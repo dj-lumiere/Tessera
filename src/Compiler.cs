@@ -253,7 +253,7 @@ public sealed partial class Compiler
         if (!Target.HasOs && d.IsLibrary && d is not ModuleDecl && IsOsModule(d.Module)) return false;
         if (!TraceSelected(d)) return false;
         if (!HeapCheckSelected(d)) return false;
-        foreach (var a in d.Attributes)
+        foreach (var a in d.Annotations)
         {
             if (a.Name != "target" && a.Args.FirstOrDefault(arg => arg.Values is not null) is { } listed)
                 throw new CompileError(a.Pos, $"only #target takes a list of values; #{a.Name}'s '{listed.Key}' takes one");
@@ -293,7 +293,7 @@ public sealed partial class Compiler
     /// only with the check on, and the plain malloc / free one only with it off.
     private bool HeapCheckSelected(Decl d)
     {
-        if (d.Attr("heap_check") is not { } a) return true;
+        if (d.AnnotationNamed("heap_check") is not { } a) return true;
         if (!d.IsLibrary)
             throw new CompileError(a.Pos, "#heap_check selects standard library declarations by the heap-check setting");
         return a.First switch
@@ -316,9 +316,9 @@ public sealed partial class Compiler
         // Exported library routines are always emitted: something outside Tessera (C code, or LLVM's own lowering)
         // may call them by their C name. A program's export of the same name replaces the library's, the way a
         // program supplies its own crash handler.
-        var programExports = _userRoutines.Select(r => r.Attr("export")?.First).Where(n => n is not null).ToHashSet();
+        var programExports = _userRoutines.Select(r => r.AnnotationNamed("export")?.First).Where(n => n is not null).ToHashSet();
         if (EmitLibraryExports)
-            foreach (var r in _allRoutines.Where(r => r.IsLibrary && r.Attr("export") is { } e && !programExports.Contains(e.First)))
+            foreach (var r in _allRoutines.Where(r => r.IsLibrary && r.AnnotationNamed("export") is { } e && !programExports.Contains(e.First)))
                 CheckRoot(r);
         while (_pending.Count > 0) EmitInstance(_pending.Dequeue());
         // The entry comes after the program's own routines, so an error in one of them is reported first.
@@ -398,9 +398,9 @@ public sealed partial class Compiler
         int checkedUpTo = errors.Count;
         // A routine derived without being asked for holds only when its payloads allow it, so it's checked when used.
         // A library export the program replaces (its own crash handler) isn't part of the program.
-        var programExports = _userRoutines.Select(r => r.Attr("export")?.First).Where(n => n is not null).ToHashSet();
+        var programExports = _userRoutines.Select(r => r.AnnotationNamed("export")?.First).Where(n => n is not null).ToHashSet();
         foreach (var r in _allRoutines.Where(r => !Tessera.Derive.IsImplicit(r)
-                     && !(r.IsLibrary && r.Attr("export") is { } e && programExports.Contains(e.First))
+                     && !(r.IsLibrary && r.AnnotationNamed("export") is { } e && programExports.Contains(e.First))
                      && (scope is null || scope(r.File))))
         {
             try
@@ -422,8 +422,8 @@ public sealed partial class Compiler
     /// constant is an error where it's written. Presets on a generic owner are folded where they're used.
     private void CheckPreset(PresetDecl c)
     {
-        if (c.Attr("threadlocal") is { } tl) CheckThreadLocal(c, tl);
-        if (c.Attr("external") is { } ext) CheckExternalVariable(c, ext);
+        if (c.AnnotationNamed("threadlocal") is { } tl) CheckThreadLocal(c, tl);
+        if (c.AnnotationNamed("external") is { } ext) CheckExternalVariable(c, ext);
         var env = new TypeEnv(c.File);
         DType? self = null;
         if (c.Owner is not null)
@@ -445,7 +445,7 @@ public sealed partial class Compiler
 
     /// `#threadlocal` gives each thread its own copy of a global. A preset is read-only, so the threads can share one,
     /// and a target without an operating system has no threads to give copies to.
-    private void CheckThreadLocal(PresetDecl c, Attribute tl)
+    private void CheckThreadLocal(PresetDecl c, Annotation tl)
     {
         if (!c.IsGlobal)
             throw new CompileError(tl.Pos, $"#threadlocal marks a global; '{c.Name}' is a preset, which is read-only, so every thread can share it");
@@ -458,7 +458,7 @@ public sealed partial class Compiler
 
     /// `#[external("c"), symbol("environ")] global ENVIRON: @@@Byte` is a C variable the program links against: C's
     /// `extern char** environ;`. Its contents are the C side's, so it takes none here.
-    private static void CheckExternalVariable(PresetDecl c, Attribute ext)
+    private static void CheckExternalVariable(PresetDecl c, Annotation ext)
     {
         if (!c.IsGlobal)
             throw new CompileError(ext.Pos, $"an external variable is a global: #[external(\"c\"), symbol(\"{c.Name}\")] global {c.Name}: @T");
@@ -469,14 +469,14 @@ public sealed partial class Compiler
     }
 
     /// The symbol of a C variable: its #symbol, or its own name.
-    private static string ExternalSymbol(PresetDecl c) => c.Attr("symbol")?.First ?? c.Name;
+    private static string ExternalSymbol(PresetDecl c) => c.AnnotationNamed("symbol")?.First ?? c.Name;
 
     /// Instantiates a routine that needs no type arguments: user code is always checked, even if unused.
     private void CheckRoot(RoutineDecl r)
     {
         if (IsEntryRoutine(r)) CheckEntryRoutine(r);
         CheckInlining(r);
-        if (r.Attr("external") is { First: "llvm" }) return;
+        if (r.AnnotationNamed("external") is { First: "llvm" }) return;
         if (r.Blocks is null) { CheckExternal(r); return; }
         // An assembly routine's body is checked as assembly, whether or not anything calls it.
         if (IsAsm(r) && r.TypeParams.Count == 0 && (r.Owner is null || OwnerTypeParams(r).Count == 0))
@@ -873,9 +873,9 @@ public sealed partial class Compiler
     {
         string cc = "default";
         var parts = t.Args.ToList();
-        if (parts.Count > 0 && parts[0] is TypeArgAttr { Attr: { Name: "callconv" } attr })
+        if (parts.Count > 0 && parts[0] is TypeArgAnnotation { Annotation: { Name: "callconv" } annotation })
         {
-            cc = CheckCallConv(attr);
+            cc = CheckCallConv(annotation);
             parts.RemoveAt(0);
         }
         if (parts is not [TypeArgTuple ps, TypeArgType ret])
@@ -885,11 +885,11 @@ public sealed partial class Compiler
 
     /// `#callconv("fast")`, `#callconv("cold")`, or `#callconv("stdcall")`; every other routine uses the default, the C
     /// convention.
-    public static string CheckCallConv(Attribute attr) => attr.First switch
+    public static string CheckCallConv(Annotation annotation) => annotation.First switch
     {
-        "fast" or "cold" or "stdcall" => attr.First,
-        _ => throw new CompileError(attr.Pos,
-            $"#callconv takes \"fast\", \"cold\", or \"stdcall\", not {(attr.First is null ? "nothing" : $"\"{attr.First}\"")}"),
+        "fast" or "cold" or "stdcall" => annotation.First,
+        _ => throw new CompileError(annotation.Pos,
+            $"#callconv takes \"fast\", \"cold\", or \"stdcall\", not {(annotation.First is null ? "nothing" : $"\"{annotation.First}\"")}"),
     };
 
     private readonly Dictionary<string, HashSet<string>> _calls = [];
@@ -907,7 +907,7 @@ public sealed partial class Compiler
     private List<CompileError> InlineRecursion()
     {
         var errors = new List<CompileError>();
-        foreach (var inst in _instances.Values.Where(i => i.Decl.Attr("inline") is not null).OrderBy(i => i.Symbol))
+        foreach (var inst in _instances.Values.Where(i => i.Decl.AnnotationNamed("inline") is not null).OrderBy(i => i.Symbol))
         {
             var from = new Dictionary<string, string> { [inst.Symbol] = "" };
             var queue = new Queue<string>([inst.Symbol]);
@@ -929,7 +929,7 @@ public sealed partial class Compiler
             var path = new List<string> { inst.Decl.DisplayName };
             for (string at = closing; at != inst.Symbol; at = from[at]) path.Insert(1, _instances[at].Decl.DisplayName);
             path.Add(inst.Decl.DisplayName);
-            errors.Add(new CompileError(inst.Decl.Attr("inline")!.Pos,
+            errors.Add(new CompileError(inst.Decl.AnnotationNamed("inline")!.Pos,
                 $"'{inst.Decl.DisplayName}' is #inline, and it calls itself ({string.Join(" -> ", path)}); "
                 + "a recursive routine can't be inlined at every call"));
         }
@@ -940,8 +940,8 @@ public sealed partial class Compiler
     /// Neither takes arguments, a routine can't ask for both, and both need a body here: an `#external` routine has none.
     private static void CheckInlining(RoutineDecl r)
     {
-        var inline = r.Attr("inline");
-        var noinline = r.Attr("noinline");
+        var inline = r.AnnotationNamed("inline");
+        var noinline = r.AnnotationNamed("noinline");
         if (inline is not null && noinline is not null)
             throw new CompileError(noinline.Pos, $"'{r.DisplayName}' is #inline and #noinline; it can only be one");
         foreach (var a in new[] { inline, noinline })
@@ -949,7 +949,7 @@ public sealed partial class Compiler
             if (a is null) continue;
             if (a.Args.Count != 0)
                 throw new CompileError(a.Pos, $"#{a.Name} takes no arguments");
-            if (r.Attr("external") is not null)
+            if (r.AnnotationNamed("external") is not null)
                 throw new CompileError(a.Pos, $"#{a.Name} needs a body, and '{r.DisplayName}' is #external");
         }
     }
@@ -1049,13 +1049,13 @@ public sealed partial class Compiler
     {
         var d = s.Decl;
         // A library `#llvm("iN")` record (B128) is an integer of that width underneath. Built-in names never get here.
-        if (d.Attr("llvm") is { } llvm)
+        if (d.AnnotationNamed("llvm") is { } llvm)
             return llvm.First is ['i', .. var digits] && int.TryParse(digits, NumberStyles.None, CultureInfo.InvariantCulture, out int bits)
                 ? IntType.U(bits)
                 : throw new CompileError(d.Pos, $"#llvm on a library record takes an integer type (\"i128\"), got \"{llvm.First}\"");
-        if (d.Attr("aggregate") is not null || d.Fields.Count != 1) return null;
+        if (d.AnnotationNamed("aggregate") is not null || d.Fields.Count != 1) return null;
         if (_transparent.TryGetValue(s.Key, out var cached)) return cached;
-        if (d.Attr("layout") is not null || d.Fields[0].Attr("aligned") is not null)
+        if (d.AnnotationNamed("layout") is not null || d.Fields[0].AnnotationNamed("aligned") is not null)
             throw new CompileError(d.Pos, $"record '{d.Name}' has one field, so it lowers to that field's type; a layout or #aligned needs it to be #aggregate");
         if (!_resolvingTransparent.Add(s.Key)) throw new CompileError(d.Pos, $"{s} contains itself");
         try
@@ -1128,7 +1128,7 @@ public sealed partial class Compiler
                 _typeDefs.AppendLine($"{v.Llvm} = type {{ {body} }}");
                 break;
             }
-            case RecordType s when s.Decl.Attr("llvm") is null:
+            case RecordType s when s.Decl.AnnotationNamed("llvm") is null:
                 // A record can hold itself only through a pointer.
                 if (_definingTypes.Contains(s.Key)) throw new CompileError(s.Decl.Pos, $"{s} contains itself");
                 if (!_definedTypes.Add(s.Key)) return;
@@ -1173,11 +1173,11 @@ public sealed partial class Compiler
     public string GlobalVariable(PresetDecl c, DType t, TypeEnv env)
     {
         if (Prechecking) return "@precheck";
-        var external = c.Attr("external");
+        var external = c.AnnotationNamed("external");
         string symbol = external is null ? MangleVariable(c, null) : ExternalSymbol(c);
         if (_globalVars.TryGetValue(symbol, out var name)) return name;
         EnsureTypeDefined(t);
-        string threadLocal = c.Attr("threadlocal") is null ? "" : "thread_local ";
+        string threadLocal = c.AnnotationNamed("threadlocal") is null ? "" : "thread_local ";
         if (external is not null)
         {
             CheckExternalVariable(c, external);
@@ -1233,7 +1233,7 @@ public sealed partial class Compiler
             return "[" + string.Join(", ", elements.Select((_, i) => constants[i % constants.Count])) + "]";
         }
         if (t is PtrType or CallableType) return PointerInitializer(e, t, env);
-        if (t is RecordType record && record.Decl.Attr("llvm") is null && e is RecordLit recordLit)
+        if (t is RecordType record && record.Decl.AnnotationNamed("llvm") is null && e is RecordLit recordLit)
             return RecordInitializer(recordLit, record, env);
         if (t is not (IntType or BoolType or FloatType or ChoiceType) && BitRecordWidth(t) is null)
             throw new CompileError(e.Pos, $"a preset array element or global initializer can't be a {t.Name}");
@@ -1250,7 +1250,7 @@ public sealed partial class Compiler
             && FindPreset("", r.Name, env.File, r.Pos, r.Path) is { } target
             && target.IsStorage)
         {
-            if (target.Attr("threadlocal") is not null)
+            if (target.AnnotationNamed("threadlocal") is not null)
                 throw new CompileError(e.Pos, $"'{target.Name}' is #threadlocal: its address differs per thread, so it can't initialize a global");
             var targetEnv = new TypeEnv(target.File);
             var pointee = ResolveType(target.Type, targetEnv);
@@ -1306,7 +1306,7 @@ public sealed partial class Compiler
             try { sig = Signature(routine, new TypeEnv(routine.File)); }
             catch (CompileError) { continue; }
             if (!new CallableType(sig.CallConv, sig.Params, sig.Ret).Equals(want)) continue;
-            if (routine.Attr("inline") is not null)
+            if (routine.AnnotationNamed("inline") is not null)
                 throw new CompileError(r.Pos, $"'{r.Name}' is #inline, so it can't be a Callable value: it's inlined at every call");
             if (!sig.PassesBf16AsBits && (Instance.IsBf16(sig.Ret) || sig.Params.Any(Instance.IsBf16)))
                 throw new CompileError(r.Pos, $"routine '{r.Name}' passes BF16 the C way, so it can't be a Callable; wrap it in a Tessera routine");

@@ -123,7 +123,7 @@ public static partial class LanguageServer
         return symbols;
     }
 
-    /// The last line of a declaration that ends before `next` (1-based): past the blank, comment, and attribute
+    /// The last line of a declaration that ends before `next` (1-based): past the blank, comment, and annotation
     /// lines that belong to the next one.
     private static int EndBefore(string[] lines, int next)
     {

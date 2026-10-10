@@ -7,7 +7,7 @@ namespace Tessera;
 public enum TokenKind
 {
     Ident,       // routine, S64, entry, add, count, ...
-    Hash,        // # (starts an attribute)
+    Hash,        // # (starts an annotation)
     At,          // @ (a pointer type: @T is Ptr<T>)
     Int,         // 42, -5, 0xFF
     Byte,        // b'A': a Byte

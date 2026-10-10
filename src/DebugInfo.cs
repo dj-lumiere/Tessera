@@ -28,7 +28,7 @@ public sealed partial class Compiler
     private readonly HashSet<string> _onCycle = [];
     private int _diUnit = -1;
 
-    public static bool IsTrackCaller(RoutineDecl r) => r.Attr("track_caller") is not null;
+    public static bool IsTrackCaller(RoutineDecl r) => r.AnnotationNamed("track_caller") is not null;
 
     private readonly Dictionary<string, string> _places = [];
 

@@ -64,7 +64,7 @@ public sealed partial class Compiler
                 r.Name == StartName
                     ? $"{what}, declared '{shape}': no parameters, and it returns nothing (set_exit_code in Standard/Os sets the exit status)"
                     : $"{what}, declared '{shape}'");
-        if (r.Blocks is null || IsAsm(r) || r.Attr("export") is not null || r.Attr("inline") is not null)
+        if (r.Blocks is null || IsAsm(r) || r.AnnotationNamed("export") is not null || r.AnnotationNamed("inline") is not null)
             throw new CompileError(r.Pos, $"{what}: an ordinary '{shape}' with a body, which the builder calls (no #external, #export, or #inline)");
     }
 

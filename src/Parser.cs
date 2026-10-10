@@ -61,7 +61,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         {
             if (IsIdent("module")) throw Error("a file names its module once, on its first line");
             if (IsIdent("import")) throw Error("imports go at the top of the file, after the module line");
-            var attrs = ParseAttributes();
+            var annotations = ParseAnnotations();
             bool isPrivate = IsIdent("private");
             bool isInternal = IsIdent("internal");
             if (isPrivate || isInternal) Next();
@@ -69,17 +69,17 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 throw Error($"expected a declaration (routine, record, choice, variant, preset, global, concept, conform, define), found {Describe(Cur)}");
             Decl d = Cur.Text switch
             {
-                "routine" => ParseRoutine(attrs, inConcept: false),
-                "record" => ParseRecord(attrs),
-                "choice" => ParseChoice(attrs),
-                "variant" => ParseVariant(attrs),
-                "preset" => ParsePreset(attrs),
-                "global" => ParseGlobal(attrs),
-                "conform" => ParseConformDecl(attrs),
-                "define" => ParseDefine(attrs),
-                _ => ParseConcept(attrs),
+                "routine" => ParseRoutine(annotations, inConcept: false),
+                "record" => ParseRecord(annotations),
+                "choice" => ParseChoice(annotations),
+                "variant" => ParseVariant(annotations),
+                "preset" => ParsePreset(annotations),
+                "global" => ParseGlobal(annotations),
+                "conform" => ParseConformDecl(annotations),
+                "define" => ParseDefine(annotations),
+                _ => ParseConcept(annotations),
             };
-            if (d is not RoutineDecl && attrs.FirstOrDefault(a => a.Name == ExpensiveCallLint.Attribute) is { } expensive)
+            if (d is not RoutineDecl && annotations.FirstOrDefault(a => a.Name == ExpensiveCallLint.Annotation) is { } expensive)
                 throw new CompileError(expensive.Pos,
                     "#expensive marks a routine, the one whose calls cost a lot: put it on the routine declaration");
             decls.Add(d with { IsLibrary = isLibrary, IsPrivate = isPrivate, IsInternal = isInternal, Module = module });
@@ -89,7 +89,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     }
 
     /// `define Fmt = Standard/Format`, `define Numbers = Standard/Collections/List[S64]`.
-    private AliasDecl ParseDefine(List<Attribute> attrs)
+    private AliasDecl ParseDefine(List<Annotation> annotations)
     {
         var pos = Next().Pos;
         var name = TypeName(Expect(TokenKind.Ident, "the defined name"));
@@ -98,7 +98,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         Expect(TokenKind.Eq, "'='");
         var target = ParseType();
         ExpectLineEnd();
-        return new AliasDecl(file, attrs, target, name.Text, pos);
+        return new AliasDecl(file, annotations, target, name.Text, pos);
     }
 
     /// `Standard/Format`: PascalCase names joined by `/`.
@@ -188,29 +188,29 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         Is(TokenKind.Eof) || Is(TokenKind.Hash)
         || (IsKeyword(Cur) && (DeclKeywords.Contains(Cur.Text) || Cur.Text is "private" or "internal"));
 
-    // ── Attributes and clauses ──────────────────────────────────────────────
+    // ── Annotations and clauses ──────────────────────────────────────────────
 
-    private List<Attribute> ParseAttributes()
+    private List<Annotation> ParseAnnotations()
     {
-        var attrs = new List<Attribute>();
+        var annotations = new List<Annotation>();
         while (Is(TokenKind.Hash))
         {
             Next();
             if (Accept(TokenKind.LBracket))
             {
-                do attrs.Add(ParseAttribute()); while (Accept(TokenKind.Comma));
+                do annotations.Add(ParseAnnotation()); while (Accept(TokenKind.Comma));
                 Expect(TokenKind.RBracket, "']'");
             }
-            else attrs.Add(ParseAttribute());
+            else annotations.Add(ParseAnnotation());
             ExpectLineEnd();
         }
-        return attrs;
+        return annotations;
     }
 
-    private Attribute ParseAttribute()
+    private Annotation ParseAnnotation()
     {
-        var name = Expect(TokenKind.Ident, "an attribute name");
-        var args = new List<AttrArg>();
+        var name = Expect(TokenKind.Ident, "an annotation name");
+        var args = new List<AnnotationArg>();
         if (Accept(TokenKind.LParen))
         {
             if (!Is(TokenKind.RParen))
@@ -229,27 +229,27 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     if (negated) Next();
                     if (Is(TokenKind.LParen))
                     {
-                        args.Add(ParseAttrValueList(key, negated));
+                        args.Add(ParseAnnotationValueList(key, negated));
                         continue;
                     }
                     if (Is(TokenKind.Ident) && PeekTok(1).Kind is TokenKind.LParen or TokenKind.LBracket)
                     {
-                        args.Add(new AttrArg(key, "", negated, ParseExpr()));
+                        args.Add(new AnnotationArg(key, "", negated, ParseExpr()));
                         continue;
                     }
                     var a = Next();
                     if (a.Kind is not (TokenKind.Str or TokenKind.Int or TokenKind.Ident))
-                        throw new CompileError(a.Pos, "attribute arguments must be literals");
-                    args.Add(new AttrArg(key, a.Kind == TokenKind.Int ? a.IntValue.ToString() : a.Text, negated));
+                        throw new CompileError(a.Pos, "annotation arguments must be literals");
+                    args.Add(new AnnotationArg(key, a.Kind == TokenKind.Int ? a.IntValue.ToString() : a.Text, negated));
                 } while (Accept(TokenKind.Comma));
             }
             Expect(TokenKind.RParen, "')'");
         }
-        return new Attribute(name.Text, args, name.Pos);
+        return new Annotation(name.Text, args, name.Pos);
     }
 
     /// `os: ("linux", "macos")`, `arch: not ("x86", "arm")`: a key's list of values, any of which matches.
-    private AttrArg ParseAttrValueList(string? key, bool negated)
+    private AnnotationArg ParseAnnotationValueList(string? key, bool negated)
     {
         var open = Next();
         if (key is null)
@@ -261,14 +261,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             {
                 var v = Next();
                 if (v.Kind is not (TokenKind.Str or TokenKind.Int or TokenKind.Ident))
-                    throw new CompileError(v.Pos, "a list of attribute values holds literals");
+                    throw new CompileError(v.Pos, "a list of annotation values holds literals");
                 values.Add(v.Kind == TokenKind.Int ? v.IntValue.ToString() : v.Text);
             } while (Accept(TokenKind.Comma));
         }
         Expect(TokenKind.RParen, "')'");
         if (values.Count == 0)
             throw new CompileError(open.Pos, $"'{key}: ()' lists no values, so nothing could match; list at least one");
-        return new AttrArg(key, values[0], negated, Values: values);
+        return new AnnotationArg(key, values[0], negated, Values: values);
     }
 
     /// `require ...` and `conform ...` lines after a declaration header. They follow it line by line: after a blank
@@ -329,7 +329,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     }
 
     /// `conform C[X, ...] [when ...]` at top level, then `require` lines for its type parameters.
-    private ConformDecl ParseConformDecl(List<Attribute> attrs)
+    private ConformDecl ParseConformDecl(List<Annotation> annotations)
     {
         var pos = Cur.Pos;
         var clauses = new List<Clause> { ParseClause() };
@@ -339,12 +339,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             clauses.Add(ParseClause());
             SkipNewlines();
         }
-        return new ConformDecl(file, attrs, clauses, pos);
+        return new ConformDecl(file, annotations, clauses, pos);
     }
 
     /// `#source("gcd.mini", 5, 9)`: a place in a generator's input, the column optional. A relative file is relative
     /// to this file's directory.
-    private Pos SourceOf(Attribute a)
+    private Pos SourceOf(Annotation a)
     {
         if (a.Args.Count is < 2 or > 3 || a.Args.Any(x => x.Key is not null || x.Expr is not null))
             throw new CompileError(a.Pos, "#source takes a file, a line and an optional column: #source(\"gcd.mini\", 5, 9)");
@@ -358,20 +358,20 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new Pos(path, line, col);
     }
 
-    /// Whether a block comes next, and the `#source` on the line before it if any. Attributes that aren't followed
+    /// Whether a block comes next, and the `#source` on the line before it if any. Annotations that aren't followed
     /// by a block belong to the next declaration, so they're left for it.
     private (bool IsBlock, Pos? Source) NextBlockSource()
     {
         if (!Is(TokenKind.Hash)) return (IsIdent("block"), null);
         int start = _i;
-        var attrs = ParseAttributes();
+        var annotations = ParseAnnotations();
         if (!IsIdent("block"))
         {
             _i = start;
             return (false, null);
         }
         Pos? source = null;
-        foreach (var a in attrs)
+        foreach (var a in annotations)
             source = a.Name == "source" ? SourceOf(a) : throw new CompileError(a.Pos, $"a block takes #source, not #{a.Name}");
         return (true, source);
     }
@@ -402,7 +402,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     // ── Declarations ────────────────────────────────────────────────────────
 
-    private RoutineDecl ParseRoutine(List<Attribute> attrs, bool inConcept, List<string>? conceptParams = null)
+    private RoutineDecl ParseRoutine(List<Annotation> annotations, bool inConcept, List<string>? conceptParams = null)
     {
         var pos = Cur.Pos;
         ExpectIdent("routine");
@@ -430,7 +430,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 throw TypeNameTaken(me.Type.Pos);
         }
 
-        _inAsm = attrs.Any(a => a is { Name: "external", First: "asm" });
+        _inAsm = annotations.Any(a => a is { Name: "external", First: "asm" });
         var parameters = ParseParams(receiver: true);
         _routineValues = parameters.Select(p => p.Name).ToList();
         Expect(TokenKind.Arrow, "'->' and a return type");
@@ -459,9 +459,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             }
         }
 
-        var source = attrs.FirstOrDefault(a => a.Name == "source") is { } src ? SourceOf(src) : (Pos?)null;
+        var source = annotations.FirstOrDefault(a => a.Name == "source") is { } src ? SourceOf(src) : (Pos?)null;
         if (inConcept)
-            return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, null, pos) { Fixed = fixedArgs };
+            return new RoutineDecl(file, annotations, owner, name, typeParams, parameters, ret, clauses, null, pos) { Fixed = fixedArgs };
 
         // Only an #external routine is declared without a body. Every other one has its head (the routine's local
         // lines, if it has any), then its entry block: written `block entry()`, or the lines before the first block.
@@ -479,8 +479,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 if (shared.Count > 0)
                     throw new CompileError(shared[0].Pos,
                         $"routine '{display}' shares values but has no body to share them with: its lines follow the head");
-                if (attrs.Any(a => a.Name == "external"))
-                    return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, null, pos) { Fixed = fixedArgs, Source = source };
+                if (annotations.Any(a => a.Name == "external"))
+                    return new RoutineDecl(file, annotations, owner, name, typeParams, parameters, ret, clauses, null, pos) { Fixed = fixedArgs, Source = source };
                 throw new CompileError(pos, $"routine '{display}' has no body: its lines follow the header");
             }
             // The lines before the first block are the entry block.
@@ -497,7 +497,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             throw new CompileError(blocks[0].Pos, $"the first block of routine '{display}' must be 'entry'");
         if (blocks[0].Params.Count != 0)
             throw new CompileError(blocks[0].Pos, "the entry block takes no parameters");
-        return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, blocks, pos)
+        return new RoutineDecl(file, annotations, owner, name, typeParams, parameters, ret, clauses, blocks, pos)
             { Fixed = fixedArgs, Source = source, Shared = shared };
     }
 
@@ -513,13 +513,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             Pos? lineSource = null;
             if (Is(TokenKind.Hash))
             {
-                var lineAttrs = ParseAttributes();
+                var lineAnnotations = ParseAnnotations();
                 if (!IsIdent("local"))
                 {
-                    _i = start;   // the attributes of the first block, or of the next declaration
+                    _i = start;   // the annotations of the first block, or of the next declaration
                     break;
                 }
-                foreach (var a in lineAttrs)
+                foreach (var a in lineAnnotations)
                     lineSource = a.Name == "source"
                         ? SourceOf(a)
                         : throw new CompileError(a.Pos, $"a local line takes #source, not #{a.Name}");
@@ -567,7 +567,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new BindStmt(name, type, ParseExpr(), pos);
     }
 
-    private RecordDecl ParseRecord(List<Attribute> attrs)
+    private RecordDecl ParseRecord(List<Annotation> annotations)
     {
         var pos = Cur.Pos;
         ExpectIdent("record");
@@ -579,32 +579,32 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var fields = new List<FieldDecl>();
         while (true)
         {
-            // Attributes and `private` belong to the next field when a field follows them, and to the next
+            // Annotations and `private` belong to the next field when a field follows them, and to the next
             // declaration otherwise.
             int start = _i;
-            var fieldAttrs = ParseAttributes();
+            var fieldAnnotations = ParseAnnotations();
             bool isPrivate = IsIdent("private") && PeekTok(1).Kind == TokenKind.Ident;
             bool isInternal = IsIdent("internal") && PeekTok(1).Kind == TokenKind.Ident;
             if (isPrivate || isInternal) Next();
             if (!(Is(TokenKind.Ident) && PeekTok(1).Kind == TokenKind.Colon))
             {
                 _i = start;
-                if (fieldAttrs.Count > 0 || isPrivate || isInternal || AtDeclStart()) break;
+                if (fieldAnnotations.Count > 0 || isPrivate || isInternal || AtDeclStart()) break;
             }
 
             var f = Expect(TokenKind.Ident, "a field name");
-            if (fieldAttrs.FirstOrDefault(a => a.Name == ExpensiveCallLint.Attribute) is { } expensive)
+            if (fieldAnnotations.FirstOrDefault(a => a.Name == ExpensiveCallLint.Annotation) is { } expensive)
                 throw new CompileError(expensive.Pos,
                     "#expensive marks a routine, the one whose calls cost a lot, not a field");
             Expect(TokenKind.Colon, "':' after the field name");
-            fields.Add(new FieldDecl(f.Text, ParseType(), fieldAttrs, f.Pos, isPrivate, isInternal));
+            fields.Add(new FieldDecl(f.Text, ParseType(), fieldAnnotations, f.Pos, isPrivate, isInternal));
             ExpectLineEnd();
         }
-        return new RecordDecl(file, attrs, name.Text, typeParams, clauses, fields, pos);
+        return new RecordDecl(file, annotations, name.Text, typeParams, clauses, fields, pos);
     }
 
     /// `variant Name[T]`, its clauses, then one case per line: `Number: S64` carries a payload, `Empty` doesn't.
-    private VariantDecl ParseVariant(List<Attribute> attrs)
+    private VariantDecl ParseVariant(List<Annotation> annotations)
     {
         var pos = Cur.Pos;
         ExpectIdent("variant");
@@ -622,10 +622,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             ExpectLineEnd();
         }
         if (cases.Count == 0) throw new CompileError(pos, $"variant '{name.Text}' needs at least one case");
-        return new VariantDecl(file, attrs, name.Text, typeParams, clauses, cases, pos);
+        return new VariantDecl(file, annotations, name.Text, typeParams, clauses, cases, pos);
     }
 
-    private ChoiceDecl ParseChoice(List<Attribute> attrs)
+    private ChoiceDecl ParseChoice(List<Annotation> annotations)
     {
         var pos = Cur.Pos;
         ExpectIdent("choice");
@@ -651,13 +651,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             members.Add((m.Text, value));
             ExpectLineEnd();
         }
-        return new ChoiceDecl(file, attrs, name.Text, underlying, members, pos);
+        return new ChoiceDecl(file, annotations, name.Text, underlying, members, pos);
     }
 
     private static bool IsScreamingSnake(string name) =>
         char.IsAsciiLetterUpper(name[0]) && name.All(c => char.IsAsciiLetterUpper(c) || char.IsAsciiDigit(c) || c == '_');
 
-    private PresetDecl ParsePreset(List<Attribute> attrs)
+    private PresetDecl ParsePreset(List<Annotation> annotations)
     {
         var pos = Cur.Pos;
         ExpectIdent("preset");
@@ -681,7 +681,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             Expect(TokenKind.LeftArrow, $"'<-' and the contents: preset {name}: {type} <- value");
             var contents = ParseExpr();
             ExpectLineEnd();
-            return new PresetDecl(file, attrs, owner, name, pointee, contents, pos) { IsStorage = true };
+            return new PresetDecl(file, annotations, owner, name, pointee, contents, pos) { IsStorage = true };
         }
         if (Is(TokenKind.LeftArrow))
             throw Error($"'<-' fills memory, and a preset of type {type} is a value: preset {name}: {type} = value, "
@@ -689,11 +689,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         Expect(TokenKind.Eq, "'='");
         var value = ParseExpr();
         ExpectLineEnd();
-        return new PresetDecl(file, attrs, owner, name, type, value, pos);
+        return new PresetDecl(file, annotations, owner, name, type, value, pos);
     }
 
     /// `global NAME: @T` (all-zero) or `global NAME: @T <- value`: the name is the address of the memory.
-    private PresetDecl ParseGlobal(List<Attribute> attrs)
+    private PresetDecl ParseGlobal(List<Annotation> annotations)
     {
         var pos = Cur.Pos;
         ExpectIdent("global");
@@ -707,14 +707,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             throw Error($"a global takes its contents with '<-': global {name.Text}: {type} <- value");
         Expr? value = Accept(TokenKind.LeftArrow) ? ParseExpr() : null;
         ExpectLineEnd();
-        return new PresetDecl(file, attrs, null, name.Text, pointee, value, pos) { IsGlobal = true, IsStorage = true };
+        return new PresetDecl(file, annotations, null, name.Text, pointee, value, pos) { IsGlobal = true, IsStorage = true };
     }
 
     /// `T` in `@T`, or null if the type isn't a pointer.
     private static TypeRef? PointeeOf(TypeRef type) =>
         type is { Name: "Ptr", Path: null, Args: [TypeArgType inner] } ? inner.Type : null;
 
-    private ConceptDecl ParseConcept(List<Attribute> attrs)
+    private ConceptDecl ParseConcept(List<Annotation> annotations)
     {
         var pos = Cur.Pos;
         ExpectIdent("concept");
@@ -731,7 +731,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                                   && (owner.Text == "Me" || typeParams.Contains(owner.Text) || Cur.Pos.Col > 1)
                                   && PeekTok(2).Kind == TokenKind.Dot)
             routines.Add(ParseRoutine([], inConcept: true, conceptParams: typeParams));
-        return new ConceptDecl(file, attrs, name.Text, typeParams, clauses, routines, pos);
+        return new ConceptDecl(file, annotations, name.Text, typeParams, clauses, routines, pos);
     }
 
     /// A routine's parameters (`receiver`), which may start with `me`, or a block's, which may not.
@@ -834,7 +834,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private TypeArg ParseTypeArg()
     {
         if (Is(TokenKind.Int)) return new TypeArgInt(Low64(Next().IntValue));
-        if (Accept(TokenKind.Hash)) return new TypeArgAttr(ParseAttribute());
+        if (Accept(TokenKind.Hash)) return new TypeArgAnnotation(ParseAnnotation());
         if (Accept(TokenKind.LParen))
         {
             // A one-element tuple is written `(T,)`, so a trailing comma is allowed.
@@ -894,15 +894,15 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         while (true)
         {
             KeywordBinding();
-            // Attributes on the line before a line of the block: `#source(...)` on any, and `#asm_prefix("lock")` on an
+            // Annotations on the line before a line of the block: `#source(...)` on any, and `#asm_prefix("lock")` on an
             // instruction of an assembly routine.
             if (AtBlockEnd())
                 throw Unterminated(name.Text, pos, implicitEntry);
             Pos? lineSource = null;
-            List<Attribute> prefixes = [];
+            List<Annotation> prefixes = [];
             if (Is(TokenKind.Hash))
             {
-                foreach (var a in ParseAttributes())
+                foreach (var a in ParseAnnotations())
                 {
                     if (a.Name == "source") lineSource = SourceOf(a);
                     else if (a.Name == "asm_prefix" && _inAsm) prefixes.Add(a);
@@ -912,7 +912,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                             : $"a line of a block takes #source, not #{a.Name}");
                 }
                 if (AtBlockEnd())
-                    throw new CompileError(Cur.Pos, "an attribute goes on the line before the line it describes");
+                    throw new CompileError(Cur.Pos, "an annotation goes on the line before the line it describes");
             }
             if (AtBlockEnd())
                 throw Unterminated(name.Text, pos, implicitEntry);
@@ -941,7 +941,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             }
             if (prefixes.Count > 0)
                 stmt = stmt is ExprStmt instruction
-                    ? instruction with { Attributes = prefixes }
+                    ? instruction with { Annotations = prefixes }
                     : throw new CompileError(prefixes[0].Pos, "#asm_prefix goes on the line before an instruction");
 
             // A bare call as the last line of a block is a #noreturn terminator, such as `crash_overflow()`.
@@ -961,7 +961,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             ValueName("a value name");
     }
 
-    /// Whether the block is over: a declaration or another block comes next. Attribute lines end it when one of
+    /// Whether the block is over: a declaration or another block comes next. Annotation lines end it when one of
     /// those follows them. Before a line of the block (`#source(...)`) they don't.
     private bool AtBlockEnd()
     {
@@ -969,7 +969,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         int start = _i;
         try
         {
-            ParseAttributes();
+            ParseAnnotations();
             return AtDeclStart() || IsIdent("block");
         }
         catch (CompileError)

@@ -289,7 +289,7 @@ public sealed partial class Compiler
             if (t.Path is null or CoreModule && t.Name == "Callable")
             {
                 // `PF <ret> <params> E`, each written the way the routine declares it.
-                var parts = t.Args.Where(a => a is not TypeArgAttr).ToList();
+                var parts = t.Args.Where(a => a is not TypeArgAnnotation).ToList();
                 if (parts is not [TypeArgTuple ps, TypeArgType ret])
                     throw new CompileError(t.Pos, "Callable is written Callable[(Params...), Ret]");
                 string fkey = "FREF:" + t;

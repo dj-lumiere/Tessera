@@ -152,12 +152,12 @@ public sealed class CpuModel
     }
 
     /// The names `#feature` asks about in the declarations a build of the target can select: those whose `#target`
-    /// attributes before it match. Only a guess at what the build will ask (PrefetchFeatures), so an attribute it
+    /// annotations before it match. Only a guess at what the build will ask (PrefetchFeatures), so an annotation it
     /// can't read is passed over.
     public static IEnumerable<string> FeaturesNamed(IEnumerable<Decl> decls, BuildTarget target)
     {
         foreach (var d in decls)
-            foreach (var a in d.Attributes)
+            foreach (var a in d.Annotations)
             {
                 if (a.Name == "target")
                 {

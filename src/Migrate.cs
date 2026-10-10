@@ -428,8 +428,8 @@ public static class Migrate
 
             if (c == '#')
             {
-                // An attribute holds no literal, and its strings are LLVM or assembler text: skip it whole.
-                i = AttributeEnd(sb, i);
+                // An annotation holds no literal, and its strings are LLVM or assembler text: skip it whole.
+                i = AnnotationEnd(sb, i);
                 continue;
             }
 
@@ -489,9 +489,9 @@ public static class Migrate
         return sb.ToString();
     }
 
-    /// The index past the attribute starting at the `#` at `i`: `#name(...)` to the end of its line, `#[...]` to its
+    /// The index past the annotation starting at the `#` at `i`: `#name(...)` to the end of its line, `#[...]` to its
     /// closing bracket, over any lines.
-    private static int AttributeEnd(StringBuilder sb, int i)
+    private static int AnnotationEnd(StringBuilder sb, int i)
     {
         if (i + 1 >= sb.Length || sb[i + 1] != '[') return LineEnd(sb, i);
         int depth = 0;

@@ -2,7 +2,7 @@ namespace Tessera;
 
 /// The warning for an expensive call on a loop. A routine marked `#expensive` costs a lot on every target, every time
 /// it runs: it allocates or frees, asks the operating system for something, or does work in software that the hardware
-/// has no instruction for. The attribute changes nothing in the build output. It only tells this lint, and a reader,
+/// has no instruction for. The annotation changes nothing in the build output. It only tells this lint, and a reader,
 /// that a call to the routine is worth a look where it runs many times.
 ///
 /// Where that is: a block on a loop, one that the block graph reaches again through its jumps and arms (BlockGraph.Loops),
@@ -20,7 +20,7 @@ namespace Tessera;
 /// it is usually the very work that makes it expensive (a write that loops over partial writes).
 public static class ExpensiveCallLint
 {
-    public const string Attribute = "expensive";
+    public const string Annotation = "expensive";
 
     /// A call the build resolved to an `#expensive` routine, in the block it was written in.
     /// `Arm` is the block an arm goes to when the call is among that arm's arguments (LeavesRoutine for a return or a
@@ -32,9 +32,9 @@ public static class ExpensiveCallLint
 
     /// `#expensive` or `#expensive("allocates")`: no arguments, or one plain string, the reason, which reads after the
     /// routine's name in the warning ("'allocate' allocates").
-    public static void CheckAttribute(RoutineDecl r)
+    public static void CheckAnnotation(RoutineDecl r)
     {
-        if (r.Attr(Attribute) is not { } a) return;
+        if (r.AnnotationNamed(Annotation) is not { } a) return;
         if (a.Args.Count > 1 || a.Args is [{ Key: not null } or { Negated: true } or { Expr: not null } or { Values: not null }])
             throw new CompileError(a.Pos,
                 "#expensive takes nothing, or one string that says why the routine is expensive: #expensive(\"allocates\")");
@@ -45,7 +45,7 @@ public static class ExpensiveCallLint
     public static List<(Pos Pos, string Warning)> Check(RoutineDecl r, IReadOnlyList<Call> calls)
     {
         var warnings = new List<(Pos, string)>();
-        if (calls.Count == 0 || r.Attr(Attribute) is not null || r.Blocks is not { Count: > 0 } blocks) return warnings;
+        if (calls.Count == 0 || r.AnnotationNamed(Annotation) is not null || r.Blocks is not { Count: > 0 } blocks) return warnings;
         var successors = BlockGraph.Successors(r);
         var loops = BlockGraph.Loops(blocks[0].Name, successors);
         if (loops.Count == 0) return warnings;
@@ -62,7 +62,7 @@ public static class ExpensiveCallLint
     private static string Message(Call call, string head, string closing)
     {
         string callee = call.Callee.DisplayName;
-        string what = call.Callee.Attr(Attribute)?.First is { Length: > 0 } reason
+        string what = call.Callee.AnnotationNamed(Annotation)?.First is { Length: > 0 } reason
             ? $"'{callee}' {reason} (#expensive)"
             : $"'{callee}' is #expensive";
         string loop = head == call.Block && closing == call.Block

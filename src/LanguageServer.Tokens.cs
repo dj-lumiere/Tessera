@@ -48,7 +48,7 @@ public static partial class LanguageServer
     };
 
     /// The document's tokens, delta-encoded as the protocol wants them. Until a check of the current text has
-    /// finished, only what the text alone says is colored (keywords, numbers, operators, attributes).
+    /// finished, only what the text alone says is colored (keywords, numbers, operators, annotations).
     private static JsonObject SemanticTokens(string uri)
     {
         string? text;
@@ -182,7 +182,7 @@ public static partial class LanguageServer
         }
     }
 
-    /// What a token is by itself: a keyword, a number, an operator, or the `#name` of an attribute.
+    /// What a token is by itself: a keyword, a number, an operator, or the `#name` of an annotation.
     private static string? Lexical(List<Token> tokens, int i)
     {
         var t = tokens[i];
@@ -660,7 +660,7 @@ public static partial class LanguageServer
                 ? At(b.Pos, b.Name, () => HoverText(LineAt(analysis, b.Pos).TrimEnd(':'), DocAbove(analysis, b.Pos)))
                 : null;
 
-        private void Attributes(List<Attribute> attributes)
+        private void Annotations(List<Annotation> attributes)
         {
             foreach (var a in attributes) Mark(a.Pos, a.Name, "decorator");
         }
@@ -672,7 +672,7 @@ public static partial class LanguageServer
             _conceptsOf = [];
             _routine = null;
             _concept = null;
-            Attributes(d.Attributes);
+            Annotations(d.Annotations);
             switch (d)
             {
                 case RoutineDecl r:
@@ -685,7 +685,7 @@ public static partial class LanguageServer
                     TypeParamNames(rec.Pos, rec.TypeParams);
                     foreach (var f in rec.Fields)
                     {
-                        Attributes(f.Attributes);
+                        Annotations(f.Annotations);
                         Mark(f.Pos, f.Name, "property", FieldHover(rec, f));
                         Type(f.Type);
                     }
@@ -879,7 +879,7 @@ public static partial class LanguageServer
                     Expr(bind.Value, bind.Type);
                     break;
                 case ExprStmt e:
-                    Attributes(e.Attributes);
+                    Annotations(e.Annotations);
                     Expr(e.Value);
                     break;
                 case DestructureStmt d:

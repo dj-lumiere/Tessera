@@ -28,19 +28,19 @@ public sealed record TypeArgTuple(List<TypeRef> Types) : TypeArg
     public override string ToString() => $"({string.Join(", ", Types)})";
 }
 /// `#callconv("fast")` inside a Callable.
-public sealed record TypeArgAttr(Attribute Attr) : TypeArg { public override string ToString() => $"#{Attr.Name}"; }
+public sealed record TypeArgAnnotation(Annotation Annotation) : TypeArg { public override string ToString() => $"#{Annotation.Name}"; }
 /// A buildtime integer expression as a generic argument: `max(sizeof[A](), sizeof[B]())` in `Array[Byte, …]`.
 public sealed record TypeArgExpr(Expr Expr) : TypeArg { public override string ToString() => "(expr)"; }
 
 // ── Declarations ────────────────────────────────────────────────────────────
 
-/// An attribute argument: `"c"`, `64`, `size: 64`, `os: !"windows"`, or a buildtime expression such as
+/// An annotation argument: `"c"`, `64`, `size: 64`, `os: !"windows"`, or a buildtime expression such as
 /// `max(alignof[A](), alignof[B]())` (then Expr is set and Value is empty), or a key's list of values, `os: ("linux",
 /// "macos")` (then Values holds them and Value is the first), which #target matches when the target's value is any of
 /// them (with `not`, none of them).
-public sealed record AttrArg(string? Key, string Value, bool Negated, Expr? Expr = null, List<string>? Values = null);
+public sealed record AnnotationArg(string? Key, string Value, bool Negated, Expr? Expr = null, List<string>? Values = null);
 
-public sealed record Attribute(string Name, List<AttrArg> Args, Pos Pos)
+public sealed record Annotation(string Name, List<AnnotationArg> Args, Pos Pos)
 {
     public string? First => Args.Count > 0 ? Args[0].Value : null;
 }
@@ -63,9 +63,9 @@ public sealed record Clause(string Kind, List<Token> Tokens)
     public List<TypeRef> When { get; init; } = [];
 }
 
-public abstract record Decl(string File, List<Attribute> Attributes, Pos Pos)
+public abstract record Decl(string File, List<Annotation> Annotations, Pos Pos)
 {
-    public Attribute? Attr(string name) => Attributes.FirstOrDefault(a => a.Name == name);
+    public Annotation? AnnotationNamed(string name) => Annotations.FirstOrDefault(a => a.Name == name);
     /// True for declarations loaded from the standard library, which are checked only when used.
     public bool IsLibrary { get; init; }
     /// `private`: visible only in the declaring file.
@@ -78,7 +78,7 @@ public abstract record Decl(string File, List<Attribute> Attributes, Pos Pos)
 
 public sealed record RoutineDecl(
     string File,
-    List<Attribute> Attributes,
+    List<Annotation> Annotations,
     TypeRef? Owner,              // `S64` in `S64.add`, `Option[T]` in `Option[T].some`, `TFrom` in `TFrom.bitcast[TTo]`
     string Name,
     List<string> TypeParams,     // the routine's own: `TTo` in `TFrom.bitcast[TTo]`, `T` in `add[T]`
@@ -86,7 +86,7 @@ public sealed record RoutineDecl(
     TypeRef ReturnType,
     List<Clause> Clauses,
     List<BlockDecl>? Blocks,     // null for an external or concept declaration
-    Pos Pos) : Decl(File, Attributes, Pos)
+    Pos Pos) : Decl(File, Annotations, Pos)
 {
     /// The type arguments a routine on a type is defined for, when its `<...>` names types its `require` doesn't
     /// declare: `S64` in `S32.to[S64]`, `@T` in `Array[T, COUNT].to[@T]`. A call picks the one its type arguments match.
@@ -97,31 +97,31 @@ public sealed record RoutineDecl(
     /// a ClaimExpr, the shapes a block's binding and claim have. Empty for a routine without a body.
     public List<BindStmt> Shared { get; init; } = [];
 
-    /// `#source("gcd.mini", 5, 9)` among its attributes: the place in a generator's input it came from.
+    /// `#source("gcd.mini", 5, 9)` among its annotations: the place in a generator's input it came from.
     public Pos? Source { get; init; }
 
     public string DisplayName => (Owner is null ? Name : $"{Owner}.{Name}")
         + (Fixed.Count == 0 ? "" : $"[{string.Join(", ", Fixed)}]");
 }
 
-public sealed record FieldDecl(string Name, TypeRef Type, List<Attribute> Attributes, Pos Pos, bool IsPrivate = false,
+public sealed record FieldDecl(string Name, TypeRef Type, List<Annotation> Annotations, Pos Pos, bool IsPrivate = false,
     bool IsInternal = false)
 {
-    public Attribute? Attr(string name) => Attributes.FirstOrDefault(a => a.Name == name);
+    public Annotation? AnnotationNamed(string name) => Annotations.FirstOrDefault(a => a.Name == name);
 }
 
 public sealed record RecordDecl(
-    string File, List<Attribute> Attributes, string Name, List<string> TypeParams, List<Clause> Clauses,
-    List<FieldDecl> Fields, Pos Pos) : Decl(File, Attributes, Pos);
+    string File, List<Annotation> Annotations, string Name, List<string> TypeParams, List<Clause> Clauses,
+    List<FieldDecl> Fields, Pos Pos) : Decl(File, Annotations, Pos);
 
 public sealed record ChoiceDecl(
-    string File, List<Attribute> Attributes, string Name, TypeRef Underlying, List<(string Name, Expr Value)> Members,
-    Pos Pos) : Decl(File, Attributes, Pos);
+    string File, List<Annotation> Annotations, string Name, TypeRef Underlying, List<(string Name, Expr Value)> Members,
+    Pos Pos) : Decl(File, Annotations, Pos);
 
 /// `variant Expr` and its cases, each a name and at most one payload type: `Number: S64`, `Empty`.
 public sealed record VariantDecl(
-    string File, List<Attribute> Attributes, string Name, List<string> TypeParams, List<Clause> Clauses,
-    List<VariantCase> Cases, Pos Pos) : Decl(File, Attributes, Pos);
+    string File, List<Annotation> Annotations, string Name, List<string> TypeParams, List<Clause> Clauses,
+    List<VariantCase> Cases, Pos Pos) : Decl(File, Annotations, Pos);
 
 public sealed record VariantCase(string Name, TypeRef? Payload, Pos Pos);
 
@@ -129,8 +129,8 @@ public sealed record VariantCase(string Name, TypeRef? Payload, Pos Pos);
 /// `global NAME: @T [<- value]` is mutable memory, all-zero without a value. In memory (`IsStorage`), Type is the
 /// pointee T and the name is its address. The contents are part of the program image, there before `start` runs.
 public sealed record PresetDecl(
-    string File, List<Attribute> Attributes, TypeRef? Owner, string Name, TypeRef Type, Expr? Value, Pos Pos)
-    : Decl(File, Attributes, Pos)
+    string File, List<Annotation> Annotations, TypeRef? Owner, string Name, TypeRef Type, Expr? Value, Pos Pos)
+    : Decl(File, Annotations, Pos)
 {
     public bool IsGlobal { get; init; }
     /// A global, or a preset declared `@T`: the name is an address, not a value.
@@ -139,12 +139,12 @@ public sealed record PresetDecl(
 
 /// A top-level `conform C[X, ...] [when ...]`, with `require` clauses naming its type parameters. It declares a
 /// conformance no single record can carry: a multi-type concept, or a concept for a type declared elsewhere.
-public sealed record ConformDecl(string File, List<Attribute> Attributes, List<Clause> Clauses, Pos Pos)
-    : Decl(File, Attributes, Pos);
+public sealed record ConformDecl(string File, List<Annotation> Annotations, List<Clause> Clauses, Pos Pos)
+    : Decl(File, Annotations, Pos);
 
 public sealed record ConceptDecl(
-    string File, List<Attribute> Attributes, string Name, List<string> TypeParams, List<Clause> Clauses,
-    List<RoutineDecl> Routines, Pos Pos) : Decl(File, Attributes, Pos);
+    string File, List<Annotation> Annotations, string Name, List<string> TypeParams, List<Clause> Clauses,
+    List<RoutineDecl> Routines, Pos Pos) : Decl(File, Annotations, Pos);
 
 public sealed record BlockDecl(string Name, List<Param> Params, List<Stmt> Stmts, Terminator Terminator, Pos Pos)
 {
@@ -162,8 +162,8 @@ public sealed record ImportDecl(string File, string Path, Pos Pos) : Decl(File, 
 
 /// `define Fmt = Standard/Format` or `define Numbers = Standard/Collections/List[S64]`: a second name for a module
 /// or a type. It belongs to its module like any declaration, so importers see it.
-public sealed record AliasDecl(string File, List<Attribute> Attributes, TypeRef Target, string Name, Pos Pos)
-    : Decl(File, Attributes, Pos);
+public sealed record AliasDecl(string File, List<Annotation> Annotations, TypeRef Target, string Name, Pos Pos)
+    : Decl(File, Annotations, Pos);
 
 // ── Statements ──────────────────────────────────────────────────────────────
 
@@ -182,7 +182,7 @@ public sealed record BindStmt(string Name, TypeRef Type, Expr Value, Pos Pos) : 
 public sealed record ExprStmt(Expr Value, Pos Pos) : Stmt(Pos)
 {
     /// Written on the line before: `#asm_prefix("lock")` on an instruction of an assembly routine.
-    public List<Attribute> Attributes { get; init; } = [];
+    public List<Annotation> Annotations { get; init; } = [];
 }
 
 /// `q, r = div_rem(a, b)`: binds every item of a tuple, each with the item's type. Tuples are the only values

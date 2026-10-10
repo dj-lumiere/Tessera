@@ -64,7 +64,7 @@ routine start() -> Void
 - `//` for comments, `///` for Markdown doc comments directly above a declaration, field, or choice member.
   `;` is not a comment (it was until 2026-09-28) and is rejected.
 - **Every routine has a doc comment**, private ones, externals, and a concept's required routines included. It sits
-  above the attribute lines and reads, in this order: what the routine does in one or two plain sentences (from its
+  above the annotation lines and reads, in this order: what the routine does in one or two plain sentences (from its
   real behavior), `:typeparam T:` for its own type parameters, `:param name:` for every parameter but `me` in
   order, `:returns:` unless it returns Void, then `:throws:` ("Crashes with `IndexOutOfBoundsError` when ...", or the
   `Failure` it returns), `:absent:` (when an Option comes back Absent), `:note:`, and `:see:` as needed. No `;` in the
@@ -82,7 +82,7 @@ routine start() -> Void
   whether a value is a pointer (`@T`, or `Addr` for an address with no pointee type, C's `void*`). `@T`
   passes where an `Addr` is expected; the other way takes `a.to[@T]()`. `@T` is how the record `Ptr[T]` is
   written (`@@Byte`, `@Array[@S32, 3]`); it keeps its name only where routines are declared on it or called through
-  it (`routine Ptr[T].peek`). Attributes start with `#`: `#target(os: "windows")`, `#[external("c"), noreturn]`.
+  it (`routine Ptr[T].peek`). Annotations start with `#`: `#target(os: "windows")`, `#[external("c"), noreturn]`.
 - `=` only binds. Memory is read and written with methods: `v: S64 = p.peek()`, `p.poke(v)`,
   `f: T = p.field.peek()`, `p.field.poke(v)`, `e: T = p.stride(i).peek()`, `p.stride(i).poke(v)`. Places
   (`p.field`, `p.stride(i)`) are addresses. An `Addr` has no `peek` or `poke`: convert it to say what's there, `a.to[@U32]().peek()`. Registers:
@@ -168,7 +168,7 @@ routine start() -> Void
   must all hold). `not` negates a value, and a list in parentheses matches any of its values:
   `#target(os: ("linux", "macos"))`, `#target(arch: not ("x86_64", "aarch64"))`. Say the set you mean: POSIX code is
   `os: ("linux", "macos")`, not `os: not "windows"`, which a target without an OS (`none`) matches too.
-- Every routine is LLVM `nounwind` (Tessera has no unwinding); there's no attribute for it. `#no_builtins` stops LLVM
+- Every routine is LLVM `nounwind` (Tessera has no unwinding); there's no annotation for it. `#no_builtins` stops LLVM
   from turning a routine's loops into C library calls: only for a routine that is one (the stdlib's `memcpy`, its
   soft-float runtime).
 - `#inline` inlines a routine at every call (LLVM `alwaysinline`, not a hint). Put it on small routines in hot loops

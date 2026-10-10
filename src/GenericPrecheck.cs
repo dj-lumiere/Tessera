@@ -81,7 +81,7 @@ public sealed partial class Compiler
     /// asked holds only when its payloads allow it, so it is checked where it's used, and an assembly routine is checked
     /// as assembly.
     private static bool NeedsPrecheck(RoutineDecl r) =>
-        r.Blocks is not null && r.Attr("external") is null && !IsAsm(r) && !Tessera.Derive.IsImplicit(r)
+        r.Blocks is not null && r.AnnotationNamed("external") is null && !IsAsm(r) && !Tessera.Derive.IsImplicit(r)
         && (r.TypeParams.Count > 0 || OwnerTypeParams(r).Count > 0);
 
     private void PrecheckRoutine(RoutineDecl r)

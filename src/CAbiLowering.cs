@@ -37,7 +37,7 @@ public sealed partial class Compiler
     /// A record, variant, or array with bytes in it: what the C ABI lowers. An empty record passes as itself.
     public bool IsAggregate(DType t) => t.Repr switch
     {
-        RecordType r when r.Decl.Attr("llvm") is not null => false,
+        RecordType r when r.Decl.AnnotationNamed("llvm") is not null => false,
         RecordType or VariantType or ArrayType => SizeAlign(t, default).Size > 0,
         _ => false,
     };
@@ -146,7 +146,7 @@ public sealed partial class Compiler
                     acc.Add(new Leaf(at + offset + w * align, align, 'i', $"i{align * 8}"));
                 break;
             }
-            case RecordType r when r.Decl.Attr("llvm") is not null:
+            case RecordType r when r.Decl.AnnotationNamed("llvm") is not null:
             {
                 long size = SizeAlign(r, pos).Size;
                 string llvm = r.Llvm;

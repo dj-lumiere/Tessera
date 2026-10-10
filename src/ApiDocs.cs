@@ -278,9 +278,9 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse)
         AppendDoc(sb, page, DocAbove(page, DocLine(preset)));
     }
 
-    /// The line a declaration's doc comment sits above: its first attribute's line when the attributes come first.
+    /// The line a declaration's doc comment sits above: its first annotation's line when the annotations come first.
     private static int DocLine(Decl d) =>
-        d.Attributes.Where(a => a.Pos.File == d.Pos.File).Select(a => a.Pos.Line).Append(d.Pos.Line).Min();
+        d.Annotations.Where(a => a.Pos.File == d.Pos.File).Select(a => a.Pos.Line).Append(d.Pos.Line).Min();
 
     private static string Line(Page page, int line) =>
         line >= 1 && line <= page.Lines.Length ? page.Lines[line - 1].Trim() : "";
@@ -310,7 +310,7 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse)
 
     // ── Doc comments ────────────────────────────────────────────────────────
 
-    /// The `///` lines right above a 1-based line, past any attribute lines (`#track_caller`), without their markers;
+    /// The `///` lines right above a 1-based line, past any annotation lines (`#track_caller`), without their markers;
     /// null when there are none.
     private static string? DocAbove(Page page, int line)
     {

@@ -48,7 +48,7 @@ public static class RecordParamLint
     /// Whether a routine's signature is set by a C ABI rather than by its author: an `#external` declaration, an
     /// `#export`, or a callback another convention calls (`#callconv("stdcall")`, as a C API's progress routine).
     private static bool IsCAbi(RoutineDecl r) =>
-        r.Attr("external") is not null || r.Attr("export") is not null || r.Attr("callconv") is { First: not "fast" };
+        r.AnnotationNamed("external") is not null || r.AnnotationNamed("export") is not null || r.AnnotationNamed("callconv") is { First: not "fast" };
 
     /// Whether a file is a generator's output: under a directory named `generated`.
     private static bool IsGenerated(string file)

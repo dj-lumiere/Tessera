@@ -21,10 +21,10 @@ public sealed partial class Compiler
 {
     private readonly Dictionary<string, AsmPlan> _asmPlans = [];
 
-    public static bool IsAsm(RoutineDecl r) => r.Attr("external") is { First: "asm" };
+    public static bool IsAsm(RoutineDecl r) => r.AnnotationNamed("external") is { First: "asm" };
 
     /// A `#naked` assembly routine: a function of its own whose whole body is the assembly, not put in place.
-    public static bool IsNaked(RoutineDecl r) => IsAsm(r) && r.Attr("naked") is not null;
+    public static bool IsNaked(RoutineDecl r) => IsAsm(r) && r.AnnotationNamed("naked") is not null;
 
     /// The plan of an assembly routine's instance, built once and checked even if the routine is never called.
     public AsmPlan PlanAsm(Instance sig)
@@ -85,7 +85,7 @@ internal sealed class AsmLowering
         _c = c;
         _sig = sig;
         _r = sig.Decl;
-        if (_r.Attr("target") is not { } target || !target.Args.Any(a => a is { Key: "arch", Negated: false, Values: null or { Count: 1 } }))
+        if (_r.AnnotationNamed("target") is not { } target || !target.Args.Any(a => a is { Key: "arch", Negated: false, Values: null or { Count: 1 } }))
             throw new CompileError(_r.Pos,
                 $"assembly belongs to one architecture: give '{_r.DisplayName}' #target(arch: \"{c.Target.Arch}\")");
         _arch = c.Target.Arch switch
@@ -98,7 +98,7 @@ internal sealed class AsmLowering
                 $"assembly is written for x86_64, aarch64, arm, riscv64 and riscv32; '{_r.DisplayName}' is built for {other}"),
         };
         _paramOutput = new int[_r.Params.Count];
-        _naked = _r.Attr("naked") is not null;
+        _naked = _r.AnnotationNamed("naked") is not null;
         _thumb = _arch == Arch.Arm && CpuModel.For(c.Target, _r.Pos).Has("thumb-mode", _r.Pos);
     }
 
@@ -149,13 +149,13 @@ internal sealed class AsmLowering
         string text = Body();
         // A system register changes on its own (a counter, a random number) or writing it changes the machine, so the
         // optimizer may never merge, drop or move the routine as #pure or #readonly would let it.
-        if (_systemRegister is { } sys && (_r.Attr("pure") ?? _r.Attr("readonly")) is { } weaker)
+        if (_systemRegister is { } sys && (_r.AnnotationNamed("pure") ?? _r.AnnotationNamed("readonly")) is { } weaker)
             throw new CompileError(weaker.Pos,
                 $"'{_r.DisplayName}' names the system register {sys.Name} (line {sys.Pos.Line}), whose value changes on its "
                 + $"own or whose writing changes the machine, so it keeps its side effects: drop #{weaker.Name}");
         return new AsmPlan(text, _arch == Arch.X86, _outputs, inputs, Clobbers(), resultOutputs,
-            SideEffect: _r.Attr("pure") is null && _r.Attr("readonly") is null,
-            Memory: _r.Attr("pure") is not null ? "none" : _r.Attr("readonly") is not null ? "read" : null);
+            SideEffect: _r.AnnotationNamed("pure") is null && _r.AnnotationNamed("readonly") is null,
+            Memory: _r.AnnotationNamed("pure") is not null ? "none" : _r.AnnotationNamed("readonly") is not null ? "read" : null);
     }
 
     // ── #naked ──────────────────────────────────────────────────────────────
@@ -245,17 +245,17 @@ internal sealed class AsmLowering
     {
         if (_r.TypeParams.Count != 0)
             throw new CompileError(_r.Pos, $"an assembly routine takes no type parameters, and '{_r.DisplayName}' has some");
-        if (_r.Attr("pure") is not null && _r.Attr("readonly") is not null)
+        if (_r.AnnotationNamed("pure") is not null && _r.AnnotationNamed("readonly") is not null)
             throw new CompileError(_r.Pos, "#pure already touches no memory; #readonly says less, so write one of them");
         if (_naked)
         {
             foreach (var name in new[] { "clobbers", "pure", "readonly", "inline", "callconv" })
-                if (_r.Attr(name) is { } a)
+                if (_r.AnnotationNamed(name) is { } a)
                     throw new CompileError(a.Pos, name == "inline"
                         ? "a #naked routine is called, never put in place"
                         : $"a #naked routine keeps the C calling convention by itself, so it takes no #{name}");
         }
-        else if (_r.Attr("inline") is not null || _r.Attr("noinline") is not null || _r.Attr("export") is not null)
+        else if (_r.AnnotationNamed("inline") is not null || _r.AnnotationNamed("noinline") is not null || _r.AnnotationNamed("export") is not null)
             throw new CompileError(_r.Pos, "an assembly routine is put in place at each call; it has no function to inline, keep, or export");
         foreach (var b in _r.Blocks!)
             if (b.Params.Count != 0)
@@ -780,7 +780,7 @@ internal sealed class AsmLowering
         if (s is not ExprStmt es)
             throw new CompileError(s.Pos, "an assembly body holds instructions, one per line: add[U64, U64](R0, R3)");
         string prefix = "";
-        foreach (var a in es.Attributes)
+        foreach (var a in es.Annotations)
         {
             if (a.Name != "asm_prefix" || a.Args is not [{ Key: null, Negated: false, Expr: null } p] || p.Value.Length == 0)
                 throw new CompileError(a.Pos, "an instruction takes #asm_prefix(\"lock\"), the prefix as the assembler spells it");
@@ -1158,24 +1158,24 @@ internal sealed class AsmLowering
         foreach (var name in _named.Keys)
             if (!_fixedOutputs.ContainsKey(name)) Add($"~{{{name}}}");
 
-        if (_r.Attr("clobbers") is { } attr)
+        if (_r.AnnotationNamed("clobbers") is { } annotation)
         {
-            foreach (var a in attr.Args)
+            foreach (var a in annotation.Args)
             {
                 if (a.Key is not null || a.Negated || a.Expr is not null)
-                    throw new CompileError(attr.Pos, "#clobbers lists registers, FLAGS and MEMORY: #clobbers(R2, FLAGS)");
+                    throw new CompileError(annotation.Pos, "#clobbers lists registers, FLAGS and MEMORY: #clobbers(R2, FLAGS)");
                 if (a.Value == "MEMORY") { Add("~{memory}"); continue; }
                 if (a.Value == "FLAGS")
                 {
-                    if (_arch == Arch.Rv) throw new CompileError(attr.Pos, "RISC-V has no flags");
+                    if (_arch == Arch.Rv) throw new CompileError(annotation.Pos, "RISC-V has no flags");
                     Add(FlagsClobber);
                     continue;
                 }
-                var reg = Register(a.Value, attr.Pos);
+                var reg = Register(a.Value, annotation.Pos);
                 if (reg.Class == RegClass.Sp || IsStackOrZero(reg) && reg.Index != 0)
-                    throw new CompileError(attr.Pos, "SP can't be changed: assembly that moves the stack pointer breaks the routine around it");
+                    throw new CompileError(annotation.Pos, "SP can't be changed: assembly that moves the stack pointer breaks the routine around it");
                 if (reg.Class is not (RegClass.Gpr or RegClass.Vec or RegClass.Fpr))
-                    throw new CompileError(attr.Pos, $"{a.Value} can't be listed in #clobbers");
+                    throw new CompileError(annotation.Pos, $"{a.Value} can't be listed in #clobbers");
                 if (IsStackOrZero(reg)) continue;
                 string name = LlvmName(reg, null);
                 if (!_fixedOutputs.ContainsKey(name)) Add($"~{{{name}}}");
@@ -1184,7 +1184,7 @@ internal sealed class AsmLowering
         // A branch on the flags means an instruction here set them.
         if (_flagsTested) Add(FlagsClobber);
         // Without #pure or #readonly, the assembly may read and write any memory.
-        if (_r.Attr("pure") is null && _r.Attr("readonly") is null) Add("~{memory}");
+        if (_r.AnnotationNamed("pure") is null && _r.AnnotationNamed("readonly") is null) Add("~{memory}");
         if (_arch == Arch.X86)
         {
             Add("~{dirflag}");

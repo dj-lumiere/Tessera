@@ -9,8 +9,8 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
     public List<DType> Params { get; } = parameters;
     public DType Ret { get; } = ret;
 
-    public bool IsExternalC => Decl.Attr("external") is { First: "c" };
-    public bool IsTemplate => Decl.Attr("template") is not null;
+    public bool IsExternalC => Decl.AnnotationNamed("external") is { First: "c" };
+    public bool IsTemplate => Decl.AnnotationNamed("template") is not null;
     /// An `#external("asm")` routine: its body is put in place at each call as inline assembly.
     public bool IsAsm => Compiler.IsAsm(Decl);
     /// A `#naked` assembly routine: emitted as a function of its own, called like any routine.
@@ -18,10 +18,10 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
 
     /// `#track_caller`: its last parameter is the place it was called from, which the routine doesn't declare.
     public bool IsTrackCaller => Compiler.IsTrackCaller(Decl);
-    public bool NoReturn => Decl.Attr("noreturn") is not null;
-    public bool Variadic => Decl.Attr("variadic") is not null;
+    public bool NoReturn => Decl.AnnotationNamed("noreturn") is not null;
+    public bool Variadic => Decl.AnnotationNamed("variadic") is not null;
     /// "default" (the C convention, which every routine uses unless it asks otherwise), "fast", "cold", or "stdcall".
-    public string CallConv => Decl.Attr("callconv")?.First ?? "default";
+    public string CallConv => Decl.AnnotationNamed("callconv")?.First ?? "default";
 
     public string CcPrefix(BuildTarget target) => Compiler.CcPrefix(CallConv, target);
 
@@ -36,11 +36,11 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
             if (NoReturn) attrs.Add("noreturn");
             // A naked function is its assembly alone: no prologue, never inlined into a caller.
             if (IsNaked) attrs.AddRange(["naked", "noinline"]);
-            if (Decl.Attr("inline") is not null) attrs.Add("alwaysinline");
-            if (Decl.Attr("noinline") is not null) attrs.Add("noinline");
+            if (Decl.AnnotationNamed("inline") is not null) attrs.Add("alwaysinline");
+            if (Decl.AnnotationNamed("noinline") is not null) attrs.Add("noinline");
             // A routine that is a C library routine (memcpy on a target without one): LLVM may not turn its loops
             // into calls to the C library, which would be calls to itself.
-            if (Decl.Attr("no_builtins") is not null) attrs.Add("\"no-builtins\"");
+            if (Decl.AnnotationNamed("no_builtins") is not null) attrs.Add("\"no-builtins\"");
             return " " + string.Join(" ", attrs);
         }
     }
@@ -49,7 +49,7 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
     /// (BF16.from_bits(0xBF80) came back as 0x0001), and likewise for bfloat arguments. So Tessera routines pass BF16 as
     /// its i16 bits and bitcast inside. External and exported routines keep the C ABI: LLVM itself calls the exported
     /// __truncsfbf2.
-    public bool PassesBf16AsBits => Decl.Attr("external") is null && Decl.Attr("export") is null;
+    public bool PassesBf16AsBits => Decl.AnnotationNamed("external") is null && Decl.AnnotationNamed("export") is null;
 
     public static bool IsBf16(DType t) => t.Repr is FloatType ft && ft == FloatType.BF16;
 
@@ -81,24 +81,24 @@ public sealed partial class Compiler
     /// another). Nothing reads one without an operating system, so a routine there has none.
     public string UnwindTable => Target.HasOs ? " uwtable" : "";
 
-    private static readonly HashSet<string> KnownAttributes =
+    private static readonly HashSet<string> KnownAnnotations =
         ["external", "symbol", "callconv", "noreturn", "variadic", "template", "target", "feature", "llvm",
          "export", "derived", "inline", "noinline", "clobbers", "readonly", "pure", "naked", "source", "track_caller",
-         "no_builtins", "untraced", "trace", "heap_check", "positional", ExpensiveCallLint.Attribute];
+         "no_builtins", "untraced", "trace", "heap_check", "positional", ExpensiveCallLint.Annotation];
 
-    /// Attributes that describe an assembly routine and mean nothing on another.
-    private static readonly string[] AsmAttributes = ["clobbers", "readonly", "pure", "naked"];
+    /// Annotations that describe an assembly routine and mean nothing on another.
+    private static readonly string[] AsmAnnotations = ["clobbers", "readonly", "pure", "naked"];
 
     /// Resolves a routine's signature in `env` and gives it a symbol. Does not emit anything.
     public Instance Signature(RoutineDecl r, TypeEnv env)
     {
-        foreach (var a in r.Attributes)
-            if (!KnownAttributes.Contains(a.Name))
-                throw new CompileError(a.Pos, $"attribute '@{a.Name}' is not supported by this builder yet");
-        if (r.Attr("callconv") is { } callconv) CheckCallConv(callconv);
+        foreach (var a in r.Annotations)
+            if (!KnownAnnotations.Contains(a.Name))
+                throw new CompileError(a.Pos, $"annotation '#{a.Name}' is not supported by this builder yet");
+        if (r.AnnotationNamed("callconv") is { } callconv) CheckCallConv(callconv);
         bool asm = IsAsm(r);
-        foreach (var a in r.Attributes)
-            if (!asm && AsmAttributes.Contains(a.Name))
+        foreach (var a in r.Annotations)
+            if (!asm && AsmAnnotations.Contains(a.Name))
                 throw new CompileError(a.Pos, $"#{a.Name} describes an assembly routine, and '{r.DisplayName}' is not #external(\"asm\")");
         foreach (var p in r.Params)
             if (p.Register is { } placed && !asm)
@@ -106,7 +106,7 @@ public sealed partial class Compiler
                     $"'= {placed.Text}' places a parameter of an assembly routine in a register, and '{r.DisplayName}' is not #external(\"asm\")");
         CheckInlining(r);
         CheckUntraced(r);
-        ExpensiveCallLint.CheckAttribute(r);
+        ExpensiveCallLint.CheckAnnotation(r);
 
         var needed = new HashSet<string>(OwnerTypeParams(r).Concat(r.TypeParams));
         foreach (var n in needed)
@@ -123,8 +123,8 @@ public sealed partial class Compiler
         // `#track_caller`: the place of each call comes in as a last, hidden parameter (see caller_location()).
         if (IsTrackCaller(r))
         {
-            if (r.Blocks is null || r.Attr("external") is not null)
-                throw new CompileError(r.Attr("track_caller")!.Pos, $"#track_caller needs a routine with a body, and '{r.DisplayName}' has none");
+            if (r.Blocks is null || r.AnnotationNamed("external") is not null)
+                throw new CompileError(r.AnnotationNamed("track_caller")!.Pos, $"#track_caller needs a routine with a body, and '{r.DisplayName}' has none");
             ps.Add(new PtrType(null));
         }
         var ret = ResolveType(r.ReturnType, env, allowVoid: true);
@@ -136,11 +136,11 @@ public sealed partial class Compiler
         if (required || Prechecking) return new Instance(r, env, $"precheck {r.DisplayName}", ps, ret);
 
         string symbol;
-        if (asm && r.Attr("export") is null) symbol = MangleRoutine(r, env, ps, ret);
-        else if (r.Attr("external") is { } external && !asm) symbol = r.Attr("symbol")?.First ?? r.Name;
+        if (asm && r.AnnotationNamed("export") is null) symbol = MangleRoutine(r, env, ps, ret);
+        else if (r.AnnotationNamed("external") is { } external && !asm) symbol = r.AnnotationNamed("symbol")?.First ?? r.Name;
         // `#export("name")` defines the routine under that plain C name: Tessera's own calls use it too, so a caller in
         // another module and one here reach the same definition, which LLVM can inline (an alias it can't see through).
-        else if (r.Attr("export") is { } export)
+        else if (r.AnnotationNamed("export") is { } export)
         {
             symbol = export.First ?? throw new CompileError(export.Pos, "#export needs a symbol name");
             if (r.TypeParams.Count != 0 || OwnerTypeParams(r).Count != 0)
@@ -151,16 +151,16 @@ public sealed partial class Compiler
         return new Instance(r, env, symbol, ps, ret);
     }
 
-    /// What a routine's attributes say about its body: an external one has none (and an LLVM one a template), every
+    /// What a routine's annotations say about its body: an external one has none (and an LLVM one a template), every
     /// other one has blocks.
     private static void CheckExternalSignature(RoutineDecl r, bool asm)
     {
-        var external = r.Attr("external");
+        var external = r.AnnotationNamed("external");
         if (external is not null && external.First is not ("c" or "llvm" or "asm"))
             throw new CompileError(external.Pos, "only #external(\"c\"), #external(\"llvm\") and #external(\"asm\") are supported");
         if (asm && r.Blocks is null)
             throw new CompileError(r.Pos, $"assembly routine '{r.DisplayName}' needs its instructions: a 'block entry()'");
-        if (external is { First: "llvm" } && r.Attr("template") is null)
+        if (external is { First: "llvm" } && r.AnnotationNamed("template") is null)
             throw new CompileError(r.Pos, $"#external(\"llvm\") routine '{r.DisplayName}' needs a #template");
         if (external is not null && !asm && r.Blocks is not null)
             throw new CompileError(r.Pos, $"external routine '{r.DisplayName}' cannot have a body");
@@ -199,7 +199,7 @@ public sealed partial class Compiler
         if (Prechecking) return sig;
         // An #external declaration and an #export definition of one C name are one routine; the definition is the
         // instance, whichever was reached first, and the declaration is never emitted (see _exported).
-        if (_instances.TryGetValue(sig.Symbol, out var existing) && !(existing.IsExternalC && r.Attr("export") is not null))
+        if (_instances.TryGetValue(sig.Symbol, out var existing) && !(existing.IsExternalC && r.AnnotationNamed("export") is not null))
         {
             if (existing.Decl != r && !sig.IsExternalC)
                 throw new CompileError(r.Pos, $"'{sig.Symbol}' is defined more than once (also at {existing.Decl.Pos})");
@@ -234,7 +234,7 @@ public sealed partial class Compiler
     /// routines (as an LLVM value), but not across a C boundary, where C would expect the ABI's own convention.
     private void CheckCBoundary(Instance sig)
     {
-        if (sig.CallConv == "fast" || (!sig.IsExternalC && sig.Decl.Attr("export") is null)) return;
+        if (sig.CallConv == "fast" || (!sig.IsExternalC && sig.Decl.AnnotationNamed("export") is null)) return;
         foreach (var t in sig.Params.Append(sig.Ret))
             if (t.Repr is VectorType)
                 throw new CompileError(sig.Decl.Pos,
@@ -249,7 +249,7 @@ public sealed partial class Compiler
         new FunctionGen(this, inst, _functions).Emit();
         // An exported routine is defined under its C name (its Symbol), so a declaration of that name elsewhere in the
         // program is this definition, not a second one.
-        if (inst.Decl.Attr("export") is not null) _exported.Add(inst.Symbol);
+        if (inst.Decl.AnnotationNamed("export") is not null) _exported.Add(inst.Symbol);
     }
 
     /// An LLVM name: bare when LLVM's spelling allows it, otherwise quoted, with a quote, a backslash, and every byte

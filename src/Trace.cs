@@ -21,7 +21,7 @@ public sealed partial class Compiler
     /// accessors read 0 frames without storage in an untraced build.
     private bool TraceSelected(Decl d)
     {
-        if (d.Attr("trace") is not { } a) return true;
+        if (d.AnnotationNamed("trace") is not { } a) return true;
         if (!d.IsLibrary)
             throw new CompileError(a.Pos, "#trace selects standard library declarations by the build's trace setting; a routine of the program opts out with #untraced");
         return a.First switch
@@ -36,17 +36,17 @@ public sealed partial class Compiler
     /// no arguments and needs a body to leave the trace calls out of.
     private static void CheckUntraced(RoutineDecl r)
     {
-        if (r.Attr("untraced") is not { } a) return;
+        if (r.AnnotationNamed("untraced") is not { } a) return;
         if (a.Args.Count != 0) throw new CompileError(a.Pos, "#untraced takes no arguments");
-        if (r.Attr("external") is not null && !IsAsm(r))
+        if (r.AnnotationNamed("external") is not null && !IsAsm(r))
             throw new CompileError(a.Pos, $"#untraced needs a body, and '{r.DisplayName}' is #external");
     }
 
     /// Whether this instance keeps a frame on the crash trace.
     public bool IsTraced(Instance inst) =>
         Trace && !inst.Decl.IsLibrary && !inst.IsAsm && inst.Decl.Blocks is not null
-        && inst.Decl.Attr("untraced") is null && inst.Decl.Attr("inline") is null && inst.Decl.Attr("derived") is null
-        && inst.Decl.Attr("export")?.First != CrashHandlerSymbol;
+        && inst.Decl.AnnotationNamed("untraced") is null && inst.Decl.AnnotationNamed("inline") is null && inst.Decl.AnnotationNamed("derived") is null
+        && inst.Decl.AnnotationNamed("export")?.First != CrashHandlerSymbol;
 
     private readonly Dictionary<string, Instance> _traceRoutines = [];
 

@@ -43,17 +43,17 @@ public sealed partial class Compiler
         if (dense)
         {
             for (int i = 0; i < fields.Count; i++)
-                if (s.Decl.Fields[i].Attr("aligned") is { } a)
+                if (s.Decl.Fields[i].AnnotationNamed("aligned") is { } a)
                     throw new CompileError(a.Pos, "#aligned has no place in a #layout(dense) record: its fields have no padding");
-            long wrap = recordAlign is null ? 0 : AlignMember(recordAlign, s.Decl.Attr("layout")!.Pos, "#layout(align: N)", env).Align;
+            long wrap = recordAlign is null ? 0 : AlignMember(recordAlign, s.Decl.AnnotationNamed("layout")!.Pos, "#layout(align: N)", env).Align;
             return _shapes[s.Key] = new RecordShape(fields.Select(f => new Member(f.Type, 0)).ToList(),
                 Enumerable.Range(0, fields.Count).ToArray(), Dense: true, WrapAlign: wrap);
         }
-        if (recordAlign is not null) members.Add(AlignMember(recordAlign, s.Decl.Attr("layout")!.Pos, "#layout(align: N)", env));
+        if (recordAlign is not null) members.Add(AlignMember(recordAlign, s.Decl.AnnotationNamed("layout")!.Pos, "#layout(align: N)", env));
         var index = new int[fields.Count];
         for (int i = 0; i < fields.Count; i++)
         {
-            if (s.Decl.Fields[i].Attr("aligned") is { } fieldAlign)
+            if (s.Decl.Fields[i].AnnotationNamed("aligned") is { } fieldAlign)
             {
                 if (fieldAlign.Args is not [var arg]) throw new CompileError(fieldAlign.Pos, "#aligned takes one buildtime integer");
                 members.Add(AlignMember(arg, fieldAlign.Pos, "#aligned", env));
@@ -66,11 +66,11 @@ public sealed partial class Compiler
 
     /// A record's `#layout(...)`: `dense` packs the fields with no padding (alignment 1), and `align: N` raises the
     /// whole record's alignment, alone or with dense. Returns whether it's dense and the alignment argument.
-    private static (bool Dense, AttrArg? Align) LayoutOf(RecordDecl d)
+    private static (bool Dense, AnnotationArg? Align) LayoutOf(RecordDecl d)
     {
-        if (d.Attr("aligned") is { } misplaced)
+        if (d.AnnotationNamed("aligned") is { } misplaced)
             throw new CompileError(misplaced.Pos, "#aligned goes on a field; a record's own alignment is #layout(align: N)");
-        if (d.Attr("layout") is not { } layout) return (false, null);
+        if (d.AnnotationNamed("layout") is not { } layout) return (false, null);
         return layout.Args switch
         {
             [{ Key: "align" } align] => (false, align),
@@ -102,7 +102,7 @@ public sealed partial class Compiler
         return offsets;
     }
 
-    private Member AlignMember(AttrArg arg, Pos pos, string what, TypeEnv env)
+    private Member AlignMember(AnnotationArg arg, Pos pos, string what, TypeEnv env)
     {
         var expr = arg.Expr ?? (long.TryParse(arg.Value, CultureInfo.InvariantCulture, out long n)
             ? new IntLit(n, pos)
@@ -162,7 +162,7 @@ public sealed partial class Compiler
                     _sizing.Remove(v.Key);
                 }
             }
-            case RecordType s when s.Decl.Attr("llvm") is null:
+            case RecordType s when s.Decl.AnnotationNamed("llvm") is null:
             {
                 if (!_sizing.Add(s.Key)) throw new CompileError(pos, $"{s} contains itself");
                 try

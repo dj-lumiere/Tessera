@@ -678,7 +678,7 @@ public sealed class FunctionGen
 
     /// A derived routine calls its fields' and payloads' methods whatever module declares them: its constraints
     /// vouch for them, and the type's file needn't import Standard/Format for its represent.
-    private bool Derived => _decl.Attr("derived") is not null;
+    private bool Derived => _decl.AnnotationNamed("derived") is not null;
 
     /// Emits the address of a place chain and returns it with the type stored there.
     private (string Addr, DType Type) PlaceAddress(Expr e)
@@ -1509,7 +1509,7 @@ public sealed class FunctionGen
             var slot = new PtrType(t);
             // A thread-local's address is the running thread's copy, so each use asks for it: LLVM may not reuse an
             // address taken on another thread.
-            if (c.Attr("threadlocal") is not null)
+            if (c.AnnotationNamed("threadlocal") is not null)
                 return new PresetInfo(slot, _ => new Val(
                     EmitTmp($"call ptr @llvm.threadlocal.address.p0(ptr {_c.GlobalVariable(c, t, env)})"), slot), IsGlobal: true);
             return new PresetInfo(slot, _ => new Val(_c.GlobalVariable(c, t, env), slot), IsGlobal: true);
@@ -1545,7 +1545,7 @@ public sealed class FunctionGen
         var routine = set.Count == 1 ? set[0] : OverloadForValue(r, set, expected);
         if (Recorded) _c.CallUses.TryAdd((r.Pos, r.Name), new Compiler.CallUse(routine, []));
         // An #inline routine is inlined at every call, so there's no call of its own for a pointer to name.
-        if (routine.Attr("inline") is not null)
+        if (routine.AnnotationNamed("inline") is not null)
             throw Err(r.Pos, $"'{r.Name}' is #inline, so it can't be a Callable value: it's inlined at every call, "
                              + "and a call through a pointer can't be; wrap it in a routine without #inline");
         if (routine.TypeParams.Count != 0)
@@ -1575,7 +1575,7 @@ public sealed class FunctionGen
     private bool IsNoReturn(Expr e) => AddrOfCallable(e) is null && e switch
     {
         NsCallExpr or MethodCallExpr when TemplateWriter(e) is not null => false,
-        CallExpr or NsCallExpr or MethodCallExpr => PlanCall(e, null) is { } p && p.Decl.Attr("noreturn") is not null,
+        CallExpr or NsCallExpr or MethodCallExpr => PlanCall(e, null) is { } p && p.Decl.AnnotationNamed("noreturn") is not null,
         ImplicitCallExpr => false,
         _ => false,
     };
@@ -1758,7 +1758,7 @@ public sealed class FunctionGen
         try
         {
             int want = r.Params.Count - first;
-            bool variadic = r.Attr("variadic") is not null && r.Attr("external") is { First: "c" };
+            bool variadic = r.AnnotationNamed("variadic") is not null && r.AnnotationNamed("external") is { First: "c" };
             if (variadic ? args.Count < want : args.Count != want)
                 return No($"it takes {(variadic ? "at least " : "")}{want} argument(s), not {args.Count}");
             if (r.Fixed.Count == 0 && typeArgs.Count != 0 && typeArgs.Count != r.TypeParams.Count)
@@ -2218,7 +2218,7 @@ public sealed class FunctionGen
                     env.Bind(n.Name, new ConstArg(a.Count));
                 break;
             case CallableType ct when t.Name == "Callable"
-                                      && t.Args.Where(a => a is not TypeArgAttr).ToList() is [TypeArgTuple ps, TypeArgType ret]
+                                      && t.Args.Where(a => a is not TypeArgAnnotation).ToList() is [TypeArgTuple ps, TypeArgType ret]
                                       && ps.Types.Count == ct.Params.Count:
                 // `Callable[(@S,), Void]` against a routine value: its parameter types (and a non-Void return type)
                 // bind the type parameters they mention, so `Thread.spawn(work.to[Callable](), state)` needn't say S.
@@ -2284,7 +2284,7 @@ public sealed class FunctionGen
         int offset = r.Params.Count - plan.Args.Count;
         if (offset < 0) return;
         var named = r.Params.Skip(offset).Where(p => p.Name != "me").ToList();
-        bool inOrder = r.Attr("positional") is not null || r.Attr("external") is { First: "c" };
+        bool inOrder = r.AnnotationNamed("positional") is not null || r.AnnotationNamed("external") is { First: "c" };
         bool needsNames = named.Count >= 2 && !inOrder;
         string Shape() => $"{r.DisplayName}({string.Join(", ", named.Select(p => $"{p.Name}: ..."))})";
         for (int i = 0; i < plan.Args.Count; i++)
@@ -2323,7 +2323,7 @@ public sealed class FunctionGen
         if (Recorded)
             _c.CallUses.TryAdd((plan.Pos, plan.Decl.Name), new Compiler.CallUse(plan.Decl, [.. plan.Env.All.Select(kv => (kv.Key, kv.Value))]));
         var sig = _c.Signature(plan.Decl, plan.Env);
-        if (_blockName.Length > 0 && plan.Decl.Attr(ExpensiveCallLint.Attribute) is not null)
+        if (_blockName.Length > 0 && plan.Decl.AnnotationNamed(ExpensiveCallLint.Annotation) is not null)
             _expensiveCalls.Add(new ExpensiveCallLint.Call(_blockName, _arm, plan.Pos, plan.Decl));
         int offset = plan.Receiver is null ? 0 : 1;
         int fixedCount = sig.Params.Count - offset - (sig.IsTrackCaller ? 1 : 0);
@@ -2535,10 +2535,10 @@ public sealed class FunctionGen
     {
         if (_c.Prechecking) return ("", "");
         bool shared = _c.IsGenericInstance(_inst) || _decl.IsLibrary;
-        bool exported = _decl.Attr("export") is not null;
+        bool exported = _decl.AnnotationNamed("export") is not null;
         if (_c.ExposeDefinitions)
         {
-            if (_decl.Attr("inline") is not null)
+            if (_decl.AnnotationNamed("inline") is not null)
             {
                 if (!shared && !exported) return ("internal ", "");
             }
@@ -2621,7 +2621,7 @@ public sealed class FunctionGen
     /// Expands an `#external("llvm")` routine's `#template` in place.
     private Val ExpandTemplate(Instance sig, List<Val> args, Pos pos, string suffix = "")
     {
-        string text = sig.Decl.Attr("template")!.First! + suffix;
+        string text = sig.Decl.AnnotationNamed("template")!.First! + suffix;
         string? result = sig.Ret is VoidType ? null : Tmp();
         var temps = new Dictionary<string, string>();
         var sb = new StringBuilder();

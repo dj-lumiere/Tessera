@@ -113,18 +113,18 @@ public sealed partial class Compiler
     /// An overloaded routine's C name can't default to the routine's name, which its overloads share.
     private static void CheckOverloadSymbol(RoutineDecl r, RoutineDecl other)
     {
-        if (r.Attr("export") is { First: null } export)
+        if (r.AnnotationNamed("export") is { First: null } export)
             throw new CompileError(export.Pos, $"'{r.DisplayName}' is overloaded (also at {other.Pos}), so its #export names its C symbol: "
                 + $"#export(\"{r.Name}_...\")");
-        if (r.Attr("external") is { First: "c" } && r.Attr("symbol") is null)
+        if (r.AnnotationNamed("external") is { First: "c" } && r.AnnotationNamed("symbol") is null)
             throw new CompileError(r.Pos, $"'{r.DisplayName}' is overloaded (also at {other.Pos}), so its C name can't default to '{r.Name}', "
                 + $"which every overload would get: name the C routine with #symbol(\"...\")");
     }
 
     /// The C name a routine is defined or declared under, if it has one.
     private static string? CSymbol(RoutineDecl r) =>
-        r.Attr("export")?.First
-        ?? (r.Attr("external") is { First: "c" } ? r.Attr("symbol")?.First ?? r.Name : null);
+        r.AnnotationNamed("export")?.First
+        ?? (r.AnnotationNamed("external") is { First: "c" } ? r.AnnotationNamed("symbol")?.First ?? r.Name : null);
 
     // ── Overload sets ───────────────────────────────────────────────────────
 

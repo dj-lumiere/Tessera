@@ -63,7 +63,7 @@ internal sealed class NamedArgsMigration
 
     private void Add(RoutineDecl r, string file, bool library, bool onType = false)
     {
-        bool inOrder = r.Attr("positional") is not null || r.Attr("external") is { First: "c" };
+        bool inOrder = r.AnnotationNamed("positional") is not null || r.AnnotationNamed("external") is { First: "c" };
         // A routine on every type (`T.hash`) and a concept's requirement fit any owner: their owner is null.
         string? owner = r.Owner is null || Compiler.IsBlanket(r) ? null : r.Owner.Name;
         var generics = r.TypeParams.ToHashSet();

@@ -268,7 +268,7 @@ public static partial class LanguageServer
 
     /// A file's declarations, as many as parse. The parser stops at the first error, so when the file doesn't parse
     /// whole, each top-level declaration is parsed on its own (one starts at a line of its own column 0 after a blank
-    /// line, its doc and attribute lines included) and those that parse are kept, at their own lines. Each one that
+    /// line, its doc and annotation lines included) and those that parse are kept, at their own lines. Each one that
     /// doesn't adds its error. A half-written routine leaves the rest of the file named, colored, and completed.
     private static List<Decl> ParseRecovering(string shown, string text, bool library, List<CompileError> errors)
     {

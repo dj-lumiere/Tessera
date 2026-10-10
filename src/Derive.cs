@@ -34,23 +34,23 @@ public static class Derive
         var derived = new List<Decl>();
         foreach (var type in decls.Where(d => d is RecordDecl or ChoiceDecl or VariantDecl))
         {
-            var attrs = type.Attributes.Where(a => a.Name == "derive").ToList();
-            if (attrs.Count == 0 && type is ChoiceDecl or VariantDecl)
+            var annotations = type.Annotations.Where(a => a.Name == "derive").ToList();
+            if (annotations.Count == 0 && type is ChoiceDecl or VariantDecl)
             {
                 foreach (var (concept, method) in Methods)
                     if (Implicit(type, concept, method, declared, conformed))
                         derived.AddRange(Parse(type, Source(type, concept, method, implicitly: true), implicitly: true));
                 continue;
             }
-            foreach (var attr in attrs)
+            foreach (var annotation in annotations)
             {
-                foreach (var arg in attr.Args)
+                foreach (var arg in annotation.Args)
                 {
                     string concept = arg.Value;
                     if (!Methods.TryGetValue(concept, out var method))
-                        throw new CompileError(attr.Pos,
+                        throw new CompileError(annotation.Pos,
                             $"#derive can't derive '{concept}'; it derives {string.Join(", ", Methods.Keys)}");
-                    Check(type, concept, method, declared, attr.Pos);
+                    Check(type, concept, method, declared, annotation.Pos);
                     derived.AddRange(Parse(type, Source(type, concept, method, implicitly: false), implicitly: false));
                 }
             }
@@ -112,7 +112,7 @@ public static class Derive
             return;
         }
         if (type is not RecordDecl r) return;
-        if (r.Attr("llvm") is not null)
+        if (r.AnnotationNamed("llvm") is not null)
             throw new CompileError(at, $"{name} is an #llvm record, so it has no fields to derive {concept} from");
         if (r.Clauses.Any(c => c.Kind == "conform" && c.Concepts.Any(x => x.Name == concept)))
             throw new CompileError(at, $"{name} derives {concept}, which declares the conformance; drop 'conform {concept}[...]'");
@@ -130,18 +130,18 @@ public static class Derive
     {
         var tokens = new Lexer(type.File, source, type.Pos.Line, type.Pos.Col).Lex();
         // The type's #target / #feature carry over, so the derived code exists exactly where the type does.
-        var selection = type.Attributes.Where(a => a.Name is "target" or "feature").ToList();
-        var mark = new Attribute("derived", implicitly ? [new AttrArg(null, "implicit", false)] : [], type.Pos);
+        var selection = type.Annotations.Where(a => a.Name is "target" or "feature").ToList();
+        var mark = new Annotation("derived", implicitly ? [new AnnotationArg(null, "implicit", false)] : [], type.Pos);
         foreach (var g in new Parser(tokens, type.File, type.IsLibrary).ParseModule().Decls)
             yield return g with
             {
-                Attributes = [.. g.Attributes, .. selection, .. (g is RoutineDecl ? new[] { mark } : [])],
+                Annotations = [.. g.Annotations, .. selection, .. (g is RoutineDecl ? new[] { mark } : [])],
                 Module = type.Module, IsLibrary = type.IsLibrary, IsPrivate = type.IsPrivate,
             };
     }
 
     /// Whether a routine was derived without the type asking (a choice or variant with no `#derive`).
-    public static bool IsImplicit(Decl d) => d.Attr("derived") is { Args: [{ Value: "implicit" }] };
+    public static bool IsImplicit(Decl d) => d.AnnotationNamed("derived") is { Args: [{ Value: "implicit" }] };
 
     // ── Records ─────────────────────────────────────────────────────────────
 

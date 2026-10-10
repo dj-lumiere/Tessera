@@ -6,7 +6,7 @@ namespace Tessera;
 /// are:
 /// - indentation is spaces, 4 per level (a tab becomes 4 spaces);
 /// - one blank line between blocks, and between a routine and the next top-level declaration or comment;
-/// - a doc comment sits directly on its declaration, above any attribute lines;
+/// - a doc comment sits directly on its declaration, above any annotation lines;
 /// - a top-level section comment (a group of `//` lines with a `// --`, `// ==`, or `// ──` divider) has a blank line
 ///   before and after it;
 /// - a binding, a claim, a local line, a record field, a choice member and a variant case write their `:` right after
@@ -27,7 +27,7 @@ namespace Tessera;
 /// - top-level declarations come in one order: module, imports (sorted), defines, globals, presets, types (records,
 ///   choices, variants), concepts, standalone conformances, routines, and the entry
 ///   routines last (`when_booted`, then `start`). Within a kind the written order
-///   stays, a declaration keeps the comments and attributes above it, and a file divided by section comments is
+///   stays, a declaration keeps the comments and annotations above it, and a file divided by section comments is
 ///   ordered section by section. A file already in order is left as it is;
 /// - inside `routine Owner.name`, the owner type is written `Me` after the header names it (`List[T]` in a
 ///   `List[T]` routine, not `List[U]`); comments and literals are left alone.
@@ -46,7 +46,7 @@ public static class Formatter
         lines = HeadLayout(lines);
         lines = Align(lines);
         lines = Space(lines);
-        lines = DocBeforeAttributes(lines);
+        lines = DocBeforeAnnotations(lines);
         lines = SpaceSections(lines);
         var continued = Continuations(lines);
         lines = lines.SelectMany((l, i) => continued[i] ? WrapContinuation(l) : Wrap(l)).ToList();
@@ -337,7 +337,7 @@ public static class Formatter
 
     private static bool IsDoc(string line) => line.TrimStart().StartsWith("///");
 
-    private static bool IsAttribute(string line) => line.TrimStart().StartsWith("#");
+    private static bool IsAnnotation(string line) => line.TrimStart().StartsWith("#");
 
     private static List<string> Space(List<string> lines)
     {
@@ -358,7 +358,7 @@ public static class Formatter
             if (!continued[i] && !IsBlank(line) && result.Count > 0 && !IsBlank(result[^1])
                 && NeedsBlankBefore(collapsed, continued, i))
             {
-                // the blank goes before the comments and attributes (with their continuation lines) that lead in
+                // the blank goes before the comments and annotations (with their continuation lines) that lead in
                 int at = result.Count;
                 while (at > 0 && (resultContinued[at - 1] || IsLeading(result[at - 1], Indent(line)))) at--;
                 if (at > 0 && !IsBlank(result[at - 1]))
@@ -421,9 +421,9 @@ public static class Formatter
         return result;
     }
 
-    /// A comment or attribute line at `indent`, which belongs to the declaration or block that follows it.
+    /// A comment or annotation line at `indent`, which belongs to the declaration or block that follows it.
     private static bool IsLeading(string line, int indent) =>
-        !IsBlank(line) && Indent(line) == indent && (line.TrimStart().StartsWith("//") || IsAttribute(line));
+        !IsBlank(line) && Indent(line) == indent && (line.TrimStart().StartsWith("//") || IsAnnotation(line));
 
     private static bool NeedsBlankBefore(List<string> lines, List<bool> continued, int i)
     {
@@ -448,7 +448,7 @@ public static class Formatter
         line.StartsWith("routine ") || line.StartsWith("record ") || line.StartsWith("choice ") ||
         line.StartsWith("variant ") || line.StartsWith("concept ") || line.StartsWith("//") || line.StartsWith("#");
 
-    /// The nearest line before `i` that isn't a comment, attribute, continuation, or blank.
+    /// The nearest line before `i` that isn't a comment, annotation, continuation, or blank.
     private static string PreviousCode(List<string> lines, List<bool> continued, int i)
     {
         for (int j = i - 1; j >= 0; j--)
@@ -626,13 +626,13 @@ public static class Formatter
     }
 
     /// The `[` of a type argument list (`Dict[TKey, TValue]`): one right after a name or another list. The only other
-    /// `[` is an attribute list's, after `#`.
+    /// `[` is an annotation list's, after `#`.
     private static bool OpensTypeArguments(string s, int i) =>
         s[i] == '[' && i > 0 && (char.IsLetterOrDigit(s[i - 1]) || s[i - 1] is '_' or ']' or '`');
 
     /// The first `(`, `[`, or `{` group at the line's top level whose own depth holds a comma: its bounds and commas.
     /// A type is never broken: nothing inside type arguments (`Callable[(Addr,), Void]`) is a candidate, and outside an
-    /// attribute (whose `("linux", "macos")` is a list of values) a `(` that doesn't follow a name opens a tuple type
+    /// annotation (whose `("linux", "macos")` is a list of values) a `(` that doesn't follow a name opens a tuple type
     /// (`-> (U64, U64)`, `q : (S64, S64) = ...`), skipped whole.
     private static (int Open, int Close, List<int> Commas)? FirstCommaList(string s)
     {
@@ -745,7 +745,7 @@ public static class Formatter
 
     private enum DeclKind { Module, Import, Define, Global, Preset, Type, Concept, Conform, Routine, Entry }
 
-    /// One top-level declaration with the comments and attributes above it, or a section divider (Kind null).
+    /// One top-level declaration with the comments and annotations above it, or a section divider (Kind null).
     private sealed record DeclChunk(DeclKind? Kind, List<string> Lines, int Index)
     {
         /// Every line is top-level and fits on one line: a one-line declaration with its comments, not one with a body
@@ -838,7 +838,7 @@ public static class Formatter
                 i++;
                 continue;
             }
-            pending.Add(line);  // a comment or an attribute above the next declaration
+            pending.Add(line);  // a comment or an annotation above the next declaration
             i++;
         }
         if (current is not null)
@@ -1154,24 +1154,24 @@ public static class Formatter
         return result;
     }
 
-    // ── Doc comments before attributes ─────────────────────────────────────
+    // ── Doc comments before annotations ─────────────────────────────────────
 
-    /// `@attr` lines followed by `///` lines become the `///` lines followed by the `@attr` lines.
-    private static List<string> DocBeforeAttributes(List<string> lines)
+    /// `#annotation` lines followed by `///` lines become the `///` lines followed by the `#annotation` lines.
+    private static List<string> DocBeforeAnnotations(List<string> lines)
     {
         var result = new List<string>(lines);
         for (int i = 0; i < result.Count; i++)
         {
-            if (!IsAttribute(result[i])) continue;
-            int attrEnd = i;
-            while (attrEnd + 1 < result.Count && IsAttribute(result[attrEnd + 1])) attrEnd++;
-            int docEnd = attrEnd;
+            if (!IsAnnotation(result[i])) continue;
+            int annotationEnd = i;
+            while (annotationEnd + 1 < result.Count && IsAnnotation(result[annotationEnd + 1])) annotationEnd++;
+            int docEnd = annotationEnd;
             while (docEnd + 1 < result.Count && IsDoc(result[docEnd + 1])) docEnd++;
-            if (docEnd == attrEnd) continue;
-            var attrs = result.GetRange(i, attrEnd - i + 1);
-            var docs = result.GetRange(attrEnd + 1, docEnd - attrEnd);
+            if (docEnd == annotationEnd) continue;
+            var annotations = result.GetRange(i, annotationEnd - i + 1);
+            var docs = result.GetRange(annotationEnd + 1, docEnd - annotationEnd);
             result.RemoveRange(i, docEnd - i + 1);
-            result.InsertRange(i, docs.Concat(attrs));
+            result.InsertRange(i, docs.Concat(annotations));
             i = docEnd;
         }
         return result;

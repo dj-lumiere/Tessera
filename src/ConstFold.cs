@@ -65,7 +65,7 @@ public sealed partial class Compiler
 
     /// A fieldless `#llvm("iN")` record (B128): its width, or null.
     private static int? BitRecordWidth(DType t) =>
-        t is RecordType { Decl: var d } && d.Fields.Count == 0 && d.Attr("llvm")?.First is ['i', .. var digits]
+        t is RecordType { Decl: var d } && d.Fields.Count == 0 && d.AnnotationNamed("llvm")?.First is ['i', .. var digits]
         && int.TryParse(digits, NumberStyles.None, CultureInfo.InvariantCulture, out int bits)
             ? bits
             : null;

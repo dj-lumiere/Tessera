@@ -1,7 +1,7 @@
 namespace Tessera;
 
 /// The style warnings for doc comments. Every routine in a library or example file, private ones and a concept's
-/// required routines included, carries a `///` doc comment right above it (past its attribute lines): what it does, a
+/// required routines included, carries a `///` doc comment right above it (past its annotation lines): what it does, a
 /// `:param name:` line for each parameter but `me`, and a `:returns:` line unless it returns Void. Four warnings: no
 /// doc comment, a parameter without its `:param` line, a `:param` line for a name that isn't a parameter, and a
 /// routine that returns a value with no `:returns:` line.
@@ -50,9 +50,9 @@ public static class DocLint
     private static void Routine(RoutineDecl r, IReadOnlyList<string> lines, List<string> warnings)
     {
         string name = r.DisplayName;
-        // The doc sits above the attributes, which may span lines (`#[external("llvm"),` then `template(...)]`): start
-        // from the first attribute's line.
-        int first = r.Attributes.Where(a => a.Pos.File == r.Pos.File).Select(a => a.Pos.Line).Append(r.Pos.Line).Min();
+        // The doc sits above the annotations, which may span lines (`#[external("llvm"),` then `template(...)]`): start
+        // from the first annotation's line.
+        int first = r.Annotations.Where(a => a.Pos.File == r.Pos.File).Select(a => a.Pos.Line).Append(r.Pos.Line).Min();
         if (DocAbove(lines, first) is not { } doc)
         {
             warnings.Add($"{r.Pos}: warning: routine '{name}' has no doc comment: write /// lines above it saying what "
@@ -72,7 +72,7 @@ public static class DocLint
                 + $"{r.ReturnType}");
     }
 
-    /// The `///` lines right above a 1-based line, past any attribute lines (`#track_caller`), without their markers;
+    /// The `///` lines right above a 1-based line, past any annotation lines (`#track_caller`), without their markers;
     /// null when there are none.
     public static List<string>? DocAbove(IReadOnlyList<string> lines, int line)
     {
