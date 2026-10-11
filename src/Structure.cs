@@ -336,7 +336,13 @@ public sealed class Structurer
                 if (known.Header != target || same.Args(known.Args, null) != argsText)
                     throw new GiveUp($"the loop at '{inner.Header}' goes back to '{target}' from two places with different values");
             }
-            else inner.OuterContinue = (target, args);
+            else
+            {
+                var bound = Rewriter.BoundInBody(_loops[inner.Header].SelectMany(b => _blocks[b].Stmts)).ToHashSet();
+                if (j.Args.SelectMany(Rewriter.Uses).Any(bound.Contains))
+                    throw new GiveUp($"the loop at '{inner.Header}' goes back to '{target}' with a value bound inside it");
+                inner.OuterContinue = (target, args);
+            }
             return [new BreakStmt(j.Pos)];
         }
         if (target == ctx.Fallthrough)
@@ -806,6 +812,10 @@ public sealed class Structurer
             // A binding the loop's arms or the lines after the guard still read stays a line of the body.
             var later = stayArm.Concat(exitArm).Concat(header.Stmts.Skip(at + 1)).ToList();
             var (lifted, rest) = LiftCondition(body, test, later);
+            // `then` runs after the loop and sees only the carried values: an exit arm reading a value the
+            // body binds before the guard keeps the guard a line of the body.
+            if (lifted is not null && Rewriter.UsesInBody(exitArm).Intersect(Rewriter.BoundInBody(rest)).Any())
+                (lifted, rest) = (null, body);
             if (lifted is null)
             {
                 // The condition needs lines of its own: the loop runs on `true`, and the test is a line of the body.

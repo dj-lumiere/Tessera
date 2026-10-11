@@ -43,40 +43,50 @@ routine agree() -> None
     local quoted: @Array[U32, 8] <- .hollow()
     local bytes: @List[Byte] <- .construct()
 
-    while c <= 0x10FFFF with c: U32 = 0, bad: U32 = 0
+    jump each(0, 0)
+
+    block each(c: U32, bad: U32)
+        if c > 0x10FFFF
+            jump report(bad)
         chars[0] = c
         text: Span[U32] = chars.getview()
         written: USize = text.json_quote_into(quoted.getview())
         width: USize = c.json_escaped_width()
         fits: Bool = written == width + 2
         if width == 1
-            same: Bool = quoted[1] == c
-            good: Bool = fits and same
-            bad_after: U32 = when
-                good => bad
-                else => bad + 1
-            continue with c: c + 1, bad: bad_after
+            jump itself(c, bad, fits)
         else
-            byte: Byte = c.to[U8]().bits()
-            local one: @Array[Byte, 1] <- [byte]
-            bytes.clear()
-            single: Span[Byte] = Span[Byte].construct(data: one.to[@Byte](), count: 1)
-            single.json_quote_into(bytes)
+            jump escaped(c, bad, fits, written)
 
-            each i in 0 til written
-                bad_after: U32 = when
-                    fits => bad
-                    else => bad + 1
-                from_bytes: U32 = bytes[i].to[U8]().to[U32]()
-                if quoted[i] == from_bytes
-                    continue
-                else
-                    break
-            then
-                continue with c: c + 1, bad: bad_after
+    block itself(c: U32, bad: U32, fits: Bool)
+        same: Bool = quoted[1] == c
+        good: Bool = fits and same
+        bad_after: U32 = when
+            good => bad
+            else => bad + 1
+        jump each(c + 1, bad_after)
 
-            continue with c: c + 1, bad: bad + 1
-    then
+    block escaped(c: U32, bad: U32, fits: Bool, written: USize)
+        byte: Byte = c.to[U8]().bits()
+        local one: @Array[Byte, 1] <- [byte]
+        bytes.clear()
+        single: Span[Byte] = Span[Byte].construct(data: one.to[@Byte](), count: 1)
+        single.json_quote_into(bytes)
+        jump compare(c, bad, fits, written, 0)
+
+    block compare(c: U32, bad: U32, fits: Bool, written: USize, i: USize)
+        bad_after: U32 = when
+            fits => bad
+            else => bad + 1
+        if i >= written
+            jump each(c + 1, bad_after)
+        from_bytes: U32 = bytes[i].to[U8]().to[U32]()
+        if quoted[i] == from_bytes
+            jump compare(c, bad, fits, written, i + 1)
+        else
+            jump each(c + 1, bad + 1)
+
+    block report(bad: U32)
         Out.write("code points where the paths or widths disagree: {bad}\n")
         drop bytes
         return

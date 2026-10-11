@@ -210,8 +210,11 @@ public sealed partial class Compiler
             return true;
         for (int i = 0; i < o.Args.Count; i++)
         {
-            if (o.Args[i] is not TypeArgType { Type: var t } || actual[i] is ArchetypeType) continue;
+            if (o.Args[i] is not TypeArgType { Type: var t }) continue;
             if (t.Args.Count == 0 && ClauseTypeParamsOrOwnerArg(m, t.Name)) continue;
+            // A type parameter being checked (an archetype) stands for any type: a routine written for one named
+            // type (`Fiber[None].retrieve`) is not its routine.
+            if (actual[i] is ArchetypeType) return false;
             if (t.Args.Count > 0 && OwnerTypeParams(m).Any(n => ClauseTypeParamsOrOwnerArg(m, n)))
             {
                 if (!BindNestedOwnerArgs(m, actual, new TypeEnv(m.File))) return false;

@@ -871,8 +871,11 @@ public sealed partial class Compiler
         // A type parameter inside an argument (`T` in `List[Thread[T]].wait_all_finished`) is one too, when the routine
         // requires it.
         var clauseParams = ClauseTypeParams(r.Clauses);
+        // An argument written as a type's own name (`Fiber[None].put_work`) is that type, not a parameter.
         return r.Owner.Args.OfType<TypeArgType>()
-            .SelectMany(t => t.Type.Args.Count == 0 ? [t.Type.Name] : NestedNames(t.Type).Where(clauseParams.Contains))
+            .SelectMany(t => t.Type.Args.Count == 0
+                ? (t.Type.Name is "None" or "Bool" or "Addr" || IntType.FromName(t.Type.Name) is not null ? [] : [t.Type.Name])
+                : NestedNames(t.Type).Where(clauseParams.Contains))
             .Distinct().ToList();
     }
 
