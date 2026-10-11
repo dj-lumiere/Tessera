@@ -437,7 +437,8 @@ routine start() -> None
   declaring the routine, and a literal on the left takes the right side's type (`1 + x` is `T.add(1, x)`). Precedence,
   tightest first: calls and `[i]`, `**`, the unary `- not ~`, `* / %`, `+ -`, the bitwise operators (one level: two
   different ones side by side need parentheses, `(a & b) | c`), ranges `til` / `to` (only walked by `each`),
-  comparisons (chained: `1 < b <= 3 < a`), `and` / `or` (one level: mixed, they need parentheses, `a or (b and c)`).
+  comparisons (chained one way: `<`, `<=`, `==` together or `>`, `>=`, `==` together, `1 < b <= 3 < a`, the middle a
+  name, literal or field, and `!=` and `<=>` don't chain), `and` / `or` (one level: mixed, they need parentheses, `a or (b and c)`).
   `and` / `or` / `not` are `Bool`'s own, and the right side of `and` / `or` runs only when the left leaves the answer
   open. The method spellings still work (`i.add(1).bitand(mask)`), and a chain of pure calls reads left to right.
 - A chain holds at most three calls (`(sum.peek() + x).poke_into(sum)` is fine). Everything call-shaped counts

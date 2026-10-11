@@ -1740,10 +1740,19 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (op.Text == "<=>" && Cur.Kind == TokenKind.Op && ComparisonOps.Contains(Cur.Text))
             throw Error("<=> gives an ordering, which no further comparison chains on");
         Expr result = e;
+        // A chain goes one way: `<`, `<=`, `==` together, or `>`, `>=`, `==` together. `a != b != c` reads as "all
+        // different" and is not, and `a < b > c` says nothing about a and c.
+        static int Way(string o) => o switch { "<" or "<=" => 1, ">" or ">=" => -1, "==" => 0, _ => 2 };
+        int way = Way(op.Text);
         while (Cur.Kind == TokenKind.Op && ComparisonOps.Contains(Cur.Text))
         {
             var next = Next();
             if (next.Text == "<=>") throw new CompileError(next.Pos, "<=> doesn't chain with other comparisons");
+            int w = Way(next.Text);
+            if (w == 2 || way == 2 || w != 0 && way != 0 && w != way)
+                throw new CompileError(next.Pos, "a chained comparison goes one way: <, <= and == together, or >, >= and == together; " +
+                    "write the other comparisons separately, joined with and (a < b and c > b)");
+            if (w != 0) way = w;
             if (right is not (ValueRef or IntLit or TypedIntLit or FloatLit or FieldExpr or PresetRef))
                 throw new CompileError(next.Pos, "the middle of a chained comparison is a name, a literal, or a field, written once and read twice: bind it first");
             var further = ParseRange();
