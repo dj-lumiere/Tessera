@@ -559,6 +559,11 @@ routine start() -> Void
   library `#llvm("iN")` record with no fields is an integer underneath (`B128` is an `i128`). `#layout(align: N)` sets
   a record's alignment, `#aligned` a field's.
 - A record can't contain itself by value; go through a `Ptr`.
+- **Every record declares a `construct` (returning `Me`) and a `destruct(me: @Me) -> Void`, every variant a
+  `destruct`** (a build error otherwise; choices and the machine types need neither). A record of plain values:
+  `routine Point.construct(x: S64, y: S64) -> Me` / `return(Me(x, y))` and `routine Point.destruct(me: @Me) -> Void`
+  / `return()`. A record that holds memory releases its fields in `destruct`. `tessera migrate --step lifecycle`
+  writes both for a type that lacks them.
 
 **Tuples**
 
