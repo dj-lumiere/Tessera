@@ -149,6 +149,10 @@ public static class ChainLint
             case RecordLit r: foreach (var (_, v, _) in r.Fields) Expr(v, warnings); break;
             case ClaimExpr { Contents: { } c }: Expr(c, warnings); break;
             case ArrayLit a: foreach (var x in a.Elements) Expr(x, warnings); break;
+            case AtExpr at:
+                Expr(at.Value, warnings);
+                Expr(at.Manager, warnings);
+                break;
         }
     }
 

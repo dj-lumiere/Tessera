@@ -543,7 +543,7 @@ public sealed class FunctionGen
                 Define(b.Name, new Val(op, t), b.Pos);
                 DescribeValue(b.Name, op, t, b.Source ?? b.Pos);
                 // `claim p: @T <- value` is the claim, then `p.poke(value)`.
-                if (b.Value is ClaimExpr { Contents: { } contents })
+                if (b.Value is ClaimExpr { Contents: { } contents } && t is PtrType)
                 {
                     // The store is the builder's, so a mismatch is said as a binding's, not as an argument's.
                     _claimContents = contents;
@@ -842,6 +842,7 @@ public sealed class FunctionGen
         {
             case IntLit or FloatLit or NullLit or StrLit: return null;
             case ArrayLit: return null;
+            case AtExpr: return null;
             case LambdaExpr: return null;
             case BoolLit: return BoolType.Instance;
             case TypedIntLit t: return t.Type;
@@ -961,7 +962,9 @@ public sealed class FunctionGen
             FieldExpr f => ExtractField(f),
             SelectExpr s => EvalSelect(s, expected),
             RecordLit s => EvalRecordLit(s, expected),
+            ArrayLit a when argument > 0 && Compiler.IsCoreSpan(expected, out _) => FrameSpan(a, expected),
             ArrayLit a => EvalElementsLit(a, expected),
+            AtExpr at => EvalAt(at, expected),
             ImplicitMemberExpr m => throw Err(m.Pos,
                 $"'.{m.Name}' isn't a value of {expected}: a leading '.' starts a call on the type, .{m.Name}(...)"),
             ImplicitCallExpr => EvalCall(e, expected),
@@ -1031,9 +1034,8 @@ public sealed class FunctionGen
 
     private Val StringLiteral(StrLit s, DType expected)
     {
-        // A string literal is a Bytes (data + count + a null allocator, UTF-8) where a Bytes is expected, a CStr or
-        // CWStr (a pointer to NUL-terminated text) where one of those is expected, and a NUL-terminated Ptr<Byte>
-        // where a pointer is.
+        // A string literal is a Span[Byte] (data + count, UTF-8) where one is expected, a CStr or CWStr (a pointer to
+        // NUL-terminated text) where one of those is expected, and a NUL-terminated @Byte where a pointer is.
         string g = _c.StringGlobal(s.Value);
         if (expected is PtrType { Pointee: null or IntType { Kind: IntKind.Byte } })
             return new Val(g, expected);
@@ -1063,6 +1065,9 @@ public sealed class FunctionGen
 
     private Val EvalClaim(ClaimExpr a, DType expected)
     {
+        // `claim xs: Span[T] <- [...]`: the elements in the frame, and the claim is the Span over them.
+        if (Compiler.IsCoreSpan(expected, out _) && a.Contents is ArrayLit lit)
+            return FrameSpan(lit, expected);
         if (expected is not PtrType { Pointee: { } t })
             throw Err(a.Pos, $"claim needs a typed pointer to fill, such as claim p: @T; found {expected}");
         _c.EnsureTypeDefined(t);
@@ -1071,6 +1076,66 @@ public sealed class FunctionGen
         // access (cmpxchg16b) needs its 16.
         _allocas.Add($"{slot} = alloca {t.Llvm}, align {_c.SizeAlign(t, a.Pos).Align}");
         return new Val(slot, new PtrType(t));
+    }
+
+    /// An array literal in the routine's frame, seen as a `Span[T]`: as many elements as the literal has, a count the
+    /// build knows. The Span mustn't outlive the routine.
+    private Val FrameSpan(ArrayLit lit, DType span)
+    {
+        Compiler.IsCoreSpan(span, out var elem);
+        int count;
+        try
+        {
+            count = _c.Elements(lit, _env).Count;
+        }
+        catch (CompileError) when (lit.Repeat is not null)
+        {
+            throw Err(lit.Repeat.Pos,
+                "a Span in the frame has a count the build knows; for a count known only while running, "
+                + "claim the memory from a manager: claim xs: Memory[T] <- [0] x n at manager");
+        }
+        var array = new ArrayType(elem, count);
+        _c.EnsureTypeDefined(array);
+        string slot = $"%s{_allocas.Count}";
+        _allocas.Add($"{slot} = alloca {array.Llvm}, align {_c.SizeAlign(array, lit.Pos).Align}");
+        var contents = EvalElementsLit(lit, array);
+        Line($"store {array.Llvm} {contents.Op}, ptr {slot}");
+        return SpanOver(slot, count, span);
+    }
+
+    /// The `Span[T]` value of `count` elements at `address`.
+    private Val SpanOver(string address, long count, DType span)
+    {
+        _c.EnsureTypeDefined(span);
+        string data = EmitTmp($"insertvalue {span.Llvm} poison, ptr {address}, 0");
+        return new Val(EmitTmp($"insertvalue {span.Llvm} {data}, {_c.USize.Llvm} {count}, 1"), span);
+    }
+
+    /// `[...] at manager` is a `Memory[T]` of the elements, the pattern written out and repeated as many times as the
+    /// count says (known only while running is fine), and `value at manager` is a `Box[T]` of the value. Both are
+    /// the type's own `construct`, which takes the memory from the manager.
+    private Val EvalAt(AtExpr a, DType expected)
+    {
+        if (expected is RecordType { Decl.Name: "Memory", Args: [_] } memory && memory.Decl.Module == Compiler.CoreModule)
+        {
+            if (a.Value is not ArrayLit { IsTuple: false } lit)
+                throw Err(a.Value.Pos, $"a {expected} at a manager is an array literal: [a, b] at manager, or [0] x n at manager");
+            var owner = new TypeRef("Memory", [], a.Pos) { Known = memory };
+            Expr times = lit.Repeat ?? new IntLit(1, lit.Pos);
+            var call = new NsCallExpr(owner, "construct", [], [lit with { Repeat = null }, times, a.Manager], a.Pos)
+                { ArgNames = ["values", "times", "manager"] };
+            return EvalCall(call, expected);
+        }
+        if (expected is RecordType { Decl.Name: "Box", Args: [_] } box && box.Decl.Module == Compiler.CoreModule)
+        {
+            if (a.Value is ArrayLit { IsTuple: false })
+                throw Err(a.Value.Pos, $"an array literal at a manager is a Memory[T], and this place takes {expected}");
+            var owner = new TypeRef("Box", [], a.Pos) { Known = box };
+            var call = new NsCallExpr(owner, "construct", [], [a.Value, a.Manager], a.Pos) { ArgNames = ["value", "manager"] };
+            return EvalCall(call, expected);
+        }
+        throw Err(a.Pos, $"'at' takes memory from a manager: [...] at manager is a Memory[T], value at manager a Box[T]; "
+                         + $"this place takes {expected}");
     }
 
     /// An entry-block buffer that holds a value and any form the C ABI coerces it to (at most 16 bytes, or the
@@ -1579,6 +1644,17 @@ public sealed class FunctionGen
         var env = new Compiler.TypeEnv(c.File);
         if (self is not null) env.Bind("Me", self);
         var t = _c.ResolveType(c.Type, env);
+        // `preset NAME: Span[T] <- [...]` and `global NAME: Span[T] <- [...]`: the name is a Span over the memory.
+        if (c.IsSpan)
+        {
+            var storage = _c.SpanStorage(c, t, env);
+            Func<string> address = c.IsGlobal
+                ? c.AnnotationNamed("threadlocal") is not null
+                    ? () => EmitTmp($"call ptr @llvm.threadlocal.address.p0(ptr {_c.GlobalVariable(c, storage, env)})")
+                    : () => _c.GlobalVariable(c, storage, env)
+                : () => _c.PresetStorageGlobal(c, storage, env);
+            return new PresetInfo(t, _ => SpanOver(address(), storage.Count, t));
+        }
         // A global's name is the address of its storage.
         if (c.IsGlobal)
         {
@@ -1972,6 +2048,8 @@ public sealed class FunctionGen
                     ArrayType at when !a.IsTuple && at.Count == a.Elements.Count => null,
                     VectorType vt when !a.IsTuple && vt.Count == a.Elements.Count => null,
                     RecordType { IsTuple: true } tu when a.IsTuple && tu.Args.Count == a.Elements.Count => null,
+                    // An argument borrows a literal in the frame where a Span is expected.
+                    _ when !a.IsTuple && Compiler.IsCoreSpan(pt, out _) => null,
                     _ => a.IsTuple
                         ? $"a tuple of {a.Elements.Count} items can't be a {pt}"
                         : $"[...] with {a.Elements.Count} element(s) can't be a {pt}",

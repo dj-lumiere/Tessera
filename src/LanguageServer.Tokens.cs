@@ -1075,6 +1075,11 @@ public static partial class LanguageServer
                     break;
                 case ArrayLit array:
                     foreach (var el in array.Elements) Expr(el);
+                    if (array.Repeat is not null) Expr(array.Repeat);
+                    break;
+                case AtExpr at:
+                    Expr(at.Value);
+                    Expr(at.Manager);
                     break;
             }
         }

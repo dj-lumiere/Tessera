@@ -302,6 +302,10 @@ internal sealed class NamedArgsMigration
                 case RecordLit r: foreach (var (_, v, _) in r.Fields) Expr(v); break;
                 case ClaimExpr { Contents: { } c }: Expr(c, expected is null ? null : Pointee(expected)); break;
                 case ArrayLit a: foreach (var x in a.Elements) Expr(x); break;
+                case AtExpr at:
+                    Expr(at.Value);
+                    Expr(at.Manager);
+                    break;
                 case StrLit str: Holes(str); break;
             }
         }
@@ -532,6 +536,7 @@ internal sealed class NamedArgsMigration
             FieldExpr f => Start(f.Base),
             IndexExpr i => Start(i.Base),
             SelectExpr s => Start(s.Cond),
+            AtExpr at => Start(at.Value),
             _ => e.Pos,
         };
     }

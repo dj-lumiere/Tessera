@@ -471,6 +471,11 @@ public sealed partial class Compiler
             env.Bind("Me", self);
         }
         var t = ResolveType(c.Type, env);
+        if (c.IsSpan)
+        {
+            PresetInitializer(c.Value!, SpanStorage(c, t, env), env);
+            return;
+        }
         if (!c.IsStorage && t is ArrayType)
             throw new CompileError(c.Pos, $"an array preset lives in memory: preset {c.Name}: @{t} <- {{ ... }}");
         if (c.IsStorage)
@@ -1380,6 +1385,30 @@ public sealed partial class Compiler
         return name;
     }
 
+    /// The memory under `preset NAME: Span[T] <- [...]` or `global NAME: Span[T] <- [...]`: an Array of the literal's
+    /// elements, as many as it has.
+    public ArrayType SpanStorage(PresetDecl c, DType span, TypeEnv env)
+    {
+        if (!IsCoreSpan(span, out var elem))
+            throw new CompileError(c.Type.Pos, $"expected Span[T], found {span}");
+        if (c.Value is not ArrayLit { IsTuple: false } lit)
+            throw new CompileError(c.Value!.Pos,
+                $"a Span in static memory takes an array literal, which gives its count: {c.Name}: {span} <- [a, b], or <- [0] x 26");
+        return new ArrayType(elem, Elements(lit, env).Count);
+    }
+
+    /// Whether `t` is the core `Span[T]`, and its element type.
+    public static bool IsCoreSpan(DType t, out DType elem)
+    {
+        if (t is RecordType { Decl.Name: "Span", Args: [var e] } span && span.Decl.Module == CoreModule)
+        {
+            elem = e;
+            return true;
+        }
+        elem = null!;
+        return false;
+    }
+
     /// The LLVM constant for a preset array element or a global's initializer: a folded constant (ConstFold.cs),
     /// or a nested array literal.
     private string PresetInitializer(Expr e, DType t, TypeEnv env)
@@ -1396,11 +1425,39 @@ public sealed partial class Compiler
             return "[" + string.Join(", ", elements.Select((_, i) => constants[i % constants.Count])) + "]";
         }
         if (t is PtrType or CallableType) return PointerInitializer(e, t, env);
+        if (IsCoreSpan(t, out _) && SpanInitializer(e, t, env) is { } span) return span;
         if (t is RecordType record && record.Decl.AnnotationNamed("llvm") is null && e is RecordLit recordLit)
             return RecordInitializer(recordLit, record, env);
         if (t is not (IntType or BoolType or FloatType or ChoiceType) && BitRecordWidth(t) is null)
             throw new CompileError(e.Pos, $"a preset array element or global initializer can't be a {t.Name}");
         return ConstLlvm(Typed(Fold(e, t, env), t, e.Pos));
+    }
+
+    /// A Span known when the program is linked: a string literal's bytes, or another Span preset or global. Null for
+    /// anything else, which then goes in as a record literal.
+    private string? SpanInitializer(Expr e, DType span, TypeEnv env)
+    {
+        EnsureTypeDefined(span);
+        if (e is StrLit s)
+        {
+            if (span is not RecordType { Args: [IntType { Kind: IntKind.Byte }] })
+                throw new CompileError(e.Pos, $"a string literal is a Span[Byte], and this is a {span}");
+            return $"{{ ptr {StringGlobal(s.Value)}, {USize.Llvm} {Utf8Length(s.Value)} }}";
+        }
+        if (e is PresetRef { Owner: null } r && FindPreset("", r.Name, env.File, r.Pos, r.Path) is { IsSpan: true } target)
+        {
+            if (target.AnnotationNamed("threadlocal") is not null)
+                throw new CompileError(e.Pos, $"'{target.Name}' is #threadlocal: its address differs per thread, so it can't initialize a global");
+            var targetEnv = new TypeEnv(target.File);
+            var targetSpan = ResolveType(target.Type, targetEnv);
+            if (!targetSpan.Equals(span)) throw new CompileError(e.Pos, $"expected {span}, found {targetSpan}");
+            var storage = SpanStorage(target, targetSpan, targetEnv);
+            string address = target.IsGlobal
+                ? GlobalVariable(target, storage, targetEnv)
+                : PresetStorageGlobal(target, storage, targetEnv);
+            return $"{{ ptr {address}, {USize.Llvm} {storage.Count} }}";
+        }
+        return null;
     }
 
     /// A pointer known when the program is linked: `null`, or the name of another global or preset in memory (its
@@ -1411,7 +1468,7 @@ public sealed partial class Compiler
         if (t is CallableType callable && e is RoutineRef routine) return RoutineAddress(routine, callable, env);
         if (t is PtrType && e is PresetRef { Owner: null } r
             && FindPreset("", r.Name, env.File, r.Pos, r.Path) is { } target
-            && target.IsStorage)
+            && target is { IsStorage: true, IsSpan: false })
         {
             if (target.AnnotationNamed("threadlocal") is not null)
                 throw new CompileError(e.Pos, $"'{target.Name}' is #threadlocal: its address differs per thread, so it can't initialize a global");

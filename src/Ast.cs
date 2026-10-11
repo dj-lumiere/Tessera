@@ -141,14 +141,18 @@ public sealed record VariantBranch(TypeRef Type, Pos Pos)
 
 /// `preset NAME: T = value` is a value, and `preset NAME: @T <- value` is read-only memory. With `IsGlobal`,
 /// `global NAME: @T [<- value]` is mutable memory, all-zero without a value. In memory (`IsStorage`), Type is the
-/// pointee T and the name is its address. The contents are part of the program image, there before `start` runs.
+/// pointee T and the name is its address. With `IsSpan`, `preset NAME: Span[T] <- [...]` or `global NAME: Span[T] <-
+/// [...]`, Type is the Span and the name is a Span of the literal's elements, as many as it has. The contents are part
+/// of the program image, there before `start` runs.
 public sealed record PresetDecl(
     string File, List<Annotation> Annotations, TypeRef? Owner, string Name, TypeRef Type, Expr? Value, Pos Pos)
     : Decl(File, Annotations, Pos)
 {
     public bool IsGlobal { get; init; }
-    /// A global, or a preset declared `@T`: the name is an address, not a value.
+    /// A global, or a preset declared `@T` or `Span[T]`: the name is an address, not a value.
     public bool IsStorage { get; init; }
+    /// Declared `Span[T]`: the name is a Span over the memory, whose count the array literal gives.
+    public bool IsSpan { get; init; }
 }
 
 /// A top-level `conform C[X, ...] [when ...]`, with `require` clauses naming its type parameters. It declares a
@@ -321,6 +325,10 @@ public sealed record ArrayLit(List<Expr> Elements, Pos Pos) : Expr(Pos)
     /// they are written out.
     public Expr? Repeat { get; init; }
 }
+
+/// `[0] x n at manager` (a `Memory[T]`) or `(value: 1, next: null) at manager` (a `Box[T]`): the literal in memory
+/// taken from the manager, which `drop` gives back. A repeat count here may be known only while running.
+public sealed record AtExpr(Expr Value, Expr Manager, Pos Pos) : Expr(Pos);
 
 // ── Terminators ─────────────────────────────────────────────────────────────
 

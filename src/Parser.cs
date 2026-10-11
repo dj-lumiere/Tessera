@@ -557,16 +557,19 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var type = ParseType();
         if (Is(TokenKind.LeftArrow))
         {
-            if (type is not { Name: "Ptr", Args.Count: 1 })
+            if (type is not { Name: "Ptr", Args.Count: 1 } && !IsSpanType(type) && !IsManagedType(type))
                 throw new CompileError(type.Pos,
                     $"a local slot is memory, so its type is a pointer: local {name}: @{type} <- value, or local {name}: {type} = value for a value");
             Next();
-            return new BindStmt(name, type, new ClaimExpr(pos) { Contents = ParseExpr() }, pos);
+            return MemoryBinding(name, type, pos);
         }
         if (!Is(TokenKind.Eq))
             throw Error($"a local line gives a value with '=' or a slot's contents with '<-': local {name}: {type} = value");
         Next();
-        return new BindStmt(name, type, ParseExpr(), pos);
+        var value = ParseExpr();
+        if (value is AtExpr at)
+            throw new CompileError(at.Pos, $"memory from a manager takes its contents with '<-': local {name}: {type} <- ... at manager");
+        return new BindStmt(name, type, value, pos);
     }
 
     private RecordDecl ParseRecord(List<Annotation> annotations)
@@ -677,6 +680,16 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
         Expect(TokenKind.Colon, "':' and the preset's type");
         var type = ParseType();
+        // `preset NAME: Span[T] <- [a, b]` is read-only memory of the literal's elements, and the name is a Span of them.
+        if (IsSpanType(type))
+        {
+            if (Is(TokenKind.Eq))
+                throw Error($"a Span preset takes its elements with '<-': preset {name}: {type} <- [a, b]");
+            Expect(TokenKind.LeftArrow, $"'<-' and the elements: preset {name}: {type} <- [a, b]");
+            var elements = ParseExpr();
+            ExpectLineEnd();
+            return new PresetDecl(file, annotations, owner, name, type, elements, pos) { IsStorage = true, IsSpan = true };
+        }
         // `preset NAME: @T <- value` is read-only memory, whose name is its address; `preset NAME: T = value` is a value.
         if (PointeeOf(type) is { } pointee)
         {
@@ -705,14 +718,28 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (Is(TokenKind.Dot)) throw Error("a global belongs to its module, not to a type: global NAME: @T");
         Expect(TokenKind.Colon, "':' and the global's type");
         var type = ParseType();
-        var pointee = PointeeOf(type)
-                      ?? throw new CompileError(type.Pos, $"a global's name is the address of its memory: global {name.Text}: @{type}");
         if (Is(TokenKind.Eq))
             throw Error($"a global takes its contents with '<-': global {name.Text}: {type} <- value");
+        // `global NAME: Span[T] <- [0] x 26`: the literal gives the elements and how many there are.
+        if (IsSpanType(type))
+        {
+            Expect(TokenKind.LeftArrow,
+                $"'<-' and the elements, which give the count: global {name.Text}: {type} <- [0] x 26");
+            var elements = ParseExpr();
+            ExpectLineEnd();
+            return new PresetDecl(file, annotations, null, name.Text, type, elements, pos)
+                { IsGlobal = true, IsStorage = true, IsSpan = true };
+        }
+        var pointee = PointeeOf(type)
+                      ?? throw new CompileError(type.Pos,
+                          $"a global's name is the address of its memory: global {name.Text}: @{type}, or global {name.Text}: Span[{type}] <- [...] for a run of them");
         Expr? value = Accept(TokenKind.LeftArrow) ? ParseExpr() : null;
         ExpectLineEnd();
         return new PresetDecl(file, annotations, null, name.Text, pointee, value, pos) { IsGlobal = true, IsStorage = true };
     }
+
+    /// `Span[T]`, the type of a run of values in static memory or in a routine's frame.
+    private static bool IsSpanType(TypeRef type) => type is { Name: "Span", Path: null, Args.Count: 1 };
 
     /// `T` in `@T`, or null if the type isn't a pointer.
     private static TypeRef? PointeeOf(TypeRef type) =>
@@ -1127,7 +1154,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (Is(TokenKind.Comma))
                 throw Error("a tuple's items take their types from the tuple: write a, b = ... without types");
             Expect(TokenKind.Eq, "'='");
-            return new BindStmt(name, type, ParseExpr(), pos);
+            var value = ParseExpr();
+            if (value is AtExpr at)
+                throw new CompileError(at.Pos, $"memory from a manager is claimed: claim {name}: {type} <- ... at manager");
+            return new BindStmt(name, type, value, pos);
         }
         if (Cur.Kind == TokenKind.Ident && PeekTok(1).Kind == TokenKind.Comma)
         {
@@ -1426,9 +1456,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 {
                     Next();
                     if (elems.Count == 0) throw Error("'[] x n' repeats nothing; write the elements to repeat: [0] x n");
-                    return new ArrayLit(elems, t.Pos) { Repeat = ParsePostfix() };
+                    return AtManager(new ArrayLit(elems, t.Pos) { Repeat = ParsePostfix() });
                 }
-                return new ArrayLit(elems, t.Pos);
+                return AtManager(new ArrayLit(elems, t.Pos));
             }
             case TokenKind.Ident when _inAsm && AsmCondition() is { } condition:
                 return condition;
@@ -1445,6 +1475,15 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
     }
 
+    /// `literal at manager`: an array literal or a record literal in memory from a manager, a `Memory[T]` or a
+    /// `Box[T]`. Without `at` the literal itself.
+    private Expr AtManager(Expr literal)
+    {
+        if (_inAsm || Cur is not { Kind: TokenKind.Ident, Text: "at", Escaped: false }) return literal;
+        var pos = Next().Pos;
+        return new AtExpr(literal, ParsePostfix(), pos);
+    }
+
     /// `f(args)`, `f[T](args)`, `Type.f(args)`, `Type[T].f[U](args)`, `Type.CONST`, `CONST`, `Type(field: value)`.
     private Expr ParseNameExpr()
     {
@@ -1459,8 +1498,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             bool numbers = typeArgs.Any(a => a is not TypeArgType);
             var targs = numbers ? [] : typeArgs.Select(a => ((TypeArgType)a).Type).ToList();
             var (args, names) = ParseNamedArgs();
-            return new CallExpr(name.Text, targs, args, pos)
-                { Path = path, ArgNames = names, WrittenTypeArgs = numbers ? typeArgs : null };
+            return AtManager(new CallExpr(name.Text, targs, args, pos)
+                { Path = path, ArgNames = names, WrittenTypeArgs = numbers ? typeArgs : null });
         }
 
         var owner = new TypeRef(name.Text, typeArgs, pos) { Path = path };
@@ -1513,28 +1552,52 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             } while (Accept(TokenKind.Comma));
         }
         Expect(TokenKind.RParen, "')'");
-        return new RecordLit(null, fields, pos);
+        return AtManager(new RecordLit(null, fields, pos));
     }
 
-    /// `claim p: @T`: a stack slot bound to a pointer name. It takes no initializer; the value goes in with a
-    /// store.
+    /// `claim p: @T <- value`: a slot in the routine's frame bound to a pointer name. `claim xs: Span[T] <- [...]` is
+    /// a run of them, as many as the literal has, and `claim m: Memory[T] <- [...] at manager` (or a `Box[T]` of one
+    /// value) is memory from a manager.
     private Stmt ParseClaim()
     {
         var pos = Next().Pos;
         string name = ValueName("the name of the value claim binds: claim p: @T").Text;
         Expect(TokenKind.Colon, "':'");
         var type = ParseType();
-        if (type is not { Name: "Ptr", Args.Count: 1 })
-            throw new CompileError(type.Pos, $"claim takes a typed pointer: claim p: @T; found {type}");
         if (Is(TokenKind.Eq))
             throw new CompileError(pos, $"a claim takes its contents with '<-': claim {name}: {type} <- value");
+        if (type is not { Name: "Ptr", Args.Count: 1 } && !IsSpanType(type) && !IsManagedType(type))
+            throw new CompileError(type.Pos,
+                $"claim makes memory: claim p: @T, claim xs: Span[T] <- [...], or claim m: Memory[T] <- [...] at manager; found {type}");
         // `claim p: @T <- value` claims the slot and stores the value in it, where the claim stands. A slot a routine
         // fills later (an out parameter, `construct`) starts as `.hollow()`, all zero, which its `destruct` leaves alone.
         if (!Is(TokenKind.LeftArrow))
             throw new CompileError(pos,
                 $"a claim says what the slot starts with: claim {name}: {type} <- value, or <- .hollow() when a routine it's passed to fills it");
         Next();
-        return new BindStmt(name, type, new ClaimExpr(pos) { Contents = ParseExpr() }, pos);
+        return MemoryBinding(name, type, pos);
+    }
+
+    /// `Memory[T]` or `Box[T]`: memory taken from a manager.
+    private static bool IsManagedType(TypeRef type) => type is { Name: "Memory" or "Box", Path: null, Args.Count: 1 };
+
+    /// The binding after `<-` in a claim or a local slot: a pointer's or a span's contents go into the frame, and memory
+    /// from a manager is the `... at manager` value itself.
+    private BindStmt MemoryBinding(string name, TypeRef type, Pos pos)
+    {
+        var contents = ParseExpr();
+        if (IsManagedType(type))
+            return contents is AtExpr
+                ? new BindStmt(name, type, contents, pos)
+                : throw new CompileError(contents.Pos,
+                    $"a {type.Name} is memory from a manager, which the contents name: {name}: {type} <- [...] at manager");
+        if (IsSpanType(type) && contents is AtExpr)
+            throw new CompileError(contents.Pos,
+                $"memory from a manager is a Memory[T]: {name}: Memory{type.ToString()[4..]} <- ... at manager, or the literal alone for a Span in the frame");
+        if (IsSpanType(type) && contents is not ArrayLit { IsTuple: false })
+            throw new CompileError(contents.Pos,
+                $"a Span in the frame takes an array literal, which gives its count: {name}: {type} <- [0] x 64");
+        return new BindStmt(name, type, new ClaimExpr(pos) { Contents = contents }, pos);
     }
 
     private List<TypeRef> ParseTypeArgsOpt()
