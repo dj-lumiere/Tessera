@@ -97,6 +97,10 @@ routine start() -> Void
 - `.addr()` gives a `Callable`'s code address as an `Addr`, for C code that takes a function as `void*`:
   `fn.addr()`, or `my_routine.addr()` (typed by the routine's own signature). A `Callable` never widens to `Addr` on
   its own, and an `Addr` is not callable.
+- A lambda, `(a, b) => a.add(b)` (one expression on one line, parentheses kept around one name: `(x) => x.mul(2)`),
+  is a routine written where a `Callable` is expected: a parameter, a binding with a `Callable` type. Its parameter
+  and result types come from that `Callable`. It sees its parameters, presets, globals, and routines, never a value of
+  the routine around it (a build error: pass it as a parameter). It is a plain function pointer.
 - A `Callable` value is called with `.call(args)`. One stored in a field is loaded first:
   `free_fn: Callable[…] = alloc.free_fn.peek()`, then `free_fn.call(state, raw)`. `alloc.free_fn(...)` is an
   error.
