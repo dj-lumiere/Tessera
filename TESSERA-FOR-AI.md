@@ -133,8 +133,8 @@ routine start() -> Void
   a `Memory` / `Box` by value (that routine releases it then). `drop()` has a value overload and a `@Me` overload that
   also leaves the slot hollow. `.hollow()` holds nothing: `drop()` on it does nothing, a read crashes with
   `InvalidValueError`. `Memory[T]` also has `construct(count, manager)` (uninitialized), `construct_result`,
-  `count()`, `getslot(i)`, `getview()`, `with_count(n)`, `duplicate()` (memory of its own), `resize(n)` /
-  `resize_result(n)`, and `destruct_all()` (destructs every value, then drops). `Array[T, COUNT]` is the run of values
+  `count()`, `getslot(i)`, `getview()`, `with_count(n)`, `duplicate()` (memory of its own), `replace(new)`,
+  `give_back()`, `resize(n)` / `resize_result(n)`, and `destruct_all()` (destructs every value, then drops). `Array[T, COUNT]` is the run of values
   whose count is in the type, a value. `getview()` gives a `Span` of anything holding contiguous elements (a `Memory`,
   a `List`, an `Array` through a pointer, a `SliceWriter`, a `CStr`). `Span[T].construct(data, count)` wraps memory
   from C (the count is yours to get right). The raw layer, `allocate[T](count, alloc)` /
@@ -151,7 +151,9 @@ routine start() -> Void
   always on under `tessera test`) `DEFAULT_HEAP` also keeps a header in front of each block and crashes with
   `DoubleFreeError` at the line of a second free of the same block (a quarantine of the last 256 freed blocks keeps
   that sure, raw layer included). With it off it is plain malloc / free, and so is a single-file build without a
-  manifest. Debug and release behave the same. The builder makes no build-time check for double frees.
+  manifest. Debug and release behave the same. The build catches a second drop, a use after a drop, and a missing
+  drop inside one routine (the group check below). The generation check is what catches a copy that crosses a
+  routine boundary: memory dropped by a routine that only borrowed a slot, a copy kept in a field.
 - **Lending.** Passing a `Memory[T]` where a `Span[T]` parameter is expected lends it (the argument becomes
   `getview()`), and a `Box[T]` where a `@T` is expected lends its address. Only at argument positions and
   receivers: anywhere else write `m.getview()` (`view: Span[U32] = m.getview()`). The view is valid until the memory
@@ -173,8 +175,83 @@ routine start() -> Void
   manager: `load` / `store`, dropped exactly once or handed over, empty or not. 3. A `@T` / `Span` viewing this
   routine's memory (a claim slot, a frame Span) does not leave the routine. 4. A routine that moves memory says
   `#reshaping`, and isn't called while that memory is viewed. 5. A global `Box` / `Memory` is changed with `replace`
-  and dropped in `start`'s `finish`. Rules 3-5 are the programmer's to keep: the builder doesn't check them all yet
-  (it has no `#reshaping` annotation or `replace` routine so far).
+  and dropped in `start`'s `finish`. The build checks all five, as below. Build errors unless marked.
+- **The group check (rule 2), in every routine without type parameters.** A Box / Memory that a call or an `at`
+  literal gives, or a by-value parameter hands in, plus every copy of it (`b = a`, `slot.peek()`, `m.with_count(n)`,
+  the block parameters it is passed to, the slots it is stored in) is ONE group. A group ends exactly once on every
+  path: `drop()` / `destruct()` / `destruct_all()`, being returned, being handed to a parameter that takes a Box /
+  Memory by value, being kept in a record or tuple literal, or being passed to a block parameter of another type (a
+  `Result` that holds it). Memory taken out of a variant (`is Memory[T] as m`) is that arm's group. The errors and
+  their fixes:
+  - `'m' holds memory (from line N) that isn't given back before 'r' returns here`: drop it first, return it, or hand
+    it on. Also what a path that skips the drop gets (dropped in one branch, not the other): drop on every path, or
+    jump to one `finish`.
+  - `'m' gives back memory that was given back already`: drop one copy only, or make memory of its own with
+    `.duplicate()`.
+  - `'m' is used after its memory was given back`: use it before the drop, or `.duplicate()` it.
+  - `the memory of 'm' (from line N) is lost here: block 'b' doesn't get it`: a block's own value doesn't reach the
+    next block by itself. Pass it as an argument (`jump done(m)`), keep it in a head `local`, or drop it first.
+  - `'s' holds memory that hasn't been given back ..., and this overwrites it`: a `poke` into the last slot that
+    holds live memory. Drop the slot first (`s.drop()` leaves it hollow, then poke).
+  A slot's `drop()` leaves it hollow, so a second `s.drop()` of the same slot does nothing and is no error. `b = a`
+  of a Box / Memory is a WARNING (`'b' and 'a' are the same memory, released once whichever one gives it back`):
+  write `a.duplicate()` for memory of its own, or `a.getview()` to lend it. The check follows one routine's own
+  flow: what a callee does with a slot it was lent is the callee's, so that case is the generation check's.
+- **The escape check (rule 3).** A routine doesn't return a view of its frame (a claimed slot, a frame Span, and
+  every view made from them with `getslot` / `getslice` / `stride` / `offset` / `to` / a Span's `getview`) or of a
+  Box / Memory it holds (`m.getview()`, `m.getslot(i)`), and doesn't store one through a parameter (`out.poke(x)`)
+  or into a global. Errors: `this returns a view of the frame slot 'x' ...` and `this keeps a view of ... where it
+  outlives 'r'`. Fix: return the values, or let the caller pass the memory in (a `Span[T]` or a `@T` parameter) and
+  write there. A view handed to a thread or fiber ticket isn't checked (the work is waited for).
+- **`#reshaping` (rule 4), written by hand.** `#reshaping` alone means the routine may move the memory of `me`.
+  `#reshaping(items, keys)` names parameters. The base: `MemoryManager.realloc` (`#reshaping(at)`), `reallocate[T]`
+  (`#reshaping(ptr)`), `Memory[T].resize` / `resize_result`, and every growing collection mutator: `List.add_last` /
+  `reserve` / `ensure_capacity`, `Dict.setitem`, `Set.add`, `CircularList.add_last` / `add_first`,
+  `PriorityQueue.add` / `reserve`, their `_result` forms, and the `FiberManager` routines (`run`, `sleep`, `wake`,
+  ...). Freeing (`drop`, `free`, `destruct`) isn't moving.
+  - A routine that calls a `#reshaping` routine on memory reached from its own parameter must say so:
+    `'grow' may move the memory of 'items' here ('List[T].add_last' is #reshaping): mark it #reshaping(items)`.
+    A user routine that grows a list it was handed (`items: @List[T]`) carries `#reshaping(items)`, one on `me`
+    carries `#reshaping`. A name that isn't a parameter, or a bare `#reshaping` on a routine without `me`, is an
+    error.
+  - In a routine without type parameters, a view (an address or a Span) of memory used after a `#reshaping` call
+    that may move it is an error: `'first' is a view of 'xs', and 'grow' on line N may have moved that memory`. Keep
+    a position (a `USize` index) and take the view again after the call:
+
+    ```tessera
+    #reshaping(items)
+    routine grow(items: @List[S64]) -> Void
+        items.add_last(2)
+        return()
+
+    first: @S64 = xs.getslot(0)
+    before: S64 = first.peek()  // use the view before the call
+    grow(xs)
+    again: @S64 = xs.getslot(0)  // take it again after
+    ```
+- **A global holding a Box / Memory (rule 5).** `global CACHE: @Memory[Byte]` starts hollow. Only
+  `CACHE.replace(new)` changes it (it drops the old memory, then stores the new one: `poke` is an error), only
+  `start` drops it, and `start` must end with a block `finish` that drops each such global, every exit of `start`
+  jumping there:
+
+  ```tessera
+  global CACHE: @Memory[Byte]
+
+  routine refill(count: USize, fill: Byte) -> Void
+      CACHE.replace(Memory[Byte].construct(values: [fill], times: count, manager: DEFAULT_HEAP))
+      return()
+
+  routine start() -> Void
+      refill(count: 4, fill: 0x41)
+      jump finish()
+
+      block finish()
+          CACHE.drop()
+          return()
+  ```
+
+  `Box[T].replace` works the same. `Memory[T].give_back()` drops the memory and keeps the manager, so a later
+  `resize` draws from it again (what a collection's `destruct` does with its storage).
 - **A `MemoryManager` is called through its routines:** `alloc(size, align)` (a power-of-two alignment), `realloc(at,
   size, align)`, `free(at)`, and the page routines `reserve(size)` / `commit(at, size)` / `release(at, size)` and
   `protect(at, size, PageAccess.NONE | READ | READ_WRITE)`. Its fields are `Callable`s taking `state` first, the page
@@ -768,6 +845,10 @@ on empty, and `getitem` of a missing key crash. The `_checked` forms (`getitem_c
 insertion and `reserve` has a `_result` form (`add_last_result`, `setitem_result`, `add_result`) that returns
 `Result[T, AllocFailed]` and leaves the collection unchanged on an `AllocFailed`. `_checked` always means `Maybe`, `_result`
 always `Result`.
+The mutators that grow storage are `#reshaping` (`List.add_last` / `reserve` / `ensure_capacity`, `Dict.setitem`,
+`Set.add`, `CircularList.add_last` / `add_first`, `PriorityQueue.add` / `reserve`, and their `_result` forms): a
+`getslot` / `getview` taken before one is not used after it, and a routine that calls one on a collection parameter
+says `#reshaping(name)`.
 
 | Type | Key operations | Iteration order |
 |------|----------------|-----------------|
