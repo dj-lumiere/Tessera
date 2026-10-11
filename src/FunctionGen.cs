@@ -299,10 +299,10 @@ public sealed class FunctionGen
             return;
         switch (plan.Decl.Name)
         {
-            case "drop" or "destruct" or "destruct_all" when !Compiler.IsEntryRoutine(_decl):
+            case "destruct" or "destruct_all" when !Compiler.IsEntryRoutine(_decl):
                 throw Err(plan.Pos, $"'{g.Name}' is a global that holds memory, which start's finish block gives back: "
                     + $"change it with {g.Name}.replace(...), which gives the old memory back first");
-            case "drop" or "destruct" or "destruct_all":
+            case "destruct" or "destruct_all":
                 (_globalDrops.TryGetValue(g.Name, out var blocks) ? blocks : _globalDrops[g.Name] = []).Add(_blockName);
                 break;
             case "poke" or "poke_volatile":
@@ -321,7 +321,7 @@ public sealed class FunctionGen
             if (OwnedMemory(t) is null) continue;
             if (_globalDrops.TryGetValue(g.Name, out var blocks) && blocks.Contains("finish")) continue;
             throw Err(_decl.Pos, $"'{g.Name}' (line {g.Pos.Line}) is a global that holds memory, and start's finish block "
-                + $"doesn't give it back: end start with a block finish() that calls {g.Name}.drop() and returns, and "
+                + $"doesn't give it back: end start with a block finish() that calls {g.Name}.destruct() and returns, and "
                 + "jump there instead of returning elsewhere");
         }
     }
@@ -437,7 +437,7 @@ public sealed class FunctionGen
             return;
         }
         // A slot's drop leaves the slot hollow: the slot holds nothing after it, so a second drop of it gives nothing back.
-        if (receiver is not null && sig.Decl.Name is "drop" or "destruct" or "destruct_all" && sig.Params[0] is PtrType)
+        if (receiver is not null && sig.Decl.Name is "destruct" or "destruct_all" && sig.Params[0] is PtrType)
         {
             Mem(new MemoryRules.End(receiver, $"{receiver}.{sig.Decl.Name}()", plan.Pos));
             Mem(new MemoryRules.Store(receiver, null, plan.Pos));
@@ -445,7 +445,7 @@ public sealed class FunctionGen
         }
         if (receiver is not null)
         {
-            Mem(sig.Decl.Name is "drop" or "destruct" or "destruct_all"
+            Mem(sig.Decl.Name is "destruct" or "destruct_all"
                 ? new MemoryRules.End(receiver, $"{receiver}.{sig.Decl.Name}()", plan.Pos)
                 : new MemoryRules.Use(receiver, plan.Pos));
             // with_count and the like give the same memory back: a binding of the call is a copy of the handle.

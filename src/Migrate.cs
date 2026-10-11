@@ -60,7 +60,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none";
+        bool entryPages = step is "entry" or "none" or "destruct";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.tess", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -264,9 +264,17 @@ public static class Migrate
         ["none"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? NoneSpelling.RewriteMarkdown(text)
             : NoneSpelling.Rewrite(text),
+        ["destruct"] = (_, text, _) => DestructSpelling(text),
     };
 
     private static readonly Regex Contains = new(@"\.contains(?=\s*\()", RegexOptions.Compiled);
+
+    private static readonly Regex Drop = new(@"\.drop\(\)", RegexOptions.Compiled);
+
+    /// Memory is given back with `destruct()`, the release every type has: `.drop()` (of a Memory or a Box) is
+    /// `.destruct()`, and `DroppedMemoryError` is `DestructedMemoryError`.
+    public static string DestructSpelling(string text) =>
+        Drop.Replace(text, ".destruct()").Replace("DroppedMemoryError", "DestructedMemoryError").Replace("dropped already", "given back already");
 
     /// Membership is `has` (an element of a set or a sorted list, a piece of text) and `has_key` (a key of a dict),
     /// with `lacks` / `lacks_key` for the opposite: `.contains(` is `.has_key(` on a Dict or a SortedDict, by the

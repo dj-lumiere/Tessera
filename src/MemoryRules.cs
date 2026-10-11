@@ -166,7 +166,7 @@ public static class MemoryRules
                         if (state.Names.TryGetValue(st.Slot, out var id) && state.Groups.TryGetValue(id, out var g) && g.Ended is null
                             && !state.Names.Any(n => n.Key != st.Slot && n.Value == id))
                             Report(st.Pos, $"'{st.Slot}' holds memory that hasn't been given back (from line {g.Born.Line}), and this "
-                                + $"overwrites it: drop it first ({st.Slot}.drop())");
+                                + $"overwrites it: destruct it first ({st.Slot}.destruct())");
                         if (st.From is { } from && state.Names.TryGetValue(from, out var fromId)) state.Names[st.Slot] = fromId;
                         else state.Names.Remove(st.Slot);
                         break;
@@ -194,7 +194,7 @@ public static class MemoryRules
                         foreach (var (_, g) in state.Groups)
                             if (g.Ended is null)
                                 Report(ex.Pos, $"'{g.Origin}' holds memory (from line {g.Born.Line}) that isn't given back before '{routine}' "
-                                    + $"returns here: drop it with {g.Origin}.drop() first, return it, or hand it to a routine that takes it");
+                                    + $"returns here: destruct it with {g.Origin}.destruct() first, return it, or hand it to a routine that takes it");
                         break;
                     case Exit { Block: null }:
                         break;
@@ -223,7 +223,7 @@ public static class MemoryRules
                                       + "it is bound in: give the memory back first (drop it), return it, or keep it in a slot bound outside the body"
                                     : $"the memory of '{g.Origin}' (from line {g.Born.Line}) is lost here: block '{ex.Block}' doesn't get "
                                       + $"it. Pass it to the block as an argument, keep it in a slot of the routine's head (local m: "
-                                      + "@Memory[T] <- ...), or drop it first");
+                                      + "@Memory[T] <- ...), or destruct it first");
                         }
                         work.Enqueue((ex.Block!, next.Canonical()));
                         break;
