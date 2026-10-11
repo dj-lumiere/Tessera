@@ -2,9 +2,9 @@
 //
 // Forward iterator over a fixed-size Array[T, COUNT] held behind a pointer.
 // The count N is computed once at construction via sizeof division and stored
-// in the record so next() never needs generic arithmetic.
+// in the record so emit_checked() never needs generic arithmetic.
 //
-// Satisfies concept Iterator[T, ArrayIter[T, COUNT]].
+// Satisfies concepts Iterator[T, ArrayIter[T, COUNT]] and SlotIterator[T, ArrayIter[T, COUNT]].
 
 module Standard/Core
 
@@ -12,7 +12,7 @@ module Standard/Core
 /// :typeparam T: The element type.
 /// :typeparam COUNT: The number of elements.
 record ArrayIter[T, COUNT]
-conform Iterator[T, ArrayIter[T, COUNT]]
+conform Iterator[T, ArrayIter[T, COUNT]], SlotIterator[T, ArrayIter[T, COUNT]]
 require T: typename, COUNT: USize
     data: @T  // bitcast of the original @Array[T, COUNT]
     index: USize
@@ -31,7 +31,7 @@ require T: typename, COUNT: USize
 /// Yields the next element and advances the iterator.
 /// :returns: The next element, in index order.
 /// :absent: After the last element has been yielded.
-routine ArrayIter[T, COUNT].next(me: @Me) -> Option[T]
+routine ArrayIter[T, COUNT].emit_checked(me: @Me) -> Option[T]
 require T: typename, COUNT: USize
     local index: USize = me.index.peek()
 
@@ -52,3 +52,44 @@ require T: typename, COUNT: USize
         me.index.poke(index.add(1))
         some: Option[T] = .Present(value)
         return(some)
+
+/// Yields the next element and advances the iterator, crashing when there is none.
+/// :returns: The next element, in index order.
+/// :throws: Crashes with `AbsentValueError` after the last element has been yielded.
+#track_caller
+routine ArrayIter[T, COUNT].emit(me: @Me) -> T
+require T: typename, COUNT: USize
+    block entry()
+        item: Option[T] = me.emit_checked()
+        when item
+            .Present(value) => return(value)
+            .Absent => crash_absent_value()
+
+/// Hands out the next element's slot and advances the iterator. Writing through the slot changes the element in the
+/// collection.
+/// :returns: The address of the next element, in index order.
+/// :absent: After the last element has been handed out.
+routine ArrayIter[T, COUNT].next_checked(me: @Me) -> Option[@T]
+require T: typename, COUNT: USize
+    local index: USize = me.index.peek()
+
+    block entry()
+        done: Bool = index.ge(me.count.peek())
+        branch done
+            ? return(.Absent)
+            : continue
+        me.index.poke(index.add(1))
+        element: @T = me.data.peek().stride(index)
+        return(.Present(element))
+
+/// Hands out the next element's slot and advances the iterator, crashing when there is none.
+/// :returns: The address of the next element, in index order.
+/// :throws: Crashes with `AbsentValueError` after the last element has been handed out.
+#track_caller
+routine ArrayIter[T, COUNT].next(me: @Me) -> @T
+require T: typename, COUNT: USize
+    block entry()
+        slot: Option[@T] = me.next_checked()
+        when slot
+            .Present(element) => return(element)
+            .Absent => crash_absent_value()

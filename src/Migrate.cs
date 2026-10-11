@@ -43,7 +43,16 @@ public static class Migrate
         bool check = args.Contains("--check");
         // `--named-args` runs only the step that names call arguments, which is safe on any source.
         bool namedArgsOnly = args.Contains("--named-args");
-        var paths = args.Where(a => a is not ("--check" or "--named-args")).ToList();
+        // `--step <name>` runs one of 0.5's later steps alone, on any source whatever release its manifest names: the
+        // sources that were moved to 0.5 before the step existed take it this way.
+        int stepAt = Array.IndexOf(args, "--step");
+        string? step = stepAt >= 0 && stepAt + 1 < args.Length ? args[stepAt + 1] : null;
+        if (stepAt >= 0 && (step is null || !Steps.ContainsKey(step)))
+        {
+            Console.Error.WriteLine($"error: migrate: --step takes one of {string.Join(", ", Steps.Keys)}");
+            return 1;
+        }
+        var paths = args.Where((a, i) => a is not ("--check" or "--named-args" or "--step") && (stepAt < 0 || i != stepAt + 1)).ToList();
         if (paths.Count == 0)
         {
             Console.Error.WriteLine("error: migrate: give files or directories to rewrite");
@@ -67,6 +76,21 @@ public static class Migrate
                 // Not UTF-8: building it reports that, and rewriting it would change its bytes.
                 Console.Error.WriteLine($"skipped {file}: not UTF-8");
             }
+        }
+
+        if (step is not null)
+        {
+            int changed = 0;
+            foreach (var (file, text) in texts)
+            {
+                string rewritten = Steps[step](text);
+                if (rewritten == text) continue;
+                changed++;
+                if (check) Console.WriteLine(file);
+                else File.WriteAllText(file, rewritten, new UTF8Encoding(false));
+            }
+            if (!check) Console.WriteLine($"migrated {changed} of {files.Count} file(s)");
+            return check && changed > 0 ? 1 : 0;
         }
 
         // The choices a program names may be the standard library's, so its declarations count too.
@@ -168,6 +192,12 @@ public static class Migrate
         return Regex.Replace(text, @",\s*aggregate(?=\s*[,\]])", "");
     }
 
+    /// The steps `--step` runs alone, each one also part of the whole migration.
+    private static readonly Dictionary<string, Func<string, string>> Steps = new()
+    {
+        ["iterators"] = IteratorNames,
+    };
+
     /// The release `migrate` moves sources to.
     private static readonly Version Release = new(0, 5);
 
@@ -232,7 +262,41 @@ public static class Migrate
             lines[i] = inAsmBody ? RewriteTypeArguments(line) : RewriteNames(line);
         }
 
-        return Renames(CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names))))));
+        return IteratorNames(Renames(CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names)))))));
+    }
+
+    private static readonly Regex IteratorNext = new(@"\.next(?=\s*\()", RegexOptions.Compiled);
+
+    /// An iterator's step that hands back an `Option` is `emit_checked` (`next` is the step that hands back the element's
+    /// slot): `iter.next()` on a value typed `...Iter` (or the concept's `TIter`), and `routine ListIter[T].next`. A
+    /// `next` on anything else (a random generator's `Xoshiro256.next`) keeps its name.
+    public static string IteratorNames(string text)
+    {
+        var lines = text.Split('\n');
+        string? owner = null;
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string line = lines[i];
+            var header = Regex.Match(line, @"^(?:(?:private|internal)\s+)?routine\s+([A-Z]\w*)(?:\[[^\]]*\])?\.");
+            if (header.Success) owner = header.Groups[1].Value;
+            else if (Regex.IsMatch(line, @"^(?:(?:private|internal)\s+)?routine\s")) owner = null;
+            var sb = new StringBuilder(line);
+            int comment = line.TrimStart().StartsWith("//", StringComparison.Ordinal) ? line.IndexOf("//", StringComparison.Ordinal) : CommentStart(sb, 0, sb.Length);
+            string code = line[..comment];
+            string before = string.Join('\n', lines, 0, i + 1);
+            string renamed = IteratorNext.Replace(code, m =>
+            {
+                // A declaration names its owner before the dot: `routine ListIter[T].next(`, `routine TIter.next(`.
+                var declared = Regex.Match(code[..m.Index], @"routine\s+([A-Z]\w*)(?:\[[^\]]*\])?$");
+                string? type = declared.Success ? declared.Groups[1].Value : ReceiverType(code, m.Index, before, owner);
+                return type is not null && (type.EndsWith("Iter", StringComparison.Ordinal) || type == "TIter")
+                    ? ".emit_checked"
+                    : m.Value;
+            });
+            lines[i] = renamed + line[comment..];
+        }
+
+        return string.Join('\n', lines);
     }
 
     /// The 0.5 names of the managers and the lock types (whole words, in code and in comments).

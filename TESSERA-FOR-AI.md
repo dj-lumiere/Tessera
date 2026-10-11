@@ -451,7 +451,7 @@ routine start() -> Void
   through `ptr_eq`, so `a.peek().eq(b.peek())`), `represent_into` / `diagnose_into` (a pointer isn't
   Representable, so `{list}` on a slot is a build error that asks for `{list.peek()}`), and a generic `to[T]` (it
   would hide `Ptr`'s `to<@U>`). You can't call a pointer method on a temporary:
-  `DictIter[TKey, TValue].construct(m).next()` fails with "has no method 'next'"; claim a slot for
+  `DictIter[TKey, TValue].construct(m).emit_checked()` fails with "has no method 'emit_checked'"; claim a slot for
   the iterator first.
 - **A constraint is said once, where it belongs.** A record's (or variant's) `require` constraints hold in every
   routine on it, wherever the routine is declared (an extension routine in another module, such as
@@ -596,7 +596,9 @@ routine sum_to(n: U64) -> U64
         branch done ? return(total) : loop(i.add(1), total.add(i))
 ```
 
-Iterating a collection (`next` returns `Option[T]`):
+Iterating a collection (`emit_checked` returns `Option[T]`, Absent past the end, `emit` crashes there; an iterator
+over elements in memory, `ListIter`, `ArrayIter`, `CircularListIter`, also hands out each element's slot with
+`next` / `next_checked`):
 
 ```tessera
 routine sum_list(list: @List[S64]) -> S64
@@ -606,7 +608,7 @@ routine sum_list(list: @List[S64]) -> S64
         jump next(0)
 
     block next(total: S64)
-        item: Option[S64] = iter.next()
+        item: Option[S64] = iter.emit_checked()
         when item
             .Present(value) => next(total.add(value))
             .Absent => return(total)
@@ -748,7 +750,7 @@ routine on them is one thing done there now, returning `Result[T, FsError]`, so 
 `delete_result`, `touch_result`, `map_result(write, offset, count)`, `name` / `stem` / `extension` / `parent`. A
 Directory: `create_result` / `create_all_result`, `delete_result` / `delete_all_result(alloc)`, `file(name, alloc)` /
 `subdir(name, alloc)`, `Directory.current_result` / `temp_result` / `home_result`, and a `DirIter` (`claim`,
-`open_result(dir)`, `next()` until Absent, `close()`). Path text needs no OS: `join_path`, `parent_path`,
+`open_result(dir)`, `emit_checked()` until Absent, `close()`). Path text needs no OS: `join_path`, `parent_path`,
 `file_name`, `file_stem`, `file_extension`. A routine that hands text back takes an allocator and returns `Bytes`
 that carry it (`read_all_result`, `join_path`, `env_var`): release them with `destruct()`. One that makes a path
 (`file`, `subdir`, `absolute_result`, `canonical_result`, `Directory.current_result` / `temp_result` /
@@ -831,9 +833,9 @@ byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`
   `to[T]` / `to_result[T]`, `In.read[T]` / `read_checked[T]` / `read_result[T]`. File and process routines fail for
   reasons the caller handles, so they are `_result` forms (`File.open_read_result`). A `_checked` never returns a
   `Result` or a `Bool`, a `_result` never an `Option`, and a plain name never returns an `Option` or a `Result` just to
-  say it failed. An `Option` that is a normal outcome keeps a plain name: `next` (the end), `Bytes.find` (not found),
-  `env_var` (not set), `Bool.then_present`; so does `atomic_compare_exchange`, whose `Result` is the answer (the old
-  value, or the value found).
+  say it failed. An `Option` that is a normal outcome keeps a plain name: `Bytes.find` (not found), `env_var` (not
+  set), `Bool.then_present`; so does `atomic_compare_exchange`, whose `Result` is the answer (the old value, or the
+  value found). An iterator has the plain/`_checked` pair: `emit` crashes past the end, `emit_checked` returns Absent.
 
 - `to[T]()` is a type conversion: one value of type A becomes a value of type B, on A (`p.to[CStr]()`, not
   `CStr.from_ptr(p)`). A conversion that can fail is `to_result[T]()`.

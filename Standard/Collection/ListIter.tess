@@ -1,16 +1,17 @@
 // Tessera stdlib collection: ListIter[T]
 //
 // Forward iterator over List[T].  Borrows the list — the list must outlive the
-// iterator.  next() returns Option[T].Absent after the last element.
+// iterator.  emit_checked() returns Absent after the last element, next_checked()
+// hands out the element slots.
 //
-// Satisfies concept Iterator[T, ListIter[T]].
+// Satisfies concepts Iterator[T, ListIter[T]] and SlotIterator[T, ListIter[T]].
 
 module Standard/Collections
 
 /// A forward iterator over a {List[T]}. It borrows the list, so the list must outlive the iterator and must not change while it is walked.
 /// :typeparam T: The element type.
 record ListIter[T]
-conform Iterator[T, ListIter[T]]
+conform Iterator[T, ListIter[T]], SlotIterator[T, ListIter[T]]
 require T: typename
     list: @List[T]
     index: USize
@@ -27,7 +28,7 @@ require T: typename
 /// Yields the next element and advances the iterator.
 /// :returns: The next element, front to back.
 /// :absent: After the last element has been yielded.
-routine ListIter[T].next(me: @Me) -> Option[T]
+routine ListIter[T].emit_checked(me: @Me) -> Option[T]
 require T: typename
     local list: @List[T] = me.list.peek()
     local len: USize = list.count()
@@ -48,3 +49,45 @@ require T: typename
         me.index.poke(index.add(1))
         some: Option[T] = .Present(value)
         return(some)
+
+/// Yields the next element and advances the iterator, crashing when there is none.
+/// :returns: The next element, front to back.
+/// :throws: Crashes with `AbsentValueError` after the last element has been yielded.
+#track_caller
+routine ListIter[T].emit(me: @Me) -> T
+require T: typename
+    block entry()
+        item: Option[T] = me.emit_checked()
+        when item
+            .Present(value) => return(value)
+            .Absent => crash_absent_value()
+
+/// Hands out the next element's slot and advances the iterator. Writing through the slot changes the element in the
+/// collection.
+/// :returns: The address of the next element, front to back.
+/// :absent: After the last element has been handed out.
+routine ListIter[T].next_checked(me: @Me) -> Option[@T]
+require T: typename
+    local list: @List[T] = me.list.peek()
+    local index: USize = me.index.peek()
+
+    block entry()
+        done: Bool = index.ge(list.count())
+        branch done
+            ? return(.Absent)
+            : continue
+        me.index.poke(index.add(1))
+        element: @T = list.getslot(index)
+        return(.Present(element))
+
+/// Hands out the next element's slot and advances the iterator, crashing when there is none.
+/// :returns: The address of the next element, front to back.
+/// :throws: Crashes with `AbsentValueError` after the last element has been handed out.
+#track_caller
+routine ListIter[T].next(me: @Me) -> @T
+require T: typename
+    block entry()
+        slot: Option[@T] = me.next_checked()
+        when slot
+            .Present(element) => return(element)
+            .Absent => crash_absent_value()
