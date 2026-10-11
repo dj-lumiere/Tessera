@@ -1,7 +1,9 @@
 // Tessera stdlib: atomics
 //
-// An atomic access is per access, like a volatile one: atomic_* routines on @T next to load and store (Roadmap
-// #26). The memory order is a name suffix: none is sequentially consistent, _relaxed, _acquire, _release, and
+// A value whose every access is atomic is an Atomic[T]: the type says it, and its operations are the ones below
+// without the atomic_ prefix. Memory whose type the program doesn't choose (from C, shared with another process, a
+// futex word) is reached per access instead, like a volatile access: atomic_* routines on @T next to peek and poke.
+// The memory order is a name suffix: none is sequentially consistent, _relaxed, _acquire, _release, and
 // _acq_rel choose weaker ones, and each operation has only the orders LLVM allows for it (a load can't release, a
 // store can't acquire). compare_exchange's failure order follows its success order as C++'s does.
 //
@@ -829,6 +831,440 @@ require T: typename, AtomicExchangeable[T]
     branch swapped
         ? return(Unit())
         : return(value)
+
+// -- Atomic[T] -------------------------------------------------------------------
+
+/// A value every access to which is atomic: the type says it, where an `@T` says it only at each access. It sits at
+/// an address aligned to T's size, so a 64-bit one is 8-aligned on 32-bit targets too. Threads share the place
+/// (`@Atomic[T]`), not copies, which would be other values. The operations and their memory orders are `@T`'s
+/// `atomic_*` ones without the prefix: `peek`, `poke`, `swap`, `compare_exchange`, `fetch_add`, ..., each with the
+/// same order suffixes.
+/// :typeparam T: The value type, which must be atomic on the target.
+#layout(align: sizeof[T]())
+record Atomic[T]
+require T: typename, AtomicStorable[T]
+    value: T
+
+/// An atomic holding `value`.
+/// :param value: The value it starts with.
+/// :returns: The new value.
+routine Atomic[T].construct(value: T) -> Me
+require T: typename, AtomicStorable[T]
+    return(Me(value))
+
+/// Releases nothing: an `Atomic` holds no memory of its own.
+routine Atomic[T].destruct(me: @Me) -> Void
+require T: typename, AtomicStorable[T]
+    return()
+
+/// Reads the value atomically, sequentially consistent.
+/// :returns: The value.
+routine Atomic[T].peek(me: @Me) -> T
+require T: typename, AtomicStorable[T]
+    return(me.value.peek_atomic())
+
+/// Reads the value atomically, relaxed (only atomic).
+/// :returns: The value.
+routine Atomic[T].peek_relaxed(me: @Me) -> T
+require T: typename, AtomicStorable[T]
+    return(me.value.peek_atomic_relaxed())
+
+/// Reads the value atomically, acquire.
+/// :returns: The value.
+routine Atomic[T].peek_acquire(me: @Me) -> T
+require T: typename, AtomicStorable[T]
+    return(me.value.peek_atomic_acquire())
+
+/// Writes `value` atomically, sequentially consistent.
+/// :param value: The value to write.
+routine Atomic[T].poke(me: @Me, value: T) -> Void
+require T: typename, AtomicStorable[T]
+    me.value.poke_atomic(value)
+    return()
+
+/// Writes `value` atomically, relaxed (only atomic).
+/// :param value: The value to write.
+routine Atomic[T].poke_relaxed(me: @Me, value: T) -> Void
+require T: typename, AtomicStorable[T]
+    me.value.poke_atomic_relaxed(value)
+    return()
+
+/// Writes `value` atomically, release.
+/// :param value: The value to write.
+routine Atomic[T].poke_release(me: @Me, value: T) -> Void
+require T: typename, AtomicStorable[T]
+    me.value.poke_atomic_release(value)
+    return()
+
+/// Writes `value` and returns what was there, atomically and sequentially consistent.
+/// :param value: The value to write.
+/// :returns: The value that was there before.
+routine Atomic[T].swap(me: @Me, value: T) -> T
+require T: typename, AtomicExchangeable[T]
+    return(me.value.atomic_swap(value))
+
+/// Writes `value` and returns what was there, atomically and relaxed (only atomic).
+/// :param value: The value to write.
+/// :returns: The value that was there before.
+routine Atomic[T].swap_relaxed(me: @Me, value: T) -> T
+require T: typename, AtomicExchangeable[T]
+    return(me.value.atomic_swap_relaxed(value))
+
+/// Writes `value` and returns what was there, atomically and acquire.
+/// :param value: The value to write.
+/// :returns: The value that was there before.
+routine Atomic[T].swap_acquire(me: @Me, value: T) -> T
+require T: typename, AtomicExchangeable[T]
+    return(me.value.atomic_swap_acquire(value))
+
+/// Writes `value` and returns what was there, atomically and release.
+/// :param value: The value to write.
+/// :returns: The value that was there before.
+routine Atomic[T].swap_release(me: @Me, value: T) -> T
+require T: typename, AtomicExchangeable[T]
+    return(me.value.atomic_swap_release(value))
+
+/// Writes `value` and returns what was there, atomically and acquire and release.
+/// :param value: The value to write.
+/// :returns: The value that was there before.
+routine Atomic[T].swap_acq_rel(me: @Me, value: T) -> T
+require T: typename, AtomicExchangeable[T]
+    return(me.value.atomic_swap_acq_rel(value))
+
+/// Writes `new` if the value is `expected`, atomically and sequentially consistent: `Unit` if it did, the value found if
+/// not. It fails only when the value differs.
+/// :param expected: The value expected.
+/// :param new: The value to write when it matches.
+/// :returns: `Unit` when `new` was written, the value found (a `T`) when not.
+routine Atomic[T].compare_exchange(me: @Me, expected: T, new: T) -> Result[Unit, T]
+require T: typename, AtomicExchangeable[T]
+    return(me.value.atomic_compare_exchange(expected, new))
+
+/// Writes `new` if the value is `expected`, atomically and relaxed (only atomic): `Unit` if it did, the value found if
+/// not. It fails only when the value differs.
+/// :param expected: The value expected.
+/// :param new: The value to write when it matches.
+/// :returns: `Unit` when `new` was written, the value found (a `T`) when not.
+routine Atomic[T].compare_exchange_relaxed(me: @Me, expected: T, new: T) -> Result[Unit, T]
+require T: typename, AtomicExchangeable[T]
+    return(me.value.atomic_compare_exchange_relaxed(expected, new))
+
+/// Writes `new` if the value is `expected`, atomically and acquire: `Unit` if it did, the value found if
+/// not. It fails only when the value differs.
+/// :param expected: The value expected.
+/// :param new: The value to write when it matches.
+/// :returns: `Unit` when `new` was written, the value found (a `T`) when not.
+routine Atomic[T].compare_exchange_acquire(me: @Me, expected: T, new: T) -> Result[Unit, T]
+require T: typename, AtomicExchangeable[T]
+    return(me.value.atomic_compare_exchange_acquire(expected, new))
+
+/// Writes `new` if the value is `expected`, atomically and release: `Unit` if it did, the value found if
+/// not. It fails only when the value differs.
+/// :param expected: The value expected.
+/// :param new: The value to write when it matches.
+/// :returns: `Unit` when `new` was written, the value found (a `T`) when not.
+routine Atomic[T].compare_exchange_release(me: @Me, expected: T, new: T) -> Result[Unit, T]
+require T: typename, AtomicExchangeable[T]
+    return(me.value.atomic_compare_exchange_release(expected, new))
+
+/// Writes `new` if the value is `expected`, atomically and acquire and release: `Unit` if it did, the value found if
+/// not. It fails only when the value differs.
+/// :param expected: The value expected.
+/// :param new: The value to write when it matches.
+/// :returns: `Unit` when `new` was written, the value found (a `T`) when not.
+routine Atomic[T].compare_exchange_acq_rel(me: @Me, expected: T, new: T) -> Result[Unit, T]
+require T: typename, AtomicExchangeable[T]
+    return(me.value.atomic_compare_exchange_acq_rel(expected, new))
+
+/// Writes `new` if the value is `expected`, atomically and sequentially consistent: `Unit` if it did, the value found if
+/// not. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop.
+/// :param expected: The value expected.
+/// :param new: The value to write when it matches.
+/// :returns: `Unit` when `new` was written, the value found (a `T`) when not.
+routine Atomic[T].compare_exchange_weak(me: @Me, expected: T, new: T) -> Result[Unit, T]
+require T: typename, AtomicExchangeable[T]
+    return(me.value.atomic_compare_exchange_weak(expected, new))
+
+/// Writes `new` if the value is `expected`, atomically and relaxed (only atomic): `Unit` if it did, the value found if
+/// not. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop.
+/// :param expected: The value expected.
+/// :param new: The value to write when it matches.
+/// :returns: `Unit` when `new` was written, the value found (a `T`) when not.
+routine Atomic[T].compare_exchange_weak_relaxed(me: @Me, expected: T, new: T) -> Result[Unit, T]
+require T: typename, AtomicExchangeable[T]
+    return(me.value.atomic_compare_exchange_weak_relaxed(expected, new))
+
+/// Writes `new` if the value is `expected`, atomically and acquire: `Unit` if it did, the value found if
+/// not. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop.
+/// :param expected: The value expected.
+/// :param new: The value to write when it matches.
+/// :returns: `Unit` when `new` was written, the value found (a `T`) when not.
+routine Atomic[T].compare_exchange_weak_acquire(me: @Me, expected: T, new: T) -> Result[Unit, T]
+require T: typename, AtomicExchangeable[T]
+    return(me.value.atomic_compare_exchange_weak_acquire(expected, new))
+
+/// Writes `new` if the value is `expected`, atomically and release: `Unit` if it did, the value found if
+/// not. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop.
+/// :param expected: The value expected.
+/// :param new: The value to write when it matches.
+/// :returns: `Unit` when `new` was written, the value found (a `T`) when not.
+routine Atomic[T].compare_exchange_weak_release(me: @Me, expected: T, new: T) -> Result[Unit, T]
+require T: typename, AtomicExchangeable[T]
+    return(me.value.atomic_compare_exchange_weak_release(expected, new))
+
+/// Writes `new` if the value is `expected`, atomically and acquire and release: `Unit` if it did, the value found if
+/// not. It may also fail when the value matched (a spurious failure), so it belongs in a retry loop.
+/// :param expected: The value expected.
+/// :param new: The value to write when it matches.
+/// :returns: `Unit` when `new` was written, the value found (a `T`) when not.
+routine Atomic[T].compare_exchange_weak_acq_rel(me: @Me, expected: T, new: T) -> Result[Unit, T]
+require T: typename, AtomicExchangeable[T]
+    return(me.value.atomic_compare_exchange_weak_acq_rel(expected, new))
+
+/// Adds `value` (wrapping) and returns what was there, atomically and sequentially consistent.
+/// :param value: The value to add.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_add(me: @Me, value: T) -> T
+require T: typename, AtomicAddable[T]
+    return(me.value.atomic_fetch_add(value))
+
+/// Adds `value` (wrapping) and returns what was there, atomically and relaxed (only atomic).
+/// :param value: The value to add.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_add_relaxed(me: @Me, value: T) -> T
+require T: typename, AtomicAddable[T]
+    return(me.value.atomic_fetch_add_relaxed(value))
+
+/// Adds `value` (wrapping) and returns what was there, atomically and acquire.
+/// :param value: The value to add.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_add_acquire(me: @Me, value: T) -> T
+require T: typename, AtomicAddable[T]
+    return(me.value.atomic_fetch_add_acquire(value))
+
+/// Adds `value` (wrapping) and returns what was there, atomically and release.
+/// :param value: The value to add.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_add_release(me: @Me, value: T) -> T
+require T: typename, AtomicAddable[T]
+    return(me.value.atomic_fetch_add_release(value))
+
+/// Adds `value` (wrapping) and returns what was there, atomically and acquire and release.
+/// :param value: The value to add.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_add_acq_rel(me: @Me, value: T) -> T
+require T: typename, AtomicAddable[T]
+    return(me.value.atomic_fetch_add_acq_rel(value))
+
+/// Subtracts `value` (wrapping) and returns what was there, atomically and sequentially consistent.
+/// :param value: The value to subtract.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_sub(me: @Me, value: T) -> T
+require T: typename, AtomicAddable[T]
+    return(me.value.atomic_fetch_sub(value))
+
+/// Subtracts `value` (wrapping) and returns what was there, atomically and relaxed (only atomic).
+/// :param value: The value to subtract.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_sub_relaxed(me: @Me, value: T) -> T
+require T: typename, AtomicAddable[T]
+    return(me.value.atomic_fetch_sub_relaxed(value))
+
+/// Subtracts `value` (wrapping) and returns what was there, atomically and acquire.
+/// :param value: The value to subtract.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_sub_acquire(me: @Me, value: T) -> T
+require T: typename, AtomicAddable[T]
+    return(me.value.atomic_fetch_sub_acquire(value))
+
+/// Subtracts `value` (wrapping) and returns what was there, atomically and release.
+/// :param value: The value to subtract.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_sub_release(me: @Me, value: T) -> T
+require T: typename, AtomicAddable[T]
+    return(me.value.atomic_fetch_sub_release(value))
+
+/// Subtracts `value` (wrapping) and returns what was there, atomically and acquire and release.
+/// :param value: The value to subtract.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_sub_acq_rel(me: @Me, value: T) -> T
+require T: typename, AtomicAddable[T]
+    return(me.value.atomic_fetch_sub_acq_rel(value))
+
+/// Ands in `value` and returns what was there, atomically and sequentially consistent.
+/// :param value: The mask.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_and(me: @Me, value: T) -> T
+require T: typename, AtomicMaskable[T]
+    return(me.value.atomic_fetch_and(value))
+
+/// Ands in `value` and returns what was there, atomically and relaxed (only atomic).
+/// :param value: The mask.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_and_relaxed(me: @Me, value: T) -> T
+require T: typename, AtomicMaskable[T]
+    return(me.value.atomic_fetch_and_relaxed(value))
+
+/// Ands in `value` and returns what was there, atomically and acquire.
+/// :param value: The mask.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_and_acquire(me: @Me, value: T) -> T
+require T: typename, AtomicMaskable[T]
+    return(me.value.atomic_fetch_and_acquire(value))
+
+/// Ands in `value` and returns what was there, atomically and release.
+/// :param value: The mask.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_and_release(me: @Me, value: T) -> T
+require T: typename, AtomicMaskable[T]
+    return(me.value.atomic_fetch_and_release(value))
+
+/// Ands in `value` and returns what was there, atomically and acquire and release.
+/// :param value: The mask.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_and_acq_rel(me: @Me, value: T) -> T
+require T: typename, AtomicMaskable[T]
+    return(me.value.atomic_fetch_and_acq_rel(value))
+
+/// Ors in `value` and returns what was there, atomically and sequentially consistent.
+/// :param value: The mask.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_or(me: @Me, value: T) -> T
+require T: typename, AtomicMaskable[T]
+    return(me.value.atomic_fetch_or(value))
+
+/// Ors in `value` and returns what was there, atomically and relaxed (only atomic).
+/// :param value: The mask.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_or_relaxed(me: @Me, value: T) -> T
+require T: typename, AtomicMaskable[T]
+    return(me.value.atomic_fetch_or_relaxed(value))
+
+/// Ors in `value` and returns what was there, atomically and acquire.
+/// :param value: The mask.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_or_acquire(me: @Me, value: T) -> T
+require T: typename, AtomicMaskable[T]
+    return(me.value.atomic_fetch_or_acquire(value))
+
+/// Ors in `value` and returns what was there, atomically and release.
+/// :param value: The mask.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_or_release(me: @Me, value: T) -> T
+require T: typename, AtomicMaskable[T]
+    return(me.value.atomic_fetch_or_release(value))
+
+/// Ors in `value` and returns what was there, atomically and acquire and release.
+/// :param value: The mask.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_or_acq_rel(me: @Me, value: T) -> T
+require T: typename, AtomicMaskable[T]
+    return(me.value.atomic_fetch_or_acq_rel(value))
+
+/// Xors in `value` and returns what was there, atomically and sequentially consistent.
+/// :param value: The mask.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_xor(me: @Me, value: T) -> T
+require T: typename, AtomicMaskable[T]
+    return(me.value.atomic_fetch_xor(value))
+
+/// Xors in `value` and returns what was there, atomically and relaxed (only atomic).
+/// :param value: The mask.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_xor_relaxed(me: @Me, value: T) -> T
+require T: typename, AtomicMaskable[T]
+    return(me.value.atomic_fetch_xor_relaxed(value))
+
+/// Xors in `value` and returns what was there, atomically and acquire.
+/// :param value: The mask.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_xor_acquire(me: @Me, value: T) -> T
+require T: typename, AtomicMaskable[T]
+    return(me.value.atomic_fetch_xor_acquire(value))
+
+/// Xors in `value` and returns what was there, atomically and release.
+/// :param value: The mask.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_xor_release(me: @Me, value: T) -> T
+require T: typename, AtomicMaskable[T]
+    return(me.value.atomic_fetch_xor_release(value))
+
+/// Xors in `value` and returns what was there, atomically and acquire and release.
+/// :param value: The mask.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_xor_acq_rel(me: @Me, value: T) -> T
+require T: typename, AtomicMaskable[T]
+    return(me.value.atomic_fetch_xor_acq_rel(value))
+
+/// Adds `value` and returns what was there, atomically and sequentially consistent.
+/// :param value: The value to add.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_fadd(me: @Me, value: T) -> T
+require T: typename, AtomicFloatAddable[T]
+    return(me.value.atomic_fetch_fadd(value))
+
+/// Adds `value` and returns what was there, atomically and relaxed (only atomic).
+/// :param value: The value to add.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_fadd_relaxed(me: @Me, value: T) -> T
+require T: typename, AtomicFloatAddable[T]
+    return(me.value.atomic_fetch_fadd_relaxed(value))
+
+/// Adds `value` and returns what was there, atomically and acquire.
+/// :param value: The value to add.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_fadd_acquire(me: @Me, value: T) -> T
+require T: typename, AtomicFloatAddable[T]
+    return(me.value.atomic_fetch_fadd_acquire(value))
+
+/// Adds `value` and returns what was there, atomically and release.
+/// :param value: The value to add.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_fadd_release(me: @Me, value: T) -> T
+require T: typename, AtomicFloatAddable[T]
+    return(me.value.atomic_fetch_fadd_release(value))
+
+/// Adds `value` and returns what was there, atomically and acquire and release.
+/// :param value: The value to add.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_fadd_acq_rel(me: @Me, value: T) -> T
+require T: typename, AtomicFloatAddable[T]
+    return(me.value.atomic_fetch_fadd_acq_rel(value))
+
+/// Subtracts `value` and returns what was there, atomically and sequentially consistent.
+/// :param value: The value to subtract.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_fsub(me: @Me, value: T) -> T
+require T: typename, AtomicFloatAddable[T]
+    return(me.value.atomic_fetch_fsub(value))
+
+/// Subtracts `value` and returns what was there, atomically and relaxed (only atomic).
+/// :param value: The value to subtract.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_fsub_relaxed(me: @Me, value: T) -> T
+require T: typename, AtomicFloatAddable[T]
+    return(me.value.atomic_fetch_fsub_relaxed(value))
+
+/// Subtracts `value` and returns what was there, atomically and acquire.
+/// :param value: The value to subtract.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_fsub_acquire(me: @Me, value: T) -> T
+require T: typename, AtomicFloatAddable[T]
+    return(me.value.atomic_fetch_fsub_acquire(value))
+
+/// Subtracts `value` and returns what was there, atomically and release.
+/// :param value: The value to subtract.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_fsub_release(me: @Me, value: T) -> T
+require T: typename, AtomicFloatAddable[T]
+    return(me.value.atomic_fetch_fsub_release(value))
+
+/// Subtracts `value` and returns what was there, atomically and acquire and release.
+/// :param value: The value to subtract.
+/// :returns: The value that was there before.
+routine Atomic[T].fetch_fsub_acq_rel(me: @Me, value: T) -> T
+require T: typename, AtomicFloatAddable[T]
+    return(me.value.atomic_fetch_fsub_acq_rel(value))
 
 // -- fences ----------------------------------------------------------------------
 

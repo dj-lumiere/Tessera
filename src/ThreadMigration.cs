@@ -18,6 +18,7 @@ public static class ThreadMigration
     {
         var names = new HashSet<string>();
         var localNames = new HashSet<string>();
+        var detached = new HashSet<string>();
         var sb = new StringBuilder();
         int at = 0;
         while (true)
@@ -51,6 +52,16 @@ public static class ThreadMigration
                 continue;
             }
             string indent = head.Groups["indent"].Value, name = head.Groups["name"].Value;
+            // A thread bound and then detached is one nobody waits for.
+            var detach = new Regex($@"^[ \t]*{Regex.Escape(name)}\.detach\(\)[ \t]*\r?\n", RegexOptions.Multiline);
+            if (detach.IsMatch(text, after))
+            {
+                sb.Append(text, at, lineStart - at);
+                sb.Append($"{indent}DEFAULT_THREADS.launch_unwatched(entry: {entry}, arg: {arg})");
+                at = after;
+                detached.Add(name);
+                continue;
+            }
             names.Add(name);
             if (head.Groups["local"].Success) localNames.Add(name);
             sb.Append(text, at, lineStart - at);
@@ -62,6 +73,8 @@ public static class ThreadMigration
         // A thread that gives no result is a Thread[Void] wherever its type is written.
         string result = BareThread.Replace(sb.ToString(), "Thread[Void]");
         result = AfterLocals(result, localNames);
+        foreach (var name in detached)
+            result = Regex.Replace(result, $@"^[ \t]*{Regex.Escape(name)}\.detach\(\)[ \t]*\r?\n", "", RegexOptions.Multiline);
         foreach (var name in names)
             result = Regex.Replace(result, $@"^(?<indent>[ \t]*){Regex.Escape(name)}\.join\(\)[ \t]*$",
                 m => $"{m.Groups["indent"].Value}{name}.wait_finished()\n{m.Groups["indent"].Value}{name}.give_back()",
@@ -128,11 +141,14 @@ public static class ThreadMigration
             }
         }
         parts.Add(inside[start..]);
+        // An argument without a name stands where the parameter of its place does: entry, arg, alloc.
+        string[] order = ["entry", "arg", "alloc"];
         var named = new Dictionary<string, string>();
-        foreach (var part in parts)
+        for (int i = 0; i < parts.Count; i++)
         {
-            var m = Regex.Match(part, @"^\s*(\w+)\s*:\s*(.*?)\s*$", RegexOptions.Singleline);
+            var m = Regex.Match(parts[i], @"^\s*(\w+)\s*:\s*(.*?)\s*$", RegexOptions.Singleline);
             if (m.Success) named[m.Groups[1].Value] = Regex.Replace(m.Groups[2].Value, @"\s+", " ");
+            else if (i < order.Length && parts[i].Trim().Length > 0) named[order[i]] = Regex.Replace(parts[i].Trim(), @"\s+", " ");
         }
         return named;
     }

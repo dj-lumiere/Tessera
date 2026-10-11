@@ -53,8 +53,10 @@ record WorkSlot
     cancel: U32
     /// Guards `waiter`.
     lock: ExclusiveLock
-    /// A fiber waiting for the work to finish, or a hollow Waiter.
+    /// Whoever waits for the work to finish, or a hollow Waiter.
     waiter: Waiter
+    /// The work's own waiter while it is in a cancellable wait, which `cancel()` wakes, or a hollow Waiter.
+    blocked: Waiter
     /// The number of the ticket that holds the slot. `give_back` changes it, so an old ticket no longer matches.
     issued: U64
 
@@ -70,18 +72,19 @@ record CancelRequested
 /// :param cancel: Its `cancel`.
 /// :param lock: Its `lock`.
 /// :param waiter: Its `waiter`.
+/// :param blocked: Its `blocked`.
 /// :param issued: Its `issued`.
 /// :returns: The new value.
 routine WorkSlot.construct(state: U32, runner: Callable[(Addr,), Void], work: Addr,
-    alloc: @MemoryManager, cancel: U32, lock: ExclusiveLock, waiter: Waiter, issued: U64) -> Me
-    return(Me(state, runner, work, alloc, cancel, lock, waiter, issued))
+    alloc: @MemoryManager, cancel: U32, lock: ExclusiveLock, waiter: Waiter, blocked: Waiter, issued: U64) -> Me
+    return(Me(state, runner, work, alloc, cancel, lock, waiter, blocked, issued))
 
 /// An empty slot whose work blocks come from `alloc`.
 /// :param alloc: Where the work's blocks come from.
 /// :returns: The slot.
 routine WorkSlot.construct(alloc: @MemoryManager) -> Me
     return(Me(state: TICKET_EMPTY, runner: no_work.to[Callable](), work: null, alloc, cancel: 0,
-        lock: .construct(), waiter: .hollow(), issued: 0))
+        lock: .construct(), waiter: .hollow(), blocked: .hollow(), issued: 0))
 
 /// Gives back the block of the last work.
 routine WorkSlot.destruct(me: @Me) -> Void
@@ -142,6 +145,7 @@ routine WorkSlot.put(me: @Me, runner: Callable[(Addr,), Void], work: Addr) -> Vo
     me.runner.poke(runner)
     me.work.poke(work)
     me.cancel.poke_atomic(0)
+    me.blocked.poke(.hollow())
     me.state.poke_atomic(TICKET_RUNNING)
     wake_all(me.state)
     return()
@@ -165,59 +169,24 @@ routine WorkSlot.is_finished(me: @Me) -> Bool
 /// sleeps.
 #target(os: not "none")
 routine WorkSlot.wait(me: @Me) -> Void
-    local waiter: Waiter = current_waiter()
+    me.wait_until(deadline: U64.MAX, cancellable: false)
+    return()
 
-    branch waiter.is_fiber()
-        ? fiber()
-        : thread()
-
-    block thread()
-        branch me.is_finished()
-            ? return()
-            : continue
-        wait_on(at: me.state, expected: TICKET_RUNNING)
-        jump thread()
-
-    // The waiter goes in under the lock, which `complete` takes after it marks the work done: either this sees it
-    // done, or `complete` sees the waiter.
-    block fiber()
-        me.lock.lock()
-        branch me.is_finished()
-            ? done()
-            : continue
-        me.waiter.poke(waiter)
-        me.lock.unlock()
-        waiter.park()
-        jump fiber()
-
-    block done()
-        me.lock.unlock()
-        return()
-
-/// Waits until the work has finished or `deadline` (in `monotonic_ns` time) has passed, whichever comes first.
+/// Waits until the work has finished, `deadline` (in `monotonic_ns` time, `U64.MAX` for none) has passed, or, when
+/// `cancellable`, the work that waits was asked to stop with `cancel()`, whichever comes first.
 /// :param deadline: When to stop waiting.
+/// :param cancellable: True to stop waiting when the waiting work is cancelled.
 /// :returns: True when the work has finished.
 #target(os: not "none")
-routine WorkSlot.wait_until(me: @Me, deadline: U64) -> Bool
+routine WorkSlot.wait_until(me: @Me, deadline: U64, cancellable: Bool) -> Bool
     local waiter: Waiter = current_waiter()
 
-    branch waiter.is_fiber()
-        ? fiber()
-        : thread()
+    jump look()
 
-    block thread()
-        branch me.is_finished()
-            ? return(true)
-            : continue
-        now: U64 = monotonic_ns()
-        branch now.ge(deadline)
-            ? return(false)
-            : continue
-        wait_on_for(at: me.state, expected: TICKET_RUNNING, timeout_ns: deadline.sub(now))
-        jump thread()
-
-    // A waiter left behind when the time runs out only wakes the fiber once more later, which a park allows.
-    block fiber()
+    // The waiter goes in under the lock, which `complete` takes after it marks the work done: either this sees it
+    // done, or `complete` sees the waiter. One left behind when the wait ends otherwise only wakes it once more later,
+    // which a park allows.
+    block look()
         me.lock.lock()
         branch me.is_finished()
             ? done()
@@ -227,12 +196,68 @@ routine WorkSlot.wait_until(me: @Me, deadline: U64) -> Bool
         branch monotonic_ns().ge(deadline)
             ? return(false)
             : continue
+        branch cancellable
+            ? cancel_check()
+            : park()
+
+    block cancel_check()
+        branch blocked_until_cancelled(waiter)
+            ? return(false)
+            : park()
+
+    block park()
         waiter.park_until(deadline)
-        jump fiber()
+        jump look()
 
     block done()
         me.lock.unlock()
         return(true)
+
+/// Whether the running work was asked to stop, after making `waiter` the one `cancel()` wakes while it waits.
+/// :param waiter: The waiter of the running work.
+/// :returns: True when it was asked to stop: the wait ends.
+#target(os: not "none")
+routine blocked_until_cancelled(waiter: Waiter) -> Bool
+    slot: @WorkSlot = RUNNING_WORK.peek()
+    branch slot.is_null()
+        ? return(false)
+        : continue
+    slot.lock.lock()
+    slot.blocked.poke(waiter)
+    slot.lock.unlock()
+    return(slot.is_cancelled())
+
+/// Makes `waiter` the one woken when the work finishes, unless it has: for a wait on several tickets at once.
+/// :param waiter: The waiter.
+/// :returns: True when the work has finished already (`waiter` isn't kept).
+#target(os: not "none")
+routine WorkSlot.register(me: @Me, waiter: Waiter) -> Bool
+    me.lock.lock()
+    branch me.is_finished()
+        ? done()
+        : continue
+    me.waiter.poke(waiter)
+    me.lock.unlock()
+    return(false)
+
+    block done()
+        me.lock.unlock()
+        return(true)
+
+/// Forgets `waiter` if it is the one woken when the work finishes: a wait on several tickets that is over.
+/// :param waiter: The waiter.
+#target(os: not "none")
+routine WorkSlot.unregister(me: @Me, waiter: Waiter) -> Void
+    me.lock.lock()
+    branch me.waiter.peek().same(waiter)
+        ? continue
+        : done()
+    me.waiter.poke(.hollow())
+    jump done()
+
+    block done()
+        me.lock.unlock()
+        return()
 
 /// Marks the work finished and wakes whoever waits for it: the thread that runs it calls this once the routine
 /// returns.
@@ -273,9 +298,15 @@ require T: typename
 routine WorkSlot.is_cancelled(me: @Me) -> Bool
     return(me.cancel.peek_atomic().eq(1))
 
-/// Asks the work to stop: `cancel_requested()` turns true inside it.
+/// Asks the work to stop: `cancel_requested()` turns true inside it, and a cancellable wait it is in (a `_result`
+/// one) ends.
+#target(os: not "none")
 routine WorkSlot.request_cancel(me: @Me) -> Void
     me.cancel.poke_atomic(1)
+    me.lock.lock()
+    blocked: Waiter = me.blocked.peek()
+    me.lock.unlock()
+    blocked.wake()
     return()
 
 /// Ends the ticket that holds the slot: gives the last work's block back and gives the slot a new number.

@@ -1,8 +1,8 @@
 // Tessera stdlib: ExclusiveLock
 //
 // A lock in one U32, the same on every operating system: atomics for the
-// uncontended case and wait_on / wake_one for the rest (Drepper's three-state
-// futex mutex). 0 is free, 1 locked, 2 locked with a thread that may be
+// uncontended case and wait_while / wake_one for the rest (Drepper's three-state
+// futex mutex). A fiber that waits for it parks instead of holding up its thread. 0 is free, 1 locked, 2 locked with a thread that may be
 // waiting. An ExclusiveLock starts free (ExclusiveLock { state: 0 }) and needs nothing to free.
 
 module Standard/Os
@@ -23,7 +23,8 @@ routine ExclusiveLock.construct() -> Me
     m: Me = Me(state: 0)
     return(m)
 
-/// Takes the lock, sleeping until it is free when another thread holds it.
+/// Takes the lock, waiting until it is free when someone else holds it: a thread sleeps, and a fiber parks a short
+/// while at a time so the other fibers of its thread go on (one of them may hold it).
 routine ExclusiveLock.lock(me: @Me) -> Void
     claim found: @U32 <- 0
     took: Bool = me.state.atomic_compare_exchange_acquire_raw(expected: 0, new: 1, previous: found)
@@ -40,7 +41,7 @@ routine ExclusiveLock.lock(me: @Me) -> Void
             : sleep()
 
     block sleep()
-        wait_on(at: me.state, expected: 2)
+        wait_while(at: me.state, expected: 2)
         jump contended()
 
 /// Releases the lock, waking one sleeping thread if any waits. Only the holder may call it.

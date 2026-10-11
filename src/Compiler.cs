@@ -68,11 +68,16 @@ public sealed partial class Compiler
     /// <paramref name="heapCheck"/>: whether the standard library's `#heap_check("on")` declarations are kept (the
     /// default heap catches a block freed twice) instead of its `#heap_check("off")` ones. It is the manifest's
     /// `[debug] heap-check`, the same in every build mode.
-    public Compiler(BuildTarget target, IEnumerable<Decl> decls, bool trace = false, bool heapCheck = false)
+    /// <paramref name="raceCheck"/>: whether the program runs with the data race check (`[debug] race-check`,
+    /// `--race-check`): every routine is instrumented, and the standard library's `#race_check("on")` declarations are
+    /// kept instead of its `#race_check("off")` ones.
+    public Compiler(BuildTarget target, IEnumerable<Decl> decls, bool trace = false, bool heapCheck = false,
+        bool raceCheck = false)
     {
         Target = target;
         Trace = trace;
         HeapCheck = heapCheck;
+        RaceCheck = raceCheck;
         foreach (var d in Derive.Routines(decls.ToList()))
         {
             // A type's construct and destruct count on every target, even where only another target keeps them.
@@ -131,7 +136,7 @@ public sealed partial class Compiler
             (a, b) => a.Owner is null ? a.Module == b.Module : OwnerDecl(a.Owner, a.File) == OwnerDecl(b.Owner!, b.File));
         // Routines of one name under one parent may differ in their parameter types (Overloads.cs).
         RejectOverloadClashes(_free.Values, SameModule);
-        RejectOverloadClashes(_methods.Values, (a, b) => OwnerDecl(a) == OwnerDecl(b) && SameFixed(a, b));
+        RejectOverloadClashes(_methods.Values, (a, b) => OwnerDecl(a) == OwnerDecl(b) && SameFixed(a, b) && SameOwnerArgs(a, b));
         RejectOverloadClashes(_blanket.Values, (_, _) => true);
         CheckAliases();
         CheckLifecycle();
@@ -290,6 +295,7 @@ public sealed partial class Compiler
         if (!Target.HasOs && d.IsLibrary && d is not ModuleDecl && IsOsModule(d.Module)) return false;
         if (!TraceSelected(d)) return false;
         if (!HeapCheckSelected(d)) return false;
+        if (!RaceCheckSelected(d)) return false;
         foreach (var a in d.Annotations)
         {
             if (a.Name != "target" && a.Args.FirstOrDefault(arg => arg.Values is not null) is { } listed)
@@ -340,6 +346,39 @@ public sealed partial class Compiler
             _ => throw new CompileError(a.Pos, "#heap_check takes \"on\" or \"off\""),
         };
     }
+
+    /// Whether the program runs with the data race check: two threads that touch the same memory, one of them writing,
+    /// with neither an atomic access nor a lock between them, stop the program with a report of both places.
+    public bool RaceCheck { get; }
+
+    /// `#race_check("on")` / `#race_check("off")` keeps a standard library declaration only with the race check on or
+    /// only with it off: the fiber switch tells the check which stack runs only with it on.
+    private bool RaceCheckSelected(Decl d)
+    {
+        if (d.AnnotationNamed("race_check") is not { } a) return true;
+        if (!d.IsLibrary)
+            throw new CompileError(a.Pos, "#race_check selects standard library declarations by the race-check setting");
+        return a.First switch
+        {
+            "on" => RaceCheck,
+            "off" => !RaceCheck,
+            _ => throw new CompileError(a.Pos, "#race_check takes \"on\" or \"off\""),
+        };
+    }
+
+    /// With the race check, its runtime's options, which it reads before the program starts: stop at the first race,
+    /// with the exit status a crash has. Not instrumented (it runs before the runtime is ready), and a strong definition,
+    /// so it replaces the runtime's own.
+    private string RaceCheckOptions()
+    {
+        if (!RaceCheck) return "";
+        const string options = "halt_on_error=1 exitcode=82";
+        return $"@tessera.race_options = private unnamed_addr constant [{options.Length + 1} x i8] c\"{options}\\00\"\n"
+               + "define ptr @__tsan_default_options() nounwind {\n  ret ptr @tessera.race_options\n}\n\n";
+    }
+
+    /// The function attribute the race check instruments a routine by, or nothing.
+    public string RaceAttr => RaceCheck ? " sanitize_thread" : "";
 
     // ── Output ──────────────────────────────────────────────────────────────
 
@@ -555,6 +594,7 @@ public sealed partial class Compiler
             if (sb.Length > 0) o.Append(sb).AppendLine();
         o.Append(_functions);
         o.Append(ResetThreadLocals());
+        o.Append(RaceCheckOptions());
         o.Append(_entry);
         o.Append(DebugTrailer());
         return o.ToString();
@@ -745,6 +785,17 @@ public sealed partial class Compiler
         MethodCandidates(ownerType, name, file, pos, anyModule, fits).FirstOrDefault();
 
     /// Whether two routines on a type are defined for the same type arguments: none, or the same `<S64>`.
+    /// Whether two routines on one type are for the same owner arguments: `List[Fiber[T]]` and `List[Job[T]]` aren't.
+    /// A type parameter stands for any argument.
+    private bool SameOwnerArgs(RoutineDecl a, RoutineDecl b)
+    {
+        string Shape(RoutineDecl r) => r.Owner is null ? "" : string.Join(", ", r.Owner.Args.Select(arg =>
+            arg is TypeArgType { Type: var t } && !(t.Args.Count == 0 && ClauseTypeParamsOrOwnerArg(r, t.Name))
+                ? SlotText(t, OwnerTypeParams(r).Select((n, i) => (n, i)).ToDictionary(p => p.n, p => $"${p.i}"))
+                : "*"));
+        return Shape(a) == Shape(b);
+    }
+
     private static bool SameFixed(RoutineDecl a, RoutineDecl b) =>
         a.Fixed.Select(t => t.ToString()).SequenceEqual(b.Fixed.Select(t => t.ToString()));
 
@@ -773,8 +824,32 @@ public sealed partial class Compiler
     {
         if (r.Owner is null) return [];
         if (r.Owner.Args.Count == 0) return ClauseTypeParams(r.Clauses).Contains(r.Owner.Name) ? [r.Owner.Name] : [];
-        return r.Owner.Args.Select(a => a is TypeArgType { Type.Args.Count: 0 } t ? t.Type.Name : null)
-            .Where(n => n is not null).Select(n => n!).ToList();
+        // A type parameter inside an argument (`T` in `List[Thread[T]].wait_all_finished`) is one too, when the routine
+        // requires it.
+        var clauseParams = ClauseTypeParams(r.Clauses);
+        return r.Owner.Args.OfType<TypeArgType>()
+            .SelectMany(t => t.Type.Args.Count == 0 ? [t.Type.Name] : NestedNames(t.Type).Where(clauseParams.Contains))
+            .Distinct().ToList();
+    }
+
+    private static IEnumerable<string> NestedNames(TypeRef t) =>
+        t.Args.OfType<TypeArgType>().SelectMany(a => a.Type.Args.Count == 0 ? [a.Type.Name] : NestedNames(a.Type));
+
+    /// Binds the type parameters inside a routine's owner arguments that are types built from them
+    /// (`Thread[T]` of `List[Thread[T]]`) by matching them against the owner's actual arguments.
+    /// :returns: False when an argument doesn't match.
+    public bool BindNestedOwnerArgs(RoutineDecl r, List<DType> actual, TypeEnv env)
+    {
+        if (r.Owner is null || actual.Count != r.Owner.Args.Count) return true;
+        var vars = OwnerTypeParams(r).Where(n => !(IntType.FromName(n) is not null || DeclaresType(n))).ToHashSet();
+        var binding = new TypeEnv(r.File);
+        for (int i = 0; i < actual.Count; i++)
+            if (r.Owner.Args[i] is TypeArgType { Type.Args.Count: > 0 } ta && Mentions(ta.Type, vars)
+                && !Match(ta.Type, actual[i], vars, binding))
+                return false;
+        foreach (var (name, t) in binding.All)
+            if (!env.Has(name)) env.Bind(name, t);
+        return true;
     }
 
     // ── Types ───────────────────────────────────────────────────────────────

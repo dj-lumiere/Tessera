@@ -27,6 +27,8 @@ namespace Tessera;
 /// emit-llvm = true                    # keep the IR next to the output
 /// trace = false                       # leave out the crash trace (default: kept in debug and release,
 ///                                     # left out in release-time and release-space)
+/// race-check = true                   # stop on a data race between threads, with both places (slow, for a run
+///                                     # that looks for races, Linux and macOS on x86_64 and aarch64)
 /// heap-check = true                   # the default heap crashes on a block freed twice (DoubleFreeError), in
 ///                                     # every mode (default: off, plain malloc and free; `tessera test` always
 ///                                     # turns it on)
@@ -69,6 +71,10 @@ public sealed record Manifest(
     /// the manifest turns it on, whatever the mode, so debug and release builds behave the same.
     public bool HeapCheck { get; init; }
 
+    /// `[debug] race-check`: whether the program stops on a data race between threads. Off unless the manifest turns
+    /// it on.
+    public bool RaceCheck { get; init; }
+
     /// Where the build writes its output: `build/` next to the manifest.
     public string OutputDirectory => System.IO.Path.Combine(Directory, "build");
 
@@ -90,7 +96,7 @@ public sealed record Manifest(
     {
         ["package"] = ["name", "version", "description", "authors", "license", "repository", "tessera-version"],
         ["target"] = ["executable", "triple", "cpu", "features", "mode", "library", "sources", "c-libraries", "library-paths", "link-script"],
-        ["debug"] = ["emit-llvm", "trace", "heap-check"],
+        ["debug"] = ["emit-llvm", "trace", "heap-check", "race-check"],
     };
 
     /// <paramref name="defaultTarget"/> is the triple used when [target] names none (the host if null).
@@ -175,6 +181,7 @@ public sealed record Manifest(
             Roots = roots,
             Trace = Bool(debug, "trace", path),
             HeapCheck = Bool(debug, "heap-check", path) ?? false,
+            RaceCheck = Bool(debug, "race-check", path) ?? false,
         };
     }
 

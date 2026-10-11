@@ -1,0 +1,99 @@
+// MultiReadLock: four threads read a pair of counters that must always be equal while two threads write them, each
+// reader under lock_read and each writer under lock_write. No reader ever sees them differ, and the writers' updates
+// all land. try_lock_write fails while a reader holds the lock, and try_lock_read while a writer does.
+
+import Standard/Format
+import Standard/Os
+
+record Pair
+    lock: MultiReadLock
+    a: U64
+    b: U64
+    torn: Atomic[U64]
+
+/// Makes a `Pair` from its fields.
+/// :param lock: Its `lock`.
+/// :param a: Its `a`.
+/// :param b: Its `b`.
+/// :param torn: Its `torn`.
+/// :returns: The new value.
+routine Pair.construct(lock: MultiReadLock, a: U64, b: U64, torn: Atomic[U64]) -> Me
+    return(Me(lock, a, b, torn))
+
+/// Releases nothing: a `Pair` holds no memory of its own.
+routine Pair.destruct(me: @Me) -> Void
+    return()
+
+routine read_many(pair: @Pair) -> Void
+    jump step(0)
+
+    block step(i: U64)
+        branch i.eq(20000)
+            ? return()
+            : continue
+        pair.lock.lock_read()
+        same: Bool = pair.a.peek().eq(pair.b.peek())
+        pair.lock.unlock_read()
+        branch same
+            ? step(i.add(1))
+            : continue
+        pair.torn.fetch_add(1)
+        jump step(i.add(1))
+
+routine write_many(pair: @Pair) -> Void
+    jump step(0)
+
+    block step(i: U64)
+        branch i.eq(10000)
+            ? return()
+            : continue
+        pair.lock.lock_write()
+        pair.a.poke(pair.a.peek().add(1))
+        pair.b.poke(pair.b.peek().add(1))
+        pair.lock.unlock_write()
+        jump step(i.add(1))
+
+routine start() -> Void
+    local pair: @Pair <- Pair(lock: .construct(), a: 0, b: 0, torn: Atomic[U64](value: 0))
+    local threads: @Array[Thread[Void], 6] <- .hollow()
+
+    jump spawn(0)
+
+    block spawn(i: USize)
+        branch i.eq(6)
+            ? collect(0)
+            : continue
+        t: Thread[Void] = get_thread[Void]()
+        branch i.lt(4)
+            ? reader(i, t)
+            : writer(i, t)
+
+    block reader(i: USize, t: Thread[Void])
+        t.put_work(entry: read_many.to[Callable](), args: pair)
+        threads.setitem(index: i, value: t)
+        jump spawn(i.add(1))
+
+    block writer(i: USize, t: Thread[Void])
+        t.put_work(entry: write_many.to[Callable](), args: pair)
+        threads.setitem(index: i, value: t)
+        jump spawn(i.add(1))
+
+    block collect(i: USize)
+        branch i.eq(6)
+            ? report()
+            : continue
+        t: Thread[Void] = threads.getitem(i)
+        t.wait_finished()
+        t.give_back()
+        jump collect(i.add(1))
+
+    block report()
+        Out.write("a {pair.a.peek()}, b {pair.b.peek()}, torn reads {pair.torn.peek()}\n")
+        pair.lock.lock_read()
+        write_while_read: Bool = pair.lock.try_lock_write()
+        pair.lock.unlock_read()
+        pair.lock.lock_write()
+        read_while_written: Bool = pair.lock.try_lock_read()
+        pair.lock.unlock_write()
+        Out.write("try_lock_write while read: {write_while_read}, try_lock_read while written: {read_while_written}\n")
+        return()

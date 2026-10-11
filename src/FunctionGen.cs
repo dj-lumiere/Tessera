@@ -201,7 +201,7 @@ public sealed class FunctionGen
         string dbg = Debug ? $" !dbg !{_sp}" : "";
         var paramRecords = Debug ? ParamRecords() : [];
         string? push = _traced ? TracePush() : null;
-        _out.AppendLine($"define {linkage}{_inst.CcPrefix(_c.Target)}{_c.AbiRet(_inst, withAttrs: true)} @{Compiler.Quote(_inst.Symbol)}({string.Join(", ", ps)}){_inst.FnAttrs}{_c.UnwindTable} {CpuModel.For(_c.Target, _inst.Decl.Pos).FnAttrs}{comdat}{dbg} {{");
+        _out.AppendLine($"define {linkage}{_inst.CcPrefix(_c.Target)}{_c.AbiRet(_inst, withAttrs: true)} @{Compiler.Quote(_inst.Symbol)}({string.Join(", ", ps)}){_inst.FnAttrs}{_c.RaceAttr}{_c.UnwindTable} {CpuModel.For(_c.Target, _inst.Decl.Pos).FnAttrs}{comdat}{dbg} {{");
         _out.AppendLine("start:");
         foreach (var a in _allocas) _out.AppendLine($"  {a}");
         foreach (var u in unpack) _out.AppendLine($"  {u}");
@@ -1506,6 +1506,9 @@ public sealed class FunctionGen
             var at = new Pos(template.Pos.File, template.Pos.Line, template.Pos.Col + 2 + i);
             var value = new Parser(new Lexer(at.File, source, at.Line, at.Col).Lex(), at.File, values: _values.Keys)
                 .ParseLoneExpr();
+            // A name another block binds isn't seen here: say so, rather than what the name would be as a preset.
+            if (value is PresetRef { Owner: null, Path: null } named && ResolvePreset(named) is null && BoundInRoutine(named.Name))
+                throw Err(at, NotVisible(named.Name, fromNextLine: true));
             Flush();
             _templateHole = source.Trim();
             try
@@ -2379,6 +2382,7 @@ public sealed class FunctionGen
         for (int i = 0; i < o.Args.Count; i++)
             if (o.Args[i] is TypeArgType { Type.Args.Count: 0 } ta)
                 env.Bind(ta.Type.Name, actual[i]);
+        _c.BindNestedOwnerArgs(r, actual, env);
         env.Bind("Me", owner is PtrType { Pointee: null } ? new PtrType(IntType.Byte) : owner);
         return env;
     }

@@ -1,0 +1,144 @@
+// Channels: a thread sends 1 to 1000 through room for 4 to a receiver that adds them up, then closes, and the receiver
+// gets ChannelClosed after the last value. Three threads share the receiving end of a SharedChannel and each value
+// reaches one of them. Fibers of one thread pass values to each other, parking instead of holding up the thread.
+// send_if_room fails when the room is full, a receiver that closes makes the senders get ChannelClosed, and a
+// receiver waiting on an empty channel gets CancelRequested when its ticket is cancelled.
+
+import Standard/Fiber
+import Standard/Format
+import Standard/Os
+
+routine produce(ch: @Channel[U64]) -> Void
+    jump send(1)
+
+    block send(i: U64)
+        branch i.gt(1000)
+            ? done()
+            : continue
+        sent: Result[Unit, ChannelClosed | CancelRequested] = ch.send_result(i)
+        jump send(i.add(1))
+
+    block done()
+        ch.close_sending()
+        return()
+
+routine sum_all(ch: @Channel[U64]) -> U64
+    jump take(0)
+
+    block take(total: U64)
+        when ch.receive_result()
+            is U64 as v => take(total.add(v))
+            is ChannelClosed => return(total)
+            is CancelRequested => return(0)
+
+routine shared_produce(ch: @SharedChannel[U64]) -> Void
+    jump send(1)
+
+    block send(i: U64)
+        branch i.gt(3000)
+            ? done()
+            : continue
+        sent: Result[Unit, ChannelClosed | CancelRequested] = ch.send_result(i)
+        jump send(i.add(1))
+
+    block done()
+        ch.close_sending()
+        return()
+
+routine shared_sum(ch: @SharedChannel[U64]) -> U64
+    jump take(0)
+
+    block take(total: U64)
+        when ch.receive_result()
+            is U64 as v => take(total.add(v))
+            is ChannelClosed => return(total)
+            is CancelRequested => return(0)
+
+routine fiber_produce(ch: @Channel[U64]) -> U64
+    jump send(1)
+
+    block send(i: U64)
+        branch i.gt(100)
+            ? done()
+            : continue
+        sent: Result[Unit, ChannelClosed | CancelRequested] = ch.send_result(i)
+        jump send(i.add(1))
+
+    block done()
+        ch.close_sending()
+        return(100)
+
+/// Waits for a value that never comes, and says in `got` how the wait ended: 1 closed, 2 cancelled.
+routine wait_forever(ch: @Channel[U64], got: @U64) -> Void
+    when ch.receive_result()
+        is U64 as v => store(v)
+        is ChannelClosed => store(1)
+        is CancelRequested => store(2)
+
+    block store(code: U64)
+        got.poke(code)
+        return()
+
+routine start() -> Void
+    out: @Out = Out.writer()
+    claim ch: @Channel[U64] <- .construct(capacity: 4)
+    p: Thread[Void] = get_thread[Void]()
+    p.put_work(entry: produce.to[Callable](), args: ch)
+    total: U64 = sum_all(ch)
+    p.wait_finished()
+    p.give_back()
+    out.write("one receiver: {total}\n")
+    ch.destruct()
+
+    claim shared: @SharedChannel[U64] <- .construct(capacity: 8)
+    shared.add_receiver()
+    shared.add_receiver()
+    r1: Thread[U64] = get_thread[U64]()
+    r1.put_work(entry: shared_sum.to[Callable](), args: shared)
+    r2: Thread[U64] = get_thread[U64]()
+    r2.put_work(entry: shared_sum.to[Callable](), args: shared)
+    r3: Thread[U64] = get_thread[U64]()
+    r3.put_work(entry: shared_sum.to[Callable](), args: shared)
+    shared_produce(shared)
+    r1.wait_finished()
+    r2.wait_finished()
+    r3.wait_finished()
+    all: U64 = r1.retrieve().add(r2.retrieve()).add(r3.retrieve())
+    out.write("three receivers: {all}\n")
+    r1.give_back()
+    r2.give_back()
+    r3.give_back()
+    shared.destruct()
+
+    claim between: @Channel[U64] <- .construct(capacity: 1)
+    f: Fiber[U64] = FIBERS.get_fiber[U64]()
+    f.put_work(entry: fiber_produce.to[Callable](), args: between)
+    g: Fiber[U64] = FIBERS.get_fiber[U64]()
+    g.put_work(entry: sum_all.to[Callable](), args: between)
+    g.wait_finished()
+    out.write("fibers: {g.retrieve()}\n")
+    f.give_back()
+    g.give_back()
+    between.destruct()
+
+    claim small: @Channel[U64] <- .construct(capacity: 2)
+    first: Bool = small.send_if_room(1)
+    second: Bool = small.send_if_room(2)
+    third: Bool = small.send_if_room(3)
+    small.close_receiving()
+    after: Bool = small.send_result(4).is_success()
+    out.write("send_if_room: {first} {second} {third}, after the receiver closed: {after}\n")
+    small.destruct()
+
+    claim empty: @Channel[U64] <- .construct(capacity: 1)
+    claim got: @U64 <- 0
+    w: Thread[Void] = get_thread[Void]()
+    w.put_work(entry: wait_forever.to[Callable](), args: (empty, got))
+    early: Bool = w.wait_finished_for(2000000)
+    w.cancel()
+    w.wait_finished()
+    out.write("finished before the cancel: {early}, the wait ended with {got.peek()}\n")
+    w.give_back()
+    empty.destruct()
+    FIBERS.destruct()
+    return()

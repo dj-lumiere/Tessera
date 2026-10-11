@@ -104,8 +104,8 @@ routine ThreadManager.construct(alloc: @MemoryManager) -> Me
     return(Me(launch_fn: os_launch_fn.to[Callable](), state: null, lock: .construct(), idle: null,
         alloc))
 
-/// Ends the idle threads. The tickets still out end their threads when they are given back to a manager that is gone,
-/// so give every ticket back first.
+/// Ends the idle threads. Every ticket goes back first: a ticket given back to a manager that is gone reaches memory
+/// that is gone, and its thread never ends.
 routine ThreadManager.destruct(me: @Me) -> Void
     me.lock.lock()
     jump next()
@@ -243,11 +243,11 @@ private routine worker_main(raw: Addr) -> Void
 #[external("llvm"), template("call void @tessera.reset_thread_locals()"), target(os: not "none")]
 routine reset_thread_locals() -> Void
 
-/// The ticket's worker.
-/// :returns: The worker.
+/// The slot the ticket's work lives in, for code that waits on several tickets at once.
+/// :returns: The slot.
 /// :throws: Crashes with `TicketGivenBackError` for a ticket given back.
 #track_caller
-private routine Thread[T].slot(me: Me) -> @WorkSlot
+routine Thread[T].work_slot(me: Me) -> @WorkSlot
 require T: typename
     worker: @ThreadWorker = me.worker
     worker.slot.check_ticket(me.issued)
@@ -259,7 +259,7 @@ require T: typename
 #track_caller
 private routine Thread[T].start(me: Me, runner: Callable[(Addr,), Void], work: Addr) -> Void
 require T: typename
-    me.slot().put(runner, work)
+    me.work_slot().put(runner, work)
     return()
 
 /// Starts `entry` on the ticket. It runs from here on.
@@ -269,7 +269,7 @@ require T: typename
 #track_caller
 routine Thread[T].put_work(me: Me, entry: Callable[(), T]) -> Void
 require T: typename
-    slot: @WorkSlot = me.slot()
+    slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_work0[T](entry, alloc: slot.alloc.peek())
     me.start(runner, work)
@@ -283,7 +283,7 @@ require T: typename
 #track_caller
 routine Thread[T].put_work[A](me: Me, entry: Callable[(A,), T], args: A) -> Void
 require T: typename, A: typename
-    slot: @WorkSlot = me.slot()
+    slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_work1[T, A](entry, args, alloc: slot.alloc.peek())
     me.start(runner, work)
@@ -297,7 +297,7 @@ require T: typename, A: typename
 #track_caller
 routine Thread[T].put_work[A, B](me: Me, entry: Callable[(A, B), T], args: (A, B)) -> Void
 require T: typename, A: typename, B: typename
-    slot: @WorkSlot = me.slot()
+    slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_work2[T, A, B](entry, args, alloc: slot.alloc.peek())
     me.start(runner, work)
@@ -311,7 +311,7 @@ require T: typename, A: typename, B: typename
 #track_caller
 routine Thread[T].put_work[A, B, C](me: Me, entry: Callable[(A, B, C), T], args: (A, B, C)) -> Void
 require T: typename, A: typename, B: typename, C: typename
-    slot: @WorkSlot = me.slot()
+    slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_work3[T, A, B, C](entry, args, alloc: slot.alloc.peek())
     me.start(runner, work)
@@ -326,7 +326,7 @@ require T: typename, A: typename, B: typename, C: typename
 routine Thread[T].put_work[A, B, C, D](me: Me, entry: Callable[(A, B, C, D), T],
     args: (A, B, C, D)) -> Void
 require T: typename, A: typename, B: typename, C: typename, D: typename
-    slot: @WorkSlot = me.slot()
+    slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_work4[T, A, B, C, D](entry, args, alloc: slot.alloc.peek())
     me.start(runner, work)
@@ -338,7 +338,7 @@ require T: typename, A: typename, B: typename, C: typename, D: typename
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 #track_caller
 routine Thread[Void].put_work(me: Me, entry: Callable[(), Void]) -> Void
-    slot: @WorkSlot = me.slot()
+    slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_voidwork0(entry, alloc: slot.alloc.peek())
     me.start(runner, work)
@@ -352,7 +352,7 @@ routine Thread[Void].put_work(me: Me, entry: Callable[(), Void]) -> Void
 #track_caller
 routine Thread[Void].put_work[A](me: Me, entry: Callable[(A,), Void], args: A) -> Void
 require A: typename
-    slot: @WorkSlot = me.slot()
+    slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_voidwork1[A](entry, args, alloc: slot.alloc.peek())
     me.start(runner, work)
@@ -366,7 +366,7 @@ require A: typename
 #track_caller
 routine Thread[Void].put_work[A, B](me: Me, entry: Callable[(A, B), Void], args: (A, B)) -> Void
 require A: typename, B: typename
-    slot: @WorkSlot = me.slot()
+    slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_voidwork2[A, B](entry, args, alloc: slot.alloc.peek())
     me.start(runner, work)
@@ -381,7 +381,7 @@ require A: typename, B: typename
 routine Thread[Void].put_work[A, B, C](me: Me, entry: Callable[(A, B, C), Void],
     args: (A, B, C)) -> Void
 require A: typename, B: typename, C: typename
-    slot: @WorkSlot = me.slot()
+    slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_voidwork3[A, B, C](entry, args, alloc: slot.alloc.peek())
     me.start(runner, work)
@@ -396,7 +396,7 @@ require A: typename, B: typename, C: typename
 routine Thread[Void].put_work[A, B, C, D](me: Me, entry: Callable[(A, B, C, D), Void],
     args: (A, B, C, D)) -> Void
 require A: typename, B: typename, C: typename, D: typename
-    slot: @WorkSlot = me.slot()
+    slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_voidwork4[A, B, C, D](entry, args, alloc: slot.alloc.peek())
     me.start(runner, work)
@@ -407,14 +407,14 @@ require A: typename, B: typename, C: typename, D: typename
 #track_caller
 routine Thread[T].check_finished(me: Me) -> Bool
 require T: typename
-    return(me.slot().is_finished())
+    return(me.work_slot().is_finished())
 
 /// Waits until the work has finished. Inside a fiber only the fiber waits: its thread goes on with the other fibers,
 /// and the thread that finishes the work wakes it.
 #[target(os: not "none"), track_caller]
 routine Thread[T].wait_finished(me: Me) -> Void
 require T: typename
-    me.slot().wait()
+    me.work_slot().wait()
     return()
 
 /// Waits until the work has finished or `ns` nanoseconds have passed, whichever comes first.
@@ -423,7 +423,16 @@ require T: typename
 #[target(os: not "none"), track_caller]
 routine Thread[T].wait_finished_for(me: Me, ns: U64) -> Bool
 require T: typename
-    return(me.slot().wait_until(deadline: monotonic_ns().add_clamp(ns)))
+    return(me.work_slot().wait_until(deadline: monotonic_ns().add_clamp(ns), cancellable: false))
+
+/// Waits until the work has finished, or until the work that waits is asked to stop with `cancel()`.
+/// :returns: `Unit` when the work has finished, `CancelRequested` when the waiting work was cancelled first.
+#[target(os: not "none"), track_caller]
+routine Thread[T].wait_finished_result(me: Me) -> Result[Unit, CancelRequested]
+require T: typename
+    branch me.work_slot().wait_until(deadline: U64.MAX, cancellable: true)
+        ? return(Unit())
+        : return(CancelRequested())
 
 /// The finished work's result.
 /// :returns: The result.
@@ -432,19 +441,24 @@ require T: typename
 #track_caller
 routine Thread[T].retrieve(me: Me) -> T
 require T: typename
-    slot: @WorkSlot = me.slot()
+    slot: @WorkSlot = me.work_slot()
     place: @T = slot.result_place[T]()
     branch slot.is_cancelled()
         ? crash(name: "CancelledWorkError",
             message: "This ticket's work was cancelled, so its result may be cut short: retrieve_result() tells a cancelled one apart.")
         : return(place.peek())
 
-/// Waits for nothing and gives nothing: work with no result. It checks that the work has finished.
-/// :throws: Crashes with `TicketBusyError` while the work runs, and with `NoWorkError` when there was none.
+/// Gives nothing: work with no result. It checks that the work has finished and wasn't cancelled.
+/// :throws: Crashes with `TicketBusyError` while the work runs, with `NoWorkError` when there was none, and with
+///     `CancelledWorkError` when it was cancelled.
 #track_caller
 routine Thread[Void].retrieve(me: Me) -> Void
-    me.slot().result_place[Byte]()
-    return()
+    slot: @WorkSlot = me.work_slot()
+    slot.result_place[Byte]()
+    branch slot.is_cancelled()
+        ? crash(name: "CancelledWorkError",
+            message: "This ticket's work was cancelled, so it may have stopped short: retrieve_result() tells a cancelled one apart.")
+        : return()
 
 /// The finished work's result, or `CancelRequested` when `cancel()` asked it to stop before it finished.
 /// :returns: The result or `CancelRequested`.
@@ -452,7 +466,7 @@ routine Thread[Void].retrieve(me: Me) -> Void
 #track_caller
 routine Thread[T].retrieve_result(me: Me) -> Result[T, CancelRequested]
 require T: typename
-    slot: @WorkSlot = me.slot()
+    slot: @WorkSlot = me.work_slot()
     place: @T = slot.result_place[T]()
     branch slot.is_cancelled()
         ? return(CancelRequested())
@@ -462,7 +476,7 @@ require T: typename
 #track_caller
 routine Thread[T].cancel(me: Me) -> Void
 require T: typename
-    me.slot().request_cancel()
+    me.work_slot().request_cancel()
     return()
 
 /// Hands the thread back to its manager, which keeps it asleep for the next ticket. The ticket is over.
@@ -471,7 +485,7 @@ require T: typename
 #track_caller
 routine Thread[T].give_back(me: Me) -> Void
 require T: typename
-    me.slot().give_back()
+    me.work_slot().give_back()
     worker: @ThreadWorker = me.worker
     manager: @ThreadManager = worker.manager.peek()
     manager.lock.lock()

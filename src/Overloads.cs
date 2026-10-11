@@ -212,6 +212,11 @@ public sealed partial class Compiler
         {
             if (o.Args[i] is not TypeArgType { Type: var t } || actual[i] is ArchetypeType) continue;
             if (t.Args.Count == 0 && ClauseTypeParamsOrOwnerArg(m, t.Name)) continue;
+            if (t.Args.Count > 0 && OwnerTypeParams(m).Any(n => ClauseTypeParamsOrOwnerArg(m, n)))
+            {
+                if (!BindNestedOwnerArgs(m, actual, new TypeEnv(m.File))) return false;
+                continue;
+            }
             if (KeyQuiet(t, new TypeEnv(m.File)) is { } want && want != actual[i].Key) return false;
         }
         return true;

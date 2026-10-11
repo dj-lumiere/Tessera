@@ -1,0 +1,49 @@
+// Lists of tickets: four thread tickets napping for different times, wait_any_finished naming the first to finish,
+// wait_all_finished, retrieve_all in the list's order, take_finished moving every finished ticket out, give_back_all,
+// and give_back_finished on fibers once FIBERS has run them.
+
+import Standard/Collections
+import Standard/Fiber
+import Standard/Format
+import Standard/Os
+
+routine nap(ms: U64) -> U64
+    sleep_for(ms.mul(1000000))
+    return(ms)
+
+routine start() -> Void
+    local out: @Out = Out.writer()
+    local ts: @List[Thread[U64]] <- .construct(alloc: DEFAULT_HEAP)
+
+    jump add(0)
+
+    block add(i: U64)
+        branch i.eq(4)
+            ? go()
+            : continue
+        t: Thread[U64] = get_thread[U64]()
+        t.put_work(entry: nap.to[Callable](), args: i.mul(20).add(5))
+        ts.add_last(t)
+        jump add(i.add(1))
+
+    block go()
+        first: USize = ts.wait_any_finished()
+        ts.wait_all_finished()
+        claim results: @List[U64] <- ts.retrieve_all()
+        out.write("first {first}, results {results.getitem(0)} {results.getitem(3)}, count {results.count()}\n")
+        done: List[Thread[U64]] = ts.take_finished()
+        out.write("taken {done.count()}, left {ts.count()}\n")
+        claim back: @List[Thread[U64]] <- done
+        back.give_back_all()
+        claim fs: @List[Fiber[U64]] <- .construct(alloc: DEFAULT_HEAP)
+        f: Fiber[U64] = FIBERS.get_fiber[U64]()
+        f.put_work(entry: nap.to[Callable](), args: 3)
+        fs.add_last(f)
+        g: Fiber[U64] = FIBERS.get_fiber[U64]()
+        g.put_work(entry: nap.to[Callable](), args: 1)
+        fs.add_last(g)
+        FIBERS.run()
+        fs.give_back_finished()
+        out.write("fibers left {fs.count()}\n")
+        results.destruct()
+        return()
