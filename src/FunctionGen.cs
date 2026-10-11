@@ -848,8 +848,6 @@ public sealed class FunctionGen
                 return PlaceType(e) is { } pt ? new PtrType(pt) : null;
             case FieldExpr f:
                 return Infer(f.Base) is RecordType s ? FieldOf(s, f.Name, f.Pos).Type : null;
-            case NsCallExpr or PresetRef when VariantCaseOf(e, null) is { } vc:
-                return vc.Type;
             case PresetRef r:
                 return InferPresetRef(r);
             case RoutineRef rr:
@@ -933,6 +931,9 @@ public sealed class FunctionGen
     private Val Eval(Expr e, DType expected, int argument = 0)
     {
         e = AsStride(AsField(_c.AsRecordLit(e, _env)));
+        // A value of a branch type is a value of the variant (one level), and so is a narrower variant's.
+        if (expected is VariantType vt && WidenSource(e, vt) is { } branch)
+            return WrapInVariant(Eval(e, branch, argument), vt);
         Val v = e switch
         {
             IntLit i => IntConst(i.Value, i.Pos, expected, i.HexDigits),
@@ -952,10 +953,8 @@ public sealed class FunctionGen
             SelectExpr s => EvalSelect(s, expected),
             RecordLit s => EvalRecordLit(s, expected),
             ArrayLit a => EvalElementsLit(a, expected),
-            NsCallExpr or ImplicitCallExpr or ImplicitMemberExpr or PresetRef when VariantCaseOf(e, expected) is { } vc =>
-                EmitVariantCase(vc, e.Pos),
             ImplicitMemberExpr m => throw Err(m.Pos,
-                $"'.{m.Name}' isn't a case of {expected}: a leading '.' without arguments names a variant case; a typewise call is .{m.Name}(...)"),
+                $"'.{m.Name}' isn't a value of {expected}: a leading '.' starts a call on the type, .{m.Name}(...)"),
             ImplicitCallExpr => EvalCall(e, expected),
             NsCallExpr or MethodCallExpr when TemplateWriter(e) is { } writer =>
                 ExpandTemplate(writer, (StrLit)(e is NsCallExpr ns ? ns.Args[0] : ((MethodCallExpr)e).Args[0])),
@@ -1092,137 +1091,192 @@ public sealed class FunctionGen
 
     // ── Variants ────────────────────────────────────────────────────────────
 
-    private sealed record VariantCaseRef(VariantType Type, int Index, List<Expr> Args);
-
-    /// `Expr.Number(5)`, `.Number(5)` where an Expr is expected, or `Expr.Empty`: a case of a variant, if `e` names one.
-    private VariantCaseRef? VariantCaseOf(Expr e, DType? expected)
+    /// The branch of `vt` a value of `e` goes into, when `e` isn't a `vt` itself: a value of a branch type, a variant
+    /// whose branches are all `vt`'s (`A | B` into `A | B | C`), or an untyped literal that only one branch takes. Null
+    /// when `e` is a `vt` already, or nothing fits (the plain mismatch reports it).
+    private DType? WidenSource(Expr e, VariantType vt)
     {
-        (DType? owner, string name, List<Expr> args) = e switch
+        // A select widens each side on its own: `ready ? n : Unit()`.
+        if (e is SelectExpr) return null;
+        var actual = InferQuiet(e);
+        if (actual is not null)
+            return actual.Equals(vt) ? null : Widens(actual, vt) ? actual : null;
+        return UntypedBranch(e, vt);
+    }
+
+    /// Whether a value of `actual` goes into the variant `vt` by itself: `actual` is one of its branches, or a variant
+    /// whose branches all are.
+    private static bool Widens(DType actual, DType expected) =>
+        expected is VariantType vt && !actual.Equals(vt)
+        && (vt.BranchIndex(actual) >= 0
+            || actual is VariantType sub && sub.Branches.All(b => vt.BranchIndex(b) >= 0));
+
+    /// The one branch of `vt` an untyped literal can be (an integer literal and one integer branch, `null` and one
+    /// pointer branch), or null when none or several can.
+    private DType? UntypedBranch(Expr e, VariantType vt)
+    {
+        if (e is not (IntLit or FloatLit or NullLit or StrLit)) return null;
+        var fits = vt.Branches.Where(b =>
         {
-            NsCallExpr n => (TryResolveOwner(n.Owner), n.Name, n.Args),
-            ImplicitCallExpr ic => (expected, ic.Name, ic.Args),
-            ImplicitMemberExpr m => (expected, m.Name, []),
-            PresetRef { Owner: { } o } r => (TryResolveOwner(o), r.Name, []),
-            _ => (null, "", []),
-        };
-        if (owner is not VariantType v) return null;
-        int index = v.CaseIndex(name);
-        return index < 0 ? null : new VariantCaseRef(v, index, args);
+            bool preferred = true;
+            // An integer literal is a number: a choice branch takes one only by its member's name.
+            return b is not (VariantType or ChoiceType) && UntypedMisfit(e, b, ref preferred) is null;
+        }).ToList();
+        return fits.Count == 1 ? fits[0] : null;
     }
 
-    /// A variant holding one case: the tag, and the payload written into the shared storage. The storage can only be
-    /// reached through memory, so a case with a payload is built in a stack slot.
-    private Val EmitVariantCase(VariantCaseRef c, Pos pos)
+    /// A variant holding `value`, a value of one of its branches (or of a narrower variant): the tag is the branch
+    /// type's ID, and the value is written into the shared storage through a stack slot.
+    private Val WrapInVariant(Val value, VariantType vt)
     {
-        _c.CaseUses.Add(pos);
-        var (v, index, args) = c;
-        string name = $"{v.Decl.Name}.{v.Decl.Cases[index].Name}";
-        var payload = v.Payloads[index];
-        if (payload is null && args.Count != 0) throw Err(pos, $"{name} carries no payload; write {name}");
-        if (payload is not null && args.Count != 1) throw Err(pos, $"{name} carries one {payload}: {name}(...)");
-        _c.EnsureTypeDefined(v);
-        string tagged = EmitTmp($"insertvalue {v.Llvm} zeroinitializer, {v.Tag.Llvm} {index}, 0");
-        if (payload is null) return new Val(tagged, v);
-        var value = EvalArg(args[0], payload, 1);
-        string slot = NewSlot(v);
-        Line($"store {v.Llvm} {tagged}, ptr {slot}");
-        string at = EmitTmp($"getelementptr inbounds {v.Llvm}, ptr {slot}, i32 0, i32 2");
-        Line($"store {payload.Llvm} {value.Op}, ptr {at}");
-        return new Val(EmitTmp($"load {v.Llvm}, ptr {slot}"), v);
+        _c.EnsureTypeDefined(vt);
+        if (value.Type is VariantType sub && vt.BranchIndex(sub) < 0) return WidenVariant(value, sub, vt);
+        uint id = VariantType.TypeId(value.Type);
+        string tagged = EmitTmp($"insertvalue {vt.Llvm} zeroinitializer, {VariantType.Tag.Llvm} {id}, 0");
+        if (_c.VariantStorage(vt).Aligner is null || _c.SizeAlign(value.Type, default).Size == 0) return new Val(tagged, vt);
+        string slot = NewSlot(vt);
+        Line($"store {vt.Llvm} {tagged}, ptr {slot}");
+        string at = EmitTmp($"getelementptr inbounds {vt.Llvm}, ptr {slot}, i32 0, i32 2");
+        Line($"store {value.Type.Llvm} {value.Op}, ptr {at}");
+        return new Val(EmitTmp($"load {vt.Llvm}, ptr {slot}"), vt);
     }
 
-    /// One case pattern of a `when` on a variant: `Expr.Number(n)` binds the payload, `Expr.Number` and
-    /// `Expr.Empty` don't.
+    /// `A | B` into `A | B | C`: the tag is already the branch type's ID, so the tag and the narrower storage are
+    /// copied over as they are.
+    private Val WidenVariant(Val value, VariantType sub, VariantType vt)
+    {
+        _c.EnsureTypeDefined(sub);
+        string tag = EmitTmp($"extractvalue {sub.Llvm} {value.Op}, 0");
+        string tagged = EmitTmp($"insertvalue {vt.Llvm} zeroinitializer, {VariantType.Tag.Llvm} {tag}, 0");
+        var (aligner, size, align) = _c.VariantStorage(sub);
+        if (aligner is null) return new Val(tagged, vt);
+        string from = NewSlot(sub);
+        Line($"store {sub.Llvm} {value.Op}, ptr {from}");
+        string slot = NewSlot(vt);
+        Line($"store {vt.Llvm} {tagged}, ptr {slot}");
+        string words = $"[{(size + align - 1) / align} x i{align * 8}]";
+        string src = EmitTmp($"getelementptr inbounds {sub.Llvm}, ptr {from}, i32 0, i32 2");
+        string dst = EmitTmp($"getelementptr inbounds {vt.Llvm}, ptr {slot}, i32 0, i32 2");
+        string moved = EmitTmp($"load {words}, ptr {src}");
+        Line($"store {words} {moved}, ptr {dst}");
+        return new Val(EmitTmp($"load {vt.Llvm}, ptr {slot}"), vt);
+    }
+
+    /// One arm pattern of a `when` on a variant: `is S64 as n` binds the value as that branch, `is Unit` doesn't.
     private (int Index, ValueRef? Binding) VariantPattern(Expr e, VariantType v)
     {
-        (string? owner, string name, List<Expr> args) = e switch
-        {
-            NsCallExpr n => (n.Owner.Name, n.Name, n.Args),
-            ImplicitCallExpr ic => (null, ic.Name, ic.Args),
-            ImplicitMemberExpr m => (null, m.Name, []),
-            PresetRef { Owner: { } o } r => (o.Name, r.Name, []),
-            _ => throw Err(e.Pos, $"a when on {v} matches its cases: {v.Decl.Name}.{v.Decl.Cases[0].Name}"),
-        };
-        if (owner is not null && owner != v.Decl.Name) throw Err(e.Pos, $"'{owner}' isn't {v}; its cases are {v.Decl.Name}.*");
-        int index = v.CaseIndex(name);
-        if (index < 0) throw Err(e.Pos, $"variant '{v.Decl.Name}' has no case '{name}'");
-        _c.CaseUses.Add(e.Pos);
-        var payload = v.Payloads[index];
-        switch (args)
-        {
-            case []:
-                return (index, null);
-            case [ValueRef r] when payload is not null:
-                return (index, r);
-            case [ValueRef]:
-                throw Err(e.Pos, $"{v.Decl.Name}.{name} carries no payload to bind");
-            default:
-                throw Err(e.Pos, $"bind the payload to a name: {v.Decl.Name}.{name}(value)");
-        }
+        if (e is not IsPattern p)
+            throw Err(e.Pos, $"a when on {v} observes its value as one of its branches: is {v.Branches[0]} as value");
+        var type = Resolve(p.Type);
+        int index = v.BranchIndex(type);
+        if (index < 0)
+            throw Err(p.Type.Pos, $"{type} isn't a branch of {v}; its branches are {string.Join(", ", v.Branches)}");
+        _c.CaseUses.Add(p.Pos);
+        return (index, p.Binding);
     }
 
-    /// A `when` on a variant switches on its tag. An arm that binds the payload gets its own block, which reads the
-    /// payload out of a stack copy of the value and then goes on to the arm's target.
+    /// A `when` on a variant switches on its tag's branch type ID. An arm that names the value gets its own block,
+    /// which reads the value out of a stack copy and then goes on to the arm's target. `else as rest` names what is
+    /// left: the one branch no arm observes, or else the whole value. A value that holds none of the branches (a
+    /// hollow one, all zero) crashes.
     private void EmitVariantWhen(WhenValueTerm sw, Val v, VariantType vt)
     {
         string tag = EmitTmp($"extractvalue {vt.Llvm} {v.Op}, 0");
+        string id = EmitTmp($"trunc {VariantType.Tag.Llvm} {tag} to i32");
         var arms = sw.Arms.Select(a => (Patterns: a.Cases?.Select(c => VariantPattern(c, vt)).ToList(), a.Target)).ToList();
         string? slot = null;
-        if (arms.Any(a => a.Patterns?.Any(p => p.Binding is not null) == true))
+        if (arms.Any(a => a.Patterns?.Any(p => p.Binding is not null) == true) || sw.ElseBinding is not null)
         {
             slot = NewSlot(vt);
             Line($"store {vt.Llvm} {v.Op}, ptr {slot}");
         }
 
         string? defaultLabel = null;
+        Target? elseTarget = null;
         var cases = new List<string>();
         var seen = new HashSet<int>();
         foreach (var (patterns, target) in arms)
         {
             if (patterns is null)
             {
-                if (defaultLabel is not null) throw Err(target.Pos, "when has two else arms");
-                defaultLabel = ArmLabel(target);
+                if (elseTarget is not null) throw Err(target.Pos, "when has two else arms");
+                elseTarget = target;
                 continue;
             }
             if (patterns.Count > 1 && patterns.Any(p => p.Binding is not null))
-                throw Err(target.Pos, "an arm that binds a payload matches one case");
+                throw Err(target.Pos, "an arm that names the value observes one branch");
             string label = patterns[0].Binding is { } binding
-                ? BindingArm(vt, slot!, patterns[0].Index, binding, target)
+                ? BindingArm(vt, slot!, vt.Branches[patterns[0].Index], binding, target)
                 : ArmLabel(target);
             foreach (var (index, _) in patterns)
             {
-                if (!seen.Add(index)) throw Err(target.Pos, $"duplicate when case {vt.Decl.Name}.{vt.Decl.Cases[index].Name}");
-                cases.Add($"{vt.Tag.Llvm} {index}, label %{label}");
+                if (!seen.Add(index)) throw Err(target.Pos, $"two arms observe {vt.Branches[index]}");
+                cases.Add($"i32 {VariantType.TypeId(vt.Branches[index])}, label %{label}");
             }
         }
-        if (defaultLabel is null)
+        var missing = vt.Branches.Where((_, i) => !seen.Contains(i)).ToList();
+        if (elseTarget is not null)
         {
-            // Without else, a when on a variant must name every case.
-            var missing = vt.Decl.Cases.Where((_, i) => !seen.Contains(i)).Select(c => c.Name).ToList();
-            if (missing.Count > 0)
-                throw Err(sw.Pos, $"when on {vt} doesn't cover {string.Join(", ", missing)}; add them or an else arm");
-            var saved = _cur;
-            _cur = NewLBlock("nocase");
-            defaultLabel = _cur.Label;
-            Terminate("unreachable");
-            _cur = saved;
+            if (missing.Count == 0) throw Err(elseTarget.Pos, $"every branch of {vt} has its arm, so else never runs");
+            if (sw.ElseBinding is { } rest)
+            {
+                defaultLabel = missing.Count == 1
+                    ? BindingArm(vt, slot!, missing[0], rest, elseTarget)
+                    : WholeValueArm(v, rest, elseTarget);
+                // The branches else takes are listed, so a value holding none of them still crashes below.
+                foreach (var m in missing) cases.Add($"i32 {VariantType.TypeId(m)}, label %{defaultLabel}");
+                defaultLabel = null;
+            }
+            else
+            {
+                string label = ArmLabel(elseTarget);
+                foreach (var m in missing) cases.Add($"i32 {VariantType.TypeId(m)}, label %{label}");
+            }
         }
-        Terminate($"switch {vt.Tag.Llvm} {tag}, label %{defaultLabel} [ {string.Join(" ", cases)} ]");
+        else if (missing.Count > 0)
+            throw Err(sw.Pos, $"when on {vt} doesn't observe {string.Join(", ", missing)}; add an arm for each, or an else arm");
+        var saved = _cur;
+        _cur = NewLBlock("hollow");
+        defaultLabel = _cur.Label;
+        EmitTarget(new ExprTarget(new CallExpr("crash", [], [new StrLit("InvalidValueError", sw.Pos),
+            new StrLit($"This {vt} holds none of its branches: it is hollow (all zero), not a value of one of them.", sw.Pos)],
+            sw.Pos) { ArgNames = ["name", "message"], Path = "Standard/Core" }, sw.Pos));
+        _cur = saved;
+        Terminate($"switch i32 {id}, label %{defaultLabel} [ {string.Join(" ", cases)} ]");
     }
 
-    /// After a guard's `when`, the lines that follow see the payload of the arm that continues, when it is the only
-    /// one that does: every other arm left the block, so the lines run only after that arm, and the payload it read
-    /// is a block binding from here on, under the same rules as any other. The payloads of the arms that left, or of
-    /// arms that continue alongside others, are not bound, and a use of one says why.
+    /// `else as rest` when several branches are left: `rest` is the whole value, still the variant.
+    private string WholeValueArm(Val v, ValueRef binding, Target target)
+    {
+        var saved = _cur;
+        var savedValues = _values;
+        _cur = NewLBlock("rest");
+        string label = _cur.Label;
+        _values = new Dictionary<string, Val>(_values);
+        Define(binding.Name, v, binding.Pos);
+        if (target is ContinueTarget && _continuedPayloads is { } kept) kept[binding.Name] = (v, binding.Pos);
+        EmitTarget(target);
+        _values = savedValues;
+        _cur = saved;
+        return label;
+    }
+
+    /// After a guard's `when`, the lines that follow see the value named by the arm that continues, when it is the
+    /// only one that does: every other arm left the block, so the lines run only after that arm, and the name is a
+    /// block binding from here on, under the same rules as any other. The names of the arms that left, or of arms
+    /// that continue alongside others, are not bound, and a use of one says why.
     private void KeepContinuedPayload(Terminator term, Dictionary<string, (Val Value, Pos Pos)> continued)
     {
         if (term is not WhenValueTerm when) return;
         int continuing = when.Arms.Count(a => a.Target is ContinueTarget);
-        foreach (var (cases, target) in when.Arms)
+        var named = when.Arms
+            .Select(a => (Binding: a.Cases is [IsPattern { Binding: { } b }] ? b : a.Cases is null ? when.ElseBinding : null,
+                Pattern: a.Cases is [IsPattern p] ? (Expr)p : null, a.Target));
+        foreach (var (binding, pattern, target) in named)
         {
-            if (cases is not [var pattern] || PayloadBinding(pattern) is not { } binding) continue;
-            string arm = PatternText(pattern, binding.Name);
+            if (binding is null) continue;
+            string arm = pattern is IsPattern ip ? $"is {ip.Type} as {binding.Name}" : $"else as {binding.Name}";
+            int line = pattern?.Pos.Line ?? binding.Pos.Line;
             if (target is ContinueTarget && continuing == 1)
             {
                 var (value, pos) = continued[binding.Name];
@@ -1232,44 +1286,36 @@ public sealed class FunctionGen
             }
             if (_values.ContainsKey(binding.Name)) continue;
             _hiddenPayloads[binding.Name] = target is ContinueTarget
-                ? $"'{binding.Name}' is the payload of the arm {arm} (line {pattern.Pos.Line}), and {continuing} arms of "
-                  + "that when continue, so the lines after it don't know which payload they have: give each arm a "
-                  + "block of its own, or let only one arm continue"
-                : $"'{binding.Name}' is the payload of the arm {arm} (line {pattern.Pos.Line}), which leaves the block: "
-                  + "only the arm that continues binds its payload for the lines after the when";
+                ? $"'{binding.Name}' is named by the arm {arm} (line {line}), and {continuing} arms of that when "
+                  + "continue, so the lines after it don't know which value they have: give each arm a block of its "
+                  + "own, or let only one arm continue"
+                : $"'{binding.Name}' is named by the arm {arm} (line {line}), which leaves the block: only the arm "
+                  + "that continues names its value for the lines after the when";
         }
     }
 
-    /// The name a `when` arm's pattern binds its payload to: `n` of `.Present(n)`.
-    private static ValueRef? PayloadBinding(Expr pattern) => pattern switch
+    private string BindingArm(VariantType vt, string slot, DType branch, ValueRef binding, Target target)
     {
-        NsCallExpr { Args: [ValueRef r] } => r,
-        ImplicitCallExpr { Args: [ValueRef r] } => r,
-        _ => null,
-    };
-
-    /// A pattern as written, for a message: `.Present(value)`, `Expr.Number(n)`.
-    private static string PatternText(Expr pattern, string binding) => pattern switch
-    {
-        NsCallExpr n => $"{n.Owner.Name}.{n.Name}({binding})",
-        ImplicitCallExpr ic => $".{ic.Name}({binding})",
-        _ => binding,
-    };
-
-    private string BindingArm(VariantType vt, string slot, int index, ValueRef binding, Target target)
-    {
-        var payload = vt.Payloads[index]!;
         var saved = _cur;
         var savedValues = _values;
         _cur = NewLBlock("case");
         string label = _cur.Label;
-        string at = EmitTmp($"getelementptr inbounds {vt.Llvm}, ptr {slot}, i32 0, i32 2");
-        string value = EmitTmp($"load {payload.Llvm}, ptr {at}");
+        string value;
+        if (_c.VariantStorage(vt).Aligner is null || _c.SizeAlign(branch, default).Size == 0)
+        {
+            _c.EnsureTypeDefined(branch);
+            value = "zeroinitializer";
+        }
+        else
+        {
+            string at = EmitTmp($"getelementptr inbounds {vt.Llvm}, ptr {slot}, i32 0, i32 2");
+            value = EmitTmp($"load {branch.Llvm}, ptr {at}");
+        }
         _values = new Dictionary<string, Val>(_values);
-        Define(binding.Name, new Val(value, payload), binding.Pos);
-        // A guard's continuing arm: the lines after the when may see the payload (KeepContinuedPayload).
+        Define(binding.Name, new Val(value, branch), binding.Pos);
+        // A guard's continuing arm: the lines after the when may see the value (KeepContinuedPayload).
         if (target is ContinueTarget && _continuedPayloads is { } kept)
-            kept[binding.Name] = (new Val(value, payload), binding.Pos);
+            kept[binding.Name] = (new Val(value, branch), binding.Pos);
         EmitTarget(target);
         _values = savedValues;
         _cur = saved;
@@ -1774,7 +1820,9 @@ public sealed class FunctionGen
                 var pt = _c.ResolveType(p, env);
                 if (InferQuiet(args[i]) is { } at)
                 {
-                    if (!at.Equals(pt)) return No(ArgumentMismatch(i + 1, at.ToString(), pt));
+                    // A value of a branch type goes into its variant, a fit an exact overload beats.
+                    if (Widens(at, pt)) preferred = false;
+                    else if (!at.Equals(pt)) return No(ArgumentMismatch(i + 1, at.ToString(), pt));
                     continue;
                 }
                 if (UntypedMisfit(args[i], pt, ref preferred) is { } why) return No($"argument {i + 1}: {why}");
@@ -1846,6 +1894,14 @@ public sealed class FunctionGen
     /// USize (SSize when negative) clears `preferred`.
     private string? UntypedMisfit(Expr arg, DType pt, ref bool preferred)
     {
+        // A literal goes into a variant through the one branch that takes it.
+        if (pt is VariantType variant && arg is IntLit or FloatLit or NullLit or StrLit)
+        {
+            if (UntypedBranch(arg, variant) is not { } branch)
+                return $"this literal fits no single branch of {variant}; give it the branch's type";
+            preferred = false;
+            return UntypedMisfit(arg, branch, ref preferred);
+        }
         switch (arg)
         {
             case IntLit i:
@@ -1878,9 +1934,8 @@ public sealed class FunctionGen
             case RecordLit { Type: null }:
                 return pt is RecordType { IsTuple: false } ? null : $"(name: ...) can't be a {pt}";
             case ImplicitMemberExpr m:
-                return pt is VariantType v && v.CaseIndex(m.Name) >= 0 ? null : $"{pt} has no case '{m.Name}'";
+                return $"'.{m.Name}' isn't a value of {pt}";
             case ImplicitCallExpr ic:
-                if (pt is VariantType vc && vc.CaseIndex(ic.Name) >= 0) return null;
                 try
                 {
                     return _c.MethodCandidates(pt, ic.Name, _env.File, ic.Pos).Count > 0 ? null : $"{pt} has no routine '{ic.Name}'";
@@ -2816,6 +2871,10 @@ public sealed class FunctionGen
                 }
                 if (v.Type is not (IntType or ChoiceType))
                     throw Err(sw.Value.Pos, $"when v needs an integer, Byte, Char, choice, or variant value, not {v.Type}");
+                if (sw.ElseBinding is { } named)
+                    throw Err(named.Pos, $"'else as {named.Name}' names what a variant's other arms leave, and {v.Type} isn't a variant");
+                if (sw.Arms.SelectMany(a => a.Cases ?? []).OfType<IsPattern>().FirstOrDefault() is { } observed)
+                    throw Err(observed.Pos, $"'is' observes a variant's branch, and {v.Type} isn't a variant");
                 string? defaultLabel = null;
                 var cases = new List<string>();
                 var seen = new HashSet<string>();

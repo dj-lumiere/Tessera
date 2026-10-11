@@ -61,15 +61,15 @@ require T: typename
     block entry()
         made: Result[Me, AllocFailed] = Me.construct_result(count, alloc)
         when made
-            .Success(slice) => return(slice)
-            .Failure => crash_allocation()
+            is Me as slice => return(slice)
+            is AllocFailed => crash_allocation()
 
-/// `construct`, returning a Failure instead of crashing when the allocator fails. A count of 0 allocates nothing and
+/// `construct`, returning an error instead of crashing when the allocator fails. A count of 0 allocates nothing and
 /// keeps the allocator.
 /// :param count: The number of values.
 /// :param alloc: The allocator the memory comes from and goes back to.
-/// :returns: Success with the slice of `count` uninitialized values.
-/// :throws: Returns Failure(`AllocFailed`) when the allocator fails.
+/// :returns: The slice of `count` uninitialized values.
+/// :throws: Returns `AllocFailed` when the allocator fails.
 #expensive("allocates heap memory")
 routine Slice[T].construct_result(count: USize, alloc: @MemoryManager) -> Result[Me, AllocFailed]
 require T: typename
@@ -81,14 +81,14 @@ require T: typename
         data: @T = allocate[T](count, alloc)
         failed: Bool = data.is_null()
         branch failed
-            ? return(.Failure(AllocFailed()))
+            ? return(AllocFailed())
             : continue
         slice: Me = Me(data: data, count: count, alloc: alloc)
-        return(.Success(slice))
+        return(slice)
 
     block empty()
         slice: Me = Me(data: null, count: 0, alloc: alloc)
-        return(.Success(slice))
+        return(slice)
 
 // -- reading ------------------------------------------------------------------------------------------------------
 
@@ -173,28 +173,28 @@ require T: typename
         value: T = me.peek().getitem(index)
         return(value)
 
-/// `getitem`, returning Absent instead of crashing on an index past the end.
+/// `getitem`, returning Unit instead of crashing on an index past the end.
 /// :param index: The zero-based position.
 /// :returns: A copy of the value.
 /// :absent: When `index >= count`.
-routine Slice[T].getitem_checked(me: Me, index: USize) -> Option[T]
+routine Slice[T].getitem_checked(me: Me, index: USize) -> Maybe[T]
 require T: typename
     block entry()
         inside: Bool = index.lt(me.count)
         branch inside
             ? continue
-            : return(.Absent)
+            : return(Unit())
         value: T = me.data.stride(index).peek()
-        return(.Present(value))
+        return(value)
 
-/// `getitem`, returning Absent instead of crashing on an index past the end.
+/// `getitem`, returning Unit instead of crashing on an index past the end.
 /// :param index: The zero-based position.
 /// :returns: A copy of the value.
 /// :absent: When `index >= count`.
-routine Slice[T].getitem_checked(me: @Me, index: USize) -> Option[T]
+routine Slice[T].getitem_checked(me: @Me, index: USize) -> Maybe[T]
 require T: typename
     block entry()
-        value: Option[T] = me.peek().getitem_checked(index)
+        value: Maybe[T] = me.peek().getitem_checked(index)
         return(value)
 
 /// Writes `value` at `index`, checked: `at(index).poke(value)`.
@@ -283,13 +283,13 @@ require T: typename
     block entry()
         resized: Result[Unit, AllocFailed] = me.resize_result(count)
         when resized
-            .Success => return()
-            .Failure => crash_allocation()
+            is Unit => return()
+            is AllocFailed => crash_allocation()
 
-/// `resize`, returning a Failure instead of crashing when the allocator fails. The slice is unchanged then.
+/// `resize`, returning an error instead of crashing when the allocator fails. The slice is unchanged then.
 /// :param count: The new number of values.
 /// :returns: Success once the slice holds `count` values.
-/// :throws: Crashes with `InvalidValueError` on a borrowed slice (a null allocator). Returns Failure(`AllocFailed`)
+/// :throws: Crashes with `InvalidValueError` on a borrowed slice (a null allocator). Returns `AllocFailed`
 ///     when the allocator fails.
 #track_caller
 #expensive("reallocates heap memory")
@@ -310,11 +310,11 @@ require T: typename
         data: @T = reallocate[T](ptr: me.data.peek(), new_count: count, alloc)
         failed: Bool = data.is_null()
         branch failed
-            ? return(.Failure(AllocFailed()))
+            ? return(AllocFailed())
             : continue
         me.data.poke(data)
         me.count.poke(count)
-        return(.Success(Unit.value()))
+        return(Unit())
 
     block emptied()
         data: @T = me.data.peek()
@@ -328,7 +328,7 @@ require T: typename
     block reset()
         me.data.poke(null)
         me.count.poke(0)
-        return(.Success(Unit.value()))
+        return(Unit())
 
 /// Gives the memory back to the allocator it came from and leaves the slice empty: a null data, a count of 0, and a
 /// null allocator. Does nothing on a borrowed slice (a null allocator). The values themselves are not destructed:

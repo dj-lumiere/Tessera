@@ -81,8 +81,8 @@ require T: typename
         alloc: @MemoryManager = me.storage.alloc.peek()
         made: Result[Slice[T], AllocFailed] = Slice[T].construct_result(count: new_capacity, alloc)
         when made
-            .Success(fresh) => move(fresh)
-            .Failure => return(false)
+            is Slice[T] as fresh => move(fresh)
+            is AllocFailed => return(false)
 
     block move(fresh: Slice[T])
         old_data: @T = me.storage.data.peek()
@@ -180,27 +180,27 @@ require T: typename
     block entry()
         pushed: Result[Unit, AllocFailed] = me.add_last_result(value)
         when pushed
-            .Success => return()
-            .Failure => crash_allocation()
+            is Unit => return()
+            is AllocFailed => crash_allocation()
 
-/// `add_last`, returning a Failure instead of crashing when the allocator fails.
+/// `add_last`, returning an error instead of crashing when the allocator fails.
 /// :param value: The element to add.
-/// :returns: `Success` once the element is added.
-/// :throws: Returns `Failure(AllocFailed)` when the buffer must grow and the allocator fails.
+/// :returns: A value once the element is added.
+/// :throws: Returns `AllocFailed` when the buffer must grow and the allocator fails.
 routine CircularList[T].add_last_result(me: @Me, value: T) -> Result[Unit, AllocFailed]
 require T: typename
     block entry()
         room: Bool = me.ensure_back()
         branch room
             ? continue
-            : return(.Failure(AllocFailed()))
+            : return(AllocFailed())
         data: @T = me.storage.data.peek()
         start: USize = me.start.peek()
         count: USize = me.count.peek()
         index: USize = start.add(count)
         data.stride(index).poke(value)
         me.count.poke(count.add(1))
-        return(.Success(Unit.value()))
+        return(Unit())
 
 /// Prepends `value` before the first element, so it becomes index `0`.
 /// :param value: The element to add.
@@ -211,20 +211,20 @@ require T: typename
     block entry()
         pushed: Result[Unit, AllocFailed] = me.add_first_result(value)
         when pushed
-            .Success => return()
-            .Failure => crash_allocation()
+            is Unit => return()
+            is AllocFailed => crash_allocation()
 
-/// `add_first`, returning a Failure instead of crashing when the allocator fails.
+/// `add_first`, returning an error instead of crashing when the allocator fails.
 /// :param value: The element to add.
-/// :returns: `Success` once the element is added.
-/// :throws: Returns `Failure(AllocFailed)` when the buffer must grow and the allocator fails.
+/// :returns: A value once the element is added.
+/// :throws: Returns `AllocFailed` when the buffer must grow and the allocator fails.
 routine CircularList[T].add_first_result(me: @Me, value: T) -> Result[Unit, AllocFailed]
 require T: typename
     block entry()
         room: Bool = me.ensure_front()
         branch room
             ? continue
-            : return(.Failure(AllocFailed()))
+            : return(AllocFailed())
         data: @T = me.storage.data.peek()
         start: USize = me.start.peek()
         new_start: USize = start.sub(1)
@@ -232,7 +232,7 @@ require T: typename
         me.start.poke(new_start)
         next_count: USize = me.count.peek().add(1)
         next_count.poke_into(me.count)
-        return(.Success(Unit.value()))
+        return(Unit())
 
 /// Removes the last element and returns it.
 /// :returns: The removed element.
@@ -241,22 +241,22 @@ require T: typename
 routine CircularList[T].remove_last(me: @Me) -> T
 require T: typename
     block entry()
-        popped: Option[T] = me.remove_last_checked()
+        popped: Maybe[T] = me.remove_last_checked()
         when popped
-            .Present(value) => return(value)
-            .Absent => crash_absent_value()
+            is T as value => return(value)
+            is Unit => crash_absent_value()
 
-/// `remove_last`, returning Absent instead of crashing on an empty list.
+/// `remove_last`, returning Unit instead of crashing on an empty list.
 /// :returns: The removed element.
 /// :absent: When the list is empty.
-routine CircularList[T].remove_last_checked(me: @Me) -> Option[T]
+routine CircularList[T].remove_last_checked(me: @Me) -> Maybe[T]
 require T: typename
     local count: USize = me.count.peek()
 
     block entry()
         empty: Bool = count.eq(0)
         branch empty
-            ? return(.Absent)
+            ? return(Unit())
             : pop()
 
     block pop()
@@ -266,7 +266,7 @@ require T: typename
         index: USize = start.add(new_count)
         value: T = data.stride(index).peek()
         me.count.poke(new_count)
-        return(.Present(value))
+        return(value)
 
 /// Removes the first element and returns it. Every remaining element's index drops by one.
 /// :returns: The removed element.
@@ -275,22 +275,22 @@ require T: typename
 routine CircularList[T].remove_first(me: @Me) -> T
 require T: typename
     block entry()
-        popped: Option[T] = me.remove_first_checked()
+        popped: Maybe[T] = me.remove_first_checked()
         when popped
-            .Present(value) => return(value)
-            .Absent => crash_absent_value()
+            is T as value => return(value)
+            is Unit => crash_absent_value()
 
-/// `remove_first`, returning Absent instead of crashing on an empty list.
+/// `remove_first`, returning Unit instead of crashing on an empty list.
 /// :returns: The removed element.
 /// :absent: When the list is empty.
-routine CircularList[T].remove_first_checked(me: @Me) -> Option[T]
+routine CircularList[T].remove_first_checked(me: @Me) -> Maybe[T]
 require T: typename
     local count: USize = me.count.peek()
 
     block entry()
         empty: Bool = count.eq(0)
         branch empty
-            ? return(.Absent)
+            ? return(Unit())
             : pop()
 
     block pop()
@@ -299,7 +299,7 @@ require T: typename
         value: T = data.stride(start).peek()
         me.start.poke(start.add(1))
         me.count.poke(count.sub(1))
-        return(.Present(value))
+        return(value)
 
 /// Reads the element at logical position `index`, counted from the front.
 /// :param index: The zero-based position to read.
@@ -321,24 +321,24 @@ require T: typename
         value: T = data.stride(start.add(index)).peek()
         return(value)
 
-/// `getitem`, returning Absent instead of crashing on an index past the end.
+/// `getitem`, returning Unit instead of crashing on an index past the end.
 /// :param index: The zero-based position to read.
 /// :returns: A copy of the element.
 /// :absent: When `index >= count`.
-routine CircularList[T].getitem_checked(me: Me, index: USize) -> Option[T]
+routine CircularList[T].getitem_checked(me: Me, index: USize) -> Maybe[T]
 require T: typename
     block entry()
         count: USize = me.count
         in_bounds: Bool = index.lt(count)
         branch in_bounds
             ? load()
-            : return(.Absent)
+            : return(Unit())
 
     block load()
         data: @T = me.storage.data
         start: USize = me.start
         value: T = data.stride(start.add(index)).peek()
-        return(.Present(value))
+        return(value)
 
 /// The address of element `index`, checked like getitem: a place to read or write in place. It stays valid until
 /// the list grows, shrinks, or is destructed.
@@ -361,24 +361,24 @@ require T: typename
         element: @T = data.stride(start.add(index))
         return(element)
 
-/// `at`, returning Absent instead of crashing on an index past the end.
+/// `at`, returning Unit instead of crashing on an index past the end.
 /// :param index: The zero-based position.
 /// :returns: The element's address.
 /// :absent: When `index >= count`.
-routine CircularList[T].getslot_checked(me: Me, index: USize) -> Option[@T]
+routine CircularList[T].getslot_checked(me: Me, index: USize) -> Maybe[@T]
 require T: typename
     block entry()
         count: USize = me.count
         in_bounds: Bool = index.lt(count)
         branch in_bounds
             ? address()
-            : return(.Absent)
+            : return(Unit())
 
     block address()
         data: @T = me.storage.data
         start: USize = me.start
         element: @T = data.stride(start.add(index))
-        return(.Present(element))
+        return(element)
 
 /// Reads the element at logical position `index`, counted from the front.
 /// :param index: The zero-based position to read.
@@ -391,14 +391,14 @@ require T: typename
         value: T = me.peek().getitem(index)
         return(value)
 
-/// `getitem`, returning Absent instead of crashing on an index past the end.
+/// `getitem`, returning Unit instead of crashing on an index past the end.
 /// :param index: The zero-based position to read.
 /// :returns: A copy of the element.
 /// :absent: When `index >= count`.
-routine CircularList[T].getitem_checked(me: @Me, index: USize) -> Option[T]
+routine CircularList[T].getitem_checked(me: @Me, index: USize) -> Maybe[T]
 require T: typename
     block entry()
-        value: Option[T] = me.peek().getitem_checked(index)
+        value: Maybe[T] = me.peek().getitem_checked(index)
         return(value)
 
 /// The address of element `index`, checked like getitem: a place to read or write in place. It stays valid until
@@ -413,14 +413,14 @@ require T: typename
         element: @T = me.peek().getslot(index)
         return(element)
 
-/// `at`, returning Absent instead of crashing on an index past the end.
+/// `at`, returning Unit instead of crashing on an index past the end.
 /// :param index: The zero-based position.
 /// :returns: The element's address.
 /// :absent: When `index >= count`.
-routine CircularList[T].getslot_checked(me: @Me, index: USize) -> Option[@T]
+routine CircularList[T].getslot_checked(me: @Me, index: USize) -> Maybe[@T]
 require T: typename
     block entry()
-        element: Option[@T] = me.peek().getslot_checked(index)
+        element: Maybe[@T] = me.peek().getslot_checked(index)
         return(element)
 
 /// Whether two lists hold equal elements in the same logical order, regardless of where each sits in its buffer.
@@ -527,10 +527,10 @@ require T: typename, Destructible[T]
         jump next()
 
     block next()
-        item: Option[T] = iter.emit_checked()
+        item: Maybe[T] = iter.emit_checked()
         when item
-            .Present(value) => element(value)
-            .Absent => finish()
+            is T as value => element(value)
+            is Unit => finish()
 
     block element(value: T)
         slot.poke(value)

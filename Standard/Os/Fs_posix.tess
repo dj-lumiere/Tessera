@@ -424,16 +424,16 @@ private routine last_error() -> FsError
 
 /// A failure carrying the FsError for the calling thread's `errno`.
 /// :typeparam T: The success type of the result.
-/// :returns: `Failure` with that FsError.
+/// :returns: The error that FsError.
 #target(os: ("linux", "macos"))
 private routine failed[T]() -> Result[T, FsError]
 require T: typename
     block entry()
-        return(.Failure(last_error()))
+        return(last_error())
 
 /// A C return code as a result: 0 is success, anything else the last error.
 /// :param rc: The return code.
-/// :returns: `Success(Unit)` for 0, else `Failure` with the FsError for `errno`.
+/// :returns: `Unit` for 0, else the FsError for `errno`.
 #target(os: ("linux", "macos"))
 private routine checked(rc: CInt) -> Result[Unit, FsError]
     block entry()
@@ -570,7 +570,7 @@ private routine ns_of(sec: S64, nsec: S64) -> S64
 #[external("c"), symbol("statx"), target(os: "linux")]
 private routine c_statx(dir: CInt, path: @Byte, flags: CInt, mask: U32, out: @Statx) -> CInt
 
-/// The Metadata in a `struct statx`. The creation time is Absent when the filesystem didn't fill `btime`, and
+/// The Metadata in a `struct statx`. The creation time is Unit when the filesystem didn't fill `btime`, and
 /// read-only means the owner has no write permission.
 /// :returns: The metadata.
 #target(os: "linux")
@@ -579,9 +579,9 @@ private routine Statx.to[Metadata](me: Me) -> Metadata
         mode: U32 = me.mode.to[U32]()
         modified: S64 = ns_of(sec: me.mtime.sec, nsec: me.mtime.nsec.to[S64]())
         born: Bool = me.mask.bitand(STATX_BTIME).ne(0)
-        created: Option[S64] = born
-            ? Option[S64].Present(ns_of(sec: me.btime.sec, nsec: me.btime.nsec.to[S64]()))
-            : .Absent
+        created: Maybe[S64] = born
+            ? ns_of(sec: me.btime.sec, nsec: me.btime.nsec.to[S64]())
+            : Unit()
         return(Metadata(kind: mode_kind(mode), size: me.size, modified_ns: modified,
             created_ns: created, readonly: mode.bitand(0o200).eq(0)))
 
@@ -599,8 +599,8 @@ private routine stat_raw(dir: CInt, cpath: @Byte, flags: CInt, out: @Statx) -> B
 /// The metadata of the NUL-terminated cpath.
 /// :param cpath: The NUL-terminated path.
 /// :param follow: True to describe what a link points at, false to describe the link itself.
-/// :returns: `Success` with the metadata.
-/// :throws: Returns `Failure` with the FsError for `errno` when statx fails.
+/// :returns: The metadata.
+/// :throws: Returns the FsError for `errno` when statx fails.
 #target(os: "linux")
 private routine metadata_of(cpath: @Byte, follow: Bool) -> Result[Metadata, FsError]
     block entry()
@@ -609,19 +609,19 @@ private routine metadata_of(cpath: @Byte, follow: Bool) -> Result[Metadata, FsEr
             ? 0
             : AT_SYMLINK_NOFOLLOW
         branch stat_raw(dir: AT_FDCWD, cpath, flags, out: st)
-            ? return(.Success(st.peek().to[Metadata]()))
+            ? return(st.peek().to[Metadata]())
             : return(failed[Metadata]())
 
 /// The metadata of the open file fd.
 /// :param fd: The open file.
-/// :returns: `Success` with the metadata.
-/// :throws: Returns `Failure` with the FsError for `errno` when statx fails.
+/// :returns: The metadata.
+/// :throws: Returns the FsError for `errno` when statx fails.
 #target(os: "linux")
 private routine fd_metadata(fd: CInt) -> Result[Metadata, FsError]
     block entry()
         claim st: @Statx <- .hollow()
         branch stat_raw(dir: fd, cpath: "", flags: AT_EMPTY_PATH, out: st)
-            ? return(.Success(st.peek().to[Metadata]()))
+            ? return(st.peek().to[Metadata]())
             : return(failed[Metadata]())
 
 /// The permission bits of the open file fd, or 0o666 when they can't be read.
@@ -645,12 +645,12 @@ private routine fd_mode(fd: CInt) -> U32
 /// :returns: The mode, type bits included.
 /// :absent: When statx fails.
 #target(os: "linux")
-private routine path_mode(cpath: @Byte) -> Option[U32]
+private routine path_mode(cpath: @Byte) -> Maybe[U32]
     block entry()
         claim st: @Statx <- .hollow()
         branch stat_raw(dir: AT_FDCWD, cpath, flags: 0, out: st)
-            ? return(.Present(st.mode.peek().to[U32]()))
-            : return(.Absent)
+            ? return(st.mode.peek().to[U32]())
+            : return(Unit())
 
 /// Binds the C `stat$INODE64` function: reads a file's metadata, a link followed.
 /// :param path: The NUL-terminated path.
@@ -704,13 +704,13 @@ private routine DarwinStat.to[Metadata](me: Me) -> Metadata
         modified: S64 = ns_of(sec: me.mtime.sec, nsec: me.mtime.nsec)
         created: S64 = ns_of(sec: me.birthtime.sec, nsec: me.birthtime.nsec)
         return(Metadata(kind: mode_kind(mode), size: me.size.to_wrap[U64](), modified_ns: modified,
-            created_ns: .Present(created), readonly: mode.bitand(0o200).eq(0)))
+            created_ns: created, readonly: mode.bitand(0o200).eq(0)))
 
 /// The metadata of the NUL-terminated cpath.
 /// :param cpath: The NUL-terminated path.
 /// :param follow: True to describe what a link points at (stat), false to describe the link itself (lstat).
-/// :returns: `Success` with the metadata.
-/// :throws: Returns `Failure` with the FsError for `errno` when the call fails.
+/// :returns: The metadata.
+/// :throws: Returns the FsError for `errno` when the call fails.
 #target(os: "macos")
 private routine metadata_of(cpath: @Byte, follow: Bool) -> Result[Metadata, FsError]
     local st: @DarwinStat <- .hollow()
@@ -722,19 +722,19 @@ private routine metadata_of(cpath: @Byte, follow: Bool) -> Result[Metadata, FsEr
 
     block got(rc: CInt)
         branch rc.eq(0)
-            ? return(.Success(st.peek().to[Metadata]()))
+            ? return(st.peek().to[Metadata]())
             : return(failed[Metadata]())
 
 /// The metadata of the open file fd.
 /// :param fd: The open file.
-/// :returns: `Success` with the metadata.
-/// :throws: Returns `Failure` with the FsError for `errno` when fstat fails.
+/// :returns: The metadata.
+/// :throws: Returns the FsError for `errno` when fstat fails.
 #target(os: "macos")
 private routine fd_metadata(fd: CInt) -> Result[Metadata, FsError]
     block entry()
         claim st: @DarwinStat <- .hollow()
         branch c_fstat(fd, st).eq(0)
-            ? return(.Success(st.peek().to[Metadata]()))
+            ? return(st.peek().to[Metadata]())
             : return(failed[Metadata]())
 
 /// The permission bits of the open file fd, or 0o666 when they can't be read.
@@ -758,36 +758,36 @@ private routine fd_mode(fd: CInt) -> U32
 /// :returns: The mode, type bits included.
 /// :absent: When stat fails.
 #target(os: "macos")
-private routine path_mode(cpath: @Byte) -> Option[U32]
+private routine path_mode(cpath: @Byte) -> Maybe[U32]
     block entry()
         claim st: @DarwinStat <- .hollow()
         branch c_stat(cpath, st).eq(0)
-            ? return(.Present(st.mode.peek().to[U32]()))
-            : return(.Absent)
+            ? return(st.mode.peek().to[U32]())
+            : return(Unit())
 
 /// path's metadata, a link followed to what it points at.
 /// :param path: The path to look at.
-/// :returns: `Success` with the metadata.
-/// :throws: Returns `Failure` with the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
+/// :returns: The metadata.
+/// :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: ("linux", "macos"))
 internal routine metadata(path: Bytes) -> Result[Metadata, FsError]
     block entry()
         claim cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
         branch c_path(path, out: cpath.to[@Byte]())
             ? return(metadata_of(cpath: cpath.to[@Byte](), follow: true))
-            : return(.Failure(path_error(path)))
+            : return(path_error(path))
 
 /// path's metadata. A link describes itself (kind Symlink).
 /// :param path: The path to look at.
-/// :returns: `Success` with the metadata.
-/// :throws: Returns `Failure` with the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
+/// :returns: The metadata.
+/// :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: ("linux", "macos"))
 internal routine symlink_metadata(path: Bytes) -> Result[Metadata, FsError]
     block entry()
         claim cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
         branch c_path(path, out: cpath.to[@Byte]())
             ? return(metadata_of(cpath: cpath.to[@Byte](), follow: false))
-            : return(.Failure(path_error(path)))
+            : return(path_error(path))
 
 // -- file handles ------------------------------------------------------------------------
 
@@ -808,8 +808,8 @@ routine FileHandle.empty() -> Me
 /// umask.
 /// :param path: The file to open.
 /// :param mode: How to open it.
-/// :returns: `Success` with the open handle.
-/// :throws: Returns `Failure` with the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
+/// :returns: The open handle.
+/// :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: ("linux", "macos"))
 internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result[Me, FsError]
     local cpath_buffer: @Array[Byte, PATH_CAPACITY] <- .hollow()
@@ -818,7 +818,7 @@ internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result[Me, FsEr
     block entry()
         branch c_path(path, out: cpath)
             ? continue
-            : return(.Failure(path_error(path)))
+            : return(path_error(path))
         f: OpenFlags = open_flags()
         when mode
             OpenMode.READ => open(f.cloexec)
@@ -836,21 +836,21 @@ internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result[Me, FsEr
         fd: CInt = c_open(cpath, flags, 0o666)
         branch fd.lt(0)
             ? return(failed[Me]())
-            : return(.Success(Me(fd: fd, failed: false)))
+            : return(Me(fd: fd, failed: false))
 
 /// Reads up to count bytes into buffer: how many, 0 at the end of the file. One call reads at most 1 GiB, and a
 /// read a signal interrupts is tried again.
 /// :param buffer: Where the bytes go.
 /// :param count: The most bytes to read.
-/// :returns: `Success` with the count read, 0 at the end of the file.
-/// :throws: Returns `Failure` with the reason when the read fails.
+/// :returns: The count read, 0 at the end of the file.
+/// :throws: Returns the reason when the read fails.
 #target(os: ("linux", "macos"))
 #expensive("asks the operating system")
 routine FileHandle.read_bytes_result(me: @Me, buffer: @Byte, count: USize) -> Result[USize, FsError]
     block entry()
         got: SSize = c_read(me.fd.peek(), buffer, count.min(1073741824))
         branch got.ge(0)
-            ? return(.Success(got.to[USize]()))
+            ? return(got.to[USize]())
             : continue
         // EINTR: a signal came first, so ask again
         branch errno().eq(4)
@@ -861,14 +861,14 @@ routine FileHandle.read_bytes_result(me: @Me, buffer: @Byte, count: USize) -> Re
 /// tried again.
 /// :param data: The first byte to write.
 /// :param count: The most bytes to write.
-/// :returns: `Success` with the count written.
-/// :throws: Returns `Failure` with the reason when the write fails.
+/// :returns: The count written.
+/// :throws: Returns the reason when the write fails.
 #target(os: ("linux", "macos"))
 internal routine FileHandle.write_some(me: @Me, data: @Byte, count: USize) -> Result[USize, FsError]
     block entry()
         wrote: SSize = c_write(me.fd.peek(), data, count.min(1073741824))
         branch wrote.ge(0)
-            ? return(.Success(wrote.to[USize]()))
+            ? return(wrote.to[USize]())
             : continue
         branch errno().eq(4)
             ? return(me.write_some(data, count))
@@ -877,8 +877,8 @@ internal routine FileHandle.write_some(me: @Me, data: @Byte, count: USize) -> Re
 /// Moves the position: the new one, from the start.
 /// :param offset: The distance to move, negative to go back.
 /// :param from: Where `offset` counts from.
-/// :returns: `Success` with the new position from the start.
-/// :throws: Returns `Failure` with the reason, such as a position before the start.
+/// :returns: The new position from the start.
+/// :throws: Returns the reason, such as a position before the start.
 #target(os: ("linux", "macos"))
 #expensive("asks the operating system")
 routine FileHandle.seek_result(me: @Me, offset: S64, from: SeekFrom) -> Result[U64, FsError]
@@ -892,12 +892,12 @@ routine FileHandle.seek_result(me: @Me, offset: S64, from: SeekFrom) -> Result[U
 
     block moved(at: S64)
         branch at.ge(0)
-            ? return(.Success(at.to[U64]()))
+            ? return(at.to[U64]())
             : return(failed[U64]())
 
 /// The metadata of the open file.
-/// :returns: `Success` with the metadata.
-/// :throws: Returns `Failure` with the reason when the OS can't report it.
+/// :returns: The metadata.
+/// :throws: Returns the reason when the OS can't report it.
 #target(os: ("linux", "macos"))
 #expensive("asks the operating system")
 routine FileHandle.metadata_result(me: @Me) -> Result[Metadata, FsError]
@@ -905,21 +905,21 @@ routine FileHandle.metadata_result(me: @Me) -> Result[Metadata, FsError]
         return(fd_metadata(me.fd.peek()))
 
 /// The size of the open file in bytes.
-/// :returns: `Success` with the size.
-/// :throws: Returns `Failure` with the reason when the OS can't report it.
+/// :returns: The size.
+/// :throws: Returns the reason when the OS can't report it.
 #target(os: ("linux", "macos"))
 #expensive("asks the operating system")
 routine FileHandle.size_result(me: @Me) -> Result[U64, FsError]
     block entry()
         m: Result[Metadata, FsError] = fd_metadata(me.fd.peek())
         when m
-            .Success(info) => return(.Success(info.size))
-            .Failure(error) => return(.Failure(error))
+            is Metadata as info => return(info.size)
+            is FsError as error => return(error)
 
 /// Truncates or extends (with zeros) the file to size bytes. The position stays.
 /// :param size: The new size in bytes.
-/// :returns: `Success(Unit)` once the size is set.
-/// :throws: Returns `Failure` with the reason when the OS refuses. Crashes with `IntegerOverflowError` when `size`
+/// :returns: `Unit` once the size is set.
+/// :throws: Returns the reason when the OS refuses. Crashes with `IntegerOverflowError` when `size`
 ///     doesn't fit in S64.
 #target(os: ("linux", "macos"))
 #expensive("asks the operating system")
@@ -928,8 +928,8 @@ routine FileHandle.set_size_result(me: @Me, size: U64) -> Result[Unit, FsError]
         return(checked(c_ftruncate(me.fd.peek(), size.to[S64]())))
 
 /// Waits until what was written is on the storage device.
-/// :returns: `Success(Unit)` once it is.
-/// :throws: Returns `Failure` with the reason when the OS reports an error.
+/// :returns: `Unit` once it is.
+/// :throws: Returns the reason when the OS reports an error.
 #target(os: ("linux", "macos"))
 #expensive("asks the operating system")
 routine FileHandle.sync_result(me: @Me) -> Result[Unit, FsError]
@@ -969,8 +969,8 @@ private routine make_dir(cpath: @Byte) -> CInt
 
 /// Makes the directory path (its parent must exist).
 /// :param path: The directory to make.
-/// :returns: `Success(Unit)` once it is made.
-/// :throws: Returns `Failure` with the reason, `AlreadyExists` when something is at `path`, `InvalidPath` or
+/// :returns: `Unit` once it is made.
+/// :throws: Returns the reason, `AlreadyExists` when something is at `path`, `InvalidPath` or
 ///     `NameTooLong` when `path` doesn't fit a C path.
 #target(os: ("linux", "macos"))
 internal routine create_dir(path: Bytes) -> Result[Unit, FsError]
@@ -978,24 +978,24 @@ internal routine create_dir(path: Bytes) -> Result[Unit, FsError]
         claim cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
         branch c_path(path, out: cpath.to[@Byte]())
             ? return(checked(make_dir(cpath.to[@Byte]())))
-            : return(.Failure(path_error(path)))
+            : return(path_error(path))
 
 /// Removes a file (or a link), not a directory.
 /// :param path: The file to remove.
-/// :returns: `Success(Unit)` once it is gone.
-/// :throws: Returns `Failure` with the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
+/// :returns: `Unit` once it is gone.
+/// :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: ("linux", "macos"))
 internal routine remove_file(path: Bytes) -> Result[Unit, FsError]
     block entry()
         claim cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
         branch c_path(path, out: cpath.to[@Byte]())
             ? return(checked(c_unlink(cpath.to[@Byte]())))
-            : return(.Failure(path_error(path)))
+            : return(path_error(path))
 
 /// Removes an empty directory.
 /// :param path: The directory to remove.
-/// :returns: `Success(Unit)` once it is gone.
-/// :throws: Returns `Failure` with the reason, `DirectoryNotEmpty` when something is in it, `InvalidPath` or
+/// :returns: `Unit` once it is gone.
+/// :throws: Returns the reason, `DirectoryNotEmpty` when something is in it, `InvalidPath` or
 ///     `NameTooLong` when `path` doesn't fit a C path.
 #target(os: ("linux", "macos"))
 internal routine remove_dir(path: Bytes) -> Result[Unit, FsError]
@@ -1003,13 +1003,13 @@ internal routine remove_dir(path: Bytes) -> Result[Unit, FsError]
         claim cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
         branch c_path(path, out: cpath.to[@Byte]())
             ? return(checked(c_rmdir(cpath.to[@Byte]())))
-            : return(.Failure(path_error(path)))
+            : return(path_error(path))
 
 /// Renames from to to, replacing what is at to. Between filesystems it fails with CrossDevice.
 /// :param from: The current path.
 /// :param to: The new path.
-/// :returns: `Success(Unit)` once it is renamed.
-/// :throws: Returns `Failure` with the reason, `InvalidPath` or `NameTooLong` when a path doesn't fit a C path.
+/// :returns: `Unit` once it is renamed.
+/// :throws: Returns the reason, `InvalidPath` or `NameTooLong` when a path doesn't fit a C path.
 #target(os: ("linux", "macos"))
 internal routine rename(from: Bytes, to: Bytes) -> Result[Unit, FsError]
     block entry()
@@ -1017,10 +1017,10 @@ internal routine rename(from: Bytes, to: Bytes) -> Result[Unit, FsError]
         claim b: @Array[Byte, PATH_CAPACITY] <- .hollow()
         branch c_path(path: from, out: a.to[@Byte]())
             ? continue
-            : return(.Failure(path_error(from)))
+            : return(path_error(from))
         branch c_path(path: to, out: b.to[@Byte]())
             ? return(checked(c_rename(a.to[@Byte](), b.to[@Byte]())))
-            : return(.Failure(path_error(to)))
+            : return(path_error(to))
 
 /// Renames a to b unless something is at b, in one step (renameat2 with `RENAME_NOREPLACE`).
 /// :param a: The current NUL-terminated path.
@@ -1046,8 +1046,8 @@ private routine rename_exclusive(a: @Byte, b: @Byte) -> CInt
 /// step, it looks first, so another process could slip a file in between.
 /// :param from: The current path.
 /// :param to: The new path.
-/// :returns: `Success(Unit)` once it is renamed.
-/// :throws: Returns `Failure` with the reason, `AlreadyExists` when something is at `to`, `InvalidPath` or
+/// :returns: `Unit` once it is renamed.
+/// :throws: Returns the reason, `AlreadyExists` when something is at `to`, `InvalidPath` or
 ///     `NameTooLong` when a path doesn't fit a C path.
 #target(os: ("linux", "macos"))
 internal routine rename_no_replace(from: Bytes, to: Bytes) -> Result[Unit, FsError]
@@ -1056,29 +1056,29 @@ internal routine rename_no_replace(from: Bytes, to: Bytes) -> Result[Unit, FsErr
         claim b: @Array[Byte, PATH_CAPACITY] <- .hollow()
         branch c_path(path: from, out: a.to[@Byte]())
             ? continue
-            : return(.Failure(path_error(from)))
+            : return(path_error(from))
         branch c_path(path: to, out: b.to[@Byte]())
             ? continue
-            : return(.Failure(path_error(to)))
+            : return(path_error(to))
         branch rename_exclusive(a: a.to[@Byte](), b: b.to[@Byte]()).eq(0)
             ? return(fs_done())
             : continue
         e: CInt = errno()
         branch e.eq(22).bitor(e.eq(errno_numbers().unsupported))
             ? look(a.to[@Byte](), b.to[@Byte]())
-            : return(.Failure(error_of(e)))
+            : return(error_of(e))
 
     block look(a: @Byte, b: @Byte)
-        there: Option[U32] = path_mode(b)
+        there: Maybe[U32] = path_mode(b)
         branch there.is_present()
-            ? return(.Failure(FsError.ALREADY_EXISTS))
+            ? return(FsError.ALREADY_EXISTS)
             : return(checked(c_rename(a, b)))
 
 /// Copies from's bytes and permissions into to (made, or replaced): the bytes copied.
 /// :param from: The file to copy.
 /// :param to: The file to write.
-/// :returns: `Success` with the number of bytes copied.
-/// :throws: Returns `Failure` with the reason when a file can't be opened, read, or written, or the permissions can't
+/// :returns: The number of bytes copied.
+/// :throws: Returns the reason when a file can't be opened, read, or written, or the permissions can't
 ///     be set. A failure once `to` is opened removes it, so no partial copy is left.
 #target(os: ("linux", "macos"))
 internal routine copy_file(from: Bytes, to: Bytes) -> Result[U64, FsError]
@@ -1089,15 +1089,15 @@ internal routine copy_file(from: Bytes, to: Bytes) -> Result[U64, FsError]
     block entry()
         source: Result[FileHandle, FsError] = FileHandle.open(path: from, mode: OpenMode.READ)
         when source
-            .Success(f) => target(f)
-            .Failure(error) => finish(.Failure(error))
+            is FileHandle as f => target(f)
+            is FsError as error => finish(error)
 
     block target(opened: FileHandle)
         src.poke(opened)
         dest: Result[FileHandle, FsError] = FileHandle.open(path: to, mode: OpenMode.WRITE)
         when dest
-            .Success(f) => copy(f)
-            .Failure(error) => finish(.Failure(error))
+            is FileHandle as f => copy(f)
+            is FsError as error => finish(error)
 
     block copy(made: FileHandle)
         dst.poke(made)
@@ -1111,17 +1111,17 @@ internal routine copy_file(from: Bytes, to: Bytes) -> Result[U64, FsError]
     block chunk(buffer: @Byte)
         got: Result[USize, FsError] = src.read_bytes_result(buffer, count: 16384)
         when got
-            .Success(n) => put(buffer, n)
-            .Failure(error) => abandon(error)
+            is USize as n => put(buffer, n)
+            is FsError as error => abandon(error)
 
     block put(buffer: @Byte, n: USize)
         branch n.eq(0)
-            ? finish(.Success(total.peek()))
+            ? finish(total.peek())
             : continue
         wrote: Result[Unit, FsError] = dst.write_all_result(data: buffer, count: n)
         when wrote
-            .Success => continue
-            .Failure(error) => abandon(error)
+            is Unit => continue
+            is FsError as error => abandon(error)
         total.peek().add(n.to[U64]()).poke_into(total)
         jump chunk(buffer)
 
@@ -1129,7 +1129,7 @@ internal routine copy_file(from: Bytes, to: Bytes) -> Result[U64, FsError]
     block abandon(error: FsError)
         dst.close()
         discard_removed: Result[Unit, FsError] = remove_file(to)
-        jump finish(.Failure(error))
+        jump finish(error)
 
     block finish(result: Result[U64, FsError])
         src.close()
@@ -1175,19 +1175,19 @@ private routine change_mode(cpath: @Byte, mode: U32) -> CInt
 /// Read-only takes every write permission away, and writable gives the owner's back.
 /// :param path: The file to change.
 /// :param readonly: True to make it read-only, false to make it writable by its owner.
-/// :returns: `Success(Unit)` once the permissions are set.
-/// :throws: Returns `Failure` with the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
+/// :returns: `Unit` once the permissions are set.
+/// :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: ("linux", "macos"))
 internal routine set_readonly(path: Bytes, readonly: Bool) -> Result[Unit, FsError]
     block entry()
         claim cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
         branch c_path(path, out: cpath.to[@Byte]())
             ? continue
-            : return(.Failure(path_error(path)))
-        there: Option[U32] = path_mode(cpath.to[@Byte]())
+            : return(path_error(path))
+        there: Maybe[U32] = path_mode(cpath.to[@Byte]())
         when there
-            .Present(mode) => change(cpath.to[@Byte](), mode.bitand(0o7777))
-            .Absent => return(failed[Unit]())
+            is U32 as mode => change(cpath.to[@Byte](), mode.bitand(0o7777))
+            is Unit => return(failed[Unit]())
 
     block change(cpath: @Byte, mode: U32)
         // S_IWUSR | S_IWGRP | S_IWOTH, or S_IWUSR
@@ -1214,15 +1214,15 @@ internal routine is_accessible(path: Bytes, access: Access) -> Bool
 
 /// Makes the file if it's missing, and sets its access and modification times to now.
 /// :param path: The file to touch.
-/// :returns: `Success(Unit)` once the times are set.
-/// :throws: Returns `Failure` with the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
+/// :returns: `Unit` once the times are set.
+/// :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: ("linux", "macos"))
 internal routine touch(path: Bytes) -> Result[Unit, FsError]
     block entry()
         claim cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
         branch c_path(path, out: cpath.to[@Byte]())
             ? continue
-            : return(.Failure(path_error(path)))
+            : return(path_error(path))
         f: OpenFlags = open_flags()
         fd: CInt = c_open(cpath.to[@Byte](), f.cloexec.bitor(1).bitor(f.create), 0o666)
         branch fd.lt(0)
@@ -1234,7 +1234,7 @@ internal routine touch(path: Bytes) -> Result[Unit, FsError]
 // -- directory listings ------------------------------------------------------------------
 
 /// The entries of a directory, "." and ".." left out, in the order the OS gives them. claim one, open it on a
-/// Directory, call next until Absent, and close it.
+/// Directory, call next until Unit, and close it.
 #target(os: ("linux", "macos"))
 record DirIter
     dir: Addr
@@ -1245,15 +1245,15 @@ record DirIter
 /// Opens the listing of the directory at path. The handle is null until the open succeeds, so close() is safe
 /// after a failure.
 /// :param path: The directory to list.
-/// :returns: `Success(Unit)` once the listing is open.
-/// :throws: Returns `Failure` with the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
+/// :returns: `Unit` once the listing is open.
+/// :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: ("linux", "macos"))
 internal routine DirIter.open_path(me: @Me, path: Bytes) -> Result[Unit, FsError]
     block entry()
         me.dir.poke(null)
         branch c_path(path, out: me.path.to[@Byte]())
             ? continue
-            : return(.Failure(path_error(path)))
+            : return(path_error(path))
         me.count.poke(path.count())
         me.name.poke(null)
         dir: Addr = c_opendir(me.path.to[@Byte]())
@@ -1284,15 +1284,15 @@ private routine is_dot_name(name: @Byte) -> Bool
         third: Byte = name.stride(2).peek()
         return(third.eq(0x00))
 
-/// The next entry, or Absent at the end (a failure partway reads as the end).
+/// The next entry, or Unit at the end (a failure partway reads as the end).
 /// :returns: The next entry, its name valid until the next call.
 /// :absent: At the end of the listing, or when reading it fails.
 #target(os: ("linux", "macos"))
-routine DirIter.emit_checked(me: @Me) -> Option[DirEntry]
+routine DirIter.emit_checked(me: @Me) -> Maybe[DirEntry]
     block entry()
         entry: @Byte = c_readdir(me.dir.peek())
         branch entry.is_null()
-            ? return(.Absent)
+            ? return(Unit())
             : continue
         name: @Byte = entry.stride(dirent_name_at())
         branch is_dot_name(name)
@@ -1311,15 +1311,15 @@ routine DirIter.emit_checked(me: @Me) -> Option[DirEntry]
     block unknown(name: @Byte)
         m: Result[Metadata, FsError] = me.entry_metadata_of(false)
         when m
-            .Success(info) => found(name, info.kind)
-            .Failure => found(name, FileKind.OTHER)
+            is Metadata as info => found(name, info.kind)
+            is FsError => found(name, FileKind.OTHER)
 
     block found(name: @Byte, kind: FileKind)
-        return(.Present(DirEntry(name: name.to[CStr]().to[Bytes](), kind: kind)))
+        return(DirEntry(name: name.to[CStr]().to[Bytes](), kind: kind))
 
 /// The metadata of the entry next last returned, a link followed.
-/// :returns: `Success` with the metadata.
-/// :throws: Returns `Failure` with the reason, `NameTooLong` when the entry's full path doesn't fit a C path.
+/// :returns: The metadata.
+/// :throws: Returns the reason, `NameTooLong` when the entry's full path doesn't fit a C path.
 #target(os: ("linux", "macos"))
 #expensive("asks the operating system")
 routine DirIter.entry_metadata_result(me: @Me) -> Result[Metadata, FsError]
@@ -1328,8 +1328,8 @@ routine DirIter.entry_metadata_result(me: @Me) -> Result[Metadata, FsError]
 
 /// The metadata of the entry next last returned, by its full path.
 /// :param follow: True to describe what a link points at, false to describe the link itself.
-/// :returns: `Success` with the metadata.
-/// :throws: Returns `Failure` with the reason, `NameTooLong` when the entry's full path doesn't fit a C path.
+/// :returns: The metadata.
+/// :throws: Returns the reason, `NameTooLong` when the entry's full path doesn't fit a C path.
 #target(os: ("linux", "macos"))
 private routine DirIter.entry_metadata_of(me: @Me, follow: Bool) -> Result[Metadata, FsError]
     block entry()
@@ -1337,7 +1337,7 @@ private routine DirIter.entry_metadata_of(me: @Me, follow: Bool) -> Result[Metad
         branch c_child_path(dir: me.path.to[@Byte](), dir_count: me.count.peek(),
             name: me.name.peek(), out: full.to[@Byte]())
             ? return(metadata_of(cpath: full.to[@Byte](), follow))
-            : return(.Failure(FsError.NAME_TOO_LONG))
+            : return(FsError.NAME_TOO_LONG)
 
 /// Closes the listing and leaves the handle null, so a second close does nothing.
 #target(os: ("linux", "macos"))
@@ -1357,37 +1357,37 @@ routine DirIter.close(me: @Me) -> Void
 /// :param p: The first byte to copy.
 /// :param n: How many bytes to copy.
 /// :param alloc: The allocator for the copy.
-/// :returns: `Success` with the copy.
-/// :throws: Returns `Failure(OutOfMemory)` when `alloc` fails.
+/// :returns: The copy.
+/// :throws: Returns `OutOfMemory` when `alloc` fails.
 #target(os: ("linux", "macos"))
 private routine owned(p: @Byte, n: USize, alloc: @MemoryManager) -> Result[Bytes, FsError]
     block entry()
         buffer: @Byte = allocate[Byte](count: n.max(1), alloc)
         branch buffer.is_null()
-            ? return(.Failure(FsError.OUT_OF_MEMORY))
+            ? return(FsError.OUT_OF_MEMORY)
             : continue
         buffer.copy(src: p, count: n)
-        return(.Success(Bytes(data: buffer, count: n, alloc: alloc)))
+        return(Bytes(data: buffer, count: n, alloc: alloc))
 
 /// The value of the environment variable name, when it is set and not empty.
 /// :param name: The variable's name.
 /// :returns: The NUL-terminated value, owned by the C library.
 /// :absent: When the variable is not set or is empty.
 #target(os: ("linux", "macos"))
-private routine nonempty_env(name: CStr) -> Option[@Byte]
+private routine nonempty_env(name: CStr) -> Maybe[@Byte]
     block entry()
         value: @Byte = c_getenv(name)
         branch value.is_null()
-            ? return(.Absent)
+            ? return(Unit())
             : continue
         branch value.peek().eq(0x00)
-            ? return(.Absent)
-            : return(.Present(value))
+            ? return(Unit())
+            : return(value)
 
 /// The working directory, in memory from alloc.
 /// :param alloc: The allocator for the text.
-/// :returns: `Success` with the path.
-/// :throws: Returns `Failure` with the reason when the OS can't report it, `OutOfMemory` when `alloc` fails.
+/// :returns: The path.
+/// :throws: Returns the reason when the OS can't report it, `OutOfMemory` when `alloc` fails.
 #target(os: ("linux", "macos"))
 internal routine current_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
     block entry()
@@ -1396,7 +1396,7 @@ internal routine current_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
     block attempt(capacity: USize)
         buffer: @Byte = allocate[Byte](count: capacity, alloc)
         branch buffer.is_null()
-            ? return(.Failure(FsError.OUT_OF_MEMORY))
+            ? return(FsError.OUT_OF_MEMORY)
             : continue
         branch c_getcwd(buffer, capacity).is_not_null()
             ? found(buffer)
@@ -1406,54 +1406,54 @@ internal routine current_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
         // ERANGE: a bigger buffer
         branch e.eq(34)
             ? attempt(capacity.mul(2))
-            : return(.Failure(error_of(e)))
+            : return(error_of(e))
 
     block found(buffer: @Byte)
         count: USize = buffer.to[CStr]().count()
         dir: Bytes = Bytes(data: buffer, count: count, alloc: alloc)
-        return(.Success(dir))
+        return(dir)
 
 /// Makes path the working directory.
 /// :param path: The new working directory.
-/// :returns: `Success(Unit)` once it is changed.
-/// :throws: Returns `Failure` with the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
+/// :returns: `Unit` once it is changed.
+/// :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: ("linux", "macos"))
 internal routine set_current_dir(path: Bytes) -> Result[Unit, FsError]
     block entry()
         claim cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
         branch c_path(path, out: cpath.to[@Byte]())
             ? return(checked(c_chdir(cpath.to[@Byte]())))
-            : return(.Failure(path_error(path)))
+            : return(path_error(path))
 
 /// TMPDIR, or /tmp when it is not set or empty, in memory from alloc.
 /// :param alloc: The allocator for the text.
-/// :returns: `Success` with the path.
-/// :throws: Returns `Failure(OutOfMemory)` when `alloc` fails.
+/// :returns: The path.
+/// :throws: Returns `OutOfMemory` when `alloc` fails.
 #target(os: ("linux", "macos"))
 internal routine temp_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
     block entry()
-        t: Option[@Byte] = nonempty_env("TMPDIR")
+        t: Maybe[@Byte] = nonempty_env("TMPDIR")
         when t
-            .Present(dir) => return(owned(p: dir, n: dir.to[CStr]().count(), alloc))
-            .Absent => return(owned(p: "/tmp", n: 4, alloc))
+            is @Byte as dir => return(owned(p: dir, n: dir.to[CStr]().count(), alloc))
+            is Unit => return(owned(p: "/tmp", n: 4, alloc))
 
 /// HOME, in memory from alloc. NotFound when it isn't set or is empty.
 /// :param alloc: The allocator for the text.
-/// :returns: `Success` with the path.
-/// :throws: Returns `Failure(NotFound)` when HOME is not set or empty, `Failure(OutOfMemory)` when `alloc` fails.
+/// :returns: The path.
+/// :throws: Returns `NotFound` when HOME is not set or empty, `OutOfMemory` when `alloc` fails.
 #target(os: ("linux", "macos"))
 internal routine home_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
     block entry()
-        h: Option[@Byte] = nonempty_env("HOME")
+        h: Maybe[@Byte] = nonempty_env("HOME")
         when h
-            .Present(dir) => return(owned(p: dir, n: dir.to[CStr]().count(), alloc))
-            .Absent => return(.Failure(FsError.NOT_FOUND))
+            is @Byte as dir => return(owned(p: dir, n: dir.to[CStr]().count(), alloc))
+            is Unit => return(FsError.NOT_FOUND)
 
 /// path made absolute by the text alone: the working directory in front of a relative path, nothing resolved.
 /// :param path: The path to make absolute.
 /// :param alloc: The allocator for the result.
-/// :returns: `Success` with the absolute path.
-/// :throws: Returns `Failure` with the reason when the working directory can't be read, `OutOfMemory` when `alloc`
+/// :returns: The absolute path.
+/// :throws: Returns the reason when the working directory can't be read, `OutOfMemory` when `alloc`
 ///     fails for it. Crashes with `MemoryAllocationError` when `alloc` fails for the joined path.
 #target(os: ("linux", "macos"))
 internal routine absolute_path(path: Bytes, alloc: @MemoryManager) -> Result[Bytes, FsError]
@@ -1463,20 +1463,20 @@ internal routine absolute_path(path: Bytes, alloc: @MemoryManager) -> Result[Byt
             : continue
         cwd: Result[Bytes, FsError] = current_dir(alloc)
         when cwd
-            .Success(dir) => join(dir)
-            .Failure(error) => return(.Failure(error))
+            is Bytes as dir => join(dir)
+            is FsError as error => return(error)
 
     block join(dir: Bytes)
         full: Bytes = join_path(a: dir, b: path, alloc)
         claim cwd: @Bytes <- dir
         cwd.destruct()
-        return(.Success(full))
+        return(full)
 
 /// The absolute path with every link, ".", and ".." resolved, and path must exist.
 /// :param path: The path to resolve.
 /// :param alloc: The allocator for the result.
-/// :returns: `Success` with the resolved path.
-/// :throws: Returns `Failure` with the reason, such as `NotFound`, `OutOfMemory` when `alloc` fails, `InvalidPath`
+/// :returns: The resolved path.
+/// :throws: Returns the reason, such as `NotFound`, `OutOfMemory` when `alloc` fails, `InvalidPath`
 ///     or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: ("linux", "macos"))
 internal routine canonical_path(path: Bytes, alloc: @MemoryManager) -> Result[Bytes, FsError]
@@ -1484,7 +1484,7 @@ internal routine canonical_path(path: Bytes, alloc: @MemoryManager) -> Result[By
         claim cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
         branch c_path(path, out: cpath.to[@Byte]())
             ? continue
-            : return(.Failure(path_error(path)))
+            : return(path_error(path))
         resolved: @Byte = c_realpath(cpath.to[@Byte](), null)
         branch resolved.is_null()
             ? return(failed[Bytes]())
@@ -1510,8 +1510,8 @@ private routine is_map_failed(p: Addr) -> Bool
 /// :param write: True for a shared, writable mapping.
 /// :param offset: Where in the file the mapping starts.
 /// :param count: The most bytes to map.
-/// :returns: `Success` with the mapping.
-/// :throws: Returns `Failure` with the reason when the file can't be opened, measured, or mapped.
+/// :returns: The mapping.
+/// :throws: Returns the reason when the file can't be opened, measured, or mapped.
 #target(os: ("linux", "macos"))
 internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
     count: USize) -> Result[Me, FsError]
@@ -1521,7 +1521,7 @@ internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
         claim cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
         branch c_path(path, out: cpath.to[@Byte]())
             ? continue
-            : finish(.Failure(path_error(path)))
+            : finish(path_error(path))
         flags: CInt = write
             ? 2
             : 0
@@ -1532,12 +1532,12 @@ internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
         file.fd.poke(fd)
         m: Result[Metadata, FsError] = fd_metadata(fd)
         when m
-            .Success(info) => sized(fd, info.size)
-            .Failure(error) => finish(.Failure(error))
+            is Metadata as info => sized(fd, info.size)
+            is FsError as error => finish(error)
 
     block sized(fd: CInt, size: U64)
         branch offset.ge(size)
-            ? finish(.Success(Me.empty()))
+            ? finish(Me.empty())
             : continue
         want_bytes: U64 = count.to[U64]().min(size.sub(offset))
         want: USize = want_bytes.to[USize]()
@@ -1555,15 +1555,15 @@ internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
         // the mapping keeps the file open on its own, and errno is read before finish closes the descriptor
         branch is_map_failed(p)
             ? finish(failed[Me]())
-            : finish(.Success(Me(base: p, delta: delta, count: want)))
+            : finish(Me(base: p, delta: delta, count: want))
 
     block finish(result: Result[Me, FsError])
         file.close()
         return(result)
 
 /// Writes changed pages back to the file.
-/// :returns: `Success(Unit)` once they are written, at once for an empty mapping.
-/// :throws: Returns `Failure` with the reason when msync fails.
+/// :returns: `Unit` once they are written, at once for an empty mapping.
+/// :throws: Returns the reason when msync fails.
 #target(os: ("linux", "macos"))
 routine Mapping.flush_result(me: Me) -> Result[Unit, FsError]
     block entry()

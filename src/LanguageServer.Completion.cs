@@ -162,9 +162,6 @@ public static partial class LanguageServer
             add(p.Name, KindConstant, p.Type.ToString(), p, null, 0);
         switch (compiler.TypeDeclQuiet(type.Name, file))
         {
-            case VariantDecl v:
-                foreach (var c in v.Cases) add(c.Name, KindEnumMember, c.Payload?.ToString(), null, c.Pos, 0);
-                break;
             case ChoiceDecl ch:
                 foreach (var (name, val) in ch.Members)
                     add(name, KindEnumMember, val is IntLit i ? i.Value.ToString() : null, null,

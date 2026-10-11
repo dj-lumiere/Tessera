@@ -236,10 +236,10 @@ private routine utf16(text: Bytes, alloc: @MemoryManager) -> (@U16, USize)
         branch units.is_null()
             ? return((null, 0))
             : continue
-        n: Option[USize] = encode_utf16(text, out: units, capacity: text.count().add(1))
+        n: Maybe[USize] = encode_utf16(text, out: units, capacity: text.count().add(1))
         when n
-            .Present(count) => return((units, count))
-            .Absent => failed()
+            is USize as count => return((units, count))
+            is Unit => failed()
 
     block failed()
         deallocate(data: units, alloc)
@@ -502,13 +502,13 @@ private routine env_entry_utf16(v: EnvVar, alloc: @MemoryManager) -> @U16
         branch units.is_null()
             ? return(null)
             : continue
-        name_units: Option[USize] = encode_utf16(text: v.name, out: units, capacity: room)
+        name_units: Maybe[USize] = encode_utf16(text: v.name, out: units, capacity: room)
         when name_units
-            .Present(n) => continue
-            .Absent => failed()
+            is USize as n => continue
+            is Unit => failed()
         // '='
         units.stride(n).poke(61)
-        value_units: Option[USize] = encode_utf16(text: v.value, out: units.stride(n.add(1)),
+        value_units: Maybe[USize] = encode_utf16(text: v.value, out: units.stride(n.add(1)),
             capacity: room.sub(n).sub(1))
         branch value_units.is_present()
             ? return(units)
@@ -881,7 +881,7 @@ private routine output_handle(mode: OutputMode, pipe: Addr, device: Addr, which:
 /// :param args: The arguments, not including the program name.
 /// :param options: The directory, environment overrides, and standard streams.
 /// :param alloc: The allocator for the captured output and the working memory.
-/// :returns: The {ProcessOutput}, or Failure with a {ProcessError} (InvalidArgument for a NUL in the command, the
+/// :returns: The {ProcessOutput}, or a {ProcessError} (InvalidArgument for a NUL in the command, the
 /// directory, or a variable, or a directory too long for a path, OutOfMemory when the working memory or the
 /// captured output can't be allocated).
 #target(os: "windows")
@@ -896,22 +896,22 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
 
     block entry()
         branch has_nul(program, args, options)
-            ? finish(.Failure(ProcessError.INVALID_ARGUMENT))
+            ? finish(ProcessError.INVALID_ARGUMENT)
             : continue
         made_line: @U16 = command_line(program, args, alloc)
         made_line.poke_into(line)
         branch made_line.is_null()
-            ? finish(.Failure(ProcessError.OUT_OF_MEMORY))
+            ? finish(ProcessError.OUT_OF_MEMORY)
             : continue
         claim directory: @Array[U16, PATH_CAPACITY] <- .hollow()
         when options.directory
-            .Present(d) => continue
-            .Absent => environment(null)
+            is Bytes as d => continue
+            is Unit => environment(null)
         units: @U16 = directory.to[@U16]()
-        n: Option[USize] = encode_utf16(text: d, out: units, capacity: PATH_CAPACITY)
+        n: Maybe[USize] = encode_utf16(text: d, out: units, capacity: PATH_CAPACITY)
         branch n.is_present()
             ? environment(units)
-            : finish(.Failure(ProcessError.INVALID_ARGUMENT))
+            : finish(ProcessError.INVALID_ARGUMENT)
 
     block environment(directory: @U16)
         branch options.env_count.eq(0)
@@ -920,7 +920,7 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
         block_units: @U16 = env_block(options, alloc)
         block_units.poke_into(env)
         branch block_units.is_null()
-            ? finish(.Failure(ProcessError.OUT_OF_MEMORY))
+            ? finish(ProcessError.OUT_OF_MEMORY)
             : handles(directory)
 
     block handles(directory: @U16)
@@ -942,12 +942,12 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
         h.close_child_side()
         branch made
             ? started()
-            : finish(.Failure(spawn_error(e)))
+            : finish(spawn_error(e))
 
     // The handles were partly made: the child's side of what there is closes here, the parent's side in finish.
     block not_started(e: U32)
         h.close_child_side()
-        jump finish(.Failure(spawn_error(e)))
+        jump finish(spawn_error(e))
 
     block started()
         claim out: @CaptureBuffer <- CaptureBuffer.empty()
@@ -958,19 +958,19 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
         claim code: @U32 <- 0
         c_get_exit_code_process(pi.process.peek(), code)
         errors: CaptureBuffer = moved(b: err.buffer.peek(), alloc)
-        status: ExitStatus = ExitStatus.Exited(code.peek().to_wrap[S32]())
+        status: ExitStatus = Exited(code: code.peek().to_wrap[S32]())
         output: ProcessOutput = ProcessOutput(status: status, stdout: out.owned(alloc),
             stderr: errors.owned(alloc))
         lost: Bool = out.failed.peek().bitor(errors.failed)
         branch lost
             ? lost_output(output)
-            : finish(.Success(output))
+            : finish(output)
 
     // A capture couldn't grow and lost bytes: what was captured goes back, and the run fails.
     block lost_output(output: ProcessOutput)
         claim held: @ProcessOutput <- output
         held.destruct()
-        jump finish(.Failure(ProcessError.OUT_OF_MEMORY))
+        jump finish(ProcessError.OUT_OF_MEMORY)
 
     // The parent's ends of the pipes, the process and thread handles, the command line, and the environment block:
     // each one this run got.
@@ -1088,40 +1088,40 @@ private routine moved(b: CaptureBuffer, alloc: @MemoryManager) -> CaptureBuffer
 ///     read or allocated.
 #target(os: "windows")
 #expensive("allocates a copy of the variable")
-routine env_var(name: Bytes, alloc: @MemoryManager) -> Option[Bytes]
+routine env_var(name: Bytes, alloc: @MemoryManager) -> Maybe[Bytes]
     local units: @@U16 <- null
 
     block entry()
         claim key: @Array[U16, 256] <- .hollow()
-        n: Option[USize] = encode_utf16(text: name, out: key.to[@U16](), capacity: 256)
+        n: Maybe[USize] = encode_utf16(text: name, out: key.to[@U16](), capacity: 256)
         branch n.is_present()
             ? continue
-            : finish(.Absent)
+            : finish(Unit())
         c_set_last_error(0)
         need: U32 = c_get_environment_variable(key.to[@U16](), null, 0)
         // ERROR_ENVVAR_NOT_FOUND
         branch need.eq(0).bitand(c_get_last_error().eq(203))
-            ? finish(.Absent)
+            ? finish(Unit())
             : continue
         branch need.eq(0)
-            ? finish(.Present(Bytes(data: null, count: 0, alloc: alloc)))
+            ? finish(Bytes(data: null, count: 0, alloc: alloc))
             : continue
         made: @U16 = allocate[U16](count: need.to[USize](), alloc)
         made.poke_into(units)
         branch made.is_null()
-            ? finish(.Absent)
+            ? finish(Unit())
             : continue
         got: U32 = c_get_environment_variable(key.to[@U16](), made, need)
         branch got.eq(0).bitor(got.ge(need))
-            ? finish(.Absent)
+            ? finish(Unit())
             : continue
         text: Result[Bytes, FsError] = owned_wide(units: made, count: got.to[USize](), alloc)
         when text
-            .Success(t) => finish(.Present(t))
-            .Failure => finish(.Absent)
+            is Bytes as t => finish(t)
+            is FsError => finish(Unit())
 
     // The UTF-16 value, when there is one: the UTF-8 copy is what goes back.
-    block finish(value: Option[Bytes])
+    block finish(value: Maybe[Bytes])
         held: @U16 = units.peek()
         branch held.is_null()
             ? return(value)

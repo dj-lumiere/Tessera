@@ -118,12 +118,21 @@ public sealed record ChoiceDecl(
     string File, List<Annotation> Annotations, string Name, TypeRef Underlying, List<(string Name, Expr Value)> Members,
     Pos Pos) : Decl(File, Annotations, Pos);
 
-/// `variant Expr` and its cases, each a name and at most one payload type: `Number: S64`, `Empty`.
+/// `variant Cell` and its branches, one type per line: a value of the variant is a value of one of them, which `when`
+/// observes with `is T as t`. A variant written inline, `A | B`, has a declaration the builder makes (`IsAnonymous`).
 public sealed record VariantDecl(
     string File, List<Annotation> Annotations, string Name, List<string> TypeParams, List<Clause> Clauses,
-    List<VariantCase> Cases, Pos Pos) : Decl(File, Annotations, Pos);
+    List<VariantBranch> Branches, Pos Pos) : Decl(File, Annotations, Pos)
+{
+    public bool IsAnonymous { get; init; }
+}
 
-public sealed record VariantCase(string Name, TypeRef? Payload, Pos Pos);
+/// One branch of a variant: the type a value of it may be.
+public sealed record VariantBranch(TypeRef Type, Pos Pos)
+{
+    /// The branch as written, `S64` or `List[T]`.
+    public string Name => Type.ToString();
+}
 
 /// `preset NAME: T = value` is a value, and `preset NAME: @T <- value` is read-only memory. With `IsGlobal`,
 /// `global NAME: @T [<- value]` is mutable memory, all-zero without a value. In memory (`IsStorage`), Type is the
@@ -210,6 +219,9 @@ public sealed record BoolLit(bool Value, Pos Pos) : Expr(Pos);
 public sealed record NullLit(Pos Pos) : Expr(Pos);
 /// A value: a parameter, a block parameter, or a binding.
 public sealed record ValueRef(string Name, Pos Pos) : Expr(Pos);
+/// A `when` arm that observes a variant's value as one of its branch types: `is S64 as n`, or `is Unit` without a
+/// name.
+public sealed record IsPattern(TypeRef Type, ValueRef? Binding, Pos Pos) : Expr(Pos);
 
 /// `name.to[Callable]()` or `name.to[Callable[(Params), Ret]]()`: the routine `name` as a value, typed by its own
 /// signature, or by the one written.
@@ -334,8 +346,12 @@ public sealed record TodoTarget(Expr Call, string Block, Pos Pos) : ExprTarget(C
 public sealed record JumpTerm(CallTarget Target, Pos Pos) : Terminator(Pos);
 public sealed record BranchTerm(Expr Cond, Target IfTrue, Target IfFalse, Pos Pos) : Terminator(Pos);
 public sealed record WhenCondTerm(List<(Expr? Cond, Target Target)> Arms, Pos Pos) : Terminator(Pos);
-/// `when v` arms: one or more constants (`1, 2 -> ...`), or `_` (null).
-public sealed record WhenValueTerm(Expr Value, List<(List<Expr>? Cases, Target Target)> Arms, Pos Pos) : Terminator(Pos);
+/// `when v` arms: one or more constants (`1, 2 => ...`), observations of a variant (`is S64 as n => ...`), or `else`
+/// (null). `else as rest` binds what the other arms didn't observe to `ElseBinding`.
+public sealed record WhenValueTerm(Expr Value, List<(List<Expr>? Cases, Target Target)> Arms, Pos Pos) : Terminator(Pos)
+{
+    public ValueRef? ElseBinding { get; init; }
+}
 
 /// A terminator written as a bare target: `return(x)`, `unreachable`, or a #noreturn call such as `crash_overflow()`.
 public sealed record TargetTerm(Target Target, Pos Pos) : Terminator(Pos);

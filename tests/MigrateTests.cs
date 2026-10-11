@@ -211,6 +211,55 @@ public class MigrateTests
     }
 
     [Fact]
+    public void Renames_an_iterators_step_that_hands_back_an_option()
+    {
+        const string before = """
+            routine sum(list: @List[S64], rng: @Xoshiro256) -> S64
+                local iter: @ListIter[S64] <- .construct(list)
+
+                block entry()
+                    item: Option[S64] = iter.next()
+                    bits: U64 = rng.next()
+                    return(0)
+            """;
+        string after = IteratorNames(before);
+        Assert.Contains("iter.emit_checked()", after);
+        Assert.Contains("rng.next()", after);
+    }
+
+    private static string IteratorNames(string text) => Migrate.IteratorNames(text);
+
+    [Fact]
+    public void Observes_variant_branches_by_type()
+    {
+        const string before = """
+            routine parse(text: Bytes) -> Result[S64, ParseError]
+                block entry()
+                    item: Option[S64] = find(text)
+                    when item
+                        .Present(value) => return(.Success(value))
+                        .Absent => return(.Failure(ParseError.EMPTY))
+
+            routine none() -> Option[S64]
+                block entry()
+                    return(.Absent)
+            """;
+        const string after = """
+            routine parse(text: Bytes) -> Result[S64, ParseError]
+                block entry()
+                    item: Maybe[S64] = find(text)
+                    when item
+                        is S64 as value => return(value)
+                        is Unit => return(ParseError.EMPTY)
+
+            routine none() -> Maybe[S64]
+                block entry()
+                    return(Unit())
+            """;
+        Assert.Equal(after, VariantMigration.Rewrite(before));
+    }
+
+    [Fact]
     public void Rewriting_twice_changes_nothing_more()
     {
         string once = Migrate.Rewrite("a : F32 = f32_bits(b).to<List<F32>>()");

@@ -165,8 +165,8 @@ public static partial class LanguageServer
                 break;
             case VariantDecl v:
                 kind = 10;
-                foreach (var c in v.Cases)
-                    children.Add(Node(lines, c.Name, 22, c.Pos, c.Name, c.Pos.Line, c.Payload?.ToString()));
+                foreach (var c in v.Branches)
+                    children.Add(Node(lines, c.Name, 22, c.Pos, c.Name, c.Pos.Line, null));
                 break;
             case ChoiceDecl ch:
                 kind = 10;

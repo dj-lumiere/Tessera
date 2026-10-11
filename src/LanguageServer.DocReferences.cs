@@ -52,9 +52,6 @@ public static partial class LanguageServer
         if (compiler.MethodsNamedQuiet(owner, member, file).FirstOrDefault() is { } method) return Of(method);
         switch (compiler.TypeDeclQuiet(ownerName, file))
         {
-            case VariantDecl v when v.Cases.FirstOrDefault(c => c.Name == member) is { } c:
-                return new DocTarget(c.Pos, c.Name, $"{ownerText}.{c.Name}" + (c.Payload is null ? "" : $" : {c.Payload}"),
-                    DocAbove(analysis, c.Pos), 0, 0, 0);
             case ChoiceDecl ch when ch.Members.FirstOrDefault(x => x.Name == member) is { Name: not null } m:
                 var at = m.Value.Pos.Line > 0 ? m.Value.Pos with { Col = 1 } : ch.Pos;
                 return new DocTarget(at, m.Name, $"{ownerText}.{m.Name}" + (m.Value is IntLit i ? $" = {i.Value}" : ""),

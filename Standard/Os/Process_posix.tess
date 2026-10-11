@@ -329,8 +329,8 @@ private routine Prepared.make(me: @Me, program: Bytes, args: Slice[Bytes], optio
     block args_done(argv: @@Byte, n: USize)
         argv.stride(n).poke(null)
         when options.directory
-            .Present(d) => directory(c_string(text: d, alloc))
-            .Absent => environment()
+            is Bytes as d => directory(c_string(text: d, alloc))
+            is Unit => environment()
 
     block directory(d: @Byte)
         branch d.is_null()
@@ -614,7 +614,7 @@ private routine output_fd(mode: OutputMode, pipe: CInt, null_fd: CInt) -> CInt
 /// :param args: The arguments, not including the program name.
 /// :param options: The directory, environment overrides, and standard streams.
 /// :param alloc: The allocator for the captured output and the working memory.
-/// :returns: The {ProcessOutput}, or Failure with a {ProcessError} (InvalidArgument for a NUL in the program, an
+/// :returns: The {ProcessOutput}, or a {ProcessError} (InvalidArgument for a NUL in the program, an
 /// argument, the directory, or a variable, OutOfMemory when the working memory or the captured output can't be
 /// allocated).
 #target(os: ("linux", "macos"))
@@ -629,11 +629,11 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
 
     block entry()
         branch has_nul(program, args, options)
-            ? finish(.Failure(ProcessError.INVALID_ARGUMENT))
+            ? finish(ProcessError.INVALID_ARGUMENT)
             : continue
         branch p.make(program, args, options, alloc)
             ? continue
-            : finish(.Failure(ProcessError.OUT_OF_MEMORY))
+            : finish(ProcessError.OUT_OF_MEMORY)
         branch pipes.make(options)
             ? continue
             : spawn_failed()
@@ -665,7 +665,7 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
 
     block spawn_failed()
         e: CInt = errno()
-        jump finish(.Failure(spawn_error(e)))
+        jump finish(spawn_error(e))
 
     // 4 bytes on the report pipe are the errno of a failed exec. Its end without them is a started program.
     block started(pid: CInt)
@@ -680,26 +680,26 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
             err: PipeCapture(fd: pipes.err_r.peek(), buffer: err), alloc)
         pipes.out_r.poke(-1)
         pipes.err_r.poke(-1)
-        status: Option[ExitStatus] = reap(pid)
+        status: Maybe[ExitStatus] = reap(pid)
         branch got.eq(4)
-            ? finish(.Failure(spawn_error(report.peek())))
+            ? finish(spawn_error(report.peek()))
             : continue
         when status
-            .Present(s) => exited(s)
-            .Absent => finish(.Failure(ProcessError.OTHER))
+            is ExitStatus as s => exited(s)
+            is Unit => finish(ProcessError.OTHER)
 
     // The output owns the captured bytes from here, so finish has none left to release. A capture that couldn't
     // grow lost bytes: the run fails, and finish releases what was captured.
     block exited(s: ExitStatus)
         lost: Bool = out.failed.peek().bitor(err.failed.peek())
         branch lost
-            ? finish(.Failure(ProcessError.OUT_OF_MEMORY))
+            ? finish(ProcessError.OUT_OF_MEMORY)
             : continue
         output: ProcessOutput = ProcessOutput(status: s, stdout: out.owned(alloc),
             stderr: err.owned(alloc))
         out.poke(CaptureBuffer.empty())
         err.poke(CaptureBuffer.empty())
-        jump finish(.Success(output))
+        jump finish(output)
 
     // Every descriptor still open, the prepared strings, and the captured bytes nothing took.
     block finish(result: Result[ProcessOutput, ProcessError])
@@ -794,7 +794,7 @@ private routine drain(out: PipeCapture, err: PipeCapture, alloc: @MemoryManager)
 /// :returns: How it ended.
 /// :absent: When waitpid fails.
 #target(os: ("linux", "macos"))
-private routine reap(pid: CInt) -> Option[ExitStatus]
+private routine reap(pid: CInt) -> Maybe[ExitStatus]
     local status: @CInt <- 0
 
     block entry()
@@ -806,14 +806,22 @@ private routine reap(pid: CInt) -> Option[ExitStatus]
             ? wait()
             : continue
         branch rc.lt(0)
-            ? return(.Absent)
+            ? return(Unit())
             : continue
         s: CInt = status.peek()
         low: CInt = s.bitand(0x7F)
         // WIFEXITED, else WIFSIGNALED (0x7F is a stop, which waitpid without WUNTRACED doesn't report)
         branch low.eq(0)
-            ? return(.Present(ExitStatus.Exited(s.shr(8).bitand(0xFF))))
-            : return(.Present(ExitStatus.Signaled(low)))
+            ? exited(s.shr(8).bitand(0xFF))
+            : signaled(low)
+
+    block exited(code: CInt)
+        ended: ExitStatus = Exited(code)
+        return(ended)
+
+    block signaled(signal: CInt)
+        stopped: ExitStatus = Signaled(signal)
+        return(stopped)
 
 // -- the environment ---------------------------------------------------------------------
 
@@ -824,25 +832,25 @@ private routine reap(pid: CInt) -> Option[ExitStatus]
 /// :absent: When the variable isn't set, `name` is 256 bytes or longer or holds a NUL, or the allocation fails.
 #target(os: ("linux", "macos"))
 #expensive("allocates a copy of the variable")
-routine env_var(name: Bytes, alloc: @MemoryManager) -> Option[Bytes]
+routine env_var(name: Bytes, alloc: @MemoryManager) -> Maybe[Bytes]
     block entry()
         claim key: @Array[Byte, 256] <- .hollow()
         too_long: Bool = name.count().ge(256)
         branch too_long.bitor(name.contains("\x00"))
-            ? return(.Absent)
+            ? return(Unit())
             : continue
         key.to[@Byte]().copy(src: name.data, count: name.count())
         key_end: @Byte = key.to[@Byte]().stride(name.count())
         key_end.poke(0x00)
         value: @Byte = c_getenv(key.to[@Byte]())
         branch value.is_null()
-            ? return(.Absent)
+            ? return(Unit())
             : continue
         n: USize = value.to[CStr]().count()
         owned: @Byte = allocate[Byte](count: n.max(1), alloc)
         branch owned.is_null()
-            ? return(.Absent)
+            ? return(Unit())
             : continue
         owned.copy(src: value, count: n)
         text: Bytes = Bytes(data: owned, count: n, alloc: alloc)
-        return(.Present(text))
+        return(text)

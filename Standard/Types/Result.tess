@@ -1,83 +1,79 @@
-// Tessera stdlib: Result[TSuccess, TFailure]
+// Tessera stdlib: Result[T, TError]
 //
-// Result[TSuccess, TFailure] is either a success value (TSuccess) or an error (TFailure) — the standard way
-// to report an expected failure (malformed input, I/O error, allocation
-// failure). Contract violations (bugs) still crash. Result is for failures the
-// caller is expected to handle.
+// Result[T, TError] is either a value (T) or the reason there is none (TError): the standard way to report an
+// expected failure (malformed input, I/O error, allocation failure). Contract violations (bugs) still crash. Result is
+// for failures the caller is expected to handle, and every `_result` routine returns one.
 //
-// A variant, so the value and the error share storage: a Result is as big as
-// the larger of the two plus its tag. Void has no values and cannot be T. Use
+// A variant, so the value and the error share storage: a Result is as big as the larger of the two plus its tag. A T
+// or a TError goes where a Result is expected as it is. T and TError are different types (a Result[S64, S64] couldn't
+// tell its value from its error): wrap one in a record of its own. Void has no values and cannot be T. Use
 // Result[Unit, E] for operations that only succeed or fail.
 //
 // Propagation idiom (caller returns Result[U, E]):
 //
 //     when r
-//         .Success(value) -> use(value)
-//         .Failure(error) -> fail(error)
-//
-//     block fail(error: ParseError)
-//         failed : Result[U, ParseError] = .Failure(error)
-//         return(failed)
+//         is S64 as value => use(value)
+//         is ParseError as error => return(error)
 
 module Standard/Core
 
 import Standard/Format
 
-// Failure is the first case, so a Success hashes with tag 1 and a Failure with
-// tag 0, and Failure orders before every Success.
-/// Either a success value or an error: the standard way to report an expected failure such as malformed input, an I/O error, or an allocation failure. Contract violations still crash. `Failure` is the first case, so it orders before every `Success`.
-/// :typeparam TSuccess: The success value type.
-/// :typeparam TFailure: The error type.
+/// Either a value or the reason there is none: the standard way to report an expected failure such as malformed
+/// input, an I/O error, or an allocation failure. Contract violations still crash. A `T` or a `TError` goes where a
+/// `Result[T, TError]` is expected as it is, and `when` observes which with `is T as value` / `is TError as error`.
+/// :typeparam T: The value type.
+/// :typeparam TError: The error type, different from `T`.
 #derive(Representable, Diagnosable, Equatable, Hashable, Comparable)
-variant Result[TSuccess, TFailure]
-require TSuccess: typename, TFailure: typename
-    Failure: TFailure
-    Success: TSuccess
+variant Result[T, TError]
+require T: typename, TError: typename
+    T
+    TError
 
 // -- predicates ----------------------------------------------------------------
 
-/// Whether `me` holds a success value.
-/// :typeparam TSuccess: The success value type.
-/// :typeparam TFailure: The error type.
-/// :returns: `true` for `.Success`, `false` for `.Failure`.
-routine Result[TSuccess, TFailure].is_success(me: Me) -> Bool
-require TSuccess: typename, TFailure: typename
+/// Whether `me` holds a value.
+/// :typeparam T: The value type.
+/// :typeparam TError: The error type.
+/// :returns: `true` for a `T`, `false` for a `TError`.
+routine Result[T, TError].is_success(me: Me) -> Bool
+require T: typename, TError: typename
     block entry()
         when me
-            .Success => return(true)
-            .Failure => return(false)
+            is T => return(true)
+            is TError => return(false)
 
 /// Whether `me` holds an error.
-/// :typeparam TSuccess: The success value type.
-/// :typeparam TFailure: The error type.
-/// :returns: `true` for `.Failure`, `false` for `.Success`.
-routine Result[TSuccess, TFailure].is_failure(me: Me) -> Bool
-require TSuccess: typename, TFailure: typename
+/// :typeparam T: The value type.
+/// :typeparam TError: The error type.
+/// :returns: `true` for a `TError`, `false` for a `T`.
+routine Result[T, TError].is_failure(me: Me) -> Bool
+require T: typename, TError: typename
     block entry()
         when me
-            .Success => return(false)
-            .Failure => return(true)
+            is T => return(false)
+            is TError => return(true)
 
 // -- extraction ----------------------------------------------------------------
 
-/// The value. Crashes if the Result is a Failure.
-/// :returns: The success value.
-/// :throws: Crashes with `UnwrapFailureError` when `me` is a `.Failure`.
+/// The value. Crashes if the Result holds an error.
+/// :returns: The value.
+/// :throws: Crashes with `UnwrapFailureError` when `me` holds a `TError`.
 #track_caller
-routine Result[TSuccess, TFailure].unwrap(me: Me) -> TSuccess
-require TSuccess: typename, TFailure: typename
+routine Result[T, TError].unwrap(me: Me) -> T
+require T: typename, TError: typename
     block entry()
         when me
-            .Success(value) => return(value)
-            .Failure => crash_unwrap_failure()
+            is T as value => return(value)
+            is TError => crash_unwrap_failure()
 
-/// The error. Crashes if the Result is a Success.
-/// :returns: The failure value.
-/// :throws: Crashes with `UnwrapSuccessError` when `me` is a `.Success`.
+/// The error. Crashes if the Result holds a value.
+/// :returns: The error.
+/// :throws: Crashes with `UnwrapSuccessError` when `me` holds a `T`.
 #track_caller
-routine Result[TSuccess, TFailure].unwrap_failure(me: Me) -> TFailure
-require TSuccess: typename, TFailure: typename
+routine Result[T, TError].unwrap_failure(me: Me) -> TError
+require T: typename, TError: typename
     block entry()
         when me
-            .Failure(error) => return(error)
-            .Success => crash_unwrap_success()
+            is TError as error => return(error)
+            is T => crash_unwrap_success()

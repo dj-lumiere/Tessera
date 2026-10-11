@@ -413,14 +413,14 @@ require TKey: typename, TValue: typename
     block entry()
         put: Result[Unit, AllocFailed] = me.setitem_result(key, value)
         when put
-            .Success => return()
-            .Failure => crash_allocation()
+            is Unit => return()
+            is AllocFailed => crash_allocation()
 
-/// `setitem`, returning a Failure instead of crashing when the allocator fails.
+/// `setitem`, returning an error instead of crashing when the allocator fails.
 /// :param key: The key to store under.
 /// :param value: The value to store.
-/// :returns: `Success` once the value is stored.
-/// :throws: Returns `Failure(AllocFailed)` when the tables must grow and the allocator fails.
+/// :returns: A value once the value is stored.
+/// :throws: Returns `AllocFailed` when the tables must grow and the allocator fails.
 routine Dict[TKey, TValue].setitem_result(me: @Me, key: TKey,
     value: TValue) -> Result[Unit, AllocFailed]
 require TKey: typename, TValue: typename
@@ -428,9 +428,9 @@ require TKey: typename, TValue: typename
         room: Bool = me.ensure()
         branch room
             ? continue
-            : return(.Failure(AllocFailed()))
+            : return(AllocFailed())
         me.setitem_direct(key, value, hash: TKey.hash(key))
-        return(.Success(Unit.value()))
+        return(Unit())
 
 /// Reads the value stored under `key`.
 /// :param key: The key to look up.
@@ -463,11 +463,11 @@ require TKey: typename, TValue: typename
         value: TValue = me.peek().getitem(key)
         return(value)
 
-/// `getitem`, returning Absent instead of crashing on a missing key.
+/// `getitem`, returning Unit instead of crashing on a missing key.
 /// :param key: The key to look up.
 /// :returns: A copy of the value.
 /// :absent: When the key is not present.
-routine Dict[TKey, TValue].getitem_checked(me: Me, key: TKey) -> Option[TValue]
+routine Dict[TKey, TValue].getitem_checked(me: Me, key: TKey) -> Maybe[TValue]
 require TKey: typename, TValue: typename
     local entry_idx: USize = me.find(key)
 
@@ -475,21 +475,21 @@ require TKey: typename, TValue: typename
         found: Bool = entry_idx.lt(SLOT_TOMBSTONE)
         branch found
             ? load()
-            : return(.Absent)
+            : return(Unit())
 
     block load()
         values: @TValue = me.values.data
         value: TValue = values.stride(entry_idx).peek()
-        return(.Present(value))
+        return(value)
 
-/// `getitem`, returning Absent instead of crashing on a missing key.
+/// `getitem`, returning Unit instead of crashing on a missing key.
 /// :param key: The key to look up.
 /// :returns: A copy of the value.
 /// :absent: When the key is not present.
-routine Dict[TKey, TValue].getitem_checked(me: @Me, key: TKey) -> Option[TValue]
+routine Dict[TKey, TValue].getitem_checked(me: @Me, key: TKey) -> Maybe[TValue]
 require TKey: typename, TValue: typename
     block entry()
-        value: Option[TValue] = me.peek().getitem_checked(key)
+        value: Maybe[TValue] = me.peek().getitem_checked(key)
         return(value)
 
 /// The address of the value under `key`, checked like getitem: a place to update the value in place. Only the
@@ -525,11 +525,11 @@ require TKey: typename, TValue: typename
         value: @TValue = me.peek().getslot(key)
         return(value)
 
-/// `at`, returning Absent instead of crashing on a missing key.
+/// `at`, returning Unit instead of crashing on a missing key.
 /// :param key: The key to look up.
 /// :returns: The value's address.
 /// :absent: When the key is not present.
-routine Dict[TKey, TValue].getslot_checked(me: Me, key: TKey) -> Option[@TValue]
+routine Dict[TKey, TValue].getslot_checked(me: Me, key: TKey) -> Maybe[@TValue]
 require TKey: typename, TValue: typename
     local entry_idx: USize = me.find(key)
 
@@ -537,21 +537,21 @@ require TKey: typename, TValue: typename
         found: Bool = entry_idx.lt(SLOT_TOMBSTONE)
         branch found
             ? address()
-            : return(.Absent)
+            : return(Unit())
 
     block address()
         values: @TValue = me.values.data
         value: @TValue = values.stride(entry_idx)
-        return(.Present(value))
+        return(value)
 
-/// `at`, returning Absent instead of crashing on a missing key.
+/// `at`, returning Unit instead of crashing on a missing key.
 /// :param key: The key to look up.
 /// :returns: The value's address.
 /// :absent: When the key is not present.
-routine Dict[TKey, TValue].getslot_checked(me: @Me, key: TKey) -> Option[@TValue]
+routine Dict[TKey, TValue].getslot_checked(me: @Me, key: TKey) -> Maybe[@TValue]
 require TKey: typename, TValue: typename
     block entry()
-        value: Option[@TValue] = me.peek().getslot_checked(key)
+        value: Maybe[@TValue] = me.peek().getslot_checked(key)
         return(value)
 
 /// Removes the entry for `key`. Removal keeps the entries array's layout: the entry is marked dead and its slot
@@ -618,10 +618,10 @@ require TKey: typename, TValue: typename, Destructible[TKey], Destructible[TValu
         jump next()
 
     block next()
-        item: Option[KVPair[TKey, TValue]] = iter.emit_checked()
+        item: Maybe[KVPair[TKey, TValue]] = iter.emit_checked()
         when item
-            .Present(entry) => entry_found(entry)
-            .Absent => finish()
+            is KVPair[TKey, TValue] as entry => entry_found(entry)
+            is Unit => finish()
 
     block entry_found(entry: KVPair[TKey, TValue])
         key_slot.poke(entry.key)
@@ -646,10 +646,10 @@ require TKey: typename, TValue: typename, Destructible[TValue]
         jump next()
 
     block next()
-        item: Option[KVPair[TKey, TValue]] = iter.emit_checked()
+        item: Maybe[KVPair[TKey, TValue]] = iter.emit_checked()
         when item
-            .Present(entry) => entry_found(entry)
-            .Absent => finish()
+            is KVPair[TKey, TValue] as entry => entry_found(entry)
+            is Unit => finish()
 
     block entry_found(entry: KVPair[TKey, TValue])
         value_slot.poke(entry.value)
@@ -700,8 +700,8 @@ require T: typename
         alloc: @MemoryManager = into.alloc.peek()
         made: Result[Slice[T], AllocFailed] = Slice[T].construct_result(count, alloc)
         when made
-            .Success(slice) => stored(slice)
-            .Failure => return(false)
+            is Slice[T] as slice => stored(slice)
+            is AllocFailed => return(false)
 
     block stored(slice: Slice[T])
         slice.poke_into(into)

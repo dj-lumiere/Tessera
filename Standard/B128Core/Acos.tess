@@ -188,10 +188,10 @@ routine cm_acos_fast(x: B128) -> B128
         dz: S64 = root.e.shr(1)
         xc: CmAsinW3 = CmAsinW3(w0: root.w0, w1: root.w1, w2: root.w2)
         t: U128 = cm_asin_join(hi: root.w2, lo: root.w1)
-        r: Option[B128] = cm_acos_fast_direct(arg, xc, t, nz: dz)
+        r: Maybe[B128] = cm_acos_fast_direct(arg, xc, t, nz: dz)
         when r
-            .Present(y) => return(y)
-            .Absent => accurate()
+            is B128 as y => return(y)
+            is Unit => accurate()
 
     // small |x|: x itself, aligned to the fixed point of the result
     block small()
@@ -199,10 +199,10 @@ routine cm_acos_fast(x: B128) -> B128
         jump via_half_pi(xc, arg.xa, nz)
 
     block via_half_pi(xc: CmAsinW3, t: U128, lz: S64)
-        r: Option[B128] = cm_acos_fast_half_pi(arg, xc, t, nz: lz)
+        r: Maybe[B128] = cm_acos_fast_half_pi(arg, xc, t, nz: lz)
         when r
-            .Present(y) => return(y)
-            .Absent => accurate()
+            is B128 as y => return(y)
+            is Unit => accurate()
 
     block accurate()
         r: B128 = cm_acos_accurate(x)
@@ -252,7 +252,7 @@ routine cm_acos_align_x(xa: U128, nz: S64) -> CmAsinW3
 /// :param nz: The leading zeros of the reduced argument.
 /// :returns: The rounded acos(x).
 /// :absent: When the result could round either way.
-routine cm_acos_fast_half_pi(arg: CmAsinArg, xc: CmAsinW3, t: U128, nz: S64) -> Option[B128]
+routine cm_acos_fast_half_pi(arg: CmAsinArg, xc: CmAsinW3, t: U128, nz: S64) -> Maybe[B128]
     block entry()
         f: U128 = cm_asin_fast_poly(t, s2: nz.sub(6).mul(2))
         sf: S64 = nz.mul(3).add(1)
@@ -275,7 +275,7 @@ routine cm_acos_fast_half_pi(arg: CmAsinArg, xc: CmAsinW3, t: U128, nz: S64) -> 
         v_lo: U64 = s.w1.shr(sh.to[U64]()).bitor(s.w2.shl(cm_asin_sh(k.add(49))))
         v: U128 = cm_asin_join(hi: s.w2.shr(sh.to[U64]()), lo: v_lo)
         y: B128 = cm_asin_pack(v, xn: 16383.sub(k), xsgn: 0, rnd)
-        r: Option[B128] = cm_acos_checked(y, s, k, eps)
+        r: Maybe[B128] = cm_acos_checked(y, s, k, eps)
         return(r)
 
 /// Finishes the fast path for x near 1 as asin(t) = t + t^3*P(t^2) with t = sqrt(1 - x^2).
@@ -285,7 +285,7 @@ routine cm_acos_fast_half_pi(arg: CmAsinArg, xc: CmAsinW3, t: U128, nz: S64) -> 
 /// :param nz: Half the exponent of 1 - x^2, the scale of `t`.
 /// :returns: The rounded acos(x).
 /// :absent: When the result could round either way.
-routine cm_acos_fast_direct(arg: CmAsinArg, xc: CmAsinW3, t: U128, nz: S64) -> Option[B128]
+routine cm_acos_fast_direct(arg: CmAsinArg, xc: CmAsinW3, t: U128, nz: S64) -> Maybe[B128]
     block entry()
         f: U128 = cm_asin_fast_poly(t, s2: nz.sub(6).mul(2))
         sf: S64 = nz.mul(2)
@@ -298,7 +298,7 @@ routine cm_acos_fast_direct(arg: CmAsinArg, xc: CmAsinW3, t: U128, nz: S64) -> O
         eps: U64 = 1.shl(cm_asin_sh(68.sub(sf.min(60))))
         xn: S64 = arg.xn.add(k).sub(nz)
         y: B128 = cm_asin_pack(v, xn, xsgn: 0, rnd)
-        r: Option[B128] = cm_acos_checked(y, s, k, eps)
+        r: Maybe[B128] = cm_acos_checked(y, s, k, eps)
         return(r)
 
 /// `y`, rounded from the fixed-point sum `s` with `k` leading zeros, when the bits below its round
@@ -309,16 +309,16 @@ routine cm_acos_fast_direct(arg: CmAsinArg, xc: CmAsinW3, t: U128, nz: S64) -> O
 /// :param eps: The error bound in units of the lowest word.
 /// :returns: `y` when the rounding is safe.
 /// :absent: When the bits below the round bit lie within `eps` of the boundary.
-routine cm_acos_checked(y: B128, s: CmAsinW3, k: S64, eps: U64) -> Option[B128]
+routine cm_acos_checked(y: B128, s: CmAsinW3, k: S64, eps: U64) -> Maybe[B128]
     block entry()
         top: U64 = 0xFFFFFFFFFFFFFFFF.shr(cm_asin_sh(k.add(50)))
         msk: U128 = cm_asin_join(hi: top, lo: 0xFFFFFFFFFFFFFFFF)
         low_words: U128 = cm_asin_join(hi: s.w1, lo: s.w0)
         tail: U128 = low_words.add_wrap(eps.to[U128]()).bitand(msk)
         unsafe: Bool = tail.lt(eps.mul_wrap(2).to[U128]())
-        none: Option[B128] = .Absent
-        some: Option[B128] = .Present(y)
-        r: Option[B128] = unsafe
+        none: Maybe[B128] = Unit()
+        some: Maybe[B128] = y
+        r: Maybe[B128] = unsafe
             ? none
             : some
         return(r)

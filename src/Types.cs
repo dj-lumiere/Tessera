@@ -256,27 +256,47 @@ public sealed class RecordType(RecordDecl decl, List<DType> args, Func<RecordTyp
     public override string OwnerName => Decl.Name;
 }
 
-/// A variant: a tag naming one case, and that case's payload in storage every case shares. It lowers to
-/// `{ tag, [0 x A], [N x iW] }`: A is the most aligned payload type (it aligns the storage without taking space), W
-/// is that alignment in bits, and N words hold the largest payload.
-public sealed class VariantType(VariantDecl decl, List<DType> args, Func<VariantType, List<DType?>> payloads) : DType
+/// A variant: a value of one of its branch types, and the tag that says which. It lowers to
+/// `{ i64 tag, [0 x A], [N x iW] }`: the tag's low 32 bits are the branch type's ID (`TypeId`), the same number for a
+/// type in every variant, so a value moves into a wider variant by copying; the high 32 bits are free for what travels
+/// with the value. A is the most aligned branch type (it aligns the storage without taking space), W is that alignment
+/// in bits, and N words hold the largest branch.
+public sealed class VariantType(VariantDecl decl, List<DType> args, Func<VariantType, List<DType>> branches) : DType
 {
-    private List<DType?>? _payloads;
+    private List<DType>? _branches;
 
     public VariantDecl Decl { get; } = decl;
     public List<DType> Args { get; } = args;
-    public override string Name => Args.Count == 0 ? Decl.Name : $"{Decl.Name}[{string.Join(", ", Args.Select(a => a.Name))}]";
-    public override string Key => DeclKey(Decl, Decl.Name, Args);
+    public override string Name => Decl.IsAnonymous
+        ? string.Join(" | ", Branches.Select(b => b.Name))
+        : Args.Count == 0 ? Decl.Name : $"{Decl.Name}[{string.Join(", ", Args.Select(a => a.Name))}]";
+    public override string Key => Decl.IsAnonymous
+        ? $"({string.Join("|", Branches.Select(b => b.Key))})"
+        : DeclKey(Decl, Decl.Name, Args);
     public override string Llvm => $"%\"{Key}\"";
     public override string OwnerName => Decl.Name;
 
-    /// Each case's payload type, or null for a case without one.
-    public List<DType?> Payloads => _payloads ??= payloads(this);
+    /// Each branch's type, in the declaration's order.
+    public List<DType> Branches => _branches ??= branches(this);
 
-    public IntType Tag => Decl.Cases.Count <= 256 ? IntType.U(8) : IntType.U(32);
+    /// The tag: the branch type's ID in the low 32 bits.
+    public static IntType Tag => IntType.U(64);
 
-    /// The case's position, which is its tag; -1 if there's no such case.
-    public int CaseIndex(string name) => Decl.Cases.FindIndex(c => c.Name == name);
+    /// The position of the branch that is `type`; -1 if `type` isn't one of them.
+    public int BranchIndex(DType type) => Branches.FindIndex(b => b.Equals(type));
+
+    /// A type's ID, the tag of a variant value of that type: FNV-1a of the type's key, never 0 (a hollow variant, all
+    /// zero, holds none of its branches).
+    public static uint TypeId(DType type)
+    {
+        uint h = 2166136261;
+        foreach (char c in type.Key)
+        {
+            h ^= c;
+            h *= 16777619;
+        }
+        return h == 0 ? 1 : h;
+    }
 }
 
 /// A choice: named constants of an underlying integer type.

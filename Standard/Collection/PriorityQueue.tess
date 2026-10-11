@@ -89,10 +89,10 @@ require TPriority: typename, TElement: typename
             ? return()
             : crash_allocation()
 
-/// `reserve`, returning a Failure instead of crashing when the allocator fails.
+/// `reserve`, returning an error instead of crashing when the allocator fails.
 /// :param capacity: The number of entries to make room for.
-/// :returns: `Success` once the heap array holds at least `capacity` entries.
-/// :throws: Returns `Failure(AllocFailed)` when the allocator fails.
+/// :returns: A value once the heap array holds at least `capacity` entries.
+/// :throws: Returns `AllocFailed` when the allocator fails.
 #expensive("reallocates to exactly the capacity asked for")
 routine PriorityQueue[TPriority, TElement].reserve_result(me: @Me,
     capacity: USize) -> Result[Unit, AllocFailed]
@@ -100,8 +100,8 @@ require TPriority: typename, TElement: typename
     block entry()
         reserved: Bool = me.make_capacity(capacity)
         branch reserved
-            ? return(.Success(Unit.value()))
-            : return(.Failure(AllocFailed()))
+            ? return(Unit())
+            : return(AllocFailed())
 
 /// Grows the heap array to at least `capacity` entries.
 /// :param capacity: The number of entries to make room for.
@@ -116,8 +116,8 @@ require TPriority: typename, TElement: typename
             : continue
         resized: Result[Unit, AllocFailed] = me.storage.resize_result(capacity)
         when resized
-            .Success => return(true)
-            .Failure => return(false)
+            is Unit => return(true)
+            is AllocFailed => return(false)
 
 /// Makes room for `wanted` entries: an empty array starts at 8 slots (or `wanted`, when larger), and a full one
 /// doubles until the request fits.
@@ -165,14 +165,14 @@ require TPriority: typename, TElement: typename
     block entry()
         pushed: Result[Unit, AllocFailed] = me.add_result(priority, element)
         when pushed
-            .Success => return()
-            .Failure => crash_allocation()
+            is Unit => return()
+            is AllocFailed => crash_allocation()
 
-/// `add`, returning a Failure instead of crashing when the allocator fails.
+/// `add`, returning an error instead of crashing when the allocator fails.
 /// :param priority: The priority the element is ordered by, the smallest first.
 /// :param element: The element to add.
-/// :returns: `Success` once the entry is in the heap.
-/// :throws: Returns `Failure(AllocFailed)` when the heap array must grow and the allocator fails.
+/// :returns: A value once the entry is in the heap.
+/// :throws: Returns `AllocFailed` when the heap array must grow and the allocator fails.
 routine PriorityQueue[TPriority, TElement].add_result(me: @Me, priority: TPriority,
     element: TElement) -> Result[Unit, AllocFailed]
 require TPriority: typename, TElement: typename
@@ -184,7 +184,7 @@ require TPriority: typename, TElement: typename
         room: Bool = me.make_room(wanted)
         branch room
             ? continue
-            : return(.Failure(AllocFailed()))
+            : return(AllocFailed())
         data: @PriorityEntry[TPriority, TElement] = data_at.peek()
         data.stride(count).poke(PriorityEntry[TPriority, TElement](priority: priority,
             element: element))
@@ -194,7 +194,7 @@ require TPriority: typename, TElement: typename
     block sift_up(index: USize)
         at_root: Bool = index.eq(0)
         branch at_root
-            ? return(.Success(Unit.value()))
+            ? return(Unit())
             : compare_parent(index)
 
     block compare_parent(index: USize)
@@ -205,7 +205,7 @@ require TPriority: typename, TElement: typename
         smaller: Bool = child_entry.priority.compare(parent_entry.priority).lt(0)
         branch smaller
             ? swap(index, parent, child_entry, parent_entry)
-            : return(.Success(Unit.value()))
+            : return(Unit())
 
     block swap(index: USize, parent: USize, child_entry: PriorityEntry[TPriority, TElement],
         parent_entry: PriorityEntry[TPriority, TElement])
@@ -234,25 +234,25 @@ require TPriority: typename, TElement: typename
         element: TElement = me.peek().first()
         return(element)
 
-/// `first`, returning Absent instead of crashing on an empty queue.
+/// `first`, returning Unit instead of crashing on an empty queue.
 /// :returns: A copy of the top element.
 /// :absent: When the queue is empty.
-routine PriorityQueue[TPriority, TElement].first_checked(me: @Me) -> Option[TElement]
+routine PriorityQueue[TPriority, TElement].first_checked(me: @Me) -> Maybe[TElement]
 require TPriority: typename, TElement: typename
     block entry()
-        element: Option[TElement] = me.peek().first_checked()
+        element: Maybe[TElement] = me.peek().first_checked()
         return(element)
 
-/// `first`, returning Absent instead of crashing on an empty queue.
+/// `first`, returning Unit instead of crashing on an empty queue.
 /// :returns: A copy of the top element.
 /// :absent: When the queue is empty.
-routine PriorityQueue[TPriority, TElement].first_checked(me: Me) -> Option[TElement]
+routine PriorityQueue[TPriority, TElement].first_checked(me: Me) -> Maybe[TElement]
 require TPriority: typename, TElement: typename
     block entry()
-        top: Option[PriorityEntry[TPriority, TElement]] = me.first_entry_checked()
+        top: Maybe[PriorityEntry[TPriority, TElement]] = me.first_entry_checked()
         when top
-            .Present(found) => return(.Present(found.element))
-            .Absent => return(.Absent)
+            is PriorityEntry[TPriority, TElement] as found => return(found.element)
+            is Unit => return(Unit())
 
 /// Reads the top entry, the smallest priority with its element, without removing it.
 /// :returns: A copy of the top entry.
@@ -261,10 +261,10 @@ require TPriority: typename, TElement: typename
 routine PriorityQueue[TPriority, TElement].first_entry(me: Me) -> PriorityEntry[TPriority, TElement]
 require TPriority: typename, TElement: typename
     block entry()
-        top: Option[PriorityEntry[TPriority, TElement]] = me.first_entry_checked()
+        top: Maybe[PriorityEntry[TPriority, TElement]] = me.first_entry_checked()
         when top
-            .Present(found) => return(found)
-            .Absent => crash_absent_value()
+            is PriorityEntry[TPriority, TElement] as found => return(found)
+            is Unit => crash_absent_value()
 
 /// Reads the top entry, the smallest priority with its element, without removing it.
 /// :returns: A copy of the top entry.
@@ -276,31 +276,31 @@ require TPriority: typename, TElement: typename
         top: PriorityEntry[TPriority, TElement] = me.peek().first_entry()
         return(top)
 
-/// `first_entry`, returning Absent instead of crashing on an empty queue.
+/// `first_entry`, returning Unit instead of crashing on an empty queue.
 /// :returns: A copy of the top entry.
 /// :absent: When the queue is empty.
-routine PriorityQueue[TPriority, TElement].first_entry_checked(me: @Me) -> Option[PriorityEntry[TPriority, TElement]]
+routine PriorityQueue[TPriority, TElement].first_entry_checked(me: @Me) -> Maybe[PriorityEntry[TPriority, TElement]]
 require TPriority: typename, TElement: typename
     block entry()
-        top: Option[PriorityEntry[TPriority, TElement]] = me.peek().first_entry_checked()
+        top: Maybe[PriorityEntry[TPriority, TElement]] = me.peek().first_entry_checked()
         return(top)
 
-/// `first_entry`, returning Absent instead of crashing on an empty queue.
+/// `first_entry`, returning Unit instead of crashing on an empty queue.
 /// :returns: A copy of the top entry.
 /// :absent: When the queue is empty.
-routine PriorityQueue[TPriority, TElement].first_entry_checked(me: Me) -> Option[PriorityEntry[TPriority, TElement]]
+routine PriorityQueue[TPriority, TElement].first_entry_checked(me: Me) -> Maybe[PriorityEntry[TPriority, TElement]]
 require TPriority: typename, TElement: typename
     block entry()
         count: USize = me.count
         empty: Bool = count.eq(0)
         branch empty
-            ? return(.Absent)
+            ? return(Unit())
             : load()
 
     block load()
         data: @PriorityEntry[TPriority, TElement] = me.storage.data
         top: PriorityEntry[TPriority, TElement] = data.stride(0).peek()
-        return(.Present(top))
+        return(top)
 
 /// Removes the element with the smallest priority, the top, and returns it, then restores the heap order.
 /// :returns: The removed top element.
@@ -312,16 +312,16 @@ require TPriority: typename, TElement: typename
         top: PriorityEntry[TPriority, TElement] = me.remove_entry()
         return(top.element)
 
-/// `remove`, returning Absent instead of crashing on an empty queue.
+/// `remove`, returning Unit instead of crashing on an empty queue.
 /// :returns: The removed top element.
 /// :absent: When the queue is empty.
-routine PriorityQueue[TPriority, TElement].remove_checked(me: @Me) -> Option[TElement]
+routine PriorityQueue[TPriority, TElement].remove_checked(me: @Me) -> Maybe[TElement]
 require TPriority: typename, TElement: typename
     block entry()
-        top: Option[PriorityEntry[TPriority, TElement]] = me.remove_entry_checked()
+        top: Maybe[PriorityEntry[TPriority, TElement]] = me.remove_entry_checked()
         when top
-            .Present(found) => return(.Present(found.element))
-            .Absent => return(.Absent)
+            is PriorityEntry[TPriority, TElement] as found => return(found.element)
+            is Unit => return(Unit())
 
 /// Removes the top entry, the smallest priority with its element, and returns it, then restores the heap order.
 /// :returns: The removed top entry.
@@ -330,15 +330,15 @@ require TPriority: typename, TElement: typename
 routine PriorityQueue[TPriority, TElement].remove_entry(me: @Me) -> PriorityEntry[TPriority, TElement]
 require TPriority: typename, TElement: typename
     block entry()
-        top: Option[PriorityEntry[TPriority, TElement]] = me.remove_entry_checked()
+        top: Maybe[PriorityEntry[TPriority, TElement]] = me.remove_entry_checked()
         when top
-            .Present(found) => return(found)
-            .Absent => crash_absent_value()
+            is PriorityEntry[TPriority, TElement] as found => return(found)
+            is Unit => crash_absent_value()
 
-/// `remove_entry`, returning Absent instead of crashing on an empty queue.
+/// `remove_entry`, returning Unit instead of crashing on an empty queue.
 /// :returns: The removed top entry.
 /// :absent: When the queue is empty.
-routine PriorityQueue[TPriority, TElement].remove_entry_checked(me: @Me) -> Option[PriorityEntry[TPriority, TElement]]
+routine PriorityQueue[TPriority, TElement].remove_entry_checked(me: @Me) -> Maybe[PriorityEntry[TPriority, TElement]]
 require TPriority: typename, TElement: typename
     local count: USize = me.count.peek()
     local data_at: @@PriorityEntry[TPriority, TElement] = me.storage.data
@@ -346,7 +346,7 @@ require TPriority: typename, TElement: typename
     block entry()
         empty: Bool = count.eq(0)
         branch empty
-            ? return(.Absent)
+            ? return(Unit())
             : remove_root()
 
     block remove_root()
@@ -356,7 +356,7 @@ require TPriority: typename, TElement: typename
         me.count.poke(new_count)
         now_empty: Bool = new_count.eq(0)
         branch now_empty
-            ? return(.Present(result))
+            ? return(result)
             : move_last(result, new_count)
 
     block move_last(result: PriorityEntry[TPriority, TElement], new_count: USize)
@@ -372,7 +372,7 @@ require TPriority: typename, TElement: typename
         has_left: Bool = left.lt(heap_count)
         branch has_left
             ? choose_child(index, left, right, result)
-            : return(.Present(result))
+            : return(result)
 
     block choose_child(index: USize, left: USize, right: USize,
         result: PriorityEntry[TPriority, TElement])
@@ -400,7 +400,7 @@ require TPriority: typename, TElement: typename
         child_smaller: Bool = child_entry.priority.compare(index_entry.priority).lt(0)
         branch child_smaller
             ? swap_down(index, child, index_entry, child_entry, result)
-            : return(.Present(result))
+            : return(result)
 
     block swap_down(index: USize, child: USize, index_entry: PriorityEntry[TPriority, TElement],
         child_entry: PriorityEntry[TPriority, TElement], result: PriorityEntry[TPriority, TElement])

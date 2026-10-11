@@ -81,14 +81,16 @@ public static class Migrate
         if (step is not null)
         {
             int changed = 0;
+            var report = new List<string>();
             foreach (var (file, text) in texts)
             {
-                string rewritten = Steps[step](text);
+                string rewritten = Steps[step](file, text, report);
                 if (rewritten == text) continue;
                 changed++;
                 if (check) Console.WriteLine(file);
                 else File.WriteAllText(file, rewritten, new UTF8Encoding(false));
             }
+            foreach (string line in report) Console.WriteLine(line);
             if (!check) Console.WriteLine($"migrated {changed} of {files.Count} file(s)");
             return check && changed > 0 ? 1 : 0;
         }
@@ -193,9 +195,10 @@ public static class Migrate
     }
 
     /// The steps `--step` runs alone, each one also part of the whole migration.
-    private static readonly Dictionary<string, Func<string, string>> Steps = new()
+    private static readonly Dictionary<string, Func<string, string, List<string>, string>> Steps = new()
     {
-        ["iterators"] = IteratorNames,
+        ["iterators"] = (_, text, _) => IteratorNames(text),
+        ["variants"] = (file, text, report) => VariantMigration.Rewrite(text, report, file),
     };
 
     /// The release `migrate` moves sources to.
@@ -262,7 +265,7 @@ public static class Migrate
             lines[i] = inAsmBody ? RewriteTypeArguments(line) : RewriteNames(line);
         }
 
-        return IteratorNames(Renames(CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names)))))));
+        return VariantMigration.Rewrite(IteratorNames(Renames(CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names))))))));
     }
 
     private static readonly Regex IteratorNext = new(@"\.next(?=\s*\()", RegexOptions.Compiled);

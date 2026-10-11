@@ -847,7 +847,7 @@ public sealed partial class Compiler
                     _ => throw new CompileError(t.Pos, $"invalid generic argument for '{v.Name}'"),
                 });
             CheckRequirements(v.Clauses, v.TypeParams, v.File, v.Pos, args, t.Pos, $"{v.Name}[{string.Join(", ", args.Select(a => a.Name))}]");
-            return new VariantType(v, args, VariantPayloads);
+            return new VariantType(v, args, VariantBranches);
         }
 
         if (FindChoice(t.Name, env.File, t.Pos, t.Path) is { } e)
@@ -1055,31 +1055,65 @@ public sealed partial class Compiler
         return null;
     }
 
-    private List<DType?> VariantPayloads(VariantType v)
+    /// A variant's branch types. A type may be a branch once: two branches of one type (`Result[S64, S64]`, or
+    /// `Maybe[Unit]`, whose `T` is `Unit` too) couldn't be told apart, and neither can a branch that is a variant
+    /// holding another branch's type (`Maybe[Maybe[S64]]` has `Unit` on both levels).
+    private List<DType> VariantBranches(VariantType v)
     {
         var env = new TypeEnv(v.Decl.File);
         for (int i = 0; i < v.Decl.TypeParams.Count && i < v.Args.Count; i++) env.Bind(v.Decl.TypeParams[i], v.Args[i]);
-        return v.Decl.Cases.Select(c =>
+        var branches = v.Decl.Branches.Select(b =>
         {
-            if (c.Payload is null) return null;
-            var t = ResolveType(c.Payload, env);
-            if (t is VoidType) throw new CompileError(c.Pos, $"case '{c.Name}' can't carry Void; leave the payload out");
+            var t = b.Type.Known ?? ResolveType(b.Type, env);
+            if (t is VoidType) throw new CompileError(b.Pos, "a variant's branch can't be Void: use Unit for a branch that holds nothing");
             return t;
         }).ToList();
+        if (Prechecking || !_branchesChecking.Add(v.Key)) return branches;
+        try
+        {
+        for (int i = 0; i < branches.Count; i++)
+            for (int j = 0; j < i; j++)
+            {
+                if (branches[i].Equals(branches[j]))
+                    throw new CompileError(v.Decl.Branches[i].Pos,
+                        $"{BranchesShown(v, branches)} has two branches of type {branches[i]}, and a value couldn't tell which "
+                        + "it is: wrap one of them in a record of its own");
+                foreach (var (outer, inner) in new[] { (branches[i], branches[j]), (branches[j], branches[i]) })
+                    if (outer is VariantType nested && !_branchesChecking.Contains(nested.Key)
+                        && nested.Branches.Any(n => n.Equals(inner)))
+                        throw new CompileError(v.Decl.Branches[i].Pos,
+                            $"{BranchesShown(v, branches)} has {inner} as a branch and inside its branch {outer}, and a "
+                            + $"value of {inner} couldn't tell which: wrap one of them in a record of its own");
+            }
+        }
+        finally
+        {
+            _branchesChecking.Remove(v.Key);
+        }
+        return branches;
     }
 
-    /// The storage a variant's cases share: the most aligned payload type, and the largest payload's size.
+    /// The variants whose branches are being checked, so a variant that holds itself doesn't loop.
+    private readonly HashSet<string> _branchesChecking = [];
+
+    private static string BranchesShown(VariantType v, List<DType> branches) =>
+        v.Decl.IsAnonymous
+            ? string.Join(" | ", branches.Select(b => b.Name))
+            : v.Args.Count == 0 ? v.Decl.Name : $"{v.Decl.Name}[{string.Join(", ", v.Args.Select(a => a.Name))}]";
+
+    /// The storage a variant's branches share: the most aligned branch type, and the largest branch's size.
     public (DType? Aligner, long Size, long Align) VariantStorage(VariantType v)
     {
         DType? aligner = null;
         long size = 0, align = 1;
-        foreach (var p in v.Payloads)
+        foreach (var p in v.Branches)
         {
-            if (p is null) continue;
             var (s, a) = SizeAlign(p, v.Decl.Pos);
             size = Math.Max(size, s);
             if (aligner is null || a > align) (aligner, align) = (p, Math.Max(a, align));
         }
+        // Branches that hold nothing (Unit, an empty record) need no storage.
+        if (size == 0) return (null, 0, 1);
         return (aligner, size, align);
     }
 
@@ -1099,8 +1133,7 @@ public sealed partial class Compiler
                 _definingTypes.Add(v.Key);
                 try
                 {
-                    foreach (var p in v.Payloads)
-                        if (p is not null) EnsureTypeDefined(p);
+                    foreach (var p in v.Branches) EnsureTypeDefined(p);
                 }
                 finally
                 {
@@ -1109,7 +1142,9 @@ public sealed partial class Compiler
                 // The storage is words as wide as its alignment, so an optimized copy moves words, not bytes.
                 var (aligner, size, align) = VariantStorage(v);
                 long words = (size + align - 1) / align;
-                string body = aligner is null ? v.Tag.Llvm : $"{v.Tag.Llvm}, [0 x {aligner.Llvm}], [{words} x i{align * 8}]";
+                string body = aligner is null
+                    ? VariantType.Tag.Llvm
+                    : $"{VariantType.Tag.Llvm}, [0 x {aligner.Llvm}], [{words} x i{align * 8}]";
                 _typeDefs.AppendLine($"{v.Llvm} = type {{ {body} }}");
                 break;
             }

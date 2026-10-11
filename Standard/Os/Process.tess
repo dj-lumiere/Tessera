@@ -35,10 +35,20 @@ choice OutputMode: U8
     INHERIT  // this process's
     NULL  // discarded
 
+/// A program that ended by exiting.
+#derive(Representable, Diagnosable, Equatable, Hashable, Comparable)
+record Exited
+    code: S32  // its exit code
+
+/// A program a signal stopped (POSIX only).
+#derive(Representable, Diagnosable, Equatable, Hashable, Comparable)
+record Signaled
+    signal: S32  // the signal that stopped it
+
 /// How a program ended.
 variant ExitStatus
-    Exited: S32  // its exit code
-    Signaled: S32  // the signal that stopped it (POSIX only)
+    Exited
+    Signaled
 
 /// One environment variable for the child.
 record EnvVar
@@ -48,7 +58,7 @@ record EnvVar
 /// How {run_process_result} starts a program: its working directory, environment overrides, and what its standard
 /// streams are. {ProcessOptions.default} is a good start.
 record ProcessOptions
-    directory: Option[Bytes]  // where it starts: Absent for this process's working directory
+    directory: Maybe[Bytes]  // where it starts: Unit for this process's working directory
     env: @EnvVar  // env_count overrides of this process's environment
     env_count: USize
     stdin: InputMode
@@ -75,7 +85,7 @@ routine ProcessOutput.destruct(me: @Me) -> Void
 /// :returns: The default options.
 routine ProcessOptions.default() -> Me
     block entry()
-        return(Me(directory: .Absent, env: null, env_count: 0, stdin: InputMode.NULL,
+        return(Me(directory: Unit(), env: null, env_count: 0, stdin: InputMode.NULL,
             stdout: OutputMode.CAPTURE, stderr: OutputMode.CAPTURE))
 
 /// The exit code, or for a program a signal stopped, 128 plus the signal (as a POSIX shell reports it).
@@ -83,23 +93,23 @@ routine ProcessOptions.default() -> Me
 routine ExitStatus.code(me: Me) -> S32
     block entry()
         when me
-            .Exited(c) => return(c)
-            .Signaled(s) => return(s.add_wrap(128))
+            is Exited as exited => return(exited.code)
+            is Signaled as signaled => return(signaled.signal.add_wrap(128))
 
 /// Whether it exited with code 0.
 /// :returns: True for an exit with code 0, false for any other code or a signal.
 routine ExitStatus.is_success(me: Me) -> Bool
     block entry()
         when me
-            .Exited(c) => return(c.eq(0))
-            .Signaled => return(false)
+            is Exited as exited => return(exited.code.eq(0))
+            is Signaled => return(false)
 
 /// Runs a command line through the platform shell (`/bin/sh -c` on Linux and macOS, `cmd.exe /c` on Windows) with
 /// {run_process_result}, for pipes and globs at the cost of the shell's quoting.
 /// :param command: The command line.
 /// :param options: The directory, environment overrides, and standard streams.
 /// :param alloc: The allocator for the captured output and the working memory.
-/// :returns: The {ProcessOutput}, or Failure with a {ProcessError} when the shell couldn't start.
+/// :returns: The {ProcessOutput}, or a {ProcessError} when the shell couldn't start.
 #expensive("starts a process")
 routine run_shell_result(command: Bytes, options: ProcessOptions,
     alloc: @MemoryManager) -> Result[ProcessOutput, ProcessError]
@@ -268,8 +278,8 @@ internal routine has_nul(program: Bytes, args: Slice[Bytes], options: ProcessOpt
 
     block directory()
         when options.directory
-            .Present(d) => return(d.contains("\x00"))
-            .Absent => return(false)
+            is Bytes as d => return(d.contains("\x00"))
+            is Unit => return(false)
 
 /// Whether `name`'s bytes equal the start of `entry` up to its '=' (a "NAME=VALUE" entry), ASCII letters in any case
 /// when `fold` is set.

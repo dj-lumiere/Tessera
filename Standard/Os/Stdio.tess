@@ -7,7 +7,7 @@
 // other should have had, so In.read_into_result, read_count, read_word, read_line, and read_all all draw on that one.
 // In.read[T]() reads a number (any Parsable type) from the next word in place, without allocating unless the word is
 // longer than the buffer. read[T], read_word, and read_line crash at the end of the input, and their _checked forms
-// return Absent there. In is a Reader, so code that reads a file or standard input alike takes a @R and gets
+// return Unit there. In is a Reader, so code that reads a file or standard input alike takes a @R and gets
 // In.reader().
 //
 // On Linux and macOS these are file descriptors 0, 1, and 2. On Windows a console is a different thing from a pipe:
@@ -43,7 +43,7 @@ require T: typename
     /// Reads up to `count` bytes into `buffer`.
     /// :param buffer: Where the bytes go.
     /// :param count: The most bytes to read.
-    /// :returns: How many bytes were read, 0 at the end, or Failure with an {FsError}.
+    /// :returns: How many bytes were read, 0 at the end, or a {FsError}.
     routine Me.read_bytes_result(me: @Me, buffer: @Byte, count: USize) -> Result[USize, FsError]
 
 // -- In ----------------------------------------------------------------------------------
@@ -67,8 +67,8 @@ private routine InputBuffer.fill(me: @Me) -> Bool
     block entry()
         got: Result[USize, FsError] = stdin_read(buffer: me.bytes.to[@Byte](), count: IN_BUFFER)
         when got
-            .Success(n) => filled(n)
-            .Failure => filled(0)
+            is USize as n => filled(n)
+            is FsError => filled(0)
 
     block filled(n: USize)
         me.start.poke(0)
@@ -78,20 +78,20 @@ private routine InputBuffer.fill(me: @Me) -> Bool
 /// The next byte, filling the buffer when it is empty. The lock is held.
 /// :returns: The byte.
 /// :absent: At the end of the input.
-private routine InputBuffer.emit_checked(me: @Me) -> Option[Byte]
+private routine InputBuffer.emit_checked(me: @Me) -> Maybe[Byte]
     block entry()
         branch me.start.peek().lt(me.end.peek())
             ? take()
             : continue
         branch me.fill()
             ? take()
-            : return(.Absent)
+            : return(Unit())
 
     block take()
         at: USize = me.start.peek()
         me.start.poke(at.add(1))
         buffered: @Byte = me.bytes.to[@Byte]()
-        return(.Present(buffered.stride(at).peek()))
+        return(buffered.stride(at).peek())
 
 /// Puts back the byte emit_checked just handed out. The lock is held.
 private routine InputBuffer.unread(me: @Me) -> Void
@@ -110,8 +110,8 @@ private routine InputBuffer.fill_more(me: @Me) -> Bool
         free: @Byte = me.bytes.to[@Byte]().stride(end)
         got: Result[USize, FsError] = stdin_read(buffer: free, count: IN_BUFFER.sub(end))
         when got
-            .Success(n) => added(n)
-            .Failure => return(false)
+            is USize as n => added(n)
+            is FsError => return(false)
 
     block added(n: USize)
         me.end.poke(end.add(n))
@@ -138,7 +138,7 @@ private routine InputBuffer.compact(me: @Me) -> Void
         buffered.stride(i).poke(byte)
         jump move(i.add(1))
 
-/// Skips white space and hands out the next word, Absent at the end of the input. A word that fits in the buffer is a
+/// Skips white space and hands out the next word, Unit at the end of the input. A word that fits in the buffer is a
 /// view of it (moved to the front of the buffer first when it runs past the end of what was read, so it comes out
 /// whole), good until the buffer is read into again: nothing is allocated. A longer word is copied into memory from
 /// DEFAULT_HEAP, and the Bytes carries that allocator. Either way the caller destructs the word when it's done with it
@@ -146,17 +146,17 @@ private routine InputBuffer.compact(me: @Me) -> Void
 /// :returns: The word.
 /// :absent: At the end of the input.
 /// :throws: Crashes with `MemoryAllocationError` when a word longer than the buffer can't be copied.
-private routine InputBuffer.word(me: @Me) -> Option[Bytes]
+private routine InputBuffer.word(me: @Me) -> Maybe[Bytes]
     local text: @CaptureBuffer <- CaptureBuffer.empty()
 
     block entry()
         jump skip()
 
     block skip()
-        c: Option[Byte] = me.emit_checked()
+        c: Maybe[Byte] = me.emit_checked()
         when c
-            .Present(byte) => first(byte)
-            .Absent => return(.Absent)
+            is Byte as byte => first(byte)
+            is Unit => return(Unit())
 
     block first(byte: Byte)
         branch is_space(byte)
@@ -194,7 +194,7 @@ private routine InputBuffer.word(me: @Me) -> Option[Bytes]
         buffered: @Byte = me.bytes.to[@Byte]()
         word: Bytes = Bytes.from_ptr(data: buffered.stride(from), count: length)
         me.start.poke(from.add(length))
-        return(.Present(word))
+        return(word)
 
     // The whole buffer is one word so far: it goes on in memory from the default heap.
     block spill(length: USize)
@@ -203,10 +203,10 @@ private routine InputBuffer.word(me: @Me) -> Option[Bytes]
         jump spill_next()
 
     block spill_next()
-        c: Option[Byte] = me.emit_checked()
+        c: Maybe[Byte] = me.emit_checked()
         when c
-            .Present(byte) => spill_byte(byte)
-            .Absent => spilled()
+            is Byte as byte => spill_byte(byte)
+            is Unit => spilled()
 
     block spill_byte(byte: Byte)
         branch is_space(byte)
@@ -225,7 +225,7 @@ private routine InputBuffer.word(me: @Me) -> Option[Bytes]
             ? crash_allocation()
             : continue
         word: Bytes = text.owned(DEFAULT_HEAP)
-        return(.Present(word))
+        return(word)
 
 /// A pointer to standard input, for passing where a Reader is taken (`@R`). Every value of {In} is the same stream,
 /// so the pointer holds no state and is null.
@@ -239,7 +239,7 @@ routine In.reader() -> @Me
 /// `count` is a bufferful or more).
 /// :param buffer: Where the bytes go.
 /// :param count: The most bytes to read.
-/// :returns: How many bytes were read, 0 at the end, or Failure with an {FsError} when the OS read fails.
+/// :returns: How many bytes were read, 0 at the end, or a {FsError} when the OS read fails.
 routine In.read_into_result(buffer: @Byte, count: USize) -> Result[USize, FsError]
     local b: @InputBuffer = STDIN_BUFFER
 
@@ -254,7 +254,7 @@ routine In.read_into_result(buffer: @Byte, count: USize) -> Result[USize, FsErro
             : continue
         branch b.fill()
             ? held()
-            : finish(.Success(0))
+            : finish(0)
 
     block held()
         available: USize = b.end.peek().sub(b.start.peek())
@@ -262,7 +262,7 @@ routine In.read_into_result(buffer: @Byte, count: USize) -> Result[USize, FsErro
         buffer.copy(src: b.bytes.to[@Byte]().stride(b.start.peek()), count: n)
         next_start: USize = b.start.peek().add(n)
         next_start.poke_into(b.start)
-        jump finish(.Success(n))
+        jump finish(n)
 
     block direct()
         got: Result[USize, FsError] = stdin_read(buffer, count)
@@ -286,10 +286,10 @@ require T: typename, Parsable[T]
 
     block entry()
         b.lock.lock()
-        word: Option[Bytes] = b.word()
+        word: Maybe[Bytes] = b.word()
         when word
-            .Present(text) => convert(text)
-            .Absent => ended()
+            is Bytes as text => convert(text)
+            is Unit => ended()
 
     block ended()
         b.lock.unlock()
@@ -304,32 +304,32 @@ require T: typename, Parsable[T]
         b.lock.unlock()
         return(value)
 
-/// Skips white space and reads the next word as a T, like {In.read[T]}, with Absent instead of a crash at the end of
+/// Skips white space and reads the next word as a T, like {In.read[T]}, with Unit instead of a crash at the end of
 /// the input and on a word that isn't a T. The word is gone from the input either way.
 /// :typeparam T: The type to read, a Parsable one.
-/// :returns: The value, or Absent at the end of the input or when the word isn't a T.
-routine In.read_checked[T]() -> Option[T]
+/// :returns: The value, or Unit at the end of the input or when the word isn't a T.
+routine In.read_checked[T]() -> Maybe[T]
 require T: typename, Parsable[T]
     block entry()
         converted: Result[T, ParseError] = Me.read_result[T]()
         when converted
-            .Success(value) => return(.Present(value))
-            .Failure => return(.Absent)
+            is T as value => return(value)
+            is ParseError => return(Unit())
 
-/// Skips white space and reads the next word as a T, like {In.read[T]}, with a Failure instead of a crash: `Empty` at
+/// Skips white space and reads the next word as a T, like {In.read[T]}, with an error instead of a crash: `Empty` at
 /// the end of the input, else why the word isn't a T. The word is gone from the input either way.
 /// :typeparam T: The type to read, a Parsable one.
-/// :returns: Success with the value, or Failure with a {ParseError}.
+/// :returns: The value, or a {ParseError}.
 routine In.read_result[T]() -> Result[T, ParseError]
 require T: typename, Parsable[T]
     local b: @InputBuffer = STDIN_BUFFER
 
     block entry()
         b.lock.lock()
-        word: Option[Bytes] = b.word()
+        word: Maybe[Bytes] = b.word()
         when word
-            .Present(text) => convert(text)
-            .Absent => finish(.Failure(ParseError.EMPTY))
+            is Bytes as text => convert(text)
+            is Unit => finish(ParseError.EMPTY)
 
     block convert(text: Bytes)
         claim word: @Bytes <- text
@@ -344,7 +344,7 @@ require T: typename, Parsable[T]
 /// The Reader side: {In.read_into_result}.
 /// :param buffer: Where the bytes go.
 /// :param count: The most bytes to read.
-/// :returns: How many bytes were read, 0 at the end, or Failure with an {FsError}.
+/// :returns: How many bytes were read, 0 at the end, or a {FsError}.
 routine In.read_bytes_result(me: @Me, buffer: @Byte, count: USize) -> Result[USize, FsError]
     block entry()
         return(Me.read_into_result(buffer, count))
@@ -370,8 +370,8 @@ routine In.read_count(count: USize, alloc: @MemoryManager) -> Bytes
         got: Result[USize, FsError] = Me.read_into_result(buffer: buffer.stride(n),
             count: count.sub(n))
         when got
-            .Success(k) => continue
-            .Failure => return(Bytes(data: buffer, count: n, alloc: alloc))
+            is USize as k => continue
+            is FsError => return(Bytes(data: buffer, count: n, alloc: alloc))
         branch k.eq(0)
             ? return(Bytes(data: buffer, count: n, alloc: alloc))
             : more(n.add(k))
@@ -391,8 +391,8 @@ routine In.read_all(alloc: @MemoryManager) -> Bytes
     block more()
         got: Result[USize, FsError] = Me.read_into_result(buffer: chunk, count: 4096)
         when got
-            .Success(n) => continue
-            .Failure => return(text.owned(alloc))
+            is USize as n => continue
+            is FsError => return(text.owned(alloc))
         branch n.eq(0)
             ? return(text.owned(alloc))
             : continue
@@ -408,19 +408,19 @@ routine In.read_all(alloc: @MemoryManager) -> Bytes
 #expensive("allocates what it reads")
 routine In.read_line(alloc: @MemoryManager) -> Bytes
     block entry()
-        line: Option[Bytes] = Me.read_line_checked(alloc)
+        line: Maybe[Bytes] = Me.read_line_checked(alloc)
         when line
-            .Present(text) => return(text)
-            .Absent => crash(name: "AbsentValueError",
+            is Bytes as text => return(text)
+            is Unit => crash(name: "AbsentValueError",
                 message: "The input ended before In.read_line() found a line to read.")
 
-/// The next line, without its "\n" (or "\r\n"), in memory from alloc, or Absent at the end of the input. A last line
+/// The next line, without its "\n" (or "\r\n"), in memory from alloc, or Unit at the end of the input. A last line
 /// with no "\n" still counts, and a blank line is "". Release it with `destruct()`.
 /// :param alloc: The allocator for the line.
 /// :returns: The line.
 /// :absent: At the end of the input.
 #expensive("allocates what it reads")
-routine In.read_line_checked(alloc: @MemoryManager) -> Option[Bytes]
+routine In.read_line_checked(alloc: @MemoryManager) -> Maybe[Bytes]
     local b: @InputBuffer = STDIN_BUFFER
     local text: @CaptureBuffer <- CaptureBuffer.empty()
 
@@ -429,10 +429,10 @@ routine In.read_line_checked(alloc: @MemoryManager) -> Option[Bytes]
         jump next(false)
 
     block next(any: Bool)
-        c: Option[Byte] = b.emit_checked()
+        c: Maybe[Byte] = b.emit_checked()
         when c
-            .Present(byte) => continue
-            .Absent => ended(any)
+            is Byte as byte => continue
+            is Unit => ended(any)
         branch byte.eq(b'\n')
             ? done()
             : continue
@@ -443,12 +443,12 @@ routine In.read_line_checked(alloc: @MemoryManager) -> Option[Bytes]
     block ended(any: Bool)
         branch any
             ? done()
-            : finish(.Absent)
+            : finish(Unit())
 
     block done()
-        jump finish(.Present(trim_cr(text.owned(alloc))))
+        jump finish(trim_cr(text.owned(alloc)))
 
-    block finish(line: Option[Bytes])
+    block finish(line: Maybe[Bytes])
         b.lock.unlock()
         return(line)
 
@@ -481,19 +481,19 @@ private routine is_space(c: Byte) -> Bool
 #expensive("allocates what it reads")
 routine In.read_word(alloc: @MemoryManager) -> Bytes
     block entry()
-        word: Option[Bytes] = Me.read_word_checked(alloc)
+        word: Maybe[Bytes] = Me.read_word_checked(alloc)
         when word
-            .Present(text) => return(text)
-            .Absent => crash(name: "AbsentValueError",
+            is Bytes as text => return(text)
+            is Unit => crash(name: "AbsentValueError",
                 message: "The input ended before In.read_word() found a word to read.")
 
-/// The next word (spaces, tabs, and line ends separate words), in memory from alloc, or Absent at the end of the
+/// The next word (spaces, tabs, and line ends separate words), in memory from alloc, or Unit at the end of the
 /// input. The space after the word stays in the input. Release it with `destruct()`.
 /// :param alloc: The allocator for the word.
 /// :returns: The word.
 /// :absent: At the end of the input.
 #expensive("allocates what it reads")
-routine In.read_word_checked(alloc: @MemoryManager) -> Option[Bytes]
+routine In.read_word_checked(alloc: @MemoryManager) -> Maybe[Bytes]
     local b: @InputBuffer = STDIN_BUFFER
     local text: @CaptureBuffer <- CaptureBuffer.empty()
     local single: @Byte <- .hollow()
@@ -503,10 +503,10 @@ routine In.read_word_checked(alloc: @MemoryManager) -> Option[Bytes]
         jump skip()
 
     block skip()
-        c: Option[Byte] = b.emit_checked()
+        c: Maybe[Byte] = b.emit_checked()
         when c
-            .Present(byte) => continue
-            .Absent => finish(.Absent)
+            is Byte as byte => continue
+            is Unit => finish(Unit())
         branch is_space(byte)
             ? skip()
             : continue
@@ -515,10 +515,10 @@ routine In.read_word_checked(alloc: @MemoryManager) -> Option[Bytes]
         jump next()
 
     block next()
-        c: Option[Byte] = b.emit_checked()
+        c: Maybe[Byte] = b.emit_checked()
         when c
-            .Present(byte) => continue
-            .Absent => done()
+            is Byte as byte => continue
+            is Unit => done()
         branch is_space(byte)
             ? put_back()
             : continue
@@ -531,9 +531,9 @@ routine In.read_word_checked(alloc: @MemoryManager) -> Option[Bytes]
         jump done()
 
     block done()
-        jump finish(.Present(text.owned(alloc)))
+        jump finish(text.owned(alloc))
 
-    block finish(word: Option[Bytes])
+    block finish(word: Maybe[Bytes])
         b.lock.unlock()
         return(word)
 
@@ -556,13 +556,13 @@ routine Out.writer() -> @Me
 /// Writes all `count` bytes to standard output.
 /// :param data: The bytes to write.
 /// :param count: How many bytes there are.
-/// :returns: Success, or Failure with Other if the OS refused (or the process has no standard output).
+/// :returns: Success, or the error Other if the OS refused (or the process has no standard output).
 #expensive("makes a system call")
 routine Out.write_all_result(data: @Byte, count: USize) -> Result[Unit, FsError]
     block entry()
         branch stream_write(stream: StdStream.OUTPUT, data, count)
-            ? return(.Success(Unit.value()))
-            : return(.Failure(FsError.OTHER))
+            ? return(Unit())
+            : return(FsError.OTHER)
 
 /// The Writer side of standard output: a failed write is dropped ({Out.write_all_result} reports it).
 /// :param data: The bytes to write.
@@ -597,13 +597,13 @@ routine Err.writer() -> @Me
 /// Writes all `count` bytes to standard error.
 /// :param data: The bytes to write.
 /// :param count: How many bytes there are.
-/// :returns: Success, or Failure with Other if the OS refused (or the process has no standard error).
+/// :returns: Success, or the error Other if the OS refused (or the process has no standard error).
 #expensive("makes a system call")
 routine Err.write_all_result(data: @Byte, count: USize) -> Result[Unit, FsError]
     block entry()
         branch stream_write(stream: StdStream.ERROR, data, count)
-            ? return(.Success(Unit.value()))
-            : return(.Failure(FsError.OTHER))
+            ? return(Unit())
+            : return(FsError.OTHER)
 
 /// The Writer side of standard error: a failed write is dropped ({Err.write_all_result} reports it).
 /// :param data: The bytes to write.
@@ -692,18 +692,18 @@ internal routine stream_write(stream: StdStream, data: @Byte, count: USize) -> B
 /// Reads up to `count` bytes of standard input with one read, retrying after EINTR.
 /// :param buffer: Where the bytes go.
 /// :param count: The most bytes to read.
-/// :returns: How many bytes were read, 0 at its end, or Failure with Other when the read fails.
+/// :returns: How many bytes were read, 0 at its end, or the error Other when the read fails.
 #target(os: ("linux", "macos"))
 internal routine stdin_read(buffer: @Byte, count: USize) -> Result[USize, FsError]
     block entry()
         got: SSize = c_read(0, buffer, count.min(1073741824))
         branch got.ge(0)
-            ? return(.Success(got.to[USize]()))
+            ? return(got.to[USize]())
             : continue
         errno: CInt = c_errno_place().peek()
         branch errno.eq(4)
             ? return(stdin_read(buffer, count))
-            : return(.Failure(FsError.OTHER))
+            : return(FsError.OTHER)
 
 /// Whether ANSI color sequences work on the stream: a terminal takes them as it is.
 /// :param stream: The stream.
@@ -1012,10 +1012,10 @@ private routine console_text(h: Addr, data: @Byte, count: USize) -> Bool
         branch n.ge(2046)
             ? flush(n)
             : continue
-        c: Option[Char] = iter.emit_checked()
+        c: Maybe[Char] = iter.emit_checked()
         when c
-            .Present(char) => put(n, char.to[U32]())
-            .Absent => last(n)
+            is Char as char => put(n, char.to[U32]())
+            is Unit => last(n)
 
     block put(n: USize, cp: U32)
         branch cp.lt(0x10000)
@@ -1062,31 +1062,31 @@ private routine write_units(h: Addr, units: @U16, n: USize, written: @U32) -> Bo
 /// :param buffer: Where the bytes go.
 /// :param count: The most bytes to read.
 /// :returns: How many bytes were read, 0 at its end (Ctrl+Z at the start of a console read, a closed pipe, or no
-///     standard input), or Failure with Other when the read fails.
+///     standard input), or the error Other when the read fails.
 #target(os: "windows")
 internal routine stdin_read(buffer: @Byte, count: USize) -> Result[USize, FsError]
     block entry()
         h: Addr = handle_of(StdStream.INPUT)
         branch is_usable(h)
             ? continue
-            : return(.Success(0))
+            : return(0)
         branch is_console(h)
             ? return(console_read(h, buffer, count))
             : continue
         claim got: @U32 <- 0
         branch c_read_file(h, buffer, count.min(1073741824).to[U32](), got, null).ne(0)
-            ? return(.Success(got.peek().to[USize]()))
+            ? return(got.peek().to[USize]())
             : continue
         // ERROR_BROKEN_PIPE: the writing end closed, which is the end
         branch c_get_last_error().eq(109)
-            ? return(.Success(0))
-            : return(.Failure(FsError.OTHER))
+            ? return(0)
+            : return(FsError.OTHER)
 
 /// Hands out UTF-8 from CONSOLE_INPUT, reading the console (as UTF-16) when it is empty.
 /// :param h: The console handle.
 /// :param buffer: Where the bytes go.
 /// :param count: The most bytes to hand out.
-/// :returns: How many bytes were handed out, 0 at the end of the input (Ctrl+Z first), or Failure with Other when
+/// :returns: How many bytes were handed out, 0 at the end of the input (Ctrl+Z first), or the error Other when
 ///     ReadConsoleW fails.
 #target(os: "windows")
 private routine console_read(h: Addr, buffer: @Byte, count: USize) -> Result[USize, FsError]
@@ -1100,14 +1100,14 @@ private routine console_read(h: Addr, buffer: @Byte, count: USize) -> Result[USi
         claim got: @U32 <- 0
         branch c_read_console(h, units.to[@U16](), 4096, got, null).ne(0)
             ? continue
-            : return(.Failure(FsError.OTHER))
+            : return(FsError.OTHER)
         n: USize = got.peek().to[USize]()
         branch n.eq(0)
-            ? return(.Success(0))
+            ? return(0)
             : continue
         // Ctrl+Z first: the end of the input
         branch units.getitem(0).eq(0x1A)
-            ? return(.Success(0))
+            ? return(0)
             : convert(units.to[@U16](), n)
 
     // A high surrogate at the end waits for its low half. One held from the last read goes in front.
@@ -1141,4 +1141,4 @@ private routine console_read(h: Addr, buffer: @Byte, count: USize) -> Result[USi
         n: USize = available.min(count)
         buffer.copy(src: input.bytes.to[@Byte]().stride(start), count: n)
         input.start.poke(start.add(n))
-        return(.Success(n))
+        return(n)

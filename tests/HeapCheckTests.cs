@@ -34,7 +34,7 @@ public class HeapCheckTests
     {
         string ir = CompileSliceProgram(mode, heapCheck: false);
         foreach (string symbol in CheckedHeapSymbols) Assert.DoesNotContain(symbol, ir);
-        Assert.Contains("c_heap_free_fn", ir);
+        Assert.Contains("plain_heap_free_fn", ir);
     }
 
     [Fact]

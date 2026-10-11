@@ -603,7 +603,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new RecordDecl(file, annotations, name.Text, typeParams, clauses, fields, pos);
     }
 
-    /// `variant Name[T]`, its clauses, then one case per line: `Number: S64` carries a payload, `Empty` doesn't.
+    /// `variant Name[T]`, its clauses, then one branch type per line: `S64`, `Chest`, `@Node`.
     private VariantDecl ParseVariant(List<Annotation> annotations)
     {
         var pos = Cur.Pos;
@@ -613,16 +613,18 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         ExpectLineEnd();
         var clauses = ParseClauses();
 
-        var cases = new List<VariantCase>();
+        var branches = new List<VariantBranch>();
         while (!AtDeclStart())
         {
-            var c = Expect(TokenKind.Ident, "a variant case");
-            TypeRef? payload = Accept(TokenKind.Colon) ? ParseType() : null;
-            cases.Add(new VariantCase(c.Text, payload, c.Pos));
+            var at = Cur.Pos;
+            var type = ParseType();
+            if (Cur.Kind == TokenKind.Colon)
+                throw new CompileError(Cur.Pos, $"a variant's branches are types, one per line ('{type}'), not named cases");
+            branches.Add(new VariantBranch(type, at));
             ExpectLineEnd();
         }
-        if (cases.Count == 0) throw new CompileError(pos, $"variant '{name.Text}' needs at least one case");
-        return new VariantDecl(file, annotations, name.Text, typeParams, clauses, cases, pos);
+        if (branches.Count == 0) throw new CompileError(pos, $"variant '{name.Text}' needs at least one branch type");
+        return new VariantDecl(file, annotations, name.Text, typeParams, clauses, branches, pos);
     }
 
     private ChoiceDecl ParseChoice(List<Annotation> annotations)
@@ -1089,14 +1091,24 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 var value = ParsePostfix();
                 ExpectLineEnd();
                 var arms = new List<(List<Expr>?, Target)>();
+                ValueRef? elseBinding = null;
                 while (!AtBlockEnd() && LineIsArm())
                 {
-                    // `_`, or one or more constants: `b' ', b'	' -> skip()`
+                    // `else` (`else as rest`), observations (`is S64 as n`, `is Unit, is Empty`), or one or more
+                    // constants (`b' ', b'\t' => skip()`)
                     List<Expr>? cases = null;
-                    if (!AcceptElse())
+                    if (AcceptElse())
+                    {
+                        if (IsIdent("as"))
+                        {
+                            Next();
+                            elseBinding = BindName();
+                        }
+                    }
+                    else
                     {
                         cases = [];
-                        do cases.Add(BindPayload(ParsePostfix()));
+                        do cases.Add(IsIdent("is") ? ParseIsPattern() : ParsePostfix());
                         while (Accept(TokenKind.Comma));
                     }
                     Expect(TokenKind.FatArrow, "'=>'");
@@ -1104,7 +1116,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     ExpectLineEnd();
                 }
                 if (arms.Count == 0) throw new CompileError(pos, "when needs at least one arm");
-                return new WhenValueTerm(value, arms, pos);
+                return new WhenValueTerm(value, arms, pos) { ElseBinding = elseBinding };
             }
             default:
             {
@@ -1132,19 +1144,27 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new AsmCondExpr(name.Text, types.Count == 1 ? types[0] : null, name.Pos);
     }
 
-    /// `Expr.Number(n)` in a `when` arm binds the payload to `n`, which the arm's target then sees as a value.
-    private Expr BindPayload(Expr pattern)
+    /// `is T` or `is T as name` in a `when` arm: the name is a value the arm's target sees.
+    private IsPattern ParseIsPattern()
     {
-        List<Expr>? args = pattern switch
+        var pos = Cur.Pos;
+        Next();
+        var type = ParseType();
+        ValueRef? binding = null;
+        if (IsIdent("as"))
         {
-            NsCallExpr n => n.Args,
-            ImplicitCallExpr ic => ic.Args,
-            _ => null,
-        };
-        if (args is not [PresetRef { Owner: null, Path: null } name]) return pattern;
-        args[0] = new ValueRef(name.Name, name.Pos);
-        _values?.Add(name.Name);
-        return pattern;
+            Next();
+            binding = BindName();
+        }
+        return new IsPattern(type, binding, pos);
+    }
+
+    /// The name after `as`, now a value of the block.
+    private ValueRef BindName()
+    {
+        var name = Expect(TokenKind.Ident, "a name after 'as'");
+        _values?.Add(name.Text);
+        return new ValueRef(name.Text, name.Pos);
     }
 
     /// `else`, the default arm of `when`.

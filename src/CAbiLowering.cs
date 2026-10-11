@@ -137,8 +137,8 @@ public sealed partial class Compiler
             }
             case VariantType v:
             {
-                var (tagSize, _) = SizeAlign(v.Tag, pos);
-                acc.Add(new Leaf(at, tagSize, 'i', v.Tag.Llvm));
+                var (tagSize, _) = SizeAlign(VariantType.Tag, pos);
+                acc.Add(new Leaf(at, tagSize, 'i', VariantType.Tag.Llvm));
                 var (aligner, size, align) = VariantStorage(v);
                 if (aligner is null) break;
                 long offset = RoundUp(tagSize, align);

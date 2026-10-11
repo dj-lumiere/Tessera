@@ -516,9 +516,6 @@ public static partial class LanguageServer
         private Func<string?>? CaseHover(TypeRef owner, string name) =>
             analysis.Compiler.TypeDeclQuiet(owner.Name, analysis.Shown, owner.Path) switch
             {
-                VariantDecl v when v.Cases.FirstOrDefault(c => c.Name == name) is { } c =>
-                    At(c.Pos, c.Name, () => HoverText($"{owner}.{c.Name}" + (c.Payload is null ? "" : $": {c.Payload}"),
-                        DocAbove(analysis, c.Pos), v.TypeParams.Zip(owner.Args, (p, a) => (p, a.ToString() ?? "")))),
                 ChoiceDecl ch when ch.Members.FirstOrDefault(m => m.Name == name) is { Name: not null } m =>
                     At(m.Value.Pos.Line > 0 ? m.Value.Pos with { Col = 1 } : ch.Pos, m.Name, () => HoverText(
                         $"{owner}.{m.Name}" + (m.Value is IntLit value ? $" = {value.Value}" : ""),
@@ -706,12 +703,7 @@ public static partial class LanguageServer
                     Mark(variant.Pos, variant.Name, "recordType", DeclHover(variant));
                     Clauses(variant.Clauses);
                     TypeParamNames(variant.Pos, variant.TypeParams);
-                    foreach (var c in variant.Cases)
-                    {
-                        Mark(c.Pos, c.Name, "constant", () => HoverText(
-                            $"{variant.Name}.{c.Name}" + (c.Payload is null ? "" : $": {c.Payload}"), DocAbove(analysis, c.Pos)));
-                        if (c.Payload is not null) Type(c.Payload);
-                    }
+                    foreach (var c in variant.Branches) Type(c.Type);
                     break;
                 case PresetDecl preset:
                     _typeParams = [];
@@ -1114,7 +1106,6 @@ public static partial class LanguageServer
         private bool IsCase(TypeRef owner, string name) =>
             analysis.Compiler.TypeDeclQuiet(owner.Name, analysis.Shown, owner.Path) switch
             {
-                VariantDecl v => v.Cases.Any(c => c.Name == name),
                 ChoiceDecl c => c.Members.Any(m => m.Name == name),
                 _ => false,
             };

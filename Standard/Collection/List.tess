@@ -76,18 +76,18 @@ require T: typename
             ? return()
             : crash_allocation()
 
-/// `reserve`, returning a Failure instead of crashing when the allocator fails.
+/// `reserve`, returning an error instead of crashing when the allocator fails.
 /// :param capacity: The number of elements to make room for.
-/// :returns: `Success` once the buffer holds at least `capacity` elements.
-/// :throws: Returns `Failure(AllocFailed)` when the allocator fails.
+/// :returns: A value once the buffer holds at least `capacity` elements.
+/// :throws: Returns `AllocFailed` when the allocator fails.
 #expensive("reallocates to exactly the capacity asked for")
 routine List[T].reserve_result(me: @Me, capacity: USize) -> Result[Unit, AllocFailed]
 require T: typename
     block entry()
         reserved: Bool = me.make_capacity(capacity)
         branch reserved
-            ? return(.Success(Unit.value()))
-            : return(.Failure(AllocFailed()))
+            ? return(Unit())
+            : return(AllocFailed())
 
 /// Grows the buffer to at least `capacity` elements.
 /// :param capacity: The number of elements to make room for.
@@ -102,8 +102,8 @@ require T: typename
             : continue
         resized: Result[Unit, AllocFailed] = me.storage.resize_result(capacity)
         when resized
-            .Success => return(true)
-            .Failure => return(false)
+            is Unit => return(true)
+            is AllocFailed => return(false)
 
 /// Makes room for `wanted` elements, starting at 4 slots and doubling until the request fits.
 /// :param wanted: The element count the buffer must hold.
@@ -161,13 +161,13 @@ require T: typename
     block entry()
         pushed: Result[Unit, AllocFailed] = me.add_last_result(value)
         when pushed
-            .Success => return()
-            .Failure => crash_allocation()
+            is Unit => return()
+            is AllocFailed => crash_allocation()
 
-/// `add_last`, returning a Failure instead of crashing when the allocator fails.
+/// `add_last`, returning an error instead of crashing when the allocator fails.
 /// :param value: The element to append.
-/// :returns: `Success` once the element is appended.
-/// :throws: Returns `Failure(AllocFailed)` when the buffer must grow and the allocator fails.
+/// :returns: A value once the element is appended.
+/// :throws: Returns `AllocFailed` when the buffer must grow and the allocator fails.
 routine List[T].add_last_result(me: @Me, value: T) -> Result[Unit, AllocFailed]
 require T: typename
     block entry()
@@ -176,11 +176,11 @@ require T: typename
         room: Bool = me.make_room(wanted)
         branch room
             ? continue
-            : return(.Failure(AllocFailed()))
+            : return(AllocFailed())
         data: @T = me.storage.data.peek()
         data.stride(count).poke(value)
         me.count.poke(wanted)
-        return(.Success(Unit.value()))
+        return(Unit())
 
 /// Removes the last element and returns it.
 /// :returns: The removed element.
@@ -189,22 +189,22 @@ require T: typename
 routine List[T].remove_last(me: @Me) -> T
 require T: typename
     block entry()
-        popped: Option[T] = me.remove_last_checked()
+        popped: Maybe[T] = me.remove_last_checked()
         when popped
-            .Present(value) => return(value)
-            .Absent => crash_absent_value()
+            is T as value => return(value)
+            is Unit => crash_absent_value()
 
-/// `remove_last`, returning Absent instead of crashing on an empty list.
+/// `remove_last`, returning Unit instead of crashing on an empty list.
 /// :returns: The removed element.
 /// :absent: When the list is empty.
-routine List[T].remove_last_checked(me: @Me) -> Option[T]
+routine List[T].remove_last_checked(me: @Me) -> Maybe[T]
 require T: typename
     local count: USize = me.count.peek()
 
     block entry()
         empty: Bool = count.eq(0)
         branch empty
-            ? return(.Absent)
+            ? return(Unit())
             : pop()
 
     block pop()
@@ -212,7 +212,7 @@ require T: typename
         data: @T = me.storage.data.peek()
         value: T = data.stride(index).peek()
         me.count.poke(index)
-        return(.Present(value))
+        return(value)
 
 // -- element access ------------------------------------------------------------
 
@@ -238,24 +238,24 @@ require T: typename
         value: T = me.to[Slice[T]]().getitem(index)
         return(value)
 
-/// `getitem`, returning Absent instead of crashing on an index past the end.
+/// `getitem`, returning Unit instead of crashing on an index past the end.
 /// :param index: The zero-based position to read.
 /// :returns: A copy of the element.
 /// :absent: When `index >= count`.
-routine List[T].getitem_checked(me: Me, index: USize) -> Option[T]
+routine List[T].getitem_checked(me: Me, index: USize) -> Maybe[T]
 require T: typename
     block entry()
-        value: Option[T] = me.to[Slice[T]]().getitem_checked(index)
+        value: Maybe[T] = me.to[Slice[T]]().getitem_checked(index)
         return(value)
 
-/// `getitem`, returning Absent instead of crashing on an index past the end.
+/// `getitem`, returning Unit instead of crashing on an index past the end.
 /// :param index: The zero-based position to read.
 /// :returns: A copy of the element.
 /// :absent: When `index >= count`.
-routine List[T].getitem_checked(me: @Me, index: USize) -> Option[T]
+routine List[T].getitem_checked(me: @Me, index: USize) -> Maybe[T]
 require T: typename
     block entry()
-        value: Option[T] = me.to[Slice[T]]().getitem_checked(index)
+        value: Maybe[T] = me.to[Slice[T]]().getitem_checked(index)
         return(value)
 
 /// The address of element `index`, checked like getitem: a place to read or write in place. It stays valid until
@@ -282,32 +282,32 @@ require T: typename
         element: @T = me.to[Slice[T]]().getslot(index)
         return(element)
 
-/// `at`, returning Absent instead of crashing on an index past the end.
+/// `at`, returning Unit instead of crashing on an index past the end.
 /// :param index: The zero-based position.
 /// :returns: The element's address.
 /// :absent: When `index >= count`.
-routine List[T].getslot_checked(me: Me, index: USize) -> Option[@T]
+routine List[T].getslot_checked(me: Me, index: USize) -> Maybe[@T]
 require T: typename
     block entry()
         count: USize = me.count
         in_bounds: Bool = index.lt(count)
         branch in_bounds
             ? address()
-            : return(.Absent)
+            : return(Unit())
 
     block address()
         data: @T = me.storage.data
         element: @T = data.stride(index)
-        return(.Present(element))
+        return(element)
 
-/// `at`, returning Absent instead of crashing on an index past the end.
+/// `at`, returning Unit instead of crashing on an index past the end.
 /// :param index: The zero-based position.
 /// :returns: The element's address.
 /// :absent: When `index >= count`.
-routine List[T].getslot_checked(me: @Me, index: USize) -> Option[@T]
+routine List[T].getslot_checked(me: @Me, index: USize) -> Maybe[@T]
 require T: typename
     block entry()
-        element: Option[@T] = me.peek().getslot_checked(index)
+        element: Maybe[@T] = me.peek().getslot_checked(index)
         return(element)
 
 /// Overwrites the element at `index` with `value`.

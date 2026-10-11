@@ -143,14 +143,14 @@ routine cm_hyper_expm1(u: U128) -> CmFrac
 /// :param kind: The function.
 /// :returns: The bits of the correctly rounded result.
 /// :absent: When the result lies too close to a midpoint to decide here, or a is past exp's overflow threshold.
-routine cm_hyper_quick(a: B128, kind: HyperKind) -> Option[U128]
+routine cm_hyper_quick(a: B128, kind: HyperKind) -> Maybe[U128]
     local u: U128 = a.bits()
     local one: CmFrac = CmFrac(frac: CM_FRAC_TOP, exponent: 1)
 
     block entry()
         beyond: Bool = u.ge(CM_EXP_E_OVERFLOW)
         branch beyond
-            ? return(.Absent)
+            ? return(Unit())
             : continue
         when kind
             HyperKind.SINH => sinh()
@@ -166,7 +166,7 @@ routine cm_hyper_quick(a: B128, kind: HyperKind) -> Option[U128]
         m: CmFrac = cm_hyper_expm1(u)
         q: CmFrac = cm_frac_div(a: m, b: cm_frac_add(a: one, b: m))
         s: CmFrac = cm_frac_add(a: m, b: q)
-        r: Option[U128] = cm_frac_round(frac: s.frac, exponent: s.exponent.sub(1), sign: 0,
+        r: Maybe[U128] = cm_frac_round(frac: s.frac, exponent: s.exponent.sub(1), sign: 0,
             gate: B128_SINH_NEAR_GATE)
         return(r)
 
@@ -176,7 +176,7 @@ routine cm_hyper_quick(a: B128, kind: HyperKind) -> Option[U128]
         d: CmFrac = cm_frac_sub(a: e, b: cm_frac_div(a: one, b: e))
         k: S64 = e.exponent.sub(1).min(3)
         gate: U64 = B128_SINH_FAR_GATES.getitem(k.to[USize]())
-        r: Option[U128] = cm_frac_round(frac: d.frac, exponent: d.exponent.sub(1), sign: 0, gate)
+        r: Maybe[U128] = cm_frac_round(frac: d.frac, exponent: d.exponent.sub(1), sign: 0, gate)
         return(r)
 
     // (e + 1 / e) / 2 with e = e^a: e's error enters as tanh a < min(1, 2^(k + 1)) for a in [2^k, 2^(k + 1))
@@ -186,7 +186,7 @@ routine cm_hyper_quick(a: B128, kind: HyperKind) -> Option[U128]
         k: S64 = b128_exponent(u).sub(16383)
         drop: S64 = 0.sub(k.add(1)).max(0)
         gate: U64 = 129.shr(drop.to[U64]()).add(4)
-        r: Option[U128] = cm_frac_round(frac: s.frac, exponent: s.exponent.sub(1), sign: 0, gate)
+        r: Maybe[U128] = cm_frac_round(frac: s.frac, exponent: s.exponent.sub(1), sign: 0, gate)
         return(r)
 
     // m / (m + 2) with m = e^2a - 1 below 1/4
@@ -199,7 +199,7 @@ routine cm_hyper_quick(a: B128, kind: HyperKind) -> Option[U128]
         m: CmFrac = cm_hyper_expm1(doubled)
         two: CmFrac = CmFrac(frac: CM_FRAC_TOP, exponent: 2)
         t: CmFrac = cm_frac_div(a: m, b: cm_frac_add(a: two, b: m))
-        r: Option[U128] = cm_frac_round(frac: t.frac, exponent: t.exponent, sign: 0,
+        r: Maybe[U128] = cm_frac_round(frac: t.frac, exponent: t.exponent, sign: 0,
             gate: B128_TANH_NEAR_GATE)
         return(r)
 
@@ -209,7 +209,7 @@ routine cm_hyper_quick(a: B128, kind: HyperKind) -> Option[U128]
         t: CmFrac = cm_frac_div(a: cm_frac_sub(a: e, b: one), b: cm_frac_add(a: e, b: one))
         k: S64 = e.exponent.sub(1).min(3)
         gate: U64 = B128_TANH_FAR_GATES.getitem(k.to[USize]())
-        r: Option[U128] = cm_frac_round(frac: t.frac, exponent: t.exponent, sign: 0, gate)
+        r: Maybe[U128] = cm_frac_round(frac: t.frac, exponent: t.exponent, sign: 0, gate)
         return(r)
 
 // -- fast tier: B128Extended -----------------------------------------------------
@@ -301,10 +301,10 @@ routine b128_hyper_general(a: B128, kind: HyperKind, exact: Bool) -> B128
             : quick()
 
     block quick()
-        q: Option[U128] = cm_hyper_quick(a, kind)
+        q: Maybe[U128] = cm_hyper_quick(a, kind)
         when q
-            .Present(bits) => return(b128_of(bits))
-            .Absent => fast()
+            is U128 as bits => return(b128_of(bits))
+            is Unit => fast()
 
     block fast()
         w: B128Extended = wide_hyper(a, kind)

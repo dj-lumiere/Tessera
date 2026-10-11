@@ -80,7 +80,7 @@ public static class Derive
         {
             ChoiceDecl c => c.Members.Count > 0 || method is not ("represent_into" or "diagnose_into"),
             VariantDecl v => concept is not ("Equatable" or "Hashable" or "Comparable")
-                             || v.Cases.All(c => c.Payload?.Name is not ("Ptr" or "Addr")),
+                             || v.Branches.All(c => c.Type.Name is not ("Ptr" or "Addr")),
             _ => false,
         };
     }
@@ -107,8 +107,8 @@ public static class Derive
             if (v.Clauses.Any(c => c.Kind == "conform" && c.Concepts.Any(x => x.Name == concept)))
                 throw new CompileError(at, $"{name} derives {concept}, which declares the conformance; drop 'conform {concept}[...]'");
             if (concept is "Equatable" or "Hashable" or "Comparable"
-                && v.Cases.FirstOrDefault(c => c.Payload?.Name is "Ptr" or "Addr") is { } pointerCase)
-                throw new CompileError(at, $"{name} can't derive {concept}: case '{pointerCase.Name}' carries a pointer; declare '{method}'");
+                && v.Branches.FirstOrDefault(c => c.Type.Name is "Ptr" or "Addr") is { } pointerBranch)
+                throw new CompileError(at, $"{name} can't derive {concept}: its branch {pointerBranch.Name} is a pointer; declare '{method}'");
             return;
         }
         if (type is not RecordDecl r) return;
@@ -148,11 +148,11 @@ public static class Derive
     /// A generic type conforms when its type parameters do. Representable writes the parts with diagnose (strings keep
     /// their quotes), so it needs Diagnosable of them. The type's own `require` concepts already hold wherever the type
     /// is formed, so the derived routine and its conformance list only what they add, as a written routine does.
-    private static List<string> Constraints(List<Clause> clauses, string concept)
+    private static List<string> Constraints(List<Clause> clauses, string concept, bool sameConcept = false)
     {
         var requires = clauses.Where(c => c.Kind == "require").ToList();
         var parameters = requires.SelectMany(c => c.Params).ToList();
-        string partConcept = Qualified(concept == "Representable" ? "Diagnosable" : concept);
+        string partConcept = Qualified(concept == "Representable" && !sameConcept ? "Diagnosable" : concept);
         return parameters.Select(p => $"{p.Name}: {p.Kind}")
             .Concat(parameters.Where(p => p.Kind.Name == "typename").Select(p => $"{partConcept}[{p.Name}]"))
             .Distinct()
@@ -316,58 +316,51 @@ public static class Derive
 
     // ── Variants ────────────────────────────────────────────────────────────
 
-    /// A variant writes its case and payload (`Number(5)`, or `Expr.Number(5)` to diagnose), is equal when the cases and
-    /// payloads are, hashes its case with its payload, and orders by case, then by payload.
+    /// A variant writes the value it holds (with the value's own `represent_into` / `diagnose_into`, a pointer as its
+    /// address), is equal when the branches and the values are, hashes the branch's position with the value, and
+    /// orders by branch (in the declaration's order), then by value.
     private static string VariantSource(VariantDecl v, string concept, string method, bool implicitly)
     {
-        var constraints = Constraints(v.Clauses, concept);
-        // A derive nobody asked for holds only when every payload has the concept.
+        // A variant writes the value it holds as that value writes itself, so each part needs the concept itself.
+        var constraints = Constraints(v.Clauses, concept, sameConcept: true);
+        // A derive nobody asked for holds only when every branch has the concept.
         if (implicitly)
         {
-            string part = Qualified(concept == "Representable" ? "Diagnosable" : concept);
-            // A pointer payload writes its address, so it asks nothing of the pointer to write it.
+            string part = Qualified(concept);
+            // A pointer branch writes its address, so it asks nothing of the pointer to write it.
             bool writes = method is "represent_into" or "diagnose_into";
             constraints = constraints
-                .Concat(v.Cases.Where(c => c.Payload is { } payload && !(writes && payload.Name == "Ptr"))
-                    .Select(c => $"{part}[{c.Payload}]"))
+                .Concat(v.Branches.Where(b => !(writes && b.Type.Name is "Ptr" or "Addr")).Select(b => $"{part}[{b.Type}]"))
                 .Distinct().ToList();
         }
-        string self = SelfName(v.Name, v.TypeParams);
-        string Payload(VariantCase c, string name) => $"{name}";
+        string self = v.IsAnonymous ? v.Name : SelfName(v.Name, v.TypeParams);
         var sb = new StringBuilder();
         sb.Append($"conform {Qualified(concept)}[{self}]");
         if (constraints.Count > 0) sb.Append($" when {string.Join(", ", constraints)}");
         sb.Append("\n\n");
-        var cases = v.Cases;
+        var branches = v.Branches;
         switch (method)
         {
             case "represent_into" or "diagnose_into":
             {
-                string prefix = method == "diagnose_into" ? $"{v.Name}." : "";
                 string writer = WriterParam(v.TypeParams, v.Clauses);
                 sb.Append(WriterHeader(self, method, writer));
                 sb.Append($"require {string.Join(", ", constraints.Append($"{writer}: typename").Append($"{Fmt}Writer[{writer}]"))}\n");
                 sb.Append("    block entry()\n        when me\n");
-                for (int i = 0; i < cases.Count; i++)
-                    sb.Append(cases[i].Payload is null
-                        ? $"            {v.Name}.{cases[i].Name} => named(\"{prefix}{cases[i].Name}\")\n"
-                        : $"            {v.Name}.{cases[i].Name}({Payload(cases[i], "p")}) => case{i}({Payload(cases[i], "p")})\n");
-                for (int i = 0; i < cases.Count; i++)
+                for (int i = 0; i < branches.Count; i++)
+                    sb.Append($"            is {branches[i].Type} as p => branch{i}(p)\n");
+                for (int i = 0; i < branches.Count; i++)
                 {
-                    if (cases[i].Payload is null) continue;
-                    string p = Payload(cases[i], "p");
-                    sb.Append($"\n    block case{i}({p}: {cases[i].Payload})\n");
-                    sb.Append($"        Standard/Format/write_str(out, text: \"{prefix}{cases[i].Name}(\")\n");
-                    // A pointer payload writes its address, as a record's pointer field does.
-                    if (cases[i].Payload!.Name == "Ptr")
+                    sb.Append($"\n    block branch{i}(p: {branches[i].Type})\n");
+                    // A pointer writes its address, as a record's pointer field does.
+                    if (branches[i].Type.Name is "Ptr" or "Addr")
                     {
-                        sb.Append($"        address: Addr = {p}.to[Addr]()\n");
+                        sb.Append("        address: Addr = p.to[Addr]()\n");
                         sb.Append("        address.diagnose_into(out)\n");
                     }
-                    else sb.Append($"        {p}.diagnose_into(out)\n");
-                    sb.Append("        Standard/Format/write_str(out, text: \")\")\n        return()\n");
+                    else sb.Append($"        p.{method}(out)\n");
+                    sb.Append("        return()\n");
                 }
-                sb.Append("\n    block named(text: Bytes)\n        Standard/Format/write_str(out, text)\n        return()\n");
                 break;
             }
             case "eq" or "compare":
@@ -376,36 +369,27 @@ public static class Derive
                 string ret = eq ? "Bool" : "S32";
                 Header(sb, $"routine {self}.{method}(me: Me, other: Me) -> {ret}", constraints);
                 sb.Append("    block entry()\n        when me\n");
-                for (int i = 0; i < cases.Count; i++)
-                    sb.Append(cases[i].Payload is null
-                        ? $"            {v.Name}.{cases[i].Name} => left{i}()\n"
-                        : $"            {v.Name}.{cases[i].Name}({Payload(cases[i], "a")}) => left{i}({Payload(cases[i], "a")})\n");
-                for (int i = 0; i < cases.Count; i++)
+                for (int i = 0; i < branches.Count; i++)
+                    sb.Append($"            is {branches[i].Type} as a => left{i}(a)\n");
+                for (int i = 0; i < branches.Count; i++)
                 {
-                    var c = cases[i];
-                    string a = c.Payload is null ? "" : Payload(c, "a"), b = c.Payload is null ? "" : Payload(c, "b");
-                    sb.Append(c.Payload is null ? $"\n    block left{i}()\n" : $"\n    block left{i}({a}: {c.Payload})\n");
+                    var b = branches[i].Type;
+                    sb.Append($"\n    block left{i}(a: {b})\n");
                     sb.Append("        when other\n");
-                    string same = c.Payload is null
-                        ? $"return({(eq ? "true" : "0")})"
-                        : $"same{i}({a}, {b})";
-                    sb.Append(c.Payload is null
-                        ? $"            {v.Name}.{c.Name} => {same}\n"
-                        : $"            {v.Name}.{c.Name}({b}) => {same}\n");
+                    sb.Append($"            is {b} as b => same{i}(a, b)\n");
                     if (eq)
                     {
-                        if (cases.Count > 1) sb.Append("            else => return(false)\n");
+                        if (branches.Count > 1) sb.Append("            else => return(false)\n");
                     }
                     else
                     {
-                        var before = cases.Take(i).Select(x => $"{v.Name}.{x.Name}").ToList();
-                        var after = cases.Skip(i + 1).Select(x => $"{v.Name}.{x.Name}").ToList();
+                        var before = branches.Take(i).Select(x => $"is {x.Type}").ToList();
+                        var after = branches.Skip(i + 1).Select(x => $"is {x.Type}").ToList();
                         if (before.Count > 0) sb.Append($"            {string.Join(", ", before)} => return(1)\n");
                         if (after.Count > 0) sb.Append($"            {string.Join(", ", after)} => return(-1)\n");
                     }
-                    if (c.Payload is null) continue;
-                    sb.Append($"\n    block same{i}({a}: {c.Payload}, {b}: {c.Payload})\n");
-                    sb.Append($"        r: {ret} = {a}.{method}({b})\n        return(r)\n");
+                    sb.Append($"\n    block same{i}(a: {b}, b: {b})\n");
+                    sb.Append($"        r: {ret} = a.{method}(b)\n        return(r)\n");
                 }
                 break;
             }
@@ -413,19 +397,14 @@ public static class Derive
             {
                 Header(sb, $"routine {self}.hash(me: Me) -> U64", constraints);
                 sb.Append("    block entry()\n        when me\n");
-                for (int i = 0; i < cases.Count; i++)
-                    sb.Append(cases[i].Payload is null
-                        ? $"            {v.Name}.{cases[i].Name} => bare({i})\n"
-                        : $"            {v.Name}.{cases[i].Name}({Payload(cases[i], "a")}) => case{i}({Payload(cases[i], "a")})\n");
-                for (int i = 0; i < cases.Count; i++)
+                for (int i = 0; i < branches.Count; i++)
+                    sb.Append($"            is {branches[i].Type} as a => branch{i}(a)\n");
+                for (int i = 0; i < branches.Count; i++)
                 {
-                    if (cases[i].Payload is null) continue;
-                    string a = Payload(cases[i], "a");
-                    sb.Append($"\n    block case{i}({a}: {cases[i].Payload})\n");
-                    sb.Append($"        g: U64 = {a}.hash()\n");
+                    sb.Append($"\n    block branch{i}(a: {branches[i].Type})\n");
+                    sb.Append("        g: U64 = a.hash()\n");
                     sb.Append($"        h: U64 = hash_combine(first: {i}, second: g)\n        return(h)\n");
                 }
-                sb.Append("\n    block bare(index: U64)\n        h: U64 = siphash24(value: index, key: hash_key())\n        return(h)\n");
                 break;
             }
         }

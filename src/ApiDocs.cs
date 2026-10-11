@@ -251,8 +251,8 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse)
                 sb.Append('\n');
                 break;
             case VariantDecl variant:
-                sb.Append("**Cases**\n\n");
-                foreach (var c in variant.Cases) AppendItem(sb, page, Line(page, c.Pos.Line), c.Pos.Line);
+                sb.Append("**Branches**\n\n");
+                foreach (var c in variant.Branches) AppendItem(sb, page, Line(page, c.Pos.Line), c.Pos.Line);
                 sb.Append('\n');
                 break;
             case ConceptDecl concept:

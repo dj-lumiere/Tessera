@@ -47,7 +47,7 @@ record Metadata
     kind: FileKind
     size: U64
     modified_ns: S64
-    created_ns: Option[S64]  // Absent where the filesystem doesn't record it
+    created_ns: Maybe[S64]  // Unit where the filesystem doesn't record it
     readonly: Bool
 
 choice OpenMode: U8
@@ -79,10 +79,10 @@ record Mapping
     count: USize  // the bytes mapped from there
 
 /// The success value of a filesystem call that has nothing to return.
-/// :returns: `Success(Unit)`.
+/// :returns: `Unit`.
 internal routine fs_done() -> Result[Unit, FsError]
     block entry()
-        return(.Success(Unit.value()))
+        return(Unit())
 
 /// Why path didn't fit a C path: a NUL inside, or too long.
 /// :param path: The path that didn't fit.
@@ -111,13 +111,13 @@ internal routine is_kind(path: Bytes, kind: FileKind) -> Bool
     block entry()
         m: Result[Metadata, FsError] = metadata(path)
         when m
-            .Success(info) => return(info.kind.eq(kind))
-            .Failure => return(false)
+            is Metadata as info => return(info.kind.eq(kind))
+            is FsError => return(false)
 
 /// Like mkdir -p: every missing directory on the way, then path. A directory already there is fine.
 /// :param path: The directory to make.
-/// :returns: `Success(Unit)` once `path` is a directory.
-/// :throws: Returns `Failure` with the reason when the last step fails, `AlreadyExists` when something other than a
+/// :returns: `Unit` once `path` is a directory.
+/// :throws: Returns the reason when the last step fails, `AlreadyExists` when something other than a
 ///     directory is at `path`.
 internal routine create_dir_all(path: Bytes) -> Result[Unit, FsError]
     block entry()
@@ -139,26 +139,26 @@ internal routine create_dir_all(path: Bytes) -> Result[Unit, FsError]
     block last()
         made: Result[Unit, FsError] = create_dir(path)
         when made
-            .Success => return(made)
-            .Failure(error) => check(error)
+            is Unit => return(made)
+            is FsError as error => check(error)
 
     block check(error: FsError)
         branch error.eq(FsError.ALREADY_EXISTS).bitand(is_kind(path, kind: FileKind.DIRECTORY))
             ? return(fs_done())
-            : return(.Failure(error))
+            : return(error)
 
 /// Removes path and everything in it. A link is removed, not followed. Child paths are built in memory from alloc.
 /// :param path: The file or directory to remove.
 /// :param alloc: The allocator for the child paths, each given back before the next.
-/// :returns: `Success(Unit)` once everything is gone.
-/// :throws: Returns `Failure` with the first error, which stops the removal partway. Crashes with
+/// :returns: `Unit` once everything is gone.
+/// :throws: Returns the first error, which stops the removal partway. Crashes with
 ///     `MemoryAllocationError` when `alloc` fails for a child path.
 internal routine remove_dir_all(path: Bytes, alloc: @MemoryManager) -> Result[Unit, FsError]
     block entry()
         m: Result[Metadata, FsError] = symlink_metadata(path)
         when m
-            .Success(info) => kind(info.kind)
-            .Failure(error) => return(.Failure(error))
+            is Metadata as info => kind(info.kind)
+            is FsError as error => return(error)
 
     block kind(k: FileKind)
         branch k.eq(FileKind.DIRECTORY)
@@ -166,15 +166,15 @@ internal routine remove_dir_all(path: Bytes, alloc: @MemoryManager) -> Result[Un
             : return(remove_file(path))
         emptied: Result[Unit, FsError] = remove_entries(path, alloc)
         when emptied
-            .Success => return(remove_dir(path))
-            .Failure(error) => return(.Failure(error))
+            is Unit => return(remove_dir(path))
+            is FsError as error => return(error)
 
 /// Removes everything in the directory at path, which is left empty. Its listing is closed before remove_dir_all
 /// removes the directory itself, since Windows can't remove a directory that is still being listed.
 /// :param path: The directory to empty.
 /// :param alloc: The allocator for the child paths.
-/// :returns: `Success(Unit)` once the directory is empty.
-/// :throws: Returns `Failure` with the first error. Crashes with `MemoryAllocationError` when `alloc` fails for a
+/// :returns: `Unit` once the directory is empty.
+/// :throws: Returns the first error. Crashes with `MemoryAllocationError` when `alloc` fails for a
 ///     child path.
 private routine remove_entries(path: Bytes, alloc: @MemoryManager) -> Result[Unit, FsError]
     // open_path sets the handle before anything in it can fail, so finish closes a real or a null one
@@ -183,22 +183,22 @@ private routine remove_entries(path: Bytes, alloc: @MemoryManager) -> Result[Uni
     block entry()
         opened: Result[Unit, FsError] = iter.open_path(path)
         when opened
-            .Success => next()
-            .Failure(error) => finish(.Failure(error))
+            is Unit => next()
+            is FsError as error => finish(error)
 
     block next()
-        entry: Option[DirEntry] = iter.emit_checked()
+        entry: Maybe[DirEntry] = iter.emit_checked()
         when entry
-            .Present(e) => child(e)
-            .Absent => finish(fs_done())
+            is DirEntry as e => child(e)
+            is Unit => finish(fs_done())
 
     block child(e: DirEntry)
         claim full: @Bytes <- join_path(a: path, b: e.name, alloc)
         gone: Result[Unit, FsError] = remove_dir_all(path: full.peek(), alloc)
         full.destruct()
         when gone
-            .Success => next()
-            .Failure(error) => finish(.Failure(error))
+            is Unit => next()
+            is FsError as error => finish(error)
 
     block finish(result: Result[Unit, FsError])
         iter.close()
@@ -207,15 +207,15 @@ private routine remove_entries(path: Bytes, alloc: @MemoryManager) -> Result[Uni
 /// Reads the whole file at path into memory from alloc (release it with destruct()).
 /// :param path: The file to read.
 /// :param alloc: The allocator for the text.
-/// :returns: `Success` with the file's bytes.
-/// :throws: Returns `Failure` with the reason when the file can't be opened or read, `OutOfMemory` when `alloc`
+/// :returns: The file's bytes.
+/// :throws: Returns the reason when the file can't be opened or read, `OutOfMemory` when `alloc`
 ///     fails or the file is too large for the address space (4 GiB or more on a 32-bit target).
 internal routine read_file(path: Bytes, alloc: @MemoryManager) -> Result[Bytes, FsError]
     block entry()
         opened: Result[FileHandle, FsError] = FileHandle.open(path, mode: OpenMode.READ)
         when opened
-            .Success(f) => read(f)
-            .Failure(error) => return(.Failure(error))
+            is FileHandle as f => read(f)
+            is FsError as error => return(error)
 
     block read(opened: FileHandle)
         claim f: @FileHandle <- opened
@@ -227,8 +227,8 @@ internal routine read_file(path: Bytes, alloc: @MemoryManager) -> Result[Bytes, 
 /// read, or reports 0 (Linux's /proc), still reads whole.
 /// :param f: The open file, read from its position to the end.
 /// :param alloc: The allocator for the text.
-/// :returns: `Success` with the bytes read.
-/// :throws: Returns `Failure` with the reason when a read fails, `OutOfMemory` when `alloc` fails or the file is too
+/// :returns: The bytes read.
+/// :throws: Returns the reason when a read fails, `OutOfMemory` when `alloc` fails or the file is too
 ///     large for the address space (it reports a size, or grows to one, that a USize can't hold).
 private routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Bytes, FsError]
     local buffer: @Slice[Byte] <- .empty()
@@ -236,25 +236,25 @@ private routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Bytes
     block entry()
         size: Result[U64, FsError] = f.size_result()
         when size
-            .Success(n) => known_size(n)
-            .Failure => start(64)
+            is U64 as n => known_size(n)
+            is FsError => start(64)
 
     block known_size(n: U64)
-        room: Option[U64] = n.add_checked(1)
+        room: Maybe[U64] = n.add_checked(1)
         when room
-            .Present(with_one) => continue
-            .Absent => finish(.Failure(FsError.OUT_OF_MEMORY))
-        size_guess: Option[USize] = with_one.to_checked[USize]()
+            is U64 as with_one => continue
+            is Unit => finish(FsError.OUT_OF_MEMORY)
+        size_guess: Maybe[USize] = with_one.to_checked[USize]()
         when size_guess
-            .Present(guess) => start(guess.max(64))
-            .Absent => finish(.Failure(FsError.OUT_OF_MEMORY))
+            is USize as guess => start(guess.max(64))
+            is Unit => finish(FsError.OUT_OF_MEMORY)
 
     block start(capacity: USize)
         made: Result[Slice[Byte], AllocFailed] = Slice[Byte].construct_result(count: capacity,
             alloc)
         when made
-            .Success(slice) => filling(slice)
-            .Failure => finish(.Failure(FsError.OUT_OF_MEMORY))
+            is Slice[Byte] as slice => filling(slice)
+            is AllocFailed => finish(FsError.OUT_OF_MEMORY)
 
     block filling(slice: Slice[Byte])
         slice.poke_into(buffer)
@@ -269,8 +269,8 @@ private routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Bytes
         got: Result[USize, FsError] = f.read_bytes_result(buffer: buffer.getslot(count),
             count: capacity.sub(count))
         when got
-            .Success(n) => advance(count, n)
-            .Failure(error) => finish(.Failure(error))
+            is USize as n => advance(count, n)
+            is FsError as error => finish(error)
 
     block advance(count: USize, n: USize)
         branch n.eq(0)
@@ -278,20 +278,20 @@ private routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Bytes
             : fill(count.add(n))
 
     block grow(count: USize)
-        doubled: Option[USize] = count.mul_checked(2)
+        doubled: Maybe[USize] = count.mul_checked(2)
         when doubled
-            .Present(capacity) => continue
-            .Absent => finish(.Failure(FsError.OUT_OF_MEMORY))
+            is USize as capacity => continue
+            is Unit => finish(FsError.OUT_OF_MEMORY)
         bigger: Result[Unit, AllocFailed] = buffer.resize_result(capacity)
         when bigger
-            .Success => fill(count)
-            .Failure => finish(.Failure(FsError.OUT_OF_MEMORY))
+            is Unit => fill(count)
+            is AllocFailed => finish(FsError.OUT_OF_MEMORY)
 
     // The text takes the memory over, so buffer goes back to empty and finish has nothing to give back.
     block read_all(count: USize)
         text: Bytes = Bytes(data: buffer.data.peek(), count: count, alloc: alloc)
         buffer.poke(Slice[Byte].empty())
-        jump finish(.Success(text))
+        jump finish(text)
 
     block finish(result: Result[Bytes, FsError])
         buffer.destruct()
@@ -300,14 +300,14 @@ private routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Bytes
 /// Writes data as the whole file: made if missing, replaced if not.
 /// :param path: The file to write.
 /// :param data: The bytes that become the file.
-/// :returns: `Success(Unit)` once every byte is written.
-/// :throws: Returns `Failure` with the reason when the file can't be opened or written.
+/// :returns: `Unit` once every byte is written.
+/// :throws: Returns the reason when the file can't be opened or written.
 internal routine write_file(path: Bytes, data: Bytes) -> Result[Unit, FsError]
     block entry()
         opened: Result[FileHandle, FsError] = FileHandle.open(path, mode: OpenMode.WRITE)
         when opened
-            .Success(f) => write(f)
-            .Failure(error) => return(.Failure(error))
+            is FileHandle as f => write(f)
+            is FsError as error => return(error)
 
     block write(opened: FileHandle)
         claim f: @FileHandle <- opened
@@ -323,8 +323,8 @@ conform Writer[FileHandle]
 /// Writes all count bytes, however many calls that takes.
 /// :param data: The first byte to write.
 /// :param count: How many bytes to write.
-/// :returns: `Success(Unit)` once all of them are written.
-/// :throws: Returns `Failure` with the reason when a write fails, `Other` when a write makes no progress.
+/// :returns: `Unit` once all of them are written.
+/// :throws: Returns the reason when a write fails, `Other` when a write makes no progress.
 #expensive("asks the operating system")
 routine FileHandle.write_all_result(me: @Me, data: @Byte, count: USize) -> Result[Unit, FsError]
     block entry()
@@ -336,10 +336,10 @@ routine FileHandle.write_all_result(me: @Me, data: @Byte, count: USize) -> Resul
             : continue
         wrote: Result[USize, FsError] = me.write_some(data: at, count: remaining)
         when wrote
-            .Success(n) => continue
-            .Failure(error) => return(.Failure(error))
+            is USize as n => continue
+            is FsError as error => return(error)
         branch n.eq(0)
-            ? return(.Failure(FsError.OTHER))
+            ? return(FsError.OTHER)
             : write(at.stride(n), remaining.sub(n))
 
 /// The Writer side, behind handle.write("x = {x}\n"): a failure is kept for has_failed, and the bytes are dropped.
