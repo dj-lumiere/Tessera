@@ -440,7 +440,9 @@ internal sealed class NamedArgsMigration
                 case MethodCallExpr m:
                     Expr(m.Receiver);
                     foreach (var a in m.Args) Expr(a);
-                    Name(MethodCall(m), m.Args, m.ArgNames, m.Name, m.Pos);
+                    // An operator written as one (`xs[i] = v` is `xs.setitem(i, v)`, `a + b` is `a.add(b)`) has no
+                    // argument list to name.
+                    if (!m.FromOperator) Name(MethodCall(m), m.Args, m.ArgNames, m.Name, m.Pos);
                     break;
                 case NsCallExpr n:
                     foreach (var a in n.Args) Expr(a);
