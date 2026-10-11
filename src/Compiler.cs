@@ -832,6 +832,21 @@ public sealed partial class Compiler
         }
     }
 
+    /// Sets the trace sizes the manifest gives (`[debug] trace-frames`, `failure-traces`): the standard library's
+    /// TRACE_CAPACITY and FAILURE_FRAMES, and FAILURE_TRACES (Trace.tess). Null keeps a size as the library has it.
+    public void SetTraceSizes(int? frames, int? failures)
+    {
+        void Set(string name, int? value)
+        {
+            if (value is not { } n || !_presets.TryGetValue(("", name), out var list)) return;
+            for (int i = 0; i < list.Count; i++)
+                if (list[i] is { IsLibrary: true, Value: { } old }) list[i] = list[i] with { Value = new IntLit(n, old.Pos) };
+        }
+        Set("TRACE_CAPACITY", frames);
+        Set("FAILURE_FRAMES", frames);
+        Set("FAILURE_TRACES", failures);
+    }
+
     /// Whether a routine has type parameters, its own or its owner's.
     public static bool IsGenericRoutine(RoutineDecl r) =>
         r.TypeParams.Count != 0 || (r.Owner is not null && OwnerTypeParams(r).Count != 0);

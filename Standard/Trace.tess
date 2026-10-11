@@ -33,6 +33,8 @@
 
 module Standard/Core
 
+import Standard/Format
+
 /// The running thread's trace.
 #[threadlocal, target(os: not "none"), trace("on")]
 private global TRACE: @TraceStack
@@ -181,3 +183,188 @@ routine trace_switch(depth: USize) -> USize
 #trace("off")
 routine trace_switch(depth: USize) -> USize
     return(0)
+
+// -- the failures' traces -----------------------------------------------------------------------------------------
+//
+// A Result's error (a failure) keeps where it was made. When the builder makes a Result hold its error, it calls
+// failure_note, which copies the running thread's trace into a table of recent failures (FAILURE_TRACES of them, each
+// FAILURE_FRAMES frames deep, no heap) under a number, and puts the number in the spare high half of the Result's tag:
+// the Result stays the size it is. An error made in a `when` arm that observed another failure (wrapping it in an
+// error of another type) records that one as the failure it wraps. `unwrap` of a failure writes the error, where it
+// was made, and each failure it wraps (write_failure_trace). The table is the thread's: a failure made on another
+// thread, or one later failures have pushed out of the table, says so instead of showing another failure's trace.
+
+/// The running thread's recent failures.
+#[threadlocal, target(os: not "none"), trace("on")]
+private global FAILURES: @FailureTable
+/// The recent failures on a target without an operating system.
+#[target(os: "none"), trace("on")]
+private global FAILURES: @FailureTable
+/// The number of the last failure noted, on every thread.
+#trace("on")
+private global FAILURE_COUNT: @U32
+
+/// The frames a failure's trace keeps: its innermost ones.
+preset FAILURE_FRAMES: USize = 32
+/// The failures each thread remembers: the most recent ones.
+preset FAILURE_TRACES: USize = 32
+
+/// Where one failure was made: its number, the failure it wraps (0 for none), and the trace then.
+record FailureTrace
+    seq: U32
+    previous: U32
+    depth: USize
+    frames: Array[TraceFrame, FAILURE_FRAMES]
+
+/// The recent failures of a thread, a ring.
+private record FailureTable
+    next: USize
+    entries: Array[FailureTrace, FAILURE_TRACES]
+
+/// Makes a `FailureTrace` from its fields.
+/// :param seq: Its `seq`.
+/// :param previous: Its `previous`.
+/// :param depth: Its `depth`.
+/// :param frames: Its `frames`.
+/// :returns: The new value.
+routine FailureTrace.construct(seq: U32, previous: U32, depth: USize,
+    frames: Array[TraceFrame, FAILURE_FRAMES]) -> Me
+    return(Me(seq, previous, depth, frames))
+
+/// Releases nothing: a `FailureTrace` holds no memory of its own.
+routine FailureTrace.destruct(me: @Me) -> Void
+    return()
+
+/// Makes a `FailureTable` from its fields.
+/// :param next: Its `next`.
+/// :param entries: Its `entries`.
+/// :returns: The new value.
+private routine FailureTable.construct(next: USize,
+    entries: Array[FailureTrace, FAILURE_TRACES]) -> Me
+    return(Me(next, entries))
+
+/// Releases nothing: a `FailureTable` holds no memory of its own.
+private routine FailureTable.destruct(me: @Me) -> Void
+    return()
+
+/// Notes the running thread's trace as a new failure's, wrapping `previous` (0 for none): the builder calls it when
+/// a Result is made to hold its error.
+/// :param previous: The number of the failure this one wraps, or 0.
+/// :returns: The failure's number, never 0.
+#trace("on")
+routine failure_note(previous: U32) -> U32
+    local table: @FailureTable = FAILURES
+    local seq: U32 = next_failure_number()
+    local slot: USize = table.next.peek()
+    local entry: @FailureTrace = table.entries.to[@FailureTrace]().stride(slot)
+    local depth: USize = trace_depth()
+
+    table.next.poke(slot.add(1).mod(FAILURE_TRACES))
+    entry.seq.poke(seq)
+    entry.previous.poke(previous)
+    entry.depth.poke(depth)
+    jump copy(0)
+
+    block copy(back: USize)
+        branch back.ge(depth.min(FAILURE_FRAMES).min(TRACE_CAPACITY))
+            ? return(seq)
+            : continue
+        entry.frames.to[@TraceFrame]().stride(back).poke(trace_frame(back))
+        jump copy(back.add(1))
+
+/// The next failure's number, unique among the program's threads (never 0).
+/// :returns: The number.
+#[trace("on"), target(os: not "none")]
+private routine next_failure_number() -> U32
+    return(FAILURE_COUNT.atomic_fetch_add_relaxed(1).add_wrap(1).max(1))
+
+/// The next failure's number (never 0): one thread, so no atomic is needed.
+/// :returns: The number.
+#[trace("on"), target(os: "none")]
+private routine next_failure_number() -> U32
+    next: U32 = FAILURE_COUNT.peek().add_wrap(1).max(1)
+    FAILURE_COUNT.poke(next)
+    return(next)
+
+/// Notes nothing: this build keeps no trace.
+/// :param previous: Unused.
+/// :returns: 0.
+#trace("off")
+routine failure_note(previous: U32) -> U32
+    return(0)
+
+/// The trace of failure `seq`, made on this thread and still remembered, or null.
+/// :param seq: The failure's number.
+/// :returns: Its trace, or null.
+#trace("on")
+routine failure_trace(seq: U32) -> @FailureTrace
+    local table: @FailureTable = FAILURES
+
+    branch seq.eq(0)
+        ? return(null)
+        : look(0)
+
+    block look(i: USize)
+        branch i.ge(FAILURE_TRACES)
+            ? return(null)
+            : continue
+        entry: @FailureTrace = table.entries.to[@FailureTrace]().stride(i)
+        branch entry.seq.peek().eq(seq)
+            ? return(entry)
+            : look(i.add(1))
+
+/// No failure's trace: this build keeps none.
+/// :param seq: Unused.
+/// :returns: Null.
+#trace("off")
+routine failure_trace(seq: U32) -> @FailureTrace
+    return(null)
+
+/// Writes where failure `seq` was made, and where each failure it wraps was, most recent frame first: what `unwrap`
+/// of a failure adds to its message. Nothing for 0 (an untraced build, or a Result made without a trace).
+/// :param seq: The failure's number.
+/// :param out: Where the text goes.
+routine write_failure_trace[TWriter](seq: U32, out: @TWriter) -> Void
+require TWriter: typename, Writer[TWriter]
+    branch seq.eq(0)
+        ? return()
+        : continue
+    out.write("\nThe failure was made at:")
+    jump failure(seq)
+
+    block failure(number: U32)
+        entry: @FailureTrace = failure_trace(number)
+        branch entry.is_null()
+            ? forgotten()
+            : continue
+        jump frame(entry, 0)
+
+    block frame(entry: @FailureTrace, back: USize)
+        branch back.ge(entry.depth.peek().min(FAILURE_FRAMES).min(TRACE_CAPACITY))
+            ? wrapped(entry)
+            : continue
+        at: TraceFrame = entry.frames.to[@TraceFrame]().stride(back).peek()
+        name: Span[Byte] = at.name.getview()
+        file: Span[Byte] = at.file.getview()
+        out.write("\n  {back}: at {name} ({file}:{at.line}")
+        branch at.column.eq(0)
+            ? closed(entry, back)
+            : continue
+        out.write(":{at.column}")
+        jump closed(entry, back)
+
+    block closed(entry: @FailureTrace, back: USize)
+        out.write(")")
+        jump frame(entry, back.add(1))
+
+    block wrapped(entry: @FailureTrace)
+        previous: U32 = entry.previous.peek()
+        branch previous.eq(0)
+            ? return()
+            : continue
+        out.write("\nIt wraps the failure made at:")
+        jump failure(previous)
+
+    block forgotten()
+        out.write("\n  (not remembered here: made on another thread, or later failures took its place)")
+        return()

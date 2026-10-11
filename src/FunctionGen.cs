@@ -512,7 +512,7 @@ public sealed class FunctionGen
         foreach (var b in blocks) EmitBlock(b);
         _c.NoteExpensiveCalls(ExpensiveCallLint.Check(_decl, _expensiveCalls));
         CheckGlobalMemoryFinish();
-        if (MemOn && MemoryRules.Check(_decl.DisplayName, blocks[0].Name, _memEvents, _routineValues.Keys.ToHashSet()) is [var memoryError, ..])
+        if (MemOn && MemoryRules.Check(_decl.DisplayName, _decl.Pos, blocks[0].Name, _memEvents, _routineValues.Keys.ToHashSet()) is [var memoryError, ..])
             throw memoryError;
 
         // A BF16 parameter arrives as its i16 bits (see Instance.PassesBf16AsBits) and is bitcast back on entry.
@@ -914,7 +914,10 @@ public sealed class FunctionGen
                 }
                 if (MemOn)
                 {
-                    if (b.Value is ClaimExpr) _frameViews[b.Name] = $"the frame slot '{b.Name}' (claimed at line {b.Pos.Line})";
+                    if (b.Value is ClaimExpr)
+                        _frameViews[b.Name] = Compiler.IsCoreSpan(t, out _)
+                            ? $"the frame Span '{b.Name}' (claimed at line {b.Pos.Line})"
+                            : $"the frame slot '{b.Name}' (claimed at line {b.Pos.Line})";
                     else if (PointsAtMemory(t) && FrameView(b.Value) is { } sees) _frameViews[b.Name] = sees;
                 }
                 if (MemOn && OwnedMemory(t) is not null)
@@ -1267,6 +1270,11 @@ public sealed class FunctionGen
         if (e is CallExpr { Name: "type_name", TypeArgs.Count: 1, Args.Count: 0 } tn
             && _c.FindFree(tn.Name, _env.File, tn.Pos) is null)
             return BytesType(tn.Pos);
+        if (e is CallExpr { Name: "failure_of", TypeArgs.Count: 0, Args.Count: 1 } fo && _c.FindFree(fo.Name, _env.File, fo.Pos) is null)
+            return IntType.U(32);
+        if (e is CallExpr { Name: "diagnose_or_name", TypeArgs.Count: 0, Args.Count: 2 } dn
+            && _c.FindFree(dn.Name, _env.File, dn.Pos) is null)
+            return VoidType.Instance;
         if (AddrOfCallable(e) is not null) return new PtrType(null);
         if (IndirectCall(e) is { } ind) return ind.Callable.Ret;
         if (e is MethodCallExpr deferred && DeferredType(deferred, expected) is { } deferredType) return deferredType;
@@ -1321,7 +1329,7 @@ public sealed class FunctionGen
         e = AsStride(AsField(_c.AsRecordLit(e, _env)));
         // A value of a branch type is a value of the variant (one level), and so is a narrower variant's.
         if (expected is VariantType vt && WidenSource(e, vt) is { } branch)
-            return WrapInVariant(Eval(e, branch, argument), vt);
+            return WrapInVariant(Eval(e, branch, argument), vt, e.Pos);
         // An argument borrows what a parameter takes as a view: a Memory lends its Span, a Box its address.
         if (argument > 0 && Lends(InferQuiet(e), expected))
             return Eval(new MethodCallExpr(e, "getview", [], [], e.Pos), expected, argument);
@@ -1593,18 +1601,48 @@ public sealed class FunctionGen
 
     /// A variant holding `value`, a value of one of its leaves (or of a variant written inline over some of them): the
     /// tag is the leaf type's ID, and the value is written into the shared storage through a stack slot.
-    private Val WrapInVariant(Val value, VariantType vt)
+    private Val WrapInVariant(Val value, VariantType vt, Pos? made = null)
     {
         _c.EnsureTypeDefined(vt);
         if (value.Type is VariantType { Decl.IsAnonymous: true } sub && vt.LeafIndex(sub) < 0) return WidenVariant(value, sub, vt);
         uint id = VariantType.TypeId(value.Type);
-        string tagged = EmitTmp($"insertvalue {vt.Llvm} zeroinitializer, {VariantType.Tag.Llvm} {id}, 0");
+        string tag = FailureTag(value.Type, vt, id, made ?? _decl.Pos);
+        string tagged = EmitTmp($"insertvalue {vt.Llvm} zeroinitializer, {VariantType.Tag.Llvm} {tag}, 0");
         if (_c.VariantStorage(vt).Aligner is null || _c.SizeAlign(value.Type, default).Size == 0) return new Val(tagged, vt);
         string slot = NewSlot(vt);
         Line($"store {vt.Llvm} {tagged}, ptr {slot}");
         string at = EmitTmp($"getelementptr inbounds {vt.Llvm}, ptr {slot}, i32 0, i32 2");
         Line($"store {value.Type.Llvm} {value.Op}, ptr {at}");
         return new Val(EmitTmp($"load {vt.Llvm}, ptr {slot}"), vt);
+    }
+
+    /// The name a `when` arm that observed a failure gives the failure's number, for a failure made in the arm to wrap.
+    private const string FailedBefore = "failure observed";
+
+    /// Whether a value of `leaf` in `vt` is a failure: `vt` is a Result, and `leaf` is its error type or one of the
+    /// types the error type is written over.
+    private static bool IsFailure(DType leaf, VariantType vt) =>
+        vt is { Decl.Name: "Result", Args: [_, var error] } && vt.Decl.Module == Compiler.CoreModule
+        && (leaf.Equals(error) || error is VariantType { Decl.IsAnonymous: true } union && union.LeafIndex(leaf) >= 0);
+
+    /// The tag of a variant made from a value of `leaf`: the leaf's type ID, and for a failure in a traced build the
+    /// failure's number in the high half (Trace.tess's failure_note), wrapping the failure the arm it is made in observed.
+    private string FailureTag(DType leaf, VariantType vt, uint id, Pos at)
+    {
+        if (!_c.Trace || _c.Prechecking || !IsFailure(leaf, vt)) return $"{id}";
+        Expr previous = _values.ContainsKey(FailedBefore) ? new ValueRef(FailedBefore, at) : new IntLit(0, at);
+        var seq = EvalCall(new CallExpr("failure_note", [], [previous], at) { Path = Compiler.CoreModule }, IntType.U(32));
+        string wide = EmitTmp($"zext i32 {seq.Op} to i64");
+        string high = EmitTmp($"shl i64 {wide}, 32");
+        return EmitTmp($"or i64 {high}, {id}");
+    }
+
+    /// The failure number in a variant's tag (0 for none).
+    private Val FailureOf(Val v)
+    {
+        string tag = EmitTmp($"extractvalue {v.Type.Llvm} {v.Op}, 0");
+        string high = EmitTmp($"lshr i64 {tag}, 32");
+        return new Val(EmitTmp($"trunc i64 {high} to i32"), IntType.U(32));
     }
 
     /// `A | B` into `A | B | C`: the tag is already the leaf type's ID, so the tag and the narrower storage are
@@ -1656,6 +1694,24 @@ public sealed class FunctionGen
         throw Err(p.Type.Pos, $"{type} isn't a branch of {v}; its branches are {string.Join(", ", v.Leaves)}");
     }
 
+    /// An arm without a name: one that observes a failure lets a failure made in it wrap that one (Trace.tess).
+    private string FailureArm(VariantType vt, DType observed, string tag, Target target)
+    {
+        if (!_c.Trace || _c.Prechecking || !IsFailure(observed, vt)) return ArmLabel(target);
+        var saved = _values;
+        _values = new Dictionary<string, Val>(_values);
+        string high = EmitTmp($"lshr i64 {tag}, 32");
+        _values[FailedBefore] = new Val(EmitTmp($"trunc i64 {high} to i32"), IntType.U(32));
+        try
+        {
+            return ArmLabel(target);
+        }
+        finally
+        {
+            _values = saved;
+        }
+    }
+
     /// A `when` on a variant switches on its tag's leaf type ID. An arm that names the value gets its own block,
     /// which reads the value out of a stack copy and then goes on to the arm's target. `else as rest` names what is
     /// left: the one leaf no arm observes, the variant written inline over the leaves left (up to 8), or else the whole
@@ -1687,7 +1743,7 @@ public sealed class FunctionGen
                 throw Err(target.Pos, "an arm that names the value observes one type");
             string label = patterns[0].Binding is { } binding
                 ? BindingArm(vt, slot!, patterns[0].Type, binding, target)
-                : ArmLabel(target);
+                : FailureArm(vt, patterns[0].Type, tag, target);
             foreach (int index in patterns.SelectMany(p => p.Leaves))
             {
                 if (!seen.Add(index)) throw Err(target.Pos, $"two arms observe {vt.Leaves[index]}");
@@ -1789,6 +1845,14 @@ public sealed class FunctionGen
         }
         _values = new Dictionary<string, Val>(_values);
         Define(binding.Name, new Val(value, branch), binding.Pos);
+        // A failure made in an arm that observed one wraps it (Trace.tess).
+        if (_c.Trace && !_c.Prechecking && IsFailure(branch, vt))
+        {
+            string tagAt = EmitTmp($"getelementptr inbounds {vt.Llvm}, ptr {slot}, i32 0, i32 0");
+            string tag = EmitTmp($"load i64, ptr {tagAt}");
+            string high = EmitTmp($"lshr i64 {tag}, 32");
+            _values[FailedBefore] = new Val(EmitTmp($"trunc i64 {high} to i32"), IntType.U(32));
+        }
         // A guard's continuing arm: the lines after the when may see the value (KeepContinuedPayload).
         if (target is ContinueTarget && _continuedPayloads is { } kept)
             kept[binding.Name] = (new Val(value, branch), binding.Pos);
@@ -2901,6 +2965,27 @@ public sealed class FunctionGen
         if (e is CallExpr { Name: "type_name", TypeArgs.Count: 1, Args.Count: 0 } tn
             && _c.FindFree(tn.Name, _env.File, tn.Pos) is null)
             return StringLiteral(new StrLit(Resolve(tn.TypeArgs[0]).Name, tn.Pos), BytesType(tn.Pos));
+        // `failure_of(result)`: the number of the failure a Result holds (Trace.tess), 0 for none or a value.
+        if (e is CallExpr { Name: "failure_of", TypeArgs.Count: 0, Args: [var held] } && _c.FindFree("failure_of", _env.File, e.Pos) is null)
+        {
+            var v = EvalAny(held);
+            if (v.Type is not VariantType) throw Err(held.Pos, $"failure_of takes a Result, not {v.Type}");
+            return FailureOf(v);
+        }
+        // `diagnose_or_name(value: v, out: w)`: writes v the way a programmer reads it when its type is Diagnosable,
+        // and else says which type it is: a message about a value of any type, such as unwrap's.
+        if (e is CallExpr { Name: "diagnose_or_name", TypeArgs.Count: 0, Args: [var shown, var writer] } dn
+            && _c.FindFree(dn.Name, _env.File, dn.Pos) is null)
+        {
+            var call = new MethodCallExpr(shown, "diagnose_into", [], [writer], dn.Pos);
+            CallPlan? diagnose = null;
+            try { diagnose = PlanCall(call, VoidType.Instance); }
+            catch (CompileError) { }
+            if (diagnose is not null && _c.RequirementsFailure(diagnose.Decl, diagnose.Env) is null) return EmitCall(diagnose);
+            string what = InferQuiet(shown)?.Name ?? "value";
+            return EvalCall(new CallExpr("write_str", [], [writer, new StrLit($"a {what}", dn.Pos)], dn.Pos)
+                { ArgNames = ["out", "text"], Path = FormatModule }, VoidType.Instance);
+        }
 
         if (AddrOfCallable(e) is { } addr) return new Val(Eval(addr.Callee, addr.Callable).Op, new PtrType(null));
         if (IndirectCall(e) is { } ind) return EmitIndirect(ind.Callee, ind.Callable, ind.Args, e.Pos);

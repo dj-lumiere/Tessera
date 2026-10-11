@@ -27,6 +27,8 @@ namespace Tessera;
 /// emit-llvm = true                    # keep the IR next to the output
 /// trace = false                       # leave out the crash trace (default: kept in debug and release,
 ///                                     # left out in release-time and release-space)
+/// trace-frames = 64                    # the frames a crash trace and a failure's trace keep (a power of two, 32)
+/// failure-traces = 16                  # the failures each thread remembers where they were made (32)
 /// race-check = true                   # stop on a data race between threads, with both places (slow, for a run
 ///                                     # that looks for races, Linux and macOS on x86_64 and aarch64)
 /// heap-check = true                   # the default heap crashes on a block freed twice (DoubleFreeError), in
@@ -75,6 +77,12 @@ public sealed record Manifest(
     /// it on.
     public bool RaceCheck { get; init; }
 
+    /// `[debug] trace-frames`: the frames a crash trace and a failure's trace keep (a power of two), or null for 32.
+    public int? TraceFrames { get; init; }
+
+    /// `[debug] failure-traces`: the failures each thread remembers the traces of, or null for 32.
+    public int? FailureTraces { get; init; }
+
     /// Where the build writes its output: `build/` next to the manifest.
     public string OutputDirectory => System.IO.Path.Combine(Directory, "build");
 
@@ -96,7 +104,7 @@ public sealed record Manifest(
     {
         ["package"] = ["name", "version", "description", "authors", "license", "repository", "tessera-version"],
         ["target"] = ["executable", "triple", "cpu", "features", "mode", "library", "sources", "c-libraries", "library-paths", "link-script"],
-        ["debug"] = ["emit-llvm", "trace", "heap-check", "race-check"],
+        ["debug"] = ["emit-llvm", "trace", "heap-check", "race-check", "trace-frames", "failure-traces"],
     };
 
     /// <paramref name="defaultTarget"/> is the triple used when [target] names none (the host if null).
@@ -182,6 +190,8 @@ public sealed record Manifest(
             Trace = Bool(debug, "trace", path),
             HeapCheck = Bool(debug, "heap-check", path) ?? false,
             RaceCheck = Bool(debug, "race-check", path) ?? false,
+            TraceFrames = TraceSize(debug, "trace-frames", path, powerOfTwo: true),
+            FailureTraces = TraceSize(debug, "failure-traces", path, powerOfTwo: false),
         };
     }
 
@@ -259,6 +269,17 @@ public sealed record Manifest(
         !t.TryGetValue(key, out var v) ? null
         : v is string s ? s
         : throw new ManifestError(path, $"'{key}' is a string");
+
+    /// A trace size: a count from 1 to 4096 (a power of two where the trace's ring needs one), or null when not given.
+    private static int? TraceSize(TomlTable t, string key, string path, bool powerOfTwo)
+    {
+        if (!t.TryGetValue(key, out var v)) return null;
+        if (v is not long n || n < 1 || n > 4096 || (powerOfTwo && (n & (n - 1)) != 0))
+            throw new ManifestError(path, powerOfTwo
+                ? $"'{key}' is a power of two from 1 to 4096, the frames a trace keeps"
+                : $"'{key}' is a count from 1 to 4096");
+        return (int)n;
+    }
 
     private static bool? Bool(TomlTable t, string key, string path) =>
         !t.TryGetValue(key, out var v) ? null

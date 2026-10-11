@@ -489,7 +489,7 @@ static class Cli
     /// <paramref name="heapCheck"/>: whether the default heap crashes on a block freed twice (`[debug] heap-check`).
     public static string Compile(IEnumerable<string> files, BuildTarget target, bool executable = true,
         IReadOnlyList<string>? roots = null, BuildMode mode = BuildMode.Debug, bool stdlibExports = true, bool lint = true,
-        bool? trace = null, bool heapCheck = false, bool raceCheck = false)
+        bool? trace = null, bool heapCheck = false, bool raceCheck = false, int? traceFrames = null, int? failureTraces = null)
     {
         var inputs = files.ToList();
         var decls = LoadDecls(inputs, target);
@@ -501,6 +501,7 @@ static class Cli
             EmitLibraryExports = stdlibExports,
             StdlibParent = Path.GetDirectoryName(StdlibDir()),
         };
+        compiler.SetTraceSizes(traceFrames, failureTraces);
         string ir = compiler.Generate();
         if (lint) Lint(decls, inputs, [compiler]);
         if (executable && !compiler.HasStart)
@@ -652,7 +653,7 @@ static class Cli
     {
         if (m.RaceCheck) RequireRaceCheckable(m.Target);
         string ir = Compile(m.Sources, m.Target, roots: m.Roots, mode: m.Mode, trace: m.Traced,
-            heapCheck: m.HeapCheck, raceCheck: m.RaceCheck);
+            heapCheck: m.HeapCheck, raceCheck: m.RaceCheck, traceFrames: m.TraceFrames, failureTraces: m.FailureTraces);
         Directory.CreateDirectory(m.OutputDirectory);
         if (m.EmitLlvm) File.WriteAllText(Path.ChangeExtension(m.ExecutablePath, ".ll"), ir);
         Link(ir, m.ExecutablePath, m.Target, m.Mode, m.LinkArguments().Concat(RaceLink(m.RaceCheck)));
@@ -999,7 +1000,8 @@ static class Cli
             // A test always runs with the heap check on, whatever its manifest says: a block freed twice fails it.
             ir = Compile(sources, target, mode: manifest?.Mode ?? _testMode, lint: false,
                 trace: manifest is null ? _testTrace : manifest.Traced, heapCheck: true,
-                raceCheck: manifest?.RaceCheck ?? false);
+                raceCheck: manifest?.RaceCheck ?? false, traceFrames: manifest?.TraceFrames,
+                failureTraces: manifest?.FailureTraces);
         }
         catch (ManifestError e)
         {

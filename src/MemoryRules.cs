@@ -5,9 +5,10 @@ namespace Tessera;
 /// group: the value a call or an `at` literal gives, a parameter the routine was handed, and every copy of those, block
 /// parameters they are passed to, and slots they are stored in. A group ends exactly once on every path: with `drop()`
 /// (or `destruct()`), by being returned, or by being handed to a routine that takes it by value, which then owns it.
-/// The check reports a group that doesn't end before a return, one that ends twice, a handle used after its group ended,
-/// a slot overwritten while it holds a group that hasn't ended, and paths that meet with the group ended on one of them
-/// and not on another. It follows the routine's own flow only: what a callee does with memory it borrows is its own.
+/// The check reports a group that doesn't end before a return (on any path: each path is followed on its own), one that
+/// ends twice, a handle used after its group ended, a group lost at a jump (no name of the next block reaches it), and a
+/// slot overwritten while it is the last holder of a group that hasn't ended. It follows the routine's own flow only:
+/// what a callee does with memory it borrows is its own.
 ///
 /// FunctionGen records what each line does with the handles it can see (MemoryEvents), in the order the lines run, and
 /// the check runs over the blocks once the routine is built. It checks routines without type parameters: in a generic
@@ -91,7 +92,7 @@ public static class MemoryRules
     /// The errors of one routine: each a message at its place, first one first. `routineWide` names the handles every
     /// block sees (the routine's parameters and the values of its head): the rest live in their block only. Each path is
     /// followed with its own state, and a block is entered again only with a state it hasn't been entered with.
-    public static List<CompileError> Check(string routine, string firstBlock, IReadOnlyDictionary<string, List<Event>> events,
+    public static List<CompileError> Check(string routine, Pos routinePos, string firstBlock, IReadOnlyDictionary<string, List<Event>> events,
         IReadOnlySet<string> routineWide)
     {
         var errors = new List<CompileError>();
@@ -106,8 +107,15 @@ public static class MemoryRules
         var work = new Queue<(string Block, State State)>();
         work.Enqueue((entry, new State()));
         int rounds = 0;
-        while (work.Count > 0 && rounds++ < 20000)
+        while (work.Count > 0)
         {
+            // A routine with more paths than this is too branchy to follow: it says so rather than pass unchecked.
+            if (rounds++ > 20000)
+            {
+                errors.Insert(0, new CompileError(routinePos, $"'{routine}' has too many paths for the memory check to follow: "
+                    + "split it into routines of their own"));
+                break;
+            }
             var (block, start) = work.Dequeue();
             if (!seen.Add($"{block}|{start.Key()}")) continue;
             if (!events.TryGetValue(block, out var list)) continue;
@@ -141,7 +149,7 @@ public static class MemoryRules
                     {
                         if (state.Names.TryGetValue(u.Name, out var id) && state.Groups.TryGetValue(id, out var g) && g.Ended is { } at)
                             Report(u.Pos, $"'{u.Name}' is used after its memory was given back ({g.How} on line {at.Line}): "
-                                + "use it before, or keep memory of its own with .duplicate()");
+                                + "use it before that, or make memory of its own with .duplicate() before it");
                         break;
                     }
                     case Store st:
@@ -149,8 +157,8 @@ public static class MemoryRules
                         // A slot that is the last handle of a group that hasn't ended loses it: another handle keeps it.
                         if (state.Names.TryGetValue(st.Slot, out var id) && state.Groups.TryGetValue(id, out var g) && g.Ended is null
                             && !state.Names.Any(n => n.Key != st.Slot && n.Value == id))
-                            Report(st.Pos, $"'{st.Slot}' holds memory that hasn't been given back ('{g.Origin}' from line {g.Born.Line}), and this "
-                                + "overwrites it: drop it first");
+                            Report(st.Pos, $"'{st.Slot}' holds memory that hasn't been given back (from line {g.Born.Line}), and this "
+                                + $"overwrites it: drop it first ({st.Slot}.drop())");
                         if (st.From is { } from && state.Names.TryGetValue(from, out var fromId)) state.Names[st.Slot] = fromId;
                         else state.Names.Remove(st.Slot);
                         break;
@@ -202,7 +210,8 @@ public static class MemoryRules
                             if (reached) next.Groups[id] = g;
                             else if (g.Ended is null)
                                 Report(ex.Pos, $"the memory of '{g.Origin}' (from line {g.Born.Line}) is lost here: block '{ex.Block}' doesn't get "
-                                    + $"it. Pass it as an argument, keep it in a local of the routine's head, or drop it first");
+                                    + $"it. Pass it to the block as an argument, keep it in a slot of the routine's head (local m: "
+                                    + "@Memory[T] <- ...), or drop it first");
                         }
                         work.Enqueue((ex.Block!, next.Canonical()));
                         break;
