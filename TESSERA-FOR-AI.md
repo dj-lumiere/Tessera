@@ -657,8 +657,34 @@ routine start() -> Void
   `TRACE_CAPACITY`). It's on in debug and release, off in release-time and release-space; `--no-trace` / `--trace`
   or `[debug] trace = false|true` in config.toml override that. Thread-local with an OS, a plain global without.
   A handler's own helper routines should be `#untraced` (they'd push onto the trace it's reading).
+- `[debug] trace-frames = N` (a power of two, 1 to 4096, default 32) sets the frames the crash trace and each
+  failure's trace keep (`TRACE_CAPACITY`, `FAILURE_FRAMES`), `[debug] failure-traces = N` (1 to 4096, default 32) the
+  failures each thread remembers (`FAILURE_TRACES`). Anything else is a manifest error.
 - Expected failures return `Result[T, TError]`. There's no `?`: `when r` with `is T as v` / `is TError as e` arms
   (`is S64 as v`, `is ParseError as e => return(e)`).
+- A failure keeps where it was made (traced builds only). Making a Result hold its error (a value of `TError`, or of
+  a branch of an inline `TError` union) calls `failure_note`, which copies the thread's crash trace into a per-thread
+  ring of recent failures (no heap) under a number (never 0, unique across threads) and stores the number in the high
+  32 bits of the Result's tag: same size. An error made inside a `when` arm that observed a failure (`is E as e` or
+  `is E`) records that failure as the one it wraps. Untraced builds note nothing (number 0).
+- `unwrap` of a failure crashes with `UnwrapFailureError`: `Attempted to unwrap the value of a Failure, which holds
+  Problem.BAD_INPUT.` (the error as `diagnose` writes it if its type is Diagnosable, else `a ParseFailed`), then
+  `The failure was made at:` with its frames (`  0: at load (f.tess:44:34)`, innermost first), then `It wraps the
+  failure made at:` plus frames for each wrapped failure, innermost wrap first. A failure made on another thread, or
+  pushed out of the ring, prints `  (not remembered here: made on another thread, or later failures took its place)`.
+  The default handler then adds the place and `Stack trace:` of the unwrap as for any crash.
+- Builtins for that: `failure_of(result) -> U32` (the failure number in a Result's tag, 0 for none or a value),
+  `write_failure_trace(seq: n, out: w)` (Standard/Core, writes the `The failure was made at:` part to any Writer,
+  nothing for 0), `failure_trace(seq) -> @FailureTrace` (null when not remembered), and
+  `diagnose_or_name(value: v, out: w)` (writes any value: `diagnose_into` when it is Diagnosable, else `a <Type>`).
+- Hardware faults: a traced build's entry calls `install_fault_handlers()` before `start` (not under `--race-check`,
+  which reports faults itself). Linux/macOS: SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT, each handler on a 64 KiB
+  signal stack every thread gets (so a stack overflow is reported too). Windows: the unhandled-exception filter
+  (AccessViolation, StackOverflow, IllegalInstruction, IntegerDivideByZero, IntegerOverflow). The report on stderr:
+  `tessera: SegmentationFault (SIGSEGV): <meaning>`, the crash trace (a frame that made no call yet shows only its
+  file: `  0: at read (f.tess)`), then `Platform stack:` (`backtrace_symbols_fd` on Linux/macOS, raw `0x...`
+  addresses on Windows). Then the fault ends the program as it would have (handler is one-shot, the signal is raised
+  again): exit status 139 for SIGSEGV on Linux, not 82.
 
 **Records**
 
