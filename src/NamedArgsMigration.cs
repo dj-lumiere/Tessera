@@ -76,7 +76,11 @@ internal sealed class NamedArgsMigration
     }
 
     /// The source with each call that needs them given its argument names, and the calls left for a hand rewrite.
-    public string Rewrite(string file, string text, List<string> report)
+    /// The division step: `/` on an unsigned integer is `//` (the same quotient), and the `/` and `%` whose meaning
+    /// changes (a signed integer, a float's `%`) or whose type the source does not tell are listed for a hand rewrite.
+    public string RewriteDivision(string file, string text, List<string> report) => Rewrite(file, text, report, division: true);
+
+    public string Rewrite(string file, string text, List<string> report, bool division = false)
     {
         Module module;
         try
@@ -92,7 +96,8 @@ internal sealed class NamedArgsMigration
         for (int i = 0; i < text.Length; i++)
             if (text[i] == '\n') lineStarts.Add(i + 1);
         var inserts = new SortedDictionary<int, string>();
-        var walker = new Walker(this, file, text, lineStarts, inserts, report);
+        var replacements = new List<(int Start, int Length, string Text)>();
+        var walker = new Walker(this, file, text, lineStarts, inserts, report, division, replacements);
         foreach (var decl in module.Decls)
         {
             switch (decl)
@@ -102,9 +107,15 @@ internal sealed class NamedArgsMigration
             }
         }
 
-        if (inserts.Count == 0) return text;
+        if (inserts.Count == 0 && replacements.Count == 0) return text;
         var sb = new StringBuilder(text);
-        foreach (var (offset, label) in inserts.Reverse()) sb.Insert(offset, label);
+        var edits = inserts.Select(kv => (Start: kv.Key, Length: 0, Text: kv.Value)).Concat(replacements)
+            .OrderByDescending(e => e.Start).ThenBy(e => e.Length).ToList();
+        foreach (var (start, length, value) in edits)
+        {
+            if (length > 0) sb.Remove(start, length);
+            sb.Insert(start, value);
+        }
         return sb.ToString();
     }
 
@@ -116,7 +127,7 @@ internal sealed class NamedArgsMigration
 
     /// A Markdown page with the calls in its fenced Tessera blocks named. A block that is a few lines of a body rather
     /// than whole declarations is read inside a routine of its own, and only its own lines change.
-    public string RewriteMarkdown(string file, string text, List<string> report)
+    public string RewriteMarkdown(string file, string text, List<string> report, bool division = false)
     {
         var sb = new StringBuilder();
         int at = 0;
@@ -124,8 +135,8 @@ internal sealed class NamedArgsMigration
         {
             sb.Append(text, at, start - at);
             string block = text[start..end];
-            string named = Rewrite(file, block, report);
-            if (named == block) named = RewriteAsBody(file, block, report);
+            string named = Rewrite(file, block, report, division);
+            if (named == block) named = RewriteAsBody(file, block, report, division);
             sb.Append(named);
             at = end;
         }
@@ -135,14 +146,14 @@ internal sealed class NamedArgsMigration
 
     /// The lines of a body, read inside a routine: each line is indented under `block entry()`, named, and taken out
     /// again.
-    private string RewriteAsBody(string file, string block, List<string> report)
+    private string RewriteAsBody(string file, string block, List<string> report, bool division = false)
     {
         const string head = "routine doc_example() -> Void\n    block entry()\n";
         const string indent = "        ";
         var lines = block.Split('\n');
         string wrapped = head + string.Join("\n", lines.Select(l => l.Length == 0 ? l : indent + l));
         var quiet = new List<string>();
-        string named = Rewrite(file, wrapped, quiet);
+        string named = Rewrite(file, wrapped, quiet, division);
         if (named == wrapped || !named.StartsWith(head)) return block;
         var back = named[head.Length..].Split('\n')
             .Select(l => l.StartsWith(indent) ? l[indent.Length..] : l).ToList();
@@ -187,8 +198,188 @@ internal sealed class NamedArgsMigration
     private static TypeRef Pointee(TypeRef t) => t is { Name: "Ptr", Args: [TypeArgType inner] } ? inner.Type : t;
 
     private sealed class Walker(NamedArgsMigration index, string file, string text, List<int> lineStarts,
-        SortedDictionary<int, string> inserts, List<string> report)
+        SortedDictionary<int, string> inserts, List<string> report, bool division = false,
+        List<(int Start, int Length, string Text)>? replacements = null)
     {
+        private string? _routineName;
+        private List<Token>? _tokens;
+        private List<Token> Tokens => _tokens ??= new Lexer(file, text).Lex();
+        private int Offset(Pos p) => p.Line >= 1 && p.Line <= lineStarts.Count ? lineStarts[p.Line - 1] + p.Col - 1 : -1;
+
+        private int TokenIndexAt(int offset)
+        {
+            var t = Tokens;
+            for (int i = 0; i < t.Count; i++)
+                if (Offset(t[i].Pos) == offset) return i;
+            return -1;
+        }
+
+        /// Where the token ends in the source: read from where the next one starts, since a literal's text has no
+        /// quotes.
+        private int TokenEnd(int i)
+        {
+            var t = Tokens;
+            int plain = Offset(t[i].Pos) + t[i].Text.Length;
+            if (i + 1 >= t.Count || t[i + 1].Kind is TokenKind.Newline or TokenKind.Eof) return plain;
+            int next = Offset(t[i + 1].Pos);
+            if (next < plain) return plain;
+            int end = next;
+            while (end > plain && text[end - 1] is ' ' or '\t') end--;
+            return end;
+        }
+
+        private int Balanced(int open)
+        {
+            var t = Tokens;
+            var close = t[open].Kind == TokenKind.LParen ? TokenKind.RParen : TokenKind.RBracket;
+            int depth = 0;
+            for (int i = open; i < t.Count; i++)
+            {
+                if (t[i].Kind == t[open].Kind) depth++;
+                else if (t[i].Kind == close && --depth == 0) return i;
+            }
+            return -1;
+        }
+
+        private int BalancedBack(int close)
+        {
+            var t = Tokens;
+            var open = t[close].Kind == TokenKind.RParen ? TokenKind.LParen : TokenKind.LBracket;
+            int depth = 0;
+            for (int i = close; i >= 0; i--)
+            {
+                if (t[i].Kind == t[close].Kind) depth++;
+                else if (t[i].Kind == open && --depth == 0) return i;
+            }
+            return -1;
+        }
+
+        private bool Adjacent(int a, int b) => Tokens[a].Pos.Line == Tokens[b].Pos.Line && TokenEnd(a) == Offset(Tokens[b].Pos);
+
+        private static bool IsPrimary(Token t) => t.Kind is TokenKind.Ident or TokenKind.Int or TokenKind.Float or TokenKind.Str or TokenKind.Char or TokenKind.Byte;
+
+        /// The last token of the operand that starts at `k`: unary signs, a primary or a bracketed group, its calls,
+        /// indexes and members, and a `**` power after it. -1 where the operand has a shape this does not read.
+        private int OperandEndIndex(int k)
+        {
+            var t = Tokens;
+            while (k < t.Count && t[k] is { Kind: TokenKind.Op, Text: "-" or "~" }) k++;
+            if (k >= t.Count) return -1;
+            int last;
+            if (t[k].Kind is TokenKind.LParen or TokenKind.LBracket) last = Balanced(k);
+            else if (IsPrimary(t[k])) last = k;
+            else return -1;
+            if (last < 0) return -1;
+            while (last + 1 < t.Count)
+            {
+                var n = t[last + 1];
+                if (n.Kind == TokenKind.Dot && last + 2 < t.Count && t[last + 2].Kind == TokenKind.Ident) { last += 2; continue; }
+                if (n.Kind is TokenKind.LParen or TokenKind.LBracket && Adjacent(last, last + 1))
+                {
+                    last = Balanced(last + 1);
+                    if (last < 0) return -1;
+                    continue;
+                }
+                break;
+            }
+            if (last + 1 < t.Count && t[last + 1] is { Kind: TokenKind.Op, Text: "**" })
+            {
+                int r = OperandEndIndex(last + 2);
+                if (r < 0) return -1;
+                last = r;
+            }
+            return last;
+        }
+
+        /// The first token of the operand that ends at `k`: a primary or a bracketed group with the members, calls
+        /// and indexes before it. -1 where the operand has a shape this does not read.
+        private int OperandStartIndex(int k)
+        {
+            var t = Tokens;
+            int first = k;
+            while (true)
+            {
+                if (t[first].Kind is TokenKind.RParen or TokenKind.RBracket)
+                {
+                    first = BalancedBack(first);
+                    if (first < 0) return -1;
+                    if (first >= 1 && t[first - 1].Kind == TokenKind.Ident && Adjacent(first - 1, first)) first--;
+                    else if (first >= 1 && t[first - 1].Kind is TokenKind.RParen or TokenKind.RBracket && Adjacent(first - 1, first)) { first--; continue; }
+                    else return first;
+                }
+                else if (!IsPrimary(t[first])) return -1;
+                if (first >= 2 && t[first - 1].Kind == TokenKind.Dot && (IsPrimary(t[first - 2]) || t[first - 2].Kind is TokenKind.RParen or TokenKind.RBracket)) { first -= 2; continue; }
+                return first;
+            }
+        }
+
+        /// Rewrites `a OP b` at the operator token `opIndex` as `a.NAME(b)` where both operands have a shape this
+        /// reads and nothing tighter binds the left one: `x * y / 2` is left for a hand rewrite.
+        private bool AsCall(int opIndex, string name)
+        {
+            var t = Tokens;
+            int leftFirst = OperandStartIndex(opIndex - 1);
+            int rightLast = OperandEndIndex(opIndex + 1);
+            if (leftFirst < 0 || rightLast < 0) return false;
+            if (leftFirst >= 1 && t[leftFirst - 1] is { Kind: TokenKind.Op, Text: "*" or "/" or "//" or "%" or "**" or "*%" or "*^" }) return false;
+            if (leftFirst >= 1 && t[leftFirst - 1].Kind == TokenKind.Slash) return false;
+            int gapStart = TokenEnd(opIndex - 1);
+            int gapEnd = Offset(t[opIndex + 1].Pos);
+            replacements?.Add((gapStart, gapEnd - gapStart, $".{name}("));
+            replacements?.Add((TokenEnd(rightLast), 0, ")"));
+            return true;
+        }
+
+        private static readonly HashSet<string> UnsignedNames = ["U8", "U16", "U32", "U64", "U128", "U256", "USize", "Byte"];
+        private static readonly HashSet<string> SignedNames = ["S8", "S16", "S32", "S64", "S128", "S256", "SSize"];
+        private static readonly HashSet<string> FloatNames = ["B16", "BF16", "B32", "B64", "B128"];
+
+        /// A `/` or `%` and what it becomes. `/` on an unsigned integer is `//` (the same quotient). `/` on a signed
+        /// integer keeps its meaning as `.div_trunc()` (the quotient toward zero), and `%` on a signed integer or a float as
+        /// `.mod_trunc()` (the remainder with the dividend's sign): `//` and `%` are Euclidean now. Inside a type's own
+        /// `div_euclid` / `mod_euclid`, the operators are the primitives they are built from, so they become calls
+        /// whatever the type. A site whose operands this does not read is listed for a hand rewrite.
+        private void Division(BinaryExpr b)
+        {
+            TypeRef? t = TypeOf(b.Left) ?? (b.Left is IntLit or FloatLit ? TypeOf(b.Right) : null);
+            string kind = t is null ? (b.Left is IntLit && b.Right is IntLit ? "an integer literal" : "a type the source does not tell") : Pointee(t).Name;
+            if (kind == "Me" && _owner is not null) kind = _owner;
+            bool inEuclid = _routineName is "div_euclid" or "mod_euclid";
+            bool ownType = t is not null && !UnsignedNames.Contains(kind) && !SignedNames.Contains(kind) && !FloatNames.Contains(kind) && kind != "?";
+            if (ownType && !inEuclid) return;
+            int offset = Offset(b.Pos);
+            if (offset < 0 || offset >= text.Length) return;
+            int opIndex = TokenIndexAt(offset);
+            if (opIndex < 0) return;
+            string keep = b.Op == "/" ? "div_trunc" : "mod_trunc";
+            if (b.Op == "/")
+            {
+                if (FloatNames.Contains(kind) && !inEuclid) return;
+                if (UnsignedNames.Contains(kind) && !inEuclid)
+                {
+                    if (text[offset] == '/' && (offset + 1 >= text.Length || text[offset + 1] != '/')) inserts[offset] = "/";
+                    return;
+                }
+                if (SignedNames.Contains(kind) || inEuclid)
+                {
+                    if (!AsCall(opIndex, keep))
+                        report.Add($"{b.Pos}: '/' on {kind}: '//' is the Euclidean quotient now (the remainder never negative) and '.div_trunc()' the quotient toward zero, and this site has a shape the step does not rewrite (left as it is)");
+                    return;
+                }
+                report.Add($"{b.Pos}: '/' on {kind}: write '//' when it is an integer (left as it is)");
+                return;
+            }
+
+            if (UnsignedNames.Contains(kind) && !inEuclid) return;
+            if (SignedNames.Contains(kind) || FloatNames.Contains(kind) || inEuclid)
+            {
+                if (!AsCall(opIndex, keep))
+                    report.Add($"{b.Pos}: '%' on {kind} is the Euclidean remainder now (never negative), '.mod_trunc()' the remainder with the dividend's sign, and this site has a shape the step does not rewrite (left as it is)");
+                return;
+            }
+            report.Add($"{b.Pos}: '%' on {kind} is the Euclidean remainder now (never negative): check what it divides");
+        }
+
         private HashSet<string> _blocks = [];
         private Dictionary<string, TypeRef> _types = [];
         private string? _owner;
@@ -196,6 +387,7 @@ internal sealed class NamedArgsMigration
         public void Routine(RoutineDecl r)
         {
             _owner = r.Owner?.Name;
+            _routineName = r.Name;
             _types = r.Params.GroupBy(p => p.Name).ToDictionary(g => g.Key, g => g.First().Type);
             foreach (var s in r.Shared) _types.TryAdd(s.Name, s.Type);
             foreach (var b in r.Blocks ?? [])
@@ -279,6 +471,7 @@ internal sealed class NamedArgsMigration
                         foreach (var st in Bodies.All(arm.Body)) Stmt(st);
                     break;
                 case BinaryExpr b:
+                    if (division && b.Op is "/" or "%") Division(b);
                     Expr(b.Left);
                     Expr(b.Right);
                     break;
@@ -442,6 +635,14 @@ internal sealed class NamedArgsMigration
                     string record = Pointee(baseType).Name == "Me" && _owner is not null ? _owner : Pointee(baseType).Name;
                     return index._fields.GetValueOrDefault(record)?.GetValueOrDefault(f.Name);
                 }
+                case MethodCallExpr { Name: "peek", Args.Count: 0 } pk when TypeOf(pk.Receiver) is { } pointer:
+                    return Pointee(pointer);
+                case MethodCallExpr { Name: "to" or "to_wrap" or "to_clamp" or "to_bits", TypeArgs: [{ } target] }:
+                    return target;
+                case NsCallExpr { Name: "to" or "to_wrap" or "to_clamp", TypeArgs: [{ } target] }:
+                    return target;
+                case PresetRef { Owner: { } owner, Name: "MAX" or "MIN" or "ZERO" or "ONE" }:
+                    return owner;
                 case MethodCallExpr m:
                     return Returned(MethodCall(m), TypeOf(m.Receiver));
                 case NsCallExpr n:
@@ -450,6 +651,11 @@ internal sealed class NamedArgsMigration
                     return Named(c.Name);
                 case CallExpr c when !_types.ContainsKey(c.Name):
                     return Returned(FreeCall(c.Name, c.Args), null);
+                // Arithmetic keeps its operands' type, and a literal takes the other side's.
+                case BinaryExpr { Op: "+" or "-" or "*" or "/" or "//" or "%" or "**" or "+%" or "-%" or "*%" or "+^" or "-^" or "*^" or "&" or "|" or "^" or "<<" or ">>" or ">>>" } b:
+                    return b.Left is IntLit or FloatLit ? TypeOf(b.Right) : TypeOf(b.Left) ?? TypeOf(b.Right);
+                case UnaryExpr { Op: "-" or "~" } u:
+                    return TypeOf(u.Operand);
                 default:
                     return null;
             }
@@ -482,6 +688,7 @@ internal sealed class NamedArgsMigration
         /// A call the routines it can mean disagree on is reported and left as it is.
         private void Name(Candidates c, List<Expr> args, List<string?>? written, string what, Pos pos)
         {
+            if (division) return;
             if (c.Routines.Count == 0) return;
             // Every argument named already: nothing to add, whichever routine it is.
             if (written is not null && written.All(n => n is not null)) return;

@@ -443,12 +443,15 @@ public sealed class Structurer
         {
             var p = block.Params[i];
             var arg = args[i];
-            if (arg is ValueRef v && !Rewriter.BoundInBody(block.Stmts).Contains(v.Name))
+            // A name a write template reads stays bound: the template may pass it on by its name (`{f(map, count)}`).
+            if (arg is ValueRef v && !Rewriter.BoundInBody(block.Stmts).Contains(v.Name) &&
+                (v.Name == p.Name || !TemplateNames(block.Stmts).Contains(p.Name)))
             {
                 rw.Subst[p.Name] = v;
                 continue;
             }
-            if (IsPure(arg) && UsesOf(block.Stmts, p.Name) <= 1 && !Rewriter.BoundInBody(block.Stmts).Contains(p.Name))
+            if (IsPure(arg) && UsesOf(block.Stmts, p.Name) <= 1 && !Rewriter.BoundInBody(block.Stmts).Contains(p.Name) &&
+                !TemplateNames(block.Stmts).Contains(p.Name))
             {
                 rw.Subst[p.Name] = arg;
                 continue;
@@ -467,6 +470,25 @@ public sealed class Structurer
     }
 
     private static int UsesOf(List<Stmt> body, string name) => Rewriter.UsesInBody(body).Count(u => u == name);
+
+    /// The names the write templates of a body read: a template holds names, so a value only a name can stand in for.
+    private static HashSet<string> TemplateNames(List<Stmt> body)
+    {
+        var recorder = new TemplateRecorder();
+        recorder.Body(body);
+        return recorder.Names;
+    }
+
+    private sealed class TemplateRecorder : Rewriter
+    {
+        public HashSet<string> Names { get; } = [];
+
+        public override Expr Expr(Expr e)
+        {
+            if (e is StrLit s) foreach (string n in HoleNames(s.Value)) Names.Add(n);
+            return base.Expr(e);
+        }
+    }
 
     /// Whether `name` in `from` is the loop header's parameter of that name, passed along unchanged: `from` is the
     /// header itself, or has no binding of its own by that name (the routine's value, which no round changes), or
@@ -497,7 +519,7 @@ public sealed class Structurer
     {
         ValueRef or IntLit or TypedIntLit or FloatLit or BoolLit or NullLit or PresetRef => true,
         FieldExpr f => IsPure(f.Base),
-        MethodCallExpr { Args.Count: <= 1 } m when Operators.OperatorFor(m.Name) is not null || m.Name is "neg" or "bitnot" =>
+        MethodCallExpr { Args.Count: <= 1 } m when OldOperatorFor(m.Name) is not null || m.Name is "neg" or "bitnot" =>
             IsPure(m.Receiver) && m.Args.All(IsPure),
         BinaryExpr b => IsPure(b.Left) && IsPure(b.Right),
         UnaryExpr u => IsPure(u.Operand),
@@ -1091,6 +1113,16 @@ public sealed class Structurer
     /// The lines of a block as they are, the old forms read into the new: no restructuring.
     private static List<Stmt> Plain(List<Stmt> stmts) => stmts;
 
+    /// The operator a routine stood for in the sources this step reads, written before `//` existed: `div` was `/`
+    /// and `mod` was `%` whatever the type (the division step then picks `//`, `div_trunc` or `mod_trunc` by type).
+    private static string? OldOperatorFor(string routine) => routine switch
+    {
+        "div" => "/",
+        "mod" => "%",
+        "truediv" or "div_trunc" or "mod_trunc" => null,
+        _ => Operators.OperatorFor(routine),
+    };
+
     /// Operators for the routines they stand for, Bool bindings used once right after as the condition they test,
     /// and `continue` at the end of a loop without carried values dropped.
     public List<Stmt> Finish(List<Stmt> body)
@@ -1219,7 +1251,7 @@ public sealed class Structurer
             e = base.Expr(e);
             switch (e)
             {
-                case MethodCallExpr { TypeArgs.Count: 0, Args.Count: 1 } m when Operators.OperatorFor(m.Name) is { } op
+                case MethodCallExpr { TypeArgs.Count: 0, Args.Count: 1 } m when OldOperatorFor(m.Name) is { } op
                                                                              && m.Name is not ("ushr" or "compare"):
                 {
                     var left = OperatorizeExpr(m.Receiver);

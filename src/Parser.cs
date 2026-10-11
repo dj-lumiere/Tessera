@@ -1788,7 +1788,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     }
 
     private static readonly HashSet<string> AdditiveOps = ["+", "-", "+%", "-%", "+^", "-^"];
-    private static readonly HashSet<string> MultiplicativeOps = ["*", "%", "*%", "*^"];
+    private static readonly HashSet<string> MultiplicativeOps = ["*", "//", "%", "*%", "*^"];
 
     private Expr ParseAdditive()
     {

@@ -56,10 +56,13 @@ public class Rewriter
             case ValueRef v:
                 if (Subst.TryGetValue(v.Name, out var replaced)) return replaced;
                 return Rename.ContainsKey(v.Name) ? v with { Name = N(v.Name) } : v;
+            // A write template's holes read values: a name there is renamed, or replaced by the name it stands for.
+            case StrLit str when str.Value.Contains('{'):
+                return str with { Value = RenameHoles(str.Value) };
             case LambdaExpr l: return l with { Body = Expr(l.Body) };
             case IsPattern p: return p.Binding is null ? p : p with { Binding = p.Binding with { Name = N(p.Binding.Name) } };
             case CallExpr c: return c with { Args = c.Args.Select(Expr).ToList(), ArgNames = Names(c.Args, c.ArgNames, literal: char.IsUpper(c.Name[0])) };
-            // A call on a type (`B32.div(1.0, x)`) may pass `me` first, which is never named: its names stay as written.
+            // A call on a type (`B32.truediv(1.0, x)`) may pass `me` first, which is never named: its names stay as written.
             case NsCallExpr n: return n with { Args = n.Args.Select(Expr).ToList() };
             case ImplicitCallExpr ic: return ic with { Args = ic.Args.Select(Expr).ToList(), ArgNames = Names(ic.Args, ic.ArgNames) };
             case MethodCallExpr m: return m with { Receiver = Expr(m.Receiver), Args = m.Args.Select(Expr).ToList(), ArgNames = Names(m.Args, m.ArgNames) };
@@ -204,6 +207,32 @@ public class Rewriter
 
     /// The names inside the `{...}` holes of a string that may be a write template, as far as they can be read
     /// without parsing: every word that could be a value's name.
+    /// The template with each name in its holes renamed, or replaced by the name it is substituted with. A name
+    /// substituted by anything else than a name is left: a template holds names and calls, not every expression.
+    private string RenameHoles(string text)
+    {
+        var sb = new System.Text.StringBuilder();
+        int depth = 0;
+        int i = 0;
+        while (i < text.Length)
+        {
+            char c = text[i];
+            if (c == '{') { depth++; sb.Append(c); i++; continue; }
+            if (c == '}') { depth = Math.Max(0, depth - 1); sb.Append(c); i++; continue; }
+            bool starts = depth > 0 && (char.IsAsciiLetter(c) || c == '_') && (i == 0 || !(char.IsAsciiLetterOrDigit(text[i - 1]) || text[i - 1] is '_' or '.'));
+            if (!starts) { sb.Append(c); i++; continue; }
+            int end = i;
+            while (end < text.Length && (char.IsAsciiLetterOrDigit(text[end]) || text[end] == '_')) end++;
+            string word = text[i..end];
+            bool argName = end < text.Length && text[end] == ':' && (end + 1 >= text.Length || text[end + 1] != ':');
+            if (!argName && Subst.TryGetValue(word, out var to) && to is ValueRef named) sb.Append(named.Name);
+            else if (!argName && Rename.ContainsKey(word)) sb.Append(N(word));
+            else sb.Append(word);
+            i = end;
+        }
+        return sb.ToString();
+    }
+
     public static IEnumerable<string> HoleNames(string text)
     {
         int depth = 0;

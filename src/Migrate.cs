@@ -60,7 +60,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments";
+        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.tess", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -111,6 +111,32 @@ public static class Migrate
             }
             if (!check) Console.WriteLine($"migrated {moved} of {files.Count} file(s)");
             return check && moved > 0 ? 1 : 0;
+        }
+
+        if (step == "division")
+        {
+            // The step reads the types the source tells, so the declarations of the library and of every file given
+            // are taken in first, as the named-arguments step does.
+            var division = new NamedArgsMigration();
+            foreach (var (path, text) in StdlibFiles()) division.Index(path, text, true);
+            foreach (var (path, text) in texts)
+                if (path.EndsWith(".md", StringComparison.Ordinal)) division.IndexMarkdown(path, text);
+                else division.Index(path, text, false);
+            int changedDivision = 0;
+            var divisionReport = new List<string>();
+            foreach (var (file, text) in texts)
+            {
+                string rewritten = file.EndsWith(".md", StringComparison.Ordinal)
+                    ? division.RewriteMarkdown(file, text, divisionReport, division: true)
+                    : division.RewriteDivision(file, text, divisionReport);
+                if (rewritten == text) continue;
+                changedDivision++;
+                if (check) Console.WriteLine(file);
+                else File.WriteAllText(file, rewritten, new UTF8Encoding(false));
+            }
+            foreach (string line in divisionReport) Console.WriteLine(line);
+            if (!check) Console.WriteLine($"migrated {changedDivision} of {files.Count} file(s), {divisionReport.Count} place(s) to look at by hand");
+            return check && changedDivision > 0 ? 1 : 0;
         }
 
         if (step is not null)
@@ -269,6 +295,7 @@ public static class Migrate
             ? NoneSpelling.RewriteMarkdown(text)
             : NoneSpelling.Rewrite(text),
         ["destruct"] = (_, text, _) => DestructSpelling(text),
+        ["division"] = (_, text, _) => text,
         ["comments"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, HashComments)
             : HashComments(text),

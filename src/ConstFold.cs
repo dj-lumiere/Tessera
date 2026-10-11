@@ -17,7 +17,7 @@ public sealed partial class Compiler
     // build time: a routine call in a preset is an error, not code at each use.
 
     private const string PresetForms =
-        "literals, other presets, integer and Bool arithmetic and conversions, B32/B64 add/sub/mul/div/neg, " +
+        "literals, other presets, integer and Bool arithmetic and conversions, B32/B64 add/sub/mul/truediv/neg, " +
         "max/min, sizeof/alignof, and T.from_bits(...)";
 
     private readonly Dictionary<string, ConstVal> _presetValues = [];
@@ -288,10 +288,19 @@ public sealed partial class Compiler
                 case "add": v = a + b; break;
                 case "sub": v = a - b; break;
                 case "mul": v = a * b; break;
-                case "div" or "mod":
+                case "div" or "mod" or "div_trunc" or "mod_trunc":
+                {
                     if (b.IsZero) throw new CompileError(pos, $"{name} by zero in a preset");
-                    v = name == "div" ? BigInteger.Divide(a, b) : BigInteger.Remainder(a, b);
+                    BigInteger q = BigInteger.DivRem(a, b, out BigInteger r);
+                    // `div` / `mod` are Euclidean: the remainder is never negative.
+                    if (name is "div" or "mod" && r.Sign < 0)
+                    {
+                        r += BigInteger.Abs(b);
+                        q -= b.Sign;
+                    }
+                    v = name is "div" or "div_trunc" ? q : r;
                     break;
+                }
                 case "min": return new ConstVal(it, BigInteger.Min(a, b));
                 case "max": return new ConstVal(it, BigInteger.Max(a, b));
                 case "bitand": return new ConstVal(it, Wrap(Unsigned(a, it.Bits) & Unsigned(b, it.Bits), it));
@@ -347,7 +356,7 @@ public sealed partial class Compiler
         bool f32 = ft == FloatType.B32;
         double a = f32 ? BitConverter.UInt32BitsToSingle((uint)bits) : BitConverter.UInt64BitsToDouble((ulong)bits);
         if (name == "neg" && args.Count == 0) return new ConstVal(ft, bits ^ (BigInteger.One << (ft.Bits - 1)));
-        if (args.Count == 1 && name is "add" or "sub" or "mul" or "div")
+        if (args.Count == 1 && name is "add" or "sub" or "mul" or "truediv")
         {
             BigInteger bb = Typed(Fold(args[0], ft, env), ft, args[0].Pos, firstArgument).Value;
             if (f32)

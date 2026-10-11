@@ -234,6 +234,8 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                 continue;
             }
 
+            if (c >= CharText.Length)
+                throw new CompileError(pos, $"'{c}' can't stand here: outside text and comments a source is ASCII");
             _i++;
             _col++;   // never a newline here
             TokenKind kind;
@@ -264,7 +266,11 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                     if (Peek() == '|') throw new CompileError(pos, "'or' joins two Bool values; '|' is bitor");
                     kind = TokenKind.Pipe;
                     break;
-                case '/': kind = TokenKind.Slash; break;   // a module path: Standard/Os, or division
+                case '/':
+                    // `//` is Euclidean division. A lone `/` is a module path (Standard/Os) or division.
+                    if (Peek() == '/') { Advance(); kind = TokenKind.Op; text = "//"; }
+                    else kind = TokenKind.Slash;
+                    break;
                 case '#': kind = TokenKind.Hash; break;    // the old spelling of an annotation, which the parser reports
                 case '_': kind = TokenKind.Underscore; break;
                 case '=':

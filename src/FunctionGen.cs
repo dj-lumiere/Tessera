@@ -1358,6 +1358,13 @@ public sealed class FunctionGen
             : e;
 
     /// The type an expression has on its own, or null if it depends on context (untyped literals, null).
+    /// `Infer`, or null where it would complain: the migration and the operator rule only want a type when there is one.
+    private DType? TryInfer(Expr e)
+    {
+        try { return Infer(e); }
+        catch (CompileError) { return null; }
+    }
+
     private DType? Infer(Expr e)
     {
         e = AsStride(AsField(_c.AsRecordLit(Desugar(e), _env)));
@@ -2328,6 +2335,10 @@ public sealed class FunctionGen
             case BinaryExpr b:
             {
                 string name = Operators.Routine(b.Op) ?? throw Err(b.Pos, $"'{b.Op}' is not an operator Tessera has");
+                // `/` is true division: an integer divides with `//` (the Euclidean quotient) or `.div_trunc()` (toward zero).
+                if (b.Op == "/" && TryInfer(b.Left is IntLit or FloatLit ? b.Right : b.Left) is IntType)
+                    throw Err(b.Pos, "'/' is true division: integers divide with '//' (the Euclidean quotient, whose remainder is never negative), or '.div_trunc()' for the quotient toward zero");
+
                 if (b.Left is IntLit or FloatLit && Infer(b.Right) is { } rightType)
                     return new NsCallExpr(new TypeRef("$operand", [], b.Pos) { Known = rightType }, name, [], [b.Left, b.Right], b.Pos) { FromOperator = true };
                 return new MethodCallExpr(b.Left, name, [], [b.Right], b.Pos) { FromOperator = true };
@@ -2862,7 +2873,10 @@ public sealed class FunctionGen
     /// same (`-> None`) stays what it says.
     private static TypeRef Substitute(TypeRef t, List<TypeRef> fixedArgs, List<DType> given, RoutineDecl d)
     {
-        int i = fixedArgs.FindIndex(f => f.ToString() == t.ToString() && NamesParameter(f, d));
+        // A fixed argument is a hole where it names a type parameter, or where the type given for it is one being
+        // checked: `S64.to[B128Big]` read for `to[T]` gives a T, while `Fiber[None]` given None keeps None.
+        int i = fixedArgs.FindIndex(f => f.ToString() == t.ToString() &&
+            (NamesParameter(f, d) || given[fixedArgs.IndexOf(f)] is var g && Compiler.MentionsArchetype(g)));
         if (i >= 0) return new TypeRef(given[i].Name, [], t.Pos) { Known = given[i] };
         return t with { Args = t.Args.Select(a => a is TypeArgType ta ? new TypeArgType(Substitute(ta.Type, fixedArgs, given, d)) : a).ToList() };
     }

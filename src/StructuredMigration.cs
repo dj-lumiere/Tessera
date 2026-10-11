@@ -295,7 +295,9 @@ public static class StructuredMigration
                 openList = null;
             }
             string trimmed = line.TrimStart();
-            if (trimmed.StartsWith("#"))
+            // A comment line: `//` in a source not moved to `#` comments yet, `# ...` or `###` in one that is. An old
+            // annotation (`#inline`, `#[a, b]`) is not one.
+            if (trimmed.StartsWith("//") || trimmed == "#" || trimmed.StartsWith("# ") || trimmed.StartsWith("##"))
             {
                 result.Add(line);
                 continue;
