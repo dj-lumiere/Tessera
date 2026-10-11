@@ -216,6 +216,15 @@ public sealed class Structurer
     {
         for (int k = 0; k < stmts.Count - 1; k++)
         {
+            if (stmts[k] is WhenStmt { Value: null } w && w.Arms.Count(a => a.Body.Count == 0) == 1
+                && w.Arms.Where(a => a.Body.Count > 0).All(a => a.Body is [JumpStmt] && Bodies.Leaves(a.Body)))
+            {
+                // The same for a `when` with one arm that goes on (`is T as t => continue`): the rest is that arm's,
+                // where what the arm names is still visible.
+                var whenRest = NestFallthrough(stmts.Skip(k + 1).ToList());
+                var arms = w.Arms.Select(a => a.Body.Count == 0 ? a with { Body = whenRest } : a).ToList();
+                return [.. stmts.Take(k), w with { Arms = arms }];
+            }
             if (stmts[k] is not IfStmt i) continue;
             bool thenFalls = i.Then.Count == 0, elseFalls = i.Else is null || i.Else.Count == 0;
             if (thenFalls == elseFalls) continue;
