@@ -810,16 +810,19 @@ static class Cli
         };
         using var p = Process.Start(psi)!;
         string stdout = "", stderr = "";
+        Task? feed = null;
         if (captureOutput)
         {
-            var feed = Task.Run(() =>
+            feed = Task.Run(() =>
             {
                 try
                 {
                     if (input is not null) p.StandardInput.BaseStream.Write(input);
                     p.StandardInput.Close();
                 }
-                catch (IOException) { } // the program ended without reading it all
+                // The program ended without reading it all: its end of the pipe is gone.
+                catch (IOException) { }
+                catch (ObjectDisposedException) { }
             });
             var errTask = p.StandardError.ReadToEndAsync();
             stdout = p.StandardOutput.ReadToEnd();
@@ -828,8 +831,11 @@ static class Cli
         if (!p.WaitForExit(10_000))
         {
             p.Kill();
+            feed?.Wait();
             return (-1, stdout, "timed out after 10 s");
         }
+        // The feed is done before the process is disposed, which closes the same pipe.
+        feed?.Wait();
         return (p.ExitCode, stdout, stderr);
     }
 

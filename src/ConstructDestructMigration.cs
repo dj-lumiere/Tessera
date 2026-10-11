@@ -3,10 +3,12 @@ using System.Text.RegularExpressions;
 
 namespace Tessera;
 
-/// `tessera migrate`'s step for 0.5's rule that every type says how it is made and how it is released: a record
-/// without a `construct` gets one taking its fields in order, and a record or a variant without a `destruct` gets one
-/// that releases the fields that hold memory (a collection, `Bytes`, a `Slice`, an owned C string) and otherwise
-/// nothing. A machine type (`#llvm`) and a variant written inline (`#union`) are left alone.
+/// `tessera migrate`'s step for the rule that a type that holds something to release (LifecycleNeeds.cs) says how it is
+/// made and how it is released: such a record without a `construct` gets one taking its fields in order, and such a
+/// record or variant without a `destruct` gets one that releases the fields that are collections or owned C strings
+/// and otherwise nothing. A type of plain data needs neither, and the step takes away the ones that only take the
+/// fields (`return(Me(...))`) or only return (`return()`). A machine type (`#llvm`) and a variant written inline
+/// (`#union`) are left alone.
 ///
 /// The routines a type already has count wherever they are declared in the files that make one program: the whole
 /// standard library together, a library folder together, and a test or an example file on its own.
@@ -36,13 +38,53 @@ public static partial class ConstructDestructMigration
         return set;
     }
 
-    /// The text with a `construct` and a `destruct` written after each type that lacks one in it: for a file that is a
-    /// program of its own, such as a generated module.
-    public static string Rewrite(string text) => Rewrite(text, Declared([text]));
+    /// The text with a `construct` and a `destruct` written after each type that holds something to release and lacks
+    /// one: for a file that is a program of its own, such as a generated module. A type it doesn't declare counts as
+    /// holding something.
+    public static string Rewrite(string text)
+    {
+        var holds = Holding([("generated.tess", text)], unknownHolds: true);
+        return Rewrite(text, Declared([text]), holds);
+    }
 
-    /// The text with a `construct` and a `destruct` written after each type that lacks one, `declared` being what the
-    /// program has already.
-    public static string Rewrite(string text, HashSet<(string Type, string Routine)> declared)
+    /// Which of the types the texts declare hold something to release, by name: a type the texts don't declare counts as
+    /// holding something when `unknownHolds` is set. A text that doesn't parse holds everything it declares.
+    public static Func<string, bool> Holding(IEnumerable<(string File, string Text)> texts, bool unknownHolds)
+    {
+        var byName = new Dictionary<string, List<Decl>>();
+        var unparsed = new HashSet<string>();
+        foreach (var (file, text) in texts)
+        {
+            List<Decl> decls;
+            try
+            {
+                decls = new Parser(new Lexer(file, text).Lex(), file).ParseModule().Decls;
+            }
+            catch (CompileError)
+            {
+                foreach (Match m in Regex.Matches(text, @"^(?:(?:private|internal)\s+)?(?:record|variant)\s+(\w+)", RegexOptions.Multiline))
+                    unparsed.Add(m.Groups[1].Value);
+                continue;
+            }
+            foreach (var d in decls)
+            {
+                string? name = d switch { RecordDecl r => r.Name, VariantDecl v => v.Name, ChoiceDecl c => c.Name, AliasDecl a => a.Name, _ => null };
+                if (name is null) continue;
+                (byName.TryGetValue(name, out var list) ? list : byName[name] = []).Add(d);
+            }
+        }
+        var needs = new LifecycleNeeds((t, file) => byName.GetValueOrDefault(t.Name) is { } found
+            ? found.FirstOrDefault(d => d.File == file) ?? found[0]
+            : null, unknownHolds);
+        return name => unparsed.Contains(name)
+                       || (byName.GetValueOrDefault(name) is { } found
+                           ? found.Any(d => d is RecordDecl or VariantDecl && needs.Why(d) is not null)
+                           : unknownHolds);
+    }
+
+    /// The text with a `construct` and a `destruct` written after each type that holds something to release (`holds`)
+    /// and lacks one, `declared` being what the program has already.
+    public static string Rewrite(string text, HashSet<(string Type, string Routine)> declared, Func<string, bool> holds)
     {
         var lines = text.Split('\n').ToList();
         for (int i = 0; i < lines.Count; i++)
@@ -74,6 +116,7 @@ public static partial class ConstructDestructMigration
                 if (isRecord && Field().Match(lines[end]) is { Success: true } f) fields.Add((f.Groups[1].Value, f.Groups[2].Value.Trim()));
                 end++;
             }
+            if (!holds(name.Trim('`'))) continue;
             bool needsConstruct = isRecord && !declared.Contains((name, "construct"));
             bool needsDestruct = !declared.Contains((name, "destruct"));
             if (!needsConstruct && !needsDestruct) continue;
@@ -112,6 +155,54 @@ public static partial class ConstructDestructMigration
             i = end;
         }
         return string.Join('\n', lines);
+    }
+
+    /// The text without the `construct` and `destruct` of the types that hold nothing to release (`holds` false for the
+    /// type's name) when they do nothing of their own: a `construct` whose body is `return(Me(...))` and a `destruct`
+    /// whose body is `return()`, with their doc comments and annotations. `kept` names the types the program still calls
+    /// one of them on through a concept (`conform Destructible[Point]`), which keep theirs.
+    public static string Trim(string text, Func<string, bool> holds, HashSet<string> kept)
+    {
+        var lines = text.Split('\n').ToList();
+        for (int i = 0; i < lines.Count; i++)
+        {
+            var m = LifeRoutine().Match(lines[i]);
+            if (!m.Success) continue;
+            string owner = m.Groups[1].Value.Trim('`');
+            if (holds(owner) || kept.Contains(owner)) continue;
+            // The signature, which may go on over lines, ends at its result type.
+            int end = i;
+            while (end < lines.Count && !Regex.IsMatch(lines[end], @"\)\s*->\s*\S+\s*(//.*)?$")) end++;
+            if (end >= lines.Count) continue;
+            int body = end + 1;
+            while (body < lines.Count && lines[body].StartsWith("require ", StringComparison.Ordinal)) body++;
+            int after = body;
+            while (after < lines.Count && lines[after].StartsWith("    ", StringComparison.Ordinal)) after++;
+            if (after - body != 1) continue;
+            string only = lines[body];
+            bool trivial = m.Groups[2].Value == "construct"
+                ? Regex.IsMatch(only, @"^    return\(Me\((`?\w+`?(, `?\w+`?)*)?\)\)\s*$")
+                : Regex.IsMatch(only, @"^    return\(\)\s*$");
+            if (!trivial) continue;
+            int start = i;
+            while (start > 0 && (lines[start - 1].StartsWith("///", StringComparison.Ordinal) || lines[start - 1].StartsWith('#'))) start--;
+            // The blank line before it goes too, so the ones around it don't double.
+            if (start > 0 && lines[start - 1].Length == 0) start--;
+            lines.RemoveRange(start, after - start);
+            i = start - 1;
+        }
+        return string.Join('\n', lines);
+    }
+
+    /// The types a `conform Destructible[...]` or `conform Constructible[...]` in the texts names: their routines are
+    /// called through the concept, so they stay.
+    public static HashSet<string> KeptByConcepts(IEnumerable<string> texts)
+    {
+        var kept = new HashSet<string>();
+        foreach (string text in texts)
+            foreach (Match m in Regex.Matches(text, @"(?:Destructible|Constructible)\[(\w+)"))
+                kept.Add(m.Groups[1].Value);
+        return kept;
     }
 
     /// The `#...` lines right above a declaration (past its doc comment).

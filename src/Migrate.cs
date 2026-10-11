@@ -85,12 +85,25 @@ public static class Migrate
         {
             // A type's routines count across the files of one program: the stdlib together, a folder of a library
             // together, a test or an example on its own.
+            // Which types hold something to release is read from the program's files and the standard library's.
             int moved = 0;
+            var stdlib = StdlibFiles().ToList();
+            var groups = new Dictionary<string, (Func<string, bool> Holds, HashSet<string> Kept)>();
             foreach (var (file, text) in texts)
             {
-                var group = texts.Where(kv => SameProgram(kv.Key, file)).Select(kv => kv.Value);
-                var declared = ConstructDestructMigration.Declared(group);
-                string rewritten = ConstructDestructMigration.Rewrite(text, declared);
+                var group = texts.Where(kv => SameProgram(kv.Key, file)).ToList();
+                var declared = ConstructDestructMigration.Declared(group.Select(kv => kv.Value));
+                string root = ProgramRoot(file) + (IsStandalone(file) ? "|" + file : "");
+                if (!groups.TryGetValue(root, out var analysis))
+                {
+                    var all = group.Select(kv => (kv.Key, kv.Value))
+                        .Concat(stdlib.Where(s => group.All(g => Path.GetFullPath(g.Key) != Path.GetFullPath(s.Path))))
+                        .ToList();
+                    analysis = groups[root] = (ConstructDestructMigration.Holding(all, unknownHolds: true),
+                        ConstructDestructMigration.KeptByConcepts(all.Select(a => a.Item2)));
+                }
+                string rewritten = ConstructDestructMigration.Trim(
+                    ConstructDestructMigration.Rewrite(text, declared, analysis.Holds), analysis.Holds, analysis.Kept);
                 if (rewritten == text) continue;
                 moved++;
                 if (check) Console.WriteLine(file);

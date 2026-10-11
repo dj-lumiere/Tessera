@@ -157,6 +157,7 @@ public sealed partial class Compiler
     /// inline are exempt, and so is a choice, which holds a member and nothing to release.
     private void CheckLifecycle()
     {
+        var needs = LifecycleNeeds();
         var has = new HashSet<(Decl, string)>();
         foreach (var r in _lifeRoutines)
             if (OwnerDeclQuiet(r) is { } owner) has.Add((owner, r.Name));
@@ -165,14 +166,25 @@ public sealed partial class Compiler
             if (!Selected(d) || d.AnnotationNamed("llvm") is not null || d is VariantDecl { IsAnonymous: true }
                 || d is RecordDecl { Name: "USize" or "SSize" }) continue;
             var (kind, name) = d is RecordDecl r ? ("record", r.Name) : ("variant", ((VariantDecl)d).Name);
-            if (d is RecordDecl && !has.Contains((d, "construct")))
-                throw new CompileError(d.Pos, $"{kind} '{name}' has no construct: every type says how it is made, "
-                    + $"routine {name}.construct(...) -> Me (for plain fields, taking them in order and returning Me(...))");
-            if (!has.Contains((d, "destruct")))
-                throw new CompileError(d.Pos, $"{kind} '{name}' has no destruct: every type says how it is released, "
-                    + $"routine {name}.destruct(me: @Me) -> Void (with return() alone when it holds nothing)");
+            bool construct = d is not RecordDecl || has.Contains((d, "construct"));
+            bool destruct = has.Contains((d, "destruct"));
+            if (construct && destruct) continue;
+            // Only a type that holds something to release says how it is made and released.
+            if (needs.Why(d) is not { } why) continue;
+            if (!construct)
+                throw new CompileError(d.Pos, $"{kind} '{name}' holds something to release ({why}), so it says how it is "
+                    + $"made: routine {name}.construct(...) -> Me (for plain fields, taking them in order and returning Me(...))");
+            throw new CompileError(d.Pos, $"{kind} '{name}' holds something to release ({why}), so it says how it is "
+                + $"released: routine {name}.destruct(me: @Me) -> Void");
         }
     }
+
+    /// Which of the program's types hold something to release (LifecycleNeeds.cs), by the declarations this build has.
+    public LifecycleNeeds LifecycleNeeds() => new((t, file) =>
+    {
+        try { return TypeDeclQuiet(t.Name, file, t.Path) ?? _aliases.GetValueOrDefault(t.Name)?.FirstOrDefault(); }
+        catch (CompileError) { return null; }
+    });
 
     /// A `define` names a module or a type that exists, and it takes a name no type in its module has.
     private void CheckAliases()
