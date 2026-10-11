@@ -319,6 +319,24 @@ public class MigrateTests
     }
 
     [Fact]
+    public void Writes_a_construct_and_a_destruct_for_a_type_without_them()
+    {
+        const string before = """
+            record Point
+                x: S64
+                y: S64
+
+            record Named
+                name: Bytes
+            """;
+        string after = ConstructDestructMigration.Rewrite(before);
+        Assert.Contains("routine Point.construct(x: S64, y: S64) -> Me\n    return(Me(x, y))", after);
+        Assert.Contains("routine Point.destruct(me: @Me) -> Void\n    return()", after);
+        Assert.Contains("routine Named.destruct(me: @Me) -> Void\n    me.name.destruct()\n    return()", after);
+        Assert.Equal(after, ConstructDestructMigration.Rewrite(after));
+    }
+
+    [Fact]
     public void Rewriting_twice_changes_nothing_more()
     {
         string once = Migrate.Rewrite("a : F32 = f32_bits(b).to<List<F32>>()");

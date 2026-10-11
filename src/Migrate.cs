@@ -81,6 +81,25 @@ public static class Migrate
             }
         }
 
+        if (step == "lifecycle")
+        {
+            // A type's routines count across the files of one program: the stdlib together, a folder of a library
+            // together, a test or an example on its own.
+            int moved = 0;
+            foreach (var (file, text) in texts)
+            {
+                var group = texts.Where(kv => SameProgram(kv.Key, file)).Select(kv => kv.Value);
+                var declared = ConstructDestructMigration.Declared(group);
+                string rewritten = ConstructDestructMigration.Rewrite(text, declared);
+                if (rewritten == text) continue;
+                moved++;
+                if (check) Console.WriteLine(file);
+                else File.WriteAllText(file, rewritten, new UTF8Encoding(false));
+            }
+            if (!check) Console.WriteLine($"migrated {moved} of {files.Count} file(s)");
+            return check && moved > 0 ? 1 : 0;
+        }
+
         if (step is not null)
         {
             int changed = 0;
@@ -197,12 +216,31 @@ public static class Migrate
         return Regex.Replace(text, @",\s*aggregate(?=\s*[,\]])", "");
     }
 
+    /// Whether a file is a program of its own: a test or an example file, or a generated one, directly in its folder.
+    private static bool IsStandalone(string file) =>
+        Path.GetFileName(Path.GetDirectoryName(Path.GetFullPath(file))) is "tests" or "examples" or "generated";
+
+    /// Whether two files are parts of one program: the same file, or two files of a folder that isn't a test's.
+    private static bool SameProgram(string a, string b) =>
+        a == b || !IsStandalone(a) && !IsStandalone(b) && ProgramRoot(a) == ProgramRoot(b);
+
+    /// The folder a library's files share: the stdlib's `Standard`, else the file's folder up to a `tessera` folder
+    /// (Ingrid's) or its own.
+    private static string ProgramRoot(string file)
+    {
+        var dir = new DirectoryInfo(Path.GetDirectoryName(Path.GetFullPath(file))!);
+        for (var d = dir; d is not null; d = d.Parent)
+            if (d.Name is "Standard" or "tessera" or "runtime-tessera") return d.FullName;
+        return dir.FullName;
+    }
+
     /// The steps `--step` runs alone, each one also part of the whole migration.
     private static readonly Dictionary<string, Func<string, string, List<string>, string>> Steps = new()
     {
         ["iterators"] = (_, text, _) => IteratorNames(text),
         ["variants"] = (file, text, report) => VariantMigration.Rewrite(text, report, file),
         ["membership"] = (_, text, _) => MembershipNames(text),
+        ["lifecycle"] = (_, text, _) => text,
         ["entry"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? EntryMigration.RewriteMarkdown(text)
             : EntryMigration.Rewrite(text),

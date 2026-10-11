@@ -6,7 +6,7 @@ namespace Tessera;
 /// like any other parameter (it may stay a separate last parameter beside the record).
 ///
 /// Exempt: an `#external` declaration, an `#export` routine, and a C callback with a `#callconv` (their signature is
-/// a C ABI), a routine a generator
+/// a C ABI), a type's `construct` (its parameters are the type's own parts, the record already), a routine a generator
 /// wrote (`#source(...)`), and any file under a directory named `generated`. A concept's required routines are
 /// checked like any other, since every type that meets the concept repeats the signature.
 ///
@@ -31,7 +31,7 @@ public static class RecordParamLint
             };
             foreach (var r in routines)
             {
-                if (IsCAbi(r) || r.Source is not null) continue;
+                if (IsCAbi(r) || r.Source is not null || r is { Owner: not null, Name: "construct" }) continue;
                 int count = Count(r);
                 if (count < MaxParameters) continue;
                 warnings.Add($"{r.Pos}: warning: routine '{r.DisplayName}' takes {count} parameters (not counting me): "

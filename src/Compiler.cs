@@ -75,6 +75,8 @@ public sealed partial class Compiler
         HeapCheck = heapCheck;
         foreach (var d in Derive.Routines(decls.ToList()))
         {
+            // A type's construct and destruct count on every target, even where only another target keeps them.
+            if (d is RoutineDecl { Owner: not null, Name: "construct" or "destruct" } life) _lifeRoutines.Add(life);
             if (!Selected(d)) continue;
             _fileModule.TryAdd(d.File, d.Module);
             RegisterConcepts(d);
@@ -132,6 +134,39 @@ public sealed partial class Compiler
         RejectOverloadClashes(_methods.Values, (a, b) => OwnerDecl(a) == OwnerDecl(b) && SameFixed(a, b));
         RejectOverloadClashes(_blanket.Values, (_, _) => true);
         CheckAliases();
+        CheckLifecycle();
+    }
+
+    /// Every declared `construct` and `destruct`, whatever target it is kept for.
+    private readonly List<RoutineDecl> _lifeRoutines = [];
+
+    /// The type a routine is declared on, or null when its owner doesn't resolve here (another target's type).
+    private Decl? OwnerDeclQuiet(RoutineDecl r)
+    {
+        try { return OwnerDecl(r); }
+        catch (CompileError) { return null; }
+    }
+
+    /// Every type says how it is made and how it is released: a record declares a `construct` and a `destruct`, and a
+    /// variant a `destruct` (its values are made from its branches). A machine type (`#llvm`) and a variant written
+    /// inline are exempt, and so is a choice, which holds a member and nothing to release.
+    private void CheckLifecycle()
+    {
+        var has = new HashSet<(Decl, string)>();
+        foreach (var r in _lifeRoutines)
+            if (OwnerDeclQuiet(r) is { } owner) has.Add((owner, r.Name));
+        foreach (var d in _records.Values.SelectMany(g => g).Cast<Decl>().Concat(_variants.Values.SelectMany(g => g)))
+        {
+            if (!Selected(d) || d.AnnotationNamed("llvm") is not null || d is VariantDecl { IsAnonymous: true }
+                || d is RecordDecl { Name: "USize" or "SSize" }) continue;
+            var (kind, name) = d is RecordDecl r ? ("record", r.Name) : ("variant", ((VariantDecl)d).Name);
+            if (d is RecordDecl && !has.Contains((d, "construct")))
+                throw new CompileError(d.Pos, $"{kind} '{name}' has no construct: every type says how it is made, "
+                    + $"routine {name}.construct(...) -> Me (for plain fields, taking them in order and returning Me(...))");
+            if (!has.Contains((d, "destruct")))
+                throw new CompileError(d.Pos, $"{kind} '{name}' has no destruct: every type says how it is released, "
+                    + $"routine {name}.destruct(me: @Me) -> Void (with return() alone when it holds nothing)");
+        }
     }
 
     /// A `define` names a module or a type that exists, and it takes a name no type in its module has.
