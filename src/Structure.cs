@@ -954,6 +954,13 @@ public sealed class Structurer
                 case LoopStmt l:
                     result.Add(l with { Body = StripIndex(l.Body, index), Then = l.Then is null ? null : StripIndex(l.Then, index) });
                     break;
+                // A `when` that is a value (`x: T = when ...`) has arms with lines of their own, continues among them.
+                case BindStmt { Value: WhenExpr we } b:
+                    result.Add(b with { Value = we with { When = StripIndexWhen(we.When, index) } });
+                    break;
+                case ReturnStmt { Value: WhenExpr we } r:
+                    result.Add(r with { Value = we with { When = StripIndexWhen(we.When, index) } });
+                    break;
                 default:
                     result.Add(s);
                     break;
@@ -961,6 +968,9 @@ public sealed class Structurer
         }
         return result;
     }
+
+    private static WhenStmt StripIndexWhen(WhenStmt w, string index) =>
+        w with { Arms = w.Arms.Select(a => a with { Body = StripIndex(a.Body, index) }).ToList() };
 
     /// Whether `then` doesn't read the index (which an `each` doesn't carry into then).
     private static bool StripIndexUses(List<Stmt> then, string index) => !Rewriter.UsesInBody(then).Contains(index);
