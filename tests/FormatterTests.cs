@@ -10,6 +10,14 @@ namespace Tessera.Tests;
 public class FormatterTests
 {
     [Fact]
+    public void OneBlankLineBetweenTheHeadAndTheEntryLines()
+    {
+        const string source = "routine f(n: S64) -> S64\n    local m: S64 = n.add(1)\n    return(m)\n";
+        const string expected = "routine f(n: S64) -> S64\n    local m: S64 = n.add(1)\n\n    return(m)\n";
+        Assert.Equal(expected, Formatter.Format(source));
+    }
+
+    [Fact]
     public void LambdaParameterParenthesesStay()
     {
         const string source = "routine f() -> Void\n    block entry()\n        double: Callable[(S64,), S64] = (x) => x.mul(2)\n        return()\n";

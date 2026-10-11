@@ -44,32 +44,28 @@ record Checkpoint
     results: S64
 
 routine Rng.below(me: @Me, bound: USize) -> USize
-    block entry()
-        state: U64 = me.state.peek()
-        next: U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
-        me.state.poke(next)
-        bucket: U64 = next.shr(33).mod(bound.to[U64]())
-        value: USize = bucket.to[USize]()
-        return(value)
+    state: U64 = me.state.peek()
+    next: U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
+    me.state.poke(next)
+    bucket: U64 = next.shr(33).mod(bound.to[U64]())
+    value: USize = bucket.to[USize]()
+    return(value)
 
 routine mix(hash: S64, value: S64) -> S64
-    block entry()
-        mixed: S64 = hash.mul_wrap(1000003).add_wrap(value)
-        return(mixed)
+    mixed: S64 = hash.mul_wrap(1000003).add_wrap(value)
+    return(mixed)
 
 routine labeled[T](out: @T, label: Bytes, value: S64) -> Void
 require T: typename, Writer[T]
-    block entry()
-        out.write(" {label} {value}")
-        return()
+    out.write(" {label} {value}")
+    return()
 
 // Folds every element in iteration order.
 routine iteration_hash(list: @SortedList[S64]) -> S64
     local iter_val: SortedListIter[S64] = .construct(list)
     local iter: @SortedListIter[S64] <- iter_val
 
-    block entry()
-        jump next(0)
+    jump next(0)
 
     block next(hash: S64)
         item: Maybe[S64] = iter.emit_checked()
@@ -78,15 +74,14 @@ routine iteration_hash(list: @SortedList[S64]) -> S64
             is Unit => return(hash)
 
 routine checkpoint(out: @BufWriter[Out], list: @SortedList[S64], at: Checkpoint) -> Void
-    block entry()
-        out.write("phase {at.phase}")
-        labeled(out, label: "op", value: at.op.to[S64]())
-        size: USize = list.count()
-        labeled(out, label: "length", value: size.to[S64]())
-        labeled(out, label: "results", value: at.results)
-        labeled(out, label: "iteration", value: iteration_hash(list))
-        out.write("\n")
-        return()
+    out.write("phase {at.phase}")
+    labeled(out, label: "op", value: at.op.to[S64]())
+    size: USize = list.count()
+    labeled(out, label: "length", value: size.to[S64]())
+    labeled(out, label: "results", value: at.results)
+    labeled(out, label: "iteration", value: iteration_hash(list))
+    out.write("\n")
+    return()
 
 // Runs ops random operations. An operation kind is drawn below 10: below pushes it's a push, below ranks a rank,
 // below contains a has (both of a random value), below removes a remove at a random index, otherwise a get.
@@ -100,8 +95,7 @@ routine run_phase(harness: Harness, list: @SortedList[S64], phase: Phase, result
     local contains: USize = phase.contains
     local removes: USize = phase.removes
 
-    block entry()
-        jump next(0, results)
+    jump next(0, results)
 
     block next(op: USize, checksum: S64)
         done: Bool = op.ge(ops)
@@ -170,8 +164,7 @@ routine copy_all(from: @SortedList[S64], to: @SortedList[S64]) -> Void
     local iter_val: SortedListIter[S64] = .construct(from)
     local iter: @SortedListIter[S64] <- iter_val
 
-    block entry()
-        jump next()
+    jump next()
 
     block next()
         item: Maybe[S64] = iter.emit_checked()
@@ -182,45 +175,43 @@ routine copy_all(from: @SortedList[S64], to: @SortedList[S64]) -> Void
         jump next()
 
 routine report_eq(out: @BufWriter[Out], label: Bytes, equal: Bool) -> Void
-    block entry()
-        out.write("{label} {equal}\n")
-        return()
+    out.write("{label} {equal}\n")
+    return()
 
 routine start() -> Void
-    block entry()
-        fd: @Out = Out.writer()
-        claim out: @BufWriter[Out] <- .hollow()
-        out.construct(fd)
-        claim alloc: @MemoryManager <- make_heap_memory()
-        claim rng: @Rng <- Rng(state: 1)
-        claim list: @SortedList[S64] <- .construct(alloc)
+    fd: @Out = Out.writer()
+    claim out: @BufWriter[Out] <- .hollow()
+    out.construct(fd)
+    claim alloc: @MemoryManager <- make_heap_memory()
+    claim rng: @Rng <- Rng(state: 1)
+    claim list: @SortedList[S64] <- .construct(alloc)
 
-        harness: Harness = Harness(out: out, rng: rng)
-        r1: S64 = run_phase(harness, list,
-            phase: Phase(number: 1, ops: 3000, pushes: 4, ranks: 5, contains: 6, removes: 8),
-            results: 0)
-        r2: S64 = run_phase(harness, list,
-            phase: Phase(number: 2, ops: 10000, pushes: 5, ranks: 6, contains: 7, removes: 8),
-            results: r1)
+    harness: Harness = Harness(out: out, rng: rng)
+    r1: S64 = run_phase(harness, list,
+        phase: Phase(number: 1, ops: 3000, pushes: 4, ranks: 5, contains: 6, removes: 8),
+        results: 0)
+    r2: S64 = run_phase(harness, list,
+        phase: Phase(number: 2, ops: 10000, pushes: 5, ranks: 6, contains: 7, removes: 8),
+        results: r1)
 
-        claim copied: @SortedList[S64] <- .construct(alloc)
-        report_eq(out, label: "empty copy equal", equal: list.peek().eq(copied.peek()))
-        copy_all(from: list, to: copied)
-        report_eq(out, label: "copy equal", equal: list.peek().eq(copied.peek()))
-        size: USize = list.count()
-        middle: USize = size.div(2)
-        old: S64 = copied.remove(middle)
-        report_eq(out, label: "removed element equal", equal: list.peek().eq(copied.peek()))
-        copied.add(old)
-        report_eq(out, label: "restored element equal", equal: list.peek().eq(copied.peek()))
-        copied.add(0)
-        report_eq(out, label: "extra element equal", equal: list.peek().eq(copied.peek()))
-        copied.destruct()
+    claim copied: @SortedList[S64] <- .construct(alloc)
+    report_eq(out, label: "empty copy equal", equal: list.peek().eq(copied.peek()))
+    copy_all(from: list, to: copied)
+    report_eq(out, label: "copy equal", equal: list.peek().eq(copied.peek()))
+    size: USize = list.count()
+    middle: USize = size.div(2)
+    old: S64 = copied.remove(middle)
+    report_eq(out, label: "removed element equal", equal: list.peek().eq(copied.peek()))
+    copied.add(old)
+    report_eq(out, label: "restored element equal", equal: list.peek().eq(copied.peek()))
+    copied.add(0)
+    report_eq(out, label: "extra element equal", equal: list.peek().eq(copied.peek()))
+    copied.destruct()
 
-        r3: S64 = run_phase(harness, list,
-            phase: Phase(number: 3, ops: 19000, pushes: 1, ranks: 2, contains: 3, removes: 9),
-            results: r2)
-        list.destruct()
-        report_eq(out, label: "freed is empty", equal: list.is_empty())
-        out.flush()
-        return()
+    r3: S64 = run_phase(harness, list,
+        phase: Phase(number: 3, ops: 19000, pushes: 1, ranks: 2, contains: 3, removes: 9),
+        results: r2)
+    list.destruct()
+    report_eq(out, label: "freed is empty", equal: list.is_empty())
+    out.flush()
+    return()

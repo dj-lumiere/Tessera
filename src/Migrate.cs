@@ -59,9 +59,12 @@ public static class Migrate
             return 1;
         }
 
+        // The entry step also rewrites the examples of documentation pages.
+        bool entryPages = step == "entry";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.tess", SearchOption.AllDirectories)
-            : p.EndsWith(".md", StringComparison.Ordinal) ? [] : [p]).Order().ToList();
+                .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
+            : p.EndsWith(".md", StringComparison.Ordinal) && !entryPages ? [] : [p]).Order().ToList();
         var changedFiles = new HashSet<string>();
         var strictUtf8 = new UTF8Encoding(false, true);
         var texts = new Dictionary<string, string>();
@@ -200,6 +203,9 @@ public static class Migrate
         ["iterators"] = (_, text, _) => IteratorNames(text),
         ["variants"] = (file, text, report) => VariantMigration.Rewrite(text, report, file),
         ["membership"] = (_, text, _) => MembershipNames(text),
+        ["entry"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? EntryMigration.RewriteMarkdown(text)
+            : EntryMigration.Rewrite(text),
     };
 
     private static readonly Regex Contains = new(@"\.contains(?=\s*\()", RegexOptions.Compiled);
@@ -298,7 +304,7 @@ public static class Migrate
             lines[i] = inAsmBody ? RewriteTypeArguments(line) : RewriteNames(line);
         }
 
-        return MembershipNames(VariantMigration.Rewrite(IteratorNames(Renames(CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names)))))))));
+        return EntryMigration.Rewrite(MembershipNames(VariantMigration.Rewrite(IteratorNames(Renames(CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names))))))))));
     }
 
     private static readonly Regex IteratorNext = new(@"\.next(?=\s*\()", RegexOptions.Compiled);

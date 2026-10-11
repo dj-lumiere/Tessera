@@ -45,31 +45,27 @@ record Mix
     pop_front: USize
 
 routine Rng.below(me: @Me, bound: USize) -> USize
-    block entry()
-        state: U64 = me.state.peek()
-        next: U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
-        me.state.poke(next)
-        bucket: U64 = next.shr(33).mod(bound.to[U64]())
-        value: USize = bucket.to[USize]()
-        return(value)
+    state: U64 = me.state.peek()
+    next: U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
+    me.state.poke(next)
+    bucket: U64 = next.shr(33).mod(bound.to[U64]())
+    value: USize = bucket.to[USize]()
+    return(value)
 
 routine mix(hash: S64, value: S64) -> S64
-    block entry()
-        mixed: S64 = hash.mul_wrap(1000003).add_wrap(value)
-        return(mixed)
+    mixed: S64 = hash.mul_wrap(1000003).add_wrap(value)
+    return(mixed)
 
 routine labeled[T](out: @T, label: Bytes, value: S64) -> Void
 require T: typename, Writer[T]
-    block entry()
-        out.write(" {label} {value}")
-        return()
+    out.write(" {label} {value}")
+    return()
 
 // Folds every element front to back.
 routine iteration_hash(circular_list: @CircularList[S64]) -> S64
     local iter: @CircularListIter[S64] <- .construct(circular_list)
 
-    block entry()
-        jump next(0)
+    jump next(0)
 
     block next(hash: S64)
         item: Maybe[S64] = iter.emit_checked()
@@ -78,17 +74,16 @@ routine iteration_hash(circular_list: @CircularList[S64]) -> S64
             is Unit => return(hash)
 
 routine checkpoint(out: @BufWriter[Out], circular_list: @CircularList[S64], at: Checkpoint) -> Void
-    block entry()
-        out.write("phase {at.phase}")
-        labeled(out, label: "op", value: at.op.to[S64]())
-        size: USize = circular_list.count()
-        labeled(out, label: "length", value: size.to[S64]())
-        labeled(out, label: "results", value: at.results)
-        labeled(out, label: "iteration", value: iteration_hash(circular_list))
-        capacity: USize = circular_list.storage.count.peek()
-        labeled(out, label: "capacity", value: capacity.to[S64]())
-        out.write("\n")
-        return()
+    out.write("phase {at.phase}")
+    labeled(out, label: "op", value: at.op.to[S64]())
+    size: USize = circular_list.count()
+    labeled(out, label: "length", value: size.to[S64]())
+    labeled(out, label: "results", value: at.results)
+    labeled(out, label: "iteration", value: iteration_hash(circular_list))
+    capacity: USize = circular_list.storage.count.peek()
+    labeled(out, label: "capacity", value: capacity.to[S64]())
+    out.write("\n")
+    return()
 
 // Runs ops random operations weighted by op_mix. Returns the updated results checksum.
 routine run_phase(harness: Harness, circular_list: @CircularList[S64], phase: Phase,
@@ -101,8 +96,7 @@ routine run_phase(harness: Harness, circular_list: @CircularList[S64], phase: Ph
     local pop_back_end: USize = push_front_end.add(op_mix.pop_back.mul(10))
     local pop_front_end: USize = pop_back_end.add(op_mix.pop_front.mul(10))
 
-    block entry()
-        jump next(0, results)
+    jump next(0, results)
 
     block next(op: USize, checksum: S64)
         done: Bool = op.ge(ops)
@@ -195,9 +189,8 @@ routine run_phase(harness: Harness, circular_list: @CircularList[S64], phase: Ph
 
 // Copies from into to by pushing each element at the front, back to front, so to has a different start.
 routine copy_reversed_pushes(from: @CircularList[S64], to: @CircularList[S64]) -> Void
-    block entry()
-        count: USize = from.count()
-        jump next(count)
+    count: USize = from.count()
+    jump next(count)
 
     block next(index: USize)
         done: Bool = index.eq(0)
@@ -210,52 +203,50 @@ routine copy_reversed_pushes(from: @CircularList[S64], to: @CircularList[S64]) -
         jump next(index)
 
 routine report_eq(out: @BufWriter[Out], label: Bytes, equal: Bool) -> Void
-    block entry()
-        out.write("{label} {equal}\n")
-        return()
+    out.write("{label} {equal}\n")
+    return()
 
 routine start() -> Void
-    block entry()
-        fd: @Out = Out.writer()
-        claim out: @BufWriter[Out] <- .hollow()
-        out.construct(fd)
-        claim alloc: @MemoryManager <- make_heap_memory()
-        claim rng: @Rng <- Rng(state: 3)
-        claim circular_list: @CircularList[S64] <- .construct(alloc)
+    fd: @Out = Out.writer()
+    claim out: @BufWriter[Out] <- .hollow()
+    out.construct(fd)
+    claim alloc: @MemoryManager <- make_heap_memory()
+    claim rng: @Rng <- Rng(state: 3)
+    claim circular_list: @CircularList[S64] <- .construct(alloc)
 
-        balanced: Mix = Mix(push_back: 25, push_front: 25, pop_back: 15, pop_front: 15)
-        front_heavy: Mix = Mix(push_back: 5, push_front: 45, pop_back: 20, pop_front: 10)
-        back_heavy: Mix = Mix(push_back: 45, push_front: 5, pop_back: 10, pop_front: 20)
-        queue: Mix = Mix(push_back: 40, push_front: 0, pop_back: 0, pop_front: 40)
-        reversed_queue: Mix = Mix(push_back: 0, push_front: 40, pop_back: 40, pop_front: 0)
-        harness: Harness = Harness(out: out, rng: rng)
-        r1: S64 = run_phase(harness, circular_list,
-            phase: Phase(number: 1, ops: 3000, op_mix: balanced), results: 0)
-        r2: S64 = run_phase(harness, circular_list,
-            phase: Phase(number: 2, ops: 3000, op_mix: front_heavy), results: r1)
-        r3: S64 = run_phase(harness, circular_list,
-            phase: Phase(number: 3, ops: 3000, op_mix: back_heavy), results: r2)
-        r4: S64 = run_phase(harness, circular_list,
-            phase: Phase(number: 4, ops: 8000, op_mix: queue), results: r3)
-        r5: S64 = run_phase(harness, circular_list,
-            phase: Phase(number: 5, ops: 8000, op_mix: reversed_queue), results: r4)
+    balanced: Mix = Mix(push_back: 25, push_front: 25, pop_back: 15, pop_front: 15)
+    front_heavy: Mix = Mix(push_back: 5, push_front: 45, pop_back: 20, pop_front: 10)
+    back_heavy: Mix = Mix(push_back: 45, push_front: 5, pop_back: 10, pop_front: 20)
+    queue: Mix = Mix(push_back: 40, push_front: 0, pop_back: 0, pop_front: 40)
+    reversed_queue: Mix = Mix(push_back: 0, push_front: 40, pop_back: 40, pop_front: 0)
+    harness: Harness = Harness(out: out, rng: rng)
+    r1: S64 = run_phase(harness, circular_list,
+        phase: Phase(number: 1, ops: 3000, op_mix: balanced), results: 0)
+    r2: S64 = run_phase(harness, circular_list,
+        phase: Phase(number: 2, ops: 3000, op_mix: front_heavy), results: r1)
+    r3: S64 = run_phase(harness, circular_list,
+        phase: Phase(number: 3, ops: 3000, op_mix: back_heavy), results: r2)
+    r4: S64 = run_phase(harness, circular_list, phase: Phase(number: 4, ops: 8000, op_mix: queue),
+        results: r3)
+    r5: S64 = run_phase(harness, circular_list,
+        phase: Phase(number: 5, ops: 8000, op_mix: reversed_queue), results: r4)
 
-        claim copied: @CircularList[S64] <- .construct(alloc)
-        report_eq(out, label: "empty copy equal", equal: circular_list.peek().eq(copied.peek()))
-        copy_reversed_pushes(from: circular_list, to: copied)
-        report_eq(out, label: "copy equal", equal: circular_list.peek().eq(copied.peek()))
-        front: S64 = copied.getitem(0)
-        copied.setitem(index: 0, value: front.add(1))
-        report_eq(out, label: "changed front equal", equal: circular_list.peek().eq(copied.peek()))
-        copied.setitem(index: 0, value: front)
-        copied.add_first(front)
-        report_eq(out, label: "longer equal", equal: circular_list.peek().eq(copied.peek()))
-        copied.remove_first()
-        report_eq(out, label: "restored equal", equal: circular_list.peek().eq(copied.peek()))
-        copied.clear()
-        report_eq(out, label: "cleared is empty", equal: copied.is_empty())
-        copied.destruct()
-        circular_list.destruct()
-        report_eq(out, label: "freed is empty", equal: circular_list.is_empty())
-        out.flush()
-        return()
+    claim copied: @CircularList[S64] <- .construct(alloc)
+    report_eq(out, label: "empty copy equal", equal: circular_list.peek().eq(copied.peek()))
+    copy_reversed_pushes(from: circular_list, to: copied)
+    report_eq(out, label: "copy equal", equal: circular_list.peek().eq(copied.peek()))
+    front: S64 = copied.getitem(0)
+    copied.setitem(index: 0, value: front.add(1))
+    report_eq(out, label: "changed front equal", equal: circular_list.peek().eq(copied.peek()))
+    copied.setitem(index: 0, value: front)
+    copied.add_first(front)
+    report_eq(out, label: "longer equal", equal: circular_list.peek().eq(copied.peek()))
+    copied.remove_first()
+    report_eq(out, label: "restored equal", equal: circular_list.peek().eq(copied.peek()))
+    copied.clear()
+    report_eq(out, label: "cleared is empty", equal: copied.is_empty())
+    copied.destruct()
+    circular_list.destruct()
+    report_eq(out, label: "freed is empty", equal: circular_list.is_empty())
+    out.flush()
+    return()

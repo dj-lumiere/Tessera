@@ -52,7 +52,7 @@ public class MigrateTests
                 block entry()
                     return(x)
             """;
-        Assert.Equal(after, Migrate.Rewrite(before));
+        Assert.Equal(EntryMigration.Rewrite(after), Migrate.Rewrite(before));
     }
 
     [Theory]
@@ -107,7 +107,7 @@ public class MigrateTests
                 block red()
                     return(1)
             """;
-        Assert.Equal(after, Migrate.Rewrite(before));
+        Assert.Equal(EntryMigration.Rewrite(after), Migrate.Rewrite(before));
     }
 
     [Fact]
@@ -149,7 +149,7 @@ public class MigrateTests
                     // Dir.NORTH and .North in prose
                     return("{Dir.NORTH} Dir.North")
             """;
-        Assert.Equal(after, Migrate.Rewrite(before));
+        Assert.Equal(EntryMigration.Rewrite(after), Migrate.Rewrite(before));
     }
 
     [Theory]
@@ -207,7 +207,7 @@ public class MigrateTests
                     top: S64 = q.remove()
                     return()
             """;
-        Assert.Equal(after, Migrate.Rewrite(before));
+        Assert.Equal(EntryMigration.Rewrite(after), Migrate.Rewrite(before));
     }
 
     [Fact]
@@ -273,6 +273,49 @@ public class MigrateTests
         Assert.Contains("s.has(1)", after);
         Assert.Contains("d.has_key(2)", after);
         Assert.Contains("text.has(\"x\")", after);
+    }
+
+    [Fact]
+    public void Leaves_out_block_entry_unless_entry_is_a_jump_target()
+    {
+        const string before = """
+            routine f(n: S64) -> S64
+                local m: S64 = n.add(1)
+
+                block entry()
+                    jump done(m)
+
+                block done(x: S64)
+                    return(x)
+
+            routine g(n: S64) -> Void
+                block entry()
+                    branch n.gt(0)
+                        ? again()
+                        : return()
+
+                block again()
+                    jump entry()
+            """;
+        const string after = """
+            routine f(n: S64) -> S64
+                local m: S64 = n.add(1)
+
+                jump done(m)
+
+                block done(x: S64)
+                    return(x)
+
+            routine g(n: S64) -> Void
+                block entry()
+                    branch n.gt(0)
+                        ? again()
+                        : return()
+
+                block again()
+                    jump entry()
+            """;
+        Assert.Equal(after, EntryMigration.Rewrite(before));
     }
 
     [Fact]

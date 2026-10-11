@@ -362,7 +362,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// by a block belong to the next declaration, so they're left for it.
     private (bool IsBlock, Pos? Source) NextBlockSource()
     {
-        if (!Is(TokenKind.Hash)) return (IsIdent("block"), null);
+        // `block: S64 = 1` is a value named like the keyword, which the line itself reports.
+        if (!Is(TokenKind.Hash)) return (IsIdent("block") && PeekTok(1).Kind != TokenKind.Colon, null);
         int start = _i;
         var annotations = ParseAnnotations();
         if (!IsIdent("block"))
@@ -474,7 +475,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         _i = afterHead;
         if (!blockNext)
         {
-            if (AtDeclStart())
+            // An annotation line inside the body (`#source(...)` before its first line) starts no declaration.
+            if (AtDeclStart() && !(Is(TokenKind.Hash) && Cur.Pos.Col > 1))
             {
                 if (shared.Count > 0)
                     throw new CompileError(shared[0].Pos,
@@ -524,7 +526,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                         ? SourceOf(a)
                         : throw new CompileError(a.Pos, $"a local line takes #source, not #{a.Name}");
             }
-            if (!IsIdent("local")) break;
+            if (!IsIdent("local") || PeekTok(1).Kind == TokenKind.Colon) break;
             if (_inAsm)
                 throw Error($"assembly routine '{display}' has no local values: its blocks pass registers, so each block "
                             + "takes its values as parameters");
@@ -1041,7 +1043,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// those follows them. Before a line of the block (`#source(...)`) they don't.
     private bool AtBlockEnd()
     {
-        if (!Is(TokenKind.Hash)) return AtDeclStart() || IsIdent("block");
+        if (!Is(TokenKind.Hash)) return AtDeclStart() || (IsIdent("block") && PeekTok(1).Kind != TokenKind.Colon);
         int start = _i;
         try
         {

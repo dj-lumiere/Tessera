@@ -34,98 +34,86 @@ preset SPECIAL64: @Array[U64, 32] <- [0x0000000000000000, 0x8000000000000000, 0x
 
 /// splitmix64.
 routine random() -> U64
-    block entry()
-        s: U64 = SEED.peek().add_wrap(0x9E3779B97F4A7C15)
-        s.poke_into(SEED)
-        z1: U64 = s.bitxor(s.shr(30)).mul_wrap(0xBF58476D1CE4E5B9)
-        z2: U64 = z1.bitxor(z1.shr(27)).mul_wrap(0x94D049BB133111EB)
-        r: U64 = z2.bitxor(z2.shr(31))
-        return(r)
+    s: U64 = SEED.peek().add_wrap(0x9E3779B97F4A7C15)
+    s.poke_into(SEED)
+    z1: U64 = s.bitxor(s.shr(30)).mul_wrap(0xBF58476D1CE4E5B9)
+    z2: U64 = z1.bitxor(z1.shr(27)).mul_wrap(0x94D049BB133111EB)
+    r: U64 = z2.bitxor(z2.shr(31))
+    return(r)
 
 /// Two B32 operands' bits, packed in a U64 (a in the high half): any bits for mix 0, `b` a few exponents from `a`
 /// for mix 1, two tiny values (subnormals and the smallest normals) for mix 2.
 routine operands32(mix: U32) -> U64
-    block entry()
-        bits: U64 = random()
-        a: U32 = bits.shr(32).to_wrap[U32]()
-        b: U32 = bits.to_wrap[U32]()
-        when mix
-            1 => return(pack32(a, b: a.bitxor(b.bitand(0x87FFFFFF))))
-            2 => return(pack32(a: a.bitand(0x80FFFFFF), b: b.bitand(0x80FFFFFF)))
-            else => return(bits)
+    bits: U64 = random()
+    a: U32 = bits.shr(32).to_wrap[U32]()
+    b: U32 = bits.to_wrap[U32]()
+    when mix
+        1 => return(pack32(a, b: a.bitxor(b.bitand(0x87FFFFFF))))
+        2 => return(pack32(a: a.bitand(0x80FFFFFF), b: b.bitand(0x80FFFFFF)))
+        else => return(bits)
 
 /// {operands32} for B64: two calls' worth of bits, `b` within a few exponents of `a`, or two tiny values.
 routine operands64(mix: U32, second: @U64) -> U64
-    block entry()
-        a: U64 = random()
-        b: U64 = random()
-        tiny: Bool = mix.eq(2)
-        low: U64 = b.bitand(0x801FFFFFFFFFFFFF)
-        near: U64 = mix.eq(1)
-            ? low.bitxor(a)
-            : b
-        other: U64 = tiny
-            ? low
-            : near
-        other.poke_into(second)
-        r: U64 = tiny
-            ? a.bitand(0x801FFFFFFFFFFFFF)
-            : a
-        return(r)
+    a: U64 = random()
+    b: U64 = random()
+    tiny: Bool = mix.eq(2)
+    low: U64 = b.bitand(0x801FFFFFFFFFFFFF)
+    near: U64 = mix.eq(1)
+        ? low.bitxor(a)
+        : b
+    other: U64 = tiny
+        ? low
+        : near
+    other.poke_into(second)
+    r: U64 = tiny
+        ? a.bitand(0x801FFFFFFFFFFFFF)
+        : a
+    return(r)
 
 routine pack64(a: U64, b: U64) -> U128
-    block entry()
-        high: U128 = a.to[U128]().shl(64)
-        r: U128 = high.bitor(b.to[U128]())
-        return(r)
+    high: U128 = a.to[U128]().shl(64)
+    r: U128 = high.bitor(b.to[U128]())
+    return(r)
 
 routine pack32(a: U32, b: U32) -> U64
-    block entry()
-        high: U64 = a.to[U64]().shl(32)
-        r: U64 = high.bitor(b.to[U64]())
-        return(r)
+    high: U64 = a.to[U64]().shl(32)
+    r: U64 = high.bitor(b.to[U64]())
+    return(r)
 
 // -- checks: B32 ---------------------------------------------------------------
 
 routine is_nan32(x: U32) -> Bool
-    block entry()
-        r: Bool = x.bitand(0x7FFFFFFF).gt(0x7F800000)
-        return(r)
+    r: Bool = x.bitand(0x7FFFFFFF).gt(0x7F800000)
+    return(r)
 
 /// The NaN compiler-rt gives for a binary operation: the first NaN operand, quieted, or else the default NaN.
 routine crt_nan32(a: U32, b: U32) -> U32
-    block entry()
-        when
-            is_nan32(a) => return(a.bitor(0x00400000))
-            is_nan32(b) => return(b.bitor(0x00400000))
-            else => return(0x7FC00000)
+    when
+        is_nan32(a) => return(a.bitor(0x00400000))
+        is_nan32(b) => return(b.bitor(0x00400000))
+        else => return(0x7FC00000)
 
 /// Whether a soft result matches the hardware's: the same bits, or for a NaN, compiler-rt's NaN.
 routine agree32(soft: U32, hard: U32, nan: U32) -> Bool
-    block entry()
-        branch is_nan32(hard)
-            ? return(soft.eq(nan))
-            : return(soft.eq(hard))
+    branch is_nan32(hard)
+        ? return(soft.eq(nan))
+        : return(soft.eq(hard))
 
 /// One B32 binary operation, soft against hard: 0 add, 1 sub, 2 mul, 3 div, 4 mod, 5 comparisons, 6 powi.
 routine check32(op: U32, a: U32, b: U32) -> Bool
     local x: B32 = .from_bits(a)
     local y: B32 = .from_bits(b)
 
-    block entry()
-        when op
-            0 => return(agree32(soft: soft_b32_add(a, b), hard: x.add(y).bits(),
-                nan: crt_nan32(a, b)))
-            1 => return(agree32(soft: soft_b32_sub(a, b), hard: x.sub(y).bits(),
-                nan: crt_nan32(a, b: b.bitxor(0x80000000))))
-            2 => return(agree32(soft: soft_b32_mul(a, b), hard: x.mul(y).bits(),
-                nan: crt_nan32(a, b)))
-            3 => return(agree32(soft: soft_b32_div(a, b), hard: x.div(y).bits(),
-                nan: crt_nan32(a, b)))
-            4 => return(agree32(soft: soft_b32_mod(a, b), hard: frem[B32](x, y).bits(),
-                nan: crt_nan32(a, b)))
-            5 => compare()
-            else => power()
+    when op
+        0 => return(agree32(soft: soft_b32_add(a, b), hard: x.add(y).bits(), nan: crt_nan32(a, b)))
+        1 => return(agree32(soft: soft_b32_sub(a, b), hard: x.sub(y).bits(),
+            nan: crt_nan32(a, b: b.bitxor(0x80000000))))
+        2 => return(agree32(soft: soft_b32_mul(a, b), hard: x.mul(y).bits(), nan: crt_nan32(a, b)))
+        3 => return(agree32(soft: soft_b32_div(a, b), hard: x.div(y).bits(), nan: crt_nan32(a, b)))
+        4 => return(agree32(soft: soft_b32_mod(a, b), hard: frem[B32](x, y).bits(),
+            nan: crt_nan32(a, b)))
+        5 => compare()
+        else => power()
 
     block compare()
         unordered: Bool = x.is_nan().bitor(y.is_nan())
@@ -152,8 +140,7 @@ routine check32(op: U32, a: U32, b: U32) -> Bool
         return(r)
 
 routine powi_model32(x: B32, n: S32) -> B32
-    block entry()
-        jump step(x, n.abs_diff(0), 1.0)
+    jump step(x, n.abs_diff(0), 1.0)
 
     block step(base: B32, left: U32, result: B32)
         odd: Bool = left.bitand(1).eq(1)
@@ -172,87 +159,78 @@ routine powi_model32(x: B32, n: S32) -> B32
 
 /// The B32 unary operations: square root, widening, narrowing to B16 and BF16, and every integer conversion.
 routine unary32(a: U32) -> Bool
-    block entry()
-        x: B32 = .from_bits(a)
-        root: Bool = agree32(soft: soft_b32_sqrt(a), hard: x.sqrt().bits(), nan: crt_nan32(a, b: a))
-        wide: Bool = widen_ok(a)
-        half_soft: B16 = bitcast[U32, B32](a).soft_to[B16]()
-        half: Bool = half_soft.bits().eq(x.to[B16]().bits())
-        brain_soft: BF16 = bitcast[U32, B32](a).soft_to[BF16]()
-        brain: Bool = brain_soft.bits().eq(x.to[BF16]().bits())
-        ints: Bool = fix_ok32(a, x: x.to[B64]())
-        floats: Bool = root.bitand(wide).bitand(half)
-        r: Bool = floats.bitand(brain).bitand(ints)
-        return(r)
+    x: B32 = .from_bits(a)
+    root: Bool = agree32(soft: soft_b32_sqrt(a), hard: x.sqrt().bits(), nan: crt_nan32(a, b: a))
+    wide: Bool = widen_ok(a)
+    half_soft: B16 = bitcast[U32, B32](a).soft_to[B16]()
+    half: Bool = half_soft.bits().eq(x.to[B16]().bits())
+    brain_soft: BF16 = bitcast[U32, B32](a).soft_to[BF16]()
+    brain: Bool = brain_soft.bits().eq(x.to[BF16]().bits())
+    ints: Bool = fix_ok32(a, x: x.to[B64]())
+    floats: Bool = root.bitand(wide).bitand(half)
+    r: Bool = floats.bitand(brain).bitand(ints)
+    return(r)
 
 /// Widening is exact. A NaN keeps its payload as it is, quiet or not, which the hardware doesn't.
 routine widen_ok(a: U32) -> Bool
-    block entry()
-        widened: B64 = bitcast[U32, B32](a).soft_to[B64]()
-        soft: U64 = widened.bits()
-        branch is_nan32(a)
-            ? continue
-            : return(soft.eq(b64_bits(B32.from_bits(a))))
-        sign: U64 = a.bitand(0x80000000).to[U64]()
-        fraction: U64 = a.bitand(0x007FFFFF).to[U64]()
-        signed: U64 = sign.shl(32).bitor(0x7FF0000000000000)
-        want: U64 = signed.bitor(fraction.shl(29))
-        return(soft.eq(want))
+    widened: B64 = bitcast[U32, B32](a).soft_to[B64]()
+    soft: U64 = widened.bits()
+    branch is_nan32(a)
+        ? continue
+        : return(soft.eq(b64_bits(B32.from_bits(a))))
+    sign: U64 = a.bitand(0x80000000).to[U64]()
+    fraction: U64 = a.bitand(0x007FFFFF).to[U64]()
+    signed: U64 = sign.shl(32).bitor(0x7FF0000000000000)
+    want: U64 = signed.bitor(fraction.shl(29))
+    return(soft.eq(want))
 
 /// The six integer conversions of a B32, against {fix_model} on its exact B64 value.
 routine fix_ok32(a: U32, x: B64) -> Bool
-    block entry()
-        s32_soft: S32 = bitcast[U32, B32](a).soft_to[S32]()
-        s32: Bool = from_s32(s32_soft).eq(fix_model(x, width: 32, signed: true))
-        u32_soft: U32 = bitcast[U32, B32](a).soft_to[U32]()
-        u32: Bool = from_u32(u32_soft).eq(fix_model(x, width: 32, signed: false))
-        s64_soft: S64 = bitcast[U32, B32](a).soft_to[S64]()
-        s64: Bool = from_s64(s64_soft).eq(fix_model(x, width: 64, signed: true))
-        u64_soft: U64 = bitcast[U32, B32](a).soft_to[U64]()
-        u64: Bool = from_u64(u64_soft).eq(fix_model(x, width: 64, signed: false))
-        s128_soft: S128 = bitcast[U32, B32](a).soft_to[S128]()
-        s128: Bool = from_s128(s128_soft).eq(fix_model(x, width: 128, signed: true))
-        u128_soft: U128 = bitcast[U32, B32](a).soft_to[U128]()
-        u128: Bool = u128_soft.eq(fix_model(x, width: 128, signed: false))
-        low: Bool = s32.bitand(u32).bitand(s64)
-        high: Bool = u64.bitand(s128).bitand(u128)
-        return(low.bitand(high))
+    s32_soft: S32 = bitcast[U32, B32](a).soft_to[S32]()
+    s32: Bool = from_s32(s32_soft).eq(fix_model(x, width: 32, signed: true))
+    u32_soft: U32 = bitcast[U32, B32](a).soft_to[U32]()
+    u32: Bool = from_u32(u32_soft).eq(fix_model(x, width: 32, signed: false))
+    s64_soft: S64 = bitcast[U32, B32](a).soft_to[S64]()
+    s64: Bool = from_s64(s64_soft).eq(fix_model(x, width: 64, signed: true))
+    u64_soft: U64 = bitcast[U32, B32](a).soft_to[U64]()
+    u64: Bool = from_u64(u64_soft).eq(fix_model(x, width: 64, signed: false))
+    s128_soft: S128 = bitcast[U32, B32](a).soft_to[S128]()
+    s128: Bool = from_s128(s128_soft).eq(fix_model(x, width: 128, signed: true))
+    u128_soft: U128 = bitcast[U32, B32](a).soft_to[U128]()
+    u128: Bool = u128_soft.eq(fix_model(x, width: 128, signed: false))
+    low: Bool = s32.bitand(u32).bitand(s64)
+    high: Bool = u64.bitand(s128).bitand(u128)
+    return(low.bitand(high))
 
 /// An S32's bits, zero-extended.
 routine from_s32(x: S32) -> U128
-    block entry()
-        r: U128 = x.to_wrap[U32]().to[U128]()
-        return(r)
+    r: U128 = x.to_wrap[U32]().to[U128]()
+    return(r)
 
 /// A U32, zero-extended.
 routine from_u32(x: U32) -> U128
-    block entry()
-        r: U128 = x.to[U128]()
-        return(r)
+    r: U128 = x.to[U128]()
+    return(r)
 
 /// A U64, zero-extended.
 routine from_u64(x: U64) -> U128
-    block entry()
-        r: U128 = x.to[U128]()
-        return(r)
+    r: U128 = x.to[U128]()
+    return(r)
 
 /// An S128's bits.
 routine from_s128(x: S128) -> U128
-    block entry()
-        r: U128 = x.to_wrap[U128]()
-        return(r)
+    r: U128 = x.to_wrap[U128]()
+    return(r)
 
 /// A B32 widened to B64, as bits.
 routine b64_bits(x: B32) -> U64
-    block entry()
-        r: U64 = x.to[B64]().bits()
-        return(r)
+    r: U64 = x.to[B64]().bits()
+    return(r)
 
 /// An S64's bits, zero-extended.
 routine from_s64(x: S64) -> U128
-    block entry()
-        r: U128 = x.to_wrap[U64]().to[U128]()
-        return(r)
+    r: U128 = x.to_wrap[U64]().to[U128]()
+    return(r)
 
 /// compiler-rt's float-to-integer result, as `width` bits. In range it truncates (from the hardware's saturating
 /// conversion). NaN, infinity, and values from 2^width up saturate by the sign. A negative value converted to
@@ -261,15 +239,14 @@ routine fix_model(x: B64, width: U32, signed: Bool) -> U128
     local mask: U128 = U128.MAX.shr(U32.sub(128, width).to[U128]())
     local negative: Bool = x.is_sign_negative()
 
-    block entry()
-        field: U64 = width.add(1023).to[U64]()
-        limit: B64 = B64.from_bits(field.shl(52))
-        huge: Bool = x.is_nan().bitor(x.abs().ge(limit))
-        when
-            signed.bitnot().bitand(negative) => return(0)
-            huge.bitand(signed.bitnot()) => return(mask)
-            huge => return(negative ? mask.shr(1).add(1) : mask.shr(1))
-            else => exact()
+    field: U64 = width.add(1023).to[U64]()
+    limit: B64 = B64.from_bits(field.shl(52))
+    huge: Bool = x.is_nan().bitor(x.abs().ge(limit))
+    when
+        signed.bitnot().bitand(negative) => return(0)
+        huge.bitand(signed.bitnot()) => return(mask)
+        huge => return(negative ? mask.shr(1).add(1) : mask.shr(1))
+        else => exact()
 
     block exact()
         magnitude: U128 = x.abs().to_clamp[U128]()
@@ -281,42 +258,35 @@ routine fix_model(x: B64, width: U32, signed: Bool) -> U128
 // -- checks: B64 ---------------------------------------------------------------
 
 routine is_nan64(x: U64) -> Bool
-    block entry()
-        r: Bool = x.bitand(0x7FFFFFFFFFFFFFFF).gt(0x7FF0000000000000)
-        return(r)
+    r: Bool = x.bitand(0x7FFFFFFFFFFFFFFF).gt(0x7FF0000000000000)
+    return(r)
 
 routine crt_nan64(a: U64, b: U64) -> U64
-    block entry()
-        when
-            is_nan64(a) => return(a.bitor(0x0008000000000000))
-            is_nan64(b) => return(b.bitor(0x0008000000000000))
-            else => return(0x7FF8000000000000)
+    when
+        is_nan64(a) => return(a.bitor(0x0008000000000000))
+        is_nan64(b) => return(b.bitor(0x0008000000000000))
+        else => return(0x7FF8000000000000)
 
 routine agree64(soft: U64, hard: U64, nan: U64) -> Bool
-    block entry()
-        branch is_nan64(hard)
-            ? return(soft.eq(nan))
-            : return(soft.eq(hard))
+    branch is_nan64(hard)
+        ? return(soft.eq(nan))
+        : return(soft.eq(hard))
 
 /// {check32} for B64.
 routine check64(op: U32, a: U64, b: U64) -> Bool
     local x: B64 = .from_bits(a)
     local y: B64 = .from_bits(b)
 
-    block entry()
-        when op
-            0 => return(agree64(soft: soft_b64_add(a, b), hard: x.add(y).bits(),
-                nan: crt_nan64(a, b)))
-            1 => return(agree64(soft: soft_b64_sub(a, b), hard: x.sub(y).bits(),
-                nan: crt_nan64(a, b: b.bitxor(0x8000000000000000))))
-            2 => return(agree64(soft: soft_b64_mul(a, b), hard: x.mul(y).bits(),
-                nan: crt_nan64(a, b)))
-            3 => return(agree64(soft: soft_b64_div(a, b), hard: x.div(y).bits(),
-                nan: crt_nan64(a, b)))
-            4 => return(agree64(soft: soft_b64_mod(a, b), hard: frem[B64](x, y).bits(),
-                nan: crt_nan64(a, b)))
-            5 => compare()
-            else => power()
+    when op
+        0 => return(agree64(soft: soft_b64_add(a, b), hard: x.add(y).bits(), nan: crt_nan64(a, b)))
+        1 => return(agree64(soft: soft_b64_sub(a, b), hard: x.sub(y).bits(),
+            nan: crt_nan64(a, b: b.bitxor(0x8000000000000000))))
+        2 => return(agree64(soft: soft_b64_mul(a, b), hard: x.mul(y).bits(), nan: crt_nan64(a, b)))
+        3 => return(agree64(soft: soft_b64_div(a, b), hard: x.div(y).bits(), nan: crt_nan64(a, b)))
+        4 => return(agree64(soft: soft_b64_mod(a, b), hard: frem[B64](x, y).bits(),
+            nan: crt_nan64(a, b)))
+        5 => compare()
+        else => power()
 
     block compare()
         unordered: Bool = x.is_nan().bitor(y.is_nan())
@@ -342,8 +312,7 @@ routine check64(op: U32, a: U64, b: U64) -> Bool
         return(r)
 
 routine powi_model64(x: B64, n: S32) -> B64
-    block entry()
-        jump step(x, n.abs_diff(0), 1.0)
+    jump step(x, n.abs_diff(0), 1.0)
 
     block step(base: B64, left: U32, result: B64)
         odd: Bool = left.bitand(1).eq(1)
@@ -362,37 +331,35 @@ routine powi_model64(x: B64, n: S32) -> B64
 
 /// The B64 unary operations: square root, narrowing to B32, B16, and BF16, and every integer conversion.
 routine unary64(a: U64) -> Bool
-    block entry()
-        x: B64 = .from_bits(a)
-        root: Bool = agree64(soft: soft_b64_sqrt(a), hard: x.sqrt().bits(), nan: crt_nan64(a, b: a))
-        narrow_soft: B32 = bitcast[U64, B64](a).soft_to[B32]()
-        narrow: Bool = narrow_soft.bits().eq(x.to[B32]().bits())
-        half_soft: B16 = bitcast[U64, B64](a).soft_to[B16]()
-        half: Bool = half_soft.bits().eq(x.to[B16]().bits())
-        brain_soft: BF16 = bitcast[U64, B64](a).soft_to[BF16]()
-        brain: Bool = brain_soft.bits().eq(x.to[BF16]().bits())
-        ints: Bool = fix_ok64(a, x)
-        floats: Bool = root.bitand(narrow).bitand(half)
-        r: Bool = floats.bitand(brain).bitand(ints)
-        return(r)
+    x: B64 = .from_bits(a)
+    root: Bool = agree64(soft: soft_b64_sqrt(a), hard: x.sqrt().bits(), nan: crt_nan64(a, b: a))
+    narrow_soft: B32 = bitcast[U64, B64](a).soft_to[B32]()
+    narrow: Bool = narrow_soft.bits().eq(x.to[B32]().bits())
+    half_soft: B16 = bitcast[U64, B64](a).soft_to[B16]()
+    half: Bool = half_soft.bits().eq(x.to[B16]().bits())
+    brain_soft: BF16 = bitcast[U64, B64](a).soft_to[BF16]()
+    brain: Bool = brain_soft.bits().eq(x.to[BF16]().bits())
+    ints: Bool = fix_ok64(a, x)
+    floats: Bool = root.bitand(narrow).bitand(half)
+    r: Bool = floats.bitand(brain).bitand(ints)
+    return(r)
 
 routine fix_ok64(a: U64, x: B64) -> Bool
-    block entry()
-        s32_soft: S32 = bitcast[U64, B64](a).soft_to[S32]()
-        s32: Bool = from_s32(s32_soft).eq(fix_model(x, width: 32, signed: true))
-        u32_soft: U32 = bitcast[U64, B64](a).soft_to[U32]()
-        u32: Bool = from_u32(u32_soft).eq(fix_model(x, width: 32, signed: false))
-        s64_soft: S64 = bitcast[U64, B64](a).soft_to[S64]()
-        s64: Bool = from_s64(s64_soft).eq(fix_model(x, width: 64, signed: true))
-        u64_soft: U64 = bitcast[U64, B64](a).soft_to[U64]()
-        u64: Bool = from_u64(u64_soft).eq(fix_model(x, width: 64, signed: false))
-        s128_soft: S128 = bitcast[U64, B64](a).soft_to[S128]()
-        s128: Bool = from_s128(s128_soft).eq(fix_model(x, width: 128, signed: true))
-        u128_soft: U128 = bitcast[U64, B64](a).soft_to[U128]()
-        u128: Bool = u128_soft.eq(fix_model(x, width: 128, signed: false))
-        low: Bool = s32.bitand(u32).bitand(s64)
-        high: Bool = u64.bitand(s128).bitand(u128)
-        return(low.bitand(high))
+    s32_soft: S32 = bitcast[U64, B64](a).soft_to[S32]()
+    s32: Bool = from_s32(s32_soft).eq(fix_model(x, width: 32, signed: true))
+    u32_soft: U32 = bitcast[U64, B64](a).soft_to[U32]()
+    u32: Bool = from_u32(u32_soft).eq(fix_model(x, width: 32, signed: false))
+    s64_soft: S64 = bitcast[U64, B64](a).soft_to[S64]()
+    s64: Bool = from_s64(s64_soft).eq(fix_model(x, width: 64, signed: true))
+    u64_soft: U64 = bitcast[U64, B64](a).soft_to[U64]()
+    u64: Bool = from_u64(u64_soft).eq(fix_model(x, width: 64, signed: false))
+    s128_soft: S128 = bitcast[U64, B64](a).soft_to[S128]()
+    s128: Bool = from_s128(s128_soft).eq(fix_model(x, width: 128, signed: true))
+    u128_soft: U128 = bitcast[U64, B64](a).soft_to[U128]()
+    u128: Bool = u128_soft.eq(fix_model(x, width: 128, signed: false))
+    low: Bool = s32.bitand(u32).bitand(s64)
+    high: Bool = u64.bitand(s128).bitand(u128)
+    return(low.bitand(high))
 
 // -- checks: integers to floats --------------------------------------------------
 
@@ -400,172 +367,160 @@ routine fix_ok64(a: U64, x: B64) -> Bool
 /// the wider ones against the stdlib's B128 (exact for 64 bits, and a single extra rounding at 113 bits for 128,
 /// which a random value doesn't meet).
 routine int_to_float(bits: U64, more: U64) -> Bool
-    block entry()
-        s32: S32 = bits.to_wrap[U32]().to_wrap[S32]()
-        u32: U32 = bits.to_wrap[U32]()
-        s64: S64 = bits.to_wrap[S64]()
-        f_s32_soft: B32 = s32.soft_to[B32]()
-        f_s32: Bool = f_s32_soft.bits().eq(s32.to[B32]().bits())
-        f_u32_soft: B32 = u32.soft_to[B32]()
-        f_u32: Bool = f_u32_soft.bits().eq(u32.to[B32]().bits())
-        d_s32_soft: B64 = s32.soft_to[B64]()
-        d_s32: Bool = d_s32_soft.bits().eq(s32.to[B64]().bits())
-        d_u32_soft: B64 = u32.soft_to[B64]()
-        d_u32: Bool = d_u32_soft.bits().eq(u32.to[B64]().bits())
-        f_s64_soft: B32 = s64.soft_to[B32]()
-        f_s64: Bool = f_s64_soft.bits().eq(b32_of(s64.to[B128]()))
-        f_u64_soft: B32 = bits.soft_to[B32]()
-        f_u64: Bool = f_u64_soft.bits().eq(b32_of(bits.to[B128]()))
-        d_s64_soft: B64 = s64.soft_to[B64]()
-        d_s64: Bool = d_s64_soft.bits().eq(b64_of(s64.to[B128]()))
-        d_u64_soft: B64 = bits.soft_to[B64]()
-        d_u64: Bool = d_u64_soft.bits().eq(b64_of(bits.to[B128]()))
-        wide_ok: Bool = wide_to_float(pack64(a: bits, b: more))
-        narrow: Bool = f_s32.bitand(f_u32).bitand(d_s32)
-        middle: Bool = d_u32.bitand(f_s64).bitand(f_u64)
-        wide: Bool = d_s64.bitand(d_u64).bitand(wide_ok)
-        r: Bool = narrow.bitand(middle).bitand(wide)
-        return(r)
+    s32: S32 = bits.to_wrap[U32]().to_wrap[S32]()
+    u32: U32 = bits.to_wrap[U32]()
+    s64: S64 = bits.to_wrap[S64]()
+    f_s32_soft: B32 = s32.soft_to[B32]()
+    f_s32: Bool = f_s32_soft.bits().eq(s32.to[B32]().bits())
+    f_u32_soft: B32 = u32.soft_to[B32]()
+    f_u32: Bool = f_u32_soft.bits().eq(u32.to[B32]().bits())
+    d_s32_soft: B64 = s32.soft_to[B64]()
+    d_s32: Bool = d_s32_soft.bits().eq(s32.to[B64]().bits())
+    d_u32_soft: B64 = u32.soft_to[B64]()
+    d_u32: Bool = d_u32_soft.bits().eq(u32.to[B64]().bits())
+    f_s64_soft: B32 = s64.soft_to[B32]()
+    f_s64: Bool = f_s64_soft.bits().eq(b32_of(s64.to[B128]()))
+    f_u64_soft: B32 = bits.soft_to[B32]()
+    f_u64: Bool = f_u64_soft.bits().eq(b32_of(bits.to[B128]()))
+    d_s64_soft: B64 = s64.soft_to[B64]()
+    d_s64: Bool = d_s64_soft.bits().eq(b64_of(s64.to[B128]()))
+    d_u64_soft: B64 = bits.soft_to[B64]()
+    d_u64: Bool = d_u64_soft.bits().eq(b64_of(bits.to[B128]()))
+    wide_ok: Bool = wide_to_float(pack64(a: bits, b: more))
+    narrow: Bool = f_s32.bitand(f_u32).bitand(d_s32)
+    middle: Bool = d_u32.bitand(f_s64).bitand(f_u64)
+    wide: Bool = d_s64.bitand(d_u64).bitand(wide_ok)
+    r: Bool = narrow.bitand(middle).bitand(wide)
+    return(r)
 
 routine wide_to_float(wide: U128) -> Bool
-    block entry()
-        signed: S128 = wide.to_wrap[S128]()
-        f_s_soft: B32 = signed.soft_to[B32]()
-        f_s: Bool = f_s_soft.bits().eq(b32_of(signed.to[B128]()))
-        f_u_soft: B32 = wide.soft_to[B32]()
-        f_u: Bool = f_u_soft.bits().eq(b32_of(wide.to[B128]()))
-        d_s_soft: B64 = signed.soft_to[B64]()
-        d_s: Bool = d_s_soft.bits().eq(b64_of(signed.to[B128]()))
-        d_u_soft: B64 = wide.soft_to[B64]()
-        d_u: Bool = d_u_soft.bits().eq(b64_of(wide.to[B128]()))
-        small: S128 = signed.shr(100)  // |small| below 2^28, exact in B64
-        top: U128 = wide.shr(100)
-        h_s_soft: B16 = small.soft_to[B16]()
-        h_s: Bool = h_s_soft.bits().eq(b16_of(small.to[B64]()))
-        h_u_soft: B16 = top.soft_to[B16]()
-        h_u: Bool = h_u_soft.bits().eq(b16_of(top.to[B64]()))
-        floats: Bool = f_s.bitand(f_u).bitand(d_s)
-        halves: Bool = d_u.bitand(h_s).bitand(h_u)
-        r: Bool = floats.bitand(halves)
-        return(r)
+    signed: S128 = wide.to_wrap[S128]()
+    f_s_soft: B32 = signed.soft_to[B32]()
+    f_s: Bool = f_s_soft.bits().eq(b32_of(signed.to[B128]()))
+    f_u_soft: B32 = wide.soft_to[B32]()
+    f_u: Bool = f_u_soft.bits().eq(b32_of(wide.to[B128]()))
+    d_s_soft: B64 = signed.soft_to[B64]()
+    d_s: Bool = d_s_soft.bits().eq(b64_of(signed.to[B128]()))
+    d_u_soft: B64 = wide.soft_to[B64]()
+    d_u: Bool = d_u_soft.bits().eq(b64_of(wide.to[B128]()))
+    small: S128 = signed.shr(100)  // |small| below 2^28, exact in B64
+    top: U128 = wide.shr(100)
+    h_s_soft: B16 = small.soft_to[B16]()
+    h_s: Bool = h_s_soft.bits().eq(b16_of(small.to[B64]()))
+    h_u_soft: B16 = top.soft_to[B16]()
+    h_u: Bool = h_u_soft.bits().eq(b16_of(top.to[B64]()))
+    floats: Bool = f_s.bitand(f_u).bitand(d_s)
+    halves: Bool = d_u.bitand(h_s).bitand(h_u)
+    r: Bool = floats.bitand(halves)
+    return(r)
 
 /// The bits of a B128 rounded to B32.
 routine b32_of(x: B128) -> U32
-    block entry()
-        r: U32 = x.to[B32]().bits()
-        return(r)
+    r: U32 = x.to[B32]().bits()
+    return(r)
 
 /// The bits of a B128 rounded to B64.
 routine b64_of(x: B128) -> U64
-    block entry()
-        r: U64 = x.to[B64]().bits()
-        return(r)
+    r: U64 = x.to[B64]().bits()
+    return(r)
 
 /// The bits of a B64 rounded to B16.
 routine b16_of(x: B64) -> U16
-    block entry()
-        r: U16 = x.to[B16]().bits()
-        return(r)
+    r: U16 = x.to[B16]().bits()
+    return(r)
 
 // -- checks: integers ------------------------------------------------------------
 
 /// Division, multiplication, shifts, and the leading-zero count on one random pair, cut to each width, against the
 /// integer types' own operations. The divisor keeps a random number of bits, so every quotient length comes up.
 routine integer_ops(a: U64, b: U64, c: U64) -> Bool
-    block entry()
-        keep: U64 = c.bitand(63)
-        divisor: U64 = b.shr(keep).bitor(1)
-        d32: U32 = divisor.to_wrap[U32]().bitor(1)
-        wide_n: U128 = pack64(a, b: c)
-        lift: U128 = c.bitand(64).to[U128]()
-        wide_d: U128 = divisor.to[U128]().shl(lift)
-        u32_ok: Bool = divmod32(n: a.to_wrap[U32](), d: d32)
-        u64_ok: Bool = divmod64(n: a, d: divisor)
-        u128_ok: Bool = divmod128(n: wide_n, d: wide_d)
-        mul_ok: Bool = mul_shift(a, b, n: c.bitand(127).to_wrap[U32]())
-        r: Bool = u32_ok.bitand(u64_ok).bitand(u128_ok.bitand(mul_ok))
-        return(r)
+    keep: U64 = c.bitand(63)
+    divisor: U64 = b.shr(keep).bitor(1)
+    d32: U32 = divisor.to_wrap[U32]().bitor(1)
+    wide_n: U128 = pack64(a, b: c)
+    lift: U128 = c.bitand(64).to[U128]()
+    wide_d: U128 = divisor.to[U128]().shl(lift)
+    u32_ok: Bool = divmod32(n: a.to_wrap[U32](), d: d32)
+    u64_ok: Bool = divmod64(n: a, d: divisor)
+    u128_ok: Bool = divmod128(n: wide_n, d: wide_d)
+    mul_ok: Bool = mul_shift(a, b, n: c.bitand(127).to_wrap[U32]())
+    r: Bool = u32_ok.bitand(u64_ok).bitand(u128_ok.bitand(mul_ok))
+    return(r)
 
 routine divmod32(n: U32, d: U32) -> Bool
-    block entry()
-        q, r = soft_divmod(n, d)
-        sn: S32 = n.to_wrap[S32]()
-        sd: S32 = d.to_wrap[S32]()
-        sq, sr = soft_divmod(n: sn, d: sd)
-        overflow: Bool = sn.eq(S32.MIN).bitand(sd.eq(-1))
-        unsigned: Bool = q.eq(n.div(d)).bitand(r.eq(n.mod(d)))
-        branch overflow
-            ? return(unsigned)
-            : continue
-        signed: Bool = sq.eq(sn.div(sd)).bitand(sr.eq(sn.mod(sd)))
-        return(unsigned.bitand(signed))
+    q, r = soft_divmod(n, d)
+    sn: S32 = n.to_wrap[S32]()
+    sd: S32 = d.to_wrap[S32]()
+    sq, sr = soft_divmod(n: sn, d: sd)
+    overflow: Bool = sn.eq(S32.MIN).bitand(sd.eq(-1))
+    unsigned: Bool = q.eq(n.div(d)).bitand(r.eq(n.mod(d)))
+    branch overflow
+        ? return(unsigned)
+        : continue
+    signed: Bool = sq.eq(sn.div(sd)).bitand(sr.eq(sn.mod(sd)))
+    return(unsigned.bitand(signed))
 
 routine divmod64(n: U64, d: U64) -> Bool
-    block entry()
-        q, r = soft_divmod(n, d)
-        sn: S64 = n.to_wrap[S64]()
-        sd: S64 = d.to_wrap[S64]()
-        sq, sr = soft_divmod(n: sn, d: sd)
-        overflow: Bool = sn.eq(S64.MIN).bitand(sd.eq(-1))
-        unsigned: Bool = q.eq(n.div(d)).bitand(r.eq(n.mod(d)))
-        branch overflow
-            ? return(unsigned)
-            : continue
-        signed: Bool = sq.eq(sn.div(sd)).bitand(sr.eq(sn.mod(sd)))
-        return(unsigned.bitand(signed))
+    q, r = soft_divmod(n, d)
+    sn: S64 = n.to_wrap[S64]()
+    sd: S64 = d.to_wrap[S64]()
+    sq, sr = soft_divmod(n: sn, d: sd)
+    overflow: Bool = sn.eq(S64.MIN).bitand(sd.eq(-1))
+    unsigned: Bool = q.eq(n.div(d)).bitand(r.eq(n.mod(d)))
+    branch overflow
+        ? return(unsigned)
+        : continue
+    signed: Bool = sq.eq(sn.div(sd)).bitand(sr.eq(sn.mod(sd)))
+    return(unsigned.bitand(signed))
 
 routine divmod128(n: U128, d: U128) -> Bool
-    block entry()
-        q, r = soft_divmod(n, d)
-        sn: S128 = n.to_wrap[S128]()
-        sd: S128 = d.to_wrap[S128]()
-        sq, sr = soft_divmod(n: sn, d: sd)
-        overflow: Bool = sn.eq(S128.MIN).bitand(sd.eq(-1))
-        unsigned: Bool = q.eq(n.div(d)).bitand(r.eq(n.mod(d)))
-        branch overflow
-            ? return(unsigned)
-            : continue
-        signed: Bool = sq.eq(sn.div(sd)).bitand(sr.eq(sn.mod(sd)))
-        return(unsigned.bitand(signed))
+    q, r = soft_divmod(n, d)
+    sn: S128 = n.to_wrap[S128]()
+    sd: S128 = d.to_wrap[S128]()
+    sq, sr = soft_divmod(n: sn, d: sd)
+    overflow: Bool = sn.eq(S128.MIN).bitand(sd.eq(-1))
+    unsigned: Bool = q.eq(n.div(d)).bitand(r.eq(n.mod(d)))
+    branch overflow
+        ? return(unsigned)
+        : continue
+    signed: Bool = sq.eq(sn.div(sd)).bitand(sr.eq(sn.mod(sd)))
+    return(unsigned.bitand(signed))
 
 routine mul_shift(a: U64, b: U64, n: U32) -> Bool
-    block entry()
-        a32: U32 = a.to_wrap[U32]()
-        b32: U32 = b.to_wrap[U32]()
-        mul32: Bool = soft_mul(a: a32, b: b32).eq(a32.mul_wrap(b32))
-        mul64: Bool = soft_mul(a, b).eq(a.mul_wrap(b))
-        amount: U64 = n.to[U64]()
-        shl: Bool = soft_shl(x: a, n).eq(a.shl(amount))
-        shr: Bool = soft_shr(x: a, n).eq(a.shr(amount))
-        signed: S64 = a.to_wrap[S64]()
-        sar: Bool = soft_shr(x: signed, n).eq(signed.shr(amount.to_wrap[S64]()))
-        lead: U32 = a32.shr(n.bitand(31))
-        clz: Bool = soft_u32_leading_zeros(lead).eq(lead.leading_zeros())
-        r: Bool = mul32.bitand(mul64).bitand(shl.bitand(shr).bitand(sar.bitand(clz)))
-        return(r)
+    a32: U32 = a.to_wrap[U32]()
+    b32: U32 = b.to_wrap[U32]()
+    mul32: Bool = soft_mul(a: a32, b: b32).eq(a32.mul_wrap(b32))
+    mul64: Bool = soft_mul(a, b).eq(a.mul_wrap(b))
+    amount: U64 = n.to[U64]()
+    shl: Bool = soft_shl(x: a, n).eq(a.shl(amount))
+    shr: Bool = soft_shr(x: a, n).eq(a.shr(amount))
+    signed: S64 = a.to_wrap[S64]()
+    sar: Bool = soft_shr(x: signed, n).eq(signed.shr(amount.to_wrap[S64]()))
+    lead: U32 = a32.shr(n.bitand(31))
+    clz: Bool = soft_u32_leading_zeros(lead).eq(lead.leading_zeros())
+    r: Bool = mul32.bitand(mul64).bitand(shl.bitand(shr).bitand(sar.bitand(clz)))
+    return(r)
 
 // -- B16 -------------------------------------------------------------------------
 
 /// A B16 widened to B32 by the stdlib, as bits, a NaN by compiler-rt's rule (the payload kept as it is), since a
 /// 32-bit x86 returns a B32 on the x87 stack, which quiets a signaling NaN.
 routine b16_widened(h: U16) -> U32
-    block entry()
-        x: B16 = .from_bits(h)
-        branch x.is_nan()
-            ? continue
-            : return(x.to[B32]().bits())
-        bits: U32 = h.to[U32]()
-        sign: U32 = bits.bitand(0x8000).shl(16)
-        payload: U32 = bits.bitand(0x03FF).shl(13)
-        r: U32 = sign.bitor(0x7F800000).bitor(payload)
-        return(r)
+    x: B16 = .from_bits(h)
+    branch x.is_nan()
+        ? continue
+        : return(x.to[B32]().bits())
+    bits: U32 = h.to[U32]()
+    sign: U32 = bits.bitand(0x8000).shl(16)
+    payload: U32 = bits.bitand(0x03FF).shl(13)
+    r: U32 = sign.bitor(0x7F800000).bitor(payload)
+    return(r)
 
 /// Every B16: widening to B32 against the stdlib's, and the 128-bit conversions of the finite ones against B32's.
 routine b16_all() -> U64
     local wrong: @U64 <- 0
 
-    block entry()
-        jump step(0)
+    jump step(0)
 
     block step(bits: U32)
         branch bits.eq(0x10000)
@@ -591,8 +546,7 @@ routine b16_all() -> U64
 routine specials32(op: U32) -> U64
     local wrong: @U64 <- 0
 
-    block entry()
-        jump step(0)
+    jump step(0)
 
     block step(at: USize)
         branch at.eq(1024)
@@ -608,8 +562,7 @@ routine specials32(op: U32) -> U64
 routine random32(op: U32, count: U32) -> U64
     local wrong: @U64 <- 0
 
-    block entry()
-        jump step(0)
+    jump step(0)
 
     block step(at: U32)
         branch at.eq(count.mul(3))
@@ -624,8 +577,7 @@ routine random32(op: U32, count: U32) -> U64
 routine specials64(op: U32) -> U64
     local wrong: @U64 <- 0
 
-    block entry()
-        jump step(0)
+    jump step(0)
 
     block step(at: USize)
         branch at.eq(1024)
@@ -641,8 +593,7 @@ routine random64(op: U32, count: U32) -> U64
     local second: @U64 <- 0
     local wrong: @U64 <- 0
 
-    block entry()
-        jump step(0)
+    jump step(0)
 
     block step(at: U32)
         branch at.eq(count.mul(3))
@@ -658,8 +609,7 @@ routine unaries(count: U32) -> U64
     local second: @U64 <- 0
     local wrong: @U64 <- 0
 
-    block entry()
-        jump special(0)
+    jump special(0)
 
     block special(at: USize)
         branch at.eq(32)
@@ -685,8 +635,7 @@ routine unaries(count: U32) -> U64
 routine integers(count: U32) -> U64
     local wrong: @U64 <- 0
 
-    block entry()
-        jump step(0)
+    jump step(0)
 
     block step(at: U32)
         branch at.eq(count)
@@ -702,24 +651,21 @@ routine integers(count: U32) -> U64
         jump step(at.add(1))
 
 routine report(name: Bytes, wrong: U64) -> Void
-    block entry()
-        Out.write("{name}: {wrong} mismatches\n")
-        return()
+    Out.write("{name}: {wrong} mismatches\n")
+    return()
 
 routine op_name(op: U32) -> Bytes
-    block entry()
-        when op
-            0 => return("add")
-            1 => return("sub")
-            2 => return("mul")
-            3 => return("div")
-            4 => return("mod")
-            5 => return("compare")
-            else => return("powi")
+    when op
+        0 => return("add")
+        1 => return("sub")
+        2 => return("mul")
+        3 => return("div")
+        4 => return("mod")
+        5 => return("compare")
+        else => return("powi")
 
 routine start() -> Void
-    block entry()
-        jump ops(0)
+    jump ops(0)
 
     block ops(op: U32)
         branch op.eq(7)

@@ -24,13 +24,12 @@ private record ThreadStart
 /// the entry with its state.
 /// :param raw: The {ThreadStart} record.
 private routine thread_body(raw: Addr) -> Void
-    block entry()
-        start: @ThreadStart = raw.to[@ThreadStart]()
-        entry: Callable[(Addr,), Void] = start.entry.peek()
-        arg: Addr = start.arg.peek()
-        deallocate(data: start, alloc: start.alloc.peek())
-        entry.call(arg)
-        return()
+    start: @ThreadStart = raw.to[@ThreadStart]()
+    entry: Callable[(Addr,), Void] = start.entry.peek()
+    arg: Addr = start.arg.peek()
+    deallocate(data: start, alloc: start.alloc.peek())
+    entry.call(arg)
+    return()
 
 /// Allocates the record a new thread starts from. The record keeps the entry without its state type: a routine
 /// taking an @T takes an Addr the same way (both are one pointer), so thread_body calls it with the state as an Addr.
@@ -43,15 +42,14 @@ private routine thread_body(raw: Addr) -> Void
 private routine thread_start[T](entry: Callable[(@T,), Void], arg: @T,
     alloc: @MemoryManager) -> @ThreadStart
 require T: typename
-    block entry()
-        erased: Callable[(Addr,), Void] = bitcast(entry)
-        state: Addr = arg
-        start: @ThreadStart = allocate[ThreadStart](count: 1, alloc)
-        branch start.is_null()
-            ? crash_allocation()
-            : continue
-        start.poke(ThreadStart(entry: erased, arg: state, alloc: alloc))
-        return(start)
+    erased: Callable[(Addr,), Void] = bitcast(entry)
+    state: Addr = arg
+    start: @ThreadStart = allocate[ThreadStart](count: 1, alloc)
+    branch start.is_null()
+        ? crash_allocation()
+        : continue
+    start.poke(ThreadStart(entry: erased, arg: state, alloc: alloc))
+    return(start)
 
 // -- POSIX ----------------------------------------------------------------------------
 
@@ -83,9 +81,8 @@ private routine c_sysconf(name: CInt) -> CLong
 /// :returns: Always null.
 #target(os: ("linux", "macos"))
 private routine posix_thread_main(arg: Addr) -> Addr
-    block entry()
-        thread_body(arg)
-        return(null)
+    thread_body(arg)
+    return(null)
 
 /// Starts entry(arg) on a new thread.
 /// :param entry: The routine the thread runs.
@@ -98,23 +95,21 @@ private routine posix_thread_main(arg: Addr) -> Addr
 #expensive("starts an operating system thread")
 routine Thread.spawn[T](entry: Callable[(@T,), Void], arg: @T, alloc: @MemoryManager) -> Me
 require T: typename
-    block entry()
-        start: @ThreadStart = thread_start(entry, arg, alloc)
-        claim handle: @Addr <- null
-        result: CInt = c_pthread_create(handle, null, posix_thread_main.to[Callable](), start)
-        failed: Bool = result.ne(0)
-        branch failed
-            ? crash_task_spawn()
-            : continue
-        thread: Me = Me(handle: handle.peek())
-        return(thread)
+    start: @ThreadStart = thread_start(entry, arg, alloc)
+    claim handle: @Addr <- null
+    result: CInt = c_pthread_create(handle, null, posix_thread_main.to[Callable](), start)
+    failed: Bool = result.ne(0)
+    branch failed
+        ? crash_task_spawn()
+        : continue
+    thread: Me = Me(handle: handle.peek())
+    return(thread)
 
 /// Waits for the thread to return.
 #target(os: ("linux", "macos"))
 routine Thread.join(me: Me) -> Void
-    block entry()
-        c_pthread_join(me.handle, null)
-        return()
+    c_pthread_join(me.handle, null)
+    return()
 
 /// Binds the C `pthread_detach` function, which lets a thread's resources go when it returns, with nobody joining.
 /// :param thread: The thread's id.
@@ -126,34 +121,30 @@ private routine c_pthread_detach(thread: Addr) -> CInt
 /// detached, once.
 #target(os: ("linux", "macos"))
 routine Thread.detach(me: Me) -> Void
-    block entry()
-        c_pthread_detach(me.handle)
-        return()
+    c_pthread_detach(me.handle)
+    return()
 
 /// _SC_NPROCESSORS_ONLN, whose number differs between Linux and macOS.
 /// :returns: The sysconf number.
 #target(os: "macos")
 private routine sc_nprocessors_onln() -> CInt
-    block entry()
-        return(58)
+    return(58)
 
 /// _SC_NPROCESSORS_ONLN, whose number differs between Linux and macOS.
 /// :returns: The sysconf number.
 #target(os: "linux")
 private routine sc_nprocessors_onln() -> CInt
-    block entry()
-        return(84)
+    return(84)
 
 /// The number of processors the system has online, at least 1.
 /// :returns: The processor count, 1 when it can't be told.
 #target(os: ("linux", "macos"))
 routine cpu_count() -> USize
-    block entry()
-        n: CLong = c_sysconf(sc_nprocessors_onln())
-        none: Bool = n.lt(1)
-        branch none
-            ? return(1)
-            : return(n.to[USize]())
+    n: CLong = c_sysconf(sc_nprocessors_onln())
+    none: Bool = n.lt(1)
+    branch none
+        ? return(1)
+        : return(n.to[USize]())
 
 // -- Windows --------------------------------------------------------------------------
 
@@ -193,9 +184,8 @@ private routine c_get_active_processor_count(group: U16) -> U32
 /// :returns: Always 0.
 #[target(os: "windows"), callconv("stdcall")]
 private routine windows_thread_main(arg: Addr) -> U32
-    block entry()
-        thread_body(arg)
-        return(0)
+    thread_body(arg)
+    return(0)
 
 /// Starts entry(arg) on a new thread.
 /// :param entry: The routine the thread runs.
@@ -208,41 +198,37 @@ private routine windows_thread_main(arg: Addr) -> U32
 #expensive("starts an operating system thread")
 routine Thread.spawn[T](entry: Callable[(@T,), Void], arg: @T, alloc: @MemoryManager) -> Me
 require T: typename
-    block entry()
-        start: @ThreadStart = thread_start(entry, arg, alloc)
-        handle: Addr = c_create_thread(null, 0, windows_thread_main.to[Callable](), start, 0, null)
-        failed: Bool = handle.is_null()
-        branch failed
-            ? crash_task_spawn()
-            : continue
-        thread: Me = Me(handle: handle)
-        return(thread)
+    start: @ThreadStart = thread_start(entry, arg, alloc)
+    handle: Addr = c_create_thread(null, 0, windows_thread_main.to[Callable](), start, 0, null)
+    failed: Bool = handle.is_null()
+    branch failed
+        ? crash_task_spawn()
+        : continue
+    thread: Me = Me(handle: handle)
+    return(thread)
 
 /// Waits for the thread to return.
 #target(os: "windows")
 routine Thread.join(me: Me) -> Void
-    block entry()
-        // INFINITE
-        c_wait_for_single_object(me.handle, U32.MAX)
-        c_close_handle(me.handle)
-        return()
+    // INFINITE
+    c_wait_for_single_object(me.handle, U32.MAX)
+    c_close_handle(me.handle)
+    return()
 
 /// Lets the thread run on with nobody waiting for it: the OS reclaims it when it returns. A thread is joined or
 /// detached, once.
 #target(os: "windows")
 routine Thread.detach(me: Me) -> Void
-    block entry()
-        c_close_handle(me.handle)
-        return()
+    c_close_handle(me.handle)
+    return()
 
 /// The number of processors the system has online, at least 1.
 /// :returns: The processor count, 1 when it can't be told.
 #target(os: "windows")
 routine cpu_count() -> USize
-    block entry()
-        // ALL_PROCESSOR_GROUPS
-        n: U32 = c_get_active_processor_count(0xFFFF)
-        none: Bool = n.lt(1)
-        branch none
-            ? return(1)
-            : return(n.to[USize]())
+    // ALL_PROCESSOR_GROUPS
+    n: U32 = c_get_active_processor_count(0xFFFF)
+    none: Bool = n.lt(1)
+    branch none
+        ? return(1)
+        : return(n.to[USize]())

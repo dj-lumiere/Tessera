@@ -374,11 +374,13 @@ public static class Formatter
     }
 
     /// A routine's head: its local lines sit 4 spaces in, with no blank line between the header and them or among
-    /// them (Space puts one blank line between the head and the first block).
+    /// them, and one blank line between them and what follows: the first block (Space puts that one), or the lines of
+    /// the entry block written without its `block entry()`.
     private static List<string> HeadLayout(List<string> lines)
     {
         var continued = Continuations(lines);
         var drop = new HashSet<int>();
+        var blankBefore = new HashSet<int>();
         var result = new List<string>(lines);
         for (int i = 0; i < lines.Count; i++)
         {
@@ -396,9 +398,24 @@ public static class Formatter
             }
             for (int k = i + 1; k < lastShared; k++)
                 if (IsBlank(lines[k])) drop.Add(k);
+            if (lastShared >= 0)
+            {
+                int next = lastShared + 1;
+                while (next < lines.Count && continued[next]) next++;
+                if (next < lines.Count && lines[next].StartsWith("    ", StringComparison.Ordinal) && !IsBlank(lines[next])
+                    && !lines[next].StartsWith("    block ", StringComparison.Ordinal))
+                    blankBefore.Add(next);
+            }
             i = j - 1;
         }
-        return result.Where((_, k) => !drop.Contains(k)).ToList();
+        var laidOut = new List<string>();
+        for (int k = 0; k < result.Count; k++)
+        {
+            if (drop.Contains(k)) continue;
+            if (blankBefore.Contains(k)) laidOut.Add("");
+            laidOut.Add(result[k]);
+        }
+        return laidOut;
     }
 
     /// For each line, whether it starts inside a bracket opened on an earlier line (a wrapped continuation).

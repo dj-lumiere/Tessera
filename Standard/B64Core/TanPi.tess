@@ -84,13 +84,12 @@ routine B64.tan_pi(me: Me) -> Me
     local zero: Me = Me.copysign(0.0, me)
     local one: Me = Me.copysign(1.0, me)
 
-    block entry()
-        moderate: Bool = ax.ge(0x3F30000000000000)  // |x| >= 2^-12
-        huge: Bool = ax.ge(0x42D0000000000000)  // |x| >= 2^46
-        when
-            huge => huge()
-            moderate => moderate()
-            else => small()
+    moderate: Bool = ax.ge(0x3F30000000000000)  // |x| >= 2^-12
+    huge: Bool = ax.ge(0x42D0000000000000)  // |x| >= 2^46
+    when
+        huge => huge()
+        moderate => moderate()
+        else => small()
 
     // |x| >= 2^46: x is a multiple of 1/64, so tan(pi x) is a table entry
     block huge()
@@ -301,21 +300,19 @@ routine B64.tan_pi(me: Me) -> Me
 /// :param neg: The input's sign bit, 1 for negative.
 /// :returns: `x` when `neg` is 0, else `0 - x` (wrapping).
 private routine cm_b64_tan_pi_signed(x: U64, neg: U64) -> U64
-    block entry()
-        negative: Bool = neg.eq(1)
-        branch negative
-            ? return(U64.sub_wrap(0, x))
-            : return(x)
+    negative: Bool = neg.eq(1)
+    branch negative
+        ? return(U64.sub_wrap(0, x))
+        : return(x)
 
 /// tan(pi j/64) for j in 0..31, from its double-double table entry.
 /// :param j: The table index, in 0..31.
 /// :returns: tan(pi `j`/64), the high and low table parts summed to one B64.
 private routine cm_b64_tan_pi_entry(j: U64) -> B64
-    block entry()
-        i: USize = j.to[USize]().mul(2)
-        nl: B64 = B64.from_bits(CM_B64_TAN_PI_T.getitem(i))
-        nh: B64 = B64.from_bits(CM_B64_TAN_PI_T.getitem(i.add(1)))
-        return(nh.add(nl))
+    i: USize = j.to[USize]().mul(2)
+    nl: B64 = B64.from_bits(CM_B64_TAN_PI_T.getitem(i))
+    nh: B64 = B64.from_bits(CM_B64_TAN_PI_T.getitem(i.add(1)))
+    return(nh.add(nl))
 
 /// The exact tangent at a multiple of 1/4 (jq counts quarter turns, as a two's-complement bit pattern, only its two
 /// low bits matter, neg is the input's sign bit): +-inf at half-integers, a signed zero at integers.
@@ -325,13 +322,12 @@ private routine cm_b64_tan_pi_entry(j: U64) -> B64
 private routine cm_b64_tan_pi_exact(jq: U64, neg: U64) -> B64
     local down: Bool = jq.bitand(2).ne(0)
 
-    block entry()
-        odd: Bool = jq.bitand(1).eq(1)
-        flip: Bool = jq.shr(1).bitand(1).ne(neg)
-        when
-            odd => pole()
-            flip => return(B64.from_bits(0x8000000000000000))
-            else => return(0.0)
+    odd: Bool = jq.bitand(1).eq(1)
+    flip: Bool = jq.shr(1).bitand(1).ne(neg)
+    when
+        odd => pole()
+        flip => return(B64.from_bits(0x8000000000000000))
+        else => return(0.0)
 
     block pole()
         branch down
@@ -344,9 +340,8 @@ private routine cm_b64_tan_pi_exact(jq: U64, neg: U64) -> B64
 /// :param c: The B64 to add.
 /// :returns: The sum as a double-double.
 private routine cm_b64_tan_pi_fastsumddd(xh: B64, xl: B64, c: B64) -> CmF64TrigDD
-    block entry()
-        t: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: xh, b: c)
-        return(CmF64TrigDD(hi: t.hi, lo: xl.add(t.lo)))
+    t: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: xh, b: c)
+    return(CmF64TrigDD(hi: t.hi, lo: xl.add(t.lo)))
 
 /// Combines tan(pi z') = th + tl for the small residual angle with the table entry tan(pi iq/64) by the tangent
 /// addition formula, in double-double arithmetic (iq in 0..32, where 32 is the pole, handled as -1/t, and flip = 1
@@ -357,36 +352,35 @@ private routine cm_b64_tan_pi_fastsumddd(xh: B64, xl: B64, c: B64) -> CmF64TrigD
 /// :param flip: 1 to negate the table entry, 0 to keep it.
 /// :returns: The tangent of the whole angle as a double-double.
 private routine cm_b64_tan_pi_combine(th: B64, tl: B64, iq: U64, flip: U64) -> CmF64TrigDD
-    block entry()
-        pole: Bool = iq.eq(32)
-        branch pole
-            ? pole()
-            : continue
-        i: USize = iq.to[USize]().mul(2)
-        entry_l: B64 = B64.from_bits(CM_B64_TAN_PI_T.getitem(i))
-        entry_h: B64 = B64.from_bits(CM_B64_TAN_PI_T.getitem(i.add(1)))
-        negate: Bool = flip.eq(1)
-        nh0: B64 = negate
-            ? entry_h.neg()
-            : entry_h
-        nl0: B64 = negate
-            ? entry_l.neg()
-            : entry_l
-        mp: CmF64TrigDD = cm_b64_trig_pi_muldd(xh: th, xl: tl, ch: nh0, cl: nl0)
-        // the denominator 1 - (th + tl) n
-        mh: B64 = B64.sub(1.0, mp.hi)
-        dm: B64 = B64.sub(1.0, mh).sub(mp.hi)
-        ml: B64 = dm.sub(mp.lo)
-        // the numerator n + (th + tl)
-        ns: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: nh0, b: th)
-        nh: B64 = ns.hi
-        nl: B64 = nl0.add(ns.lo.add(tl))
-        imh: B64 = B64.div(1.0, mh)
-        rh: B64 = nh.mul(imh)
-        rem: B64 = mh.neg().mul_add(a: imh, b: 1.0).sub(ml.mul(imh))  // 1 - (mh + ml) imh
-        corr: B64 = nl.add(nh.mul(rem)).mul(imh)
-        rl: B64 = b64_mul_error(x: nh, y: imh, p: rh).add(corr)
-        return(CmF64TrigDD(hi: rh, lo: rl))
+    pole: Bool = iq.eq(32)
+    branch pole
+        ? pole()
+        : continue
+    i: USize = iq.to[USize]().mul(2)
+    entry_l: B64 = B64.from_bits(CM_B64_TAN_PI_T.getitem(i))
+    entry_h: B64 = B64.from_bits(CM_B64_TAN_PI_T.getitem(i.add(1)))
+    negate: Bool = flip.eq(1)
+    nh0: B64 = negate
+        ? entry_h.neg()
+        : entry_h
+    nl0: B64 = negate
+        ? entry_l.neg()
+        : entry_l
+    mp: CmF64TrigDD = cm_b64_trig_pi_muldd(xh: th, xl: tl, ch: nh0, cl: nl0)
+    // the denominator 1 - (th + tl) n
+    mh: B64 = B64.sub(1.0, mp.hi)
+    dm: B64 = B64.sub(1.0, mh).sub(mp.hi)
+    ml: B64 = dm.sub(mp.lo)
+    // the numerator n + (th + tl)
+    ns: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: nh0, b: th)
+    nh: B64 = ns.hi
+    nl: B64 = nl0.add(ns.lo.add(tl))
+    imh: B64 = B64.div(1.0, mh)
+    rh: B64 = nh.mul(imh)
+    rem: B64 = mh.neg().mul_add(a: imh, b: 1.0).sub(ml.mul(imh))  // 1 - (mh + ml) imh
+    corr: B64 = nl.add(nh.mul(rem)).mul(imh)
+    rl: B64 = b64_mul_error(x: nh, y: imh, p: rh).add(corr)
+    return(CmF64TrigDD(hi: rh, lo: rl))
 
     block pole()
         ith: B64 = B64.div(-1.0, th)
@@ -402,12 +396,11 @@ private routine cm_b64_tan_pi_database(x: B64, f: B64) -> B64
     local ixu: U64 = x.bits()
     local aix: U64 = ixu.bitand(0x7FFFFFFFFFFFFFFF)
 
-    block entry()
-        e: S64 = aix.shr(52).to_wrap[S64]().sub(1022)
-        periodic: Bool = e.ge(0)  // |x| >= 1/2
-        branch periodic
-            ? reduce(e.to_wrap[U64]())
-            : search(x.abs(), 0)
+    e: S64 = aix.shr(52).to_wrap[S64]().sub(1022)
+    periodic: Bool = e.ge(0)  // |x| >= 1/2
+    branch periodic
+        ? reduce(e.to_wrap[U64]())
+        : search(x.abs(), 0)
 
     // drop the integer part of |x|, then fold [1/2, 1) onto (0, 1/2]
     block reduce(e: U64)
