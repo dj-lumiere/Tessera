@@ -57,7 +57,7 @@ public class Rewriter
                 return Rename.ContainsKey(v.Name) ? v with { Name = N(v.Name) } : v;
             case LambdaExpr l: return l with { Body = Expr(l.Body) };
             case IsPattern p: return p.Binding is null ? p : p with { Binding = p.Binding with { Name = N(p.Binding.Name) } };
-            case CallExpr c: return c with { Args = c.Args.Select(Expr).ToList(), ArgNames = Names(c.Args, c.ArgNames) };
+            case CallExpr c: return c with { Args = c.Args.Select(Expr).ToList(), ArgNames = Names(c.Args, c.ArgNames, literal: char.IsUpper(c.Name[0])) };
             case NsCallExpr n: return n with { Args = n.Args.Select(Expr).ToList(), ArgNames = Names(n.Args, n.ArgNames) };
             case ImplicitCallExpr ic: return ic with { Args = ic.Args.Select(Expr).ToList(), ArgNames = Names(ic.Args, ic.ArgNames) };
             case MethodCallExpr m: return m with { Receiver = Expr(m.Receiver), Args = m.Args.Select(Expr).ToList(), ArgNames = Names(m.Args, m.ArgNames) };
@@ -79,9 +79,11 @@ public class Rewriter
 
     /// The argument names of a call whose arguments change: an argument that was a bare name of its parameter (a pun,
     /// `f(key, alloc)`) and now reads differently keeps the parameter's name. A call of one argument needs no name.
-    private List<string?>? Names(List<Expr> args, List<string?>? names)
+    /// A bare name passed to a routine (two or more arguments) or to a record literal (`Exited(code)`, any number)
+    /// stands for its parameter's name too: when the value is read under another name here, the name is written out.
+    private List<string?>? Names(List<Expr> args, List<string?>? names, bool literal = false)
     {
-        if (args.Count < 2) return names;
+        if (args.Count < 2 && !literal) return names;
         List<string?>? result = names is null ? null : new List<string?>(names);
         for (int i = 0; i < args.Count; i++)
         {
