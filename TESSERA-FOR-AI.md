@@ -76,7 +76,7 @@ routine start() -> Void
 
 - A value is written by its bare name, pointers included: `x: S64 = ...`, `claim p: @S64`. A bare name is the
   nearest visible value (routine and block parameters, earlier bindings in the block), else a preset, global, or type;
-  a call `f(...)` always names a routine. A routine as a value is `f.to[Callable]()` (never a bare `f`), and a value
+  a call `f(...)` always names a routine. A routine as a value is `f.to[Callable]()` (never a bare `f`), a generic one's instance `f[S64].to[Callable]()`, and a value
   named like a keyword (`block`, `null`, `return`, ...) is written between backticks: `` `block` ``. The type says
   whether a value is a pointer (`@T`, or `Addr` for an address with no pointee type, C's `void*`). `@T`
   passes where an `Addr` is expected; the other way takes `a.to[@T]()`. `@T` is how the record `Ptr[T]` is
@@ -156,7 +156,9 @@ routine start() -> Void
   receivers: anywhere else write `m.getview()` (`view: Span[U32] = m.getview()`). The view is valid until the memory
   is dropped or resized.
 - **Static and frame memory as a Span.** `preset NAME: Span[T] <- [a, b]` is read-only static data (a write faults
-  on a hosted target, the build doesn't catch it). `global NAME: Span[T] <- [0] x 26` is mutable static memory (the
+  on a hosted target, the build doesn't catch it). `preset GREETING: Span[Byte] <- "hello"` is a string literal's
+  bytes, and a Span preset of text Spans may name it: `preset WORDS: Span[Span[Byte]] <- [GREETING, "world"]` (a
+  `global` can't take a string literal: it is read-only). `global NAME: Span[T] <- [0] x 26` is mutable static memory (the
   literal is required: it gives the count). `claim xs: Span[T] <- [0] x 64` in a block and `local xs: Span[T] <-
   [...]` in the head put the values in the routine's frame, with a count the build knows (a literal count or a
   preset). An array literal passed as an argument where a Span is expected is a frame Span too: `total([4, 5, 6])`.
@@ -198,7 +200,8 @@ routine start() -> Void
 - `#threadlocal global NAME: @T [<- value]` gives each thread its own copy, starting from the value; the name is the
   running thread's copy, so don't hand it to another thread expecting that thread's copy. A preset can't be
   thread-local (read-only, so one copy serves every thread), a thread-local's address can't initialize another
-  global, and a target without an OS has no thread-locals. `#threadlocal` takes no arguments yet.
+  global, and a target without an OS has no thread-locals. `#threadlocal` takes no arguments yet. A thread ticket's
+  thread resets every thread-local to its starting value before each piece of work.
 - Every routine uses the C calling convention unless `#callconv` says `"fast"`, `"cold"`, or `"stdcall"`. `stdcall` is
   the Windows API's (`CreateThread`, its thread routine): callee-popped on 32-bit x86, the C convention elsewhere,
   so one declaration serves every target. A `Callable` carries it: `Callable<#callconv("stdcall"), (Addr,), U32>`.
@@ -217,7 +220,7 @@ routine start() -> Void
 - `#expensive` (or `#expensive("allocates heap memory")`, the reason reading after the routine's name) marks a routine
   that costs a lot on every call and every target: allocation and freeing (`allocate`, `reallocate`, `deallocate`,
   `Memory[T].construct` / `resize`, `Span[Byte].concat`, `List[T].reserve`), the operating system (`Out` / `Err` writes,
-  allocating `In` reads, file and directory operations, `FileHandle` I/O, processes, `Thread.spawn`), `U256` / `S256`
+  allocating `In` reads, file and directory operations, `FileHandle` I/O, processes, `launch_unwatched`), `U256` / `S256`
   division and `BigNat` division, and whole-buffer hashes. It changes nothing in the output and goes on routines
   only. `tessera lint` (and `check` / `build` / `run` for the program's own files, and the language server) warns on a
   direct call to one from a block on a loop (a block that can reach itself again through its jumps and arms), naming
@@ -226,7 +229,7 @@ routine start() -> Void
   passes, or keep it when each pass needs its own: there is no way to mark a call as meant yet
   (Roadmap open question #66), so `lint` prints these and counts them apart without failing. Don't mark what costs
   only on some targets (64-bit division on 32-bit, 128-bit division, `popcount`) or only now and then (`List.push`),
-  nor blocking waits (`SignalCaster.wait`, `wait_on`, `Thread.join`), which belong in loops.
+  nor blocking waits (`SignalCaster.wait`, `wait_on`, `wait_finished`), which belong in loops.
 - A `preset` value is folded by the builder, and only from literals, other presets, integer and `Bool` arithmetic and
   conversions (`add`, `shl`, `bitor`, `to[U128]()`, `to_wrap[U8]()`, …), B32/B64 `add`/`sub`/`mul`/`div`/`neg`,
   `max`/`min`/`sizeof`/`alignof`, and `T.from_bits(0x…)` for floats and B128. A routine call is an error; nothing
@@ -518,8 +521,9 @@ routine start() -> Void
   their parameter types (`me` included); a call picks the one whose parameter types are its arguments' types
   exactly. No implicit conversion counts there (a `@T` isn't an `Addr` overload's argument), and an untyped integer
   literal prefers `USize` (`SSize` if negative) when several take it. An exact concrete overload beats a generic
-  one; anything else ambiguous, or nothing fitting, is an error listing the overloads. Same parameter types, or a
-  difference only in the return type, is an error. A free routine's set is one module's (the file's own module
+  one, and a routine on an owner with its type arguments named (`routine Thread[Void].put_work`) beats the generic
+  owner's (`Thread[T].put_work`) for that receiver. Anything else ambiguous, or nothing fitting, is an error listing
+  the overloads. Same parameter types, or a difference only in the return type, is an error. A free routine's set is one module's (the file's own module
   hides an import's same name). A routine value of an overloaded name is picked by its Callable type
   (`f.to[Callable[(S64,), S64]]()`, or where it goes); an overloaded `#export` / `#external("c")` names its C
   symbol. Overload only for one operation over several types: a different behavior gets a different name
@@ -799,23 +803,49 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 - Every routine with a body starts with its entry block, the lines after its head's `local` lines (if it has any),
   which takes no parameters. A routine without a body must be `#external`.
 
-**Threads and fibers.** `Standard/Os` has `Thread.spawn(routine, state, alloc)` (or without `alloc`, on
-`DEFAULT_HEAP`) / `join()` / `detach()`, generic over the state: the routine takes an `@S` and `state` is one
-(`routine work(job: @Job) -> Void`, then `Thread.spawn(work.to[Callable](), job)`), so nothing converts through
-`Addr`; a thread with no state of its own is handed the global it works on. `ExclusiveLock`
-(`lock` / `unlock` / `try_lock`), `SignalCaster` (a condition variable for an ExclusiveLock: `wait(mutex)`,
-`wait_for(mutex, timeout_ns)` / `wait_until(mutex, deadline_ns)` returning whether it returned in time,
-`wake_one()` / `wake_all()`; a wait may return without a wake, so the waiter checks its condition again in a loop),
-`wait_on` / `wait_on_for` / `cast_one` / `cast_all` on a `@U32`, and `monotonic_ns()`. `Standard/Fiber`'s `FiberManager`
-runs fibers over worker threads: `.construct(workers, stacks, alloc)` (0 = one per processor), then
-`spawn(routine, state, stack_size)` (generic over the state like `Thread.spawn`: the routine takes an `@S` and
-`state` is one, and so for `spawn_joinable` and `run_blocking`), `yield()` inside a fiber, `run()`
-until all return, `destruct()`. Pass `make_stack_memory()` as `stacks` for guard pages. A fiber may move to
-another thread at a yield. A call that may block goes through `sched.run_blocking(routine, state)`, or
-`sched.read` / `sched.write`, so the worker runs other fibers meanwhile. A fiber waits without holding its worker
-with `park()` (until `wake(handle)`, the handle from `current()`; it may return early, so loop on the condition),
-`sleep(ns)`, or `join(j)` on a fiber from `spawn_joinable` (every `Join` is joined once). Fibers run on System V and Windows x86-64 (where the switch moves the thread
-block's stack fields with the stack), AArch64 outside Windows, and 32-bit ARM (ARM and Thumb code, Cortex-M included).
+**Threads and fibers are tickets.** A manager hands one out, and it is used in one flow, top to bottom:
+`t: Thread[S64] = get_thread[S64]()`, `t.put_work(entry: f.to[Callable](), args: x)` (it runs from here on),
+`t.check_finished()` to look without waiting or `t.wait_finished()` / `t.wait_finished_for(ns) -> Bool` to wait,
+`r: S64 = t.retrieve()`, then more work on the same ticket or `t.give_back()`. `T` is the result type, `Thread[Void]`
+for none. `args` is nothing, one value, or a tuple of two to four (`args: (a, b)`), copied into a block from the
+manager's allocator. A pointer argument must outlive the work, so wait before releasing what it points to. One piece
+of work at a time: `put_work` or `give_back` while it runs crashes with `TicketBusyError`, a ticket used after
+`give_back` with `TicketGivenBackError`, a ticket destructed before `give_back` with `TicketNotGivenBackError`, and
+`retrieve` with no work with `NoWorkError`. `cancel()` asks the work to stop: the work asks `cancel_requested()` where
+stopping is safe and returns. `retrieve()` of cancelled work crashes with `CancelledWorkError`, and `retrieve_result()
+-> Result[T, CancelRequested]` tells them apart. Before each piece of work a thread puts every `#threadlocal` global
+back to its starting value.
+- **Threads** (`Standard/Os/Thread.tess`, what both tickets share in `Work.tess`, who waits in `Waiter.tess`):
+  `get_thread[T]()` takes one from `DEFAULT_THREADS` (the hosted manager, OS threads,
+  blocks from `DEFAULT_HEAP`), `get_thread[T](manager)` from another. A `ThreadManager` is a record of a launch routine,
+  its state, the idle threads, and an allocator: `ThreadManager.construct(alloc)` is OS threads with another allocator,
+  `ThreadManager.construct(launch_fn, state, alloc)` a program's own (`launch_fn` starts a thread running `(entry,
+  arg)`, false when none starts), and `destruct()` ends its idle threads (give every ticket back first). A manager that
+  starts no thread crashes `get_thread` with `TaskSpawnError`. `manager.launch_unwatched(entry, arg)` (entry takes an
+  `@T`, `arg` is one and outlives the thread) starts a thread nobody waits for: only for a runtime's own threads that
+  live as long as the program. `cpu_count()`.
+- **Fibers** (`Standard/Fiber/FiberManager.tess`): `FIBERS.get_fiber[T]()`, the same flow and crashes. `FIBERS` is each thread's own
+  `FiberManager`, made on first use (64 KiB stacks from `DEFAULT_STACKS`), and on a thread ticket it goes when the
+  work is over. `FiberManager.construct(stacks, alloc, stack_size)` makes another (`make_stack_memory()` for guard
+  pages), `destruct()` frees it. A manager runs its fibers on ONE thread, the one that drives it, and never moves
+  them: cooperative, a fiber runs until it yields, parks, sleeps, waits, or its work finishes, so its fibers share
+  values without locks between those points. Driving: `wait_finished()` outside a fiber on the manager's thread runs
+  the manager until that work is done, `run()` until no fiber has work, `run_until_idle()` until none is ready.
+  Inside a fiber, waiting parks only that fiber: `wait_finished` of a fiber or THREAD ticket, `park()` (until
+  `wake(handle)` from any thread, the handle from `current()`, may return early so loop on the condition),
+  `park_until(deadline)`, `sleep(ns)`, and `run_blocking(work, arg)` (a blocking call on a thread ticket), which
+  `read` / `write` (`Standard/Fiber/Io.tess`) use. A blocking call made directly stops every fiber of its thread.
+  `yield()` lets the other ready fibers go first. Outside a fiber `sleep` waits the thread, `park` returns,
+  `run_blocking` just calls. More cores = thread tickets, each driving its own `FIBERS` (`tests/fiber_workers.tess`).
+- `migrate --step threads` rewrites `x: Thread = Thread.spawn(entry: f, arg: s)` / `x.join()` /
+  `Thread.spawn(...).detach()` into tickets and `launch_unwatched`.
+
+Locks and waits: `ExclusiveLock` (`lock` / `unlock` / `try_lock`), `SignalCaster` (a condition variable for an
+ExclusiveLock: `wait(mutex)`, `wait_for(mutex, timeout_ns)` / `wait_until(mutex, deadline_ns)` returning whether it
+returned in time, `cast_one()` / `cast_all()`, and a wait may return without a wake, so the waiter checks its condition
+again in a loop), `wait_on` / `wait_on_for` / `wake_one` / `wake_all` on a `@U32`, and `monotonic_ns()`. Fibers run
+on System V and Windows x86-64 (where the switch moves the thread block's stack fields with the stack), AArch64
+outside Windows, and 32-bit ARM (ARM and Thumb code, Cortex-M included).
 On any other target a program that switches fibers fails to link (`tessera_fibers_unsupported_on_this_target`).
 
 **Files.** `File.at(path)` and `Directory.at(path)` are paths (`Span[Byte]`, UTF-8, the W calls on Windows), and each
@@ -943,8 +973,8 @@ isn't empty is named for what it is: `ProcessOptions.default()` captures both st
 
 **The allocator comes last.** A routine that takes an `@MemoryManager` takes it as its last parameter:
 `List[T].construct(alloc)`, `Memory[T].construct(count, manager)`, `allocate[T](count, alloc)`,
-`deallocate(p, alloc)`, `In.read_line(alloc)`, `Thread.spawn(routine, state, alloc)`. A second allocator for another
-job goes just before it (`FiberManager.construct(workers, stacks, alloc)`). So the form without the allocator
+`deallocate(p, alloc)`, `In.read_line(alloc)`, `ThreadManager.construct(alloc)`. A second allocator for another
+job goes just before it. So the form without the allocator
 (`construct()` with `Standard/Os`) is the same call with the last argument left off.
 
 **Named arguments.** A call to a routine taking two or more arguments besides `me` names each one, in the order of
@@ -987,7 +1017,7 @@ value generic parameters are `UPPER_SNAKE_CASE` (`FsError.NOT_FOUND`, `U64.MAX`,
 choice member written otherwise.
 
 **Generic parameter names.** Count only the type parameters in scope. One is `T` (`List[T]`, `Maybe[T]`,
-`Writer[T]`, `BufWriter[T]`, `Thread.spawn[T]`, `S64.represent_into[T]`). Two or more are each `T` + its role in
+`Writer[T]`, `BufWriter[T]`, `Thread[T]`, `S64.represent_into[T]`). Two or more are each `T` + its role in
 PascalCase: `Dict[TKey, TValue]`, `Iterator[TItem, TIter]`,
 `Tuple2[TItem0, TItem1]`, `bitcast[TFrom, TTo]`; `Result[T, TError]` keeps plain `T` for its value and `TError`
 for the error. A routine's own type parameters count together with its owner
