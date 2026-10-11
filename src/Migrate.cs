@@ -336,6 +336,9 @@ public static class Migrate
     public static string HashComments(string text)
     {
         var lines = text.Split('\n');
+        // A source with `#` comments has been moved already: its `//` is Euclidean division, not a comment.
+        if (lines.Any(l => l.TrimStart() is var t && (t == "#" || t.StartsWith("# ") || t.StartsWith("###"))))
+            return text;
         for (int i = 0; i < lines.Length; i++)
         {
             string line = lines[i];
