@@ -644,7 +644,8 @@ routine sum_to(n: U64) -> U64
 ```
 
 Iterating a collection (`emit_checked` returns `Maybe[T]`, `Unit` past the end, `emit` crashes there; an iterator
-over elements in memory, `ListIter`, `ArrayIter`, `CircularListIter`, also hands out each element's slot with
+over elements in memory, `ListIter`, `ArrayIter`, `CircularListIter`, `DictValues` (a dict's values, never its keys),
+also hands out each element's slot with
 `next` / `next_checked`):
 
 ```tessera

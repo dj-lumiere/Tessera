@@ -202,6 +202,16 @@ public sealed partial class Compiler
             VerifyConformance(concept, args, conf);
             return null;
         }
+        // A conformance to a concept that refines this one (`SlotIterator` refines `Iterator`) gives this one too.
+        foreach (var refining in _conceptDecls.Values.SelectMany(d => d))
+        {
+            if (refining == concept || RefinedArgs(refining, concept, args) is not { } refiningArgs) continue;
+            if (!_conformances.Any(c => c.Concept.Name == refining.Name)) continue;
+            if (Conforms(refining, refiningArgs, file, at) is not null) continue;
+            var through = _conformances.First(c => c.Concept.Name == refining.Name);
+            VerifyConformance(concept, args, through);
+            return null;
+        }
         // A type parameter has only the constraints in force on it.
         if (_precheck is not null && args.Any(MentionsArchetype))
         {
@@ -215,6 +225,29 @@ public sealed partial class Compiler
             ? $" for {Target.LlvmTriple} (CPU {CpuModel.For(Target, at).Cpu}{(Target.Features.Count > 0 ? $", {string.Join(",", Target.Features)}" : "")})"
             : "";
         return $"no conformance to {Show(concept.Name, args)} is declared{where}";
+    }
+
+    /// The arguments of `refining` for which it gives `concept[args]` directly (its `conform` clause names `concept`
+    /// over its own parameters, as `concept SlotIterator[TItem, TIter]` does with `conform Iterator[TItem, TIter]`), or
+    /// null when it doesn't refine `concept` or its parameters aren't all fixed by `args`.
+    private static List<DType>? RefinedArgs(ConceptDecl refining, ConceptDecl concept, List<DType> args)
+    {
+        foreach (var super in refining.Clauses.Where(c => c.Kind == "conform").SelectMany(c => c.Concepts))
+        {
+            if (super.Name != concept.Name || super.Args.Count != args.Count) continue;
+            var bound = new DType?[refining.TypeParams.Count];
+            bool ok = true;
+            for (int i = 0; i < super.Args.Count && ok; i++)
+            {
+                int p = super.Args[i] is TypeArgType { Type: { Args.Count: 0, Path: null } name }
+                    ? refining.TypeParams.IndexOf(name.Name)
+                    : -1;
+                ok = p >= 0 && (bound[p] is null || bound[p]!.Equals(args[i]));
+                if (ok) bound[p] = args[i];
+            }
+            if (ok && bound.All(b => b is not null)) return bound.Select(b => b!).ToList();
+        }
+        return null;
     }
 
     /// Matches a type pattern over `vars` against a concrete type, binding the variables.
