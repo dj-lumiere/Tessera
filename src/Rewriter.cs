@@ -58,7 +58,8 @@ public class Rewriter
             case LambdaExpr l: return l with { Body = Expr(l.Body) };
             case IsPattern p: return p.Binding is null ? p : p with { Binding = p.Binding with { Name = N(p.Binding.Name) } };
             case CallExpr c: return c with { Args = c.Args.Select(Expr).ToList(), ArgNames = Names(c.Args, c.ArgNames, literal: char.IsUpper(c.Name[0])) };
-            case NsCallExpr n: return n with { Args = n.Args.Select(Expr).ToList(), ArgNames = Names(n.Args, n.ArgNames) };
+            // A call on a type (`B32.div(1.0, x)`) may pass `me` first, which is never named: its names stay as written.
+            case NsCallExpr n: return n with { Args = n.Args.Select(Expr).ToList() };
             case ImplicitCallExpr ic: return ic with { Args = ic.Args.Select(Expr).ToList(), ArgNames = Names(ic.Args, ic.ArgNames) };
             case MethodCallExpr m: return m with { Receiver = Expr(m.Receiver), Args = m.Args.Select(Expr).ToList(), ArgNames = Names(m.Args, m.ArgNames) };
             case FieldExpr f: return f with { Base = Expr(f.Base) };

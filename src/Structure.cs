@@ -968,6 +968,11 @@ public sealed class Structurer
             if (step is not BinaryExpr { Op: "+", Left: ValueRef l, Right: IntLit { Value: var one } } || l.Name != index.Name || one != 1)
                 return loop;
         }
+        // The index of `each` takes the type of a bound, or `USize` when both are bare numbers: a counter of another
+        // type between bare numbers stays a `while`, which names the type.
+        var counter = loop.With.First(c => c.Name == index.Name);
+        if (counter.Init is IntLit && cmp.Right is IntLit && counter.Type is not { Name: "USize", Path: null, Args.Count: 0 })
+            return loop;
         var with = loop.With.Where(c => c.Name != index.Name).ToList();
         var rewritten = StripIndex(loop.Body, index.Name);
         if (with.Count == 0 && rewritten.Count > 1 && rewritten[^1] is ContinueStmt { With: null }) rewritten.RemoveAt(rewritten.Count - 1);
