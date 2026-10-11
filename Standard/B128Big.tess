@@ -411,15 +411,21 @@ routine big_exp(x: B128Big) -> B128Big
     local small: B128Big = r.ldexp(-8)
 
     one: B128Big = big_one()
+    jump series(1, small, one + small)
 
     // term = small^j / j!
-    until big_is_negligible(term: term * small / (j + 1), sum) with j: U64 = 1, term: B128Big = small, sum: B128Big = one + small
-        continue with j: j + 1, term: next, sum: sum + next
-    then
-        each i in 0 til 8 with e: B128Big = sum
-            continue with e: e * e
-        then
+    block series(j: U64, term: B128Big, sum: B128Big)
+        next: B128Big = term * small / (j + 1)
+        if big_is_negligible(term: next, sum)
+            jump square(0, sum)
+        else
+            jump series(j + 1, next, sum + next)
+
+    block square(i: S64, e: B128Big)
+        if i >= 8
             return e.ldexp(q)
+        else
+            jump square(i + 1, e * e)
 
 /// e^x - 1 without cancellation: below 2^-20 its own series x Σ x^j / (j+1)!, else e^x - 1, which loses at most
 /// 21 of the 448 bits.
@@ -431,10 +437,12 @@ routine big_exp_m1(x: B128Big) -> B128Big
         zero => return x
         x.top() < -20 =>
             // term = x^j / j!
-            until big_is_negligible(term: term * x / (j + 1), sum) with j: U64 = 1, term: B128Big = x, sum: B128Big = x
-                continue with j: j + 1, term: next, sum: sum + next
-            then
-                return sum
+            while true with j: U64 = 1, term: B128Big = x, sum: B128Big = x
+                next2: B128Big = term * x / (j + 1)
+                if big_is_negligible(term: next2, sum)
+                    return sum
+                else
+                    continue with j: j + 1, term: next2, sum: sum + next2
         else => return big_exp(x) - big_one()
 
 // -- ln, ln_1p -----------------------------------------------------------------
@@ -539,10 +547,12 @@ routine big_sin_core(t: B128Big) -> B128Big
 
     // term = θ (-θ²)^k / (2k+1)!, and j = 2k + 1
     u: B128Big = -(t * t)
-    until big_is_negligible(term: term * u / ((j + 1) * (j + 2)), sum) with j: U64 = 1, term: B128Big = t, sum: B128Big = t
-        continue with j: j + 2, term: next, sum: sum + next
-    then
-        return sum
+    while true with j: U64 = 1, term: B128Big = t, sum: B128Big = t
+        next2: B128Big = term * u / ((j + 1) * (j + 2))
+        if big_is_negligible(term: next2, sum)
+            return sum
+        else
+            continue with j: j + 2, term: next2, sum: sum + next2
 
 /// cos θ = Σ (-θ²)^k / (2k)! for |θ| <= π/4.
 /// :param t: θ, with |θ| <= π/4.
@@ -554,10 +564,12 @@ routine big_cos_core(t: B128Big) -> B128Big
 
     // term = (-θ²)^k / (2k)!, and j = 2k
     u: B128Big = -(t * t)
-    until big_is_negligible(term: term * u / ((j + 1) * (j + 2)), sum) with j: U64 = 0, term: B128Big = one, sum: B128Big = one
-        continue with j: j + 2, term: next, sum: sum + next
-    then
-        return sum
+    while true with j: U64 = 0, term: B128Big = one, sum: B128Big = one
+        next2: B128Big = term * u / ((j + 1) * (j + 2))
+        if big_is_negligible(term: next2, sum)
+            return sum
+        else
+            continue with j: j + 2, term: next2, sum: sum + next2
 
 /// Reduces |x| by π/2 (Payne-Hanek). With |x| = m × 2^(e - 112), the bits of 2/π that land below 4 are a window W
 /// of 14 limbs (896 bits) from limb s on: |x| × 2/π mod 4 = m W × 2^-sh. The bits above sh give the quadrant, the

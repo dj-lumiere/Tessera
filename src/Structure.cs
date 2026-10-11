@@ -758,7 +758,9 @@ public sealed class Structurer
             var stayArm = (exitIsThen ? guard.Else : guard.Then) ?? [];
             body = EmitStmts(pre, headerRw, loopCtx);
             var test = headerRw.Expr(guard.Cond);
-            var (lifted, rest) = LiftCondition(body, test);
+            // A binding the loop's arms or the lines after the guard still read stays a line of the body.
+            var later = stayArm.Concat(exitArm).Concat(header.Stmts.Skip(at + 1)).ToList();
+            var (lifted, rest) = LiftCondition(body, test, later);
             if (lifted is null)
             {
                 // The condition needs lines of its own: the loop runs on `true`, and the test is a line of the body.
@@ -836,10 +838,11 @@ public sealed class Structurer
 
     /// The loop's condition with the Bool bindings it reads folded in, when the lines before it bind nothing else
     /// it reads: the condition and the lines left. Null when a line it needs can't be folded in.
-    private static (Expr? Cond, List<Stmt> Left) LiftCondition(List<Stmt> pre, Expr test)
+    private static (Expr? Cond, List<Stmt> Left) LiftCondition(List<Stmt> pre, Expr test, List<Stmt> later)
     {
         var rest = new List<Stmt>(pre);
         var cond = test;
+        var usedLater = Rewriter.UsesInBody(later).ToHashSet();
         for (int guard = 0; guard < 8; guard++)
         {
             var bound = Rewriter.BoundInBody(rest).ToHashSet();
@@ -854,7 +857,7 @@ public sealed class Structurer
                 // Only a value read once, with nothing after it that could change what it reads, folds in.
                 if (binding.Value is WhenExpr or IfExpr or ClaimExpr || Rewriter.Uses(cond).Count(u => u == name) != 1) return (null, pre);
                 if (rest.Skip(index + 1).Any(s => s is not BindStmt)) return (null, pre);
-                if (Rewriter.UsesInBody(rest.Skip(index + 1)).Contains(name)) return (null, pre);
+                if (Rewriter.UsesInBody(rest.Skip(index + 1)).Contains(name) || usedLater.Contains(name)) return (null, pre);
                 cond = new Rewriter { Subst = { [name] = binding.Value } }.Expr(cond);
                 rest.RemoveAt(index);
                 progressed = true;
