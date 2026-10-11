@@ -246,10 +246,10 @@ public sealed record Manifest(
         foreach (var raw in File.ReadLines(file))
         {
             string line = raw.Trim();
-            if (line.Length == 0 || line.StartsWith("//", StringComparison.Ordinal)) continue;
+            if (line.Length == 0 || line.StartsWith('#')) continue;
             string? Word(string keyword) =>
                 line.StartsWith(keyword + " ", StringComparison.Ordinal)
-                    ? line[(keyword.Length + 1)..].Split("//")[0].Trim()
+                    ? line[(keyword.Length + 1)..].Split('#')[0].Trim()
                     : null;
             if (Word("module") is { } m) module = m;
             else if (Word("import") is { } i) imports.Add(i);

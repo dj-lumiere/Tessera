@@ -128,7 +128,7 @@ public static partial class LanguageServer
     private static int EndBefore(string[] lines, int next)
     {
         int end = next - 1;
-        while (end > 1 && lines[end - 1].Trim() is var l && (l.Length == 0 || l.StartsWith("//") || l.StartsWith('#')))
+        while (end > 1 && lines[end - 1].Trim() is var l && (l.Length == 0 || l.StartsWith('#')))
             end--;
         return end;
     }

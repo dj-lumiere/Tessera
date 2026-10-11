@@ -99,15 +99,19 @@ public static partial class ConstructDestructMigration
             if (name is "USize" or "SSize") continue;
             var annotations = AnnotationsAbove(lines, i);
             if (annotations.Any(a => a.StartsWith("#llvm", StringComparison.Ordinal) || a.StartsWith("#union", StringComparison.Ordinal)
+                                     || a.StartsWith("@llvm", StringComparison.Ordinal) || a.StartsWith("@union", StringComparison.Ordinal)
                                      || a.Contains("llvm(", StringComparison.Ordinal) || a.Contains("union", StringComparison.Ordinal)
                                      && a.StartsWith("#[", StringComparison.Ordinal)))
                 continue;
             int end = i + 1;
             var require = new List<string>();
             while (end < lines.Count && (lines[end].StartsWith("conform ", StringComparison.Ordinal)
-                                         || lines[end].StartsWith("require ", StringComparison.Ordinal)))
+                                         || lines[end].StartsWith("obeys ", StringComparison.Ordinal)
+                                         || lines[end].StartsWith("require ", StringComparison.Ordinal)
+                                         || lines[end].StartsWith("needs ", StringComparison.Ordinal)))
             {
-                if (lines[end].StartsWith("require ", StringComparison.Ordinal)) require.Add(lines[end]);
+                if (lines[end].StartsWith("require ", StringComparison.Ordinal) || lines[end].StartsWith("needs ", StringComparison.Ordinal))
+                    require.Add(lines[end]);
                 end++;
             }
             var fields = new List<(string Name, string Type)>();
@@ -123,32 +127,32 @@ public static partial class ConstructDestructMigration
             string owner = name + typeArgs;
             // A type kept only on some targets keeps its routines there too.
             string target = annotations.Select(a => Regex.Match(a, @"target\((?:[^()]|\([^()]*\))*\)")).FirstOrDefault(m => m.Success)?.Value is { } t
-                ? $"#{t}\n"
+                ? $"@{t}\n"
                 : "";
             string kinds = Kinds(require);
             var added = new StringBuilder();
             if (needsConstruct)
             {
                 added.Append('\n');
-                added.Append($"/// Makes a `{name.Trim('`')}` from its fields.\n");
-                foreach (var (field, _) in fields) added.Append($"/// :param {field.Trim('`')}: Its `{field.Trim('`')}`.\n");
-                added.Append("/// :returns: The new value.\n");
+                added.Append($"### Makes a `{name.Trim('`')}` from its fields.\n");
+                foreach (var (field, _) in fields) added.Append($"### :param {field.Trim('`')}: Its `{field.Trim('`')}`.\n");
+                added.Append("### :returns: The new value.\n");
                 string ps = string.Join(", ", fields.Select(f => $"{f.Name}: {f.Type}"));
                 added.Append(target).Append($"{visibility}routine {owner}.construct({ps}) -> Me\n");
-                if (kinds.Length > 0) added.Append($"require {kinds}\n");
-                added.Append($"    return(Me({string.Join(", ", fields.Select(f => f.Name))}))\n");
+                if (kinds.Length > 0) added.Append($"needs {kinds}\n");
+                added.Append($"    return Me({string.Join(", ", fields.Select(f => f.Name))})\n");
             }
             if (needsDestruct)
             {
                 var owned = fields.Where(f => Owning.Contains(OuterName(f.Type))).ToList();
                 added.Append('\n');
                 added.Append(owned.Count == 0
-                    ? $"/// Releases nothing: a `{name.Trim('`')}` holds no memory of its own.\n"
-                    : $"/// Releases the memory its {string.Join(" and ", owned.Select(f => $"`{f.Name.Trim('`')}`"))} hold{(owned.Count == 1 ? "s" : "")}.\n");
-                added.Append(target).Append($"{visibility}routine {owner}.destruct(me: @Me) -> Void\n");
-                if (kinds.Length > 0) added.Append($"require {kinds}\n");
+                    ? $"### Releases nothing: a `{name.Trim('`')}` holds no memory of its own.\n"
+                    : $"### Releases the memory its {string.Join(" and ", owned.Select(f => $"`{f.Name.Trim('`')}`"))} hold{(owned.Count == 1 ? "s" : "")}.\n");
+                added.Append(target).Append($"{visibility}routine {owner}.destruct(me: @Me) -> None\n");
+                if (kinds.Length > 0) added.Append($"needs {kinds}\n");
                 foreach (var (field, _) in owned) added.Append($"    me.{field}.destruct()\n");
-                added.Append("    return()\n");
+                added.Append("    return\n");
             }
             // After the type's last line, before the blank line that ends it.
             lines.InsertRange(end, added.ToString().TrimEnd('\n').Split('\n'));
@@ -172,20 +176,22 @@ public static partial class ConstructDestructMigration
             if (holds(owner) || kept.Contains(owner)) continue;
             // The signature, which may go on over lines, ends at its result type.
             int end = i;
-            while (end < lines.Count && !Regex.IsMatch(lines[end], @"\)\s*->\s*\S+\s*(//.*)?$")) end++;
+            while (end < lines.Count && !Regex.IsMatch(lines[end], @"\)\s*->\s*\S+\s*((//|#).*)?$")) end++;
             if (end >= lines.Count) continue;
             int body = end + 1;
-            while (body < lines.Count && lines[body].StartsWith("require ", StringComparison.Ordinal)) body++;
+            while (body < lines.Count && (lines[body].StartsWith("require ", StringComparison.Ordinal) ||
+                                          lines[body].StartsWith("needs ", StringComparison.Ordinal))) body++;
             int after = body;
             while (after < lines.Count && lines[after].StartsWith("    ", StringComparison.Ordinal)) after++;
             if (after - body != 1) continue;
             string only = lines[body];
             bool trivial = m.Groups[2].Value == "construct"
-                ? Regex.IsMatch(only, @"^    return\(Me\((`?\w+`?(, `?\w+`?)*)?\)\)\s*$")
-                : Regex.IsMatch(only, @"^    return\(\)\s*$");
+                ? Regex.IsMatch(only, @"^    return(\(Me\((`?\w+`?(, `?\w+`?)*)?\)\)| Me\((`?\w+`?(, `?\w+`?)*)?\))\s*$")
+                : Regex.IsMatch(only, @"^    return(\(\))?\s*$");
             if (!trivial) continue;
             int start = i;
-            while (start > 0 && (lines[start - 1].StartsWith("///", StringComparison.Ordinal) || lines[start - 1].StartsWith('#'))) start--;
+            while (start > 0 && (lines[start - 1].StartsWith("///", StringComparison.Ordinal) || lines[start - 1].StartsWith('#') ||
+                                 lines[start - 1].StartsWith('@'))) start--;
             // The blank line before it goes too, so the ones around it don't double.
             if (start > 0 && lines[start - 1].Length == 0) start--;
             lines.RemoveRange(start, after - start);
@@ -209,8 +215,10 @@ public static partial class ConstructDestructMigration
     private static List<string> AnnotationsAbove(List<string> lines, int at)
     {
         var found = new List<string>();
-        for (int k = at - 1; k >= 0 && (lines[k].StartsWith('#') || lines[k].StartsWith("///", StringComparison.Ordinal)); k--)
-            if (lines[k].StartsWith('#')) found.Add(lines[k]);
+        for (int k = at - 1; k >= 0 && (lines[k].StartsWith('#') || lines[k].StartsWith('@') || lines[k].StartsWith("///", StringComparison.Ordinal)); k--)
+            if (lines[k].StartsWith("#[", StringComparison.Ordinal) || lines[k].StartsWith('@') ||
+                lines[k].StartsWith('#') && lines[k].Length > 1 && char.IsAsciiLetter(lines[k][1]))
+                found.Add(lines[k]);
         return found;
     }
 
@@ -228,8 +236,9 @@ public static partial class ConstructDestructMigration
         var parts = new List<string>();
         foreach (string line in require)
         {
-            string body = line["require ".Length..];
+            string body = line[(line.StartsWith("needs ", StringComparison.Ordinal) ? "needs ".Length : "require ".Length)..];
             int comment = body.IndexOf("//", StringComparison.Ordinal);
+            if (comment < 0) comment = body.IndexOf('#');
             if (comment >= 0) body = body[..comment];
             int depth = 0, start = 0;
             for (int k = 0; k <= body.Length; k++)
