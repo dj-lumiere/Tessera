@@ -1270,8 +1270,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new ExprStmt(lhs, pos);
     }
 
-    /// A keyword at the head of a line that is a value's name after all: `then: U64 = 1`, `until.poke(0)`.
-    private bool StartsValue() => PeekTok(1).Kind is TokenKind.Colon or TokenKind.Dot or TokenKind.Comma or TokenKind.Eq;
+    /// A keyword at the head of a line that is a value's name after all: `then: U64 = 1`, `until.poke(0)`. A word no
+    /// value can be named (`return`) stays the keyword, so `return .hollow()` gives back the owner-less call.
+    private bool StartsValue() => !ReservedValueNames.Contains(Cur.Text)
+                                  && PeekTok(1).Kind is TokenKind.Colon or TokenKind.Dot or TokenKind.Comma or TokenKind.Eq;
 
     /// The value a binding takes: an expression on the line, or a `when` whose arms follow on the lines below.
     private Expr ParseValue(int col)

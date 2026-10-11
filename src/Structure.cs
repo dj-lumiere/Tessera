@@ -770,7 +770,8 @@ public sealed class Structurer
             {
                 body = rest;
                 cond = exitIsThen ? Not(lifted) : lifted;
-                if (exitArm is [JumpStmt j] && j.Block == frame.Post) then = null;
+                // Leaving to the block after the loop, or to the loop written after it, is what the loop's own end does.
+                if (exitArm is [JumpStmt j] && (j.Block == frame.Post || frame.After is { } following && j.Block == following.Block)) then = null;
                 else
                 {
                     // `then` runs after the loop, inside the loop around it, and sees the carried values.
