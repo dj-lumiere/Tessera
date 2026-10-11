@@ -697,11 +697,15 @@ routine start() -> Void
   library `#llvm("iN")` record with no fields is an integer underneath (`B128` is an `i128`). `#layout(align: N)` sets
   a record's alignment, `#aligned` a field's.
 - A record can't contain itself by value; go through a `Ptr`.
-- **Every record declares a `construct` (returning `Me`) and a `destruct(me: @Me) -> Void`, every variant a
-  `destruct`** (a build error otherwise; choices and the machine types need neither). A record of plain values:
-  `routine Point.construct(x: S64, y: S64) -> Me` / `return(Me(x, y))` and `routine Point.destruct(me: @Me) -> Void`
-  / `return()`. A record that holds memory releases its fields in `destruct`. `tessera migrate --step lifecycle`
-  writes both for a type that lacks them.
+- **A type that holds something to release declares a `construct` (returning `Me`) and a `destruct(me: @Me) -> Void`**
+  (a variant only the `destruct`), a build error otherwise that names what it holds. It holds something when a field
+  (a branch, for a variant) is an address (`@T`, `Addr`), a `Box` or `Memory`, a value of a type parameter, or a value
+  of a type that itself holds something (a `List`, an `OwnedCStr`, a record with such a field). Its `destruct`
+  releases those fields. A type of plain data (numbers, `Bool`, choices, records and variants of those) declares
+  neither: `Point(x: 1, y: 2)` makes it and nothing releases it. It may still declare them, and a plain type used where
+  generic code asks for `Destructible[T]` (`destruct_all`) declares a `destruct` that does nothing. `tessera migrate
+  --step lifecycle` writes both for a holding type that lacks them, and removes the one-line ones (`return(Me(x, y))`,
+  `return()`) from a plain-data type.
 
 **Tuples**
 
