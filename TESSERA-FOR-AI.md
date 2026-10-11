@@ -737,11 +737,11 @@ always `Result`.
 | `Array[T, COUNT]` | `[a, b]` literal, `getslot`, `getitem` (on a value or a pointer: `[2, 3, 5].getitem(i)`), `setitem`, `getslice`, `to[Slice[T]]`, `shift_left`, `shift_right`, `copy`, `destruct_all` (no `destruct`: it acquires nothing) | index |
 | `List[T]` | `add_last`, `remove_last`, `getitem`, `setitem`, `getslice`, `to[Slice[T]]`, `clear`, `reserve` | index |
 | `CircularList[T]` | `add_first`, `add_last`, `remove_first`, `remove_last`, `getitem`, `setitem` | front to back |
-| `Dict[TKey, TValue]` | `setitem`, `getitem`, `contains`, `remove` | **insertion order (guaranteed)** |
-| `Set[T]` | `add`, `contains`, `remove` | **insertion order (guaranteed)** |
-| `SortedDict[TKey, TValue]` | `setitem`, `getitem`, `contains`, `remove`, `get_by_rank(rank)` (a `KVPair` copy), `value_ptr_by_rank(rank)` | ascending key |
-| `SortedSet[T]` | `add`, `contains`, `remove`, `get_by_rank(rank)` | ascending |
-| `SortedList[T]` | `add` (sorted, after equals), `getitem` / `get_by_rank`, `rank(v)`, `contains`, `remove(i)` (`T: Comparable[T]`) | ascending |
+| `Dict[TKey, TValue]` | `setitem` (adds or replaces), `getitem`, `has_key` / `lacks_key`, `remove` | **insertion order (guaranteed)** |
+| `Set[T]` | `add`, `has` / `lacks`, `remove` | **insertion order (guaranteed)** |
+| `SortedDict[TKey, TValue]` | `setitem`, `getitem`, `has_key` / `lacks_key`, `remove`, `get_by_rank(rank)` (a `KVPair` copy), `value_ptr_by_rank(rank)` | ascending key |
+| `SortedSet[T]` | `add`, `has` / `lacks`, `remove`, `get_by_rank(rank)` | ascending |
+| `SortedList[T]` | `add` (sorted, after equals), `getitem` / `get_by_rank`, `rank(v)`, `has` / `lacks`, `remove(i)` (`T: Comparable[T]`) | ascending |
 | `PriorityQueue[TPriority, TElement]` | `add(priority, element)`, `remove` / `peek` (the element), `remove_entry` / `peek_entry` (a `PriorityEntry` with `priority` and `element`); a min-heap on `TPriority: Comparable[TPriority]`, the smallest first, `Reversed[T]` priorities for the largest first | none (the top first) |
 
 No collection is unordered. Hash collections keep insertion order: updating a present key keeps its position, and
@@ -936,10 +936,11 @@ their signature), generated code (files under a `generated` directory, routines 
 emitter writes), and `Callable` types. `tessera lint` warns on the rest (`check`, `build`, `run` too, for the
 program's own files).
 
-**`Bool` routines: `is_`, `has_`, or `contains`.** A routine that answers a question names which kind: `is_` asks about
+**`Bool` routines: `is_`, `has_`, or membership.** A routine that answers a question names which kind: `is_` asks about
 a state of the value (`is_empty`, `is_null`, `is_finite`, `is_utf8`, `file.is_present()`, `file.is_accessible(access)`),
 `has_` about a part it has (`text.has_prefix(p)` / `has_suffix(s)`, `n.has_bit(i)`, `SliceWriter.has_overflowed()`),
-and membership is `contains` (`set.contains(x)`, `dict.contains(k)`, `text.contains(needle)`). There are no other bare
+and membership is `has` / `lacks` (`set.has(x)`, `text.has(needle)`, `set.lacks(x)`) and `has_key` / `lacks_key` for
+a dict's key (`dict.has_key(k)`). There are no other bare
 predicates (`empty()`, `finite()`, `exists()`, `all()`), no `should_`, and no `starts_with`. A capability is `is_[x]able`,
 never `can_[x]`: `is_readable`, `is_writable`, `is_seekable` (not `can_read`, `can_write`, `can_seek`), and a C ABI
 symbol keeps its own name (`rf_fs_can_read`). A vector mask asks
