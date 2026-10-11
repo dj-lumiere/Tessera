@@ -52,13 +52,13 @@ variant ExitStatus
 
 /// One environment variable for the child.
 record EnvVar
-    name: Bytes
-    value: Bytes
+    name: Span[Byte]
+    value: Span[Byte]
 
 /// How {run_process_result} starts a program: its working directory, environment overrides, and what its standard
 /// streams are. {ProcessOptions.default} is a good start.
 record ProcessOptions
-    directory: Maybe[Bytes]  // where it starts: Unit for this process's working directory
+    directory: Maybe[Span[Byte]]  // where it starts: Unit for this process's working directory
     env: @EnvVar  // env_count overrides of this process's environment
     env_count: USize
     stdin: InputMode
@@ -70,8 +70,8 @@ record ProcessOptions
 record ProcessOutput
 conform Destructible[ProcessOutput]
     status: ExitStatus
-    stdout: Bytes
-    stderr: Bytes
+    stdout: Memory[Byte]
+    stderr: Memory[Byte]
 
 /// Makes a `Exited` from its fields.
 /// :param code: Its `code`.
@@ -101,7 +101,7 @@ routine ExitStatus.destruct(me: @Me) -> Void
 /// :param name: Its `name`.
 /// :param value: Its `value`.
 /// :returns: The new value.
-routine EnvVar.construct(name: Bytes, value: Bytes) -> Me
+routine EnvVar.construct(name: Span[Byte], value: Span[Byte]) -> Me
     return(Me(name, value))
 
 /// Releases the memory its `name` and `value` hold.
@@ -118,7 +118,7 @@ routine EnvVar.destruct(me: @Me) -> Void
 /// :param stdout: Its `stdout`.
 /// :param stderr: Its `stderr`.
 /// :returns: The new value.
-routine ProcessOptions.construct(directory: Maybe[Bytes], env: @EnvVar, env_count: USize,
+routine ProcessOptions.construct(directory: Maybe[Span[Byte]], env: @EnvVar, env_count: USize,
     stdin: InputMode, stdout: OutputMode, stderr: OutputMode) -> Me
     return(Me(directory, env, env_count, stdin, stdout, stderr))
 
@@ -131,14 +131,15 @@ routine ProcessOptions.destruct(me: @Me) -> Void
 /// :param stdout: Its `stdout`.
 /// :param stderr: Its `stderr`.
 /// :returns: The new value.
-routine ProcessOutput.construct(status: ExitStatus, stdout: Bytes, stderr: Bytes) -> Me
+routine ProcessOutput.construct(status: ExitStatus, stdout: Memory[Byte],
+    stderr: Memory[Byte]) -> Me
     return(Me(status, stdout, stderr))
 
 /// Gives both captured streams back to the allocator they came from.
 #track_caller
 routine ProcessOutput.destruct(me: @Me) -> Void
-    me.stdout.destruct()
-    me.stderr.destruct()
+    me.stdout.drop()
+    me.stderr.drop()
     return()
 
 /// No directory and no overrides, the null device as input, and both output streams captured.
@@ -168,34 +169,33 @@ routine ExitStatus.is_success(me: Me) -> Bool
 /// :param alloc: The allocator for the captured output and the working memory.
 /// :returns: The {ProcessOutput}, or a {ProcessError} when the shell couldn't start.
 #expensive("starts a process")
-routine run_shell_result(command: Bytes, options: ProcessOptions,
+routine run_shell_result(command: Span[Byte], options: ProcessOptions,
     alloc: @MemoryManager) -> Result[ProcessOutput, ProcessError]
-    claim args: @Array[Bytes, 2] <- [shell_flag(), command]
-    return(run_process_result(program: shell_program(), args: args.to[Slice[Bytes]](), options,
-        alloc))
+    claim args: @Array[Span[Byte], 2] <- [shell_flag(), command]
+    return(run_process_result(program: shell_program(), args: args.getview(), options, alloc))
 
 /// The platform shell {run_shell_result} starts: `cmd.exe` on Windows, `/bin/sh` elsewhere.
 /// :returns: The program name.
 #target(os: "windows")
-private routine shell_program() -> Bytes
+private routine shell_program() -> Span[Byte]
     return("cmd.exe")
 
 /// The shell's flag that takes a command line: `/c` for cmd.exe, `-c` for sh.
 /// :returns: The flag.
 #target(os: "windows")
-private routine shell_flag() -> Bytes
+private routine shell_flag() -> Span[Byte]
     return("/c")
 
 /// The platform shell {run_shell_result} starts: `cmd.exe` on Windows, `/bin/sh` elsewhere.
 /// :returns: The program name.
 #target(os: ("linux", "macos"))
-private routine shell_program() -> Bytes
+private routine shell_program() -> Span[Byte]
     return("/bin/sh")
 
 /// The shell's flag that takes a command line: `/c` for cmd.exe, `-c` for sh.
 /// :returns: The flag.
 #target(os: ("linux", "macos"))
-private routine shell_flag() -> Bytes
+private routine shell_flag() -> Span[Byte]
     return("-c")
 
 /// Sets the exit status the program ends with when `start` returns. The last store wins: it is one atomic value, so
@@ -220,32 +220,31 @@ routine exit(status: S32) -> Void
 
 // -- what both halves share ------------------------------------------------------------
 
-/// A captured stream as it grows, in memory from an allocator.
+/// A captured stream as it grows, in memory from an allocator: `storage` holds the capacity, `count` the bytes in
+/// use.
 internal record CaptureBuffer
-    data: @Byte
+    storage: Memory[Byte]
     count: USize
-    capacity: USize
     failed: Bool  // an allocation failed: what came after was dropped
 
 /// Makes a `CaptureBuffer` from its fields.
-/// :param data: Its `data`.
+/// :param storage: Its `storage`.
 /// :param count: Its `count`.
-/// :param capacity: Its `capacity`.
 /// :param failed: Its `failed`.
 /// :returns: The new value.
-internal routine CaptureBuffer.construct(data: @Byte, count: USize, capacity: USize,
-    failed: Bool) -> Me
-    return(Me(data, count, capacity, failed))
+internal routine CaptureBuffer.construct(storage: Memory[Byte], count: USize, failed: Bool) -> Me
+    return(Me(storage, count, failed))
 
-/// Releases nothing: a `CaptureBuffer` holds no memory of its own.
+/// Gives the buffer's memory back.
 internal routine CaptureBuffer.destruct(me: @Me) -> Void
+    me.storage.drop()
     return()
 
 /// An empty capture buffer that holds no memory yet. Its `failed` is read when the run ends: a capture that lost
 /// bytes makes the run fail with OutOfMemory instead of handing back a truncated stream.
 /// :returns: The buffer.
 internal routine CaptureBuffer.empty() -> Me
-    return(Me(data: null, count: 0, capacity: 0, failed: false))
+    return(Me(storage: .hollow(), count: 0, failed: false))
 
 /// Appends `n` bytes, growing the buffer (to at least double, and at least 256 bytes). An allocation failure drops
 /// them and marks the buffer `failed`.
@@ -255,27 +254,32 @@ internal routine CaptureBuffer.empty() -> Me
 internal routine CaptureBuffer.append(me: @Me, chunk: @Byte, n: USize,
     alloc: @MemoryManager) -> Void
     local need: USize = me.count.peek().add(n)
+    local capacity: USize = me.storage.count.peek()
 
-    branch need.gt(me.capacity.peek())
+    branch need.gt(capacity)
         ? grow_to_fit()
         : put()
 
     block grow_to_fit()
-        doubled: USize = me.capacity.peek().mul(2)
+        doubled: USize = capacity.mul(2)
         jump grow(doubled.max(need).max(256))
 
-    block grow(capacity: USize)
-        old: @Byte = me.data.peek()
-        branch old.is_null()
-            ? grown(capacity, allocate[Byte](count: capacity, alloc))
-            : grown(capacity, reallocate[Byte](ptr: old, new_count: capacity, alloc))
-
-    block grown(capacity: USize, bigger: @Byte)
-        branch bigger.is_null()
-            ? lost()
+    block grow(bigger: USize)
+        branch me.storage.data.peek().is_null()
+            ? fresh(bigger)
             : continue
-        me.data.poke(bigger)
-        me.capacity.poke(capacity)
+        resized: Result[Unit, AllocFailed] = me.storage.resize_result(bigger)
+        when resized
+            is Unit => put()
+            is AllocFailed => lost()
+
+    block fresh(bigger: USize)
+        made: Result[Memory[Byte], AllocFailed] = Memory[Byte].construct_result(count: bigger,
+            manager: alloc)
+        when made
+            is Memory[Byte] as memory => continue
+            is AllocFailed => lost()
+        me.storage.poke(memory)
         jump put()
 
     block lost()
@@ -283,24 +287,21 @@ internal routine CaptureBuffer.append(me: @Me, chunk: @Byte, n: USize,
         return()
 
     block put()
-        me.data.peek().stride(me.count.peek()).copy(src: chunk, count: n)
+        me.storage.getslot(me.count.peek()).copy(src: chunk, count: n)
         next_count: USize = me.count.peek().add(n)
         next_count.poke_into(me.count)
         return()
 
-/// What was captured, owned by the caller, who releases it with `destruct()`.
-/// :param alloc: The allocator the buffer was filled from.
-/// :returns: The captured bytes, carrying `alloc`.
-internal routine CaptureBuffer.owned(me: Me, alloc: @MemoryManager) -> Bytes
-    owned: Bytes = Bytes(data: me.data, count: me.count, alloc: alloc)
-    return(owned)
+/// What was captured, owned by the caller, who drops it.
+/// :returns: The captured bytes.
+internal routine CaptureBuffer.owned(me: Me) -> Memory[Byte]
+    return(Memory[Byte](data: me.storage.data, count: me.count, manager: me.storage.manager,
+        generation: me.storage.generation))
 
-/// What was captured, owned by the caller, who releases it with `destruct()`.
-/// :param alloc: The allocator the buffer was filled from.
-/// :returns: The captured bytes, carrying `alloc`.
-internal routine CaptureBuffer.owned(me: @Me, alloc: @MemoryManager) -> Bytes
-    owned: Bytes = me.peek().owned(alloc)
-    return(owned)
+/// What was captured, owned by the caller, who drops it.
+/// :returns: The captured bytes.
+internal routine CaptureBuffer.owned(me: @Me) -> Memory[Byte]
+    return(me.peek().owned())
 
 /// Whether a NUL is inside any text the child would get, or an override's name holds a '=': what run_process_result
 /// turns down with InvalidArgument before it allocates anything, so a later failure to allocate is OutOfMemory.
@@ -308,7 +309,8 @@ internal routine CaptureBuffer.owned(me: @Me, alloc: @MemoryManager) -> Bytes
 /// :param args: The arguments.
 /// :param options: The directory and environment overrides.
 /// :returns: True when the program, an argument, an override, or the directory can't be passed to the child.
-internal routine has_nul(program: Bytes, args: Slice[Bytes], options: ProcessOptions) -> Bool
+internal routine has_nul(program: Span[Byte], args: Span[Span[Byte]],
+    options: ProcessOptions) -> Bool
     local arg_count: USize = args.count()
 
     branch program.has("\x00")
@@ -319,7 +321,7 @@ internal routine has_nul(program: Bytes, args: Slice[Bytes], options: ProcessOpt
         branch i.eq(arg_count)
             ? env(0)
             : continue
-        argument: Bytes = args.getitem(i)
+        argument: Span[Byte] = args.getitem(i)
         branch argument.has("\x00")
             ? return(true)
             : arg(i.add(1))
@@ -336,7 +338,7 @@ internal routine has_nul(program: Bytes, args: Slice[Bytes], options: ProcessOpt
 
     block directory()
         when options.directory
-            is Bytes as d => return(d.has("\x00"))
+            is Span[Byte] as d => return(d.has("\x00"))
             is Unit => return(false)
 
 /// Whether `name`'s bytes equal the start of `entry` up to its '=' (a "NAME=VALUE" entry), ASCII letters in any case
@@ -345,7 +347,7 @@ internal routine has_nul(program: Bytes, args: Slice[Bytes], options: ProcessOpt
 /// :param entry: The "NAME=VALUE" entry.
 /// :param fold: True to compare ASCII letters without regard to case.
 /// :returns: True when `entry` is the variable `name`.
-internal routine env_key_matches(name: Bytes, entry: Bytes, fold: Bool) -> Bool
+internal routine env_key_matches(name: Span[Byte], entry: Span[Byte], fold: Bool) -> Bool
     n: USize = name.count()
     branch entry.count().gt(n)
         ? continue

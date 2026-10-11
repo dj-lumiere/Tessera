@@ -431,7 +431,7 @@ public static class Derive
                 sb.Append("        when me\n");
                 foreach (var (name, _) in c.Members)
                     sb.Append($"            {c.Name}.{name} => named(\"{prefix}{name}\")\n");
-                sb.Append("\n    block named(text: Bytes)\n");
+                sb.Append("\n    block named(text: Span[Byte])\n");
                 sb.Append("        Standard/Format/write_str(out, text)\n");
                 sb.Append("        return()\n");
                 break;

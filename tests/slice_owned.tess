@@ -1,7 +1,7 @@
-// A Slice[T] from construct(count, alloc) owns heap memory: an address, a count, and the allocator it came from.
-// destruct() gives the memory back to that allocator, destruct_all() destructs the values first, resize reallocates,
-// and the _result forms return an error instead of crashing. A counting allocator shows every block coming back,
-// and a refusing one the failures.
+// A Memory[T] from construct(count, manager) is memory from a manager: an address, a count, the manager, and a
+// generation. drop() gives the memory back to that manager, destruct_all() destructs the values first, resize
+// reallocates, and the _result forms return an error instead of crashing. A counting manager shows every block coming
+// back, and a refusing one the failures.
 
 import Standard/Alloc
 import Standard/Collections
@@ -64,20 +64,20 @@ routine refuse_alloc(state: Addr, size: USize, align: USize) -> Addr
 routine refuse_realloc(state: Addr, old: Addr, size: USize, align: USize) -> Addr
     return(null)
 
-routine show(label: Bytes, counts: @Counts) -> Void
+routine show(label: Span[Byte], counts: @Counts) -> Void
     Out.write("{label}: live {counts.live.peek()}, allocator calls {counts.calls.peek()}\n")
     return()
 
 /// Reading and writing through both receivers, and resizing.
 routine values(counts: @Counts, alloc: @MemoryManager) -> Void
-    claim owned: @Slice[S64] <- .construct(count: 3, alloc)
+    claim owned: @Memory[S64] <- .construct(count: 3, manager: alloc)
     owned.setitem(index: 0, value: 10)
     owned.setitem(index: 1, value: 20)
     owned.getslot(2).poke(30)
-    copy: Slice[S64] = owned.peek()
+    copy: Span[S64] = owned.getview()
     Out.write("count {owned.count()} and {copy.count()}, values {owned.getitem(0)} {copy.getitem(1)} {owned.getslot(2).peek()}\n")
     Out.write("getitem_checked(2) {owned.getitem_checked(2)}, getitem_checked(3) {copy.getitem_checked(3)}\n")
-    tail: Slice[S64] = owned.getslice(start: 1, count: 2)
+    tail: Span[S64] = owned.getslice(start: 1, count: 2)
     Out.write("getslice(1, 2): {tail.getitem(0)} {tail.getitem(1)}, first by address {owned.to[@S64]().peek()}\n")
     owned.resize(5)
     owned.setitem(index: 4, value: 50)
@@ -86,21 +86,21 @@ routine values(counts: @Counts, alloc: @MemoryManager) -> Void
     owned.resize(0)
     Out.write("after resize(0): count {owned.count()}\n")
     show(label: "  given back", counts)
-    owned.destruct()
+    owned.drop()
     return()
 
-/// A count of 0 allocates nothing, and destruct on an empty slice gives nothing back.
+/// A count of 0 allocates nothing, and drop on empty memory gives nothing back.
 routine empty(counts: @Counts, alloc: @MemoryManager) -> Void
-    claim nothing: @Slice[U8] <- .construct(count: 0, alloc)
+    claim nothing: @Memory[U8] <- .construct(count: 0, manager: alloc)
     Out.write("empty: count {nothing.count()}, getitem_checked(0) {nothing.getitem_checked(0)}\n")
-    nothing.destruct()
-    nothing.destruct()
-    show(label: "  after two destructs", counts)
+    nothing.drop()
+    nothing.drop()
+    show(label: "  after two drops", counts)
     return()
 
-/// destruct_all releases what each value owns, then the slice itself.
+/// destruct_all releases what each value owns, then the memory itself.
 routine nested(counts: @Counts, alloc: @MemoryManager) -> Void
-    claim rows: @Slice[List[S64]] <- .construct(count: 2, alloc)
+    claim rows: @Memory[List[S64]] <- .construct(count: 2, manager: alloc)
     rows.setitem(index: 0, value: List[S64].construct(alloc))
     rows.setitem(index: 1, value: List[S64].construct(alloc))
     rows.getslot(0).add_last(1)
@@ -112,14 +112,14 @@ routine nested(counts: @Counts, alloc: @MemoryManager) -> Void
     show(label: "  after destruct_all", counts)
     return()
 
-/// Text from a Slice[Byte].
+/// Text in a Memory[Byte].
 routine text(alloc: @MemoryManager) -> Void
-    claim bytes: @Slice[Byte] <- .construct(count: 2, alloc)
+    claim bytes: @Memory[Byte] <- .construct(count: 2, manager: alloc)
     bytes.setitem(index: 0, value: b'o')
     bytes.setitem(index: 1, value: b'k')
-    copy: Slice[Byte] = bytes.peek()
-    Out.write("text: {bytes.to[Bytes]()} {copy.to[Bytes]().count()}\n")
-    bytes.destruct()
+    copy: Span[Byte] = bytes.getview()
+    Out.write("text: {bytes.getview()} {copy.getview().count()}\n")
+    bytes.drop()
     return()
 
 /// The _result forms against an allocator that refuses everything.
@@ -128,9 +128,9 @@ routine refused() -> Void
         realloc_fn: refuse_realloc.to[Callable](), free_fn: DEFAULT_HEAP.free_fn.peek(),
         reserve_fn: null, commit_fn: null, release_fn: null, protect_fn: null, state: null)
     claim alloc: @MemoryManager <- refusing
-    made: Result[Slice[U8], AllocFailed] = Slice[U8].construct_result(count: 4, alloc)
+    made: Result[Memory[U8], AllocFailed] = Memory[U8].construct_result(count: 4, manager: alloc)
     Out.write("construct_result: failed {made.is_failure()}, {made.unwrap_failure()}\n")
-    claim none: @Slice[U8] <- .construct(count: 0, alloc)
+    claim none: @Memory[U8] <- .construct(count: 0, manager: alloc)
     resized: Result[Unit, AllocFailed] = none.resize_result(4)
     Out.write("resize_result: {resized}, count still {none.count()}\n")
     return()

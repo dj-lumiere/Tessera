@@ -8,36 +8,50 @@
 //     h.write("total = {total}\n")
 //     h.close()
 //
-// The path is a Bytes. File.at and Directory.at keep the one they're given, so a borrowed path's text must outlive the
-// File (a literal's does). A routine that makes a path (file, subdir, absolute, canonical, the well-known
-// directories) takes an allocator, and the path it makes carries that allocator: `file.destruct()` /
-// `dir.destruct()` gives it back. destruct() on a File or Directory over a borrowed path does nothing.
+// The path is a Span[Byte]. File.at and Directory.at keep the one they're given, so a borrowed path's text must outlive
+// the File (a literal's does). A routine that makes a path (file, subdir, absolute, canonical, the well-known
+// directories) takes an allocator, and the File or Directory holds that memory in `storage`: `file.destruct()` /
+// `dir.destruct()` drops it. destruct() on a File or Directory over a borrowed path does nothing.
 
 module Standard/Os
 
 import Standard/Alloc
 
-/// A file, by its path. `destruct()` gives the path back when it was made from an allocator.
+/// A file, by its path. `destruct()` drops the path's memory when the File made it.
 record File
 conform Destructible[File]
-    path: Bytes
+    path: Span[Byte]
+    storage: Memory[Byte]  // the path's memory when it was made from an allocator, hollow when it is borrowed
 
-/// A directory, by its path. `destruct()` gives the path back when it was made from an allocator.
+/// A directory, by its path. `destruct()` drops the path's memory when the Directory made it.
 record Directory
 conform Destructible[Directory]
-    path: Bytes
+    path: Span[Byte]
+    storage: Memory[Byte]  // the path's memory when it was made from an allocator, hollow when it is borrowed
 
-/// Makes a `File` from its fields.
-/// :param path: Its `path`.
+/// A `File` over a borrowed path, which must outlive it.
+/// :param path: The path.
 /// :returns: The new value.
-routine File.construct(path: Bytes) -> Me
-    return(Me(path))
+routine File.construct(path: Span[Byte]) -> Me
+    return(Me(path, storage: .hollow()))
 
-/// Makes a `Directory` from its fields.
-/// :param path: Its `path`.
+/// A `File` that takes over the memory of its path, dropped by `destruct()`.
+/// :param path: The path's memory.
 /// :returns: The new value.
-routine Directory.construct(path: Bytes) -> Me
-    return(Me(path))
+routine File.construct(path: Memory[Byte]) -> Me
+    return(Me(path: path.getview(), storage: path))
+
+/// A `Directory` over a borrowed path, which must outlive it.
+/// :param path: The path.
+/// :returns: The new value.
+routine Directory.construct(path: Span[Byte]) -> Me
+    return(Me(path, storage: .hollow()))
+
+/// A `Directory` that takes over the memory of its path, dropped by `destruct()`.
+/// :param path: The path's memory.
+/// :returns: The new value.
+routine Directory.construct(path: Memory[Byte]) -> Me
+    return(Me(path: path.getview(), storage: path))
 
 // -- File --------------------------------------------------------------------------------
 
@@ -45,14 +59,18 @@ routine Directory.construct(path: Bytes) -> Me
 /// and one with an allocator goes back to it with `destruct()`.
 /// :param path: The path of the file, as UTF-8 bytes.
 /// :returns: A {File} holding `path`.
-routine File.at(path: Bytes) -> Me
-    return(Me(path: path))
+routine File.at(path: Span[Byte]) -> Me
+    return(Me.construct(path))
 
 /// Gives the path back to the allocator it came from (a path made by `Directory.file`, `absolute`, `canonical`, ...)
 /// and leaves the path empty. Does nothing when the path is borrowed (a literal, or text someone else gives back).
 #track_caller
 routine File.destruct(me: @Me) -> Void
-    me.path.destruct()
+    branch me.storage.data.peek().is_null()
+        ? return()
+        : continue
+    me.storage.drop()
+    me.path.poke(.hollow())
     return()
 
 /// Whether something is at the path (a link counts as what it points at).
@@ -109,19 +127,19 @@ routine File.open_read_write_result(me: Me) -> Result[FileHandle, FsError]
 routine File.create_new_result(me: Me) -> Result[FileHandle, FsError]
     return(FileHandle.open(path: me.path, mode: OpenMode.CREATE_NEW))
 
-/// The whole file, in memory from alloc (release it with destruct()).
+/// The whole file, in memory from alloc (drop it).
 /// :param alloc: The allocator for the bytes.
 /// :returns: The file's bytes, or the {FsError} the OS reported, `OutOfMemory` when
 ///     `alloc` fails or the file is too large for the address space (4 GiB or more on a 32-bit target).
 #expensive("asks the operating system")
-routine File.read_all_result(me: Me, alloc: @MemoryManager) -> Result[Bytes, FsError]
+routine File.read_all_result(me: Me, alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
     return(read_file(path: me.path, alloc))
 
 /// Writes data as the whole file: made if missing, replaced if not.
 /// :param data: The bytes to write.
 /// :returns: A value, or the {FsError} the OS reported.
 #expensive("asks the operating system")
-routine File.write_all_result(me: Me, data: Bytes) -> Result[Unit, FsError]
+routine File.write_all_result(me: Me, data: Span[Byte]) -> Result[Unit, FsError]
     return(write_file(path: me.path, data))
 
 /// Copies the bytes (and on Linux and macOS the permissions) to destination, made or replaced: the bytes copied. On
@@ -186,23 +204,23 @@ routine File.map_result(me: Me, write: Bool, offset: U64, count: USize) -> Resul
 
 /// The last part of the path: "/a/b/file.txt" gives "file.txt".
 /// :returns: The last part of the path, a view into it.
-routine File.name(me: Me) -> Bytes
+routine File.name(me: Me) -> Span[Byte]
     return(file_name(me.path))
 
 /// The name without its extension: "archive.tar.gz" gives "archive.tar".
 /// :returns: The name without its extension, a view into the path.
-routine File.stem(me: Me) -> Bytes
+routine File.stem(me: Me) -> Span[Byte]
     return(file_stem(me.path))
 
 /// The extension without its dot: "file.txt" gives "txt", "file" gives "".
 /// :returns: The extension, a view into the path, or empty.
-routine File.extension(me: Me) -> Bytes
+routine File.extension(me: Me) -> Span[Byte]
     return(file_extension(me.path))
 
 /// The directory the path names the file in (by the text: nothing is looked up).
 /// :returns: A {Directory} over the leading part of the path.
 routine File.parent(me: Me) -> Directory
-    return(Directory(path: parent_path(me.path)))
+    return(Directory.construct(path: parent_path(me.path)))
 
 /// The path made absolute by the text: the working directory in front of a relative one (on Windows "." and ".."
 /// taken out too), nothing looked up. The new path is in memory from alloc: give it back with
@@ -211,9 +229,9 @@ routine File.parent(me: Me) -> Directory
 /// :returns: The absolute {File}, or the {FsError} the OS reported.
 #expensive("asks the operating system")
 routine File.absolute_result(me: Me, alloc: @MemoryManager) -> Result[Me, FsError]
-    r: Result[Bytes, FsError] = absolute_path(path: me.path, alloc)
+    r: Result[Memory[Byte], FsError] = absolute_path(path: me.path, alloc)
     when r
-        is Bytes as p => return(Me(path: p))
+        is Memory[Byte] as p => return(Me.construct(path: p))
         is FsError as error => return(error)
 
 /// The absolute path with every link, ".", and ".." resolved. The file must exist. In memory from alloc: give it back
@@ -222,9 +240,9 @@ routine File.absolute_result(me: Me, alloc: @MemoryManager) -> Result[Me, FsErro
 /// :returns: The canonical {File}, or the {FsError} the OS reported.
 #expensive("asks the operating system")
 routine File.canonical_result(me: Me, alloc: @MemoryManager) -> Result[Me, FsError]
-    r: Result[Bytes, FsError] = canonical_path(path: me.path, alloc)
+    r: Result[Memory[Byte], FsError] = canonical_path(path: me.path, alloc)
     when r
-        is Bytes as p => return(Me(path: p))
+        is Memory[Byte] as p => return(Me.construct(path: p))
         is FsError as error => return(error)
 
 // -- Directory ---------------------------------------------------------------------------
@@ -233,14 +251,18 @@ routine File.canonical_result(me: Me, alloc: @MemoryManager) -> Result[Me, FsErr
 /// directory, and one with an allocator goes back to it with `destruct()`.
 /// :param path: The path of the directory, as UTF-8 bytes.
 /// :returns: A {Directory} holding `path`.
-routine Directory.at(path: Bytes) -> Me
-    return(Me(path: path))
+routine Directory.at(path: Span[Byte]) -> Me
+    return(Me.construct(path))
 
 /// Gives the path back to the allocator it came from (a path made by `subdir`, `current`, `temp`, ...) and leaves the
 /// path empty. Does nothing when the path is borrowed (a literal, or text someone else gives back).
 #track_caller
 routine Directory.destruct(me: @Me) -> Void
-    me.path.destruct()
+    branch me.storage.data.peek().is_null()
+        ? return()
+        : continue
+    me.storage.drop()
+    me.path.poke(.hollow())
     return()
 
 /// Whether a directory is at the path (a link counts as what it points at).
@@ -311,23 +333,23 @@ routine Directory.is_accessible(me: Me, access: Access) -> Bool
 
 /// The last part of the path: "/a/b/" gives "b".
 /// :returns: The last part of the path, a view into it.
-routine Directory.name(me: Me) -> Bytes
+routine Directory.name(me: Me) -> Span[Byte]
     return(file_name(me.path))
 
 /// The directory this one is in, by the text of the path: nothing is looked up, and no memory is allocated.
 /// :returns: A {Directory} over the leading part of the path.
 routine Directory.parent(me: Me) -> Me
-    return(Me(path: parent_path(me.path)))
+    return(Me.construct(path: parent_path(me.path)))
 
-/// The file name in this directory, its path in memory from alloc (`file.destruct()` gives it back).
+/// The file name in this directory, its path in memory from alloc (`file.destruct()` drops it).
 /// :param name: The file's name.
 /// :param alloc: The allocator for the new path.
 /// :returns: The {File}.
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 #track_caller
 #expensive("allocates the joined path")
-routine Directory.file(me: Me, name: Bytes, alloc: @MemoryManager) -> File
-    return(File(path: join_path(a: me.path, b: name, alloc)))
+routine Directory.file(me: Me, name: Span[Byte], alloc: @MemoryManager) -> File
+    return(File.construct(path: join_path(a: me.path, b: name, alloc)))
 
 /// The directory name in this directory, its path in memory from alloc (`dir.destruct()` gives it
 /// back).
@@ -337,8 +359,8 @@ routine Directory.file(me: Me, name: Bytes, alloc: @MemoryManager) -> File
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 #track_caller
 #expensive("allocates the joined path")
-routine Directory.subdir(me: Me, name: Bytes, alloc: @MemoryManager) -> Me
-    return(Me(path: join_path(a: me.path, b: name, alloc)))
+routine Directory.subdir(me: Me, name: Span[Byte], alloc: @MemoryManager) -> Me
+    return(Me.construct(path: join_path(a: me.path, b: name, alloc)))
 
 /// The path made absolute by its text: the working directory in front of a relative one, nothing else looked up. The
 /// new path is in memory from `alloc`. Give it back with `dir.destruct()`.
@@ -346,9 +368,9 @@ routine Directory.subdir(me: Me, name: Bytes, alloc: @MemoryManager) -> Me
 /// :returns: The absolute {Directory}, or the {FsError} the OS reported.
 #expensive("asks the operating system")
 routine Directory.absolute_result(me: Me, alloc: @MemoryManager) -> Result[Me, FsError]
-    r: Result[Bytes, FsError] = absolute_path(path: me.path, alloc)
+    r: Result[Memory[Byte], FsError] = absolute_path(path: me.path, alloc)
     when r
-        is Bytes as p => return(Me(path: p))
+        is Memory[Byte] as p => return(Me.construct(path: p))
         is FsError as error => return(error)
 
 /// The absolute path with every link, `.`, and `..` resolved. The directory must exist, and the new path is in memory
@@ -357,12 +379,12 @@ routine Directory.absolute_result(me: Me, alloc: @MemoryManager) -> Result[Me, F
 /// :returns: The canonical {Directory}, or the {FsError} the OS reported (NotFound when it is missing).
 #expensive("asks the operating system")
 routine Directory.canonical_result(me: Me, alloc: @MemoryManager) -> Result[Me, FsError]
-    r: Result[Bytes, FsError] = canonical_path(path: me.path, alloc)
+    r: Result[Memory[Byte], FsError] = canonical_path(path: me.path, alloc)
     when r
-        is Bytes as p => return(Me(path: p))
+        is Memory[Byte] as p => return(Me.construct(path: p))
         is FsError as error => return(error)
 
-/// The working directory, its path in memory from alloc (`dir.destruct()` gives it back).
+/// The working directory, its path in memory from alloc (`dir.destruct()` drops it).
 /// :param alloc: The allocator for the new path.
 /// :returns: The working {Directory}, or the {FsError} the OS reported.
 #expensive("asks the operating system")
@@ -376,7 +398,7 @@ routine Directory.set_current_result(me: Me) -> Result[Unit, FsError]
     return(set_current_dir(me.path))
 
 /// The temporary directory (TMPDIR or /tmp, on Windows GetTempPathW's), its path in memory from alloc
-/// (`dir.destruct()` gives it back).
+/// (`dir.destruct()` drops it).
 /// :param alloc: The allocator for the new path.
 /// :returns: The temporary {Directory}, or the {FsError} the OS reported.
 #expensive("asks the operating system")
@@ -394,9 +416,9 @@ routine Directory.home_result(alloc: @MemoryManager) -> Result[Me, FsError]
 /// Wraps the path of a successful result as a {Directory}, passing a failure through unchanged.
 /// :param r: A path result from one of the well-known-directory routines.
 /// :returns: The same outcome, with the path as a {Directory}.
-private routine directory_of(r: Result[Bytes, FsError]) -> Result[Directory, FsError]
+private routine directory_of(r: Result[Memory[Byte], FsError]) -> Result[Directory, FsError]
     when r
-        is Bytes as p => return(Directory(path: p))
+        is Memory[Byte] as p => return(Directory.construct(path: p))
         is FsError as error => return(error)
 
 /// Starts listing dir's entries.

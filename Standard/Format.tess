@@ -29,7 +29,7 @@ require T: typename
     /// :param count: The number of bytes to write.
     routine Me.write_bytes(me: @Me, data: @Byte, count: USize) -> Void
 
-/// A type that can write its program-output text into a Writer with `represent_into`. Integers write decimal (`represent_hex_into` gives hex), Bytes writes itself unquoted, and Bool writes `true` or `false`.
+/// A type that can write its program-output text into a Writer with `represent_into`. Integers write decimal (`represent_hex_into` gives hex), Span[Byte] writes itself unquoted, and Bool writes `true` or `false`.
 /// :typeparam T: The type that can write its program-output text.
 concept Representable[T]
 require T: typename
@@ -62,7 +62,7 @@ conform Representable[S8], Representable[S16], Representable[S32], Representable
 conform Representable[U8], Representable[U16], Representable[U32], Representable[U64], Representable[U128], Representable[U256]
 conform Representable[USize], Representable[SSize]
 conform Representable[B16], Representable[BF16], Representable[B32], Representable[B64], Representable[B128]
-conform Representable[Bool], Representable[Char], Representable[Bytes], Representable[Addr], Representable[Unit]
+conform Representable[Bool], Representable[Char], Representable[Span[Byte]], Representable[Addr], Representable[Unit]
 conform Representable[Array[T, COUNT]] when T: typename, COUNT: USize, Diagnosable[T]
 
 conform HexRepresentable[S8], HexRepresentable[S16], HexRepresentable[S32], HexRepresentable[S64], HexRepresentable[S128], HexRepresentable[S256]
@@ -95,17 +95,13 @@ routine SliceWriter.construct(data: @Byte, capacity: USize) -> Me
 
 /// The text written so far, a view into the buffer.
 /// :returns: The bytes written so far, a view into the buffer.
-routine SliceWriter.to[Bytes](me: Me) -> Bytes
-    data: @Byte = me.data
-    count: USize = me.count
-    s: Bytes = .from_ptr(data, count)
-    return(s)
+routine SliceWriter.getview(me: Me) -> Span[Byte]
+    return(Span[Byte].construct(data: me.data, count: me.count))
 
 /// The text written so far, a view into the buffer.
 /// :returns: The bytes written so far, a view into the buffer.
-routine SliceWriter.to[Bytes](me: @Me) -> Bytes
-    s: Bytes = .from_ptr(data: me.data.peek(), count: me.count.peek())
-    return(s)
+routine SliceWriter.getview(me: @Me) -> Span[Byte]
+    return(me.peek().getview())
 
 /// True once some write did not fit in the buffer, meaning the text was cut off.
 /// :returns: True when at least one write was cut short.
@@ -267,7 +263,7 @@ routine CountWriter.write_bytes(me: @Me, data: @Byte, count: USize) -> Void
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 /// :param text: The bytes to write.
-routine write_str[T](out: @T, text: Bytes) -> Void
+routine write_str[T](out: @T, text: Span[Byte]) -> Void
 require T: typename, Writer[T]
     data: @Byte = text.data
     count: USize = text.count
@@ -735,7 +731,7 @@ require T: typename, Writer[T]
 /// Writes the bytes as they are, without quotes or escapes.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine Bytes.represent_into[T](me: Me, out: @T) -> Void
+routine Span[Byte].represent_into[T](me: Me, out: @T) -> Void
 require T: typename, Writer[T]
     write_str(out, text: me)
     return()
@@ -1243,7 +1239,7 @@ require T: typename, Writer[T]
             negative => text("-inf")
             else => text("inf")
 
-    block text(s: Bytes)
+    block text(s: Span[Byte])
         write_str(out, text: s)
         return()
 
@@ -1420,7 +1416,7 @@ require T: typename, Writer[T]
             ? text("-inf")
             : text("inf")
 
-    block text(s: Bytes)
+    block text(s: Span[Byte])
         write_str(out, text: s)
         return()
 
@@ -1574,7 +1570,7 @@ choice Align: U8
 /// How `represent_with_into` pads a value: the minimum width in characters, the fill text, and the alignment.
 record FormatSpec
     width: USize
-    fill: Bytes
+    fill: Span[Byte]
     align: Align
 
 /// Passes writes on to inner, putting pad copies of fill before the first
@@ -1583,7 +1579,7 @@ record SignPadWriter[T]
 require T: typename
 conform Writer[SignPadWriter[T]] when T: typename, Writer[T]
     inner: @T
-    fill: Bytes
+    fill: Span[Byte]
     pad: USize
 
 /// Releases the memory its `fill` holds.
@@ -1596,7 +1592,7 @@ routine FormatSpec.destruct(me: @Me) -> Void
 /// :param fill: Its `fill`.
 /// :param pad: Its `pad`.
 /// :returns: The new value.
-routine SignPadWriter[T].construct(inner: @T, fill: Bytes, pad: USize) -> Me
+routine SignPadWriter[T].construct(inner: @T, fill: Span[Byte], pad: USize) -> Me
 require T: typename
     return(Me(inner, fill, pad))
 
@@ -1630,7 +1626,7 @@ routine FormatSpec.with_align(me: Me, align: Align) -> Me
 /// The same spec with a different fill: one character (any UTF-8 text works, but width counts it as one).
 /// :param fill: The new fill text.
 /// :returns: A copy of the spec with the new fill.
-routine FormatSpec.with_fill(me: Me, fill: Bytes) -> Me
+routine FormatSpec.with_fill(me: Me, fill: Span[Byte]) -> Me
     spec: Me = Me(width: me.width, fill: fill, align: me.align)
     return(spec)
 
@@ -1639,7 +1635,7 @@ routine FormatSpec.with_fill(me: Me, fill: Bytes) -> Me
 /// :param out: The Writer the text is written to.
 /// :param text: The text to write.
 /// :param count: How many times to write it.
-routine write_repeated[T](out: @T, text: Bytes, count: USize) -> Void
+routine write_repeated[T](out: @T, text: Span[Byte], count: USize) -> Void
 require T: typename, Writer[T]
     jump loop(count)
 
@@ -1661,7 +1657,7 @@ require T: typename, Writer[T]
 /// :param spec: The width, fill and alignment to apply.
 routine represent_with_into[TValue, TWriter](out: @TWriter, value: TValue, spec: FormatSpec) -> Void
 require TValue: typename, TWriter: typename, Writer[TWriter], Representable[TValue]
-    local fill: Bytes = spec.fill
+    local fill: Span[Byte] = spec.fill
 
     claim counter: @CountWriter <- .construct()
     value.represent_into(counter)
@@ -1702,7 +1698,7 @@ require T: typename, Writer[T]
         : pass(data, count)
 
     block first()
-        fill: Bytes = me.fill.peek()
+        fill: Span[Byte] = me.fill.peek()
         me.pad.poke(0)
         byte: U8 = Byte.to[U8](data.stride(0).peek())
         signed: Bool = byte.eq(45).bitor(byte.eq(43))  // - or +
@@ -1710,12 +1706,12 @@ require T: typename, Writer[T]
             ? sign(fill)
             : pad(fill, data, count)
 
-    block sign(fill: Bytes)
+    block sign(fill: Span[Byte])
         inner.write_bytes(data, count: 1)
         rest: @Byte = data.stride(1)
         jump pad(fill, rest, count.sub(1))
 
-    block pad(fill: Bytes, from: @Byte, left: USize)
+    block pad(fill: Span[Byte], from: @Byte, left: USize)
         write_repeated(out: inner, text: fill, count: pad)
         jump pass(from, left)
 

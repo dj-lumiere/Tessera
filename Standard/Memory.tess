@@ -5,8 +5,8 @@
 // make_heap_memory(), backed by libc malloc / realloc / free, is in
 // Standard/Os (Os/Heap.tess).
 //
-// Heap memory reaches user code as a Slice (Types/Slice.tess) or Bytes: an
-// address, a count, and this allocator, released with destruct(). allocate,
+// Heap memory reaches user code as a Memory[T] (Types/Memory.tess) or a Box[T]:
+// an address, a count, and this manager, released with drop(). allocate,
 // reallocate, and deallocate below are the raw layer under it, for the stdlib's
 // own node-based structures (B-tree nodes, thread and fiber records) and for
 // memory that C code hands over. Sizes and counts are USize.
@@ -257,7 +257,7 @@ require T: typename
 /// :typeparam T: The element type.
 /// :param data: The block, from `allocate` or `reallocate`.
 /// :param alloc: The allocator the block came from.
-/// :note: The raw layer under {Slice[T]} and {Bytes}, whose `destruct()` calls it. Code that holds a Slice never needs it.
+/// :note: A raw layer beside {Memory[T]} and {Box[T]}, for node-based structures and memory C hands over. Code that holds a Memory never needs it.
 #track_caller
 #expensive("frees heap memory")
 routine deallocate[T](data: @T, alloc: @MemoryManager) -> Void
@@ -353,24 +353,24 @@ private routine copy_bytes(dst: Addr, src: Addr, bytes: USize) -> Void
 /// `CStr` with `to[CStr]()` and gives the memory back with `destruct()`.
 record OwnedCStr
 conform Destructible[OwnedCStr]
-    storage: Slice[CChar]
+    storage: Memory[CChar]
 
 /// A copy of some text in wide characters ending with a 0, for C, in memory from an allocator:
 /// `text.to[OwnedCWStr](alloc)`. It lends a `CWStr` with `to[CWStr]()` and gives the memory back with `destruct()`.
 record OwnedCWStr
 conform Destructible[OwnedCWStr]
-    storage: Slice[CWChar]
+    storage: Memory[CWChar]
 
 /// Makes a `OwnedCStr` from its fields.
 /// :param storage: Its `storage`.
 /// :returns: The new value.
-routine OwnedCStr.construct(storage: Slice[CChar]) -> Me
+routine OwnedCStr.construct(storage: Memory[CChar]) -> Me
     return(Me(storage))
 
 /// Makes a `OwnedCWStr` from its fields.
 /// :param storage: Its `storage`.
 /// :returns: The new value.
-routine OwnedCWStr.construct(storage: Slice[CWChar]) -> Me
+routine OwnedCWStr.construct(storage: Memory[CWChar]) -> Me
     return(Me(storage))
 
 /// The text, borrowed: valid until `destruct()`.
@@ -415,9 +415,9 @@ routine OwnedCWStr.destruct(me: @Me) -> Void
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 #track_caller
 #expensive("allocates a copy")
-routine Bytes.to[OwnedCStr](me: Me, alloc: @MemoryManager) -> OwnedCStr
+routine Span[Byte].to[OwnedCStr](me: Me, alloc: @MemoryManager) -> OwnedCStr
     count: USize = me.count
-    buffer: Slice[CChar] = Slice[CChar].construct(count: count.add(1), alloc)
+    buffer: Memory[CChar] = Memory[CChar].construct(count: count.add(1), manager: alloc)
     buffer.data.to[@Byte]().copy(src: me.data, count)
     buffer.data.stride(count).poke(0)
     owned: OwnedCStr = OwnedCStr(storage: buffer)
@@ -429,7 +429,7 @@ routine Bytes.to[OwnedCStr](me: Me, alloc: @MemoryManager) -> OwnedCStr
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 #track_caller
 #expensive("allocates a copy")
-routine Bytes.to[OwnedCStr](me: @Me, alloc: @MemoryManager) -> OwnedCStr
+routine Span[Byte].to[OwnedCStr](me: @Me, alloc: @MemoryManager) -> OwnedCStr
     owned: OwnedCStr = me.peek().to[OwnedCStr](alloc)
     return(owned)
 
@@ -440,8 +440,8 @@ routine Bytes.to[OwnedCStr](me: @Me, alloc: @MemoryManager) -> OwnedCStr
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 #track_caller
 #expensive("allocates a copy")
-routine Bytes.to[OwnedCWStr](me: Me, alloc: @MemoryManager) -> OwnedCWStr
-    local storage: Slice[CWChar] = Slice[CWChar].construct(count: me.count.add(1), alloc)
+routine Span[Byte].to[OwnedCWStr](me: Me, alloc: @MemoryManager) -> OwnedCWStr
+    local storage: Memory[CWChar] = Memory[CWChar].construct(count: me.count.add(1), manager: alloc)
     local units: @CWChar = storage.data
     local iter: @BytesCharsIter <- me.chars()
     local n: @USize <- 0
@@ -469,7 +469,7 @@ routine Bytes.to[OwnedCWStr](me: Me, alloc: @MemoryManager) -> OwnedCWStr
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 #track_caller
 #expensive("allocates a copy")
-routine Bytes.to[OwnedCWStr](me: @Me, alloc: @MemoryManager) -> OwnedCWStr
+routine Span[Byte].to[OwnedCWStr](me: @Me, alloc: @MemoryManager) -> OwnedCWStr
     owned: OwnedCWStr = me.peek().to[OwnedCWStr](alloc)
     return(owned)
 

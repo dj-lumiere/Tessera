@@ -1,7 +1,7 @@
 // Tessera stdlib collection: List[T]
 //
-// Dynamic array: a Slice[T] whose count is the capacity, and the number of
-// elements in use. The allocator lives in the Slice, so callers do not pass
+// Dynamic array: a Memory[T] whose count is the capacity, and the number of
+// elements in use. The manager lives in the Memory, so callers do not pass
 // it to individual operations.
 
 module Standard/Collections
@@ -9,7 +9,7 @@ module Standard/Collections
 import Standard/Alloc
 import Standard/Format
 
-/// A growable array of `T` stored contiguously on the heap: `storage` holds the capacity (a {Slice[T]}, which keeps the allocator) and `count` the elements in use. The buffer grows by doubling, and the list is released with `destruct`.
+/// A growable array of `T` stored contiguously on the heap: `storage` holds the capacity (a {Memory[T]}, which keeps the manager) and `count` the elements in use. The buffer grows by doubling, and the list is released with `destruct`.
 /// :typeparam T: The element type.
 record List[T]
 conform Destructible[List[T]]
@@ -17,7 +17,7 @@ conform Equatable[List[T]] when T: typename, Equatable[T]
 conform Representable[List[T]] when T: typename, Diagnosable[T]
 conform Diagnosable[List[T]] when T: typename, Diagnosable[T]
 require T: typename
-    storage: Slice[T]
+    storage: Memory[T]
     count: USize
 
 /// Creates an empty List that draws its storage from `alloc`. Nothing is allocated until the first insertion.
@@ -25,7 +25,7 @@ require T: typename
 /// :returns: A new empty List.
 routine List[T].construct(alloc: @MemoryManager) -> Me
 require T: typename
-    storage: Slice[T] = Slice[T].construct(count: 0, alloc)
+    storage: Memory[T] = Memory[T].construct(count: 0, manager: alloc)
     list: Me = Me(storage: storage, count: 0)
     return(list)
 
@@ -209,7 +209,7 @@ require T: typename
 #track_caller
 routine List[T].getitem(me: Me, index: USize) -> T
 require T: typename
-    value: T = me.to[Slice[T]]().getitem(index)
+    value: T = me.getview().getitem(index)
     return(value)
 
 /// Reads the element at `index`.
@@ -219,7 +219,7 @@ require T: typename
 #track_caller
 routine List[T].getitem(me: @Me, index: USize) -> T
 require T: typename
-    value: T = me.to[Slice[T]]().getitem(index)
+    value: T = me.getview().getitem(index)
     return(value)
 
 /// `getitem`, returning Unit instead of crashing on an index past the end.
@@ -228,7 +228,7 @@ require T: typename
 /// :absent: When `index >= count`.
 routine List[T].getitem_checked(me: Me, index: USize) -> Maybe[T]
 require T: typename
-    value: Maybe[T] = me.to[Slice[T]]().getitem_checked(index)
+    value: Maybe[T] = me.getview().getitem_checked(index)
     return(value)
 
 /// `getitem`, returning Unit instead of crashing on an index past the end.
@@ -237,7 +237,7 @@ require T: typename
 /// :absent: When `index >= count`.
 routine List[T].getitem_checked(me: @Me, index: USize) -> Maybe[T]
 require T: typename
-    value: Maybe[T] = me.to[Slice[T]]().getitem_checked(index)
+    value: Maybe[T] = me.getview().getitem_checked(index)
     return(value)
 
 /// The address of element `index`, checked like getitem: a place to read or write in place. It stays valid until
@@ -248,7 +248,7 @@ require T: typename
 #track_caller
 routine List[T].getslot(me: Me, index: USize) -> @T
 require T: typename
-    element: @T = me.to[Slice[T]]().getslot(index)
+    element: @T = me.getview().getslot(index)
     return(element)
 
 /// The address of element `index`, checked like getitem: a place to read or write in place. It stays valid until
@@ -259,7 +259,7 @@ require T: typename
 #track_caller
 routine List[T].getslot(me: @Me, index: USize) -> @T
 require T: typename
-    element: @T = me.to[Slice[T]]().getslot(index)
+    element: @T = me.getview().getslot(index)
     return(element)
 
 /// `at`, returning Unit instead of crashing on an index past the end.
@@ -295,23 +295,21 @@ require T: typename
 #track_caller
 routine List[T].setitem(me: @Me, index: USize, value: T) -> Void
 require T: typename
-    view: Slice[T] = me.to[Slice[T]]()
+    view: Span[T] = me.getview()
     view.setitem(index, value)
     return()
 
 /// The elements, borrowed: valid until the list grows, shrinks, or is destructed.
-/// :returns: A borrowed slice of the `count` elements.
-routine List[T].to[Slice[T]](me: Me) -> Slice[T]
+/// :returns: A span of the `count` elements.
+routine List[T].getview(me: Me) -> Span[T]
 require T: typename
-    slice: Slice[T] = Slice[T].construct(data: me.storage.data, count: me.count)
-    return(slice)
+    return(Span[T].construct(data: me.storage.data, count: me.count))
 
 /// The elements, borrowed: valid until the list grows, shrinks, or is destructed.
-/// :returns: A borrowed slice of the `count` elements.
-routine List[T].to[Slice[T]](me: @Me) -> Slice[T]
+/// :returns: A span of the `count` elements.
+routine List[T].getview(me: @Me) -> Span[T]
 require T: typename
-    slice: Slice[T] = me.peek().to[Slice[T]]()
-    return(slice)
+    return(me.peek().getview())
 
 /// The `count` elements from `start`, borrowed, checked against the list's count.
 /// :param start: The index of the first element.
@@ -319,9 +317,9 @@ require T: typename
 /// :returns: A borrowed slice of those elements.
 /// :throws: Crashes with `IndexOutOfBoundsError` when the range runs past the end.
 #track_caller
-routine List[T].getslice(me: Me, start: USize, count: USize) -> Slice[T]
+routine List[T].getslice(me: Me, start: USize, count: USize) -> Span[T]
 require T: typename
-    part: Slice[T] = me.to[Slice[T]]().getslice(start, count)
+    part: Span[T] = me.getview().getslice(start, count)
     return(part)
 
 /// The `count` elements from `start`, borrowed, checked against the list's count.
@@ -330,9 +328,9 @@ require T: typename
 /// :returns: A borrowed slice of those elements.
 /// :throws: Crashes with `IndexOutOfBoundsError` when the range runs past the end.
 #track_caller
-routine List[T].getslice(me: @Me, start: USize, count: USize) -> Slice[T]
+routine List[T].getslice(me: @Me, start: USize, count: USize) -> Span[T]
 require T: typename
-    part: Slice[T] = me.to[Slice[T]]().getslice(start, count)
+    part: Span[T] = me.getview().getslice(start, count)
     return(part)
 
 /// Removes every element by resetting the count to `0`. The buffer and its capacity are kept for reuse, and elements are not destructed.
@@ -378,7 +376,7 @@ require T: typename, Equatable[T]
 #track_caller
 routine List[T].destruct(me: @Me) -> Void
 require T: typename
-    hollow: Bool = me.storage.alloc.peek().is_null()
+    hollow: Bool = me.storage.manager.peek().is_null()
     branch hollow
         ? return()
         : continue
@@ -411,7 +409,7 @@ require T: typename, Destructible[T]
 // -- text ----------------------------------------------------------------------
 //
 // A List[Byte] is the growable text buffer: it's a Writer, so buf.write("...")
-// appends to it, and to[Bytes]() views what it holds. The list's allocator is
+// appends to it, and getview() views what it holds. The list's allocator is
 // the only place memory comes from.
 
 conform Writer[List[Byte]]
@@ -432,20 +430,6 @@ routine List[Byte].write_bytes(me: @Me, data: @Byte, count: USize) -> Void
     base.stride(old).copy(src: data, count)
     me.count.poke(new)
     return()
-
-/// A view of the bytes written so far, without copying. It's valid until the
-/// list next grows or is destructed, and it isn't NUL-terminated.
-/// :returns: A borrowed `Bytes` over the `count` bytes.
-routine List[Byte].to[Bytes](me: Me) -> Bytes
-    text: Bytes = .from_ptr(data: me.storage.data, count: me.count)
-    return(text)
-
-/// A view of the bytes written so far, without copying. It's valid until the
-/// list next grows or is destructed, and it isn't NUL-terminated.
-/// :returns: A borrowed `Bytes` over the `count` bytes.
-routine List[Byte].to[Bytes](me: @Me) -> Bytes
-    text: Bytes = me.peek().to[Bytes]()
-    return(text)
 
 /// Ends the bytes with a NUL (not counted in `count`) and points at them,
 /// for C. Valid until the list next changes or is destructed.

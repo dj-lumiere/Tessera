@@ -940,6 +940,9 @@ public sealed class FunctionGen
         // A value of a branch type is a value of the variant (one level), and so is a narrower variant's.
         if (expected is VariantType vt && WidenSource(e, vt) is { } branch)
             return WrapInVariant(Eval(e, branch, argument), vt);
+        // An argument borrows what a parameter takes as a view: a Memory lends its Span, a Box its address.
+        if (argument > 0 && Lends(InferQuiet(e), expected))
+            return Eval(new MethodCallExpr(e, "getview", [], [], e.Pos), expected, argument);
         Val v = e switch
         {
             IntLit i => IntConst(i.Value, i.Pos, expected, i.HexDigits),
@@ -1047,13 +1050,13 @@ public sealed class FunctionGen
             _c.EnsureTypeDefined(cw);
             return new Val(EmitTmp($"insertvalue {cw.Llvm} poison, ptr {_c.WideStringGlobal(s.Value)}, 0"), cw);
         }
-        if (expected is RecordType { Name: "Bytes" } st)
+        if (IsByteSpan(expected))
         {
+            var st = (RecordType)expected;
             _c.EnsureTypeDefined(st);
-            // A literal's bytes belong to the program image, so its allocator is null: destruct() leaves it alone.
+            // A literal's bytes belong to the program image: a view of them, which releases nothing.
             string a = EmitTmp($"insertvalue {st.Llvm} poison, ptr {g}, 0");
-            string b = EmitTmp($"insertvalue {st.Llvm} {a}, {_c.USize.Llvm} {Compiler.Utf8Length(s.Value)}, 1");
-            return new Val(EmitTmp($"insertvalue {st.Llvm} {b}, ptr null, 2"), st);
+            return new Val(EmitTmp($"insertvalue {st.Llvm} {a}, {_c.USize.Llvm} {Compiler.Utf8Length(s.Value)}, 1"), st);
         }
         throw Mismatch(s.Pos, expected, "a string literal");
     }
@@ -1861,8 +1864,9 @@ public sealed class FunctionGen
                 var pt = _c.ResolveType(p, env);
                 if (InferQuiet(args[i]) is { } at)
                 {
-                    // A value of a branch type goes into its variant, a fit an exact overload beats.
-                    if (Widens(at, pt)) preferred = false;
+                    // A value of a branch type goes into its variant, and memory lends its view: fits an exact
+                    // overload beats.
+                    if (Widens(at, pt) || Lends(at, pt)) preferred = false;
                     else if (!at.Equals(pt)) return No(ArgumentMismatch(i + 1, at.ToString(), pt));
                     continue;
                 }
@@ -1959,7 +1963,7 @@ public sealed class FunctionGen
             case NullLit:
                 return pt is PtrType or CallableType ? null : $"null can't be a {pt}";
             case StrLit:
-                return pt is PtrType { Pointee: null or IntType { Kind: IntKind.Byte } } or RecordType { Name: "Bytes" or "CStr" or "CWStr" }
+                return pt is PtrType { Pointee: null or IntType { Kind: IntKind.Byte } } or RecordType { Name: "CStr" or "CWStr" } || IsByteSpan(pt)
                     ? null
                     : $"a string literal can't be a {pt}";
             case ArrayLit a:
@@ -2130,6 +2134,11 @@ public sealed class FunctionGen
             InferTypeArgs(r, env, m.Args, expected, 1);
             return new CallPlan(r, env, m.Receiver, m.Args, m.Pos);
         }
+
+        // A Memory or a Box lends its view to the routines it has none of its own for: `line.trim()` on a
+        // `Memory[Byte]` is `line.getview().trim()`, checked once.
+        if (OwnedMemory(rt) is not null && m.Name != "getview")
+            return PlanMethod(m with { Receiver = new MethodCallExpr(m.Receiver, "getview", [], [], m.Receiver.Pos) }, expected);
 
         // Choices are distinct from their underlying integer, but every choice compares: `eq` / `ne` lower to the
         // prelude's `ieq` / `ine`.
@@ -2494,7 +2503,28 @@ public sealed class FunctionGen
             : new Val(_c.PlaceGlobal(_lineSource ?? callPos), new PtrType(null));
 
     /// The stdlib's Bytes, the type `type_name[T]()` gives.
-    private DType BytesType(Pos pos) => _c.ResolveType(TypeRef.Simple("Bytes", pos), _env);
+    private DType BytesType(Pos pos) =>
+        _c.ResolveType(new TypeRef("Span", [new TypeArgType(TypeRef.Simple("Byte", pos))], pos) { Path = Compiler.CoreModule }, _env);
+
+    /// The `Memory[T]` or `Box[T]` a value is (or a slot holds), or null: memory from a manager, which lends a view.
+    private static RecordType? OwnedMemory(DType? t)
+    {
+        var owned = t is PtrType { Pointee: RecordType inner } ? inner : t as RecordType;
+        return owned is { Decl.Name: "Memory" or "Box", Args.Count: 1 } && owned.Decl.Module == Compiler.CoreModule ? owned : null;
+    }
+
+    /// Whether a value of `actual` is lent where `expected` is: a `Memory[T]` (or a slot of one) where a `Span[T]` is
+    /// expected, a `Box[T]` where a `@T` is.
+    private static bool Lends(DType? actual, DType expected) =>
+        OwnedMemory(actual) is { } owned
+        && (owned.Decl.Name == "Memory"
+            ? expected is RecordType { Decl.Name: "Span", Args: [var e] } span && span.Decl.Module == Compiler.CoreModule
+              && e.Equals(owned.Args[0])
+            : expected is PtrType { Pointee: { } p } && p.Equals(owned.Args[0]) && !actual!.Equals(expected));
+
+    /// Whether `t` is `Span[Byte]`, the type of text: a string literal is one.
+    private static bool IsByteSpan(DType t) =>
+        t is RecordType { Decl.Name: "Span", Args: [IntType { Kind: IntKind.Byte }] } span && span.Decl.Module == Compiler.CoreModule;
 
     /// `caller_location()`: inside a `#track_caller` routine, where it was called from.
     private DType SourceLocationPtr(Pos pos) =>

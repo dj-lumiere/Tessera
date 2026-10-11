@@ -290,7 +290,7 @@ private routine close_if_open(h: Addr) -> Void
 /// :param alloc: The allocator for the units.
 /// :returns: The units and their count without the 0, or null and 0 when `text` has a NUL or the allocation fails.
 #target(os: "windows")
-private routine utf16(text: Bytes, alloc: @MemoryManager) -> (@U16, USize)
+private routine utf16(text: Span[Byte], alloc: @MemoryManager) -> (@U16, USize)
     local units: @U16 = allocate[U16](count: text.count().add(1), alloc)
 
     branch units.is_null()
@@ -314,7 +314,7 @@ private routine utf16(text: Bytes, alloc: @MemoryManager) -> (@U16, USize)
 /// :param c: A third unit to look for.
 /// :returns: True when one of them is there.
 #target(os: "windows")
-private routine has_any(s: Slice[U16], a: U16, b: U16, c: U16) -> Bool
+private routine has_any(s: Span[U16], a: U16, b: U16, c: U16) -> Bool
     local n: USize = s.count()
 
     jump look(0)
@@ -338,7 +338,7 @@ private routine has_any(s: Slice[U16], a: U16, b: U16, c: U16) -> Bool
 #target(os: "windows")
 private routine quote_arg(source: @U16, n: USize, target: @U16) -> @U16
     local start: @U16 = target.stride(1)
-    local units: Slice[U16] = Slice[U16].construct(data: source, count: n)
+    local units: Span[U16] = Span[U16].construct(data: source, count: n)
 
     branch n.eq(0)
         ? empty()
@@ -410,7 +410,8 @@ private routine quote_arg(source: @U16, n: USize, target: @U16) -> @U16
 /// :param alloc: The allocator for the line and the working memory.
 /// :returns: The command line, or null when an allocation fails (the texts were checked for a NUL before).
 #target(os: "windows")
-private routine command_line(program: Bytes, args: Slice[Bytes], alloc: @MemoryManager) -> @U16
+private routine command_line(program: Span[Byte], args: Span[Span[Byte]],
+    alloc: @MemoryManager) -> @U16
     local arg_count: USize = args.count()
     local at: @@U16 <- .hollow()
 
@@ -424,7 +425,7 @@ private routine command_line(program: Bytes, args: Slice[Bytes], alloc: @MemoryM
             : count_arg(i, capacity)
 
     block count_arg(i: USize, capacity: USize)
-        argument: Bytes = args.getitem(i)
+        argument: Span[Byte] = args.getitem(i)
         jump size(i.add(1), capacity.add(argument.count().mul(2)).add(3))
 
     block made(line: @U16)
@@ -443,7 +444,7 @@ private routine command_line(program: Bytes, args: Slice[Bytes], alloc: @MemoryM
             ? one(line, i, program)
             : one(line, i, args.getitem(i.sub(1)))
 
-    block one(line: @U16, i: USize, arg: Bytes)
+    block one(line: @U16, i: USize, arg: Span[Byte])
         units, n = utf16(text: arg, alloc)
         branch units.is_null()
             ? failed(line)
@@ -960,7 +961,7 @@ private routine output_handle(mode: OutputMode, pipe: Addr, device: Addr, which:
 /// captured output can't be allocated).
 #target(os: "windows")
 #expensive("starts a process")
-routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessOptions,
+routine run_process_result(program: Span[Byte], args: Span[Span[Byte]], options: ProcessOptions,
     alloc: @MemoryManager) -> Result[ProcessOutput, ProcessError]
     local line: @@U16 <- null
     local env: @@U16 <- null
@@ -978,7 +979,7 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
         : continue
     claim directory: @Array[U16, PATH_CAPACITY] <- .hollow()
     when options.directory
-        is Bytes as d => continue
+        is Span[Byte] as d => continue
         is Unit => environment(null)
     units: @U16 = directory.to[@U16]()
     n: Maybe[USize] = encode_utf16(text: d, out: units, capacity: PATH_CAPACITY)
@@ -1032,8 +1033,8 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
         c_get_exit_code_process(pi.process.peek(), code)
         errors: CaptureBuffer = moved(b: err.buffer.peek(), alloc)
         status: ExitStatus = Exited(code: code.peek().to_wrap[S32]())
-        output: ProcessOutput = ProcessOutput(status: status, stdout: out.owned(alloc),
-            stderr: errors.owned(alloc))
+        output: ProcessOutput = ProcessOutput(status: status, stdout: out.owned(),
+            stderr: errors.owned())
         lost: Bool = out.failed.peek().bitor(errors.failed)
         branch lost
             ? lost_output(output)
@@ -1136,20 +1137,20 @@ private routine read_into(pipe: Addr, buffer: @CaptureBuffer, alloc: @MemoryMana
 ///     allocated.
 #target(os: "windows")
 private routine moved(b: CaptureBuffer, alloc: @MemoryManager) -> CaptureBuffer
-    branch b.data.is_null()
-        ? return(CaptureBuffer(data: null, count: 0, capacity: 0, failed: b.failed))
+    branch b.storage.data.is_null()
+        ? return(CaptureBuffer(storage: .hollow(), count: 0, failed: b.failed))
         : continue
-    claim heap: @MemoryManager <- make_heap_memory()
+    claim held: @CaptureBuffer <- b
     claim copied: @CaptureBuffer <- CaptureBuffer.empty()
-    copied.append(chunk: b.data, n: b.count, alloc)
-    deallocate(data: b.data, alloc: heap)
+    copied.append(chunk: b.storage.data, n: b.count, alloc)
+    held.destruct()
     lost: Bool = copied.failed.peek().bitor(b.failed)
     copied.failed.poke(lost)
     return(copied.peek())
 
 // -- the environment ---------------------------------------------------------------------
 
-/// The value of the environment variable `name`, in memory from `alloc`. Release it with `destruct()`.
+/// The value of the environment variable `name`, in memory from `alloc`. Drop it.
 /// :param name: The variable's name.
 /// :param alloc: The allocator for the value.
 /// :returns: The value's bytes (UTF-8).
@@ -1157,7 +1158,7 @@ private routine moved(b: CaptureBuffer, alloc: @MemoryManager) -> CaptureBuffer
 ///     read or allocated.
 #target(os: "windows")
 #expensive("allocates a copy of the variable")
-routine env_var(name: Bytes, alloc: @MemoryManager) -> Maybe[Bytes]
+routine env_var(name: Span[Byte], alloc: @MemoryManager) -> Maybe[Memory[Byte]]
     local units: @@U16 <- null
 
     claim key: @Array[U16, 256] <- .hollow()
@@ -1172,7 +1173,7 @@ routine env_var(name: Bytes, alloc: @MemoryManager) -> Maybe[Bytes]
         ? finish(Unit())
         : continue
     branch need.eq(0)
-        ? finish(Bytes(data: null, count: 0, alloc: alloc))
+        ? finish(Memory[Byte].construct(count: 0, manager: alloc))
         : continue
     made: @U16 = allocate[U16](count: need.to[USize](), alloc)
     made.poke_into(units)
@@ -1183,13 +1184,13 @@ routine env_var(name: Bytes, alloc: @MemoryManager) -> Maybe[Bytes]
     branch got.eq(0).bitor(got.ge(need))
         ? finish(Unit())
         : continue
-    text: Result[Bytes, FsError] = owned_wide(units: made, count: got.to[USize](), alloc)
+    text: Result[Memory[Byte], FsError] = owned_wide(units: made, count: got.to[USize](), alloc)
     when text
-        is Bytes as t => finish(t)
+        is Memory[Byte] as t => finish(t)
         is FsError => finish(Unit())
 
     // The UTF-16 value, when there is one: the UTF-8 copy is what goes back.
-    block finish(value: Maybe[Bytes])
+    block finish(value: Maybe[Memory[Byte]])
         held: @U16 = units.peek()
         branch held.is_null()
             ? return(value)

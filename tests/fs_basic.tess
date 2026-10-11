@@ -6,7 +6,7 @@ import Standard/Alloc
 import Standard/Format
 import Standard/Os
 
-routine error_name(e: FsError) -> Bytes
+routine error_name(e: FsError) -> Span[Byte]
     when e
         FsError.NOT_FOUND => return("NotFound")
         FsError.PERMISSION_DENIED => return("PermissionDenied")
@@ -23,7 +23,7 @@ routine error_name(e: FsError) -> Bytes
         FsError.OUT_OF_MEMORY => return("OutOfMemory")
         FsError.OTHER => return("Other")
 
-routine report(what: Bytes, r: Result[Unit, FsError]) -> Void
+routine report(what: Span[Byte], r: Result[Unit, FsError]) -> Void
     when r
         is Unit => ok()
         is FsError as error => failed(error)
@@ -37,11 +37,11 @@ routine report(what: Bytes, r: Result[Unit, FsError]) -> Void
         return()
 
 /// The file's text, or the error's name.
-routine contents(f: File, alloc: @MemoryManager) -> Bytes
-    r: Result[Bytes, FsError] = f.read_all_result(alloc)
+routine contents(f: File, alloc: @MemoryManager) -> Memory[Byte]
+    r: Result[Memory[Byte], FsError] = f.read_all_result(alloc)
     when r
-        is Bytes as text => return(text)
-        is FsError as error => return(error_name(error))
+        is Memory[Byte] as text => return(text)
+        is FsError as error => return(Span[Byte].concat(a: error_name(error), b: "", alloc))
 
 routine size_of(f: File) -> U64
     m: Result[Metadata, FsError] = f.metadata_result()
@@ -82,7 +82,7 @@ routine start() -> Void
         Out.write("seek to end - 4: {at}\n")
         claim tail: @Array[Byte, 8] <- .hollow()
         got: USize = both.read_bytes_result(buffer: tail.to[@Byte](), count: 8).unwrap()
-        back: Bytes = Bytes.from_ptr(data: tail.to[@Byte](), count: got)
+        back: Span[Byte] = Span[Byte].construct(data: tail.to[@Byte](), count: got)
         Out.write("read back: {back}\n")
         report(what: "set_size 5", r: both.set_size_result(5))
         size: U64 = both.size_result().unwrap()
@@ -140,14 +140,14 @@ routine start() -> Void
     block paths(hello: File)
         f: File = File.at("/a/b/archive.tar.gz")
         Out.write("name {f.name()}, stem {f.stem()}, extension {f.extension()}, parent {f.parent().path}\n")
-        p1: Bytes = parent_path("a/b")
-        p2: Bytes = parent_path("file.txt")
-        p3: Bytes = parent_path("/")
-        p4: Bytes = parent_path("/a")
+        p1: Span[Byte] = parent_path("a/b")
+        p2: Span[Byte] = parent_path("file.txt")
+        p3: Span[Byte] = parent_path("/")
+        p4: Span[Byte] = parent_path("/a")
         Out.write("parent_path: [{p1}] [{p2}] [{p3}] [{p4}]\n")
-        e1: Bytes = file_extension(".hidden")
-        e2: Bytes = file_extension("file")
-        s1: Bytes = file_stem(".hidden")
+        e1: Span[Byte] = file_extension(".hidden")
+        e2: Span[Byte] = file_extension("file")
+        s1: Span[Byte] = file_stem(".hidden")
         Out.write("hidden: stem [{s1}], extension [{e1}]; no extension: [{e2}]\n")
         report(what: "set_current", r: root.set_current_result())
         cwd: Directory = Directory.current_result(alloc).unwrap()
@@ -163,11 +163,11 @@ routine start() -> Void
 
     block mapped(hello: File)
         whole: Mapping = hello.map_result(write: false, offset: 0, count: USize.MAX).unwrap()
-        w: Bytes = Bytes.from_ptr(data: whole.data(), count: whole.count())
+        w: Span[Byte] = Span[Byte].construct(data: whole.data(), count: whole.count())
         Out.write("map: {w}\n")
         whole.unmap()
         part: Mapping = hello.map_result(write: false, offset: 1, count: 3).unwrap()
-        p: Bytes = Bytes.from_ptr(data: part.data(), count: part.count())
+        p: Span[Byte] = Span[Byte].construct(data: part.data(), count: part.count())
         Out.write("map 1..4: {p}\n")
         part.unmap()
         past: Mapping = hello.map_result(write: false, offset: 100, count: 3).unwrap()

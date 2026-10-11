@@ -108,7 +108,9 @@ public sealed partial class Compiler
         CheckUntraced(r);
         ExpensiveCallLint.CheckAnnotation(r);
 
-        var needed = new HashSet<string>(OwnerTypeParams(r).Concat(r.TypeParams));
+        // An owner's argument that names a type (`Byte` of `Span[Byte].to_result`) fixes it rather than binding it.
+        var needed = new HashSet<string>(OwnerTypeParams(r).Where(n => !(IntType.FromName(n) is not null || DeclaresType(n)))
+            .Concat(r.TypeParams));
         foreach (var n in needed)
             if (!env.Has(n))
                 throw new CompileError(r.Pos, $"type parameter '{n}' of '{r.DisplayName}' could not be inferred; pass it explicitly");

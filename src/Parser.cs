@@ -733,9 +733,23 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var routines = new List<RoutineDecl>();
         while (IsIdent("routine") && PeekTok(1) is { Kind: TokenKind.Ident } owner
                                   && (owner.Text == "Me" || typeParams.Contains(owner.Text) || Cur.Pos.Col > 1)
-                                  && PeekTok(2).Kind == TokenKind.Dot)
+                                  && PeekTok(AfterTypeArgs(2)).Kind == TokenKind.Dot)
             routines.Add(ParseRoutine([], inConcept: true, conceptParams: typeParams));
         return new ConceptDecl(file, annotations, name.Text, typeParams, clauses, routines, pos);
+    }
+
+    /// The token offset past the type arguments that may start at `k` (`[Byte]` in `Span[Byte].to_result`), or `k`.
+    private int AfterTypeArgs(int k)
+    {
+        if (PeekTok(k).Kind != TokenKind.LBracket) return k;
+        int depth = 0;
+        for (; ; k++)
+        {
+            var tok = PeekTok(k);
+            if (tok.Kind is TokenKind.Eof or TokenKind.Newline) return k;
+            if (tok.Kind == TokenKind.LBracket) depth++;
+            else if (tok.Kind == TokenKind.RBracket && --depth == 0) return k + 1;
+        }
     }
 
     /// A routine's parameters (`receiver`), which may start with `me`, or a block's, which may not.

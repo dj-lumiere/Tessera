@@ -233,7 +233,7 @@ private routine Prepared.empty() -> Me
 /// :param alloc: The allocator for the copy.
 /// :returns: The NUL-terminated copy, or null when the allocation fails.
 #target(os: ("linux", "macos"))
-private routine c_string(text: Bytes, alloc: @MemoryManager) -> @Byte
+private routine c_string(text: Span[Byte], alloc: @MemoryManager) -> @Byte
     n: USize = text.count()
     p: @Byte = allocate[Byte](count: n.add(1), alloc)
     branch p.is_null()
@@ -316,8 +316,8 @@ private routine Prepared.release(me: @Me, alloc: @MemoryManager) -> Void
 /// :param alloc: The allocator for the strings and arrays.
 /// :returns: `true` on success, `false` when an allocation failed.
 #target(os: ("linux", "macos"))
-private routine Prepared.make(me: @Me, program: Bytes, args: Slice[Bytes], options: ProcessOptions,
-    alloc: @MemoryManager) -> Bool
+private routine Prepared.make(me: @Me, program: Span[Byte], args: Span[Span[Byte]],
+    options: ProcessOptions, alloc: @MemoryManager) -> Bool
     local arg_count: USize = args.count()
     local first: @USize <- .hollow()
 
@@ -348,7 +348,7 @@ private routine Prepared.make(me: @Me, program: Bytes, args: Slice[Bytes], optio
     block args_done(argv: @@Byte, n: USize)
         argv.stride(n).poke(null)
         when options.directory
-            is Bytes as d => directory(c_string(text: d, alloc))
+            is Span[Byte] as d => directory(c_string(text: d, alloc))
             is Unit => environment()
 
     block directory(d: @Byte)
@@ -390,7 +390,7 @@ private routine Prepared.make(me: @Me, program: Bytes, args: Slice[Bytes], optio
             ? own(envp, 0)
             : continue
         entry: @Byte = parent.stride(i).peek()
-        branch is_overridden(entry: entry.to[CStr]().to[Bytes](), options)
+        branch is_overridden(entry: entry.to[CStr]().getview(), options)
             ? keep(parent, n, envp, i.add(1))
             : continue
         envp.stride(first.peek()).poke(entry)
@@ -424,7 +424,7 @@ private routine Prepared.make(me: @Me, program: Bytes, args: Slice[Bytes], optio
 /// :param options: The environment overrides.
 /// :returns: True when an override has the same name.
 #target(os: ("linux", "macos"))
-private routine is_overridden(entry: Bytes, options: ProcessOptions) -> Bool
+private routine is_overridden(entry: Span[Byte], options: ProcessOptions) -> Bool
     jump look(0)
 
     block look(j: USize)
@@ -677,7 +677,7 @@ private routine output_fd(mode: OutputMode, pipe: CInt, null_fd: CInt) -> CInt
 /// allocated).
 #target(os: ("linux", "macos"))
 #expensive("starts a process")
-routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessOptions,
+routine run_process_result(program: Span[Byte], args: Span[Span[Byte]], options: ProcessOptions,
     alloc: @MemoryManager) -> Result[ProcessOutput, ProcessError]
     local p: @Prepared <- Prepared.empty()
     local pipes: @Plumbing <- Plumbing.empty()
@@ -752,8 +752,7 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
         branch lost
             ? finish(ProcessError.OUT_OF_MEMORY)
             : continue
-        output: ProcessOutput = ProcessOutput(status: s, stdout: out.owned(alloc),
-            stderr: err.owned(alloc))
+        output: ProcessOutput = ProcessOutput(status: s, stdout: out.owned(), stderr: err.owned())
         out.poke(CaptureBuffer.empty())
         err.poke(CaptureBuffer.empty())
         jump finish(output)
@@ -762,20 +761,9 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
     block finish(result: Result[ProcessOutput, ProcessError])
         pipes.close_all()
         p.release(alloc)
-        release(b: out.peek(), alloc)
-        release(b: err.peek(), alloc)
+        out.destruct()
+        err.destruct()
         return(result)
-
-/// Frees a capture buffer's memory if it has any.
-/// :param b: The buffer.
-/// :param alloc: The allocator it was filled from.
-#target(os: ("linux", "macos"))
-private routine release(b: CaptureBuffer, alloc: @MemoryManager) -> Void
-    branch b.data.is_null()
-        ? return()
-        : continue
-    deallocate(data: b.data, alloc)
-    return()
 
 /// Reads both pipes (-1 for one not captured) to their end, whichever has data, and closes them. When poll fails
 /// with anything but EINTR, it closes both and stops.
@@ -879,14 +867,14 @@ private routine reap(pid: CInt) -> Maybe[ExitStatus]
 
 // -- the environment ---------------------------------------------------------------------
 
-/// The value of the environment variable `name`, in memory from `alloc`. Release it with `destruct()`.
+/// The value of the environment variable `name`, in memory from `alloc`. Drop it.
 /// :param name: The variable's name.
 /// :param alloc: The allocator for the value.
 /// :returns: The value's bytes.
 /// :absent: When the variable isn't set, `name` is 256 bytes or longer or holds a NUL, or the allocation fails.
 #target(os: ("linux", "macos"))
 #expensive("allocates a copy of the variable")
-routine env_var(name: Bytes, alloc: @MemoryManager) -> Maybe[Bytes]
+routine env_var(name: Span[Byte], alloc: @MemoryManager) -> Maybe[Memory[Byte]]
     claim key: @Array[Byte, 256] <- .hollow()
     too_long: Bool = name.count().ge(256)
     branch too_long.bitor(name.has("\x00"))
@@ -900,10 +888,10 @@ routine env_var(name: Bytes, alloc: @MemoryManager) -> Maybe[Bytes]
         ? return(Unit())
         : continue
     n: USize = value.to[CStr]().count()
-    owned: @Byte = allocate[Byte](count: n.max(1), alloc)
-    branch owned.is_null()
-        ? return(Unit())
-        : continue
-    owned.copy(src: value, count: n)
-    text: Bytes = Bytes(data: owned, count: n, alloc: alloc)
-    return(text)
+    made: Result[Memory[Byte], AllocFailed] = Memory[Byte].construct_result(count: n.max(1),
+        manager: alloc)
+    when made
+        is Memory[Byte] as owned => continue
+        is AllocFailed => return(Unit())
+    owned.data.copy(src: value, count: n)
+    return(owned.with_count(n))

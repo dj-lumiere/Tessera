@@ -1,7 +1,6 @@
-// The allocator a Slice[T] or a Bytes carries says whether destruct() gives memory back. A null allocator means
-// borrowed, and destruct() does nothing: a string literal, getview(), getslice, a sub-text, to[Slice[Byte]]() of a text.
-// Memory from an allocator goes back on the first destruct(), which leaves the value empty (null data, count 0, null
-// allocator), so a second destruct() does nothing. A counting allocator shows every block.
+// A Span[T] is a view and releases nothing: a string literal, getview(), getslice, a sub-text. A Memory[T] from a
+// manager goes back on drop(), which leaves it hollow (null data, count 0), so a second drop() does nothing. A
+// counting manager shows every block.
 
 import Standard/Alloc
 import Standard/Format
@@ -40,44 +39,39 @@ routine counting_free(state: Addr, memory: Addr) -> Void
     return()
 
 routine literal() -> Void
-    claim text: @Bytes <- "a literal"
+    claim text: @Span[Byte] <- "a literal"
     text.destruct()
-    Out.write("literal after destruct: [{text.peek()}], borrowed {text.alloc.peek().is_null()}\n")
+    Out.write("literal after destruct: [{text.peek()}]\n")
     return()
 
 routine text(counts: @Counts, alloc: @MemoryManager) -> Void
-    claim joined: @Bytes <- Bytes.concat(a: "Tes", b: "sera", alloc)
-    Out.write("concat: [{joined.peek()}], live {counts.live.peek()}\n")
-    claim view: @Bytes <- joined.getview()
+    claim joined: @Memory[Byte] <- Span[Byte].concat(a: "Tes", b: "sera", alloc)
+    Out.write("concat: [{joined.getview()}], live {counts.live.peek()}\n")
+    claim view: @Span[Byte] <- joined.getview()
     view.destruct()
-    claim part: @Bytes <- joined.slice(start: 1, end: 4)
+    claim part: @Span[Byte] <- joined.slice(start: 1, end: 4)
     part.destruct()
-    claim bytes: @Slice[Byte] <- joined.peek().to[Slice[Byte]]()
-    bytes.destruct()
-    Out.write("views destructed: [{view.peek()}] [{part.peek()}] {bytes.count()}, live {counts.live.peek()}\n")
-    copy: Bytes = joined.peek()
-    joined.destruct()
+    Out.write("views destructed: [{view.peek()}] [{part.peek()}], live {counts.live.peek()}\n")
+    joined.drop()
     empty: Bool = joined.data.peek().is_null()
-    Out.write("concat destructed: live {counts.live.peek()}, empty {empty}, count {joined.count()}")
-    Out.write(", borrowed {joined.alloc.peek().is_null()}, the copy kept its allocator {copy.alloc.is_not_null()}\n")
-    joined.destruct()
-    Out.write("second destruct: live {counts.live.peek()}\n")
+    Out.write("concat dropped: live {counts.live.peek()}, empty {empty}, count {joined.count()}\n")
+    joined.drop()
+    Out.write("second drop: live {counts.live.peek()}\n")
     return()
 
 routine values(counts: @Counts, alloc: @MemoryManager) -> Void
-    claim squares: @Slice[U32] <- .construct(count: 4, alloc)
-    squares.setitem(index: 3, value: 9)
-    claim view: @Slice[U32] <- squares.getview()
+    claim squares: @Memory[U32] <- .construct(count: 4, manager: alloc)
+    squares.store(index: 3, value: 9)
+    claim view: @Span[U32] <- squares.getview()
     view.destruct()
-    claim part: @Slice[U32] <- squares.getslice(start: 2, count: 2)
+    claim part: @Span[U32] <- squares.getslice(start: 2, count: 2)
     part.destruct()
-    Out.write("slice views destructed: {view.getitem(3)} {part.getitem(1)}, live {counts.live.peek()}\n")
+    Out.write("views destructed: {view.getitem(3)} {part.getitem(1)}, live {counts.live.peek()}\n")
     squares.resize(8)
-    Out.write("resized: count {squares.count()}, kept {squares.getitem(3)}, live {counts.live.peek()}\n")
-    squares.destruct()
-    Out.write("slice destructed: live {counts.live.peek()}, count {squares.count()}")
-    Out.write(", borrowed {squares.alloc.peek().is_null()}\n")
-    squares.destruct()
+    Out.write("resized: count {squares.count()}, kept {squares.load(3)}, live {counts.live.peek()}\n")
+    squares.drop()
+    Out.write("memory dropped: live {counts.live.peek()}, count {squares.count()}\n")
+    squares.drop()
     return()
 
 routine start() -> Void

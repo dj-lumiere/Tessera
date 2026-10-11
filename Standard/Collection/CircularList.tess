@@ -1,7 +1,7 @@
 // Tessera stdlib collection: CircularList[T]
 //
 // Dynamic array with a centered start index — front and back both grow without
-// shifting. The buffer is a Slice[T] whose count is the capacity, and it
+// shifting. The buffer is a Memory[T] whose count is the capacity, and it
 // keeps the allocator.
 //
 // Logical element i lives at storage.data[start + i]. Front growth consumes spare slots
@@ -21,7 +21,7 @@ conform Representable[CircularList[T]] when T: typename, Diagnosable[T]
 conform Diagnosable[CircularList[T]] when T: typename, Diagnosable[T]
 conform Equatable[CircularList[T]] when T: typename, Equatable[T]
 require T: typename
-    storage: Slice[T]
+    storage: Memory[T]
     start: USize
     count: USize
 
@@ -30,7 +30,7 @@ require T: typename
 /// :returns: A new empty CircularList.
 routine CircularList[T].construct(alloc: @MemoryManager) -> Me
 require T: typename
-    storage: Slice[T] = Slice[T].construct(count: 0, alloc)
+    storage: Memory[T] = Memory[T].construct(count: 0, manager: alloc)
     circular_list: Me = Me(storage: storage, start: 0, count: 0)
     return(circular_list)
 
@@ -72,20 +72,21 @@ require T: typename
     local slack: USize = new_capacity.sub(count)
     local new_start: USize = slack.div(2)
 
-    alloc: @MemoryManager = me.storage.alloc.peek()
-    made: Result[Slice[T], AllocFailed] = Slice[T].construct_result(count: new_capacity, alloc)
+    alloc: @MemoryManager = me.storage.manager.peek()
+    made: Result[Memory[T], AllocFailed] = Memory[T].construct_result(count: new_capacity,
+        manager: alloc)
     when made
-        is Slice[T] as fresh => move(fresh)
+        is Memory[T] as fresh => move(fresh)
         is AllocFailed => return(false)
 
-    block move(fresh: Slice[T])
+    block move(fresh: Memory[T])
         old_data: @T = me.storage.data.peek()
         old_null: Bool = old_data.is_null()
         branch old_null
             ? install(fresh)
             : copy_live(fresh, old_data)
 
-    block copy_live(fresh: Slice[T], old_data: @T)
+    block copy_live(fresh: Memory[T], old_data: @T)
         old_start: USize = me.start.peek()
         src: @T = old_data.stride(old_start)
         dst: @T = fresh.data.stride(new_start)
@@ -93,7 +94,7 @@ require T: typename
         me.storage.destruct()
         jump install(fresh)
 
-    block install(fresh: Slice[T])
+    block install(fresh: Memory[T])
         me.storage.poke(fresh)
         me.start.poke(new_start)
         return(true)
@@ -475,7 +476,7 @@ require T: typename
 #track_caller
 routine CircularList[T].destruct(me: @Me) -> Void
 require T: typename
-    hollow: Bool = me.storage.alloc.peek().is_null()
+    hollow: Bool = me.storage.manager.peek().is_null()
     branch hollow
         ? return()
         : continue

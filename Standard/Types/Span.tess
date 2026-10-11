@@ -1,0 +1,227 @@
+// Tessera stdlib: Span[T], memory a routine borrows
+//
+// Four types say where values are. `@T` (a Ptr) is the address of one value and `Span[T]` the address and the count
+// of a run of them: both are views of memory someone else gives back, read with `peek` and written with `poke`, and
+// they release nothing. `Box[T]` and `Memory[T]` (Types/Memory.tess) are memory taken from a manager: each is released
+// exactly once with `drop()`, and their `load` / `store` check that it hasn't been.
+//
+// A Span comes from what holds the values: `getview()` of a Memory, a List, an Array, or another Span, `getslice` for
+// part of one, a string literal (a `Span[Byte]` of the program image), or `Span[T].construct(data, count)` over memory
+// from C. It is valid as long as that memory is and isn't moved. A routine that takes a `Span[T]` borrows: passing a
+// `Memory[T]` where a `Span[T]` is expected lends it. `getslot(i)` is the checked address, and every access through it
+// is `@T`'s own: `peek`, `poke`, `peek_volatile`, `atomic_fetch_add`, and the rest. `getitem` and `setitem` are the
+// value shortcuts.
+
+module Standard/Core
+
+/// `count` values of `T` at `data`, borrowed: a view of memory something else gives back. It releases nothing.
+/// :typeparam T: The element type.
+record Span[T]
+require T: typename
+    data: @T
+    count: USize
+
+// -- making one ---------------------------------------------------------------------------------------------------
+
+/// The `count` values starting at `data`. The count is yours to get right.
+/// :param data: The first value.
+/// :param count: The number of values from `data` on.
+/// :returns: The span.
+routine Span[T].construct(data: @T, count: USize) -> Me
+require T: typename
+    return(Me(data, count))
+
+/// Releases nothing: a span borrows its memory.
+routine Span[T].destruct(me: @Me) -> Void
+require T: typename
+    return()
+
+// -- reading ------------------------------------------------------------------------------------------------------
+
+/// The number of values.
+/// :returns: The count.
+routine Span[T].count(me: Me) -> USize
+require T: typename
+    return(me.count)
+
+/// The number of values.
+/// :returns: The count.
+routine Span[T].count(me: @Me) -> USize
+require T: typename
+    return(me.count.peek())
+
+/// Whether there are no values.
+/// :returns: True for a count of 0.
+routine Span[T].is_empty(me: Me) -> Bool
+require T: typename
+    return(me.count.eq(0))
+
+/// Whether there are no values.
+/// :returns: True for a count of 0.
+routine Span[T].is_empty(me: @Me) -> Bool
+require T: typename
+    return(me.count.peek().eq(0))
+
+/// The same values: a span is its own view.
+/// :returns: The span.
+routine Span[T].getview(me: Me) -> Me
+require T: typename
+    return(me)
+
+/// The same values: a span is its own view.
+/// :returns: The span.
+routine Span[T].getview(me: @Me) -> Me
+require T: typename
+    return(me.peek())
+
+/// The address of the value at `index`, checked against the count. Everything else is `@T`'s own: `peek`, `poke`,
+/// `peek_volatile`, `atomic_fetch_add`, ...
+/// :param index: The zero-based position.
+/// :returns: The address of the value.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
+#track_caller
+routine Span[T].getslot(me: Me, index: USize) -> @T
+require T: typename
+    outside: Bool = index.ge(me.count)
+    branch outside
+        ? crash_out_of_bounds()
+        : continue
+    place: @T = me.data.stride(index)
+    return(place)
+
+/// The address of the value at `index`, checked against the count. Everything else is `@T`'s own: `peek`, `poke`,
+/// `peek_volatile`, `atomic_fetch_add`, ...
+/// :param index: The zero-based position.
+/// :returns: The address of the value.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
+#track_caller
+routine Span[T].getslot(me: @Me, index: USize) -> @T
+require T: typename
+    place: @T = me.peek().getslot(index)
+    return(place)
+
+/// The value at `index`, checked: `getslot(index).peek()`.
+/// :param index: The zero-based position.
+/// :returns: A copy of the value.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`. See {Span[T].getitem_checked}.
+#track_caller
+routine Span[T].getitem(me: Me, index: USize) -> T
+require T: typename
+    value: T = me.getslot(index).peek()
+    return(value)
+
+/// The value at `index`, checked: `getslot(index).peek()`.
+/// :param index: The zero-based position.
+/// :returns: A copy of the value.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`. See {Span[T].getitem_checked}.
+#track_caller
+routine Span[T].getitem(me: @Me, index: USize) -> T
+require T: typename
+    value: T = me.peek().getitem(index)
+    return(value)
+
+/// `getitem`, returning Unit instead of crashing on an index past the end.
+/// :param index: The zero-based position.
+/// :returns: A copy of the value.
+/// :absent: When `index >= count`.
+routine Span[T].getitem_checked(me: Me, index: USize) -> Maybe[T]
+require T: typename
+    inside: Bool = index.lt(me.count)
+    branch inside
+        ? continue
+        : return(Unit())
+    value: T = me.data.stride(index).peek()
+    return(value)
+
+/// `getitem`, returning Unit instead of crashing on an index past the end.
+/// :param index: The zero-based position.
+/// :returns: A copy of the value.
+/// :absent: When `index >= count`.
+routine Span[T].getitem_checked(me: @Me, index: USize) -> Maybe[T]
+require T: typename
+    value: Maybe[T] = me.peek().getitem_checked(index)
+    return(value)
+
+/// Writes `value` at `index`, checked: `getslot(index).poke(value)`.
+/// :param index: The zero-based position.
+/// :param value: The value to write.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
+#track_caller
+routine Span[T].setitem(me: Me, index: USize, value: T) -> Void
+require T: typename
+    me.getslot(index).poke(value)
+    return()
+
+/// Writes `value` at `index`, checked: `getslot(index).poke(value)`.
+/// :param index: The zero-based position.
+/// :param value: The value to write.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
+#track_caller
+routine Span[T].setitem(me: @Me, index: USize, value: T) -> Void
+require T: typename
+    me.peek().setitem(index, value)
+    return()
+
+/// The `count` values from `start`, checked against this span.
+/// :param start: The position of the first value.
+/// :param count: The number of values.
+/// :returns: A span over that range.
+/// :throws: Crashes with `IndexOutOfBoundsError` when the range runs past the end.
+#track_caller
+routine Span[T].getslice(me: Me, start: USize, count: USize) -> Me
+require T: typename
+    past_end: Bool = start.gt(me.count)
+    branch past_end
+        ? crash_out_of_bounds()
+        : continue
+    room: USize = me.count.sub(start)
+    too_many: Bool = count.gt(room)
+    branch too_many
+        ? crash_out_of_bounds()
+        : continue
+    first: @T = me.data.stride(start)
+    return(Me(data: first, count))
+
+/// The `count` values from `start`, checked against this span.
+/// :param start: The position of the first value.
+/// :param count: The number of values.
+/// :returns: A span over that range.
+/// :throws: Crashes with `IndexOutOfBoundsError` when the range runs past the end.
+#track_caller
+routine Span[T].getslice(me: @Me, start: USize, count: USize) -> Me
+require T: typename
+    part: Me = me.peek().getslice(start, count)
+    return(part)
+
+/// The address of the first value.
+/// :returns: `data`, which is null for a hollow span.
+routine Span[T].to[@T](me: Me) -> @T
+require T: typename
+    return(me.data)
+
+/// The address of the first value.
+/// :returns: `data`, which is null for a hollow span.
+routine Span[T].to[@T](me: @Me) -> @T
+require T: typename
+    return(me.data.peek())
+
+// -- views of the built-in containers -------------------------------------------------------------------------
+
+/// The array's values: valid as long as the array is.
+/// :returns: A span of all `COUNT` values.
+routine Array[T, COUNT].getview(me: @Me) -> Span[T]
+require T: typename, COUNT: USize
+    first: @T = me.to[@T]()
+    return(Span[T].construct(data: first, count: COUNT))
+
+/// The `count` values from `start`, checked against `COUNT`.
+/// :param start: The position of the first value.
+/// :param count: The number of values.
+/// :returns: A span over that range.
+/// :throws: Crashes with `IndexOutOfBoundsError` when the range runs past the end.
+#track_caller
+routine Array[T, COUNT].getslice(me: @Me, start: USize, count: USize) -> Span[T]
+require T: typename, COUNT: USize
+    whole: Span[T] = me.getview()
+    part: Span[T] = whole.getslice(start, count)
+    return(part)

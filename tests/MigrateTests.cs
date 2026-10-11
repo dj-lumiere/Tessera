@@ -337,6 +337,27 @@ public class MigrateTests
     }
 
     [Fact]
+    public void Memory_types_replace_slices_and_bytes()
+    {
+        const string before = """
+            routine f(text: Bytes, list: @List[Byte]) -> Void
+                claim owned: @Slice[U32] <- .construct(count: 4, alloc)
+                view: Slice[U32] = owned.getview()
+                raw: Bytes = Bytes.from_ptr(data: list.storage.data, count: 3)
+                whole: Bytes = list.to[Bytes]()
+                Out.write("{text.to[Slice[Byte]]().count()}")
+                return()
+            """;
+        string after = MemoryMigration.Rewrite(before);
+        Assert.Contains("routine f(text: Span[Byte], list: @List[Byte]) -> Void", after);
+        Assert.Contains("claim owned: @Memory[U32] <- .construct(count: 4, manager: alloc)", after);
+        Assert.Contains("view: Span[U32] = owned.getview()", after);
+        Assert.Contains("raw: Span[Byte] = Span[Byte].construct(data: list.storage.data, count: 3)", after);
+        Assert.Contains("whole: Span[Byte] = list.getview()", after);
+        Assert.Contains("{text.getview().count()}", after);
+    }
+
+    [Fact]
     public void Rewriting_twice_changes_nothing_more()
     {
         string once = Migrate.Rewrite("a : F32 = f32_bits(b).to<List<F32>>()");

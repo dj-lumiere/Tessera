@@ -1,121 +1,18 @@
-// Tessera stdlib: Bytes
+// Tessera stdlib: text, as bytes
 //
-// Bytes is text: UTF-8 by convention, and the type of a string literal. It is three fields:
-//   data  — @Byte to the first byte (a literal's bytes are also NUL-terminated, but other text isn't)
-//   count — USize byte count (not including any terminator)
-//   alloc — @MemoryManager the bytes came from, or null when they're borrowed
+// Text is bytes, UTF-8 by convention: a `Span[Byte]` reads it (a string literal is one, its bytes in the program
+// image, NUL-terminated past the count), and text a routine makes in new memory (concat, In.read_line, File.read_all,
+// join_path) is a `Memory[Byte]`, which the caller drops. The routines here are on `Span[Byte]`: a `Memory[Byte]` is
+// lent to them as a view, by argument and by receiver.
 //
 // Nothing checks that the bytes are UTF-8, but is_utf8 does when it matters. The character operations read a malformed
-// sequence as U+FFFD and move on, so they are defined for any bytes.
-//
-// destruct() gives the bytes back to alloc and leaves the value empty. A null alloc means the text is borrowed and
-// destruct() does nothing: a string literal (its bytes are in the program image), Bytes.from_ptr, and every text made
-// from other text (slice, getview, the iterators, to[Bytes]() of a List[Byte]) have a null alloc. Text a routine
-// allocates (concat, In.read_line, File.read_all, join_path) carries its allocator, and the caller destructs it.
-// Copying a Bytes copies the allocator with it, so either copy can give the bytes back: destruct exactly one. ==,
-// compare, and hash look at the bytes only, never at alloc.
-//
-// Slice[Byte] has the same layout and is plain bytes. to[Slice[Byte]]() and Slice[Byte].to[Bytes]() convert between
-// them as borrowed views.
+// sequence as U+FFFD and move on, so they are defined for any bytes. eq, compare, and hash look at the bytes only.
 
 module Standard/Core
 
 import Standard/Alloc
 
-/// Text, UTF-8 by convention: `count` bytes at `data`, and `alloc`, the allocator they came from. A null `alloc` means
-/// the bytes are borrowed and `destruct()` does nothing. A string literal is a `Bytes` with a null `alloc`.
-record Bytes
-conform Equatable[Bytes], Comparable[Bytes], Hashable[Bytes], Destructible[Bytes]
-    data: @Byte
-    count: USize
-    alloc: @MemoryManager
-
-/// Makes a `Bytes` from its fields.
-/// :param data: Its `data`.
-/// :param count: Its `count`.
-/// :param alloc: Its `alloc`.
-/// :returns: The new value.
-routine Bytes.construct(data: @Byte, count: USize, alloc: @MemoryManager) -> Me
-    return(Me(data, count, alloc))
-
-// -- construction --------------------------------------------------------------
-
-/// The empty text: a null `data` pointer, a count of 0, and a null allocator.
-/// :returns: An empty `Bytes`.
-routine Bytes.empty() -> Me
-    str: Me = Me(data: null, count: 0, alloc: null)
-    return(str)
-
-/// The `count` bytes starting at `data`, borrowed (a null allocator), without copying. Nothing checks that the memory
-/// is valid or UTF-8.
-/// :param data: A pointer to the first byte.
-/// :param count: The number of bytes.
-/// :returns: The text, which `destruct()` leaves alone.
-routine Bytes.from_ptr(data: @Byte, count: USize) -> Me
-    str: Me = Me(data: data, count: count, alloc: null)
-    return(str)
-
-/// The same bytes, borrowed: the same data and count with a null allocator, so `destruct()` on it does nothing.
-/// :returns: The borrowed view.
-routine Bytes.getview(me: Me) -> Me
-    view: Me = Me(data: me.data, count: me.count, alloc: null)
-    return(view)
-
-/// The same bytes, borrowed: the same data and count with a null allocator, so `destruct()` on it does nothing.
-/// :returns: The borrowed view.
-routine Bytes.getview(me: @Me) -> Me
-    view: Me = me.peek().getview()
-    return(view)
-
-/// Gives the bytes back to the allocator they came from and leaves the text empty: a null data, a count of 0, and a
-/// null allocator. Does nothing when the allocator is null (a literal, or text borrowed from somewhere else).
-#track_caller
-routine Bytes.destruct(me: @Me) -> Void
-    alloc: @MemoryManager = me.alloc.peek()
-    borrowed: Bool = alloc.is_null()
-    branch borrowed
-        ? return()
-        : continue
-    data: @Byte = me.data.peek()
-    empty: Bool = data.is_null()
-    branch empty
-        ? reset()
-        : continue
-    deallocate[Byte](data, alloc)
-    jump reset()
-
-    block reset()
-        me.data.poke(null)
-        me.count.poke(0)
-        me.alloc.poke(null)
-        return()
-
-// -- predicates ----------------------------------------------------------------
-
-/// The number of bytes of the UTF-8 text, not of characters (count those with `chars()`).
-/// :returns: The byte count.
-routine Bytes.count(me: Me) -> USize
-    count: USize = me.count
-    return(count)
-
-/// The number of bytes of the UTF-8 text, not of characters (count those with `chars()`).
-/// :returns: The byte count.
-routine Bytes.count(me: @Me) -> USize
-    count: USize = me.count.peek()
-    return(count)
-
-/// Whether the text holds no bytes.
-/// :returns: `true` when the count is 0.
-routine Bytes.is_empty(me: Me) -> Bool
-    count: USize = me.count
-    result: Bool = count.eq(0)
-    return(result)
-
-/// Whether the text holds no bytes.
-/// :returns: `true` when the count is 0.
-routine Bytes.is_empty(me: @Me) -> Bool
-    result: Bool = me.count.peek().eq(0)
-    return(result)
+conform Equatable[Span[Byte]], Comparable[Span[Byte]], Hashable[Span[Byte]]
 
 // -- element access ------------------------------------------------------------
 
@@ -124,7 +21,7 @@ routine Bytes.is_empty(me: @Me) -> Bool
 /// :returns: The byte as a number from 0 to 255.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index` is not less than the count.
 #track_caller
-routine Bytes.byte_at(me: Me, index: USize) -> U8
+routine Span[Byte].byte_at(me: Me, index: USize) -> U8
     count: USize = me.count
     in_bounds: Bool = index.lt(count)
     branch in_bounds
@@ -141,19 +38,19 @@ routine Bytes.byte_at(me: Me, index: USize) -> U8
 /// :returns: The byte as a number from 0 to 255.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index` is not less than the count.
 #track_caller
-routine Bytes.byte_at(me: @Me, index: USize) -> U8
+routine Span[Byte].byte_at(me: @Me, index: USize) -> U8
     byte: U8 = me.peek().byte_at(index)
     return(byte)
 
 // -- slicing -------------------------------------------------------------------
 
-/// The bytes in [`start`, `end`), borrowed (a null allocator), without copying.
+/// The bytes in [`start`, `end`), a view of the same bytes, without copying.
 /// :param start: The index of the first byte, included.
 /// :param end: The index after the last byte.
 /// :returns: The borrowed text.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `end` is past the count or `start > end`.
 #track_caller
-routine Bytes.slice(me: Me, start: USize, end: USize) -> Me
+routine Span[Byte].slice(me: Me, start: USize, end: USize) -> Me
     count: USize = me.count
     valid_end: Bool = end.le(count)
     valid_order: Bool = start.le(end)
@@ -167,60 +64,45 @@ routine Bytes.slice(me: Me, start: USize, end: USize) -> Me
         from: @Byte = base.stride(start)
         count: USize = me.count
         slice_len: USize = end.sub(start)
-        result: Me = Me(data: from, count: slice_len, alloc: null)
+        result: Me = Me(data: from, count: slice_len)
         return(result)
 
-/// The bytes in [`start`, `end`), borrowed (a null allocator), without copying.
+/// The bytes in [`start`, `end`), a view of the same bytes, without copying.
 /// :param start: The index of the first byte, included.
 /// :param end: The index after the last byte.
 /// :returns: The borrowed text.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `end` is past the count or `start > end`.
 #track_caller
-routine Bytes.slice(me: @Me, start: USize, end: USize) -> Me
+routine Span[Byte].slice(me: @Me, start: USize, end: USize) -> Me
     result: Me = me.peek().slice(start, end)
     return(result)
 
 // -- heap-allocating operations ------------------------------------------------
 
-/// `a` followed by `b` in new memory from `alloc`, with a NUL after them that the count leaves out. The caller gives
-/// it back with `destruct()`.
+/// `a` followed by `b` in new memory from `alloc`, with a NUL after them that the count leaves out. The caller drops
+/// it.
 /// :param a: The first text.
 /// :param b: The text that follows it.
-/// :param alloc: The allocator for the new bytes, which the result carries.
+/// :param alloc: The manager the new bytes come from.
 /// :returns: The joined text.
-/// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
+/// :throws: Crashes with `MemoryAllocationError` when the manager has no memory to give.
 #track_caller
 #expensive("allocates a new buffer")
-routine Bytes.concat(a: Me, b: Me, alloc: @MemoryManager) -> Me
-    local len_a: USize = a.count
-    local la: USize = a.count
-    local lb: USize = b.count
-    local count: USize = la.add(lb)
-    local data: @Byte = allocate[Byte](count: count.add(1), alloc)
+routine Span[Byte].concat(a: Me, b: Me, alloc: @MemoryManager) -> Memory[Byte]
+    local count: USize = a.count.add(b.count)
+    local buffer: Memory[Byte] = .construct(count: count.add(1), manager: alloc)
 
-    failed: Bool = data.is_null()
-    branch failed
-        ? crash_allocation()
-        : continue
-    src_a: @Byte = a.data
-    data.copy(src: src_a, count: len_a)
-    jump copy_b()
-
-    block copy_b()
-        dst: @Byte = data.stride(len_a)
-        src_b: @Byte = b.data
-        len_b: USize = b.count
-        dst.copy(src: src_b, count: len_b)
-        data.stride(count).poke(0x00)
-        result: Me = Me(data: data, count: count, alloc: alloc)
-        return(result)
+    buffer.data.copy(src: a.data, count: a.count)
+    buffer.data.stride(a.count).copy(src: b.data, count: b.count)
+    buffer.data.stride(count).poke(0x00)
+    return(Memory[Byte](data: buffer.data, count, manager: alloc, generation: buffer.generation))
 
 // -- equality, ordering, hashing -----------------------------------------------
 
 /// Whether both hold the same bytes: equal counts and equal contents, not the same address or allocator.
 /// :param other: The right-hand operand.
 /// :returns: `true` when the contents are identical.
-routine Bytes.eq(me: Me, other: Me) -> Bool
+routine Span[Byte].eq(me: Me, other: Me) -> Bool
     local la: USize = me.count
     local pa: @Byte = me.data
     local pb: @Byte = other.data
@@ -243,11 +125,11 @@ routine Bytes.eq(me: Me, other: Me) -> Bool
             ? loop(i.add(1))
             : return(false)
 
-/// Lexicographic byte-wise comparison. Bytes compare as U8, so this matches `memcmp` ordering, and a text that is a
+/// Lexicographic byte-wise comparison. Span[Byte] compare as U8, so this matches `memcmp` ordering, and a text that is a
 /// prefix of the other comes first. The allocator plays no part.
 /// :param other: The right-hand operand.
 /// :returns: -1, 0, or 1 as `me` orders before, equal to, or after `other`.
-routine Bytes.compare(me: Me, other: Me) -> S32
+routine Span[Byte].compare(me: Me, other: Me) -> S32
     local la: USize = me.count
     local lb: USize = other.count
     local a_shorter: Bool = la.le(lb)
@@ -292,7 +174,7 @@ routine Bytes.compare(me: Me, other: Me) -> S32
 /// SipHash-2-4 of the byte contents under the process key. The allocator plays no part.
 /// :returns: The 64-bit hash.
 #expensive("hashes the whole buffer")
-routine Bytes.hash(me: Me) -> U64
+routine Span[Byte].hash(me: Me) -> U64
     data: @Byte = me.data
     len: USize = me.count
     h: U64 = siphash24(data, count: len, key: hash_key())
@@ -303,7 +185,7 @@ routine Bytes.hash(me: Me) -> U64
 /// Whether the text begins with `prefix`.
 /// :param prefix: The bytes to look for at the start.
 /// :returns: `true` when `prefix` matches the first bytes. An empty `prefix` always matches.
-routine Bytes.has_prefix(me: Me, prefix: Me) -> Bool
+routine Span[Byte].has_prefix(me: Me, prefix: Me) -> Bool
     local pl: USize = prefix.count
     local sd: @Byte = me.data
     local pd: @Byte = prefix.data
@@ -329,14 +211,14 @@ routine Bytes.has_prefix(me: Me, prefix: Me) -> Bool
 /// Whether the text begins with `prefix`.
 /// :param prefix: The bytes to look for at the start.
 /// :returns: `true` when `prefix` matches the first bytes. An empty `prefix` always matches.
-routine Bytes.has_prefix(me: @Me, prefix: Me) -> Bool
+routine Span[Byte].has_prefix(me: @Me, prefix: Me) -> Bool
     result: Bool = me.peek().has_prefix(prefix)
     return(result)
 
 /// Whether the text ends with `suffix`.
 /// :param suffix: The bytes to look for at the end.
 /// :returns: `true` when `suffix` matches the last bytes. An empty `suffix` always matches.
-routine Bytes.has_suffix(me: Me, suffix: Me) -> Bool
+routine Span[Byte].has_suffix(me: Me, suffix: Me) -> Bool
     local fl: USize = suffix.count
     local sd: @Byte = me.data
     local fd: @Byte = suffix.data
@@ -363,7 +245,7 @@ routine Bytes.has_suffix(me: Me, suffix: Me) -> Bool
 /// Whether the text ends with `suffix`.
 /// :param suffix: The bytes to look for at the end.
 /// :returns: `true` when `suffix` matches the last bytes. An empty `suffix` always matches.
-routine Bytes.has_suffix(me: @Me, suffix: Me) -> Bool
+routine Span[Byte].has_suffix(me: @Me, suffix: Me) -> Bool
     result: Bool = me.peek().has_suffix(suffix)
     return(result)
 
@@ -371,7 +253,7 @@ routine Bytes.has_suffix(me: @Me, suffix: Me) -> Bool
 /// :param needle: The bytes to look for.
 /// :returns: The index where the first match starts. An empty `needle` matches at 0.
 /// :absent: When `needle` does not occur in the text.
-routine Bytes.find(me: Me, needle: Me) -> Maybe[USize]
+routine Span[Byte].find(me: Me, needle: Me) -> Maybe[USize]
     local nlen: USize = needle.count
     local slen: USize = me.count
     local sd: @Byte = me.data
@@ -425,14 +307,14 @@ routine Bytes.find(me: Me, needle: Me) -> Maybe[USize]
 /// :param needle: The bytes to look for.
 /// :returns: The index where the first match starts. An empty `needle` matches at 0.
 /// :absent: When `needle` does not occur in the text.
-routine Bytes.find(me: @Me, needle: Me) -> Maybe[USize]
+routine Span[Byte].find(me: @Me, needle: Me) -> Maybe[USize]
     r: Maybe[USize] = me.peek().find(needle)
     return(r)
 
-/// Whether `needle` occurs anywhere in the text, using {Bytes.find}.
+/// Whether `needle` occurs anywhere in the text, using {Span[Byte].find}.
 /// :param needle: The bytes to look for.
 /// :returns: `true` when a match exists. An empty `needle` always matches.
-routine Bytes.has(me: Me, needle: Me) -> Bool
+routine Span[Byte].has(me: Me, needle: Me) -> Bool
     r: Maybe[USize] = me.find(needle)
     found: Bool = r.is_present()
     return(found)
@@ -440,21 +322,21 @@ routine Bytes.has(me: Me, needle: Me) -> Bool
 /// Whether `needle` is not there: the opposite of `has`.
 /// :param needle: The value to look for.
 /// :returns: `true` when `has` would be `false`.
-routine Bytes.lacks(me: Me, needle: Me) -> Bool
+routine Span[Byte].lacks(me: Me, needle: Me) -> Bool
     there: Bool = me.has(needle)
     return(there.bitnot())
 
-/// Whether `needle` occurs anywhere in the text, using {Bytes.find}.
+/// Whether `needle` occurs anywhere in the text, using {Span[Byte].find}.
 /// :param needle: The bytes to look for.
 /// :returns: `true` when a match exists. An empty `needle` always matches.
-routine Bytes.has(me: @Me, needle: Me) -> Bool
+routine Span[Byte].has(me: @Me, needle: Me) -> Bool
     found: Bool = me.peek().has(needle)
     return(found)
 
 /// Whether `needle` is not there: the opposite of `has`.
 /// :param needle: The value to look for.
 /// :returns: `true` when `has` would be `false`.
-routine Bytes.lacks(me: @Me, needle: Me) -> Bool
+routine Span[Byte].lacks(me: @Me, needle: Me) -> Bool
     there: Bool = me.has(needle)
     return(there.bitnot())
 
@@ -463,7 +345,7 @@ routine Bytes.lacks(me: @Me, needle: Me) -> Bool
 /// Whether the bytes are well-formed UTF-8: no bad lead or continuation byte, overlong form, surrogate, or value past
 /// U+10FFFF.
 /// :returns: `true` when the whole text decodes as UTF-8. An empty text is valid.
-routine Bytes.is_utf8(me: Me) -> Bool
+routine Span[Byte].is_utf8(me: Me) -> Bool
     jump next(0)
 
     block next(pos: USize)
@@ -480,14 +362,14 @@ routine Bytes.is_utf8(me: Me) -> Bool
 
 /// Whether the bytes are well-formed UTF-8.
 /// :returns: `true` when the whole text decodes as UTF-8. An empty text is valid.
-routine Bytes.is_utf8(me: @Me) -> Bool
+routine Span[Byte].is_utf8(me: @Me) -> Bool
     valid: Bool = me.peek().is_utf8()
     return(valid)
 
 /// Whether a character can start at byte `index`: the byte there is not a UTF-8 continuation byte.
 /// :param index: The byte position.
 /// :returns: `true` when `index` is the count or the byte there is not a continuation byte. `false` past the end.
-routine Bytes.is_char_boundary(me: Me, index: USize) -> Bool
+routine Span[Byte].is_char_boundary(me: Me, index: USize) -> Bool
     at_end: Bool = index.eq(me.count)
     past: Bool = index.gt(me.count)
     when
@@ -503,7 +385,7 @@ routine Bytes.is_char_boundary(me: Me, index: USize) -> Bool
 /// Whether a character can start at byte `index`: the byte there is not a UTF-8 continuation byte.
 /// :param index: The byte position.
 /// :returns: `true` when `index` is the count or the byte there is not a continuation byte. `false` past the end.
-routine Bytes.is_char_boundary(me: @Me, index: USize) -> Bool
+routine Span[Byte].is_char_boundary(me: @Me, index: USize) -> Bool
     lead: Bool = me.peek().is_char_boundary(index)
     return(lead)
 
@@ -511,24 +393,24 @@ routine Bytes.is_char_boundary(me: @Me, index: USize) -> Bool
 
 /// Iterates over the raw bytes as `U8` values.
 /// :returns: A {BytesIter} positioned at the first byte.
-routine Bytes.bytes(me: Me) -> BytesIter
+routine Span[Byte].bytes(me: Me) -> BytesIter
     iter: BytesIter = BytesIter(str: me.getview(), index: 0)
     return(iter)
 
 /// Iterates over the raw bytes as `U8` values.
 /// :returns: A {BytesIter} positioned at the first byte.
-routine Bytes.bytes(me: @Me) -> BytesIter
+routine Span[Byte].bytes(me: @Me) -> BytesIter
     iter: BytesIter = me.peek().bytes()
     return(iter)
 
 /// Iterates over the characters, decoding UTF-8. A malformed sequence yields U+FFFD.
 /// :returns: A {BytesCharsIter} positioned at the first character.
-routine Bytes.chars(me: Me) -> BytesCharsIter
+routine Span[Byte].chars(me: Me) -> BytesCharsIter
     iter: BytesCharsIter = BytesCharsIter(str: me.getview(), index: 0)
     return(iter)
 
 /// Iterates over the characters, decoding UTF-8. A malformed sequence yields U+FFFD.
 /// :returns: A {BytesCharsIter} positioned at the first character.
-routine Bytes.chars(me: @Me) -> BytesCharsIter
+routine Span[Byte].chars(me: @Me) -> BytesCharsIter
     iter: BytesCharsIter = me.peek().chars()
     return(iter)

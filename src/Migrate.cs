@@ -241,6 +241,7 @@ public static class Migrate
         ["variants"] = (file, text, report) => VariantMigration.Rewrite(text, report, file),
         ["membership"] = (_, text, _) => MembershipNames(text),
         ["lifecycle"] = (_, text, _) => text,
+        ["memory"] = (_, text, _) => MemoryMigration.Rewrite(text),
         ["entry"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? EntryMigration.RewriteMarkdown(text)
             : EntryMigration.Rewrite(text),

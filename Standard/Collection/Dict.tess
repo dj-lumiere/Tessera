@@ -6,7 +6,7 @@
 //   - Slots is an index table: each cell is SLOT_EMPTY, SLOT_TOMBSTONE, or an
 //     entry index >= 0. Linear probing on the hash mod capacity.
 //
-// Every array is a Slice of the same count, the capacity, and each keeps
+// Every array is a Memory of the same count, the capacity, and each keeps
 // the allocator. Removal marks the entry dead and the slot a tombstone. The
 // entry's position in the entries array is retained so the insertion order of
 // surviving entries is preserved. Rehash compacts dead entries away.
@@ -21,7 +21,7 @@ import Standard/Format
 private preset SLOT_EMPTY:     USize = USize.MAX
 private preset SLOT_TOMBSTONE: USize = SLOT_EMPTY.sub(1)
 
-/// An insertion-ordered hash map. Entries live in parallel arrays (each a {Slice[T]} holding the capacity and the allocator) in the order they were first inserted, and an open-addressed slot table with linear probing maps a key hash to its entry. Removal marks the entry dead, so surviving entries keep their order until the next rehash.
+/// An insertion-ordered hash map. Entries live in parallel arrays (each a {Memory[T]} holding the capacity and the manager) in the order they were first inserted, and an open-addressed slot table with linear probing maps a key hash to its entry. Removal marks the entry dead, so surviving entries keep their order until the next rehash.
 /// :typeparam TKey: The key type, which must provide hashing and equality.
 /// :typeparam TValue: The value type.
 record Dict[TKey, TValue]
@@ -30,11 +30,11 @@ conform Representable[Dict[TKey, TValue]] when TKey: typename, TValue: typename,
 conform Diagnosable[Dict[TKey, TValue]] when TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue]
 conform Equatable[Dict[TKey, TValue]] when TKey: typename, TValue: typename, Equatable[TValue]
 require TKey: typename, TValue: typename, HashEquatable[TKey]
-    keys: Slice[TKey]
-    values: Slice[TValue]
-    hashes: Slice[U64]
-    entry_states: Slice[U8]
-    slots: Slice[USize]
+    keys: Memory[TKey]
+    values: Memory[TValue]
+    hashes: Memory[U64]
+    entry_states: Memory[U8]
+    slots: Memory[USize]
     count: USize
     entries_count: USize
 
@@ -43,11 +43,11 @@ require TKey: typename, TValue: typename, HashEquatable[TKey]
 /// :returns: A new empty Dict.
 routine Dict[TKey, TValue].construct(alloc: @MemoryManager) -> Me
 require TKey: typename, TValue: typename
-    keys: Slice[TKey] = Slice[TKey].construct(count: 0, alloc)
-    values: Slice[TValue] = Slice[TValue].construct(count: 0, alloc)
-    hashes: Slice[U64] = Slice[U64].construct(count: 0, alloc)
-    entry_states: Slice[U8] = Slice[U8].construct(count: 0, alloc)
-    slots: Slice[USize] = Slice[USize].construct(count: 0, alloc)
+    keys: Memory[TKey] = Memory[TKey].construct(count: 0, manager: alloc)
+    values: Memory[TValue] = Memory[TValue].construct(count: 0, manager: alloc)
+    hashes: Memory[U64] = Memory[U64].construct(count: 0, manager: alloc)
+    entry_states: Memory[U8] = Memory[U8].construct(count: 0, manager: alloc)
+    slots: Memory[USize] = Memory[USize].construct(count: 0, manager: alloc)
     map: Me = Me(keys: keys, values: values, hashes: hashes, entry_states: entry_states,
         slots: slots, count: 0, entries_count: 0)
     return(map)
@@ -259,13 +259,13 @@ require TKey: typename, TValue: typename, Equatable[TValue]
 /// :returns: True when it rehashed, false when the allocator failed (the map is left as it was).
 private routine Dict[TKey, TValue].rehash(me: @Me, new_capacity: USize) -> Bool
 require TKey: typename, TValue: typename
-    local alloc: @MemoryManager = me.keys.alloc.peek()
+    local alloc: @MemoryManager = me.keys.manager.peek()
     local fresh: @Me <- .construct(alloc)
-    local keys: @Slice[TKey] = fresh.keys
-    local values: @Slice[TValue] = fresh.values
-    local hashes: @Slice[U64] = fresh.hashes
-    local entry_states: @Slice[U8] = fresh.entry_states
-    local slots: @Slice[USize] = fresh.slots
+    local keys: @Memory[TKey] = fresh.keys
+    local values: @Memory[TValue] = fresh.values
+    local hashes: @Memory[U64] = fresh.hashes
+    local entry_states: @Memory[U8] = fresh.entry_states
+    local slots: @Memory[USize] = fresh.slots
 
     made_keys: Bool = make_array[TKey](into: keys, count: new_capacity)
     branch made_keys
@@ -582,7 +582,7 @@ require TKey: typename, TValue: typename
 #track_caller
 routine Dict[TKey, TValue].destruct(me: @Me) -> Void
 require TKey: typename, TValue: typename
-    hollow: Bool = me.keys.alloc.peek().is_null()
+    hollow: Bool = me.keys.manager.peek().is_null()
     branch hollow
         ? return()
         : continue
@@ -680,15 +680,15 @@ require TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue]
 /// :param into: The empty slice to fill, which carries the allocator.
 /// :param count: The number of elements to allocate.
 /// :returns: True when it allocated, false when the allocator failed (leaving `into` empty).
-internal routine make_array[T](into: @Slice[T], count: USize) -> Bool
+internal routine make_array[T](into: @Memory[T], count: USize) -> Bool
 require T: typename
-    alloc: @MemoryManager = into.alloc.peek()
-    made: Result[Slice[T], AllocFailed] = Slice[T].construct_result(count, alloc)
+    alloc: @MemoryManager = into.manager.peek()
+    made: Result[Memory[T], AllocFailed] = Memory[T].construct_result(count, manager: alloc)
     when made
-        is Slice[T] as slice => stored(slice)
+        is Memory[T] as slice => stored(slice)
         is AllocFailed => return(false)
 
-    block stored(slice: Slice[T])
+    block stored(slice: Memory[T])
         slice.poke_into(into)
         return(true)
 
@@ -696,10 +696,10 @@ require T: typename
 /// :typeparam T: The element type.
 /// :param a: The first slice.
 /// :param b: The second slice.
-internal routine swap_slices[T](a: @Slice[T], b: @Slice[T]) -> Void
+internal routine swap_slices[T](a: @Memory[T], b: @Memory[T]) -> Void
 require T: typename
-    first: Slice[T] = a.peek()
-    second: Slice[T] = b.peek()
+    first: Memory[T] = a.peek()
+    second: Memory[T] = b.peek()
     second.poke_into(a)
     first.poke_into(b)
     return()

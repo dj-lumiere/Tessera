@@ -560,7 +560,7 @@ public static partial class LanguageServer
         /// `out.write("x = {x}\n")`, `Out.write("...")`: a template the builder expands in place, which no routine declares.
         private Func<string?> TemplateHover()
         {
-            Func<string?> hover = () => HoverText("out.write(template: Bytes) -> Void",
+            Func<string?> hover = () => HoverText("out.write(template: Span[Byte]) -> Void",
                 Ko("Writes the string to the Writer, each `{expression}` in it through the value's `represent_into`, "
                    + "expanded in place by the builder: nothing is allocated. `{{` and `}}` are literal braces.",
                     "문자열을 Writer에 씁니다. 안의 `{식}`은 그 값의 `represent_into`로 씁니다. builder가 그 자리에서 "

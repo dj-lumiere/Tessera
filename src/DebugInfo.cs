@@ -32,8 +32,8 @@ public sealed partial class Compiler
 
     private readonly Dictionary<string, string> _places = [];
 
-    /// The constant SourceLocation of a place in the source, for a call to a `#track_caller` routine: its file as
-    /// Bytes (with a null allocator), its line, and its column (0 when a `#source` gives none).
+    /// The constant SourceLocation of a place in the source, for a call to a `#track_caller` routine: its file as a
+    /// Span[Byte] of the program image, its line, and its column (0 when a `#source` gives none).
     public string PlaceGlobal(Pos pos)
     {
         if (Prechecking) return "@precheck";
@@ -43,8 +43,8 @@ public sealed partial class Compiler
         name = $"@.place.{_places.Count}";
         _places[key] = name;
         string text = StringGlobal(file), usize = USize.Llvm;
-        _globals.AppendLine($"{name} = private unnamed_addr constant {{ {{ ptr, {usize}, ptr }}, i32, i32 }} "
-            + $"{{ {{ ptr, {usize}, ptr }} {{ ptr {text}, {usize} {Utf8Length(file)}, ptr null }}, i32 {pos.Line}, i32 {pos.Col} }}");
+        _globals.AppendLine($"{name} = private unnamed_addr constant {{ {{ ptr, {usize} }}, i32, i32 }} "
+            + $"{{ {{ ptr, {usize} }} {{ ptr {text}, {usize} {Utf8Length(file)} }}, i32 {pos.Line}, i32 {pos.Col} }}");
         return name;
     }
 

@@ -485,7 +485,7 @@ private routine is_invalid_handle(h: Addr) -> Bool
 /// :returns: The length in units, the 0 left out.
 /// :absent: When `text` has a NUL or doesn't fit with its 0.
 #target(os: "windows")
-internal routine encode_utf16(text: Bytes, out: @U16, capacity: USize) -> Maybe[USize]
+internal routine encode_utf16(text: Span[Byte], out: @U16, capacity: USize) -> Maybe[USize]
     local iter: @BytesCharsIter <- text.chars()
 
     jump next(0)
@@ -533,7 +533,7 @@ internal routine encode_utf16(text: Bytes, out: @U16, capacity: USize) -> Maybe[
 /// :returns: The length in units, the 0 left out.
 /// :absent: When `path` has a NUL or doesn't fit.
 #target(os: "windows")
-private routine wide(path: Bytes, out: @U16) -> Maybe[USize]
+private routine wide(path: Span[Byte], out: @U16) -> Maybe[USize]
     return(encode_utf16(text: path, out, capacity: PATH_CAPACITY))
 
 /// path as UTF-16 in out: whether it fit.
@@ -541,7 +541,7 @@ private routine wide(path: Bytes, out: @U16) -> Maybe[USize]
 /// :param out: The buffer, `PATH_CAPACITY` units.
 /// :returns: True when it was converted. False when `path` has a NUL or doesn't fit.
 #target(os: "windows")
-private routine wide_path(path: Bytes, out: @U16) -> Bool
+private routine wide_path(path: Span[Byte], out: @U16) -> Bool
     n: Maybe[USize] = wide(path, out)
     return(n.is_present())
 
@@ -602,7 +602,7 @@ internal routine wide_length(units: @U16) -> USize
             ? return(i)
             : scan(i.add(1))
 
-/// count UTF-16 units as UTF-8, in memory from alloc, carrying that allocator.
+/// count UTF-16 units as UTF-8, in memory from alloc.
 /// :param units: The first unit.
 /// :param count: How many units.
 /// :param alloc: The allocator for the text.
@@ -610,13 +610,14 @@ internal routine wide_length(units: @U16) -> USize
 /// :throws: Returns `OutOfMemory` when `alloc` fails.
 #target(os: "windows")
 internal routine owned_wide(units: @U16, count: USize,
-    alloc: @MemoryManager) -> Result[Bytes, FsError]
-    buffer: @Byte = allocate[Byte](count: count.mul(3).max(1), alloc)
-    branch buffer.is_null()
-        ? return(FsError.OUT_OF_MEMORY)
-        : continue
-    n: USize = narrow(units, count, out: buffer)
-    return(Bytes(data: buffer, count: n, alloc: alloc))
+    alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
+    made: Result[Memory[Byte], AllocFailed] = Memory[Byte].construct_result(
+        count: count.mul(3).max(1), manager: alloc)
+    when made
+        is Memory[Byte] as buffer => continue
+        is AllocFailed => return(FsError.OUT_OF_MEMORY)
+    n: USize = narrow(units, count, out: buffer.data)
+    return(buffer.with_count(n))
 
 // -- metadata ------------------------------------------------------------------------
 
@@ -727,7 +728,7 @@ private routine query_handle(wpath: @U16, link_itself: Bool) -> Addr
 /// :returns: The metadata.
 /// :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: "windows")
-internal routine metadata(path: Bytes) -> Result[Metadata, FsError]
+internal routine metadata(path: Span[Byte]) -> Result[Metadata, FsError]
     claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
     branch wide_path(path, out: wpath.to[@U16]())
         ? continue
@@ -753,7 +754,7 @@ internal routine metadata(path: Bytes) -> Result[Metadata, FsError]
 /// :returns: The metadata.
 /// :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: "windows")
-internal routine symlink_metadata(path: Bytes) -> Result[Metadata, FsError]
+internal routine symlink_metadata(path: Span[Byte]) -> Result[Metadata, FsError]
     claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
     branch wide_path(path, out: wpath.to[@U16]())
         ? continue
@@ -801,7 +802,7 @@ routine FileHandle.empty() -> Me
 /// :returns: The open handle.
 /// :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: "windows")
-internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result[Me, FsError]
+internal routine FileHandle.open(path: Span[Byte], mode: OpenMode) -> Result[Me, FsError]
     claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
     branch wide_path(path, out: wpath.to[@U16]())
         ? continue
@@ -934,7 +935,7 @@ routine FileHandle.close(me: @Me) -> Void
 /// :throws: Returns the reason, `AlreadyExists` when something is at `path`, `InvalidPath` or
 ///     `NameTooLong` when `path` doesn't fit a C path.
 #target(os: "windows")
-internal routine create_dir(path: Bytes) -> Result[Unit, FsError]
+internal routine create_dir(path: Span[Byte]) -> Result[Unit, FsError]
     claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
     branch wide_path(path, out: wpath.to[@U16]())
         ? return(checked(c_create_directory(wpath.to[@U16](), null)))
@@ -945,7 +946,7 @@ internal routine create_dir(path: Bytes) -> Result[Unit, FsError]
 /// :returns: `Unit` once it is gone.
 /// :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: "windows")
-internal routine remove_file(path: Bytes) -> Result[Unit, FsError]
+internal routine remove_file(path: Span[Byte]) -> Result[Unit, FsError]
     claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
     branch wide_path(path, out: wpath.to[@U16]())
         ? continue
@@ -969,7 +970,7 @@ internal routine remove_file(path: Bytes) -> Result[Unit, FsError]
 /// :throws: Returns the reason, `DirectoryNotEmpty` when something is in it, `InvalidPath` or
 ///     `NameTooLong` when `path` doesn't fit a C path.
 #target(os: "windows")
-internal routine remove_dir(path: Bytes) -> Result[Unit, FsError]
+internal routine remove_dir(path: Span[Byte]) -> Result[Unit, FsError]
     claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
     branch wide_path(path, out: wpath.to[@U16]())
         ? return(checked(c_remove_directory(wpath.to[@U16]())))
@@ -982,7 +983,7 @@ internal routine remove_dir(path: Bytes) -> Result[Unit, FsError]
 /// :returns: `Unit` once it is renamed.
 /// :throws: Returns the reason, `InvalidPath` or `NameTooLong` when a path doesn't fit a C path.
 #target(os: "windows")
-private routine move_file(from: Bytes, to: Bytes, flags: U32) -> Result[Unit, FsError]
+private routine move_file(from: Span[Byte], to: Span[Byte], flags: U32) -> Result[Unit, FsError]
     claim a: @Array[U16, PATH_CAPACITY] <- .hollow()
     claim b: @Array[U16, PATH_CAPACITY] <- .hollow()
     branch wide_path(path: from, out: a.to[@U16]())
@@ -998,7 +999,7 @@ private routine move_file(from: Bytes, to: Bytes, flags: U32) -> Result[Unit, Fs
 /// :returns: `Unit` once it is renamed.
 /// :throws: Returns the reason, `InvalidPath` or `NameTooLong` when a path doesn't fit a C path.
 #target(os: "windows")
-internal routine rename(from: Bytes, to: Bytes) -> Result[Unit, FsError]
+internal routine rename(from: Span[Byte], to: Span[Byte]) -> Result[Unit, FsError]
     // MOVEFILE_REPLACE_EXISTING
     return(move_file(from, to, flags: 1))
 
@@ -1009,7 +1010,7 @@ internal routine rename(from: Bytes, to: Bytes) -> Result[Unit, FsError]
 /// :throws: Returns the reason, `AlreadyExists` when something is at `to`, `InvalidPath` or
 ///     `NameTooLong` when a path doesn't fit a C path.
 #target(os: "windows")
-internal routine rename_no_replace(from: Bytes, to: Bytes) -> Result[Unit, FsError]
+internal routine rename_no_replace(from: Span[Byte], to: Span[Byte]) -> Result[Unit, FsError]
     return(move_file(from, to, flags: 0))
 
 /// CopyFileExW's progress routine: records the bytes transferred so far in the U64 at `data`, and lets the copy go
@@ -1038,7 +1039,7 @@ private routine copy_progress(total_size: S64, transferred: S64, stream_size: S6
 /// :throws: Returns the reason when the copy fails, `InvalidPath` or `NameTooLong` when a path doesn't
 ///     fit a C path.
 #target(os: "windows")
-internal routine copy_file(from: Bytes, to: Bytes) -> Result[U64, FsError]
+internal routine copy_file(from: Span[Byte], to: Span[Byte]) -> Result[U64, FsError]
     claim a: @Array[U16, PATH_CAPACITY] <- .hollow()
     claim b: @Array[U16, PATH_CAPACITY] <- .hollow()
     claim copied: @U64 <- 0
@@ -1060,7 +1061,7 @@ internal routine copy_file(from: Bytes, to: Bytes) -> Result[U64, FsError]
 /// :returns: `Unit` once the attribute is set.
 /// :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: "windows")
-internal routine set_readonly(path: Bytes, readonly: Bool) -> Result[Unit, FsError]
+internal routine set_readonly(path: Span[Byte], readonly: Bool) -> Result[Unit, FsError]
     claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
     branch wide_path(path, out: wpath.to[@U16]())
         ? continue
@@ -1079,7 +1080,7 @@ internal routine set_readonly(path: Bytes, readonly: Bool) -> Result[Unit, FsErr
 /// :param e: The extension, without its dot.
 /// :returns: True for those four.
 #target(os: "windows")
-private routine is_program_extension(e: Bytes) -> Bool
+private routine is_program_extension(e: Span[Byte]) -> Bool
     branch e.count().eq(3)
         ? continue
         : return(false)
@@ -1105,7 +1106,7 @@ private routine is_program_extension(e: Bytes) -> Bool
 /// :param access: What to check for.
 /// :returns: True when allowed. False when not, when nothing is there, or when `path` doesn't fit a C path.
 #target(os: "windows")
-internal routine is_accessible(path: Bytes, access: Access) -> Bool
+internal routine is_accessible(path: Span[Byte], access: Access) -> Bool
     claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
     branch wide_path(path, out: wpath.to[@U16]())
         ? continue
@@ -1129,7 +1130,7 @@ internal routine is_accessible(path: Bytes, access: Access) -> Bool
 /// :returns: `Unit` once the times are set.
 /// :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: "windows")
-internal routine touch(path: Bytes) -> Result[Unit, FsError]
+internal routine touch(path: Span[Byte]) -> Result[Unit, FsError]
     claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
     branch wide_path(path, out: wpath.to[@U16]())
         ? continue
@@ -1178,7 +1179,7 @@ routine DirIter.destruct(me: @Me) -> Void
 /// :returns: `Unit` once the listing is open.
 /// :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: "windows")
-internal routine DirIter.open_path(me: @Me, path: Bytes) -> Result[Unit, FsError]
+internal routine DirIter.open_path(me: @Me, path: Span[Byte]) -> Result[Unit, FsError]
     local pattern_buffer: @Array[U16, PATH_CAPACITY] <- .hollow()
     local pattern: @U16 = pattern_buffer.to[@U16]()
 
@@ -1259,7 +1260,8 @@ routine DirIter.emit_checked(me: @Me) -> Maybe[DirEntry]
             : continue
         n: USize = narrow(units: name, count: wide_length(name), out: me.name.to[@Byte]())
         info: Metadata = from_find_data(data)
-        return(DirEntry(name: Bytes.from_ptr(data: me.name.to[@Byte](), count: n), kind: info.kind))
+        return(DirEntry(name: Span[Byte].construct(data: me.name.to[@Byte](), count: n),
+            kind: info.kind))
 
 /// The metadata of the entry next last returned, from the listing itself (a link describes itself).
 /// :returns: The metadata, which never fails here.
@@ -1286,29 +1288,29 @@ routine DirIter.close(me: @Me) -> Void
 /// :returns: The path.
 /// :throws: Returns the reason when the OS can't report it, `OutOfMemory` when `alloc` fails.
 #target(os: "windows")
-internal routine current_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
-    local units: @Slice[U16] <- .empty()
+internal routine current_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
+    local units: @Memory[U16] <- .hollow()
 
     need: U32 = c_get_current_directory(0, null)
     branch need.eq(0)
-        ? finish(failed[Bytes]())
+        ? finish(failed[Memory[Byte]]())
         : continue
-    made: Result[Slice[U16], AllocFailed] = Slice[U16].construct_result(count: need.to[USize](),
-        alloc)
+    made: Result[Memory[U16], AllocFailed] = Memory[U16].construct_result(count: need.to[USize](),
+        manager: alloc)
     when made
-        is Slice[U16] as slice => read(slice)
+        is Memory[U16] as slice => read(slice)
         is AllocFailed => finish(FsError.OUT_OF_MEMORY)
 
-    block read(slice: Slice[U16])
+    block read(slice: Memory[U16])
         slice.poke_into(units)
         need: U32 = slice.count().to[U32]()
-        got: U32 = c_get_current_directory(need, slice.to[@U16]())
+        got: U32 = c_get_current_directory(need, slice.data)
         branch got.eq(0).bitor(got.ge(need))
-            ? finish(failed[Bytes]())
-            : finish(owned_wide(units: slice.to[@U16](), count: got.to[USize](), alloc))
+            ? finish(failed[Memory[Byte]]())
+            : finish(owned_wide(units: slice.data, count: got.to[USize](), alloc))
 
-    block finish(result: Result[Bytes, FsError])
-        units.destruct()
+    block finish(result: Result[Memory[Byte], FsError])
+        units.drop()
         return(result)
 
 /// Makes path the working directory.
@@ -1316,7 +1318,7 @@ internal routine current_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
 /// :returns: `Unit` once it is changed.
 /// :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: "windows")
-internal routine set_current_dir(path: Bytes) -> Result[Unit, FsError]
+internal routine set_current_dir(path: Span[Byte]) -> Result[Unit, FsError]
     claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
     branch wide_path(path, out: wpath.to[@U16]())
         ? return(checked(c_set_current_directory(wpath.to[@U16]())))
@@ -1328,7 +1330,7 @@ internal routine set_current_dir(path: Bytes) -> Result[Unit, FsError]
 /// :returns: The path.
 /// :throws: Returns `OutOfMemory` when `alloc` fails.
 #target(os: "windows")
-internal routine temp_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
+internal routine temp_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
     claim units: @Array[U16, PATH_CAPACITY] <- .hollow()
     got: U32 = c_get_temp_path(PATH_CAPACITY.to[U32](), units.to[@U16]())
     branch got.eq(0).bitor(got.to[USize]().ge(PATH_CAPACITY))
@@ -1341,12 +1343,13 @@ internal routine temp_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
         : return(owned_wide(units: units.to[@U16](), count: got.to[USize](), alloc))
 
     block fallback()
-        buffer: @Byte = allocate[Byte](count: 15, alloc)
-        branch buffer.is_null()
-            ? return(FsError.OUT_OF_MEMORY)
-            : continue
-        buffer.copy(src: "C:\\Windows\\Temp", count: 15)
-        return(Bytes(data: buffer, count: 15, alloc: alloc))
+        made: Result[Memory[Byte], AllocFailed] = Memory[Byte].construct_result(count: 15,
+            manager: alloc)
+        when made
+            is Memory[Byte] as buffer => continue
+            is AllocFailed => return(FsError.OUT_OF_MEMORY)
+        buffer.data.copy(src: "C:\\Windows\\Temp", count: 15)
+        return(buffer)
 
 /// The environment variable name, as UTF-8 in memory from alloc, when it is set and not empty.
 /// :param name: The variable's 0-terminated UTF-16 name.
@@ -1354,16 +1357,16 @@ internal routine temp_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
 /// :returns: The value.
 /// :absent: When the variable is not set, is empty, takes `PATH_CAPACITY` units or more, or `alloc` fails.
 #target(os: "windows")
-private routine env_dir(name: CWStr, alloc: @MemoryManager) -> Maybe[Bytes]
+private routine env_dir(name: CWStr, alloc: @MemoryManager) -> Maybe[Memory[Byte]]
     claim units: @Array[U16, PATH_CAPACITY] <- .hollow()
     got: U32 = c_get_environment_variable(name, units.to[@U16](), PATH_CAPACITY.to[U32]())
     branch got.eq(0).bitor(got.to[USize]().ge(PATH_CAPACITY))
         ? return(Unit())
         : continue
-    text: Result[Bytes, FsError] = owned_wide(units: units.to[@U16](), count: got.to[USize](),
-        alloc)
+    text: Result[Memory[Byte], FsError] = owned_wide(units: units.to[@U16](),
+        count: got.to[USize](), alloc)
     when text
-        is Bytes as t => return(t)
+        is Memory[Byte] as t => return(t)
         is FsError => return(Unit())
 
 /// USERPROFILE, or HOMEDRIVE and HOMEPATH, in memory from alloc. NotFound when neither is set.
@@ -1372,36 +1375,36 @@ private routine env_dir(name: CWStr, alloc: @MemoryManager) -> Maybe[Bytes]
 /// :throws: Returns `NotFound` when neither is set, or when `alloc` fails for a variable's value. Crashes
 ///     with `MemoryAllocationError` when `alloc` fails joining HOMEDRIVE and HOMEPATH.
 #target(os: "windows")
-internal routine home_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
-    local drive: @Bytes <- .empty()
-    local path: @Bytes <- .empty()
+internal routine home_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
+    local drive: @Memory[Byte] <- .hollow()
+    local path: @Memory[Byte] <- .hollow()
 
-    profile: Maybe[Bytes] = env_dir(name: "USERPROFILE", alloc)
+    profile: Maybe[Memory[Byte]] = env_dir(name: "USERPROFILE", alloc)
     when profile
-        is Bytes as dir => finish(dir)
+        is Memory[Byte] as dir => finish(dir)
         is Unit => from_drive()
 
     block from_drive()
-        d: Maybe[Bytes] = env_dir(name: "HOMEDRIVE", alloc)
+        d: Maybe[Memory[Byte]] = env_dir(name: "HOMEDRIVE", alloc)
         when d
-            is Bytes as text => home_path(text)
+            is Memory[Byte] as text => home_path(text)
             is Unit => finish(FsError.NOT_FOUND)
 
-    block home_path(drive_text: Bytes)
+    block home_path(drive_text: Memory[Byte])
         drive_text.poke_into(drive)
-        p: Maybe[Bytes] = env_dir(name: "HOMEPATH", alloc)
+        p: Maybe[Memory[Byte]] = env_dir(name: "HOMEPATH", alloc)
         when p
-            is Bytes as text => join(text)
+            is Memory[Byte] as text => join(text)
             is Unit => finish(FsError.NOT_FOUND)
 
-    block join(path_text: Bytes)
+    block join(path_text: Memory[Byte])
         path_text.poke_into(path)
-        both: Bytes = Bytes.concat(a: drive.peek(), b: path.peek(), alloc)
+        both: Memory[Byte] = Span[Byte].concat(a: drive, b: path, alloc)
         jump finish(both)
 
-    block finish(result: Result[Bytes, FsError])
-        drive.destruct()
-        path.destruct()
+    block finish(result: Result[Memory[Byte], FsError])
+        drive.drop()
+        path.drop()
         return(result)
 
 /// path made absolute by the text: the working directory in front of a relative path, and "." and ".." taken out
@@ -1412,7 +1415,8 @@ internal routine home_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
 /// :throws: Returns the reason, `NameTooLong` when the result doesn't fit, `OutOfMemory` when
 ///     `alloc` fails, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: "windows")
-internal routine absolute_path(path: Bytes, alloc: @MemoryManager) -> Result[Bytes, FsError]
+internal routine absolute_path(path: Span[Byte],
+    alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
     claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
     branch wide_path(path, out: wpath.to[@U16]())
         ? continue
@@ -1421,7 +1425,7 @@ internal routine absolute_path(path: Bytes, alloc: @MemoryManager) -> Result[Byt
     got: U32 = c_get_full_path_name(wpath.to[@U16](), PATH_CAPACITY.to[U32](), full.to[@U16](),
         null)
     branch got.eq(0)
-        ? return(failed[Bytes]())
+        ? return(failed[Memory[Byte]]())
         : continue
     branch got.to[USize]().ge(PATH_CAPACITY)
         ? return(FsError.NAME_TOO_LONG)
@@ -1435,14 +1439,15 @@ internal routine absolute_path(path: Bytes, alloc: @MemoryManager) -> Result[Byt
 /// :throws: Returns the reason, such as `NotFound`, `OutOfMemory` when `alloc` fails, `InvalidPath`
 ///     or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: "windows")
-internal routine canonical_path(path: Bytes, alloc: @MemoryManager) -> Result[Bytes, FsError]
+internal routine canonical_path(path: Span[Byte],
+    alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
     claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
     branch wide_path(path, out: wpath.to[@U16]())
         ? continue
         : return(path_error(path))
     h: Addr = query_handle(wpath: wpath.to[@U16](), link_itself: false)
     branch is_invalid_handle(h)
-        ? return(failed[Bytes]())
+        ? return(failed[Memory[Byte]]())
         : continue
     claim full: @Array[U16, PATH_CAPACITY] <- .hollow()
     // FILE_NAME_NORMALIZED | VOLUME_NAME_DOS
@@ -1455,12 +1460,13 @@ internal routine canonical_path(path: Bytes, alloc: @MemoryManager) -> Result[By
     branch got.to[USize]().ge(PATH_CAPACITY)
         ? return(FsError.NAME_TOO_LONG)
         : continue
-    text: Result[Bytes, FsError] = owned_wide(units: full.to[@U16](), count: got.to[USize](), alloc)
+    text: Result[Memory[Byte], FsError] = owned_wide(units: full.to[@U16](), count: got.to[USize](),
+        alloc)
     when text
-        is Bytes as t => strip(t)
+        is Memory[Byte] as t => strip(t)
         is FsError as error => return(error)
 
-    block strip(t: Bytes)
+    block strip(t: Memory[Byte])
         branch t.has_prefix("\\\\?\\UNC\\")
             ? unc(t)
             : continue
@@ -1469,17 +1475,17 @@ internal routine canonical_path(path: Bytes, alloc: @MemoryManager) -> Result[By
             : return(t)
 
     // "\\?\UNC\server" to "\\server": keep the first two backslashes, drop "?\UNC\"
-    block unc(t: Bytes)
+    block unc(t: Memory[Byte])
         jump shift(t, 8, 2)
 
     // Moves the text from from down to keep, so the buffer's start (what free wants) stays where it is.
-    block shift(t: Bytes, from: USize, keep: USize)
+    block shift(t: Memory[Byte], from: USize, keep: USize)
         rest: USize = t.count().sub(from)
         jump move(t, from, keep, rest, 0)
 
-    block move(t: Bytes, from: USize, keep: USize, rest: USize, i: USize)
+    block move(t: Memory[Byte], from: USize, keep: USize, rest: USize, i: USize)
         branch i.eq(rest)
-            ? return(Bytes(data: t.data, count: keep.add(rest), alloc: t.alloc))
+            ? return(t.with_count(keep.add(rest)))
             : continue
         t.data.stride(keep.add(i)).poke(t.data.stride(from.add(i)).peek())
         jump move(t, from, keep, rest, i.add(1))
@@ -1496,7 +1502,7 @@ internal routine canonical_path(path: Bytes, alloc: @MemoryManager) -> Result[By
 /// :returns: The mapping.
 /// :throws: Returns the reason when the file can't be opened, measured, or mapped.
 #target(os: "windows")
-internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
+internal routine Mapping.map(path: Span[Byte], write: Bool, offset: U64,
     count: USize) -> Result[Me, FsError]
     local file: @FileHandle <- .empty()
 
