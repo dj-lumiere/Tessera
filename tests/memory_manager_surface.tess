@@ -1,0 +1,51 @@
+// A MemoryManager hands out blocks at the alignment asked for, and DEFAULT_HEAP handles pages: reserve, commit,
+// protect, release. A manager without pages says so, and calling its reserve crashes with NotImplementedError.
+
+import Standard/Alloc
+import Standard/Format
+import Standard/Os
+
+#[external("c"), symbol("exit"), noreturn]
+routine exit(status: CInt) -> Void
+
+/// Reports the crash on stdout and exits with status 3.
+/// :param name: The crash kind.
+/// :param message: The crash message.
+/// :param place: Where the crash was raised.
+#[export("tessera_crash_handler"), noreturn]
+routine on_crash(name: Bytes, message: Bytes, place: @SourceLocation) -> Void
+    block entry()
+        Out.write("crashed: {name}\n")
+        exit(3)
+
+/// Whether `at` is a multiple of `align`.
+/// :param at: The address.
+/// :param align: The alignment.
+/// :returns: True when aligned.
+routine aligned(at: Addr, align: USize) -> Bool
+    block entry()
+        return(ptrtoint[Addr, USize](at).bitand(align.sub(1)).eq(0))
+
+routine start() -> Void
+    local heap: @MemoryManager <- DEFAULT_HEAP.peek()
+    local plain: @MemoryManager <- .construct(alloc_fn: DEFAULT_HEAP.alloc_fn.peek(),
+        realloc_fn: DEFAULT_HEAP.realloc_fn.peek(), free_fn: DEFAULT_HEAP.free_fn.peek(), state: null)
+
+    block entry()
+        wide: Addr = heap.alloc(size: 100, align: 256)
+        Out.write("aligned 256: {aligned(at: wide, align: 256)}\n")
+        grown: Addr = heap.realloc(at: wide, size: 5000, align: 256)
+        Out.write("still aligned: {aligned(at: grown, align: 256)}\n")
+        heap.free(grown)
+        Out.write("pages: {heap.has_pages()} {heap.has_protect()}\n")
+        page: USize = page_size()
+        space: Addr = heap.reserve(page.mul(4))
+        committed: Bool = heap.commit(at: space, size: page.mul(2))
+        42.poke_into(space.to[@U64]())
+        closed: Bool = heap.protect(at: space.offset(page.to[SSize]()), size: page, access: PageAccess.READ)
+        Out.write("committed {committed}, protected {closed}, read {space.to[@U64]().peek()}\n")
+        heap.release(at: space, size: page.mul(4))
+        Out.write("plain pages: {plain.has_pages()}\n")
+        nothing: Addr = plain.reserve(page)
+        Out.write("not reached {nothing}\n")
+        return()

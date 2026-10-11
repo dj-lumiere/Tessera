@@ -27,17 +27,185 @@ import Standard/Format
 // functions fit behind them.
 // ============================================================
 
-/// A manual vtable for heap allocation: the allocate, reallocate and free callbacks plus an opaque `state` passed to each. Callers pass `@Allocator` to any routine that allocates, so no allocation is hidden.
+/// What a page allows: `NONE` (touching it stops the program), `READ`, or `READ_WRITE`.
+choice PageAccess: U8
+    NONE
+    READ
+    READ_WRITE
+
+/// A memory manager: the routines that hand out memory, plus an opaque `state` passed to each. Callers pass
+/// `@MemoryManager` to any routine that allocates, so no allocation is hidden. `alloc_fn`, `realloc_fn`, and `free_fn`
+/// are always there. The page routines (`reserve_fn`, `commit_fn`, `release_fn`) and `protect_fn` may be null, for a
+/// manager that doesn't handle pages (an arena, a pool), and calling one that is null crashes.
 record MemoryManager
-    alloc_fn: Callable[(Addr, USize), Addr]
-    realloc_fn: Callable[(Addr, Addr, USize), Addr]
+    /// Allocates `size` bytes aligned to `align` (a power of two), or returns null: `(state, size, align)`.
+    alloc_fn: Callable[(Addr, USize, USize), Addr]
+    /// Resizes a block to `size` bytes, keeping its contents and its alignment `align`, or returns null and leaves it
+    /// as it was: `(state, at, size, align)`.
+    realloc_fn: Callable[(Addr, Addr, USize, USize), Addr]
+    /// Gives a block back: `(state, at)`.
     free_fn: Callable[(Addr, Addr), Void]
+    /// Reserves `size` bytes of address space, no page usable yet, or returns null: `(state, size)`.
+    reserve_fn: Callable[(Addr, USize), Addr]
+    /// Makes reserved pages readable and writable, false when it can't: `(state, at, size)`.
+    commit_fn: Callable[(Addr, Addr, USize), Bool]
+    /// Gives a whole reservation back: `(state, at, size)` with `at` and `size` as reserved.
+    release_fn: Callable[(Addr, Addr, USize), Void]
+    /// Sets what pages allow, false when it can't: `(state, at, size, access)`.
+    protect_fn: Callable[(Addr, Addr, USize, PageAccess), Bool]
+    /// What the routines share, passed to each of them.
     state: Addr
 
 /// The error of a `_result` operation whose allocator returned null, such as
 /// `List.push_result`. The collection is left as it was before the call.
 #derive(Representable, Diagnosable, Equatable, Hashable)
 record AllocFailed
+
+/// A memory manager that hands out blocks and doesn't handle pages: its page routines and `protect_fn` are null.
+/// :param alloc_fn: Allocates `(state, size, align)`.
+/// :param realloc_fn: Resizes `(state, at, size, align)`.
+/// :param free_fn: Gives a block back `(state, at)`.
+/// :param state: What the three routines share.
+/// :returns: The manager.
+routine MemoryManager.construct(alloc_fn: Callable[(Addr, USize, USize), Addr],
+    realloc_fn: Callable[(Addr, Addr, USize, USize), Addr], free_fn: Callable[(Addr, Addr), Void], state: Addr) -> Me
+    block entry()
+        manager: Me = Me(alloc_fn, realloc_fn, free_fn, reserve_fn: null, commit_fn: null, release_fn: null,
+            protect_fn: null, state)
+        return(manager)
+
+/// Allocates `size` bytes aligned to `align` from this manager.
+/// :param size: The number of bytes.
+/// :param align: The alignment, a power of two.
+/// :returns: The block, or null when the manager has no memory to give.
+/// :throws: Crashes with `InvalidValueError` when `align` isn't a power of two.
+#[track_caller, expensive("allocates memory")]
+routine MemoryManager.alloc(me: @Me, size: USize, align: USize) -> Addr
+    block entry()
+        check_align(align)
+        alloc_fn: Callable[(Addr, USize, USize), Addr] = me.alloc_fn.peek()
+        block_start: Addr = alloc_fn.call(me.state.peek(), size, align)
+        return(block_start)
+
+/// Resizes the block at `at`, from this manager, to `size` bytes, keeping its contents up to the smaller size.
+/// :param at: The block, or null for a new one.
+/// :param size: The new size in bytes.
+/// :param align: The alignment the block was allocated with, a power of two.
+/// :returns: The resized block, which may have moved, or null when the manager has no memory to give (the block is
+///     left as it was).
+/// :throws: Crashes with `InvalidValueError` when `align` isn't a power of two.
+#[track_caller, expensive("reallocates memory")]
+routine MemoryManager.realloc(me: @Me, at: Addr, size: USize, align: USize) -> Addr
+    block entry()
+        check_align(align)
+        realloc_fn: Callable[(Addr, Addr, USize, USize), Addr] = me.realloc_fn.peek()
+        note_call_place(caller_location())
+        block_start: Addr = realloc_fn.call(me.state.peek(), at, size, align)
+        note_call_place(null)
+        return(block_start)
+
+/// Gives the block at `at` back to this manager, the one it came from.
+/// :param at: The block. Null does nothing in the stdlib's managers.
+#[track_caller, expensive("frees memory")]
+routine MemoryManager.free(me: @Me, at: Addr) -> Void
+    block entry()
+        free_fn: Callable[(Addr, Addr), Void] = me.free_fn.peek()
+        note_call_place(caller_location())
+        free_fn.call(me.state.peek(), at)
+        note_call_place(null)
+        return()
+
+/// Whether this manager handles pages: `reserve`, `commit`, and `release` are there.
+/// :returns: True when its page routines are filled in.
+routine MemoryManager.has_pages(me: @Me) -> Bool
+    block entry()
+        reserve_fn: Callable[(Addr, USize), Addr] = me.reserve_fn.peek()
+        there: Bool = reserve_fn.addr().is_not_null()
+        return(there)
+
+/// Whether this manager can set what pages allow: `protect` is there.
+/// :returns: True when its protect routine is filled in.
+routine MemoryManager.has_protect(me: @Me) -> Bool
+    block entry()
+        protect_fn: Callable[(Addr, Addr, USize, PageAccess), Bool] = me.protect_fn.peek()
+        there: Bool = protect_fn.addr().is_not_null()
+        return(there)
+
+/// Reserves `size` bytes of address space: whole pages, none of them usable until `commit`.
+/// :param size: The number of bytes, rounded up to whole pages by the manager.
+/// :returns: The reservation's start, or null when the space can't be reserved.
+/// :throws: Crashes with `NotImplementedError` when this manager doesn't handle pages.
+#[track_caller, expensive("asks for address space")]
+routine MemoryManager.reserve(me: @Me, size: USize) -> Addr
+    block entry()
+        reserve_fn: Callable[(Addr, USize), Addr] = me.reserve_fn.peek()
+        branch reserve_fn.addr().is_null()
+            ? crash_no_pages()
+            : continue
+        at: Addr = reserve_fn.call(me.state.peek(), size)
+        return(at)
+
+/// Makes `size` bytes of reserved pages at `at` readable and writable.
+/// :param at: The first page, page aligned, inside a reservation of this manager.
+/// :param size: The number of bytes, a whole number of pages.
+/// :returns: False when the pages can't be committed (no memory left).
+/// :throws: Crashes with `NotImplementedError` when this manager doesn't handle pages.
+#[track_caller, expensive("asks for memory")]
+routine MemoryManager.commit(me: @Me, at: Addr, size: USize) -> Bool
+    block entry()
+        commit_fn: Callable[(Addr, Addr, USize), Bool] = me.commit_fn.peek()
+        branch commit_fn.addr().is_null()
+            ? crash_no_pages()
+            : continue
+        done: Bool = commit_fn.call(me.state.peek(), at, size)
+        return(done)
+
+/// Gives a whole reservation back, committed pages and all.
+/// :param at: The reservation's start, as `reserve` returned it.
+/// :param size: The size `reserve` was asked for.
+/// :throws: Crashes with `NotImplementedError` when this manager doesn't handle pages.
+#[track_caller, expensive("gives memory back")]
+routine MemoryManager.release(me: @Me, at: Addr, size: USize) -> Void
+    block entry()
+        release_fn: Callable[(Addr, Addr, USize), Void] = me.release_fn.peek()
+        branch release_fn.addr().is_null()
+            ? crash_no_pages()
+            : continue
+        release_fn.call(me.state.peek(), at, size)
+        return()
+
+/// Sets what `size` bytes of pages at `at` allow: a page closed with `PageAccess.NONE` stops the program when touched
+/// (a guard page).
+/// :param at: The first page, page aligned.
+/// :param size: The number of bytes, a whole number of pages.
+/// :param access: What the pages allow.
+/// :returns: False when the access can't be set.
+/// :throws: Crashes with `NotImplementedError` when this manager can't set what pages allow.
+#[track_caller, expensive("asks the operating system")]
+routine MemoryManager.protect(me: @Me, at: Addr, size: USize, access: PageAccess) -> Bool
+    block entry()
+        protect_fn: Callable[(Addr, Addr, USize, PageAccess), Bool] = me.protect_fn.peek()
+        branch protect_fn.addr().is_null()
+            ? crash(name: "NotImplementedError", message: "This memory manager can't set what pages allow: its protect is empty.")
+            : continue
+        done: Bool = protect_fn.call(me.state.peek(), at, size, access)
+        return(done)
+
+/// Crashes with `NotImplementedError`: the manager's page routines are empty.
+#[noreturn, track_caller]
+private routine crash_no_pages() -> Void
+    block entry()
+        crash(name: "NotImplementedError", message: "This memory manager doesn't handle pages: its reserve, commit, and release are empty.")
+
+/// Crashes with `InvalidValueError` unless `align` is a power of two.
+/// :param align: The alignment asked for.
+#track_caller
+private routine check_align(align: USize) -> Void
+    block entry()
+        power: Bool = align.is_power_of_two()
+        branch power
+            ? return()
+            : crash(name: "InvalidValueError", message: "An alignment must be a power of two.")
 
 // ============================================================
 // Generic memory routines (prelude surface)
@@ -59,9 +227,7 @@ require T: typename
     block entry()
         elem_size: USize = sizeof[T]()
         size: USize = elem_size.mul(count)
-        alloc_fn: Callable[(Addr, USize), Addr] = alloc.alloc_fn.peek()
-        state: Addr = alloc.state.peek()
-        raw: Addr = alloc_fn.call(state, size)
+        raw: Addr = alloc.alloc(size, align: alignof[T]())
         typed: @T = raw.to[@T]()
         return(typed)
 
@@ -80,12 +246,7 @@ require T: typename
     block entry()
         elem_size: USize = sizeof[T]()
         size: USize = elem_size.mul(new_count)
-        raw_old: Addr = ptr
-        realloc_fn: Callable[(Addr, Addr, USize), Addr] = alloc.realloc_fn.peek()
-        state: Addr = alloc.state.peek()
-        note_call_place(caller_location())
-        raw: Addr = realloc_fn.call(state, raw_old, size)
-        note_call_place(null)
+        raw: Addr = alloc.realloc(at: ptr, size, align: alignof[T]())
         typed: @T = raw.to[@T]()
         return(typed)
 
@@ -100,12 +261,7 @@ require T: typename
 routine deallocate[T](data: @T, alloc: @MemoryManager) -> Void
 require T: typename
     block entry()
-        raw: Addr = data
-        free_fn: Callable[(Addr, Addr), Void] = alloc.free_fn.peek()
-        state: Addr = alloc.state.peek()
-        note_call_place(caller_location())
-        free_fn.call(state, raw)
-        note_call_place(null)
+        alloc.free(data)
         return()
 
 // -- the place of the allocator call in progress --------------------------------------------------------------------
