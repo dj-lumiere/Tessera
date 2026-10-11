@@ -1122,6 +1122,16 @@ public sealed class FunctionGen
     /// pointer leaf), or null when none or several can.
     private DType? UntypedBranch(Expr e, VariantType vt)
     {
+        // A tuple, an array, or a record literal without its type goes in through the one branch of that shape.
+        if (e is ArrayLit or RecordLit { Type: null })
+        {
+            var shaped = vt.Leaves.Where(b =>
+            {
+                bool preferred = true;
+                return b is not VariantType && UntypedMisfit(e, b, ref preferred) is null;
+            }).ToList();
+            return shaped.Count == 1 ? shaped[0] : null;
+        }
         if (e is not (IntLit or FloatLit or NullLit or StrLit)) return null;
         var fits = vt.Leaves.Where(b =>
         {
@@ -1926,7 +1936,7 @@ public sealed class FunctionGen
     private string? UntypedMisfit(Expr arg, DType pt, ref bool preferred)
     {
         // A literal goes into a variant through the one branch that takes it.
-        if (pt is VariantType variant && arg is IntLit or FloatLit or NullLit or StrLit)
+        if (pt is VariantType variant && arg is IntLit or FloatLit or NullLit or StrLit or ArrayLit or RecordLit { Type: null })
         {
             if (UntypedBranch(arg, variant) is not { } branch)
                 return $"this literal fits no single branch of {variant}; give it the branch's type";
