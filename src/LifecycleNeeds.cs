@@ -74,7 +74,7 @@ public sealed class LifecycleNeeds(Func<TypeRef, string, Decl?> find, bool unkno
                 return t.Args.OfType<TypeArgType>().Any(a => Holds(a.Type, args, file));
         }
         if (t.Args.Count == 0 && (IntType.FromName(t.Name) is not null
-                                  || t.Name is "Bool" or "Void" or "B16" or "BF16" or "B32" or "B64" or "B128"))
+                                  || t.Name is "Bool" or "None" or "B16" or "BF16" or "B32" or "B64" or "B128"))
             return false;
         Decl? d = find(t, file);
         switch (d)

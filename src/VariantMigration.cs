@@ -156,7 +156,7 @@ public static partial class VariantMigration
             string? type = m.Groups[1].Value switch
             {
                 "Present" when s.Kind is "Option" or "Maybe" => s.Args[0],
-                "Absent" => "Unit",
+                "Absent" => "None",
                 "Success" when s.Kind == "Result" => s.Args[0],
                 "Failure" when s.Kind == "Result" && s.Args.Count > 1 => s.Args[1],
                 _ => null,

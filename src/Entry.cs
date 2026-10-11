@@ -50,7 +50,7 @@ public sealed partial class Compiler
     /// with a body that Tessera calls, and `when_booted` only on a target without an operating system.
     private void CheckEntryRoutine(RoutineDecl r)
     {
-        string shape = $"routine {r.Name}() -> Void";
+        string shape = $"routine {r.Name}() -> None";
         string what = r.Name == StartName
             ? "start is the program's entry point"
             : "when_booted is the board step that runs before start";

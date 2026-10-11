@@ -18,6 +18,10 @@ public sealed class Printer
     /// The lines that had a blank line right above them.
     public HashSet<int> BlankBefore { get; } = [];
 
+    /// The lines of Comments that were written after code on the same line: they stay on the line written for that
+    /// code.
+    public HashSet<int> Trailing { get; } = [];
+
     /// The directory the file is in: a `@source` names its file relative to it.
     public string? Directory { get; init; }
 
@@ -64,6 +68,7 @@ public sealed class Printer
         if (BlankBefore.Contains(s.Pos.Line) && !EndsWithBlank() && _sb.Length > 0 && !_afterHeader) _sb.Append('\n');
         _afterHeader = s is IfStmt or LoopStmt or WhenStmt || text.StartsWith("else") || text == "then";
         if (s.Source is { } source) _sb.Append(Indent(indent)).Append(SourceText(source)).Append('\n');
+        if (Trailing.Contains(s.Pos.Line) && Comments.Remove(s.Pos.Line, out string? trailing)) text = $"{text}  {trailing.Trim()}";
         _sb.Append(Indent(indent)).Append(text).Append('\n');
     }
 

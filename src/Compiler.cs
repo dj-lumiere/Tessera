@@ -175,7 +175,7 @@ public sealed partial class Compiler
                 throw new CompileError(d.Pos, $"{kind} '{name}' holds something to release ({why}), so it says how it is "
                     + $"made: routine {name}.construct(...) -> Me (for plain fields, taking them in order and returning Me(...))");
             throw new CompileError(d.Pos, $"{kind} '{name}' holds something to release ({why}), so it says how it is "
-                + $"released: routine {name}.destruct(me: @Me) -> Void");
+                + $"released: routine {name}.destruct(me: @Me) -> None");
         }
     }
 
@@ -780,7 +780,8 @@ public sealed partial class Compiler
         var args = c.WrittenTypeArgs ?? c.TypeArgs.Select(t => (TypeArg)new TypeArgType(t)).ToList();
         var type = new TypeRef(c.Name, args, c.Pos) { Path = c.Path };
         DType? resolved;
-        try { resolved = ResolveType(type, env, allowVoid: true); }
+        // A value is being built: `None()` is the record with the one value, never the return of nothing.
+        try { resolved = ResolveType(type, env); }
         catch (CompileError err) when (!err.Final) { return e; }
         if (resolved is not RecordType) return e;
         var fields = c.Args.Select((a, i) => (FieldName(i)!, a, a.Pos)).ToList();
@@ -917,13 +918,13 @@ public sealed partial class Compiler
 
     public DType ResolveType(TypeRef t, TypeEnv env, bool allowVoid = false)
     {
-        var r = ResolveTypeInner(t, env);
-        if (r is VoidType && !allowVoid) throw new CompileError(t.Pos, "Void can only be a return type");
+        var r = ResolveTypeInner(t, env, allowVoid);
+        if (r is VoidType && !allowVoid) throw new CompileError(t.Pos, "None as a value is the one value None(); as a type it is the return of nothing");
         if (r is ConstArg) throw new CompileError(t.Pos, $"'{t.Name}' is a number, not a type");
         return r;
     }
 
-    private DType ResolveTypeInner(TypeRef t, TypeEnv env)
+    private DType ResolveTypeInner(TypeRef t, TypeEnv env, bool allowVoid = false)
     {
         if (t.Known is { } known) return known;
         void NoArgs()
@@ -956,7 +957,11 @@ public sealed partial class Compiler
             case "B32": NoArgs(); return FloatType.B32;
             case "B64": NoArgs(); return FloatType.B64;
             case "Bool": NoArgs(); return BoolType.Instance;
-            case "Void": NoArgs(); return VoidType.Instance;
+            // `None` is the one type for nothing: as a return type (and a Callable's), nothing comes back, elsewhere it
+            // is the record with the one value `None()`.
+            case "None" when allowVoid: NoArgs(); return VoidType.Instance;
+            case "Void": throw new CompileError(t.Pos, "nothing is written None, not Void (tessera migrate rewrites it)");
+            case "Unit": throw new CompileError(t.Pos, "the type with one value is written None, not Unit (tessera migrate rewrites it)");
             case "Addr": NoArgs(); return new PtrType(null);
             case "Ptr":
                 return t.Args switch
@@ -1067,7 +1072,10 @@ public sealed partial class Compiler
         }
         if (parts is not [TypeArgTuple ps, TypeArgType ret])
             throw new CompileError(t.Pos, "Callable is written Callable[(Params...), Ret]");
-        return new CallableType(cc, ps.Types.Select(p => ResolveType(p, env)).ToList(), ResolveType(ret.Type, env, allowVoid: true));
+        // `Callable[(S,), T]` with `T` the None record (a generic argument) returns nothing, like `-> None` written out.
+        var returned = ResolveType(ret.Type, env, allowVoid: true);
+        if (returned is RecordType { Decl.Name: "None" } none && none.Decl.Module == CoreModule) returned = VoidType.Instance;
+        return new CallableType(cc, ps.Types.Select(p => ResolveType(p, env)).ToList(), returned);
     }
 
     /// `#callconv("fast")`, `#callconv("cold")`, or `#callconv("stdcall")`; every other routine uses the default, the C
@@ -1255,8 +1263,9 @@ public sealed partial class Compiler
         {
             branchesAsDeclared = v.Decl.Branches.Select(b =>
             {
-                var t = b.Type.Known ?? ResolveType(b.Type, env);
-                if (t is VoidType) throw new CompileError(b.Pos, "a variant's branch can't be Void: use Unit for a branch that holds nothing");
+                var t = b.Type.Known ?? ResolveType(b.Type, env, allowVoid: true);
+                // A branch of `None` (a generic argument read as the return of nothing) holds the one value.
+                if (t is VoidType) t = ResolveType(new TypeRef("None", [], b.Pos) { Path = CoreModule }, env);
                 return t;
             }).ToList();
         }

@@ -18,10 +18,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         Legacy.Add((pos, message));
     }
 
-    /// While the sources are being migrated, the old spellings build everywhere, so a build can check them before
-    /// `tessera migrate` rewrites them. TESSERA_STRICT_SYNTAX reports them instead.
+    /// An old spelling is a build error that names the migration. TESSERA_ACCEPT_OLD_SYNTAX lets sources build as they
+    /// are while they are being migrated.
     public static bool AcceptLegacyEverywhere { get; set; } =
-        Environment.GetEnvironmentVariable("TESSERA_STRICT_SYNTAX") is not { Length: > 0 };
+        Environment.GetEnvironmentVariable("TESSERA_ACCEPT_OLD_SYNTAX") is { Length: > 0 };
 
     /// How deep in loops the parser is: `continue` and `break` belong to the innermost one.
     private int _loopDepth;

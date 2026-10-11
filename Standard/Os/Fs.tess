@@ -47,7 +47,7 @@ record Metadata
     kind: FileKind
     size: U64
     modified_ns: S64
-    created_ns: Maybe[S64]  // Unit where the filesystem doesn't record it
+    created_ns: Maybe[S64]  // None where the filesystem doesn't record it
     readonly: Bool
 
 choice OpenMode: U8
@@ -86,7 +86,7 @@ routine DirEntry.construct(name: Span[Byte], kind: FileKind) -> Me
     return Me(name, kind)
 
 /// Releases the memory its `name` holds.
-routine DirEntry.destruct(me: @Me) -> Void
+routine DirEntry.destruct(me: @Me) -> None
     me.name.destruct()
     return
 
@@ -99,13 +99,13 @@ routine Mapping.construct(base: Addr, delta: USize, count: USize) -> Me
     return Me(base, delta, count)
 
 /// Releases nothing: a `Mapping` holds no memory of its own.
-routine Mapping.destruct(me: @Me) -> Void
+routine Mapping.destruct(me: @Me) -> None
     return
 
 /// The success value of a filesystem call that has nothing to return.
 /// :returns: `Unit`.
-internal routine fs_done() -> Result[Unit, FsError]
-    return Unit()
+internal routine fs_done() -> Result[None, FsError]
+    return None()
 
 /// Why path didn't fit a C path: a NUL inside, or too long.
 /// :param path: The path that didn't fit.
@@ -140,14 +140,14 @@ internal routine is_kind(path: Span[Byte], kind: FileKind) -> Bool
 /// :returns: `Unit` once `path` is a directory.
 /// :throws: Returns the reason when the last step fails, `AlreadyExists` when something other than a
 ///     directory is at `path`.
-internal routine create_dir_all(path: Span[Byte]) -> Result[Unit, FsError]
+internal routine create_dir_all(path: Span[Byte]) -> Result[None, FsError]
     // Each separator after the first byte ends a prefix to make. Failures there show up in the last step.
     each i in 1 til path.count()
         if is_separator(path.byte_at(i).bits())
             create_dir(path.slice(start: 0, end: i))
-    made: Result[Unit, FsError] = create_dir(path)
+    made: Result[None, FsError] = create_dir(path)
     when made
-        is Unit => return made
+        is None => return made
         is FsError as error =>
             if error == FsError.ALREADY_EXISTS and is_kind(path, kind: FileKind.DIRECTORY)
                 return fs_done()
@@ -160,15 +160,15 @@ internal routine create_dir_all(path: Span[Byte]) -> Result[Unit, FsError]
 /// :returns: `Unit` once everything is gone.
 /// :throws: Returns the first error, which stops the removal partway. Crashes with
 ///     `MemoryAllocationError` when `alloc` fails for a child path.
-internal routine remove_dir_all(path: Span[Byte], alloc: @MemoryManager) -> Result[Unit, FsError]
+internal routine remove_dir_all(path: Span[Byte], alloc: @MemoryManager) -> Result[None, FsError]
     m: Result[Metadata, FsError] = symlink_metadata(path)
     when m
         is Metadata as info =>
             if not (info.kind == FileKind.DIRECTORY)
                 return remove_file(path)
-            emptied: Result[Unit, FsError] = remove_entries(path, alloc)
+            emptied: Result[None, FsError] = remove_entries(path, alloc)
             when emptied
-                is Unit => return remove_dir(path)
+                is None => return remove_dir(path)
                 is FsError as error => return error
         is FsError as error => return error
 
@@ -179,27 +179,27 @@ internal routine remove_dir_all(path: Span[Byte], alloc: @MemoryManager) -> Resu
 /// :returns: `Unit` once the directory is empty.
 /// :throws: Returns the first error. Crashes with `MemoryAllocationError` when `alloc` fails for a
 ///     child path.
-private routine remove_entries(path: Span[Byte], alloc: @MemoryManager) -> Result[Unit, FsError]
+private routine remove_entries(path: Span[Byte], alloc: @MemoryManager) -> Result[None, FsError]
     // open_path sets the handle before anything in it can fail, so finish closes a real or a null one
     local iter: @DirIter <- .hollow()
 
-    opened: Result[Unit, FsError] = iter.open_path(path)
+    opened: Result[None, FsError] = iter.open_path(path)
     when opened
-        is Unit =>
+        is None =>
             while true
                 entry: Maybe[DirEntry] = iter.emit_checked()
                 when entry
                     is DirEntry as e =>
                         local full: @Memory[Byte] <- join_path(a: path, b: e.name, alloc)
-                        gone: Result[Unit, FsError] = remove_dir_all(path: full, alloc)
+                        gone: Result[None, FsError] = remove_dir_all(path: full, alloc)
                         full.drop()
                         when gone
-                            is Unit => continue
+                            is None => continue
                             is FsError as error =>
                                 iter.close()
                                 return error
-                    is Unit =>
-                        result: Result[Unit, FsError] = fs_done()
+                    is None =>
+                        result: Result[None, FsError] = fs_done()
                         iter.close()
                         return result
         is FsError as error =>
@@ -242,12 +242,12 @@ private routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Memor
                     when size_guess
                         is USize as guess =>
                             becomes guess.max(64)
-                        is Unit =>
+                        is None =>
                             // count bytes read so far, and the buffer's count is its capacity
                             // The text takes the memory over, so buffer goes back to empty and finish has nothing to give back.
                             buffer.drop()
                             return FsError.OUT_OF_MEMORY
-                is Unit =>
+                is None =>
                     buffer.drop()
                     return FsError.OUT_OF_MEMORY
         is FsError => 64
@@ -261,13 +261,13 @@ private routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Memor
                     doubled: Maybe[USize] = count.mul_checked(2)
                     when doubled
                         is USize as capacity3 =>
-                            bigger: Result[Unit, AllocFailed] = buffer.resize_result(capacity3)
+                            bigger: Result[None, AllocFailed] = buffer.resize_result(capacity3)
                             when bigger
-                                is Unit => continue with count: count
+                                is None => continue with count: count
                                 is AllocFailed =>
                                     buffer.drop()
                                     return FsError.OUT_OF_MEMORY
-                        is Unit =>
+                        is None =>
                             buffer.drop()
                             return FsError.OUT_OF_MEMORY
                 else
@@ -293,12 +293,12 @@ private routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Memor
 /// :param data: The bytes that become the file.
 /// :returns: `Unit` once every byte is written.
 /// :throws: Returns the reason when the file can't be opened or written.
-internal routine write_file(path: Span[Byte], data: Span[Byte]) -> Result[Unit, FsError]
+internal routine write_file(path: Span[Byte], data: Span[Byte]) -> Result[None, FsError]
     opened: Result[FileHandle, FsError] = FileHandle.open(path, mode: OpenMode.WRITE)
     when opened
         is FileHandle as f =>
             local f2: @FileHandle <- f
-            wrote: Result[Unit, FsError] = f2.write_all_result(data: data.data, count: data.count())
+            wrote: Result[None, FsError] = f2.write_all_result(data: data.data, count: data.count())
             f2.close()
             return wrote
         is FsError as error => return error
@@ -314,7 +314,7 @@ obeys Writer[FileHandle]
 /// :returns: `Unit` once all of them are written.
 /// :throws: Returns the reason when a write fails, `Other` when a write makes no progress.
 @expensive("asks the operating system")
-routine FileHandle.write_all_result(me: @Me, data: @Byte, count: USize) -> Result[Unit, FsError]
+routine FileHandle.write_all_result(me: @Me, data: @Byte, count: USize) -> Result[None, FsError]
     while remaining != 0 with at: @Byte = data, remaining: USize = count
         wrote: Result[USize, FsError] = me.write_some(data: at, count: remaining)
         n: USize = when wrote
@@ -331,8 +331,8 @@ routine FileHandle.write_all_result(me: @Me, data: @Byte, count: USize) -> Resul
 /// :param data: The first byte to write.
 /// :param count: How many bytes to write.
 @expensive("asks the operating system")
-routine FileHandle.write_bytes(me: @Me, data: @Byte, count: USize) -> Void
-    wrote: Result[Unit, FsError] = me.write_all_result(data, count)
+routine FileHandle.write_bytes(me: @Me, data: @Byte, count: USize) -> None
+    wrote: Result[None, FsError] = me.write_all_result(data, count)
     if wrote.is_success()
         return
     me.failed.poke(true)

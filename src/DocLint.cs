@@ -2,7 +2,7 @@ namespace Tessera;
 
 /// The style warnings for doc comments. Every routine in a library or example file, private ones and a concept's
 /// required routines included, carries a `///` doc comment right above it (past its annotation lines): what it does, a
-/// `:param name:` line for each parameter but `me`, and a `:returns:` line unless it returns Void. Four warnings: no
+/// `:param name:` line for each parameter but `me`, and a `:returns:` line unless it returns None. Four warnings: no
 /// doc comment, a parameter without its `:param` line, a `:param` line for a name that isn't a parameter, and a
 /// routine that returns a value with no `:returns:` line.
 ///
@@ -56,7 +56,7 @@ public static class DocLint
         if (DocAbove(lines, first) is not { } doc)
         {
             warnings.Add($"{r.Pos}: warning: routine '{name}' has no doc comment: write /// lines above it saying what "
-                + "it does, with a :param line for each parameter and a :returns: line unless it returns Void");
+                + "it does, with a :param line for each parameter and a :returns: line unless it returns None");
             return;
         }
         var fields = Fields(doc);
@@ -67,7 +67,7 @@ public static class DocLint
         foreach (string p in documented.Where(p => !parameters.Contains(p)))
             warnings.Add($"{r.Pos}: warning: the doc comment of '{name}' has a :param line for '{p}', which is not one "
                 + "of its parameters");
-        if (r.ReturnType.Name != "Void" && !fields.Any(f => f.Kind == "returns"))
+        if (r.ReturnType.Name != "None" && !fields.Any(f => f.Kind == "returns"))
             warnings.Add($"{r.Pos}: warning: the doc comment of '{name}' has no :returns: line, and it returns "
                 + $"{r.ReturnType}");
     }

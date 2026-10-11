@@ -113,6 +113,8 @@ static class Cli
         catch (CompileError e)
         {
             Console.Error.WriteLine(e.Message);
+            // TESSERA_STACK shows where in the builder the error was raised.
+            if (Environment.GetEnvironmentVariable("TESSERA_STACK") is { Length: > 0 }) Console.Error.WriteLine(e.StackTrace);
             return 1;
         }
         catch (ToolError e)

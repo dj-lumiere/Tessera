@@ -8,7 +8,7 @@
 // piece after another.
 //
 // A ticket given back with its work still running, or destructed before it is given back, crashes: no work runs on
-// that nobody looks at, and nothing it uses goes away under it. Work with no result is a `Thread[Void]`, waited for
+// that nobody looks at, and nothing it uses goes away under it. Work with no result is a `Thread[None]`, waited for
 // and given back the same way. Before each piece of work the thread puts every `#threadlocal` global back to its
 // starting value, so no work sees what the one before left.
 
@@ -41,7 +41,7 @@ record ThreadWorker
 /// for the next ticket. `DEFAULT_THREADS` is the hosted one, and a program without an operating system makes its own.
 record ThreadManager
     /// Starts a thread that runs `(entry, arg)` and ends when it returns, given `state`: false when none starts.
-    launch_fn: Callable[(Callable[(Addr,), Void], Addr, Addr), Bool]
+    launch_fn: Callable[(Callable[(Addr,), None], Addr, Addr), Bool]
     /// What `launch_fn` is given.
     state: Addr
     /// Guards `idle`.
@@ -62,7 +62,7 @@ needs T: typename
 /// Crashes when the ticket wasn't given back: its thread would be lost, and its work might still run.
 /// :throws: Crashes with `TicketNotGivenBackError` for a ticket that still holds its thread.
 @track_caller
-routine Thread[T].destruct(me: @Me) -> Void
+routine Thread[T].destruct(me: @Me) -> None
 needs T: typename
     worker: @ThreadWorker = me.worker.peek()
     if worker.is_null()
@@ -81,7 +81,7 @@ routine ThreadWorker.construct(slot: WorkSlot, next: @Me, manager: @ThreadManage
     return Me(slot, next, manager)
 
 /// Releases the block of its last work.
-routine ThreadWorker.destruct(me: @Me) -> Void
+routine ThreadWorker.destruct(me: @Me) -> None
     me.slot.destruct()
     return
 
@@ -91,7 +91,7 @@ routine ThreadWorker.destruct(me: @Me) -> Void
 /// :param state: What `launch_fn` is given.
 /// :param alloc: Where the workers and the work blocks come from.
 /// :returns: The manager, with no threads yet.
-routine ThreadManager.construct(launch_fn: Callable[(Callable[(Addr,), Void], Addr, Addr), Bool],
+routine ThreadManager.construct(launch_fn: Callable[(Callable[(Addr,), None], Addr, Addr), Bool],
     state: Addr, alloc: @MemoryManager) -> Me
     return Me(launch_fn, state, lock: .construct(), idle: null, alloc)
 
@@ -104,7 +104,7 @@ routine ThreadManager.construct(alloc: @MemoryManager) -> Me
 
 /// Ends the idle threads. Every ticket goes back first: a ticket given back to a manager that is gone reaches memory
 /// that is gone, and its thread never ends.
-routine ThreadManager.destruct(me: @Me) -> Void
+routine ThreadManager.destruct(me: @Me) -> None
     me.lock.lock()
 
     while true
@@ -150,9 +150,9 @@ needs T: typename
 /// :throws: Crashes with `TaskSpawnError` when no thread starts.
 @track_caller
 @expensive("starts a thread")
-routine ThreadManager.launch_unwatched[T](me: @Me, entry: Callable[(@T,), Void], arg: @T) -> Void
+routine ThreadManager.launch_unwatched[T](me: @Me, entry: Callable[(@T,), None], arg: @T) -> None
 needs T: typename
-    erased: Callable[(Addr,), Void] = bitcast(entry)
+    erased: Callable[(Addr,), None] = bitcast(entry)
     state: Addr = arg
     if me.launch_fn.peek().call(erased, state, me.state.peek())
         return
@@ -189,7 +189,7 @@ private routine ThreadManager.take_worker(me: @Me) -> @ThreadWorker
 /// its manager tells it to end.
 /// :param raw: The {ThreadWorker}.
 @target(os: not "none")
-private routine worker_main(raw: Addr) -> Void
+private routine worker_main(raw: Addr) -> None
     local worker: @ThreadWorker = raw.to[@ThreadWorker]()
 
     while true
@@ -198,9 +198,9 @@ private routine worker_main(raw: Addr) -> Void
             // Every piece of work starts from the thread-local values a new thread has.
             reset_thread_locals()
             RUNNING_WORK.poke(worker.slot)
-            runner: Callable[(Addr,), Void] = worker.slot.runner.peek()
+            runner: Callable[(Addr,), None] = worker.slot.runner.peek()
             runner.call(worker.slot.work.peek())
-            cleanup: Callable[(), Void] = THREAD_CLEANUP.peek()
+            cleanup: Callable[(), None] = THREAD_CLEANUP.peek()
             if cleanup.addr().is_null()
                 RUNNING_WORK.poke(null)
                 worker.slot.complete()
@@ -225,7 +225,7 @@ private routine worker_main(raw: Addr) -> Void
 @external("llvm")
 @template("call void @tessera.reset_thread_locals()")
 @target(os: not "none")
-routine reset_thread_locals() -> Void
+routine reset_thread_locals() -> None
 
 /// The slot the ticket's work lives in, for code that waits on several tickets at once.
 /// :returns: The slot.
@@ -241,7 +241,7 @@ needs T: typename
 /// :param runner: Runs the work.
 /// :param work: Its block.
 @track_caller
-private routine Thread[T].start(me: Me, runner: Callable[(Addr,), Void], work: Addr) -> Void
+private routine Thread[T].start(me: Me, runner: Callable[(Addr,), None], work: Addr) -> None
 needs T: typename
     me.work_slot().put(runner, work)
     return
@@ -251,7 +251,7 @@ needs T: typename
 /// :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @track_caller
-routine Thread[T].put_work(me: Me, entry: Callable[(), T]) -> Void
+routine Thread[T].put_work(me: Me, entry: Callable[(), T]) -> None
 needs T: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -265,7 +265,7 @@ needs T: typename
 /// :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @track_caller
-routine Thread[T].put_work[A](me: Me, entry: Callable[(A,), T], args: A) -> Void
+routine Thread[T].put_work[A](me: Me, entry: Callable[(A,), T], args: A) -> None
 needs T: typename, A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -279,7 +279,7 @@ needs T: typename, A: typename
 /// :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @track_caller
-routine Thread[T].put_work[A, B](me: Me, entry: Callable[(A, B), T], args: (A, B)) -> Void
+routine Thread[T].put_work[A, B](me: Me, entry: Callable[(A, B), T], args: (A, B)) -> None
 needs T: typename, A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -293,7 +293,7 @@ needs T: typename, A: typename, B: typename
 /// :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @track_caller
-routine Thread[T].put_work[A, B, C](me: Me, entry: Callable[(A, B, C), T], args: (A, B, C)) -> Void
+routine Thread[T].put_work[A, B, C](me: Me, entry: Callable[(A, B, C), T], args: (A, B, C)) -> None
 needs T: typename, A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -308,7 +308,7 @@ needs T: typename, A: typename, B: typename, C: typename
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @track_caller
 routine Thread[T].put_work[A, B, C, D](me: Me, entry: Callable[(A, B, C, D), T],
-    args: (A, B, C, D)) -> Void
+    args: (A, B, C, D)) -> None
 needs T: typename, A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -321,7 +321,7 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
 /// :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @track_caller
-routine Thread[Void].put_work(me: Me, entry: Callable[(), Void]) -> Void
+routine Thread[None].put_work(me: Me, entry: Callable[(), None]) -> None
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_voidwork0(entry, alloc: slot.alloc.peek())
@@ -334,7 +334,7 @@ routine Thread[Void].put_work(me: Me, entry: Callable[(), Void]) -> Void
 /// :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @track_caller
-routine Thread[Void].put_work[A](me: Me, entry: Callable[(A,), Void], args: A) -> Void
+routine Thread[None].put_work[A](me: Me, entry: Callable[(A,), None], args: A) -> None
 needs A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -348,7 +348,7 @@ needs A: typename
 /// :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @track_caller
-routine Thread[Void].put_work[A, B](me: Me, entry: Callable[(A, B), Void], args: (A, B)) -> Void
+routine Thread[None].put_work[A, B](me: Me, entry: Callable[(A, B), None], args: (A, B)) -> None
 needs A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -362,8 +362,8 @@ needs A: typename, B: typename
 /// :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @track_caller
-routine Thread[Void].put_work[A, B, C](me: Me, entry: Callable[(A, B, C), Void],
-    args: (A, B, C)) -> Void
+routine Thread[None].put_work[A, B, C](me: Me, entry: Callable[(A, B, C), None],
+    args: (A, B, C)) -> None
 needs A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -377,8 +377,8 @@ needs A: typename, B: typename, C: typename
 /// :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @track_caller
-routine Thread[Void].put_work[A, B, C, D](me: Me, entry: Callable[(A, B, C, D), Void],
-    args: (A, B, C, D)) -> Void
+routine Thread[None].put_work[A, B, C, D](me: Me, entry: Callable[(A, B, C, D), None],
+    args: (A, B, C, D)) -> None
 needs A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -397,7 +397,7 @@ needs T: typename
 /// and the thread that finishes the work wakes it.
 @target(os: not "none")
 @track_caller
-routine Thread[T].wait_finished(me: Me) -> Void
+routine Thread[T].wait_finished(me: Me) -> None
 needs T: typename
     me.work_slot().wait()
     return
@@ -415,10 +415,10 @@ needs T: typename
 /// :returns: `Unit` when the work has finished, `CancelRequested` when the waiting work was cancelled first.
 @target(os: not "none")
 @track_caller
-routine Thread[T].wait_finished_result(me: Me) -> Result[Unit, CancelRequested]
+routine Thread[T].wait_finished_result(me: Me) -> Result[None, CancelRequested]
 needs T: typename
     if me.work_slot().wait_until(deadline: U64.MAX, cancellable: true)
-        return Unit()
+        return None()
     else
         return CancelRequested()
 
@@ -440,7 +440,7 @@ needs T: typename
 /// :throws: Crashes with `TicketBusyError` while the work runs, with `NoWorkError` when there was none, and with
 ///     `CancelledWorkError` when it was cancelled.
 @track_caller
-routine Thread[Void].retrieve(me: Me) -> Void
+routine Thread[None].retrieve(me: Me) -> None
     slot: @WorkSlot = me.work_slot()
     slot.result_place[Byte]()
     if slot.is_cancelled()
@@ -463,7 +463,7 @@ needs T: typename
 
 /// Asks the work to stop: `cancel_requested()` turns true inside it, and the work stops where it looks.
 @track_caller
-routine Thread[T].cancel(me: Me) -> Void
+routine Thread[T].cancel(me: Me) -> None
 needs T: typename
     me.work_slot().request_cancel()
     return
@@ -472,7 +472,7 @@ needs T: typename
 /// :throws: Crashes with `TicketBusyError` while the work runs, and with `TicketGivenBackError` for a ticket given
 ///     back already.
 @track_caller
-routine Thread[T].give_back(me: Me) -> Void
+routine Thread[T].give_back(me: Me) -> None
 needs T: typename
     me.work_slot().give_back()
     worker: @ThreadWorker = me.worker
@@ -487,27 +487,27 @@ needs T: typename
 
 /// What a new operating system thread starts with.
 private record ThreadStart
-    entry: Callable[(Addr,), Void]
+    entry: Callable[(Addr,), None]
     arg: Addr
 
 /// Makes a `ThreadStart` from its fields.
 /// :param entry: Its `entry`.
 /// :param arg: Its `arg`.
 /// :returns: The new value.
-private routine ThreadStart.construct(entry: Callable[(Addr,), Void], arg: Addr) -> Me
+private routine ThreadStart.construct(entry: Callable[(Addr,), None], arg: Addr) -> Me
     return Me(entry, arg)
 
 /// Releases nothing: a `ThreadStart` holds no memory of its own.
-private routine ThreadStart.destruct(me: @Me) -> Void
+private routine ThreadStart.destruct(me: @Me) -> None
     return
 
 /// Every new operating system thread's first Tessera routine, whatever the system's entry signature: frees the start
 /// record, then calls the entry.
 /// :param raw: The {ThreadStart} record.
 @target(os: not "none")
-private routine thread_body(raw: Addr) -> Void
+private routine thread_body(raw: Addr) -> None
     start: @ThreadStart = raw.to[@ThreadStart]()
-    entry: Callable[(Addr,), Void] = start.entry.peek()
+    entry: Callable[(Addr,), None] = start.entry.peek()
     arg: Addr = start.arg.peek()
     deallocate(data: start, alloc: DEFAULT_HEAP)
     fault_stack: Addr = give_fault_stack()
@@ -520,7 +520,7 @@ private routine thread_body(raw: Addr) -> Void
 /// :param arg: What it is given.
 /// :returns: The record, or null.
 @target(os: not "none")
-private routine thread_start(entry: Callable[(Addr,), Void], arg: Addr) -> @ThreadStart
+private routine thread_start(entry: Callable[(Addr,), None], arg: Addr) -> @ThreadStart
     start: @ThreadStart = allocate[ThreadStart](count: 1, alloc: DEFAULT_HEAP)
     if start.is_null()
         return null
@@ -572,7 +572,7 @@ private routine posix_thread_main(arg: Addr) -> Addr
 /// :param state: Unused.
 /// :returns: False when the operating system starts no thread, or there is no memory for its start record.
 @target(os: ("linux", "macos"))
-private routine os_launch_fn(entry: Callable[(Addr,), Void], arg: Addr, state: Addr) -> Bool
+private routine os_launch_fn(entry: Callable[(Addr,), None], arg: Addr, state: Addr) -> Bool
     start: @ThreadStart = thread_start(entry, arg)
     if start.is_null()
         return false
@@ -622,7 +622,7 @@ routine cpu_count() -> USize
 @callconv("stdcall")
 @target(os: "windows")
 private routine c_create_thread(attrs: Addr, stack: USize,
-    start: Callable[#callconv("stdcall"), (Addr,), U32], arg: Addr, flags: U32, id: Addr) -> Addr
+    start: Callable[@callconv("stdcall"), (Addr,), U32], arg: Addr, flags: U32, id: Addr) -> Addr
 
 /// Binds the Win32 `CloseHandle` function, which closes a handle.
 /// :param handle: The handle.
@@ -658,7 +658,7 @@ private routine windows_thread_main(arg: Addr) -> U32
 /// :param state: Unused.
 /// :returns: False when the operating system starts no thread, or there is no memory for its start record.
 @target(os: "windows")
-private routine os_launch_fn(entry: Callable[(Addr,), Void], arg: Addr, state: Addr) -> Bool
+private routine os_launch_fn(entry: Callable[(Addr,), None], arg: Addr, state: Addr) -> Bool
     start: @ThreadStart = thread_start(entry, arg)
     if start.is_null()
         return false

@@ -2536,7 +2536,8 @@ public sealed class FunctionGen
     /// Resolves a type written as a namespace, or null if it doesn't name a type (it may be a preset).
     private DType? TryResolveOwner(TypeRef owner)
     {
-        try { return Resolve(owner, allowVoid: true); }
+        // `None()` builds the one value: the record, not the return of nothing.
+        try { return Resolve(owner, allowVoid: true) is var t && t is VoidType ? Resolve(owner) : t; }
         catch (CompileError e) when (owner.Args.Count == 0 && !e.Final) { return null; }
     }
 
@@ -2782,7 +2783,7 @@ public sealed class FunctionGen
                 var parts = t.Args.Where(a => a is not TypeArgAnnotation).ToList();
                 if (parts is not [TypeArgTuple ps, TypeArgType ret] || ps.Types.Count != ct.Params.Count) return false;
                 return ps.Types.Select((p, i) => CouldMatch(p, ct.Params[i], unbound)).All(x => x)
-                       && (ct.Ret is VoidType ? ret.Type.Name is "Void" || unbound.Contains(ret.Type.Name) : CouldMatch(ret.Type, ct.Ret, unbound));
+                       && (ct.Ret is VoidType ? ret.Type.Name is "None" || unbound.Contains(ret.Type.Name) : CouldMatch(ret.Type, ct.Ret, unbound));
             case PtrType { Pointee: { } pointee }:
                 return t.Name != "Ptr" || t.Args is not [TypeArgType inner] || CouldMatch(inner.Type, pointee, unbound);
             case RecordType s:
@@ -2820,7 +2821,7 @@ public sealed class FunctionGen
             typeArgs = [new TypeRef(expected.Name, [], m.Pos) { Known = expected }];
         if (typeArgs.Count == 0) return null;
         List<DType> given;
-        try { given = typeArgs.Select(t => Resolve(t, allowVoid: true)).ToList(); }
+        try { given = typeArgs.Select(t => Resolve(t)).ToList(); }
         catch (CompileError) { return null; }
         if (!given.Any(Compiler.MentionsArchetype) || InferQuiet(m.Receiver) is not { } rt || rt is ArchetypeType) return null;
         foreach (var owner in rt is PtrType { Pointee: { } pointee } ? new[] { pointee, rt } : [rt])
@@ -2834,19 +2835,29 @@ public sealed class FunctionGen
                     return null;
                 var d = defined.FirstOrDefault(d => d.Fixed.Count == given.Count);
                 if (d is null) return null;
-                return _c.ResolveType(Substitute(d.ReturnType, d.Fixed, given), BindOwner(d, owner, m.Pos), allowVoid: true);
+                return _c.ResolveType(Substitute(d.ReturnType, d.Fixed, given, d), BindOwner(d, owner, m.Pos), allowVoid: true);
             }
             catch (CompileError) { return null; }
         }
         return null;
     }
 
-    /// A type with each of a routine's fixed type arguments replaced by the type given for it.
-    private static TypeRef Substitute(TypeRef t, List<TypeRef> fixedArgs, List<DType> given)
+    /// A type with each of a routine's fixed type arguments replaced by the type given for it. A fixed argument that
+    /// names no type parameter (`Fiber[None].put_work`) is a type as written, not a hole: a return type spelled the
+    /// same (`-> None`) stays what it says.
+    private static TypeRef Substitute(TypeRef t, List<TypeRef> fixedArgs, List<DType> given, RoutineDecl d)
     {
-        int i = fixedArgs.FindIndex(f => f.ToString() == t.ToString());
+        int i = fixedArgs.FindIndex(f => f.ToString() == t.ToString() && NamesParameter(f, d));
         if (i >= 0) return new TypeRef(given[i].Name, [], t.Pos) { Known = given[i] };
-        return t with { Args = t.Args.Select(a => a is TypeArgType ta ? new TypeArgType(Substitute(ta.Type, fixedArgs, given)) : a).ToList() };
+        return t with { Args = t.Args.Select(a => a is TypeArgType ta ? new TypeArgType(Substitute(ta.Type, fixedArgs, given, d)) : a).ToList() };
+    }
+
+    /// Whether a type mentions one of the routine's type parameters or its owner pattern's.
+    private static bool NamesParameter(TypeRef t, RoutineDecl d)
+    {
+        var owned = d.Owner?.Args.OfType<TypeArgType>().Select(a => a.Type.Name) ?? [];
+        if (d.TypeParams.Contains(t.Name) || owned.Contains(t.Name)) return true;
+        return t.Args.OfType<TypeArgType>().Any(a => NamesParameter(a.Type, d));
     }
 
     /// Why an argument without a type of its own can't be a `pt`, or null if it can. An integer literal not landing on a
@@ -3145,8 +3156,9 @@ public sealed class FunctionGen
             _ => throw Err(pos, $"{owner} does not match '{o}'"),
         };
         if (actual.Count != o.Args.Count) throw Err(pos, $"{owner} does not match '{o}'");
+        // An argument written as a type's own name (`Fiber[None].put_work`) is that type, not a parameter to bind.
         for (int i = 0; i < o.Args.Count; i++)
-            if (o.Args[i] is TypeArgType { Type.Args.Count: 0 } ta)
+            if (o.Args[i] is TypeArgType { Type.Args.Count: 0 } ta && !PrimitiveOrRecordName(ta.Type.Name))
                 env.Bind(ta.Type.Name, actual[i]);
         _c.BindNestedOwnerArgs(r, actual, env);
         env.Bind("Me", owner is PtrType { Pointee: null } ? new PtrType(IntType.Byte) : owner);
@@ -3155,7 +3167,7 @@ public sealed class FunctionGen
 
     private bool PrimitiveOrRecordName(string name) =>
         IntType.FromName(name) is not null
-        || name is "B16" or "BF16" or "B32" or "B64" or "Bool" or "Void" or "Ptr" or "Addr" or "Array" or "Vector"
+        || name is "B16" or "BF16" or "B32" or "B64" or "Bool" or "None" or "Ptr" or "Addr" or "Array" or "Vector"
         || _c.DeclaresType(name);
 
     /// Whether a routine defined for type arguments (`S32.to[S64]`, `Ptr[T].to[@U]`) is the one these name.
@@ -3165,7 +3177,7 @@ public sealed class FunctionGen
         var env = BindOwner(r, owner, pos);
         try
         {
-            return FixedMismatch(r, env, typeArgs.Select(t => Resolve(t, allowVoid: true)).ToList()) < 0;
+            return FixedMismatch(r, env, typeArgs.Select(t => Resolve(t)).ToList()) < 0;
         }
         catch (CompileError) { return false; }
     }
@@ -3184,7 +3196,7 @@ public sealed class FunctionGen
         var unbound = r.TypeParams.Where(p => !env.Has(p)).ToHashSet();
         for (int i = 0; i < r.Fixed.Count; i++) Unify(r.Fixed[i], given[i], env, unbound);
         for (int i = 0; i < r.Fixed.Count; i++)
-            if (!_c.ResolveType(r.Fixed[i], env, allowVoid: true).Equals(given[i]))
+            if (!_c.ResolveType(r.Fixed[i], env).Equals(given[i]))
                 return i;
         return -1;
     }
@@ -3193,14 +3205,14 @@ public sealed class FunctionGen
     {
         if (r.Fixed.Count > 0)
         {
-            BindFixed(r, env, typeArgs.Select(t => Resolve(t, allowVoid: true)).ToList());
+            BindFixed(r, env, typeArgs.Select(t => Resolve(t)).ToList());
             return;
         }
         if (typeArgs.Count == 0) return;
         if (typeArgs.Count != r.TypeParams.Count)
             throw Err(pos, $"'{r.DisplayName}' takes {r.TypeParams.Count} type argument(s), got {typeArgs.Count}");
         for (int i = 0; i < typeArgs.Count; i++)
-            env.Bind(r.TypeParams[i], Resolve(typeArgs[i], allowVoid: true));
+            env.Bind(r.TypeParams[i], Resolve(typeArgs[i]));
     }
 
     /// Infers unbound type parameters by matching parameter types against argument types, then the return type
@@ -3862,10 +3874,12 @@ public sealed class FunctionGen
 
     private void EmitReturn(ReturnStmt r)
     {
+        if (_decl.AnnotationNamed("noreturn") is not null)
+            throw Err(r.Pos, $"'{_decl.DisplayName}' is @noreturn, so no line in it can return: end it with a call that never returns, or drop the annotation");
         MemReturn(r);
         if (_inst.Ret is VoidType)
         {
-            if (r.Value is not null) throw Err(r.Pos, $"'{_decl.DisplayName}' returns Void; write a bare return");
+            if (r.Value is not null) throw Err(r.Pos, $"'{_decl.DisplayName}' returns None; write a bare return");
             Return("ret void");
             return;
         }
@@ -4008,10 +4022,10 @@ public sealed class FunctionGen
             {
                 iterator = EvalAny(l.Source!);
                 var emit = Infer(new MethodCallExpr(l.Source!, "emit_checked", [], [], l.Source!.Pos));
-                if (emit is not VariantType vt || vt.Leaves.Count != 2 || !vt.Leaves.Any(leaf => leaf is RecordType { Decl.Name: "Unit" }))
+                if (emit is not VariantType vt || vt.Leaves.Count != 2 || !vt.Leaves.Any(leaf => leaf is RecordType { Decl.Name: "None" }))
                     throw Err(l.Source!.Pos, $"each walks a range (a til b) or an iterator in memory (one whose emit_checked gives Maybe[T]); this is {iterator.Type}");
                 iteratorMaybe = vt;
-                itemType = vt.Leaves.First(leaf => leaf is not RecordType { Decl.Name: "Unit" });
+                itemType = vt.Leaves.First(leaf => leaf is not RecordType { Decl.Name: "None" });
             }
         }
 

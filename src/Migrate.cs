@@ -60,7 +60,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step == "entry";
+        bool entryPages = step is "entry" or "none";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.tess", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -261,6 +261,9 @@ public static class Migrate
             : EntryMigration.Rewrite(text),
         ["structured"] = (file, text, report) => StructuredMigration.Rewrite(file, text, report),
         ["spellings"] = (_, text, _) => StructuredMigration.Spellings(text),
+        ["none"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? NoneSpelling.RewriteMarkdown(text)
+            : NoneSpelling.Rewrite(text),
     };
 
     private static readonly Regex Contains = new(@"\.contains(?=\s*\()", RegexOptions.Compiled);

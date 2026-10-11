@@ -142,7 +142,11 @@ public static class StructuredMigration
                 continue;
             }
             if (trimmed.StartsWith("//")) printer.Comments[line] = trimmed;
-            else if (TrailingComment(text) is { } trailing) printer.Comments[line] = trailing;
+            else if (TrailingComment(text) is { } trailing)
+            {
+                printer.Comments[line] = trailing;
+                printer.Trailing.Add(line);
+            }
         }
         var sb = new StringBuilder();
         foreach (var s in structurer.Finish(r.Shared.Cast<Stmt>().ToList()).Cast<BindStmt>())
@@ -254,13 +258,27 @@ public static class StructuredMigration
     {
         var result = new List<string>();
         bool inAsm = false;
+        // An annotation list over several lines (`#[external("llvm"),` / `    template(...)]`) is read as one.
+        string? openList = null;
         foreach (string raw in text.Split('\n'))
         {
             string line = raw;
+            if (openList is not null)
+            {
+                openList += " " + line.Trim();
+                if (!line.TrimEnd().EndsWith("]")) continue;
+                line = openList;
+                openList = null;
+            }
             string trimmed = line.TrimStart();
             if (trimmed.StartsWith("//"))
             {
                 result.Add(line);
+                continue;
+            }
+            if (trimmed.StartsWith("#[") && !trimmed.TrimEnd().EndsWith("]"))
+            {
+                openList = line.TrimEnd();
                 continue;
             }
             if (AnnotationLine.Match(line) is { Success: true } a && !trimmed.StartsWith("#["))
@@ -269,13 +287,16 @@ public static class StructuredMigration
                 inAsm = trimmed.Contains("external(\"asm\")");
                 continue;
             }
-            if (trimmed.StartsWith("#[") && trimmed.EndsWith("]"))
+            if (trimmed.StartsWith("#[") && trimmed.TrimEnd().EndsWith("]"))
             {
+                trimmed = trimmed.TrimEnd();
                 string indent = line[..(line.Length - trimmed.Length)];
                 foreach (string item in SplitTopLevel(trimmed[2..^1])) result.Add($"{indent}@{item.Trim()}");
                 inAsm = trimmed.Contains("external(\"asm\")");
                 continue;
             }
+            // An annotation inside a Callable type (`Callable[#callconv("stdcall"), ...]`) is written @ too.
+            line = line.Replace("Callable[#", "Callable[@");
             if (Keyword.Match(line) is { Success: true } k)
                 line = k.Groups[1].Value + k.Groups[2].Value switch { "require" => "needs", "conform" => "obeys", _ => "protocol" } + line[k.Length..];
             if (line.StartsWith("routine ") || line.StartsWith("private routine ") || line.StartsWith("internal routine "))

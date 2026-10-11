@@ -23,7 +23,7 @@ public sealed partial class Compiler
         // concrete return and parameter types.
         if (r.Fixed.Count > 0)
         {
-            var fixedArgs = r.Fixed.Select(t => ResolveType(t, env, allowVoid: true)).ToList();
+            var fixedArgs = r.Fixed.Select(t => ResolveType(t, env)).ToList();
             steps.Add(new Step(UnqualifiedName(r.Name, r), "FP:" + r.DisplayName + "@" + r.Module, () => m.TemplateArgs(fixedArgs), null));
             m.Name(steps, function: true);
             m.Type(ret);
@@ -271,7 +271,7 @@ public sealed partial class Compiler
         {
             if (!Mentions(t, fnParams))
             {
-                Type(c.ResolveType(t, env, allowVoid: true));
+                Type(c.ResolveType(t, env));
                 return;
             }
             if (t.Path is null && t.Args.Count == 0 && fnParams.TryGetValue(t.Name, out int index))

@@ -44,7 +44,7 @@ record FiberPool
     /// How many threads it runs: 0 until the first job starts them.
     count: USize
     /// The threads' tickets.
-    threads: Memory[Thread[Void]]
+    threads: Memory[Thread[None]]
     /// Where the jobs and the threads' tickets come from.
     alloc: @MemoryManager
 
@@ -76,8 +76,8 @@ routine FiberPool.construct(threads: USize) -> Me
 /// Stops the pool: its threads finish the work they have, then end, and the idle jobs go. Give every job back first.
 @target(os: not "none")
 @track_caller
-routine FiberPool.destruct(me: @Me) -> Void
-    local threads: @Memory[Thread[Void]] = me.threads
+routine FiberPool.destruct(me: @Me) -> None
+    local threads: @Memory[Thread[None]] = me.threads
     local started: USize = threads.count()
 
     me.stopping.poke_atomic(1)
@@ -85,7 +85,7 @@ routine FiberPool.destruct(me: @Me) -> Void
     wake_all(me.epoch)
 
     each i in 0 til started
-        t: Thread[Void] = threads.load(index: i)
+        t: Thread[None] = threads.load(index: i)
         t.wait_finished()
         t.give_back()
 
@@ -109,7 +109,7 @@ routine PoolJob.construct(slot: WorkSlot, next: @Me, pool: @FiberPool) -> Me
 
 /// Releases the block of its last work.
 @target(os: not "none")
-routine PoolJob.destruct(me: @Me) -> Void
+routine PoolJob.destruct(me: @Me) -> None
     me.slot.destruct()
     return
 
@@ -126,7 +126,7 @@ needs T: typename
 /// :throws: Crashes with `TicketNotGivenBackError` for a ticket that still holds its job.
 @target(os: not "none")
 @track_caller
-routine Job[T].destruct(me: @Me) -> Void
+routine Job[T].destruct(me: @Me) -> None
 needs T: typename
     job: @PoolJob = me.job.peek()
     if job.is_null()
@@ -166,16 +166,16 @@ needs T: typename
 /// Starts the pool's threads, the first time. The lock is held.
 @target(os: not "none")
 @track_caller
-private routine FiberPool.start_threads(me: @Me) -> Void
+private routine FiberPool.start_threads(me: @Me) -> None
     local count: USize = me.count.peek()
-    local threads: @Memory[Thread[Void]] = me.threads
+    local threads: @Memory[Thread[None]] = me.threads
 
     if not (threads.count() == 0)
         return
     threads.poke(.construct(count, manager: me.alloc.peek()))
 
     each i in 0 til count
-        t: Thread[Void] = get_thread[Void]()
+        t: Thread[None] = get_thread[None]()
         t.put_work(entry: pool_thread.to[Callable](), args: me)
         threads.store(index: i, value: t)
     then
@@ -184,7 +184,7 @@ private routine FiberPool.start_threads(me: @Me) -> Void
 /// Puts `job` behind the others in the queue and wakes the threads.
 /// :param job: The job, with its work put on.
 @target(os: not "none")
-private routine FiberPool.queue(me: @Me, job: @PoolJob) -> Void
+private routine FiberPool.queue(me: @Me, job: @PoolJob) -> None
     me.lock.lock()
     last: @PoolJob = me.last.peek()
     if last.is_null()
@@ -219,8 +219,8 @@ private routine FiberPool.take(me: @Me) -> @PoolJob
 /// and sleeps when there is nothing, until the pool stops and its fibers are done.
 /// :param pool: The pool.
 @target(os: not "none")
-private routine pool_thread(pool: @FiberPool) -> Void
-    local running: @List[Fiber[Void]] <- .construct(alloc: DEFAULT_HEAP)
+private routine pool_thread(pool: @FiberPool) -> None
+    local running: @List[Fiber[None]] <- .construct(alloc: DEFAULT_HEAP)
 
     FIBERS.wake_through(pool.epoch)
 
@@ -242,7 +242,7 @@ private routine pool_thread(pool: @FiberPool) -> Void
                     wait_on_for(at: pool.epoch, expected: seen, timeout_ns: wait)
                     continue
         else
-            fiber: Fiber[Void] = FIBERS.get_fiber[Void]()
+            fiber: Fiber[None] = FIBERS.get_fiber[None]()
             fiber.run_job(job.slot)
             running.add_last(fiber)
             continue
@@ -252,13 +252,13 @@ private routine pool_thread(pool: @FiberPool) -> Void
 /// Gives back the fibers in `running` whose job is done, and takes them out.
 /// :param running: The fibers running jobs.
 @target(os: not "none")
-private routine give_back_finished(running: @List[Fiber[Void]]) -> Void
+private routine give_back_finished(running: @List[Fiber[None]]) -> None
     while i < running.count() with i: USize = 0
-        fiber: Fiber[Void] = running[i]
+        fiber: Fiber[None] = running[i]
         if fiber.check_finished()
             // The last fiber takes the finished one's place, and is looked at next.
             fiber.give_back()
-            last: Fiber[Void] = running.remove_last()
+            last: Fiber[None] = running.remove_last()
             if not (i < running.count())
                 return
             running[i] = last
@@ -286,7 +286,7 @@ needs T: typename
 /// :param work: Its block.
 @target(os: not "none")
 @track_caller
-private routine Job[T].start(me: Me, runner: Callable[(Addr,), Void], work: Addr) -> Void
+private routine Job[T].start(me: Me, runner: Callable[(Addr,), None], work: Addr) -> None
 needs T: typename
     job: @PoolJob = me.job
     me.work_slot().put(runner, work)
@@ -299,7 +299,7 @@ needs T: typename
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[T].put_work(me: Me, entry: Callable[(), T]) -> Void
+routine Job[T].put_work(me: Me, entry: Callable[(), T]) -> None
 needs T: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -314,7 +314,7 @@ needs T: typename
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[T].put_work[A](me: Me, entry: Callable[(A,), T], args: A) -> Void
+routine Job[T].put_work[A](me: Me, entry: Callable[(A,), T], args: A) -> None
 needs T: typename, A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -329,7 +329,7 @@ needs T: typename, A: typename
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[T].put_work[A, B](me: Me, entry: Callable[(A, B), T], args: (A, B)) -> Void
+routine Job[T].put_work[A, B](me: Me, entry: Callable[(A, B), T], args: (A, B)) -> None
 needs T: typename, A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -344,7 +344,7 @@ needs T: typename, A: typename, B: typename
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[T].put_work[A, B, C](me: Me, entry: Callable[(A, B, C), T], args: (A, B, C)) -> Void
+routine Job[T].put_work[A, B, C](me: Me, entry: Callable[(A, B, C), T], args: (A, B, C)) -> None
 needs T: typename, A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -360,7 +360,7 @@ needs T: typename, A: typename, B: typename, C: typename
 @target(os: not "none")
 @track_caller
 routine Job[T].put_work[A, B, C, D](me: Me, entry: Callable[(A, B, C, D), T],
-    args: (A, B, C, D)) -> Void
+    args: (A, B, C, D)) -> None
 needs T: typename, A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -374,7 +374,7 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[Void].put_work(me: Me, entry: Callable[(), Void]) -> Void
+routine Job[None].put_work(me: Me, entry: Callable[(), None]) -> None
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_voidwork0(entry, alloc: slot.alloc.peek())
@@ -388,7 +388,7 @@ routine Job[Void].put_work(me: Me, entry: Callable[(), Void]) -> Void
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[Void].put_work[A](me: Me, entry: Callable[(A,), Void], args: A) -> Void
+routine Job[None].put_work[A](me: Me, entry: Callable[(A,), None], args: A) -> None
 needs A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -403,7 +403,7 @@ needs A: typename
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[Void].put_work[A, B](me: Me, entry: Callable[(A, B), Void], args: (A, B)) -> Void
+routine Job[None].put_work[A, B](me: Me, entry: Callable[(A, B), None], args: (A, B)) -> None
 needs A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -418,8 +418,8 @@ needs A: typename, B: typename
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[Void].put_work[A, B, C](me: Me, entry: Callable[(A, B, C), Void],
-    args: (A, B, C)) -> Void
+routine Job[None].put_work[A, B, C](me: Me, entry: Callable[(A, B, C), None],
+    args: (A, B, C)) -> None
 needs A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -434,8 +434,8 @@ needs A: typename, B: typename, C: typename
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[Void].put_work[A, B, C, D](me: Me, entry: Callable[(A, B, C, D), Void],
-    args: (A, B, C, D)) -> Void
+routine Job[None].put_work[A, B, C, D](me: Me, entry: Callable[(A, B, C, D), None],
+    args: (A, B, C, D)) -> None
 needs A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -454,7 +454,7 @@ needs T: typename
 /// Waits until the work has finished. Inside a fiber only that fiber waits, and its thread goes on with other work.
 @target(os: not "none")
 @track_caller
-routine Job[T].wait_finished(me: Me) -> Void
+routine Job[T].wait_finished(me: Me) -> None
 needs T: typename
     me.work_slot().wait()
     return
@@ -472,10 +472,10 @@ needs T: typename
 /// :returns: `Unit` when the work has finished, `CancelRequested` when the waiting work was cancelled first.
 @target(os: not "none")
 @track_caller
-routine Job[T].wait_finished_result(me: Me) -> Result[Unit, CancelRequested]
+routine Job[T].wait_finished_result(me: Me) -> Result[None, CancelRequested]
 needs T: typename
     if me.work_slot().wait_until(deadline: U64.MAX, cancellable: true)
-        return Unit()
+        return None()
     else
         return CancelRequested()
 
@@ -499,7 +499,7 @@ needs T: typename
 ///     `CancelledWorkError` when it was cancelled.
 @target(os: not "none")
 @track_caller
-routine Job[Void].retrieve(me: Me) -> Void
+routine Job[None].retrieve(me: Me) -> None
     slot: @WorkSlot = me.work_slot()
     slot.result_place[Byte]()
     if slot.is_cancelled()
@@ -524,7 +524,7 @@ needs T: typename
 /// Asks the work to stop: `cancel_requested()` turns true inside it, and the work stops where it looks.
 @target(os: not "none")
 @track_caller
-routine Job[T].cancel(me: Me) -> Void
+routine Job[T].cancel(me: Me) -> None
 needs T: typename
     me.work_slot().request_cancel()
     return
@@ -534,7 +534,7 @@ needs T: typename
 ///     back already.
 @target(os: not "none")
 @track_caller
-routine Job[T].give_back(me: Me) -> Void
+routine Job[T].give_back(me: Me) -> None
 needs T: typename
     me.work_slot().give_back()
     job: @PoolJob = me.job

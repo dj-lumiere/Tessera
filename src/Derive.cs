@@ -132,7 +132,7 @@ public static class Derive
         // The type's #target / #feature carry over, so the derived code exists exactly where the type does.
         var selection = type.Annotations.Where(a => a.Name is "target" or "feature").ToList();
         var mark = new Annotation("derived", implicitly ? [new AnnotationArg(null, "implicit", false)] : [], type.Pos);
-        foreach (var g in new Parser(tokens, type.File, type.IsLibrary).ParseModule().Decls)
+        foreach (var g in new Parser(tokens, type.File, type.IsLibrary, acceptLegacy: true).ParseModule().Decls)
             yield return g with
             {
                 Annotations = [.. g.Annotations, .. selection, .. (g is RoutineDecl ? new[] { mark } : [])],
@@ -175,7 +175,7 @@ public static class Derive
     }
 
     private static string WriterHeader(string self, string method, string writer) =>
-        $"routine {self}.{method}[{writer}](me: Me, out: @{writer}) -> Void\n";
+        $"routine {self}.{method}[{writer}](me: Me, out: @{writer}) -> None\n";
 
     private static string RecordSource(RecordDecl r, string concept, string method)
     {
@@ -183,7 +183,7 @@ public static class Derive
         string self = SelfName(r.Name, r.TypeParams);
 
         var sb = new StringBuilder();
-        sb.Append($"conform {Qualified(concept)}[{self}]");
+        sb.Append($"obeys {Qualified(concept)}[{self}]");
         if (constraints.Count > 0) sb.Append($" when {string.Join(", ", constraints)}");
         sb.Append("\n\n");
         switch (method)
@@ -336,7 +336,7 @@ public static class Derive
         }
         string self = SelfName(v.Name, v.TypeParams);
         var sb = new StringBuilder();
-        sb.Append($"conform {Qualified(concept)}[{self}]");
+        sb.Append($"obeys {Qualified(concept)}[{self}]");
         if (constraints.Count > 0) sb.Append($" when {string.Join(", ", constraints)}");
         sb.Append("\n\n");
         var branches = v.Branches;
@@ -419,7 +419,7 @@ public static class Derive
     {
         var u = c.Underlying;
         var sb = new StringBuilder();
-        sb.Append($"conform {Qualified(concept)}[{c.Name}]\n\n");
+        sb.Append($"obeys {Qualified(concept)}[{c.Name}]\n\n");
         switch (method)
         {
             case "represent_into" or "diagnose_into":

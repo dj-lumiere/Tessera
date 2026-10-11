@@ -28,7 +28,7 @@ global RUNNING_WORK: @@WorkSlot
 /// globals and still owns (the thread's FiberManager), or null. Whatever makes such a value sets it.
 @threadlocal
 @target(os: not "none")
-global THREAD_CLEANUP: @Callable[(), Void]
+global THREAD_CLEANUP: @Callable[(), None]
 
 /// A ticket with no work yet: the next may go on.
 preset TICKET_EMPTY: U32 = 0
@@ -46,7 +46,7 @@ record WorkSlot
     /// `TICKET_EMPTY`, `TICKET_RUNNING`, `TICKET_DONE`, `TICKET_IDLE` or `TICKET_QUIT`. A thread waits on it.
     state: U32
     /// Runs the work in `work`: calls its routine with its arguments and stores the result in front.
-    runner: Callable[(Addr,), Void]
+    runner: Callable[(Addr,), None]
     /// The block of the work, from `alloc`, or null.
     work: Addr
     /// Where the work's blocks come from: the manager's allocator.
@@ -77,7 +77,7 @@ record CancelRequested
 /// :param blocked: Its `blocked`.
 /// :param issued: Its `issued`.
 /// :returns: The new value.
-routine WorkSlot.construct(state: U32, runner: Callable[(Addr,), Void], work: Addr,
+routine WorkSlot.construct(state: U32, runner: Callable[(Addr,), None], work: Addr,
     alloc: @MemoryManager, cancel: U32, lock: ExclusiveLock, waiter: Waiter, blocked: Waiter,
     issued: U64) -> Me
     return Me(state, runner, work, alloc, cancel, lock, waiter, blocked, issued)
@@ -89,13 +89,13 @@ routine WorkSlot.construct(alloc: @MemoryManager) -> Me
     return Me(state: TICKET_EMPTY, runner: no_work.to[Callable](), work: null, alloc, cancel: 0, lock: .construct(), waiter: .hollow(), blocked: .hollow(), issued: 0)
 
 /// Gives back the block of the last work.
-routine WorkSlot.destruct(me: @Me) -> Void
+routine WorkSlot.destruct(me: @Me) -> None
     me.free_work()
     return
 
 /// The work of a slot that has none.
 /// :param work: Ignored.
-private routine no_work(work: Addr) -> Void
+private routine no_work(work: Addr) -> None
     return
 
 /// Whether the running work was asked to stop with `cancel()`. The work looks at it where stopping is safe, cleans up
@@ -113,7 +113,7 @@ routine cancel_requested() -> Bool
 /// :param issued: The ticket's number.
 /// :throws: Crashes with `TicketGivenBackError` for a ticket that was given back.
 @track_caller
-routine WorkSlot.check_ticket(me: @Me, issued: U64) -> Void
+routine WorkSlot.check_ticket(me: @Me, issued: U64) -> None
     if me.issued.peek() == issued
         return
     else
@@ -122,7 +122,7 @@ routine WorkSlot.check_ticket(me: @Me, issued: U64) -> Void
 /// Crashes when work runs: a ticket runs one piece of work at a time.
 /// :throws: Crashes with `TicketBusyError` while the work runs.
 @track_caller
-routine WorkSlot.check_free(me: @Me) -> Void
+routine WorkSlot.check_free(me: @Me) -> None
     if me.state.peek_atomic() == TICKET_RUNNING
         crash(name: "TicketBusyError", message: "This ticket's work hasn't finished: a ticket runs one piece of work at a time, so wait_finished() first.")
     else
@@ -133,7 +133,7 @@ routine WorkSlot.check_free(me: @Me) -> Void
 /// :param work: Its block, from the slot's allocator.
 /// :throws: Crashes with `TicketBusyError` while the last work runs.
 @track_caller
-routine WorkSlot.put(me: @Me, runner: Callable[(Addr,), Void], work: Addr) -> Void
+routine WorkSlot.put(me: @Me, runner: Callable[(Addr,), None], work: Addr) -> None
     me.check_free()
     me.free_work()
     me.runner.poke(runner)
@@ -145,7 +145,7 @@ routine WorkSlot.put(me: @Me, runner: Callable[(Addr,), Void], work: Addr) -> Vo
     return
 
 /// Gives the block of the last work back, if there is one.
-routine WorkSlot.free_work(me: @Me) -> Void
+routine WorkSlot.free_work(me: @Me) -> None
     work: Addr = me.work.peek()
     if work.is_null()
         return
@@ -161,7 +161,7 @@ routine WorkSlot.is_finished(me: @Me) -> Bool
 /// Waits until the work has finished. A fiber parks and the thread goes on with its manager's other fibers. A thread
 /// sleeps.
 @target(os: not "none")
-routine WorkSlot.wait(me: @Me) -> Void
+routine WorkSlot.wait(me: @Me) -> None
     me.wait_until(deadline: U64.MAX, cancellable: false)
     return
 
@@ -220,7 +220,7 @@ routine WorkSlot.register(me: @Me, waiter: Waiter) -> Bool
 /// Forgets `waiter` if it is the one woken when the work finishes: a wait on several tickets that is over.
 /// :param waiter: The waiter.
 @target(os: not "none")
-routine WorkSlot.unregister(me: @Me, waiter: Waiter) -> Void
+routine WorkSlot.unregister(me: @Me, waiter: Waiter) -> None
     me.lock.lock()
     if me.waiter.peek().same(waiter)
         me.waiter.poke(.hollow())
@@ -230,7 +230,7 @@ routine WorkSlot.unregister(me: @Me, waiter: Waiter) -> Void
 /// Marks the work finished and wakes whoever waits for it: the thread that runs it calls this once the routine
 /// returns.
 @target(os: not "none")
-routine WorkSlot.complete(me: @Me) -> Void
+routine WorkSlot.complete(me: @Me) -> None
     me.state.poke_atomic(TICKET_DONE)
     wake_all(me.state)
     me.lock.lock()
@@ -265,7 +265,7 @@ routine WorkSlot.is_cancelled(me: @Me) -> Bool
 /// Asks the work to stop: `cancel_requested()` turns true inside it, and a cancellable wait it is in (a `_result`
 /// one) ends.
 @target(os: not "none")
-routine WorkSlot.request_cancel(me: @Me) -> Void
+routine WorkSlot.request_cancel(me: @Me) -> None
     me.cancel.poke_atomic(1)
     me.lock.lock()
     blocked: Waiter = me.blocked.peek()
@@ -276,7 +276,7 @@ routine WorkSlot.request_cancel(me: @Me) -> Void
 /// Ends the ticket that holds the slot: gives the last work's block back and gives the slot a new number.
 /// :throws: Crashes with `TicketBusyError` while the work runs.
 @track_caller
-routine WorkSlot.give_back(me: @Me) -> Void
+routine WorkSlot.give_back(me: @Me) -> None
     if me.state.peek_atomic() == TICKET_RUNNING
         crash(name: "TicketBusyError", message: "This ticket's work hasn't finished: wait_finished() before give_back(), so nothing it still uses goes away.")
     me.free_work()
@@ -328,25 +328,25 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
 
 /// The work a ticket runs: a routine of 0 argument(s), no result.
 record VoidWork0
-    entry: Callable[(), Void]
+    entry: Callable[(), None]
 
 /// The work a ticket runs: a routine of 1 argument(s), no result.
 record VoidWork1[A]
 needs A: typename
-    entry: Callable[(A,), Void]
+    entry: Callable[(A,), None]
     first: A
 
 /// The work a ticket runs: a routine of 2 argument(s), no result.
 record VoidWork2[A, B]
 needs A: typename, B: typename
-    entry: Callable[(A, B), Void]
+    entry: Callable[(A, B), None]
     first: A
     second: B
 
 /// The work a ticket runs: a routine of 3 argument(s), no result.
 record VoidWork3[A, B, C]
 needs A: typename, B: typename, C: typename
-    entry: Callable[(A, B, C), Void]
+    entry: Callable[(A, B, C), None]
     first: A
     second: B
     third: C
@@ -354,7 +354,7 @@ needs A: typename, B: typename, C: typename
 /// The work a ticket runs: a routine of 4 argument(s), no result.
 record VoidWork4[A, B, C, D]
 needs A: typename, B: typename, C: typename, D: typename
-    entry: Callable[(A, B, C, D), Void]
+    entry: Callable[(A, B, C, D), None]
     first: A
     second: B
     third: C
@@ -369,13 +369,13 @@ needs T: typename
     return Me(result, entry)
 
 /// Releases nothing: a `Work0` holds the work's arguments, which its routine owns once it runs.
-routine Work0[T].destruct(me: @Me) -> Void
+routine Work0[T].destruct(me: @Me) -> None
 needs T: typename
     return
 
 /// Runs the work in the block at `raw`, a `Work0`, and stores its result there.
 /// :param raw: The block.
-private routine run_work0[T](raw: Addr) -> Void
+private routine run_work0[T](raw: Addr) -> None
 needs T: typename
     work: @Work0[T] = raw.to[@Work0[T]]()
     entry: Callable[(), T] = work.entry.peek()
@@ -390,13 +390,13 @@ needs T: typename
 /// :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the block.
 @track_caller
 routine make_work0[T](entry: Callable[(), T],
-    alloc: @MemoryManager) -> (Callable[(Addr,), Void], Addr)
+    alloc: @MemoryManager) -> (Callable[(Addr,), None], Addr)
 needs T: typename
     work: @Work0[T] = allocate[Work0[T]](count: 1, alloc)
     if work.is_null()
         crash_allocation()
     work.entry.poke(entry)
-    runner: Callable[(Addr,), Void] = run_work0[T].to[Callable]()
+    runner: Callable[(Addr,), None] = run_work0[T].to[Callable]()
     place: Addr = work
     return (runner, place)
 
@@ -410,13 +410,13 @@ needs T: typename, A: typename
     return Me(result, entry, first)
 
 /// Releases nothing: a `Work1` holds the work's arguments, which its routine owns once it runs.
-routine Work1[T, A].destruct(me: @Me) -> Void
+routine Work1[T, A].destruct(me: @Me) -> None
 needs T: typename, A: typename
     return
 
 /// Runs the work in the block at `raw`, a `Work1`, and stores its result there.
 /// :param raw: The block.
-private routine run_work1[T, A](raw: Addr) -> Void
+private routine run_work1[T, A](raw: Addr) -> None
 needs T: typename, A: typename
     work: @Work1[T, A] = raw.to[@Work1[T, A]]()
     entry: Callable[(A,), T] = work.entry.peek()
@@ -432,14 +432,14 @@ needs T: typename, A: typename
 /// :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the block.
 @track_caller
 routine make_work1[T, A](entry: Callable[(A,), T], args: A,
-    alloc: @MemoryManager) -> (Callable[(Addr,), Void], Addr)
+    alloc: @MemoryManager) -> (Callable[(Addr,), None], Addr)
 needs T: typename, A: typename
     work: @Work1[T, A] = allocate[Work1[T, A]](count: 1, alloc)
     if work.is_null()
         crash_allocation()
     work.entry.poke(entry)
     work.first.poke(args)
-    runner: Callable[(Addr,), Void] = run_work1[T, A].to[Callable]()
+    runner: Callable[(Addr,), None] = run_work1[T, A].to[Callable]()
     place: Addr = work
     return (runner, place)
 
@@ -454,13 +454,13 @@ needs T: typename, A: typename, B: typename
     return Me(result, entry, first, second)
 
 /// Releases nothing: a `Work2` holds the work's arguments, which its routine owns once it runs.
-routine Work2[T, A, B].destruct(me: @Me) -> Void
+routine Work2[T, A, B].destruct(me: @Me) -> None
 needs T: typename, A: typename, B: typename
     return
 
 /// Runs the work in the block at `raw`, a `Work2`, and stores its result there.
 /// :param raw: The block.
-private routine run_work2[T, A, B](raw: Addr) -> Void
+private routine run_work2[T, A, B](raw: Addr) -> None
 needs T: typename, A: typename, B: typename
     work: @Work2[T, A, B] = raw.to[@Work2[T, A, B]]()
     entry: Callable[(A, B), T] = work.entry.peek()
@@ -476,7 +476,7 @@ needs T: typename, A: typename, B: typename
 /// :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the block.
 @track_caller
 routine make_work2[T, A, B](entry: Callable[(A, B), T], args: (A, B),
-    alloc: @MemoryManager) -> (Callable[(Addr,), Void], Addr)
+    alloc: @MemoryManager) -> (Callable[(Addr,), None], Addr)
 needs T: typename, A: typename, B: typename
     work: @Work2[T, A, B] = allocate[Work2[T, A, B]](count: 1, alloc)
     if work.is_null()
@@ -484,7 +484,7 @@ needs T: typename, A: typename, B: typename
     work.entry.poke(entry)
     work.first.poke(args.item0)
     work.second.poke(args.item1)
-    runner: Callable[(Addr,), Void] = run_work2[T, A, B].to[Callable]()
+    runner: Callable[(Addr,), None] = run_work2[T, A, B].to[Callable]()
     place: Addr = work
     return (runner, place)
 
@@ -501,13 +501,13 @@ needs T: typename, A: typename, B: typename, C: typename
     return Me(result, entry, first, second, third)
 
 /// Releases nothing: a `Work3` holds the work's arguments, which its routine owns once it runs.
-routine Work3[T, A, B, C].destruct(me: @Me) -> Void
+routine Work3[T, A, B, C].destruct(me: @Me) -> None
 needs T: typename, A: typename, B: typename, C: typename
     return
 
 /// Runs the work in the block at `raw`, a `Work3`, and stores its result there.
 /// :param raw: The block.
-private routine run_work3[T, A, B, C](raw: Addr) -> Void
+private routine run_work3[T, A, B, C](raw: Addr) -> None
 needs T: typename, A: typename, B: typename, C: typename
     work: @Work3[T, A, B, C] = raw.to[@Work3[T, A, B, C]]()
     entry: Callable[(A, B, C), T] = work.entry.peek()
@@ -523,7 +523,7 @@ needs T: typename, A: typename, B: typename, C: typename
 /// :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the block.
 @track_caller
 routine make_work3[T, A, B, C](entry: Callable[(A, B, C), T], args: (A, B, C),
-    alloc: @MemoryManager) -> (Callable[(Addr,), Void], Addr)
+    alloc: @MemoryManager) -> (Callable[(Addr,), None], Addr)
 needs T: typename, A: typename, B: typename, C: typename
     work: @Work3[T, A, B, C] = allocate[Work3[T, A, B, C]](count: 1, alloc)
     if work.is_null()
@@ -532,7 +532,7 @@ needs T: typename, A: typename, B: typename, C: typename
     work.first.poke(args.item0)
     work.second.poke(args.item1)
     work.third.poke(args.item2)
-    runner: Callable[(Addr,), Void] = run_work3[T, A, B, C].to[Callable]()
+    runner: Callable[(Addr,), None] = run_work3[T, A, B, C].to[Callable]()
     place: Addr = work
     return (runner, place)
 
@@ -550,13 +550,13 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
     return Me(result, entry, first, second, third, fourth)
 
 /// Releases nothing: a `Work4` holds the work's arguments, which its routine owns once it runs.
-routine Work4[T, A, B, C, D].destruct(me: @Me) -> Void
+routine Work4[T, A, B, C, D].destruct(me: @Me) -> None
 needs T: typename, A: typename, B: typename, C: typename, D: typename
     return
 
 /// Runs the work in the block at `raw`, a `Work4`, and stores its result there.
 /// :param raw: The block.
-private routine run_work4[T, A, B, C, D](raw: Addr) -> Void
+private routine run_work4[T, A, B, C, D](raw: Addr) -> None
 needs T: typename, A: typename, B: typename, C: typename, D: typename
     work: @Work4[T, A, B, C, D] = raw.to[@Work4[T, A, B, C, D]]()
     entry: Callable[(A, B, C, D), T] = work.entry.peek()
@@ -572,7 +572,7 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
 /// :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the block.
 @track_caller
 routine make_work4[T, A, B, C, D](entry: Callable[(A, B, C, D), T], args: (A, B, C, D),
-    alloc: @MemoryManager) -> (Callable[(Addr,), Void], Addr)
+    alloc: @MemoryManager) -> (Callable[(Addr,), None], Addr)
 needs T: typename, A: typename, B: typename, C: typename, D: typename
     work: @Work4[T, A, B, C, D] = allocate[Work4[T, A, B, C, D]](count: 1, alloc)
     if work.is_null()
@@ -582,15 +582,15 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
     work.second.poke(args.item1)
     work.third.poke(args.item2)
     work.fourth.poke(args.item3)
-    runner: Callable[(Addr,), Void] = run_work4[T, A, B, C, D].to[Callable]()
+    runner: Callable[(Addr,), None] = run_work4[T, A, B, C, D].to[Callable]()
     place: Addr = work
     return (runner, place)
 
 /// Runs the work in the block at `raw`, a `VoidWork0`.
 /// :param raw: The block.
-private routine run_voidwork0(raw: Addr) -> Void
+private routine run_voidwork0(raw: Addr) -> None
     work: @VoidWork0 = raw.to[@VoidWork0]()
-    entry: Callable[(), Void] = work.entry.peek()
+    entry: Callable[(), None] = work.entry.peek()
     entry.call()
     return
 
@@ -600,13 +600,13 @@ private routine run_voidwork0(raw: Addr) -> Void
 /// :returns: The runner and the block.
 /// :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the block.
 @track_caller
-routine make_voidwork0(entry: Callable[(), Void],
-    alloc: @MemoryManager) -> (Callable[(Addr,), Void], Addr)
+routine make_voidwork0(entry: Callable[(), None],
+    alloc: @MemoryManager) -> (Callable[(Addr,), None], Addr)
     work: @VoidWork0 = allocate[VoidWork0](count: 1, alloc)
     if work.is_null()
         crash_allocation()
     work.entry.poke(entry)
-    runner: Callable[(Addr,), Void] = run_voidwork0.to[Callable]()
+    runner: Callable[(Addr,), None] = run_voidwork0.to[Callable]()
     place: Addr = work
     return (runner, place)
 
@@ -614,21 +614,21 @@ routine make_voidwork0(entry: Callable[(), Void],
 /// :param entry: Its `entry`.
 /// :param first: Its `first`.
 /// :returns: The new value.
-routine VoidWork1[A].construct(entry: Callable[(A,), Void], first: A) -> Me
+routine VoidWork1[A].construct(entry: Callable[(A,), None], first: A) -> Me
 needs A: typename
     return Me(entry, first)
 
 /// Releases nothing: a `VoidWork1` holds the work's arguments, which its routine owns once it runs.
-routine VoidWork1[A].destruct(me: @Me) -> Void
+routine VoidWork1[A].destruct(me: @Me) -> None
 needs A: typename
     return
 
 /// Runs the work in the block at `raw`, a `VoidWork1`.
 /// :param raw: The block.
-private routine run_voidwork1[A](raw: Addr) -> Void
+private routine run_voidwork1[A](raw: Addr) -> None
 needs A: typename
     work: @VoidWork1[A] = raw.to[@VoidWork1[A]]()
-    entry: Callable[(A,), Void] = work.entry.peek()
+    entry: Callable[(A,), None] = work.entry.peek()
     entry.call(work.first.peek())
     return
 
@@ -639,15 +639,15 @@ needs A: typename
 /// :returns: The runner and the block.
 /// :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the block.
 @track_caller
-routine make_voidwork1[A](entry: Callable[(A,), Void], args: A,
-    alloc: @MemoryManager) -> (Callable[(Addr,), Void], Addr)
+routine make_voidwork1[A](entry: Callable[(A,), None], args: A,
+    alloc: @MemoryManager) -> (Callable[(Addr,), None], Addr)
 needs A: typename
     work: @VoidWork1[A] = allocate[VoidWork1[A]](count: 1, alloc)
     if work.is_null()
         crash_allocation()
     work.entry.poke(entry)
     work.first.poke(args)
-    runner: Callable[(Addr,), Void] = run_voidwork1[A].to[Callable]()
+    runner: Callable[(Addr,), None] = run_voidwork1[A].to[Callable]()
     place: Addr = work
     return (runner, place)
 
@@ -656,21 +656,21 @@ needs A: typename
 /// :param first: Its `first`.
 /// :param second: Its `second`.
 /// :returns: The new value.
-routine VoidWork2[A, B].construct(entry: Callable[(A, B), Void], first: A, second: B) -> Me
+routine VoidWork2[A, B].construct(entry: Callable[(A, B), None], first: A, second: B) -> Me
 needs A: typename, B: typename
     return Me(entry, first, second)
 
 /// Releases nothing: a `VoidWork2` holds the work's arguments, which its routine owns once it runs.
-routine VoidWork2[A, B].destruct(me: @Me) -> Void
+routine VoidWork2[A, B].destruct(me: @Me) -> None
 needs A: typename, B: typename
     return
 
 /// Runs the work in the block at `raw`, a `VoidWork2`.
 /// :param raw: The block.
-private routine run_voidwork2[A, B](raw: Addr) -> Void
+private routine run_voidwork2[A, B](raw: Addr) -> None
 needs A: typename, B: typename
     work: @VoidWork2[A, B] = raw.to[@VoidWork2[A, B]]()
-    entry: Callable[(A, B), Void] = work.entry.peek()
+    entry: Callable[(A, B), None] = work.entry.peek()
     entry.call(work.first.peek(), work.second.peek())
     return
 
@@ -681,8 +681,8 @@ needs A: typename, B: typename
 /// :returns: The runner and the block.
 /// :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the block.
 @track_caller
-routine make_voidwork2[A, B](entry: Callable[(A, B), Void], args: (A, B),
-    alloc: @MemoryManager) -> (Callable[(Addr,), Void], Addr)
+routine make_voidwork2[A, B](entry: Callable[(A, B), None], args: (A, B),
+    alloc: @MemoryManager) -> (Callable[(Addr,), None], Addr)
 needs A: typename, B: typename
     work: @VoidWork2[A, B] = allocate[VoidWork2[A, B]](count: 1, alloc)
     if work.is_null()
@@ -690,7 +690,7 @@ needs A: typename, B: typename
     work.entry.poke(entry)
     work.first.poke(args.item0)
     work.second.poke(args.item1)
-    runner: Callable[(Addr,), Void] = run_voidwork2[A, B].to[Callable]()
+    runner: Callable[(Addr,), None] = run_voidwork2[A, B].to[Callable]()
     place: Addr = work
     return (runner, place)
 
@@ -700,22 +700,22 @@ needs A: typename, B: typename
 /// :param second: Its `second`.
 /// :param third: Its `third`.
 /// :returns: The new value.
-routine VoidWork3[A, B, C].construct(entry: Callable[(A, B, C), Void], first: A, second: B,
+routine VoidWork3[A, B, C].construct(entry: Callable[(A, B, C), None], first: A, second: B,
     third: C) -> Me
 needs A: typename, B: typename, C: typename
     return Me(entry, first, second, third)
 
 /// Releases nothing: a `VoidWork3` holds the work's arguments, which its routine owns once it runs.
-routine VoidWork3[A, B, C].destruct(me: @Me) -> Void
+routine VoidWork3[A, B, C].destruct(me: @Me) -> None
 needs A: typename, B: typename, C: typename
     return
 
 /// Runs the work in the block at `raw`, a `VoidWork3`.
 /// :param raw: The block.
-private routine run_voidwork3[A, B, C](raw: Addr) -> Void
+private routine run_voidwork3[A, B, C](raw: Addr) -> None
 needs A: typename, B: typename, C: typename
     work: @VoidWork3[A, B, C] = raw.to[@VoidWork3[A, B, C]]()
-    entry: Callable[(A, B, C), Void] = work.entry.peek()
+    entry: Callable[(A, B, C), None] = work.entry.peek()
     entry.call(work.first.peek(), work.second.peek(), work.third.peek())
     return
 
@@ -726,8 +726,8 @@ needs A: typename, B: typename, C: typename
 /// :returns: The runner and the block.
 /// :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the block.
 @track_caller
-routine make_voidwork3[A, B, C](entry: Callable[(A, B, C), Void], args: (A, B, C),
-    alloc: @MemoryManager) -> (Callable[(Addr,), Void], Addr)
+routine make_voidwork3[A, B, C](entry: Callable[(A, B, C), None], args: (A, B, C),
+    alloc: @MemoryManager) -> (Callable[(Addr,), None], Addr)
 needs A: typename, B: typename, C: typename
     work: @VoidWork3[A, B, C] = allocate[VoidWork3[A, B, C]](count: 1, alloc)
     if work.is_null()
@@ -736,7 +736,7 @@ needs A: typename, B: typename, C: typename
     work.first.poke(args.item0)
     work.second.poke(args.item1)
     work.third.poke(args.item2)
-    runner: Callable[(Addr,), Void] = run_voidwork3[A, B, C].to[Callable]()
+    runner: Callable[(Addr,), None] = run_voidwork3[A, B, C].to[Callable]()
     place: Addr = work
     return (runner, place)
 
@@ -747,22 +747,22 @@ needs A: typename, B: typename, C: typename
 /// :param third: Its `third`.
 /// :param fourth: Its `fourth`.
 /// :returns: The new value.
-routine VoidWork4[A, B, C, D].construct(entry: Callable[(A, B, C, D), Void], first: A, second: B,
+routine VoidWork4[A, B, C, D].construct(entry: Callable[(A, B, C, D), None], first: A, second: B,
     third: C, fourth: D) -> Me
 needs A: typename, B: typename, C: typename, D: typename
     return Me(entry, first, second, third, fourth)
 
 /// Releases nothing: a `VoidWork4` holds the work's arguments, which its routine owns once it runs.
-routine VoidWork4[A, B, C, D].destruct(me: @Me) -> Void
+routine VoidWork4[A, B, C, D].destruct(me: @Me) -> None
 needs A: typename, B: typename, C: typename, D: typename
     return
 
 /// Runs the work in the block at `raw`, a `VoidWork4`.
 /// :param raw: The block.
-private routine run_voidwork4[A, B, C, D](raw: Addr) -> Void
+private routine run_voidwork4[A, B, C, D](raw: Addr) -> None
 needs A: typename, B: typename, C: typename, D: typename
     work: @VoidWork4[A, B, C, D] = raw.to[@VoidWork4[A, B, C, D]]()
-    entry: Callable[(A, B, C, D), Void] = work.entry.peek()
+    entry: Callable[(A, B, C, D), None] = work.entry.peek()
     entry.call(work.first.peek(), work.second.peek(), work.third.peek(), work.fourth.peek())
     return
 
@@ -773,8 +773,8 @@ needs A: typename, B: typename, C: typename, D: typename
 /// :returns: The runner and the block.
 /// :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the block.
 @track_caller
-routine make_voidwork4[A, B, C, D](entry: Callable[(A, B, C, D), Void], args: (A, B, C, D),
-    alloc: @MemoryManager) -> (Callable[(Addr,), Void], Addr)
+routine make_voidwork4[A, B, C, D](entry: Callable[(A, B, C, D), None], args: (A, B, C, D),
+    alloc: @MemoryManager) -> (Callable[(Addr,), None], Addr)
 needs A: typename, B: typename, C: typename, D: typename
     work: @VoidWork4[A, B, C, D] = allocate[VoidWork4[A, B, C, D]](count: 1, alloc)
     if work.is_null()
@@ -784,6 +784,6 @@ needs A: typename, B: typename, C: typename, D: typename
     work.second.poke(args.item1)
     work.third.poke(args.item2)
     work.fourth.poke(args.item3)
-    runner: Callable[(Addr,), Void] = run_voidwork4[A, B, C, D].to[Callable]()
+    runner: Callable[(Addr,), None] = run_voidwork4[A, B, C, D].to[Callable]()
     place: Addr = work
     return (runner, place)

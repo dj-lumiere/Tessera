@@ -180,7 +180,7 @@ public sealed class FloatType : DType
 public sealed class VoidType : DType
 {
     public static readonly VoidType Instance = new();
-    public override string Name => "Void";
+    public override string Name => "None";
     public override string Llvm => "void";
     public override string OwnerName => Name;
 }

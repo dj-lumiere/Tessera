@@ -58,7 +58,7 @@ public static partial class ConstructDestructMigration
             List<Decl> decls;
             try
             {
-                decls = new Parser(new Lexer(file, text).Lex(), file).ParseModule().Decls;
+                decls = new Parser(new Lexer(file, text).Lex(), file, acceptLegacy: true).ParseModule().Decls;
             }
             catch (CompileError)
             {

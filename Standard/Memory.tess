@@ -44,13 +44,13 @@ record MemoryManager
     /// as it was: `(state, at, size, align)`.
     realloc_fn: Callable[(Addr, Addr, USize, USize), Addr]
     /// Gives a block back: `(state, at)`.
-    free_fn: Callable[(Addr, Addr), Void]
+    free_fn: Callable[(Addr, Addr), None]
     /// Reserves `size` bytes of address space, no page usable yet, or returns null: `(state, size)`.
     reserve_fn: Callable[(Addr, USize), Addr]
     /// Makes reserved pages readable and writable, false when it can't: `(state, at, size)`.
     commit_fn: Callable[(Addr, Addr, USize), Bool]
     /// Gives a whole reservation back: `(state, at, size)` with `at` and `size` as reserved.
-    release_fn: Callable[(Addr, Addr, USize), Void]
+    release_fn: Callable[(Addr, Addr, USize), None]
     /// Sets what pages allow, false when it can't: `(state, at, size, access)`.
     protect_fn: Callable[(Addr, Addr, USize, PageAccess), Bool]
     /// What the routines share, passed to each of them.
@@ -62,7 +62,7 @@ record MemoryManager
 record AllocFailed
 
 /// Releases nothing: a `MemoryManager` holds no memory of its own.
-routine MemoryManager.destruct(me: @Me) -> Void
+routine MemoryManager.destruct(me: @Me) -> None
     return
 
 /// A memory manager that hands out blocks and doesn't handle pages: its page routines and `protect_fn` are null.
@@ -72,7 +72,7 @@ routine MemoryManager.destruct(me: @Me) -> Void
 /// :param state: What the three routines share.
 /// :returns: The manager.
 routine MemoryManager.construct(alloc_fn: Callable[(Addr, USize, USize), Addr],
-    realloc_fn: Callable[(Addr, Addr, USize, USize), Addr], free_fn: Callable[(Addr, Addr), Void],
+    realloc_fn: Callable[(Addr, Addr, USize, USize), Addr], free_fn: Callable[(Addr, Addr), None],
     state: Addr) -> Me
     manager: Me = Me(alloc_fn, realloc_fn, free_fn, reserve_fn: null, commit_fn: null, release_fn: null, protect_fn: null, state)
     return manager
@@ -112,8 +112,8 @@ routine MemoryManager.realloc(me: @Me, at: Addr, size: USize, align: USize) -> A
 /// :param at: The block. Null does nothing in the stdlib's managers.
 @track_caller
 @expensive("frees memory")
-routine MemoryManager.free(me: @Me, at: Addr) -> Void
-    free_fn: Callable[(Addr, Addr), Void] = me.free_fn.peek()
+routine MemoryManager.free(me: @Me, at: Addr) -> None
+    free_fn: Callable[(Addr, Addr), None] = me.free_fn.peek()
     note_call_place(caller_location())
     free_fn.call(me.state.peek(), at)
     note_call_place(null)
@@ -163,8 +163,8 @@ routine MemoryManager.commit(me: @Me, at: Addr, size: USize) -> Bool
 /// :throws: Crashes with `NotImplementedError` when this manager doesn't handle pages.
 @track_caller
 @expensive("gives memory back")
-routine MemoryManager.release(me: @Me, at: Addr, size: USize) -> Void
-    release_fn: Callable[(Addr, Addr, USize), Void] = me.release_fn.peek()
+routine MemoryManager.release(me: @Me, at: Addr, size: USize) -> None
+    release_fn: Callable[(Addr, Addr, USize), None] = me.release_fn.peek()
     if release_fn.addr().is_null()
         crash_no_pages()
     release_fn.call(me.state.peek(), at, size)
@@ -188,13 +188,13 @@ routine MemoryManager.protect(me: @Me, at: Addr, size: USize, access: PageAccess
 /// Crashes with `NotImplementedError`: the manager's page routines are empty.
 @noreturn
 @track_caller
-private routine crash_no_pages() -> Void
+private routine crash_no_pages() -> None
     crash(name: "NotImplementedError", message: "This memory manager doesn't handle pages: its reserve, commit, and release are empty.")
 
 /// Crashes with `InvalidValueError` unless `align` is a power of two.
 /// :param align: The alignment asked for.
 @track_caller
-private routine check_align(align: USize) -> Void
+private routine check_align(align: USize) -> None
     if align.is_power_of_two()
         return
     else
@@ -250,7 +250,7 @@ needs T: typename
 /// :note: A raw layer beside {Memory[T]} and {Box[T]}, for node-based structures and memory C hands over. Code that holds a Memory never needs it.
 @track_caller
 @expensive("frees heap memory")
-routine deallocate[T](data: @T, alloc: @MemoryManager) -> Void
+routine deallocate[T](data: @T, alloc: @MemoryManager) -> None
 needs T: typename
     alloc.free(data)
     return
@@ -272,7 +272,7 @@ private global CALL_PLACE: @@SourceLocation
 /// :param place: The call's place, or null.
 @inline
 @heap_check("on")
-private routine note_call_place(place: @SourceLocation) -> Void
+private routine note_call_place(place: @SourceLocation) -> None
     CALL_PLACE.poke(place)
     return
 
@@ -280,7 +280,7 @@ private routine note_call_place(place: @SourceLocation) -> Void
 /// :param place: The call's place, or null.
 @inline
 @heap_check("off")
-private routine note_call_place(place: @SourceLocation) -> Void
+private routine note_call_place(place: @SourceLocation) -> None
     return
 
 /// With the heap check on, where the `reallocate` or `deallocate` call that is running this thread's allocator
@@ -305,7 +305,7 @@ routine allocator_call_place() -> @SourceLocation
 /// :param count: The number of values of `T` to copy.
 /// :throws: Crashes with `IntegerOverflowError` when the byte size does not fit in USize.
 /// :note: The ranges must not overlap, and no destructor or copy hook runs.
-routine Ptr[T].copy(me: Me, src: Me, count: USize) -> Void
+routine Ptr[T].copy(me: Me, src: Me, count: USize) -> None
 needs T: typename
     elem_size: USize = sizeof[T]()
     size: USize = elem_size * count
@@ -321,7 +321,7 @@ needs T: typename
 /// :param count: The number of values of `T` to copy.
 /// :throws: Crashes with `IntegerOverflowError` when the byte size does not fit in USize.
 /// :note: The ranges must not overlap, and no destructor or copy hook runs.
-routine Ptr[T].copy_into(me: Me, dst: Me, count: USize) -> Void
+routine Ptr[T].copy_into(me: Me, dst: Me, count: USize) -> None
 needs T: typename
     elem_size: USize = sizeof[T]()
     size: USize = elem_size * count
@@ -336,9 +336,9 @@ needs T: typename
 /// :param src: The source address.
 /// :param bytes: The number of bytes to copy.
 /// :note: The ranges must not overlap.
-#[external("llvm"),
-    template("call void @llvm.memcpy.p0.p0.{USize}(ptr {dst}, ptr {src}, {USize} {bytes}, i1 false)")]
-private routine copy_bytes(dst: Addr, src: Addr, bytes: USize) -> Void
+@external("llvm")
+@template("call void @llvm.memcpy.p0.p0.{USize}(ptr {dst}, ptr {src}, {USize} {bytes}, i1 false)")
+private routine copy_bytes(dst: Addr, src: Addr, bytes: USize) -> None
 
 // ============================================================
 // C strings (Types/CStr.tess)
@@ -382,7 +382,7 @@ routine OwnedCStr.to[CStr](me: @Me) -> CStr
 
 /// Gives the memory back to the allocator it came from.
 @track_caller
-routine OwnedCStr.destruct(me: @Me) -> Void
+routine OwnedCStr.destruct(me: @Me) -> None
     me.storage.destruct()
     return
 
@@ -400,7 +400,7 @@ routine OwnedCWStr.to[CWStr](me: @Me) -> CWStr
 
 /// Gives the memory back to the allocator it came from.
 @track_caller
-routine OwnedCWStr.destruct(me: @Me) -> Void
+routine OwnedCWStr.destruct(me: @Me) -> None
     me.storage.destruct()
     return
 
@@ -448,7 +448,7 @@ routine Span[Byte].to[OwnedCWStr](me: Me, alloc: @MemoryManager) -> OwnedCWStr
                 count: USize = encode_cwchar(char, out: units.stride(n.peek()))
                 (n.peek() + count).poke_into(n)
                 continue
-            is Unit => break
+            is None => break
     units.stride(n.peek()).poke(0)
     owned: OwnedCWStr = OwnedCWStr(storage: storage)
     return owned

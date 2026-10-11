@@ -290,7 +290,7 @@ public sealed partial class Compiler
 
     private DType? ResolveTypeQuiet(TypeRef t, TypeEnv env)
     {
-        try { return ResolveType(t, env, allowVoid: true); }
+        try { return ResolveType(t, env); }
         catch (CompileError) { return null; }
     }
 
@@ -314,7 +314,7 @@ public sealed partial class Compiler
             string ownerParam = req.Owner!.Name == "Me" ? concept.TypeParams[0] : req.Owner.Name;
             var owner = req.Owner.Args.Count == 0 && cenv.Get(ownerParam) is { } bound ? bound : ResolveType(req.Owner, cenv);
             string claim = $"{key} (declared at {conf.Source.Pos})";
-            var wanted = req.Fixed.Select(f => ResolveType(f, cenv, allowVoid: true)).ToList();
+            var wanted = req.Fixed.Select(f => ResolveType(f, cenv)).ToList();
             var methods = MethodCandidates(owner, req.Name, conf.Source.File, conf.Source.Pos,
                 fits: wanted.Count == 0 ? null : m => FixedFor(m, owner, wanted, conf.Source.Pos));
             if (wanted.Count > 0) methods = methods.Where(m => m.Fixed.Count > 0).ToList();

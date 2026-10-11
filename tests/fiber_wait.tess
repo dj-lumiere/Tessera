@@ -30,7 +30,7 @@ record Sleeper
 record Family
     sched: @FiberManager
     sum: U64
-    children: Array[Fiber[Void], 10]
+    children: Array[Fiber[None], 10]
 
 /// Makes a `PingPong` from its fields.
 /// :param sched: Its `sched`.
@@ -41,11 +41,11 @@ record Family
 /// :returns: The new value.
 routine PingPong.construct(sched: @FiberManager, turn: U32, ping: @FiberState, pong: @FiberState,
     handoffs: U64) -> Me
-    return(Me(sched, turn, ping, pong, handoffs))
+    return Me(sched, turn, ping, pong, handoffs)
 
 /// Releases nothing: a `PingPong` holds no memory of its own.
-routine PingPong.destruct(me: @Me) -> Void
-    return()
+routine PingPong.destruct(me: @Me) -> None
+    return
 
 /// Makes a `Sleepers` from its fields.
 /// :param sched: Its `sched`.
@@ -56,138 +56,111 @@ routine PingPong.destruct(me: @Me) -> Void
 /// :returns: The new value.
 routine Sleepers.construct(sched: @FiberManager, order: Array[U64, 8], next: USize, short: U64,
     base: U64) -> Me
-    return(Me(sched, order, next, short, base))
+    return Me(sched, order, next, short, base)
 
 /// Releases nothing: a `Sleepers` holds no memory of its own.
-routine Sleepers.destruct(me: @Me) -> Void
-    return()
+routine Sleepers.destruct(me: @Me) -> None
+    return
 
 /// Makes a `Sleeper` from its fields.
 /// :param all: Its `all`.
 /// :param id: Its `id`.
 /// :returns: The new value.
 routine Sleeper.construct(all: @Sleepers, id: U64) -> Me
-    return(Me(all, id))
+    return Me(all, id)
 
 /// Releases nothing: a `Sleeper` holds no memory of its own.
-routine Sleeper.destruct(me: @Me) -> Void
-    return()
+routine Sleeper.destruct(me: @Me) -> None
+    return
 
 /// Makes a `Family` from its fields.
 /// :param sched: Its `sched`.
 /// :param sum: Its `sum`.
 /// :param children: Its `children`.
 /// :returns: The new value.
-routine Family.construct(sched: @FiberManager, sum: U64, children: Array[Fiber[Void], 10]) -> Me
-    return(Me(sched, sum, children))
+routine Family.construct(sched: @FiberManager, sum: U64, children: Array[Fiber[None], 10]) -> Me
+    return Me(sched, sum, children)
 
 /// Releases nothing: a `Family` holds no memory of its own.
-routine Family.destruct(me: @Me) -> Void
-    return()
+routine Family.destruct(me: @Me) -> None
+    return
 
 /// One side of the ping-pong: waits for mine, hands the turn to the other, ROUNDS times.
-routine play(game: @PingPong, mine: U32, own: @@FiberState, other: @@FiberState) -> Void
+routine play(game: @PingPong, mine: U32, own: @@FiberState, other: @@FiberState) -> None
     local sched: @FiberManager = game.sched.peek()
 
     own.poke_atomic(sched.current())
-    jump round(0)
 
-    block round(i: U64)
-        done: Bool = i.eq(ROUNDS)
-        branch done
-            ? return()
-            : wait(i)
+    each i in 0 til ROUNDS
+        // park may return without a wake, so the turn is checked again.
+        while game.turn.peek_atomic() != mine
+            sched.park()
+        then
+            // The other side may not have its handle in yet: then it hasn't checked the turn either, and will see it.
+            game.handoffs.atomic_fetch_add(1)
+            game.turn.poke_atomic(mine ^ 1)
+            peer: @FiberState = other.peek_atomic()
+            if peer.is_null()
+                continue
+            else
+                sched.wake(peer)
+                continue
+    then
+        return
 
-    // park may return without a wake, so the turn is checked again.
-    block wait(i: U64)
-        ours: Bool = game.turn.peek_atomic().eq(mine)
-        branch ours
-            ? hand_over(i)
-            : continue
-        sched.park()
-        jump wait(i)
-
-    // The other side may not have its handle in yet: then it hasn't checked the turn either, and will see it.
-    block hand_over(i: U64)
-        game.handoffs.atomic_fetch_add(1)
-        game.turn.poke_atomic(mine.bitxor(1))
-        peer: @FiberState = other.peek_atomic()
-        none: Bool = peer.is_null()
-        branch none
-            ? round(i.add(1))
-            : continue
-        sched.wake(peer)
-        jump round(i.add(1))
-
-routine ping(game: @PingPong) -> Void
+routine ping(game: @PingPong) -> None
     play(game, mine: 0, own: game.ping, other: game.pong)
-    return()
+    return
 
-routine pong(game: @PingPong) -> Void
+routine pong(game: @PingPong) -> None
     play(game, mine: 1, own: game.pong, other: game.ping)
-    return()
+    return
 
 /// Sleeper n sleeps until (8 - n) * 30 ms after the base, so they wake from the last to the first. The times are
 /// far enough apart for a coarse system timer (15.6 ms on Windows by default).
-routine sleeper(s: @Sleeper) -> Void
+routine sleeper(s: @Sleeper) -> None
     local all: @Sleepers = s.all.peek()
 
     id: U64 = s.id.peek()
-    delay: U64 = 8.sub(id).mul(30000000)
-    wake_at: U64 = delay.add(all.base.peek())
-    all.sched.peek().sleep(wake_at.sub_clamp(monotonic_ns()))
-    early: Bool = monotonic_ns().lt(wake_at)
+    delay: U64 = (8 - id) * 30000000
+    wake_at: U64 = delay + all.base.peek()
+    all.sched.peek().sleep(wake_at -^ monotonic_ns())
+    early: Bool = monotonic_ns() < wake_at
     slot: USize = all.next.atomic_fetch_add(1)
     order_slots: @U64 = all.order.to[@U64]()
     order_slots.stride(slot).poke(id)
-    branch early
-        ? short()
-        : return()
-
-    block short()
+    if early
         all.short.atomic_fetch_add(1)
-        return()
+        return
+    else
+        return
 
 /// A child adds its share, sleeping and yielding on the way so the parent waits on children still running.
-routine child(family: @Family) -> Void
+routine child(family: @Family) -> None
     sched: @FiberManager = family.sched.peek()
     sched.sleep(1000000)
     family.sum.atomic_fetch_add(1)
     sched.yield()
     family.sum.atomic_fetch_add(9)
-    return()
+    return
 
-routine parent(family: @Family) -> Void
+routine parent(family: @Family) -> None
     local sched: @FiberManager = family.sched.peek()
-    local kids: @Fiber[Void] = family.children.to[@Fiber[Void]]()
+    local kids: @Fiber[None] = family.children.to[@Fiber[None]]()
 
-    jump spawn(0)
-
-    block spawn(i: USize)
-        done: Bool = i.eq(10)
-        branch done
-            ? join(0)
-            : continue
-        kid: Fiber[Void] = sched.get_fiber[Void]()
+    each i in 0 til 10
+        kid: Fiber[None] = sched.get_fiber[None]()
         kid.put_work(entry: child.to[Callable](), args: family)
         kids.stride(i).poke(kid)
-        jump spawn(i.add(1))
 
-    block join(i: USize)
-        done: Bool = i.eq(10)
-        branch done
-            ? report()
-            : continue
-        kid: Fiber[Void] = kids.stride(i).peek()
+    each i in 0 til 10
+        kid: Fiber[None] = kids.stride(i).peek()
         kid.wait_finished()
         kid.give_back()
-        jump join(i.add(1))
+    Out.write("joined: sum {family.sum.peek_atomic()}\n")
+    return
 
-    block report()
-        Out.write("joined: sum {family.sum.peek_atomic()}\n")
-        return()
-
-routine start() -> Void
+routine start() -> None
     local alloc: @MemoryManager <- make_heap_memory()
     local stacks: @MemoryManager <- make_stack_memory()
     local sched: @FiberManager <- .construct(stack_size: 65536, stacks, alloc)
@@ -195,77 +168,54 @@ routine start() -> Void
     local sleepers: @Sleepers <- .hollow()
     local sleeper_slots: @Array[Sleeper, 8] <- .hollow()
     local sleeper_at: @Sleeper = sleeper_slots.to[@Sleeper]()
-    local sleeper_fibers: @Array[Fiber[Void], 8] <- .hollow()
-    local players: @Array[Fiber[Void], 2] <- .hollow()
+    local sleeper_fibers: @Array[Fiber[None], 8] <- .hollow()
+    local players: @Array[Fiber[None], 2] <- .hollow()
 
     // Outside a fiber, sleep waits the thread.
     before: U64 = monotonic_ns()
     sched.sleep(5000000)
-    elapsed: U64 = monotonic_ns().sub(before)
-    waited: Bool = elapsed.ge(5000000)
+    elapsed: U64 = monotonic_ns() - before
+    waited: Bool = elapsed >= 5000000
     Out.write("thread slept: {waited}\n")
 
-    pinger: Fiber[Void] = sched.get_fiber[Void]()
+    pinger: Fiber[None] = sched.get_fiber[None]()
     pinger.put_work(entry: ping.to[Callable](), args: game)
-    players.setitem(index: 0, value: pinger)
-    ponger: Fiber[Void] = sched.get_fiber[Void]()
+    players[0] = pinger
+    ponger: Fiber[None] = sched.get_fiber[None]()
     ponger.put_work(entry: pong.to[Callable](), args: game)
-    players.setitem(index: 1, value: ponger)
+    players[1] = ponger
 
-    sleepers.poke(Sleepers(sched: sched, order: [0, 0, 0, 0, 0, 0, 0, 0], next: 0, short: 0,
-        base: monotonic_ns()))
-    jump sleepers(0)
+    sleepers.poke(Sleepers(sched: sched, order: [0, 0, 0, 0, 0, 0, 0, 0], next: 0, short: 0, base: monotonic_ns()))
 
-    block sleepers(i: USize)
-        done: Bool = i.eq(8)
-        branch done
-            ? family()
-            : continue
+    each i in 0 til 8
         s: @Sleeper = sleeper_at.stride(i)
         s.poke(Sleeper(all: sleepers, id: i.to[U64]()))
-        f: Fiber[Void] = sched.get_fiber[Void]()
+        f: Fiber[None] = sched.get_fiber[None]()
         f.put_work(entry: sleeper.to[Callable](), args: s)
-        sleeper_fibers.setitem(index: i, value: f)
-        jump sleepers(i.add(1))
+        sleeper_fibers[i] = f
+    local family: @Family <- Family(sched: sched, sum: 0, children: .hollow())
+    elder: Fiber[None] = sched.get_fiber[None]()
+    elder.put_work(entry: parent.to[Callable](), args: family)
+    local alone: @Family <- Family(sched: sched, sum: 0, children: .hollow())
+    lone: Fiber[None] = sched.get_fiber[None]()
+    lone.put_work(entry: child.to[Callable](), args: alone)
+    sched.run()
+    elder.give_back()
+    Out.write("handoffs: {game.handoffs.peek()}\n")
 
-    block family()
-        claim family: @Family <- Family(sched: sched, sum: 0, children: .hollow())
-        elder: Fiber[Void] = sched.get_fiber[Void]()
-        elder.put_work(entry: parent.to[Callable](), args: family)
-        claim alone: @Family <- Family(sched: sched, sum: 0, children: .hollow())
-        lone: Fiber[Void] = sched.get_fiber[Void]()
-        lone.put_work(entry: child.to[Callable](), args: alone)
-        sched.run()
-        elder.give_back()
-        Out.write("handoffs: {game.handoffs.peek()}\n")
-        jump order(lone, 0)
-
-    block order(lone: Fiber[Void], i: USize)
-        done: Bool = i.eq(8)
-        branch done
-            ? lone_done(lone)
-            : continue
+    each i in 0 til 8
         order_slots: @U64 = sleepers.order.to[@U64]()
         Out.write("{order_slots.stride(i).peek()} ")
-        jump order(lone, i.add(1))
-
-    // The lone child finished during run: wait_finished returns at once.
-    block lone_done(lone: Fiber[Void])
+    then
+        // The lone child finished during run: wait_finished returns at once.
         Out.write("\nwoke early: {sleepers.short.peek()}\n")
         lone.wait_finished()
         lone.give_back()
         Out.write("lone joined\n")
-        jump give_back(0)
 
-    block give_back(i: USize)
-        branch i.eq(8)
-            ? players_back()
-            : continue
-        sleeper_fibers.getitem(i).give_back()
-        jump give_back(i.add(1))
-
-    block players_back()
-        players.getitem(0).give_back()
-        players.getitem(1).give_back()
+        each i2 in 0 til 8
+            sleeper_fibers[i2].give_back()
+        players[0].give_back()
+        players[1].give_back()
         sched.destruct()
-        return()
+        return

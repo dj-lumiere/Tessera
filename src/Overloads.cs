@@ -65,7 +65,7 @@ public sealed partial class Compiler
 
     private string? KeyQuiet(TypeRef t, TypeEnv env)
     {
-        try { return ResolveType(t, env, allowVoid: true).Key; }
+        try { return ResolveType(t, env).Key; }
         catch (CompileError) { return null; }
     }
 
@@ -281,7 +281,7 @@ public sealed partial class Compiler
         var generics = r.Fixed.Count > 0 ? r.Fixed.Select(f => f.ToString()) : r.TypeParams;
         if (generics.Any()) sb.Append('[').Append(string.Join(", ", generics)).Append(']');
         sb.Append('(').Append(string.Join(", ", r.Params.Select(p => $"{p.Name}: {p.Type}"))).Append(')');
-        if (r.ReturnType.Name != "Void" || r.ReturnType.Args.Count != 0) sb.Append(" -> ").Append(r.ReturnType);
+        if (r.ReturnType.Name != "None" || r.ReturnType.Args.Count != 0) sb.Append(" -> ").Append(r.ReturnType);
         return sb.ToString();
     }
 }

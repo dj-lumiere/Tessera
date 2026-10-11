@@ -64,7 +64,7 @@ record FiberState
     /// The slot whose work it runs: its own, or a FiberPool job's it was given.
     work: @WorkSlot
     /// Where its manager puts it after it stops.
-    then: Callable[(@FiberManager, @FiberState), Void]
+    then: Callable[(@FiberManager, @FiberState), None]
     /// FIBER_RUNNING, FIBER_NOTIFIED, FIBER_PARKING or FIBER_PARKED.
     wake_state: U32
     /// The number of the timer that wakes it while it waits with a deadline, 0 for none.
@@ -147,13 +147,13 @@ record FiberManager
 /// :returns: The new value.
 @target(os: not "none")
 routine FiberState.construct(sp: Addr, stack: Addr, manager: @FiberManager, slot: WorkSlot,
-    work: @WorkSlot, then: Callable[(@FiberManager, @Me), Void], wake_state: U32, timer: U64,
+    work: @WorkSlot, then: Callable[(@FiberManager, @Me), None], wake_state: U32, timer: U64,
     trace_depth: USize, race: Addr, next_idle: @Me, next_all: @Me) -> Me
     return Me(sp, stack, manager, slot, work, then, wake_state, timer, trace_depth, race, next_idle, next_all)
 
 /// Releases the block of its last work. Its stack is its manager's to give back.
 @target(os: not "none")
-routine FiberState.destruct(me: @Me) -> Void
+routine FiberState.destruct(me: @Me) -> None
     me.slot.destruct()
     return
 
@@ -170,7 +170,7 @@ needs T: typename
 /// :throws: Crashes with `TicketNotGivenBackError` for a ticket that still holds its fiber.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].destruct(me: @Me) -> Void
+routine Fiber[T].destruct(me: @Me) -> None
 needs T: typename
     fiber: @FiberState = me.fiber.peek()
     if fiber.is_null()
@@ -207,7 +207,7 @@ routine FiberManager.construct(stack_size: USize, stacks: @MemoryManager,
 /// Frees every fiber with its stack, and the queues. The fibers whose work never finished are dropped where they
 /// stand.
 @target(os: not "none")
-routine FiberManager.destruct(me: @Me) -> Void
+routine FiberManager.destruct(me: @Me) -> None
     if me.alloc.peek().is_null()
         return
     else
@@ -226,7 +226,7 @@ routine FiberManager.destruct(me: @Me) -> Void
 
 /// Makes the manager on first use, if it is a hollow one (FIBERS starts hollow).
 @target(os: not "none")
-private routine FiberManager.ensure(me: @Me) -> Void
+private routine FiberManager.ensure(me: @Me) -> None
     if me.alloc.peek().is_null()
         // A thread worker releases its FIBERS before it takes the next ticket's work.
         me.poke(FiberManager.construct(stack_size: DEFAULT_FIBER_STACK, stacks: DEFAULT_STACKS, alloc: DEFAULT_HEAP))
@@ -239,7 +239,7 @@ private routine FiberManager.ensure(me: @Me) -> Void
 
 /// Releases this thread's FIBERS: what a thread worker calls once a ticket's work is over.
 @target(os: not "none")
-private routine release_fibers() -> Void
+private routine release_fibers() -> None
     FIBERS.destruct()
     return
 
@@ -294,7 +294,7 @@ routine FiberManager.current(me: @Me) -> @FiberState
 
 /// Inside a fiber: lets the other ready fibers run first, then goes on. Outside one it does nothing.
 @target(os: not "none")
-routine FiberManager.yield(me: @Me) -> Void
+routine FiberManager.yield(me: @Me) -> None
     local fiber: @FiberState = me.current()
 
     if fiber.is_null()
@@ -307,7 +307,7 @@ routine FiberManager.yield(me: @Me) -> Void
 /// Inside a fiber: waits until wake is called with its handle, or returns at once for a wake that came since the
 /// last park. It may also return without one, so a fiber checks what it waits for again. Outside a fiber it returns.
 @target(os: not "none")
-routine FiberManager.park(me: @Me) -> Void
+routine FiberManager.park(me: @Me) -> None
     local fiber: @FiberState = me.current()
 
     if fiber.is_null()
@@ -328,7 +328,7 @@ routine FiberManager.park(me: @Me) -> Void
 /// :param deadline: When the fiber goes on without a wake.
 @target(os: not "none")
 @reshaping
-routine FiberManager.park_until(me: @Me, deadline: U64) -> Void
+routine FiberManager.park_until(me: @Me, deadline: U64) -> None
     local fiber: @FiberState = me.current()
 
     if fiber.is_null()
@@ -346,7 +346,7 @@ routine FiberManager.park_until(me: @Me, deadline: U64) -> Void
 /// :param fiber: The handle of the fiber to wake, from {FiberManager.current}.
 @target(os: not "none")
 @reshaping
-routine FiberManager.wake(me: @Me, fiber: @FiberState) -> Void
+routine FiberManager.wake(me: @Me, fiber: @FiberState) -> None
     while true
         state: U32 = fiber.wake_state.peek_atomic()
         if state == FIBER_PARKED
@@ -369,7 +369,7 @@ routine FiberManager.wake(me: @Me, fiber: @FiberState) -> Void
 /// :param ns: The least time to wait, in nanoseconds.
 @target(os: not "none")
 @reshaping
-routine FiberManager.sleep(me: @Me, ns: U64) -> Void
+routine FiberManager.sleep(me: @Me, ns: U64) -> None
     local deadline: U64 = monotonic_ns() +^ ns
     local fiber: @FiberState = me.current()
 
@@ -385,7 +385,7 @@ routine FiberManager.sleep(me: @Me, ns: U64) -> Void
 /// Runs the fibers until none has work left. The thread that calls it drives the manager from here on.
 @target(os: not "none")
 @reshaping
-routine FiberManager.run(me: @Me) -> Void
+routine FiberManager.run(me: @Me) -> None
     me.ensure()
     me.drive(awaited: null, deadline: U64.MAX, idle_only: false)
     return
@@ -394,7 +394,7 @@ routine FiberManager.run(me: @Me) -> Void
 /// other work between turns. The thread that calls it drives the manager from here on.
 @target(os: not "none")
 @reshaping
-routine FiberManager.run_until_idle(me: @Me) -> Void
+routine FiberManager.run_until_idle(me: @Me) -> None
     me.ensure()
     me.drive(awaited: null, deadline: U64.MAX, idle_only: true)
     return
@@ -411,7 +411,7 @@ routine FiberManager.idle_wait(me: @Me) -> U64
 /// for a thread that drives the manager between other work and sleeps on `word` for both.
 /// :param word: The word, or null for the manager's own.
 @target(os: not "none")
-routine FiberManager.wake_through(me: @Me, word: @U32) -> Void
+routine FiberManager.wake_through(me: @Me, word: @U32) -> None
     me.ensure()
     me.alert.poke(word)
     return
@@ -433,13 +433,13 @@ private routine FiberManager.wake_word(me: @Me) -> @U32
 /// :param work: The call that may block.
 /// :param arg: The state it works on.
 @target(os: not "none")
-routine FiberManager.run_blocking[T](me: @Me, work: Callable[(@T,), Void], arg: @T) -> Void
+routine FiberManager.run_blocking[T](me: @Me, work: Callable[(@T,), None], arg: @T) -> None
 needs T: typename
     if me.current().is_null()
         work.call(arg)
         return
     else
-        t: Thread[Void] = get_thread[Void]()
+        t: Thread[None] = get_thread[None]()
         t.put_work(entry: work, args: arg)
         t.wait_finished()
         t.give_back()
@@ -463,7 +463,7 @@ needs T: typename
 /// :param work: Its block.
 @target(os: not "none")
 @track_caller
-private routine Fiber[T].start(me: Me, runner: Callable[(Addr,), Void], work: Addr) -> Void
+private routine Fiber[T].start(me: Me, runner: Callable[(Addr,), None], work: Addr) -> None
 needs T: typename
     fiber: @FiberState = me.fiber
     manager: @FiberManager = fiber.manager.peek()
@@ -478,7 +478,7 @@ needs T: typename
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].put_work(me: Me, entry: Callable[(), T]) -> Void
+routine Fiber[T].put_work(me: Me, entry: Callable[(), T]) -> None
 needs T: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -493,7 +493,7 @@ needs T: typename
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].put_work[A](me: Me, entry: Callable[(A,), T], args: A) -> Void
+routine Fiber[T].put_work[A](me: Me, entry: Callable[(A,), T], args: A) -> None
 needs T: typename, A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -508,7 +508,7 @@ needs T: typename, A: typename
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].put_work[A, B](me: Me, entry: Callable[(A, B), T], args: (A, B)) -> Void
+routine Fiber[T].put_work[A, B](me: Me, entry: Callable[(A, B), T], args: (A, B)) -> None
 needs T: typename, A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -523,7 +523,7 @@ needs T: typename, A: typename, B: typename
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].put_work[A, B, C](me: Me, entry: Callable[(A, B, C), T], args: (A, B, C)) -> Void
+routine Fiber[T].put_work[A, B, C](me: Me, entry: Callable[(A, B, C), T], args: (A, B, C)) -> None
 needs T: typename, A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -539,7 +539,7 @@ needs T: typename, A: typename, B: typename, C: typename
 @target(os: not "none")
 @track_caller
 routine Fiber[T].put_work[A, B, C, D](me: Me, entry: Callable[(A, B, C, D), T],
-    args: (A, B, C, D)) -> Void
+    args: (A, B, C, D)) -> None
 needs T: typename, A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -553,7 +553,7 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[Void].put_work(me: Me, entry: Callable[(), Void]) -> Void
+routine Fiber[None].put_work(me: Me, entry: Callable[(), None]) -> None
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_voidwork0(entry, alloc: slot.alloc.peek())
@@ -567,7 +567,7 @@ routine Fiber[Void].put_work(me: Me, entry: Callable[(), Void]) -> Void
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[Void].put_work[A](me: Me, entry: Callable[(A,), Void], args: A) -> Void
+routine Fiber[None].put_work[A](me: Me, entry: Callable[(A,), None], args: A) -> None
 needs A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -582,7 +582,7 @@ needs A: typename
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[Void].put_work[A, B](me: Me, entry: Callable[(A, B), Void], args: (A, B)) -> Void
+routine Fiber[None].put_work[A, B](me: Me, entry: Callable[(A, B), None], args: (A, B)) -> None
 needs A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -597,8 +597,8 @@ needs A: typename, B: typename
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[Void].put_work[A, B, C](me: Me, entry: Callable[(A, B, C), Void],
-    args: (A, B, C)) -> Void
+routine Fiber[None].put_work[A, B, C](me: Me, entry: Callable[(A, B, C), None],
+    args: (A, B, C)) -> None
 needs A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -613,8 +613,8 @@ needs A: typename, B: typename, C: typename
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[Void].put_work[A, B, C, D](me: Me, entry: Callable[(A, B, C, D), Void],
-    args: (A, B, C, D)) -> Void
+routine Fiber[None].put_work[A, B, C, D](me: Me, entry: Callable[(A, B, C, D), None],
+    args: (A, B, C, D)) -> None
 needs A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -634,7 +634,7 @@ needs T: typename
 /// manager, the manager runs its fibers until the work is done. On another thread, that thread sleeps.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].wait_finished(me: Me) -> Void
+routine Fiber[T].wait_finished(me: Me) -> None
 needs T: typename
     local slot: @WorkSlot = me.work_slot()
     local fiber: @FiberState = me.fiber
@@ -672,7 +672,7 @@ needs T: typename
 /// :returns: `Unit` when the work has finished, `CancelRequested` when the waiting work was cancelled first.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].wait_finished_result(me: Me) -> Result[Unit, CancelRequested]
+routine Fiber[T].wait_finished_result(me: Me) -> Result[None, CancelRequested]
 needs T: typename
     local slot: @WorkSlot = me.work_slot()
     local fiber: @FiberState = me.fiber
@@ -680,9 +680,9 @@ needs T: typename
 
     if manager.drives_here()
         manager.drive(awaited: slot, deadline: U64.MAX, idle_only: false)
-        return Unit()
+        return None()
     else if slot.wait_until(deadline: U64.MAX, cancellable: true)
-        return Unit()
+        return None()
     else
         return CancelRequested()
 
@@ -706,7 +706,7 @@ needs T: typename
 ///     `CancelledWorkError` when it was cancelled.
 @target(os: not "none")
 @track_caller
-routine Fiber[Void].retrieve(me: Me) -> Void
+routine Fiber[None].retrieve(me: Me) -> None
     slot: @WorkSlot = me.work_slot()
     slot.result_place[Byte]()
     if slot.is_cancelled()
@@ -731,7 +731,7 @@ needs T: typename
 /// Asks the work to stop: `cancel_requested()` turns true inside it, and the work stops where it looks.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].cancel(me: Me) -> Void
+routine Fiber[T].cancel(me: Me) -> None
 needs T: typename
     me.work_slot().request_cancel()
     return
@@ -741,7 +741,7 @@ needs T: typename
 ///     back already.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].give_back(me: Me) -> Void
+routine Fiber[T].give_back(me: Me) -> None
 needs T: typename
     me.work_slot().give_back()
     fiber: @FiberState = me.fiber
@@ -758,7 +758,7 @@ needs T: typename
 /// :throws: Crashes with `TicketBusyError` while the ticket's fiber has work.
 @target(os: not "none")
 @track_caller
-routine Fiber[Void].run_job(me: Me, job: @WorkSlot) -> Void
+routine Fiber[None].run_job(me: Me, job: @WorkSlot) -> None
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
     fiber: @FiberState = me.fiber
@@ -789,7 +789,7 @@ private routine FiberManager.drives_here(me: @Me) -> Bool
 @target(os: not "none")
 @reshaping
 private routine FiberManager.drive(me: @Me, awaited: @WorkSlot, deadline: U64,
-    idle_only: Bool) -> Void
+    idle_only: Bool) -> None
     me.owner.poke_atomic(thread_mark())
 
     while true
@@ -823,7 +823,7 @@ private routine FiberManager.drive(me: @Me, awaited: @WorkSlot, deadline: U64,
 /// stack, after the fiber has switched away from its.
 /// :param fiber: The fiber to run.
 @target(os: not "none")
-private routine FiberManager.resume(me: @Me, fiber: @FiberState) -> Void
+private routine FiberManager.resume(me: @Me, fiber: @FiberState) -> None
     me.current.poke(fiber)
     outer_fiber: Waiter = RUNNING_FIBER.peek()
     outer_work: @WorkSlot = RUNNING_WORK.peek()
@@ -839,7 +839,7 @@ private routine FiberManager.resume(me: @Me, fiber: @FiberState) -> Void
     RUNNING_FIBER.poke(outer_fiber)
     RUNNING_WORK.poke(outer_work)
     me.current.poke(null)
-    then: Callable[(@FiberManager, @FiberState), Void] = fiber.then.peek()
+    then: Callable[(@FiberManager, @FiberState), None] = fiber.then.peek()
     fiber.then.poke(requeue.to[Callable]())
     then.call(me, fiber)
     return
@@ -848,12 +848,12 @@ private routine FiberManager.resume(me: @Me, fiber: @FiberState) -> Void
 /// its slot, marks it finished, and goes back to its manager until the next.
 @noreturn
 @target(os: not "none")
-private routine fiber_start() -> Void
+private routine fiber_start() -> None
     while true
         fiber: @FiberState = current_waiter().fiber.to[@FiberState]()
         manager: @FiberManager = fiber.manager.peek()
         slot: @WorkSlot = fiber.work.peek()
-        runner: Callable[(Addr,), Void] = slot.runner.peek()
+        runner: Callable[(Addr,), None] = slot.runner.peek()
         runner.call(slot.work.peek())
         slot.complete()
         if not slot.ptr_eq(fiber.slot)
@@ -869,7 +869,7 @@ private routine fiber_start() -> Void
 /// :param fiber: The fiber to queue.
 @target(os: not "none")
 @reshaping
-private routine FiberManager.place_ready(me: @Me, fiber: @FiberState) -> Void
+private routine FiberManager.place_ready(me: @Me, fiber: @FiberState) -> None
     if thread_mark().ptr_eq(me.owner.peek_atomic())
         me.ready.add_last(fiber)
         return
@@ -885,7 +885,7 @@ private routine FiberManager.place_ready(me: @Me, fiber: @FiberState) -> Void
 /// Moves the fibers in the inbox to the ready queue.
 @target(os: not "none")
 @reshaping
-private routine FiberManager.take_inbox(me: @Me) -> Void
+private routine FiberManager.take_inbox(me: @Me) -> None
     me.inbox_lock.lock()
 
     until me.inbox.is_empty()
@@ -897,7 +897,7 @@ private routine FiberManager.take_inbox(me: @Me) -> Void
 /// fiber's) wakes nothing.
 @target(os: not "none")
 @reshaping
-private routine FiberManager.fire_timers(me: @Me) -> Void
+private routine FiberManager.fire_timers(me: @Me) -> None
     local now: U64 = monotonic_ns()
 
     until me.timers.is_empty()
@@ -928,7 +928,7 @@ private routine FiberManager.timer_wait(me: @Me) -> U64
 /// :param fiber: The fiber that stopped.
 @target(os: not "none")
 @reshaping(manager)
-private routine requeue(manager: @FiberManager, fiber: @FiberState) -> Void
+private routine requeue(manager: @FiberManager, fiber: @FiberState) -> None
     manager.ready.add_last(fiber)
     return
 
@@ -937,7 +937,7 @@ private routine requeue(manager: @FiberManager, fiber: @FiberState) -> Void
 /// :param fiber: The fiber that stopped.
 @target(os: not "none")
 @reshaping(manager)
-private routine commit_park(manager: @FiberManager, fiber: @FiberState) -> Void
+private routine commit_park(manager: @FiberManager, fiber: @FiberState) -> None
     if compare_exchange(at: fiber.wake_state, expected: FIBER_PARKING, new: FIBER_PARKED)
         return
     fiber.wake_state.poke_atomic(FIBER_RUNNING)
@@ -949,7 +949,7 @@ private routine commit_park(manager: @FiberManager, fiber: @FiberState) -> Void
 /// :param manager: The manager.
 /// :param fiber: The fiber that stopped.
 @target(os: not "none")
-private routine commit_idle(manager: @FiberManager, fiber: @FiberState) -> Void
+private routine commit_idle(manager: @FiberManager, fiber: @FiberState) -> None
     fiber.wake_state.poke_atomic(FIBER_RUNNING)
     return
 
@@ -958,7 +958,7 @@ private routine commit_idle(manager: @FiberManager, fiber: @FiberState) -> Void
 /// :param deadline: When the fiber goes on without a wake, or `U64.MAX`.
 @target(os: not "none")
 @reshaping(manager)
-private routine park_hook(manager: Addr, deadline: U64) -> Void
+private routine park_hook(manager: Addr, deadline: U64) -> None
     local fibers: @FiberManager = manager.to[@FiberManager]()
 
     if deadline == U64.MAX
@@ -973,7 +973,7 @@ private routine park_hook(manager: Addr, deadline: U64) -> Void
 /// :param fiber: The fiber.
 @target(os: not "none")
 @reshaping(manager)
-private routine wake_hook(manager: Addr, fiber: Addr) -> Void
+private routine wake_hook(manager: Addr, fiber: Addr) -> None
     fibers: @FiberManager = manager.to[@FiberManager]()
     fibers.wake(fiber.to[@FiberState]())
     return
@@ -981,7 +981,7 @@ private routine wake_hook(manager: Addr, fiber: Addr) -> Void
 /// A thread outside a fiber waits until deadline.
 /// :param deadline: When to stop waiting, in `monotonic_ns` time.
 @target(os: not "none")
-private routine sleep_thread(deadline: U64) -> Void
+private routine sleep_thread(deadline: U64) -> None
     local never: @U32 <- 0
 
     while true
