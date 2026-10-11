@@ -333,7 +333,7 @@ public static class Derive
                 .Concat(v.Branches.Where(b => !(writes && b.Type.Name is "Ptr" or "Addr")).Select(b => $"{part}[{b.Type}]"))
                 .Distinct().ToList();
         }
-        string self = v.IsAnonymous ? v.Name : SelfName(v.Name, v.TypeParams);
+        string self = SelfName(v.Name, v.TypeParams);
         var sb = new StringBuilder();
         sb.Append($"conform {Qualified(concept)}[{self}]");
         if (constraints.Count > 0) sb.Append($" when {string.Join(", ", constraints)}");

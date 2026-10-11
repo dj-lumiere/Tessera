@@ -16,6 +16,7 @@ public enum TokenKind
     LParen, RParen, LBracket, RBracket, LBrace, RBrace,
     Float,       // 3.14, 1.5e10 — IntValue holds the double's bits
     Comma, Colon, Slash, ColonEq, Eq, Arrow, FatArrow, Question, Dot, Underscore,
+    Pipe,        // | (a variant written inline: A | B)
     LeftArrow,   // <- (the contents of a slot, global, or preset in memory)
     Newline,
     Eof,
@@ -250,6 +251,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                 case '?': kind = TokenKind.Question; break;
                 case '.': kind = TokenKind.Dot; break;
                 case '@': kind = TokenKind.At; break;
+                case '|': kind = TokenKind.Pipe; break;
                 case '/': kind = TokenKind.Slash; break;   // a module path: Standard/Os (a `//` comment is skipped above)
                 case '#': kind = TokenKind.Hash; break;
                 case '_': kind = TokenKind.Underscore; break;

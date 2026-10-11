@@ -757,13 +757,27 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return list;
     }
 
+    /// A type, or a variant written inline: `A | B | C`, the loosest-binding of the type forms (`@A | B` is a pointer
+    /// or a B).
     private TypeRef ParseType()
+    {
+        var first = ParseTypeAtom();
+        if (!Is(TokenKind.Pipe)) return first;
+        var branches = new List<TypeArg> { new TypeArgType(first) };
+        while (Accept(TokenKind.Pipe)) branches.Add(new TypeArgType(ParseTypeAtom()));
+        return new TypeRef(TypeRef.UnionName, branches, first.Pos);
+    }
+
+    private TypeRef ParseTypeAtom()
     {
         // `@T` is `Ptr[T]`.
         if (Is(TokenKind.At))
         {
             var at = Next().Pos;
-            return new TypeRef("Ptr", [new TypeArgType(ParseType())], at);
+            if (Is(TokenKind.LParen) && UnionInParens())
+                throw new CompileError(Cur.Pos,
+                    "a pointer to a variant written inline goes through a name: define Choice = A | B, then @Choice");
+            return new TypeRef("Ptr", [new TypeArgType(ParseTypeAtom())], at);
         }
         if (Is(TokenKind.LParen))
         {
@@ -771,10 +785,26 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             var items = new List<TypeRef>();
             do items.Add(ParseType()); while (Accept(TokenKind.Comma));
             Expect(TokenKind.RParen, "')'");
+            if (items is [{ Name: TypeRef.UnionName, Path: null }])
+                throw new CompileError(pos, "a variant written inline needs no parentheses: A | B is already the loosest type form");
             return TupleType(items, pos);
         }
         var (path, name) = ParseQualifiedName("a type");
         return new TypeRef(name.Text, ParseTypeArgs(callable: name.Text == "Callable" && path is null), name.Pos) { Path = path };
+    }
+
+    /// Whether the parentheses at the cursor hold a `|` at their own level: `@(A | B)`.
+    private bool UnionInParens()
+    {
+        int depth = 0;
+        for (int k = 0; ; k++)
+        {
+            var tok = PeekTok(k);
+            if (tok.Kind is TokenKind.Eof or TokenKind.Newline) return false;
+            if (tok.Kind is TokenKind.LParen or TokenKind.LBracket) depth++;
+            else if (tok.Kind is TokenKind.RParen or TokenKind.RBracket && --depth == 0) return false;
+            else if (tok.Kind == TokenKind.Pipe && depth == 1) return true;
+        }
     }
 
     public const int MinTupleItems = 2, MaxTupleItems = 4;

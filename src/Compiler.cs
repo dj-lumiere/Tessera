@@ -141,6 +141,8 @@ public sealed partial class Compiler
         foreach (var a in _aliases.Values.SelectMany(g => g))
         {
             if (IsModuleAlias(a)) continue;
+            // A variant written inline is checked where it is used.
+            if (a.Target is { Name: TypeRef.UnionName, Path: null }) continue;
             if (TypeDeclQuiet(a.Target.Name, a.File, a.Target.Path) is null)
                 throw new CompileError(a.Target.Pos, $"define {a.Name} = {a.Target}: that's neither a module nor a type");
             var clash = (_records.GetValueOrDefault(a.Name) ?? []).Cast<Decl>()
@@ -750,6 +752,7 @@ public sealed partial class Compiler
             NoArgs();
             return bound;
         }
+        if (t.Path is null && t.Name == TypeRef.UnionName) return ResolveUnion(t, env);
         if (t.Path is not null) t = t with { Path = ExpandPath(t.Path, env.File) };
 
         // The built-in types live in Standard/Core.
@@ -847,7 +850,7 @@ public sealed partial class Compiler
                     _ => throw new CompileError(t.Pos, $"invalid generic argument for '{v.Name}'"),
                 });
             CheckRequirements(v.Clauses, v.TypeParams, v.File, v.Pos, args, t.Pos, $"{v.Name}[{string.Join(", ", args.Select(a => a.Name))}]");
-            return new VariantType(v, args, VariantBranches);
+            return CheckedAt(new VariantType(v, args, VariantBranches), t.Pos);
         }
 
         if (FindChoice(t.Name, env.File, t.Pos, t.Path) is { } e)
@@ -1062,26 +1065,43 @@ public sealed partial class Compiler
     {
         var env = new TypeEnv(v.Decl.File);
         for (int i = 0; i < v.Decl.TypeParams.Count && i < v.Args.Count; i++) env.Bind(v.Decl.TypeParams[i], v.Args[i]);
-        var branches = v.Decl.Branches.Select(b =>
+        bool outermost = _resolvingBranches.Add(v.Key);
+        List<DType> branchesAsDeclared;
+        try
         {
-            var t = b.Type.Known ?? ResolveType(b.Type, env);
-            if (t is VoidType) throw new CompileError(b.Pos, "a variant's branch can't be Void: use Unit for a branch that holds nothing");
-            return t;
-        }).ToList();
+            branchesAsDeclared = v.Decl.Branches.Select(b =>
+            {
+                var t = b.Type.Known ?? ResolveType(b.Type, env);
+                if (t is VoidType) throw new CompileError(b.Pos, "a variant's branch can't be Void: use Unit for a branch that holds nothing");
+                return t;
+            }).ToList();
+        }
+        finally
+        {
+            if (outermost) _resolvingBranches.Remove(v.Key);
+        }
+        var branches = branchesAsDeclared;
         if (Prechecking || !_branchesChecking.Add(v.Key)) return branches;
+        // A branch written inline gives its own branches: they are this variant's too.
+        var leaves = branches.SelectMany(b => b is VariantType { Decl.IsAnonymous: true } inner ? inner.Leaves : [b]).ToList();
+        var pos = branches.Select((b, i) => (b, i))
+            .SelectMany(x => x.b is VariantType { Decl.IsAnonymous: true } inner
+                ? inner.Leaves.Select(_ => v.Decl.Branches[Math.Min(x.i, v.Decl.Branches.Count - 1)].Pos)
+                : [v.Decl.Branches[Math.Min(x.i, v.Decl.Branches.Count - 1)].Pos]).ToList();
+        branches = leaves;
         try
         {
         for (int i = 0; i < branches.Count; i++)
             for (int j = 0; j < i; j++)
             {
                 if (branches[i].Equals(branches[j]))
-                    throw new CompileError(v.Decl.Branches[i].Pos,
+                    throw new CompileError(pos[i],
                         $"{BranchesShown(v, branches)} has two branches of type {branches[i]}, and a value couldn't tell which "
                         + "it is: wrap one of them in a record of its own");
                 foreach (var (outer, inner) in new[] { (branches[i], branches[j]), (branches[j], branches[i]) })
                     if (outer is VariantType nested && !_branchesChecking.Contains(nested.Key)
                         && nested.Branches.Any(n => n.Equals(inner)))
-                        throw new CompileError(v.Decl.Branches[i].Pos,
+                        throw new CompileError(pos[i],
                             $"{BranchesShown(v, branches)} has {inner} as a branch and inside its branch {outer}, and a "
                             + $"value of {inner} couldn't tell which: wrap one of them in a record of its own");
             }
@@ -1090,8 +1110,60 @@ public sealed partial class Compiler
         {
             _branchesChecking.Remove(v.Key);
         }
-        return branches;
+        return branchesAsDeclared;
     }
+
+    /// The most branches a variant written inline may have: the stdlib declares `Union2` to `Union8`.
+    public const int MaxUnionBranches = 8;
+
+    /// `A | B | C`: the stdlib's `UnionN` over the branch types, each once (a branch that is itself written inline gives
+    /// its branches), in the order of their keys, so `A | B` and `B | A` are one type. One type alone is that type.
+    private DType ResolveUnion(TypeRef t, TypeEnv env)
+    {
+        var branches = new List<DType>();
+        foreach (var arg in t.Args)
+        {
+            var b = ResolveType(((TypeArgType)arg).Type, env);
+            foreach (var flat in b is VariantType { Decl.IsAnonymous: true } inner ? inner.Args : [b])
+                if (!branches.Contains(flat)) branches.Add(flat);
+        }
+        branches.Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
+        if (branches.Count == 1) return branches[0];
+        if (branches.Count > MaxUnionBranches)
+            throw new CompileError(t.Pos,
+                $"a variant written inline has at most {MaxUnionBranches} branches, and '{t}' has {branches.Count}: declare a variant");
+        var decl = FindVariant($"Union{branches.Count}", env.File, t.Pos, CoreModule)
+            ?? throw new CompileError(t.Pos, $"the standard library's Union{branches.Count} is missing");
+        return CheckedAt(new VariantType(decl, branches, VariantBranches), t.Pos);
+    }
+
+    /// A variant whose branches are checked now (two of one type, a variant branch holding another branch's type),
+    /// a mistake reported where the type is written rather than at the declaration.
+    private VariantType CheckedAt(VariantType v, Pos at)
+    {
+        if (Prechecking || v.Args.Any(a => a is ArchetypeType) || _resolvingBranches.Count > 0) return v;
+        try
+        {
+            _ = v.Branches;
+        }
+        catch (CompileError e) when (e.Pos.File == v.Decl.File)
+        {
+            throw new CompileError(at, e.Text);
+        }
+        return v;
+    }
+
+    /// The variant written inline over `leaves` (2 to 8 of them), as `A | B` would name it.
+    public VariantType UnionOf(List<DType> leaves, string file, Pos pos)
+    {
+        var sorted = leaves.Distinct().OrderBy(l => l.Key, StringComparer.Ordinal).ToList();
+        var decl = FindVariant($"Union{sorted.Count}", file, pos, CoreModule)
+            ?? throw new CompileError(pos, $"the standard library's Union{sorted.Count} is missing");
+        return new VariantType(decl, sorted, VariantBranches);
+    }
+
+    /// The variants whose branch types are being resolved: a variant met inside one is checked when it is used.
+    private readonly HashSet<string> _resolvingBranches = [];
 
     /// The variants whose branches are being checked, so a variant that holds itself doesn't loop.
     private readonly HashSet<string> _branchesChecking = [];
@@ -1106,7 +1178,7 @@ public sealed partial class Compiler
     {
         DType? aligner = null;
         long size = 0, align = 1;
-        foreach (var p in v.Branches)
+        foreach (var p in v.Leaves)
         {
             var (s, a) = SizeAlign(p, v.Decl.Pos);
             size = Math.Max(size, s);
@@ -1133,7 +1205,7 @@ public sealed partial class Compiler
                 _definingTypes.Add(v.Key);
                 try
                 {
-                    foreach (var p in v.Branches) EnsureTypeDefined(p);
+                    foreach (var p in v.Leaves) EnsureTypeDefined(p);
                 }
                 finally
                 {

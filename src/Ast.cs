@@ -14,9 +14,13 @@ public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
     public DType? Known { get; init; }
 
     public override string ToString() =>
-        Path is null && Name == "Ptr" && Args is [TypeArgType inner] ? $"@{inner}"
+        Path is null && Name == UnionName ? string.Join(" | ", Args)
+        : Path is null && Name == "Ptr" && Args is [TypeArgType inner] ? $"@{inner}"
         : (Path is null ? "" : Path + "/") + (Args.Count == 0 ? Name : $"{Name}[{string.Join(", ", Args)}]");
     public static TypeRef Simple(string name, Pos pos) => new(name, [], pos);
+
+    /// The name of a variant written inline, `A | B`: its arguments are the branches as written.
+    public const string UnionName = "|";
 }
 
 public abstract record TypeArg;
@@ -119,12 +123,13 @@ public sealed record ChoiceDecl(
     Pos Pos) : Decl(File, Annotations, Pos);
 
 /// `variant Cell` and its branches, one type per line: a value of the variant is a value of one of them, which `when`
-/// observes with `is T as t`. A variant written inline, `A | B`, has a declaration the builder makes (`IsAnonymous`).
+/// observes with `is T as t`. A variant written inline, `A | B`, is one of the stdlib's `#union` variants
+/// (`Union2[A, B]`, its branches in the order of their types' names), and is shown as written.
 public sealed record VariantDecl(
     string File, List<Annotation> Annotations, string Name, List<string> TypeParams, List<Clause> Clauses,
     List<VariantBranch> Branches, Pos Pos) : Decl(File, Annotations, Pos)
 {
-    public bool IsAnonymous { get; init; }
+    public bool IsAnonymous => Annotations.Any(a => a.Name == "union");
 }
 
 /// One branch of a variant: the type a value of it may be.

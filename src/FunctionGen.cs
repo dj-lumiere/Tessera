@@ -1104,19 +1104,19 @@ public sealed class FunctionGen
         return UntypedBranch(e, vt);
     }
 
-    /// Whether a value of `actual` goes into the variant `vt` by itself: `actual` is one of its branches, or a variant
-    /// whose branches all are.
+    /// Whether a value of `actual` goes into the variant `vt` by itself: `actual` is one of its leaves (a branch, or a
+    /// branch of a branch written inline), or a variant written inline whose branches all are.
     private static bool Widens(DType actual, DType expected) =>
         expected is VariantType vt && !actual.Equals(vt)
-        && (vt.BranchIndex(actual) >= 0
-            || actual is VariantType sub && sub.Branches.All(b => vt.BranchIndex(b) >= 0));
+        && (vt.LeafIndex(actual) >= 0
+            || actual is VariantType { Decl.IsAnonymous: true } sub && sub.Leaves.All(l => vt.LeafIndex(l) >= 0));
 
-    /// The one branch of `vt` an untyped literal can be (an integer literal and one integer branch, `null` and one
-    /// pointer branch), or null when none or several can.
+    /// The one leaf of `vt` an untyped literal can be (an integer literal and one integer leaf, `null` and one
+    /// pointer leaf), or null when none or several can.
     private DType? UntypedBranch(Expr e, VariantType vt)
     {
         if (e is not (IntLit or FloatLit or NullLit or StrLit)) return null;
-        var fits = vt.Branches.Where(b =>
+        var fits = vt.Leaves.Where(b =>
         {
             bool preferred = true;
             // An integer literal is a number: a choice branch takes one only by its member's name.
@@ -1125,12 +1125,12 @@ public sealed class FunctionGen
         return fits.Count == 1 ? fits[0] : null;
     }
 
-    /// A variant holding `value`, a value of one of its branches (or of a narrower variant): the tag is the branch
-    /// type's ID, and the value is written into the shared storage through a stack slot.
+    /// A variant holding `value`, a value of one of its leaves (or of a variant written inline over some of them): the
+    /// tag is the leaf type's ID, and the value is written into the shared storage through a stack slot.
     private Val WrapInVariant(Val value, VariantType vt)
     {
         _c.EnsureTypeDefined(vt);
-        if (value.Type is VariantType sub && vt.BranchIndex(sub) < 0) return WidenVariant(value, sub, vt);
+        if (value.Type is VariantType { Decl.IsAnonymous: true } sub && vt.LeafIndex(sub) < 0) return WidenVariant(value, sub, vt);
         uint id = VariantType.TypeId(value.Type);
         string tagged = EmitTmp($"insertvalue {vt.Llvm} zeroinitializer, {VariantType.Tag.Llvm} {id}, 0");
         if (_c.VariantStorage(vt).Aligner is null || _c.SizeAlign(value.Type, default).Size == 0) return new Val(tagged, vt);
@@ -1141,44 +1141,59 @@ public sealed class FunctionGen
         return new Val(EmitTmp($"load {vt.Llvm}, ptr {slot}"), vt);
     }
 
-    /// `A | B` into `A | B | C`: the tag is already the branch type's ID, so the tag and the narrower storage are
+    /// `A | B` into `A | B | C`: the tag is already the leaf type's ID, so the tag and the narrower storage are
     /// copied over as they are.
     private Val WidenVariant(Val value, VariantType sub, VariantType vt)
     {
         _c.EnsureTypeDefined(sub);
-        string tag = EmitTmp($"extractvalue {sub.Llvm} {value.Op}, 0");
-        string tagged = EmitTmp($"insertvalue {vt.Llvm} zeroinitializer, {VariantType.Tag.Llvm} {tag}, 0");
-        var (aligner, size, align) = _c.VariantStorage(sub);
-        if (aligner is null) return new Val(tagged, vt);
         string from = NewSlot(sub);
         Line($"store {sub.Llvm} {value.Op}, ptr {from}");
-        string slot = NewSlot(vt);
-        Line($"store {vt.Llvm} {tagged}, ptr {slot}");
-        string words = $"[{(size + align - 1) / align} x i{align * 8}]";
-        string src = EmitTmp($"getelementptr inbounds {sub.Llvm}, ptr {from}, i32 0, i32 2");
-        string dst = EmitTmp($"getelementptr inbounds {vt.Llvm}, ptr {slot}, i32 0, i32 2");
-        string moved = EmitTmp($"load {words}, ptr {src}");
-        Line($"store {words} {moved}, ptr {dst}");
-        return new Val(EmitTmp($"load {vt.Llvm}, ptr {slot}"), vt);
+        return new Val(CopyVariant(sub, from, vt), vt);
     }
 
-    /// One arm pattern of a `when` on a variant: `is S64 as n` binds the value as that branch, `is Unit` doesn't.
-    private (int Index, ValueRef? Binding) VariantPattern(Expr e, VariantType v)
+    /// The variant `to` holding what the variant `from` (in memory at `slot`) holds: the tag, then as many storage
+    /// words as the narrower of the two has. Moving between a variant and one written inline over some of its leaves
+    /// is this copy either way.
+    private string CopyVariant(VariantType from, string slot, VariantType to)
+    {
+        _c.EnsureTypeDefined(to);
+        string tag = EmitTmp($"getelementptr inbounds {from.Llvm}, ptr {slot}, i32 0, i32 0");
+        string id = EmitTmp($"load {VariantType.Tag.Llvm}, ptr {tag}");
+        string tagged = EmitTmp($"insertvalue {to.Llvm} zeroinitializer, {VariantType.Tag.Llvm} {id}, 0");
+        var (fromAligner, fromSize, _) = _c.VariantStorage(from);
+        var (toAligner, toSize, toAlign) = _c.VariantStorage(to);
+        if (fromAligner is null || toAligner is null) return tagged;
+        // The narrower storage, in the words of the target's storage.
+        long size = Math.Min(fromSize, toSize);
+        string words = $"[{(size + toAlign - 1) / toAlign} x i{toAlign * 8}]";
+        string target = NewSlot(to);
+        Line($"store {to.Llvm} {tagged}, ptr {target}");
+        string src = EmitTmp($"getelementptr inbounds {from.Llvm}, ptr {slot}, i32 0, i32 2");
+        string dst = EmitTmp($"getelementptr inbounds {to.Llvm}, ptr {target}, i32 0, i32 2");
+        string moved = EmitTmp($"load {words}, ptr {src}, align 1");
+        Line($"store {words} {moved}, ptr {dst}");
+        return EmitTmp($"load {to.Llvm}, ptr {target}");
+    }
+
+    /// One arm pattern of a `when` on a variant: `is S64 as n` observes one leaf, `is IoError | ParseError as e` (or
+    /// a branch that is a variant written inline) the leaves it has, and names the value as that type.
+    private (List<int> Leaves, ValueRef? Binding, DType Type) VariantPattern(Expr e, VariantType v)
     {
         if (e is not IsPattern p)
             throw Err(e.Pos, $"a when on {v} observes its value as one of its branches: is {v.Branches[0]} as value");
         var type = Resolve(p.Type);
-        int index = v.BranchIndex(type);
-        if (index < 0)
-            throw Err(p.Type.Pos, $"{type} isn't a branch of {v}; its branches are {string.Join(", ", v.Branches)}");
         _c.CaseUses.Add(p.Pos);
-        return (index, p.Binding);
+        int index = v.LeafIndex(type);
+        if (index >= 0) return ([index], p.Binding, type);
+        if (type is VariantType { Decl.IsAnonymous: true } inner && inner.Leaves.All(l => v.LeafIndex(l) >= 0))
+            return (inner.Leaves.Select(v.LeafIndex).ToList(), p.Binding, type);
+        throw Err(p.Type.Pos, $"{type} isn't a branch of {v}; its branches are {string.Join(", ", v.Leaves)}");
     }
 
-    /// A `when` on a variant switches on its tag's branch type ID. An arm that names the value gets its own block,
+    /// A `when` on a variant switches on its tag's leaf type ID. An arm that names the value gets its own block,
     /// which reads the value out of a stack copy and then goes on to the arm's target. `else as rest` names what is
-    /// left: the one branch no arm observes, or else the whole value. A value that holds none of the branches (a
-    /// hollow one, all zero) crashes.
+    /// left: the one leaf no arm observes, the variant written inline over the leaves left (up to 8), or else the whole
+    /// value. A value that holds none of the leaves (a hollow one, all zero) crashes.
     private void EmitVariantWhen(WhenValueTerm sw, Val v, VariantType vt)
     {
         string tag = EmitTmp($"extractvalue {vt.Llvm} {v.Op}, 0");
@@ -1191,7 +1206,6 @@ public sealed class FunctionGen
             Line($"store {vt.Llvm} {v.Op}, ptr {slot}");
         }
 
-        string? defaultLabel = null;
         Target? elseTarget = null;
         var cases = new List<string>();
         var seen = new HashSet<int>();
@@ -1204,40 +1218,34 @@ public sealed class FunctionGen
                 continue;
             }
             if (patterns.Count > 1 && patterns.Any(p => p.Binding is not null))
-                throw Err(target.Pos, "an arm that names the value observes one branch");
+                throw Err(target.Pos, "an arm that names the value observes one type");
             string label = patterns[0].Binding is { } binding
-                ? BindingArm(vt, slot!, vt.Branches[patterns[0].Index], binding, target)
+                ? BindingArm(vt, slot!, patterns[0].Type, binding, target)
                 : ArmLabel(target);
-            foreach (var (index, _) in patterns)
+            foreach (int index in patterns.SelectMany(p => p.Leaves))
             {
-                if (!seen.Add(index)) throw Err(target.Pos, $"two arms observe {vt.Branches[index]}");
-                cases.Add($"i32 {VariantType.TypeId(vt.Branches[index])}, label %{label}");
+                if (!seen.Add(index)) throw Err(target.Pos, $"two arms observe {vt.Leaves[index]}");
+                cases.Add($"i32 {VariantType.TypeId(vt.Leaves[index])}, label %{label}");
             }
         }
-        var missing = vt.Branches.Where((_, i) => !seen.Contains(i)).ToList();
+        var missing = vt.Leaves.Where((_, i) => !seen.Contains(i)).ToList();
         if (elseTarget is not null)
         {
             if (missing.Count == 0) throw Err(elseTarget.Pos, $"every branch of {vt} has its arm, so else never runs");
-            if (sw.ElseBinding is { } rest)
-            {
-                defaultLabel = missing.Count == 1
-                    ? BindingArm(vt, slot!, missing[0], rest, elseTarget)
-                    : WholeValueArm(v, rest, elseTarget);
-                // The branches else takes are listed, so a value holding none of them still crashes below.
-                foreach (var m in missing) cases.Add($"i32 {VariantType.TypeId(m)}, label %{defaultLabel}");
-                defaultLabel = null;
-            }
-            else
-            {
-                string label = ArmLabel(elseTarget);
-                foreach (var m in missing) cases.Add($"i32 {VariantType.TypeId(m)}, label %{label}");
-            }
+            string label = sw.ElseBinding is { } rest
+                ? missing.Count == 1 ? BindingArm(vt, slot!, missing[0], rest, elseTarget)
+                : missing.Count <= Compiler.MaxUnionBranches
+                    ? BindingArm(vt, slot!, _c.UnionOf(missing, _env.File, rest.Pos), rest, elseTarget)
+                    : WholeValueArm(v, rest, elseTarget)
+                : ArmLabel(elseTarget);
+            // The leaves else takes are listed, so a value holding none of them still crashes below.
+            foreach (var m in missing) cases.Add($"i32 {VariantType.TypeId(m)}, label %{label}");
         }
         else if (missing.Count > 0)
             throw Err(sw.Pos, $"when on {vt} doesn't observe {string.Join(", ", missing)}; add an arm for each, or an else arm");
         var saved = _cur;
         _cur = NewLBlock("hollow");
-        defaultLabel = _cur.Label;
+        string defaultLabel = _cur.Label;
         EmitTarget(new ExprTarget(new CallExpr("crash", [], [new StrLit("InvalidValueError", sw.Pos),
             new StrLit($"This {vt} holds none of its branches: it is hollow (all zero), not a value of one of them.", sw.Pos)],
             sw.Pos) { ArgNames = ["name", "message"], Path = "Standard/Core" }, sw.Pos));
@@ -1301,7 +1309,9 @@ public sealed class FunctionGen
         _cur = NewLBlock("case");
         string label = _cur.Label;
         string value;
-        if (_c.VariantStorage(vt).Aligner is null || _c.SizeAlign(branch, default).Size == 0)
+        if (branch is VariantType { Decl.IsAnonymous: true } union && vt.LeafIndex(union) < 0)
+            value = CopyVariant(vt, slot, union);
+        else if (_c.VariantStorage(vt).Aligner is null || _c.SizeAlign(branch, default).Size == 0)
         {
             _c.EnsureTypeDefined(branch);
             value = "zeroinitializer";

@@ -268,11 +268,9 @@ public sealed class VariantType(VariantDecl decl, List<DType> args, Func<Variant
     public VariantDecl Decl { get; } = decl;
     public List<DType> Args { get; } = args;
     public override string Name => Decl.IsAnonymous
-        ? string.Join(" | ", Branches.Select(b => b.Name))
+        ? string.Join(" | ", Args.Select(b => b.Name))
         : Args.Count == 0 ? Decl.Name : $"{Decl.Name}[{string.Join(", ", Args.Select(a => a.Name))}]";
-    public override string Key => Decl.IsAnonymous
-        ? $"({string.Join("|", Branches.Select(b => b.Key))})"
-        : DeclKey(Decl, Decl.Name, Args);
+    public override string Key => DeclKey(Decl, Decl.Name, Args);
     public override string Llvm => $"%\"{Key}\"";
     public override string OwnerName => Decl.Name;
 
@@ -282,8 +280,16 @@ public sealed class VariantType(VariantDecl decl, List<DType> args, Func<Variant
     /// The tag: the branch type's ID in the low 32 bits.
     public static IntType Tag => IntType.U(64);
 
-    /// The position of the branch that is `type`; -1 if `type` isn't one of them.
-    public int BranchIndex(DType type) => Branches.FindIndex(b => b.Equals(type));
+    private List<DType>? _leaves;
+
+    /// The types a value may hold, each with its own tag: the branches, a branch written inline (`A | B`) giving its
+    /// own branches. A variant written inline isn't a layer, so its branches are the outer variant's too, and its
+    /// values move in and out by copying the tag and the storage.
+    public List<DType> Leaves => _leaves ??=
+        Branches.SelectMany(b => b is VariantType { Decl.IsAnonymous: true } inner ? inner.Leaves : [b]).ToList();
+
+    /// The position of the leaf that is `type`; -1 if `type` isn't one of them.
+    public int LeafIndex(DType type) => Leaves.FindIndex(b => b.Equals(type));
 
     /// A type's ID, the tag of a variant value of that type: FNV-1a of the type's key, never 0 (a hollow variant, all
     /// zero, holds none of its branches).
