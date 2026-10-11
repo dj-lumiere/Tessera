@@ -290,110 +290,107 @@ routine Parser.parse_binary(me: @Me, level: S64) -> Result[@Expr, CalcError]
         is @Expr as lhs =>
             while true with lhs2: @Expr = lhs
                 peeked: Result[Token, CalcError] = me.peek()
-                tok: Token = when peeked
-                    is Token as tok => tok
+                when peeked
+                    is Token as tok =>
+                        tok_kind: TokenKind = tok.kind
+                        op: Maybe[ExprKind] = operator_at(kind: tok_kind, level)
+                        done: Result[@Expr, CalcError] = lhs2
+                        kind: ExprKind = when op
+                            is ExprKind as kind => kind
+                            is Unit => return done
+                        me.advance(tok)
+                        rhs: Result[@Expr, CalcError] = me.parse_operand(level)
+                        pos: USize = tok.pos
+                        when rhs
+                            is @Expr as right =>
+                                alloc: @MemoryManager = me.alloc.peek()
+                                node: Expr = Expr(kind: kind, value: 0, lhs: lhs2, rhs: right, pos: pos)
+                                continue with lhs2: new_expr(node, alloc)
+                            is CalcError as error =>
+                                // The left side parsed but what follows didn't: free it before failing.
+                                alloc: @MemoryManager = me.alloc.peek()
+                                free_expr(e: lhs2, alloc)
+                                r: Result[@Expr, CalcError] = error
+                                return r
                     is CalcError as error =>
-                        // The left side parsed but what follows didn't: free it before failing.
                         alloc: @MemoryManager = me.alloc.peek()
                         free_expr(e: lhs2, alloc)
                         r: Result[@Expr, CalcError] = error
                         return r
-                tok_kind: TokenKind = tok.kind
-                op: Maybe[ExprKind] = operator_at(kind: tok_kind, level)
-                done: Result[@Expr, CalcError] = lhs2
-                kind: ExprKind = when op
-                    is ExprKind as kind => kind
-                    is Unit => return done
-                me.advance(tok)
-                rhs: Result[@Expr, CalcError] = me.parse_operand(level)
-                pos: USize = tok.pos
-                right: @Expr = when rhs
-                    is @Expr as right => right
-                    is CalcError as error =>
-                        alloc: @MemoryManager = me.alloc.peek()
-                        free_expr(e: lhs2, alloc)
-                        r: Result[@Expr, CalcError] = error
-                        return r
-                alloc: @MemoryManager = me.alloc.peek()
-                node: Expr = Expr(kind: kind, value: 0, lhs: lhs2, rhs: right, pos: pos)
-                continue with lhs2: new_expr(node, alloc)
         is CalcError => return first
 
 routine Parser.parse_primary(me: @Me) -> Result[@Expr, CalcError]
     peeked: Result[Token, CalcError] = me.peek()
-    tok: Token = when peeked
-        is Token as tok => tok
-        is CalcError as error =>
-            // "(" expr ")"
-            r: Result[@Expr, CalcError] = error
-            return r
-    kind: TokenKind = tok.kind
-    pos: USize = tok.pos
-    when kind
-        TokenKind.NUMBER =>
-            me.advance(tok)
-            alloc: @MemoryManager = me.alloc.peek()
-            value: S64 = tok.value
-            pos2: USize = tok.pos
-            node: Expr = Expr(kind: ExprKind.NUM, value: value, lhs: null, rhs: null, pos: pos2)
-            leaf: @Expr = new_expr(node, alloc)
-            r: Result[@Expr, CalcError] = leaf
-            return r
-        TokenKind.L_PAREN =>
-            me.advance(tok)
-            inner: Result[@Expr, CalcError] = me.parse_binary(0)
-            tree: @Expr = when inner
-                is @Expr as tree => tree
-                is CalcError => return inner
-            peeked2: Result[Token, CalcError] = me.peek()
-            close: Token = when peeked2
-                is Token as close => close
-                is CalcError as error =>
+    when peeked
+        is Token as tok =>
+            kind: TokenKind = tok.kind
+            pos: USize = tok.pos
+            when kind
+                TokenKind.NUMBER =>
+                    me.advance(tok)
+                    alloc: @MemoryManager = me.alloc.peek()
+                    value: S64 = tok.value
+                    pos2: USize = tok.pos
+                    node: Expr = Expr(kind: ExprKind.NUM, value: value, lhs: null, rhs: null, pos: pos2)
+                    leaf: @Expr = new_expr(node, alloc)
+                    r: Result[@Expr, CalcError] = leaf
+                    return r
+                TokenKind.L_PAREN =>
+                    // "(" expr ")"
+                    me.advance(tok)
+                    inner: Result[@Expr, CalcError] = me.parse_binary(0)
+                    tree: @Expr = when inner
+                        is @Expr as tree => tree
+                        is CalcError => return inner
+                    peeked2: Result[Token, CalcError] = me.peek()
+                    error: CalcError = when peeked2
+                        is Token as close =>
+                            kind2: TokenKind = close.kind
+                            closed: Bool = kind2 == TokenKind.R_PAREN
+                            pos2: USize = close.pos
+                            e: CalcError = CalcError(message: "expected ')'", pos: pos2)
+                            if closed
+                                me.advance(close)
+                                r: Result[@Expr, CalcError] = tree
+                                return r
+                            else
+                                becomes e
+                        is CalcError as error => error
                     alloc: @MemoryManager = me.alloc.peek()
                     free_expr(e: tree, alloc)
                     r: Result[@Expr, CalcError] = error
                     return r
-            kind2: TokenKind = close.kind
-            closed: Bool = kind2 == TokenKind.R_PAREN
-            pos2: USize = close.pos
-            e: CalcError = CalcError(message: "expected ')'", pos: pos2)
-            if closed
-                me.advance(close)
-                r: Result[@Expr, CalcError] = tree
-                return r
-            else
-                alloc: @MemoryManager = me.alloc.peek()
-                free_expr(e: tree, alloc)
-                r: Result[@Expr, CalcError] = e
-                return r
-        TokenKind.MINUS =>
-            me.advance(tok)
-            inner: Result[@Expr, CalcError] = me.parse_primary()
-            pos2: USize = tok.pos
-            operand: @Expr = when inner
-                is @Expr as operand => operand
-                is CalcError => return inner
-            alloc: @MemoryManager = me.alloc.peek()
-            node: Expr = Expr(kind: ExprKind.NEG, value: 0, lhs: operand, rhs: null, pos: pos2)
-            tree: @Expr = new_expr(node, alloc)
-            r: Result[@Expr, CalcError] = tree
-            return r
-        TokenKind.END =>
-            message: @Byte = "unexpected end of input"
+                TokenKind.MINUS =>
+                    me.advance(tok)
+                    inner: Result[@Expr, CalcError] = me.parse_primary()
+                    pos2: USize = tok.pos
+                    operand: @Expr = when inner
+                        is @Expr as operand => operand
+                        is CalcError => return inner
+                    alloc: @MemoryManager = me.alloc.peek()
+                    node: Expr = Expr(kind: ExprKind.NEG, value: 0, lhs: operand, rhs: null, pos: pos2)
+                    tree: @Expr = new_expr(node, alloc)
+                    r: Result[@Expr, CalcError] = tree
+                    return r
+                TokenKind.END =>
+                    message: @Byte = "unexpected end of input"
 
-            error: CalcError = CalcError(message: message, pos: pos)
-            r: Result[@Expr, CalcError] = error
-            return r
-        TokenKind.INVALID =>
-            message: @Byte = "unexpected character"
+                    error: CalcError = CalcError(message: message, pos: pos)
+                    r: Result[@Expr, CalcError] = error
+                    return r
+                TokenKind.INVALID =>
+                    message: @Byte = "unexpected character"
 
-            error: CalcError = CalcError(message: message, pos: pos)
-            r: Result[@Expr, CalcError] = error
-            return r
-        else =>
-            message: @Byte = "expected a number or '('"
+                    error: CalcError = CalcError(message: message, pos: pos)
+                    r: Result[@Expr, CalcError] = error
+                    return r
+                else =>
+                    message: @Byte = "expected a number or '('"
 
-            error: CalcError = CalcError(message: message, pos: pos)
+                    error: CalcError = CalcError(message: message, pos: pos)
+                    r: Result[@Expr, CalcError] = error
+                    return r
+        is CalcError as error =>
             r: Result[@Expr, CalcError] = error
             return r
 
@@ -413,23 +410,20 @@ routine parse(source: Span[Byte], alloc: @MemoryManager) -> Result[@Expr, CalcEr
         is CalcError => return parsed
     peeked: Result[Token, CalcError] = parser.peek()
     // a lex error here is still "something after the expression"
-    tok: Token = when peeked
-        is Token as tok => tok
-        is CalcError as error =>
-            free_expr(e: tree, alloc)
-            e: CalcError = CalcError(message: "unexpected input after expression", pos: error.pos)
-            r: Result[@Expr, CalcError] = e
-            return r
-    kind: TokenKind = tok.kind
-    at_end: Bool = kind == TokenKind.END
-    done: Result[@Expr, CalcError] = tree
-    if at_end
-        return done
-    else
-        free_expr(e: tree, alloc)
-        e: CalcError = CalcError(message: "unexpected input after expression", pos: tok.pos)
-        r: Result[@Expr, CalcError] = e
-        return r
+    pos: USize = when peeked
+        is Token as tok =>
+            kind: TokenKind = tok.kind
+            at_end: Bool = kind == TokenKind.END
+            done: Result[@Expr, CalcError] = tree
+            if at_end
+                return done
+            else
+                becomes tok.pos
+        is CalcError as error => error.pos
+    free_expr(e: tree, alloc)
+    e: CalcError = CalcError(message: "unexpected input after expression", pos: pos)
+    r: Result[@Expr, CalcError] = e
+    return r
 
 // ── Evaluator ─────────────────────────────────────────────────────────────────
 
@@ -508,23 +502,20 @@ routine calculate(source: Span[Byte], alloc: @MemoryManager) -> Void
     src: @Byte = source.data
     c_printf("%-34s ", src)
     parsed: Result[@Expr, CalcError] = parse(source, alloc)
-    tree: @Expr = when parsed
-        is @Expr as tree => tree
-        is CalcError as error =>
-            pos: USize = error.pos
-            message: @Byte = error.message
-            c_printf("error at column %zu: %s\n", pos + 1, message)
-            return
-    result: Result[S64, CalcError] = eval(tree)
-    free_expr(e: tree, alloc)
-    value: S64 = when result
-        is S64 as value => value
-        is CalcError as error =>
-            pos: USize = error.pos
-            message: @Byte = error.message
-            c_printf("error at column %zu: %s\n", pos + 1, message)
-            return
-    c_printf("= %lld\n", value)
+    error: CalcError = when parsed
+        is @Expr as tree =>
+            result: Result[S64, CalcError] = eval(tree)
+            free_expr(e: tree, alloc)
+            when result
+                is S64 as value =>
+                    c_printf("= %lld\n", value)
+                    return
+                is CalcError as error =>
+                    becomes error
+        is CalcError as error => error
+    pos: USize = error.pos
+    message: @Byte = error.message
+    c_printf("error at column %zu: %s\n", pos + 1, message)
     return
 
 routine start() -> Void

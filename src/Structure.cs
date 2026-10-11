@@ -216,7 +216,7 @@ public sealed class Structurer
     {
         for (int k = 0; k < stmts.Count - 1; k++)
         {
-            if (stmts[k] is WhenStmt { Value: null } w && w.Arms.Count(a => a.Body.Count == 0) == 1
+            if (stmts[k] is WhenStmt w && w.Arms.Count(a => a.Body.Count == 0) == 1
                 && w.Arms.Where(a => a.Body.Count > 0).All(a => a.Body is [JumpStmt] && Bodies.Leaves(a.Body)))
             {
                 // The same for a `when` with one arm that goes on (`is T as t => continue`): the rest is that arm's,
