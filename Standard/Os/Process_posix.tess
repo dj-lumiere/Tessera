@@ -733,43 +733,52 @@ private routine drain(out: PipeCapture, err: PipeCapture, alloc: @MemoryManager)
     local chunk: @Byte = chunk_buffer.to[@Byte]()
 
     out_open: U32 = (out_fd >= 0).to[U32]()
+    jump wait(out_open + (err_fd >= 0).to[U32]())
 
-    open: U32 = out_open + (err_fd >= 0).to[U32]()
-
-    while open != 0
+    block wait(open: U32)
+        if open == 0
+            return
         if poll_two(fds) < 0
-            if errno() == 4
-                continue
-            else
-                break
+            jump interrupted(open)
         else
-            each i in 0 til 2 with open2: U32 = open
-                p: @PollFd = fds.stride(i)
-                fd: CInt = p.fd.peek()
-                if fd < 0 or p.revents.peek() == 0
-                    continue with open2: open2
-                else
-                    n: SSize = c_read(fd, chunk, 4096)
-                    if n > 0
-                        n2: USize = n.to[USize]()
-                        buffer: @CaptureBuffer = when
-                            i == 0 => out.buffer
-                            else => err.buffer
-                        buffer.append(chunk, n: n2, alloc)
-                        continue with open2: open2
-                    else if n < 0 and errno() == 4
-                        continue with open2: open2
-                    else
-                        c_close(fd)
-                        p.fd.poke(-1)
-                        continue with open2: open2 - 1
-            then
-                continue
-    then
+            jump stream(open, 0)
+
+    block interrupted(open: U32)
+        if errno() == 4
+            jump wait(open)
+        else
+            jump give_up()
+
+    block give_up()
+        close_if_open(fds.fd.peek())
+        close_if_open(fds.stride(1).fd.peek())
         return
-    close_if_open(fds.fd.peek())
-    close_if_open(fds.stride(1).fd.peek())
-    return
+
+    block stream(open: U32, i: USize)
+        if i == 2
+            jump wait(open)
+        p: @PollFd = fds.stride(i)
+        fd: CInt = p.fd.peek()
+        if fd < 0 or p.revents.peek() == 0
+            jump stream(open, i + 1)
+        n: SSize = c_read(fd, chunk, 4096)
+        if n > 0
+            jump keep(open, i, n.to[USize]())
+        if n < 0 and errno() == 4
+            jump stream(open, i + 1)
+        c_close(fd)
+        p.fd.poke(-1)
+        jump stream(open - 1, i + 1)
+
+    block keep(open: U32, i: USize, n: USize)
+        if i == 0
+            jump into(open, i, n, out.buffer)
+        else
+            jump into(open, i, n, err.buffer)
+
+    block into(open: U32, i: USize, n: USize, buffer: @CaptureBuffer)
+        buffer.append(chunk, n, alloc)
+        jump stream(open, i + 1)
 
 /// Waits for the child to end, retrying when a signal interrupts the wait.
 /// :param pid: The child's process id.

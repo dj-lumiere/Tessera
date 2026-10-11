@@ -468,6 +468,29 @@ public sealed class Structurer
 
     private static int UsesOf(List<Stmt> body, string name) => Rewriter.UsesInBody(body).Count(u => u == name);
 
+    /// Whether `name` in `from` is the loop header's parameter of that name, passed along unchanged: `from` is the
+    /// header itself, or has no binding of its own by that name (the routine's value, which no round changes), or
+    /// takes it as a parameter that every jump into `from` from the loop fills with the same name, passed along the
+    /// same way. A block that binds the name in its body passes something else.
+    private bool PassesHeaderValue(string from, string name, string header, HashSet<string> members, HashSet<string> visiting)
+    {
+        if (from == header || !visiting.Add(from)) return true;
+        var block = _blocks[from];
+        if (Rewriter.BoundInBody(block.Stmts).Contains(name)) return false;
+        int slot = block.Params.FindIndex(q => q.Name == name);
+        if (slot < 0) return true;
+        foreach (string m in members)
+        {
+            foreach (var j in Bodies.Jumps(_blocks[m].Stmts))
+            {
+                if (j.Block != from) continue;
+                if (j.Args.Count <= slot || j.Args[slot] is not ValueRef v || v.Name != name) return false;
+                if (!PassesHeaderValue(m, name, header, members, visiting)) return false;
+            }
+        }
+        return true;
+    }
+
     /// An expression a block may read in place of its parameter: a name, a literal, a field, or an operation on
     /// those, with no call that could run at another time.
     private static bool IsPure(Expr e) => e switch
@@ -703,19 +726,44 @@ public sealed class Structurer
     /// aren't values the when chooses, the block reads the names as they are.
     private HashSet<string> PassThrough(string merge, List<List<Stmt>> arms, Rewriter rw, Ctx ctx)
     {
-        var jumps = arms.SelectMany(a => JumpsThrough(a, [])).Where(j => j.Block == merge).ToList();
+        var jumps = arms.SelectMany(a => JumpsThroughBound(a, [.. Rewriter.BoundInBody(a)], [])).Where(x => x.Jump.Block == merge).ToList();
         var block = _blocks[merge];
         var result = new HashSet<string>();
         for (int i = 0; i < block.Params.Count; i++)
         {
             // Passed straight through: every jump passes the value of the parameter's name as it reads here (under
-            // its rename, when the name was bound again), and that value is visible where the block is written.
-            if (rw.Expr(new ValueRef(block.Params[i].Name, block.Pos)) is not ValueRef here || !ctx.Scope.Contains(here.Name))
+            // its rename, when the name was bound again), and that value is visible where the block is written. A
+            // jump from an arm or a block that binds the name itself passes that binding, not the one read here.
+            string name = block.Params[i].Name;
+            if (rw.Expr(new ValueRef(name, block.Pos)) is not ValueRef here || !ctx.Scope.Contains(here.Name))
                 continue;
-            if (jumps.All(j => j.Args.Count > i && j.Args[i] is ValueRef v && v.Name == block.Params[i].Name))
-                result.Add(block.Params[i].Name);
+            if (jumps.All(x => x.Jump.Args.Count > i && x.Jump.Args[i] is ValueRef v && v.Name == name && !x.Bound.Contains(name)))
+                result.Add(name);
         }
         return result;
+    }
+
+    /// The jumps a body makes, as JumpsThrough, each with the names bound where it stands: the body's own, or, for a
+    /// jump inside a block the body alone reaches, that block's parameters and bindings.
+    private IEnumerable<(JumpStmt Jump, HashSet<string> Bound)> JumpsThroughBound(List<Stmt> body, HashSet<string> bound, HashSet<string> seen)
+    {
+        foreach (var j in Bodies.Jumps(body))
+        {
+            yield return (j, bound);
+            if (_blocks.TryGetValue(j.Block, out var block) && _siteCount[j.Block] == 1 && !IsLoopHeader(j.Block) && seen.Add(j.Block))
+            {
+                // A parameter the jump fills with the value of its own name, not bound again on the way, is that
+                // value under the same name, not a new binding.
+                var inner = new HashSet<string>(Rewriter.BoundInBody(block.Stmts));
+                for (int k = 0; k < block.Params.Count; k++)
+                {
+                    string p = block.Params[k].Name;
+                    bool same = k < j.Args.Count && j.Args[k] is ValueRef v && v.Name == p && !bound.Contains(p);
+                    if (!same) inner.Add(p);
+                }
+                foreach (var x in JumpsThroughBound(block.Stmts, inner, seen)) yield return x;
+            }
+        }
     }
 
     /// The loop at `header`, entered with `args` for its parameters: `while true with ...`, its body the header's
@@ -756,11 +804,14 @@ public sealed class Structurer
         var invariant = new HashSet<string>();
         var before = new List<Stmt>();
         var rename = new Dictionary<string, string>();
-        var backEdges = members.SelectMany(m => Bodies.Jumps(_blocks[m].Stmts)).Where(j => j.Block == header.Name).ToList();
+        var backEdges = members.SelectMany(m => Bodies.Jumps(_blocks[m].Stmts).Select(j => (From: m, Jump: j))).Where(x => x.Jump.Block == header.Name).ToList();
         for (int i = 0; i < header.Params.Count; i++)
         {
             var p = header.Params[i];
-            if (!backEdges.All(j => j.Args.Count > i && j.Args[i] is ValueRef v && v.Name == p.Name)) continue;
+            // The name passed back must be the header's own parameter: a block with a parameter or a value of the
+            // same name passes its own (`next(k: USize)` jumping `step(k, ...)` after `step` jumped `next(k - 1)`).
+            if (!backEdges.All(x => x.Jump.Args.Count > i && x.Jump.Args[i] is ValueRef v && v.Name == p.Name &&
+                    PassesHeaderValue(x.From, p.Name, header.Name, members, []))) continue;
             invariant.Add(p.Name);
             if (args[i] is ValueRef same && same.Name == p.Name) continue;
             string name = p.Name;

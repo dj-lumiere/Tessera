@@ -16,80 +16,55 @@ import Standard/Os
 /// :param counts: The count of each word seen so far.
 /// :param word: The word to count.
 /// :throws: Crashes with `MemoryAllocationError` when the dictionary can't grow.
-#reshaping(counts)
-routine tally(counts: @Dict[Span[Byte], USize], word: Span[Byte]) -> Void
-    seen: Bool = counts.has_key(word)
-    branch seen
-        ? bump()
-        : first_time()
-
-    block bump()
-        count: USize = counts.getitem(word)
-        counts.setitem(key: word, value: count.add(1))
-        return()
-
-    block first_time()
-        counts.setitem(key: word, value: 1)
-        return()
+@reshaping(counts)
+routine tally(counts: @Dict[Span[Byte], USize], word: Span[Byte]) -> None
+    if counts.has_key(word)
+        count: USize = counts[word]
+        counts[word] = count + 1
+        return
+    else
+        counts[word] = 1
+        return
 
 /// Splits `text` on single spaces and tallies every word into `counts`. Two spaces in a row count an empty word.
 /// :param text: The text to split.
 /// :param counts: The dictionary the counts are added to.
 /// :throws: Crashes with `MemoryAllocationError` when the dictionary can't grow.
-#reshaping(counts)
-routine count_words(text: Span[Byte], counts: @Dict[Span[Byte], USize]) -> Void
+@reshaping(counts)
+routine count_words(text: Span[Byte], counts: @Dict[Span[Byte], USize]) -> None
     local count: USize = text.count()
     local start: @USize <- 0
 
-    jump scan(0)
-
     /// The current word started at start, and i is the next byte to look at.
-    block scan(i: USize)
-        at_end: Bool = i.ge(count)
-        branch at_end
-            ? last_word()
-            : look(i)
-
-    block look(i: USize)
-        is_space: Bool = text.byte_at(i).eq(b' '.to[U8]())
-        branch is_space
-            ? end_word(i)
-            : scan(i.add(1))
-
-    block end_word(i: USize)
-        tally(counts, word: text.slice(start: start.peek(), end: i))
-        i.add(1).poke_into(start)
-        jump scan(i.add(1))
-
-    block last_word()
-        tally(counts, word: text.slice(start: start.peek(), end: count))
-        return()
+    each i in 0 til count
+        if text.byte_at(i) == b' '.to[U8]()
+            tally(counts, word: text.slice(start: start.peek(), end: i))
+            (i + 1).poke_into(start)
+    tally(counts, word: text.slice(start: start.peek(), end: count))
+    return
 
 /// Writes one line `word: count` for each word in `counts`, in the order the words were first added.
 /// :param out: Where the lines go.
 /// :param counts: The words and their counts.
-routine print_counts(out: @Out, counts: @Dict[Span[Byte], USize]) -> Void
+routine print_counts(out: @Out, counts: @Dict[Span[Byte], USize]) -> None
     local iter: @DictIter[Span[Byte], USize] <- .construct(counts)
 
-    jump next()
-
-    block next()
+    while true
         item: Maybe[KVPair[Span[Byte], USize]] = iter.emit_checked()
-        when item
-            is KVPair[Span[Byte], USize] as entry => continue
-            is Unit => return()
+        entry: KVPair[Span[Byte], USize] = when item
+            is KVPair[Span[Byte], USize] as entry => entry
+            is None => return
         out.write("{entry.key}: {entry.value}\n")
-        jump next()
 
 /// Counts the words of one sentence and prints each word with its count.
-routine start() -> Void
+routine start() -> None
     out: @Out = Out.writer()
-    claim alloc: @MemoryManager <- make_heap_memory()
+    local alloc: @MemoryManager <- make_heap_memory()
 
     text: Span[Byte] = "the cat saw the dog and the dog saw a bird"
 
-    claim counts: @Dict[Span[Byte], USize] <- .construct(alloc)
+    local counts: @Dict[Span[Byte], USize] <- .construct(alloc)
     count_words(text, counts)
     print_counts(out, counts)
-    counts.destruct()
-    return()
+    drop counts
+    return
