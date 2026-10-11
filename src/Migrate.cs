@@ -259,6 +259,8 @@ public static class Migrate
         ["entry"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? EntryMigration.RewriteMarkdown(text)
             : EntryMigration.Rewrite(text),
+        ["structured"] = (file, text, report) => StructuredMigration.Rewrite(file, text, report),
+        ["spellings"] = (_, text, _) => StructuredMigration.Spellings(text),
     };
 
     private static readonly Regex Contains = new(@"\.contains(?=\s*\()", RegexOptions.Compiled);

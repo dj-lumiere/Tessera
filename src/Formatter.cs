@@ -9,21 +9,20 @@ namespace Tessera;
 /// - a doc comment sits directly on its declaration, above any annotation lines;
 /// - a top-level section comment (a group of `//` lines with a `// --`, `// ==`, or `// ──` divider) has a blank line
 ///   before and after it;
-/// - a binding, a claim, a local line, a record field, a choice member and a variant case write their `:` right after
+/// - a binding, a local line, a record field, a choice member and a variant case write their `:` right after
 ///   the name with one space after it (`count: USize = 0`), `=`, `->`, `=>` and `<-` have one space on each side, and
 ///   nothing is aligned with the line above.
-/// - a routine's head, its `local` lines, sits 4 spaces in right under the header (and its `require` lines), with no
+/// - a routine's head, its `local` lines, sits 4 spaces in right under the header (and its `needs` lines), with no
 ///   blank line inside it, and exactly one blank line between it and the first block.
 /// - an inline comment sits exactly two spaces after its code; comments are never aligned with each other.
 /// - a line longer than 100 characters breaks after commas inside its first bracketed list, continuing 4 spaces
 ///   further in (every continuation line sits 4 further in, whatever made the line long); a line with nowhere to break
 ///   (a comment, one long argument) stays as it is;
-/// - a `branch`, and a select that is a binding's or a claim's whole value, always put `? a` and `: b` on their own
-///   lines, 4 spaces further in, so the two outcomes sit one above the other; a select inside an argument stays.
+/// - an annotation list `@[a, b]` is written one annotation per line.
 /// - a pointer type is written `@T`, not `Ptr[T]`, except where routines are declared on or called through the record
 ///   (`routine Ptr[T].peek`); comments and literals are left alone;
-/// - parentheses around one value, which group nothing in a language without operators, are dropped: `(x).add(1)` is
-///   `x.add(1)`. A call's arguments, a tuple type, and `(a, b)` (an error the builder reports) stay.
+/// - parentheses around one value that hold no operator, which group nothing, are dropped: `(x).add(1)` is
+///   `x.add(1)`. Those around an operation (`(a + b) * c`), a call's arguments, a tuple type, and `(a, b)` stay.
 /// - top-level declarations come in one order: module, imports (sorted), defines, globals, presets, types (records,
 ///   choices, variants), concepts, standalone conformances, routines, and the entry
 ///   routines last (`when_booted`, then `start`). Within a kind the written order
@@ -41,7 +40,7 @@ public static class Formatter
         lines = UseSelf(lines);
         lines = JoinContinuations(lines);
         lines = OrderDeclarations(lines);
-        lines = SplitSelects(lines);
+        lines = lines.SelectMany(SplitAnnotationList).ToList();
         lines = lines.Select(DropGroupingParens).ToList();
         lines = HeadLayout(lines);
         lines = Align(lines);
@@ -102,7 +101,7 @@ public static class Formatter
                 if (decl.StartsWith("record ")) context = "record";
                 else if (decl.StartsWith("choice ")) context = "choice";
                 else if (decl.StartsWith("variant ")) context = "variant";
-                else if (!(trimmed.StartsWith("conform ") || trimmed.StartsWith("require ") || trimmed.StartsWith("#")))
+                else if (!(trimmed.StartsWith("obeys ") || trimmed.StartsWith("needs ") || IsAnnotation(trimmed)))
                     context = null;
                 whenIndent = -1;
             }
@@ -169,10 +168,10 @@ public static class Formatter
         return result;
     }
 
-    /// `conform Equatable[Option[T]] when T: typename, Equatable[T]`: the conformance, and its conditions after `when`.
+    /// `obeys Equatable[Option[T]] when T: typename, Equatable[T]`: the conformance, and its conditions after `when`.
     private static (string Head, string Conditions)? SplitConformWhen(string s)
     {
-        if (!s.StartsWith("conform ")) return null;
+        if (!s.StartsWith("obeys ")) return null;
         int when = TopLevelIndex(s, 0, " when ");
         if (when < 0) return null;
         return (s[..when].TrimEnd(), s[(when + 6)..].Trim());
@@ -337,7 +336,32 @@ public static class Formatter
 
     private static bool IsDoc(string line) => line.TrimStart().StartsWith("///");
 
-    private static bool IsAnnotation(string line) => line.TrimStart().StartsWith("#");
+    private static bool IsAnnotation(string line) =>
+        line.TrimStart() is var t && (t.StartsWith("#") || t.StartsWith("@[") || (t.StartsWith("@") && t.Length > 1 && char.IsAsciiLetterLower(t[1])));
+
+    /// `@[a, b]` as one annotation per line.
+    private static IEnumerable<string> SplitAnnotationList(string line)
+    {
+        string t = line.TrimStart();
+        if (!t.StartsWith("@[") || !t.EndsWith("]") || TopLevelComment(t) >= 0) return [line];
+        string indent = line[..(line.Length - t.Length)];
+        var items = new List<string>();
+        int depth = 0, start = 2;
+        for (int i = 2; i < t.Length - 1; i++)
+        {
+            char c = t[i];
+            if (c is '"' or '\'') i = SkipLiteral(t, i);
+            else if (c is '(' or '[') depth++;
+            else if (c is ')' or ']') depth--;
+            else if (c == ',' && depth == 0)
+            {
+                items.Add(t[start..i].Trim());
+                start = i + 1;
+            }
+        }
+        items.Add(t[start..^1].Trim());
+        return items.Select(item => $"{indent}@{item}");
+    }
 
     private static List<string> Space(List<string> lines)
     {
@@ -390,7 +414,7 @@ public static class Formatter
             for (; j < lines.Count; j++)
             {
                 string t = lines[j].TrimStart();
-                if (continued[j] || t.Length == 0 || t.StartsWith("require ") || t.StartsWith("//") || t.StartsWith("#"))
+                if (continued[j] || t.Length == 0 || t.StartsWith("needs ") || t.StartsWith("obeys ") || t.StartsWith("//") || IsAnnotation(t))
                     continue;
                 if (!t.StartsWith("local ")) break;
                 lastShared = j;
@@ -448,8 +472,8 @@ public static class Formatter
         string prev = PreviousCode(lines, continued, i);
         if (IsBlockHeader(line))
             // the first block follows its routine header (and `require` lines) directly
-            return !(Indent(prev) == 0 && (IsRoutineHeader(prev) || prev.StartsWith("require ")));
-        if (line.StartsWith("require ") || line.StartsWith("conform "))
+            return !(Indent(prev) == 0 && (IsRoutineHeader(prev) || prev.StartsWith("needs ")));
+        if (line.StartsWith("needs ") || line.StartsWith("obeys "))
             return false;   // continues the declaration above, even after a multi-line header
         if (Indent(line) == 0)
             // a top-level line after a routine or record body, or a declaration after a body-less routine
@@ -463,7 +487,7 @@ public static class Formatter
 
     private static bool StartsDeclaration(string line) =>
         line.StartsWith("routine ") || line.StartsWith("record ") || line.StartsWith("choice ") ||
-        line.StartsWith("variant ") || line.StartsWith("concept ") || line.StartsWith("//") || line.StartsWith("#");
+        line.StartsWith("variant ") || line.StartsWith("protocol ") || line.StartsWith("//") || IsAnnotation(line);
 
     /// The nearest line before `i` that isn't a comment, annotation, continuation, or blank.
     private static string PreviousCode(List<string> lines, List<bool> continued, int i)
@@ -473,7 +497,7 @@ public static class Formatter
             if (continued[j]) continue;
             string t = lines[j].TrimStart();
             if (t.Length == 0) return "";
-            if (!t.StartsWith("//") && !t.StartsWith("#")) return lines[j];
+            if (!t.StartsWith("//") && !IsAnnotation(t)) return lines[j];
         }
         return "";
     }
@@ -490,7 +514,6 @@ public static class Formatter
     private static IEnumerable<string> Wrap(string line)
     {
         if (line.Length <= MaxWidth || line.TrimStart().StartsWith("//")) return [line];
-        if (SplitBranch(line) is { } arms) return arms.SelectMany(Wrap);
         var list = FirstCommaList(line);
         if (list is not var (open, close, commas)) return [line];
         var items = new List<string>();
@@ -533,71 +556,6 @@ public static class Formatter
         }
         result.Add(current + tail);
         return result;
-    }
-
-    /// A long `branch c ? a(...) : b(...)` puts each target on its own line, 4 spaces further in, rather than breaking
-    /// inside the first target's arguments.
-    private static string[]? SplitBranch(string line)
-    {
-        string trimmed = line.TrimStart();
-        if (!trimmed.StartsWith("branch ") || TopLevelComment(line) >= 0) return null;
-        int question = TopLevelIndex(line, 0, " ? ");
-        if (question < 0) return null;
-        int colon = TopLevelIndex(line, question + 3, " : ");
-        string pad = new(' ', Indent(line) + 4);
-        if (colon < 0)   // the `:` target is already on the next line
-            return [line[..question], pad + "? " + line[(question + 3)..].Trim()];
-        return [line[..question], pad + "? " + line[(question + 3)..colon].Trim(), pad + ": " + line[(colon + 3)..].Trim()];
-    }
-
-    // ── Selects and branches ─────────────────────────────────────────────
-
-    /// Writes every `branch c ? a : b`, and every `x: T = c ? a : b` / `claim p: @T <- c ? a : b`, on three
-    /// lines: the condition, then `? a` and `: b` 4 spaces further in. Arms already on their own lines are joined first,
-    /// so every such statement comes out the same way. The lexer reads a line starting with `?` or `:` as the end of
-    /// the one above, so the meaning doesn't change.
-    private static List<string> SplitSelects(List<string> lines)
-    {
-        var joined = new List<string>();
-        foreach (var line in lines)
-        {
-            string trimmed = line.TrimStart();
-            bool arm = trimmed.StartsWith("? ") || trimmed.StartsWith(": ");
-            if (arm && joined.Count > 0 && joined[^1].Length > 0 && !joined[^1].TrimStart().StartsWith("//"))
-            {
-                // A comment on the line above (where SplitSelect puts one) moves to the end of the joined line.
-                string previous = joined[^1];
-                int comment = TopLevelComment(previous);
-                joined[^1] = comment < 0
-                    ? previous.TrimEnd() + " " + trimmed
-                    : previous[..comment].TrimEnd() + " " + trimmed + "  " + previous[comment..];
-            }
-            else
-                joined.Add(line);
-        }
-        return joined.SelectMany(SplitSelect).ToList();
-    }
-
-    private static string[] SplitSelect(string line)
-    {
-        string trimmed = line.TrimStart();
-        if (trimmed.StartsWith("//")) return [line];
-        int comment = TopLevelComment(line);
-        string code = comment >= 0 ? line[..comment].TrimEnd() : line;
-        string trailing = comment >= 0 ? "  " + line[comment..] : "";
-        int from;
-        if (trimmed.StartsWith("branch ")) from = 0;
-        else if (trimmed.StartsWith("claim ") && TopLevelIndex(code, 0, "<-") is var arrow and >= 0) from = arrow + 2;
-        else if (SplitShared(trimmed) is { } sh)
-            from = sh.Tail.StartsWith("<-") ? TopLevelIndex(code, 0, "<-") + 2 : TopLevelIndex(code, code.IndexOf(':'), "=") + 1;
-        else if (SplitBinding(trimmed) is not null && TopLevelIndex(code, 0, "=") is var eq and >= 0) from = eq + 1;
-        else return [line];
-        int question = TopLevelIndex(code, from, " ? ");
-        if (question < 0) return [line];
-        int colon = TopLevelIndex(code, question + 3, " : ");
-        if (colon < 0) return [line];
-        string pad = new(' ', Indent(line) + 4);
-        return [code[..question] + trailing, pad + "? " + code[(question + 3)..colon].Trim(), pad + ": " + code[(colon + 3)..].Trim()];
     }
 
     /// A continuation line (inside a bracket opened above) breaks after its own top-level commas, keeping its indent.
@@ -653,7 +611,7 @@ public static class Formatter
     /// (`-> (U64, U64)`, `q : (S64, S64) = ...`), skipped whole.
     private static (int Open, int Close, List<int> Commas)? FirstCommaList(string s)
     {
-        bool attribute = s.TrimStart().StartsWith('#');
+        bool attribute = IsAnnotation(s);
         for (int i = 0; i < s.Length; i++)
         {
             char c = s[i];
@@ -785,8 +743,8 @@ public static class Formatter
             "global" => DeclKind.Global,
             "preset" => DeclKind.Preset,
             "record" or "choice" or "variant" => DeclKind.Type,
-            "concept" => DeclKind.Concept,
-            "conform" => DeclKind.Conform,
+            "protocol" => DeclKind.Concept,
+            "obeys" => DeclKind.Conform,
             "routine" => IsEntryHeader(s, "start") || IsEntryHeader(s, "when_booted") ? DeclKind.Entry : DeclKind.Routine,
             _ => null,
         };
@@ -814,7 +772,7 @@ public static class Formatter
         {
             string line = lines[i];
             bool body = current is not null && (line.Length == 0 || line[0] == ' '
-                || ((line.StartsWith("conform ") || line.StartsWith("require ")) && lines[i - 1].Length != 0));
+                || ((line.StartsWith("obeys ") || line.StartsWith("needs ")) && lines[i - 1].Length != 0));
             if (body && pending.Count == 0)
             {
                 current!.Lines.Add(line);
@@ -950,7 +908,8 @@ public static class Formatter
                 bool recordLiteral = System.Text.RegularExpressions.Regex.IsMatch(inner, @"^\s*[A-Za-z_]\w*\s*:(?!:)");
                 // `(x) => x.mul(2)`: a lambda's parameter list, not a group.
                 bool lambda = line[(close + 1)..].TrimStart().StartsWith("=>", StringComparison.Ordinal);
-                if (inner.Trim().Length > 0 && !recordLiteral && !lambda && TopLevelIndex(inner, 0, ",") < 0)
+                // `(a + b) * c`: parentheses around an operation say which binds first.
+                if (inner.Trim().Length > 0 && !recordLiteral && !lambda && TopLevelIndex(inner, 0, ",") < 0 && !HoldsOperator(inner))
                 {
                     sb.Append(DropGroupingParens(inner).Trim());
                     i = close;
@@ -960,6 +919,33 @@ public static class Formatter
             sb.Append(c);
         }
         return sb.ToString();
+    }
+
+    /// Whether an expression's text has an operator at its top level: `a + b`, `x and y`, `not z`, `-n`.
+    private static bool HoldsOperator(string inner)
+    {
+        int depth = 0;
+        string t = inner.Trim();
+        if (t.StartsWith("not ") || t.StartsWith("-") || t.StartsWith("~")) return true;
+        for (int i = 0; i < t.Length; i++)
+        {
+            char c = t[i];
+            if (c is '"' or '\'')
+            {
+                i = SkipLiteral(t, i);
+                continue;
+            }
+            if (c is '(' or '[' or '{') depth++;
+            else if (c is ')' or ']' or '}') depth--;
+            else if (depth == 0 && c == ' ' && i + 1 < t.Length)
+            {
+                int end = t.IndexOf(' ', i + 1);
+                string word = end < 0 ? t[(i + 1)..] : t[(i + 1)..end];
+                if (word is "and" or "or" or "to" or "til" or "by" || (word.Length > 0 && word.All(ch => "+-*/%<>=!&|^~".Contains(ch))))
+                    return true;
+            }
+        }
+        return false;
     }
 
     private static bool OpensExpression(StringBuilder before, bool signature)
@@ -1048,13 +1034,13 @@ public static class Formatter
             string? owner = Owner(result[i]);
             if (owner is null || owner == "Me") continue;
             int end = i + 1;
-            while (end < result.Count && (result[end].Length == 0 || result[end].StartsWith(' ') || result[end].StartsWith("require ")))
+            while (end < result.Count && (result[end].Length == 0 || result[end].StartsWith(' ') || result[end].StartsWith("needs ")))
                 end++;
             // `Me` starts where the owner is declared. A concrete owner is declared by the header (`U64.` in
             // `routine U64.min`); a type parameter by its `require` line (`routine TFrom.bitcast[TTo](me: TFrom)` with
             // `require T: typename`), so its header keeps T. `require` lines always name their types.
-            bool typeParameter = Enumerable.Range(i + 1, end - i - 1).Any(j => result[j].StartsWith("require ")
-                && System.Text.RegularExpressions.Regex.IsMatch(result[j], $@"(^require |,\s*){owner}\s*:"));
+            bool typeParameter = Enumerable.Range(i + 1, end - i - 1).Any(j => result[j].StartsWith("needs ")
+                && System.Text.RegularExpressions.Regex.IsMatch(result[j], $@"(^needs |,\s*){owner}\s*:"));
             // A routine on Ptr<T> meets its owner spelled `@T`.
             string? atOwner = owner.StartsWith("Ptr[", StringComparison.Ordinal) ? "@" + owner[4..^1] : null;
             string Replace(string line) => atOwner is null ? ReplaceType(line, owner) : ReplaceType(ReplaceType(line, owner), atOwner);
@@ -1065,11 +1051,10 @@ public static class Formatter
             }
             for (int j = i + 1; j < end; j++)
             {
-                if (result[j].StartsWith("require ") || (typeParameter && result[j].StartsWith(' ') && j < FirstBodyLine(result, i, end)))
+                if (result[j].StartsWith("needs ") || (typeParameter && result[j].StartsWith(' ') && j < FirstBodyLine(result, i, end)))
                     continue;
-                // `claim p: @T` (and a local slot) spells its pointer type out, so a routine on Ptr[T] keeps it there.
-                if (atOwner is not null && (result[j].TrimStart().StartsWith("claim ", StringComparison.Ordinal)
-                                            || result[j].TrimStart().StartsWith("local ", StringComparison.Ordinal)))
+                // `local p: @T` spells its pointer type out, so a routine on Ptr[T] keeps it there.
+                if (atOwner is not null && result[j].TrimStart().StartsWith("local ", StringComparison.Ordinal))
                     continue;
                 result[j] = Replace(result[j]);
             }

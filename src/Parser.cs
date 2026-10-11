@@ -46,7 +46,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         "jump", "branch", "when", "return", "unreachable", "continue", "else", "block", "claim", "local",
         "true", "false", "null", "routine", "record", "choice", "variant", "preset", "global", "concept", "conform",
         "protocol", "obeys", "needs", "define", "private", "internal", "module", "import", "and", "or", "not", "is", "as",
-        "todo", "if", "for", "while", "until", "becomes", "break",
+        "todo", "if", "each", "while", "until", "becomes", "break", "pass",
     ];
     /// Inside an `@external("asm")` routine: a statement may carry `@asm_prefix`, and an `if` may test a bare
     /// comparison name (`eq`, `lt[U64]`).
@@ -54,7 +54,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     /// The words a statement starts with, besides a binding or a call.
     private static readonly HashSet<string> StatementKeywords =
-        ["jump", "branch", "when", "return", "unreachable", "todo", "if", "for", "while", "until", "continue", "break",
+        ["jump", "branch", "when", "return", "unreachable", "todo", "if", "each", "while", "until", "continue", "break", "pass",
          "becomes", "local", "claim", "else", "then"];
 
     private static readonly HashSet<string> DeclKeywords =
@@ -599,7 +599,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 throw Error($"assembly routine '{display}' has no local values: its blocks pass registers, so each block "
                             + "takes its values as parameters");
             var line = ParseLocal() with { Source = lineSource };
-            ExpectLineEnd();
+            if (line.Value is not WhenExpr) ExpectLineEnd();
             if (_routineValues.Contains(line.Name))
                 throw new CompileError(line.Pos,
                     $"'{line.Name}' is a parameter of routine '{display}', which every block already sees: use the "
@@ -638,7 +638,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (!inHead)
             throw Error($"local makes memory: local {name}: @{type} <- value; a value is bound without it, {name}: {type} = value");
         Next();
-        var value = ParseExpr();
+        var value = ParseValue(pos.Col);
         if (value is AtExpr at)
             throw new CompileError(at.Pos, $"memory from a manager takes its contents with '<-': local {name}: {type} <- ... at manager");
         return new BindStmt(name, type, value, pos);
@@ -1194,7 +1194,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             switch (Cur.Text)
             {
                 case "if": return ParseIf(col);
-                case "for" or "while" or "until": return ParseLoop(col);
+                case "each" or "while" or "until": return ParseLoop(col);
                 case "when": return ParseWhen(col, asValue: false);
                 case "else": throw Error("'else' follows the body of an if or a when arm, at the same column as the if");
                 case "then": throw Error("'then' follows the body of a loop, at the same column as the loop");
@@ -1306,20 +1306,24 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// The condition of an `if`, a `while`, or an `until`: a Bool expression, or in assembly a comparison name.
     private Expr ParseCondition() => _inAsm && AsmCondition() is { } named ? named : ParseExpr();
 
-    /// `for x in source`, `while c`, `until c`, each with `with a: T = init, ...`, a body, and `then` with a body.
+    /// `each x in source`, `while c`, `until c`, each with `with a: T = init, ...`, a body, and `then` with a body.
     private LoopStmt ParseLoop(int col)
     {
         var word = Next();
-        var kind = word.Text switch { "for" => LoopKind.For, "while" => LoopKind.While, _ => LoopKind.Until };
+        var kind = word.Text switch { "each" => LoopKind.For, "while" => LoopKind.While, _ => LoopKind.Until };
         string? variable = null;
         Pos varPos = default;
         Expr? source = null, cond = null;
+        // The carried values are visible in the condition (`while n > 1 with n: U64 = start`): their names are
+        // read off the line before the condition is parsed.
+        var outerValues = _values is null ? null : new HashSet<string>(_values);
+        foreach (string carried in CarriedNamesAhead()) _values?.Add(carried);
         if (kind == LoopKind.For)
         {
-            var name = ValueName("the name each element takes: for x in ...");
+            var name = ValueName("the name each element takes: each x in ...");
             variable = name.Text;
             varPos = name.Pos;
-            if (!IsIdent("in")) throw Error($"expected 'in' after '{variable}': for {variable} in ...");
+            if (!IsIdent("in")) throw Error($"expected 'in' after '{variable}': each {variable} in ...");
             Next();
             source = ParseExpr();
         }
@@ -1338,7 +1342,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             } while (Accept(TokenKind.Comma));
         }
         ExpectLineEnd();
-        var outer = _values is null ? null : new HashSet<string>(_values);
+        var outer = outerValues;
         if (variable is not null) _values?.Add(variable);
         foreach (var c in with) _values?.Add(c.Name);
         _loopDepth++;
@@ -1358,11 +1362,43 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new LoopStmt(kind, cond, with, body, then, word.Pos) { Var = variable, VarPos = varPos, Source = source };
     }
 
+    /// The names after `with` on the current line: `a` and `b` in `while c with a: T = x, b: U = y`.
+    private List<string> CarriedNamesAhead()
+    {
+        var names = new List<string>();
+        int depth = 0;
+        for (int k = 0; ; k++)
+        {
+            var t = PeekTok(k);
+            if (t.Kind is TokenKind.Newline or TokenKind.Eof) return names;
+            if (t.Kind is TokenKind.LParen or TokenKind.LBracket) depth++;
+            else if (t.Kind is TokenKind.RParen or TokenKind.RBracket) depth--;
+            else if (depth == 0 && t is { Kind: TokenKind.Ident, Escaped: false, Text: "with" })
+            {
+                for (int m = k + 1; ; m++)
+                {
+                    if (PeekTok(m).Kind != TokenKind.Ident || PeekTok(m + 1).Kind != TokenKind.Colon) return names;
+                    names.Add(PeekTok(m).Text);
+                    // past `: Type = init` to the next comma at this depth
+                    int d = 0;
+                    for (m += 2; ; m++)
+                    {
+                        var u = PeekTok(m);
+                        if (u.Kind is TokenKind.Newline or TokenKind.Eof) return names;
+                        if (u.Kind is TokenKind.LParen or TokenKind.LBracket) d++;
+                        else if (u.Kind is TokenKind.RParen or TokenKind.RBracket) d--;
+                        else if (u.Kind == TokenKind.Comma && d == 0) break;
+                    }
+                }
+            }
+        }
+    }
+
     /// `when` / `when v` as a statement: its arms are bodies.
     private WhenStmt ParseWhen(int col, bool asValue)
     {
         var pos = Next().Pos;
-        Expr? value = Is(TokenKind.Newline) || Is(TokenKind.Eof) ? null : ParsePostfix();
+        Expr? value = Is(TokenKind.Newline) || Is(TokenKind.Eof) ? null : ParseExpr();
         ExpectLineEnd();
         var arms = new List<WhenArm>();
         ValueRef? elseBinding = null;
@@ -1410,7 +1446,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             else
             {
                 oneLine = true;
-                if (asValue)
+                if (asValue && IsKeyword(Cur) && Cur.Text is "return" or "jump" or "continue" or "break" or "unreachable" or "todo" && !StartsValue())
+                    body = [ParseLeave()];
+                else if (asValue)
                 {
                     var at = Cur.Pos;
                     body = [new BecomesStmt(ParseExpr(), at)];
@@ -1464,7 +1502,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
         if (IsKeyword(Cur) && StatementKeywords.Contains(Cur.Text) && !StartsValue())
         {
-            if (Cur.Text is "if" or "for" or "while" or "until" or "when" or "local" or "claim" or "branch")
+            if (Cur.Text is "if" or "each" or "while" or "until" or "when" or "local" or "claim" or "branch")
                 throw Error($"'{Cur.Text}' opens a body of its own: write it under the arm, on the lines after =>");
             return ParseLeave();
         }
@@ -1535,9 +1573,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 if (!Is(TokenKind.Newline) && !Is(TokenKind.Eof))
                     throw Error("break takes no value: a loop sends a value out through return or a local slot");
                 return new BreakStmt(pos);
+            case "pass":
+                return new PassStmt(pos);
             case "becomes":
                 if (_valueWhenDepth == 0)
                     throw new CompileError(pos, "becomes gives the value of a when arm, and this line isn't in an arm of a when that is a value");
+                if (IsIdent("when") && !StartsValue()) return new BecomesStmt(ParseWhenValue(pos.Col), pos);
                 return new BecomesStmt(ParseExpr(), pos);
             default:
                 throw new CompileError(pos, $"unexpected '{word.Text}'");
@@ -1800,7 +1841,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             {
                 var pos = Next().Pos;
                 var name = Expect(TokenKind.Ident, "a field or method name");
-                var typeArgs = ParseTypeArgsOpt();
+                // `.to[U8]()` takes type arguments, `.limbs[i]` is a field indexed.
+                var typeArgs = Is(TokenKind.LBracket) && PeekTok(AfterTypeArgs(0)).Kind == TokenKind.LParen ? ParseTypeArgsOpt() : [];
                 if (Is(TokenKind.LParen))
                 {
                     var (args, names) = ParseNamedArgs();

@@ -76,6 +76,8 @@ public sealed class FunctionGen
         public LBlock After { get; } = after;
         public string AfterRegion { get; } = afterRegion;
         public bool HasWith { get; } = hasWith;
+        /// Whether a `break` was written: the block after the loop is reached.
+        public bool Breaks { get; set; }
         /// The carried values, in the order of their phis: name, type, and the `with` names a continue must give.
         public List<(string Name, DType Type)> Carried { get; } = [];
         /// Each round's values, by the block that sends them.
@@ -958,6 +960,8 @@ public sealed class FunctionGen
             {
                 var t = Resolve(b.Type);
                 var v = Eval(b.Value, t);
+                // A value every arm of which left (a when whose arms all return) is never bound: nothing runs here.
+                if (_cur.Terminated) break;
                 string op = LocalOp(b.Name);
                 // Name the instruction that produced the value after the binding, so the IR reads like the
                 // source. Literals, parameters and earlier bindings need an explicit copy instead.
@@ -1008,6 +1012,7 @@ public sealed class FunctionGen
             {
                 // Only a tuple comes apart; a record's fields are read by name (FAQ: Why no destructuring?).
                 var v = EvalAny(d.Value);
+                if (_cur.Terminated) break;
                 if (v.Type is not RecordType { IsTuple: true } tuple)
                     throw Err(d.Value.Pos, $"only a tuple can be taken apart, and this is {v.Type}; read its fields by name");
                 if (tuple.Args.Count != d.Names.Count)
@@ -1066,10 +1071,13 @@ public sealed class FunctionGen
             {
                 if (_loops.Count == 0) throw Err(br.Pos, "break leaves a loop, and there is no loop here");
                 var loop = _loops.Peek();
+                loop.Breaks = true;
                 MemEdge(loop.AfterRegion, loop.OuterNames, pos: br.Pos);
                 Terminate($"br label %{loop.After.Label}");
                 break;
             }
+            case PassStmt:
+                break;
             case BecomesStmt bc:
             {
                 if (_valueWhens.Count == 0)
@@ -1342,7 +1350,7 @@ public sealed class FunctionGen
         {
             case WhenExpr: return null;
             case IfExpr ie: return Infer(ie.Then) ?? Infer(ie.Else);
-            case RangeExpr r: throw Err(r.Pos, "a range is walked by a for: for i in a til b");
+            case RangeExpr r: throw Err(r.Pos, "a range is walked by each: each i in a til b");
             case BinaryExpr { Op: "and" or "or" } or UnaryExpr { Op: "not" }: return BoolType.Instance;
             case IntLit or FloatLit or NullLit or StrLit: return null;
             case ArrayLit: return null;
@@ -1473,7 +1481,7 @@ public sealed class FunctionGen
             WhenExpr w => EvalWhenValue(w, expected),
             BinaryExpr { Op: "and" or "or" } l => EvalLogic(l),
             UnaryExpr { Op: "not" } n => EvalNot(n),
-            RangeExpr r => throw Err(r.Pos, "a range is walked by a for: for i in a til b"),
+            RangeExpr r => throw Err(r.Pos, "a range is walked by each: each i in a til b"),
             RecordLit s => EvalRecordLit(s, expected),
             ArrayLit a when argument > 0 && Compiler.IsCoreSpan(expected, out _) => FrameSpan(a, expected),
             ArrayLit a => EvalElementsLit(a, expected),
@@ -3863,6 +3871,7 @@ public sealed class FunctionGen
         }
         if (r.Value is null) throw Err(r.Pos, $"'{_decl.DisplayName}' must return a {_inst.Ret}");
         var v = Eval(r.Value, _inst.Ret);
+        if (_cur.Terminated) return;
         if (_sig.Sret)
         {
             Line($"store {_inst.Ret.Llvm} {v.Op}, ptr %ret.slot");
@@ -3939,7 +3948,7 @@ public sealed class FunctionGen
 
     // ── Loops ───────────────────────────────────────────────────────────────
 
-    /// `for` / `while` / `until`: a header block holds a phi for each carried value (and a `for` range's index), the
+    /// `each` / `while` / `until`: a header block holds a phi for each carried value (and an `each` range's index), the
     /// body runs with them, `continue with` sends the next round's values back to the header, and the loop's end
     /// goes through `then` to the block after it.
     private void EmitLoop(LoopStmt l)
@@ -4000,7 +4009,7 @@ public sealed class FunctionGen
                 iterator = EvalAny(l.Source!);
                 var emit = Infer(new MethodCallExpr(l.Source!, "emit_checked", [], [], l.Source!.Pos));
                 if (emit is not VariantType vt || vt.Leaves.Count != 2 || !vt.Leaves.Any(leaf => leaf is RecordType { Decl.Name: "Unit" }))
-                    throw Err(l.Source!.Pos, $"for walks a range (a til b) or an iterator in memory (one whose emit_checked gives Maybe[T]); this is {iterator.Type}");
+                    throw Err(l.Source!.Pos, $"each walks a range (a til b) or an iterator in memory (one whose emit_checked gives Maybe[T]); this is {iterator.Type}");
                 iteratorMaybe = vt;
                 itemType = vt.Leaves.First(leaf => leaf is not RecordType { Decl.Name: "Unit" });
             }
@@ -4109,10 +4118,13 @@ public sealed class FunctionGen
         if (frame.Range is { } range2) _values.Remove(range2.Name);
         _values.Remove(LiveFlag);
         if (l.Then is not null) EmitBody(l.Then);
+        bool afterReached = frame.Breaks;
         if (!_cur.Terminated)
         {
             MemEdge(afterRegion, outerNames, pos: l.Pos);
             Terminate($"br label %{after.Label}");
+            // A loop on `true` never ends on its own: its then, and what follows it, never run.
+            afterReached |= l.Cond is not BoolLit { Value: true };
         }
 
         // The phis, now that every round's values are known.
@@ -4124,6 +4136,7 @@ public sealed class FunctionGen
         _cur = after;
         EnterRegion(afterRegion);
         _values = outerValues;
+        if (!afterReached) Terminate("unreachable");
     }
 
     /// `iterator.emit_checked()` for a `for` over an iterator in memory, the iterator evaluated once.

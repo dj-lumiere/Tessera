@@ -239,13 +239,13 @@ public sealed record WhenArm(Expr? Cond, List<Expr>? Cases, List<Stmt> Body, Pos
 
 public enum LoopKind { For, While, Until }
 
-/// `for x in source`, `while cond`, `until cond`, each with its carried values (`with a: T = init, ...`), its body,
+/// `each x in source`, `while cond`, `until cond`, each with its carried values (`with a: T = init, ...`), its body,
 /// and the `then` body that runs when the loop ends on its own. The carried values are visible in the body and in
 /// `then`, bound anew on every round by `continue with a: ..., ...`.
 public sealed record LoopStmt(LoopKind Kind, Expr? Cond, List<Carried> With, List<Stmt> Body, List<Stmt>? Then, Pos Pos)
     : Stmt(Pos)
 {
-    /// `for x in source`: the name each element is bound to, and what is walked (a range, or an iterator in memory).
+    /// `each x in source`: the name each element is bound to, and what is walked (a range, or an iterator in memory).
     public string? Var { get; init; }
     public Pos VarPos { get; init; }
     public Expr? Source { get; init; }
@@ -279,6 +279,9 @@ public sealed record BreakStmt(Pos Pos) : Stmt(Pos);
 
 /// `becomes v`: the value of the `when` arm this ends.
 public sealed record BecomesStmt(Expr Value, Pos Pos) : Stmt(Pos);
+
+/// `pass`: a line that does nothing, for an arm or a body that has nothing to do.
+public sealed record PassStmt(Pos Pos) : Stmt(Pos);
 
 // ── Expressions ─────────────────────────────────────────────────────────────
 
@@ -380,7 +383,7 @@ public sealed record UnaryExpr(string Op, Expr Operand, Pos Pos) : Expr(Pos);
 /// `xs[i]`: `xs.getitem(i)`, and as a statement's left side `xs[i] = v` is `xs.setitem(i, v)`.
 public sealed record GetItemExpr(Expr Base, Expr Index, Pos Pos) : Expr(Pos);
 
-/// `a til b`, `a to b`, each optionally `by s`: the integers a loop walks. Only a `for` takes one.
+/// `a til b`, `a to b`, each optionally `by s`: the integers a loop walks. Only an `each` takes one.
 public sealed record RangeExpr(Expr From, Expr To, bool Inclusive, Expr? Step, Pos Pos) : Expr(Pos);
 
 /// `if c then a else b` as a value: only the side taken is evaluated. Written after `return`.
@@ -462,6 +465,12 @@ public static class Bodies
             case ReturnStmt { Value: WhenExpr we }:
                 foreach (var arm in we.When.Arms) yield return arm.Body;
                 break;
+            case BecomesStmt { Value: WhenExpr we }:
+                foreach (var arm in we.When.Arms) yield return arm.Body;
+                break;
+            case DestructureStmt { Value: WhenExpr we }:
+                foreach (var arm in we.When.Arms) yield return arm.Body;
+                break;
         }
     }
 
@@ -511,9 +520,30 @@ public static class Bodies
             IfStmt i => i.Else is not null && Leaves(i.Then) && Leaves(i.Else),
             // Whether the arms cover every case, the build checks.
             WhenStmt w => w.Arms.All(a => Leaves(a.Body)),
-            LoopStmt { Kind: LoopKind.While, Cond: BoolLit { Value: true } } l => !All(l.Body).OfType<BreakStmt>().Any(),
+            LoopStmt { Kind: LoopKind.While, Cond: BoolLit { Value: true } } l => !BreaksOut(l.Body),
             LoopStmt { Then: { } then } l => Leaves(then),
             _ => false,
         };
+    }
+
+    /// Whether a loop's body breaks out of it somewhere: a `break` in it, outside the loops nested in it (a `break` in
+    /// a nested loop's `then` is this loop's, since `then` runs after the nested loop, as the body's own line).
+    public static bool BreaksOut(IEnumerable<Stmt> body)
+    {
+        foreach (var s in body)
+        {
+            switch (s)
+            {
+                case BreakStmt: return true;
+                case LoopStmt l:
+                    if (l.Then is not null && BreaksOut(l.Then)) return true;
+                    break;
+                default:
+                    foreach (var inner in Inner(s))
+                        if (BreaksOut(inner)) return true;
+                    break;
+            }
+        }
+        return false;
     }
 }
