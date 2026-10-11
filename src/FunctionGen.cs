@@ -49,9 +49,52 @@ public sealed class FunctionGen
     /// The source of the write-template hole being expanded (`sum` for `{sum}`), so an error about it can quote it.
     private string? _templateHole;
     private LBlock _cur = null!;
+
+    /// The block of the routine being emitted (`entry`, or a named block): the scope IR names and the lints speak of.
     private string _blockName = "";
+
+    /// The region the memory check follows: the block, or a body inside it (an if's arm, a loop's body), each with
+    /// its own list of events, joined by Exit events the way blocks are by jumps.
+    private string _region = "";
+    private int _regions;
+
+    /// The IR names given out in this routine: a name bound in two bodies gets a suffix the second time.
+    private readonly HashSet<string> _opNames = [];
     private int _tmp;
     private int _labels;
+
+    /// The loops being emitted, innermost last: where `continue` and `break` go.
+    private readonly Stack<LoopFrame> _loops = new();
+
+    /// The `when`s that are values being emitted, innermost last: where `becomes` goes.
+    private readonly Stack<ValueFrame> _valueWhens = new();
+
+    private sealed class LoopFrame(LBlock header, string headerRegion, LBlock after, string afterRegion, bool hasWith)
+    {
+        public LBlock Header { get; } = header;
+        public string HeaderRegion { get; } = headerRegion;
+        public LBlock After { get; } = after;
+        public string AfterRegion { get; } = afterRegion;
+        public bool HasWith { get; } = hasWith;
+        /// The carried values, in the order of their phis: name, type, and the `with` names a continue must give.
+        public List<(string Name, DType Type)> Carried { get; } = [];
+        /// Each round's values, by the block that sends them.
+        public List<(string Pred, List<string> Ops)> Incoming { get; } = [];
+        /// A `for` over a range: the index, its type, the bound, the step, and whether the bound is included.
+        public (string Name, IntType Type, Val To, Val Step, bool Inclusive, bool Descending)? Range { get; set; }
+        /// The names visible in the header: the loop's outer scope and its carried values.
+        public HashSet<string> HeaderNames { get; } = [];
+        public HashSet<string> OuterNames { get; } = [];
+    }
+
+    private sealed class ValueFrame(LBlock join, string joinRegion, DType type, HashSet<string> outerNames)
+    {
+        public LBlock Join { get; } = join;
+        public string JoinRegion { get; } = joinRegion;
+        public DType Type { get; } = type;
+        public HashSet<string> OuterNames { get; } = outerNames;
+        public List<(string Pred, string Op)> Incoming { get; } = [];
+    }
 
     // Debug information (Compiler.DebugInfo): the routine's DISubprogram, the current block's DILexicalBlock, the
     // location the next operation gets, and each block's records for its parameters, written after its phis.
@@ -96,7 +139,7 @@ public sealed class FunctionGen
     private void Mem(MemoryRules.Event e)
     {
         if (!MemOn) return;
-        (_memEvents.TryGetValue(_blockName, out var list) ? list : _memEvents[_blockName] = []).Add(e);
+        (_memEvents.TryGetValue(_region, out var list) ? list : _memEvents[_region] = []).Add(e);
     }
 
     /// The tracked handle an expression names, or null: a handle, or what a tracked slot holds (`slot.peek()`).
@@ -149,7 +192,7 @@ public sealed class FunctionGen
 
     /// A return: the value returned takes its handle's group along (a record or tuple literal's handles too), and every
     /// other group must have ended. The events go in after the value is evaluated, so its own calls come first.
-    private void MemReturn(ReturnTarget r)
+    private void MemReturn(ReturnStmt r)
     {
         if (MemOn) CheckReturnEscape(r);
         _memReturnPos = r.Pos;
@@ -322,7 +365,7 @@ public sealed class FunctionGen
     }
 
     /// A return that takes a view of this routine's memory out of it.
-    private void CheckReturnEscape(ReturnTarget r)
+    private void CheckReturnEscape(ReturnStmt r)
     {
         if (r.Value is { } value && FrameView(value) is { } sees)
             throw Err(value.Pos, $"this returns a view of {sees}, which is gone once '{_decl.DisplayName}' returns: return the "
@@ -356,9 +399,6 @@ public sealed class FunctionGen
         MethodCallExpr { Name: "getslot" or "stride" } m => IsOwnFrameValue(m.Receiver),
         _ => false,
     };
-
-    /// The memory the continuing arm of a guard's `when` takes out of the variant, for the lines after it.
-    private readonly List<MemoryRules.Acquire> _memContinued = [];
 
     /// Where the return being emitted is written, and the value it returns.
     private Pos? _memReturnPos;
@@ -767,6 +807,7 @@ public sealed class FunctionGen
         _lblocks.Add(_head);
         _cur = _head;
         _blockName = "";
+        _region = "";
         _values = new Dictionary<string, Val>(_routineParams);
         if (Debug) (_scope, _scopeFile) = (_sp, _spFile);
         foreach (var s in _decl.Shared) EmitStmt(s);
@@ -786,6 +827,7 @@ public sealed class FunctionGen
     private void EmitBlockCore(BlockDecl b)
     {
         _blockName = b.Name;
+        _region = b.Name;
         _cur = new LBlock($"b.{b.Name}");
         _lblocks.Add(_cur);
         if (Debug)
@@ -814,8 +856,52 @@ public sealed class FunctionGen
                     .AddRange(ValueRecords(b.Params[i].Name, ParamOp(b.Name, b.Params[i].Name), types[i], b.Source ?? b.Params[i].Pos));
         }
 
-        foreach (var s in b.Stmts) EmitStmt(s);
-        EmitTerminator(b.Terminator);
+        EmitLines(b.Stmts);
+        if (!_cur.Terminated)
+            throw Err(b.Pos, b.Name == "entry"
+                ? $"the lines of routine '{_decl.DisplayName}' can run off their end: end them with return (or a jump, or a call that never returns)"
+                : $"block '{b.Name}' can run off its end: end it with return, a jump, or a call that never returns");
+    }
+
+    /// The lines of a body, one after another. A line after one that left the body can't run, and says so.
+    private void EmitLines(List<Stmt> body)
+    {
+        foreach (var s in body)
+        {
+            if (_cur.Terminated)
+                throw Err(s.Pos, "this line can't run: every path through the line before it leaves (returns, jumps, breaks, continues, or never comes back)");
+            EmitStmt(s);
+        }
+    }
+
+    /// A body as a region of its own: what it binds isn't visible after it.
+    private void EmitBody(List<Stmt> body)
+    {
+        var saved = _values;
+        _values = new Dictionary<string, Val>(_values);
+        EmitLines(body);
+        _values = saved;
+    }
+
+    /// A new region for the memory check, entered from the current one: the current region's events get the edge,
+    /// with the names the new region sees, and the events after this go to the new region.
+    private string NewRegion(string kind)
+    {
+        return $"{_blockName}.{kind}{_regions++}";
+    }
+
+    /// The edge from the current region to `region`: the handles it sees are `visible` (every tracked name the
+    /// current scope has, when null), plus `passed` under new names (a loop's carried values).
+    private void MemEdge(string region, IEnumerable<string>? visible = null, List<(string Param, string Arg)>? passed = null, Pos pos = default)
+    {
+        if (!MemOn) return;
+        var names = (visible ?? _values.Keys).Where(_memTracked.Contains).ToHashSet();
+        Mem(new MemoryRules.Exit(region, false, passed ?? [], pos) { Visible = names, Region = true });
+    }
+
+    private void EnterRegion(string region)
+    {
+        _region = region;
     }
 
     private void Define(string name, Val v, Pos pos)
@@ -841,18 +927,18 @@ public sealed class FunctionGen
             : $"the local value in the head of routine '{_decl.DisplayName}'"
               + (_decl.Shared.FirstOrDefault(s => s.Name == name) is { } shared ? $" (line {shared.Pos.Line})" : "");
 
-    private string LocalOp(string name) => InHead ? $"%h.{IrName(name)}" : $"%v.{_blockName}.{IrName(name)}";
+    private string LocalOp(string name)
+    {
+        string op = InHead ? $"%h.{IrName(name)}" : $"%v.{_blockName}.{IrName(name)}";
+        if (_opNames.Add(op)) return op;
+        for (int i = 2; ; i++)
+            if (_opNames.Add($"{op}.{i}")) return $"{op}.{i}";
+    }
 
     /// A value's name in IR: the name as written. A `#` inside a name, which LLVM names can't hold, becomes `$`.
     private static string IrName(string name) => name;
 
-    /// Where a `continue` arm goes: the LLVM block that holds the lines after the guard.
-    private string? _continueLabel;
-
-    /// While a guard's `when` is emitted: the payload its continuing arm binds, read in that arm's own block, by name.
-    private Dictionary<string, (Val Value, Pos Pos)>? _continuedPayloads;
-
-    /// The payload names a guard's arms bound that the lines after it don't see, with the reason, said when one is
+    /// The payload names a `when`'s arms bound that the lines after it don't see, with the reason, said when one is
     /// used.
     private readonly Dictionary<string, string> _hiddenPayloads = [];
 
@@ -868,29 +954,6 @@ public sealed class FunctionGen
         At(s.Source ?? s.Pos);
         switch (s)
         {
-            case GuardStmt g:
-            {
-                var next = NewLBlock("cont");
-                string? outer = _continueLabel;
-                var outerPayloads = _continuedPayloads;
-                Dictionary<string, (Val Value, Pos Pos)> continued = [];
-                _continueLabel = next.Label;
-                _continuedPayloads = continued;
-                try
-                {
-                    EmitTerminator(g.Term);
-                }
-                finally
-                {
-                    _continueLabel = outer;
-                    _continuedPayloads = outerPayloads;
-                }
-                _cur = next;
-                KeepContinuedPayload(g.Term, continued);
-                foreach (var acquire in _memContinued) Mem(acquire);
-                _memContinued.Clear();
-                break;
-            }
             case BindStmt b:
             {
                 var t = Resolve(b.Type);
@@ -962,9 +1025,61 @@ public sealed class FunctionGen
             }
             case ExprStmt e:
             {
+                // A call that never returns (`crash(...)`) ends the body here.
                 if (IsNoReturn(e.Value))
-                    throw Err(e.Pos, "this call never returns, so it must be the last line of the block");
+                {
+                    EmitNoReturnCall(e.Value, e.Pos);
+                    Mem(new MemoryRules.Exit(null, false, [], e.Pos));
+                    break;
+                }
                 EvalAny(e.Value);
+                break;
+            }
+            case IfStmt i:
+                EmitIf(i);
+                break;
+            case WhenStmt w:
+                EmitWhen(w, null);
+                break;
+            case LoopStmt l:
+                EmitLoop(l);
+                break;
+            case ReturnStmt r:
+                EmitReturn(r);
+                break;
+            case JumpStmt j:
+                EmitJump(j);
+                break;
+            case UnreachableStmt u:
+                Mem(new MemoryRules.Exit(null, false, [], u.Pos));
+                Terminate("unreachable");
+                break;
+            case TodoStmt t:
+                EvalAny(t.Crash);
+                Mem(new MemoryRules.Exit(null, false, [], t.Pos));
+                Terminate("unreachable");
+                break;
+            case ContinueStmt c:
+                EmitContinue(c);
+                break;
+            case BreakStmt br:
+            {
+                if (_loops.Count == 0) throw Err(br.Pos, "break leaves a loop, and there is no loop here");
+                var loop = _loops.Peek();
+                MemEdge(loop.AfterRegion, loop.OuterNames, pos: br.Pos);
+                Terminate($"br label %{loop.After.Label}");
+                break;
+            }
+            case BecomesStmt bc:
+            {
+                if (_valueWhens.Count == 0)
+                    throw Err(bc.Pos, "becomes gives the value of a when arm, and this line isn't in an arm of a when that is a value");
+                var frame = _valueWhens.Peek();
+                var v = Eval(bc.Value, frame.Type);
+                MemTakeAlong(bc.Value, "the when's value");
+                frame.Incoming.Add((_cur.Label, v.Op));
+                MemEdge(frame.JoinRegion, frame.OuterNames, pos: bc.Pos);
+                Terminate($"br label %{frame.Join.Label}");
                 break;
             }
             default:
@@ -1177,8 +1292,9 @@ public sealed class FunctionGen
         InHead
             ? $"'{name}' is not visible in the head of routine '{_decl.DisplayName}': a local line sees the routine's "
               + "parameters, presets and globals, and the local lines above it"
-            : $"'{name}' is not visible in block '{_blockName}'; values from other blocks must be passed as block "
-              + "arguments or local in the routine head" + (fromNextLine ? ", and a binding is visible from the line after it" : "");
+            : $"'{name}' is not visible here: a name is visible from the line after its binding to the end of the body "
+              + "(an if, a loop, a when arm) it is bound in, and a block's values only in that block"
+              + (fromNextLine ? "" : "");
 
     /// `b.poke(20)` where `b` names no type, preset, global, or routine: a value that isn't there.
     private void UnknownReceiver(TypeRef owner)
@@ -1191,13 +1307,14 @@ public sealed class FunctionGen
         throw Err(owner.Pos, $"'{owner.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
     }
 
-    /// Whether some block of this routine binds `name`: a parameter, a block parameter, or a binding.
+    /// Whether some body of this routine binds `name`: a parameter, a block parameter, a carried value, or a binding.
     private bool BoundInRoutine(string name) =>
         _decl.Params.Any(p => p.Name == name) || _decl.Shared.Any(s => s.Name == name)
-        || _decl.Blocks!.Any(b => b.Params.Any(p => p.Name == name) || b.Stmts.Any(s => s switch
+        || _decl.Blocks!.Any(b => b.Params.Any(p => p.Name == name) || Bodies.All(b.Stmts).Any(s => s switch
         {
             BindStmt bind => bind.Name == name,
             DestructureStmt d => d.Names.Any(n => n.Name == name),
+            LoopStmt l => l.Var == name || l.With.Any(c => c.Name == name),
             _ => false,
         }));
 
@@ -1220,9 +1337,13 @@ public sealed class FunctionGen
     /// The type an expression has on its own, or null if it depends on context (untyped literals, null).
     private DType? Infer(Expr e)
     {
-        e = AsStride(AsField(_c.AsRecordLit(e, _env)));
+        e = AsStride(AsField(_c.AsRecordLit(Desugar(e), _env)));
         switch (e)
         {
+            case WhenExpr: return null;
+            case IfExpr ie: return Infer(ie.Then) ?? Infer(ie.Else);
+            case RangeExpr r: throw Err(r.Pos, "a range is walked by a for: for i in a til b");
+            case BinaryExpr { Op: "and" or "or" } or UnaryExpr { Op: "not" }: return BoolType.Instance;
             case IntLit or FloatLit or NullLit or StrLit: return null;
             case ArrayLit: return null;
             case AtExpr: return null;
@@ -1231,7 +1352,6 @@ public sealed class FunctionGen
             case TypedIntLit t: return t.Type;
             case ValueRef r: return Lookup(r).Type;
             case RecordLit sl: return sl.Type is null ? null : Resolve(sl.Type);
-            case SelectExpr se: return Infer(se.IfTrue) ?? Infer(se.IfFalse);
             case FieldExpr or IndexExpr when IsPlaceChain(e):
                 return PlaceType(e) is { } pt ? new PtrType(pt) : null;
             case FieldExpr f:
@@ -1326,7 +1446,7 @@ public sealed class FunctionGen
     /// one, so a type mismatch names it the way overload resolution does.
     private Val Eval(Expr e, DType expected, int argument = 0)
     {
-        e = AsStride(AsField(_c.AsRecordLit(e, _env)));
+        e = AsStride(AsField(_c.AsRecordLit(Desugar(e), _env)));
         // A value of a branch type is a value of the variant (one level), and so is a narrower variant's.
         if (expected is VariantType vt && WidenSource(e, vt) is { } branch)
             return WrapInVariant(Eval(e, branch, argument), vt, e.Pos);
@@ -1349,7 +1469,11 @@ public sealed class FunctionGen
             ClaimExpr c => EvalClaim(c, expected),
             FieldExpr or IndexExpr when IsPlaceChain(e) => PlaceAsValue(e),
             FieldExpr f => ExtractField(f),
-            SelectExpr s => EvalSelect(s, expected),
+            IfExpr s => EvalIf(s, expected),
+            WhenExpr w => EvalWhenValue(w, expected),
+            BinaryExpr { Op: "and" or "or" } l => EvalLogic(l),
+            UnaryExpr { Op: "not" } n => EvalNot(n),
+            RangeExpr r => throw Err(r.Pos, "a range is walked by a for: for i in a til b"),
             RecordLit s => EvalRecordLit(s, expected),
             ArrayLit a when argument > 0 && Compiler.IsCoreSpan(expected, out _) => FrameSpan(a, expected),
             ArrayLit a => EvalElementsLit(a, expected),
@@ -1560,8 +1684,8 @@ public sealed class FunctionGen
     /// when `e` is a `vt` already, or nothing fits (the plain mismatch reports it).
     private DType? WidenSource(Expr e, VariantType vt)
     {
-        // A select widens each side on its own: `ready ? n : Unit()`.
-        if (e is SelectExpr) return null;
+        // A value if or when widens each side on its own.
+        if (e is IfExpr or WhenExpr) return null;
         var actual = InferQuiet(e);
         if (actual is not null)
             return actual.Equals(vt) ? null : Widens(actual, vt) ? actual : null;
@@ -1694,142 +1818,239 @@ public sealed class FunctionGen
         throw Err(p.Type.Pos, $"{type} isn't a branch of {v}; its branches are {string.Join(", ", v.Leaves)}");
     }
 
-    /// An arm without a name: one that observes a failure lets a failure made in it wrap that one (Trace.tess).
-    private string FailureArm(VariantType vt, DType observed, string tag, Target target)
+    // ── when ────────────────────────────────────────────────────────────────
+
+    /// `when` as a statement (`frame` null) or as a value (`frame` set: every arm ends with `becomes`). Each arm is a
+    /// body in a block of its own. A statement's arm that doesn't leave goes on at the join block after the when.
+    private void EmitWhen(WhenStmt w, ValueFrame? frame)
     {
-        if (!_c.Trace || _c.Prechecking || !IsFailure(observed, vt)) return ArmLabel(target);
-        var saved = _values;
-        _values = new Dictionary<string, Val>(_values);
-        string high = EmitTmp($"lshr i64 {tag}, 32");
-        _values[FailedBefore] = new Val(EmitTmp($"trunc i64 {high} to i32"), IntType.U(32));
-        try
+        var outerNames = _values.Keys.ToHashSet();
+        var join = frame?.Join ?? NewLBlock("endwhen");
+        string joinRegion = frame?.JoinRegion ?? NewRegion("endwhen");
+        var armNames = new List<(ValueRef Binding, string Arm, int Line)>();
+        int reached = 0;
+        // The old form `is T as p => continue`: the one arm that goes on after the when carries its payload to the
+        // lines after it. It builds until `tessera migrate` makes the when a value.
+        (string Name, Val Value, Pos Pos)? continued = null;
+
+        // The arm's block: its payload bound, its body run, and the join reached when the body doesn't leave.
+        string Arm(WhenArm arm, Action? bind)
         {
-            return ArmLabel(target);
+            var saved = _cur;
+            var savedValues = _values;
+            _cur = NewLBlock("arm");
+            string label = _cur.Label;
+            string region = NewRegion("arm");
+            MemEdge(region, pos: arm.Pos);
+            string outerRegion = _region;
+            EnterRegion(region);
+            _values = new Dictionary<string, Val>(_values);
+            var before = _values.Keys.ToHashSet();
+            bind?.Invoke();
+            var bound = _values.Keys.Where(k => !before.Contains(k)).ToList();
+            EmitLines(arm.Body);
+            if (!_cur.Terminated)
+            {
+                if (frame is not null)
+                    throw Err(arm.Body.Count > 0 ? arm.Body[^1].Pos : arm.Pos, "this arm of a when that is a value ends without giving one: end it with becomes v");
+                if (arm.Body.Count == 0 && bound.Count == 1 && _memTracked.Contains(bound[0]) == false)
+                    continued = (bound[0], _values[bound[0]], arm.Pos);
+                else if (arm.Body.Count == 0 && bound.Count == 1)
+                    continued = (bound[0], _values[bound[0]], arm.Pos);
+                MemEdge(joinRegion, outerNames.Concat(bound), pos: arm.Pos);
+                Terminate($"br label %{join.Label}");
+                reached++;
+            }
+            _values = savedValues;
+            _cur = saved;
+            EnterRegion(outerRegion);
+            return label;
         }
-        finally
+
+        if (w.Value is null)
         {
-            _values = saved;
+            if (!w.Arms[^1].IsElse) throw Err(w.Pos, "when needs a final else arm");
+            for (int i = 0; i < w.Arms.Count; i++)
+            {
+                var arm = w.Arms[i];
+                if (arm.IsElse)
+                {
+                    if (i != w.Arms.Count - 1) throw Err(arm.Pos, "the else arm must come last");
+                    string label = Arm(arm, null);
+                    MemEdge(_region, pos: arm.Pos);
+                    Terminate($"br label %{label}");
+                    break;
+                }
+                var c = Eval(arm.Cond!, BoolType.Instance);
+                string armLabel = Arm(arm, null);
+                var next = NewLBlock("sel");
+                Terminate($"br i1 {c.Op}, label %{armLabel}, label %{next.Label}");
+                _cur = next;
+            }
         }
+        else
+        {
+            var v = EvalAny(w.Value);
+            if (v.Type is VariantType vt) EmitVariantWhen(w, v, vt, Arm, armNames);
+            else EmitSwitchWhen(w, v, Arm);
+        }
+
+        _cur = join;
+        EnterRegion(joinRegion);
+        if (frame is null && reached == 0) Terminate("unreachable");
+        if (frame is null && reached == 1 && continued is { } carried && !_values.ContainsKey(carried.Name))
+        {
+            Define(carried.Name, carried.Value, carried.Pos);
+            DescribeValue(carried.Name, carried.Value.Op, carried.Value.Type, carried.Pos);
+        }
+        foreach (var (binding, arm, line) in armNames)
+            if (!_values.ContainsKey(binding.Name))
+                _hiddenPayloads[binding.Name] = $"'{binding.Name}' is named by the arm {arm} (line {line}), and is visible in that arm only: "
+                    + "to use what an arm observed after the when, make the when a value (x: T = when ...)";
     }
 
-    /// A `when` on a variant switches on its tag's leaf type ID. An arm that names the value gets its own block,
-    /// which reads the value out of a stack copy and then goes on to the arm's target. `else as rest` names what is
-    /// left: the one leaf no arm observes, the variant written inline over the leaves left (up to 8), or else the whole
-    /// value. A value that holds none of the leaves (a hollow one, all zero) crashes.
-    private void EmitVariantWhen(WhenValueTerm sw, Val v, VariantType vt)
+    /// `when v` on an integer, a Byte, a Char, or a choice: a switch on the value.
+    private void EmitSwitchWhen(WhenStmt w, Val v, Func<WhenArm, Action?, string> armBlock)
+    {
+        if (v.Type is not (IntType or ChoiceType))
+            throw Err(w.Value!.Pos, $"when v needs an integer, Byte, Char, choice, or variant value, not {v.Type}");
+        if (w.ElseBinding is { } named)
+            throw Err(named.Pos, $"'else as {named.Name}' names what a variant's other arms leave, and {v.Type} isn't a variant");
+        if (w.Arms.SelectMany(a => a.Cases ?? []).OfType<IsPattern>().FirstOrDefault() is { } observed)
+            throw Err(observed.Pos, $"'is' observes a variant's branch, and {v.Type} isn't a variant");
+        string? defaultLabel = null;
+        var cases = new List<string>();
+        var seen = new HashSet<string>();
+        foreach (var arm in w.Arms)
+        {
+            if (arm.IsElse)
+            {
+                if (defaultLabel is not null) throw Err(arm.Pos, "when has two else arms");
+                defaultLabel = armBlock(arm, null);
+                continue;
+            }
+            // several values in one arm share its label; a value in two arms is an error
+            var caseOps = new List<string>();
+            foreach (var caseExpr in arm.Cases!)
+            {
+                if (caseExpr is not (IntLit or TypedIntLit or PresetRef or UnaryExpr { Op: "-", Operand: IntLit }))
+                    throw Err(caseExpr.Pos, "when cases must be integer literals, presets, or choice members");
+                var cv = Eval(caseExpr, v.Type);
+                if (!long.TryParse(cv.Op, out _)) throw Err(caseExpr.Pos, "when cases must be constant integers");
+                if (!seen.Add(cv.Op)) throw Err(caseExpr.Pos, $"duplicate when case {cv.Op}");
+                caseOps.Add(cv.Op);
+            }
+            string label = armBlock(arm, null);
+            foreach (var op in caseOps) cases.Add($"{v.Type.Llvm} {op}, label %{label}");
+        }
+        if (defaultLabel is null && v.Type is ChoiceType en)
+        {
+            // Without else, a when on a choice must name every member.
+            var missing = en.Decl.Members
+                .Where(mem => mem.Value is IntLit lit && !seen.Contains(IntConst(lit.Value, mem.Value.Pos, en).Op))
+                .Select(mem => mem.Name).ToList();
+            if (missing.Count > 0)
+                throw Err(w.Pos, $"when on {en.Name} doesn't cover {string.Join(", ", missing)}; add them or an else arm");
+            var saved = _cur;
+            _cur = NewLBlock("nocase");
+            defaultLabel = _cur.Label;
+            Terminate("unreachable");
+            _cur = saved;
+        }
+        if (defaultLabel is null)
+            throw Err(w.Pos, "when needs an else arm (write 'else => unreachable' if every case is covered)");
+        Terminate($"switch {v.Type.Llvm} {v.Op}, label %{defaultLabel} [ {string.Join(" ", cases)} ]");
+    }
+
+    /// A `when` on a variant switches on its tag's leaf type ID. An arm that names the value reads it out of a stack
+    /// copy before its body. `else as rest` names what is left: the one leaf no arm observes, the variant written
+    /// inline over the leaves left (up to 8), or else the whole value. A value that holds none of the leaves (a hollow
+    /// one, all zero) crashes.
+    private void EmitVariantWhen(WhenStmt w, Val v, VariantType vt, Func<WhenArm, Action?, string> armBlock,
+        List<(ValueRef Binding, string Arm, int Line)> armNames)
     {
         string tag = EmitTmp($"extractvalue {vt.Llvm} {v.Op}, 0");
         string id = EmitTmp($"trunc {VariantType.Tag.Llvm} {tag} to i32");
-        var arms = sw.Arms.Select(a => (Patterns: a.Cases?.Select(c => VariantPattern(c, vt)).ToList(), a.Target)).ToList();
+        var arms = w.Arms.Select(a => (Patterns: a.Cases?.Select(c => VariantPattern(c, vt)).ToList(), Arm: a)).ToList();
         string? slot = null;
-        if (arms.Any(a => a.Patterns?.Any(p => p.Binding is not null) == true) || sw.ElseBinding is not null)
+        if (arms.Any(a => a.Patterns?.Any(p => p.Binding is not null) == true) || w.ElseBinding is not null)
         {
             slot = NewSlot(vt);
             Line($"store {vt.Llvm} {v.Op}, ptr {slot}");
         }
 
-        Target? elseTarget = null;
+        WhenArm? elseArm = null;
         var cases = new List<string>();
         var seen = new HashSet<int>();
-        foreach (var (patterns, target) in arms)
+        foreach (var (patterns, arm) in arms)
         {
             if (patterns is null)
             {
-                if (elseTarget is not null) throw Err(target.Pos, "when has two else arms");
-                elseTarget = target;
+                if (elseArm is not null) throw Err(arm.Pos, "when has two else arms");
+                elseArm = arm;
                 continue;
             }
             if (patterns.Count > 1 && patterns.Any(p => p.Binding is not null))
-                throw Err(target.Pos, "an arm that names the value observes one type");
-            string label = patterns[0].Binding is { } binding
-                ? BindingArm(vt, slot!, patterns[0].Type, binding, target)
-                : FailureArm(vt, patterns[0].Type, tag, target);
+                throw Err(arm.Pos, "an arm that names the value observes one type");
+            string label;
+            if (patterns[0].Binding is { } binding)
+            {
+                label = armBlock(arm, () => BindPayload(vt, slot!, patterns[0].Type, binding));
+                armNames.Add((binding, $"is {patterns[0].Type} as {binding.Name}", patterns[0].Binding!.Pos.Line));
+            }
+            else label = armBlock(arm, FailureObserved(vt, patterns[0].Type, tag));
             foreach (int index in patterns.SelectMany(p => p.Leaves))
             {
-                if (!seen.Add(index)) throw Err(target.Pos, $"two arms observe {vt.Leaves[index]}");
+                if (!seen.Add(index)) throw Err(arm.Pos, $"two arms observe {vt.Leaves[index]}");
                 cases.Add($"i32 {VariantType.TypeId(vt.Leaves[index])}, label %{label}");
             }
         }
         var missing = vt.Leaves.Where((_, i) => !seen.Contains(i)).ToList();
-        if (elseTarget is not null)
+        if (elseArm is not null)
         {
-            if (missing.Count == 0) throw Err(elseTarget.Pos, $"every branch of {vt} has its arm, so else never runs");
-            string label = sw.ElseBinding is { } rest
-                ? missing.Count == 1 ? BindingArm(vt, slot!, missing[0], rest, elseTarget)
-                : missing.Count <= Compiler.MaxUnionBranches
-                    ? BindingArm(vt, slot!, _c.UnionOf(missing, _env.File, rest.Pos), rest, elseTarget)
-                    : WholeValueArm(v, rest, elseTarget)
-                : ArmLabel(elseTarget);
+            if (missing.Count == 0) throw Err(elseArm.Pos, $"every branch of {vt} has its arm, so else never runs");
+            string label;
+            if (w.ElseBinding is { } rest)
+            {
+                if (missing.Count == 1) label = armBlock(elseArm, () => BindPayload(vt, slot!, missing[0], rest));
+                else if (missing.Count <= Compiler.MaxUnionBranches)
+                {
+                    var union = _c.UnionOf(missing, _env.File, rest.Pos);
+                    label = armBlock(elseArm, () => BindPayload(vt, slot!, union, rest));
+                }
+                else label = armBlock(elseArm, () => Define(rest.Name, v, rest.Pos));
+                armNames.Add((rest, $"else as {rest.Name}", rest.Pos.Line));
+            }
+            else label = armBlock(elseArm, null);
             // The leaves else takes are listed, so a value holding none of them still crashes below.
             foreach (var m in missing) cases.Add($"i32 {VariantType.TypeId(m)}, label %{label}");
         }
         else if (missing.Count > 0)
-            throw Err(sw.Pos, $"when on {vt} doesn't observe {string.Join(", ", missing)}; add an arm for each, or an else arm");
+            throw Err(w.Pos, $"when on {vt} doesn't observe {string.Join(", ", missing)}; add an arm for each, or an else arm");
         var saved = _cur;
         _cur = NewLBlock("hollow");
         string defaultLabel = _cur.Label;
-        EmitTarget(new ExprTarget(new CallExpr("crash", [], [new StrLit("InvalidValueError", sw.Pos),
-            new StrLit($"This {vt} holds none of its branches: it is hollow (all zero), not a value of one of them.", sw.Pos)],
-            sw.Pos) { ArgNames = ["name", "message"], Path = "Standard/Core" }, sw.Pos));
+        EmitNoReturnCall(new CallExpr("crash", [], [new StrLit("InvalidValueError", w.Pos),
+            new StrLit($"This {vt} holds none of its branches: it is hollow (all zero), not a value of one of them.", w.Pos)],
+            w.Pos) { ArgNames = ["name", "message"], Path = "Standard/Core" }, w.Pos);
         _cur = saved;
         Terminate($"switch i32 {id}, label %{defaultLabel} [ {string.Join(" ", cases)} ]");
     }
 
-    /// `else as rest` when several branches are left: `rest` is the whole value, still the variant.
-    private string WholeValueArm(Val v, ValueRef binding, Target target)
+    /// An arm without a name that observes a failure: a failure made in it wraps that one (Trace.tess).
+    private Action? FailureObserved(VariantType vt, DType observed, string tag)
     {
-        var saved = _cur;
-        var savedValues = _values;
-        _cur = NewLBlock("rest");
-        string label = _cur.Label;
-        _values = new Dictionary<string, Val>(_values);
-        Define(binding.Name, v, binding.Pos);
-        if (target is ContinueTarget && _continuedPayloads is { } kept) kept[binding.Name] = (v, binding.Pos);
-        EmitTarget(target);
-        _values = savedValues;
-        _cur = saved;
-        return label;
-    }
-
-    /// After a guard's `when`, the lines that follow see the value named by the arm that continues, when it is the
-    /// only one that does: every other arm left the block, so the lines run only after that arm, and the name is a
-    /// block binding from here on, under the same rules as any other. The names of the arms that left, or of arms
-    /// that continue alongside others, are not bound, and a use of one says why.
-    private void KeepContinuedPayload(Terminator term, Dictionary<string, (Val Value, Pos Pos)> continued)
-    {
-        if (term is not WhenValueTerm when) return;
-        int continuing = when.Arms.Count(a => a.Target is ContinueTarget);
-        var named = when.Arms
-            .Select(a => (Binding: a.Cases is [IsPattern { Binding: { } b }] ? b : a.Cases is null ? when.ElseBinding : null,
-                Pattern: a.Cases is [IsPattern p] ? (Expr)p : null, a.Target));
-        foreach (var (binding, pattern, target) in named)
+        if (!_c.Trace || _c.Prechecking || !IsFailure(observed, vt)) return null;
+        return () =>
         {
-            if (binding is null) continue;
-            string arm = pattern is IsPattern ip ? $"is {ip.Type} as {binding.Name}" : $"else as {binding.Name}";
-            int line = pattern?.Pos.Line ?? binding.Pos.Line;
-            if (target is ContinueTarget && continuing == 1)
-            {
-                var (value, pos) = continued[binding.Name];
-                Define(binding.Name, value, pos);
-                DescribeValue(binding.Name, value.Op, value.Type, pos);
-                continue;
-            }
-            if (_values.ContainsKey(binding.Name)) continue;
-            _hiddenPayloads[binding.Name] = target is ContinueTarget
-                ? $"'{binding.Name}' is named by the arm {arm} (line {line}), and {continuing} arms of that when "
-                  + "continue, so the lines after it don't know which value they have: give each arm a block of its "
-                  + "own, or let only one arm continue"
-                : $"'{binding.Name}' is named by the arm {arm} (line {line}), which leaves the block: only the arm "
-                  + "that continues names its value for the lines after the when";
-        }
+            string high = EmitTmp($"lshr i64 {tag}, 32");
+            _values[FailedBefore] = new Val(EmitTmp($"trunc i64 {high} to i32"), IntType.U(32));
+        };
     }
 
-    private string BindingArm(VariantType vt, string slot, DType branch, ValueRef binding, Target target)
+    /// Binds what an arm observes: the value read out of the variant's stack copy as the branch type.
+    private void BindPayload(VariantType vt, string slot, DType branch, ValueRef binding)
     {
-        var saved = _cur;
-        var savedValues = _values;
-        _cur = NewLBlock("case");
-        string label = _cur.Label;
         string value;
         if (branch is VariantType { Decl.IsAnonymous: true } union && vt.LeafIndex(union) < 0)
             value = CopyVariant(vt, slot, union);
@@ -1843,8 +2064,8 @@ public sealed class FunctionGen
             string at = EmitTmp($"getelementptr inbounds {vt.Llvm}, ptr {slot}, i32 0, i32 2");
             value = EmitTmp($"load {branch.Llvm}, ptr {at}");
         }
-        _values = new Dictionary<string, Val>(_values);
         Define(binding.Name, new Val(value, branch), binding.Pos);
+        DescribeValue(binding.Name, value, branch, binding.Pos);
         // A failure made in an arm that observed one wraps it (Trace.tess).
         if (_c.Trace && !_c.Prechecking && IsFailure(branch, vt))
         {
@@ -1853,25 +2074,36 @@ public sealed class FunctionGen
             string high = EmitTmp($"lshr i64 {tag}, 32");
             _values[FailedBefore] = new Val(EmitTmp($"trunc i64 {high} to i32"), IntType.U(32));
         }
-        // A guard's continuing arm: the lines after the when may see the value (KeepContinuedPayload).
-        if (target is ContinueTarget && _continuedPayloads is { } kept)
-            kept[binding.Name] = (new Val(value, branch), binding.Pos);
         // Memory a variant held is the arm's to give back: the arm owns what the value it observes owned.
-        bool owned = MemOn && OwnedValue(branch);
-        if (owned && target is not ContinueTarget) Mem(new MemoryRules.ArmBegin(binding.Pos));
-        if (owned)
+        if (MemOn && OwnedValue(branch))
         {
             _memTracked.Add(binding.Name);
-            // The arm that continues takes the memory along to the lines after the when, once every arm is emitted.
-            var acquire = new MemoryRules.Acquire(binding.Name, "taken out of a variant", binding.Pos);
-            if (target is ContinueTarget) _memContinued.Add(acquire);
-            else Mem(acquire);
+            Mem(new MemoryRules.Acquire(binding.Name, "taken out of a variant", binding.Pos));
         }
-        EmitTarget(target);
-        if (owned && target is not ContinueTarget) Mem(new MemoryRules.ArmEnd(binding.Pos));
-        _values = savedValues;
-        _cur = saved;
-        return label;
+    }
+
+    /// `x: T = when ...`: the arms each give a T, met at one block.
+    private Val EvalWhenValue(WhenExpr w, DType expected)
+    {
+        var join = NewLBlock("whenvalue");
+        var frame = new ValueFrame(join, NewRegion("whenvalue"), expected, _values.Keys.ToHashSet());
+        _valueWhens.Push(frame);
+        try
+        {
+            EmitWhen(w.When, frame);
+        }
+        finally
+        {
+            _valueWhens.Pop();
+        }
+        if (frame.Incoming.Count == 0)
+        {
+            // Every arm left the routine: nothing reaches here, and the value is never read.
+            Terminate("unreachable");
+            return new Val("poison", expected);
+        }
+        string edges = string.Join(", ", frame.Incoming.Select(i => $"[ {i.Op}, %{i.Pred} ]"));
+        return new Val(EmitTmp($"phi {expected.Llvm} {edges}"), expected);
     }
 
     /// Where a write template finds write_str, whatever the file imports.
@@ -2017,12 +2249,75 @@ public sealed class FunctionGen
         return new Val(acc, t);
     }
 
-    private Val EvalSelect(SelectExpr s, DType expected)
+    /// `if c then a else b` as a value: only the side taken is evaluated.
+    private Val EvalIf(IfExpr s, DType expected)
     {
         var c = Eval(s.Cond, BoolType.Instance);
-        var a = Eval(s.IfTrue, expected);
-        var b = Eval(s.IfFalse, expected);
-        return new Val(EmitTmp($"select i1 {c.Op}, {expected.Llvm} {a.Op}, {expected.Llvm} {b.Op}"), expected);
+        var thenB = NewLBlock("then");
+        var elseB = NewLBlock("else");
+        var join = NewLBlock("endif");
+        Terminate($"br i1 {c.Op}, label %{thenB.Label}, label %{elseB.Label}");
+        _cur = thenB;
+        var a = Eval(s.Then, expected);
+        string aPred = _cur.Label;
+        Terminate($"br label %{join.Label}");
+        _cur = elseB;
+        var b = Eval(s.Else, expected);
+        string bPred = _cur.Label;
+        Terminate($"br label %{join.Label}");
+        _cur = join;
+        return new Val(EmitTmp($"phi {expected.Llvm} [ {a.Op}, %{aPred} ], [ {b.Op}, %{bPred} ]"), expected);
+    }
+
+    /// `a and b` / `a or b`: the right side runs only when the left leaves the answer open.
+    private Val EvalLogic(BinaryExpr l)
+    {
+        var a = Eval(l.Left, BoolType.Instance);
+        var right = NewLBlock("rhs");
+        var join = NewLBlock("logic");
+        string aPred = _cur.Label;
+        bool isAnd = l.Op == "and";
+        Terminate(isAnd ? $"br i1 {a.Op}, label %{right.Label}, label %{join.Label}" : $"br i1 {a.Op}, label %{join.Label}, label %{right.Label}");
+        _cur = right;
+        var b = Eval(l.Right, BoolType.Instance);
+        string bPred = _cur.Label;
+        Terminate($"br label %{join.Label}");
+        _cur = join;
+        string shortValue = isAnd ? "false" : "true";
+        return new Val(EmitTmp($"phi i1 [ {shortValue}, %{aPred} ], [ {b.Op}, %{bPred} ]"), BoolType.Instance);
+    }
+
+    private Val EvalNot(UnaryExpr n)
+    {
+        var v = Eval(n.Operand, BoolType.Instance);
+        return new Val(EmitTmp($"xor i1 {v.Op}, true"), BoolType.Instance);
+    }
+
+    /// An operator as the call it stands for: `a + b` is `a.add(b)`, `-x` is `x.neg()`, `xs[i]` is `xs.getitem(i)`.
+    /// A literal on the left takes the right side's type: `1 + x` is `T.add(1, x)`. `and`, `or` and `not` stay: they
+    /// are Bool's own.
+    private Expr Desugar(Expr e)
+    {
+        switch (e)
+        {
+            case BinaryExpr { Op: "and" or "or" }:
+                return e;
+            case BinaryExpr b:
+            {
+                string name = Operators.Routine(b.Op) ?? throw Err(b.Pos, $"'{b.Op}' is not an operator Tessera has");
+                if (b.Left is IntLit or FloatLit && Infer(b.Right) is { } rightType)
+                    return new NsCallExpr(new TypeRef("$operand", [], b.Pos) { Known = rightType }, name, [], [b.Left, b.Right], b.Pos) { FromOperator = true };
+                return new MethodCallExpr(b.Left, name, [], [b.Right], b.Pos) { FromOperator = true };
+            }
+            case UnaryExpr { Op: "not" }:
+                return e;
+            case UnaryExpr u:
+                return new MethodCallExpr(u.Operand, u.Op == "-" ? "neg" : "bitnot", [], [], u.Pos) { FromOperator = true };
+            case GetItemExpr g:
+                return new MethodCallExpr(g.Base, "getitem", [], [g.Index], g.Pos) { FromOperator = true };
+            default:
+                return e;
+        }
     }
 
     /// `(a, b)` where a tuple is expected: each item takes the type the tuple has in its place.
@@ -3012,6 +3307,7 @@ public sealed class FunctionGen
     /// routine take them in order, and a name written there still has to be the parameter's.
     private void CheckArgNames(Expr e, CallPlan plan)
     {
+        if (e is MethodCallExpr { FromOperator: true } or NsCallExpr { FromOperator: true }) return;
         var names = e switch
         {
             CallExpr c => c.ArgNames,
@@ -3064,7 +3360,7 @@ public sealed class FunctionGen
             _c.CallUses.TryAdd((plan.Pos, plan.Decl.Name), new Compiler.CallUse(plan.Decl, [.. plan.Env.All.Select(kv => (kv.Key, kv.Value))]));
         var sig = _c.Signature(plan.Decl, plan.Env);
         if (_blockName.Length > 0 && plan.Decl.AnnotationNamed(ExpensiveCallLint.Annotation) is not null)
-            _expensiveCalls.Add(new ExpensiveCallLint.Call(_blockName, _arm, plan.Pos, plan.Decl));
+            _expensiveCalls.Add(new ExpensiveCallLint.Call(_blockName, _arm, plan.Pos, plan.Decl) { InLoop = _loops.Count > 0 });
         int offset = plan.Receiver is null ? 0 : 1;
         int fixedCount = sig.Params.Count - offset - (sig.IsTrackCaller ? 1 : 0);
         bool arityOk = sig.Variadic && sig.IsExternalC ? plan.Args.Count >= fixedCount : plan.Args.Count == fixedCount;
@@ -3521,253 +3817,370 @@ public sealed class FunctionGen
 
     // ── Terminators ─────────────────────────────────────────────────────────
 
-    private void EmitTerminator(Terminator term)
-    {
-        try { EmitTerminatorCore(term); }
-        catch (CompileError e) when (term.Source is { } source && !e.FromSource) { throw FromSource(e, source); }
-    }
+    // ── if, loops, and the lines that leave ─────────────────────────────────
 
-    private void EmitTerminatorCore(Terminator term)
+    private void EmitIf(IfStmt i)
     {
-        _lineSource = term.Source;
-        At(term.Source ?? term.Pos);
-        switch (term)
+        var outerNames = _values.Keys.ToHashSet();
+        var c = Eval(i.Cond, BoolType.Instance);
+        var thenB = NewLBlock("then");
+        var elseB = i.Else is null ? null : NewLBlock("else");
+        var join = NewLBlock("endif");
+        string joinRegion = NewRegion("endif");
+        string thenRegion = NewRegion("then");
+        string? elseRegion = i.Else is null ? null : NewRegion("else");
+        MemEdge(thenRegion, pos: i.Pos);
+        MemEdge(elseRegion ?? joinRegion, pos: i.Pos);
+        Terminate($"br i1 {c.Op}, label %{thenB.Label}, label %{(elseB ?? join).Label}");
+        int reached = i.Else is null ? 1 : 0;
+
+        void Arm(LBlock block, string region, List<Stmt> body)
         {
-            case JumpTerm j:
-                EmitTarget(j.Target);
-                break;
-
-            case TargetTerm t:
-                EmitTarget(t.Target);
-                break;
-
-            case BranchTerm b:
-            {
-                var c = Eval(b.Cond, BoolType.Instance);
-                string a = ArmLabel(b.IfTrue);
-                string f = ArmLabel(b.IfFalse);
-                Terminate($"br i1 {c.Op}, label %{a}, label %{f}");
-                break;
-            }
-
-            case WhenCondTerm s:
-            {
-                if (s.Arms[^1].Cond is not null) throw Err(s.Pos, "when needs a final else arm");
-                for (int i = 0; i < s.Arms.Count; i++)
-                {
-                    var (cond, target) = s.Arms[i];
-                    if (cond is null)
-                    {
-                        if (i != s.Arms.Count - 1) throw Err(target.Pos, "the else arm must come last");
-                        EmitTarget(target);
-                        break;
-                    }
-                    var c = Eval(cond, BoolType.Instance);
-                    string armLabel = ArmLabel(target);
-                    var next = NewLBlock("sel");
-                    Terminate($"br i1 {c.Op}, label %{armLabel}, label %{next.Label}");
-                    _cur = next;
-                }
-                break;
-            }
-
-            case WhenValueTerm sw:
-            {
-                var v = EvalAny(sw.Value);
-                if (v.Type is VariantType vt)
-                {
-                    EmitVariantWhen(sw, v, vt);
-                    break;
-                }
-                if (v.Type is not (IntType or ChoiceType))
-                    throw Err(sw.Value.Pos, $"when v needs an integer, Byte, Char, choice, or variant value, not {v.Type}");
-                if (sw.ElseBinding is { } named)
-                    throw Err(named.Pos, $"'else as {named.Name}' names what a variant's other arms leave, and {v.Type} isn't a variant");
-                if (sw.Arms.SelectMany(a => a.Cases ?? []).OfType<IsPattern>().FirstOrDefault() is { } observed)
-                    throw Err(observed.Pos, $"'is' observes a variant's branch, and {v.Type} isn't a variant");
-                string? defaultLabel = null;
-                var cases = new List<string>();
-                var seen = new HashSet<string>();
-                foreach (var (caseExprs, target) in sw.Arms)
-                {
-                    string label = ArmLabel(target);
-                    if (caseExprs is null)
-                    {
-                        if (defaultLabel is not null) throw Err(target.Pos, "when has two else arms");
-                        defaultLabel = label;
-                        continue;
-                    }
-                    // several values in one arm share its label; a value in two arms is an error
-                    foreach (var caseExpr in caseExprs)
-                    {
-                        if (caseExpr is not (IntLit or TypedIntLit or PresetRef))
-                            throw Err(caseExpr.Pos, "when cases must be integer literals, presets, or choice members");
-                        var cv = Eval(caseExpr, v.Type);
-                        if (!long.TryParse(cv.Op, out _)) throw Err(caseExpr.Pos, "when cases must be constant integers");
-                        if (!seen.Add(cv.Op)) throw Err(caseExpr.Pos, $"duplicate when case {cv.Op}");
-                        cases.Add($"{v.Type.Llvm} {cv.Op}, label %{label}");
-                    }
-                }
-                if (defaultLabel is null && v.Type is ChoiceType en)
-                {
-                    // Without else, a when on a choice must name every member.
-                    var missing = en.Decl.Members
-                        .Where(mem => mem.Value is IntLit lit && !seen.Contains(IntConst(lit.Value, mem.Value.Pos, en).Op))
-                        .Select(mem => mem.Name).ToList();
-                    if (missing.Count > 0)
-                        throw Err(sw.Pos, $"when on {en.Name} doesn't cover {string.Join(", ", missing)}; add them or an else arm");
-                    var saved = _cur;
-                    _cur = NewLBlock("nocase");
-                    defaultLabel = _cur.Label;
-                    Terminate("unreachable");
-                    _cur = saved;
-                }
-                if (defaultLabel is null)
-                    throw Err(sw.Pos, "when needs an else arm (write 'else => unreachable' if every case is covered)");
-                Terminate($"switch {v.Type.Llvm} {v.Op}, label %{defaultLabel} [ {string.Join(" ", cases)} ]");
-                break;
-            }
-
-            default:
-                throw new InvalidOperationException(term.GetType().Name);
-        }
-    }
-
-    /// The label to branch to for an arm. A block call without arguments branches directly; anything else
-    /// (arguments to pass, an inline return/unreachable/crash) gets its own edge block.
-    private string ArmLabel(Target target)
-    {
-        if (target is ContinueTarget cont)
-            return _continueLabel ?? throw Err(cont.Pos, "continue goes on with the next line, so it can't end a block");
-        if (target is CallTarget { Args.Count: 0 } ct && _blocks.ContainsKey(ct.Name))
-        {
-            CheckBlockArgs(ct);
-            Mem(new MemoryRules.Exit(ct.Name, false, [], ct.Pos));
-            _incoming[ct.Name].Add((_cur.Label, []));
-            return $"b.{ct.Name}";
+            _cur = block;
+            EnterRegion(region);
+            EmitBody(body);
+            if (_cur.Terminated) return;
+            MemEdge(joinRegion, outerNames, pos: i.Pos);
+            Terminate($"br label %{join.Label}");
+            reached++;
         }
 
-        var saved = _cur;
-        _cur = NewLBlock("arm");
-        string label = _cur.Label;
-        EmitTarget(target);
-        _cur = saved;
-        return label;
+        Arm(thenB, thenRegion, i.Then);
+        if (i.Else is not null) Arm(elseB!, elseRegion!, i.Else);
+        _cur = join;
+        EnterRegion(joinRegion);
+        if (reached == 0) Terminate("unreachable");
     }
 
-    private void CheckBlockArgs(CallTarget ct)
+    private void EmitReturn(ReturnStmt r)
     {
-        if (ct.ArgNames?.FirstOrDefault(n => n is not null) is { } named)
-            throw Err(ct.Pos, $"block '{ct.Name}' takes its arguments in order, without names ('{named}:' here)");
-        var types = _blockParamTypes[ct.Name];
-        if (ct.Args.Count != types.Count)
-            throw Err(ct.Pos, $"block '{ct.Name}' takes {types.Count} argument(s), got {ct.Args.Count}");
+        MemReturn(r);
+        if (_inst.Ret is VoidType)
+        {
+            if (r.Value is not null) throw Err(r.Pos, $"'{_decl.DisplayName}' returns Void; write a bare return");
+            Return("ret void");
+            return;
+        }
+        if (r.Value is null) throw Err(r.Pos, $"'{_decl.DisplayName}' must return a {_inst.Ret}");
+        var v = Eval(r.Value, _inst.Ret);
+        if (_sig.Sret)
+        {
+            Line($"store {_inst.Ret.Llvm} {v.Op}, ptr %ret.slot");
+            Return("ret void");
+            return;
+        }
+        if (_sig.Ret.Pass == AbiPass.Coerce)
+        {
+            string buffer = NewBuffer(_inst.Ret);
+            Line($"store {_inst.Ret.Llvm} {v.Op}, ptr {buffer}");
+            string part = _sig.Ret.Parts[0].Llvm;
+            Return($"ret {part} {EmitTmp($"load {part}, ptr {buffer}")}");
+            return;
+        }
+        if (_inst.PassesBf16AsBits && Instance.IsBf16(_inst.Ret))
+            v = new Val(EmitTmp($"bitcast bfloat {v.Op} to i16"), IntType.U(16));
+        Return($"ret {_inst.LlvmRet} {v.Op}");
     }
 
-    /// Emits a target in the current block, terminating it. While its arguments are evaluated, `_arm` says where the
-    /// arm goes, for ExpensiveCallLint: a call there runs only when the arm is taken.
-    private void EmitTarget(Target target)
+    /// `jump name(args)`: to a block of the routine, its arguments evaluated here. While they are, `_arm` says where
+    /// the jump goes, for ExpensiveCallLint: a call there runs only when the jump is taken.
+    private void EmitJump(JumpStmt j)
     {
+        if (!_blocks.TryGetValue(j.Block, out var target))
+            throw Err(j.Pos, _c.FindFree(j.Block, _env.File, j.Pos) is not null
+                ? $"'{j.Block}' is a routine, and jump goes to a block of this routine: call it as a line of its own"
+                : $"no block named '{j.Block}' in '{_decl.DisplayName}'");
+        if (j.ArgNames?.FirstOrDefault(n => n is not null) is { } named)
+            throw Err(j.Pos, $"block '{j.Block}' takes its arguments in order, without names ('{named}:' here)");
+        var types = _blockParamTypes[j.Block];
+        if (j.Args.Count != types.Count)
+            throw Err(j.Pos, $"block '{j.Block}' takes {types.Count} argument(s), got {j.Args.Count}");
         string? outer = _arm;
-        _arm = target is CallTarget call && _blocks.ContainsKey(call.Name) ? call.Name : ExpensiveCallLint.LeavesRoutine;
-        Mem(new MemoryRules.ArmBegin(target.Pos));
+        _arm = j.Block;
+        Mem(new MemoryRules.ArmBegin(j.Pos));
         try
         {
-            EmitTargetCore(target);
+            var ops = j.Args.Select((a, i) => Eval(a, types[i]).Op).ToList();
+            if (MemOn)
+            {
+                for (int i = 0; i < j.Args.Count; i++)
+                    if (FrameView(j.Args[i]) is { } sees) _frameViews[target.Params[i].Name] = sees;
+                var passed = new List<(string, string)>();
+                for (int i = 0; i < j.Args.Count; i++)
+                {
+                    if (MemName(j.Args[i]) is not { } handle) continue;
+                    // Passed to a parameter of another type (a Result that holds it): the memory goes into that value.
+                    if (OwnedValue(types[i])) passed.Add((target.Params[i].Name, handle));
+                    else Mem(new MemoryRules.End(handle, $"kept in a {types[i].Name}", j.Args[i].Pos));
+                }
+                Mem(new MemoryRules.Exit(j.Block, false, passed, j.Pos));
+            }
+            _incoming[j.Block].Add((_cur.Label, ops));
+            Terminate($"br label %b.{j.Block}");
         }
         finally
         {
             _arm = outer;
         }
-        Mem(new MemoryRules.ArmEnd(target.Pos));
-    }
-
-    private void EmitTargetCore(Target target)
-    {
-        switch (target)
-        {
-            case CallTarget ct when _blocks.ContainsKey(ct.Name):
-            {
-                CheckBlockArgs(ct);
-                var types = _blockParamTypes[ct.Name];
-                var ops = ct.Args.Select((a, i) => Eval(a, types[i]).Op).ToList();
-                if (MemOn)
-                {
-                    for (int i = 0; i < ct.Args.Count; i++)
-                        if (FrameView(ct.Args[i]) is { } sees) _frameViews[_blocks[ct.Name].Params[i].Name] = sees;
-                    var passed = new List<(string, string)>();
-                    for (int i = 0; i < ct.Args.Count; i++)
-                    {
-                        if (MemName(ct.Args[i]) is not { } handle) continue;
-                        // Passed to a parameter of another type (a Result that holds it): the memory goes into that value.
-                        if (OwnedValue(types[i])) passed.Add((_blocks[ct.Name].Params[i].Name, handle));
-                        else Mem(new MemoryRules.End(handle, $"kept in a {types[i].Name}", ct.Args[i].Pos));
-                    }
-                    Mem(new MemoryRules.Exit(ct.Name, false, passed, ct.Pos));
-                }
-                _incoming[ct.Name].Add((_cur.Label, ops));
-                Terminate($"br label %b.{ct.Name}");
-                break;
-            }
-            case CallTarget ct:
-                EmitNoReturnCall(new CallExpr(ct.Name, [], ct.Args, ct.Pos) { ArgNames = ct.ArgNames }, ct.Pos);
-                Mem(new MemoryRules.Exit(null, false, [], ct.Pos));
-                break;
-            case ExprTarget et:
-                EmitNoReturnCall(et.Call, et.Pos);
-                Mem(new MemoryRules.Exit(null, false, [], et.Pos));
-                break;
-            case ReturnTarget r:
-            {
-                MemReturn(r);
-                if (_inst.Ret is VoidType)
-                {
-                    if (r.Value is not null) throw Err(r.Pos, $"'{_decl.DisplayName}' returns Void; write return()");
-                    Return("ret void");
-                }
-                else
-                {
-                    if (r.Value is null) throw Err(r.Pos, $"'{_decl.DisplayName}' must return a {_inst.Ret}");
-                    var v = Eval(r.Value, _inst.Ret);
-                    if (_sig.Sret)
-                    {
-                        Line($"store {_inst.Ret.Llvm} {v.Op}, ptr %ret.slot");
-                        Return("ret void");
-                        break;
-                    }
-                    if (_sig.Ret.Pass == AbiPass.Coerce)
-                    {
-                        string buffer = NewBuffer(_inst.Ret);
-                        Line($"store {_inst.Ret.Llvm} {v.Op}, ptr {buffer}");
-                        string part = _sig.Ret.Parts[0].Llvm;
-                        Return($"ret {part} {EmitTmp($"load {part}, ptr {buffer}")}");
-                        break;
-                    }
-                    if (_inst.PassesBf16AsBits && Instance.IsBf16(_inst.Ret))
-                        v = new Val(EmitTmp($"bitcast bfloat {v.Op} to i16"), IntType.U(16));
-                    Return($"ret {_inst.LlvmRet} {v.Op}");
-                }
-                break;
-            }
-            case UnreachableTarget:
-                Mem(new MemoryRules.Exit(null, false, [], target.Pos));
-                Terminate("unreachable");
-                break;
-            case ContinueTarget ct:
-                Terminate($"br label %{_continueLabel ?? throw Err(ct.Pos, "continue goes on with the next line, so it can't end a block")}");
-                break;
-            default:
-                throw new InvalidOperationException(target.GetType().Name);
-        }
+        Mem(new MemoryRules.ArmEnd(j.Pos));
     }
 
     private void EmitNoReturnCall(Expr call, Pos pos)
     {
         if (call is CallExpr c && _c.FindFree(c.Name, _env.File, c.Pos) is null)
-            throw Err(pos, $"no block or routine named '{c.Name}'");
+            throw Err(pos, _blocks.ContainsKey(c.Name)
+                ? $"'{c.Name}' is a block: jump {c.Name}(...)"
+                : $"no routine named '{c.Name}'");
         if (!IsNoReturn(call))
-            throw Err(pos, "only a #noreturn routine (such as crash) can end a block; this one returns");
+            throw Err(pos, "only a @noreturn routine (such as crash) can end a body; this one returns");
         EvalAny(call);
         Terminate("unreachable");
+    }
+
+    // ── Loops ───────────────────────────────────────────────────────────────
+
+    /// `for` / `while` / `until`: a header block holds a phi for each carried value (and a `for` range's index), the
+    /// body runs with them, `continue with` sends the next round's values back to the header, and the loop's end
+    /// goes through `then` to the block after it.
+    private void EmitLoop(LoopStmt l)
+    {
+        var outerValues = _values;
+        var outerNames = _values.Keys.ToHashSet();
+        var header = NewLBlock("loop");
+        var body = NewLBlock("body");
+        var thenB = NewLBlock("then");
+        var after = NewLBlock("after");
+        string headerRegion = NewRegion("loop"), bodyRegion = NewRegion("body"), thenRegion = NewRegion("then"),
+            afterRegion = NewRegion("after");
+        var frame = new LoopFrame(header, headerRegion, after, afterRegion, l.With.Count > 0);
+        frame.OuterNames.UnionWith(outerNames);
+
+        // The first values: the carried values' inits, a range's start, all evaluated once, before the header.
+        var firstOps = new List<string>();
+        var passed = new List<(string Param, string Arg)>();
+        foreach (var c in l.With)
+        {
+            if (_values.ContainsKey(c.Name))
+                throw Err(c.Pos, $"'{c.Name}' is already bound here: a carried value takes a name of its own (a name is bound once)");
+            if (l.With.Count(o => o.Name == c.Name) > 1) throw Err(c.Pos, $"the loop carries '{c.Name}' twice");
+            var t = Resolve(c.Type);
+            var v = Eval(c.Init, t);
+            if (MemName(c.Init) is { } handle) passed.Add((c.Name, handle));
+            frame.Carried.Add((c.Name, t));
+            firstOps.Add(v.Op);
+        }
+        Val? iterator = null;
+        VariantType? iteratorMaybe = null;
+        DType? itemType = null;
+        if (l.Kind == LoopKind.For)
+        {
+            if (l.Source is RangeExpr range)
+            {
+                var indexType = Infer(range.From) ?? Infer(range.To) ?? _c.USize;
+                if (indexType is not IntType it) throw Err(range.Pos, $"a range walks integers, and this one is over {indexType}");
+                var from = Eval(range.From, it);
+                var to = Eval(range.To, it);
+                bool descending = range.Step is UnaryExpr { Op: "-" } or IntLit { Value.Sign: < 0 };
+                var step = range.Step is null ? new Val("1", it) : Eval(range.Step, it);
+                if (_values.ContainsKey(l.Var!))
+                    throw Err(l.VarPos, $"'{l.Var}' is already bound here: the loop's index takes a name of its own (a name is bound once)");
+                frame.Carried.Add((l.Var!, it));
+                firstOps.Add(from.Op);
+                if (range.Inclusive)
+                {
+                    // The index stays inside the range: a hidden flag says when the last round is done, so the
+                    // index never steps past the bound (which could wrap).
+                    frame.Carried.Add((LiveFlag, BoolType.Instance));
+                    firstOps.Add("true");
+                }
+                frame.Range = (l.Var!, it, to, step, range.Inclusive, descending);
+            }
+            else
+            {
+                iterator = EvalAny(l.Source!);
+                var emit = Infer(new MethodCallExpr(l.Source!, "emit_checked", [], [], l.Source!.Pos));
+                if (emit is not VariantType vt || vt.Leaves.Count != 2 || !vt.Leaves.Any(leaf => leaf is RecordType { Decl.Name: "Unit" }))
+                    throw Err(l.Source!.Pos, $"for walks a range (a til b) or an iterator in memory (one whose emit_checked gives Maybe[T]); this is {iterator.Type}");
+                iteratorMaybe = vt;
+                itemType = vt.Leaves.First(leaf => leaf is not RecordType { Decl.Name: "Unit" });
+            }
+        }
+
+        // Into the header, with the phis for the first round.
+        string entryPred = _cur.Label;
+        MemEdge(headerRegion, outerNames, passed, l.Pos);
+        Terminate($"br label %{header.Label}");
+        frame.Incoming.Add((entryPred, firstOps));
+        _cur = header;
+        EnterRegion(headerRegion);
+        _values = new Dictionary<string, Val>(outerValues);
+        int phiAt = header.Lines.Count;
+        var phiOps = new List<string>();
+        foreach (var (name, type) in frame.Carried)
+        {
+            string op = LocalOp(name);
+            phiOps.Add(op);
+            Line("");   // the phi, written once every round's values are known
+            Define(name, new Val(op, type), l.Pos);
+            if (MemOn && OwnedValue(type)) _memTracked.Add(name);
+        }
+        frame.HeaderNames.UnionWith(_values.Keys);
+        var headerValues = _values;
+
+        // The condition: on to the body, or out through then.
+        string cond;
+        string? itemSlot = null;
+        switch (l.Kind)
+        {
+            case LoopKind.While:
+                cond = Eval(l.Cond!, BoolType.Instance).Op;
+                break;
+            case LoopKind.Until:
+                cond = EmitTmp($"xor i1 {Eval(l.Cond!, BoolType.Instance).Op}, true");
+                break;
+            case LoopKind.For when frame.Range is { } r:
+            {
+                string index = _values[r.Name].Op;
+                string pred = r.Descending ? (r.Inclusive ? "ge" : "gt") : (r.Inclusive ? "le" : "lt");
+                string sign = r.Type.IsUnsigned ? "u" : "s";
+                cond = EmitTmp($"icmp {sign}{pred} {r.Type.Llvm} {index}, {r.To.Op}");
+                if (r.Inclusive) cond = EmitTmp($"and i1 {cond}, {_values[LiveFlag].Op}");
+                break;
+            }
+            default:
+            {
+                var item = ItemCall(iterator!, l);
+                itemSlot = NewSlot(iteratorMaybe!);
+                Line($"store {iteratorMaybe!.Llvm} {item.Op}, ptr {itemSlot}");
+                string tag = EmitTmp($"extractvalue {iteratorMaybe.Llvm} {item.Op}, 0");
+                string id = EmitTmp($"trunc {VariantType.Tag.Llvm} {tag} to i32");
+                cond = EmitTmp($"icmp eq i32 {id}, {VariantType.TypeId(itemType!)}");
+                break;
+            }
+        }
+        MemEdge(bodyRegion, pos: l.Pos);
+        MemEdge(thenRegion, pos: l.Pos);
+        Terminate($"br i1 {cond}, label %{body.Label}, label %{thenB.Label}");
+
+        // The body.
+        _cur = body;
+        EnterRegion(bodyRegion);
+        _values = new Dictionary<string, Val>(headerValues);
+        if (itemSlot is not null)
+        {
+            string value;
+            if (_c.VariantStorage(iteratorMaybe!).Aligner is null || _c.SizeAlign(itemType!, default).Size == 0)
+            {
+                _c.EnsureTypeDefined(itemType!);
+                value = "zeroinitializer";
+            }
+            else
+            {
+                string at = EmitTmp($"getelementptr inbounds {iteratorMaybe!.Llvm}, ptr {itemSlot}, i32 0, i32 2");
+                value = EmitTmp($"load {itemType!.Llvm}, ptr {at}");
+            }
+            if (_values.ContainsKey(l.Var!))
+                throw Err(l.VarPos, $"'{l.Var}' is already bound here: the loop's element takes a name of its own (a name is bound once)");
+            Define(l.Var!, new Val(value, itemType!), l.VarPos);
+            DescribeValue(l.Var!, value, itemType!, l.VarPos);
+            if (MemOn && OwnedValue(itemType!)) _memTracked.Add(l.Var!);
+        }
+        _loops.Push(frame);
+        try
+        {
+            EmitLines(l.Body);
+            if (!_cur.Terminated)
+            {
+                if (frame.HasWith)
+                    throw Err(l.Body[^1].Pos, "the body of a loop that carries values ends here without passing them on: "
+                        + $"end every path with continue with {string.Join(", ", l.With.Select(c => $"{c.Name}: ..."))} (or break, or return)");
+                EmitContinue(new ContinueStmt(null, l.Body[^1].Pos));
+            }
+        }
+        finally
+        {
+            _loops.Pop();
+        }
+
+        // `then`, with the carried values as they are when the loop ends on its own.
+        _cur = thenB;
+        EnterRegion(thenRegion);
+        _values = new Dictionary<string, Val>(headerValues);
+        if (frame.Range is { } range2) _values.Remove(range2.Name);
+        _values.Remove(LiveFlag);
+        if (l.Then is not null) EmitBody(l.Then);
+        if (!_cur.Terminated)
+        {
+            MemEdge(afterRegion, outerNames, pos: l.Pos);
+            Terminate($"br label %{after.Label}");
+        }
+
+        // The phis, now that every round's values are known.
+        for (int i = 0; i < frame.Carried.Count; i++)
+        {
+            string edges = string.Join(", ", frame.Incoming.Select(e => $"[ {e.Ops[i]}, %{e.Pred} ]"));
+            header.Lines[phiAt + i] = $"{phiOps[i]} = phi {frame.Carried[i].Type.Llvm} {edges}";
+        }
+        _cur = after;
+        EnterRegion(afterRegion);
+        _values = outerValues;
+    }
+
+    /// `iterator.emit_checked()` for a `for` over an iterator in memory, the iterator evaluated once.
+    private Val ItemCall(Val iterator, LoopStmt l)
+    {
+        string name = "$iterator";
+        _values[name] = iterator;
+        try
+        {
+            return EvalAny(new MethodCallExpr(new ValueRef(name, l.Pos), "emit_checked", [], [], l.Source!.Pos));
+        }
+        finally
+        {
+            _values.Remove(name);
+        }
+    }
+
+    /// The hidden carried value of a `for` over an inclusive range: false once the index has reached the bound.
+    private const string LiveFlag = "$live";
+
+    /// `continue` / `continue with a: a2, ...`: the next round's values go back to the header.
+    private void EmitContinue(ContinueStmt c)
+    {
+        if (_loops.Count == 0) throw Err(c.Pos, "continue goes on with the next round of a loop, and there is no loop here");
+        var loop = _loops.Peek();
+        var with = loop.Carried.Where(v => (loop.Range is not { } r || v.Name != r.Name) && v.Name != LiveFlag).ToList();
+        var given = c.With ?? [];
+        if (with.Count > 0 && c.With is null)
+            throw Err(c.Pos, $"the loop carries values, so each round says what the next one gets: continue with {string.Join(", ", with.Select(v => $"{v.Name}: ..."))}");
+        if (with.Count == 0 && c.With is not null)
+            throw Err(c.Pos, "this loop carries no values (no with), so continue takes none");
+        var ops = new List<string>();
+        var passed = new List<(string Param, string Arg)>();
+        foreach (var (name, type) in with)
+        {
+            var matches = given.Where(g => g.Name == name).ToList();
+            if (matches.Count == 0) throw Err(c.Pos, $"continue with doesn't say what '{name}' is in the next round");
+            if (matches.Count > 1) throw Err(matches[1].Pos, $"continue with names '{name}' twice");
+            var v = Eval(matches[0].Value, type);
+            if (MemName(matches[0].Value) is { } handle) passed.Add((name, handle));
+            ops.Add(v.Op);
+        }
+        foreach (var (name, _, pos) in given)
+            if (with.All(v => v.Name != name))
+                throw Err(pos, loop.Range is { } r && r.Name == name
+                    ? $"'{name}' is the loop's index, which the range steps by itself"
+                    : $"the loop carries no value named '{name}'");
+        if (loop.Range is { } range)
+        {
+            // The next index. An inclusive range's last round clears the flag instead of stepping past the bound.
+            string index = _values[range.Name].Op;
+            string next = EmitTmp($"add {range.Type.Llvm} {index}, {range.Step.Op}");
+            ops.Add(next);
+            if (range.Inclusive) ops.Add(EmitTmp($"icmp ne {range.Type.Llvm} {index}, {range.To.Op}"));
+        }
+        MemEdge(loop.HeaderRegion, loop.HeaderNames, passed, c.Pos);
+        loop.Incoming.Add((_cur.Label, ops));
+        Terminate($"br label %{loop.Header.Label}");
     }
 }

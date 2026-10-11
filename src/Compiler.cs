@@ -1365,15 +1365,14 @@ public sealed partial class Compiler
         var pos = l.Pos;
         var parameters = l.Params.Select((p, i) => new Param(p.Name, new TypeRef("$lambda", [], p.Pos) { Known = ct.Params[i] }, p.Pos)).ToList();
         var ret = new TypeRef("$lambda", [], pos) { Known = ct.Ret };
-        Terminator term = ct.Ret is VoidType
-            ? new TargetTerm(new ReturnTarget(null, pos), pos)
-            : new TargetTerm(new ReturnTarget(l.Body, pos), pos);
-        List<Stmt> stmts = ct.Ret is VoidType ? [new ExprStmt(l.Body, pos)] : [];
+        List<Stmt> stmts = ct.Ret is VoidType
+            ? [new ExprStmt(l.Body, pos), new ReturnStmt(null, pos)]
+            : [new ReturnStmt(l.Body, pos)];
         var annotations = ct.CallConv == "default"
             ? new List<Annotation>()
             : [new Annotation("callconv", [new AnnotationArg(null, ct.CallConv, false)], pos)];
         var decl = new RoutineDecl(around.File, annotations, null, $"lambda_{l.Pos.Line}_{l.Pos.Col}_{h:x8}", [],
-            parameters, ret, [], [new BlockDecl("entry", [], stmts, term, pos)], pos)
+            parameters, ret, [], [new BlockDecl("entry", [], stmts, pos)], pos)
         {
             Module = around.Module, IsPrivate = true, IsLibrary = around.IsLibrary,
         };

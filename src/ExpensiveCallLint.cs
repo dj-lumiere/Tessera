@@ -25,7 +25,11 @@ public static class ExpensiveCallLint
     /// A call the build resolved to an `#expensive` routine, in the block it was written in.
     /// `Arm` is the block an arm goes to when the call is among that arm's arguments (LeavesRoutine for a return or a
     /// `#noreturn` call), null when it is on one of the block's own lines or conditions.
-    public sealed record Call(string Block, string? Arm, Pos Pos, RoutineDecl Callee);
+    public sealed record Call(string Block, string? Arm, Pos Pos, RoutineDecl Callee)
+    {
+        /// Written in the body of a `for`, `while` or `until`.
+        public bool InLoop { get; init; }
+    }
 
     /// The Arm of a call in an arm that leaves the routine.
     public const string LeavesRoutine = "";
@@ -37,7 +41,7 @@ public static class ExpensiveCallLint
         if (r.AnnotationNamed(Annotation) is not { } a) return;
         if (a.Args.Count > 1 || a.Args is [{ Key: not null } or { Negated: true } or { Expr: not null } or { Values: not null }])
             throw new CompileError(a.Pos,
-                "#expensive takes nothing, or one string that says why the routine is expensive: #expensive(\"allocates\")");
+                "@expensive takes nothing, or one string that says why the routine is expensive: @expensive(\"allocates\")");
     }
 
     /// The warnings for the calls of one routine instance: each call written in a block on a loop. The calls come from
@@ -48,9 +52,14 @@ public static class ExpensiveCallLint
         if (calls.Count == 0 || r.AnnotationNamed(Annotation) is not null || r.Blocks is not { Count: > 0 } blocks) return warnings;
         var successors = BlockGraph.Successors(r);
         var loops = BlockGraph.Loops(blocks[0].Name, successors);
-        if (loops.Count == 0) return warnings;
         foreach (var call in calls)
         {
+            if (call.InLoop)
+            {
+                warnings.Add((call.Pos, $"{call.Pos}: warning: {What(call)}, and this call is in a loop, so it runs on every round. Move it "
+                    + "out of the loop, reuse one result across the rounds (a buffer made once, before the loop), or keep it here if each round needs its own"));
+                continue;
+            }
             if (BlockGraph.LoopOf(call.Block, blocks[0].Name, successors, loops) is not { } loop) continue;
             // An arm's arguments run only when the arm is taken: once, when the arm leaves the loop.
             if (call.Arm is { } arm && loops.GetValueOrDefault(arm, -1) != loops[call.Block]) continue;
@@ -59,12 +68,17 @@ public static class ExpensiveCallLint
         return warnings;
     }
 
-    private static string Message(Call call, string head, string closing)
+    private static string What(Call call)
     {
         string callee = call.Callee.DisplayName;
-        string what = call.Callee.AnnotationNamed(Annotation)?.First is { Length: > 0 } reason
-            ? $"'{callee}' {reason} (#expensive)"
-            : $"'{callee}' is #expensive";
+        return call.Callee.AnnotationNamed(Annotation)?.First is { Length: > 0 } reason
+            ? $"'{callee}' {reason} (@expensive)"
+            : $"'{callee}' is @expensive";
+    }
+
+    private static string Message(Call call, string head, string closing)
+    {
+        string what = What(call);
         string loop = head == call.Block && closing == call.Block
             ? $"block '{call.Block}' jumps back to itself"
             : closing == call.Block

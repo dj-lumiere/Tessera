@@ -20,10 +20,7 @@ public static class ChainLint
             _values = ValueNames(r);
             foreach (var s in r.Shared) Stmt(s, warnings);
             foreach (var b in r.Blocks ?? [])
-            {
-                foreach (var s in b.Stmts) Stmt(s, warnings);
-                Terminator(b.Terminator, warnings);
-            }
+                foreach (var s in Bodies.All(b.Stmts)) Stmt(s, warnings);
         }
         return warnings;
     }
@@ -40,10 +37,15 @@ public static class ChainLint
         foreach (var b in r.Blocks ?? [])
         {
             names.UnionWith(b.Params.Select(p => p.Name));
-            foreach (var s in b.Stmts)
+            foreach (var s in Bodies.All(b.Stmts))
             {
                 if (s is BindStmt bind) names.Add(bind.Name);
                 else if (s is DestructureStmt d) names.UnionWith(d.Names.Select(n => n.Name));
+                else if (s is LoopStmt l)
+                {
+                    if (l.Var is not null) names.Add(l.Var);
+                    names.UnionWith(l.With.Select(c => c.Name));
+                }
             }
         }
         return names;
@@ -51,48 +53,7 @@ public static class ChainLint
 
     private static void Stmt(Stmt s, List<string> warnings)
     {
-        switch (s)
-        {
-            case BindStmt b: Expr(b.Value, warnings); break;
-            case ExprStmt e: Expr(e.Value, warnings); break;
-            case DestructureStmt d: Expr(d.Value, warnings); break;
-            case GuardStmt g: Terminator(g.Term, warnings); break;
-        }
-    }
-
-    private static void Terminator(Terminator t, List<string> warnings)
-    {
-        switch (t)
-        {
-            case JumpTerm j: Target(j.Target, warnings); break;
-            case BranchTerm b:
-                Expr(b.Cond, warnings);
-                Target(b.IfTrue, warnings);
-                Target(b.IfFalse, warnings);
-                break;
-            case WhenCondTerm w:
-                foreach (var (cond, target) in w.Arms)
-                {
-                    if (cond is not null) Expr(cond, warnings);
-                    Target(target, warnings);
-                }
-                break;
-            case WhenValueTerm w:
-                Expr(w.Value, warnings);
-                foreach (var (_, target) in w.Arms) Target(target, warnings);
-                break;
-            case TargetTerm t2: Target(t2.Target, warnings); break;
-        }
-    }
-
-    private static void Target(Target t, List<string> warnings)
-    {
-        switch (t)
-        {
-            case CallTarget c: foreach (var a in c.Args) Expr(a, warnings); break;
-            case ReturnTarget { Value: { } v }: Expr(v, warnings); break;
-            case ExprTarget e: Expr(e.Call, warnings); break;
-        }
+        foreach (var e in Bodies.Exprs(s)) Expr(e, warnings);
     }
 
     /// Checks the chain e heads, then the chains inside it (arguments, template holes, operands).
@@ -111,6 +72,7 @@ public static class ChainLint
         MethodCallExpr m => Head(m.Receiver),
         FieldExpr f => Head(f.Base),
         IndexExpr i => Head(i.Base),
+        GetItemExpr g => Head(g.Base),
         _ => e,
     };
 
@@ -120,6 +82,7 @@ public static class ChainLint
         MethodCallExpr m => Operations(m.Receiver) + 1,
         FieldExpr f => Operations(f.Base),
         IndexExpr i => Operations(i.Base),
+        GetItemExpr g => Operations(g.Base),
         CallExpr or NsCallExpr or ImplicitCallExpr => 1,
         _ => 0,
     };
@@ -141,10 +104,27 @@ public static class ChainLint
             case CallExpr c: Args(c.Args, warnings); break;
             case NsCallExpr n: Args(n.Args, warnings); break;
             case ImplicitCallExpr ic: Args(ic.Args, warnings); break;
-            case SelectExpr s:
+            case IfExpr s:
                 Expr(s.Cond, warnings);
-                Expr(s.IfTrue, warnings);
-                Expr(s.IfFalse, warnings);
+                Expr(s.Then, warnings);
+                Expr(s.Else, warnings);
+                break;
+            case BinaryExpr b:
+                Expr(b.Left, warnings);
+                Expr(b.Right, warnings);
+                break;
+            case UnaryExpr u: Expr(u.Operand, warnings); break;
+            case GetItemExpr g:
+                Expr(g.Base, warnings);
+                Expr(g.Index, warnings);
+                break;
+            case RangeExpr r:
+                Expr(r.From, warnings);
+                Expr(r.To, warnings);
+                if (r.Step is not null) Expr(r.Step, warnings);
+                break;
+            case WhenExpr w:
+                foreach (var inner in Bodies.Exprs(w.When)) Expr(inner, warnings);
                 break;
             case RecordLit r: foreach (var (_, v, _) in r.Fields) Expr(v, warnings); break;
             case ClaimExpr { Contents: { } c }: Expr(c, warnings); break;

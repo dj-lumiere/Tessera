@@ -12,10 +12,10 @@ public static class TodoLint
         var warnings = new List<string>();
         foreach (var r in decls.OfType<RoutineDecl>())
         {
-            var todo = (r.Blocks ?? []).Where(b => b.Terminator is TargetTerm { Target: TodoTarget }).ToList();
+            var todo = (r.Blocks ?? []).Where(b => Bodies.All(b.Stmts).OfType<TodoStmt>().Any()).ToList();
             if (todo.Count == 0) continue;
-            string names = string.Join(", ", todo.Select(b => $"'{b.Name}'"));
-            warnings.Add($"{r.Pos}: warning: routine '{r.Name}' has blocks not written yet: {names}");
+            string lines = string.Join(", ", todo.SelectMany(b => Bodies.All(b.Stmts).OfType<TodoStmt>()).Select(t => $"line {t.Pos.Line}"));
+            warnings.Add($"{r.Pos}: warning: routine '{r.Name}' has lines not written yet (todo): {lines}");
         }
         return warnings;
     }

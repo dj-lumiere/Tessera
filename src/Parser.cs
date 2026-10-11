@@ -4,9 +4,30 @@ namespace Tessera;
 
 /// Recursive-descent parser. Layout is not significant: declarations are found by their keywords, statements are
 /// separated by newlines, and a block ends at its terminator.
-public sealed class Parser(List<Token> tokens, string file, bool isLibrary = false, IEnumerable<string>? values = null)
+public sealed class Parser(List<Token> tokens, string file, bool isLibrary = false, IEnumerable<string>? values = null,
+    bool acceptLegacy = false)
 {
     private int _i;
+
+    /// The old spellings the file still uses (`#annotation`, `branch`, `claim`, `return(x)`, `require`), each with the
+    /// new one. The parser reads them so `tessera migrate` can rewrite them, and reports the first one otherwise.
+    public List<(Pos Pos, string Message)> Legacy { get; } = [];
+
+    private void Old(Pos pos, string message)
+    {
+        Legacy.Add((pos, message));
+    }
+
+    /// While the sources are being migrated, the old spellings build everywhere, so a build can check them before
+    /// `tessera migrate` rewrites them. TESSERA_STRICT_SYNTAX reports them instead.
+    public static bool AcceptLegacyEverywhere { get; set; } =
+        Environment.GetEnvironmentVariable("TESSERA_STRICT_SYNTAX") is not { Length: > 0 };
+
+    /// How deep in loops the parser is: `continue` and `break` belong to the innermost one.
+    private int _loopDepth;
+
+    /// How deep in value `when`s the parser is: `becomes` belongs to the innermost one.
+    private int _valueWhenDepth;
 
     /// The values visible where the parser is: inside a block the routine's parameters, the block's, and what the block
     /// has bound so far; null outside a routine body. A bare name that is one of them is that value (the nearest name
@@ -24,17 +45,20 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     [
         "jump", "branch", "when", "return", "unreachable", "continue", "else", "block", "claim", "local",
         "true", "false", "null", "routine", "record", "choice", "variant", "preset", "global", "concept", "conform",
-        "define", "private", "internal", "module", "import", "and", "or", "is", "as", "todo",
+        "protocol", "obeys", "needs", "define", "private", "internal", "module", "import", "and", "or", "not", "is", "as",
+        "todo", "if", "for", "while", "until", "becomes", "break",
     ];
-    /// Inside an `#external("asm")` routine: a statement may carry `#asm_prefix`, and a `branch` may test a bare
+    /// Inside an `@external("asm")` routine: a statement may carry `@asm_prefix`, and an `if` may test a bare
     /// comparison name (`eq`, `lt[U64]`).
     private bool _inAsm;
 
-    private static readonly HashSet<string> TerminatorKeywords =
-        ["jump", "branch", "when", "return", "unreachable", "todo"];
+    /// The words a statement starts with, besides a binding or a call.
+    private static readonly HashSet<string> StatementKeywords =
+        ["jump", "branch", "when", "return", "unreachable", "todo", "if", "for", "while", "until", "continue", "break",
+         "becomes", "local", "claim", "else", "then"];
 
     private static readonly HashSet<string> DeclKeywords =
-        ["routine", "record", "choice", "variant", "preset", "global", "concept", "conform", "define"];
+        ["routine", "record", "choice", "variant", "preset", "global", "concept", "conform", "protocol", "obeys", "define"];
 
     public Module ParseModule()
     {
@@ -66,7 +90,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             bool isInternal = IsIdent("internal");
             if (isPrivate || isInternal) Next();
             if (!IsKeyword(Cur) || !DeclKeywords.Contains(Cur.Text))
-                throw Error($"expected a declaration (routine, record, choice, variant, preset, global, concept, conform, define), found {Describe(Cur)}");
+                throw Error($"expected a declaration (routine, record, choice, variant, preset, global, protocol, obeys, define), found {Describe(Cur)}");
             Decl d = Cur.Text switch
             {
                 "routine" => ParseRoutine(annotations, inConcept: false),
@@ -75,16 +99,18 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 "variant" => ParseVariant(annotations),
                 "preset" => ParsePreset(annotations),
                 "global" => ParseGlobal(annotations),
-                "conform" => ParseConformDecl(annotations),
+                "conform" or "obeys" => ParseConformDecl(annotations),
                 "define" => ParseDefine(annotations),
                 _ => ParseConcept(annotations),
             };
             if (d is not RoutineDecl && annotations.FirstOrDefault(a => a.Name == ExpensiveCallLint.Annotation) is { } expensive)
                 throw new CompileError(expensive.Pos,
-                    "#expensive marks a routine, the one whose calls cost a lot: put it on the routine declaration");
+                    "@expensive marks a routine, the one whose calls cost a lot: put it on the routine declaration");
             decls.Add(d with { IsLibrary = isLibrary, IsPrivate = isPrivate, IsInternal = isInternal, Module = module });
             SkipNewlines();
         }
+        if (Legacy.Count > 0 && !acceptLegacy && !AcceptLegacyEverywhere)
+            throw new CompileError(Legacy[0].Pos, $"{Legacy[0].Message} (tessera migrate rewrites it)");
         return new Module(decls);
     }
 
@@ -183,10 +209,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         _ => $"'{t.Text}'",
     };
 
-    /// True at the start of the next top-level declaration (or the end of the file).
+    /// True at the start of the next top-level declaration (or the end of the file): a declaration keyword, or an
+    /// annotation at the start of a line (one inside a body sits further in).
     private bool AtDeclStart() =>
-        Is(TokenKind.Eof) || Is(TokenKind.Hash)
-        || (IsKeyword(Cur) && (DeclKeywords.Contains(Cur.Text) || Cur.Text is "private" or "internal"));
+        Is(TokenKind.Eof) || (Is(TokenKind.Hash) && Cur.Pos.Col == 1)
+        || (IsKeyword(Cur) && (DeclKeywords.Contains(Cur.Text) || Cur.Text is "private" or "internal") && Cur.Pos.Col == 1);
 
     // ── Annotations and clauses ──────────────────────────────────────────────
 
@@ -195,7 +222,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var annotations = new List<Annotation>();
         while (Is(TokenKind.Hash))
         {
-            Next();
+            var hash = Next();
+            if (hash.Text == "#") Old(hash.Pos, "an annotation is written @name, not #name");
             if (Accept(TokenKind.LBracket))
             {
                 do annotations.Add(ParseAnnotation()); while (Accept(TokenKind.Comma));
@@ -253,7 +281,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     {
         var open = Next();
         if (key is null)
-            throw new CompileError(open.Pos, "a list of values follows a key, as in #target(os: (\"linux\", \"macos\"))");
+            throw new CompileError(open.Pos, "a list of values follows a key, as in @target(os: (\"linux\", \"macos\"))");
         var values = new List<string>();
         if (!Is(TokenKind.RParen))
         {
@@ -271,13 +299,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new AnnotationArg(key, values[0], negated, Values: values);
     }
 
-    /// `require ...` and `conform ...` lines after a declaration header. They follow it line by line: after a blank
-    /// line, a `conform` starts a declaration of its own.
+    /// `needs ...` and `obeys ...` lines after a declaration header. They follow it line by line: after a blank
+    /// line, an `obeys` starts a declaration of its own.
     private List<Clause> ParseClauses()
     {
         var clauses = new List<Clause>();
-        while ((IsIdent("require") || IsIdent("conform"))
-               && _i > 0 && tokens[_i - 1] is { Kind: TokenKind.Newline } nl && nl.Pos.Line == Cur.Pos.Line - 1)
+        while (IsClauseStart() && _i > 0 && tokens[_i - 1] is { Kind: TokenKind.Newline } nl && nl.Pos.Line == Cur.Pos.Line - 1)
         {
             clauses.Add(ParseClause());
             SkipNewlines();
@@ -285,11 +312,21 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return clauses;
     }
 
-    /// One clause line. `require` lists parameters (`T: typename`, `N: USize`) and concept constraints (`Equatable[T]`);
-    /// `conform` lists concepts, optionally followed by `when` and the constraints under which it holds.
+    private bool IsClauseStart() => IsIdent("needs") || IsIdent("obeys") || IsIdent("require") || IsIdent("conform");
+
+    /// One clause line. `needs` lists parameters (`T: typename`, `N: USize`) and protocol constraints (`Equatable[T]`);
+    /// `obeys` lists protocols, optionally followed by `when` and the constraints under which it holds.
     private Clause ParseClause()
     {
-        string kind = Next().Text;
+        var word = Next();
+        string kind = word.Text switch
+        {
+            "needs" => "require",
+            "obeys" => "conform",
+            _ => word.Text,
+        };
+        if (word.Text == "require") Old(word.Pos, "a constraint line is written needs, not require");
+        if (word.Text == "conform") Old(word.Pos, "a conformance line is written obeys, not conform");
         int start = _i;
         var parameters = new List<(string, TypeRef, Pos)>();
         var concepts = new List<TypeRef>();
@@ -315,8 +352,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         else
         {
             do concepts.Add(ParseType()); while (Accept(TokenKind.Comma));
-            if (IsIdent("require"))
-                throw Error("a conformance's conditions are written with 'when': conform Equatable[Option[T]] when T: typename, Equatable[T]");
+            if (IsIdent("needs") || IsIdent("require"))
+                throw Error("a conformance's conditions are written with 'when': obeys Equatable[Option[T]] when T: typename, Equatable[T]");
             if (IsIdent("when"))
             {
                 Next();
@@ -328,13 +365,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new Clause(kind, toks) { Params = parameters, Concepts = concepts, When = when };
     }
 
-    /// `conform C[X, ...] [when ...]` at top level, then `require` lines for its type parameters.
+    /// `obeys C[X, ...] [when ...]` at top level, then `needs` lines for its type parameters.
     private ConformDecl ParseConformDecl(List<Annotation> annotations)
     {
         var pos = Cur.Pos;
         var clauses = new List<Clause> { ParseClause() };
         SkipNewlines();
-        while (IsIdent("require"))
+        while (IsIdent("needs") || IsIdent("require"))
         {
             clauses.Add(ParseClause());
             SkipNewlines();
@@ -342,40 +379,43 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new ConformDecl(file, annotations, clauses, pos);
     }
 
-    /// `#source("gcd.mini", 5, 9)`: a place in a generator's input, the column optional. A relative file is relative
+    /// `@source("gcd.mini", 5, 9)`: a place in a generator's input, the column optional. A relative file is relative
     /// to this file's directory.
     private Pos SourceOf(Annotation a)
     {
         if (a.Args.Count is < 2 or > 3 || a.Args.Any(x => x.Key is not null || x.Expr is not null))
-            throw new CompileError(a.Pos, "#source takes a file, a line and an optional column: #source(\"gcd.mini\", 5, 9)");
+            throw new CompileError(a.Pos, "@source takes a file, a line and an optional column: @source(\"gcd.mini\", 5, 9)");
         if (!int.TryParse(a.Args[1].Value, out int line) || line < 1)
-            throw new CompileError(a.Pos, $"#source's line is a number from 1, not {a.Args[1].Value}");
+            throw new CompileError(a.Pos, $"@source's line is a number from 1, not {a.Args[1].Value}");
         int col = 0;
         if (a.Args.Count == 3 && (!int.TryParse(a.Args[2].Value, out col) || col < 1))
-            throw new CompileError(a.Pos, $"#source's column is a number from 1, not {a.Args[2].Value}");
+            throw new CompileError(a.Pos, $"@source's column is a number from 1, not {a.Args[2].Value}");
         string path = a.Args[0].Value;
         if (!Path.IsPathRooted(path)) path = Path.Combine(Path.GetDirectoryName(file) ?? "", path);
         return new Pos(path, line, col);
     }
 
-    /// Whether a block comes next, and the `#source` on the line before it if any. Annotations that aren't followed
+    /// Whether a block comes next, and the `@source` on the line before it if any. Annotations that aren't followed
     /// by a block belong to the next declaration, so they're left for it.
     private (bool IsBlock, Pos? Source) NextBlockSource()
     {
         // `block: S64 = 1` is a value named like the keyword, which the line itself reports.
-        if (!Is(TokenKind.Hash)) return (IsIdent("block") && PeekTok(1).Kind != TokenKind.Colon, null);
+        if (!Is(TokenKind.Hash)) return (IsBlockHeader(), null);
         int start = _i;
         var annotations = ParseAnnotations();
-        if (!IsIdent("block"))
+        if (!IsBlockHeader())
         {
             _i = start;
             return (false, null);
         }
         Pos? source = null;
         foreach (var a in annotations)
-            source = a.Name == "source" ? SourceOf(a) : throw new CompileError(a.Pos, $"a block takes #source, not #{a.Name}");
+            source = a.Name == "source" ? SourceOf(a) : throw new CompileError(a.Pos, $"a block takes @source, not @{a.Name}");
         return (true, source);
     }
+
+    /// `block name(...)` at the start of a line: a block of the routine.
+    private bool IsBlockHeader() => IsIdent("block") && PeekTok(1).Kind == TokenKind.Ident && PeekTok(2).Kind == TokenKind.LParen;
 
     /// Every type name a type is written with: `Ptr`, `U` in `@U`, `Array`, `T` and `COUNT` in `Array[T, COUNT]`.
     private static IEnumerable<string> NamesIn(TypeRef t) =>
@@ -461,6 +501,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
 
         var source = annotations.FirstOrDefault(a => a.Name == "source") is { } src ? SourceOf(src) : (Pos?)null;
+        int headerEnd = _i > 0 ? tokens[_i - 1].Pos.Line : pos.Line;
         if (inConcept)
             return new RoutineDecl(file, annotations, owner, name, typeParams, parameters, ret, clauses, null, pos) { Fixed = fixedArgs };
 
@@ -475,8 +516,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         _i = afterHead;
         if (!blockNext)
         {
-            // An annotation line inside the body (`#source(...)` before its first line) starts no declaration.
-            if (AtDeclStart() && !(Is(TokenKind.Hash) && Cur.Pos.Col > 1))
+            if (AtDeclStart())
             {
                 if (shared.Count > 0)
                     throw new CompileError(shared[0].Pos,
@@ -488,7 +528,15 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             // The lines before the first block are the entry block.
             _blockName = "entry";
             _values = [.. _routineValues];
-            blocks.Add(ParseBlockBody("entry", [], Cur.Pos, implicitEntry: true));
+            var entryPos = Cur.Pos;
+            // A routine's lines sit further in than its header, which starts its line (after `private` if any).
+            var stmts = ParseBody(1, routineLevel: true);
+            if (!Bodies.Leaves(stmts))
+                throw new CompileError(entryPos, IsBlockHeader() && PeekTok(1).Text == "entry"
+                    ? $"the lines after the head of routine '{display}' are its entry block, and a 'block entry()' "
+                      + "follows them: move those lines into the block, or end them with return and drop the block's header"
+                    : $"the lines of routine '{display}' can run off their end: end them with return (or a jump, or a call that never returns)");
+            blocks.Add(new BlockDecl("entry", [], stmts, entryPos));
         }
 
         while (NextBlockSource() is var (isBlock, blockSource) && isBlock)
@@ -499,8 +547,28 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             throw new CompileError(blocks[0].Pos, $"the first block of routine '{display}' must be 'entry'");
         if (blocks[0].Params.Count != 0)
             throw new CompileError(blocks[0].Pos, "the entry block takes no parameters");
+        ResolveBlockCalls(blocks);
+        int endLine = _i > 0 ? tokens[_i - 1].Pos.Line : pos.Line;
         return new RoutineDecl(file, annotations, owner, name, typeParams, parameters, ret, clauses, blocks, pos)
-            { Fixed = fixedArgs, Source = source, Shared = shared };
+            { Fixed = fixedArgs, Source = source, Shared = shared, HeaderEndLine = headerEnd, EndLine = endLine };
+    }
+
+    /// A call written as a `when` arm or an `if` arm in the old form (`c ? done() : next(i)`) names a block when the
+    /// routine has one of that name: it is a jump to it.
+    private void ResolveBlockCalls(List<BlockDecl> blocks)
+    {
+        var names = blocks.Select(b => b.Name).ToHashSet();
+        foreach (var b in blocks) ResolveBlockCalls(b.Stmts, names);
+    }
+
+    private void ResolveBlockCalls(List<Stmt> body, HashSet<string> names)
+    {
+        for (int i = 0; i < body.Count; i++)
+        {
+            if (body[i] is ExprStmt { Value: CallExpr { Path: null, TypeArgs.Count: 0 } c } e && names.Contains(c.Name))
+                body[i] = new JumpStmt(c.Name, c.Args, e.Pos) { ArgNames = c.ArgNames, Source = e.Source };
+            foreach (var inner in Bodies.Inner(body[i])) ResolveBlockCalls(inner, names);
+        }
     }
 
     /// The routine's head: its `local` lines, between the header (and its `require` lines) and the first block.
@@ -524,7 +592,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 foreach (var a in lineAnnotations)
                     lineSource = a.Name == "source"
                         ? SourceOf(a)
-                        : throw new CompileError(a.Pos, $"a local line takes #source, not #{a.Name}");
+                        : throw new CompileError(a.Pos, $"a local line takes @source, not @{a.Name}");
             }
             if (!IsIdent("local") || PeekTok(1).Kind == TokenKind.Colon) break;
             if (_inAsm)
@@ -547,9 +615,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return shared;
     }
 
-    /// `local NAME: T = value` (a value) or `local NAME: @T <- value` (a slot, what `claim` makes in
-    /// a block). Both parse as a BindStmt, the slot over a ClaimExpr: the shapes a block's lines have.
-    private BindStmt ParseLocal()
+    /// `local NAME: T = value` (a value, in the head only) or `local NAME: @T <- value` (a slot in the frame). Both
+    /// parse as a BindStmt, the slot over a ClaimExpr.
+    private BindStmt ParseLocal(bool inHead = true)
     {
         var pos = Next().Pos;
         string name = ValueName("the name of a local value: local x: T = value").Text;
@@ -564,7 +632,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             return MemoryBinding(name, type, pos);
         }
         if (!Is(TokenKind.Eq))
-            throw Error($"a local line gives a value with '=' or a slot's contents with '<-': local {name}: {type} = value");
+            throw Error(inHead
+                ? $"a local line gives a value with '=' or a slot's contents with '<-': local {name}: {type} = value"
+                : $"local makes memory: local {name}: @{type} <- value; a value is bound without it, {name}: {type} = value");
+        if (!inHead)
+            throw Error($"local makes memory: local {name}: @{type} <- value; a value is bound without it, {name}: {type} = value");
         Next();
         var value = ParseExpr();
         if (value is AtExpr at)
@@ -600,7 +672,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             var f = Expect(TokenKind.Ident, "a field name");
             if (fieldAnnotations.FirstOrDefault(a => a.Name == ExpensiveCallLint.Annotation) is { } expensive)
                 throw new CompileError(expensive.Pos,
-                    "#expensive marks a routine, the one whose calls cost a lot, not a field");
+                    "@expensive marks a routine, the one whose calls cost a lot, not a field");
             Expect(TokenKind.Colon, "':' after the field name");
             fields.Add(new FieldDecl(f.Text, ParseType(), fieldAnnotations, f.Pos, isPrivate, isInternal));
             ExpectLineEnd();
@@ -748,8 +820,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private ConceptDecl ParseConcept(List<Annotation> annotations)
     {
         var pos = Cur.Pos;
-        ExpectIdent("concept");
-        var name = TypeName(Expect(TokenKind.Ident, "a concept name"));
+        var word = Next();
+        if (word.Text == "concept") Old(word.Pos, "a protocol is declared with protocol, not concept");
+        var name = TypeName(Expect(TokenKind.Ident, "a protocol name"));
         var typeParams = ParseTypeParamNames();
         ExpectLineEnd();
         var clauses = ParseClauses();
@@ -905,12 +978,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             { Path = "Standard/Core" };
     }
 
-    /// `Name` or `Standard/Collections/Name`: the module path, if any, and the name.
+    /// `Name` or `Standard/Collections/Name`: the module path, if any, and the name. A `/` is a path separator
+    /// between a PascalCase module name and a name written right against it, and division otherwise (`a / b`).
     private (string? Path, Token Name) ParseQualifiedName(string what)
     {
         var name = Expect(TokenKind.Ident, what);
         string? path = null;
-        while (Is(TokenKind.Slash) && PeekTok(1).Kind == TokenKind.Ident)
+        while (IsPathSeparator(name))
         {
             Next();
             path = path is null ? name.Text : $"{path}/{name.Text}";
@@ -918,6 +992,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
         return (path, name);
     }
+
+    private bool IsPathSeparator(Token before) =>
+        Is(TokenKind.Slash) && PeekTok(1).Kind == TokenKind.Ident && !before.Escaped
+        && char.IsAsciiLetterUpper(before.Text[0]) && before.Pos.Line == Cur.Pos.Line
+        && before.Pos.Col + before.Text.Length == Cur.Pos.Col && Cur.Pos.Col + 1 == PeekTok(1).Pos.Col;
 
     /// Generic arguments. A parenthesized list is a tuple type, except `Callable`'s first one, its parameter list:
     /// `Callable[(S64, S64), (S64, S64)]` takes two S64s and returns a pair.
@@ -953,7 +1032,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private TypeArg ParseTypeArg()
     {
         if (Is(TokenKind.Int)) return new TypeArgInt(Low64(Next().IntValue));
-        if (Accept(TokenKind.Hash)) return new TypeArgAnnotation(ParseAnnotation());
+        if (Is(TokenKind.Hash))
+        {
+            var hash = Next();
+            if (hash.Text == "#") Old(hash.Pos, "an annotation is written @name, not #name");
+            return new TypeArgAnnotation(ParseAnnotation());
+        }
         if (Accept(TokenKind.LParen))
         {
             // A one-element tuple is written `(T,)`, so a trailing comma is allowed.
@@ -974,7 +1058,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new TypeArgExpr(ParseExpr());
     }
 
-    // ── Blocks and statements ───────────────────────────────────────────────
+    // ── Blocks and bodies ───────────────────────────────────────────────────
 
     private BlockDecl ParseBlock()
     {
@@ -991,32 +1075,32 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                   + $"'{_routineDisplay}' (line {shared.Pos.Line}), which every block already sees: use '{p.Name}' itself, "
                   + "or give a value that changes its own name"
                 : $"block '{name.Text}' has a parameter named '{p.Name}', like the routine's parameter, which every block "
-                  + $"already sees: use '{p.Name}' itself, or give a value that changes its own name (or claim a slot for it)");
+                  + $"already sees: use '{p.Name}' itself, or give a value that changes its own name (or keep it in a local slot)");
         ExpectLineEnd();
         _values = [.. _routineValues, .. parameters.Select(p => p.Name)];
-        return ParseBlockBody(name.Text, parameters, pos);
+        var stmts = ParseBody(pos.Col, routineLevel: true);
+        if (!Bodies.Leaves(stmts))
+            throw new CompileError(pos, $"block '{name.Text}' can run off its end: end it with return, a jump, or a call that never returns");
+        return new BlockDecl(name.Text, parameters, stmts, pos);
     }
 
-    /// The error for a block whose lines stop before a terminator. Lines after a routine's head that run into a
-    /// `block entry()` are an entry block of their own, which says so.
-    private CompileError Unterminated(string block, Pos pos, bool implicitEntry) =>
-        new(pos, implicitEntry && IsIdent("block") && PeekTok(1).Text == "entry"
-            ? $"the lines after the head of routine '{_routineDisplay}' are its entry block, and a 'block entry()' "
-              + "follows them: move those lines into the block, or end them with a terminator and drop the block's header"
-            : $"block '{block}' does not end with a terminator");
-
-    /// A block's lines, up to and including its terminator.
-    private BlockDecl ParseBlockBody(string blockName, List<Param> parameters, Pos pos, bool implicitEntry = false)
+    /// The lines of a body: those written further in than the column `parentCol`, all at one column, up to the next
+    /// line at or before that column (an `else`, a `then`, a block header, or the next declaration). A body is a
+    /// naming scope: what it binds isn't visible after it.
+    private List<Stmt> ParseBody(int parentCol, bool routineLevel = false)
     {
-        var name = (Text: blockName, Pos: pos);
         var stmts = new List<Stmt>();
+        var outer = _values is null ? null : new HashSet<string>(_values);
+        int bodyCol = -1;
         while (true)
         {
             KeywordBinding();
-            // Annotations on the line before a line of the block: `#source(...)` on any, and `#asm_prefix("lock")` on an
-            // instruction of an assembly routine.
-            if (AtBlockEnd())
-                throw Unterminated(name.Text, pos, implicitEntry);
+            if (AtBodyEnd(parentCol, routineLevel)) break;
+            if (bodyCol < 0) bodyCol = Cur.Pos.Col;
+            else if (Cur.Pos.Col != bodyCol)
+                throw Error(Cur.Pos.Col > bodyCol
+                    ? "this line sits further in than the body it is in: the lines of a body sit at one column"
+                    : "this line sits further out than the body it is in, and further in than the line that opens the body");
             Pos? lineSource = null;
             List<Annotation> prefixes = [];
             if (Is(TokenKind.Hash))
@@ -1027,69 +1111,34 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     else if (a.Name == "asm_prefix" && _inAsm) prefixes.Add(a);
                     else
                         throw new CompileError(a.Pos, _inAsm
-                            ? $"a line of a block takes #source or #asm_prefix, not #{a.Name}"
-                            : $"a line of a block takes #source, not #{a.Name}");
+                            ? $"a line of a body takes @source or @asm_prefix, not @{a.Name}"
+                            : $"a line of a body takes @source, not @{a.Name}");
                 }
-                if (AtBlockEnd())
+                if (AtBodyEnd(parentCol, routineLevel))
                     throw new CompileError(Cur.Pos, "an annotation goes on the line before the line it describes");
             }
-            if (AtBlockEnd())
-                throw Unterminated(name.Text, pos, implicitEntry);
-
-            if (IsKeyword(Cur) && TerminatorKeywords.Contains(Cur.Text))
-            {
-                if (prefixes.Count > 0) throw new CompileError(prefixes[0].Pos, "#asm_prefix goes on the line before an instruction");
-                var term = ParseTerminator() with { Source = lineSource };
-                if (!HasContinue(term)) return new BlockDecl(name.Text, parameters, stmts, term, pos);
-                // a `continue` arm goes on with the next line, so the block isn't over
-                if (term is not (BranchTerm or WhenCondTerm or WhenValueTerm))
-                    throw new CompileError(term.Pos, "continue is an arm of branch or when");
-                KeywordBinding();
-                if (AtBlockEnd())
-                    throw new CompileError(term.Pos, "a continue arm needs lines after it; the block still ends with a terminator");
-                stmts.Add(new GuardStmt(term, term.Pos) { Source = lineSource });
-                continue;
-            }
-
-            var stmt = ParseStmt() with { Source = lineSource };
-            ExpectLineEnd();
-            switch (stmt)
-            {
-                case BindStmt bind: _values!.Add(bind.Name); break;
-                case DestructureStmt d: _values!.UnionWith(d.Names.Select(n => n.Name)); break;
-            }
+            var stmt = ParseStmt(bodyCol) with { Source = lineSource };
             if (prefixes.Count > 0)
                 stmt = stmt is ExprStmt instruction
                     ? instruction with { Annotations = prefixes }
-                    : throw new CompileError(prefixes[0].Pos, "#asm_prefix goes on the line before an instruction");
-
-            // A bare call as the last line of a block is a #noreturn terminator, such as `crash_overflow()`.
-            if (AtBlockEnd() && stmt is ExprStmt e)
-                return new BlockDecl(name.Text, parameters, stmts,
-                    new TargetTerm(new ExprTarget(e.Value, e.Pos), e.Pos) { Source = e.Source }, pos);
-
+                    : throw new CompileError(prefixes[0].Pos, "@asm_prefix goes on the line before an instruction");
             stmts.Add(stmt);
         }
+        if (_values is not null && outer is not null) _values = outer;
+        return stmts;
     }
 
-    /// `block: S64 = 1` or `record: Addr = ...` binds a value named like a keyword, which needs backticks: said so
-    /// here, before the keyword is read as the next block or declaration.
-    private void KeywordBinding()
+    /// Whether the body is over: a line at or before the column that opens it, a block header, or a declaration.
+    private bool AtBodyEnd(int parentCol, bool routineLevel)
     {
-        if (IsKeyword(Cur) && Cur.Text != "when" && ReservedValueNames.Contains(Cur.Text) && PeekTok(1).Kind == TokenKind.Colon)
-            ValueName("a value name");
-    }
-
-    /// Whether the block is over: a declaration or another block comes next. Annotation lines end it when one of
-    /// those follows them. Before a line of the block (`#source(...)`) they don't.
-    private bool AtBlockEnd()
-    {
-        if (!Is(TokenKind.Hash)) return AtDeclStart() || (IsIdent("block") && PeekTok(1).Kind != TokenKind.Colon);
+        if (Is(TokenKind.Eof)) return true;
+        if (!Is(TokenKind.Hash))
+            return Cur.Pos.Col <= parentCol || AtDeclStart() || (routineLevel && IsBlockHeader());
         int start = _i;
         try
         {
             ParseAnnotations();
-            return AtDeclStart() || IsIdent("block");
+            return Cur.Pos.Col <= parentCol || AtDeclStart() || (routineLevel && IsBlockHeader());
         }
         catch (CompileError)
         {
@@ -1101,8 +1150,15 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
     }
 
-    /// Whether the current line is a `when` arm: it has a `=>` before its end. Layout doesn't matter, so this is
-    /// how the arms end when lines follow a `when` with a `continue` arm.
+    /// `block: S64 = 1` or `record: Addr = ...` binds a value named like a keyword, which needs backticks: said so
+    /// here, before the keyword is read as the next block or declaration.
+    private void KeywordBinding()
+    {
+        if (IsKeyword(Cur) && Cur.Text != "when" && ReservedValueNames.Contains(Cur.Text) && PeekTok(1).Kind == TokenKind.Colon)
+            ValueName("a value name");
+    }
+
+    /// Whether the current line is a `when` arm: it has a `=>` before its end.
     private bool LineIsArm()
     {
         // A lambda's `=>` sits inside parentheses, or after the `=` or `<-` of a binding: neither leads an arm.
@@ -1129,23 +1185,44 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                && (k == 0 || PeekTok(k - 1).Kind is TokenKind.LParen or TokenKind.Comma or TokenKind.Colon);
     }
 
-    private static bool HasContinue(Terminator t) => t switch
-    {
-        BranchTerm b => b.IfTrue is ContinueTarget || b.IfFalse is ContinueTarget,
-        WhenCondTerm w => w.Arms.Any(a => a.Target is ContinueTarget),
-        WhenValueTerm w => w.Arms.Any(a => a.Target is ContinueTarget),
-        TargetTerm { Target: ContinueTarget } => true,
-        _ => false,
-    };
-
-    private Stmt ParseStmt()
+    /// One line of a body, with the body it opens if it opens one. `col` is the column the line sits at.
+    private Stmt ParseStmt(int col)
     {
         var pos = Cur.Pos;
-        if (IsIdent("claim")) return ParseClaim();
-        if (IsIdent("local") && PeekTok(1).Kind == TokenKind.Ident)
-            throw Error($"a local value is declared in the head of routine '{_routineDisplay}', between its header and "
-                        + "'block entry()', where every block sees it: move this line up there, or bind the value in this "
-                        + "block without 'local'");
+        if (IsKeyword(Cur) && StatementKeywords.Contains(Cur.Text) && !StartsValue())
+        {
+            switch (Cur.Text)
+            {
+                case "if": return ParseIf(col);
+                case "for" or "while" or "until": return ParseLoop(col);
+                case "when": return ParseWhen(col, asValue: false);
+                case "else": throw Error("'else' follows the body of an if or a when arm, at the same column as the if");
+                case "then": throw Error("'then' follows the body of a loop, at the same column as the loop");
+                case "local":
+                {
+                    var line = ParseLocal(inHead: false);
+                    ExpectLineEnd();
+                    _values!.Add(line.Name);
+                    return line;
+                }
+                case "claim":
+                {
+                    Old(pos, "a slot is claimed with local, not claim");
+                    var line = (BindStmt)ParseClaim();
+                    ExpectLineEnd();
+                    _values!.Add(line.Name);
+                    return line;
+                }
+                case "branch":
+                    return ParseBranch(col);
+                default:
+                {
+                    var leave = ParseLeave();
+                    ExpectLineEnd();
+                    return leave;
+                }
+            }
+        }
         if (Cur.Kind == TokenKind.Ident && PeekTok(1).Kind == TokenKind.Colon)
         {
             string name = ValueName("a value name").Text;
@@ -1154,9 +1231,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (Is(TokenKind.Comma))
                 throw Error("a tuple's items take their types from the tuple: write a, b = ... without types");
             Expect(TokenKind.Eq, "'='");
-            var value = ParseExpr();
+            var value = ParseValue(col);
             if (value is AtExpr at)
-                throw new CompileError(at.Pos, $"memory from a manager is claimed: claim {name}: {type} <- ... at manager");
+                throw new CompileError(at.Pos, $"memory from a manager goes in a slot: local {name}: {type} <- ... at manager");
+            if (value is not WhenExpr) ExpectLineEnd();
+            _values!.Add(name);
             return new BindStmt(name, type, value, pos);
         }
         if (Cur.Kind == TokenKind.Ident && PeekTok(1).Kind == TokenKind.Comma)
@@ -1170,107 +1249,356 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (Is(TokenKind.Colon))
                 throw Error("a tuple's items take their types from the tuple: write a, b = ... without types");
             Expect(TokenKind.Eq, "'='");
-            return new DestructureStmt(names, ParseExpr(), pos);
+            var value = ParseValue(col);
+            if (value is not WhenExpr) ExpectLineEnd();
+            foreach (var (n, _) in names) _values!.Add(n);
+            return new DestructureStmt(names, value, pos);
         }
 
         var lhs = ParsePostfix();
+        // `xs[i] = v` stores through setitem.
+        if (Is(TokenKind.Eq) && lhs is GetItemExpr item)
+        {
+            Next();
+            var value = ParseExpr();
+            ExpectLineEnd();
+            return new ExprStmt(new MethodCallExpr(item.Base, "setitem", [], [item.Index, value], item.Pos) { FromOperator = true }, pos);
+        }
         if (lhs is not (CallExpr or NsCallExpr or MethodCallExpr or ImplicitCallExpr))
             throw new CompileError(pos, "a statement must be a binding or a call");
+        ExpectLineEnd();
         return new ExprStmt(lhs, pos);
     }
 
-    // ── Terminators ─────────────────────────────────────────────────────────
+    /// A keyword at the head of a line that is a value's name after all: `then: U64 = 1`, `until.poke(0)`.
+    private bool StartsValue() => PeekTok(1).Kind is TokenKind.Colon or TokenKind.Dot or TokenKind.Comma or TokenKind.Eq;
 
-    private Terminator ParseTerminator()
+    /// The value a binding takes: an expression on the line, or a `when` whose arms follow on the lines below.
+    private Expr ParseValue(int col)
     {
-        var pos = Cur.Pos;
-        switch (Cur.Text)
+        if (IsIdent("when") && !StartsValue()) return ParseWhenValue(col);
+        return ParseExpr();
+    }
+
+    /// `if c` and its body, then `else if c2` / `else` and theirs at the same column.
+    private IfStmt ParseIf(int col)
+    {
+        var pos = Next().Pos;
+        var cond = ParseCondition();
+        ExpectLineEnd();
+        var then = ParseBody(col);
+        List<Stmt>? otherwise = null;
+        if (IsIdent("else") && Cur.Pos.Col == col)
         {
-            case "jump":
+            Next();
+            if (IsIdent("if") && !StartsValue()) otherwise = [ParseIf(col)];
+            else
             {
-                Next();
-                var t = ParseTarget();
-                if (t is not CallTarget ct) throw new CompileError(t.Pos, "jump needs a block target");
                 ExpectLineEnd();
-                return new JumpTerm(ct, pos);
-            }
-            case "branch":
-            {
-                Next();
-                var cond = _inAsm && AsmCondition() is { } named ? named : ParsePostfix();
-                Expect(TokenKind.Question, "'?'");
-                var a = ParseTarget();
-                Expect(TokenKind.Colon, "':'");
-                var b = ParseTarget();
-                ExpectLineEnd();
-                return new BranchTerm(cond, a, b, pos);
-            }
-            // `when` alone takes the first arm whose condition holds; `when v` matches one value against constants.
-            case "when" when PeekTok(1).Kind is TokenKind.Newline or TokenKind.Eof:
-            {
-                Next();
-                ExpectLineEnd();
-                var arms = new List<(Expr?, Target)>();
-                while (!AtBlockEnd() && LineIsArm())   // an arm has `=>`; the first line without one follows the when
-                {
-                    Expr? cond = AcceptElse() ? null : ParseExpr();
-                    Expect(TokenKind.FatArrow, "'=>'");
-                    arms.Add((cond, ParseTarget()));
-                    ExpectLineEnd();
-                }
-                if (arms.Count == 0) throw new CompileError(pos, "when needs at least one arm");
-                return new WhenCondTerm(arms, pos);
-            }
-            case "when":
-            {
-                Next();
-                var value = ParsePostfix();
-                ExpectLineEnd();
-                var arms = new List<(List<Expr>?, Target)>();
-                ValueRef? elseBinding = null;
-                while (!AtBlockEnd() && LineIsArm())
-                {
-                    // `else` (`else as rest`), observations (`is S64 as n`, `is Unit, is Empty`), or one or more
-                    // constants (`b' ', b'\t' => skip()`)
-                    List<Expr>? cases = null;
-                    if (AcceptElse())
-                    {
-                        if (IsIdent("as"))
-                        {
-                            Next();
-                            elseBinding = BindName();
-                        }
-                    }
-                    else
-                    {
-                        cases = [];
-                        do cases.Add(IsIdent("is") ? ParseIsPattern() : ParsePostfix());
-                        while (Accept(TokenKind.Comma));
-                    }
-                    Expect(TokenKind.FatArrow, "'=>'");
-                    arms.Add((cases, ParseTarget()));
-                    ExpectLineEnd();
-                }
-                if (arms.Count == 0) throw new CompileError(pos, "when needs at least one arm");
-                return new WhenValueTerm(value, arms, pos) { ElseBinding = elseBinding };
-            }
-            default:
-            {
-                var t = ParseTarget();
-                ExpectLineEnd();
-                return new TargetTerm(t, pos);
+                otherwise = ParseBody(col);
+                if (otherwise.Count == 0) throw new CompileError(pos, "else needs lines of its own under it");
             }
         }
+        if (then.Count == 0) throw new CompileError(pos, "if needs lines of its own under it");
+        return new IfStmt(cond, then, otherwise, pos);
+    }
+
+    /// The condition of an `if`, a `while`, or an `until`: a Bool expression, or in assembly a comparison name.
+    private Expr ParseCondition() => _inAsm && AsmCondition() is { } named ? named : ParseExpr();
+
+    /// `for x in source`, `while c`, `until c`, each with `with a: T = init, ...`, a body, and `then` with a body.
+    private LoopStmt ParseLoop(int col)
+    {
+        var word = Next();
+        var kind = word.Text switch { "for" => LoopKind.For, "while" => LoopKind.While, _ => LoopKind.Until };
+        string? variable = null;
+        Pos varPos = default;
+        Expr? source = null, cond = null;
+        if (kind == LoopKind.For)
+        {
+            var name = ValueName("the name each element takes: for x in ...");
+            variable = name.Text;
+            varPos = name.Pos;
+            if (!IsIdent("in")) throw Error($"expected 'in' after '{variable}': for {variable} in ...");
+            Next();
+            source = ParseExpr();
+        }
+        else cond = ParseCondition();
+        var with = new List<Carried>();
+        if (IsIdent("with"))
+        {
+            Next();
+            do
+            {
+                var n = ValueName("the name of a carried value: with a: T = init");
+                Expect(TokenKind.Colon, "':' and the carried value's type");
+                var type = ParseType();
+                Expect(TokenKind.Eq, "'=' and the carried value's first value");
+                with.Add(new Carried(n.Text, type, ParseExpr(), n.Pos));
+            } while (Accept(TokenKind.Comma));
+        }
+        ExpectLineEnd();
+        var outer = _values is null ? null : new HashSet<string>(_values);
+        if (variable is not null) _values?.Add(variable);
+        foreach (var c in with) _values?.Add(c.Name);
+        _loopDepth++;
+        var body = ParseBody(col);
+        _loopDepth--;
+        if (body.Count == 0) throw new CompileError(word.Pos, $"{word.Text} needs lines of its own under it");
+        List<Stmt>? then = null;
+        if (IsIdent("then") && Cur.Pos.Col == col)
+        {
+            Next();
+            ExpectLineEnd();
+            if (variable is not null) _values?.Remove(variable);
+            then = ParseBody(col);
+            if (then.Count == 0) throw new CompileError(word.Pos, "then needs lines of its own under it");
+        }
+        if (_values is not null && outer is not null) _values = outer;
+        return new LoopStmt(kind, cond, with, body, then, word.Pos) { Var = variable, VarPos = varPos, Source = source };
+    }
+
+    /// `when` / `when v` as a statement: its arms are bodies.
+    private WhenStmt ParseWhen(int col, bool asValue)
+    {
+        var pos = Next().Pos;
+        Expr? value = Is(TokenKind.Newline) || Is(TokenKind.Eof) ? null : ParsePostfix();
+        ExpectLineEnd();
+        var arms = new List<WhenArm>();
+        ValueRef? elseBinding = null;
+        int armCol = -1;
+        var outer = _values is null ? null : new HashSet<string>(_values);
+        // The old form `is T as p => continue` kept p for the lines after the when.
+        var carriedOn = new List<string>();
+        while (!AtBodyEnd(col, routineLevel: false) && LineIsArm())
+        {
+            var armPos = Cur.Pos;
+            if (armCol < 0) armCol = Cur.Pos.Col;
+            else if (Cur.Pos.Col != armCol) throw Error("the arms of a when sit at one column");
+            var beforePattern = _values is null ? null : new HashSet<string>(_values);
+            Expr? cond = null;
+            List<Expr>? cases = null;
+            if (AcceptElse())
+            {
+                if (IsIdent("as"))
+                {
+                    if (value is null) throw Error("'else as' names what a when on a value leaves, and this when has no value");
+                    Next();
+                    elseBinding = BindName();
+                }
+            }
+            else if (value is null) cond = ParseExpr();
+            else
+            {
+                // observations (`is S64 as n`, `is Unit, is Empty`), or one or more constants (`b' ', b'\t' => ...`)
+                cases = [];
+                do cases.Add(IsIdent("is") ? ParseIsPattern() : ParseExpr());
+                while (Accept(TokenKind.Comma));
+            }
+            Expect(TokenKind.FatArrow, "'=>'");
+            var armValues = _values is null ? null : new HashSet<string>(_values);
+            List<Stmt> body;
+            bool oneLine = false;
+            if (Is(TokenKind.Newline) || Is(TokenKind.Eof))
+            {
+                SkipNewlines();
+                if (asValue) _valueWhenDepth++;
+                body = ParseBody(armCol);
+                if (asValue) _valueWhenDepth--;
+                if (body.Count == 0) throw new CompileError(armPos, "an arm takes its lines under it, or one on the line after =>");
+            }
+            else
+            {
+                oneLine = true;
+                if (asValue)
+                {
+                    var at = Cur.Pos;
+                    body = [new BecomesStmt(ParseExpr(), at)];
+                }
+                else
+                {
+                    var one = ParseArmStmt(col);
+                    body = one is null ? [] : [one];
+                    if (one is null && _values is not null && beforePattern is not null)
+                        carriedOn.AddRange(_values.Where(n => !beforePattern.Contains(n)));
+                }
+                ExpectLineEnd();
+            }
+            if (_values is not null && armValues is not null) _values = armValues;
+            arms.Add(new WhenArm(cond, cases, body, armPos) { OneLine = oneLine });
+        }
+        if (_values is not null && outer is not null)
+        {
+            _values = outer;
+            _values.UnionWith(carriedOn);
+        }
+        if (arms.Count == 0) throw new CompileError(pos, "when needs at least one arm");
+        return new WhenStmt(value, arms, pos) { ElseBinding = elseBinding };
+    }
+
+    /// `x: T = when ...`: every arm gives the value.
+    private WhenExpr ParseWhenValue(int col)
+    {
+        var pos = Cur.Pos;
+        _valueWhenDepth++;
+        try
+        {
+            return new WhenExpr(ParseWhen(col, asValue: true), pos);
+        }
+        finally
+        {
+            _valueWhenDepth--;
+        }
+    }
+
+    /// The one line after `=>` of a statement arm: a leave, a call, or (the old form) `continue` for "go on after the
+    /// when", which is an arm with nothing in it, and a block's name, which becomes a jump.
+    private Stmt? ParseArmStmt(int col)
+    {
+        var pos = Cur.Pos;
+        if (IsIdent("continue") && _loopDepth == 0 && PeekTok(1).Kind is TokenKind.Newline or TokenKind.Eof)
+        {
+            Old(pos, "an arm that only goes on after the when is written with nothing after =>");
+            Next();
+            return null;
+        }
+        if (IsKeyword(Cur) && StatementKeywords.Contains(Cur.Text) && !StartsValue())
+        {
+            if (Cur.Text is "if" or "for" or "while" or "until" or "when" or "local" or "claim" or "branch")
+                throw Error($"'{Cur.Text}' opens a body of its own: write it under the arm, on the lines after =>");
+            return ParseLeave();
+        }
+        var call = ParsePostfix();
+        if (call is not (CallExpr or NsCallExpr or MethodCallExpr or ImplicitCallExpr))
+            throw new CompileError(pos, "the line of an arm is a call, a return, a jump, a break, or a continue");
+        return new ExprStmt(call, pos);
+    }
+
+    /// `return [v]`, `jump name(args)`, `unreachable`, `todo`, `continue [with ...]`, `break`, `becomes v`.
+    private Stmt ParseLeave()
+    {
+        var word = Next();
+        var pos = word.Pos;
+        switch (word.Text)
+        {
+            case "return":
+            {
+                // `return(x)` was the old form: the parentheses were part of the spelling, not grouping.
+                if (Is(TokenKind.LParen) && Cur.Pos.Line == pos.Line && Cur.Pos.Col == pos.Col + "return".Length)
+                {
+                    Old(pos, "a return is written return x, without parentheses, and a bare return for nothing");
+                    Next();
+                    Expr? inner = Is(TokenKind.RParen) ? null : ParseExpr();
+                    Expect(TokenKind.RParen, "')'");
+                    return new ReturnStmt(inner, pos);
+                }
+                if (Is(TokenKind.Newline) || Is(TokenKind.Eof)) return new ReturnStmt(null, pos);
+                if (IsIdent("if") && !StartsValue()) return new ReturnStmt(ParseIfValue(), pos);
+                if (IsIdent("when") && !StartsValue()) return new ReturnStmt(ParseWhenValue(pos.Col), pos);
+                return new ReturnStmt(ParseExpr(), pos);
+            }
+            case "jump":
+            {
+                var name = Expect(TokenKind.Ident, "a block name after jump");
+                var (args, names) = ParseNamedArgs();
+                return new JumpStmt(name.Text, args, pos) { ArgNames = names };
+            }
+            case "unreachable":
+                return new UnreachableStmt(pos);
+            case "todo":
+            {
+                string message = $"block '{_blockName}' of routine '{_routineDisplay}' is not written yet";
+                var crash = new CallExpr("crash", [], [new StrLit("NotImplementedError", pos), new StrLit(message, pos)], pos)
+                    { ArgNames = ["name", "message"], Path = "Standard/Core" };
+                return new TodoStmt(crash, _blockName, pos);
+            }
+            case "continue":
+            {
+                if (_loopDepth == 0)
+                    throw new CompileError(pos, "continue goes on with the next round of a loop, and there is no loop here");
+                List<(string, Expr, Pos)>? with = null;
+                if (IsIdent("with"))
+                {
+                    Next();
+                    with = [];
+                    do
+                    {
+                        var n = Expect(TokenKind.Ident, "the name of a carried value: continue with a: a2");
+                        Expect(TokenKind.Colon, "':' and the value the next round gets");
+                        with.Add((n.Text, ParseExpr(), n.Pos));
+                    } while (Accept(TokenKind.Comma));
+                }
+                return new ContinueStmt(with, pos);
+            }
+            case "break":
+                if (_loopDepth == 0) throw new CompileError(pos, "break leaves a loop, and there is no loop here");
+                if (!Is(TokenKind.Newline) && !Is(TokenKind.Eof))
+                    throw Error("break takes no value: a loop sends a value out through return or a local slot");
+                return new BreakStmt(pos);
+            case "becomes":
+                if (_valueWhenDepth == 0)
+                    throw new CompileError(pos, "becomes gives the value of a when arm, and this line isn't in an arm of a when that is a value");
+                return new BecomesStmt(ParseExpr(), pos);
+            default:
+                throw new CompileError(pos, $"unexpected '{word.Text}'");
+        }
+    }
+
+    /// `if c then a else b` as a value, after `return`.
+    private IfExpr ParseIfValue()
+    {
+        var pos = Next().Pos;
+        var cond = ParseExpr();
+        if (!IsIdent("then")) throw Error("a value if is written if c then a else b");
+        Next();
+        var a = ParseExpr();
+        if (!IsIdent("else")) throw Error("a value if is written if c then a else b: the else is missing");
+        Next();
+        var b = ParseExpr();
+        return new IfExpr(cond, a, b, pos);
+    }
+
+    /// The old `branch c ? a : b`: an `if`. An arm that was `continue` is the lines after the branch, so the if has
+    /// no body for it.
+    private Stmt ParseBranch(int col)
+    {
+        var pos = Next().Pos;
+        Old(pos, "a branch is written if c (and its body) and else");
+        var cond = _inAsm && AsmCondition() is { } named ? named : ParseLogic();
+        Expect(TokenKind.Question, "'?'");
+        var a = ParseBranchArm();
+        Expect(TokenKind.Colon, "':'");
+        var b = ParseBranchArm();
+        ExpectLineEnd();
+        if (a is null && b is null) throw new CompileError(pos, "both arms of the branch continue");
+        if (a is null) return new IfStmt(new UnaryExpr("not", cond, cond.Pos), [b!], null, pos);
+        if (b is null) return new IfStmt(cond, [a], null, pos);
+        return new IfStmt(cond, [a], [b], pos);
+    }
+
+    private Stmt? ParseBranchArm()
+    {
+        var pos = Cur.Pos;
+        if (IsIdent("continue"))
+        {
+            Next();
+            return null;
+        }
+        if (IsIdent("return") || IsIdent("unreachable") || IsIdent("todo") || IsIdent("jump")) return ParseLeave();
+        var call = ParsePostfix();
+        if (call is not (CallExpr or NsCallExpr or MethodCallExpr or ImplicitCallExpr))
+            throw new CompileError(pos, "an arm of a branch is a block's name, a return, or a call that never returns");
+        return new ExprStmt(call, pos);
     }
 
     internal static readonly HashSet<string> AsmComparisons = ["eq", "ne", "lt", "le", "gt", "ge"];
 
-    /// `eq` or `lt[U64]` as an assembly `branch` condition or condition operand (`csel[U64, U64](R1, R2, lt[U64])`):
+    /// `eq` or `lt[U64]` as an assembly `if` condition or condition operand (`csel[U64, U64](R1, R2, lt[U64])`):
     /// a comparison of the flags the last instruction left. `lt[U64](…)` is a call instead, RISC-V's comparison.
     private AsmCondExpr? AsmCondition()
     {
         if (!IsKeyword(Cur) || !AsmComparisons.Contains(Cur.Text)) return null;
-        bool bare = PeekTok(1).Kind is TokenKind.Question or TokenKind.Comma or TokenKind.RParen;
+        bool bare = PeekTok(1).Kind is TokenKind.Question or TokenKind.Comma or TokenKind.RParen or TokenKind.Newline or TokenKind.Eof;
         bool typed = PeekTok(1).Kind == TokenKind.LBracket && PeekTok(2).Kind == TokenKind.Ident
                      && PeekTok(3).Kind == TokenKind.RBracket && PeekTok(4).Kind != TokenKind.LParen;
         if (!bare && !typed) return null;
@@ -1280,7 +1608,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new AsmCondExpr(name.Text, types.Count == 1 ? types[0] : null, name.Pos);
     }
 
-    /// `is T` or `is T as name` in a `when` arm: the name is a value the arm's target sees.
+    /// `is T` or `is T as name` in a `when` arm: the name is a value the arm's lines see.
     private IsPattern ParseIsPattern()
     {
         var pos = Cur.Pos;
@@ -1295,7 +1623,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new IsPattern(type, binding, pos);
     }
 
-    /// The name after `as`, now a value of the block.
+    /// The name after `as`, now a value of the arm.
     private ValueRef BindName()
     {
         var name = Expect(TokenKind.Ident, "a name after 'as'");
@@ -1311,55 +1639,156 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return true;
     }
 
-    private Target ParseTarget()
-    {
-        var pos = Cur.Pos;
-        if (IsIdent("unreachable"))
-        {
-            Next();
-            return new UnreachableTarget(pos);
-        }
-        if (IsIdent("todo"))
-        {
-            Next();
-            string message = $"block '{_blockName}' of routine '{_routineDisplay}' is not written yet";
-            var crash = new CallExpr("crash", [], [new StrLit("NotImplementedError", pos), new StrLit(message, pos)], pos)
-                { ArgNames = ["name", "message"], Path = "Standard/Core" };
-            return new TodoTarget(crash, _blockName, pos);
-        }
-        if (IsIdent("continue"))
-        {
-            Next();
-            return new ContinueTarget(pos);
-        }
-        if (IsIdent("return"))
-        {
-            Next();
-            Expect(TokenKind.LParen, "'(' after return");
-            Expr? value = Is(TokenKind.RParen) ? null : ParseExpr();
-            Expect(TokenKind.RParen, "')'");
-            return new ReturnTarget(value, pos);
-        }
-        if (Is(TokenKind.Ident) && PeekTok(1).Kind == TokenKind.LParen)
-        {
-            var name = Next();
-            var (args, names) = ParseNamedArgs();
-            return new CallTarget(name.Text, args, pos) { ArgNames = names };
-        }
-        return new ExprTarget(ParsePostfix(), pos);
-    }
-
     // ── Expressions ─────────────────────────────────────────────────────────
 
-    /// A full expression: a postfix expression, optionally a value select `cond ? a : b`.
+    /// The operators from loosest to tightest: `and` / `or` (one level, not mixed), comparisons (chained), ranges,
+    /// the bitwise operators (one level, not mixed), `+ -`, `* / %`, the unary `- not ~`, `**`, then calls, fields and
+    /// `[i]`.
     private Expr ParseExpr()
     {
-        var e = ParsePostfix();
-        if (!Accept(TokenKind.Question)) return e;
-        var a = ParsePostfix();
+        var e = ParseLogic();
+        if (!Is(TokenKind.Question)) return e;
+        // The old `c ? a : b`.
+        var q = Next().Pos;
+        Old(q, "a value chosen by a condition is written with when (or return if c then a else b)");
+        var a = ParseLogic();
         Expect(TokenKind.Colon, "':' in value select");
-        var b = ParsePostfix();
-        return new SelectExpr(e, a, b, e.Pos);
+        var b = ParseLogic();
+        return new IfExpr(e, a, b, q);
+    }
+
+    private bool IsOp(string text) => Cur.Kind == TokenKind.Op && Cur.Text == text;
+
+    private bool IsWordOp(string text) => IsKeyword(Cur) && Cur.Text == text;
+
+    private Expr ParseLogic()
+    {
+        var left = ParseComparison();
+        string? seen = null;
+        while (IsWordOp("and") || IsWordOp("or"))
+        {
+            var op = Next();
+            if (seen is not null && seen != op.Text)
+                throw new CompileError(op.Pos, "and and or side by side need parentheses to say which binds first: a or (b and c)");
+            seen = op.Text;
+            left = new BinaryExpr(op.Text, left, ParseComparison(), op.Pos);
+        }
+        return left;
+    }
+
+    private static readonly HashSet<string> ComparisonOps = ["==", "!=", "<", "<=", ">", ">=", "<=>"];
+
+    /// `a < b`, and a chain `a < b <= c` (`a < b and b <= c`, with b written once: a name, a literal, or a field).
+    private Expr ParseComparison()
+    {
+        var left = ParseRange();
+        if (Cur.Kind != TokenKind.Op || !ComparisonOps.Contains(Cur.Text)) return left;
+        var op = Next();
+        var right = ParseRange();
+        var e = new BinaryExpr(op.Text, left, right, op.Pos);
+        if (op.Text == "<=>" && Cur.Kind == TokenKind.Op && ComparisonOps.Contains(Cur.Text))
+            throw Error("<=> gives an ordering, which no further comparison chains on");
+        Expr result = e;
+        while (Cur.Kind == TokenKind.Op && ComparisonOps.Contains(Cur.Text))
+        {
+            var next = Next();
+            if (next.Text == "<=>") throw new CompileError(next.Pos, "<=> doesn't chain with other comparisons");
+            if (right is not (ValueRef or IntLit or TypedIntLit or FloatLit or FieldExpr or PresetRef))
+                throw new CompileError(next.Pos, "the middle of a chained comparison is a name, a literal, or a field, written once and read twice: bind it first");
+            var further = ParseRange();
+            result = new BinaryExpr("and", result, new BinaryExpr(next.Text, right, further, next.Pos), next.Pos);
+            right = further;
+        }
+        return result;
+    }
+
+    /// `a til b`, `a to b`, with `by s`: only a `for` walks one.
+    private Expr ParseRange()
+    {
+        var from = ParseBitwise();
+        if (!(IsWordOp("til") || IsWordOp("to"))) return from;
+        var word = Next();
+        var to = ParseBitwise();
+        Expr? step = null;
+        if (IsWordOp("by"))
+        {
+            Next();
+            step = ParseBitwise();
+        }
+        return new RangeExpr(from, to, word.Text == "to", step, word.Pos);
+    }
+
+    private static readonly HashSet<string> BitwiseOps = ["<<", ">>", ">>>", "&", "^", "|"];
+
+    private Expr ParseBitwise()
+    {
+        var left = ParseAdditive();
+        string? seen = null;
+        while (Cur.Kind == TokenKind.Op && BitwiseOps.Contains(Cur.Text) || Is(TokenKind.Pipe))
+        {
+            var op = Next();
+            string text = op.Kind == TokenKind.Pipe ? "|" : op.Text;
+            if (seen is not null && seen != text)
+                throw new CompileError(op.Pos, "two different bitwise operators side by side need parentheses to say which binds first: (a & b) | c");
+            seen = text;
+            left = new BinaryExpr(text, left, ParseAdditive(), op.Pos);
+        }
+        return left;
+    }
+
+    private static readonly HashSet<string> AdditiveOps = ["+", "-", "+%", "-%", "+^", "-^"];
+    private static readonly HashSet<string> MultiplicativeOps = ["*", "%", "*%", "*^"];
+
+    private Expr ParseAdditive()
+    {
+        var left = ParseMultiplicative();
+        while (Cur.Kind == TokenKind.Op && AdditiveOps.Contains(Cur.Text))
+        {
+            var op = Next();
+            left = new BinaryExpr(op.Text, left, ParseMultiplicative(), op.Pos);
+        }
+        return left;
+    }
+
+    private Expr ParseMultiplicative()
+    {
+        var left = ParseUnary();
+        while (Cur.Kind == TokenKind.Op && MultiplicativeOps.Contains(Cur.Text) || IsDivision())
+        {
+            var op = Next();
+            left = new BinaryExpr(op.Text, left, ParseUnary(), op.Pos);
+        }
+        return left;
+    }
+
+    /// A `/` between two operands is division: a path separator sits against a PascalCase name on both sides.
+    private bool IsDivision() =>
+        Is(TokenKind.Slash) && !(PeekTok(1).Kind == TokenKind.Ident && Cur.Pos.Col + 1 == PeekTok(1).Pos.Col
+                                 && _i > 0 && tokens[_i - 1] is { Kind: TokenKind.Ident, Escaped: false } prev
+                                 && char.IsAsciiLetterUpper(prev.Text[0]) && prev.Pos.Col + prev.Text.Length == Cur.Pos.Col);
+
+    private Expr ParseUnary()
+    {
+        if (IsOp("-") || IsOp("~"))
+        {
+            var op = Next();
+            return new UnaryExpr(op.Text, ParseUnary(), op.Pos);
+        }
+        if (IsWordOp("not"))
+        {
+            var op = Next();
+            return new UnaryExpr("not", ParseUnary(), op.Pos);
+        }
+        return ParsePower();
+    }
+
+    /// `a ** b`, right-associative, the exponent may carry a sign.
+    private Expr ParsePower()
+    {
+        var left = ParsePostfix();
+        if (!IsOp("**")) return left;
+        var op = Next();
+        return new BinaryExpr("**", left, ParseUnary(), op.Pos);
     }
 
     private Expr ParsePostfix()
@@ -1382,9 +1811,21 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 else
                     e = new FieldExpr(e, name.Text, pos);
             }
+            else if (Is(TokenKind.LBracket) && e is not PresetRef { Owner: null } && IndexFollows())
+            {
+                var pos = Next().Pos;
+                var index = ParseExpr();
+                Expect(TokenKind.RBracket, "']'");
+                e = new GetItemExpr(e, index, pos);
+            }
             else return e;
         }
     }
+
+    /// Whether the `[` at the cursor opens an index (`xs[i]`): it sits right against what comes before it.
+    private bool IndexFollows() => _i > 0 && tokens[_i - 1].Pos.Line == Cur.Pos.Line
+        && (tokens[_i - 1].Pos.Col + tokens[_i - 1].Text.Length == Cur.Pos.Col
+            || tokens[_i - 1].Kind is TokenKind.RParen or TokenKind.RBracket);
 
     private Expr ParsePrimary()
     {
@@ -1429,8 +1870,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 return ParseRecordLit(t.Pos);
             case TokenKind.LParen:
             {
-                // `(a, b)` is a tuple. Around one value parentheses group nothing (there are no operators), so `(x)` is
-                // `x`, which `fmt` writes without them.
+                // `(a, b)` is a tuple, and parentheses around one value group it: `(a + b) * c`.
                 Next();
                 var inner = ParseExpr();
                 if (Accept(TokenKind.Comma))
@@ -1468,6 +1908,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     case "true": Next(); return new BoolLit(true, t.Pos);
                     case "false": Next(); return new BoolLit(false, t.Pos);
                     case "null": Next(); return new NullLit(t.Pos);
+                    case "if": throw Error("if c then a else b is a value only after return; elsewhere choose with when");
+                    case "when": throw Error("a when that gives a value is a binding's whole value: x: T = when ...");
                 }
                 return ParseNameExpr();
             default:
@@ -1484,12 +1926,32 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new AtExpr(literal, ParsePostfix(), pos);
     }
 
-    /// `f(args)`, `f[T](args)`, `Type.f(args)`, `Type[T].f[U](args)`, `Type.CONST`, `CONST`, `Type(field: value)`.
+    /// Whether a name takes type arguments in `[...]` (`List[S64]`, `U8`, `T`): PascalCase, or a short all-capitals
+    /// name. A value's or a preset's `[i]` is an index.
+    private static bool TakesTypeArgs(string name)
+    {
+        if (name.Length == 0 || !char.IsAsciiLetterUpper(name[0])) return false;
+        if (name.Contains('_')) return false;
+        return name.Any(char.IsAsciiLetterLower) || name.Any(char.IsAsciiDigit) || name.Length <= 2;
+    }
+
+    /// Whether the `[...]` at the cursor is followed by `(` or `.to[Callable]`: a generic routine's arguments
+    /// (`sort[T](xs)`, `sort[T].to[Callable]()`), where a value's `[i]` would be an index.
+    private bool BracketsOpenCall()
+    {
+        int k = AfterTypeArgs(0);
+        return PeekTok(k).Kind == TokenKind.LParen
+               || PeekTok(k).Kind == TokenKind.Dot && PeekTok(k + 1) is { Kind: TokenKind.Ident, Text: "to" }
+                  && PeekTok(k + 2).Kind == TokenKind.LBracket && PeekTok(k + 3) is { Kind: TokenKind.Ident, Text: "Callable" };
+    }
+
+    /// `f(args)`, `f[T](args)`, `Type.f(args)`, `Type[T].f[U](args)`, `Type.CONST`, `CONST`, `Type(field: value)`,
+    /// `CONST[i]`.
     private Expr ParseNameExpr()
     {
         var pos = Cur.Pos;
         var (path, name) = ParseQualifiedName("a name");
-        var typeArgs = ParseTypeArgs();
+        var typeArgs = Is(TokenKind.LBracket) && (TakesTypeArgs(name.Text) || path is not null || BracketsOpenCall()) ? ParseTypeArgs() : [];
 
         // `f(args)` calls a routine and `Point(x: 1, y: 2)` builds a record field by field: which one the name is,
         // the checker says, once names are resolved.
@@ -1533,7 +1995,15 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
 
         if (typeArgs.Count != 0) throw new CompileError(pos, $"expected '(' or '.' after '{owner}'");
-        return new PresetRef(null, name.Text, pos) { Path = path };
+        var preset = new PresetRef(null, name.Text, pos) { Path = path };
+        if (Is(TokenKind.LBracket) && IndexFollows())
+        {
+            var at = Next().Pos;
+            var index = ParseExpr();
+            Expect(TokenKind.RBracket, "']'");
+            return new GetItemExpr(preset, index, at);
+        }
+        return preset;
     }
 
     /// `(field: value, ...)`: a record built field by field, its type from where the value goes. With the type
@@ -1557,9 +2027,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return AtManager(new RecordLit(null, fields, pos));
     }
 
-    /// `claim p: @T <- value`: a slot in the routine's frame bound to a pointer name. `claim xs: Span[T] <- [...]` is
-    /// a run of them, as many as the literal has, and `claim m: Memory[T] <- [...] at manager` (or a `Box[T]` of one
-    /// value) is memory from a manager.
+    /// The old `claim p: @T <- value`: a slot in the routine's frame bound to a pointer name, now `local`.
     private Stmt ParseClaim()
     {
         var pos = Next().Pos;
@@ -1567,15 +2035,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         Expect(TokenKind.Colon, "':'");
         var type = ParseType();
         if (Is(TokenKind.Eq))
-            throw new CompileError(pos, $"a claim takes its contents with '<-': claim {name}: {type} <- value");
+            throw new CompileError(pos, $"a slot takes its contents with '<-': local {name}: {type} <- value");
         if (type is not { Name: "Ptr", Args.Count: 1 } && !IsSpanType(type) && !IsManagedType(type))
             throw new CompileError(type.Pos,
-                $"claim makes memory: claim p: @T, claim xs: Span[T] <- [...], or claim m: Memory[T] <- [...] at manager; found {type}");
-        // `claim p: @T <- value` claims the slot and stores the value in it, where the claim stands. A slot a routine
-        // fills later (an out parameter, `construct`) starts as `.hollow()`, all zero, which its `destruct` leaves alone.
+                $"local makes memory: local p: @T <- value, local xs: Span[T] <- [...], or local m: Memory[T] <- [...] at manager; found {type}");
         if (!Is(TokenKind.LeftArrow))
             throw new CompileError(pos,
-                $"a claim says what the slot starts with: claim {name}: {type} <- value, or <- .hollow() when a routine it's passed to fills it");
+                $"a slot says what it starts with: local {name}: {type} <- value, or <- .hollow() when a routine it's passed to fills it");
         Next();
         return MemoryBinding(name, type, pos);
     }
@@ -1583,7 +2049,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// `Memory[T]` or `Box[T]`: memory taken from a manager.
     private static bool IsManagedType(TypeRef type) => type is { Name: "Memory" or "Box", Path: null, Args.Count: 1 };
 
-    /// The binding after `<-` in a claim or a local slot: a pointer's or a span's contents go into the frame, and memory
+    /// The binding after `<-` in a local slot: a pointer's or a span's contents go into the frame, and memory
     /// from a manager is the `... at manager` value itself.
     private BindStmt MemoryBinding(string name, TypeRef type, Pos pos)
     {
@@ -1614,7 +2080,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// A bare name that names a visible value, and isn't a call (a call always names a routine), a path, or a record.
     private bool IsValue(Token t) =>
         _values is not null && _values.Contains(t.Text) && (t.Escaped || !ReservedValueNames.Contains(t.Text))
-        && PeekTok(1).Kind is not (TokenKind.LParen or TokenKind.Slash);
+        && PeekTok(1).Kind is not TokenKind.LParen && !(PeekTok(1).Kind == TokenKind.Slash && !t.Escaped && char.IsAsciiLetterUpper(t.Text[0]) && t.Pos.Col + t.Text.Length == PeekTok(1).Pos.Col);
 
     /// A name a declaration gives a type or a type parameter. `Me` is the type a routine is on, so it names nothing else.
     private static Token TypeName(Token n) =>
@@ -1623,7 +2089,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private static CompileError TypeNameTaken(Pos pos) =>
         new(pos, "'Me' is the type a routine is on, so no type or type parameter takes that name");
 
-    /// The name a parameter, binding, or claim gives a value. A word a statement or an expression starts with is a
+    /// The name a parameter, binding, or slot gives a value. A word a statement or an expression starts with is a
     /// value's name only between backticks.
     private Token ValueName(string what, bool receiver = false)
     {

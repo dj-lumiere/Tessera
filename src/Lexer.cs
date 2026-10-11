@@ -7,8 +7,9 @@ namespace Tessera;
 public enum TokenKind
 {
     Ident,       // routine, S64, entry, add, count, ...
-    Hash,        // # (starts an annotation)
+    Hash,        // @ at the head of a line or in a type argument list (starts an annotation), or the old `#`
     At,          // @ (a pointer type: @T is Ptr<T>)
+    Op,          // an operator: + - * / % ** == != < <= > >= <=> & | ^ ~ << >> >>> and the +% +^ forms
     Int,         // 42, -5, 0xFF
     Byte,        // b'A': a Byte
     Char,        // 'A': a Char, a Unicode scalar value
@@ -16,7 +17,7 @@ public enum TokenKind
     LParen, RParen, LBracket, RBracket, LBrace, RBrace,
     Float,       // 3.14, 1.5e10 — IntValue holds the double's bits
     Comma, Colon, Slash, ColonEq, Eq, Arrow, FatArrow, Question, Dot, Underscore,
-    Pipe,        // | (a variant written inline: A | B)
+    Pipe,        // | (a variant written inline: A | B, or the bitor operator)
     LeftArrow,   // <- (the contents of a slot, global, or preset in memory)
     Newline,
     Eof,
@@ -183,7 +184,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                 continue;
             }
 
-            if (c == '%' && IsIdentChar(Peek(1)))
+            if (c == '%' && IsIdentChar(Peek(1)) && !OperandBefore())
                 throw new CompileError(pos, "a value is written without '%': count, not %count");
 
             if (c == '`')
@@ -219,7 +220,9 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                 continue;
             }
 
-            if (char.IsAsciiDigit(c) || (c == '-' && char.IsAsciiDigit(Peek(1))))
+            // `-5` is a literal where no operand ends before it (`x = -5`, `f(-1)`), and a subtraction after one
+            // (`x -1` is `x - 1`).
+            if (char.IsAsciiDigit(c) || (c == '-' && char.IsAsciiDigit(Peek(1)) && !OperandBefore()))
             {
                 _tokens.Add(ReadNumber(pos));
                 continue;
@@ -234,6 +237,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
             _i++;
             _col++;   // never a newline here
             TokenKind kind;
+            string text = CharText[c];
             switch (c)
             {
                 case '(': kind = TokenKind.LParen; _depth++; break;
@@ -246,32 +250,77 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                     // `<-` fills memory.
                     Advance();
                     kind = TokenKind.LeftArrow;
+                    text = "<-";
                     break;
                 case ',': kind = TokenKind.Comma; break;
                 case '?': kind = TokenKind.Question; break;
                 case '.': kind = TokenKind.Dot; break;
-                case '@': kind = TokenKind.At; break;
-                case '|': kind = TokenKind.Pipe; break;
-                case '/': kind = TokenKind.Slash; break;   // a module path: Standard/Os (a `//` comment is skipped above)
-                case '#': kind = TokenKind.Hash; break;
+                case '@':
+                    // At the head of a line, `@name` is an annotation (a lowercase name, or a `[list]`). Before a type
+                    // name it is a pointer: `@T`.
+                    kind = char.IsAsciiLetterLower(Peek()) || Peek() == '[' ? TokenKind.Hash : TokenKind.At;
+                    break;
+                case '|':
+                    if (Peek() == '|') throw new CompileError(pos, "'or' joins two Bool values; '|' is bitor");
+                    kind = TokenKind.Pipe;
+                    break;
+                case '/': kind = TokenKind.Slash; break;   // a module path: Standard/Os, or division (a `//` comment is skipped above)
+                case '#': kind = TokenKind.Hash; break;    // the old spelling of an annotation, which the parser reports
                 case '_': kind = TokenKind.Underscore; break;
                 case '=':
-                    // `=>` leads a `when` arm to its target.
-                    if (Peek() == '>') { Advance(); kind = TokenKind.FatArrow; }
+                    // `=>` leads a `when` arm to its target, `==` compares.
+                    if (Peek() == '>') { Advance(); kind = TokenKind.FatArrow; text = "=>"; }
+                    else if (Peek() == '=') { Advance(); kind = TokenKind.Op; text = "=="; }
                     else kind = TokenKind.Eq;
                     break;
                 case ':':
-                    if (Peek() == '=') { Advance(); kind = TokenKind.ColonEq; }
+                    if (Peek() == '=') { Advance(); kind = TokenKind.ColonEq; text = ":="; }
                     else kind = TokenKind.Colon;
                     break;
                 case '-':
-                    if (Peek() == '>') { Advance(); kind = TokenKind.Arrow; break; }
-                    throw new CompileError(pos, "unexpected '-' (Tessera has no operators; use .sub())");
+                    if (Peek() == '>') { Advance(); kind = TokenKind.Arrow; text = "->"; break; }
+                    kind = TokenKind.Op;
+                    text = OverflowForm("-");
+                    break;
+                case '+':
+                    kind = TokenKind.Op;
+                    text = OverflowForm("+");
+                    break;
+                case '*':
+                    kind = TokenKind.Op;
+                    if (Peek() == '*') { Advance(); text = "**"; }
+                    else text = OverflowForm("*");
+                    break;
+                case '%': kind = TokenKind.Op; break;
+                case '^': kind = TokenKind.Op; break;
+                case '&':
+                    if (Peek() == '&') throw new CompileError(pos, "'and' joins two Bool values; '&' is bitand");
+                    kind = TokenKind.Op;
+                    break;
+                case '~': kind = TokenKind.Op; break;
+                case '!':
+                    if (Peek() != '=') throw new CompileError(pos, "'not' negates a Bool; '!' alone is nothing");
+                    Advance();
+                    kind = TokenKind.Op;
+                    text = "!=";
+                    break;
+                case '<':
+                    kind = TokenKind.Op;
+                    if (Peek() == '=' && Peek(1) == '>') { Advance(); Advance(); text = "<=>"; }
+                    else if (Peek() == '=') { Advance(); text = "<="; }
+                    else if (Peek() == '<') { Advance(); text = "<<"; }
+                    break;
+                case '>':
+                    kind = TokenKind.Op;
+                    if (Peek() == '=') { Advance(); text = ">="; }
+                    else if (Peek() == '>' && Peek(1) == '>') { Advance(); Advance(); text = ">>>"; }
+                    else if (Peek() == '>') { Advance(); text = ">>"; }
+                    break;
                 default:
                     throw new CompileError(pos, $"unexpected character '{c}'");
             }
             if (_depth < 0) throw new CompileError(pos, $"unmatched '{c}'");
-            _tokens.Add(new Token(kind, CharText[c], pos));
+            _tokens.Add(new Token(kind, text, pos));
         }
 
         if (_tokens.Count > 0 && _tokens[^1].Kind != TokenKind.Newline)
@@ -281,6 +330,27 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
     }
 
     private Pos Here() => new(file, _line, _col);
+
+    /// `+%` wraps and `+^` clamps: the overflow form of an arithmetic operator, read after its first character.
+    private string OverflowForm(string op)
+    {
+        if (Peek() == '%') { Advance(); return op + "%"; }
+        if (Peek() == '^') { Advance(); return op + "^"; }
+        return op;
+    }
+
+    /// Whether the token before the cursor ends an operand (a name, a literal, a closing bracket), so that what comes
+    /// next is an operator rather than the start of a value.
+    private bool OperandBefore()
+    {
+        if (_tokens.Count == 0) return false;
+        var t = _tokens[^1];
+        bool operand = t.Kind is TokenKind.Ident or TokenKind.Int or TokenKind.Float or TokenKind.Byte or TokenKind.Char
+            or TokenKind.Str or TokenKind.RParen or TokenKind.RBracket;
+        bool word = t.Kind == TokenKind.Ident && !t.Escaped && t.Text is "return" or "becomes" or "and" or "or" or "not"
+            or "if" or "while" or "until" or "then" or "else" or "in" or "to" or "til" or "by" or "with" or "when" or "jump";
+        return operand && !word;
+    }
 
     private char Peek(int ahead = 0) => _i + ahead < src.Length ? src[_i + ahead] : '\0';
 

@@ -31,8 +31,8 @@ public sealed record TypeArgTuple(List<TypeRef> Types) : TypeArg
 {
     public override string ToString() => $"({string.Join(", ", Types)})";
 }
-/// `#callconv("fast")` inside a Callable.
-public sealed record TypeArgAnnotation(Annotation Annotation) : TypeArg { public override string ToString() => $"#{Annotation.Name}"; }
+/// `@callconv("fast")` inside a Callable.
+public sealed record TypeArgAnnotation(Annotation Annotation) : TypeArg { public override string ToString() => $"@{Annotation.Name}"; }
 /// A buildtime integer expression as a generic argument: `max(sizeof[A](), sizeof[B]())` in `Array[Byte, …]`.
 public sealed record TypeArgExpr(Expr Expr) : TypeArg { public override string ToString() => "(expr)"; }
 
@@ -55,15 +55,15 @@ public sealed record Param(string Name, TypeRef Type, Pos Pos)
     public Token? Register { get; init; }
 }
 
-/// `require T: typename, N: U64, Equatable[T]` or `conform Equatable[Option[T]] when Equatable[T]`. Tokens keeps the raw text;
-/// the parsed parts are below.
+/// `needs T: typename, N: U64, Equatable[T]` or `obeys Equatable[Option[T]] when Equatable[T]`. Kind is "require" for
+/// a needs line and "conform" for an obeys line. Tokens keeps the raw text; the parsed parts are below.
 public sealed record Clause(string Kind, List<Token> Tokens)
 {
-    /// require: the declared parameters and their kinds (`T: typename`, `N: USize`).
+    /// needs: the declared parameters and their kinds (`T: typename`, `N: USize`).
     public List<(string Name, TypeRef Kind, Pos Pos)> Params { get; init; } = [];
-    /// require: the concept constraints; conform: the concepts conformed to.
+    /// needs: the protocol constraints; obeys: the protocols obeyed.
     public List<TypeRef> Concepts { get; init; } = [];
-    /// conform: the conditions after `when`, under which the conformance holds.
+    /// obeys: the conditions after `when`, under which the conformance holds.
     public List<TypeRef> When { get; init; } = [];
 }
 
@@ -98,11 +98,16 @@ public sealed record RoutineDecl(
 
     /// The head's `local` lines, top to bottom: values and slots every block sees, made once when the routine starts,
     /// before `entry`. `local x: T = v` is a BindStmt of v, and `local p: @T <- v` a BindStmt of
-    /// a ClaimExpr, the shapes a block's binding and claim have. Empty for a routine without a body.
+    /// a ClaimExpr, the shapes a body's binding and slot have. Empty for a routine without a body.
     public List<BindStmt> Shared { get; init; } = [];
 
-    /// `#source("gcd.mini", 5, 9)` among its annotations: the place in a generator's input it came from.
+    /// `@source("gcd.mini", 5, 9)` among its annotations: the place in a generator's input it came from.
     public Pos? Source { get; init; }
+
+    /// The line the header (with its needs and obeys lines) ends on, and the last line of the body: the lines
+    /// `tessera migrate` rewrites. 0 for a routine without a body.
+    public int HeaderEndLine { get; init; }
+    public int EndLine { get; init; }
 
     public string DisplayName => (Owner is null ? Name : $"{Owner}.{Name}")
         + (Fixed.Count == 0 ? "" : $"[{string.Join(", ", Fixed)}]");
@@ -155,8 +160,8 @@ public sealed record PresetDecl(
     public bool IsSpan { get; init; }
 }
 
-/// A top-level `conform C[X, ...] [when ...]`, with `require` clauses naming its type parameters. It declares a
-/// conformance no single record can carry: a multi-type concept, or a concept for a type declared elsewhere.
+/// A top-level `obeys C[X, ...] [when ...]`, with `needs` clauses naming its type parameters. It declares a
+/// conformance no single record can carry: a multi-type protocol, or a protocol for a type declared elsewhere.
 public sealed record ConformDecl(string File, List<Annotation> Annotations, List<Clause> Clauses, Pos Pos)
     : Decl(File, Annotations, Pos);
 
@@ -164,9 +169,11 @@ public sealed record ConceptDecl(
     string File, List<Annotation> Annotations, string Name, List<string> TypeParams, List<Clause> Clauses,
     List<RoutineDecl> Routines, Pos Pos) : Decl(File, Annotations, Pos);
 
-public sealed record BlockDecl(string Name, List<Param> Params, List<Stmt> Stmts, Terminator Terminator, Pos Pos)
+/// `block name(params)` and its lines, which always leave it (Bodies.Leaves). The entry block is the routine's own
+/// lines, named `entry`.
+public sealed record BlockDecl(string Name, List<Param> Params, List<Stmt> Stmts, Pos Pos)
 {
-    /// `#source("gcd.mini", 5, 9)` on the line before: the place in a generator's input this block came from.
+    /// `@source("gcd.mini", 5, 9)` on the line before: the place in a generator's input this block came from.
     public Pos? Source { get; init; }
 }
 
@@ -187,28 +194,91 @@ public sealed record AliasDecl(string File, List<Annotation> Annotations, TypeRe
 
 public abstract record Stmt(Pos Pos)
 {
-    /// `#source("gcd.mini", 5, 9)` on the line before: the place in a generator's input this line came from.
+    /// `@source("gcd.mini", 5, 9)` on the line before: the place in a generator's input this line came from.
     public Pos? Source { get; init; }
 }
 
-/// `x: T = expr` — a binding. The expression is evaluated; memory is not read.
+/// `x: T = expr` — a binding. The expression is evaluated; memory is not read. `local x: @T <- v` is a binding of a
+/// ClaimExpr: a slot in the frame.
 public sealed record BindStmt(string Name, TypeRef Type, Expr Value, Pos Pos) : Stmt(Pos);
 
-
-
-/// `call(...)` evaluated for its side effect.
+/// `call(...)` evaluated for its side effect. A call to a `@noreturn` routine (`crash(...)`) ends the body it is in.
 public sealed record ExprStmt(Expr Value, Pos Pos) : Stmt(Pos)
 {
-    /// Written on the line before: `#asm_prefix("lock")` on an instruction of an assembly routine.
+    /// Written on the line before: `@asm_prefix("lock")` on an instruction of an assembly routine.
     public List<Annotation> Annotations { get; init; } = [];
 }
 
 /// `q, r = div_rem(a, b)`: binds every item of a tuple, each with the item's type. Tuples are the only values
 /// taken apart this way.
 public sealed record DestructureStmt(List<(string Name, Pos Pos)> Names, Expr Value, Pos Pos) : Stmt(Pos);
-/// A `branch` or `when` with a `continue` arm, in the middle of a block: the other arms leave, and `continue` goes
-/// on with the next line.
-public sealed record GuardStmt(Terminator Term, Pos Pos) : Stmt(Pos);
+
+/// `if c` and its body, `else if` / `else` and theirs. A body is a region: a name bound in it isn't visible after it,
+/// and a body that doesn't leave (return, break, continue, jump) goes on with the line after the whole `if`. An
+/// `else if` is an Else holding one IfStmt.
+public sealed record IfStmt(Expr Cond, List<Stmt> Then, List<Stmt>? Else, Pos Pos) : Stmt(Pos);
+
+/// `when` (the first arm whose condition holds) or `when v` (one value against its cases). As a statement every arm
+/// is a body, and one that doesn't leave goes on after the `when`. As a value (WhenExpr) every arm gives one.
+public sealed record WhenStmt(Expr? Value, List<WhenArm> Arms, Pos Pos) : Stmt(Pos)
+{
+    /// `else as rest`: what the other arms didn't observe, named.
+    public ValueRef? ElseBinding { get; init; }
+}
+
+/// One arm of a `when`: its condition (`when` without a value), its cases (`when v`: constants, `is T as t`
+/// observations), or `else` (both null). The body is the arm's lines, one for `=> stmt`, and for a value arm written
+/// `=> expr` on one line it is a single BecomesStmt.
+public sealed record WhenArm(Expr? Cond, List<Expr>? Cases, List<Stmt> Body, Pos Pos)
+{
+    public bool IsElse => Cond is null && Cases is null;
+
+    /// Written `pattern => expr` on one line, the value itself (the formatter keeps it on the line).
+    public bool OneLine { get; init; }
+}
+
+public enum LoopKind { For, While, Until }
+
+/// `for x in source`, `while cond`, `until cond`, each with its carried values (`with a: T = init, ...`), its body,
+/// and the `then` body that runs when the loop ends on its own. The carried values are visible in the body and in
+/// `then`, bound anew on every round by `continue with a: ..., ...`.
+public sealed record LoopStmt(LoopKind Kind, Expr? Cond, List<Carried> With, List<Stmt> Body, List<Stmt>? Then, Pos Pos)
+    : Stmt(Pos)
+{
+    /// `for x in source`: the name each element is bound to, and what is walked (a range, or an iterator in memory).
+    public string? Var { get; init; }
+    public Pos VarPos { get; init; }
+    public Expr? Source { get; init; }
+}
+
+/// One carried value of a loop: `a: T = init` after `with`.
+public sealed record Carried(string Name, TypeRef Type, Expr Init, Pos Pos);
+
+/// `return`, `return v`, or `return if c then a else b`.
+public sealed record ReturnStmt(Expr? Value, Pos Pos) : Stmt(Pos);
+
+/// `jump name(args)`: on to a block of the routine (a generator's escape hatch).
+public sealed record JumpStmt(string Block, List<Expr> Args, Pos Pos) : Stmt(Pos)
+{
+    /// Each argument's name where the jump names it, as on CallExpr. A block takes its arguments in order.
+    public List<string?>? ArgNames { get; init; }
+}
+
+/// `unreachable`: a place that can't be reached.
+public sealed record UnreachableStmt(Pos Pos) : Stmt(Pos);
+
+/// `todo`: lines not written yet. It crashes with `NotImplementedError`, naming the routine (and the block), so a
+/// program with some parts still to write builds and runs up to them.
+public sealed record TodoStmt(Expr Crash, string Block, Pos Pos) : Stmt(Pos);
+
+/// `continue`, or `continue with a: a2, b: b2` in a loop with carried values: the next round.
+public sealed record ContinueStmt(List<(string Name, Expr Value, Pos Pos)>? With, Pos Pos) : Stmt(Pos);
+
+/// `break`: out of the loop, skipping its `then`.
+public sealed record BreakStmt(Pos Pos) : Stmt(Pos);
+
+/// `becomes v`: the value of the `when` arm this ends.
+public sealed record BecomesStmt(Expr Value, Pos Pos) : Stmt(Pos);
 
 // ── Expressions ─────────────────────────────────────────────────────────────
 
@@ -267,6 +337,9 @@ public sealed record NsCallExpr(TypeRef Owner, string Name, List<TypeRef> TypeAr
 {
     /// Each argument's name where the call names it, as on CallExpr.
     public List<string?>? ArgNames { get; init; }
+
+    /// Written as an operator (`1 + x` is `S64.add(1, x)`), so its arguments go by position.
+    public bool FromOperator { get; init; }
 }
 
 /// `.name(args)`: a typewise call whose type is the expected one (`n: Option[T] = .absent()`).
@@ -292,26 +365,46 @@ public sealed record MethodCallExpr(Expr Receiver, string Name, List<TypeRef> Ty
 {
     /// Each argument's name where the call names it, as on CallExpr.
     public List<string?>? ArgNames { get; init; }
+
+    /// Written as an operator (`a + b` is `a.add(b)`, `xs[i]` is `xs.getitem(i)`), so its arguments go by position.
+    public bool FromOperator { get; init; }
 }
+
+/// `a + b`, `a == b`, `a and b`, ...: an operator, sugar for the routine of that name on the left operand
+/// (Operators.Routine), except `and` / `or`, which are Bool's and evaluate the right side only when it matters.
+public sealed record BinaryExpr(string Op, Expr Left, Expr Right, Pos Pos) : Expr(Pos);
+
+/// `-x`, `not x`, `~x`.
+public sealed record UnaryExpr(string Op, Expr Operand, Pos Pos) : Expr(Pos);
+
+/// `xs[i]`: `xs.getitem(i)`, and as a statement's left side `xs[i] = v` is `xs.setitem(i, v)`.
+public sealed record GetItemExpr(Expr Base, Expr Index, Pos Pos) : Expr(Pos);
+
+/// `a til b`, `a to b`, each optionally `by s`: the integers a loop walks. Only a `for` takes one.
+public sealed record RangeExpr(Expr From, Expr To, bool Inclusive, Expr? Step, Pos Pos) : Expr(Pos);
+
+/// `if c then a else b` as a value: only the side taken is evaluated. Written after `return`.
+public sealed record IfExpr(Expr Cond, Expr Then, Expr Else, Pos Pos) : Expr(Pos);
+
+/// `when` as a value: `x: T = when v` and arms that each give a value, `=> expr` on one line or a body that ends with
+/// `becomes v`. Every arm gives one, or leaves (return, break, continue).
+public sealed record WhenExpr(WhenStmt When, Pos Pos) : Expr(Pos);
 
 /// `base.field` — a field of a value record, or (behind a pointer) a place.
 public sealed record FieldExpr(Expr Base, string Name, Pos Pos) : Expr(Pos);
 
-/// `p[i]` — a place. As a binding value it is an address; with `:=` or as a store target it is memory.
+/// `p.stride(i)` as the builder sees it — a place. As a binding value it is an address; as a store target it is memory.
 public sealed record IndexExpr(Expr Base, Expr Index, Pos Pos) : Expr(Pos);
 
-/// `eq`, `lt[U64]`: an assembly `branch` condition, the comparison the flags of the last instruction show. Type gives an
+/// `eq`, `lt[U64]`: an assembly `if` condition, the comparison the flags of the last instruction show. Type gives an
 /// ordered comparison its signedness.
 public sealed record AsmCondExpr(string Name, TypeRef? Type, Pos Pos) : Expr(Pos);
 
-/// `cond ? a : b` — value select.
-public sealed record SelectExpr(Expr Cond, Expr IfTrue, Expr IfFalse, Pos Pos) : Expr(Pos);
-
-/// The slot of `claim p: @T`, which parses as a binding of this: an uninitialized stack slot for one T. Lowers
-/// to an LLVM alloca.
+/// The slot of `local p: @T <- value`, which parses as a binding of this: a stack slot for one T, filled with the
+/// contents where the line stands. Lowers to an LLVM alloca.
 public sealed record ClaimExpr(Pos Pos) : Expr(Pos)
 {
-    /// `claim p: @T <- value`: stored into the slot where the claim stands. Null only for a slot the builder makes
+    /// `local p: @T <- value`: stored into the slot where the line stands. Null only for a slot the builder makes
     /// itself, which it fills before any read.
     public Expr? Contents { get; init; }
 }
@@ -334,43 +427,93 @@ public sealed record ArrayLit(List<Expr> Elements, Pos Pos) : Expr(Pos)
 /// taken from the manager, which `drop` gives back. A repeat count here may be known only while running.
 public sealed record AtExpr(Expr Value, Expr Manager, Pos Pos) : Expr(Pos);
 
-// ── Terminators ─────────────────────────────────────────────────────────────
-
-public abstract record Terminator(Pos Pos)
+/// The statements of a body and of every body inside it, outermost first, in source order.
+public static class Bodies
 {
-    /// `#source("gcd.mini", 5, 9)` on the line before: the place in a generator's input this line came from.
-    public Pos? Source { get; init; }
+    public static IEnumerable<Stmt> All(IEnumerable<Stmt> body)
+    {
+        foreach (var s in body)
+        {
+            yield return s;
+            foreach (var inner in Inner(s))
+                foreach (var deep in All(inner)) yield return deep;
+        }
+    }
+
+    /// The bodies a statement holds directly.
+    public static IEnumerable<List<Stmt>> Inner(Stmt s)
+    {
+        switch (s)
+        {
+            case IfStmt i:
+                yield return i.Then;
+                if (i.Else is not null) yield return i.Else;
+                break;
+            case WhenStmt w:
+                foreach (var arm in w.Arms) yield return arm.Body;
+                break;
+            case LoopStmt l:
+                yield return l.Body;
+                if (l.Then is not null) yield return l.Then;
+                break;
+            case BindStmt { Value: WhenExpr we }:
+                foreach (var arm in we.When.Arms) yield return arm.Body;
+                break;
+            case ReturnStmt { Value: WhenExpr we }:
+                foreach (var arm in we.When.Arms) yield return arm.Body;
+                break;
+        }
+    }
+
+    /// The expressions a statement holds directly (not those of the bodies inside it).
+    public static IEnumerable<Expr> Exprs(Stmt s)
+    {
+        switch (s)
+        {
+            case BindStmt b: yield return b.Value; break;
+            case ExprStmt e: yield return e.Value; break;
+            case DestructureStmt d: yield return d.Value; break;
+            case IfStmt i: yield return i.Cond; break;
+            case WhenStmt w:
+                if (w.Value is not null) yield return w.Value;
+                foreach (var arm in w.Arms)
+                {
+                    if (arm.Cond is not null) yield return arm.Cond;
+                    foreach (var c in arm.Cases ?? []) yield return c;
+                }
+                break;
+            case LoopStmt l:
+                if (l.Cond is not null) yield return l.Cond;
+                if (l.Source is not null) yield return l.Source;
+                foreach (var c in l.With) yield return c.Init;
+                break;
+            case ReturnStmt { Value: { } v }: yield return v; break;
+            case JumpStmt j: foreach (var a in j.Args) yield return a; break;
+            case TodoStmt t: yield return t.Crash; break;
+            case ContinueStmt { With: { } with }: foreach (var (_, v, _) in with) yield return v; break;
+            case BecomesStmt b: yield return b.Value; break;
+        }
+    }
+
+    /// The jumps written anywhere in a body.
+    public static IEnumerable<JumpStmt> Jumps(IEnumerable<Stmt> body) => All(body).OfType<JumpStmt>();
+
+    /// Whether every path through the body leaves it (returns, jumps, crashes, continues, breaks, or becomes): the
+    /// body never runs off its end. A bare call as the last line is taken to be a call that never returns, which the
+    /// build checks.
+    public static bool Leaves(List<Stmt> body)
+    {
+        if (body.Count == 0) return false;
+        return body[^1] switch
+        {
+            ReturnStmt or JumpStmt or UnreachableStmt or TodoStmt or ContinueStmt or BreakStmt or BecomesStmt => true,
+            ExprStmt => true,
+            IfStmt i => i.Else is not null && Leaves(i.Then) && Leaves(i.Else),
+            // Whether the arms cover every case, the build checks.
+            WhenStmt w => w.Arms.All(a => Leaves(a.Body)),
+            LoopStmt { Kind: LoopKind.While, Cond: BoolLit { Value: true } } l => !All(l.Body).OfType<BreakStmt>().Any(),
+            LoopStmt { Then: { } then } l => Leaves(then),
+            _ => false,
+        };
+    }
 }
-
-/// A target in a jump / branch / select / switch position.
-public abstract record Target(Pos Pos);
-
-/// `name(args)` — a block call, or (resolved later) a call to a #noreturn routine.
-public sealed record CallTarget(string Name, List<Expr> Args, Pos Pos) : Target(Pos)
-{
-    /// Each argument's name where the call names it, as on CallExpr. A block takes its arguments in order.
-    public List<string?>? ArgNames { get; init; }
-}
-public sealed record ReturnTarget(Expr? Value, Pos Pos) : Target(Pos);
-public sealed record UnreachableTarget(Pos Pos) : Target(Pos);
-/// `continue` as an arm: go on with the next line of the same block.
-public sealed record ContinueTarget(Pos Pos) : Target(Pos);
-/// Any other #noreturn call used as a target, such as `crash_allocation()`.
-public record ExprTarget(Expr Call, Pos Pos) : Target(Pos);
-
-/// `todo`: a block not written yet. It crashes with `NotImplementedError`, naming the routine and the block, so a
-/// program with some blocks still to write builds and runs up to them.
-public sealed record TodoTarget(Expr Call, string Block, Pos Pos) : ExprTarget(Call, Pos);
-
-public sealed record JumpTerm(CallTarget Target, Pos Pos) : Terminator(Pos);
-public sealed record BranchTerm(Expr Cond, Target IfTrue, Target IfFalse, Pos Pos) : Terminator(Pos);
-public sealed record WhenCondTerm(List<(Expr? Cond, Target Target)> Arms, Pos Pos) : Terminator(Pos);
-/// `when v` arms: one or more constants (`1, 2 => ...`), observations of a variant (`is S64 as n => ...`), or `else`
-/// (null). `else as rest` binds what the other arms didn't observe to `ElseBinding`.
-public sealed record WhenValueTerm(Expr Value, List<(List<Expr>? Cases, Target Target)> Arms, Pos Pos) : Terminator(Pos)
-{
-    public ValueRef? ElseBinding { get; init; }
-}
-
-/// A terminator written as a bare target: `return(x)`, `unreachable`, or a #noreturn call such as `crash_overflow()`.
-public sealed record TargetTerm(Target Target, Pos Pos) : Terminator(Pos);

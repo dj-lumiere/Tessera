@@ -5,9 +5,8 @@ namespace Tessera;
 /// jumps to itself being the one-block case. ExpensiveCallLint uses the loops to tell which calls run on every pass.
 public static class BlockGraph
 {
-    /// Each block's successors, in the order its lines and terminator name them: the blocks a `jump`, a `branch` or
-    /// `when` arm, or a guard line may go to. A name that isn't a block of the routine (a `#noreturn` routine called as
-    /// an arm) is left out.
+    /// Each block's successors, in the order its lines name them: the blocks its jumps go to, wherever they are
+    /// written in it.
     public static Dictionary<string, List<string>> Successors(RoutineDecl r)
     {
         var blocks = r.Blocks ?? [];
@@ -16,22 +15,10 @@ public static class BlockGraph
         foreach (var b in blocks)
         {
             if (successors.ContainsKey(b.Name)) continue;
-            var targets = b.Stmts.OfType<GuardStmt>().SelectMany(g => Targets(g.Term)).Concat(Targets(b.Terminator));
-            successors[b.Name] = targets.OfType<CallTarget>().Select(t => t.Name).Where(names.Contains).Distinct().ToList();
+            successors[b.Name] = Bodies.Jumps(b.Stmts).Select(j => j.Block).Where(names.Contains).Distinct().ToList();
         }
         return successors;
     }
-
-    /// The arms of a terminator.
-    private static IEnumerable<Target> Targets(Terminator t) => t switch
-    {
-        JumpTerm j => [j.Target],
-        BranchTerm b => [b.IfTrue, b.IfFalse],
-        WhenCondTerm w => w.Arms.Select(a => a.Target),
-        WhenValueTerm w => w.Arms.Select(a => a.Target),
-        TargetTerm t2 => [t2.Target],
-        _ => [],
-    };
 
     /// The loops among the blocks reached from `entry`: each block on a cycle, mapped to the number of its loop (its
     /// strongly connected component, Tarjan's algorithm, kept iterative so a long chain of blocks can't overflow the

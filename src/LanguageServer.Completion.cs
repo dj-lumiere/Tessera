@@ -272,7 +272,7 @@ public static partial class LanguageServer
             foreach (var shared in routine.Shared) Values.Add((shared.Name, shared.Type));
             if (blocks.LastOrDefault(b => b.Pos.Line <= line) is not { } block) return;
             foreach (var p in block.Params) Values.Add((p.Name, p.Type));
-            foreach (var s in block.Stmts.Where(s => s.Pos.Line < line))
+            foreach (var s in Bodies.All(block.Stmts).Where(s => s.Pos.Line < line))
                 switch (s)
                 {
                     case BindStmt bind:
@@ -280,6 +280,10 @@ public static partial class LanguageServer
                         break;
                     case DestructureStmt d:
                         foreach (var (name, _) in d.Names) Values.Add((name, null));
+                        break;
+                    case LoopStmt l:
+                        if (l.Var is not null) Values.Add((l.Var, null));
+                        foreach (var c in l.With) Values.Add((c.Name, c.Type));
                         break;
                 }
             Values.Reverse(); // the nearest binding first

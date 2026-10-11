@@ -572,10 +572,8 @@ internal sealed class AsmLowering
     {
         List<Result>? found = null;
         string? foundKey = null;
-        foreach (var target in _r.Blocks!.SelectMany(b => Targets(b.Terminator)
-                     .Concat(b.Stmts.OfType<GuardStmt>().SelectMany(g => Targets(g.Term)))))
+        foreach (var ret in _r.Blocks!.SelectMany(b => Bodies.All(b.Stmts)).OfType<ReturnStmt>())
         {
-            if (target is not ReturnTarget ret) continue;
             var items = ResultItems(ret);
             string key = string.Join(",", items.Select(i => i.Reg is null ? $"%{i.Param}" : LlvmName(i.Reg, i.Type)));
             if (foundKey is not null && key != foundKey)
@@ -586,15 +584,7 @@ internal sealed class AsmLowering
         return found ?? (_sig.Ret is VoidType ? [] : throw new CompileError(_r.Pos, $"'{_r.DisplayName}' never returns its {_sig.Ret}"));
     }
 
-    private static IEnumerable<Target> Targets(Terminator t) => t switch
-    {
-        JumpTerm j => [j.Target],
-        BranchTerm b => [b.IfTrue, b.IfFalse],
-        TargetTerm tt => [tt.Target],
-        _ => [],
-    };
-
-    private List<Result> ResultItems(ReturnTarget ret)
+    private List<Result> ResultItems(ReturnStmt ret)
     {
         var rt = _sig.Ret;
         if (ret.Value is null)
@@ -660,87 +650,103 @@ internal sealed class AsmLowering
             string? next = k + 1 < blocks.Count ? blocks[k + 1].Name : null;
             if (k > 0) lines.Add(Label(b.Name) + ":");
 
-            // Where a target goes, and whether that is the next line anyway: the block that follows, or the end.
-            (string Label, bool FallsThrough) Where(Target t, Pos pos)
+            // Where a leave goes, and whether that is the next line anyway: the block that follows, or the end.
+            (string Label, bool FallsThrough) Where(Stmt t)
             {
                 switch (t)
                 {
-                    case CallTarget ct:
-                        if (!names.Contains(ct.Name)) throw new CompileError(ct.Pos, $"no block named '{ct.Name}'");
-                        if (ct.Args.Count != 0) throw new CompileError(ct.Pos, "an assembly block takes no arguments");
-                        return (Label(ct.Name), ct.Name == next);
-                    case ReturnTarget when _naked:
+                    case JumpStmt j:
+                        if (!names.Contains(j.Block)) throw new CompileError(j.Pos, $"no block named '{j.Block}'");
+                        if (j.Args.Count != 0) throw new CompileError(j.Pos, "an assembly block takes no arguments");
+                        return (Label(j.Block), j.Block == next);
+                    case ReturnStmt when _naked:
                         endUsed = true;
                         return (Label(EndLabel), false);
-                    case ReturnTarget:
+                    case ReturnStmt:
                         endUsed |= next is not null;
                         return (Label(EndLabel), next is null);
                     default:
-                        throw new CompileError(pos, "an assembly block goes to a block or returns");
+                        throw new CompileError(t.Pos, "an assembly block goes to a block or returns");
                 }
             }
             // A jump to the block that follows is left out, as is a return from the last one.
-            string? JumpText(Target t, Pos pos) => Where(t, pos) is (var l, false) ? l : null;
+            string? JumpText(Stmt t) => Where(t) is (var l, false) ? l : null;
 
-            // A branch with a continue arm is one conditional jump to its other target, and the next line is the
-            // continue: `? done() : continue` jumps when the condition holds, `? continue : done()` when it doesn't.
-            foreach (var s in b.Stmts)
+            // `if c` with one jump (or return) under it and no else is one conditional jump, and the lines after it
+            // go on: the instruction stream falls through when the condition doesn't hold.
+            Stmt OnlyLeave(List<Stmt> body, Pos pos)
             {
-                if (s is not GuardStmt guard)
+                if (body is not [JumpStmt or ReturnStmt])
+                    throw new CompileError(pos, "an if in an assembly block holds one line: a jump to a block, or a return");
+                return body[0];
+            }
+
+            for (int si = 0; si < b.Stmts.Count; si++)
+            {
+                var s = b.Stmts[si];
+                bool last = si == b.Stmts.Count - 1;
+                switch (s)
                 {
-                    var (text, condition) = Instruction(s);
-                    if (condition is null)
+                    case ExprStmt instructionStmt:
+                    {
+                        var (text, condition) = Instruction(instructionStmt);
+                        if (condition is null)
+                        {
+                            EndItBlock();
+                            lines.Add(text);
+                            break;
+                        }
+                        if (itBlock.Count > 0 && condition != itBlock[0].Condition
+                                              && condition != ArmConditions.Opposite(itBlock[0].Condition))
+                            EndItBlock();
+                        itBlock.Add((text, condition));
+                        if (itBlock.Count == 4 || EndsItBlock(text)) EndItBlock();
+                        break;
+                    }
+                    case IfStmt ifStmt:
                     {
                         EndItBlock();
-                        lines.Add(text);
-                        continue;
+                        var taken = OnlyLeave(ifStmt.Then, ifStmt.Pos);
+                        if (ifStmt.Else is null)
+                        {
+                            if (last) throw new CompileError(ifStmt.Pos, "an assembly block ends with jump or return after an if without else");
+                            var (label, _) = Where(taken);
+                            if (label == Label(EndLabel)) endUsed = true;
+                            lines.Add(ConditionalJump(ifStmt.Cond, label, negate: false));
+                            break;
+                        }
+                        // The true target is always branched to, even when it follows: the false one is then the jump.
+                        if (!last) throw new CompileError(ifStmt.Pos, "an if with an else ends an assembly block: both sides leave it");
+                        var other = OnlyLeave(ifStmt.Else, ifStmt.Pos);
+                        var (takenLabel, _) = Where(taken);
+                        if (takenLabel == Label(EndLabel)) endUsed = true;
+                        lines.Add(ConditionalJump(ifStmt.Cond, takenLabel));
+                        if (JumpText(other) is { } otherLabel) lines.Add($"{Jump()} {otherLabel}");
+                        break;
                     }
-                    if (itBlock.Count > 0 && condition != itBlock[0].Condition
-                                          && condition != ArmConditions.Opposite(itBlock[0].Condition))
+                    case JumpStmt j:
                         EndItBlock();
-                    itBlock.Add((text, condition));
-                    if (itBlock.Count == 4 || EndsItBlock(text)) EndItBlock();
-                    continue;
+                        if (!last) throw new CompileError(j.Pos, "a jump ends an assembly block: no line follows it");
+                        if (JumpText(j) is { } jl) lines.Add($"{Jump()} {jl}");
+                        break;
+                    case ReturnStmt r when _naked:
+                        EndItBlock();
+                        if (!last) throw new CompileError(r.Pos, "a return ends an assembly block: no line follows it");
+                        lines.Add(Ret());
+                        break;
+                    case ReturnStmt r:
+                        EndItBlock();
+                        if (!last) throw new CompileError(r.Pos, "a return ends an assembly block: no line follows it");
+                        if (JumpText(r) is { } rl) lines.Add($"{Jump()} {rl}");
+                        break;
+                    case UnreachableStmt:
+                        EndItBlock();
+                        break;
+                    default:
+                        throw new CompileError(s.Pos, "an assembly block holds instructions, an if that jumps or returns, and ends with jump or return");
                 }
-                EndItBlock();
-                if (guard.Term is not BranchTerm gb)
-                    throw new CompileError(guard.Pos, "an assembly block goes on after a branch, not a when");
-                bool trueGoesOn = gb.IfTrue is ContinueTarget, falseGoesOn = gb.IfFalse is ContinueTarget;
-                if (trueGoesOn == falseGoesOn)
-                    throw new CompileError(gb.Pos, "one arm of the branch is continue, the other a block or a return");
-                var (label, _) = Where(trueGoesOn ? gb.IfFalse : gb.IfTrue, gb.Pos);
-                if (label == Label(EndLabel)) endUsed = true;
-                lines.Add(ConditionalJump(gb.Cond, label, negate: trueGoesOn));
             }
             EndItBlock();
-
-            switch (b.Terminator)
-            {
-                case JumpTerm j:
-                    if (JumpText(j.Target, j.Pos) is { } jl) lines.Add($"{Jump()} {jl}");
-                    break;
-                case BranchTerm br:
-                {
-                    // The true target is always branched to, even when it follows: the false one is then the jump.
-                    var (taken, _) = Where(br.IfTrue, br.Pos);
-                    if (taken == Label(EndLabel)) endUsed = true;
-                    lines.Add(ConditionalJump(br.Cond, taken));
-                    if (JumpText(br.IfFalse, br.Pos) is { } other) lines.Add($"{Jump()} {other}");
-                    break;
-                }
-                case TargetTerm { Target: ReturnTarget } when _naked:
-                    lines.Add(Ret());
-                    break;
-                case TargetTerm { Target: ReturnTarget r }:
-                    if (JumpText(r, r.Pos) is { } rl) lines.Add($"{Jump()} {rl}");
-                    break;
-                case TargetTerm { Target: UnreachableTarget }:
-                    break;
-                case TargetTerm { Target: ExprTarget e }:
-                    throw new CompileError(e.Pos, "an assembly block ends with jump, branch or return; this instruction needs one after it");
-                default:
-                    throw new CompileError(b.Terminator.Pos, "an assembly block ends with jump, branch or return");
-            }
         }
         if (endUsed) lines.Add(Label(EndLabel) + ":");
         if (endUsed && _naked) lines.Add(Ret());

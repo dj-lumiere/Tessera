@@ -17,18 +17,17 @@ public static partial class LanguageServer
     ];
 
     private static readonly HashSet<string> ControlKeywords =
-        ["jump", "branch", "when", "return", "unreachable", "continue", "else", "todo"];
+        ["jump", "when", "return", "unreachable", "continue", "else", "todo", "if", "for", "while", "until", "then", "with",
+         "break", "becomes", "in"];
 
-    /// Words the improvement plan adds that the parser doesn't take yet (`drop`, the Bool `and` / `or`, the `is` / `as`
-    /// patterns): colored as keywords so code written for the planned surface reads right, and
-    /// left out of completion, since the builder still rejects them.
-    private static readonly HashSet<string> PlannedKeywords = ["drop", "and", "or", "is", "as"];
+    /// Words colored as keywords but left out of completion: the operators spelled as words, and the patterns.
+    private static readonly HashSet<string> PlannedKeywords = ["and", "or", "is", "as", "til", "to", "by"];
 
 
     private static readonly HashSet<string> Keywords =
     [
-        "routine", "record", "choice", "variant", "preset", "global", "concept", "conform", "define", "block", "claim", "local",
-        "import", "module", "private", "internal", "require", "not", "true", "false", "null", "typename",
+        "routine", "record", "choice", "variant", "preset", "global", "protocol", "obeys", "define", "block", "local",
+        "import", "module", "private", "internal", "needs", "not", "true", "false", "null", "typename",
     ];
 
     /// A document's last successful check: its text, the declarations parsed from it, and the builder that checked them
@@ -796,8 +795,7 @@ public static partial class LanguageServer
                     Type(p.Type);
                     _params.Add(p.Name);
                 }
-                foreach (var s in b.Stmts) Stmt(s);
-                Terminator(b.Terminator);
+                Body(b.Stmts);
             }
         }
 
@@ -883,83 +881,86 @@ public static partial class LanguageServer
                     }
                     Expr(d.Value);
                     break;
-                case GuardStmt g:
-                    Terminator(g.Term);
+                case IfStmt i:
+                    Expr(i.Cond);
+                    Body(i.Then);
+                    if (i.Else is not null) Body(i.Else);
                     break;
-            }
-        }
-
-        private void Terminator(Terminator t)
-        {
-            switch (t)
-            {
-                case JumpTerm j:
-                    Target(j.Target);
+                case WhenStmt w:
+                    When(w);
                     break;
-                case BranchTerm b:
-                    Expr(b.Cond);
-                    Target(b.IfTrue);
-                    Target(b.IfFalse);
-                    break;
-                case WhenCondTerm w:
-                    foreach (var (cond, target) in w.Arms)
+                case LoopStmt l:
+                {
+                    if (l.Cond is not null) Expr(l.Cond);
+                    if (l.Source is not null) Expr(l.Source);
+                    foreach (var c in l.With)
                     {
-                        if (cond is not null) Expr(cond);
-                        Target(target);
+                        Type(c.Type);
+                        Expr(c.Init, c.Type);
                     }
-                    break;
-                case WhenValueTerm w:
-                    Expr(w.Value);
-                    foreach (var (cases, target) in w.Arms)
+                    var before = _written;
+                    _written = new Dictionary<string, TypeRef>(_written);
+                    if (l.Var is not null)
                     {
-                        // A pattern of a `when` on a value names a case of its type.
-                        foreach (var c in cases ?? [])
-                        {
-                            if (c is ImplicitCallExpr or ImplicitMemberExpr)
-                            {
-                                string name = c is ImplicitCallExpr call ? call.Name : ((ImplicitMemberExpr)c).Name;
-                                // `.Present(index)` binds `index` for the arm's target.
-                                if (c is ImplicitCallExpr { Args: var bound })
-                                    foreach (var b in bound.OfType<ValueRef>())
-                                    {
-                                        _written.Remove(b.Name);
-                                        _definedAt[b.Name] = b.Pos;
-                                    }
-                                Mark(c.Pos, name, "constant",
-                                    WrittenType(w.Value) is { } matched ? CaseHover(matched, name) : null);
-                            }
-                            Expr(c);
-                        }
-                        Target(target);
+                        _definedAt[l.Var] = l.VarPos;
+                        Mark(l.VarPos, l.Var, "variable", ValueHover(l.Var, l.VarPos, parameter: false));
                     }
+                    foreach (var c in l.With)
+                    {
+                        _written[c.Name] = c.Type;
+                        _definedAt[c.Name] = c.Pos;
+                        Mark(c.Pos, c.Name, "variable", ValueHover(c.Name, c.Pos, parameter: false));
+                    }
+                    Body(l.Body);
+                    if (l.Then is not null) Body(l.Then);
+                    _written = before;
                     break;
-                case TargetTerm tt:
-                    Target(tt.Target);
-                    break;
-            }
-        }
-
-        private void Target(Target t)
-        {
-            switch (t)
-            {
-                case CallTarget call when _blocks.ContainsKey(call.Name):
-                    // A target names a block of the routine.
-                    Mark(call.Pos, call.Name, "block", BlockHover(call.Name));
-                    foreach (var a in call.Args) Expr(a);
-                    break;
-                case CallTarget call:
-                    // Or a routine that doesn't return (`crash(...)`).
-                    Mark(call.Pos, call.Name, "function",
-                        CallHover(call.Pos, call.Name, FreeRoutine(new CallExpr(call.Name, [], call.Args, call.Pos))));
-                    foreach (var a in call.Args) Expr(a);
-                    break;
-                case ReturnTarget r when r.Value is not null:
+                }
+                case ReturnStmt r when r.Value is not null:
                     Expr(r.Value, _returnType);
                     break;
-                case ExprTarget e:
-                    Expr(e.Call);
+                case JumpStmt j:
+                    if (_blocks.ContainsKey(j.Block)) Mark(j.Pos, j.Block, "block", BlockHover(j.Block));
+                    foreach (var a in j.Args) Expr(a);
                     break;
+                case ContinueStmt { With: { } with }:
+                    foreach (var (_, v, _) in with) Expr(v);
+                    break;
+                case BecomesStmt bc:
+                    Expr(bc.Value);
+                    break;
+            }
+        }
+
+        private void Body(List<Stmt> body)
+        {
+            foreach (var s in body) Stmt(s);
+        }
+
+        private void When(WhenStmt w)
+        {
+            if (w.Value is not null) Expr(w.Value);
+            foreach (var arm in w.Arms)
+            {
+                if (arm.Cond is not null) Expr(arm.Cond);
+                // A pattern of a `when` on a value names a case of its type.
+                foreach (var c in arm.Cases ?? [])
+                {
+                    if (c is ImplicitCallExpr or ImplicitMemberExpr)
+                    {
+                        string name = c is ImplicitCallExpr call ? call.Name : ((ImplicitMemberExpr)c).Name;
+                        if (c is ImplicitCallExpr { Args: var bound })
+                            foreach (var b in bound.OfType<ValueRef>())
+                            {
+                                _written.Remove(b.Name);
+                                _definedAt[b.Name] = b.Pos;
+                            }
+                        Mark(c.Pos, name, "constant",
+                            w.Value is not null && WrittenType(w.Value) is { } matched ? CaseHover(matched, name) : null);
+                    }
+                    Expr(c);
+                }
+                Body(arm.Body);
             }
         }
 
@@ -1050,10 +1051,29 @@ public static partial class LanguageServer
                     Expr(index.Base);
                     Expr(index.Index);
                     break;
-                case SelectExpr select:
+                case IfExpr select:
                     Expr(select.Cond);
-                    Expr(select.IfTrue);
-                    Expr(select.IfFalse);
+                    Expr(select.Then, expected);
+                    Expr(select.Else, expected);
+                    break;
+                case WhenExpr we:
+                    When(we.When);
+                    break;
+                case BinaryExpr bin:
+                    Expr(bin.Left);
+                    Expr(bin.Right);
+                    break;
+                case UnaryExpr un:
+                    Expr(un.Operand);
+                    break;
+                case GetItemExpr item:
+                    Expr(item.Base);
+                    Expr(item.Index);
+                    break;
+                case RangeExpr range:
+                    Expr(range.From);
+                    Expr(range.To);
+                    if (range.Step is not null) Expr(range.Step);
                     break;
                 case ClaimExpr claim when claim.Contents is not null:
                     Expr(claim.Contents, expected);

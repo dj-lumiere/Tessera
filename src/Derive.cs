@@ -192,7 +192,7 @@ public static class Derive
             {
                 string writer = WriterParam(r.TypeParams, r.Clauses);
                 sb.Append(WriterHeader(self, method, writer));
-                sb.Append($"require {string.Join(", ", constraints.Append($"{writer}: typename").Append($"{Fmt}Writer[{writer}]"))}\n");
+                sb.Append($"needs {string.Join(", ", constraints.Append($"{writer}: typename").Append($"{Fmt}Writer[{writer}]"))}\n");
                 WriteBody(sb, r);
                 break;
             }
@@ -215,7 +215,7 @@ public static class Derive
     private static void Header(StringBuilder sb, string signature, List<string> constraints)
     {
         sb.Append(signature).Append('\n');
-        if (constraints.Count > 0) sb.Append($"require {string.Join(", ", constraints)}\n");
+        if (constraints.Count > 0) sb.Append($"needs {string.Join(", ", constraints)}\n");
     }
 
     /// `Point(x: 1, name: "a")`, each field diagnosed: inside a record, a string keeps its quotes either way. A
@@ -237,7 +237,7 @@ public static class Derive
             sb.Append($"        {value}.diagnose_into(out)\n");
         }
         if (r.Fields.Count > 0) sb.Append("        Standard/Format/write_str(out, text: \")\")\n");
-        sb.Append("        return()\n");
+        sb.Append("        return\n");
     }
 
     /// Every field equal.
@@ -246,7 +246,7 @@ public static class Derive
         sb.Append("    block entry()\n");
         if (r.Fields.Count == 0)
         {
-            sb.Append("        return(true)\n");
+            sb.Append("        return true\n");
             return;
         }
         for (int i = 0; i < r.Fields.Count; i++)
@@ -258,7 +258,7 @@ public static class Derive
             if (i > 0) sb.Append($"        all{i}: Bool = all{i - 1}.bitand(e{i})\n");
             else sb.Append("        all0: Bool = e0\n");
         }
-        sb.Append($"        return(all{r.Fields.Count - 1})\n");
+        sb.Append($"        return all{r.Fields.Count - 1}\n");
     }
 
     /// The fields' hashes, combined in order with hash_combine (SipHash-2-4 under the process key).
@@ -267,7 +267,7 @@ public static class Derive
         sb.Append("    block entry()\n");
         if (r.Fields.Count == 0)
         {
-            sb.Append("        return(0)\n");
+            sb.Append("        return 0\n");
             return;
         }
         for (int i = 0; i < r.Fields.Count; i++)
@@ -278,7 +278,7 @@ public static class Derive
             if (i > 0) sb.Append($"        h{i}: U64 = hash_combine(first: h{i - 1}, second: g{i})\n");
             else sb.Append("        h0: U64 = g0\n");
         }
-        sb.Append($"        return(h{r.Fields.Count - 1})\n");
+        sb.Append($"        return h{r.Fields.Count - 1}\n");
     }
 
     /// Field by field, in declaration order: the first field that differs decides.
@@ -287,7 +287,7 @@ public static class Derive
         sb.Append("    block entry()\n");
         if (r.Fields.Count == 0)
         {
-            sb.Append("        return(0)\n");
+            sb.Append("        return 0\n");
             return;
         }
         for (int i = 0; i < r.Fields.Count; i++)
@@ -299,18 +299,19 @@ public static class Derive
             sb.Append($"        c{i}: S32 = a{i}.compare(b{i})\n");
             if (i == r.Fields.Count - 1)
             {
-                sb.Append($"        return(c{i})\n");
+                sb.Append($"        return c{i}\n");
             }
             else
             {
-                sb.Append($"        differs{i}: Bool = c{i}.ne(0)\n");
-                sb.Append($"        branch differs{i} ? decided(c{i}) : field{i + 1}()\n");
+                sb.Append($"        if c{i} != 0\n");
+                sb.Append($"            jump decided(c{i})\n");
+                sb.Append($"        jump field{i + 1}()\n");
             }
         }
         if (r.Fields.Count > 1)
         {
             sb.Append("\n    block decided(c: S32)\n");
-            sb.Append("        return(c)\n");
+            sb.Append("        return c\n");
         }
     }
 
@@ -345,10 +346,10 @@ public static class Derive
             {
                 string writer = WriterParam(v.TypeParams, v.Clauses);
                 sb.Append(WriterHeader(self, method, writer));
-                sb.Append($"require {string.Join(", ", constraints.Append($"{writer}: typename").Append($"{Fmt}Writer[{writer}]"))}\n");
+                sb.Append($"needs {string.Join(", ", constraints.Append($"{writer}: typename").Append($"{Fmt}Writer[{writer}]"))}\n");
                 sb.Append("    block entry()\n        when me\n");
                 for (int i = 0; i < branches.Count; i++)
-                    sb.Append($"            is {branches[i].Type} as p => branch{i}(p)\n");
+                    sb.Append($"            is {branches[i].Type} as p => jump branch{i}(p)\n");
                 for (int i = 0; i < branches.Count; i++)
                 {
                     sb.Append($"\n    block branch{i}(p: {branches[i].Type})\n");
@@ -359,7 +360,7 @@ public static class Derive
                         sb.Append("        address.diagnose_into(out)\n");
                     }
                     else sb.Append($"        p.{method}(out)\n");
-                    sb.Append("        return()\n");
+                    sb.Append("        return\n");
                 }
                 break;
             }
@@ -370,26 +371,26 @@ public static class Derive
                 Header(sb, $"routine {self}.{method}(me: Me, other: Me) -> {ret}", constraints);
                 sb.Append("    block entry()\n        when me\n");
                 for (int i = 0; i < branches.Count; i++)
-                    sb.Append($"            is {branches[i].Type} as a => left{i}(a)\n");
+                    sb.Append($"            is {branches[i].Type} as a => jump left{i}(a)\n");
                 for (int i = 0; i < branches.Count; i++)
                 {
                     var b = branches[i].Type;
                     sb.Append($"\n    block left{i}(a: {b})\n");
                     sb.Append("        when other\n");
-                    sb.Append($"            is {b} as b => same{i}(a, b)\n");
+                    sb.Append($"            is {b} as b => jump same{i}(a, b)\n");
                     if (eq)
                     {
-                        if (branches.Count > 1) sb.Append("            else => return(false)\n");
+                        if (branches.Count > 1) sb.Append("            else => return false\n");
                     }
                     else
                     {
                         var before = branches.Take(i).Select(x => $"is {x.Type}").ToList();
                         var after = branches.Skip(i + 1).Select(x => $"is {x.Type}").ToList();
-                        if (before.Count > 0) sb.Append($"            {string.Join(", ", before)} => return(1)\n");
-                        if (after.Count > 0) sb.Append($"            {string.Join(", ", after)} => return(-1)\n");
+                        if (before.Count > 0) sb.Append($"            {string.Join(", ", before)} => return 1\n");
+                        if (after.Count > 0) sb.Append($"            {string.Join(", ", after)} => return -1\n");
                     }
                     sb.Append($"\n    block same{i}(a: {b}, b: {b})\n");
-                    sb.Append($"        r: {ret} = a.{method}(b)\n        return(r)\n");
+                    sb.Append($"        r: {ret} = a.{method}(b)\n        return r\n");
                 }
                 break;
             }
@@ -403,7 +404,7 @@ public static class Derive
                 {
                     sb.Append($"\n    block branch{i}(a: {branches[i].Type})\n");
                     sb.Append("        g: U64 = a.hash()\n");
-                    sb.Append($"        h: U64 = hash_combine(first: {i}, second: g)\n        return(h)\n");
+                    sb.Append($"        h: U64 = hash_combine(first: {i}, second: g)\n        return h\n");
                 }
                 break;
             }
@@ -426,27 +427,27 @@ public static class Derive
                     throw new CompileError(c.Pos, $"{c.Name} has no members to {method}");
                 string prefix = method == "diagnose_into" ? $"{c.Name}." : "";
                 sb.Append(WriterHeader(c.Name, method, "T"));
-                sb.Append($"require T: typename, {Fmt}Writer[T]\n");
+                sb.Append($"needs T: typename, {Fmt}Writer[T]\n");
                 sb.Append("    block entry()\n");
                 sb.Append("        when me\n");
                 foreach (var (name, _) in c.Members)
-                    sb.Append($"            {c.Name}.{name} => named(\"{prefix}{name}\")\n");
+                    sb.Append($"            {c.Name}.{name} => jump named(\"{prefix}{name}\")\n");
                 sb.Append("\n    block named(text: Span[Byte])\n");
                 sb.Append("        Standard/Format/write_str(out, text)\n");
-                sb.Append("        return()\n");
+                sb.Append("        return\n");
                 break;
             case "eq":
                 sb.Append($"routine {c.Name}.eq(me: Me, other: Me) -> Bool\n");
                 sb.Append("    block entry()\n");
                 sb.Append("        r: Bool = ieq[Me](a: me, b: other)\n");
-                sb.Append("        return(r)\n");
+                sb.Append("        return r\n");
                 break;
             case "hash":
                 sb.Append($"routine {c.Name}.hash(me: Me) -> U64\n");
                 sb.Append("    block entry()\n");
                 sb.Append($"        v: {u} = bitcast[Me, {u}](me)\n");
                 sb.Append("        r: U64 = v.hash()\n");
-                sb.Append("        return(r)\n");
+                sb.Append("        return r\n");
                 break;
             case "compare":
                 sb.Append($"routine {c.Name}.compare(me: Me, other: Me) -> S32\n");
@@ -454,7 +455,7 @@ public static class Derive
                 sb.Append($"        a: {u} = bitcast[Me, {u}](me)\n");
                 sb.Append($"        b: {u} = bitcast[Me, {u}](other)\n");
                 sb.Append("        r: S32 = a.compare(b)\n");
-                sb.Append("        return(r)\n");
+                sb.Append("        return r\n");
                 break;
         }
         return sb.ToString();

@@ -201,17 +201,23 @@ internal sealed class NamedArgsMigration
             foreach (var b in r.Blocks ?? [])
             {
                 foreach (var p in b.Params) _types.TryAdd(p.Name, p.Type);
-                foreach (var st in b.Stmts.OfType<BindStmt>()) _types.TryAdd(st.Name, st.Type);
-                foreach (var d in b.Stmts.OfType<DestructureStmt>())
-                    foreach (var (name, _) in d.Names) _types.TryAdd(name, Named("?"));
+                foreach (var st in Bodies.All(b.Stmts))
+                    switch (st)
+                    {
+                        case BindStmt bind: _types.TryAdd(bind.Name, bind.Type); break;
+                        case DestructureStmt d:
+                            foreach (var (name, _) in d.Names) _types.TryAdd(name, Named("?"));
+                            break;
+                        case LoopStmt l:
+                            if (l.Var is not null) _types.TryAdd(l.Var, Named("?"));
+                            foreach (var c in l.With) _types.TryAdd(c.Name, c.Type);
+                            break;
+                    }
             }
             _blocks = (r.Blocks ?? []).Select(b => b.Name).ToHashSet();
             foreach (var s in r.Shared) Expr(s.Value, s.Type);
             foreach (var b in r.Blocks ?? [])
-            {
-                foreach (var s in b.Stmts) Stmt(s);
-                Terminator(b.Terminator);
-            }
+                foreach (var s in Bodies.All(b.Stmts)) Stmt(s);
         }
 
         private void Stmt(Stmt s)
@@ -219,49 +225,17 @@ internal sealed class NamedArgsMigration
             switch (s)
             {
                 case BindStmt b: Expr(b.Value, b.Type); break;
-                case ExprStmt e: Expr(e.Value); break;
-                case DestructureStmt d: Expr(d.Value); break;
-                case GuardStmt g: Terminator(g.Term); break;
-            }
-        }
-
-        private void Terminator(Terminator t)
-        {
-            switch (t)
-            {
-                case JumpTerm j: Target(j.Target); break;
-                case BranchTerm b:
-                    Expr(b.Cond);
-                    Target(b.IfTrue);
-                    Target(b.IfFalse);
+                case JumpStmt j:
+                    foreach (var a in j.Args) Expr(a);
                     break;
-                case WhenCondTerm w:
-                    foreach (var (cond, target) in w.Arms)
-                    {
-                        if (cond is not null) Expr(cond);
-                        Target(target);
-                    }
+                case LoopStmt l:
+                    foreach (var c in l.With) Expr(c.Init, c.Type);
+                    if (l.Cond is not null) Expr(l.Cond);
+                    if (l.Source is not null) Expr(l.Source);
                     break;
-                case WhenValueTerm w:
-                    Expr(w.Value);
-                    foreach (var (_, target) in w.Arms) Target(target);
+                default:
+                    foreach (var e in Bodies.Exprs(s)) Expr(e);
                     break;
-                case TargetTerm t2: Target(t2.Target); break;
-            }
-        }
-
-        private void Target(Target t)
-        {
-            switch (t)
-            {
-                case CallTarget c:
-                    foreach (var a in c.Args) Expr(a);
-                    if (!_blocks.Contains(c.Name)) Name(FreeCall(c.Name, c.Args), c.Args, c.ArgNames, c.Name, c.Pos);
-                    break;
-                case ReturnTarget { Value: { } v }: Expr(v); break;
-                // `todo` is a call the parser writes, not one in the source.
-                case TodoTarget: break;
-                case ExprTarget e: Expr(e.Call); break;
             }
         }
 
@@ -294,10 +268,29 @@ internal sealed class NamedArgsMigration
                     Expr(i.Base);
                     Expr(i.Index);
                     break;
-                case SelectExpr s:
+                case IfExpr s:
                     Expr(s.Cond);
-                    Expr(s.IfTrue, expected);
-                    Expr(s.IfFalse, expected);
+                    Expr(s.Then, expected);
+                    Expr(s.Else, expected);
+                    break;
+                case WhenExpr w:
+                    foreach (var inner in Bodies.Exprs(w.When)) Expr(inner);
+                    foreach (var arm in w.When.Arms)
+                        foreach (var st in Bodies.All(arm.Body)) Stmt(st);
+                    break;
+                case BinaryExpr b:
+                    Expr(b.Left);
+                    Expr(b.Right);
+                    break;
+                case UnaryExpr u: Expr(u.Operand); break;
+                case GetItemExpr g:
+                    Expr(g.Base);
+                    Expr(g.Index);
+                    break;
+                case RangeExpr r:
+                    Expr(r.From);
+                    Expr(r.To);
+                    if (r.Step is not null) Expr(r.Step);
                     break;
                 case RecordLit r: foreach (var (_, v, _) in r.Fields) Expr(v); break;
                 case ClaimExpr { Contents: { } c }: Expr(c, expected is null ? null : Pointee(expected)); break;
@@ -535,7 +528,10 @@ internal sealed class NamedArgsMigration
             MethodCallExpr m => Start(m.Receiver),
             FieldExpr f => Start(f.Base),
             IndexExpr i => Start(i.Base),
-            SelectExpr s => Start(s.Cond),
+            IfExpr s => Start(s.Cond),
+        BinaryExpr b => Start(b.Left),
+        UnaryExpr u => u.Pos,
+        GetItemExpr g => Start(g.Base),
             AtExpr at => Start(at.Value),
             _ => e.Pos,
         };

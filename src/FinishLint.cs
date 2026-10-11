@@ -22,29 +22,10 @@ public static class FinishLint
         {
             if (r.Blocks?.FirstOrDefault(b => b.Name == BlockName) is not { } finish) continue;
             foreach (var b in r.Blocks.Where(b => b != finish))
-            {
-                foreach (var g in b.Stmts.OfType<GuardStmt>()) Returns(g.Term, warnings);
-                Returns(b.Terminator, warnings);
-            }
+                foreach (var ret in Bodies.All(b.Stmts).OfType<ReturnStmt>())
+                    warnings.Add($"{ret.Pos}: warning: a return outside {BlockName} here: jump {BlockName}(...) instead, "
+                        + $"so the release in {BlockName} runs on this exit too");
         }
         return warnings;
     }
-
-    /// Warns on each `return` among t's arms.
-    private static void Returns(Terminator t, List<string> warnings)
-    {
-        foreach (var target in Targets(t).OfType<ReturnTarget>())
-            warnings.Add($"{target.Pos}: warning: a return outside {BlockName} here: jump {BlockName}(...) instead, "
-                + $"so the release in {BlockName} runs on this exit too");
-    }
-
-    private static IEnumerable<Target> Targets(Terminator t) => t switch
-    {
-        JumpTerm j => [j.Target],
-        BranchTerm b => [b.IfTrue, b.IfFalse],
-        WhenCondTerm w => w.Arms.Select(a => a.Target),
-        WhenValueTerm w => w.Arms.Select(a => a.Target),
-        TargetTerm t2 => [t2.Target],
-        _ => [],
-    };
 }

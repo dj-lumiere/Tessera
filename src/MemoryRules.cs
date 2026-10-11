@@ -34,7 +34,15 @@ public static class MemoryRules
 
     /// The line leaves the block: to `Block` (null for a return or a call that doesn't return), passing each named
     /// handle to the parameter it is mapped to.
-    public sealed record Exit(string? Block, bool Returns, List<(string Param, string Arg)> Args, Pos Pos) : Event(Pos);
+    public sealed record Exit(string? Block, bool Returns, List<(string Param, string Arg)> Args, Pos Pos) : Event(Pos)
+    {
+        /// The handles the next region sees under their own names (a body inside the block, which sees what is bound
+        /// before it), besides the routine-wide ones.
+        public HashSet<string>? Visible { get; init; }
+
+        /// The edge goes into a body of the same block (an if's arm, a loop's round), not to a block of the routine.
+        public bool Region { get; init; }
+    }
 
     /// What an arm's arguments do applies to that arm only: the lines after an arm see the state before it.
     public sealed record ArmBegin(Pos Pos) : Event(Pos);
@@ -193,12 +201,13 @@ public static class MemoryRules
                     case Exit ex:
                     {
                         var next = new State();
+                        bool Sees(string name) => routineWide.Contains(name) || ex.Visible?.Contains(name) == true;
                         foreach (var (name, id) in state.Names)
-                            if (routineWide.Contains(name)) next.Names[name] = id;
+                            if (Sees(name)) next.Names[name] = id;
                         foreach (var (param, arg) in ex.Args)
                             if (state.Names.TryGetValue(arg, out var id)) next.Names[param] = id;
                         foreach (var (view, root) in state.Views)
-                            if (routineWide.Contains(view))
+                            if (Sees(view))
                             {
                                 next.Views[view] = root;
                                 if (state.Stale.TryGetValue(view, out var stale)) next.Stale[view] = stale;
@@ -209,9 +218,12 @@ public static class MemoryRules
                             bool reached = next.Names.ContainsValue(id);
                             if (reached) next.Groups[id] = g;
                             else if (g.Ended is null)
-                                Report(ex.Pos, $"the memory of '{g.Origin}' (from line {g.Born.Line}) is lost here: block '{ex.Block}' doesn't get "
-                                    + $"it. Pass it to the block as an argument, keep it in a slot of the routine's head (local m: "
-                                    + "@Memory[T] <- ...), or drop it first");
+                                Report(ex.Pos, ex.Region
+                                    ? $"'{g.Origin}' holds memory (from line {g.Born.Line}) and goes out of sight here, at the end of the body "
+                                      + "it is bound in: give the memory back first (drop it), return it, or keep it in a slot bound outside the body"
+                                    : $"the memory of '{g.Origin}' (from line {g.Born.Line}) is lost here: block '{ex.Block}' doesn't get "
+                                      + $"it. Pass it to the block as an argument, keep it in a slot of the routine's head (local m: "
+                                      + "@Memory[T] <- ...), or drop it first");
                         }
                         work.Enqueue((ex.Block!, next.Canonical()));
                         break;
