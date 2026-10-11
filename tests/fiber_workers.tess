@@ -1,5 +1,6 @@
-// Fibers over four worker threads: 64 fibers each add 1000 to a shared total, yielding between steps, so they move
-// between workers as idle ones take them. The total comes out exact, and run returns once every fiber has.
+// Fibers on four threads: four thread tickets each run 16 fibers on their own thread's FIBERS, and every fiber adds
+// 1000 to a shared total, yielding between steps. Fibers never move between threads, the total comes out exact, and
+// each thread's FIBERS goes when its work is over.
 
 import Standard/Alloc
 import Standard/Fiber
@@ -7,15 +8,13 @@ import Standard/Format
 import Standard/Os
 
 record Shared
-    sched: @FiberManager
     total: U64
 
 /// Makes a `Shared` from its fields.
-/// :param sched: Its `sched`.
 /// :param total: Its `total`.
 /// :returns: The new value.
-routine Shared.construct(sched: @FiberManager, total: U64) -> Me
-    return(Me(sched, total))
+routine Shared.construct(total: U64) -> Me
+    return(Me(total))
 
 /// Releases nothing: a `Shared` holds no memory of its own.
 routine Shared.destruct(me: @Me) -> Void
@@ -32,29 +31,59 @@ routine add_steps(state: @Shared) -> Void
 
     block add(i: U64)
         state.total.atomic_fetch_add(1)
-        state.sched.peek().yield()
+        FIBERS.yield()
         jump step(i.add(1))
 
+/// One thread's work: 16 fibers on its FIBERS, run until all have finished.
+routine run_fibers(state: @Shared) -> Void
+    local fibers: @Array[Fiber[Void], 16] <- .hollow()
+
+    jump start(0)
+
+    block start(i: USize)
+        branch i.eq(16)
+            ? run()
+            : continue
+        f: Fiber[Void] = FIBERS.get_fiber[Void]()
+        f.put_work(entry: add_steps.to[Callable](), args: state)
+        fibers.setitem(index: i, value: f)
+        jump start(i.add(1))
+
+    block run()
+        FIBERS.run()
+        jump give(0)
+
+    block give(i: USize)
+        branch i.eq(16)
+            ? return()
+            : continue
+        fibers.getitem(i).give_back()
+        jump give(i.add(1))
+
 routine start() -> Void
-    local alloc: @MemoryManager <- make_heap_memory()
-    local stacks: @MemoryManager <- make_stack_memory()
-    local sched: @FiberManager <- .construct(workers: 4, stacks, alloc)
-    local state: @Shared <- Shared(sched: sched, total: 0)
+    local state: @Shared <- Shared(total: 0)
+    local threads: @Array[Thread[Void], 4] <- .hollow()
 
     jump spawn(0)
 
-    block spawn(i: U64)
-        done: Bool = i.eq(64)
-        branch done
-            ? go()
-            : one(i)
-
-    block one(i: U64)
-        sched.spawn(entry: add_steps.to[Callable](), arg: state, stack_size: 65536)
+    block spawn(i: USize)
+        branch i.eq(4)
+            ? collect(0)
+            : continue
+        t: Thread[Void] = get_thread[Void]()
+        t.put_work(entry: run_fibers.to[Callable](), args: state)
+        threads.setitem(index: i, value: t)
         jump spawn(i.add(1))
 
-    block go()
-        sched.run()
+    block collect(i: USize)
+        branch i.eq(4)
+            ? report()
+            : continue
+        t: Thread[Void] = threads.getitem(i)
+        t.wait_finished()
+        t.give_back()
+        jump collect(i.add(1))
+
+    block report()
         Out.write("{state.total.peek()}\n")
-        sched.destruct()
         return()

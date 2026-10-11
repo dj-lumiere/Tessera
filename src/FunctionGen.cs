@@ -857,7 +857,8 @@ public sealed class FunctionGen
                 return InferPresetRef(r);
             case RoutineRef rr:
                 // An overloaded routine's value is the overload the Callable it goes to names.
-                return rr.Callable is null && _c.FreeCandidates(rr.Name, _env.File, rr.Pos, rr.Path).Count > 1
+                return rr.Callable is null && _c.FreeCandidates(rr.Name, _env.File, rr.Pos, rr.Path)
+                    .Count(o => rr.TypeArgs.Count == 0 || o.TypeParams.Count == rr.TypeArgs.Count) > 1
                     ? null
                     : RoutineValue(rr, null).Type;
             case NsCallExpr or MethodCallExpr when TemplateWriter(e) is not null:
@@ -1645,6 +1646,8 @@ public sealed class FunctionGen
         if (self is not null) env.Bind("Me", self);
         var t = _c.ResolveType(c.Type, env);
         // `preset NAME: Span[T] <- [...]` and `global NAME: Span[T] <- [...]`: the name is a Span over the memory.
+        if (c is { IsSpan: true, Value: StrLit text })
+            return new PresetInfo(t, _ => StringLiteral(text, t));
         if (c.IsSpan)
         {
             var storage = _c.SpanStorage(c, t, env);
@@ -1694,6 +1697,7 @@ public sealed class FunctionGen
     {
         var set = _c.FreeCandidates(r.Name, _env.File, r.Pos, r.Path);
         if (set.Count == 0) throw Err(r.Pos, $"'{r.Name}' isn't a routine; to[Callable]() makes a routine a value");
+        if (r.TypeArgs.Count > 0) return GenericRoutineValue(r, set, expected);
         var routine = set.Count == 1 ? set[0] : OverloadForValue(r, set, expected);
         if (Recorded) _c.CallUses.TryAdd((r.Pos, r.Name), new Compiler.CallUse(routine, []));
         // An #inline routine is inlined at every call, so there's no call of its own for a pointer to name.
@@ -1714,6 +1718,37 @@ public sealed class FunctionGen
     }
 
 
+
+    /// `name[T, U].to[Callable]()`: the instance of a generic routine for the type arguments written, the one overload
+    /// with that many type parameters (or, among several, the one whose instance is the Callable expected).
+    private Val GenericRoutineValue(RoutineRef r, List<RoutineDecl> set, DType? expected)
+    {
+        var fitting = set.Where(o => o.TypeParams.Count == r.TypeArgs.Count && o.Fixed.Count == 0).ToList();
+        if (fitting.Count == 0)
+            throw Err(r.Pos, $"no overload of '{r.Name}' takes {r.TypeArgs.Count} type argument(s)");
+        var want = r.Callable is { } written ? Resolve(written) : expected as CallableType;
+        (RoutineDecl Decl, Instance Inst)? chosen = null;
+        foreach (var o in fitting)
+        {
+            var env = new Compiler.TypeEnv(o.File);
+            BindExplicit(o, env, r.TypeArgs, r.Pos);
+            var inst = _c.RequireInstance(o, env);
+            if (fitting.Count > 1 && want is not null && !new CallableType(inst.CallConv, inst.Params, inst.Ret).Equals(want))
+                continue;
+            if (chosen is not null)
+                throw Err(r.Pos, $"'{r.Name}' has more than one overload with {r.TypeArgs.Count} type argument(s); name the one "
+                                 + $"you mean by its Callable type: {r.Name}[...].to[Callable[(...), R]]()");
+            chosen = (o, inst);
+        }
+        if (chosen is not { } c) throw Err(r.Pos, $"no overload of '{r.Name}' is {want}");
+        if (Recorded) _c.CallUses.TryAdd((r.Pos, r.Name), new Compiler.CallUse(c.Decl, []));
+        if (c.Decl.AnnotationNamed("inline") is not null)
+            throw Err(r.Pos, $"'{r.Name}' is #inline, so it can't be a Callable value: it's inlined at every call");
+        var own = new CallableType(c.Inst.CallConv, c.Inst.Params, c.Inst.Ret);
+        if (r.Callable is { } shown && Resolve(shown) is var ct && !ct.Equals(own))
+            throw Err(r.Pos, $"routine '{r.Name}' is {own}, not {ct}");
+        return new Val($"@{Compiler.Quote(c.Inst.Symbol)}", own);
+    }
 
     /// `(a, b) => a.add(b)` where a Callable is expected: a routine of the file with the Callable's parameter and result
     /// types, `return(body)` its one block, whose address is the value. It sees its parameters, presets, globals, and
@@ -1890,7 +1925,8 @@ public sealed class FunctionGen
 
     /// Picks the overload a call means. An overload fits when each argument's type is its parameter's type exactly (an
     /// implicit conversion such as `@T` to `Addr` doesn't count) and an untyped argument can be its parameter's type.
-    /// Of the ones that fit, one without type parameters of its own beats a generic one; then one where every untyped
+    /// Of the ones that fit, one without type parameters of its own beats a generic one, and one written for its owner's
+    /// type arguments (`Thread[Void].put_work`) beats the one for any; then one where every untyped
     /// integer literal is a USize (SSize if negative) beats the rest. Anything else that is left is ambiguous.
     private Fit ChooseOverload(List<(RoutineDecl Decl, Compiler.TypeEnv Env)> set, List<TypeRef> typeArgs, List<Expr> args,
         int firstArgParam, DType? expected, Pos pos, string what)
@@ -1903,6 +1939,7 @@ public sealed class FunctionGen
                 + string.Concat(fits.Select(f => $"\n    {Compiler.ShowSignature(f.Decl)} at {f.Decl.Pos}: {f.Why}"))
                 + _c.HiddenOverloadHint(set[0].Decl, args.Count, _env.File));
         var tier = taking.Where(f => !f.Generic).ToList() is { Count: > 0 } concrete ? concrete : taking;
+        if (tier.Count > 1 && tier.Where(f => _c.OwnerArgsSpecific(f.Decl)).ToList() is { Count: > 0 } specific) tier = specific;
         if (tier.Count > 1 && tier.Where(f => f.Preferred).ToList() is { Count: > 0 } preferred) tier = preferred;
         if (tier.Count == 1) return tier[0];
         string hint = args.Any(a => a is IntLit)
@@ -1936,7 +1973,14 @@ public sealed class FunctionGen
             for (int i = 0; i < want; i++)
             {
                 var p = r.Params[i + first].Type;
-                if (MentionsAny(p, unbound)) continue;   // bound later by where the result goes, or not at all
+                if (MentionsAny(p, unbound))
+                {
+                    // Bound later by where the result goes, or not at all, but an argument of another shape (a
+                    // Callable of another arity) can't be one.
+                    if (InferQuiet(args[i]) is { } shaped && !CouldMatch(p, shaped, unbound))
+                        return No($"argument {i + 1}: a {shaped} can't be a {p}");
+                    continue;
+                }
                 var pt = _c.ResolveType(p, env);
                 if (InferQuiet(args[i]) is { } at)
                 {
@@ -1954,6 +1998,31 @@ public sealed class FunctionGen
         catch (CompileError e)
         {
             return No(e.Text);
+        }
+    }
+
+    /// Whether a value of `actual` could be a `t` once the type parameters in `unbound` are known: the same kind of
+    /// type with as many arguments, all the way down.
+    private static bool CouldMatch(TypeRef t, DType actual, HashSet<string> unbound)
+    {
+        if (t.Path is null && t.Args.Count == 0 && unbound.Contains(t.Name)) return true;
+        switch (actual)
+        {
+            case CallableType ct:
+                if (t.Name != "Callable") return false;
+                var parts = t.Args.Where(a => a is not TypeArgAnnotation).ToList();
+                if (parts is not [TypeArgTuple ps, TypeArgType ret] || ps.Types.Count != ct.Params.Count) return false;
+                return ps.Types.Select((p, i) => CouldMatch(p, ct.Params[i], unbound)).All(x => x)
+                       && (ct.Ret is VoidType ? ret.Type.Name is "Void" || unbound.Contains(ret.Type.Name) : CouldMatch(ret.Type, ct.Ret, unbound));
+            case PtrType { Pointee: { } pointee }:
+                return t.Name != "Ptr" || t.Args is not [TypeArgType inner] || CouldMatch(inner.Type, pointee, unbound);
+            case RecordType s:
+                if (t.Name is "Callable" or "Ptr") return false;
+                if (t.Name != s.Decl.Name) return t.Args.Count == 0;
+                if (t.Args.Count != s.Args.Count) return false;
+                return t.Args.Select((a, i) => a is not TypeArgType ta || CouldMatch(ta.Type, s.Args[i], unbound)).All(x => x);
+            default:
+                return true;
         }
     }
 

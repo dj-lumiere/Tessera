@@ -238,6 +238,10 @@ public sealed record IsPattern(TypeRef Type, ValueRef? Binding, Pos Pos) : Expr(
 /// signature, or by the one written.
 public sealed record RoutineRef(string Name, TypeRef? Callable, Pos Pos) : Expr(Pos)
 {
+    /// `name[T, U].to[Callable]()`: the type arguments of a generic routine, whose instance is the value. Empty for a
+    /// routine that isn't generic.
+    public List<TypeRef> TypeArgs { get; init; } = [];
+
     /// The module of a qualified routine: `Standard/Os` in `Standard/Os/wake_one.to[Callable]()`.
     public string? Path { get; init; }
 }

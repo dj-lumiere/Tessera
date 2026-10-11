@@ -1,6 +1,6 @@
-// A fiber reading a pipe doesn't stop the others: with one worker thread, the reader waits for data while the
-// writer, a fiber on the same worker, runs, yields, and writes it. The read and the write run on the scheduler's
-// I/O threads. If the read blocked the worker, the writer would never run.
+// A fiber reading a pipe doesn't stop the others: the reader waits for data while the writer, a fiber of the same
+// manager on the same thread, runs, yields, and writes it. The read and the write run on thread tickets. If the read
+// blocked the manager's thread, the writer would never run.
 
 import Standard/Alloc
 import Standard/Fiber
@@ -62,13 +62,17 @@ routine writer(pipe: @Pipe) -> Void
 routine start() -> Void
     claim alloc: @MemoryManager <- make_heap_memory()
     claim stacks: @MemoryManager <- make_stack_memory()
-    claim sched: @FiberManager <- .construct(workers: 1, stacks, alloc)
+    claim sched: @FiberManager <- .construct(stacks, alloc, stack_size: 65536)
     claim fds: @Array[CInt, 2] <- .hollow()
     make_pipe(fds.to[@CInt]())
     claim pipe: @Pipe <- Pipe(sched: sched, fds: fds.peek())
-    sched.spawn(entry: reader.to[Callable](), arg: pipe, stack_size: 65536)
-    sched.spawn(entry: writer.to[Callable](), arg: pipe, stack_size: 65536)
+    r: Fiber[Void] = sched.get_fiber[Void]()
+    r.put_work(entry: reader.to[Callable](), args: pipe)
+    w: Fiber[Void] = sched.get_fiber[Void]()
+    w.put_work(entry: writer.to[Callable](), args: pipe)
     sched.run()
+    r.give_back()
+    w.give_back()
     Out.write("all done\n")
     sched.destruct()
     return()

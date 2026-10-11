@@ -1,7 +1,6 @@
-// Fibers that wait without holding up their worker, over four worker threads: two fibers hand a turn back and forth
-// a thousand times with park and wake, eight fibers sleep until different times and wake in that order, and a fiber starts
-// ten joinable ones and joins each. Outside a fiber, sleep waits the thread, and join of a fiber that has returned
-// returns at once.
+// Fibers that wait without holding up their thread: two fibers hand a turn back and forth a thousand times with park
+// and wake, eight fibers sleep until different times and wake in that order, and a fiber starts ten others and waits
+// for each. Outside a fiber, sleep waits the thread, and wait_finished of a fiber whose work is done returns at once.
 
 import Standard/Alloc
 import Standard/Fiber
@@ -31,7 +30,7 @@ record Sleeper
 record Family
     sched: @FiberManager
     sum: U64
-    children: Array[@Join, 10]
+    children: Array[Fiber[Void], 10]
 
 /// Makes a `PingPong` from its fields.
 /// :param sched: Its `sched`.
@@ -79,7 +78,7 @@ routine Sleeper.destruct(me: @Me) -> Void
 /// :param sum: Its `sum`.
 /// :param children: Its `children`.
 /// :returns: The new value.
-routine Family.construct(sched: @FiberManager, sum: U64, children: Array[@Join, 10]) -> Me
+routine Family.construct(sched: @FiberManager, sum: U64, children: Array[Fiber[Void], 10]) -> Me
     return(Me(sched, sum, children))
 
 /// Releases nothing: a `Family` holds no memory of its own.
@@ -160,7 +159,7 @@ routine child(family: @Family) -> Void
 
 routine parent(family: @Family) -> Void
     local sched: @FiberManager = family.sched.peek()
-    local kids: @@Join = family.children.to[@@Join]()
+    local kids: @Fiber[Void] = family.children.to[@Fiber[Void]]()
 
     jump spawn(0)
 
@@ -169,8 +168,9 @@ routine parent(family: @Family) -> Void
         branch done
             ? join(0)
             : continue
-        kids.stride(i).poke(sched.spawn_joinable(entry: child.to[Callable](), arg: family,
-            stack_size: 65536))
+        kid: Fiber[Void] = sched.get_fiber[Void]()
+        kid.put_work(entry: child.to[Callable](), args: family)
+        kids.stride(i).poke(kid)
         jump spawn(i.add(1))
 
     block join(i: USize)
@@ -178,7 +178,9 @@ routine parent(family: @Family) -> Void
         branch done
             ? report()
             : continue
-        sched.join(kids.stride(i).peek())
+        kid: Fiber[Void] = kids.stride(i).peek()
+        kid.wait_finished()
+        kid.give_back()
         jump join(i.add(1))
 
     block report()
@@ -188,11 +190,13 @@ routine parent(family: @Family) -> Void
 routine start() -> Void
     local alloc: @MemoryManager <- make_heap_memory()
     local stacks: @MemoryManager <- make_stack_memory()
-    local sched: @FiberManager <- .construct(workers: 4, stacks, alloc)
+    local sched: @FiberManager <- .construct(stacks, alloc, stack_size: 65536)
     local game: @PingPong <- PingPong(sched: sched, turn: 0, ping: null, pong: null, handoffs: 0)
     local sleepers: @Sleepers <- .hollow()
     local sleeper_slots: @Array[Sleeper, 8] <- .hollow()
     local each: @Sleeper = sleeper_slots.to[@Sleeper]()
+    local sleeper_fibers: @Array[Fiber[Void], 8] <- .hollow()
+    local players: @Array[Fiber[Void], 2] <- .hollow()
 
     // Outside a fiber, sleep waits the thread.
     before: U64 = monotonic_ns()
@@ -201,8 +205,12 @@ routine start() -> Void
     waited: Bool = elapsed.ge(5000000)
     Out.write("thread slept: {waited}\n")
 
-    sched.spawn(entry: ping.to[Callable](), arg: game, stack_size: 65536)
-    sched.spawn(entry: pong.to[Callable](), arg: game, stack_size: 65536)
+    pinger: Fiber[Void] = sched.get_fiber[Void]()
+    pinger.put_work(entry: ping.to[Callable](), args: game)
+    players.setitem(index: 0, value: pinger)
+    ponger: Fiber[Void] = sched.get_fiber[Void]()
+    ponger.put_work(entry: pong.to[Callable](), args: game)
+    players.setitem(index: 1, value: ponger)
 
     sleepers.poke(Sleepers(sched: sched, order: [0, 0, 0, 0, 0, 0, 0, 0], next: 0, short: 0,
         base: monotonic_ns()))
@@ -215,34 +223,49 @@ routine start() -> Void
             : continue
         s: @Sleeper = each.stride(i)
         s.poke(Sleeper(all: sleepers, id: i.to[U64]()))
-        sched.spawn(entry: sleeper.to[Callable](), arg: s, stack_size: 65536)
+        f: Fiber[Void] = sched.get_fiber[Void]()
+        f.put_work(entry: sleeper.to[Callable](), args: s)
+        sleeper_fibers.setitem(index: i, value: f)
         jump sleepers(i.add(1))
 
     block family()
-        claim family: @Family <- Family(sched: sched, sum: 0,
-            children: [null, null, null, null, null, null, null, null, null, null])
-        sched.spawn(entry: parent.to[Callable](), arg: family, stack_size: 65536)
-        claim alone: @Family <- Family(sched: sched, sum: 0,
-            children: [null, null, null, null, null, null, null, null, null, null])
-        lone: @Join = sched.spawn_joinable(entry: child.to[Callable](), arg: alone,
-            stack_size: 65536)
+        claim family: @Family <- Family(sched: sched, sum: 0, children: .hollow())
+        elder: Fiber[Void] = sched.get_fiber[Void]()
+        elder.put_work(entry: parent.to[Callable](), args: family)
+        claim alone: @Family <- Family(sched: sched, sum: 0, children: .hollow())
+        lone: Fiber[Void] = sched.get_fiber[Void]()
+        lone.put_work(entry: child.to[Callable](), args: alone)
         sched.run()
+        elder.give_back()
         Out.write("handoffs: {game.handoffs.peek()}\n")
         jump order(lone, 0)
 
-    block order(lone: @Join, i: USize)
+    block order(lone: Fiber[Void], i: USize)
         done: Bool = i.eq(8)
         branch done
-            ? finish(lone)
+            ? lone_done(lone)
             : continue
         order_slots: @U64 = sleepers.order.to[@U64]()
         Out.write("{order_slots.stride(i).peek()} ")
         jump order(lone, i.add(1))
 
-    // The lone child returned during run: join just frees its Join.
-    block finish(lone: @Join)
+    // The lone child finished during run: wait_finished returns at once.
+    block lone_done(lone: Fiber[Void])
         Out.write("\nwoke early: {sleepers.short.peek()}\n")
-        sched.join(lone)
+        lone.wait_finished()
+        lone.give_back()
         Out.write("lone joined\n")
+        jump give_back(0)
+
+    block give_back(i: USize)
+        branch i.eq(8)
+            ? players_back()
+            : continue
+        sleeper_fibers.getitem(i).give_back()
+        jump give_back(i.add(1))
+
+    block players_back()
+        players.getitem(0).give_back()
+        players.getitem(1).give_back()
         sched.destruct()
         return()

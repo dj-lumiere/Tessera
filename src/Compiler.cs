@@ -473,7 +473,13 @@ public sealed partial class Compiler
         var t = ResolveType(c.Type, env);
         if (c.IsSpan)
         {
-            PresetInitializer(c.Value!, SpanStorage(c, t, env), env);
+            if (c.Value is StrLit)
+            {
+                if (c.IsGlobal)
+                    throw new CompileError(c.Value.Pos, $"a string literal is read-only, and a global is written: preset {c.Name}: {t} <- \"...\"");
+                SpanInitializer(c.Value, t, env);
+            }
+            else PresetInitializer(c.Value!, SpanStorage(c, t, env), env);
             return;
         }
         if (!c.IsStorage && t is ArrayType)
@@ -548,9 +554,29 @@ public sealed partial class Compiler
         foreach (var sb in new[] { _typeDefs, _globals, declares })
             if (sb.Length > 0) o.Append(sb).AppendLine();
         o.Append(_functions);
+        o.Append(ResetThreadLocals());
         o.Append(_entry);
         o.Append(DebugTrailer());
         return o.ToString();
+    }
+
+    /// `@tessera.reset_thread_locals`, what the stdlib's `reset_thread_locals()` calls: it stores each `#threadlocal`
+    /// global's starting value in the running thread's copy. A thread manager's worker calls it before each ticket's
+    /// work, so the work starts from the values a new thread would.
+    private string ResetThreadLocals()
+    {
+        var f = new StringBuilder();
+        f.AppendLine("define internal void @tessera.reset_thread_locals() {");
+        for (int i = 0; i < _threadLocals.Count; i++)
+        {
+            var (name, llvm, init) = _threadLocals[i];
+            f.AppendLine($"  %a{i} = call ptr @llvm.threadlocal.address.p0(ptr {name})");
+            f.AppendLine($"  store {llvm} {init}, ptr %a{i}");
+        }
+        f.AppendLine("  ret void");
+        f.AppendLine("}");
+        f.AppendLine();
+        return f.ToString();
     }
 
     private void CheckExternal(RoutineDecl r)
@@ -1335,6 +1361,10 @@ public sealed partial class Compiler
 
     private readonly Dictionary<string, string> _globalVars = [];
 
+    /// The `#threadlocal` globals this module defines, with their starting values, which `reset_thread_locals()` stores
+    /// again.
+    private readonly List<(string Name, string Llvm, string Init)> _threadLocals = [];
+
     /// A global is a private mutable global variable, emitted once on first use: its value, or all-zero bytes. A
     /// `#threadlocal` one is LLVM's `thread_local`: each thread starts from a copy of that value. An
     /// `#external("c")` one is declared, not defined: the C variable of its #symbol.
@@ -1368,6 +1398,7 @@ public sealed partial class Compiler
         string linkage = ExposeDefinitions ? "" : "internal ";
         if (ExposeDefinitions) NoteExposed(symbol);
         _globals.AppendLine($"{name} = {linkage}{threadLocal}global {t.Llvm} {init}");
+        if (threadLocal != "") _threadLocals.Add((name, t.Llvm, init));
         return name;
     }
 
@@ -1451,6 +1482,7 @@ public sealed partial class Compiler
             var targetEnv = new TypeEnv(target.File);
             var targetSpan = ResolveType(target.Type, targetEnv);
             if (!targetSpan.Equals(span)) throw new CompileError(e.Pos, $"expected {span}, found {targetSpan}");
+            if (target.Value is StrLit text) return SpanInitializer(text, span, targetEnv);
             var storage = SpanStorage(target, targetSpan, targetEnv);
             string address = target.IsGlobal
                 ? GlobalVariable(target, storage, targetEnv)

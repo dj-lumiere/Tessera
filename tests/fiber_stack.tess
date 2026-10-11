@@ -1,4 +1,4 @@
-// Fibers that run deep on stacks of their own: two fibers on one worker each recurse 40 levels through 8 KiB frames
+// Fibers that run deep on stacks of their own: two fibers of one manager each recurse 40 levels through 8 KiB frames
 // (320 KiB of a 1 MiB stack from the stack allocator) and yield at the bottom, so each runs while the other's stack is
 // deep. A frame larger than a page makes Windows' __chkstk probe the stack page by page, and the stack allocator commits
 // only the top pages there, with a guard page below that Windows moves down as the stack grows: both read the thread
@@ -118,12 +118,16 @@ routine diver(d: @Diver) -> Void
 routine start() -> Void
     claim alloc: @MemoryManager <- make_heap_memory()
     claim stacks: @MemoryManager <- make_stack_memory()
-    claim sched: @FiberManager <- .construct(workers: 1, stacks, alloc)
+    claim sched: @FiberManager <- .construct(stacks, alloc, stack_size: STACK_SIZE)
     claim a: @Diver <- Diver(sched: sched, name: "a")
     claim b: @Diver <- Diver(sched: sched, name: "b")
-    sched.spawn(entry: diver.to[Callable](), arg: a, stack_size: STACK_SIZE)
-    sched.spawn(entry: diver.to[Callable](), arg: b, stack_size: STACK_SIZE)
+    fa: Fiber[Void] = sched.get_fiber[Void]()
+    fa.put_work(entry: diver.to[Callable](), args: a)
+    fb: Fiber[Void] = sched.get_fiber[Void]()
+    fb.put_work(entry: diver.to[Callable](), args: b)
     sched.run()
+    fa.give_back()
+    fb.give_back()
     Out.write("both returned\n")
     sched.destruct()
     return()

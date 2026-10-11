@@ -186,7 +186,8 @@ public sealed partial class Compiler
         if (ownerType is ArchetypeType && required.Count > 0) return required;
         string owner = ownerType.OwnerName;
         var ownerDecl = DeclOf(ownerType);
-        if (_methods.GetValueOrDefault((owner, name))?.Where(m => OwnerDecl(m) == ownerDecl && (fits?.Invoke(m) ?? m.Fixed.Count == 0))
+        if (_methods.GetValueOrDefault((owner, name))?.Where(m => OwnerDecl(m) == ownerDecl && OwnerArgsFit(m, ownerType)
+                && (fits?.Invoke(m) ?? m.Fixed.Count == 0))
                 .ToList() is { Count: > 0 } methods)
         {
             string home = ownerDecl?.Module ?? CoreModule;
@@ -200,6 +201,27 @@ public sealed partial class Compiler
         }
         return required.Count > 0 ? required : BlanketCandidates(name, file, pos, anyModule);
     }
+
+    /// Whether a routine written for given type arguments of its owner (`Thread[Void].put_work`) is one for
+    /// `ownerType`'s: each owner argument that names a type is that type. One that names a type parameter takes any.
+    public bool OwnerArgsFit(RoutineDecl m, DType ownerType)
+    {
+        if (m.Owner is not { Args.Count: > 0 } o || ownerType is not RecordType { Args: var actual } || actual.Count != o.Args.Count)
+            return true;
+        for (int i = 0; i < o.Args.Count; i++)
+        {
+            if (o.Args[i] is not TypeArgType { Type: var t } || actual[i] is ArchetypeType) continue;
+            if (t.Args.Count == 0 && ClauseTypeParamsOrOwnerArg(m, t.Name)) continue;
+            if (KeyQuiet(t, new TypeEnv(m.File)) is { } want && want != actual[i].Key) return false;
+        }
+        return true;
+    }
+
+    /// Whether a routine names a type among its owner's arguments (`Thread[Void].put_work`), so it is meant for those
+    /// arguments only, ahead of the one for every argument.
+    public bool OwnerArgsSpecific(RoutineDecl m) =>
+        m.Owner is { Args.Count: > 0 } o
+        && o.Args.Any(a => a is TypeArgType { Type: var t } && !(t.Args.Count == 0 && ClauseTypeParamsOrOwnerArg(m, t.Name)));
 
     /// For an error about a call to a routine on a type that takes `args` arguments: a routine of the same type and name
     /// that does take that many but sits in a module `file` doesn't import, named so the error says where it is

@@ -1,5 +1,5 @@
-// Fibers on one worker thread: two workers take turns through yield, one spawns a third from inside, and run returns when
-// all three have. The stacks come from the stack allocator, with a guard page below each.
+// Fibers of one manager: two workers take turns through yield, a third starts a fourth from inside and waits for it,
+// and run returns when all have finished. The stacks come from the stack allocator, with a guard page below each.
 
 import Standard/Alloc
 import Standard/Fiber
@@ -43,24 +43,34 @@ routine worker(state: @Worker) -> Void
         Out.write("{state.name.peek()} done\n")
         return()
 
-/// Spawns a late worker from inside a fiber, then returns.
+/// Starts a late worker from inside a fiber, and waits for it before it returns: only this fiber waits, and the
+/// others go on.
 routine spawner(late: @Worker) -> Void
     sched: @FiberManager = late.sched.peek()
     Out.write("spawner\n")
-    sched.spawn(entry: worker.to[Callable](), arg: late, stack_size: 65536)
+    f: Fiber[Void] = sched.get_fiber[Void]()
+    f.put_work(entry: worker.to[Callable](), args: late)
+    f.wait_finished()
+    f.give_back()
     return()
 
 routine start() -> Void
     claim alloc: @MemoryManager <- make_heap_memory()
     claim stacks: @MemoryManager <- make_stack_memory()
-    claim sched: @FiberManager <- .construct(workers: 1, stacks, alloc)
+    claim sched: @FiberManager <- .construct(stacks, alloc, stack_size: 65536)
     claim a: @Worker <- Worker(name: "a", steps: 3, sched: sched)
     claim b: @Worker <- Worker(name: "b", steps: 2, sched: sched)
     claim c: @Worker <- Worker(name: "c", steps: 1, sched: sched)
-    sched.spawn(entry: worker.to[Callable](), arg: a, stack_size: 65536)
-    sched.spawn(entry: worker.to[Callable](), arg: b, stack_size: 65536)
-    sched.spawn(entry: spawner.to[Callable](), arg: c, stack_size: 65536)
+    fa: Fiber[Void] = sched.get_fiber[Void]()
+    fa.put_work(entry: worker.to[Callable](), args: a)
+    fb: Fiber[Void] = sched.get_fiber[Void]()
+    fb.put_work(entry: worker.to[Callable](), args: b)
+    fc: Fiber[Void] = sched.get_fiber[Void]()
+    fc.put_work(entry: spawner.to[Callable](), args: c)
     sched.run()
+    fa.give_back()
+    fb.give_back()
+    fc.give_back()
     Out.write("all done\n")
     sched.destruct()
     return()

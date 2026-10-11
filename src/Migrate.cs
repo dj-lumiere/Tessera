@@ -242,6 +242,7 @@ public static class Migrate
         ["membership"] = (_, text, _) => MembershipNames(text),
         ["lifecycle"] = (_, text, _) => text,
         ["memory"] = (_, text, _) => MemoryMigration.Rewrite(text),
+        ["threads"] = (_, text, _) => ThreadMigration.Rewrite(text),
         ["entry"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? EntryMigration.RewriteMarkdown(text)
             : EntryMigration.Rewrite(text),
@@ -343,7 +344,7 @@ public static class Migrate
             lines[i] = inAsmBody ? RewriteTypeArguments(line) : RewriteNames(line);
         }
 
-        return EntryMigration.Rewrite(MembershipNames(VariantMigration.Rewrite(IteratorNames(Renames(CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names))))))))));
+        return ThreadMigration.Rewrite(EntryMigration.Rewrite(MembershipNames(VariantMigration.Rewrite(IteratorNames(Renames(CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names)))))))))));
     }
 
     private static readonly Regex IteratorNext = new(@"\.next(?=\s*\()", RegexOptions.Compiled);

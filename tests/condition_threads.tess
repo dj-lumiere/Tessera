@@ -399,7 +399,7 @@ routine make_ready(timed: @Timed) -> Void
 /// A run of slots in a thread array: `count` of them from `first` on.
 record ThreadSlots
     /// The array the threads go into.
-    threads: @Array[Thread, 8]
+    threads: @Array[Thread[Void], 8]
     /// The first slot of the run.
     first: USize
     /// How many slots the run has.
@@ -410,7 +410,7 @@ record ThreadSlots
 /// :param first: Its `first`.
 /// :param count: Its `count`.
 /// :returns: The new value.
-routine ThreadSlots.construct(threads: @Array[Thread, 8], first: USize, count: USize) -> Me
+routine ThreadSlots.construct(threads: @Array[Thread[Void], 8], first: USize, count: USize) -> Me
     return(Me(threads, first, count))
 
 /// Releases nothing: a `ThreadSlots` holds no memory of its own.
@@ -421,7 +421,7 @@ routine ThreadSlots.destruct(me: @Me) -> Void
 routine spawn_many[T](body: Callable[(@T,), Void], state: @T, slots: ThreadSlots,
     alloc: @MemoryManager) -> Void
 require T: typename
-    local threads: @Array[Thread, 8] = slots.threads
+    local threads: @Array[Thread[Void], 8] = slots.threads
     local end: USize = slots.first.add(slots.count)
 
     jump next(slots.first)
@@ -430,29 +430,34 @@ require T: typename
         branch i.ge(end)
             ? return()
             : continue
-        t: Thread = Thread.spawn(entry: body, arg: state, alloc)
+        t: Thread[Void] = get_thread[Void]()
+        t.put_work(entry: body, args: state)
         threads.setitem(index: i, value: t)
         jump next(i.add(1))
 
 /// Joins the threads in `threads` below `count`.
-routine join_many(threads: @Array[Thread, 8], count: USize) -> Void
+routine join_many(threads: @Array[Thread[Void], 8], count: USize) -> Void
     jump next(0)
 
     block next(i: USize)
         branch i.ge(count)
             ? return()
             : continue
-        threads.getitem(i).join()
+        t: Thread[Void] = threads.getitem(i)
+        t.wait_finished()
+        t.give_back()
         jump next(i.add(1))
 
 routine start() -> Void
     claim alloc: @MemoryManager <- make_heap_memory()
-    claim threads: @Array[Thread, 8] <- .hollow()
+    claim threads: @Array[Thread[Void], 8] <- .hollow()
     claim box: @Mailbox <- Mailbox(lock: .construct(), not_full: .construct(),
         not_empty: .construct(), full: false, value: 0)
-    producer: Thread = Thread.spawn(entry: produce.to[Callable](), arg: box, alloc)
+    producer: Thread[Void] = get_thread[Void]()
+    producer.put_work(entry: produce.to[Callable](), args: box)
     sum, in_order = consume(box)
-    producer.join()
+    producer.wait_finished()
+    producer.give_back()
     Out.write("handoff: {ROUNDS} values, sum {sum}, in order {in_order}\n")
     claim tokens: @Gate <- Gate(lock: .construct(), cond: .construct(), progress: .construct(),
         waiting: 0, tokens: 0, passed: 0, open: false)
@@ -470,7 +475,8 @@ routine start() -> Void
     Out.write("wake_all: {gate.passed.peek()} of {GATE_THREADS} through after one wake\n")
     claim timed: @Timed <- Timed(lock: .construct(), cond: .construct(), progress: .construct(),
         waiting: 0, ready: false, stop: false, timed_out: 0, in_time: 0, wrong: 0)
-    waker: Thread = Thread.spawn(entry: wake_everyone.to[Callable](), arg: timed, alloc)
+    waker: Thread[Void] = get_thread[Void]()
+    waker.put_work(entry: wake_everyone.to[Callable](), args: timed)
     spawn_many(body: wait_never.to[Callable](), state: timed,
         slots: ThreadSlots(threads: threads, first: 0, count: TIMED_THREADS), alloc)
     spawn_many(body: wait_ready.to[Callable](), state: timed,
@@ -480,7 +486,8 @@ routine start() -> Void
     timed.lock.lock()
     timed.stop.poke(true)
     timed.lock.unlock()
-    waker.join()
+    waker.wait_finished()
+    waker.give_back()
     Out.write("deadlines under contention: {timed.timed_out.peek()} gave up at the deadline, ")
     Out.write("{timed.in_time.peek()} woken in time, {timed.wrong.peek()} wrong\n")
     return()

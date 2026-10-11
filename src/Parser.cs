@@ -1504,16 +1504,18 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
         var owner = new TypeRef(name.Text, typeArgs, pos) { Path = path };
 
-        if (typeArgs.Count == 0 && Is(TokenKind.Dot) && PeekTok(1) is { Kind: TokenKind.Ident, Text: "to" }
+        if (typeArgs.All(a => a is TypeArgType) && Is(TokenKind.Dot) && PeekTok(1) is { Kind: TokenKind.Ident, Text: "to" }
             && PeekTok(2).Kind == TokenKind.LBracket && PeekTok(3) is { Kind: TokenKind.Ident, Text: "Callable" })
         {
             // `name.to[Callable]()`: the routine `name` as a value, typed by its own signature or by the one written.
+            // `name[T].to[Callable]()` is the instance of a generic one for those type arguments.
             Next();
             Next();
             var written = ParseTypeArgsOpt()[0];
             Expect(TokenKind.LParen, "'('");
             Expect(TokenKind.RParen, "')': a routine becomes a Callable with name.to[Callable]()");
-            return new RoutineRef(name.Text, written.Args.Count == 0 ? null : written, pos) { Path = path };
+            return new RoutineRef(name.Text, written.Args.Count == 0 ? null : written, pos)
+                { Path = path, TypeArgs = typeArgs.Select(a => ((TypeArgType)a).Type).ToList() };
         }
 
         if (Is(TokenKind.Dot) && PeekTok(1).Kind == TokenKind.Ident)

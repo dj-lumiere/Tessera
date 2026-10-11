@@ -1,0 +1,83 @@
+// Tessera stdlib: who is waiting
+//
+// Code waits in one of two ways, by what runs it. A thread waits itself: wait_on puts it to sleep until the word it
+// watches changes. A fiber waits through its FiberManager: the fiber parks, the thread goes on with the manager's
+// other fibers, and whoever finishes what the fiber waits for wakes it through the manager. current_waiter() says
+// which one runs here, as a Waiter. Something being waited for (a ticket's work, a channel) keeps the Waiter of a
+// fiber that waits on it and wakes it when it is done, and a thread that waits on it sleeps on its word as usual.
+//
+// A FiberManager puts its fiber in RUNNING_FIBER while the fiber runs and takes it out when the fiber stops, so the
+// waiter is always the code running on this thread right now.
+
+module Standard/Os
+
+/// The fiber running on this thread, put there by its FiberManager while it runs, or a hollow Waiter outside every
+/// fiber.
+#[threadlocal, target(os: not "none")]
+global RUNNING_FIBER: @Waiter
+
+/// Who is waiting, and how to wake it: a fiber, with its manager and the manager's routines, or a thread, with a null
+/// `fiber` (the `.hollow()` waiter).
+record Waiter
+    /// The fiber's handle, or null for a thread.
+    fiber: Addr
+    /// The fiber's manager, which every routine here is passed.
+    manager: Addr
+    /// Parks the running fiber until a wake or a deadline in `monotonic_ns` time (`U64.MAX` for none). It may return
+    /// without either, so the fiber looks again at what it waits for.
+    park_fn: Callable[(Addr, U64), Void]
+    /// Wakes the fiber, from any thread: queues it if it is parked, or makes its next park return at once.
+    wake_fn: Callable[(Addr, Addr), Void]
+
+/// Makes a `Waiter` from its fields.
+/// :param fiber: Its `fiber`.
+/// :param manager: Its `manager`.
+/// :param park_fn: Its `park_fn`.
+/// :param wake_fn: Its `wake_fn`.
+/// :returns: The new value.
+routine Waiter.construct(fiber: Addr, manager: Addr, park_fn: Callable[(Addr, U64), Void],
+    wake_fn: Callable[(Addr, Addr), Void]) -> Me
+    return(Me(fiber, manager, park_fn, wake_fn))
+
+/// Releases nothing: a `Waiter` holds no memory of its own.
+routine Waiter.destruct(me: @Me) -> Void
+    return()
+
+/// What runs here: the running fiber, or a hollow Waiter for a thread.
+/// :returns: The waiter.
+#target(os: not "none")
+routine current_waiter() -> Waiter
+    return(RUNNING_FIBER.peek())
+
+/// An address unique to the running thread while it runs: two threads never share it. A FiberManager keeps its
+/// thread's, so it knows whether a call comes from that thread.
+/// :returns: The running thread's mark.
+#target(os: not "none")
+routine thread_mark() -> Addr
+    mark: Addr = RUNNING_FIBER
+    return(mark)
+
+/// Whether the waiter is a fiber, which waits through its manager, rather than a thread.
+/// :returns: True for a fiber.
+routine Waiter.is_fiber(me: Me) -> Bool
+    return(me.fiber.is_not_null())
+
+/// Parks the fiber until a wake. It may return without one, so the fiber looks again at what it waits for.
+routine Waiter.park(me: Me) -> Void
+    me.park_fn.call(me.manager, U64.MAX)
+    return()
+
+/// Parks the fiber until a wake or until `deadline`, in `monotonic_ns` time. It may return before either, so the
+/// fiber looks again at what it waits for and at the time.
+/// :param deadline: When to stop waiting.
+routine Waiter.park_until(me: Me, deadline: U64) -> Void
+    me.park_fn.call(me.manager, deadline)
+    return()
+
+/// Wakes the fiber, from any thread. Nothing for a thread's waiter, which sleeps on a word that its waker changes.
+routine Waiter.wake(me: Me) -> Void
+    branch me.is_fiber()
+        ? continue
+        : return()
+    me.wake_fn.call(me.manager, me.fiber)
+    return()
