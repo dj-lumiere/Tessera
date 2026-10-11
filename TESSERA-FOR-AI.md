@@ -11,6 +11,7 @@ answer.
 dotnet run -- run   file.tess        # build and run (the whole stdlib is always available)
 dotnet run -- run --mode release file.tess   # the same at -O2 (also release-time -O3, release-space -Os)
 dotnet run -- run --no-trace file.tess   # without the crash trace (--trace keeps it; build, run, test, check)
+dotnet run -- run --race-check file.tess # stop at the first data race, exit 82 (build too, Linux/macOS on x86_64 and aarch64)
 dotnet run -- check file.tess        # type-check only
 dotnet run -- test tests examples             # golden tests
 dotnet run -- fmt <files or dirs>        # format in place (--check to only list)
@@ -522,7 +523,9 @@ routine start() -> Void
   exactly. No implicit conversion counts there (a `@T` isn't an `Addr` overload's argument), and an untyped integer
   literal prefers `USize` (`SSize` if negative) when several take it. An exact concrete overload beats a generic
   one, and a routine on an owner with its type arguments named (`routine Thread[Void].put_work`) beats the generic
-  owner's (`Thread[T].put_work`) for that receiver. Anything else ambiguous, or nothing fitting, is an error listing
+  owner's (`Thread[T].put_work`) for that receiver. An owner argument may nest the routine's type parameter:
+  `routine List[Thread[T]].wait_all_finished(me: @Me)` with `require T: typename` exists only for a `List` of
+  `Thread[...]`, binds `T` from the receiver, and doesn't clash with `List[Fiber[T]].wait_all_finished`. Anything else ambiguous, or nothing fitting, is an error listing
   the overloads. Same parameter types, or a difference only in the return type, is an error. A free routine's set is one module's (the file's own module
   hides an import's same name). A routine value of an overloaded name is picked by its Callable type
   (`f.to[Callable[(S64,), S64]]()`, or where it goes); an overloaded `#export` / `#external("c")` names its C
@@ -803,7 +806,7 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 - Every routine with a body starts with its entry block, the lines after its head's `local` lines (if it has any),
   which takes no parameters. A routine without a body must be `#external`.
 
-**Threads and fibers are tickets.** A manager hands one out, and it is used in one flow, top to bottom:
+**Threads, fibers, and FiberPool jobs are tickets.** A manager hands one out, and it is used in one flow, top to bottom:
 `t: Thread[S64] = get_thread[S64]()`, `t.put_work(entry: f.to[Callable](), args: x)` (it runs from here on),
 `t.check_finished()` to look without waiting or `t.wait_finished()` / `t.wait_finished_for(ns) -> Bool` to wait,
 `r: S64 = t.retrieve()`, then more work on the same ticket or `t.give_back()`. `T` is the result type, `Thread[Void]`
@@ -812,9 +815,20 @@ manager's allocator. A pointer argument must outlive the work, so wait before re
 of work at a time: `put_work` or `give_back` while it runs crashes with `TicketBusyError`, a ticket used after
 `give_back` with `TicketGivenBackError`, a ticket destructed before `give_back` with `TicketNotGivenBackError`, and
 `retrieve` with no work with `NoWorkError`. `cancel()` asks the work to stop: the work asks `cancel_requested()` where
-stopping is safe and returns. `retrieve()` of cancelled work crashes with `CancelledWorkError`, and `retrieve_result()
--> Result[T, CancelRequested]` tells them apart. Before each piece of work a thread puts every `#threadlocal` global
-back to its starting value.
+stopping is safe and returns. `retrieve()` of cancelled work crashes with `CancelledWorkError` (a `Thread[Void]` /
+`Fiber[Void]` / `Job[Void]` one too), and `retrieve_result() -> Result[T, CancelRequested]` tells them apart. Before
+each piece of work a thread puts every `#threadlocal` global back to its starting value. The same flow on all three
+ticket kinds: `Thread[T]`, `Fiber[T]`, `Job[T]` (a FiberPool's). `work_slot()` gives the ticket's `@WorkSlot`, for
+code waiting on several tickets at once.
+- **Cancellable waits**: `wait_finished_result() -> Result[Unit, CancelRequested]` (on all three tickets) and a
+  channel's `send_result` / `receive_result` end with `CancelRequested` as soon as the WAITING work's own ticket is
+  cancelled. Then clean up and return. Plain `wait_finished` / `wait_finished_for` are not cancellable. Outside a
+  ticket's work nothing cancels them.
+- **Lists of tickets**: `List[Thread[T]]` (Standard/Os), `List[Fiber[T]]` and `List[Job[T]]` (Standard/Fiber) have
+  `wait_all_finished()`, `retrieve_all()` / `retrieve_all(alloc)` (results in list order, crashes as `retrieve`
+  does), `give_back_all()` (and empties the list), `wait_any_finished() -> USize` (the position of a finished one,
+  crashes on an empty list), `cancel_all()`, `take_finished()` / `take_finished(alloc)` (moves finished tickets out
+  into a new list, both keep their order), and `give_back_finished()`.
 - **Threads** (`Standard/Os/Thread.tess`, what both tickets share in `Work.tess`, who waits in `Waiter.tess`):
   `get_thread[T]()` takes one from `DEFAULT_THREADS` (the hosted manager, OS threads,
   blocks from `DEFAULT_HEAP`), `get_thread[T](manager)` from another. A `ThreadManager` is a record of a launch routine,
@@ -826,7 +840,7 @@ back to its starting value.
   live as long as the program. `cpu_count()`.
 - **Fibers** (`Standard/Fiber/FiberManager.tess`): `FIBERS.get_fiber[T]()`, the same flow and crashes. `FIBERS` is each thread's own
   `FiberManager`, made on first use (64 KiB stacks from `DEFAULT_STACKS`), and on a thread ticket it goes when the
-  work is over. `FiberManager.construct(stacks, alloc, stack_size)` makes another (`make_stack_memory()` for guard
+  work is over. `FiberManager.construct(stack_size, stacks, alloc)` makes another (`make_stack_memory()` for guard
   pages), `destruct()` frees it. A manager runs its fibers on ONE thread, the one that drives it, and never moves
   them: cooperative, a fiber runs until it yields, parks, sleeps, waits, or its work finishes, so its fibers share
   values without locks between those points. Driving: `wait_finished()` outside a fiber on the manager's thread runs
@@ -836,15 +850,64 @@ back to its starting value.
   `park_until(deadline)`, `sleep(ns)`, and `run_blocking(work, arg)` (a blocking call on a thread ticket), which
   `read` / `write` (`Standard/Fiber/Io.tess`) use. A blocking call made directly stops every fiber of its thread.
   `yield()` lets the other ready fibers go first. Outside a fiber `sleep` waits the thread, `park` returns,
-  `run_blocking` just calls. More cores = thread tickets, each driving its own `FIBERS` (`tests/fiber_workers.tess`).
+  `run_blocking` just calls. More cores = thread tickets, each driving its own `FIBERS` (`tests/fiber_workers.tess`),
+  or a FiberPool. A thread that drives a manager between other work loops on `run_until_idle()` and sleeps on a word
+  of its own: `wake_through(word)` makes a wake from another thread change that word (and `wake_all` it),
+  `idle_wait() -> U64` is how long it may sleep before a fiber with a deadline is due (`U64.MAX` for none).
+- **FiberPool** (`Standard/Fiber/FiberPool.tess`, M:N): `claim pool: @FiberPool <- .construct(threads: 0)` (0 = one
+  thread per processor), `j: Job[T] = pool.get_job[T]()`, then the ticket flow (`put_work`, `check_finished`,
+  `wait_finished(_for, _result)`, `retrieve(_result)`, `cancel`, `give_back`). Work waits in the pool's queue until a
+  pool thread is free, then runs as a fiber of that thread and NEVER moves. A job may put work on more jobs and wait:
+  the waiting job parks, its thread runs other jobs, the finishing thread wakes it (recursive splitting:
+  `tests/fiber_pool.tess`). Jobs don't choose their thread, so they share values like threads do (atomics, locks,
+  channels). Threads start with the first `get_job` and end at `pool.destruct()`: give every job back first.
 - `migrate --step threads` rewrites `x: Thread = Thread.spawn(entry: f, arg: s)` / `x.join()` /
   `Thread.spawn(...).detach()` into tickets and `launch_unwatched`.
 
-Locks and waits: `ExclusiveLock` (`lock` / `unlock` / `try_lock`), `SignalCaster` (a condition variable for an
-ExclusiveLock: `wait(mutex)`, `wait_for(mutex, timeout_ns)` / `wait_until(mutex, deadline_ns)` returning whether it
-returned in time, `cast_one()` / `cast_all()`, and a wait may return without a wake, so the waiter checks its condition
-again in a loop), `wait_on` / `wait_on_for` / `wake_one` / `wake_all` on a `@U32`, and `monotonic_ns()`. Fibers run
-on System V and Windows x86-64 (where the switch moves the thread block's stack fields with the stack), AArch64
+**Atomics.** `Atomic[T]` (Core, `Atomic.tess`) is a record aligned to T's size whose every access is atomic: the
+form for state a program shares between threads (`hits: Atomic[U64]` in a shared record, `Atomic[U64].construct(value:
+0)` or `.construct(value: 0)`). Threads share its place, `@Atomic[T]`, never copies. Routines: `peek` / `poke`,
+`swap`, `compare_exchange` / `compare_exchange_weak` (`Result[Unit, T]`: `Unit` when it wrote, the value found when
+not), `fetch_add` / `fetch_sub` (integers, wrapping), `fetch_and` / `fetch_or` / `fetch_xor`, `fetch_fadd` /
+`fetch_fsub` (B32, B64), each with the order suffixes LLVM allows: `_relaxed` / `_acquire` / `_release` / `_acq_rel`
+(`peek_acquire`, `poke_release`, `fetch_add_relaxed`), none = sequentially consistent. `@T`'s `atomic_*` routines
+(`peek_atomic`, `poke_atomic`, `atomic_fetch_add`, ...) are for memory whose type the program doesn't choose (from C,
+another process, a futex word). What T allows depends on the target (capability concepts, a wider access is a build
+error). `Bool` has none: use a `U8`.
+
+**Locks and waits.** A thread waiting sleeps, a fiber waiting parks (its thread goes on with the other fibers): every
+stdlib wait does what fits the code running it. `ExclusiveLock` (`lock` / `unlock` / `try_lock`) and `MultiReadLock`
+(`lock_read` / `unlock_read` / `try_lock_read`, `lock_write` / `unlock_write` / `try_lock_write`, many readers or one
+writer, writer-preferring: a waiting writer holds off later readers) park a waiting fiber a short while at a time.
+`SignalCaster` (a condition variable for an ExclusiveLock: `wait(mutex)`, `wait_for(mutex, timeout_ns)` /
+`wait_until(mutex, deadline_ns)` returning whether it returned in time, `cast_one()` / `cast_all()`, and a wait may
+return without a wake, so the waiter checks its condition again in a loop). No lock guards: unlock explicitly on
+every path. `wait_on` / `wait_on_for` / `wake_one` / `wake_all` on a `@U32` make a THREAD sleep. `wait_while(at,
+expected)` / `wait_while_for(at, expected, timeout_ns)` are that wait for whoever runs (a fiber parks 50 µs at a time
+and looks again), may return early, so loop. `sleep_for(ns)` waits the same way. `monotonic_ns()`. A waiter the
+waited-for thing knows is a `Waiter` (`current_waiter()`: a fiber parks through its manager, a thread on a word of its
+own), with `park()` / `park_until(deadline)` / `wake()`. All in Standard/Os.
+
+**Channels** (Standard/Os/Channel.tess): `Channel[T]` (one receiver) and `SharedChannel[T]` (many, each value to
+one), shared as `@Channel[T]`: `claim ch: @Channel[U64] <- .construct(capacity: 8)` (or `construct(capacity, alloc)`),
+`send_result(value) -> Result[Unit, ChannelClosed | CancelRequested]` (waits while full), `send_if_room(value) ->
+Bool` (never waits), `receive_result() -> Result[T, ChannelClosed | CancelRequested]` (waits while empty, match it
+with `when ... is T as v => ... is ChannelClosed => ... is CancelRequested => ...`), `destruct()`. A channel starts
+with one sender and one receiver: `add_sender()` / `add_receiver()` (SharedChannel only) count more, each calls
+`close_sending()` / `close_receiving()` once. All senders closed: receivers drain what is left, then get
+`ChannelClosed`. All receivers closed: the values left are dropped (never destructed) and senders get `ChannelClosed`,
+so a receiver takes out values owning memory before it closes.
+
+**The data race check.** `tessera run|build --race-check`, or `[debug] race-check = true` in config.toml: every
+routine (stdlib too) is instrumented with ThreadSanitizer, and the program stops at the first data race (two threads
+touching the same memory, one writing, neither an atomic access nor a lock between them) with exit status 82 and a
+report of both places on stderr. Linux and macOS on x86_64 and aarch64 only (elsewhere an error). Slow: for runs that
+look for races. It sees the races a run has, not every possible one. Fibers tell the check which stack runs
+(`Standard/Os/RaceCheck.tess`). `tessera check` checks the stdlib's `#race_check("on")` / `#race_check("off")` sides
+too. A golden test of a race (`tests/race_check/` with `race_check.exit` holding `82`) expects the stop, and passes on
+a target without the check.
+
+Fibers run on System V and Windows x86-64 (where the switch moves the thread block's stack fields with the stack), AArch64
 outside Windows, and 32-bit ARM (ARM and Thumb code, Cortex-M included).
 On any other target a program that switches fibers fails to link (`tessera_fibers_unsupported_on_this_target`).
 
