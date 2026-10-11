@@ -229,7 +229,7 @@ public sealed class DataLayout
     /// Compiles an empty C file for the triple and reads the `target datalayout` line.
     private static string? QueryClang(string triple)
     {
-        var psi = new ProcessStartInfo("clang")
+        var psi = new ProcessStartInfo(Toolchain.Clang)
         {
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
             UseShellExecute = false,

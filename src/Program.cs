@@ -465,7 +465,7 @@ static class Cli
         File.WriteAllText(ll, compiler.Output());
         try
         {
-            var psi = new ProcessStartInfo("clang") { RedirectStandardError = true, UseShellExecute = false };
+            var psi = new ProcessStartInfo(Toolchain.Clang) { RedirectStandardError = true, UseShellExecute = false };
             foreach (var a in new[] { "-c", "-Wno-override-module", "--target=" + target.LlvmTriple, ll, "-o", obj })
                 psi.ArgumentList.Add(a);
             using var p = Process.Start(psi)!;
@@ -734,7 +734,7 @@ static class Cli
         File.WriteAllText(ll, ir);
         try
         {
-            var psi = new ProcessStartInfo("clang")
+            var psi = new ProcessStartInfo(Toolchain.Clang)
             {
                 RedirectStandardError = true,
                 RedirectStandardOutput = true,
@@ -783,7 +783,7 @@ static class Cli
         string? builtins = null;
         try
         {
-            var psi = new ProcessStartInfo("clang") { RedirectStandardOutput = true, UseShellExecute = false };
+            var psi = new ProcessStartInfo(Toolchain.Clang) { RedirectStandardOutput = true, UseShellExecute = false };
             psi.ArgumentList.Add("--target=" + target.LlvmTriple);
             psi.ArgumentList.Add("--rtlib=compiler-rt");
             psi.ArgumentList.Add("-print-libgcc-file-name");

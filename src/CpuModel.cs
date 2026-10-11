@@ -78,7 +78,7 @@ public sealed class CpuModel
     private static (string Ir, string Err) QueryClang(BuildTarget target, IEnumerable<string> features, Pos pos)
     {
         var run = Run(target, features).GetAwaiter().GetResult()
-                  ?? throw new CompileError(pos, "clang is needed to resolve the target's CPU features and isn't on PATH");
+                  ?? throw new CompileError(pos, "clang is needed to resolve the target's CPU features and wasn't found: put it on PATH, or name it with TESSERA_CLANG");
         if (run.ExitCode != 0)
             throw new CompileError(pos, $"clang rejected the CPU or features for {target.LlvmTriple}: {run.Err.Trim()}");
         return (run.Ir, run.Err);
@@ -107,7 +107,7 @@ public sealed class CpuModel
 
     private static ClangRun? Execute(List<string> args)
     {
-        var psi = new ProcessStartInfo("clang")
+        var psi = new ProcessStartInfo(Toolchain.Clang)
         {
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
             UseShellExecute = false,
