@@ -24,107 +24,85 @@ import Standard/Format
 /// How many characters this code point takes inside a JSON string: 2 for a short escape, 6 for `\u00XX`, 1 when it
 /// is written as itself. A byte of UTF-8 text goes in as its value, since every escaped character is ASCII.
 /// :returns: 1, 2, or 6.
-#inline
+@inline
 routine U32.json_escaped_width(me: Me) -> USize
     when me
-        0x22, 0x5C, 0x08, 0x09, 0x0A, 0x0C, 0x0D => return(2)
-        else => other()
-
-    block other()
-        control: Bool = me.lt(0x20)
-        branch control
-            ? return(6)
-            : return(1)
+        0x22, 0x5C, 0x08, 0x09, 0x0A, 0x0C, 0x0D => return 2
+        else =>
+            if me < 0x20
+                return 6
+            else
+                return 1
 
 /// Writes the escape of this code point into `out` and gives its length: 2 for a short escape, 6 for `\u00XX`, and
 /// 0 (with nothing written) when the code point is written as itself.
 /// :param out: Room for the escape's 6 bytes.
 /// :returns: 0, 2, or 6.
 routine U32.json_escape_into(me: Me, out: @Array[Byte, 6]) -> USize
-    when me
-        0x22 => short(b'"')
-        0x5C => short(b'\\')
-        0x08 => short(b'b')
-        0x09 => short(b't')
-        0x0A => short(b'n')
-        0x0C => short(b'f')
-        0x0D => short(b'r')
-        else => other()
-
-    block other()
-        control: Bool = me.lt(0x20)
-        branch control
-            ? long()
-            : return(0)
-
-    block short(letter: Byte)
-        out.setitem(index: 0, value: b'\\')
-        out.setitem(index: 1, value: letter)
-        return(2)
-
-    block long()
-        out.setitem(index: 0, value: b'\\')
-        out.setitem(index: 1, value: b'u')
-        out.setitem(index: 2, value: b'0')
-        out.setitem(index: 3, value: b'0')
-        out.setitem(index: 4, value: hex_digit(me.shr(4)))
-        out.setitem(index: 5, value: hex_digit(me.bitand(0xF)))
-        return(6)
+    letter: Byte = when me
+        0x22 => b'"'
+        0x5C => b'\\'
+        0x08 => b'b'
+        0x09 => b't'
+        0x0A => b'n'
+        0x0C => b'f'
+        0x0D => b'r'
+        else =>
+            if me < 0x20
+                out[0] = b'\\'
+                out[1] = b'u'
+                out[2] = b'0'
+                out[3] = b'0'
+                out[4] = hex_digit(me >> 4)
+                out[5] = hex_digit(me & 0xF)
+                return 6
+            else
+                return 0
+    out[0] = b'\\'
+    out[1] = letter
+    return 2
 
 /// The lowercase hex digit of a nibble.
 /// :param nibble: A value from 0 to 15.
 /// :returns: `0` to `9` or `a` to `f`.
-#inline
+@inline
 private routine hex_digit(nibble: U32) -> Byte
-    digit: Bool = nibble.lt(10)
-    code: U32 = digit
-        ? nibble.add(0x30)
-        : nibble.add(0x57)
-    return(code.to[U8]().bits())
+    digit: Bool = nibble < 10
+    code: U32 = when
+        digit => nibble + 0x30
+        else => nibble + 0x57
+    return code.to[U8]().bits()
 
 /// Writes this UTF-8 text as a JSON string, quotes included. Runs of bytes that need no escape go out in one write
 /// each. Span[Byte] above 0x7F are written as they are.
 /// :param out: The Writer.
 routine Span[Byte].json_quote_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     local data: @Byte = me.data
     local count: USize = me.count
     local escape: @Array[Byte, 6] <- .hollow()
     local start: @USize <- 0
 
     write_str(out, text: "\"")
-    jump scan(0)
 
-    block scan(at: USize)
-        done: Bool = at.ge(count)
-        branch done
-            ? close()
-            : continue
+    each at in 0 til count
         byte: Byte = data.stride(at).peek()
         c: U32 = byte.to[U8]().to[U32]()
         width: USize = c.json_escape_into(escape)
-        plain: Bool = width.eq(0)
-        branch plain
-            ? scan(at.add(1))
-            : escaped(at, width)
-
-    block escaped(at: USize, width: USize)
-        out.write_bytes(data: data.stride(start.peek()), count: at.sub(start.peek()))
-        out.write_bytes(data: escape.to[@Byte](), count: width)
-        at.add(1).poke_into(start)
-        jump scan(at.add(1))
-
-    block close()
-        out.write_bytes(data: data.stride(start.peek()), count: count.sub(start.peek()))
-        write_str(out, text: "\"")
-        return()
+        if not (width == 0)
+            out.write_bytes(data: data.stride(start.peek()), count: at - start.peek())
+            out.write_bytes(data: escape.to[@Byte](), count: width)
+            (at + 1).poke_into(start)
+    out.write_bytes(data: data.stride(start.peek()), count: count - start.peek())
+    write_str(out, text: "\"")
+    return
 
 /// Writes the text in this slot as a JSON string, quotes included (the value form's).
 /// :param out: The Writer.
 routine Span[Byte].json_quote_into[T](me: @Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     me.peek().json_quote_into(out)
-    return()
+    return
 
 /// How many code points this text, held as code points, takes as a JSON string, quotes included: the length
 /// `json_quote_into` writes.
@@ -133,55 +111,36 @@ routine Span[U32].json_quoted_count(me: Me) -> USize
     local count: USize = me.count()
     local total: @USize <- 2
 
-    jump add(0)
-
-    block add(at: USize)
-        done: Bool = at.ge(count)
-        branch done
-            ? return(total.peek())
-            : continue
-        c: U32 = me.getitem(at)
+    each at in 0 til count
+        c: U32 = me[at]
         width: USize = c.json_escaped_width()
-        total.peek().add(width).poke_into(total)
-        jump add(at.add(1))
+        (total.peek() + width).poke_into(total)
+    then
+        return total.peek()
 
 /// Writes this text, held as code points, as a JSON string, quotes included, one code point per element of `out`.
 /// :param out: Where the JSON string goes: `json_quoted_count()` elements.
 /// :returns: How many elements it wrote.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `out` is shorter than the JSON string.
-#track_caller
+@track_caller
 routine Span[U32].json_quote_into(me: Me, out: Me) -> USize
     local count: USize = me.count()
     local escape: @Array[Byte, 6] <- .hollow()
 
-    out.setitem(index: 0, value: 0x22)
-    jump each(0, 1)
+    out[0] = 0x22
 
-    block each(at: USize, put: USize)
-        done: Bool = at.ge(count)
-        branch done
-            ? close(put)
-            : continue
-        c: U32 = me.getitem(at)
+    each at in 0 til count with put: USize = 1
+        c: U32 = me[at]
         width: USize = c.json_escape_into(escape)
-        plain: Bool = width.eq(0)
-        branch plain
-            ? copy(at, put, c)
-            : spell(at, put, width, 0)
-
-    block copy(at: USize, put: USize, c: U32)
-        out.setitem(index: put, value: c)
-        jump each(at.add(1), put.add(1))
-
-    block spell(at: USize, put: USize, width: USize, k: USize)
-        done: Bool = k.ge(width)
-        branch done
-            ? each(at.add(1), put.add(width))
-            : continue
-        byte: Byte = escape.getitem(k)
-        out.setitem(index: put.add(k), value: byte.to[U8]().to[U32]())
-        jump spell(at, put, width, k.add(1))
-
-    block close(put: USize)
-        out.setitem(index: put, value: 0x22)
-        return(put.add(1))
+        if width == 0
+            out[put] = c
+            continue with put: put + 1
+        else
+            each k in 0 til width
+                byte: Byte = escape[k]
+                out[put + k] = byte.to[U8]().to[U32]()
+            then
+                continue with put: put + width
+    then
+        out[put] = 0x22
+        return put + 1

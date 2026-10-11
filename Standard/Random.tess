@@ -35,21 +35,21 @@ record Xoshiro256
 /// splitmix64 generator itself is `splitmix64(state)` with the state stepping by the gamma between outputs.
 /// :param x: The running accumulator.
 /// :returns: The mixed value.
-#inline
+@inline
 routine splitmix64(x: U64) -> U64
-    z: U64 = x.add_wrap(GOLDEN_GAMMA)
-    a: U64 = z.bitxor(z.shr(30)).mul_wrap(0xBF58476D1CE4E5B9)
-    b: U64 = a.bitxor(a.shr(27)).mul_wrap(0x94D049BB133111EB)
-    return(b.bitxor(b.shr(31)))
+    z: U64 = x +% GOLDEN_GAMMA
+    a: U64 = (z ^ (z >> 30)) *% 0xBF58476D1CE4E5B9
+    b: U64 = (a ^ (a >> 27)) *% 0x94D049BB133111EB
+    return b ^ (b >> 31)
 
 /// The double in [0, 1) that 64 random bits stand for: their top 53 bits times 2^-53, exact, so every multiple of
 /// 2^-53 below 1 is equally likely.
 /// :param bits: The random bits.
 /// :returns: A value in [0, 1).
-#inline
+@inline
 routine unit_b64(bits: U64) -> B64
-    top: B64 = bits.shr(11).to[B64]()
-    return(top.mul(UNIT_STEP))
+    top: B64 = (bits >> 11).to[B64]()
+    return top * UNIT_STEP
 
 /// A generator from its four state words, as the reference code starts one.
 /// :param s0: State word 0.
@@ -58,79 +58,77 @@ routine unit_b64(bits: U64) -> B64
 /// :param s3: State word 3.
 /// :returns: The generator.
 /// :throws: Crashes with `InvalidValueError` when all four words are zero (the one state that stays zero forever).
-#[inline, track_caller]
+@inline
+@track_caller
 routine Xoshiro256.from_state(s0: U64, s1: U64, s2: U64, s3: U64) -> Me
-    low: U64 = s0.bitor(s1)
-    high: U64 = s2.bitor(s3)
-    zero: Bool = low.bitor(high).eq(0)
-    branch zero
-        ? crash_invalid_value()
-        : continue
-    return((s0: s0, s1: s1, s2: s2, s3: s3))
+    low: U64 = s0 | s1
+    high: U64 = s2 | s3
+    if low | high == 0
+        crash_invalid_value()
+    return (s0: s0, s1: s1, s2: s2, s3: s3)
 
 /// A generator seeded from one U64: each state word is splitmix64 of the one before it, starting from the seed
 /// (s0 = splitmix64(seed), s1 = splitmix64(s0), ...). Equal seeds replay equal streams.
 /// :param seed: The seed.
 /// :returns: The generator.
-#inline
+@inline
 routine Xoshiro256.from_seed(seed: U64) -> Me
     s0: U64 = splitmix64(seed)
     s1: U64 = splitmix64(s0)
     s2: U64 = splitmix64(s1)
     s3: U64 = splitmix64(s2)
-    return((s0: s0, s1: s1, s2: s2, s3: s3))
+    return (s0: s0, s1: s1, s2: s2, s3: s3)
 
 /// A generator seeded with 256 secret random bits from the program's key source (`entropy_key()`), so every run gets
 /// a stream of its own.
 /// :returns: The generator.
 routine Xoshiro256.from_entropy() -> Me
-    block entry()
-        first: SipKey = entropy_key()
-        second: SipKey = entropy_key()
-        state: Me = (s0: first.k0, s1: first.k1, s2: second.k0, s3: second.k1)
-        low: U64 = first.k0.bitor(first.k1)
-        high: U64 = second.k0.bitor(second.k1)
-        zero: Bool = low.bitor(high).eq(0)
-        branch zero
-            ? entry()
-            : return(state)
+    first: SipKey = entropy_key()
+    second: SipKey = entropy_key()
+    state: Me = (s0: first.k0, s1: first.k1, s2: second.k0, s3: second.k1)
+    low: U64 = first.k0 | first.k1
+    high: U64 = second.k0 | second.k1
+    if low | high == 0
+        jump entry()
+    else
+        return state
 
 /// The output this state gives: state word 1 scrambled by multiply by 5, rotate left by 7, multiply by 9.
 /// :returns: The next 64 random bits.
-#inline
+@inline
 routine Xoshiro256.output(me: Me) -> U64
-    return(me.s1.mul_wrap(5).rotl(7).mul_wrap(9))
+    return (me.s1 *% 5).rotl(7) *% 9
 
 /// The state after this one: the xoshiro linear step.
 /// :returns: The next state.
-#inline
+@inline
 routine Xoshiro256.step(me: Me) -> Me
-    t: U64 = me.s1.shl(17)
-    s2: U64 = me.s2.bitxor(me.s0)
-    s3: U64 = me.s3.bitxor(me.s1)
-    s1: U64 = me.s1.bitxor(s2)
-    s0: U64 = me.s0.bitxor(s3)
-    return((s0: s0, s1: s1, s2: s2.bitxor(t), s3: s3.rotl(45)))
+    t: U64 = me.s1 << 17
+    s2: U64 = me.s2 ^ me.s0
+    s3: U64 = me.s3 ^ me.s1
+    s1: U64 = me.s1 ^ s2
+    s0: U64 = me.s0 ^ s3
+    return (s0: s0, s1: s1, s2: s2 ^ t, s3: s3.rotl(45))
 
 /// The next 64 random bits, stepping the generator.
 /// :returns: A uniform U64.
-#inline
+@inline
 routine Xoshiro256.next(me: @Me) -> U64
     state: Me = me.peek()
     state.step().poke_into(me)
-    return(state.output())
+    return state.output()
 
 /// The next 32 random bits: the high half of a 64-bit draw.
 /// :returns: A uniform U32.
-#inline
+@inline
 routine Xoshiro256.next_u32(me: @Me) -> U32
-    return(me.next().shr(32).to[U32]())
+    return (me.next() >> 32).to[U32]()
 
 /// The next double in [0, 1), from the top 53 bits of a draw (`unit_b64`).
 /// :returns: A uniform B64 in [0, 1).
-#inline
+@inline
 routine Xoshiro256.next_b64(me: @Me) -> B64
-    return(unit_b64(me.next()))
+    return unit_b64(me.next())
 
 /// A uniform value in [0, bound), without the bias of a draw modulo `bound`: Lemire's multiply-and-reject (2019). The
 /// high 64 bits of draw times bound are the value, and a draw whose low 64 bits fall below 2^64 mod bound is drawn
@@ -138,24 +136,16 @@ routine Xoshiro256.next_b64(me: @Me) -> B64
 /// :param bound: The exclusive upper bound.
 /// :returns: A uniform U64 in [0, bound).
 /// :throws: Crashes with `InvalidValueError` when `bound` is 0 (the range is empty).
-#track_caller
+@track_caller
 routine Xoshiro256.below(me: @Me, bound: U64) -> U64
-    empty: Bool = bound.eq(0)
-    branch empty
-        ? crash_invalid_value()
-        : draw()
-
-    block draw()
-        product: U128 = me.next().mul_wide(bound)
-        low: U64 = product.to_wrap[U64]()
-        short: Bool = low.lt(bound)
-        branch short
-            ? check(product, low)
-            : return(product.shr(64).to[U64]())
-
-    block check(product: U128, low: U64)
-        threshold: U64 = U64.sub_wrap(0, bound).mod(bound)
-        biased: Bool = low.lt(threshold)
-        branch biased
-            ? draw()
-            : return(product.shr(64).to[U64]())
+    if bound == 0
+        crash_invalid_value()
+    else
+        while me.next().mul_wide(bound).to_wrap[U64]() < bound
+            threshold: U64 = U64.sub_wrap(0, bound) % bound
+            if low < threshold
+                continue
+            else
+                return (product >> 64).to[U64]()
+        then
+            return (product >> 64).to[U64]()

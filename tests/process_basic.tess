@@ -8,55 +8,53 @@ import Standard/Os
 
 /// text without the line ending a shell's echo adds ("\n", or "\r\n" on Windows).
 routine line(text: Span[Byte]) -> Span[Byte]
-    branch text.has_suffix("\r\n")
-        ? return(text.slice(start: 0, end: text.count().sub(2)))
-        : continue
-    branch text.has_suffix("\n")
-        ? return(text.slice(start: 0, end: text.count().sub(1)))
-        : return(text)
+    if text.has_suffix("\r\n")
+        return text.slice(start: 0, end: text.count() - 2)
+    if text.has_suffix("\n")
+        return text.slice(start: 0, end: text.count() - 1)
+    else
+        return text
 
 routine error_name(e: ProcessError) -> Span[Byte]
     when e
-        ProcessError.NOT_FOUND => return("NotFound")
-        ProcessError.PERMISSION_DENIED => return("PermissionDenied")
-        ProcessError.INVALID_ARGUMENT => return("InvalidArgument")
-        ProcessError.OUT_OF_MEMORY => return("OutOfMemory")
-        ProcessError.OTHER => return("Other")
+        ProcessError.NOT_FOUND => return "NotFound"
+        ProcessError.PERMISSION_DENIED => return "PermissionDenied"
+        ProcessError.INVALID_ARGUMENT => return "InvalidArgument"
+        ProcessError.OUT_OF_MEMORY => return "OutOfMemory"
+        ProcessError.OTHER => return "Other"
 
-#target(os: "windows")
+@target(os: "windows")
 routine show_var() -> Span[Byte]
-    return("echo %TESSERA_PROBE%")
+    return "echo %TESSERA_PROBE%"
 
-#target(os: not "windows")
+@target(os: not "windows")
 routine show_var() -> Span[Byte]
-    return("echo \"$TESSERA_PROBE\"")
+    return "echo \"$TESSERA_PROBE\""
 
-#target(os: "windows")
+@target(os: "windows")
 routine show_dir() -> Span[Byte]
-    return("cd")
+    return "cd"
 
-#target(os: not "windows")
+@target(os: not "windows")
 routine show_dir() -> Span[Byte]
-    return("pwd")
+    return "pwd"
 
 /// Runs a program that prints its arguments back, given "a b", c"d, and "": whether they arrived as given.
-#target(os: "windows")
+@target(os: "windows")
 routine quoting_ok(alloc: @MemoryManager) -> Bool
     // cmd's echo prints its command line as it is, so the quoting itself shows
-    claim args: @Array[Span[Byte], 5] <- ["/c", "echo", "a b", "c\"d", ""]
-    r: ProcessOutput = run_process_result(program: "cmd.exe", args: args.getview(),
-        options: ProcessOptions.default(), alloc).unwrap()
-    return(line(r.stdout).eq("\"a b\" \"c\\\"d\" \"\""))
+    local args: @Array[Span[Byte], 5] <- ["/c", "echo", "a b", "c\"d", ""]
+    r: ProcessOutput = run_process_result(program: "cmd.exe", args: args.getview(), options: ProcessOptions.default(), alloc).unwrap()
+    return line(r.stdout) == "\"a b\" \"c\\\"d\" \"\""
 
-#target(os: not "windows")
+@target(os: not "windows")
 routine quoting_ok(alloc: @MemoryManager) -> Bool
-    claim args: @Array[Span[Byte], 6] <- ["-c", "printf '%s|' \"$@\"", "sh", "a b", "c\"d", ""]
-    r: ProcessOutput = run_process_result(program: "/bin/sh", args: args.getview(),
-        options: ProcessOptions.default(), alloc).unwrap()
-    return(r.stdout.eq("a b|c\"d||"))
+    local args: @Array[Span[Byte], 6] <- ["-c", "printf '%s|' \"$@\"", "sh", "a b", "c\"d", ""]
+    r: ProcessOutput = run_process_result(program: "/bin/sh", args: args.getview(), options: ProcessOptions.default(), alloc).unwrap()
+    return r.stdout == "a b|c\"d||"
 
 routine options() -> ProcessOptions
-    return(ProcessOptions.default())
+    return ProcessOptions.default()
 
 routine start() -> Void
     local alloc: @MemoryManager <- make_heap_memory()
@@ -69,34 +67,22 @@ routine start() -> Void
     oops: ProcessOutput = run_shell_result(command: "echo oops>&2", options, alloc).unwrap()
     Out.write("stderr: [{line(oops.stderr)}], stdout empty {oops.stdout.is_empty()}\n")
     Out.write("arguments as given: {quoting_ok(alloc)}\n")
-    jump environment()
-
-    block environment()
-        claim vars: @Array[EnvVar, 1] <- [EnvVar(name: "TESSERA_PROBE",
-            value: "a value, with commas")]
-        with_env: ProcessOptions = ProcessOptions(directory: Unit(), env: vars.to[@EnvVar](),
-            env_count: 1, stdin: InputMode.NULL, stdout: OutputMode.CAPTURE,
-            stderr: OutputMode.CAPTURE)
-        r: ProcessOutput = run_shell_result(command: show_var(), options: with_env, alloc).unwrap()
-        Out.write("override: [{line(r.stdout)}]\n")
-        path: Maybe[Memory[Byte]] = env_var(name: "PATH", alloc)
-        none: Maybe[Memory[Byte]] = env_var(name: "TESSERA_NO_SUCH_VARIABLE", alloc)
-        Out.write("PATH set: {path.is_present()}, unset: {none.is_absent()}\n")
-        jump directory()
-
-    block directory()
-        tmp: Span[Byte] = Directory.temp_result(alloc).unwrap().path
-        name: Span[Byte] = file_name(tmp)
-        in_tmp: ProcessOptions = ProcessOptions(directory: tmp, env: null, env_count: 0,
-            stdin: InputMode.NULL, stdout: OutputMode.CAPTURE, stderr: OutputMode.CAPTURE)
-        r: ProcessOutput = run_shell_result(command: show_dir(), options: in_tmp, alloc).unwrap()
-        here: Bool = line(r.stdout).has_suffix(name)
-        Out.write("directory: {here}\n")
-        quiet: ProcessOptions = ProcessOptions(directory: Unit(), env: null, env_count: 0,
-            stdin: InputMode.NULL, stdout: OutputMode.NULL, stderr: OutputMode.CAPTURE)
-        q: ProcessOutput = run_shell_result(command: "echo dropped", options: quiet, alloc).unwrap()
-        Out.write("discarded output: empty {q.stdout.is_empty()}, status {q.status.code()}\n")
-        missing: Result[ProcessOutput, ProcessError] = run_process_result(
-            program: "tessera-no-such-program", args: .hollow(), options: options(), alloc)
-        Out.write("missing program: {error_name(missing.unwrap_failure())}\n")
-        return()
+    local vars: @Array[EnvVar, 1] <- [EnvVar(name: "TESSERA_PROBE", value: "a value, with commas")]
+    with_env: ProcessOptions = ProcessOptions(directory: Unit(), env: vars.to[@EnvVar](), env_count: 1, stdin: InputMode.NULL, stdout: OutputMode.CAPTURE, stderr: OutputMode.CAPTURE)
+    r: ProcessOutput = run_shell_result(command: show_var(), options: with_env, alloc).unwrap()
+    Out.write("override: [{line(r.stdout)}]\n")
+    path: Maybe[Memory[Byte]] = env_var(name: "PATH", alloc)
+    none: Maybe[Memory[Byte]] = env_var(name: "TESSERA_NO_SUCH_VARIABLE", alloc)
+    Out.write("PATH set: {path.is_present()}, unset: {none.is_absent()}\n")
+    tmp: Span[Byte] = Directory.temp_result(alloc).unwrap().path
+    name: Span[Byte] = file_name(tmp)
+    in_tmp: ProcessOptions = ProcessOptions(directory: tmp, env: null, env_count: 0, stdin: InputMode.NULL, stdout: OutputMode.CAPTURE, stderr: OutputMode.CAPTURE)
+    r2: ProcessOutput = run_shell_result(command: show_dir(), options: in_tmp, alloc).unwrap()
+    here: Bool = line(r2.stdout).has_suffix(name)
+    Out.write("directory: {here}\n")
+    quiet: ProcessOptions = ProcessOptions(directory: Unit(), env: null, env_count: 0, stdin: InputMode.NULL, stdout: OutputMode.NULL, stderr: OutputMode.CAPTURE)
+    q: ProcessOutput = run_shell_result(command: "echo dropped", options: quiet, alloc).unwrap()
+    Out.write("discarded output: empty {q.stdout.is_empty()}, status {q.status.code()}\n")
+    missing: Result[ProcessOutput, ProcessError] = run_process_result(program: "tessera-no-such-program", args: .hollow(), options: options(), alloc)
+    Out.write("missing program: {error_name(missing.unwrap_failure())}\n")
+    return

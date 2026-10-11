@@ -22,10 +22,10 @@ private preset FAULT_FRAMES: USize = 64
 // -- POSIX -------------------------------------------------------------------------------------------------------
 
 /// SS_DISABLE, which takes a thread's signal stack away.
-#target(os: "linux")
+@target(os: "linux")
 private preset SS_DISABLE: CInt = 2
 /// SS_DISABLE, which takes a thread's signal stack away.
-#target(os: "macos")
+@target(os: "macos")
 private preset SS_DISABLE: CInt = 4
 
 /// Binds the C `sigaction` function, which sets what a signal does.
@@ -33,191 +33,194 @@ private preset SS_DISABLE: CInt = 4
 /// :param act: The new action, a `struct sigaction`.
 /// :param old: Where the old action goes, or null.
 /// :returns: 0 on success.
-#[external("c"), symbol("sigaction"), target(os: ("linux", "macos"))]
+@external("c")
+@symbol("sigaction")
+@target(os: ("linux", "macos"))
 private routine c_sigaction(sig: CInt, act: Addr, old: Addr) -> CInt
 
 /// Binds the C `sigaltstack` function, which gives the thread a stack for signal handlers.
 /// :param stack: The new stack, a `stack_t`.
 /// :param old: Where the old one goes, or null.
 /// :returns: 0 on success.
-#[external("c"), symbol("sigaltstack"), target(os: ("linux", "macos"))]
+@external("c")
+@symbol("sigaltstack")
+@target(os: ("linux", "macos"))
 private routine c_sigaltstack(stack: Addr, old: Addr) -> CInt
 
 /// Binds the C `raise` function, which sends a signal to the running thread.
 /// :param sig: The signal.
 /// :returns: 0 on success.
-#[external("c"), symbol("raise"), target(os: ("linux", "macos"))]
+@external("c")
+@symbol("raise")
+@target(os: ("linux", "macos"))
 private routine c_raise(sig: CInt) -> CInt
 
 /// Binds the C `backtrace` function, which takes the platform's stack.
 /// :param buffer: Where the return addresses go.
 /// :param size: How many it takes at most.
 /// :returns: How many it took.
-#[external("c"), symbol("backtrace"), target(os: ("linux", "macos"))]
+@external("c")
+@symbol("backtrace")
+@target(os: ("linux", "macos"))
 private routine c_backtrace(buffer: @Addr, size: CInt) -> CInt
 
 /// Binds the C `backtrace_symbols_fd` function, which writes a stack's frames with their symbols.
 /// :param buffer: The return addresses.
 /// :param size: How many.
 /// :param fd: The file descriptor to write to.
-#[external("c"), symbol("backtrace_symbols_fd"), target(os: ("linux", "macos"))]
+@external("c")
+@symbol("backtrace_symbols_fd")
+@target(os: ("linux", "macos"))
 private routine c_backtrace_symbols_fd(buffer: @Addr, size: CInt, fd: CInt) -> Void
 
 /// The signals the report covers: SIGSEGV, SIGBUS, SIGFPE, SIGILL, and SIGABRT.
 /// :returns: Their numbers on this system.
-#target(os: "linux")
+@target(os: "linux")
 private routine fault_signals() -> Array[CInt, 5]
-    return([11, 7, 8, 4, 6])
+    return [11, 7, 8, 4, 6]
 
 /// The signals the report covers: SIGSEGV, SIGBUS, SIGFPE, SIGILL, and SIGABRT.
 /// :returns: Their numbers on this system.
-#target(os: "macos")
+@target(os: "macos")
 private routine fault_signals() -> Array[CInt, 5]
-    return([11, 10, 8, 4, 6])
+    return [11, 10, 8, 4, 6]
 
 /// The fault's name and what it means.
 /// :param index: Its place in fault_signals.
 /// :returns: The text.
-#target(os: ("linux", "macos"))
+@target(os: ("linux", "macos"))
 private routine fault_name(index: USize) -> Span[Byte]
     when index
-        0 => return("SegmentationFault (SIGSEGV): the program touched memory it may not, such as through a null or stale address, or a stack ran out")
-        1 => return("BusError (SIGBUS): the program touched memory that isn't there or is misaligned")
-        2 => return("ArithmeticFault (SIGFPE): an integer division by zero or an overflow the processor stops on")
-        3 => return("IllegalInstruction (SIGILL): an instruction this processor can't run")
-        else => return("Aborted (SIGABRT): the program, or a library it uses, aborted")
+        0 => return "SegmentationFault (SIGSEGV): the program touched memory it may not, such as through a null or stale address, or a stack ran out"
+        1 => return "BusError (SIGBUS): the program touched memory that isn't there or is misaligned"
+        2 => return "ArithmeticFault (SIGFPE): an integer division by zero or an overflow the processor stops on"
+        3 => return "IllegalInstruction (SIGILL): an instruction this processor can't run"
+        else => return "Aborted (SIGABRT): the program, or a library it uses, aborted"
 
 /// The handler of every covered signal: writes the report, then sends the signal again, which now does what it would
 /// have done (the handler was installed for one use).
 /// :param sig: The signal.
-#target(os: ("linux", "macos"))
+@target(os: ("linux", "macos"))
 private routine on_fault(sig: CInt) -> Void
     local signals: Array[CInt, 5] = fault_signals()
 
-    jump look(0)
-
-    block look(i: USize)
-        branch i.ge(4).bitor(signals.getitem(i).eq(sig))
-            ? report(i)
-            : look(i.add(1))
-
-    block report(i: USize)
+    until i >= 4 or signals[i] == sig with i: USize = 0
+        continue with i: i + 1
+    then
         Err.write("tessera: {fault_name(i)}\n")
         write_trace()
         write_platform_stack()
         c_raise(sig)
-        return()
+        return
 
 /// Writes the platform's stack: the return addresses with the symbols the system knows.
-#target(os: ("linux", "macos"))
+@target(os: ("linux", "macos"))
 private routine write_platform_stack() -> Void
     local frames: @Array[Addr, FAULT_FRAMES] <- .hollow()
 
     Err.write("Platform stack:\n")
     n: CInt = c_backtrace(frames.to[@Addr](), FAULT_FRAMES.to[CInt]())
     c_backtrace_symbols_fd(frames.to[@Addr](), n, 2)
-    return()
+    return
 
 /// Writes `struct sigaction` for the handler: on its own stack, used once. Linux keeps the handler, a 128-byte mask,
 /// the flags, then a restorer.
 /// :param act: The bytes of the struct, zero.
-#target(os: "linux")
+@target(os: "linux")
 private routine fill_action(act: @Byte) -> Void
     pointer: SSize = sizeof[Addr]().to[SSize]()
     handler: Callable[(CInt,), Void] = on_fault.to[Callable]()
     act.to[Addr]().to[@Callable[(CInt,), Void]]().poke(handler)
     // SA_ONSTACK | SA_RESETHAND
     flags: U32 = 0x88000000
-    act.to[Addr]().offset(pointer.add(128)).to[@U32]().poke(flags)
-    return()
+    act.to[Addr]().offset(pointer + 128).to[@U32]().poke(flags)
+    return
 
 /// Writes `struct sigaction` for the handler: on its own stack, used once. macOS keeps the handler, a 4-byte mask, then
 /// the flags.
 /// :param act: The bytes of the struct, zero.
-#target(os: "macos")
+@target(os: "macos")
 private routine fill_action(act: @Byte) -> Void
     handler: Callable[(CInt,), Void] = on_fault.to[Callable]()
     act.to[Addr]().to[@Callable[(CInt,), Void]]().poke(handler)
     // SA_ONSTACK | SA_RESETHAND
     flags: U32 = 0x0005
     act.to[Addr]().offset(12).to[@U32]().poke(flags)
-    return()
+    return
 
 /// Installs the fault report: the generated entry calls it before `start` when the build keeps the crash trace.
-#target(os: ("linux", "macos"))
+@target(os: ("linux", "macos"))
 routine install_fault_handlers() -> Void
     local act: @Array[Byte, 160] <- .hollow()
     local signals: Array[CInt, 5] = fault_signals()
 
     fill_action(act.to[@Byte]())
     drop: Addr = give_fault_stack()
-    jump each(0)
 
-    block each(i: USize)
-        branch i.eq(5)
-            ? return()
-            : continue
-        c_sigaction(signals.getitem(i), act.to[Addr](), null)
-        jump each(i.add(1))
+    each i in 0 til 5
+        c_sigaction(signals[i], act.to[Addr](), null)
+    then
+        return
 
 /// Gives the running thread a stack of its own for the fault report, so a thread whose stack ran out can still write it.
 /// A thread that can't get one reports as before, except a stack that ran out.
 /// :returns: The stack's memory, for release_fault_stack when the thread ends, or null.
-#target(os: ("linux", "macos"))
+@target(os: ("linux", "macos"))
 routine give_fault_stack() -> Addr
     local stack: @Array[Byte, 32] <- .hollow()
 
     memory: Addr = DEFAULT_HEAP.alloc(size: FAULT_STACK, align: 16)
-    branch memory.is_null()
-        ? return(null)
-        : continue
+    if memory.is_null()
+        return null
     fill_stack(stack: stack.to[@Byte](), memory, flags: 0)
     c_sigaltstack(stack.to[Addr](), null)
-    return(memory)
+    return memory
 
 /// Takes the thread's fault stack away and gives its memory back: a thread calls it as it ends.
 /// :param memory: The stack's memory, from give_fault_stack, or null (then it does nothing).
-#target(os: ("linux", "macos"))
+@target(os: ("linux", "macos"))
 routine release_fault_stack(memory: Addr) -> Void
     local stack: @Array[Byte, 32] <- .hollow()
 
-    branch memory.is_null()
-        ? return()
-        : continue
+    if memory.is_null()
+        return
     fill_stack(stack: stack.to[@Byte](), memory, flags: SS_DISABLE)
     c_sigaltstack(stack.to[Addr](), null)
     DEFAULT_HEAP.free(memory)
-    return()
+    return
 
 /// Writes a `stack_t` for `memory`: Linux keeps the address, the flags, then the size.
 /// :param stack: The bytes of the struct, zero.
 /// :param memory: The handler's stack.
 /// :param flags: 0 to use it, SS_DISABLE to take it away.
-#target(os: "linux")
+@target(os: "linux")
 private routine fill_stack(stack: @Byte, memory: Addr, flags: CInt) -> Void
     pointer: SSize = sizeof[Addr]().to[SSize]()
     stack.to[Addr]().to[@Addr]().poke(memory)
     stack.to[Addr]().offset(pointer).to[@CInt]().poke(flags)
-    stack.to[Addr]().offset(pointer.mul(2)).to[@USize]().poke(FAULT_STACK)
-    return()
+    stack.to[Addr]().offset(pointer * 2).to[@USize]().poke(FAULT_STACK)
+    return
 
 /// Writes a `stack_t` for `memory`: macOS keeps the address, the size, then the flags.
 /// :param stack: The bytes of the struct, zero.
 /// :param memory: The handler's stack.
 /// :param flags: 0 to use it, SS_DISABLE to take it away.
-#target(os: "macos")
+@target(os: "macos")
 private routine fill_stack(stack: @Byte, memory: Addr, flags: CInt) -> Void
     stack.to[Addr]().to[@Addr]().poke(memory)
     stack.to[Addr]().offset(8).to[@USize]().poke(FAULT_STACK)
     stack.to[Addr]().offset(16).to[@CInt]().poke(flags)
-    return()
+    return
 
 // -- Windows -----------------------------------------------------------------------------------------------------
 
 /// Binds the Win32 `SetUnhandledExceptionFilter` function, which sets what an exception nothing handles does first.
 /// :param filter: The filter.
 /// :returns: The filter before.
-#[external("c"), symbol("SetUnhandledExceptionFilter"), callconv("stdcall"), target(os: "windows")]
+@external("c")
+@symbol("SetUnhandledExceptionFilter")
+@callconv("stdcall")
+@target(os: "windows")
 private routine c_set_unhandled_exception_filter(filter: Callable[#callconv("stdcall"), (Addr,), CLong]) -> Addr
 
 /// Binds the Win32 `RtlCaptureStackBackTrace` function, which takes the platform's stack.
@@ -226,26 +229,30 @@ private routine c_set_unhandled_exception_filter(filter: Callable[#callconv("std
 /// :param frames: Where the return addresses go.
 /// :param hash: Where a hash of them goes, or null.
 /// :returns: How many it took.
-#[external("c"), symbol("RtlCaptureStackBackTrace"), callconv("stdcall"), target(os: "windows")]
+@external("c")
+@symbol("RtlCaptureStackBackTrace")
+@callconv("stdcall")
+@target(os: "windows")
 private routine c_capture_stack(skip: U32, count: U32, frames: @Addr, hash: Addr) -> U16
 
 /// The exception's name and what it means.
 /// :param code: The exception code.
 /// :returns: The text.
-#target(os: "windows")
+@target(os: "windows")
 private routine exception_name(code: U32) -> Span[Byte]
     when code
-        0xC0000005 => return("AccessViolation: the program touched memory it may not, such as through a null or stale address")
-        0xC00000FD => return("StackOverflow: a stack ran out")
-        0xC000001D => return("IllegalInstruction: an instruction this processor can't run")
-        0xC0000094 => return("IntegerDivideByZero: an integer division by zero")
-        0xC0000095 => return("IntegerOverflow: an overflow the processor stops on")
-        else => return("Exception: one that nothing handled")
+        0xC0000005 => return "AccessViolation: the program touched memory it may not, such as through a null or stale address"
+        0xC00000FD => return "StackOverflow: a stack ran out"
+        0xC000001D => return "IllegalInstruction: an instruction this processor can't run"
+        0xC0000094 => return "IntegerDivideByZero: an integer division by zero"
+        0xC0000095 => return "IntegerOverflow: an overflow the processor stops on"
+        else => return "Exception: one that nothing handled"
 
 /// The unhandled-exception filter: writes the report, then lets the exception end the program as it would have.
 /// :param pointers: The `EXCEPTION_POINTERS`, whose record holds the code.
 /// :returns: 0, EXCEPTION_CONTINUE_SEARCH.
-#[target(os: "windows"), callconv("stdcall")]
+@target(os: "windows")
+@callconv("stdcall")
 private routine on_exception(pointers: Addr) -> CLong
     local frames: @Array[Addr, FAULT_FRAMES] <- .hollow()
     local err: @Err = Err.writer()
@@ -258,31 +265,30 @@ private routine on_exception(pointers: Addr) -> CLong
     write_trace()
     Err.write("Platform stack:\n")
     taken: U16 = c_capture_stack(0, FAULT_FRAMES.to[U32](), frames.to[@Addr](), null)
-    jump each(0, taken.to[USize]())
 
-    block each(i: USize, n: USize)
-        branch i.ge(n)
-            ? return(0)
-            : continue
+    n: USize = taken.to[USize]()
+
+    each i in 0 til n
         err.write("  {i}: 0x")
-        ptrtoint[Addr, USize](frames.getitem(i)).represent_hex_into(err)
+        ptrtoint[Addr, USize](frames[i]).represent_hex_into(err)
         err.write("\n")
-        jump each(i.add(1), n)
+    then
+        return 0
 
 /// Installs the fault report: the generated entry calls it before `start` when the build keeps the crash trace.
-#target(os: "windows")
+@target(os: "windows")
 routine install_fault_handlers() -> Void
     c_set_unhandled_exception_filter(on_exception.to[Callable]())
-    return()
+    return
 
 /// Nothing on Windows: the filter runs on the stack that faulted.
 /// :returns: Null.
-#target(os: "windows")
+@target(os: "windows")
 routine give_fault_stack() -> Addr
-    return(null)
+    return null
 
 /// Nothing on Windows.
 /// :param memory: Unused.
-#target(os: "windows")
+@target(os: "windows")
 routine release_fault_stack(memory: Addr) -> Void
-    return()
+    return

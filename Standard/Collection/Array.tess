@@ -11,18 +11,18 @@ module Standard/Core
 /// A fixed-size array stored inline as the LLVM type `[COUNT x T]`: no heap allocation and no pointer indirection. `COUNT` is a buildtime constant and every index is bounds-checked.
 /// :typeparam T: The element type.
 /// :typeparam COUNT: The number of elements, fixed at build time.
-#llvm("[{COUNT} x {T}]")
+@llvm("[{COUNT} x {T}]")
 record Array[T, COUNT]
-conform Equatable[Array[T, COUNT]] when T: typename, COUNT: USize, Equatable[T]
-require T: typename, COUNT: USize
+obeys Equatable[Array[T, COUNT]] when T: typename, COUNT: USize, Equatable[T]
+needs T: typename, COUNT: USize
 
 // -- metadata ------------------------------------------------------------------
 
 /// The number of elements, which is the buildtime constant `COUNT`.
 /// :returns: `COUNT`.
 routine Array[T, COUNT].count() -> USize
-require T: typename, COUNT: USize
-    return(COUNT)
+needs T: typename, COUNT: USize
+    return COUNT
 
 // -- construction --------------------------------------------------------------
 
@@ -36,63 +36,54 @@ require T: typename, COUNT: USize
 /// :param index: The zero-based position to read.
 /// :returns: A copy of the element at `index`.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index >= COUNT`.
-#track_caller
+@track_caller
 routine Array[T, COUNT].getitem(me: Me, index: USize) -> T
-require T: typename, COUNT: USize
-    claim slot: @Me <- me
-    value: T = slot.getitem(index)
-    return(value)
+needs T: typename, COUNT: USize
+    local slot: @Me <- me
+    value: T = slot[index]
+    return value
 
 /// Reads the element at `index`.
 /// :param index: The zero-based position to read.
 /// :returns: A copy of the element at `index`.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index >= COUNT`.
-#track_caller
+@track_caller
 routine Array[T, COUNT].getitem(me: @Me, index: USize) -> T
-require T: typename, COUNT: USize
-    in_bounds: Bool = index.lt(COUNT)
-    branch in_bounds
-        ? load()
-        : crash_out_of_bounds()
-
-    block load()
+needs T: typename, COUNT: USize
+    if index < COUNT
         base: @T = bitcast[@Me, @T](me)
         value: T = base.stride(index).peek()
-        return(value)
+        return value
+    else
+        crash_out_of_bounds()
 
 /// Writes `value` into the element at `index`, replacing the old value in place.
 /// :param index: The zero-based position to write.
 /// :param value: The value to store.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index >= COUNT`.
-#track_caller
+@track_caller
 routine Array[T, COUNT].setitem(me: @Me, index: USize, value: T) -> Void
-require T: typename, COUNT: USize
-    in_bounds: Bool = index.lt(COUNT)
-    branch in_bounds
-        ? store()
-        : crash_out_of_bounds()
-
-    block store()
+needs T: typename, COUNT: USize
+    if index < COUNT
         base: @T = bitcast[@Me, @T](me)
         base.stride(index).poke(value)
-        return()
+        return
+    else
+        crash_out_of_bounds()
 
 /// The address of element index, checked like getitem: a place to read or write in place (`a.getslot(i).poke(v)`).
 /// :param index: The element's index.
 /// :returns: The element's address.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index >= COUNT`.
-#track_caller
+@track_caller
 routine Array[T, COUNT].getslot(me: @Me, index: USize) -> @T
-require T: typename, COUNT: USize
-    in_bounds: Bool = index.lt(COUNT)
-    branch in_bounds
-        ? address()
-        : crash_out_of_bounds()
-
-    block address()
+needs T: typename, COUNT: USize
+    if index < COUNT
         base: @T = bitcast[@Me, @T](me)
         element: @T = base.stride(index)
-        return(element)
+        return element
+    else
+        crash_out_of_bounds()
 
 // -- equality ------------------------------------------------------------------
 
@@ -100,44 +91,37 @@ require T: typename, COUNT: USize
 /// :param other: The array to compare with.
 /// :returns: `true` when all `COUNT` element pairs are equal.
 routine Array[T, COUNT].eq(me: Me, other: Me) -> Bool
-require T: typename, COUNT: USize, Equatable[T]
-    claim a: @Me <- me
-    claim b: @Me <- other
-    equal: Bool = a.eq_at(b)
-    return(equal)
+needs T: typename, COUNT: USize, Equatable[T]
+    local a: @Me <- me
+    local b: @Me <- other
+    return a.eq_at(b)
 
 /// `eq`, through pointers to the two arrays.
 /// :param other: The array to compare with.
 /// :returns: True when all `COUNT` element pairs are equal.
 private routine Array[T, COUNT].eq_at(me: @Me, other: @Me) -> Bool
-require T: typename, COUNT: USize, Equatable[T]
+needs T: typename, COUNT: USize, Equatable[T]
     local pa: @T = bitcast[@Me, @T](me)
     local pb: @T = bitcast[@Me, @T](other)
 
-    jump loop(0)
-
-    block loop(i: USize)
-        done: Bool = i.ge(COUNT)
-        branch done
-            ? return(true)
-            : step(i)
-
-    block step(i: USize)
+    each i in 0 til COUNT
         x: T = pa.stride(i).peek()
         y: T = pb.stride(i).peek()
-        eq: Bool = x.eq(y)
-        branch eq
-            ? loop(i.add(1))
-            : return(false)
+        if x == y
+            continue
+        else
+            return false
+    then
+        return true
 
 // -- pointer to first element --------------------------------------------------
 
 /// Reinterprets the array as a pointer to its first element, so its elements can be walked with `stride`.
 /// :returns: A pointer to element `0`, valid as long as the array itself is.
 routine Array[T, COUNT].to[@T](me: @Me) -> @T
-require T: typename, COUNT: USize
+needs T: typename, COUNT: USize
     base: @T = bitcast[@Me, @T](me)
-    return(base)
+    return base
 
 // -- releasing elements --------------------------------------------------------
 
@@ -145,20 +129,15 @@ require T: typename, COUNT: USize
 
 /// Destructs every element: for elements that own something, such as lists. The array itself has nothing to release.
 /// Elements that only borrow (a `Ptr` to memory owned elsewhere) must not be destructed this way.
-#track_caller
+@track_caller
 routine Array[T, COUNT].destruct_all(me: @Me) -> Void
-require T: typename, COUNT: USize, Destructible[T]
+needs T: typename, COUNT: USize, Destructible[T]
     local first: @T = bitcast[@Me, @T](me)
 
-    jump each(0)
-
-    block each(i: USize)
-        done: Bool = i.ge(COUNT)
-        branch done
-            ? return()
-            : continue
+    each i in 0 til COUNT
         first.stride(i).destruct()
-        jump each(i.add(1))
+    then
+        return
 
 /// Moves elements [`start`, `end`) one slot right, to [`start` + 1, `end` + 1), opening a hole at `start`. Writes
 /// index `end`.
@@ -166,41 +145,28 @@ require T: typename, COUNT: USize, Destructible[T]
 /// :param end: The index past the last one to move.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `end >= COUNT` and `end > start`.
 routine Array[T, COUNT].shift_right(me: @Me, start: USize, end: USize) -> Void
-require T: typename, COUNT: USize
-    jump loop(end)
-
-    block loop(i: USize)
-        done: Bool = i.le(start)
-        branch done
-            ? return()
-            : move(i)
-
-    block move(i: USize)
-        from: USize = i.sub(1)
-        value: T = me.getitem(from)
-        me.setitem(index: i, value)
-        jump loop(from)
+needs T: typename, COUNT: USize
+    until i <= start with i: USize = end
+        from: USize = i - 1
+        value: T = me[from]
+        me[i] = value
+        continue with i: from
+    then
+        return
 
 /// Closes the hole at `start`: moves elements [`start` + 1, `end`) one slot left, to [`start`, `end` - 1).
 /// :param start: The index of the hole.
 /// :param end: The index past the last element to move.
 /// :throws: Crashes with `IntegerOverflowError` when `end` is 0, and with `IndexOutOfBoundsError` when `end > COUNT`.
 routine Array[T, COUNT].shift_left(me: @Me, start: USize, end: USize) -> Void
-require T: typename, COUNT: USize
-    jump loop(start)
-
-    block loop(i: USize)
-        last: USize = end.sub(1)
-        done: Bool = i.ge(last)
-        branch done
-            ? return()
-            : move(i)
-
-    block move(i: USize)
-        from: USize = i.add(1)
-        value: T = me.getitem(from)
-        me.setitem(index: i, value)
-        jump loop(from)
+needs T: typename, COUNT: USize
+    while i < end - 1 with i: USize = start
+        from: USize = i + 1
+        value: T = me[from]
+        me[i] = value
+        continue with i: from
+    then
+        return
 
 /// Copies `count` elements from `src` starting at `src_start` into this array starting at `dst_start`, one element at a time from the front.
 /// :param dst_start: The first index written in this array.
@@ -211,18 +177,11 @@ require T: typename, COUNT: USize
 /// :note: Overlapping ranges within one array are only safe when `dst_start` is below `src_start`.
 routine Array[T, COUNT].copy(me: @Me, dst_start: USize, src: @Me, src_start: USize,
     count: USize) -> Void
-require T: typename, COUNT: USize
-    jump loop(0)
-
-    block loop(i: USize)
-        done: Bool = i.ge(count)
-        branch done
-            ? return()
-            : copy_one(i)
-
-    block copy_one(i: USize)
-        src_index: USize = src_start.add(i)
-        dst_index: USize = dst_start.add(i)
-        value: T = src.getitem(src_index)
-        me.setitem(index: dst_index, value)
-        jump loop(i.add(1))
+needs T: typename, COUNT: USize
+    each i in 0 til count
+        src_index: USize = src_start + i
+        dst_index: USize = dst_start + i
+        value: T = src[src_index]
+        me[dst_index] = value
+    then
+        return

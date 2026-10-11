@@ -16,37 +16,41 @@ record Pipe
 /// :param fds: Its `fds`.
 /// :returns: The new value.
 routine Pipe.construct(sched: @FiberManager, fds: Array[CInt, 2]) -> Me
-    return(Me(sched, fds))
+    return Me(sched, fds)
 
 /// Releases nothing: a `Pipe` holds no memory of its own.
 routine Pipe.destruct(me: @Me) -> Void
-    return()
+    return
 
-#[external("c"), symbol("pipe"), target(os: not "windows")]
+@external("c")
+@symbol("pipe")
+@target(os: not "windows")
 routine c_pipe(fds: @CInt) -> CInt
 
-#[external("c"), symbol("_pipe"), target(os: "windows")]
+@external("c")
+@symbol("_pipe")
+@target(os: "windows")
 routine c_win_pipe(fds: @CInt, size: U32, mode: CInt) -> CInt
 
-#target(os: not "windows")
+@target(os: not "windows")
 routine make_pipe(fds: @CInt) -> Void
     c_pipe(fds)
-    return()
+    return
 
 /// _O_BINARY, so the bytes go through as they are.
-#target(os: "windows")
+@target(os: "windows")
 routine make_pipe(fds: @CInt) -> Void
     c_win_pipe(fds, 4096, 0x8000)
-    return()
+    return
 
 routine reader(pipe: @Pipe) -> Void
     sched: @FiberManager = pipe.sched.peek()
-    claim buf: @Array[Byte, 16] <- .hollow()
+    local buf: @Array[Byte, 16] <- .hollow()
     Out.write("reader: waiting\n")
-    n: SSize = sched.read(fd: pipe.fds.getitem(0), buf: buf.to[@Byte](), count: 16)
+    n: SSize = sched.read(fd: pipe.fds[0], buf: buf.to[@Byte](), count: 16)
     text: Span[Byte] = Span[Byte].construct(data: buf.to[@Byte](), count: n.to[USize]())
     Out.write("reader: got {text}\n")
-    return()
+    return
 
 routine writer(pipe: @Pipe) -> Void
     sched: @FiberManager = pipe.sched.peek()
@@ -56,16 +60,16 @@ routine writer(pipe: @Pipe) -> Void
     sched.yield()
     Out.write("writer: writing\n")
     hello: Span[Byte] = "hello"
-    sched.write(fd: pipe.fds.getitem(1), buf: hello.data, count: hello.count)
-    return()
+    sched.write(fd: pipe.fds[1], buf: hello.data, count: hello.count)
+    return
 
 routine start() -> Void
-    claim alloc: @MemoryManager <- make_heap_memory()
-    claim stacks: @MemoryManager <- make_stack_memory()
-    claim sched: @FiberManager <- .construct(stack_size: 65536, stacks, alloc)
-    claim fds: @Array[CInt, 2] <- .hollow()
+    local alloc: @MemoryManager <- make_heap_memory()
+    local stacks: @MemoryManager <- make_stack_memory()
+    local sched: @FiberManager <- .construct(stack_size: 65536, stacks, alloc)
+    local fds: @Array[CInt, 2] <- .hollow()
     make_pipe(fds.to[@CInt]())
-    claim pipe: @Pipe <- Pipe(sched: sched, fds: fds.peek())
+    local pipe: @Pipe <- Pipe(sched: sched, fds: fds.peek())
     r: Fiber[Void] = sched.get_fiber[Void]()
     r.put_work(entry: reader.to[Callable](), args: pipe)
     w: Fiber[Void] = sched.get_fiber[Void]()
@@ -75,4 +79,4 @@ routine start() -> Void
     w.give_back()
     Out.write("all done\n")
     sched.destruct()
-    return()
+    return

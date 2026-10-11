@@ -83,12 +83,12 @@ record Mapping
 /// :param kind: Its `kind`.
 /// :returns: The new value.
 routine DirEntry.construct(name: Span[Byte], kind: FileKind) -> Me
-    return(Me(name, kind))
+    return Me(name, kind)
 
 /// Releases the memory its `name` holds.
 routine DirEntry.destruct(me: @Me) -> Void
     me.name.destruct()
-    return()
+    return
 
 /// Makes a `Mapping` from its fields.
 /// :param base: Its `base`.
@@ -96,24 +96,25 @@ routine DirEntry.destruct(me: @Me) -> Void
 /// :param count: Its `count`.
 /// :returns: The new value.
 routine Mapping.construct(base: Addr, delta: USize, count: USize) -> Me
-    return(Me(base, delta, count))
+    return Me(base, delta, count)
 
 /// Releases nothing: a `Mapping` holds no memory of its own.
 routine Mapping.destruct(me: @Me) -> Void
-    return()
+    return
 
 /// The success value of a filesystem call that has nothing to return.
 /// :returns: `Unit`.
 internal routine fs_done() -> Result[Unit, FsError]
-    return(Unit())
+    return Unit()
 
 /// Why path didn't fit a C path: a NUL inside, or too long.
 /// :param path: The path that didn't fit.
 /// :returns: `InvalidPath` when `path` holds a NUL, else `NameTooLong`.
 internal routine path_error(path: Span[Byte]) -> FsError
-    branch path.has("\x00")
-        ? return(FsError.INVALID_PATH)
-        : return(FsError.NAME_TOO_LONG)
+    if path.has("\0")
+        return FsError.INVALID_PATH
+    else
+        return FsError.NAME_TOO_LONG
 
 // -- built on the per-OS calls ---------------------------------------------------------
 
@@ -122,7 +123,7 @@ internal routine path_error(path: Span[Byte]) -> FsError
 /// :returns: True when the metadata of `path` can be read. Any failure, not only `NotFound`, gives false.
 internal routine is_present(path: Span[Byte]) -> Bool
     m: Result[Metadata, FsError] = metadata(path)
-    return(m.is_success())
+    return m.is_success()
 
 /// Whether something is at path and is of the given kind (a link counts as what it points at).
 /// :param path: The path to look at.
@@ -131,8 +132,8 @@ internal routine is_present(path: Span[Byte]) -> Bool
 internal routine is_kind(path: Span[Byte], kind: FileKind) -> Bool
     m: Result[Metadata, FsError] = metadata(path)
     when m
-        is Metadata as info => return(info.kind.eq(kind))
-        is FsError => return(false)
+        is Metadata as info => return info.kind == kind
+        is FsError => return false
 
 /// Like mkdir -p: every missing directory on the way, then path. A directory already there is fine.
 /// :param path: The directory to make.
@@ -140,31 +141,18 @@ internal routine is_kind(path: Span[Byte], kind: FileKind) -> Bool
 /// :throws: Returns the reason when the last step fails, `AlreadyExists` when something other than a
 ///     directory is at `path`.
 internal routine create_dir_all(path: Span[Byte]) -> Result[Unit, FsError]
-    jump scan(1)
-
     // Each separator after the first byte ends a prefix to make. Failures there show up in the last step.
-    block scan(i: USize)
-        branch i.ge(path.count())
-            ? last()
-            : continue
-        branch is_separator(path.byte_at(i).bits())
-            ? make(i)
-            : scan(i.add(1))
-
-    block make(i: USize)
-        create_dir(path.slice(start: 0, end: i))
-        jump scan(i.add(1))
-
-    block last()
-        made: Result[Unit, FsError] = create_dir(path)
-        when made
-            is Unit => return(made)
-            is FsError as error => check(error)
-
-    block check(error: FsError)
-        branch error.eq(FsError.ALREADY_EXISTS).bitand(is_kind(path, kind: FileKind.DIRECTORY))
-            ? return(fs_done())
-            : return(error)
+    each i in 1 til path.count()
+        if is_separator(path.byte_at(i).bits())
+            create_dir(path.slice(start: 0, end: i))
+    made: Result[Unit, FsError] = create_dir(path)
+    when made
+        is Unit => return made
+        is FsError as error =>
+            if error == FsError.ALREADY_EXISTS and is_kind(path, kind: FileKind.DIRECTORY)
+                return fs_done()
+            else
+                return error
 
 /// Removes path and everything in it. A link is removed, not followed. Child paths are built in memory from alloc.
 /// :param path: The file or directory to remove.
@@ -175,17 +163,14 @@ internal routine create_dir_all(path: Span[Byte]) -> Result[Unit, FsError]
 internal routine remove_dir_all(path: Span[Byte], alloc: @MemoryManager) -> Result[Unit, FsError]
     m: Result[Metadata, FsError] = symlink_metadata(path)
     when m
-        is Metadata as info => kind(info.kind)
-        is FsError as error => return(error)
-
-    block kind(k: FileKind)
-        branch k.eq(FileKind.DIRECTORY)
-            ? continue
-            : return(remove_file(path))
-        emptied: Result[Unit, FsError] = remove_entries(path, alloc)
-        when emptied
-            is Unit => return(remove_dir(path))
-            is FsError as error => return(error)
+        is Metadata as info =>
+            if not (info.kind == FileKind.DIRECTORY)
+                return remove_file(path)
+            emptied: Result[Unit, FsError] = remove_entries(path, alloc)
+            when emptied
+                is Unit => return remove_dir(path)
+                is FsError as error => return error
+        is FsError as error => return error
 
 /// Removes everything in the directory at path, which is left empty. Its listing is closed before remove_dir_all
 /// removes the directory itself, since Windows can't remove a directory that is still being listed.
@@ -200,26 +185,26 @@ private routine remove_entries(path: Span[Byte], alloc: @MemoryManager) -> Resul
 
     opened: Result[Unit, FsError] = iter.open_path(path)
     when opened
-        is Unit => next()
-        is FsError as error => finish(error)
-
-    block next()
-        entry: Maybe[DirEntry] = iter.emit_checked()
-        when entry
-            is DirEntry as e => child(e)
-            is Unit => finish(fs_done())
-
-    block child(e: DirEntry)
-        claim full: @Memory[Byte] <- join_path(a: path, b: e.name, alloc)
-        gone: Result[Unit, FsError] = remove_dir_all(path: full, alloc)
-        full.drop()
-        when gone
-            is Unit => next()
-            is FsError as error => finish(error)
-
-    block finish(result: Result[Unit, FsError])
-        iter.close()
-        return(result)
+        is Unit =>
+            while true
+                entry: Maybe[DirEntry] = iter.emit_checked()
+                when entry
+                    is DirEntry as e =>
+                        local full: @Memory[Byte] <- join_path(a: path, b: e.name, alloc)
+                        gone: Result[Unit, FsError] = remove_dir_all(path: full, alloc)
+                        full.drop()
+                        when gone
+                            is Unit => continue
+                            is FsError as error =>
+                                iter.close()
+                                return error
+                    is Unit =>
+                        result: Result[Unit, FsError] = fs_done()
+                        iter.close()
+                        return result
+        is FsError as error =>
+            iter.close()
+            return error
 
 /// Reads the whole file at path into memory from alloc (drop it).
 /// :param path: The file to read.
@@ -230,14 +215,12 @@ private routine remove_entries(path: Span[Byte], alloc: @MemoryManager) -> Resul
 internal routine read_file(path: Span[Byte], alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
     opened: Result[FileHandle, FsError] = FileHandle.open(path, mode: OpenMode.READ)
     when opened
-        is FileHandle as f => read(f)
-        is FsError as error => return(error)
-
-    block read(opened: FileHandle)
-        claim f: @FileHandle <- opened
-        text: Result[Memory[Byte], FsError] = read_rest(f, alloc)
-        f.close()
-        return(text)
+        is FileHandle as f =>
+            local f2: @FileHandle <- f
+            text: Result[Memory[Byte], FsError] = read_rest(f: f2, alloc)
+            f2.close()
+            return text
+        is FsError as error => return error
 
 /// Reads the rest of the open file f into memory from alloc. The size is a first guess: a file that grows while it's
 /// read, or reports 0 (Linux's /proc), still reads whole.
@@ -250,67 +233,59 @@ private routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Memor
     local buffer: @Memory[Byte] <- .hollow()
 
     size: Result[U64, FsError] = f.size_result()
-    when size
-        is U64 as n => known_size(n)
-        is FsError => start(64)
-
-    block known_size(n: U64)
-        room: Maybe[U64] = n.add_checked(1)
-        when room
-            is U64 as with_one => continue
-            is Unit => finish(FsError.OUT_OF_MEMORY)
-        size_guess: Maybe[USize] = with_one.to_checked[USize]()
-        when size_guess
-            is USize as guess => start(guess.max(64))
-            is Unit => finish(FsError.OUT_OF_MEMORY)
-
-    block start(capacity: USize)
-        made: Result[Memory[Byte], AllocFailed] = Memory[Byte].construct_result(count: capacity,
-            manager: alloc)
-        when made
-            is Memory[Byte] as slice => filling(slice)
-            is AllocFailed => finish(FsError.OUT_OF_MEMORY)
-
-    block filling(slice: Memory[Byte])
-        slice.poke_into(buffer)
-        jump fill(0)
-
-    // count bytes read so far, and the buffer's count is its capacity
-    block fill(count: USize)
-        capacity: USize = buffer.count()
-        branch count.eq(capacity)
-            ? grow(count)
-            : continue
-        got: Result[USize, FsError] = f.read_bytes_result(buffer: buffer.getslot(count),
-            count: capacity.sub(count))
-        when got
-            is USize as n => advance(count, n)
-            is FsError as error => finish(error)
-
-    block advance(count: USize, n: USize)
-        branch n.eq(0)
-            ? read_all(count)
-            : fill(count.add(n))
-
-    block grow(count: USize)
-        doubled: Maybe[USize] = count.mul_checked(2)
-        when doubled
-            is USize as capacity => continue
-            is Unit => finish(FsError.OUT_OF_MEMORY)
-        bigger: Result[Unit, AllocFailed] = buffer.resize_result(capacity)
-        when bigger
-            is Unit => fill(count)
-            is AllocFailed => finish(FsError.OUT_OF_MEMORY)
-
-    // The text takes the memory over, so buffer goes back to empty and finish has nothing to give back.
-    block read_all(count: USize)
-        text: Memory[Byte] = buffer.peek().with_count(count)
-        buffer.poke(.hollow())
-        jump finish(text)
-
-    block finish(result: Result[Memory[Byte], FsError])
-        buffer.drop()
-        return(result)
+    capacity: USize = when size
+        is U64 as n =>
+            room: Maybe[U64] = n.add_checked(1)
+            with_one: U64 = when room
+                is U64 as with_one => with_one
+                is Unit =>
+                    // count bytes read so far, and the buffer's count is its capacity
+                    // The text takes the memory over, so buffer goes back to empty and finish has nothing to give back.
+                    buffer.drop()
+                    return FsError.OUT_OF_MEMORY
+            size_guess: Maybe[USize] = with_one.to_checked[USize]()
+            when size_guess
+                is USize as guess =>
+                    becomes guess.max(64)
+                is Unit =>
+                    buffer.drop()
+                    return FsError.OUT_OF_MEMORY
+        is FsError => 64
+    made: Result[Memory[Byte], AllocFailed] = Memory[Byte].construct_result(count: capacity, manager: alloc)
+    when made
+        is Memory[Byte] as slice =>
+            slice.poke_into(buffer)
+            while true with count: USize = 0
+                capacity2: USize = buffer.count()
+                if count == capacity2
+                    doubled: Maybe[USize] = count.mul_checked(2)
+                    capacity3: USize = when doubled
+                        is USize as capacity3 => capacity3
+                        is Unit =>
+                            buffer.drop()
+                            return FsError.OUT_OF_MEMORY
+                    bigger: Result[Unit, AllocFailed] = buffer.resize_result(capacity3)
+                    when bigger
+                        is Unit => continue with count: count
+                        is AllocFailed =>
+                            buffer.drop()
+                            return FsError.OUT_OF_MEMORY
+                got: Result[USize, FsError] = f.read_bytes_result(buffer: buffer.getslot(count), count: capacity2 - count)
+                when got
+                    is USize as n =>
+                        if n == 0
+                            text: Memory[Byte] = buffer.peek().with_count(count)
+                            buffer.poke(.hollow())
+                            buffer.drop()
+                            return text
+                        else
+                            continue with count: count + n
+                    is FsError as error =>
+                        buffer.drop()
+                        return error
+        is AllocFailed =>
+            buffer.drop()
+            return FsError.OUT_OF_MEMORY
 
 /// Writes data as the whole file: made if missing, replaced if not.
 /// :param path: The file to write.
@@ -320,57 +295,52 @@ private routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Memor
 internal routine write_file(path: Span[Byte], data: Span[Byte]) -> Result[Unit, FsError]
     opened: Result[FileHandle, FsError] = FileHandle.open(path, mode: OpenMode.WRITE)
     when opened
-        is FileHandle as f => write(f)
-        is FsError as error => return(error)
-
-    block write(opened: FileHandle)
-        claim f: @FileHandle <- opened
-        wrote: Result[Unit, FsError] = f.write_all_result(data: data.data, count: data.count())
-        f.close()
-        return(wrote)
+        is FileHandle as f =>
+            local f2: @FileHandle <- f
+            wrote: Result[Unit, FsError] = f2.write_all_result(data: data.data, count: data.count())
+            f2.close()
+            return wrote
+        is FsError as error => return error
 
 // -- FileHandle: what both halves share ------------------------------------------------------
 
-conform Reader[FileHandle]
-conform Writer[FileHandle]
+obeys Reader[FileHandle]
+obeys Writer[FileHandle]
 
 /// Writes all count bytes, however many calls that takes.
 /// :param data: The first byte to write.
 /// :param count: How many bytes to write.
 /// :returns: `Unit` once all of them are written.
 /// :throws: Returns the reason when a write fails, `Other` when a write makes no progress.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine FileHandle.write_all_result(me: @Me, data: @Byte, count: USize) -> Result[Unit, FsError]
-    jump write(data, count)
-
-    block write(at: @Byte, remaining: USize)
-        branch remaining.eq(0)
-            ? return(fs_done())
-            : continue
+    while remaining != 0 with at: @Byte = data, remaining: USize = count
         wrote: Result[USize, FsError] = me.write_some(data: at, count: remaining)
-        when wrote
-            is USize as n => continue
-            is FsError as error => return(error)
-        branch n.eq(0)
-            ? return(FsError.OTHER)
-            : write(at.stride(n), remaining.sub(n))
+        n: USize = when wrote
+            is USize as n => n
+            is FsError as error => return error
+        if n == 0
+            return FsError.OTHER
+        else
+            continue with at: at.stride(n), remaining: remaining - n
+    then
+        return fs_done()
 
 /// The Writer side, behind handle.write("x = {x}\n"): a failure is kept for has_failed, and the bytes are dropped.
 /// :param data: The first byte to write.
 /// :param count: How many bytes to write.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine FileHandle.write_bytes(me: @Me, data: @Byte, count: USize) -> Void
     wrote: Result[Unit, FsError] = me.write_all_result(data, count)
-    branch wrote.is_success()
-        ? return()
-        : continue
+    if wrote.is_success()
+        return
     me.failed.poke(true)
-    return()
+    return
 
 /// Whether a write through the Writer side (write_bytes) failed.
 /// :returns: True once a `write_bytes` has failed. Nothing clears it.
 routine FileHandle.has_failed(me: @Me) -> Bool
-    return(me.failed.peek())
+    return me.failed.peek()
 
 // -- paths (no OS calls) -----------------------------------------------------------------
 //
@@ -379,28 +349,28 @@ routine FileHandle.has_failed(me: @Me) -> Bool
 /// Whether b is a path separator: '/' or '\' on Windows.
 /// :param b: The byte to test.
 /// :returns: True for '/' and '\'.
-#target(os: "windows")
+@target(os: "windows")
 routine is_separator(b: Byte) -> Bool
-    return(b.eq(b'/').bitor(b.eq(b'\\')))
+    return b == b'/' or b == b'\\'
 
 /// Whether b is a path separator: '/' on Linux and macOS.
 /// :param b: The byte to test.
 /// :returns: True for '/'.
-#target(os: ("linux", "macos"))
+@target(os: ("linux", "macos"))
 routine is_separator(b: Byte) -> Bool
-    return(b.eq(b'/'))
+    return b == b'/'
 
 /// The separator the OS writes.
 /// :returns: '\' on Windows.
-#target(os: "windows")
+@target(os: "windows")
 routine path_separator() -> Byte
-    return(b'\\')
+    return b'\\'
 
 /// The separator the OS writes.
 /// :returns: '/' on Linux and macOS.
-#target(os: ("linux", "macos"))
+@target(os: ("linux", "macos"))
 routine path_separator() -> Byte
-    return(b'/')
+    return b'/'
 
 /// a and b with a separator between them (none added when a is empty or already ends with one), in memory from
 /// alloc. Drop it.
@@ -409,60 +379,51 @@ routine path_separator() -> Byte
 /// :param alloc: The allocator for the result.
 /// :returns: The joined path.
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
-#track_caller
-#expensive("allocates the joined path")
+@track_caller
+@expensive("allocates the joined path")
 routine join_path(a: Span[Byte], b: Span[Byte], alloc: @MemoryManager) -> Memory[Byte]
-    branch a.is_empty()
-        ? build(true)
-        : build(is_separator(a.byte_at(a.count().sub(1)).bits()))
-
-    block build(ends: Bool)
-        sep: USize = ends
-            ? 0
-            : 1
-        prefix_count: USize = a.count().add(sep)
-        count: USize = prefix_count.add(b.count())
-        memory: Memory[Byte] = Memory[Byte].construct(count: count.max(1), manager: alloc)
-        buffer: @Byte = memory.data
-        buffer.copy(src: a.data, count: a.count())
-        branch ends
-            ? tail(memory, sep, count)
-            : continue
-        buffer.stride(a.count()).poke(path_separator())
-        jump tail(memory, sep, count)
-
-    block tail(memory: Memory[Byte], sep: USize, count: USize)
-        memory.data.stride(a.count().add(sep)).copy(src: b.data, count: b.count())
-        return(memory.with_count(count))
+    ends: Bool = when
+        a.is_empty() => true
+        else => is_separator(a.byte_at(a.count() - 1).bits())
+    sep: USize = when
+        ends => 0
+        else => 1
+    prefix_count: USize = a.count() + sep
+    count: USize = prefix_count + b.count()
+    memory: Memory[Byte] = Memory[Byte].construct(count: count.max(1), manager: alloc)
+    buffer: @Byte = memory.data
+    buffer.copy(src: a.data, count: a.count())
+    if ends
+        memory.data.stride(a.count() + sep).copy(src: b.data, count: b.count())
+        return memory.with_count(count)
+    buffer.stride(a.count()).poke(path_separator())
+    memory.data.stride(a.count() + sep).copy(src: b.data, count: b.count())
+    return memory.with_count(count)
 
 /// Where path's last component ends, trailing separators left out.
 /// :param path: The path to look at.
 /// :returns: The index just past the component's last byte, 0 when `path` is empty or only separators.
 private routine name_end(path: Span[Byte]) -> USize
-    jump trim(path.count())
-
-    block trim(end: USize)
-        branch end.eq(0)
-            ? return(0)
-            : continue
-        branch is_separator(path.byte_at(end.sub(1)).bits())
-            ? trim(end.sub(1))
-            : return(end)
+    while end != 0 with end: USize = path.count()
+        if is_separator(path.byte_at(end - 1).bits())
+            continue with end: end - 1
+        else
+            return end
+    then
+        return 0
 
 /// Where the component that ends at end starts.
 /// :param path: The path to look at.
 /// :param end: Where the component ends, from {name_end}.
 /// :returns: The index just after the separator before the component, or 0 when there is none.
 private routine name_start(path: Span[Byte], end: USize) -> USize
-    jump find(end)
-
-    block find(i: USize)
-        branch i.eq(0)
-            ? return(0)
-            : continue
-        branch is_separator(path.byte_at(i.sub(1)).bits())
-            ? return(i)
-            : find(i.sub(1))
+    while i != 0 with i: USize = end
+        if is_separator(path.byte_at(i - 1).bits())
+            return i
+        else
+            continue with i: i - 1
+    then
+        return 0
 
 /// The last component: "/a/b/file.txt" gives "file.txt", "/a/b/" gives "b".
 /// :param path: The path to look at.
@@ -470,7 +431,7 @@ private routine name_start(path: Span[Byte], end: USize) -> USize
 routine file_name(path: Span[Byte]) -> Span[Byte]
     end: USize = name_end(path)
     start: USize = name_start(path, end)
-    return(path.slice(start, end))
+    return path.slice(start, end)
 
 /// The directory part: "/a/b/c" gives "/a/b", "a/b" gives "a", "file.txt" gives "", and "/" stays "/".
 /// :param path: The path to look at.
@@ -479,40 +440,36 @@ routine parent_path(path: Span[Byte]) -> Span[Byte]
     local end: USize = name_end(path)
 
     start: USize = name_start(path, end)
-    branch start.eq(0)
-        ? root()
-        : trim(start)
-
-    // Separators before the name go too, but a leading root separator stays.
-    block trim(i: USize)
-        branch i.eq(0)
-            ? return(path.slice(start: 0, end: 1))
-            : continue
-        branch is_separator(path.byte_at(i.sub(1)).bits())
-            ? trim(i.sub(1))
-            : return(path.slice(start: 0, end: i))
-
-    // No separator before the name: the root if path is only separators, else nothing.
-    block root()
-        branch end.eq(0).bitand(path.is_empty().bitnot())
-            ? return(path.slice(start: 0, end: 1))
-            : return(path.slice(start: 0, end: 0))
+    if start == 0
+        // Separators before the name go too, but a leading root separator stays.
+        // No separator before the name: the root if path is only separators, else nothing.
+        if end == 0 and not path.is_empty()
+            return path.slice(start: 0, end: 1)
+        else
+            return path.slice(start: 0, end: 0)
+    else
+        while i != 0 with i: USize = start
+            if is_separator(path.byte_at(i - 1).bits())
+                continue with i: i - 1
+            else
+                return path.slice(start: 0, end: i)
+        then
+            return path.slice(start: 0, end: 1)
 
 /// The last '.' of a name after its first character, or 0: a hidden file's leading dot isn't an extension.
 /// :param name: The file name to look at.
 /// :returns: The index of that dot, or 0 when there is none.
 private routine last_dot(name: Span[Byte]) -> USize
-    branch name.count().lt(2)
-        ? return(0)
-        : look(name.count().sub(1))
-
-    block look(i: USize)
-        branch i.eq(0)
-            ? return(0)
-            : continue
-        branch name.byte_at(i).eq(46)
-            ? return(i)
-            : look(i.sub(1))
+    if name.count() < 2
+        return 0
+    else
+        while i != 0 with i: USize = name.count() - 1
+            if name.byte_at(i) == 46
+                return i
+            else
+                continue with i: i - 1
+        then
+            return 0
 
 /// The name without its extension: "file.txt" gives "file", "archive.tar.gz" gives "archive.tar".
 /// :param path: The path whose last component is used.
@@ -520,9 +477,10 @@ private routine last_dot(name: Span[Byte]) -> USize
 routine file_stem(path: Span[Byte]) -> Span[Byte]
     name: Span[Byte] = file_name(path)
     dot: USize = last_dot(name)
-    branch dot.eq(0)
-        ? return(name)
-        : return(name.slice(start: 0, end: dot))
+    if dot == 0
+        return name
+    else
+        return name.slice(start: 0, end: dot)
 
 /// The extension without its dot: "file.txt" gives "txt", "file" and ".hidden" give "".
 /// :param path: The path whose last component is used.
@@ -530,25 +488,27 @@ routine file_stem(path: Span[Byte]) -> Span[Byte]
 routine file_extension(path: Span[Byte]) -> Span[Byte]
     name: Span[Byte] = file_name(path)
     dot: USize = last_dot(name)
-    branch dot.eq(0)
-        ? return(name.slice(start: 0, end: 0))
-        : return(name.slice(start: dot.add(1), end: name.count()))
+    if dot == 0
+        return name.slice(start: 0, end: 0)
+    else
+        return name.slice(start: dot + 1, end: name.count())
 
 // -- memory-mapped files -----------------------------------------------------------------
 
 /// A mapping of nothing: what an empty file, or a range past the end, maps to.
 /// :returns: A mapping with a null base and a count of 0.
 routine Mapping.empty() -> Me
-    return(Me(base: null, delta: 0, count: 0))
+    return Me(base: null, delta: 0, count: 0)
 
 /// The first byte asked for (null for an empty mapping).
 /// :returns: `base` plus `delta`, or null.
 routine Mapping.data(me: Me) -> @Byte
-    branch me.base.is_null()
-        ? return(null)
-        : return(me.base.to[@Byte]().stride(me.delta))
+    if me.base.is_null()
+        return null
+    else
+        return me.base.to[@Byte]().stride(me.delta)
 
 /// The number of bytes mapped, from `data()` on.
 /// :returns: The byte count, 0 for an empty mapping.
 routine Mapping.count(me: Me) -> USize
-    return(me.count)
+    return me.count

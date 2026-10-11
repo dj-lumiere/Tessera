@@ -810,56 +810,47 @@ routine B64.erf(me: Me) -> Me
     local z: Me = me.abs()
     local ux: U64 = z.bits()
 
-    saturate: Bool = ux.gt(0x4017AFB48DC96626)  // |x| > 0x1.7afb48dc96626p+2
-    tiny: Bool = z.lt(0x1p-61)
+    saturate: Bool = ux > 0x4017AFB48DC96626
+
+    // |x| > 0x1.7afb48dc96626p+2
     when
-        saturate => saturate()
-        tiny => tiny()
-        else => fast()
-
-    // erf(x) rounds to +-1 (also infinities and NaN)
-    block saturate()
-        os: Me = Me.copysign(1.0, me)
-        nan: Bool = ux.gt(0x7FF0000000000000)
-        infinite: Bool = ux.eq(0x7FF0000000000000)
-        when
-            nan => return(me.add(me))
-            infinite => return(os)
-            else => return(os.sub(os.mul(0x1p-54)))
-
-    // |x| < 2^-61: erf(x) = 2/sqrt(pi) x + O(x^3), the O(x^3) term below 2^-123 of the main one
-    block tiny()
-        zero: Bool = me.eq(0.0)
-        branch zero  // keeps the sign of -0
-            ? return(me)
-            : continue
-        y: Me = me.mul(0x1.20dd750429b6dp+0)
-        sx: Me = me.mul(0x1p106)  // out of the subnormal range
-        p: CmF64ErfDd = cm_b64_erf_a_mul(a: 0x1.20dd750429b6dp+0, b: sx)
-        l0: Me = Me.mul_add(0x1.1ae3a914fed8p-56, a: sx, b: p.lo)
-        // the residual h + l - y: h - y 2^106 is exact since h and y are very close
-        l: Me = l0.add(p.hi.sub(y.mul(0x1p106)))
-        return(l.mul_add(a: 0x1p-106, b: y))
-
-    block fast()
-        err: Me = cm_b64_erf_fast_err(z)
-        f: CmF64ErfDd = cm_b64_erf_fast(z)
-        sign: U64 = me.bits().bitand(0x8000000000000000)
-        u: Me = Me.from_bits(f.hi.bits().bitxor(sign))
-        v: Me = Me.from_bits(f.lo.bits().bitxor(sign))
-        left: Me = u.add(err.mul_add(a: u.neg(), b: v))
-        right: Me = u.add(err.mul_add(a: u, b: v))
-        sure: Bool = left.eq(right)
-        branch sure
-            ? return(left)
-            : accurate()
-
-    block accurate()
-        a: CmF64ErfDd = cm_b64_erf_accurate_exact(z)
-        positive: Bool = me.ge(0.0)
-        branch positive
-            ? return(a.hi.add(a.lo))
-            : return(a.hi.neg().add(a.lo.neg()))
+        saturate =>
+            // erf(x) rounds to +-1 (also infinities and NaN)
+            os: Me = Me.copysign(1.0, me)
+            nan: Bool = ux > 0x7FF0000000000000
+            when
+                nan => return me + me
+                ux == 0x7FF0000000000000 => return os
+                else => return os - os * 5.551115123125783e-17
+        z < 4.336808689942018e-19 =>
+            // |x| < 2^-61: erf(x) = 2/sqrt(pi) x + O(x^3), the O(x^3) term below 2^-123 of the main one
+            if me == 0.0
+                // keeps the sign of -0
+                return me
+            y: Me = me * 1.1283791670955126
+            sx: Me = me * 8.112963841460668e31
+            // out of the subnormal range
+            p: CmF64ErfDd = cm_b64_erf_a_mul(a: 1.1283791670955126, b: sx)
+            l0: Me = Me.mul_add(1.533545961316588e-17, a: sx, b: p.lo)
+            // the residual h + l - y: h - y 2^106 is exact since h and y are very close
+            l: Me = l0 + (p.hi - y * 8.112963841460668e31)
+            return l.mul_add(a: 1.232595164407831e-32, b: y)
+        else =>
+            err: Me = cm_b64_erf_fast_err(z)
+            f: CmF64ErfDd = cm_b64_erf_fast(z)
+            sign: U64 = me.bits() & 0x8000000000000000
+            u: Me = Me.from_bits(f.hi.bits() ^ sign)
+            v: Me = Me.from_bits(f.lo.bits() ^ sign)
+            left: Me = u + err.mul_add(a: -u, b: v)
+            right: Me = u + err.mul_add(a: u, b: v)
+            if left == right
+                return left
+            else
+                a: CmF64ErfDd = cm_b64_erf_accurate_exact(z)
+                if me >= 0.0
+                    return a.hi + a.lo
+                else
+                    return -a.hi + -a.lo
 
 // -- error-free transforms -----------------------------------------------------
 
@@ -868,29 +859,29 @@ routine B64.erf(me: Me) -> Me
 /// :param b: The smaller addend.
 /// :returns: The rounded sum and its exact error.
 routine cm_b64_erf_fast_two_sum(a: B64, b: B64) -> CmF64ErfDd
-    hi: B64 = a.add(b)
-    e: B64 = hi.sub(a)
-    return(CmF64ErfDd(hi: hi, lo: b.sub(e)))
+    hi: B64 = a + b
+    e: B64 = hi - a
+    return CmF64ErfDd(hi: hi, lo: b - e)
 
 /// a + b as a double-double for any magnitudes (Knuth's two-sum).
 /// :param a: The first addend.
 /// :param b: The second addend.
 /// :returns: The rounded sum and its exact error.
 routine cm_b64_erf_two_sum(a: B64, b: B64) -> CmF64ErfDd
-    hi: B64 = a.add(b)
-    aa: B64 = hi.sub(b)
-    bb: B64 = hi.sub(aa)
-    da: B64 = a.sub(aa)
-    db: B64 = b.sub(bb)
-    return(CmF64ErfDd(hi: hi, lo: da.add(db)))
+    hi: B64 = a + b
+    aa: B64 = hi - b
+    bb: B64 = hi - aa
+    da: B64 = a - aa
+    db: B64 = b - bb
+    return CmF64ErfDd(hi: hi, lo: da + db)
 
 /// The exact product a b as a double-double.
 /// :param a: The first factor.
 /// :param b: The second factor.
 /// :returns: The rounded product and its exact error.
 routine cm_b64_erf_a_mul(a: B64, b: B64) -> CmF64ErfDd
-    hi: B64 = a.mul(b)
-    return(CmF64ErfDd(hi: hi, lo: b64_mul_error(x: a, y: b, p: hi)))
+    hi: B64 = a * b
+    return CmF64ErfDd(hi: hi, lo: b64_mul_error(x: a, y: b, p: hi))
 
 // -- fast path -----------------------------------------------------------------
 
@@ -898,25 +889,20 @@ routine cm_b64_erf_a_mul(a: B64, b: B64) -> CmF64ErfDd
 /// :param z: The argument.
 /// :returns: The error bound.
 routine cm_b64_erf_fast_err(z: B64) -> B64
-    small: Bool = z.lt(0.0625)
-    branch small
-        ? return(0x1.78p-69)
-        : return(0x1.11p-69)
+    if z < 0.0625
+        return 2.4881592825595072e-21
+    else
+        return 1.8065624578158124e-21
 
 /// A double-double approximation of erf(z) for 0 <= z <= 0x1.7afb48dc96626p+2, relative error bounded
 /// by cm_b64_erf_fast_err(z).
 /// :param z: The argument.
 /// :returns: The approximation of erf(`z`) as a double-double.
 routine cm_b64_erf_fast(z: B64) -> CmF64ErfDd
-    small: Bool = z.lt(0.0625)
-    branch small
-        ? odd()
-        : table()
-
-    // a degree-11 minimax polynomial on [0, 1/16], relative error 2^-68.935
-    block odd()
+    if z < 0.0625
+        // a degree-11 minimax polynomial on [0, 1/16], relative error 2^-68.935
         z2: CmF64ErfDd = cm_b64_erf_a_mul(a: z, b: z)
-        z4: B64 = z2.hi.mul(z2.hi)
+        z4: B64 = z2.hi * z2.hi
         q9: B64 = cm_b64_erf_c0(7).mul_add(a: z2.hi, b: cm_b64_erf_c0(6))
         q5a: B64 = cm_b64_erf_c0(5).mul_add(a: z2.hi, b: cm_b64_erf_c0(4))
         q5: B64 = q9.mul_add(a: z4, b: q5a)
@@ -924,50 +910,49 @@ routine cm_b64_erf_fast(z: B64) -> CmF64ErfDd
         t: CmF64ErfDd = cm_b64_erf_a_mul(a: z2.hi, b: q5)
         s: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: cm_b64_erf_c0(2), b: t.hi)
         h: B64 = s.hi
-        l: B64 = s.lo.add(t.lo.add(cm_b64_erf_c0(3)))
+        l: B64 = s.lo + (t.lo + cm_b64_erf_c0(3))
         // C0[0] + C0[1] + (z2h + z2l) (h + l)
         t2: CmF64ErfDd = cm_b64_erf_a_mul(a: z2.hi, b: h)
-        tl: B64 = t2.lo.add(z2.hi.mul_add(a: l, b: cm_b64_erf_c0(1)))
+        tl: B64 = t2.lo + z2.hi.mul_add(a: l, b: cm_b64_erf_c0(1))
         s2: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: cm_b64_erf_c0(0), b: t2.hi)
-        l2: B64 = s2.lo.add(z2.lo.mul_add(a: h, b: tl))
+        l2: B64 = s2.lo + z2.lo.mul_add(a: h, b: tl)
         // times z
         t3: CmF64ErfDd = cm_b64_erf_a_mul(a: s2.hi, b: z)
-        return(CmF64ErfDd(hi: t3.hi, lo: l2.mul_add(a: z, b: t3.lo)))
-
-    // i/16 <= z < (i + 1)/16: a degree-10 polynomial in w = z - (i/16 + 1/32), |w| <= 1/32
-    block table()
-        v: B64 = z.mul(16.0).floor()
-        iu: U64 = z.mul(16.0).to[U64]()
+        return CmF64ErfDd(hi: t3.hi, lo: l2.mul_add(a: z, b: t3.lo))
+    else
+        // i/16 <= z < (i + 1)/16: a degree-10 polynomial in w = z - (i/16 + 1/32), |w| <= 1/32
+        v: B64 = (z * 16.0).floor()
+        iu: U64 = (z * 16.0).to[U64]()
         i: USize = iu.to[USize]()
-        w: B64 = z.sub(0.03125).sub(v.mul(0.0625))  // both subtractions are exact
-        c: USize = i.sub(1).mul(13)
-        w2: B64 = w.mul(w)
-        w4: B64 = w2.mul(w2)
+        w: B64 = z - 0.03125 - v * 0.0625
+        // both subtractions are exact
+        c: USize = (i - 1) * 13
+        w2: B64 = w * w
+        w4: B64 = w2 * w2
         q9: B64 = cm_b64_erf_c(base: c, k: 12).mul_add(a: w, b: cm_b64_erf_c(base: c, k: 11))
         q7a: B64 = cm_b64_erf_c(base: c, k: 10).mul_add(a: w, b: cm_b64_erf_c(base: c, k: 9))
         q5: B64 = cm_b64_erf_c(base: c, k: 8).mul_add(a: w, b: cm_b64_erf_c(base: c, k: 7))
         // q3 = C[c+5] + w C[c+6]
-        q3: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: cm_b64_erf_c(base: c, k: 5),
-            b: w.mul(cm_b64_erf_c(base: c, k: 6)))
+        q3: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: cm_b64_erf_c(base: c, k: 5), b: w * cm_b64_erf_c(base: c, k: 6))
         q7: B64 = q9.mul_add(a: w2, b: q7a)
         // q3 += q5 w2, then q3 += q7 w4
-        s: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: q3.hi, b: q5.mul(w2))
-        q3l: B64 = q3.lo.add(s.lo)
-        s2: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: s.hi, b: q7.mul(w4))
-        q3l2: B64 = q3l.add(s2.lo)
+        s: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: q3.hi, b: q5 * w2)
+        q3l: B64 = q3.lo + s.lo
+        s2: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: s.hi, b: q7 * w4)
+        q3l2: B64 = q3l + s2.lo
         // q2 = C[c+4] + w q3
         t: CmF64ErfDd = cm_b64_erf_a_mul(a: w, b: s2.hi)
         q2: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: cm_b64_erf_c(base: c, k: 4), b: t.hi)
-        q2l: B64 = q2.lo.add(w.mul_add(a: q3l2, b: t.lo))
+        q2l: B64 = q2.lo + w.mul_add(a: q3l2, b: t.lo)
         // C[c+2] + C[c+3] + w q2
         t2: CmF64ErfDd = cm_b64_erf_a_mul(a: w, b: q2.hi)
         s3: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: cm_b64_erf_c(base: c, k: 2), b: t2.hi)
-        l: B64 = s3.lo.add(t2.lo.add(w.mul_add(a: q2l, b: cm_b64_erf_c(base: c, k: 3))))
+        l: B64 = s3.lo + (t2.lo + w.mul_add(a: q2l, b: cm_b64_erf_c(base: c, k: 3)))
         // C[c] + C[c+1] + w (h + l)
         t3: CmF64ErfDd = cm_b64_erf_a_mul(a: w, b: s3.hi)
         tl: B64 = w.mul_add(a: l, b: t3.lo)
         s4: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: cm_b64_erf_c(base: c, k: 0), b: t3.hi)
-        return(CmF64ErfDd(hi: s4.hi, lo: s4.lo.add(tl.add(cm_b64_erf_c(base: c, k: 1)))))
+        return CmF64ErfDd(hi: s4.hi, lo: s4.lo + (tl + cm_b64_erf_c(base: c, k: 1)))
 
 // -- accurate path -------------------------------------------------------------
 
@@ -976,145 +961,94 @@ routine cm_b64_erf_fast(z: B64) -> CmF64ErfDd
 /// :param z: The argument.
 /// :returns: erf(`z`) as a double-double.
 routine cm_b64_erf_accurate_exact(z: B64) -> CmF64ErfDd
-    jump scan(0)
-
-    block scan(k: USize)
-        more: Bool = k.lt(5)
-        branch more
-            ? check(k)
-            : below_eighth()
-
-    block check(k: USize)
-        hit: Bool = z.eq(cm_b64_erf_accurate_exc(i: k, k: 0))
-        branch hit
-            ? return(CmF64ErfDd(hi: cm_b64_erf_accurate_exc(i: k, k: 1),
-                lo: cm_b64_erf_accurate_exc(i: k, k: 2)))
-            : scan(k.add(1))
-
-    block below_eighth()
-        small: Bool = z.lt(0.125)
-        branch small
-            ? search(0, 171)
-            : return(cm_b64_erf_accurate(z))
-
-    // binary search in the sorted table of hard cases below 1/8
-    block search(i: USize, j: USize)
-        open: Bool = i.add(1).lt(j)
-        branch open
-            ? bisect(i, j)
-            : found(i)
-
-    block bisect(i: USize, j: USize)
-        m: USize = i.add(j).div(2)
-        below: Bool = cm_b64_erf_tiny_exc(i: m, k: 0).le(z)
-        branch below
-            ? search(m, j)
-            : search(i, m)
-
-    block found(i: USize)
-        hit: Bool = z.eq(cm_b64_erf_tiny_exc(i, k: 0))
-        branch hit
-            ? return(CmF64ErfDd(hi: cm_b64_erf_tiny_exc(i, k: 1), lo: cm_b64_erf_tiny_exc(i, k: 2)))
-            : return(cm_b64_erf_accurate(z))
+    each k in 0 til 5
+        if z == cm_b64_erf_accurate_exc(i: k, k: 0)
+            return CmF64ErfDd(hi: cm_b64_erf_accurate_exc(i: k, k: 1), lo: cm_b64_erf_accurate_exc(i: k, k: 2))
+        else
+            continue
+    if z < 0.125
+        // binary search in the sorted table of hard cases below 1/8
+        while i + 1 < j with i: USize = 0, j: USize = 171
+            m: USize = (i + j) / 2
+            if cm_b64_erf_tiny_exc(i: m, k: 0) <= z
+                continue with i: m, j: j
+            else
+                continue with i: i, j: m
+        then
+            if z == cm_b64_erf_tiny_exc(i, k: 0)
+                return CmF64ErfDd(hi: cm_b64_erf_tiny_exc(i, k: 1), lo: cm_b64_erf_tiny_exc(i, k: 2))
+            else
+                return cm_b64_erf_accurate(z)
+    else
+        return cm_b64_erf_accurate(z)
 
 /// An accurate double-double erf(z) (about 106 bits) for 2^-61 <= z <= 0x1.7afb48dc96626p+2, without
 /// the hard-case tables.
 /// :param z: The argument.
 /// :returns: erf(`z`) as a double-double.
 routine cm_b64_erf_accurate(z: B64) -> CmF64ErfDd
-    small: Bool = z.lt(0.125)
-    branch small
-        ? return(cm_b64_erf_accurate_tiny(z))
-        : table()
-
-    // i/8 <= z < (i + 1)/8: a degree-18 polynomial in w = z - (i/8 + 1/16), |w| <= 1/16
-    block table()
-        v: B64 = z.mul(8.0).floor()
-        iu: U64 = z.mul(8.0).to[U64]()
+    if z < 0.125
+        return cm_b64_erf_accurate_tiny(z)
+    else
+        // i/8 <= z < (i + 1)/8: a degree-18 polynomial in w = z - (i/8 + 1/16), |w| <= 1/16
+        v: B64 = (z * 8.0).floor()
+        iu: U64 = (z * 8.0).to[U64]()
         i: USize = iu.to[USize]()
-        w: B64 = z.sub(0.0625).sub(v.mul(0.125))
-        p: USize = i.sub(1).mul(27)
-        jump high(p, w, 17, cm_b64_erf_c2(base: p, k: 26))
-
-    // degrees 17 down to 11 in double
-    block high(p: USize, w: B64, j: USize, h: B64)
-        more: Bool = j.gt(10)
-        branch more
-            ? high(p, w, j.sub(1), h.mul_add(a: w, b: cm_b64_erf_c2(base: p, k: j.add(8))))
-            : middle(p, w, j, h, 0.0)
-
-    // degrees 10 down to 8: (h + l) w + C2[p+8+j]
-    block middle(p: USize, w: B64, j: USize, h: B64, l: B64)
-        more: Bool = j.gt(7)
-        branch more
-            ? middle_step(p, w, j, h, l)
-            : low(p, w, 8, h, l)
-
-    block middle_step(p: USize, w: B64, j: USize, h: B64, l: B64)
-        t: CmF64ErfDd = cm_b64_erf_a_mul(a: h, b: w)
-        tl: B64 = l.mul_add(a: w, b: t.lo)
-        s: CmF64ErfDd = cm_b64_erf_two_sum(a: cm_b64_erf_c2(base: p, k: j.add(8)), b: t.hi)
-        jump middle(p, w, j.sub(1), s.hi, s.lo.add(tl))
-
-    // degrees 7 down to 0 have double-double coefficients C2[p+2j] + C2[p+2j+1]
-    block low(p: USize, w: B64, j: USize, h: B64, l: B64)
-        done: Bool = j.eq(0)
-        branch done
-            ? return(CmF64ErfDd(hi: h, lo: l))
-            : low_step(p, w, j.sub(1), h, l)
-
-    block low_step(p: USize, w: B64, j: USize, h: B64, l: B64)
-        t: CmF64ErfDd = cm_b64_erf_a_mul(a: h, b: w)
-        tl: B64 = l.mul_add(a: w, b: t.lo)
-        s: CmF64ErfDd = cm_b64_erf_two_sum(a: cm_b64_erf_c2(base: p, k: j.mul(2)), b: t.hi)
-        cl: B64 = cm_b64_erf_c2(base: p, k: j.mul(2).add(1))
-        jump low(p, w, j, s.hi, s.lo.add(cl.add(tl)))
+        w: B64 = z - 0.0625 - v * 0.125
+        p: USize = (i - 1) * 27
+        // degrees 17 down to 11 in double
+        while j > 10 with j: USize = 17, h: B64 = cm_b64_erf_c2(base: p, k: 26)
+            continue with j: j - 1, h: h.mul_add(a: w, b: cm_b64_erf_c2(base: p, k: j + 8))
+        then
+            // degrees 10 down to 8: (h + l) w + C2[p+8+j]
+            while j2 > 7 with j2: USize = j, h2: B64 = h, l: B64 = 0.0
+                t: CmF64ErfDd = cm_b64_erf_a_mul(a: h2, b: w)
+                tl: B64 = l.mul_add(a: w, b: t.lo)
+                s: CmF64ErfDd = cm_b64_erf_two_sum(a: cm_b64_erf_c2(base: p, k: j2 + 8), b: t.hi)
+                continue with j2: j2 - 1, h2: s.hi, l: s.lo + tl
+            then
+                // degrees 7 down to 0 have double-double coefficients C2[p+2j] + C2[p+2j+1]
+                j3: USize = 8
+                while j3 != 0 with h3: B64 = h2, l2: B64 = l
+                    j4: USize = j3 - 1
+                    t: CmF64ErfDd = cm_b64_erf_a_mul(a: h3, b: w)
+                    tl: B64 = l2.mul_add(a: w, b: t.lo)
+                    s: CmF64ErfDd = cm_b64_erf_two_sum(a: cm_b64_erf_c2(base: p, k: j4 * 2), b: t.hi)
+                    cl: B64 = cm_b64_erf_c2(base: p, k: j4 * 2 + 1)
+                    continue with h3: s.hi, l2: s.lo + (cl + tl)
+                then
+                    return CmF64ErfDd(hi: h3, lo: l2)
 
 /// An accurate double-double erf(z) for 2^-61 <= z < 1/8: an odd polynomial of degree 21 whose
 /// coefficients of degree 1 to 7 are double-double.
 /// :param z: The argument.
 /// :returns: erf(`z`) as a double-double.
 routine cm_b64_erf_accurate_tiny(z: B64) -> CmF64ErfDd
-    jump high(19, cm_b64_erf_tiny_p(14))
-
     // degrees 19 down to 13 in double: h z^2 + P[a/2+4]
-    block high(a: USize, h: B64)
-        more: Bool = a.gt(11)
-        branch more
-            ? high(a.sub(2), h.mul_add(a: z.mul(z), b: cm_b64_erf_tiny_p(a.div(2).add(4))))
-            : middle(a, h, 0.0)
-
-    // degrees 11 and 9: (h + l) z^2 + P[a/2+4]
-    block middle(a: USize, h: B64, l: B64)
-        more: Bool = a.gt(7)
-        branch more
-            ? middle_step(a, h, l)
-            : low(a, h, l)
-
-    block middle_step(a: USize, h: B64, l: B64)
-        t: CmF64ErfDd = cm_b64_erf_a_mul(a: h, b: z)
-        tl: B64 = l.mul_add(a: z, b: t.lo)
-        m: CmF64ErfDd = cm_b64_erf_a_mul(a: t.hi, b: z)
-        l2: B64 = tl.mul_add(a: z, b: m.lo)
-        s: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: cm_b64_erf_tiny_p(a.div(2).add(4)), b: m.hi)
-        jump middle(a.sub(2), s.hi, l2.add(s.lo))
-
-    // degrees 7 down to 1 have double-double coefficients P[a-1] + P[a]
-    block low(a: USize, h: B64, l: B64)
-        t: CmF64ErfDd = cm_b64_erf_a_mul(a: h, b: z)
-        tl: B64 = l.mul_add(a: z, b: t.lo)
-        m: CmF64ErfDd = cm_b64_erf_a_mul(a: t.hi, b: z)
-        l2: B64 = tl.mul_add(a: z, b: m.lo)
-        s: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: cm_b64_erf_tiny_p(a.sub(1)), b: m.hi)
-        l3: B64 = l2.add(cm_b64_erf_tiny_p(a).add(s.lo))
-        last: Bool = a.eq(1)
-        branch last
-            ? times_z(s.hi, l3)
-            : low(a.sub(2), s.hi, l3)
-
-    block times_z(h: B64, l: B64)
-        t: CmF64ErfDd = cm_b64_erf_a_mul(a: h, b: z)
-        return(CmF64ErfDd(hi: t.hi, lo: l.mul_add(a: z, b: t.lo)))
+    while a > 11 with a: USize = 19, h: B64 = cm_b64_erf_tiny_p(14)
+        continue with a: a - 2, h: h.mul_add(a: z * z, b: cm_b64_erf_tiny_p(a / 2 + 4))
+    then
+        // degrees 11 and 9: (h + l) z^2 + P[a/2+4]
+        while a2 > 7 with a2: USize = a, h2: B64 = h, l: B64 = 0.0
+            t: CmF64ErfDd = cm_b64_erf_a_mul(a: h2, b: z)
+            tl: B64 = l.mul_add(a: z, b: t.lo)
+            m: CmF64ErfDd = cm_b64_erf_a_mul(a: t.hi, b: z)
+            l2: B64 = tl.mul_add(a: z, b: m.lo)
+            s: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: cm_b64_erf_tiny_p(a2 / 2 + 4), b: m.hi)
+            continue with a2: a2 - 2, h2: s.hi, l: l2 + s.lo
+        then
+            // degrees 7 down to 1 have double-double coefficients P[a-1] + P[a]
+            while a3 != 1 with a3: USize = a2, h3: B64 = h2, l2: B64 = l
+                t: CmF64ErfDd = cm_b64_erf_a_mul(a: h3, b: z)
+                tl: B64 = l2.mul_add(a: z, b: t.lo)
+                m: CmF64ErfDd = cm_b64_erf_a_mul(a: t.hi, b: z)
+                l22: B64 = tl.mul_add(a: z, b: m.lo)
+                s: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: cm_b64_erf_tiny_p(a3 - 1), b: m.hi)
+                l3: B64 = l22 + (cm_b64_erf_tiny_p(a3) + s.lo)
+                continue with a3: a3 - 2, h3: s.hi, l2: l3
+            then
+                t2: CmF64ErfDd = cm_b64_erf_a_mul(a: s.hi, b: z)
+                return CmF64ErfDd(hi: t2.hi, lo: l3.mul_add(a: z, b: t2.lo))
 
 // -- table access --------------------------------------------------------------
 
@@ -1122,38 +1056,38 @@ routine cm_b64_erf_accurate_tiny(z: B64) -> CmF64ErfDd
 /// :param k: The entry's index.
 /// :returns: The entry as a B64.
 private routine cm_b64_erf_c0(k: USize) -> B64
-    return(B64.from_bits(CM_B64_ERF_C0.getitem(k)))
+    return B64.from_bits(CM_B64_ERF_C0.getitem(k))
 
 /// Coefficient k of the row starting at base in CM_B64_ERF_C.
 /// :param base: The index of the row's first coefficient.
 /// :param k: The coefficient's index within the row.
 /// :returns: The coefficient.
 private routine cm_b64_erf_c(base: USize, k: USize) -> B64
-    return(B64.from_bits(CM_B64_ERF_C.getitem(base.add(k))))
+    return B64.from_bits(CM_B64_ERF_C.getitem(base + k))
 
 /// Coefficient k of the row starting at base in CM_B64_ERF_C2.
 /// :param base: The index of the row's first coefficient.
 /// :param k: The coefficient's index within the row.
 /// :returns: The coefficient.
 private routine cm_b64_erf_c2(base: USize, k: USize) -> B64
-    return(B64.from_bits(CM_B64_ERF_C2.getitem(base.add(k))))
+    return B64.from_bits(CM_B64_ERF_C2.getitem(base + k))
 
 /// Entry k of CM_B64_ERF_TINY_P, the accurate path's odd polynomial on [0, 1/8].
 /// :param k: The entry's index.
 /// :returns: The entry as a B64.
 private routine cm_b64_erf_tiny_p(k: USize) -> B64
-    return(B64.from_bits(CM_B64_ERF_TINY_P.getitem(k)))
+    return B64.from_bits(CM_B64_ERF_TINY_P.getitem(k))
 
 /// Entry k of triple i in CM_B64_ERF_TINY_EXC.
 /// :param i: The triple's index.
 /// :param k: The entry's index within the triple.
 /// :returns: The entry as a B64.
 private routine cm_b64_erf_tiny_exc(i: USize, k: USize) -> B64
-    return(B64.from_bits(CM_B64_ERF_TINY_EXC.getitem(i.mul(3).add(k))))
+    return B64.from_bits(CM_B64_ERF_TINY_EXC.getitem(i * 3 + k))
 
 /// Entry k of triple i in CM_B64_ERF_ACCURATE_EXC.
 /// :param i: The triple's index.
 /// :param k: The entry's index within the triple.
 /// :returns: The entry as a B64.
 private routine cm_b64_erf_accurate_exc(i: USize, k: USize) -> B64
-    return(B64.from_bits(CM_B64_ERF_ACCURATE_EXC.getitem(i.mul(3).add(k))))
+    return B64.from_bits(CM_B64_ERF_ACCURATE_EXC.getitem(i * 3 + k))

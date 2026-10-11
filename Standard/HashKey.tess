@@ -29,7 +29,8 @@ private preset KEY_READY:   U32 = 2
 /// signature as "tessera_hash_key" to supply it: Standard/Os does with the OS's random source, and so does the stdlib
 /// on a target without an OS whose CPU has a random number instruction.
 /// :param key: The key to fill.
-#[external("c"), symbol("tessera_hash_key")]
+@external("c")
+@symbol("tessera_hash_key")
 private routine hash_key_source(key: @SipKey) -> Void
 
 /// 128 fresh secret random bits from the source the hash key comes from (`tessera_hash_key`), drawn anew on every
@@ -37,81 +38,73 @@ private routine hash_key_source(key: @SipKey) -> Void
 /// or anything else that wants entropy of its own.
 /// :returns: The random bits, as a key's two words.
 routine entropy_key() -> SipKey
-    claim key: @SipKey <- (k0: 0, k1: 0)
+    local key: @SipKey <- (k0: 0, k1: 0)
     hash_key_source(key)
-    return(key.peek())
+    return key.peek()
 
 /// The process's hash key, the one every stdlib `hash()` uses: drawn from `tessera_hash_key` the first time it is
 /// asked for, the same from then on. With an OS it is safe to ask from any thread: one draws it and the others wait
 /// for it.
 /// :returns: The 128-bit key.
-#[target(os: not "none"), inline]
+@target(os: not "none")
+@inline
 routine hash_key() -> SipKey
     state: U32 = HASH_KEY_STATE.peek_atomic_acquire()
-    ready: Bool = state.eq(KEY_READY)
-    branch ready
-        ? return(HASH_KEY.peek())
-        : draw()
-
-    block draw()
+    if state == KEY_READY
+        return HASH_KEY.peek()
+    else
         key: SipKey = draw_hash_key()
-        return(key)
+        return key
 
 /// Draws the key once: the thread that moves the state from undrawn to drawing asks the source, and every other one
 /// waits until the key is ready.
 /// :returns: The 128-bit key.
-#[target(os: not "none"), noinline]
+@target(os: not "none")
+@noinline
 private routine draw_hash_key() -> SipKey
-    claimed: Result[Unit, U32] = HASH_KEY_STATE.atomic_compare_exchange(expected: KEY_UNDRAWN,
-        new: KEY_DRAWING)
+    claimed: Result[Unit, U32] = HASH_KEY_STATE.atomic_compare_exchange(expected: KEY_UNDRAWN, new: KEY_DRAWING)
     when claimed
-        is Unit => fill()
-        is U32 => wait()
-
-    block fill()
-        hash_key_source(HASH_KEY)
-        HASH_KEY_STATE.poke_atomic_release(KEY_READY)
-        return(HASH_KEY.peek())
-
-    block wait()
-        state: U32 = HASH_KEY_STATE.peek_atomic_acquire()
-        ready: Bool = state.eq(KEY_READY)
-        branch ready
-            ? return(HASH_KEY.peek())
-            : wait()
+        is Unit =>
+            hash_key_source(HASH_KEY)
+            HASH_KEY_STATE.poke_atomic_release(KEY_READY)
+            return HASH_KEY.peek()
+        is U32 =>
+            while HASH_KEY_STATE.peek_atomic_acquire() != KEY_READY
+                pass
+            then
+                return HASH_KEY.peek()
 
 /// The process's hash key, the one every stdlib `hash()` uses: drawn from `tessera_hash_key` the first time it is
 /// asked for, the same from then on. Without an OS there is no thread to wait for, so a program whose interrupt
 /// handlers hash calls `hash_key()` once before it enables them.
 /// :returns: The 128-bit key.
-#[target(os: "none"), inline]
+@target(os: "none")
+@inline
 routine hash_key() -> SipKey
     state: U32 = HASH_KEY_STATE.peek_volatile()
-    ready: Bool = state.eq(KEY_READY)
-    branch ready
-        ? return(HASH_KEY.peek())
-        : draw()
-
-    block draw()
+    if state == KEY_READY
+        return HASH_KEY.peek()
+    else
         key: SipKey = draw_hash_key()
-        return(key)
+        return key
 
 /// Draws the key from the source and marks it ready.
 /// :returns: The 128-bit key.
-#[target(os: "none"), noinline]
+@target(os: "none")
+@noinline
 private routine draw_hash_key() -> SipKey
     hash_key_source(HASH_KEY)
     HASH_KEY_STATE.poke_volatile(KEY_READY)
-    return(HASH_KEY.peek())
+    return HASH_KEY.peek()
 
 /// Folds two hashes into one, for a value made of parts (a record's fields, a variant's case and payload): SipHash-2-4
 /// of their 16 bytes under the process's key, so the order of the parts counts.
 /// :param first: The hash of the first part.
 /// :param second: The hash of the second part.
 /// :returns: The combined hash.
-#inline
+@inline
 routine hash_combine(first: U64, second: U64) -> U64
-    return(siphash24(low: first, high: second, key: hash_key()))
+    return siphash24(low: first, high: second, key: hash_key())
 
 // -- the key from a random number instruction, without an OS -------------------------------------------------------
 //
@@ -120,45 +113,48 @@ routine hash_combine(first: U64, second: U64) -> U64
 
 /// How many 16-bit samples the key is conditioned from: 512 bits, so a source with even a quarter of a bit of
 /// entropy per bit gives the 128-bit key its full strength.
-#[target(arch: "riscv32", os: "none"), feature("zkr")]
+@target(arch: "riscv32", os: "none")
+@feature("zkr")
 private preset SEED_SAMPLES: USize = 32
 
 /// RDRAND once: the random value, and 1 when the CPU had one ready (the carry flag), 0 when not.
 /// :returns: The value and 1, or an unspecified value and 0 when the CPU had none ready.
-#[target(arch: "x86_64", os: "none"), feature("rdrnd"), external("asm"), clobbers(FLAGS)]
+@target(arch: "x86_64", os: "none")
+@feature("rdrnd")
+@external("asm")
+@clobbers(FLAGS)
 private routine rdrand_step() -> (U64, U8)
     block entry()
         rdrand[U64](R0)  // rdrand rax
         setc[U8](R1)  // setc cl
-        return((R0, R1))
+        return (R0, R1)
 
 /// One 64-bit word from RDRAND, retried up to 10 times as Intel's guide says (a failure that persists means a broken
 /// generator).
 /// :returns: The random word.
 /// :throws: Crashes with `InvalidValueError` when RDRAND fails 10 times in a row.
-#[target(arch: "x86_64", os: "none"), feature("rdrnd")]
+@target(arch: "x86_64", os: "none")
+@feature("rdrnd")
 private routine rdrand_word() -> U64
-    jump draw(0)
-
-    block draw(attempt: U32)
-        gave_up: Bool = attempt.ge(10)
-        branch gave_up
-            ? crash(name: "InvalidValueError", message: "RDRAND gave no random value in 10 tries.")
-            : continue
+    each attempt in 0 til 10
         value, ok = rdrand_step()
-        got: Bool = ok.ne(0)
-        branch got
-            ? return(value)
-            : draw(attempt.add(1))
+        if ok != 0
+            return value
+        else
+            continue
+    then
+        crash(name: "InvalidValueError", message: "RDRAND gave no random value in 10 tries.")
 
 /// The hash key from RDRAND: two 64-bit words.
 /// :param key: The key to fill.
 /// :throws: Crashes with `InvalidValueError` when RDRAND fails 10 times in a row.
-#[target(arch: "x86_64", os: "none"), feature("rdrnd"), export("tessera_hash_key")]
+@target(arch: "x86_64", os: "none")
+@feature("rdrnd")
+@export("tessera_hash_key")
 routine rdrand_hash_key(key: @SipKey) -> Void
     rdrand_word().poke_into(key.k0)
     rdrand_word().poke_into(key.k1)
-    return()
+    return
 
 /// RDSEED once: the random value, and 1 when the CPU had one ready (the carry flag), 0 when not.
 /// :returns: The value and 1, or an unspecified value and 0 when the CPU had none ready.
@@ -171,132 +167,124 @@ private routine rdseed_step() -> (U64, U8)
         return((R0, R1))
 
 /// The CPU's spin-wait hint, between RDSEED tries.
-#[target(arch: "x86_64", os: "none"), feature(not "rdrnd", "rdseed"), external("asm")]
+@target(arch: "x86_64", os: "none")
+@feature(not "rdrnd", "rdseed")
+@external("asm")
 private routine rdseed_pause() -> Void
     block entry()
         pause()  // pause
-        return()
+        return
 
 /// One 64-bit word from RDSEED, which runs dry for a while when asked often: retried with a pause in between, as
 /// Intel's guide says, up to 1000 times.
 /// :returns: The random word.
 /// :throws: Crashes with `InvalidValueError` when RDSEED fails 1000 times in a row.
-#[target(arch: "x86_64", os: "none"), feature(not "rdrnd", "rdseed")]
+@target(arch: "x86_64", os: "none")
+@feature(not "rdrnd", "rdseed")
 private routine rdseed_word() -> U64
-    jump draw(0)
-
-    block draw(attempt: U32)
-        gave_up: Bool = attempt.ge(1000)
-        branch gave_up
-            ? crash(name: "InvalidValueError",
-                message: "RDSEED gave no random value in 1000 tries.")
-            : continue
+    each attempt in 0 til 1000
         value, ok = rdseed_step()
-        got: Bool = ok.ne(0)
-        branch got
-            ? return(value)
-            : wait(attempt)
-
-    block wait(attempt: U32)
-        rdseed_pause()
-        jump draw(attempt.add(1))
+        if ok != 0
+            return value
+        else
+            rdseed_pause()
+            continue
+    then
+        crash(name: "InvalidValueError", message: "RDSEED gave no random value in 1000 tries.")
 
 /// The hash key from RDSEED, on a CPU built for without RDRAND: two 64-bit words.
 /// :param key: The key to fill.
 /// :throws: Crashes with `InvalidValueError` when RDSEED fails 1000 times in a row.
-#[target(arch: "x86_64", os: "none"), feature(not "rdrnd", "rdseed"), export("tessera_hash_key")]
+@target(arch: "x86_64", os: "none")
+@feature(not "rdrnd", "rdseed")
+@export("tessera_hash_key")
 routine rdseed_hash_key(key: @SipKey) -> Void
     rdseed_word().poke_into(key.k0)
     rdseed_word().poke_into(key.k1)
-    return()
+    return
 
 /// RNDR once (FEAT_RNG): the random value, and 1 when the CPU had one ready, 0 when not (RNDR clears the Z flag when
 /// it gave a value and sets it when it didn't).
 /// :returns: The value and 1, or an unspecified value and 0 when the CPU had none ready.
-#[target(arch: "aarch64", os: "none"), feature("rand"), external("asm"), clobbers(FLAGS)]
+@target(arch: "aarch64", os: "none")
+@feature("rand")
+@external("asm")
+@clobbers(FLAGS)
 private routine rndr_step() -> (U64, U8)
     block entry()
         mrs[U64](R0, RNDR)  // mrs x0, RNDR
         cset[U8](R1, ne)  // cset w1, ne
-        return((R0, R1))
+        return (R0, R1)
 
 /// One 64-bit word from RNDR, retried up to 10 times (the instruction fails only when the generator can't give a value
 /// in reasonable time).
 /// :returns: The random word.
 /// :throws: Crashes with `InvalidValueError` when RNDR fails 10 times in a row.
-#[target(arch: "aarch64", os: "none"), feature("rand")]
+@target(arch: "aarch64", os: "none")
+@feature("rand")
 private routine rndr_word() -> U64
-    jump draw(0)
-
-    block draw(attempt: U32)
-        gave_up: Bool = attempt.ge(10)
-        branch gave_up
-            ? crash(name: "InvalidValueError", message: "RNDR gave no random value in 10 tries.")
-            : continue
+    each attempt in 0 til 10
         value, ok = rndr_step()
-        got: Bool = ok.ne(0)
-        branch got
-            ? return(value)
-            : draw(attempt.add(1))
+        if ok != 0
+            return value
+        else
+            continue
+    then
+        crash(name: "InvalidValueError", message: "RNDR gave no random value in 10 tries.")
 
 /// The hash key from RNDR: two 64-bit words.
 /// :param key: The key to fill.
 /// :throws: Crashes with `InvalidValueError` when RNDR fails 10 times in a row.
-#[target(arch: "aarch64", os: "none"), feature("rand"), export("tessera_hash_key")]
+@target(arch: "aarch64", os: "none")
+@feature("rand")
+@export("tessera_hash_key")
 routine rndr_hash_key(key: @SipKey) -> Void
     rndr_word().poke_into(key.k0)
     rndr_word().poke_into(key.k1)
-    return()
+    return
 
 /// Reads the Zkr `seed` CSR (number 0x015) once, which only a write may read: `csrrw a0, seed, zero`. Bits 31 and 30
 /// are its state (2 is ES16: bits 15..0 hold 16 bits of entropy), the rest is reserved or entropy.
 /// :returns: The CSR's 32 bits.
-#[target(arch: "riscv32", os: "none"), feature("zkr"), external("asm")]
+@target(arch: "riscv32", os: "none")
+@feature("zkr")
+@external("asm")
 private routine seed_poll() -> U32
     block entry()
         csrrw[U32, U32](R10, seed, ZERO)  // csrrw a0, seed, zero
-        return(R10)
+        return R10
 
 /// The next 16-bit sample from `seed`: polled until its state is ES16 (WAIT means try again, BIST a me test still
 /// running).
 /// :returns: The 16 bits of entropy.
 /// :throws: Crashes with `InvalidValueError` when the source reports DEAD (an unrecoverable failure).
-#[target(arch: "riscv32", os: "none"), feature("zkr")]
+@target(arch: "riscv32", os: "none")
+@feature("zkr")
 private routine seed_sample() -> U16
-    jump poll()
-
-    block poll()
+    while true
         word: U64 = seed_poll().to[U64]()
-        state: U64 = word.shr(30).bitand(3)
+        state: U64 = (word >> 30) & 3
         when state
-            2 => return(word.bitand(0xFFFF).to[U16]())
-            3 => crash(name: "InvalidValueError",
-                message: "The RISC-V entropy source (seed) reports DEAD.")
-            else => poll()
+            2 => return (word & 0xFFFF).to[U16]()
+            3 => crash(name: "InvalidValueError", message: "The RISC-V entropy source (seed) reports DEAD.")
+            else => continue
 
 /// The hash key from the Zkr entropy source: `SEED_SAMPLES` raw 16-bit samples, conditioned into 128 bits by hashing
 /// them with SipHash under two fixed keys.
 /// :param key: The key to fill.
 /// :throws: Crashes with `InvalidValueError` when the source reports DEAD.
-#[target(arch: "riscv32", os: "none"), feature("zkr"), export("tessera_hash_key")]
+@target(arch: "riscv32", os: "none")
+@feature("zkr")
+@export("tessera_hash_key")
 routine seed_hash_key(key: @SipKey) -> Void
     local samples: @Array[U16, 32] <- .hollow()
 
-    jump gather(0)
-
-    block gather(at: USize)
-        done: Bool = at.ge(SEED_SAMPLES)
-        branch done
-            ? condition()
-            : continue
-        samples.setitem(index: at, value: seed_sample())
-        jump gather(at.add(1))
-
-    block condition()
-        bytes: @Byte = samples.to[@Byte]()
-        size: USize = SEED_SAMPLES.mul(2)
-        first: SipKey = (k0: 0, k1: 0)
-        other: SipKey = (k0: 1, k1: 0)
-        siphash24(data: bytes, count: size, key: first).poke_into(key.k0)
-        siphash24(data: bytes, count: size, key: other).poke_into(key.k1)
-        return()
+    each at in 0 til SEED_SAMPLES
+        samples[at] = seed_sample()
+    bytes: @Byte = samples.to[@Byte]()
+    size: USize = SEED_SAMPLES.mul(2)
+    first: SipKey = (k0: 0, k1: 0)
+    other: SipKey = (k0: 1, k1: 0)
+    siphash24(data: bytes, count: size, key: first).poke_into(key.k0)
+    siphash24(data: bytes, count: size, key: other).poke_into(key.k1)
+    return

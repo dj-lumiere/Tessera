@@ -60,86 +60,73 @@ preset CM_B32_LOG10_ST: @Array[U32, 16] <- [0x501502F9, 0x41200000, 0x42C80000, 
 routine B32.log10(me: Me) -> Me
     local ux: U32 = me.bits()
 
-    special: Bool = ux.ge(0x7F800000)  // x <= -0, +inf, or NaN
-    top_bits: U32 = ux.shr(24).bitand(0xF)
-    power: Bool = ux.eq(CM_B32_LOG10_ST.getitem(top_bits.to[USize]()))
-    small: Bool = ux.lt(0x00800000)
-    when
-        special => return(cm_b32_log10_special(me))
-        power => power()
-        small => small()
-        else => normal(ux)
+    special: Bool = ux >= 0x7F800000
 
-    // x = 10^n: n = floor((e + 1) log10(2)) for the biased exponent e
-    block power()
-        e_plus_1: U32 = ux.shr(23).sub_wrap(126)
-        je: U32 = e_plus_1.mul_wrap(0x4D104D4).shr(28)
-        return(je.to[Me]())
-
-    // +0 or a subnormal
-    block small()
-        zero: Bool = ux.eq(0)
-        branch zero
-            ? return(cm_b32_log10_special(me))
-            : continue
-        n: U32 = ux.leading_zeros().sub(8)
-        jump normal(ux.shl(n).sub_wrap(n.shl(23)))
+    // x <= -0, +inf, or NaN
+    top_bits: U32 = (ux >> 24) & 0xF
+    power: Bool = ux == CM_B32_LOG10_ST.getitem(top_bits.to[USize]())
+    small: Bool = ux < 0x00800000
+    ux_norm: U32 = when
+        special => return cm_b32_log10_special(me)
+        power =>
+            // x = 10^n: n = floor((e + 1) log10(2)) for the biased exponent e
+            e_plus_1: U32 = (ux >> 23) -% 126
+            je: U32 = e_plus_1 *% 0x4D104D4 >> 28
+            return je.to[Me]()
+        small =>
+            // +0 or a subnormal
+            if ux == 0
+                return cm_b32_log10_special(me)
+            n: U32 = ux.leading_zeros() - 8
+            becomes (ux << n) -% (n << 23)
+        else => ux
 
     // ux_norm is a normalized positive pattern (the exponent field may be below 1 for a subnormal x)
-    block normal(ux_norm: U32)
-        biased_exponent: S32 = ux_norm.to_wrap[S32]().shr(23)
-        e: S64 = biased_exponent.to[S64]().sub(127)
-        ed: B64 = e.to[B64]()
-        m: U64 = ux_norm.bitand(0x7FFFFF).to[U64]()
-        j_bits: U64 = m.add(0x10000).shr(17)
-        j: USize = j_bits.to[USize]()
-        tz: B64 = B64.from_bits(m.shl(29).bitor(0x3FF0000000000000))
-        tlj: B64 = B64.from_bits(CM_B32_LOG10_TL.getitem(j))
-        z: B64 = tz.mul(B64.from_bits(CM_B32_LOG10_TR.getitem(j))).sub(1.0)
-        z2: B64 = z.mul(z)
-        e_log: B64 = ed.mul(0x1.34413509f79ffp-2).add(tlj)
-        head: B64 = e_log.add(z.mul(0x1.bcb7b15d35067p-2))
-        tail: B64 = z.mul(0x1.2870e2624ce4ep-3).add(-0x1.bcbb1cd29cbafp-3)
-        r: B64 = head.add(z2.mul(tail))
-        ub: Me = r.to[Me]()
-        lb: Me = r.add(0x1.af23fp-34).to[Me]()
-        sure: Bool = ub.eq(lb)
-        branch sure
-            ? return(ub)
-            : slow(z, z2, ed, tlj)
-
-    // The fast path can't decide the rounding: a longer polynomial and a two-part log10(2).
-    block slow(z: B64, z2: B64, ed: B64, tlj: B64)
-        c01: B64 = B64.sub(0x1.bcb7b1526e50ep-2, z.mul(0x1.bcb7b1526e53dp-3))
-        c23: B64 = B64.sub(0x1.287a7636f3fa2p-3, z.mul(0x1.bcb7b146a14b3p-4))
-        c46: B64 = B64.sub(0x1.63c627d5219cbp-4,
-            z.mul(0x1.2880736c8762dp-4)).add(z2.mul(0x1.fc1ecf913961ap-5))
-        f: B64 = z.mul(c01.add(z2.mul(c23.add(z2.mul(c46)))))
-        f1: B64 = f.sub(ed.mul(0x1.0cee0ed4ca7e9p-54))
-        f2: B64 = f1.add(tlj.sub(B64.from_bits(CM_B32_LOG10_TL.getitem(0))))
-        el: B64 = ed.mul(0x1.34413509f7ap-2)
-        r: B64 = el.add(f2)
-        low_bits: U64 = r.bits().bitand(0x0FFFFFFF)
-        boundary: Bool = low_bits.eq(0)
-        branch boundary
-            ? nudge(el, f2, r)
-            : return(r.to[Me]())
-
-    // r lies on a B32 rounding boundary: nudge it by the rounding error of el + f
-    block nudge(el: B64, f: B64, r: B64)
-        dr: B64 = el.sub(r).add(f)
-        return(r.add(dr.mul(32.0)).to[Me]())
+    biased_exponent: S32 = ux_norm.to_wrap[S32]() >> 23
+    e: S64 = biased_exponent.to[S64]() - 127
+    ed: B64 = e.to[B64]()
+    m: U64 = (ux_norm & 0x7FFFFF).to[U64]()
+    j_bits: U64 = m + 0x10000 >> 17
+    j: USize = j_bits.to[USize]()
+    tz: B64 = B64.from_bits((m << 29) | 0x3FF0000000000000)
+    tlj: B64 = B64.from_bits(CM_B32_LOG10_TL.getitem(j))
+    z: B64 = tz * B64.from_bits(CM_B32_LOG10_TR.getitem(j)) - 1.0
+    z2: B64 = z * z
+    e_log: B64 = ed * 0.3010299956639812 + tlj
+    head: B64 = e_log + z * 0.4342944825305097
+    tail: B64 = z * 0.14474655973900713 + -0.2171537639402152
+    r: B64 = head + z2 * tail
+    ub: Me = r.to[Me]()
+    lb: Me = (r + 9.802997302799099e-11).to[Me]()
+    if ub == lb
+        return ub
+    else
+        // The fast path can't decide the rounding: a longer polynomial and a two-part log10(2).
+        c01: B64 = B64.sub(0.4342944819032518, z * 0.2171472409516272)
+        c23: B64 = B64.sub(0.14476482730105739, z * 0.10857362030408772)
+        c46: B64 = B64.sub(0.08685889777743865, z * 0.07238812530018697) + z2 * 0.062026410488936715
+        f: B64 = z * (c01 + z2 * (c23 + z2 * c46))
+        f1: B64 = f - ed * 5.8314879359043e-17
+        f2: B64 = f1 + (tlj - B64.from_bits(CM_B32_LOG10_TL.getitem(0)))
+        el: B64 = ed * 0.30102999566398125
+        r2: B64 = el + f2
+        low_bits: U64 = r2.bits() & 0x0FFFFFFF
+        if low_bits == 0
+            // r lies on a B32 rounding boundary: nudge it by the rounding error of el + f
+            dr: B64 = el - r2 + f2
+            return (r2 + dr * 32.0).to[Me]()
+        else
+            return r2.to[Me]()
 
 /// log10 of +-0 (-inf), +inf (itself), NaN (itself, quiet) or a negative input (NaN).
 /// :param x: The special input.
 /// :returns: The base-10 logarithm of `x`.
 private routine cm_b32_log10_special(x: B32) -> B32
     ux: U32 = x.bits()
-    zero: Bool = ux.shl(1).eq(0)
-    inf: Bool = ux.eq(0x7F800000)
-    nan: Bool = ux.shl(1).gt(0xFF000000)
+    zero: Bool = ux << 1 == 0
+    inf: Bool = ux == 0x7F800000
     when
-        zero => return(B32.from_bits(0xFF800000))
-        inf => return(x)
-        nan => return(x.add(x))
-        else => return(B32.from_bits(0xFFC00000))
+        zero => return B32.from_bits(0xFF800000)
+        inf => return x
+        ux << 1 > 0xFF000000 => return x + x
+        else => return B32.from_bits(0xFFC00000)

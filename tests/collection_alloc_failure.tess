@@ -8,13 +8,16 @@ import Standard/Collections
 import Standard/Format
 import Standard/Os
 
-#[external("c"), symbol("malloc")]
+@external("c")
+@symbol("malloc")
 routine c_malloc(size: USize) -> Addr
 
-#[external("c"), symbol("realloc")]
+@external("c")
+@symbol("realloc")
 routine c_realloc(ptr: Addr, size: USize) -> Addr
 
-#[external("c"), symbol("free")]
+@external("c")
+@symbol("free")
 routine c_free(ptr: Addr) -> Void
 
 // -- the budgeted allocator: state points at the number of calls still allowed --------------------------------------
@@ -22,28 +25,26 @@ routine c_free(ptr: Addr) -> Void
 routine take_budget(state: Addr) -> Bool
     budget: @USize = state.to[@USize]()
     left: USize = budget.peek()
-    spent: Bool = left.eq(0)
-    branch spent
-        ? return(false)
-        : continue
-    left.sub(1).poke_into(budget)
-    return(true)
+    if left == 0
+        return false
+    (left - 1).poke_into(budget)
+    return true
 
 routine budget_alloc(state: Addr, size: USize, align: USize) -> Addr
-    allowed: Bool = take_budget(state)
-    branch allowed
-        ? return(c_malloc(size))
-        : return(null)
+    if take_budget(state)
+        return c_malloc(size)
+    else
+        return null
 
 routine budget_realloc(state: Addr, old: Addr, size: USize, align: USize) -> Addr
-    allowed: Bool = take_budget(state)
-    branch allowed
-        ? return(c_realloc(old, size))
-        : return(null)
+    if take_budget(state)
+        return c_realloc(old, size)
+    else
+        return null
 
 routine budget_free(state: Addr, ptr: Addr) -> Void
     c_free(ptr)
-    return()
+    return
 
 // -- sequences ------------------------------------------------------------------------------------------------------
 
@@ -53,21 +54,18 @@ routine list_case(budget: @USize, grant: USize, alloc: @MemoryManager) -> Void
     budget.poke(grant)
     list_val: List[S64] = .construct(alloc)
     list.poke(list_val)
-    jump fill(0)
 
-    block fill(i: S64)
+    while true with i: S64 = 0
         pushed: Result[Unit, AllocFailed] = list.add_last_result(i)
         when pushed
-            is Unit => fill(i.add(1))
-            is AllocFailed => failed()
-
-    block failed()
-        Out.write("List, budget {grant}: {list.peek()}\n")
-        budget.poke(1)
-        list.add_last(99)
-        Out.write("  then push: {list.peek()}\n")
-        list.destruct()
-        return()
+            is Unit => continue with i: i + 1
+            is AllocFailed => break
+    Out.write("List, budget {grant}: {list.peek()}\n")
+    budget.poke(1)
+    list.add_last(99)
+    Out.write("  then push: {list.peek()}\n")
+    list.destruct()
+    return
 
 routine circular_case(budget: @USize, grant: USize, alloc: @MemoryManager) -> Void
     local deque: @CircularList[S64] <- .hollow()
@@ -75,35 +73,22 @@ routine circular_case(budget: @USize, grant: USize, alloc: @MemoryManager) -> Vo
     budget.poke(grant)
     deque_val: CircularList[S64] = .construct(alloc)
     deque.poke(deque_val)
-    jump fill(0)
 
     // Alternates ends, so both push_front_result and push_back_result reach the allocator.
-    block fill(i: S64)
-        front: Bool = i.mod(2).eq(1)
-        branch front
-            ? push_front(i)
-            : push_back(i)
-
-    block push_front(i: S64)
-        pushed: Result[Unit, AllocFailed] = deque.add_first_result(i)
-        jump pushed(i, pushed)
-
-    block push_back(i: S64)
-        pushed: Result[Unit, AllocFailed] = deque.add_last_result(i)
-        jump pushed(i, pushed)
-
-    block pushed(i: S64, pushed: Result[Unit, AllocFailed])
+    while true with i: S64 = 0
+        front: Bool = i % 2 == 1
+        pushed: Result[Unit, AllocFailed] = when
+            front => deque.add_first_result(i)
+            else => deque.add_last_result(i)
         when pushed
-            is Unit => fill(i.add(1))
-            is AllocFailed => failed()
-
-    block failed()
-        Out.write("CircularList, budget {grant}: {deque.peek()}\n")
-        budget.poke(1)
-        deque.add_first(99)
-        Out.write("  then push_front: {deque.peek()}\n")
-        deque.destruct()
-        return()
+            is Unit => continue with i: i + 1
+            is AllocFailed => break
+    Out.write("CircularList, budget {grant}: {deque.peek()}\n")
+    budget.poke(1)
+    deque.add_first(99)
+    Out.write("  then push_front: {deque.peek()}\n")
+    deque.destruct()
+    return
 
 routine queue_case(budget: @USize, grant: USize, alloc: @MemoryManager) -> Void
     local queue: @PriorityQueue[S64, S64] <- .hollow()
@@ -111,23 +96,20 @@ routine queue_case(budget: @USize, grant: USize, alloc: @MemoryManager) -> Void
     budget.poke(grant)
     queue_val: PriorityQueue[S64, S64] = .construct(alloc)
     queue.poke(queue_val)
-    jump fill(0)
 
     // Pushes 100, 99, 98, ..., so each push sifts to the top.
-    block fill(i: S64)
+    while true with i: S64 = 0
         value: S64 = S64.sub(100, i)
         pushed: Result[Unit, AllocFailed] = queue.add_result(priority: value, element: value)
         when pushed
-            is Unit => fill(i.add(1))
-            is AllocFailed => failed()
-
-    block failed()
-        Out.write("PriorityQueue, budget {grant}: {queue.count()} elements, top {queue.first_checked()}\n")
-        budget.poke(1)
-        queue.add(priority: 0, element: 0)
-        Out.write("  then push: top {queue.remove()}, next {queue.remove_checked()}\n")
-        queue.destruct()
-        return()
+            is Unit => continue with i: i + 1
+            is AllocFailed => break
+    Out.write("PriorityQueue, budget {grant}: {queue.count()} elements, top {queue.first_checked()}\n")
+    budget.poke(1)
+    queue.add(priority: 0, element: 0)
+    Out.write("  then push: top {queue.remove()}, next {queue.remove_checked()}\n")
+    queue.destruct()
+    return
 
 // -- hash collections -----------------------------------------------------------------------------------------------
 
@@ -135,21 +117,17 @@ routine queue_case(budget: @USize, grant: USize, alloc: @MemoryManager) -> Void
 routine is_dict_intact(map: @Dict[S64, S64], count: S64) -> Bool
     size: USize = map.count()
     held: S64 = size.to[S64]()
-    same: Bool = held.eq(count)
-    branch same
-        ? check(0)
-        : return(false)
-
-    block check(i: S64)
-        done: Bool = i.ge(count)
-        branch done
-            ? return(true)
-            : continue
-        value: S64 = map.getitem(i)
-        right: Bool = value.eq(i.mul(10))
-        branch right
-            ? check(i.add(1))
-            : return(false)
+    if held == count
+        each i in 0 til count
+            value: S64 = map[i]
+            if value == i * 10
+                continue
+            else
+                return false
+        then
+            return true
+    else
+        return false
 
 routine dict_case(budget: @USize, grant: USize, alloc: @MemoryManager) -> Void
     local map: @Dict[S64, S64] <- .hollow()
@@ -157,39 +135,32 @@ routine dict_case(budget: @USize, grant: USize, alloc: @MemoryManager) -> Void
     budget.poke(grant)
     map_val: Dict[S64, S64] = .construct(alloc)
     map.poke(map_val)
-    jump fill(0)
 
-    block fill(i: S64)
-        put: Result[Unit, AllocFailed] = map.setitem_result(key: i, value: i.mul(10))
+    while true with i: S64 = 0
+        put: Result[Unit, AllocFailed] = map.setitem_result(key: i, value: i * 10)
         when put
-            is Unit => fill(i.add(1))
-            is AllocFailed => failed(i)
-
-    block failed(count: S64)
-        Out.write("Dict, budget {grant}: {count} entries, intact {is_dict_intact(map, count)}")
-        budget.poke(5)
-        map.setitem(key: count, value: count.mul(10))
-        Out.write(", then put: intact {is_dict_intact(map, count: count.add(1))}\n")
-        map.destruct()
-        return()
+            is Unit => continue with i: i + 1
+            is AllocFailed =>
+                Out.write("Dict, budget {grant}: {count} entries, intact {is_dict_intact(map, count)}")
+                budget.poke(5)
+                map[i] = i * 10
+                Out.write(", then put: intact {is_dict_intact(map, count: count.add(1))}\n")
+                map.destruct()
+                return
 
 routine is_set_intact(set: @Set[S64], count: S64) -> Bool
     size: USize = set.count()
     held: S64 = size.to[S64]()
-    same: Bool = held.eq(count)
-    branch same
-        ? check(0)
-        : return(false)
-
-    block check(i: S64)
-        done: Bool = i.ge(count)
-        branch done
-            ? return(true)
-            : continue
-        has: Bool = set.has(i)
-        branch has
-            ? check(i.add(1))
-            : return(false)
+    if held == count
+        each i in 0 til count
+            if set.has(i)
+                continue
+            else
+                return false
+        then
+            return true
+    else
+        return false
 
 routine set_case(budget: @USize, grant: USize, alloc: @MemoryManager) -> Void
     local set: @Set[S64] <- .hollow()
@@ -197,22 +168,19 @@ routine set_case(budget: @USize, grant: USize, alloc: @MemoryManager) -> Void
     budget.poke(grant)
     set_val: Set[S64] = .construct(alloc)
     set.poke(set_val)
-    jump fill(0)
 
-    block fill(i: S64)
+    while true with i: S64 = 0
         added: Result[Bool, AllocFailed] = set.add_result(i)
         when added
-            is Bool => fill(i.add(1))
-            is AllocFailed => failed(i)
-
-    block failed(count: S64)
-        Out.write("Set, budget {grant}: {count} keys, intact {is_set_intact(set, count)}")
-        budget.poke(4)
-        added: Bool = set.add(count)
-        again: Result[Bool, AllocFailed] = set.add_result(count)
-        Out.write(", then add: {added}, again {again}, intact {is_set_intact(set, count: count.add(1))}\n")
-        set.destruct()
-        return()
+            is Bool => continue with i: i + 1
+            is AllocFailed =>
+                Out.write("Set, budget {grant}: {count} keys, intact {is_set_intact(set, count)}")
+                budget.poke(4)
+                added2: Bool = set + i
+                again: Result[Bool, AllocFailed] = set.add_result(i)
+                Out.write(", then add: {added}, again {again}, intact {is_set_intact(set, count: count.add(1))}\n")
+                set.destruct()
+                return
 
 // -- B-trees --------------------------------------------------------------------------------------------------------
 
@@ -220,26 +188,22 @@ routine set_case(budget: @USize, grant: USize, alloc: @MemoryManager) -> Void
 routine is_sorted_dict_intact(map: @SortedDict[S64, S64], count: S64) -> Bool
     size: USize = map.count()
     held: S64 = size.to[S64]()
-    same: Bool = held.eq(count)
-    branch same
-        ? check(0)
-        : return(false)
-
-    block check(i: S64)
-        done: Bool = i.ge(count)
-        branch done
-            ? return(true)
-            : continue
-        pair: KVPair[S64, S64] = map.get_by_rank(i.to[USize]())
-        key: S64 = pair.key
-        value: S64 = pair.value
-        found: S64 = map.getitem(i)
-        tens: S64 = i.mul(10)
-        pair_right: Bool = key.eq(i).bitand(value.eq(tens))
-        right: Bool = pair_right.bitand(found.eq(tens))
-        branch right
-            ? check(i.add(1))
-            : return(false)
+    if held == count
+        each i in 0 til count
+            pair: KVPair[S64, S64] = map.get_by_rank(i.to[USize]())
+            key: S64 = pair.key
+            value: S64 = pair.value
+            found: S64 = map[i]
+            tens: S64 = i * 10
+            pair_right: Bool = key == i and value == tens
+            if pair_right and found == tens
+                continue
+            else
+                return false
+        then
+            return true
+    else
+        return false
 
 routine sorted_dict_case(budget: @USize, grant: USize, alloc: @MemoryManager) -> Void
     local map: @SortedDict[S64, S64] <- .hollow()
@@ -247,40 +211,33 @@ routine sorted_dict_case(budget: @USize, grant: USize, alloc: @MemoryManager) ->
     budget.poke(grant)
     map_val: SortedDict[S64, S64] = .construct(alloc)
     map.poke(map_val)
-    jump fill(0)
 
-    block fill(i: S64)
-        put: Result[Unit, AllocFailed] = map.setitem_result(key: i, value: i.mul(10))
+    while true with i: S64 = 0
+        put: Result[Unit, AllocFailed] = map.setitem_result(key: i, value: i * 10)
         when put
-            is Unit => fill(i.add(1))
-            is AllocFailed => failed(i)
-
-    block failed(count: S64)
-        Out.write("SortedDict, budget {grant}: {count} entries, intact {is_sorted_dict_intact(map, count)}")
-        budget.poke(3)
-        map.setitem(key: count, value: count.mul(10))
-        Out.write(", then put: intact {is_sorted_dict_intact(map, count: count.add(1))}\n")
-        map.destruct()
-        return()
+            is Unit => continue with i: i + 1
+            is AllocFailed =>
+                Out.write("SortedDict, budget {grant}: {count} entries, intact {is_sorted_dict_intact(map, count)}")
+                budget.poke(3)
+                map[i] = i * 10
+                Out.write(", then put: intact {is_sorted_dict_intact(map, count: count.add(1))}\n")
+                map.destruct()
+                return
 
 routine is_sorted_set_intact(set: @SortedSet[S64], count: S64) -> Bool
     size: USize = set.count()
     held: S64 = size.to[S64]()
-    same: Bool = held.eq(count)
-    branch same
-        ? check(0)
-        : return(false)
-
-    block check(i: S64)
-        done: Bool = i.ge(count)
-        branch done
-            ? return(true)
-            : continue
-        key: S64 = set.get_by_rank(i.to[USize]())
-        right: Bool = key.eq(i).bitand(set.has(i))
-        branch right
-            ? check(i.add(1))
-            : return(false)
+    if held == count
+        each i in 0 til count
+            key: S64 = set.get_by_rank(i.to[USize]())
+            if (key == i) & set.has(i)
+                continue
+            else
+                return false
+        then
+            return true
+    else
+        return false
 
 routine sorted_set_case(budget: @USize, grant: USize, alloc: @MemoryManager) -> Void
     local set: @SortedSet[S64] <- .hollow()
@@ -288,42 +245,35 @@ routine sorted_set_case(budget: @USize, grant: USize, alloc: @MemoryManager) -> 
     budget.poke(grant)
     set_val: SortedSet[S64] = .construct(alloc)
     set.poke(set_val)
-    jump fill(0)
 
-    block fill(i: S64)
+    while true with i: S64 = 0
         added: Result[Bool, AllocFailed] = set.add_result(i)
         when added
-            is Bool => fill(i.add(1))
-            is AllocFailed => failed(i)
-
-    block failed(count: S64)
-        Out.write("SortedSet, budget {grant}: {count} keys, intact {is_sorted_set_intact(set, count)}")
-        budget.poke(3)
-        added: Bool = set.add(count)
-        Out.write(", then add: {added}, intact {is_sorted_set_intact(set, count: count.add(1))}\n")
-        set.destruct()
-        return()
+            is Bool => continue with i: i + 1
+            is AllocFailed =>
+                Out.write("SortedSet, budget {grant}: {count} keys, intact {is_sorted_set_intact(set, count)}")
+                budget.poke(3)
+                added2: Bool = set + i
+                Out.write(", then add: {added}, intact {is_sorted_set_intact(set, count: count.add(1))}\n")
+                set.destruct()
+                return
 
 routine is_sorted_list_intact(list: @SortedList[S64], count: S64) -> Bool
     size: USize = list.count()
     held: S64 = size.to[S64]()
-    same: Bool = held.eq(count)
-    branch same
-        ? check(0)
-        : return(false)
-
-    block check(i: S64)
-        done: Bool = i.ge(count)
-        branch done
-            ? return(true)
-            : continue
-        value: S64 = list.getitem(i.to[USize]())
-        position: USize = list.rank(i)
-        rank: S64 = position.to[S64]()
-        right: Bool = value.eq(i).bitand(rank.eq(i))
-        branch right
-            ? check(i.add(1))
-            : return(false)
+    if held == count
+        each i in 0 til count
+            value: S64 = list[i.to[USize]()]
+            position: USize = list.rank(i)
+            rank: S64 = position.to[S64]()
+            if value == i and rank == i
+                continue
+            else
+                return false
+        then
+            return true
+    else
+        return false
 
 routine sorted_list_case(budget: @USize, grant: USize, alloc: @MemoryManager) -> Void
     local list: @SortedList[S64] <- .hollow()
@@ -331,28 +281,25 @@ routine sorted_list_case(budget: @USize, grant: USize, alloc: @MemoryManager) ->
     budget.poke(grant)
     list_val: SortedList[S64] = .construct(alloc)
     list.poke(list_val)
-    jump fill(0)
 
-    block fill(i: S64)
+    while true with i: S64 = 0
         pushed: Result[Unit, AllocFailed] = list.add_result(i)
         when pushed
-            is Unit => fill(i.add(1))
-            is AllocFailed => failed(i)
-
-    block failed(count: S64)
-        Out.write("SortedList, budget {grant}: {count} elements, intact {is_sorted_list_intact(list, count)}")
-        budget.poke(3)
-        list.add(count)
-        Out.write(", then push: intact {is_sorted_list_intact(list, count: count.add(1))}\n")
-        list.destruct()
-        return()
+            is Unit => continue with i: i + 1
+            is AllocFailed =>
+                Out.write("SortedList, budget {grant}: {count} elements, intact {is_sorted_list_intact(list, count)}")
+                budget.poke(3)
+                list.add(i)
+                Out.write(", then push: intact {is_sorted_list_intact(list, count: count.add(1))}\n")
+                list.destruct()
+                return
 
 // -- the _checked forms -----------------------------------------------------------------------------------------------
 
 routine checked_forms(budget: @USize, alloc: @MemoryManager) -> Void
     budget.poke(100)
     list_val: List[S64] = .construct(alloc)
-    claim list: @List[S64] <- list_val
+    local list: @List[S64] <- list_val
     Out.write("List: pop_checked {list.remove_last_checked()}")
     list.add_last(7)
     Out.write(", get_checked(0) {list.getitem_checked(0)}, get_checked(1) {list.getitem_checked(1)}")
@@ -360,7 +307,7 @@ routine checked_forms(budget: @USize, alloc: @MemoryManager) -> Void
     list.destruct()
 
     deque_val: CircularList[S64] = .construct(alloc)
-    claim deque: @CircularList[S64] <- deque_val
+    local deque: @CircularList[S64] <- deque_val
     Out.write("CircularList: pop_front_checked {deque.remove_first_checked()}")
     Out.write(", pop_back_checked {deque.remove_last_checked()}")
     deque.add_last(1)
@@ -370,7 +317,7 @@ routine checked_forms(budget: @USize, alloc: @MemoryManager) -> Void
     deque.destruct()
 
     queue_val: PriorityQueue[S64, S64] = .construct(alloc)
-    claim queue: @PriorityQueue[S64, S64] <- queue_val
+    local queue: @PriorityQueue[S64, S64] <- queue_val
     Out.write("PriorityQueue: peek_checked {queue.first_checked()}, pop_checked {queue.remove_checked()}")
     queue.add(priority: 5, element: 5)
     queue.add(priority: 3, element: 3)
@@ -378,66 +325,67 @@ routine checked_forms(budget: @USize, alloc: @MemoryManager) -> Void
     queue.destruct()
 
     map_val: Dict[S64, S64] = .construct(alloc)
-    claim map: @Dict[S64, S64] <- map_val
+    local map: @Dict[S64, S64] <- map_val
     Out.write("Dict: get_checked(1) {map.getitem_checked(1)}")
-    map.setitem(key: 1, value: 10)
+    map[1] = 10
     Out.write(", after put {map.getitem_checked(1)}, get_checked(2) {map.getitem_checked(2)}\n")
     map.destruct()
 
-    claim sorted: @SortedDict[S64, S64] <- .construct(alloc)
+    local sorted: @SortedDict[S64, S64] <- .construct(alloc)
     Out.write("SortedDict: get_checked(1) {sorted.getitem_checked(1)}")
-    sorted.setitem(key: 1, value: 10)
+    sorted[1] = 10
     Out.write(", after put {sorted.getitem_checked(1)}, get_checked(2) {sorted.getitem_checked(2)}\n")
     sorted.destruct()
 
-    claim ordered: @SortedList[S64] <- .construct(alloc)
+    local ordered: @SortedList[S64] <- .construct(alloc)
     Out.write("SortedList: get_checked(0) {ordered.getitem_checked(0)}")
     ordered.add(4)
     Out.write(", after push {ordered.getitem_checked(0)}\n")
     ordered.destruct()
-    return()
+    return
 
 routine start() -> Void
     local budget: @USize <- 0
-    local budgeted: MemoryManager = MemoryManager(alloc_fn: budget_alloc.to[Callable](),
-        realloc_fn: budget_realloc.to[Callable](), free_fn: budget_free.to[Callable](),
-        reserve_fn: null, commit_fn: null, release_fn: null, protect_fn: null, state: budget)
+    local budgeted: MemoryManager = MemoryManager(alloc_fn: budget_alloc.to[Callable](), realloc_fn: budget_realloc.to[Callable](), free_fn: budget_free.to[Callable](), reserve_fn: null, commit_fn: null, release_fn: null, protect_fn: null, state: budget)
     local alloc: @MemoryManager <- budgeted
 
-    jump sequences(0)
-
-    block sequences(grant: USize)
-        done: Bool = grant.gt(2)
-        branch done
-            ? hashes(0)
-            : continue
+    each grant in 0 to 2
         list_case(budget, grant, alloc)
         circular_case(budget, grant, alloc)
         queue_case(budget, grant, alloc)
-        jump sequences(grant.add(1))
-
-    // Dict rehashes into 5 arrays and Set into 4, so the budgets stop partway through a rehash too.
-    block hashes(grant: USize)
-        done: Bool = grant.gt(12)
-        branch done
-            ? trees(0)
-            : continue
+    then
+        // Dict rehashes into 5 arrays and Set into 4, so the budgets stop partway through a rehash too.
+        each grant2 in 0 to 12
+            dict_case(budget, grant: grant2, alloc)
+            set_case(budget, grant: grant2, alloc)
+        then
+            // Ascending keys fill a root leaf (1 node), split it (2 more), add leaves until the root is full (6 more), then
+            // split the root again (2) above one more leaf split: budgets up to 12 fail at each of those steps.
+            each grant3 in 0 to 12
+                sorted_dict_case(budget, grant: grant3, alloc)
+                sorted_set_case(budget, grant: grant3, alloc)
+                sorted_list_case(budget, grant: grant3, alloc)
+            checked_forms(budget, alloc)
+            return
+        each grant2 in 0 to 12
+            sorted_dict_case(budget, grant: grant2, alloc)
+            sorted_set_case(budget, grant: grant2, alloc)
+            sorted_list_case(budget, grant: grant2, alloc)
+        checked_forms(budget, alloc)
+        return
+    each grant in 0 to 12
         dict_case(budget, grant, alloc)
         set_case(budget, grant, alloc)
-        jump hashes(grant.add(1))
-
-    // Ascending keys fill a root leaf (1 node), split it (2 more), add leaves until the root is full (6 more), then
-    // split the root again (2) above one more leaf split: budgets up to 12 fail at each of those steps.
-    block trees(grant: USize)
-        done: Bool = grant.gt(12)
-        branch done
-            ? checked()
-            : continue
+    then
+        each grant2 in 0 to 12
+            sorted_dict_case(budget, grant: grant2, alloc)
+            sorted_set_case(budget, grant: grant2, alloc)
+            sorted_list_case(budget, grant: grant2, alloc)
+        checked_forms(budget, alloc)
+        return
+    each grant in 0 to 12
         sorted_dict_case(budget, grant, alloc)
         sorted_set_case(budget, grant, alloc)
         sorted_list_case(budget, grant, alloc)
-        jump trees(grant.add(1))
-
-    block checked()
-        checked_forms(budget, alloc)
-        return()
+    checked_forms(budget, alloc)
+    return

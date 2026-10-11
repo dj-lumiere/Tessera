@@ -12,11 +12,11 @@ import Standard/Format
 /// A growable array of `T` stored contiguously on the heap: `storage` holds the capacity (a {Memory[T]}, which keeps the manager) and `count` the elements in use. The buffer grows by doubling, and the list is released with `destruct`.
 /// :typeparam T: The element type.
 record List[T]
-conform Destructible[List[T]]
-conform Equatable[List[T]] when T: typename, Equatable[T]
-conform Representable[List[T]] when T: typename, Diagnosable[T]
-conform Diagnosable[List[T]] when T: typename, Diagnosable[T]
-require T: typename
+obeys Destructible[List[T]]
+obeys Equatable[List[T]] when T: typename, Equatable[T]
+obeys Representable[List[T]] when T: typename, Diagnosable[T]
+obeys Diagnosable[List[T]] when T: typename, Diagnosable[T]
+needs T: typename
     storage: Memory[T]
     count: USize
 
@@ -24,184 +24,168 @@ require T: typename
 /// :param alloc: The allocator the list stores and later frees its memory with.
 /// :returns: A new empty List.
 routine List[T].construct(alloc: @MemoryManager) -> Me
-require T: typename
+needs T: typename
     storage: Memory[T] = Memory[T].construct(count: 0, manager: alloc)
     list: Me = Me(storage: storage, count: 0)
-    return(list)
+    return list
 
 /// The number of elements currently stored.
 /// :returns: The count of elements, `0` when the list is empty.
 routine List[T].count(me: Me) -> USize
-require T: typename
+needs T: typename
     count: USize = me.count
-    return(count)
+    return count
 
 /// The number of elements currently stored.
 /// :returns: The count of elements, `0` when the list is empty.
 routine List[T].count(me: @Me) -> USize
-require T: typename
+needs T: typename
     count: USize = me.count.peek()
-    return(count)
+    return count
 
 /// Whether the list holds no elements.
 /// :returns: `true` when the count is `0`.
 routine List[T].is_empty(me: Me) -> Bool
-require T: typename
+needs T: typename
     count: USize = me.count
-    empty: Bool = count.eq(0)
-    return(empty)
+    return count == 0
 
 /// Whether the list holds no elements.
 /// :returns: `true` when the count is `0`.
 routine List[T].is_empty(me: @Me) -> Bool
-require T: typename
-    empty: Bool = me.count.peek().eq(0)
-    return(empty)
+needs T: typename
+    return me.count.peek() == 0
 
 /// Grows the buffer to hold at least `capacity` elements without further allocation. A smaller request leaves the buffer unchanged.
 /// :param capacity: The number of elements to make room for.
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails. See {List[T].reserve_result} for a recoverable form.
-#track_caller
-#[expensive("reallocates to exactly the capacity asked for"), reshaping]
+@track_caller
+@expensive("reallocates to exactly the capacity asked for")
+@reshaping
 routine List[T].reserve(me: @Me, capacity: USize) -> Void
-require T: typename
-    reserved: Bool = me.make_capacity(capacity)
-    branch reserved
-        ? return()
-        : crash_allocation()
+needs T: typename
+    if me.make_capacity(capacity)
+        return
+    else
+        crash_allocation()
 
 /// `reserve`, returning an error instead of crashing when the allocator fails.
 /// :param capacity: The number of elements to make room for.
 /// :returns: A value once the buffer holds at least `capacity` elements.
 /// :throws: Returns `AllocFailed` when the allocator fails.
-#[expensive("reallocates to exactly the capacity asked for"), reshaping]
+@expensive("reallocates to exactly the capacity asked for")
+@reshaping
 routine List[T].reserve_result(me: @Me, capacity: USize) -> Result[Unit, AllocFailed]
-require T: typename
-    reserved: Bool = me.make_capacity(capacity)
-    branch reserved
-        ? return(Unit())
-        : return(AllocFailed())
+needs T: typename
+    if me.make_capacity(capacity)
+        return Unit()
+    else
+        return AllocFailed()
 
 /// Grows the buffer to at least `capacity` elements.
 /// :param capacity: The number of elements to make room for.
 /// :returns: True when the buffer is big enough, false when the allocator failed (the list is left as it was).
-#reshaping
+@reshaping
 private routine List[T].make_capacity(me: @Me, capacity: USize) -> Bool
-require T: typename
+needs T: typename
     old_capacity: USize = me.storage.count.peek()
-    enough: Bool = old_capacity.ge(capacity)
-    branch enough
-        ? return(true)
-        : continue
+    if old_capacity >= capacity
+        return true
     resized: Result[Unit, AllocFailed] = me.storage.resize_result(capacity)
     when resized
-        is Unit => return(true)
-        is AllocFailed => return(false)
+        is Unit => return true
+        is AllocFailed => return false
 
 /// Makes room for `wanted` elements, starting at 4 slots and doubling until the request fits.
 /// :param wanted: The element count the buffer must hold.
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
-#[track_caller, reshaping]
+@track_caller
+@reshaping
 routine List[T].ensure_capacity(me: @Me, wanted: USize) -> Void
-require T: typename
-    room: Bool = me.make_room(wanted)
-    branch room
-        ? return()
-        : crash_allocation()
+needs T: typename
+    if me.make_room(wanted)
+        return
+    else
+        crash_allocation()
 
 /// Makes room for `wanted` elements: an empty buffer starts at 4 slots (or `wanted`, when larger), and a full one
 /// doubles until the request fits.
 /// :param wanted: The element count the buffer must hold.
 /// :returns: True when the buffer is big enough, false when the allocator failed (the list is left as it was).
-#reshaping
+@reshaping
 private routine List[T].make_room(me: @Me, wanted: USize) -> Bool
-require T: typename
+needs T: typename
     local capacity: USize = me.storage.count.peek()
 
-    enough: Bool = capacity.ge(wanted)
-    branch enough
-        ? return(true)
-        : choose()
-
-    block choose()
-        empty: Bool = capacity.eq(0)
-        branch empty
-            ? initial()
-            : double(capacity)
-
-    block initial()
+    if capacity >= wanted
+        return true
+    else if capacity == 0
         base: USize = 4
-        use_wanted: Bool = wanted.gt(base)
-        new_capacity: USize = use_wanted
-            ? wanted
-            : base
-        return(me.make_capacity(new_capacity))
-
-    block double(grown: USize)
-        next: USize = grown.mul(2)
-        enough: Bool = next.ge(wanted)
-        branch enough
-            ? return(me.make_capacity(next))
-            : double(next)
+        use_wanted: Bool = wanted > base
+        new_capacity: USize = when
+            use_wanted => wanted
+            else => base
+        return me.make_capacity(new_capacity)
+    else
+        while grown * 2 < wanted with grown: USize = capacity
+            continue with grown: next
+        then
+            return me.make_capacity(next)
 
 /// Appends `value` after the last element, growing the buffer when it is full.
 /// :param value: The element to append.
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails. See {List[T].add_last_result} for a recoverable form.
-#[track_caller, reshaping]
+@track_caller
+@reshaping
 routine List[T].add_last(me: @Me, value: T) -> Void
-require T: typename
+needs T: typename
     pushed: Result[Unit, AllocFailed] = me.add_last_result(value)
     when pushed
-        is Unit => return()
+        is Unit => return
         is AllocFailed => crash_allocation()
 
 /// `add_last`, returning an error instead of crashing when the allocator fails.
 /// :param value: The element to append.
 /// :returns: A value once the element is appended.
 /// :throws: Returns `AllocFailed` when the buffer must grow and the allocator fails.
-#reshaping
+@reshaping
 routine List[T].add_last_result(me: @Me, value: T) -> Result[Unit, AllocFailed]
-require T: typename
+needs T: typename
     count: USize = me.count.peek()
-    wanted: USize = count.add(1)
-    room: Bool = me.make_room(wanted)
-    branch room
-        ? continue
-        : return(AllocFailed())
+    wanted: USize = count + 1
+    if not me.make_room(wanted)
+        return AllocFailed()
     data: @T = me.storage.data.peek()
     data.stride(count).poke(value)
     me.count.poke(wanted)
-    return(Unit())
+    return Unit()
 
 /// Removes the last element and returns it.
 /// :returns: The removed element.
 /// :throws: Crashes with `AbsentValueError` when the list is empty. See {List[T].remove_last_checked}.
-#track_caller
+@track_caller
 routine List[T].remove_last(me: @Me) -> T
-require T: typename
+needs T: typename
     popped: Maybe[T] = me.remove_last_checked()
     when popped
-        is T as value => return(value)
+        is T as value => return value
         is Unit => crash_absent_value()
 
 /// `remove_last`, returning Unit instead of crashing on an empty list.
 /// :returns: The removed element.
 /// :absent: When the list is empty.
 routine List[T].remove_last_checked(me: @Me) -> Maybe[T]
-require T: typename
+needs T: typename
     local count: USize = me.count.peek()
 
-    empty: Bool = count.eq(0)
-    branch empty
-        ? return(Unit())
-        : pop()
-
-    block pop()
-        index: USize = count.sub(1)
+    if count == 0
+        return Unit()
+    else
+        index: USize = count - 1
         data: @T = me.storage.data.peek()
         value: T = data.stride(index).peek()
         me.count.poke(index)
-        return(value)
+        return value
 
 // -- element access ------------------------------------------------------------
 
@@ -209,205 +193,182 @@ require T: typename
 /// :param index: The zero-based position to read.
 /// :returns: A copy of the element.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`. See {List[T].getitem_checked}.
-#track_caller
+@track_caller
 routine List[T].getitem(me: Me, index: USize) -> T
-require T: typename
-    value: T = me.getview().getitem(index)
-    return(value)
+needs T: typename
+    value: T = me.getview()[index]
+    return value
 
 /// Reads the element at `index`.
 /// :param index: The zero-based position to read.
 /// :returns: A copy of the element.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`. See {List[T].getitem_checked}.
-#track_caller
+@track_caller
 routine List[T].getitem(me: @Me, index: USize) -> T
-require T: typename
-    value: T = me.getview().getitem(index)
-    return(value)
+needs T: typename
+    value: T = me.getview()[index]
+    return value
 
 /// `getitem`, returning Unit instead of crashing on an index past the end.
 /// :param index: The zero-based position to read.
 /// :returns: A copy of the element.
 /// :absent: When `index >= count`.
 routine List[T].getitem_checked(me: Me, index: USize) -> Maybe[T]
-require T: typename
+needs T: typename
     value: Maybe[T] = me.getview().getitem_checked(index)
-    return(value)
+    return value
 
 /// `getitem`, returning Unit instead of crashing on an index past the end.
 /// :param index: The zero-based position to read.
 /// :returns: A copy of the element.
 /// :absent: When `index >= count`.
 routine List[T].getitem_checked(me: @Me, index: USize) -> Maybe[T]
-require T: typename
+needs T: typename
     value: Maybe[T] = me.getview().getitem_checked(index)
-    return(value)
+    return value
 
 /// The address of element `index`, checked like getitem: a place to read or write in place. It stays valid until
 /// the list grows, shrinks, or is destructed.
 /// :param index: The zero-based position.
 /// :returns: The element's address.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
-#track_caller
+@track_caller
 routine List[T].getslot(me: Me, index: USize) -> @T
-require T: typename
+needs T: typename
     element: @T = me.getview().getslot(index)
-    return(element)
+    return element
 
 /// The address of element `index`, checked like getitem: a place to read or write in place. It stays valid until
 /// the list grows, shrinks, or is destructed.
 /// :param index: The zero-based position.
 /// :returns: The element's address.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
-#track_caller
+@track_caller
 routine List[T].getslot(me: @Me, index: USize) -> @T
-require T: typename
+needs T: typename
     element: @T = me.getview().getslot(index)
-    return(element)
+    return element
 
 /// `at`, returning Unit instead of crashing on an index past the end.
 /// :param index: The zero-based position.
 /// :returns: The element's address.
 /// :absent: When `index >= count`.
 routine List[T].getslot_checked(me: Me, index: USize) -> Maybe[@T]
-require T: typename
+needs T: typename
     count: USize = me.count
-    in_bounds: Bool = index.lt(count)
-    branch in_bounds
-        ? address()
-        : return(Unit())
-
-    block address()
+    if index < count
         data: @T = me.storage.data
         element: @T = data.stride(index)
-        return(element)
+        return element
+    else
+        return Unit()
 
 /// `at`, returning Unit instead of crashing on an index past the end.
 /// :param index: The zero-based position.
 /// :returns: The element's address.
 /// :absent: When `index >= count`.
 routine List[T].getslot_checked(me: @Me, index: USize) -> Maybe[@T]
-require T: typename
+needs T: typename
     element: Maybe[@T] = me.peek().getslot_checked(index)
-    return(element)
+    return element
 
 /// Overwrites the element at `index` with `value`.
 /// :param index: The zero-based position to write.
 /// :param value: The value to store.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
-#track_caller
+@track_caller
 routine List[T].setitem(me: @Me, index: USize, value: T) -> Void
-require T: typename
+needs T: typename
     view: Span[T] = me.getview()
-    view.setitem(index, value)
-    return()
+    view[index] = value
+    return
 
 /// The elements, borrowed: valid until the list grows, shrinks, or is destructed.
 /// :returns: A span of the `count` elements.
 routine List[T].getview(me: Me) -> Span[T]
-require T: typename
-    return(Span[T].construct(data: me.storage.data, count: me.count))
+needs T: typename
+    return Span[T].construct(data: me.storage.data, count: me.count)
 
 /// The elements, borrowed: valid until the list grows, shrinks, or is destructed.
 /// :returns: A span of the `count` elements.
 routine List[T].getview(me: @Me) -> Span[T]
-require T: typename
-    return(me.peek().getview())
+needs T: typename
+    return me.peek().getview()
 
 /// The `count` elements from `start`, borrowed, checked against the list's count.
 /// :param start: The index of the first element.
 /// :param count: The number of elements.
 /// :returns: A borrowed slice of those elements.
 /// :throws: Crashes with `IndexOutOfBoundsError` when the range runs past the end.
-#track_caller
+@track_caller
 routine List[T].getslice(me: Me, start: USize, count: USize) -> Span[T]
-require T: typename
+needs T: typename
     part: Span[T] = me.getview().getslice(start, count)
-    return(part)
+    return part
 
 /// The `count` elements from `start`, borrowed, checked against the list's count.
 /// :param start: The index of the first element.
 /// :param count: The number of elements.
 /// :returns: A borrowed slice of those elements.
 /// :throws: Crashes with `IndexOutOfBoundsError` when the range runs past the end.
-#track_caller
+@track_caller
 routine List[T].getslice(me: @Me, start: USize, count: USize) -> Span[T]
-require T: typename
+needs T: typename
     part: Span[T] = me.getview().getslice(start, count)
-    return(part)
+    return part
 
 /// Removes every element by resetting the count to `0`. The buffer and its capacity are kept for reuse, and elements are not destructed.
 routine List[T].clear(me: @Me) -> Void
-require T: typename
+needs T: typename
     me.count.poke(0)
-    return()
+    return
 
 /// Whether two lists hold equal elements in the same order.
 /// :param other: The list to compare with.
 /// :returns: `true` when the counts match and every element pair is equal.
 routine List[T].eq(me: Me, other: Me) -> Bool
-require T: typename, Equatable[T]
+needs T: typename, Equatable[T]
     local la: USize = me.count
     local pa: @T = me.storage.data
     local pb: @T = other.storage.data
 
     lb: USize = other.count
-    same_len: Bool = la.eq(lb)
-    branch same_len
-        ? scan()
-        : return(false)
-
-    block scan()
-        jump loop(0)
-
-    block loop(i: USize)
-        done: Bool = i.ge(la)
-        branch done
-            ? return(true)
-            : step(i)
-
-    block step(i: USize)
-        x: T = pa.stride(i).peek()
-        y: T = pb.stride(i).peek()
-        eq: Bool = x.eq(y)
-        branch eq
-            ? loop(i.add(1))
-            : return(false)
+    if la == lb
+        each i in 0 til la
+            x: T = pa.stride(i).peek()
+            y: T = pb.stride(i).peek()
+            if x == y
+                continue
+            else
+                return false
+        then
+            return true
+    else
+        return false
 
 /// Gives the list's memory back to its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
 /// :note: Does nothing on a hollow list (`.hollow()`, no allocator), and only resets the fields of a never-filled one.
-#track_caller
+@track_caller
 routine List[T].destruct(me: @Me) -> Void
-require T: typename
-    hollow: Bool = me.storage.manager.peek().is_null()
-    branch hollow
-        ? return()
-        : continue
+needs T: typename
+    if me.storage.manager.peek().is_null()
+        return
     me.storage.give_back()
     me.count.poke(0)
-    return()
+    return
 
 /// Destructs every element, then the collection itself: for elements the collection owns, such as inner lists.
 /// Elements that are only borrowed (a `Ptr` to memory owned elsewhere) must not be destructed this way.
-#track_caller
+@track_caller
 routine List[T].destruct_all(me: @Me) -> Void
-require T: typename, Destructible[T]
+needs T: typename, Destructible[T]
     local first: @T = me.storage.data.peek()
     local count: USize = me.count.peek()
 
-    jump each(0)
-
-    block each(i: USize)
-        done: Bool = i.ge(count)
-        branch done
-            ? finish()
-            : continue
+    each i in 0 til count
         first.stride(i).destruct()
-        jump each(i.add(1))
-
-    block finish()
-        me.destruct()
-        return()
+    me.destruct()
+    return
 
 // -- text ----------------------------------------------------------------------
 //
@@ -415,37 +376,35 @@ require T: typename, Destructible[T]
 // appends to it, and getview() views what it holds. The list's allocator is
 // the only place memory comes from.
 
-conform Writer[List[Byte]]
+obeys Writer[List[Byte]]
 
 /// Appends `count` bytes, growing through the list's allocator.
 /// :param data: The first byte to append.
 /// :param count: The number of bytes.
 /// :throws: Crashes with `MemoryAllocationError` when the buffer must grow and the allocator fails.
-#reshaping
+@reshaping
 routine List[Byte].write_bytes(me: @Me, data: @Byte, count: USize) -> Void
-    nothing: Bool = count.eq(0)
-    branch nothing
-        ? return()
-        : continue
+    if count == 0
+        return
     old: USize = me.count.peek()
-    new: USize = old.add(count)
+    new: USize = old + count
     me.ensure_capacity(new)
     base: @Byte = me.storage.data.peek()
     base.stride(old).copy(src: data, count)
     me.count.poke(new)
-    return()
+    return
 
 /// Ends the bytes with a NUL (not counted in `count`) and points at them,
 /// for C. Valid until the list next changes or is destructed.
 /// :returns: The NUL-terminated text.
 /// :throws: Crashes with `MemoryAllocationError` when the buffer must grow and the allocator fails.
-#reshaping
+@reshaping
 routine List[Byte].to[CStr](me: @Me) -> CStr
     count: USize = me.count.peek()
-    me.ensure_capacity(count.add(1))
+    me.ensure_capacity(count + 1)
     data: @Byte = me.storage.data.peek()
     data.stride(count).poke(0x00)
-    return(data.to[CStr]())
+    return data.to[CStr]()
 
 // -- text -----------------------------------------------------------------------
 
@@ -453,20 +412,20 @@ routine List[Byte].to[CStr](me: @Me) -> CStr
 /// :typeparam TWriter: The type of the Writer that receives the text.
 /// :param out: The writer to write to.
 routine List[T].represent_into[TWriter](me: Me, out: @TWriter) -> Void
-require T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
-    claim whole: @Me <- me
+needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
+    local whole: @Me <- me
     iter_val: ListIter[T] = .construct(whole)
-    claim iter: @ListIter[T] <- iter_val
+    local iter: @ListIter[T] <- iter_val
     diagnose_items[T, ListIter[T], TWriter](out, iter, open: "[", close: "]")
-    return()
+    return
 
 /// The elements in order, each diagnosed: [1, 2, 3].
 /// :typeparam TWriter: The type of the Writer that receives the text.
 /// :param out: The writer to write to.
 routine List[T].diagnose_into[TWriter](me: Me, out: @TWriter) -> Void
-require T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
-    claim whole: @Me <- me
+needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
+    local whole: @Me <- me
     iter_val: ListIter[T] = .construct(whole)
-    claim iter: @ListIter[T] <- iter_val
+    local iter: @ListIter[T] <- iter_val
     diagnose_items[T, ListIter[T], TWriter](out, iter, open: "[", close: "]")
-    return()
+    return

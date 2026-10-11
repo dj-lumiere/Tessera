@@ -8,46 +8,42 @@ import Standard/Os
 
 routine error_name(e: FsError) -> Span[Byte]
     when e
-        FsError.NOT_FOUND => return("NotFound")
-        FsError.PERMISSION_DENIED => return("PermissionDenied")
-        FsError.ALREADY_EXISTS => return("AlreadyExists")
-        FsError.NOT_A_DIRECTORY => return("NotADirectory")
-        FsError.IS_A_DIRECTORY => return("IsADirectory")
-        FsError.DIRECTORY_NOT_EMPTY => return("DirectoryNotEmpty")
-        FsError.CROSS_DEVICE => return("CrossDevice")
-        FsError.NAME_TOO_LONG => return("NameTooLong")
-        FsError.INVALID_PATH => return("InvalidPath")
-        FsError.NO_SPACE => return("NoSpace")
-        FsError.READ_ONLY => return("ReadOnly")
-        FsError.BUSY => return("Busy")
-        FsError.OUT_OF_MEMORY => return("OutOfMemory")
-        FsError.OTHER => return("Other")
+        FsError.NOT_FOUND => return "NotFound"
+        FsError.PERMISSION_DENIED => return "PermissionDenied"
+        FsError.ALREADY_EXISTS => return "AlreadyExists"
+        FsError.NOT_A_DIRECTORY => return "NotADirectory"
+        FsError.IS_A_DIRECTORY => return "IsADirectory"
+        FsError.DIRECTORY_NOT_EMPTY => return "DirectoryNotEmpty"
+        FsError.CROSS_DEVICE => return "CrossDevice"
+        FsError.NAME_TOO_LONG => return "NameTooLong"
+        FsError.INVALID_PATH => return "InvalidPath"
+        FsError.NO_SPACE => return "NoSpace"
+        FsError.READ_ONLY => return "ReadOnly"
+        FsError.BUSY => return "Busy"
+        FsError.OUT_OF_MEMORY => return "OutOfMemory"
+        FsError.OTHER => return "Other"
 
 routine report(what: Span[Byte], r: Result[Unit, FsError]) -> Void
     when r
-        is Unit => ok()
-        is FsError as error => failed(error)
-
-    block ok()
-        Out.write("{what}: ok\n")
-        return()
-
-    block failed(error: FsError)
-        Out.write("{what}: {error_name(error)}\n")
-        return()
+        is Unit =>
+            Out.write("{what}: ok\n")
+            return
+        is FsError as error =>
+            Out.write("{what}: {error_name(error)}\n")
+            return
 
 /// The file's text, or the error's name.
 routine contents(f: File, alloc: @MemoryManager) -> Memory[Byte]
     r: Result[Memory[Byte], FsError] = f.read_all_result(alloc)
     when r
-        is Memory[Byte] as text => return(text)
-        is FsError as error => return(Span[Byte].concat(a: error_name(error), b: "", alloc))
+        is Memory[Byte] as text => return text
+        is FsError as error => return Span[Byte].concat(a: error_name(error), b: "", alloc)
 
 routine size_of(f: File) -> U64
     m: Result[Metadata, FsError] = f.metadata_result()
     when m
-        is Metadata as info => return(info.size)
-        is FsError => return(U64.MAX)
+        is Metadata as info => return info.size
+        is FsError => return U64.MAX
 
 routine start() -> Void
     local alloc: @MemoryManager <- make_heap_memory()
@@ -64,126 +60,107 @@ routine start() -> Void
     report(what: "create_all again", r: deep.create_all_result())
     as_file: Bool = File.at(deep.path).is_file()
     Out.write("directory exists: {deep.is_present()}, is a file: {as_file}\n")
-    jump files()
+    a: Directory = root.subdir(name: "a", alloc)
+    hello: File = a.file(name: "hello.txt", alloc)
+    report(what: "write_all", r: hello.write_all_result("hello, 세계\n"))
+    Out.write("read_all: {contents(f: hello, alloc)}")
+    Out.write("size: {size_of(hello)}\n")
+    local appended: @FileHandle <- hello.open_append_result().unwrap()
+    appended.write("more")
+    Out.write("formatted write failed: {appended.has_failed()}\n")
+    appended.close()
+    Out.write("size after append: {size_of(hello)}\n")
+    local both: @FileHandle <- hello.open_read_write_result().unwrap()
+    at: U64 = both.seek_result(offset: -4, from: SeekFrom.END).unwrap()
+    Out.write("seek to end - 4: {at}\n")
+    local tail: @Array[Byte, 8] <- .hollow()
+    got: USize = both.read_bytes_result(buffer: tail.to[@Byte](), count: 8).unwrap()
+    back: Span[Byte] = Span[Byte].construct(data: tail.to[@Byte](), count: got)
+    Out.write("read back: {back}\n")
+    report(what: "set_size 5", r: both.set_size_result(5))
+    size: U64 = both.size_result().unwrap()
+    Out.write("size: {size}\n")
+    both.close()
+    copied: File = a.file(name: "copy.txt", alloc)
+    renamed: File = a.file(name: "renamed.txt", alloc)
+    bytes: U64 = hello.copy_to_result(copied).unwrap()
+    Out.write("copy_to: {bytes} bytes, {contents(f: copied, alloc)}\n")
+    report(what: "move_to", r: copied.move_to_result(renamed))
+    Out.write("old there: {copied.is_present()}, new there: {renamed.is_present()}\n")
+    report(what: "move_to_if_absent onto a file", r: renamed.move_to_if_absent_result(hello))
+    new_file: Result[FileHandle, FsError] = hello.create_new_result()
+    Out.write("create_new on a file: {error_name(new_file.unwrap_failure())}\n")
+    missing: Result[FileHandle, FsError] = a.file(name: "missing.txt", alloc).open_read_result()
+    Out.write("open missing: {error_name(missing.unwrap_failure())}\n")
+    report(what: "set_readonly", r: renamed.set_readonly_result(true))
+    ro: Bool = renamed.metadata_result().unwrap().readonly
+    Out.write("readonly: {ro}\n")
+    report(what: "set_readonly off", r: renamed.set_readonly_result(false))
+    rw: Bool = renamed.metadata_result().unwrap().readonly
+    Out.write("readonly: {rw}\n")
+    touched: File = a.file(name: "파일.txt", alloc)
+    report(what: "touch", r: touched.touch_result())
+    Out.write("touched: {touched.is_file()}, size {size_of(touched)}\n")
+    report(what: "open listing", r: iter.open_result(a))
+    0.poke_into(count)
+    0.poke_into(dirs)
+    false.poke_into(korean)
 
-    block files()
-        a: Directory = root.subdir(name: "a", alloc)
-        hello: File = a.file(name: "hello.txt", alloc)
-        report(what: "write_all", r: hello.write_all_result("hello, 세계\n"))
-        Out.write("read_all: {contents(f: hello, alloc)}")
-        Out.write("size: {size_of(hello)}\n")
-        claim appended: @FileHandle <- hello.open_append_result().unwrap()
-        appended.write("more")
-        Out.write("formatted write failed: {appended.has_failed()}\n")
-        appended.close()
-        Out.write("size after append: {size_of(hello)}\n")
-        claim both: @FileHandle <- hello.open_read_write_result().unwrap()
-        at: U64 = both.seek_result(offset: -4, from: SeekFrom.END).unwrap()
-        Out.write("seek to end - 4: {at}\n")
-        claim tail: @Array[Byte, 8] <- .hollow()
-        got: USize = both.read_bytes_result(buffer: tail.to[@Byte](), count: 8).unwrap()
-        back: Span[Byte] = Span[Byte].construct(data: tail.to[@Byte](), count: got)
-        Out.write("read back: {back}\n")
-        report(what: "set_size 5", r: both.set_size_result(5))
-        size: U64 = both.size_result().unwrap()
-        Out.write("size: {size}\n")
-        both.close()
-        jump names(a, hello)
-
-    block names(a: Directory, hello: File)
-        copied: File = a.file(name: "copy.txt", alloc)
-        renamed: File = a.file(name: "renamed.txt", alloc)
-        bytes: U64 = hello.copy_to_result(copied).unwrap()
-        Out.write("copy_to: {bytes} bytes, {contents(f: copied, alloc)}\n")
-        report(what: "move_to", r: copied.move_to_result(renamed))
-        Out.write("old there: {copied.is_present()}, new there: {renamed.is_present()}\n")
-        report(what: "move_to_if_absent onto a file", r: renamed.move_to_if_absent_result(hello))
-        new_file: Result[FileHandle, FsError] = hello.create_new_result()
-        Out.write("create_new on a file: {error_name(new_file.unwrap_failure())}\n")
-        missing: Result[FileHandle, FsError] = a.file(name: "missing.txt", alloc).open_read_result()
-        Out.write("open missing: {error_name(missing.unwrap_failure())}\n")
-        report(what: "set_readonly", r: renamed.set_readonly_result(true))
-        ro: Bool = renamed.metadata_result().unwrap().readonly
-        Out.write("readonly: {ro}\n")
-        report(what: "set_readonly off", r: renamed.set_readonly_result(false))
-        rw: Bool = renamed.metadata_result().unwrap().readonly
-        Out.write("readonly: {rw}\n")
-        touched: File = a.file(name: "파일.txt", alloc)
-        report(what: "touch", r: touched.touch_result())
-        Out.write("touched: {touched.is_file()}, size {size_of(touched)}\n")
-        jump listing(a, hello)
-
-    block listing(a: Directory, hello: File)
-        report(what: "open listing", r: iter.open_result(a))
-        0.poke_into(count)
-        0.poke_into(dirs)
-        false.poke_into(korean)
-        jump next(hello)
-
-    block next(hello: File)
+    while true
         e: Maybe[DirEntry] = iter.emit_checked()
-        when e
-            is DirEntry as d => continue
-            is Unit => listed(hello)
-        is_d: Bool = d.kind.eq(FileKind.DIRECTORY)
-        found: Bool = korean.peek().bitor(d.name.eq("파일.txt"))
-        count.peek().add(1).poke_into(count)
-        dirs.peek().add(is_d.to[U64]()).poke_into(dirs)
+        d: DirEntry = when e
+            is DirEntry as d => d
+            is Unit =>
+                iter.close()
+                Out.write("entries: {count.peek()}, directories: {dirs.peek()}, Korean name listed: {korean.peek()}\n")
+                f: File = File.at("/a/b/archive.tar.gz")
+                Out.write("name {f.name()}, stem {f.stem()}, extension {f.extension()}, parent {f.parent().path}\n")
+                p1: Span[Byte] = parent_path("a/b")
+                p2: Span[Byte] = parent_path("file.txt")
+                p3: Span[Byte] = parent_path("/")
+                p4: Span[Byte] = parent_path("/a")
+                Out.write("parent_path: [{p1}] [{p2}] [{p3}] [{p4}]\n")
+                e1: Span[Byte] = file_extension(".hidden")
+                e2: Span[Byte] = file_extension("file")
+                s1: Span[Byte] = file_stem(".hidden")
+                Out.write("hidden: stem [{s1}], extension [{e1}]; no extension: [{e2}]\n")
+                report(what: "set_current", r: root.set_current_result())
+                cwd: Directory = Directory.current_result(alloc).unwrap()
+                canonical: Directory = root.canonical_result(alloc).unwrap()
+                relative: File = File.at("x.txt")
+                absolute: File = relative.absolute_result(alloc).unwrap()
+                cwd_ok: Bool = cwd.name() == "tessera_fs_basic"
+                canonical_ok: Bool = canonical.name() == "tessera_fs_basic"
+                absolute_ok: Bool = absolute.name() == "x.txt"
+                Out.write("names right: current {cwd_ok}, canonical {canonical_ok}, absolute {absolute_ok}\n")
+                report(what: "set_current back", r: tmp.set_current_result())
+                whole: Mapping = hello.map_result(write: false, offset: 0, count: USize.MAX).unwrap()
+                w: Span[Byte] = Span[Byte].construct(data: whole.data(), count: whole.count())
+                Out.write("map: {w}\n")
+                whole.unmap()
+                part: Mapping = hello.map_result(write: false, offset: 1, count: 3).unwrap()
+                p: Span[Byte] = Span[Byte].construct(data: part.data(), count: part.count())
+                Out.write("map 1..4: {p}\n")
+                part.unmap()
+                past: Mapping = hello.map_result(write: false, offset: 100, count: 3).unwrap()
+                Out.write("map past the end: {past.count()}\n")
+                rw2: Mapping = hello.map_result(write: true, offset: 0, count: USize.MAX).unwrap()
+                rw2.data().poke(b'J')
+                rw2.unmap()
+                Out.write("after a mapped store: {contents(f: hello, alloc)}\n")
+                report(what: "delete_all", r: root.delete_all_result(alloc))
+                Out.write("root there: {root.is_present()}\n")
+                local made_dir: @Directory <- root
+                local made_file: @File <- hello
+                local given: @Directory <- Directory.at("given/as/a/literal")
+                made_dir.destruct()
+                made_file.destruct()
+                given.destruct()
+                Out.write("paths given back: {made_dir.path.count()} {made_file.path.count()}")
+                Out.write(", a literal kept: {given.path.peek()}\n")
+                return
+        is_d: Bool = d.kind == FileKind.DIRECTORY
+        found: Bool = korean.peek() | (d.name == "파일.txt")
+        (count.peek() + 1).poke_into(count)
+        (dirs.peek() + is_d.to[U64]()).poke_into(dirs)
         found.poke_into(korean)
-        jump next(hello)
-
-    block listed(hello: File)
-        iter.close()
-        Out.write("entries: {count.peek()}, directories: {dirs.peek()}, Korean name listed: {korean.peek()}\n")
-        jump paths(hello)
-
-    block paths(hello: File)
-        f: File = File.at("/a/b/archive.tar.gz")
-        Out.write("name {f.name()}, stem {f.stem()}, extension {f.extension()}, parent {f.parent().path}\n")
-        p1: Span[Byte] = parent_path("a/b")
-        p2: Span[Byte] = parent_path("file.txt")
-        p3: Span[Byte] = parent_path("/")
-        p4: Span[Byte] = parent_path("/a")
-        Out.write("parent_path: [{p1}] [{p2}] [{p3}] [{p4}]\n")
-        e1: Span[Byte] = file_extension(".hidden")
-        e2: Span[Byte] = file_extension("file")
-        s1: Span[Byte] = file_stem(".hidden")
-        Out.write("hidden: stem [{s1}], extension [{e1}]; no extension: [{e2}]\n")
-        report(what: "set_current", r: root.set_current_result())
-        cwd: Directory = Directory.current_result(alloc).unwrap()
-        canonical: Directory = root.canonical_result(alloc).unwrap()
-        relative: File = File.at("x.txt")
-        absolute: File = relative.absolute_result(alloc).unwrap()
-        cwd_ok: Bool = cwd.name().eq("tessera_fs_basic")
-        canonical_ok: Bool = canonical.name().eq("tessera_fs_basic")
-        absolute_ok: Bool = absolute.name().eq("x.txt")
-        Out.write("names right: current {cwd_ok}, canonical {canonical_ok}, absolute {absolute_ok}\n")
-        report(what: "set_current back", r: tmp.set_current_result())
-        jump mapped(hello)
-
-    block mapped(hello: File)
-        whole: Mapping = hello.map_result(write: false, offset: 0, count: USize.MAX).unwrap()
-        w: Span[Byte] = Span[Byte].construct(data: whole.data(), count: whole.count())
-        Out.write("map: {w}\n")
-        whole.unmap()
-        part: Mapping = hello.map_result(write: false, offset: 1, count: 3).unwrap()
-        p: Span[Byte] = Span[Byte].construct(data: part.data(), count: part.count())
-        Out.write("map 1..4: {p}\n")
-        part.unmap()
-        past: Mapping = hello.map_result(write: false, offset: 100, count: 3).unwrap()
-        Out.write("map past the end: {past.count()}\n")
-        rw: Mapping = hello.map_result(write: true, offset: 0, count: USize.MAX).unwrap()
-        rw.data().poke(b'J')
-        rw.unmap()
-        Out.write("after a mapped store: {contents(f: hello, alloc)}\n")
-        report(what: "delete_all", r: root.delete_all_result(alloc))
-        Out.write("root there: {root.is_present()}\n")
-        claim made_dir: @Directory <- root
-        claim made_file: @File <- hello
-        claim given: @Directory <- Directory.at("given/as/a/literal")
-        made_dir.destruct()
-        made_file.destruct()
-        given.destruct()
-        Out.write("paths given back: {made_dir.path.count()} {made_file.path.count()}")
-        Out.write(", a literal kept: {given.path.peek()}\n")
-        return()

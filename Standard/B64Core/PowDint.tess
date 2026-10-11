@@ -20,45 +20,45 @@ record CmF64PowDint
 /// :param v: The 128-bit value.
 /// :returns: The upper limb.
 routine cm_b64_pow_hi(v: U128) -> U64
-    return(v.shr(64).to_wrap[U64]())
+    return (v >> 64).to_wrap[U64]()
 
 /// The lower 64 bits of v.
 /// :param v: The 128-bit value.
 /// :returns: The lower limb.
 routine cm_b64_pow_lo(v: U128) -> U64
-    return(v.to_wrap[U64]())
+    return v.to_wrap[U64]()
 
 /// hi 2^64 + lo.
 /// :param hi: The upper limb.
 /// :param lo: The lower limb.
 /// :returns: The 128-bit value.
 routine cm_b64_pow_join(hi: U64, lo: U64) -> U128
-    hi_part: U128 = hi.to[U128]().shl(64)
-    return(hi_part.bitor(lo.to[U128]()))
+    hi_part: U128 = hi.to[U128]() << 64
+    return hi_part | lo.to[U128]()
 
 /// The zero CmF64PowDint.
 /// :returns: Zero, with exponent -1076.
 private routine cm_b64_pow_dint_zero() -> CmF64PowDint
-    return(CmF64PowDint(r: 0, ex: -1076, sgn: 0))
+    return CmF64PowDint(r: 0, ex: -1076, sgn: 0)
 
 /// Compares |a| and |b|: -1, 0 or 1.
 /// :param a: The first value.
 /// :param b: The second value.
 /// :returns: -1 when |a| < |b|, 0 when they are equal, 1 when |a| > |b|.
 routine cm_b64_pow_cmp_dint_abs(a: CmF64PowDint, b: CmF64PowDint) -> S64
-    a_zero: Bool = cm_b64_pow_hi(a.r).eq(0)
-    b_zero: Bool = cm_b64_pow_hi(b.r).eq(0)
-    both: Bool = a_zero.bitand(b_zero)
+    a_zero: Bool = cm_b64_pow_hi(a.r) == 0
+    b_zero: Bool = cm_b64_pow_hi(b.r) == 0
+    both: Bool = a_zero and b_zero
     by_ex: S32 = a.ex.compare(b.ex)
     by_r: S32 = a.r.compare(b.r)
-    c: S32 = by_ex.ne(0)
-        ? by_ex
-        : by_r
+    c: S32 = when
+        by_ex != 0 => by_ex
+        else => by_r
     when
-        both => return(0)
-        a_zero => return(-1)
-        b_zero => return(1)
-        else => return(c.to[S64]())
+        both => return 0
+        a_zero => return -1
+        b_zero => return 1
+        else => return c.to[S64]()
 
 /// Compares |a| and |b| using only their upper limbs: -1, 0 or 1.
 /// :param a: The first value.
@@ -67,73 +67,57 @@ routine cm_b64_pow_cmp_dint_abs(a: CmF64PowDint, b: CmF64PowDint) -> S64
 private routine cm_b64_pow_cmp_dint_11(a: CmF64PowDint, b: CmF64PowDint) -> S64
     by_ex: S32 = a.ex.compare(b.ex)
     by_r: S32 = cm_b64_pow_hi(a.r).compare(cm_b64_pow_hi(b.r))
-    c: S32 = by_ex.ne(0)
-        ? by_ex
-        : by_r
-    return(c.to[S64]())
+    c: S32 = when
+        by_ex != 0 => by_ex
+        else => by_r
+    return c.to[S64]()
 
 /// a + b with error below 2 ulps (exact in the Sterbenz case).
 /// :param a: The first addend.
 /// :param b: The second addend.
 /// :returns: The sum.
 routine cm_b64_pow_add_dint(a: CmF64PowDint, b: CmF64PowDint) -> CmF64PowDint
-    a_zero: Bool = a.r.eq(0)
-    branch a_zero
-        ? return(b)
-        : continue
+    if a.r == 0
+        return b
     c: S64 = cm_b64_pow_cmp_dint_abs(a, b)
-    tie: Bool = c.eq(0)
-    branch tie
-        ? tie()
-        : continue
-    swap: Bool = c.lt(0)
-    aa: CmF64PowDint = swap
-        ? b
-        : a
-    bb: CmF64PowDint = swap
-        ? a
-        : b
-    k: U64 = aa.ex.sub_wrap(bb.ex).to_wrap[U64]()
-    big_b: U128 = bb.r.shr(k.to[U128]())
-    differ: Bool = aa.sgn.ne(bb.sgn)
-    branch differ
-        ? subtract(aa, bb, big_b, k)
-        : add(aa, big_b)
-
-    block tie()
-        differ: Bool = a.sgn.ne(b.sgn)
-        branch differ
-            ? return(cm_b64_pow_dint_zero())
-            : return(CmF64PowDint(r: a.r, ex: a.ex.add(1), sgn: a.sgn))
-
-    block subtract(aa: CmF64PowDint, bb: CmF64PowDint, big_b: U128, k: U64)
-        cc: U128 = aa.r.sub_wrap(big_b)
-        ex: U64 = cc.leading_zeros().to_wrap[U64]()
-        renorm: Bool = ex.gt(0)
-        branch renorm
-            ? renormalize(aa, bb, big_b, k, ex)
-            : normalize(cc, 0, aa.ex, aa.sgn)
-
-    // redo the subtraction with both operands shifted left by ex, so that no bit of b is lost
-    block renormalize(aa: CmF64PowDint, bb: CmF64PowDint, big_b: U128, k: U64, ex: U64)
-        shifted_a: U128 = aa.r.shl(ex.to[U128]())
-        near: Bool = k.eq(1)
-        shifted_b: U128 = near
-            ? bb.r.shl(ex.sub(1).to[U128]())
-            : big_b.shl(ex.to[U128]())
-        cc: U128 = shifted_a.sub_wrap(shifted_b)
-        jump normalize(cc, cm_b64_pow_hi(cc).leading_zeros(), aa.ex.sub(ex.to[S64]()), aa.sgn)
-
-    block normalize(cc: U128, ex: U64, rex: S64, sgn: U64)
-        return(CmF64PowDint(r: cc.shl(ex.to[U128]()), ex: rex.sub(ex.to[S64]()), sgn: sgn))
-
-    block add(aa: CmF64PowDint, big_b: U128)
-        cc: U128 = aa.r.add_wrap(big_b)
-        carry: Bool = cc.lt(aa.r)
-        branch carry
-            ? return(CmF64PowDint(r: U128.shl(1, 127).bitor(cc.shr(1)), ex: aa.ex.add(1),
-                sgn: aa.sgn))
-            : return(CmF64PowDint(r: cc, ex: aa.ex, sgn: aa.sgn))
+    if c == 0
+        if a.sgn != b.sgn
+            return cm_b64_pow_dint_zero()
+        else
+            return CmF64PowDint(r: a.r, ex: a.ex + 1, sgn: a.sgn)
+    swap: Bool = c < 0
+    aa: CmF64PowDint = when
+        swap => b
+        else => a
+    bb: CmF64PowDint = when
+        swap => a
+        else => b
+    k: U64 = (aa.ex -% bb.ex).to_wrap[U64]()
+    big_b: U128 = bb.r >> k.to[U128]()
+    differ: Bool = aa.sgn != bb.sgn
+    values2: (U128, U64, S64, U64) = when
+        differ =>
+            cc: U128 = aa.r -% big_b
+            ex: U64 = cc.leading_zeros().to_wrap[U64]()
+            if ex > 0
+                // redo the subtraction with both operands shifted left by ex, so that no bit of b is lost
+                shifted_a: U128 = aa.r << ex.to[U128]()
+                near: Bool = k == 1
+                shifted_b: U128 = when
+                    near => bb.r << (ex - 1).to[U128]()
+                    else => big_b << ex.to[U128]()
+                cc2: U128 = shifted_a -% shifted_b
+                becomes (cc2, cm_b64_pow_hi(cc2).leading_zeros(), aa.ex - ex.to[S64](), aa.sgn)
+            else
+                becomes (cc, 0, aa.ex, aa.sgn)
+        else =>
+            cc: U128 = aa.r +% big_b
+            if cc < aa.r
+                return CmF64PowDint(r: U128.shl(1, 127) | (cc >> 1), ex: aa.ex + 1, sgn: aa.sgn)
+            else
+                return CmF64PowDint(r: cc, ex: aa.ex, sgn: aa.sgn)
+    cc, ex, rex, sgn = values2
+    return CmF64PowDint(r: cc << ex.to[U128](), ex: rex - ex.to[S64](), sgn: sgn)
 
 /// a + b using only the upper limbs of a and b, with error below 2 ulps (64-bit ulps). The lower limb of the
 /// result keeps the lower limb of b, as the C code (which writes into b) does.
@@ -141,70 +125,67 @@ routine cm_b64_pow_add_dint(a: CmF64PowDint, b: CmF64PowDint) -> CmF64PowDint
 /// :param b: The second addend.
 /// :returns: The sum.
 private routine cm_b64_pow_add_dint_11(a: CmF64PowDint, b: CmF64PowDint) -> CmF64PowDint
-    a_zero: Bool = cm_b64_pow_hi(a.r).eq(0)
-    b_zero: Bool = cm_b64_pow_hi(b.r).eq(0)
+    a_zero: Bool = cm_b64_pow_hi(a.r) == 0
     when
-        a_zero => return(b)
-        b_zero => return(a)
-        else => compare()
+        a_zero => return b
+        cm_b64_pow_hi(b.r) == 0 => return a
+        else => jump compare()
 
     block compare()
         stale: U64 = cm_b64_pow_lo(b.r)
         c: S64 = cm_b64_pow_cmp_dint_11(a, b)
-        tie: Bool = c.eq(0)
-        branch tie
-            ? tie()
-            : continue
-        swap: Bool = c.lt(0)
-        aa: CmF64PowDint = swap
-            ? b
-            : a
-        bb: CmF64PowDint = swap
-            ? a
-            : b
+        if c == 0
+            jump tie()
+        swap: Bool = c < 0
+        aa: CmF64PowDint = when
+            swap => b
+            else => a
+        bb: CmF64PowDint = when
+            swap => a
+            else => b
         big_a: U64 = cm_b64_pow_hi(aa.r)
-        apart: Bool = aa.ex.gt(bb.ex)
-        k: U64 = apart
-            ? aa.ex.sub_wrap(bb.ex).to_wrap[U64]()
-            : 0
-        big_b: U64 = cm_b64_pow_hi(bb.r).shr(k)
-        differ: Bool = aa.sgn.ne(bb.sgn)
-        branch differ
-            ? subtract(big_a, big_b, aa.ex, aa.sgn, stale)
-            : add(big_a, big_b, aa.ex, aa.sgn, stale)
+        apart: Bool = aa.ex > bb.ex
+        k: U64 = when
+            apart => (aa.ex -% bb.ex).to_wrap[U64]()
+            else => 0
+        big_b: U64 = cm_b64_pow_hi(bb.r) >> k
+        if aa.sgn != bb.sgn
+            jump subtract(big_a, big_b, aa.ex, aa.sgn, stale)
+        else
+            jump add(big_a, big_b, aa.ex, aa.sgn, stale)
 
     block tie()
-        differ: Bool = a.sgn.ne(b.sgn)
-        branch differ
-            ? return(cm_b64_pow_dint_zero())
-            : return(CmF64PowDint(r: a.r, ex: a.ex.add(1), sgn: a.sgn))
+        if a.sgn != b.sgn
+            return cm_b64_pow_dint_zero()
+        else
+            return CmF64PowDint(r: a.r, ex: a.ex + 1, sgn: a.sgn)
 
     block subtract(big_a: U64, big_b: U64, rex: S64, sgn: U64, stale: U64)
-        cc: U64 = big_a.sub_wrap(big_b)
+        cc: U64 = big_a -% big_b
         ex: U64 = cc.leading_zeros()
-        renorm: Bool = ex.gt(0)
-        branch renorm
-            ? renormalize(big_a, big_b, ex, rex, sgn, stale)
-            : normalize(cc, 0, rex, sgn, stale)
+        if ex > 0
+            jump renormalize(big_a, big_b, ex, rex, sgn, stale)
+        else
+            jump normalize(cc, 0, rex, sgn, stale)
 
     block renormalize(big_a: U64, big_b: U64, ex: U64, rex: S64, sgn: U64, stale: U64)
-        cc: U64 = big_a.shl(ex).sub_wrap(big_b.shl(ex))
-        jump normalize(cc, cc.leading_zeros(), rex.sub(ex.to[S64]()), sgn, stale)
+        cc: U64 = (big_a << ex) -% (big_b << ex)
+        jump normalize(cc, cc.leading_zeros(), rex - ex.to[S64](), sgn, stale)
 
     block normalize(cc: U64, ex: U64, rex: S64, sgn: U64, stale: U64)
-        r: U128 = cm_b64_pow_join(hi: cc.shl(ex), lo: stale)
-        return(CmF64PowDint(r: r, ex: rex.sub(ex.to[S64]()), sgn: sgn))
+        r: U128 = cm_b64_pow_join(hi: cc << ex, lo: stale)
+        return CmF64PowDint(r: r, ex: rex - ex.to[S64](), sgn: sgn)
 
     block add(big_a: U64, big_b: U64, rex: S64, sgn: U64, stale: U64)
-        cc: U64 = big_a.add_wrap(big_b)
-        carry: Bool = cc.lt(big_a)
-        hi: U64 = carry
-            ? cc.shr(1).bitor(0x8000000000000000)
-            : cc
-        ex: S64 = carry
-            ? rex.add(1)
-            : rex
-        return(CmF64PowDint(r: cm_b64_pow_join(hi, lo: stale), ex: ex, sgn: sgn))
+        cc: U64 = big_a +% big_b
+        carry: Bool = cc < big_a
+        hi: U64 = when
+            carry => (cc >> 1) | 0x8000000000000000
+            else => cc
+        ex: S64 = when
+            carry => rex + 1
+            else => rex
+        return CmF64PowDint(r: cm_b64_pow_join(hi, lo: stale), ex: ex, sgn: sgn)
 
 /// Normalizes a 128-bit product whose top bit is at position 126 or 127.
 /// :param r: The product's 128 bits.
@@ -212,14 +193,14 @@ private routine cm_b64_pow_add_dint_11(a: CmF64PowDint, b: CmF64PowDint) -> CmF6
 /// :param sgn: The sign bit.
 /// :returns: The normalized value.
 private routine cm_b64_pow_dint_norm(r: U128, ex: S64, sgn: U64) -> CmF64PowDint
-    top: Bool = r.shr(127).ne(0)
-    rr: U128 = top
-        ? r
-        : r.shl(1)
-    rex: S64 = top
-        ? ex.add(1)
-        : ex
-    return(CmF64PowDint(r: rr, ex: rex, sgn: sgn))
+    top: Bool = r >> 127 != 0
+    rr: U128 = when
+        top => r
+        else => r << 1
+    rex: S64 = when
+        top => ex + 1
+        else => ex
+    return CmF64PowDint(r: rr, ex: rex, sgn: sgn)
 
 /// a b with error below 6 ulps.
 /// :param a: The first factor.
@@ -232,8 +213,8 @@ private routine cm_b64_pow_mul_dint(a: CmF64PowDint, b: CmF64PowDint) -> CmF64Po
     m1: U128 = ah.mul_wide(bl)
     m2: U128 = cm_b64_pow_lo(a.r).mul_wide(bh)
     r0: U128 = ah.mul_wide(bh)
-    r: U128 = r0.add_wrap(m1.shr(64).add_wrap(m2.shr(64)))
-    return(cm_b64_pow_dint_norm(r, ex: a.ex.add(b.ex), sgn: a.sgn.bitxor(b.sgn)))
+    r: U128 = r0 +% ((m1 >> 64) +% (m2 >> 64))
+    return cm_b64_pow_dint_norm(r, ex: a.ex + b.ex, sgn: a.sgn ^ b.sgn)
 
 /// a b assuming the lower limb of b is zero, with error below 2 ulps.
 /// :param a: The first factor.
@@ -243,8 +224,7 @@ routine cm_b64_pow_mul_dint_21(a: CmF64PowDint, b: CmF64PowDint) -> CmF64PowDint
     bh: U64 = cm_b64_pow_hi(b.r)
     hi: U128 = cm_b64_pow_hi(a.r).mul_wide(bh)
     lo: U128 = cm_b64_pow_lo(a.r).mul_wide(bh)
-    return(cm_b64_pow_dint_norm(r: hi.add_wrap(lo.shr(64)), ex: a.ex.add(b.ex),
-        sgn: a.sgn.bitxor(b.sgn)))
+    return cm_b64_pow_dint_norm(r: hi +% (lo >> 64), ex: a.ex + b.ex, sgn: a.sgn ^ b.sgn)
 
 /// a b using only the upper limbs of a and b (exact).
 /// :param a: The first factor.
@@ -252,75 +232,71 @@ routine cm_b64_pow_mul_dint_21(a: CmF64PowDint, b: CmF64PowDint) -> CmF64PowDint
 /// :returns: The product of the upper limbs.
 private routine cm_b64_pow_mul_dint_11(a: CmF64PowDint, b: CmF64PowDint) -> CmF64PowDint
     r: U128 = cm_b64_pow_hi(a.r).mul_wide(cm_b64_pow_hi(b.r))
-    return(cm_b64_pow_dint_norm(r, ex: a.ex.add(b.ex), sgn: a.sgn.bitxor(b.sgn)))
+    return cm_b64_pow_dint_norm(r, ex: a.ex + b.ex, sgn: a.sgn ^ b.sgn)
 
 /// a b for an integer b, with error below 1 ulp.
 /// :param a: The value.
 /// :param b: The integer factor.
 /// :returns: The product.
 private routine cm_b64_pow_mul_dint_int64(a: CmF64PowDint, b: S64) -> CmF64PowDint
-    zero: Bool = b.eq(0)
-    branch zero
-        ? return(cm_b64_pow_dint_zero())
-        : continue
-    neg: Bool = b.lt(0)
+    if b == 0
+        return cm_b64_pow_dint_zero()
+    neg: Bool = b < 0
     c0: U64 = b.to_wrap[U64]()
-    c: U64 = neg
-        ? U64.sub_wrap(0, c0)
-        : c0
-    sgn: U64 = neg
-        ? a.sgn.bitxor(1)
-        : a.sgn
+    c: U64 = when
+        neg => U64.sub_wrap(0, c0)
+        else => c0
+    sgn: U64 = when
+        neg => a.sgn ^ 1
+        else => a.sgn
     r0: U128 = cm_b64_pow_hi(a.r).mul_wide(c)
     rh: U64 = cm_b64_pow_hi(r0)
-    m: U64 = rh.ne(0)
-        ? rh.leading_zeros()
-        : 64
-    r1: U128 = r0.shl(m.to[U128]())
-    rex: S64 = a.ex.add(64).sub(m.to[S64]())
+    m: U64 = when
+        rh != 0 => rh.leading_zeros()
+        else => 64
+    r1: U128 = r0 << m.to[U128]()
+    rex: S64 = a.ex + 64 - m.to[S64]()
     l0: U128 = cm_b64_pow_lo(a.r).mul_wide(c)
-    l: U128 = l0.shl(m.sub_wrap(1).to[U128]()).shr(63)
-    r: U128 = r1.add_wrap(l)
-    carry: Bool = r.lt(l)
-    branch carry
-        ? return(CmF64PowDint(r: U128.shl(1, 127).bitor(r.shr(1)), ex: rex.add(1), sgn: sgn))
-        : return(CmF64PowDint(r: r, ex: rex, sgn: sgn))
+    l: U128 = (l0 << (m -% 1).to[U128]()) >> 63
+    r: U128 = r1 +% l
+    if r < l
+        return CmF64PowDint(r: U128.shl(1, 127) | (r >> 1), ex: rex + 1, sgn: sgn)
+    else
+        return CmF64PowDint(r: r, ex: rex, sgn: sgn)
 
 /// A nonzero finite B64 as a CmF64PowDint (exact).
 /// :returns: `me` as a normalized CmF64PowDint.
 routine B64.to[CmF64PowDint](me: Me) -> CmF64PowDint
     u: U64 = me.bits()
-    exp_field: U64 = u.shr(52).bitand(0x7FF)
+    exp_field: U64 = (u >> 52) & 0x7FF
     e0: S64 = exp_field.to[S64]()
-    m0: U64 = u.bitand(0x000FFFFFFFFFFFFF)
-    normal: Bool = e0.ne(0)
-    m1: U64 = normal
-        ? m0.add(0x0010000000000000)
-        : m0
-    e1: S64 = e0.sub(0x3FF)
+    m0: U64 = u & 0x000FFFFFFFFFFFFF
+    normal: Bool = e0 != 0
+    m1: U64 = when
+        normal => m0 + 0x0010000000000000
+        else => m0
+    e1: S64 = e0 - 0x3FF
     t: U64 = m1.leading_zeros()
-    sgn: U64 = me.lt(0.0)
-        ? 1
-        : 0
-    e: S64 = t.gt(11)
-        ? e1.sub(t.to[S64]().sub(12))
-        : e1
-    return(CmF64PowDint(r: cm_b64_pow_join(hi: m1.shl(t), lo: 0), ex: e, sgn: sgn))
+    sgn: U64 = when
+        me < 0.0 => 1
+        else => 0
+    e: S64 = when
+        t > 11 => e1 - (t.to[S64]() - 12)
+        else => e1
+    return CmF64PowDint(r: cm_b64_pow_join(hi: m1 << t, lo: 0), ex: e, sgn: sgn)
 
 /// a as an integer, rounded toward zero.
 /// :param a: The value, below 2^63 in magnitude.
 /// :returns: The integer part of `a`.
 private routine cm_b64_pow_dint_toi(a: CmF64PowDint) -> S64
-    small: Bool = a.ex.lt(0)
-    branch small
-        ? return(0)
-        : continue
-    integer_part: U64 = cm_b64_pow_hi(a.r).shr(S64.sub(63, a.ex).to_wrap[U64]())
+    if a.ex < 0
+        return 0
+    integer_part: U64 = cm_b64_pow_hi(a.r) >> S64.sub(63, a.ex).to_wrap[U64]()
     r: S64 = integer_part.to_wrap[S64]()
-    neg: Bool = a.sgn.ne(0)
-    branch neg
-        ? return(S64.sub(0, r))
-        : return(r)
+    if a.sgn != 0
+        return S64.sub(0, r)
+    else
+        return r
 
 /// log(1+z) for |z| <= 2^-13 (lower limb of z zero), with relative error below 2^-124.82.
 /// :param z: The reduced argument.
@@ -337,17 +313,13 @@ private routine cm_b64_pow_p_2(z: CmF64PowDint) -> CmF64PowDint
     r7: CmF64PowDint = cm_b64_pow_mul_dint_11(a: z, b: r6)
     r8: CmF64PowDint = cm_b64_pow_add_dint(a: cm_b64_pow_p_2_at(4), b: r7)
     r8.poke_into(r)
-    jump horner(5)
 
-    block horner(k: USize)
+    each k in 5 til 9
         zr: CmF64PowDint = cm_b64_pow_mul_dint_21(a: r.peek(), b: z)
-        done: Bool = k.eq(9)
-        branch done
-            ? return(zr)
-            : continue
         next: CmF64PowDint = cm_b64_pow_add_dint(a: cm_b64_pow_p_2_at(k), b: zr)
         next.poke_into(r)
-        jump horner(k.add(1))
+    then
+        return zr
 
 /// exp(y) for |y| < 0.00016923, with relative error below 2^-122.29.
 /// :param y: The reduced argument.
@@ -362,79 +334,68 @@ private routine cm_b64_pow_q_2(y: CmF64PowDint) -> CmF64PowDint
     r5: CmF64PowDint = cm_b64_pow_mul_dint_11(a: y, b: r4)
     r6: CmF64PowDint = cm_b64_pow_add_dint(a: cm_b64_pow_q_2_at(3), b: r5)
     r6.poke_into(r)
-    jump horner(4)
 
-    block horner(k: USize)
-        done: Bool = k.eq(8)
-        branch done
-            ? return(r.peek())
-            : continue
+    each k in 4 til 8
         yr: CmF64PowDint = cm_b64_pow_mul_dint(a: y, b: r.peek())
         next: CmF64PowDint = cm_b64_pow_add_dint(a: cm_b64_pow_q_2_at(k), b: yr)
         next.poke_into(r)
-        jump horner(k.add(1))
+    then
+        return r.peek()
 
 /// log(x) with relative error below 2^-122.88.
 /// :param x: The positive argument.
 /// :returns: log(`x`).
 routine cm_b64_pow_log_2(x: CmF64PowDint) -> CmF64PowDint
     xh: U64 = cm_b64_pow_hi(x.r)
-    above: Bool = xh.gt(0xB504F333F9DE6484)
-    big_e: S64 = above
-        ? x.ex.add(1)
-        : x.ex
-    i: U64 = above  // 90 <= i <= 181, sqrt(2)/2 < x < sqrt(2)
-        ? xh.shr(57)
-        : xh.shr(56)
-    ii: USize = i.sub(90).to[USize]()
-    xx: CmF64PowDint = CmF64PowDint(r: x.r, ex: x.ex.sub(big_e), sgn: x.sgn)
+    above: Bool = xh > 0xB504F333F9DE6484
+    big_e: S64 = when
+        above => x.ex + 1
+        else => x.ex
+    i: U64 = when
+        above => xh >> 57
+        else => xh >> 56
+    // 90 <= i <= 181, sqrt(2)/2 < x < sqrt(2)
+    ii: USize = (i - 90).to[USize]()
+    xx: CmF64PowDint = CmF64PowDint(r: x.r, ex: x.ex - big_e, sgn: x.sgn)
     z1: CmF64PowDint = cm_b64_pow_mul_dint_11(a: xx, b: cm_b64_pow_inverse_2_1(ii))
-    j: U64 = cm_b64_pow_hi(z1.r).shr(S64.sub(50, z1.ex).to_wrap[U64]())
-    jj: USize = j.sub(8128).to[USize]()
+    j: U64 = cm_b64_pow_hi(z1.r) >> S64.sub(50, z1.ex).to_wrap[U64]()
+    jj: USize = (j - 8128).to[USize]()
     z2: CmF64PowDint = cm_b64_pow_mul_dint_11(a: z1, b: cm_b64_pow_inverse_2_2(jj))
     m_one: CmF64PowDint = CmF64PowDint(r: U128.shl(1, 127), ex: 0, sgn: 1)
     z: CmF64PowDint = cm_b64_pow_add_dint(a: m_one, b: z2)
-    log2: CmF64PowDint = CmF64PowDint(
-        r: cm_b64_pow_join(hi: 0xB17217F7D1CF79AB, lo: 0xC9E3B39803F2F6AF), ex: -1, sgn: 0)
+    log2: CmF64PowDint = CmF64PowDint(r: cm_b64_pow_join(hi: 0xB17217F7D1CF79AB, lo: 0xC9E3B39803F2F6AF), ex: -1, sgn: 0)
     r: CmF64PowDint = cm_b64_pow_mul_dint_int64(a: log2, b: big_e)
     p0: CmF64PowDint = cm_b64_pow_p_2(z)
     p1: CmF64PowDint = cm_b64_pow_add_dint(a: cm_b64_pow_log_inv_2_2(jj), b: p0)
     p2: CmF64PowDint = cm_b64_pow_add_dint(a: cm_b64_pow_log_inv_2_1(ii), b: p1)
-    return(cm_b64_pow_add_dint(a: p2, b: r))
+    return cm_b64_pow_add_dint(a: p2, b: r)
 
 /// exp(x) for |x| < 744.45 with relative error below 2^-121.70. For larger |x| a value whose exponent marks the
 /// underflow (-1076) or overflow (1025).
 /// :param x: The argument.
 /// :returns: exp(`x`), or a value with exponent -1076 or 1025 when |x| is too large.
 routine cm_b64_pow_exp_2(x: CmF64PowDint) -> CmF64PowDint
-    extreme: Bool = x.ex.ge(10)
-    branch extreme
-        ? extreme()
-        : continue
-    log2: CmF64PowDint = CmF64PowDint(
-        r: cm_b64_pow_join(hi: 0xB17217F7D1CF79AB, lo: 0xC9E3B39803F2F6AF), ex: -1, sgn: 0)
-    log2_inv: CmF64PowDint = CmF64PowDint(r: cm_b64_pow_join(hi: 0xB8AA3B295C17F0BC, lo: 0), ex: 12,
-        sgn: 0)
+    if x.ex >= 10
+        if x.sgn == 1
+            return CmF64PowDint(r: x.r, ex: -1076, sgn: 0)
+        else
+            return CmF64PowDint(r: x.r, ex: 1025, sgn: 0)
+    log2: CmF64PowDint = CmF64PowDint(r: cm_b64_pow_join(hi: 0xB17217F7D1CF79AB, lo: 0xC9E3B39803F2F6AF), ex: -1, sgn: 0)
+    log2_inv: CmF64PowDint = CmF64PowDint(r: cm_b64_pow_join(hi: 0xB8AA3B295C17F0BC, lo: 0), ex: 12, sgn: 0)
     kk0: CmF64PowDint = cm_b64_pow_mul_dint_11(a: x, b: log2_inv)
     k: S64 = cm_b64_pow_dint_toi(kk0)
     kk1: CmF64PowDint = cm_b64_pow_mul_dint_int64(a: log2, b: k)
-    kk: CmF64PowDint = CmF64PowDint(r: kk1.r, ex: kk1.ex.sub(12), sgn: kk1.sgn.bitxor(1))
+    kk: CmF64PowDint = CmF64PowDint(r: kk1.r, ex: kk1.ex - 12, sgn: kk1.sgn ^ 1)
     y: CmF64PowDint = cm_b64_pow_add_dint(a: x, b: kk)
-    big_m: S64 = k.shr(12)
-    k_high: U64 = k.shr(6).to_wrap[U64]()
-    i2: USize = k_high.bitand(0x3F).to[USize]()
+    big_m: S64 = k >> 12
+    k_high: U64 = (k >> 6).to_wrap[U64]()
+    i2: USize = (k_high & 0x3F).to[USize]()
     k_bits: U64 = k.to_wrap[U64]()
-    i1: USize = k_bits.bitand(0x3F).to[USize]()
+    i1: USize = (k_bits & 0x3F).to[USize]()
     r0: CmF64PowDint = cm_b64_pow_q_2(y)
     r1: CmF64PowDint = cm_b64_pow_mul_dint(a: cm_b64_pow_t1_2(i2), b: r0)
     r2: CmF64PowDint = cm_b64_pow_mul_dint(a: cm_b64_pow_t2_2(i1), b: r1)
-    return(CmF64PowDint(r: r2.r, ex: r2.ex.add(big_m), sgn: r2.sgn))
-
-    block extreme()
-        neg: Bool = x.sgn.eq(1)
-        branch neg
-            ? return(CmF64PowDint(r: x.r, ex: -1076, sgn: 0))
-            : return(CmF64PowDint(r: x.r, ex: 1025, sgn: 0))
+    return CmF64PowDint(r: r2.r, ex: r2.ex + big_m, sgn: r2.sgn)
 
 /// a (with a.ex < -1022) rounded to the nearest subnormal B64.
 /// :param a: The value.
@@ -442,71 +403,62 @@ routine cm_b64_pow_exp_2(x: CmF64PowDint) -> CmF64PowDint
 private routine cm_b64_pow_dint_tod_subnormal(a: CmF64PowDint) -> B64
     local ah: U64 = cm_b64_pow_hi(a.r)
     local al: U64 = cm_b64_pow_lo(a.r)
-    local ex: U64 = S64.sub(0, a.ex.add(1011)).to_wrap[U64]()
+    local ex: U64 = S64.sub(0, a.ex + 1011).to_wrap[U64]()
 
-    gone: Bool = ex.ge(64)
-    branch gone
-        ? vanish()
-        : continue
-    hi0: U64 = ah.shr(ex)
-    rb: U64 = ah.shr(ex.sub(1)).bitand(1)
-    ah_sticky: Bool = ah.shl(U64.sub(65, ex)).ne(0)
-    sticky: Bool = ah_sticky.bitor(al.ne(0))
-    hi: U64 = sticky
-        ? hi0.add(rb)
-        : hi0.add(hi0.bitand(rb))
-    return(B64.from_bits(hi.bitor(a.sgn.shl(63))))
-
-    // all bits disappear: |a| < 2^-1074
-    block vanish()
-        rb0: U64 = ah.shr(63)
-        sb0: U64 = ah.shl(1).bitor(al)
-        no_round: Bool = ex.gt(64).bitor(rb0.eq(0))
-        zero: Bool = no_round.bitor(sb0.eq(0))
-        ret: B64 = zero
-            ? 0.0
-            : B64.from_bits(1)
-        neg: Bool = a.sgn.ne(0)
-        branch neg
-            ? return(ret.neg())
-            : return(ret)
+    if ex >= 64
+        // all bits disappear: |a| < 2^-1074
+        rb0: U64 = ah >> 63
+        sb0: U64 = (ah << 1) | al
+        no_round: Bool = ex > 64 or rb0 == 0
+        zero: Bool = no_round or sb0 == 0
+        ret: B64 = when
+            zero => 0.0
+            else => B64.from_bits(1)
+        if a.sgn != 0
+            return -ret
+        else
+            return ret
+    hi0: U64 = ah >> ex
+    rb: U64 = (ah >> ex - 1) & 1
+    ah_sticky: Bool = ah << U64.sub(65, ex) != 0
+    sticky: Bool = ah_sticky or al != 0
+    hi: U64 = when
+        sticky => hi0 + rb
+        else => hi0 + (hi0 & rb)
+    return B64.from_bits(hi | (a.sgn << 63))
 
 /// a rounded to the nearest B64. An exponent below -1022 goes through the subnormal rounding.
 /// :returns: The nearest B64, an infinity of the sign of `me` when it overflows.
 routine CmF64PowDint.to[B64](me: Me) -> B64
-    sub: Bool = me.ex.lt(-1022)
-    branch sub
-        ? return(cm_b64_pow_dint_tod_subnormal(me))
-        : continue
+    if me.ex < -1022
+        return cm_b64_pow_dint_tod_subnormal(me)
     ah: U64 = cm_b64_pow_hi(me.r)
     al: U64 = cm_b64_pow_lo(me.r)
-    r0: B64 = B64.from_bits(ah.shr(11).bitor(0x3FF0000000000000))  // the significand in [1, 2)
-    round_bit: U64 = ah.shr(10).bitand(1)
-    half: Bool = round_bit.ne(0)
-    rd0: B64 = half
-        ? B64.add(0.0, 0x1p-53)
-        : 0.0
-    ah_sticky: Bool = ah.bitand(0x3FF).ne(0)
-    sticky: Bool = ah_sticky.bitor(al.ne(0))
-    rd1: B64 = sticky
-        ? rd0.add(0x1p-54)
-        : rd0
-    neg: Bool = me.sgn.ne(0)
-    rd: B64 = neg
-        ? rd1.neg()
-        : rd1
-    r1: B64 = B64.from_bits(r0.bits().bitor(me.sgn.shl(63)))
-    r: B64 = r1.add(rd)
-    edge: Bool = me.ex.eq(1024)
-    over: Bool = me.ex.gt(1023)
+    r0: B64 = B64.from_bits((ah >> 11) | 0x3FF0000000000000)
+    // the significand in [1, 2)
+    round_bit: U64 = (ah >> 10) & 1
+    half: Bool = round_bit != 0
+    rd0: B64 = when
+        half => B64.add(0.0, 1.1102230246251565e-16)
+        else => 0.0
+    ah_sticky: Bool = ah & 0x3FF != 0
+    sticky: Bool = ah_sticky or al != 0
+    rd1: B64 = when
+        sticky => rd0 + 5.551115123125783e-17
+        else => rd0
+    neg: Bool = me.sgn != 0
+    rd: B64 = when
+        neg => -rd1
+        else => rd1
+    r1: B64 = B64.from_bits(r0.bits() | (me.sgn << 63))
+    r: B64 = r1 + rd
+    edge: Bool = me.ex == 1024
     when
-        edge => return(r.mul(2.0).mul(0x1p+1023))
-        over => return(r.mul(0x1.fffffffffffffp+1023).mul(0x1.fffffffffffffp+1023))
-        else => normal_range(r)
-
-    block normal_range(r: B64)
-        biased_exponent: U64 = me.ex.add(1023).to_wrap[U64]()
-        return(r.mul(B64.from_bits(biased_exponent.bitand(0x7FF).shl(52))))
+        edge => return r * 2.0 * 8.98846567431158e307
+        me.ex > 1023 => return r * 1.7976931348623157e308 * 1.7976931348623157e308
+        else =>
+            biased_exponent: U64 = (me.ex + 1023).to_wrap[U64]()
+            return r * B64.from_bits((biased_exponent & 0x7FF) << 52)
 
 /// A CmF64PowDint from a table entry's two limbs, exponent and sign.
 /// :param hi: The upper limb.
@@ -515,76 +467,68 @@ routine CmF64PowDint.to[B64](me: Me) -> B64
 /// :param sgn: The sign bit.
 /// :returns: The value.
 private routine cm_b64_pow_dint_entry(hi: U64, lo: U64, ex: S64, sgn: U64) -> CmF64PowDint
-    return(CmF64PowDint(r: cm_b64_pow_join(hi, lo), ex: ex, sgn: sgn))
+    return CmF64PowDint(r: cm_b64_pow_join(hi, lo), ex: ex, sgn: sgn)
 
 /// Entry i of CM_B64_POW_INVERSE_2_1, the 128-bit inverses of the first log reduction.
 /// :param i: The index, 0..91.
 /// :returns: The inverse.
 private routine cm_b64_pow_inverse_2_1(i: USize) -> CmF64PowDint
-    hi: U64 = CM_B64_POW_INVERSE_2_1_MANT.getitem(i.mul(2))
-    lo: U64 = CM_B64_POW_INVERSE_2_1_MANT.getitem(i.mul(2).add(1))
-    return(cm_b64_pow_dint_entry(hi, lo, ex: CM_B64_POW_INVERSE_2_1_EX.getitem(i),
-        sgn: CM_B64_POW_INVERSE_2_1_SGN.getitem(i)))
+    hi: U64 = CM_B64_POW_INVERSE_2_1_MANT.getitem(i * 2)
+    lo: U64 = CM_B64_POW_INVERSE_2_1_MANT.getitem(i * 2 + 1)
+    return cm_b64_pow_dint_entry(hi, lo, ex: CM_B64_POW_INVERSE_2_1_EX.getitem(i), sgn: CM_B64_POW_INVERSE_2_1_SGN.getitem(i))
 
 /// Entry i of CM_B64_POW_INVERSE_2_2, the 128-bit inverses of the second log reduction.
 /// :param i: The index, 0..128.
 /// :returns: The inverse.
 private routine cm_b64_pow_inverse_2_2(i: USize) -> CmF64PowDint
-    hi: U64 = CM_B64_POW_INVERSE_2_2_MANT.getitem(i.mul(2))
-    lo: U64 = CM_B64_POW_INVERSE_2_2_MANT.getitem(i.mul(2).add(1))
-    return(cm_b64_pow_dint_entry(hi, lo, ex: CM_B64_POW_INVERSE_2_2_EX.getitem(i),
-        sgn: CM_B64_POW_INVERSE_2_2_SGN.getitem(i)))
+    hi: U64 = CM_B64_POW_INVERSE_2_2_MANT.getitem(i * 2)
+    lo: U64 = CM_B64_POW_INVERSE_2_2_MANT.getitem(i * 2 + 1)
+    return cm_b64_pow_dint_entry(hi, lo, ex: CM_B64_POW_INVERSE_2_2_EX.getitem(i), sgn: CM_B64_POW_INVERSE_2_2_SGN.getitem(i))
 
 /// Entry i of CM_B64_POW_LOG_INV_2_1, the 128-bit -log of the first-reduction inverse.
 /// :param i: The index, 0..91.
 /// :returns: The logarithm.
 private routine cm_b64_pow_log_inv_2_1(i: USize) -> CmF64PowDint
-    hi: U64 = CM_B64_POW_LOG_INV_2_1_MANT.getitem(i.mul(2))
-    lo: U64 = CM_B64_POW_LOG_INV_2_1_MANT.getitem(i.mul(2).add(1))
-    return(cm_b64_pow_dint_entry(hi, lo, ex: CM_B64_POW_LOG_INV_2_1_EX.getitem(i),
-        sgn: CM_B64_POW_LOG_INV_2_1_SGN.getitem(i)))
+    hi: U64 = CM_B64_POW_LOG_INV_2_1_MANT.getitem(i * 2)
+    lo: U64 = CM_B64_POW_LOG_INV_2_1_MANT.getitem(i * 2 + 1)
+    return cm_b64_pow_dint_entry(hi, lo, ex: CM_B64_POW_LOG_INV_2_1_EX.getitem(i), sgn: CM_B64_POW_LOG_INV_2_1_SGN.getitem(i))
 
 /// Entry i of CM_B64_POW_LOG_INV_2_2, the 128-bit -log of the second-reduction inverse.
 /// :param i: The index, 0..128.
 /// :returns: The logarithm.
 private routine cm_b64_pow_log_inv_2_2(i: USize) -> CmF64PowDint
-    hi: U64 = CM_B64_POW_LOG_INV_2_2_MANT.getitem(i.mul(2))
-    lo: U64 = CM_B64_POW_LOG_INV_2_2_MANT.getitem(i.mul(2).add(1))
-    return(cm_b64_pow_dint_entry(hi, lo, ex: CM_B64_POW_LOG_INV_2_2_EX.getitem(i),
-        sgn: CM_B64_POW_LOG_INV_2_2_SGN.getitem(i)))
+    hi: U64 = CM_B64_POW_LOG_INV_2_2_MANT.getitem(i * 2)
+    lo: U64 = CM_B64_POW_LOG_INV_2_2_MANT.getitem(i * 2 + 1)
+    return cm_b64_pow_dint_entry(hi, lo, ex: CM_B64_POW_LOG_INV_2_2_EX.getitem(i), sgn: CM_B64_POW_LOG_INV_2_2_SGN.getitem(i))
 
 /// Entry i of CM_B64_POW_T1_2, the 128-bit 2^(i/64).
 /// :param i: The index, 0..63.
 /// :returns: 2^(`i`/64).
 private routine cm_b64_pow_t1_2(i: USize) -> CmF64PowDint
-    hi: U64 = CM_B64_POW_T1_2_MANT.getitem(i.mul(2))
-    lo: U64 = CM_B64_POW_T1_2_MANT.getitem(i.mul(2).add(1))
-    return(cm_b64_pow_dint_entry(hi, lo, ex: CM_B64_POW_T1_2_EX.getitem(i),
-        sgn: CM_B64_POW_T1_2_SGN.getitem(i)))
+    hi: U64 = CM_B64_POW_T1_2_MANT.getitem(i * 2)
+    lo: U64 = CM_B64_POW_T1_2_MANT.getitem(i * 2 + 1)
+    return cm_b64_pow_dint_entry(hi, lo, ex: CM_B64_POW_T1_2_EX.getitem(i), sgn: CM_B64_POW_T1_2_SGN.getitem(i))
 
 /// Entry i of CM_B64_POW_T2_2, the 128-bit 2^(i/2^12).
 /// :param i: The index, 0..63.
 /// :returns: 2^(`i`/2^12).
 private routine cm_b64_pow_t2_2(i: USize) -> CmF64PowDint
-    hi: U64 = CM_B64_POW_T2_2_MANT.getitem(i.mul(2))
-    lo: U64 = CM_B64_POW_T2_2_MANT.getitem(i.mul(2).add(1))
-    return(cm_b64_pow_dint_entry(hi, lo, ex: CM_B64_POW_T2_2_EX.getitem(i),
-        sgn: CM_B64_POW_T2_2_SGN.getitem(i)))
+    hi: U64 = CM_B64_POW_T2_2_MANT.getitem(i * 2)
+    lo: U64 = CM_B64_POW_T2_2_MANT.getitem(i * 2 + 1)
+    return cm_b64_pow_dint_entry(hi, lo, ex: CM_B64_POW_T2_2_EX.getitem(i), sgn: CM_B64_POW_T2_2_SGN.getitem(i))
 
 /// Coefficient i of the second-phase log(1+z) polynomial, highest degree first.
 /// :param i: The coefficient index.
 /// :returns: The coefficient.
 private routine cm_b64_pow_p_2_at(i: USize) -> CmF64PowDint
-    hi: U64 = CM_B64_POW_P_2_MANT.getitem(i.mul(2))
-    lo: U64 = CM_B64_POW_P_2_MANT.getitem(i.mul(2).add(1))
-    return(cm_b64_pow_dint_entry(hi, lo, ex: CM_B64_POW_P_2_EX.getitem(i),
-        sgn: CM_B64_POW_P_2_SGN.getitem(i)))
+    hi: U64 = CM_B64_POW_P_2_MANT.getitem(i * 2)
+    lo: U64 = CM_B64_POW_P_2_MANT.getitem(i * 2 + 1)
+    return cm_b64_pow_dint_entry(hi, lo, ex: CM_B64_POW_P_2_EX.getitem(i), sgn: CM_B64_POW_P_2_SGN.getitem(i))
 
 /// Coefficient i of the second-phase exp(z) polynomial, highest degree first.
 /// :param i: The coefficient index.
 /// :returns: The coefficient.
 private routine cm_b64_pow_q_2_at(i: USize) -> CmF64PowDint
-    hi: U64 = CM_B64_POW_Q_2_MANT.getitem(i.mul(2))
-    lo: U64 = CM_B64_POW_Q_2_MANT.getitem(i.mul(2).add(1))
-    return(cm_b64_pow_dint_entry(hi, lo, ex: CM_B64_POW_Q_2_EX.getitem(i),
-        sgn: CM_B64_POW_Q_2_SGN.getitem(i)))
+    hi: U64 = CM_B64_POW_Q_2_MANT.getitem(i * 2)
+    lo: U64 = CM_B64_POW_Q_2_MANT.getitem(i * 2 + 1)
+    return cm_b64_pow_dint_entry(hi, lo, ex: CM_B64_POW_Q_2_EX.getitem(i), sgn: CM_B64_POW_Q_2_SGN.getitem(i))

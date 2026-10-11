@@ -10,97 +10,83 @@ import Standard/Alloc
 import Standard/Collections
 
 /// Waits until the work of every thread ticket in the list has finished.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine List[Thread[T]].wait_all_finished(me: @Me) -> Void
-require T: typename
-    jump next(0)
-
-    block next(i: USize)
-        branch i.ge(me.count())
-            ? return()
-            : continue
-        me.getitem(i).wait_finished()
-        jump next(i.add(1))
+needs T: typename
+    each i in 0 til me.count()
+        me[i].wait_finished()
+    then
+        return
 
 /// The results of the thread tickets' finished work, in the list's order, in a list from `alloc`.
 /// :param alloc: Where the list comes from.
 /// :returns: The results.
 /// :throws: Crashes as each ticket's `retrieve` does: work still running, none, or cancelled.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine List[Thread[T]].retrieve_all(me: @Me, alloc: @MemoryManager) -> List[T]
-require T: typename
+needs T: typename
     local results: @List[T] <- .construct(alloc)
 
-    jump next(0)
-
-    block next(i: USize)
-        branch i.ge(me.count())
-            ? return(results.peek())
-            : continue
-        results.add_last(me.getitem(i).retrieve())
-        jump next(i.add(1))
+    each i in 0 til me.count()
+        results.add_last(me[i].retrieve())
+    then
+        return results.peek()
 
 /// The results of the thread tickets' finished work, in the list's order, in a list from DEFAULT_HEAP.
 /// :returns: The results.
 /// :throws: Crashes as each ticket's `retrieve` does: work still running, none, or cancelled.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine List[Thread[T]].retrieve_all(me: @Me) -> List[T]
-require T: typename
-    return(me.retrieve_all(alloc: DEFAULT_HEAP))
+needs T: typename
+    return me.retrieve_all(alloc: DEFAULT_HEAP)
 
 /// Gives every thread ticket in the list back, and empties the list.
 /// :throws: Crashes as each ticket's `give_back` does, when its work still runs.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine List[Thread[T]].give_back_all(me: @Me) -> Void
-require T: typename
-    jump next(0)
-
-    block next(i: USize)
-        branch i.ge(me.count())
-            ? done()
-            : continue
-        me.getitem(i).give_back()
-        jump next(i.add(1))
-
-    block done()
-        me.clear()
-        return()
+needs T: typename
+    each i in 0 til me.count()
+        me[i].give_back()
+    me.clear()
+    return
 
 /// Asks the work of every thread ticket in the list to stop.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine List[Thread[T]].cancel_all(me: @Me) -> Void
-require T: typename
-    jump next(0)
-
-    block next(i: USize)
-        branch i.ge(me.count())
-            ? return()
-            : continue
-        me.getitem(i).cancel()
-        jump next(i.add(1))
+needs T: typename
+    each i in 0 til me.count()
+        me[i].cancel()
+    then
+        return
 
 /// Waits until the work of one of the thread tickets in the list has finished, and says which: the first in the list
 /// among those finished when it looks.
 /// :returns: The position of a ticket whose work has finished.
 /// :throws: Crashes with `InvalidValueError` for an empty list.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine List[Thread[T]].wait_any_finished(me: @Me) -> USize
-require T: typename
+needs T: typename
     local waiter: Waiter = current_waiter()
 
-    branch me.count().eq(0)
-        ? crash(name: "InvalidValueError",
-            message: "wait_any_finished of an empty list waits for nothing.")
-        : look(0)
+    if me.count() == 0
+        crash(name: "InvalidValueError", message: "wait_any_finished of an empty list waits for nothing.")
+    else
+        jump look(0)
 
     // Each ticket keeps the waiter, so the first to finish wakes it: then it forgets every one.
     block look(i: USize)
-        branch i.ge(me.count())
-            ? park()
-            : continue
-        branch me.getitem(i).work_slot().register(waiter)
-            ? found(i)
-            : look(i.add(1))
+        if i >= me.count()
+            jump park()
+        if me[i].work_slot().register(waiter)
+            jump found(i)
+        else
+            jump look(i + 1)
 
     block park()
         waiter.park()
@@ -110,83 +96,64 @@ require T: typename
         jump forget(0, i)
 
     block forget(k: USize, result: USize)
-        branch k.ge(me.count())
-            ? settle(result)
-            : continue
-        me.getitem(k).work_slot().unregister(waiter)
-        jump forget(k.add(1), result)
+        if k >= me.count()
+            jump settle(result)
+        me[k].work_slot().unregister(waiter)
+        jump forget(k + 1, result)
 
     // After a park, the tickets are looked at again.
     block settle(result: USize)
-        branch result.lt(me.count())
-            ? return(result)
-            : look(0)
+        if result < me.count()
+            return result
+        else
+            jump look(0)
 
 /// Takes the thread tickets whose work has finished out of the list, into a list from `alloc`, keeping the others
 /// in order.
 /// :param alloc: Where the list of finished tickets comes from.
 /// :returns: The finished tickets, in the order they had.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine List[Thread[T]].take_finished(me: @Me, alloc: @MemoryManager) -> Me
-require T: typename
+needs T: typename
     local finished: @Me <- .construct(alloc)
 
-    jump next(0, 0)
-
-    block next(i: USize, kept: USize)
-        branch i.ge(me.count())
-            ? trim(kept)
-            : continue
-        ticket: Thread[T] = me.getitem(i)
-        branch ticket.check_finished()
-            ? take(i, kept, ticket)
-            : continue
-        me.setitem(index: kept, value: ticket)
-        jump next(i.add(1), kept.add(1))
-
-    block take(i: USize, kept: USize, ticket: Thread[T])
-        finished.add_last(ticket)
-        jump next(i.add(1), kept)
-
-    block trim(kept: USize)
-        branch me.count().gt(kept)
-            ? continue
-            : return(finished.peek())
-        removed: Thread[T] = me.remove_last()
-        jump trim(kept)
+    each i in 0 til me.count() with kept: USize = 0
+        ticket: Thread[T] = me[i]
+        if ticket.check_finished()
+            finished.add_last(ticket)
+            continue with kept: kept
+        me[kept] = ticket
+        continue with kept: kept + 1
+    then
+        while me.count() > kept
+            removed: Thread[T] = me.remove_last()
+        then
+            return finished.peek()
 
 /// Takes the thread tickets whose work has finished out of the list, into a list from DEFAULT_HEAP.
 /// :returns: The finished tickets, in the order they had.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine List[Thread[T]].take_finished(me: @Me) -> Me
-require T: typename
-    return(me.take_finished(alloc: DEFAULT_HEAP))
+needs T: typename
+    return me.take_finished(alloc: DEFAULT_HEAP)
 
 /// Gives back the thread tickets whose work has finished, and takes them out of the list: for work whose result
 /// nobody needs.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine List[Thread[T]].give_back_finished(me: @Me) -> Void
-require T: typename
-    jump next(0, 0)
-
-    block next(i: USize, kept: USize)
-        branch i.ge(me.count())
-            ? trim(kept)
-            : continue
-        ticket: Thread[T] = me.getitem(i)
-        branch ticket.check_finished()
-            ? give(i, kept, ticket)
-            : continue
-        me.setitem(index: kept, value: ticket)
-        jump next(i.add(1), kept.add(1))
-
-    block give(i: USize, kept: USize, ticket: Thread[T])
-        ticket.give_back()
-        jump next(i.add(1), kept)
-
-    block trim(kept: USize)
-        branch me.count().gt(kept)
-            ? continue
-            : return()
-        removed: Thread[T] = me.remove_last()
-        jump trim(kept)
+needs T: typename
+    each i in 0 til me.count() with kept: USize = 0
+        ticket: Thread[T] = me[i]
+        if ticket.check_finished()
+            ticket.give_back()
+            continue with kept: kept
+        me[kept] = ticket
+        continue with kept: kept + 1
+    then
+        while me.count() > kept
+            removed: Thread[T] = me.remove_last()
+        then
+            return

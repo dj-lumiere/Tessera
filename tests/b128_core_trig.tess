@@ -9384,75 +9384,69 @@ record Outcome
 /// :param want: Its `want`.
 /// :returns: The new value.
 routine Outcome.construct(name: Span[Byte], index: USize, got: U128, want: U128) -> Me
-    return(Me(name, index, got, want))
+    return Me(name, index, got, want)
 
 /// Releases the memory its `name` holds.
 routine Outcome.destruct(me: @Me) -> Void
     me.name.destruct()
-    return()
+    return
 
 /// 1 when got differs from want (and the difference is printed), else 0.
 routine report(out: @Out, o: Outcome) -> U64
-    ok: Bool = o.got.eq(o.want)
-    branch ok
-        ? return(0)
-        : bad()
-
-    block bad()
+    if o.got == o.want
+        return 0
+    else
         out.write("{o.name} #{o.index}: ")
         o.got.represent_hex_into(out)
         out.write(" want ")
         o.want.represent_hex_into(out)
         out.write("\n")
-        return(1)
+        return 1
 
 routine summary(out: @Out, name: Span[Byte], failures: U64) -> Void
     out.write("{name}: ")
     total: U64 = 2521
-    passed: U64 = total.sub(failures)
+    passed: U64 = total - failures
     out.write("{passed} / 2521\n")
-    return()
+    return
 
 // -- internal routines against exact models ------------------------------------------------
 
 /// Prints "<name> i" for a mismatch and returns 1 for a mismatch, else 0.
 routine unit_miss(out: @Out, name: Span[Byte], i: USize, ok: Bool) -> U64
-    branch ok
-        ? return(0)
-        : bad()
-
-    block bad()
+    if ok
+        return 0
+    else
         out.write("{name} #{i} differs\n")
-        return(1)
+        return 1
 
 routine unit_summary(out: @Out, name: Span[Byte], count: USize, bad: U64) -> Void
     out.write("{name}: {count} cases, {bad} mismatches\n")
-    return()
+    return
 
 /// The 256-bit value stored as (high, low) at p[2i], p[2i + 1].
 routine load256(p: @U128, i: USize) -> U256
-    at: USize = i.mul(2)
-    next: USize = at.add(1)
+    at: USize = i * 2
+    next: USize = at + 1
     high: U128 = p.stride(at).peek()
     low: U128 = p.stride(next).peek()
     r: U256 = cm_trig_join(high, low)
-    return(r)
+    return r
 
 /// The 384-bit value stored as (l0, l1, l2) at p[3i ..].
 routine load384(p: @U128, i: USize) -> CmTrigU384
-    at: USize = i.mul(3)
-    i1: USize = at.add(1)
-    i2: USize = at.add(2)
+    at: USize = i * 3
+    i1: USize = at + 1
+    i2: USize = at + 2
     l0: U128 = p.stride(at).peek()
     l1: U128 = p.stride(i1).peek()
     l2: U128 = p.stride(i2).peek()
     r: CmTrigU384 = CmTrigU384(l0: l0, l1: l1, l2: l2)
-    return(r)
+    return r
 
 routine same384(a: CmTrigU384, b: CmTrigU384) -> Bool
-    low_same: Bool = a.l0.eq(b.l0).bitand(a.l1.eq(b.l1))
-    r: Bool = low_same.bitand(a.l2.eq(b.l2))
-    return(r)
+    low_same: Bool = a.l0 == b.l0 and a.l1 == b.l1
+    return low_same and a.l2 == b.l2
 
 routine check_mul256(out: @Out) -> Void
     local a: @U128 = UNIT_MUL256_A.to[@U128]()
@@ -9460,23 +9454,12 @@ routine check_mul256(out: @Out) -> Void
     local want: @U128 = UNIT_MUL256_WANT.to[@U128]()
     local bad: @U64 <- 0
 
-    jump loop(0)
-
-    block loop(i: USize)
-        done: Bool = i.eq(UNIT_MUL256_COUNT)
-        branch done
-            ? finish()
-            : test(i)
-
-    block test(i: USize)
+    each i in 0 til UNIT_MUL256_COUNT
         got: U256 = cm_trig_mul256(a: load256(p: a, i), b: load256(p: b, i))
-        miss: U64 = unit_miss(out, name: "mul256", i, ok: got.eq(load256(p: want, i)))
-        bad.peek().add(miss).poke_into(bad)
-        jump loop(i.add(1))
-
-    block finish()
-        unit_summary(out, name: "mul256", count: UNIT_MUL256_COUNT, bad: bad.peek())
-        return()
+        miss: U64 = unit_miss(out, name: "mul256", i, ok: got == load256(p: want, i))
+        (bad.peek() + miss).poke_into(bad)
+    unit_summary(out, name: "mul256", count: UNIT_MUL256_COUNT, bad: bad.peek())
+    return
 
 routine check_mul384(out: @Out) -> Void
     local a: @U128 = UNIT_MUL384_A.to[@U128]()
@@ -9484,23 +9467,12 @@ routine check_mul384(out: @Out) -> Void
     local want: @U128 = UNIT_MUL384_WANT.to[@U128]()
     local bad: @U64 <- 0
 
-    jump loop(0)
-
-    block loop(i: USize)
-        done: Bool = i.eq(UNIT_MUL384_COUNT)
-        branch done
-            ? finish()
-            : test(i)
-
-    block test(i: USize)
+    each i in 0 til UNIT_MUL384_COUNT
         got: CmTrigU384 = cm_trig_mul384(a: load384(p: a, i), b: load384(p: b, i))
         miss: U64 = unit_miss(out, name: "mul384", i, ok: same384(a: got, b: load384(p: want, i)))
-        bad.peek().add(miss).poke_into(bad)
-        jump loop(i.add(1))
-
-    block finish()
-        unit_summary(out, name: "mul384", count: UNIT_MUL384_COUNT, bad: bad.peek())
-        return()
+        (bad.peek() + miss).poke_into(bad)
+    unit_summary(out, name: "mul384", count: UNIT_MUL384_COUNT, bad: bad.peek())
+    return
 
 routine check_addsub384(out: @Out) -> Void
     local a: @U128 = UNIT_ADDSUB_A.to[@U128]()
@@ -9509,26 +9481,15 @@ routine check_addsub384(out: @Out) -> Void
     local diff: @U128 = UNIT_ADDSUB_DIFF.to[@U128]()
     local bad: @U64 <- 0
 
-    jump loop(0)
-
-    block loop(i: USize)
-        done: Bool = i.eq(UNIT_ADDSUB_COUNT)
-        branch done
-            ? finish()
-            : test(i)
-
-    block test(i: USize)
+    each i in 0 til UNIT_ADDSUB_COUNT
         x: CmTrigU384 = load384(p: a, i)
         y: CmTrigU384 = load384(p: b, i)
         sum_ok: Bool = same384(a: cm_trig_add384(a: x, b: y), b: load384(p: sum, i))
         diff_ok: Bool = same384(a: cm_trig_sub384(a: x, b: y), b: load384(p: diff, i))
-        miss: U64 = unit_miss(out, name: "add384/sub384", i, ok: sum_ok.bitand(diff_ok))
-        bad.peek().add(miss).poke_into(bad)
-        jump loop(i.add(1))
-
-    block finish()
-        unit_summary(out, name: "add384/sub384", count: UNIT_ADDSUB_COUNT, bad: bad.peek())
-        return()
+        miss: U64 = unit_miss(out, name: "add384/sub384", i, ok: sum_ok and diff_ok)
+        (bad.peek() + miss).poke_into(bad)
+    unit_summary(out, name: "add384/sub384", count: UNIT_ADDSUB_COUNT, bad: bad.peek())
+    return
 
 routine check_place_top(out: @Out) -> Void
     local f: @U128 = UNIT_SHIFT_F.to[@U128]()
@@ -9538,35 +9499,24 @@ routine check_place_top(out: @Out) -> Void
     local top: @U128 = UNIT_SHIFT_TOP.to[@U128]()
     local bad: @U64 <- 0
 
-    jump loop(0)
-
-    block loop(i: USize)
-        done: Bool = i.eq(UNIT_SHIFT_COUNT)
-        branch done
-            ? finish()
-            : test(i)
-
-    block test(i: USize)
+    each i in 0 til UNIT_SHIFT_COUNT
         value: U128 = f.stride(i).peek()
         by: S64 = shift.stride(i).peek()
         top_want: U128 = top.stride(i).peek()
         placed: U256 = cm_trig_place256(f: value, shift: by)
         topped: U128 = cm_trig_top256(s: load256(p: x, i), shift: by)
-        ok: Bool = placed.eq(load256(p: place, i)).bitand(topped.eq(top_want))
+        ok: Bool = placed == load256(p: place, i) and topped == top_want
         miss: U64 = unit_miss(out, name: "place/top", i, ok)
-        bad.peek().add(miss).poke_into(bad)
-        jump loop(i.add(1))
-
-    block finish()
-        unit_summary(out, name: "place/top", count: UNIT_SHIFT_COUNT, bad: bad.peek())
-        return()
+        (bad.peek() + miss).poke_into(bad)
+    unit_summary(out, name: "place/top", count: UNIT_SHIFT_COUNT, bad: bad.peek())
+    return
 
 /// ok | negative << 1 | n << 2 | (et + 1000) << 12, as the generator packs it.
 routine reduce_meta(ok: Bool, negative: Bool, n: U64, et: S64) -> U64
-    flags: U64 = ok.to[U64]().bitor(negative.to[U64]().shl(1))
-    biased_et: U64 = et.add(1000).to[U64]()
-    r: U64 = flags.bitor(n.shl(2)).bitor(biased_et.shl(12))
-    return(r)
+    flags: U64 = ok.to[U64]() | (negative.to[U64]() << 1)
+    biased_et: U64 = (et + 1000).to[U64]()
+    r: U64 = flags | (n << 2) | (biased_et << 12)
+    return r
 
 routine check_reduce(out: @Out) -> Void
     local m: @U128 = UNIT_REDUCE_M.to[@U128]()
@@ -9575,29 +9525,18 @@ routine check_reduce(out: @Out) -> Void
     local meta: @U64 = UNIT_REDUCE_META.to[@U64]()
     local bad: @U64 <- 0
 
-    jump loop(0)
-
-    block loop(i: USize)
-        done: Bool = i.eq(UNIT_REDUCE_COUNT)
-        branch done
-            ? finish()
-            : test(i)
-
-    block test(i: USize)
+    each i in 0 til UNIT_REDUCE_COUNT
         mv: U128 = m.stride(i).peek()
         ev: S64 = e.stride(i).peek()
         t1_want: U128 = t1.stride(i).peek()
         meta_want: U64 = meta.stride(i).peek()
         red: CmTrigReduced = cm_trig_reduce(m: mv, e: ev)
         meta_val: U64 = reduce_meta(ok: red.ok, negative: red.negative, n: red.n, et: red.et)
-        ok: Bool = red.t1.eq(t1_want).bitand(meta_val.eq(meta_want))
+        ok: Bool = red.t1 == t1_want and meta_val == meta_want
         miss: U64 = unit_miss(out, name: "reduce", i, ok)
-        bad.peek().add(miss).poke_into(bad)
-        jump loop(i.add(1))
-
-    block finish()
-        unit_summary(out, name: "reduce", count: UNIT_REDUCE_COUNT, bad: bad.peek())
-        return()
+        (bad.peek() + miss).poke_into(bad)
+    unit_summary(out, name: "reduce", count: UNIT_REDUCE_COUNT, bad: bad.peek())
+    return
 
 routine check_reduce_wide(out: @Out) -> Void
     local m: @U128 = UNIT_WIDE_M.to[@U128]()
@@ -9606,28 +9545,17 @@ routine check_reduce_wide(out: @Out) -> Void
     local meta: @U64 = UNIT_WIDE_META.to[@U64]()
     local bad: @U64 <- 0
 
-    jump loop(0)
-
-    block loop(i: USize)
-        done: Bool = i.eq(UNIT_WIDE_COUNT)
-        branch done
-            ? finish()
-            : test(i)
-
-    block test(i: USize)
+    each i in 0 til UNIT_WIDE_COUNT
         mv: U128 = m.stride(i).peek()
         ev: S64 = e.stride(i).peek()
         meta_want: U64 = meta.stride(i).peek()
         red: CmTrigWideReduced = cm_trig_reduce_wide(m: mv, e: ev)
         meta_val: U64 = reduce_meta(ok: true, negative: red.negative, n: red.n, et: red.et)
-        ok: Bool = same384(a: red.t, b: load384(p: t, i)).bitand(meta_val.eq(meta_want))
+        ok: Bool = same384(a: red.t, b: load384(p: t, i)) and meta_val == meta_want
         miss: U64 = unit_miss(out, name: "reduce_wide", i, ok)
-        bad.peek().add(miss).poke_into(bad)
-        jump loop(i.add(1))
-
-    block finish()
-        unit_summary(out, name: "reduce_wide", count: UNIT_WIDE_COUNT, bad: bad.peek())
-        return()
+        (bad.peek() + miss).poke_into(bad)
+    unit_summary(out, name: "reduce_wide", count: UNIT_WIDE_COUNT, bad: bad.peek())
+    return
 
 routine start() -> Void
     local out: @Out = Out.writer()
@@ -9635,15 +9563,7 @@ routine start() -> Void
     local cos_bad: @U64 <- 0
     local pair_bad: @U64 <- 0
 
-    jump next(0)
-
-    block next(i: USize)
-        done: Bool = i.ge(2521)
-        branch done
-            ? finish()
-            : check(i)
-
-    block check(i: USize)
+    each i in 0 til 2521
         bits: U128 = INPUTS.getitem(i)
         sin_want: U128 = SIN_WANT.getitem(i)
         cos_want: U128 = COS_WANT.getitem(i)
@@ -9653,31 +9573,24 @@ routine start() -> Void
         pair: B128SinCos = x.sin_cos()
         pair_sin: B128 = pair.sin
         pair_cos: B128 = pair.cos
-        sin_miss: U64 = report(out,
-            o: Outcome(name: "sin", index: i, got: sin.bits(), want: sin_want))
-        cos_miss: U64 = report(out,
-            o: Outcome(name: "cos", index: i, got: cos.bits(), want: cos_want))
-        ps_miss: U64 = report(out,
-            o: Outcome(name: "sin_cos.sin", index: i, got: pair_sin.bits(), want: sin_want))
-        pc_miss: U64 = report(out,
-            o: Outcome(name: "sin_cos.cos", index: i, got: pair_cos.bits(), want: cos_want))
-        pair_miss: U64 = ps_miss.bitor(pc_miss)
-        sin_next: U64 = sin_bad.peek().add(sin_miss)
-        cos_next: U64 = cos_bad.peek().add(cos_miss)
-        pair_next: U64 = pair_bad.peek().add(pair_miss)
+        sin_miss: U64 = report(out, o: Outcome(name: "sin", index: i, got: sin.bits(), want: sin_want))
+        cos_miss: U64 = report(out, o: Outcome(name: "cos", index: i, got: cos.bits(), want: cos_want))
+        ps_miss: U64 = report(out, o: Outcome(name: "sin_cos.sin", index: i, got: pair_sin.bits(), want: sin_want))
+        pc_miss: U64 = report(out, o: Outcome(name: "sin_cos.cos", index: i, got: pair_cos.bits(), want: cos_want))
+        pair_miss: U64 = ps_miss | pc_miss
+        sin_next: U64 = sin_bad.peek() + sin_miss
+        cos_next: U64 = cos_bad.peek() + cos_miss
+        pair_next: U64 = pair_bad.peek() + pair_miss
         sin_next.poke_into(sin_bad)
         cos_next.poke_into(cos_bad)
         pair_next.poke_into(pair_bad)
-        jump next(i.add(1))
-
-    block finish()
-        summary(out, name: "sin", failures: sin_bad.peek())
-        summary(out, name: "cos", failures: cos_bad.peek())
-        summary(out, name: "sin_cos", failures: pair_bad.peek())
-        check_mul256(out)
-        check_mul384(out)
-        check_addsub384(out)
-        check_place_top(out)
-        check_reduce(out)
-        check_reduce_wide(out)
-        return()
+    summary(out, name: "sin", failures: sin_bad.peek())
+    summary(out, name: "cos", failures: cos_bad.peek())
+    summary(out, name: "sin_cos", failures: pair_bad.peek())
+    check_mul256(out)
+    check_mul384(out)
+    check_addsub384(out)
+    check_place_top(out)
+    check_reduce(out)
+    check_reduce_wide(out)
+    return

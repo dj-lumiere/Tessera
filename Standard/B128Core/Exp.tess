@@ -23,48 +23,44 @@ routine B128.exp(me: Me) -> Me
 
     nan: Bool = me.is_nan()
     bits: S128 = me.bits().to_wrap[S128]()
-    negative: Bool = bits.lt(0)
+    negative: Bool = bits < 0
     // e^x overflows past x = 11356.52 and is below half the smallest subnormal
     // before x = -11433.4. Beyond those the answer needs no series.
-    big: Me = b128_of(0x400C6300000000000000000000000000)  // 11360
-    small: Me = b128_of(0xC00C6700000000000000000000000000)  // -11488
-    over: Bool = me.gt(big)
-    under: Bool = me.lt(small)
+    big: Me = b128_of(0x400C6300000000000000000000000000)
+    // 11360
+    small: Me = b128_of(0xC00C6700000000000000000000000000)
+    // -11488
+    over: Bool = me > big
+    under: Bool = me < small
     quiet: Me = b128_of(b128_quiet(bits.to_wrap[U128]()))
     infinity: Me = Me.INFINITY
     plus_zero: Me = b128_of(0)
     when
-        nan => return(quiet)
-        over => return(infinity)
-        under => return(plus_zero)
-        else => compute()
-
-    block compute()
-        hi: U64 = cm_exp_hi(u)
-        mag_hi: U64 = hi.bitand(0x7FFFFFFFFFFFFFFF)
-        tiny: Bool = mag_hi.lt(0x3F8D000000000000)  // |x| < 2^-114: e^x rounds to 1
-        large: Bool = mag_hi.ge(0x400C62E42FEFA39E)
-        when
-            tiny => return(CM_EXP_ONE)
-            large => edge()
-            else => reduce()
-
-    // NaN, infinities, and the overflow and underflow thresholds
-    block edge()
-        is_nan: Bool = b128_is_nan_bits(u)
-        nonnegative: Bool = b128_is_negative_bits(u).bitnot()
-        overflow: Bool = nonnegative.bitand(u.ge(CM_EXP_E_OVERFLOW))
-        underflow: Bool = u.ge(CM_EXP_E_UNDERFLOW)
-        quiet: Me = b128_of(u.bitor(B128_QUIET_BIT))
-        when
-            is_nan => return(quiet)
-            overflow => return(Me.INFINITY)
-            underflow => return(CM_EXP_ZERO)
-            else => reduce()
-
-    block reduce()
-        r: Me = cm_exp_finish(fs: cm_exp_reduce(u), x: u, kind: CM_EXP_KIND_E)
-        return(r)
+        nan => return quiet
+        over => return infinity
+        under => return plus_zero
+        else =>
+            hi: U64 = cm_exp_hi(u)
+            mag_hi: U64 = hi & 0x7FFFFFFFFFFFFFFF
+            tiny: Bool = mag_hi < 0x3F8D000000000000
+            // |x| < 2^-114: e^x rounds to 1
+            when
+                tiny => return CM_EXP_ONE
+                mag_hi >= 0x400C62E42FEFA39E =>
+                    // NaN, infinities, and the overflow and underflow thresholds
+                    is_nan: Bool = b128_is_nan_bits(u)
+                    nonnegative: Bool = ~b128_is_negative_bits(u)
+                    overflow: Bool = nonnegative and u >= CM_EXP_E_OVERFLOW
+                    underflow: Bool = u >= CM_EXP_E_UNDERFLOW
+                    quiet2: Me = b128_of(u | B128_QUIET_BIT)
+                    when
+                        is_nan => return quiet2
+                        overflow => return Me.INFINITY
+                        underflow => return CM_EXP_ZERO
+                        else => pass
+                else => pass
+    r: Me = cm_exp_finish(fs: cm_exp_reduce(u), x: u, kind: CM_EXP_KIND_E)
+    return r
 
 /// x / ln(2) in 3-word fixed point for the 2^x engine: the significand times 1/ln(2), one's-complemented for
 /// negative x, its integer part above the 20 low bits of `w2`.
@@ -72,13 +68,12 @@ routine B128.exp(me: Me) -> Me
 /// :returns: The reduced argument for {cm_exp_fast} and {cm_exp_finish}.
 routine cm_exp_reduce(u: U128) -> CmExpWords3
     hi: S64 = cm_exp_hi(u).to_wrap[S64]()
-    sign_mask: S64 = hi.shr(63)
-    sig: U128 = u.bitand(B128_FRAC_MASK).bitor(B128_IMPLICIT)
+    sign_mask: S64 = hi >> 63
+    sig: U128 = (u & B128_FRAC_MASK) | B128_IMPLICIT
     k4: U64 = CM_EXP_ILN2.getitem(4)
     k5: U64 = CM_EXP_ILN2.getitem(5)
     k6: U64 = CM_EXP_ILN2.getitem(6)
     scaled: CmExpWords3 = cm_exp_mul3x2_high(a0: k4, a1: k5, a2: k6, b: sig)
-    shift: S64 = 0x401A.sub(b128_exponent(u))
-    reduced: CmExpWords3 = cm_exp_ashr3(w: cm_exp_flip3(w: scaled, mask: sign_mask.to_wrap[U64]()),
-        n: shift.to[U64]())
-    return(reduced)
+    shift: S64 = 0x401A - b128_exponent(u)
+    reduced: CmExpWords3 = cm_exp_ashr3(w: cm_exp_flip3(w: scaled, mask: sign_mask.to_wrap[U64]()), n: shift.to[U64]())
+    return reduced

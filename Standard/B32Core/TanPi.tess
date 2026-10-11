@@ -17,65 +17,57 @@ module Standard/Core
 /// :returns: tan(pi `me`).
 routine B32.tan_pi(me: Me) -> Me
     local ix: U32 = me.bits()
-    local e: U32 = ix.bitand(0x7F800000)
+    local e: U32 = ix & 0x7F800000
 
-    large: Bool = e.gt(0x4B000000)  // |x| >= 2^24
-    branch large
-        ? large()
-        : continue
+    // |x| >= 2^24
+    if e > 0x4B000000
+        // x minus the nearest integer
+        // NaN comes back quiet with its sign and payload, an infinity gives NaN, any other x is an even integer
+        if not (e == 0x7F800000)
+            return Me.copysign(0.0, me)
+        if ix << 9 == 0
+            return Me.from_bits(0x7FC00000)
+        else
+            return me + me
     x4: Me = Me.mul(4.0, me)
-    dx4: Me = x4.sub(x4.round_ties_even())
-    zf: Me = me.sub(me.round_ties_even())  // x minus the nearest integer
-    quarter: Bool = dx4.eq(0.0)
-    branch quarter
-        ? quarter(x4.to[S32](), zf)
-        : continue
-    a: U32 = zf.bits().bitand(0x7FFFFFFF)
-    when a
-        0x3E933802 => listed(0x1.44cfbap+0, 0x1p-25, zf)
-        0x38F26685 => listed(0x1.7cc304p-12, 0x1p-37, zf)
-        else => rational(zf)
-
-    // NaN comes back quiet with its sign and payload, an infinity gives NaN, any other x is an even integer
-    block large()
-        special: Bool = e.eq(0x7F800000)
-        branch special
-            ? continue
-            : return(Me.copysign(0.0, me))
-        infinite: Bool = ix.shl(9).eq(0)
-        branch infinite
-            ? return(Me.from_bits(0x7FC00000))
-            : return(me.add(me))
-
-    // x = k/4 for an integer k
-    block quarter(k: S32, zf: Me)
-        odd: Bool = k.bitand(1).eq(1)  // x = 1/4 mod 1/2: +-1 with the sign of tan
-        branch odd
-            ? return(Me.copysign(1.0, zf))
-            : continue
+    dx4: Me = x4 - x4.round_ties_even()
+    zf: Me = me - me.round_ties_even()
+    if dx4 == 0.0
+        // x = k/4 for an integer k
+        k: S32 = x4.to[S32]()
+        // x = 1/4 mod 1/2: +-1 with the sign of tan
+        if k & 1 == 1
+            return Me.copysign(1.0, zf)
         zero: Me = Me.copysign(0.0, me)
-        turn: S32 = k.bitand(6)  // 4 x mod 8, k being even: x mod 2 in quarters
+        turn: S32 = k & 6
+        // 4 x mod 8, k being even: x mod 2 in quarters
         when turn
-            0 => return(zero)  // x = 0 mod 2
-            4 => return(zero.neg())  // x = 1 mod 2
-            2 => return(Me.INFINITY)  // x = 1/2 mod 2
-            else => return(Me.NEG_INFINITY)  // x = -1/2 mod 2
-
-    // the two arguments whose rational evaluation would round wrongly: sign(z) (rh + rl)
-    block listed(rh: Me, rl: Me, zf: Me)
-        return(Me.copysign(rh, zf).add(Me.copysign(rl, zf)))
-
-    block rational(zf: Me)
-        z: B64 = zf.to[B64]()
-        z2: B64 = z.mul(z)
-        z4: B64 = z2.mul(z2)
-        n23: B64 = B64.add(0x1.68a34bd0b8f6ap-6, z2.mul(-0x1.e4866f7a25f99p-13))
-        n01: B64 = B64.add(0x1.921fb54442d19p-1, z2.mul(-0x1.1f458b3e1f8d6p-2))
-        poly: B64 = n01.add(z4.mul(n23))
-        num: B64 = z.sub(z.mul(z2)).mul(poly)
-        d23: B64 = B64.add(0x1.8e9926d2bb901p-4, z2.mul(-0x1.a6f77fd847eep-9))
-        d01: B64 = B64.add(0x1p+0, z2.mul(-0x1.4b4b98d2df3a7p-1))
-        dpoly: B64 = d01.add(z4.mul(d23))
-        den: B64 = dpoly.mul(B64.sub(0.25, z2))
-        r: B64 = num.div(den)
-        return(r.to[Me]())
+            0 => return zero
+            4 => return -zero
+            2 => return Me.INFINITY
+            else => return Me.NEG_INFINITY
+    a: U32 = zf.bits() & 0x7FFFFFFF
+    values2: (Me, Me) = when a
+        0x3E933802 => (1.2687946557998657, 2.980232238769531e-08)
+        0x38F26685 => (0.000363122730050236, 7.275957614183426e-12)
+        else =>
+            // x = 0 mod 2
+            // x = 1 mod 2
+            // x = 1/2 mod 2
+            // x = -1/2 mod 2
+            // the two arguments whose rational evaluation would round wrongly: sign(z) (rh + rl)
+            z: B64 = zf.to[B64]()
+            z2: B64 = z * z
+            z4: B64 = z2 * z2
+            n23: B64 = B64.add(0.02201158908691473, z2 * -0.00023103959012326923)
+            n01: B64 = B64.add(0.7853981633974484, z2 * -0.2805387264887832)
+            poly: B64 = n01 + z4 * n23
+            num: B64 = (z - z * z2) * poly
+            d23: B64 = B64.add(0.0973140255480054, z2 * -0.0032269805489163333)
+            d01: B64 = B64.add(1.0, z2 * -0.6470611340915767)
+            dpoly: B64 = d01 + z4 * d23
+            den: B64 = dpoly * B64.sub(0.25, z2)
+            r: B64 = num / den
+            return r.to[Me]()
+    rh, rl = values2
+    return Me.copysign(rh, zf) + Me.copysign(rl, zf)

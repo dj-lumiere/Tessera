@@ -43,33 +43,25 @@ routine B128.ln(me: Me) -> Me
     bits: S128 = me.bits().to_wrap[S128]()
     nan: Bool = me.is_nan()
     zero: Bool = b128_is_zero_bits(bits.to_wrap[U128]())
-    negative: Bool = bits.lt(0)
+    negative: Bool = bits < 0
     inf: Bool = me.is_infinite()
     quiet: Me = b128_of(b128_quiet(bits.to_wrap[U128]()))
     minus_inf: Me = Me.NEG_INFINITY
     invalid: Me = Me.NAN
     when
-        nan => return(quiet)
-        zero => return(minus_inf)
-        negative => return(invalid)
-        inf => return(me)
-        else => compute()
-
-    // a positive finite x (the cases above went back): near 1 or not
-    block compute()
-        u: U128 = me.bits()
-        near: Bool = cm_wide_hi(u).between(lo: 0x3FFEFFFFF0000040, hi: 0x3FFF000008000020)
-        branch near
-            ? near_one(u)
-            : general(u)
-
-    block near_one(u: U128)
-        r: Me = cm_log_near_one(u)
-        return(r)
-
-    block general(u: U128)
-        r: Me = cm_log_general(u)
-        return(r)
+        nan => return quiet
+        zero => return minus_inf
+        negative => return invalid
+        inf => return me
+        else =>
+            // a positive finite x (the cases above went back): near 1 or not
+            u: U128 = me.bits()
+            if cm_wide_hi(u).between(lo: 0x3FFEFFFFF0000040, hi: 0x3FFF000008000020)
+                r: Me = cm_log_near_one(u)
+                return r
+            else
+                r: Me = cm_log_general(u)
+                return r
 
 /// ln(x) for positive finite x away from 1 (+0 included): a table-driven reduction and a polynomial, rounded by
 /// {cm_log_round}.
@@ -79,36 +71,31 @@ routine cm_log_general(u: U128) -> B128
     local hi: U64 = cm_wide_hi(u)
 
     lo: U64 = cm_wide_lo(u)
-    e: U64 = hi.bitand(0xFFFF000000000000)
-    subnormal: Bool = e.eq(0)
-    branch subnormal
-        ? subnormal()
-        : reduce(hi, lo, e)
-
-    block subnormal()
-        zero: Bool = u.eq(0)
-        neg_inf: B128 = b128_of(0xFFFF0000000000000000000000000000)
-        branch zero
-            ? return(neg_inf)
-            : normalize()
-
-    // shift the leading bit up to bit 48 of the high word, lowering the exponent to match
-    block normalize()
-        hi_zero: Bool = hi.eq(0)
-        lo_zeros: U64 = cm_wide_lo(u).leading_zeros()
-        lz_lo: S64 = lo_zeros.to[S64]().add(64)
-        nz: S64 = hi_zero
-            ? lz_lo
-            : hi.leading_zeros().to[S64]()
-        m: U128 = u.shl(nz.sub(15).to[U128]())
-        e: S64 = 0.sub_wrap(nz.sub(16).shl(48))
-        jump reduce(cm_wide_hi(m), cm_wide_lo(m), e.to_wrap[U64]())
-
-    block reduce(mh: U64, ml: U64, e_field: U64)
-        total: CmWide3 = cm_log_fast(mh, ml, e_field)
-        // the exact check compares against the normalized significand (subnormal x included)
-        r: B128 = cm_log_round(f: total, x: cm_wide_u128(hi: mh, lo: ml))
-        return(r)
+    e: U64 = hi & 0xFFFF000000000000
+    subnormal: Bool = e == 0
+    values2: (U64, U64, U64) = when
+        subnormal =>
+            zero: Bool = u == 0
+            neg_inf: B128 = b128_of(0xFFFF0000000000000000000000000000)
+            if zero
+                return neg_inf
+            else
+                // shift the leading bit up to bit 48 of the high word, lowering the exponent to match
+                hi_zero: Bool = hi == 0
+                lo_zeros: U64 = cm_wide_lo(u).leading_zeros()
+                lz_lo: S64 = lo_zeros.to[S64]() + 64
+                nz: S64 = when
+                    hi_zero => lz_lo
+                    else => hi.leading_zeros().to[S64]()
+                m: U128 = u << (nz - 15).to[U128]()
+                e2: S64 = 0 -% (nz - 16 << 48)
+                becomes (cm_wide_hi(m), cm_wide_lo(m), e2.to_wrap[U64]())
+        else => (hi, lo, e)
+    mh, ml, e_field = values2
+    total: CmWide3 = cm_log_fast(mh, ml, e_field)
+    // the exact check compares against the normalized significand (subnormal x included)
+    r: B128 = cm_log_round(f: total, x: cm_wide_u128(hi: mh, lo: ml))
+    return r
 
 /// The fast path of ln(x) before rounding: x = 2^e * m, m is multiplied by four table reciprocals chosen from a
 /// crude log2(m), and a polynomial gives ln of the reduced m. CORE-MATH's rounding test (in {cm_log_round})
@@ -119,73 +106,68 @@ routine cm_log_general(u: U128) -> B128
 /// :param e_field: The biased exponent shifted up by 48 (two's complement below 1 for a subnormal x).
 /// :returns: ln(x) in 3-word two's-complement fixed point, its last bit 2^-148.
 routine cm_log_fast(mh: U64, ml: U64, e_field: U64) -> CmWide3
-    local e: U64 = e_field.add_wrap(0x0070000000000000)  // + 112 << 48
+    local e: U64 = e_field +% 0x0070000000000000
 
-    jump scale(cm_log_log2(mh))
+    // + 112 << 48
 
     // The four 5-bit digits of l index the reciprocals, whose product r makes m * r slightly above 1. The
     // crude log2 can overshoot an index boundary by a hair, leaving m * r just below 1, which the unsigned
     // reduced argument can't hold (the original, CORE-MATH's logq.c, is off by about 2^-20 there: m just
     // below 2^(k / 2^20) for k = 29, 256, 285). Then the index one lower is taken.
-    block scale(l: U64)
+    while true with l: U64 = cm_log_log2(mh)
         j: CmLogIndices = cm_log_indices(l)
-        sig: U64 = mh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
+        sig: U64 = (mh & 0x0000FFFFFFFFFFFF) | 0x0001000000000000
         rt0: U64 = CM_LOG_RT0.getitem(j.j0)
         rt1: U64 = CM_LOG_RT1.getitem(j.j1)
         rt2: U64 = CM_LOG_RT2.getitem(j.j2)
         rt3: U64 = CM_LOG_RT3.getitem(j.j3)
-        r01: U64 = rt1.mul_wrap(rt0)
-        r23: U64 = rt2.mul_wrap(rt3)
+        r01: U64 = rt1 *% rt0
+        r23: U64 = rt2 *% rt3
         r: U128 = cm_wide_mul(a: r01, b: r23)
         rr: U256 = cm_wide_u128(hi: sig, lo: ml).mul_wide(r)
-        rhh: U64 = rr.shr(192).to[U64]()
+        rhh: U64 = (rr >> 192).to[U64]()
         // m * r below 1: the product's leading bit (2^236) is clear
-        below_one: Bool = rhh.shr(44).eq(0)
-        branch below_one
-            ? scale(l.sub(0x0000100000000000))
-            : continue
-        rhl: U64 = rr.shr(128).to_wrap[U64]()
-        rlh: U64 = rr.shr(64).to_wrap[U64]()
-        mh2: U64 = rhh.shl(40).bitor(rhl.shr(24))
-        ml2: U64 = rhl.shl(40).bitor(rlh.shr(24))
+        if rhh >> 44 == 0
+            continue with l: l - 0x0000100000000000
+        rhl: U64 = (rr >> 128).to_wrap[U64]()
+        rlh: U64 = (rr >> 64).to_wrap[U64]()
+        mh2: U64 = (rhh << 40) | (rhl >> 24)
+        ml2: U64 = (rhl << 40) | (rlh >> 24)
+        // ln(1 + m) for the reduced m, added to the table sum
         sum: CmWide3 = cm_log_table_sum(e, j)
-        jump polynomial(sum, mh2, cm_wide_u128(hi: mh2, lo: ml2))
-
-    // ln(1 + m) for the reduced m, added to the table sum
-    block polynomial(sum: CmWide3, top: U64, m: U128)
+        m: U128 = cm_wide_u128(hi: mh2, lo: ml2)
         c6: U64 = CM_LOG_C.getitem(6)
         c7: U64 = CM_LOG_C.getitem(7)
         c8: U64 = CM_LOG_C.getitem(8)
         c10: U64 = CM_LOG_C.getitem(10)
-        t10: U64 = cm_wide_mulhi(a: top, b: c10)
-        t8: U64 = cm_wide_mulhi(a: top, b: c8.sub_wrap(t10))
-        f3: U128 = cm_wide_u128(hi: c7, lo: c6.sub_wrap(t8))
-        f2: U128 = cm_log_coefficient(4).sub_wrap(cm_wide_mulhi(a: m, b: f3))
-        f1: U128 = cm_log_coefficient(2).sub_wrap(cm_wide_mulhi(a: m, b: f2))
-        f0: U128 = cm_log_coefficient(0).sub_wrap(cm_wide_mulhi(a: m, b: f1))
+        t10: U64 = cm_wide_mulhi(a: mh2, b: c10)
+        t8: U64 = cm_wide_mulhi(a: mh2, b: c8 -% t10)
+        f3: U128 = cm_wide_u128(hi: c7, lo: c6 -% t8)
+        f2: U128 = cm_log_coefficient(4) -% cm_wide_mulhi(a: m, b: f3)
+        f1: U128 = cm_log_coefficient(2) -% cm_wide_mulhi(a: m, b: f2)
+        f0: U128 = cm_log_coefficient(0) -% cm_wide_mulhi(a: m, b: f1)
         p: U128 = cm_wide_mulhi(a: m, b: f0)
         p3: CmWide3 = CmWide3(w0: cm_wide_lo(p), w1: cm_wide_hi(p), w2: 0)
         total: CmWide3 = cm_wide_add3(a: sum, b: p3)
-        return(total)
+        return total
 
 /// Word pair (i, i + 1) of the ln(1 + r) polynomial as a 128-bit coefficient.
 /// :param i: The index of the low word in CM_LOG_C.
 /// :returns: `CM_LOG_C[i + 1]` × 2^64 + `CM_LOG_C[i]`.
 routine cm_log_coefficient(i: USize) -> U128
     lo: U64 = CM_LOG_C.getitem(i)
-    hi: U64 = CM_LOG_C.getitem(i.add(1))
+    hi: U64 = CM_LOG_C.getitem(i + 1)
     r: U128 = cm_wide_u128(hi, lo)
-    return(r)
+    return r
 
 /// The four table indices of a log2 estimate: its top 20 bits, 5 at a time.
 /// :param l: The log2 estimate.
 /// :returns: The indices, j0 from the top bits.
 routine cm_log_indices(l: U64) -> CmLogIndices
-    j1_bits: U64 = l.shr(54).bitand(31)
-    j2_bits: U64 = l.shr(49).bitand(31)
-    j3_bits: U64 = l.shr(44).bitand(31)
-    return(CmLogIndices(j0: l.shr(59).to[USize](), j1: j1_bits.to[USize](), j2: j2_bits.to[USize](),
-        j3: j3_bits.to[USize]()))
+    j1_bits: U64 = (l >> 54) & 31
+    j2_bits: U64 = (l >> 49) & 31
+    j3_bits: U64 = (l >> 44) & 31
+    return CmLogIndices(j0: (l >> 59).to[USize](), j1: j1_bits.to[USize](), j2: j2_bits.to[USize](), j3: j3_bits.to[USize]())
 
 /// e * ln(2) minus the bias, plus the logarithms of the four chosen reciprocals, in 3-word fixed point.
 /// :param e: The exponent field of x (shifted up by 48), plus 112.
@@ -199,7 +181,7 @@ routine cm_log_table_sum(e: U64, j: CmLogIndices) -> CmWide3
     s2: CmWide3 = cm_wide_add3(a: s1, b: cm_wide_row3(table: CM_LOG_LT1.to[@U64](), i: j.j1))
     s3: CmWide3 = cm_wide_add3(a: s2, b: cm_wide_row3(table: CM_LOG_LT2.to[@U64](), i: j.j2))
     s4: CmWide3 = cm_wide_add3(a: s3, b: cm_wide_row3(table: CM_LOG_LT3.to[@U64](), i: j.j3))
-    return(s4)
+    return s4
 
 /// Rounds the 3-word fixed-point logarithm f to B128, checking exactly with {cm_log_refine} when it's too close
 /// to a midpoint.
@@ -208,44 +190,38 @@ routine cm_log_table_sum(e: U64, j: CmLogIndices) -> CmWide3
 /// :returns: The rounded logarithm.
 routine cm_log_round(f: CmWide3, x: U128) -> B128
     local mask: U64 = cm_sign_mask64(f.w2)
-    local f0: U64 = f.w0.bitxor(mask)
-    local f1: U64 = f.w1.bitxor(mask)
-    local f2: U64 = f.w2.bitxor(mask)
+    local f0: U64 = f.w0 ^ mask
+    local f1: U64 = f.w1 ^ mask
+    local f2: U64 = f.w2 ^ mask
     local magnitude: CmWide3 = (w0: f0, w1: f1, w2: f2)
-    local top_zero: Bool = f2.eq(0)
-    local nz: U64 = top_zero
+    local top_zero: Bool = f2 == 0
+    local nz: U64 = when
+        top_zero => f1.leading_zeros() + 64
+        else => f2.leading_zeros()
+    local ns: U64 = nz -% 15
+    local half: U64 = 63 -% ns & 63
+    local rnd: U64 = (f0 >> half) & 1
+    local el: U64 = 0x4029 -% nz | (mask << 15)
 
-        ? f1.leading_zeros().add(64) : f2.leading_zeros()
-    local ns: U64 = nz.sub_wrap(15)
-    local half: U64 = 63.sub_wrap(ns).bitand(63)
-    local rnd: U64 = f0.shr(half).bitand(1)
-    local el: U64 = 0x4029.sub_wrap(nz).bitor(mask.shl(15))
-
-    tail: U64 = U64.MAX.shr(ns.bitand(63))
-    nudged: U64 = f0.add_wrap(1.shl(half)).add_wrap(12)
-    near_half: U64 = nudged.bitand(tail)
-    hard: Bool = near_half.le(24)
-    branch hard
-        ? exact()
-        : fast()
-
-    block fast()
-        ls: U64 = ns.bitand(63)
-        rs: U64 = 64.sub_wrap(ns).bitand(63)
-        sig: U128 = cm_log_shift_pair(f: magnitude, ls, rs)
-        r: B128 = cm_log_pack(sig, el, round: rnd)
-        return(r)
-
-    // the rounding test failed: decide it exactly from 113 bits plus one
-    block exact()
-        ls: U64 = nz.sub_wrap(14)
-        rs: U64 = 64.sub_wrap(ls).bitand(63)
-        sig: U128 = cm_log_shift_pair(f: magnitude, ls: ls.bitand(63), rs)
-        below: U64 = f0.shr(63.sub_wrap(ls).bitand(63)).bitand(1)
-        m: U128 = sig.add_wrap(below.to[U128]())
+    tail: U64 = U64.MAX >> (ns & 63)
+    nudged: U64 = f0 +% (1 << half) +% 12
+    near_half: U64 = nudged & tail
+    if near_half <= 24
+        // the rounding test failed: decide it exactly from 113 bits plus one
+        ls: U64 = nz -% 14
+        rs: U64 = 64 -% ls & 63
+        sig: U128 = cm_log_shift_pair(f: magnitude, ls: ls & 63, rs)
+        below: U64 = (f0 >> (63 -% ls & 63)) & 1
+        m: U128 = sig +% below.to[U128]()
         exact: CmLogRounding = cm_log_refine(el, m, x)
         r: B128 = cm_log_pack(sig: exact.sig, el, round: exact.round)
-        return(r)
+        return r
+    else
+        ls: U64 = ns & 63
+        rs: U64 = 64 -% ns & 63
+        sig: U128 = cm_log_shift_pair(f: magnitude, ls, rs)
+        r: B128 = cm_log_pack(sig, el, round: rnd)
+        return r
 
 /// The 128 bits (f << ls) >> 64, shifting by ls left and rs = (64 - ls) mod 64 right as the original does (a
 /// zero ls ORs in the lower word unshifted, like the x86 shifts it was written for).
@@ -254,10 +230,10 @@ routine cm_log_round(f: CmWide3, x: U128) -> B128
 /// :param rs: The matching right shift, (64 - `ls`) mod 64.
 /// :returns: The top two words of the shifted value.
 routine cm_log_shift_pair(f: CmWide3, ls: U64, rs: U64) -> U128
-    hi: U64 = f.w2.shl(ls).bitor(f.w1.shr(rs))
-    lo: U64 = f.w1.shl(ls).bitor(f.w0.shr(rs))
+    hi: U64 = (f.w2 << ls) | (f.w1 >> rs)
+    lo: U64 = (f.w1 << ls) | (f.w0 >> rs)
     r: U128 = cm_wide_u128(hi, lo)
-    return(r)
+    return r
 
 /// sig + (el << 112) + round: the exponent (and sign) field added to the significand, which carries into the
 /// exponent when its implicit bit is set.
@@ -266,29 +242,29 @@ routine cm_log_shift_pair(f: CmWide3, ls: U64, rs: U64) -> U128
 /// :param round: The round bit (0 or 1).
 /// :returns: The packed B128.
 routine cm_log_pack(sig: U128, el: U64, round: U64) -> B128
-    field: U128 = cm_wide_u128(hi: el.shl(48), lo: round)
-    r: B128 = b128_of(sig.add_wrap(field))
-    return(r)
+    field: U128 = cm_wide_u128(hi: el << 48, lo: round)
+    r: B128 = b128_of(sig +% field)
+    return r
 
 /// Crude fixed-point log2 of the high significand word x, whose bits select the reciprocal tables.
 /// :param x: The high word of the bits of x (only its 48 fraction bits are read).
 /// :returns: The log2 estimate, its top 20 bits the four 5-bit table indices.
 routine cm_log_log2(x: U64) -> U64
-    j_bits: U64 = x.shr(43).bitand(31)
+    j_bits: U64 = (x >> 43) & 31
     j: USize = j_bits.to[USize]()
-    z: U64 = x.shr(11).bitand(0xFFFFFFFF)
-    z2: U64 = z.mul_wrap(z).shr(32)
-    k: USize = j.mul(4)
+    z: U64 = (x >> 11) & 0xFFFFFFFF
+    z2: U64 = z *% z >> 32
+    k: USize = j * 4
     c0: U64 = CM_LOG_L2C.getitem(k)
-    c1: U64 = CM_LOG_L2C.getitem(k.add(1))
-    c2: U64 = CM_LOG_L2C.getitem(k.add(2))
-    c3: U64 = CM_LOG_L2C.getitem(k.add(3))
-    t0: U64 = c0.sub_wrap(z.mul_wrap(c1).shr(38)).bitand(0xFFFFFFFF)
-    t2: U64 = c2.sub_wrap(z.mul_wrap(c3).shr(32)).bitand(0xFFFFFFFF)
-    t: U64 = t0.add_wrap(z2.mul_wrap(t2).shr(44)).bitand(0xFFFFFFFF)
+    c1: U64 = CM_LOG_L2C.getitem(k + 1)
+    c2: U64 = CM_LOG_L2C.getitem(k + 2)
+    c3: U64 = CM_LOG_L2C.getitem(k + 3)
+    t0: U64 = c0 -% (z *% c1 >> 38) & 0xFFFFFFFF
+    t2: U64 = c2 -% (z *% c3 >> 32) & 0xFFFFFFFF
+    t: U64 = t0 +% (z2 *% t2 >> 44) & 0xFFFFFFFF
     base: U64 = CM_LOG_L2C0.getitem(j)
-    r: U64 = base.add_wrap(z.mul_wrap(t).shr(4))
-    return(r)
+    r: U64 = base +% (z *% t >> 4)
+    return r
 
 /// (w2, w1, w0) >> s, logical, s < 192.
 /// :param t: The value.
@@ -297,27 +273,24 @@ routine cm_log_log2(x: U64) -> U64
 routine cm_log_shift_right3(t: CmWide3, s: U64) -> CmWide3
     local shifted: @CmWide3 <- .hollow()
 
-    rs: U64 = s.bitand(63)
-    ls: U64 = 64.sub_wrap(rs).bitand(63)
-    aligned: Bool = rs.eq(0)
-    b0: U64 = t.w0.shr(rs).bitor(t.w1.shl(ls))
-    b1: U64 = t.w1.shr(rs).bitor(t.w2.shl(ls))
-    b2: U64 = t.w2.shr(rs)
+    rs: U64 = s & 63
+    ls: U64 = 64 -% rs & 63
+    aligned: Bool = rs == 0
+    b0: U64 = (t.w0 >> rs) | (t.w1 << ls)
+    b1: U64 = (t.w1 >> rs) | (t.w2 << ls)
+    b2: U64 = t.w2 >> rs
     bits: CmWide3 = CmWide3(w0: b0, w1: b1, w2: b2)
-    start: CmWide3 = aligned
-        ? t
-        : bits
+    start: CmWide3 = when
+        aligned => t
+        else => bits
     start.poke_into(shifted)
-    jump words(s)
 
-    block words(k: U64)
-        done: Bool = k.lt(64)
+    until k < 64 with k: U64 = s
         moved: CmWide3 = CmWide3(w0: shifted.peek().w1, w1: shifted.peek().w2, w2: 0)
-        branch done
-            ? return(shifted.peek())
-            : continue
         moved.poke_into(shifted)
-        jump words(k.sub(64))
+        continue with k: k - 64
+    then
+        return shifted.peek()
 
 // -- near 1 --------------------------------------------------------------------
 
@@ -326,102 +299,95 @@ routine cm_log_shift_right3(t: CmWide3, s: U64) -> CmWide3
 /// :returns: ln(x), correctly rounded, +0 for x = 1.
 routine cm_log_near_one(x: U128) -> B128
     one: U128 = 0x3FFF0000000000000000000000000000
-    exact: Bool = x.eq(one)
-    above: Bool = x.gt(one)
+    exact: Bool = x == one
+    above: Bool = x > one
     plus_zero: B128 = b128_of(0)
-    when
-        exact => return(plus_zero)
-        above => normalize(cm_log_above_one(x), 0)
-        else => below()
-
-    block below()
-        n: CmLogNear = cm_log_below_one(x)
-        jump normalize(n, 1)
+    values2: (CmLogNear, U64) = when
+        exact => return plus_zero
+        above => (cm_log_above_one(x), 0)
+        else => (cm_log_below_one(x), 1)
+    n, neg = values2
 
     // normalize the top bit to 127, then round (exactly when the fast test failed)
-    block normalize(n: CmLogNear, neg: U64)
-        top_clear: Bool = n.sig.lt(0).bitnot()
-        sig: S128 = top_clear
-            ? n.sig.shl(1)
-            : n.sig
-        e: U64 = top_clear
-            ? n.e.add(1)
-            : n.e
-        sig_lo: U64 = cm_wide_lo(sig.to_wrap[U128]())
-        rnd: U64 = sig_lo.shr(14).bitand(1)
-        biased: U64 = 16381.sub(e)
-        el: U64 = biased.bitor(neg.shl(15))
-        branch n.hard
-            ? exact(sig.to_wrap[U128](), el)
-            : fast(sig.to_wrap[U128](), el, rnd)
-
-    block fast(sig: U128, el: U64, rnd: U64)
-        r: B128 = cm_log_pack(sig: sig.shr(15), el, round: rnd)
-        return(r)
-
-    block exact(sig: U128, el: U64)
-        m: U128 = sig.add_wrap(0x2000).shr(14)
+    top_clear: Bool = n.sig >= 0
+    sig: S128 = when
+        top_clear => n.sig << 1
+        else => n.sig
+    e: U64 = when
+        top_clear => n.e + 1
+        else => n.e
+    sig_lo: U64 = cm_wide_lo(sig.to_wrap[U128]())
+    rnd: U64 = (sig_lo >> 14) & 1
+    biased: U64 = 16381 - e
+    el: U64 = biased | (neg << 15)
+    if n.hard
+        sig2: U128 = sig.to_wrap[U128]()
+        m: U128 = sig2 +% 0x2000 >> 14
         rounded: CmLogRounding = cm_log_refine(el, m, x)
         r: B128 = cm_log_pack(sig: rounded.sig, el, round: rounded.round)
-        return(r)
+        return r
+    else
+        sig2: U128 = sig.to_wrap[U128]()
+        r: B128 = cm_log_pack(sig: sig2 >> 15, el, round: rnd)
+        return r
 
 /// ln(x) for 1 < x < 1 + 2^-29 or so: t = x - 1, ln(1 + t) = t - t^2 * P(t), before the final rounding.
 /// :param x: The bits of x, above 1.
 /// :returns: The result before rounding, with its exponent adjustment and the fast rounding test.
 routine cm_log_above_one(x: U128) -> CmLogNear
-    t: U128 = x.sub(0x3FFF0000000000000000000000000000)
+    t: U128 = x - 0x3FFF0000000000000000000000000000
     nz: S64 = t.leading_zeros().to[S64]()
-    u: U128 = t.shl(nz.to[U128]())
-    e: S64 = nz.sub(16)
+    u: U128 = t << nz.to[U128]()
+    e: S64 = nz - 16
     u2: U128 = cm_wide_mulhi(a: u, b: u)
-    m: U128 = u.shr(e.sub(20).to[U128]())
+    m: U128 = u >> (e - 20).to[U128]()
     mh: U64 = cm_wide_hi(m)
     n10: U64 = CM_LOG_NCP.getitem(10)
     n8: U64 = CM_LOG_NCP.getitem(8)
     n7: U64 = CM_LOG_NCP.getitem(7)
     n6: U64 = CM_LOG_NCP.getitem(6)
     t10: U64 = cm_wide_mulhi(a: mh, b: n10)
-    t8: U64 = cm_wide_mulhi(a: mh, b: n8.sub_wrap(t10))
-    f3: U128 = cm_wide_u128(hi: n7, lo: n6.sub_wrap(t8))
-    f2: U128 = cm_log_ncp(4).sub_wrap(cm_wide_mulhi(a: m, b: f3))
-    f1: U128 = cm_log_ncp(2).sub_wrap(cm_wide_mulhi(a: m, b: f2))
-    f0: U128 = cm_log_ncp(0).sub_wrap(cm_wide_mulhi(a: m, b: f1))
+    t8: U64 = cm_wide_mulhi(a: mh, b: n8 -% t10)
+    f3: U128 = cm_wide_u128(hi: n7, lo: n6 -% t8)
+    f2: U128 = cm_log_ncp(4) -% cm_wide_mulhi(a: m, b: f3)
+    f1: U128 = cm_log_ncp(2) -% cm_wide_mulhi(a: m, b: f2)
+    f0: U128 = cm_log_ncp(0) -% cm_wide_mulhi(a: m, b: f1)
     p: U128 = cm_wide_mulhi(a: u2, b: f0)
     p3: CmWide3 = CmWide3(w0: 0, w1: cm_wide_lo(p), w2: cm_wide_hi(p))
     shifted: CmWide3 = cm_log_shift_right3(t: p3, s: e.to[U64]())
     u3: CmWide3 = CmWide3(w0: 0, w1: cm_wide_lo(u), w2: cm_wide_hi(u))
     z: CmWide3 = cm_wide_sub3(a: u3, b: shifted)
     r: CmLogNear = cm_log_near_test(z, e, point: 64, last: 63)
-    return(r)
+    return r
 
 /// ln(x) for 1 - 2^-29 or so < x < 1: t = 1 - x, ln(1 - t) = -(t + t^2 * P(t)), before the final rounding.
 /// :param x: The bits of x, below 1.
 /// :returns: The magnitude of the result before rounding, with its exponent adjustment and the fast rounding test.
 routine cm_log_below_one(x: U128) -> CmLogNear
-    t: U128 = 0x3FFF0000000000000000000000000000.sub(x)
+    t: U128 = 0x3FFF0000000000000000000000000000 - x
     nz: S64 = t.leading_zeros().to[S64]()
-    u: U128 = t.shl(nz.to[U128]())
-    e: S64 = nz.sub(16)
+    u: U128 = t << nz.to[U128]()
+    e: S64 = nz - 16
     u2: U128 = cm_wide_mulhi(a: u, b: u)
-    m: U128 = u.shr(e.sub(20).to[U128]())
+    m: U128 = u >> (e - 20).to[U128]()
     mh: U64 = cm_wide_hi(m)
     n10: U64 = CM_LOG_NCN.getitem(10)
     n8: U64 = CM_LOG_NCN.getitem(8)
     n6: U64 = CM_LOG_NCN.getitem(6)
     t10: U64 = cm_wide_mulhi(a: mh, b: n10)
-    t8: U64 = cm_wide_mulhi(a: mh, b: n8.add_wrap(t10))
-    t6: U64 = cm_wide_mulhi(a: mh, b: n6.add_wrap(t8))
-    f2: U128 = cm_log_ncn(4).add(t6.to[U128]())
-    f1: U128 = cm_log_ncn(2).add_wrap(cm_wide_mulhi(a: m, b: f2))
-    f0: U128 = cm_log_ncn(0).add_wrap(cm_wide_mulhi(a: m, b: f1))
+    t8: U64 = cm_wide_mulhi(a: mh, b: n8 +% t10)
+    t6: U64 = cm_wide_mulhi(a: mh, b: n6 +% t8)
+    f2: U128 = cm_log_ncn(4) + t6.to[U128]()
+    f1: U128 = cm_log_ncn(2) +% cm_wide_mulhi(a: m, b: f2)
+    f0: U128 = cm_log_ncn(0) +% cm_wide_mulhi(a: m, b: f1)
     p: U128 = cm_wide_mulhi(a: u2, b: f0)
-    half_u: U128 = u.shr(1)
+    half_u: U128 = u >> 1
     p3: CmWide3 = CmWide3(w0: 0, w1: cm_wide_lo(p), w2: cm_wide_hi(p))
-    shifted: CmWide3 = cm_log_shift_right3(t: p3, s: e.add(2).to[U64]())
+    shifted: CmWide3 = cm_log_shift_right3(t: p3, s: (e + 2).to[U64]())
     u3: CmWide3 = CmWide3(w0: 0, w1: cm_wide_lo(half_u), w2: cm_wide_hi(half_u))
     z: CmWide3 = cm_wide_add3(a: u3, b: shifted)
     r: CmLogNear = cm_log_near_test(z, e, point: 62, last: 62)
-    return(r)
+    return r
 
 /// The near-one rounding test on z and the 128-bit significand to round. The rounding position sits point - e
 /// bits into the tail words while e <= last. Past that, the error bound eps shrinks as e grows.
@@ -432,52 +398,45 @@ routine cm_log_below_one(x: U128) -> CmLogNear
 /// :returns: The top two words of `z`, `e`, and whether the rounding is too close to call.
 routine cm_log_near_test(z: CmWide3, e: S64, point: S64, last: S64) -> CmLogNear
     local tl: U128 = cm_wide_u128(hi: z.w1, lo: z.w0)
-    local zs: S64 = z.w2.shr(63).to[S64]()
-    local msk: U128 = U128.MAX.shr(50.sub(zs).to[U128]())
-    local nrnd: U128 = 1.shl(13.add(zs).to[U128]())
+    local zs: S64 = (z.w2 >> 63).to[S64]()
+    local msk: U128 = U128.MAX >> (50 - zs).to[U128]()
+    local nrnd: U128 = 1 << (13 + zs).to[U128]()
 
-    inside: Bool = e.le(last)
-    branch inside
-        ? short()
-        : long()
-
-    // e below the point: the tail shifts down to the rounding position
-    block short()
-        gap: S128 = point.sub(e).to[S128]()
-        tail: U128 = tl.shr(gap.to[U128]())
-        mask: U128 = msk.shr(gap.to[U128]())
-        bound: U128 = nrnd.shl(e.to[U128]()).bitor(12)
-        jump test(tail, mask, bound, 12)
-
-    block long()
-        eps: U64 = 12.shr(e.sub(point).to[U64]()).add(1)
-        bound: U128 = nrnd.shl(point.to[U128]()).bitor(eps.to[U128]())
-        jump test(tl, msk, bound, eps)
-
-    block test(tail: U128, mask: U128, bound: U128, eps: U64)
-        t: U128 = mask.bitand(tail.add_wrap(bound))
-        hard: Bool = t.le(eps.mul(2).to[U128]())
-        sig: U128 = cm_wide_u128(hi: z.w2, lo: z.w1)
-        r: CmLogNear = CmLogNear(sig: sig.to_wrap[S128](), e: e.to[U64](), hard: hard)
-        return(r)
+    inside: Bool = e <= last
+    values2: (U128, U128, U128, U64) = when
+        inside =>
+            // e below the point: the tail shifts down to the rounding position
+            gap: S128 = (point - e).to[S128]()
+            tail: U128 = tl >> gap.to[U128]()
+            mask: U128 = msk >> gap.to[U128]()
+            becomes (tail, mask, (nrnd << e.to[U128]()) | 12, 12)
+        else =>
+            eps: U64 = (12 >> (e - point).to[U64]()) + 1
+            becomes (tl, msk, (nrnd << point.to[U128]()) | eps.to[U128](), eps)
+    tail, mask, bound, eps = values2
+    t: U128 = mask & tail +% bound
+    hard: Bool = t <= (eps * 2).to[U128]()
+    sig: U128 = cm_wide_u128(hi: z.w2, lo: z.w1)
+    r: CmLogNear = CmLogNear(sig: sig.to_wrap[S128](), e: e.to[U64](), hard: hard)
+    return r
 
 /// Word pair (i, i + 1) of the above-one polynomial.
 /// :param i: The index of the low word in CM_LOG_NCP.
 /// :returns: `CM_LOG_NCP[i + 1]` × 2^64 + `CM_LOG_NCP[i]`.
 routine cm_log_ncp(i: USize) -> U128
     lo: U64 = CM_LOG_NCP.getitem(i)
-    hi: U64 = CM_LOG_NCP.getitem(i.add(1))
+    hi: U64 = CM_LOG_NCP.getitem(i + 1)
     r: U128 = cm_wide_u128(hi, lo)
-    return(r)
+    return r
 
 /// Word pair (i, i + 1) of the below-one polynomial.
 /// :param i: The index of the low word in CM_LOG_NCN.
 /// :returns: `CM_LOG_NCN[i + 1]` × 2^64 + `CM_LOG_NCN[i]`.
 routine cm_log_ncn(i: USize) -> U128
     lo: U64 = CM_LOG_NCN.getitem(i)
-    hi: U64 = CM_LOG_NCN.getitem(i.add(1))
+    hi: U64 = CM_LOG_NCN.getitem(i + 1)
     r: U128 = cm_wide_u128(hi, lo)
-    return(r)
+    return r
 
 // -- exact rounding ------------------------------------------------------------
 
@@ -488,35 +447,35 @@ routine cm_log_ncn(i: USize) -> U128
 /// :param x: The input with its significand normalized.
 /// :returns: The round bit and the significand.
 routine cm_log_refine(el: U64, m: U128, x: U128) -> CmLogRounding
-    claim t_buf: @Array[U64, 7] <- .hollow()
+    local t_buf: @Array[U64, 7] <- .hollow()
     t: @U64 = t_buf.to[@U64]()
-    claim ft_buf: @Array[U64, 6] <- .hollow()
+    local ft_buf: @Array[U64, 6] <- .hollow()
     ft: @U64 = ft_buf.to[@U64]()
-    sm: U64 = 0.sub_wrap(el.shr(15).bitand(1))
+    sm: U64 = 0 -% ((el >> 15) & 1)
     cm_wide_mulhi_7x2(a: CM_WIDE_ILN2.to[@U64](), b: m, out: t)
     cm_wide_xor_words(x: t, n: 7, mask: sm)
-    cm_wide_ashr7(x: t, n: 0x402E.sub(el.bitand(0x7FFF)))
+    cm_wide_ashr7(x: t, n: 0x402E - (el & 0x7FFF))
     cm_wide_exp2_frac(x: t, out: ft)
     w0: U64 = ft.stride(0).peek()
     w1: U64 = ft.stride(1).peek()
     w2: U64 = ft.stride(2).peek()
     w3: U64 = ft.stride(3).peek()
     w4: U64 = ft.stride(4).peek()
-    low_bits: U64 = w0.bitor(w1).bitor(w2)
-    inexact: Bool = low_bits.bitor(w3).ne(0)
-    sticky: U64 = w4.bitor(inexact.to[U64]())
-    d: S64 = sticky.sub_wrap(cm_wide_lo(x).shl(12)).to_wrap[S64]()
-    above: Bool = d.lt(0).bitnot()
-    down: Bool = sm.ne(0)
-        ? above.bitnot()
-        : above
-    doubled: U128 = m.shl(1)
-    mm: U128 = down
-        ? doubled.sub_wrap(1)
-        : doubled.add_wrap(1)
-    round: U64 = cm_wide_lo(mm.shr(1)).bitand(1)
-    r: CmLogRounding = CmLogRounding(round: round, sig: mm.shr(2))
-    return(r)
+    low_bits: U64 = w0 | w1 | w2
+    inexact: Bool = low_bits | w3 != 0
+    sticky: U64 = w4 | inexact.to[U64]()
+    d: S64 = (sticky -% (cm_wide_lo(x) << 12)).to_wrap[S64]()
+    above: Bool = d >= 0
+    down: Bool = when
+        sm != 0 => not above
+        else => above
+    doubled: U128 = m << 1
+    mm: U128 = when
+        down => doubled -% 1
+        else => doubled +% 1
+    round: U64 = cm_wide_lo(mm >> 1) & 1
+    r: CmLogRounding = CmLogRounding(round: round, sig: mm >> 2)
+    return r
 
 // -- tables --------------------------------------------------------------------
 

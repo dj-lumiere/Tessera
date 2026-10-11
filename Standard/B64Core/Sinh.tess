@@ -67,41 +67,38 @@ preset CM_B64_SINH_DB_L: @Array[U64, 51] <- [0xB95BC00000000000, 0xBC70000000000
 routine B64.sinh(me: Me) -> Me
     local aix: U64 = me.abs().bits()
 
-    small: Bool = aix.lt(0x3FD0000000000000)  // |x| < 1/4
-    large: Bool = aix.gt(0x408633CE8FB9F87D)  // |x| > 0x1.633ce8fb9f87dp+9 ~ 710.47586
+    small: Bool = aix < 0x3FD0000000000000
+
+    // |x| < 1/4
+    // |x| > 0x1.633ce8fb9f87dp+9 ~ 710.47586
     when
-        small => small()
-        large => large()
-        else => return(cm_b64_sinh_main(me))
-
-    block small()
-        tiny: Bool = aix.lt(0x3E57137449123EF7)  // |x| < 0x1.7137449123ef7p-26
-        branch tiny
-            ? return(me.mul_add(a: 0x1p-55, b: me))
-            : continue
-        // x + p is a minimax approximation of sinh x on [0x1.7137449123ef7p-26, 1/4] with
-        // |x + p - sinh x| / x^3 < 2^-56.584
-        x2: Me = me.mul(me)
-        x3: Me = x2.mul(me)
-        x4: Me = x2.mul(x2)
-        c0: Me = x2.mul(0x1.111111111151ep-7).add(0x1.5555555555555p-3)
-        c4: Me = x2.mul(0x1.71de444a96e11p-19).add(0x1.a01a019d0c767p-13)
-        c48: Me = x4.mul(0x1.ae8465375242p-26).add(c4)
-        p: Me = x3.mul(x4.mul(c48).add(c0))
-        e: Me = x3.mul(0x1.cp-53)
-        lb: Me = me.add(p.sub(e))
-        ub: Me = me.add(p.add(e))
-        sure: Bool = lb.eq(ub)
-        branch sure
-            ? return(lb)
-            : return(cm_b64_sinh_zero(me))
-
-    // NaN, infinities, or overflow
-    block large()
-        nonfinite: Bool = aix.ge(0x7FF0000000000000)
-        branch nonfinite
-            ? return(me.add(me))
-            : return(Me.copysign(0x1p+1023, me).mul(2.0))
+        small =>
+            // |x| < 0x1.7137449123ef7p-26
+            if aix < 0x3E57137449123EF7
+                return me.mul_add(a: 2.7755575615628914e-17, b: me)
+            // x + p is a minimax approximation of sinh x on [0x1.7137449123ef7p-26, 1/4] with
+            // |x + p - sinh x| / x^3 < 2^-56.584
+            x2: Me = me * me
+            x3: Me = x2 * me
+            x4: Me = x2 * x2
+            c0: Me = x2 * 0.008333333333335132 + 0.16666666666666666
+            c4: Me = x2 * 2.7557330544555877e-06 + 0.00019841269832592963
+            c48: Me = x4 * 2.5059397415904265e-08 + c4
+            p: Me = x3 * (x4 * c48 + c0)
+            e: Me = x3 * 1.942890293094024e-16
+            lb: Me = me + (p - e)
+            ub: Me = me + (p + e)
+            if lb == ub
+                return lb
+            else
+                return cm_b64_sinh_zero(me)
+        aix > 0x408633CE8FB9F87D =>
+            // NaN, infinities, or overflow
+            if aix >= 0x7FF0000000000000
+                return me + me
+            else
+                return Me.copysign(8.98846567431158e307, me) * 2.0
+        else => return cm_b64_sinh_main(me)
 
 /// sinh x for 1/4 <= |x| <= 0x1.633ce8fb9f87dp+9.
 /// :param x: The argument.
@@ -111,198 +108,162 @@ private routine cm_b64_sinh_main(x: B64) -> B64
     local aix: U64 = ax.bits()
     local sgn: B64 = B64.copysign(1.0, x)
     // t = round(|x| 2^12 / log 2), and its bits il = 2^12 ie + 2^6 i0 + i1
-    local v0: B64 = ax.mul_add(a: 0x1.71547652b82fep+12, b: 0x1.8000002p+26)
+    local v0: B64 = ax.mul_add(a: 5909.278887481194, b: 100663296.5)
     local jt: U64 = v0.bits()
-    local t: B64 = B64.from_bits(jt.bitand(0xFFFFFFFFFC000000)).sub(0x1.8p+26)
-    local index_bits: U64 = jt.shl(14).shr(40)
+    local t: B64 = B64.from_bits(jt & 0xFFFFFFFFFC000000) - 100663296.0
+    local index_bits: U64 = (jt << 14) >> 40
     local il: S64 = index_bits.to[S64]()
-    local ie: S64 = il.shr(12)
-    local i1: USize = il.bitand(0x3F).to[USize]()
-    local slot0: S64 = il.shr(6).bitand(0x3F)
+    local ie: S64 = il >> 12
+    local i1: USize = (il & 0x3F).to[USize]()
+    local slot0: S64 = (il >> 6) & 0x3F
     local i0: USize = slot0.to[USize]()
-    local sp: B64 = cm_b64_hyp_scale(ie.add(1022))
+    local sp: B64 = cm_b64_hyp_scale(ie + 1022)
     local tt: CmF64HypDd = cm_b64_hyp_table(i0, i1)
     // |x| = t log(2) / 2^12 + dx, with log(2) / 2^12 as l2h + l2l and l2h t exact
-    local dx: B64 = ax.sub(t.mul(0x1.62e42ffp-13)).add(t.mul(0x1.718432a1b0e26p-47))
-    local dx2: B64 = dx.mul(dx)
+    local dx: B64 = ax - t * 0.00016922538588914904 + t * 1.0256140314162804e-14
+    local dx2: B64 = dx * dx
     local pp: B64 = cm_b64_hyp_poly(d: dx, d2: dx2)
-    local jl: S64 = il.neg()
+    local jl: S64 = -il
     local th: B64 = tt.hi
     local tl: B64 = tt.lo
 
-    above5: Bool = aix.gt(0x4014000000000000)
-    huge: Bool = aix.gt(0x40425E4F7B2737FA)  // |x| > ~36.736801: e^-|x| is negligible
-    when
-        huge => huge()
-        above5 => mid()
-        else => low()
-
-    // sinh x ~ sgn e^|x| / 2
-    block huge()
-        sp_huge: B64 = cm_b64_hyp_scale(ie.add(1021))
-        rh: B64 = th.mul(sgn)
-        rl: B64 = tl.add(th.mul(pp)).mul(sgn)
-        e: B64 = th.mul(0x1.1b6p-63)
-        lb: B64 = rh.add(rl.sub(e))
-        ub: B64 = rh.add(rl.add(e))
-        sure: Bool = lb.eq(ub)
-        branch sure
-            ? return(lb.mul(sp_huge).mul(2.0))
-            : huge_accurate(sp_huge)
-
-    block huge_accurate(sp_huge: B64)
-        a0: CmF64HypDd = cm_b64_hyp_exp_accurate(x: ax, t, th, tl)
-        a: CmF64HypDd = cm_b64_hyp_fasttwosum(x: a0.hi, y: a0.lo)
-        bh: B64 = a.hi.mul(sgn)
-        bl: B64 = a.lo.mul(sgn)
-        hard: Bool = cm_b64_hyp_is_hard(h: bh, l: bl)
-        doubled: B64 = bh.add(bl).mul(2.0)
-        r: B64 = doubled.mul(sp_huge)
-        branch hard
-            ? return(cm_b64_sinh_database(x, f: r))
-            : return(r)
-
-    // 5 < |x| <= ~36.736801: e^-|x| matters only to the low part
-    block mid()
-        j1: USize = jl.bitand(0x3F).to[USize]()
-        slot_j: S64 = jl.shr(6).bitand(0x3F)
-        j0: USize = slot_j.to[USize]()
-        sm: B64 = cm_b64_hyp_scale(jl.shr(12).add(1022))
-        q: CmF64HypDd = cm_b64_hyp_table(i0: j0, i1: j1)
-        th_scaled: B64 = th.mul(sp)
-        tl_scaled: B64 = tl.mul(sp)
-        qh: B64 = q.hi.mul(sm)
-        pm: B64 = cm_b64_hyp_poly(d: dx.neg(), d2: dx2)
-        em: B64 = qh.mul(pm).add(qh)
-        rh: B64 = th_scaled.mul(sgn)
-        rl0: B64 = tl_scaled.sub(em).add(th_scaled.mul(pp))
-        rl: B64 = rl0.mul(sgn)
-        e: B64 = B64.mul(0x1.202p-63, rh)
-        lb: B64 = rh.add(rl.sub(e))
-        ub: B64 = rh.add(rl.add(e))
-        sure: Bool = lb.eq(ub)
-        branch sure
-            ? return(lb)
-            : mid_accurate(th_scaled, tl_scaled, qh, q, sm)
-
-    block mid_accurate(th0: B64, tl0: B64, qh: B64, q: CmF64HypDd, sm: B64)
-        a: CmF64HypDd = cm_b64_hyp_exp_accurate(x: ax, t, th: th0, tl: tl0)
-        beyond: Bool = aix.gt(0x403F666666666666)  // |x| > 31.4
-        branch beyond
-            ? far(a, qh)
-            : near(a, q, sm)
-
-    // e^-|x| as the one B64 qh
-    block far(a: CmF64HypDd, qh: B64)
-        rh: B64 = a.hi.sub(qh)
-        rh_err: B64 = a.hi.sub(rh).sub(qh)
-        rl: B64 = rh_err.add(a.lo)
-        jump tail(rh, rl)
-
-    // e^-|x| in double-double
-    block near(a: CmF64HypDd, q: CmF64HypDd, sm: B64)
-        m: CmF64HypDd = cm_b64_hyp_exp_accurate(x: ax.neg(), t: t.neg(), th: q.hi.mul(sm),
-            tl: q.lo.mul(sm))
-        rh: B64 = a.hi.sub(m.hi)
-        rh_err: B64 = a.hi.sub(rh).sub(m.hi)
-        rl: B64 = rh_err.sub(m.lo).add(a.lo)
-        jump tail(rh, rl)
-
-    // 1/4 <= |x| <= 5
-    block low()
-        j1: USize = jl.bitand(0x3F).to[USize]()
-        slot_j: S64 = jl.shr(6).bitand(0x3F)
-        j0: USize = slot_j.to[USize]()
-        sm: B64 = cm_b64_hyp_scale(jl.shr(12).add(1022))
-        q: CmF64HypDd = cm_b64_hyp_table(i0: j0, i1: j1)
-        th_scaled: B64 = th.mul(sp)
-        tl_scaled: B64 = tl.mul(sp)
-        qh: B64 = q.hi.mul(sm)
-        ql: B64 = q.lo.mul(sm)
-        pm: B64 = cm_b64_hyp_poly(d: dx.neg(), d2: dx2)
-        fpl: B64 = tl_scaled.add(th_scaled.mul(pp))
-        fml: B64 = ql.add(qh.mul(pm))
-        rh0: B64 = th_scaled.sub(qh)
-        rh0_err: B64 = th_scaled.sub(rh0).sub(qh)
-        rl0: B64 = rh0_err.sub(fml).add(fpl)
-        rh: B64 = rh0.mul(sgn)
-        rl: B64 = rl0.mul(sgn)
-        e: B64 = B64.mul(0x1.c0ap-62, rh)
-        lb: B64 = rh.add(rl.sub(e))
-        ub: B64 = rh.add(rl.add(e))
-        sure: Bool = lb.eq(ub)
-        branch sure
-            ? return(lb)
-            : low_accurate(th_scaled, tl_scaled, qh, ql)
-
-    block low_accurate(th_scaled: B64, tl_scaled: B64, qh: B64, ql: B64)
-        a: CmF64HypDd = cm_b64_hyp_exp_accurate(x: ax, t, th: th_scaled, tl: tl_scaled)
-        m: CmF64HypDd = cm_b64_hyp_exp_accurate(x: ax.neg(), t: t.neg(), th: qh, tl: ql)
-        rh: B64 = a.hi.sub(m.hi)
-        rh_err: B64 = a.hi.sub(rh).sub(m.hi)
-        rl: B64 = rh_err.sub(m.lo).add(a.lo)
-        jump tail(rh, rl)
-
-    block tail(rh: B64, rl: B64)
-        s: CmF64HypDd = cm_b64_hyp_fasttwosum(x: rh, y: rl)
-        hard: Bool = cm_b64_hyp_is_hard(h: s.hi, l: s.lo)
-        r: B64 = s.hi.mul(sgn).add(s.lo.mul(sgn))
-        branch hard
-            ? return(cm_b64_sinh_database(x, f: r))
-            : return(r)
+    above5: Bool = aix > 0x4014000000000000
+    huge: Bool = aix > 0x40425E4F7B2737FA
+    // |x| > ~36.736801: e^-|x| is negligible
+    values2: (B64, B64) = when
+        huge =>
+            // sinh x ~ sgn e^|x| / 2
+            sp_huge: B64 = cm_b64_hyp_scale(ie + 1021)
+            rh: B64 = th * sgn
+            rl: B64 = (tl + th * pp) * sgn
+            e: B64 = th * 1.2001398071409368e-19
+            lb: B64 = rh + (rl - e)
+            ub: B64 = rh + (rl + e)
+            if lb == ub
+                return lb * sp_huge * 2.0
+            else
+                a0: CmF64HypDd = cm_b64_hyp_exp_accurate(x: ax, t, th, tl)
+                a: CmF64HypDd = cm_b64_hyp_fasttwosum(x: a0.hi, y: a0.lo)
+                bh: B64 = a.hi * sgn
+                bl: B64 = a.lo * sgn
+                hard: Bool = cm_b64_hyp_is_hard(h: bh, l: bl)
+                doubled: B64 = (bh + bl) * 2.0
+                r: B64 = doubled * sp_huge
+                if hard
+                    return cm_b64_sinh_database(x, f: r)
+                else
+                    return r
+        above5 =>
+            // 5 < |x| <= ~36.736801: e^-|x| matters only to the low part
+            j1: USize = (jl & 0x3F).to[USize]()
+            slot_j: S64 = (jl >> 6) & 0x3F
+            j0: USize = slot_j.to[USize]()
+            sm: B64 = cm_b64_hyp_scale((jl >> 12) + 1022)
+            q: CmF64HypDd = cm_b64_hyp_table(i0: j0, i1: j1)
+            th_scaled: B64 = th * sp
+            tl_scaled: B64 = tl * sp
+            qh: B64 = q.hi * sm
+            pm: B64 = cm_b64_hyp_poly(d: -dx, d2: dx2)
+            em: B64 = qh * pm + qh
+            rh: B64 = th_scaled * sgn
+            rl0: B64 = tl_scaled - em + th_scaled * pp
+            rl: B64 = rl0 * sgn
+            e: B64 = B64.mul(1.2202568396382264e-19, rh)
+            lb: B64 = rh + (rl - e)
+            ub: B64 = rh + (rl + e)
+            if lb == ub
+                return lb
+            else
+                a: CmF64HypDd = cm_b64_hyp_exp_accurate(x: ax, t, th: th_scaled, tl: tl_scaled)
+                // |x| > 31.4
+                if aix > 0x403F666666666666
+                    // e^-|x| as the one B64 qh
+                    rh2: B64 = a.hi - qh
+                    rh_err: B64 = a.hi - rh2 - qh
+                    becomes (rh2, rh_err + a.lo)
+                else
+                    // e^-|x| in double-double
+                    m: CmF64HypDd = cm_b64_hyp_exp_accurate(x: -ax, t: -t, th: q.hi * sm, tl: q.lo * sm)
+                    rh2: B64 = a.hi - m.hi
+                    rh_err: B64 = a.hi - rh2 - m.hi
+                    becomes (rh2, rh_err - m.lo + a.lo)
+        else =>
+            // 1/4 <= |x| <= 5
+            j1: USize = (jl & 0x3F).to[USize]()
+            slot_j: S64 = (jl >> 6) & 0x3F
+            j0: USize = slot_j.to[USize]()
+            sm: B64 = cm_b64_hyp_scale((jl >> 12) + 1022)
+            q: CmF64HypDd = cm_b64_hyp_table(i0: j0, i1: j1)
+            th_scaled: B64 = th * sp
+            tl_scaled: B64 = tl * sp
+            qh: B64 = q.hi * sm
+            ql: B64 = q.lo * sm
+            pm: B64 = cm_b64_hyp_poly(d: -dx, d2: dx2)
+            fpl: B64 = tl_scaled + th_scaled * pp
+            fml: B64 = ql + qh * pm
+            rh0: B64 = th_scaled - qh
+            rh0_err: B64 = th_scaled - rh0 - qh
+            rl0: B64 = rh0_err - fml + fpl
+            rh: B64 = rh0 * sgn
+            rl: B64 = rl0 * sgn
+            e: B64 = B64.mul(3.800001559619605e-19, rh)
+            lb: B64 = rh + (rl - e)
+            ub: B64 = rh + (rl + e)
+            if lb == ub
+                return lb
+            else
+                a: CmF64HypDd = cm_b64_hyp_exp_accurate(x: ax, t, th: th_scaled, tl: tl_scaled)
+                m: CmF64HypDd = cm_b64_hyp_exp_accurate(x: -ax, t: -t, th: qh, tl: ql)
+                rh2: B64 = a.hi - m.hi
+                rh_err: B64 = a.hi - rh2 - m.hi
+                becomes (rh2, rh_err - m.lo + a.lo)
+    rh, rl = values2
+    s: CmF64HypDd = cm_b64_hyp_fasttwosum(x: rh, y: rl)
+    hard: Bool = cm_b64_hyp_is_hard(h: s.hi, l: s.lo)
+    r: B64 = s.hi * sgn + s.lo * sgn
+    if hard
+        return cm_b64_sinh_database(x, f: r)
+    else
+        return r
 
 /// The accurate path of sinh for 0x1.7137449123ef7p-26 <= |x| < 1/4: a double-double odd polynomial.
 /// :param x: The argument.
 /// :returns: sinh(`x`), correctly rounded.
 private routine cm_b64_sinh_zero(x: B64) -> B64
-    x2: B64 = x.mul(x)
+    x2: B64 = x * x
     x2l: B64 = b64_mul_error(x, y: x, p: x2)
     x2dd: CmF64HypDd = (hi: x2, lo: x2l)
-    c: B64 = x2.mul(0x1.95785063cd974p-49).add(0x1.ae7f36beea815p-41)
-    y2: B64 = x2.mul(x2.mul(c).add(0x1.6124613aef206p-33))
-    p9: CmF64HypDd = cm_b64_hyp_polydd_init(l: y2, c_hi: 0x1.ae64567f54482p-26,
-        c_lo: -0x1.defcf17a6ab79p-81)
-    p7: CmF64HypDd = cm_b64_hyp_polydd_step(x: x2dd, value: p9,
-        c: CmF64HypDd(hi: 0x1.71de3a556c734p-19, lo: -0x1.b4e2835532bcdp-73))
-    p5: CmF64HypDd = cm_b64_hyp_polydd_step(x: x2dd, value: p7,
-        c: CmF64HypDd(hi: 0x1.a01a01a01a01ap-13, lo: 0x1.a0011c925b85cp-73))
-    p3: CmF64HypDd = cm_b64_hyp_polydd_step(x: x2dd, value: p5,
-        c: CmF64HypDd(hi: 0x1.1111111111111p-7, lo: 0x1.11111115cf00dp-63))
-    p1: CmF64HypDd = cm_b64_hyp_polydd_step(x: x2dd, value: p3,
-        c: CmF64HypDd(hi: 0x1.5555555555555p-3, lo: 0x1.555555555552fp-57))
+    c: B64 = x2 * 2.8135131492069468e-15 + 7.647161643548583e-13
+    y2: B64 = x2 * (x2 * c + 1.6059043837926057e-10)
+    p9: CmF64HypDd = cm_b64_hyp_polydd_init(l: y2, c_hi: 2.5052108385441396e-08, c_lo: -7.738469464826113e-25)
+    p7: CmF64HypDd = cm_b64_hyp_polydd_step(x: x2dd, value: p9, c: CmF64HypDd(hi: 2.7557319223985893e-06, lo: -1.8069132505534607e-22))
+    p5: CmF64HypDd = cm_b64_hyp_polydd_step(x: x2dd, value: p7, c: CmF64HypDd(hi: 0.0001984126984126984, lo: 1.720553633109976e-22))
+    p3: CmF64HypDd = cm_b64_hyp_polydd_step(x: x2dd, value: p5, c: CmF64HypDd(hi: 0.008333333333333333, lo: 1.1564823185149052e-19))
+    p1: CmF64HypDd = cm_b64_hyp_polydd_step(x: x2dd, value: p3, c: CmF64HypDd(hi: 0.16666666666666666, lo: 9.251858538542912e-18))
     px: CmF64HypDd = cm_b64_hyp_mulddd(xh: p1.hi, xl: p1.lo, ch: x)
     p: CmF64HypDd = cm_b64_hyp_muldd(xh: px.hi, xl: px.lo, ch: x2, cl: x2l)
     s0: CmF64HypDd = cm_b64_hyp_fasttwosum(x, y: p.hi)
     s1: CmF64HypDd = cm_b64_hyp_fasttwosum(x: s0.lo, y: p.lo)
-    return(s0.hi.add(cm_b64_hyp_nudge(y1: s1.hi, y2: s1.lo)))
+    return s0.hi + cm_b64_hyp_nudge(y1: s1.hi, y2: s1.lo)
 
 /// The exact sinh x for the arguments the fast and accurate paths can't round, or f for any other x.
 /// :param x: The argument.
 /// :param f: The result returned when |x| is not in the table.
 /// :returns: The correctly rounded sinh for a listed |x|, else `f`.
 private routine cm_b64_sinh_database(x: B64, f: B64) -> B64
-    jump search(0, 50)
-
-    block search(a: S64, b: S64)
-        open: Bool = a.le(b)
-        branch open
-            ? probe(a, b)
-            : return(f)
-
-    block probe(a: S64, b: S64)
-        m: S64 = a.add(b).div(2)
+    while a <= b with a: S64 = 0, b: S64 = 50
+        m: S64 = (a + b) / 2
         mu: USize = m.to[USize]()
         key: B64 = B64.from_bits(CM_B64_SINH_DB_X.getitem(mu))
         ax: B64 = x.abs()
-        below: Bool = key.lt(ax)
-        found: Bool = key.eq(ax)
+        below: Bool = key < ax
         when
-            below => search(m.add(1), b)
-            found => hit(mu)
-            else => search(a, m.sub(1))
-
-    block hit(mu: USize)
-        sgn: B64 = B64.copysign(1.0, x)
-        h: B64 = B64.from_bits(CM_B64_SINH_DB_H.getitem(mu))
-        l: B64 = B64.from_bits(CM_B64_SINH_DB_L.getitem(mu))
-        return(sgn.mul(h).add(sgn.mul(l)))
+            below => continue with a: m + 1, b: b
+            key == ax =>
+                sgn: B64 = B64.copysign(1.0, x)
+                h: B64 = B64.from_bits(CM_B64_SINH_DB_H.getitem(mu))
+                l: B64 = B64.from_bits(CM_B64_SINH_DB_L.getitem(mu))
+                return sgn * h + sgn * l
+            else => continue with a: a, b: m - 1
+    then
+        return f

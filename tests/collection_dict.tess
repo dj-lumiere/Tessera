@@ -41,28 +41,28 @@ record Checkpoint
 /// :param rng: Its `rng`.
 /// :returns: The new value.
 routine Harness.construct(out: @BufWriter[Out], rng: @Rng) -> Me
-    return(Me(out, rng))
+    return Me(out, rng)
 
 /// Releases nothing: a `Harness` holds no memory of its own.
 routine Harness.destruct(me: @Me) -> Void
-    return()
+    return
 
 routine Rng.below(me: @Me, bound: USize) -> USize
     state: U64 = me.state.peek()
-    next: U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
+    next: U64 = state *% 6364136223846793005 +% 1442695040888963407
     me.state.poke(next)
-    bucket: U64 = next.shr(33).mod(bound.to[U64]())
+    bucket: U64 = (next >> 33) % bound.to[U64]()
     value: USize = bucket.to[USize]()
-    return(value)
+    return value
 
 routine mix(hash: S64, value: S64) -> S64
-    mixed: S64 = hash.mul_wrap(1000003).add_wrap(value)
-    return(mixed)
+    mixed: S64 = hash *% 1000003 +% value
+    return mixed
 
 routine labeled[T](out: @T, label: Span[Byte], value: S64) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     out.write(" {label} {value}")
-    return()
+    return
 
 // Folds every (key, value) pair in iteration order.
 routine iteration_hash(map: @Dict[S64, S64]) -> S64
@@ -70,17 +70,14 @@ routine iteration_hash(map: @Dict[S64, S64]) -> S64
     local iter: @DictIter[S64, S64] <- iter_val
     local hash: @S64 <- 0
 
-    jump next()
-
-    block next()
+    while true
         item: Maybe[KVPair[S64, S64]] = iter.emit_checked()
-        when item
-            is KVPair[S64, S64] as pair => continue
-            is Unit => return(hash.peek())
+        pair: KVPair[S64, S64] = when item
+            is KVPair[S64, S64] as pair => pair
+            is Unit => return hash.peek()
         key: S64 = pair.key
         value: S64 = pair.value
         mix(hash: mix(hash: hash.peek(), value: key), value).poke_into(hash)
-        jump next()
 
 routine checkpoint(out: @BufWriter[Out], map: @Dict[S64, S64], at: Checkpoint) -> Void
     out.write("phase {at.phase}")
@@ -90,130 +87,102 @@ routine checkpoint(out: @BufWriter[Out], map: @Dict[S64, S64], at: Checkpoint) -
     labeled(out, label: "results", value: at.results)
     labeled(out, label: "iteration", value: iteration_hash(map))
     out.write("\n")
-    return()
+    return
 
 // Runs ops random operations on keys below keys. Returns the updated results checksum.
-#reshaping(map)
+@reshaping(map)
 routine run_phase(harness: Harness, map: @Dict[S64, S64], phase: Phase, results: S64) -> S64
     local rng: @Rng = harness.rng
     local ops: USize = phase.ops
     local keys: USize = phase.keys
 
-    jump next(0, results)
-
-    block next(op: USize, checksum: S64)
-        done: Bool = op.ge(ops)
-        branch done
-            ? return(checksum)
-            : pick(op, checksum)
-
-    block pick(op: USize, checksum: S64)
+    while op < ops with op: USize = 0, checksum: S64 = results
         key: S64 = rng.below(keys).to[S64]()
         kind: USize = rng.below(10)
-        is_put: Bool = kind.lt(5)
-        is_remove: Bool = kind.lt(7)
-        when
-            is_put => put(op, checksum, key)
-            is_remove => remove(op, checksum, key)
-            else => lookup(op, checksum, key)
-
-    block put(op: USize, checksum: S64, key: S64)
-        value: S64 = rng.below(1000000).to[S64]()
-        map.setitem(key, value)
-        jump record(op, checksum, value)
-
-    block remove(op: USize, checksum: S64, key: S64)
-        removed: Bool = map.remove(key)
-        jump record(op, checksum, removed.to[S64]())
-
-    block lookup(op: USize, checksum: S64, key: S64)
-        found: Bool = map.has_key(key)
-        branch found
-            ? get(op, checksum, key)
-            : record(op, checksum, -1)
-
-    block get(op: USize, checksum: S64, key: S64)
-        value: S64 = map.getitem(key)
-        jump record(op, checksum, value)
-
-    block record(op: USize, checksum: S64, result: S64)
+        is_put: Bool = kind < 5
+        is_remove: Bool = kind < 7
+        result: S64 = when
+            is_put =>
+                value: S64 = rng.below(1000000).to[S64]()
+                map[key] = value
+                becomes value
+            is_remove =>
+                removed: Bool = map.remove(key)
+                becomes removed.to[S64]()
+            else =>
+                if map.has_key(key)
+                    becomes map[key]
+                else
+                    becomes -1
         mixed: S64 = mix(hash: checksum, value: result)
-        op_next: USize = op.add(1)
-        report: Bool = op_next.mod(500).eq(0)
-        branch report
-            ? report(op_next, mixed)
-            : next(op_next, mixed)
-
-    block report(op: USize, checksum: S64)
-        checkpoint(out: harness.out, map,
-            at: Checkpoint(phase: phase.number, op: op, results: checksum))
-        jump next(op, checksum)
+        op_next: USize = op + 1
+        if op_next % 500 == 0
+            checkpoint(out: harness.out, map, at: Checkpoint(phase: phase.number, op: op_next, results: mixed))
+        continue with op: op_next, checksum: mixed
+    then
+        return checksum
 
 // Copies from into to in iteration order, but starting from its second half, so the two maps hold the same pairs in
 // a different insertion order.
-#reshaping(to)
+@reshaping(to)
 routine copy_rotated(from: @Dict[S64, S64], to: @Dict[S64, S64]) -> Void
     local size: USize = from.count()
-    local half: USize = size.div(2)
+    local half: USize = size / 2
     local iter: @DictIter[S64, S64] <- .hollow()
 
-    jump round(0, true)
+    while true with round: USize = 0, second: Bool = true
+        done2: Bool = round == 2
+        iter_val2: DictIter[S64, S64] = .construct(from)
+        iter.poke(iter_val2)
+        if done2
+            return
+        else
+            while true with index: USize = 0
+                item: Maybe[KVPair[S64, S64]] = iter.emit_checked()
+                pair: KVPair[S64, S64] = when item
+                    is KVPair[S64, S64] as pair => pair
+                    is Unit => break
+                in_second: Bool = index >= half
+                if not (in_second == second)
+                    continue with index: index + 1
+                to[pair.key] = pair.value
+                continue with index: index + 1
 
-    block round(round: USize, second: Bool)
-        done: Bool = round.eq(2)
-        iter_val: DictIter[S64, S64] = .construct(from)
-        iter.poke(iter_val)
-        branch done
-            ? return()
-            : next(round, second, 0)
-
-    block next(round: USize, second: Bool, index: USize)
-        item: Maybe[KVPair[S64, S64]] = iter.emit_checked()
-        when item
-            is KVPair[S64, S64] as pair => continue
-            is Unit => round(round.add(1), second.bitnot())
-        in_second: Bool = index.ge(half)
-        wanted: Bool = in_second.eq(second)
-        branch wanted
-            ? continue
-            : next(round, second, index.add(1))
-        to.setitem(key: pair.key, value: pair.value)
-        jump next(round, second, index.add(1))
+            continue with round: round + 1, second: not second
 
 routine report_eq(out: @BufWriter[Out], label: Span[Byte], equal: Bool) -> Void
     out.write("{label} {equal}\n")
-    return()
+    return
 
 routine start() -> Void
     fd: @Out = Out.writer()
-    claim out: @BufWriter[Out] <- .hollow()
+    local out: @BufWriter[Out] <- .hollow()
     out.construct(fd)
-    claim alloc: @MemoryManager <- make_heap_memory()
-    claim rng: @Rng <- Rng(state: 1)
-    claim map: @Dict[S64, S64] <- .construct(alloc)
+    local alloc: @MemoryManager <- make_heap_memory()
+    local rng: @Rng <- Rng(state: 1)
+    local map: @Dict[S64, S64] <- .construct(alloc)
 
     harness: Harness = Harness(out: out, rng: rng)
     r1: S64 = run_phase(harness, map, phase: Phase(number: 1, ops: 3000, keys: 64), results: 0)
     r2: S64 = run_phase(harness, map, phase: Phase(number: 2, ops: 8000, keys: 5000), results: r1)
     r3: S64 = run_phase(harness, map, phase: Phase(number: 3, ops: 4000, keys: 300), results: r2)
 
-    claim copied: @Dict[S64, S64] <- .construct(alloc)
-    report_eq(out, label: "empty copy equal", equal: map.peek().eq(copied.peek()))
+    local copied: @Dict[S64, S64] <- .construct(alloc)
+    report_eq(out, label: "empty copy equal", equal: map.peek() == copied.peek())
     copy_rotated(from: map, to: copied)
-    report_eq(out, label: "rotated copy equal", equal: map.peek().eq(copied.peek()))
-    report_eq(out, label: "rotated copy same order",
-        equal: iteration_hash(map).eq(iteration_hash(copied)))
-    copied.setitem(key: -1, value: 0)
-    report_eq(out, label: "extra key equal", equal: map.peek().eq(copied.peek()))
+    report_eq(out, label: "rotated copy equal", equal: map.peek() == copied.peek())
+    report_eq(out, label: "rotated copy same order", equal: iteration_hash(map) == iteration_hash(copied))
+    copied[-1] = 0
+    report_eq(out, label: "extra key equal", equal: map.peek() == copied.peek())
     copied.remove(-1)
-    report_eq(out, label: "extra key removed equal", equal: map.peek().eq(copied.peek()))
+    report_eq(out, label: "extra key removed equal", equal: map.peek() == copied.peek())
     iter_val: DictIter[S64, S64] = .construct(map)
-    claim iter: @DictIter[S64, S64] <- iter_val
+    local iter: @DictIter[S64, S64] <- iter_val
     first: KVPair[S64, S64] = iter.emit_checked().unwrap()
-    copied.setitem(key: first.key, value: first.value.add(1))
-    report_eq(out, label: "changed value equal", equal: map.peek().eq(copied.peek()))
+    copied[first.key] = first.value + 1
+    report_eq(out, label: "changed value equal", equal: map.peek() == copied.peek())
     copied.destruct()
     map.destruct()
     report_eq(out, label: "freed is empty", equal: map.is_empty())
     out.flush()
-    return()
+    return

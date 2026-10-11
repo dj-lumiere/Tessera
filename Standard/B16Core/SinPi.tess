@@ -1052,57 +1052,43 @@ preset CM_B16_SIN_PI_C2: @Array[U32, 2048] <- [0x3F800000, 0x3F800000, 0x3F80000
 /// :returns: sin(pi `me`).
 routine B16.sin_pi(me: Me) -> Me
     local u: U16 = me.bits()
-    local au: U16 = u.bitand(0x7FFF)
-    local positive: Bool = au.eq(u)
+    local au: U16 = u & 0x7FFF
+    local positive: Bool = au == u
 
-    at_least_one: Bool = au.ge(0x3C00)
-    branch at_least_one
-        ? integral()
-        : small()
-
-    // |x| >= 1: x is an integer when its encoding bits below the binary point are all 0
-    block integral()
-        special: Bool = au.ge(0x7C00)
-        branch special
-            ? return(cm_b16_trig_pi_nan(me))
-            : continue
-        e: U16 = au.shr(10)
-        has_fraction: Bool = e.le(25)
-        mask: U16 = has_fraction
-            ? U16.shr(0x3FF, e.sub(15))
-            : 0
-        integer: Bool = au.bitand(mask).eq(0)
-        branch integer
-            ? signed_zero()
-            : tabulated()
-
-    block signed_zero()
-        branch positive
-            ? return(Me.from_bits(0))
-            : return(Me.from_bits(0x8000))
-
-    block small()
-        zero: Bool = au.eq(0)
-        wrong: Bool = au.eq(0x3BF7)  // the one input whose B32 evaluation would round wrongly
+    if au >= 0x3C00
+        // |x| >= 1: x is an integer when its encoding bits below the binary point are all 0
+        if au >= 0x7C00
+            return cm_b16_trig_pi_nan(me)
+        e: U16 = au >> 10
+        has_fraction: Bool = e <= 25
+        mask: U16 = when
+            has_fraction => U16.shr(0x3FF, e - 15)
+            else => 0
+        if au & mask == 0
+            if positive
+                return Me.from_bits(0)
+            else
+                return Me.from_bits(0x8000)
+    else
+        zero: Bool = au == 0
+        // the one input whose B32 evaluation would round wrongly
         when
-            zero => return(me)
-            wrong => listed()
-            else => tabulated()
-
-    block listed()
-        r: Me = B32.to[Me](0x1.c45ffep-7)
-        branch positive
-            ? return(r)
-            : return(r.neg())
-
-    block tabulated()
-        i1, i2 = cm_b16_trig_split(u)
-        s1: B32 = .from_bits(CM_B16_SIN_PI_S1.getitem(i1))
-        c1: B32 = .from_bits(CM_B16_SIN_PI_C1.getitem(i1))
-        s2: B32 = .from_bits(CM_B16_SIN_PI_S2.getitem(i2))
-        c2: B32 = .from_bits(CM_B16_SIN_PI_C2.getitem(i2))
-        res: B32 = s1.mul_add(a: c2, b: c1.mul(s2))  // the fma fixes the evaluation order
-        return(res.to[Me]())
+            zero => return me
+            au == 0x3BF7 =>
+                r: Me = B32.to[Me](0.0138053884729743)
+                if positive
+                    return r
+                else
+                    return -r
+            else => pass
+    i1, i2 = cm_b16_trig_split(u)
+    s1: B32 = .from_bits(CM_B16_SIN_PI_S1.getitem(i1))
+    c1: B32 = .from_bits(CM_B16_SIN_PI_C1.getitem(i1))
+    s2: B32 = .from_bits(CM_B16_SIN_PI_S2.getitem(i2))
+    c2: B32 = .from_bits(CM_B16_SIN_PI_C2.getitem(i2))
+    res: B32 = s1.mul_add(a: c2, b: c1 * s2)
+    // the fma fixes the evaluation order
+    return res.to[Me]()
 
 /// The NaN sin_pi, cos_pi and tan_pi give for a non-finite x: a signaling NaN comes back quiet (sign and payload
 /// kept), while a quiet NaN or +-inf gives the default NaN 0xFE00 (what the original's 0.0f / 0.0f gives on
@@ -1111,8 +1097,8 @@ routine B16.sin_pi(me: Me) -> Me
 /// :returns: The NaN result.
 routine cm_b16_trig_pi_nan(x: B16) -> B16
     u: U16 = x.bits()
-    au: U16 = u.bitand(0x7FFF)
-    signaling: Bool = au.gt(0x7C00).bitand(au.lt(0x7E00))
-    branch signaling
-        ? return(B16.from_bits(u.bitor(0x0200)))
-        : return(B16.from_bits(0xFE00))
+    au: U16 = u & 0x7FFF
+    if au > 0x7C00 and au < 0x7E00
+        return B16.from_bits(u | 0x0200)
+    else
+        return B16.from_bits(0xFE00)

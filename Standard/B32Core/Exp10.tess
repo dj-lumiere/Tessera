@@ -20,98 +20,74 @@ preset CM_B32_EXP10_EX: @Array[U32, 10] <- [0x41200000, 0x42C80000, 0x447A0000, 
 routine B32.exp10(me: Me) -> Me
     local tu: U32 = me.bits()
     local z: B64 = me.to[B64]()
-    local ux: U32 = tu.shl(1)
+    local ux: U32 = tu << 1
 
-    outside: Bool = ux.gt(0x84344134).bitor(ux.lt(0x72ADF1C6))
-    branch outside
-        ? edge()
-        : exact()
-
-    // |x| > 0x1.344134p+5, x is NaN, or |x| < 0x1.adf1c6p-13
-    block edge()
-        tiny: Bool = ux.lt(0x72ADF1C6)
-        special: Bool = ux.ge(0xFF000000)
-        negative: Bool = tu.shr(31).eq(1)
-        under: Bool = tu.gt(0xC23369F4)  // x < -0x1.66d3e8p+5
+    if ux > 0x84344134 or ux < 0x72ADF1C6
+        // |x| > 0x1.344134p+5, x is NaN, or |x| < 0x1.adf1c6p-13
+        tiny: Bool = ux < 0x72ADF1C6
+        special: Bool = ux >= 0xFF000000
+        negative: Bool = tu >> 31 == 1
+        // x < -0x1.66d3e8p+5
         when
-            tiny => tiny()
-            special => special(negative)
-            under => underflow()
-            negative => exact()
-            else => return(Me.INFINITY)  // x > 0x1.344134p+5
-
-    block tiny()
-        c23: B64 = z.mul(0x1.0470591de2ca4p+1).add(0x1.53524c73cea69p+1)
-        c13: B64 = z.mul(c23).add(0x1.26bb1bbb55516p+1)
-        r: B64 = B64.add(1.0, z.mul(c13))  // 1 + z (c1 + z (c2 + z c3))
-        return(r.to[Me]())
-
-    // infinities and NaN, which comes back quiet with its sign and payload
-    block special(negative: Bool)
-        nan: Bool = ux.gt(0xFF000000)
-        when
-            nan => return(me.add(me))
-            negative => return(0.0)
-            else => return(Me.INFINITY)
-
-    // the result underflows to a tiny subnormal or zero
-    block underflow()
-        scaled: B64 = z.add(0x1.66d3e7bd9a403p+5).mul(0x1.a934f0979a37p-149)
-        y: B64 = B64.add(0x1p-149, scaled)
-        clamped: B64 = y.max(0x1p-151)
-        return(clamped.to[Me]())
+            tiny =>
+                // x > 0x1.344134p+5
+                c23: B64 = z * 2.034678592293476 + 2.650949055239199
+                c13: B64 = z * c23 + 2.302585092994046
+                r: B64 = B64.add(1.0, z * c13)
+                // 1 + z (c1 + z (c2 + z c3))
+                return r.to[Me]()
+            special =>
+                // infinities and NaN, which comes back quiet with its sign and payload
+                when
+                    ux > 0xFF000000 => return me + me
+                    negative => return 0.0
+                    else => return Me.INFINITY
+            tu > 0xC23369F4 =>
+                // the result underflows to a tiny subnormal or zero
+                scaled: B64 = (z + 44.8534693539332) * 2.3275063689815626e-45
+                y: B64 = B64.add(1.401298464324817e-45, scaled)
+                clamped: B64 = y.max(3.503246160812043e-46)
+                return clamped.to[Me]()
+            negative => pass
+            else => return Me.INFINITY
 
     // x = n for an integer n in 1..10 has an exact (or tabulated) power
-    block exact()
-        integral: Bool = tu.shl(12).eq(0)
-        branch integral
-            ? small_integer(tu.shr(20).sub_wrap(1016))
-            : fast()
-
-    // bit k of 0x7551101 is set for the k of the integers 1..10, and counting the set bits below it gives n - 1
-    block small_integer(k: U32)
-        in_range: Bool = k.le(26)
-        branch in_range
-            ? continue
-            : fast()
+    if tu << 12 == 0
+        // bit k of 0x7551101 is set for the k of the integers 1..10, and counting the set bits below it gives n - 1
+        k: U32 = (tu >> 20) -% 1016
+        in_range: Bool = k <= 26
         bt: U32 = U32.shl(1, k)
-        listed: Bool = bt.bitand(0x7551101).ne(0)
-        branch listed
-            ? continue
-            : fast()
-        below: U32 = bt.sub(1).bitand(0x7551101)
+        listed: Bool = bt & 0x7551101 != 0
+        below: U32 = bt - 1 & 0x7551101
         n: U32 = below.count_ones()
-        return(Me.from_bits(CM_B32_EXP10_EX.getitem(n.to[USize]())))
-
-    block fast()
-        a: B64 = B64.mul(0x1.a934f0979a371p+6, z)  // 32 x log2(10)
-        ia: B64 = a.round_ties_even()
-        h: B64 = a.sub(ia)
-        ja: S64 = ia.to[S64]()
-        entry: U64 = CM_B32_EXPM1_TD.getitem(ja.to_wrap[U64]().bitand(0x1F).to[USize]())
-        scale: U64 = ja.shr(5).to_wrap[U64]().shl(52)
-        sv: B64 = B64.from_bits(entry.add_wrap(scale))  // 2^(round(32 x log2(10)) / 32)
-        h2: B64 = h.mul(h)
-        p01: B64 = B64.add(1.0, h.mul(0x1.62e42fef4c4e7p-6))
-        p23: B64 = B64.add(0x1.ebfd1b232f475p-13, h.mul(0x1.c6b19384ecd93p-20))
-        r: B64 = p01.add(h2.mul(p23)).mul(sv)
-        ub: Me = r.to[Me]()
-        lb: Me = r.sub(r.mul(0x1.3edbbe4560327p-33)).to[Me]()
-        sure: Bool = ub.eq(lb)
-        branch sure
-            ? return(ub)
-            : slow(ia, sv)
-
-    // The fast path can't decide the rounding: redo it with a longer reduction and polynomial.
-    block slow(ia: B64, sv: B64)
-        h_hi: B64 = B64.mul(0x1.a934f09p+1, z).sub(ia.mul(0.03125))
-        h: B64 = h_hi.add(B64.mul(0x1.e68dc57f2496p-29, z))
-        h2: B64 = h.mul(h)
-        w: B64 = sv.mul(h)
-        c01: B64 = B64.add(0x1.62e42fefa39efp-1, h.mul(0x1.ebfbdff82c58fp-3))
-        c23: B64 = B64.add(0x1.c6b08d702e0edp-5, h.mul(0x1.3b2ab6fb92e5ep-7))
-        c45: B64 = B64.add(0x1.5d886e6d54203p-10, h.mul(0x1.430976b8ce6efp-13))
-        c25: B64 = c23.add(h2.mul(c45))
-        c05: B64 = c01.add(h2.mul(c25))
-        r: B64 = sv.add(w.mul(c05))
-        return(r.to[Me]())
+        return Me.from_bits(CM_B32_EXP10_EX.getitem(n.to[USize]()))
+    a: B64 = B64.mul(106.30169903639559, z)
+    // 32 x log2(10)
+    ia: B64 = a.round_ties_even()
+    h: B64 = a - ia
+    ja: S64 = ia.to[S64]()
+    entry: U64 = CM_B32_EXPM1_TD.getitem((ja.to_wrap[U64]() & 0x1F).to[USize]())
+    scale: U64 = (ja >> 5).to_wrap[U64]() << 52
+    sv: B64 = B64.from_bits(entry +% scale)
+    // 2^(round(32 x log2(10)) / 32)
+    h2: B64 = h * h
+    p01: B64 = B64.add(1.0, h * 0.021660849391257477)
+    p23: B64 = B64.add(0.0002345984913513542, h * 1.6938658699950235e-06)
+    r: B64 = (p01 + h2 * p23) * sv
+    ub: Me = r.to[Me]()
+    lb: Me = (r - r * 1.45e-10).to[Me]()
+    if ub == lb
+        return ub
+    else
+        // The fast path can't decide the rounding: redo it with a longer reduction and polynomial.
+        h_hi: B64 = B64.mul(3.3219280913472176, z) - ia * 0.03125
+        h3: B64 = h_hi + B64.mul(3.5401447880558664e-09, z)
+        h22: B64 = h3 * h3
+        w: B64 = sv * h3
+        c01: B64 = B64.add(0.6931471805599453, h3 * 0.24022650695910072)
+        c23: B64 = B64.add(0.05550410866402609, h3 * 0.009618129107500536)
+        c45: B64 = B64.add(0.001333362331326638, h3 * 0.00015403602972146417)
+        c25: B64 = c23 + h22 * c45
+        c05: B64 = c01 + h22 * c25
+        r2: B64 = sv + w * c05
+        return r2.to[Me]()

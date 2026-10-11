@@ -78,50 +78,48 @@ preset CM_B16_LOG1P_R: @Array[U32, 448] <- [0x44F10C00, 0xC0F20FD5, 0x44D7AC00, 
 routine B16.ln_1p(me: Me) -> Me
     local v: B32 = me.to[B32]()
     local u: U32 = v.bits()
-    local au: U32 = u.bitand(0x7FFFFFFF)
+    local au: U32 = u & 0x7FFFFFFF
 
     when
-        u.ge(0xBF800000) => at_most_minus_one()  // x <= -1, and every negative NaN
-        au.shr(23).eq(0xFF) => return(me.add(me))  // +inf or a positive NaN
-        au.lt(0x3D000000) => small()  // |x| < 2^-5
-        u.eq(0x3DEC8000) => return(B32.to[Me](0x1.bfa006p-4))  // hard case x = 0x1.d9p-4
-        else => reduce()
-
-    block at_most_minus_one()
-        minus_one: Bool = u.eq(0xBF800000)
-        branch minus_one
-            ? return(Me.NEG_INFINITY)
-            : return(Me.from_bits(0xFE00))
-
-    block small()
-        when
-            u.eq(0xBBBFA000) => return(B32.to[Me](-0x1.805ffep-8))  // hard cases
-            u.eq(0xBCFB6000) => return(B32.to[Me](-0x1.fea004p-6))
-            u.eq(0x3BC06000) => return(B32.to[Me](0x1.7fa002p-8))
-            au.le(0x34000000) => tiny()  // |x| <= 2^-23
-            else => return(cm_b16_log1p_small(v).to[Me]())
-
-    block tiny()
-        zero: Bool = au.eq(0)
-        branch zero
-            ? return(me)
-            : return(v.sub(0x1p-45).to[Me]())
-
-    // 1 + x is exact
-    block reduce()
-        w: B32 = v.add(1.0)
-        w_top: U32 = w.bits().shr(20)
-        i: USize = w_top.sub(928).to[USize]()
-        r: B32 = B32.from_bits(CM_B16_LOG1P_R.getitem(i.mul(2)))
-        logr: B32 = B32.from_bits(CM_B16_LOG1P_R.getitem(i.mul(2).add(1)))
-        z: B32 = r.mul_add(a: w, b: -1.0)
-        return(logr.add(cm_b16_log1p_small(z)).to[Me]())
+        u >= 0xBF800000 =>
+            // x <= -1, and every negative NaN
+            // +inf or a positive NaN
+            // |x| < 2^-5
+            // hard case x = 0x1.d9p-4
+            if u == 0xBF800000
+                return Me.NEG_INFINITY
+            else
+                return Me.from_bits(0xFE00)
+        au >> 23 == 0xFF => return me + me
+        au < 0x3D000000 =>
+            when
+                u == 0xBBBFA000 => return B32.to[Me](-0.00586509658023715)
+                u == 0xBCFB6000 => return B32.to[Me](-0.03116608038544655)
+                u == 0x3BC06000 => return B32.to[Me](0.00585365341976285)
+                au <= 0x34000000 =>
+                    // hard cases
+                    // |x| <= 2^-23
+                    if au == 0
+                        return me
+                    else
+                        return (v - 2.842170943040401e-14).to[Me]()
+                else => return cm_b16_log1p_small(v).to[Me]()
+        u == 0x3DEC8000 => return B32.to[Me](0.10928346961736679)
+        else =>
+            // 1 + x is exact
+            w: B32 = v + 1.0
+            w_top: U32 = w.bits() >> 20
+            i: USize = (w_top - 928).to[USize]()
+            r: B32 = B32.from_bits(CM_B16_LOG1P_R.getitem(i * 2))
+            logr: B32 = B32.from_bits(CM_B16_LOG1P_R.getitem(i * 2 + 1))
+            z: B32 = r.mul_add(a: w, b: -1.0)
+            return (logr + cm_b16_log1p_small(z)).to[Me]()
 
 /// ln(1 + x) for a small B32 `x`, by the Taylor polynomial x - x^2/2 + x^3/3 - x^4/4.
 /// :param x: The small argument.
 /// :returns: The approximation of ln(1 + `x`).
 private routine cm_b16_log1p_small(x: B32) -> B32
-    c3: B32 = x.mul_add(a: -0x1p-2, b: 0x1.555556p-2)
+    c3: B32 = x.mul_add(a: -0.25, b: 0.3333333432674408)
     c2: B32 = x.mul_add(a: c3, b: -0.5)
-    r: B32 = x.mul_add(a: x.mul(c2), b: x)
-    return(r)
+    r: B32 = x.mul_add(a: x * c2, b: x)
+    return r

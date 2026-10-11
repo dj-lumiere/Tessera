@@ -25,19 +25,19 @@ module Standard/Format
 
 /// A type that can write itself the way a programmer reads it, as Tessera source where a literal exists, with `diagnose_into`.
 /// :typeparam T: The type that can write its source-like text.
-concept Diagnosable[T]
-require T: typename
+protocol Diagnosable[T]
+needs T: typename
     /// Writes `me` the way a programmer reads it, as Tessera source where a literal exists.
     /// :typeparam TWriter: The type of the Writer that receives the text.
     /// :param out: The Writer the text is written to.
     routine Me.diagnose_into[TWriter](me: Me, out: @TWriter) -> Void
 
-conform Diagnosable[S8], Diagnosable[S16], Diagnosable[S32], Diagnosable[S64], Diagnosable[S128], Diagnosable[S256]
-conform Diagnosable[U8], Diagnosable[U16], Diagnosable[U32], Diagnosable[U64], Diagnosable[U128], Diagnosable[U256]
-conform Diagnosable[USize], Diagnosable[SSize]
-conform Diagnosable[B16], Diagnosable[BF16], Diagnosable[B32], Diagnosable[B64], Diagnosable[B128]
-conform Diagnosable[Bool], Diagnosable[Char], Diagnosable[Byte], Diagnosable[Span[Byte]], Diagnosable[Unit], Diagnosable[Addr]
-conform Diagnosable[Array[T, COUNT]] when T: typename, COUNT: USize, Diagnosable[T]
+obeys Diagnosable[S8], Diagnosable[S16], Diagnosable[S32], Diagnosable[S64], Diagnosable[S128], Diagnosable[S256]
+obeys Diagnosable[U8], Diagnosable[U16], Diagnosable[U32], Diagnosable[U64], Diagnosable[U128], Diagnosable[U256]
+obeys Diagnosable[USize], Diagnosable[SSize]
+obeys Diagnosable[B16], Diagnosable[BF16], Diagnosable[B32], Diagnosable[B64], Diagnosable[B128]
+obeys Diagnosable[Bool], Diagnosable[Char], Diagnosable[Byte], Diagnosable[Span[Byte]], Diagnosable[Unit], Diagnosable[Addr]
+obeys Diagnosable[Array[T, COUNT]] when T: typename, COUNT: USize, Diagnosable[T]
 
 // -- text ----------------------------------------------------------------------
 
@@ -49,141 +49,91 @@ conform Diagnosable[Array[T, COUNT]] when T: typename, COUNT: USize, Diagnosable
 /// :param quote: The literal's quote character, which gets a backslash.
 /// :param as_char: Whether the literal is a character literal.
 routine write_escaped_byte[T](out: @T, byte: Byte, quote: Byte, as_char: Bool) -> Void
-require T: typename, Writer[T]
-    is_quote: Bool = byte.eq(quote)
-    branch is_quote
-        ? escaped()
-        : named()
-
-    block escaped()
+needs T: typename, Writer[T]
+    if byte == quote
         write_str(out, text: "\\")
-        jump raw()
-
-    block named()
-        when byte
-            b'\n' => escape("\\n")
-            b'\t' => escape("\\t")
-            b'\r' => escape("\\r")
-            b'\0' => escape("\\0")
-            b'\\' => escape("\\\\")
-            else => other()
-
-    block escape(text: Span[Byte])
+    else
+        text: Span[Byte] = when byte
+            b'\n' => "\\n"
+            b'\t' => "\\t"
+            b'\r' => "\\r"
+            b'\0' => "\\0"
+            b'\\' => "\\\\"
+            else =>
+                if byte.between(lo: 0x20, hi: 0x7E)
+                    local slot: @Byte <- byte
+                    out.write_bytes(data: slot, count: 1)
+                    return
+                else if as_char
+                    write_str(out, text: "\\u")
+                    code: U64 = byte.to[U8]().to[U64]()
+                    code.represent_hex_into(out, min_digits: 6)
+                    return
+                else
+                    write_str(out, text: "\\x")
+                    code: U64 = byte.to[U8]().to[U64]()
+                    code.represent_hex_into(out, min_digits: 2)
+                    return
         write_str(out, text)
-        return()
-
-    block other()
-        printable: Bool = byte.between(lo: 0x20, hi: 0x7E)
-        branch printable
-            ? raw()
-            : hex()
-
-    block raw()
-        claim slot: @Byte <- byte
-        out.write_bytes(data: slot, count: 1)
-        return()
-
-    block hex()
-        branch as_char
-            ? char_hex()
-            : byte_hex()
-
-    block byte_hex()
-        write_str(out, text: "\\x")
-        code: U64 = byte.to[U8]().to[U64]()
-        code.represent_hex_into(out, min_digits: 2)
-        return()
-
-    block char_hex()
-        write_str(out, text: "\\u")
-        code: U64 = byte.to[U8]().to[U64]()
-        code.represent_hex_into(out, min_digits: 6)
-        return()
+        return
+    local slot: @Byte <- byte
+    out.write_bytes(data: slot, count: 1)
+    return
 
 /// Writes the text in quotes: ASCII through the byte escapes, a well-formed UTF-8 character as it is, and each byte
 /// of a malformed sequence as \xHH, so the text reads back as the same bytes.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine Span[Byte].diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     write_str(out, text: "\"")
-    jump walk(0)
 
-    block walk(at: USize)
-        count: USize = me.count
-        more: Bool = at.lt(count)
-        branch more
-            ? step(at)
-            : close()
-
-    block step(at: USize)
+    while at < me.count with at: USize = 0
         data: @Byte = me.data
         byte: Byte = data.stride(at).peek()
-        ascii: Bool = byte.lt(0x80)
-        branch ascii
-            ? ascii(at, byte)
-            : wide(at, byte)
-
-    block ascii(at: USize, byte: Byte)
-        write_escaped_byte(out, byte, quote: b'"', as_char: false)
-        jump walk(at.add(1))
-
-    block wide(at: USize, byte: Byte)
-        data: @Byte = me.data
-        d: Utf8Decoded = utf8_decode(bytes: data, pos: at, len: me.count)
-        branch d.ok
-            ? character(at, d.next_pos)
-            : malformed(at, byte)
-
-    block character(at: USize, next: USize)
-        data: @Byte = me.data
-        out.write_bytes(data: data.stride(at), count: next.sub(at))
-        jump walk(next)
-
-    block malformed(at: USize, byte: Byte)
-        write_escaped_byte(out, byte, quote: b'"', as_char: false)
-        jump walk(at.add(1))
-
-    block close()
-        write_str(out, text: "\"")
-        return()
+        if byte < 0x80
+            write_escaped_byte(out, byte, quote: b'"', as_char: false)
+            continue with at: at + 1
+        else
+            data2: @Byte = me.data
+            d: Utf8Decoded = utf8_decode(bytes: data2, pos: at, len: me.count)
+            if d.ok
+                next: USize = d.next_pos
+                data3: @Byte = me.data
+                out.write_bytes(data: data3.stride(at), count: next - at)
+                continue with at: next
+            else
+                write_escaped_byte(out, byte, quote: b'"', as_char: false)
+                continue with at: at + 1
+    write_str(out, text: "\"")
+    return
 
 /// Writes the byte as a byte literal such as `b'A'`, escaping quotes, backslashes and non-printable bytes.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine Byte.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     write_str(out, text: "b'")
     write_escaped_byte(out, byte: me, quote: b'\'', as_char: false)
     write_str(out, text: "'")
-    return()
+    return
 
 /// Writes the character as a character literal such as `'A'`: ASCII goes through the byte escapes, and any other
 /// character is written as its UTF-8.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine Char.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     local code: U32 = me.to[U32]()
 
     write_str(out, text: "'")
-    ascii: Bool = code.lt(128)
-    branch ascii
-        ? ascii()
-        : wide()
-
-    block ascii()
+    if code < 128
         byte: Byte = code.to[U8]().bits()
         write_escaped_byte(out, byte, quote: b'\'', as_char: true)
-        jump close()
-
-    block wide()
+    else
         me.represent_into(out)
-        jump close()
-
-    block close()
-        write_str(out, text: "'")
-        return()
+    write_str(out, text: "'")
+    return
 
 // -- values that read the same both ways ---------------------------------------
 
@@ -191,25 +141,25 @@ require T: typename, Writer[T]
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine Bool.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     me.represent_into(out)
-    return()
+    return
 
 /// Writes the unit value as Tessera source, `Unit()`.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine Unit.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     write_str(out, text: "Unit()")
-    return()
+    return
 
 /// Writes the address like `represent_into`: `0x` and lowercase hex.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine Addr.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     me.represent_into(out)
-    return()
+    return
 
 // -- arrays --------------------------------------------------------------------
 
@@ -219,36 +169,18 @@ require T: typename, Writer[T]
 /// :typeparam TWriter: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine Array[T, COUNT].diagnose_into[TWriter](me: Me, out: @TWriter) -> Void
-require T: typename, COUNT: USize, Diagnosable[T], TWriter: typename, Writer[TWriter]
+needs T: typename, COUNT: USize, Diagnosable[T], TWriter: typename, Writer[TWriter]
     local slot: @Me <- me
 
     write_str(out, text: "[")
-    jump walk(0)
 
-    block walk(at: USize)
-        more: Bool = at.lt(COUNT)
-        branch more
-            ? item(at)
-            : close()
-
-    block item(at: USize)
-        first: Bool = at.eq(0)
-        branch first
-            ? element(at)
-            : separate(at)
-
-    block separate(at: USize)
-        write_str(out, text: ", ")
-        jump element(at)
-
-    block element(at: USize)
-        value: T = slot.getitem(at)
+    each at in 0 til COUNT
+        if not (at == 0)
+            write_str(out, text: ", ")
+        value: T = slot[at]
         value.diagnose_into(out)
-        jump walk(at.add(1))
-
-    block close()
-        write_str(out, text: "]")
-        return()
+    write_str(out, text: "]")
+    return
 
 // -- numbers -------------------------------------------------------------------
 //
@@ -259,153 +191,153 @@ require T: typename, COUNT: USize, Diagnosable[T], TWriter: typename, Writer[TWr
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine S8.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     me.represent_into(out)
-    return()
+    return
 
 /// Writes the S16 as its decimal literal, the same as `represent_into`.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine S16.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     me.represent_into(out)
-    return()
+    return
 
 /// Writes the S32 as its decimal literal, the same as `represent_into`.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine S32.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     me.represent_into(out)
-    return()
+    return
 
 /// Writes the S64 as its decimal literal, the same as `represent_into`.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine S64.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     me.represent_into(out)
-    return()
+    return
 
 /// Writes the S128 as its decimal literal, the same as `represent_into`.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine S128.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     me.represent_into(out)
-    return()
+    return
 
 /// Writes the S256 as its decimal literal, the same as `represent_into`.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine S256.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     me.represent_into(out)
-    return()
+    return
 
 /// Writes the U8 as its decimal literal, the same as `represent_into`.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine U8.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     me.represent_into(out)
-    return()
+    return
 
 /// Writes the U16 as its decimal literal, the same as `represent_into`.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine U16.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     me.represent_into(out)
-    return()
+    return
 
 /// Writes the U32 as its decimal literal, the same as `represent_into`.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine U32.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     me.represent_into(out)
-    return()
+    return
 
 /// Writes the U64 as its decimal literal, the same as `represent_into`.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine U64.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     me.represent_into(out)
-    return()
+    return
 
 /// Writes the U128 as its decimal literal, the same as `represent_into`.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine U128.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     me.represent_into(out)
-    return()
+    return
 
 /// Writes the U256 as its decimal literal, the same as `represent_into`.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine U256.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     me.represent_into(out)
-    return()
+    return
 
 /// Writes the USize as its decimal literal, the same as `represent_into`.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine USize.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     me.represent_into(out)
-    return()
+    return
 
 /// Writes the SSize as its decimal literal, the same as `represent_into`.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine SSize.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     me.represent_into(out)
-    return()
+    return
 
 /// Writes the B16 as its shortest round-trip decimal literal, the same as `represent_into`.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine B16.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     me.represent_into(out)
-    return()
+    return
 
 /// Writes the BF16 as its shortest round-trip decimal literal, the same as `represent_into`.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine BF16.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     me.represent_into(out)
-    return()
+    return
 
 /// Writes the B32 as its shortest round-trip decimal literal, the same as `represent_into`.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine B32.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     me.represent_into(out)
-    return()
+    return
 
 /// Writes the B64 as its shortest round-trip decimal literal, the same as `represent_into`.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine B64.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     me.represent_into(out)
-    return()
+    return
 
 /// Writes the B128 as its shortest round-trip decimal literal, the same as `represent_into`.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine B128.diagnose_into[T](me: Me, out: @T) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     me.represent_into(out)
-    return()
+    return
 
 // -- the adapters --------------------------------------------------------------
 
@@ -417,55 +349,55 @@ record Diagnosed[T]
 record Represented[T]
     value: T
 
-conform Representable[Diagnosed[T]] when T: typename, Diagnosable[T]
-conform Representable[Represented[T]] when T: typename, Representable[T]
+obeys Representable[Diagnosed[T]] when T: typename, Diagnosable[T]
+obeys Representable[Represented[T]] when T: typename, Representable[T]
 
 /// Makes a `Diagnosed` from its fields.
 /// :param value: Its `value`.
 /// :returns: The new value.
 routine Diagnosed[T].construct(value: T) -> Me
-    return(Me(value))
+    return Me(value)
 
 /// Releases nothing: a `Diagnosed` holds no memory of its own.
 routine Diagnosed[T].destruct(me: @Me) -> Void
-    return()
+    return
 
 /// Makes a `Represented` from its fields.
 /// :param value: Its `value`.
 /// :returns: The new value.
 routine Represented[T].construct(value: T) -> Me
-    return(Me(value))
+    return Me(value)
 
 /// Releases nothing: a `Represented` holds no memory of its own.
 routine Represented[T].destruct(me: @Me) -> Void
-    return()
+    return
 
 /// `me`, to be written as Tessera source: Out.write("{x.diagnose()}").
 /// :returns: `me` in a `Diagnosed` adapter.
 routine T.diagnose(me: T) -> Diagnosed[T]
-require T: typename, Diagnosable[T]
-    return(Diagnosed[Me](value: me))
+needs T: typename, Diagnosable[T]
+    return Diagnosed[Me](value: me)
 
 /// `me`, to be written as the program's output (what a plain hole already does): Out.write("{x.represent()}").
 /// :returns: `me` in a `Represented` adapter.
 routine T.represent(me: T) -> Represented[T]
-require T: typename, Representable[T]
-    return(Represented[Me](value: me))
+needs T: typename, Representable[T]
+    return Represented[Me](value: me)
 
 /// Writes the wrapped value with its `diagnose_into`, so a template hole holding `x.diagnose()` prints the source form.
 /// :typeparam T: The wrapped type, which must conform to {Diagnosable}.
 /// :typeparam TWriter: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine Diagnosed[T].represent_into[TWriter](me: Me, out: @TWriter) -> Void
-require T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
+needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
     me.value.diagnose_into(out)
-    return()
+    return
 
 /// Writes the wrapped value with its `represent_into`.
 /// :typeparam T: The wrapped type, which must conform to {Representable}.
 /// :typeparam TWriter: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 routine Represented[T].represent_into[TWriter](me: Me, out: @TWriter) -> Void
-require T: typename, Representable[T], TWriter: typename, Writer[TWriter]
+needs T: typename, Representable[T], TWriter: typename, Writer[TWriter]
     me.value.represent_into(out)
-    return()
+    return

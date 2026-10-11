@@ -10,7 +10,9 @@ global MAIN_SP: @Addr
 global FIBER_SP: @Addr
 
 /// System V x86-64: from arrives in RDI, to in RSI. RBX, RBP and R12 to R15 are the caller's.
-#[target(arch: "x86_64", os: not "windows"), external("asm"), naked]
+@target(arch: "x86_64", os: not "windows")
+@external("asm")
+@naked
 routine swap(from: @Addr = R7, to: Addr = R6) -> Void
     block entry()
         push[U64](R5)
@@ -27,11 +29,13 @@ routine swap(from: @Addr = R7, to: Addr = R6) -> Void
         pop[U64](R12)
         pop[U64](R3)
         pop[U64](R5)
-        return()
+        return
 
 /// Windows x64: from arrives in RCX, to in RDX. RBX, RBP, RDI, RSI, R12 to R15 and XMM6 to XMM15 are the
 /// caller's, and the thread block's stack base and limit (GS:[8], GS:[16]) follow the stack.
-#[target(arch: "x86_64", os: "windows"), external("asm"), naked]
+@target(arch: "x86_64", os: "windows")
+@external("asm")
+@naked
 routine swap(from: @Addr = R1, to: Addr = R2) -> Void
     block entry()
         push[U64](R5)
@@ -82,11 +86,13 @@ routine swap(from: @Addr = R1, to: Addr = R2) -> Void
         pop[U64](R7)
         pop[U64](R3)
         pop[U64](R5)
-        return()
+        return
 
 /// AArch64: from arrives in X0, to in X1. X19 to X28, the frame pointer, the link register (the return address)
 /// and D8 to D15 are the caller's.
-#[target(arch: "aarch64"), external("asm"), naked]
+@target(arch: "aarch64")
+@external("asm")
+@naked
 routine swap(from: @Addr = R0, to: Addr = R1) -> Void
     block entry()
         stp[B64, B64, U64](V8, V9, SP.offset(-16).update())
@@ -112,79 +118,68 @@ routine swap(from: @Addr = R0, to: Addr = R1) -> Void
         ldp[B64, B64, U64](V12, V13, SP.after_offset(16))
         ldp[B64, B64, U64](V10, V11, SP.after_offset(16))
         ldp[B64, B64, U64](V8, V9, SP.after_offset(16))
-        return()
+        return
 
 /// The words a new stack starts with, below its 16-byte aligned top, as swap restores them: the saved registers
 /// (zero), the fiber's first routine where swap returns, and on x86 the room above a return address that a
 /// routine's entry expects (its own return address slot, and Windows' 32-byte home area).
-#[target(arch: "x86_64", os: not "windows")]
+@target(arch: "x86_64", os: not "windows")
 routine frame_words() -> USize
-    return(8)
+    return 8
 
-#[target(arch: "x86_64", os: "windows")]
+@target(arch: "x86_64", os: "windows")
 routine frame_words() -> USize
-    return(36)
+    return 36
 
-#[target(arch: "aarch64")]
+@target(arch: "aarch64")
 routine frame_words() -> USize
-    return(20)
+    return 20
 
 /// The word of the frame swap returns through.
-#[target(arch: "x86_64", os: not "windows")]
+@target(arch: "x86_64", os: not "windows")
 routine entry_word() -> USize
-    return(6)
+    return 6
 
-#[target(arch: "x86_64", os: "windows")]
+@target(arch: "x86_64", os: "windows")
 routine entry_word() -> USize
-    return(30)
+    return 30
 
-#[target(arch: "aarch64")]
+@target(arch: "aarch64")
 routine entry_word() -> USize
-    return(1)
+    return 1
 
 /// A new stack in `words` U64s at `stack`: its stack pointer, at a frame that returns into `entry`.
 routine fiber_stack(stack: @U64, words: USize, entry: Addr) -> Addr
     local end: U64 = ptrtoint[@U64, U64](stack.stride(words))
-    local top: U64 = end.bitand(0xFFFFFFFFFFFFFFF0)
+    local top: U64 = end & 0xFFFFFFFFFFFFFFF0
     local frame: USize = frame_words()
-    local sp: @U64 = inttoptr[U64, @U64](top.sub(frame.mul(8).to[U64]()))
+    local sp: @U64 = inttoptr[U64, @U64](top - (frame * 8).to[U64]())
 
-    jump clear(0)
-
-    block clear(i: USize)
-        done: Bool = i.eq(frame)
-        branch done
-            ? fill()
-            : store_zero(i)
-
-    block store_zero(i: USize)
+    each i in 0 til frame
         sp.stride(i).poke(0)
-        jump clear(i.add(1))
-
-    block fill()
-        sp.stride(entry_word()).poke(ptrtoint[Addr, U64](entry))
-        base: U64 = ptrtoint[@U64, U64](stack.stride(words)).bitand(0xFFFFFFFFFFFFFFF0)
-        store_bounds(sp, limit: ptrtoint[@U64, U64](stack), base)
-        sp_addr: Addr = inttoptr[U64, Addr](ptrtoint[@U64, U64](sp))
-        return(sp_addr)
+    sp.stride(entry_word()).poke(ptrtoint[Addr, U64](entry))
+    base: U64 = ptrtoint[@U64, U64](stack.stride(words)) & 0xFFFFFFFFFFFFFFF0
+    store_bounds(sp, limit: ptrtoint[@U64, U64](stack), base)
+    sp_addr: Addr = inttoptr[U64, Addr](ptrtoint[@U64, U64](sp))
+    return sp_addr
 
 /// Windows checks a stack against the thread block's base and limit, which swap restores from the 21st and 22nd
 /// words of the frame. Elsewhere nothing follows the stack.
-#target(arch: "x86_64", os: "windows")
+@target(arch: "x86_64", os: "windows")
 routine store_bounds(sp: @U64, limit: U64, base: U64) -> Void
     limit.poke_into(sp.stride(20))
     base.poke_into(sp.stride(21))
-    return()
+    return
 
-#target(arch: not "x86_64", os: not "windows")
+@target(arch: not "x86_64", os: not "windows")
 routine store_bounds(sp: @U64, limit: U64, base: U64) -> Void
-    return()
+    return
 
-#target(arch: "x86_64", os: not "windows")
+@target(arch: "x86_64", os: not "windows")
 routine store_bounds(sp: @U64, limit: U64, base: U64) -> Void
-    return()
+    return
 
-#noreturn
+@noreturn
 routine fiber_main() -> Void
     Out.write("fiber: step 1\n")
     swap(from: FIBER_SP, to: MAIN_SP.peek())
@@ -193,13 +188,12 @@ routine fiber_main() -> Void
     unreachable
 
 routine start() -> Void
-    claim stack: @Array[U64, 8192] <- .hollow()
-    sp: Addr = fiber_stack(stack: stack.to[@U64](), words: 8192,
-        entry: fiber_main.to[Callable]().addr())
+    local stack: @Array[U64, 8192] <- .hollow()
+    sp: Addr = fiber_stack(stack: stack.to[@U64](), words: 8192, entry: fiber_main.to[Callable]().addr())
     sp.poke_into(FIBER_SP)
     Out.write("main: start\n")
     swap(from: MAIN_SP, to: FIBER_SP.peek())
     Out.write("main: back once\n")
     swap(from: MAIN_SP, to: FIBER_SP.peek())
     Out.write("main: back twice\n")
-    return()
+    return

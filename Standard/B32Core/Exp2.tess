@@ -17,117 +17,84 @@ module Standard/Core
 /// :returns: 2^`me`.
 routine B32.exp2(me: Me) -> Me
     local tu: U32 = me.bits()
-    local ux: U32 = tu.shl(1)
+    local ux: U32 = tu << 1
 
-    maybe_whole: Bool = tu.bitand(0xFFFF).eq(0)
-    branch maybe_whole
-        ? whole_range()
-        : general()
-
-    // x may be an integer: look at its exponent, 2^k <= |x| < 2^(k+1)
-    block whole_range()
-        e: U32 = tu.shr(23).bitand(0xFF)
-        small: Bool = e.between(lo: 127, hi: 135)  // 0 <= k < 9
-        branch small
-            ? whole_check(e.sub(127))
-            : general()
-
-    block whole_check(k: U32)
-        whole: Bool = tu.shl(k.add(9)).eq(0)
-        branch whole
-            ? whole(k)
-            : general()
-
-    // x is an integer with 1 <= |x| < 2^9: the result is an exact power of two (or a subnormal)
-    block whole(k: U32)
-        significand: U32 = tu.bitand(0x7FFFFF).bitor(0x800000)
-        mant: U64 = significand.to[U64]()
-        magnitude: S64 = mant.shr(U32.sub(23, k).to[U64]()).to[S64]()
-        negative: Bool = tu.shr(31).eq(1)
-        signed: S64 = negative
-            ? magnitude.neg()
-            : magnitude
-        m: S64 = signed.add(127)
-        normal: Bool = m.between(lo: 1, hi: 254)
-        subnormal: Bool = m.between(lo: -22, hi: 0)
+    if tu & 0xFFFF == 0
+        // x may be an integer: look at its exponent, 2^k <= |x| < 2^(k+1)
+        e: U32 = (tu >> 23) & 0xFF
+        // 0 <= k < 9
+        if e.between(lo: 127, hi: 135)
+            k: U32 = e - 127
+            if tu << k + 9 == 0
+                // x is an integer with 1 <= |x| < 2^9: the result is an exact power of two (or a subnormal)
+                significand: U32 = (tu & 0x7FFFFF) | 0x800000
+                mant: U64 = significand.to[U64]()
+                magnitude: S64 = (mant >> U32.sub(23, k).to[U64]()).to[S64]()
+                negative: Bool = tu >> 31 == 1
+                signed: S64 = when
+                    negative => -magnitude
+                    else => magnitude
+                m: S64 = signed + 127
+                normal: Bool = m.between(lo: 1, hi: 254)
+                when
+                    normal => return Me.from_bits(m.to_wrap[U32]() << 23)
+                    m.between(lo: -22, hi: 0) => return Me.from_bits(U32.shl(1, (m + 22).to_wrap[U32]()))
+                    else => pass
+    if ux >= 0x86000000 or ux < 0x65000000
+        // |x| >= 128, x is NaN, or |x| < 0x1p-26
+        tiny: Bool = ux < 0x65000000
+        // -149 < x <= -128
         when
-            normal => return(Me.from_bits(m.to_wrap[U32]().shl(23)))
-            subnormal => return(Me.from_bits(U32.shl(1, m.add(22).to_wrap[U32]())))
-            else => general()
-
-    block general()
-        outside: Bool = ux.ge(0x86000000).bitor(ux.lt(0x65000000))
-        branch outside
-            ? edge()
-            : fast()
-
-    // |x| >= 128, x is NaN, or |x| < 0x1p-26
-    block edge()
-        tiny: Bool = ux.lt(0x65000000)
-        finite: Bool = tu.ge(0xC3000000).bitand(tu.lt(0xC3150000))  // -149 < x <= -128
+            tiny => return me + 1.0
+            tu >= 0xC3000000 and tu < 0xC3150000 => pass
+            else =>
+                // infinities, NaN, x <= -149 (underflow) or x >= 128 (overflow)
+                special: Bool = ux >= 0xFF000000
+                nan: Bool = ux > 0xFF000000
+                negative: Bool = tu >> 31 == 1
+                when
+                    nan => return me + me
+                    special =>
+                        if negative
+                            return 0.0
+                        else
+                            return Me.INFINITY
+                    tu >= 0xC3150000 =>
+                        z: B64 = me.to[B64]()
+                        scaled: B64 = (z + 149.0) * 7.006492321624085e-46
+                        y: B64 = scaled + 1.401298464324817e-45
+                        clamped: B64 = y.max(3.503246160812043e-46)
+                        return clamped.to[Me]()
+                    else => return Me.INFINITY
+    xd: B64 = me.to[B64]()
+    h: B64 = xd - (xd + 105553116266496.0 - 105553116266496.0)
+    h2: B64 = h * h
+    u: U32 = (me + 196608.0).bits()
+    // the low bits are round(64 x)
+    tb: U64 = CM_B32_EXP_TB.getitem((u & 0x3F).to[USize]())
+    scale_exponent: U64 = (u >> 6).to[U64]()
+    sv: B64 = B64.from_bits(tb +% (scale_exponent << 52))
+    // 2^(round(64 x) / 64)
+    p01: B64 = h * 0.6931471805202393 + 1.0
+    p23: B64 = h * 0.05550459682799693 + 0.2402288551437867
+    r: B64 = sv * (h2 * p23 + p01)
+    ub: Me = r.to[Me]()
+    lb: Me = (r - r * 1.4438228390645236e-10).to[Me]()
+    if ub == lb
+        return ub
+    else
+        // The fast path can't decide the rounding: three hard cases, then a longer polynomial.
+        near: Bool = ux <= 0x79E7526E
+        case1: Bool = near and tu == 0x3B429D37
+        case2: Bool = near and tu == 0xBCF3A937
         when
-            tiny => return(me.add(1.0))
-            finite => fast()
-            else => special()
-
-    // infinities, NaN, x <= -149 (underflow) or x >= 128 (overflow)
-    block special()
-        special: Bool = ux.ge(0xFF000000)
-        nan: Bool = ux.gt(0xFF000000)
-        negative: Bool = tu.shr(31).eq(1)
-        under: Bool = tu.ge(0xC3150000)
-        when
-            nan => return(me.add(me))
-            special => infinite(negative)
-            under => underflow()
-            else => return(Me.INFINITY)
-
-    block infinite(negative: Bool)
-        branch negative
-            ? return(0.0)
-            : return(Me.INFINITY)
-
-    block underflow()
-        z: B64 = me.to[B64]()
-        scaled: B64 = z.add(149.0).mul(0x1p-150)
-        y: B64 = scaled.add(0x1p-149)
-        clamped: B64 = y.max(0x1p-151)
-        return(clamped.to[Me]())
-
-    block fast()
-        xd: B64 = me.to[B64]()
-        h: B64 = xd.sub(xd.add(0x1.8p+46).sub(0x1.8p+46))
-        h2: B64 = h.mul(h)
-        u: U32 = me.add(0x1.8p+17).bits()  // the low bits are round(64 x)
-        tb: U64 = CM_B32_EXP_TB.getitem(u.bitand(0x3F).to[USize]())
-        scale_exponent: U64 = u.shr(6).to[U64]()
-        sv: B64 = B64.from_bits(tb.add_wrap(scale_exponent.shl(52)))  // 2^(round(64 x) / 64)
-        p01: B64 = h.mul(0x1.62e42fef4c4e7p-1).add(1.0)
-        p23: B64 = h.mul(0x1.c6b19384ecd93p-5).add(0x1.ebfd1b232f475p-3)
-        r: B64 = sv.mul(h2.mul(p23).add(p01))
-        ub: Me = r.to[Me]()
-        lb: Me = r.sub(r.mul(0x1.3d8p-33)).to[Me]()
-        sure: Bool = ub.eq(lb)
-        branch sure
-            ? return(ub)
-            : hard(h, h2, sv)
-
-    // The fast path can't decide the rounding: three hard cases, then a longer polynomial.
-    block hard(h: B64, h2: B64, sv: B64)
-        near: Bool = ux.le(0x79E7526E)
-        case1: Bool = near.bitand(tu.eq(0x3B429D37))
-        case2: Bool = near.bitand(tu.eq(0xBCF3A937))
-        case3: Bool = near.bitand(tu.eq(0xB8D3D026))
-        when
-            case1 => return(Me.sub(0x1.00870ap+0, 0x1p-25))
-            case2 => return(Me.sub(0x1.f58d62p-1, 0x1p-26))
-            case3 => return(Me.add(0x1.fff6d2p-1, 0x1p-26))
-            else => slow(h, h2, sv)
-
-    block slow(h: B64, h2: B64, sv: B64)
-        c01: B64 = h.mul(0x1.ebfbdff82c58fp-3).add(0x1.62e42fefa39efp-1)
-        c23: B64 = h.mul(0x1.3b2ab6fb92e5ep-7).add(0x1.c6b08d702e0edp-5)
-        c45: B64 = h.mul(0x1.430976b8ce6efp-13).add(0x1.5d886e6d54203p-10)
-        svh: B64 = sv.mul(h)
-        r: B64 = svh.mul(h2.mul(h2.mul(c45).add(c23)).add(c01)).add(sv)
-        return(r.to[Me]())
+            case1 => return Me.sub(1.0020605325698853, 2.980232238769531e-08)
+            case2 => return Me.sub(0.9795942902565002, 1.4901161193847656e-08)
+            near and tu == 0xB8D3D026 => return Me.add(0.9999299645423889, 1.4901161193847656e-08)
+            else =>
+                c01: B64 = h * 0.24022650695910072 + 0.6931471805599453
+                c23: B64 = h * 0.009618129107500536 + 0.05550410866402609
+                c45: B64 = h * 0.00015403602972146417 + 0.001333362331326638
+                svh: B64 = sv * h
+                r2: B64 = svh * (h2 * (h2 * c45 + c23) + c01) + sv
+                return r2.to[Me]()

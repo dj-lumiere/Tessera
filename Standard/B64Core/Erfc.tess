@@ -281,56 +281,44 @@ preset CM_B64_ERFC_POS_EXC: @Array[U64, 87] <- [0x3C8C5BF891B4EF6B, 0x3FEFFFFFFF
 /// :returns: erfc(`me`).
 routine B64.erfc(me: Me) -> Me
     local tu: U64 = me.bits()
-    local at: U64 = tu.bitand(0x7FFFFFFFFFFFFFFF)
+    local at: U64 = tu & 0x7FFFFFFFFFFFFFFF
 
-    negative: Bool = tu.ge(0x8000000000000000)
-    branch negative
-        ? negative()
-        : positive()
-
-    // x = -NaN or x <= 0, excluding +0
-    block negative()
-        two: Bool = tu.ge(0xC017744F8F74E94B)  // x <= -0x1.7744f8f74e94bp+2: erfc(x) rounds to 2
-        one: Bool = me.ge(-0x1.c5bf891b4ef6ap-54)  // erfc(x) rounds to 1
+    if tu >= 0x8000000000000000
+        // x = -NaN or x <= 0, excluding +0
+        two: Bool = tu >= 0xC017744F8F74E94B
+        // x <= -0x1.7744f8f74e94bp+2: erfc(x) rounds to 2
+        // erfc(x) rounds to 1
         when
-            two => two()
-            one => return(me.neg().mul_add(a: 0x1p-54, b: 1.0))
-            else => general()
-
-    block two()
-        infinite: Bool = tu.eq(0xFFF0000000000000)
-        nan: Bool = tu.gt(0xFFF0000000000000)
+            two =>
+                infinite: Bool = tu == 0xFFF0000000000000
+                when
+                    infinite => return 2.0
+                    tu > 0xFFF0000000000000 => return me + me
+                    else => return Me.sub(2.0, 5.551115123125783e-17)
+            me >= -9.83909537680414e-17 => return (-me).mul_add(a: 5.551115123125783e-17, b: 1.0)
+            else => pass
+    else
+        // x = +NaN or x >= 0, excluding -0
+        zero: Bool = at >= 0x403B39DC41E48BFD
+        // x >= 0x1.b39dc41e48bfdp+4: erfc(x) < 2^-1075 rounds to 0
+        // erfc(x) rounds to 1
         when
-            infinite => return(2.0)
-            nan => return(me.add(me))
-            else => return(Me.sub(2.0, 0x1p-54))
-
-    // x = +NaN or x >= 0, excluding -0
-    block positive()
-        zero: Bool = at.ge(0x403B39DC41E48BFD)  // x >= 0x1.b39dc41e48bfdp+4: erfc(x) < 2^-1075 rounds to 0
-        one: Bool = me.le(0x1.c5bf891b4ef6ap-55)  // erfc(x) rounds to 1
-        when
-            zero => zero()
-            one => return(me.neg().mul_add(a: 0x1p-54, b: 1.0))
-            else => general()
-
-    block zero()
-        infinite: Bool = at.eq(0x7FF0000000000000)
-        nan: Bool = at.gt(0x7FF0000000000000)
-        when
-            infinite => return(0.0)
-            nan => return(me.add(me))
-            else => return(Me.mul(0x1p-1074, 0.25))
-
+            zero =>
+                infinite: Bool = at == 0x7FF0000000000000
+                when
+                    infinite => return 0.0
+                    at > 0x7FF0000000000000 => return me + me
+                    else => return Me.mul(5e-324, 0.25)
+            me <= 4.91954768840207e-17 => return (-me).mul_add(a: 5.551115123125783e-17, b: 1.0)
+            else => pass
     // -0x1.7744f8f74e94bp+2 < x < -0x1.c5bf891b4ef6ap-54 or 0x1.c5bf891b4ef6ap-55 < x < 0x1.b39dc41e48bfdp+4
-    block general()
-        h, l, err = cm_b64_erfc_fast(me)
-        left: Me = h.add(l.sub(err))
-        right: Me = h.add(l.add(err))
-        sure: Bool = left.eq(right)
-        branch sure
-            ? return(left)
-            : return(cm_b64_erfc_accurate(me))
+    h, l, err = cm_b64_erfc_fast(me)
+    left: Me = h + (l - err)
+    right: Me = h + (l + err)
+    if left == right
+        return left
+    else
+        return cm_b64_erfc_accurate(me)
 
 // -- double-double helpers -----------------------------------------------------
 
@@ -341,7 +329,7 @@ routine B64.erfc(me: Me) -> Me
 /// :returns: The product as a double-double.
 routine cm_b64_erfc_s_mul(a: B64, bh: B64, bl: B64) -> CmF64ErfDd
     p: CmF64ErfDd = cm_b64_erf_a_mul(a, b: bh)
-    return(CmF64ErfDd(hi: p.hi, lo: a.mul_add(a: bl, b: p.lo)))
+    return CmF64ErfDd(hi: p.hi, lo: a.mul_add(a: bl, b: p.lo))
 
 /// (ah + al) (bh + bl) - al bl as a double-double.
 /// :param ah: The high part of the first factor.
@@ -352,32 +340,32 @@ routine cm_b64_erfc_s_mul(a: B64, bh: B64, bl: B64) -> CmF64ErfDd
 routine cm_b64_erfc_d_mul(ah: B64, al: B64, bh: B64, bl: B64) -> CmF64ErfDd
     p: CmF64ErfDd = cm_b64_erf_a_mul(a: ah, b: bh)
     lo: B64 = ah.mul_add(a: bl, b: p.lo)
-    return(CmF64ErfDd(hi: p.hi, lo: al.mul_add(a: bh, b: lo)))
+    return CmF64ErfDd(hi: p.hi, lo: al.mul_add(a: bh, b: lo))
 
 /// x 2^n with a single rounding (C's ldexp), for -2044 <= n <= 2046.
 /// :param x: The value to scale.
 /// :param n: The power of two.
 /// :returns: `x` 2^`n`.
 routine cm_b64_erfc_ldexp(x: B64, n: S64) -> B64
-    big: Bool = n.gt(1023)
-    y: B64 = big
-        ? x.mul(0x1p1023)
-        : x
-    k: S64 = big
-        ? n.sub(1023)
-        : n
-    tiny: Bool = k.lt(-1022)
+    big: Bool = n > 1023
+    y: B64 = when
+        big => x * 8.98846567431158e307
+        else => x
+    k: S64 = when
+        big => n - 1023
+        else => n
     // scale into the normal range first (exact), so the last multiplication is the only rounding
-    branch tiny
-        ? return(y.mul(cm_b64_erfc_pow2(k.add(1022))).mul(cm_b64_erfc_pow2(-1022)))
-        : return(y.mul(cm_b64_erfc_pow2(k)))
+    if k < -1022
+        return y * cm_b64_erfc_pow2(k + 1022) * cm_b64_erfc_pow2(-1022)
+    else
+        return y * cm_b64_erfc_pow2(k)
 
 /// 2^k for a normal exponent -1022 <= k <= 1023.
 /// :param k: The exponent.
 /// :returns: 2^`k`.
 routine cm_b64_erfc_pow2(k: S64) -> B64
-    biased: U64 = k.add(1023).to_wrap[U64]()
-    return(B64.from_bits(biased.shl(52)))
+    biased: U64 = (k + 1023).to_wrap[U64]()
+    return B64.from_bits(biased << 52)
 
 // -- fast path -----------------------------------------------------------------
 
@@ -386,91 +374,74 @@ routine cm_b64_erfc_pow2(k: S64) -> B64
 /// :param x: The argument.
 /// :returns: The triple (h, l, err).
 routine cm_b64_erfc_fast(x: B64) -> (B64, B64, B64)
-    negative: Bool = x.lt(0.0)
-    moderate: Bool = x.le(0x1.713786d9c7c09p+1)
+    negative: Bool = x < 0.0
     when
-        negative => negative()
-        moderate => moderate()
-        else => return(cm_b64_erfc_asympt_fast(x))  // erfc(x) < 0.000046
-
-    // erfc(x) = 1 + erf(-x), with the relative error bound made absolute
-    block negative()
-        f: CmF64ErfDd = cm_b64_erf_fast(x.neg())
-        err: B64 = cm_b64_erf_fast_err(x.neg()).mul(f.hi)
-        s: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: 1.0, b: f.hi)
-        return((s.hi, s.lo.add(f.lo), err.add(0x1.4p-102)))
-
-    block moderate()
-        f: CmF64ErfDd = cm_b64_erf_fast(x)
-        err: B64 = cm_b64_erf_fast_err(x).mul(f.hi)
-        s: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: 1.0, b: f.hi.neg())
-        l: B64 = s.lo.sub(f.lo)
-        half: Bool = x.ge(0x1.e861fbb24c00ap-2)  // erf(x) >= 1/2, so 1 - h is exact
-        branch half
-            ? return((s.hi, l, err))
-            : return((s.hi, l, err.add(0x1.4p-104)))
+        negative =>
+            // erfc(x) < 0.000046
+            // erfc(x) = 1 + erf(-x), with the relative error bound made absolute
+            f: CmF64ErfDd = cm_b64_erf_fast(-x)
+            err: B64 = cm_b64_erf_fast_err(-x) * f.hi
+            s: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: 1.0, b: f.hi)
+            return (s.hi, s.lo + f.lo, err + 2.465190328815662e-31)
+        x <= 2.8845070422535213 =>
+            f: CmF64ErfDd = cm_b64_erf_fast(x)
+            err: B64 = cm_b64_erf_fast_err(x) * f.hi
+            s: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: 1.0, b: -f.hi)
+            l: B64 = s.lo - f.lo
+            // erf(x) >= 1/2, so 1 - h is exact
+            if x >= 0.4769362762044699
+                return (s.hi, l, err)
+            else
+                return (s.hi, l, err + 6.162975822039155e-32)
+        else => return cm_b64_erfc_asympt_fast(x)
 
 /// The fast path erfc(x) = exp(-x^2) p(1/x) for 0x1.713786d9c7c09p+1 < x < 0x1.b39dc41e48bfdp+4, as
 /// (h, l, err).
 /// :param x: The argument.
 /// :returns: The triple (h, l, err), h + l within err of erfc(`x`).
 routine cm_b64_erfc_asympt_fast(x: B64) -> (B64, B64, B64)
-    tiny: Bool = x.ge(0x1.9db1bb14e15cap+4)  // erfc(x) < 2^-970: leave it to the accurate path
-    branch tiny
-        ? return((0.0, 0.0, 1.0))
-        : continue
+    // erfc(x) < 2^-970: leave it to the accurate path
+    if x >= 25.85589130550742
+        return (0.0, 0.0, 1.0)
     u: CmF64ErfDd = cm_b64_erf_a_mul(a: x, b: x)
-    e: CmF64ErfDd = cm_b64_erfc_exp_1(xh: u.hi.neg(), xl: u.lo.neg())
+    e: CmF64ErfDd = cm_b64_erfc_exp_1(xh: -u.hi, xl: -u.lo)
     // 1/x as a double-double (one Newton step)
     yh: B64 = B64.div(1.0, x)
-    yl: B64 = yh.mul(x.neg().mul_add(a: yh, b: 1.0))
-    jump find(e, yh, yl, 0)
 
     // the interval of yh
-    block find(e: CmF64ErfDd, yh: B64, yl: B64, i: USize)
-        above: Bool = yh.gt(B64.from_bits(CM_B64_ERFC_ASYMPT_THRESHOLD.getitem(i)))
-        branch above
-            ? find(e, yh, yl, i.add(1))
-            : poly(e, yh, yl, i.mul(13))
-
-    // p(uh + ul) with u = 1/x^2: degrees 23, 21, 19 in double, then 17 down to 3 in double-double
-    block poly(e: CmF64ErfDd, yh: B64, yl: B64, p: USize)
-        u: CmF64ErfDd = cm_b64_erf_a_mul(a: yh, b: yh)
-        ul: B64 = yh.mul(2.0).mul_add(a: yl, b: u.lo)
+    yl: B64 = yh * (-x).mul_add(a: yh, b: 1.0)
+    while yh > B64.from_bits(CM_B64_ERFC_ASYMPT_THRESHOLD.getitem(i)) with i: USize = 0
+        continue with i: i + 1
+    then
+        // p(uh + ul) with u = 1/x^2: degrees 23, 21, 19 in double, then 17 down to 3 in double-double
+        p: USize = i * 13
+        u2: CmF64ErfDd = cm_b64_erf_a_mul(a: yh, b: yh)
+        ul: B64 = (yh * 2.0).mul_add(a: yl, b: u2.lo)
         z0: B64 = cm_b64_erfc_t(base: p, k: 12)
-        z1: B64 = z0.mul_add(a: u.hi, b: cm_b64_erfc_t(base: p, k: 11))
-        z2: B64 = z1.mul_add(a: u.hi, b: cm_b64_erfc_t(base: p, k: 10))
+        z1: B64 = z0.mul_add(a: u2.hi, b: cm_b64_erfc_t(base: p, k: 11))
+        z2: B64 = z1.mul_add(a: u2.hi, b: cm_b64_erfc_t(base: p, k: 10))
         // degree 17: zh (uh + ul) + T[p+9]
-        m: CmF64ErfDd = cm_b64_erfc_s_mul(a: z2, bh: u.hi, bl: ul)
+        m: CmF64ErfDd = cm_b64_erfc_s_mul(a: z2, bh: u2.hi, bl: ul)
         z: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: cm_b64_erfc_t(base: p, k: 9), b: m.hi)
-        uul: CmF64ErfDd = CmF64ErfDd(hi: u.hi, lo: ul)
-        jump horner(e, yh, yl, p, uul, 15, z.hi, z.lo.add(m.lo))
 
-    block horner(e: CmF64ErfDd, yh: B64, yl: B64, p: USize, u: CmF64ErfDd, j: USize, zh: B64,
-        zl: B64)
-        more: Bool = j.ge(3)
-        branch more
-            ? step(e, yh, yl, p, u, j, zh, zl)
-            : assemble(e, yh, yl, p, u, zh, zl)
+        u3: CmF64ErfDd = CmF64ErfDd(hi: u2.hi, lo: ul)
 
-    block step(e: CmF64ErfDd, yh: B64, yl: B64, p: USize, u: CmF64ErfDd, j: USize, zh: B64, zl: B64)
-        m: CmF64ErfDd = cm_b64_erfc_d_mul(ah: zh, al: zl, bh: u.hi, bl: u.lo)
-        z: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: cm_b64_erfc_t(base: p, k: j.add(1).div(2)),
-            b: m.hi)
-        jump horner(e, yh, yl, p, u, j.sub(2), z.hi, z.lo.add(m.lo))
-
-    // degree 1: (zh + zl) (uh + ul) + T[p] + T[p+1], then times (yh + yl) and (eh + el)
-    block assemble(e: CmF64ErfDd, yh: B64, yl: B64, p: USize, u: CmF64ErfDd, zh: B64, zl: B64)
-        m: CmF64ErfDd = cm_b64_erfc_d_mul(ah: zh, al: zl, bh: u.hi, bl: u.lo)
-        z: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: cm_b64_erfc_t(base: p, k: 0), b: m.hi)
-        zl2: B64 = z.lo.add(m.lo.add(cm_b64_erfc_t(base: p, k: 1)))
-        q: CmF64ErfDd = cm_b64_erfc_d_mul(ah: z.hi, al: zl2, bh: yh, bl: yl)
-        r: CmF64ErfDd = cm_b64_erfc_d_mul(ah: q.hi, al: q.lo, bh: e.hi, bl: e.lo)
-        // the relative error bound is 2^-67.115 < 0x1.d9p-68, and 0x1.d9p-68 h must not underflow
-        normal: Bool = r.hi.ge(0x1.151b9a3fdd5c9p-955)
-        branch normal
-            ? return((r.hi, r.lo, r.hi.mul(0x1.d9p-68)))
-            : return((r.hi, r.lo, 0x1p-1022))
+        while j >= 3 with j: USize = 15, zh: B64 = z.hi, zl: B64 = z.lo + m.lo
+            m2: CmF64ErfDd = cm_b64_erfc_d_mul(ah: zh, al: zl, bh: u3.hi, bl: u3.lo)
+            z3: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: cm_b64_erfc_t(base: p, k: (j + 1) / 2), b: m2.hi)
+            continue with j: j - 2, zh: z3.hi, zl: z3.lo + m2.lo
+        then
+            // degree 1: (zh + zl) (uh + ul) + T[p] + T[p+1], then times (yh + yl) and (eh + el)
+            m2: CmF64ErfDd = cm_b64_erfc_d_mul(ah: zh, al: zl, bh: u3.hi, bl: u3.lo)
+            z3: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: cm_b64_erfc_t(base: p, k: 0), b: m2.hi)
+            zl2: B64 = z3.lo + (m2.lo + cm_b64_erfc_t(base: p, k: 1))
+            q: CmF64ErfDd = cm_b64_erfc_d_mul(ah: z3.hi, al: zl2, bh: yh, bl: yl)
+            r: CmF64ErfDd = cm_b64_erfc_d_mul(ah: q.hi, al: q.lo, bh: e.hi, bl: e.lo)
+            // the relative error bound is 2^-67.115 < 0x1.d9p-68, and 0x1.d9p-68 h must not underflow
+            if r.hi >= 3.5543726719065856e-288
+                return (r.hi, r.lo, r.hi * 6.2601028758013134e-21)
+            else
+                return (r.hi, r.lo, 2.2250738585072014e-308)
 
 /// exp(xh + xl) as a double-double with relative error below 2^-74.139, for |xl/xh| < 2^-23.89 and
 /// |xl| < 2^-14.3486 (the fast exponential of CORE-MATH's pow).
@@ -479,24 +450,22 @@ routine cm_b64_erfc_asympt_fast(x: B64) -> (B64, B64, B64)
 /// :returns: exp(`xh` + `xl`) as a double-double.
 routine cm_b64_erfc_exp_1(xh: B64, xl: B64) -> CmF64ErfDd
     // 0x1.71547652b82fep+12 approximates 2^12/log(2)
-    k: B64 = xh.mul(0x1.71547652b82fep+12).round_ties_even()
+    k: B64 = (xh * 5909.278887481194).round_ties_even()
     // log(2)/2^12 as a double-double
-    kk: CmF64ErfDd = cm_b64_erfc_s_mul(a: k, bh: 0x1.62e42fefa39efp-13, bl: 0x1.abc9e3b39803fp-68)
-    y: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: xh.sub(kk.hi), b: xl)
-    yl: B64 = y.lo.sub(kk.lo)
+    kk: CmF64ErfDd = cm_b64_erfc_s_mul(a: k, bh: 0.0001692253858788929, bl: 5.661735385366942e-21)
+    y: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: xh - kk.hi, b: xl)
+    yl: B64 = y.lo - kk.lo
     bk: S64 = k.to[S64]()
     ku: U64 = bk.to_wrap[U64]()
-    m: S64 = bk.shr(12).add(0x3FF)
-    i2u: U64 = ku.shr(6).bitand(0x3F)
+    m: S64 = (bk >> 12) + 0x3FF
+    i2u: U64 = (ku >> 6) & 0x3F
     i2: USize = i2u.to[USize]()
-    i1: USize = ku.bitand(0x3F).to[USize]()
-    t: CmF64ErfDd = cm_b64_erfc_d_mul(ah: cm_b64_erfc_t2(i: i1, k: 0),
-        al: cm_b64_erfc_t2(i: i1, k: 1), bh: cm_b64_erfc_t1(i: i2, k: 0),
-        bl: cm_b64_erfc_t1(i: i2, k: 1))
+    i1: USize = (ku & 0x3F).to[USize]()
+    t: CmF64ErfDd = cm_b64_erfc_d_mul(ah: cm_b64_erfc_t2(i: i1, k: 0), al: cm_b64_erfc_t2(i: i1, k: 1), bh: cm_b64_erfc_t1(i: i2, k: 0), bl: cm_b64_erfc_t1(i: i2, k: 1))
     q: CmF64ErfDd = cm_b64_erfc_q_1(zh: y.hi, zl: yl)
     r: CmF64ErfDd = cm_b64_erfc_d_mul(ah: t.hi, al: t.lo, bh: q.hi, bl: q.lo)
-    scale: B64 = B64.from_bits(m.to_wrap[U64]().shl(52))
-    return(CmF64ErfDd(hi: r.hi.mul(scale), lo: r.lo.mul(scale)))
+    scale: B64 = B64.from_bits(m.to_wrap[U64]() << 52)
+    return CmF64ErfDd(hi: r.hi * scale, lo: r.lo * scale)
 
 /// exp(zh + zl) as a double-double for |zh + zl| < 2^-12.88 and |zl| < 2^-42.6 (a degree-4
 /// polynomial).
@@ -504,13 +473,13 @@ routine cm_b64_erfc_exp_1(xh: B64, xl: B64) -> CmF64ErfDd
 /// :param zl: The low part of the argument.
 /// :returns: exp(`zh` + `zl`) as a double-double.
 routine cm_b64_erfc_q_1(zh: B64, zl: B64) -> CmF64ErfDd
-    z: B64 = zh.add(zl)
-    q0: B64 = B64.mul_add(0x1.55555558489dcp-5, a: zh, b: 0x1.5555555995d37p-3)
+    z: B64 = zh + zl
+    q0: B64 = B64.mul_add(0.0416666666881331, a: zh, b: 0.16666666679041395)
     q: B64 = q0.mul_add(a: z, b: 0.5)
-    s: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: 1.0, b: q.mul(z))
+    s: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: 1.0, b: q * z)
     d: CmF64ErfDd = cm_b64_erfc_d_mul(ah: zh, al: zl, bh: s.hi, bl: s.lo)
     r: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: 1.0, b: d.hi)
-    return(CmF64ErfDd(hi: r.hi, lo: r.lo.add(d.lo)))
+    return CmF64ErfDd(hi: r.hi, lo: r.lo + d.lo)
 
 // -- accurate path -------------------------------------------------------------
 
@@ -519,146 +488,97 @@ routine cm_b64_erfc_q_1(zh: B64, zl: B64) -> CmF64ErfDd
 /// :param x: The argument.
 /// :returns: erfc(`x`), correctly rounded.
 routine cm_b64_erfc_accurate(x: B64) -> B64
-    negative: Bool = x.lt(0.0)
-    moderate: Bool = x.le(0x1.b59ffb450828cp+0)  // erfc(x) >= 2^-6
+    negative: Bool = x < 0.0
+    // erfc(x) >= 2^-6
     when
-        negative => negative_scan(0)
-        moderate => positive_scan(0)
-        else => return(cm_b64_erfc_asympt_accurate(x))
-
-    block negative_scan(k: USize)
-        more: Bool = k.lt(17)
-        branch more
-            ? negative_check(k)
-            : negative()
-
-    block negative_check(k: USize)
-        hit: Bool = x.eq(cm_b64_erfc_neg_exc(i: k, k: 0))
-        branch hit
-            ? return(cm_b64_erfc_neg_exc(i: k, k: 1).add(cm_b64_erfc_neg_exc(i: k, k: 2)))
-            : negative_scan(k.add(1))
-
-    // erfc(x) = 1 + erf(-x)
-    block negative()
-        a: CmF64ErfDd = cm_b64_erf_accurate(x.neg())
-        s: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: 1.0, b: a.hi)
-        return(s.hi.add(s.lo.add(a.lo)))
-
-    block positive_scan(k: USize)
-        more: Bool = k.lt(29)
-        branch more
-            ? positive_check(k)
-            : positive()
-
-    block positive_check(k: USize)
-        hit: Bool = x.eq(cm_b64_erfc_pos_exc(i: k, k: 0))
-        branch hit
-            ? return(cm_b64_erfc_pos_exc(i: k, k: 1).add(cm_b64_erfc_pos_exc(i: k, k: 2)))
-            : positive_scan(k.add(1))
-
-    block positive()
-        a: CmF64ErfDd = cm_b64_erf_accurate(x)
-        s: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: 1.0, b: a.hi.neg())
-        return(s.hi.add(s.lo.sub(a.lo)))
+        negative =>
+            each k in 0 til 17
+                if x == cm_b64_erfc_neg_exc(i: k, k: 0)
+                    return cm_b64_erfc_neg_exc(i: k, k: 1) + cm_b64_erfc_neg_exc(i: k, k: 2)
+                else
+                    continue
+            // erfc(x) = 1 + erf(-x)
+            a: CmF64ErfDd = cm_b64_erf_accurate(-x)
+            s: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: 1.0, b: a.hi)
+            return s.hi + (s.lo + a.lo)
+        x <= 1.7094723742995113 =>
+            each k in 0 til 29
+                if x == cm_b64_erfc_pos_exc(i: k, k: 0)
+                    return cm_b64_erfc_pos_exc(i: k, k: 1) + cm_b64_erfc_pos_exc(i: k, k: 2)
+                else
+                    continue
+            a: CmF64ErfDd = cm_b64_erf_accurate(x)
+            s: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: 1.0, b: -a.hi)
+            return s.hi + (s.lo - a.lo)
+        else => return cm_b64_erfc_asympt_accurate(x)
 
 /// The accurate asymptotic path erfc(x) = exp(-x^2) p(1/x), correctly rounded, for
 /// 0x1.b59ffb450828cp+0 < x < 0x1.b39dc41e48bfdp+4.
 /// :param x: The argument.
 /// :returns: erfc(`x`), correctly rounded.
 routine cm_b64_erfc_asympt_accurate(x: B64) -> B64
-    jump scan(0)
-
-    block scan(k: USize)
-        more: Bool = k.lt(22)
-        branch more
-            ? check(k)
-            : special()
-
-    block check(k: USize)
-        hit: Bool = x.eq(cm_b64_erfc_asympt_exc(i: k, k: 0))
-        branch hit
-            ? return(cm_b64_erfc_asympt_exc(i: k, k: 1).add(cm_b64_erfc_asympt_exc(i: k, k: 2)))
-            : scan(k.add(1))
+    each k in 0 til 22
+        if x == cm_b64_erfc_asympt_exc(i: k, k: 0)
+            return cm_b64_erfc_asympt_exc(i: k, k: 1) + cm_b64_erfc_asympt_exc(i: k, k: 2)
+        else
+            continue
 
     // a hard case with a subnormal result that the table can't hold
-    block special()
-        hard: Bool = x.eq(0x1.a8f7bfbd15495p+4)
-        branch hard
-            ? return(B64.mul_add(0x1p-1074, a: -0.25, b: 0x1.99ef5883f656cp-1024))
-            : continue
-        // exp(-x^2) as 2^e (eh + el)
-        u: CmF64ErfDd = cm_b64_erf_a_mul(a: x, b: x)
-        ex: (B64, B64, S64) = cm_b64_erfc_exp_accurate(xh: u.hi.neg(), xl: u.lo.neg())
-        // 1/x as a double-double (one Newton step)
-        yh: B64 = B64.div(1.0, x)
-        yl: B64 = yh.mul(x.neg().mul_add(a: yh, b: 1.0))
-        y: CmF64ErfDd = CmF64ErfDd(hi: yh, lo: yl)
-        jump find(ex, y, 0)
+    if x == 26.560485590559058
+        return B64.mul_add(5e-324, a: -0.25, b: 8.907573520005566e-309)
+    // exp(-x^2) as 2^e (eh + el)
+    u: CmF64ErfDd = cm_b64_erf_a_mul(a: x, b: x)
+    ex: (B64, B64, S64) = cm_b64_erfc_exp_accurate(xh: -u.hi, xl: -u.lo)
+    // 1/x as a double-double (one Newton step)
+    yh: B64 = B64.div(1.0, x)
+    yl: B64 = yh * (-x).mul_add(a: yh, b: 1.0)
 
     // 0 <= i <= 9
-    block find(ex: (B64, B64, S64), y: CmF64ErfDd, i: USize)
-        above: Bool = y.hi.gt(B64.from_bits(CM_B64_ERFC_ACC_THRESHOLD.getitem(i)))
-        branch above
-            ? find(ex, y, i.add(1))
-            : poly(ex, y, i)
-
-    // the polynomial has degree 29 + 2i, its coefficient of largest degree is Tacc[p + 20 + i]
-    block poly(ex: (B64, B64, S64), y: CmF64ErfDd, i: USize)
-        p: USize = i.mul(30)
-        u: CmF64ErfDd = cm_b64_erf_a_mul(a: y.hi, b: y.hi)
-        ul: B64 = y.hi.mul(2.0).mul_add(a: y.lo, b: u.lo)
-        uu: CmF64ErfDd = CmF64ErfDd(hi: u.hi, lo: ul)
-        jump high(ex, y, p, uu, i.mul(2).add(27), cm_b64_erfc_tacc(base: p, k: i.add(20)), 0.0)
-
-    // degree j: (zh + zl) (uh + ul) + Tacc[p + (j-1)/2 + 6]
-    block high(ex: (B64, B64, S64), y: CmF64ErfDd, p: USize, u: CmF64ErfDd, j: USize, zh: B64,
-        zl: B64)
-        more: Bool = j.ge(13)
-        branch more
-            ? high_step(ex, y, p, u, j, zh, zl)
-            : low(ex, y, p, u, j, zh, zl)
-
-    block high_step(ex: (B64, B64, S64), y: CmF64ErfDd, p: USize, u: CmF64ErfDd, j: USize, zh: B64,
-        zl: B64)
-        m: CmF64ErfDd = cm_b64_erf_a_mul(a: zh, b: u.hi)
-        l0: B64 = zh.mul_add(a: u.lo, b: m.lo)
-        l: B64 = zl.mul_add(a: u.hi, b: l0)
-        half_j: USize = j.sub(1).div(2)
-        s: CmF64ErfDd = cm_b64_erf_two_sum(a: cm_b64_erfc_tacc(base: p, k: half_j.add(6)), b: m.hi)
-        jump high(ex, y, p, u, j.sub(2), s.hi, s.lo.add(l))
-
-    // degrees 11 down to 1 have double-double coefficients Tacc[p+j-1] + Tacc[p+j]
-    block low(ex: (B64, B64, S64), y: CmF64ErfDd, p: USize, u: CmF64ErfDd, j: USize, zh: B64,
-        zl: B64)
-        m: CmF64ErfDd = cm_b64_erf_a_mul(a: zh, b: u.hi)
-        l0: B64 = zh.mul_add(a: u.lo, b: m.lo)
-        l: B64 = zl.mul_add(a: u.hi, b: l0)
-        s: CmF64ErfDd = cm_b64_erf_two_sum(a: cm_b64_erfc_tacc(base: p, k: j.sub(1)), b: m.hi)
-        zl2: B64 = s.lo.add(l.add(cm_b64_erfc_tacc(base: p, k: j)))
-        last: Bool = j.eq(1)
-        branch last
-            ? assemble(ex, y, s.hi, zl2)
-            : low(ex, y, p, u, j.sub(2), s.hi, zl2)
-
-    // times (yh + yl) gives p(1/x) = erfc(x) exp(x^2). Normalize, times (eh + el), then 2^e
-    block assemble(ex: (B64, B64, S64), y: CmF64ErfDd, zh: B64, zl: B64)
-        eh, el, e = ex
-        q: CmF64ErfDd = cm_b64_erf_a_mul(a: zh, b: y.hi)
-        ql0: B64 = zh.mul_add(a: y.lo, b: q.lo)
-        ql: B64 = zl.mul_add(a: y.hi, b: ql0)
-        n: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: q.hi, b: ql)
-        r: CmF64ErfDd = cm_b64_erf_a_mul(a: n.hi, b: eh)
-        l0: B64 = n.hi.mul_add(a: el, b: r.lo)
-        l: B64 = n.lo.mul_add(a: eh, b: l0)
-        res: B64 = cm_b64_erfc_ldexp(x: r.hi.add(l), n: e)
-        normal: Bool = res.ge(0x1p-1022)
-        branch normal
-            ? return(res)
-            : continue
-        // a subnormal erfc(x) needs a special rounding
-        corr0: B64 = r.hi.sub(cm_b64_erfc_ldexp(x: res, n: e.neg()))
-        corr: B64 = corr0.add(l)
-        return(res.add(cm_b64_erfc_ldexp(x: corr, n: e)))
+    y: CmF64ErfDd = CmF64ErfDd(hi: yh, lo: yl)
+    while y.hi > B64.from_bits(CM_B64_ERFC_ACC_THRESHOLD.getitem(i)) with i: USize = 0
+        continue with i: i + 1
+    then
+        // the polynomial has degree 29 + 2i, its coefficient of largest degree is Tacc[p + 20 + i]
+        p: USize = i * 30
+        u2: CmF64ErfDd = cm_b64_erf_a_mul(a: y.hi, b: y.hi)
+        ul: B64 = (y.hi * 2.0).mul_add(a: y.lo, b: u2.lo)
+        // degree j: (zh + zl) (uh + ul) + Tacc[p + (j-1)/2 + 6]
+        u3: CmF64ErfDd = CmF64ErfDd(hi: u2.hi, lo: ul)
+        while j >= 13 with j: USize = i * 2 + 27, zh: B64 = cm_b64_erfc_tacc(base: p, k: i + 20), zl: B64 = 0.0
+            m: CmF64ErfDd = cm_b64_erf_a_mul(a: zh, b: u3.hi)
+            l0: B64 = zh.mul_add(a: u3.lo, b: m.lo)
+            l: B64 = zl.mul_add(a: u3.hi, b: l0)
+            half_j: USize = (j - 1) / 2
+            s: CmF64ErfDd = cm_b64_erf_two_sum(a: cm_b64_erfc_tacc(base: p, k: half_j + 6), b: m.hi)
+            continue with j: j - 2, zh: s.hi, zl: s.lo + l
+        then
+            // degrees 11 down to 1 have double-double coefficients Tacc[p+j-1] + Tacc[p+j]
+            u4: CmF64ErfDd = u3
+            while j2 != 1 with j2: USize = j, zh2: B64 = zh, zl2: B64 = zl
+                m: CmF64ErfDd = cm_b64_erf_a_mul(a: zh2, b: u4.hi)
+                l0: B64 = zh2.mul_add(a: u4.lo, b: m.lo)
+                l: B64 = zl2.mul_add(a: u4.hi, b: l0)
+                s: CmF64ErfDd = cm_b64_erf_two_sum(a: cm_b64_erfc_tacc(base: p, k: j2 - 1), b: m.hi)
+                zl22: B64 = s.lo + (l + cm_b64_erfc_tacc(base: p, k: j2))
+                continue with j2: j2 - 2, zh2: s.hi, zl2: zl22
+            then
+                // times (yh + yl) gives p(1/x) = erfc(x) exp(x^2). Normalize, times (eh + el), then 2^e
+                zh3: B64 = s.hi
+                eh, el, e = ex
+                q: CmF64ErfDd = cm_b64_erf_a_mul(a: zh3, b: y.hi)
+                ql0: B64 = zh3.mul_add(a: y.lo, b: q.lo)
+                ql: B64 = zl2.mul_add(a: y.hi, b: ql0)
+                n: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: q.hi, b: ql)
+                r: CmF64ErfDd = cm_b64_erf_a_mul(a: n.hi, b: eh)
+                l02: B64 = n.hi.mul_add(a: el, b: r.lo)
+                l2: B64 = n.lo.mul_add(a: eh, b: l02)
+                res: B64 = cm_b64_erfc_ldexp(x: r.hi + l2, n: e)
+                if res >= 2.2250738585072014e-308
+                    return res
+                // a subnormal erfc(x) needs a special rounding
+                corr0: B64 = r.hi - cm_b64_erfc_ldexp(x: res, n: -e)
+                corr: B64 = corr0 + l2
+                return res + cm_b64_erfc_ldexp(x: corr, n: e)
 
 /// exp(xh + xl) as 2^e (h + l) with about 104 bits of accuracy, for -742 <= xh + xl <= -2.92.
 /// :param xh: The high part of the argument.
@@ -666,15 +586,15 @@ routine cm_b64_erfc_asympt_accurate(x: B64) -> B64
 /// :returns: The triple (h, l, e).
 routine cm_b64_erfc_exp_accurate(xh: B64, xl: B64) -> (B64, B64, S64)
     // xh + xl ~ k log(2) + yh + yl
-    local kd: B64 = xh.mul(0x1.71547652b82fep+0).round_ties_even()
+    local kd: B64 = (xh * 1.4426950408889634).round_ties_even()
     local k: S64 = kd.to[S64]()
     // log(2) as 0x1.62e42fefa39efp-1 + 0x1.abc9e3b398p-56 + 0x1.f97b57a079a19p-103: k times the
     // middle part is exact, and yh is exact by Sterbenz
-    local yh0: B64 = kd.neg().mul_add(a: 0x1.62e42fefa39efp-1, b: xh)
-    local t: CmF64ErfDd = cm_b64_erf_two_sum(a: kd.neg().mul(0x1.abc9e3b398p-56), b: xl)
+    local yh0: B64 = (-kd).mul_add(a: 0.6931471805599453, b: xh)
+    local t: CmF64ErfDd = cm_b64_erf_two_sum(a: -kd * 2.31904681384628e-17, b: xl)
     local y: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: yh0, b: t.hi)
     local yh: B64 = y.hi
-    local yl: B64 = kd.neg().mul_add(a: 0x1.f97b57a079a19p-103, b: y.lo.add(t.lo))
+    local yl: B64 = (-kd).mul_add(a: 1.94704509238075e-31, b: y.lo + t.lo)
 
     // degrees 19 down to 16 in double (yl is negligible there)
     h18: B64 = cm_b64_erfc_e2(27).mul_add(a: yh, b: cm_b64_erfc_e2(26))
@@ -684,33 +604,38 @@ routine cm_b64_erfc_exp_accurate(xh: B64, xl: B64) -> (B64, B64, S64)
     m: CmF64ErfDd = cm_b64_erf_a_mul(a: h16, b: yh)
     tl: B64 = h16.mul_add(a: yl, b: m.lo)
     s: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: cm_b64_erfc_e2(23), b: m.hi)
-    jump middle(14, s.hi, s.lo.add(tl))
 
     // degrees 14 down to 8: (h + l) (yh + yl) + E2[i+8]
-    block middle(i: USize, h: B64, l: B64)
-        m: CmF64ErfDd = cm_b64_erf_a_mul(a: h, b: yh)
-        tl0: B64 = h.mul_add(a: yl, b: m.lo)
-        tl: B64 = l.mul_add(a: yh, b: tl0)
-        s: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: cm_b64_erfc_e2(i.add(8)), b: m.hi)
-        last: Bool = i.eq(8)
-        branch last
-            ? low(8, s.hi, s.lo.add(tl))
-            : middle(i.sub(1), s.hi, s.lo.add(tl))
-
-    // degrees 7 down to 0 have double-double coefficients E2[2i] + E2[2i+1]
-    block low(i: USize, h: B64, l: B64)
-        done: Bool = i.eq(0)
-        branch done
-            ? return((h, l, k))
-            : low_step(i.sub(1), h, l)
-
-    block low_step(i: USize, h: B64, l: B64)
-        m: CmF64ErfDd = cm_b64_erf_a_mul(a: h, b: yh)
-        tl0: B64 = h.mul_add(a: yl, b: m.lo)
-        tl: B64 = l.mul_add(a: yh, b: tl0)
-        s: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: cm_b64_erfc_e2(i.mul(2)), b: m.hi)
-        cl: B64 = cm_b64_erfc_e2(i.mul(2).add(1))
-        jump low(i, s.hi, s.lo.add(tl.add(cl)))
+    while i != 8 with i: USize = 14, h: B64 = s.hi, l: B64 = s.lo + tl
+        m2: CmF64ErfDd = cm_b64_erf_a_mul(a: h, b: yh)
+        tl0: B64 = h.mul_add(a: yl, b: m2.lo)
+        tl2: B64 = l.mul_add(a: yh, b: tl0)
+        s2: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: cm_b64_erfc_e2(i + 8), b: m2.hi)
+        continue with i: i - 1, h: s2.hi, l: s2.lo + tl2
+    then
+        // degrees 7 down to 0 have double-double coefficients E2[2i] + E2[2i+1]
+        i2: USize = 8
+        while i2 != 0 with h2: B64 = s.hi, l2: B64 = s.lo + tl
+            i3: USize = i2 - 1
+            m3: CmF64ErfDd = cm_b64_erf_a_mul(a: h2, b: yh)
+            tl02: B64 = h2.mul_add(a: yl, b: m3.lo)
+            tl3: B64 = l2.mul_add(a: yh, b: tl02)
+            s3: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: cm_b64_erfc_e2(i3 * 2), b: m3.hi)
+            cl: B64 = cm_b64_erfc_e2(i3 * 2 + 1)
+            continue with h2: s3.hi, l2: s3.lo + (tl3 + cl)
+        then
+            return (h2, l2, k)
+    i: USize = 8
+    while i != 0 with h: B64 = s.hi, l: B64 = s.lo + tl
+        i2: USize = i - 1
+        m2: CmF64ErfDd = cm_b64_erf_a_mul(a: h, b: yh)
+        tl0: B64 = h.mul_add(a: yl, b: m2.lo)
+        tl2: B64 = l.mul_add(a: yh, b: tl0)
+        s2: CmF64ErfDd = cm_b64_erf_fast_two_sum(a: cm_b64_erfc_e2(i2 * 2), b: m2.hi)
+        cl: B64 = cm_b64_erfc_e2(i2 * 2 + 1)
+        continue with h: s2.hi, l: s2.lo + (tl2 + cl)
+    then
+        return (h, l, k)
 
 // -- table access --------------------------------------------------------------
 
@@ -719,52 +644,52 @@ routine cm_b64_erfc_exp_accurate(xh: B64, xl: B64) -> (B64, B64, S64)
 /// :param k: The entry's index within the pair.
 /// :returns: The entry as a B64.
 private routine cm_b64_erfc_t1(i: USize, k: USize) -> B64
-    return(B64.from_bits(CM_B64_ERFC_T1.getitem(i.mul(2).add(k))))
+    return B64.from_bits(CM_B64_ERFC_T1.getitem(i * 2 + k))
 
 /// Entry k of pair i in CM_B64_ERFC_T2.
 /// :param i: The pair's index.
 /// :param k: The entry's index within the pair.
 /// :returns: The entry as a B64.
 private routine cm_b64_erfc_t2(i: USize, k: USize) -> B64
-    return(B64.from_bits(CM_B64_ERFC_T2.getitem(i.mul(2).add(k))))
+    return B64.from_bits(CM_B64_ERFC_T2.getitem(i * 2 + k))
 
 /// Coefficient k of the row starting at base in CM_B64_ERFC_T.
 /// :param base: The index of the row's first coefficient.
 /// :param k: The coefficient's index within the row.
 /// :returns: The coefficient.
 private routine cm_b64_erfc_t(base: USize, k: USize) -> B64
-    return(B64.from_bits(CM_B64_ERFC_T.getitem(base.add(k))))
+    return B64.from_bits(CM_B64_ERFC_T.getitem(base + k))
 
 /// Coefficient k of the row starting at base in CM_B64_ERFC_TACC.
 /// :param base: The index of the row's first coefficient.
 /// :param k: The coefficient's index within the row.
 /// :returns: The coefficient.
 private routine cm_b64_erfc_tacc(base: USize, k: USize) -> B64
-    return(B64.from_bits(CM_B64_ERFC_TACC.getitem(base.add(k))))
+    return B64.from_bits(CM_B64_ERFC_TACC.getitem(base + k))
 
 /// Entry k of CM_B64_ERFC_E2, the degree-19 polynomial approximating exp(x) near 1.
 /// :param k: The entry's index.
 /// :returns: The entry as a B64.
 private routine cm_b64_erfc_e2(k: USize) -> B64
-    return(B64.from_bits(CM_B64_ERFC_E2.getitem(k)))
+    return B64.from_bits(CM_B64_ERFC_E2.getitem(k))
 
 /// Entry k of triple i in CM_B64_ERFC_ASYMPT_EXC.
 /// :param i: The triple's index.
 /// :param k: The entry's index within the triple.
 /// :returns: The entry as a B64.
 private routine cm_b64_erfc_asympt_exc(i: USize, k: USize) -> B64
-    return(B64.from_bits(CM_B64_ERFC_ASYMPT_EXC.getitem(i.mul(3).add(k))))
+    return B64.from_bits(CM_B64_ERFC_ASYMPT_EXC.getitem(i * 3 + k))
 
 /// Entry k of triple i in CM_B64_ERFC_NEG_EXC.
 /// :param i: The triple's index.
 /// :param k: The entry's index within the triple.
 /// :returns: The entry as a B64.
 private routine cm_b64_erfc_neg_exc(i: USize, k: USize) -> B64
-    return(B64.from_bits(CM_B64_ERFC_NEG_EXC.getitem(i.mul(3).add(k))))
+    return B64.from_bits(CM_B64_ERFC_NEG_EXC.getitem(i * 3 + k))
 
 /// Entry k of triple i in CM_B64_ERFC_POS_EXC.
 /// :param i: The triple's index.
 /// :param k: The entry's index within the triple.
 /// :returns: The entry as a B64.
 private routine cm_b64_erfc_pos_exc(i: USize, k: USize) -> B64
-    return(B64.from_bits(CM_B64_ERFC_POS_EXC.getitem(i.mul(3).add(k))))
+    return B64.from_bits(CM_B64_ERFC_POS_EXC.getitem(i * 3 + k))

@@ -24,69 +24,60 @@ routine B128.exp10(me: Me) -> Me
 
     nan: Bool = me.is_nan()
     quiet: Me = b128_of(b128_quiet(me.bits()))
-    branch nan
-        ? return(quiet)
-        : continue
+    if nan
+        return quiet
     hi: U64 = cm_exp_hi(u)
-    mag_hi: U64 = hi.bitand(0x7FFFFFFFFFFFFFFF)
-    tiny: Bool = mag_hi.lt(0x3F8BBCB7B1526E50)  // 10^x rounds to 1
-    large: Bool = mag_hi.ge(0x400B34413509F79F)
-    when
-        tiny => return(CM_EXP_ONE)
-        large => edge()
-        else => integer_check(u.to_wrap[S128]())
-
-    // NaN, infinities, and the overflow and underflow thresholds
-    block edge()
-        is_nan: Bool = b128_is_nan_bits(u)
-        nonnegative: Bool = b128_is_negative_bits(u).bitnot()
-        overflow: Bool = nonnegative.bitand(u.ge(CM_EXP10_OVERFLOW))
-        underflow: Bool = u.ge(CM_EXP10_UNDERFLOW)
-        quiet: Me = b128_of(u.bitor(B128_QUIET_BIT))
-        when
-            is_nan => return(quiet)
-            overflow => return(Me.INFINITY)
-            underflow => return(CM_EXP_ZERO)
-            else => integer_check(u.to_wrap[S128]())
+    mag_hi: U64 = hi & 0x7FFFFFFFFFFFFFFF
+    tiny: Bool = mag_hi < 0x3F8BBCB7B1526E50
+    // 10^x rounds to 1
+    large: Bool = mag_hi >= 0x400B34413509F79F
+    su: S128 = when
+        tiny => return CM_EXP_ONE
+        large =>
+            // NaN, infinities, and the overflow and underflow thresholds
+            is_nan: Bool = b128_is_nan_bits(u)
+            nonnegative: Bool = ~b128_is_negative_bits(u)
+            overflow: Bool = nonnegative and u >= CM_EXP10_OVERFLOW
+            underflow: Bool = u >= CM_EXP10_UNDERFLOW
+            quiet2: Me = b128_of(u | B128_QUIET_BIT)
+            when
+                is_nan => return quiet2
+                overflow => return Me.INFINITY
+                underflow => return CM_EXP_ZERO
+                else =>
+                    becomes u.to_wrap[S128]()
+        else => u.to_wrap[S128]()
 
     // positive x >= 1 with no fraction bits in the low word
-    block integer_check(su: S128)
-        e: S64 = b128_exponent(su.to_wrap[U128]())
-        positive: Bool = su.ge(0)
-        candidate: Bool = positive.bitand(e.ge(16383)).bitand(su.to_wrap[S64]().eq(0))
-        branch candidate
-            ? integer_test(su, e)
-            : reduce(su.to_wrap[U128]())
-
-    // the high word has 16 sign and exponent bits, then e - 16383 integer bits
-    block integer_test(su: S128, e: S64)
-        hi: U64 = cm_exp_hi(su.to_wrap[U128]())
-        fraction: U64 = hi.shl(e.sub(16367).to[U64]())
-        sig_hi: U64 = hi.bitand(0xFFFFFFFFFFFF).bitor(0x1000000000000)
-        n: U64 = sig_hi.shr(16431.sub(e).to[U64]())
-        exact: Bool = fraction.eq(0).bitand(n.le(48))
-        branch exact
-            ? power(n)
-            : reduce(su.to_wrap[U128]())
-
-    block power(n: U64)
-        r: Me = cm_exp10_exact(n)
-        return(r)
+    e: S64 = b128_exponent(su.to_wrap[U128]())
+    positive: Bool = su >= 0
+    candidate: Bool = positive and e >= 16383 and su.to_wrap[S64]() == 0
+    x_bits: U128 = when
+        candidate =>
+            // the high word has 16 sign and exponent bits, then e - 16383 integer bits
+            hi2: U64 = cm_exp_hi(su.to_wrap[U128]())
+            fraction: U64 = hi2 << (e - 16367).to[U64]()
+            sig_hi: U64 = (hi2 & 0xFFFFFFFFFFFF) | 0x1000000000000
+            n: U64 = sig_hi >> (16431 - e).to[U64]()
+            if fraction == 0 and n <= 48
+                r: Me = cm_exp10_exact(n)
+                return r
+            else
+                becomes su.to_wrap[U128]()
+        else => su.to_wrap[U128]()
 
     // x × log2(10): the significand times log2(10), one's-complemented for negative x
-    block reduce(x_bits: U128)
-        hi: S64 = cm_exp_hi(x_bits).to_wrap[S64]()
-        sign_mask: S64 = hi.shr(63)
-        sig: U128 = x_bits.bitand(B128_FRAC_MASK).bitor(B128_IMPLICIT)
-        k4: U64 = CM_EXP_ILN102.getitem(4)
-        k5: U64 = CM_EXP_ILN102.getitem(5)
-        k6: U64 = CM_EXP_ILN102.getitem(6)
-        scaled: CmExpWords3 = cm_exp_mul3x2_high(a0: k4, a1: k5, a2: k6, b: sig)
-        shift: S64 = 0x4019.sub(b128_exponent(x_bits))
-        reduced: CmExpWords3 = cm_exp_ashr3(
-            w: cm_exp_flip3(w: scaled, mask: sign_mask.to_wrap[U64]()), n: shift.to[U64]())
-        r: Me = cm_exp_finish(fs: reduced, x: x_bits, kind: CM_EXP_KIND_TEN)
-        return(r)
+    hi2: S64 = cm_exp_hi(x_bits).to_wrap[S64]()
+    sign_mask: S64 = hi2 >> 63
+    sig: U128 = (x_bits & B128_FRAC_MASK) | B128_IMPLICIT
+    k4: U64 = CM_EXP_ILN102.getitem(4)
+    k5: U64 = CM_EXP_ILN102.getitem(5)
+    k6: U64 = CM_EXP_ILN102.getitem(6)
+    scaled: CmExpWords3 = cm_exp_mul3x2_high(a0: k4, a1: k5, a2: k6, b: sig)
+    shift: S64 = 0x4019 - b128_exponent(x_bits)
+    reduced: CmExpWords3 = cm_exp_ashr3(w: cm_exp_flip3(w: scaled, mask: sign_mask.to_wrap[U64]()), n: shift.to[U64]())
+    r: Me = cm_exp_finish(fs: reduced, x: x_bits, kind: CM_EXP_KIND_TEN)
+    return r
 
 /// 10^n for an integer n in 1..48, exact: 5^n fits 112 bits, so it is normalized to
 /// the significand and scaled by 2^n.
@@ -95,20 +86,13 @@ routine B128.exp10(me: Me) -> Me
 routine cm_exp10_exact(n: U64) -> B128
     local p: @U128 <- 1
 
-    jump power(0)
-
-    block power(i: U64)
-        done: Bool = i.ge(n)
-        branch done
-            ? pack(n.to[S64]())
-            : continue
-        p.peek().mul_wrap(5).poke_into(p)
-        jump power(i.add(1))
-
-    block pack(ten_exponent: S64)
+    each i in 0 til n
+        (p.peek() *% 5).poke_into(p)
+    then
+        ten_exponent: S64 = n.to[S64]()
         lz: S64 = p.peek().leading_zeros().to[S64]()
-        sig: U128 = p.peek().shl(lz.sub(15).to[U128]())
-        exponent: S64 = 16509.sub(lz).add(ten_exponent)
-        bits: U128 = sig.add_wrap(exponent.to[U128]().shl(112))
+        sig: U128 = p.peek() << (lz - 15).to[U128]()
+        exponent: S64 = 16509 - lz + ten_exponent
+        bits: U128 = sig +% (exponent.to[U128]() << 112)
         r: B128 = b128_of(bits)
-        return(r)
+        return r

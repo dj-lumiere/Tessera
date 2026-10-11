@@ -11,94 +11,73 @@ record Counts
 
 routine counting_alloc(state: Addr, size: USize, align: USize) -> Addr
     counts: @Counts = state.to[@Counts]()
-    next_live: S64 = counts.live.peek().add(1)
+    next_live: S64 = counts.live.peek() + 1
     next_live.poke_into(counts.live)
     heap: MemoryManager = make_heap_memory()
     r: Addr = heap.alloc_fn.call(null, size, align)
-    return(r)
+    return r
 
 routine counting_realloc(state: Addr, old: Addr, size: USize, align: USize) -> Addr
-    was_null: Bool = old.is_null()
-    branch was_null
-        ? fresh()
-        : resize()
-
-    block fresh()
+    if old.is_null()
         counts: @Counts = state.to[@Counts]()
-        next_live: S64 = counts.live.peek().add(1)
+        next_live: S64 = counts.live.peek() + 1
         next_live.poke_into(counts.live)
-        jump resize()
-
-    block resize()
-        heap: MemoryManager = make_heap_memory()
-        r: Addr = heap.realloc_fn.call(null, old, size, align)
-        return(r)
+    heap: MemoryManager = make_heap_memory()
+    r: Addr = heap.realloc_fn.call(null, old, size, align)
+    return r
 
 routine counting_free(state: Addr, memory: Addr) -> Void
-    was_null: Bool = memory.is_null()
-    branch was_null
-        ? return()
-        : release()
-
-    block release()
+    if memory.is_null()
+        return
+    else
         counts: @Counts = state.to[@Counts]()
-        remaining_live: S64 = counts.live.peek().sub(1)
+        remaining_live: S64 = counts.live.peek() - 1
         remaining_live.poke_into(counts.live)
         heap: MemoryManager = make_heap_memory()
         heap.free_fn.call(null, memory)
-        return()
+        return
 
 routine show(label: Span[Byte], counts: @Counts) -> Void
     Out.write("{label}")
     live: S64 = counts.live.peek()
     Out.write("{live}\n")
-    return()
+    return
 
 // A list of three inner lists, each with a few elements.
-#reshaping(outer)
+@reshaping(outer)
 routine fill(outer: @List[List[S64]], alloc: @MemoryManager) -> Void
-    jump loop(0)
-
-    block loop(i: USize)
-        done: Bool = i.eq(3)
-        branch done
-            ? return()
-            : add(i)
-
-    block add(i: USize)
-        claim inner: @List[S64] <- .construct(alloc)
+    each i in 0 til 3
+        local inner: @List[S64] <- .construct(alloc)
         inner.add_last(i.to[S64]())
         inner.add_last(7)
         filled: List[S64] = inner.peek()
         outer.add_last(filled)
-        jump loop(i.add(1))
+    then
+        return
 
 routine start() -> Void
-    claim counts: @Counts <- (live: 0)
-    counting: MemoryManager = MemoryManager(alloc_fn:   counting_alloc.to[Callable](),
-        realloc_fn: counting_realloc.to[Callable](), free_fn:    counting_free.to[Callable](),
-        reserve_fn: null, commit_fn: null, release_fn: null, protect_fn: null,
-        state:      counts.to[@Byte]())
-    claim alloc: @MemoryManager <- counting
+    local counts: @Counts <- (live: 0)
+    counting: MemoryManager = MemoryManager(alloc_fn: counting_alloc.to[Callable](), realloc_fn: counting_realloc.to[Callable](), free_fn: counting_free.to[Callable](), reserve_fn: null, commit_fn: null, release_fn: null, protect_fn: null, state: counts.to[@Byte]())
+    local alloc: @MemoryManager <- counting
 
-    claim a: @List[List[S64]] <- .construct(alloc)
+    local a: @List[List[S64]] <- .construct(alloc)
     fill(outer: a, alloc)
     show(label: "filled: ", counts)
     a.destruct()
     show(label: "after destruct (inner lists leak): ", counts)
 
     counts.live.poke(0)
-    claim b: @List[List[S64]] <- .construct(alloc)
+    local b: @List[List[S64]] <- .construct(alloc)
     fill(outer: b, alloc)
     b.destruct_all()
     show(label: "after destruct_all: ", counts)
 
     counts.live.poke(0)
-    claim d: @Dict[S64, List[S64]] <- .construct(alloc)
-    claim v: @List[S64] <- .construct(alloc)
+    local d: @Dict[S64, List[S64]] <- .construct(alloc)
+    local v: @List[S64] <- .construct(alloc)
     v.add_last(1)
     v_loaded: List[S64] = v.peek()
-    d.setitem(key: 5, value: v_loaded)
+    d[5] = v_loaded
     d.destruct_all_values()
     show(label: "dict after destruct_all_values: ", counts)
-    return()
+    return

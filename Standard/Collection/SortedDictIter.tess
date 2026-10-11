@@ -17,111 +17,86 @@ private preset ITER_DEPTH: USize = 64
 /// `nodes[d]` and `indices[d]` for each level `d < depth`: the node, and in it the next key to yield. Every child
 /// left of that key has been walked already.
 record SortedDictIter[TKey, TValue]
-conform Iterator[KVPair[TKey, TValue], SortedDictIter[TKey, TValue]]
-require TKey: typename, TValue: typename, Comparable[TKey]
+obeys Iterator[KVPair[TKey, TValue], SortedDictIter[TKey, TValue]]
+needs TKey: typename, TValue: typename, Comparable[TKey]
     nodes: Array[@SortedDictNode[TKey, TValue], ITER_DEPTH]
     indices: Array[USize, ITER_DEPTH]
     depth: USize
 
 /// Releases nothing: a `SortedDictIter` holds no memory of its own.
 routine SortedDictIter[TKey, TValue].destruct(me: @Me) -> Void
-require TKey: typename, TValue: typename
-    return()
+needs TKey: typename, TValue: typename
+    return
 
 /// Creates an iterator positioned before the smallest key, descending to the leftmost leaf.
 /// :param map: The sorted dict to walk.
 /// :returns: A new iterator, already positioned when the map is not empty.
 routine SortedDictIter[TKey, TValue].construct(map: @SortedDict[TKey, TValue]) -> Me
-require TKey: typename, TValue: typename
+needs TKey: typename, TValue: typename
     local iter: @Me <- .hollow()
 
     root: @SortedDictNode[TKey, TValue] = map.root.peek()
     empty: Bool = root.is_null()
     iter.depth.poke(0)
-    branch empty
-        ? finish()
-        : continue
-    iter.push_leftmost(root)
-    jump finish()
-
-    block finish()
+    if empty
         iter_val: Me = iter.peek()
-        return(iter_val)
+        return iter_val
+    iter.push_leftmost(root)
+    iter_val: Me = iter.peek()
+    return iter_val
 
 /// Pushes node and the first child of each level below it, down to a leaf.
 /// :param node: The node to start from.
 private routine SortedDictIter[TKey, TValue].push_leftmost(me: @Me,
     node: @SortedDictNode[TKey, TValue]) -> Void
-require TKey: typename, TValue: typename
-    jump push(node)
-
-    block push(current: @SortedDictNode[TKey, TValue])
-        depth: USize = me.depth.peek()
-        leaf: Bool = current.leaf.peek()
-        me.nodes.setitem(index: depth, value: current)
-        me.indices.setitem(index: depth, value: 0)
-        me.depth.poke(depth.add(1))
-        branch leaf
-            ? return()
-            : first_child(current)
-
-    block first_child(current: @SortedDictNode[TKey, TValue])
-        jump push(current.children.getitem(0))
+needs TKey: typename, TValue: typename
+    while true with current: @SortedDictNode[TKey, TValue] = node
+        depth2: USize = me.depth.peek()
+        leaf2: Bool = current.leaf.peek()
+        me.nodes[depth2] = current
+        me.indices[depth2] = 0
+        me.depth.poke(depth2 + 1)
+        if leaf2
+            return
+        else
+            continue with current: current.children[0]
 
 /// Yields the next entry in ascending key order, climbing to a parent or descending to the next leaf as needed.
 /// :returns: The next key and value pair, smallest key first.
 /// :absent: After the entry with the largest key has been yielded.
 routine SortedDictIter[TKey, TValue].emit_checked(me: @Me) -> Maybe[KVPair[TKey, TValue]]
-require TKey: typename, TValue: typename
-    jump top()
-
-    block top()
-        depth: USize = me.depth.peek()
-        empty: Bool = depth.eq(0)
-        branch empty
-            ? done()
-            : continue
-        level: USize = depth.sub(1)
-        node: @SortedDictNode[TKey, TValue] = me.nodes.getitem(level)
-        index: USize = me.indices.getitem(level)
+needs TKey: typename, TValue: typename
+    while me.depth.peek() != 0
+        level: USize = depth - 1
+        node: @SortedDictNode[TKey, TValue] = me.nodes[level]
+        index: USize = me.indices[level]
         count: USize = node.count.peek()
-        has_key: Bool = index.lt(count)
-        branch has_key
-            ? take(node, level, index)
-            : pop(level)
-
-    block pop(level: USize)
-        me.depth.poke(level)
-        jump top()
-
-    block take(node: @SortedDictNode[TKey, TValue], level: USize, index: USize)
-        key: TKey = node.keys.getitem(index)
-        value: TValue = node.values.getitem(index)
-        pair: KVPair[TKey, TValue] = KVPair[TKey, TValue](key: key, value: value)
-        leaf: Bool = node.leaf.peek()
-        me.indices.setitem(index: level, value: index.add(1))
-        branch leaf
-            ? yield(pair)
-            : continue
-        right: @SortedDictNode[TKey, TValue] = node.children.getitem(index.add(1))
-        me.push_leftmost(right)
-        jump yield(pair)
-
-    block yield(pair: KVPair[TKey, TValue])
-        some: Maybe[KVPair[TKey, TValue]] = pair
-        return(some)
-
-    block done()
-        none: Maybe[KVPair[TKey, TValue]] = Unit()
-        return(none)
+        if index < count
+            key: TKey = node.keys[index]
+            value: TValue = node.values[index]
+            pair: KVPair[TKey, TValue] = KVPair[TKey, TValue](key: key, value: value)
+            leaf: Bool = node.leaf.peek()
+            me.indices[level] = index + 1
+            if leaf
+                some: Maybe[KVPair[TKey, TValue]] = pair
+                return some
+            right: @SortedDictNode[TKey, TValue] = node.children[index + 1]
+            me.push_leftmost(right)
+            some: Maybe[KVPair[TKey, TValue]] = pair
+            return some
+        else
+            me.depth.poke(level)
+            continue
+    none: Maybe[KVPair[TKey, TValue]] = Unit()
+    return none
 
 /// Yields the next element and advances the iterator, crashing when there is none.
 /// :returns: The next element, smallest key first.
 /// :throws: Crashes with `AbsentValueError` after the last element has been yielded.
-#track_caller
+@track_caller
 routine SortedDictIter[TKey, TValue].emit(me: @Me) -> KVPair[TKey, TValue]
-require TKey: typename, TValue: typename
+needs TKey: typename, TValue: typename
     item: Maybe[KVPair[TKey, TValue]] = me.emit_checked()
     when item
-        is KVPair[TKey, TValue] as value => return(value)
+        is KVPair[TKey, TValue] as value => return value
         is Unit => crash_absent_value()

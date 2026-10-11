@@ -79,130 +79,128 @@ preset CM_B64_TAN_PI_DB: @Array[U64, 147] <- [0x3C8B44453E2404E7, 0x3CA56A4AA740
 /// :returns: tan(pi `me`), correctly rounded.
 routine B64.tan_pi(me: Me) -> Me
     local ixu: U64 = me.bits()
-    local ax: U64 = ixu.bitand(0x7FFFFFFFFFFFFFFF)
-    local neg: U64 = ixu.shr(63)
+    local ax: U64 = ixu & 0x7FFFFFFFFFFFFFFF
+    local neg: U64 = ixu >> 63
     local zero: Me = Me.copysign(0.0, me)
     local one: Me = Me.copysign(1.0, me)
 
-    moderate: Bool = ax.ge(0x3F30000000000000)  // |x| >= 2^-12
-    huge: Bool = ax.ge(0x42D0000000000000)  // |x| >= 2^46
+    moderate: Bool = ax >= 0x3F30000000000000
+
+    // |x| >= 2^-12
+    // |x| >= 2^46
     when
-        huge => huge()
-        moderate => moderate()
-        else => small()
+        ax >= 0x42D0000000000000 => jump huge()
+        moderate => jump moderate()
+        else => jump small()
 
     // |x| >= 2^46: x is a multiple of 1/64, so tan(pi x) is a table entry
     block huge()
-        special: Bool = ax.ge(0x7FF0000000000000)
-        branch special
-            ? special()
-            : continue
-        sb: U64 = ax.shr(52).sub(1069)  // 2^(46 + sb) <= |x| < 2^(47 + sb)
-        even: Bool = sb.gt(6)  // |x| >= 2^53: an even integer
-        branch even
-            ? return(zero)
-            : continue
+        if ax >= 0x7FF0000000000000
+            jump special()
+        sb: U64 = (ax >> 52) - 1069
+        // 2^(46 + sb) <= |x| < 2^(47 + sb)
+        // |x| >= 2^53: an even integer
+        if sb > 6
+            return zero
         sm: U64 = cm_b64_tan_pi_signed(x: ax, neg)
-        iq: U64 = sm.shl(sb).bitand(127)  // 64 x mod 128
-        quarter: Bool = iq.bitand(31).eq(0)
-        branch quarter
-            ? return(cm_b64_tan_pi_exact(jq: iq.shr(5), neg))
-            : continue
-        j: U64 = iq.bitand(31)
-        mirror: Bool = iq.bitand(32).ne(0)  // tan(pi (32 + j)/64) = -tan(pi (32 - j)/64)
-        branch mirror
-            ? return(cm_b64_tan_pi_entry(U64.sub(32, j)).neg())
-            : return(cm_b64_tan_pi_entry(j))
+        iq: U64 = (sm << sb) & 127
+        // 64 x mod 128
+        if iq & 31 == 0
+            return cm_b64_tan_pi_exact(jq: iq >> 5, neg)
+        j: U64 = iq & 31
+        // tan(pi (32 + j)/64) = -tan(pi (32 - j)/64)
+        if iq & 32 != 0
+            return -cm_b64_tan_pi_entry(U64.sub(32, j))
+        else
+            return cm_b64_tan_pi_entry(j)
 
     // NaN comes back quiet with its sign and payload, an infinity gives the NaN 0.0 / 0.0 gives on x86-64
     block special()
-        nan: Bool = ax.gt(0x7FF0000000000000)
-        branch nan
-            ? return(me.add(me))
-            : return(Me.from_bits(0xFFF8000000000000))
+        if ax > 0x7FF0000000000000
+            return me + me
+        else
+            return Me.from_bits(0xFFF8000000000000)
 
     // 2^-12 <= |x| < 2^46, so 1011 <= e <= 1068
     block moderate()
-        e: U64 = ax.shr(52)
+        e: U64 = ax >> 52
         s: U64 = U64.sub(1068, e)
-        s1: U64 = e.sub(1011)
-        m: U64 = ax.bitand(0x000FFFFFFFFFFFFF).bitor(0x0010000000000000)  // 2^52 <= m < 2^53
+        s1: U64 = e - 1011
+        m: U64 = (ax & 0x000FFFFFFFFFFFFF) | 0x0010000000000000
+        // 2^52 <= m < 2^53
         // msb is the bit of weight 1/2 in |x|: past it, tan(pi |x|) is read from the next table entry backward
-        msb: U64 = m.shl(s1).shr(63)
-        past: Bool = msb.eq(1)
-        mm: U64 = past
-            ? m.bitnot()
-            : m
-        iq2: U64 = mm.shr(s).bitand(63)
-        iq: U64 = iq2.add(1).shr(1)
-        flip: U64 = msb.bitxor(neg)  // the table entry is negated
+        msb: U64 = (m << s1) >> 63
+        past: Bool = msb == 1
+        mm: U64 = when
+            past => ~m
+            else => m
+        iq2: U64 = (mm >> s) & 63
+        iq: U64 = iq2 + 1 >> 1
+        flip: U64 = msb ^ neg
+        // the table entry is negated
         sm: U64 = cm_b64_tan_pi_signed(x: m, neg)
-        k: U64 = sm.shl(e.sub(1005))  // the bits of 64 x below 1/2 (signed), scaled by 2^63
+        k: U64 = sm << e - 1005
+        // the bits of 64 x below 1/2 (signed), scaled by 2^63
         z: Me = k.to_wrap[S64]().to[Me]()
-        mod256: Bool = k.shl(1).eq(0)  // x mod 2^-8 = 0
-        branch mod256
-            ? aligned(e, s, s1, m, iq, flip, sm, k, z)
-            : fast(iq, flip, z)
+        // x mod 2^-8 = 0
+        if k << 1 == 0
+            jump aligned(e, s, s1, m, iq, flip, sm, k, z)
+        else
+            jump fast(iq, flip, z)
 
     block aligned(e: U64, s: U64, s1: U64, m: U64, iq: U64, flip: U64, sm: U64, k: U64, z: Me)
-        mod128: Bool = k.eq(0)  // x mod 2^-7 = 0
-        branch mod128
-            ? continue
-            : fast(iq, flip, one.mul(z))
-        quarter: Bool = iq.bitand(31).eq(0)
-        branch quarter
-            ? quarters(sm, s)
-            : continue
-        kq: U64 = m.shl(s1).shr(58)
+        // x mod 2^-7 = 0
+        if not (k == 0)
+            jump fast(iq, flip, one * z)
+        if iq & 31 == 0
+            jump quarters(sm, s)
+        kq: U64 = (m << s1) >> 58
         when kq
-            0x10 => return(one)  // |x| = 1/4 mod 1
-            0x30 => return(one.neg())  // |x| = 3/4 mod 1
-            else => fast(iq, flip, one.mul(z))
+            0x10 => return one
+            0x30 => return -one
+            else => jump fast(iq, flip, one * z)
+
+    // |x| = 1/4 mod 1
+    // |x| = 3/4 mod 1
 
     // x = jq/2: jq counts the quarter turns of the angle pi x
     block quarters(sm: U64, s: U64)
-        jq: S64 = sm.to_wrap[S64]().shr(s.add(6).to_wrap[S64]())
-        return(cm_b64_tan_pi_exact(jq: jq.to_wrap[U64](), neg))
+        jq: S64 = sm.to_wrap[S64]() >> (s + 6).to_wrap[S64]()
+        return cm_b64_tan_pi_exact(jq: jq.to_wrap[U64](), neg)
 
     block fast(iq: U64, flip: U64, z: Me)
-        z2: Me = z.mul(z)
-        z4: Me = z2.mul(z2)
-        z3: Me = z.mul(z2)
-        c01: Me = Me.add(0x1.4abbce625be51p-207, z2.mul(0x1.466bc6776a9b1p-345))
-        c23: Me = Me.add(0x1.45fff6eb26045p-483, z2.mul(0x1.4627663861052p-621))
-        f: Me = z3.mul(c01.add(z4.mul(c23)))
-        eps0: Me = z3.mul(0x1p-256).add(Me.copysign(0x1p-104, z))
-        p0: CmF64TrigDD = cm_b64_trig_pi_mulddd(xh: 0x1.921fb54442d18p-69,
-            xl: 0x1.1a62633145c07p-123, c: z)
+        z2: Me = z * z
+        z4: Me = z2 * z2
+        z3: Me = z * z2
+        c01: Me = Me.add(6.281006949579927e-63, z2 * 1.779055995675284e-104)
+        c23: Me = Me.add(5.099053215602634e-146, z2 * 1.4640479742404237e-187)
+        f: Me = z3 * (c01 + z4 * c23)
+        eps0: Me = z3 * 8.636168555094445e-78 + Me.copysign(4.930380657631324e-32, z)
+        p0: CmF64TrigDD = cm_b64_trig_pi_mulddd(xh: 2.6610324844426207e-21, xl: 1.0373161876273278e-37, c: z)
         p1: CmF64TrigDD = cm_b64_tan_pi_fastsumddd(xh: p0.hi, xl: p0.lo, c: f)
         p: CmF64TrigDD = cm_b64_tan_pi_combine(th: p1.hi, tl: p1.lo, iq, flip)
-        eps: Me = eps0.add(eps0.mul(p.hi.mul(p.hi)))
-        lb: Me = p.hi.add(p.lo.sub(eps))
-        ub: Me = p.hi.add(p.lo.add(eps))
-        sure: Bool = lb.eq(ub)
-        branch sure
-            ? return(lb)
-            : accurate(iq, flip, z)
+        eps: Me = eps0 + eps0 * (p.hi * p.hi)
+        lb: Me = p.hi + (p.lo - eps)
+        ub: Me = p.hi + (p.lo + eps)
+        if lb == ub
+            return lb
+        else
+            jump accurate(iq, flip, z)
 
     // the fast path can't decide the rounding: a longer double-double polynomial of tan(pi z 2^-69)
     block accurate(iq: U64, flip: U64, zs: Me)
-        z: Me = zs.mul(0x1p-63)
-        z2: Me = z.mul(z)
+        z: Me = zs * 1.0842021724855044e-19
+        z2: Me = z * z
         dz2: Me = b64_mul_error(x: z, y: z, p: z2)
         z2dd: CmF64TrigDD = (hi: z2, lo: dz2)
-        cl2: Me = Me.add(0x1.45f3030c82af4p-78, z2.mul(0x1.464490600a978p-90))
-        cl1: Me = Me.add(0x1.45f32f25dab7fp-66, z2.mul(cl2))
-        cl: Me = z2.mul(cl1)
-        q0: CmF64TrigDD = cm_b64_trig_pi_poly_start(c0: 0x1.45f472e3af011p-54,
-            c1: 0x1.90612a0755449p-110, l: cl)
-        q1: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: z2dd, p: q0,
-            c: CmF64TrigDD(hi: 0x1.45fff9b48e95ep-42, lo: 0x1.b226b250d2cc3p-98))
-        q2: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: z2dd, p: q1,
-            c: CmF64TrigDD(hi: 0x1.466bc6775aae2p-30, lo: -0x1.6dc0d93fb2ecep-85))
-        q3: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: z2dd, p: q2,
-            c: CmF64TrigDD(hi: 0x1.4abbce625be53p-18, lo: -0x1.05511c6842515p-72))
-        q4: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: z2dd, p: q3,
-            c: CmF64TrigDD(hi: 0x1.921fb54442d18p-6, lo: 0x1.1a62633145c07p-60))
+        cl2: Me = Me.add(4.212795514202248e-24, z2 * 1.0295197365311714e-27)
+        cl1: Me = Me.add(1.7255646049060546e-20, z2 * cl2)
+        cl: Me = z2 * cl1
+        q0: CmF64TrigDD = cm_b64_trig_pi_poly_start(c0: 7.068019738778885e-17, c1: 1.2048483746230456e-33, l: cl)
+        q1: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: z2dd, p: q0, c: CmF64TrigDD(hi: 2.8954607951315737e-13, lo: 5.3513261844359426e-30))
+        q2: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: z2dd, p: q1, c: CmF64TrigDD(hi: 1.1875126696551896e-09, lo: -3.6931646863639206e-26))
+        q3: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: z2dd, p: q2, c: CmF64TrigDD(hi: 4.928314952897997e-06, lo: -2.1615622354208456e-22))
+        q4: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: z2dd, p: q3, c: CmF64TrigDD(hi: 0.02454369260617026, lo: 9.567553118338697e-19))
         q5: CmF64TrigDD = cm_b64_trig_pi_mulddd(xh: q4.hi, xl: q4.lo, c: z)
         q6: CmF64TrigDD = cm_b64_tan_pi_combine(th: q5.hi, tl: q5.lo, iq, flip)
         q: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: q6.hi, b: q6.lo)
@@ -210,109 +208,102 @@ routine B64.tan_pi(me: Me) -> Me
 
     // |x| < 2^-12
     block small()
-        is_zero: Bool = ax.eq(0)
-        tiny: Bool = ax.lt(0x3CA0000000000000)  // |x| < 2^-53
+        is_zero: Bool = ax == 0
+        // |x| < 2^-53
         when
-            is_zero => return(me)
-            tiny => tiny()
-            else => polynomial()
+            is_zero => return me
+            ax < 0x3CA0000000000000 => jump tiny()
+            else => jump polynomial()
 
     block tiny()
-        subnormal: Bool = ax.lt(0x06B0000000000000)  // |x| < 2^-916
-        branch subnormal
-            ? scaled()
-            : continue
-        r: CmF64TrigDD = cm_b64_trig_pi_mulddd(xh: 0x1.921fb54442d18p+1, xl: 0x1.1a62633145c07p-53,
-            c: me)
+        // |x| < 2^-916
+        if ax < 0x06B0000000000000
+            jump scaled()
+        r: CmF64TrigDD = cm_b64_trig_pi_mulddd(xh: 3.141592653589793, xl: 1.2246467991473532e-16, c: me)
         jump check(r.hi, r.lo, r.hi)
 
     // scaled up so that the double-double product stays exact
     block scaled()
-        e: U64 = ax.shr(52)
-        sc: Me = Me.from_bits(U64.sub(2045, e).shl(52))
-        isc: Me = Me.from_bits(e.add(1).shl(52))
-        r: CmF64TrigDD = cm_b64_trig_pi_mulddd(xh: 0x1.921fb54442d18p+1, xl: 0x1.1a62633145c07p-53,
-            c: me.mul(sc))
-        res: Me = r.hi.mul(isc)
-        sub: Bool = res.abs().lt(0x1p-1022)
-        branch sub
-            ? subnormal(r, sc, isc, res)
-            : check(r.hi, r.lo, res)
+        e: U64 = ax >> 52
+        sc: Me = Me.from_bits(U64.sub(2045, e) << 52)
+        isc: Me = Me.from_bits(e + 1 << 52)
+        r: CmF64TrigDD = cm_b64_trig_pi_mulddd(xh: 3.141592653589793, xl: 1.2246467991473532e-16, c: me * sc)
+        res: Me = r.hi * isc
+        if res.abs() < 2.2250738585072014e-308
+            jump subnormal(r, sc, isc, res)
+        else
+            jump check(r.hi, r.lo, res)
 
     // a subnormal result: round at the subnormal's precision by adding and removing 2^-1022 at the scaled size
     block subnormal(r: CmF64TrigDD, sc: Me, isc: Me, res: Me)
-        o: Me = Me.copysign(0x1p-1022, me)
-        v0b: Me = o.add(res).mul(sc)
-        v0h: Me = res.mul(sc)
-        tl: Me = r.lo.add(r.hi.sub(v0h))
-        v0: Me = v0b.add(tl)
-        return(v0.mul(isc).sub(o))
+        o: Me = Me.copysign(2.2250738585072014e-308, me)
+        v0b: Me = (o + res) * sc
+        v0h: Me = res * sc
+        tl: Me = r.lo + (r.hi - v0h)
+        v0: Me = v0b + tl
+        return v0 * isc - o
 
     // 2^-53 <= |x| < 2^-12: pi x + (pi^3/3) x^3 + ...
     block polynomial()
-        x2: Me = me.mul(me)
-        x3: Me = me.mul(x2)
-        f2: Me = Me.add(0x1.466bc6775aa2ap+5, x2.mul(0x1.46000158496c2p+7))
-        f1: Me = Me.add(0x1.4abbce625be53p+3, x2.mul(f2))
-        f: Me = x3.mul(f1)
-        px: CmF64TrigDD = cm_b64_trig_pi_mulddd(xh: 0x1.921fb54442d18p+1, xl: 0x1.1a62633145c07p-53,
-            c: me)
+        x2: Me = me * me
+        x3: Me = me * x2
+        f2: Me = Me.add(40.80262463803622, x2 * 163.0000102605464)
+        f1: Me = Me.add(10.33542556009994, x2 * f2)
+        f: Me = x3 * f1
+        px: CmF64TrigDD = cm_b64_trig_pi_mulddd(xh: 3.141592653589793, xl: 1.2246467991473532e-16, c: me)
         t: CmF64TrigDD = cm_b64_tan_pi_fastsumddd(xh: px.hi, xl: px.lo, c: f)
-        eps: Me = me.mul(x2.mul(0x1.1p-47).add(0x1p-101))
-        lb: Me = t.hi.add(t.lo.sub(eps))
-        ub: Me = t.hi.add(t.lo.add(eps))
-        sure: Bool = lb.eq(ub)
-        branch sure
-            ? return(lb)
-            : polynomial_accurate(x2, x3, px)
+        eps: Me = me * (x2 * 7.549516567451064e-15 + 3.944304526105059e-31)
+        lb: Me = t.hi + (t.lo - eps)
+        ub: Me = t.hi + (t.lo + eps)
+        if lb == ub
+            return lb
+        else
+            jump polynomial_accurate(x2, x3, px)
 
     block polynomial_accurate(x2: Me, x3: Me, px: CmF64TrigDD)
         dx2: Me = b64_mul_error(x: me, y: me, p: x2)
         x2dd: CmF64TrigDD = (hi: x2, lo: dx2)
-        dx3: Me = b64_mul_error(x: x2, y: me, p: x3).add(dx2.mul(me))
-        cl1: Me = Me.add(0x1.45f472e3aed7dp+9, x2.mul(0x1.45f33be0e9598p+11))
-        cl: Me = x2.mul(cl1)
-        q0: CmF64TrigDD = cm_b64_trig_pi_poly_start(c0: 0x1.45fff9b48e95ep+7,
-            c1: 0x1.a5047910ae0efp-49, l: cl)
-        q1: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: x2dd, p: q0,
-            c: CmF64TrigDD(hi: 0x1.466bc6775aae2p+5, lo: -0x1.6dc0cbddc0e69p-50))
-        q2: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: x2dd, p: q1,
-            c: CmF64TrigDD(hi: 0x1.4abbce625be53p+3, lo: -0x1.05511c68476a8p-51))
+        dx3: Me = b64_mul_error(x: x2, y: me, p: x3) + dx2 * me
+        cl1: Me = Me.add(651.9097561458326, x2 * 2607.6010593946085)
+        cl: Me = x2 * cl1
+        q0: CmF64TrigDD = cm_b64_trig_pi_poly_start(c0: 162.99995197525544, c1: 2.9213955720341702e-15, l: cl)
+        q1: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: x2dd, p: q0, c: CmF64TrigDD(hi: 40.80262463803753, lo: -1.2689610152651054e-15))
+        q2: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: x2dd, p: q1, c: CmF64TrigDD(hi: 10.33542556009994, lo: -4.533124565157889e-16))
         q3: CmF64TrigDD = cm_b64_trig_pi_muldd(xh: x3, xl: dx3, ch: q2.hi, cl: q2.lo)
         sv: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: px.hi, b: q3.hi)
-        tl: Me = q3.lo.add(px.lo).add(sv.lo)
+        tl: Me = q3.lo + px.lo + sv.lo
         q: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: sv.hi, b: tl)
         jump check(q.hi, q.lo, q.hi)
 
     // th + tl may still round the wrong way when tl sits at a rounding boundary: look the input up
     block check(th: Me, tl: Me, res: Me)
         ul: U64 = tl.bits()
-        er: U64 = ul.add_wrap(6).bitand(0x000FFFFFFFFFFFFF)
-        diff: U64 = th.bits().sub_wrap(ul)
-        de: U64 = diff.shr(52).bitand(0x7FF)
-        hard: Bool = er.le(12).bitor(de.gt(102))
-        branch hard
-            ? return(cm_b64_tan_pi_database(x: me, f: res))
-            : return(res)
+        er: U64 = ul +% 6 & 0x000FFFFFFFFFFFFF
+        diff: U64 = th.bits() -% ul
+        de: U64 = (diff >> 52) & 0x7FF
+        if er <= 12 or de > 102
+            return cm_b64_tan_pi_database(x: me, f: res)
+        else
+            return res
 
 /// x with the sign of the input (neg is its sign bit), in two's complement.
 /// :param x: The magnitude.
 /// :param neg: The input's sign bit, 1 for negative.
 /// :returns: `x` when `neg` is 0, else `0 - x` (wrapping).
 private routine cm_b64_tan_pi_signed(x: U64, neg: U64) -> U64
-    negative: Bool = neg.eq(1)
-    branch negative
-        ? return(U64.sub_wrap(0, x))
-        : return(x)
+    if neg == 1
+        return U64.sub_wrap(0, x)
+    else
+        return x
 
 /// tan(pi j/64) for j in 0..31, from its double-double table entry.
 /// :param j: The table index, in 0..31.
 /// :returns: tan(pi `j`/64), the high and low table parts summed to one B64.
 private routine cm_b64_tan_pi_entry(j: U64) -> B64
-    i: USize = j.to[USize]().mul(2)
+    i: USize = j.to[USize]() * 2
     nl: B64 = B64.from_bits(CM_B64_TAN_PI_T.getitem(i))
-    nh: B64 = B64.from_bits(CM_B64_TAN_PI_T.getitem(i.add(1)))
-    return(nh.add(nl))
+    nh: B64 = B64.from_bits(CM_B64_TAN_PI_T.getitem(i + 1))
+    return nh + nl
 
 /// The exact tangent at a multiple of 1/4 (jq counts quarter turns, as a two's-complement bit pattern, only its two
 /// low bits matter, neg is the input's sign bit): +-inf at half-integers, a signed zero at integers.
@@ -320,19 +311,17 @@ private routine cm_b64_tan_pi_entry(j: U64) -> B64
 /// :param neg: The input's sign bit.
 /// :returns: +inf or -inf for an odd `jq`, else +0 or -0.
 private routine cm_b64_tan_pi_exact(jq: U64, neg: U64) -> B64
-    local down: Bool = jq.bitand(2).ne(0)
+    local down: Bool = jq & 2 != 0
 
-    odd: Bool = jq.bitand(1).eq(1)
-    flip: Bool = jq.shr(1).bitand(1).ne(neg)
+    odd: Bool = jq & 1 == 1
     when
-        odd => pole()
-        flip => return(B64.from_bits(0x8000000000000000))
-        else => return(0.0)
-
-    block pole()
-        branch down
-            ? return(B64.NEG_INFINITY)
-            : return(B64.INFINITY)
+        odd =>
+            if down
+                return B64.NEG_INFINITY
+            else
+                return B64.INFINITY
+        (jq >> 1) & 1 != neg => return B64.from_bits(0x8000000000000000)
+        else => return 0.0
 
 /// (xh + xl) + c as a double-double, for |xh| >= |c|.
 /// :param xh: The high part of the double-double.
@@ -341,7 +330,7 @@ private routine cm_b64_tan_pi_exact(jq: U64, neg: U64) -> B64
 /// :returns: The sum as a double-double.
 private routine cm_b64_tan_pi_fastsumddd(xh: B64, xl: B64, c: B64) -> CmF64TrigDD
     t: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: xh, b: c)
-    return(CmF64TrigDD(hi: t.hi, lo: xl.add(t.lo)))
+    return CmF64TrigDD(hi: t.hi, lo: xl + t.lo)
 
 /// Combines tan(pi z') = th + tl for the small residual angle with the table entry tan(pi iq/64) by the tangent
 /// addition formula, in double-double arithmetic (iq in 0..32, where 32 is the pole, handled as -1/t, and flip = 1
@@ -352,40 +341,36 @@ private routine cm_b64_tan_pi_fastsumddd(xh: B64, xl: B64, c: B64) -> CmF64TrigD
 /// :param flip: 1 to negate the table entry, 0 to keep it.
 /// :returns: The tangent of the whole angle as a double-double.
 private routine cm_b64_tan_pi_combine(th: B64, tl: B64, iq: U64, flip: U64) -> CmF64TrigDD
-    pole: Bool = iq.eq(32)
-    branch pole
-        ? pole()
-        : continue
-    i: USize = iq.to[USize]().mul(2)
+    if iq == 32
+        // the denominator 1 - (th + tl) n
+        // the numerator n + (th + tl)
+        // 1 - (mh + ml) imh
+        ith: B64 = B64.div(-1.0, th)
+        il: B64 = (ith.mul_add(a: th, b: 1.0) + tl * ith) * ith
+        return CmF64TrigDD(hi: ith, lo: il)
+    i: USize = iq.to[USize]() * 2
     entry_l: B64 = B64.from_bits(CM_B64_TAN_PI_T.getitem(i))
-    entry_h: B64 = B64.from_bits(CM_B64_TAN_PI_T.getitem(i.add(1)))
-    negate: Bool = flip.eq(1)
-    nh0: B64 = negate
-        ? entry_h.neg()
-        : entry_h
-    nl0: B64 = negate
-        ? entry_l.neg()
-        : entry_l
+    entry_h: B64 = B64.from_bits(CM_B64_TAN_PI_T.getitem(i + 1))
+    negate: Bool = flip == 1
+    nh0: B64 = when
+        negate => -entry_h
+        else => entry_h
+    nl0: B64 = when
+        negate => -entry_l
+        else => entry_l
     mp: CmF64TrigDD = cm_b64_trig_pi_muldd(xh: th, xl: tl, ch: nh0, cl: nl0)
-    // the denominator 1 - (th + tl) n
     mh: B64 = B64.sub(1.0, mp.hi)
-    dm: B64 = B64.sub(1.0, mh).sub(mp.hi)
-    ml: B64 = dm.sub(mp.lo)
-    // the numerator n + (th + tl)
+    dm: B64 = B64.sub(1.0, mh) - mp.hi
+    ml: B64 = dm - mp.lo
     ns: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: nh0, b: th)
     nh: B64 = ns.hi
-    nl: B64 = nl0.add(ns.lo.add(tl))
+    nl: B64 = nl0 + (ns.lo + tl)
     imh: B64 = B64.div(1.0, mh)
-    rh: B64 = nh.mul(imh)
-    rem: B64 = mh.neg().mul_add(a: imh, b: 1.0).sub(ml.mul(imh))  // 1 - (mh + ml) imh
-    corr: B64 = nl.add(nh.mul(rem)).mul(imh)
-    rl: B64 = b64_mul_error(x: nh, y: imh, p: rh).add(corr)
-    return(CmF64TrigDD(hi: rh, lo: rl))
-
-    block pole()
-        ith: B64 = B64.div(-1.0, th)
-        il: B64 = ith.mul_add(a: th, b: 1.0).add(tl.mul(ith)).mul(ith)
-        return(CmF64TrigDD(hi: ith, lo: il))
+    rh: B64 = nh * imh
+    rem: B64 = (-mh).mul_add(a: imh, b: 1.0) - ml * imh
+    corr: B64 = (nl + nh * rem) * imh
+    rl: B64 = b64_mul_error(x: nh, y: imh, p: rh) + corr
+    return CmF64TrigDD(hi: rh, lo: rl)
 
 /// Looks up an input whose correctly rounded tangent the fast path can't decide, using tan(pi (x + 1)) = tan(pi x)
 /// and tan(pi (1/2 - x)) = 1/tan(pi x) to reduce it to [0, 1/2). Returns f when it isn't listed.
@@ -394,44 +379,37 @@ private routine cm_b64_tan_pi_combine(th: B64, tl: B64, iq: U64, flip: U64) -> C
 /// :returns: The listed correctly rounded tangent, or `f`.
 private routine cm_b64_tan_pi_database(x: B64, f: B64) -> B64
     local ixu: U64 = x.bits()
-    local aix: U64 = ixu.bitand(0x7FFFFFFFFFFFFFFF)
+    local aix: U64 = ixu & 0x7FFFFFFFFFFFFFFF
 
-    e: S64 = aix.shr(52).to_wrap[S64]().sub(1022)
-    periodic: Bool = e.ge(0)  // |x| >= 1/2
-    branch periodic
-        ? reduce(e.to_wrap[U64]())
-        : search(x.abs(), 0)
+    e: S64 = (aix >> 52).to_wrap[S64]() - 1022
+    periodic: Bool = e >= 0
+    // |x| >= 1/2
+    values2: (B64, U64) = when
+        periodic =>
+            // drop the integer part of |x|, then fold [1/2, 1) onto (0, 1/2]
+            e2: U64 = e.to_wrap[U64]()
+            whole: U64 = ~U64.shr(0xFFFFFFFFFFFFFFFF, e2 + 12)
+            t: B64 = B64.from_bits(aix & whole)
+            ax: B64 = x.abs() - t
+            p: U64 = ((aix | 0x0010000000000000) >> U64.sub(52, e: e2)) & 1
+            if p == 1
+                becomes (B64.sub(0.5, ax), p)
+            else
+                becomes (ax, p)
+        else => (x.abs(), 0)
+    ax, p = values2
+    minus: Bool = p ^ (ixu >> 63) == 1
+    sgn: B64 = when
+        minus => -1.0
+        else => 1.0
 
-    // drop the integer part of |x|, then fold [1/2, 1) onto (0, 1/2]
-    block reduce(e: U64)
-        whole: U64 = U64.shr(0xFFFFFFFFFFFFFFFF, e.add(12)).bitnot()
-        t: B64 = B64.from_bits(aix.bitand(whole))
-        ax: B64 = x.abs().sub(t)
-        p: U64 = aix.bitor(0x0010000000000000).shr(U64.sub(52, e)).bitand(1)
-        fold: Bool = p.eq(1)
-        branch fold
-            ? search(B64.sub(0.5, ax), p)
-            : search(ax, p)
-
-    block search(ax: B64, p: U64)
-        minus: Bool = p.bitxor(ixu.shr(63)).eq(1)
-        sgn: B64 = minus
-            ? -1.0
-            : 1.0
-        jump probe(ax, sgn, 0)
-
-    block probe(ax: B64, sgn: B64, i: USize)
-        done: Bool = i.eq(49)
-        branch done
-            ? return(f)
-            : continue
-        key: B64 = B64.from_bits(CM_B64_TAN_PI_DB.getitem(i.mul(3)))
-        found: Bool = key.eq(ax)
-        branch found
-            ? listed(sgn, i)
-            : probe(ax, sgn, i.add(1))
-
-    block listed(sgn: B64, i: USize)
-        r: B64 = B64.from_bits(CM_B64_TAN_PI_DB.getitem(i.mul(3).add(1)))
-        dr: B64 = B64.from_bits(CM_B64_TAN_PI_DB.getitem(i.mul(3).add(2)))
-        return(sgn.mul(r).add(sgn.mul(dr)))
+    each i in 0 til 49
+        key: B64 = B64.from_bits(CM_B64_TAN_PI_DB.getitem(i * 3))
+        if key == ax
+            r: B64 = B64.from_bits(CM_B64_TAN_PI_DB.getitem(i * 3 + 1))
+            dr: B64 = B64.from_bits(CM_B64_TAN_PI_DB.getitem(i * 3 + 2))
+            return sgn * r + sgn * dr
+        else
+            continue
+    then
+        return f

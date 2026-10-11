@@ -34,69 +34,61 @@ preset CM_B16_ACOSH_P: @Array[U32, 96] <- [0x3FC8CA05, 0xBE50F729, 0x3D86E325, 0
 routine B16.acosh(me: Me) -> Me
     local v: B32 = me.to[B32]()
     local u: U32 = v.bits()
-    local au: U32 = u.bitand(0x7FFFFFFF)
+    local au: U32 = u & 0x7FFFFFFF
 
-    special: Bool = au.ge(0x7F800000)
-    at_most1: Bool = u.ge(0x80000000).bitor(au.le(0x3F800000))  // x <= 1
-    biased_exponent: U32 = au.shr(23)
-    when
-        special => special()
-        at_most1 => at_most_one()
-        else => binade(biased_exponent.sub(127).to[USize]())
-
-    // +inf or NaN: x + x (quiets a signaling NaN), and -inf has no real result
-    block special()
-        quiet: Bool = u.eq(0x7F800000).bitor(au.bitand(0x7FFFFF).ne(0))
-        branch quiet
-            ? return(me.add(me))
-            : return(Me.from_bits(0xFE00))
-
-    // acosh(1) = +0, and below 1 there is no real result (the default NaN of x86)
-    block at_most_one()
-        one: Bool = u.eq(0x3F800000)
-        branch one
-            ? return(Me.from_bits(0))
-            : return(Me.from_bits(0xFE00))
-
-    // 2^i <= x < 2^(i+1)
-    block binade(i: USize)
-        tt: B32 = v.mul(v)
-        c4: B32 = cm_b16_acosh_p(i, k: 5).mul_add(a: v, b: cm_b16_acosh_p(i, k: 4))
-        c2: B32 = cm_b16_acosh_p(i, k: 3).mul_add(a: v, b: cm_b16_acosh_p(i, k: 2))
-        d2: B32 = c4.mul_add(a: tt, b: c2)
-        c0: B32 = cm_b16_acosh_p(i, k: 1).mul_add(a: v, b: cm_b16_acosh_p(i, k: 0))
-        p: B32 = d2.mul_add(a: tt, b: c0)
-        // for x < 32 the polynomial approximates acosh(x) / sqrt(x - 1)
-        below32: Bool = i.lt(5)
-        branch below32
-            ? scale_by_root(p)
-            : narrow(p)
-
-    block scale_by_root(p: B32)
-        root: B32 = v.sub(1.0).sqrt()
-        jump narrow(root.mul(p))
+    special: Bool = au >= 0x7F800000
+    at_most1: Bool = u >= 0x80000000 or au <= 0x3F800000
+    // x <= 1
+    biased_exponent: U32 = au >> 23
+    y: B32 = when
+        special =>
+            // +inf or NaN: x + x (quiets a signaling NaN), and -inf has no real result
+            if u == 0x7F800000 or au & 0x7FFFFF != 0
+                return me + me
+            else
+                return Me.from_bits(0xFE00)
+        at_most1 =>
+            // acosh(1) = +0, and below 1 there is no real result (the default NaN of x86)
+            if u == 0x3F800000
+                return Me.from_bits(0)
+            else
+                return Me.from_bits(0xFE00)
+        else =>
+            // 2^i <= x < 2^(i+1)
+            i: USize = (biased_exponent - 127).to[USize]()
+            tt: B32 = v * v
+            c4: B32 = cm_b16_acosh_p(i, k: 5).mul_add(a: v, b: cm_b16_acosh_p(i, k: 4))
+            c2: B32 = cm_b16_acosh_p(i, k: 3).mul_add(a: v, b: cm_b16_acosh_p(i, k: 2))
+            d2: B32 = c4.mul_add(a: tt, b: c2)
+            c0: B32 = cm_b16_acosh_p(i, k: 1).mul_add(a: v, b: cm_b16_acosh_p(i, k: 0))
+            p: B32 = d2.mul_add(a: tt, b: c0)
+            // for x < 32 the polynomial approximates acosh(x) / sqrt(x - 1)
+            if i < 5
+                root: B32 = (v - 1.0).sqrt()
+                becomes root * p
+            else
+                becomes p
 
     // the inputs the polynomials round wrongly
-    block narrow(y: B32)
-        when
-            u.eq(0x40422000) => return(B32.to[Me](0x1.c63ffcp+0))
-            u.eq(0x411C0000) => return(B32.to[Me](0x1.7be006p+1))
-            u.eq(0x415F6000) => return(B32.to[Me](0x1.aa0002p+1))
-            u.eq(0x41BFE000) => return(B32.to[Me](0x1.ef5fecp+1))
-            u.eq(0x41C04000) => return(B32.to[Me](0x1.ef9ff6p+1))
-            u.eq(0x41DBC000) => return(B32.to[Me](0x1.006016p+2))
-            u.eq(0x41D3C000) => return(B32.to[Me](0x1.fc002ap+1))
-            u.eq(0x42374000) => return(B32.to[Me](0x1.21201cp+2))
-            u.eq(0x4245C000) => return(B32.to[Me](0x1.260012p+2))
-            u.eq(0x42890000) => return(B32.to[Me](0x1.3ae018p+2))
-            u.eq(0x429D6000) => return(B32.to[Me](0x1.43bff4p+2))
-            u.eq(0x433D2000) => return(B32.to[Me](0x1.7be006p+2))
-            u.eq(0x43884000) => return(B32.to[Me](0x1.934004p+2))
-            u.eq(0x43F9A000) => return(B32.to[Me](0x1.ba000ep+2))
-            u.eq(0x443B0000) => return(B32.to[Me](0x1.d3e00cp+2))
-            u.eq(0x45B78000) => return(B32.to[Me](0x1.2be008p+3))
-            u.eq(0x4673A000) => return(B32.to[Me](0x1.4b2008p+3))
-            else => return(y.to[Me]())
+    when
+        u == 0x40422000 => return B32.to[Me](1.774413824081421)
+        u == 0x411C0000 => return B32.to[Me](2.9677741527557373)
+        u == 0x415F6000 => return B32.to[Me](3.328125238418579)
+        u == 0x41BFE000 => return B32.to[Me](3.870114803314209)
+        u == 0x41C04000 => return B32.to[Me](3.8720691204071045)
+        u == 0x41DBC000 => return B32.to[Me](4.00586462020874)
+        u == 0x41D3C000 => return B32.to[Me](3.968755006790161)
+        u == 0x42374000 => return B32.to[Me](4.517584800720215)
+        u == 0x4245C000 => return B32.to[Me](4.593754291534424)
+        u == 0x42890000 => return B32.to[Me](4.919927597045898)
+        u == 0x429D6000 => return B32.to[Me](5.058590888977051)
+        u == 0x433D2000 => return B32.to[Me](5.935548305511475)
+        u == 0x43884000 => return B32.to[Me](6.300782203674316)
+        u == 0x43F9A000 => return B32.to[Me](6.906253337860107)
+        u == 0x443B0000 => return B32.to[Me](7.310549736022949)
+        u == 0x45B78000 => return B32.to[Me](9.371097564697266)
+        u == 0x4673A000 => return B32.to[Me](10.347660064697266)
+        else => return y.to[Me]()
 
 /// Coefficient k of the acosh polynomial for binade index i.
 /// :param i: The binade index, 0 to 15.
@@ -104,4 +96,4 @@ routine B16.acosh(me: Me) -> Me
 /// :returns: The coefficient.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `i * 6 + k` is past the table.
 private routine cm_b16_acosh_p(i: USize, k: USize) -> B32
-    return(B32.from_bits(CM_B16_ACOSH_P.getitem(i.mul(6).add(k))))
+    return B32.from_bits(CM_B16_ACOSH_P.getitem(i * 6 + k))

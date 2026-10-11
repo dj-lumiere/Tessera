@@ -12,21 +12,21 @@ module Standard/Core
 
 /// Iterator over the characters (`Char`) of a UTF-8 {Span[Byte]}. It satisfies `Iterator[Char, BytesCharsIter]`. A malformed sequence yields U+FFFD and skips one byte, so iteration always ends.
 record BytesCharsIter
-conform Iterator[Char, BytesCharsIter]
+obeys Iterator[Char, BytesCharsIter]
     str: Span[Byte]
     index: USize
 
 /// Releases the memory its `str` holds.
 routine BytesCharsIter.destruct(me: @Me) -> Void
     me.str.destruct()
-    return()
+    return
 
 /// Starts an iterator at the first byte of `str`.
 /// :param str: The view to iterate. It is not copied, so its bytes must outlive the iterator.
 /// :returns: An iterator positioned before the first element.
 routine BytesCharsIter.construct(str: Span[Byte]) -> Me
     iter: Me = Me(str: str, index: 0)
-    return(iter)
+    return iter
 
 /// Advances the iterator and returns the element it passed.
 /// :returns: The next character.
@@ -36,34 +36,28 @@ routine BytesCharsIter.emit_checked(me: @Me) -> Maybe[Char]
     local str: Span[Byte] = me.str.peek()
 
     str_len: USize = str.count
-    done: Bool = index.ge(str_len)
-    branch done
-        ? return_none()
-        : decode()
-
-    block return_none()
+    if index >= str_len
         none: Maybe[Char] = Unit()
-        return(none)
-
-    block decode()
+        return none
+    else
         data: @Byte = str.data
         decoded: Utf8Decoded = utf8_decode(bytes: data, pos: index, len: str.count)
         ok: Bool = decoded.ok
         // on a decode error next_pos == index, so advance by 1 to avoid an infinite loop
-        safe_next: USize = index.add(1)
-        advance: USize = ok
-            ? decoded.next_pos
-            : safe_next
+        safe_next: USize = index + 1
+        advance: USize = when
+            ok => decoded.next_pos
+            else => safe_next
         me.index.poke(advance)
         some: Maybe[Char] = decoded.char
-        return(some)
+        return some
 
 /// Yields the next element and advances the iterator, crashing when there is none.
 /// :returns: The next element, in order.
 /// :throws: Crashes with `AbsentValueError` after the last element has been yielded.
-#track_caller
+@track_caller
 routine BytesCharsIter.emit(me: @Me) -> Char
     item: Maybe[Char] = me.emit_checked()
     when item
-        is Char as value => return(value)
+        is Char as value => return value
         is Unit => crash_absent_value()

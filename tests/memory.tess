@@ -2,61 +2,42 @@
 
 import Standard/Os
 
-#[external("c"), symbol("malloc")]
+@external("c")
+@symbol("malloc")
 routine c_malloc(size: USize) -> Addr
 
-#[external("c"), symbol("free")]
+@external("c")
+@symbol("free")
 routine c_free(ptr: Addr) -> Void
 
 /// Fills data[i] = i * i for i in 0..len, then sums it through a stack slot.
 routine sum_of_squares(len: USize) -> U64
     local total: @U64 <- 0
 
-    bytes: USize = len.mul(8)
+    bytes: USize = len * 8
     raw: Addr = c_malloc(bytes)
-    failed: Bool = raw.is_null()
-    branch failed
-        ? crash_allocation()
-        : ready(raw.to[@U64]())
+    if raw.is_null()
+        crash_allocation()
+    else
+        data: @U64 = raw.to[@U64]()
 
-    block ready(data: @U64)
-        jump fill(data, 0)
-
-    block fill(data: @U64, i: USize)
-        done: Bool = i.ge(len)
-        branch done
-            ? start_sum(data)
-            : store(data, i)
-
-    block store(data: @U64, i: USize)
-        data.stride(i).poke(i.mul(i).to[U64]())
-        jump fill(data, i.add(1))
-
-    block start_sum(data: @U64)
-        jump sum(data, 0)
-
-    block sum(data: @U64, i: USize)
-        done: Bool = i.ge(len)
-        branch done
-            ? finish(data)
-            : add(data, i)
-
-    block add(data: @U64, i: USize)
-        x: U64 = data.stride(i).peek()
-        running: U64 = total.peek().add(x)
-        running.poke_into(total)
-        jump sum(data, i.add(1))
-
-    block finish(data: @U64)
-        c_free(data)
-        result: U64 = total.peek()
-        return(result)
+        each i in 0 til len
+            data.stride(i).poke((i * i).to[U64]())
+        then
+            each i2 in 0 til len
+                x: U64 = data.stride(i2).peek()
+                running: U64 = total.peek() + x
+                running.poke_into(total)
+            then
+                c_free(data)
+                result: U64 = total.peek()
+                return result
 
 routine start() -> Void
     s: U64 = sum_of_squares(10)
-    ok: Bool = s.eq(285)
-    code: S32 = ok
-        ? 0
-        : 1
+    ok: Bool = s == 285
+    code: S32 = when
+        ok => 0
+        else => 1
     set_exit_code(code)
-    return()
+    return

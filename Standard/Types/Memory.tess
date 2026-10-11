@@ -23,10 +23,10 @@ module Standard/Core
 import Standard/Alloc
 
 /// The last generation given out, on a target with threads.
-#target(os: not "none")
+@target(os: not "none")
 private global LAST_GENERATION: @U64
 /// The last generation given out, on a target without an operating system.
-#target(os: "none")
+@target(os: "none")
 private global LAST_GENERATION: @U64
 
 /// The bytes the stamp takes in front of the values.
@@ -41,33 +41,33 @@ private record BlockStamp
 
 /// A generation no block has had yet.
 /// :returns: The next generation, never 0.
-#target(os: not "none")
+@target(os: not "none")
 private routine next_generation() -> U64
-    return(LAST_GENERATION.atomic_fetch_add(1).add(1))
+    return LAST_GENERATION.atomic_fetch_add(1) + 1
 
 /// A generation no block has had yet.
 /// :returns: The next generation, never 0.
-#target(os: "none")
+@target(os: "none")
 private routine next_generation() -> U64
-    next: U64 = LAST_GENERATION.peek().add(1)
+    next: U64 = LAST_GENERATION.peek() + 1
     next.poke_into(LAST_GENERATION)
-    return(next)
+    return next
 
 /// The room in front of the values of a `T`: the stamp, rounded up to keep the values aligned.
 /// :typeparam T: The value type.
 /// :returns: The room in bytes.
 private routine stamp_room[T]() -> USize
-require T: typename
-    return(alignof[T]().max(STAMP_SIZE))
+needs T: typename
+    return alignof[T]().max(STAMP_SIZE)
 
 /// The stamp of the block whose values start at `data`.
 /// :typeparam T: The value type.
 /// :param data: The first value.
 /// :returns: The stamp's address.
 private routine stamp_of[T](data: @T) -> @BlockStamp
-require T: typename
+needs T: typename
     raw: Addr = data
-    return(raw.offset(STAMP_BACK).to[@BlockStamp]())
+    return raw.offset(STAMP_BACK).to[@BlockStamp]()
 
 /// Crashes unless the block at `data` still has `generation`: a dropped block, or one that moved, doesn't.
 /// :typeparam T: The value type.
@@ -75,18 +75,16 @@ require T: typename
 /// :param generation: The generation the value was given.
 /// :throws: Crashes with `InvalidValueError` when `data` is null (a hollow value), and with `DroppedMemoryError`
 ///     when the block was dropped or moved.
-#track_caller
+@track_caller
 private routine check_generation[T](data: @T, generation: U64) -> Void
-require T: typename
-    branch data.is_null()
-        ? crash(name: "InvalidValueError",
-            message: "This memory holds nothing: it is hollow, or was dropped.")
-        : continue
+needs T: typename
+    if data.is_null()
+        crash(name: "InvalidValueError", message: "This memory holds nothing: it is hollow, or was dropped.")
     now: U64 = stamp_of[T](data).generation.peek()
-    branch now.eq(generation)
-        ? return()
-        : crash(name: "DroppedMemoryError",
-            message: "This memory was dropped already, or moved by a resize: the value is a stale copy.")
+    if now == generation
+        return
+    else
+        crash(name: "DroppedMemoryError", message: "This memory was dropped already, or moved by a resize: the value is a stale copy.")
 
 /// Takes room for `count` values of `T` and a stamp from `manager`, the stamp set to a new generation.
 /// :typeparam T: The value type.
@@ -94,32 +92,31 @@ require T: typename
 /// :param manager: Where the memory comes from.
 /// :returns: The first value's address and its generation, or a null address when the manager has none to give.
 /// :throws: Crashes with `IntegerOverflowError` when the size doesn't fit in USize.
-#expensive("allocates memory")
+@expensive("allocates memory")
 private routine take_block[T](count: USize, manager: @MemoryManager) -> (@T, U64)
-require T: typename
+needs T: typename
     room: USize = stamp_room[T]()
-    size: USize = sizeof[T]().mul(count).add(room)
+    size: USize = sizeof[T]() * count + room
     taken: Addr = manager.alloc(size, align: room)
-    branch taken.is_null()
-        ? return((null, 0))
-        : continue
+    if taken.is_null()
+        return (null, 0)
     data: @T = taken.offset(room.to[SSize]()).to[@T]()
     generation: U64 = next_generation()
     generation.poke_into(stamp_of[T](data).generation)
-    return((data, generation))
+    return (data, generation)
 
 /// Clears the stamp of the block at `data` and gives the block back to `manager`.
 /// :typeparam T: The value type.
 /// :param data: The first value.
 /// :param manager: Where the memory came from.
-#track_caller
-#expensive("frees memory")
+@track_caller
+@expensive("frees memory")
 private routine give_block[T](data: @T, manager: @MemoryManager) -> Void
-require T: typename
+needs T: typename
     stamp_of[T](data).generation.poke(0)
     raw: Addr = data
-    manager.free(raw.offset(stamp_room[T]().to[SSize]().neg()))
-    return()
+    manager.free(raw.offset(-stamp_room[T]().to[SSize]()))
+    return
 
 // == Memory[T] ====================================================================================================
 
@@ -127,7 +124,7 @@ require T: typename
 /// hasn't been dropped. Lend it where a `Span[T]` is expected.
 /// :typeparam T: The element type.
 record Memory[T]
-require T: typename
+needs T: typename
     data: @T
     count: USize
     manager: @MemoryManager
@@ -140,13 +137,13 @@ require T: typename
 /// :returns: The memory.
 /// :throws: Crashes with `MemoryAllocationError` when the manager has no memory to give. See
 ///     {Memory[T].construct_result}.
-#track_caller
-#expensive("allocates memory")
+@track_caller
+@expensive("allocates memory")
 routine Memory[T].construct(count: USize, manager: @MemoryManager) -> Me
-require T: typename
+needs T: typename
     made: Result[Me, AllocFailed] = Me.construct_result(count, manager)
     when made
-        is Me as memory => return(memory)
+        is Me as memory => return memory
         is AllocFailed => crash_allocation()
 
 /// `values` written `times` over, one run after another, in memory from `manager`: what `[a, b] x n at manager`
@@ -157,136 +154,127 @@ require T: typename
 /// :returns: The memory, `times` runs of `values`.
 /// :throws: Crashes with `IntegerOverflowError` when the count doesn't fit in a USize, and with
 ///     `MemoryAllocationError` when the manager has no memory to give.
-#track_caller
-#expensive("allocates memory")
+@track_caller
+@expensive("allocates memory")
 routine Memory[T].construct(values: Span[T], times: USize, manager: @MemoryManager) -> Me
-require T: typename
-    local made: Me = Me.construct(count: values.count.mul(times), manager)
+needs T: typename
+    local made: Me = Me.construct(count: values.count * times, manager)
     local view: Span[T] = made.getview()
 
-    branch values.count.eq(0)
-        ? finish()
-        : each(0)
-
-    block each(i: USize)
-        branch i.ge(times)
-            ? finish()
-            : continue
-        view.getslot(i.mul(values.count)).copy(src: values.data, count: values.count)
-        jump each(i.add(1))
-
-    block finish()
-        return(made)
+    if values.count == 0
+        return made
+    else
+        each i in 0 til times
+            view.getslot(i * values.count).copy(src: values.data, count: values.count)
+        then
+            return made
 
 /// `construct`, returning an error instead of crashing when the manager has no memory to give.
 /// :param count: The number of values.
 /// :param manager: Where the memory comes from and goes back to.
 /// :returns: The memory.
 /// :throws: Returns `AllocFailed` when the manager has no memory to give.
-#expensive("allocates memory")
+@expensive("allocates memory")
 routine Memory[T].construct_result(count: USize, manager: @MemoryManager) -> Result[Me, AllocFailed]
-require T: typename
-    branch count.eq(0)
-        ? return(Me(data: null, count: 0, manager, generation: 0))
-        : continue
+needs T: typename
+    if count == 0
+        return Me(data: null, count: 0, manager, generation: 0)
     data, generation = take_block[T](count, manager)
-    branch data.is_null()
-        ? return(AllocFailed())
-        : continue
-    return(Me(data, count, manager, generation))
+    if data.is_null()
+        return AllocFailed()
+    return Me(data, count, manager, generation)
 
 /// The number of values.
 /// :returns: The count.
 routine Memory[T].count(me: Me) -> USize
-require T: typename
-    return(me.count)
+needs T: typename
+    return me.count
 
 /// The number of values.
 /// :returns: The count.
 routine Memory[T].count(me: @Me) -> USize
-require T: typename
-    return(me.count.peek())
+needs T: typename
+    return me.count.peek()
 
 /// The values as a view, after checking that the memory is still there: what lending passes.
 /// :returns: A span over the same values, valid until the memory is dropped or resized.
 /// :throws: Crashes with `DroppedMemoryError` when the memory was dropped or moved, and with `InvalidValueError` when
 ///     it is hollow.
-#track_caller
+@track_caller
 routine Memory[T].getview(me: Me) -> Span[T]
-require T: typename
-    branch me.count.eq(0)
-        ? return(Span[T].construct(data: me.data, count: 0))
-        : continue
+needs T: typename
+    if me.count == 0
+        return Span[T].construct(data: me.data, count: 0)
     check_generation[T](data: me.data, generation: me.generation)
-    return(Span[T].construct(data: me.data, count: me.count))
+    return Span[T].construct(data: me.data, count: me.count)
 
 /// The values as a view, after checking that the memory is still there.
 /// :returns: A span over the same values, valid until the memory is dropped or resized.
 /// :throws: Crashes with `DroppedMemoryError` when the memory was dropped or moved, and with `InvalidValueError` when
 ///     it is hollow.
-#track_caller
+@track_caller
 routine Memory[T].getview(me: @Me) -> Span[T]
-require T: typename
-    return(me.peek().getview())
+needs T: typename
+    return me.peek().getview()
 
 /// The address of the first value, after checking that the memory is still there: a window valid until the memory
 /// is dropped or resized.
 /// :returns: `data`, null for an empty memory.
 /// :throws: Crashes with `DroppedMemoryError` when the memory was dropped or moved.
-#track_caller
+@track_caller
 routine Memory[T].to[@T](me: Me) -> @T
-require T: typename
-    return(me.getview().data)
+needs T: typename
+    return me.getview().data
 
 /// The address of the first value, after checking that the memory is still there.
 /// :returns: `data`, null for an empty memory.
 /// :throws: Crashes with `DroppedMemoryError` when the memory was dropped or moved.
-#track_caller
+@track_caller
 routine Memory[T].to[@T](me: @Me) -> @T
-require T: typename
-    return(me.peek().getview().data)
+needs T: typename
+    return me.peek().getview().data
 
 /// The value at `index`, after checking the memory and the index.
 /// :param index: The zero-based position.
 /// :returns: A copy of the value.
 /// :throws: Crashes with `DroppedMemoryError` when the memory was dropped or moved, and with `IndexOutOfBoundsError`
 ///     when `index >= count`.
-#track_caller
+@track_caller
 routine Memory[T].load(me: Me, index: USize) -> T
-require T: typename
-    return(me.getview().getitem(index))
+needs T: typename
+    return me.getview()[index]
 
 /// The value at `index`, after checking the memory and the index.
 /// :param index: The zero-based position.
 /// :returns: A copy of the value.
 /// :throws: Crashes with `DroppedMemoryError` when the memory was dropped or moved, and with `IndexOutOfBoundsError`
 ///     when `index >= count`.
-#track_caller
+@track_caller
 routine Memory[T].load(me: @Me, index: USize) -> T
-require T: typename
-    return(me.peek().getview().getitem(index))
+needs T: typename
+    return me.peek().getview()[index]
 
 /// Writes `value` at `index`, after checking the memory and the index.
 /// :param index: The zero-based position.
 /// :param value: The value to write.
 /// :throws: Crashes with `DroppedMemoryError` when the memory was dropped or moved, and with `IndexOutOfBoundsError`
 ///     when `index >= count`.
-#track_caller
+@track_caller
 routine Memory[T].store(me: Me, index: USize, value: T) -> Void
-require T: typename
-    me.getview().setitem(index, value)
-    return()
+needs T: typename
+    me.getview()[index] = value
+    return
 
 /// Writes `value` at `index`, after checking the memory and the index.
 /// :param index: The zero-based position.
 /// :param value: The value to write.
 /// :throws: Crashes with `DroppedMemoryError` when the memory was dropped or moved, and with `IndexOutOfBoundsError`
 ///     when `index >= count`.
-#track_caller
+@track_caller
 routine Memory[T].store(me: @Me, index: USize, value: T) -> Void
-require T: typename
-    me.peek().getview().setitem(index, value)
-    return()
+needs T: typename
+    me.peek().getview()[index] = value
+    return
 
 /// The address of the value at `index`, after checking the memory and the index: a window valid until the memory is
 /// dropped or resized.
@@ -294,49 +282,47 @@ require T: typename
 /// :returns: The value's address.
 /// :throws: Crashes with `DroppedMemoryError` when the memory was dropped or moved, and with `IndexOutOfBoundsError`
 ///     when `index >= count`.
-#track_caller
+@track_caller
 routine Memory[T].getslot(me: Me, index: USize) -> @T
-require T: typename
-    return(me.getview().getslot(index))
+needs T: typename
+    return me.getview().getslot(index)
 
 /// The address of the value at `index`, after checking the memory and the index.
 /// :param index: The zero-based position.
 /// :returns: The value's address.
 /// :throws: Crashes with `DroppedMemoryError` when the memory was dropped or moved, and with `IndexOutOfBoundsError`
 ///     when `index >= count`.
-#track_caller
+@track_caller
 routine Memory[T].getslot(me: @Me, index: USize) -> @T
-require T: typename
-    return(me.peek().getview().getslot(index))
+needs T: typename
+    return me.peek().getview().getslot(index)
 
 /// The same memory with only its first `count` values in use: no copy and no reallocation, for a buffer filled with
 /// less than it holds. Drop the result, not `me` as well: it is the same memory.
 /// :param count: How many of the values are in use, at most `count()`.
 /// :returns: The memory, its count `count`.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `count` is more than the memory holds.
-#track_caller
+@track_caller
 routine Memory[T].with_count(me: Me, count: USize) -> Me
-require T: typename
-    branch count.gt(me.count)
-        ? crash_out_of_bounds()
-        : continue
-    return(Me(data: me.data, count, manager: me.manager, generation: me.generation))
+needs T: typename
+    if count > me.count
+        crash_out_of_bounds()
+    return Me(data: me.data, count, manager: me.manager, generation: me.generation)
 
 /// A copy in memory of its own from the same manager, released on its own.
 /// :returns: The copy.
 /// :throws: Crashes with `DroppedMemoryError` when the memory was dropped, and with `MemoryAllocationError` when the
 ///     manager has no memory to give.
-#track_caller
-#expensive("allocates memory")
+@track_caller
+@expensive("allocates memory")
 routine Memory[T].duplicate(me: Me) -> Me
-require T: typename
+needs T: typename
     view: Span[T] = me.getview()
     copy: Me = Me.construct(count: me.count, manager: me.manager)
-    branch me.count.eq(0)
-        ? return(copy)
-        : continue
+    if me.count == 0
+        return copy
     copy.data.copy(src: view.data, count: me.count)
-    return(copy)
+    return copy
 
 /// Holds `count` values from here on, keeping the first ones (as many as both counts allow). The memory may move, so
 /// it gets a new generation: views, addresses, and copies taken before no longer pass the check. A count of 0 gives
@@ -344,13 +330,14 @@ require T: typename
 /// :param count: The new number of values.
 /// :throws: Crashes with `MemoryAllocationError` when the manager has no memory to give. See
 ///     {Memory[T].resize_result}.
-#track_caller
-#[expensive("reallocates memory"), reshaping]
+@track_caller
+@expensive("reallocates memory")
+@reshaping
 routine Memory[T].resize(me: @Me, count: USize) -> Void
-require T: typename
+needs T: typename
     resized: Result[Unit, AllocFailed] = me.resize_result(count)
     when resized
-        is Unit => return()
+        is Unit => return
         is AllocFailed => crash_allocation()
 
 /// `resize`, returning an error instead of crashing when the manager has no memory to give. The memory is unchanged
@@ -359,131 +346,108 @@ require T: typename
 /// :returns: Unit once the memory holds `count` values.
 /// :throws: Crashes with `DroppedMemoryError` when the memory was dropped already, and with `InvalidValueError` on a
 ///     hollow memory (no manager). Returns `AllocFailed` when the manager has no memory to give.
-#track_caller
-#[expensive("reallocates memory"), reshaping]
+@track_caller
+@expensive("reallocates memory")
+@reshaping
 routine Memory[T].resize_result(me: @Me, count: USize) -> Result[Unit, AllocFailed]
-require T: typename
+needs T: typename
     local manager: @MemoryManager = me.manager.peek()
     local data: @T = me.data.peek()
 
-    branch manager.is_null()
-        ? crash(name: "InvalidValueError",
-            message: "This memory is hollow (it has no manager), so it can't be resized.")
-        : continue
-    branch count.eq(0)
-        ? emptied()
-        : continue
-    branch data.is_null()
-        ? fresh()
-        : continue
+    if manager.is_null()
+        crash(name: "InvalidValueError", message: "This memory is hollow (it has no manager), so it can't be resized.")
+    if count == 0
+        me.drop()
+        me.manager.poke(manager)
+        return Unit()
+    if data.is_null()
+        made: Result[Me, AllocFailed] = Me.construct_result(count, manager)
+        memory: Me = when made
+            is Me as memory => memory
+            is AllocFailed => return AllocFailed()
+        me.poke(memory)
+        return Unit()
     check_generation[T](data, generation: me.generation.peek())
     room: USize = stamp_room[T]()
     raw: Addr = data
-    grown: Addr = manager.realloc(at: raw.offset(room.to[SSize]().neg()),
-        size: sizeof[T]().mul(count).add(room), align: room)
-    branch grown.is_null()
-        ? return(AllocFailed())
-        : continue
+    grown: Addr = manager.realloc(at: raw.offset(-room.to[SSize]()), size: sizeof[T]() * count + room, align: room)
+    if grown.is_null()
+        return AllocFailed()
     moved: @T = grown.offset(room.to[SSize]()).to[@T]()
     generation: U64 = next_generation()
     generation.poke_into(stamp_of[T](moved).generation)
     me.poke(Me(data: moved, count, manager, generation))
-    return(Unit())
-
-    block fresh()
-        made: Result[Me, AllocFailed] = Me.construct_result(count, manager)
-        when made
-            is Me as memory => continue
-            is AllocFailed => return(AllocFailed())
-        me.poke(memory)
-        return(Unit())
-
-    block emptied()
-        me.drop()
-        me.manager.poke(manager)
-        return(Unit())
+    return Unit()
 
 /// Gives the memory back to its manager. Does nothing on a hollow or empty value. The values themselves are not
 /// destructed: see `destruct_all`.
 /// :throws: Crashes with `DroppedMemoryError` when the memory was dropped already through another copy.
-#track_caller
+@track_caller
 routine Memory[T].drop(me: Me) -> Void
-require T: typename
-    branch me.data.is_null()
-        ? return()
-        : continue
+needs T: typename
+    if me.data.is_null()
+        return
     check_generation[T](data: me.data, generation: me.generation)
     give_block[T](data: me.data, manager: me.manager)
-    return()
+    return
 
 /// Gives the memory back to its manager and leaves the value hollow. Does nothing on a hollow or empty value. The
 /// values themselves are not destructed: see `destruct_all`.
 /// :throws: Crashes with `DroppedMemoryError` when the memory was dropped already through another copy.
-#track_caller
+@track_caller
 routine Memory[T].drop(me: @Me) -> Void
-require T: typename
+needs T: typename
     data: @T = me.data.peek()
-    branch data.is_null()
-        ? cleared()
-        : continue
+    if data.is_null()
+        me.poke(.hollow())
+        return
     check_generation[T](data, generation: me.generation.peek())
     give_block[T](data, manager: me.manager.peek())
-    jump cleared()
-
-    block cleared()
-        me.poke(.hollow())
-        return()
+    me.poke(.hollow())
+    return
 
 /// Gives the memory back and puts `value` in its place: how a global that holds memory changes, since only `start`'s
 /// finish block drops one.
 /// :param value: The memory that takes its place, taken over.
 /// :throws: Crashes with `DroppedMemoryError` when the memory was dropped already through another copy.
-#track_caller
+@track_caller
 routine Memory[T].replace(me: @Me, value: Me) -> Void
-require T: typename
+needs T: typename
     me.drop()
     me.poke(value)
-    return()
+    return
 
 /// Gives the memory back and keeps the manager: it holds nothing afterward, and a `resize` draws from the same manager
 /// again. What a collection's `destruct` does with its storage. Nothing on a hollow or empty value.
 /// :throws: Crashes with `DroppedMemoryError` when the memory was dropped already through another copy.
-#track_caller
+@track_caller
 routine Memory[T].give_back(me: @Me) -> Void
-require T: typename
+needs T: typename
     manager: @MemoryManager = me.manager.peek()
     me.drop()
     me.manager.poke(manager)
-    return()
+    return
 
 /// `drop()`, the release every type has.
 /// :throws: Crashes with `DroppedMemoryError` when the memory was dropped already through another copy.
-#track_caller
+@track_caller
 routine Memory[T].destruct(me: @Me) -> Void
-require T: typename
+needs T: typename
     me.drop()
-    return()
+    return
 
 /// Destructs every value, then drops the memory: for values that hold something, such as lists. Every value must be
 /// initialized.
 /// :throws: Crashes with `DroppedMemoryError` when the memory was dropped already through another copy.
-#track_caller
+@track_caller
 routine Memory[T].destruct_all(me: @Me) -> Void
-require T: typename, Destructible[T]
+needs T: typename, Destructible[T]
     local view: Span[T] = me.getview()
 
-    jump each(0)
-
-    block each(i: USize)
-        branch i.ge(view.count)
-            ? finish()
-            : continue
+    each i in 0 til view.count
         view.getslot(i).destruct()
-        jump each(i.add(1))
-
-    block finish()
-        me.drop()
-        return()
+    me.drop()
+    return
 
 // == Box[T] =======================================================================================================
 
@@ -491,7 +455,7 @@ require T: typename, Destructible[T]
 /// Lend it where a `@T` is expected.
 /// :typeparam T: The value type.
 record Box[T]
-require T: typename
+needs T: typename
     at: @T
     manager: @MemoryManager
     generation: U64
@@ -501,105 +465,100 @@ require T: typename
 /// :param manager: Where the memory comes from and goes back to.
 /// :returns: The box.
 /// :throws: Crashes with `MemoryAllocationError` when the manager has no memory to give.
-#track_caller
-#expensive("allocates memory")
+@track_caller
+@expensive("allocates memory")
 routine Box[T].construct(value: T, manager: @MemoryManager) -> Me
-require T: typename
+needs T: typename
     at, generation = take_block[T](count: 1, manager)
-    branch at.is_null()
-        ? crash_allocation()
-        : continue
+    if at.is_null()
+        crash_allocation()
     at.poke(value)
-    return(Me(at, manager, generation))
+    return Me(at, manager, generation)
 
 /// The value's address, after checking that the memory is still there: what lending passes.
 /// :returns: The address, valid until the box is dropped.
 /// :throws: Crashes with `DroppedMemoryError` when the box was dropped, and with `InvalidValueError` when it is hollow.
-#track_caller
+@track_caller
 routine Box[T].getview(me: Me) -> @T
-require T: typename
+needs T: typename
     check_generation[T](data: me.at, generation: me.generation)
-    return(me.at)
+    return me.at
 
 /// The value's address, after checking that the memory is still there.
 /// :returns: The address, valid until the box is dropped.
 /// :throws: Crashes with `DroppedMemoryError` when the box was dropped, and with `InvalidValueError` when it is hollow.
-#track_caller
+@track_caller
 routine Box[T].getview(me: @Me) -> @T
-require T: typename
-    return(me.peek().getview())
+needs T: typename
+    return me.peek().getview()
 
 /// The value, after checking that the box is still there.
 /// :returns: A copy of the value.
 /// :throws: Crashes with `DroppedMemoryError` when the box was dropped, and with `InvalidValueError` when it is hollow.
-#track_caller
+@track_caller
 routine Box[T].load(me: Me) -> T
-require T: typename
-    return(me.getview().peek())
+needs T: typename
+    return me.getview().peek()
 
 /// Writes `value` into the box, after checking that it is still there.
 /// :param value: The value to write.
 /// :throws: Crashes with `DroppedMemoryError` when the box was dropped, and with `InvalidValueError` when it is hollow.
-#track_caller
+@track_caller
 routine Box[T].store(me: Me, value: T) -> Void
-require T: typename
+needs T: typename
     me.getview().poke(value)
-    return()
+    return
 
 /// The value in a box of its own from the same manager.
 /// :returns: The copy.
 /// :throws: Crashes with `DroppedMemoryError` when the box was dropped.
-#track_caller
-#expensive("allocates memory")
+@track_caller
+@expensive("allocates memory")
 routine Box[T].duplicate(me: Me) -> Me
-require T: typename
-    return(Me.construct(value: me.load(), manager: me.manager))
+needs T: typename
+    return Me.construct(value: me.load(), manager: me.manager)
 
 /// Gives the memory back to its manager. Does nothing on a hollow box. The value itself is not destructed.
 /// :throws: Crashes with `DroppedMemoryError` when the box was dropped already through another copy.
-#track_caller
+@track_caller
 routine Box[T].drop(me: Me) -> Void
-require T: typename
-    branch me.at.is_null()
-        ? return()
-        : continue
+needs T: typename
+    if me.at.is_null()
+        return
     check_generation[T](data: me.at, generation: me.generation)
     give_block[T](data: me.at, manager: me.manager)
-    return()
+    return
 
 /// Gives the memory back to its manager and leaves the box hollow. Does nothing on a hollow box. The value itself
 /// is not destructed.
 /// :throws: Crashes with `DroppedMemoryError` when the box was dropped already through another copy.
-#track_caller
+@track_caller
 routine Box[T].drop(me: @Me) -> Void
-require T: typename
+needs T: typename
     at: @T = me.at.peek()
-    branch at.is_null()
-        ? cleared()
-        : continue
+    if at.is_null()
+        me.poke(.hollow())
+        return
     check_generation[T](data: at, generation: me.generation.peek())
     give_block[T](data: at, manager: me.manager.peek())
-    jump cleared()
-
-    block cleared()
-        me.poke(.hollow())
-        return()
+    me.poke(.hollow())
+    return
 
 /// Gives the memory back and puts `value` in its place: how a global that holds a box changes, since only `start`'s
 /// finish block drops one.
 /// :param value: The box that takes its place, taken over.
 /// :throws: Crashes with `DroppedMemoryError` when the box was dropped already through another copy.
-#track_caller
+@track_caller
 routine Box[T].replace(me: @Me, value: Me) -> Void
-require T: typename
+needs T: typename
     me.drop()
     me.poke(value)
-    return()
+    return
 
 /// `drop()`, the release every type has.
 /// :throws: Crashes with `DroppedMemoryError` when the box was dropped already through another copy.
-#track_caller
+@track_caller
 routine Box[T].destruct(me: @Me) -> Void
-require T: typename
+needs T: typename
     me.drop()
-    return()
+    return

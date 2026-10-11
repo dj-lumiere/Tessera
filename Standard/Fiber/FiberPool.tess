@@ -58,7 +58,7 @@ record PoolJob
 /// `T` (`Void` for none), until {Job[T].give_back}.
 /// :typeparam T: The type of the work's result.
 record Job[T]
-require T: typename
+needs T: typename
     job: @PoolJob
     /// The ticket's number: the job's until the ticket is given back.
     issued: U64
@@ -66,16 +66,16 @@ require T: typename
 /// A pool that will run `threads` threads, or one per processor for 0. They start with the first job.
 /// :param threads: How many threads, or 0 for one per processor.
 /// :returns: The pool, with no threads yet.
-#target(os: not "none")
+@target(os: not "none")
 routine FiberPool.construct(threads: USize) -> Me
-    count: USize = threads.eq(0)
-        ? cpu_count()
-        : threads
-    return(Me(lock: .construct(), first: null, last: null, idle: null, epoch: 0, stopping: 0, count,
-        threads: .hollow(), alloc: DEFAULT_HEAP))
+    count: USize = when
+        threads == 0 => cpu_count()
+        else => threads
+    return Me(lock: .construct(), first: null, last: null, idle: null, epoch: 0, stopping: 0, count, threads: .hollow(), alloc: DEFAULT_HEAP)
 
 /// Stops the pool: its threads finish the work they have, then end, and the idle jobs go. Give every job back first.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine FiberPool.destruct(me: @Me) -> Void
     local threads: @Memory[Thread[Void]] = me.threads
     local started: USize = threads.count()
@@ -83,129 +83,120 @@ routine FiberPool.destruct(me: @Me) -> Void
     me.stopping.poke_atomic(1)
     me.epoch.atomic_fetch_add(1)
     wake_all(me.epoch)
-    jump collect(0)
 
-    block collect(i: USize)
-        branch i.eq(started)
-            ? jobs(me.idle.peek())
-            : continue
+    each i in 0 til started
         t: Thread[Void] = threads.load(index: i)
         t.wait_finished()
         t.give_back()
-        jump collect(i.add(1))
+    then
+        until job.is_null() with job: @PoolJob = me.idle.peek()
+            next: @PoolJob = job.next.peek()
+            job.slot.destruct()
+            deallocate(data: job, alloc: me.alloc.peek())
+            continue with job: next
+        threads.drop()
+        me.idle.poke(null)
+        return
 
-    block jobs(job: @PoolJob)
-        branch job.is_null()
-            ? finish()
-            : continue
+    until job.is_null() with job: @PoolJob = me.idle.peek()
         next: @PoolJob = job.next.peek()
         job.slot.destruct()
         deallocate(data: job, alloc: me.alloc.peek())
-        jump jobs(next)
-
-    block finish()
-        threads.drop()
-        me.idle.poke(null)
-        return()
+        continue with job: next
+    threads.drop()
+    me.idle.poke(null)
+    return
 
 /// Makes a `PoolJob` from its fields.
 /// :param slot: Its `slot`.
 /// :param next: Its `next`.
 /// :param pool: Its `pool`.
 /// :returns: The new value.
-#target(os: not "none")
+@target(os: not "none")
 routine PoolJob.construct(slot: WorkSlot, next: @Me, pool: @FiberPool) -> Me
-    return(Me(slot, next, pool))
+    return Me(slot, next, pool)
 
 /// Releases the block of its last work.
-#target(os: not "none")
+@target(os: not "none")
 routine PoolJob.destruct(me: @Me) -> Void
     me.slot.destruct()
-    return()
+    return
 
 /// Makes a `Job` from its fields.
 /// :param job: Its `job`.
 /// :param issued: Its `issued`.
 /// :returns: The new value.
-#target(os: not "none")
+@target(os: not "none")
 routine Job[T].construct(job: @PoolJob, issued: U64) -> Me
-require T: typename
-    return(Me(job, issued))
+needs T: typename
+    return Me(job, issued)
 
 /// Crashes when the ticket wasn't given back: its job would be lost, and its work might still run.
 /// :throws: Crashes with `TicketNotGivenBackError` for a ticket that still holds its job.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine Job[T].destruct(me: @Me) -> Void
-require T: typename
+needs T: typename
     job: @PoolJob = me.job.peek()
-    branch job.is_null()
-        ? return()
-        : continue
-    branch job.slot.issued.peek().eq(me.issued.peek())
-        ? crash(name: "TicketNotGivenBackError",
-            message: "This job ticket was never given back: wait_finished() and give_back() before it goes.")
-        : return()
+    if job.is_null()
+        return
+    if job.slot.issued.peek() == me.issued.peek()
+        crash(name: "TicketNotGivenBackError", message: "This job ticket was never given back: wait_finished() and give_back() before it goes.")
+    else
+        return
 
 /// A ticket for a job of the pool: one given back, or a new one. The pool's threads start with the first.
 /// :typeparam T: The type of the work's result, `Void` for none.
 /// :returns: The ticket, with no work yet.
 /// :throws: Crashes with `MemoryAllocationError` when there is no memory for the job, and with `TaskSpawnError` when
 ///     the pool's threads can't start.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine FiberPool.get_job[T](me: @Me) -> Job[T]
-require T: typename
+needs T: typename
     me.lock.lock()
     me.start_threads()
     idle: @PoolJob = me.idle.peek()
-    branch idle.is_null()
-        ? new()
-        : continue
+    if idle.is_null()
+        me.lock.unlock()
+        alloc: @MemoryManager = me.alloc.peek()
+        job: @PoolJob = allocate[PoolJob](count: 1, alloc)
+        if job.is_null()
+            crash_allocation()
+        job.poke(PoolJob(slot: .construct(alloc), next: null, pool: me))
+        return Job[T](job, issued: 0)
     me.idle.poke(idle.next.peek())
     me.lock.unlock()
     idle.next.poke(null)
     idle.slot.state.poke_atomic(TICKET_EMPTY)
-    return(Job[T](job: idle, issued: idle.slot.issued.peek()))
-
-    block new()
-        me.lock.unlock()
-        alloc: @MemoryManager = me.alloc.peek()
-        job: @PoolJob = allocate[PoolJob](count: 1, alloc)
-        branch job.is_null()
-            ? crash_allocation()
-            : continue
-        job.poke(PoolJob(slot: .construct(alloc), next: null, pool: me))
-        return(Job[T](job, issued: 0))
+    return Job[T](job: idle, issued: idle.slot.issued.peek())
 
 /// Starts the pool's threads, the first time. The lock is held.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 private routine FiberPool.start_threads(me: @Me) -> Void
     local count: USize = me.count.peek()
     local threads: @Memory[Thread[Void]] = me.threads
 
-    branch threads.count().eq(0)
-        ? continue
-        : return()
+    if not (threads.count() == 0)
+        return
     threads.poke(.construct(count, manager: me.alloc.peek()))
-    jump start(0)
 
-    block start(i: USize)
-        branch i.eq(count)
-            ? return()
-            : continue
+    each i in 0 til count
         t: Thread[Void] = get_thread[Void]()
         t.put_work(entry: pool_thread.to[Callable](), args: me)
         threads.store(index: i, value: t)
-        jump start(i.add(1))
+    then
+        return
 
 /// Puts `job` behind the others in the queue and wakes the threads.
 /// :param job: The job, with its work put on.
-#target(os: not "none")
+@target(os: not "none")
 private routine FiberPool.queue(me: @Me, job: @PoolJob) -> Void
     me.lock.lock()
     last: @PoolJob = me.last.peek()
-    branch last.is_null()
-        ? empty()
-        : continue
+    if last.is_null()
+        jump empty()
     last.next.poke(job)
     jump queued()
 
@@ -218,347 +209,345 @@ private routine FiberPool.queue(me: @Me, job: @PoolJob) -> Void
         me.lock.unlock()
         me.epoch.atomic_fetch_add(1)
         wake_all(me.epoch)
-        return()
+        return
 
 /// The job at the front of the queue, taken out, or null.
 /// :returns: The job, or null.
-#target(os: not "none")
+@target(os: not "none")
 private routine FiberPool.take(me: @Me) -> @PoolJob
     me.lock.lock()
     job: @PoolJob = me.first.peek()
-    branch job.is_null()
-        ? none()
-        : continue
+    if job.is_null()
+        me.lock.unlock()
+        return null
     next: @PoolJob = job.next.peek()
     me.first.poke(next)
-    branch next.is_null()
-        ? continue
-        : taken(job)
-    me.last.poke(null)
-    jump taken(job)
-
-    block taken(job: @PoolJob)
+    if not next.is_null()
         job.next.poke(null)
         me.lock.unlock()
-        return(job)
-
-    block none()
-        me.lock.unlock()
-        return(null)
+        return job
+    me.last.poke(null)
+    job.next.poke(null)
+    me.lock.unlock()
+    return job
 
 /// A pool thread's work: runs this thread's fibers until none is ready, starts the next queued job as one of them,
 /// and sleeps when there is nothing, until the pool stops and its fibers are done.
 /// :param pool: The pool.
-#target(os: not "none")
+@target(os: not "none")
 private routine pool_thread(pool: @FiberPool) -> Void
     local running: @List[Fiber[Void]] <- .construct(alloc: DEFAULT_HEAP)
 
     FIBERS.wake_through(pool.epoch)
-    jump look()
 
     // Reads the epoch before looking, so work or a wake that comes in between changes it and the sleep returns.
-    block look()
+    while true
         seen: U32 = pool.epoch.peek_atomic()
         FIBERS.run_until_idle()
         give_back_finished(running)
         job: @PoolJob = pool.take()
-        branch job.is_null()
-            ? nothing(seen)
-            : continue
+        if job.is_null()
+            if pool.stopping.peek_atomic() == 1 and running.count() == 0
+                break
+            wait: U64 = FIBERS.idle_wait()
+            if wait == U64.MAX
+                wait_on(at: pool.epoch, expected: seen)
+                continue
+            wait_on_for(at: pool.epoch, expected: seen, timeout_ns: wait)
+            continue
         fiber: Fiber[Void] = FIBERS.get_fiber[Void]()
         fiber.run_job(job.slot)
         running.add_last(fiber)
-        jump look()
-
-    block nothing(seen: U32)
-        branch pool.stopping.peek_atomic().eq(1).bitand(running.count().eq(0))
-            ? finish()
-            : continue
-        wait: U64 = FIBERS.idle_wait()
-        branch wait.eq(U64.MAX)
-            ? forever(seen)
-            : continue
-        wait_on_for(at: pool.epoch, expected: seen, timeout_ns: wait)
-        jump look()
-
-    block forever(seen: U32)
-        wait_on(at: pool.epoch, expected: seen)
-        jump look()
-
-    block finish()
-        running.destruct()
-        return()
+    running.destruct()
+    return
 
 /// Gives back the fibers in `running` whose job is done, and takes them out.
 /// :param running: The fibers running jobs.
-#target(os: not "none")
+@target(os: not "none")
 private routine give_back_finished(running: @List[Fiber[Void]]) -> Void
-    jump look(0)
-
-    block look(i: USize)
-        branch i.ge(running.count())
-            ? return()
-            : continue
-        fiber: Fiber[Void] = running.getitem(i)
-        branch fiber.check_finished()
-            ? finished(i, fiber)
-            : look(i.add(1))
-
-    // The last fiber takes the finished one's place, and is looked at next.
-    block finished(i: USize, fiber: Fiber[Void])
-        fiber.give_back()
-        last: Fiber[Void] = running.remove_last()
-        branch i.lt(running.count())
-            ? continue
-            : return()
-        running.setitem(index: i, value: last)
-        jump look(i)
+    while i < running.count() with i: USize = 0
+        fiber: Fiber[Void] = running[i]
+        if fiber.check_finished()
+            // The last fiber takes the finished one's place, and is looked at next.
+            fiber.give_back()
+            last: Fiber[Void] = running.remove_last()
+            if not (i < running.count())
+                return
+            running[i] = last
+            continue with i: i
+        else
+            continue with i: i + 1
+    then
+        return
 
 // -- the tickets -------------------------------------------------------------------------------------------------
 
 /// The slot the ticket's work lives in, for code that waits on several tickets at once.
 /// :returns: The slot.
 /// :throws: Crashes with `TicketGivenBackError` for a ticket given back.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine Job[T].work_slot(me: Me) -> @WorkSlot
-require T: typename
+needs T: typename
     job: @PoolJob = me.job
     job.slot.check_ticket(me.issued)
-    return(job.slot)
+    return job.slot
 
 /// Starts the work in `work`, run by `runner`: it waits in the pool's queue for a free thread.
 /// :param runner: Runs the work.
 /// :param work: Its block.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 private routine Job[T].start(me: Me, runner: Callable[(Addr,), Void], work: Addr) -> Void
-require T: typename
+needs T: typename
     job: @PoolJob = me.job
     me.work_slot().put(runner, work)
     job.pool.peek().queue(job)
-    return()
+    return
 
 /// Starts `entry` on the ticket. It runs from here on.
 /// :param entry: The routine.
 /// :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine Job[T].put_work(me: Me, entry: Callable[(), T]) -> Void
-require T: typename
+needs T: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_work0[T](entry, alloc: slot.alloc.peek())
     me.start(runner, work)
-    return()
+    return
 
 /// Starts `entry` on `args` on the ticket. It runs from here on.
 /// :param entry: The routine.
 /// :param args: Its argument.
 /// :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine Job[T].put_work[A](me: Me, entry: Callable[(A,), T], args: A) -> Void
-require T: typename, A: typename
+needs T: typename, A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_work1[T, A](entry, args, alloc: slot.alloc.peek())
     me.start(runner, work)
-    return()
+    return
 
 /// Starts `entry` on `args` on the ticket. It runs from here on.
 /// :param entry: The routine.
 /// :param args: Its arguments, in a tuple.
 /// :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine Job[T].put_work[A, B](me: Me, entry: Callable[(A, B), T], args: (A, B)) -> Void
-require T: typename, A: typename, B: typename
+needs T: typename, A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_work2[T, A, B](entry, args, alloc: slot.alloc.peek())
     me.start(runner, work)
-    return()
+    return
 
 /// Starts `entry` on `args` on the ticket. It runs from here on.
 /// :param entry: The routine.
 /// :param args: Its arguments, in a tuple.
 /// :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine Job[T].put_work[A, B, C](me: Me, entry: Callable[(A, B, C), T], args: (A, B, C)) -> Void
-require T: typename, A: typename, B: typename, C: typename
+needs T: typename, A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_work3[T, A, B, C](entry, args, alloc: slot.alloc.peek())
     me.start(runner, work)
-    return()
+    return
 
 /// Starts `entry` on `args` on the ticket. It runs from here on.
 /// :param entry: The routine.
 /// :param args: Its arguments, in a tuple.
 /// :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine Job[T].put_work[A, B, C, D](me: Me, entry: Callable[(A, B, C, D), T],
     args: (A, B, C, D)) -> Void
-require T: typename, A: typename, B: typename, C: typename, D: typename
+needs T: typename, A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_work4[T, A, B, C, D](entry, args, alloc: slot.alloc.peek())
     me.start(runner, work)
-    return()
+    return
 
 /// Starts `entry` on the ticket, a routine with no result. It runs from here on.
 /// :param entry: The routine.
 /// :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine Job[Void].put_work(me: Me, entry: Callable[(), Void]) -> Void
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_voidwork0(entry, alloc: slot.alloc.peek())
     me.start(runner, work)
-    return()
+    return
 
 /// Starts `entry` on `args` on the ticket, a routine with no result. It runs from here on.
 /// :param entry: The routine.
 /// :param args: Its argument.
 /// :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine Job[Void].put_work[A](me: Me, entry: Callable[(A,), Void], args: A) -> Void
-require A: typename
+needs A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_voidwork1[A](entry, args, alloc: slot.alloc.peek())
     me.start(runner, work)
-    return()
+    return
 
 /// Starts `entry` on `args` on the ticket, a routine with no result. It runs from here on.
 /// :param entry: The routine.
 /// :param args: Its arguments, in a tuple.
 /// :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine Job[Void].put_work[A, B](me: Me, entry: Callable[(A, B), Void], args: (A, B)) -> Void
-require A: typename, B: typename
+needs A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_voidwork2[A, B](entry, args, alloc: slot.alloc.peek())
     me.start(runner, work)
-    return()
+    return
 
 /// Starts `entry` on `args` on the ticket, a routine with no result. It runs from here on.
 /// :param entry: The routine.
 /// :param args: Its arguments, in a tuple.
 /// :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine Job[Void].put_work[A, B, C](me: Me, entry: Callable[(A, B, C), Void],
     args: (A, B, C)) -> Void
-require A: typename, B: typename, C: typename
+needs A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_voidwork3[A, B, C](entry, args, alloc: slot.alloc.peek())
     me.start(runner, work)
-    return()
+    return
 
 /// Starts `entry` on `args` on the ticket, a routine with no result. It runs from here on.
 /// :param entry: The routine.
 /// :param args: Its arguments, in a tuple.
 /// :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ///     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine Job[Void].put_work[A, B, C, D](me: Me, entry: Callable[(A, B, C, D), Void],
     args: (A, B, C, D)) -> Void
-require A: typename, B: typename, C: typename, D: typename
+needs A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_voidwork4[A, B, C, D](entry, args, alloc: slot.alloc.peek())
     me.start(runner, work)
-    return()
+    return
 
 /// Whether the work has finished, without waiting: true once it has, and for a ticket with no work.
 /// :returns: True unless the work runs or waits for a thread.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine Job[T].check_finished(me: Me) -> Bool
-require T: typename
-    return(me.work_slot().is_finished())
+needs T: typename
+    return me.work_slot().is_finished()
 
 /// Waits until the work has finished. Inside a fiber only that fiber waits, and its thread goes on with other work.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine Job[T].wait_finished(me: Me) -> Void
-require T: typename
+needs T: typename
     me.work_slot().wait()
-    return()
+    return
 
 /// Waits until the work has finished or `ns` nanoseconds have passed, whichever comes first.
 /// :param ns: The longest wait, in nanoseconds.
 /// :returns: True when the work has finished, false when the time ran out first.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine Job[T].wait_finished_for(me: Me, ns: U64) -> Bool
-require T: typename
-    return(me.work_slot().wait_until(deadline: monotonic_ns().add_clamp(ns), cancellable: false))
+needs T: typename
+    return me.work_slot().wait_until(deadline: monotonic_ns() +^ ns, cancellable: false)
 
 /// Waits until the work has finished, or until the work that waits is asked to stop with `cancel()`.
 /// :returns: `Unit` when the work has finished, `CancelRequested` when the waiting work was cancelled first.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine Job[T].wait_finished_result(me: Me) -> Result[Unit, CancelRequested]
-require T: typename
-    branch me.work_slot().wait_until(deadline: U64.MAX, cancellable: true)
-        ? return(Unit())
-        : return(CancelRequested())
+needs T: typename
+    if me.work_slot().wait_until(deadline: U64.MAX, cancellable: true)
+        return Unit()
+    else
+        return CancelRequested()
 
 /// The finished work's result.
 /// :returns: The result.
 /// :throws: Crashes with `TicketBusyError` while the work runs, with `NoWorkError` when there was none, and with
 ///     `CancelledWorkError` when it was cancelled (`retrieve_result` tells that apart).
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine Job[T].retrieve(me: Me) -> T
-require T: typename
+needs T: typename
     slot: @WorkSlot = me.work_slot()
     place: @T = slot.result_place[T]()
-    branch slot.is_cancelled()
-        ? crash(name: "CancelledWorkError",
-            message: "This ticket's work was cancelled, so its result may be cut short: retrieve_result() tells a cancelled one apart.")
-        : return(place.peek())
+    if slot.is_cancelled()
+        crash(name: "CancelledWorkError", message: "This ticket's work was cancelled, so its result may be cut short: retrieve_result() tells a cancelled one apart.")
+    else
+        return place.peek()
 
 /// Gives nothing: work with no result. It checks that the work has finished and wasn't cancelled.
 /// :throws: Crashes with `TicketBusyError` while the work runs, with `NoWorkError` when there was none, and with
 ///     `CancelledWorkError` when it was cancelled.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine Job[Void].retrieve(me: Me) -> Void
     slot: @WorkSlot = me.work_slot()
     slot.result_place[Byte]()
-    branch slot.is_cancelled()
-        ? crash(name: "CancelledWorkError",
-            message: "This ticket's work was cancelled, so it may have stopped short: retrieve_result() tells a cancelled one apart.")
-        : return()
+    if slot.is_cancelled()
+        crash(name: "CancelledWorkError", message: "This ticket's work was cancelled, so it may have stopped short: retrieve_result() tells a cancelled one apart.")
+    else
+        return
 
 /// The finished work's result, or `CancelRequested` when `cancel()` asked it to stop before it finished.
 /// :returns: The result or `CancelRequested`.
 /// :throws: Crashes with `TicketBusyError` while the work runs, and with `NoWorkError` when there was none.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine Job[T].retrieve_result(me: Me) -> Result[T, CancelRequested]
-require T: typename
+needs T: typename
     slot: @WorkSlot = me.work_slot()
     place: @T = slot.result_place[T]()
-    branch slot.is_cancelled()
-        ? return(CancelRequested())
-        : return(place.peek())
+    if slot.is_cancelled()
+        return CancelRequested()
+    else
+        return place.peek()
 
 /// Asks the work to stop: `cancel_requested()` turns true inside it, and the work stops where it looks.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine Job[T].cancel(me: Me) -> Void
-require T: typename
+needs T: typename
     me.work_slot().request_cancel()
-    return()
+    return
 
 /// Hands the job back to its pool for the next ticket. The ticket is over.
 /// :throws: Crashes with `TicketBusyError` while the work runs, and with `TicketGivenBackError` for a ticket given
 ///     back already.
-#[target(os: not "none"), track_caller]
+@target(os: not "none")
+@track_caller
 routine Job[T].give_back(me: Me) -> Void
-require T: typename
+needs T: typename
     me.work_slot().give_back()
     job: @PoolJob = me.job
     pool: @FiberPool = job.pool.peek()
@@ -566,4 +555,4 @@ require T: typename
     job.next.poke(pool.idle.peek())
     pool.idle.poke(job)
     pool.lock.unlock()
-    return()
+    return

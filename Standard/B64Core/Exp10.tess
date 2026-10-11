@@ -38,100 +38,98 @@ preset CM_B64_EXP10_DB: @Array[U64, 49] <- [0x3F4821E0F2AFB970, 0x3F57C3DDD23AC8
 /// :returns: 10^`me`, correctly rounded.
 routine B64.exp10(me: Me) -> Me
     local ux: U64 = me.bits()
-    local aix: U64 = ux.bitand(0x7FFFFFFFFFFFFFFF)
+    local aix: U64 = ux & 0x7FFFFFFFFFFFFFFF
     local r: @Me <- .hollow()
 
-    edge: Bool = aix.gt(0x40734413509F79FE)  // |x| > 0x1.34413509f79fep+8
-    branch edge
-        ? edge()
-        : exact()
+    // |x| > 0x1.34413509f79fep+8
+    if aix > 0x40734413509F79FE
+        jump edge()
+    else
+        jump exact()
 
     block edge()
-        nan: Bool = aix.gt(0x7FF0000000000000)
-        inf: Bool = aix.eq(0x7FF0000000000000)
-        positive: Bool = ux.shr(63).eq(0)
-        under: Bool = aix.gt(0x407439B746E36B52)  // x < -0x1.439b746e36b52p+8
+        nan: Bool = aix > 0x7FF0000000000000
+        inf: Bool = aix == 0x7FF0000000000000
+        positive: Bool = ux >> 63 == 0
+        // x < -0x1.439b746e36b52p+8
         when
-            nan => return(me.add(me))
-            inf => infinite(positive)
-            positive => return(Me.mul(0x1p1023, 2.0))  // overflow
-            under => return(Me.mul(0x1.8p-1022, 0x1p-55))  // underflow to +0
-            else => exact()
+            nan => return me + me
+            inf => jump infinite(positive)
+            positive => return Me.mul(8.98846567431158e307, 2.0)
+            aix > 0x407439B746E36B52 => return Me.mul(3.337610787760802e-308, 2.7755575615628914e-17)
+            else => jump exact()
 
+    // overflow
+    // underflow to +0
     block infinite(positive: Bool)
-        branch positive
-            ? return(me)
-            : return(0.0)
+        if positive
+            return me
+        else
+            return 0.0
 
     // a nonnegative integer n <= 22 (bits below 2^(e - 1023 - 4) all 0): 10^n by exact products
     block exact()
-        short: Bool = ux.shl(16).eq(0).bitand(aix.shr(48).le(0x4036))
-        branch short
-            ? continue
-            : flat()
+        if not (ux << 16 == 0 and aix >> 48 <= 0x4036)
+            jump flat()
         kx: Me = me.round_ties_even()
-        integral: Bool = kx.eq(me)
-        branch integral
-            ? continue
-            : flat()
+        if not (kx == me)
+            jump flat()
         k: S64 = kx.to[S64]()
-        positive: Bool = k.ge(0)
-        branch positive
-            ? continue
-            : flat()
+        if not (k >= 0)
+            jump flat()
         1.0.poke_into(r)
         jump power(k, 0)
 
     block power(k: S64, i: S64)
-        done: Bool = i.ge(k)
-        branch done
-            ? return(r.peek())
-            : continue
-        r.peek().mul(10.0).poke_into(r)
-        jump power(k, i.add(1))
+        if i >= k
+            return r.peek()
+        (r.peek() * 10.0).poke_into(r)
+        jump power(k, i + 1)
 
     block flat()
-        one: Bool = aix.le(0x3C7BCB7B1526E50E)  // |x| <= 0x1.bcb7b1526e50ep-56: 10^x rounds to 1
-        branch one
-            ? return(Me.add(1.0, me))
-            : fast()
+        // |x| <= 0x1.bcb7b1526e50ep-56: 10^x rounds to 1
+        if aix <= 0x3C7BCB7B1526E50E
+            return Me.add(1.0, me)
+        else
+            jump fast()
 
     block fast()
-        t: Me = Me.mul(0x1.a934f0979a371p+13, me).round_ties_even()
+        t: Me = Me.mul(13606.617476658635, me).round_ties_even()
         jt: S64 = t.to[S64]()
-        ie: S64 = jt.shr(12)
+        ie: S64 = jt >> 12
         tt: CmF64ExpDd = cm_b64_exp_table_2pow(jt.to_wrap[U64]())
-        dx: Me = me.sub(Me.mul(0x1.34413508p-14, t)).sub(Me.mul(0x1.f79fef311f12bp-46, t))
-        dx2: Me = dx.mul(dx)
-        p01: Me = Me.add(0x1.26bb1bbb55516p+1, dx.mul(0x1.53524c73cea69p+1))
-        p23: Me = Me.add(0x1.0470591fd74e1p+1, dx.mul(0x1.2bd760a1f32a5p+0))
-        p: Me = p01.add(dx2.mul(p23))
-        fx: Me = tt.hi.mul(dx)
-        fl: Me = tt.lo.add(fx.mul(p))
-        sub: Bool = ux.ge(0xC0733A7146F72A42)  // x <= -0x1.33a7146f72a42p+8: subnormal result
-        branch sub
-            ? subnormal(tt.hi, fl, ie)
-            : normal(tt.hi, fl, ie)
+        dx: Me = me - Me.mul(7.349365125719487e-05, t) - Me.mul(2.795678930181113e-14, t)
+        dx2: Me = dx * dx
+        p01: Me = Me.add(2.302585092994046, dx * 2.650949055239199)
+        p23: Me = Me.add(2.0346785932039073, dx * 1.171255149401227)
+        p: Me = p01 + dx2 * p23
+        fx: Me = tt.hi * dx
+        fl: Me = tt.lo + fx * p
+        // x <= -0x1.33a7146f72a42p+8: subnormal result
+        if ux >= 0xC0733A7146F72A42
+            jump subnormal(tt.hi, fl, ie)
+        else
+            jump normal(tt.hi, fl, ie)
 
     block normal(fh: Me, fl: Me, ie: S64)
-        ub: Me = fh.add(fl.add(2.17e-19))
-        lb: Me = fh.add(fl.sub(2.17e-19))
-        sure: Bool = lb.eq(ub)
-        branch sure
-            ? return(cm_b64_exp_ldexp(x: fh.add(fl), e: ie))
-            : return(cm_b64_exp10_accurate(me))
+        ub: Me = fh + (fl + 2.17e-19)
+        lb: Me = fh + (fl - 2.17e-19)
+        if lb == ub
+            return cm_b64_exp_ldexp(x: fh + fl, e: ie)
+        else
+            return cm_b64_exp10_accurate(me)
 
     block subnormal(fh: Me, fl: Me, ie: S64)
         bias_e: U64 = S64.sub(1, ie).to_wrap[U64]()
-        bias: Me = Me.from_bits(bias_e.shl(52))
+        bias: Me = Me.from_bits(bias_e << 52)
         s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: bias, y: fh)
-        sl: Me = fl.add(s.lo)
-        lb: Me = s.hi.add(sl.sub(2.17e-19))
-        ub: Me = s.hi.add(sl.add(2.17e-19))
-        sure: Bool = lb.eq(ub)
-        branch sure
-            ? return(Me.from_bits(s.hi.add(sl).bits().bitand(0x000FFFFFFFFFFFFF)))
-            : return(cm_b64_exp10_accurate(me))
+        sl: Me = fl + s.lo
+        lb: Me = s.hi + (sl - 2.17e-19)
+        ub: Me = s.hi + (sl + 2.17e-19)
+        if lb == ub
+            return Me.from_bits((s.hi + sl).bits() & 0x000FFFFFFFFFFFFF)
+        else
+            return cm_b64_exp10_accurate(me)
 
 /// The slow accurate path of exp10, for finite x whose 10^x neither overflows nor underflows to 0.
 /// :param x: The argument.
@@ -140,89 +138,74 @@ private routine cm_b64_exp10_accurate(x: B64) -> B64
     local ch: @B64 <- .hollow()
     local cl: @B64 <- .hollow()
     local ux: U64 = x.bits()
-    local t: B64 = B64.mul(0x1.a934f0979a371p+13, x).round_ties_even()
+    local t: B64 = B64.mul(13606.617476658635, x).round_ties_even()
     local jt: S64 = t.to[S64]()
     local ujt: U64 = jt.to_wrap[U64]()
-    local ie: S64 = jt.shr(12)
+    local ie: S64 = jt >> 12
     local tt: CmF64ExpDd = cm_b64_exp_table_2pow(ujt)
     // Cody-Waite reduction with a triple-double log10(2)/2^12
-    local dx: B64 = x.sub(B64.mul(0x1.34413508p-14, t))
-    local dxl: B64 = B64.mul(-0x1.f79fef311f12bp-46, t)
+    local dx: B64 = x - B64.mul(7.349365125719487e-05, t)
+    local dxl: B64 = B64.mul(-2.795678930181113e-14, t)
     // the rounding error of dxl
-    local dxle: B64 = B64.mul_add(-0x1.f79fef311f12bp-46, a: t, b: dxl.neg())
-    local dxll: B64 = B64.mul(-0x1.ac0b7c917826bp-101, t).add(dxle)
-    local dxh: B64 = dx.add(dxl)
-    local dxlo: B64 = dx.sub(dxh).add(dxl).add(dxll)
+    local dxle: B64 = B64.mul_add(-2.795678930181113e-14, a: t, b: -dxl)
+    local dxll: B64 = B64.mul(-6.5950754538526695e-31, t) + dxle
+    local dxh: B64 = dx + dxl
+    local dxlo: B64 = dx - dxh + dxl + dxll
 
     B64.from_bits(CM_B64_EXP10_ACC_C.getitem(10)).poke_into(ch)
     B64.from_bits(CM_B64_EXP10_ACC_C.getitem(11)).poke_into(cl)
-    jump horner(5)
 
     // Horner's rule over the double-double coefficients, top down
-    block horner(i: USize)
-        done: Bool = i.eq(0)
-        branch done
-            ? evaluated()
-            : continue
-        j: USize = i.sub(1)
+    while i != 0 with i: USize = 5
+        j: USize = i - 1
         r: CmF64ExpDd = cm_b64_exp_muldd(xh: dxh, xl: dxlo, ch: ch.peek(), cl: cl.peek())
-        ci: B64 = B64.from_bits(CM_B64_EXP10_ACC_C.getitem(j.mul(2)))
-        cil: B64 = B64.from_bits(CM_B64_EXP10_ACC_C.getitem(j.mul(2).add(1)))
-        sh: B64 = r.hi.add(ci)
-        sl: B64 = ci.sub(sh).add(r.hi)
-        r.lo.add(sl.add(cil)).poke_into(cl)
+        ci: B64 = B64.from_bits(CM_B64_EXP10_ACC_C.getitem(j * 2))
+        cil: B64 = B64.from_bits(CM_B64_EXP10_ACC_C.getitem(j * 2 + 1))
+        sh: B64 = r.hi + ci
+        sl: B64 = ci - sh + r.hi
+        (r.lo + (sl + cil)).poke_into(cl)
         sh.poke_into(ch)
-        jump horner(j)
-
-    block evaluated()
-        f: CmF64ExpDd = cm_b64_exp_muldd(xh: dxh, xl: dxlo, ch: ch.peek(), cl: cl.peek())
-        sub: Bool = ux.ge(0xC0733A7146F72A42)  // subnormal result
-        one: Bool = ujt.bitand(0xFFF).eq(0)  // 2^(k/2^12) is exactly 1
-        when
-            sub => subnormal(f)
-            one => at_one(f, tt.hi)
-            else => scale(f)
-
-    block subnormal(f: CmF64ExpDd)
-        bias_e: U64 = S64.sub(1, ie).to_wrap[U64]()
-        bias: B64 = B64.from_bits(bias_e.shl(52))
-        g: CmF64ExpDd = cm_b64_exp_muldd(xh: f.hi, xl: f.lo, ch: tt.hi, cl: tt.lo)
-        h: CmF64ExpDd = cm_b64_exp_fastsum(xh: tt.hi, xl: tt.lo, yh: g.hi, yl: g.lo)
-        s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: bias, y: h.hi)
-        fl: B64 = h.lo.add(s.lo)
-        res: B64 = s.hi.add(fl)
-        return(B64.from_bits(res.bits().bitand(0x000FFFFFFFFFFFFF)))
-
-    // add 1 in without a product
-    block at_one(f: CmF64ExpDd, th: B64)
-        s1: CmF64ExpDd = cm_b64_exp_fasttwosum(x: f.hi, y: f.lo)
-        s2: CmF64ExpDd = cm_b64_exp_fasttwosum(x: th, y: s1.hi)
-        s3: CmF64ExpDd = cm_b64_exp_fasttwosum(x: s2.lo, y: s1.lo)
-        ub: U64 = s3.hi.bits()
-        pow2: Bool = ub.shl(12).eq(0)
-        branch pow2
-            ? nudge(s2.hi, ub, s3.lo)
-            : return(cm_b64_exp_ldexp(x: s2.hi.add(s3.hi), e: ie))
-
-    // the tail is a power of 2: push it away from the rounding boundary toward the sign of its own tail
-    block nudge(fh: B64, ub: U64, tail: B64)
-        same: Bool = ub.shr(63).eq(tail.bits().shr(63))
-        u: U64 = same
-            ? ub.add_wrap(U64.shl(1, 51))
-            : ub.sub_wrap(U64.shl(1, 51).add_wrap(1))
-        return(cm_b64_exp_ldexp(x: fh.add(B64.from_bits(u)), e: ie))
-
-    block scale(f: CmF64ExpDd)
-        g: CmF64ExpDd = cm_b64_exp_muldd(xh: f.hi, xl: f.lo, ch: tt.hi, cl: tt.lo)
-        h: CmF64ExpDd = cm_b64_exp_fastsum(xh: tt.hi, xl: tt.lo, yh: g.hi, yl: g.lo)
-        s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: h.hi, y: h.lo)
-        ul: U64 = s.lo.bits()
-        near: Bool = ul.add_wrap(4).bitand(0x000FFFFFFFFFFFFF).le(4)
-        tiny: Bool = ul.shr(52).bitand(0x7FF).lt(918)
-        hard: Bool = near.bitor(tiny)
-        branch hard
-            ? return(cm_b64_exp_ldexp(x: cm_b64_exp10_database(x, f: s.hi), e: ie))
-            : return(cm_b64_exp_ldexp(x: s.hi, e: ie))
+        continue with i: j
+    f: CmF64ExpDd = cm_b64_exp_muldd(xh: dxh, xl: dxlo, ch: ch.peek(), cl: cl.peek())
+    sub: Bool = ux >= 0xC0733A7146F72A42
+    // subnormal result
+    // 2^(k/2^12) is exactly 1
+    when
+        sub =>
+            bias_e: U64 = S64.sub(1, ie).to_wrap[U64]()
+            bias: B64 = B64.from_bits(bias_e << 52)
+            g: CmF64ExpDd = cm_b64_exp_muldd(xh: f.hi, xl: f.lo, ch: tt.hi, cl: tt.lo)
+            h: CmF64ExpDd = cm_b64_exp_fastsum(xh: tt.hi, xl: tt.lo, yh: g.hi, yl: g.lo)
+            s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: bias, y: h.hi)
+            fl: B64 = h.lo + s.lo
+            res: B64 = s.hi + fl
+            return B64.from_bits(res.bits() & 0x000FFFFFFFFFFFFF)
+        ujt & 0xFFF == 0 =>
+            // add 1 in without a product
+            s1: CmF64ExpDd = cm_b64_exp_fasttwosum(x: f.hi, y: f.lo)
+            s2: CmF64ExpDd = cm_b64_exp_fasttwosum(x: tt.hi, y: s1.hi)
+            s3: CmF64ExpDd = cm_b64_exp_fasttwosum(x: s2.lo, y: s1.lo)
+            ub: U64 = s3.hi.bits()
+            if ub << 12 == 0
+                // the tail is a power of 2: push it away from the rounding boundary toward the sign of its own tail
+                same: Bool = ub >> 63 == s3.lo.bits() >> 63
+                u: U64 = when
+                    same => ub +% U64.shl(1, 51)
+                    else => ub -% (U64.shl(1, 51) +% 1)
+                return cm_b64_exp_ldexp(x: s2.hi + B64.from_bits(u), e: ie)
+            else
+                return cm_b64_exp_ldexp(x: s2.hi + s3.hi, e: ie)
+        else =>
+            g: CmF64ExpDd = cm_b64_exp_muldd(xh: f.hi, xl: f.lo, ch: tt.hi, cl: tt.lo)
+            h: CmF64ExpDd = cm_b64_exp_fastsum(xh: tt.hi, xl: tt.lo, yh: g.hi, yl: g.lo)
+            s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: h.hi, y: h.lo)
+            ul: U64 = s.lo.bits()
+            near: Bool = ul +% 4 & 0x000FFFFFFFFFFFFF <= 4
+            tiny: Bool = (ul >> 52) & 0x7FF < 918
+            if near or tiny
+                return cm_b64_exp_ldexp(x: cm_b64_exp10_database(x, f: s.hi), e: ie)
+            else
+                return cm_b64_exp_ldexp(x: s.hi, e: ie)
 
 /// Looks x up among the arguments whose 10^x lies too close to a rounding boundary for the accurate path, and
 /// returns the correctly rounded (unscaled) result for them, or f unchanged otherwise.
@@ -230,31 +213,23 @@ private routine cm_b64_exp10_accurate(x: B64) -> B64
 /// :param f: The unscaled result of the accurate path, returned when `x` is not in the table.
 /// :returns: The correctly rounded unscaled result for a listed `x`, else `f`.
 private routine cm_b64_exp10_database(x: B64, f: B64) -> B64
-    jump search(0, 48)
-
-    block search(a: S64, b: S64)
-        open: Bool = a.le(b)
-        branch open
-            ? probe(a, b)
-            : return(f)
-
-    block probe(a: S64, b: S64)
-        m: S64 = a.add(b).shr(1)
+    while a <= b with a: S64 = 0, b: S64 = 48
+        m: S64 = a + b >> 1
         cm: U64 = CM_B64_EXP10_DB.getitem(m.to[USize]())
         ux: U64 = x.bits()
-        below: Bool = cm.lt(ux)
-        found: Bool = cm.eq(ux)
+        below: Bool = cm < ux
         when
-            below => search(m.add(1), b)
-            found => found(m.to_wrap[U64]())
-            else => search(a, m.sub(1))
-
-    block found(um: U64)
-        sign_bit: U64 = U64.shr(371470981966157, um).bitand(1).shl(63)
-        dr: B64 = B64.from_bits(sign_bit.bitor(0x3C90000000000000))
-        upper: Bool = um.shr(5).eq(1)
-        s2: U64 = upper
-            ? 0x3781B19E1
-            : 0x7EB37EF5AC3FE7C6
-        t: U64 = s2.shr(um.bitand(31).shl(1)).bitand(3)
-        return(cm_b64_exp_pick(f, t, dr))
+            below => continue with a: m + 1, b: b
+            cm == ux =>
+                um: U64 = m.to_wrap[U64]()
+                sign_bit: U64 = (U64.shr(371470981966157, um) & 1) << 63
+                dr: B64 = B64.from_bits(sign_bit | 0x3C90000000000000)
+                upper: Bool = um >> 5 == 1
+                s2: U64 = when
+                    upper => 0x3781B19E1
+                    else => 0x7EB37EF5AC3FE7C6
+                t: U64 = (s2 >> ((um & 31) << 1)) & 3
+                return cm_b64_exp_pick(f, t, dr)
+            else => continue with a: a, b: m - 1
+    then
+        return f

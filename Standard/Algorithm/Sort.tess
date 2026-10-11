@@ -38,41 +38,27 @@ record MergeRuns
 /// :param lo: The index of the first element of the range.
 /// :param hi: The index one past the last element of the range.
 routine sort_insertion[T](data: @T, lo: USize, hi: USize) -> Void
-require T: typename, Comparable[T]
-    jump outer(lo.add(1))
-
-    block outer(i: USize)
-        done: Bool = i.ge(hi)
-        branch done
-            ? return()
-            : load(i)
-
-    block load(i: USize)
+needs T: typename, Comparable[T]
+    while i < hi with i: USize = lo + 1
         x: T = data.stride(i).peek()
-        jump inner(i, i, x)
 
-    block inner(i: USize, j: USize, x: T)
-        at_start: Bool = j.le(lo)
-        branch at_start
-            ? place(i, j, x)
-            : check(i, j, x)
+        until j <= lo with j: USize = i
+            prev: USize = j - 1
+            y: T = data.stride(prev).peek()
+            cmp: S32 = y.compare(x)
+            if cmp > 0
+                data.stride(j).poke(y)
+                continue with j: prev
+            else
+                data.stride(j).poke(x)
+                break
+        then
+            data.stride(j).poke(x)
+            continue with i: i + 1
 
-    block check(i: USize, j: USize, x: T)
-        prev: USize = j.sub(1)
-        y: T = data.stride(prev).peek()
-        cmp: S32 = y.compare(x)
-        greater: Bool = cmp.gt(0)
-        branch greater
-            ? shift(i, j, x, y, prev)
-            : place(i, j, x)
-
-    block shift(i: USize, j: USize, x: T, y: T, prev: USize)
-        data.stride(j).poke(y)
-        jump inner(i, prev, x)
-
-    block place(i: USize, j: USize, x: T)
-        data.stride(j).poke(x)
-        jump outer(i.add(1))
+        continue with i: i + 1
+    then
+        return
 
 // -- merge two sorted half-open ranges [lo, mid) and [mid, hi) -----------------
 //
@@ -85,7 +71,7 @@ require T: typename, Comparable[T]
 /// :param dst: Where the merged run is written.
 /// :param runs: Where the two adjacent runs start and end.
 routine sort_merge[T](src: @T, dst: @T, runs: MergeRuns) -> Void
-require T: typename, Comparable[T]
+needs T: typename, Comparable[T]
     local lo: USize = runs.lo
     local mid: USize = runs.mid
     local hi: USize = runs.hi
@@ -94,59 +80,59 @@ require T: typename, Comparable[T]
     jump loop(lo, mid)
 
     block loop(i: USize, j: USize)
-        i_done: Bool = i.ge(mid)
-        branch i_done
-            ? drain_b(j)
-            : check_j(i, j)
+        if i >= mid
+            jump drain_b(j)
+        else
+            jump check_j(i, j)
 
     block check_j(i: USize, j: USize)
-        j_done: Bool = j.ge(hi)
-        branch j_done
-            ? drain_a(i)
-            : pick(i, j)
+        if j >= hi
+            jump drain_a(i)
+        else
+            jump pick(i, j)
 
     block pick(i: USize, j: USize)
         a: T = src.stride(i).peek()
         b: T = src.stride(j).peek()
         cmp: S32 = a.compare(b)
-        take_a: Bool = cmp.le(0)
-        branch take_a
-            ? take_a(i, j, a)
-            : take_b(i, j, b)
+        if cmp <= 0
+            jump take_a(i, j, a)
+        else
+            jump take_b(i, j, b)
 
     block take_a(i: USize, j: USize, a: T)
         dst.stride(k.peek()).poke(a)
-        k.peek().add(1).poke_into(k)
-        jump loop(i.add(1), j)
+        (k.peek() + 1).poke_into(k)
+        jump loop(i + 1, j)
 
     block take_b(i: USize, j: USize, b: T)
         dst.stride(k.peek()).poke(b)
-        k.peek().add(1).poke_into(k)
-        jump loop(i, j.add(1))
+        (k.peek() + 1).poke_into(k)
+        jump loop(i, j + 1)
 
     block drain_a(i: USize)
-        done: Bool = i.ge(mid)
-        branch done
-            ? return()
-            : copy_a(i)
+        if i >= mid
+            return
+        else
+            jump copy_a(i)
 
     block copy_a(i: USize)
         v: T = src.stride(i).peek()
         dst.stride(k.peek()).poke(v)
-        k.peek().add(1).poke_into(k)
-        jump drain_a(i.add(1))
+        (k.peek() + 1).poke_into(k)
+        jump drain_a(i + 1)
 
     block drain_b(j: USize)
-        done: Bool = j.ge(hi)
-        branch done
-            ? return()
-            : copy_b(j)
+        if j >= hi
+            return
+        else
+            jump copy_b(j)
 
     block copy_b(j: USize)
         v: T = src.stride(j).peek()
         dst.stride(k.peek()).poke(v)
-        k.peek().add(1).poke_into(k)
-        jump drain_b(j.add(1))
+        (k.peek() + 1).poke_into(k)
+        jump drain_b(j + 1)
 
 // -- one bottom-up pass merging every pair of width-sized runs -----------------
 
@@ -157,96 +143,58 @@ require T: typename, Comparable[T]
 /// :param n: The number of elements.
 /// :param width: The length of each sorted run in `src`.
 routine sort_merge_pass[T](src: @T, dst: @T, n: USize, width: USize) -> Void
-require T: typename, Comparable[T]
-    jump loop(0)
-
-    block loop(lo: USize)
-        done: Bool = lo.ge(n)
-        branch done
-            ? return()
-            : run(lo)
-
-    block run(lo: USize)
-        mid_raw: USize = lo.add(width)
-        hi_raw: USize = mid_raw.add(width)
-        mid_ok: Bool = mid_raw.le(n)
-        mid: USize = mid_ok
-            ? mid_raw
-            : n
-        hi_ok: Bool = hi_raw.le(n)
-        hi: USize = hi_ok
-            ? hi_raw
-            : n
+needs T: typename, Comparable[T]
+    while lo < n with lo: USize = 0
+        mid_raw: USize = lo + width
+        hi_raw: USize = mid_raw + width
+        mid_ok: Bool = mid_raw <= n
+        mid: USize = when
+            mid_ok => mid_raw
+            else => n
+        hi_ok: Bool = hi_raw <= n
+        hi: USize = when
+            hi_ok => hi_raw
+            else => n
         sort_merge[T](src, dst, runs: MergeRuns(lo: lo, mid: mid, hi: hi))
-        jump loop(hi_raw)
+        continue with lo: hi_raw
+    then
+        return
 
 // -- public entry point --------------------------------------------------------
 
 /// Sorts the list in place into ascending `compare` order. Stable, so equal elements keep their order. A list of 32 elements or fewer is insertion-sorted without allocating. A longer one is merge-sorted through a scratch buffer from the list's allocator, and the buffer is freed afterward.
 /// :typeparam T: The element type, which must conform to {Comparable}.
 /// :throws: Crashes with `MemoryAllocationError` if the scratch buffer cannot be allocated.
-#track_caller
+@track_caller
 routine List[T].sort(me: @Me) -> Void
-require T: typename, Comparable[T]
+needs T: typename, Comparable[T]
     local n: USize = me.count.peek()
 
-    small: Bool = n.le(SORT_RUN)
-    branch small
-        ? small_sort()
-        : big_sort()
-
-    block small_sort()
+    if n <= SORT_RUN
         data: @T = me.storage.data.peek()
         sort_insertion[T](data, lo: 0, hi: n)
-        return()
-
-    block big_sort()
+        return
+    else
         data: @T = me.storage.data.peek()
         alloc: @MemoryManager = me.storage.manager.peek()
         scratch: @T = allocate[T](count: n, alloc)
-        failed: Bool = scratch.is_null()
-        branch failed
-            ? crash_allocation()
-            : run_loop(0, data, scratch)
-
-    block run_loop(lo: USize, data: @T, scratch: @T)
-        done: Bool = lo.ge(n)
-        branch done
-            ? pass_start(data, scratch)
-            : run_step(lo, data, scratch)
-
-    block run_step(lo: USize, data: @T, scratch: @T)
-        hi_raw: USize = lo.add(SORT_RUN)
-        hi_ok: Bool = hi_raw.le(n)
-        hi: USize = hi_ok
-            ? hi_raw
-            : n
-        sort_insertion[T](data, lo, hi)
-        jump run_loop(hi_raw, data, scratch)
-
-    block pass_start(data: @T, scratch: @T)
-        jump pass_loop(SORT_RUN, data, scratch, data, scratch)
-
-    block pass_loop(width: USize, src: @T, dst: @T, data: @T, scratch: @T)
-        done: Bool = width.ge(n)
-        branch done
-            ? merged(src, data, scratch)
-            : pass(width, src, dst, data, scratch)
-
-    block pass(width: USize, src: @T, dst: @T, data: @T, scratch: @T)
-        sort_merge_pass[T](src, dst, n, width)
-        jump pass_loop(width.mul(2), dst, src, data, scratch)
-
-    block merged(src: @T, data: @T, scratch: @T)
-        in_place: Bool = src.ptr_eq(data)
-        branch in_place
-            ? release(scratch)
-            : copy_back(src, data, scratch)
-
-    block copy_back(src: @T, data: @T, scratch: @T)
-        src.copy_into(dst: data, count: n)
-        jump release(scratch)
-
-    block release(scratch: @T)
-        deallocate[T](data: scratch, alloc: me.storage.manager.peek())
-        return()
+        if scratch.is_null()
+            crash_allocation()
+        else
+            while lo < n with lo: USize = 0
+                hi_raw: USize = lo + SORT_RUN
+                hi_ok: Bool = hi_raw <= n
+                hi: USize = when
+                    hi_ok => hi_raw
+                    else => n
+                sort_insertion[T](data, lo, hi)
+                continue with lo: hi_raw
+            then
+                while width < n with width: USize = SORT_RUN, src: @T = data, dst: @T = scratch
+                    sort_merge_pass[T](src, dst, n, width)
+                    continue with width: width * 2, src: dst, dst: src
+                then
+                    if not src.ptr_eq(data)
+                        src.copy_into(dst: data, count: n)
+                    deallocate[T](data: scratch, alloc: me.storage.manager.peek())
+                    return

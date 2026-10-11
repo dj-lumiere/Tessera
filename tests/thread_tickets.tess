@@ -8,49 +8,47 @@ import Standard/Fiber
 import Standard/Format
 import Standard/Os
 
-#threadlocal
+@threadlocal
 global SEEN: @U64 <- 7
 
 record Log
     steps: U64
 
 routine forty_two() -> S64
-    return(42)
+    return 42
 
 routine twice(n: S64) -> S64
-    return(n.mul(2))
+    return n * 2
 
 routine sum3(a: S64, b: S64, c: S64) -> S64
-    return(a.add(b).add(c))
+    return a + b + c
 
 routine sum4(a: S64, b: S64, c: S64, d: S64) -> S64
-    return(a.add(b).add(c).add(d))
+    return a + b + c + d
 
 routine pair(a: S64, b: Bool) -> S64
-    branch b
-        ? return(a)
-        : return(a.neg())
+    if b
+        return a
+    else
+        return -a
 
 /// Leaves a mark in this thread's SEEN, and returns what was there.
 routine mark(value: U64) -> U64
     before: U64 = SEEN.peek()
     SEEN.poke(value)
-    return(before)
+    return before
 
 /// Sleeps until cancelled, a millisecond at a time, and says how many naps it took.
 routine nap_until_cancelled(limit: U64) -> U64
-    jump nap(0)
-
-    block nap(n: U64)
-        branch cancel_requested().bitor(n.ge(limit))
-            ? return(n)
-            : continue
+    until cancel_requested() | (n >= limit) with n: U64 = 0
         sleep_for(1000000)
-        jump nap(n.add(1))
+        continue with n: n + 1
+    then
+        return n
 
 routine slow(ns: U64) -> U64
     sleep_for(ns)
-    return(ns)
+    return ns
 
 /// A fiber that waits for a thread ticket: only it waits.
 routine waits_for_thread(log: @Log) -> S64
@@ -58,19 +56,15 @@ routine waits_for_thread(log: @Log) -> S64
     t.put_work(entry: slow.to[Callable](), args: 5000000)
     t.wait_finished()
     t.give_back()
-    return(log.steps.peek().to[S64]())
+    return log.steps.peek().to[S64]()
 
 /// A fiber that keeps stepping while the other waits.
 routine steps(log: @Log) -> S64
-    jump step(0)
-
-    block step(i: U64)
-        branch i.eq(5)
-            ? return(5)
-            : continue
-        log.steps.poke(i.add(1))
+    each i in 0 til 5
+        log.steps.poke(i + 1)
         FIBERS.sleep(200000)
-        jump step(i.add(1))
+    then
+        return 5
 
 /// Cancels work that naps until it is, and reports what retrieve_result says.
 /// :param out: Where the line goes.
@@ -78,25 +72,21 @@ routine cancelled(out: @Out) -> Void
     local k: Thread[U64] = get_thread[U64]()
 
     k.put_work(entry: nap_until_cancelled.to[Callable](), args: 100000)
-    early: Bool = k.wait_finished_for(3000000)
-    branch early
-        ? not_cancelled()
-        : continue
+    if k.wait_finished_for(3000000)
+        out.write("not cancelled\n")
+        k.give_back()
+        return
     k.cancel()
     k.wait_finished()
     when k.retrieve_result()
-        is U64 => not_cancelled()
-        is CancelRequested => was_cancelled()
-
-    block not_cancelled()
-        out.write("not cancelled\n")
-        k.give_back()
-        return()
-
-    block was_cancelled()
-        out.write("cancelled\n")
-        k.give_back()
-        return()
+        is U64 =>
+            out.write("not cancelled\n")
+            k.give_back()
+            return
+        is CancelRequested =>
+            out.write("cancelled\n")
+            k.give_back()
+            return
 
 routine start() -> Void
     out: @Out = Out.writer()
@@ -138,7 +128,7 @@ routine start() -> Void
 
     cancelled(out)
 
-    claim log: @Log <- Log(steps: 0)
+    local log: @Log <- Log(steps: 0)
     w: Fiber[S64] = FIBERS.get_fiber[S64]()
     w.put_work(entry: waits_for_thread.to[Callable](), args: log)
     x: Fiber[S64] = FIBERS.get_fiber[S64]()
@@ -148,4 +138,4 @@ routine start() -> Void
     w.give_back()
     x.give_back()
     FIBERS.destruct()
-    return()
+    return

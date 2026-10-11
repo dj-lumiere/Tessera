@@ -276,55 +276,55 @@ preset CM_B16_TAN_PI_S1: @Array[U32, 2048] <- [0x00000000, 0x36C90FDB, 0x37490FD
 /// :returns: tan(pi `me`).
 routine B16.tan_pi(me: Me) -> Me
     local u: U16 = me.bits()
-    local au: U16 = u.bitand(0x7FFF)
-    local positive: Bool = au.eq(u)
+    local au: U16 = u & 0x7FFF
+    local positive: Bool = au == u
 
-    from_half: Bool = au.ge(0x3800)  // |x| >= 1/2: maybe an integer or a half-integer
-    minus0: Bool = u.eq(0x8000)  // the only input the tables get wrong
+    from_half: Bool = au >= 0x3800
+
+    // |x| >= 1/2: maybe an integer or a half-integer
+    // the only input the tables get wrong
     when
-        from_half => exact()
-        minus0 => return(me)
-        else => tabulated()
+        from_half => jump exact()
+        u == 0x8000 => return me
+        else => jump tabulated()
 
     // 14 <= e <= 30, the biased exponent: the bit of weight 1 is bit 25 - e of the encoding (none when e >= 26,
     // where |x| is even), the bit of weight 1/2 is bit 24 - e (the hidden bit when e = 14)
     block exact()
-        special: Bool = au.ge(0x7C00)
-        branch special
-            ? return(cm_b16_trig_pi_nan(me))
-            : continue
-        e: U16 = au.shr(10)
-        integer: Bool = au.bitand(cm_b16_tan_pi_fraction_mask(e.sub(14))).eq(0)
-        halfway: Bool = au.bitand(cm_b16_tan_pi_fraction_mask(e.sub(13))).eq(0)
+        if au >= 0x7C00
+            return cm_b16_trig_pi_nan(me)
+        e: U16 = au >> 10
+        integer: Bool = au & cm_b16_tan_pi_fraction_mask(e - 14) == 0
         when
-            integer => integer(e)
-            halfway => halfway(e)
-            else => tabulated()
+            integer => jump integer(e)
+            au & cm_b16_tan_pi_fraction_mask(e - 13) == 0 => jump halfway(e)
+            else => jump tabulated()
 
     block integer(e: U16)
-        large: Bool = e.ge(26)
-        branch large
-            ? integer_parity(true)
-            : integer_parity(au.bitand(U16.shl(1, U16.sub(25, e))).eq(0))
+        if e >= 26
+            jump integer_parity(true)
+        else
+            jump integer_parity(au & U16.shl(1, U16.sub(25, e)) == 0)
 
     block integer_parity(even: Bool)
-        plus: Bool = even.eq(positive)
-        branch plus
-            ? return(Me.from_bits(0))
-            : return(Me.from_bits(0x8000))
+        if even == positive
+            return Me.from_bits(0)
+        else
+            return Me.from_bits(0x8000)
 
     block halfway(e: U16)
-        half: Bool = e.eq(14)  // |x| = 1/2
-        branch half
-            ? pole(true)
-            : pole(au.bitand(U16.shl(1, U16.sub(25, e))).eq(0))
+        // |x| = 1/2
+        if e == 14
+            jump pole(true)
+        else
+            jump pole(au & U16.shl(1, U16.sub(25, e)) == 0)
 
     // x = n + 1/2: near_even says whether n (of |x|) is even
     block pole(near_even: Bool)
-        plus: Bool = near_even.eq(positive)
-        branch plus
-            ? return(Me.INFINITY)
-            : return(Me.NEG_INFINITY)
+        if near_even == positive
+            return Me.INFINITY
+        else
+            return Me.NEG_INFINITY
 
     block tabulated()
         i1, i2 = cm_b16_trig_split(u)
@@ -332,10 +332,11 @@ routine B16.tan_pi(me: Me) -> Me
         c1: B32 = .from_bits(CM_B16_SIN_PI_C1.getitem(i1))
         s2: B32 = .from_bits(CM_B16_SIN_PI_S2.getitem(i2))
         c2: B32 = .from_bits(CM_B16_SIN_PI_C2.getitem(i2))
-        s: B32 = s1.mul_add(a: c2, b: c1.mul(s2))  // the fmas fix the evaluation order
-        c: B32 = c1.mul_add(a: c2, b: s1.neg().mul(s2))
-        r: B32 = s.div(c)
-        return(r.to[Me]())
+        s: B32 = s1.mul_add(a: c2, b: c1 * s2)
+        // the fmas fix the evaluation order
+        c: B32 = c1.mul_add(a: c2, b: -s1 * s2)
+        r: B32 = s / c
+        return r.to[Me]()
 
 /// The mask of the encoding bits below the binary point, shifted left by one, for a B16 with biased exponent
 /// 14 + j (j = 0 is |x| in [1/2, 1), where the bit 1/2 is the hidden bit): 0xFFF for j = 0, 0x3FF >> (j - 1) for
@@ -344,6 +345,6 @@ routine B16.tan_pi(me: Me) -> Me
 /// :returns: The mask.
 private routine cm_b16_tan_pi_fraction_mask(j: U16) -> U16
     when
-        j.eq(0) => return(0xFFF)
-        j.le(11) => return(U16.shr(0x3FF, j.sub(1)))
-        else => return(0)
+        j == 0 => return 0xFFF
+        j <= 11 => return U16.shr(0x3FF, j - 1)
+        else => return 0

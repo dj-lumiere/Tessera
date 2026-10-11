@@ -23,105 +23,85 @@ record MultiReadLock
 /// A free lock.
 /// :returns: The lock.
 routine MultiReadLock.construct() -> Me
-    return(Me(state: 0, writers: 0))
+    return Me(state: 0, writers: 0)
 
 /// Takes the lock for reading, waiting while a writer holds it or waits for it.
-#target(os: not "none")
+@target(os: not "none")
 routine MultiReadLock.lock_read(me: @Me) -> Void
-    jump look()
-
-    block look()
-        state: U32 = me.state.peek_atomic()
-        writers: U32 = me.writers.peek_atomic()
-        branch writers.ne(0)
-            ? wait_writers(writers)
-            : continue
-        branch state.bitand(WRITE_HELD).ne(0)
-            ? wait_state(state)
-            : continue
-        branch me.try_add_reader(state)
-            ? return()
-            : look()
-
-    block wait_writers(writers: U32)
-        wait_while(at: me.writers, expected: writers)
-        jump look()
-
-    block wait_state(state: U32)
-        wait_while(at: me.state, expected: state)
-        jump look()
+    while true
+        state2: U32 = me.state.peek_atomic()
+        writers2: U32 = me.writers.peek_atomic()
+        if writers2 != 0
+            wait_while(at: me.writers, expected: writers2)
+            continue
+        if state2 & WRITE_HELD != 0
+            wait_while(at: me.state, expected: state2)
+            continue
+        if me.try_add_reader(state2)
+            return
+        else
+            continue
 
 /// Takes the lock for reading if no writer holds it or waits for it, without waiting.
 /// :returns: True when it took the lock.
 routine MultiReadLock.try_lock_read(me: @Me) -> Bool
-    jump look()
-
-    block look()
-        state: U32 = me.state.peek_atomic()
-        branch me.writers.peek_atomic().ne(0).bitor(state.bitand(WRITE_HELD).ne(0))
-            ? return(false)
-            : continue
-        branch me.try_add_reader(state)
-            ? return(true)
-            : look()
+    until me.writers.peek_atomic() != 0 or me.state.peek_atomic() & WRITE_HELD != 0
+        if me.try_add_reader(state)
+            return true
+        else
+            continue
+    then
+        return false
 
 /// Lets go of the lock taken for reading. The last reader out wakes a waiting writer.
-#target(os: not "none")
+@target(os: not "none")
 routine MultiReadLock.unlock_read(me: @Me) -> Void
     before: U32 = me.state.atomic_fetch_sub_release(1)
-    branch before.eq(1).bitand(me.writers.peek_atomic().ne(0))
-        ? continue
-        : return()
+    if not (before == 1 and me.writers.peek_atomic() != 0)
+        return
     wake_all(me.state)
-    return()
+    return
 
 /// Takes the lock for writing, waiting until no one holds it. From the moment it waits, readers that come later wait
 /// behind it.
-#target(os: not "none")
+@target(os: not "none")
 routine MultiReadLock.lock_write(me: @Me) -> Void
     me.writers.atomic_fetch_add(1)
-    jump look()
 
-    block look()
+    while true
         state: U32 = me.state.peek_atomic()
-        branch state.eq(0)
-            ? take()
-            : wait(state)
-
-    block take()
-        branch me.state.atomic_compare_exchange_acquire(expected: 0, new: WRITE_HELD).is_success()
-            ? return()
-            : look()
-
-    block wait(state: U32)
-        wait_while(at: me.state, expected: state)
-        jump look()
+        if state == 0
+            if me.state.atomic_compare_exchange_acquire(expected: 0, new: WRITE_HELD).is_success()
+                return
+            else
+                continue
+        else
+            wait_while(at: me.state, expected: state)
+            continue
 
 /// Takes the lock for writing if no one holds it, without waiting.
 /// :returns: True when it took the lock.
-#target(os: not "none")
+@target(os: not "none")
 routine MultiReadLock.try_lock_write(me: @Me) -> Bool
     me.writers.atomic_fetch_add(1)
-    branch me.state.atomic_compare_exchange_acquire(expected: 0, new: WRITE_HELD).is_success()
-        ? return(true)
-        : continue
+    if me.state.atomic_compare_exchange_acquire(expected: 0, new: WRITE_HELD).is_success()
+        return true
     // A reader that saw this writer for a moment waits on the count: it looks again.
     me.writers.atomic_fetch_sub(1)
     wake_all(me.writers)
-    return(false)
+    return false
 
 /// Lets go of the lock taken for writing, and wakes everyone who waits for it.
-#target(os: not "none")
+@target(os: not "none")
 routine MultiReadLock.unlock_write(me: @Me) -> Void
     me.state.poke_atomic_release(0)
     me.writers.atomic_fetch_sub_release(1)
     wake_all(me.state)
     wake_all(me.writers)
-    return()
+    return
 
 /// One more reader, if the state is still `state`.
 /// :param state: The state read before.
 /// :returns: True when the reader is in.
 private routine MultiReadLock.try_add_reader(me: @Me, state: U32) -> Bool
-    return(me.state.atomic_compare_exchange_acquire(expected: state,
-        new: state.add(1)).is_success())
+    return me.state.atomic_compare_exchange_acquire(expected: state, new: state + 1).is_success()

@@ -133,52 +133,50 @@ routine B16.erf(me: Me) -> Me
     local ax: B32 = xf.abs()
     local ux: U32 = ax.bits()
 
-    large: Bool = ux.gt(0x407AD444)  // for |x| > 0x1.f5a888p+1, erf(x) rounds to +-1
-    small: Bool = ux.lt(0x3EE00000)  // |x| < 0x1.cp-2
+    large: Bool = ux > 0x407AD444
+
+    // for |x| > 0x1.f5a888p+1, erf(x) rounds to +-1
+    // |x| < 0x1.cp-2
     when
-        large => large()
-        small => small(xf.to[B64]())
-        else => table(xf.to[B64]())
-
-    block large()
-        os: B32 = B32.copysign(1.0, xf)
-        when
-            ux.gt(0x7F800000) => return(xf.add(xf).to[Me]())
-            ux.eq(0x7F800000) => return(os.to[Me]())
-            else => return(os.sub(B32.mul(0x1p-25, os)).to[Me]())
-
-    // an odd polynomial in x
-    block small(s: B64)
-        z2: B64 = s.mul(s)
-        z4: B64 = z2.mul(z2)
-        z8: B64 = z4.mul(z4)
-        c0: B64 = z2.mul(-0x1.812746b0375fbp-2).add(0x1.20dd750429b6dp+0)
-        c2: B64 = z2.mul(-0x1.b82ce2cbf0838p-6).add(0x1.ce2f219fd6f45p-4)
-        c4: B64 = z2.mul(-0x1.c025bfc879c94p-11).add(0x1.565bb655adb85p-8)
-        c6: B64 = z2.mul(-0x1.cc67bd88f5867p-17).add(0x1.f81718f61309cp-14)
-        d0: B64 = c0.add(z4.mul(c2))
-        d4: B64 = c4.add(z4.mul(c6))
-        e0: B64 = d0.add(z8.mul(d4))
-        return(s.mul(e0).to[Me]())
-
-    // |x| in [i/16, (i+1)/16): a degree-7 polynomial around i/16 + 1/32
-    block table(s: B64)
-        z0: B64 = ax.to[B64]()
-        v: B64 = B64.mul(16.0, z0).floor()
-        interval: U64 = B32.mul(16.0, ax).to[U64]()
-        i: USize = interval.to[USize]()
-        z: B64 = z0.sub(0.03125).sub(B64.mul(0.0625, v))
-        row: USize = i.sub(7).mul(8)
-        zz2: B64 = z.mul(z)
-        zz4: B64 = zz2.mul(zz2)
-        d0: B64 = cm_b16_erf_c(row, k: 0).add(z.mul(cm_b16_erf_c(row, k: 1)))
-        d2: B64 = cm_b16_erf_c(row, k: 2).add(z.mul(cm_b16_erf_c(row, k: 3)))
-        d4: B64 = cm_b16_erf_c(row, k: 4).add(z.mul(cm_b16_erf_c(row, k: 5)))
-        d6: B64 = cm_b16_erf_c(row, k: 6).add(z.mul(cm_b16_erf_c(row, k: 7)))
-        e0: B64 = d0.add(zz2.mul(d2))
-        e4: B64 = d4.add(zz2.mul(d6))
-        f: B64 = e0.add(zz4.mul(e4))
-        return(f.copysign(s).to[Me]())
+        large =>
+            os: B32 = B32.copysign(1.0, xf)
+            when
+                ux > 0x7F800000 => return (xf + xf).to[Me]()
+                ux == 0x7F800000 => return os.to[Me]()
+                else => return (os - B32.mul(2.980232238769531e-08, os)).to[Me]()
+        ux < 0x3EE00000 =>
+            // an odd polynomial in x
+            s: B64 = xf.to[B64]()
+            z2: B64 = s * s
+            z4: B64 = z2 * z2
+            z8: B64 = z4 * z4
+            c0: B64 = z2 * -0.3761263890317818 + 1.1283791670955126
+            c2: B64 = z2 * -0.026866170388309935 + 0.1128379167034242
+            c4: B64 = z2 * -0.0008547734406051549 + 0.0052239723351509325
+            c6: B64 = z2 * -1.3721145267025539e-05 + 0.00012018447509482211
+            d0: B64 = c0 + z4 * c2
+            d4: B64 = c4 + z4 * c6
+            e0: B64 = d0 + z8 * d4
+            return (s * e0).to[Me]()
+        else =>
+            // |x| in [i/16, (i+1)/16): a degree-7 polynomial around i/16 + 1/32
+            s: B64 = xf.to[B64]()
+            z0: B64 = ax.to[B64]()
+            v: B64 = B64.mul(16.0, z0).floor()
+            interval: U64 = B32.mul(16.0, ax).to[U64]()
+            i: USize = interval.to[USize]()
+            z: B64 = z0 - 0.03125 - B64.mul(0.0625, v)
+            row: USize = (i - 7) * 8
+            zz2: B64 = z * z
+            zz4: B64 = zz2 * zz2
+            d0: B64 = cm_b16_erf_c(row, k: 0) + z * cm_b16_erf_c(row, k: 1)
+            d2: B64 = cm_b16_erf_c(row, k: 2) + z * cm_b16_erf_c(row, k: 3)
+            d4: B64 = cm_b16_erf_c(row, k: 4) + z * cm_b16_erf_c(row, k: 5)
+            d6: B64 = cm_b16_erf_c(row, k: 6) + z * cm_b16_erf_c(row, k: 7)
+            e0: B64 = d0 + zz2 * d2
+            e4: B64 = d4 + zz2 * d6
+            f: B64 = e0 + zz4 * e4
+            return f.copysign(s).to[Me]()
 
 /// Coefficient k of the table row starting at row.
 /// :param row: The row's first index in CM_B16_ERF_C.
@@ -186,4 +184,4 @@ routine B16.erf(me: Me) -> Me
 /// :returns: The coefficient.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `row + k` is past the table.
 private routine cm_b16_erf_c(row: USize, k: USize) -> B64
-    return(B64.from_bits(CM_B16_ERF_C.getitem(row.add(k))))
+    return B64.from_bits(CM_B16_ERF_C.getitem(row + k))

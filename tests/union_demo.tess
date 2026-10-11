@@ -20,7 +20,9 @@
 // slot, cast, and load to the payload binding of a `when` arm. Section 1 spells
 // that lowering out by hand to show the mechanism, not as the recommended Result.
 
-#[external("c"), symbol("printf"), variadic]
+@external("c")
+@symbol("printf")
+@variadic
 routine c_printf(fmt: @Byte) -> S32
 
 // ============================================================
@@ -29,8 +31,8 @@ routine c_printf(fmt: @Byte) -> S32
 // ============================================================
 
 record UnionTwo[TFirst, TSecond]
-require TFirst: typename, TSecond: typename
-    #aligned(max(alignof[TFirst](), alignof[TSecond]()))
+needs TFirst: typename, TSecond: typename
+    @aligned(max(alignof[TFirst](), alignof[TSecond]()))
     storage: Array[Byte, max(sizeof[TFirst](), sizeof[TSecond]())]
 
 // ============================================================
@@ -54,44 +56,40 @@ record IntResult
     payload: UnionTwo[S64, S32]
 
 routine IntResult.Success(value: S64) -> Me
-    claim payload_buf: @UnionTwo[S64, S32] <- .hollow()
+    local payload_buf: @UnionTwo[S64, S32] <- .hollow()
     payload_buf.zeroinit(1)
     ok_view: @S64 = payload_buf.to[@S64]()
     ok_view.poke(value)
     payload: UnionTwo[S64, S32] = payload_buf.peek()
     r: Me = Me(tag: IntResultTag.OK, payload: payload)
-    return(r)
+    return r
 
 routine IntResult.Failure(code: S32) -> Me
-    claim payload_buf: @UnionTwo[S64, S32] <- .hollow()
+    local payload_buf: @UnionTwo[S64, S32] <- .hollow()
     payload_buf.zeroinit(1)
     err_view: @S32 = payload_buf.to[@S32]()
     err_view.poke(code)
     payload: UnionTwo[S64, S32] = payload_buf.peek()
     r: Me = Me(tag: IntResultTag.ERR, payload: payload)
-    return(r)
+    return r
 
 /// Caller checks the tag explicitly, then casts to the active view.
 routine IntResult.print(me: @Me) -> Void
     tag: IntResultTag = me.tag.peek()
     when tag
-        IntResultTag.OK => print_ok()
-        IntResultTag.ERR => print_err()
+        IntResultTag.OK =>
+            payload: @UnionTwo[S64, S32] = me.payload
+            ok_view: @S64 = payload.to[@S64]()
+            v: S64 = ok_view.peek()
+            c_printf("Ok(%lld)\n", v)
+            return
+        IntResultTag.ERR =>
+            payload: @UnionTwo[S64, S32] = me.payload
+            err_view: @S32 = payload.to[@S32]()
+            code: S32 = err_view.peek()
+            c_printf("Err(%lld)\n", code.to[S64]())
+            return
         else => unreachable
-
-    block print_ok()
-        payload: @UnionTwo[S64, S32] = me.payload
-        ok_view: @S64 = payload.to[@S64]()
-        v: S64 = ok_view.peek()
-        c_printf("Ok(%lld)\n", v)
-        return()
-
-    block print_err()
-        payload: @UnionTwo[S64, S32] = me.payload
-        err_view: @S32 = payload.to[@S32]()
-        code: S32 = err_view.peek()
-        c_printf("Err(%lld)\n", code.to[S64]())
-        return()
 
 // ============================================================
 // Section 2: C ABI overlay — Number that is either int-shaped or float-shaped
@@ -103,32 +101,32 @@ routine IntResult.print(me: @Me) -> Void
 // ============================================================
 
 record Number
-    #aligned(max(alignof[S64](), alignof[B64]()))
+    @aligned(max(alignof[S64](), alignof[B64]()))
     storage: Array[Byte, max(sizeof[S64](), sizeof[B64]())]
 
 routine Number.from_int(n: S64) -> Me
-    claim buf: @Me <- .hollow()
+    local buf: @Me <- .hollow()
     int_view: @S64 = buf.to[@S64]()
     int_view.poke(n)
     u: Me = buf.peek()
-    return(u)
+    return u
 
 routine Number.from_float(f: B64) -> Me
-    claim buf: @Me <- .hollow()
+    local buf: @Me <- .hollow()
     float_view: @B64 = buf.to[@B64]()
     float_view.poke(f)
     u: Me = buf.peek()
-    return(u)
+    return u
 
 routine Number.to_int(me: @Me) -> S64
     view: @S64 = me.to[@S64]()
     n: S64 = view.peek()
-    return(n)
+    return n
 
 routine Number.to_float(me: @Me) -> B64
     view: @B64 = me.to[@B64]()
     f: B64 = view.peek()
-    return(f)
+    return f
 
 // ============================================================
 // start
@@ -139,8 +137,8 @@ routine start() -> Void
     ok: IntResult = .Success(42)
     err: IntResult = .Failure(-5)
 
-    claim ok_ptr: @IntResult <- ok
-    claim err_ptr: @IntResult <- err
+    local ok_ptr: @IntResult <- ok
+    local err_ptr: @IntResult <- err
     ok_ptr.print()
     err_ptr.print()
 
@@ -148,10 +146,10 @@ routine start() -> Void
     to_int: Number = .from_int(7)
     to_float: Number = .from_float(3.14)
 
-    claim int_ptr: @Number <- to_int
-    claim flt_ptr: @Number <- to_float
+    local int_ptr: @Number <- to_int
+    local flt_ptr: @Number <- to_float
 
     c_printf("Number int view: %lld\n", int_ptr.to_int())
     c_printf("Number float view: %f\n", flt_ptr.to_float())
 
-    return()
+    return

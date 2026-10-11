@@ -24,76 +24,64 @@ private preset ONE:      U32 = 0x3F800000
 /// :param b: The second addend's bits.
 /// :returns: The bits of `a + b`: a NaN operand comes back quieted, `inf + -inf` is NaN, and a sum of two zeros is
 /// -0 only when both are -0 (an exact zero sum of nonzero values is +0).
-#no_builtins
+@no_builtins
 routine soft_b32_add(a: U32, b: U32) -> U32
-    local a_size: U32 = a.bitand(MAGNITUDE)
-    local b_size: U32 = b.bitand(MAGNITUDE)
+    local a_size: U32 = a & MAGNITUDE
+    local b_size: U32 = b & MAGNITUDE
 
     when
-        a_size.gt(INFINITY) => return(a.bitor(QUIET))
-        b_size.gt(INFINITY) => return(b.bitor(QUIET))
-        a_size.eq(INFINITY) => infinite()
-        b_size.eq(INFINITY) => return(b)
-        a_size.eq(0) => zero()
-        b_size.eq(0) => return(a)
-        else => order()
-
-    // inf + inf keeps the sign, and inf - inf is NaN
-    block infinite()
-        opposite: Bool = a.bitxor(b).eq(SIGN)
-        branch opposite
-            ? return(NAN)
-            : return(a)
-
-    block zero()
-        both: Bool = b_size.eq(0)
-        branch both
-            ? return(a.bitand(b))
-            : return(b)
-
-    // the larger magnitude first, so the result takes its sign
-    block order()
-        swap: Bool = b_size.gt(a_size)
-        larger: U32 = swap
-            ? b
-            : a
-        smaller: U32 = swap
-            ? a
-            : b
-        jump align(larger, smaller)
-
-    // each significand gets three bits below it (half, and the rest), and the smaller one shifts right to the larger
-    // one's exponent with the bits it loses folded into a sticky bit
-    block align(x: U32, y: U32)
-        x_parts: SoftParts32 = soft_unpack(magnitude: x.bitand(MAGNITUDE), sig_bits: 23)
-        y_parts: SoftParts32 = soft_unpack(magnitude: y.bitand(MAGNITUDE), sig_bits: 23)
-        x_sig: U32 = x_parts.sig.shl(3)
-        y_sig: U32 = y_parts.sig.shl(3)
-        apart: U32 = x_parts.exponent.sub(y_parts.exponent).to[U32]()
-        aligned: U32 = soft_shr_sticky(x: y_sig, shift: apart)
-        sign: U32 = x.bitand(SIGN)
-        same: Bool = x.bitxor(y).lt(SIGN)
-        branch same
-            ? return(soft_round_pack(sign, exponent: x_parts.exponent, m: x_sig.add(aligned),
-                format: B32.FORMAT.peek()))
-            : difference(sign, x_sig.sub(aligned), x_parts.exponent)
-
-    // the larger magnitude came first, so the difference isn't negative. An exact zero is +0
-    block difference(sign: U32, sig: U32, exponent: S32)
-        cancelled: Bool = sig.eq(0)
-        branch cancelled
-            ? return(0)
-            : return(soft_round_pack(sign, exponent, m: sig, format: B32.FORMAT.peek()))
+        a_size > INFINITY => return a | QUIET
+        b_size > INFINITY => return b | QUIET
+        a_size == INFINITY =>
+            // inf + inf keeps the sign, and inf - inf is NaN
+            if a ^ b == SIGN
+                return NAN
+            else
+                return a
+        b_size == INFINITY => return b
+        a_size == 0 =>
+            if b_size == 0
+                return a & b
+            else
+                return b
+        b_size == 0 => return a
+        else =>
+            // the larger magnitude first, so the result takes its sign
+            swap: Bool = b_size > a_size
+            larger: U32 = when
+                swap => b
+                else => a
+            smaller: U32 = when
+                swap => a
+                else => b
+            // each significand gets three bits below it (half, and the rest), and the smaller one shifts right to the larger
+            // one's exponent with the bits it loses folded into a sticky bit
+            x_parts: SoftParts32 = soft_unpack(magnitude: larger & MAGNITUDE, sig_bits: 23)
+            y_parts: SoftParts32 = soft_unpack(magnitude: smaller & MAGNITUDE, sig_bits: 23)
+            x_sig: U32 = x_parts.sig << 3
+            y_sig: U32 = y_parts.sig << 3
+            apart: U32 = (x_parts.exponent - y_parts.exponent).to[U32]()
+            aligned: U32 = soft_shr_sticky(x: y_sig, shift: apart)
+            sign: U32 = larger & SIGN
+            if larger ^ smaller < SIGN
+                return soft_round_pack(sign, exponent: x_parts.exponent, m: x_sig + aligned, format: B32.FORMAT.peek())
+            else
+                // the larger magnitude came first, so the difference isn't negative. An exact zero is +0
+                sig: U32 = x_sig - aligned
+                if sig == 0
+                    return 0
+                else
+                    return soft_round_pack(sign, exponent: x_parts.exponent, m: sig, format: B32.FORMAT.peek())
 
 /// B32 subtraction on the bits: `a + (-b)`, as compiler-rt's `__subsf3` computes it (so a NaN `b` comes back with its
 /// sign flipped).
 /// :param a: The minuend's bits.
 /// :param b: The subtrahend's bits.
 /// :returns: The bits of `a - b`.
-#no_builtins
+@no_builtins
 routine soft_b32_sub(a: U32, b: U32) -> U32
-    r: U32 = soft_b32_add(a, b: b.bitxor(SIGN))
-    return(r)
+    r: U32 = soft_b32_add(a, b: b ^ SIGN)
+    return r
 
 // -- multiplication ------------------------------------------------------------
 
@@ -102,39 +90,34 @@ routine soft_b32_sub(a: U32, b: U32) -> U32
 /// :param b: The second factor's bits.
 /// :returns: The bits of `a * b`: a NaN operand comes back quieted, `inf * 0` is NaN, and the sign is the XOR of the
 /// signs.
-#no_builtins
+@no_builtins
 routine soft_b32_mul(a: U32, b: U32) -> U32
-    local sign: U32 = a.bitxor(b).bitand(SIGN)
-    local a_size: U32 = a.bitand(MAGNITUDE)
-    local b_size: U32 = b.bitand(MAGNITUDE)
+    local sign: U32 = (a ^ b) & SIGN
+    local a_size: U32 = a & MAGNITUDE
+    local b_size: U32 = b & MAGNITUDE
 
-    when
-        a_size.gt(INFINITY) => return(a.bitor(QUIET))
-        b_size.gt(INFINITY) => return(b.bitor(QUIET))
-        a_size.eq(INFINITY) => infinite(b_size)
-        b_size.eq(INFINITY) => infinite(a_size)
-        a_size.eq(0) => return(sign)
-        b_size.eq(0) => return(sign)
-        else => finite()
-
-    // infinity times zero is NaN, times anything else infinity
-    block infinite(other: U32)
-        nothing: Bool = other.eq(0)
-        branch nothing
-            ? return(NAN)
-            : return(sign.bitor(INFINITY))
-
-    // the 48-bit product of two 24-bit significands, its leading bit at 46 or 47. Shifted down by 21 with a sticky
-    // bit, it is a significand for an exponent of the two exponents' sum minus 126
-    block finite()
-        x: SoftParts32 = soft_unpack(magnitude: a_size, sig_bits: 23)
-        y: SoftParts32 = soft_unpack(magnitude: b_size, sig_bits: 23)
-        product: U64 = x.sig.to[U64]().mul_wrap(y.sig.to[U64]())
-        sig: U64 = soft_shr_sticky(x: product, shift: 21)
-        sum: S32 = x.exponent.add(y.exponent)
-        r: U32 = soft_round_pack(sign, exponent: sum.sub(126), m: sig.to_wrap[U32](),
-            format: B32.FORMAT.peek())
-        return(r)
+    other: U32 = when
+        a_size > INFINITY => return a | QUIET
+        b_size > INFINITY => return b | QUIET
+        a_size == INFINITY => b_size
+        b_size == INFINITY => a_size
+        a_size == 0 => return sign
+        b_size == 0 => return sign
+        else =>
+            // infinity times zero is NaN, times anything else infinity
+            // the 48-bit product of two 24-bit significands, its leading bit at 46 or 47. Shifted down by 21 with a sticky
+            // bit, it is a significand for an exponent of the two exponents' sum minus 126
+            x: SoftParts32 = soft_unpack(magnitude: a_size, sig_bits: 23)
+            y: SoftParts32 = soft_unpack(magnitude: b_size, sig_bits: 23)
+            product: U64 = x.sig.to[U64]() *% y.sig.to[U64]()
+            sig: U64 = soft_shr_sticky(x: product, shift: 21)
+            sum: S32 = x.exponent + y.exponent
+            r: U32 = soft_round_pack(sign, exponent: sum - 126, m: sig.to_wrap[U32](), format: B32.FORMAT.peek())
+            return r
+    if other == 0
+        return NAN
+    else
+        return sign | INFINITY
 
 // -- division ------------------------------------------------------------------
 
@@ -143,74 +126,61 @@ routine soft_b32_mul(a: U32, b: U32) -> U32
 /// :param b: The divisor's bits.
 /// :returns: The bits of `a / b`: a NaN operand comes back quieted, `0 / 0` and `inf / inf` are NaN, and a nonzero
 /// value over zero is a signed infinity.
-#no_builtins
+@no_builtins
 routine soft_b32_div(a: U32, b: U32) -> U32
-    local sign: U32 = a.bitxor(b).bitand(SIGN)
-    local a_size: U32 = a.bitand(MAGNITUDE)
-    local b_size: U32 = b.bitand(MAGNITUDE)
+    local sign: U32 = (a ^ b) & SIGN
+    local a_size: U32 = a & MAGNITUDE
+    local b_size: U32 = b & MAGNITUDE
     local rem: @U32 <- .hollow()
     local quotient: @U32 <- .hollow()
 
     when
-        a_size.gt(INFINITY) => return(a.bitor(QUIET))
-        b_size.gt(INFINITY) => return(b.bitor(QUIET))
-        a_size.eq(INFINITY) => infinite()
-        b_size.eq(INFINITY) => return(sign)
-        a_size.eq(0) => zero()
-        b_size.eq(0) => return(sign.bitor(INFINITY))
-        else => finite()
-
-    block infinite()
-        both: Bool = b_size.eq(INFINITY)
-        branch both
-            ? return(NAN)
-            : return(sign.bitor(INFINITY))
-
-    block zero()
-        both: Bool = b_size.eq(0)
-        branch both
-            ? return(NAN)
-            : return(sign)
-
-    // a dividend below the divisor doubles, so the quotient is in [1, 2)
-    block finite()
-        x: SoftParts32 = soft_unpack(magnitude: a_size, sig_bits: 23)
-        y: SoftParts32 = soft_unpack(magnitude: b_size, sig_bits: 23)
-        apart: S32 = x.exponent.sub(y.exponent)
-        below: Bool = x.sig.lt(y.sig)
-        num: U32 = below
-            ? x.sig.shl(1)
-            : x.sig
-        exponent: S32 = below
-            ? apart.add(126)
-            : apart.add(127)
-        num.poke_into(rem)
-        0.poke_into(quotient)
-        jump divide(exponent, y.sig, 0)
-
-    // 26 quotient bits, one a step: the 24 the result keeps and two below them, then the remainder's sticky bit
-    block divide(exponent: S32, den: U32, step: U32)
-        done: Bool = step.eq(26)
-        branch done
-            ? round(exponent)
-            : continue
-        fits: Bool = rem.peek().ge(den)
-        left: U32 = fits
-            ? rem.peek().sub_wrap(den)
-            : rem.peek()
-        q_bit: U32 = fits.to[U32]()
-        next: U32 = quotient.peek().shl(1).bitor(q_bit)
-        next_quotient: U32 = next
-        next_rem: U32 = left.shl(1)
-        next_rem.poke_into(rem)
-        next_quotient.poke_into(quotient)
-        jump divide(exponent, den, step.add(1))
-
-    block round(exponent: S32)
-        sticky: U32 = rem.peek().ne(0).to[U32]()
-        sig: U32 = quotient.peek().shl(1).bitor(sticky)
-        r: U32 = soft_round_pack(sign, exponent, m: sig, format: B32.FORMAT.peek())
-        return(r)
+        a_size > INFINITY => return a | QUIET
+        b_size > INFINITY => return b | QUIET
+        a_size == INFINITY =>
+            if b_size == INFINITY
+                return NAN
+            else
+                return sign | INFINITY
+        b_size == INFINITY => return sign
+        a_size == 0 =>
+            if b_size == 0
+                return NAN
+            else
+                return sign
+        b_size == 0 => return sign | INFINITY
+        else =>
+            // a dividend below the divisor doubles, so the quotient is in [1, 2)
+            x: SoftParts32 = soft_unpack(magnitude: a_size, sig_bits: 23)
+            y: SoftParts32 = soft_unpack(magnitude: b_size, sig_bits: 23)
+            apart: S32 = x.exponent - y.exponent
+            below: Bool = x.sig < y.sig
+            num: U32 = when
+                below => x.sig << 1
+                else => x.sig
+            exponent: S32 = when
+                below => apart + 126
+                else => apart + 127
+            num.poke_into(rem)
+            0.poke_into(quotient)
+            // 26 quotient bits, one a step: the 24 the result keeps and two below them, then the remainder's sticky bit
+            den: U32 = y.sig
+            each step in 0 til 26
+                fits: Bool = rem.peek() >= den
+                left: U32 = when
+                    fits => rem.peek() -% den
+                    else => rem.peek()
+                q_bit: U32 = fits.to[U32]()
+                next: U32 = (quotient.peek() << 1) | q_bit
+                next_quotient: U32 = next
+                next_rem: U32 = left << 1
+                next_rem.poke_into(rem)
+                next_quotient.poke_into(quotient)
+            then
+                sticky: U32 = (rem.peek() != 0).to[U32]()
+                sig: U32 = (quotient.peek() << 1) | sticky
+                r: U32 = soft_round_pack(sign, exponent, m: sig, format: B32.FORMAT.peek())
+                return r
 
 // -- square root and remainder ---------------------------------------------------
 
@@ -219,60 +189,53 @@ routine soft_b32_div(a: U32, b: U32) -> U32
 /// :param a: The radicand's bits.
 /// :returns: The bits of sqrt(a): the same zero for ±0, +inf for +inf, a quieted NaN for NaN, and NaN (0x7FC00000)
 /// for any other negative value.
-#no_builtins
+@no_builtins
 routine soft_b32_sqrt(a: U32) -> U32
-    local size: U32 = a.bitand(MAGNITUDE)
+    local size: U32 = a & MAGNITUDE
     local rem: @U64 <- .hollow()
     local res: @U64 <- .hollow()
 
     when
-        size.gt(INFINITY) => return(a.bitor(QUIET))
-        size.eq(0) => return(a)
-        a.ge(SIGN) => return(NAN)
-        size.eq(INFINITY) => return(a)
-        else => finite()
+        size > INFINITY => return a | QUIET
+        size == 0 => return a
+        a >= SIGN => return NAN
+        size == INFINITY => return a
+        else =>
+            // an odd unbiased exponent moves one bit into the significand, so the root's exponent is a whole half. The
+            // significand scaled by 2^27 has a 26-bit root, the 24 kept bits and two below them
+            parts: SoftParts32 = soft_unpack(magnitude: size, sig_bits: 23)
+            unbiased: S32 = parts.exponent - 127
+            odd: Bool = unbiased & 1 == 1
+            sig: U32 = when
+                odd => parts.sig << 1
+                else => parts.sig
+            even: S32 = unbiased - odd.to[S32]()
+            radicand: U64 = sig.to[U64]() << 27
+            radicand.poke_into(rem)
+            0.poke_into(res)
 
-    // an odd unbiased exponent moves one bit into the significand, so the root's exponent is a whole half. The
-    // significand scaled by 2^27 has a 26-bit root, the 24 kept bits and two below them
-    block finite()
-        parts: SoftParts32 = soft_unpack(magnitude: size, sig_bits: 23)
-        unbiased: S32 = parts.exponent.sub(127)
-        odd: Bool = unbiased.bitand(1).eq(1)
-        sig: U32 = odd
-            ? parts.sig.shl(1)
-            : parts.sig
-        even: S32 = unbiased.sub(odd.to[S32]())
-        radicand: U64 = sig.to[U64]().shl(27)
-        radicand.poke_into(rem)
-        0.poke_into(res)
-        jump root(even.shr(1), 0x4000000000000)
+            half: S32 = even >> 1
 
-    block root(half: S32, bit: U64)
-        done: Bool = bit.eq(0)
-        branch done
-            ? round(half)
-            : continue
-        trial: U64 = res.peek().add(bit)
-        fits: Bool = rem.peek().ge(trial)
-        left: U64 = fits
-            ? rem.peek().sub_wrap(trial)
-            : rem.peek()
-        shifted: U64 = res.peek().shr(1)
-        next: U64 = fits
-            ? shifted.add(bit)
-            : shifted
-        next_res: U64 = next
-        next_rem: U64 = left
-        next_rem.poke_into(rem)
-        next_res.poke_into(res)
-        jump root(half, bit.shr(2))
-
-    block round(half: S32)
-        sticky: U64 = rem.peek().ne(0).to[U64]()
-        sig: U64 = res.peek().shl(1).bitor(sticky)
-        r: U32 = soft_round_pack(sign: 0, exponent: half.add(127), m: sig.to_wrap[U32](),
-            format: B32.FORMAT.peek())
-        return(r)
+            while bit != 0 with bit: U64 = 0x4000000000000
+                trial: U64 = res.peek() + bit
+                fits: Bool = rem.peek() >= trial
+                left: U64 = when
+                    fits => rem.peek() -% trial
+                    else => rem.peek()
+                shifted: U64 = res.peek() >> 1
+                next: U64 = when
+                    fits => shifted + bit
+                    else => shifted
+                next_res: U64 = next
+                next_rem: U64 = left
+                next_rem.poke_into(rem)
+                next_res.poke_into(res)
+                continue with bit: bit >> 2
+            then
+                sticky: U64 = (rem.peek() != 0).to[U64]()
+                sig2: U64 = (res.peek() << 1) | sticky
+                r: U32 = soft_round_pack(sign: 0, exponent: half + 127, m: sig2.to_wrap[U32](), format: B32.FORMAT.peek())
+                return r
 
 /// The B32 remainder on the bits, exact: C's `fmodf`, which LLVM calls for `frem`. The result has the sign of `a`
 /// and a magnitude below `|b|`.
@@ -280,79 +243,72 @@ routine soft_b32_sqrt(a: U32) -> U32
 /// :param b: The divisor's bits.
 /// :returns: The bits of `fmod(a, b)`: a NaN operand comes back quieted, NaN for an infinite `a` or a zero `b`, `a`
 /// itself when `|a| < |b|`, and a zero with `a`'s sign when the division is exact.
-#no_builtins
+@no_builtins
 routine soft_b32_mod(a: U32, b: U32) -> U32
-    local sign: U32 = a.bitand(SIGN)
-    local a_size: U32 = a.bitand(MAGNITUDE)
-    local b_size: U32 = b.bitand(MAGNITUDE)
+    local sign: U32 = a & SIGN
+    local a_size: U32 = a & MAGNITUDE
+    local b_size: U32 = b & MAGNITUDE
 
     when
-        a_size.gt(INFINITY) => return(a.bitor(QUIET))
-        b_size.gt(INFINITY) => return(b.bitor(QUIET))
-        a_size.eq(INFINITY) => return(NAN)
-        b_size.eq(0) => return(NAN)
-        a_size.lt(b_size) => return(a)
-        a_size.eq(b_size) => return(sign)
-        else => finite()
+        a_size > INFINITY => return a | QUIET
+        b_size > INFINITY => return b | QUIET
+        a_size == INFINITY => return NAN
+        b_size == 0 => return NAN
+        a_size < b_size => return a
+        a_size == b_size => return sign
+        else =>
+            // long division one exponent step at a time, keeping only the remainder (below 2 × den throughout)
+            x: SoftParts32 = soft_unpack(magnitude: a_size, sig_bits: 23)
+            y: SoftParts32 = soft_unpack(magnitude: b_size, sig_bits: 23)
 
-    // long division one exponent step at a time, keeping only the remainder (below 2 × den throughout)
-    block finite()
-        x: SoftParts32 = soft_unpack(magnitude: a_size, sig_bits: 23)
-        y: SoftParts32 = soft_unpack(magnitude: b_size, sig_bits: 23)
-        jump reduce(x.sig, x.exponent, y.sig, y.exponent)
+            den: U32 = y.sig
 
-    block reduce(rem: U32, exponent: S32, den: U32, den_exponent: S32)
-        fits: Bool = rem.ge(den)
-        left: U32 = fits
-            ? rem.sub_wrap(den)
-            : rem
-        exact: Bool = left.eq(0)
-        last: Bool = exponent.eq(den_exponent)
-        when
-            exact => return(sign)
-            last => pack(left, exponent)
-            else => reduce(left.shl(1), exponent.sub(1), den, den_exponent)
+            den_exponent: S32 = y.exponent
 
-    // the remainder is exact and fits the format, so the packing doesn't round
-    block pack(rem: U32, exponent: S32)
-        r: U32 = soft_round_pack(sign, exponent, m: rem.shl(3), format: B32.FORMAT.peek())
-        return(r)
+            while true with rem: U32 = x.sig, exponent: S32 = x.exponent
+                fits: Bool = rem >= den
+                left: U32 = when
+                    fits => rem -% den
+                    else => rem
+                exact: Bool = left == 0
+                when
+                    exact => return sign
+                    exponent == den_exponent =>
+                        // the remainder is exact and fits the format, so the packing doesn't round
+                        r: U32 = soft_round_pack(sign, exponent, m: left << 3, format: B32.FORMAT.peek())
+                        return r
+                    else => continue with rem: left << 1, exponent: exponent - 1
 
 /// B32 raised to an integer power by repeated squaring: compiler-rt's `__powisf2`, with the same multiplications in
 /// the same order (so it rounds at each step, as compiler-rt does, rather than once).
 /// :param a: The base's bits.
 /// :param n: The exponent. A negative one takes the reciprocal of the positive power at the end.
 /// :returns: The bits of the result.
-#no_builtins
+@no_builtins
 routine soft_b32_powi(a: U32, n: S32) -> U32
     local base: @U32 <- a
     local result: @U32 <- ONE
 
-    count: U32 = n.abs_diff(0)
-    jump step(count)
+    jump step(n.abs_diff(0))
 
     block step(left: U32)
-        odd: Bool = left.bitand(1).eq(1)
-        branch odd
-            ? continue
-            : advance(left)
+        if not (left & 1 == 1)
+            jump advance(left)
         soft_b32_mul(a: result.peek(), b: base.peek()).poke_into(result)
         jump advance(left)
 
     block advance(left: U32)
-        rest: U32 = left.shr(1)
-        done: Bool = rest.eq(0)
-        branch done
-            ? finish()
-            : continue
+        rest: U32 = left >> 1
+        if rest == 0
+            jump finish()
         soft_b32_mul(a: base.peek(), b: base.peek()).poke_into(base)
         jump step(rest)
 
     block finish()
-        negative: Bool = n.lt(0)
-        branch negative
-            ? return(soft_b32_div(a: ONE, b: result.peek()))
-            : return(result.peek())
+        if n < 0
+            return soft_b32_div(a: ONE, b: result.peek())
+        else
+            return result.peek()
 
 // -- comparison ----------------------------------------------------------------
 
@@ -360,34 +316,33 @@ routine soft_b32_powi(a: U32, n: S32) -> U32
 /// :param a: The first operand's bits.
 /// :param b: The second operand's bits.
 /// :returns: -1 when `a < b`, 0 when they are equal (+0 equals -0), 1 when `a > b` or either is NaN.
-#no_builtins
+@no_builtins
 routine soft_b32_le(a: U32, b: U32) -> S32
-    unordered: Bool = soft_b32_unordered(a, b)
-    branch unordered
-        ? return(1)
-        : return(soft_b32_order(a, b))
+    if soft_b32_unordered(a, b)
+        return 1
+    else
+        return soft_b32_order(a, b)
 
 /// Orders two B32 values as compiler-rt's `__gesf2` (and its alias `__gtsf2`) does.
 /// :param a: The first operand's bits.
 /// :param b: The second operand's bits.
 /// :returns: -1 when `a < b` or either is NaN, 0 when they are equal (+0 equals -0), 1 when `a > b`.
-#no_builtins
+@no_builtins
 routine soft_b32_ge(a: U32, b: U32) -> S32
-    unordered: Bool = soft_b32_unordered(a, b)
-    branch unordered
-        ? return(-1)
-        : return(soft_b32_order(a, b))
+    if soft_b32_unordered(a, b)
+        return -1
+    else
+        return soft_b32_order(a, b)
 
 /// Whether either B32 is NaN: compiler-rt's `__unordsf2`.
 /// :param a: The first operand's bits.
 /// :param b: The second operand's bits.
 /// :returns: True when `a` or `b` is NaN.
-#no_builtins
+@no_builtins
 routine soft_b32_unordered(a: U32, b: U32) -> Bool
-    a_nan: Bool = a.bitand(MAGNITUDE).gt(INFINITY)
-    b_nan: Bool = b.bitand(MAGNITUDE).gt(INFINITY)
-    r: Bool = a_nan.bitor(b_nan)
-    return(r)
+    a_nan: Bool = a & MAGNITUDE > INFINITY
+    b_nan: Bool = b & MAGNITUDE > INFINITY
+    return a_nan or b_nan
 
 /// Two numbers (not NaN) in order: equal zeros first, then as sign-magnitude integers, whose order flips when both
 /// are negative.
@@ -395,15 +350,14 @@ routine soft_b32_unordered(a: U32, b: U32) -> Bool
 /// :param b: The second operand's bits.
 /// :returns: -1 when `a < b`, 0 when they are equal (+0 equals -0), 1 when `a > b`.
 private routine soft_b32_order(a: U32, b: U32) -> S32
-    both: U32 = a.bitor(b)
-    zeros: Bool = both.bitand(MAGNITUDE).eq(0)
-    branch zeros
-        ? return(0)
-        : continue
+    both: U32 = a | b
+    if both & MAGNITUDE == 0
+        return 0
     x: S32 = a.to_wrap[S32]()
     y: S32 = b.to_wrap[S32]()
-    negative: Bool = x.bitand(y).lt(0)
+    negative: Bool = x & y < 0
     order: S32 = x.compare(y)
-    branch negative
-        ? return(order.neg())
-        : return(order)
+    if negative
+        return -order
+    else
+        return order

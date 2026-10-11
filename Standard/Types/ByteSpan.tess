@@ -12,7 +12,7 @@ module Standard/Core
 
 import Standard/Alloc
 
-conform Equatable[Span[Byte]], Comparable[Span[Byte]], Hashable[Span[Byte]]
+obeys Equatable[Span[Byte]], Comparable[Span[Byte]], Hashable[Span[Byte]]
 
 // -- element access ------------------------------------------------------------
 
@@ -20,27 +20,24 @@ conform Equatable[Span[Byte]], Comparable[Span[Byte]], Hashable[Span[Byte]]
 /// :param index: The zero-based byte position.
 /// :returns: The byte as a number from 0 to 255.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index` is not less than the count.
-#track_caller
+@track_caller
 routine Span[Byte].byte_at(me: Me, index: USize) -> U8
     count: USize = me.count
-    in_bounds: Bool = index.lt(count)
-    branch in_bounds
-        ? load()
-        : crash_out_of_bounds()
-
-    block load()
+    if index < count
         data: @Byte = me.data
         byte: U8 = Byte.to[U8](data.stride(index).peek())
-        return(byte)
+        return byte
+    else
+        crash_out_of_bounds()
 
 /// Reads the byte at `index`.
 /// :param index: The zero-based byte position.
 /// :returns: The byte as a number from 0 to 255.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index` is not less than the count.
-#track_caller
+@track_caller
 routine Span[Byte].byte_at(me: @Me, index: USize) -> U8
     byte: U8 = me.peek().byte_at(index)
-    return(byte)
+    return byte
 
 // -- slicing -------------------------------------------------------------------
 
@@ -49,33 +46,30 @@ routine Span[Byte].byte_at(me: @Me, index: USize) -> U8
 /// :param end: The index after the last byte.
 /// :returns: The borrowed text.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `end` is past the count or `start > end`.
-#track_caller
+@track_caller
 routine Span[Byte].slice(me: Me, start: USize, end: USize) -> Me
     count: USize = me.count
-    valid_end: Bool = end.le(count)
-    valid_order: Bool = start.le(end)
-    valid: Bool = valid_end.bitand(valid_order)
-    branch valid
-        ? make()
-        : crash_out_of_bounds()
-
-    block make()
+    valid_end: Bool = end <= count
+    valid_order: Bool = start <= end
+    if valid_end and valid_order
         base: @Byte = me.data
         from: @Byte = base.stride(start)
-        count: USize = me.count
-        slice_len: USize = end.sub(start)
+        count2: USize = me.count
+        slice_len: USize = end - start
         result: Me = Me(data: from, count: slice_len)
-        return(result)
+        return result
+    else
+        crash_out_of_bounds()
 
 /// The bytes in [`start`, `end`), a view of the same bytes, without copying.
 /// :param start: The index of the first byte, included.
 /// :param end: The index after the last byte.
 /// :returns: The borrowed text.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `end` is past the count or `start > end`.
-#track_caller
+@track_caller
 routine Span[Byte].slice(me: @Me, start: USize, end: USize) -> Me
     result: Me = me.peek().slice(start, end)
-    return(result)
+    return result
 
 // -- heap-allocating operations ------------------------------------------------
 
@@ -86,16 +80,16 @@ routine Span[Byte].slice(me: @Me, start: USize, end: USize) -> Me
 /// :param alloc: The manager the new bytes come from.
 /// :returns: The joined text.
 /// :throws: Crashes with `MemoryAllocationError` when the manager has no memory to give.
-#track_caller
-#expensive("allocates a new buffer")
+@track_caller
+@expensive("allocates a new buffer")
 routine Span[Byte].concat(a: Me, b: Me, alloc: @MemoryManager) -> Memory[Byte]
-    local count: USize = a.count.add(b.count)
-    local buffer: Memory[Byte] = .construct(count: count.add(1), manager: alloc)
+    local count: USize = a.count + b.count
+    local buffer: Memory[Byte] = .construct(count: count + 1, manager: alloc)
 
     buffer.data.copy(src: a.data, count: a.count)
     buffer.data.stride(a.count).copy(src: b.data, count: b.count)
     buffer.data.stride(count).poke(0x00)
-    return(Memory[Byte](data: buffer.data, count, manager: alloc, generation: buffer.generation))
+    return Memory[Byte](data: buffer.data, count, manager: alloc, generation: buffer.generation)
 
 // -- equality, ordering, hashing -----------------------------------------------
 
@@ -108,22 +102,18 @@ routine Span[Byte].eq(me: Me, other: Me) -> Bool
     local pb: @Byte = other.data
 
     lb: USize = other.count
-    same_len: Bool = la.eq(lb)
-    branch same_len
-        ? loop(0)
-        : return(false)
-
-    block loop(i: USize)
-        done: Bool = i.ge(la)
-        branch done
-            ? return(true)
-            : continue
-        ba: U8 = Byte.to[U8](pa.stride(i).peek())
-        bb: U8 = Byte.to[U8](pb.stride(i).peek())
-        eq: Bool = ba.eq(bb)
-        branch eq
-            ? loop(i.add(1))
-            : return(false)
+    if la == lb
+        each i in 0 til la
+            ba: U8 = Byte.to[U8](pa.stride(i).peek())
+            bb: U8 = Byte.to[U8](pb.stride(i).peek())
+            if ba == bb
+                continue
+            else
+                return false
+        then
+            return true
+    else
+        return false
 
 /// Lexicographic byte-wise comparison. Span[Byte] compare as U8, so this matches `memcmp` ordering, and a text that is a
 /// prefix of the other comes first. The allocator plays no part.
@@ -132,53 +122,37 @@ routine Span[Byte].eq(me: Me, other: Me) -> Bool
 routine Span[Byte].compare(me: Me, other: Me) -> S32
     local la: USize = me.count
     local lb: USize = other.count
-    local a_shorter: Bool = la.le(lb)
-    local min: USize = a_shorter
-
-        ? la : lb
+    local a_shorter: Bool = la <= lb
+    local min: USize = when
+        a_shorter => la
+        else => lb
     local pa: @Byte = me.data
     local pb: @Byte = other.data
 
-    jump loop(0)
-
-    block loop(i: USize)
-        done: Bool = i.ge(min)
-        branch done
-            ? counts()
-            : step(i)
-
-    block step(i: USize)
+    each i in 0 til min
         ba: U8 = Byte.to[U8](pa.stride(i).peek())
         bb: U8 = Byte.to[U8](pb.stride(i).peek())
-        lt: Bool = ba.lt(bb)
-        branch lt
-            ? return(-1)
-            : maybe_gt(i, ba, bb)
-
-    block maybe_gt(i: USize, ba: U8, bb: U8)
-        gt: Bool = ba.gt(bb)
-        branch gt
-            ? return(1)
-            : loop(i.add(1))
-
-    block counts()
-        lt: Bool = la.lt(lb)
-        branch lt
-            ? return(-1)
-            : continue
-        gt: Bool = la.gt(lb)
-        branch gt
-            ? return(1)
-            : return(0)
+        if ba < bb
+            return -1
+        else if ba > bb
+            return 1
+        else
+            continue
+    if la < lb
+        return -1
+    if la > lb
+        return 1
+    else
+        return 0
 
 /// SipHash-2-4 of the byte contents under the process key. The allocator plays no part.
 /// :returns: The 64-bit hash.
-#expensive("hashes the whole buffer")
+@expensive("hashes the whole buffer")
 routine Span[Byte].hash(me: Me) -> U64
     data: @Byte = me.data
     len: USize = me.count
     h: U64 = siphash24(data, count: len, key: hash_key())
-    return(h)
+    return h
 
 // -- search --------------------------------------------------------------------
 
@@ -191,29 +165,24 @@ routine Span[Byte].has_prefix(me: Me, prefix: Me) -> Bool
     local pd: @Byte = prefix.data
 
     sl: USize = me.count
-    fits: Bool = pl.le(sl)
-    branch fits
-        ? loop(0)
-        : return(false)
-
-    block loop(i: USize)
-        done: Bool = i.ge(pl)
-        branch done
-            ? return(true)
-            : continue
-        a: U8 = Byte.to[U8](sd.stride(i).peek())
-        b: U8 = Byte.to[U8](pd.stride(i).peek())
-        eq: Bool = a.eq(b)
-        branch eq
-            ? loop(i.add(1))
-            : return(false)
+    if pl <= sl
+        each i in 0 til pl
+            a: U8 = Byte.to[U8](sd.stride(i).peek())
+            b: U8 = Byte.to[U8](pd.stride(i).peek())
+            if a == b
+                continue
+            else
+                return false
+        then
+            return true
+    else
+        return false
 
 /// Whether the text begins with `prefix`.
 /// :param prefix: The bytes to look for at the start.
 /// :returns: `true` when `prefix` matches the first bytes. An empty `prefix` always matches.
 routine Span[Byte].has_prefix(me: @Me, prefix: Me) -> Bool
-    result: Bool = me.peek().has_prefix(prefix)
-    return(result)
+    return me.peek().has_prefix(prefix)
 
 /// Whether the text ends with `suffix`.
 /// :param suffix: The bytes to look for at the end.
@@ -224,30 +193,27 @@ routine Span[Byte].has_suffix(me: Me, suffix: Me) -> Bool
     local fd: @Byte = suffix.data
 
     sl: USize = me.count
-    fits: Bool = fl.le(sl)
-    branch fits
-        ? loop(0, sl.sub(fl))
-        : return(false)
+    if fl <= sl
+        off: USize = sl - fl
 
-    block loop(i: USize, off: USize)
-        done: Bool = i.ge(fl)
-        branch done
-            ? return(true)
-            : continue
-        idx: USize = off.add(i)
-        a: U8 = Byte.to[U8](sd.stride(idx).peek())
-        b: U8 = Byte.to[U8](fd.stride(i).peek())
-        eq: Bool = a.eq(b)
-        branch eq
-            ? loop(i.add(1), off)
-            : return(false)
+        each i in 0 til fl
+            idx: USize = off + i
+            a: U8 = Byte.to[U8](sd.stride(idx).peek())
+            b: U8 = Byte.to[U8](fd.stride(i).peek())
+            if a == b
+                continue
+            else
+                return false
+        then
+            return true
+    else
+        return false
 
 /// Whether the text ends with `suffix`.
 /// :param suffix: The bytes to look for at the end.
 /// :returns: `true` when `suffix` matches the last bytes. An empty `suffix` always matches.
 routine Span[Byte].has_suffix(me: @Me, suffix: Me) -> Bool
-    result: Bool = me.peek().has_suffix(suffix)
-    return(result)
+    return me.peek().has_suffix(suffix)
 
 /// The byte index of the first match of `needle`, by a naive O(n*m) search.
 /// :param needle: The bytes to look for.
@@ -259,49 +225,32 @@ routine Span[Byte].find(me: Me, needle: Me) -> Maybe[USize]
     local sd: @Byte = me.data
     local nd: @Byte = needle.data
 
-    empty_needle: Bool = nlen.eq(0)
-    branch empty_needle
-        ? hit(0)
-        : check_fits()
-
-    block check_fits()
-        too_big: Bool = nlen.gt(slen)
-        branch too_big
-            ? miss()
-            : start()
-
-    block miss()
+    if nlen == 0
+        r: Maybe[USize] = 0
+        return r
+    else if nlen > slen
         r: Maybe[USize] = Unit()
-        return(r)
+        return r
+    else
+        last: USize = slen - nlen
 
-    block hit(i: USize)
-        r: Maybe[USize] = i
-        return(r)
+        while i <= last with i: USize = 0
+            each j in 0 til nlen
+                idx: USize = i + j
+                a: U8 = Byte.to[U8](sd.stride(idx).peek())
+                b: U8 = Byte.to[U8](nd.stride(j).peek())
+                if a == b
+                    continue
+                else
+                    break
+            then
+                r: Maybe[USize] = i
+                return r
 
-    block start()
-        last: USize = slen.sub(nlen)
-        jump outer(0, last)
-
-    block outer(i: USize, last: USize)
-        past: Bool = i.gt(last)
-        branch past
-            ? miss()
-            : inner(i, 0, last)
-
-    block inner(i: USize, j: USize, last: USize)
-        done: Bool = j.ge(nlen)
-        branch done
-            ? hit(i)
-            : check(i, j, last)
-
-    block check(i: USize, j: USize, last: USize)
-        idx: USize = i.add(j)
-        a: U8 = Byte.to[U8](sd.stride(idx).peek())
-        b: U8 = Byte.to[U8](nd.stride(j).peek())
-        eq: Bool = a.eq(b)
-        branch eq
-            ? inner(i, j.add(1), last)
-            : outer(i.add(1), last)
+            continue with i: i + 1
+        then
+            r: Maybe[USize] = Unit()
+            return r
 
 /// The byte index of the first match of `needle`.
 /// :param needle: The bytes to look for.
@@ -309,36 +258,34 @@ routine Span[Byte].find(me: Me, needle: Me) -> Maybe[USize]
 /// :absent: When `needle` does not occur in the text.
 routine Span[Byte].find(me: @Me, needle: Me) -> Maybe[USize]
     r: Maybe[USize] = me.peek().find(needle)
-    return(r)
+    return r
 
 /// Whether `needle` occurs anywhere in the text, using {Span[Byte].find}.
 /// :param needle: The bytes to look for.
 /// :returns: `true` when a match exists. An empty `needle` always matches.
 routine Span[Byte].has(me: Me, needle: Me) -> Bool
     r: Maybe[USize] = me.find(needle)
-    found: Bool = r.is_present()
-    return(found)
+    return r.is_present()
 
 /// Whether `needle` is not there: the opposite of `has`.
 /// :param needle: The value to look for.
 /// :returns: `true` when `has` would be `false`.
 routine Span[Byte].lacks(me: Me, needle: Me) -> Bool
     there: Bool = me.has(needle)
-    return(there.bitnot())
+    return not there
 
 /// Whether `needle` occurs anywhere in the text, using {Span[Byte].find}.
 /// :param needle: The bytes to look for.
 /// :returns: `true` when a match exists. An empty `needle` always matches.
 routine Span[Byte].has(me: @Me, needle: Me) -> Bool
-    found: Bool = me.peek().has(needle)
-    return(found)
+    return me.peek().has(needle)
 
 /// Whether `needle` is not there: the opposite of `has`.
 /// :param needle: The value to look for.
 /// :returns: `true` when `has` would be `false`.
 routine Span[Byte].lacks(me: @Me, needle: Me) -> Bool
     there: Bool = me.has(needle)
-    return(there.bitnot())
+    return not there
 
 // -- UTF-8 -----------------------------------------------------------------------
 
@@ -346,48 +293,37 @@ routine Span[Byte].lacks(me: @Me, needle: Me) -> Bool
 /// U+10FFFF.
 /// :returns: `true` when the whole text decodes as UTF-8. An empty text is valid.
 routine Span[Byte].is_utf8(me: Me) -> Bool
-    jump next(0)
-
-    block next(pos: USize)
-        done: Bool = pos.ge(me.count)
-        branch done
-            ? return(true)
-            : decode(pos)
-
-    block decode(pos: USize)
+    while pos < me.count with pos: USize = 0
         d: Utf8Decoded = utf8_decode(bytes: me.data, pos, len: me.count)
-        branch d.ok
-            ? next(d.next_pos)
-            : return(false)
+        if d.ok
+            continue with pos: d.next_pos
+        else
+            return false
+    then
+        return true
 
 /// Whether the bytes are well-formed UTF-8.
 /// :returns: `true` when the whole text decodes as UTF-8. An empty text is valid.
 routine Span[Byte].is_utf8(me: @Me) -> Bool
-    valid: Bool = me.peek().is_utf8()
-    return(valid)
+    return me.peek().is_utf8()
 
 /// Whether a character can start at byte `index`: the byte there is not a UTF-8 continuation byte.
 /// :param index: The byte position.
 /// :returns: `true` when `index` is the count or the byte there is not a continuation byte. `false` past the end.
 routine Span[Byte].is_char_boundary(me: Me, index: USize) -> Bool
-    at_end: Bool = index.eq(me.count)
-    past: Bool = index.gt(me.count)
+    at_end: Bool = index == me.count
     when
-        at_end => return(true)
-        past => return(false)
-        else => inside()
-
-    block inside()
-        b: U8 = Byte.to[U8](me.data.stride(index).peek())
-        lead: Bool = b.bitand(0xC0).ne(0x80)
-        return(lead)
+        at_end => return true
+        index > me.count => return false
+        else =>
+            b: U8 = Byte.to[U8](me.data.stride(index).peek())
+            return b & 0xC0 != 0x80
 
 /// Whether a character can start at byte `index`: the byte there is not a UTF-8 continuation byte.
 /// :param index: The byte position.
 /// :returns: `true` when `index` is the count or the byte there is not a continuation byte. `false` past the end.
 routine Span[Byte].is_char_boundary(me: @Me, index: USize) -> Bool
-    lead: Bool = me.peek().is_char_boundary(index)
-    return(lead)
+    return me.peek().is_char_boundary(index)
 
 // -- iterators -----------------------------------------------------------------
 
@@ -395,22 +331,22 @@ routine Span[Byte].is_char_boundary(me: @Me, index: USize) -> Bool
 /// :returns: A {BytesIter} positioned at the first byte.
 routine Span[Byte].bytes(me: Me) -> BytesIter
     iter: BytesIter = BytesIter(str: me.getview(), index: 0)
-    return(iter)
+    return iter
 
 /// Iterates over the raw bytes as `U8` values.
 /// :returns: A {BytesIter} positioned at the first byte.
 routine Span[Byte].bytes(me: @Me) -> BytesIter
     iter: BytesIter = me.peek().bytes()
-    return(iter)
+    return iter
 
 /// Iterates over the characters, decoding UTF-8. A malformed sequence yields U+FFFD.
 /// :returns: A {BytesCharsIter} positioned at the first character.
 routine Span[Byte].chars(me: Me) -> BytesCharsIter
     iter: BytesCharsIter = BytesCharsIter(str: me.getview(), index: 0)
-    return(iter)
+    return iter
 
 /// Iterates over the characters, decoding UTF-8. A malformed sequence yields U+FFFD.
 /// :returns: A {BytesCharsIter} positioned at the first character.
 routine Span[Byte].chars(me: @Me) -> BytesCharsIter
     iter: BytesCharsIter = me.peek().chars()
-    return(iter)
+    return iter

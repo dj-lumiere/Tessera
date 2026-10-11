@@ -17,44 +17,32 @@ record ExclusiveLock
 /// :returns: A {ExclusiveLock} with state 0.
 routine ExclusiveLock.construct() -> Me
     m: Me = Me(state: 0)
-    return(m)
+    return m
 
 /// Takes the lock, waiting until it is free when someone else holds it: a thread sleeps, and a fiber parks a short
 /// while at a time so the other fibers of its thread go on (one of them may hold it).
 routine ExclusiveLock.lock(me: @Me) -> Void
-    claim found: @U32 <- 0
-    took: Bool = me.state.atomic_compare_exchange_acquire_raw(expected: 0, new: 1, previous: found)
-    branch took
-        ? return()
-        : contended()
-
-    // Marks the lock contended. Whoever takes it from 0 this way holds it.
-    block contended()
-        previous: U32 = me.state.atomic_swap_acquire(2)
-        took: Bool = previous.eq(0)
-        branch took
-            ? return()
-            : sleep()
-
-    block sleep()
-        wait_while(at: me.state, expected: 2)
-        jump contended()
+    local found: @U32 <- 0
+    if me.state.atomic_compare_exchange_acquire_raw(expected: 0, new: 1, previous: found)
+        return
+    else
+        // Marks the lock contended. Whoever takes it from 0 this way holds it.
+        while me.state.atomic_swap_acquire(2) != 0
+            wait_while(at: me.state, expected: 2)
+        then
+            return
 
 /// Releases the lock, waking one sleeping thread if any waits. Only the holder may call it.
 routine ExclusiveLock.unlock(me: @Me) -> Void
     previous: U32 = me.state.atomic_swap_release(0)
-    waiting: Bool = previous.eq(2)
-    branch waiting
-        ? wake()
-        : return()
-
-    block wake()
+    if previous == 2
         wake_one(me.state)
-        return()
+        return
+    else
+        return
 
 /// Takes the lock if it is free, without waiting.
 /// :returns: True when it took the lock.
 routine ExclusiveLock.try_lock(me: @Me) -> Bool
-    claim found: @U32 <- 0
-    took: Bool = me.state.atomic_compare_exchange_acquire_raw(expected: 0, new: 1, previous: found)
-    return(took)
+    local found: @U32 <- 0
+    return me.state.atomic_compare_exchange_acquire_raw(expected: 0, new: 1, previous: found)

@@ -5,7 +5,7 @@
 import Standard/Format
 import Standard/Os
 
-#threadlocal
+@threadlocal
 global COUNTER: @U64 <- 100
 
 global SHARED: @U64
@@ -18,58 +18,72 @@ record Seen
 
 routine work(seen: @Seen) -> Void
     seen.counter.poke(COUNTER.peek())
-    next_counter: U64 = COUNTER.peek().add(5)
+    next_counter: U64 = COUNTER.peek() + 5
     next_counter.poke_into(COUNTER)
     seen.after.poke(COUNTER.peek())
     seen.shared.poke(SHARED.peek())
-    return()
+    return
 
-#[target(os: not "windows"), external("c"), symbol("pthread_create")]
+@target(os: not "windows")
+@external("c")
+@symbol("pthread_create")
 routine pthread_create(thread: @Addr, attr: Addr, start: Callable[(Addr,), Addr], arg: Addr) -> CInt
 
-#[target(os: not "windows"), external("c"), symbol("pthread_join")]
+@target(os: not "windows")
+@external("c")
+@symbol("pthread_join")
 routine pthread_join(thread: Addr, result: Addr) -> CInt
 
-#target(os: not "windows")
+@target(os: not "windows")
 routine posix_worker(arg: Addr) -> Addr
     work(arg.to[@Seen]())
-    return(null)
+    return null
 
-#target(os: not "windows")
+@target(os: not "windows")
 routine run_worker(seen: @Seen) -> Void
-    claim thread: @Addr <- .hollow()
+    local thread: @Addr <- .hollow()
     created: CInt = pthread_create(thread, null, posix_worker.to[Callable](), seen)
     joined: CInt = pthread_join(thread.peek(), null)
-    return()
+    return
 
-#[target(os: "windows"), external("c"), symbol("CreateThread"), callconv("stdcall")]
+@target(os: "windows")
+@external("c")
+@symbol("CreateThread")
+@callconv("stdcall")
 routine create_thread(attrs: Addr, stack: USize,
     start: Callable[#callconv("stdcall"), (Addr,), U32], arg: Addr, flags: U32, id: Addr) -> Addr
 
-#[target(os: "windows"), external("c"), symbol("WaitForSingleObject"), callconv("stdcall")]
+@target(os: "windows")
+@external("c")
+@symbol("WaitForSingleObject")
+@callconv("stdcall")
 routine wait_for_single_object(handle: Addr, millis: U32) -> U32
 
-#[target(os: "windows"), external("c"), symbol("CloseHandle"), callconv("stdcall")]
+@target(os: "windows")
+@external("c")
+@symbol("CloseHandle")
+@callconv("stdcall")
 routine close_handle(handle: Addr) -> S32
 
-#[target(os: "windows"), callconv("stdcall")]
+@target(os: "windows")
+@callconv("stdcall")
 routine windows_worker(arg: Addr) -> U32
     work(arg.to[@Seen]())
-    return(0)
+    return 0
 
-#target(os: "windows")
+@target(os: "windows")
 routine run_worker(seen: @Seen) -> Void
     thread: Addr = create_thread(null, 0, windows_worker.to[Callable](), seen, 0, null)
     waited: U32 = wait_for_single_object(thread, U32.MAX)
     closed: S32 = close_handle(thread)
-    return()
+    return
 
 routine start() -> Void
     1.poke_into(COUNTER)
     7.poke_into(SHARED)
-    claim seen: @Seen <- (counter: 0, after: 0, shared: 0)
+    local seen: @Seen <- (counter: 0, after: 0, shared: 0)
     run_worker(seen)
     Out.write("worker saw COUNTER {seen.counter.peek()}, left it at {seen.after.peek()}\n")
     Out.write("worker saw SHARED {seen.shared.peek()}\n")
     Out.write("main still has COUNTER {COUNTER.peek()}\n")
-    return()
+    return

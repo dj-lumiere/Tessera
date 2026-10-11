@@ -24,164 +24,127 @@ record U128DivRem
 /// :param d: The divisor.
 /// :returns: The quotient and the remainder.
 /// :throws: Crashes with `DivisionByZeroError` when `d` is 0.
-#[target(size: 64), track_caller]
+@target(size: 64)
+@track_caller
 routine wide_divrem(u: U128, d: U128) -> U128DivRem
-    by_zero: Bool = d.eq(0)
-    branch by_zero
-        ? crash_division_by_zero()
-        : continue
-    below: Bool = u.lt(d)
-    branch below
-        ? return(U128DivRem(quotient: 0, remainder: u))
-        : narrow()
+    if d == 0
+        crash_division_by_zero()
+    if u < d
+        return U128DivRem(quotient: 0, remainder: u)
 
     // d <= u, so when u fits in 64 bits, both do.
-    block narrow()
-        fits: Bool = u.shr(64).eq(0)
-        branch fits
-            ? by_u64()
-            : by_limbs()
-
-    block by_u64()
+    else if u >> 64 == 0
         a: U64 = u.to_wrap[U64]()
         b: U64 = d.to_wrap[U64]()
-        return(U128DivRem(quotient: a.div(b).to[U128](), remainder: a.mod(b).to[U128]()))
-
-    block by_limbs()
-        one_limb: Bool = d.shr(64).eq(0)
-        branch one_limb
-            ? by_one_limb()
-            : by_two_limbs()
-
-    block by_one_limb()
+        return U128DivRem(quotient: (a / b).to[U128](), remainder: (a % b).to[U128]())
+    else if d >> 64 == 0
         r: U128DivRem = u128_divrem_by_limb(u, d: d.to_wrap[U64]())
-        return(r)
-
-    block by_two_limbs()
+        return r
+    else
         r: U128DivRem = u128_divrem_by_two_limbs(u, d)
-        return(r)
+        return r
 
 /// u / d and u % d.
 /// :param u: The dividend.
 /// :param d: The divisor.
 /// :returns: The quotient and the remainder.
 /// :throws: Crashes with `DivisionByZeroError` when `d` is 0.
-#[target(size: not 64), track_caller]
+@target(size: not 64)
+@track_caller
 routine wide_divrem(u: U128, d: U128) -> U128DivRem
-    by_zero: Bool = d.eq(0)
-    branch by_zero
-        ? crash_division_by_zero()
-        : continue
-    below: Bool = u.lt(d)
-    branch below
-        ? return(U128DivRem(quotient: 0, remainder: u))
-        : narrow()
-
-    // d <= u, so when u fits in 64 bits, both do.
-    block narrow()
-        fits: Bool = u.shr(64).eq(0)
-        branch fits
-            ? by_u64()
-            : by_words()
-
-    block by_u64()
-        a: U64 = u.to_wrap[U64]()
-        b: U64 = d.to_wrap[U64]()
-        return(U128DivRem(quotient: a.div(b).to[U128](), remainder: a.mod(b).to[U128]()))
-
-    block by_words()
-        wide: U256 = u.to[U256]()
-        one_word: Bool = d.shr(32).eq(0)
-        branch one_word
-            ? by_one_word(wide)
-            : by_several_words(wide)
-
-    block by_one_word(wide: U256)
-        r: U256DivRem = divrem_by_word32(u: wide, d: d.to_wrap[U32](), words: 4)
-        jump narrowed(r)
-
-    block by_several_words(wide: U256)
-        r: U256DivRem = divrem_knuth32(u: wide, d: d.to[U256](), words: 4)
-        jump narrowed(r)
-
-    block narrowed(r: U256DivRem)
-        q: U128 = r.quotient.to_wrap[U128]()
-        rem: U128 = r.remainder.to_wrap[U128]()
-        return(U128DivRem(quotient: q, remainder: rem))
+    if d == 0
+        crash_division_by_zero()
+    below: Bool = u < d
+    r: U256DivRem = when
+        below => return U128DivRem(quotient: 0, remainder: u)
+        else =>
+            // d <= u, so when u fits in 64 bits, both do.
+            if u >> 64 == 0
+                a: U64 = u.to_wrap[U64]()
+                b: U64 = d.to_wrap[U64]()
+                return U128DivRem(quotient: (a / b).to[U128](), remainder: (a % b).to[U128]())
+            else
+                wide: U256 = u.to[U256]()
+                if d >> 32 == 0
+                    becomes divrem_by_word32(u: wide, d: d.to_wrap[U32](), words: 4)
+                else
+                    becomes divrem_knuth32(u: wide, d: d.to[U256](), words: 4)
+    q: U128 = r.quotient.to_wrap[U128]()
+    rem: U128 = r.remainder.to_wrap[U128]()
+    return U128DivRem(quotient: q, remainder: rem)
 
 /// u / d and u % d for a nonzero one-limb d: normalized so d's top bit is set, then two 2-by-1 steps.
 /// :param u: The dividend.
 /// :param d: The divisor, not zero.
 /// :returns: The quotient and the remainder.
-#target(size: 64)
+@target(size: 64)
 private routine u128_divrem_by_limb(u: U128, d: U64) -> U128DivRem
     shift: U64 = d.leading_zeros()
-    d_norm: U64 = d.shl(shift)
+    d_norm: U64 = d << shift
     v: U64 = div_2by1_prepare(d_norm)
-    u_norm: U128 = u.shl(shift.to[U128]())
+    u_norm: U128 = u << shift.to[U128]()
     // The bits shifted out of the top, below d_norm (a funnel shift by 0 gives 0, where a plain shr by 64 would
     // be poison).
-    u_over: U64 = fshl[U64](hi: 0, lo: u.shr(64).to_wrap[U64](), amt: shift)
-    high: Div2By1 = div_2by1(u1: u_over, u0: u_norm.shr(64).to_wrap[U64](), d: d_norm, v)
+    u_over: U64 = fshl[U64](hi: 0, lo: (u >> 64).to_wrap[U64](), amt: shift)
+    high: Div2By1 = div_2by1(u1: u_over, u0: (u_norm >> 64).to_wrap[U64](), d: d_norm, v)
     low: Div2By1 = div_2by1(u1: high.remainder, u0: u_norm.to_wrap[U64](), d: d_norm, v)
-    q_high: U128 = high.quotient.to[U128]().shl(64)
-    q: U128 = q_high.bitor(low.quotient.to[U128]())
-    return(U128DivRem(quotient: q, remainder: low.remainder.shr(shift).to[U128]()))
+    q_high: U128 = high.quotient.to[U128]() << 64
+    q: U128 = q_high | low.quotient.to[U128]()
+    return U128DivRem(quotient: q, remainder: (low.remainder >> shift).to[U128]())
 
 /// u / d and u % d for a two-limb d <= u: normalized so d's top bit is set, then one 3-by-2 step.
 /// :param u: The dividend.
 /// :param d: The divisor, at least 2^64 and at most `u`.
 /// :returns: The quotient and the remainder.
-#target(size: 64)
+@target(size: 64)
 private routine u128_divrem_by_two_limbs(u: U128, d: U128) -> U128DivRem
-    d_top: U64 = d.shr(64).to_wrap[U64]()
+    d_top: U64 = (d >> 64).to_wrap[U64]()
     shift: U64 = d_top.leading_zeros()
-    d_norm: U128 = d.shl(shift.to[U128]())
-    d1: U64 = d_norm.shr(64).to_wrap[U64]()
+    d_norm: U128 = d << shift.to[U128]()
+    d1: U64 = (d_norm >> 64).to_wrap[U64]()
     d0: U64 = d_norm.to_wrap[U64]()
     divisor: Divisor3By2 = div_3by2_prepare(d1, d0)
-    u_norm: U128 = u.shl(shift.to[U128]())
-    u_over: U64 = fshl[U64](hi: 0, lo: u.shr(64).to_wrap[U64](), amt: shift)
-    step: Div3By2 = div_3by2(u2: u_over, u1: u_norm.shr(64).to_wrap[U64](),
-        u0: u_norm.to_wrap[U64](), divisor)
-    return(U128DivRem(quotient: step.quotient.to[U128](),
-        remainder: step.remainder.shr(shift.to[U128]())))
+    u_norm: U128 = u << shift.to[U128]()
+    u_over: U64 = fshl[U64](hi: 0, lo: (u >> 64).to_wrap[U64](), amt: shift)
+    step: Div3By2 = div_3by2(u2: u_over, u1: (u_norm >> 64).to_wrap[U64](), u0: u_norm.to_wrap[U64](), divisor)
+    return U128DivRem(quotient: step.quotient.to[U128](), remainder: step.remainder >> shift.to[U128]())
 
 /// |x| as a U128 (MIN's magnitude too).
 /// :param x: The value.
 /// :returns: The magnitude, 2^127 for `S128.MIN`.
 private routine s128_magnitude(x: S128) -> U128
     u: U128 = bitcast[S128, U128](x)
-    branch x.lt(0)
-        ? return(0.sub_wrap(u))
-        : return(u)
+    if x < 0
+        return 0 -% u
+    else
+        return u
 
 /// The quotient truncated toward zero.
 /// :param u: The dividend.
 /// :param d: The divisor.
 /// :returns: The quotient.
 /// :throws: Crashes with `DivisionByZeroError` when `d` is 0, and with `IntegerOverflowError` on `MIN / -1`.
-#track_caller
+@track_caller
 routine wide_div(u: S128, d: S128) -> S128
-    overflow: Bool = u.eq(S128.MIN).bitand(d.eq(-1))
-    branch overflow
-        ? crash_overflow()
-        : continue
+    if u == S128.MIN and d == -1
+        crash_overflow()
     r: U128DivRem = wide_divrem(u: s128_magnitude(u), d: s128_magnitude(d))
     q: S128 = bitcast[U128, S128](r.quotient)
-    branch u.lt(0).bitxor(d.lt(0))
-        ? return(q.neg_wrap())
-        : return(q)
+    if (u < 0) ^ (d < 0)
+        return q.neg_wrap()
+    else
+        return q
 
 /// The remainder with the dividend's sign (MIN % -1 is 0).
 /// :param u: The dividend.
 /// :param d: The divisor.
 /// :returns: The remainder.
 /// :throws: Crashes with `DivisionByZeroError` when `d` is 0.
-#track_caller
+@track_caller
 routine wide_rem(u: S128, d: S128) -> S128
     r: U128DivRem = wide_divrem(u: s128_magnitude(u), d: s128_magnitude(d))
     rem: S128 = bitcast[U128, S128](r.remainder)
-    branch u.lt(0)
-        ? return(rem.neg_wrap())
-        : return(rem)
+    if u < 0
+        return rem.neg_wrap()
+    else
+        return rem

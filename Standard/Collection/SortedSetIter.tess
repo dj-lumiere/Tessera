@@ -14,108 +14,83 @@ private preset ITER_DEPTH: USize = 64
 /// `nodes[d]` and `indices[d]` for each level `d < depth`: the node, and in it the next key to yield. Every child
 /// left of that key has been walked already.
 record SortedSetIter[T]
-conform Iterator[T, SortedSetIter[T]]
-require T: typename, Comparable[T]
+obeys Iterator[T, SortedSetIter[T]]
+needs T: typename, Comparable[T]
     nodes: Array[@SortedSetNode[T], ITER_DEPTH]
     indices: Array[USize, ITER_DEPTH]
     depth: USize
 
 /// Releases nothing: a `SortedSetIter` holds no memory of its own.
 routine SortedSetIter[T].destruct(me: @Me) -> Void
-require T: typename
-    return()
+needs T: typename
+    return
 
 /// Creates an iterator positioned before the smallest element, descending to the leftmost leaf.
 /// :param set: The sorted set to walk.
 /// :returns: A new iterator, already positioned when the set is not empty.
 routine SortedSetIter[T].construct(set: @SortedSet[T]) -> Me
-require T: typename
+needs T: typename
     local iter: @Me <- .hollow()
 
     root: @SortedSetNode[T] = set.root.peek()
     empty: Bool = root.is_null()
     iter.depth.poke(0)
-    branch empty
-        ? finish()
-        : continue
-    iter.push_leftmost(root)
-    jump finish()
-
-    block finish()
+    if empty
         iter_val: Me = iter.peek()
-        return(iter_val)
+        return iter_val
+    iter.push_leftmost(root)
+    iter_val: Me = iter.peek()
+    return iter_val
 
 /// Pushes node and the first child of each level below it, down to a leaf.
 /// :param node: The node to start from.
 private routine SortedSetIter[T].push_leftmost(me: @Me, node: @SortedSetNode[T]) -> Void
-require T: typename
-    jump push(node)
-
-    block push(current: @SortedSetNode[T])
-        depth: USize = me.depth.peek()
-        leaf: Bool = current.leaf.peek()
-        me.nodes.setitem(index: depth, value: current)
-        me.indices.setitem(index: depth, value: 0)
-        me.depth.poke(depth.add(1))
-        branch leaf
-            ? return()
-            : first_child(current)
-
-    block first_child(current: @SortedSetNode[T])
-        jump push(current.children.getitem(0))
+needs T: typename
+    while true with current: @SortedSetNode[T] = node
+        depth2: USize = me.depth.peek()
+        leaf2: Bool = current.leaf.peek()
+        me.nodes[depth2] = current
+        me.indices[depth2] = 0
+        me.depth.poke(depth2 + 1)
+        if leaf2
+            return
+        else
+            continue with current: current.children[0]
 
 /// Yields the next element in ascending order, climbing to a parent or descending to the next leaf as needed.
 /// :returns: The next element, smallest first.
 /// :absent: After the largest element has been yielded.
 routine SortedSetIter[T].emit_checked(me: @Me) -> Maybe[T]
-require T: typename
-    jump top()
-
-    block top()
-        depth: USize = me.depth.peek()
-        empty: Bool = depth.eq(0)
-        branch empty
-            ? done()
-            : continue
-        level: USize = depth.sub(1)
-        node: @SortedSetNode[T] = me.nodes.getitem(level)
-        index: USize = me.indices.getitem(level)
+needs T: typename
+    while me.depth.peek() != 0
+        level: USize = depth - 1
+        node: @SortedSetNode[T] = me.nodes[level]
+        index: USize = me.indices[level]
         count: USize = node.count.peek()
-        has_key: Bool = index.lt(count)
-        branch has_key
-            ? take(node, level, index)
-            : pop(level)
-
-    block pop(level: USize)
-        me.depth.poke(level)
-        jump top()
-
-    block take(node: @SortedSetNode[T], level: USize, index: USize)
-        key: T = node.keys.getitem(index)
-        leaf: Bool = node.leaf.peek()
-        me.indices.setitem(index: level, value: index.add(1))
-        branch leaf
-            ? yield(key)
-            : continue
-        right: @SortedSetNode[T] = node.children.getitem(index.add(1))
-        me.push_leftmost(right)
-        jump yield(key)
-
-    block yield(key: T)
-        some: Maybe[T] = key
-        return(some)
-
-    block done()
-        none: Maybe[T] = Unit()
-        return(none)
+        if index < count
+            key: T = node.keys[index]
+            leaf: Bool = node.leaf.peek()
+            me.indices[level] = index + 1
+            if leaf
+                some: Maybe[T] = key
+                return some
+            right: @SortedSetNode[T] = node.children[index + 1]
+            me.push_leftmost(right)
+            some: Maybe[T] = key
+            return some
+        else
+            me.depth.poke(level)
+            continue
+    none: Maybe[T] = Unit()
+    return none
 
 /// Yields the next element and advances the iterator, crashing when there is none.
 /// :returns: The next element, smallest first.
 /// :throws: Crashes with `AbsentValueError` after the last element has been yielded.
-#track_caller
+@track_caller
 routine SortedSetIter[T].emit(me: @Me) -> T
-require T: typename
+needs T: typename
     item: Maybe[T] = me.emit_checked()
     when item
-        is T as value => return(value)
+        is T as value => return value
         is Unit => crash_absent_value()

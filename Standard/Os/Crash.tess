@@ -28,13 +28,12 @@ import Standard/Format
 /// :param name: The kind of failure, such as `IntegerOverflowError`.
 /// :param message: What happened.
 /// :param place: Where the crash happened: file, line, and column (0 when only the line is known).
-#[export("tessera_crash_handler"), noreturn]
+@export("tessera_crash_handler")
+@noreturn
 routine default_crash_handler(name: Span[Byte], message: Span[Byte], place: @SourceLocation) -> Void
     Err.write("tessera: {name}")
-    none: Bool = message.count.eq(0)
-    branch none
-        ? place()
-        : continue
+    if message.count == 0
+        jump place()
     Err.write(": {message}")
     jump place()
 
@@ -43,10 +42,8 @@ routine default_crash_handler(name: Span[Byte], message: Span[Byte], place: @Sou
         line: U32 = place.line.peek()
         Err.write("\n  at {file}:{line}")
         column: U32 = place.column.peek()
-        whole: Bool = column.eq(0)
-        branch whole
-            ? done()
-            : continue
+        if column == 0
+            jump done()
         Err.write(":{column}")
         jump done()
 
@@ -62,48 +59,29 @@ internal routine write_trace() -> Void
     local depth: USize = trace_depth()
     local shown: USize = depth.min(TRACE_CAPACITY)
 
-    empty: Bool = depth.eq(0)
-    branch empty
-        ? return()
-        : continue
+    if depth == 0
+        return
     Err.write("Stack trace:\n")
-    jump frame(0)
 
-    block frame(back: USize)
-        done: Bool = back.ge(shown)
-        branch done
-            ? total()
-            : continue
+    each back in 0 til shown
         at: TraceFrame = trace_frame(back)
         name: Span[Byte] = at.name.getview()
         file: Span[Byte] = at.file.getview()
         line: U32 = at.line
-        branch line.eq(0)
-            ? no_line(back, name, file)
-            : continue
+        if line == 0
+            // A frame that made no call yet (the fault came first) has no place within its routine.
+            Err.write("  {back}: at {name} ({file}")
+            Err.write(")\n")
+            continue
         Err.write("  {back}: at {name} ({file}:{line}")
         column: U32 = at.column
-        whole: Bool = column.eq(0)
-        branch whole
-            ? closed(back)
-            : continue
+        if column == 0
+            Err.write(")\n")
+            continue
         Err.write(":{column}")
-        jump closed(back)
-
-    // A frame that made no call yet (the fault came first) has no place within its routine.
-    block no_line(back: USize, name: Span[Byte], file: Span[Byte])
-        Err.write("  {back}: at {name} ({file}")
-        jump closed(back)
-
-    block closed(back: USize)
         Err.write(")\n")
-        jump frame(back.add(1))
-
-    block total()
-        total_depth: USize = trace_depth()
-        more: Bool = total_depth.gt(TRACE_CAPACITY)
-        branch more
-            ? continue
-            : return()
-        Err.write("  ... ({total_depth} frames total)\n")
-        return()
+    total_depth: USize = trace_depth()
+    if not (total_depth > TRACE_CAPACITY)
+        return
+    Err.write("  ... ({total_depth} frames total)\n")
+    return

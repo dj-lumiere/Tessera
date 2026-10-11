@@ -25,54 +25,45 @@ record Harness
 /// :param rng: Its `rng`.
 /// :returns: The new value.
 routine Harness.construct(out: @BufWriter[Out], rng: @Rng) -> Me
-    return(Me(out, rng))
+    return Me(out, rng)
 
 /// Releases nothing: a `Harness` holds no memory of its own.
 routine Harness.destruct(me: @Me) -> Void
-    return()
+    return
 
 routine Rng.below(me: @Me, bound: USize) -> USize
     state: U64 = me.state.peek()
-    next: U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
+    next: U64 = state *% 6364136223846793005 +% 1442695040888963407
     me.state.poke(next)
-    bucket: U64 = next.shr(33).mod(bound.to[U64]())
+    bucket: U64 = (next >> 33) % bound.to[U64]()
     value: USize = bucket.to[USize]()
-    return(value)
+    return value
 
 routine mix(hash: S64, value: S64) -> S64
-    mixed: S64 = hash.mul_wrap(1000003).add_wrap(value)
-    return(mixed)
+    mixed: S64 = hash *% 1000003 +% value
+    return mixed
 
 routine labeled[T](out: @T, label: Span[Byte], value: S64) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     out.write(" {label} {value}")
-    return()
+    return
 
 // Folds every element in index order.
 routine iteration_hash(array: @Array[S64, 16]) -> S64
     local iter: @ArrayIter[S64, 16] <- .construct(array)
 
-    jump next(0)
-
-    block next(hash: S64)
+    while true with hash: S64 = 0
         item: Maybe[S64] = iter.emit_checked()
         when item
-            is S64 as value => next(mix(hash, value))
-            is Unit => return(hash)
+            is S64 as value => continue with hash: mix(hash, value)
+            is Unit => return hash
 
 // Sets element i to base + i.
 routine fill(array: @Array[S64, 16], base: S64) -> Void
-    jump next(0)
-
-    block next(index: USize)
-        done: Bool = index.ge(N)
-        branch done
-            ? return()
-            : store(index)
-
-    block store(index: USize)
-        array.setitem(index, value: base.add(index.to[S64]()))
-        jump next(index.add(1))
+    each index in 0 til N
+        array[index] = base + index.to[S64]()
+    then
+        return
 
 routine checkpoint(out: @BufWriter[Out], array: @Array[S64, 16], op: USize, results: S64) -> Void
     out.write("op {op}")
@@ -80,7 +71,7 @@ routine checkpoint(out: @BufWriter[Out], array: @Array[S64, 16], op: USize, resu
     labeled(out, label: "results", value: results)
     labeled(out, label: "iteration", value: iteration_hash(array))
     out.write("\n")
-    return()
+    return
 
 routine run(harness: Harness, array: @Array[S64, 16], other: @Array[S64, 16], ops: USize) -> Void
     local rng: @Rng = harness.rng
@@ -88,79 +79,77 @@ routine run(harness: Harness, array: @Array[S64, 16], other: @Array[S64, 16], op
     jump next(0, 0)
 
     block next(op: USize, results: S64)
-        done: Bool = op.ge(ops)
-        branch done
-            ? return()
-            : pick(op, results)
+        if op >= ops
+            return
+        else
+            jump pick(op, results)
 
     block pick(op: USize, results: S64)
         kind: USize = rng.below(100)
-        is_set: Bool = kind.lt(20)
-        is_set_other: Bool = kind.lt(30)
-        is_get: Bool = kind.lt(45)
-        is_shift_right: Bool = kind.lt(57)
-        is_shift_left: Bool = kind.lt(69)
-        is_copy: Bool = kind.lt(79)
-        is_copy_self: Bool = kind.lt(85)
-        is_eq: Bool = kind.lt(92)
+        is_set: Bool = kind < 20
+        is_set_other: Bool = kind < 30
+        is_get: Bool = kind < 45
+        is_shift_right: Bool = kind < 57
+        is_shift_left: Bool = kind < 69
+        is_copy: Bool = kind < 79
+        is_copy_self: Bool = kind < 85
         when
-            is_set => set(op, results, array)
-            is_set_other => set(op, results, other)
-            is_get => get(op, results)
-            is_shift_right => shift_right(op, results)
-            is_shift_left => shift_left(op, results)
-            is_copy => copy(op, results, other)
-            is_copy_self => copy(op, results, array)
-            is_eq => eq(op, results)
-            else => read_raw(op, results)
+            is_set => jump set(op, results, array)
+            is_set_other => jump set(op, results, other)
+            is_get => jump get(op, results)
+            is_shift_right => jump shift_right(op, results)
+            is_shift_left => jump shift_left(op, results)
+            is_copy => jump copy(op, results, other)
+            is_copy_self => jump copy(op, results, array)
+            kind < 92 => jump eq(op, results)
+            else => jump read_raw(op, results)
 
     block set(op: USize, results: S64, target: @Array[S64, 16])
         index: USize = rng.below(N)
         value: S64 = rng.below(1000).to[S64]()
-        target.setitem(index, value)
+        target[index] = value
         jump record(op, results, value)
 
     block get(op: USize, results: S64)
         index: USize = rng.below(N)
-        jump record(op, results, array.getitem(index))
+        jump record(op, results, array[index])
 
     block shift_right(op: USize, results: S64)
         start: USize = rng.below(N)
-        end: USize = start.add(rng.below(N.sub(start)))
+        end: USize = start + rng.below(N.sub(start))
         array.shift_right(start, end)
         jump record(op, results, end.to[S64]())
 
     block shift_left(op: USize, results: S64)
         start: USize = rng.below(N)
-        end: USize = start.add(1).add(rng.below(N.sub(start)))
+        end: USize = start + 1 + rng.below(N.sub(start))
         array.shift_left(start, end)
         jump record(op, results, end.to[S64]())
 
     block copy(op: USize, results: S64, source: @Array[S64, 16])
         count: USize = rng.below(N.add(1))
-        room: USize = N.sub(count).add(1)
+        room: USize = N.sub(count) + 1
         dst: USize = rng.below(room)
         src: USize = rng.below(room)
         array.copy(dst_start: dst, src: source, src_start: src, count)
         jump record(op, results, count.to[S64]())
 
     block eq(op: USize, results: S64)
-        equal: Bool = array.peek().eq(other.peek())
+        equal: Bool = array.peek() == other.peek()
         jump record(op, results, equal.to[S64]())
 
     block read_raw(op: USize, results: S64)
         data: @S64 = array.to[@S64]()
         index: USize = rng.below(N)
-        value: S64 = data.stride(index).peek()
-        jump record(op, results, value)
+        jump record(op, results, data.stride(index).peek())
 
     block record(op: USize, results: S64, result: S64)
         mixed: S64 = mix(hash: results, value: result)
-        op_next: USize = op.add(1)
-        report: Bool = op_next.mod(100).eq(0)
-        branch report
-            ? report(op_next, mixed)
-            : next(op_next, mixed)
+        op_next: USize = op + 1
+        if op_next % 100 == 0
+            jump report(op_next, mixed)
+        else
+            jump next(op_next, mixed)
 
     block report(op: USize, results: S64)
         checkpoint(out: harness.out, array, op, results)
@@ -168,11 +157,11 @@ routine run(harness: Harness, array: @Array[S64, 16], other: @Array[S64, 16], op
 
 routine start() -> Void
     fd: @Out = Out.writer()
-    claim out: @BufWriter[Out] <- .hollow()
+    local out: @BufWriter[Out] <- .hollow()
     out.construct(fd)
-    claim rng: @Rng <- Rng(state: 5)
-    claim array: @Array[S64, 16] <- .hollow()
-    claim other: @Array[S64, 16] <- .hollow()
+    local rng: @Rng <- Rng(state: 5)
+    local array: @Array[S64, 16] <- .hollow()
+    local other: @Array[S64, 16] <- .hollow()
     fill(array, base: 0)
     fill(array: other, base: 0)
     out.write("same fill equal {array.peek().eq(other.peek())}\n")
@@ -182,4 +171,4 @@ routine start() -> Void
     other.copy(dst_start: 0, src: array, src_start: 0, count: N)
     out.write("full copy equal {array.peek().eq(other.peek())}\n")
     out.flush()
-    return()
+    return

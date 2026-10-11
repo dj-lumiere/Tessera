@@ -17,7 +17,9 @@ import Standard/Os
 
 // ── C FFI ─────────────────────────────────────────────────────────────────────
 
-#[external("c"), symbol("printf"), variadic]
+@external("c")
+@symbol("printf")
+@variadic
 routine c_printf(fmt: @Byte) -> S32
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -40,64 +42,39 @@ record Graph
 routine Graph.construct(num_nodes: USize, alloc: @MemoryManager) -> Me
     local adj: @List[@List[Edge]] = allocate[List[@List[Edge]]](count: 1, alloc)
 
-    adj_null: Bool = adj.is_null()
-    branch adj_null
-        ? crash_allocation()
-        : continue
+    if adj.is_null()
+        crash_allocation()
     adj_val: List[@List[Edge]] = .construct(alloc)
     adj.poke(adj_val)
-    jump init_loop(0)
 
-    block init_loop(i: USize)
-        done: Bool = i.ge(num_nodes)
-        branch done
-            ? build()
-            : make_list(i)
-
-    block make_list(i: USize)
+    each i in 0 til num_nodes
         list: @List[Edge] = allocate[List[Edge]](count: 1, alloc)
-        list_null: Bool = list.is_null()
-        branch list_null
-            ? crash_allocation()
-            : continue
+        if list.is_null()
+            crash_allocation()
         empty: List[Edge] = .construct(alloc)
         list.poke(empty)
         adj.add_last(list)
-        jump init_loop(i.add(1))
-
-    block build()
-        g: Me = Me(adj: adj, num_nodes: num_nodes)
-        return(g)
+    g: Me = Me(adj: adj, num_nodes: num_nodes)
+    return g
 
 routine Graph.add_edge(me: @Me, from: USize, to: USize, weight: S64) -> Void
     adj: @List[@List[Edge]] = me.adj.peek()
-    list: @List[Edge] = adj.getitem(from)
+    list: @List[Edge] = adj[from]
     edge: Edge = Edge(to: to, weight: weight)
     list.add_last(edge)
-    return()
+    return
 
 routine Graph.destruct(me: @Me, alloc: @MemoryManager) -> Void
     local n: USize = me.num_nodes.peek()
     local adj: @List[@List[Edge]] = me.adj.peek()
 
-    jump free_loop(0)
-
-    block free_loop(i: USize)
-        done: Bool = i.ge(n)
-        branch done
-            ? free_outer()
-            : free_one(i)
-
-    block free_one(i: USize)
-        list: @List[Edge] = adj.getitem(i)
+    each i in 0 til n
+        list: @List[Edge] = adj[i]
         list.destruct()
         deallocate(data: list, alloc)
-        jump free_loop(i.add(1))
-
-    block free_outer()
-        adj.destruct()
-        deallocate(data: adj, alloc)
-        return()
+    adj.destruct()
+    deallocate(data: adj, alloc)
+    return
 
 // ── Dijkstra ─────────────────────────────────────────────────────────────────
 //
@@ -109,74 +86,42 @@ routine dijkstra(graph:  @Graph, source: USize, dist:   @S64, alloc:  @MemoryMan
     local n: USize = graph.num_nodes.peek()
     local pq: @PriorityQueue[S64, USize] <- .construct(alloc)
 
-    jump fill_inf(0)
-
     // Phase 1 — initialise every distance slot to INF.
-    block fill_inf(i: USize)
-        done: Bool = i.ge(n)
-        branch done
-            ? seed()
-            : write_inf(i)
-
-    block write_inf(i: USize)
+    each i in 0 til n
         dist.stride(i).poke(INF)
-        jump fill_inf(i.add(1))
 
     // Phase 2 — set the source distance to 0 and seed the queue.
-    block seed()
-        dist.stride(source).poke(0)
-        pq.add(priority: 0, element: source)
-        jump main_loop()
+    dist.stride(source).poke(0)
+    pq.add(priority: 0, element: source)
 
     // Phase 3 — drain the queue, relaxing edges on each settled node.
-    block main_loop()
-        empty: Bool = pq.is_empty()
-        branch empty
-            ? done()
-            : dequeue()
-
-    block dequeue()
+    until pq.is_empty()
         top: PriorityEntry[S64, USize] = pq.remove_entry()
         d: S64 = top.priority
         u: USize = top.element
         best: S64 = dist.stride(u).peek()
-        stale: Bool = d.gt(best)
         // re-push instead of decrease-key produces stale entries — drop them.
-        branch stale
-            ? main_loop()
-            : scan(u, d)
+        if d > best
+            continue
+        else
+            adj: @List[@List[Edge]] = graph.adj.peek()
+            list: @List[Edge] = adj[u]
 
-    block scan(u: USize, d: S64)
-        adj: @List[@List[Edge]] = graph.adj.peek()
-        list: @List[Edge] = adj.getitem(u)
-        len: USize = list.count()
-        jump edge_loop(0, len, d, list)
+            len: USize = list.count()
 
-    block edge_loop(i: USize, len: USize, d: S64, list: @List[Edge])
-        done: Bool = i.ge(len)
-        branch done
-            ? main_loop()
-            : relax(i, len, d, list)
-
-    block relax(i: USize, len: USize, d: S64, list: @List[Edge])
-        edge: Edge = list.getitem(i)
-        v: USize = edge.to
-        w: S64 = edge.weight
-        new_dist: S64 = d.add(w)
-        best: S64 = dist.stride(v).peek()
-        better: Bool = new_dist.lt(best)
-        branch better
-            ? improve(i, len, d, list, v, new_dist) \
-            : edge_loop(i.add(1), len, d, list)
-
-    block improve(i: USize, len: USize, d: S64, list: @List[Edge], v: USize, new_dist: S64)
-        dist.stride(v).poke(new_dist)
-        pq.add(priority: new_dist, element: v)
-        jump edge_loop(i.add(1), len, d, list)
-
-    block done()
-        pq.destruct()
-        return()
+            each i in 0 til len
+                edge: Edge = list[i]
+                v: USize = edge.to
+                w: S64 = edge.weight
+                new_dist: S64 = d + w
+                best2: S64 = dist.stride(v).peek()
+                if new_dist < best2
+                    dist.stride(v).poke(new_dist)
+                    pq.add(priority: new_dist, element: v)
+            then
+                continue
+    pq.destruct()
+    return
 
 // ── start ────────────────────────────────────────────────────────────────────
 //
@@ -205,35 +150,25 @@ routine start() -> Void
     local graph: @Graph <- g
     local distances: @Memory[S64] <- .hollow()
 
-    graph.add_edge(from: 0, to: 1,  weight: 7)
-    graph.add_edge(from: 0, to: 2,  weight: 9)
+    graph.add_edge(from: 0, to: 1, weight: 7)
+    graph.add_edge(from: 0, to: 2, weight: 9)
     graph.add_edge(from: 0, to: 5, weight: 14)
     graph.add_edge(from: 1, to: 2, weight: 10)
     graph.add_edge(from: 1, to: 3, weight: 15)
     graph.add_edge(from: 2, to: 3, weight: 11)
-    graph.add_edge(from: 2, to: 5,  weight: 2)
-    graph.add_edge(from: 3, to: 4,  weight: 6)
-    graph.add_edge(from: 4, to: 5,  weight: 9)
+    graph.add_edge(from: 2, to: 5, weight: 2)
+    graph.add_edge(from: 3, to: 4, weight: 6)
+    graph.add_edge(from: 4, to: 5, weight: 9)
 
     distances.poke(.construct(count: 6, manager: alloc))
     dist: @S64 = distances.to[@S64]()
     dijkstra(graph, source: 0, dist, alloc)
 
     c_printf("Shortest distances from node 0:\n")
-    jump print_loop(0)
 
-    block print_loop(i: USize)
-        done: Bool = i.ge(6)
-        branch done
-            ? cleanup()
-            : print_one(i)
-
-    block print_one(i: USize)
-        d: S64 = distances.getitem(i)
+    each i in 0 til 6
+        d: S64 = distances[i]
         c_printf("  node %zu  dist %lld\n", i, d)
-        jump print_loop(i.add(1))
-
-    block cleanup()
-        graph.destruct(alloc)
-        distances.destruct()
-        return()
+    graph.destruct(alloc)
+    distances.destruct()
+    return

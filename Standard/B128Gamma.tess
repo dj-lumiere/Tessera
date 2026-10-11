@@ -300,13 +300,12 @@ preset BIG_LN_PI: @Array[U64, 7] <- [0x39C5543C3AB0C9BA, 0x69201612B6D85C33, 0x2
 /// :returns: The coefficient at 192 bits.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `i` > 35.
 routine wide_gamma_coef(i: USize) -> B128Extended
-    w: B128Extended = wide_table(hi: WIDE_GAMMA_COEF_HI.to[@U128](),
-        lo: WIDE_GAMMA_COEF_LO.to[@U64](), exponent: WIDE_GAMMA_COEF_EXP.to[@S64](), i)
+    w: B128Extended = wide_table(hi: WIDE_GAMMA_COEF_HI.to[@U128](), lo: WIDE_GAMMA_COEF_LO.to[@U64](), exponent: WIDE_GAMMA_COEF_EXP.to[@S64](), i)
     neg: Bool = WIDE_GAMMA_COEF_NEG.getitem(i)
-    r: B128Extended = neg
-        ? w.neg()
-        : w
-    return(r)
+    r: B128Extended = when
+        neg => -w
+        else => w
+    return r
 
 // -- fast tier: B128Extended ---------------------------------------------------
 
@@ -324,35 +323,27 @@ record LnGammaWide
 /// :returns: The coefficient at 192 bits.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `i` is past the table.
 routine ln_gamma_near_coef(two: Bool, i: USize) -> B128Extended
-    branch two
-        ? near_two()
-        : near_one()
-
-    block near_one()
-        w: B128Extended = wide_table(hi: LN_GAMMA_NEAR_ONE_HI.to[@U128](),
-            lo: LN_GAMMA_NEAR_ONE_LO.to[@U64](), exponent: LN_GAMMA_NEAR_ONE_EXP.to[@S64](), i)
-        neg: Bool = LN_GAMMA_NEAR_ONE_NEG.getitem(i)
-        r: B128Extended = neg
-            ? w.neg()
-            : w
-        return(r)
-
-    block near_two()
-        w: B128Extended = wide_table(hi: LN_GAMMA_NEAR_TWO_HI.to[@U128](),
-            lo: LN_GAMMA_NEAR_TWO_LO.to[@U64](), exponent: LN_GAMMA_NEAR_TWO_EXP.to[@S64](), i)
+    if two
+        w: B128Extended = wide_table(hi: LN_GAMMA_NEAR_TWO_HI.to[@U128](), lo: LN_GAMMA_NEAR_TWO_LO.to[@U64](), exponent: LN_GAMMA_NEAR_TWO_EXP.to[@S64](), i)
         neg: Bool = LN_GAMMA_NEAR_TWO_NEG.getitem(i)
-        r: B128Extended = neg
-            ? w.neg()
-            : w
-        return(r)
+        r: B128Extended = when
+            neg => -w
+            else => w
+        return r
+    else
+        w: B128Extended = wide_table(hi: LN_GAMMA_NEAR_ONE_HI.to[@U128](), lo: LN_GAMMA_NEAR_ONE_LO.to[@U64](), exponent: LN_GAMMA_NEAR_ONE_EXP.to[@S64](), i)
+        neg: Bool = LN_GAMMA_NEAR_ONE_NEG.getitem(i)
+        r: B128Extended = when
+            neg => -w
+            else => w
+        return r
 
 /// Entry i of WIDE_EXP_COEF, 1 / i!.
 /// :param i: The index.
 /// :returns: 1 / i! at 192 bits.
 routine wide_exp_coef(i: USize) -> B128Extended
-    w: B128Extended = wide_table(hi: WIDE_EXP_COEF_HI.to[@U128](), lo: WIDE_EXP_COEF_LO.to[@U64](),
-        exponent: WIDE_EXP_COEF_EXP.to[@S64](), i)
-    return(w)
+    w: B128Extended = wide_table(hi: WIDE_EXP_COEF_HI.to[@U128](), lo: WIDE_EXP_COEF_LO.to[@U64](), exponent: WIDE_EXP_COEF_EXP.to[@S64](), i)
+    return w
 
 /// e^x as wide_exp computes it, but with all 36 Taylor terms: x = q ln 2 + d with |d| <= ln 2 / 2, and the
 /// first dropped term is below 2^-193, so the result is within about 2^-189 relative, plus 2^-191 |x| from the
@@ -360,22 +351,19 @@ routine wide_exp_coef(i: USize) -> B128Extended
 /// :param x: The exponent.
 /// :returns: e^x at 192 bits.
 routine gamma_wide_exp(x: B128Extended) -> B128Extended
-    local q: S64 = x.mul(wide_const(1)).to_nearest[S64]()
-    local d: B128Extended = x.sub(q.to[B128Extended]().mul(wide_const(0)))
+    local q: S64 = (x * wide_const(1)).to_nearest[S64]()
+    local d: B128Extended = x - q.to[B128Extended]() * wide_const(0)
     local s: @B128Extended <- .hollow()
 
     last: B128Extended = wide_exp_coef(35)
     last.poke_into(s)
-    jump horner(34)
 
-    block horner(i: S64)
-        done: Bool = i.lt(0)
-        branch done
-            ? return(s.peek().ldexp(q))
-            : continue
+    until i < 0 with i: S64 = 34
         c: B128Extended = wide_exp_coef(i.to[USize]())
-        s.poke(s.peek().mul(d).add(c))
-        jump horner(i.sub(1))
+        s.poke(s.peek() * d + c)
+        continue with i: i - 1
+    then
+        return s.peek().ldexp(q)
 
 /// ln a for a > 0: a = m 2^e with m in [1, 2), and ln m from B128's correctly rounded ln (CORE-MATH) refined by
 /// one Newton step y ← y + m e^-y - 1, which squares its 2^-113 error away. Within about 2^-188 absolute, plus
@@ -384,19 +372,18 @@ routine gamma_wide_exp(x: B128Extended) -> B128Extended
 /// :returns: ln a at 192 bits.
 routine gamma_wide_ln(a: B128Extended) -> B128Extended
     e: S64 = a.exponent
-    m: B128Extended = a.ldexp(0.sub(e))
+    m: B128Extended = a.ldexp(0 - e)
     y: B128Extended = B128.to[B128Extended](m.to[B128]().ln())
-    step: B128Extended = m.mul(gamma_wide_exp(y.neg())).sub(wide_one())
-    scaled: B128Extended = e.to[B128Extended]().mul(wide_const(0))
-    r: B128Extended = y.add(step).add(scaled)
-    return(r)
+    step: B128Extended = m * gamma_wide_exp(-y) - wide_one()
+    scaled: B128Extended = e.to[B128Extended]() * wide_const(0)
+    r: B128Extended = y + step + scaled
+    return r
 
 /// Whether |z| < 2^-5, where the Taylor series of ln Γ around 1 and 2 take over.
 /// :param z: The distance from 1 or 2.
 /// :returns: True when z is zero or below 2^-5 in magnitude.
 routine wide_is_small(z: B128Extended) -> Bool
-    r: Bool = z.is_zero().bitor(z.exponent.lt(-5))
-    return(r)
+    return z.is_zero() or z.exponent < -5
 
 /// ln Γ(1 + z) = -γ z + Σ (-1)^k ζ(k) / k z^k (40 terms), or ln Γ(2 + z) = (1 - γ) z + Σ (-1)^k (ζ(k) - 1) / k
 /// z^k (34 terms), for |z| < 2^-5: the first dropped term is below 2^-204 of the first one. Near the zeros at
@@ -407,27 +394,22 @@ routine wide_is_small(z: B128Extended) -> Bool
 routine wide_ln_gamma_near(z: B128Extended, two: Bool) -> LnGammaWide
     local s: @B128Extended <- .hollow()
 
-    count: USize = two
-        ? 34
-        : 40
-    last: B128Extended = ln_gamma_near_coef(two, i: count.sub(1))
+    count: USize = when
+        two => 34
+        else => 40
+    last: B128Extended = ln_gamma_near_coef(two, i: count - 1)
     last.poke_into(s)
-    jump horner(count.sub(1))
 
     // s ← s z + c_i, down to i = 0, and the value is then s z
-    block horner(i: USize)
-        done: Bool = i.eq(0)
-        branch done
-            ? finish(s.peek().mul(z))
-            : continue
-        c: B128Extended = ln_gamma_near_coef(two, i: i.sub(1))
-        s.poke(s.peek().mul(z).add(c))
-        jump horner(i.sub(1))
-
-    // the terms fall by 2^-5 or faster, so the value's own exponent (plus one) is the scale
-    block finish(value: B128Extended)
-        r: LnGammaWide = LnGammaWide(value: value, scale: value.exponent.add(1))
-        return(r)
+    while i != 0 with i: USize = count - 1
+        c: B128Extended = ln_gamma_near_coef(two, i: i - 1)
+        s.poke(s.peek() * z + c)
+        continue with i: i - 1
+    then
+        // the terms fall by 2^-5 or faster, so the value's own exponent (plus one) is the scale
+        value: B128Extended = s.peek() * z
+        r: LnGammaWide = LnGammaWide(value: value, scale: value.exponent + 1)
+        return r
 
 /// ln |Γ(a)| for a > 0 or -1 < a < 0 (a exact in B128Extended): the series near 1 and 2, else the recurrence
 /// Γ(a) = Γ(a + n) / (a (a + 1) … (a + n - 1)) up to a + n in [30, 31), and Stirling's series there, 36 terms
@@ -436,8 +418,8 @@ routine wide_ln_gamma_near(z: B128Extended, two: Bool) -> LnGammaWide
 /// :param floor: floor(a), saturated.
 /// :returns: The value and its scale.
 routine wide_ln_gamma_positive(a: B128Extended, floor: S64) -> LnGammaWide
-    local z1: B128Extended = a.sub(wide_one())
-    local z2: B128Extended = a.sub(S64.to[B128Extended](2))
+    local z1: B128Extended = a - wide_one()
+    local z2: B128Extended = a - S64.to[B128Extended](2)
     local near_1: Bool = wide_is_small(z1)
     local near_2: Bool = wide_is_small(z2)
     local steps: S64 = GAMMA_WIDE_LIFT.sub(floor).max(0)
@@ -445,48 +427,36 @@ routine wide_ln_gamma_positive(a: B128Extended, floor: S64) -> LnGammaWide
     local s: @B128Extended <- .hollow()
 
     when
-        near_1 => return(wide_ln_gamma_near(z: z1, two: false))
-        near_2 => return(wide_ln_gamma_near(z: z2, two: true))
-        else => continue
+        near_1 => return wide_ln_gamma_near(z: z1, two: false)
+        near_2 => return wide_ln_gamma_near(z: z2, two: true)
+        else => pass
     wide_one().poke_into(w)
-    jump lift(0)
 
     // w = a (a + 1) … (a + j - 1)
-    block lift(j: S64)
-        done: Bool = j.ge(steps)
-        branch done
-            ? stirling(a.add(steps.to[B128Extended]()))
-            : continue
-        w.peek().mul(a.add(j.to[B128Extended]())).poke_into(w)
-        jump lift(j.add(1))
-
-    block stirling(b: B128Extended)
-        inv_bb: B128Extended = wide_one().div(b.mul(b))
+    each j in 0 til steps
+        (w.peek() * (a + j.to[B128Extended]())).poke_into(w)
+    then
+        b: B128Extended = a + steps.to[B128Extended]()
+        inv_bb: B128Extended = wide_one() / (b * b)
         last: B128Extended = wide_gamma_coef(35)
         last.poke_into(s)
-        jump series(34, b, inv_bb)
 
-    block series(i: S64, b: B128Extended, inv_bb: B128Extended)
-        done: Bool = i.lt(0)
-        branch done
-            ? assemble(b)
-            : continue
-        c: B128Extended = wide_gamma_coef(i.to[USize]())
-        s.poke(s.peek().mul(inv_bb).add(c))
-        jump series(i.sub(1), b, inv_bb)
-
-    // (b - 1/2) ln b - b + ln(2π)/2 + series / b - ln |w|
-    block assemble(b: B128Extended)
-        half: B128Extended = wide_one().ldexp(-1)
-        main: B128Extended = b.sub(half).mul(gamma_wide_ln(b))
-        ln_w: B128Extended = gamma_wide_ln(w.peek().abs())
-        half_ln_two_pi: B128Extended = wide_special(1).ldexp(-1)
-        tail: B128Extended = half_ln_two_pi.add(s.peek().div(b))
-        ln_gamma_b: B128Extended = main.sub(b).add(tail)
-        value: B128Extended = ln_gamma_b.sub(ln_w)
-        scale: S64 = main.exponent.max(b.exponent).max(ln_w.exponent)
-        r: LnGammaWide = LnGammaWide(value: value, scale: scale)
-        return(r)
+        until i < 0 with i: S64 = 34
+            c: B128Extended = wide_gamma_coef(i.to[USize]())
+            s.poke(s.peek() * inv_bb + c)
+            continue with i: i - 1
+        then
+            // (b - 1/2) ln b - b + ln(2π)/2 + series / b - ln |w|
+            half: B128Extended = wide_one().ldexp(-1)
+            main: B128Extended = (b - half) * gamma_wide_ln(b)
+            ln_w: B128Extended = gamma_wide_ln(w.peek().abs())
+            half_ln_two_pi: B128Extended = wide_special(1).ldexp(-1)
+            tail: B128Extended = half_ln_two_pi + s.peek() / b
+            ln_gamma_b: B128Extended = main - b + tail
+            value: B128Extended = ln_gamma_b - ln_w
+            scale: S64 = main.exponent.max(b.exponent).max(ln_w.exponent)
+            r: LnGammaWide = LnGammaWide(value: value, scale: scale)
+            return r
 
 /// |sin πx| for a finite x that is not an integer: πx = r π/2 + θ exactly reduced (b128_pi_reduce), then
 /// sin θ = 2 s c or cos θ = (c - s)(c + s) from s, c at θ/2, where the series' first dropped term is below
@@ -495,44 +465,39 @@ routine wide_ln_gamma_positive(a: B128Extended, floor: S64) -> LnGammaWide
 /// :returns: |sin πx| at 192 bits.
 routine wide_abs_sin_pi(x: B128) -> B128Extended
     red: PiReduced = b128_pi_reduce(x)
-    theta: B128Extended = red.d.to[B128Extended]().mul(wide_half_pi())
+    theta: B128Extended = red.d.to[B128Extended]() * wide_half_pi()
     half: B128Extended = theta.ldexp(-1)
     s: B128Extended = wide_sin_core(half)
     c: B128Extended = wide_cos_core(half)
-    odd: Bool = red.quadrant.bitand(1).eq(1)
-    sin: B128Extended = s.mul(c).ldexp(1)
-    cos: B128Extended = c.sub(s).mul(c.add(s))
-    r: B128Extended = odd
-        ? cos.abs()
-        : sin.abs()
-    return(r)
+    odd: Bool = red.quadrant & 1 == 1
+    sin: B128Extended = (s * c).ldexp(1)
+    cos: B128Extended = (c - s) * (c + s)
+    r: B128Extended = when
+        odd => cos.abs()
+        else => sin.abs()
+    return r
 
 /// ln |Γ(x)| in B128Extended for a finite x that is not a pole. Below -1, reflection: ln |Γ(x)| =
 /// ln π - ln |sin πx| - ln Γ(1 - x).
 /// :param x: The argument.
 /// :returns: The value and its scale.
 routine wide_ln_gamma(x: B128) -> LnGammaWide
-    reflect: Bool = x.lt(b128_of(0xBFFF0000000000000000000000000000))  // -1
-    branch reflect
-        ? reflected()
-        : continue
-    r: LnGammaWide = wide_ln_gamma_positive(a: x.to[B128Extended](),
-        floor: x.floor().to_clamp[S64]())
-    return(r)
-
-    // floor(1 - x) = 1 - ceil(x), exact for |x| < 2^112 (the larger ones are poles)
-    block reflected()
-        a: B128Extended = wide_one().sub(x.to[B128Extended]())
-        one_minus_ceil: B128 = b128_of(B128_ONE).sub(x.ceil())
+    // -1
+    if x < b128_of(0xBFFF0000000000000000000000000000)
+        // floor(1 - x) = 1 - ceil(x), exact for |x| < 2^112 (the larger ones are poles)
+        a: B128Extended = wide_one() - x.to[B128Extended]()
+        one_minus_ceil: B128 = b128_of(B128_ONE) - x.ceil()
         floor: S64 = one_minus_ceil.to_clamp[S64]()
         inner: LnGammaWide = wide_ln_gamma_positive(a, floor)
         ln_sin: B128Extended = gamma_wide_ln(wide_abs_sin_pi(x))
-        reflection: B128Extended = wide_special(2).sub(ln_sin)
-        value: B128Extended = reflection.sub(inner.value)
+        reflection: B128Extended = wide_special(2) - ln_sin
+        value: B128Extended = reflection - inner.value
         inner_scale: S64 = inner.scale.max(inner.value.exponent)
         scale: S64 = inner_scale.max(ln_sin.exponent).max(1)
         r: LnGammaWide = LnGammaWide(value: value, scale: scale)
-        return(r)
+        return r
+    r: LnGammaWide = wide_ln_gamma_positive(a: x.to[B128Extended](), floor: x.floor().to_clamp[S64]())
+    return r
 
 /// The band left for the fast tier's value once cancellation took its bits: band minus how far the value
 /// fell below its scale.
@@ -540,9 +505,9 @@ routine wide_ln_gamma(x: B128) -> LnGammaWide
 /// :param band: The band against the scale, in bits.
 /// :returns: The band against the value, in bits.
 routine ln_gamma_band(l: LnGammaWide, band: S64) -> S64
-    lost: S64 = l.scale.sub(l.value.exponent).max(0)
-    r: S64 = band.sub(lost)
-    return(r)
+    lost: S64 = (l.scale - l.value.exponent).max(0)
+    r: S64 = band - lost
+    return r
 
 // -- exact tier: B128Big -------------------------------------------------------
 
@@ -550,13 +515,13 @@ routine ln_gamma_band(l: LnGammaWide, band: S64) -> S64
 /// :returns: ln(2π)/2 as a B128Big.
 routine big_half_ln_two_pi() -> B128Big
     r: B128Big = big_from_limbs(limbs: BIG_HALF_LN_TWO_PI.to[@U64](), exponent: -448)
-    return(r)
+    return r
 
 /// ln π at 448 bits.
 /// :returns: ln π as a B128Big.
 routine big_ln_pi() -> B128Big
     r: B128Big = big_from_limbs(limbs: BIG_LN_PI.to[@U64](), exponent: -447)
-    return(r)
+    return r
 
 /// c_(i+1) = B(2i + 2) / ((2i + 2)(2i + 1)): 1/12, -1/360, 1/1260, …
 /// :param i: The index, 0 to 60.
@@ -564,13 +529,12 @@ routine big_ln_pi() -> B128Big
 /// :throws: Crashes with `IndexOutOfBoundsError` when `i` > 60.
 routine big_stirling_coef(i: USize) -> B128Big
     limbs: @U64 = BIG_STIRLING_LIMBS.to[@U64]()
-    c: B128Big = big_from_limbs(limbs: limbs.stride(i.mul(7)),
-        exponent: BIG_STIRLING_EXP.getitem(i))
-    odd: Bool = i.bitand(1).eq(1)
-    r: B128Big = odd
-        ? c.neg()
-        : c
-    return(r)
+    c: B128Big = big_from_limbs(limbs: limbs.stride(i * 7), exponent: BIG_STIRLING_EXP.getitem(i))
+    odd: Bool = i & 1 == 1
+    r: B128Big = when
+        odd => -c
+        else => c
+    return r
 
 /// ln Γ(b) for b >= 100 by Stirling's series (b - 1/2) ln b - b + ln(2π)/2 + Σ c_k / b^(2k-1). For a real
 /// b > 0 the remainder after any term is below the first term left out, and the terms fall while k < π b. At
@@ -580,28 +544,26 @@ routine big_stirling_coef(i: USize) -> B128Big
 /// :returns: ln Γ(b) at 448 bits.
 routine big_stirling(b: B128Big) -> B128Big
     local inv: B128Big = b.recip()
-    local inv_sq: B128Big = inv.mul(inv)
+    local inv_sq: B128Big = inv * inv
 
     jump series(0, inv, big_zero())
 
     // power = 1 / b^(2i + 1)
     block series(i: USize, power: B128Big, sum: B128Big)
-        full: Bool = i.ge(61)
-        branch full
-            ? assemble(sum)
-            : continue
-        term: B128Big = big_stirling_coef(i).mul(power)
-        done: Bool = big_is_negligible(term, sum)
-        branch done
-            ? assemble(sum)
-            : series(i.add(1), power.mul(inv_sq), sum.add(term))
+        if i >= 61
+            jump assemble(sum)
+        term: B128Big = big_stirling_coef(i) * power
+        if big_is_negligible(term, sum)
+            jump assemble(sum)
+        else
+            jump series(i + 1, power * inv_sq, sum + term)
 
     block assemble(sum: B128Big)
         half: B128Big = big_one().ldexp(-1)
-        main: B128Big = b.sub(half).mul(big_ln(b))
-        leading: B128Big = main.sub(b).add(big_half_ln_two_pi())
-        r: B128Big = leading.add(sum)
-        return(r)
+        main: B128Big = (b - half) * big_ln(b)
+        leading: B128Big = main - b + big_half_ln_two_pi()
+        r: B128Big = leading + sum
+        return r
 
 /// ln |Γ(a)| for a > 0 or -1 < a < 0: the recurrence up to a + n in [100, 101), then Stirling's series.
 /// :param a: The argument.
@@ -612,53 +574,41 @@ routine big_ln_gamma_positive(a: B128Big, floor: S64) -> B128Big
     local w: @B128Big <- .hollow()
 
     big_one().poke_into(w)
-    jump lift(0)
 
     // w = a (a + 1) … (a + j - 1)
-    block lift(j: S64)
-        done: Bool = j.ge(steps)
-        branch done
-            ? finish()
-            : continue
-        w.peek().mul(a.add(j.to[B128Big]())).poke_into(w)
-        jump lift(j.add(1))
-
-    block finish()
-        b: B128Big = a.add(steps.to[B128Big]())
-        r: B128Big = big_stirling(b).sub(big_ln(w.peek().abs()))
-        return(r)
+    each j in 0 til steps
+        (w.peek() * (a + j.to[B128Big]())).poke_into(w)
+    b: B128Big = a + steps.to[B128Big]()
+    r: B128Big = big_stirling(b) - big_ln(w.peek().abs())
+    return r
 
 /// |sin πx| for a finite x that is not an integer, from the exact reduction.
 /// :param x: The argument.
 /// :returns: |sin πx| at 448 bits.
 routine big_abs_sin_pi(x: B128) -> B128Big
     red: PiReduced = b128_pi_reduce(x)
-    theta: B128Big = red.d.to[B128Big]().mul(big_half_pi())
-    odd: Bool = red.quadrant.bitand(1).eq(1)
-    branch odd
-        ? return(big_cos_core(theta).abs())
-        : return(big_sin_core(theta).abs())
+    theta: B128Big = red.d.to[B128Big]() * big_half_pi()
+    if red.quadrant & 1 == 1
+        return big_cos_core(theta).abs()
+    else
+        return big_sin_core(theta).abs()
 
 /// ln |Γ(x)| in B128Big for a finite x that is not a pole, the same way as wide_ln_gamma. 1 - x is exact: it
 /// has at most 114 significant bits.
 /// :param x: The argument.
 /// :returns: ln |Γ(x)| at 448 bits.
 routine big_ln_gamma(x: B128) -> B128Big
-    reflect: Bool = x.lt(b128_of(0xBFFF0000000000000000000000000000))  // -1
-    branch reflect
-        ? reflected()
-        : continue
-    r: B128Big = big_ln_gamma_positive(a: x.to[B128Big](), floor: x.floor().to_clamp[S64]())
-    return(r)
-
-    block reflected()
-        a: B128Big = big_one().sub(x.to[B128Big]())
-        one_minus_ceil: B128 = b128_of(B128_ONE).sub(x.ceil())
+    // -1
+    if x < b128_of(0xBFFF0000000000000000000000000000)
+        a: B128Big = big_one() - x.to[B128Big]()
+        one_minus_ceil: B128 = b128_of(B128_ONE) - x.ceil()
         floor: S64 = one_minus_ceil.to_clamp[S64]()
         inner: B128Big = big_ln_gamma_positive(a, floor)
-        reflection: B128Big = big_ln_pi().sub(big_ln(big_abs_sin_pi(x)))
-        r: B128Big = reflection.sub(inner)
-        return(r)
+        reflection: B128Big = big_ln_pi() - big_ln(big_abs_sin_pi(x))
+        r: B128Big = reflection - inner
+        return r
+    r: B128Big = big_ln_gamma_positive(a: x.to[B128Big](), floor: x.floor().to_clamp[S64]())
+    return r
 
 // -- ln_gamma ------------------------------------------------------------------
 
@@ -667,7 +617,7 @@ routine big_ln_gamma(x: B128) -> B128Big
 /// :returns: ln |Γ(`me`)|.
 routine B128.ln_gamma(me: Me) -> Me
     r: Me = b128_ln_gamma(x: me, exact: false)
-    return(r)
+    return r
 
 /// ln |Γ(x)|, correctly rounded, as {B128.ln_gamma}.
 /// :param x: The argument.
@@ -677,33 +627,24 @@ routine b128_ln_gamma(x: B128, exact: Bool) -> B128
     nan: Bool = x.is_nan()
     zero: Bool = b128_is_zero_bits(x.bits())
     inf: Bool = x.is_infinite()
-    pole: Bool = b128_is_negative_bits(x.bits()).bitand(b128_is_integer(x))
-    one: Bool = x.eq(b128_of(B128_ONE))
-    two: Bool = x.eq(b128_of(0x40000000000000000000000000000000))
-    blows_up: Bool = zero.bitor(inf).bitor(pole)
-    root: Bool = one.bitor(two)
+    pole: Bool = b128_is_negative_bits(x.bits()) & b128_is_integer(x)
+    one: Bool = x == b128_of(B128_ONE)
+    two: Bool = x == b128_of(0x40000000000000000000000000000000)
+    blows_up: Bool = zero or inf or pole
     when
-        nan => return(b128_of(b128_quiet(x.bits())))
-        blows_up => return(B128.INFINITY)
-        root => return(b128_of(0))
-        exact => slow()
-        else => fast()
-
-    block fast()
-        l: LnGammaWide = wide_ln_gamma(x)
-        band: S64 = ln_gamma_band(l, band: B128_LN_GAMMA_BAND)
-        useful: Bool = band.ge(GAMMA_MIN_BAND).bitand(l.value.is_zero().bitnot())
-        branch useful
-            ? continue
-            : slow()
-        rounded: WideRounding = wide_round_within(u: l.value, k: band)
-        branch rounded.ok
-            ? return(rounded.value)
-            : slow()
-
-    block slow()
-        r: B128 = big_ln_gamma(x).to[B128]()
-        return(r)
+        nan => return b128_of(b128_quiet(x.bits()))
+        blows_up => return B128.INFINITY
+        one or two => return b128_of(0)
+        exact => pass
+        else =>
+            l: LnGammaWide = wide_ln_gamma(x)
+            band: S64 = ln_gamma_band(l, band: B128_LN_GAMMA_BAND)
+            useful: Bool = band >= GAMMA_MIN_BAND and not l.value.is_zero()
+            rounded: WideRounding = wide_round_within(u: l.value, k: band)
+            if rounded.ok
+                return rounded.value
+    r: B128 = big_ln_gamma(x).to[B128]()
+    return r
 
 // -- gamma ---------------------------------------------------------------------
 
@@ -712,7 +653,7 @@ routine b128_ln_gamma(x: B128, exact: Bool) -> B128
 /// :returns: Γ(`me`).
 routine B128.gamma(me: Me) -> Me
     r: Me = b128_gamma(x: me, exact: false)
-    return(r)
+    return r
 
 /// The sign of Γ(x) for x not a pole: negative on (-1, 0), (-3, -2), …, where trunc(x) is even.
 /// :param x: The argument.
@@ -720,9 +661,8 @@ routine B128.gamma(me: Me) -> Me
 routine b128_gamma_is_negative(x: B128) -> Bool
     below: Bool = b128_is_negative_bits(x.bits())
     whole: S128 = x.trunc().to_clamp[S128]()
-    even: Bool = whole.bitand(1).eq(0)
-    r: Bool = below.bitand(even)
-    return(r)
+    even: Bool = whole & 1 == 0
+    return below and even
 
 /// Γ(x), correctly rounded, as {B128.gamma}.
 /// :param x: The argument.
@@ -733,68 +673,72 @@ routine b128_gamma(x: B128, exact: Bool) -> B128
 
     nan: Bool = x.is_nan()
     zero: Bool = b128_is_zero_bits(x.bits())
-    pole: Bool = b128_is_negative_bits(x.bits()).bitand(b128_is_integer(x))
-    invalid: Bool = pole.bitor(x.eq(B128.NEG_INFINITY))
-    huge: Bool = x.ge(b128_of(0x4009B700000000000000000000000000))  // 1756
-    tiny: Bool = x.lt(b128_of(0xC009C200000000000000000000000000))  // -1800
-    small: Bool = x.le(b128_of(0x40044000000000000000000000000000))  // 40
-    factorial: Bool = b128_is_integer(x).bitand(small)
+    pole: Bool = b128_is_negative_bits(x.bits()) & b128_is_integer(x)
+    invalid: Bool = pole or x == B128.NEG_INFINITY
+    huge: Bool = x >= b128_of(0x4009B700000000000000000000000000)
+    // 1756
+    tiny: Bool = x < b128_of(0xC009C200000000000000000000000000)
+    // -1800
+    small: Bool = x <= b128_of(0x40044000000000000000000000000000)
+    // 40
+    factorial: Bool = b128_is_integer(x) & small
     negative: Bool = b128_gamma_is_negative(x)
     // below -1800, |Γ| <= π / (|sin πx| Γ(1 - x)) < 2^-16700 even next to an integer: it rounds
     // to ±0
     when
-        nan => return(b128_of(b128_quiet(x.bits())))
-        zero => return(B128.INFINITY.copysign(x))
-        invalid => return(B128.NAN)
-        huge => return(B128.INFINITY)
-        tiny => signed(b128_of(0), negative)
-        factorial => continue
-        exact => slow(negative)
-        else => fast(negative)
+        nan => return b128_of(b128_quiet(x.bits()))
+        zero => return B128.INFINITY.copysign(x)
+        invalid => return B128.NAN
+        huge => return B128.INFINITY
+        tiny => jump signed(b128_of(0), negative)
+        factorial => pass
+        exact => jump slow(negative)
+        else => jump fast(negative)
     big_one().poke_into(p)
     jump product(2, x.to[U64]())
 
     // Γ(n) = (n - 1)!, exact in B128Big (38! has a 114-bit odd part), rounded once
     block product(k: U64, n: U64)
-        done: Bool = k.ge(n)
-        branch done
-            ? return(p.peek().to[B128]())
-            : continue
-        p.peek().mul(k).poke_into(p)
-        jump product(k.add(1), n)
+        if k >= n
+            return p.peek().to[B128]()
+        (p.peek() * k).poke_into(p)
+        jump product(k + 1, n)
 
     // past ln |Γ| = 11360, Γ overflows, and below -11488 it is under half the smallest subnormal
     block fast(negative: Bool)
         l: LnGammaWide = wide_ln_gamma(x)
         ln: B128 = l.value.to[B128]()
-        over: Bool = ln.gt(b128_of(0x400C6300000000000000000000000000))  // 11360
-        under: Bool = ln.lt(b128_of(0xC00C6700000000000000000000000000))  // -11488
+        over: Bool = ln > b128_of(0x400C6300000000000000000000000000)
+        // 11360
+        under: Bool = ln < b128_of(0xC00C6700000000000000000000000000)
+        // -11488
         band: S64 = B128_GAMMA_BAND.sub(l.scale.max(0))
-        loose: Bool = band.lt(GAMMA_MIN_BAND)
         when
-            over => signed(B128.INFINITY, negative)
-            under => signed(b128_of(0), negative)
-            loose => slow(negative)
-            else => fast_exp(l.value, band, negative)
+            over => jump signed(B128.INFINITY, negative)
+            under => jump signed(b128_of(0), negative)
+            band < GAMMA_MIN_BAND => jump slow(negative)
+            else => jump fast_exp(l.value, band, negative)
 
     block fast_exp(ln: B128Extended, band: S64, negative: Bool)
         rounded: WideRounding = wide_round_within(u: gamma_wide_exp(ln), k: band)
-        branch rounded.ok
-            ? signed(rounded.value, negative)
-            : slow(negative)
+        if rounded.ok
+            jump signed(rounded.value, negative)
+        else
+            jump slow(negative)
 
     block slow(negative: Bool)
         l: B128Big = big_ln_gamma(x)
         ln: B128 = l.to[B128]()
-        over: Bool = ln.gt(b128_of(0x400C6300000000000000000000000000))  // 11360
-        under: Bool = ln.lt(b128_of(0xC00C6700000000000000000000000000))  // -11488
+        over: Bool = ln > b128_of(0x400C6300000000000000000000000000)
+        // 11360
+        // -11488
         when
-            over => signed(B128.INFINITY, negative)
-            under => signed(b128_of(0), negative)
-            else => signed(big_exp(l).to[B128](), negative)
+            over => jump signed(B128.INFINITY, negative)
+            ln < b128_of(0xC00C6700000000000000000000000000) => jump signed(b128_of(0), negative)
+            else => jump signed(big_exp(l).to[B128](), negative)
 
     block signed(r: B128, negative: Bool)
-        s: B128 = negative
-            ? r.neg()
-            : r
-        return(s)
+        s: B128 = when
+            negative => -r
+            else => r
+        return s

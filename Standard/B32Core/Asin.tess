@@ -27,97 +27,84 @@ preset CM_B32_ASIN_C: @Array[U64, 24] <- [0x3FC555555555529C, 0x3FB333333337E0DD
 /// :returns: The arc sine of `me`, in radians.
 routine B32.asin(me: Me) -> Me
     local xs: B64 = me.to[B64]()
-    local ax: U32 = me.bits().shl(1)
+    local ax: U32 = me.bits() << 1
 
-    outside: Bool = ax.gt(0x7F000000)
-    fast: Bool = ax.lt(0x7EC29000)
+    outside: Bool = ax > 0x7F000000
     when
-        outside => outside()
-        fast => fast()
-        else => accurate()
-
-    // |x| > 1 or NaN, which comes back quiet with its sign and payload
-    block outside()
-        nan: Bool = ax.gt(0xFF000000)
-        branch nan
-            ? return(me.add(me))
-            : return(Me.from_bits(0xFFC00000))
-
-    // |x| < 0x1.c29p-1
-    block fast()
-        tiny: Bool = ax.lt(0x73000000)  // |x| < 0x1p-12
-        branch tiny
-            ? return(me.mul_add(a: 0x1p-25, b: me))
-            : continue
-        z2: B64 = xs.mul(xs)
-        z4: B64 = z2.mul(z2)
-        z8: B64 = z4.mul(z4)
-        z16: B64 = z8.mul(z8)
-        a01: B64 = z2.mul(0x1.55557aeca105dp-3).add(0x1.0000000000005p+0)
-        a23: B64 = z2.mul(0x1.775738a5a6f92p-5).add(0x1.3314ec3db7d12p-4)
-        a45: B64 = z2.mul(0x1.605c6d58740fp-2).add(0x1.5d5f7ce1c8538p-8)
-        a67: B64 = z2.mul(0x1.f152170f151ebp+3).add(-0x1.5728b732d73c6p+1)
-        p0: B64 = z8.mul(z4.mul(a67).add(a45)).add(z4.mul(a23).add(a01))
-        b01: B64 = z2.mul(0x1.71971e17375ap+7).add(-0x1.f962ea3ca992ep+5)
-        b23: B64 = z2.mul(0x1.26a3b8d4bdb14p+9).add(-0x1.860512b4ba23p+8)
-        b45: B64 = z2.mul(0x1.b3d722aebfa2ep+8).add(-0x1.36f2ea5698b51p+9)
-        b67: B64 = z2.mul(0x1.1518af6a65e2dp+5).add(-0x1.6cf89703b1289p+7)
-        p1: B64 = z8.mul(z4.mul(b67).add(b45)).add(z4.mul(b23).add(b01))
-        rf: B64 = xs.mul(z16.mul(p1).add(p0))
-        ub: Me = rf.to[Me]()
-        lb: Me = rf.sub(xs.mul(0x1.efa8ebp-31)).to[Me]()
-        sure: Bool = ub.eq(lb)
-        branch sure
-            ? return(ub)
-            : accurate()
+        outside =>
+            // |x| > 1 or NaN, which comes back quiet with its sign and payload
+            if ax > 0xFF000000
+                return me + me
+            else
+                return Me.from_bits(0xFFC00000)
+        ax < 0x7EC29000 =>
+            // |x| < 0x1.c29p-1
+            // |x| < 0x1p-12
+            if ax < 0x73000000
+                return me.mul_add(a: 2.980232238769531e-08, b: me)
+            z2: B64 = xs * xs
+            z4: B64 = z2 * z2
+            z8: B64 = z4 * z4
+            z16: B64 = z8 * z8
+            a01: B64 = z2 * 0.16666694674143204 + 1.000000000000001
+            a23: B64 = z2 * 0.0458179575336707 + 0.07497112542795417
+            a45: B64 = z2 * 0.34410258152367046 + 0.005331008900413985
+            a67: B64 = z2 * 15.541270760972983 + -2.680930042099564
+            p0: B64 = z8 * (z4 * a67 + a45) + (z4 * a23 + a01)
+            b01: B64 = z2 * 184.79515144873312 + -63.17329833405016
+            b23: B64 = z2 * 589.2790780950768 + -390.0198166803775
+            b45: B64 = z2 * 435.8403729646551 + -621.89777643639
+            b67: B64 = z2 * 34.63705332873756 + -182.48552714860514
+            p1: B64 = z8 * (z4 * b67 + b45) + (z4 * b23 + b01)
+            rf: B64 = xs * (z16 * p1 + p0)
+            ub: Me = rf.to[Me]()
+            lb: Me = (rf - xs * 9.015999891115456e-10).to[Me]()
+            if ub == lb
+                return ub
+        else => pass
 
     // The fast path can't decide the rounding, or |x| >= 0x1.c29p-1.
-    block accurate()
-        half: Bool = ax.lt(0x7E000000)  // |x| < 1/2
-        hard1: Bool = ax.eq(0x7E55688A)
-        hard2: Bool = ax.eq(0x7E107434)
-        when
-            half => small()
-            hard1 => return(Me.copysign(0x1.75b8a2p-1, me).add(Me.copysign(0x1p-26, me)))
-            hard2 => return(Me.copysign(0x1.1f4b64p-1, me).add(Me.copysign(0x1p-26, me)))
-            else => large()
-
-    // x + x^3 p(x^2)
-    block small()
-        z2: B64 = xs.mul(xs)
-        x3: B64 = xs.mul(z2)
-        r: B64 = x3.mul(cm_b32_asin_poly12(z: z2, base: 0)).add(xs)
-        return(r.to[Me]())
-
-    // sign(x) (pi/2 - sqrt(z) q(z)) with z = 1 - |x|
-    block large()
-        z: B64 = B64.sub(1.0, xs.abs())
-        s: B64 = z.sqrt()
-        r: B64 = B64.sub(0x1.921fb54442d18p+0, s.mul(cm_b32_asin_poly12(z, base: 12)))
-        return(r.copysign(xs).to[Me]())
+    half: Bool = ax < 0x7E000000
+    // |x| < 1/2
+    hard1: Bool = ax == 0x7E55688A
+    when
+        half =>
+            // x + x^3 p(x^2)
+            z2: B64 = xs * xs
+            x3: B64 = xs * z2
+            r: B64 = x3 * cm_b32_asin_poly12(z: z2, base: 0) + xs
+            return r.to[Me]()
+        hard1 => return Me.copysign(0.7299242615699768, me) + Me.copysign(1.4901161193847656e-08, me)
+        ax == 0x7E107434 => return Me.copysign(0.5611220598220825, me) + Me.copysign(1.4901161193847656e-08, me)
+        else =>
+            // sign(x) (pi/2 - sqrt(z) q(z)) with z = 1 - |x|
+            z: B64 = B64.sub(1.0, xs.abs())
+            s: B64 = z.sqrt()
+            r: B64 = B64.sub(1.5707963267948966, s * cm_b32_asin_poly12(z, base: 12))
+            return r.copysign(xs).to[Me]()
 
 /// Evaluates one of the two degree-11 polynomials of CM_B32_ASIN_C at `z`.
 /// :param z: The point to evaluate at.
 /// :param base: 0 or 12, the index of the polynomial's first coefficient.
 /// :returns: The polynomial's value.
 routine cm_b32_asin_poly12(z: B64, base: USize) -> B64
-    z2: B64 = z.mul(z)
-    z4: B64 = z2.mul(z2)
-    c0: B64 = z.mul(cm_b32_asin_coef(base, k: 1)).add(cm_b32_asin_coef(base, k: 0))
-    c2: B64 = z.mul(cm_b32_asin_coef(base, k: 3)).add(cm_b32_asin_coef(base, k: 2))
-    c4: B64 = z.mul(cm_b32_asin_coef(base, k: 5)).add(cm_b32_asin_coef(base, k: 4))
-    c6: B64 = z.mul(cm_b32_asin_coef(base, k: 7)).add(cm_b32_asin_coef(base, k: 6))
-    c8: B64 = z.mul(cm_b32_asin_coef(base, k: 9)).add(cm_b32_asin_coef(base, k: 8))
-    c10: B64 = z.mul(cm_b32_asin_coef(base, k: 11)).add(cm_b32_asin_coef(base, k: 10))
-    d0: B64 = c2.mul(z2).add(c0)
-    d4: B64 = c6.mul(z2).add(c4)
-    d8: B64 = z2.mul(c10).add(c8)
-    r: B64 = z4.mul(z4.mul(d8).add(d4)).add(d0)
-    return(r)
+    z2: B64 = z * z
+    z4: B64 = z2 * z2
+    c0: B64 = z * cm_b32_asin_coef(base, k: 1) + cm_b32_asin_coef(base, k: 0)
+    c2: B64 = z * cm_b32_asin_coef(base, k: 3) + cm_b32_asin_coef(base, k: 2)
+    c4: B64 = z * cm_b32_asin_coef(base, k: 5) + cm_b32_asin_coef(base, k: 4)
+    c6: B64 = z * cm_b32_asin_coef(base, k: 7) + cm_b32_asin_coef(base, k: 6)
+    c8: B64 = z * cm_b32_asin_coef(base, k: 9) + cm_b32_asin_coef(base, k: 8)
+    c10: B64 = z * cm_b32_asin_coef(base, k: 11) + cm_b32_asin_coef(base, k: 10)
+    d0: B64 = c2 * z2 + c0
+    d4: B64 = c6 * z2 + c4
+    d8: B64 = z2 * c10 + c8
+    r: B64 = z4 * (z4 * d8 + d4) + d0
+    return r
 
 /// Coefficient `k` of the polynomial starting at `base` in CM_B32_ASIN_C.
 /// :param base: The index of the polynomial's first coefficient.
 /// :param k: The coefficient's index within the polynomial.
 /// :returns: The coefficient.
 private routine cm_b32_asin_coef(base: USize, k: USize) -> B64
-    return(B64.from_bits(CM_B32_ASIN_C.getitem(base.add(k))))
+    return B64.from_bits(CM_B32_ASIN_C.getitem(base + k))

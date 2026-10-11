@@ -30,111 +30,93 @@ record Utf8Decoded
 /// :returns: The character, the position after it, and whether it was well formed.
 /// :note: A malformed or truncated sequence, or `pos` at or past `len`, gives U+FFFD with `next_pos` equal to `pos` and `ok` false.
 routine utf8_decode(bytes: @Byte, pos: USize, len: USize) -> Utf8Decoded
-    past_end: Bool = pos.ge(len)
-    branch past_end
-        ? error()
-        : read_lead()
-
-    block read_lead()
-        b0: Byte = bytes.stride(pos).peek()
-        b0u: U32 = b0.to[U8]().to[U32]()
-        next: USize = pos.add(1)
-        // single byte: 0xxxxxxx
-        is_one: Bool = b0u.lt(0x80)
-        branch is_one
-            ? done(b0u, 0, next)
-            : check_two(b0u, next)
-
-    block check_two(b0u: U32, next: USize)
-        // two byte: 110xxxxx 10xxxxxx
-        mask2: U32 = b0u.bitand(0xE0)
-        is_two: Bool = mask2.eq(0xC0)
-        branch is_two
-            ? read_two(b0u, next)
-            : check_three(b0u, next)
-
-    block read_two(b0u: U32, next: USize)
-        b1u: U32 = utf8_continuation(bytes, pos: next, len)
-        valid: Bool = b1u.le(0x3F)
-        branch valid
-            ? done_two(b0u, b1u, next)
-            : error()
-
-    block done_two(b0u: U32, b1u: U32, next: USize)
-        hi: U32 = b0u.bitand(0x1F).shl(6)
-        cp: U32 = hi.bitor(b1u)
-        jump done(cp, 0x80, next.add(1))
-
-    block check_three(b0u: U32, next: USize)
-        // three byte: 1110xxxx 10xxxxxx 10xxxxxx
-        mask3: U32 = b0u.bitand(0xF0)
-        is_three: Bool = mask3.eq(0xE0)
-        branch is_three
-            ? read_three(b0u, next)
-            : check_four(b0u, next)
-
-    block read_three(b0u: U32, next: USize)
-        n2: USize = next.add(1)
-        b1u: U32 = utf8_continuation(bytes, pos: next, len)
-        b2u: U32 = utf8_continuation(bytes, pos: n2, len)
-        valid: Bool = b1u.bitor(b2u).le(0x3F)
-        branch valid
-            ? done_three(b0u, b1u, b2u, n2)
-            : error()
-
-    block done_three(b0u: U32, b1u: U32, b2u: U32, n2: USize)
-        hi: U32 = b0u.bitand(0x0F).shl(12)
-        mid: U32 = b1u.shl(6)
-        cp: U32 = hi.bitor(mid).bitor(b2u)
-        jump done(cp, 0x800, n2.add(1))
-
-    block check_four(b0u: U32, next: USize)
-        // four byte: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
-        mask4: U32 = b0u.bitand(0xF8)
-        is_four: Bool = mask4.eq(0xF0)
-        branch is_four
-            ? read_four(b0u, next)
-            : error()
-
-    block read_four(b0u: U32, next: USize)
-        n2: USize = next.add(1)
-        n3: USize = n2.add(1)
-        b1u: U32 = utf8_continuation(bytes, pos: next, len)
-        b2u: U32 = utf8_continuation(bytes, pos: n2, len)
-        b3u: U32 = utf8_continuation(bytes, pos: n3, len)
-        continuation_bits: U32 = b1u.bitor(b2u).bitor(b3u)
-        valid: Bool = continuation_bits.le(0x3F)
-        branch valid
-            ? done_four(b0u, b1u, b2u, b3u, n3)
-            : error()
-
-    block done_four(b0u: U32, b1u: U32, b2u: U32, b3u: U32, n3: USize)
-        p0: U32 = b0u.bitand(0x07).shl(18)
-        p1: U32 = b1u.shl(12)
-        p2: U32 = b2u.shl(6)
-        upper: U32 = p0.bitor(p1).bitor(p2)
-        cp: U32 = upper.bitor(b3u)
-        jump done(cp, 0x10000, n3.add(1))
-
-    // An overlong form (below min, the smallest value that needs this many bytes), a surrogate, or a value
-    // past 0x10FFFF isn't a Char.
-    block done(cp: U32, min: U32, after: USize)
-        overlong: Bool = cp.lt(min)
-        branch overlong
-            ? error()
-            : continue
-        scalar: Maybe[Char] = cp.to_checked[Char]()
-        when scalar
-            is Char as char => continue
-            is Unit => error()
-        result: Utf8Decoded = Utf8Decoded(char: char, next_pos: after, ok: true)
-        return(result)
-
-    block error()
+    past_end: Bool = pos >= len
+    values2: (U32, U32, USize) = when
+        past_end =>
+            // single byte: 0xxxxxxx
+            // two byte: 110xxxxx 10xxxxxx
+            // three byte: 1110xxxx 10xxxxxx 10xxxxxx
+            // four byte: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+            // An overlong form (below min, the smallest value that needs this many bytes), a surrogate, or a value
+            // past 0x10FFFF isn't a Char.
+            fffd: U32 = 0xFFFD
+            replacement: Char = fffd.to[Char]()
+            result: Utf8Decoded = Utf8Decoded(char: replacement, next_pos: pos, ok: false)
+            return result
+        else =>
+            b0: Byte = bytes.stride(pos).peek()
+            b0u: U32 = b0.to[U8]().to[U32]()
+            next: USize = pos + 1
+            if b0u < 0x80
+                becomes (b0u, 0, next)
+            else
+                mask2: U32 = b0u & 0xE0
+                if mask2 == 0xC0
+                    b1u: U32 = utf8_continuation(bytes, pos: next, len)
+                    if b1u <= 0x3F
+                        hi: U32 = (b0u & 0x1F) << 6
+                        becomes (hi | b1u, 0x80, next + 1)
+                    else
+                        fffd: U32 = 0xFFFD
+                        replacement: Char = fffd.to[Char]()
+                        result: Utf8Decoded = Utf8Decoded(char: replacement, next_pos: pos, ok: false)
+                        return result
+                else
+                    mask3: U32 = b0u & 0xF0
+                    if mask3 == 0xE0
+                        n2: USize = next + 1
+                        b1u: U32 = utf8_continuation(bytes, pos: next, len)
+                        b2u: U32 = utf8_continuation(bytes, pos: n2, len)
+                        if b1u | b2u <= 0x3F
+                            hi: U32 = (b0u & 0x0F) << 12
+                            mid: U32 = b1u << 6
+                            becomes (hi | mid | b2u, 0x800, n2 + 1)
+                        else
+                            fffd: U32 = 0xFFFD
+                            replacement: Char = fffd.to[Char]()
+                            result: Utf8Decoded = Utf8Decoded(char: replacement, next_pos: pos, ok: false)
+                            return result
+                    else
+                        mask4: U32 = b0u & 0xF8
+                        if mask4 == 0xF0
+                            n2: USize = next + 1
+                            n3: USize = n2 + 1
+                            b1u: U32 = utf8_continuation(bytes, pos: next, len)
+                            b2u: U32 = utf8_continuation(bytes, pos: n2, len)
+                            b3u: U32 = utf8_continuation(bytes, pos: n3, len)
+                            continuation_bits: U32 = b1u | b2u | b3u
+                            if continuation_bits <= 0x3F
+                                p0: U32 = (b0u & 0x07) << 18
+                                p1: U32 = b1u << 12
+                                p2: U32 = b2u << 6
+                                upper: U32 = p0 | p1 | p2
+                                becomes (upper | b3u, 0x10000, n3 + 1)
+                            else
+                                fffd: U32 = 0xFFFD
+                                replacement: Char = fffd.to[Char]()
+                                result: Utf8Decoded = Utf8Decoded(char: replacement, next_pos: pos, ok: false)
+                                return result
+                        else
+                            fffd: U32 = 0xFFFD
+                            replacement: Char = fffd.to[Char]()
+                            result: Utf8Decoded = Utf8Decoded(char: replacement, next_pos: pos, ok: false)
+                            return result
+    cp, min, after = values2
+    if cp < min
         fffd: U32 = 0xFFFD
         replacement: Char = fffd.to[Char]()
         result: Utf8Decoded = Utf8Decoded(char: replacement, next_pos: pos, ok: false)
-        return(result)
+        return result
+    scalar: Maybe[Char] = cp.to_checked[Char]()
+    char: Char = when scalar
+        is Char as char => char
+        is Unit =>
+            fffd: U32 = 0xFFFD
+            replacement: Char = fffd.to[Char]()
+            result: Utf8Decoded = Utf8Decoded(char: replacement, next_pos: pos, ok: false)
+            return result
+    result: Utf8Decoded = Utf8Decoded(char: char, next_pos: after, ok: true)
+    return result
 
 /// Reads the continuation byte at `pos` and gives its six payload bits.
 /// :param bytes: The buffer to read from.
@@ -142,16 +124,14 @@ routine utf8_decode(bytes: @Byte, pos: USize, len: USize) -> Utf8Decoded
 /// :param len: The number of readable bytes in the buffer.
 /// :returns: The payload bits, 0x00 ..= 0x3F, or 0xFF when `pos` is at or past `len` or the byte is not a continuation byte (`10xxxxxx`).
 routine utf8_continuation(bytes: @Byte, pos: USize, len: USize) -> U32
-    past_end: Bool = pos.ge(len)
-    branch past_end
-        ? return(0xFF)
-        : continue
+    if pos >= len
+        return 0xFF
     b: Byte = bytes.stride(pos).peek()
     bu: U32 = b.to[U8]().to[U32]()
-    is_continuation: Bool = bu.bitand(0xC0).eq(0x80)
-    branch is_continuation
-        ? return(bu.bitand(0x3F))
-        : return(0xFF)
+    if bu & 0xC0 == 0x80
+        return bu & 0x3F
+    else
+        return 0xFF
 
 // -- encode --------------------------------------------------------------------
 
@@ -162,53 +142,33 @@ routine utf8_continuation(bytes: @Byte, pos: USize, len: USize) -> U32
 routine utf8_encode_into(char: Char, out: @Byte) -> USize
     local cp: U32 = char.to[U32]()
 
-    in_one: Bool = cp.lt(0x80)
-    branch in_one
-        ? enc_one()
-        : check_two()
-
-    block enc_one()
+    if cp < 0x80
         out.stride(0).poke(cp.to[U8]().bits())
-        return(1)
-
-    block check_two()
-        in_two: Bool = cp.lt(0x800)
-        branch in_two
-            ? enc_two()
-            : check_three()
-
-    block enc_two()
-        hi: U32 = cp.shr(6).bitor(0xC0)
-        lo: U32 = cp.bitand(0x3F).bitor(0x80)
+        return 1
+    else if cp < 0x800
+        hi: U32 = (cp >> 6) | 0xC0
+        lo: U32 = (cp & 0x3F) | 0x80
         out.stride(0).poke(hi.to[U8]().bits())
         out.stride(1).poke(lo.to[U8]().bits())
-        return(2)
-
-    block check_three()
-        in_three: Bool = cp.lt(0x10000)
-        branch in_three
-            ? enc_three()
-            : enc_four()
-
-    block enc_three()
-        b0: U32 = cp.shr(12).bitor(0xE0)
-        middle_six: U32 = cp.shr(6).bitand(0x3F)
-        b1: U32 = middle_six.bitor(0x80)
-        b2: U32 = cp.bitand(0x3F).bitor(0x80)
+        return 2
+    else if cp < 0x10000
+        b0: U32 = (cp >> 12) | 0xE0
+        middle_six: U32 = (cp >> 6) & 0x3F
+        b1: U32 = middle_six | 0x80
+        b2: U32 = (cp & 0x3F) | 0x80
         out.stride(0).poke(b0.to[U8]().bits())
         out.stride(1).poke(b1.to[U8]().bits())
         out.stride(2).poke(b2.to[U8]().bits())
-        return(3)
-
-    block enc_four()
-        b0: U32 = cp.shr(18).bitor(0xF0)
-        upper_six: U32 = cp.shr(12).bitand(0x3F)
-        b1: U32 = upper_six.bitor(0x80)
-        middle_six: U32 = cp.shr(6).bitand(0x3F)
-        b2: U32 = middle_six.bitor(0x80)
-        b3: U32 = cp.bitand(0x3F).bitor(0x80)
+        return 3
+    else
+        b0: U32 = (cp >> 18) | 0xF0
+        upper_six: U32 = (cp >> 12) & 0x3F
+        b1: U32 = upper_six | 0x80
+        middle_six: U32 = (cp >> 6) & 0x3F
+        b2: U32 = middle_six | 0x80
+        b3: U32 = (cp & 0x3F) | 0x80
         out.stride(0).poke(b0.to[U8]().bits())
         out.stride(1).poke(b1.to[U8]().bits())
         out.stride(2).poke(b2.to[U8]().bits())
         out.stride(3).poke(b3.to[U8]().bits())
-        return(4)
+        return 4

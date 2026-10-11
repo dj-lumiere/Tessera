@@ -48,65 +48,59 @@ record Checkpoint
 /// :param rng: Its `rng`.
 /// :returns: The new value.
 routine Harness.construct(out: @BufWriter[Out], rng: @Rng) -> Me
-    return(Me(out, rng))
+    return Me(out, rng)
 
 /// Releases nothing: a `Harness` holds no memory of its own.
 routine Harness.destruct(me: @Me) -> Void
-    return()
+    return
 
 routine Rng.below(me: @Me, bound: USize) -> USize
     state: U64 = me.state.peek()
-    next: U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
+    next: U64 = state *% 6364136223846793005 +% 1442695040888963407
     me.state.poke(next)
-    bucket: U64 = next.shr(33).mod(bound.to[U64]())
+    bucket: U64 = (next >> 33) % bound.to[U64]()
     value: USize = bucket.to[USize]()
-    return(value)
+    return value
 
 routine mix(hash: S64, value: S64) -> S64
-    mixed: S64 = hash.mul_wrap(1000003).add_wrap(value)
-    return(mixed)
+    mixed: S64 = hash *% 1000003 +% value
+    return mixed
 
 routine labeled[T](out: @T, label: Span[Byte], value: S64) -> Void
-require T: typename, Writer[T]
+needs T: typename, Writer[T]
     out.write(" {label} {value}")
-    return()
+    return
 
 // Folds every (key, value) pair in iteration order.
 routine iteration_hash(map: @SortedDict[S64, S64]) -> S64
     local iter: @SortedDictIter[S64, S64] <- .construct(map)
     local hash: @S64 <- 0
 
-    jump next()
-
-    block next()
+    while true
         item: Maybe[KVPair[S64, S64]] = iter.emit_checked()
-        when item
-            is KVPair[S64, S64] as pair => continue
-            is Unit => return(hash.peek())
+        pair: KVPair[S64, S64] = when item
+            is KVPair[S64, S64] as pair => pair
+            is Unit => return hash.peek()
         key: S64 = pair.key
         value: S64 = pair.value
         mix(hash: mix(hash: hash.peek(), value: key), value).poke_into(hash)
-        jump next()
 
 routine rank_hash_at(map: @SortedDict[S64, S64], hash: S64, rank: USize) -> S64
     key: S64 = map.get_by_rank(rank).key
     value: S64 = map.get_by_rank(rank).value
-    return(mix(hash: mix(hash, value: key), value))
+    return mix(hash: mix(hash, value: key), value)
 
 // Folds get_by_rank at the first, middle, and last rank, or 0 for an empty map.
 routine rank_hash(map: @SortedDict[S64, S64]) -> S64
     local count: USize = map.count()
 
-    empty: Bool = count.eq(0)
-    branch empty
-        ? return(0)
-        : ranks()
-
-    block ranks()
+    if count == 0
+        return 0
+    else
         first: S64 = rank_hash_at(map, hash: 0, rank: 0)
-        middle: S64 = rank_hash_at(map, hash: first, rank: count.div(2))
-        last: S64 = rank_hash_at(map, hash: middle, rank: count.sub(1))
-        return(last)
+        middle: S64 = rank_hash_at(map, hash: first, rank: count / 2)
+        last: S64 = rank_hash_at(map, hash: middle, rank: count - 1)
+        return last
 
 routine checkpoint(out: @BufWriter[Out], map: @SortedDict[S64, S64], at: Checkpoint) -> Void
     out.write("phase {at.phase}")
@@ -117,12 +111,12 @@ routine checkpoint(out: @BufWriter[Out], map: @SortedDict[S64, S64], at: Checkpo
     labeled(out, label: "iteration", value: iteration_hash(map))
     labeled(out, label: "ranks", value: rank_hash(map))
     out.write("\n")
-    return()
+    return
 
 // Runs ops random operations on keys below keys. An operation kind is drawn below 10: below puts it's a put, below
 // removes a remove of a random key, below rank_removes a remove of the key at a random rank, otherwise a lookup.
 // Returns the updated results checksum.
-#reshaping(map)
+@reshaping(map)
 routine run_phase(harness: Harness, map: @SortedDict[S64, S64], phase: Phase, results: S64) -> S64
     local rng: @Rng = harness.rng
     local ops: USize = phase.ops
@@ -131,126 +125,85 @@ routine run_phase(harness: Harness, map: @SortedDict[S64, S64], phase: Phase, re
     local removes: USize = phase.removes
     local rank_removes: USize = phase.rank_removes
 
-    jump next(0, results)
-
-    block next(op: USize, checksum: S64)
-        done: Bool = op.ge(ops)
-        branch done
-            ? return(checksum)
-            : pick(op, checksum)
-
-    block pick(op: USize, checksum: S64)
+    while op < ops with op: USize = 0, checksum: S64 = results
         key: S64 = rng.below(keys).to[S64]()
         kind: USize = rng.below(10)
-        is_put: Bool = kind.lt(puts)
-        is_remove: Bool = kind.lt(removes)
-        is_rank_remove: Bool = kind.lt(rank_removes)
-        when
-            is_put => put(op, checksum, key)
-            is_remove => remove(op, checksum, key)
-            is_rank_remove => remove_ranked(op, checksum)
-            else => lookup(op, checksum, key)
-
-    block put(op: USize, checksum: S64, key: S64)
-        value: S64 = rng.below(1000000).to[S64]()
-        map.setitem(key, value)
-        jump record(op, checksum, value)
-
-    block remove(op: USize, checksum: S64, key: S64)
-        removed: Bool = map.remove(key)
-        jump record(op, checksum, removed.to[S64]())
-
-    block remove_ranked(op: USize, checksum: S64)
-        count: USize = map.count()
-        empty: Bool = count.eq(0)
-        branch empty
-            ? record(op, checksum, -2)
-            : remove_at(op, checksum, count)
-
-    block remove_at(op: USize, checksum: S64, count: USize)
-        rank: USize = rng.below(count)
-        key: S64 = map.get_by_rank(rank).key
-        removed: Bool = map.remove(key)
-        jump record(op, checksum, mix(hash: key, value: removed.to[S64]()))
-
-    block lookup(op: USize, checksum: S64, key: S64)
-        found: Bool = map.has_key(key)
-        branch found
-            ? get(op, checksum, key)
-            : record(op, checksum, -1)
-
-    block get(op: USize, checksum: S64, key: S64)
-        value: S64 = map.getitem(key)
-        jump record(op, checksum, value)
-
-    block record(op: USize, checksum: S64, result: S64)
+        is_put: Bool = kind < puts
+        is_remove: Bool = kind < removes
+        is_rank_remove: Bool = kind < rank_removes
+        result: S64 = when
+            is_put =>
+                value: S64 = rng.below(1000000).to[S64]()
+                map[key] = value
+                becomes value
+            is_remove =>
+                removed: Bool = map.remove(key)
+                becomes removed.to[S64]()
+            is_rank_remove =>
+                count: USize = map.count()
+                if count == 0
+                    becomes -2
+                else
+                    rank: USize = rng.below(count)
+                    key2: S64 = map.get_by_rank(rank).key
+                    removed: Bool = map.remove(key2)
+                    becomes mix(hash: key2, value: removed.to[S64]())
+            else =>
+                if map.has_key(key)
+                    becomes map[key]
+                else
+                    becomes -1
         mixed: S64 = mix(hash: checksum, value: result)
-        op_next: USize = op.add(1)
-        report: Bool = op_next.mod(500).eq(0)
-        branch report
-            ? report(op_next, mixed)
-            : next(op_next, mixed)
-
-    block report(op: USize, checksum: S64)
-        checkpoint(out: harness.out, map,
-            at: Checkpoint(phase: phase.number, op: op, results: checksum))
-        jump next(op, checksum)
+        op_next: USize = op + 1
+        if op_next % 500 == 0
+            checkpoint(out: harness.out, map, at: Checkpoint(phase: phase.number, op: op_next, results: mixed))
+        continue with op: op_next, checksum: mixed
+    then
+        return checksum
 
 // Copies from into to from the largest key down, so the two trees are built by a different insertion order.
-#reshaping(to)
+@reshaping(to)
 routine copy_reversed(from: @SortedDict[S64, S64], to: @SortedDict[S64, S64]) -> Void
-    jump next(from.count())
-
-    block next(rank_end: USize)
-        done: Bool = rank_end.eq(0)
-        branch done
-            ? return()
-            : copy(rank_end.sub(1))
-
-    block copy(rank: USize)
-        to.setitem(key: from.get_by_rank(rank).key, value: from.get_by_rank(rank).value)
-        jump next(rank)
+    while rank_end != 0 with rank_end: USize = from.count()
+        rank: USize = rank_end - 1
+        to[from.get_by_rank(rank).key] = from.get_by_rank(rank).value
+        continue with rank_end: rank
+    then
+        return
 
 routine report_eq(out: @BufWriter[Out], label: Span[Byte], equal: Bool) -> Void
     out.write("{label} {equal}\n")
-    return()
+    return
 
 routine start() -> Void
     fd: @Out = Out.writer()
-    claim out: @BufWriter[Out] <- .hollow()
+    local out: @BufWriter[Out] <- .hollow()
     out.construct(fd)
-    claim alloc: @MemoryManager <- make_heap_memory()
-    claim rng: @Rng <- Rng(state: 1)
-    claim map: @SortedDict[S64, S64] <- .construct(alloc)
+    local alloc: @MemoryManager <- make_heap_memory()
+    local rng: @Rng <- Rng(state: 1)
+    local map: @SortedDict[S64, S64] <- .construct(alloc)
 
     harness: Harness = Harness(out: out, rng: rng)
-    r1: S64 = run_phase(harness, map,
-        phase: Phase(number: 1, ops: 3000, keys: 64, puts: 5, removes: 7, rank_removes: 7),
-        results: 0)
-    r2: S64 = run_phase(harness, map,
-        phase: Phase(number: 2, ops: 10000, keys: 20000, puts: 6, removes: 7, rank_removes: 7),
-        results: r1)
+    r1: S64 = run_phase(harness, map, phase: Phase(number: 1, ops: 3000, keys: 64, puts: 5, removes: 7, rank_removes: 7), results: 0)
+    r2: S64 = run_phase(harness, map, phase: Phase(number: 2, ops: 10000, keys: 20000, puts: 6, removes: 7, rank_removes: 7), results: r1)
 
-    claim copied: @SortedDict[S64, S64] <- .construct(alloc)
-    report_eq(out, label: "empty copy equal", equal: map.peek().eq(copied.peek()))
+    local copied: @SortedDict[S64, S64] <- .construct(alloc)
+    report_eq(out, label: "empty copy equal", equal: map.peek() == copied.peek())
     copy_reversed(from: map, to: copied)
-    report_eq(out, label: "reversed copy equal", equal: map.peek().eq(copied.peek()))
-    report_eq(out, label: "reversed copy same order",
-        equal: iteration_hash(map).eq(iteration_hash(copied)))
-    copied.setitem(key: -1, value: 0)
-    report_eq(out, label: "extra key equal", equal: map.peek().eq(copied.peek()))
+    report_eq(out, label: "reversed copy equal", equal: map.peek() == copied.peek())
+    report_eq(out, label: "reversed copy same order", equal: iteration_hash(map) == iteration_hash(copied))
+    copied[-1] = 0
+    report_eq(out, label: "extra key equal", equal: map.peek() == copied.peek())
     copied.remove(-1)
-    report_eq(out, label: "extra key removed equal", equal: map.peek().eq(copied.peek()))
+    report_eq(out, label: "extra key removed equal", equal: map.peek() == copied.peek())
     key: S64 = map.get_by_rank(0).key
-    old_value: S64 = map.getitem(key)
-    copied.setitem(key, value: old_value.add(1))
-    report_eq(out, label: "changed value equal", equal: map.peek().eq(copied.peek()))
+    old_value: S64 = map[key]
+    copied[key] = old_value + 1
+    report_eq(out, label: "changed value equal", equal: map.peek() == copied.peek())
     copied.destruct()
 
-    r3: S64 = run_phase(harness, map,
-        phase: Phase(number: 3, ops: 14000, keys: 20000, puts: 1, removes: 3, rank_removes: 8),
-        results: r2)
+    r3: S64 = run_phase(harness, map, phase: Phase(number: 3, ops: 14000, keys: 20000, puts: 1, removes: 3, rank_removes: 8), results: r2)
     map.destruct()
     report_eq(out, label: "freed is empty", equal: map.is_empty())
     out.flush()
-    return()
+    return

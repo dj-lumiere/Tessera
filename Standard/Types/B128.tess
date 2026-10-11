@@ -50,9 +50,9 @@ preset B128.EPSILON:      B128 = B128.from_bits(0x3F8F00000000000000000000000000
 /// It is stored as an LLVM `i128` (sign bit, 15-bit exponent with bias 16383, 112-bit fraction) and has a 113-bit significand, about 34 significant decimal digits.
 /// :note: Every operation is integer code, so results are bit-identical on every target and need no compiler-rt routines. Arithmetic rounds to nearest, ties to even.
 /// :see: {B64} for hardware speed.
-#llvm("i128")
+@llvm("i128")
 record B128
-conform Equatable[B128], Comparable[B128], Hashable[B128]
+obeys Equatable[B128], Comparable[B128], Hashable[B128]
 
 // -- bits ----------------------------------------------------------------------
 
@@ -62,107 +62,100 @@ conform Equatable[B128], Comparable[B128], Hashable[B128]
 /// :see: {B128.bits} for the inverse.
 routine B128.from_bits(bits: U128) -> Me
     r: Me = bitcast[U128, Me](bits)
-    return(r)
+    return r
 
 /// The raw IEEE 754 binary128 bits, exactly.
 /// :returns: The encoding: sign bit 127, a 15-bit exponent field, then 112 fraction bits.
 /// :see: {B128.from_bits} for the inverse.
 routine B128.bits(me: Me) -> U128
     r: U128 = bitcast[Me, U128](me)
-    return(r)
+    return r
 
 /// {B128.from_bits}, short for the stdlib's own B128 code.
 /// :param bits: The binary128 encoding.
 /// :returns: The value with that encoding.
 routine b128_of(bits: U128) -> B128
     r: B128 = bitcast[U128, B128](bits)
-    return(r)
+    return r
 
 /// Reads the sign bit of binary128 bits.
 /// :param bits: The binary128 encoding.
 /// :returns: `true` when the sign bit is set, for -0 and NaNs with the bit set too.
 routine b128_is_negative_bits(bits: U128) -> Bool
-    r: Bool = bits.ge(B128_SIGN)
-    return(r)
+    return bits >= B128_SIGN
 
 /// Extracts the biased exponent field of binary128 bits.
 /// :param bits: The binary128 encoding.
 /// :returns: The 15-bit exponent field, 0 for zeros and subnormals and `B128_EXP_MAX` for infinities and NaNs.
 routine b128_exponent(bits: U128) -> S64
-    exponent_bits: U128 = bits.shr(112)
-    r: S64 = exponent_bits.to[S64]().bitand(32767)
-    return(r)
+    exponent_bits: U128 = bits >> 112
+    r: S64 = exponent_bits.to[S64]() & 32767
+    return r
 
 /// Extracts the stored fraction of binary128 bits, without the implicit bit.
 /// :param bits: The binary128 encoding.
 /// :returns: The low 112 bits.
 routine b128_fraction(bits: U128) -> U128
-    r: U128 = bits.bitand(B128_FRAC_MASK)
-    return(r)
+    r: U128 = bits & B128_FRAC_MASK
+    return r
 
 /// Whether binary128 bits encode a NaN: the all-ones exponent with a nonzero fraction.
 /// :param bits: The binary128 encoding.
 /// :returns: True for quiet and signaling NaNs.
 routine b128_is_nan_bits(bits: U128) -> Bool
-    all_ones: Bool = b128_exponent(bits).eq(B128_EXP_MAX)
-    payload: Bool = b128_fraction(bits).ne(0)
-    r: Bool = all_ones.bitand(payload)
-    return(r)
+    all_ones: Bool = b128_exponent(bits) == B128_EXP_MAX
+    payload: Bool = b128_fraction(bits) != 0
+    return all_ones and payload
 
 /// Whether binary128 bits encode +0.0 or -0.0.
 /// :param bits: The binary128 encoding.
 /// :returns: True when every bit but the sign is 0.
 routine b128_is_zero_bits(bits: U128) -> Bool
-    r: Bool = bits.bitand(B128_SIGN.bitnot()).eq(0)
-    return(r)
+    return bits & B128_SIGN.bitnot() == 0
 
 // -- classification ------------------------------------------------------------
 
 /// Whether `me` is NaN, quiet or signaling.
 /// :returns: True for NaN, the only value unordered with itself.
 routine B128.is_nan(me: Me) -> Bool
-    r: Bool = b128_is_nan_bits(me.bits())
-    return(r)
+    return b128_is_nan_bits(me.bits())
 
 /// Whether `me` is +inf or -inf.
 /// :returns: True for either infinity, false for NaN and finite values.
 routine B128.is_infinite(me: Me) -> Bool
-    magnitude: U128 = me.bits().bitand(B128_SIGN.bitnot())
-    r: Bool = magnitude.eq(B128_INF)
-    return(r)
+    magnitude: U128 = me.bits() & B128_SIGN.bitnot()
+    return magnitude == B128_INF
 
 /// Neither infinite nor NaN.
 /// :returns: True for zeros, subnormals and normal values.
 routine B128.is_finite(me: Me) -> Bool
-    r: Bool = b128_exponent(me.bits()).ne(B128_EXP_MAX)
-    return(r)
+    return b128_exponent(me.bits()) != B128_EXP_MAX
 
 /// Reads the sign bit, so it is true for -0.0 and for NaNs with the bit set.
 /// :returns: Whether the sign bit is set.
 routine B128.is_sign_negative(me: Me) -> Bool
-    r: Bool = b128_is_negative_bits(me.bits())
-    return(r)
+    return b128_is_negative_bits(me.bits())
 
 /// Flips the sign bit, exactly.
 /// :returns: `-me`: 0.0 becomes -0.0, infinities swap sign, and NaN keeps its payload.
 routine B128.neg(me: Me) -> Me
-    r: Me = b128_of(me.bits().bitxor(B128_SIGN))
-    return(r)
+    r: Me = b128_of(me.bits() ^ B128_SIGN)
+    return r
 
 /// Clears the sign bit, so abs(-0.0) is 0.0 and NaN stays NaN.
 /// :returns: The magnitude of `me`.
 routine B128.abs(me: Me) -> Me
-    r: Me = b128_of(me.bits().bitand(B128_SIGN.bitnot()))
-    return(r)
+    r: Me = b128_of(me.bits() & B128_SIGN.bitnot())
+    return r
 
 /// The magnitude of `me` with the sign of `sign`, exactly.
 /// :param sign: The value whose sign bit is taken, NaN included.
 /// :returns: `me` with its sign bit replaced.
 routine B128.copysign(me: Me, sign: Me) -> Me
-    magnitude: U128 = me.bits().bitand(B128_SIGN.bitnot())
-    signed: U128 = sign.bits().bitand(B128_SIGN)
-    r: Me = b128_of(magnitude.bitor(signed))
-    return(r)
+    magnitude: U128 = me.bits() & B128_SIGN.bitnot()
+    signed: U128 = sign.bits() & B128_SIGN
+    r: Me = b128_of(magnitude | signed)
+    return r
 
 // -- shifting and rounding -----------------------------------------------------
 
@@ -177,19 +170,16 @@ record B128Parts
 /// :param n: The shift amount, at least 0. From 128 on, every bit is shifted out.
 /// :returns: The shifted value, its bit 0 set when any set bit was lost.
 routine shr_sticky(value: U128, n: S64) -> U128
-    none: Bool = n.eq(0)
-    all: Bool = n.ge(128)
+    none: Bool = n == 0
     when
-        none => return(value)
-        all => return(value.ne(0).to[U128]())
-        else => part()
-
-    block part()
-        amount: U128 = n.to[U128]()
-        mask: U128 = 1.shl(amount).sub(1)
-        lost: Bool = value.bitand(mask).ne(0)
-        shifted: U128 = value.shr(amount).bitor(lost.to[U128]())
-        return(shifted)
+        none => return value
+        n >= 128 => return (value != 0).to[U128]()
+        else =>
+            amount: U128 = n.to[U128]()
+            mask: U128 = (1 << amount) - 1
+            lost: Bool = value & mask != 0
+            shifted: U128 = (value >> amount) | lost.to[U128]()
+            return shifted
 
 /// Packs `sig` × 2^(`exponent` - 16383 - 115) into binary128 bits, rounding to nearest even. `sig` may sit at any bit
 /// position, and its lowest bit may be a sticky bit. Handles overflow to infinity, subnormals, and underflow to zero.
@@ -198,64 +188,56 @@ routine shr_sticky(value: U128, n: S64) -> U128
 /// :param sig: The significand, with 3 bits below the kept ones for rounding.
 /// :returns: The binary128 bits: a signed zero for a zero `sig`, a signed infinity on overflow.
 routine b128_round_pack(negative: Bool, exponent: S64, sig: U128) -> U128
-    local sign: U128 = negative
+    local sign: U128 = when
+        negative => B128_SIGN
+        else => 0
 
-        ? B128_SIGN : 0
-
-    zero: Bool = sig.eq(0)
-    branch zero
-        ? return(sign)
-        : normalize()
-
-    // Put the leading bit at 115 (12 leading zeros), unless that would push
-    // the exponent below 1: then the value is subnormal at exponent 1.
-    block normalize()
-        lz: S64 = sig.leading_zeros().to[S64]()
-        shift: S64 = 12.sub(lz)  // > 0: right, < 0: left
-        new_exp: S64 = exponent.add(shift)
-        subnormal: Bool = new_exp.lt(1)
-        amount: S64 = subnormal
-            ? 1.sub(exponent)
-            : shift
-        final_exp: S64 = subnormal
-            ? 1
-            : new_exp
-        right: Bool = amount.gt(0)
-        branch right
-            ? shift_right(amount, final_exp)
-            : shift_left(amount, final_exp)
-
-    block shift_right(amount: S64, e: S64)
-        s: U128 = shr_sticky(value: sig, n: amount)
-        jump round(s, e)
-
-    block shift_left(amount: S64, e: S64)
-        s: U128 = sig.shl(0.sub(amount).to[U128]())
-        jump round(s, e)
-
-    block round(s: U128, e: S64)
-        extra: U128 = s.bitand(7)
-        kept: U128 = s.shr(3)
-        above: Bool = extra.gt(4)
-        tie: Bool = extra.eq(4)
-        odd: Bool = kept.bitand(1).eq(1)
-        up: Bool = above.bitor(tie.bitand(odd))
-        rounded: U128 = kept.add(up.to[U128]())
-        carry: Bool = rounded.eq(0x20000000000000000000000000000)  // 2^113
-        final: U128 = carry
-            ? rounded.shr(1)
-            : rounded
-        e2: S64 = e.add(carry.to[S64]())
-        normal: Bool = final.ge(B128_IMPLICIT)
-        biased: S64 = normal
-            ? e2
-            : 0
-        overflow: Bool = biased.ge(B128_EXP_MAX)
-        field: U128 = biased.to[U128]().shl(112)
-        bits: U128 = sign.bitor(field).bitor(final.bitand(B128_FRAC_MASK))
-        branch overflow
-            ? return(sign.bitor(B128_INF))
-            : return(bits)
+    zero: Bool = sig == 0
+    values2: (U128, S64) = when
+        zero => return sign
+        else =>
+            // Put the leading bit at 115 (12 leading zeros), unless that would push
+            // the exponent below 1: then the value is subnormal at exponent 1.
+            lz: S64 = sig.leading_zeros().to[S64]()
+            shift: S64 = 12 - lz
+            // > 0: right, < 0: left
+            new_exp: S64 = exponent + shift
+            subnormal: Bool = new_exp < 1
+            amount: S64 = when
+                subnormal => 1 - exponent
+                else => shift
+            final_exp: S64 = when
+                subnormal => 1
+                else => new_exp
+            if amount > 0
+                becomes (shr_sticky(value: sig, n: amount), final_exp)
+            else
+                becomes (sig << (0 - amount).to[U128](), final_exp)
+    s, e = values2
+    extra: U128 = s & 7
+    kept: U128 = s >> 3
+    above: Bool = extra > 4
+    tie: Bool = extra == 4
+    odd: Bool = kept & 1 == 1
+    up: Bool = above or (tie and odd)
+    rounded: U128 = kept + up.to[U128]()
+    carry: Bool = rounded == 0x20000000000000000000000000000
+    // 2^113
+    final: U128 = when
+        carry => rounded >> 1
+        else => rounded
+    e2: S64 = e + carry.to[S64]()
+    normal: Bool = final >= B128_IMPLICIT
+    biased: S64 = when
+        normal => e2
+        else => 0
+    overflow: Bool = biased >= B128_EXP_MAX
+    field: U128 = biased.to[U128]() << 112
+    bits: U128 = sign | field | (final & B128_FRAC_MASK)
+    if overflow
+        return sign | B128_INF
+    else
+        return bits
 
 /// Splits finite, nonzero binary128 bits into a significand and an unbiased exponent.
 /// :param bits: The encoding of a finite, nonzero value.
@@ -264,21 +246,14 @@ routine b128_unpack(bits: U128) -> B128Parts
     local biased: S64 = b128_exponent(bits)
     local fraction: U128 = b128_fraction(bits)
 
-    subnormal: Bool = biased.eq(0)
-    branch subnormal
-        ? subnormal()
-        : normal()
-
-    block normal()
-        p: B128Parts = B128Parts(sig: fraction.bitor(B128_IMPLICIT),
-            exponent: biased.sub(B128_BIAS))
-        return(p)
-
-    block subnormal()
+    if biased == 0
         lz: U128 = fraction.leading_zeros()
-        shift: S64 = lz.to[S64]().sub(15)
-        p: B128Parts = B128Parts(sig: fraction.shl(shift.to[U128]()), exponent: -16382.sub(shift))
-        return(p)
+        shift: S64 = lz.to[S64]() - 15
+        p: B128Parts = B128Parts(sig: fraction << shift.to[U128](), exponent: -16382 - shift)
+        return p
+    else
+        p: B128Parts = B128Parts(sig: fraction | B128_IMPLICIT, exponent: biased - B128_BIAS)
+        return p
 
 // -- arithmetic ----------------------------------------------------------------
 
@@ -286,15 +261,15 @@ routine b128_unpack(bits: U128) -> B128Parts
 /// :param bits: The bits of a NaN.
 /// :returns: The quiet NaN's bits.
 routine b128_quiet(bits: U128) -> U128
-    r: U128 = bits.bitor(B128_QUIET_BIT)
-    return(r)
+    r: U128 = bits | B128_QUIET_BIT
+    return r
 
 /// Whether `x` is a signaling NaN: a NaN whose quiet bit is clear.
 /// :param x: The value.
 /// :returns: True for a signaling NaN.
 routine b128_is_signaling(x: B128) -> Bool
-    quiet: Bool = x.bits().bitand(B128_QUIET_BIT).ne(0)
-    return(x.is_nan().bitand(quiet.bitnot()))
+    quiet: Bool = x.bits() & B128_QUIET_BIT != 0
+    return x.is_nan() and not quiet
 
 /// The NaN an operation on `a` and `b` gives when one of them is NaN, as `add` and `mul` give it: `a` quieted when
 /// it is NaN, else `b` quieted, the payload kept.
@@ -302,10 +277,10 @@ routine b128_is_signaling(x: B128) -> Bool
 /// :param b: The second operand.
 /// :returns: The quiet NaN.
 routine b128_nan_of(a: B128, b: B128) -> B128
-    first: U128 = a.is_nan()
-        ? a.bits()
-        : b.bits()
-    return(b128_of(b128_quiet(first)))
+    first: U128 = when
+        a.is_nan() => a.bits()
+        else => b.bits()
+    return b128_of(b128_quiet(first))
 
 /// Adds `other` to `me` in software, rounded to nearest (ties to even).
 /// :param other: The value to add.
@@ -313,14 +288,14 @@ routine b128_nan_of(a: B128, b: B128) -> B128
 /// :see: {b128_add_bits} for the algorithm.
 routine B128.add(me: Me, other: Me) -> Me
     r: Me = b128_of(b128_add_bits(a: me.bits(), b: other.bits()))
-    return(r)
+    return r
 
 /// Subtracts `other` from `me` in software: adds `other` with its sign flipped, rounded to nearest (ties to even).
 /// :param other: The value to subtract.
 /// :returns: `me - other`: infinity on overflow, NaN when either operand is NaN or for `inf - inf`.
 routine B128.sub(me: Me, other: Me) -> Me
-    r: Me = b128_of(b128_add_bits(a: me.bits(), b: other.bits().bitxor(B128_SIGN)))
-    return(r)
+    r: Me = b128_of(b128_add_bits(a: me.bits(), b: other.bits() ^ B128_SIGN))
+    return r
 
 /// Adds two binary128 values on their bits, rounded to nearest (ties to even). {B128.add} and {B128.sub} call it.
 /// :param a: The first addend's bits.
@@ -329,218 +304,202 @@ routine B128.sub(me: Me, other: Me) -> Me
 routine b128_add_bits(a: U128, b: U128) -> U128
     a_nan: Bool = b128_is_nan_bits(a)
     b_nan: Bool = b128_is_nan_bits(b)
-    a_inf: Bool = b128_exponent(a).eq(B128_EXP_MAX)
-    b_inf: Bool = b128_exponent(b).eq(B128_EXP_MAX)
+    a_inf: Bool = b128_exponent(a) == B128_EXP_MAX
+    b_inf: Bool = b128_exponent(b) == B128_EXP_MAX
     a_zero: Bool = b128_is_zero_bits(a)
     b_zero: Bool = b128_is_zero_bits(b)
     when
-        a_nan => return(b128_quiet(a))
-        b_nan => return(b128_quiet(b))
-        a_inf => infinities()
-        b_inf => return(b)
-        a_zero => zero_a(b_zero)
-        b_zero => return(a)
-        else => finite()
-
-    // inf + inf keeps the sign, and inf - inf is NaN
-    block infinities()
-        b_inf: Bool = b128_exponent(b).eq(B128_EXP_MAX)
-        same: Bool = b128_is_negative_bits(a.bitxor(b)).bitnot()
-        clash: Bool = b_inf.bitand(same.bitnot())
-        branch clash
-            ? return(B128_QNAN)
-            : return(a)
-
-    // -0 + -0 is -0. Any other zero sum of zeros is +0
-    block zero_a(b_zero: Bool)
-        both_negative: Bool = b128_is_negative_bits(a.bitand(b))
-        zero: U128 = both_negative
-            ? B128_SIGN
-            : 0
-        branch b_zero
-            ? return(zero)
-            : return(b)
-
-    block finite()
-        a_exp: S64 = b128_exponent(a)
-        b_exp: S64 = b128_exponent(b)
-        a_sub: Bool = a_exp.eq(0)
-        b_sub: Bool = b_exp.eq(0)
-        // subnormals sit at exponent 1 without the implicit bit
-        a_e: S64 = a_sub
-            ? 1
-            : a_exp
-        b_e: S64 = b_sub
-            ? 1
-            : b_exp
-        a_hid: U128 = a_sub
-            ? 0
-            : B128_IMPLICIT
-        b_hid: U128 = b_sub
-            ? 0
-            : B128_IMPLICIT
-        a_frac: U128 = b128_fraction(a).bitor(a_hid)
-        a_sig: U128 = a_frac.shl(3)
-        b_frac: U128 = b128_fraction(b).bitor(b_hid)
-        b_sig: U128 = b_frac.shl(3)
-        a_big: Bool = a_e.ge(b_e)
-        big_sig: U128 = a_big
-            ? a_sig
-            : b_sig
-        small_sig: U128 = a_big
-            ? b_sig
-            : a_sig
-        big_e: S64 = a_big
-            ? a_e
-            : b_e
-        small_e: S64 = a_big
-            ? b_e
-            : a_e
-        big_bits: U128 = a_big
-            ? a
-            : b
-        small_bits: U128 = a_big
-            ? b
-            : a
-        big_neg: Bool = b128_is_negative_bits(big_bits)
-        small_neg: Bool = b128_is_negative_bits(small_bits)
-        aligned: U128 = shr_sticky(value: small_sig, n: big_e.sub(small_e))
-        same: Bool = big_neg.eq(small_neg)
-        branch same
-            ? sum(big_sig, aligned, big_e, big_neg)
-            : difference(big_sig, aligned, big_e, big_neg)
-
-    block sum(x: U128, y: U128, e: S64, negative: Bool)
-        r: U128 = b128_round_pack(negative, exponent: e, sig: x.add(y))
-        return(r)
-
-    // x - y. An exact zero is +0
-    block difference(x: U128, y: U128, e: S64, x_negative: Bool)
-        x_larger: Bool = x.ge(y)
-        m: U128 = x.abs_diff(y)
-        sign: Bool = x_larger
-            ? x_negative
-            : x_negative.bitnot()
-        negative: Bool = sign.bitand(m.ne(0))
-        r: U128 = b128_round_pack(negative, exponent: e, sig: m)
-        return(r)
+        a_nan => return b128_quiet(a)
+        b_nan => return b128_quiet(b)
+        a_inf =>
+            // inf + inf keeps the sign, and inf - inf is NaN
+            b_inf2: Bool = b128_exponent(b) == B128_EXP_MAX
+            same: Bool = ~b128_is_negative_bits(a ^ b)
+            if b_inf2 & not same
+                return B128_QNAN
+            else
+                return a
+        b_inf => return b
+        a_zero =>
+            // -0 + -0 is -0. Any other zero sum of zeros is +0
+            both_negative: Bool = b128_is_negative_bits(a & b)
+            zero: U128 = when
+                both_negative => B128_SIGN
+                else => 0
+            if b_zero
+                return zero
+            else
+                return b
+        b_zero => return a
+        else =>
+            a_exp: S64 = b128_exponent(a)
+            b_exp: S64 = b128_exponent(b)
+            a_sub: Bool = a_exp == 0
+            b_sub: Bool = b_exp == 0
+            // subnormals sit at exponent 1 without the implicit bit
+            a_e: S64 = when
+                a_sub => 1
+                else => a_exp
+            b_e: S64 = when
+                b_sub => 1
+                else => b_exp
+            a_hid: U128 = when
+                a_sub => 0
+                else => B128_IMPLICIT
+            b_hid: U128 = when
+                b_sub => 0
+                else => B128_IMPLICIT
+            a_frac: U128 = b128_fraction(a) | a_hid
+            a_sig: U128 = a_frac << 3
+            b_frac: U128 = b128_fraction(b) | b_hid
+            b_sig: U128 = b_frac << 3
+            a_big: Bool = a_e >= b_e
+            big_sig: U128 = when
+                a_big => a_sig
+                else => b_sig
+            small_sig: U128 = when
+                a_big => b_sig
+                else => a_sig
+            big_e: S64 = when
+                a_big => a_e
+                else => b_e
+            small_e: S64 = when
+                a_big => b_e
+                else => a_e
+            big_bits: U128 = when
+                a_big => a
+                else => b
+            small_bits: U128 = when
+                a_big => b
+                else => a
+            big_neg: Bool = b128_is_negative_bits(big_bits)
+            small_neg: Bool = b128_is_negative_bits(small_bits)
+            aligned: U128 = shr_sticky(value: small_sig, n: big_e - small_e)
+            if big_neg == small_neg
+                r: U128 = b128_round_pack(negative: big_neg, exponent: big_e, sig: big_sig + aligned)
+                return r
+            else
+                // x - y. An exact zero is +0
+                x_larger: Bool = big_sig >= aligned
+                m: U128 = big_sig.abs_diff(aligned)
+                sign: Bool = when
+                    x_larger => big_neg
+                    else => not big_neg
+                negative: Bool = sign and m != 0
+                r: U128 = b128_round_pack(negative, exponent: big_e, sig: m)
+                return r
 
 /// Multiplies `me` by `other` in software, rounded to nearest (ties to even).
 /// :param other: The factor.
 /// :returns: `me * other`: infinity on overflow, NaN when either operand is NaN or for `0 * inf`.
 routine B128.mul(me: Me, other: Me) -> Me
     r: Me = b128_of(b128_mul_bits(a: me.bits(), b: other.bits()))
-    return(r)
+    return r
 
 /// Multiplies two binary128 values on their bits, rounded to nearest (ties to even): the 226-bit product is formed exactly from 64-bit halves.
 /// :param a: The first factor's bits.
 /// :param b: The second factor's bits.
 /// :returns: The bits of `a * b`: a NaN operand comes back quieted, `inf * 0` is NaN, and the sign is the XOR of the signs.
 routine b128_mul_bits(a: U128, b: U128) -> U128
-    sign: U128 = a.bitxor(b).bitand(B128_SIGN)
+    sign: U128 = (a ^ b) & B128_SIGN
     a_nan: Bool = b128_is_nan_bits(a)
     b_nan: Bool = b128_is_nan_bits(b)
-    a_inf: Bool = b128_exponent(a).eq(B128_EXP_MAX)
-    b_inf: Bool = b128_exponent(b).eq(B128_EXP_MAX)
+    a_inf: Bool = b128_exponent(a) == B128_EXP_MAX
+    b_inf: Bool = b128_exponent(b) == B128_EXP_MAX
     a_zero: Bool = b128_is_zero_bits(a)
     b_zero: Bool = b128_is_zero_bits(b)
-    any_inf: Bool = a_inf.bitor(b_inf)
-    any_zero: Bool = a_zero.bitor(b_zero)
+    any_inf: Bool = a_inf or b_inf
+    any_zero: Bool = a_zero or b_zero
     when
-        a_nan => return(b128_quiet(a))
-        b_nan => return(b128_quiet(b))
-        any_inf => infinite(sign, any_zero)
-        any_zero => return(sign)
-        else => finite(sign)
-
-    block infinite(sign: U128, any_zero: Bool)
-        branch any_zero
-            ? return(B128_QNAN)
-            : return(sign.bitor(B128_INF))
-
-    // The 226-bit product of two 113-bit significands, from 64-bit halves:
-    // P = hi × 2^128 + lo. Then sig = P >> 109 with a sticky bit, so the
-    // leading bit lands at 115 or 116.
-    block finite(sign: U128)
-        pa: B128Parts = b128_unpack(a)
-        pb: B128Parts = b128_unpack(b)
-        ma: U128 = pa.sig
-        mb: U128 = pb.sig
-        a0: U128 = ma.bitand(0xFFFFFFFFFFFFFFFF)
-        a1: U128 = ma.shr(64)
-        b0: U128 = mb.bitand(0xFFFFFFFFFFFFFFFF)
-        b1: U128 = mb.shr(64)
-        p00: U128 = a0.mul(b0)
-        mid: U128 = a0.mul(b1).add(a1.mul(b0))
-        p11: U128 = a1.mul(b1)
-        lo: U128 = p00.add_wrap(mid.shl(64))
-        lo_carry: U128 = lo.lt(p00).to[U128]()
-        hi: U128 = p11.add(mid.shr(64)).add(lo_carry)
-        top: U128 = hi.shl(19).bitor(lo.shr(109))
-        sticky: Bool = lo.bitand(0x1FFFFFFFFFFFFFFFFFFFFFFFFFFF).ne(0)  // low 109 bits
-        sig: U128 = top.bitor(sticky.to[U128]())
-        exponent: S64 = pa.exponent.add(pb.exponent).add(B128_BIAS)
-        negative: Bool = sign.ne(0)
-        r: U128 = b128_round_pack(negative, exponent, sig)
-        return(r)
+        a_nan => return b128_quiet(a)
+        b_nan => return b128_quiet(b)
+        any_inf =>
+            if any_zero
+                return B128_QNAN
+            else
+                return sign | B128_INF
+        any_zero => return sign
+        else =>
+            // The 226-bit product of two 113-bit significands, from 64-bit halves:
+            // P = hi × 2^128 + lo. Then sig = P >> 109 with a sticky bit, so the
+            // leading bit lands at 115 or 116.
+            pa: B128Parts = b128_unpack(a)
+            pb: B128Parts = b128_unpack(b)
+            ma: U128 = pa.sig
+            mb: U128 = pb.sig
+            a0: U128 = ma & 0xFFFFFFFFFFFFFFFF
+            a1: U128 = ma >> 64
+            b0: U128 = mb & 0xFFFFFFFFFFFFFFFF
+            b1: U128 = mb >> 64
+            p00: U128 = a0 * b0
+            mid: U128 = a0 * b1 + a1 * b0
+            p11: U128 = a1 * b1
+            lo: U128 = p00 +% (mid << 64)
+            lo_carry: U128 = (lo < p00).to[U128]()
+            hi: U128 = p11 + (mid >> 64) + lo_carry
+            top: U128 = (hi << 19) | (lo >> 109)
+            sticky: Bool = lo & 0x1FFFFFFFFFFFFFFFFFFFFFFFFFFF != 0
+            // low 109 bits
+            sig: U128 = top | sticky.to[U128]()
+            exponent: S64 = pa.exponent + pb.exponent + B128_BIAS
+            negative: Bool = sign != 0
+            r: U128 = b128_round_pack(negative, exponent, sig)
+            return r
 
 /// Divides `me` by `other` in software, rounded to nearest (ties to even).
 /// :param other: The divisor.
 /// :returns: `me / other`: a signed infinity for a nonzero value divided by zero, NaN for `0 / 0`, `inf / inf`, or a NaN operand.
 routine B128.div(me: Me, other: Me) -> Me
     r: Me = b128_of(b128_div_bits(a: me.bits(), b: other.bits()))
-    return(r)
+    return r
 
 /// Divides two binary128 values on their bits, rounded to nearest (ties to even), with two 3-by-2 limb division steps.
 /// :param a: The dividend's bits.
 /// :param b: The divisor's bits.
 /// :returns: The bits of `a / b`: a NaN operand comes back quieted, `0 / 0` and `inf / inf` are NaN, a nonzero value over zero is a signed infinity.
 routine b128_div_bits(a: U128, b: U128) -> U128
-    local sign: U128 = a.bitxor(b).bitand(B128_SIGN)
+    local sign: U128 = (a ^ b) & B128_SIGN
 
     a_nan: Bool = b128_is_nan_bits(a)
     b_nan: Bool = b128_is_nan_bits(b)
-    a_inf: Bool = b128_exponent(a).eq(B128_EXP_MAX)
-    b_inf: Bool = b128_exponent(b).eq(B128_EXP_MAX)
+    a_inf: Bool = b128_exponent(a) == B128_EXP_MAX
+    b_inf: Bool = b128_exponent(b) == B128_EXP_MAX
     a_zero: Bool = b128_is_zero_bits(a)
     b_zero: Bool = b128_is_zero_bits(b)
-    both_inf: Bool = a_inf.bitand(b_inf)
-    both_zero: Bool = a_zero.bitand(b_zero)
-    invalid: Bool = both_inf.bitor(both_zero)
-    to_inf: Bool = a_inf.bitor(b_zero)
-    to_zero: Bool = b_inf.bitor(a_zero)
+    both_inf: Bool = a_inf and b_inf
+    both_zero: Bool = a_zero and b_zero
+    invalid: Bool = both_inf or both_zero
+    to_inf: Bool = a_inf or b_zero
     when
-        a_nan => return(b128_quiet(a))
-        b_nan => return(b128_quiet(b))
-        invalid => return(B128_QNAN)
-        to_inf => return(sign.bitor(B128_INF))
-        to_zero => return(sign)
-        else => finite()
-
-    // q = floor(ma × 2^116 / mb) = floor(ma × 2^131 / d) with the divisor
-    // normalized to d = mb × 2^15 (two limbs, top bit set). ma × 2^131 is four
-    // limbs, (ma × 8, 0, 0), so the quotient takes two 3-by-2 steps
-    // (Standard/WideDiv.tess). The last remainder is the sticky bit.
-    block finite()
-        pa: B128Parts = b128_unpack(a)
-        pb: B128Parts = b128_unpack(b)
-        d: U128 = pb.sig.shl(15)
-        d1: U64 = d.shr(64).to[U64]()
-        d0: U64 = d.to_wrap[U64]()
-        divisor: Divisor3By2 = div_3by2_prepare(d1, d0)
-        n: U128 = pa.sig.shl(3)
-        high: Div3By2 = div_3by2(u2: n.shr(64).to[U64](), u1: n.to_wrap[U64](), u0: 0, divisor)
-        r: U128 = high.remainder
-        low: Div3By2 = div_3by2(u2: r.shr(64).to[U64](), u1: r.to_wrap[U64](), u0: 0, divisor)
-        q_high: U128 = high.quotient.to[U128]().shl(64)
-        q: U128 = q_high.bitor(low.quotient.to[U128]())
-        sticky: Bool = low.remainder.ne(0)
-        sig: U128 = q.bitor(sticky.to[U128]())
-        unbiased: S64 = pa.exponent.sub(pb.exponent).sub(1)
-        exponent: S64 = unbiased.add(B128_BIAS)
-        negative: Bool = sign.ne(0)
-        bits: U128 = b128_round_pack(negative, exponent, sig)
-        return(bits)
+        a_nan => return b128_quiet(a)
+        b_nan => return b128_quiet(b)
+        invalid => return B128_QNAN
+        to_inf => return sign | B128_INF
+        b_inf or a_zero => return sign
+        else =>
+            // q = floor(ma × 2^116 / mb) = floor(ma × 2^131 / d) with the divisor
+            // normalized to d = mb × 2^15 (two limbs, top bit set). ma × 2^131 is four
+            // limbs, (ma × 8, 0, 0), so the quotient takes two 3-by-2 steps
+            // (Standard/WideDiv.tess). The last remainder is the sticky bit.
+            pa: B128Parts = b128_unpack(a)
+            pb: B128Parts = b128_unpack(b)
+            d: U128 = pb.sig << 15
+            d1: U64 = (d >> 64).to[U64]()
+            d0: U64 = d.to_wrap[U64]()
+            divisor: Divisor3By2 = div_3by2_prepare(d1, d0)
+            n: U128 = pa.sig << 3
+            high: Div3By2 = div_3by2(u2: (n >> 64).to[U64](), u1: n.to_wrap[U64](), u0: 0, divisor)
+            r: U128 = high.remainder
+            low: Div3By2 = div_3by2(u2: (r >> 64).to[U64](), u1: r.to_wrap[U64](), u0: 0, divisor)
+            q_high: U128 = high.quotient.to[U128]() << 64
+            q: U128 = q_high | low.quotient.to[U128]()
+            sticky: Bool = low.remainder != 0
+            sig: U128 = q | sticky.to[U128]()
+            unbiased: S64 = pa.exponent - pb.exponent - 1
+            exponent: S64 = unbiased + B128_BIAS
+            negative: Bool = sign != 0
+            bits: U128 = b128_round_pack(negative, exponent, sig)
+            return bits
 
 /// The square root of a binary128 value on its bits, correctly rounded, from a 256-bit integer square root.
 /// :param a: The radicand's bits.
@@ -549,34 +508,32 @@ routine b128_sqrt_bits(a: U128) -> U128
     nan: Bool = b128_is_nan_bits(a)
     zero: Bool = b128_is_zero_bits(a)
     negative: Bool = b128_is_negative_bits(a)
-    inf: Bool = b128_exponent(a).eq(B128_EXP_MAX)
     when
-        nan => return(b128_quiet(a))
-        zero => return(a)  // sqrt(-0) is -0
-        negative => return(B128_QNAN)
-        inf => return(a)
-        else => finite()
-
-    // With an even exponent e, sqrt(m × 2^(e-112)) = sqrt(m × 2^118) × 2^((e-230)/2),
-    // and the integer root of the 232-bit m × 2^118 has 116 bits (isqrt_256).
-    block finite()
-        p: B128Parts = b128_unpack(a)
-        odd: Bool = p.exponent.bitand(1).eq(1)
-        m: U128 = odd
-            ? p.sig.shl(1)
-            : p.sig
-        e: S64 = odd
-            ? p.exponent.sub(1)
-            : p.exponent
-        hi: U128 = m.shr(10)
-        lo: U128 = m.shl(118)
-        exponent: S64 = e.div(2).add(B128_BIAS)
-        root: U128 = isqrt_256(hi, lo)
-        // the root is exact exactly when root^2 = radicand. Otherwise set the sticky bit
-        exact: Bool = square_equals(x: root, hi, lo)
-        sig: U128 = root.bitor(exact.bitnot().to[U128]())
-        bits: U128 = b128_round_pack(negative: false, exponent, sig)
-        return(bits)
+        nan => return b128_quiet(a)
+        zero => return a
+        negative => return B128_QNAN
+        b128_exponent(a) == B128_EXP_MAX => return a
+        else =>
+            // sqrt(-0) is -0
+            // With an even exponent e, sqrt(m × 2^(e-112)) = sqrt(m × 2^118) × 2^((e-230)/2),
+            // and the integer root of the 232-bit m × 2^118 has 116 bits (isqrt_256).
+            p: B128Parts = b128_unpack(a)
+            odd: Bool = p.exponent & 1 == 1
+            m: U128 = when
+                odd => p.sig << 1
+                else => p.sig
+            e: S64 = when
+                odd => p.exponent - 1
+                else => p.exponent
+            hi: U128 = m >> 10
+            lo: U128 = m << 118
+            exponent: S64 = e / 2 + B128_BIAS
+            root: U128 = isqrt_256(hi, lo)
+            // the root is exact exactly when root^2 = radicand. Otherwise set the sticky bit
+            exact: Bool = square_equals(x: root, hi, lo)
+            sig: U128 = root | (not exact).to[U128]()
+            bits: U128 = b128_round_pack(negative: false, exponent, sig)
+            return bits
 
 /// floor(n / x) for n = `hi` × 2^128 + `lo`, when the quotient fits in 128 bits and `hi` < `x` (after normalizing,
 /// the 3-by-2 steps need it). `x` must be nonzero.
@@ -586,25 +543,23 @@ routine b128_sqrt_bits(a: U128) -> U128
 /// :returns: The quotient.
 routine div_256_by_128(hi: U128, lo: U128, x: U128) -> U128
     s: S64 = x.leading_zeros().to[S64]()
-    d: U128 = x.shl(s.to[U128]())
-    spill_shift: S64 = 128.sub(s).min(127)
-    spill: U128 = lo.shr(spill_shift.to[U128]())
-    carry: U128 = s.eq(0)
-        ? 0
-        : spill
-    n_hi: U128 = hi.shl(s.to[U128]()).bitor(carry)
-    n_lo: U128 = lo.shl(s.to[U128]())
-    d1: U64 = d.shr(64).to[U64]()
+    d: U128 = x << s.to[U128]()
+    spill_shift: S64 = (128 - s).min(127)
+    spill: U128 = lo >> spill_shift.to[U128]()
+    carry: U128 = when
+        s == 0 => 0
+        else => spill
+    n_hi: U128 = (hi << s.to[U128]()) | carry
+    n_lo: U128 = lo << s.to[U128]()
+    d1: U64 = (d >> 64).to[U64]()
     d0: U64 = d.to_wrap[U64]()
     divisor: Divisor3By2 = div_3by2_prepare(d1, d0)
-    high: Div3By2 = div_3by2(u2: n_hi.shr(64).to[U64](), u1: n_hi.to_wrap[U64](),
-        u0: n_lo.shr(64).to[U64](), divisor)
+    high: Div3By2 = div_3by2(u2: (n_hi >> 64).to[U64](), u1: n_hi.to_wrap[U64](), u0: (n_lo >> 64).to[U64](), divisor)
     r: U128 = high.remainder
-    low: Div3By2 = div_3by2(u2: r.shr(64).to[U64](), u1: r.to_wrap[U64](), u0: n_lo.to_wrap[U64](),
-        divisor)
-    q_high: U128 = high.quotient.to[U128]().shl(64)
-    q: U128 = q_high.bitor(low.quotient.to[U128]())
-    return(q)
+    low: Div3By2 = div_3by2(u2: (r >> 64).to[U64](), u1: r.to_wrap[U64](), u0: n_lo.to_wrap[U64](), divisor)
+    q_high: U128 = high.quotient.to[U128]() << 64
+    q: U128 = q_high | low.quotient.to[U128]()
+    return q
 
 /// floor(sqrt(n)) for n = `hi` × 2^128 + `lo` with 2^230 <= n < 2^232: Newton's method on integers, started above the
 /// root from a B64 square root of the top bits of n, stops at the first step that does not go down.
@@ -612,23 +567,18 @@ routine div_256_by_128(hi: U128, lo: U128, x: U128) -> U128
 /// :param lo: The low 128 bits of n.
 /// :returns: The integer square root.
 routine isqrt_256(hi: U128, lo: U128) -> U128
-    bits: S64 = 256.sub(hi.leading_zeros().to[S64]())
-    shift: S64 = bits.sub(64)
-    even: S64 = shift.add(shift.bitand(1))
-    top: U64 = hi.shr(even.sub(128).to[U128]()).to[U64]()
+    bits: S64 = 256 - hi.leading_zeros().to[S64]()
+    shift: S64 = bits - 64
+    even: S64 = shift + (shift & 1)
+    top: U64 = (hi >> (even - 128).to[U128]()).to[U64]()
     // B64's root of top is within 2^-50 relative: + 2 makes the seed an overestimate
     root: B64 = top.to[B64]().sqrt()
-    guess: U64 = root.to[U64]().add(2)
-    seed: U128 = guess.to[U128]().shl(even.div(2).to[U128]())
-    jump step(seed)
+    guess: U64 = root.to[U64]() + 2
 
-    block step(x: U128)
-        q: U128 = div_256_by_128(hi, lo, x)
-        next: U128 = x.add(q).shr(1)
-        done: Bool = next.ge(x)
-        branch done
-            ? return(x)
-            : step(next)
+    while x + div_256_by_128(hi, lo, x) >> 1 < x with x: U128 = guess.to[U128]() << (even / 2).to[U128]()
+        continue with x: next
+    then
+        return x
 
 /// Whether `x`^2 = `hi` × 2^128 + `lo`, for `x` < 2^116.
 /// :param x: The root to square.
@@ -636,16 +586,15 @@ routine isqrt_256(hi: U128, lo: U128) -> U128
 /// :param lo: The low 128 bits of the value.
 /// :returns: `true` when the square matches exactly.
 routine square_equals(x: U128, hi: U128, lo: U128) -> Bool
-    x0: U128 = x.bitand(0xFFFFFFFFFFFFFFFF)
-    x1: U128 = x.shr(64)
-    low: U128 = x0.mul(x0)
-    cross: U128 = x0.mul(x1).shl(1)
-    sq_lo: U128 = low.add_wrap(cross.shl(64))
-    carry: U128 = sq_lo.lt(low).to[U128]()
-    x1_sq: U128 = x1.mul(x1)
-    sq_hi: U128 = x1_sq.add(cross.shr(64)).add(carry)
-    r: Bool = sq_hi.eq(hi).bitand(sq_lo.eq(lo))
-    return(r)
+    x0: U128 = x & 0xFFFFFFFFFFFFFFFF
+    x1: U128 = x >> 64
+    low: U128 = x0 * x0
+    cross: U128 = x0 * x1 << 1
+    sq_lo: U128 = low +% (cross << 64)
+    carry: U128 = (sq_lo < low).to[U128]()
+    x1_sq: U128 = x1 * x1
+    sq_hi: U128 = x1_sq + (cross >> 64) + carry
+    return sq_hi == hi and sq_lo == lo
 
 // -- comparison ----------------------------------------------------------------
 
@@ -654,19 +603,18 @@ routine square_equals(x: U128, hi: U128, lo: U128) -> Bool
 /// :returns: The bits inverted for a negative value, else the bits with the top bit set.
 routine b128_order_key(bits: U128) -> U128
     negative: Bool = b128_is_negative_bits(bits)
-    r: U128 = negative
-        ? bits.bitnot()
-        : bits.bitor(B128_SIGN)
-    return(r)
+    r: U128 = when
+        negative => ~bits
+        else => bits | B128_SIGN
+    return r
 
 /// Whether two binary128 values compare at all: neither is NaN.
 /// :param a: The first encoding.
 /// :param b: The second encoding.
 /// :returns: `true` unless `a` or `b` is NaN.
 routine b128_ordered(a: U128, b: U128) -> Bool
-    either_nan: Bool = b128_is_nan_bits(a).bitor(b128_is_nan_bits(b))
-    r: Bool = either_nan.bitnot()
-    return(r)
+    either_nan: Bool = b128_is_nan_bits(a) | b128_is_nan_bits(b)
+    return not either_nan
 
 /// IEEE equality, on the bits.
 /// :param other: The value to compare against.
@@ -674,17 +622,15 @@ routine b128_ordered(a: U128, b: U128) -> Bool
 routine B128.eq(me: Me, other: Me) -> Bool
     a: U128 = me.bits()
     b: U128 = other.bits()
-    zeros: Bool = b128_is_zero_bits(a).bitand(b128_is_zero_bits(b))
-    same: Bool = a.eq(b).bitor(zeros)
-    r: Bool = same.bitand(b128_ordered(a, b))
-    return(r)
+    zeros: Bool = b128_is_zero_bits(a) & b128_is_zero_bits(b)
+    same: Bool = a == b or zeros
+    return same & b128_ordered(a, b)
 
 /// IEEE inequality: the negation of {B128.eq}.
 /// :param other: The value to compare against.
 /// :returns: True when the values differ or either operand is NaN, false for -0.0 against +0.0.
 routine B128.ne(me: Me, other: Me) -> Bool
-    r: Bool = me.eq(other).bitnot()
-    return(r)
+    return me != other
 
 /// Whether `me` is less than `other`, as an ordered IEEE comparison on the bits.
 /// :param other: The value to compare against.
@@ -692,43 +638,38 @@ routine B128.ne(me: Me, other: Me) -> Bool
 routine B128.lt(me: Me, other: Me) -> Bool
     a: U128 = me.bits()
     b: U128 = other.bits()
-    zeros: Bool = b128_is_zero_bits(a).bitand(b128_is_zero_bits(b))
-    below: Bool = b128_order_key(a).lt(b128_order_key(b))
-    r: Bool = below.bitand(zeros.bitnot()).bitand(b128_ordered(a, b))
-    return(r)
+    zeros: Bool = b128_is_zero_bits(a) & b128_is_zero_bits(b)
+    below: Bool = b128_order_key(a) < b128_order_key(b)
+    return (below and not zeros) & b128_ordered(a, b)
 
 /// Whether `me` is greater than `other`, as an ordered IEEE comparison.
 /// :param other: The value to compare against.
 /// :returns: `me > other`, or false when either operand is NaN. -0.0 and +0.0 compare equal.
 routine B128.gt(me: Me, other: Me) -> Bool
-    r: Bool = other.lt(me)
-    return(r)
+    return other < me
 
 /// Whether `me` is less than or equal to `other`, as an ordered IEEE comparison.
 /// :param other: The value to compare against.
 /// :returns: `me <= other`, or false when either operand is NaN. -0.0 and +0.0 compare equal.
 routine B128.le(me: Me, other: Me) -> Bool
-    r: Bool = me.lt(other).bitor(me.eq(other))
-    return(r)
+    return me < other or me == other
 
 /// Whether `me` is greater than or equal to `other`, as an ordered IEEE comparison.
 /// :param other: The value to compare against.
 /// :returns: `me >= other`, or false when either operand is NaN. -0.0 and +0.0 compare equal.
 routine B128.ge(me: Me, other: Me) -> Bool
-    r: Bool = other.le(me)
-    return(r)
+    return other <= me
 
 /// Three-way comparison of `me` and `other`, -0.0 equal to +0.0.
 /// :param other: The value to compare with.
 /// :returns: -1, 0, or 1 as `me` is below, equal to, or above `other`. 0 also when either is NaN, as for the other
 ///     float types.
 routine B128.compare(me: Me, other: Me) -> S32
-    lt: Bool = me.lt(other)
-    gt: Bool = me.gt(other)
+    lt: Bool = me < other
     when
-        lt => return(-1)
-        gt => return(1)
-        else => return(0)
+        lt => return -1
+        me > other => return 1
+        else => return 0
 
 /// Orders by IEEE 754 totalOrder: -NaN < -inf < ... < -0 < +0 < ... < +inf < +NaN.
 /// :param other: The value to compare with.
@@ -736,12 +677,11 @@ routine B128.compare(me: Me, other: Me) -> S32
 routine B128.total_compare(me: Me, other: Me) -> S32
     a: U128 = b128_order_key(me.bits())
     b: U128 = b128_order_key(other.bits())
-    lt: Bool = a.lt(b)
-    gt: Bool = a.gt(b)
+    lt: Bool = a < b
     when
-        lt => return(-1)
-        gt => return(1)
-        else => return(0)
+        lt => return -1
+        a > b => return 1
+        else => return 0
 
 // -- conversions ---------------------------------------------------------------
 
@@ -754,40 +694,33 @@ routine b128_widen(bits: U64, format: FloatFormat) -> B128
     local mantissa_bits: U64 = format.fraction_bits.to[U64]()
     local bias: S64 = format.bias.to[S64]()
     local exponent_max: U64 = format.exponent_max.to[U64]()
-    local sign_bit: U64 = bits.shr(width.sub(1)).bitand(1)
-    local fraction: U64 = bits.bitand(1.shl(mantissa_bits).sub(1))
-    local top: U128 = fraction.to[U128]().shl(112.sub(mantissa_bits).to[U128]())
-    local negative: Bool = sign_bit.eq(1)
-    local sign: U128 = negative
+    local sign_bit: U64 = (bits >> width - 1) & 1
+    local fraction: U64 = bits & (1 << mantissa_bits) - 1
+    local top: U128 = fraction.to[U128]() << (112 - mantissa_bits).to[U128]()
+    local negative: Bool = sign_bit == 1
+    local sign: U128 = when
+        negative => B128_SIGN
+        else => 0
+    local exponent: U64 = (bits >> mantissa_bits) & exponent_max
 
-        ? B128_SIGN : 0
-    local exponent: U64 = bits.shr(mantissa_bits).bitand(exponent_max)
-
-    special: Bool = exponent.eq(exponent_max)
-    zero: Bool = exponent.eq(0).bitand(fraction.eq(0))
-    subnormal: Bool = exponent.eq(0)
-    when
-        special => done(sign.bitor(B128_INF).bitor(top))
-        zero => done(sign)
-        subnormal => sub()
-        else => normal()
-
-    block normal()
-        unbiased: S64 = exponent.to[S64]().sub(bias)
-        rebiased: S64 = unbiased.add(B128_BIAS)
-        field: U128 = rebiased.to[U128]().shl(112)
-        jump done(sign.bitor(field).bitor(top))
-
-    // value = fraction × 2^(1 - bias - mantissa_bits): exact after normalizing
-    block sub()
-        min_exponent: S64 = 1.sub(bias).add(B128_BIAS)
-        pack_exponent: S64 = min_exponent.add(3)
-        r: U128 = b128_round_pack(negative, exponent: pack_exponent, sig: top)
-        jump done(r)
-
-    block done(r: U128)
-        v: B128 = b128_of(r)
-        return(v)
+    special: Bool = exponent == exponent_max
+    zero: Bool = exponent == 0 and fraction == 0
+    subnormal: Bool = exponent == 0
+    r: U128 = when
+        special => sign | B128_INF | top
+        zero => sign
+        subnormal =>
+            // value = fraction × 2^(1 - bias - mantissa_bits): exact after normalizing
+            min_exponent: S64 = 1 - bias + B128_BIAS
+            pack_exponent: S64 = min_exponent + 3
+            becomes b128_round_pack(negative, exponent: pack_exponent, sig: top)
+        else =>
+            unbiased: S64 = exponent.to[S64]() - bias
+            rebiased: S64 = unbiased + B128_BIAS
+            field: U128 = rebiased.to[U128]() << 112
+            becomes sign | field | top
+    v: B128 = b128_of(r)
+    return v
 
 /// Rounds to nearest even into a narrower binary format. Rounds once, so B128 to B32 is not B128 to B64 to B32.
 /// :param value: The B128 to narrow.
@@ -800,186 +733,176 @@ routine b128_narrow(value: B128, format: FloatFormat) -> U64
     local bias: S64 = format.bias.to[S64]()
     local exponent_max: U64 = format.exponent_max.to[U64]()
     local bits: U128 = value.bits()
-    local top_bit: U64 = 1.shl(width.sub(1))
-    local sign: U64 = b128_is_negative_bits(bits)
-
-        ? top_bit : 0
-    local infinity: U64 = exponent_max.shl(mantissa_bits)
+    local top_bit: U64 = 1 << width - 1
+    local sign: U64 = when
+        b128_is_negative_bits(bits) => top_bit
+        else => 0
+    local infinity: U64 = exponent_max << mantissa_bits
 
     nan: Bool = b128_is_nan_bits(bits)
-    inf: Bool = b128_exponent(bits).eq(B128_EXP_MAX)
-    zero: Bool = b128_is_zero_bits(bits)
+    inf: Bool = b128_exponent(bits) == B128_EXP_MAX
     when
-        nan => nan()
-        inf => return(sign.bitor(infinity))
-        zero => return(sign)
-        else => finite()
-
-    // keep the top payload bits and force the quiet bit
-    block nan()
-        top_fraction: U128 = b128_fraction(bits).shr(112.sub(mantissa_bits).to[U128]())
-        payload: U64 = top_fraction.to[U64]()
-        quiet: U64 = 1.shl(mantissa_bits.sub(1))
-        signed_inf: U64 = sign.bitor(infinity)
-        r: U64 = signed_inf.bitor(payload).bitor(quiet)
-        return(r)
-
-    // q = round(sig / 2^shift): the quantum is 2^(e - mantissa_bits), or the
-    // subnormal quantum when e is below the target's smallest normal exponent.
-    block finite()
-        p: B128Parts = b128_unpack(bits)
-        min_e: S64 = 1.sub(bias)
-        e_used: S64 = p.exponent.max(min_e)
-        shift: S64 = 112.sub(mantissa_bits.to[S64]()).add(e_used.sub(p.exponent))
-        sticky: U128 = shr_sticky(value: p.sig, n: shift.sub(2).max(0))
-        grs_shift: S64 = 2.sub(shift).max(0)
-        // two extra bits (half, rest) under the kept ones
-        grs: U128 = shift.lt(2)
-            ? p.sig.shl(grs_shift.to[U128]())
-            : sticky
-        kept: U128 = grs.shr(2)
-        low: U128 = grs.bitand(3)
-        up: Bool = low.gt(2).bitor(low.eq(2).bitand(kept.bitand(1).eq(1)))
-        q: U64 = kept.add(up.to[U128]()).to[U64]()
-        carry: Bool = q.eq(1.shl(mantissa_bits.add(1)))
-        q2: U64 = carry
-            ? q.shr(1)
-            : q
-        e2: S64 = e_used.add(carry.to[S64]())
-        hidden: U64 = 1.shl(mantissa_bits)
-        normal: Bool = q2.ge(hidden)
-        biased: S64 = normal
-            ? e2.add(bias)
-            : 0
-        overflow: Bool = biased.ge(exponent_max.to[S64]())
-        r: U64 = sign.bitor(biased.to[U64]().shl(mantissa_bits)).bitor(q2.bitand(hidden.sub(1)))
-        branch overflow
-            ? return(sign.bitor(infinity))
-            : return(r)
+        nan =>
+            // keep the top payload bits and force the quiet bit
+            top_fraction: U128 = b128_fraction(bits) >> (112 - mantissa_bits).to[U128]()
+            payload: U64 = top_fraction.to[U64]()
+            quiet: U64 = 1 << mantissa_bits - 1
+            signed_inf: U64 = sign | infinity
+            r: U64 = signed_inf | payload | quiet
+            return r
+        inf => return sign | infinity
+        b128_is_zero_bits(bits) => return sign
+        else =>
+            // q = round(sig / 2^shift): the quantum is 2^(e - mantissa_bits), or the
+            // subnormal quantum when e is below the target's smallest normal exponent.
+            p: B128Parts = b128_unpack(bits)
+            min_e: S64 = 1 - bias
+            e_used: S64 = p.exponent.max(min_e)
+            shift: S64 = 112 - mantissa_bits.to[S64]() + (e_used - p.exponent)
+            sticky: U128 = shr_sticky(value: p.sig, n: (shift - 2).max(0))
+            grs_shift: S64 = (2 - shift).max(0)
+            // two extra bits (half, rest) under the kept ones
+            grs: U128 = when
+                shift < 2 => p.sig << grs_shift.to[U128]()
+                else => sticky
+            kept: U128 = grs >> 2
+            low: U128 = grs & 3
+            up: Bool = low > 2 or (low == 2 and kept & 1 == 1)
+            q: U64 = (kept + up.to[U128]()).to[U64]()
+            carry: Bool = q == 1 << mantissa_bits + 1
+            q2: U64 = when
+                carry => q >> 1
+                else => q
+            e2: S64 = e_used + carry.to[S64]()
+            hidden: U64 = 1 << mantissa_bits
+            normal: Bool = q2 >= hidden
+            biased: S64 = when
+                normal => e2 + bias
+                else => 0
+            overflow: Bool = biased >= exponent_max.to[S64]()
+            r: U64 = sign | (biased.to[U64]() << mantissa_bits) | (q2 & hidden - 1)
+            if overflow
+                return sign | infinity
+            else
+                return r
 
 /// Widens to B128, exactly.
 /// :returns: The same value as a B128. NaN payloads move to the top of the fraction.
 routine B64.to[B128](me: Me) -> B128
     r: B128 = b128_widen(bits: me.bits(), format: Me.FORMAT.peek())
-    return(r)
+    return r
 
 /// Widens to B128, exactly.
 /// :returns: The same value as a B128. NaN payloads move to the top of the fraction.
 routine B32.to[B128](me: Me) -> B128
     r: B128 = b128_widen(bits: me.bits().to[U64](), format: Me.FORMAT.peek())
-    return(r)
+    return r
 
 /// Widens to B128, exactly.
 /// :returns: The same value as a B128. NaN payloads move to the top of the fraction.
 routine B16.to[B128](me: Me) -> B128
     r: B128 = b128_widen(bits: me.bits().to[U64](), format: Me.FORMAT.peek())
-    return(r)
+    return r
 
 /// Widens to B128, exactly.
 /// :returns: The same value as a B128. NaN payloads move to the top of the fraction.
 routine BF16.to[B128](me: Me) -> B128
     r: B128 = b128_widen(bits: me.bits().to[U64](), format: Me.FORMAT.peek())
-    return(r)
+    return r
 
 /// Narrows to B64, rounding once to nearest (ties to even).
 /// :returns: The nearest B64: infinity beyond B64's range, a subnormal or zero for tiny values, NaN for NaN.
 routine B128.to[B64](me: Me) -> B64
     r: B64 = .from_bits(b128_narrow(value: me, format: B64.FORMAT.peek()))
-    return(r)
+    return r
 
 /// Narrows to B32, rounding once to nearest (ties to even), so it can differ from going through B64.
 /// :returns: The nearest B32: infinity beyond B32's range, a subnormal or zero for tiny values, NaN for NaN.
 routine B128.to[B32](me: Me) -> B32
     r: B32 = .from_bits(b128_narrow(value: me, format: B32.FORMAT.peek()).to[U32]())
-    return(r)
+    return r
 
 /// Narrows to B16, rounding once to nearest (ties to even).
 /// :returns: The nearest B16: infinity above 65504, a subnormal or zero for tiny values, NaN for NaN.
 routine B128.to[B16](me: Me) -> B16
     r: B16 = .from_bits(b128_narrow(value: me, format: B16.FORMAT.peek()).to[U16]())
-    return(r)
+    return r
 
 /// Narrows to BF16, rounding once to nearest (ties to even).
 /// :returns: The nearest BF16: infinity beyond BF16's range, a subnormal or zero for tiny values, NaN for NaN.
 routine B128.to[BF16](me: Me) -> BF16
     r: BF16 = .from_bits(b128_narrow(value: me, format: BF16.FORMAT.peek()).to[U16]())
-    return(r)
+    return r
 
 /// The identity conversion, so generic code can call `to[T]()` when `T` is B128.
 /// :returns: `me` unchanged.
 routine B128.to[Me](me: Me) -> Me
-    return(me)
+    return me
 
 /// Converts to B128, rounding to nearest (ties to even) when the value needs more than 113 bits.
 /// :returns: The nearest B128, exact below 2^113.
 routine U128.to[B128](me: Me) -> B128
     bits: Me = b128_round_pack(negative: false, exponent: B128_BIAS.add(115), sig: me)
     r: B128 = b128_of(bits)
-    return(r)
+    return r
 
 /// Converts to B128, rounding to nearest (ties to even) when the magnitude needs more than 113 bits.
 /// :returns: The nearest B128, exact for magnitudes below 2^113.
 routine S128.to[B128](me: Me) -> B128
-    negative: Bool = me.lt(0)
+    negative: Bool = me < 0
     magnitude: U128 = me.abs_diff(0)
     bits: U128 = b128_round_pack(negative, exponent: B128_BIAS.add(115), sig: magnitude)
     r: B128 = b128_of(bits)
-    return(r)
+    return r
 
 /// Converts to B128, exactly: every U64 fits in B128's 113-bit significand.
 /// :returns: The same value as a B128.
 routine U64.to[B128](me: Me) -> B128
     r: B128 = me.to[U128]().to[B128]()
-    return(r)
+    return r
 
 /// Converts to B128, exactly: every S64 fits in B128's 113-bit significand.
 /// :returns: The same value as a B128.
 routine S64.to[B128](me: Me) -> B128
     r: B128 = me.to[S128]().to[B128]()
-    return(r)
+    return r
 
 /// Converts to B128, exactly.
 /// :returns: The same value as a B128.
 routine U32.to[B128](me: Me) -> B128
     r: B128 = me.to[U128]().to[B128]()
-    return(r)
+    return r
 
 /// Converts to B128, exactly.
 /// :returns: The same value as a B128.
 routine S32.to[B128](me: Me) -> B128
     r: B128 = me.to[S128]().to[B128]()
-    return(r)
+    return r
 
 /// |value| rounded toward zero, saturating at U128.MAX. NaN and values below 1 give 0.
 /// :param bits: The binary128 encoding.
 /// :returns: The integer part of the magnitude, U128.MAX from 2^128 up and for infinities.
 routine b128_whole_magnitude(bits: U128) -> U128
     nan: Bool = b128_is_nan_bits(bits)
-    zero: Bool = b128_is_zero_bits(bits)
     when
-        nan => return(0)
-        zero => return(0)
-        else => finite()
-
-    block finite()
-        p: B128Parts = b128_unpack(bits)
-        small: Bool = p.exponent.lt(0)
-        huge: Bool = p.exponent.ge(128)
-        when
-            small => return(0)
-            huge => return(U128.MAX)
-            else => whole(p)
-
-    block whole(p: B128Parts)
-        up: Bool = p.exponent.ge(112)
-        left_shift: S64 = p.exponent.sub(112).max(0)
-        left: U128 = p.sig.shl(left_shift.to[U128]())
-        right_shift: S64 = 112.sub(p.exponent).max(0)
-        right: U128 = p.sig.shr(right_shift.to[U128]())
-        r: U128 = up
-            ? left
-            : right
-        return(r)
+        nan => return 0
+        b128_is_zero_bits(bits) => return 0
+        else =>
+            p: B128Parts = b128_unpack(bits)
+            small: Bool = p.exponent < 0
+            when
+                small => return 0
+                p.exponent >= 128 => return U128.MAX
+                else =>
+                    up: Bool = p.exponent >= 112
+                    left_shift: S64 = (p.exponent - 112).max(0)
+                    left: U128 = p.sig << left_shift.to[U128]()
+                    right_shift: S64 = (112 - p.exponent).max(0)
+                    right: U128 = p.sig >> right_shift.to[U128]()
+                    r: U128 = when
+                        up => left
+                        else => right
+                    return r
 
 // -- rounding to integers ------------------------------------------------------
 
@@ -999,119 +922,118 @@ choice B128Rounding: U8
 /// :returns: The bits of the rounded value. Zeros and infinities come back unchanged, and a NaN comes back quieted.
 routine b128_round_int(bits: U128, mode: B128Rounding) -> U128
     local biased: S64 = b128_exponent(bits)
-    local e: S64 = biased.sub(B128_BIAS)
+    local e: S64 = biased - B128_BIAS
 
-    special: Bool = biased.eq(B128_EXP_MAX)
-    whole: Bool = e.ge(112)
+    special: Bool = biased == B128_EXP_MAX
+    whole: Bool = e >= 112
     zero: Bool = b128_is_zero_bits(bits)
-    below: Bool = e.lt(0)
-    when
-        special => nan_or_inf()
-        whole => return(bits)
-        zero => return(bits)
-        below => below_one()
-        else => split()
-
-    block nan_or_inf()
-        nan: Bool = b128_is_nan_bits(bits)
-        branch nan
-            ? return(b128_quiet(bits))
-            : return(bits)
-
-    // |x| < 1: the result is ±0 or ±1 (1.0 is 0x3FFF << 112)
-    block below_one()
-        sign: U128 = bits.bitand(B128_SIGN)
-        one: U128 = sign.bitor(0x3FFF0000000000000000000000000000)
-        negative: Bool = sign.ne(0)
-        half_up: Bool = e.eq(-1)  // |x| >= 0.5
-        exact_half: Bool = half_up.bitand(b128_fraction(bits).eq(0))
-        down: U128 = negative
-            ? one
-            : sign
-        up: U128 = negative
-            ? sign
-            : one
-        away: U128 = half_up
-            ? one
-            : sign
-        over: Bool = half_up.bitand(exact_half.bitnot())
-        even: U128 = over
-            ? one
-            : sign
-        when mode
-            B128Rounding.TOWARD_ZERO => return(sign)
-            B128Rounding.DOWN => return(down)
-            B128Rounding.UP => return(up)
-            B128Rounding.NEAREST_AWAY => return(away)
-            B128Rounding.NEAREST_EVEN => return(even)
-
-    block split()
-        frac_bits: U128 = 112.sub(e).to[U128]()
-        unit: U128 = 1.shl(frac_bits)
-        mask: U128 = unit.sub(1)
-        kept: U128 = bits.bitand(mask.bitnot())
-        rest: U128 = bits.bitand(mask)
-        half: U128 = unit.shr(1)
-        negative: Bool = b128_is_negative_bits(bits)
-        inexact: Bool = rest.ne(0)
-        odd: Bool = kept.bitand(unit).ne(0)
-        over_half: Bool = rest.gt(half)
-        at_half: Bool = rest.eq(half)
-        away: Bool = over_half.bitor(at_half)
-        even_up: Bool = over_half.bitor(at_half.bitand(odd))
-        down: Bool = negative.bitand(inexact)
-        up: Bool = negative.bitnot().bitand(inexact)
-        when mode
-            B128Rounding.TOWARD_ZERO => done(kept, unit, false)
-            B128Rounding.DOWN => done(kept, unit, down)
-            B128Rounding.UP => done(kept, unit, up)
-            B128Rounding.NEAREST_AWAY => done(kept, unit, away)
-            B128Rounding.NEAREST_EVEN => done(kept, unit, even_up)
-
-    block done(kept: U128, unit: U128, bump: Bool)
-        r: U128 = bump
-            ? kept.add(unit)
-            : kept
-        return(r)
+    below: Bool = e < 0
+    values2: (U128, U128, Bool) = when
+        special =>
+            if b128_is_nan_bits(bits)
+                return b128_quiet(bits)
+            else
+                return bits
+        whole => return bits
+        zero => return bits
+        below =>
+            // |x| < 1: the result is ±0 or ±1 (1.0 is 0x3FFF << 112)
+            sign: U128 = bits & B128_SIGN
+            one: U128 = sign | 0x3FFF0000000000000000000000000000
+            negative: Bool = sign != 0
+            half_up: Bool = e == -1
+            // |x| >= 0.5
+            exact_half: Bool = half_up and b128_fraction(bits) == 0
+            down: U128 = when
+                negative => one
+                else => sign
+            up: U128 = when
+                negative => sign
+                else => one
+            away: U128 = when
+                half_up => one
+                else => sign
+            over: Bool = half_up and not exact_half
+            even: U128 = when
+                over => one
+                else => sign
+            when mode
+                B128Rounding.TOWARD_ZERO => return sign
+                B128Rounding.DOWN => return down
+                B128Rounding.UP => return up
+                B128Rounding.NEAREST_AWAY => return away
+                B128Rounding.NEAREST_EVEN => return even
+        else =>
+            frac_bits: U128 = (112 - e).to[U128]()
+            unit: U128 = 1 << frac_bits
+            mask: U128 = unit - 1
+            kept: U128 = bits & ~mask
+            rest: U128 = bits & mask
+            half: U128 = unit >> 1
+            negative: Bool = b128_is_negative_bits(bits)
+            inexact: Bool = rest != 0
+            odd: Bool = kept & unit != 0
+            over_half: Bool = rest > half
+            at_half: Bool = rest == half
+            away: Bool = over_half or at_half
+            even_up: Bool = over_half or (at_half and odd)
+            down: Bool = negative and inexact
+            up: Bool = not negative and inexact
+            when mode
+                B128Rounding.TOWARD_ZERO =>
+                    becomes (kept, unit, false)
+                B128Rounding.DOWN =>
+                    becomes (kept, unit, down)
+                B128Rounding.UP =>
+                    becomes (kept, unit, up)
+                B128Rounding.NEAREST_AWAY =>
+                    becomes (kept, unit, away)
+                B128Rounding.NEAREST_EVEN =>
+                    becomes (kept, unit, even_up)
+    kept, unit, bump = values2
+    r: U128 = when
+        bump => kept + unit
+        else => kept
+    return r
 
 /// Rounds toward zero on the encoding, exactly.
 /// :returns: The integer part of `me`, with its sign (-0.5 gives -0.0). Infinities and NaN come back unchanged.
 routine B128.trunc(me: Me) -> Me
     r: Me = b128_of(b128_round_int(bits: me.bits(), mode: B128Rounding.TOWARD_ZERO))
-    return(r)
+    return r
 
 /// Rounds toward negative infinity on the encoding (exact).
 /// :returns: The largest integer value not above `me`. Zeros, infinities and NaN come back unchanged.
 routine B128.floor(me: Me) -> Me
     r: Me = b128_of(b128_round_int(bits: me.bits(), mode: B128Rounding.DOWN))
-    return(r)
+    return r
 
 /// Rounds toward positive infinity on the encoding (exact).
 /// :returns: The smallest integer value not below `me` (-0.5 gives -0.0). Zeros, infinities and NaN come back unchanged.
 routine B128.ceil(me: Me) -> Me
     r: Me = b128_of(b128_round_int(bits: me.bits(), mode: B128Rounding.UP))
-    return(r)
+    return r
 
 /// Rounds to the nearest integer on the encoding, half-way cases away from zero (exact).
 /// :returns: The rounded value, with the sign of `me`. Zeros and infinities come back unchanged, and a NaN comes
 ///     back quieted.
 routine B128.round(me: Me) -> Me
     r: Me = b128_of(b128_round_int(bits: me.bits(), mode: B128Rounding.NEAREST_AWAY))
-    return(r)
+    return r
 
 /// Rounds to the nearest integer on the encoding, half-way cases to the even neighbor (exact).
 /// :returns: The rounded value, with the sign of `me`. Zeros and infinities come back unchanged, and a NaN comes
 ///     back quieted.
 routine B128.round_ties_even(me: Me) -> Me
     r: Me = b128_of(b128_round_int(bits: me.bits(), mode: B128Rounding.NEAREST_EVEN))
-    return(r)
+    return r
 
 /// `me` minus its integer part, with the sign of `me`.
 /// :returns: `me - me.trunc()`, NaN for an infinity or NaN.
 routine B128.fract(me: Me) -> Me
     whole: Me = me.trunc()
-    r: Me = me.sub(whole)
-    return(r)
+    r: Me = me - whole
+    return r
 
 /// The smaller value, or the other one if one operand is NaN. Equal values, -0.0 and +0.0 included, give `me`.
 /// :param other: The value to compare with.
@@ -1119,12 +1041,11 @@ routine B128.fract(me: Me) -> Me
 routine B128.min(me: Me, other: Me) -> Me
     self_nan: Bool = me.is_nan()
     other_nan: Bool = other.is_nan()
-    less: Bool = other.lt(me)
     when
-        self_nan => return(other)
-        other_nan => return(me)
-        less => return(other)
-        else => return(me)
+        self_nan => return other
+        other_nan => return me
+        other < me => return other
+        else => return me
 
 /// The larger value, or the other one if one operand is NaN. Equal values, -0.0 and +0.0 included, give `me`.
 /// :param other: The value to compare with.
@@ -1132,12 +1053,11 @@ routine B128.min(me: Me, other: Me) -> Me
 routine B128.max(me: Me, other: Me) -> Me
     self_nan: Bool = me.is_nan()
     other_nan: Bool = other.is_nan()
-    more: Bool = other.gt(me)
     when
-        self_nan => return(other)
-        other_nan => return(me)
-        more => return(other)
-        else => return(me)
+        self_nan => return other
+        other_nan => return me
+        other > me => return other
+        else => return me
 
 // -- fused multiply-add ----------------------------------------------------------
 
@@ -1146,22 +1066,16 @@ routine B128.max(me: Me, other: Me) -> Me
 /// :param n: The shift amount, at least 0. From 256 on, every bit is shifted out.
 /// :returns: The shifted value, its bit 0 set when any set bit was lost.
 routine shr_sticky(x: U256, n: S64) -> U256
-    all: Bool = n.ge(256)
-    branch all
-        ? all()
-        : some()
-
-    block all()
-        nonzero: U64 = x.ne(0).to[U64]()
+    if n >= 256
+        nonzero: U64 = (x != 0).to[U64]()
         any: U256 = nonzero.to[U256]()
-        return(any)
-
-    block some()
+        return any
+    else
         shift: U256 = n.to[U256]()
-        mask: U256 = 1.shl(shift).sub(1)
-        lost: Bool = x.bitand(mask).ne(0)
-        r: U256 = x.shr(shift).bitor(lost.to[U64]().to[U256]())
-        return(r)
+        mask: U256 = (1 << shift) - 1
+        lost: Bool = x & mask != 0
+        r: U256 = (x >> shift) | lost.to[U64]().to[U256]()
+        return r
 
 /// `me * a + b` with a single rounding: the 226-bit product is exact, `b` is aligned to it in 256 bits (anything
 /// shifted further out becomes a sticky bit), and only the sum is rounded.
@@ -1171,7 +1085,7 @@ routine shr_sticky(x: U256, n: S64) -> U256
 /// :see: {b128_fma_bits}
 routine B128.mul_add(me: Me, a: Me, b: Me) -> Me
     r: Me = b128_of(b128_fma_bits(x: me.bits(), y: a.bits(), c: b.bits()))
-    return(r)
+    return r
 
 /// Fused multiply-add on binary128 bits: `x * y + c` with a single rounding, the exact product aligned with `c` in 256 bits.
 /// :param x: The first factor's bits.
@@ -1179,113 +1093,100 @@ routine B128.mul_add(me: Me, a: Me, b: Me) -> Me
 /// :param c: The addend's bits.
 /// :returns: The bits of the rounded result: NaN operands come back quieted, `inf * 0` and `inf - inf` are NaN, and a zero product plus a zero is -0 only when both are -0.
 routine b128_fma_bits(x: U128, y: U128, c: U128) -> U128
-    sign: U128 = x.bitxor(y).bitand(B128_SIGN)
+    sign: U128 = (x ^ y) & B128_SIGN
     x_nan: Bool = b128_is_nan_bits(x)
     y_nan: Bool = b128_is_nan_bits(y)
     c_nan: Bool = b128_is_nan_bits(c)
-    x_inf: Bool = b128_exponent(x).eq(B128_EXP_MAX)
-    y_inf: Bool = b128_exponent(y).eq(B128_EXP_MAX)
-    c_inf: Bool = b128_exponent(c).eq(B128_EXP_MAX)
+    x_inf: Bool = b128_exponent(x) == B128_EXP_MAX
+    y_inf: Bool = b128_exponent(y) == B128_EXP_MAX
+    c_inf: Bool = b128_exponent(c) == B128_EXP_MAX
     x_zero: Bool = b128_is_zero_bits(x)
     y_zero: Bool = b128_is_zero_bits(y)
     c_zero: Bool = b128_is_zero_bits(c)
-    p_inf: Bool = x_inf.bitor(y_inf)
-    p_zero: Bool = x_zero.bitor(y_zero)
-    when
-        x_nan => return(b128_quiet(x))
-        y_nan => return(b128_quiet(y))
-        c_nan => return(b128_quiet(c))
-        p_inf => infinite_product(sign, p_zero, c_inf)
-        c_inf => return(c)
-        p_zero => zero_product(sign, c_zero)
-        c_zero => return(b128_mul_bits(a: x, b: y))
-        else => finite(sign)
-
-    // inf × 0 and inf - inf are NaN
-    block infinite_product(sign: U128, p_zero: Bool, c_inf: Bool)
-        clash: Bool = c_inf.bitand(c.bitand(B128_SIGN).ne(sign))
-        invalid: Bool = p_zero.bitor(clash)
-        inf: U128 = sign.bitor(B128_INF)
-        branch invalid
-            ? return(B128_QNAN)
-            : return(inf)
-
-    // ±0 + c is c, except ±0 + ±0: -0 only when both are -0
-    block zero_product(sign: U128, c_zero: Bool)
-        both_neg: Bool = sign.ne(0).bitand(b128_is_negative_bits(c))
-        zero: U128 = both_neg
-            ? B128_SIGN
-            : 0
-        branch c_zero
-            ? return(zero)
-            : return(c)
-
-    // P = mx my × 2^(ex + ey - 224) sits at bits ≤ 254 after << 29, and
-    // C = mc × 2^(ec - 112) at bits ≤ 254 after << 142. One bit of headroom stays for a carry.
-    block finite(sign: U128)
-        px: B128Parts = b128_unpack(x)
-        py: B128Parts = b128_unpack(y)
-        pc: B128Parts = b128_unpack(c)
-        p: U256 = px.sig.mul_wide(py.sig).shl(29)
-        p_e: S64 = px.exponent.add(py.exponent).sub(253)
-        cc: U256 = pc.sig.to[U256]().shl(142)
-        c_e: S64 = pc.exponent.sub(254)
-        p_neg: Bool = sign.ne(0)
-        c_neg: Bool = b128_is_negative_bits(c)
-        p_first: Bool = p_e.ge(c_e)
-        big: U256 = p_first
-            ? p
-            : cc
-        small: U256 = p_first
-            ? cc
-            : p
-        e: S64 = p_first
-            ? p_e
-            : c_e
-        diff: S64 = p_first
-            ? p_e.sub(c_e)
-            : c_e.sub(p_e)
-        big_neg: Bool = p_first
-            ? p_neg
-            : c_neg
-        small_neg: Bool = p_first
-            ? c_neg
-            : p_neg
-        aligned: U256 = shr_sticky(x: small, n: diff)
-        same: Bool = big_neg.eq(small_neg)
-        branch same
-            ? sum(big, aligned, e, big_neg)
-            : difference(big, aligned, e, big_neg)
-
-    block sum(a: U256, b: U256, e: S64, negative: Bool)
-        total: U256 = a.add(b)
-        jump round(total, e, negative)
-
-    // an exact zero is +0
-    block difference(a: U256, b: U256, e: S64, a_negative: Bool)
-        a_larger: Bool = a.ge(b)
-        m: U256 = a.abs_diff(b)
-        negative: Bool = a_larger
-            ? a_negative
-            : a_negative.bitnot()
-        jump round(m, e, negative)
+    p_inf: Bool = x_inf or y_inf
+    p_zero: Bool = x_zero or y_zero
+    values2: (U256, S64, Bool) = when
+        x_nan => return b128_quiet(x)
+        y_nan => return b128_quiet(y)
+        c_nan => return b128_quiet(c)
+        p_inf =>
+            // inf × 0 and inf - inf are NaN
+            clash: Bool = c_inf and c & B128_SIGN != sign
+            invalid: Bool = p_zero or clash
+            inf: U128 = sign | B128_INF
+            if invalid
+                return B128_QNAN
+            else
+                return inf
+        c_inf => return c
+        p_zero =>
+            // ±0 + c is c, except ±0 + ±0: -0 only when both are -0
+            both_neg: Bool = (sign != 0) & b128_is_negative_bits(c)
+            zero: U128 = when
+                both_neg => B128_SIGN
+                else => 0
+            if c_zero
+                return zero
+            else
+                return c
+        c_zero => return b128_mul_bits(a: x, b: y)
+        else =>
+            // P = mx my × 2^(ex + ey - 224) sits at bits ≤ 254 after << 29, and
+            // C = mc × 2^(ec - 112) at bits ≤ 254 after << 142. One bit of headroom stays for a carry.
+            px: B128Parts = b128_unpack(x)
+            py: B128Parts = b128_unpack(y)
+            pc: B128Parts = b128_unpack(c)
+            p: U256 = px.sig.mul_wide(py.sig) << 29
+            p_e: S64 = px.exponent + py.exponent - 253
+            cc: U256 = pc.sig.to[U256]() << 142
+            c_e: S64 = pc.exponent - 254
+            p_neg: Bool = sign != 0
+            c_neg: Bool = b128_is_negative_bits(c)
+            p_first: Bool = p_e >= c_e
+            big: U256 = when
+                p_first => p
+                else => cc
+            small: U256 = when
+                p_first => cc
+                else => p
+            e: S64 = when
+                p_first => p_e
+                else => c_e
+            diff: S64 = when
+                p_first => p_e - c_e
+                else => c_e - p_e
+            big_neg: Bool = when
+                p_first => p_neg
+                else => c_neg
+            small_neg: Bool = when
+                p_first => c_neg
+                else => p_neg
+            aligned: U256 = shr_sticky(x: small, n: diff)
+            if big_neg == small_neg
+                becomes (big + aligned, e, big_neg)
+            else
+                // an exact zero is +0
+                a_larger: Bool = big >= aligned
+                m: U256 = big.abs_diff(aligned)
+                negative: Bool = when
+                    a_larger => big_neg
+                    else => not big_neg
+                becomes (m, e, negative)
+    r, e, negative = values2
 
     // value = r × 2^e: bring the top bit to 255, then hand the high half (with
     // a sticky bit for the low one) to b128_round_pack
-    block round(r: U256, e: S64, negative: Bool)
-        zero: Bool = r.eq(0)
-        branch zero
-            ? return(0)
-            : continue
-        lz: S64 = r.leading_zeros().to[S64]()
-        n: U256 = r.shl(lz.to[U256]())
-        high: U128 = n.shr(128).to[U128]()
-        low_sticky: Bool = n.to_wrap[U128]().ne(0)
-        sig: U128 = high.bitor(low_sticky.to[U128]())
-        unbiased: S64 = e.sub(lz).add(128)
-        exponent: S64 = unbiased.add(B128_BIAS).add(115)
-        bits: U128 = b128_round_pack(negative, exponent, sig)
-        return(bits)
+    if r == 0
+        return 0
+    lz: S64 = r.leading_zeros().to[S64]()
+    n: U256 = r << lz.to[U256]()
+    high: U128 = (n >> 128).to[U128]()
+    low_sticky: Bool = n.to_wrap[U128]() != 0
+    sig: U128 = high | low_sticky.to[U128]()
+    unbiased: S64 = e - lz + 128
+    exponent: S64 = unbiased + B128_BIAS + 115
+    bits: U128 = b128_round_pack(negative, exponent, sig)
+    return bits
 
 // ============================================================
 // B64's surface, and IEEE operations on the encoding
@@ -1328,14 +1229,14 @@ preset B128_ONE: U128 = B128_BIAS.to[U128]().shl(112)
 /// :returns: The 64-bit hash of {B128.bits}.
 routine B128.hash(me: Me) -> U64
     r: U64 = me.bits().hash()
-    return(r)
+    return r
 
 /// The reciprocal `1 / me`, rounded once.
 /// :returns: `1 / me`: a signed infinity for a signed zero, a signed zero for an infinity, NaN for NaN.
 routine B128.recip(me: Me) -> Me
     one: Me = b128_of(B128_ONE)
-    r: Me = one.div(me)
-    return(r)
+    r: Me = one / me
+    return r
 
 // -- sign and classification ---------------------------------------------------
 
@@ -1344,31 +1245,28 @@ routine B128.recip(me: Me) -> Me
 routine B128.signum(me: Me) -> Me
     nan: Bool = me.is_nan()
     unit: Me = b128_of(B128_ONE).copysign(me)
-    r: Me = nan
-        ? me
-        : unit
-    return(r)
+    r: Me = when
+        nan => me
+        else => unit
+    return r
 
 /// Reads the sign bit, so it is true for +0.0 and for NaNs with the bit clear.
 /// :returns: Whether the sign bit is clear.
 routine B128.is_sign_positive(me: Me) -> Bool
-    r: Bool = b128_is_negative_bits(me.bits()).bitnot()
-    return(r)
+    return ~b128_is_negative_bits(me.bits())
 
 /// Whether `me` is a normal value: not zero, subnormal, infinite, or NaN.
 /// :returns: True when the exponent field is neither all zeros nor all ones.
 routine B128.is_normal(me: Me) -> Bool
     exponent: S64 = b128_exponent(me.bits())
-    r: Bool = exponent.ne(0).bitand(exponent.ne(B128_EXP_MAX))
-    return(r)
+    return exponent != 0 and exponent != B128_EXP_MAX
 
 /// Whether `me` is subnormal: a zero exponent field with a nonzero fraction, so its magnitude is below `B128.MIN_POSITIVE`.
 /// :returns: True for subnormals, false for zero, normal values, infinities and NaN.
 routine B128.is_subnormal(me: Me) -> Bool
     exponent: S64 = b128_exponent(me.bits())
     fraction: U128 = b128_fraction(me.bits())
-    r: Bool = exponent.eq(0).bitand(fraction.ne(0))
-    return(r)
+    return exponent == 0 and fraction != 0
 
 // -- remainders ----------------------------------------------------------------
 
@@ -1388,41 +1286,36 @@ routine b128_remainder_parts(a: U128, b: U128) -> B128Remainder
 
     pa: B128Parts = b128_unpack(a)
     pb: B128Parts = b128_unpack(b)
-    same_exp: Bool = pa.exponent.eq(pb.exponent)
-    a_smaller: Bool = pa.exponent.lt(pb.exponent).bitor(same_exp.bitand(pa.sig.lt(pb.sig)))
-    magnitude: B128 = b128_of(a.bitand(B128_SIGN.bitnot()))
+    same_exp: Bool = pa.exponent == pb.exponent
+    a_smaller: Bool = pa.exponent < pb.exponent or (same_exp and pa.sig < pb.sig)
+    magnitude: B128 = b128_of(a & B128_SIGN.bitnot())
     as_is: B128Remainder = B128Remainder(magnitude: magnitude, odd: false)
-    branch a_smaller
-        ? return(as_is)
-        : continue
+    if a_smaller
+        return as_is
     pa.sig.poke_into(x)
-    jump divide(pb.sig, pa.exponent.sub(pb.exponent), pb.exponent)
 
-    block divide(mb: U128, steps: S64, eb: S64)
-        done: Bool = steps.eq(0)
-        branch done
-            ? last(mb, eb)
-            : step(mb, steps, eb)
+    mb: U128 = pb.sig
 
-    block step(mb: U128, steps: S64, eb: S64)
-        fits: Bool = x.peek().ge(mb)
-        taken: U128 = fits
-            ? mb
-            : 0
-        left: U128 = x.peek().sub(taken)
-        left.shl(1).poke_into(x)
-        jump divide(mb, steps.sub(1), eb)
+    eb: S64 = pb.exponent
 
-    // x < 2 mb: one more subtraction gives the quotient's last bit. The rest is x × 2^(eb - 112)
-    block last(mb: U128, eb: S64)
-        odd: Bool = x.peek().ge(mb)
-        taken: U128 = odd
-            ? mb
-            : 0
-        rest: U128 = x.peek().sub(taken)
-        bits: U128 = b128_round_pack(negative: false, exponent: eb.add(B128_BIAS), sig: rest.shl(3))
+    while steps != 0 with steps: S64 = pa.exponent - pb.exponent
+        fits: Bool = x.peek() >= mb
+        taken: U128 = when
+            fits => mb
+            else => 0
+        left: U128 = x.peek() - taken
+        (left << 1).poke_into(x)
+        continue with steps: steps - 1
+    then
+        // x < 2 mb: one more subtraction gives the quotient's last bit. The rest is x × 2^(eb - 112)
+        odd: Bool = x.peek() >= mb
+        taken: U128 = when
+            odd => mb
+            else => 0
+        rest: U128 = x.peek() - taken
+        bits: U128 = b128_round_pack(negative: false, exponent: eb + B128_BIAS, sig: rest << 3)
         r: B128Remainder = B128Remainder(magnitude: b128_of(bits), odd: odd)
-        return(r)
+        return r
 
 /// The remainder of `me / other`, with the sign of `me` (C fmod, Rust's %). Exact.
 /// :param other: The divisor.
@@ -1433,19 +1326,16 @@ routine B128.mod(me: Me, other: Me) -> Me
     b: U128 = other.bits()
     a_nan: Bool = b128_is_nan_bits(a)
     b_nan: Bool = b128_is_nan_bits(b)
-    invalid: Bool = me.is_infinite().bitor(b128_is_zero_bits(b))
-    keep: Bool = other.is_infinite().bitor(b128_is_zero_bits(a))
+    invalid: Bool = me.is_infinite() | b128_is_zero_bits(b)
     when
-        a_nan => return(b128_of(b128_quiet(a)))
-        b_nan => return(b128_of(b128_quiet(b)))
-        invalid => return(Me.NAN)
-        keep => return(me)
-        else => finite()
-
-    block finite()
-        parts: B128Remainder = b128_remainder_parts(a: me.bits(), b: other.bits())
-        r: Me = parts.magnitude.copysign(me)
-        return(r)
+        a_nan => return b128_of(b128_quiet(a))
+        b_nan => return b128_of(b128_quiet(b))
+        invalid => return Me.NAN
+        other.is_infinite() | b128_is_zero_bits(a) => return me
+        else =>
+            parts: B128Remainder = b128_remainder_parts(a: me.bits(), b: other.bits())
+            r: Me = parts.magnitude.copysign(me)
+            return r
 
 /// IEEE 754 remainder: `me - n * other` with `n` = `me / other` rounded to the nearest integer, ties to even (C
 /// remainder). Exact, with |result| <= |other| / 2, and a zero result has the sign of `me`.
@@ -1457,118 +1347,111 @@ routine B128.rem(me: Me, other: Me) -> Me
     b: U128 = other.bits()
     a_nan: Bool = b128_is_nan_bits(a)
     b_nan: Bool = b128_is_nan_bits(b)
-    invalid: Bool = me.is_infinite().bitor(b128_is_zero_bits(b))
-    keep: Bool = other.is_infinite().bitor(b128_is_zero_bits(a))
+    invalid: Bool = me.is_infinite() | b128_is_zero_bits(b)
     when
-        a_nan => return(b128_of(b128_quiet(a)))
-        b_nan => return(b128_of(b128_quiet(b)))
-        invalid => return(Me.NAN)
-        keep => return(me)
-        else => finite()
-
-    // past half of |other|, or at half with an odd quotient, step down by |other|:
-    // r - |other| is exact, as |other| / 2 <= r < |other|
-    block finite()
-        parts: B128Remainder = b128_remainder_parts(a: me.bits(), b: other.bits())
-        r: Me = parts.magnitude
-        divisor: Me = other.abs()
-        twice: Me = r.add(r)
-        over: Bool = twice.gt(divisor)
-        tie: Bool = twice.eq(divisor).bitand(parts.odd)
-        nearest: Bool = over.bitor(tie)
-        down: Me = r.sub(divisor)
-        m: Me = nearest
-            ? down
-            : r
-        negative: Bool = b128_is_negative_bits(me.bits())
-        result: Me = negative
-            ? m.neg()
-            : m
-        return(result)
+        a_nan => return b128_of(b128_quiet(a))
+        b_nan => return b128_of(b128_quiet(b))
+        invalid => return Me.NAN
+        other.is_infinite() | b128_is_zero_bits(a) => return me
+        else =>
+            // past half of |other|, or at half with an odd quotient, step down by |other|:
+            // r - |other| is exact, as |other| / 2 <= r < |other|
+            parts: B128Remainder = b128_remainder_parts(a: me.bits(), b: other.bits())
+            r: Me = parts.magnitude
+            divisor: Me = other.abs()
+            twice: Me = r + r
+            over: Bool = twice > divisor
+            tie: Bool = (twice == divisor) & parts.odd
+            nearest: Bool = over or tie
+            down: Me = r - divisor
+            m: Me = when
+                nearest => down
+                else => r
+            negative: Bool = b128_is_negative_bits(me.bits())
+            result: Me = when
+                negative => -m
+                else => m
+            return result
 
 /// The quotient `q` of Euclidean division, so that `me = q * other + r` with `0 <= r < |other|`.
 /// :param other: The divisor.
 /// :returns: The truncated quotient, moved one step down (for a positive `other`) or up when the remainder is negative.
 routine B128.div_euclid(me: Me, other: Me) -> Me
-    local q: Me = me.div(other).trunc()
+    local q: Me = (me / other).trunc()
 
-    rem: Me = me.mod(other)
+    rem: Me = me % other
     zero: Me = b128_of(0)
-    rem_negative: Bool = rem.lt(zero)
-    branch rem_negative
-        ? adjust()
-        : return(q)
-
-    block adjust()
+    if rem < zero
         one: Me = b128_of(B128_ONE)
-        zero: Me = b128_of(0)
-        positive_divisor: Bool = other.gt(zero)
-        down: Me = q.sub(one)
-        up: Me = q.add(one)
-        r: Me = positive_divisor
-            ? down
-            : up
-        return(r)
+        zero2: Me = b128_of(0)
+        positive_divisor: Bool = other > zero2
+        down: Me = q - one
+        up: Me = q + one
+        r: Me = when
+            positive_divisor => down
+            else => up
+        return r
+    else
+        return q
 
 /// The least non-negative remainder of `me / other`.
 /// :param other: The divisor.
 /// :returns: The remainder, in `0 ..< |other|` for a finite `other`. When the exact remainder is a tiny negative value,
 ///     `|other|` plus it would round to `|other|`, so the largest value below `|other|` comes back instead.
 routine B128.mod_euclid(me: Me, other: Me) -> Me
-    rem: Me = me.mod(other)
+    rem: Me = me % other
     zero: Me = b128_of(0)
-    rem_negative: Bool = rem.lt(zero)
-    branch rem_negative
-        ? continue
-        : return(rem)
+    if not (rem < zero)
+        return rem
     magnitude: Me = other.abs()
-    r: Me = rem.add(magnitude)
-    whole: Bool = r.eq(magnitude).bitand(magnitude.is_finite())
+    r: Me = rem + magnitude
     // a tiny negative remainder plus |other| rounds up to |other|: the largest value below it is the nearest
     // one in range
-    branch whole
-        ? return(Me.from_bits(magnitude.bits().sub(1)))
-        : return(r)
+    if r == magnitude and magnitude.is_finite()
+        return Me.from_bits(magnitude.bits() - 1)
+    else
+        return r
 
 /// The positive difference (C fdim).
 /// :param other: The value to subtract.
 /// :returns: `me - other` when `me > other`, else +0. NaN when either is NaN.
 routine B128.fdim(me: Me, other: Me) -> Me
-    unordered: Bool = b128_ordered(a: me.bits(), b: other.bits()).bitnot()
-    above: Bool = me.gt(other)
-    subtract: Bool = unordered.bitor(above)
+    unordered: Bool = ~b128_ordered(a: me.bits(), b: other.bits())
+    above: Bool = me > other
+    subtract: Bool = unordered or above
     zero: Me = b128_of(0)
-    branch subtract
-        ? continue
-        : return(zero)
-    r: Me = me.sub(other)
-    return(r)
+    if not subtract
+        return zero
+    r: Me = me - other
+    return r
 
 /// (`me` + `other`) / 2 with one rounding and no intermediate overflow (Rust's midpoint): halving is exact except
 /// near the subnormals, where a tiny operand is added whole.
 /// :param other: The other end.
 /// :returns: The value halfway between `me` and `other`.
 routine B128.midpoint(me: Me, other: Me) -> Me
-    lo: Me = b128_of(0x00020000000000000000000000000000)  // 2 × MIN_POSITIVE
-    hi: Me = b128_of(0x7FFDFFFFFFFFFFFFFFFFFFFFFFFFFFFF)  // MAX / 2
+    lo: Me = b128_of(0x00020000000000000000000000000000)
+    // 2 × MIN_POSITIVE
+    hi: Me = b128_of(0x7FFDFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
+    // MAX / 2
     half: Me = b128_of(0x3FFE0000000000000000000000000000)
     abs_a: Me = me.abs()
     abs_b: Me = other.abs()
-    small: Bool = abs_a.le(hi).bitand(abs_b.le(hi))
-    a_tiny: Bool = abs_a.lt(lo)
-    b_tiny: Bool = abs_b.lt(lo)
-    sum: Me = me.add(other)
-    a_half: Me = me.mul(half)
-    b_half: Me = other.mul(half)
-    both: Me = sum.mul(half)
-    a_whole: Me = me.add(b_half)
-    b_whole: Me = a_half.add(other)
-    halves: Me = a_half.add(b_half)
+    small: Bool = abs_a <= hi and abs_b <= hi
+    a_tiny: Bool = abs_a < lo
+    b_tiny: Bool = abs_b < lo
+    sum: Me = me + other
+    a_half: Me = me * half
+    b_half: Me = other * half
+    both: Me = sum * half
+    a_whole: Me = me + b_half
+    b_whole: Me = a_half + other
+    halves: Me = a_half + b_half
     when
-        small => return(both)
-        a_tiny => return(a_whole)
-        b_tiny => return(b_whole)
-        else => return(halves)
+        small => return both
+        a_tiny => return a_whole
+        b_tiny => return b_whole
+        else => return halves
 
 // -- ordering ------------------------------------------------------------------
 
@@ -1580,12 +1463,11 @@ routine B128.minimum(me: Me, other: Me) -> Me
     b: U128 = other.bits()
     a_nan: Bool = b128_is_nan_bits(a)
     b_nan: Bool = b128_is_nan_bits(b)
-    a_first: Bool = b128_order_key(a).le(b128_order_key(b))
     when
-        a_nan => return(b128_of(b128_quiet(a)))
-        b_nan => return(b128_of(b128_quiet(b)))
-        a_first => return(me)
-        else => return(other)
+        a_nan => return b128_of(b128_quiet(a))
+        b_nan => return b128_of(b128_quiet(b))
+        b128_order_key(a) <= b128_order_key(b) => return me
+        else => return other
 
 /// The larger value, NaN if either is NaN, and +0.0 above -0.0 (IEEE 754-2019 maximum).
 /// :param other: The value to compare with.
@@ -1595,51 +1477,45 @@ routine B128.maximum(me: Me, other: Me) -> Me
     b: U128 = other.bits()
     a_nan: Bool = b128_is_nan_bits(a)
     b_nan: Bool = b128_is_nan_bits(b)
-    a_first: Bool = b128_order_key(a).ge(b128_order_key(b))
     when
-        a_nan => return(b128_of(b128_quiet(a)))
-        b_nan => return(b128_of(b128_quiet(b)))
-        a_first => return(me)
-        else => return(other)
+        a_nan => return b128_of(b128_quiet(a))
+        b_nan => return b128_of(b128_quiet(b))
+        b128_order_key(a) >= b128_order_key(b) => return me
+        else => return other
 
 /// Restricts `me` to `lo ..= hi`. NaN stays NaN.
 /// :param lo: The lower bound.
 /// :param hi: The upper bound.
 /// :returns: `lo` when `me < lo`, `hi` when `me > hi`, else `me`.
 /// :throws: Crashes with `InvalidValueError` unless `lo <= hi` (so also when either bound is NaN).
-#track_caller
+@track_caller
 routine B128.clamp(me: Me, lo: Me, hi: Me) -> Me
-    valid: Bool = lo.le(hi)
-    branch valid
-        ? clamp()
-        : crash_invalid_value()
-
-    block clamp()
-        below: Bool = me.lt(lo)
-        above: Bool = me.gt(hi)
-        upper: Me = above
-            ? hi
-            : me
-        r: Me = below
-            ? lo
-            : upper
-        return(r)
+    if lo <= hi
+        below: Bool = me < lo
+        above: Bool = me > hi
+        upper: Me = when
+            above => hi
+            else => me
+        r: Me = when
+            below => lo
+            else => upper
+        return r
+    else
+        crash_invalid_value()
 
 /// Whether `me` lies in [`lo`, `hi`], both ends included. False when `lo > hi` or any operand is NaN.
 /// :param lo: The lower bound, included.
 /// :param hi: The upper bound, included.
 /// :returns: `true` when `lo <= me <= hi`.
 routine B128.between(me: Me, lo: Me, hi: Me) -> Bool
-    r: Bool = me.ge(lo).bitand(me.le(hi))
-    return(r)
+    return me >= lo and me <= hi
 
 /// Whether `me` lies in [`lo`, `end`): `lo` included, `end` not. False when `lo >= end` or any operand is NaN.
 /// :param lo: The lower bound, included.
 /// :param end: The upper bound, excluded.
 /// :returns: `true` when `lo <= me < end`.
 routine B128.in_range(me: Me, lo: Me, end: Me) -> Bool
-    r: Bool = me.ge(lo).bitand(me.lt(end))
-    return(r)
+    return me >= lo and me < end
 
 // -- stepping and scaling ------------------------------------------------------
 
@@ -1654,23 +1530,23 @@ record B128Frexp
 routine B128.next_up(me: Me) -> Me
     bits: U128 = me.bits()
     nan: Bool = b128_is_nan_bits(bits)
-    top: Bool = bits.eq(B128_INF)
+    top: Bool = bits == B128_INF
     zero: Bool = b128_is_zero_bits(bits)
-    positive: Bool = b128_is_negative_bits(bits).bitnot()
+    positive: Bool = ~b128_is_negative_bits(bits)
     tiny: Me = b128_of(1)
     when
-        nan => return(b128_of(b128_quiet(bits)))
-        top => return(me)
-        zero => return(tiny)
-        positive => return(b128_of(bits.add(1)))
-        else => return(b128_of(bits.sub(1)))
+        nan => return b128_of(b128_quiet(bits))
+        top => return me
+        zero => return tiny
+        positive => return b128_of(bits + 1)
+        else => return b128_of(bits - 1)
 
 /// The greatest value below `me` (IEEE 754 nextDown), as `-(-me).next_up()`.
 /// :returns: The next value down: -inf stays -inf, and a NaN comes back quieted.
 routine B128.next_down(me: Me) -> Me
-    negated_up: Me = me.neg().next_up()
-    r: Me = negated_up.neg()
-    return(r)
+    negated_up: Me = (-me).next_up()
+    r: Me = -negated_up
+    return r
 
 /// `me` × 2^`n`: exact unless it overflows (to ±inf) or lands among the subnormals, where it rounds once, to nearest
 /// even (C scalbn).
@@ -1680,21 +1556,17 @@ routine B128.scalbn(me: Me, n: S64) -> Me
     local bits: U128 = me.bits()
 
     nan: Bool = b128_is_nan_bits(bits)
-    keep: Bool = b128_is_zero_bits(bits).bitor(me.is_infinite())
     when
-        nan => return(b128_of(b128_quiet(bits)))
-        keep => return(me)
-        else => finite()
-
-    // past ±40000 every finite value over- or underflows, and the sum can't wrap
-    block finite()
-        p: B128Parts = b128_unpack(bits)
-        shift: S64 = n.clamp(lo: -40000, hi: 40000)
-        negative: Bool = b128_is_negative_bits(bits)
-        packed: U128 = b128_round_pack(negative, exponent: p.exponent.add(shift).add(B128_BIAS),
-            sig: p.sig.shl(3))
-        r: Me = b128_of(packed)
-        return(r)
+        nan => return b128_of(b128_quiet(bits))
+        b128_is_zero_bits(bits) | me.is_infinite() => return me
+        else =>
+            // past ±40000 every finite value over- or underflows, and the sum can't wrap
+            p: B128Parts = b128_unpack(bits)
+            shift: S64 = n.clamp(lo: -40000, hi: 40000)
+            negative: Bool = b128_is_negative_bits(bits)
+            packed: U128 = b128_round_pack(negative, exponent: p.exponent + shift + B128_BIAS, sig: p.sig << 3)
+            r: Me = b128_of(packed)
+            return r
 
 /// floor(log2 |`me`|) as a float (IEEE 754 logB).
 /// :returns: The unbiased exponent: -inf for ±0, +inf for ±inf, and a NaN comes back quieted.
@@ -1702,17 +1574,14 @@ routine B128.logb(me: Me) -> Me
     bits: U128 = me.bits()
     nan: Bool = b128_is_nan_bits(bits)
     zero: Bool = b128_is_zero_bits(bits)
-    inf: Bool = me.is_infinite()
     when
-        nan => return(b128_of(b128_quiet(bits)))
-        zero => return(Me.NEG_INFINITY)
-        inf => return(Me.INFINITY)
-        else => finite()
-
-    block finite()
-        p: B128Parts = b128_unpack(me.bits())
-        r: Me = p.exponent.to[Me]()
-        return(r)
+        nan => return b128_of(b128_quiet(bits))
+        zero => return Me.NEG_INFINITY
+        me.is_infinite() => return Me.INFINITY
+        else =>
+            p: B128Parts = b128_unpack(me.bits())
+            r: Me = p.exponent.to[Me]()
+            return r
 
 /// Splits `me` into a signed fraction with 0.5 <= |fraction| < 1 and a power of two (C frexp).
 /// :returns: The fraction and exponent with `me` = fraction × 2^exponent. Zeros and infinities come back whole with
@@ -1720,19 +1589,17 @@ routine B128.logb(me: Me) -> Me
 routine B128.frexp(me: Me) -> B128Frexp
     bits: U128 = me.bits()
     nan: Bool = b128_is_nan_bits(bits)
-    keep: Bool = b128_is_zero_bits(bits).bitor(me.is_infinite())
+    keep: Bool = b128_is_zero_bits(bits) | me.is_infinite()
     quiet: B128Frexp = B128Frexp(fraction: b128_of(b128_quiet(bits)), exponent: 0)
     whole: B128Frexp = B128Frexp(fraction: me, exponent: 0)
     when
-        nan => return(quiet)
-        keep => return(whole)
-        else => finite()
-
-    block finite()
-        p: B128Parts = b128_unpack(me.bits())
-        e: S64 = p.exponent.add(1)
-        r: B128Frexp = B128Frexp(fraction: me.scalbn(0.sub(e)), exponent: e)
-        return(r)
+        nan => return quiet
+        keep => return whole
+        else =>
+            p: B128Parts = b128_unpack(me.bits())
+            e: S64 = p.exponent + 1
+            r: B128Frexp = B128Frexp(fraction: me.scalbn(0 - e), exponent: e)
+            return r
 
 // -- integer conversions ---------------------------------------------------------
 //
@@ -1745,8 +1612,8 @@ routine B128.frexp(me: Me) -> B128Frexp
 /// :returns: The power of two.
 routine b128_pow2(k: S64) -> B128
     biased: S64 = B128_BIAS.add(k)
-    r: B128 = b128_of(biased.to[U128]().shl(112))
-    return(r)
+    r: B128 = b128_of(biased.to[U128]() << 112)
+    return r
 
 /// Whether `me`, rounded toward zero, lies in [-2^`lo_bits`, 2^`hi_bits`). False for NaN.
 /// :param lo_bits: The power of two of the lower bound's magnitude. A negative value means a lower bound of 0.
@@ -1756,30 +1623,22 @@ routine B128.is_trunc_in_range(me: Me, lo_bits: S64, hi_bits: S64) -> Bool
     local whole: Me = me.trunc()
     local hi: Me = b128_pow2(hi_bits)
 
-    unsigned: Bool = lo_bits.lt(0)
-    branch unsigned
-        ? unsigned()
-        : signed()
-
-    block unsigned()
+    if lo_bits < 0
         zero: Me = b128_of(0)
-        r: Bool = whole.in_range(lo: zero, end: hi)
-        return(r)
-
-    block signed()
-        lo: Me = b128_pow2(lo_bits).neg()
-        r: Bool = whole.in_range(lo, end: hi)
-        return(r)
+        return whole.in_range(lo: zero, end: hi)
+    else
+        lo: Me = -b128_pow2(lo_bits)
+        return whole.in_range(lo, end: hi)
 
 /// Converts to U128, rounding toward zero and saturating at the ends of its range.
 /// :returns: The integer part of `me`, U128.MAX from 2^128 up, 0 for NaN and negative values.
 routine B128.to_clamp[U128](me: Me) -> U128
     negative: Bool = b128_is_negative_bits(me.bits())
     magnitude: U128 = b128_whole_magnitude(me.bits())
-    r: U128 = negative
-        ? 0
-        : magnitude
-    return(r)
+    r: U128 = when
+        negative => 0
+        else => magnitude
+    return r
 
 /// Converts to S128, rounding toward zero and saturating at the ends of its range.
 /// :returns: The integer part of `me`, clamped to S128.MIN ..= S128.MAX. NaN gives 0.
@@ -1787,33 +1646,26 @@ routine B128.to_clamp[S128](me: Me) -> S128
     local negative: Bool = b128_is_negative_bits(me.bits())
     local magnitude: U128 = b128_whole_magnitude(me.bits())
 
-    branch negative
-        ? negative()
-        : positive()
-
-    block negative()
-        over: Bool = magnitude.ge(0x80000000000000000000000000000000)
-        r: S128 = over
-            ? S128.MIN
-            : magnitude.to_wrap[S128]().neg_wrap()
-        return(r)
-
-    block positive()
+    if negative
+        over: Bool = magnitude >= 0x80000000000000000000000000000000
+        r: S128 = when
+            over => S128.MIN
+            else => magnitude.to_wrap[S128]().neg_wrap()
+        return r
+    else
         r: S128 = magnitude.to_clamp[S128]()
-        return(r)
+        return r
 
 /// Converts to S8, rounding toward zero.
 /// :returns: The integer part of `me`.
 /// :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-128, 127]. The crash reports the caller's location.
 /// :see: {B128.to_checked[S8]} to get an absent value instead, {B128.to_clamp[S8]} to saturate.
-#track_caller
+@track_caller
 routine B128.to[S8](me: Me) -> S8
-    fits: Bool = me.is_trunc_in_range(lo_bits: 7, hi_bits: 7)
-    branch fits
-        ? continue
-        : crash_overflow()
+    if not me.is_trunc_in_range(lo_bits: 7, hi_bits: 7)
+        crash_overflow()
     r: S8 = me.to_clamp[S8]()
-    return(r)
+    return r
 
 /// Converts to S8, rounding toward zero, without crashing.
 /// :returns: The integer part of `me` when it fits.
@@ -1823,27 +1675,25 @@ routine B128.to_checked[S8](me: Me) -> Maybe[S8]
     fits: Bool = me.is_trunc_in_range(lo_bits: 7, hi_bits: 7)
     value: S8 = me.to_clamp[S8]()
     r: Maybe[S8] = fits.then_present(value)
-    return(r)
+    return r
 
 /// Converts to S8, rounding toward zero and saturating at the ends of its range.
 /// :returns: The integer part of `me`, clamped to [-128, 127]. Infinities give the nearer end and NaN gives 0.
 /// :see: {B128.to_checked[S8]} to detect values that do not fit.
 routine B128.to_clamp[S8](me: Me) -> S8
     r: S8 = me.to_clamp[S128]().to_clamp[S8]()
-    return(r)
+    return r
 
 /// Converts to S16, rounding toward zero.
 /// :returns: The integer part of `me`.
 /// :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-32768, 32767]. The crash reports the caller's location.
 /// :see: {B128.to_checked[S16]} to get an absent value instead, {B128.to_clamp[S16]} to saturate.
-#track_caller
+@track_caller
 routine B128.to[S16](me: Me) -> S16
-    fits: Bool = me.is_trunc_in_range(lo_bits: 15, hi_bits: 15)
-    branch fits
-        ? continue
-        : crash_overflow()
+    if not me.is_trunc_in_range(lo_bits: 15, hi_bits: 15)
+        crash_overflow()
     r: S16 = me.to_clamp[S16]()
-    return(r)
+    return r
 
 /// Converts to S16, rounding toward zero, without crashing.
 /// :returns: The integer part of `me` when it fits.
@@ -1853,27 +1703,25 @@ routine B128.to_checked[S16](me: Me) -> Maybe[S16]
     fits: Bool = me.is_trunc_in_range(lo_bits: 15, hi_bits: 15)
     value: S16 = me.to_clamp[S16]()
     r: Maybe[S16] = fits.then_present(value)
-    return(r)
+    return r
 
 /// Converts to S16, rounding toward zero and saturating at the ends of its range.
 /// :returns: The integer part of `me`, clamped to [-32768, 32767]. Infinities give the nearer end and NaN gives 0.
 /// :see: {B128.to_checked[S16]} to detect values that do not fit.
 routine B128.to_clamp[S16](me: Me) -> S16
     r: S16 = me.to_clamp[S128]().to_clamp[S16]()
-    return(r)
+    return r
 
 /// Converts to S32, rounding toward zero.
 /// :returns: The integer part of `me`.
 /// :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-2^31, 2^31 - 1]. The crash reports the caller's location.
 /// :see: {B128.to_checked[S32]} to get an absent value instead, {B128.to_clamp[S32]} to saturate.
-#track_caller
+@track_caller
 routine B128.to[S32](me: Me) -> S32
-    fits: Bool = me.is_trunc_in_range(lo_bits: 31, hi_bits: 31)
-    branch fits
-        ? continue
-        : crash_overflow()
+    if not me.is_trunc_in_range(lo_bits: 31, hi_bits: 31)
+        crash_overflow()
     r: S32 = me.to_clamp[S32]()
-    return(r)
+    return r
 
 /// Converts to S32, rounding toward zero, without crashing.
 /// :returns: The integer part of `me` when it fits.
@@ -1883,27 +1731,25 @@ routine B128.to_checked[S32](me: Me) -> Maybe[S32]
     fits: Bool = me.is_trunc_in_range(lo_bits: 31, hi_bits: 31)
     value: S32 = me.to_clamp[S32]()
     r: Maybe[S32] = fits.then_present(value)
-    return(r)
+    return r
 
 /// Converts to S32, rounding toward zero and saturating at the ends of its range.
 /// :returns: The integer part of `me`, clamped to [-2^31, 2^31 - 1]. Infinities give the nearer end and NaN gives 0.
 /// :see: {B128.to_checked[S32]} to detect values that do not fit.
 routine B128.to_clamp[S32](me: Me) -> S32
     r: S32 = me.to_clamp[S128]().to_clamp[S32]()
-    return(r)
+    return r
 
 /// Converts to S64, rounding toward zero.
 /// :returns: The integer part of `me`.
 /// :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-2^63, 2^63 - 1]. The crash reports the caller's location.
 /// :see: {B128.to_checked[S64]} to get an absent value instead, {B128.to_clamp[S64]} to saturate.
-#track_caller
+@track_caller
 routine B128.to[S64](me: Me) -> S64
-    fits: Bool = me.is_trunc_in_range(lo_bits: 63, hi_bits: 63)
-    branch fits
-        ? continue
-        : crash_overflow()
+    if not me.is_trunc_in_range(lo_bits: 63, hi_bits: 63)
+        crash_overflow()
     r: S64 = me.to_clamp[S64]()
-    return(r)
+    return r
 
 /// Converts to S64, rounding toward zero, without crashing.
 /// :returns: The integer part of `me` when it fits.
@@ -1913,27 +1759,25 @@ routine B128.to_checked[S64](me: Me) -> Maybe[S64]
     fits: Bool = me.is_trunc_in_range(lo_bits: 63, hi_bits: 63)
     value: S64 = me.to_clamp[S64]()
     r: Maybe[S64] = fits.then_present(value)
-    return(r)
+    return r
 
 /// Converts to S64, rounding toward zero and saturating at the ends of its range.
 /// :returns: The integer part of `me`, clamped to [-2^63, 2^63 - 1]. Infinities give the nearer end and NaN gives 0.
 /// :see: {B128.to_checked[S64]} to detect values that do not fit.
 routine B128.to_clamp[S64](me: Me) -> S64
     r: S64 = me.to_clamp[S128]().to_clamp[S64]()
-    return(r)
+    return r
 
 /// Converts to S128, rounding toward zero.
 /// :returns: The integer part of `me`.
 /// :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-2^127, 2^127 - 1]. The crash reports the caller's location.
 /// :see: {B128.to_checked[S128]} to get an absent value instead, {B128.to_clamp[S128]} to saturate.
-#track_caller
+@track_caller
 routine B128.to[S128](me: Me) -> S128
-    fits: Bool = me.is_trunc_in_range(lo_bits: 127, hi_bits: 127)
-    branch fits
-        ? continue
-        : crash_overflow()
+    if not me.is_trunc_in_range(lo_bits: 127, hi_bits: 127)
+        crash_overflow()
     r: S128 = me.to_clamp[S128]()
-    return(r)
+    return r
 
 /// Converts to S128, rounding toward zero, without crashing.
 /// :returns: The integer part of `me` when it fits.
@@ -1943,20 +1787,18 @@ routine B128.to_checked[S128](me: Me) -> Maybe[S128]
     fits: Bool = me.is_trunc_in_range(lo_bits: 127, hi_bits: 127)
     value: S128 = me.to_clamp[S128]()
     r: Maybe[S128] = fits.then_present(value)
-    return(r)
+    return r
 
 /// Converts to U8, rounding toward zero.
 /// :returns: The integer part of `me`.
 /// :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 255]. The crash reports the caller's location.
 /// :see: {B128.to_checked[U8]} to get an absent value instead, {B128.to_clamp[U8]} to saturate.
-#track_caller
+@track_caller
 routine B128.to[U8](me: Me) -> U8
-    fits: Bool = me.is_trunc_in_range(lo_bits: -1, hi_bits: 8)
-    branch fits
-        ? continue
-        : crash_overflow()
+    if not me.is_trunc_in_range(lo_bits: -1, hi_bits: 8)
+        crash_overflow()
     r: U8 = me.to_clamp[U8]()
-    return(r)
+    return r
 
 /// Converts to U8, rounding toward zero, without crashing.
 /// :returns: The integer part of `me` when it fits.
@@ -1966,27 +1808,25 @@ routine B128.to_checked[U8](me: Me) -> Maybe[U8]
     fits: Bool = me.is_trunc_in_range(lo_bits: -1, hi_bits: 8)
     value: U8 = me.to_clamp[U8]()
     r: Maybe[U8] = fits.then_present(value)
-    return(r)
+    return r
 
 /// Converts to U8, rounding toward zero and saturating at the ends of its range.
 /// :returns: The integer part of `me`, clamped to [0, 255]. Infinities give the nearer end and NaN gives 0.
 /// :see: {B128.to_checked[U8]} to detect values that do not fit.
 routine B128.to_clamp[U8](me: Me) -> U8
     r: U8 = me.to_clamp[U128]().to_clamp[U8]()
-    return(r)
+    return r
 
 /// Converts to U16, rounding toward zero.
 /// :returns: The integer part of `me`.
 /// :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 65535]. The crash reports the caller's location.
 /// :see: {B128.to_checked[U16]} to get an absent value instead, {B128.to_clamp[U16]} to saturate.
-#track_caller
+@track_caller
 routine B128.to[U16](me: Me) -> U16
-    fits: Bool = me.is_trunc_in_range(lo_bits: -1, hi_bits: 16)
-    branch fits
-        ? continue
-        : crash_overflow()
+    if not me.is_trunc_in_range(lo_bits: -1, hi_bits: 16)
+        crash_overflow()
     r: U16 = me.to_clamp[U16]()
-    return(r)
+    return r
 
 /// Converts to U16, rounding toward zero, without crashing.
 /// :returns: The integer part of `me` when it fits.
@@ -1996,27 +1836,25 @@ routine B128.to_checked[U16](me: Me) -> Maybe[U16]
     fits: Bool = me.is_trunc_in_range(lo_bits: -1, hi_bits: 16)
     value: U16 = me.to_clamp[U16]()
     r: Maybe[U16] = fits.then_present(value)
-    return(r)
+    return r
 
 /// Converts to U16, rounding toward zero and saturating at the ends of its range.
 /// :returns: The integer part of `me`, clamped to [0, 65535]. Infinities give the nearer end and NaN gives 0.
 /// :see: {B128.to_checked[U16]} to detect values that do not fit.
 routine B128.to_clamp[U16](me: Me) -> U16
     r: U16 = me.to_clamp[U128]().to_clamp[U16]()
-    return(r)
+    return r
 
 /// Converts to U32, rounding toward zero.
 /// :returns: The integer part of `me`.
 /// :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 2^32 - 1]. The crash reports the caller's location.
 /// :see: {B128.to_checked[U32]} to get an absent value instead, {B128.to_clamp[U32]} to saturate.
-#track_caller
+@track_caller
 routine B128.to[U32](me: Me) -> U32
-    fits: Bool = me.is_trunc_in_range(lo_bits: -1, hi_bits: 32)
-    branch fits
-        ? continue
-        : crash_overflow()
+    if not me.is_trunc_in_range(lo_bits: -1, hi_bits: 32)
+        crash_overflow()
     r: U32 = me.to_clamp[U32]()
-    return(r)
+    return r
 
 /// Converts to U32, rounding toward zero, without crashing.
 /// :returns: The integer part of `me` when it fits.
@@ -2026,27 +1864,25 @@ routine B128.to_checked[U32](me: Me) -> Maybe[U32]
     fits: Bool = me.is_trunc_in_range(lo_bits: -1, hi_bits: 32)
     value: U32 = me.to_clamp[U32]()
     r: Maybe[U32] = fits.then_present(value)
-    return(r)
+    return r
 
 /// Converts to U32, rounding toward zero and saturating at the ends of its range.
 /// :returns: The integer part of `me`, clamped to [0, 2^32 - 1]. Infinities give the nearer end and NaN gives 0.
 /// :see: {B128.to_checked[U32]} to detect values that do not fit.
 routine B128.to_clamp[U32](me: Me) -> U32
     r: U32 = me.to_clamp[U128]().to_clamp[U32]()
-    return(r)
+    return r
 
 /// Converts to U64, rounding toward zero.
 /// :returns: The integer part of `me`.
 /// :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 2^64 - 1]. The crash reports the caller's location.
 /// :see: {B128.to_checked[U64]} to get an absent value instead, {B128.to_clamp[U64]} to saturate.
-#track_caller
+@track_caller
 routine B128.to[U64](me: Me) -> U64
-    fits: Bool = me.is_trunc_in_range(lo_bits: -1, hi_bits: 64)
-    branch fits
-        ? continue
-        : crash_overflow()
+    if not me.is_trunc_in_range(lo_bits: -1, hi_bits: 64)
+        crash_overflow()
     r: U64 = me.to_clamp[U64]()
-    return(r)
+    return r
 
 /// Converts to U64, rounding toward zero, without crashing.
 /// :returns: The integer part of `me` when it fits.
@@ -2056,27 +1892,25 @@ routine B128.to_checked[U64](me: Me) -> Maybe[U64]
     fits: Bool = me.is_trunc_in_range(lo_bits: -1, hi_bits: 64)
     value: U64 = me.to_clamp[U64]()
     r: Maybe[U64] = fits.then_present(value)
-    return(r)
+    return r
 
 /// Converts to U64, rounding toward zero and saturating at the ends of its range.
 /// :returns: The integer part of `me`, clamped to [0, 2^64 - 1]. Infinities give the nearer end and NaN gives 0.
 /// :see: {B128.to_checked[U64]} to detect values that do not fit.
 routine B128.to_clamp[U64](me: Me) -> U64
     r: U64 = me.to_clamp[U128]().to_clamp[U64]()
-    return(r)
+    return r
 
 /// Converts to U128, rounding toward zero.
 /// :returns: The integer part of `me`.
 /// :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 2^128 - 1]. The crash reports the caller's location.
 /// :see: {B128.to_checked[U128]} to get an absent value instead, {B128.to_clamp[U128]} to saturate.
-#track_caller
+@track_caller
 routine B128.to[U128](me: Me) -> U128
-    fits: Bool = me.is_trunc_in_range(lo_bits: -1, hi_bits: 128)
-    branch fits
-        ? continue
-        : crash_overflow()
+    if not me.is_trunc_in_range(lo_bits: -1, hi_bits: 128)
+        crash_overflow()
     r: U128 = me.to_clamp[U128]()
-    return(r)
+    return r
 
 /// Converts to U128, rounding toward zero, without crashing.
 /// :returns: The integer part of `me` when it fits.
@@ -2086,4 +1920,4 @@ routine B128.to_checked[U128](me: Me) -> Maybe[U128]
     fits: Bool = me.is_trunc_in_range(lo_bits: -1, hi_bits: 128)
     value: U128 = me.to_clamp[U128]()
     r: Maybe[U128] = fits.then_present(value)
-    return(r)
+    return r

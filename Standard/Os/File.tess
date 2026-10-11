@@ -19,13 +19,13 @@ import Standard/Alloc
 
 /// A file, by its path. `destruct()` drops the path's memory when the File made it.
 record File
-conform Destructible[File]
+obeys Destructible[File]
     path: Span[Byte]
     storage: Memory[Byte]  // the path's memory when it was made from an allocator, hollow when it is borrowed
 
 /// A directory, by its path. `destruct()` drops the path's memory when the Directory made it.
 record Directory
-conform Destructible[Directory]
+obeys Destructible[Directory]
     path: Span[Byte]
     storage: Memory[Byte]  // the path's memory when it was made from an allocator, hollow when it is borrowed
 
@@ -33,25 +33,25 @@ conform Destructible[Directory]
 /// :param path: The path.
 /// :returns: The new value.
 routine File.construct(path: Span[Byte]) -> Me
-    return(Me(path, storage: .hollow()))
+    return Me(path, storage: .hollow())
 
 /// A `File` that takes over the memory of its path, dropped by `destruct()`.
 /// :param path: The path's memory.
 /// :returns: The new value.
 routine File.construct(path: Memory[Byte]) -> Me
-    return(Me(path: path.getview(), storage: path))
+    return Me(path: path.getview(), storage: path)
 
 /// A `Directory` over a borrowed path, which must outlive it.
 /// :param path: The path.
 /// :returns: The new value.
 routine Directory.construct(path: Span[Byte]) -> Me
-    return(Me(path, storage: .hollow()))
+    return Me(path, storage: .hollow())
 
 /// A `Directory` that takes over the memory of its path, dropped by `destruct()`.
 /// :param path: The path's memory.
 /// :returns: The new value.
 routine Directory.construct(path: Memory[Byte]) -> Me
-    return(Me(path: path.getview(), storage: path))
+    return Me(path: path.getview(), storage: path)
 
 // -- File --------------------------------------------------------------------------------
 
@@ -60,137 +60,136 @@ routine Directory.construct(path: Memory[Byte]) -> Me
 /// :param path: The path of the file, as UTF-8 bytes.
 /// :returns: A {File} holding `path`.
 routine File.at(path: Span[Byte]) -> Me
-    return(Me.construct(path))
+    return Me.construct(path)
 
 /// Gives the path back to the allocator it came from (a path made by `Directory.file`, `absolute`, `canonical`, ...)
 /// and leaves the path empty. Does nothing when the path is borrowed (a literal, or text someone else gives back).
-#track_caller
+@track_caller
 routine File.destruct(me: @Me) -> Void
-    branch me.storage.data.peek().is_null()
-        ? return()
-        : continue
+    if me.storage.data.peek().is_null()
+        return
     me.storage.drop()
     me.path.poke(.hollow())
-    return()
+    return
 
 /// Whether something is at the path (a link counts as what it points at).
 /// :returns: True when something is at the path.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine File.is_present(me: Me) -> Bool
-    return(is_present(me.path))
+    return is_present(me.path)
 
 /// Whether a file is at the path, not a directory or anything else.
 /// :returns: True when a file is at the path.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine File.is_file(me: Me) -> Bool
-    return(is_kind(path: me.path, kind: FileKind.FILE))
+    return is_kind(path: me.path, kind: FileKind.FILE)
 
 /// The metadata, a link followed to what it points at.
 /// :returns: The {Metadata}, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine File.metadata_result(me: Me) -> Result[Metadata, FsError]
-    return(metadata(me.path))
+    return metadata(me.path)
 
 /// The metadata of a link itself (kind Symlink), or of what isn't one.
 /// :returns: The {Metadata}, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine File.link_metadata_result(me: Me) -> Result[Metadata, FsError]
-    return(symlink_metadata(me.path))
+    return symlink_metadata(me.path)
 
 /// Opens an existing file for reading.
 /// :returns: The open {FileHandle}, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine File.open_read_result(me: Me) -> Result[FileHandle, FsError]
-    return(FileHandle.open(path: me.path, mode: OpenMode.READ))
+    return FileHandle.open(path: me.path, mode: OpenMode.READ)
 
 /// Opens the file for writing, made if missing and emptied if not.
 /// :returns: The open {FileHandle}, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine File.open_write_result(me: Me) -> Result[FileHandle, FsError]
-    return(FileHandle.open(path: me.path, mode: OpenMode.WRITE))
+    return FileHandle.open(path: me.path, mode: OpenMode.WRITE)
 
 /// Opens the file for writing at its end, made if missing.
 /// :returns: The open {FileHandle}, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine File.open_append_result(me: Me) -> Result[FileHandle, FsError]
-    return(FileHandle.open(path: me.path, mode: OpenMode.APPEND))
+    return FileHandle.open(path: me.path, mode: OpenMode.APPEND)
 
 /// Opens an existing file for reading and writing.
 /// :returns: The open {FileHandle}, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine File.open_read_write_result(me: Me) -> Result[FileHandle, FsError]
-    return(FileHandle.open(path: me.path, mode: OpenMode.READ_WRITE))
+    return FileHandle.open(path: me.path, mode: OpenMode.READ_WRITE)
 
 /// Makes the file and opens it for writing: AlreadyExists if something is at the path.
 /// :returns: The open {FileHandle}, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine File.create_new_result(me: Me) -> Result[FileHandle, FsError]
-    return(FileHandle.open(path: me.path, mode: OpenMode.CREATE_NEW))
+    return FileHandle.open(path: me.path, mode: OpenMode.CREATE_NEW)
 
 /// The whole file, in memory from alloc (drop it).
 /// :param alloc: The allocator for the bytes.
 /// :returns: The file's bytes, or the {FsError} the OS reported, `OutOfMemory` when
 ///     `alloc` fails or the file is too large for the address space (4 GiB or more on a 32-bit target).
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine File.read_all_result(me: Me, alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
-    return(read_file(path: me.path, alloc))
+    return read_file(path: me.path, alloc)
 
 /// Writes data as the whole file: made if missing, replaced if not.
 /// :param data: The bytes to write.
 /// :returns: A value, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine File.write_all_result(me: Me, data: Span[Byte]) -> Result[Unit, FsError]
-    return(write_file(path: me.path, data))
+    return write_file(path: me.path, data)
 
 /// Copies the bytes (and on Linux and macOS the permissions) to destination, made or replaced: the bytes copied. On
 /// Linux and macOS a copy that fails once destination is opened removes it, so no partial file is left.
 /// :param destination: The file to copy to.
 /// :returns: The number of bytes copied, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine File.copy_to_result(me: Me, destination: Me) -> Result[U64, FsError]
-    return(copy_file(from: me.path, to: destination.path))
+    return copy_file(from: me.path, to: destination.path)
 
 /// Moves (renames) the file to destination, replacing what is there. Between filesystems it fails with
 /// CrossDevice: copy and delete instead.
 /// :param destination: The file's new path.
 /// :returns: A value, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine File.move_to_result(me: Me, destination: Me) -> Result[Unit, FsError]
-    return(rename(from: me.path, to: destination.path))
+    return rename(from: me.path, to: destination.path)
 
 /// Moves the file to destination, failing with AlreadyExists if something is there.
 /// :param destination: The file's new path.
 /// :returns: A value, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine File.move_to_if_absent_result(me: Me, destination: Me) -> Result[Unit, FsError]
-    return(rename_no_replace(from: me.path, to: destination.path))
+    return rename_no_replace(from: me.path, to: destination.path)
 
 /// Deletes the file (or a link, not what it points at).
 /// :returns: A value, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine File.delete_result(me: Me) -> Result[Unit, FsError]
-    return(remove_file(me.path))
+    return remove_file(me.path)
 
 /// Makes the file if it's missing, and sets its access and modification times to now.
 /// :returns: A value, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine File.touch_result(me: Me) -> Result[Unit, FsError]
-    return(touch(me.path))
+    return touch(me.path)
 
 /// Sets or clears the file's read-only state. On Linux and macOS read-only takes every write permission away and
 /// writable gives the owner's back. On Windows it sets or clears the read-only attribute.
 /// :param readonly: `true` to make the file read-only, `false` to make it writable.
 /// :returns: Success, or the {FsError} the OS reported (for example NotFound).
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine File.set_readonly_result(me: Me, readonly: Bool) -> Result[Unit, FsError]
-    return(set_readonly(path: me.path, readonly))
+    return set_readonly(path: me.path, readonly)
 
 /// Whether this process may read, write, or run the file.
 /// :param access: The kind of access to test for.
 /// :returns: `true` when the OS allows it, `false` when it refuses or the path can't be examined.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine File.is_accessible(me: Me, access: Access) -> Bool
-    return(is_accessible(path: me.path, access))
+    return is_accessible(path: me.path, access)
 
 /// Maps count bytes from offset (USize.MAX: to the end) into memory, clamped to the file. Past the end, or an empty
 /// file, gives an empty mapping. write maps it so stores reach the file. Otherwise it's read-only.
@@ -198,52 +197,52 @@ routine File.is_accessible(me: Me, access: Access) -> Bool
 /// :param offset: The byte offset in the file to map from.
 /// :param count: The number of bytes to map, or `USize.MAX` for the rest of the file.
 /// :returns: The {Mapping}, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine File.map_result(me: Me, write: Bool, offset: U64, count: USize) -> Result[Mapping, FsError]
-    return(Mapping.map(path: me.path, write, offset, count))
+    return Mapping.map(path: me.path, write, offset, count)
 
 /// The last part of the path: "/a/b/file.txt" gives "file.txt".
 /// :returns: The last part of the path, a view into it.
 routine File.name(me: Me) -> Span[Byte]
-    return(file_name(me.path))
+    return file_name(me.path)
 
 /// The name without its extension: "archive.tar.gz" gives "archive.tar".
 /// :returns: The name without its extension, a view into the path.
 routine File.stem(me: Me) -> Span[Byte]
-    return(file_stem(me.path))
+    return file_stem(me.path)
 
 /// The extension without its dot: "file.txt" gives "txt", "file" gives "".
 /// :returns: The extension, a view into the path, or empty.
 routine File.extension(me: Me) -> Span[Byte]
-    return(file_extension(me.path))
+    return file_extension(me.path)
 
 /// The directory the path names the file in (by the text: nothing is looked up).
 /// :returns: A {Directory} over the leading part of the path.
 routine File.parent(me: Me) -> Directory
-    return(Directory.construct(path: parent_path(me.path)))
+    return Directory.construct(path: parent_path(me.path))
 
 /// The path made absolute by the text: the working directory in front of a relative one (on Windows "." and ".."
 /// taken out too), nothing looked up. The new path is in memory from alloc: give it back with
 /// `file.destruct()`.
 /// :param alloc: The allocator for the new path.
 /// :returns: The absolute {File}, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine File.absolute_result(me: Me, alloc: @MemoryManager) -> Result[Me, FsError]
     r: Result[Memory[Byte], FsError] = absolute_path(path: me.path, alloc)
     when r
-        is Memory[Byte] as p => return(Me.construct(path: p))
-        is FsError as error => return(error)
+        is Memory[Byte] as p => return Me.construct(path: p)
+        is FsError as error => return error
 
 /// The absolute path with every link, ".", and ".." resolved. The file must exist. In memory from alloc: give it back
 /// with `file.destruct()`.
 /// :param alloc: The allocator for the new path.
 /// :returns: The canonical {File}, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine File.canonical_result(me: Me, alloc: @MemoryManager) -> Result[Me, FsError]
     r: Result[Memory[Byte], FsError] = canonical_path(path: me.path, alloc)
     when r
-        is Memory[Byte] as p => return(Me.construct(path: p))
-        is FsError as error => return(error)
+        is Memory[Byte] as p => return Me.construct(path: p)
+        is FsError as error => return error
 
 // -- Directory ---------------------------------------------------------------------------
 
@@ -252,104 +251,103 @@ routine File.canonical_result(me: Me, alloc: @MemoryManager) -> Result[Me, FsErr
 /// :param path: The path of the directory, as UTF-8 bytes.
 /// :returns: A {Directory} holding `path`.
 routine Directory.at(path: Span[Byte]) -> Me
-    return(Me.construct(path))
+    return Me.construct(path)
 
 /// Gives the path back to the allocator it came from (a path made by `subdir`, `current`, `temp`, ...) and leaves the
 /// path empty. Does nothing when the path is borrowed (a literal, or text someone else gives back).
-#track_caller
+@track_caller
 routine Directory.destruct(me: @Me) -> Void
-    branch me.storage.data.peek().is_null()
-        ? return()
-        : continue
+    if me.storage.data.peek().is_null()
+        return
     me.storage.drop()
     me.path.poke(.hollow())
-    return()
+    return
 
 /// Whether a directory is at the path (a link counts as what it points at).
 /// :returns: True when a directory is at the path.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine Directory.is_present(me: Me) -> Bool
-    return(is_kind(path: me.path, kind: FileKind.DIRECTORY))
+    return is_kind(path: me.path, kind: FileKind.DIRECTORY)
 
 /// The metadata of the directory, a link followed to what it points at.
 /// :returns: The {Metadata}, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine Directory.metadata_result(me: Me) -> Result[Metadata, FsError]
-    return(metadata(me.path))
+    return metadata(me.path)
 
 /// Makes the directory. Its parent must exist.
 /// :returns: A value, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine Directory.create_result(me: Me) -> Result[Unit, FsError]
-    return(create_dir(me.path))
+    return create_dir(me.path)
 
 /// Makes the directory and every missing one on the way, like mkdir -p. One already there is fine.
 /// :returns: A value, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine Directory.create_all_result(me: Me) -> Result[Unit, FsError]
-    return(create_dir_all(me.path))
+    return create_dir_all(me.path)
 
 /// Deletes the directory, which must be empty.
 /// :returns: A value, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine Directory.delete_result(me: Me) -> Result[Unit, FsError]
-    return(remove_dir(me.path))
+    return remove_dir(me.path)
 
 /// Deletes the directory and everything in it. A link inside is deleted, not followed. Child paths are built in
 /// memory from alloc.
 /// :param alloc: The allocator for the child paths.
 /// :returns: A value, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine Directory.delete_all_result(me: Me, alloc: @MemoryManager) -> Result[Unit, FsError]
-    return(remove_dir_all(path: me.path, alloc))
+    return remove_dir_all(path: me.path, alloc)
 
 /// Moves (renames) the directory to destination. Between filesystems it fails with CrossDevice.
 /// :param destination: The directory's new path.
 /// :returns: A value, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine Directory.move_to_result(me: Me, destination: Me) -> Result[Unit, FsError]
-    return(rename(from: me.path, to: destination.path))
+    return rename(from: me.path, to: destination.path)
 
 /// Moves the directory to destination, failing with AlreadyExists if something is there.
 /// :param destination: The directory's new path.
 /// :returns: A value, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine Directory.move_to_if_absent_result(me: Me, destination: Me) -> Result[Unit, FsError]
-    return(rename_no_replace(from: me.path, to: destination.path))
+    return rename_no_replace(from: me.path, to: destination.path)
 
 /// Sets or clears the directory's read-only state, as {File.set_readonly_result} does for a file.
 /// :param readonly: `true` to make the directory read-only, `false` to make it writable.
 /// :returns: Success, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine Directory.set_readonly_result(me: Me, readonly: Bool) -> Result[Unit, FsError]
-    return(set_readonly(path: me.path, readonly))
+    return set_readonly(path: me.path, readonly)
 
 /// Whether this process may read, write, or enter the directory.
 /// :param access: The kind of access to test for.
 /// :returns: `true` when the OS allows it, `false` when it refuses or the path can't be examined.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine Directory.is_accessible(me: Me, access: Access) -> Bool
-    return(is_accessible(path: me.path, access))
+    return is_accessible(path: me.path, access)
 
 /// The last part of the path: "/a/b/" gives "b".
 /// :returns: The last part of the path, a view into it.
 routine Directory.name(me: Me) -> Span[Byte]
-    return(file_name(me.path))
+    return file_name(me.path)
 
 /// The directory this one is in, by the text of the path: nothing is looked up, and no memory is allocated.
 /// :returns: A {Directory} over the leading part of the path.
 routine Directory.parent(me: Me) -> Me
-    return(Me.construct(path: parent_path(me.path)))
+    return Me.construct(path: parent_path(me.path))
 
 /// The file name in this directory, its path in memory from alloc (`file.destruct()` drops it).
 /// :param name: The file's name.
 /// :param alloc: The allocator for the new path.
 /// :returns: The {File}.
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
-#track_caller
-#expensive("allocates the joined path")
+@track_caller
+@expensive("allocates the joined path")
 routine Directory.file(me: Me, name: Span[Byte], alloc: @MemoryManager) -> File
-    return(File.construct(path: join_path(a: me.path, b: name, alloc)))
+    return File.construct(path: join_path(a: me.path, b: name, alloc))
 
 /// The directory name in this directory, its path in memory from alloc (`dir.destruct()` gives it
 /// back).
@@ -357,73 +355,73 @@ routine Directory.file(me: Me, name: Span[Byte], alloc: @MemoryManager) -> File
 /// :param alloc: The allocator for the new path.
 /// :returns: The {Directory}.
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
-#track_caller
-#expensive("allocates the joined path")
+@track_caller
+@expensive("allocates the joined path")
 routine Directory.subdir(me: Me, name: Span[Byte], alloc: @MemoryManager) -> Me
-    return(Me.construct(path: join_path(a: me.path, b: name, alloc)))
+    return Me.construct(path: join_path(a: me.path, b: name, alloc))
 
 /// The path made absolute by its text: the working directory in front of a relative one, nothing else looked up. The
 /// new path is in memory from `alloc`. Give it back with `dir.destruct()`.
 /// :param alloc: The allocator for the new path.
 /// :returns: The absolute {Directory}, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine Directory.absolute_result(me: Me, alloc: @MemoryManager) -> Result[Me, FsError]
     r: Result[Memory[Byte], FsError] = absolute_path(path: me.path, alloc)
     when r
-        is Memory[Byte] as p => return(Me.construct(path: p))
-        is FsError as error => return(error)
+        is Memory[Byte] as p => return Me.construct(path: p)
+        is FsError as error => return error
 
 /// The absolute path with every link, `.`, and `..` resolved. The directory must exist, and the new path is in memory
 /// from `alloc`. Give it back with `dir.destruct()`.
 /// :param alloc: The allocator for the new path.
 /// :returns: The canonical {Directory}, or the {FsError} the OS reported (NotFound when it is missing).
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine Directory.canonical_result(me: Me, alloc: @MemoryManager) -> Result[Me, FsError]
     r: Result[Memory[Byte], FsError] = canonical_path(path: me.path, alloc)
     when r
-        is Memory[Byte] as p => return(Me.construct(path: p))
-        is FsError as error => return(error)
+        is Memory[Byte] as p => return Me.construct(path: p)
+        is FsError as error => return error
 
 /// The working directory, its path in memory from alloc (`dir.destruct()` drops it).
 /// :param alloc: The allocator for the new path.
 /// :returns: The working {Directory}, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine Directory.current_result(alloc: @MemoryManager) -> Result[Me, FsError]
-    return(directory_of(current_dir(alloc)))
+    return directory_of(current_dir(alloc))
 
 /// Makes this the working directory.
 /// :returns: A value, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine Directory.set_current_result(me: Me) -> Result[Unit, FsError]
-    return(set_current_dir(me.path))
+    return set_current_dir(me.path)
 
 /// The temporary directory (TMPDIR or /tmp, on Windows GetTempPathW's), its path in memory from alloc
 /// (`dir.destruct()` drops it).
 /// :param alloc: The allocator for the new path.
 /// :returns: The temporary {Directory}, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine Directory.temp_result(alloc: @MemoryManager) -> Result[Me, FsError]
-    return(directory_of(temp_dir(alloc)))
+    return directory_of(temp_dir(alloc))
 
 /// The user's home directory (HOME, on Windows USERPROFILE), its path in memory from alloc. NotFound when it can't
 /// be told.
 /// :param alloc: The allocator for the new path.
 /// :returns: The home {Directory}, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine Directory.home_result(alloc: @MemoryManager) -> Result[Me, FsError]
-    return(directory_of(home_dir(alloc)))
+    return directory_of(home_dir(alloc))
 
 /// Wraps the path of a successful result as a {Directory}, passing a failure through unchanged.
 /// :param r: A path result from one of the well-known-directory routines.
 /// :returns: The same outcome, with the path as a {Directory}.
 private routine directory_of(r: Result[Memory[Byte], FsError]) -> Result[Directory, FsError]
     when r
-        is Memory[Byte] as p => return(Directory.construct(path: p))
-        is FsError as error => return(error)
+        is Memory[Byte] as p => return Directory.construct(path: p)
+        is FsError as error => return error
 
 /// Starts listing dir's entries.
 /// :param dir: The directory to list.
 /// :returns: A value, or the {FsError} the OS reported.
-#expensive("asks the operating system")
+@expensive("asks the operating system")
 routine DirIter.open_result(me: @Me, dir: Directory) -> Result[Unit, FsError]
-    return(me.open_path(dir.path))
+    return me.open_path(dir.path)

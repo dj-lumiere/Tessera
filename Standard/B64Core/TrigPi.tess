@@ -150,10 +150,10 @@ private record CmF64TrigPiAngle
 /// :param cl: The low part of the second double-double.
 /// :returns: The sum as a double-double.
 routine cm_b64_trig_pi_adddd(xh: B64, xl: B64, ch: B64, cl: B64) -> CmF64TrigDD
-    s: B64 = xh.add(ch)
-    d: B64 = s.sub(xh)
-    error: B64 = ch.sub(d).add(xh.add(d.sub(s)))
-    return(CmF64TrigDD(hi: s, lo: error.add(xl.add(cl))))
+    s: B64 = xh + ch
+    d: B64 = s - xh
+    error: B64 = ch - d + (xh + (d - s))
+    return CmF64TrigDD(hi: s, lo: error + (xl + cl))
 
 /// (xh + xl) (ch + cl) as a double-double, the cross terms added before the final Fast2Sum.
 /// :param xh: The high part of the first double-double.
@@ -162,12 +162,12 @@ routine cm_b64_trig_pi_adddd(xh: B64, xl: B64, ch: B64, cl: B64) -> CmF64TrigDD
 /// :param cl: The low part of the second factor.
 /// :returns: The product as a double-double.
 routine cm_b64_trig_pi_muldd(xh: B64, xl: B64, ch: B64, cl: B64) -> CmF64TrigDD
-    ahlh: B64 = ch.mul(xl)
-    alhh: B64 = cl.mul(xh)
-    ahhh: B64 = ch.mul(xh)
+    ahlh: B64 = ch * xl
+    alhh: B64 = cl * xh
+    ahhh: B64 = ch * xh
     ahhl: B64 = b64_mul_error(x: ch, y: xh, p: ahhh)
-    low: B64 = ahhl.add(alhh.add(ahlh))
-    return(cm_b64_trig_fast_two_sum(a: ahhh, b: low))
+    low: B64 = ahhl + (alhh + ahlh)
+    return cm_b64_trig_fast_two_sum(a: ahhh, b: low)
 
 /// (xh + xl) c as a double-double.
 /// :param xh: The high part of the first double-double.
@@ -175,11 +175,11 @@ routine cm_b64_trig_pi_muldd(xh: B64, xl: B64, ch: B64, cl: B64) -> CmF64TrigDD
 /// :param c: The B64 factor.
 /// :returns: The product as a double-double.
 routine cm_b64_trig_pi_mulddd(xh: B64, xl: B64, c: B64) -> CmF64TrigDD
-    ahlh: B64 = c.mul(xl)
-    ahhh: B64 = c.mul(xh)
-    ahhl: B64 = b64_mul_error(x: c, y: xh, p: ahhh).add(ahlh)
-    h: B64 = ahhh.add(ahhl)
-    return(CmF64TrigDD(hi: h, lo: ahhh.sub(h).add(ahhl)))
+    ahlh: B64 = c * xl
+    ahhh: B64 = c * xh
+    ahhl: B64 = b64_mul_error(x: c, y: xh, p: ahhh) + ahlh
+    h: B64 = ahhh + ahhl
+    return CmF64TrigDD(hi: h, lo: ahhh - h + ahhl)
 
 /// The first step of a double-double Horner evaluation: the top coefficient c0 + c1 plus the tail l, already
 /// evaluated in double precision.
@@ -188,8 +188,8 @@ routine cm_b64_trig_pi_mulddd(xh: B64, xl: B64, c: B64) -> CmF64TrigDD
 /// :param l: The tail, evaluated in double precision.
 /// :returns: `c0` + `c1` + `l` as a double-double.
 routine cm_b64_trig_pi_poly_start(c0: B64, c1: B64, l: B64) -> CmF64TrigDD
-    h: B64 = c0.add(l)
-    return(CmF64TrigDD(hi: h, lo: c0.sub(h).add(l).add(c1)))
+    h: B64 = c0 + l
+    return CmF64TrigDD(hi: h, lo: c0 - h + l + c1)
 
 /// One double-double Horner step: `p` `x` + `c`.
 /// :param x: The variable, as a double-double.
@@ -198,26 +198,27 @@ routine cm_b64_trig_pi_poly_start(c0: B64, c1: B64, l: B64) -> CmF64TrigDD
 /// :returns: The polynomial after this step, as a double-double.
 routine cm_b64_trig_pi_poly_step(x: CmF64TrigDD, p: CmF64TrigDD, c: CmF64TrigDD) -> CmF64TrigDD
     q: CmF64TrigDD = cm_b64_trig_pi_muldd(xh: x.hi, xl: x.lo, ch: p.hi, cl: p.lo)
-    th: B64 = q.hi.add(c.hi)
-    tl: B64 = c.hi.sub(th).add(q.hi)
-    return(CmF64TrigDD(hi: th, lo: q.lo.add(tl.add(c.lo))))
+    th: B64 = q.hi + c.hi
+    tl: B64 = c.hi - th + q.hi
+    return CmF64TrigDD(hi: th, lo: q.lo + (tl + c.lo))
 
 /// The CmF64TrigPiAngle of the angle index s.
 /// :param s: The angle index, in units of a 2048th of a half turn.
 /// :returns: The table indices and the signs of the angle.
 private routine cm_b64_trig_pi_angle(s: U64) -> CmF64TrigPiAngle
-    low: U64 = s.bitand(0x3FF)
-    mirrored: Bool = s.shr(10).bitand(1).eq(1)
-    j: U64 = mirrored
-        ? U64.sub(1024, low)
-        : low
-    ks: USize = j.shr(5).to[USize]()
+    low: U64 = s & 0x3FF
+    mirrored: Bool = (s >> 10) & 1 == 1
+    j: U64 = when
+        mirrored => U64.sub(1024, low)
+        else => low
+    ks: USize = (j >> 5).to[USize]()
     kc: USize = USize.sub(32, ks)
-    jm: USize = j.bitand(0x1F).to[USize]()
-    ss: Bool = s.shr(11).bitand(1).eq(1)
-    next_half: U64 = s.add_wrap(1024)  // the angle plus a quarter turn
-    sc: Bool = next_half.shr(11).bitand(1).eq(1)
-    return(CmF64TrigPiAngle(ks: ks, kc: kc, jm: jm, ss: ss, sc: sc))
+    jm: USize = (j & 0x1F).to[USize]()
+    ss: Bool = (s >> 11) & 1 == 1
+    next_half: U64 = s +% 1024
+    // the angle plus a quarter turn
+    sc: Bool = (next_half >> 11) & 1 == 1
+    return CmF64TrigPiAngle(ks: ks, kc: kc, jm: jm, ss: ss, sc: sc)
 
 /// The signs of the angle applied to a sine and a cosine double-double.
 /// :param a: The angle, whose sign bits are applied.
@@ -226,61 +227,61 @@ private routine cm_b64_trig_pi_angle(s: U64) -> CmF64TrigPiAngle
 /// :returns: The sine and cosine with their signs.
 private routine cm_b64_trig_pi_signed(a: CmF64TrigPiAngle, ts: CmF64TrigDD,
     tc: CmF64TrigDD) -> CmF64TrigPiSinCos
-    sh: B64 = a.ss
-        ? ts.hi.neg()
-        : ts.hi
-    sl: B64 = a.ss
-        ? ts.lo.neg()
-        : ts.lo
-    ch: B64 = a.sc
-        ? tc.hi.neg()
-        : tc.hi
-    cl: B64 = a.sc
-        ? tc.lo.neg()
-        : tc.lo
-    return(CmF64TrigPiSinCos(sh: sh, sl: sl, ch: ch, cl: cl))
+    sh: B64 = when
+        a.ss => -ts.hi
+        else => ts.hi
+    sl: B64 = when
+        a.ss => -ts.lo
+        else => ts.lo
+    ch: B64 = when
+        a.sc => -tc.hi
+        else => tc.hi
+    cl: B64 = when
+        a.sc => -tc.lo
+        else => tc.lo
+    return CmF64TrigPiSinCos(sh: sh, sl: sl, ch: ch, cl: cl)
 
 /// The B64 at index i of a table.
 /// :param table: The table, as B64 bits.
 /// :param i: The index.
 /// :returns: The entry as a B64.
 private routine cm_b64_trig_pi_at(table: @Array[U64, 66], i: USize) -> B64
-    return(B64.from_bits(table.getitem(i)))
+    return B64.from_bits(table[i])
 
 /// The B64 at index i of a 64-entry table.
 /// :param table: The table, as B64 bits.
 /// :param i: The index.
 /// :returns: The entry as a B64.
 private routine cm_b64_trig_pi_at(table: @Array[U64, 64], i: USize) -> B64
-    return(B64.from_bits(table.getitem(i)))
+    return B64.from_bits(table[i])
 
 /// sin(pi s/2048) and cos(pi s/2048) to about 2^-75, from the angle index s (only its low 12 bits matter).
 /// :param s: The angle index.
 /// :returns: The sine and cosine as double-doubles.
 routine cm_b64_trig_pi_sincos(s: U64) -> CmF64TrigPiSinCos
     a: CmF64TrigPiAngle = cm_b64_trig_pi_angle(s)
-    sbh: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SN, i: a.ks.mul(2))
-    sbl: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SN, i: a.ks.mul(2).add(1))
-    cbh: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SN, i: a.kc.mul(2))
-    cbl: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SN, i: a.kc.mul(2).add(1))
-    slh: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SM, i: a.jm.mul(2))
-    sll: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SM, i: a.jm.mul(2).add(1))
-    clh: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_CM, i: a.jm.mul(2))
-    cll: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_CM, i: a.jm.mul(2).add(1))
-    sb: B64 = sbh.add(sbl)
-    cb: B64 = cbh.add(cbl)
+    sbh: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SN, i: a.ks * 2)
+    sbl: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SN, i: a.ks * 2 + 1)
+    cbh: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SN, i: a.kc * 2)
+    cbl: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SN, i: a.kc * 2 + 1)
+    slh: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SM, i: a.jm * 2)
+    sll: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SM, i: a.jm * 2 + 1)
+    clh: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_CM, i: a.jm * 2)
+    cll: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_CM, i: a.jm * 2 + 1)
+    sb: B64 = sbh + sbl
+    cb: B64 = cbh + cbl
     // cos(b + l) = cb cl - sb sl and sin(b + l) = sb cl + cb sl, the high parts exact
-    bch: B64 = cbh.mul(clh).sub(sbh.mul(slh))
-    bc1: B64 = clh.mul(cbl).sub(slh.mul(sbl))
-    bcl: B64 = bc1.add(cb.mul(cll)).sub(sb.mul(sll))
-    bsh: B64 = sbh.mul(clh).add(cbh.mul(slh))
-    bs1: B64 = slh.mul(cbl).add(clh.mul(sbl))
-    bsl: B64 = bs1.add(cb.mul(sll)).add(sb.mul(cll))
-    tch: B64 = bch.add(bcl)
-    tsh: B64 = bsh.add(bsl)
-    tc: CmF64TrigDD = (hi: tch, lo: bch.sub(tch).add(bcl))
-    ts: CmF64TrigDD = (hi: tsh, lo: bsh.sub(tsh).add(bsl))
-    return(cm_b64_trig_pi_signed(a, ts, tc))
+    bch: B64 = cbh * clh - sbh * slh
+    bc1: B64 = clh * cbl - slh * sbl
+    bcl: B64 = bc1 + cb * cll - sb * sll
+    bsh: B64 = sbh * clh + cbh * slh
+    bs1: B64 = slh * cbl + clh * sbl
+    bsl: B64 = bs1 + cb * sll + sb * cll
+    tch: B64 = bch + bcl
+    tsh: B64 = bsh + bsl
+    tc: CmF64TrigDD = (hi: tch, lo: bch - tch + bcl)
+    ts: CmF64TrigDD = (hi: tsh, lo: bsh - tsh + bsl)
+    return cm_b64_trig_pi_signed(a, ts, tc)
 
 /// sin(pi s/2048) and cos(pi s/2048) to double-double accuracy, from the angle index s (only its low 12 bits
 /// matter).
@@ -288,14 +289,14 @@ routine cm_b64_trig_pi_sincos(s: U64) -> CmF64TrigPiSinCos
 /// :returns: The sine and cosine as double-doubles.
 routine cm_b64_trig_pi_sincos2(s: U64) -> CmF64TrigPiSinCos
     a: CmF64TrigPiAngle = cm_b64_trig_pi_angle(s)
-    sbh: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SN2, i: a.ks.mul(2))
-    sbl: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SN2, i: a.ks.mul(2).add(1))
-    cbh: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SN2, i: a.kc.mul(2))
-    cbl: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SN2, i: a.kc.mul(2).add(1))
-    slh: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SM2, i: a.jm.mul(2))
-    sll: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SM2, i: a.jm.mul(2).add(1))
-    clh: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_CM2, i: a.jm.mul(2))
-    cll: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_CM2, i: a.jm.mul(2).add(1))
+    sbh: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SN2, i: a.ks * 2)
+    sbl: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SN2, i: a.ks * 2 + 1)
+    cbh: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SN2, i: a.kc * 2)
+    cbl: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SN2, i: a.kc * 2 + 1)
+    slh: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SM2, i: a.jm * 2)
+    sll: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_SM2, i: a.jm * 2 + 1)
+    clh: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_CM2, i: a.jm * 2)
+    cll: B64 = cm_b64_trig_pi_at(table: CM_B64_TRIG_PI_CM2, i: a.jm * 2 + 1)
     // with the second table holding 1 - cos(l): cos(b + l) = cb - (cb (1 - cos l) + sb sin l) and
     // sin(b + l) = sb - (sb (1 - cos l) - cb sin l)
     cc: CmF64TrigDD = cm_b64_trig_pi_muldd(xh: clh, xl: cll, ch: cbh, cl: cbl)
@@ -303,14 +304,14 @@ routine cm_b64_trig_pi_sincos2(s: U64) -> CmF64TrigPiSinCos
     cs: CmF64TrigDD = cm_b64_trig_pi_muldd(xh: clh, xl: cll, ch: sbh, cl: sbl)
     scp: CmF64TrigDD = cm_b64_trig_pi_muldd(xh: slh, xl: sll, ch: cbh, cl: cbl)
     dc: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: sn.hi, b: cc.hi)
-    dcl: B64 = dc.lo.add(cc.lo.add(sn.lo))
-    ds: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: scp.hi.neg(), b: cs.hi)
-    dsl: B64 = ds.lo.add(cs.lo.sub(scp.lo))
-    tc: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: cbh, b: dc.hi.neg())
-    ts: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: sbh, b: ds.hi.neg())
-    c: CmF64TrigDD = (hi: tc.hi, lo: cbl.sub(dcl).add(tc.lo))
-    s2: CmF64TrigDD = (hi: ts.hi, lo: sbl.sub(dsl).add(ts.lo))
-    return(cm_b64_trig_pi_signed(a, ts: s2, tc: c))
+    dcl: B64 = dc.lo + (cc.lo + sn.lo)
+    ds: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: -scp.hi, b: cs.hi)
+    dsl: B64 = ds.lo + (cs.lo - scp.lo)
+    tc: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: cbh, b: -dc.hi)
+    ts: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: sbh, b: -ds.hi)
+    c: CmF64TrigDD = (hi: tc.hi, lo: cbl - dcl + tc.lo)
+    s2: CmF64TrigDD = (hi: ts.hi, lo: sbl - dsl + ts.lo)
+    return cm_b64_trig_pi_signed(a, ts: s2, tc: c)
 
 /// The accurate phase shared by sin_pi and cos_pi: the sine of the angle iq/2048 + z 2^-75 half turns, as an
 /// unevaluated double-double (iq in 0..4096, z the scaled residual angle).
@@ -318,35 +319,30 @@ routine cm_b64_trig_pi_sincos2(s: U64) -> CmF64TrigPiSinCos
 /// :param z: The residual angle, in units of 2^-75 half turns.
 /// :returns: The sine as a double-double.
 routine cm_b64_trig_pi_refine(iq: U64, z: B64) -> CmF64TrigDD
-    x: B64 = z.mul(0x1p-63)
-    x2: B64 = x.mul(x)
+    x: B64 = z * 1.0842021724855044e-19
+    x2: B64 = x * x
     dx2: B64 = b64_mul_error(x, y: x, p: x2)
     x2dd: CmF64TrigDD = (hi: x2, lo: dx2)
-    sll: B64 = B64.mul(-0x1.32d2cc920dcb4p-73, x2)
-    sp0: CmF64TrigDD = cm_b64_trig_pi_poly_start(c0: 0x1.466bc6775aae1p-47,
-        c1: -0x1.9c3c168d990ap-114, l: sll)
-    sp1: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: x2dd, p: sp0,
-        c: CmF64TrigDD(hi: -0x1.4abbce625be53p-22, lo: 0x1.05511cbc65743p-76))
-    sp2: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: x2dd, p: sp1,
-        c: CmF64TrigDD(hi: 0x1.921fb54442d18p+1, lo: 0x1.1a62633145c06p-53))
-    sl: CmF64TrigDD = cm_b64_trig_pi_mulddd(xh: sp2.hi, xl: sp2.lo,
-        c: x.mul(0x1p-12))  // sin(pi x 2^-12)
-    cl2: B64 = B64.add(-0x1.55d3c7e3cbff9p-72, B64.mul(0x1.e1f50604fa0ffp-99, x2))
-    cll: B64 = x2.mul(cl2)
-    cp0: CmF64TrigDD = cm_b64_trig_pi_poly_start(c0: 0x1.03c1f081b5ac4p-46,
-        c1: -0x1.32b33fda9113cp-100, l: cll)
-    cp1: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: x2dd, p: cp0,
-        c: CmF64TrigDD(hi: -0x1.3bd3cc9be45dep-22, lo: -0x1.692b71366cc04p-76))
-    cl: CmF64TrigDD = cm_b64_trig_pi_muldd(xh: cp1.hi, xl: cp1.lo, ch: x2,
-        cl: dx2)  // cos(pi x 2^-12) - 1
+    sll: B64 = B64.mul(-1.268991980402342e-22, x2)
+    sp0: CmF64TrigDD = cm_b64_trig_pi_poly_start(c0: 9.06000266765739e-15, c1: -7.753273336863097e-35, l: sll)
+    sp1: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: x2dd, p: sp0, c: CmF64TrigDD(hi: -3.080196845561248e-07, lo: 1.3509764230648207e-23))
+    sp2: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: x2dd, p: sp1, c: CmF64TrigDD(hi: 3.141592653589793, lo: 1.224646799147353e-16))
+    sl: CmF64TrigDD = cm_b64_trig_pi_mulddd(xh: sp2.hi, xl: sp2.lo, c: x * 0.000244140625)
+    // sin(pi x 2^-12)
+    cl2: B64 = B64.add(-2.827528896154601e-22, B64.mul(2.9702900969209974e-30, x2))
+    cll: B64 = x2 * cl2
+    cp0: CmF64TrigDD = cm_b64_trig_pi_poly_start(c0: 1.441944208983432e-14, c1: -9.45092937287402e-31, l: cll)
+    cp1: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: x2dd, p: cp0, c: CmF64TrigDD(hi: -2.9413713220028156e-07, lo: -1.867203566056404e-23))
+    cl: CmF64TrigDD = cm_b64_trig_pi_muldd(xh: cp1.hi, xl: cp1.lo, ch: x2, cl: dx2)
+    // cos(pi x 2^-12) - 1
     b: CmF64TrigPiSinCos = cm_b64_trig_pi_sincos2(iq)
     cs: CmF64TrigDD = cm_b64_trig_pi_muldd(xh: cl.hi, xl: cl.lo, ch: b.sh, cl: b.sl)
     sc: CmF64TrigDD = cm_b64_trig_pi_muldd(xh: sl.hi, xl: sl.lo, ch: b.ch, cl: b.cl)
     ts: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: sc.hi, b: cs.hi)
-    tsl: B64 = ts.lo.add(cs.lo.add(sc.lo))
+    tsl: B64 = ts.lo + (cs.lo + sc.lo)
     ts2: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: b.sh, b: ts.hi)
-    low: B64 = b.sl.add(tsl).add(ts2.lo)
-    return(CmF64TrigDD(hi: ts2.hi, lo: low))
+    low: B64 = b.sl + tsl + ts2.lo
+    return CmF64TrigDD(hi: ts2.hi, lo: low)
 
 /// Whether the low part of the accurate phase has a mantissa of all zeros or all ones: the only case where
 /// high + low may round wrongly, so the list of exceptions must be consulted.
@@ -354,6 +350,6 @@ routine cm_b64_trig_pi_refine(iq: U64, z: B64) -> CmF64TrigDD
 /// :returns: True when the mantissa bits of `tsl` are all zeros or all ones.
 routine cm_b64_trig_pi_is_refine_suspect(tsl: B64) -> Bool
     t: U64 = tsl.bits()
-    ones: Bool = t.bitor(0xFFF0000000000000).eq(0xFFFFFFFFFFFFFFFF)
-    zero: Bool = t.shl(12).eq(0)
-    return(ones.bitor(zero))
+    ones: Bool = t | 0xFFF0000000000000 == 0xFFFFFFFFFFFFFFFF
+    zero: Bool = t << 12 == 0
+    return ones or zero

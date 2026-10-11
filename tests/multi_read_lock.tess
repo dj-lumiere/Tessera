@@ -12,69 +12,42 @@ record Pair
     torn: Atomic[U64]
 
 routine read_many(pair: @Pair) -> Void
-    jump step(0)
-
-    block step(i: U64)
-        branch i.eq(20000)
-            ? return()
-            : continue
+    each i in 0 til 20000
         pair.lock.lock_read()
-        same: Bool = pair.a.peek().eq(pair.b.peek())
+        same: Bool = pair.a.peek() == pair.b.peek()
         pair.lock.unlock_read()
-        branch same
-            ? step(i.add(1))
-            : continue
+        if same
+            continue
         pair.torn.fetch_add(1)
-        jump step(i.add(1))
+    then
+        return
 
 routine write_many(pair: @Pair) -> Void
-    jump step(0)
-
-    block step(i: U64)
-        branch i.eq(10000)
-            ? return()
-            : continue
+    each i in 0 til 10000
         pair.lock.lock_write()
-        pair.a.poke(pair.a.peek().add(1))
-        pair.b.poke(pair.b.peek().add(1))
+        pair.a.poke(pair.a.peek() + 1)
+        pair.b.poke(pair.b.peek() + 1)
         pair.lock.unlock_write()
-        jump step(i.add(1))
+    then
+        return
 
 routine start() -> Void
     local pair: @Pair <- Pair(lock: .construct(), a: 0, b: 0, torn: Atomic[U64](value: 0))
     local threads: @Array[Thread[Void], 6] <- .hollow()
 
-    jump spawn(0)
-
-    block spawn(i: USize)
-        branch i.eq(6)
-            ? collect(0)
-            : continue
+    each i in 0 til 6
         t: Thread[Void] = get_thread[Void]()
-        branch i.lt(4)
-            ? reader(i, t)
-            : writer(i, t)
-
-    block reader(i: USize, t: Thread[Void])
-        t.put_work(entry: read_many.to[Callable](), args: pair)
-        threads.setitem(index: i, value: t)
-        jump spawn(i.add(1))
-
-    block writer(i: USize, t: Thread[Void])
-        t.put_work(entry: write_many.to[Callable](), args: pair)
-        threads.setitem(index: i, value: t)
-        jump spawn(i.add(1))
-
-    block collect(i: USize)
-        branch i.eq(6)
-            ? report()
-            : continue
-        t: Thread[Void] = threads.getitem(i)
-        t.wait_finished()
-        t.give_back()
-        jump collect(i.add(1))
-
-    block report()
+        if i < 4
+            t.put_work(entry: read_many.to[Callable](), args: pair)
+            threads[i] = t
+        else
+            t.put_work(entry: write_many.to[Callable](), args: pair)
+            threads[i] = t
+    then
+        each i2 in 0 til 6
+            t: Thread[Void] = threads[i2]
+            t.wait_finished()
+            t.give_back()
         Out.write("a {pair.a.peek()}, b {pair.b.peek()}, torn reads {pair.torn.peek()}\n")
         pair.lock.lock_read()
         write_while_read: Bool = pair.lock.try_lock_write()
@@ -83,4 +56,18 @@ routine start() -> Void
         read_while_written: Bool = pair.lock.try_lock_read()
         pair.lock.unlock_write()
         Out.write("try_lock_write while read: {write_while_read}, try_lock_read while written: {read_while_written}\n")
-        return()
+        return
+
+    each i in 0 til 6
+        t: Thread[Void] = threads[i]
+        t.wait_finished()
+        t.give_back()
+    Out.write("a {pair.a.peek()}, b {pair.b.peek()}, torn reads {pair.torn.peek()}\n")
+    pair.lock.lock_read()
+    write_while_read: Bool = pair.lock.try_lock_write()
+    pair.lock.unlock_read()
+    pair.lock.lock_write()
+    read_while_written: Bool = pair.lock.try_lock_read()
+    pair.lock.unlock_write()
+    Out.write("try_lock_write while read: {write_while_read}, try_lock_read while written: {read_while_written}\n")
+    return

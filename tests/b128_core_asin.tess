@@ -4255,88 +4255,58 @@ preset CASE_ACOS: @Array[U128, 2827] <- [0x3FFF921FB54442D18469898CC51701B8,
 // 0 = asin, 1 = asin's accurate path, 2 = acos, 3 = acos's accurate path
 routine evaluate(which: U64, x: B128) -> B128
     when which
-        0 => asin()
-        1 => asin_accurate()
-        2 => acos()
-        else => acos_accurate()
-
-    block asin()
-        r: B128 = x.asin()
-        return(r)
-
-    block asin_accurate()
-        r: B128 = cm_asin_accurate(x)
-        return(r)
-
-    block acos()
-        r: B128 = x.acos()
-        return(r)
-
-    block acos_accurate()
-        r: B128 = cm_acos_accurate(x)
-        return(r)
+        0 =>
+            r: B128 = x.asin()
+            return r
+        1 =>
+            r: B128 = cm_asin_accurate(x)
+            return r
+        2 =>
+            r: B128 = x.acos()
+            return r
+        else =>
+            r: B128 = cm_acos_accurate(x)
+            return r
 
 // Whether a routine takes x: the full functions take everything, asin's accurate path takes
 // 2^-56 <= |x| < 1 (the fast path's own range), and acos's |x| < 1.
 routine accepts(which: U64, x: B128) -> Bool
-    high_bits: U128 = x.bits().shr(112)
-    exp: U64 = high_bits.bitand(32767).to[U64]()
-    below_1: Bool = exp.lt(16383)
-    asin_ok: Bool = below_1.bitand(exp.ge(16327))
-    full: Bool = which.bitand(1).eq(0)
-    is_asin: Bool = which.eq(1)
-    partial: Bool = is_asin
-        ? asin_ok
-        : below_1
-    r: Bool = full.bitor(partial)
-    return(r)
+    high_bits: U128 = x.bits() >> 112
+    exp: U64 = (high_bits & 32767).to[U64]()
+    below_1: Bool = exp < 16383
+    asin_ok: Bool = below_1 and exp >= 16327
+    full: Bool = which & 1 == 0
+    is_asin: Bool = which == 1
+    partial: Bool = when
+        is_asin => asin_ok
+        else => below_1
+    return full or partial
 
 routine run(out: @Out, name: Span[Byte], which: U64, want: @U128) -> Void
     local checked: @U64 <- 0
     local wrong: @U64 <- 0
 
-    jump next(0)
-
-    block next(i: USize)
-        done: Bool = i.eq(CASE_COUNT)
-        branch done
-            ? summary()
-            : case(i)
-
-    block case(i: USize)
+    each i in 0 til CASE_COUNT
         xs: @U128 = CASE_X.to[@U128]()
         bits: U128 = xs.stride(i).peek()
         x: B128 = b128_of(bits)
-        taken: Bool = accepts(which, x)
-        branch taken
-            ? compare(i, x)
-            : next(i.add(1))
-
-    block compare(i: USize, x: B128)
-        got: B128 = evaluate(which, x)
-        good: U128 = want.stride(i).peek()
-        right: Bool = got.bits().eq(good)
-        branch right
-            ? continue
-            : report(i, x, got, good)
-        checked.peek().add(1).poke_into(checked)
-        jump next(i.add(1))
-
-    block report(i: USize, x: B128, got: B128, good: U128)
-        out.write("{name} ")
-        x.bits().represent_hex_into(out)
-        out.write(": got ")
-        got.bits().represent_hex_into(out)
-        out.write(", want ")
-        good.represent_hex_into(out)
-        out.write("\n")
-        checked.peek().add(1).poke_into(checked)
-        wrong.peek().add(1).poke_into(wrong)
-        jump next(i.add(1))
-
-    block summary()
-        out.write("{name}: {checked.peek()} checked, {wrong.peek()} wrong\n")
-        return()
+        if accepts(which, x)
+            got: B128 = evaluate(which, x)
+            good: U128 = want.stride(i).peek()
+            if not (got.bits() == good)
+                out.write("{name} ")
+                x.bits().represent_hex_into(out)
+                out.write(": got ")
+                got.bits().represent_hex_into(out)
+                out.write(", want ")
+                good.represent_hex_into(out)
+                out.write("\n")
+                (checked.peek() + 1).poke_into(checked)
+                (wrong.peek() + 1).poke_into(wrong)
+                continue
+            (checked.peek() + 1).poke_into(checked)
+    out.write("{name}: {checked.peek()} checked, {wrong.peek()} wrong\n")
+    return
 
 routine start() -> Void
     out: @Out = Out.writer()
@@ -4344,4 +4314,4 @@ routine start() -> Void
     run(out, name: "asin accurate", which: 1, want: CASE_ASIN.to[@U128]())
     run(out, name: "acos", which: 2, want: CASE_ACOS.to[@U128]())
     run(out, name: "acos accurate", which: 3, want: CASE_ACOS.to[@U128]())
-    return()
+    return

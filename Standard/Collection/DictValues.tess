@@ -13,77 +13,71 @@ module Standard/Collections
 /// :typeparam TKey: The key type.
 /// :typeparam TValue: The value type.
 record DictValues[TKey, TValue]
-conform SlotIterator[TValue, DictValues[TKey, TValue]]
-require TKey: typename, TValue: typename, HashEquatable[TKey]
+obeys SlotIterator[TValue, DictValues[TKey, TValue]]
+needs TKey: typename, TValue: typename, HashEquatable[TKey]
     map: @Dict[TKey, TValue]
     index: USize
 
 /// Releases nothing: a `DictValues` holds no memory of its own.
 routine DictValues[TKey, TValue].destruct(me: @Me) -> Void
-require TKey: typename, TValue: typename
-    return()
+needs TKey: typename, TValue: typename
+    return
 
 /// Creates an iterator positioned before the first value of `map`.
 /// :param map: The dict whose values to walk.
 /// :returns: A new iterator at the first entry.
 routine DictValues[TKey, TValue].construct(map: @Dict[TKey, TValue]) -> Me
-require TKey: typename, TValue: typename
+needs TKey: typename, TValue: typename
     iter: Me = Me(map: map, index: 0)
-    return(iter)
+    return iter
 
 /// Hands out the slot of the next live entry's value and advances past it, skipping dead entries.
 /// :returns: The address of the next value, in insertion order.
 /// :absent: After the last live entry's value has been handed out.
 routine DictValues[TKey, TValue].next_checked(me: @Me) -> Maybe[@TValue]
-require TKey: typename, TValue: typename
+needs TKey: typename, TValue: typename
     local map: @Dict[TKey, TValue] = me.map.peek()
     local count: USize = map.entries_count.peek()
 
-    jump scan(me.index.peek())
-
-    block scan(index: USize)
-        branch index.ge(count)
-            ? return(Unit())
-            : continue
+    each index in me.index.peek() til count
         entry_states: @U8 = map.entry_states.data.peek()
-        live: Bool = entry_states.stride(index).peek().eq(1)
-        branch live
-            ? found(index)
-            : scan(index.add(1))
-
-    block found(index: USize)
-        me.index.poke(index.add(1))
-        slot: @TValue = map.values.data.peek().stride(index)
-        return(slot)
+        if entry_states.stride(index).peek() == 1
+            me.index.poke(index + 1)
+            slot: @TValue = map.values.data.peek().stride(index)
+            return slot
+        else
+            continue
+    then
+        return Unit()
 
 /// Hands out the slot of the next live entry's value, crashing when there is none.
 /// :returns: The address of the next value, in insertion order.
 /// :throws: Crashes with `AbsentValueError` after the last value has been handed out.
-#track_caller
+@track_caller
 routine DictValues[TKey, TValue].next(me: @Me) -> @TValue
-require TKey: typename, TValue: typename
+needs TKey: typename, TValue: typename
     slot: Maybe[@TValue] = me.next_checked()
     when slot
-        is @TValue as value => return(value)
+        is @TValue as value => return value
         is Unit => crash_absent_value()
 
 /// Yields the next live entry's value and advances past it.
 /// :returns: The next value, in insertion order.
 /// :absent: After the last value has been yielded.
 routine DictValues[TKey, TValue].emit_checked(me: @Me) -> Maybe[TValue]
-require TKey: typename, TValue: typename
+needs TKey: typename, TValue: typename
     slot: Maybe[@TValue] = me.next_checked()
     when slot
-        is @TValue as value => return(value.peek())
-        is Unit => return(Unit())
+        is @TValue as value => return value.peek()
+        is Unit => return Unit()
 
 /// Yields the next live entry's value, crashing when there is none.
 /// :returns: The next value, in insertion order.
 /// :throws: Crashes with `AbsentValueError` after the last value has been yielded.
-#track_caller
+@track_caller
 routine DictValues[TKey, TValue].emit(me: @Me) -> TValue
-require TKey: typename, TValue: typename
+needs TKey: typename, TValue: typename
     item: Maybe[TValue] = me.emit_checked()
     when item
-        is TValue as value => return(value)
+        is TValue as value => return value
         is Unit => crash_absent_value()

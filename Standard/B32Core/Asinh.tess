@@ -85,78 +85,72 @@ preset CM_B32_ASINH_LIX: @Array[U64, 129] <- [0x0000000000000000, 0x3F7FE02A6B14
 /// asinh(`me`), correctly rounded.
 /// :returns: The inverse hyperbolic sine of `me`.
 routine B32.asinh(me: Me) -> Me
-    local tu: U32 = me.bits().bitand(0x7FFFFFFF)
+    local tu: U32 = me.bits() & 0x7FFFFFFF
     local xs: B64 = me.to[B64]()
 
-    small: Bool = tu.le(0x3E815667)  // |x| <= 0x1.02accep-2
-    tiny: Bool = tu.le(0x39DDB3D7)  // |x| <= 0x1.bb67aep-12
-    zero: Bool = tu.eq(0)
-    big: Bool = tu.ge(0x7F800000)  // ±inf or NaN
+    small: Bool = tu <= 0x3E815667
+
+    // |x| <= 0x1.02accep-2
+    tiny: Bool = tu <= 0x39DDB3D7
+    // |x| <= 0x1.bb67aep-12
+    zero: Bool = tu == 0
+    // ±inf or NaN
     when
-        zero => return(me)
-        tiny => return(me.mul_add(a: -0x1p-25, b: me))
-        small => poly()
-        big => return(me.add(me))
-        else => general()
-
-    block poly()
-        x2: B64 = xs.mul(xs)
-        x4: B64 = x2.mul(x2)
-        x8: B64 = x4.mul(x4)
-        p01: B64 = x2.mul(-0x1.3333333330e9dp-4).add(0x1.5555555555553p-3)
-        p23: B64 = x2.mul(-0x1.f1c71699375dp-6).add(0x1.6db6db67cb37ap-5)
-        p45: B64 = x2.mul(-0x1.1c1e98f9d01e1p-6).add(0x1.6e8a374c39ff9p-6)
-        p67: B64 = x2.mul(-0x1.329ff5faf02abp-7).add(0x1.c277e96d84026p-7)
-        p03: B64 = x4.mul(p23).add(p01)
-        p47: B64 = x4.mul(p67).add(p45)
-        p07: B64 = x8.mul(p47).add(p03)
-        f: B64 = p07.mul(x2)
-        return(xs.sub(xs.mul(f)).to[Me]())
-
-    block general()
-        xd: B64 = xs.abs()
-        x2p1: B64 = xd.mul(xd).add(1.0)
-        tp: B64 = xd.add(x2p1.sqrt())
-        r: B64 = cm_b32_asinh_log(tp)
-        return(r.copysign(xs).to[Me]())
+        zero => return me
+        tiny => return me.mul_add(a: -2.980232238769531e-08, b: me)
+        small =>
+            x2: B64 = xs * xs
+            x4: B64 = x2 * x2
+            x8: B64 = x4 * x4
+            p01: B64 = x2 * -0.07499999999987002 + 0.1666666666666666
+            p23: B64 = x2 * -0.03038193899998537 + 0.04464285709978007
+            p45: B64 = x2 * -0.017341279402218638 + 0.022371820451468214
+            p67: B64 = x2 * -0.009357447726757803 + 0.013747204759994313
+            p03: B64 = x4 * p23 + p01
+            p47: B64 = x4 * p67 + p45
+            p07: B64 = x8 * p47 + p03
+            f: B64 = p07 * x2
+            return (xs - xs * f).to[Me]()
+        tu >= 0x7F800000 => return me + me
+        else =>
+            xd: B64 = xs.abs()
+            x2p1: B64 = xd * xd + 1.0
+            tp: B64 = xd + x2p1.sqrt()
+            r: B64 = cm_b32_asinh_log(tp)
+            return r.copysign(xs).to[Me]()
 
 /// log(tp) for tp >= 1, accurate enough to round correctly to B32.
 /// :param tp: The argument, at least 1.
 /// :returns: The natural logarithm of `tp`.
 routine cm_b32_asinh_log(tp: B64) -> B64
     tb: U64 = tp.bits()
-    m: U64 = tb.bitand(0x000FFFFFFFFFFFFF)
-    j_bits: U64 = m.add_wrap(U64.shl(1, 44)).shr(45)
+    m: U64 = tb & 0x000FFFFFFFFFFFFF
+    j_bits: U64 = m +% U64.shl(1, 44) >> 45
     j: USize = j_bits.to[USize]()
-    biased_exponent: S64 = tb.shr(52).to[S64]()
-    e: B64 = biased_exponent.sub(0x3FF).to[B64]()
-    w: B64 = B64.from_bits(m.bitor(0x3FF0000000000000))
+    biased_exponent: S64 = (tb >> 52).to[S64]()
+    e: B64 = (biased_exponent - 0x3FF).to[B64]()
+    w: B64 = B64.from_bits(m | 0x3FF0000000000000)
     lix: B64 = B64.from_bits(CM_B32_ASINH_LIX.getitem(j))
-    z: B64 = w.mul(B64.from_bits(CM_B32_ASINH_IX.getitem(j))).sub(1.0)
-    z2: B64 = z.mul(z)
-    e_log: B64 = B64.mul(0x1.62e42fefa39efp-1, e).add(lix)
-    head: B64 = e_log.add(z.mul(0x1.0000000066947p+0))
-    r: B64 = head.add(z2.mul(z.mul(0x1.555280111d914p-2).add(-0x1.00007f053d8cbp-1)))
-    biased_bits: U64 = r.bits().add_wrap(259000)
-    hard: Bool = biased_bits.bitand(0xFFFFFFF).lt(260000)
-    branch hard
-        ? accurate(z, e, lix)
-        : return(r)
-
-    block accurate(z: B64, e: B64, lix: B64)
-        z2: B64 = z.mul(z)
-        c0: B64 = z.mul(-0.5).add(1.0)
-        c2: B64 = z.mul(-0x1.ffffffff2b4e5p-3).add(0x1.55555555030bcp-2)
-        c4: B64 = z.mul(-0x1.55570c45a647dp-3).add(0x1.999b5076a42f2p-3)
-        c: B64 = z2.mul(z2.mul(c4).add(c2)).add(c0)
-        lh: B64 = B64.mul(0x1.62e4p-1, e)
-        ll: B64 = B64.mul(0x1.7f7d1cf79abcap-20, e)
-        low: B64 = z.mul(c).add(ll.add(lix))
-        r: B64 = low.add(lh)
-        low_bits: U64 = r.bits().bitand(0xFFFFFFF)
-        tie: Bool = low_bits.eq(0)
-        branch tie
-            ? continue
-            : return(r)
-        h: B64 = low.add(lh.sub(r))
-        return(r.add(B64.mul(64.0, h)))
+    z: B64 = w * B64.from_bits(CM_B32_ASINH_IX.getitem(j)) - 1.0
+    z2: B64 = z * z
+    e_log: B64 = B64.mul(0.6931471805599453, e) + lix
+    head: B64 = e_log + z * 1.0000000000932958
+    r: B64 = head + z2 * (z * 0.33332252602066714 + -0.5000037855050093)
+    biased_bits: U64 = r.bits() +% 259000
+    if biased_bits & 0xFFFFFFF < 260000
+        z22: B64 = z * z
+        c0: B64 = z * -0.5 + 1.0
+        c2: B64 = z * -0.24999999997581948 + 0.33333333331462334
+        c4: B64 = z * -0.16666993701509006 + 0.20000326978745125
+        c: B64 = z22 * (z22 * c4 + c2) + c0
+        lh: B64 = B64.mul(0.693145751953125, e)
+        ll: B64 = B64.mul(1.4286068203094173e-06, e)
+        low: B64 = z * c + (ll + lix)
+        r2: B64 = low + lh
+        low_bits: U64 = r2.bits() & 0xFFFFFFF
+        if not (low_bits == 0)
+            return r2
+        h: B64 = low + (lh - r2)
+        return r2 + B64.mul(64.0, h)
+    else
+        return r

@@ -7385,12 +7385,12 @@ record Atan2Cases
 /// :param want: Its `want`.
 /// :returns: The new value.
 routine Mismatch.construct(name: Span[Byte], y: U128, x: U128, got: U128, want: U128) -> Me
-    return(Me(name, y, x, got, want))
+    return Me(name, y, x, got, want)
 
 /// Releases the memory its `name` holds.
 routine Mismatch.destruct(me: @Me) -> Void
     me.name.destruct()
-    return()
+    return
 
 /// Makes a `AtanCases` from its fields.
 /// :param name: Its `name`.
@@ -7398,14 +7398,14 @@ routine Mismatch.destruct(me: @Me) -> Void
 /// :param want: Its `want`.
 /// :returns: The new value.
 routine AtanCases.construct(name: Span[Byte], xs: Span[U128], want: Span[U128]) -> Me
-    return(Me(name, xs, want))
+    return Me(name, xs, want)
 
 /// Releases the memory its `name` and `xs` and `want` hold.
 routine AtanCases.destruct(me: @Me) -> Void
     me.name.destruct()
     me.xs.destruct()
     me.want.destruct()
-    return()
+    return
 
 /// Makes a `Atan2Cases` from its fields.
 /// :param name: Its `name`.
@@ -7415,7 +7415,7 @@ routine AtanCases.destruct(me: @Me) -> Void
 /// :returns: The new value.
 routine Atan2Cases.construct(name: Span[Byte], ys: Span[U128], xs: Span[U128],
     want: Span[U128]) -> Me
-    return(Me(name, ys, xs, want))
+    return Me(name, ys, xs, want)
 
 /// Releases the memory its `name` and `ys` and `xs` and `want` hold.
 routine Atan2Cases.destruct(me: @Me) -> Void
@@ -7423,11 +7423,11 @@ routine Atan2Cases.destruct(me: @Me) -> Void
     me.ys.destruct()
     me.xs.destruct()
     me.want.destruct()
-    return()
+    return
 
 routine report(out: @Out, name: Span[Byte], count: USize, wrong: U64) -> Void
     out.write("{name}: {count} cases, {wrong} wrong\n")
-    return()
+    return
 
 routine mismatch(out: @Out, m: Mismatch) -> Void
     out.write("{m.name} ")
@@ -7439,124 +7439,87 @@ routine mismatch(out: @Out, m: Mismatch) -> Void
     out.write(" want ")
     m.want.represent_hex_into(out)
     out.write("\n")
-    return()
+    return
 
 // mode 0: B128.atan, 1: the accurate path alone, for the inputs that reach the reduction
 routine atan_of(x: U128, mode: U64) -> U128
-    exponent_field: U128 = x.shr(112).bitand(0x7FFF)
+    exponent_field: U128 = (x >> 112) & 0x7FFF
     xn: U64 = exponent_field.to[U64]()
     reduced: Bool = xn.between(lo: 0x3FC6, hi: 0x4071)
-    accurate: Bool = mode.eq(1).bitand(reduced)
-    branch accurate
-        ? accurate()
-        : full()
-
-    block full()
-        r: B128 = b128_of(x).atan()
-        bits: U128 = r.bits()
-        return(bits)
-
-    block accurate()
-        sign: U128 = x.bitand(B128_SIGN)
-        high_magnitude: U128 = x.shr(64).bitand(0x7FFFFFFFFFFFFFFF)
+    if mode == 1 and reduced
+        sign: U128 = x & B128_SIGN
+        high_magnitude: U128 = (x >> 64) & 0x7FFFFFFFFFFFFFFF
         hi: U64 = high_magnitude.to[U64]()
-        mant: U64 = hi.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
-        red: CmAtanReduction = cm_atan_reduce(mant, lo: x.to_wrap[U64](), xn: hi.shr(48))
+        mant: U64 = (hi & 0x0000FFFFFFFFFFFF) | 0x0001000000000000
+        red: CmAtanReduction = cm_atan_reduce(mant, lo: x.to_wrap[U64](), xn: hi >> 48)
         r: B128 = cm_atan_accurate(red, sign)
         bits: U128 = r.bits()
-        return(bits)
+        return bits
+    else
+        r: B128 = b128_of(x).atan()
+        bits: U128 = r.bits()
+        return bits
 
 // mode 0: B128.atan2, 1: the accurate path alone, for finite nonzero coordinates
 routine atan2_of(y: U128, x: U128, mode: U64) -> U128
     magnitude: U128 = B128_SIGN.bitnot()
-    xa: U128 = x.bitand(magnitude)
-    ya: U128 = y.bitand(magnitude)
-    finite: Bool = xa.lt(B128_INF).bitand(ya.lt(B128_INF))
-    nonzero: Bool = xa.ne(0).bitand(ya.ne(0))
-    wants_accurate: Bool = mode.eq(1).bitand(finite)
-    accurate: Bool = wants_accurate.bitand(nonzero)
-    branch accurate
-        ? accurate()
-        : full()
-
-    block full()
+    xa: U128 = x & magnitude
+    ya: U128 = y & magnitude
+    finite: Bool = xa < B128_INF and ya < B128_INF
+    nonzero: Bool = xa != 0 and ya != 0
+    wants_accurate: Bool = mode == 1 and finite
+    if wants_accurate and nonzero
+        magnitude2: U128 = B128_SIGN.bitnot()
+        red: CmAtanReduction = cm_atan2_reduce(xa: x & magnitude2, ya: y & magnitude2)
+        r: B128 = cm_atan2_accurate(red, x_neg: b128_is_negative_bits(x), y_sign: y & B128_SIGN)
+        bits: U128 = r.bits()
+        return bits
+    else
         r: B128 = b128_of(y).atan2(b128_of(x))
         bits: U128 = r.bits()
-        return(bits)
-
-    block accurate()
-        magnitude: U128 = B128_SIGN.bitnot()
-        red: CmAtanReduction = cm_atan2_reduce(xa: x.bitand(magnitude), ya: y.bitand(magnitude))
-        r: B128 = cm_atan2_accurate(red, x_neg: b128_is_negative_bits(x),
-            y_sign: y.bitand(B128_SIGN))
-        bits: U128 = r.bits()
-        return(bits)
+        return bits
 
 // checks every case of one atan group and returns the number wrong
 routine check_atan(out: @Out, cases: AtanCases, mode: U64) -> U64
     local count: USize = cases.xs.count()
     local wrong: @U64 <- 0
 
-    jump case(0)
-
-    block case(i: USize)
-        done: Bool = i.ge(count)
-        branch done
-            ? return(wrong.peek())
-            : run(i)
-
-    block run(i: USize)
-        x: U128 = cases.xs.getitem(i)
-        w: U128 = cases.want.getitem(i)
+    each i in 0 til count
+        x: U128 = cases.xs[i]
+        w: U128 = cases.want[i]
         got: U128 = atan_of(x, mode)
-        good: Bool = got.eq(w)
-        branch good
-            ? case(i.add(1))
-            : bad(i, x, got, w)
-
-    block bad(i: USize, x: U128, got: U128, w: U128)
-        mismatch(out, m: Mismatch(name: cases.name, y: 0, x: x, got: got, want: w))
-        wrong.peek().add(1).poke_into(wrong)
-        jump case(i.add(1))
+        if not (got == w)
+            mismatch(out, m: Mismatch(name: cases.name, y: 0, x: x, got: got, want: w))
+            (wrong.peek() + 1).poke_into(wrong)
+    then
+        return wrong.peek()
 
 routine check_atan2(out: @Out, cases: Atan2Cases, mode: U64) -> U64
     local count: USize = cases.xs.count()
     local wrong: @U64 <- 0
 
-    jump case(0)
-
-    block case(i: USize)
-        done: Bool = i.ge(count)
-        branch done
-            ? return(wrong.peek())
-            : run(i)
-
-    block run(i: USize)
-        y: U128 = cases.ys.getitem(i)
-        x: U128 = cases.xs.getitem(i)
-        w: U128 = cases.want.getitem(i)
+    each i in 0 til count
+        y: U128 = cases.ys[i]
+        x: U128 = cases.xs[i]
+        w: U128 = cases.want[i]
         got: U128 = atan2_of(y, x, mode)
-        good: Bool = got.eq(w)
-        branch good
-            ? case(i.add(1))
-            : bad(i, y, x, got, w)
-
-    block bad(i: USize, y: U128, x: U128, got: U128, w: U128)
-        mismatch(out, m: Mismatch(name: cases.name, y: y, x: x, got: got, want: w))
-        wrong.peek().add(1).poke_into(wrong)
-        jump case(i.add(1))
+        if not (got == w)
+            mismatch(out, m: Mismatch(name: cases.name, y: y, x: x, got: got, want: w))
+            (wrong.peek() + 1).poke_into(wrong)
+    then
+        return wrong.peek()
 
 // checks one atan group with the given mode and prints its summary line
 routine atan_group(out: @Out, cases: AtanCases, mode: U64) -> Void
     wrong: U64 = check_atan(out, cases, mode)
     report(out, name: cases.name, count: cases.xs.count(), wrong)
-    return()
+    return
 
 // checks one atan2 group with the given mode and prints its summary line
 routine atan2_group(out: @Out, cases: Atan2Cases, mode: U64) -> Void
     wrong: U64 = check_atan2(out, cases, mode)
     report(out, name: cases.name, count: cases.xs.count(), wrong)
-    return()
+    return
 
 routine start() -> Void
     out: @Out = Out.writer()
@@ -7565,8 +7528,7 @@ routine start() -> Void
     atan_group(out, cases: AtanCases(name: "atan accurate", xs: atan.xs, want: atan.want), mode: 1)
     hard: AtanCases = (name: "atan hard", xs: ATAN_HARD_X.getview(), want: ATAN_HARD_W.getview())
     atan_group(out, cases: hard, mode: 0)
-    atan_group(out, cases: AtanCases(name: "atan hard accurate", xs: hard.xs, want: hard.want),
-        mode: 1)
+    atan_group(out, cases: AtanCases(name: "atan hard accurate", xs: hard.xs, want: hard.want), mode: 1)
     special: AtanCases = (name: "atan special", xs: ATAN_SP_X.getview(), want: ATAN_SP_W.getview())
     atan_group(out, cases: special, mode: 0)
     atan2: Atan2Cases = (name: "atan2", ys: ATAN2_Y.getview(), xs: ATAN2_X.getview(), want: ATAN2_W.getview())
@@ -7579,4 +7541,4 @@ routine start() -> Void
     atan2_group(out, cases: hard2_accurate, mode: 1)
     special2: Atan2Cases = (name: "atan2 special", ys: ATAN2_SP_Y.getview(), xs: ATAN2_SP_X.getview(), want: ATAN2_SP_W.getview())
     atan2_group(out, cases: special2, mode: 0)
-    return()
+    return

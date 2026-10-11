@@ -11,69 +11,46 @@ record Shared
     total: U64
 
 routine add_steps(state: @Shared) -> Void
-    jump step(0)
-
-    block step(i: U64)
-        done: Bool = i.eq(1000)
-        branch done
-            ? return()
-            : add(i)
-
-    block add(i: U64)
+    each i in 0 til 1000
         state.total.atomic_fetch_add(1)
         FIBERS.yield()
-        jump step(i.add(1))
+    then
+        return
 
 /// One thread's work: 16 fibers on its FIBERS, run until all have finished.
 routine run_fibers(state: @Shared) -> Void
     local fibers: @Array[Fiber[Void], 16] <- .hollow()
 
-    jump start(0)
-
-    block start(i: USize)
-        branch i.eq(16)
-            ? run()
-            : continue
+    each i in 0 til 16
         f: Fiber[Void] = FIBERS.get_fiber[Void]()
         f.put_work(entry: add_steps.to[Callable](), args: state)
-        fibers.setitem(index: i, value: f)
-        jump start(i.add(1))
+        fibers[i] = f
+    FIBERS.run()
 
-    block run()
-        FIBERS.run()
-        jump give(0)
-
-    block give(i: USize)
-        branch i.eq(16)
-            ? return()
-            : continue
-        fibers.getitem(i).give_back()
-        jump give(i.add(1))
+    each i in 0 til 16
+        fibers[i].give_back()
+    then
+        return
 
 routine start() -> Void
     local state: @Shared <- Shared(total: 0)
     local threads: @Array[Thread[Void], 4] <- .hollow()
 
-    jump spawn(0)
-
-    block spawn(i: USize)
-        branch i.eq(4)
-            ? collect(0)
-            : continue
+    each i in 0 til 4
         t: Thread[Void] = get_thread[Void]()
         t.put_work(entry: run_fibers.to[Callable](), args: state)
-        threads.setitem(index: i, value: t)
-        jump spawn(i.add(1))
+        threads[i] = t
+    then
+        each i2 in 0 til 4
+            t: Thread[Void] = threads[i2]
+            t.wait_finished()
+            t.give_back()
+        Out.write("{state.total.peek()}\n")
+        return
 
-    block collect(i: USize)
-        branch i.eq(4)
-            ? report()
-            : continue
-        t: Thread[Void] = threads.getitem(i)
+    each i in 0 til 4
+        t: Thread[Void] = threads[i]
         t.wait_finished()
         t.give_back()
-        jump collect(i.add(1))
-
-    block report()
-        Out.write("{state.total.peek()}\n")
-        return()
+    Out.write("{state.total.peek()}\n")
+    return

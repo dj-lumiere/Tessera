@@ -567,41 +567,30 @@ record CmF64LgammaFast
 /// :returns: The natural logarithm of the absolute value of the gamma function at `me`.
 routine B64.ln_gamma(me: Me) -> Me
     local t: U64 = me.bits()
-    local nx: U64 = t.shl(1)
+    local nx: U64 = t << 1
 
-    huge: Bool = nx.ge(0xFEAEA9B24F16A34C)  // |x| >= 0x1.006df1bfac84ep+1015
-    branch huge
-        ? huge()
-        : continue
-    integer: Bool = me.floor().eq(me)
-    branch integer
-        ? integer()
-        : general()
-
-    // two hard cases, +-inf, NaN (x + x quiets it), and overflow (huge negative integers are poles)
-    block huge()
+    // |x| >= 0x1.006df1bfac84ep+1015
+    if nx >= 0xFEAEA9B24F16A34C
+        // two hard cases, +-inf, NaN (x + x quiets it), and overflow (huge negative integers are poles)
         when
-            t.eq(0x7F5754D9278B51A6) => return(Me.sub(0x1.ffffffffffffep+1023, 0x1p+969))
-            t.eq(0x7F5754D9278B51A7) => return(Me.sub(0x1.fffffffffffffp+1023, 0x1p+969))
-            nx.eq(0xFFE0000000000000) => return(me.abs())
-            nx.gt(0xFFE0000000000000) => return(me.add(me))
-            else => return(Me.mul(0x1.fp+1023, 0x1.fp+1023))
-
-    // 0 and the negative integers are poles, and lgamma(1) = lgamma(2) = 0
-    block integer()
+            t == 0x7F5754D9278B51A6 => return Me.sub(1.7976931348623155e308, 4.9896007738368e291)
+            t == 0x7F5754D9278B51A7 => return Me.sub(1.7976931348623157e308, 4.9896007738368e291)
+            nx == 0xFFE0000000000000 => return me.abs()
+            nx > 0xFFE0000000000000 => return me + me
+            else => return Me.mul(1.7415152243978685e308, 1.7415152243978685e308)
+    if me.floor() == me
+        // 0 and the negative integers are poles, and lgamma(1) = lgamma(2) = 0
         when
-            me.le(0.0) => return(Me.from_bits(0x7FF0000000000000))
-            me.eq(1.0).bitor(me.eq(2.0)) => return(0.0)
-            else => general()
-
-    block general()
-        f: CmF64LgammaFast = cm_b64_lgamma_dd(me)
-        ub: Me = f.hi.add(f.lo.add(f.eps))
-        lb: Me = f.hi.add(f.lo.sub(f.eps))
-        unsure: Bool = ub.ne(lb)
-        branch unsure
-            ? return(cm_b64_lgamma_accurate(me))
-            : return(ub)
+            me <= 0.0 => return Me.from_bits(0x7FF0000000000000)
+            me == 1.0 or me == 2.0 => return 0.0
+            else => pass
+    f: CmF64LgammaFast = cm_b64_lgamma_dd(me)
+    ub: Me = f.hi + (f.lo + f.eps)
+    lb: Me = f.hi + (f.lo - f.eps)
+    if ub != lb
+        return cm_b64_lgamma_accurate(me)
+    else
+        return ub
 
 /// The double-double fast phase of lgamma, for a finite x that is not a pole, not
 /// 1 or 2, and below 0x1.006df1bfac84ep+1015 in magnitude.
@@ -609,139 +598,138 @@ routine B64.ln_gamma(me: Me) -> Me
 /// :returns: The approximation hi + lo and its error bound eps.
 private routine cm_b64_lgamma_dd(x: B64) -> CmF64LgammaFast
     local t: U64 = x.bits()
-    local au: U64 = t.shl(1).shr(38)
+    local au: U64 = (t << 1) >> 38
 
-    small: Bool = au.lt(CM_B64_LGAMMA_UBRD.getitem(0))
-    branch small
-        ? small()
-        : large()
+    if au < CM_B64_LGAMMA_UBRD.getitem(0)
+        jump small()
+    else
+        jump large()
 
     // |x| < 0.5: lgamma(x) = lgamma(1 + x) - log|x|
     block small()
         lg: CmF64GammaDD = cm_b64_gamma_logd(x.abs())
         when
-            au.lt(0x1DA0000) => return(CmF64LgammaFast(hi: lg.hi.neg(), lo: lg.lo.neg(),
-                eps: 0x1.6aad80c11872cp-73))  // |x| < 2^-75
-            au.lt(0x1FD0000) => series(lg)  // |x| < 0.03125
-            else => shifted(lg)
+            au < 0x1DA0000 => return CmF64LgammaFast(hi: -lg.hi, lo: -lg.lo, eps: 1.5e-22)
+            au < 0x1FD0000 => jump series(lg)
+            else => jump shifted(lg)
 
+    // |x| < 2^-75
+    // |x| < 0.03125
     block series(lg: CmF64GammaDD)
-        z2: B64 = x.mul(x)
-        z4: B64 = z2.mul(z2)
+        z2: B64 = x * x
+        z4: B64 = z2 * z2
         lo: B64 = cm_b64_lgamma_pair4(z: x, z2, q: 1437)
         hi: B64 = cm_b64_lgamma_pair4(z: x, z2, q: 1441)
-        fl: B64 = x.mul(lo.add(z4.mul(hi)))
+        fl: B64 = x * (lo + z4 * hi)
         p: CmF64GammaDD = cm_b64_lgamma_polydddfst(x, n: 4, base: 1429, l: fl)
         m: CmF64GammaDD = cm_b64_gamma_mulddd(x, ch: p.hi, cl: p.lo)
-        f: CmF64GammaDD = cm_b64_gamma_sumdd(xh: lg.hi.neg(), xl: lg.lo.neg(), yh: m.hi, yl: m.lo)
-        return(CmF64LgammaFast(hi: f.hi, lo: f.lo, eps: 0x1.6aad80c11872cp-73))
+        f: CmF64GammaDD = cm_b64_gamma_sumdd(xh: -lg.hi, xl: -lg.lo, yh: m.hi, yl: m.lo)
+        return CmF64LgammaFast(hi: f.hi, lo: f.lo, eps: 1.5e-22)
 
     // 0.03125 <= |x| < 0.5: 1 + x falls in the piece-wise approximation
     block shifted(lg: CmF64GammaDD)
         s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: 1.0, y: x)
-        j: USize = cm_b64_lgamma_piece(s.hi.bits().shr(37))
-        z: B64 = s.hi.sub(cm_b64_lgamma_t(j.add(1068))).add(s.lo)
+        j: USize = cm_b64_lgamma_piece(s.hi.bits() >> 37)
+        z: B64 = s.hi - cm_b64_lgamma_t(j + 1068) + s.lo
         p: CmF64GammaDD = cm_b64_lgamma_piece_poly(z, j)
-        root: Bool = j.eq(4)  // the region around the root at 1
-        f: CmF64GammaDD = root
-            ? cm_b64_gamma_mulddd(x: x.neg(), ch: p.hi, cl: p.lo)
-            : p
-        eps: B64 = f.hi.abs().mul(0x1.87f4d7d0af16bp-64)
-        g: CmF64GammaDD = cm_b64_gamma_sumdd(xh: lg.hi.neg(), xl: lg.lo.neg(), yh: f.hi, yl: f.lo)
-        return(CmF64LgammaFast(hi: g.hi, lo: g.lo,
-            eps: eps.add(lg.hi.abs().mul(0x1.2e3b40a0e9b4fp-71))))
+        root: Bool = j == 4
+        // the region around the root at 1
+        f: CmF64GammaDD = when
+            root => cm_b64_gamma_mulddd(x: -x, ch: p.hi, cl: p.lo)
+            else => p
+        eps: B64 = f.hi.abs() * 8.3e-20
+        g: CmF64GammaDD = cm_b64_gamma_sumdd(xh: -lg.hi, xl: -lg.lo, yh: f.hi, yl: f.lo)
+        return CmF64LgammaFast(hi: g.hi, lo: g.lo, eps: eps + lg.hi.abs() * 5e-22)
 
     block large()
         ax: B64 = x.abs()
-        stirling: Bool = au.ge(CM_B64_LGAMMA_UBRD.getitem(19))
-        branch stirling
-            ? stirling(ax)
-            : pieces(ax)
+        if au >= CM_B64_LGAMMA_UBRD.getitem(19)
+            jump stirling(ax)
+        else
+            jump pieces(ax)
 
     // |x| >= 8.29541: Stirling's series, (|x| - 1/2) (log|x| - 1) + ...
     block stirling(ax: B64)
         lg: CmF64GammaDD = cm_b64_gamma_logd(ax)
-        lh: B64 = lg.hi.sub(1.0)
+        lh: B64 = lg.hi - 1.0
         s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: lh, y: lg.lo)
         when
-            au.ge(0x3FABAA6) => above_2p52(ax, s.hi, s.lo)  // |x| >= 0x1.754cp+1014
-            au.ge(0x2198000) => above_2p52(ax, lh, lg.lo)  // |x| >= 2^52
-            else => below_2p52(ax, lh, lg.lo)
+            au >= 0x3FABAA6 => jump above_2p52(ax, s.hi, s.lo)
+            au >= 0x2198000 => jump above_2p52(ax, lh, lg.lo)
+            else => jump below_2p52(ax, lh, lg.lo)
+
+    // |x| >= 0x1.754cp+1014
+    // |x| >= 2^52
 
     // |x| - 1/2 isn't exact: multiply by |x| and take half the log off
     block above_2p52(ax: B64, lh: B64, ll: B64)
         m: CmF64GammaDD = cm_b64_gamma_mulddd(x: ax, ch: lh, cl: ll)
-        jump asym(ax, m.hi, m.lo.sub(lh.mul(0.5)))
+        jump asym(ax, m.hi, m.lo - lh * 0.5)
 
     block below_2p52(ax: B64, lh: B64, ll: B64)
-        m: CmF64GammaDD = cm_b64_gamma_mulddd(x: ax.sub(0.5), ch: lh, cl: ll)
+        m: CmF64GammaDD = cm_b64_gamma_mulddd(x: ax - 0.5, ch: lh, cl: ll)
         jump asym(ax, m.hi, m.lo)
 
     block asym(ax: B64, lh: B64, ll: B64)
-        a: CmF64GammaDD = cm_b64_gamma_fastsum(xh: lh, xl: ll, yh: cm_b64_lgamma_t(1445),
-            yl: cm_b64_lgamma_t(1446))
-        finite: Bool = ax.lt(0x1p+100)
-        branch finite
-            ? tail(ax, a)
-            : asym_sum(a, 0.0, 0.0)
+        a: CmF64GammaDD = cm_b64_gamma_fastsum(xh: lh, xl: ll, yh: cm_b64_lgamma_t(1445), yl: cm_b64_lgamma_t(1446))
+        if ax < 1.2676506002282294e30
+            jump tail(ax, a)
+        else
+            jump asym_sum(a, 0.0, 0.0)
 
     // the series in 1/|x|, negligible from 2^100 on
     block tail(ax: B64, a: CmF64GammaDD)
         zh: B64 = B64.div(1.0, ax)
-        zl: B64 = zh.mul_add(a: ax.neg(), b: 1.0).mul(zh)
-        z2h: B64 = zh.mul(zh)
-        z4h: B64 = z2h.mul(z2h)
-        q0: B64 = cm_b64_lgamma_t(1449).add(z2h.mul(cm_b64_lgamma_t(1450)))
-        q2: B64 = cm_b64_lgamma_t(1451).add(z2h.mul(cm_b64_lgamma_t(1452)))
+        zl: B64 = zh.mul_add(a: -ax, b: 1.0) * zh
+        z2h: B64 = zh * zh
+        z4h: B64 = z2h * z2h
+        q0: B64 = cm_b64_lgamma_t(1449) + z2h * cm_b64_lgamma_t(1450)
+        q2: B64 = cm_b64_lgamma_t(1451) + z2h * cm_b64_lgamma_t(1452)
         q4: B64 = cm_b64_lgamma_t(1453)
-        fl: B64 = z2h.mul(q0.add(z4h.mul(q2.add(z4h.mul(q4)))))
+        fl: B64 = z2h * (q0 + z4h * (q2 + z4h * q4))
         f: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: cm_b64_lgamma_t(1447), y: fl)
-        g: CmF64GammaDD = cm_b64_gamma_muldd(xh: f.hi, xl: f.lo.add(cm_b64_lgamma_t(1448)), ch: zh,
-            cl: zl)
+        g: CmF64GammaDD = cm_b64_gamma_muldd(xh: f.hi, xl: f.lo + cm_b64_lgamma_t(1448), ch: zh, cl: zl)
         jump asym_sum(a, g.hi, g.lo)
 
     block asym_sum(a: CmF64GammaDD, fh: B64, fl: B64)
         f: CmF64GammaDD = cm_b64_gamma_fastsum(xh: a.hi, xl: a.lo, yh: fh, yl: fl)
-        jump reflect(f.hi, f.lo, f.hi.abs().mul(0x1.a90352e248a68p-65))
+        jump reflect(f.hi, f.lo, f.hi.abs() * 4.5e-20)
 
     // 0.5 <= |x| < 8.29541: piece-wise polynomials, with the roots at 1 and 2 factored out
     block pieces(ax: B64)
         j: USize = cm_b64_lgamma_piece(au)
-        z: B64 = ax.sub(cm_b64_lgamma_t(j.add(1068)))
+        z: B64 = ax - cm_b64_lgamma_t(j + 1068)
         p: CmF64GammaDD = cm_b64_lgamma_piece_poly(z, j)
-        one: Bool = j.eq(4)
-        two: Bool = j.eq(10)
-        f1: CmF64GammaDD = one
-            ? cm_b64_gamma_mulddd(x: B64.sub(1.0, ax), ch: p.hi, cl: p.lo)
-            : p
-        f: CmF64GammaDD = two
-            ? cm_b64_gamma_mulddd(x: ax.sub(2.0), ch: f1.hi, cl: f1.lo)
-            : f1
-        hi_err: B64 = f.hi.abs().mul(0x1.9ad88bdabdb20p-64)
-        eps: B64 = hi_err.add(0x1.357c299a88ea7p-80)
-        jump reflect(f.hi, f.lo, eps)
+        one: Bool = j == 4
+        two: Bool = j == 10
+        f1: CmF64GammaDD = when
+            one => cm_b64_gamma_mulddd(x: B64.sub(1.0, ax), ch: p.hi, cl: p.lo)
+            else => p
+        f: CmF64GammaDD = when
+            two => cm_b64_gamma_mulddd(x: ax - 2.0, ch: f1.hi, cl: f1.lo)
+            else => f1
+        hi_err: B64 = f.hi.abs() * 8.7e-20
+        jump reflect(f.hi, f.lo, hi_err + 1e-24)
 
     block reflect(fh: B64, fl: B64, eps: B64)
-        negative: Bool = t.shr(63).eq(1)
-        branch negative
-            ? negative(fh, fl, eps)
-            : return(CmF64LgammaFast(hi: fh, lo: fl, eps: eps))
+        if t >> 63 == 1
+            jump negative(fh, fl, eps)
+        else
+            return CmF64LgammaFast(hi: fh, lo: fl, eps: eps)
 
     // x < 0: lgamma(x) = log(pi / |x sin(pi x)|) - lgamma(-x)
     block negative(fh: B64, fl: B64, eps: B64)
-        s0: CmF64GammaDD = cm_b64_lgamma_sinpipid(x.sub(x.floor()))
-        sp: CmF64GammaDD = cm_b64_gamma_mulddd(x: x.neg(), ch: s0.hi, cl: s0.lo)
+        s0: CmF64GammaDD = cm_b64_lgamma_sinpipid(x - x.floor())
+        sp: CmF64GammaDD = cm_b64_gamma_mulddd(x: -x, ch: s0.hi, cl: s0.lo)
         lg: CmF64GammaDD = cm_b64_gamma_logd(sp.hi)
-        s: CmF64GammaDD = cm_b64_gamma_sumdd(xh: fh, xl: fl, yh: lg.hi,
-            yl: lg.lo.add(sp.lo.div(sp.hi)))
-        return(CmF64LgammaFast(hi: s.hi.neg(), lo: s.lo.neg(),
-            eps: eps.add(lg.hi.abs().mul(0x1.e392010175ee6p-71))))
+        s: CmF64GammaDD = cm_b64_gamma_sumdd(xh: fh, xl: fl, yh: lg.hi, yl: lg.lo + sp.lo / sp.hi)
+        return CmF64LgammaFast(hi: -s.hi, lo: -s.lo, eps: eps + lg.hi.abs() * 8e-22)
 
 /// Entry i of CM_B64_LGAMMA_T as a B64.
 /// :param i: The index into the table.
 /// :returns: The entry as a B64.
 private routine cm_b64_lgamma_t(i: USize) -> B64
-    return(B64.from_bits(CM_B64_LGAMMA_T.getitem(i)))
+    return B64.from_bits(CM_B64_LGAMMA_T.getitem(i))
 
 /// (c[q] + z c[q+1]) + z2 (c[q+2] + z c[q+3]) for the entries c of CM_B64_LGAMMA_T.
 /// :param z: The argument.
@@ -749,59 +737,54 @@ private routine cm_b64_lgamma_t(i: USize) -> B64
 /// :param q: The table index of c[q].
 /// :returns: The value of the four-term polynomial.
 private routine cm_b64_lgamma_pair4(z: B64, z2: B64, q: USize) -> B64
-    a: B64 = cm_b64_lgamma_t(q).add(z.mul(cm_b64_lgamma_t(q.add(1))))
-    b: B64 = cm_b64_lgamma_t(q.add(2)).add(z.mul(cm_b64_lgamma_t(q.add(3))))
-    return(a.add(z2.mul(b)))
+    a: B64 = cm_b64_lgamma_t(q) + z * cm_b64_lgamma_t(q + 1)
+    b: B64 = cm_b64_lgamma_t(q + 2) + z * cm_b64_lgamma_t(q + 3)
+    return a + z2 * b
 
 /// The piece-wise region (0..18) of [0.5, 8.29541] holding the argument whose bits
 /// shifted right by 37 are au (at least CM_B64_LGAMMA_UBRD[0]).
 /// :param au: The bits of the argument's absolute value, shifted right by 37.
 /// :returns: The region index.
 private routine cm_b64_lgamma_piece(au: U64) -> USize
-    ou: U64 = au.sub(CM_B64_LGAMMA_UBRD.getitem(0))
-    p: U64 = ou.mul_wrap(0x150D).bitand(0xFFFFFFFF)  // the C code's 32-bit product wraps
-    prod: U64 = U64.sub_wrap(0x157CED865, p).mul_wrap(ou)
-    region: U64 = prod.add_wrap(0x128000000000).shr(45)
+    ou: U64 = au - CM_B64_LGAMMA_UBRD.getitem(0)
+    p: U64 = ou *% 0x150D & 0xFFFFFFFF
+    // the C code's 32-bit product wraps
+    prod: U64 = U64.sub_wrap(0x157CED865, p) *% ou
+    region: U64 = prod +% 0x128000000000 >> 45
     j: USize = region.to[USize]()
-    below: Bool = au.lt(CM_B64_LGAMMA_UBRD.getitem(j))
-    branch below
-        ? return(j.sub(1))
-        : return(j)
+    if au < CM_B64_LGAMMA_UBRD.getitem(j)
+        return j - 1
+    else
+        return j
 
 /// The region-j polynomial of the piece-wise approximation at the offset z.
 /// :param z: The offset of the argument within the region.
 /// :param j: The region index, 0..18.
 /// :returns: The polynomial value as a double-double.
 private routine cm_b64_lgamma_piece_poly(z: B64, j: USize) -> CmF64GammaDD
-    z2: B64 = z.mul(z)
-    z4: B64 = z2.mul(z2)
-    q: USize = j.mul(8).add(1087)
+    z2: B64 = z * z
+    z4: B64 = z2 * z2
+    q: USize = j * 8 + 1087
     lo: B64 = cm_b64_lgamma_pair4(z, z2, q)
-    hi: B64 = cm_b64_lgamma_pair4(z, z2, q: q.add(4))
-    fl: B64 = z.mul(lo.add(z4.mul(hi)))
-    return(cm_b64_lgamma_polydddfst(x: z, n: 5, base: j.mul(10).add(1239), l: fl))
+    hi: B64 = cm_b64_lgamma_pair4(z, z2, q: q + 4)
+    fl: B64 = z * (lo + z4 * hi)
+    return cm_b64_lgamma_polydddfst(x: z, n: 5, base: j * 10 + 1239, l: fl)
 
 /// The correctly rounded log-gamma of a tabulated hard-to-round x, or f otherwise.
 /// :param x: The argument.
 /// :param f: The result returned when `x` is not in the table.
 /// :returns: The correctly rounded log-gamma for a listed `x`, else `f`.
 private routine cm_b64_lgamma_database(x: B64, f: B64) -> B64
-    jump search(0, 18)
-
-    block search(a: S64, b: S64)
-        empty: Bool = a.gt(b)
-        branch empty
-            ? return(f)
-            : probe(a, b)
-
-    block probe(a: S64, b: S64)
-        m: S64 = a.add(b).div(2)
-        base: USize = m.mul(3).to[USize]()
+    while a <= b with a: S64 = 0, b: S64 = 18
+        m: S64 = (a + b) / 2
+        base: USize = (m * 3).to[USize]()
         key: B64 = cm_b64_lgamma_t(base)
         when
-            key.lt(x) => search(m.add(1), b)
-            key.eq(x) => return(cm_b64_lgamma_t(base.add(1)).add(cm_b64_lgamma_t(base.add(2))))
-            else => search(a, m.sub(1))
+            key < x => continue with a: m + 1, b: b
+            key == x => return cm_b64_lgamma_t(base + 1) + cm_b64_lgamma_t(base + 2)
+            else => continue with a: a, b: m - 1
+    then
+        return f
 
 /// The triple-double sum f + l.
 /// :param f: The triple-double addend.
@@ -813,7 +796,7 @@ private routine cm_b64_lgamma_add3(f: CmF64GammaTD, lh: B64, ll: B64, lll: B64) 
     s: CmF64GammaDD = cm_b64_gamma_sumdd(xh: f.mid, xl: f.lo, yh: ll, yl: lll)
     h: CmF64GammaDD = cm_b64_gamma_twosum(x: f.hi, y: lh)
     s2: CmF64GammaDD = cm_b64_gamma_sumdd(xh: s.hi, xl: s.lo, yh: h.lo, yl: 0.0)
-    return(CmF64GammaTD(hi: h.hi, mid: s2.hi, lo: s2.lo))
+    return CmF64GammaTD(hi: h.hi, mid: s2.hi, lo: s2.lo)
 
 /// f + log(x) for a triple-double f and x > 0, both as triple-doubles.
 /// :param f: The triple-double addend.
@@ -821,24 +804,24 @@ private routine cm_b64_lgamma_add3(f: CmF64GammaTD, lh: B64, ll: B64, lll: B64) 
 /// :returns: The sum as a triple-double.
 private routine cm_b64_lgamma_add_log(f: CmF64GammaTD, x: B64) -> CmF64GammaTD
     l: CmF64GammaTD = cm_b64_lgamma_logd_accurate(x)
-    return(cm_b64_lgamma_add3(f, lh: l.hi, ll: l.mid, lll: l.lo))
+    return cm_b64_lgamma_add3(f, lh: l.hi, ll: l.mid, lll: l.lo)
 
 /// log(x - 1) + log(x - 2) as a triple-double, for x > 2.
 /// :param x: The argument, greater than 2.
 /// :returns: The sum of the two logarithms as a triple-double.
 private routine cm_b64_lgamma_log2terms(x: B64) -> CmF64GammaTD
-    l2: CmF64GammaTD = cm_b64_lgamma_logd_accurate(x.sub(2.0))
-    l1: CmF64GammaTD = cm_b64_lgamma_logd_accurate(x.sub(1.0))
+    l2: CmF64GammaTD = cm_b64_lgamma_logd_accurate(x - 2.0)
+    l1: CmF64GammaTD = cm_b64_lgamma_logd_accurate(x - 1.0)
     s: CmF64GammaDD = cm_b64_gamma_sumdd(xh: l1.mid, xl: l1.lo, yh: l2.mid, yl: l2.lo)
     h: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: l1.hi, y: l2.hi)
     s2: CmF64GammaDD = cm_b64_gamma_sumdd(xh: s.hi, xl: s.lo, yh: h.lo, yl: 0.0)
-    return(CmF64GammaTD(hi: h.hi, mid: s2.hi, lo: s2.lo))
+    return CmF64GammaTD(hi: h.hi, mid: s2.hi, lo: s2.lo)
 
 /// A double-double as a triple-double with a zero low part.
 /// :param f: The double-double value.
 /// :returns: `f` as a triple-double.
 private routine cm_b64_lgamma_td(f: CmF64GammaDD) -> CmF64GammaTD
-    return(CmF64GammaTD(hi: f.hi, mid: f.lo, lo: 0.0))
+    return CmF64GammaTD(hi: f.hi, mid: f.lo, lo: 0.0)
 
 /// The accurate phase of lgamma, for a finite x that is not a pole.
 /// :param x: The argument.
@@ -847,15 +830,15 @@ private routine cm_b64_lgamma_accurate(x: B64) -> B64
     local ax: B64 = x.abs()
 
     when
-        ax.lt(0x1p-100) => tiny()
-        ax.lt(0x1p-2) => small()
-        else => regions()
+        ax < 7.888609052210118e-31 => jump tiny()
+        ax < 0.25 => jump small()
+        else => jump regions()
 
     // |x| < 2^-100: lgamma(x) = -log|x|
     block tiny()
         l: CmF64GammaTD = cm_b64_lgamma_logd_accurate(ax)
-        s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: l.hi.neg(), y: l.mid.neg())
-        s2: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: s.lo, y: l.lo.neg())
+        s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: -l.hi, y: -l.mid)
+        s2: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: s.lo, y: -l.lo)
         jump near_zero(s.hi, s2.hi, s2.lo)
 
     // |x| < 1/4: lgamma(x) = x P(x) - log|x|
@@ -863,130 +846,122 @@ private routine cm_b64_lgamma_accurate(x: B64) -> B64
         p: CmF64GammaDD = cm_b64_lgamma_polydddfst(x, n: 34, base: 57, l: 0.0)
         m: CmF64GammaDD = cm_b64_gamma_mulddd(x, ch: p.hi, cl: p.lo)
         l: CmF64GammaTD = cm_b64_lgamma_logd_accurate(ax)
-        f: CmF64GammaDD = cm_b64_gamma_sumdd(xh: m.hi, xl: m.lo, yh: l.mid.neg(), yl: l.lo.neg())
-        h: CmF64GammaDD = cm_b64_gamma_twosum(x: l.hi.neg(), y: f.hi)
+        f: CmF64GammaDD = cm_b64_gamma_sumdd(xh: m.hi, xl: m.lo, yh: -l.mid, yl: -l.lo)
+        h: CmF64GammaDD = cm_b64_gamma_twosum(x: -l.hi, y: f.hi)
         s: CmF64GammaDD = cm_b64_gamma_twosum(x: h.lo, y: f.lo)
         jump near_zero(h.hi, s.hi, s.lo)
 
     // fh + fl a rounding midpoint: move fl toward fll (the second test holds in round to nearest)
     block near_zero(fh: B64, fl: B64, fll: B64)
         e: B64 = cm_b64_gamma_fasttwosum(x: fh, y: B64.mul(2.0, fl)).lo
-        tie: Bool = e.eq(0.0).bitand(B64.add(1.0, 0x1p-54).eq(B64.sub(1.0, 0x1p-54)))
-        adj: B64 = B64.copysign(0x1p-52, fl).mul(B64.copysign(1.0, fll))
-        branch tie
-            ? roots(fh, fl.mul(B64.add(1.0, adj)))
-            : roots(fh, fl)
+        tie: Bool = e == 0.0 and B64.add(1.0, 5.551115123125783e-17) == B64.sub(1.0, 5.551115123125783e-17)
+        adj: B64 = B64.copysign(2.220446049250313e-16, fl) * B64.copysign(1.0, fll)
+        if tie
+            jump roots(fh, fl * B64.add(1.0, adj))
+        else
+            jump roots(fh, fl)
 
     // |x| >= 1/4: lgamma(|x|) or, for x < 0, lgamma(1 + |x|), from the region of |x|
     block regions()
-        gap_half: B64 = ax.sub(0.5).abs()
-        branch gap_half.lt(0x1p-2)
-            ? around_half()
-            : continue
-        gap_2half: B64 = ax.sub(2.5).abs()
-        branch gap_2half.lt(0x1p-2)
-            ? around_2half()
-            : continue
-        gap_3half: B64 = ax.sub(3.5).abs()
-        branch gap_3half.lt(0x1p-2)
-            ? around_3half()
-            : continue
-        gap_one: B64 = ax.sub(1.0).abs()
-        branch gap_one.lt(0x1p-2)
-            ? around_one()
-            : continue
-        gap_1half: B64 = ax.sub(1.5).abs()
-        branch gap_1half.lt(0x1p-2)
-            ? around_1half()
-            : continue
-        gap_two: B64 = ax.sub(2.0).abs()
-        branch gap_two.lt(0x1p-2)
-            ? around_two()
-            : continue
-        gap_three: B64 = ax.sub(3.0).abs()
-        branch gap_three.lt(0x1p-2)
-            ? around_three()
-            : asym()
+        gap_half: B64 = (ax - 0.5).abs()
+        if gap_half < 0.25
+            jump around_half()
+        gap_2half: B64 = (ax - 2.5).abs()
+        if gap_2half < 0.25
+            jump around_2half()
+        gap_3half: B64 = (ax - 3.5).abs()
+        if gap_3half < 0.25
+            jump around_3half()
+        gap_one: B64 = (ax - 1.0).abs()
+        if gap_one < 0.25
+            jump around_one()
+        gap_1half: B64 = (ax - 1.5).abs()
+        if gap_1half < 0.25
+            jump around_1half()
+        gap_two: B64 = (ax - 2.0).abs()
+        if gap_two < 0.25
+            jump around_two()
+        gap_three: B64 = (ax - 3.0).abs()
+        if gap_three < 0.25
+            jump around_three()
+        else
+            jump asym()
 
     // the polynomial of lgamma(1 + y) around 1.5 gives lgamma(1/2 + d) after taking log off
     block around_half()
-        r: CmF64GammaTD = cm_b64_lgamma_td(cm_b64_lgamma_polydddfst(x: ax.sub(0.5), n: 30,
-            base: 125, l: 0.0))
-        positive: Bool = x.gt(0.0)
-        branch positive
-            ? minus_log(r)
-            : combine(r)
+        r: CmF64GammaTD = cm_b64_lgamma_td(cm_b64_lgamma_polydddfst(x: ax - 0.5, n: 30, base: 125, l: 0.0))
+        if x > 0.0
+            jump minus_log(r)
+        else
+            jump combine(r)
 
     block minus_log(r: CmF64GammaTD)
         l: CmF64GammaTD = cm_b64_lgamma_logd_accurate(ax)
-        jump combine(cm_b64_lgamma_add3(f: r, lh: l.hi.neg(), ll: l.mid.neg(), lll: l.lo.neg()))
+        jump combine(cm_b64_lgamma_add3(f: r, lh: -l.hi, ll: -l.mid, lll: -l.lo))
 
     block around_2half()
-        f: CmF64GammaTD = cm_b64_lgamma_td(cm_b64_lgamma_polydddfst(x: ax.sub(2.5), n: 30,
-            base: 125, l: 0.0))
-        jump shift_up(cm_b64_lgamma_add_log(f, x: ax.sub(1.0)))
+        f: CmF64GammaTD = cm_b64_lgamma_td(cm_b64_lgamma_polydddfst(x: ax - 2.5, n: 30, base: 125, l: 0.0))
+        jump shift_up(cm_b64_lgamma_add_log(f, x: ax - 1.0))
 
     block around_3half()
         l: CmF64GammaTD = cm_b64_lgamma_log2terms(ax)
-        f: CmF64GammaTD = cm_b64_lgamma_td(cm_b64_lgamma_polydddfst(x: ax.sub(3.5), n: 30,
-            base: 125, l: 0.0))
+        f: CmF64GammaTD = cm_b64_lgamma_td(cm_b64_lgamma_polydddfst(x: ax - 3.5, n: 30, base: 125, l: 0.0))
         jump shift_up(cm_b64_lgamma_add3(f, lh: l.hi, ll: l.mid, lll: l.lo))
 
     block around_one()
-        d: B64 = ax.sub(1.0)
+        d: B64 = ax - 1.0
         p: CmF64GammaDD = cm_b64_lgamma_polydddfst(x: d, n: 34, base: 57, l: 0.0)
         jump shift_up(cm_b64_lgamma_td(cm_b64_gamma_mulddd(x: d, ch: p.hi, cl: p.lo)))
 
     block around_1half()
-        jump shift_up(cm_b64_lgamma_td(cm_b64_lgamma_polydddfst(x: ax.sub(1.5), n: 30, base: 125,
-            l: 0.0)))
+        jump shift_up(cm_b64_lgamma_td(cm_b64_lgamma_polydddfst(x: ax - 1.5, n: 30, base: 125, l: 0.0)))
 
     block around_two()
-        l: CmF64GammaTD = cm_b64_lgamma_logd_accurate(ax.sub(1.0))
-        d: B64 = ax.sub(2.0)
+        l: CmF64GammaTD = cm_b64_lgamma_logd_accurate(ax - 1.0)
+        d: B64 = ax - 2.0
         p: CmF64GammaDD = cm_b64_lgamma_polydddfst(x: d, n: 34, base: 57, l: 0.0)
         f: CmF64GammaTD = cm_b64_lgamma_td(cm_b64_gamma_mulddd(x: d, ch: p.hi, cl: p.lo))
         jump shift_up(cm_b64_lgamma_add3(f, lh: l.hi, ll: l.mid, lll: l.lo))
 
     block around_three()
         l: CmF64GammaTD = cm_b64_lgamma_log2terms(ax)
-        d: B64 = ax.sub(3.0)
+        d: B64 = ax - 3.0
         p: CmF64GammaDD = cm_b64_lgamma_polydddfst(x: d, n: 34, base: 57, l: 0.0)
         f: CmF64GammaTD = cm_b64_lgamma_td(cm_b64_gamma_mulddd(x: d, ch: p.hi, cl: p.lo))
         jump shift_up(cm_b64_lgamma_add3(f, lh: l.hi, ll: l.mid, lll: l.lo))
 
     // r = lgamma(|x|). For x < 0 the reflection wants lgamma(1 + |x|) = r + log|x|
     block shift_up(r: CmF64GammaTD)
-        negative: Bool = x.lt(0.0)
-        branch negative
-            ? combine(cm_b64_lgamma_add_log(f: r, x: ax))
-            : combine(r)
+        if x < 0.0
+            jump combine(cm_b64_lgamma_add_log(f: r, x: ax))
+        else
+            jump combine(r)
 
     // Stirling's series at |x|, or at 1 + |x| = 1 - x for x < 0
     block asym()
-        negative: Bool = x.lt(0.0)
+        negative: Bool = x < 0.0
         s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: ax, y: 1.0)
-        branch negative
-            ? combine(cm_b64_lgamma_asym_accurate(xh: s.hi, xl: s.lo))
-            : combine(cm_b64_lgamma_asym_accurate(xh: ax, xl: 0.0))
+        if negative
+            jump combine(cm_b64_lgamma_asym_accurate(xh: s.hi, xl: s.lo))
+        else
+            jump combine(cm_b64_lgamma_asym_accurate(xh: ax, xl: 0.0))
 
     block combine(r: CmF64GammaTD)
-        negative: Bool = x.lt(0.0)
-        branch negative
-            ? reflection(r)
-            : collapse(r)
+        if x < 0.0
+            jump reflection(r)
+        else
+            jump collapse(r)
 
     // lgamma(x) = log(pi / |sin(pi x)|) - lgamma(1 - x)
     block reflection(r: CmF64GammaTD)
-        far: Bool = x.lt(-0.5)
-        phi: B64 = far
-            ? x.sub(x.floor())
-            : x.neg()
+        far: Bool = x < -0.5
+        phi: B64 = when
+            far => x - x.floor()
+            else => -x
         sp: CmF64GammaDD = cm_b64_lgamma_sinpipid_accurate(phi)
         l: CmF64GammaTD = cm_b64_lgamma_logd_accurate(sp.hi)
-        s: CmF64GammaTD = cm_b64_lgamma_add3(f: r, lh: l.hi,
-            ll: l.mid.add(sp.lo.div(sp.hi).add(l.lo)), lll: 0.0)
-        jump collapse(CmF64GammaTD(hi: s.hi.neg(), mid: s.mid.neg(), lo: s.lo.neg()))
+        s: CmF64GammaTD = cm_b64_lgamma_add3(f: r, lh: l.hi, ll: l.mid + (sp.lo / sp.hi + l.lo), lll: 0.0)
+        jump collapse(CmF64GammaTD(hi: -s.hi, mid: -s.mid, lo: -s.lo))
 
     // renormalize the triple-double, then nudge fl off a rounding midpoint toward fll
     block collapse(r: CmF64GammaTD)
@@ -995,33 +970,34 @@ private routine cm_b64_lgamma_accurate(x: B64) -> B64
         s3: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: s.hi, y: s2.hi)
         s4: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: s3.lo, y: s2.lo)
         e: B64 = cm_b64_gamma_fasttwosum(x: s3.hi, y: B64.mul(2.0, s4.hi)).lo
-        tie: Bool = e.eq(0.0)
-        adj: B64 = B64.copysign(0x1p-26, s4.hi).mul(B64.copysign(0x1p-26, s4.lo))
-        branch tie
-            ? roots(s3.hi, s4.hi.mul(B64.add(1.0, adj)))
-            : roots(s3.hi, s4.hi)
+        tie: Bool = e == 0.0
+        adj: B64 = B64.copysign(1.4901161193847656e-08, s4.hi) * B64.copysign(1.4901161193847656e-08, s4.lo)
+        if tie
+            jump roots(s3.hi, s4.hi * B64.add(1.0, adj))
+        else
+            jump roots(s3.hi, s4.hi)
 
     // near a root of lgamma for -10.5 < x < -2: a polynomial around the root
     block roots(fh: B64, fl: B64)
-        near: Bool = fh.abs().lt(0x1.8p-2)
-        branch near
-            ? scan(fh, fl, 0)
-            : finish(fh, fl)
+        if fh.abs() < 0.375
+            jump scan(fh, fl, 0)
+        else
+            jump finish(fh, fl)
 
     block scan(fh: B64, fl: B64, k: USize)
-        done: Bool = k.eq(17)
-        branch done
-            ? finish(fh, fl)
-            : check(fh, fl, k)
+        if k == 17
+            jump finish(fh, fl)
+        else
+            jump check(fh, fl, k)
 
     block check(fh: B64, fl: B64, k: USize)
-        small: Bool = fh.abs().lt(B64.from_bits(CM_B64_LGAMMA_RG_FH.getitem(k)))
-        above: Bool = x.gt(B64.from_bits(CM_B64_LGAMMA_RG_LO.getitem(k)))
-        below: Bool = x.lt(B64.from_bits(CM_B64_LGAMMA_RG_HI.getitem(k)))
-        match: Bool = small.bitand(above).bitand(below)
-        branch match
-            ? root(k)
-            : scan(fh, fl, k.add(1))
+        small: Bool = fh.abs() < B64.from_bits(CM_B64_LGAMMA_RG_FH.getitem(k))
+        above: Bool = x > B64.from_bits(CM_B64_LGAMMA_RG_LO.getitem(k))
+        below: Bool = x < B64.from_bits(CM_B64_LGAMMA_RG_HI.getitem(k))
+        if small and above and below
+            jump root(k)
+        else
+            jump scan(fh, fl, k + 1)
 
     block root(k: USize)
         f: CmF64GammaDD = cm_b64_lgamma_root_poly(x, k)
@@ -1029,11 +1005,11 @@ private routine cm_b64_lgamma_accurate(x: B64) -> B64
 
     // fl next to a power of two: fh + fl may be one of the tabulated hard cases
     block finish(fh: B64, fl: B64)
-        fl_near: U64 = fl.bits().add_wrap(2)
-        hard: Bool = fl_near.bitand(0x000FFFFFFFFFFFFF).le(2)
-        branch hard
-            ? return(cm_b64_lgamma_database(x, f: fh.add(fl)))
-            : return(fh.add(fl))
+        fl_near: U64 = fl.bits() +% 2
+        if fl_near & 0x000FFFFFFFFFFFFF <= 2
+            return cm_b64_lgamma_database(x, f: fh + fl)
+        else
+            return fh + fl
 
 /// The polynomial of root region k (around a root x0 of lgamma for -10.5 < x < -2) at x.
 /// :param x: The argument.
@@ -1044,19 +1020,18 @@ private routine cm_b64_lgamma_root_poly(x: B64, k: USize) -> CmF64GammaDD
     c: USize = CM_B64_LGAMMA_RG_C.getitem(k)
     n: USize = CM_B64_LGAMMA_RG_N.getitem(k)
     kk: USize = CM_B64_LGAMMA_RG_K.getitem(k)
-    biased_exponent: S64 = CM_B64_LGAMMA_RG_SC.getitem(k).add(1023)
-    sc: B64 = B64.from_bits(biased_exponent.to[U64]().shl(52))
-    z: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: cm_b64_lgamma_t(x0).add(x),
-        y: cm_b64_lgamma_t(x0.add(1)))
+    biased_exponent: S64 = CM_B64_LGAMMA_RG_SC.getitem(k) + 1023
+    sc: B64 = B64.from_bits(biased_exponent.to[U64]() << 52)
+    z: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: cm_b64_lgamma_t(x0) + x, y: cm_b64_lgamma_t(x0 + 1))
     zh: B64 = z.hi
-    zl: B64 = z.lo.add(cm_b64_lgamma_t(x0.add(2)))
-    sh: B64 = zh.mul(sc)
-    sl: B64 = zl.mul(sc)
-    nd: USize = n.sub(kk)
-    fl: B64 = sh.mul(cm_b64_lgamma_polyd(x: sh, n: kk, base: c.add(nd.mul(2))))
+    zl: B64 = z.lo + cm_b64_lgamma_t(x0 + 2)
+    sh: B64 = zh * sc
+    sl: B64 = zl * sc
+    nd: USize = n - kk
+    fl: B64 = sh * cm_b64_lgamma_polyd(x: sh, n: kk, base: c + nd * 2)
     s: CmF64GammaDD = (hi: sh, lo: sl)
     f: CmF64GammaDD = cm_b64_lgamma_polydd(x: s, n: nd, base: c, l: fl)
-    return(cm_b64_gamma_muldd(xh: zh, xl: zl, ch: f.hi, cl: f.lo))
+    return cm_b64_gamma_muldd(xh: zh, xl: zl, ch: f.hi, cl: f.lo)
 
 /// The double-double polynomial c[0] + c[1] x + ... + (c[n-1] + l) x^(n-1) of the
 /// (high, low) pairs of CM_B64_LGAMMA_T from base, at a double-double x.
@@ -1069,29 +1044,23 @@ private routine cm_b64_lgamma_polydd(x: CmF64GammaDD, n: USize, base: USize, l: 
     local ch: @B64 <- .hollow()
     local cl: @B64 <- .hollow()
 
-    i: USize = n.sub(1)
-    k: USize = base.add(i.mul(2))
+    i: USize = n - 1
+    k: USize = base + i * 2
     s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: cm_b64_lgamma_t(k), y: l)
     s.hi.poke_into(ch)
-    s.lo.add(cm_b64_lgamma_t(k.add(1))).poke_into(cl)
-    jump loop(i)
+    (s.lo + cm_b64_lgamma_t(k + 1)).poke_into(cl)
 
-    block loop(i: USize)
-        done: Bool = i.eq(0)
-        branch done
-            ? return(CmF64GammaDD(hi: ch.peek(), lo: cl.peek()))
-            : step(i.sub(1))
-
-    block step(i: USize)
-        k: USize = base.add(i.mul(2))
+    while i != 0
+        i2: USize = i - 1
+        k2: USize = base + i2 * 2
         m: CmF64GammaDD = cm_b64_gamma_muldd(xh: x.hi, xl: x.lo, ch: ch.peek(), cl: cl.peek())
-        a: CmF64GammaDD = cm_b64_gamma_fastsum(xh: cm_b64_lgamma_t(k),
-            xl: cm_b64_lgamma_t(k.add(1)), yh: m.hi, yl: m.lo)
+        a: CmF64GammaDD = cm_b64_gamma_fastsum(xh: cm_b64_lgamma_t(k2), xl: cm_b64_lgamma_t(k2 + 1), yh: m.hi, yl: m.lo)
         next_cl: B64 = a.lo
         next_ch: B64 = a.hi
         next_ch.poke_into(ch)
         next_cl.poke_into(cl)
-        jump loop(i)
+    then
+        return CmF64GammaDD(hi: ch.peek(), lo: cl.peek())
 
 /// The same polynomial at a double x.
 /// :param x: The argument.
@@ -1103,29 +1072,23 @@ private routine cm_b64_lgamma_polydddfst(x: B64, n: USize, base: USize, l: B64) 
     local ch: @B64 <- .hollow()
     local cl: @B64 <- .hollow()
 
-    i: USize = n.sub(1)
-    k: USize = base.add(i.mul(2))
+    i: USize = n - 1
+    k: USize = base + i * 2
     s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: cm_b64_lgamma_t(k), y: l)
     s.hi.poke_into(ch)
-    s.lo.add(cm_b64_lgamma_t(k.add(1))).poke_into(cl)
-    jump loop(i)
+    (s.lo + cm_b64_lgamma_t(k + 1)).poke_into(cl)
 
-    block loop(i: USize)
-        done: Bool = i.eq(0)
-        branch done
-            ? return(CmF64GammaDD(hi: ch.peek(), lo: cl.peek()))
-            : step(i.sub(1))
-
-    block step(i: USize)
-        k: USize = base.add(i.mul(2))
+    while i != 0
+        i2: USize = i - 1
+        k2: USize = base + i2 * 2
         m: CmF64GammaDD = cm_b64_gamma_mulddd(x, ch: ch.peek(), cl: cl.peek())
-        a: CmF64GammaDD = cm_b64_gamma_fastsum(xh: cm_b64_lgamma_t(k),
-            xl: cm_b64_lgamma_t(k.add(1)), yh: m.hi, yl: m.lo)
+        a: CmF64GammaDD = cm_b64_gamma_fastsum(xh: cm_b64_lgamma_t(k2), xl: cm_b64_lgamma_t(k2 + 1), yh: m.hi, yl: m.lo)
         next_cl: B64 = a.lo
         next_ch: B64 = a.hi
         next_ch.poke_into(ch)
         next_cl.poke_into(cl)
-        jump loop(i)
+    then
+        return CmF64GammaDD(hi: ch.peek(), lo: cl.peek())
 
 /// The double polynomial c[0] + c[1] x + ... + c[n-1] x^(n-1) of the high parts of the
 /// pairs of CM_B64_LGAMMA_T from base.
@@ -1136,85 +1099,72 @@ private routine cm_b64_lgamma_polydddfst(x: B64, n: USize, base: USize, l: B64) 
 private routine cm_b64_lgamma_polyd(x: B64, n: USize, base: USize) -> B64
     local ch: @B64 <- .hollow()
 
-    i: USize = n.sub(1)
-    cm_b64_lgamma_t(base.add(i.mul(2))).poke_into(ch)
-    jump loop(i)
+    i: USize = n - 1
+    cm_b64_lgamma_t(base + i * 2).poke_into(ch)
 
-    block loop(i: USize)
-        done: Bool = i.eq(0)
-        branch done
-            ? return(ch.peek())
-            : step(i.sub(1))
-
-    block step(i: USize)
-        cm_b64_lgamma_t(base.add(i.mul(2))).add(x.mul(ch.peek())).poke_into(ch)
-        jump loop(i)
+    while i != 0
+        i2: USize = i - 1
+        (cm_b64_lgamma_t(base + i2 * 2) + x * ch.peek()).poke_into(ch)
+    then
+        return ch.peek()
 
 /// sin(pi x) / pi as a double-double, for 0 < x < 1.
 /// :param x: The argument, 0 < x < 1.
 /// :returns: sin(pi `x`) / pi as a double-double.
 private routine cm_b64_lgamma_sinpipid(x: B64) -> CmF64GammaDD
-    local ax: B64 = x.sub(0.5).abs()
-    local sx: B64 = ax.mul(128.0)
+    local ax: B64 = (x - 0.5).abs()
+    local sx: B64 = ax * 128.0
     local ix: B64 = sx.round_ties_even()
     local ky: USize = ix.to[S64]().to[USize]()
     local kx: USize = USize.sub(64, ky)
 
-    edge: Bool = kx.lt(2)
-    branch edge
-        ? edge()
-        : table()
-
-    // x close to 0 or 1: sin(pi z) / pi = z (1 + z^2 P(z^2)) with z = 1/2 - |x - 1/2|
-    block edge()
+    if kx < 2
+        // x close to 0 or 1: sin(pi z) / pi = z (1 + z^2 P(z^2)) with z = 1/2 - |x - 1/2|
         z: B64 = B64.sub(0.5, ax)
-        z2: B64 = z.mul(z)
+        z2: B64 = z * z
         z2l: B64 = b64_mul_error(x: z, y: z, p: z2)
-        fl_tail: B64 = z2.mul(0x1.ac644e7aa33e6p-6).add(-0x1.86a8e46ddf78dp-3)
-        fl: B64 = z2.mul(z2.mul(fl_tail).add(0x1.9f9cb402bc42ap-1))
-        f0: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: -0x1.a51a6625307d3p+0, y: fl)
-        f1: CmF64GammaDD = cm_b64_gamma_muldd(xh: z2, xl: z2l, ch: f0.hi,
-            cl: f0.lo.add(-0x1.16cc8f2044a4ap-55))
+        fl_tail: B64 = z2 * 0.026146961822224223 + -0.19075182400041193
+        fl: B64 = z2 * (z2 * fl_tail + 0.8117424252833463)
+        f0: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: -1.6449340668482264, y: fl)
+        f1: CmF64GammaDD = cm_b64_gamma_muldd(xh: z2, xl: z2l, ch: f0.hi, cl: f0.lo + -3.02274545379001e-17)
         f: CmF64GammaDD = cm_b64_gamma_mulddd(x: z, ch: f1.hi, cl: f1.lo)
         s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: z, y: f.hi)
-        return(CmF64GammaDD(hi: s.hi, lo: f.lo.add(s.lo)))
-
-    block table()
-        d: B64 = ix.sub(sx)
-        d2: B64 = d.mul(d)
-        sh: B64 = cm_b64_lgamma_t(kx.mul(2).add(1671))
-        sl: B64 = cm_b64_lgamma_t(kx.mul(2).add(1670))
-        ch: B64 = cm_b64_lgamma_t(ky.mul(2).add(1671))
-        cl: B64 = cm_b64_lgamma_t(ky.mul(2).add(1670))
-        pp_tail: B64 = d2.mul(0x1.e1f4826790653p-59).add(-0x1.55d3c7e3bd8bfp-42)
-        pp: B64 = d2.mul(d2.mul(pp_tail).add(0x1.03c1f081b5ac4p-26))
-        qq_tail: B64 = d2.mul(-0x1.32d26e446373ap-50).add(0x1.466bc67748efcp-34)
-        qq: B64 = d2.mul(d2.mul(qq_tail).add(-0x1.4abbce625be53p-19))
-        q: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: 0x1.921fb54442d18p-6, y: qq)
-        c: CmF64GammaDD = cm_b64_gamma_muldd(xh: q.hi, xl: q.lo.add(0x1.1a624b88c9448p-60), ch, cl)
-        t0: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: -0x1.3bd3cc9be45dep-12, y: pp)
-        th: CmF64GammaDD = cm_b64_gamma_mulddd(x: d, ch: t0.hi,
-            cl: t0.lo.add(-0x1.692b66e3cf6e8p-66))
+        return CmF64GammaDD(hi: s.hi, lo: f.lo + s.lo)
+    else
+        d: B64 = ix - sx
+        d2: B64 = d * d
+        sh: B64 = cm_b64_lgamma_t(kx * 2 + 1671)
+        sl: B64 = cm_b64_lgamma_t(kx * 2 + 1670)
+        ch: B64 = cm_b64_lgamma_t(ky * 2 + 1671)
+        cl: B64 = cm_b64_lgamma_t(ky * 2 + 1670)
+        pp_tail: B64 = d2 * 3.2658548907715e-18 + -3.0360360343398624e-13
+        pp: B64 = d2 * (d2 * pp_tail + 1.5119880908790113e-08)
+        qq_tail: B64 = d2 * -1.0645026354944996e-15 + 7.421954185251001e-11
+        qq: B64 = d2 * (d2 * qq_tail + -2.4641574764489986e-06)
+        q: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: 0.02454369260617026, y: qq)
+        c: CmF64GammaDD = cm_b64_gamma_muldd(xh: q.hi, xl: q.lo + 9.567540887362087e-19, ch, cl)
+        t0: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: -0.0003011964233730883, y: pp)
+        th: CmF64GammaDD = cm_b64_gamma_mulddd(x: d, ch: t0.hi, cl: t0.lo + -1.912015617779642e-20)
         ph: CmF64GammaDD = cm_b64_gamma_muldd(xh: th.hi, xl: th.lo, ch: sh, cl: sl)
         c1: CmF64GammaDD = cm_b64_gamma_fastsum(xh: c.hi, xl: c.lo, yh: ph.hi, yl: ph.lo)
         c2: CmF64GammaDD = cm_b64_gamma_mulddd(x: d, ch: c1.hi, cl: c1.lo)
-        return(cm_b64_gamma_fastsum(xh: sh, xl: sl, yh: c2.hi, yl: c2.lo))
+        return cm_b64_gamma_fastsum(xh: sh, xl: sl, yh: c2.hi, yl: c2.lo)
 
 /// sin(pi x) / pi as an accurate double-double, for 0 < x < 1.
 /// :param x: The argument, 0 < x < 1.
 /// :returns: sin(pi `x`) / pi as a double-double.
 private routine cm_b64_lgamma_sinpipid_accurate(x: B64) -> CmF64GammaDD
-    from_half: B64 = x.sub(0.5).abs()
-    y: B64 = from_half.mul(128.0)
+    from_half: B64 = (x - 0.5).abs()
+    y: B64 = from_half * 128.0
     ix: B64 = y.round_ties_even()
-    d: B64 = ix.sub(y)
+    d: B64 = ix - y
     ky: USize = ix.to[S64]().to[USize]()
     kx: USize = USize.sub(64, ky)
-    sh: B64 = cm_b64_lgamma_t(kx.mul(2).add(1671))
-    sl: B64 = cm_b64_lgamma_t(kx.mul(2).add(1670))
-    ch: B64 = cm_b64_lgamma_t(ky.mul(2).add(1671))
-    cl: B64 = cm_b64_lgamma_t(ky.mul(2).add(1670))
-    d2h: B64 = d.mul(d)
+    sh: B64 = cm_b64_lgamma_t(kx * 2 + 1671)
+    sl: B64 = cm_b64_lgamma_t(kx * 2 + 1670)
+    ch: B64 = cm_b64_lgamma_t(ky * 2 + 1671)
+    cl: B64 = cm_b64_lgamma_t(ky * 2 + 1670)
+    d2h: B64 = d * d
     d2l: B64 = b64_mul_error(x: d, y: d, p: d2h)
     d2: CmF64GammaDD = (hi: d2h, lo: d2l)
     p0: CmF64GammaDD = cm_b64_lgamma_polydd(x: d2, n: 5, base: 1800, l: 0.0)
@@ -1224,33 +1174,33 @@ private routine cm_b64_lgamma_sinpipid_accurate(x: B64) -> CmF64GammaDD
     q: CmF64GammaDD = cm_b64_gamma_muldd(xh: ch, xl: cl, ch: q0.hi, cl: q0.lo)
     c0: CmF64GammaDD = cm_b64_gamma_fastsum(xh: q.hi, xl: q.lo, yh: p.hi, yl: p.lo)
     c: CmF64GammaDD = cm_b64_gamma_mulddd(x: d, ch: c0.hi, cl: c0.lo)
-    return(cm_b64_gamma_fastsum(xh: sh, xl: sl, yh: c.hi, yl: c.lo))
+    return cm_b64_gamma_fastsum(xh: sh, xl: sl, yh: c.hi, yl: c.lo)
 
 /// log(x) as a triple-double, for a positive finite x (subnormals included).
 /// :param x: The positive finite argument.
 /// :returns: log(`x`) as a triple-double.
 private routine cm_b64_lgamma_logd_accurate(x: B64) -> CmF64GammaTD
     a: CmF64GammaLogArg = cm_b64_gamma_log_arg(x)
-    r: B64 = cm_b64_tgamma_t(a.i1.add(969)).mul(cm_b64_tgamma_t(a.i2.add(1002)))
-    o: B64 = r.mul(a.tf)
-    dx: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: o.sub(1.0), y: b64_mul_error(x: r, y: a.tf, p: o))
-    q: B64 = cm_b64_lgamma_t(1666).add(dx.hi.mul(cm_b64_lgamma_t(1668)))
-    fl: B64 = dx.hi.mul(cm_b64_lgamma_t(1664).add(dx.hi.mul(q)))
+    r: B64 = cm_b64_tgamma_t(a.i1 + 969) * cm_b64_tgamma_t(a.i2 + 1002)
+    o: B64 = r * a.tf
+    dx: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: o - 1.0, y: b64_mul_error(x: r, y: a.tf, p: o))
+    q: B64 = cm_b64_lgamma_t(1666) + dx.hi * cm_b64_lgamma_t(1668)
+    fl: B64 = dx.hi * (cm_b64_lgamma_t(1664) + dx.hi * q)
     f0: CmF64GammaDD = cm_b64_lgamma_polydd(x: dx, n: 6, base: 1652, l: fl)
     f: CmF64GammaDD = cm_b64_gamma_muldd(xh: dx.hi, xl: dx.lo, ch: f0.hi, cl: f0.lo)
-    h1: USize = a.i1.mul(3).add(1454)
-    h2: USize = a.i2.mul(3).add(1553)
-    s2: B64 = cm_b64_lgamma_t(h1.add(2)).add(cm_b64_lgamma_t(h2.add(2)))
-    s1: B64 = cm_b64_lgamma_t(h1.add(1)).add(cm_b64_lgamma_t(h2.add(1)))
-    s0: B64 = cm_b64_lgamma_t(h1).add(cm_b64_lgamma_t(h2))
-    l0: B64 = a.ed.mul(0x1.62e42fefa38p-1).add(s2)
-    l1: B64 = a.ed.mul(0x1.ef35793c76p-45)
-    l2: B64 = a.ed.mul(0x1.cc01f97b57a08p-87)
+    h1: USize = a.i1 * 3 + 1454
+    h2: USize = a.i2 * 3 + 1553
+    s2: B64 = cm_b64_lgamma_t(h1 + 2) + cm_b64_lgamma_t(h2 + 2)
+    s1: B64 = cm_b64_lgamma_t(h1 + 1) + cm_b64_lgamma_t(h2 + 1)
+    s0: B64 = cm_b64_lgamma_t(h1) + cm_b64_lgamma_t(h2)
+    l0: B64 = a.ed * 0.6931471805598903 + s2
+    l1: B64 = a.ed * 5.49792301870721e-14
+    l2: B64 = a.ed * 1.1612227229362532e-26
     u: CmF64GammaDD = cm_b64_gamma_sumdd(xh: l1, xl: l2, yh: s1, yl: s0)
     v: CmF64GammaDD = cm_b64_gamma_sumdd(xh: u.hi, xl: u.lo, yh: f.hi, yl: f.lo)
     b: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: l0, y: v.hi)
     b2: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: b.lo, y: v.lo)
-    return(CmF64GammaTD(hi: b.hi, mid: b2.hi, lo: b2.lo))
+    return CmF64GammaTD(hi: b.hi, mid: b2.hi, lo: b2.lo)
 
 /// lgamma(x) for x = xh + xl > 3.75 as a triple-double, from Stirling's asymptotic series.
 /// :param xh: The high part of the argument.
@@ -1259,73 +1209,70 @@ private routine cm_b64_lgamma_logd_accurate(x: B64) -> CmF64GammaTD
 private routine cm_b64_lgamma_asym_accurate(xh: B64, xl: B64) -> CmF64GammaTD
     local lg: CmF64GammaTD = cm_b64_lgamma_logd_accurate(xh)
 
-    huge: Bool = xh.ge(0x1p+120)
-    branch huge
-        ? huge()
-        : series()
+    if xh >= 1.329227995784916e36
+        jump huge()
+    else
+        jump series()
 
     block series()
         zh: B64 = B64.div(1.0, xh)
-        dz: B64 = xl.mul(zh)
-        zh_err: B64 = zh.mul_add(a: xh.neg(), b: 1.0).sub(dz)
-        zl: B64 = zh_err.mul(zh)
-        xl0: Bool = xl.ne(0.0)
-        branch xl0
-            ? shift_log(zh, zl)
-            : weigh(lg.hi, lg.mid, lg.lo, zh, zl)
+        dz: B64 = xl * zh
+        zh_err: B64 = zh.mul_add(a: -xh, b: 1.0) - dz
+        zl: B64 = zh_err * zh
+        if xl != 0.0
+            jump shift_log(zh, zl)
+        else
+            jump weigh(lg.hi, lg.mid, lg.lo, zh, zl)
 
     // log(xh + xl) = log(xh) + log(1 + xl/xh)
     block shift_log(zh: B64, zl: B64)
-        dl: CmF64GammaDD = cm_b64_gamma_mulddd(x: xl, ch: zh,
-            cl: zh.mul_add(a: xh.neg(), b: 1.0).mul(zh))
-        dl2: B64 = dl.lo.sub(dl.hi.mul(dl.hi).div(2.0))
+        dl: CmF64GammaDD = cm_b64_gamma_mulddd(x: xl, ch: zh, cl: zh.mul_add(a: -xh, b: 1.0) * zh)
+        dl2: B64 = dl.lo - dl.hi * dl.hi / 2.0
         s: CmF64GammaDD = cm_b64_gamma_sumdd(xh: lg.mid, xl: lg.lo, yh: dl.hi, yl: dl2)
         jump weigh(lg.hi, s.hi, s.lo, zh, zl)
 
     // (x - 1/2) (log x - 1) + the series in 1/x^2, with x - 1/2 split exactly past 2^52
     block weigh(l0: B64, l1: B64, l2: B64, zh: B64, zl: B64)
-        xh_exp: U64 = xh.bits().shr(52)
-        big: Bool = xh_exp.gt(0x432)
-        wh: B64 = big
-            ? xh
-            : xh.sub(0.5)
-        wl: B64 = big
-            ? xl.sub(0.5)
-            : xl
-        m0: B64 = l0.sub(1.0)
-        l0x: B64 = m0.mul(wh)
+        xh_exp: U64 = xh.bits() >> 52
+        big: Bool = xh_exp > 0x432
+        wh: B64 = when
+            big => xh
+            else => xh - 0.5
+        wl: B64 = when
+            big => xl - 0.5
+            else => xl
+        m0: B64 = l0 - 1.0
+        l0x: B64 = m0 * wh
         l0xl: B64 = b64_mul_error(x: m0, y: wh, p: l0x)
-        l1x: B64 = l1.mul(wh)
+        l1x: B64 = l1 * wh
         l1xl: B64 = b64_mul_error(x: l1, y: wh, p: l1x)
-        l2x: B64 = l2.mul(wh)
+        l2x: B64 = l2 * wh
         s0: CmF64GammaDD = cm_b64_gamma_sumdd(xh: l1x, xl: l2x, yh: l0xl, yl: l1xl)
-        s1: CmF64GammaDD = cm_b64_gamma_sumdd(xh: s0.hi, xl: s0.lo, yh: m0.mul(wl), yl: l1.mul(wl))
+        s1: CmF64GammaDD = cm_b64_gamma_sumdd(xh: s0.hi, xl: s0.lo, yh: m0 * wl, yl: l1 * wl)
         z2: CmF64GammaDD = cm_b64_gamma_muldd(xh: zh, xl: zl, ch: zh, cl: zl)
         when
-            xh.ge(48.0) => tail(l0x, s1, z2, zh, zl, 1822, 7)
-            xh.ge(14.5) => tail(l0x, s1, z2, zh, zl, 1838, 11)
-            else => tail(l0x, s1, z2, zh, zl, 1862, 27)
+            xh >= 48.0 => jump tail(l0x, s1, z2, zh, zl, 1822, 7)
+            xh >= 14.5 => jump tail(l0x, s1, z2, zh, zl, 1838, 11)
+            else => jump tail(l0x, s1, z2, zh, zl, 1862, 27)
 
     block tail(l0x: B64, s1: CmF64GammaDD, z2: CmF64GammaDD, zh: B64, zl: B64, c: USize, n: USize)
-        s2: CmF64GammaDD = cm_b64_gamma_sumdd(xh: s1.hi, xl: s1.lo, yh: cm_b64_lgamma_t(c),
-            yl: cm_b64_lgamma_t(c.add(1)))
-        f0: CmF64GammaDD = cm_b64_lgamma_polydd(x: z2, n, base: c.add(2), l: 0.0)
+        s2: CmF64GammaDD = cm_b64_gamma_sumdd(xh: s1.hi, xl: s1.lo, yh: cm_b64_lgamma_t(c), yl: cm_b64_lgamma_t(c + 1))
+        f0: CmF64GammaDD = cm_b64_lgamma_polydd(x: z2, n, base: c + 2, l: 0.0)
         f: CmF64GammaDD = cm_b64_gamma_muldd(xh: zh, xl: zl, ch: f0.hi, cl: f0.lo)
         s3: CmF64GammaDD = cm_b64_gamma_sumdd(xh: s2.hi, xl: s2.lo, yh: f.hi, yl: f.lo)
         h: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: l0x, y: s3.hi)
         h2: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: h.lo, y: s3.lo)
-        return(CmF64GammaTD(hi: h.hi, mid: h2.hi, lo: h2.lo))
+        return CmF64GammaTD(hi: h.hi, mid: h2.hi, lo: h2.lo)
 
     // x >= 2^120: the series in 1/x is below the triple-double's precision
     block huge()
-        wl: B64 = xl.sub(0.5)
-        m0: B64 = lg.hi.sub(1.0)
-        l0x: B64 = m0.mul(xh)
+        wl: B64 = xl - 0.5
+        m0: B64 = lg.hi - 1.0
+        l0x: B64 = m0 * xh
         l0xl: B64 = b64_mul_error(x: m0, y: xh, p: l0x)
-        l1x: B64 = lg.mid.mul(xh)
+        l1x: B64 = lg.mid * xh
         l1xl: B64 = b64_mul_error(x: lg.mid, y: xh, p: l1x)
-        l2x: B64 = lg.lo.mul(xh)
+        l2x: B64 = lg.lo * xh
         s0: CmF64GammaDD = cm_b64_gamma_sumdd(xh: l1x, xl: l2x, yh: l0xl, yl: l1xl)
-        s1: CmF64GammaDD = cm_b64_gamma_sumdd(xh: s0.hi, xl: s0.lo, yh: m0.mul(wl),
-            yl: lg.mid.mul(wl))
-        return(CmF64GammaTD(hi: l0x, mid: s1.hi, lo: s1.lo))
+        s1: CmF64GammaDD = cm_b64_gamma_sumdd(xh: s0.hi, xl: s0.lo, yh: m0 * wl, yl: lg.mid * wl)
+        return CmF64GammaTD(hi: l0x, mid: s1.hi, lo: s1.lo)

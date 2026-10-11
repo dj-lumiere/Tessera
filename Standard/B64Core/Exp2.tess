@@ -40,81 +40,74 @@ preset CM_B64_EXP2_DB: @Array[U64, 43] <- [0x3F5E4596526BF94D, 0x3F5E76049073067
 /// :returns: 2^`me`, correctly rounded.
 routine B64.exp2(me: Me) -> Me
     local ux: U64 = me.bits()
-    local ax: U64 = ux.shl(1)
+    local ax: U64 = ux << 1
 
-    zero: Bool = ax.eq(0)
-    big: Bool = ax.ge(0x8120000000000000)  // |x| >= 1024, infinite or NaN
-    tiny: Bool = ax.le(0x792E2A8ECA5705FC)  // |x| <= 0x1.71547652b82fep-54: 2^x rounds to 1
+    zero: Bool = ax == 0
+    big: Bool = ax >= 0x8120000000000000
+    // |x| >= 1024, infinite or NaN
+    // |x| <= 0x1.71547652b82fep-54: 2^x rounds to 1
     when
-        zero => return(1.0)
-        big => edge()
-        tiny => return(Me.add(1.0, Me.copysign(0x1p-54, me)))
-        else => fast()
-
-    block edge()
-        nan: Bool = ax.gt(0xFFE0000000000000)
-        inf: Bool = ax.eq(0xFFE0000000000000)
-        positive: Bool = ux.shr(63).eq(0)
-        under: Bool = ux.ge(0xC090CC0000000000)  // x <= -1075
-        when
-            nan => return(me.add(me))
-            inf => infinite(positive)
-            positive => return(Me.mul(0x1p1023, me))  // x >= 1024: overflow
-            under => return(0.0)
-            else => fast()
-
-    block infinite(positive: Bool)
-        branch positive
-            ? return(me)
-            : return(0.0)
-
-    block fast()
-        // frac is nonzero exactly when x is not an integer
-        m: U64 = ux.shl(12)
-        ex: U64 = ax.shr(53).sub_wrap(0x3FF)
-        frac: U64 = ex.shr(63).bitor(m.shl(ex.bitand(63)))
-        sx: Me = Me.mul(4096.0, me)
-        fx: Me = sx.round_ties_even()
-        z: Me = sx.sub(fx)
-        z2: Me = z.mul(z)
-        k: S64 = fx.to[S64]()
-        ie: S64 = k.shr(12)
-        tt: CmF64ExpDd = cm_b64_exp_table_2pow(k.to_wrap[U64]())
-        tz: Me = tt.hi.mul(z)
-        p01: Me = Me.add(0x1.62e42fefa39efp-13, z.mul(0x1.ebfbdff82c58fp-27))
-        p23: Me = Me.add(0x1.c6b08d73b3e01p-41, z.mul(0x1.3b2ab6fdda001p-55))
-        fl: Me = tz.mul(p01.add(z2.mul(p23))).add(tt.lo)
-        normal: Bool = ux.le(0xC08FF00000000000)  // x >= -1022
-        whole: Bool = frac.eq(0)
-        when
-            normal => normal(tt.hi, fl, ie, whole)
-            else => subnormal(tt.hi, fl, ie, whole)
-
-    block normal(fh: Me, fl: Me, ie: S64, whole: Bool)
-        branch whole
-            ? return(cm_b64_exp_ldexp(x: fh, e: ie))
-            : continue
-        ub: Me = fh.add(fl.add(0x1.fdp-63))
-        lb: Me = fh.add(fl.sub(0x1.fdp-63))
-        sure: Bool = ub.eq(lb)
-        branch sure
-            ? return(cm_b64_exp_ldexp(x: lb, e: ie))
-            : return(cm_b64_exp2_accurate(me))
-
-    block subnormal(fh: Me, fl: Me, ie: S64, whole: Bool)
-        bias_e: U64 = S64.sub(1, ie).to_wrap[U64]()
-        bias: Me = Me.from_bits(bias_e.shl(52))
-        s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: bias, y: fh)
-        sl: Me = fl.add(s.lo)
-        branch whole
-            ? return(Me.from_bits(s.hi.bits().bitand(0x000FFFFFFFFFFFFF)))
-            : continue
-        ub: Me = s.hi.add(sl.add(0x1.fdp-63))
-        lb: Me = s.hi.add(sl.sub(0x1.fdp-63))
-        sure: Bool = ub.eq(lb)
-        branch sure
-            ? return(Me.from_bits(lb.bits().bitand(0x000FFFFFFFFFFFFF)))
-            : return(cm_b64_exp2_accurate(me))
+        zero => return 1.0
+        big =>
+            nan: Bool = ax > 0xFFE0000000000000
+            inf: Bool = ax == 0xFFE0000000000000
+            positive: Bool = ux >> 63 == 0
+            // x <= -1075
+            when
+                nan => return me + me
+                inf =>
+                    // x >= 1024: overflow
+                    if positive
+                        return me
+                    else
+                        return 0.0
+                positive => return Me.mul(8.98846567431158e307, me)
+                ux >= 0xC090CC0000000000 => return 0.0
+                else => pass
+        ax <= 0x792E2A8ECA5705FC => return Me.add(1.0, Me.copysign(5.551115123125783e-17, me))
+        else => pass
+    // frac is nonzero exactly when x is not an integer
+    m: U64 = ux << 12
+    ex: U64 = (ax >> 53) -% 0x3FF
+    frac: U64 = (ex >> 63) | (m << (ex & 63))
+    sx: Me = Me.mul(4096.0, me)
+    fx: Me = sx.round_ties_even()
+    z: Me = sx - fx
+    z2: Me = z * z
+    k: S64 = fx.to[S64]()
+    ie: S64 = k >> 12
+    tt: CmF64ExpDd = cm_b64_exp_table_2pow(k.to_wrap[U64]())
+    tz: Me = tt.hi * z
+    p01: Me = Me.add(0.0001692253858788929, z * 1.4318615612930102e-08)
+    p23: Me = Me.add(8.076910844779527e-13, z * 3.417045885940598e-17)
+    fl: Me = tz * (p01 + z2 * p23) + tt.lo
+    normal: Bool = ux <= 0xC08FF00000000000
+    // x >= -1022
+    whole: Bool = frac == 0
+    when
+        normal =>
+            fh: Me = tt.hi
+            if whole
+                return cm_b64_exp_ldexp(x: fh, e: ie)
+            ub: Me = fh + (fl + 2.1556988507621944e-19)
+            lb: Me = fh + (fl - 2.1556988507621944e-19)
+            if ub == lb
+                return cm_b64_exp_ldexp(x: lb, e: ie)
+            else
+                return cm_b64_exp2_accurate(me)
+        else =>
+            bias_e: U64 = S64.sub(1, ie).to_wrap[U64]()
+            bias: Me = Me.from_bits(bias_e << 52)
+            s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: bias, y: tt.hi)
+            sl: Me = fl + s.lo
+            if whole
+                return Me.from_bits(s.hi.bits() & 0x000FFFFFFFFFFFFF)
+            ub: Me = s.hi + (sl + 2.1556988507621944e-19)
+            lb: Me = s.hi + (sl - 2.1556988507621944e-19)
+            if ub == lb
+                return Me.from_bits(lb.bits() & 0x000FFFFFFFFFFFFF)
+            else
+                return cm_b64_exp2_accurate(me)
 
 /// The slow accurate path of exp2, for finite x that is not an integer, with
 /// 2^x neither overflowing nor below 2^-1075.
@@ -123,76 +116,62 @@ routine B64.exp2(me: Me) -> Me
 private routine cm_b64_exp2_accurate(x: B64) -> B64
     local sx: B64 = B64.mul(4096.0, x)
     local fx: B64 = sx.round_ties_even()
-    local z: B64 = sx.sub(fx)
+    local z: B64 = sx - fx
     local k: S64 = fx.to[S64]()
     local uk: U64 = k.to_wrap[U64]()
-    local ie: S64 = k.shr(12)
+    local ie: S64 = k >> 12
     local tt: CmF64ExpDd = cm_b64_exp_table_2pow(uk)
     local p: CmF64ExpDd = cm_b64_exp2_poly_acc(z)
     local f: CmF64ExpDd = cm_b64_exp2_mulddd(xh: z, ch: p.hi, cl: p.lo)
 
     ux: U64 = x.bits()
-    normal: Bool = ux.le(0xC08FF00000000000)  // x >= -1022
-    branch normal
-        ? normal()
-        : subnormal()
-
-    block normal()
-        above: Bool = B64.le(-0x1.71547652b82fep-54, x)
-        below: Bool = x.le(0x1.71547652b82fdp-53)
-        near1: Bool = above.bitand(below)
-        branch near1
-            ? return(x.mul_add(a: 0.5, b: 1.0))
-            : continue
-        whole: Bool = uk.bitand(0xFFF).eq(0)  // 4096 x rounds to 4096 times an integer
-        branch whole
-            ? at_one(tt.hi)
-            : scale()
-
-    // 2^(k/2^12) is exactly 1: add it in without a product
-    block at_one(th: B64)
-        s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: th, y: f.hi)
-        s2: CmF64ExpDd = cm_b64_exp_fasttwosum(x: s.lo, y: f.lo)
-        ul: U64 = s2.hi.bits()
-        pow2: Bool = ul.bitand(0x000FFFFFFFFFFFFF).eq(0)
-        ebits: U64 = ul.shr(52).bitand(0x7FF)
-        nonzero: Bool = ebits.ne(0)
-        adjusted: Bool = pow2.bitand(nonzero)
-        branch adjusted
-            ? nudge(s.hi, ul, s2.lo)
-            : round(s.hi, s2.hi)
-
-    // the low part is a nonzero power of 2: nudge it one ulp toward the sign of the tail
-    block nudge(fh: B64, ul: U64, tail: B64)
-        same: Bool = ul.shr(63).eq(tail.bits().shr(63))
-        u: U64 = same
-            ? ul.add_wrap(1)
-            : ul.sub_wrap(1)
-        jump round(fh, B64.from_bits(u))
-
-    block scale()
-        g: CmF64ExpDd = cm_b64_exp_muldd(xh: f.hi, xl: f.lo, ch: tt.hi, cl: tt.lo)
-        h: CmF64ExpDd = cm_b64_exp_fastsum(xh: tt.hi, xl: tt.lo, yh: g.hi, yl: g.lo)
-        jump round(h.hi, h.lo)
-
-    block round(fh: B64, fl: B64)
-        s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: fh, y: fl)
-        lo_bits: U64 = s.lo.bits()
-        d: U64 = lo_bits.add_wrap(2).bitand(0x000FFFFFFFFFFFFF)
-        hard: Bool = d.le(2)
-        branch hard
-            ? return(cm_b64_exp_ldexp(x: cm_b64_exp2_database(x, f: s.hi), e: ie))
-            : return(cm_b64_exp_ldexp(x: s.hi, e: ie))
-
-    block subnormal()
-        bias_e: U64 = S64.sub(1, ie).to_wrap[U64]()
-        bias: B64 = B64.from_bits(bias_e.shl(52))
-        g: CmF64ExpDd = cm_b64_exp_muldd(xh: f.hi, xl: f.lo, ch: tt.hi, cl: tt.lo)
-        h: CmF64ExpDd = cm_b64_exp_fastsum(xh: tt.hi, xl: tt.lo, yh: g.hi, yl: g.lo)
-        s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: bias, y: h.hi)
-        fl: B64 = h.lo.add(s.lo)
-        res: B64 = s.hi.add(fl)
-        return(B64.from_bits(res.bits().bitand(0x000FFFFFFFFFFFFF)))
+    normal: Bool = ux <= 0xC08FF00000000000
+    // x >= -1022
+    values2: (B64, B64) = when
+        normal =>
+            above: Bool = B64.le(-8.008566259537294e-17, x)
+            below: Bool = x <= 1.6017132519074586e-16
+            if above and below
+                return x.mul_add(a: 0.5, b: 1.0)
+            // 4096 x rounds to 4096 times an integer
+            if uk & 0xFFF == 0
+                // 2^(k/2^12) is exactly 1: add it in without a product
+                s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: tt.hi, y: f.hi)
+                s2: CmF64ExpDd = cm_b64_exp_fasttwosum(x: s.lo, y: f.lo)
+                ul: U64 = s2.hi.bits()
+                pow2: Bool = ul & 0x000FFFFFFFFFFFFF == 0
+                ebits: U64 = (ul >> 52) & 0x7FF
+                nonzero: Bool = ebits != 0
+                if pow2 and nonzero
+                    // the low part is a nonzero power of 2: nudge it one ulp toward the sign of the tail
+                    same: Bool = ul >> 63 == s2.lo.bits() >> 63
+                    u: U64 = when
+                        same => ul +% 1
+                        else => ul -% 1
+                    becomes (s.hi, B64.from_bits(u))
+                else
+                    becomes (s.hi, s2.hi)
+            else
+                g: CmF64ExpDd = cm_b64_exp_muldd(xh: f.hi, xl: f.lo, ch: tt.hi, cl: tt.lo)
+                h: CmF64ExpDd = cm_b64_exp_fastsum(xh: tt.hi, xl: tt.lo, yh: g.hi, yl: g.lo)
+                becomes (h.hi, h.lo)
+        else =>
+            bias_e: U64 = S64.sub(1, ie).to_wrap[U64]()
+            bias: B64 = B64.from_bits(bias_e << 52)
+            g: CmF64ExpDd = cm_b64_exp_muldd(xh: f.hi, xl: f.lo, ch: tt.hi, cl: tt.lo)
+            h: CmF64ExpDd = cm_b64_exp_fastsum(xh: tt.hi, xl: tt.lo, yh: g.hi, yl: g.lo)
+            s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: bias, y: h.hi)
+            fl: B64 = h.lo + s.lo
+            res: B64 = s.hi + fl
+            return B64.from_bits(res.bits() & 0x000FFFFFFFFFFFFF)
+    fh, fl = values2
+    s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: fh, y: fl)
+    lo_bits: U64 = s.lo.bits()
+    d: U64 = lo_bits +% 2 & 0x000FFFFFFFFFFFFF
+    if d <= 2
+        return cm_b64_exp_ldexp(x: cm_b64_exp2_database(x, f: s.hi), e: ie)
+    else
+        return cm_b64_exp_ldexp(x: s.hi, e: ie)
 
 /// The degree-6 double-double polynomial (constant term 0) of the accurate
 /// path, divided by z, at z: Horner's rule on CM_B64_EXP2_ACC_CD.
@@ -204,25 +183,22 @@ private routine cm_b64_exp2_poly_acc(z: B64) -> CmF64ExpDd
 
     B64.from_bits(CM_B64_EXP2_ACC_CD.getitem(10)).poke_into(ch)
     B64.from_bits(CM_B64_EXP2_ACC_CD.getitem(11)).poke_into(cl)
-    jump loop(5)
 
-    block loop(i: USize)
-        done: Bool = i.eq(0)
-        branch done
-            ? return(CmF64ExpDd(hi: ch.peek(), lo: cl.peek()))
-            : step(i.sub(1))
+    i: USize = 5
 
-    block step(i: USize)
+    while i != 0
+        i2: USize = i - 1
         r: CmF64ExpDd = cm_b64_exp2_mulddd(xh: z, ch: ch.peek(), cl: cl.peek())
-        c0: B64 = B64.from_bits(CM_B64_EXP2_ACC_CD.getitem(i.mul(2)))
-        c1: B64 = B64.from_bits(CM_B64_EXP2_ACC_CD.getitem(i.mul(2).add(1)))
-        sh: B64 = r.hi.add(c0)
-        sl: B64 = c0.sub(sh).add(r.hi)
-        next_cl: B64 = r.lo.add(sl.add(c1))
+        c0: B64 = B64.from_bits(CM_B64_EXP2_ACC_CD.getitem(i2 * 2))
+        c1: B64 = B64.from_bits(CM_B64_EXP2_ACC_CD.getitem(i2 * 2 + 1))
+        sh: B64 = r.hi + c0
+        sl: B64 = c0 - sh + r.hi
+        next_cl: B64 = r.lo + (sl + c1)
         next_ch: B64 = sh
         next_ch.poke_into(ch)
         next_cl.poke_into(cl)
-        jump loop(i)
+    then
+        return CmF64ExpDd(hi: ch.peek(), lo: cl.peek())
 
 /// Double-double times double (ch + cl) xh.
 /// :param xh: The double factor.
@@ -230,9 +206,9 @@ private routine cm_b64_exp2_poly_acc(z: B64) -> CmF64ExpDd
 /// :param cl: The low part of the double-double factor.
 /// :returns: The product as a double-double, not renormalized.
 private routine cm_b64_exp2_mulddd(xh: B64, ch: B64, cl: B64) -> CmF64ExpDd
-    ahhh: B64 = ch.mul(xh)
-    lo: B64 = cl.mul(xh).add(b64_mul_error(x: ch, y: xh, p: ahhh))
-    return(CmF64ExpDd(hi: ahhh, lo: lo))
+    ahhh: B64 = ch * xh
+    lo: B64 = cl * xh + b64_mul_error(x: ch, y: xh, p: ahhh)
+    return CmF64ExpDd(hi: ahhh, lo: lo)
 
 /// Looks x up among the arguments whose 2^x lies too close to a rounding
 /// boundary for the accurate path, and returns the correctly rounded
@@ -241,31 +217,23 @@ private routine cm_b64_exp2_mulddd(xh: B64, ch: B64, cl: B64) -> CmF64ExpDd
 /// :param f: The unscaled result of the accurate path, returned when `x` is not in the table.
 /// :returns: The correctly rounded unscaled result for a listed `x`, else `f`.
 private routine cm_b64_exp2_database(x: B64, f: B64) -> B64
-    jump search(0, 42)
-
-    block search(a: S64, b: S64)
-        open: Bool = a.le(b)
-        branch open
-            ? probe(a, b)
-            : return(f)
-
-    block probe(a: S64, b: S64)
-        m: S64 = a.add(b).shr(1)
+    while a <= b with a: S64 = 0, b: S64 = 42
+        m: S64 = a + b >> 1
         cm: U64 = CM_B64_EXP2_DB.getitem(m.to[USize]())
         ux: U64 = x.bits()
-        below: Bool = cm.lt(ux)
-        found: Bool = cm.eq(ux)
+        below: Bool = cm < ux
         when
-            below => search(m.add(1), b)
-            found => found(m.to_wrap[U64]())
-            else => search(a, m.sub(1))
-
-    block found(um: U64)
-        sign_bit: U64 = U64.shr(8677191773140, um).shl(63)
-        dr: B64 = B64.from_bits(sign_bit.bitor(0x3C90000000000000))
-        upper: Bool = um.shr(5).eq(1)
-        s2: U64 = upper
-            ? 0x34C797
-            : 0x3B216FBD5FD7665F
-        t: U64 = s2.shr(um.shl(1).bitand(63)).bitand(3)
-        return(cm_b64_exp_pick(f, t, dr))
+            below => continue with a: m + 1, b: b
+            cm == ux =>
+                um: U64 = m.to_wrap[U64]()
+                sign_bit: U64 = U64.shr(8677191773140, um) << 63
+                dr: B64 = B64.from_bits(sign_bit | 0x3C90000000000000)
+                upper: Bool = um >> 5 == 1
+                s2: U64 = when
+                    upper => 0x34C797
+                    else => 0x3B216FBD5FD7665F
+                t: U64 = (s2 >> ((um << 1) & 63)) & 3
+                return cm_b64_exp_pick(f, t, dr)
+            else => continue with a: a, b: m - 1
+    then
+        return f

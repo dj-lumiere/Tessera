@@ -54,18 +54,18 @@ choice LogKind: U8
 routine wide_log_kind(x: B128, kind: LogKind) -> B128Extended
     w: B128Extended = x.to[B128Extended]()
     when kind
-        LogKind.LN1P => return(wide_ln_1p(w))
-        LogKind.LOG2 => return(wide_log(w).mul(wide_const(1)))
-        LogKind.LOG10 => return(wide_log(w).mul(wide_const(3)))
+        LogKind.LN1P => return wide_ln_1p(w)
+        LogKind.LOG2 => return wide_log(w) * wide_const(1)
+        LogKind.LOG10 => return wide_log(w) * wide_const(3)
 
 /// The fast tier's band for a function.
 /// :param kind: The function.
 /// :returns: The band, as a power of two.
 routine b128_log_band(kind: LogKind) -> S64
     when kind
-        LogKind.LN1P => return(B128_LN_1P_BAND)
-        LogKind.LOG2 => return(B128_LOG2_BAND)
-        LogKind.LOG10 => return(B128_LOG10_BAND)
+        LogKind.LN1P => return B128_LN_1P_BAND
+        LogKind.LOG2 => return B128_LOG2_BAND
+        LogKind.LOG10 => return B128_LOG10_BAND
 
 // -- exact tier: B128Big -------------------------------------------------------
 
@@ -77,17 +77,13 @@ routine b128_log_exact(x: B128, kind: LogKind) -> B128
     local b: B128Big = x.to[B128Big]()
 
     when kind
-        LogKind.LN1P => return(big_ln_1p(b).to[B128]())
-        LogKind.LOG2 => log2_exact()
-        LogKind.LOG10 => log10_exact()
-
-    block log2_exact()
-        log2: B128Big = big_ln(b).div(big_ln2())
-        return(log2.to[B128]())
-
-    block log10_exact()
-        log10: B128Big = big_ln(b).div(big_ln(S64.to[B128Big](10)))
-        return(log10.to[B128]())
+        LogKind.LN1P => return big_ln_1p(b).to[B128]()
+        LogKind.LOG2 =>
+            log2: B128Big = big_ln(b) / big_ln2()
+            return log2.to[B128]()
+        LogKind.LOG10 =>
+            log10: B128Big = big_ln(b) / big_ln(S64.to[B128Big](10))
+            return log10.to[B128]()
 
 // -- the two tiers -------------------------------------------------------------
 
@@ -97,20 +93,13 @@ routine b128_log_exact(x: B128, kind: LogKind) -> B128
 /// :param exact: True skips the fast tier (the tests use it to check the exact tier on its own).
 /// :returns: The correctly rounded result.
 routine b128_log_general(x: B128, kind: LogKind, exact: Bool) -> B128
-    branch exact
-        ? slow()
-        : fast()
-
-    block fast()
+    if not exact
         w: B128Extended = wide_log_kind(x, kind)
         rounded: WideRounding = wide_round_within(u: w, k: b128_log_band(kind))
-        branch rounded.ok
-            ? return(rounded.value)
-            : slow()
-
-    block slow()
-        r: B128 = b128_log_exact(x, kind)
-        return(r)
+        if rounded.ok
+            return rounded.value
+    r: B128 = b128_log_exact(x, kind)
+    return r
 
 // -- exact cases ---------------------------------------------------------------
 
@@ -119,20 +108,18 @@ routine b128_log_general(x: B128, kind: LogKind, exact: Bool) -> B128
 /// :returns: The exponent k, or -1.
 routine b128_power_of_ten(x: B128) -> S64
     one: B128 = b128_of(B128_ONE)
-    integer: Bool = x.trunc().eq(x)
-    at_least: Bool = x.ge(one)
-    branch integer.bitand(at_least)
-        ? search(0, one)
-        : return(-1)
-
-    // p = 10^k, exact while k <= 48
-    block search(k: S64, p: B128)
-        found: Bool = p.eq(x)
-        past: Bool = p.gt(x).bitor(k.ge(48))
-        when
-            found => return(k)
-            past => return(-1)
-            else => search(k.add(1), p.mul(b128_of(0x40024000000000000000000000000000)))  // 10
+    integer: Bool = x.trunc() == x
+    if integer and x >= one
+        // p = 10^k, exact while k <= 48
+        while true with k: S64 = 0, p: B128 = one
+            found: Bool = p == x
+            when
+                found => return k
+                p > x or k >= 48 => return -1
+                else => continue with k: k + 1, p: p * b128_of(0x40024000000000000000000000000000)
+    else
+        return -1
+    // 10
 
 // -- ln_1p, log2, log10 --------------------------------------------------------
 
@@ -140,21 +127,21 @@ routine b128_power_of_ten(x: B128) -> S64
 /// :returns: ln(1 + `me`).
 routine B128.ln_1p(me: Me) -> Me
     r: Me = b128_ln_1p(x: me, exact: false)
-    return(r)
+    return r
 
 /// log2 me, correctly rounded, and exactly k at 2^k: NaN for me < 0, -inf at ±0, +inf at +inf. A NaN comes
 /// back quieted.
 /// :returns: log2(`me`).
 routine B128.log2(me: Me) -> Me
     r: Me = b128_log2(x: me, exact: false)
-    return(r)
+    return r
 
 /// log10 me, correctly rounded, and exactly k at 10^k: NaN for me < 0, -inf at ±0, +inf at +inf. A NaN
 /// comes back quieted.
 /// :returns: log10(`me`).
 routine B128.log10(me: Me) -> Me
     r: Me = b128_log10(x: me, exact: false)
-    return(r)
+    return r
 
 /// ln(1 + x), correctly rounded, as {B128.ln_1p}.
 /// :param x: The argument.
@@ -165,20 +152,17 @@ routine b128_ln_1p(x: B128, exact: Bool) -> B128
     nan: Bool = b128_is_nan_bits(bits)
     zero: Bool = b128_is_zero_bits(bits)
     minus_one: B128 = b128_of(0xBFFF0000000000000000000000000000)
-    pole: Bool = x.eq(minus_one)
-    below: Bool = x.lt(minus_one)
-    inf: Bool = x.eq(B128.INFINITY)
+    pole: Bool = x == minus_one
+    below: Bool = x < minus_one
     when
-        nan => return(b128_of(b128_quiet(bits)))
-        zero => return(x)
-        pole => return(B128.NEG_INFINITY)
-        below => return(B128.NAN)
-        inf => return(x)
-        else => general()
-
-    block general()
-        r: B128 = b128_log_general(x, kind: LogKind.LN1P, exact)
-        return(r)
+        nan => return b128_of(b128_quiet(bits))
+        zero => return x
+        pole => return B128.NEG_INFINITY
+        below => return B128.NAN
+        x == B128.INFINITY => return x
+        else =>
+            r: B128 = b128_log_general(x, kind: LogKind.LN1P, exact)
+            return r
 
 /// The special cases log2 and log10 share: NaN in (quieted), NaN for x < 0, -inf at ±0, +inf at +inf.
 /// :param x: The argument.
@@ -189,13 +173,12 @@ routine b128_log_special(x: B128) -> Maybe[B128]
     nan: Bool = b128_is_nan_bits(bits)
     zero: Bool = b128_is_zero_bits(bits)
     negative: Bool = b128_is_negative_bits(bits)
-    inf: Bool = x.is_infinite()
     when
-        nan => return(b128_of(b128_quiet(bits)))
-        zero => return(B128.NEG_INFINITY)
-        negative => return(B128.NAN)
-        inf => return(x)
-        else => return(Unit())
+        nan => return b128_of(b128_quiet(bits))
+        zero => return B128.NEG_INFINITY
+        negative => return B128.NAN
+        x.is_infinite() => return x
+        else => return Unit()
 
 /// log2 x, correctly rounded, as {B128.log2}.
 /// :param x: The argument.
@@ -204,18 +187,14 @@ routine b128_log_special(x: B128) -> Maybe[B128]
 routine b128_log2(x: B128, exact: Bool) -> B128
     special: Maybe[B128] = b128_log_special(x)
     when special
-        is B128 as v => return(v)
-        is Unit => finite()
-
-    // 2^k has the bare implicit bit in its unpacked significand, subnormals included
-    block finite()
-        p: B128Parts = b128_unpack(x.bits())
-        power: Bool = p.sig.eq(B128_IMPLICIT)
-        branch power
-            ? return(p.exponent.to[B128]())
-            : continue
-        r: B128 = b128_log_general(x, kind: LogKind.LOG2, exact)
-        return(r)
+        is B128 as v => return v
+        is Unit =>
+            // 2^k has the bare implicit bit in its unpacked significand, subnormals included
+            p: B128Parts = b128_unpack(x.bits())
+            if p.sig == B128_IMPLICIT
+                return p.exponent.to[B128]()
+            r: B128 = b128_log_general(x, kind: LogKind.LOG2, exact)
+            return r
 
 /// log10 x, correctly rounded, as {B128.log10}.
 /// :param x: The argument.
@@ -224,17 +203,13 @@ routine b128_log2(x: B128, exact: Bool) -> B128
 routine b128_log10(x: B128, exact: Bool) -> B128
     special: Maybe[B128] = b128_log_special(x)
     when special
-        is B128 as v => return(v)
-        is Unit => finite()
-
-    block finite()
-        k: S64 = b128_power_of_ten(x)
-        power: Bool = k.ge(0)
-        branch power
-            ? return(k.to[B128]())
-            : continue
-        r: B128 = b128_log_general(x, kind: LogKind.LOG10, exact)
-        return(r)
+        is B128 as v => return v
+        is Unit =>
+            k: S64 = b128_power_of_ten(x)
+            if k >= 0
+                return k.to[B128]()
+            r: B128 = b128_log_general(x, kind: LogKind.LOG10, exact)
+            return r
 
 // -- log with a base -----------------------------------------------------------
 
@@ -247,19 +222,12 @@ routine b128_log10(x: B128, exact: Bool) -> B128
 /// :param exact: True skips the fast tier (the tests use it to check the exact tier on its own).
 /// :returns: log base `base` of `x`.
 routine b128_log_base(x: B128, base: B128, exact: Bool) -> B128
-    branch exact
-        ? slow()
-        : fast()
-
-    block fast()
+    if not exact
         num: B128Extended = wide_log(x.to[B128Extended]())
         den: B128Extended = wide_log(base.to[B128Extended]())
-        rounded: WideRounding = wide_round_within(u: num.div(den), k: B128_LOG_BASE_BAND)
-        branch rounded.ok
-            ? return(rounded.value)
-            : slow()
-
-    block slow()
-        num: B128Big = big_ln(x.to[B128Big]())
-        quotient: B128Big = num.div(big_ln(base.to[B128Big]()))
-        return(quotient.to[B128]())
+        rounded: WideRounding = wide_round_within(u: num / den, k: B128_LOG_BASE_BAND)
+        if rounded.ok
+            return rounded.value
+    num: B128Big = big_ln(x.to[B128Big]())
+    quotient: B128Big = num / big_ln(base.to[B128Big]())
+    return quotient.to[B128]()
