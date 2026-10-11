@@ -199,7 +199,40 @@ public static class Migrate
     {
         ["iterators"] = (_, text, _) => IteratorNames(text),
         ["variants"] = (file, text, report) => VariantMigration.Rewrite(text, report, file),
+        ["membership"] = (_, text, _) => MembershipNames(text),
     };
+
+    private static readonly Regex Contains = new(@"\.contains(?=\s*\()", RegexOptions.Compiled);
+
+    /// Membership is `has` (an element of a set or a sorted list, a piece of text) and `has_key` (a key of a dict),
+    /// with `lacks` / `lacks_key` for the opposite: `.contains(` is `.has_key(` on a Dict or a SortedDict, by the
+    /// receiver's declared type (`me` in a routine on one), and `.has(` on anything else.
+    public static string MembershipNames(string text)
+    {
+        var lines = text.Split('\n');
+        string? owner = null;
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string line = lines[i];
+            var header = Regex.Match(line, @"^(?:(?:private|internal)\s+)?routine\s+([A-Z]\w*)(?:\[[^\]]*\])?\.");
+            if (header.Success) owner = header.Groups[1].Value;
+            else if (Regex.IsMatch(line, @"^(?:(?:private|internal)\s+)?routine\s")) owner = null;
+            var sb = new StringBuilder(line);
+            int comment = line.TrimStart().StartsWith("//", StringComparison.Ordinal) ? line.IndexOf("//", StringComparison.Ordinal) : CommentStart(sb, 0, sb.Length);
+            string code = line[..comment];
+            int lineIndex = i;
+            string renamed = Contains.Replace(code, m =>
+            {
+                var declared = Regex.Match(code[..m.Index], @"routine\s+([A-Z]\w*)(?:\[[^\]]*\])?$");
+                string? type = declared.Success
+                    ? declared.Groups[1].Value
+                    : ReceiverType(code, m.Index, string.Join('\n', lines, 0, lineIndex + 1), owner);
+                return type is "Dict" or "SortedDict" ? ".has_key" : ".has";
+            });
+            lines[i] = renamed + line[comment..];
+        }
+        return string.Join('\n', lines);
+    }
 
     /// The release `migrate` moves sources to.
     private static readonly Version Release = new(0, 5);
@@ -265,7 +298,7 @@ public static class Migrate
             lines[i] = inAsmBody ? RewriteTypeArguments(line) : RewriteNames(line);
         }
 
-        return VariantMigration.Rewrite(IteratorNames(Renames(CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names))))))));
+        return MembershipNames(VariantMigration.Rewrite(IteratorNames(Renames(CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names)))))))));
     }
 
     private static readonly Regex IteratorNext = new(@"\.next(?=\s*\()", RegexOptions.Compiled);
@@ -393,7 +426,6 @@ public static class Migrate
         ["pop_front"] = "remove_first", ["pop_front_checked"] = "remove_first_checked",
         ["pop_entry"] = "remove_entry", ["pop_entry_checked"] = "remove_entry_checked",
         ["put"] = "setitem", ["put_result"] = "setitem_result", ["put_direct"] = "setitem_direct",
-        ["has_key"] = "contains", ["has"] = "contains",
     };
 
     /// `push` and `pop` mean "at the end" on a list and "in order" on a sorted list or a priority queue, which RazorForge
@@ -411,7 +443,7 @@ public static class Migrate
         ["peek_entry_checked"] = "first_entry_checked",
     };
 
-    private static readonly Regex CalledName = new(@"\.(peek_entry_checked|peek_entry|peek_checked|peek|push_back_result|push_back|push_front_result|push_front|pop_back_checked|pop_back|pop_front_checked|pop_front|pop_entry_checked|pop_entry|put_result|put_direct|put|has_key|has|push_result|push|pop_checked|pop)(?=\s*[\[(])", RegexOptions.Compiled);
+    private static readonly Regex CalledName = new(@"\.(peek_entry_checked|peek_entry|peek_checked|peek|push_back_result|push_back|push_front_result|push_front|pop_back_checked|pop_back|pop_front_checked|pop_front|pop_entry_checked|pop_entry|put_result|put_direct|put|push_result|push|pop_checked|pop)(?=\s*[\[(])", RegexOptions.Compiled);
 
     /// The text with the collection routines renamed (`xs.push(v)` is `xs.add_last(v)`), in code, declarations
     /// included. For `push` and `pop`, the receiver's type decides: a name declared in the file with a `SortedList` or

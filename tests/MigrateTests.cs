@@ -202,7 +202,7 @@ public class MigrateTests
                     xs.add_last(1)
                     q.add(2, 3)
                     d.setitem(4, 5)
-                    seen: Bool = d.contains(4)
+                    seen: Bool = d.has_key(4)
                     last: S64 = xs.remove_last()
                     top: S64 = q.remove()
                     return()
@@ -257,6 +257,22 @@ public class MigrateTests
                     return(Unit())
             """;
         Assert.Equal(after, VariantMigration.Rewrite(before));
+    }
+
+    [Fact]
+    public void Membership_is_has_and_has_key()
+    {
+        const string before = """
+            routine find(s: @Set[S64], d: @Dict[S64, S64], text: Bytes) -> Bool
+                block entry()
+                    a: Bool = s.contains(1)
+                    b: Bool = d.contains(2)
+                    return(text.contains("x"))
+            """;
+        string after = Migrate.MembershipNames(before);
+        Assert.Contains("s.has(1)", after);
+        Assert.Contains("d.has_key(2)", after);
+        Assert.Contains("text.has(\"x\")", after);
     }
 
     [Fact]
