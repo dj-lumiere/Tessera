@@ -25,13 +25,12 @@ it painful to write by hand. Nothing happens between the lines: phi nodes become
 become typed values, and hand-rolled loops over memory become collections.
 
 ```tessera
-routine two_sum(list: @S32, count: USize, target: S32) -> Option[(USize, USize)]
-    block entry()
-        jump search_left(0)
+routine two_sum(list: @S32, count: USize, target: S32) -> Maybe[(USize, USize)]
+    jump search_left(0)
 
     block search_left(left_idx: USize)
         branch left_idx.ge(count)
-            ? return(.Absent)
+            ? return(Unit())
             : search_right(left_idx, left_idx.add(1))
 
     block search_right(left_idx: USize, right_idx: USize)
@@ -41,14 +40,14 @@ routine two_sum(list: @S32, count: USize, target: S32) -> Option[(USize, USize)]
         left_val: S32 = list.stride(left_idx).peek()
         right_val: S32 = list.stride(right_idx).peek()
         branch left_val.add(right_val).eq(target)
-            ? return(.Present([left_idx, right_idx]))
+            ? return((left_idx, right_idx))
             : search_right(left_idx, right_idx.add(1))
 ```
 
 Two blocks make the two loops of an O(n²) search. Each loop's state travels as block parameters, `continue` goes on
 with the next line when the inner loop isn't done, and the numbers come as a pointer and a count: `stride` is the
-address of one, read with an explicit `peek`. The answer is an `Option` of a tuple, built with `(...)` from where
-it goes.
+address of one, read with an explicit `peek`. The answer is a `Maybe` of a tuple: the tuple itself, built with `(...)` from where
+it goes, or `Unit()` when there is none.
 
 > **Early alpha.** The language is still changing, and the builder works but is incomplete. Every commit runs the
 > golden tests on Linux, Windows, and macOS, 64- and 32-bit, and checks 32-bit ARM, aarch64 Linux, and riscv64
