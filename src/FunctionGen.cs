@@ -249,11 +249,11 @@ public sealed class FunctionGen
     {
         if (_decl.AnnotationNamed("reshaping") is not { } a) return;
         if (a.Args.Count == 0 && _decl.Params is not [{ Name: "me" }, ..])
-            throw Err(a.Pos, $"#reshaping alone means '{_decl.DisplayName}' may move the memory of me, and it takes no me: "
-                + "name the parameters, #reshaping(items)");
+            throw Err(a.Pos, $"@reshaping alone means '{_decl.DisplayName}' may move the memory of me, and it takes no me: "
+                + "name the parameters, @reshaping(items)");
         foreach (var name in ReshapedParams(_decl))
             if (_decl.Params.All(p => p.Name != name))
-                throw Err(a.Pos, $"#reshaping names '{name}', which isn't a parameter of '{_decl.DisplayName}'");
+                throw Err(a.Pos, $"@reshaping names '{name}', which isn't a parameter of '{_decl.DisplayName}'");
     }
 
     /// A call to a `#reshaping` routine: the views of the memory it may move no longer see it, and when that memory is
@@ -277,7 +277,7 @@ public sealed class FunctionGen
             Mem(new MemoryRules.Reshape(root, $"'{plan.Decl.DisplayName}'", plan.Pos));
             if (!instance && _decl.Params.Any(p => p.Name == root) && !ReshapedParams(_decl).Contains(root))
                 throw Err(plan.Pos, $"'{_decl.DisplayName}' may move the memory of '{root}' here ('{plan.Decl.DisplayName}' is "
-                    + $"#reshaping): mark it {(root == "me" ? "#reshaping" : $"#reshaping({root})")}, so its callers know a view "
+                    + $"@reshaping): mark it {(root == "me" ? "@reshaping" : $"@reshaping({root})")}, so its callers know a view "
                     + $"of '{root}' doesn't outlive the call");
         }
     }
@@ -439,14 +439,14 @@ public sealed class FunctionGen
         // A slot's drop leaves the slot hollow: the slot holds nothing after it, so a second drop of it gives nothing back.
         if (receiver is not null && sig.Decl.Name is "destruct" or "destruct_all" && sig.Params[0] is PtrType)
         {
-            Mem(new MemoryRules.End(receiver, $"{receiver}.{sig.Decl.Name}()", plan.Pos));
+            Mem(new MemoryRules.End(receiver, sig.Decl.Name is "destruct" ? $"drop {receiver}" : $"{receiver}.destruct_all()", plan.Pos));
             Mem(new MemoryRules.Store(receiver, null, plan.Pos));
             return;
         }
         if (receiver is not null)
         {
             Mem(sig.Decl.Name is "destruct" or "destruct_all"
-                ? new MemoryRules.End(receiver, $"{receiver}.{sig.Decl.Name}()", plan.Pos)
+                ? new MemoryRules.End(receiver, sig.Decl.Name is "destruct" ? $"drop {receiver}" : $"{receiver}.destruct_all()", plan.Pos)
                 : new MemoryRules.Use(receiver, plan.Pos));
             // with_count and the like give the same memory back: a binding of the call is a copy of the handle.
             if (OwnedValue(sig.Ret) && OwnedMemory(sig.Params[0]) is not null && sig.Decl.Name != "duplicate"

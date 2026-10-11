@@ -167,7 +167,7 @@ public sealed partial class Compiler
         if (external is not null && !asm && r.Blocks is not null)
             throw new CompileError(r.Pos, $"external routine '{r.DisplayName}' cannot have a body");
         if (external is null && r.Blocks is null)
-            throw new CompileError(r.Pos, $"routine '{r.DisplayName}' has no body (mark it #external to declare it)");
+            throw new CompileError(r.Pos, $"routine '{r.DisplayName}' has no body (mark it @external to declare it)");
     }
 
     /// Whether an instance comes from a generic routine: its own type parameters, or its owner's (`List[T].push`).

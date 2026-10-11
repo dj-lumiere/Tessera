@@ -291,7 +291,7 @@ public static class Migrate
         {
             string line = lines[i];
             if (RoutineLine.Match(line) is { Success: true } r) inDestruct = r.Groups[1].Value is "destruct" or "destruct_all";
-            else if (line.Length > 0 && !char.IsWhiteSpace(line[0]) && !line.StartsWith("//")) inDestruct = false;
+            else if (line.Length > 0 && !char.IsWhiteSpace(line[0]) && !line.StartsWith("//") && !line.StartsWith("needs ")) inDestruct = false;
             if (inDestruct) continue;
             if (DestructLine.Match(line) is { Success: true } m)
                 lines[i] = $"{m.Groups[1].Value}drop {m.Groups[2].Value}{(m.Groups[3].Success ? "  " + m.Groups[3].Value : "")}";

@@ -91,8 +91,8 @@ public sealed partial class Compiler
         var ownerDecl = r.Owner is { Args.Count: > 0 } ? OwnerDecl(r) : null;
         string? ownerName = ownerDecl switch { RecordDecl rd => rd.Name, VariantDecl vd => vd.Name, _ => null };
         string fix = ownerName is null
-            ? $"the require of '{r.DisplayName}'"
-            : $"the require of '{r.DisplayName}', or to {ownerName}'s if every one of its instances needs it";
+            ? $"the needs of '{r.DisplayName}'"
+            : $"the needs of '{r.DisplayName}', or to {ownerName}'s if every one of its instances needs it";
         _precheck = new PrecheckScope($"'{r.DisplayName}'", fix);
         // A receiver written as a fixed type (`Ptr[T].to[CStr](me: @CChar)`) fixes the owner's parameters it matches.
         if (r.Owner is { Args.Count: > 0 } fixedOwner && HasReceiver(r) && !NamesMe(r.Params[0].Type)
