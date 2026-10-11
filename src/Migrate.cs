@@ -880,7 +880,7 @@ public static class Migrate
     private static IEnumerable<string> StdlibTexts() => StdlibFiles().Select(f => f.Text);
 
     /// The standard library's files and their sources, when the builder can find them.
-    private static IEnumerable<(string Path, string Text)> StdlibFiles()
+    internal static IEnumerable<(string Path, string Text)> StdlibFiles()
     {
         string dir;
         try

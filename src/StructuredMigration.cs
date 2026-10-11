@@ -48,6 +48,55 @@ public static class StructuredMigration
         return result;
     }
 
+    private static readonly Dictionary<string, HashSet<string>> PositionalByFile = [];
+    private static HashSet<string>? _stdlibPositional;
+
+    /// The names of the routines that take their arguments in order: the C externals and `@positional` routines of
+    /// the standard library and of the file being rewritten.
+    private static HashSet<string> PositionalNames(string file)
+    {
+        if (_stdlibPositional is null)
+        {
+            _stdlibPositional = [];
+            foreach (var (path, text) in Migrate.StdlibFiles()) Collect(path, text, _stdlibPositional);
+        }
+        if (!PositionalByFile.TryGetValue(file, out var own))
+        {
+            own = new HashSet<string>(_stdlibPositional);
+            if (File.Exists(file)) Collect(file, File.ReadAllText(file), own);
+            PositionalByFile[file] = own;
+        }
+        return own;
+    }
+
+    private static void Collect(string path, string text, HashSet<string> into)
+    {
+        List<Decl> decls;
+        try
+        {
+            decls = new Parser(new Lexer(path, text.Replace("\r\n", "\n")).Lex(), path, acceptLegacy: true).ParseModule().Decls;
+        }
+        catch (CompileError)
+        {
+            return;
+        }
+        foreach (var r in decls.OfType<RoutineDecl>())
+            if (r.AnnotationNamed("positional") is not null || r.AnnotationNamed("external") is { Args: [{ Value: "c" }, ..] })
+                into.Add(r.Name);
+    }
+
+    /// Drops the argument names of calls to routines that take their arguments in order.
+    private sealed class StripArgumentNames(HashSet<string> inOrder) : Rewriter
+    {
+        public override Expr Expr(Expr e) => base.Expr(e) switch
+        {
+            CallExpr c when inOrder.Contains(c.Name) => c with { ArgNames = null },
+            NsCallExpr n when inOrder.Contains(n.Name) => n with { ArgNames = null },
+            MethodCallExpr m when inOrder.Contains(m.Name) => m with { ArgNames = null },
+            var other => other,
+        };
+    }
+
     /// The routine's body: its head, its lines structured, then the blocks left.
     private static string Body(RoutineDecl r, List<string> lines, string? directory, out string? reason)
     {
@@ -56,6 +105,11 @@ public static class StructuredMigration
         bool generated = r.File.Replace('\\', '/').Contains("/generated/");
         var (entry, kept) = generated ? structurer.Keep() : structurer.Run();
         reason = structurer.Reason;
+        // A renamed value passed on keeps its parameter's name on the call, which a routine taking its arguments in
+        // order (a C external, a `@positional` one) has no use for.
+        var inOrder = new StripArgumentNames(PositionalNames(r.File));
+        entry = inOrder.Body(entry);
+        kept = kept.Select(k => k with { Stmts = inOrder.Body(k.Stmts) }).ToList();
         foreach (var at in ValueIfsInside(entry.Concat(kept.SelectMany(k => k.Stmts))))
             reason = (reason is null ? "" : reason + ". ") + $"line {at.Line}: a value if inside an expression (write the value with when first)";
         var printer = new Printer { Directory = directory };
