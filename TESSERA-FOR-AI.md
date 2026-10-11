@@ -46,15 +46,16 @@ import Standard/Collections
 import Standard/Format
 import Standard/Os
 
-routine start() -> Void
-    claim alloc: @MemoryManager <- make_heap_memory()
-    claim list: @List[S64] <- .construct(alloc)
+routine start() -> None
+    local alloc: @MemoryManager <- make_heap_memory()
+    local list: @List[S64] <- .construct(alloc)
+
     list.add_last(42)
-    first: S64 = list.getitem(0)
+    first: S64 = list[0]
     Out.write("first: {first}, as source: {first.diagnose()}\n")
 
     list.destruct()
-    return()
+    return
 ```
 
 ## Rules That Trip People Up
@@ -144,7 +145,7 @@ routine start() -> Void
   its own `copy`) the type's routine wins, so generic code over `@T` uses `src.copy_into(dst, count)`.
 - **The generation check.** Every block a Memory or a Box takes starts with a 16-byte stamp holding a generation (a
   number no other block of the program had), and the value keeps its copy. `drop()` clears the stamp, and `load`,
-  `store`, `getslot`, and `getview` compare the two first: a dropped block crashes with `DroppedMemoryError` instead
+  `store`, `getslot`, and `getview` compare the two first: a dropped block crashes with `DestructedMemoryError` instead
   of reading freed memory. `resize` gives the moved block a new generation, so an older copy fails too. A plain copy
   (`b = a`) is the SAME memory, not a second owner: drop exactly one. A Span or `@T` carries no generation (the check
   runs when the view is made). With `[debug] heap-check = true` in config.toml (any build mode, off by default,
@@ -192,8 +193,8 @@ routine start() -> Void
   - `the memory of 'm' (from line N) is lost here: block 'b' doesn't get it`: a block's own value doesn't reach the
     next block by itself. Pass it as an argument (`jump done(m)`), keep it in a head `local`, or drop it first.
   - `'s' holds memory that hasn't been given back ..., and this overwrites it`: a `poke` into the last slot that
-    holds live memory. Drop the slot first (`s.drop()` leaves it hollow, then poke).
-  A slot's `drop()` leaves it hollow, so a second `s.drop()` of the same slot does nothing and is no error. `b = a`
+    holds live memory. Drop the slot first (`s.destruct()` leaves it hollow, then poke).
+  A slot's `drop()` leaves it hollow, so a second `s.destruct()` of the same slot does nothing and is no error. `b = a`
   of a Box / Memory is a WARNING (`'b' and 'a' are the same memory, released once whichever one gives it back`):
   write `a.duplicate()` for memory of its own, or `a.getview()` to lend it. The check follows one routine's own
   flow: what a callee does with a slot it was lent is the callee's, so that case is the generation check's.
@@ -219,8 +220,8 @@ routine start() -> Void
     a position (a `USize` index) and take the view again after the call:
 
     ```tessera
-    #reshaping(items)
-    routine grow(items: @List[S64]) -> Void
+    @reshaping(items)
+    routine grow(items: @List[S64]) -> None
         items.add_last(2)
         return()
 
@@ -237,17 +238,14 @@ routine start() -> Void
   ```tessera
   global CACHE: @Memory[Byte]
 
-  routine refill(count: USize, fill: Byte) -> Void
+  routine refill(count: USize, fill: Byte) -> None
       CACHE.replace(Memory[Byte].construct(values: [fill], times: count, manager: DEFAULT_HEAP))
-      return()
+      return
 
-  routine start() -> Void
+  routine start() -> None
       refill(count: 4, fill: 0x41)
-      jump finish()
-
-      block finish()
-          CACHE.drop()
-          return()
+      CACHE.destruct()
+      return
   ```
 
   `Box[T].replace` works the same. `Memory[T].give_back()` drops the memory and keeps the manager, so a later
@@ -342,8 +340,8 @@ routine start() -> Void
   Before, `first` and `count` ride along every jump:
 
   ```tessera
-  routine List[T].destruct_all(me: @Me) -> Void
-  require T: typename, Destructible[T]
+  routine List[T].destruct_all(me: @Me) -> None
+  needs T: typename, Destructible[T]
       first: @T = me.storage.data.peek()
       count: USize = me.count.peek()
       jump each(first, count, 0)
@@ -357,8 +355,8 @@ routine start() -> Void
   After, the head shares them and the loop passes only what changes:
 
   ```tessera
-  routine List[T].destruct_all(me: @Me) -> Void
-  require T: typename, Destructible[T]
+  routine List[T].destruct_all(me: @Me) -> None
+  needs T: typename, Destructible[T]
       local first: @T = me.storage.data.peek()
       local count: USize = me.count.peek()
 
@@ -383,17 +381,12 @@ routine start() -> Void
       local n: USize = values.count()
       local sum: @U64 <- 0
 
-      jump add(0)
-
-      block add(i: USize)
-          done: Bool = i.ge(n)
-          branch done
-              ? return(sum.peek())
-              : continue
-          value: U32 = values.getitem(i)
+      each i in 0 til n
+          value: U32 = values[i]
           total: U64 = sum.peek()
-          total.add(value.to[U64]()).poke_into(sum)
-          jump add(i.add(1))
+          (total + value.to[U64]()).poke_into(sum)
+      then
+          return sum.peek()
   ```
 
 - **Release in one `finish` block.** A routine that has something to release (a `destruct()` / `destruct_all()`, a
@@ -411,18 +404,14 @@ routine start() -> Void
   routine home_path(drive: Memory[Byte], alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
       p: Maybe[Memory[Byte]] = env_var(name: "HOMEPATH", alloc)
       when p
-          is Memory[Byte] as path => join(path)
-          is Unit => missing()
-
-      block missing()
-          drive.drop()
-          return(FsError.NOT_FOUND)
-
-      block join(path: Memory[Byte])
-          both: Memory[Byte] = Span[Byte].concat(a: drive, b: path, alloc)
-          drive.drop()
-          path.drop()
-          return(both)
+          is Memory[Byte] as path =>
+              both: Memory[Byte] = Span[Byte].concat(a: drive, b: path, alloc)
+              drive.destruct()
+              path.destruct()
+              return both
+          is None =>
+              drive.destruct()
+              return FsError.NOT_FOUND
   ```
 
   After, the owners start in the head and every exit goes through `finish`:
@@ -433,19 +422,14 @@ routine start() -> Void
       local path: @Memory[Byte] <- .hollow()
 
       p: Maybe[Memory[Byte]] = env_var(name: "HOMEPATH", alloc)
-      when p
-          is Memory[Byte] as text => join(text)
-          is Unit => finish(FsError.NOT_FOUND)
-
-      block join(path_text: Memory[Byte])
-          path_text.poke_into(path)
-          both: Memory[Byte] = Span[Byte].concat(a: drive.peek(), b: path.peek(), alloc)
-          jump finish(both)
-
-      block finish(result: Result[Memory[Byte], FsError])
-          drive.drop()
-          path.drop()
-          return(result)
+      result: Result[Memory[Byte], FsError] = when p
+          is Memory[Byte] as text =>
+              text.poke_into(path)
+              becomes Span[Byte].concat(a: drive.peek(), b: path.peek(), alloc)
+          is None => FsError.NOT_FOUND
+      drive.destruct()
+      path.destruct()
+      return result
   ```
 
   An early return before anything was acquired may stay a plain `return` only in a routine without a `finish`. A lock
@@ -473,7 +457,7 @@ routine start() -> Void
   ```tessera
   when item
       is S64 as value => continue
-      is Unit => finish()
+      is None => finish()
   total.peek().add(value).poke_into(total)  // value is bound here
   ```
 
@@ -621,7 +605,7 @@ routine start() -> Void
   wraps bytes from C, and text made from other text (`slice`, `getslice`, the iterators, `buf.getview()` of a
   `List[Byte]`) views the same memory. Text a routine takes memory for (`Span[Byte].concat`, `In.read_line`,
   `File.read_all_result`, `join_path`, `env_var`, ...) comes back as a `Memory[Byte]`: drop it once
-  (`line: Memory[Byte] = In.read_line()`, then `line.drop()`: a Memory a routine returns is bound with `=`, and
+  (`line: Memory[Byte] = In.read_line()`, then `line.destruct()`: a Memory a routine returns is bound with `=`, and
   `claim ... <-` takes only an `at` literal for a Memory or a Box). A Memory lends itself to a text routine at
   a receiver or an argument (`line.find("=")`, `out.write("{line.getview()}")` in a template). Escapes: `\xXX` is one byte (strings, `b'..'`), `\uXXXXXX` one
   character by exactly six hex digits (strings, `'..'`), so `"\u01F600"` equals `"\xF0\x9F\x98\x80"`.
@@ -780,11 +764,10 @@ the `branch` would (an overflow or an out-of-bounds load there is a real bug):
 
 ```tessera
 routine sum_to(n: U64) -> U64
-    jump loop(0, 0)
-
-    block loop(i: U64, total: U64)
-        done: Bool = i.ge(n)
-        branch done ? return(total) : loop(i.add(1), total.add(i))
+    each i in 0 til n with total: U64 = 0
+        continue with total: total + i
+    then
+        return total
 ```
 
 Iterating a collection (`emit_checked` returns `Maybe[T]`, `Unit` past the end, `emit` crashes there; an iterator
@@ -796,13 +779,11 @@ also hands out each element's slot with
 routine sum_list(list: @List[S64]) -> S64
     local iter: @ListIter[S64] <- .construct(list)
 
-    jump next(0)
-
-    block next(total: S64)
+    while true with total: S64 = 0
         item: Maybe[S64] = iter.emit_checked()
         when item
-            is S64 as value => next(total.add(value))
-            is Unit => return(total)
+            is S64 as value => continue with total: total + value
+            is None => return total
 ```
 
 Propagating a `Result`:
@@ -811,11 +792,8 @@ Propagating a `Result`:
 routine parse_or_zero(text: Span[Byte]) -> B64
     r: Result[B64, ParseError] = text.to_result[B64]()
     when r
-        is B64 as value => return(value)
-        is ParseError as error => failed(error)
-
-    block failed(error: ParseError)
-        return(0.0)
+        is B64 as value => return value
+        is ParseError as error => return 0.0
 ```
 
 ## Output
@@ -1225,7 +1203,7 @@ array presets (`K.getitem(i)`, with `preset K: @Array[T, COUNT] <- [...]`), and 
 - Other ways to make a value are named for what they make: `Out.writer()`, `Xoshiro256.from_seed(seed)`,
   `FormatSpec.zero_padded(6)`.
 - `deallocate(p, alloc)` (the raw layer) is not a destructor: it hands a block of memory back to its allocator.
-  `Memory[T].drop()` / `Box[T].drop()` are the way to do it for memory taken from a manager.
+  `Memory[T].destruct()` / `Box[T].destruct()` are the way to do it for memory taken from a manager.
 
 ## Style
 

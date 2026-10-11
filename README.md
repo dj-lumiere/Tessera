@@ -2,9 +2,9 @@
   <img src="branding/tessera.svg" alt="Tessera logo" width="112">
 </p>
 
-<h1 align="center">Tessera[/h1]
+<h1 align="center">Tessera</h1>
 
-<p align="center"><strong>A structured SSA language built from explicit operations.</strong></p>
+<p align="center"><strong>A statement-centred low-level language: a value is bound once, memory comes from a manager and is given back by hand, and the build checks it.</strong></p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-0.1.0-informational.svg" alt="Version 0.1.0">
@@ -13,41 +13,31 @@
 </p>
 
 <p align="center">
-  <a href="https://tessera.lumi-dev.xyz/">Documentation[/a] ·
-  <a href="#quick-start">Quick start[/a] ·
-  <a href="TESSERA-FOR-AI.md">Reference for AI assistants[/a] ·
-  <a href="examples/README.md">Examples[/a] ·
-  <a href="https://github.com/dj-lumiere/RazorForge">RazorForge[/a]
+  <a href="https://tessera.lumi-dev.xyz/">Documentation</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="TESSERA-FOR-AI.md">Reference for AI assistants</a> ·
+  <a href="examples/README.md">Examples</a> ·
+  <a href="https://github.com/dj-lumiere/RazorForge">RazorForge</a>
 </p>
 
-Tessera (`.tess`) is an attempt to keep what makes IR honest, one explicit step at a time, while taming what makes
-it painful to write by hand. Nothing happens between the lines: phi nodes become block parameters, raw integers
-become typed values, and hand-rolled loops over memory become collections.
+Tessera (`.tess`) keeps every step of a program on the page, and keeps writing it bearable. Nothing happens between
+the lines: a value is bound once and never reassigned, a load and a store are calls you can see (`p.peek()`,
+`p.poke(v)`), memory is taken from a manager and given back by hand, and the builder checks that it was.
 
 ```tessera
 routine two_sum(list: @S32, count: USize, target: S32) -> Maybe[(USize, USize)]
-    jump search_left(0)
-
-    block search_left(left_idx: USize)
-        branch left_idx.ge(count)
-            ? return(Unit())
-            : search_right(left_idx, left_idx.add(1))
-
-    block search_right(left_idx: USize, right_idx: USize)
-        branch right_idx.ge(count)
-            ? search_left(left_idx.add(1))
-            : continue
-        left_val: S32 = list.stride(left_idx).peek()
-        right_val: S32 = list.stride(right_idx).peek()
-        branch left_val.add(right_val).eq(target)
-            ? return((left_idx, right_idx))
-            : search_right(left_idx, right_idx.add(1))
+    each left_idx in 0 til count
+        each right_idx in left_idx + 1 til count
+            left_val: S32 = list.stride(left_idx).peek()
+            right_val: S32 = list.stride(right_idx).peek()
+            if left_val + right_val == target
+                return (left_idx, right_idx)
+    return None()
 ```
 
-Two blocks make the two loops of an O(n²) search. Each loop's state travels as block parameters, `continue` goes on
-with the next line when the inner loop isn't done, and the numbers come as a pointer and a count: `stride` is the
-address of one, read with an explicit `peek`. The answer is a `Maybe` of a tuple: the tuple itself, built with `(...)` from where
-it goes, or `Unit()` when there is none.
+Two `each` loops make the O(n²) search, and the numbers come as a pointer and a count: `stride` is the address of
+one, read with an explicit `peek`. The answer is a `Maybe` of a tuple: the tuple itself, built with `(...)` from where
+it goes, or `None()` when there is none.
 
 > **Early alpha.** The language is still changing, and the builder works but is incomplete. Every commit runs the
 > golden tests on Linux, Windows, and macOS, 64- and 32-bit, and checks 32-bit ARM, aarch64 Linux, and riscv64
@@ -71,21 +61,21 @@ way: each level is made of whole pieces of the level below.
 
 | Level         | What it is                                                                                                                                                                                 |
 |---------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **operation** | One explicit step: a named method (`a.add(b)`), a load (`p.peek()`), a store (`p.poke(v)`), a stack slot (`claim`), a call. There are no operators, so every operation says what it does and what it costs. |
-| **block**     | A straight run of operations. Values come in as block parameters (no phi nodes), and the block ends in exactly one terminator: `jump`, `branch`, `when`, or `return`.                      |
-| **routine**   | A set of blocks with one entry. Control moves between its blocks only through terminators, and every value is SSA.                                                                         |
+| **statement** | One step: a binding (`x: S64 = a + b`), a load (`p.peek()`), a store (`p.poke(v)`), a local slot (`local p: @S64 <- 0`), a call, a `return`.                                             |
+| **routine**   | A body of statements with a head of `local` lines: `if` / `else`, `each` / `while` / `until` loops with carried values, and `when` to choose. Every value is bound once, and every path ends in a `return`. |
 | **module**    | A namespace for routines, types, and constants (`Standard/Format`). It's declared in the source, not tied to files.                                                                        |
 | **solution**  | The code built together to make one application.                                                                                                                                           |
 
-**No operators.** Every step is a named call, so `add` and `add_wrap`, or `shr` on a signed and an unsigned value,
-never look alike.
+**Operators are routine calls.** `a + b` is `a.add(b)`, `a +% b` is `a.add_wrap(b)`, and `a >> 1` is `a.shr(1)`
+(arithmetic on a signed value, logical on an unsigned one): a type takes an operator by declaring the routine, and an
+overflow crashes unless the wrapping (`+%`) or clamping (`+^`) form was written.
 
-**Block parameters instead of phi nodes.** A loop passes its state forward (`search_right(left_idx,
-right_idx.add(1))`) instead of collecting it from predecessors.
+**Loops carry their values by name.** `while n > 1 with n: U64 = start, steps: U64 = 0` names what each pass
+changes, `continue with n: n / 2, steps: steps + 1` passes the next values, and `then` sees the last ones.
 
 **`=` only binds.** Memory is read and written by `peek` and `poke` calls, and every binding states its type.
 
-**Sum types are variants.** `Option` and `Result` are variants, read with a `when` whose arms bind the payload;
+**Sum types are variants.** `Maybe` and `Result` are variants, read with a `when` whose arms bind the payload;
 choices and variants print, compare, and hash without being asked. Tuples of two to four values
 (`-> (U64, U64)`, `q, r = div_rem(a, b)`) cover results that are just several values; a record names the parts
 when they mean something.
@@ -139,7 +129,7 @@ tessera help | version
 
 `<mode>` is `debug` (-O0, the default), `release` (-O2), `release-time` (-O3), or `release-space` (-Os), as a
 `config.toml`'s `mode`. Every mode carries debug information, DWARF or CodeView and a `.pdb` on Windows MSVC: a
-debugger stops on Tessera lines and shows routine parameters, bindings, and block parameters by name.
+debugger stops on Tessera lines and shows routine parameters, bindings, and loop-carried values by name.
 From a checkout, run it as `dotnet run -- <command>`. `<target>` is `--target <arch-os-abi>` (default: this
 machine), `--cpu <name>`, and `--feature <name>[,...]`. With files, all of them form one solution. Without files,
 `build` and `run` read the nearest `config.toml`, which names the package and sets the target, mode, sources,

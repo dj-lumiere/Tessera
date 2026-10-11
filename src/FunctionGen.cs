@@ -321,7 +321,7 @@ public sealed class FunctionGen
             if (OwnedMemory(t) is null) continue;
             if (_globalDrops.TryGetValue(g.Name, out var blocks) && blocks.Contains("finish")) continue;
             throw Err(_decl.Pos, $"'{g.Name}' (line {g.Pos.Line}) is a global that holds memory, and start's finish block "
-                + $"doesn't give it back: end start with a block finish() that calls {g.Name}.destruct() and returns, and "
+                + $"doesn't give it back: give it back before start returns (drop {g.Name}), and "
                 + "jump there instead of returning elsewhere");
         }
     }
@@ -1037,7 +1037,22 @@ public sealed class FunctionGen
                     Mem(new MemoryRules.Exit(null, false, [], e.Pos));
                     break;
                 }
+                // Giving a value back is the statement `drop x`: `destruct` is the type's to write and the build's to
+                // call. A type's own `destruct` (and `destruct_all`) still gives its members back by name, and the
+                // standard library keeps its calls.
+                if (e.Value is MethodCallExpr { Name: "destruct", Args.Count: 0, TypeArgs.Count: 0 } direct
+                    && !_decl.IsLibrary && _decl.Name is not ("destruct" or "destruct_all"))
+                {
+                    var printer = new Printer();
+                    throw Err(e.Pos, $"a value is given back with drop: drop {printer.Expr(direct.Receiver, 0)}");
+                }
                 EvalAny(e.Value);
+                break;
+            }
+            case DropStmt d:
+            {
+                var call = new MethodCallExpr(d.Value, "destruct", [], [], d.Pos);
+                EvalAny(call);
                 break;
             }
             case IfStmt i:

@@ -46,7 +46,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         "jump", "branch", "when", "return", "unreachable", "continue", "else", "block", "claim", "local",
         "true", "false", "null", "routine", "record", "choice", "variant", "preset", "global", "concept", "conform",
         "protocol", "obeys", "needs", "define", "private", "internal", "module", "import", "and", "or", "not", "is", "as",
-        "todo", "if", "each", "while", "until", "becomes", "break", "pass",
+        "todo", "if", "each", "while", "until", "becomes", "break", "pass", "drop",
     ];
     /// Inside an `@external("asm")` routine: a statement may carry `@asm_prefix`, and an `if` may test a bare
     /// comparison name (`eq`, `lt[U64]`).
@@ -55,7 +55,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// The words a statement starts with, besides a binding or a call.
     private static readonly HashSet<string> StatementKeywords =
         ["jump", "branch", "when", "return", "unreachable", "todo", "if", "each", "while", "until", "continue", "break", "pass",
-         "becomes", "local", "claim", "else", "then"];
+         "becomes", "local", "claim", "else", "then", "drop"];
 
     private static readonly HashSet<string> DeclKeywords =
         ["routine", "record", "choice", "variant", "preset", "global", "concept", "conform", "protocol", "obeys", "define"];
@@ -1195,6 +1195,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             {
                 case "if": return ParseIf(col);
                 case "each" or "while" or "until": return ParseLoop(col);
+                case "drop":
+                {
+                    Next();
+                    if (Is(TokenKind.Newline) || Is(TokenKind.Eof)) throw Error("drop names what to give back: drop x");
+                    var dropped = ParsePostfix();
+                    ExpectLineEnd();
+                    return new DropStmt(dropped, pos);
+                }
                 case "when": return ParseWhen(col, asValue: false);
                 case "else": throw Error("'else' follows the body of an if or a when arm, at the same column as the if");
                 case "then": throw Error("'then' follows the body of a loop, at the same column as the loop");

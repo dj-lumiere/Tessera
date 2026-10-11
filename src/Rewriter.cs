@@ -33,6 +33,7 @@ public class Rewriter
         TodoStmt t => t,
         ContinueStmt c => c with { With = c.With?.Select(w => (N(w.Name), Expr(w.Value), w.Pos)).ToList() },
         BecomesStmt b => b with { Value = Expr(b.Value) },
+        DropStmt d => d with { Value = Expr(d.Value) },
         _ => s,
     };
 

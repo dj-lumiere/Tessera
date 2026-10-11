@@ -166,7 +166,7 @@ public static class MemoryRules
                         if (state.Names.TryGetValue(st.Slot, out var id) && state.Groups.TryGetValue(id, out var g) && g.Ended is null
                             && !state.Names.Any(n => n.Key != st.Slot && n.Value == id))
                             Report(st.Pos, $"'{st.Slot}' holds memory that hasn't been given back (from line {g.Born.Line}), and this "
-                                + $"overwrites it: destruct it first ({st.Slot}.destruct())");
+                                + $"overwrites it: give it back first (drop {st.Slot})");
                         if (st.From is { } from && state.Names.TryGetValue(from, out var fromId)) state.Names[st.Slot] = fromId;
                         else state.Names.Remove(st.Slot);
                         break;
@@ -194,7 +194,7 @@ public static class MemoryRules
                         foreach (var (_, g) in state.Groups)
                             if (g.Ended is null)
                                 Report(ex.Pos, $"'{g.Origin}' holds memory (from line {g.Born.Line}) that isn't given back before '{routine}' "
-                                    + $"returns here: destruct it with {g.Origin}.destruct() first, return it, or hand it to a routine that takes it");
+                                    + $"returns here: give it back first (drop {g.Origin}), return it, or hand it to a routine that takes it");
                         break;
                     case Exit { Block: null }:
                         break;

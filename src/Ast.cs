@@ -277,6 +277,10 @@ public sealed record ContinueStmt(List<(string Name, Expr Value, Pos Pos)>? With
 /// `break`: out of the loop, skipping its `then`.
 public sealed record BreakStmt(Pos Pos) : Stmt(Pos);
 
+/// `drop x`: `x` (a value, or a place such as `me.storage`) is given back here through its type's `destruct`, which only
+/// this statement calls from a program's own lines.
+public sealed record DropStmt(Expr Value, Pos Pos) : Stmt(Pos);
+
 /// `becomes v`: the value of the `when` arm this ends.
 public sealed record BecomesStmt(Expr Value, Pos Pos) : Stmt(Pos);
 
@@ -481,6 +485,7 @@ public static class Bodies
         {
             case BindStmt b: yield return b.Value; break;
             case ExprStmt e: yield return e.Value; break;
+            case DropStmt d: yield return d.Value; break;
             case DestructureStmt d: yield return d.Value; break;
             case IfStmt i: yield return i.Cond; break;
             case WhenStmt w:

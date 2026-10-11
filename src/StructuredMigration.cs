@@ -9,6 +9,29 @@ namespace Tessera;
 /// in assembly routines `branch` to `if`, `claim` to `local`, `return(x)` to `return x`.
 public static class StructuredMigration
 {
+    /// The examples of a documentation page, each rewritten when it reads as a whole module (a fragment is left as
+    /// it is).
+    public static string RewriteMarkdown(string file, string text, List<string> report) =>
+        MarkdownBlocks(text, code =>
+        {
+            var quiet = new List<string>();
+            string rewritten = Rewrite(file, code, quiet);
+            return rewritten;
+        });
+
+    /// Every ```tessera block of a page put through `rewrite`, its indentation kept.
+    public static string MarkdownBlocks(string text, Func<string, string> rewrite) =>
+        Regex.Replace(text, @"(?ms)^( *)```tessera\n(.*?)^\1```", m =>
+        {
+            string indent = m.Groups[1].Value;
+            var lines = m.Groups[2].Value.Split('\n')
+                .Select(l => l.StartsWith(indent, StringComparison.Ordinal) ? l[indent.Length..] : l);
+            string code = rewrite(string.Join('\n', lines));
+            if (!code.EndsWith('\n')) code += "\n";
+            string back = string.Join('\n', code.Split('\n').Select(l => l.Length == 0 ? l : indent + l));
+            return $"{indent}```tessera\n{back}{indent}```";
+        });
+
     public static string Rewrite(string file, string text, List<string> report)
     {
         string lf = text.Replace("\r\n", "\n");
@@ -63,7 +86,8 @@ public static class StructuredMigration
         if (!PositionalByFile.TryGetValue(file, out var own))
         {
             own = new HashSet<string>(_stdlibPositional);
-            if (File.Exists(file)) Collect(file, File.ReadAllText(file), own);
+            // A page's examples see the standard library's routines, not a lexed page.
+            if (File.Exists(file) && file.EndsWith(".tess", StringComparison.Ordinal)) Collect(file, File.ReadAllText(file), own);
             PositionalByFile[file] = own;
         }
         return own;
@@ -79,7 +103,7 @@ public static class StructuredMigration
         {
             decls = new Parser(new Lexer(path, text.Replace("\r\n", "\n")).Lex(), path, acceptLegacy: true).ParseModule().Decls;
         }
-        catch (CompileError)
+        catch (Exception e) when (e is CompileError or IndexOutOfRangeException or ArgumentException)
         {
             return;
         }

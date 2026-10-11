@@ -60,7 +60,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none" or "destruct";
+        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.tess", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -259,17 +259,45 @@ public static class Migrate
         ["entry"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? EntryMigration.RewriteMarkdown(text)
             : EntryMigration.Rewrite(text),
-        ["structured"] = (file, text, report) => StructuredMigration.Rewrite(file, text, report),
-        ["spellings"] = (_, text, _) => StructuredMigration.Spellings(text),
+        ["structured"] = (file, text, report) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.RewriteMarkdown(file, text, report)
+            : StructuredMigration.Rewrite(file, text, report),
+        ["spellings"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, StructuredMigration.Spellings)
+            : StructuredMigration.Spellings(text),
         ["none"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? NoneSpelling.RewriteMarkdown(text)
             : NoneSpelling.Rewrite(text),
         ["destruct"] = (_, text, _) => DestructSpelling(text),
+        ["drop"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, DropStatements)
+            : DropStatements(text),
     };
 
     private static readonly Regex Contains = new(@"\.contains(?=\s*\()", RegexOptions.Compiled);
 
     private static readonly Regex Drop = new(@"\.drop\(\)", RegexOptions.Compiled);
+
+    private static readonly Regex DestructLine = new(@"^(\s*)([A-Za-z_`][\w`]*(?:\.[A-Za-z_`][\w`]*(?:\([^()]*\))?)*)\.destruct\(\)\s*(//.*)?$", RegexOptions.Compiled);
+    private static readonly Regex RoutineLine = new(@"^(?:(?:private|internal)\s+)?routine\s+(?:[^\s(]+\.)?([A-Za-z_]\w*)", RegexOptions.Compiled);
+
+    /// A value given back on a line of its own, `x.destruct()` (a name, or a place such as `me.storage`), is the
+    /// statement `drop x`. A type's own `destruct` and `destruct_all` keep their calls.
+    public static string DropStatements(string text)
+    {
+        var lines = text.Split('\n');
+        bool inDestruct = false;
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string line = lines[i];
+            if (RoutineLine.Match(line) is { Success: true } r) inDestruct = r.Groups[1].Value is "destruct" or "destruct_all";
+            else if (line.Length > 0 && !char.IsWhiteSpace(line[0]) && !line.StartsWith("//")) inDestruct = false;
+            if (inDestruct) continue;
+            if (DestructLine.Match(line) is { Success: true } m)
+                lines[i] = $"{m.Groups[1].Value}drop {m.Groups[2].Value}{(m.Groups[3].Success ? "  " + m.Groups[3].Value : "")}";
+        }
+        return string.Join('\n', lines);
+    }
 
     /// Memory is given back with `destruct()`, the release every type has: `.drop()` (of a Memory or a Box) is
     /// `.destruct()`, and `DroppedMemoryError` is `DestructedMemoryError`.

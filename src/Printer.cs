@@ -167,6 +167,9 @@ public sealed class Printer
             case BreakStmt:
                 Line(s, indent, "break");
                 break;
+            case DropStmt d:
+                Line(s, indent, $"drop {Expr(d.Value)}");
+                break;
             case BecomesStmt { Value: WhenExpr w } b:
                 Line(s, indent, $"becomes when{(w.When.Value is null ? "" : " " + Expr(w.When.Value))}");
                 Arms(w.When, indent + 1, asValue: true);
