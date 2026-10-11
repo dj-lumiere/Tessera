@@ -781,6 +781,9 @@ public sealed class FunctionGen
             return v;
         }
         if (_hiddenPayloads.TryGetValue(r.Name, out var why)) throw Err(r.Pos, why);
+        if (_c.LambdaOuter.TryGetValue(_decl, out var outer) && outer.Names.Contains(r.Name))
+            throw Err(r.Pos, $"the lambda uses '{r.Name}', a value of routine '{outer.Routine}', and a lambda uses only its "
+                + "own parameters, presets, and globals: pass it as a parameter, or write a routine");
         if (!BoundInRoutine(r.Name))
             throw Err(r.Pos, $"'{r.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
         throw Err(r.Pos, NotVisible(r.Name));
@@ -839,6 +842,7 @@ public sealed class FunctionGen
         {
             case IntLit or FloatLit or NullLit or StrLit: return null;
             case ArrayLit: return null;
+            case LambdaExpr: return null;
             case BoolLit: return BoolType.Instance;
             case TypedIntLit t: return t.Type;
             case ValueRef r: return Lookup(r).Type;
@@ -908,6 +912,8 @@ public sealed class FunctionGen
         if (e is CallExpr unknown && Infer(e) is null && PlanCall(e, null) is null)
             throw Err(unknown.Pos, UnknownCall(unknown));
         if (e is RoutineRef overloaded && Infer(e) is null) return RoutineValue(overloaded, null);
+        if (e is LambdaExpr lambda)
+            throw Err(lambda.Pos, "a lambda takes its parameter types from the Callable it becomes, and nothing here says which: bind it with a Callable type first");
         var t = Infer(e) ?? throw Err(e.Pos, "cannot infer the type of this expression; bind it with a type annotation");
         return Eval(e, t);
     }
@@ -960,6 +966,7 @@ public sealed class FunctionGen
                 ExpandTemplate(writer, (StrLit)(e is NsCallExpr ns ? ns.Args[0] : ((MethodCallExpr)e).Args[0])),
             PresetRef r => EvalPresetRef(r, expected),
             RoutineRef rr => RoutineValue(rr, expected),
+            LambdaExpr l => EvalLambda(l, expected),
             CallExpr or NsCallExpr or MethodCallExpr => EvalCall(e, expected),
             _ => throw new InvalidOperationException(e.GetType().Name),
         };
@@ -1618,6 +1625,20 @@ public sealed class FunctionGen
     }
 
 
+
+    /// `(a, b) => a.add(b)` where a Callable is expected: a routine of the file with the Callable's parameter and result
+    /// types, `return(body)` its one block, whose address is the value. It sees its parameters, presets, globals, and
+    /// routines, not the values of the routine it is written in.
+    private Val EvalLambda(LambdaExpr l, DType expected)
+    {
+        if (expected is not CallableType ct)
+            throw Err(l.Pos, $"a lambda becomes a Callable, and {expected} is expected here");
+        if (ct.Params.Count != l.Params.Count)
+            throw Err(l.Pos, $"the lambda takes {l.Params.Count} parameter(s), and {ct} takes {ct.Params.Count}");
+        var decl = _c.LambdaRoutine(l, ct, _decl, _env, _values.Keys.Concat(_routineValues.Keys));
+        var inst = _c.RequireInstance(decl, _env.Clone(decl.File));
+        return new Val($"@{Compiler.Quote(inst.Symbol)}", ct);
+    }
 
     /// Resolves a type written as a namespace, or null if it doesn't name a type (it may be a preset).
     private DType? TryResolveOwner(TypeRef owner)

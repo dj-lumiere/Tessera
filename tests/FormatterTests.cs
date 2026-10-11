@@ -10,6 +10,13 @@ namespace Tessera.Tests;
 public class FormatterTests
 {
     [Fact]
+    public void LambdaParameterParenthesesStay()
+    {
+        const string source = "routine f() -> Void\n    block entry()\n        double: Callable[(S64,), S64] = (x) => x.mul(2)\n        return()\n";
+        Assert.Equal(source, Formatter.Format(source));
+    }
+
+    [Fact]
     public void CallableTupleInAngleBracketsIsNotBroken()
     {
         string source = """

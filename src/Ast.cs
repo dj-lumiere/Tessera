@@ -224,6 +224,8 @@ public sealed record BoolLit(bool Value, Pos Pos) : Expr(Pos);
 public sealed record NullLit(Pos Pos) : Expr(Pos);
 /// A value: a parameter, a block parameter, or a binding.
 public sealed record ValueRef(string Name, Pos Pos) : Expr(Pos);
+/// `(a, b) => a.add(b)`: a routine written where its value goes, its parameters typed by the Callable it becomes.
+public sealed record LambdaExpr(List<ValueRef> Params, Expr Body, Pos Pos) : Expr(Pos);
 /// A `when` arm that observes a variant's value as one of its branch types: `is S64 as n`, or `is Unit` without a
 /// name.
 public sealed record IsPattern(TypeRef Type, ValueRef? Binding, Pos Pos) : Expr(Pos);

@@ -1162,6 +1162,42 @@ public sealed partial class Compiler
         return new VariantType(decl, sorted, VariantBranches);
     }
 
+    /// The routines lambdas became, by where each is written and what it became: one routine for each lambda and
+    /// Callable type, under each set of the enclosing routine's type arguments.
+    private readonly Dictionary<string, RoutineDecl> _lambdas = [];
+
+    /// A lambda's routine, and the values of the routine it is written in (which it can't use) with that routine's name.
+    public Dictionary<RoutineDecl, (HashSet<string> Names, string Routine)> LambdaOuter { get; } = [];
+
+    /// The routine `(a, b) => body` becomes as a `ct`: its parameters typed by `ct`, one `entry` block that returns
+    /// the body (or runs it, for a Void result), private to the file it is written in.
+    public RoutineDecl LambdaRoutine(LambdaExpr l, CallableType ct, RoutineDecl around, TypeEnv env, IEnumerable<string> outer)
+    {
+        string bindings = string.Join(",", env.All.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => $"{kv.Key}={kv.Value.Key}"));
+        string key = $"{around.File}:{l.Pos.Line}:{l.Pos.Col}|{ct.Key}|{bindings}";
+        if (_lambdas.TryGetValue(key, out var known)) return known;
+        uint h = 2166136261;
+        foreach (char c in key) { h ^= c; h *= 16777619; }
+        var pos = l.Pos;
+        var parameters = l.Params.Select((p, i) => new Param(p.Name, new TypeRef("$lambda", [], p.Pos) { Known = ct.Params[i] }, p.Pos)).ToList();
+        var ret = new TypeRef("$lambda", [], pos) { Known = ct.Ret };
+        Terminator term = ct.Ret is VoidType
+            ? new TargetTerm(new ReturnTarget(null, pos), pos)
+            : new TargetTerm(new ReturnTarget(l.Body, pos), pos);
+        List<Stmt> stmts = ct.Ret is VoidType ? [new ExprStmt(l.Body, pos)] : [];
+        var annotations = ct.CallConv == "default"
+            ? new List<Annotation>()
+            : [new Annotation("callconv", [new AnnotationArg(null, ct.CallConv, false)], pos)];
+        var decl = new RoutineDecl(around.File, annotations, null, $"lambda_{l.Pos.Line}_{l.Pos.Col}_{h:x8}", [],
+            parameters, ret, [], [new BlockDecl("entry", [], stmts, term, pos)], pos)
+        {
+            Module = around.Module, IsPrivate = true, IsLibrary = around.IsLibrary,
+        };
+        _lambdas[key] = decl;
+        LambdaOuter[decl] = (outer.Where(n => !l.Params.Any(p => p.Name == n)).ToHashSet(), around.DisplayName);
+        return decl;
+    }
+
     /// The variants whose branch types are being resolved: a variant met inside one is checked when it is used.
     private readonly HashSet<string> _resolvingBranches = [];
 

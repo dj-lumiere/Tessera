@@ -931,7 +931,9 @@ public static class Formatter
                 string inner = line[(i + 1)..close];
                 // `(x: 1)` is a record literal and `(a, b)` a tuple: only parentheses around one plain value group.
                 bool recordLiteral = System.Text.RegularExpressions.Regex.IsMatch(inner, @"^\s*[A-Za-z_]\w*\s*:(?!:)");
-                if (inner.Trim().Length > 0 && !recordLiteral && TopLevelIndex(inner, 0, ",") < 0)
+                // `(x) => x.mul(2)`: a lambda's parameter list, not a group.
+                bool lambda = line[(close + 1)..].TrimStart().StartsWith("=>", StringComparison.Ordinal);
+                if (inner.Trim().Length > 0 && !recordLiteral && !lambda && TopLevelIndex(inner, 0, ",") < 0)
                 {
                     sb.Append(DropGroupingParens(inner).Trim());
                     i = close;

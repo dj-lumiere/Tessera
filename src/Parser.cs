@@ -793,6 +793,50 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new TypeRef(name.Text, ParseTypeArgs(callable: name.Text == "Callable" && path is null), name.Pos) { Path = path };
     }
 
+    /// The number of names in a lambda's parameter list at the cursor, `(a, b) =>`, or null when the parentheses aren't
+    /// one.
+    private int? LambdaParamCount()
+    {
+        int k = 1, names = 0;
+        if (PeekTok(k).Kind != TokenKind.RParen)
+            while (true)
+            {
+                if (PeekTok(k).Kind != TokenKind.Ident) return null;
+                names++;
+                k++;
+                if (PeekTok(k).Kind == TokenKind.Comma) { k++; continue; }
+                break;
+            }
+        return PeekTok(k).Kind == TokenKind.RParen && PeekTok(k + 1).Kind == TokenKind.FatArrow ? names : null;
+    }
+
+    /// `(a, b) => a.add(b)`: a routine written where its value goes, one expression on one line. Its parameters'
+    /// types come from the Callable it becomes.
+    private LambdaExpr ParseLambda(int count, Pos pos)
+    {
+        Next();
+        var parameters = new List<ValueRef>();
+        for (int i = 0; i < count; i++)
+        {
+            if (i > 0) Expect(TokenKind.Comma, "','");
+            var name = Next();
+            parameters.Add(new ValueRef(name.Text, name.Pos));
+        }
+        Expect(TokenKind.RParen, "')'");
+        var arrow = Expect(TokenKind.FatArrow, "'=>'");
+        if (Is(TokenKind.Newline))
+            throw new CompileError(arrow.Pos, "a lambda's body is one expression on the same line; a longer one is a routine of its own");
+        var added = parameters.Where(p => _values is not null && _values.Add(p.Name)).Select(p => p.Name).ToList();
+        try
+        {
+            return new LambdaExpr(parameters, ParseExpr(), pos);
+        }
+        finally
+        {
+            foreach (string name in added) _values!.Remove(name);
+        }
+    }
+
     /// Whether the parentheses at the cursor hold a `|` at their own level: `@(A | B)`.
     private bool UnionInParens()
     {
@@ -1018,12 +1062,28 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// how the arms end when lines follow a `when` with a `continue` arm.
     private bool LineIsArm()
     {
+        // A lambda's `=>` sits inside parentheses, or after the `=` or `<-` of a binding: neither leads an arm.
+        int depth = 0;
         for (int k = 0; ; k++)
         {
             var t = PeekTok(k);
-            if (t.Kind == TokenKind.FatArrow) return true;
+            if (t.Kind is TokenKind.LParen or TokenKind.LBracket) depth++;
+            else if (t.Kind is TokenKind.RParen or TokenKind.RBracket) depth--;
+            else if (depth == 0 && t.Kind is TokenKind.Eq or TokenKind.LeftArrow) return false;
+            else if (depth == 0 && t.Kind == TokenKind.FatArrow)
+                return k == 0 || PeekTok(k - 1).Kind != TokenKind.RParen || !LambdaBefore(k - 1);
             if (t.Kind is TokenKind.Newline or TokenKind.Eof) return false;
         }
+    }
+
+    /// Whether the `)` at `close` ends a lambda's parameter list (`(a, b)` of names, opened at the line's start or
+    /// after a `(` or `,`): `f((a) => a)` leads no arm.
+    private bool LambdaBefore(int close)
+    {
+        int k = close - 1;
+        while (k >= 0 && PeekTok(k).Kind is TokenKind.Ident or TokenKind.Comma) k--;
+        return k >= 0 && PeekTok(k).Kind == TokenKind.LParen
+               && (k == 0 || PeekTok(k - 1).Kind is TokenKind.LParen or TokenKind.Comma or TokenKind.Colon);
     }
 
     private static bool HasContinue(Terminator t) => t switch
@@ -1314,6 +1374,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 var (implicitArgs, implicitNames) = ParseNamedArgs();
                 return new ImplicitCallExpr(member.Text, typeArgs, implicitArgs, t.Pos) { ArgNames = implicitNames };
             }
+            case TokenKind.LParen when LambdaParamCount() is { } lambdaParams:
+                return ParseLambda(lambdaParams, t.Pos);
             case TokenKind.LParen when PeekTok(1).Kind == TokenKind.RParen
                                        || (PeekTok(1).Kind == TokenKind.Ident && PeekTok(2).Kind == TokenKind.Colon):
                 // `(x: 1, y: 2)` (or `()` for one with no fields): a record whose type comes from where the value goes, as
