@@ -46,15 +46,14 @@ import Standard/Format
 import Standard/Os
 
 routine start() -> Void
-    block entry()
-        claim alloc: @MemoryManager <- make_heap_memory()
-        claim list: @List[S64] <- .construct(alloc)
-        list.add_last(42)
-        first: S64 = list.getitem(0)
-        Out.write("first: {first}, as source: {first.diagnose()}\n")
+    claim alloc: @MemoryManager <- make_heap_memory()
+    claim list: @List[S64] <- .construct(alloc)
+    list.add_last(42)
+    first: S64 = list.getitem(0)
+    Out.write("first: {first}, as source: {first.diagnose()}\n")
 
-        list.destruct()
-        return()
+    list.destruct()
+    return()
 ```
 
 ## Rules That Trip People Up
@@ -209,20 +208,20 @@ routine start() -> Void
 
 **Blocks and control flow**
 
-- A routine body is its head (optional `local` lines) and a list of blocks. The first block is `entry`: written
-  `block entry()`, or left out, when the lines after the head (before the first `block`) are the entry block. A
-  routine without a body must be `#external`.
+- A routine body is its head (optional `local` lines) and a list of blocks. The first block is `entry`: the lines after
+  the head, before the first `block`, with no `block entry()` line. `block entry()` is written only in a routine whose
+  blocks jump back to it (`jump entry()`), and in an assembly routine. A routine without a body must be `#external`.
 - **A routine has two layers of names.** The routine layer, its parameters and the values its head shares, is
   visible in every block. The block layer, the block's parameters, the values it binds and the slots it claims, is
   visible only in that block. Anything else must be passed as a block argument. This is the most common error. No
   name is bound twice anywhere: there is no reassignment.
-- **The head: `local` lines.** Between the routine's header (and its `require` lines) and `block entry()`, a
+- **The head: `local` lines.** Between the routine's header (and its `require` lines) and the entry block, a
   routine may share values and slots with every block: `local n: USize = values.count()` (a value) and
   `local sum: @U64 <- 0` or `<- .hollow()` (a slot, what `claim` makes in a block). The head holds only local
   lines, top to bottom, each seeing the routine's parameters, presets, globals, and the local lines above it; its
   expressions may call routines. It runs once when the routine starts, before `entry`, and `jump entry()` runs entry
   again, never the head. `fmt` puts the head 4 spaces in right under the header, with one
-  blank line before `block entry()`. `local` in a block, or in an assembly routine, is a build error, and
+  blank line after it. `local` in a block, or in an assembly routine, is a build error, and
   `local` is a keyword (a value of that name is written `` `local` ``).
 - **A routine's parameters and local values are there in every block, so a block parameter or a block's binding
   can't take one's name.** Don't pass a routine parameter or a local value along to a block: use it. A value that
@@ -236,10 +235,9 @@ routine start() -> Void
   ```tessera
   routine List[T].destruct_all(me: @Me) -> Void
   require T: typename, Destructible[T]
-      block entry()
-          first: @T = me.storage.data.peek()
-          count: USize = me.count.peek()
-          jump each(first, count, 0)
+      first: @T = me.storage.data.peek()
+      count: USize = me.count.peek()
+      jump each(first, count, 0)
 
       block each(first: @T, count: USize, i: USize)
           done: Bool = i.ge(count)
@@ -255,8 +253,7 @@ routine start() -> Void
       local first: @T = me.storage.data.peek()
       local count: USize = me.count.peek()
 
-      block entry()
-          jump each(0)
+      jump each(0)
 
       block each(i: USize)
           done: Bool = i.ge(count)
@@ -277,8 +274,7 @@ routine start() -> Void
       local n: USize = values.count()
       local sum: @U64 <- 0
 
-      block entry()
-          jump add(0)
+      jump add(0)
 
       block add(i: USize)
           done: Bool = i.ge(n)
@@ -304,11 +300,10 @@ routine start() -> Void
 
   ```tessera
   routine home_path(drive: Bytes, alloc: @MemoryManager) -> Result[Bytes, FsError]
-      block entry()
-          p: Maybe[Bytes] = env_dir(name: "HOMEPATH", alloc)
-          when p
-              is Bytes as path => join(path)
-              is Unit => missing()
+      p: Maybe[Bytes] = env_dir(name: "HOMEPATH", alloc)
+      when p
+          is Bytes as path => join(path)
+          is Unit => missing()
 
       block missing()
           claim held: @Bytes <- drive
@@ -331,11 +326,10 @@ routine start() -> Void
       local drive: @Bytes <- drive_text
       local path: @Bytes <- .empty()
 
-      block entry()
-          p: Maybe[Bytes] = env_dir(name: "HOMEPATH", alloc)
-          when p
-              is Bytes as text => join(text)
-              is Unit => finish(FsError.NOT_FOUND)
+      p: Maybe[Bytes] = env_dir(name: "HOMEPATH", alloc)
+      when p
+          is Bytes as text => join(text)
+          is Unit => finish(FsError.NOT_FOUND)
 
       block join(path_text: Bytes)
           path_text.poke_into(path)
@@ -639,8 +633,7 @@ the `branch` would (an overflow or an out-of-bounds load there is a real bug):
 
 ```tessera
 routine sum_to(n: U64) -> U64
-    block entry()
-        jump loop(0, 0)
+    jump loop(0, 0)
 
     block loop(i: U64, total: U64)
         done: Bool = i.ge(n)
@@ -656,8 +649,7 @@ also hands out each element's slot with
 routine sum_list(list: @List[S64]) -> S64
     local iter: @ListIter[S64] <- .construct(list)
 
-    block entry()
-        jump next(0)
+    jump next(0)
 
     block next(total: S64)
         item: Maybe[S64] = iter.emit_checked()
@@ -670,11 +662,10 @@ Propagating a `Result`:
 
 ```tessera
 routine parse_or_zero(text: Bytes) -> B64
-    block entry()
-        r: Result[B64, ParseError] = text.to_result[B64]()
-        when r
-            is B64 as value => return(value)
-            is ParseError as error => failed(error)
+    r: Result[B64, ParseError] = text.to_result[B64]()
+    when r
+        is B64 as value => return(value)
+        is ParseError as error => failed(error)
 
     block failed(error: ParseError)
         return(0.0)
@@ -770,8 +761,8 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
   error that says so. `start` with parameters or a result is an error too.
 - `routine when_booted() -> Void` is the board step of a program for a target without an operating system (below);
   with one it is a build error.
-- Every routine with a body starts with `block entry()` (after its head's `local` lines, if it has any), which
-  takes no parameters. A routine without blocks must be `#external`.
+- Every routine with a body starts with its entry block, the lines after its head's `local` lines (if it has any),
+  which takes no parameters. A routine without a body must be `#external`.
 
 **Threads and fibers.** `Standard/Os` has `Thread.spawn(routine, state, alloc)` (or without `alloc`, on
 `DEFAULT_HEAP`) / `join()` / `detach()`, generic over the state: the routine takes an `@S` and `state` is one

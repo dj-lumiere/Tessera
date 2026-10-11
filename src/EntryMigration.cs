@@ -61,22 +61,18 @@ public static partial class EntryMigration
         return string.Join('\n', lines);
     }
 
-    /// The `tessera` code blocks of a Markdown page rewritten the same way.
-    public static string RewriteMarkdown(string text)
-    {
-        var sb = new StringBuilder();
-        var parts = Regex.Split(text, @"(```tessera\n.*?```)", RegexOptions.Singleline);
-        foreach (string part in parts)
+    /// The `tessera` code blocks of a Markdown page rewritten the same way, an indented block (in a list item) by its
+    /// lines without the indent.
+    public static string RewriteMarkdown(string text) =>
+        Regex.Replace(text, @"(?ms)^( *)```tessera\n(.*?)^\1```", m =>
         {
-            if (part.StartsWith("```tessera\n", StringComparison.Ordinal))
-            {
-                string code = part["```tessera\n".Length..^3];
-                sb.Append("```tessera\n").Append(Rewrite(code)).Append("```");
-            }
-            else sb.Append(part);
-        }
-        return sb.ToString();
-    }
+            string indent = m.Groups[1].Value;
+            var lines = m.Groups[2].Value.Split('\n')
+                .Select(l => l.StartsWith(indent, StringComparison.Ordinal) ? l[indent.Length..] : l);
+            string code = Rewrite(string.Join('\n', lines));
+            string back = string.Join('\n', code.Split('\n').Select(l => l.Length == 0 ? l : indent + l));
+            return $"{indent}```tessera\n{back}{indent}```";
+        });
 
     /// A line without its comment or its strings: where a jump to `entry` can be written.
     private static string CodeOf(string line)
