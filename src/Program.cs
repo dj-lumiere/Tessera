@@ -445,7 +445,7 @@ static class Cli
         }
         foreach (var e in errors) Console.Error.WriteLine(e.Message);
         if (errors.Count == 0) Lint(ownDecls!, files, [.. checkedSides.Select(s => s.Compiler)]);
-        Console.Error.WriteLine($"{instances} routine instance(s) checked (heap check on and off), {errors.Count} error(s)");
+        Console.Error.WriteLine($"{instances} routine instance(s) checked (heap check on and off, race check on), {errors.Count} error(s)");
         if (errors.Count > 0) return 1;
 
         // The IR must also be valid for LLVM: compile it to an object file and throw that away.

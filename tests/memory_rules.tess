@@ -1,0 +1,56 @@
+// What the memory rules allow: a global that holds memory, changed with replace and given back in start's finish
+// block, a copy of its own made with duplicate() and dropped on every pass of a loop, a slot dropped twice (the
+// second drop finds it hollow and does nothing), memory handed to a routine that takes it over, and a view used
+// before a #reshaping call, then taken again after it.
+
+import Standard/Collections
+import Standard/Format
+import Standard/Os
+
+global CACHE: @Memory[Byte]
+
+/// Takes `m` over and gives it back.
+/// :param m: The memory.
+/// :returns: How many bytes it held.
+routine consume(m: Memory[Byte]) -> USize
+    n: USize = m.count()
+    m.drop()
+    return(n)
+
+#reshaping(items)
+routine grow(items: @List[S64]) -> Void
+    items.add_last(2)
+    return()
+
+routine start() -> Void
+    local out: @Out = Out.writer()
+    local base: Memory[Byte] <- [0x41, 0x42] x 3 at DEFAULT_HEAP
+    local xs: @List[S64] <- .construct(alloc: DEFAULT_HEAP)
+
+    CACHE.replace(Memory[Byte].construct(count: 4, manager: DEFAULT_HEAP))
+    CACHE.replace(base.duplicate())
+    jump each(0, 0)
+
+    block each(i: USize, total: USize)
+        branch i.eq(3)
+            ? after(total)
+            : continue
+        copy: Memory[Byte] = base.duplicate()
+        jump each(i.add(1), total.add(consume(copy)))
+
+    block after(total: USize)
+        claim slot: @Memory[Byte] <- base
+        slot.drop()
+        slot.drop()
+        xs.add_last(1)
+        first: @S64 = xs.getslot(0)
+        before: S64 = first.peek()
+        grow(xs)
+        again: @S64 = xs.getslot(0)
+        out.write("{total} {CACHE.count()} {before} {again.peek()} {xs.count()}\n")
+        xs.destruct()
+        jump finish()
+
+    block finish()
+        CACHE.drop()
+        return()

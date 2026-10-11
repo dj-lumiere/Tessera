@@ -148,7 +148,8 @@ record FiberManager
 routine FiberState.construct(sp: Addr, stack: Addr, manager: @FiberManager, slot: WorkSlot,
     work: @WorkSlot, then: Callable[(@FiberManager, @Me), Void], wake_state: U32, timer: U64,
     trace_depth: USize, race: Addr, next_idle: @Me, next_all: @Me) -> Me
-    return(Me(sp, stack, manager, slot, work, then, wake_state, timer, trace_depth, race, next_idle, next_all))
+    return(Me(sp, stack, manager, slot, work, then, wake_state, timer, trace_depth, race, next_idle,
+        next_all))
 
 /// Releases the block of its last work. Its stack is its manager's to give back.
 #target(os: not "none")
@@ -212,9 +213,9 @@ routine FiberManager.construct(stack_size: USize, stacks: @MemoryManager,
     ready: CircularList[@FiberState] = .construct(alloc)
     inbox: CircularList[@FiberState] = .construct(alloc)
     timers: PriorityQueue[TimerKey, @FiberState] = .construct(alloc)
-    return(Me(alloc, stacks, stack_size, owner: thread_mark(), home: null, home_race: null, current: null, ready,
-        inbox_lock: .construct(), inbox, epoch: 0, alert: null, busy: 0, idle: null, all: null,
-        timers, timer_seq: 0))
+    return(Me(alloc, stacks, stack_size, owner: thread_mark(), home: null, home_race: null,
+        current: null, ready, inbox_lock: .construct(), inbox, epoch: 0, alert: null, busy: 0,
+        idle: null, all: null, timers, timer_seq: 0))
 
 /// Frees every fiber with its stack, and the queues. The fibers whose work never finished are dropped where they
 /// stand.
@@ -362,7 +363,7 @@ routine FiberManager.park(me: @Me) -> Void
 /// Inside a fiber: park, and a wake comes on its own at `deadline` (in `monotonic_ns` time) if none came before.
 /// Outside a fiber it returns.
 /// :param deadline: When the fiber goes on without a wake.
-#target(os: not "none")
+#[target(os: not "none"), reshaping]
 routine FiberManager.park_until(me: @Me, deadline: U64) -> Void
     local fiber: @FiberState = me.current()
 
@@ -380,7 +381,7 @@ routine FiberManager.park_until(me: @Me, deadline: U64) -> Void
 /// Lets fiber, one of this manager's fibers, go on: if it is parked it is queued, and if not its next park returns at
 /// once. From any thread, inside a fiber or out.
 /// :param fiber: The handle of the fiber to wake, from {FiberManager.current}.
-#target(os: not "none")
+#[target(os: not "none"), reshaping]
 routine FiberManager.wake(me: @Me, fiber: @FiberState) -> Void
     jump look()
 
@@ -415,7 +416,7 @@ routine FiberManager.wake(me: @Me, fiber: @FiberState) -> Void
 /// Inside a fiber: waits at least ns nanoseconds while the thread goes on with the other fibers. Outside one the
 /// thread waits.
 /// :param ns: The least time to wait, in nanoseconds.
-#target(os: not "none")
+#[target(os: not "none"), reshaping]
 routine FiberManager.sleep(me: @Me, ns: U64) -> Void
     local deadline: U64 = monotonic_ns().add_clamp(ns)
     local fiber: @FiberState = me.current()
@@ -436,7 +437,7 @@ routine FiberManager.sleep(me: @Me, ns: U64) -> Void
         jump inside()
 
 /// Runs the fibers until none has work left. The thread that calls it drives the manager from here on.
-#target(os: not "none")
+#[target(os: not "none"), reshaping]
 routine FiberManager.run(me: @Me) -> Void
     me.ensure()
     me.drive(until: null, deadline: U64.MAX, idle_only: false)
@@ -444,7 +445,7 @@ routine FiberManager.run(me: @Me) -> Void
 
 /// Runs the fibers that are ready, and those they make ready, until none is, then returns: for a thread that takes
 /// other work between turns. The thread that calls it drives the manager from here on.
-#target(os: not "none")
+#[target(os: not "none"), reshaping]
 routine FiberManager.run_until_idle(me: @Me) -> Void
     me.ensure()
     me.drive(until: null, deadline: U64.MAX, idle_only: true)
@@ -824,7 +825,7 @@ private routine FiberManager.drives_here(me: @Me) -> Bool
 /// :param until: The work to run until, or null.
 /// :param deadline: When to stop, in `monotonic_ns` time (`U64.MAX` for never).
 /// :param idle_only: True to return once no fiber is ready.
-#target(os: not "none")
+#[target(os: not "none"), reshaping]
 private routine FiberManager.drive(me: @Me, until: @WorkSlot, deadline: U64,
     idle_only: Bool) -> Void
     me.owner.poke_atomic(thread_mark())
@@ -931,7 +932,7 @@ private routine fiber_start() -> Void
 
 /// fiber is ready: in the ready queue on the manager's thread, else in its inbox, waking the thread.
 /// :param fiber: The fiber to queue.
-#target(os: not "none")
+#[target(os: not "none"), reshaping]
 private routine FiberManager.place_ready(me: @Me, fiber: @FiberState) -> Void
     branch thread_mark().ptr_eq(me.owner.peek_atomic())
         ? here()
@@ -949,7 +950,7 @@ private routine FiberManager.place_ready(me: @Me, fiber: @FiberState) -> Void
         return()
 
 /// Moves the fibers in the inbox to the ready queue.
-#target(os: not "none")
+#[target(os: not "none"), reshaping]
 private routine FiberManager.take_inbox(me: @Me) -> Void
     me.inbox_lock.lock()
     jump next()
@@ -967,7 +968,7 @@ private routine FiberManager.take_inbox(me: @Me) -> Void
 
 /// Wakes the fibers whose deadline has come. A timer whose fiber went on before it (its number is no longer the
 /// fiber's) wakes nothing.
-#target(os: not "none")
+#[target(os: not "none"), reshaping]
 private routine FiberManager.fire_timers(me: @Me) -> Void
     local now: U64 = monotonic_ns()
 
@@ -1005,7 +1006,7 @@ private routine FiberManager.timer_wait(me: @Me) -> U64
 /// A yield: behind the other ready fibers.
 /// :param manager: The manager.
 /// :param fiber: The fiber that stopped.
-#target(os: not "none")
+#[target(os: not "none"), reshaping(manager)]
 private routine requeue(manager: @FiberManager, fiber: @FiberState) -> Void
     manager.ready.add_last(fiber)
     return()
@@ -1013,7 +1014,7 @@ private routine requeue(manager: @FiberManager, fiber: @FiberState) -> Void
 /// A park: parked, unless a wake came while it stopped.
 /// :param manager: The manager.
 /// :param fiber: The fiber that stopped.
-#target(os: not "none")
+#[target(os: not "none"), reshaping(manager)]
 private routine commit_park(manager: @FiberManager, fiber: @FiberState) -> Void
     parked: Bool = compare_exchange(at: fiber.wake_state, expected: FIBER_PARKING,
         new: FIBER_PARKED)
@@ -1036,7 +1037,7 @@ private routine commit_idle(manager: @FiberManager, fiber: @FiberState) -> Void
 /// How a Waiter parks a fiber of a manager: until a wake, or a deadline other than U64.MAX.
 /// :param manager: The manager.
 /// :param deadline: When the fiber goes on without a wake, or `U64.MAX`.
-#target(os: not "none")
+#[target(os: not "none"), reshaping(manager)]
 private routine park_hook(manager: Addr, deadline: U64) -> Void
     local fibers: @FiberManager = manager.to[@FiberManager]()
 
@@ -1053,7 +1054,7 @@ private routine park_hook(manager: Addr, deadline: U64) -> Void
 /// How a Waiter wakes a fiber of a manager.
 /// :param manager: The manager.
 /// :param fiber: The fiber.
-#target(os: not "none")
+#[target(os: not "none"), reshaping(manager)]
 private routine wake_hook(manager: Addr, fiber: Addr) -> Void
     fibers: @FiberManager = manager.to[@FiberManager]()
     fibers.wake(fiber.to[@FiberState]())

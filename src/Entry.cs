@@ -26,7 +26,7 @@ public sealed partial class Compiler
     private readonly StringBuilder _entry = new();
 
     /// Whether `r` is one of the program's entry routines by its name: a free routine in one of the program's files.
-    private static bool IsEntryRoutine(RoutineDecl r) =>
+    public static bool IsEntryRoutine(RoutineDecl r) =>
         !r.IsLibrary && r.Owner is null && r.Name is StartName or WhenBootedName;
 
     /// The program's routine of an entry name, or null. Two of them (in two modules) is an error.

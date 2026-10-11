@@ -78,6 +78,348 @@ public sealed class FunctionGen
     /// `#noreturn` call). Null on a block's own lines and conditions.
     private string? _arm;
 
+    // ── The memory model's group check (MemoryRules.cs) ─────────────────────
+
+    /// What each block does with the Box and Memory handles of this routine, in order, for MemoryRules.Check.
+    private readonly Dictionary<string, List<MemoryRules.Event>> _memEvents = [];
+
+    /// The names (values, block parameters, slots) whose memory the check follows.
+    private readonly HashSet<string> _memTracked = [];
+
+    /// A call to a Memory or Box routine that gives back the same memory (`with_count`): the call, and the handle it
+    /// was made on, so a binding of it is a copy of that handle.
+    private (Pos Call, string Of)? _memSame;
+
+    /// Whether the check follows this routine: a built routine without type parameters, with a body.
+    private bool MemOn => !_c.Prechecking && !Compiler.IsGenericRoutine(_decl) && _decl.Blocks is { Count: > 0 };
+
+    private void Mem(MemoryRules.Event e)
+    {
+        if (!MemOn) return;
+        (_memEvents.TryGetValue(_blockName, out var list) ? list : _memEvents[_blockName] = []).Add(e);
+    }
+
+    /// The tracked handle an expression names, or null: a handle, or what a tracked slot holds (`slot.peek()`).
+    private string? MemName(Expr e) => e switch
+    {
+        ValueRef r when _memTracked.Contains(r.Name) => r.Name,
+        MethodCallExpr { Name: "peek", Args.Count: 0, Receiver: ValueRef r } when _memTracked.Contains(r.Name) => r.Name,
+        _ => null,
+    };
+
+    /// Whether a value of `t` is a Box or a Memory itself (not a slot of one).
+    private static bool OwnedValue(DType t) => t is not PtrType && OwnedMemory(t) is not null;
+
+    /// The event for binding `name` to `value`, a Box or a Memory (or a slot of one): a copy of a handle, the same memory
+    /// again, or new memory. A field read or a value from elsewhere isn't followed.
+    private void MemBind(string name, Expr value, Pos pos, bool warn = true)
+    {
+        if (value is ImplicitCallExpr { Name: "hollow" } or NsCallExpr { Name: "hollow" })
+        {
+            _memTracked.Add(name);
+            return;
+        }
+        if (MemName(value) is { } of)
+        {
+            _memTracked.Add(name);
+            Mem(new MemoryRules.Alias(name, of, pos));
+            if (warn)
+                _c.NoteExpensiveCalls([(pos, $"{pos}: warning: '{name}' and '{of}' are the same memory, released once whichever one "
+                + $"gives it back: keep memory of its own with {of}.duplicate(), or lend it with {of}.getview()")]);
+            return;
+        }
+        if (value is MethodCallExpr { Name: "peek", Args.Count: 0 } peek && MemName(peek.Receiver) is { } slot)
+        {
+            _memTracked.Add(name);
+            Mem(new MemoryRules.Alias(name, slot, pos));
+            return;
+        }
+        if (_memSame is { } same && same.Call == value.Pos && value is MethodCallExpr)
+        {
+            _memTracked.Add(name);
+            Mem(new MemoryRules.Alias(name, same.Of, pos));
+            return;
+        }
+        if (value is CallExpr or NsCallExpr or MethodCallExpr or ImplicitCallExpr or AtExpr)
+        {
+            _memTracked.Add(name);
+            Mem(new MemoryRules.Acquire(name, "made here", pos));
+        }
+    }
+
+    /// A return: the value returned takes its handle's group along (a record or tuple literal's handles too), and every
+    /// other group must have ended. The events go in after the value is evaluated, so its own calls come first.
+    private void MemReturn(ReturnTarget r)
+    {
+        if (MemOn) CheckReturnEscape(r);
+        _memReturnPos = r.Pos;
+        _memReturnValue = r.Value;
+    }
+
+    // ── #reshaping ────────────────────────────────────────────────────────────
+
+    /// The value each pointer-like binding was made from, by name: `storage` in `items: @T = storage.getslot(0)`.
+    private readonly Dictionary<string, string> _rootOf = [];
+
+    /// The names that are views of memory another name holds, for the reshaping check's uses.
+    private readonly HashSet<string> _viewNames = [];
+
+    private Val MemUseView(ValueRef r)
+    {
+        if (_viewNames.Contains(r.Name)) Mem(new MemoryRules.UseView(r.Name, r.Pos));
+        return Lookup(r);
+    }
+
+    /// The name a place or a view is rooted at: `me` in `me.items.getslot(i)`, or null. An address read out of a field
+    /// is other memory than the record's, unless the field is the block a Memory or a Box owns (`me.data.peek()` in one).
+    private string? RootName(Expr e) => e switch
+    {
+        ValueRef r => r.Name,
+        FieldExpr f => RootName(f.Base),
+        IndexExpr ix => RootName(ix.Base),
+        MethodCallExpr { Name: "peek", Args.Count: 0, Receiver: FieldExpr field } m
+            when PointsAtMemory(InferQuiet(m)) && OwnedMemory(InferQuiet(field.Base)) is null => null,
+        MethodCallExpr { Name: "getslot" or "getslot_checked" or "stride" or "offset" or "getview" or "to" or "getslice" or "peek" } m
+            => RootName(m.Receiver),
+        _ => null,
+    };
+
+    /// The name a value comes from in the end, through the bindings that were made from it.
+    private string ResolveRoot(string name)
+    {
+        for (int i = 0; i < 64 && _rootOf.TryGetValue(name, out var from) && from != name; i++) name = from;
+        return name;
+    }
+
+    /// The parameters a `#reshaping` routine may move the memory of: the ones named, or `me` alone.
+    private static List<string> ReshapedParams(RoutineDecl r)
+    {
+        if (r.AnnotationNamed("reshaping") is not { } a) return [];
+        if (a.Args.Count == 0) return r.Params is [{ Name: "me" }, ..] ? ["me"] : [];
+        return a.Args.Select(arg => arg.Value ?? arg.Key ?? "").ToList();
+    }
+
+    /// Checks a `#reshaping` annotation: it names parameters of the routine, or stands alone on one that takes `me`.
+    private void CheckReshapingAnnotation()
+    {
+        if (_decl.AnnotationNamed("reshaping") is not { } a) return;
+        if (a.Args.Count == 0 && _decl.Params is not [{ Name: "me" }, ..])
+            throw Err(a.Pos, $"#reshaping alone means '{_decl.DisplayName}' may move the memory of me, and it takes no me: "
+                + "name the parameters, #reshaping(items)");
+        foreach (var name in ReshapedParams(_decl))
+            if (_decl.Params.All(p => p.Name != name))
+                throw Err(a.Pos, $"#reshaping names '{name}', which isn't a parameter of '{_decl.DisplayName}'");
+    }
+
+    /// A call to a `#reshaping` routine: the views of the memory it may move no longer see it, and when that memory is
+    /// a parameter's, this routine moves it too, which its own `#reshaping` says.
+    private void CheckReshapingCall(CallPlan plan)
+    {
+        var moved = ReshapedParams(plan.Decl);
+        if (moved.Count == 0) return;
+        // An instance of a generic routine reaches routines through its type parameters, which one instance makes
+        // #reshaping and another doesn't: the generic routine is checked as it is written, with the parameters
+        // unknown.
+        bool instance = !_c.Prechecking && Compiler.IsGenericRoutine(_decl);
+        int offset = plan.Receiver is null ? 0 : 1;
+        foreach (var name in moved)
+        {
+            int index = plan.Decl.Params.FindIndex(p => p.Name == name);
+            Expr? arg = index == 0 && plan.Receiver is not null ? plan.Receiver
+                : index - offset >= 0 && index - offset < plan.Args.Count ? plan.Args[index - offset] : null;
+            if (arg is null || RootName(arg) is not { } root) continue;
+            root = ResolveRoot(root);
+            Mem(new MemoryRules.Reshape(root, $"'{plan.Decl.DisplayName}'", plan.Pos));
+            if (!instance && _decl.Params.Any(p => p.Name == root) && !ReshapedParams(_decl).Contains(root))
+                throw Err(plan.Pos, $"'{_decl.DisplayName}' may move the memory of '{root}' here ('{plan.Decl.DisplayName}' is "
+                    + $"#reshaping): mark it {(root == "me" ? "#reshaping" : $"#reshaping({root})")}, so its callers know a view "
+                    + $"of '{root}' doesn't outlive the call");
+        }
+    }
+
+    // ── Globals that hold memory ─────────────────────────────────────────────
+
+    /// The globals of the program that hold a Box or a Memory, which `start`'s finish block gives back, by name, and the
+    /// blocks of `start` each is dropped in.
+    private readonly Dictionary<string, HashSet<string>> _globalDrops = [];
+
+    /// A global that holds a Box or a Memory lives as long as `start`: it always holds one value (`.hollow()` to start
+    /// with), another routine changes it only with `replace`, which gives the old memory back first, and only `start`'s
+    /// finish block drops it.
+    private void CheckGlobalMemoryCall(CallPlan plan)
+    {
+        if (plan.Receiver is not PresetRef { Owner: null } r
+            || _c.FindPreset("", r.Name, _env.File, r.Pos, r.Path) is not { IsGlobal: true, IsLibrary: false, IsSpan: false } g
+            || ResolvePreset(r) is not { Type: PtrType { Pointee: var held } } || OwnedMemory(held) is null)
+            return;
+        switch (plan.Decl.Name)
+        {
+            case "drop" or "destruct" or "destruct_all" when !Compiler.IsEntryRoutine(_decl):
+                throw Err(plan.Pos, $"'{g.Name}' is a global that holds memory, which start's finish block gives back: "
+                    + $"change it with {g.Name}.replace(...), which gives the old memory back first");
+            case "drop" or "destruct" or "destruct_all":
+                (_globalDrops.TryGetValue(g.Name, out var blocks) ? blocks : _globalDrops[g.Name] = []).Add(_blockName);
+                break;
+            case "poke" or "poke_volatile":
+                throw Err(plan.Pos, $"'{g.Name}' is a global that holds memory, and this overwrites it: "
+                    + $"{g.Name}.replace(...) gives the old memory back and puts the new one in");
+        }
+    }
+
+    /// `start` gives back every global that holds memory in its finish block.
+    private void CheckGlobalMemoryFinish()
+    {
+        if (_c.Prechecking || !Compiler.IsEntryRoutine(_decl)) return;
+        foreach (var (g, t) in _c.ProgramGlobals())
+        {
+            // A global's declared type is what it holds: its name is the address.
+            if (OwnedMemory(t) is null) continue;
+            if (_globalDrops.TryGetValue(g.Name, out var blocks) && blocks.Contains("finish")) continue;
+            throw Err(_decl.Pos, $"'{g.Name}' (line {g.Pos.Line}) is a global that holds memory, and start's finish block "
+                + $"doesn't give it back: end start with a block finish() that calls {g.Name}.drop() and returns, and "
+                + "jump there instead of returning elsewhere");
+        }
+    }
+
+    // ── The escape check ──────────────────────────────────────────────────────
+
+    /// The values that see memory of this routine, by name, with what they see: the frame (a claimed slot, a Span in
+    /// the frame) or memory the routine holds (a view of a Box or a Memory it took). Such a view doesn't leave the
+    /// routine: that memory is gone, or the routine's to give back, once it returns.
+    private readonly Dictionary<string, string> _frameViews = [];
+
+    /// Whether a value of `t` points at memory: an address, a Span, or an Addr.
+    private static bool PointsAtMemory(DType? t) => t is PtrType || t is RecordType { Decl.Name: "Span" } span
+        && span.Decl.Module == Compiler.CoreModule;
+
+    /// What the value of `e` sees of this routine's memory, or null: a name that sees it, a view of a Box or a Memory the
+    /// routine holds, or a pointer or Span made from one.
+    private string? FrameView(Expr e)
+    {
+        if (!MemOn) return null;
+        switch (e)
+        {
+            case ValueRef r:
+                return _frameViews.GetValueOrDefault(r.Name);
+            case MethodCallExpr { Name: "getview" or "to" or "getslot" or "getslot_checked" } m when MemName(m.Receiver) is { } owned:
+                return $"the memory '{owned}' holds";
+            // A view made from a view (a slot of it, a part of it) sees the same memory. What other routines give
+            // back (memory they allocate, an address they read) is theirs to say.
+            case MethodCallExpr { Name: "getslot" or "getslot_checked" or "getslice" or "stride" or "offset" or "to" } m
+                when PointsAtMemory(InferQuiet(m)):
+                return FrameView(m.Receiver);
+            case MethodCallExpr { Name: "getview" } m when Compiler.IsCoreSpan(InferQuiet(m.Receiver) ?? VoidType.Instance, out _):
+                return FrameView(m.Receiver);
+            case FieldExpr f when PointsAtMemory(InferQuiet(f)):
+                return FrameView(f.Base);
+            case RecordLit lit:
+                return lit.Fields.Select(f => FrameView(f.Value)).FirstOrDefault(v => v is not null);
+            case ArrayLit { IsTuple: true } tuple:
+                return tuple.Elements.Select(FrameView).FirstOrDefault(v => v is not null);
+            default:
+                return null;
+        }
+    }
+
+    /// A return that takes a view of this routine's memory out of it.
+    private void CheckReturnEscape(ReturnTarget r)
+    {
+        if (r.Value is { } value && FrameView(value) is { } sees)
+            throw Err(value.Pos, $"this returns a view of {sees}, which is gone once '{_decl.DisplayName}' returns: return the "
+                + "values themselves, or let the caller pass the memory in (a Span or a slot) and write there");
+    }
+
+    /// A store that keeps a view of this routine's memory where it outlives the routine: through a pointer the routine
+    /// was given, or in a global.
+    private void CheckStoreEscape(CallPlan plan, Instance sig)
+    {
+        if (!MemOn || plan.Receiver is null) return;
+        Expr? value = sig.Decl.Name switch
+        {
+            "poke" or "poke_volatile" or "poke_atomic" or "store" or "setitem" => plan.Args.LastOrDefault(),
+            "poke_into" => plan.Receiver,
+            _ => null,
+        };
+        Expr? into = sig.Decl.Name == "poke_into" ? plan.Args.FirstOrDefault() : plan.Receiver;
+        if (value is null || into is null || FrameView(value) is not { } sees) return;
+        if (FrameView(into) is not null || MemName(into) is not null || IsOwnFrameValue(into)) return;
+        throw Err(plan.Pos, $"this keeps a view of {sees} where it outlives '{_decl.DisplayName}': that memory is gone once the "
+            + "routine returns. Keep the values there, or keep the view in this routine only");
+    }
+
+    /// Whether a place is rooted at a value of this routine (a binding or a claim), not at a parameter or a global.
+    private bool IsOwnFrameValue(Expr e) => e switch
+    {
+        ValueRef r => !_routineParams.ContainsKey(r.Name) && _frameViews.ContainsKey(r.Name),
+        FieldExpr f => IsOwnFrameValue(f.Base),
+        IndexExpr ix => IsOwnFrameValue(ix.Base),
+        MethodCallExpr { Name: "getslot" or "stride" } m => IsOwnFrameValue(m.Receiver),
+        _ => false,
+    };
+
+    /// The memory the continuing arm of a guard's `when` takes out of the variant, for the lines after it.
+    private readonly List<MemoryRules.Acquire> _memContinued = [];
+
+    /// Where the return being emitted is written, and the value it returns.
+    private Pos? _memReturnPos;
+
+    private Expr? _memReturnValue;
+
+    /// Ends the groups of the handles a returned value or a record literal takes along.
+    private void MemTakeAlong(Expr e, string how)
+    {
+        if (!MemOn) return;
+        if (MemName(e) is { } name) Mem(new MemoryRules.End(name, how, e.Pos));
+        else if (e is MethodCallExpr && _memSame is { } same && same.Call == e.Pos) Mem(new MemoryRules.End(same.Of, how, e.Pos));
+    }
+
+    /// The events of a call's receiver and arguments, once they are evaluated: `drop` ends a group, a parameter that
+    /// takes a Box or a Memory by value takes the group over, `poke` into a slot stores one, and anything else uses it.
+    private void MemCall(CallPlan plan, Instance sig, int offset)
+    {
+        if (!MemOn) return;
+        string? receiver = plan.Receiver is null ? null : MemName(plan.Receiver);
+        if (plan.Receiver is not null && sig.Decl.Name == "poke" && receiver is not null && sig.Params[0] is PtrType)
+        {
+            // A claim's own contents, stored where the claim stands: the claim's binding said what the slot holds.
+            if (plan.Args.Count == 1 && ReferenceEquals(plan.Args[0], _claimContents)) return;
+            Mem(new MemoryRules.Store(receiver, plan.Args.Count == 1 ? MemName(plan.Args[0]) : null, plan.Pos));
+            return;
+        }
+        // `x.poke_into(slot)` stores x where slot points: into a tracked slot, or away from this routine.
+        if (sig.Decl.Name == "poke_into" && receiver is not null && plan.Args.Count == 1)
+        {
+            Mem(MemName(plan.Args[0]) is { } into
+                ? new MemoryRules.Store(into, receiver, plan.Pos)
+                : new MemoryRules.End(receiver, "stored away", plan.Pos));
+            return;
+        }
+        // A slot's drop leaves the slot hollow: the slot holds nothing after it, so a second drop of it gives nothing back.
+        if (receiver is not null && sig.Decl.Name is "drop" or "destruct" or "destruct_all" && sig.Params[0] is PtrType)
+        {
+            Mem(new MemoryRules.End(receiver, $"{receiver}.{sig.Decl.Name}()", plan.Pos));
+            Mem(new MemoryRules.Store(receiver, null, plan.Pos));
+            return;
+        }
+        if (receiver is not null)
+        {
+            Mem(sig.Decl.Name is "drop" or "destruct" or "destruct_all"
+                ? new MemoryRules.End(receiver, $"{receiver}.{sig.Decl.Name}()", plan.Pos)
+                : new MemoryRules.Use(receiver, plan.Pos));
+            // with_count and the like give the same memory back: a binding of the call is a copy of the handle.
+            if (OwnedValue(sig.Ret) && OwnedMemory(sig.Params[0]) is not null && sig.Decl.Name != "duplicate"
+                && sig.Decl.Owner is { Name: "Memory" or "Box" })
+                _memSame = (plan.Pos, receiver);
+        }
+        for (int i = 0; i < plan.Args.Count && i + offset < sig.Params.Count; i++)
+        {
+            if (MemName(plan.Args[i]) is not { } arg) continue;
+            Mem(OwnedValue(sig.Params[i + offset])
+                ? new MemoryRules.End(arg, $"handed to '{sig.Decl.DisplayName}'", plan.Args[i].Pos)
+                : new MemoryRules.Use(arg, plan.Args[i].Pos));
+        }
+    }
+
     public FunctionGen(Compiler c, Instance inst, StringBuilder output)
     {
         _c = c;
@@ -153,10 +495,25 @@ public sealed class FunctionGen
             _incoming[b.Name] = [];
         }
 
+        CheckReshapingAnnotation();
+        if (MemOn)
+        {
+            string first = _decl.Shared.Count > 0 ? "" : blocks[0].Name;
+            var handed = _memEvents[first] = [];
+            for (int i = 0; i < _decl.Params.Count; i++)
+                if (OwnedValue(_inst.Params[i]))
+                {
+                    _memTracked.Add(_decl.Params[i].Name);
+                    handed.Add(new MemoryRules.Acquire(_decl.Params[i].Name, "handed in", _decl.Params[i].Pos));
+                }
+        }
         if (Debug) BeginSubprogram();
         EmitHead();
         foreach (var b in blocks) EmitBlock(b);
         _c.NoteExpensiveCalls(ExpensiveCallLint.Check(_decl, _expensiveCalls));
+        CheckGlobalMemoryFinish();
+        if (MemOn && MemoryRules.Check(_decl.DisplayName, blocks[0].Name, _memEvents, _routineValues.Keys.ToHashSet()) is [var memoryError, ..])
+            throw memoryError;
 
         // A BF16 parameter arrives as its i16 bits (see Instance.PassesBf16AsBits) and is bitcast back on entry.
         // An aggregate the C ABI coerces arrives as its parts, stored into a buffer and loaded back as the value; one
@@ -381,6 +738,9 @@ public sealed class FunctionGen
     /// Ends the routine: its frame comes off the trace, then it returns.
     private void Return(string ret)
     {
+        if (_memReturnValue is { } returned) MemTakeAlong(returned, "returned");
+        _memReturnValue = null;
+        Mem(new MemoryRules.Exit(null, true, [], _memReturnPos ?? _decl.Pos));
         if (_traced) Line(_c.TraceCall("trace_pop"));
         Terminate(ret);
     }
@@ -411,6 +771,7 @@ public sealed class FunctionGen
         if (Debug) (_scope, _scopeFile) = (_sp, _spFile);
         foreach (var s in _decl.Shared) EmitStmt(s);
         _routineValues = _values;
+        Mem(new MemoryRules.Exit(_decl.Blocks![0].Name, false, [], _decl.Pos));
         Terminate("br label %b.entry");
     }
 
@@ -446,6 +807,7 @@ public sealed class FunctionGen
                     + $"{RoutineValueKind(b.Params[i].Name)}, which every block already sees: use '{b.Params[i].Name}' itself, "
                     + "or give a value that changes its own name");
             _values[b.Params[i].Name] = new Val(ParamOp(b.Name, b.Params[i].Name), types[i]);
+            if (MemOn && OwnedValue(types[i])) _memTracked.Add(b.Params[i].Name);
             RecordValue(b.Params[i].Pos, types[i]);
             if (Debug && types[i] is not VoidType)
                 (_blockRecords.TryGetValue(b.Name, out var records) ? records : _blockRecords[b.Name] = [])
@@ -525,6 +887,8 @@ public sealed class FunctionGen
                 }
                 _cur = next;
                 KeepContinuedPayload(g.Term, continued);
+                foreach (var acquire in _memContinued) Mem(acquire);
+                _memContinued.Clear();
                 break;
             }
             case BindStmt b:
@@ -542,6 +906,22 @@ public sealed class FunctionGen
                     Line($"{op} = {Copy(v, t)}");
                 Define(b.Name, new Val(op, t), b.Pos);
                 DescribeValue(b.Name, op, t, b.Source ?? b.Pos);
+                if (PointsAtMemory(t) && b.Value is not ClaimExpr && RootName(b.Value) is { } made && made != b.Name)
+                {
+                    _rootOf[b.Name] = made;
+                    _viewNames.Add(b.Name);
+                    Mem(new MemoryRules.ViewOf(b.Name, ResolveRoot(made), b.Pos));
+                }
+                if (MemOn)
+                {
+                    if (b.Value is ClaimExpr) _frameViews[b.Name] = $"the frame slot '{b.Name}' (claimed at line {b.Pos.Line})";
+                    else if (PointsAtMemory(t) && FrameView(b.Value) is { } sees) _frameViews[b.Name] = sees;
+                }
+                if (MemOn && OwnedMemory(t) is not null)
+                {
+                    if (b.Value is ClaimExpr { Contents: { } held }) MemBind(b.Name, held, b.Pos, warn: false);
+                    else if (b.Value is not ClaimExpr) MemBind(b.Name, b.Value, b.Pos);
+                }
                 // `claim p: @T <- value` is the claim, then `p.poke(value)`.
                 if (b.Value is ClaimExpr { Contents: { } contents } && t is PtrType)
                 {
@@ -957,7 +1337,7 @@ public sealed class FunctionGen
                 ? new Val("null", expected)
                 : throw Mismatch(n.Pos, expected, "null"),
             StrLit s => StringLiteral(s, expected),
-            ValueRef r => Lookup(r),
+            ValueRef r => MemUseView(r),
             ClaimExpr c => EvalClaim(c, expected),
             FieldExpr or IndexExpr when IsPlaceChain(e) => PlaceAsValue(e),
             FieldExpr f => ExtractField(f),
@@ -1412,7 +1792,19 @@ public sealed class FunctionGen
         // A guard's continuing arm: the lines after the when may see the value (KeepContinuedPayload).
         if (target is ContinueTarget && _continuedPayloads is { } kept)
             kept[binding.Name] = (new Val(value, branch), binding.Pos);
+        // Memory a variant held is the arm's to give back: the arm owns what the value it observes owned.
+        bool owned = MemOn && OwnedValue(branch);
+        if (owned && target is not ContinueTarget) Mem(new MemoryRules.ArmBegin(binding.Pos));
+        if (owned)
+        {
+            _memTracked.Add(binding.Name);
+            // The arm that continues takes the memory along to the lines after the when, once every arm is emitted.
+            var acquire = new MemoryRules.Acquire(binding.Name, "taken out of a variant", binding.Pos);
+            if (target is ContinueTarget) _memContinued.Add(acquire);
+            else Mem(acquire);
+        }
         EmitTarget(target);
+        if (owned && target is not ContinueTarget) Mem(new MemoryRules.ArmEnd(binding.Pos));
         _values = savedValues;
         _cur = saved;
         return label;
@@ -1580,6 +1972,7 @@ public sealed class FunctionGen
         for (int i = 0; i < lit.Elements.Count; i++)
         {
             var v = Eval(lit.Elements[i], s.Args[i]);
+            MemTakeAlong(lit.Elements[i], "kept in a tuple");
             acc = EmitTmp($"insertvalue {s.Llvm} {acc}, {s.Args[i].Llvm} {v.Op}, {shape.ValuePath(i)}");
         }
         return new Val(acc, s);
@@ -1601,13 +1994,19 @@ public sealed class FunctionGen
         var missing = fields.Where(f => !given.ContainsKey(f.Name)).Select(f => f.Name).ToList();
         if (missing.Count > 0) throw Err(lit.Pos, $"{s} literal is missing field(s): {string.Join(", ", missing)}");
 
-        if (s.TransparentField is not null) return new Val(Eval(given[fields[0].Name], fields[0].Type).Op, s);
+        if (s.TransparentField is not null)
+        {
+            var only = Eval(given[fields[0].Name], fields[0].Type);
+            MemTakeAlong(given[fields[0].Name], $"kept in a {s.Name}");
+            return new Val(only.Op, s);
+        }
 
         string acc = fields.Count == 0 ? "zeroinitializer" : "poison";
         var shape = _c.Shape(s);
         for (int i = 0; i < fields.Count; i++)
         {
             var v = Eval(given[fields[i].Name], fields[i].Type);
+            MemTakeAlong(given[fields[i].Name], $"kept in a {s.Name}");
             acc = EmitTmp($"insertvalue {s.Llvm} {acc}, {fields[i].Type.Llvm} {v.Op}, {shape.ValuePath(i)}");
         }
         return new Val(acc, s);
@@ -2607,6 +3006,10 @@ public sealed class FunctionGen
         for (int i = 0; i < fixedCount; i++) args.Add(Address(plan.Args[i], sig.Params[i + offset], ReferenceEquals(plan.Args[i], _claimContents) ? 0 : i + 1));
         for (int i = fixedCount; i < plan.Args.Count; i++) args.Add(VariadicArg(plan.Args[i]));
         if (sig.IsTrackCaller) args.Add(CallerPlace(plan.Pos));
+        MemCall(plan, sig, offset);
+        CheckStoreEscape(plan, sig);
+        if (!sig.IsTemplate || plan.Decl.AnnotationNamed("reshaping") is not null) CheckReshapingCall(plan);
+        CheckGlobalMemoryCall(plan);
 
         _c.CheckRoutineRequirements(plan.Decl, plan.Env, plan.Pos);
         // A preset in memory is read-only static data, and pointers carry no read-only marker, so the routines that
@@ -3154,6 +3557,7 @@ public sealed class FunctionGen
         if (target is CallTarget { Args.Count: 0 } ct && _blocks.ContainsKey(ct.Name))
         {
             CheckBlockArgs(ct);
+            Mem(new MemoryRules.Exit(ct.Name, false, [], ct.Pos));
             _incoming[ct.Name].Add((_cur.Label, []));
             return $"b.{ct.Name}";
         }
@@ -3181,6 +3585,7 @@ public sealed class FunctionGen
     {
         string? outer = _arm;
         _arm = target is CallTarget call && _blocks.ContainsKey(call.Name) ? call.Name : ExpensiveCallLint.LeavesRoutine;
+        Mem(new MemoryRules.ArmBegin(target.Pos));
         try
         {
             EmitTargetCore(target);
@@ -3189,6 +3594,7 @@ public sealed class FunctionGen
         {
             _arm = outer;
         }
+        Mem(new MemoryRules.ArmEnd(target.Pos));
     }
 
     private void EmitTargetCore(Target target)
@@ -3200,18 +3606,35 @@ public sealed class FunctionGen
                 CheckBlockArgs(ct);
                 var types = _blockParamTypes[ct.Name];
                 var ops = ct.Args.Select((a, i) => Eval(a, types[i]).Op).ToList();
+                if (MemOn)
+                {
+                    for (int i = 0; i < ct.Args.Count; i++)
+                        if (FrameView(ct.Args[i]) is { } sees) _frameViews[_blocks[ct.Name].Params[i].Name] = sees;
+                    var passed = new List<(string, string)>();
+                    for (int i = 0; i < ct.Args.Count; i++)
+                    {
+                        if (MemName(ct.Args[i]) is not { } handle) continue;
+                        // Passed to a parameter of another type (a Result that holds it): the memory goes into that value.
+                        if (OwnedValue(types[i])) passed.Add((_blocks[ct.Name].Params[i].Name, handle));
+                        else Mem(new MemoryRules.End(handle, $"kept in a {types[i].Name}", ct.Args[i].Pos));
+                    }
+                    Mem(new MemoryRules.Exit(ct.Name, false, passed, ct.Pos));
+                }
                 _incoming[ct.Name].Add((_cur.Label, ops));
                 Terminate($"br label %b.{ct.Name}");
                 break;
             }
             case CallTarget ct:
                 EmitNoReturnCall(new CallExpr(ct.Name, [], ct.Args, ct.Pos) { ArgNames = ct.ArgNames }, ct.Pos);
+                Mem(new MemoryRules.Exit(null, false, [], ct.Pos));
                 break;
             case ExprTarget et:
                 EmitNoReturnCall(et.Call, et.Pos);
+                Mem(new MemoryRules.Exit(null, false, [], et.Pos));
                 break;
             case ReturnTarget r:
             {
+                MemReturn(r);
                 if (_inst.Ret is VoidType)
                 {
                     if (r.Value is not null) throw Err(r.Pos, $"'{_decl.DisplayName}' returns Void; write return()");
@@ -3242,6 +3665,7 @@ public sealed class FunctionGen
                 break;
             }
             case UnreachableTarget:
+                Mem(new MemoryRules.Exit(null, false, [], target.Pos));
                 Terminate("unreachable");
                 break;
             case ContinueTarget ct:

@@ -820,6 +820,22 @@ public sealed partial class Compiler
 
     /// The names that are type parameters of the routine's owner: `T` in `Option[T].some`, `T` and `COUNT` in
     /// `Array[T, COUNT].get`, `TFrom` in `TFrom.bitcast[TTo]`.
+    /// The program's own globals (not the standard library's), each with the type of what it holds.
+    public IEnumerable<(PresetDecl Decl, DType Type)> ProgramGlobals()
+    {
+        foreach (var c in _presets.Values.SelectMany(g => g).Where(c => c is { IsGlobal: true, IsLibrary: false, IsSpan: false }))
+        {
+            DType? t;
+            try { t = ResolveType(c.Type, new TypeEnv(c.File)); }
+            catch (CompileError) { t = null; }
+            if (t is not null) yield return (c, t);
+        }
+    }
+
+    /// Whether a routine has type parameters, its own or its owner's.
+    public static bool IsGenericRoutine(RoutineDecl r) =>
+        r.TypeParams.Count != 0 || (r.Owner is not null && OwnerTypeParams(r).Count != 0);
+
     private static List<string> OwnerTypeParams(RoutineDecl r)
     {
         if (r.Owner is null) return [];
