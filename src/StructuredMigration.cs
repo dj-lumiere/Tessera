@@ -165,7 +165,7 @@ public static class StructuredMigration
                     }
                 continue;
             }
-            if (trimmed.StartsWith("//")) printer.Comments[line] = trimmed;
+            if (trimmed.StartsWith("#")) printer.Comments[line] = trimmed;
             else if (TrailingComment(text) is { } trailing)
             {
                 printer.Comments[line] = trailing;
@@ -257,7 +257,7 @@ public static class StructuredMigration
     /// The `// ...` after code on a line, outside literals, or null.
     private static string? TrailingComment(string line)
     {
-        for (int i = 0; i + 1 < line.Length; i++)
+        for (int i = 0; i < line.Length; i++)
         {
             char c = line[i];
             if (c is '"' or '\'')
@@ -267,7 +267,7 @@ public static class StructuredMigration
                     if (line[i] == '\\') i++;
                 continue;
             }
-            if (c == '/' && line[i + 1] == '/') return line[i..].Trim();
+            if (c == '#') return line[i..].Trim();
         }
         return null;
     }
@@ -295,7 +295,7 @@ public static class StructuredMigration
                 openList = null;
             }
             string trimmed = line.TrimStart();
-            if (trimmed.StartsWith("//"))
+            if (trimmed.StartsWith("#"))
             {
                 result.Add(line);
                 continue;

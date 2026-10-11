@@ -60,7 +60,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop";
+        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.tess", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -269,6 +269,9 @@ public static class Migrate
             ? NoneSpelling.RewriteMarkdown(text)
             : NoneSpelling.Rewrite(text),
         ["destruct"] = (_, text, _) => DestructSpelling(text),
+        ["comments"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, HashComments)
+            : HashComments(text),
         ["drop"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, DropStatements)
             : DropStatements(text),
@@ -291,7 +294,7 @@ public static class Migrate
         {
             string line = lines[i];
             if (RoutineLine.Match(line) is { Success: true } r) inDestruct = r.Groups[1].Value is "destruct" or "destruct_all";
-            else if (line.Length > 0 && !char.IsWhiteSpace(line[0]) && !line.StartsWith("//") && !line.StartsWith("needs ")) inDestruct = false;
+            else if (line.Length > 0 && !char.IsWhiteSpace(line[0]) && !line.StartsWith("#") && !line.StartsWith("needs ")) inDestruct = false;
             if (inDestruct) continue;
             if (DestructLine.Match(line) is { Success: true } m)
                 lines[i] = $"{m.Groups[1].Value}drop {m.Groups[2].Value}{(m.Groups[3].Success ? "  " + m.Groups[3].Value : "")}";
@@ -301,6 +304,40 @@ public static class Migrate
 
     /// Memory is given back with `destruct()`, the release every type has: `.drop()` (of a Memory or a Box) is
     /// `.destruct()`, and `DroppedMemoryError` is `DestructedMemoryError`.
+    /// A comment starts with `#`, and a doc comment with `###`: the `//` and `///` of the lines are rewritten, outside
+    /// string and character literals.
+    public static string HashComments(string text)
+    {
+        var lines = text.Split('\n');
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string line = lines[i];
+            int at = SlashCommentStart(line);
+            if (at < 0) continue;
+            bool doc = line.AsSpan(at).StartsWith("///");
+            lines[i] = line[..at] + (doc ? "###" + line[(at + 3)..] : "#" + line[(at + 2)..]);
+        }
+        return string.Join('\n', lines);
+    }
+
+    /// The index of the `//` that starts `line`'s comment, outside literals, or -1.
+    private static int SlashCommentStart(string line)
+    {
+        for (int i = 0; i + 1 < line.Length; i++)
+        {
+            char c = line[i];
+            if (c is '"' or '\'')
+            {
+                char quote = c;
+                for (i++; i < line.Length && line[i] != quote; i++)
+                    if (line[i] == '\\') i++;
+                continue;
+            }
+            if (c == '/' && line[i + 1] == '/') return i;
+        }
+        return -1;
+    }
+
     public static string DestructSpelling(string text) =>
         Drop.Replace(text, ".destruct()").Replace("DroppedMemoryError", "DestructedMemoryError").Replace("dropped already", "given back already");
 
@@ -318,7 +355,7 @@ public static class Migrate
             if (header.Success) owner = header.Groups[1].Value;
             else if (Regex.IsMatch(line, @"^(?:(?:private|internal)\s+)?routine\s")) owner = null;
             var sb = new StringBuilder(line);
-            int comment = line.TrimStart().StartsWith("//", StringComparison.Ordinal) ? line.IndexOf("//", StringComparison.Ordinal) : CommentStart(sb, 0, sb.Length);
+            int comment = line.TrimStart().StartsWith("#", StringComparison.Ordinal) ? line.IndexOf("#", StringComparison.Ordinal) : CommentStart(sb, 0, sb.Length);
             string code = line[..comment];
             int lineIndex = i;
             string renamed = Contains.Replace(code, m =>
@@ -386,7 +423,7 @@ public static class Migrate
                     inAsmBody = asmPending;
                     asmPending = false;
                 }
-                else if (!line.StartsWith('#') && !line.StartsWith("//", StringComparison.Ordinal))
+                else if (!line.StartsWith('#') && !line.StartsWith('@'))
                 {
                     asmPending = false;
                 }
@@ -417,7 +454,7 @@ public static class Migrate
             if (header.Success) owner = header.Groups[1].Value;
             else if (Regex.IsMatch(line, @"^(?:(?:private|internal)\s+)?routine\s")) owner = null;
             var sb = new StringBuilder(line);
-            int comment = line.TrimStart().StartsWith("//", StringComparison.Ordinal) ? line.IndexOf("//", StringComparison.Ordinal) : CommentStart(sb, 0, sb.Length);
+            int comment = line.TrimStart().StartsWith("#", StringComparison.Ordinal) ? line.IndexOf("#", StringComparison.Ordinal) : CommentStart(sb, 0, sb.Length);
             string code = line[..comment];
             string before = string.Join('\n', lines, 0, i + 1);
             string renamed = IteratorNext.Replace(code, m =>
@@ -476,13 +513,13 @@ public static class Migrate
             if (line.Length > 0 && !char.IsWhiteSpace(line[0]))
             {
                 bool routineLine = Regex.IsMatch(line, @"^(?:(?:private|internal)\s+)?routine\s");
-                if (line.StartsWith('#') && line.Contains("external(\"asm\")", StringComparison.Ordinal)) asmPending = true;
+                if ((line.StartsWith("#[", StringComparison.Ordinal) || line.StartsWith('@')) && line.Contains("external(\"asm\")", StringComparison.Ordinal)) asmPending = true;
                 else if (routineLine) { inAsm = asmPending; asmPending = false; }
-                else if (!line.StartsWith('#') && !line.StartsWith("//", StringComparison.Ordinal)) { inAsm = false; asmPending = false; }
+                else if (!line.StartsWith('#') && !line.StartsWith('@')) { inAsm = false; asmPending = false; }
             }
 
             var sb = new StringBuilder(line);
-            int comment = line.TrimStart().StartsWith("//", StringComparison.Ordinal) ? line.IndexOf("//", StringComparison.Ordinal) : CommentStart(sb, 0, sb.Length);
+            int comment = line.TrimStart().StartsWith("#", StringComparison.Ordinal) ? line.IndexOf("#", StringComparison.Ordinal) : CommentStart(sb, 0, sb.Length);
             var result = new StringBuilder();
             int from = 0;
             for (int j = 0; j < comment; j++)
@@ -564,11 +601,11 @@ public static class Migrate
             // An assembly routine's lines are instructions (`push[U64](R5)`), not calls of collection routines.
             if (line.Length > 0 && !char.IsWhiteSpace(line[0]))
             {
-                if (line.StartsWith('#') && line.Contains("external(\"asm\")", StringComparison.Ordinal)) asmPending = true;
+                if ((line.StartsWith("#[", StringComparison.Ordinal) || line.StartsWith('@')) && line.Contains("external(\"asm\")", StringComparison.Ordinal)) asmPending = true;
                 else if (routineLine) { inAsm = asmPending; asmPending = false; }
-                else if (!line.StartsWith('#') && !line.StartsWith("//", StringComparison.Ordinal)) { inAsm = false; asmPending = false; }
+                else if (!line.StartsWith('#') && !line.StartsWith('@')) { inAsm = false; asmPending = false; }
             }
-            if (inAsm || line.TrimStart().StartsWith("//", StringComparison.Ordinal)) continue;
+            if (inAsm || line.TrimStart().StartsWith("#", StringComparison.Ordinal)) continue;
             var sb = new StringBuilder(line);
             int comment = CommentStart(sb, 0, sb.Length);
             string code = line[..comment];
@@ -640,7 +677,7 @@ public static class Migrate
         while (i < sb.Length)
         {
             char c = sb[i];
-            if (c == '/' && i + 1 < sb.Length && sb[i + 1] == '/')
+            if (c == '#')
             {
                 while (i < sb.Length && sb[i] != '\n') i++;
                 continue;
@@ -892,7 +929,7 @@ public static class Migrate
         for (int i = 0; i < lines.Length; i++)
         {
             string line = lines[i];
-            if (line.TrimStart().StartsWith("//", StringComparison.Ordinal)) continue;
+            if (line.TrimStart().StartsWith("#", StringComparison.Ordinal)) continue;
             // Already 0.5: a routine's head line (`local x: T = v`) and a block not written yet (`todo`).
             if (KeywordLocal.IsMatch(line) || line.Trim() == "todo") continue;
             var sb = new StringBuilder(line);
@@ -988,7 +1025,7 @@ public static class Migrate
                         continue;
                     }
 
-                    if ((choice is null && !variant) || line.TrimStart().StartsWith("//", StringComparison.Ordinal)) continue;
+                    if ((choice is null && !variant) || line.TrimStart().StartsWith("#", StringComparison.Ordinal)) continue;
                     if (Leading.Match(line) is not { Success: true } member || member.Groups[1].Value is "require") continue;
                     if (choice is not null)
                     {
@@ -1026,15 +1063,15 @@ public static class Migrate
         {
             string line = lines[i];
             if (line.Length > 0 && !char.IsWhiteSpace(line[0])) inChoice = ChoiceHeader.IsMatch(line);
-            else if (inChoice && Leading.Match(line) is { Success: true } member && !line.TrimStart().StartsWith("//"))
+            else if (inChoice && Leading.Match(line) is { Success: true } member && !line.TrimStart().StartsWith("#"))
             {
                 var g = member.Groups[1];
                 line = line[..g.Index] + Screaming(g.Value) + line[(g.Index + g.Length)..];
             }
 
             var sb = new StringBuilder(line);
-            int comment = sb.Length > 1 && line.TrimStart().StartsWith("//", StringComparison.Ordinal)
-                ? line.IndexOf("//", StringComparison.Ordinal)
+            int comment = sb.Length > 1 && line.TrimStart().StartsWith("#", StringComparison.Ordinal)
+                ? line.IndexOf("#", StringComparison.Ordinal)
                 : CommentStart(sb, 0, sb.Length);
             var result = new StringBuilder();
             int from = 0;
@@ -1095,7 +1132,7 @@ public static class Migrate
         while (i < sb.Length)
         {
             int end = LineEnd(sb, i);
-            int comment = sb[i] == '/' && i + 1 < sb.Length && sb[i + 1] == '/' ? i : CommentStart(sb, i, end);
+            int comment = sb[i] == '#' ? i : CommentStart(sb, i, end);
             for (int j = i; j < comment; j++)
             {
                 int skipped = SkipLiteral(sb, j, comment);
@@ -1138,7 +1175,7 @@ public static class Migrate
         while (i < sb.Length)
         {
             char c = sb[i];
-            if (c == '/' && i + 1 < sb.Length && sb[i + 1] == '/')
+            if (c == '#')
             {
                 // A comment: rewritten like code, but a quote in prose ("it's") does not open a literal.
                 int end = LineEnd(sb, i);
@@ -1172,7 +1209,7 @@ public static class Migrate
         {
             int skipped = SkipLiteral(sb, j, end);
             if (skipped != j) { j = skipped - 1; continue; }
-            if (sb[j] == '/' && j + 1 < end && sb[j + 1] == '/') return j;
+            if (sb[j] == '#') return j;
         }
 
         return end;

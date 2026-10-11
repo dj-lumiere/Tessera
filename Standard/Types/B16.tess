@@ -1,163 +1,163 @@
-// Tessera stdlib: B16 — 16-bit IEEE 754 half precision
-//
-// Maps to LLVM IR half. x86 has no B16 arithmetic, so LLVM computes in B32
-// and rounds. The conversions call compiler-rt, which the builder links.
+# Tessera stdlib: B16 — 16-bit IEEE 754 half precision
+#
+# Maps to LLVM IR half. x86 has no B16 arithmetic, so LLVM computes in B32
+# and rounds. The conversions call compiler-rt, which the builder links.
 
 module Standard/Core
 
-/// A 16-bit IEEE 754 binary16 floating-point number (half precision), mapped to LLVM `half`.
-/// It has an 11-bit significand (about 3 significant decimal digits) and finite magnitudes up to 65504.
-/// :note: Targets without B16 arithmetic (x86) compute in B32 and round back, which gives the same correctly rounded result.
-/// :see: {BF16} for B32's range at lower precision.
+### A 16-bit IEEE 754 binary16 floating-point number (half precision), mapped to LLVM `half`.
+### It has an 11-bit significand (about 3 significant decimal digits) and finite magnitudes up to 65504.
+### :note: Targets without B16 arithmetic (x86) compute in B32 and round back, which gives the same correctly rounded result.
+### :see: {BF16} for B32's range at lower precision.
 @llvm("half")
 record B16
 obeys Equatable[B16], Comparable[B16], Hashable[B16]
 
-// -- constants -----------------------------------------------------------------
+# -- constants -----------------------------------------------------------------
 
-/// Positive infinity (bits `0x7C00`): the result of overflow and of dividing a positive value by +0.0.
-preset B16.INFINITY:     B16 = B16.from_bits(0x7C00)  // +inf bits
-/// Negative infinity (bits `0xFC00`).
-preset B16.NEG_INFINITY: B16 = B16.from_bits(0xFC00)  // -inf bits
-/// The canonical quiet NaN (bits `0x7E00`).
-/// :note: NaN is unequal to everything, itself included, so test for it with {B16.is_nan}, not `eq`.
-preset B16.NAN:          B16 = B16.from_bits(0x7E00)  // canonical quiet NaN bits
+### Positive infinity (bits `0x7C00`): the result of overflow and of dividing a positive value by +0.0.
+preset B16.INFINITY:     B16 = B16.from_bits(0x7C00)  # +inf bits
+### Negative infinity (bits `0xFC00`).
+preset B16.NEG_INFINITY: B16 = B16.from_bits(0xFC00)  # -inf bits
+### The canonical quiet NaN (bits `0x7E00`).
+### :note: NaN is unequal to everything, itself included, so test for it with {B16.is_nan}, not `eq`.
+preset B16.NAN:          B16 = B16.from_bits(0x7E00)  # canonical quiet NaN bits
 
-// -- runtime support ---------------------------------------------------------
+# -- runtime support ---------------------------------------------------------
 
-// x86 has no B16 arithmetic, so LLVM computes in B32 and converts with these
-// compiler-rt routines. The Windows build of compiler-rt passes half values in
-// integer registers while LLVM passes them in SSE registers, so the stdlib
-// provides its own under the same names.
+# x86 has no B16 arithmetic, so LLVM computes in B32 and converts with these
+# compiler-rt routines. The Windows build of compiler-rt passes half values in
+# integer registers while LLVM passes them in SSE registers, so the stdlib
+# provides its own under the same names.
 
-/// Windows-only replacement for compiler-rt's `__extendhfsf2`, exported under that name: widens B16 to B32 exactly.
-/// :param x: The B16 to widen.
-/// :returns: The same value as a B32.
-/// :note: LLVM calls it on x86, which computes B16 arithmetic in B32. The Windows compiler-rt passes half values in integer registers where LLVM uses SSE registers.
+### Windows-only replacement for compiler-rt's `__extendhfsf2`, exported under that name: widens B16 to B32 exactly.
+### :param x: The B16 to widen.
+### :returns: The same value as a B32.
+### :note: LLVM calls it on x86, which computes B16 arithmetic in B32. The Windows compiler-rt passes half values in integer registers where LLVM uses SSE registers.
 @export("__extendhfsf2")
 @target(os: "windows")
 private routine export_extendhfsf2(x: B16) -> B32
     r: B32 = x.to[B32]()
     return r
 
-/// Windows-only replacement for compiler-rt's `__truncsfhf2`, exported under that name: narrows B32 to B16, rounding to nearest (ties to even).
-/// :param x: The B32 to narrow.
-/// :returns: The nearest B16.
-/// :note: LLVM calls it on x86 to round B16 arithmetic computed in B32.
+### Windows-only replacement for compiler-rt's `__truncsfhf2`, exported under that name: narrows B32 to B16, rounding to nearest (ties to even).
+### :param x: The B32 to narrow.
+### :returns: The nearest B16.
+### :note: LLVM calls it on x86 to round B16 arithmetic computed in B32.
 @export("__truncsfhf2")
 @target(os: "windows")
 private routine export_truncsfhf2(x: B32) -> B16
     r: B16 = x.to[B16]()
     return r
 
-/// Windows-only replacement for compiler-rt's `__truncdfhf2`, exported under that name: narrows B64 to B16, rounding once to nearest (ties to even).
-/// :param x: The B64 to narrow.
-/// :returns: The nearest B16.
+### Windows-only replacement for compiler-rt's `__truncdfhf2`, exported under that name: narrows B64 to B16, rounding once to nearest (ties to even).
+### :param x: The B64 to narrow.
+### :returns: The nearest B16.
 @export("__truncdfhf2")
 @target(os: "windows")
 private routine export_truncdfhf2(x: B64) -> B16
     r: B16 = x.to[B16]()
     return r
 
-// -- arithmetic ----------------------------------------------------------------
+# -- arithmetic ----------------------------------------------------------------
 
-/// Clears the sign bit, so abs(-0.0) is 0.0 and NaN stays NaN.
-/// :returns: `me` with the sign bit cleared.
+### Clears the sign bit, so abs(-0.0) is 0.0 and NaN stays NaN.
+### :returns: `me` with the sign bit cleared.
 routine B16.abs(me: Me) -> Me
     r: Me = fabs[Me](me)
     return r
 
-/// The smaller value, or the other one if one operand is NaN.
-/// :param other: The value to compare with.
-/// :returns: The smaller value, the other operand when one is NaN, and NaN when both are.
+### The smaller value, or the other one if one operand is NaN.
+### :param other: The value to compare with.
+### :returns: The smaller value, the other operand when one is NaN, and NaN when both are.
 routine B16.min(me: Me, other: Me) -> Me
     smaller: B32 = me.to[B32]().min(other.to[B32]())
-    r: Me = smaller.to[Me]()  // via B32 (exact)
+    r: Me = smaller.to[Me]()  # via B32 (exact)
     return r
 
-/// The larger value, or the other one if one operand is NaN.
-/// :param other: The value to compare with.
-/// :returns: The larger value, the other operand when one is NaN, and NaN when both are.
+### The larger value, or the other one if one operand is NaN.
+### :param other: The value to compare with.
+### :returns: The larger value, the other operand when one is NaN, and NaN when both are.
 routine B16.max(me: Me, other: Me) -> Me
     larger: B32 = me.to[B32]().max(other.to[B32]())
-    r: Me = larger.to[Me]()  // via B32 (exact)
+    r: Me = larger.to[Me]()  # via B32 (exact)
     return r
 
-/// Adds `other` to `me`, rounded to nearest (ties to even).
-/// :param other: The value to add.
-/// :returns: `me + other`: infinity on overflow, NaN when either operand is NaN or for `inf + -inf`.
+### Adds `other` to `me`, rounded to nearest (ties to even).
+### :param other: The value to add.
+### :returns: `me + other`: infinity on overflow, NaN when either operand is NaN or for `inf + -inf`.
 routine B16.add(me: Me, other: Me) -> Me
     r: Me = fadd[Me](me, other)
     return r
 
-/// Subtracts `other` from `me`, rounded to nearest (ties to even).
-/// :param other: The value to subtract.
-/// :returns: `me - other`: infinity on overflow, NaN when either operand is NaN or for `inf - inf`.
+### Subtracts `other` from `me`, rounded to nearest (ties to even).
+### :param other: The value to subtract.
+### :returns: `me - other`: infinity on overflow, NaN when either operand is NaN or for `inf - inf`.
 routine B16.sub(me: Me, other: Me) -> Me
     r: Me = fsub[Me](me, other)
     return r
 
-/// Multiplies `me` by `other`, rounded to nearest (ties to even).
-/// :param other: The factor.
-/// :returns: `me * other`: infinity on overflow, NaN when either operand is NaN or for `0 * inf`.
+### Multiplies `me` by `other`, rounded to nearest (ties to even).
+### :param other: The factor.
+### :returns: `me * other`: infinity on overflow, NaN when either operand is NaN or for `0 * inf`.
 routine B16.mul(me: Me, other: Me) -> Me
     r: Me = fmul[Me](me, other)
     return r
 
-// -- comparisons ---------------------------------------------------------------
+# -- comparisons ---------------------------------------------------------------
 
-/// Whether `me` is less than `other`, as an ordered IEEE comparison.
-/// :param other: The value to compare against.
-/// :returns: `me < other`, or false when either operand is NaN. -0.0 and +0.0 compare equal.
+### Whether `me` is less than `other`, as an ordered IEEE comparison.
+### :param other: The value to compare against.
+### :returns: `me < other`, or false when either operand is NaN. -0.0 and +0.0 compare equal.
 routine B16.lt(me: Me, other: Me) -> Bool
     return flt[Me](me, other)
 
-/// Whether `me` is less than or equal to `other`, as an ordered IEEE comparison.
-/// :param other: The value to compare against.
-/// :returns: `me <= other`, or false when either operand is NaN. -0.0 and +0.0 compare equal.
+### Whether `me` is less than or equal to `other`, as an ordered IEEE comparison.
+### :param other: The value to compare against.
+### :returns: `me <= other`, or false when either operand is NaN. -0.0 and +0.0 compare equal.
 routine B16.le(me: Me, other: Me) -> Bool
     return fle[Me](me, other)
 
-/// Whether `me` is greater than `other`, as an ordered IEEE comparison.
-/// :param other: The value to compare against.
-/// :returns: `me > other`, or false when either operand is NaN. -0.0 and +0.0 compare equal.
+### Whether `me` is greater than `other`, as an ordered IEEE comparison.
+### :param other: The value to compare against.
+### :returns: `me > other`, or false when either operand is NaN. -0.0 and +0.0 compare equal.
 routine B16.gt(me: Me, other: Me) -> Bool
     return fgt[Me](me, other)
 
-/// Whether `me` is greater than or equal to `other`, as an ordered IEEE comparison.
-/// :param other: The value to compare against.
-/// :returns: `me >= other`, or false when either operand is NaN. -0.0 and +0.0 compare equal.
+### Whether `me` is greater than or equal to `other`, as an ordered IEEE comparison.
+### :param other: The value to compare against.
+### :returns: `me >= other`, or false when either operand is NaN. -0.0 and +0.0 compare equal.
 routine B16.ge(me: Me, other: Me) -> Bool
     return fge[Me](me, other)
 
-// -- division ------------------------------------------------------------------
+# -- division ------------------------------------------------------------------
 
-/// Divides `me` by `other`, rounded to nearest (ties to even).
-/// :param other: The divisor.
-/// :returns: `me / other`: a signed infinity for a nonzero value divided by zero, NaN for `0 / 0`, `inf / inf`, or a NaN operand.
+### Divides `me` by `other`, rounded to nearest (ties to even).
+### :param other: The divisor.
+### :returns: `me / other`: a signed infinity for a nonzero value divided by zero, NaN for `0 / 0`, `inf / inf`, or a NaN operand.
 routine B16.div(me: Me, other: Me) -> Me
     r: Me = fdiv[Me](me, other)
     return r
 
-// -- equality, ordering, hashing -----------------------------------------------
+# -- equality, ordering, hashing -----------------------------------------------
 
-/// IEEE equality.
-/// :param other: The value to compare against.
-/// :returns: True when the values are equal: -0.0 equals +0.0, and NaN is unequal to everything, itself included.
+### IEEE equality.
+### :param other: The value to compare against.
+### :returns: True when the values are equal: -0.0 equals +0.0, and NaN is unequal to everything, itself included.
 routine B16.eq(me: Me, other: Me) -> Bool
     return feq[Me](me, other)
 
-/// Ordered inequality (LLVM `fcmp one`).
-/// :param other: The value to compare against.
-/// :returns: True when both operands are numbers and they differ, false for -0.0 against +0.0.
-/// :note: Also false when either operand is NaN, so for NaN this is not the negation of {B16.eq}.
+### Ordered inequality (LLVM `fcmp one`).
+### :param other: The value to compare against.
+### :returns: True when both operands are numbers and they differ, false for -0.0 against +0.0.
+### :note: Also false when either operand is NaN, so for NaN this is not the negation of {B16.eq}.
 routine B16.ne(me: Me, other: Me) -> Bool
     return fne[Me](me, other)
 
-/// Three-way comparison for the `Comparable` conformance.
-/// :param other: The value to compare against.
-/// :returns: -1 when `me < other`, 1 when `me > other`, and 0 otherwise, which includes -0.0 against +0.0 and any comparison with NaN.
-/// :see: {B16.total_compare} for a total order that ranks NaN and the signed zeros.
+### Three-way comparison for the `Comparable` conformance.
+### :param other: The value to compare against.
+### :returns: -1 when `me < other`, 1 when `me > other`, and 0 otherwise, which includes -0.0 against +0.0 and any comparison with NaN.
+### :see: {B16.total_compare} for a total order that ranks NaN and the signed zeros.
 routine B16.compare(me: Me, other: Me) -> S32
     if me < other
         return -1
@@ -166,79 +166,79 @@ routine B16.compare(me: Me, other: Me) -> S32
     else
         return 0
 
-/// Hashes the raw IEEE bits with SipHash-2-4 under the process key, for the `Hashable` conformance.
-/// :returns: The 64-bit hash.
-/// :note: -0.0 and +0.0 are `eq` but hash apart, and NaNs with different payloads hash apart.
+### Hashes the raw IEEE bits with SipHash-2-4 under the process key, for the `Hashable` conformance.
+### :returns: The 64-bit hash.
+### :note: -0.0 and +0.0 are `eq` but hash apart, and NaNs with different payloads hash apart.
 routine B16.hash(me: Me) -> U64
     h: U64 = siphash24(value: me.bits().to[U64](), key: hash_key())
     return h
 
-// -- named widening conversion -------------------------------------------------
+# -- named widening conversion -------------------------------------------------
 
-/// Widens to B64, exactly, through B32.
-/// :returns: The same value as a B64. Every B16 is representable.
+### Widens to B64, exactly, through B32.
+### :returns: The same value as a B64. Every B16 is representable.
 routine B16.to[B64](me: Me) -> B64
     wide: B32 = me.to[B32]()
     r: B64 = wide.to[B64]()
     return r
 
-// ============================================================
-// Rust-level operations
-// ============================================================
+# ============================================================
+# Rust-level operations
+# ============================================================
 
-// -- constants ------------------------------------------------------------------
+# -- constants ------------------------------------------------------------------
 
-/// The largest finite B16, 65504 (bits `0x7BFF`).
-preset B16.MAX:          B16 = B16.from_bits(0x7BFF)  // largest finite value
-/// The most negative finite B16, the negation of `B16.MAX` (bits `0xFBFF`).
-preset B16.MIN:          B16 = B16.from_bits(0xFBFF)  // most negative finite value
-/// The smallest positive normal B16, 2^-14, about 6.1035156e-5 (bits `0x0400`). Subnormal values go below it.
-preset B16.MIN_POSITIVE: B16 = B16.from_bits(0x0400)  // smallest positive normal value
-/// The gap between 1.0 and the next larger B16, 2^-10, 0.0009765625 (bits `0x1400`).
-preset B16.EPSILON:      B16 = B16.from_bits(0x1400)  // the gap between 1.0 and the next value
+### The largest finite B16, 65504 (bits `0x7BFF`).
+preset B16.MAX:          B16 = B16.from_bits(0x7BFF)  # largest finite value
+### The most negative finite B16, the negation of `B16.MAX` (bits `0xFBFF`).
+preset B16.MIN:          B16 = B16.from_bits(0xFBFF)  # most negative finite value
+### The smallest positive normal B16, 2^-14, about 6.1035156e-5 (bits `0x0400`). Subnormal values go below it.
+preset B16.MIN_POSITIVE: B16 = B16.from_bits(0x0400)  # smallest positive normal value
+### The gap between 1.0 and the next larger B16, 2^-10, 0.0009765625 (bits `0x1400`).
+preset B16.EPSILON:      B16 = B16.from_bits(0x1400)  # the gap between 1.0 and the next value
 
-/// Pi, rounded to the nearest B16.
-preset B16.PI: B16 = 3.14159265358979323846264338327950288  // pi
-/// Tau (2 pi), one full turn in radians, rounded to the nearest B16.
-preset B16.TAU: B16 = 6.28318530717958647692528676655900577  // 2 pi
-/// Euler's number e, rounded to the nearest B16.
-preset B16.E: B16 = 2.71828182845904523536028747135266250  // Euler's number
-/// Pi / 2, rounded to the nearest B16.
-preset B16.FRAC_PI_2: B16 = 1.57079632679489661923132169163975144  // pi / 2
-/// Pi / 4, rounded to the nearest B16.
-preset B16.FRAC_PI_4: B16 = 0.785398163397448309615660845819875721  // pi / 4
-/// 1 / pi, rounded to the nearest B16.
-preset B16.FRAC_1_PI: B16 = 0.318309886183790671537767526745028724  // 1 / pi
-/// The square root of 2, rounded to the nearest B16.
-preset B16.SQRT_2: B16 = 1.41421356237309504880168872420969808  // sqrt(2)
-/// 1 / sqrt(2), rounded to the nearest B16.
-preset B16.FRAC_1_SQRT_2: B16 = 0.707106781186547524400844362104849039  // 1 / sqrt(2)
-/// The natural logarithm of 2, rounded to the nearest B16.
-preset B16.LN_2: B16 = 0.693147180559945309417232121458176568  // ln(2)
-/// The natural logarithm of 10, rounded to the nearest B16.
-preset B16.LN_10: B16 = 2.30258509299404568401799145468436421  // ln(10)
-/// Log2(e), rounded to the nearest B16.
-preset B16.LOG2_E: B16 = 1.44269504088896340735992468100189214  // log2(e)
-/// Log10(e), rounded to the nearest B16.
-preset B16.LOG10_E: B16 = 0.434294481903251827651128918916605082  // log10(e)
+### Pi, rounded to the nearest B16.
+preset B16.PI: B16 = 3.14159265358979323846264338327950288  # pi
+### Tau (2 pi), one full turn in radians, rounded to the nearest B16.
+preset B16.TAU: B16 = 6.28318530717958647692528676655900577  # 2 pi
+### Euler's number e, rounded to the nearest B16.
+preset B16.E: B16 = 2.71828182845904523536028747135266250  # Euler's number
+### Pi / 2, rounded to the nearest B16.
+preset B16.FRAC_PI_2: B16 = 1.57079632679489661923132169163975144  # pi / 2
+### Pi / 4, rounded to the nearest B16.
+preset B16.FRAC_PI_4: B16 = 0.785398163397448309615660845819875721  # pi / 4
+### 1 / pi, rounded to the nearest B16.
+preset B16.FRAC_1_PI: B16 = 0.318309886183790671537767526745028724  # 1 / pi
+### The square root of 2, rounded to the nearest B16.
+preset B16.SQRT_2: B16 = 1.41421356237309504880168872420969808  # sqrt(2)
+### 1 / sqrt(2), rounded to the nearest B16.
+preset B16.FRAC_1_SQRT_2: B16 = 0.707106781186547524400844362104849039  # 1 / sqrt(2)
+### The natural logarithm of 2, rounded to the nearest B16.
+preset B16.LN_2: B16 = 0.693147180559945309417232121458176568  # ln(2)
+### The natural logarithm of 10, rounded to the nearest B16.
+preset B16.LN_10: B16 = 2.30258509299404568401799145468436421  # ln(10)
+### Log2(e), rounded to the nearest B16.
+preset B16.LOG2_E: B16 = 1.44269504088896340735992468100189214  # log2(e)
+### Log10(e), rounded to the nearest B16.
+preset B16.LOG10_E: B16 = 0.434294481903251827651128918916605082  # log10(e)
 
-// -- sign ----------------------------------------------------------------------
+# -- sign ----------------------------------------------------------------------
 
-/// Flips the sign bit, exactly.
-/// :returns: `-me`: 0.0 becomes -0.0, infinities swap sign, and NaN keeps its payload.
+### Flips the sign bit, exactly.
+### :returns: `-me`: 0.0 becomes -0.0, infinities swap sign, and NaN keeps its payload.
 routine B16.neg(me: Me) -> Me
     r: Me = fneg[Me](me)
     return r
 
-/// The magnitude of `me` with the sign of `sign`.
-/// :param sign: The value whose sign bit is used.
-/// :returns: `me` with its sign bit replaced by the sign bit of `sign`.
+### The magnitude of `me` with the sign of `sign`.
+### :param sign: The value whose sign bit is used.
+### :returns: `me` with its sign bit replaced by the sign bit of `sign`.
 routine B16.copysign(me: Me, sign: Me) -> Me
     r: Me = copysign[Me](mag: me, sign)
     return r
 
-/// 1.0 for +0.0 and positive values, -1.0 for -0.0 and negative values, NaN for NaN.
-/// :returns: 1.0, -1.0, or NaN, by the sign of `me`.
+### 1.0 for +0.0 and positive values, -1.0 for -0.0 and negative values, NaN for NaN.
+### :returns: 1.0, -1.0, or NaN, by the sign of `me`.
 routine B16.signum(me: Me) -> Me
     nan: Bool = me.is_nan()
     unit: Me = copysign[Me](mag: 1.0, sign: me)
@@ -247,50 +247,50 @@ routine B16.signum(me: Me) -> Me
         else => unit
     return r
 
-/// Reads the sign bit, so it is true for +0.0 and for NaNs with the bit clear.
-/// :returns: Whether the sign bit is clear.
+### Reads the sign bit, so it is true for +0.0 and for NaNs with the bit clear.
+### :returns: Whether the sign bit is clear.
 routine B16.is_sign_positive(me: Me) -> Bool
     bits: S16 = me.bits().to_wrap[S16]()
     return bits >= 0
 
-/// Reads the sign bit, so it is true for -0.0 and for NaNs with the bit set.
-/// :returns: Whether the sign bit is set.
+### Reads the sign bit, so it is true for -0.0 and for NaNs with the bit set.
+### :returns: Whether the sign bit is set.
 routine B16.is_sign_negative(me: Me) -> Bool
     bits: S16 = me.bits().to_wrap[S16]()
     return bits < 0
 
-// -- arithmetic ----------------------------------------------------------------
+# -- arithmetic ----------------------------------------------------------------
 
-/// The remainder of `me / other`, with the sign of `me` (C fmod, Rust's %). Exact: B32's remainder of the
-/// same values is a B16.
-/// :param other: The divisor.
-/// :returns: The remainder. NaN when either operand is NaN, `me` is infinite, or `other` is 0. Otherwise `me`
-///     itself when `other` is infinite or `me` is a zero.
+### The remainder of `me / other`, with the sign of `me` (C fmod, Rust's %). Exact: B32's remainder of the
+### same values is a B16.
+### :param other: The divisor.
+### :returns: The remainder. NaN when either operand is NaN, `me` is infinite, or `other` is 0. Otherwise `me`
+###     itself when `other` is infinite or `me` is a zero.
 routine B16.mod(me: Me, other: Me) -> Me
     remainder: B32 = me.to[B32]() % other.to[B32]()
     r: Me = remainder.to[Me]()
     return r
 
-/// The reciprocal `1 / me`, rounded once.
-/// :returns: `1 / me`: a signed infinity for a signed zero, a signed zero for an infinity, NaN for NaN.
+### The reciprocal `1 / me`, rounded once.
+### :returns: `1 / me`: a signed infinity for a signed zero, a signed zero for an infinity, NaN for NaN.
 routine B16.recip(me: Me) -> Me
     r: Me = fdiv[Me](1.0, me)
     return r
 
-/// `me * a + b`, rounded once. The product of two 11-bit significands is exact in B64. The sum is added
-/// with round-to-odd ({b64_add_round_to_odd}), which the narrowing then rounds as it would the exact result.
-/// :param a: The factor `me` is multiplied by.
-/// :param b: The addend.
-/// :returns: `me * a + b` rounded once to nearest (ties to even). NaN for a NaN operand, `inf * 0`, or `inf - inf`.
+### `me * a + b`, rounded once. The product of two 11-bit significands is exact in B64. The sum is added
+### with round-to-odd ({b64_add_round_to_odd}), which the narrowing then rounds as it would the exact result.
+### :param a: The factor `me` is multiplied by.
+### :param b: The addend.
+### :returns: `me * a + b` rounded once to nearest (ties to even). NaN for a NaN operand, `inf * 0`, or `inf - inf`.
 routine B16.mul_add(me: Me, a: Me, b: Me) -> Me
     product: B64 = me.to[B64]() * a.to[B64]()
     sum: B64 = b64_add_round_to_odd(a: product, b: b.to[B64]())
     r: Me = sum.to[Me]()
     return r
 
-/// The quotient `q` of Euclidean division, so that `me = q * other + r` with `0 <= r < |other|`.
-/// :param other: The divisor.
-/// :returns: The quotient `q`. NaN when either operand is NaN.
+### The quotient `q` of Euclidean division, so that `me = q * other + r` with `0 <= r < |other|`.
+### :param other: The divisor.
+### :returns: The quotient `q`. NaN when either operand is NaN.
 routine B16.div_euclid(me: Me, other: Me) -> Me
     q: Me = (me / other).trunc()
     rem: Me = me % other
@@ -304,32 +304,32 @@ routine B16.div_euclid(me: Me, other: Me) -> Me
         else => up
     return r
 
-/// The least non-negative remainder of `me / other`.
-/// :param other: The divisor.
-/// :returns: The remainder, in `0 ..< |other|` for a finite `other`. When the exact remainder is a tiny negative value,
-///     `|other|` plus it would round to `|other|`, so the largest value below `|other|` comes back instead.
+### The least non-negative remainder of `me / other`.
+### :param other: The divisor.
+### :returns: The remainder, in `0 ..< |other|` for a finite `other`. When the exact remainder is a tiny negative value,
+###     `|other|` plus it would round to `|other|`, so the largest value below `|other|` comes back instead.
 routine B16.mod_euclid(me: Me, other: Me) -> Me
     rem: Me = me % other
     if not (rem < 0.0)
         return rem
     magnitude: Me = other.abs()
     r: Me = rem + magnitude
-    // a tiny negative remainder plus |other| rounds up to |other|: the largest value below it is the nearest
-    // one in range
+    # a tiny negative remainder plus |other| rounds up to |other|: the largest value below it is the nearest
+    # one in range
     if r == magnitude and magnitude.is_finite()
         return Me.from_bits(magnitude.bits() - 1)
     else
         return r
 
-// -- ordering ------------------------------------------------------------------
+# -- ordering ------------------------------------------------------------------
 
-/// The smaller value, NaN if either is NaN, and -0.0 below +0.0.
-/// :param other: The value to compare with.
-/// :returns: The smaller value, or NaN when either operand is NaN.
+### The smaller value, NaN if either is NaN, and -0.0 below +0.0.
+### :param other: The value to compare with.
+### :returns: The smaller value, or NaN when either operand is NaN.
 routine B16.minimum(me: Me, other: Me) -> Me
     if me.is_nan() or other.is_nan()
         return me + other
-    // equal values have equal bits except ±0, where bitor picks the negative one
+    # equal values have equal bits except ±0, where bitor picks the negative one
     if me == other
         return Me.from_bits(me.bits() | other.bits())
     pick: Bool = me < other
@@ -338,13 +338,13 @@ routine B16.minimum(me: Me, other: Me) -> Me
         else => other
     return r
 
-/// The larger value, NaN if either is NaN, and +0.0 above -0.0.
-/// :param other: The value to compare with.
-/// :returns: The larger value, or NaN when either operand is NaN.
+### The larger value, NaN if either is NaN, and +0.0 above -0.0.
+### :param other: The value to compare with.
+### :returns: The larger value, or NaN when either operand is NaN.
 routine B16.maximum(me: Me, other: Me) -> Me
     if me.is_nan() or other.is_nan()
         return me + other
-    // equal values have equal bits except ±0, where bitand picks the positive one
+    # equal values have equal bits except ±0, where bitand picks the positive one
     if me == other
         return Me.from_bits(me.bits() & other.bits())
     pick: Bool = me > other
@@ -353,11 +353,11 @@ routine B16.maximum(me: Me, other: Me) -> Me
         else => other
     return r
 
-/// Restricts `me` to `lo ..= hi`. NaN stays NaN.
-/// :param lo: The lower bound.
-/// :param hi: The upper bound.
-/// :returns: `lo` when `me < lo`, `hi` when `me > hi`, otherwise `me`.
-/// :throws: Crashes with `InvalidValueError` unless `lo <= hi`, so also when either bound is NaN.
+### Restricts `me` to `lo ..= hi`. NaN stays NaN.
+### :param lo: The lower bound.
+### :param hi: The upper bound.
+### :returns: `lo` when `me < lo`, `hi` when `me > hi`, otherwise `me`.
+### :throws: Crashes with `InvalidValueError` unless `lo <= hi`, so also when either bound is NaN.
 @track_caller
 routine B16.clamp(me: Me, lo: Me, hi: Me) -> Me
     if lo <= hi
@@ -373,94 +373,94 @@ routine B16.clamp(me: Me, lo: Me, hi: Me) -> Me
     else
         crash_invalid_value()
 
-/// Tests whether `me` is in `[lo, hi]`, both ends included. False when `lo > hi`.
-/// :param lo: The lower bound, included.
-/// :param hi: The upper bound, included.
-/// :returns: True when `lo <= me <= hi`. False when any operand is NaN.
+### Tests whether `me` is in `[lo, hi]`, both ends included. False when `lo > hi`.
+### :param lo: The lower bound, included.
+### :param hi: The upper bound, included.
+### :returns: True when `lo <= me <= hi`. False when any operand is NaN.
 routine B16.between(me: Me, lo: Me, hi: Me) -> Bool
     return me >= lo and me <= hi
 
-/// Tests whether `me` is in `[lo, end)`: `lo` included, `end` not. False when `lo >= end`.
-/// :param lo: The lower bound, included.
-/// :param end: The upper bound, excluded.
-/// :returns: True when `lo <= me < end`. False when any operand is NaN.
+### Tests whether `me` is in `[lo, end)`: `lo` included, `end` not. False when `lo >= end`.
+### :param lo: The lower bound, included.
+### :param end: The upper bound, excluded.
+### :returns: True when `lo <= me < end`. False when any operand is NaN.
 routine B16.in_range(me: Me, lo: Me, end: Me) -> Bool
     return me >= lo and me < end
 
-/// IEEE 754 totalOrder: -NaN < -inf < ... < -0.0 < +0.0 < ... < +inf < +NaN.
-/// :param other: The value to compare with.
-/// :returns: -1, 0, or 1 as `me` comes before, at the same place as, or after `other` in that order.
+### IEEE 754 totalOrder: -NaN < -inf < ... < -0.0 < +0.0 < ... < +inf < +NaN.
+### :param other: The value to compare with.
+### :returns: -1, 0, or 1 as `me` comes before, at the same place as, or after `other` in that order.
 routine B16.total_compare(me: Me, other: Me) -> S32
     a: S16 = me.bits().to_wrap[S16]()
     b: S16 = other.bits().to_wrap[S16]()
-    // Flipping every bit but the sign of negative values makes the bits order like signed integers.
+    # Flipping every bit but the sign of negative values makes the bits order like signed integers.
     a_key: S16 = a ^ ((a >> 15) & S16.MAX)
     b_key: S16 = b ^ ((b >> 15) & S16.MAX)
     r: S32 = a_key.compare(b_key)
     return r
 
-// -- rounding ------------------------------------------------------------------
+# -- rounding ------------------------------------------------------------------
 
-/// Rounds toward negative infinity by widening to B32, rounding there, and narrowing back (exact).
-/// :returns: The largest integer value not above `me`. Zeros, infinities and NaN come back unchanged.
+### Rounds toward negative infinity by widening to B32, rounding there, and narrowing back (exact).
+### :returns: The largest integer value not above `me`. Zeros, infinities and NaN come back unchanged.
 routine B16.floor(me: Me) -> Me
     wide: B32 = me.to[B32]()
     r: Me = wide.floor().to[Me]()
     return r
 
-/// Rounds toward positive infinity by widening to B32, rounding there, and narrowing back (exact).
-/// :returns: The smallest integer value not below `me` (-0.5 gives -0.0). Zeros, infinities and NaN come back unchanged.
+### Rounds toward positive infinity by widening to B32, rounding there, and narrowing back (exact).
+### :returns: The smallest integer value not below `me` (-0.5 gives -0.0). Zeros, infinities and NaN come back unchanged.
 routine B16.ceil(me: Me) -> Me
     wide: B32 = me.to[B32]()
     r: Me = wide.ceil().to[Me]()
     return r
 
-/// Rounds half-way cases away from zero.
-/// :returns: The nearest integer value, half-way cases away from zero. Zeros, infinities and NaN come back unchanged.
+### Rounds half-way cases away from zero.
+### :returns: The nearest integer value, half-way cases away from zero. Zeros, infinities and NaN come back unchanged.
 routine B16.round(me: Me) -> Me
     wide: B32 = me.to[B32]()
     r: Me = wide.round().to[Me]()
     return r
 
-/// Rounds half-way cases to the even neighbor.
-/// :returns: The nearest integer value, half-way cases to the even one. Zeros, infinities and NaN come back unchanged.
+### Rounds half-way cases to the even neighbor.
+### :returns: The nearest integer value, half-way cases to the even one. Zeros, infinities and NaN come back unchanged.
 routine B16.round_ties_even(me: Me) -> Me
     wide: B32 = me.to[B32]()
     r: Me = wide.round_ties_even().to[Me]()
     return r
 
-/// Rounds toward zero.
-/// :returns: The integer part of `me`. Zeros, infinities and NaN come back unchanged.
+### Rounds toward zero.
+### :returns: The integer part of `me`. Zeros, infinities and NaN come back unchanged.
 routine B16.trunc(me: Me) -> Me
     wide: B32 = me.to[B32]()
     r: Me = wide.trunc().to[Me]()
     return r
 
-/// `me` minus its integer part, with the sign of `me`.
-/// :returns: The fractional part. NaN for an infinity or NaN.
+### `me` minus its integer part, with the sign of `me`.
+### :returns: The fractional part. NaN for an infinity or NaN.
 routine B16.fract(me: Me) -> Me
     whole: Me = me.trunc()
     r: Me = me - whole
     return r
 
-// -- powers --------------------------------------------------------------------
-//
-// cbrt, powf, the exponentials, logarithms, and trigonometric, hyperbolic, and special functions are
-// defined in Standard/B16Core/, one file each: ports of CORE-MATH, correctly rounded, so they give the same
-// bits on every target, unlike the platform libm.
+# -- powers --------------------------------------------------------------------
+#
+# cbrt, powf, the exponentials, logarithms, and trigonometric, hyperbolic, and special functions are
+# defined in Standard/B16Core/, one file each: ports of CORE-MATH, correctly rounded, so they give the same
+# bits on every target, unlike the platform libm.
 
-/// The square root of `me`.
-/// :returns: The square root: NaN for negative values other than -0.0, which gives -0.0.
+### The square root of `me`.
+### :returns: The square root: NaN for negative values other than -0.0, which gives -0.0.
 routine B16.sqrt(me: Me) -> Me
     wide: B32 = me.to[B32]()
     r: Me = wide.sqrt().to[Me]()
     return r
 
-/// me raised to an integer power, correctly rounded. The B64 power (n converts exactly) rounds correctly to
-/// B16 unless it lands exactly on a B16 midpoint. There the B128 power decides (checked for every x and n that
-/// reach it).
-/// :param n: The integer exponent.
-/// :returns: `me` to the power `n`, rounded once.
+### me raised to an integer power, correctly rounded. The B64 power (n converts exactly) rounds correctly to
+### B16 unless it lands exactly on a B16 midpoint. There the B128 power decides (checked for every x and n that
+### reach it).
+### :param n: The integer exponent.
+### :returns: `me` to the power `n`, rounded once.
 routine B16.powi(me: Me, n: S32) -> Me
     r: B64 = me.to[B64]().powf(n.to[B64]())
     if b16_is_on_midpoint_b64(r)
@@ -469,15 +469,15 @@ routine B16.powi(me: Me, n: S32) -> Me
     else
         return r.to[Me]()
 
-/// Whether r lies exactly between two B16 values.
-/// :param r: The B64 value to test.
-/// :returns: True when `r` is finite and lies exactly halfway between two adjacent B16 values.
+### Whether r lies exactly between two B16 values.
+### :param r: The B64 value to test.
+### :returns: True when `r` is finite and lies exactly halfway between two adjacent B16 values.
 private routine b16_is_on_midpoint_b64(r: B64) -> Bool
     local a: B64 = r.abs()
 
     if a < 6.103515625e-05
-        // B16 keeps 10 fraction bits: a midpoint has bit 41 set and nothing below it.
-        // Below 2^-14 B16's quantum is 2^-24: a midpoint is an odd multiple of 2^-25.
+        # B16 keeps 10 fraction bits: a midpoint has bit 41 set and nothing below it.
+        # Below 2^-14 B16's quantum is 2^-24: a midpoint is an odd multiple of 2^-25.
         t: B64 = a * 33554432.0
         whole: Bool = t.trunc() == t
         odd: Bool = t % 2.0 == 1.0
@@ -486,100 +486,100 @@ private routine b16_is_on_midpoint_b64(r: B64) -> Bool
         low: U64 = a.bits() & 0x3FFFFFFFFFF
         return a.is_finite() and low == 0x20000000000
 
-/// The logarithm of `me` in base `base`, ln(`me`) / ln(`base`) correctly rounded (to nearest, ties to even): the
-/// quotient of the correctly rounded B64 logarithms, rounded once to B16. That quotient is within 3 × 2^-53 relative of
-/// the true value, and over every pair of positive finite B16 inputs no true value lies closer than 2^-41.2 relative to
-/// a B16 midpoint (subnormal results included), so the one rounding is always the correct one.
-/// :param base: The base of the logarithm.
-/// :returns: log base `base` of `me`. Where `me` or `base` is 0, 1, +inf, negative, or NaN, the quotient of the
-///     logarithms: NaN for a negative or NaN argument, ±inf for base 1 or `me` 0 or +inf, ±0 for `me` 1 or base
-///     0 or +inf, NaN when both logarithms are zero or both infinite.
-/// :note: The scan behind it checked all 1,007,554,564 pairs (bases and arguments other than 1), with the 164 pairs
-///     closer than 2^-34 to a midpoint compared against mpmath.
+### The logarithm of `me` in base `base`, ln(`me`) / ln(`base`) correctly rounded (to nearest, ties to even): the
+### quotient of the correctly rounded B64 logarithms, rounded once to B16. That quotient is within 3 × 2^-53 relative of
+### the true value, and over every pair of positive finite B16 inputs no true value lies closer than 2^-41.2 relative to
+### a B16 midpoint (subnormal results included), so the one rounding is always the correct one.
+### :param base: The base of the logarithm.
+### :returns: log base `base` of `me`. Where `me` or `base` is 0, 1, +inf, negative, or NaN, the quotient of the
+###     logarithms: NaN for a negative or NaN argument, ±inf for base 1 or `me` 0 or +inf, ±0 for `me` 1 or base
+###     0 or +inf, NaN when both logarithms are zero or both infinite.
+### :note: The scan behind it checked all 1,007,554,564 pairs (bases and arguments other than 1), with the 164 pairs
+###     closer than 2^-34 to a midpoint compared against mpmath.
 routine B16.log(me: Me, base: Me) -> Me
     q: B64 = me.to[B64]().ln() / base.to[B64]().ln()
     return q.to[Me]()
 
-// -- special functions ---------------------------------------------------------
+# -- special functions ---------------------------------------------------------
 
-/// Converts an angle from radians to degrees by multiplying by 180 / pi (the constant rounded to B16).
-/// :returns: `me` in degrees, rounded once.
+### Converts an angle from radians to degrees by multiplying by 180 / pi (the constant rounded to B16).
+### :returns: `me` in degrees, rounded once.
 routine B16.to_degrees(me: Me) -> Me
     r: Me = me * 57.29577951308232
     return r
 
-/// Converts an angle from degrees to radians by multiplying by pi / 180 (the constant rounded to B16).
-/// :returns: `me` in radians, rounded once.
+### Converts an angle from degrees to radians by multiplying by pi / 180 (the constant rounded to B16).
+### :returns: `me` in radians, rounded once.
 routine B16.to_radians(me: Me) -> Me
     r: Me = me * 0.017453292519943295
     return r
 
-// -- classification ------------------------------------------------------------
+# -- classification ------------------------------------------------------------
 
-/// Whether `me` is NaN, quiet or signaling.
-/// :returns: True for NaN, the only value unordered with itself.
+### Whether `me` is NaN, quiet or signaling.
+### :returns: True for NaN, the only value unordered with itself.
 routine B16.is_nan(me: Me) -> Bool
     return funo[Me](me, me)
 
-/// Whether `me` is +inf or -inf.
-/// :returns: True for either infinity, false for NaN and finite values.
+### Whether `me` is +inf or -inf.
+### :returns: True for either infinity, false for NaN and finite values.
 routine B16.is_infinite(me: Me) -> Bool
     magnitude: Me = fabs[Me](me)
     return magnitude == Me.INFINITY
 
-/// Neither infinite nor NaN.
-/// :returns: True for zeros, subnormals and normal values. False for infinities and NaN.
+### Neither infinite nor NaN.
+### :returns: True for zeros, subnormals and normal values. False for infinities and NaN.
 routine B16.is_finite(me: Me) -> Bool
     magnitude: Me = fabs[Me](me)
     return magnitude < Me.INFINITY
 
-/// Not zero, subnormal, infinite, or NaN.
-/// :returns: True when the exponent field is neither all zeros nor all ones.
+### Not zero, subnormal, infinite, or NaN.
+### :returns: True when the exponent field is neither all zeros nor all ones.
 routine B16.is_normal(me: Me) -> Bool
     exponent: U16 = me.bits() & 0x7C00
     return exponent != 0 and exponent != 0x7C00
 
-/// Whether `me` is subnormal: a zero exponent field with a nonzero fraction, so its magnitude is below `B16.MIN_POSITIVE`.
-/// :returns: True for subnormals, false for zero, normal values, infinities and NaN.
+### Whether `me` is subnormal: a zero exponent field with a nonzero fraction, so its magnitude is below `B16.MIN_POSITIVE`.
+### :returns: True for subnormals, false for zero, normal values, infinities and NaN.
 routine B16.is_subnormal(me: Me) -> Bool
     bits: U16 = me.bits()
     exponent: U16 = bits & 0x7C00
     mantissa: U16 = bits & 0x03FF
     return exponent == 0 and mantissa != 0
 
-// -- bits ----------------------------------------------------------------------
+# -- bits ----------------------------------------------------------------------
 
-/// The raw IEEE 754 bits.
-/// :returns: The encoding as a U16: sign bit at the top, then the exponent field, then the fraction.
+### The raw IEEE 754 bits.
+### :returns: The encoding as a U16: sign bit at the top, then the exponent field, then the fraction.
 routine B16.bits(me: Me) -> U16
     r: U16 = bitcast[Me, U16](me)
     return r
 
-/// Reinterprets raw IEEE 754 binary16 bits as a B16, exactly.
-/// :param bits: The encoding: sign bit at the top, then the exponent field, then the fraction.
-/// :returns: The value with that encoding. NaN payloads are kept.
-/// :see: {B16.bits} for the inverse.
+### Reinterprets raw IEEE 754 binary16 bits as a B16, exactly.
+### :param bits: The encoding: sign bit at the top, then the exponent field, then the fraction.
+### :returns: The value with that encoding. NaN payloads are kept.
+### :see: {B16.bits} for the inverse.
 routine B16.from_bits(bits: U16) -> Me
     r: Me = bitcast[U16, Me](bits)
     return r
 
-// -- float conversions -----------------------------------------------------------
+# -- float conversions -----------------------------------------------------------
 
-/// The identity conversion, so generic code can call `to[T]()` when `T` is B16.
-/// :returns: `me` unchanged.
+### The identity conversion, so generic code can call `to[T]()` when `T` is B16.
+### :returns: `me` unchanged.
 routine B16.to[Me](me: Me) -> Me
     return me
 
-/// Converts to BF16 by widening to B32 exactly and rounding once to nearest (ties to even).
-/// :returns: The nearest BF16: BF16 covers B16's range but keeps only 8 significant bits, so low bits may round off.
+### Converts to BF16 by widening to B32 exactly and rounding once to nearest (ties to even).
+### :returns: The nearest BF16: BF16 covers B16's range but keeps only 8 significant bits, so low bits may round off.
 routine B16.to[BF16](me: Me) -> BF16
     wide: B32 = me.to[B32]()
     r: BF16 = wide.to[BF16]()
     return r
 
-/// Widens to B32 exactly. Written with integer operations instead of fpext, which would call
-/// compiler-rt's `__extendhfsf2` (on Windows the stdlib's own replacement for it is built on this routine).
-/// :returns: The same value as a B32. Every B16 is representable.
+### Widens to B32 exactly. Written with integer operations instead of fpext, which would call
+### compiler-rt's `__extendhfsf2` (on Windows the stdlib's own replacement for it is built on this routine).
+### :returns: The same value as a B32. Every B16 is representable.
 routine B16.to[B32](me: Me) -> B32
     local bits: U32 = me.bits().to[U32]()
     local sign: U32 = (bits & 0x8000) << 16
@@ -591,7 +591,7 @@ routine B16.to[B32](me: Me) -> B32
             r: B32 = .from_bits(sign | 0x7F800000 | (mantissa << 13))
             return r
         exponent == 0 =>
-            // Zero or subnormal: the value is mantissa * 2^-24, which B32 holds exactly.
+            # Zero or subnormal: the value is mantissa * 2^-24, which B32 holds exactly.
             value: B32 = mantissa.to[B32]() * 5.960464477539063e-08
             magnitude: U32 = value.bits()
             r: B32 = .from_bits(magnitude | sign)
@@ -600,16 +600,16 @@ routine B16.to[B32](me: Me) -> B32
             r: B32 = .from_bits(sign | (exponent + 112 << 23) | (mantissa << 13))
             return r
 
-// -- integer conversions ---------------------------------------------------------
-//
-// to_[int] rounds toward zero and crashes on NaN or a value out of the integer's
-// range, while to_[int]_checked returns None instead and to_[int]_clamp saturates
-// (NaN gives 0).
+# -- integer conversions ---------------------------------------------------------
+#
+# to_[int] rounds toward zero and crashes on NaN or a value out of the integer's
+# range, while to_[int]_checked returns None instead and to_[int]_clamp saturates
+# (NaN gives 0).
 
-/// Converts to S8, rounding toward zero.
-/// :returns: The integer part of `me`.
-/// :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-128, 127]. The crash reports the caller's location.
-/// :see: {B16.to_checked[S8]} to get an absent value instead, {B16.to_clamp[S8]} to saturate.
+### Converts to S8, rounding toward zero.
+### :returns: The integer part of `me`.
+### :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-128, 127]. The crash reports the caller's location.
+### :see: {B16.to_checked[S8]} to get an absent value instead, {B16.to_clamp[S8]} to saturate.
 @track_caller
 routine B16.to[S8](me: Me) -> S8
     if not me.is_trunc_in_range(lo: -128.0, hi: 128.0)
@@ -617,27 +617,27 @@ routine B16.to[S8](me: Me) -> S8
     r: S8 = fptosi_sat[Me, S8](me)
     return r
 
-/// Converts to S8, rounding toward zero, without crashing.
-/// :returns: The integer part of `me` when it fits.
-/// :absent: When `me` is NaN or its integer part lies outside [-128, 127].
-/// :see: {B16.to[S8]} to crash instead, {B16.to_clamp[S8]} to saturate.
+### Converts to S8, rounding toward zero, without crashing.
+### :returns: The integer part of `me` when it fits.
+### :absent: When `me` is NaN or its integer part lies outside [-128, 127].
+### :see: {B16.to[S8]} to crash instead, {B16.to_clamp[S8]} to saturate.
 routine B16.to_checked[S8](me: Me) -> Maybe[S8]
     fits: Bool = me.is_trunc_in_range(lo: -128.0, hi: 128.0)
     value: S8 = fptosi_sat[Me, S8](me)
     r: Maybe[S8] = fits.then_present(value)
     return r
 
-/// Converts to S8, rounding toward zero and saturating at the ends of its range.
-/// :returns: The integer part of `me`, clamped to [-128, 127]. Infinities give the nearer end and NaN gives 0.
-/// :see: {B16.to_checked[S8]} to detect values that do not fit.
+### Converts to S8, rounding toward zero and saturating at the ends of its range.
+### :returns: The integer part of `me`, clamped to [-128, 127]. Infinities give the nearer end and NaN gives 0.
+### :see: {B16.to_checked[S8]} to detect values that do not fit.
 routine B16.to_clamp[S8](me: Me) -> S8
     r: S8 = fptosi_sat[Me, S8](me)
     return r
 
-/// Converts to S16, rounding toward zero.
-/// :returns: The integer part of `me`.
-/// :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-32768, 32767]. The crash reports the caller's location.
-/// :see: {B16.to_checked[S16]} to get an absent value instead, {B16.to_clamp[S16]} to saturate.
+### Converts to S16, rounding toward zero.
+### :returns: The integer part of `me`.
+### :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-32768, 32767]. The crash reports the caller's location.
+### :see: {B16.to_checked[S16]} to get an absent value instead, {B16.to_clamp[S16]} to saturate.
 @track_caller
 routine B16.to[S16](me: Me) -> S16
     if not me.is_trunc_in_range(lo: -32768.0, hi: 32768.0)
@@ -645,27 +645,27 @@ routine B16.to[S16](me: Me) -> S16
     r: S16 = fptosi_sat[Me, S16](me)
     return r
 
-/// Converts to S16, rounding toward zero, without crashing.
-/// :returns: The integer part of `me` when it fits.
-/// :absent: When `me` is NaN or its integer part lies outside [-32768, 32767].
-/// :see: {B16.to[S16]} to crash instead, {B16.to_clamp[S16]} to saturate.
+### Converts to S16, rounding toward zero, without crashing.
+### :returns: The integer part of `me` when it fits.
+### :absent: When `me` is NaN or its integer part lies outside [-32768, 32767].
+### :see: {B16.to[S16]} to crash instead, {B16.to_clamp[S16]} to saturate.
 routine B16.to_checked[S16](me: Me) -> Maybe[S16]
     fits: Bool = me.is_trunc_in_range(lo: -32768.0, hi: 32768.0)
     value: S16 = fptosi_sat[Me, S16](me)
     r: Maybe[S16] = fits.then_present(value)
     return r
 
-/// Converts to S16, rounding toward zero and saturating at the ends of its range.
-/// :returns: The integer part of `me`, clamped to [-32768, 32767]. Infinities give the nearer end and NaN gives 0.
-/// :see: {B16.to_checked[S16]} to detect values that do not fit.
+### Converts to S16, rounding toward zero and saturating at the ends of its range.
+### :returns: The integer part of `me`, clamped to [-32768, 32767]. Infinities give the nearer end and NaN gives 0.
+### :see: {B16.to_checked[S16]} to detect values that do not fit.
 routine B16.to_clamp[S16](me: Me) -> S16
     r: S16 = fptosi_sat[Me, S16](me)
     return r
 
-/// Converts to S32, rounding toward zero.
-/// :returns: The integer part of `me`.
-/// :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-2^31, 2^31 - 1]. The crash reports the caller's location.
-/// :see: {B16.to_checked[S32]} to get an absent value instead, {B16.to_clamp[S32]} to saturate.
+### Converts to S32, rounding toward zero.
+### :returns: The integer part of `me`.
+### :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-2^31, 2^31 - 1]. The crash reports the caller's location.
+### :see: {B16.to_checked[S32]} to get an absent value instead, {B16.to_clamp[S32]} to saturate.
 @track_caller
 routine B16.to[S32](me: Me) -> S32
     if not me.is_trunc_in_range(lo: -2147483648.0, hi: 2147483648.0)
@@ -673,27 +673,27 @@ routine B16.to[S32](me: Me) -> S32
     r: S32 = fptosi_sat[Me, S32](me)
     return r
 
-/// Converts to S32, rounding toward zero, without crashing.
-/// :returns: The integer part of `me` when it fits.
-/// :absent: When `me` is NaN or its integer part lies outside [-2^31, 2^31 - 1].
-/// :see: {B16.to[S32]} to crash instead, {B16.to_clamp[S32]} to saturate.
+### Converts to S32, rounding toward zero, without crashing.
+### :returns: The integer part of `me` when it fits.
+### :absent: When `me` is NaN or its integer part lies outside [-2^31, 2^31 - 1].
+### :see: {B16.to[S32]} to crash instead, {B16.to_clamp[S32]} to saturate.
 routine B16.to_checked[S32](me: Me) -> Maybe[S32]
     fits: Bool = me.is_trunc_in_range(lo: -2147483648.0, hi: 2147483648.0)
     value: S32 = fptosi_sat[Me, S32](me)
     r: Maybe[S32] = fits.then_present(value)
     return r
 
-/// Converts to S32, rounding toward zero and saturating at the ends of its range.
-/// :returns: The integer part of `me`, clamped to [-2^31, 2^31 - 1]. Infinities give the nearer end and NaN gives 0.
-/// :see: {B16.to_checked[S32]} to detect values that do not fit.
+### Converts to S32, rounding toward zero and saturating at the ends of its range.
+### :returns: The integer part of `me`, clamped to [-2^31, 2^31 - 1]. Infinities give the nearer end and NaN gives 0.
+### :see: {B16.to_checked[S32]} to detect values that do not fit.
 routine B16.to_clamp[S32](me: Me) -> S32
     r: S32 = fptosi_sat[Me, S32](me)
     return r
 
-/// Converts to S64, rounding toward zero.
-/// :returns: The integer part of `me`.
-/// :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-2^63, 2^63 - 1]. The crash reports the caller's location.
-/// :see: {B16.to_checked[S64]} to get an absent value instead, {B16.to_clamp[S64]} to saturate.
+### Converts to S64, rounding toward zero.
+### :returns: The integer part of `me`.
+### :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-2^63, 2^63 - 1]. The crash reports the caller's location.
+### :see: {B16.to_checked[S64]} to get an absent value instead, {B16.to_clamp[S64]} to saturate.
 @track_caller
 routine B16.to[S64](me: Me) -> S64
     if not me.is_trunc_in_range(lo: -9.223372036854776e18, hi: 9.223372036854776e18)
@@ -701,29 +701,29 @@ routine B16.to[S64](me: Me) -> S64
     r: S64 = fptosi_sat[Me, S64](me)
     return r
 
-/// Converts to S64, rounding toward zero, without crashing.
-/// :returns: The integer part of `me` when it fits.
-/// :absent: When `me` is NaN or its integer part lies outside [-2^63, 2^63 - 1].
-/// :see: {B16.to[S64]} to crash instead, {B16.to_clamp[S64]} to saturate.
+### Converts to S64, rounding toward zero, without crashing.
+### :returns: The integer part of `me` when it fits.
+### :absent: When `me` is NaN or its integer part lies outside [-2^63, 2^63 - 1].
+### :see: {B16.to[S64]} to crash instead, {B16.to_clamp[S64]} to saturate.
 routine B16.to_checked[S64](me: Me) -> Maybe[S64]
     fits: Bool = me.is_trunc_in_range(lo: -9.223372036854776e18, hi: 9.223372036854776e18)
     value: S64 = fptosi_sat[Me, S64](me)
     r: Maybe[S64] = fits.then_present(value)
     return r
 
-/// Converts to S64, rounding toward zero and saturating at the ends of its range.
-/// :returns: The integer part of `me`, clamped to [-2^63, 2^63 - 1]. Infinities give the nearer end and NaN gives 0.
-/// :see: {B16.to_checked[S64]} to detect values that do not fit.
+### Converts to S64, rounding toward zero and saturating at the ends of its range.
+### :returns: The integer part of `me`, clamped to [-2^63, 2^63 - 1]. Infinities give the nearer end and NaN gives 0.
+### :see: {B16.to_checked[S64]} to detect values that do not fit.
 routine B16.to_clamp[S64](me: Me) -> S64
     r: S64 = fptosi_sat[Me, S64](me)
     return r
 
-// B16 to a 128-bit integer goes through B32 (exact): LLVM 21 at -O0 on AArch64 lowers the saturating half to i128
-// conversion to one 64-bit fcvtzs/fcvtzu and leaves the high word 0 or unset, so -1 came back as 2^64 - 1.
-/// Converts to S128, rounding toward zero.
-/// :returns: The integer part of `me`.
-/// :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-2^127, 2^127 - 1]. The crash reports the caller's location.
-/// :see: {B16.to_checked[S128]} to get an absent value instead, {B16.to_clamp[S128]} to saturate.
+# B16 to a 128-bit integer goes through B32 (exact): LLVM 21 at -O0 on AArch64 lowers the saturating half to i128
+# conversion to one 64-bit fcvtzs/fcvtzu and leaves the high word 0 or unset, so -1 came back as 2^64 - 1.
+### Converts to S128, rounding toward zero.
+### :returns: The integer part of `me`.
+### :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-2^127, 2^127 - 1]. The crash reports the caller's location.
+### :see: {B16.to_checked[S128]} to get an absent value instead, {B16.to_clamp[S128]} to saturate.
 @track_caller
 routine B16.to[S128](me: Me) -> S128
     if not me.is_trunc_in_range(lo: -1.7014118346046923e38, hi: 1.7014118346046923e38)
@@ -731,27 +731,27 @@ routine B16.to[S128](me: Me) -> S128
     r: S128 = fptosi_sat[B32, S128](me.to[B32]())
     return r
 
-/// Converts to S128, rounding toward zero, without crashing.
-/// :returns: The integer part of `me` when it fits.
-/// :absent: When `me` is NaN or its integer part lies outside [-2^127, 2^127 - 1].
-/// :see: {B16.to[S128]} to crash instead, {B16.to_clamp[S128]} to saturate.
+### Converts to S128, rounding toward zero, without crashing.
+### :returns: The integer part of `me` when it fits.
+### :absent: When `me` is NaN or its integer part lies outside [-2^127, 2^127 - 1].
+### :see: {B16.to[S128]} to crash instead, {B16.to_clamp[S128]} to saturate.
 routine B16.to_checked[S128](me: Me) -> Maybe[S128]
     fits: Bool = me.is_trunc_in_range(lo: -1.7014118346046923e38, hi: 1.7014118346046923e38)
     value: S128 = fptosi_sat[B32, S128](me.to[B32]())
     r: Maybe[S128] = fits.then_present(value)
     return r
 
-/// Converts to S128, rounding toward zero and saturating at the ends of its range.
-/// :returns: The integer part of `me`, clamped to [-2^127, 2^127 - 1]. Infinities give the nearer end and NaN gives 0.
-/// :see: {B16.to_checked[S128]} to detect values that do not fit.
+### Converts to S128, rounding toward zero and saturating at the ends of its range.
+### :returns: The integer part of `me`, clamped to [-2^127, 2^127 - 1]. Infinities give the nearer end and NaN gives 0.
+### :see: {B16.to_checked[S128]} to detect values that do not fit.
 routine B16.to_clamp[S128](me: Me) -> S128
     r: S128 = fptosi_sat[B32, S128](me.to[B32]())
     return r
 
-/// Converts to U8, rounding toward zero.
-/// :returns: The integer part of `me`.
-/// :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 255]. The crash reports the caller's location.
-/// :see: {B16.to_checked[U8]} to get an absent value instead, {B16.to_clamp[U8]} to saturate.
+### Converts to U8, rounding toward zero.
+### :returns: The integer part of `me`.
+### :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 255]. The crash reports the caller's location.
+### :see: {B16.to_checked[U8]} to get an absent value instead, {B16.to_clamp[U8]} to saturate.
 @track_caller
 routine B16.to[U8](me: Me) -> U8
     if not me.is_trunc_in_range(lo: 0.0, hi: 256.0)
@@ -759,27 +759,27 @@ routine B16.to[U8](me: Me) -> U8
     r: U8 = fptoui_sat[Me, U8](me)
     return r
 
-/// Converts to U8, rounding toward zero, without crashing.
-/// :returns: The integer part of `me` when it fits.
-/// :absent: When `me` is NaN or its integer part lies outside [0, 255].
-/// :see: {B16.to[U8]} to crash instead, {B16.to_clamp[U8]} to saturate.
+### Converts to U8, rounding toward zero, without crashing.
+### :returns: The integer part of `me` when it fits.
+### :absent: When `me` is NaN or its integer part lies outside [0, 255].
+### :see: {B16.to[U8]} to crash instead, {B16.to_clamp[U8]} to saturate.
 routine B16.to_checked[U8](me: Me) -> Maybe[U8]
     fits: Bool = me.is_trunc_in_range(lo: 0.0, hi: 256.0)
     value: U8 = fptoui_sat[Me, U8](me)
     r: Maybe[U8] = fits.then_present(value)
     return r
 
-/// Converts to U8, rounding toward zero and saturating at the ends of its range.
-/// :returns: The integer part of `me`, clamped to [0, 255]. Infinities give the nearer end and NaN gives 0.
-/// :see: {B16.to_checked[U8]} to detect values that do not fit.
+### Converts to U8, rounding toward zero and saturating at the ends of its range.
+### :returns: The integer part of `me`, clamped to [0, 255]. Infinities give the nearer end and NaN gives 0.
+### :see: {B16.to_checked[U8]} to detect values that do not fit.
 routine B16.to_clamp[U8](me: Me) -> U8
     r: U8 = fptoui_sat[Me, U8](me)
     return r
 
-/// Converts to U16, rounding toward zero.
-/// :returns: The integer part of `me`.
-/// :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 65535]. The crash reports the caller's location.
-/// :see: {B16.to_checked[U16]} to get an absent value instead, {B16.to_clamp[U16]} to saturate.
+### Converts to U16, rounding toward zero.
+### :returns: The integer part of `me`.
+### :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 65535]. The crash reports the caller's location.
+### :see: {B16.to_checked[U16]} to get an absent value instead, {B16.to_clamp[U16]} to saturate.
 @track_caller
 routine B16.to[U16](me: Me) -> U16
     if not me.is_trunc_in_range(lo: 0.0, hi: 65536.0)
@@ -787,27 +787,27 @@ routine B16.to[U16](me: Me) -> U16
     r: U16 = fptoui_sat[Me, U16](me)
     return r
 
-/// Converts to U16, rounding toward zero, without crashing.
-/// :returns: The integer part of `me` when it fits.
-/// :absent: When `me` is NaN or its integer part lies outside [0, 65535].
-/// :see: {B16.to[U16]} to crash instead, {B16.to_clamp[U16]} to saturate.
+### Converts to U16, rounding toward zero, without crashing.
+### :returns: The integer part of `me` when it fits.
+### :absent: When `me` is NaN or its integer part lies outside [0, 65535].
+### :see: {B16.to[U16]} to crash instead, {B16.to_clamp[U16]} to saturate.
 routine B16.to_checked[U16](me: Me) -> Maybe[U16]
     fits: Bool = me.is_trunc_in_range(lo: 0.0, hi: 65536.0)
     value: U16 = fptoui_sat[Me, U16](me)
     r: Maybe[U16] = fits.then_present(value)
     return r
 
-/// Converts to U16, rounding toward zero and saturating at the ends of its range.
-/// :returns: The integer part of `me`, clamped to [0, 65535]. Infinities give the nearer end and NaN gives 0.
-/// :see: {B16.to_checked[U16]} to detect values that do not fit.
+### Converts to U16, rounding toward zero and saturating at the ends of its range.
+### :returns: The integer part of `me`, clamped to [0, 65535]. Infinities give the nearer end and NaN gives 0.
+### :see: {B16.to_checked[U16]} to detect values that do not fit.
 routine B16.to_clamp[U16](me: Me) -> U16
     r: U16 = fptoui_sat[Me, U16](me)
     return r
 
-/// Converts to U32, rounding toward zero.
-/// :returns: The integer part of `me`.
-/// :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 2^32 - 1]. The crash reports the caller's location.
-/// :see: {B16.to_checked[U32]} to get an absent value instead, {B16.to_clamp[U32]} to saturate.
+### Converts to U32, rounding toward zero.
+### :returns: The integer part of `me`.
+### :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 2^32 - 1]. The crash reports the caller's location.
+### :see: {B16.to_checked[U32]} to get an absent value instead, {B16.to_clamp[U32]} to saturate.
 @track_caller
 routine B16.to[U32](me: Me) -> U32
     if not me.is_trunc_in_range(lo: 0.0, hi: 4294967296.0)
@@ -815,27 +815,27 @@ routine B16.to[U32](me: Me) -> U32
     r: U32 = fptoui_sat[Me, U32](me)
     return r
 
-/// Converts to U32, rounding toward zero, without crashing.
-/// :returns: The integer part of `me` when it fits.
-/// :absent: When `me` is NaN or its integer part lies outside [0, 2^32 - 1].
-/// :see: {B16.to[U32]} to crash instead, {B16.to_clamp[U32]} to saturate.
+### Converts to U32, rounding toward zero, without crashing.
+### :returns: The integer part of `me` when it fits.
+### :absent: When `me` is NaN or its integer part lies outside [0, 2^32 - 1].
+### :see: {B16.to[U32]} to crash instead, {B16.to_clamp[U32]} to saturate.
 routine B16.to_checked[U32](me: Me) -> Maybe[U32]
     fits: Bool = me.is_trunc_in_range(lo: 0.0, hi: 4294967296.0)
     value: U32 = fptoui_sat[Me, U32](me)
     r: Maybe[U32] = fits.then_present(value)
     return r
 
-/// Converts to U32, rounding toward zero and saturating at the ends of its range.
-/// :returns: The integer part of `me`, clamped to [0, 2^32 - 1]. Infinities give the nearer end and NaN gives 0.
-/// :see: {B16.to_checked[U32]} to detect values that do not fit.
+### Converts to U32, rounding toward zero and saturating at the ends of its range.
+### :returns: The integer part of `me`, clamped to [0, 2^32 - 1]. Infinities give the nearer end and NaN gives 0.
+### :see: {B16.to_checked[U32]} to detect values that do not fit.
 routine B16.to_clamp[U32](me: Me) -> U32
     r: U32 = fptoui_sat[Me, U32](me)
     return r
 
-/// Converts to U64, rounding toward zero.
-/// :returns: The integer part of `me`.
-/// :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 2^64 - 1]. The crash reports the caller's location.
-/// :see: {B16.to_checked[U64]} to get an absent value instead, {B16.to_clamp[U64]} to saturate.
+### Converts to U64, rounding toward zero.
+### :returns: The integer part of `me`.
+### :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 2^64 - 1]. The crash reports the caller's location.
+### :see: {B16.to_checked[U64]} to get an absent value instead, {B16.to_clamp[U64]} to saturate.
 @track_caller
 routine B16.to[U64](me: Me) -> U64
     if not me.is_trunc_in_range(lo: 0.0, hi: 1.8446744073709552e19)
@@ -843,27 +843,27 @@ routine B16.to[U64](me: Me) -> U64
     r: U64 = fptoui_sat[Me, U64](me)
     return r
 
-/// Converts to U64, rounding toward zero, without crashing.
-/// :returns: The integer part of `me` when it fits.
-/// :absent: When `me` is NaN or its integer part lies outside [0, 2^64 - 1].
-/// :see: {B16.to[U64]} to crash instead, {B16.to_clamp[U64]} to saturate.
+### Converts to U64, rounding toward zero, without crashing.
+### :returns: The integer part of `me` when it fits.
+### :absent: When `me` is NaN or its integer part lies outside [0, 2^64 - 1].
+### :see: {B16.to[U64]} to crash instead, {B16.to_clamp[U64]} to saturate.
 routine B16.to_checked[U64](me: Me) -> Maybe[U64]
     fits: Bool = me.is_trunc_in_range(lo: 0.0, hi: 1.8446744073709552e19)
     value: U64 = fptoui_sat[Me, U64](me)
     r: Maybe[U64] = fits.then_present(value)
     return r
 
-/// Converts to U64, rounding toward zero and saturating at the ends of its range.
-/// :returns: The integer part of `me`, clamped to [0, 2^64 - 1]. Infinities give the nearer end and NaN gives 0.
-/// :see: {B16.to_checked[U64]} to detect values that do not fit.
+### Converts to U64, rounding toward zero and saturating at the ends of its range.
+### :returns: The integer part of `me`, clamped to [0, 2^64 - 1]. Infinities give the nearer end and NaN gives 0.
+### :see: {B16.to_checked[U64]} to detect values that do not fit.
 routine B16.to_clamp[U64](me: Me) -> U64
     r: U64 = fptoui_sat[Me, U64](me)
     return r
 
-/// Converts to U128, rounding toward zero.
-/// :returns: The integer part of `me`.
-/// :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 2^128 - 1]. The crash reports the caller's location.
-/// :see: {B16.to_checked[U128]} to get an absent value instead, {B16.to_clamp[U128]} to saturate.
+### Converts to U128, rounding toward zero.
+### :returns: The integer part of `me`.
+### :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 2^128 - 1]. The crash reports the caller's location.
+### :see: {B16.to_checked[U128]} to get an absent value instead, {B16.to_clamp[U128]} to saturate.
 @track_caller
 routine B16.to[U128](me: Me) -> U128
     if not me.is_trunc_in_range(lo: 0.0, hi: 3.402823669209385e38)
@@ -871,27 +871,27 @@ routine B16.to[U128](me: Me) -> U128
     r: U128 = fptoui_sat[B32, U128](me.to[B32]())
     return r
 
-/// Converts to U128, rounding toward zero, without crashing.
-/// :returns: The integer part of `me` when it fits.
-/// :absent: When `me` is NaN or its integer part lies outside [0, 2^128 - 1].
-/// :see: {B16.to[U128]} to crash instead, {B16.to_clamp[U128]} to saturate.
+### Converts to U128, rounding toward zero, without crashing.
+### :returns: The integer part of `me` when it fits.
+### :absent: When `me` is NaN or its integer part lies outside [0, 2^128 - 1].
+### :see: {B16.to[U128]} to crash instead, {B16.to_clamp[U128]} to saturate.
 routine B16.to_checked[U128](me: Me) -> Maybe[U128]
     fits: Bool = me.is_trunc_in_range(lo: 0.0, hi: 3.402823669209385e38)
     value: U128 = fptoui_sat[B32, U128](me.to[B32]())
     r: Maybe[U128] = fits.then_present(value)
     return r
 
-/// Converts to U128, rounding toward zero and saturating at the ends of its range.
-/// :returns: The integer part of `me`, clamped to [0, 2^128 - 1]. Infinities give the nearer end and NaN gives 0.
-/// :see: {B16.to_checked[U128]} to detect values that do not fit.
+### Converts to U128, rounding toward zero and saturating at the ends of its range.
+### :returns: The integer part of `me`, clamped to [0, 2^128 - 1]. Infinities give the nearer end and NaN gives 0.
+### :see: {B16.to_checked[U128]} to detect values that do not fit.
 routine B16.to_clamp[U128](me: Me) -> U128
     r: U128 = fptoui_sat[B32, U128](me.to[B32]())
     return r
 
-/// Whether `me`, rounded toward zero, lies in `[lo, hi)`. False for NaN.
-/// :param lo: The lower bound, included.
-/// :param hi: The upper bound, excluded.
-/// :returns: True when `lo <= trunc(me) < hi`.
+### Whether `me`, rounded toward zero, lies in `[lo, hi)`. False for NaN.
+### :param lo: The lower bound, included.
+### :param hi: The upper bound, excluded.
+### :returns: True when `lo <= trunc(me) < hi`.
 routine B16.is_trunc_in_range(me: Me, lo: Me, hi: Me) -> Bool
     whole: Me = me.trunc()
     return whole.in_range(lo, end: hi)

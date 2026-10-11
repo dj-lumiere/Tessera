@@ -108,7 +108,7 @@ public static class Formatter
             if (whenIndent >= 0 && trimmed.Length > 0 && indent <= whenIndent) whenIndent = -1;
 
             Row? row = null;
-            if (trimmed.StartsWith("//") || trimmed.Length == 0)
+            if (trimmed.StartsWith("#") || trimmed.Length == 0)
                 row = null;
             else if (whenIndent >= 0 && indent == whenIndent + 4 && SplitArm(trimmed) is { } arm)
                 row = new Row(i, Kind.Arm, indent, arm.Left, null, arm.Right);
@@ -289,7 +289,7 @@ public static class Formatter
                 i = SkipLiteral(s, i);
                 continue;
             }
-            if (c == '/' && i + 1 < s.Length && s[i + 1] == '/') return -1;
+            if (c == '#') return -1;
             if (c is '(' or '[' or '{') depth++;
             else if (c is ')' or ']' or '}') depth--;
             else if (depth == 0 && string.CompareOrdinal(s, i, token, 0, token.Length) == 0)
@@ -322,10 +322,10 @@ public static class Formatter
 
     private static int TopLevelComment(string s)
     {
-        for (int i = 0; i + 1 < s.Length; i++)
+        for (int i = 0; i < s.Length; i++)
         {
             if (s[i] is '"' or '\'') i = SkipLiteral(s, i);
-            else if (s[i] == '/' && s[i + 1] == '/') return i;
+            else if (s[i] == '#') return i;
         }
         return -1;
     }
@@ -334,7 +334,7 @@ public static class Formatter
 
     private static bool IsBlockHeader(string line) => Indent(line) == 4 && line.TrimStart().StartsWith("block ");
 
-    private static bool IsDoc(string line) => line.TrimStart().StartsWith("///");
+    private static bool IsDoc(string line) => line.TrimStart().StartsWith("###");
 
     private static bool IsAnnotation(string line) =>
         line.TrimStart() is var t && (t.StartsWith("#") || t.StartsWith("@[") || (t.StartsWith("@") && t.Length > 1 && char.IsAsciiLetterLower(t[1])));
@@ -414,7 +414,7 @@ public static class Formatter
             for (; j < lines.Count; j++)
             {
                 string t = lines[j].TrimStart();
-                if (continued[j] || t.Length == 0 || t.StartsWith("needs ") || t.StartsWith("obeys ") || t.StartsWith("//") || IsAnnotation(t))
+                if (continued[j] || t.Length == 0 || t.StartsWith("needs ") || t.StartsWith("obeys ") || t.StartsWith("#") || IsAnnotation(t))
                     continue;
                 if (!t.StartsWith("local ")) break;
                 lastShared = j;
@@ -454,7 +454,7 @@ public static class Formatter
             {
                 char c = line[i];
                 if (c is '"' or '\'') i = SkipLiteral(line, i);
-                else if (c == '/' && i + 1 < line.Length && line[i + 1] == '/') break;
+                else if (c == '#') break;
                 else if (c is '(' or '[' or '{') depth++;
                 else if (c is ')' or ']' or '}') depth = Math.Max(0, depth - 1);
             }
@@ -464,7 +464,7 @@ public static class Formatter
 
     /// A comment or annotation line at `indent`, which belongs to the declaration or block that follows it.
     private static bool IsLeading(string line, int indent) =>
-        !IsBlank(line) && Indent(line) == indent && (line.TrimStart().StartsWith("//") || IsAnnotation(line));
+        !IsBlank(line) && Indent(line) == indent && (line.TrimStart().StartsWith("#") || IsAnnotation(line));
 
     private static bool NeedsBlankBefore(List<string> lines, List<bool> continued, int i)
     {
@@ -487,7 +487,7 @@ public static class Formatter
 
     private static bool StartsDeclaration(string line) =>
         line.StartsWith("routine ") || line.StartsWith("record ") || line.StartsWith("choice ") ||
-        line.StartsWith("variant ") || line.StartsWith("protocol ") || line.StartsWith("//") || IsAnnotation(line);
+        line.StartsWith("variant ") || line.StartsWith("protocol ") || line.StartsWith("#") || IsAnnotation(line);
 
     /// The nearest line before `i` that isn't a comment, annotation, continuation, or blank.
     private static string PreviousCode(List<string> lines, List<bool> continued, int i)
@@ -497,7 +497,7 @@ public static class Formatter
             if (continued[j]) continue;
             string t = lines[j].TrimStart();
             if (t.Length == 0) return "";
-            if (!t.StartsWith("//") && !IsAnnotation(t)) return lines[j];
+            if (!t.StartsWith("#") && !IsAnnotation(t)) return lines[j];
         }
         return "";
     }
@@ -513,7 +513,7 @@ public static class Formatter
     /// many items per line as fit. The lexer ignores line breaks inside brackets, so the meaning doesn't change.
     private static IEnumerable<string> Wrap(string line)
     {
-        if (line.Length <= MaxWidth || line.TrimStart().StartsWith("//")) return [line];
+        if (line.Length <= MaxWidth || line.TrimStart().StartsWith("#")) return [line];
         var list = FirstCommaList(line);
         if (list is not var (open, close, commas)) return [line];
         var items = new List<string>();
@@ -561,14 +561,14 @@ public static class Formatter
     /// A continuation line (inside a bracket opened above) breaks after its own top-level commas, keeping its indent.
     private static IEnumerable<string> WrapContinuation(string line)
     {
-        if (line.Length <= MaxWidth || line.TrimStart().StartsWith("//")) return [line];
+        if (line.Length <= MaxWidth || line.TrimStart().StartsWith("#")) return [line];
         var cuts = new List<int>();
         int depth = 0;
         for (int i = 0; i < line.Length; i++)
         {
             char c = line[i];
             if (c is '"' or '\'') i = SkipLiteral(line, i);
-            else if (c == '/' && i + 1 < line.Length && line[i + 1] == '/') break;
+            else if (c == '#') break;
             else if (c is '(' or '[' or '{') depth++;
             else if (c is ')' or ']' or '}') depth--;
             else if (c == ',' && depth == 0) cuts.Add(i);
@@ -620,7 +620,7 @@ public static class Formatter
                 i = SkipLiteral(s, i);
                 continue;
             }
-            if (c == '/' && i + 1 < s.Length && s[i + 1] == '/') return null;
+            if (c == '#') return null;
             if (c is not ('(' or '[' or '{')) continue;
             if (OpensTypeArguments(s, i) || (c == '(' && !attribute && !FollowsName(s, i)))
             {
@@ -689,7 +689,7 @@ public static class Formatter
                 continue;
             }
             var group = lines.GetRange(i, end - i);
-            bool commented = group.Any(l => TopLevelComment(l) >= 0 || l.TrimStart().StartsWith("//"));
+            bool commented = group.Any(l => TopLevelComment(l) >= 0 || l.TrimStart().StartsWith("#"));
             if (commented || group.Any(l => l.Length == 0))
             {
                 // kept as written, except that a continuation sits 4 further in, so one 8 further in comes back to 4
@@ -760,7 +760,7 @@ public static class Formatter
     {
         // The file's opening comment, followed by a blank line, stays on top.
         int start = 0;
-        while (start < lines.Count && lines[start].StartsWith("//") && !IsDivider(lines[start])) start++;
+        while (start < lines.Count && lines[start].StartsWith("#") && !IsDivider(lines[start])) start++;
         if (start == 0 || start >= lines.Count || lines[start].Length != 0) start = 0;
         var header = lines.Take(start).ToList();
 
@@ -790,10 +790,10 @@ public static class Formatter
                 i++;
                 continue;
             }
-            if (line.StartsWith("//") && !line.StartsWith("///"))
+            if (line.StartsWith("#") && !line.StartsWith("###"))
             {
                 int end = i;
-                while (end < lines.Count && lines[end].StartsWith("//") && !lines[end].StartsWith("///")) end++;
+                while (end < lines.Count && lines[end].StartsWith("#") && !lines[end].StartsWith("###")) end++;
                 if (lines.Skip(i).Take(end - i).Any(IsDivider))
                 {
                     // A loose comment above the divider stays with it.
@@ -896,7 +896,7 @@ public static class Formatter
                 i = end;
                 continue;
             }
-            if (c == '/' && i + 1 < line.Length && line[i + 1] == '/')
+            if (c == '#')
             {
                 sb.Append(line, i, line.Length - i);
                 break;
@@ -992,7 +992,7 @@ public static class Formatter
                 i = end;
                 continue;
             }
-            if (c == '/' && i + 1 < line.Length && line[i + 1] == '/')
+            if (c == '#')
             {
                 sb.Append(line, i, line.Length - i);
                 break;
@@ -1107,7 +1107,7 @@ public static class Formatter
                 i = end;
                 continue;
             }
-            if (c == '/' && i + 1 < line.Length && line[i + 1] == '/')
+            if (c == '#')
             {
                 sb.Append(line, i, line.Length - i);
                 break;
@@ -1129,7 +1129,7 @@ public static class Formatter
     // ── Section comments ────────────────────────────────────────────────
 
     private static bool IsDivider(string line) =>
-        line.StartsWith("// --") || line.StartsWith("// ==") || line.StartsWith("// ──") || line.StartsWith("//--");
+        line.StartsWith("# --") || line.StartsWith("# ==") || line.StartsWith("# ──") || line.StartsWith("#--");
 
     /// A group of top-level `//` lines that holds a divider stands apart: a blank line before it and after it.
     private static List<string> SpaceSections(List<string> lines)
@@ -1139,7 +1139,7 @@ public static class Formatter
         while (i < lines.Count)
         {
             string line = lines[i];
-            bool topComment = line.StartsWith("//") && !line.StartsWith("///");
+            bool topComment = line.StartsWith("#") && !line.StartsWith("###");
             if (!topComment)
             {
                 result.Add(line);
@@ -1147,7 +1147,7 @@ public static class Formatter
                 continue;
             }
             int end = i;
-            while (end < lines.Count && lines[end].StartsWith("//") && !lines[end].StartsWith("///")) end++;
+            while (end < lines.Count && lines[end].StartsWith("#") && !lines[end].StartsWith("###")) end++;
             var group = lines.GetRange(i, end - i);
             bool section = group.Any(IsDivider);
             if (section && result.Count > 0 && result[^1].Length > 0) result.Add("");

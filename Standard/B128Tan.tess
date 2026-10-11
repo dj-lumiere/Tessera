@@ -1,80 +1,80 @@
-// Tessera stdlib: B128 tan, correctly rounded
-//
-// CORE-MATH has no binary128 tan, so tan runs in three tiers:
-//
-// - quick: CORE-MATH's sine and cosine pipeline (TrigShared.tess) reduces |x| once and gives sin |x| and cos |x|
-//   as normalized fractions, and tan is their quotient, divided exactly in fixed point and rounded here unless it
-//   lies too close to a rounding midpoint. The fractions come from the 128-bit fast path, or from the 384-bit
-//   accurate path when the fast reduction keeps too few bits (x near a multiple of π/256). On random arguments
-//   about 0.4% go on.
-// - fast: |x| = k π/2 + θ by b128_reduce, then sin θ / cos θ (k even) or -cos θ / sin θ (k odd) in B128Extended.
-//   The result is kept when all of it × (1 ± 2^-B128_TAN_BAND) rounds to the same B128.
-// - exact: otherwise the same formulas in B128Big (448 bits, B128Big.tess), rounded once.
-//
-// The quick tier's bounds are proven. CORE-MATH's sinq_error.md bounds each fast-path fraction (normalized into
-// [2^127, 2^128) units of 2^(e - 128)) within 15.8 units of the exact sin or cos, so each is off by a relative α
-// or β with |α|, |β| < 15.8 / (2^127 - 15.8). Their quotient s / c (in [1/2, 2)) is scaled into [2^127, 2^128)
-// by 2^128 or 2^127 and divided exactly, keeping the floor. With S = s (1 + α) and C = c (1 + β), the scaled
-// quotient Q is off from the exact one by Q |α - β| / (1 + α) < 2^128 × 31.6 / (2^127 - 31.6) < 63.3 units, and
-// the floor by less than one more: under 64.3 units in all. So the 15 bits below the 113-bit significand are
-// rounded only when they lie more than B128_TAN_GATE = 64 units from the midpoint 2^14. The exact tan then lies on
-// the same side of the midpoint, or in the same rounding cell at a binade's edge. Everything nearer goes on.
-// The accurate path's fractions are good to far better than 2^-280 relative (its 448-bit reduction keeps over 300
-// bits, since no B128 comes within 2^-124 of a multiple of π/2, and its series are within 2^-296), and cutting
-// each to its top 128 bits adds under one unit: |α|, |β| < 2^-127 + 2^-280, so Q is within 5.01 units and
-// B128_TAN_WIDE_GATE = 8 decides there.
-//
-// The band is measured, not proven: on about 110000 inputs (every exponent, tiny ones, 1/2 to 2, near k π/4 and
-// k π/2 for small and huge k, up to B128.MAX) the fast tier's worst relative error against mpmath was 2^-150.2, at
-// |θ| near π/4 where the sin and cos series stop, so 2^-145 leaves about 5 bits. Results near a rounding boundary do
-// occur: just above 2^-57, tan x - x = x³/3 + … sweeps past the midpoints between B128s so slowly that the nearest
-// x lands within about 2^-225 of one, and the fast tier alone rounds some of those the wrong way
-// (tests/b128_tan.tess has them).
-//
-// b128_reduce keeps 256 bits of x × 2/π's fraction, so θ is good to about 2^-256 absolute, and tan's relative error
-// grows as θ shrinks. Past |x| = 1/2, a θ under 2^-90 therefore goes straight to the exact tier (the reduction
-// alone would leave 2^-166 relative there). The closest a B128 gets to a multiple of π/2 is |θ| = 2^-123.3, found
-// by continued fractions of 2^e × 2/π for every exponent: x = 8794873135033829349702184924722639 × 2^1852, whose
-// tan is about 1.27e37. big_reduce's θ is good to 2^-449 absolute, so even there the exact tier keeps 2^-325
-// relative.
-//
-// The only exact result is tan(±0) = ±0: for a rational x ≠ 0, e^(2ix) is transcendental (Lindemann), so tan x =
-// -i (e^(2ix) - 1) / (e^(2ix) + 1) is too, and it is never a B128 or a midpoint between two. Below |x| = 2^-57 the
-// answer is x itself: tan x - x < x³/2 < 2^-115 |x|, under half an ulp of x (at least 2^-114 |x|), and tan x lies
-// on x's side away from zero.
+# Tessera stdlib: B128 tan, correctly rounded
+#
+# CORE-MATH has no binary128 tan, so tan runs in three tiers:
+#
+# - quick: CORE-MATH's sine and cosine pipeline (TrigShared.tess) reduces |x| once and gives sin |x| and cos |x|
+#   as normalized fractions, and tan is their quotient, divided exactly in fixed point and rounded here unless it
+#   lies too close to a rounding midpoint. The fractions come from the 128-bit fast path, or from the 384-bit
+#   accurate path when the fast reduction keeps too few bits (x near a multiple of π/256). On random arguments
+#   about 0.4% go on.
+# - fast: |x| = k π/2 + θ by b128_reduce, then sin θ / cos θ (k even) or -cos θ / sin θ (k odd) in B128Extended.
+#   The result is kept when all of it × (1 ± 2^-B128_TAN_BAND) rounds to the same B128.
+# - exact: otherwise the same formulas in B128Big (448 bits, B128Big.tess), rounded once.
+#
+# The quick tier's bounds are proven. CORE-MATH's sinq_error.md bounds each fast-path fraction (normalized into
+# [2^127, 2^128) units of 2^(e - 128)) within 15.8 units of the exact sin or cos, so each is off by a relative α
+# or β with |α|, |β| < 15.8 / (2^127 - 15.8). Their quotient s / c (in [1/2, 2)) is scaled into [2^127, 2^128)
+# by 2^128 or 2^127 and divided exactly, keeping the floor. With S = s (1 + α) and C = c (1 + β), the scaled
+# quotient Q is off from the exact one by Q |α - β| / (1 + α) < 2^128 × 31.6 / (2^127 - 31.6) < 63.3 units, and
+# the floor by less than one more: under 64.3 units in all. So the 15 bits below the 113-bit significand are
+# rounded only when they lie more than B128_TAN_GATE = 64 units from the midpoint 2^14. The exact tan then lies on
+# the same side of the midpoint, or in the same rounding cell at a binade's edge. Everything nearer goes on.
+# The accurate path's fractions are good to far better than 2^-280 relative (its 448-bit reduction keeps over 300
+# bits, since no B128 comes within 2^-124 of a multiple of π/2, and its series are within 2^-296), and cutting
+# each to its top 128 bits adds under one unit: |α|, |β| < 2^-127 + 2^-280, so Q is within 5.01 units and
+# B128_TAN_WIDE_GATE = 8 decides there.
+#
+# The band is measured, not proven: on about 110000 inputs (every exponent, tiny ones, 1/2 to 2, near k π/4 and
+# k π/2 for small and huge k, up to B128.MAX) the fast tier's worst relative error against mpmath was 2^-150.2, at
+# |θ| near π/4 where the sin and cos series stop, so 2^-145 leaves about 5 bits. Results near a rounding boundary do
+# occur: just above 2^-57, tan x - x = x³/3 + … sweeps past the midpoints between B128s so slowly that the nearest
+# x lands within about 2^-225 of one, and the fast tier alone rounds some of those the wrong way
+# (tests/b128_tan.tess has them).
+#
+# b128_reduce keeps 256 bits of x × 2/π's fraction, so θ is good to about 2^-256 absolute, and tan's relative error
+# grows as θ shrinks. Past |x| = 1/2, a θ under 2^-90 therefore goes straight to the exact tier (the reduction
+# alone would leave 2^-166 relative there). The closest a B128 gets to a multiple of π/2 is |θ| = 2^-123.3, found
+# by continued fractions of 2^e × 2/π for every exponent: x = 8794873135033829349702184924722639 × 2^1852, whose
+# tan is about 1.27e37. big_reduce's θ is good to 2^-449 absolute, so even there the exact tier keeps 2^-325
+# relative.
+#
+# The only exact result is tan(±0) = ±0: for a rational x ≠ 0, e^(2ix) is transcendental (Lindemann), so tan x =
+# -i (e^(2ix) - 1) / (e^(2ix) + 1) is too, and it is never a B128 or a midpoint between two. Below |x| = 2^-57 the
+# answer is x itself: tan x - x < x³/2 < 2^-115 |x|, under half an ulp of x (at least 2^-114 |x|), and tan x lies
+# on x's side away from zero.
 
 module Standard/Core
 
-/// The fast tier's error band for tan, as a power of two: a B128Extended result is kept only when all of it × (1 ± 2^-145) rounds to the same B128.
-/// :note: Measured, not proven: the worst fast-tier error seen against mpmath was about 2^-150.2, so the band leaves about 5 bits.
+### The fast tier's error band for tan, as a power of two: a B128Extended result is kept only when all of it × (1 ± 2^-145) rounds to the same B128.
+### :note: Measured, not proven: the worst fast-tier error seen against mpmath was about 2^-150.2, so the band leaves about 5 bits.
 preset B128_TAN_BAND: S64 = 145
 
-/// The quick tier's refusal window: it rounds only when the 15 guard bits lie more than this many units from the midpoint.
-/// :note: Proven: the quick quotient is within 64.3 units of the exact one (the derivation is at the top of this file).
+### The quick tier's refusal window: it rounds only when the 15 guard bits lie more than this many units from the midpoint.
+### :note: Proven: the quick quotient is within 64.3 units of the exact one (the derivation is at the top of this file).
 preset B128_TAN_GATE: U64 = 64
 
-/// The quick tier's refusal window when it divides the accurate path's 384-bit sine and cosine, cut to 128 bits.
-/// :note: Proven: that quotient is within 5.01 units of the exact one, and 8 leaves room.
+### The quick tier's refusal window when it divides the accurate path's 384-bit sine and cosine, cut to 128 bits.
+### :note: Proven: that quotient is within 5.01 units of the exact one, and 8 leaves room.
 preset B128_TAN_WIDE_GATE: U64 = 8
 
-/// Past |x| = 1/2, the fast tier needs |θ| >= 2^-B128_TAN_LOOSE (else b128_reduce's 2^-256 is too coarse).
+### Past |x| = 1/2, the fast tier needs |θ| >= 2^-B128_TAN_LOOSE (else b128_reduce's 2^-256 is too coarse).
 preset B128_TAN_LOOSE: S64 = 90
 
-/// tan x, correctly rounded (round to nearest, ties to even): ±0 for ±0, a quiet NaN for NaN, NaN for infinities.
-/// :returns: tan(`me`).
+### tan x, correctly rounded (round to nearest, ties to even): ±0 for ±0, a quiet NaN for NaN, NaN for infinities.
+### :returns: tan(`me`).
 routine B128.tan(me: Me) -> Me
     r: Me = b128_tan(x: me, exact: false)
     return r
 
-/// tan x, correctly rounded, as {B128.tan}. Below |x| = 2^-57 the answer is x itself.
-/// :param x: The argument.
-/// :param exact: True skips the quick and fast tiers (the tests use it to check the exact tier on its own).
-/// :returns: tan x.
+### tan x, correctly rounded, as {B128.tan}. Below |x| = 2^-57 the answer is x itself.
+### :param x: The argument.
+### :param exact: True skips the quick and fast tiers (the tests use it to check the exact tier on its own).
+### :returns: tan x.
 routine b128_tan(x: B128, exact: Bool) -> B128
     bits: U128 = x.bits()
     nan: Bool = b128_is_nan_bits(bits)
     infinite: Bool = x.is_infinite()
-    // |x| < 2^-57, zeros too
+    # |x| < 2^-57, zeros too
     when
         nan => return b128_of(b128_quiet(bits))
         infinite => return B128.NAN
@@ -83,10 +83,10 @@ routine b128_tan(x: B128, exact: Bool) -> B128
             r: B128 = b128_tan_general(x, exact)
             return r
 
-/// tan x for a finite x with |x| >= 2^-57, by the three tiers.
-/// :param x: The argument.
-/// :param exact: True skips the quick and fast tiers.
-/// :returns: tan x, correctly rounded.
+### tan x for a finite x with |x| >= 2^-57, by the three tiers.
+### :param x: The argument.
+### :param exact: True skips the quick and fast tiers.
+### :returns: tan x, correctly rounded.
 routine b128_tan_general(x: B128, exact: Bool) -> B128
     if not exact
         q: Maybe[U128] = cm_tan_quick(x.bits())
@@ -102,20 +102,20 @@ routine b128_tan_general(x: B128, exact: Bool) -> B128
     r: B128 = big_tan(x)
     return r
 
-/// Whether b128_reduce's θ is too coarse for the fast tier: |x| >= 1/2 (below it θ is |x| exactly) and θ is
-/// zero or under 2^-B128_TAN_LOOSE.
-/// :param x: The argument.
-/// :param theta: θ from {b128_reduce}.
-/// :returns: True when the exact tier must run.
+### Whether b128_reduce's θ is too coarse for the fast tier: |x| >= 1/2 (below it θ is |x| exactly) and θ is
+### zero or under 2^-B128_TAN_LOOSE.
+### :param x: The argument.
+### :param theta: θ from {b128_reduce}.
+### :returns: True when the exact tier must run.
 routine wide_theta_is_loose(x: B128, theta: B128Extended) -> Bool
     reduced: Bool = b128_exponent(x.bits()) >= B128_BIAS.sub(1)
     small: Bool = theta.is_zero() or theta.exponent < 0 - B128_TAN_LOOSE
     return reduced and small
 
-/// The fast tier's tan x before rounding, from |x| = k π/2 + θ with θ nonzero.
-/// :param x: The argument (its sign is applied at the end).
-/// :param red: The reduction of |x|.
-/// :returns: tan x at 192 bits.
+### The fast tier's tan x before rounding, from |x| = k π/2 + θ with θ nonzero.
+### :param x: The argument (its sign is applied at the end).
+### :param red: The reduction of |x|.
+### :returns: tan x at 192 bits.
 routine wide_tan(x: B128, red: Reduced) -> B128Extended
     local s: B128Extended = wide_sin_core(red.theta)
     local c: B128Extended = wide_cos_core(red.theta)
@@ -125,18 +125,18 @@ routine wide_tan(x: B128, red: Reduced) -> B128Extended
         odd => -(c / s)
         else => s / c
 
-    // tan(θ + π/2) = -cot θ
+    # tan(θ + π/2) = -cot θ
 
-    // tan is odd, and the reduction took |x|
+    # tan is odd, and the reduction took |x|
     negative: Bool = b128_is_negative_bits(x.bits())
     r: B128Extended = when
         negative => -t
         else => t
     return r
 
-/// The exact tier: the same formulas in B128Big, rounded once.
-/// :param x: The argument, finite.
-/// :returns: tan x, correctly rounded.
+### The exact tier: the same formulas in B128Big, rounded once.
+### :param x: The argument, finite.
+### :returns: tan x, correctly rounded.
 routine big_tan(x: B128) -> B128
     local red: BigReduced = big_reduce(x)
     local s: B128Big = big_sin_core(red.theta)
@@ -153,12 +153,12 @@ routine big_tan(x: B128) -> B128
     r: B128 = v.to[B128]()
     return r
 
-/// The quick tier: sin |x| and cos |x| from CORE-MATH's fast path, sharing one reduction, and their quotient
-/// rounded when it is far enough from a rounding midpoint.
-/// :param bits: The bits of x, finite with |x| >= 2^-57.
-/// :returns: The bits of tan x, correctly rounded.
-/// :absent: When the fast path can't vouch for its reduction, or the quotient lies within {B128_TAN_GATE} units
-///     of a midpoint.
+### The quick tier: sin |x| and cos |x| from CORE-MATH's fast path, sharing one reduction, and their quotient
+### rounded when it is far enough from a rounding midpoint.
+### :param bits: The bits of x, finite with |x| >= 2^-57.
+### :returns: The bits of tan x, correctly rounded.
+### :absent: When the fast path can't vouch for its reduction, or the quotient lies within {B128_TAN_GATE} units
+###     of a midpoint.
 routine cm_tan_quick(bits: U128) -> Maybe[U128]
     local magnitude: U128 = bits & B128_SIGN.bitnot()
     local m: U128 = cm_trig_significand(magnitude)
@@ -167,18 +167,18 @@ routine cm_tan_quick(bits: U128) -> Maybe[U128]
     small: Bool = e < -8
     values2: (CmTrigFast, CmTrigFast) = when
         small =>
-            // below 2^-8 the argument is its own reduced angle
+            # below 2^-8 the argument is its own reduced angle
             sine: CmTrigFast = cm_trig_fast(m, e, cosine: false)
             becomes (sine, cm_trig_fast(m, e, cosine: true))
         else =>
             red: CmTrigReduced = cm_trig_reduce(m, e)
             if not red.ok
-                // tan = sin / cos: the signs combine with the argument's, and the exponents subtract
-                // the fast reduction kept too few bits (x near a multiple of π/256): the accurate path's 448-bit reduction
-                // and 384-bit series, divided on their top 128 bits
+                # tan = sin / cos: the signs combine with the argument's, and the exponents subtract
+                # the fast reduction kept too few bits (x near a multiple of π/256): the accurate path's 448-bit reduction
+                # and 384-bit series, divided on their top 128 bits
                 red2: CmTrigWideReduced = cm_trig_reduce_wide(m, e)
                 series: CmTrigSeries = cm_trig_series(red2)
-                one_minus: CmTrigU384 = cm_trig_one_minus(series.u)  // the sine or the cosine needs it
+                one_minus: CmTrigU384 = cm_trig_one_minus(series.u)  # the sine or the cosine needs it
                 sine: CmTrigWide = cm_trig_compose(red: red2, series, one_minus, function: CmTrigFunction(cosine: false, sign: 0))
                 cosine: CmTrigWide = cm_trig_compose(red: red2, series, one_minus, function: CmTrigFunction(cosine: true, sign: 0))
                 q: CmFracQuotient = cm_frac_quotient(s: sine.frac.l2, c: cosine.frac.l2)

@@ -1,34 +1,34 @@
-// Tessera stdlib: correctly rounded B128 hypot (CORE-MATH)
-//
-// Ported from CORE-MATH, src/binary128/hypot/hypotq.c via RazorForge's B128Hypot.rf.
-// Copyright (c) 2025 Alexei Sibidanov <sibid@uvic.ca>
-// MIT license: see LICENSE-CORE-MATH
-//
-// Only round-to-nearest (ties to even) is kept. The original's rounding-mode probe, errno and
-// exception flags are dropped. Everything runs on 64- and 128-bit integers: x² + y² is formed
-// in fixed point relative to the larger leg, its square root comes from Sqrt.tess's seed and
-// refinement, and a result within a few units of a rounding boundary is settled by an exact
-// 256-bit comparison of the candidate's square with the sum of squares.
+# Tessera stdlib: correctly rounded B128 hypot (CORE-MATH)
+#
+# Ported from CORE-MATH, src/binary128/hypot/hypotq.c via RazorForge's B128Hypot.rf.
+# Copyright (c) 2025 Alexei Sibidanov <sibid@uvic.ca>
+# MIT license: see LICENSE-CORE-MATH
+#
+# Only round-to-nearest (ties to even) is kept. The original's rounding-mode probe, errno and
+# exception flags are dropped. Everything runs on 64- and 128-bit integers: x² + y² is formed
+# in fixed point relative to the larger leg, its square root comes from Sqrt.tess's seed and
+# refinement, and a result within a few units of a rounding boundary is settled by an exact
+# 256-bit comparison of the candidate's square with the sum of squares.
 
 module Standard/Core
 
-/// A 256-bit value (or square) as two 128-bit halves.
+### A 256-bit value (or square) as two 128-bit halves.
 record CmHypotSquare
     hi: U128
     lo: U128
 
-// -- hypot ---------------------------------------------------------------------
+# -- hypot ---------------------------------------------------------------------
 
-/// sqrt(x² + y²) without overflow or underflow, correctly rounded to nearest (a CORE-MATH port). A signaling NaN
-/// gives NaN, as it does in every operation, and otherwise an infinite leg gives +inf, even with a quiet NaN in the
-/// other leg (IEEE 754's hypot(±inf, qNaN)). A NaN comes back quieted (`me` first), the payload kept.
-/// :param other: The other leg.
-/// :returns: sqrt(`me`² + `other`²), +inf when it overflows.
+### sqrt(x² + y²) without overflow or underflow, correctly rounded to nearest (a CORE-MATH port). A signaling NaN
+### gives NaN, as it does in every operation, and otherwise an infinite leg gives +inf, even with a quiet NaN in the
+### other leg (IEEE 754's hypot(±inf, qNaN)). A NaN comes back quieted (`me` first), the payload kept.
+### :param other: The other leg.
+### :returns: sqrt(`me`² + `other`²), +inf when it overflows.
 routine B128.hypot(me: Me, other: Me) -> Me
     local x_abs: U128 = me.bits() & B128_SIGN.bitnot()
     local y_abs: U128 = other.bits() & B128_SIGN.bitnot()
     local swap: Bool = x_abs < y_abs
-    local a: U128 = when  // the larger leg
+    local a: U128 = when  # the larger leg
         swap => y_abs
         else => x_abs
     local b: U128 = when
@@ -52,8 +52,8 @@ routine B128.hypot(me: Me, other: Me) -> Me
                     if b_zero
                         return a_only
                     else
-                        // A subnormal leg moves its leading bit up to the implicit bit's place, and its exponent
-                        // drops below 1 to match. Only then can the larger leg be subnormal too.
+                        # A subnormal leg moves its leading bit up to the implicit bit's place, and its exponent
+                        # drops below 1 to match. Only then can the larger leg be subnormal too.
                         lz_b: U128 = b.leading_zeros()
                         shift: S64 = lz_b.to[S64]() - 15
                         b_norm: U128 = b << shift.to[U128]()
@@ -66,17 +66,17 @@ routine B128.hypot(me: Me, other: Me) -> Me
                             becomes (a, a_exp, b_norm, b_exp2)
                 else => (a, a_exp, b, b_exp)
             a_leg, a_exp2, b_leg, b_exp2 = values2
-            // Both legs as 1.frac × 2^(exponent - 16383) with the leading bit placed at bit 127.
+            # Both legs as 1.frac × 2^(exponent - 16383) with the leading bit placed at bit 127.
             gap: S64 = a_exp2 - b_exp2
             a_top: U128 = (a_leg << 15) | B128_SIGN
             b_top: U128 = (b_leg << 15) | B128_SIGN
-            // b only matters as a sticky bit
+            # b only matters as a sticky bit
             if gap > 56
                 r: Me = cm_hypot_round(v: a_top | 1, exponent: a_exp2)
                 return r
             else
-                // s = a² + b² in fixed point (b aligned to a), normalized with an even or odd shift so its
-                // square root can reuse the sqrt refinement. A carry out of the sum bumps the exponent.
+                # s = a² + b² in fixed point (b aligned to a), normalized with an even or odd shift so its
+                # square root can reuse the sqrt refinement. A carry out of the sum bumps the exponent.
                 a_sq: U128 = cm_hypot_sqr_hi(a_top)
                 b_sq: U128 = cm_hypot_sqr_hi(b_top >> gap.to[U128]())
                 s: U128 = a_sq +% b_sq
@@ -93,18 +93,18 @@ routine B128.hypot(me: Me, other: Me) -> Me
                 exponent: S64 = a_exp2 + carry
                 radicand: U128 = cm_sqrt_radicand(frac, odd)
                 approx: U128 = cm_sqrt_approx(frac, radicand, odd)
-                slack: S16 = (approx << 2).to_wrap[S16]()  // the bits under the rounding point
+                slack: S16 = (approx << 2).to_wrap[S16]()  # the bits under the rounding point
                 if slack > -37 and slack < 13
-                    // approx is at most one unit (of its bit 14) off: square the candidate, compare it with the
-                    // exact sum of squares, and leave bit 0 saying which way the true root lies. Rounding up
-                    // can wrap the candidate to 0, which means 2^128: the exponent takes the carry.
+                    # approx is at most one unit (of its bit 14) off: square the candidate, compare it with the
+                    # exact sum of squares, and leave bit 0 saying which way the true root lies. Rounding up
+                    # can wrap the candidate to 0, which means 2^128: the exponent takes the carry.
                     candidate: U128 = approx +% 0x2000 & ~0x3FFF
                     wrapped: Bool = candidate == 0
                     excess: S128 = cm_hypot_excess(c: candidate >> 13, a_top, b_top, gap)
                     top_bit: U128 = when
                         wrapped => B128_SIGN
                         else => 0
-                    above: U128 = (excess < 0).to[U128]()  // the sum is below the square
+                    above: U128 = (excess < 0).to[U128]()  # the sum is below the square
                     below: U128 = (excess > 0).to[U128]()
                     lowered: U128 = (candidate | top_bit) -% above
                     v: U128 = lowered +% below
@@ -114,11 +114,11 @@ routine B128.hypot(me: Me, other: Me) -> Me
                     r: Me = cm_hypot_round(v: approx, exponent)
                     return r
 
-/// Rounds v (leading bit at 127, sticky information in its low bits) times 2^(exponent - 16383) to
-/// the nearest B128, ties to even: a normal result, +inf on overflow, or a subnormal.
-/// :param v: The significand, leading bit at 127.
-/// :param exponent: The biased exponent of the leading bit.
-/// :returns: The rounded B128.
+### Rounds v (leading bit at 127, sticky information in its low bits) times 2^(exponent - 16383) to
+### the nearest B128, ties to even: a normal result, +inf on overflow, or a subnormal.
+### :param v: The significand, leading bit at 127.
+### :param exponent: The biased exponent of the leading bit.
+### :returns: The rounded B128.
 routine cm_hypot_round(v: U128, exponent: S64) -> B128
     local e: S64 = exponent - 1
 
@@ -128,7 +128,7 @@ routine cm_hypot_round(v: U128, exponent: S64) -> B128
         if overflow
             return infinity
         else
-            // The leading bit lands on bit 112 and adds 1 to the exponent field e.
+            # The leading bit lands on bit 112 and adds 1 to the exponent field e.
             rest: U128 = v & 0x7FFF
             tie: Bool = rest == 0x4000
             up: U128 = rest >> 14
@@ -142,7 +142,7 @@ routine cm_hypot_round(v: U128, exponent: S64) -> B128
             r: B128 = b128_of(kept +% field)
             return r
     else
-        // e <= 0: shift out 15 - e bits (at most 127) and round them.
+        # e <= 0: shift out 15 - e bits (at most 127) and round them.
         one: U128 = 1
         shift: S128 = (15 - e).to[S128]()
         half: U128 = one << (14 - e).to[U128]()
@@ -157,15 +157,15 @@ routine cm_hypot_round(v: U128, exponent: S64) -> B128
         r: B128 = b128_of(kept +% round_up)
         return r
 
-/// a² + b² - c², reduced mod 2^128 and read as signed, where a and b are the legs (leading bit
-/// at 127, b not yet aligned) and c the candidate root, all shifted down 13 bits. The sum is
-/// exact apart from a sticky bit for b's shifted-out part.
-/// :param c: The candidate root, shifted down 13 bits.
-/// :param a_top: The larger leg, leading bit at 127.
-/// :param b_top: The smaller leg, leading bit at 127.
-/// :param gap: The exponent difference of the legs, 0 to 56.
-/// :returns: The low 128 bits of a² + b² - c² as a signed value: negative when the root is below `c`, positive when
-///     above, 0 when exact.
+### a² + b² - c², reduced mod 2^128 and read as signed, where a and b are the legs (leading bit
+### at 127, b not yet aligned) and c the candidate root, all shifted down 13 bits. The sum is
+### exact apart from a sticky bit for b's shifted-out part.
+### :param c: The candidate root, shifted down 13 bits.
+### :param a_top: The larger leg, leading bit at 127.
+### :param b_top: The smaller leg, leading bit at 127.
+### :param gap: The exponent difference of the legs, 0 to 56.
+### :returns: The low 128 bits of a² + b² - c² as a signed value: negative when the root is below `c`, positive when
+###     above, 0 when exact.
 routine cm_hypot_excess(c: U128, a_top: U128, b_top: U128, gap: S64) -> S128
     local c_sq: U128 = c *% c
     local a_sq: CmHypotSquare = cm_hypot_sqr(a_top >> 13)
@@ -175,7 +175,7 @@ routine cm_hypot_excess(c: U128, a_top: U128, b_top: U128, gap: S64) -> S128
     b_sq_aligned: CmHypotSquare = when
         aligned => b_sq
         else =>
-            // b² × 2^(-2 gap), with the bits shifted out kept as a sticky bit.
+            # b² × 2^(-2 gap), with the bits shifted out kept as a sticky bit.
             k: S128 = (gap * 2).to[S128]()
             kc: S128 = 128 - k
             b_hi: U128 = b_sq.hi
@@ -189,7 +189,7 @@ routine cm_hypot_excess(c: U128, a_top: U128, b_top: U128, gap: S64) -> S128
     lo: U128 = a_sq.lo +% b_lo
     carry: U128 = (lo < b_lo).to[U128]()
     hi: U128 = a_sq.hi +% (b_sq_aligned.hi +% carry)
-    // the sum carried: halve it (s = 2)
+    # the sum carried: halve it (s = 2)
     if not (hi >> 102 != 0)
         return (lo -% c_sq).to_wrap[S128]()
     dropped: Bool = lo << 126 != 0
@@ -198,9 +198,9 @@ routine cm_hypot_excess(c: U128, a_top: U128, b_top: U128, gap: S64) -> S128
     low: U128 = shifted | sticky
     return (low -% c_sq).to_wrap[S128]()
 
-/// Approximate high 128 bits of a² (low × low dropped).
-/// :param a: The value.
-/// :returns: Approximately `a`² >> 128.
+### Approximate high 128 bits of a² (low × low dropped).
+### :param a: The value.
+### :returns: Approximately `a`² >> 128.
 routine cm_hypot_sqr_hi(a: U128) -> U128
     a0: U128 = a & 0xFFFFFFFFFFFFFFFF
     a1: U128 = a >> 64
@@ -209,9 +209,9 @@ routine cm_hypot_sqr_hi(a: U128) -> U128
     r: U128 = partial +% cross
     return r
 
-/// The full 256-bit a²: the cross term a1·a0 is added twice at bit 64.
-/// :param a: The value.
-/// :returns: `a`², exact, as two 128-bit halves.
+### The full 256-bit a²: the cross term a1·a0 is added twice at bit 64.
+### :param a: The value.
+### :returns: `a`², exact, as two 128-bit halves.
 routine cm_hypot_sqr(a: U128) -> CmHypotSquare
     a0: U128 = a & 0xFFFFFFFFFFFFFFFF
     a1: U128 = a >> 64

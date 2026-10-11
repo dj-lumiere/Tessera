@@ -1,62 +1,62 @@
-// Tessera stdlib: who is waiting
-//
-// Code waits in one of two ways, by what runs it. A thread sleeps: the operating system puts it to sleep until it is
-// woken. A fiber parks through its FiberManager: the fiber stops, its thread goes on with the manager's other fibers,
-// and whoever finishes what the fiber waits for wakes it through the manager. current_waiter() says which one runs
-// here, as a Waiter, and both are parked and woken the same way: something being waited for (a ticket's work, a
-// channel) keeps the Waiter of whoever waits on it and wakes it when it is done.
-//
-// A wake that comes before the park isn't lost: the next park returns at once. A park may also return without a wake,
-// so the waiter looks again at what it waits for, in a loop. A FiberManager puts its fiber in RUNNING_FIBER while the
-// fiber runs and takes it out when the fiber stops, so the waiter is always the code running on this thread right
-// now.
+# Tessera stdlib: who is waiting
+#
+# Code waits in one of two ways, by what runs it. A thread sleeps: the operating system puts it to sleep until it is
+# woken. A fiber parks through its FiberManager: the fiber stops, its thread goes on with the manager's other fibers,
+# and whoever finishes what the fiber waits for wakes it through the manager. current_waiter() says which one runs
+# here, as a Waiter, and both are parked and woken the same way: something being waited for (a ticket's work, a
+# channel) keeps the Waiter of whoever waits on it and wakes it when it is done.
+#
+# A wake that comes before the park isn't lost: the next park returns at once. A park may also return without a wake,
+# so the waiter looks again at what it waits for, in a loop. A FiberManager puts its fiber in RUNNING_FIBER while the
+# fiber runs and takes it out when the fiber stops, so the waiter is always the code running on this thread right
+# now.
 
 module Standard/Os
 
-/// The fiber running on this thread, put there by its FiberManager while it runs, or a hollow Waiter outside every
-/// fiber.
+### The fiber running on this thread, put there by its FiberManager while it runs, or a hollow Waiter outside every
+### fiber.
 @threadlocal
 @target(os: not "none")
 global RUNNING_FIBER: @Waiter
 
-/// The word a thread outside every fiber sleeps on when it parks: 1 once it was woken and hasn't parked since.
+### The word a thread outside every fiber sleeps on when it parks: 1 once it was woken and hasn't parked since.
 @threadlocal
 @target(os: not "none")
 global THREAD_WAKE: @U32
 
-/// How long a fiber parks at a time in wait_while: 50 microseconds.
+### How long a fiber parks at a time in wait_while: 50 microseconds.
 preset FIBER_POLL_NS: U64 = 50000
 
-/// Who is waiting, and how to park and wake it: a fiber, with its manager and the manager's routines, or a thread,
-/// with a null `fiber` and the word it sleeps on.
+### Who is waiting, and how to park and wake it: a fiber, with its manager and the manager's routines, or a thread,
+### with a null `fiber` and the word it sleeps on.
 record Waiter
-    /// The fiber's handle, or null for a thread.
+    ### The fiber's handle, or null for a thread.
     fiber: Addr
-    /// The fiber's manager, or the word the thread sleeps on: what the routines here are given.
+    ### The fiber's manager, or the word the thread sleeps on: what the routines here are given.
     manager: Addr
-    /// Parks until a wake or a deadline in `monotonic_ns` time (`U64.MAX` for none), given `manager`. It may return
-    /// without either.
+    ### Parks until a wake or a deadline in `monotonic_ns` time (`U64.MAX` for none), given `manager`. It may return
+    ### without either.
     park_fn: Callable[(Addr, U64), None]
-    /// Wakes the waiter from any thread, given `manager` and `fiber`: makes its park return, now or at once when it
-    /// parks next.
+    ### Wakes the waiter from any thread, given `manager` and `fiber`: makes its park return, now or at once when it
+    ### parks next.
     wake_fn: Callable[(Addr, Addr), None]
 
-/// Makes a `Waiter` from its fields.
-/// :param fiber: Its `fiber`.
-/// :param manager: Its `manager`.
-/// :param park_fn: Its `park_fn`.
-/// :param wake_fn: Its `wake_fn`.
-/// :returns: The new value.
+### Makes a `Waiter` from its fields.
+### :param fiber: Its `fiber`.
+### :param manager: Its `manager`.
+### :param park_fn: Its `park_fn`.
+### :param wake_fn: Its `wake_fn`.
+### :returns: The new value.
 routine Waiter.construct(fiber: Addr, manager: Addr, park_fn: Callable[(Addr, U64), None],
     wake_fn: Callable[(Addr, Addr), None]) -> Me
     return Me(fiber, manager, park_fn, wake_fn)
 
-/// Releases nothing: a `Waiter` holds no memory of its own.
+### Releases nothing: a `Waiter` holds no memory of its own.
 routine Waiter.destruct(me: @Me) -> None
     return
 
-/// What runs here: the running fiber, or this thread.
-/// :returns: The waiter.
+### What runs here: the running fiber, or this thread.
+### :returns: The waiter.
 @target(os: not "none")
 routine current_waiter() -> Waiter
     fiber: Waiter = RUNNING_FIBER.peek()
@@ -65,47 +65,47 @@ routine current_waiter() -> Waiter
     word: Addr = THREAD_WAKE
     return Waiter(fiber: null, manager: word, park_fn: thread_park.to[Callable](), wake_fn: thread_wake.to[Callable]())
 
-/// An address unique to the running thread while it runs: two threads never share it. A FiberManager keeps its
-/// thread's, so it knows whether a call comes from that thread.
-/// :returns: The running thread's mark.
+### An address unique to the running thread while it runs: two threads never share it. A FiberManager keeps its
+### thread's, so it knows whether a call comes from that thread.
+### :returns: The running thread's mark.
 @target(os: not "none")
 routine thread_mark() -> Addr
     mark: Addr = RUNNING_FIBER
     return mark
 
-/// Whether the waiter is a fiber, which parks through its manager, rather than a thread.
-/// :returns: True for a fiber.
+### Whether the waiter is a fiber, which parks through its manager, rather than a thread.
+### :returns: True for a fiber.
 routine Waiter.is_fiber(me: Me) -> Bool
     return me.fiber.is_not_null()
 
-/// Whether two waiters are the same one.
-/// :param other: The other waiter.
-/// :returns: True for the same fiber, or the same thread.
+### Whether two waiters are the same one.
+### :param other: The other waiter.
+### :returns: True for the same fiber, or the same thread.
 routine Waiter.same(me: Me, other: Me) -> Bool
     return me.fiber.ptr_eq(other.fiber) & me.manager.ptr_eq(other.manager)
 
-/// Parks until a wake. It may return without one, so the waiter looks again at what it waits for.
+### Parks until a wake. It may return without one, so the waiter looks again at what it waits for.
 routine Waiter.park(me: Me) -> None
     me.park_fn.call(me.manager, U64.MAX)
     return
 
-/// Parks until a wake or until `deadline`, in `monotonic_ns` time. It may return before either, so the waiter looks
-/// again at what it waits for and at the time.
-/// :param deadline: When to stop waiting.
+### Parks until a wake or until `deadline`, in `monotonic_ns` time. It may return before either, so the waiter looks
+### again at what it waits for and at the time.
+### :param deadline: When to stop waiting.
 routine Waiter.park_until(me: Me, deadline: U64) -> None
     me.park_fn.call(me.manager, deadline)
     return
 
-/// Wakes the waiter, from any thread. Nothing for a hollow one.
+### Wakes the waiter, from any thread. Nothing for a hollow one.
 routine Waiter.wake(me: Me) -> None
     if me.manager.is_null()
         return
     me.wake_fn.call(me.manager, me.fiber)
     return
 
-/// Waits at least `ns` nanoseconds, the way the running code waits: a thread sleeps, and a fiber parks while its
-/// thread goes on with the other fibers.
-/// :param ns: The least time to wait, in nanoseconds.
+### Waits at least `ns` nanoseconds, the way the running code waits: a thread sleeps, and a fiber parks while its
+### thread goes on with the other fibers.
+### :param ns: The least time to wait, in nanoseconds.
 @target(os: not "none")
 routine sleep_for(ns: U64) -> None
     local deadline: U64 = monotonic_ns() +^ ns
@@ -116,9 +116,9 @@ routine sleep_for(ns: U64) -> None
     then
         return
 
-/// How a thread parks: sleeps on its word until a wake marks it, or the deadline.
-/// :param word: The thread's THREAD_WAKE.
-/// :param deadline: When to stop, in `monotonic_ns` time, or `U64.MAX`.
+### How a thread parks: sleeps on its word until a wake marks it, or the deadline.
+### :param word: The thread's THREAD_WAKE.
+### :param deadline: When to stop, in `monotonic_ns` time, or `U64.MAX`.
 @target(os: not "none")
 private routine thread_park(word: Addr, deadline: U64) -> None
     local at: @U32 = word.to[@U32]()
@@ -135,9 +135,9 @@ private routine thread_park(word: Addr, deadline: U64) -> None
     at.poke_atomic(0)
     return
 
-/// How a thread is woken: its word is marked, and it wakes if it sleeps.
-/// :param word: The thread's THREAD_WAKE.
-/// :param fiber: Unused, null for a thread.
+### How a thread is woken: its word is marked, and it wakes if it sleeps.
+### :param word: The thread's THREAD_WAKE.
+### :param fiber: Unused, null for a thread.
 @target(os: not "none")
 private routine thread_wake(word: Addr, fiber: Addr) -> None
     at: @U32 = word.to[@U32]()
@@ -145,11 +145,11 @@ private routine thread_wake(word: Addr, fiber: Addr) -> None
     wake_all(at)
     return
 
-/// Waits while the U32 at `at` holds `expected`, the way the running code waits: a thread sleeps on it, and a fiber
-/// parks for a short while at a time, so the other fibers of its thread go on. It may return early, so the caller
-/// looks again in a loop. For a word whose changer doesn't know who waits (a lock's).
-/// :param at: The word.
-/// :param expected: The value it holds while waiting goes on.
+### Waits while the U32 at `at` holds `expected`, the way the running code waits: a thread sleeps on it, and a fiber
+### parks for a short while at a time, so the other fibers of its thread go on. It may return early, so the caller
+### looks again in a loop. For a word whose changer doesn't know who waits (a lock's).
+### :param at: The word.
+### :param expected: The value it holds while waiting goes on.
 @target(os: not "none")
 routine wait_while(at: @U32, expected: U32) -> None
     waiter: Waiter = RUNNING_FIBER.peek()
@@ -162,10 +162,10 @@ routine wait_while(at: @U32, expected: U32) -> None
         waiter.park_until(monotonic_ns() +^ FIBER_POLL_NS)
         return
 
-/// As {wait_while}, giving up `timeout_ns` nanoseconds after the call.
-/// :param at: The word.
-/// :param expected: The value it holds while waiting goes on.
-/// :param timeout_ns: The longest wait in nanoseconds.
+### As {wait_while}, giving up `timeout_ns` nanoseconds after the call.
+### :param at: The word.
+### :param expected: The value it holds while waiting goes on.
+### :param timeout_ns: The longest wait in nanoseconds.
 @target(os: not "none")
 routine wait_while_for(at: @U32, expected: U32, timeout_ns: U64) -> None
     waiter: Waiter = RUNNING_FIBER.peek()

@@ -85,7 +85,7 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse)
         for (int i = line; i < lines.Count; i++)
         {
             string l = lines[i];
-            if (l.Trim().Length == 0 || char.IsWhiteSpace(l[0]) || l.StartsWith("//") || l.StartsWith('#')) break;
+            if (l.Trim().Length == 0 || char.IsWhiteSpace(l[0]) || l.StartsWith("#") || l.StartsWith('#')) break;
             if (!l.StartsWith("conform ") && !l.StartsWith("require ") && !l.StartsWith("when ")) break;
             header.Add(l.TrimEnd());
         }
@@ -318,7 +318,7 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse)
         for (int i = line - 2; i >= 0 && i < page.Lines.Length; i--)
         {
             string l = page.Lines[i].Trim();
-            if (l.StartsWith("///")) doc.Add(l[3..].StartsWith(' ') ? l[4..] : l[3..]);
+            if (l.StartsWith("###")) doc.Add(l[3..].StartsWith(' ') ? l[4..] : l[3..]);
             else if (!l.StartsWith('#')) break;
         }
         doc.Reverse();

@@ -1,20 +1,20 @@
-// Tessera stdlib: pieces shared by the B64 arc sine and arc cosine
-//
-// The double-double helpers (a sum with its rounding error, a double-double
-// sum, a double-double product) and the two tables both functions read: the
-// piecewise polynomial of asin(x)/x in x^2, and sin(j pi/64) as double-doubles
-// for the accurate path's rotation. atan and atan2 use the double-double
-// record and the fast two-sum too.
-//
-// Ported from CORE-MATH, src/binary64/asin/asin.c and src/binary64/acos/acos.c
-// via RazorForge's B64Asin.rf and B64Acos.rf.
-// Copyright (c) 2022-2026 Alexei Sibidanov <sibid@uvic.ca>
-// MIT license: see LICENSE-CORE-MATH
+# Tessera stdlib: pieces shared by the B64 arc sine and arc cosine
+#
+# The double-double helpers (a sum with its rounding error, a double-double
+# sum, a double-double product) and the two tables both functions read: the
+# piecewise polynomial of asin(x)/x in x^2, and sin(j pi/64) as double-doubles
+# for the accurate path's rotation. atan and atan2 use the double-double
+# record and the fast two-sum too.
+#
+# Ported from CORE-MATH, src/binary64/asin/asin.c and src/binary64/acos/acos.c
+# via RazorForge's B64Asin.rf and B64Acos.rf.
+# Copyright (c) 2022-2026 Alexei Sibidanov <sibid@uvic.ca>
+# MIT license: see LICENSE-CORE-MATH
 
 module Standard/Core
 
-/// cc[j][0..7] row-major, as B64 bits: asin(x) = x (cc[j][0] + cc[j][1] + t P(t, cc[j] + 2))
-/// with t = x^2 - j/128, for j = 0..32.
+### cc[j][0..7] row-major, as B64 bits: asin(x) = x (cc[j][0] + cc[j][1] + t P(t, cc[j] + 2))
+### with t = x^2 - j/128, for j = 0..32.
 preset CM_B64_INVTRIG_ASIN_CC: @Array[U64, 264] <- [0x3FF0000000000000, 0x0000000000000000,
     0x3FC5555555555555, 0x3FB33333333333E4, 0x3FA6DB6DB6D31F82, 0x3F9F1C71F6889397,
     0x3F96E874B7045B46, 0x3F91F753132271E2, 0x3FF0055A27E0D033, 0xBC9D9BA10494C062,
@@ -83,7 +83,7 @@ preset CM_B64_INVTRIG_ASIN_CC: @Array[U64, 264] <- [0x3FF0000000000000, 0x000000
     0x3FCB8550D62BFB6E, 0x3FBFF1BDE0FA3CAD, 0x3FB8E5F3AB550989, 0x3FB656BE8B38EBAF,
     0x3FB5C3C13008A099, 0x3FB662225A1B4F77]
 
-/// sin(pi/64 j) for j = 0..32 as double-doubles, row-major (low part, high part), as B64 bits.
+### sin(pi/64 j) for j = 0..32 as double-doubles, row-major (low part, high part), as B64 bits.
 preset CM_B64_INVTRIG_ASIN_S: @Array[U64, 66] <- [0x0000000000000000, 0x0000000000000000,
     0xBC2912BD0D569A90, 0x3FA91F65F10DD814, 0xBC3E2718D26ED688, 0x3FB917A6BC29B42C,
     0x3C513000A89A11E0, 0x3FC2C8106E8E613A, 0xBC626D19B9FF8D82, 0x3FC8F8B83C69A60B,
@@ -102,56 +102,56 @@ preset CM_B64_INVTRIG_ASIN_S: @Array[U64, 66] <- [0x0000000000000000, 0x00000000
     0xBC87A0A8CA13571F, 0x3FEFA7557F08A517, 0xBC887DF6378811C7, 0x3FEFD88DA3D12526,
     0xBC6C57BC2E24AA15, 0x3FEFF621E3796D7E, 0x0000000000000000, 0x3FF0000000000000]
 
-/// A double-double number hi + lo.
+### A double-double number hi + lo.
 record CmF64InvtrigDD
     hi: B64
     lo: B64
 
-/// x + y as a double-double (the rounded sum and its error), assuming |x| >= |y| or x = 0.
-/// :param x: The larger addend.
-/// :param y: The smaller addend.
-/// :returns: The rounded sum and its exact error.
+### x + y as a double-double (the rounded sum and its error), assuming |x| >= |y| or x = 0.
+### :param x: The larger addend.
+### :param y: The smaller addend.
+### :returns: The rounded sum and its exact error.
 routine cm_b64_invtrig_fasttwosum(x: B64, y: B64) -> CmF64InvtrigDD
     s: B64 = x + y
     z: B64 = s - x
     return CmF64InvtrigDD(hi: s, lo: y - z)
 
-/// The double-double sum (xh + xl) + (yh + yl), assuming |xh| >= |yh| or xh = 0.
-/// :param xh: The high part of the larger addend.
-/// :param xl: The low part of the larger addend.
-/// :param yh: The high part of the smaller addend.
-/// :param yl: The low part of the smaller addend.
-/// :returns: The sum as a double-double.
+### The double-double sum (xh + xl) + (yh + yl), assuming |xh| >= |yh| or xh = 0.
+### :param xh: The high part of the larger addend.
+### :param xl: The low part of the larger addend.
+### :param yh: The high part of the smaller addend.
+### :param yl: The low part of the smaller addend.
+### :returns: The sum as a double-double.
 routine cm_b64_invtrig_fastsum(xh: B64, xl: B64, yh: B64, yl: B64) -> CmF64InvtrigDD
     s: CmF64InvtrigDD = cm_b64_invtrig_fasttwosum(x: xh, y: yh)
     return CmF64InvtrigDD(hi: s.hi, lo: xl + yl + s.lo)
 
-/// The double-double product (xh + xl) (ch + cl), not renormalized.
-/// :param xh: The high part of the first factor.
-/// :param xl: The low part of the first factor.
-/// :param ch: The high part of the second factor.
-/// :param cl: The low part of the second factor.
-/// :returns: The product as a double-double.
+### The double-double product (xh + xl) (ch + cl), not renormalized.
+### :param xh: The high part of the first factor.
+### :param xl: The low part of the first factor.
+### :param ch: The high part of the second factor.
+### :param cl: The low part of the second factor.
+### :returns: The product as a double-double.
 routine cm_b64_invtrig_muldd(xh: B64, xl: B64, ch: B64, cl: B64) -> CmF64InvtrigDD
     ahhh: B64 = ch * xh
     cross: B64 = cl * xh + ch * xl
     l: B64 = cross + b64_mul_error(x: ch, y: xh, p: ahhh)
     return CmF64InvtrigDD(hi: ahhh, lo: l)
 
-/// cc[j][k] of CM_B64_INVTRIG_ASIN_CC, with j8 = 8 j.
-/// :param j8: 8 times the row index j, for j in 0..32.
-/// :param k: The column, 0..7.
-/// :returns: The coefficient as a B64.
+### cc[j][k] of CM_B64_INVTRIG_ASIN_CC, with j8 = 8 j.
+### :param j8: 8 times the row index j, for j in 0..32.
+### :param k: The column, 0..7.
+### :returns: The coefficient as a B64.
 routine cm_b64_invtrig_cc(j8: USize, k: USize) -> B64
     return B64.from_bits(CM_B64_INVTRIG_ASIN_CC.getitem(j8 + k))
 
-/// The piecewise polynomial of asin(z), with t = z.hi^2 - j/128 and j8 = 8 j:
-/// z (cc[j][0] + (cc[j][1] + t P(t))), plus f0.
-/// :param z: The argument, as a double-double.
-/// :param t: z.hi^2 - j/128.
-/// :param j8: 8 times the piece index j.
-/// :param f0: The constant added to the result, as a double-double.
-/// :returns: The polynomial value plus `f0`, as a double-double.
+### The piecewise polynomial of asin(z), with t = z.hi^2 - j/128 and j8 = 8 j:
+### z (cc[j][0] + (cc[j][1] + t P(t))), plus f0.
+### :param z: The argument, as a double-double.
+### :param t: z.hi^2 - j/128.
+### :param j8: 8 times the piece index j.
+### :param f0: The constant added to the result, as a double-double.
+### :returns: The polynomial value plus `f0`, as a double-double.
 routine cm_b64_invtrig_asin_poly(z: CmF64InvtrigDD, t: B64, j8: USize,
     f0: CmF64InvtrigDD) -> CmF64InvtrigDD
     c2: B64 = cm_b64_invtrig_cc(j8, k: 2)
@@ -170,18 +170,18 @@ routine cm_b64_invtrig_asin_poly(z: CmF64InvtrigDD, t: B64, j8: USize,
     p: CmF64InvtrigDD = cm_b64_invtrig_muldd(xh: z.hi, xl: z.lo, ch: fh, cl: fl)
     return cm_b64_invtrig_fastsum(xh: f0.hi, xl: f0.lo, yh: p.hi, yl: p.lo)
 
-/// The accurate path's polynomial: with v + dv the small rotated angle's sine and
-/// v2 + dv2 its square, asin(v + dv) in double-double.
-/// :param v: The high part of the sine.
-/// :param dv: The low part of the sine.
-/// :param v2: The high part of its square.
-/// :param dv2: The low part of its square.
-/// :returns: asin(`v + dv`) as a double-double.
+### The accurate path's polynomial: with v + dv the small rotated angle's sine and
+### v2 + dv2 its square, asin(v + dv) in double-double.
+### :param v: The high part of the sine.
+### :param dv: The low part of the sine.
+### :param v2: The high part of its square.
+### :param dv2: The low part of its square.
+### :returns: asin(`v + dv`) as a double-double.
 routine cm_b64_invtrig_asin_dd(v: B64, dv: B64, v2: B64, dv2: B64) -> CmF64InvtrigDD
     q2: B64 = v2 * 0.013992707164303743 + 0.017352737142070387
     q1: B64 = v2 * q2 + 0.022372159104814857
     fl: B64 = v2 * q1
-    // the double-double polynomial over c[0..4], Horner from the top coefficient
+    # the double-double polynomial over c[0..4], Horner from the top coefficient
     h0: CmF64InvtrigDD = cm_b64_invtrig_fasttwosum(x: 0.030381944444440517, y: fl)
     m4: CmF64InvtrigDD = cm_b64_invtrig_muldd(xh: v2, xl: dv2, ch: h0.hi, cl: B64.add(1.4675605165000499e-18, h0.lo))
     s3: CmF64InvtrigDD = cm_b64_invtrig_fastsum(xh: 0.044642857142857144, xl: -3.892844186564838e-19, yh: m4.hi, yl: m4.lo)
@@ -193,19 +193,19 @@ routine cm_b64_invtrig_asin_dd(v: B64, dv: B64, v2: B64, dv2: B64) -> CmF64Invtr
     s0: CmF64InvtrigDD = cm_b64_invtrig_fastsum(xh: 1.0, xl: -6.116918166452386e-33, yh: m1.hi, yl: m1.lo)
     return cm_b64_invtrig_muldd(xh: v, xl: dv, ch: s0.hi, cl: s0.lo)
 
-/// The accurate path's rotation: with |x| = sin(phi) and j = jf close to phi 64/pi,
-/// sin(phi - j pi/64) = |x| cos(j pi/64) - sqrt(1 - x^2) sin(j pi/64) as a double-double.
-/// :param x: The argument, |x| <= 1.
-/// :param jf: The table index j, 0..32.
-/// :returns: sin(phi - j pi/64) as a double-double.
+### The accurate path's rotation: with |x| = sin(phi) and j = jf close to phi 64/pi,
+### sin(phi - j pi/64) = |x| cos(j pi/64) - sqrt(1 - x^2) sin(j pi/64) as a double-double.
+### :param x: The argument, |x| <= 1.
+### :param jf: The table index j, 0..32.
+### :returns: sin(phi - j pi/64) as a double-double.
 routine cm_b64_invtrig_rotate(x: B64, jf: USize) -> CmF64InvtrigDD
     s2: B64 = x * x
-    dx2: B64 = b64_mul_error(x, y: x, p: s2)  // s2 + dx2 = x^2
+    dx2: B64 = b64_mul_error(x, y: x, p: s2)  # s2 + dx2 = x^2
     c2a: CmF64InvtrigDD = cm_b64_invtrig_fasttwosum(x: 1.0, y: -s2)
-    c2: CmF64InvtrigDD = cm_b64_invtrig_fasttwosum(x: c2a.hi, y: c2a.lo - dx2)  // 1 - x^2
+    c2: CmF64InvtrigDD = cm_b64_invtrig_fasttwosum(x: c2a.hi, y: c2a.lo - dx2)  # 1 - x^2
     ch: B64 = c2.hi.sqrt()
     cl: B64 = (c2.lo - ch.mul_add(a: ch, b: -c2.hi)) * B64.div(0.5, ch)
-    // the table holds sin(pi/64 j) as double-doubles, the smallest term first
+    # the table holds sin(pi/64 j) as double-doubles, the smallest term first
     ic: USize = USize.sub(32, jf) * 2
     s_index: USize = jf * 2
     bigch: B64 = B64.from_bits(CM_B64_INVTRIG_ASIN_S.getitem(ic + 1))
@@ -220,7 +220,7 @@ routine cm_b64_invtrig_rotate(x: B64, jf: USize) -> CmF64InvtrigDD
     dsc: B64 = bigsh.mul_add(a: dch, b: -sc)
     cs: B64 = bigch.mul_add(a: dsh, b: 0.09375) - 0.09375
     dcs: B64 = bigch.mul_add(a: dsh, b: -cs)
-    v: B64 = cs - sc  // exact
+    v: B64 = cs - sc  # exact
     dv1: B64 = bigch * dsl + bigcl * dsh
     dv2: B64 = bigsh * dcl + bigsl * dch
     dv: B64 = dv1 - dv2 - (dsc - dcs)

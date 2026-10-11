@@ -1,48 +1,48 @@
-// Tessera stdlib: the correctly rounded base-10 exponential 10^x of B32
-//
-// x log2(10) = k/32 + h: 2^(k/32) from a table, 2^h from a polynomial, all in B64. A second, longer reduction and
-// polynomial settle the cases the first can't round. The exact powers 10^1 .. 10^10 come from a table. Round to
-// nearest only: overflow gives +inf, underflow a correctly rounded subnormal or +0, NaN comes back quiet.
-//
-// Ported from CORE-MATH, src/binary32/exp10/exp10f.c via RazorForge's B32Exp10.rf.
-// Copyright (c) 2023-2025 Alexei Sibidanov
-// MIT license: see LICENSE-CORE-MATH
+# Tessera stdlib: the correctly rounded base-10 exponential 10^x of B32
+#
+# x log2(10) = k/32 + h: 2^(k/32) from a table, 2^h from a polynomial, all in B64. A second, longer reduction and
+# polynomial settle the cases the first can't round. The exact powers 10^1 .. 10^10 come from a table. Round to
+# nearest only: overflow gives +inf, underflow a correctly rounded subnormal or +0, NaN comes back quiet.
+#
+# Ported from CORE-MATH, src/binary32/exp10/exp10f.c via RazorForge's B32Exp10.rf.
+# Copyright (c) 2023-2025 Alexei Sibidanov
+# MIT license: see LICENSE-CORE-MATH
 
 module Standard/Core
 
-/// 10^n for n in 1..10, as B32 bits (exact, except the last one, rounded to B32).
+### 10^n for n in 1..10, as B32 bits (exact, except the last one, rounded to B32).
 preset CM_B32_EXP10_EX: @Array[U32, 10] <- [0x41200000, 0x42C80000, 0x447A0000, 0x461C4000,
     0x47C35000, 0x49742400, 0x4B189680, 0x4CBEBC20, 0x4E6E6B28, 0x501502F9]
 
-/// 10^me, correctly rounded (to nearest, ties to even). 10^-inf = +0, 10^+inf = +inf, overflow gives +inf,
-/// underflow a correctly rounded subnormal or +0, and NaN comes back quiet. 10^n is exact for n in 0..10.
-/// :returns: 10^`me`.
+### 10^me, correctly rounded (to nearest, ties to even). 10^-inf = +0, 10^+inf = +inf, overflow gives +inf,
+### underflow a correctly rounded subnormal or +0, and NaN comes back quiet. 10^n is exact for n in 0..10.
+### :returns: 10^`me`.
 routine B32.exp10(me: Me) -> Me
     local tu: U32 = me.bits()
     local z: B64 = me.to[B64]()
     local ux: U32 = tu << 1
 
     if ux > 0x84344134 or ux < 0x72ADF1C6
-        // |x| > 0x1.344134p+5, x is NaN, or |x| < 0x1.adf1c6p-13
+        # |x| > 0x1.344134p+5, x is NaN, or |x| < 0x1.adf1c6p-13
         tiny: Bool = ux < 0x72ADF1C6
         special: Bool = ux >= 0xFF000000
         negative: Bool = tu >> 31 == 1
-        // x < -0x1.66d3e8p+5
+        # x < -0x1.66d3e8p+5
         when
             tiny =>
-                // x > 0x1.344134p+5
+                # x > 0x1.344134p+5
                 c23: B64 = z * 2.034678592293476 + 2.650949055239199
                 c13: B64 = z * c23 + 2.302585092994046
-                r: B64 = B64.add(1.0, z * c13)  // 1 + z (c1 + z (c2 + z c3))
+                r: B64 = B64.add(1.0, z * c13)  # 1 + z (c1 + z (c2 + z c3))
                 return r.to[Me]()
             special =>
-                // infinities and NaN, which comes back quiet with its sign and payload
+                # infinities and NaN, which comes back quiet with its sign and payload
                 when
                     ux > 0xFF000000 => return me + me
                     negative => return 0.0
                     else => return Me.INFINITY
             tu > 0xC23369F4 =>
-                // the result underflows to a tiny subnormal or zero
+                # the result underflows to a tiny subnormal or zero
                 scaled: B64 = (z + 44.8534693539332) * 2.3275063689815626e-45
                 y: B64 = B64.add(1.401298464324817e-45, scaled)
                 clamped: B64 = y.max(3.503246160812043e-46)
@@ -50,9 +50,9 @@ routine B32.exp10(me: Me) -> Me
             negative => pass
             else => return Me.INFINITY
 
-    // x = n for an integer n in 1..10 has an exact (or tabulated) power
+    # x = n for an integer n in 1..10 has an exact (or tabulated) power
     if tu << 12 == 0
-        // bit k of 0x7551101 is set for the k of the integers 1..10, and counting the set bits below it gives n - 1
+        # bit k of 0x7551101 is set for the k of the integers 1..10, and counting the set bits below it gives n - 1
         k: U32 = (tu >> 20) -% 1016
         if k <= 26
             bt: U32 = U32.shl(1, k)
@@ -60,13 +60,13 @@ routine B32.exp10(me: Me) -> Me
                 below: U32 = bt - 1 & 0x7551101
                 n: U32 = below.count_ones()
                 return Me.from_bits(CM_B32_EXP10_EX.getitem(n.to[USize]()))
-    a: B64 = B64.mul(106.30169903639559, z)  // 32 x log2(10)
+    a: B64 = B64.mul(106.30169903639559, z)  # 32 x log2(10)
     ia: B64 = a.round_ties_even()
     h: B64 = a - ia
     ja: S64 = ia.to[S64]()
     entry: U64 = CM_B32_EXPM1_TD.getitem((ja.to_wrap[U64]() & 0x1F).to[USize]())
     scale: U64 = (ja >> 5).to_wrap[U64]() << 52
-    sv: B64 = B64.from_bits(entry +% scale)  // 2^(round(32 x log2(10)) / 32)
+    sv: B64 = B64.from_bits(entry +% scale)  # 2^(round(32 x log2(10)) / 32)
     h2: B64 = h * h
     p01: B64 = B64.add(1.0, h * 0.021660849391257477)
     p23: B64 = B64.add(0.0002345984913513542, h * 1.6938658699950235e-06)
@@ -76,7 +76,7 @@ routine B32.exp10(me: Me) -> Me
     if ub == lb
         return ub
     else
-        // The fast path can't decide the rounding: redo it with a longer reduction and polynomial.
+        # The fast path can't decide the rounding: redo it with a longer reduction and polynomial.
         h_hi: B64 = B64.mul(3.3219280913472176, z) - ia * 0.03125
         h3: B64 = h_hi + B64.mul(3.5401447880558664e-09, z)
         h22: B64 = h3 * h3

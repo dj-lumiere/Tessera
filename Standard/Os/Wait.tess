@@ -1,135 +1,135 @@
-// Tessera stdlib: waiting on an address
-//
-// wait_on(at, expected) puts the thread to sleep while the U32 at at still
-// holds expected, until another thread calls wake_one or wake_all on at. It
-// may also return without a wake, so a caller checks its condition again in a
-// loop. wait_on_for gives up after a number of nanoseconds too (it may wait a
-// little longer, never forever). This is the one way a thread waits for another in the stdlib (ExclusiveLock,
-// SignalCaster, the fiber scheduler's idle workers), and it means the same on every
-// operating system: futex on Linux, __ulock on macOS (as libc++'s
-// atomic/wait), WaitOnAddress on Windows.
+# Tessera stdlib: waiting on an address
+#
+# wait_on(at, expected) puts the thread to sleep while the U32 at at still
+# holds expected, until another thread calls wake_one or wake_all on at. It
+# may also return without a wake, so a caller checks its condition again in a
+# loop. wait_on_for gives up after a number of nanoseconds too (it may wait a
+# little longer, never forever). This is the one way a thread waits for another in the stdlib (ExclusiveLock,
+# SignalCaster, the fiber scheduler's idle workers), and it means the same on every
+# operating system: futex on Linux, __ulock on macOS (as libc++'s
+# atomic/wait), WaitOnAddress on Windows.
 
 module Standard/Os
 
-// -- Linux: futex --------------------------------------------------------------------
+# -- Linux: futex --------------------------------------------------------------------
 
-/// Binds the C `syscall` function (variadic), which makes a Linux system call.
-/// :param number: The system call number, with the call's arguments passed after it.
-/// :returns: What the system call gives, or -1 with `errno` set.
+### Binds the C `syscall` function (variadic), which makes a Linux system call.
+### :param number: The system call number, with the call's arguments passed after it.
+### :returns: What the system call gives, or -1 with `errno` set.
 @external("c")
 @symbol("syscall")
 @variadic
 @target(os: "linux")
 private routine c_syscall(number: CLong) -> CLong
 
-/// The system call number of futex, which depends on the architecture.
-/// :returns: The number.
+### The system call number of futex, which depends on the architecture.
+### :returns: The number.
 @target(os: "linux", arch: "x86_64")
 private routine sys_futex() -> CLong
     return 202
 
-/// The system call number of futex, which depends on the architecture.
-/// :returns: The number.
+### The system call number of futex, which depends on the architecture.
+### :returns: The number.
 @target(os: "linux", arch: "aarch64")
 private routine sys_futex() -> CLong
     return 98
 
-/// The system call number of futex, which depends on the architecture.
-/// :returns: The number.
+### The system call number of futex, which depends on the architecture.
+### :returns: The number.
 @target(os: "linux", arch: "riscv64")
 private routine sys_futex() -> CLong
     return 98
 
-/// The system call number of futex, which depends on the architecture.
-/// :returns: The number.
+### The system call number of futex, which depends on the architecture.
+### :returns: The number.
 @target(os: "linux", arch: not ("x86_64", "aarch64", "riscv64"))
 private routine sys_futex() -> CLong
     return 240
 
-/// Puts the thread to sleep while the U32 at `at` still holds `expected`, until {wake_one} or {wake_all} is called on
-/// `at`. It may also return without a wake, so the caller checks its condition again in a loop. The one way a thread
-/// waits for another in the standard library, via futex, __ulock, or WaitOnAddress by operating system.
-/// :param at: The word to wait on.
-/// :param expected: The value it must still hold for the thread to sleep. If it already differs, this returns at
-/// once.
+### Puts the thread to sleep while the U32 at `at` still holds `expected`, until {wake_one} or {wake_all} is called on
+### `at`. It may also return without a wake, so the caller checks its condition again in a loop. The one way a thread
+### waits for another in the standard library, via futex, __ulock, or WaitOnAddress by operating system.
+### :param at: The word to wait on.
+### :param expected: The value it must still hold for the thread to sleep. If it already differs, this returns at
+### once.
 @target(os: "linux")
 routine wait_on(at: @U32, expected: U32) -> None
-    op: CInt = 128  // FUTEX_WAIT_PRIVATE
-    none: Addr = null  // no timeout
+    op: CInt = 128  # FUTEX_WAIT_PRIVATE
+    none: Addr = null  # no timeout
     c_syscall(sys_futex(), at, op, expected, none)
     return
 
-/// As {wait_on}, but gives up after `timeout_ns` nanoseconds too. It may wait a little longer (down to the operating
-/// system's clock unit), never forever, and returns the same way whether it was woken or timed out.
-/// :param at: The word to wait on.
-/// :param expected: The value it must still hold for the thread to sleep.
-/// :param timeout_ns: The longest wait in nanoseconds.
+### As {wait_on}, but gives up after `timeout_ns` nanoseconds too. It may wait a little longer (down to the operating
+### system's clock unit), never forever, and returns the same way whether it was woken or timed out.
+### :param at: The word to wait on.
+### :param expected: The value it must still hold for the thread to sleep.
+### :param timeout_ns: The longest wait in nanoseconds.
 @target(os: "linux")
 routine wait_on_for(at: @U32, expected: U32, timeout_ns: U64) -> None
-    op: CInt = 128  // FUTEX_WAIT_PRIVATE, its timeout relative
+    op: CInt = 128  # FUTEX_WAIT_PRIVATE, its timeout relative
     local ts: @Timespec <- Timespec(sec: (timeout_ns / 1000000000).to_clamp[CLong](), nsec: (timeout_ns % 1000000000).to[CLong]())
     c_syscall(sys_futex(), at, op, expected, ts)
     return
 
-/// Wakes one thread sleeping in {wait_on} on `at`, if any.
-/// :param at: The word the thread waits on.
+### Wakes one thread sleeping in {wait_on} on `at`, if any.
+### :param at: The word the thread waits on.
 @target(os: "linux")
 routine wake_one(at: @U32) -> None
-    op: CInt = 129  // FUTEX_WAKE_PRIVATE
+    op: CInt = 129  # FUTEX_WAKE_PRIVATE
     count: CInt = 1
     c_syscall(sys_futex(), at, op, count)
     return
 
-/// Wakes every thread sleeping in {wait_on} on `at`.
-/// :param at: The word the threads wait on.
+### Wakes every thread sleeping in {wait_on} on `at`.
+### :param at: The word the threads wait on.
 @target(os: "linux")
 routine wake_all(at: @U32) -> None
-    op: CInt = 129  // FUTEX_WAKE_PRIVATE
+    op: CInt = 129  # FUTEX_WAKE_PRIVATE
     count: CInt = 2147483647
     c_syscall(sys_futex(), at, op, count)
     return
 
-// -- macOS: __ulock ------------------------------------------------------------------
+# -- macOS: __ulock ------------------------------------------------------------------
 
-/// Binds the macOS `__ulock_wait` function, which sleeps while a word holds a value.
-/// :param operation: The `UL_*` operation and `ULF_*` flags.
-/// :param addr: The word to wait on.
-/// :param value: The value it must still hold for the thread to sleep.
-/// :param timeout_us: The longest wait in microseconds, 0 for no limit.
-/// :returns: The number of waiters left, or a negative error (with `ULF_NO_ERRNO`).
+### Binds the macOS `__ulock_wait` function, which sleeps while a word holds a value.
+### :param operation: The `UL_*` operation and `ULF_*` flags.
+### :param addr: The word to wait on.
+### :param value: The value it must still hold for the thread to sleep.
+### :param timeout_us: The longest wait in microseconds, 0 for no limit.
+### :returns: The number of waiters left, or a negative error (with `ULF_NO_ERRNO`).
 @external("c")
 @symbol("__ulock_wait")
 @target(os: "macos")
 private routine c_ulock_wait(operation: U32, addr: Addr, value: U64, timeout_us: U32) -> CInt
 
-/// Binds the macOS `__ulock_wake` function, which wakes threads sleeping on a word.
-/// :param operation: The `UL_*` operation and `ULF_*` flags (`ULF_WAKE_ALL` for every waiter).
-/// :param addr: The word the threads wait on.
-/// :param wake_value: The thread to wake with `ULF_WAKE_THREAD`, else 0.
-/// :returns: 0 on success, or a negative error (with `ULF_NO_ERRNO`).
+### Binds the macOS `__ulock_wake` function, which wakes threads sleeping on a word.
+### :param operation: The `UL_*` operation and `ULF_*` flags (`ULF_WAKE_ALL` for every waiter).
+### :param addr: The word the threads wait on.
+### :param wake_value: The thread to wake with `ULF_WAKE_THREAD`, else 0.
+### :returns: 0 on success, or a negative error (with `ULF_NO_ERRNO`).
 @external("c")
 @symbol("__ulock_wake")
 @target(os: "macos")
 private routine c_ulock_wake(operation: U32, addr: Addr, wake_value: U64) -> CInt
 
-/// Puts the thread to sleep while the U32 at `at` still holds `expected`, until {wake_one} or {wake_all} is called on
-/// `at`. It may also return without a wake, so the caller checks its condition again in a loop. The one way a thread
-/// waits for another in the standard library, via futex, __ulock, or WaitOnAddress by operating system.
-/// :param at: The word to wait on.
-/// :param expected: The value it must still hold for the thread to sleep. If it already differs, this returns at
-/// once.
+### Puts the thread to sleep while the U32 at `at` still holds `expected`, until {wake_one} or {wake_all} is called on
+### `at`. It may also return without a wake, so the caller checks its condition again in a loop. The one way a thread
+### waits for another in the standard library, via futex, __ulock, or WaitOnAddress by operating system.
+### :param at: The word to wait on.
+### :param expected: The value it must still hold for the thread to sleep. If it already differs, this returns at
+### once.
 @target(os: "macos")
 routine wait_on(at: @U32, expected: U32) -> None
-    // UL_COMPARE_AND_WAIT | ULF_NO_ERRNO, no timeout
+    # UL_COMPARE_AND_WAIT | ULF_NO_ERRNO, no timeout
     c_ulock_wait(0x1000001, at, expected.to[U64](), 0)
     return
 
-/// As {wait_on}, but gives up after `timeout_ns` nanoseconds too. It may wait a little longer (down to the operating
-/// system's clock unit), never forever, and returns the same way whether it was woken or timed out.
-/// :param at: The word to wait on.
-/// :param expected: The value it must still hold for the thread to sleep.
-/// :param timeout_ns: The longest wait in nanoseconds.
-/// :note: __ulock_wait takes microseconds, and 0 means no timeout, so a wait is at least one.
+### As {wait_on}, but gives up after `timeout_ns` nanoseconds too. It may wait a little longer (down to the operating
+### system's clock unit), never forever, and returns the same way whether it was woken or timed out.
+### :param at: The word to wait on.
+### :param expected: The value it must still hold for the thread to sleep.
+### :param timeout_ns: The longest wait in nanoseconds.
+### :note: __ulock_wait takes microseconds, and 0 means no timeout, so a wait is at least one.
 @target(os: "macos")
 routine wait_on_for(at: @U32, expected: U32, timeout_ns: U64) -> None
     micros: U64 = timeout_ns.div_ceil(1000).max(1)
@@ -137,70 +137,70 @@ routine wait_on_for(at: @U32, expected: U32, timeout_ns: U64) -> None
     c_ulock_wait(0x1000001, at, expected.to[U64](), us)
     return
 
-/// Wakes one thread sleeping in {wait_on} on `at`, if any.
-/// :param at: The word the thread waits on.
+### Wakes one thread sleeping in {wait_on} on `at`, if any.
+### :param at: The word the thread waits on.
 @target(os: "macos")
 routine wake_one(at: @U32) -> None
     c_ulock_wake(0x1000001, at, 0)
     return
 
-/// Wakes every thread sleeping in {wait_on} on `at`.
-/// :param at: The word the threads wait on.
+### Wakes every thread sleeping in {wait_on} on `at`.
+### :param at: The word the threads wait on.
 @target(os: "macos")
 routine wake_all(at: @U32) -> None
-    // ULF_WAKE_ALL too
+    # ULF_WAKE_ALL too
     c_ulock_wake(0x1000101, at, 0)
     return
 
-// -- Windows: WaitOnAddress ----------------------------------------------------------
+# -- Windows: WaitOnAddress ----------------------------------------------------------
 
-/// Binds the Win32 `WaitOnAddress` function, which sleeps while the value at an address equals another.
-/// :param addr: The address to wait on.
-/// :param compare: The value it must still hold for the thread to sleep.
-/// :param size: The value's size in bytes (1, 2, 4, or 8).
-/// :param millis: The longest wait in milliseconds, `INFINITE` (U32 MAX) for no limit.
-/// :returns: Nonzero when woken (or the values differed), 0 with the last error set on a timeout.
+### Binds the Win32 `WaitOnAddress` function, which sleeps while the value at an address equals another.
+### :param addr: The address to wait on.
+### :param compare: The value it must still hold for the thread to sleep.
+### :param size: The value's size in bytes (1, 2, 4, or 8).
+### :param millis: The longest wait in milliseconds, `INFINITE` (U32 MAX) for no limit.
+### :returns: Nonzero when woken (or the values differed), 0 with the last error set on a timeout.
 @external("c")
 @symbol("WaitOnAddress")
 @callconv("stdcall")
 @target(os: "windows")
 private routine c_wait_on_address(addr: Addr, compare: Addr, size: USize, millis: U32) -> CInt
 
-/// Binds the Win32 `WakeByAddressSingle` function, which wakes one thread waiting on an address.
-/// :param addr: The address the thread waits on.
+### Binds the Win32 `WakeByAddressSingle` function, which wakes one thread waiting on an address.
+### :param addr: The address the thread waits on.
 @external("c")
 @symbol("WakeByAddressSingle")
 @callconv("stdcall")
 @target(os: "windows")
 private routine c_wake_by_address_single(addr: Addr) -> None
 
-/// Binds the Win32 `WakeByAddressAll` function, which wakes every thread waiting on an address.
-/// :param addr: The address the threads wait on.
+### Binds the Win32 `WakeByAddressAll` function, which wakes every thread waiting on an address.
+### :param addr: The address the threads wait on.
 @external("c")
 @symbol("WakeByAddressAll")
 @callconv("stdcall")
 @target(os: "windows")
 private routine c_wake_by_address_all(addr: Addr) -> None
 
-/// Puts the thread to sleep while the U32 at `at` still holds `expected`, until {wake_one} or {wake_all} is called on
-/// `at`. It may also return without a wake, so the caller checks its condition again in a loop. The one way a thread
-/// waits for another in the standard library, via futex, __ulock, or WaitOnAddress by operating system.
-/// :param at: The word to wait on.
-/// :param expected: The value it must still hold for the thread to sleep. If it already differs, this returns at
-/// once.
+### Puts the thread to sleep while the U32 at `at` still holds `expected`, until {wake_one} or {wake_all} is called on
+### `at`. It may also return without a wake, so the caller checks its condition again in a loop. The one way a thread
+### waits for another in the standard library, via futex, __ulock, or WaitOnAddress by operating system.
+### :param at: The word to wait on.
+### :param expected: The value it must still hold for the thread to sleep. If it already differs, this returns at
+### once.
 @target(os: "windows")
 routine wait_on(at: @U32, expected: U32) -> None
     local compare: @U32 <- expected
-    // INFINITE
+    # INFINITE
     c_wait_on_address(at, compare, 4, U32.MAX)
     return
 
-/// As {wait_on}, but gives up after `timeout_ns` nanoseconds too. It may wait a little longer (down to the operating
-/// system's clock unit), never forever, and returns the same way whether it was woken or timed out.
-/// :param at: The word to wait on.
-/// :param expected: The value it must still hold for the thread to sleep.
-/// :param timeout_ns: The longest wait in nanoseconds.
-/// :note: WaitOnAddress takes milliseconds, and U32.MAX means no timeout, so a wait is at most one less.
+### As {wait_on}, but gives up after `timeout_ns` nanoseconds too. It may wait a little longer (down to the operating
+### system's clock unit), never forever, and returns the same way whether it was woken or timed out.
+### :param at: The word to wait on.
+### :param expected: The value it must still hold for the thread to sleep.
+### :param timeout_ns: The longest wait in nanoseconds.
+### :note: WaitOnAddress takes milliseconds, and U32.MAX means no timeout, so a wait is at most one less.
 @target(os: "windows")
 routine wait_on_for(at: @U32, expected: U32, timeout_ns: U64) -> None
     local compare: @U32 <- expected
@@ -209,15 +209,15 @@ routine wait_on_for(at: @U32, expected: U32, timeout_ns: U64) -> None
     c_wait_on_address(at, compare, 4, ms)
     return
 
-/// Wakes one thread sleeping in {wait_on} on `at`, if any.
-/// :param at: The word the thread waits on.
+### Wakes one thread sleeping in {wait_on} on `at`, if any.
+### :param at: The word the thread waits on.
 @target(os: "windows")
 routine wake_one(at: @U32) -> None
     c_wake_by_address_single(at)
     return
 
-/// Wakes every thread sleeping in {wait_on} on `at`.
-/// :param at: The word the threads wait on.
+### Wakes every thread sleeping in {wait_on} on `at`.
+### :param at: The word the threads wait on.
 @target(os: "windows")
 routine wake_all(at: @U32) -> None
     c_wake_by_address_all(at)

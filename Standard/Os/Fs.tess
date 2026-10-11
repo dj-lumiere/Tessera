@@ -1,25 +1,25 @@
-// Tessera stdlib: files and the filesystem, the parts File.tess (File, Directory) is built on
-//
-// Paths are Span[Byte], UTF-8 by convention, as every Tessera text is. Each call copies its path into a stack buffer with
-// the terminator the OS wants (UTF-16 on Windows), so nothing allocates for a path. A path too long for that buffer
-// (4095 bytes, or 4095 UTF-16 units on Windows) fails with NameTooLong. Only routines that hand text back
-// (read_file, current_dir, ...) or build paths of their own (remove_dir_all) take an allocator. Text comes back as
-// Span[Byte] that carry that allocator, and the caller gives them back with destruct(), a path inside a File or Directory
-// through the File's or the Directory's own destruct().
-//
-// Expected failures are a Result with an FsError. The per-OS halves are Fs_posix.tess (Linux and macOS) and
-// Fs_windows.tess (the Win32 wide-character calls). Each defines the same routines and records, and this file holds
-// the types they share and what is built on top of them.
+# Tessera stdlib: files and the filesystem, the parts File.tess (File, Directory) is built on
+#
+# Paths are Span[Byte], UTF-8 by convention, as every Tessera text is. Each call copies its path into a stack buffer with
+# the terminator the OS wants (UTF-16 on Windows), so nothing allocates for a path. A path too long for that buffer
+# (4095 bytes, or 4095 UTF-16 units on Windows) fails with NameTooLong. Only routines that hand text back
+# (read_file, current_dir, ...) or build paths of their own (remove_dir_all) take an allocator. Text comes back as
+# Span[Byte] that carry that allocator, and the caller gives them back with destruct(), a path inside a File or Directory
+# through the File's or the Directory's own destruct().
+#
+# Expected failures are a Result with an FsError. The per-OS halves are Fs_posix.tess (Linux and macOS) and
+# Fs_windows.tess (the Win32 wide-character calls). Each defines the same routines and records, and this file holds
+# the types they share and what is built on top of them.
 
 module Standard/Os
 
 import Standard/Alloc
 import Standard/Format
 
-/// The longest path a call takes, in bytes (UTF-16 units on Windows), not counting the terminator.
+### The longest path a call takes, in bytes (UTF-16 units on Windows), not counting the terminator.
 preset PATH_CAPACITY: USize = 4096
 
-/// Why a filesystem call failed.
+### Why a filesystem call failed.
 choice FsError: U8
     NOT_FOUND
     PERMISSION_DENIED
@@ -27,12 +27,12 @@ choice FsError: U8
     NOT_A_DIRECTORY
     IS_A_DIRECTORY
     DIRECTORY_NOT_EMPTY
-    CROSS_DEVICE  // a rename between filesystems: copy and remove instead
+    CROSS_DEVICE  # a rename between filesystems: copy and remove instead
     NAME_TOO_LONG
-    INVALID_PATH  // a NUL inside the path, or a name the OS rejects
+    INVALID_PATH  # a NUL inside the path, or a name the OS rejects
     NO_SPACE
-    READ_ONLY  // a read-only filesystem
-    BUSY  // in use by another process (a Windows sharing violation)
+    READ_ONLY  # a read-only filesystem
+    BUSY  # in use by another process (a Windows sharing violation)
     OUT_OF_MEMORY
     OTHER
 
@@ -42,20 +42,20 @@ choice FileKind: U8
     SYMLINK
     OTHER
 
-/// A file's metadata. Times are nanoseconds since 1970-01-01 UTC.
+### A file's metadata. Times are nanoseconds since 1970-01-01 UTC.
 record Metadata
     kind: FileKind
     size: U64
     modified_ns: S64
-    created_ns: Maybe[S64]  // None where the filesystem doesn't record it
+    created_ns: Maybe[S64]  # None where the filesystem doesn't record it
     readonly: Bool
 
 choice OpenMode: U8
-    READ  // an existing file, for reading
-    WRITE  // for writing: made if missing, emptied if not
-    APPEND  // for writing at the end: made if missing
-    READ_WRITE  // an existing file, for both
-    CREATE_NEW  // for writing, made here: AlreadyExists if something is there
+    READ  # an existing file, for reading
+    WRITE  # for writing: made if missing, emptied if not
+    APPEND  # for writing at the end: made if missing
+    READ_WRITE  # an existing file, for both
+    CREATE_NEW  # for writing, made here: AlreadyExists if something is there
 
 choice SeekFrom: U8
     START
@@ -67,81 +67,81 @@ choice Access: U8
     WRITE
     EXECUTE
 
-/// One entry of a directory listing.
+### One entry of a directory listing.
 record DirEntry
-    name: Span[Byte]  // the entry's name, valid until the iterator's next call
+    name: Span[Byte]  # the entry's name, valid until the iterator's next call
     kind: FileKind
 
-/// Part of a file mapped into memory by Mapping.map. unmap it when done.
+### Part of a file mapped into memory by Mapping.map. unmap it when done.
 record Mapping
-    base: Addr  // what the OS mapped, from an aligned offset (null for an empty mapping)
-    delta: USize  // from base to the first byte asked for
-    count: USize  // the bytes mapped from there
+    base: Addr  # what the OS mapped, from an aligned offset (null for an empty mapping)
+    delta: USize  # from base to the first byte asked for
+    count: USize  # the bytes mapped from there
 
-/// Makes a `DirEntry` from its fields.
-/// :param name: Its `name`.
-/// :param kind: Its `kind`.
-/// :returns: The new value.
+### Makes a `DirEntry` from its fields.
+### :param name: Its `name`.
+### :param kind: Its `kind`.
+### :returns: The new value.
 routine DirEntry.construct(name: Span[Byte], kind: FileKind) -> Me
     return Me(name, kind)
 
-/// Releases the memory its `name` holds.
+### Releases the memory its `name` holds.
 routine DirEntry.destruct(me: @Me) -> None
     me.name.destruct()
     return
 
-/// Makes a `Mapping` from its fields.
-/// :param base: Its `base`.
-/// :param delta: Its `delta`.
-/// :param count: Its `count`.
-/// :returns: The new value.
+### Makes a `Mapping` from its fields.
+### :param base: Its `base`.
+### :param delta: Its `delta`.
+### :param count: Its `count`.
+### :returns: The new value.
 routine Mapping.construct(base: Addr, delta: USize, count: USize) -> Me
     return Me(base, delta, count)
 
-/// Releases nothing: a `Mapping` holds no memory of its own.
+### Releases nothing: a `Mapping` holds no memory of its own.
 routine Mapping.destruct(me: @Me) -> None
     return
 
-/// The success value of a filesystem call that has nothing to return.
-/// :returns: `Unit`.
+### The success value of a filesystem call that has nothing to return.
+### :returns: `Unit`.
 internal routine fs_done() -> Result[None, FsError]
     return None()
 
-/// Why path didn't fit a C path: a NUL inside, or too long.
-/// :param path: The path that didn't fit.
-/// :returns: `InvalidPath` when `path` holds a NUL, else `NameTooLong`.
+### Why path didn't fit a C path: a NUL inside, or too long.
+### :param path: The path that didn't fit.
+### :returns: `InvalidPath` when `path` holds a NUL, else `NameTooLong`.
 internal routine path_error(path: Span[Byte]) -> FsError
     if path.has("\0")
         return FsError.INVALID_PATH
     else
         return FsError.NAME_TOO_LONG
 
-// -- built on the per-OS calls ---------------------------------------------------------
+# -- built on the per-OS calls ---------------------------------------------------------
 
-/// Whether something is at path (a link counts as what it points at).
-/// :param path: The path to look at.
-/// :returns: True when the metadata of `path` can be read. Any failure, not only `NotFound`, gives false.
+### Whether something is at path (a link counts as what it points at).
+### :param path: The path to look at.
+### :returns: True when the metadata of `path` can be read. Any failure, not only `NotFound`, gives false.
 internal routine is_present(path: Span[Byte]) -> Bool
     m: Result[Metadata, FsError] = metadata(path)
     return m.is_success()
 
-/// Whether something is at path and is of the given kind (a link counts as what it points at).
-/// :param path: The path to look at.
-/// :param kind: The kind to test for.
-/// :returns: True when the metadata of `path` can be read and its kind is `kind`.
+### Whether something is at path and is of the given kind (a link counts as what it points at).
+### :param path: The path to look at.
+### :param kind: The kind to test for.
+### :returns: True when the metadata of `path` can be read and its kind is `kind`.
 internal routine is_kind(path: Span[Byte], kind: FileKind) -> Bool
     m: Result[Metadata, FsError] = metadata(path)
     when m
         is Metadata as info => return info.kind == kind
         is FsError => return false
 
-/// Like mkdir -p: every missing directory on the way, then path. A directory already there is fine.
-/// :param path: The directory to make.
-/// :returns: `Unit` once `path` is a directory.
-/// :throws: Returns the reason when the last step fails, `AlreadyExists` when something other than a
-///     directory is at `path`.
+### Like mkdir -p: every missing directory on the way, then path. A directory already there is fine.
+### :param path: The directory to make.
+### :returns: `Unit` once `path` is a directory.
+### :throws: Returns the reason when the last step fails, `AlreadyExists` when something other than a
+###     directory is at `path`.
 internal routine create_dir_all(path: Span[Byte]) -> Result[None, FsError]
-    // Each separator after the first byte ends a prefix to make. Failures there show up in the last step.
+    # Each separator after the first byte ends a prefix to make. Failures there show up in the last step.
     each i in 1 til path.count()
         if is_separator(path.byte_at(i).bits())
             create_dir(path.slice(start: 0, end: i))
@@ -154,12 +154,12 @@ internal routine create_dir_all(path: Span[Byte]) -> Result[None, FsError]
             else
                 return error
 
-/// Removes path and everything in it. A link is removed, not followed. Child paths are built in memory from alloc.
-/// :param path: The file or directory to remove.
-/// :param alloc: The allocator for the child paths, each given back before the next.
-/// :returns: `Unit` once everything is gone.
-/// :throws: Returns the first error, which stops the removal partway. Crashes with
-///     `MemoryAllocationError` when `alloc` fails for a child path.
+### Removes path and everything in it. A link is removed, not followed. Child paths are built in memory from alloc.
+### :param path: The file or directory to remove.
+### :param alloc: The allocator for the child paths, each given back before the next.
+### :returns: `Unit` once everything is gone.
+### :throws: Returns the first error, which stops the removal partway. Crashes with
+###     `MemoryAllocationError` when `alloc` fails for a child path.
 internal routine remove_dir_all(path: Span[Byte], alloc: @MemoryManager) -> Result[None, FsError]
     m: Result[Metadata, FsError] = symlink_metadata(path)
     when m
@@ -172,15 +172,15 @@ internal routine remove_dir_all(path: Span[Byte], alloc: @MemoryManager) -> Resu
                 is FsError as error => return error
         is FsError as error => return error
 
-/// Removes everything in the directory at path, which is left empty. Its listing is closed before remove_dir_all
-/// removes the directory itself, since Windows can't remove a directory that is still being listed.
-/// :param path: The directory to empty.
-/// :param alloc: The allocator for the child paths.
-/// :returns: `Unit` once the directory is empty.
-/// :throws: Returns the first error. Crashes with `MemoryAllocationError` when `alloc` fails for a
-///     child path.
+### Removes everything in the directory at path, which is left empty. Its listing is closed before remove_dir_all
+### removes the directory itself, since Windows can't remove a directory that is still being listed.
+### :param path: The directory to empty.
+### :param alloc: The allocator for the child paths.
+### :returns: `Unit` once the directory is empty.
+### :throws: Returns the first error. Crashes with `MemoryAllocationError` when `alloc` fails for a
+###     child path.
 private routine remove_entries(path: Span[Byte], alloc: @MemoryManager) -> Result[None, FsError]
-    // open_path sets the handle before anything in it can fail, so finish closes a real or a null one
+    # open_path sets the handle before anything in it can fail, so finish closes a real or a null one
     local iter: @DirIter <- .hollow()
 
     opened: Result[None, FsError] = iter.open_path(path)
@@ -206,12 +206,12 @@ private routine remove_entries(path: Span[Byte], alloc: @MemoryManager) -> Resul
             iter.close()
             return error
 
-/// Reads the whole file at path into memory from alloc (drop it).
-/// :param path: The file to read.
-/// :param alloc: The allocator for the text.
-/// :returns: The file's bytes.
-/// :throws: Returns the reason when the file can't be opened or read, `OutOfMemory` when `alloc`
-///     fails or the file is too large for the address space (4 GiB or more on a 32-bit target).
+### Reads the whole file at path into memory from alloc (drop it).
+### :param path: The file to read.
+### :param alloc: The allocator for the text.
+### :returns: The file's bytes.
+### :throws: Returns the reason when the file can't be opened or read, `OutOfMemory` when `alloc`
+###     fails or the file is too large for the address space (4 GiB or more on a 32-bit target).
 internal routine read_file(path: Span[Byte], alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
     opened: Result[FileHandle, FsError] = FileHandle.open(path, mode: OpenMode.READ)
     when opened
@@ -222,13 +222,13 @@ internal routine read_file(path: Span[Byte], alloc: @MemoryManager) -> Result[Me
             return text
         is FsError as error => return error
 
-/// Reads the rest of the open file f into memory from alloc. The size is a first guess: a file that grows while it's
-/// read, or reports 0 (Linux's /proc), still reads whole.
-/// :param f: The open file, read from its position to the end.
-/// :param alloc: The allocator for the text.
-/// :returns: The bytes read.
-/// :throws: Returns the reason when a read fails, `OutOfMemory` when `alloc` fails or the file is too
-///     large for the address space (it reports a size, or grows to one, that a USize can't hold).
+### Reads the rest of the open file f into memory from alloc. The size is a first guess: a file that grows while it's
+### read, or reports 0 (Linux's /proc), still reads whole.
+### :param f: The open file, read from its position to the end.
+### :param alloc: The allocator for the text.
+### :returns: The bytes read.
+### :throws: Returns the reason when a read fails, `OutOfMemory` when `alloc` fails or the file is too
+###     large for the address space (it reports a size, or grows to one, that a USize can't hold).
 private routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
     local buffer: @Memory[Byte] <- .hollow()
 
@@ -243,8 +243,8 @@ private routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Memor
                         is USize as guess =>
                             becomes guess.max(64)
                         is None =>
-                            // count bytes read so far, and the buffer's count is its capacity
-                            // The text takes the memory over, so buffer goes back to empty and finish has nothing to give back.
+                            # count bytes read so far, and the buffer's count is its capacity
+                            # The text takes the memory over, so buffer goes back to empty and finish has nothing to give back.
                             drop buffer
                             return FsError.OUT_OF_MEMORY
                 is None =>
@@ -288,11 +288,11 @@ private routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Memor
             drop buffer
             return FsError.OUT_OF_MEMORY
 
-/// Writes data as the whole file: made if missing, replaced if not.
-/// :param path: The file to write.
-/// :param data: The bytes that become the file.
-/// :returns: `Unit` once every byte is written.
-/// :throws: Returns the reason when the file can't be opened or written.
+### Writes data as the whole file: made if missing, replaced if not.
+### :param path: The file to write.
+### :param data: The bytes that become the file.
+### :returns: `Unit` once every byte is written.
+### :throws: Returns the reason when the file can't be opened or written.
 internal routine write_file(path: Span[Byte], data: Span[Byte]) -> Result[None, FsError]
     opened: Result[FileHandle, FsError] = FileHandle.open(path, mode: OpenMode.WRITE)
     when opened
@@ -303,16 +303,16 @@ internal routine write_file(path: Span[Byte], data: Span[Byte]) -> Result[None, 
             return wrote
         is FsError as error => return error
 
-// -- FileHandle: what both halves share ------------------------------------------------------
+# -- FileHandle: what both halves share ------------------------------------------------------
 
 obeys Reader[FileHandle]
 obeys Writer[FileHandle]
 
-/// Writes all count bytes, however many calls that takes.
-/// :param data: The first byte to write.
-/// :param count: How many bytes to write.
-/// :returns: `Unit` once all of them are written.
-/// :throws: Returns the reason when a write fails, `Other` when a write makes no progress.
+### Writes all count bytes, however many calls that takes.
+### :param data: The first byte to write.
+### :param count: How many bytes to write.
+### :returns: `Unit` once all of them are written.
+### :throws: Returns the reason when a write fails, `Other` when a write makes no progress.
 @expensive("asks the operating system")
 routine FileHandle.write_all_result(me: @Me, data: @Byte, count: USize) -> Result[None, FsError]
     while remaining != 0 with at: @Byte = data, remaining: USize = count
@@ -327,9 +327,9 @@ routine FileHandle.write_all_result(me: @Me, data: @Byte, count: USize) -> Resul
     then
         return fs_done()
 
-/// The Writer side, behind handle.write("x = {x}\n"): a failure is kept for has_failed, and the bytes are dropped.
-/// :param data: The first byte to write.
-/// :param count: How many bytes to write.
+### The Writer side, behind handle.write("x = {x}\n"): a failure is kept for has_failed, and the bytes are dropped.
+### :param data: The first byte to write.
+### :param count: How many bytes to write.
 @expensive("asks the operating system")
 routine FileHandle.write_bytes(me: @Me, data: @Byte, count: USize) -> None
     wrote: Result[None, FsError] = me.write_all_result(data, count)
@@ -338,48 +338,48 @@ routine FileHandle.write_bytes(me: @Me, data: @Byte, count: USize) -> None
     me.failed.poke(true)
     return
 
-/// Whether a write through the Writer side (write_bytes) failed.
-/// :returns: True once a `write_bytes` has failed. Nothing clears it.
+### Whether a write through the Writer side (write_bytes) failed.
+### :returns: True once a `write_bytes` has failed. Nothing clears it.
 routine FileHandle.has_failed(me: @Me) -> Bool
     return me.failed.peek()
 
-// -- paths (no OS calls) -----------------------------------------------------------------
-//
-// A separator is '/' everywhere, and '\' too on Windows. These look at the text only: nothing is resolved.
+# -- paths (no OS calls) -----------------------------------------------------------------
+#
+# A separator is '/' everywhere, and '\' too on Windows. These look at the text only: nothing is resolved.
 
-/// Whether b is a path separator: '/' or '\' on Windows.
-/// :param b: The byte to test.
-/// :returns: True for '/' and '\'.
+### Whether b is a path separator: '/' or '\' on Windows.
+### :param b: The byte to test.
+### :returns: True for '/' and '\'.
 @target(os: "windows")
 routine is_separator(b: Byte) -> Bool
     return b == b'/' or b == b'\\'
 
-/// Whether b is a path separator: '/' on Linux and macOS.
-/// :param b: The byte to test.
-/// :returns: True for '/'.
+### Whether b is a path separator: '/' on Linux and macOS.
+### :param b: The byte to test.
+### :returns: True for '/'.
 @target(os: ("linux", "macos"))
 routine is_separator(b: Byte) -> Bool
     return b == b'/'
 
-/// The separator the OS writes.
-/// :returns: '\' on Windows.
+### The separator the OS writes.
+### :returns: '\' on Windows.
 @target(os: "windows")
 routine path_separator() -> Byte
     return b'\\'
 
-/// The separator the OS writes.
-/// :returns: '/' on Linux and macOS.
+### The separator the OS writes.
+### :returns: '/' on Linux and macOS.
 @target(os: ("linux", "macos"))
 routine path_separator() -> Byte
     return b'/'
 
-/// a and b with a separator between them (none added when a is empty or already ends with one), in memory from
-/// alloc. Drop it.
-/// :param a: The leading part.
-/// :param b: The part to append.
-/// :param alloc: The allocator for the result.
-/// :returns: The joined path.
-/// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
+### a and b with a separator between them (none added when a is empty or already ends with one), in memory from
+### alloc. Drop it.
+### :param a: The leading part.
+### :param b: The part to append.
+### :param alloc: The allocator for the result.
+### :returns: The joined path.
+### :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 @track_caller
 @expensive("allocates the joined path")
 routine join_path(a: Span[Byte], b: Span[Byte], alloc: @MemoryManager) -> Memory[Byte]
@@ -399,9 +399,9 @@ routine join_path(a: Span[Byte], b: Span[Byte], alloc: @MemoryManager) -> Memory
     memory.data.stride(a.count() + sep).copy(src: b.data, count: b.count())
     return memory.with_count(count)
 
-/// Where path's last component ends, trailing separators left out.
-/// :param path: The path to look at.
-/// :returns: The index just past the component's last byte, 0 when `path` is empty or only separators.
+### Where path's last component ends, trailing separators left out.
+### :param path: The path to look at.
+### :returns: The index just past the component's last byte, 0 when `path` is empty or only separators.
 private routine name_end(path: Span[Byte]) -> USize
     while end != 0 with end: USize = path.count()
         if is_separator(path.byte_at(end - 1).bits())
@@ -411,10 +411,10 @@ private routine name_end(path: Span[Byte]) -> USize
     then
         return 0
 
-/// Where the component that ends at end starts.
-/// :param path: The path to look at.
-/// :param end: Where the component ends, from {name_end}.
-/// :returns: The index just after the separator before the component, or 0 when there is none.
+### Where the component that ends at end starts.
+### :param path: The path to look at.
+### :param end: Where the component ends, from {name_end}.
+### :returns: The index just after the separator before the component, or 0 when there is none.
 private routine name_start(path: Span[Byte], end: USize) -> USize
     while i != 0 with i: USize = end
         if is_separator(path.byte_at(i - 1).bits())
@@ -424,24 +424,24 @@ private routine name_start(path: Span[Byte], end: USize) -> USize
     then
         return 0
 
-/// The last component: "/a/b/file.txt" gives "file.txt", "/a/b/" gives "b".
-/// :param path: The path to look at.
-/// :returns: The component, borrowed from `path` (empty when `path` is empty or only separators).
+### The last component: "/a/b/file.txt" gives "file.txt", "/a/b/" gives "b".
+### :param path: The path to look at.
+### :returns: The component, borrowed from `path` (empty when `path` is empty or only separators).
 routine file_name(path: Span[Byte]) -> Span[Byte]
     end: USize = name_end(path)
     start: USize = name_start(path, end)
     return path.slice(start, end)
 
-/// The directory part: "/a/b/c" gives "/a/b", "a/b" gives "a", "file.txt" gives "", and "/" stays "/".
-/// :param path: The path to look at.
-/// :returns: The directory part, borrowed from `path`.
+### The directory part: "/a/b/c" gives "/a/b", "a/b" gives "a", "file.txt" gives "", and "/" stays "/".
+### :param path: The path to look at.
+### :returns: The directory part, borrowed from `path`.
 routine parent_path(path: Span[Byte]) -> Span[Byte]
     local end: USize = name_end(path)
 
     start: USize = name_start(path, end)
     if start == 0
-        // Separators before the name go too, but a leading root separator stays.
-        // No separator before the name: the root if path is only separators, else nothing.
+        # Separators before the name go too, but a leading root separator stays.
+        # No separator before the name: the root if path is only separators, else nothing.
         if end == 0 and not path.is_empty()
             return path.slice(start: 0, end: 1)
         else
@@ -455,9 +455,9 @@ routine parent_path(path: Span[Byte]) -> Span[Byte]
         then
             return path.slice(start: 0, end: 1)
 
-/// The last '.' of a name after its first character, or 0: a hidden file's leading dot isn't an extension.
-/// :param name: The file name to look at.
-/// :returns: The index of that dot, or 0 when there is none.
+### The last '.' of a name after its first character, or 0: a hidden file's leading dot isn't an extension.
+### :param name: The file name to look at.
+### :returns: The index of that dot, or 0 when there is none.
 private routine last_dot(name: Span[Byte]) -> USize
     if name.count() < 2
         return 0
@@ -470,9 +470,9 @@ private routine last_dot(name: Span[Byte]) -> USize
         then
             return 0
 
-/// The name without its extension: "file.txt" gives "file", "archive.tar.gz" gives "archive.tar".
-/// :param path: The path whose last component is used.
-/// :returns: The stem, borrowed from `path`.
+### The name without its extension: "file.txt" gives "file", "archive.tar.gz" gives "archive.tar".
+### :param path: The path whose last component is used.
+### :returns: The stem, borrowed from `path`.
 routine file_stem(path: Span[Byte]) -> Span[Byte]
     name: Span[Byte] = file_name(path)
     dot: USize = last_dot(name)
@@ -481,9 +481,9 @@ routine file_stem(path: Span[Byte]) -> Span[Byte]
     else
         return name.slice(start: 0, end: dot)
 
-/// The extension without its dot: "file.txt" gives "txt", "file" and ".hidden" give "".
-/// :param path: The path whose last component is used.
-/// :returns: The extension, borrowed from `path`.
+### The extension without its dot: "file.txt" gives "txt", "file" and ".hidden" give "".
+### :param path: The path whose last component is used.
+### :returns: The extension, borrowed from `path`.
 routine file_extension(path: Span[Byte]) -> Span[Byte]
     name: Span[Byte] = file_name(path)
     dot: USize = last_dot(name)
@@ -492,22 +492,22 @@ routine file_extension(path: Span[Byte]) -> Span[Byte]
     else
         return name.slice(start: dot + 1, end: name.count())
 
-// -- memory-mapped files -----------------------------------------------------------------
+# -- memory-mapped files -----------------------------------------------------------------
 
-/// A mapping of nothing: what an empty file, or a range past the end, maps to.
-/// :returns: A mapping with a null base and a count of 0.
+### A mapping of nothing: what an empty file, or a range past the end, maps to.
+### :returns: A mapping with a null base and a count of 0.
 routine Mapping.empty() -> Me
     return Me(base: null, delta: 0, count: 0)
 
-/// The first byte asked for (null for an empty mapping).
-/// :returns: `base` plus `delta`, or null.
+### The first byte asked for (null for an empty mapping).
+### :returns: `base` plus `delta`, or null.
 routine Mapping.data(me: Me) -> @Byte
     if me.base.is_null()
         return null
     else
         return me.base.to[@Byte]().stride(me.delta)
 
-/// The number of bytes mapped, from `data()` on.
-/// :returns: The byte count, 0 for an empty mapping.
+### The number of bytes mapped, from `data()` on.
+### :returns: The byte count, 0 for an empty mapping.
 routine Mapping.count(me: Me) -> USize
     return me.count

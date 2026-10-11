@@ -1,51 +1,51 @@
-// "union" via comptime-sized record
-//
-// Tessera has no `union` keyword. The same effect comes from declaring a record
-// whose only field is an aligned byte buffer sized to fit the largest member.
-// `sizeof[T]()`, `alignof[T]()`, and `max(...)` are comptime-reducible, so the
-// builder still picks up the right layout at monomorphization time.
-//
-//     record N
-//         #aligned(max(alignof[A](), alignof[B]()))
-//         storage: Array[S8, max(sizeof[A](), sizeof[B]())]
-//
-// Access is always an explicit pointer cast to the active view. Whoever owns
-// the data is responsible for knowing which view is currently active.
-//
-// Trade-off: an overlay value can only be read through memory (cast + load),
-// so a value-held overlay needs a stack slot before it can be inspected.
-// That is the right cost for C ABI unions (Section 2). For everyday tagged
-// values, declare a `variant` (stdlib Maybe[T] and Result[T, E] are ones):
-// the builder lowers it to this same tag-plus-overlay layout and confines the
-// slot, cast, and load to the payload binding of a `when` arm. Section 1 spells
-// that lowering out by hand to show the mechanism, not as the recommended Result.
+# "union" via comptime-sized record
+#
+# Tessera has no `union` keyword. The same effect comes from declaring a record
+# whose only field is an aligned byte buffer sized to fit the largest member.
+# `sizeof[T]()`, `alignof[T]()`, and `max(...)` are comptime-reducible, so the
+# builder still picks up the right layout at monomorphization time.
+#
+#     record N
+#         #aligned(max(alignof[A](), alignof[B]()))
+#         storage: Array[S8, max(sizeof[A](), sizeof[B]())]
+#
+# Access is always an explicit pointer cast to the active view. Whoever owns
+# the data is responsible for knowing which view is currently active.
+#
+# Trade-off: an overlay value can only be read through memory (cast + load),
+# so a value-held overlay needs a stack slot before it can be inspected.
+# That is the right cost for C ABI unions (Section 2). For everyday tagged
+# values, declare a `variant` (stdlib Maybe[T] and Result[T, E] are ones):
+# the builder lowers it to this same tag-plus-overlay layout and confines the
+# slot, cast, and load to the payload binding of a `when` arm. Section 1 spells
+# that lowering out by hand to show the mechanism, not as the recommended Result.
 
 @external("c")
 @symbol("printf")
 @variadic
 routine c_printf(fmt: @Byte) -> S32
 
-// ============================================================
-// A generic two-way overlay. Stdlib could ship UnionTwo / UnionThree, or
-// users can inline the same shape — there is no special type-form involved.
-// ============================================================
+# ============================================================
+# A generic two-way overlay. Stdlib could ship UnionTwo / UnionThree, or
+# users can inline the same shape — there is no special type-form involved.
+# ============================================================
 
 record UnionTwo[TFirst, TSecond]
 needs TFirst: typename, TSecond: typename
     @aligned(max(alignof[TFirst](), alignof[TSecond]()))
     storage: Array[Byte, max(sizeof[TFirst](), sizeof[TSecond]())]
 
-// ============================================================
-// Section 1: Manual tagged sum type
-//
-// IntResult — either an Ok S64 or an S32 error code. The tag lives in the
-// wrapping record. The overlay carries the payload bytes. This is what
-// `variant IntResult` with cases `Ok : S64` and `Err : S32` lowers to.
-//
-// Constructors zero the overlay before writing a view: the Err view is only
-// 4 of the 8 bytes, and loading the whole overlay must not pick up
-// uninitialized bytes.
-// ============================================================
+# ============================================================
+# Section 1: Manual tagged sum type
+#
+# IntResult — either an Ok S64 or an S32 error code. The tag lives in the
+# wrapping record. The overlay carries the payload bytes. This is what
+# `variant IntResult` with cases `Ok : S64` and `Err : S32` lowers to.
+#
+# Constructors zero the overlay before writing a view: the Err view is only
+# 4 of the 8 bytes, and loading the whole overlay must not pick up
+# uninitialized bytes.
+# ============================================================
 
 choice IntResultTag: S32
     OK: 0
@@ -73,7 +73,7 @@ routine IntResult.Failure(code: S32) -> Me
     r: Me = Me(tag: IntResultTag.ERR, payload: payload)
     return r
 
-/// Caller checks the tag explicitly, then casts to the active view.
+### Caller checks the tag explicitly, then casts to the active view.
 routine IntResult.print(me: @Me) -> None
     tag: IntResultTag = me.tag.peek()
     when tag
@@ -91,14 +91,14 @@ routine IntResult.print(me: @Me) -> None
             return
         else => unreachable
 
-// ============================================================
-// Section 2: C ABI overlay — Number that is either int-shaped or float-shaped
-//
-// This is the pattern for `union sigval`, sockaddr families, or any C API
-// that hands you a union by value. Tessera declares the storage record. Thin
-// wrappers name the views so callers don't sprinkle casts at every site.
-// Both views are the full 8 bytes, so no zeroing is needed.
-// ============================================================
+# ============================================================
+# Section 2: C ABI overlay — Number that is either int-shaped or float-shaped
+#
+# This is the pattern for `union sigval`, sockaddr families, or any C API
+# that hands you a union by value. Tessera declares the storage record. Thin
+# wrappers name the views so callers don't sprinkle casts at every site.
+# Both views are the full 8 bytes, so no zeroing is needed.
+# ============================================================
 
 record Number
     @aligned(max(alignof[S64](), alignof[B64]()))
@@ -128,12 +128,12 @@ routine Number.to_float(me: @Me) -> B64
     f: B64 = view.peek()
     return f
 
-// ============================================================
-// start
-// ============================================================
+# ============================================================
+# start
+# ============================================================
 
 routine start() -> None
-    // --- tagged result ---
+    # --- tagged result ---
     ok: IntResult = .Success(42)
     err: IntResult = .Failure(-5)
 
@@ -142,7 +142,7 @@ routine start() -> None
     ok_ptr.print()
     err_ptr.print()
 
-    // --- C ABI overlay ---
+    # --- C ABI overlay ---
     to_int: Number = .from_int(7)
     to_float: Number = .from_float(3.14)
 

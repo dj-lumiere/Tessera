@@ -37,7 +37,7 @@ public static partial class LanguageServer
         if (line >= lines.Length) return result;
         string before = lines[line][..Math.Min(character, lines[line].Length)];
         // Inside a comment or a string there's nothing to complete.
-        if (before.Contains("//", StringComparison.Ordinal) || before.Count(c => c == '"') % 2 == 1) return result;
+        if (before.Contains("#", StringComparison.Ordinal) || before.Count(c => c == '"') % 2 == 1) return result;
 
         int wordStart = before.Length;
         while (wordStart > 0 && IsNameChar(before[wordStart - 1])) wordStart--;

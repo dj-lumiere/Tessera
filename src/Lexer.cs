@@ -264,7 +264,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                     if (Peek() == '|') throw new CompileError(pos, "'or' joins two Bool values; '|' is bitor");
                     kind = TokenKind.Pipe;
                     break;
-                case '/': kind = TokenKind.Slash; break;   // a module path: Standard/Os, or division (a `//` comment is skipped above)
+                case '/': kind = TokenKind.Slash; break;   // a module path: Standard/Os, or division
                 case '#': kind = TokenKind.Hash; break;    // the old spelling of an annotation, which the parser reports
                 case '_': kind = TokenKind.Underscore; break;
                 case '=':
@@ -363,8 +363,9 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
 
     private static bool IsIdentChar(char c) => char.IsAsciiLetterOrDigit(c) || c == '_';
 
-    /// `//` starts a comment, and `///` a doc comment, which the lexer skips the same way.
-    private bool IsComment(int j) => j + 1 < src.Length && src[j] == '/' && src[j + 1] == '/';
+    /// `#` starts a comment, and `###` a doc comment, which the lexer skips the same way. `#[` is the old spelling of
+    /// an annotation, kept as a token so the parser can say so.
+    private bool IsComment(int j) => j < src.Length && src[j] == '#' && !(j + 1 < src.Length && src[j + 1] == '[');
 
     private void SkipSpaceAndComments()
     {

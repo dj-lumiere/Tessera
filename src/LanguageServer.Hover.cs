@@ -153,8 +153,8 @@ public static partial class LanguageServer
         var renamed = TypeParamsOf(type).Zip(owner.Args)
             .Where(x => x.Second is TypeArgType { Type: { Path: null, Args.Count: 0 } } given && given.Type.Name != x.First)
             .ToDictionary(x => x.First, x => ((TypeArgType)x.Second).Type.Name);
-        string from = Ko($"// from {type.GetType().Name.Replace("Decl", "").ToLowerInvariant()} {owner}",
-            $"// {owner}의 제약");
+        string from = Ko($"# from {type.GetType().Name.Replace("Decl", "").ToLowerInvariant()} {owner}",
+            $"# {owner}의 제약");
         foreach (string line in HeaderOf(analysis, type).Split('\n').Skip(1).Where(l => l.StartsWith("require ")))
         {
             string written = renamed.Count == 0
@@ -173,7 +173,7 @@ public static partial class LanguageServer
         for (int i = pos.Line - 2; i >= 0 && i < lines.Length; i--)
         {
             string l = lines[i].Trim();
-            if (l.StartsWith("///")) doc.Add(l[3..].StartsWith(' ') ? l[4..] : l[3..]);
+            if (l.StartsWith("###")) doc.Add(l[3..].StartsWith(' ') ? l[4..] : l[3..]);
             else if (!l.StartsWith('#')) break;
         }
         doc.Reverse();

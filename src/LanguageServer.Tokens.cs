@@ -85,7 +85,7 @@ public static partial class LanguageServer
                     spans.Add((t.Pos.Line, t.Pos.Col, t.Kind == TokenKind.Hash && i + 1 < now.Count ? 1 : t.Text.Length, kind));
                 }
         }
-        spans.AddRange(DocSpans(text, "///"));
+        spans.AddRange(DocSpans(text, "###"));
 
         var sourceLines = text.Replace("\r\n", "\n").Split('\n');
         int prevLine = 0, prevChar = 0;
@@ -522,12 +522,12 @@ public static partial class LanguageServer
                 _ => null,
             };
 
-        /// The `//` comment at the end of a line, which a choice's cases are often described with.
+        /// The `#` comment at the end of a line, which a choice's cases are often described with.
         private string? TrailingComment(Pos pos)
         {
             string line = LineAt(analysis, pos);
-            int at = line.IndexOf("//", StringComparison.Ordinal);
-            return at < 0 ? null : line[(at + 2)..].Trim();
+            int at = line.IndexOf("#", StringComparison.Ordinal);
+            return at < 0 ? null : line[(at + 1)..].Trim();
         }
 
         /// The routine a call on the type `owner` names, when it is the only one by that name.

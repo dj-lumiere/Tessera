@@ -1,231 +1,231 @@
-// Tessera stdlib: running another program, the environment, and leaving this one
-//
-// run_process starts a program (looked up on PATH as a shell would) with its arguments, waits for it, and hands
-// back how it ended and what it wrote. Its standard input is the null device unless the options say to share this
-// process's. Its output and error are captured (read to the end, both at once, so a child that fills one while the
-// other waits can't deadlock), shared, or discarded. Environment overrides are merged into this process's
-// environment, so PATH and the rest stay. run_shell runs a command line through the platform shell (sh -c, or
-// cmd.exe /c) for pipes and globs, at the cost of the shell's quoting.
-//
-// The per-OS halves are Process_posix.tess (fork and execvp) and Process_windows.tess (CreateProcessW).
+# Tessera stdlib: running another program, the environment, and leaving this one
+#
+# run_process starts a program (looked up on PATH as a shell would) with its arguments, waits for it, and hands
+# back how it ended and what it wrote. Its standard input is the null device unless the options say to share this
+# process's. Its output and error are captured (read to the end, both at once, so a child that fills one while the
+# other waits can't deadlock), shared, or discarded. Environment overrides are merged into this process's
+# environment, so PATH and the rest stay. run_shell runs a command line through the platform shell (sh -c, or
+# cmd.exe /c) for pipes and globs, at the cost of the shell's quoting.
+#
+# The per-OS halves are Process_posix.tess (fork and execvp) and Process_windows.tess (CreateProcessW).
 
 module Standard/Os
 
 import Standard/Alloc
 
-/// The exit status {set_exit_code} stored, which `start` returning ends the process with.
+### The exit status {set_exit_code} stored, which `start` returning ends the process with.
 private global EXIT_CODE: @S32 <- 0
 
-/// Why a program couldn't start, or its output couldn't be captured.
+### Why a program couldn't start, or its output couldn't be captured.
 choice ProcessError: U8
-    NOT_FOUND  // no such program
+    NOT_FOUND  # no such program
     PERMISSION_DENIED
-    INVALID_ARGUMENT  // a NUL inside the program, an argument, the directory, or a variable, or a '=' in a name
-    OUT_OF_MEMORY  // the working memory, or room for the captured output, couldn't be allocated
+    INVALID_ARGUMENT  # a NUL inside the program, an argument, the directory, or a variable, or a '=' in a name
+    OUT_OF_MEMORY  # the working memory, or room for the captured output, couldn't be allocated
     OTHER
 
-/// What the child's standard input is.
+### What the child's standard input is.
 choice InputMode: U8
-    NULL  // the null device: it reads end-of-file at once
-    INHERIT  // this process's standard input
+    NULL  # the null device: it reads end-of-file at once
+    INHERIT  # this process's standard input
 
-/// What becomes of the child's standard output or error.
+### What becomes of the child's standard output or error.
 choice OutputMode: U8
-    CAPTURE  // read into the ProcessOutput
-    INHERIT  // this process's
-    NULL  // discarded
+    CAPTURE  # read into the ProcessOutput
+    INHERIT  # this process's
+    NULL  # discarded
 
-/// A program that ended by exiting.
+### A program that ended by exiting.
 @derive(Representable, Diagnosable, Equatable, Hashable, Comparable)
 record Exited
-    code: S32  // its exit code
+    code: S32  # its exit code
 
-/// A program a signal stopped (POSIX only).
+### A program a signal stopped (POSIX only).
 @derive(Representable, Diagnosable, Equatable, Hashable, Comparable)
 record Signaled
-    signal: S32  // the signal that stopped it
+    signal: S32  # the signal that stopped it
 
-/// How a program ended.
+### How a program ended.
 variant ExitStatus
     Exited
     Signaled
 
-/// One environment variable for the child.
+### One environment variable for the child.
 record EnvVar
     name: Span[Byte]
     value: Span[Byte]
 
-/// How {run_process_result} starts a program: its working directory, environment overrides, and what its standard
-/// streams are. {ProcessOptions.default} is a good start.
+### How {run_process_result} starts a program: its working directory, environment overrides, and what its standard
+### streams are. {ProcessOptions.default} is a good start.
 record ProcessOptions
-    directory: Maybe[Span[Byte]]  // where it starts: None for this process's working directory
-    env: @EnvVar  // env_count overrides of this process's environment
+    directory: Maybe[Span[Byte]]  # where it starts: None for this process's working directory
+    env: @EnvVar  # env_count overrides of this process's environment
     env_count: USize
     stdin: InputMode
     stdout: OutputMode
     stderr: OutputMode
 
-/// What run_process hands back. A captured stream is in memory from the allocator, and `destruct()` releases both.
-/// One not captured is empty and holds nothing.
+### What run_process hands back. A captured stream is in memory from the allocator, and `destruct()` releases both.
+### One not captured is empty and holds nothing.
 record ProcessOutput
 obeys Destructible[ProcessOutput]
     status: ExitStatus
     stdout: Memory[Byte]
     stderr: Memory[Byte]
 
-/// Makes a `EnvVar` from its fields.
-/// :param name: Its `name`.
-/// :param value: Its `value`.
-/// :returns: The new value.
+### Makes a `EnvVar` from its fields.
+### :param name: Its `name`.
+### :param value: Its `value`.
+### :returns: The new value.
 routine EnvVar.construct(name: Span[Byte], value: Span[Byte]) -> Me
     return Me(name, value)
 
-/// Releases the memory its `name` and `value` hold.
+### Releases the memory its `name` and `value` hold.
 routine EnvVar.destruct(me: @Me) -> None
     me.name.destruct()
     me.value.destruct()
     return
 
-/// Makes a `ProcessOptions` from its fields.
-/// :param directory: Its `directory`.
-/// :param env: Its `env`.
-/// :param env_count: Its `env_count`.
-/// :param stdin: Its `stdin`.
-/// :param stdout: Its `stdout`.
-/// :param stderr: Its `stderr`.
-/// :returns: The new value.
+### Makes a `ProcessOptions` from its fields.
+### :param directory: Its `directory`.
+### :param env: Its `env`.
+### :param env_count: Its `env_count`.
+### :param stdin: Its `stdin`.
+### :param stdout: Its `stdout`.
+### :param stderr: Its `stderr`.
+### :returns: The new value.
 routine ProcessOptions.construct(directory: Maybe[Span[Byte]], env: @EnvVar, env_count: USize,
     stdin: InputMode, stdout: OutputMode, stderr: OutputMode) -> Me
     return Me(directory, env, env_count, stdin, stdout, stderr)
 
-/// Releases nothing: a `ProcessOptions` holds no memory of its own.
+### Releases nothing: a `ProcessOptions` holds no memory of its own.
 routine ProcessOptions.destruct(me: @Me) -> None
     return
 
-/// Makes a `ProcessOutput` from its fields.
-/// :param status: Its `status`.
-/// :param stdout: Its `stdout`.
-/// :param stderr: Its `stderr`.
-/// :returns: The new value.
+### Makes a `ProcessOutput` from its fields.
+### :param status: Its `status`.
+### :param stdout: Its `stdout`.
+### :param stderr: Its `stderr`.
+### :returns: The new value.
 routine ProcessOutput.construct(status: ExitStatus, stdout: Memory[Byte],
     stderr: Memory[Byte]) -> Me
     return Me(status, stdout, stderr)
 
-/// Gives both captured streams back to the allocator they came from.
+### Gives both captured streams back to the allocator they came from.
 @track_caller
 routine ProcessOutput.destruct(me: @Me) -> None
     me.stdout.destruct()
     me.stderr.destruct()
     return
 
-/// No directory and no overrides, the null device as input, and both output streams captured.
-/// :returns: The default options.
+### No directory and no overrides, the null device as input, and both output streams captured.
+### :returns: The default options.
 routine ProcessOptions.default() -> Me
     return Me(directory: None(), env: null, env_count: 0, stdin: InputMode.NULL, stdout: OutputMode.CAPTURE, stderr: OutputMode.CAPTURE)
 
-/// The exit code, or for a program a signal stopped, 128 plus the signal (as a POSIX shell reports it).
-/// :returns: The code.
+### The exit code, or for a program a signal stopped, 128 plus the signal (as a POSIX shell reports it).
+### :returns: The code.
 routine ExitStatus.code(me: Me) -> S32
     when me
         is Exited as exited => return exited.code
         is Signaled as signaled => return signaled.signal +% 128
 
-/// Whether it exited with code 0.
-/// :returns: True for an exit with code 0, false for any other code or a signal.
+### Whether it exited with code 0.
+### :returns: True for an exit with code 0, false for any other code or a signal.
 routine ExitStatus.is_success(me: Me) -> Bool
     when me
         is Exited as exited => return exited.code == 0
         is Signaled => return false
 
-/// Runs a command line through the platform shell (`/bin/sh -c` on Linux and macOS, `cmd.exe /c` on Windows) with
-/// {run_process_result}, for pipes and globs at the cost of the shell's quoting.
-/// :param command: The command line.
-/// :param options: The directory, environment overrides, and standard streams.
-/// :param alloc: The allocator for the captured output and the working memory.
-/// :returns: The {ProcessOutput}, or a {ProcessError} when the shell couldn't start.
+### Runs a command line through the platform shell (`/bin/sh -c` on Linux and macOS, `cmd.exe /c` on Windows) with
+### {run_process_result}, for pipes and globs at the cost of the shell's quoting.
+### :param command: The command line.
+### :param options: The directory, environment overrides, and standard streams.
+### :param alloc: The allocator for the captured output and the working memory.
+### :returns: The {ProcessOutput}, or a {ProcessError} when the shell couldn't start.
 @expensive("starts a process")
 routine run_shell_result(command: Span[Byte], options: ProcessOptions,
     alloc: @MemoryManager) -> Result[ProcessOutput, ProcessError]
     local args: @Array[Span[Byte], 2] <- [shell_flag(), command]
     return run_process_result(program: shell_program(), args: args.getview(), options, alloc)
 
-/// The platform shell {run_shell_result} starts: `cmd.exe` on Windows, `/bin/sh` elsewhere.
-/// :returns: The program name.
+### The platform shell {run_shell_result} starts: `cmd.exe` on Windows, `/bin/sh` elsewhere.
+### :returns: The program name.
 @target(os: "windows")
 private routine shell_program() -> Span[Byte]
     return "cmd.exe"
 
-/// The shell's flag that takes a command line: `/c` for cmd.exe, `-c` for sh.
-/// :returns: The flag.
+### The shell's flag that takes a command line: `/c` for cmd.exe, `-c` for sh.
+### :returns: The flag.
 @target(os: "windows")
 private routine shell_flag() -> Span[Byte]
     return "/c"
 
-/// The platform shell {run_shell_result} starts: `cmd.exe` on Windows, `/bin/sh` elsewhere.
-/// :returns: The program name.
+### The platform shell {run_shell_result} starts: `cmd.exe` on Windows, `/bin/sh` elsewhere.
+### :returns: The program name.
 @target(os: ("linux", "macos"))
 private routine shell_program() -> Span[Byte]
     return "/bin/sh"
 
-/// The shell's flag that takes a command line: `/c` for cmd.exe, `-c` for sh.
-/// :returns: The flag.
+### The shell's flag that takes a command line: `/c` for cmd.exe, `-c` for sh.
+### :returns: The flag.
 @target(os: ("linux", "macos"))
 private routine shell_flag() -> Span[Byte]
     return "-c"
 
-/// Sets the exit status the program ends with when `start` returns. The last store wins: it is one atomic value, so
-/// any thread may set it, and the builder's `main` reads it after `start` returned (a thread still running then may
-/// or may not get its store in). A crash ends the process with its own status, whatever was set.
-/// :param code: The exit status, 0 for success.
+### Sets the exit status the program ends with when `start` returns. The last store wins: it is one atomic value, so
+### any thread may set it, and the builder's `main` reads it after `start` returned (a thread still running then may
+### or may not get its store in). A crash ends the process with its own status, whatever was set.
+### :param code: The exit status, 0 for success.
 routine set_exit_code(code: S32) -> None
     EXIT_CODE.poke_atomic(code)
     return
 
-/// The exit status the program ends with when `start` returns: the last {set_exit_code}, 0 when nothing set one.
-/// The builder's `main` returns it after `start`.
-/// :returns: The status.
+### The exit status the program ends with when `start` returns: the last {set_exit_code}, 0 when nothing set one.
+### The builder's `main` returns it after `start`.
+### :returns: The status.
 routine exit_code() -> S32
     return EXIT_CODE.peek_atomic()
 
-/// Ends this process with `status`, without returning. (Nothing is flushed but what the C library flushes.)
-/// :param status: The process's exit status.
+### Ends this process with `status`, without returning. (Nothing is flushed but what the C library flushes.)
+### :param status: The process's exit status.
 @noreturn
 routine exit(status: S32) -> None
     c_exit(status.to[CInt]())
 
-// -- what both halves share ------------------------------------------------------------
+# -- what both halves share ------------------------------------------------------------
 
-/// A captured stream as it grows, in memory from an allocator: `storage` holds the capacity, `count` the bytes in
-/// use.
+### A captured stream as it grows, in memory from an allocator: `storage` holds the capacity, `count` the bytes in
+### use.
 internal record CaptureBuffer
     storage: Memory[Byte]
     count: USize
-    failed: Bool  // an allocation failed: what came after was dropped
+    failed: Bool  # an allocation failed: what came after was dropped
 
-/// Makes a `CaptureBuffer` from its fields.
-/// :param storage: Its `storage`.
-/// :param count: Its `count`.
-/// :param failed: Its `failed`.
-/// :returns: The new value.
+### Makes a `CaptureBuffer` from its fields.
+### :param storage: Its `storage`.
+### :param count: Its `count`.
+### :param failed: Its `failed`.
+### :returns: The new value.
 internal routine CaptureBuffer.construct(storage: Memory[Byte], count: USize, failed: Bool) -> Me
     return Me(storage, count, failed)
 
-/// Gives the buffer's memory back.
+### Gives the buffer's memory back.
 internal routine CaptureBuffer.destruct(me: @Me) -> None
     me.storage.destruct()
     return
 
-/// An empty capture buffer that holds no memory yet. Its `failed` is read when the run ends: a capture that lost
-/// bytes makes the run fail with OutOfMemory instead of handing back a truncated stream.
-/// :returns: The buffer.
+### An empty capture buffer that holds no memory yet. Its `failed` is read when the run ends: a capture that lost
+### bytes makes the run fail with OutOfMemory instead of handing back a truncated stream.
+### :returns: The buffer.
 internal routine CaptureBuffer.empty() -> Me
     return Me(storage: .hollow(), count: 0, failed: false)
 
-/// Appends `n` bytes, growing the buffer (to at least double, and at least 256 bytes). An allocation failure drops
-/// them and marks the buffer `failed`.
-/// :param chunk: The first byte to append.
-/// :param n: How many bytes to append.
-/// :param alloc: The allocator the buffer's memory comes from.
+### Appends `n` bytes, growing the buffer (to at least double, and at least 256 bytes). An allocation failure drops
+### them and marks the buffer `failed`.
+### :param chunk: The first byte to append.
+### :param n: How many bytes to append.
+### :param alloc: The allocator the buffer's memory comes from.
 @reshaping
 internal routine CaptureBuffer.append(me: @Me, chunk: @Byte, n: USize,
     alloc: @MemoryManager) -> None
@@ -262,22 +262,22 @@ internal routine CaptureBuffer.append(me: @Me, chunk: @Byte, n: USize,
     next_count.poke_into(me.count)
     return
 
-/// What was captured, owned by the caller, who drops it.
-/// :returns: The captured bytes.
+### What was captured, owned by the caller, who drops it.
+### :returns: The captured bytes.
 internal routine CaptureBuffer.owned(me: Me) -> Memory[Byte]
     return Memory[Byte](data: me.storage.data, count: me.count, manager: me.storage.manager, generation: me.storage.generation)
 
-/// What was captured, owned by the caller, who drops it.
-/// :returns: The captured bytes.
+### What was captured, owned by the caller, who drops it.
+### :returns: The captured bytes.
 internal routine CaptureBuffer.owned(me: @Me) -> Memory[Byte]
     return me.peek().owned()
 
-/// Whether a NUL is inside any text the child would get, or an override's name holds a '=': what run_process_result
-/// turns down with InvalidArgument before it allocates anything, so a later failure to allocate is OutOfMemory.
-/// :param program: The program to run.
-/// :param args: The arguments.
-/// :param options: The directory and environment overrides.
-/// :returns: True when the program, an argument, an override, or the directory can't be passed to the child.
+### Whether a NUL is inside any text the child would get, or an override's name holds a '=': what run_process_result
+### turns down with InvalidArgument before it allocates anything, so a later failure to allocate is OutOfMemory.
+### :param program: The program to run.
+### :param args: The arguments.
+### :param options: The directory and environment overrides.
+### :returns: True when the program, an argument, an override, or the directory can't be passed to the child.
 internal routine has_nul(program: Span[Byte], args: Span[Span[Byte]],
     options: ProcessOptions) -> Bool
     local arg_count: USize = args.count()
@@ -302,12 +302,12 @@ internal routine has_nul(program: Span[Byte], args: Span[Span[Byte]],
             is Span[Byte] as d => return d.has("\0")
             is None => return false
 
-/// Whether `name`'s bytes equal the start of `entry` up to its '=' (a "NAME=VALUE" entry), ASCII letters in any case
-/// when `fold` is set.
-/// :param name: The variable name.
-/// :param entry: The "NAME=VALUE" entry.
-/// :param fold: True to compare ASCII letters without regard to case.
-/// :returns: True when `entry` is the variable `name`.
+### Whether `name`'s bytes equal the start of `entry` up to its '=' (a "NAME=VALUE" entry), ASCII letters in any case
+### when `fold` is set.
+### :param name: The variable name.
+### :param entry: The "NAME=VALUE" entry.
+### :param fold: True to compare ASCII letters without regard to case.
+### :returns: True when `entry` is the variable `name`.
 internal routine env_key_matches(name: Span[Byte], entry: Span[Byte], fold: Bool) -> Bool
     n: USize = name.count()
     if not (entry.count() > n)
@@ -325,9 +325,9 @@ internal routine env_key_matches(name: Span[Byte], entry: Span[Byte], fold: Bool
     else
         return false
 
-/// The lowercase form of an ASCII uppercase letter, any other byte unchanged.
-/// :param c: The byte.
-/// :returns: `c` plus 32 for 'A' to 'Z', else `c`.
+### The lowercase form of an ASCII uppercase letter, any other byte unchanged.
+### :param c: The byte.
+### :returns: `c` plus 32 for 'A' to 'Z', else `c`.
 internal routine ascii_lower(c: U8) -> U8
     if c.between(lo: 65, hi: 90)
         return c + 32

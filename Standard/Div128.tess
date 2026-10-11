@@ -1,17 +1,17 @@
-// Tessera stdlib: U128 and S128 division
-//
-// On a 64-bit target, LLVM's 128-bit udiv / urem become calls to compiler-rt's __udivti3 / __umodti3, a general
-// shift-and-subtract loop. This divides with two U64 limbs instead (Knuth's algorithm D, which for two limbs is at
-// most two steps), each step one hardware divq on x86-64 or Möller and Granlund's multiply-only division elsewhere
-// (WideDiv.tess):
-//   both fit in 64 bits   one U64 divide
-//   divisor of one limb   two 2-by-1 steps, the remainder of the first feeding the second
-//   divisor of two limbs  one 3-by-2 step (the quotient fits in one limb)
-//
-// A target narrower than 64 bits never reaches LLVM's 128-bit udiv either: some of them expand it into a
-// bit-at-a-time loop, and riscv32 calls __udivti3 / __umodti3, which only compiler-rt has (libgcc builds its 128-bit
-// helpers for 64-bit targets alone). There the U128 widens to a U256 and goes through Div256.tess's algorithm D over
-// 32-bit limbs, told the dividend has four of them, so each digit is one U64 by U32 division.
+# Tessera stdlib: U128 and S128 division
+#
+# On a 64-bit target, LLVM's 128-bit udiv / urem become calls to compiler-rt's __udivti3 / __umodti3, a general
+# shift-and-subtract loop. This divides with two U64 limbs instead (Knuth's algorithm D, which for two limbs is at
+# most two steps), each step one hardware divq on x86-64 or Möller and Granlund's multiply-only division elsewhere
+# (WideDiv.tess):
+#   both fit in 64 bits   one U64 divide
+#   divisor of one limb   two 2-by-1 steps, the remainder of the first feeding the second
+#   divisor of two limbs  one 3-by-2 step (the quotient fits in one limb)
+#
+# A target narrower than 64 bits never reaches LLVM's 128-bit udiv either: some of them expand it into a
+# bit-at-a-time loop, and riscv32 calls __udivti3 / __umodti3, which only compiler-rt has (libgcc builds its 128-bit
+# helpers for 64-bit targets alone). There the U128 widens to a U256 and goes through Div256.tess's algorithm D over
+# 32-bit limbs, told the dividend has four of them, so each digit is one U64 by U32 division.
 
 module Standard/Core
 
@@ -19,11 +19,11 @@ record U128DivRem
     quotient: U128
     remainder: U128
 
-/// u / d and u % d.
-/// :param u: The dividend.
-/// :param d: The divisor.
-/// :returns: The quotient and the remainder.
-/// :throws: Crashes with `DivisionByZeroError` when `d` is 0.
+### u / d and u % d.
+### :param u: The dividend.
+### :param d: The divisor.
+### :returns: The quotient and the remainder.
+### :throws: Crashes with `DivisionByZeroError` when `d` is 0.
 @target(size: 64)
 @track_caller
 routine wide_divrem(u: U128, d: U128) -> U128DivRem
@@ -32,7 +32,7 @@ routine wide_divrem(u: U128, d: U128) -> U128DivRem
     if u < d
         return U128DivRem(quotient: 0, remainder: u)
 
-    // d <= u, so when u fits in 64 bits, both do.
+    # d <= u, so when u fits in 64 bits, both do.
     else if u >> 64 == 0
         a: U64 = u.to_wrap[U64]()
         b: U64 = d.to_wrap[U64]()
@@ -44,11 +44,11 @@ routine wide_divrem(u: U128, d: U128) -> U128DivRem
         r: U128DivRem = u128_divrem_by_two_limbs(u, d)
         return r
 
-/// u / d and u % d.
-/// :param u: The dividend.
-/// :param d: The divisor.
-/// :returns: The quotient and the remainder.
-/// :throws: Crashes with `DivisionByZeroError` when `d` is 0.
+### u / d and u % d.
+### :param u: The dividend.
+### :param d: The divisor.
+### :returns: The quotient and the remainder.
+### :throws: Crashes with `DivisionByZeroError` when `d` is 0.
 @target(size: not 64)
 @track_caller
 routine wide_divrem(u: U128, d: U128) -> U128DivRem
@@ -57,7 +57,7 @@ routine wide_divrem(u: U128, d: U128) -> U128DivRem
     if u < d
         return U128DivRem(quotient: 0, remainder: u)
 
-    // d <= u, so when u fits in 64 bits, both do.
+    # d <= u, so when u fits in 64 bits, both do.
     else if u >> 64 == 0
         a: U64 = u.to_wrap[U64]()
         b: U64 = d.to_wrap[U64]()
@@ -72,18 +72,18 @@ routine wide_divrem(u: U128, d: U128) -> U128DivRem
         rem: U128 = r.remainder.to_wrap[U128]()
         return U128DivRem(quotient: q, remainder: rem)
 
-/// u / d and u % d for a nonzero one-limb d: normalized so d's top bit is set, then two 2-by-1 steps.
-/// :param u: The dividend.
-/// :param d: The divisor, not zero.
-/// :returns: The quotient and the remainder.
+### u / d and u % d for a nonzero one-limb d: normalized so d's top bit is set, then two 2-by-1 steps.
+### :param u: The dividend.
+### :param d: The divisor, not zero.
+### :returns: The quotient and the remainder.
 @target(size: 64)
 private routine u128_divrem_by_limb(u: U128, d: U64) -> U128DivRem
     shift: U64 = d.leading_zeros()
     d_norm: U64 = d << shift
     v: U64 = div_2by1_prepare(d_norm)
     u_norm: U128 = u << shift.to[U128]()
-    // The bits shifted out of the top, below d_norm (a funnel shift by 0 gives 0, where a plain shr by 64 would
-    // be poison).
+    # The bits shifted out of the top, below d_norm (a funnel shift by 0 gives 0, where a plain shr by 64 would
+    # be poison).
     u_over: U64 = fshl[U64](hi: 0, lo: (u >> 64).to_wrap[U64](), amt: shift)
     high: Div2By1 = div_2by1(u1: u_over, u0: (u_norm >> 64).to_wrap[U64](), d: d_norm, v)
     low: Div2By1 = div_2by1(u1: high.remainder, u0: u_norm.to_wrap[U64](), d: d_norm, v)
@@ -91,10 +91,10 @@ private routine u128_divrem_by_limb(u: U128, d: U64) -> U128DivRem
     q: U128 = q_high | low.quotient.to[U128]()
     return U128DivRem(quotient: q, remainder: (low.remainder >> shift).to[U128]())
 
-/// u / d and u % d for a two-limb d <= u: normalized so d's top bit is set, then one 3-by-2 step.
-/// :param u: The dividend.
-/// :param d: The divisor, at least 2^64 and at most `u`.
-/// :returns: The quotient and the remainder.
+### u / d and u % d for a two-limb d <= u: normalized so d's top bit is set, then one 3-by-2 step.
+### :param u: The dividend.
+### :param d: The divisor, at least 2^64 and at most `u`.
+### :returns: The quotient and the remainder.
 @target(size: 64)
 private routine u128_divrem_by_two_limbs(u: U128, d: U128) -> U128DivRem
     d_top: U64 = (d >> 64).to_wrap[U64]()
@@ -108,9 +108,9 @@ private routine u128_divrem_by_two_limbs(u: U128, d: U128) -> U128DivRem
     step: Div3By2 = div_3by2(u2: u_over, u1: (u_norm >> 64).to_wrap[U64](), u0: u_norm.to_wrap[U64](), divisor)
     return U128DivRem(quotient: step.quotient.to[U128](), remainder: step.remainder >> shift.to[U128]())
 
-/// |x| as a U128 (MIN's magnitude too).
-/// :param x: The value.
-/// :returns: The magnitude, 2^127 for `S128.MIN`.
+### |x| as a U128 (MIN's magnitude too).
+### :param x: The value.
+### :returns: The magnitude, 2^127 for `S128.MIN`.
 private routine s128_magnitude(x: S128) -> U128
     u: U128 = bitcast[S128, U128](x)
     if x < 0
@@ -118,11 +118,11 @@ private routine s128_magnitude(x: S128) -> U128
     else
         return u
 
-/// The quotient truncated toward zero.
-/// :param u: The dividend.
-/// :param d: The divisor.
-/// :returns: The quotient.
-/// :throws: Crashes with `DivisionByZeroError` when `d` is 0, and with `IntegerOverflowError` on `MIN / -1`.
+### The quotient truncated toward zero.
+### :param u: The dividend.
+### :param d: The divisor.
+### :returns: The quotient.
+### :throws: Crashes with `DivisionByZeroError` when `d` is 0, and with `IntegerOverflowError` on `MIN / -1`.
 @track_caller
 routine wide_div(u: S128, d: S128) -> S128
     if u == S128.MIN and d == -1
@@ -134,11 +134,11 @@ routine wide_div(u: S128, d: S128) -> S128
     else
         return q
 
-/// The remainder with the dividend's sign (MIN % -1 is 0).
-/// :param u: The dividend.
-/// :param d: The divisor.
-/// :returns: The remainder.
-/// :throws: Crashes with `DivisionByZeroError` when `d` is 0.
+### The remainder with the dividend's sign (MIN % -1 is 0).
+### :param u: The dividend.
+### :param d: The divisor.
+### :returns: The remainder.
+### :throws: Crashes with `DivisionByZeroError` when `d` is 0.
 @track_caller
 routine wide_rem(u: S128, d: S128) -> S128
     r: U128DivRem = wide_divrem(u: s128_magnitude(u), d: s128_magnitude(d))

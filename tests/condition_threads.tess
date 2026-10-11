@@ -1,62 +1,62 @@
-// SignalCaster across threads. A producer hands values to the main thread through a one-value mailbox, waiting for room
-// on one SignalCaster while the main thread waits for a value on another: every value arrives, in order. Four threads
-// wait at a gate for a token: each wake_one with one token lets exactly one through, and none is lost though all
-// four were waiting. Four threads wait at a closed gate: one wake_all lets every one through. Waiters with a
-// deadline under contention, while another thread takes the mutex and wakes everyone over and over: those whose
-// condition never comes true give up at their deadline (the spurious wakes don't extend it), and those whose
-// condition comes true return in time.
-//
-// Every waiter checks its condition again after each wait, so the output doesn't depend on when the threads run.
+# SignalCaster across threads. A producer hands values to the main thread through a one-value mailbox, waiting for room
+# on one SignalCaster while the main thread waits for a value on another: every value arrives, in order. Four threads
+# wait at a gate for a token: each wake_one with one token lets exactly one through, and none is lost though all
+# four were waiting. Four threads wait at a closed gate: one wake_all lets every one through. Waiters with a
+# deadline under contention, while another thread takes the mutex and wakes everyone over and over: those whose
+# condition never comes true give up at their deadline (the spurious wakes don't extend it), and those whose
+# condition comes true return in time.
+#
+# Every waiter checks its condition again after each wait, so the output doesn't depend on when the threads run.
 
 import Standard/Alloc
 import Standard/Format
 import Standard/Os
 
-/// The values the producer hands over.
+### The values the producer hands over.
 preset ROUNDS: U64 = 10000
-/// The threads at the gate.
+### The threads at the gate.
 preset GATE_THREADS: USize = 4
-/// The waiters of each kind in the deadline test.
+### The waiters of each kind in the deadline test.
 preset TIMED_THREADS: USize = 3
-/// How long a waiter whose condition never comes true waits.
+### How long a waiter whose condition never comes true waits.
 preset SHORT_NS: U64 = 20000000
-/// The deadline of a waiter whose condition comes true, far enough away never to be reached.
+### The deadline of a waiter whose condition comes true, far enough away never to be reached.
 preset LONG_NS: U64 = 10000000000
 
-/// A one-value mailbox between the producer thread and the main thread.
+### A one-value mailbox between the producer thread and the main thread.
 record Mailbox
     lock: ExclusiveLock
-    not_full: SignalCaster  // the producer waits here for room
-    not_empty: SignalCaster  // the main thread waits here for a value
+    not_full: SignalCaster  # the producer waits here for room
+    not_empty: SignalCaster  # the main thread waits here for a value
     full: Bool
     value: U64
 
-/// Where the gate threads wait: for a token (wake_one) or for the gate to open (wake_all).
+### Where the gate threads wait: for a token (wake_one) or for the gate to open (wake_all).
 record Gate
     lock: ExclusiveLock
-    cond: SignalCaster  // the gate threads wait here
-    progress: SignalCaster  // the main thread waits here for the gate threads
-    waiting: USize  // gate threads that have reached the gate
-    tokens: USize  // passes not yet taken
-    passed: USize  // gate threads through the gate
+    cond: SignalCaster  # the gate threads wait here
+    progress: SignalCaster  # the main thread waits here for the gate threads
+    waiting: USize  # gate threads that have reached the gate
+    tokens: USize  # passes not yet taken
+    passed: USize  # gate threads through the gate
     open: Bool
 
-/// The deadline test: waiters for a condition that never comes true and for one that does, and a thread that takes
-/// the mutex and wakes everyone until told to stop.
+### The deadline test: waiters for a condition that never comes true and for one that does, and a thread that takes
+### the mutex and wakes everyone until told to stop.
 record Timed
     lock: ExclusiveLock
-    cond: SignalCaster  // the waiters wait here
-    progress: SignalCaster  // the main thread waits here for the waiters
+    cond: SignalCaster  # the waiters wait here
+    progress: SignalCaster  # the main thread waits here for the waiters
     waiting: USize
-    ready: Bool  // what the in-time waiters wait for
-    stop: Bool  // tells the waking thread to stop
-    timed_out: USize  // waiters that gave up at their deadline, not before
-    in_time: USize  // waiters that saw ready before their deadline
-    wrong: USize  // waiters that did neither
+    ready: Bool  # what the in-time waiters wait for
+    stop: Bool  # tells the waking thread to stop
+    timed_out: USize  # waiters that gave up at their deadline, not before
+    in_time: USize  # waiters that saw ready before their deadline
+    wrong: USize  # waiters that did neither
 
-// -- the mailbox ---------------------------------------------------------------------
+# -- the mailbox ---------------------------------------------------------------------
 
-/// The producer: hands over 1 to ROUNDS, waiting for room before each.
+### The producer: hands over 1 to ROUNDS, waiting for room before each.
 routine produce(box: @Mailbox) -> None
     each n in 1 to ROUNDS
         box.lock.lock()
@@ -72,8 +72,8 @@ routine produce(box: @Mailbox) -> None
     then
         return
 
-/// The main thread's side: takes ROUNDS values.
-/// :returns: Their sum, and whether they came in order.
+### The main thread's side: takes ROUNDS values.
+### :returns: Their sum, and whether they came in order.
 routine consume(box: @Mailbox) -> (U64, Bool)
     local sum: @U64 <- 0
     local in_order: @Bool <- true
@@ -94,16 +94,16 @@ routine consume(box: @Mailbox) -> (U64, Bool)
     then
         return (sum.peek(), in_order.peek())
 
-// -- the gate ------------------------------------------------------------------------
+# -- the gate ------------------------------------------------------------------------
 
-/// Counts the calling thread in at the gate, with the lock held.
+### Counts the calling thread in at the gate, with the lock held.
 routine arrive(gate: @Gate) -> None
     arrived: USize = gate.waiting.peek() + 1
     arrived.poke_into(gate.waiting)
     gate.progress.cast_all()
     return
 
-/// A gate thread that waits for a token and takes it.
+### A gate thread that waits for a token and takes it.
 routine take_token(gate: @Gate) -> None
     gate.lock.lock()
     arrive(gate)
@@ -121,7 +121,7 @@ routine take_token(gate: @Gate) -> None
             gate.cond.wait(gate.lock)
             continue
 
-/// A gate thread that waits for the gate to open and goes through.
+### A gate thread that waits for the gate to open and goes through.
 routine pass_open(gate: @Gate) -> None
     gate.lock.lock()
     arrive(gate)
@@ -133,23 +133,23 @@ routine pass_open(gate: @Gate) -> None
     gate.lock.unlock()
     return
 
-/// Waits, with the gate's lock held, until `count` gate threads have reached the gate. Each holds the lock from
-/// arriving until its wait releases it, so all of them are waiting by then.
+### Waits, with the gate's lock held, until `count` gate threads have reached the gate. Each holds the lock from
+### arriving until its wait releases it, so all of them are waiting by then.
 routine await_waiting(gate: @Gate, count: USize) -> None
     while gate.waiting.peek() < count
         gate.progress.wait(gate.lock)
     then
         return
 
-/// Waits, with the gate's lock held, until `count` gate threads are through.
+### Waits, with the gate's lock held, until `count` gate threads are through.
 routine await_passed(gate: @Gate, count: USize) -> None
     while gate.passed.peek() < count
         gate.progress.wait(gate.lock)
     then
         return
 
-/// Gives the waiting gate threads one token at a time, each with one wake_one, and waits for one to go through.
-/// :returns: Whether each token let exactly one through.
+### Gives the waiting gate threads one token at a time, each with one wake_one, and waits for one to go through.
+### :returns: Whether each token let exactly one through.
 routine hand_tokens(gate: @Gate) -> Bool
     local exact: @Bool <- true
 
@@ -166,7 +166,7 @@ routine hand_tokens(gate: @Gate) -> Bool
     gate.lock.unlock()
     return exact.peek()
 
-/// Opens the gate once every gate thread waits at it, with one wake_all.
+### Opens the gate once every gate thread waits at it, with one wake_all.
 routine open_gate(gate: @Gate) -> None
     gate.lock.lock()
     await_waiting(gate, count: GATE_THREADS)
@@ -175,22 +175,22 @@ routine open_gate(gate: @Gate) -> None
     gate.lock.unlock()
     return
 
-// -- the deadlines -------------------------------------------------------------------
+# -- the deadlines -------------------------------------------------------------------
 
-/// Counts the calling thread in, with the lock held.
+### Counts the calling thread in, with the lock held.
 routine arrive_timed(timed: @Timed) -> None
     arrived: USize = timed.waiting.peek() + 1
     arrived.poke_into(timed.waiting)
     timed.progress.cast_all()
     return
 
-/// Adds one to `counter`, with the lock held.
+### Adds one to `counter`, with the lock held.
 routine count_in(counter: @USize) -> None
     next_count: USize = counter.peek() + 1
     next_count.poke_into(counter)
     return
 
-/// Waits SHORT_NS for something that never comes true, again after every wake, until the deadline passes.
+### Waits SHORT_NS for something that never comes true, again after every wake, until the deadline passes.
 routine wait_never(timed: @Timed) -> None
     timed.lock.lock()
     arrive_timed(timed)
@@ -209,7 +209,7 @@ routine wait_never(timed: @Timed) -> None
             timed.lock.unlock()
             return
 
-/// Waits for ready, with a deadline it should never reach.
+### Waits for ready, with a deadline it should never reach.
 routine wait_ready(timed: @Timed) -> None
     timed.lock.lock()
     arrive_timed(timed)
@@ -237,7 +237,7 @@ routine wait_ready(timed: @Timed) -> None
         timed.lock.unlock()
         return
 
-/// Takes the mutex and wakes every waiter, over and over, until stop.
+### Takes the mutex and wakes every waiter, over and over, until stop.
 routine wake_everyone(timed: @Timed) -> None
     while true
         timed.lock.lock()
@@ -249,7 +249,7 @@ routine wake_everyone(timed: @Timed) -> None
         else
             continue
 
-/// Sets ready once every waiter waits, and wakes them all.
+### Sets ready once every waiter waits, and wakes them all.
 routine make_ready(timed: @Timed) -> None
     timed.lock.lock()
 
@@ -260,30 +260,30 @@ routine make_ready(timed: @Timed) -> None
     timed.lock.unlock()
     return
 
-// -- threads -------------------------------------------------------------------------
+# -- threads -------------------------------------------------------------------------
 
-/// A run of slots in a thread array: `count` of them from `first` on.
+### A run of slots in a thread array: `count` of them from `first` on.
 record ThreadSlots
-    /// The array the threads go into.
+    ### The array the threads go into.
     threads: @Array[Thread[None], 8]
-    /// The first slot of the run.
+    ### The first slot of the run.
     first: USize
-    /// How many slots the run has.
+    ### How many slots the run has.
     count: USize
 
-/// Makes a `ThreadSlots` from its fields.
-/// :param threads: Its `threads`.
-/// :param first: Its `first`.
-/// :param count: Its `count`.
-/// :returns: The new value.
+### Makes a `ThreadSlots` from its fields.
+### :param threads: Its `threads`.
+### :param first: Its `first`.
+### :param count: Its `count`.
+### :returns: The new value.
 routine ThreadSlots.construct(threads: @Array[Thread[None], 8], first: USize, count: USize) -> Me
     return Me(threads, first, count)
 
-/// Releases nothing: a `ThreadSlots` holds no memory of its own.
+### Releases nothing: a `ThreadSlots` holds no memory of its own.
 routine ThreadSlots.destruct(me: @Me) -> None
     return
 
-/// Starts a thread in each of `slots`, each running `body` on `state`.
+### Starts a thread in each of `slots`, each running `body` on `state`.
 routine spawn_many[T](body: Callable[(@T,), None], state: @T, slots: ThreadSlots) -> None
 needs T: typename
     local threads: @Array[Thread[None], 8] = slots.threads
@@ -296,7 +296,7 @@ needs T: typename
     then
         return
 
-/// Joins the threads in `threads` below `count`.
+### Joins the threads in `threads` below `count`.
 routine join_many(threads: @Array[Thread[None], 8], count: USize) -> None
     each i in 0 til count
         t: Thread[None] = threads[i]

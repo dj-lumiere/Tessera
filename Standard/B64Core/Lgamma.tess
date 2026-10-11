@@ -1,24 +1,24 @@
-// Tessera stdlib: the correctly rounded log-gamma function of B64
-//
-// log|gamma(x)| in double-double with an error bound: -log|x| plus a series for
-// |x| < 0.5, piece-wise polynomials on [0.5, 8.29541] (with the zeros at 1 and
-// 2 factored out), Stirling's series above, and the reflection formula for
-// negative x. When the bound can't decide the rounding, an accurate phase redoes
-// it in triple-double, with polynomials around the zeros of lgamma between
-// -10.5 and -2, and a table settles the hardest inputs. Only the value is
-// computed: C's signgam (the sign of gamma(x)) is not. Round to nearest only:
-// 0, the negative integers and +-inf give +inf, NaN comes back quiet.
-//
-// The double-double helpers and the fast logarithm come from Tgamma.tess.
-//
-// Ported from CORE-MATH, src/binary64/lgamma/lgamma.c via RazorForge's B64Lgamma.rf.
-// Copyright (c) 2024 Alexei Sibidanov <sibid@uvic.ca>
-// MIT license: see LICENSE-CORE-MATH
+# Tessera stdlib: the correctly rounded log-gamma function of B64
+#
+# log|gamma(x)| in double-double with an error bound: -log|x| plus a series for
+# |x| < 0.5, piece-wise polynomials on [0.5, 8.29541] (with the zeros at 1 and
+# 2 factored out), Stirling's series above, and the reflection formula for
+# negative x. When the bound can't decide the rounding, an accurate phase redoes
+# it in triple-double, with polynomials around the zeros of lgamma between
+# -10.5 and -2, and a table settles the hardest inputs. Only the value is
+# computed: C's signgam (the sign of gamma(x)) is not. Round to nearest only:
+# 0, the negative integers and +-inf give +inf, NaN comes back quiet.
+#
+# The double-double helpers and the fast logarithm come from Tgamma.tess.
+#
+# Ported from CORE-MATH, src/binary64/lgamma/lgamma.c via RazorForge's B64Lgamma.rf.
+# Copyright (c) 2024 Alexei Sibidanov <sibid@uvic.ca>
+# MIT license: see LICENSE-CORE-MATH
 
 module Standard/Core
 
-/// Upper borders of the piece-wise regions of [0.5, 8.29541], as the argument's bits
-/// shifted right by 37.
+### Upper borders of the piece-wise regions of [0.5, 8.29541], as the argument's bits
+### shifted right by 37.
 preset CM_B64_LGAMMA_UBRD: @Array[U64, 20] <- [0x0000000001FF0000, 0x0000000001FF146C,
     0x0000000001FF2B7B, 0x0000000001FF4532, 0x0000000001FF614C, 0x0000000001FF8310,
     0x0000000001FF93F7, 0x0000000001FFA880, 0x0000000001FFC05E, 0x0000000001FFDB73,
@@ -26,55 +26,55 @@ preset CM_B64_LGAMMA_UBRD: @Array[U64, 20] <- [0x0000000001FF0000, 0x0000000001F
     0x000000000200622A, 0x00000000020084D9, 0x0000000002009CE7, 0x000000000200BA2C,
     0x000000000200DDD7, 0x00000000020104BA]
 
-/// The 17 root regions of the accurate path (roots of lgamma for -10.5 < x < -2):
-/// offsets in CM_B64_LGAMMA_T of the triple-double root x0.
+### The 17 root regions of the accurate path (roots of lgamma for -10.5 < x < -2):
+### offsets in CM_B64_LGAMMA_T of the triple-double root x0.
 preset CM_B64_LGAMMA_RG_X0: @Array[USize, 17] <- [185, 240, 297, 340, 383, 434, 475, 516, 567, 618,
     671, 722, 779, 836, 895, 954, 1011]
 
-/// Offsets of each root region's coefficient pairs.
+### Offsets of each root region's coefficient pairs.
 preset CM_B64_LGAMMA_RG_C: @Array[USize, 17] <- [188, 243, 300, 343, 386, 437, 478, 519, 570, 621,
     674, 725, 782, 839, 898, 957, 1014]
 
-/// The coefficient pair count of each root region.
+### The coefficient pair count of each root region.
 preset CM_B64_LGAMMA_RG_N: @Array[USize, 17] <- [26, 27, 20, 20, 24, 19, 19, 24, 24, 25, 24, 27, 27,
     28, 28, 27, 27]
 
-/// How many trailing coefficients of each root region are evaluated in double precision.
+### How many trailing coefficients of each root region are evaluated in double precision.
 preset CM_B64_LGAMMA_RG_K: @Array[USize, 17] <- [6, 6, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6]
 
-/// The scale exponent of each root region (z is scaled by 2^sc).
+### The scale exponent of each root region (z is scaled by 2^sc).
 preset CM_B64_LGAMMA_RG_SC: @Array[S64, 17] <- [3, 4, 6, 8, 7, 10, 10, 12, 12, 14, 15, 17, 17, 20,
     20, 24, 24]
 
-/// The bound on |fh| of each root region (B64 bits).
+### The bound on |fh| of each root region (B64 bits).
 preset CM_B64_LGAMMA_RG_FH: @Array[U64, 17] <- [0x3FB7400000000000, 0x3FB1680000000000,
     0x3FB2D40000000000, 0x3FAEF00000000000, 0x3FC0000000000000, 0x3FB0800000000000,
     0x3FB1000000000000, 0x3FC1300000000000, 0x3FC1500000000000, 0x3FC3400000000000,
     0x3FC1450000000000, 0x3FC76B0000000000, 0x3FC76C0000000000, 0x3FC9900000000000,
     0x3FC9900000000000, 0x3FC76B0000000000, 0x3FC76B0000000000]
 
-/// The open interval (lo, hi) of x of each root region: lo (B64 bits).
+### The open interval (lo, hi) of x of each root region: lo (B64 bits).
 preset CM_B64_LGAMMA_RG_LO: @Array[U64, 17] <- [0xC004E147AE147AE1, 0xC008000000000000,
     0xC00C000000000000, 0xC010000000000000, 0xC012000000000000, 0xC014000000000000,
     0xC016000000000000, 0xC018000000000000, 0xC01A000000000000, 0xC01C000000000000,
     0xC01E000000000000, 0xC020000000000000, 0xC021000000000000, 0xC022000000000000,
     0xC023000000000000, 0xC024000000000000, 0xC025000000000000]
 
-/// The open interval (lo, hi) of x of each root region: hi (B64 bits).
+### The open interval (lo, hi) of x of each root region: hi (B64 bits).
 preset CM_B64_LGAMMA_RG_HI: @Array[U64, 17] <- [0xC000000000000000, 0xC004E147AE147AE1,
     0xC008000000000000, 0xC00C000000000000, 0xC010000000000000, 0xC012000000000000,
     0xC014000000000000, 0xC016000000000000, 0xC018000000000000, 0xC01A000000000000,
     0xC01C000000000000, 0xC01E000000000000, 0xC020000000000000, 0xC021000000000000,
     0xC022000000000000, 0xC023000000000000, 0xC024000000000000]
 
-/// Coefficient tables of lgamma (B64 bits), generated from lgamma.c. Layout (offset, count):
-/// DB 0 57, ACC_C0 57 68, ACC_B 125 60, then per root region k = 0..16 the root x0
-/// (3 entries) and its coefficients RC_k (at CM_B64_LGAMMA_RG_X0 / _RG_C), OFFS 1068 19,
-/// CL 1087 152, CH 1239 190, SMALL_C0 1429 8, SMALL_Q 1437 8, ASYM_C 1445 4,
-/// ASYM_Q 1449 5, H1 1454 99, H2 1553 99, LOGDA_C 1652 18, STPI 1670 130, SPA_C 1800 10,
-/// SPA_S 1810 12, ASA_C1 1822 16, ASA_C2 1838 24, ASA_C3 1862 56. DB holds (x, f, df) triples
-/// sorted by x, the polynomial tables (high, low) pairs, H1 and H2 (low, middle, high) triples, and
-/// STPI (low, high) pairs.
+### Coefficient tables of lgamma (B64 bits), generated from lgamma.c. Layout (offset, count):
+### DB 0 57, ACC_C0 57 68, ACC_B 125 60, then per root region k = 0..16 the root x0
+### (3 entries) and its coefficients RC_k (at CM_B64_LGAMMA_RG_X0 / _RG_C), OFFS 1068 19,
+### CL 1087 152, CH 1239 190, SMALL_C0 1429 8, SMALL_Q 1437 8, ASYM_C 1445 4,
+### ASYM_Q 1449 5, H1 1454 99, H2 1553 99, LOGDA_C 1652 18, STPI 1670 130, SPA_C 1800 10,
+### SPA_S 1810 12, ASA_C1 1822 16, ASA_C2 1838 24, ASA_C3 1862 56. DB holds (x, f, df) triples
+### sorted by x, the polynomial tables (high, low) pairs, H1 and H2 (low, middle, high) triples, and
+### STPI (low, high) pairs.
 preset CM_B64_LGAMMA_T: @Array[U64, 1918] <- [0xC021B649EB4316FB, 0xC0250332A035AF1F,
     0xBCC0000000000000, 0xC01808D3E2F56B4F, 0xBFFD779A9AB6CBFF, 0x3C90000000000000,
     0xC00D02B2008D5BF5, 0xBFF67CF93DB4863E, 0xBC90000000000000, 0xC00A123D403647D7,
@@ -556,22 +556,22 @@ preset CM_B64_LGAMMA_T: @Array[U64, 1918] <- [0xC021B649EB4316FB, 0xC0250332A035
     0xC2C96C399C145D71, 0x3F4D495C9370DC8A, 0x42E083BB9C79529B, 0xBF71640E2DE8CF9C,
     0xC2EB53232E707F4B, 0x3F76D239ACD71B5C, 0x42E59BAD61BD81D5, 0x3F80E3F2EA42A0E0]
 
-/// The fast phase of lgamma: lgamma(x) within eps of hi + lo.
+### The fast phase of lgamma: lgamma(x) within eps of hi + lo.
 record CmF64LgammaFast
     hi: B64
     lo: B64
     eps: B64
 
-/// ln |Γ(me)|, correctly rounded (to nearest, ties to even): +inf at 0 and the negative integers, 0 at 1 and 2,
-/// +inf at ±inf and on overflow, and NaN comes back quiet.
-/// :returns: The natural logarithm of the absolute value of the gamma function at `me`.
+### ln |Γ(me)|, correctly rounded (to nearest, ties to even): +inf at 0 and the negative integers, 0 at 1 and 2,
+### +inf at ±inf and on overflow, and NaN comes back quiet.
+### :returns: The natural logarithm of the absolute value of the gamma function at `me`.
 routine B64.ln_gamma(me: Me) -> Me
     local t: U64 = me.bits()
     local nx: U64 = t << 1
 
-    // |x| >= 0x1.006df1bfac84ep+1015
+    # |x| >= 0x1.006df1bfac84ep+1015
     if nx >= 0xFEAEA9B24F16A34C
-        // two hard cases, +-inf, NaN (x + x quiets it), and overflow (huge negative integers are poles)
+        # two hard cases, +-inf, NaN (x + x quiets it), and overflow (huge negative integers are poles)
         when
             t == 0x7F5754D9278B51A6 => return Me.sub(1.7976931348623155e308, 4.9896007738368e291)
             t == 0x7F5754D9278B51A7 => return Me.sub(1.7976931348623157e308, 4.9896007738368e291)
@@ -580,7 +580,7 @@ routine B64.ln_gamma(me: Me) -> Me
             else => return Me.mul(1.7415152243978685e308, 1.7415152243978685e308)
     else
         if me.floor() == me
-            // 0 and the negative integers are poles, and lgamma(1) = lgamma(2) = 0
+            # 0 and the negative integers are poles, and lgamma(1) = lgamma(2) = 0
             when
                 me <= 0.0 => return Me.from_bits(0x7FF0000000000000)
                 me == 1.0 or me == 2.0 => return 0.0
@@ -593,10 +593,10 @@ routine B64.ln_gamma(me: Me) -> Me
         else
             return ub
 
-/// The double-double fast phase of lgamma, for a finite x that is not a pole, not
-/// 1 or 2, and below 0x1.006df1bfac84ep+1015 in magnitude.
-/// :param x: The argument.
-/// :returns: The approximation hi + lo and its error bound eps.
+### The double-double fast phase of lgamma, for a finite x that is not a pole, not
+### 1 or 2, and below 0x1.006df1bfac84ep+1015 in magnitude.
+### :param x: The argument.
+### :returns: The approximation hi + lo and its error bound eps.
 private routine cm_b64_lgamma_dd(x: B64) -> CmF64LgammaFast
     local t: U64 = x.bits()
     local au: U64 = (t << 1) >> 38
@@ -606,7 +606,7 @@ private routine cm_b64_lgamma_dd(x: B64) -> CmF64LgammaFast
     else
         jump large()
 
-    // |x| < 0.5: lgamma(x) = lgamma(1 + x) - log|x|
+    # |x| < 0.5: lgamma(x) = lgamma(1 + x) - log|x|
     block small()
         lg: CmF64GammaDD = cm_b64_gamma_logd(x.abs())
         when
@@ -614,8 +614,8 @@ private routine cm_b64_lgamma_dd(x: B64) -> CmF64LgammaFast
             au < 0x1FD0000 => jump series(lg)
             else => jump shifted(lg)
 
-    // |x| < 2^-75
-    // |x| < 0.03125
+    # |x| < 2^-75
+    # |x| < 0.03125
     block series(lg: CmF64GammaDD)
         z2: B64 = x * x
         z4: B64 = z2 * z2
@@ -627,13 +627,13 @@ private routine cm_b64_lgamma_dd(x: B64) -> CmF64LgammaFast
         f: CmF64GammaDD = cm_b64_gamma_sumdd(xh: -lg.hi, xl: -lg.lo, yh: m.hi, yl: m.lo)
         return CmF64LgammaFast(hi: f.hi, lo: f.lo, eps: 1.5e-22)
 
-    // 0.03125 <= |x| < 0.5: 1 + x falls in the piece-wise approximation
+    # 0.03125 <= |x| < 0.5: 1 + x falls in the piece-wise approximation
     block shifted(lg: CmF64GammaDD)
         s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: 1.0, y: x)
         j: USize = cm_b64_lgamma_piece(s.hi.bits() >> 37)
         z: B64 = s.hi - cm_b64_lgamma_t(j + 1068) + s.lo
         p: CmF64GammaDD = cm_b64_lgamma_piece_poly(z, j)
-        root: Bool = j == 4  // the region around the root at 1
+        root: Bool = j == 4  # the region around the root at 1
         f: CmF64GammaDD = when
             root => cm_b64_gamma_mulddd(x: -x, ch: p.hi, cl: p.lo)
             else => p
@@ -648,7 +648,7 @@ private routine cm_b64_lgamma_dd(x: B64) -> CmF64LgammaFast
         else
             jump pieces(ax)
 
-    // |x| >= 8.29541: Stirling's series, (|x| - 1/2) (log|x| - 1) + ...
+    # |x| >= 8.29541: Stirling's series, (|x| - 1/2) (log|x| - 1) + ...
     block stirling(ax: B64)
         lg: CmF64GammaDD = cm_b64_gamma_logd(ax)
         lh: B64 = lg.hi - 1.0
@@ -658,10 +658,10 @@ private routine cm_b64_lgamma_dd(x: B64) -> CmF64LgammaFast
             au >= 0x2198000 => jump above_2p52(ax, lh, lg.lo)
             else => jump below_2p52(ax, lh, lg.lo)
 
-    // |x| >= 0x1.754cp+1014
-    // |x| >= 2^52
+    # |x| >= 0x1.754cp+1014
+    # |x| >= 2^52
 
-    // |x| - 1/2 isn't exact: multiply by |x| and take half the log off
+    # |x| - 1/2 isn't exact: multiply by |x| and take half the log off
     block above_2p52(ax: B64, lh: B64, ll: B64)
         m: CmF64GammaDD = cm_b64_gamma_mulddd(x: ax, ch: lh, cl: ll)
         jump asym(ax, m.hi, m.lo - lh * 0.5)
@@ -677,7 +677,7 @@ private routine cm_b64_lgamma_dd(x: B64) -> CmF64LgammaFast
         else
             jump asym_sum(a, 0.0, 0.0)
 
-    // the series in 1/|x|, negligible from 2^100 on
+    # the series in 1/|x|, negligible from 2^100 on
     block tail(ax: B64, a: CmF64GammaDD)
         zh: B64 = B64.div(1.0, ax)
         zl: B64 = zh.mul_add(a: -ax, b: 1.0) * zh
@@ -695,7 +695,7 @@ private routine cm_b64_lgamma_dd(x: B64) -> CmF64LgammaFast
         f: CmF64GammaDD = cm_b64_gamma_fastsum(xh: a.hi, xl: a.lo, yh: fh, yl: fl)
         jump reflect(f.hi, f.lo, f.hi.abs() * 4.5e-20)
 
-    // 0.5 <= |x| < 8.29541: piece-wise polynomials, with the roots at 1 and 2 factored out
+    # 0.5 <= |x| < 8.29541: piece-wise polynomials, with the roots at 1 and 2 factored out
     block pieces(ax: B64)
         j: USize = cm_b64_lgamma_piece(au)
         z: B64 = ax - cm_b64_lgamma_t(j + 1068)
@@ -717,7 +717,7 @@ private routine cm_b64_lgamma_dd(x: B64) -> CmF64LgammaFast
         else
             return CmF64LgammaFast(hi: fh, lo: fl, eps: eps)
 
-    // x < 0: lgamma(x) = log(pi / |x sin(pi x)|) - lgamma(-x)
+    # x < 0: lgamma(x) = log(pi / |x sin(pi x)|) - lgamma(-x)
     block negative(fh: B64, fl: B64, eps: B64)
         s0: CmF64GammaDD = cm_b64_lgamma_sinpipid(x - x.floor())
         sp: CmF64GammaDD = cm_b64_gamma_mulddd(x: -x, ch: s0.hi, cl: s0.lo)
@@ -725,29 +725,29 @@ private routine cm_b64_lgamma_dd(x: B64) -> CmF64LgammaFast
         s: CmF64GammaDD = cm_b64_gamma_sumdd(xh: fh, xl: fl, yh: lg.hi, yl: lg.lo + sp.lo / sp.hi)
         return CmF64LgammaFast(hi: -s.hi, lo: -s.lo, eps: eps + lg.hi.abs() * 8e-22)
 
-/// Entry i of CM_B64_LGAMMA_T as a B64.
-/// :param i: The index into the table.
-/// :returns: The entry as a B64.
+### Entry i of CM_B64_LGAMMA_T as a B64.
+### :param i: The index into the table.
+### :returns: The entry as a B64.
 private routine cm_b64_lgamma_t(i: USize) -> B64
     return B64.from_bits(CM_B64_LGAMMA_T.getitem(i))
 
-/// (c[q] + z c[q+1]) + z2 (c[q+2] + z c[q+3]) for the entries c of CM_B64_LGAMMA_T.
-/// :param z: The argument.
-/// :param z2: z^2.
-/// :param q: The table index of c[q].
-/// :returns: The value of the four-term polynomial.
+### (c[q] + z c[q+1]) + z2 (c[q+2] + z c[q+3]) for the entries c of CM_B64_LGAMMA_T.
+### :param z: The argument.
+### :param z2: z^2.
+### :param q: The table index of c[q].
+### :returns: The value of the four-term polynomial.
 private routine cm_b64_lgamma_pair4(z: B64, z2: B64, q: USize) -> B64
     a: B64 = cm_b64_lgamma_t(q) + z * cm_b64_lgamma_t(q + 1)
     b: B64 = cm_b64_lgamma_t(q + 2) + z * cm_b64_lgamma_t(q + 3)
     return a + z2 * b
 
-/// The piece-wise region (0..18) of [0.5, 8.29541] holding the argument whose bits
-/// shifted right by 37 are au (at least CM_B64_LGAMMA_UBRD[0]).
-/// :param au: The bits of the argument's absolute value, shifted right by 37.
-/// :returns: The region index.
+### The piece-wise region (0..18) of [0.5, 8.29541] holding the argument whose bits
+### shifted right by 37 are au (at least CM_B64_LGAMMA_UBRD[0]).
+### :param au: The bits of the argument's absolute value, shifted right by 37.
+### :returns: The region index.
 private routine cm_b64_lgamma_piece(au: U64) -> USize
     ou: U64 = au - CM_B64_LGAMMA_UBRD.getitem(0)
-    p: U64 = ou *% 0x150D & 0xFFFFFFFF  // the C code's 32-bit product wraps
+    p: U64 = ou *% 0x150D & 0xFFFFFFFF  # the C code's 32-bit product wraps
     prod: U64 = U64.sub_wrap(0x157CED865, p) *% ou
     region: U64 = prod +% 0x128000000000 >> 45
     j: USize = region.to[USize]()
@@ -756,10 +756,10 @@ private routine cm_b64_lgamma_piece(au: U64) -> USize
     else
         return j
 
-/// The region-j polynomial of the piece-wise approximation at the offset z.
-/// :param z: The offset of the argument within the region.
-/// :param j: The region index, 0..18.
-/// :returns: The polynomial value as a double-double.
+### The region-j polynomial of the piece-wise approximation at the offset z.
+### :param z: The offset of the argument within the region.
+### :param j: The region index, 0..18.
+### :returns: The polynomial value as a double-double.
 private routine cm_b64_lgamma_piece_poly(z: B64, j: USize) -> CmF64GammaDD
     z2: B64 = z * z
     z4: B64 = z2 * z2
@@ -769,10 +769,10 @@ private routine cm_b64_lgamma_piece_poly(z: B64, j: USize) -> CmF64GammaDD
     fl: B64 = z * (lo + z4 * hi)
     return cm_b64_lgamma_polydddfst(x: z, n: 5, base: j * 10 + 1239, l: fl)
 
-/// The correctly rounded log-gamma of a tabulated hard-to-round x, or f otherwise.
-/// :param x: The argument.
-/// :param f: The result returned when `x` is not in the table.
-/// :returns: The correctly rounded log-gamma for a listed `x`, else `f`.
+### The correctly rounded log-gamma of a tabulated hard-to-round x, or f otherwise.
+### :param x: The argument.
+### :param f: The result returned when `x` is not in the table.
+### :returns: The correctly rounded log-gamma for a listed `x`, else `f`.
 private routine cm_b64_lgamma_database(x: B64, f: B64) -> B64
     while a <= b with a: S64 = 0, b: S64 = 18
         m: S64 = (a + b) / 2
@@ -785,29 +785,29 @@ private routine cm_b64_lgamma_database(x: B64, f: B64) -> B64
     then
         return f
 
-/// The triple-double sum f + l.
-/// :param f: The triple-double addend.
-/// :param lh: The high part of l.
-/// :param ll: The middle part of l.
-/// :param lll: The low part of l.
-/// :returns: The sum as a triple-double.
+### The triple-double sum f + l.
+### :param f: The triple-double addend.
+### :param lh: The high part of l.
+### :param ll: The middle part of l.
+### :param lll: The low part of l.
+### :returns: The sum as a triple-double.
 private routine cm_b64_lgamma_add3(f: CmF64GammaTD, lh: B64, ll: B64, lll: B64) -> CmF64GammaTD
     s: CmF64GammaDD = cm_b64_gamma_sumdd(xh: f.mid, xl: f.lo, yh: ll, yl: lll)
     h: CmF64GammaDD = cm_b64_gamma_twosum(x: f.hi, y: lh)
     s2: CmF64GammaDD = cm_b64_gamma_sumdd(xh: s.hi, xl: s.lo, yh: h.lo, yl: 0.0)
     return CmF64GammaTD(hi: h.hi, mid: s2.hi, lo: s2.lo)
 
-/// f + log(x) for a triple-double f and x > 0, both as triple-doubles.
-/// :param f: The triple-double addend.
-/// :param x: The positive argument of the logarithm.
-/// :returns: The sum as a triple-double.
+### f + log(x) for a triple-double f and x > 0, both as triple-doubles.
+### :param f: The triple-double addend.
+### :param x: The positive argument of the logarithm.
+### :returns: The sum as a triple-double.
 private routine cm_b64_lgamma_add_log(f: CmF64GammaTD, x: B64) -> CmF64GammaTD
     l: CmF64GammaTD = cm_b64_lgamma_logd_accurate(x)
     return cm_b64_lgamma_add3(f, lh: l.hi, ll: l.mid, lll: l.lo)
 
-/// log(x - 1) + log(x - 2) as a triple-double, for x > 2.
-/// :param x: The argument, greater than 2.
-/// :returns: The sum of the two logarithms as a triple-double.
+### log(x - 1) + log(x - 2) as a triple-double, for x > 2.
+### :param x: The argument, greater than 2.
+### :returns: The sum of the two logarithms as a triple-double.
 private routine cm_b64_lgamma_log2terms(x: B64) -> CmF64GammaTD
     l2: CmF64GammaTD = cm_b64_lgamma_logd_accurate(x - 2.0)
     l1: CmF64GammaTD = cm_b64_lgamma_logd_accurate(x - 1.0)
@@ -816,15 +816,15 @@ private routine cm_b64_lgamma_log2terms(x: B64) -> CmF64GammaTD
     s2: CmF64GammaDD = cm_b64_gamma_sumdd(xh: s.hi, xl: s.lo, yh: h.lo, yl: 0.0)
     return CmF64GammaTD(hi: h.hi, mid: s2.hi, lo: s2.lo)
 
-/// A double-double as a triple-double with a zero low part.
-/// :param f: The double-double value.
-/// :returns: `f` as a triple-double.
+### A double-double as a triple-double with a zero low part.
+### :param f: The double-double value.
+### :returns: `f` as a triple-double.
 private routine cm_b64_lgamma_td(f: CmF64GammaDD) -> CmF64GammaTD
     return CmF64GammaTD(hi: f.hi, mid: f.lo, lo: 0.0)
 
-/// The accurate phase of lgamma, for a finite x that is not a pole.
-/// :param x: The argument.
-/// :returns: lgamma(`x`), correctly rounded.
+### The accurate phase of lgamma, for a finite x that is not a pole.
+### :param x: The argument.
+### :returns: lgamma(`x`), correctly rounded.
 private routine cm_b64_lgamma_accurate(x: B64) -> B64
     local ax: B64 = x.abs()
 
@@ -833,14 +833,14 @@ private routine cm_b64_lgamma_accurate(x: B64) -> B64
         ax < 0.25 => jump small()
         else => jump regions()
 
-    // |x| < 2^-100: lgamma(x) = -log|x|
+    # |x| < 2^-100: lgamma(x) = -log|x|
     block tiny()
         l: CmF64GammaTD = cm_b64_lgamma_logd_accurate(ax)
         s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: -l.hi, y: -l.mid)
         s2: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: s.lo, y: -l.lo)
         jump near_zero(s.hi, s2.hi, s2.lo)
 
-    // |x| < 1/4: lgamma(x) = x P(x) - log|x|
+    # |x| < 1/4: lgamma(x) = x P(x) - log|x|
     block small()
         p: CmF64GammaDD = cm_b64_lgamma_polydddfst(x, n: 34, base: 57, l: 0.0)
         m: CmF64GammaDD = cm_b64_gamma_mulddd(x, ch: p.hi, cl: p.lo)
@@ -850,7 +850,7 @@ private routine cm_b64_lgamma_accurate(x: B64) -> B64
         s: CmF64GammaDD = cm_b64_gamma_twosum(x: h.lo, y: f.lo)
         jump near_zero(h.hi, s.hi, s.lo)
 
-    // fh + fl a rounding midpoint: move fl toward fll (the second test holds in round to nearest)
+    # fh + fl a rounding midpoint: move fl toward fll (the second test holds in round to nearest)
     block near_zero(fh: B64, fl: B64, fll: B64)
         e: B64 = cm_b64_gamma_fasttwosum(x: fh, y: B64.mul(2.0, fl)).lo
         tie: Bool = e == 0.0 and B64.add(1.0, 5.551115123125783e-17) == B64.sub(1.0, 5.551115123125783e-17)
@@ -860,7 +860,7 @@ private routine cm_b64_lgamma_accurate(x: B64) -> B64
         else
             jump roots(fh, fl)
 
-    // |x| >= 1/4: lgamma(|x|) or, for x < 0, lgamma(1 + |x|), from the region of |x|
+    # |x| >= 1/4: lgamma(|x|) or, for x < 0, lgamma(1 + |x|), from the region of |x|
     block regions()
         gap_half: B64 = (ax - 0.5).abs()
         if gap_half < 0.25
@@ -886,7 +886,7 @@ private routine cm_b64_lgamma_accurate(x: B64) -> B64
         else
             jump asym()
 
-    // the polynomial of lgamma(1 + y) around 1.5 gives lgamma(1/2 + d) after taking log off
+    # the polynomial of lgamma(1 + y) around 1.5 gives lgamma(1/2 + d) after taking log off
     block around_half()
         r: CmF64GammaTD = cm_b64_lgamma_td(cm_b64_lgamma_polydddfst(x: ax - 0.5, n: 30, base: 125, l: 0.0))
         if x > 0.0
@@ -929,14 +929,14 @@ private routine cm_b64_lgamma_accurate(x: B64) -> B64
         f: CmF64GammaTD = cm_b64_lgamma_td(cm_b64_gamma_mulddd(x: d, ch: p.hi, cl: p.lo))
         jump shift_up(cm_b64_lgamma_add3(f, lh: l.hi, ll: l.mid, lll: l.lo))
 
-    // r = lgamma(|x|). For x < 0 the reflection wants lgamma(1 + |x|) = r + log|x|
+    # r = lgamma(|x|). For x < 0 the reflection wants lgamma(1 + |x|) = r + log|x|
     block shift_up(r: CmF64GammaTD)
         if x < 0.0
             jump combine(cm_b64_lgamma_add_log(f: r, x: ax))
         else
             jump combine(r)
 
-    // Stirling's series at |x|, or at 1 + |x| = 1 - x for x < 0
+    # Stirling's series at |x|, or at 1 + |x| = 1 - x for x < 0
     block asym()
         negative: Bool = x < 0.0
         s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: ax, y: 1.0)
@@ -951,7 +951,7 @@ private routine cm_b64_lgamma_accurate(x: B64) -> B64
         else
             jump collapse(r)
 
-    // lgamma(x) = log(pi / |sin(pi x)|) - lgamma(1 - x)
+    # lgamma(x) = log(pi / |sin(pi x)|) - lgamma(1 - x)
     block reflection(r: CmF64GammaTD)
         far: Bool = x < -0.5
         phi: B64 = when
@@ -962,7 +962,7 @@ private routine cm_b64_lgamma_accurate(x: B64) -> B64
         s: CmF64GammaTD = cm_b64_lgamma_add3(f: r, lh: l.hi, ll: l.mid + (sp.lo / sp.hi + l.lo), lll: 0.0)
         jump collapse(CmF64GammaTD(hi: -s.hi, mid: -s.mid, lo: -s.lo))
 
-    // renormalize the triple-double, then nudge fl off a rounding midpoint toward fll
+    # renormalize the triple-double, then nudge fl off a rounding midpoint toward fll
     block collapse(r: CmF64GammaTD)
         s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: r.hi, y: r.mid)
         s2: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: s.lo, y: r.lo)
@@ -976,7 +976,7 @@ private routine cm_b64_lgamma_accurate(x: B64) -> B64
         else
             jump roots(s3.hi, s4.hi)
 
-    // near a root of lgamma for -10.5 < x < -2: a polynomial around the root
+    # near a root of lgamma for -10.5 < x < -2: a polynomial around the root
     block roots(fh: B64, fl: B64)
         if fh.abs() < 0.375
             jump scan(fh, fl, 0)
@@ -1002,7 +1002,7 @@ private routine cm_b64_lgamma_accurate(x: B64) -> B64
         f: CmF64GammaDD = cm_b64_lgamma_root_poly(x, k)
         jump finish(f.hi, f.lo)
 
-    // fl next to a power of two: fh + fl may be one of the tabulated hard cases
+    # fl next to a power of two: fh + fl may be one of the tabulated hard cases
     block finish(fh: B64, fl: B64)
         fl_near: U64 = fl.bits() +% 2
         if fl_near & 0x000FFFFFFFFFFFFF <= 2
@@ -1010,10 +1010,10 @@ private routine cm_b64_lgamma_accurate(x: B64) -> B64
         else
             return fh + fl
 
-/// The polynomial of root region k (around a root x0 of lgamma for -10.5 < x < -2) at x.
-/// :param x: The argument.
-/// :param k: The root region, 0..16.
-/// :returns: The polynomial value as a double-double.
+### The polynomial of root region k (around a root x0 of lgamma for -10.5 < x < -2) at x.
+### :param x: The argument.
+### :param k: The root region, 0..16.
+### :returns: The polynomial value as a double-double.
 private routine cm_b64_lgamma_root_poly(x: B64, k: USize) -> CmF64GammaDD
     x0: USize = CM_B64_LGAMMA_RG_X0.getitem(k)
     c: USize = CM_B64_LGAMMA_RG_C.getitem(k)
@@ -1032,13 +1032,13 @@ private routine cm_b64_lgamma_root_poly(x: B64, k: USize) -> CmF64GammaDD
     f: CmF64GammaDD = cm_b64_lgamma_polydd(x: s, n: nd, base: c, l: fl)
     return cm_b64_gamma_muldd(xh: zh, xl: zl, ch: f.hi, cl: f.lo)
 
-/// The double-double polynomial c[0] + c[1] x + ... + (c[n-1] + l) x^(n-1) of the
-/// (high, low) pairs of CM_B64_LGAMMA_T from base, at a double-double x.
-/// :param x: The point, as a double-double.
-/// :param n: The number of coefficient pairs, at least 1.
-/// :param base: The table index of the first pair.
-/// :param l: The tail added to the highest coefficient.
-/// :returns: The polynomial value as a double-double.
+### The double-double polynomial c[0] + c[1] x + ... + (c[n-1] + l) x^(n-1) of the
+### (high, low) pairs of CM_B64_LGAMMA_T from base, at a double-double x.
+### :param x: The point, as a double-double.
+### :param n: The number of coefficient pairs, at least 1.
+### :param base: The table index of the first pair.
+### :param l: The tail added to the highest coefficient.
+### :returns: The polynomial value as a double-double.
 private routine cm_b64_lgamma_polydd(x: CmF64GammaDD, n: USize, base: USize, l: B64) -> CmF64GammaDD
     local ch: @B64 <- .hollow()
     local cl: @B64 <- .hollow()
@@ -1062,12 +1062,12 @@ private routine cm_b64_lgamma_polydd(x: CmF64GammaDD, n: USize, base: USize, l: 
     then
         return CmF64GammaDD(hi: ch.peek(), lo: cl.peek())
 
-/// The same polynomial at a double x.
-/// :param x: The argument.
-/// :param n: The number of coefficient pairs, at least 1.
-/// :param base: The table index of the first pair.
-/// :param l: The tail added to the highest coefficient.
-/// :returns: The polynomial value as a double-double.
+### The same polynomial at a double x.
+### :param x: The argument.
+### :param n: The number of coefficient pairs, at least 1.
+### :param base: The table index of the first pair.
+### :param l: The tail added to the highest coefficient.
+### :returns: The polynomial value as a double-double.
 private routine cm_b64_lgamma_polydddfst(x: B64, n: USize, base: USize, l: B64) -> CmF64GammaDD
     local ch: @B64 <- .hollow()
     local cl: @B64 <- .hollow()
@@ -1091,12 +1091,12 @@ private routine cm_b64_lgamma_polydddfst(x: B64, n: USize, base: USize, l: B64) 
     then
         return CmF64GammaDD(hi: ch.peek(), lo: cl.peek())
 
-/// The double polynomial c[0] + c[1] x + ... + c[n-1] x^(n-1) of the high parts of the
-/// pairs of CM_B64_LGAMMA_T from base.
-/// :param x: The argument.
-/// :param n: The number of coefficients, at least 1.
-/// :param base: The table index of the first pair.
-/// :returns: The polynomial value.
+### The double polynomial c[0] + c[1] x + ... + c[n-1] x^(n-1) of the high parts of the
+### pairs of CM_B64_LGAMMA_T from base.
+### :param x: The argument.
+### :param n: The number of coefficients, at least 1.
+### :param base: The table index of the first pair.
+### :returns: The polynomial value.
 private routine cm_b64_lgamma_polyd(x: B64, n: USize, base: USize) -> B64
     local ch: @B64 <- .hollow()
 
@@ -1110,9 +1110,9 @@ private routine cm_b64_lgamma_polyd(x: B64, n: USize, base: USize) -> B64
     then
         return ch.peek()
 
-/// sin(pi x) / pi as a double-double, for 0 < x < 1.
-/// :param x: The argument, 0 < x < 1.
-/// :returns: sin(pi `x`) / pi as a double-double.
+### sin(pi x) / pi as a double-double, for 0 < x < 1.
+### :param x: The argument, 0 < x < 1.
+### :returns: sin(pi `x`) / pi as a double-double.
 private routine cm_b64_lgamma_sinpipid(x: B64) -> CmF64GammaDD
     local ax: B64 = (x - 0.5).abs()
     local sx: B64 = ax * 128.0
@@ -1121,7 +1121,7 @@ private routine cm_b64_lgamma_sinpipid(x: B64) -> CmF64GammaDD
     local kx: USize = USize.sub(64, ky)
 
     if kx < 2
-        // x close to 0 or 1: sin(pi z) / pi = z (1 + z^2 P(z^2)) with z = 1/2 - |x - 1/2|
+        # x close to 0 or 1: sin(pi z) / pi = z (1 + z^2 P(z^2)) with z = 1/2 - |x - 1/2|
         z: B64 = B64.sub(0.5, ax)
         z2: B64 = z * z
         z2l: B64 = b64_mul_error(x: z, y: z, p: z2)
@@ -1152,9 +1152,9 @@ private routine cm_b64_lgamma_sinpipid(x: B64) -> CmF64GammaDD
         c2: CmF64GammaDD = cm_b64_gamma_mulddd(x: d, ch: c1.hi, cl: c1.lo)
         return cm_b64_gamma_fastsum(xh: sh, xl: sl, yh: c2.hi, yl: c2.lo)
 
-/// sin(pi x) / pi as an accurate double-double, for 0 < x < 1.
-/// :param x: The argument, 0 < x < 1.
-/// :returns: sin(pi `x`) / pi as a double-double.
+### sin(pi x) / pi as an accurate double-double, for 0 < x < 1.
+### :param x: The argument, 0 < x < 1.
+### :returns: sin(pi `x`) / pi as a double-double.
 private routine cm_b64_lgamma_sinpipid_accurate(x: B64) -> CmF64GammaDD
     from_half: B64 = (x - 0.5).abs()
     y: B64 = from_half * 128.0
@@ -1178,9 +1178,9 @@ private routine cm_b64_lgamma_sinpipid_accurate(x: B64) -> CmF64GammaDD
     c: CmF64GammaDD = cm_b64_gamma_mulddd(x: d, ch: c0.hi, cl: c0.lo)
     return cm_b64_gamma_fastsum(xh: sh, xl: sl, yh: c.hi, yl: c.lo)
 
-/// log(x) as a triple-double, for a positive finite x (subnormals included).
-/// :param x: The positive finite argument.
-/// :returns: log(`x`) as a triple-double.
+### log(x) as a triple-double, for a positive finite x (subnormals included).
+### :param x: The positive finite argument.
+### :returns: log(`x`) as a triple-double.
 private routine cm_b64_lgamma_logd_accurate(x: B64) -> CmF64GammaTD
     a: CmF64GammaLogArg = cm_b64_gamma_log_arg(x)
     r: B64 = cm_b64_tgamma_t(a.i1 + 969) * cm_b64_tgamma_t(a.i2 + 1002)
@@ -1204,17 +1204,17 @@ private routine cm_b64_lgamma_logd_accurate(x: B64) -> CmF64GammaTD
     b2: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: b.lo, y: v.lo)
     return CmF64GammaTD(hi: b.hi, mid: b2.hi, lo: b2.lo)
 
-/// lgamma(x) for x = xh + xl > 3.75 as a triple-double, from Stirling's asymptotic series.
-/// :param xh: The high part of the argument.
-/// :param xl: The low part of the argument.
-/// :returns: lgamma(`xh + xl`) as a triple-double.
+### lgamma(x) for x = xh + xl > 3.75 as a triple-double, from Stirling's asymptotic series.
+### :param xh: The high part of the argument.
+### :param xl: The low part of the argument.
+### :returns: lgamma(`xh + xl`) as a triple-double.
 private routine cm_b64_lgamma_asym_accurate(xh: B64, xl: B64) -> CmF64GammaTD
     local lg: CmF64GammaTD = cm_b64_lgamma_logd_accurate(xh)
 
     if xh >= 1.329227995784916e36
-        // log(xh + xl) = log(xh) + log(1 + xl/xh)
-        // (x - 1/2) (log x - 1) + the series in 1/x^2, with x - 1/2 split exactly past 2^52
-        // x >= 2^120: the series in 1/x is below the triple-double's precision
+        # log(xh + xl) = log(xh) + log(1 + xl/xh)
+        # (x - 1/2) (log x - 1) + the series in 1/x^2, with x - 1/2 split exactly past 2^52
+        # x >= 2^120: the series in 1/x is below the triple-double's precision
         wl: B64 = xl - 0.5
         m0: B64 = lg.hi - 1.0
         l0x: B64 = m0 * xh

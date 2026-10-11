@@ -1,43 +1,43 @@
-// Tessera stdlib: hash (xxHash64)
-//
-// Reference implementation of xxh64 (Yann Collet, 2014). Bit-for-bit
-// compatible with the upstream spec: little-endian byte reads, the same
-// five primes, and the same finalization mixer.
-//
-// xxh64 is the unkeyed fast hash: the same input gives the same value in
-// every run and on every machine, which is what a checksum, a content
-// address, or a table whose keys you trust wants. It is not what `hash()`
-// is: anyone can compute xxh64 collisions offline and flood a hash table
-// with them, so every stdlib `hash()` is SipHash-2-4 under a secret
-// per-process key instead (SipHash.tess, HashKey.tess).
-//
-// Public surface:
-//   xxh64(data, len, seed) -> U64    — one-shot byte hash
-//   xxh64(v, seed) -> U64    — fast path for an 8-byte integer
-//
-// All arithmetic is modulo 2^64, as the reference specifies: add_wrap and
-// mul_wrap, never the crashing add and mul.
+# Tessera stdlib: hash (xxHash64)
+#
+# Reference implementation of xxh64 (Yann Collet, 2014). Bit-for-bit
+# compatible with the upstream spec: little-endian byte reads, the same
+# five primes, and the same finalization mixer.
+#
+# xxh64 is the unkeyed fast hash: the same input gives the same value in
+# every run and on every machine, which is what a checksum, a content
+# address, or a table whose keys you trust wants. It is not what `hash()`
+# is: anyone can compute xxh64 collisions offline and flood a hash table
+# with them, so every stdlib `hash()` is SipHash-2-4 under a secret
+# per-process key instead (SipHash.tess, HashKey.tess).
+#
+# Public surface:
+#   xxh64(data, len, seed) -> U64    — one-shot byte hash
+#   xxh64(v, seed) -> U64    — fast path for an 8-byte integer
+#
+# All arithmetic is modulo 2^64, as the reference specifies: add_wrap and
+# mul_wrap, never the crashing add and mul.
 
 module Standard/Core
 
-// -- primes --------------------------------------------------------------------
+# -- primes --------------------------------------------------------------------
 
-/// The xxHash64 prime 1 (`0x9E3779B185EBCA87`), as the reference specifies.
+### The xxHash64 prime 1 (`0x9E3779B185EBCA87`), as the reference specifies.
 preset XXH64_P1: U64 = 0x9E3779B185EBCA87
-/// The xxHash64 prime 2 (`0xC2B2AE3D27D4EB4F`), as the reference specifies.
+### The xxHash64 prime 2 (`0xC2B2AE3D27D4EB4F`), as the reference specifies.
 preset XXH64_P2: U64 = 0xC2B2AE3D27D4EB4F
-/// The xxHash64 prime 3 (`0x165667B19E3779F9`), as the reference specifies.
+### The xxHash64 prime 3 (`0x165667B19E3779F9`), as the reference specifies.
 preset XXH64_P3: U64 = 0x165667B19E3779F9
-/// The xxHash64 prime 4 (`0x85EBCA77C2B2AE63`), as the reference specifies.
+### The xxHash64 prime 4 (`0x85EBCA77C2B2AE63`), as the reference specifies.
 preset XXH64_P4: U64 = 0x85EBCA77C2B2AE63
-/// The xxHash64 prime 5 (`0x27D4EB2F165667C5`), as the reference specifies.
+### The xxHash64 prime 5 (`0x27D4EB2F165667C5`), as the reference specifies.
 preset XXH64_P5: U64 = 0x27D4EB2F165667C5
 
-// -- little-endian byte readers ------------------------------------------------
+# -- little-endian byte readers ------------------------------------------------
 
-/// Reads 8 bytes starting at `me.stride(off)` as a little-endian U64, byte by byte so it does not depend on host endianness or alignment.
-/// :param off: The offset of the first byte to read.
-/// :returns: The little-endian value of the 8 bytes.
+### Reads 8 bytes starting at `me.stride(off)` as a little-endian U64, byte by byte so it does not depend on host endianness or alignment.
+### :param off: The offset of the first byte to read.
+### :returns: The little-endian value of the 8 bytes.
 routine Ptr[Byte].read_le[U64](me: Me, off: USize) -> U64
     local acc: @U64 <- 0
     local shift: @U64 <- 0
@@ -54,9 +54,9 @@ routine Ptr[Byte].read_le[U64](me: Me, off: USize) -> U64
     then
         return acc.peek()
 
-/// Reads 4 bytes starting at `me.stride(off)` as a little-endian U32, byte by byte so it does not depend on host endianness or alignment.
-/// :param off: The offset of the first byte to read.
-/// :returns: The little-endian value of the 4 bytes.
+### Reads 4 bytes starting at `me.stride(off)` as a little-endian U32, byte by byte so it does not depend on host endianness or alignment.
+### :param off: The offset of the first byte to read.
+### :returns: The little-endian value of the 4 bytes.
 routine Ptr[Byte].read_le[U32](me: Me, off: USize) -> U32
     local acc: @U32 <- 0
     local shift: @U32 <- 0
@@ -73,29 +73,29 @@ routine Ptr[Byte].read_le[U32](me: Me, off: USize) -> U32
     then
         return acc.peek()
 
-// -- xxh64 internal mixers -----------------------------------------------------
+# -- xxh64 internal mixers -----------------------------------------------------
 
-/// One xxh64 round: adds `input * P2` to `acc`, rotates left by 31, and multiplies by `P1`, all modulo 2^64.
-/// :param acc: The lane accumulator.
-/// :param input: The 8 input bytes read as a U64.
-/// :returns: The updated accumulator.
+### One xxh64 round: adds `input * P2` to `acc`, rotates left by 31, and multiplies by `P1`, all modulo 2^64.
+### :param acc: The lane accumulator.
+### :param input: The 8 input bytes read as a U64.
+### :returns: The updated accumulator.
 routine xxh64_round(acc: U64, input: U64) -> U64
     mixed: U64 = (acc +% input *% XXH64_P2).rotl(31)
     result: U64 = mixed *% XXH64_P1
     return result
 
-/// Folds one lane `val` into the accumulator when a long input's four lanes are combined: `(acc ^ round(0, val)) * P1 + P4`.
-/// :param acc: The accumulator.
-/// :param val: The lane value to fold in.
-/// :returns: The merged accumulator.
+### Folds one lane `val` into the accumulator when a long input's four lanes are combined: `(acc ^ round(0, val)) * P1 + P4`.
+### :param acc: The accumulator.
+### :param val: The lane value to fold in.
+### :returns: The merged accumulator.
 routine xxh64_merge(acc: U64, val: U64) -> U64
     folded: U64 = (acc ^ xxh64_round(acc: 0, input: val)) *% XXH64_P1
     result: U64 = folded +% XXH64_P4
     return result
 
-/// The xxh64 avalanche step: xor-shifts by 33, 29 and 32 with multiplications by `P2` and `P3` in between, so every input bit affects every output bit.
-/// :param h: The accumulated hash.
-/// :returns: The mixed 64-bit hash.
+### The xxh64 avalanche step: xor-shifts by 33, 29 and 32 with multiplications by `P2` and `P3` in between, so every input bit affects every output bit.
+### :param h: The accumulated hash.
+### :returns: The mixed 64-bit hash.
 routine xxh64_finalize(h: U64) -> U64
     s1: U64 = h >> 33
     x1: U64 = h ^ s1
@@ -107,20 +107,20 @@ routine xxh64_finalize(h: U64) -> U64
     result: U64 = m2 ^ s3
     return result
 
-// -- one-shot byte hash --------------------------------------------------------
-//
-// Layout follows the spec exactly:
-//   1. If len >= 32, run the 32-byte stripe loop with four 64-bit lanes.
-//   2. Add len.
-//   3. Drain remaining 8-byte chunks, then a 4-byte chunk, then trailing bytes.
-//   4. Apply the finalization mixer.
+# -- one-shot byte hash --------------------------------------------------------
+#
+# Layout follows the spec exactly:
+#   1. If len >= 32, run the 32-byte stripe loop with four 64-bit lanes.
+#   2. Add len.
+#   3. Drain remaining 8-byte chunks, then a 4-byte chunk, then trailing bytes.
+#   4. Apply the finalization mixer.
 
-/// Hashes `len` bytes starting at `data` with the xxHash64 algorithm and the given `seed`, matching the reference output. Unkeyed and the same in every run: for checksums and trusted keys, not for a table that takes keys from outside (`hash()` is keyed SipHash-2-4).
-/// :param data: The first byte of the input.
-/// :param len: The number of bytes to hash.
-/// :param seed: The seed of the hash.
-/// :returns: The 64-bit hash.
-/// :note: Reads only the `len` bytes. An empty input (`len` of 0) is valid.
+### Hashes `len` bytes starting at `data` with the xxHash64 algorithm and the given `seed`, matching the reference output. Unkeyed and the same in every run: for checksums and trusted keys, not for a table that takes keys from outside (`hash()` is keyed SipHash-2-4).
+### :param data: The first byte of the input.
+### :param len: The number of bytes to hash.
+### :param seed: The seed of the hash.
+### :returns: The 64-bit hash.
+### :note: Reads only the `len` bytes. An empty input (`len` of 0) is valid.
 @expensive("hashes the whole buffer")
 routine xxh64(data: @Byte, len: USize, seed: U64) -> U64
     if len >= 32
@@ -207,15 +207,15 @@ routine xxh64(data: @Byte, len: USize, seed: U64) -> U64
         result: U64 = xxh64_finalize(h)
         return result
 
-// -- 8-byte fast path ------------------------------------------------------------
-//
-// Equivalent to xxh64 with len=8: skip the big-block path, add 8, run one
-// iteration of the 8-byte tail loop, finalize.
+# -- 8-byte fast path ------------------------------------------------------------
+#
+# Equivalent to xxh64 with len=8: skip the big-block path, add 8, run one
+# iteration of the 8-byte tail loop, finalize.
 
-/// Hashes one U64 as if it were an 8-byte input of `xxh64` with the given `seed`, without a buffer. Unkeyed, like every xxh64.
-/// :param v: The integer to hash.
-/// :param seed: The seed of the hash.
-/// :returns: The 64-bit hash.
+### Hashes one U64 as if it were an 8-byte input of `xxh64` with the given `seed`, without a buffer. Unkeyed, like every xxh64.
+### :param v: The integer to hash.
+### :param seed: The seed of the hash.
+### :returns: The 64-bit hash.
 routine xxh64(v: U64, seed: U64) -> U64
     h_len: U64 = seed +% XXH64_P5 +% 8
     k: U64 = xxh64_round(acc: 0, input: v)
@@ -225,17 +225,17 @@ routine xxh64(v: U64, seed: U64) -> U64
     result: U64 = xxh64_finalize(h2)
     return result
 
-// -- 16-byte combiner -------------------------------------------------------------
-//
-// Folds two precomputed sub-hashes into one. Equivalent to running xxh64
-// with len=16 over the concatenation h1 || h2 — two iterations of the
-// 8-byte tail path, then finalize.
+# -- 16-byte combiner -------------------------------------------------------------
+#
+# Folds two precomputed sub-hashes into one. Equivalent to running xxh64
+# with len=16 over the concatenation h1 || h2 — two iterations of the
+# 8-byte tail path, then finalize.
 
-/// Combines two sub-hashes into one, the same as `xxh64` over their 16 bytes `h1 || h2`, for an unkeyed hash of a composite value.
-/// :param h1: The first sub-hash.
-/// :param h2: The second sub-hash.
-/// :param seed: The seed of the hash.
-/// :returns: The 64-bit combined hash.
+### Combines two sub-hashes into one, the same as `xxh64` over their 16 bytes `h1 || h2`, for an unkeyed hash of a composite value.
+### :param h1: The first sub-hash.
+### :param h2: The second sub-hash.
+### :param seed: The seed of the hash.
+### :returns: The 64-bit combined hash.
 routine xxh64_combine2(h1: U64, h2: U64, seed: U64) -> U64
     h_len: U64 = seed +% XXH64_P5 +% 16
     r1: U64 = xxh64_round(acc: 0, input: h1)

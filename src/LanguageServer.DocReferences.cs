@@ -17,7 +17,7 @@ public static partial class LanguageServer
         var lines = text.Replace("\r\n", "\n").Split('\n');
         if (line >= lines.Length) return null;
         string l = lines[line];
-        int marker = l.IndexOf("///", StringComparison.Ordinal);
+        int marker = l.IndexOf("###", StringComparison.Ordinal);
         if (marker < 0 || l[..marker].Trim().Length > 0) return null;
         foreach (Match m in DocReference.Matches(l, marker + 3))
             if (m.Index <= character && character < m.Index + m.Length)

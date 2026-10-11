@@ -69,7 +69,7 @@ routine start() -> None
 
 **Comments**
 
-- `//` for comments, `///` for Markdown doc comments directly above a declaration, field, or choice member.
+- `#` for comments, `###` for Markdown doc comments directly above a declaration, field, or choice member.
   `;` is not a comment (it was until 2026-09-28) and is rejected.
 - **Every routine has a doc comment**, private ones, externals, and a protocol's required routines included. It sits
   above the annotation lines and reads, in this order: what the routine does in one or two plain sentences (from its
@@ -240,9 +240,9 @@ routine start() -> None
         return
 
     first: @S64 = xs.getslot(0)
-    before: S64 = first.peek()  // use the view before the call
+    before: S64 = first.peek()  # use the view before the call
     grow(xs)
-    again: @S64 = xs.getslot(0)  // take it again after
+    again: @S64 = xs.getslot(0)  # take it again after
     ```
 - **A global holding a Box / Memory (rule 5).** `global CACHE: @Memory[Byte]` starts hollow. Only
   `CACHE.replace(new)` changes it (it gives the old memory back, then stores the new one: `poke` is an error), and

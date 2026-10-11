@@ -55,7 +55,7 @@ public static class DocLint
         int first = r.Annotations.Where(a => a.Pos.File == r.Pos.File).Select(a => a.Pos.Line).Append(r.Pos.Line).Min();
         if (DocAbove(lines, first) is not { } doc)
         {
-            warnings.Add($"{r.Pos}: warning: routine '{name}' has no doc comment: write /// lines above it saying what "
+            warnings.Add($"{r.Pos}: warning: routine '{name}' has no doc comment: write ### lines above it saying what "
                 + "it does, with a :param line for each parameter and a :returns: line unless it returns None");
             return;
         }
@@ -80,7 +80,7 @@ public static class DocLint
         for (int i = line - 2; i >= 0 && i < lines.Count; i--)
         {
             string l = lines[i].Trim();
-            if (l.StartsWith("///")) doc.Add(l[3..].Trim());
+            if (l.StartsWith("###")) doc.Add(l[3..].Trim());
             else if (!l.StartsWith('#')) break;
         }
         doc.Reverse();

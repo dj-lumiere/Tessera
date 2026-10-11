@@ -1,36 +1,36 @@
-// Integer expression calculator
-//
-// Parses and evaluates integer expressions such as "-(4 - 10) % 4":
-//
-//     expr    = term    (("+" | "-") term)*
-//     term    = primary (("*" | "/" | "%") primary)*
-//     primary = number | "(" expr ")" | "-" primary
-//
-// The parser builds a heap-allocated tree, the evaluator walks it with
-// overflow-checked S64 arithmetic, and every error (bad token, missing ")",
-// division by zero, overflow) is reported with its column.
-//
-// What this program stresses:
-//   * sum types: Expr is a tag plus every variant's fields. There is no
-//     payload-carrying choice. Switches on the tag name every kind instead of
-//     using '_', so adding a kind is a build error until each one handles it
-//   * error propagation: every call that can fail is followed by an explicit
-//     tag test and branch. Result[@Expr, CalcError] is spelled out each time
-//   * cleanup on failure paths: when the right operand fails to parse, the
-//     already-built left subtree has to be freed by hand
-//   * recursion: parse_binary, parse_primary, eval, and free_expr recurse
+# Integer expression calculator
+#
+# Parses and evaluates integer expressions such as "-(4 - 10) % 4":
+#
+#     expr    = term    (("+" | "-") term)*
+#     term    = primary (("*" | "/" | "%") primary)*
+#     primary = number | "(" expr ")" | "-" primary
+#
+# The parser builds a heap-allocated tree, the evaluator walks it with
+# overflow-checked S64 arithmetic, and every error (bad token, missing ")",
+# division by zero, overflow) is reported with its column.
+#
+# What this program stresses:
+#   * sum types: Expr is a tag plus every variant's fields. There is no
+#     payload-carrying choice. Switches on the tag name every kind instead of
+#     using '_', so adding a kind is a build error until each one handles it
+#   * error propagation: every call that can fail is followed by an explicit
+#     tag test and branch. Result[@Expr, CalcError] is spelled out each time
+#   * cleanup on failure paths: when the right operand fails to parse, the
+#     already-built left subtree has to be freed by hand
+#   * recursion: parse_binary, parse_primary, eval, and free_expr recurse
 
 import Standard/Alloc
 import Standard/Os
 
-// ── C FFI ─────────────────────────────────────────────────────────────────────
+# ── C FFI ─────────────────────────────────────────────────────────────────────
 
 @external("c")
 @symbol("printf")
 @variadic
 routine c_printf(fmt: @Byte) -> S32
 
-// ── Tokens ────────────────────────────────────────────────────────────────────
+# ── Tokens ────────────────────────────────────────────────────────────────────
 
 choice TokenKind: U8
     NUMBER
@@ -46,26 +46,26 @@ choice TokenKind: U8
 
 record Token
     kind: TokenKind
-    value: S64  // Number only
-    pos: USize  // byte offset of the first character
-    end: USize  // byte offset just past the token
+    value: S64  # Number only
+    pos: USize  # byte offset of the first character
+    end: USize  # byte offset just past the token
 
 record CalcError
     message: @Byte
     pos: USize
 
-/// Makes a `CalcError` from its fields.
-/// :param message: Its `message`.
-/// :param pos: Its `pos`.
-/// :returns: The new value.
+### Makes a `CalcError` from its fields.
+### :param message: Its `message`.
+### :param pos: Its `pos`.
+### :returns: The new value.
 routine CalcError.construct(message: @Byte, pos: USize) -> Me
     return Me(message, pos)
 
-/// Releases nothing: a `CalcError` holds no memory of its own.
+### Releases nothing: a `CalcError` holds no memory of its own.
 routine CalcError.destruct(me: @Me) -> None
     return
 
-// ── Syntax tree ───────────────────────────────────────────────────────────────
+# ── Syntax tree ───────────────────────────────────────────────────────────────
 
 choice ExprKind: U8
     NUM
@@ -76,11 +76,11 @@ choice ExprKind: U8
     DIV
     REM
 
-/// A manual sum type: `kind` says which fields mean something.
-///   Num                    value
-///   Neg                    lhs (the operand)
-///   Add Sub Mul Div Rem    lhs, rhs
-/// `pos` is the column of the number or operator, for error messages.
+### A manual sum type: `kind` says which fields mean something.
+###   Num                    value
+###   Neg                    lhs (the operand)
+###   Add Sub Mul Div Rem    lhs, rhs
+### `pos` is the column of the number or operator, for error messages.
 record Expr
     kind: ExprKind
     value: S64
@@ -88,17 +88,17 @@ record Expr
     rhs: @Expr
     pos: USize
 
-/// Makes a `Expr` from its fields.
-/// :param kind: Its `kind`.
-/// :param value: Its `value`.
-/// :param lhs: Its `lhs`.
-/// :param rhs: Its `rhs`.
-/// :param pos: Its `pos`.
-/// :returns: The new value.
+### Makes a `Expr` from its fields.
+### :param kind: Its `kind`.
+### :param value: Its `value`.
+### :param lhs: Its `lhs`.
+### :param rhs: Its `rhs`.
+### :param pos: Its `pos`.
+### :returns: The new value.
 routine Expr.construct(kind: ExprKind, value: S64, lhs: @Me, rhs: @Me, pos: USize) -> Me
     return Me(kind, value, lhs, rhs, pos)
 
-/// Releases nothing: a `Expr` holds no memory of its own.
+### Releases nothing: a `Expr` holds no memory of its own.
 routine Expr.destruct(me: @Me) -> None
     return
 
@@ -111,7 +111,7 @@ routine new_expr(node: Expr, alloc: @MemoryManager) -> @Expr
         p.poke(node)
         return p
 
-/// Frees e and its whole subtree.
+### Frees e and its whole subtree.
 routine free_expr(e: @Expr, alloc: @MemoryManager) -> None
     kind: ExprKind = e.kind.peek()
     when kind
@@ -127,7 +127,7 @@ routine free_expr(e: @Expr, alloc: @MemoryManager) -> None
     deallocate(data: e, alloc)
     return
 
-// ── Lexer ─────────────────────────────────────────────────────────────────────
+# ── Lexer ─────────────────────────────────────────────────────────────────────
 
 record Parser
     src: @Byte
@@ -135,16 +135,16 @@ record Parser
     pos: USize
     alloc: @MemoryManager
 
-/// Makes a `Parser` from its fields.
-/// :param src: Its `src`.
-/// :param len: Its `len`.
-/// :param pos: Its `pos`.
-/// :param alloc: Its `alloc`.
-/// :returns: The new value.
+### Makes a `Parser` from its fields.
+### :param src: Its `src`.
+### :param len: Its `len`.
+### :param pos: Its `pos`.
+### :param alloc: Its `alloc`.
+### :returns: The new value.
 routine Parser.construct(src: @Byte, len: USize, pos: USize, alloc: @MemoryManager) -> Me
     return Me(src, len, pos, alloc)
 
-/// Releases nothing: a `Parser` holds no memory of its own.
+### Releases nothing: a `Parser` holds no memory of its own.
 routine Parser.destruct(me: @Me) -> None
     return
 
@@ -153,8 +153,8 @@ routine is_digit(c: Byte) -> Bool
     below: Bool = c <= b'9'
     return above and below
 
-/// Reads the token at the current position without consuming it.
-/// Fails only on a number that doesn't fit in S64.
+### Reads the token at the current position without consuming it.
+### Fails only on a number that doesn't fit in S64.
 routine Parser.peek(me: @Me) -> Result[Token, CalcError]
     jump skip_space(me.pos.peek())
 
@@ -201,7 +201,7 @@ routine Parser.peek(me: @Me) -> Result[Token, CalcError]
         r: Result[Token, CalcError] = tok
         return r
 
-    // acc is the value of src[start..j) so far.
+    # acc is the value of src[start..j) so far.
     block digits(start: USize, j: USize, acc: S64)
         len: USize = me.len.peek()
         if j >= len
@@ -244,10 +244,10 @@ routine Parser.advance(me: @Me, tok: Token) -> None
     me.pos.poke(end)
     return
 
-// ── Parser ────────────────────────────────────────────────────────────────────
+# ── Parser ────────────────────────────────────────────────────────────────────
 
-/// The binary operator kind stands for at precedence level
-/// (0: + -, 1: * / %), or None when it isn't one.
+### The binary operator kind stands for at precedence level
+### (0: + -, 1: * / %), or None when it isn't one.
 routine operator_at(kind: TokenKind, level: S64) -> Maybe[ExprKind]
     additive: Bool = level == 0
     op: ExprKind = when
@@ -274,7 +274,7 @@ routine operator_at(kind: TokenKind, level: S64) -> Maybe[ExprKind]
     r: Maybe[ExprKind] = op
     return r
 
-/// An operand of a level-level operator: the next level down, or a primary.
+### An operand of a level-level operator: the next level down, or a primary.
 routine Parser.parse_operand(me: @Me, level: S64) -> Result[@Expr, CalcError]
     if level == 0
         r: Result[@Expr, CalcError] = me.parse_binary(1)
@@ -283,7 +283,7 @@ routine Parser.parse_operand(me: @Me, level: S64) -> Result[@Expr, CalcError]
         r: Result[@Expr, CalcError] = me.parse_primary()
         return r
 
-/// operand (op operand)* at one precedence level, folded to the left.
+### operand (op operand)* at one precedence level, folded to the left.
 routine Parser.parse_binary(me: @Me, level: S64) -> Result[@Expr, CalcError]
     first: Result[@Expr, CalcError] = me.parse_operand(level)
     when first
@@ -307,7 +307,7 @@ routine Parser.parse_binary(me: @Me, level: S64) -> Result[@Expr, CalcError]
                                 node: Expr = Expr(kind: kind, value: 0, lhs: lhs2, rhs: right, pos: pos)
                                 continue with lhs2: new_expr(node, alloc)
                             is CalcError as error =>
-                                // The left side parsed but what follows didn't: free it before failing.
+                                # The left side parsed but what follows didn't: free it before failing.
                                 alloc: @MemoryManager = me.alloc.peek()
                                 free_expr(e: lhs2, alloc)
                                 r: Result[@Expr, CalcError] = error
@@ -336,7 +336,7 @@ routine Parser.parse_primary(me: @Me) -> Result[@Expr, CalcError]
                     r: Result[@Expr, CalcError] = leaf
                     return r
                 TokenKind.L_PAREN =>
-                    // "(" expr ")"
+                    # "(" expr ")"
                     me.advance(tok)
                     inner: Result[@Expr, CalcError] = me.parse_binary(0)
                     tree: @Expr = when inner
@@ -398,7 +398,7 @@ routine Parser.parse_primary(me: @Me) -> Result[@Expr, CalcError]
         r: Result[@Expr, CalcError] = error
         return r
 
-/// Parses all of source. Anything left after the expression is an error.
+### Parses all of source. Anything left after the expression is an error.
 routine parse(source: Span[Byte], alloc: @MemoryManager) -> Result[@Expr, CalcError]
     local src: @Byte = source.data
     local len: USize = source.count
@@ -409,7 +409,7 @@ routine parse(source: Span[Byte], alloc: @MemoryManager) -> Result[@Expr, CalcEr
         is @Expr as tree => tree
         is CalcError => return parsed
     peeked: Result[Token, CalcError] = parser.peek()
-    // a lex error here is still "something after the expression"
+    # a lex error here is still "something after the expression"
     pos: USize = when peeked
         is Token as tok =>
             kind: TokenKind = tok.kind
@@ -425,7 +425,7 @@ routine parse(source: Span[Byte], alloc: @MemoryManager) -> Result[@Expr, CalcEr
     r: Result[@Expr, CalcError] = e
     return r
 
-// ── Evaluator ─────────────────────────────────────────────────────────────────
+# ── Evaluator ─────────────────────────────────────────────────────────────────
 
 routine eval(e: @Expr) -> Result[S64, CalcError]
     local kind: ExprKind = e.kind.peek()
@@ -468,7 +468,7 @@ routine eval(e: @Expr) -> Result[S64, CalcError]
             ExprKind.REM => jump remainder(a, b, zero_divisor)
             else => unreachable
 
-    // only the five binary kinds reach binary()
+    # only the five binary kinds reach binary()
     block divide(a: S64, b: S64, zero_divisor: Bool)
         quotient: Maybe[S64] = a.div_checked(b)
         if zero_divisor
@@ -483,7 +483,7 @@ routine eval(e: @Expr) -> Result[S64, CalcError]
         else
             jump checked(rest)
 
-    // None from a checked operation with a nonzero divisor means overflow.
+    # None from a checked operation with a nonzero divisor means overflow.
     block checked(result: Maybe[S64])
         error: CalcError = CalcError(message: "overflow", pos: pos)
         fail: Result[S64, CalcError] = error
@@ -496,7 +496,7 @@ routine eval(e: @Expr) -> Result[S64, CalcError]
         r: Result[S64, CalcError] = error
         return r
 
-// ── Driver ────────────────────────────────────────────────────────────────────
+# ── Driver ────────────────────────────────────────────────────────────────────
 
 routine calculate(source: Span[Byte], alloc: @MemoryManager) -> None
     src: @Byte = source.data

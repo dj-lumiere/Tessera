@@ -1,56 +1,56 @@
-// Tessera stdlib: the correctly rounded gamma function of B64
-//
-// A double-double fast phase with an error bound: a polynomial for 1/gamma
-// near zero, a polynomial around 3.5 + i shifted by the recurrence for
-// -3 <= x <= 4, exp(lgamma(x)) from Stirling's series above 4, and the
-// reflection formula below -3. When the bound can't decide the rounding, an
-// accurate phase redoes it with a triple-double product of powers of the
-// reduced argument over nine ranges, and a table settles the hardest inputs.
-// Round to nearest only: overflow gives +inf, +-0 gives +-inf, the negative
-// integers and -inf give NaN, a result below the subnormals rounds to a zero
-// with the true sign, and NaN comes back quiet.
-//
-// This file also holds the double-double helpers and the logarithm shared with
-// the log-gamma port (Lgamma.tess).
-//
-// Ported from CORE-MATH, src/binary64/tgamma/tgamma.c via RazorForge's B64Tgamma.rf.
-// Copyright (c) 2024 Alexei Sibidanov <sibid@uvic.ca>
-// MIT license: see LICENSE-CORE-MATH
+# Tessera stdlib: the correctly rounded gamma function of B64
+#
+# A double-double fast phase with an error bound: a polynomial for 1/gamma
+# near zero, a polynomial around 3.5 + i shifted by the recurrence for
+# -3 <= x <= 4, exp(lgamma(x)) from Stirling's series above 4, and the
+# reflection formula below -3. When the bound can't decide the rounding, an
+# accurate phase redoes it with a triple-double product of powers of the
+# reduced argument over nine ranges, and a table settles the hardest inputs.
+# Round to nearest only: overflow gives +inf, +-0 gives +-inf, the negative
+# integers and -inf give NaN, a result below the subnormals rounds to a zero
+# with the true sign, and NaN comes back quiet.
+#
+# This file also holds the double-double helpers and the logarithm shared with
+# the log-gamma port (Lgamma.tess).
+#
+# Ported from CORE-MATH, src/binary64/tgamma/tgamma.c via RazorForge's B64Tgamma.rf.
+# Copyright (c) 2024 Alexei Sibidanov <sibid@uvic.ca>
+# MIT license: see LICENSE-CORE-MATH
 
 module Standard/Core
 
-/// Accurate-path ranges of tgamma, by range index: offsets of the double coefficients in
-/// CM_B64_TGAMMA_T.
+### Accurate-path ranges of tgamma, by range index: offsets of the double coefficients in
+### CM_B64_TGAMMA_T.
 preset CM_B64_TGAMMA_BR_CH: @Array[USize, 9] <- [235, 317, 397, 474, 551, 623, 693, 762, 828]
-/// The number of double coefficients of each range.
+### The number of double coefficients of each range.
 preset CM_B64_TGAMMA_BR_NCH: @Array[USize, 9] <- [14, 14, 13, 13, 12, 12, 11, 10, 9]
-/// Offsets of each range's double-double coefficient pairs.
+### Offsets of each range's double-double coefficient pairs.
 preset CM_B64_TGAMMA_BR_CL: @Array[USize, 9] <- [249, 331, 410, 487, 563, 635, 704, 772, 837]
-/// The number of double-double coefficient pairs of each range.
+### The number of double-double coefficient pairs of each range.
 preset CM_B64_TGAMMA_BR_NCL: @Array[USize, 9] <- [34, 33, 32, 32, 30, 29, 29, 28, 26]
-/// Each range's reference integer (jm = base - floor(x)).
+### Each range's reference integer (jm = base - floor(x)).
 preset CM_B64_TGAMMA_BR_BASE: @Array[S64, 9] <- [160, 128, 96, 64, 32, 26, 16, 8, 4]
-/// Each range's result exponent offset.
+### Each range's result exponent offset.
 preset CM_B64_TGAMMA_BR_EOFF: @Array[S64, 9] <- [942, 713, 495, 293, 115, 86, 42, 14, 3]
 
-/// The reduction table of the gamma logarithms: c0 (unsigned).
+### The reduction table of the gamma logarithms: c0 (unsigned).
 preset CM_B64_GAMMA_LOGD_B0: @Array[U64, 32] <- [301, 7189, 13383, 18923, 23845, 28184, 31969,
     35231, 37996, 40288, 42129, 43542, 44546, 45160, 45399, 45281, 44821, 44032, 42929, 41522,
     39825, 37848, 35602, 33097, 30341, 27345, 24115, 20661, 16989, 13107, 9022, 4740]
 
-/// The reduction table of the gamma logarithms: c1 (signed).
+### The reduction table of the gamma logarithms: c1 (signed).
 preset CM_B64_GAMMA_LOGD_B1: @Array[S64, 32] <- [27565, 24786, 22167, 19696, 17361, 15150, 13054,
     11064, 9173, 7372, 5657, 4020, 2457, 962, -468, -1838, -3151, -4412, -5622, -6786, -7905, -8982,
     -10020, -11020, -11985, -12916, -13816, -14685, -15526, -16339, -17126, -17889]
 
-/// Coefficient tables of tgamma (B64 bits), generated from tgamma.c. Layout (offset, count):
-/// DB 0 171, ACC_CC 171 56, ACC_C 227 8, CH0 235 14, CL0 249 68, CH1 317 14, CL1 331 66,
-/// CH2 397 13, CL2 410 64, CH3 474 13, CL3 487 64, CH4 551 12, CL4 563 60, CH5 623 12,
-/// CL5 635 58, CH6 693 11, CL6 704 58, CH7 762 10, CL7 772 56, CH8 828 9, CL8 837 52,
-/// SMALL_CC 889 10, SMALL_C 899 16, MID_CC 915 36, MID_C 951 18, R1 969 33, R2 1002 33,
-/// L1 1035 66, L2 1101 64, LOGD_C 1165 4, ST 1169 130, E0 1299 64, E1 1363 64,
-/// EXP_C 1427 10, ASYM_C1 1437 16, ASYM_C2 1453 26. DB holds (x, f, df) triples sorted by x,
-/// the polynomial tables (high, low) pairs, and L1, L2, ST, E0 and E1 (low, high) pairs.
+### Coefficient tables of tgamma (B64 bits), generated from tgamma.c. Layout (offset, count):
+### DB 0 171, ACC_CC 171 56, ACC_C 227 8, CH0 235 14, CL0 249 68, CH1 317 14, CL1 331 66,
+### CH2 397 13, CL2 410 64, CH3 474 13, CL3 487 64, CH4 551 12, CL4 563 60, CH5 623 12,
+### CL5 635 58, CH6 693 11, CL6 704 58, CH7 762 10, CL7 772 56, CH8 828 9, CL8 837 52,
+### SMALL_CC 889 10, SMALL_C 899 16, MID_CC 915 36, MID_C 951 18, R1 969 33, R2 1002 33,
+### L1 1035 66, L2 1101 64, LOGD_C 1165 4, ST 1169 130, E0 1299 64, E1 1363 64,
+### EXP_C 1427 10, ASYM_C1 1437 16, ASYM_C2 1453 26. DB holds (x, f, df) triples sorted by x,
+### the polynomial tables (high, low) pairs, and L1, L2, ST, E0 and E1 (low, high) pairs.
 preset CM_B64_TGAMMA_T: @Array[U64, 1479] <- [0xC0648BA8E27D09AD, 0x82F0B34F909C5C92,
     0x0000100000000000, 0xC061FE464BBE8B7A, 0x0C5F6E94380A86BF, 0x08F0000000000000,
     0xC05DFE438A574B34, 0x16FE0EFC1FFA409E, 0x1390000000000000, 0xC05C008ED7E2BE92,
@@ -423,20 +423,20 @@ preset CM_B64_TGAMMA_T: @Array[U64, 1479] <- [0xC0648BA8E27D09AD, 0x82F0B34F909C
     0xBC50298C44C99CEE, 0x3FFE5717107E0999, 0x3C75BDFE7AC38F81, 0xC0090C04FBD840A6,
     0xBC95D2FBFE47E148]
 
-/// A double-double number hi + lo.
+### A double-double number hi + lo.
 record CmF64GammaDD
     hi: B64
     lo: B64
 
-/// A triple-double number hi + mid + lo.
+### A triple-double number hi + mid + lo.
 record CmF64GammaTD
     hi: B64
     mid: B64
     lo: B64
 
-/// The fast phase of gamma: gamma(x) within eps 2^sc of (hi + lo) 2^sc. Status
-/// 0 is a normal result, 2 a reflection result that would be subnormal, and 1
-/// a case the fast phase doesn't cover (settled exactly by the caller).
+### The fast phase of gamma: gamma(x) within eps 2^sc of (hi + lo) 2^sc. Status
+### 0 is a normal result, 2 a reflection result that would be subnormal, and 1
+### a case the fast phase doesn't cover (settled exactly by the caller).
 record CmF64TgammaFast
     status: U64
     hi: B64
@@ -444,41 +444,41 @@ record CmF64TgammaFast
     eps: B64
     sc: S64
 
-/// e^x as a double-double mantissa and a binary exponent: (hi + lo) 2^e.
+### e^x as a double-double mantissa and a binary exponent: (hi + lo) 2^e.
 record CmF64TgammaExp
     hi: B64
     lo: B64
     e: S64
 
-/// The reduced argument of the gamma logarithms: x = 2^e tf, with the two
-/// table indices of the reciprocal that brings tf close to 1 (ed = e as B64).
+### The reduced argument of the gamma logarithms: x = 2^e tf, with the two
+### table indices of the reciprocal that brings tf close to 1 (ed = e as B64).
 record CmF64GammaLogArg
     tf: B64
     ed: B64
     i1: USize
     i2: USize
 
-/// Γ(me): ±inf at ±0, NaN at the negative integers and -inf.
-/// :returns: Γ(`me`), correctly rounded.
+### Γ(me): ±inf at ±0, NaN at the negative integers and -inf.
+### :returns: Γ(`me`), correctly rounded.
 routine B64.gamma(me: Me) -> Me
     local f: CmF64TgammaFast = cm_b64_tgamma_dd(me)
 
     st: U64 = f.status
     when st
         0 =>
-            // the fast phase decides unless the error bound straddles a rounding boundary
+            # the fast phase decides unless the error bound straddles a rounding boundary
             ub: Me = f.hi + (f.lo + f.eps)
             lb: Me = f.hi + (f.lo - f.eps)
             if ub != lb
                 return cm_b64_tgamma_accurate(me)
             return Me.from_bits(ub.bits() +% (f.sc.to_wrap[U64]() << 52))
         2 =>
-            // reflection whose result may be subnormal: hi + lo is the value times 2^e, e = -sc
+            # reflection whose result may be subnormal: hi + lo is the value times 2^e, e = -sc
             e: S64 = -f.sc
             sign_exp: U64 = f.hi.bits() >> 52
             re: S64 = (sign_exp & 0x7FF).to[S64]()
             if re - e <= 0
-                // round at the subnormal quantum: add a power of two that fixes the exponent, then strip it
+                # round at the subnormal quantum: add a power of two that fixes the exponent, then strip it
                 shift_exp: S64 = e - re + 1
                 th: U64 = f.hi.bits() +% (shift_exp.to_wrap[U64]() << 52)
                 s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: Me.from_bits(th & 0xFFF0000000000000), y: f.hi)
@@ -498,10 +498,10 @@ routine B64.gamma(me: Me) -> Me
                     return Me.from_bits(ub.bits() -% (e.to_wrap[U64]() << 52))
         else => return cm_b64_tgamma_special(me)
 
-/// gamma(x) for the inputs the fast phase leaves out: NaN, infinities, |x| < 2^-112,
-/// overflow, integers, and x <= -184.
-/// :param x: The argument.
-/// :returns: Γ(`x`) for these special cases.
+### gamma(x) for the inputs the fast phase leaves out: NaN, infinities, |x| < 2^-112,
+### overflow, integers, and x <= -184.
+### :param x: The argument.
+### :returns: Γ(`x`) for these special cases.
 private routine cm_b64_tgamma_special(x: B64) -> B64
     local t: U64 = x.bits()
     local ax: U64 = t << 1
@@ -512,15 +512,15 @@ private routine cm_b64_tgamma_special(x: B64) -> B64
 
     when
         ax >= 0xFFE0000000000000 =>
-            // -inf has no gamma (the default NaN), +inf maps to itself, and x + x quiets a NaN
+            # -inf has no gamma (the default NaN), +inf maps to itself, and x + x quiets a NaN
             infinite: Bool = ax == 0xFFE0000000000000
             when
                 infinite and t >> 63 == 1 => return B64.from_bits(0xFFF8000000000000)
                 infinite => return x
                 else => return x + x
         ax < 0x71E0000000000000 =>
-            // |x| < 2^-112: gamma(x) rounds to 1/x (the C code steps below it for x = 2^k under
-            // directed rounding, and r - 0.5 is r in round to nearest)
+            # |x| < 2^-112: gamma(x) rounds to 1/x (the C code steps below it for x = 2^k under
+            # directed rounding, and r - 0.5 is r in round to nearest)
             if x == 5.562684646268003e-309
                 return B64.add(1.7976931348623157e308, 9.9792015476736e291)
             r: B64 = B64.div(1.0, x)
@@ -532,7 +532,7 @@ private routine cm_b64_tgamma_special(x: B64) -> B64
                 return r
         x >= 171.62437695630274 => return B64.add(1.7415152243978685e308, 1.7415152243978685e308)
         fx == x =>
-            // an integer: +-0 is a pole of the sign of x, a negative integer a NaN pole, and k gives (k-1)!
+            # an integer: +-0 is a pole of the sign of x, a negative integer a NaN pole, and k gives (k-1)!
             zero: Bool = x == 0.0
             when
                 zero => return B64.div(1.0, x)
@@ -555,7 +555,7 @@ private routine cm_b64_tgamma_special(x: B64) -> B64
             then
                 return th.peek() + tl.peek()
         else =>
-            // x <= -184, not an integer: |gamma(x)| < 2^-1078 rounds to a zero with the sign of gamma
+            # x <= -184, not an integer: |gamma(x)| < 2^-1078 rounds to a zero with the sign of gamma
             fits: Bool = fx >= -4.611686018427388e18
             kk: S64 = when
                 fits => fx.to[S64]()
@@ -565,9 +565,9 @@ private routine cm_b64_tgamma_special(x: B64) -> B64
             else
                 return B64.mul(2.2250738585072014e-308, -2.2250738585072014e-308)
 
-/// The double-double fast phase of gamma.
-/// :param x: The argument.
-/// :returns: The fast-phase result, with status 1 for the cases it leaves to the caller.
+### The double-double fast phase of gamma.
+### :param x: The argument.
+### :returns: The fast-phase result, with status 1 for the cases it leaves to the caller.
 private routine cm_b64_tgamma_dd(x: B64) -> CmF64TgammaFast
     ax: U64 = x.bits() << 1
     none: CmF64TgammaFast = CmF64TgammaFast(status: 1, hi: 0.0, lo: 0.0, eps: 0.0, sc: 0)
@@ -582,9 +582,9 @@ private routine cm_b64_tgamma_dd(x: B64) -> CmF64TgammaFast
         x > 4.0 => return cm_b64_tgamma_stirling(x)
         else => return cm_b64_tgamma_mid(x)
 
-/// Fast phase for |x| < 0.25: gamma(x) = 1/x + P(x).
-/// :param x: The argument.
-/// :returns: The fast-phase result (status 0).
+### Fast phase for |x| < 0.25: gamma(x) = 1/x + P(x).
+### :param x: The argument.
+### :returns: The fast-phase result (status 0).
 private routine cm_b64_tgamma_small(x: B64) -> CmF64TgammaFast
     x2: B64 = x * x
     x4: B64 = x2 * x2
@@ -604,9 +604,9 @@ private routine cm_b64_tgamma_small(x: B64) -> CmF64TgammaFast
     eps: B64 = f.hi * (x6_scaled + 3.5e-19)
     return CmF64TgammaFast(status: 0, hi: f.hi, lo: f.lo, eps: eps, sc: 0)
 
-/// Fast phase for -184 < x < -3: gamma(x) = pi / (sin(pi x) gamma(1 - x)).
-/// :param x: The argument.
-/// :returns: The fast-phase result, status 2 when `x` < -170 (the result may be subnormal), else 0.
+### Fast phase for -184 < x < -3: gamma(x) = pi / (sin(pi x) gamma(1 - x)).
+### :param x: The argument.
+### :returns: The fast-phase result, status 2 when `x` < -170 (the result may be subnormal), else 0.
 private routine cm_b64_tgamma_reflect(x: B64) -> CmF64TgammaFast
     s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: -x, y: 1.0)
     lg: CmF64GammaDD = cm_b64_tgamma_lgamma_asym(xh: s.hi, xl: s.lo)
@@ -633,19 +633,19 @@ private routine cm_b64_tgamma_reflect(x: B64) -> CmF64TgammaFast
         else => 2
     return CmF64TgammaFast(status: st, hi: sh, lo: sl, eps: eps, sc: -ex.e)
 
-/// Fast phase for 4 < x < 0x1.573fae561f648p+7: gamma(x) = exp(lgamma(x)).
-/// :param x: The argument.
-/// :returns: The fast-phase result (status 0), scaled by 2^sc.
+### Fast phase for 4 < x < 0x1.573fae561f648p+7: gamma(x) = exp(lgamma(x)).
+### :param x: The argument.
+### :returns: The fast-phase result (status 0), scaled by 2^sc.
 private routine cm_b64_tgamma_stirling(x: B64) -> CmF64TgammaFast
     lg: CmF64GammaDD = cm_b64_tgamma_lgamma_asym(xh: x, xl: 0.0)
     ex: CmF64TgammaExp = cm_b64_tgamma_expd(x: lg.hi, l: lg.lo)
     eps: B64 = ex.hi * (x * 1.84e-22 + 2e-21)
     return CmF64TgammaFast(status: 0, hi: ex.hi, lo: ex.lo, eps: eps, sc: ex.e)
 
-/// Fast phase for -3 <= x <= 4: a polynomial around 3.5 + i, shifted by the
-/// recurrence gamma(x + 1) = x gamma(x).
-/// :param x: The argument.
-/// :returns: The fast-phase result (status 0).
+### Fast phase for -3 <= x <= 4: a polynomial around 3.5 + i, shifted by the
+### recurrence gamma(x + 1) = x gamma(x).
+### :param x: The argument.
+### :returns: The fast-phase result (status 0).
 private routine cm_b64_tgamma_mid(x: B64) -> CmF64TgammaFast
     local xph: @B64 <- x
     local xpl: @B64 <- 0.0
@@ -666,7 +666,7 @@ private routine cm_b64_tgamma_mid(x: B64) -> CmF64TgammaFast
     1.0.poke_into(wh)
     jump finish(f)
 
-    // w = x (x + 1) ... (x + jm - 1) in double-double
+    # w = x (x + 1) ... (x + jm - 1) in double-double
     block product(f: CmF64GammaDD, j: S64)
         if j == 0
             jump finish(f)
@@ -697,26 +697,26 @@ private routine cm_b64_tgamma_mid(x: B64) -> CmF64TgammaFast
         g: CmF64GammaDD = cm_b64_gamma_muldd(xh: rh, xl: rl, ch: f.hi, cl: f.lo)
         return CmF64TgammaFast(status: 0, hi: g.hi, lo: g.lo, eps: g.hi * 1e-21, sc: 0)
 
-/// Entry i of CM_B64_TGAMMA_T as a B64.
-/// :param i: The table index.
-/// :returns: The entry as a B64.
+### Entry i of CM_B64_TGAMMA_T as a B64.
+### :param i: The table index.
+### :returns: The entry as a B64.
 routine cm_b64_tgamma_t(i: USize) -> B64
     return B64.from_bits(CM_B64_TGAMMA_T.getitem(i))
 
-/// (c[q] + x c[q+1]) + x2 (c[q+2] + x c[q+3]) for the entries c of CM_B64_TGAMMA_T.
-/// :param x: The variable.
-/// :param x2: `x` squared.
-/// :param q: The index of the first coefficient.
-/// :returns: The four-term polynomial's value.
+### (c[q] + x c[q+1]) + x2 (c[q+2] + x c[q+3]) for the entries c of CM_B64_TGAMMA_T.
+### :param x: The variable.
+### :param x2: `x` squared.
+### :param q: The index of the first coefficient.
+### :returns: The four-term polynomial's value.
 private routine cm_b64_tgamma_pair4(x: B64, x2: B64, q: USize) -> B64
     a: B64 = cm_b64_tgamma_t(q) + x * cm_b64_tgamma_t(q + 1)
     b: B64 = cm_b64_tgamma_t(q + 2) + x * cm_b64_tgamma_t(q + 3)
     return a + x2 * b
 
-/// The correctly rounded gamma of a tabulated hard-to-round x, or f otherwise.
-/// :param x: The argument.
-/// :param f: The result to return when `x` isn't listed.
-/// :returns: The listed gamma(`x`), or `f`.
+### The correctly rounded gamma of a tabulated hard-to-round x, or f otherwise.
+### :param x: The argument.
+### :param f: The result to return when `x` isn't listed.
+### :returns: The listed gamma(`x`), or `f`.
 private routine cm_b64_tgamma_database(x: B64, f: B64) -> B64
     while a <= b with a: S64 = 0, b: S64 = 56
         m: S64 = (a + b) / 2
@@ -729,9 +729,9 @@ private routine cm_b64_tgamma_database(x: B64, f: B64) -> B64
     then
         return f
 
-/// The accurate phase of gamma, for a finite non-integer x with -184 < x < 0x1.573fae561f648p+7.
-/// :param x: The argument.
-/// :returns: gamma(`x`), correctly rounded.
+### The accurate phase of gamma, for a finite non-integer x with -184 < x < 0x1.573fae561f648p+7.
+### :param x: The argument.
+### :returns: gamma(`x`), correctly rounded.
 private routine cm_b64_tgamma_accurate(x: B64) -> B64
     if x.abs() < 0.25
         return cm_b64_tgamma_accurate_small(x)
@@ -748,7 +748,7 @@ private routine cm_b64_tgamma_accurate(x: B64) -> B64
         jm < 0 => jump down(pf, jm, eoff, x1, 0.0, x1, 0.0, S64.sub(-1, jm))
         else => jump correct(pf.hi, pf.lo, jm, eoff)
 
-    // below the range's reference: w = x (x + 1) ... (x + jm - 1), rescaled to stay finite
+    # below the range's reference: w = x (x + 1) ... (x + jm - 1), rescaled to stay finite
     block up(pf: CmF64GammaDD, jm: S64, eoff: S64, xph: B64, xpl: B64, wh: B64, wl: B64, j: S64)
         if j == 0
             jump divide(pf, jm, eoff, wh, wl)
@@ -774,7 +774,7 @@ private routine cm_b64_tgamma_accurate(x: B64) -> B64
         m: CmF64GammaDD = cm_b64_gamma_muldd3(xh: pf.hi, xl: pf.lo, yh: rh, yl: rl)
         jump correct(m.hi, m.lo, jm, eoff)
 
-    // above the range's reference: w = (x - 1) (x - 2) ... (x + jm)
+    # above the range's reference: w = (x - 1) (x - 2) ... (x + jm)
     block down(pf: CmF64GammaDD, jm: S64, eoff: S64, xph: B64, xpl: B64, wh: B64, wl: B64, j: S64)
         if j == 0
             jump multiply(pf, jm, eoff, wh, wl)
@@ -791,7 +791,7 @@ private routine cm_b64_tgamma_accurate(x: B64) -> B64
         m: CmF64GammaDD = cm_b64_gamma_muldd3(xh: pf.hi, xl: pf.lo, yh: wh, yl: wl)
         jump correct(m.hi, m.lo, jm, eoff)
 
-    // a correction term that is zero in round to nearest (the C code needs it under directed rounding)
+    # a correction term that is zero in round to nearest (the C code needs it under directed rounding)
     block correct(fh: B64, fl: B64, jm: S64, eoff: S64)
         if jm <= 0
             jump correct_below(fh, fl, jm, eoff)
@@ -815,7 +815,7 @@ private routine cm_b64_tgamma_accurate(x: B64) -> B64
         corr: B64 = steps * crr * 1.04
         jump round(fh, fl - fh * corr, eoff)
 
-    // (fh + fl) 2^eoff, rounded at the subnormal quantum when it falls there
+    # (fh + fl) 2^eoff, rounded at the subnormal quantum when it falls there
     block round(fh: B64, fl: B64, eoff: S64)
         eps: B64 = B64.mul(1.8488927466117464e-31, fh)
         ub: B64 = fh + (fl + eps)
@@ -841,9 +841,9 @@ private routine cm_b64_tgamma_accurate(x: B64) -> B64
         else
             return B64.from_bits(res)
 
-/// The accurate-phase range of floor(x) = i: 0 for i > 159 up to 8 for i <= 7.
-/// :param i: floor(x).
-/// :returns: The range index, 0 to 8.
+### The accurate-phase range of floor(x) = i: 0 for i > 159 up to 8 for i <= 7.
+### :param i: floor(x).
+### :returns: The range index, 0 to 8.
 private routine cm_b64_tgamma_range(i: S64) -> USize
     when
         i > 159 => return 0
@@ -856,9 +856,9 @@ private routine cm_b64_tgamma_range(i: S64) -> USize
         i > 7 => return 7
         else => return 8
 
-/// The accurate phase for |x| < 0.25: gamma(x) = 1/x + P(x) in triple-double.
-/// :param x: The argument.
-/// :returns: gamma(`x`), correctly rounded.
+### The accurate phase for |x| < 0.25: gamma(x) = 1/x + P(x) in triple-double.
+### :param x: The argument.
+### :returns: gamma(`x`), correctly rounded.
 private routine cm_b64_tgamma_accurate_small(x: B64) -> B64
     x2: B64 = x * x
     x4: B64 = x2 * x2
@@ -876,7 +876,7 @@ private routine cm_b64_tgamma_accurate_small(x: B64) -> B64
     b: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: a.lo, y: s2.lo)
     et: B64 = cm_b64_gamma_fasttwosum(x: a.hi, y: B64.mul(2.0, b.hi)).lo
     if et == 0.0
-        // fh + fl is a rounding midpoint: move fl toward fll
+        # fh + fl is a rounding midpoint: move fl toward fll
         fh2: B64 = a.hi
         fl2: B64 = b.hi
         sign_product: B64 = B64.copysign(1.0, fl2) * B64.copysign(1.0, b.lo)
@@ -887,13 +887,13 @@ private routine cm_b64_tgamma_accurate_small(x: B64) -> B64
     else
         return a.hi + b.hi
 
-/// The double-double polynomial c[0] + c[1] x + ... + (c[n-1] + l) x^(n-1) of the
-/// (high, low) pairs of CM_B64_TGAMMA_T from base, at a double-double x.
-/// :param x: The point, as a double-double.
-/// :param n: The number of coefficients, at least 1.
-/// :param base: The table index of the first (high, low) pair.
-/// :param l: An extra low part added to the top coefficient.
-/// :returns: The polynomial's value as a double-double.
+### The double-double polynomial c[0] + c[1] x + ... + (c[n-1] + l) x^(n-1) of the
+### (high, low) pairs of CM_B64_TGAMMA_T from base, at a double-double x.
+### :param x: The point, as a double-double.
+### :param n: The number of coefficients, at least 1.
+### :param base: The table index of the first (high, low) pair.
+### :param l: An extra low part added to the top coefficient.
+### :returns: The polynomial's value as a double-double.
 private routine cm_b64_tgamma_polydd(x: CmF64GammaDD, n: USize, base: USize, l: B64) -> CmF64GammaDD
     local ch: @B64 <- .hollow()
     local cl: @B64 <- .hollow()
@@ -917,12 +917,12 @@ private routine cm_b64_tgamma_polydd(x: CmF64GammaDD, n: USize, base: USize, l: 
     then
         return CmF64GammaDD(hi: ch.peek(), lo: cl.peek())
 
-/// The same polynomial at a double x, accumulated with sumdd.
-/// :param x: The variable.
-/// :param n: The number of coefficients, at least 1.
-/// :param base: The table index of the first (high, low) pair.
-/// :param l: An extra low part added to the top coefficient.
-/// :returns: The polynomial's value as a double-double.
+### The same polynomial at a double x, accumulated with sumdd.
+### :param x: The variable.
+### :param n: The number of coefficients, at least 1.
+### :param base: The table index of the first (high, low) pair.
+### :param l: An extra low part added to the top coefficient.
+### :returns: The polynomial's value as a double-double.
 private routine cm_b64_tgamma_polyddd(x: B64, n: USize, base: USize, l: B64) -> CmF64GammaDD
     local ch: @B64 <- .hollow()
     local cl: @B64 <- .hollow()
@@ -946,12 +946,12 @@ private routine cm_b64_tgamma_polyddd(x: B64, n: USize, base: USize, l: B64) -> 
     then
         return CmF64GammaDD(hi: ch.peek(), lo: cl.peek())
 
-/// The double polynomial c[0] + c[1] x + ... + c[n-1] x^(n-1) of the high parts of the
-/// pairs of CM_B64_TGAMMA_T from base.
-/// :param x: The variable.
-/// :param n: The number of coefficients, at least 1.
-/// :param base: The table index of the first pair.
-/// :returns: The polynomial's value.
+### The double polynomial c[0] + c[1] x + ... + c[n-1] x^(n-1) of the high parts of the
+### pairs of CM_B64_TGAMMA_T from base.
+### :param x: The variable.
+### :param n: The number of coefficients, at least 1.
+### :param base: The table index of the first pair.
+### :returns: The polynomial's value.
 private routine cm_b64_tgamma_polyd(x: B64, n: USize, base: USize) -> B64
     local ch: @B64 <- .hollow()
 
@@ -965,30 +965,30 @@ private routine cm_b64_tgamma_polyd(x: B64, n: USize, base: USize) -> B64
     then
         return ch.peek()
 
-/// x times the triple-double x0 + x1 + x2, as a triple-double.
-/// :param x: The double factor.
-/// :param x0: The high part of the triple-double.
-/// :param x1: The middle part of the triple-double.
-/// :param x2: The low part of the triple-double.
-/// :returns: The product as a triple-double.
+### x times the triple-double x0 + x1 + x2, as a triple-double.
+### :param x: The double factor.
+### :param x0: The high part of the triple-double.
+### :param x1: The middle part of the triple-double.
+### :param x2: The low part of the triple-double.
+### :returns: The product as a triple-double.
 private routine cm_b64_tgamma_sprod(x: B64, x0: B64, x1: B64, x2: B64) -> CmF64GammaTD
     z0: B64 = x * x0
     z0l: B64 = b64_mul_error(x, y: x0, p: z0)
     z1: B64 = x * x1
     z2: B64 = x * x2 + b64_mul_error(x, y: x1, p: z1)
-    // split z0 so that ulp(high part) = 2^-25 (exact for |z0| <= 2^26)
+    # split z0 so that ulp(high part) = 2^-25 (exact for |z0| <= 2^26)
     zh: B64 = z0 + 201326592.0 - 201326592.0
     e: B64 = z0 - zh
     s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: e, y: z0l)
     t: CmF64GammaDD = cm_b64_gamma_twosum(x: s.hi, y: z1)
     return CmF64GammaTD(hi: zh, mid: t.hi, lo: t.lo + s.lo + z2)
 
-/// The accurate-phase polynomial of range k: imax double coefficients at chbase,
-/// weighted by triple-double powers of d, plus a double-double tail of jmax pairs
-/// at clbase, where the CM_B64_TGAMMA_BR_* tables give the four for the range.
-/// :param d: The reduced argument.
-/// :param k: The accurate-phase range, 0 to 8 (see cm_b64_tgamma_range).
-/// :returns: The polynomial's value as a double-double.
+### The accurate-phase polynomial of range k: imax double coefficients at chbase,
+### weighted by triple-double powers of d, plus a double-double tail of jmax pairs
+### at clbase, where the CM_B64_TGAMMA_BR_* tables give the four for the range.
+### :param d: The reduced argument.
+### :param k: The accurate-phase range, 0 to 8 (see cm_b64_tgamma_range).
+### :returns: The polynomial's value as a double-double.
 private routine cm_b64_tgamma_poly3(d: B64, k: USize) -> CmF64GammaDD
     local imax: USize = CM_B64_TGAMMA_BR_NCH.getitem(k)
     local chbase: USize = CM_B64_TGAMMA_BR_CH.getitem(k)
@@ -1026,9 +1026,9 @@ private routine cm_b64_tgamma_poly3(d: B64, k: USize) -> CmF64GammaDD
     c: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: b.lo, y: a.lo)
     return CmF64GammaDD(hi: b.hi, lo: c.hi)
 
-/// sin(pi x) as a double-double, for 0 < x < 1.
-/// :param x: The argument.
-/// :returns: sin(pi `x`) as a double-double.
+### sin(pi x) as a double-double, for 0 < x < 1.
+### :param x: The argument.
+### :returns: sin(pi `x`) as a double-double.
 private routine cm_b64_tgamma_sinpid(x: B64) -> CmF64GammaDD
     from_half: B64 = (x - 0.5).abs()
     y: B64 = from_half * 128.0
@@ -1054,10 +1054,10 @@ private routine cm_b64_tgamma_sinpid(x: B64) -> CmF64GammaDD
     c2: CmF64GammaDD = cm_b64_gamma_mulddd(x: d, ch: c1.hi, cl: c1.lo)
     return cm_b64_gamma_fastsum(xh: sh, xl: sl, yh: c2.hi, yl: c2.lo)
 
-/// e^(x + l) as (hi + lo) 2^e.
-/// :param x: The high part of the exponent.
-/// :param l: The low part of the exponent.
-/// :returns: The mantissa and binary exponent of e^(`x` + `l`).
+### e^(x + l) as (hi + lo) 2^e.
+### :param x: The high part of the exponent.
+### :param l: The low part of the exponent.
+### :returns: The mantissa and binary exponent of e^(`x` + `l`).
 private routine cm_b64_tgamma_expd(x: B64, l: B64) -> CmF64TgammaExp
     m: CmF64GammaDD = cm_b64_gamma_muldd(xh: x, xl: l, ch: 1477.3197218702985, cl: 2.0843800310713378e-14)
     ix: B64 = m.hi.round_ties_even()
@@ -1074,17 +1074,17 @@ private routine cm_b64_tgamma_expd(x: B64, l: B64) -> CmF64TgammaExp
     h: CmF64GammaDD = cm_b64_gamma_muldd(xh: r.hi, xl: r.lo, ch: o.hi, cl: g.lo + o.lo)
     return CmF64TgammaExp(hi: h.hi, lo: h.lo, e: k >> 10)
 
-/// c[q] + z c[q+2] for the entries c of CM_B64_TGAMMA_T.
-/// :param z: The variable.
-/// :param q: The index of the first coefficient.
-/// :returns: c[q] + `z` c[q+2].
+### c[q] + z c[q+2] for the entries c of CM_B64_TGAMMA_T.
+### :param z: The variable.
+### :param q: The index of the first coefficient.
+### :returns: c[q] + `z` c[q+2].
 private routine cm_b64_tgamma_stride2(z: B64, q: USize) -> B64
     return cm_b64_tgamma_t(q) + z * cm_b64_tgamma_t(q + 2)
 
-/// ln(gamma(x)) for x = xh + xl > 3 from Stirling's asymptotic series.
-/// :param xh: The high part of x.
-/// :param xl: The low part of x.
-/// :returns: ln(gamma(x)) as a double-double.
+### ln(gamma(x)) for x = xh + xl > 3 from Stirling's asymptotic series.
+### :param xh: The high part of x.
+### :param xl: The low part of x.
+### :returns: ln(gamma(x)) as a double-double.
 private routine cm_b64_tgamma_lgamma_asym(xh: B64, xl: B64) -> CmF64GammaDD
     local zh: B64 = B64.div(1.0, xh)
     local dz: B64 = xl * zh
@@ -1099,7 +1099,7 @@ private routine cm_b64_tgamma_lgamma_asym(xh: B64, xl: B64) -> CmF64GammaDD
     values2: (CmF64GammaDD, CmF64GammaDD) = when
         big =>
             a: CmF64GammaDD = cm_b64_gamma_fastsum(xh: l.hi, xl: l.lo, yh: cm_b64_tgamma_t(1437), yl: cm_b64_tgamma_t(1438))
-            // the high parts of the pairs 2..7
+            # the high parts of the pairs 2..7
             q0: B64 = cm_b64_tgamma_stride2(z: z2.hi, q: 1441)
             q2: B64 = cm_b64_tgamma_stride2(z: z2.hi, q: 1445)
             q4: B64 = cm_b64_tgamma_stride2(z: z2.hi, q: 1449)
@@ -1108,7 +1108,7 @@ private routine cm_b64_tgamma_lgamma_asym(xh: B64, xl: B64) -> CmF64GammaDD
         else =>
             a: CmF64GammaDD = cm_b64_gamma_fastsum(xh: l.hi, xl: l.lo, yh: cm_b64_tgamma_t(1453), yl: cm_b64_tgamma_t(1454))
             x4: B64 = x2 * x2
-            // the high parts of the pairs 3..12
+            # the high parts of the pairs 3..12
             q0: B64 = cm_b64_tgamma_stride2(z: z2.hi, q: 1459)
             q2: B64 = cm_b64_tgamma_stride2(z: z2.hi, q: 1463)
             q4: B64 = cm_b64_tgamma_stride2(z: z2.hi, q: 1467)
@@ -1122,9 +1122,9 @@ private routine cm_b64_tgamma_lgamma_asym(xh: B64, xl: B64) -> CmF64GammaDD
     g: CmF64GammaDD = cm_b64_gamma_muldd(xh: zh, xl: zl, ch: f.hi, cl: f.lo)
     return cm_b64_gamma_fastsum(xh: a.hi, xl: a.lo, yh: g.hi, yl: g.lo)
 
-/// The argument reduction of the gamma logarithms, for a positive finite x (subnormals included).
-/// :param x: The argument.
-/// :returns: The reduced argument, its exponent and the two table indices.
+### The argument reduction of the gamma logarithms, for a positive finite x (subnormals included).
+### :param x: The argument.
+### :returns: The reduced argument, its exponent and the two table indices.
 routine cm_b64_gamma_log_arg(x: B64) -> CmF64GammaLogArg
     local t: U64 = x.bits()
 
@@ -1145,9 +1145,9 @@ routine cm_b64_gamma_log_arg(x: B64) -> CmF64GammaLogArg
     tf: B64 = B64.from_bits(m | 0x3FF0000000000000)
     return CmF64GammaLogArg(tf: tf, ed: (ex2 - 0x3FF).to[B64](), i1: (j >> 5).to[USize](), i2: (j & 0x1F).to[USize]())
 
-/// ln(x) as a double-double, for a positive finite x (subnormals included).
-/// :param x: The argument.
-/// :returns: ln(`x`) as a double-double.
+### ln(x) as a double-double, for a positive finite x (subnormals included).
+### :param x: The argument.
+### :returns: ln(`x`) as a double-double.
 routine cm_b64_gamma_logd(x: B64) -> CmF64GammaDD
     a: CmF64GammaLogArg = cm_b64_gamma_log_arg(x)
     r: B64 = cm_b64_tgamma_t(a.i1 + 969) * cm_b64_tgamma_t(a.i2 + 1002)
@@ -1169,41 +1169,41 @@ routine cm_b64_gamma_logd(x: B64) -> CmF64GammaDD
     lo: B64 = lo0 + a.ed * 1.619851018665656e-11 + dxl
     return CmF64GammaDD(hi: lh, lo: ll + lo + f)
 
-/// x + y and its rounding error, for |x| >= |y| (or x = 0).
-/// :param x: The larger addend.
-/// :param y: The smaller addend.
-/// :returns: The rounded sum and its error.
+### x + y and its rounding error, for |x| >= |y| (or x = 0).
+### :param x: The larger addend.
+### :param y: The smaller addend.
+### :returns: The rounded sum and its error.
 routine cm_b64_gamma_fasttwosum(x: B64, y: B64) -> CmF64GammaDD
     s: B64 = x + y
     z: B64 = s - x
     return CmF64GammaDD(hi: s, lo: y - z)
 
-/// x + y and its rounding error, for any magnitudes.
-/// :param x: The first addend.
-/// :param y: The second addend.
-/// :returns: The rounded sum and its error.
+### x + y and its rounding error, for any magnitudes.
+### :param x: The first addend.
+### :param y: The second addend.
+### :returns: The rounded sum and its error.
 routine cm_b64_gamma_twosum(x: B64, y: B64) -> CmF64GammaDD
     if x.abs() > y.abs()
         return cm_b64_gamma_fasttwosum(x, y)
     else
         return cm_b64_gamma_fasttwosum(x: y, y: x)
 
-/// (xh + xl) + (yh + yl), for |xh| >= |yh|.
-/// :param xh: The high part of the first double-double.
-/// :param xl: The low part of the first double-double.
-/// :param yh: The high part of the second double-double.
-/// :param yl: The low part of the second double-double.
-/// :returns: The sum as a double-double.
+### (xh + xl) + (yh + yl), for |xh| >= |yh|.
+### :param xh: The high part of the first double-double.
+### :param xl: The low part of the first double-double.
+### :param yh: The high part of the second double-double.
+### :param yl: The low part of the second double-double.
+### :returns: The sum as a double-double.
 routine cm_b64_gamma_fastsum(xh: B64, xl: B64, yh: B64, yl: B64) -> CmF64GammaDD
     s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: xh, y: yh)
     return CmF64GammaDD(hi: s.hi, lo: xl + yl + s.lo)
 
-/// (xh + xl) + (yh + yl), for any magnitudes.
-/// :param xh: The high part of the first double-double.
-/// :param xl: The low part of the first double-double.
-/// :param yh: The high part of the second double-double.
-/// :param yl: The low part of the second double-double.
-/// :returns: The sum as a double-double.
+### (xh + xl) + (yh + yl), for any magnitudes.
+### :param xh: The high part of the first double-double.
+### :param xl: The low part of the first double-double.
+### :param yh: The high part of the second double-double.
+### :param yl: The low part of the second double-double.
+### :returns: The sum as a double-double.
 routine cm_b64_gamma_sumdd(xh: B64, xl: B64, yh: B64, yl: B64) -> CmF64GammaDD
     xbig: Bool = xh.abs() > yh.abs()
     s: CmF64GammaDD = when
@@ -1211,24 +1211,24 @@ routine cm_b64_gamma_sumdd(xh: B64, xl: B64, yh: B64, yl: B64) -> CmF64GammaDD
         else => cm_b64_gamma_fasttwosum(x: yh, y: xh)
     return CmF64GammaDD(hi: s.hi, lo: xl + yl + s.lo)
 
-/// (xh + xl) (ch + cl), not renormalized.
-/// :param xh: The high part of the first double-double.
-/// :param xl: The low part of the first double-double.
-/// :param ch: The high part of the double-double factor.
-/// :param cl: The low part of the double-double factor.
-/// :returns: The product as a double-double.
+### (xh + xl) (ch + cl), not renormalized.
+### :param xh: The high part of the first double-double.
+### :param xl: The low part of the first double-double.
+### :param ch: The high part of the double-double factor.
+### :param cl: The low part of the double-double factor.
+### :returns: The product as a double-double.
 routine cm_b64_gamma_muldd(xh: B64, xl: B64, ch: B64, cl: B64) -> CmF64GammaDD
     ahhh: B64 = ch * xh
     err: B64 = b64_mul_error(x: ch, y: xh, p: ahhh)
     cross: B64 = ch * xl + cl * xh
     return CmF64GammaDD(hi: ahhh, lo: cross + err)
 
-/// (xh + xl) (yh + yl), renormalized.
-/// :param xh: The high part of the first double-double.
-/// :param xl: The low part of the first double-double.
-/// :param yh: The high part of the second double-double.
-/// :param yl: The low part of the second double-double.
-/// :returns: The product as a double-double.
+### (xh + xl) (yh + yl), renormalized.
+### :param xh: The high part of the first double-double.
+### :param xl: The low part of the first double-double.
+### :param yh: The high part of the second double-double.
+### :param yl: The low part of the second double-double.
+### :returns: The product as a double-double.
 routine cm_b64_gamma_muldd3(xh: B64, xl: B64, yh: B64, yl: B64) -> CmF64GammaDD
     ch: B64 = xh * yh
     cl1: B64 = b64_mul_error(x: xh, y: yh, p: ch)
@@ -1237,11 +1237,11 @@ routine cm_b64_gamma_muldd3(xh: B64, xl: B64, yh: B64, yl: B64) -> CmF64GammaDD
     cl2: B64 = tl1 + xl * yh
     return cm_b64_gamma_fasttwosum(x: ch, y: cl1 + cl2)
 
-/// x (ch + cl) for a double x.
-/// :param x: The double factor.
-/// :param ch: The high part of the double-double factor.
-/// :param cl: The low part of the double-double factor.
-/// :returns: The product as a double-double.
+### x (ch + cl) for a double x.
+### :param x: The double factor.
+### :param ch: The high part of the double-double factor.
+### :param cl: The low part of the double-double factor.
+### :returns: The product as a double-double.
 routine cm_b64_gamma_mulddd(x: B64, ch: B64, cl: B64) -> CmF64GammaDD
     ahhh: B64 = ch * x
     err: B64 = b64_mul_error(x: ch, y: x, p: ahhh)

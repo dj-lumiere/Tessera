@@ -1,43 +1,43 @@
-// Tessera stdlib: the shared engine of the correctly rounded B128 exponent, exp2, and exp10
-//
-// The three functions differ only in how x becomes a fixed-point multiple of log2
-// (times 1/ln(2), times 1, times log2(10)). This file finishes all of them. The fast
-// path evaluates 2^x on 128-bit words from four 32-entry tables and a short
-// polynomial. When its result lies too close to a rounding boundary, the accurate
-// path redoes it on 3 words, and past that the superaccurate path on 6. Only round
-// to nearest (ties to even) is kept.
-//
-// Ported from CORE-MATH, src/binary128/exponent/expq.c, src/binary128/exp2/exp2q.c, and
-// src/binary128/exp10/exp10q.c via RazorForge's B128ExpShared.rf.
-// Copyright (c) 2025 Alexei Sibidanov <sibid@uvic.ca>
-// MIT license: see LICENSE-CORE-MATH
-//
-// Every word is an unsigned 64-bit limb (U64). Multi-word values are
-// little-endian limb arrays behind a Ptr[U64]. The multi-word products keep every
-// partial-product word at or above the first output word and propagate all carries,
-// exactly like the original carry chains.
+# Tessera stdlib: the shared engine of the correctly rounded B128 exponent, exp2, and exp10
+#
+# The three functions differ only in how x becomes a fixed-point multiple of log2
+# (times 1/ln(2), times 1, times log2(10)). This file finishes all of them. The fast
+# path evaluates 2^x on 128-bit words from four 32-entry tables and a short
+# polynomial. When its result lies too close to a rounding boundary, the accurate
+# path redoes it on 3 words, and past that the superaccurate path on 6. Only round
+# to nearest (ties to even) is kept.
+#
+# Ported from CORE-MATH, src/binary128/exponent/expq.c, src/binary128/exp2/exp2q.c, and
+# src/binary128/exp10/exp10q.c via RazorForge's B128ExpShared.rf.
+# Copyright (c) 2025 Alexei Sibidanov <sibid@uvic.ca>
+# MIT license: see LICENSE-CORE-MATH
+#
+# Every word is an unsigned 64-bit limb (U64). Multi-word values are
+# little-endian limb arrays behind a Ptr[U64]. The multi-word products keep every
+# partial-product word at or above the first output word and propagate all carries,
+# exactly like the original carry chains.
 
 module Standard/Core
 
 import Standard/Alloc
 
-/// Which reduction a fallback path redoes: e^x, 2^x, or 10^x.
+### Which reduction a fallback path redoes: e^x, 2^x, or 10^x.
 preset CM_EXP_KIND_E:   U64 = 0
 preset CM_EXP_KIND_TWO: U64 = 1
 preset CM_EXP_KIND_TEN: U64 = 2
 preset CM_EXP_ONE:  B128 = B128.from_bits(B128_ONE)
 preset CM_EXP_ZERO: B128 = B128.from_bits(0)
-preset CM_EXP_LOW:  U128 = U64.MAX.to[U128]()  // the low word of a U128
-/// The wide reductions' exponent shift is this minus x's biased exponent, by kind.
+preset CM_EXP_LOW:  U128 = U64.MAX.to[U128]()  # the low word of a U128
+### The wide reductions' exponent shift is this minus x's biased exponent, by kind.
 preset CM_EXP_WIDE_SHIFT: @Array[S64, 3] <- [0x402E, 0x402F, 0x402D]
 
-// -- tables ----------------------------------------------------------------------
+# -- tables ----------------------------------------------------------------------
 
-/// Fixed-point 1/ln(2), 7 words, least significant first.
+### Fixed-point 1/ln(2), 7 words, least significant first.
 preset CM_EXP_ILN2: @Array[U64, 7] <- [0xEA90B9E60C4A90A0, 0x24D92F75C16BE0B3, 0xDE1C43F755176CD6,
     0x8B25166CD1A13247, 0xEB577AA8DD695A58, 0xBE87FED0691D3E88, 0xB8AA3B295C17F0BB]
 
-/// Superaccurate path: 2^(j/16), j = 0..15, 6 words each, least significant first.
+### Superaccurate path: 2^(j/16), j = 0..15, 6 words each, least significant first.
 preset CM_EXP_TBL6: @Array[U64, 96] <- [0x0000000000000000, 0x0000000000000000, 0x0000000000000000,
     0x0000000000000000, 0x0000000000000000, 0x8000000000000000, 0x82DC9BF3421840D1,
     0x7835AF9AB4E6355C, 0x5D42B362AF1EE859, 0x148A0459E7585151, 0xC5C95B8C2154C1B2,
@@ -64,7 +64,7 @@ preset CM_EXP_TBL6: @Array[U64, 96] <- [0x0000000000000000, 0x0000000000000000, 
     0xD22DD036F1906094, 0xBDD80329364AA29F, 0x6F510308677709F5, 0x7B9D0C7AED980FC3,
     0xF5257D152486CC2C]
 
-/// Superaccurate path: 37 polynomial coefficients for 2^x on [0, 1/16), 6 words each.
+### Superaccurate path: 37 polynomial coefficients for 2^x on [0, 1/16), 6 words each.
 preset CM_EXP_C6: @Array[U64, 222] <- [0x0000000000000000, 0x0000000000000000, 0x0000000000000000,
     0x0000000000000000, 0x0000000000000000, 0x8000000000000000, 0x2ACAA97DA57CADBE,
     0xF3DC3B1036F5D64C, 0xC5068BADC5D57D15, 0xA079A193394C5B16, 0xE4F1D9CC01F97B57,
@@ -122,7 +122,7 @@ preset CM_EXP_C6: @Array[U64, 222] <- [0x0000000000000000, 0x0000000000000000, 0
     0x0000000000000000, 0x80446608D32C4ED3, 0xB4D5892FE7709C19, 0xD3840403FCEFE8A9,
     0x00000003BC4FB6D4, 0x0000000000000000, 0x0000000000000000]
 
-/// Accurate path: 2^(j/16), j = 0..15, 3 words each.
+### Accurate path: 2^(j/16), j = 0..15, 3 words each.
 preset CM_EXP_TBL0: @Array[U64, 48] <- [0x0000000000000000, 0x0000000000000000, 0x8000000000000000,
     0x148A0459E7585151, 0xC5C95B8C2154C1B2, 0x85AAC367CC487B14, 0x1AA84FFBEBAC349F,
     0xFBE4628758A53C90, 0x8B95C1E3EA8BD6E6, 0x1942B34816FB4F26, 0x0FD6D8E0AE5AC9D8,
@@ -137,7 +137,7 @@ preset CM_EXP_TBL0: @Array[U64, 48] <- [0x0000000000000000, 0x0000000000000000, 
     0xD02D75B3706E54FA, 0xEAC0C6E7DD24392E, 0x6F510308677709F5, 0x7B9D0C7AED980FC3,
     0xF5257D152486CC2C]
 
-/// Accurate path: 2^(j/256), j = 0..15, 3 words each.
+### Accurate path: 2^(j/256), j = 0..15, 3 words each.
 preset CM_EXP_TBL1: @Array[U64, 48] <- [0x0000000000000000, 0x0000000000000000, 0x8000000000000000,
     0x2ADC0C3F864BA0F5, 0x94D589F608EE4AA2, 0x8058D7D2D5E5F6B0, 0x01F60261B05F1202,
     0x25335719B6E6FD20, 0x80B1ED4FD999AB6C, 0xA9C9FFC2CA67FFDE, 0x0CEF03AB14A6654F,
@@ -152,7 +152,7 @@ preset CM_EXP_TBL1: @Array[U64, 48] <- [0x0000000000000000, 0x0000000000000000, 
     0x0F03062C26B5BA5D, 0x84F1F656379C1A29, 0xA23F7708CF218F12, 0x16C873D1D378C1C9,
     0x854E3CD8F9C8C95D]
 
-/// Accurate path: 15 polynomial coefficients for 2^x on [0, 1/256), 3 words each.
+### Accurate path: 15 polynomial coefficients for 2^x on [0, 1/256), 3 words each.
 preset CM_EXP_C3: @Array[U64, 45] <- [0x0000000000000000, 0x0000000000000000, 0x8000000000000000,
     0xA079A193394C54E1, 0xE4F1D9CC01F97B57, 0x58B90BFBE8E7BCD5, 0xA3A2751C329DEC63,
     0x6F16B06EC9735FCA, 0x1EBFBDFF82C58EA8, 0xA7AE236CCCDDAF6F, 0xCCE9D8AECCAF4B7B,
@@ -166,7 +166,7 @@ preset CM_EXP_C3: @Array[U64, 45] <- [0x0000000000000000, 0x0000000000000000, 0x
     0xFB45FF03DE0DA11F, 0x5FD29DC12646B116, 0x0000000000C0B0BE, 0xE66D2A5194015941,
     0x2DD5A6458BB23F71, 0x0000000000098D9A]
 
-/// Fast path: 2^(j/32), j = 0..31, as (low, high) word pairs.
+### Fast path: 2^(j/32), j = 0..31, as (low, high) word pairs.
 preset CM_EXP_R0: @Array[U64, 64] <- [0x0000000000000000, 0x8000000000000000, 0x3E2A475B46520BFF,
     0x82CD8698AC2BA1D7, 0xC5C95B8C2154C1B2, 0x85AAC367CC487B14, 0x5DF8D76C98C67563,
     0x88980E8092DA8527, 0xFBE4628758A53C90, 0x8B95C1E3EA8BD6E6, 0x2DC0144C8783D4C6,
@@ -185,7 +185,7 @@ preset CM_EXP_R0: @Array[U64, 64] <- [0x0000000000000000, 0x8000000000000000, 0x
     0xEFE4B99BDCDAF5CB, 0x7B9D0C7AED980FC3, 0xF5257D152486CC2C, 0x7C25BB14315D7FCD,
     0xFA83B2DB722A033A]
 
-/// Fast path: 2^(j/1024), j = 0..31, as (low, high) word pairs.
+### Fast path: 2^(j/1024), j = 0..31, as (low, high) word pairs.
 preset CM_EXP_R1: @Array[U64, 64] <- [0x0000000000000000, 0x8000000000000000, 0x3690DFE44D11D008,
     0x8016302F17467628, 0xFF8CE94A6797B3CE, 0x802C6436D0E04F50, 0x49FC841AFBA9C3C6,
     0x80429C17D77C18ED, 0x94D589F608EE4AA2, 0x8058D7D2D5E5F6B0, 0xE54EC5F966EB1872,
@@ -204,7 +204,7 @@ preset CM_EXP_R1: @Array[U64, 64] <- [0x0000000000000000, 0x8000000000000000, 0x
     0x828998760D01FAF3, 0x6A3B68FCC424FF9F, 0x82A0393FE0BB0CA8, 0xC87433776C8B975C,
     0x82B6DDF5DBC35906]
 
-/// Fast path: 2^(j/32768), j = 0..31, as (low, high) word pairs.
+### Fast path: 2^(j/32768), j = 0..31, as (low, high) word pairs.
 preset CM_EXP_R2: @Array[U64, 64] <- [0x0000000000000000, 0x8000000000000000, 0xAA22BEACCA949013,
     0x8000B17292F702A3, 0xE84C2E1A463473DA, 0x800162E61BED4A48, 0xE9B3D4C106428682,
     0x8002145A9AE42BF6, 0xB6566A58C048BE1F, 0x8002C5D00FDCFCB6, 0x2EF8674028829792,
@@ -223,7 +223,7 @@ preset CM_EXP_R2: @Array[U64, 64] <- [0x0000000000000000, 0x8000000000000000, 0x
     0x80141B80DBD70CF1, 0x4AEB2A187632347D, 0x8014CD0F4ED5D485, 0x72A28CD4D1F3BAE9,
     0x80157E9EB7FA85D8]
 
-/// Fast path: 2^(j/1048576), j = 0..31, as (low, high) word pairs.
+### Fast path: 2^(j/1048576), j = 0..31, as (low, high) word pairs.
 preset CM_EXP_R3: @Array[U64, 64] <- [0x0000000000000000, 0x8000000000000000, 0xECFC487503488BB2,
     0x8000058B90DE7E4C, 0x8307016C1CD4E8B7, 0x80000B1721FA7C18, 0x6C292B5FBF0C0AB5,
     0x800010A2B353F965, 0x526BE456600BDBE5, 0x8000162E44EAF636, 0xDFD867E27AF0ECB1,
@@ -242,112 +242,112 @@ preset CM_EXP_R3: @Array[U64, 64] <- [0x0000000000000000, 0x8000000000000000, 0x
     0x8000A0CFCABCA79D, 0xBC384922C565C6F3, 0x8000A65B62929B7D, 0x680629FABA6AD083,
     0x8000ABE6FAA60F29]
 
-/// Fast path: polynomial coefficients as (low, high) word pairs.
+### Fast path: polynomial coefficients as (low, high) word pairs.
 preset CM_EXP_C2: @Array[U64, 12] <- [0xFFFFFFFFFFFFFFFF, 0x7FFFFFFFFFFFFFFF, 0x7BCD5E4F1D9CC01F,
     0x0000058B90BFBE8E, 0xFF82C58EA86F16B0, 0x00000000001EBFBD, 0x71AC235C1282FE2C,
     0x0000000000000000, 0x0000013B2AB6FBA4, 0x0000000000000000, 0x000000000002BB10,
     0x0000000000000000]
 
-/// Fixed-point log2(10) = ln(10)/ln(2), 7 words, least significant first.
+### Fixed-point log2(10) = ln(10)/ln(2), 7 words, least significant first.
 preset CM_EXP_ILN102: @Array[U64, 7] <- [0x1435EE480565CA55, 0x3E24BEAB63AD0BD6, 0x06650FDE9DD51F3A,
     0x91B6AC8082E7859D, 0xD96C55FE37B3AD4E, 0x492BF6FF4DAFDB4C, 0xD49A784BCD1B8AFE]
 
-// -- words -----------------------------------------------------------------------
+# -- words -----------------------------------------------------------------------
 
-/// Three little-endian words.
+### Three little-endian words.
 record CmExpWords3
     w0: U64
     w1: U64
     w2: U64
 
-/// A fallback path's result: the unbiased exponent and the 2^x significand, in the
-/// same form the fast path produces.
+### A fallback path's result: the unbiased exponent and the 2^x significand, in the
+### same form the fast path produces.
 record CmExpScaled
     exponent: S64
     sig: U128
 
-/// The column sums of a multi-word product in progress: each column a double word, its low and high words
-/// in two arrays.
+### The column sums of a multi-word product in progress: each column a double word, its low and high words
+### in two arrays.
 record CmExpColumns
-    /// The low words of the column sums.
+    ### The low words of the column sums.
     lo: @U64
-    /// The high words of the column sums.
+    ### The high words of the column sums.
     hi: @U64
-    /// The number of columns.
+    ### The number of columns.
     count: S64
 
-/// A polynomial whose coefficients are multi-word fractions: a flattened table of rows of the same width,
-/// the constant term first.
+### A polynomial whose coefficients are multi-word fractions: a flattened table of rows of the same width,
+### the constant term first.
 record CmExpPoly
-    /// The first word of the coefficient table.
+    ### The first word of the coefficient table.
     rows: @U64
-    /// The words per coefficient row.
+    ### The words per coefficient row.
     width: USize
-    /// The degree of the polynomial: the table holds `degree` + 1 rows.
+    ### The degree of the polynomial: the table holds `degree` + 1 rows.
     degree: USize
 
-/// Makes a `CmExpColumns` from its fields.
-/// :param lo: Its `lo`.
-/// :param hi: Its `hi`.
-/// :param count: Its `count`.
-/// :returns: The new value.
+### Makes a `CmExpColumns` from its fields.
+### :param lo: Its `lo`.
+### :param hi: Its `hi`.
+### :param count: Its `count`.
+### :returns: The new value.
 routine CmExpColumns.construct(lo: @U64, hi: @U64, count: S64) -> Me
     return Me(lo, hi, count)
 
-/// Releases nothing: a `CmExpColumns` holds no memory of its own.
+### Releases nothing: a `CmExpColumns` holds no memory of its own.
 routine CmExpColumns.destruct(me: @Me) -> None
     return
 
-/// Makes a `CmExpPoly` from its fields.
-/// :param rows: Its `rows`.
-/// :param width: Its `width`.
-/// :param degree: Its `degree`.
-/// :returns: The new value.
+### Makes a `CmExpPoly` from its fields.
+### :param rows: Its `rows`.
+### :param width: Its `width`.
+### :param degree: Its `degree`.
+### :returns: The new value.
 routine CmExpPoly.construct(rows: @U64, width: USize, degree: USize) -> Me
     return Me(rows, width, degree)
 
-/// Releases nothing: a `CmExpPoly` holds no memory of its own.
+### Releases nothing: a `CmExpPoly` holds no memory of its own.
 routine CmExpPoly.destruct(me: @Me) -> None
     return
 
-/// A 128-bit value from its high and low words.
-/// :param hi: The high word.
-/// :param lo: The low word.
-/// :returns: `hi` × 2^64 + `lo`.
+### A 128-bit value from its high and low words.
+### :param hi: The high word.
+### :param lo: The low word.
+### :returns: `hi` × 2^64 + `lo`.
 routine cm_exp_join(hi: U64, lo: U64) -> U128
     upper: U128 = hi.to[U128]() << 64
     r: U128 = upper | lo.to[U128]()
     return r
 
-/// The high word of a 128-bit value.
-/// :param u: The value.
-/// :returns: Bits 64..127 of `u`.
+### The high word of a 128-bit value.
+### :param u: The value.
+### :returns: Bits 64..127 of `u`.
 routine cm_exp_hi(u: U128) -> U64
     r: S64 = (u >> 64).to_wrap[S64]()
     return r.to_wrap[U64]()
 
-/// The full 128-bit product of two words.
-/// :param a: The first factor.
-/// :param b: The second factor.
-/// :returns: `a` × `b`, exact.
+### The full 128-bit product of two words.
+### :param a: The first factor.
+### :param b: The second factor.
+### :returns: `a` × `b`, exact.
 routine cm_exp_mul(a: U64, b: U64) -> U128
     r: U128 = a.to[U128]() *% b.to[U128]()
     return r
 
-/// The high word of the product of two words.
-/// :param a: The first factor.
-/// :param b: The second factor.
-/// :returns: (`a` × `b`) >> 64.
+### The high word of the product of two words.
+### :param a: The first factor.
+### :param b: The second factor.
+### :returns: (`a` × `b`) >> 64.
 routine cm_exp_mulhi(a: U64, b: U64) -> U64
     product: U128 = cm_exp_mul(a, b)
     r: U64 = (product >> 64).to[U64]()
     return r
 
-/// The approximate high half of a 128 × 128-bit product: the a0 × b0 word and the
-/// carries out of the low words are dropped.
-/// :param a: The first factor.
-/// :param b: The second factor.
-/// :returns: Approximately (`a` × `b`) >> 128.
+### The approximate high half of a 128 × 128-bit product: the a0 × b0 word and the
+### carries out of the low words are dropped.
+### :param a: The first factor.
+### :param b: The second factor.
+### :returns: Approximately (`a` × `b`) >> 128.
 routine cm_exp_mulhi(a: U128, b: U128) -> U128
     a0: U64 = a.to_wrap[U64]()
     a1: U64 = cm_exp_hi(a)
@@ -359,34 +359,34 @@ routine cm_exp_mulhi(a: U128, b: U128) -> U128
     r: U128 = partial +% cross2.to[U128]()
     return r
 
-/// a × b / 2^64 + c for a word a and 128-bit b and c, the low product word truncated.
-/// :param a: The one-word factor.
-/// :param b: The two-word factor.
-/// :param c: The addend.
-/// :returns: floor(`a` × `b` / 2^64) + `c`, modulo 2^128.
+### a × b / 2^64 + c for a word a and 128-bit b and c, the low product word truncated.
+### :param a: The one-word factor.
+### :param b: The two-word factor.
+### :param c: The addend.
+### :returns: floor(`a` × `b` / 2^64) + `c`, modulo 2^128.
 routine cm_exp_mul_add_hi(a: U64, b: U128, c: U128) -> U128
     low: U64 = cm_exp_mulhi(a, b: b.to_wrap[U64]())
     high: U128 = cm_exp_mul(a, b: cm_exp_hi(b))
     r: U128 = high +% (c +% low.to[U128]())
     return r
 
-/// The low word of (hi, lo) >> n for 0 <= n < 64: a funnel shift.
-/// :param hi: The high word.
-/// :param lo: The low word.
-/// :param n: The right shift, 0 to 63.
-/// :returns: The low 64 bits of (`hi`:`lo`) >> `n`, as signed bits.
+### The low word of (hi, lo) >> n for 0 <= n < 64: a funnel shift.
+### :param hi: The high word.
+### :param lo: The low word.
+### :param n: The right shift, 0 to 63.
+### :returns: The low 64 bits of (`hi`:`lo`) >> `n`, as signed bits.
 routine cm_exp_funnel(hi: U64, lo: U64, n: S64) -> S64
     joined: U128 = cm_exp_join(hi, lo)
     r: S64 = (joined >> n.to[U128]()).to_wrap[S64]()
     return r
 
-/// The words from position 2 up of the product of the 3-word a and the 2-word b, with
-/// the a0 × b0 product and the low words of a0 × b1 and a1 × b0 dropped.
-/// :param a0: The low word of a.
-/// :param a1: The middle word of a.
-/// :param a2: The high word of a.
-/// :param b: The two-word factor.
-/// :returns: Approximately (a × `b`) >> 128, modulo 2^192.
+### The words from position 2 up of the product of the 3-word a and the 2-word b, with
+### the a0 × b0 product and the low words of a0 × b1 and a1 × b0 dropped.
+### :param a0: The low word of a.
+### :param a1: The middle word of a.
+### :param a2: The high word of a.
+### :param b: The two-word factor.
+### :returns: Approximately (a × `b`) >> 128, modulo 2^192.
 routine cm_exp_mul3x2_high(a0: U64, a1: U64, a2: U64, b: U128) -> CmExpWords3
     b0: U64 = b.to_wrap[U64]()
     b1: U64 = cm_exp_hi(b)
@@ -395,7 +395,7 @@ routine cm_exp_mul3x2_high(a0: U64, a1: U64, a2: U64, b: U128) -> CmExpWords3
     p11: U128 = cm_exp_mul(a: a1, b: b1)
     p20: U128 = cm_exp_mul(a: a2, b: b0)
     p21: U128 = cm_exp_mul(a: a2, b: b1)
-    // column sums: word 2 of the product, then word 3 with word 2's carry
+    # column sums: word 2 of the product, then word 3 with word 2's carry
     low2: U128 = (p11 & CM_EXP_LOW) + (p20 & CM_EXP_LOW)
     col2: U128 = low2 + (p01 >> 64) + (p10 >> 64)
     carries: U128 = (p11 >> 64) + (p20 >> 64)
@@ -405,18 +405,18 @@ routine cm_exp_mul3x2_high(a0: U64, a1: U64, a2: U64, b: U128) -> CmExpWords3
     r: CmExpWords3 = CmExpWords3(w0: col2.to_wrap[S64]().to_wrap[U64](), w1: col3.to_wrap[S64]().to_wrap[U64](), w2: top)
     return r
 
-/// Every word of w XORed with mask: a one's complement when mask is all ones.
-/// :param w: The value.
-/// :param mask: The mask applied to every word, 0 or all ones.
-/// :returns: `w` with each word xored with `mask`.
+### Every word of w XORed with mask: a one's complement when mask is all ones.
+### :param w: The value.
+### :param mask: The mask applied to every word, 0 or all ones.
+### :returns: `w` with each word xored with `mask`.
 routine cm_exp_flip3(w: CmExpWords3, mask: U64) -> CmExpWords3
     r: CmExpWords3 = CmExpWords3(w0: w.w0 ^ mask, w1: w.w1 ^ mask, w2: w.w2 ^ mask)
     return r
 
-/// Arithmetic right shift of the 3-word value by n bits (n < 192).
-/// :param w: The value, read as signed.
-/// :param n: The shift, below 192.
-/// :returns: `w` >> `n`, the sign bit filling the vacated bits.
+### Arithmetic right shift of the 3-word value by n bits (n < 192).
+### :param w: The value, read as signed.
+### :param n: The shift, below 192.
+### :returns: `w` >> `n`, the sign bit filling the vacated bits.
 routine cm_exp_ashr3(w: CmExpWords3, n: U64) -> CmExpWords3
     local bits: U64 = n & 63
 
@@ -432,12 +432,12 @@ routine cm_exp_ashr3(w: CmExpWords3, n: U64) -> CmExpWords3
     r: CmExpWords3 = CmExpWords3(w0: r0.to_wrap[U64](), w1: r1.to_wrap[U64](), w2: (s2 >> bits.to[S64]()).to_wrap[U64]())
     return r
 
-// -- fast path -------------------------------------------------------------------
+# -- fast path -------------------------------------------------------------------
 
-/// Entry i of a table of (low, high) word pairs.
-/// :param table: The first word of the table.
-/// :param i: The entry index.
-/// :returns: Words 2i (low) and 2i + 1 (high) as a 128-bit value.
+### Entry i of a table of (low, high) word pairs.
+### :param table: The first word of the table.
+### :param i: The entry index.
+### :returns: Words 2i (low) and 2i + 1 (high) as a 128-bit value.
 routine cm_exp_pair(table: @U64, i: USize) -> U128
     low_index: USize = i << 1
     high_index: USize = low_index + 1
@@ -446,11 +446,11 @@ routine cm_exp_pair(table: @U64, i: USize) -> U128
     r: U128 = cm_exp_join(hi: high, lo: low)
     return r
 
-/// 2^x on 128 bits for the reduced argument fs, its leading bit at 123 (for x in
-/// [0, 1)): 2^(i0/2^5 + i1/2^10 + i2/2^15 + i3/2^20) from four tables, 2^(w1 × 2^-84)
-/// by a degree-5 polynomial, and the lowest word as a first-order correction.
-/// :param fs: The reduced argument, the 20 fraction bits read from the bottom of `w2`.
-/// :returns: The 2^fraction significand, with 11 bits below the B128 fraction.
+### 2^x on 128 bits for the reduced argument fs, its leading bit at 123 (for x in
+### [0, 1)): 2^(i0/2^5 + i1/2^10 + i2/2^15 + i3/2^20) from four tables, 2^(w1 × 2^-84)
+### by a degree-5 polynomial, and the lowest word as a first-order correction.
+### :param fs: The reduced argument, the 20 fraction bits read from the bottom of `w2`.
+### :returns: The 2^fraction significand, with 11 bits below the B128 fraction.
 routine cm_exp_fast(fs: CmExpWords3) -> U128
     z: U64 = fs.w1
     c0: U64 = CM_EXP_C2.getitem(0)
@@ -462,7 +462,7 @@ routine cm_exp_fast(fs: CmExpWords3) -> U128
     c6: U64 = CM_EXP_C2.getitem(6)
     c8: U64 = CM_EXP_C2.getitem(8)
     c10: U64 = CM_EXP_C2.getitem(10)
-    // the top terms in single words, the rest by 128-bit Horner steps
+    # the top terms in single words, the rest by 128-bit Horner steps
     t4: U64 = c8 +% cm_exp_mulhi(a: z, b: c10)
     t3: U64 = c6 +% cm_exp_mulhi(a: z, b: t4)
     t2: U128 = cm_exp_join(hi: c5, lo: c4) + cm_exp_mulhi(a: z, b: t3).to[U128]()
@@ -480,25 +480,25 @@ routine cm_exp_fast(fs: CmExpWords3) -> U128
     r2: U128 = cm_exp_pair(table: CM_EXP_R2.to[@U64](), i: i2)
     r3: U128 = cm_exp_pair(table: CM_EXP_R3.to[@U64](), i: i3)
     table: U128 = cm_exp_mulhi(a: cm_exp_mulhi(a: r0, b: r1), b: cm_exp_mulhi(a: r2, b: r3))
-    // the lowest word of the argument, times ln(2)
+    # the lowest word of the argument, times ln(2)
     low_ln2: U64 = cm_exp_mulhi(a: 0xB17217F7D1CF79AC, b: fs.w0)
     correction: U128 = cm_exp_mul(a: cm_exp_hi(table), b: low_ln2) >> 84
     r: U128 = cm_exp_mulhi(a: poly, b: table +% correction)
     return r
 
-/// Finishes exponent, exp2, or exp10 from the reduced argument `fs`: a two's-complement
-/// fixed-point x × log2(base) whose integer part sits above the 20 low bits of fs.w2.
-/// When the fast result is too close to a rounding boundary, {cm_exp_accurate} redoes it.
-/// :param fs: The reduced argument.
-/// :param x: The input's bits, for the fallback paths.
-/// :param kind: The function, `CM_EXP_KIND_E`, `CM_EXP_KIND_TWO` or `CM_EXP_KIND_TEN`.
-/// :returns: The correctly rounded result, normal, subnormal, or +0 below the subnormal range.
+### Finishes exponent, exp2, or exp10 from the reduced argument `fs`: a two's-complement
+### fixed-point x × log2(base) whose integer part sits above the 20 low bits of fs.w2.
+### When the fast result is too close to a rounding boundary, {cm_exp_accurate} redoes it.
+### :param fs: The reduced argument.
+### :param x: The input's bits, for the fallback paths.
+### :param kind: The function, `CM_EXP_KIND_E`, `CM_EXP_KIND_TWO` or `CM_EXP_KIND_TEN`.
+### :returns: The correctly rounded result, normal, subnormal, or +0 below the subnormal range.
 routine cm_exp_finish(fs: CmExpWords3, x: U128, kind: U64) -> B128
     local el: S64 = fs.w2.to_wrap[S64]() >> 20
     local sig: U128 = cm_exp_fast(fs)
 
     if el >= -16382
-        // fall back when the 11 dropped bits are too close to a rounding boundary
+        # fall back when the 11 dropped bits are too close to a rounding boundary
         sig_low: U64 = sig.to_wrap[U64]()
         dropped: U64 = sig_low +% 1030 & 0x7FF
         close: Bool = dropped <= 6
@@ -508,7 +508,7 @@ routine cm_exp_finish(fs: CmExpWords3, x: U128, kind: U64) -> B128
                 becomes (better.exponent, better.sig)
             else => (el, sig)
         el_final, sig_final = values2
-        // the leading bit (at 112 after the shift) carries into the exponent field
+        # the leading bit (at 112 after the shift) carries into the exponent field
         round_bit: U128 = (sig_final >> 10) & 1
         biased_exponent: S64 = el_final + 16382
         field: U128 = biased_exponent.to[U128]() << 112
@@ -530,8 +530,8 @@ routine cm_exp_finish(fs: CmExpWords3, x: U128, kind: U64) -> B128
                 becomes (better.exponent, better.sig)
             else => (el, sig)
         el_final, sig_final = values2
-        // the accurate path may land one binade lower than the fast one, so the shift
-        // can reach 127. The result then rounds from its top bit alone (RF shifted by 128)
+        # the accurate path may land one binade lower than the fast one, so the shift
+        # can reach 127. The result then rounds from its top bit alone (RF shifted by 128)
         shift2: S128 = (-16372 - el_final).to[S128]()
         if shift2 > 127
             return CM_EXP_ZERO
@@ -541,13 +541,13 @@ routine cm_exp_finish(fs: CmExpWords3, x: U128, kind: U64) -> B128
         r: B128 = b128_of(bits)
         return r
 
-// -- multi-word arithmetic -------------------------------------------------------
+# -- multi-word arithmetic -------------------------------------------------------
 
-/// Adds `word` to `slot` of the column sums, when 0 <= slot < columns.count. The carry out of the low word goes
-/// into the high word of the same slot.
-/// :param columns: The column sums.
-/// :param slot: The column, skipped when out of range.
-/// :param word: The word added.
+### Adds `word` to `slot` of the column sums, when 0 <= slot < columns.count. The carry out of the low word goes
+### into the high word of the same slot.
+### :param columns: The column sums.
+### :param slot: The column, skipped when out of range.
+### :param word: The word added.
 routine cm_exp_add_column(columns: CmExpColumns, slot: S64, word: U64) -> None
     local lo: @U64 = columns.lo
     local hi: @U64 = columns.hi
@@ -563,13 +563,13 @@ routine cm_exp_add_column(columns: CmExpColumns, slot: S64, word: U64) -> None
     else
         return
 
-/// The words out[0 .. out.count-1] = the words p .. p+out.count-1 of the product of a
-/// and b, keeping every partial-product word at a position >= p (lower words and
-/// their carries are dropped). out may alias a or b.
-/// :param out: Where the kept words go, at most 8.
-/// :param a: The first factor's words.
-/// :param b: The second factor's words.
-/// :param p: The first product word kept.
+### The words out[0 .. out.count-1] = the words p .. p+out.count-1 of the product of a
+### and b, keeping every partial-product word at a position >= p (lower words and
+### their carries are dropped). out may alias a or b.
+### :param out: Where the kept words go, at most 8.
+### :param a: The first factor's words.
+### :param b: The second factor's words.
+### :param p: The first product word kept.
 routine cm_exp_mul_words(out: Span[U64], a: Span[U64], b: Span[U64], p: USize) -> None
     local na: USize = a.count
     local nb: USize = b.count
@@ -611,12 +611,12 @@ routine cm_exp_mul_words(out: Span[U64], a: Span[U64], b: Span[U64], p: USize) -
     then
         return
 
-/// The high n words of the product of the n-word a and b: the words n .. 2n-1, every
-/// partial-product word at a position >= n kept. out may alias a or b.
-/// :param out: Where the `n` words go.
-/// :param a: The first factor.
-/// :param b: The second factor.
-/// :param n: The words of each factor and of the result, at most 8.
+### The high n words of the product of the n-word a and b: the words n .. 2n-1, every
+### partial-product word at a position >= n kept. out may alias a or b.
+### :param out: Where the `n` words go.
+### :param a: The first factor.
+### :param b: The second factor.
+### :param n: The words of each factor and of the result, at most 8.
 routine cm_exp_mul_high(out: @U64, a: @U64, b: @U64, n: USize) -> None
     out_words: Span[U64] = .construct(data: out, count: n)
     a_words: Span[U64] = .construct(data: a, count: n)
@@ -624,12 +624,12 @@ routine cm_exp_mul_high(out: @U64, a: @U64, b: @U64, n: USize) -> None
     cm_exp_mul_words(out: out_words, a: a_words, b: b_words, p: n)
     return
 
-/// out = floor(a × b / 2^64) + c modulo 2^(64n), for a word a and n-word b and c, with
-/// n = out.count. out may alias b or c.
-/// :param out: Where the `n` words go.
-/// :param a: The one-word factor.
-/// :param b: The n-word factor.
-/// :param c: The n-word addend.
+### out = floor(a × b / 2^64) + c modulo 2^(64n), for a word a and n-word b and c, with
+### n = out.count. out may alias b or c.
+### :param out: Where the `n` words go.
+### :param a: The one-word factor.
+### :param b: The n-word factor.
+### :param c: The n-word addend.
 routine cm_exp_mul_add_words(out: Span[U64], a: U64, b: @U64, c: @U64) -> None
     local n: USize = out.count
     local prev: @U128 <- .hollow()
@@ -661,10 +661,10 @@ routine cm_exp_mul_add_words(out: Span[U64], a: U64, b: @U64, c: @U64) -> None
     then
         return
 
-/// dst += src on n words, the carry out of the top dropped.
-/// :param dst: The words added into.
-/// :param src: The words added.
-/// :param n: The number of words.
+### dst += src on n words, the carry out of the top dropped.
+### :param dst: The words added into.
+### :param src: The words added.
+### :param n: The number of words.
 routine cm_exp_add_words(dst: @U64, src: @U64, n: USize) -> None
     local carry: @U128 <- 0
 
@@ -678,12 +678,12 @@ routine cm_exp_add_words(dst: @U64, src: @U64, n: USize) -> None
     then
         return
 
-/// Word i of the len-word value at o, or the sign fill past its top.
-/// :param o: The value.
-/// :param i: The word index.
-/// :param len: The number of words of the value.
-/// :param sign: The fill word, 0 or all ones.
-/// :returns: `o[i]` when `i` < `len`, else `sign`.
+### Word i of the len-word value at o, or the sign fill past its top.
+### :param o: The value.
+### :param i: The word index.
+### :param len: The number of words of the value.
+### :param sign: The fill word, 0 or all ones.
+### :returns: `o[i]` when `i` < `len`, else `sign`.
 routine cm_exp_word_or_sign(o: @U64, i: USize, len: USize, sign: U64) -> U64
     inside: Bool = i < len
     index: USize = when
@@ -695,10 +695,10 @@ routine cm_exp_word_or_sign(o: @U64, i: USize, len: USize, sign: U64) -> U64
         else => sign
     return r
 
-/// Arithmetic right shift of the len-word value at o by n bits, in place (n < 64 len).
-/// :param o: The value, read as signed.
-/// :param len: The number of words, at least 1.
-/// :param n: The shift.
+### Arithmetic right shift of the len-word value at o by n bits, in place (n < 64 len).
+### :param o: The value, read as signed.
+### :param len: The number of words, at least 1.
+### :param n: The shift.
 routine cm_exp_ashr_words(o: @U64, len: USize, n: U64) -> None
     local top_index: USize = len - 1
     local top: U64 = o.stride(top_index).peek()
@@ -706,8 +706,8 @@ routine cm_exp_ashr_words(o: @U64, len: USize, n: U64) -> None
     local words: USize = (n >> 6).to[USize]()
     local bits: U64 = n & 63
 
-    // word j comes from words j + words and the one above it. Both are at or above
-    // j, so shifting in place from the bottom up never reads a word already written
+    # word j comes from words j + words and the one above it. Both are at or above
+    # j, so shifting in place from the bottom up never reads a word already written
     each j in 0 til len
         from: USize = j + words
         low: U64 = cm_exp_word_or_sign(o, i: from, len, sign: sign.to_wrap[U64]())
@@ -716,22 +716,22 @@ routine cm_exp_ashr_words(o: @U64, len: USize, n: U64) -> None
     then
         return
 
-// -- fallback paths --------------------------------------------------------------
+# -- fallback paths --------------------------------------------------------------
 
-/// The fixed-point significand of x (with its implicit bit) times log2(base) in len
-/// words (4 or 7), before the exponent shift. The sign is applied as a one's
-/// complement after the product (exponent, exp10) or a two's complement (exp2).
-/// :param out: Where the `len` words go.
-/// :param x: The input's bits.
-/// :param kind: The function, `CM_EXP_KIND_E`, `CM_EXP_KIND_TWO` or `CM_EXP_KIND_TEN`.
-/// :param len: The number of words, 4 or 7.
+### The fixed-point significand of x (with its implicit bit) times log2(base) in len
+### words (4 or 7), before the exponent shift. The sign is applied as a one's
+### complement after the product (exponent, exp10) or a two's complement (exp2).
+### :param out: Where the `len` words go.
+### :param x: The input's bits.
+### :param kind: The function, `CM_EXP_KIND_E`, `CM_EXP_KIND_TWO` or `CM_EXP_KIND_TEN`.
+### :param len: The number of words, 4 or 7.
 routine cm_exp_reduce_wide(out: @U64, x: U128, kind: U64, len: USize) -> None
     local sign_mask: U64 = cm_sign_mask64(cm_exp_hi(x))
     local sig: U128 = (x & B128_FRAC_MASK) | B128_IMPLICIT
 
     out.zeroinit(len)
     if kind == CM_EXP_KIND_TWO
-        // exp2: x itself is the multiple of log2(2)
+        # exp2: x itself is the multiple of log2(2)
         mask2: U128 = cm_exp_join(hi: sign_mask, lo: sign_mask)
         signed: U128 = (sig ^ mask2) -% mask2
         low_index: USize = len - 2
@@ -760,12 +760,12 @@ routine cm_exp_reduce_wide(out: @U64, x: U128, kind: U64, len: USize) -> None
         then
             return
 
-/// The reduced argument of the wide paths: len words (4 or 7) of x × log2(base),
-/// shifted to put the integer part in the top word.
-/// :param out: Where the `len` words go.
-/// :param x: The input's bits.
-/// :param kind: The function, `CM_EXP_KIND_E`, `CM_EXP_KIND_TWO` or `CM_EXP_KIND_TEN`.
-/// :param len: The number of words, 4 or 7.
+### The reduced argument of the wide paths: len words (4 or 7) of x × log2(base),
+### shifted to put the integer part in the top word.
+### :param out: Where the `len` words go.
+### :param x: The input's bits.
+### :param kind: The function, `CM_EXP_KIND_E`, `CM_EXP_KIND_TWO` or `CM_EXP_KIND_TEN`.
+### :param len: The number of words, 4 or 7.
 routine cm_exp_wide_argument(out: @U64, x: U128, kind: U64, len: USize) -> None
     cm_exp_reduce_wide(out, x, kind, len)
     base: S64 = CM_EXP_WIDE_SHIFT.getitem(kind.to[USize]())
@@ -773,19 +773,19 @@ routine cm_exp_wide_argument(out: @U64, x: U128, kind: U64, len: USize) -> None
     cm_exp_ashr_words(o: out, len, n: (base - exponent).to[U64]())
     return
 
-/// Row i of a flattened table of width-word rows.
-/// :param table: The first word of the table.
-/// :param width: The words per row.
-/// :param i: The row index.
-/// :returns: The address of the row's first word.
+### Row i of a flattened table of width-word rows.
+### :param table: The first word of the table.
+### :param width: The words per row.
+### :param i: The row index.
+### :returns: The address of the row's first word.
 routine cm_exp_row(table: @U64, width: USize, i: USize) -> @U64
     r: @U64 = table.stride(i * width)
     return r
 
-/// poly = the polynomial p at the word y (as a fraction of 2^64), by Horner steps.
-/// :param poly: Where the `p.width`-word result goes.
-/// :param y: The argument, a fraction of 2^64.
-/// :param p: The polynomial.
+### poly = the polynomial p at the word y (as a fraction of 2^64), by Horner steps.
+### :param poly: Where the `p.width`-word result goes.
+### :param y: The argument, a fraction of 2^64.
+### :param p: The polynomial.
 routine cm_exp_horner(poly: @U64, y: U64, p: CmExpPoly) -> None
     local coefs: @U64 = p.rows
     local width: USize = p.width
@@ -800,11 +800,11 @@ routine cm_exp_horner(poly: @U64, y: U64, p: CmExpPoly) -> None
     then
         return
 
-/// The accurate path, on 3 words. It defers to {cm_exp_superaccurate} when this
-/// result is still too close to a rounding boundary.
-/// :param x: The input's bits.
-/// :param kind: The function, `CM_EXP_KIND_E`, `CM_EXP_KIND_TWO` or `CM_EXP_KIND_TEN`.
-/// :returns: The unbiased exponent and the 2^x significand for the finishing step.
+### The accurate path, on 3 words. It defers to {cm_exp_superaccurate} when this
+### result is still too close to a rounding boundary.
+### :param x: The input's bits.
+### :param kind: The function, `CM_EXP_KIND_E`, `CM_EXP_KIND_TWO` or `CM_EXP_KIND_TEN`.
+### :returns: The unbiased exponent and the 2^x significand for the finishing step.
 routine cm_exp_accurate(x: U128, kind: U64) -> CmExpScaled
     local arg_words: @Array[S64, 8] <- .hollow()
     local tab_words: @Array[S64, 8] <- .hollow()
@@ -816,23 +816,23 @@ routine cm_exp_accurate(x: U128, kind: U64) -> CmExpScaled
     low: @U64 = low_words.to[@U64]()
     cm_exp_wide_argument(out: arg, x, kind, len: 4)
     el_word: U64 = arg.stride(3).peek()
-    el: S64 = el_word.to_wrap[S64]()  // the exponent, stored as a word
+    el: S64 = el_word.to_wrap[S64]()  # the exponent, stored as a word
     top: U64 = arg.stride(2).peek()
     x0: U64 = arg.stride(0).peek()
     x1: U64 = arg.stride(1).peek()
-    // 2^(j0/16) × 2^(j1/256) from the top 8 fraction bits
+    # 2^(j0/16) × 2^(j1/256) from the top 8 fraction bits
     j0: USize = (top >> 60).to[USize]()
     j1_bits: U64 = (top >> 56) & 15
     j1: USize = j1_bits.to[USize]()
     t0: @U64 = cm_exp_row(table: CM_EXP_TBL0.to[@U64](), width: 3, i: j0)
     t1: @U64 = cm_exp_row(table: CM_EXP_TBL1.to[@U64](), width: 3, i: j1)
     cm_exp_mul_high(out: tab, a: t0, b: t1, n: 3)
-    // a degree-14 polynomial in the rest of the top fraction word
+    # a degree-14 polynomial in the rest of the top fraction word
     c3: @U64 = CM_EXP_C3.to[@U64]()
     frac: U64 = top & 0x00FFFFFFFFFFFFFF
     cm_exp_horner(poly, y: frac, p: CmExpPoly(rows: c3, width: 3, degree: 14))
     cm_exp_mul_high(out: tab, a: poly, b: tab, n: 3)
-    // the two low fraction words by a first-order correction
+    # the two low fraction words by a first-order correction
     c3w2: U64 = c3.stride(2).peek()
     c3w4: U64 = c3.stride(4).peek()
     c3w5: U64 = c3.stride(5).peek()
@@ -854,20 +854,20 @@ routine cm_exp_accurate(x: U128, kind: U64) -> CmExpScaled
     r: CmExpScaled = cm_exp_superaccurate(x, kind)
     return r
 
-/// Whether the accurate result (f2, f1, f0) is too close to a rounding boundary, at the normal or the subnormal
-/// rounding position.
-/// :param el: The unbiased exponent of the result.
-/// :param f0: The low word of the result.
-/// :param f1: The middle word of the result.
-/// :param f2: The high word of the result.
-/// :returns: True when the bits under the rounding position leave the result undecided.
+### Whether the accurate result (f2, f1, f0) is too close to a rounding boundary, at the normal or the subnormal
+### rounding position.
+### :param el: The unbiased exponent of the result.
+### :param f0: The low word of the result.
+### :param f1: The middle word of the result.
+### :param f2: The high word of the result.
+### :returns: True when the bits under the rounding position leave the result undecided.
 routine cm_exp_accurate_is_close(el: S64, f0: U64, f1: U64, f2: U64) -> Bool
     if el >= -16382
         low: U128 = cm_exp_join(hi: f1, lo: f0)
-        dropped: U128 = low +% 8 & 0x7FFFFFFFFFFFFFF  // 2^59 - 1
+        dropped: U128 = low +% 8 & 0x7FFFFFFFFFFFFFF  # 2^59 - 1
         return dropped <= 16
     else
-        // the bits below the subnormal rounding position, s of them above the low word
+        # the bits below the subnormal rounding position, s of them above the low word
         s: U64 = (-16371 - el).to[U64]()
         low: U128 = cm_exp_join(hi: f1, lo: f0) +% 8
         wrapped: Bool = low < 8
@@ -889,11 +889,11 @@ routine cm_exp_accurate_is_close(el: S64, f0: U64, f1: U64, f2: U64) -> Bool
         clear: Bool = g12 | g22 == 0
         return small and clear
 
-/// The superaccurate path, on 6 words, used when the accurate result is too close to
-/// a rounding boundary.
-/// :param x: The input's bits.
-/// :param kind: The function, `CM_EXP_KIND_E`, `CM_EXP_KIND_TWO` or `CM_EXP_KIND_TEN`.
-/// :returns: The unbiased exponent and the 2^x significand for the finishing step.
+### The superaccurate path, on 6 words, used when the accurate result is too close to
+### a rounding boundary.
+### :param x: The input's bits.
+### :param kind: The function, `CM_EXP_KIND_E`, `CM_EXP_KIND_TWO` or `CM_EXP_KIND_TEN`.
+### :returns: The unbiased exponent and the 2^x significand for the finishing step.
 routine cm_exp_superaccurate(x: U128, kind: U64) -> CmExpScaled
     local arg_words: @Array[S64, 8] <- .hollow()
     local poly_words: @Array[S64, 8] <- .hollow()
@@ -905,9 +905,9 @@ routine cm_exp_superaccurate(x: U128, kind: U64) -> CmExpScaled
     low: @U64 = low_words.to[@U64]()
     cm_exp_wide_argument(out: arg, x, kind, len: 7)
     el_word: U64 = arg.stride(6).peek()
-    el: S64 = el_word.to_wrap[S64]()  // the exponent, stored as a word
+    el: S64 = el_word.to_wrap[S64]()  # the exponent, stored as a word
     top: U64 = arg.stride(5).peek()
-    // a degree-36 polynomial in the top fraction word below its 4 table bits
+    # a degree-36 polynomial in the top fraction word below its 4 table bits
     c6: @U64 = CM_EXP_C6.to[@U64]()
     frac: U64 = top & 0x0FFFFFFFFFFFFFFF
     cm_exp_horner(poly, y: frac, p: CmExpPoly(rows: c6, width: 6, degree: 36))
@@ -915,7 +915,7 @@ routine cm_exp_superaccurate(x: U128, kind: U64) -> CmExpScaled
     cm_exp_superaccurate_low(out: low, arg, c6)
     cm_exp_mul_high(out: poly, a: poly, b: next, n: 6)
     cm_exp_mul_high(out: poly, a: poly, b: low, n: 6)
-    // 2^(j/16) from the table bits
+    # 2^(j/16) from the table bits
     power: @U64 = cm_exp_row(table: CM_EXP_TBL6.to[@U64](), width: 6, i: (top >> 60).to[USize]())
     cm_exp_mul_high(out: poly, a: poly, b: power, n: 6)
     f4: U64 = poly.stride(4).peek()
@@ -924,11 +924,11 @@ routine cm_exp_superaccurate(x: U128, kind: U64) -> CmExpScaled
     r: CmExpScaled = CmExpScaled(exponent: el, sig: sig)
     return r
 
-/// 2^y for the next fraction word y = arg[4]: the same series, each degree truncated
-/// to the words it can reach.
-/// :param out: Where the 6-word result goes.
-/// :param arg: The 7-word reduced argument.
-/// :param c6: The 6-word coefficient rows of the series.
+### 2^y for the next fraction word y = arg[4]: the same series, each degree truncated
+### to the words it can reach.
+### :param out: Where the 6-word result goes.
+### :param arg: The 7-word reduced argument.
+### :param c6: The 6-word coefficient rows of the series.
 routine cm_exp_superaccurate_next(out: @U64, arg: @U64, c6: @U64) -> None
     local acc_words: @Array[S64, 8] <- .hollow()
     local term_words: @Array[S64, 8] <- .hollow()
@@ -939,7 +939,7 @@ routine cm_exp_superaccurate_next(out: @U64, arg: @U64, c6: @U64) -> None
 
     acc.zeroinit(8)
 
-    // degree r keeps the words r .. 5 of its coefficient's row, from its word r up
+    # degree r keeps the words r .. 5 of its coefficient's row, from its word r up
     while r != 0 with r: USize = 5
         term.zeroinit(8)
         coef: @U64 = c6.stride(r * 7)
@@ -950,11 +950,11 @@ routine cm_exp_superaccurate_next(out: @U64, arg: @U64, c6: @U64) -> None
     cm_exp_mul_add_words(out: out_slice, a: y, b: acc, c: c6)
     return
 
-/// 2^y for the four low fraction words y = arg[0..3], by a second-order correction:
-/// 1 + y (c1 + y c2), each product keeping its top words.
-/// :param out: Where the 6-word result goes.
-/// :param arg: The 7-word reduced argument.
-/// :param c6: The 6-word coefficient rows of the series.
+### 2^y for the four low fraction words y = arg[0..3], by a second-order correction:
+### 1 + y (c1 + y c2), each product keeping its top words.
+### :param out: Where the 6-word result goes.
+### :param arg: The 7-word reduced argument.
+### :param c6: The 6-word coefficient rows of the series.
 routine cm_exp_superaccurate_low(out: @U64, arg: @U64, c6: @U64) -> None
     local y_words: @Array[S64, 8] <- .hollow()
     local prod_words: @Array[S64, 8] <- .hollow()
