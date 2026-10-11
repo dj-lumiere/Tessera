@@ -69,6 +69,9 @@ public static class StructuredMigration
         return own;
     }
 
+    /// A name every declaration of which takes its arguments in order. One declared both ways (`switch_stack` in
+    /// assembly for one target, as a C external for another) keeps the names its calls were written with, which the
+    /// in-order declaration accepts when they are the parameters'.
     private static void Collect(string path, string text, HashSet<string> into)
     {
         List<Decl> decls;
@@ -81,9 +84,19 @@ public static class StructuredMigration
             return;
         }
         foreach (var r in decls.OfType<RoutineDecl>())
-            if (r.AnnotationNamed("positional") is not null || r.AnnotationNamed("external") is { Args: [{ Value: "c" }, ..] })
-                into.Add(r.Name);
+        {
+            bool inOrder = r.AnnotationNamed("positional") is not null || r.AnnotationNamed("external") is { Args: [{ Value: "c" }, ..] };
+            if (inOrder && !Named.Contains(r.Name)) into.Add(r.Name);
+            else if (!inOrder)
+            {
+                Named.Add(r.Name);
+                into.Remove(r.Name);
+            }
+        }
     }
+
+    /// The names declared at least once as a routine taking named arguments.
+    private static readonly HashSet<string> Named = [];
 
     /// Drops the argument names of calls to routines that take their arguments in order.
     private sealed class StripArgumentNames(HashSet<string> inOrder) : Rewriter
