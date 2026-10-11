@@ -354,11 +354,7 @@ routine ryu_float_decimal(mantissa: S64, exponent: S64, mantissa_bits: S64,
     mm_shift_b: Bool = mantissa != 0 or exponent <= 1
     mm_shift: U64 = mm_shift_b.to[U64]()
     if e2 >= 0
-        jump scale_down(e2, mv.to[U64](), mm_shift, accept)
-    else
-        jump scale_up(e2, mv, mm_shift.to[S64](), accept)
-
-    block scale_down(e2: S64, mv: U64, mm_shift: U64, accept: Bool)
+        mv2: U64 = mv.to[U64]()
         q: S64 = ryu_log10_pow2(e2.to[U64]()).to[S64]()
         k_u: U64 = 61 + ryu_pow5bits(q.to[U64]()) - 1
         k: S64 = k_u.to[S64]()
@@ -367,15 +363,15 @@ routine ryu_float_decimal(mantissa: S64, exponent: S64, mantissa_bits: S64,
         hi_at: USize = hi_index.to[USize]()
         hi: U64 = RYU_POW5_INV.getitem(hi_at)
         factor: U64 = hi +% 1
-        mp: U64 = mv + 2
-        mm: U64 = mv - 1 - mm_shift
-        vr: U64 = ryu_mul_shift32(m: mv, factor, shift: i)
+        mp: U64 = mv2 + 2
+        mm: U64 = mv2 - 1 - mm_shift
+        vr: U64 = ryu_mul_shift32(m: mv2, factor, shift: i)
         vp: U64 = ryu_mul_shift32(m: mp, factor, shift: i)
         vm: U64 = ryu_mul_shift32(m: mm, factor, shift: i)
         small: Bool = q <= 9
-        mv_by_5: Bool = mv % 5 == 0
+        mv_by_5: Bool = mv2 % 5 == 0
         not_by_5: Bool = not mv_by_5
-        vr_exact: Bool = (small and mv_by_5) & ryu_is_multiple_of_pow5(value: mv, p: q)
+        vr_exact: Bool = (small and mv_by_5) & ryu_is_multiple_of_pow5(value: mv2, p: q)
         mm_case: Bool = small and not_by_5 and accept
         vm_exact: Bool = mm_case & ryu_is_multiple_of_pow5(value: mm, p: q)
         mp_case: Bool = small and not_by_5 and not accept
@@ -384,21 +380,24 @@ routine ryu_float_decimal(mantissa: S64, exponent: S64, mantissa_bits: S64,
         // f2s also needs the digit just below vr, in case nothing gets removed
         vp_tens: U64 = (vp - 1) / 10
         if q != 0 and vp_tens <= vm / 10
-            jump down_digit(vr, vp_fixed, vm, q, e2, mv, vm_exact, vr_exact, accept)
+            q1: S64 = q - 1
+            l_u: U64 = 61 + ryu_pow5bits(q1.to[U64]()) - 1
+            l: S64 = l_u.to[S64]()
+            hi_index2: S64 = q1 * 2 + 1
+            hi_at2: USize = hi_index2.to[USize]()
+            hi2: U64 = RYU_POW5_INV.getitem(hi_at2)
+            shift: S64 = q1 + l - e2
+
+            digit: U64 = ryu_mul_shift32(m: mv2, factor: hi2 +% 1, shift) % 10
+            digits: RyuDigits = RyuDigits(vr: vr, vp: vp_fixed, vm: vm, removed: 0, last: digit, vm_zeros: vm_exact, vr_zeros: vr_exact)
+            r: FloatDecimal = ryu_shorten(start: digits, accept, e10: q)
+            return r
         else
-            jump shorten(vr, vp_fixed, vm, q, 0, vm_exact, vr_exact, accept)
-
-    block down_digit(vr: U64, vp: U64, vm: U64, q: S64, e2: S64, mv: U64, vm_exact: Bool, vr_exact: Bool, accept: Bool)
-        q1: S64 = q - 1
-        l_u: U64 = 61 + ryu_pow5bits(q1.to[U64]()) - 1
-        l: S64 = l_u.to[S64]()
-        hi_index: S64 = q1 * 2 + 1
-        hi_at: USize = hi_index.to[USize]()
-        hi: U64 = RYU_POW5_INV.getitem(hi_at)
-        shift: S64 = q1 + l - e2
-        jump shorten(vr, vp, vm, q, ryu_mul_shift32(m: mv, factor: hi +% 1, shift) % 10, vm_exact, vr_exact, accept)
-
-    block scale_up(e2: S64, mv: S64, mm_shift: S64, accept: Bool)
+            digits: RyuDigits = RyuDigits(vr: vr, vp: vp_fixed, vm: vm, removed: 0, last: 0, vm_zeros: vm_exact, vr_zeros: vr_exact)
+            r: FloatDecimal = ryu_shorten(start: digits, accept, e10: q)
+            return r
+    else
+        mm_shift2: S64 = mm_shift.to[S64]()
         neg_e2: S64 = 0 - e2
         q: S64 = ryu_log10_pow5(neg_e2.to[U64]()).to[S64]()
         e10: S64 = q + e2
@@ -410,35 +409,30 @@ routine ryu_float_decimal(mantissa: S64, exponent: S64, mantissa_bits: S64,
         hi_at: USize = hi_index.to[USize]()
         factor: U64 = RYU_POW5.getitem(hi_at)
         mp: S64 = mv + 2
-        mm: S64 = mv - 1 - mm_shift
+        mm: S64 = mv - 1 - mm_shift2
         vr: U64 = ryu_mul_shift32(m: mv.to[U64](), factor, shift: j)
         vp: U64 = ryu_mul_shift32(m: mp.to[U64](), factor, shift: j)
         vm: U64 = ryu_mul_shift32(m: mm.to[U64](), factor, shift: j)
         vp_tens: U64 = (vp - 1) / 10
-        if q != 0 and vp_tens <= vm / 10
-            jump up_digit(vr, vp, vm, q.to[U64](), e10, i, mv, mm_shift, accept)
-        else
-            jump up_zeros(vr, vp, vm, q, e10, 0, mv, mm_shift, accept)
-
-    block up_digit(vr: U64, vp: U64, vm: U64, q: U64, e10: S64, i: S64, mv: S64, mm_shift: S64, accept: Bool)
-        i1: S64 = i + 1
-        shift: U64 = q - 1 -% (ryu_pow5bits(i1.to[U64]()) -% 61)
-        hi_index: S64 = i1 * 2 + 1
-        hi_at: USize = hi_index.to[USize]()
-        factor: U64 = RYU_POW5.getitem(hi_at)
-        jump up_zeros(vr, vp, vm, q.to[S64](), e10, ryu_mul_shift32(m: mv.to[U64](), factor, shift: shift.to[S64]()) % 10, mv, mm_shift, accept)
-
-    block up_zeros(vr: U64, vp: U64, vm: U64, q: S64, e10: S64, digit: U64, mv: S64, mm_shift: S64, accept: Bool)
-        tiny: Bool = q <= 1
+        narrow: Bool = q != 0 and vp_tens <= vm / 10
+        values2: (S64, U64) = when
+            narrow =>
+                q2: U64 = q.to[U64]()
+                i1: S64 = i + 1
+                shift: U64 = q2 - 1 -% (ryu_pow5bits(i1.to[U64]()) -% 61)
+                hi_index2: S64 = i1 * 2 + 1
+                hi_at2: USize = hi_index2.to[USize]()
+                factor2: U64 = RYU_POW5.getitem(hi_at2)
+                becomes (q2.to[S64](), ryu_mul_shift32(m: mv.to[U64](), factor: factor2, shift: shift.to[S64]()) % 10)
+            else => (q, 0)
+        q2, digit = values2
+        tiny: Bool = q2 <= 1
         vm_exact: Bool = tiny and accept and mm_shift == 1
         vp_down: Bool = tiny and not accept
         vp_fixed: U64 = vp - vp_down.to[U64]()
-        checkable: Bool = not tiny and q < 31
-        shift: S64 = (q - 1).max(0)
+        checkable: Bool = not tiny and q2 < 31
+        shift: S64 = (q2 - 1).max(0)
         by_2: Bool = checkable & ryu_is_multiple_of_pow2(value: mv.to[U64](), p: shift.to[U64]())
-        jump shorten(vr, vp_fixed, vm, e10, digit, vm_exact, tiny or by_2, accept)
-
-    block shorten(vr: U64, vp: U64, vm: U64, e10: S64, digit: U64, vm_exact: Bool, vr_exact: Bool, accept: Bool)
-        digits: RyuDigits = RyuDigits(vr: vr, vp: vp, vm: vm, removed: 0, last: digit, vm_zeros: vm_exact, vr_zeros: vr_exact)
+        digits: RyuDigits = RyuDigits(vr: vr, vp: vp_fixed, vm: vm, removed: 0, last: digit, vm_zeros: vm_exact, vr_zeros: tiny or by_2)
         r: FloatDecimal = ryu_shorten(start: digits, accept, e10)
         return r

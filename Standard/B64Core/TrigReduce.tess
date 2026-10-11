@@ -407,42 +407,52 @@ routine cm_b64_trig_dint_add(a0: CmF64TrigDint, b0: CmF64TrigDint) -> CmF64TrigD
         return b0
     c: S64 = cm_b64_trig_dint_cmp_abs(a: a0, b: b0)
     equal: Bool = c == 0
-    less: Bool = c == -1
-    values2: (CmF64TrigDint, CmF64TrigDint) = when
-        equal =>
-            if a0.sgn ^ b0.sgn != 0
-                return cm_b64_trig_dint_zero()
-            else
-                return CmF64TrigDint(r: a0.r, ex: a0.ex + 1, sgn: a0.sgn)
-        less => (b0, a0)
-        else => (a0, b0)
-    a, b = values2
+    when
+        equal => jump equal()
+        c == -1 => jump ordered(b0, a0)
+        else => jump ordered(a0, b0)
+
+    block equal()
+        if a0.sgn ^ b0.sgn != 0
+            return cm_b64_trig_dint_zero()
+        else
+            return CmF64TrigDint(r: a0.r, ex: a0.ex + 1, sgn: a0.sgn)
 
     // |a| > |b|, so a.ex >= b.ex (or b is zero). A shift of 128 or more, or a negative one, leaves 0
-    k: S64 = a.ex - b.ex
-    bb: U128 = b.r >> k.to_wrap[U128]()
-    if a.sgn ^ b.sgn != 0
-        // cc is not zero since |a| != |b|
-        cc: U128 = a.r -% bb
-        ex: U128 = cc.leading_zeros()
-        if ex > 0
-            // redo the difference with a shifted left by ex to keep the bits b lost
-            aa: U128 = a.r << ex
-            adj: Bool = k == 1
-            cc2: U128 = when
-                adj => aa -% (b.r << ex - 1)
-                else => aa -% (bb << ex)
-            rex: S64 = a.ex - ex.to[S64]()
-            ex2: U64 = cm_b64_trig_hi(cc2).leading_zeros()
-            return CmF64TrigDint(r: cc2 << ex2.to[U128](), ex: rex - ex2.to[S64](), sgn: a.sgn)
+    block ordered(a: CmF64TrigDint, b: CmF64TrigDint)
+        k: S64 = a.ex - b.ex
+        bb: U128 = b.r >> k.to_wrap[U128]()
+        if a.sgn ^ b.sgn != 0
+            jump subtract(a, b, k, bb)
         else
-            return CmF64TrigDint(r: cc, ex: a.ex, sgn: a.sgn)
-    else
+            jump same_sign(a, bb)
+
+    block same_sign(a: CmF64TrigDint, bb: U128)
         cc: U128 = a.r +% bb
         if cc < a.r
             return CmF64TrigDint(r: U128.shl(1, 127) | (cc >> 1), ex: a.ex + 1, sgn: a.sgn)
         else
             return CmF64TrigDint(r: cc, ex: a.ex, sgn: a.sgn)
+
+    // cc is not zero since |a| != |b|
+    block subtract(a: CmF64TrigDint, b: CmF64TrigDint, k: S64, bb: U128)
+        cc: U128 = a.r -% bb
+        ex: U128 = cc.leading_zeros()
+        if ex > 0
+            jump renormalize(a, b, k, bb, ex)
+        else
+            return CmF64TrigDint(r: cc, ex: a.ex, sgn: a.sgn)
+
+    // redo the difference with a shifted left by ex to keep the bits b lost
+    block renormalize(a: CmF64TrigDint, b: CmF64TrigDint, k: S64, bb: U128, ex: U128)
+        aa: U128 = a.r << ex
+        adj: Bool = k == 1
+        cc: U128 = when
+            adj => aa -% (b.r << ex - 1)
+            else => aa -% (bb << ex)
+        rex: S64 = a.ex - ex.to[S64]()
+        ex2: U64 = cm_b64_trig_hi(cc).leading_zeros()
+        return CmF64TrigDint(r: cc << ex2.to[U128](), ex: rex - ex2.to[S64](), sgn: a.sgn)
 
 /// Normalizes a product significand r (one of its two top bits set) and builds the dint.
 /// :param r: The product significand.

@@ -310,7 +310,7 @@ routine cm_b64_atan2_special(y: B64, x: B64) -> B64
                     return B64.copysign(2.356194490192345, y) + B64.copysign(5.551115123125783e-17, y)
                 else
                     return B64.copysign(0.7853981633974483, y) + B64.copysign(2.7755575615628914e-17, y)
-            if xneg
+            else if xneg
                 return B64.copysign(3.141592653589793, y) + B64.copysign(1.2246467991473532e-16, y)
             else
                 return B64.copysign(0.0, y)
@@ -352,79 +352,80 @@ routine cm_b64_atan2_accurate(y: B64, x: B64) -> B64
             xpos => return t
             y > 0.0 => return B64.add(3.141592653589793, 1.2246467991473532e-16)
             else => return B64.sub(-3.141592653589793, 1.2246467991473532e-16)
-    corr: B64 = t.mul_add(a: x, b: -y)
-    if corr == 0.0 and x > 0.0
-        // t = y/x exactly, x > 0: for a tiny t, atan(t) is t minus a hair
-        small: Bool = t.abs() <= 1.3538603431225864e-08
-        if y.abs() >= 3.610388751729659e-276
-            return t.mul_add(a: -5.551115123125783e-17, b: t)
-        corr2: B64 = (t * 4.056481920730334e31).mul_add(a: x, b: -y * 4.056481920730334e31)
-        if corr2 == 0.0
-            return t.mul_add(a: -5.551115123125783e-17, b: t)
-    inv: Bool = y.abs() > x.abs()
-    num: B64 = when
-        inv => x
-        else => y
-    den: B64 = when
-        inv => y
-        else => x
-    z: CmF64Atan2Tint = cm_b64_atan2_div(b: num.to[CmF64Atan2Tint](), a: den.to[CmF64Atan2Tint]())
-    direct_pos: Bool = not inv and x > 0.0
-    if direct_pos and z.ex <= -96
-        // atan(y/x) rounds like y/x nudged slightly toward zero
-        zl: U64 = z.l -% 2
-        zh0: U64 = (z.hm >> 64).to[U64]()
-        zm0: U64 = z.hm.to_wrap[U64]()
-        zm: U64 = when
-            zl < 2 => zm0 -% 1
-            else => zm0
-        zh: U64 = when
-            zm < 1 => zh0 -% 1
-            else => zh0
-        hi_word: U128 = zh.to[U128]() << 64
-        hm: U128 = hi_word | zm.to[U128]()
-        return CmF64Atan2Tint.to[B64](CmF64Atan2Tint(hm: hm, l: zl, ex: z.ex, sgn: z.sgn), 1)
     else
-        // z P(z) / Q(z) for the positive z, by Horner's rule from the top coefficients
+        corr: B64 = t.mul_add(a: x, b: -y)
+        if corr == 0.0 and x > 0.0
+            // t = y/x exactly, x > 0: for a tiny t, atan(t) is t minus a hair
+            if t.abs() <= 1.3538603431225864e-08
+                if y.abs() >= 3.610388751729659e-276
+                    return t.mul_add(a: -5.551115123125783e-17, b: t)
+                corr2: B64 = (t * 4.056481920730334e31).mul_add(a: x, b: -y * 4.056481920730334e31)
+                if corr2 == 0.0
+                    return t.mul_add(a: -5.551115123125783e-17, b: t)
+        inv: Bool = y.abs() > x.abs()
+        num: B64 = when
+            inv => x
+            else => y
+        den: B64 = when
+            inv => y
+            else => x
+        z: CmF64Atan2Tint = cm_b64_atan2_div(b: num.to[CmF64Atan2Tint](), a: den.to[CmF64Atan2Tint]())
+        direct_pos: Bool = not inv and x > 0.0
+        if direct_pos and z.ex <= -96
+            // atan(y/x) rounds like y/x nudged slightly toward zero
+            zl: U64 = z.l -% 2
+            zh0: U64 = (z.hm >> 64).to[U64]()
+            zm0: U64 = z.hm.to_wrap[U64]()
+            zm: U64 = when
+                zl < 2 => zm0 -% 1
+                else => zm0
+            zh: U64 = when
+                zm < 1 => zh0 -% 1
+                else => zh0
+            hi_word: U128 = zh.to[U128]() << 64
+            hm: U128 = hi_word | zm.to[U128]()
+            return CmF64Atan2Tint.to[B64](CmF64Atan2Tint(hm: hm, l: zl, ex: z.ex, sgn: z.sgn), 1)
+        else
+            // z P(z) / Q(z) for the positive z, by Horner's rule from the top coefficients
 
-        sz: U64 = z.sgn
+            sz: U64 = z.sgn
 
-        za: CmF64Atan2Tint = CmF64Atan2Tint(hm: z.hm, l: z.l, ex: z.ex, sgn: 0)
+            za: CmF64Atan2Tint = CmF64Atan2Tint(hm: z.hm, l: z.l, ex: z.ex, sgn: 0)
 
-        while i != 0 with i: USize = 29, p: CmF64Atan2Tint = cm_b64_atan2_p(29), q: CmF64Atan2Tint = cm_b64_atan2_q(29)
-            k: USize = i - 1
-            pz: CmF64Atan2Tint = cm_b64_atan2_mul(a: p, b: za)
-            qz: CmF64Atan2Tint = cm_b64_atan2_mul(a: q, b: za)
-            continue with i: k, p: cm_b64_atan2_add(a: pz, b: cm_b64_atan2_p(k)), q: cm_b64_atan2_add(a: qz, b: cm_b64_atan2_q(k))
-        then
-            // z approximates atan(y/x) (or atan(x/y) when inv), with -pi/4 < z < pi/4
-            r: CmF64Atan2Tint = cm_b64_atan2_div(b: cm_b64_atan2_mul(a: p, b: za), a: q)
-            a: CmF64Atan2Tint = CmF64Atan2Tint(hm: r.hm, l: r.l, ex: r.ex, sgn: sz)
-            values2: (CmF64Atan2Tint, U64) = when
-                inv =>
-                    // +-pi/2 - atan(x/y)
-                    pi2: CmF64Atan2Tint = cm_b64_atan2_pi(1)
-                    if a.sgn == 0
-                        // pi/2 - atan(x/y)
-                        neg: CmF64Atan2Tint = CmF64Atan2Tint(hm: a.hm, l: a.l, ex: a.ex, sgn: 1)
-                        becomes (cm_b64_atan2_add(a: pi2, b: neg), 524)
-                    else
-                        // -pi/2 - atan(x/y)
-                        s: CmF64Atan2Tint = cm_b64_atan2_add(a, b: pi2)
-                        becomes (CmF64Atan2Tint(hm: s.hm, l: s.l, ex: s.ex, sgn: 1), 524)
-                else => (a, 662)
-            a2, err = values2
-            // now -pi/2 < z < pi/2. A negative x moves it to the opposite quadrant
-            if not (x < 0.0)
-                return a2.to[B64](err)
-            pi: CmF64Atan2Tint = cm_b64_atan2_pi(2)
-            if a2.sgn == 0
-                // -(pi - z)
-                neg: CmF64Atan2Tint = CmF64Atan2Tint(hm: a2.hm, l: a2.l, ex: a2.ex, sgn: 1)
-                s: CmF64Atan2Tint = cm_b64_atan2_add(a: pi, b: neg)
-                return CmF64Atan2Tint.to[B64](CmF64Atan2Tint(hm: s.hm, l: s.l, ex: s.ex, sgn: 1), 266)
-            else
-                return CmF64Atan2Tint.to[B64](cm_b64_atan2_add(a: a2, b: pi), 266)
+            while i != 0 with i: USize = 29, p: CmF64Atan2Tint = cm_b64_atan2_p(29), q: CmF64Atan2Tint = cm_b64_atan2_q(29)
+                k: USize = i - 1
+                pz: CmF64Atan2Tint = cm_b64_atan2_mul(a: p, b: za)
+                qz: CmF64Atan2Tint = cm_b64_atan2_mul(a: q, b: za)
+                continue with i: k, p: cm_b64_atan2_add(a: pz, b: cm_b64_atan2_p(k)), q: cm_b64_atan2_add(a: qz, b: cm_b64_atan2_q(k))
+            then
+                // z approximates atan(y/x) (or atan(x/y) when inv), with -pi/4 < z < pi/4
+                r: CmF64Atan2Tint = cm_b64_atan2_div(b: cm_b64_atan2_mul(a: p, b: za), a: q)
+                a: CmF64Atan2Tint = CmF64Atan2Tint(hm: r.hm, l: r.l, ex: r.ex, sgn: sz)
+                values2: (CmF64Atan2Tint, U64) = when
+                    inv =>
+                        // +-pi/2 - atan(x/y)
+                        pi2: CmF64Atan2Tint = cm_b64_atan2_pi(1)
+                        if a.sgn == 0
+                            // pi/2 - atan(x/y)
+                            neg: CmF64Atan2Tint = CmF64Atan2Tint(hm: a.hm, l: a.l, ex: a.ex, sgn: 1)
+                            becomes (cm_b64_atan2_add(a: pi2, b: neg), 524)
+                        else
+                            // -pi/2 - atan(x/y)
+                            s: CmF64Atan2Tint = cm_b64_atan2_add(a, b: pi2)
+                            becomes (CmF64Atan2Tint(hm: s.hm, l: s.l, ex: s.ex, sgn: 1), 524)
+                    else => (a, 662)
+                a2, err = values2
+                // now -pi/2 < z < pi/2. A negative x moves it to the opposite quadrant
+                if not (x < 0.0)
+                    return a2.to[B64](err)
+                pi: CmF64Atan2Tint = cm_b64_atan2_pi(2)
+                if a2.sgn == 0
+                    // -(pi - z)
+                    neg: CmF64Atan2Tint = CmF64Atan2Tint(hm: a2.hm, l: a2.l, ex: a2.ex, sgn: 1)
+                    s: CmF64Atan2Tint = cm_b64_atan2_add(a: pi, b: neg)
+                    return CmF64Atan2Tint.to[B64](CmF64Atan2Tint(hm: s.hm, l: s.l, ex: s.ex, sgn: 1), 266)
+                else
+                    return CmF64Atan2Tint.to[B64](cm_b64_atan2_add(a: a2, b: pi), 266)
 
 /// The tint pi (ex = 2) or pi/2 (ex = 1), with error below 2^-196.
 /// :param ex: 2 for pi, 1 for pi/2.
@@ -591,21 +592,28 @@ routine cm_b64_atan2_clz(h: U128, l: U64) -> U64
 /// :returns: The sum.
 routine cm_b64_atan2_add(a: CmF64Atan2Tint, b: CmF64Atan2Tint) -> CmF64Atan2Tint
     c: S64 = cm_b64_atan2_cmp_abs(a, b)
-    values2: (CmF64Atan2Tint, CmF64Atan2Tint) = when c
-        0 =>
-            // |a| = |b|: 0 or 2 a, exactly
-            if a.sgn ^ b.sgn != 0
-                return CmF64Atan2Tint(hm: 0, l: 0, ex: -1076, sgn: 0)
-            else
-                return CmF64Atan2Tint(hm: a.hm, l: a.l, ex: a.ex + 1, sgn: a.sgn)
-        -1 => (b, a)
-        else => (a, b)
-    u, v = values2
+    when c
+        0 => jump equal()
+        -1 => jump ordered(b, a)
+        else => jump ordered(a, b)
+
+    // |a| = |b|: 0 or 2 a, exactly
+    block equal()
+        if a.sgn ^ b.sgn != 0
+            return CmF64Atan2Tint(hm: 0, l: 0, ex: -1076, sgn: 0)
+        else
+            return CmF64Atan2Tint(hm: a.hm, l: a.l, ex: a.ex + 1, sgn: a.sgn)
 
     // |u| > |v|, thus u.ex >= v.ex
-    sh: U64 = u.ex.to_wrap[U64]() -% v.ex.to_wrap[U64]()
-    t: CmF64Atan2Sig = cm_b64_atan2_rshift(h: v.hm, l: v.l, k: sh)
-    if u.sgn ^ v.sgn != 0
+    block ordered(u: CmF64Atan2Tint, v: CmF64Atan2Tint)
+        sh: U64 = u.ex.to_wrap[U64]() -% v.ex.to_wrap[U64]()
+        t: CmF64Atan2Sig = cm_b64_atan2_rshift(h: v.hm, l: v.l, k: sh)
+        if u.sgn ^ v.sgn != 0
+            jump subtract(u, v, sh, t)
+        else
+            jump sum(u, t)
+
+    block subtract(u: CmF64Atan2Tint, v: CmF64Atan2Tint, sh: U64, t: CmF64Atan2Sig)
         tl: U64 = u.l -% t.l
         th0: U128 = u.hm -% t.h
         th: U128 = when
@@ -613,20 +621,24 @@ routine cm_b64_atan2_add(a: CmF64Atan2Tint, b: CmF64Atan2Tint) -> CmF64Atan2Tint
             else => th0
         ex: U64 = cm_b64_atan2_clz(h: th, l: tl)
         if not (ex <= 1 or sh == 0)
-            // ex >= 2 and sh >= 1: redo the subtraction without neglecting the low part of v
-            t2: CmF64Atan2Sig = cm_b64_atan2_lshift(h: v.hm, l: v.l, k: ex -% sh)
-            r0: CmF64Atan2Sig = cm_b64_atan2_lshift(h: u.hm, l: u.l, k: ex)
-            ul: U64 = r0.l -% t2.l
-            uh0: U128 = r0.h -% t2.h
-            uh: U128 = when
-                ul > r0.l => uh0 -% 1
-                else => uh0
-            ex1: U64 = cm_b64_atan2_clz(h: uh, l: ul)
-            r1: CmF64Atan2Sig = cm_b64_atan2_lshift(h: uh, l: ul, k: ex1)
-            return CmF64Atan2Tint(hm: r1.h, l: r1.l, ex: u.ex - (ex + ex1).to[S64](), sgn: u.sgn)
+            jump exact(u, v, sh, ex)
         r: CmF64Atan2Sig = cm_b64_atan2_lshift(h: th, l: tl, k: ex)
         return CmF64Atan2Tint(hm: r.h, l: r.l, ex: u.ex - ex.to[S64](), sgn: u.sgn)
-    else
+
+    // ex >= 2 and sh >= 1: redo the subtraction without neglecting the low part of v
+    block exact(u: CmF64Atan2Tint, v: CmF64Atan2Tint, sh: U64, ex: U64)
+        t2: CmF64Atan2Sig = cm_b64_atan2_lshift(h: v.hm, l: v.l, k: ex -% sh)
+        r0: CmF64Atan2Sig = cm_b64_atan2_lshift(h: u.hm, l: u.l, k: ex)
+        ul: U64 = r0.l -% t2.l
+        uh0: U128 = r0.h -% t2.h
+        uh: U128 = when
+            ul > r0.l => uh0 -% 1
+            else => uh0
+        ex1: U64 = cm_b64_atan2_clz(h: uh, l: ul)
+        r1: CmF64Atan2Sig = cm_b64_atan2_lshift(h: uh, l: ul, k: ex1)
+        return CmF64Atan2Tint(hm: r1.h, l: r1.l, ex: u.ex - (ex + ex1).to[S64](), sgn: u.sgn)
+
+    block sum(u: CmF64Atan2Tint, t: CmF64Atan2Sig)
         rl: U64 = u.l +% t.l
         cl: U128 = (rl < u.l).to[U128]()
         rh0: U128 = u.hm +% t.h
@@ -654,8 +666,9 @@ routine B64.to[CmF64Atan2Tint](me: Me) -> CmF64Atan2Tint
         lz: U64 = ax.leading_zeros()
         hs: U64 = ax << lz
         return CmF64Atan2Tint(hm: hs.to[U128]() << 64, l: 0, ex: S64.sub(-1010, lz.to[S64]()), sgn: sgn)
-    hn: U64 = (ax << 11) | 0x8000000000000000
-    return CmF64Atan2Tint(hm: hn.to[U128]() << 64, l: 0, ex: e.to[S64]() - 0x3FE, sgn: sgn)
+    else
+        hn: U64 = (ax << 11) | 0x8000000000000000
+        return CmF64Atan2Tint(hm: hn.to[U128]() << 64, l: 0, ex: e.to[S64]() - 0x3FE, sgn: sgn)
 
 /// A tint rounded to the nearest B64. err is 0 to convert a tint that holds a B64
 /// exactly, and otherwise a bound in ulps on the error of the low word.
@@ -673,55 +686,59 @@ routine CmF64Atan2Tint.to[B64](me: Me, err: U64) -> B64
     // |me| >= 2^1024
     under: Bool = ex <= -1074
     // |me| < 2^-1074
-    sub: Bool = ex <= -1022
-    values2: (S64, U64, U64, U64) = when
+    when
         over => return B64.from_bits((sgn << 63) | 0x7FF0000000000000)
-        under =>
-            // below 2^-1075 to zero, exactly 2^-1075 to zero (ties to even), above to 2^-1074
-            small: Bool = ex < -1074
-            top_only: Bool = hh == 0x8000000000000000 and mm == 0
-            when
-                small => return B64.from_bits(sgn << 63)
-                top_only and ll == 0 => return B64.from_bits(sgn << 63)
-                else => return B64.from_bits((sgn << 63) | 1)
-        sub =>
-            // shift the significand to the subnormal quantum, keeping a sticky bit
-            sh: U64 = S64.sub(-1021, ex).to[U64]()
-            // 1 <= sh <= 52
-            c: U64 = U64.sub(64, sh)
-            sticky: U64 = (ll > 0).to[U64]()
-            ll1: U64 = (mm << c) | (ll >> sh)
-            ll2: U64 = ll1 | sticky
-            becomes (ex + sh.to[S64](), hh >> sh, (hh << c) | (mm >> sh), ll2)
-        else => (ex, hh, mm, ll)
-    ex_round, hh_round, mm_round, ll_round = values2
-    low: U64 = hh_round & 0x7FF
-    h: B64 = (hh_round >> 11).to[B64]()
-    zero: Bool = err == 0
-    below: Bool = low < 0x400
-    above: Bool = low > 0x400
-    middle: Bool = mm_round == 0 and ll_round == 0
-    // 0.25 rounds toward zero, 0.75 away, 0.5 is the exact middle
-    lmid: B64 = when
-        middle => 0.5
-        else => 0.75
-    lhigh: B64 = when
-        above => 0.75
-        else => lmid
-    lround: B64 = when
-        below => 0.25
-        else => lhigh
-    l: B64 = when
-        zero => 0.0
-        else => lround
-    sg: B64 = when
-        sgn != 0 => -1.0
-        else => 1.0
-    hr: B64 = B64.mul_add(l, a: sg, b: sg * h) * 2.220446049250313e-16
-    // now -1021 <= ex_round <= 1024, so 2^(ex_round - 1) is a normal number
-    exp_field: U64 = (ex_round - 1).to_wrap[U64]()
-    scale: B64 = B64.from_bits(U64.add_wrap(0x3FF0000000000000, exp_field << 52))
-    return hr * scale
+        under => jump underflow()
+        ex <= -1022 => jump subnormal()
+        else => jump round(ex, hh, mm, ll)
+
+    // below 2^-1075 to zero, exactly 2^-1075 to zero (ties to even), above to 2^-1074
+    block underflow()
+        small: Bool = ex < -1074
+        top_only: Bool = hh == 0x8000000000000000 and mm == 0
+        when
+            small => return B64.from_bits(sgn << 63)
+            top_only and ll == 0 => return B64.from_bits(sgn << 63)
+            else => return B64.from_bits((sgn << 63) | 1)
+
+    // shift the significand to the subnormal quantum, keeping a sticky bit
+    block subnormal()
+        sh: U64 = S64.sub(-1021, ex).to[U64]()
+        // 1 <= sh <= 52
+        c: U64 = U64.sub(64, sh)
+        sticky: U64 = (ll > 0).to[U64]()
+        ll1: U64 = (mm << c) | (ll >> sh)
+        ll2: U64 = ll1 | sticky
+        jump round(ex + sh.to[S64](), hh >> sh, (hh << c) | (mm >> sh), ll2)
+
+    block round(ex_round: S64, hh_round: U64, mm_round: U64, ll_round: U64)
+        low: U64 = hh_round & 0x7FF
+        h: B64 = (hh_round >> 11).to[B64]()
+        zero: Bool = err == 0
+        below: Bool = low < 0x400
+        above: Bool = low > 0x400
+        middle: Bool = mm_round == 0 and ll_round == 0
+        // 0.25 rounds toward zero, 0.75 away, 0.5 is the exact middle
+        lmid: B64 = when
+            middle => 0.5
+            else => 0.75
+        lhigh: B64 = when
+            above => 0.75
+            else => lmid
+        lround: B64 = when
+            below => 0.25
+            else => lhigh
+        l: B64 = when
+            zero => 0.0
+            else => lround
+        sg: B64 = when
+            sgn != 0 => -1.0
+            else => 1.0
+        hr: B64 = B64.mul_add(l, a: sg, b: sg * h) * 2.220446049250313e-16
+        // now -1021 <= ex_round <= 1024, so 2^(ex_round - 1) is a normal number
+        exp_field: U64 = (ex_round - 1).to_wrap[U64]()
+        scale: B64 = B64.from_bits(U64.add_wrap(0x3FF0000000000000, exp_field << 52))
+        return hr * scale
 
 /// An approximation of 1/a, with absolute error below 2^-103.9 when 1 <= 1/a <= 2.
 /// :param a: The tint to invert.

@@ -223,30 +223,22 @@ routine In.read_into_result(buffer: @Byte, count: USize) -> Result[USize, FsErro
     local b: @InputBuffer = STDIN_BUFFER
 
     b.lock.lock()
-    if b.start.peek() < b.end.peek()
-        jump held()
-    // Nothing held: a read that wants a bufferful or more goes straight to the caller's buffer.
-    if count >= IN_BUFFER
-        jump direct()
-    if b.fill()
-        jump held()
-    else
-        jump finish(0)
-
-    block held()
-        available: USize = b.end.peek() - b.start.peek()
-        n: USize = available.min(count)
-        buffer.copy(src: b.bytes.to[@Byte]().stride(b.start.peek()), count: n)
-        next_start: USize = b.start.peek() + n
-        next_start.poke_into(b.start)
-        jump finish(n)
-
-    block direct()
-        jump finish(stdin_read(buffer, count))
-
-    block finish(read: Result[USize, FsError])
-        b.lock.unlock()
-        return read
+    if not (b.start.peek() < b.end.peek())
+        // Nothing held: a read that wants a bufferful or more goes straight to the caller's buffer.
+        if count >= IN_BUFFER
+            read: Result[USize, FsError] = stdin_read(buffer, count)
+            b.lock.unlock()
+            return read
+        else if not b.fill()
+            b.lock.unlock()
+            return 0
+    available: USize = b.end.peek() - b.start.peek()
+    n: USize = available.min(count)
+    buffer.copy(src: b.bytes.to[@Byte]().stride(b.start.peek()), count: n)
+    next_start: USize = b.start.peek() + n
+    next_start.poke_into(b.start)
+    b.lock.unlock()
+    return n
 
 /// Skips white space and reads the next word (spaces, tabs, and line ends separate words) as a T, straight from the
 /// input buffer: nothing is allocated unless the word is longer than the buffer. The space after the word stays in
@@ -396,9 +388,10 @@ routine In.read_line_checked(alloc: @MemoryManager) -> Maybe[Memory[Byte]]
             line: Maybe[Memory[Byte]] = trim_cr(text.owned())
             b.lock.unlock()
             return line
-        local single: @Byte <- byte2
-        text.append(chunk: single, n: 1, alloc)
-        continue with any: true
+        else
+            local single: @Byte <- byte2
+            text.append(chunk: single, n: 1, alloc)
+            continue with any: true
 
     block done()
         line: Maybe[Memory[Byte]] = trim_cr(text.owned())
@@ -461,9 +454,10 @@ routine In.read_word_checked(alloc: @MemoryManager) -> Maybe[Memory[Byte]]
                 return word
         if is_space(byte)
             continue
-        single.poke(byte)
-        text.append(chunk: single, n: 1, alloc)
-        break
+        else
+            single.poke(byte)
+            text.append(chunk: single, n: 1, alloc)
+            break
 
     while true
         c2: Maybe[Byte] = b.emit_checked()
@@ -475,8 +469,10 @@ routine In.read_word_checked(alloc: @MemoryManager) -> Maybe[Memory[Byte]]
                 return word
         if is_space(byte2)
             break
-        single.poke(byte2)
-        text.append(chunk: single, n: 1, alloc)
+        else
+            single.poke(byte2)
+            text.append(chunk: single, n: 1, alloc)
+            continue
     b.unread()
 
     word: Maybe[Memory[Byte]] = text.owned()
@@ -627,12 +623,13 @@ internal routine stream_write(stream: StdStream, data: @Byte, count: USize) -> B
         wrote: SSize = c_write(fd_of(stream), at, remaining.min(1073741824))
         if wrote > 0
             continue with at: at.stride(wrote.to[USize]()), remaining: remaining - wrote.to[USize]()
-        errno: CInt = c_errno_place().peek()
-        // EINTR: a signal came first, so try again
-        if wrote < 0 and errno == 4
-            continue with at: at, remaining: remaining
         else
-            return false
+            errno: CInt = c_errno_place().peek()
+            // EINTR: a signal came first, so try again
+            if wrote < 0 and errno == 4
+                continue with at: at, remaining: remaining
+            else
+                return false
     then
         return true
 
@@ -889,11 +886,12 @@ private routine complete_end(data: @Byte, count: USize) -> USize
         // a continuation byte: 10xxxxxx
         if top_bits == 0x80
             continue with i: i - 1, seen: seen + 1
-        sequence_end: USize = i - 1 + sequence_length(b)
-        if sequence_end > count
-            return i - 1
         else
-            return count
+            sequence_end: USize = i - 1 + sequence_length(b)
+            if sequence_end > count
+                return i - 1
+            else
+                return count
     then
         return count
 
@@ -929,11 +927,12 @@ private routine console_write(stream: StdStream, h: Addr, data: @Byte, count: US
             if taken < need
                 pending.count.poke(held + taken)
                 return true
-            pending.count.poke(0)
-            if console_text(h, data: pending.bytes.to[@Byte](), count: held + taken)
-                becomes (data.stride(taken), count - taken)
             else
-                return false
+                pending.count.poke(0)
+                if console_text(h, data: pending.bytes.to[@Byte](), count: held + taken)
+                    becomes (data.stride(taken), count - taken)
+                else
+                    return false
 
     at, n = values2
     cut: USize = complete_end(data: at, count: n)
@@ -959,20 +958,22 @@ private routine console_text(h: Addr, data: @Byte, count: USize) -> Bool
                 continue with n: 0
             else
                 return false
-        c: Maybe[Char] = iter.emit_checked()
-        when c
-            is Char as char =>
-                cp: U32 = char.to[U32]()
-                if cp < 0x10000
-                    units.stride(n).poke(cp.to[U16]())
-                    continue with n: n + 1
-                v: U32 = cp - 0x10000
-                high_surrogate: U32 = (v >> 10) + 0xD800
-                units.stride(n).poke(high_surrogate.to[U16]())
-                low_surrogate: U32 = (v & 0x3FF) + 0xDC00
-                units.stride(n + 1).poke(low_surrogate.to[U16]())
-                continue with n: n + 2
-            is Unit => return write_units(h, units, n, written)
+        else
+            c: Maybe[Char] = iter.emit_checked()
+            when c
+                is Char as char =>
+                    cp: U32 = char.to[U32]()
+                    if cp < 0x10000
+                        units.stride(n).poke(cp.to[U16]())
+                        continue with n: n + 1
+                    else
+                        v: U32 = cp - 0x10000
+                        high_surrogate: U32 = (v >> 10) + 0xD800
+                        units.stride(n).poke(high_surrogate.to[U16]())
+                        low_surrogate: U32 = (v & 0x3FF) + 0xDC00
+                        units.stride(n + 1).poke(low_surrogate.to[U16]())
+                        continue with n: n + 2
+                is Unit => return write_units(h, units, n, written)
 
 /// Writes `n` UTF-16 units to a console, however many calls that takes.
 /// :param h: The console handle.

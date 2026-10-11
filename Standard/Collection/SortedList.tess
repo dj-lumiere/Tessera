@@ -439,23 +439,23 @@ needs T: typename
 routine SortedListNode[T].insert_nonfull(me: @Me, order: USize, value: T,
     alloc: @MemoryManager) -> Bool
 needs T: typename
-    leaf: Bool = me.leaf.peek()
-    values2: (USize, @Me, USize) = when
-        leaf =>
-            count: USize = me.count.peek()
-            me.values.shift_right(start: order, end: count)
-            me.values[order] = value
-            new_count: USize = count + 1
-            me.count.poke(new_count)
-            me.subtree_count.poke(new_count)
-            return true
-        else =>
-            local local_order: @USize <- .hollow()
-            slot: USize = me.find_child(order, out_local: local_order)
-            local_order_val: USize = local_order.peek()
-            child: @Me = me.children[slot]
-            child_count: USize = child.count.peek()
-            if child_count == NODE_VALUES
+    if me.leaf.peek()
+        count: USize = me.count.peek()
+        me.values.shift_right(start: order, end: count)
+        me.values[order] = value
+        new_count: USize = count + 1
+        me.count.poke(new_count)
+        me.subtree_count.poke(new_count)
+        return true
+    else
+        local local_order: @USize <- .hollow()
+        slot: USize = me.find_child(order, out_local: local_order)
+        local_order_val: USize = local_order.peek()
+        child: @Me = me.children[slot]
+        child_count: USize = child.count.peek()
+        full: Bool = child_count == NODE_VALUES
+        values2: (USize, @Me, USize) = when
+            full =>
                 if not me.split_child(index: slot, alloc)
                     return false
                 left: @Me = me.children[slot]
@@ -466,13 +466,12 @@ needs T: typename
                     becomes (right_slot, me.children[right_slot], right_order)
                 else
                     becomes (slot, me.children[slot], local_order_val)
-            else
-                becomes (slot, child, local_order_val)
-    slot, child, local_order = values2
-    if not child.insert_nonfull(order: local_order, value, alloc)
-        return false
-    me.recount()
-    return true
+            else => (slot, child, local_order_val)
+        slot2, child2, local_order2 = values2
+        if not child2.insert_nonfull(order: local_order2, value, alloc)
+            return false
+        me.recount()
+        return true
 
 /// Inserts `value` before position `order`. push picks the position, so the order holds.
 /// :param order: The position to insert before, at most the count.
@@ -484,24 +483,24 @@ needs T: typename
 private routine SortedList[T].insert_at(me: @Me, order: USize, value: T) -> Bool
 needs T: typename
     count: USize = me.count.peek()
-    in_bounds: Bool = order <= count
-    values2: (@SortedListNode[T], @MemoryManager) = when
-        in_bounds =>
-            alloc: @MemoryManager = me.alloc.peek()
-            root: @SortedListNode[T] = me.root.peek()
-            if root.is_null()
-                root2: @SortedListNode[T] = SortedListNode[T].construct(leaf: true, alloc)
-                if root2.is_null()
-                    return false
-                root2.values[0] = value
-                root2.count.poke(1)
-                root2.subtree_count.poke(1)
-                me.root.poke(root2)
-                me.count.poke(1)
-                return true
-            else
-                root_count: USize = root.count.peek()
-                if root_count == NODE_VALUES
+    if order <= count
+        alloc: @MemoryManager = me.alloc.peek()
+        root: @SortedListNode[T] = me.root.peek()
+        if root.is_null()
+            root2: @SortedListNode[T] = SortedListNode[T].construct(leaf: true, alloc)
+            if root2.is_null()
+                return false
+            root2.values[0] = value
+            root2.count.poke(1)
+            root2.subtree_count.poke(1)
+            me.root.poke(root2)
+            me.count.poke(1)
+            return true
+        else
+            root_count: USize = root.count.peek()
+            full: Bool = root_count == NODE_VALUES
+            root2: @SortedListNode[T] = when
+                full =>
                     new_root: @SortedListNode[T] = SortedListNode[T].construct(leaf: false, alloc)
                     if new_root.is_null()
                         return false
@@ -509,19 +508,18 @@ needs T: typename
                     new_root.count.poke(1)
                     if new_root.split_child(index: 0, alloc)
                         me.root.poke(new_root)
-                        becomes (new_root, alloc)
+                        becomes new_root
                     else
                         deallocate[SortedListNode[T]](data: new_root, alloc)
                         return false
-                else
-                    becomes (root, alloc)
-        else => crash_out_of_bounds()
-    root, alloc = values2
-    if not root.insert_nonfull(order, value, alloc)
-        return false
-    next_count: USize = me.count.peek() + 1
-    next_count.poke_into(me.count)
-    return true
+                else => root
+            if not root2.insert_nonfull(order, value, alloc)
+                return false
+            next_count: USize = me.count.peek() + 1
+            next_count.poke_into(me.count)
+            return true
+    else
+        crash_out_of_bounds()
 
 // Capacity = NODE_VALUES, t = NODE_MIN. Internal-node `count` is the
 // child count, so the underflow threshold (count < NODE_MIN) is shared
@@ -609,57 +607,55 @@ needs T: typename
 @track_caller
 routine SortedListNode[T].remove(me: @Me, order: USize, alloc: @MemoryManager) -> T
 needs T: typename
-    leaf: Bool = me.leaf.peek()
-    values2: (USize, USize) = when
-        leaf =>
-            value: T = me.values[order]
-            count: USize = me.count.peek()
-            me.values.shift_left(start: order, end: count)
-            new_count: USize = count - 1
-            me.count.poke(new_count)
-            me.subtree_count.poke(new_count)
+    if me.leaf.peek()
+        value: T = me.values[order]
+        count: USize = me.count.peek()
+        me.values.shift_left(start: order, end: count)
+        new_count: USize = count - 1
+        me.count.poke(new_count)
+        me.subtree_count.poke(new_count)
+        return value
+    else
+        local local_order: @USize <- .hollow()
+        slot: USize = me.find_child_strict(order, out_local: local_order)
+        local_order_val: USize = local_order.peek()
+        child: @Me = me.children[slot]
+        child_count: USize = child.count.peek()
+        if child_count >= NODE_MIN
+            child2: @Me = me.children[slot]
+            value: T = child2.remove(order: local_order_val, alloc)
+            me.recount()
             return value
-        else =>
-            local local_order: @USize <- .hollow()
-            slot: USize = me.find_child_strict(order, out_local: local_order)
-            local_order_val: USize = local_order.peek()
-            child: @Me = me.children[slot]
-            child_count: USize = child.count.peek()
-            if child_count >= NODE_MIN
-                child2: @Me = me.children[slot]
-                value: T = child2.remove(order: local_order_val, alloc)
-                me.recount()
-                return value
-            else
-                if slot > 0
-                    left: @Me = me.children[slot - 1]
-                    left_count: USize = left.count.peek()
-                    if left_count >= NODE_MIN
-                        // Borrow/merge change the descent target's leading subtree_count, so we
-                        // diff child.subtree_count() across the operation to recover
-                        // the local-order offset. This works uniformly for leaves (where each
-                        // moved value contributes 1) and internals (where the moved entry is a
-                        // whole child subtree of arbitrary count).
-                        child2: @Me = me.children[slot]
-                        old_count: USize = child2.subtree_count()
-                        me.borrow_from_left(slot)
+        else
+            if slot > 0
+                left: @Me = me.children[slot - 1]
+                left_count: USize = left.count.peek()
+                if left_count >= NODE_MIN
+                    // Borrow/merge change the descent target's leading subtree_count, so we
+                    // diff child.subtree_count() across the operation to recover
+                    // the local-order offset. This works uniformly for leaves (where each
+                    // moved value contributes 1) and internals (where the moved entry is a
+                    // whole child subtree of arbitrary count).
+                    child2: @Me = me.children[slot]
+                    old_count: USize = child2.subtree_count()
+                    me.borrow_from_left(slot)
 
-                        local_order2: USize = local_order_val + (child2.subtree_count() - old_count)
-                        child3: @Me = me.children[slot]
-                        value: T = child3.remove(order: local_order2, alloc)
-                        me.recount()
-                        return value
-                    else
-                        parent_count: USize = me.count.peek()
-                        if slot + 1 < parent_count
-                            right: @Me = me.children[slot + 1]
-                            right_count: USize = right.count.peek()
-                            if right_count >= NODE_MIN
-                                me.borrow_from_right(slot)
-                                child2: @Me = me.children[slot]
-                                value: T = child2.remove(order: local_order_val, alloc)
-                                me.recount()
-                                return value
+                    local_order2: USize = local_order_val + (child2.subtree_count() - old_count)
+                    child3: @Me = me.children[slot]
+                    value: T = child3.remove(order: local_order2, alloc)
+                    me.recount()
+                    return value
+                else
+                    parent_count: USize = me.count.peek()
+                    if slot + 1 < parent_count
+                        right: @Me = me.children[slot + 1]
+                        right_count: USize = right.count.peek()
+                        if right_count >= NODE_MIN
+                            me.borrow_from_right(slot)
+                            child2: @Me = me.children[slot]
+                            value: T = child2.remove(order: local_order_val, alloc)
+                            me.recount()
+                            return value
                     left_slot: USize = slot - 1
                     left2: @Me = me.children[left_slot]
                     new_local: USize = left2.subtree_count() + local_order
@@ -668,38 +664,24 @@ needs T: typename
                     value: T = child2.remove(order: new_local, alloc)
                     me.recount()
                     return value
+            else
+                parent_count: USize = me.count.peek()
+                if slot + 1 < parent_count
+                    right: @Me = me.children[slot + 1]
+                    right_count: USize = right.count.peek()
+                    if not (right_count >= NODE_MIN)
+                        me.merge_children(i: slot, alloc)
+                        child2: @Me = me.children[slot]
+                        value: T = child2.remove(order: local_order_val, alloc)
+                        me.recount()
+                        return value
                 else
-                    parent_count: USize = me.count.peek()
-                    if slot + 1 < parent_count
-                        right: @Me = me.children[slot + 1]
-                        right_count: USize = right.count.peek()
-                        if not (right_count >= NODE_MIN)
-                            me.merge_children(i: slot, alloc)
-                            child2: @Me = me.children[slot]
-                            value: T = child2.remove(order: local_order_val, alloc)
-                            me.recount()
-                            return value
-                    else
-                        crash_logic_breached()
-                me.borrow_from_right(slot)
-                child2: @Me = me.children[slot]
-                value: T = child2.remove(order: local_order, alloc)
-                me.recount()
-                return value
-            left_slot: USize = slot - 1
-            left: @Me = me.children[left_slot]
-            new_local: USize = left.subtree_count() + local_order
-            me.merge_children(i: left_slot, alloc)
-            child2: @Me = me.children[left_slot]
-            value: T = child2.remove(order: new_local, alloc)
+                    crash_logic_breached()
+            me.borrow_from_right(slot)
+            child2: @Me = me.children[slot]
+            value: T = child2.remove(order: local_order, alloc)
             me.recount()
             return value
-    slot, local_order = values2
-    me.borrow_from_right(slot)
-    child: @Me = me.children[slot]
-    value: T = child.remove(order: local_order, alloc)
-    me.recount()
-    return value
 
     block descend(slot: USize, local_order: USize)
         child: @Me = me.children[slot]

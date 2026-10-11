@@ -34,45 +34,62 @@ routine B128.exp2(me: Me) -> Me
         nan => return quiet
         over => return infinity
         under => return plus_zero
-        else =>
-            hi: U64 = cm_exp_hi(u)
-            mag_hi: U64 = hi & 0x7FFFFFFFFFFFFFFF
-            tiny: Bool = mag_hi < 0x3F8D71547652B82F
-            // 2^x rounds to 1
-            when
-                tiny => return CM_EXP_ONE
-                mag_hi >= 0x400D000000000000 =>
-                    // NaN, infinities, and the overflow and underflow thresholds
-                    is_nan: Bool = b128_is_nan_bits(u)
-                    nonnegative: Bool = ~b128_is_negative_bits(u)
-                    overflow: Bool = nonnegative and u >= CM_EXP2_OVERFLOW
-                    underflow: Bool = u >= CM_EXP2_UNDERFLOW
-                    quiet2: Me = b128_of(u | B128_QUIET_BIT)
-                    when
-                        is_nan => return quiet2
-                        overflow => return Me.INFINITY
-                        underflow => return CM_EXP_ZERO
-                        else => pass
-                else => pass
+        else => jump compute()
+
+    block compute()
+        hi: U64 = cm_exp_hi(u)
+        mag_hi: U64 = hi & 0x7FFFFFFFFFFFFFFF
+        tiny: Bool = mag_hi < 0x3F8D71547652B82F
+        // 2^x rounds to 1
+        when
+            tiny => return CM_EXP_ONE
+            mag_hi >= 0x400D000000000000 => jump edge()
+            else => jump integer_check()
+
+    // NaN, infinities, and the overflow and underflow thresholds
+    block edge()
+        is_nan: Bool = b128_is_nan_bits(u)
+        nonnegative: Bool = ~b128_is_negative_bits(u)
+        overflow: Bool = nonnegative and u >= CM_EXP2_OVERFLOW
+        underflow: Bool = u >= CM_EXP2_UNDERFLOW
+        quiet: Me = b128_of(u | B128_QUIET_BIT)
+        when
+            is_nan => return quiet
+            overflow => return Me.INFINITY
+            underflow => return CM_EXP_ZERO
+            else => jump integer_check()
+
     // |x| >= 1 with no fraction bits in the low word
-    e: S64 = b128_exponent(u)
-    if e >= 16383 and u.to_wrap[S64]() == 0
-        // the high word has 16 sign and exponent bits, then e - 16383 integer bits
+    block integer_check()
+        e: S64 = b128_exponent(u)
+        if e >= 16383 and u.to_wrap[S64]() == 0
+            jump integer_test(e)
+        else
+            jump reduce(e)
+
+    // the high word has 16 sign and exponent bits, then e - 16383 integer bits
+    block integer_test(e: S64)
         fraction_bits: U64 = cm_exp_hi(u) << (e - 16367).to[U64]()
         fraction: S64 = fraction_bits.to_wrap[S64]()
         if fraction == 0
-            r: Me = cm_exp2_exact(u, e)
-            return r
+            jump exact(e)
+        else
+            jump reduce(e)
+
+    block exact(e: S64)
+        r: Me = cm_exp2_exact(u, e)
+        return r
 
     // the significand, two's-complemented for negative x
-    hi: S64 = cm_exp_hi(u).to_wrap[S64]()
-    sign2: U128 = 0 -% (u >> 127)
-    sig: U128 = (u & B128_FRAC_MASK) | B128_IMPLICIT
-    signed: U128 = (sig ^ sign2) -% sign2
-    words: CmExpWords3 = CmExpWords3(w0: 0, w1: signed.to_wrap[S64]().to_wrap[U64](), w2: cm_exp_hi(signed))
-    reduced: CmExpWords3 = cm_exp_ashr3(w: words, n: (0x401B - e).to[U64]())
-    r: Me = cm_exp_finish(fs: reduced, x: u, kind: CM_EXP_KIND_TWO)
-    return r
+    block reduce(e: S64)
+        hi: S64 = cm_exp_hi(u).to_wrap[S64]()
+        sign2: U128 = 0 -% (u >> 127)
+        sig: U128 = (u & B128_FRAC_MASK) | B128_IMPLICIT
+        signed: U128 = (sig ^ sign2) -% sign2
+        words: CmExpWords3 = CmExpWords3(w0: 0, w1: signed.to_wrap[S64]().to_wrap[U64](), w2: cm_exp_hi(signed))
+        reduced: CmExpWords3 = cm_exp_ashr3(w: words, n: (0x401B - e).to[U64]())
+        r: Me = cm_exp_finish(fs: reduced, x: u, kind: CM_EXP_KIND_TWO)
+        return r
 
 /// 2^n for the integer n = x (biased exponent e): exact, normal or subnormal.
 /// :param u: The bits of x, an integer with |x| >= 1 in the range that neither overflows nor underflows to 0.

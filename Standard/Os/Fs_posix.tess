@@ -1242,36 +1242,38 @@ internal routine copy_file(from: Span[Byte], to: Span[Byte]) -> Result[U64, FsEr
                         src.close()
                         dst.close()
                         return error
-                    local buffer: @Array[Byte, 16384] <- .hollow()
+                    else
+                        local buffer: @Array[Byte, 16384] <- .hollow()
 
-                    buffer2: @Byte = buffer.to[@Byte]()
+                        buffer2: @Byte = buffer.to[@Byte]()
 
-                    while true
-                        got: Result[USize, FsError] = src.read_bytes_result(buffer: buffer2, count: 16384)
-                        when got
-                            is USize as n =>
-                                if n == 0
-                                    result: Result[U64, FsError] = total.peek()
-                                    src.close()
-                                    dst.close()
-                                    return result
-                                wrote: Result[Unit, FsError] = dst.write_all_result(data: buffer2, count: n)
-                                when wrote
-                                    is Unit => pass
-                                    is FsError as error =>
-                                        dst.close()
-                                        discard_removed: Result[Unit, FsError] = remove_file(to)
+                        while true
+                            got: Result[USize, FsError] = src.read_bytes_result(buffer: buffer2, count: 16384)
+                            when got
+                                is USize as n =>
+                                    if n == 0
+                                        result: Result[U64, FsError] = total.peek()
                                         src.close()
                                         dst.close()
-                                        return error
-                                (total.peek() + n.to[U64]()).poke_into(total)
-                                continue
-                            is FsError as error =>
-                                dst.close()
-                                discard_removed: Result[Unit, FsError] = remove_file(to)
-                                src.close()
-                                dst.close()
-                                return error
+                                        return result
+                                    else
+                                        wrote: Result[Unit, FsError] = dst.write_all_result(data: buffer2, count: n)
+                                        when wrote
+                                            is Unit => pass
+                                            is FsError as error =>
+                                                dst.close()
+                                                discard_removed: Result[Unit, FsError] = remove_file(to)
+                                                src.close()
+                                                dst.close()
+                                                return error
+                                        (total.peek() + n.to[U64]()).poke_into(total)
+                                        continue
+                                is FsError as error =>
+                                    dst.close()
+                                    discard_removed: Result[Unit, FsError] = remove_file(to)
+                                    src.close()
+                                    dst.close()
+                                    return error
                 is FsError as error =>
                     src.close()
                     dst.close()
@@ -1537,13 +1539,14 @@ internal routine current_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsEr
             // ERANGE: a bigger buffer
             count: USize = buffer2.data.to[CStr]().count()
             return buffer2.with_count(count)
-        e: CInt = errno()
-        local held: @Memory[Byte] <- buffer2
-        held.drop()
-        if e == 34
-            continue with capacity: capacity * 2
         else
-            return error_of(e)
+            e: CInt = errno()
+            local held: @Memory[Byte] <- buffer2
+            held.drop()
+            if e == 34
+                continue with capacity: capacity * 2
+            else
+                return error_of(e)
 
 /// Makes path the working directory.
 /// :param path: The new working directory.
@@ -1642,53 +1645,46 @@ internal routine Mapping.map(path: Span[Byte], write: Bool, offset: U64,
     local file: @FileHandle <- .empty()
 
     local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
-    if not c_path(path, out: cpath.to[@Byte]())
-        // PROT_READ | PROT_WRITE and MAP_SHARED, or PROT_READ and MAP_PRIVATE
-        // the mapping keeps the file open on its own, and errno is read before finish closes the descriptor
-
-        result: Result[Me, FsError] = path_error(path)
-        file.close()
-        return result
-    flags: CInt = when
-        write => 2
-        else => 0
-    fd: CInt = c_open(cpath.to[@Byte](), flags | open_flags().cloexec, 0)
-    if fd < 0
-        result: Result[Me, FsError] = failed[Me]()
-        file.close()
-        return result
-    file.fd.poke(fd)
-    m: Result[Metadata, FsError] = fd_metadata(fd)
-    when m
-        is Metadata as info =>
-            size: U64 = info.size
-            if offset >= size
-                result: Result[Me, FsError] = Me.empty()
-                file.close()
-                return result
-            want_bytes: U64 = count.to[U64]().min(size - offset)
-            want: USize = want_bytes.to[USize]()
-            page: U64 = map_granularity().to[U64]()
-            aligned: U64 = offset - offset % page
-            delta: USize = (offset - aligned).to[USize]()
-            prot: CInt = when
-                write => 3
-                else => 1
-            share: CInt = when
-                write => 1
-                else => 2
-            p: Addr = c_mmap(null, want + delta, prot, share, fd, aligned.to[S64]())
-            if is_map_failed(p)
-                result: Result[Me, FsError] = failed[Me]()
-                file.close()
-                return result
+    result: Result[Me, FsError] = when
+        not c_path(path, out: cpath.to[@Byte]()) => path_error(path)
+        else =>
+            flags: CInt = when
+                write => 2
+                else => 0
+            fd: CInt = c_open(cpath.to[@Byte](), flags | open_flags().cloexec, 0)
+            if fd < 0
+                becomes failed[Me]()
             else
-                result: Result[Me, FsError] = Me(base: p, delta: delta, count: want)
-                file.close()
-                return result
-        is FsError as error =>
-            file.close()
-            return error
+                file.fd.poke(fd)
+                m: Result[Metadata, FsError] = fd_metadata(fd)
+                when m
+                    is Metadata as info =>
+                        size: U64 = info.size
+                        if offset >= size
+                            becomes Me.empty()
+                        else
+                            want_bytes: U64 = count.to[U64]().min(size - offset)
+                            want: USize = want_bytes.to[USize]()
+                            page: U64 = map_granularity().to[U64]()
+                            aligned: U64 = offset - offset % page
+                            delta: USize = (offset - aligned).to[USize]()
+                            // PROT_READ | PROT_WRITE and MAP_SHARED, or PROT_READ and MAP_PRIVATE
+                            prot: CInt = when
+                                write => 3
+                                else => 1
+                            share: CInt = when
+                                write => 1
+                                else => 2
+                            p: Addr = c_mmap(null, want + delta, prot, share, fd, aligned.to[S64]())
+                            // the mapping keeps the file open on its own, and errno is read before finish closes the descriptor
+                            if is_map_failed(p)
+                                becomes failed[Me]()
+                            else
+                                becomes Me(base: p, delta: delta, count: want)
+                    is FsError as error =>
+                        becomes error
+    file.close()
+    return result
 
 /// Writes changed pages back to the file.
 /// :returns: `Unit` once they are written, at once for an empty mapping.

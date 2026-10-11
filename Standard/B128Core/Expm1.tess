@@ -71,43 +71,50 @@ routine B128.exp_m1(me: Me) -> Me
         nan => return quiet
         zero => return me
         over => return infinity
-        else =>
-            uh: U64 = cm_wide_hi(u)
-            ul: U64 = cm_wide_lo(u)
-            b1: U64 = uh & 0x7FFFFFFFFFFFFFFF
-            small: Bool = b1 < 0x3FFE000000000000
-            when
-                small =>
-                    r: Me = cm_expm1_small(u)
-                    return r
-                b1 >= 0x400C62E42FEFA39E =>
-                    // NaN, infinity, overflow, or a large negative x
-                    uh2: S64 = uh.to_wrap[S64]()
-                    inf: Bool = b1 == 0x7FFF000000000000 and ul == 0
-                    nan_exp: Bool = b1 > 0x7FFF000000000000
-                    nan_frac: Bool = b1 == 0x7FFF000000000000 and ul != 0
-                    nan2: Bool = nan_exp or nan_frac
-                    positive: Bool = uh2 >= 0
-                    overflows: Bool = positive and u >= 0x400C62E42FEFA39EF35793C7673007E6
-                    quiet2: Me = b128_of(cm_wide_u128(hi: (uh2 | 0x0000800000000000).to_wrap[U64](), lo: ul))
-                    minus_one: Me = b128_of(0xBFFF0000000000000000000000000000)
-                    limit: Me = when
-                        positive => me
-                        else => minus_one
-                    infinity2: Me = Me.INFINITY
-                    when
-                        inf => return limit
-                        nan2 => return quiet2
-                        overflows => return infinity2
-                        else => pass
-                else => pass
+        else => jump compute()
+
+    block compute()
+        uh: U64 = cm_wide_hi(u)
+        ul: U64 = cm_wide_lo(u)
+        b1: U64 = uh & 0x7FFFFFFFFFFFFFFF
+        small: Bool = b1 < 0x3FFE000000000000
+        when
+            small => jump small()
+            b1 >= 0x400C62E42FEFA39E => jump large(uh.to_wrap[S64](), ul, b1)
+            else => jump moderate()
+
+    block small()
+        r: Me = cm_expm1_small(u)
+        return r
+
+    // NaN, infinity, overflow, or a large negative x
+    block large(uh: S64, ul: U64, b1: U64)
+        inf: Bool = b1 == 0x7FFF000000000000 and ul == 0
+        nan_exp: Bool = b1 > 0x7FFF000000000000
+        nan_frac: Bool = b1 == 0x7FFF000000000000 and ul != 0
+        nan: Bool = nan_exp or nan_frac
+        positive: Bool = uh >= 0
+        overflows: Bool = positive and u >= 0x400C62E42FEFA39EF35793C7673007E6
+        quiet: Me = b128_of(cm_wide_u128(hi: (uh | 0x0000800000000000).to_wrap[U64](), lo: ul))
+        minus_one: Me = b128_of(0xBFFF0000000000000000000000000000)
+        limit: Me = when
+            positive => me
+            else => minus_one
+        infinity: Me = Me.INFINITY
+        when
+            inf => return limit
+            nan => return quiet
+            overflows => return infinity
+            else => jump moderate()
+
     // below about -77.7, e^x - 1 rounds to -1
-    saturates: Bool = u >= 0xC0053C133AB16DB990B9FF9D97E6C709
-    minus_one: Me = b128_of(0xBFFF0000000000000000000000000000)
-    if saturates
-        return minus_one
-    r: Me = cm_expm1_general(u)
-    return r
+    block moderate()
+        saturates: Bool = u >= 0xC0053C133AB16DB990B9FF9D97E6C709
+        minus_one: Me = b128_of(0xBFFF0000000000000000000000000000)
+        if saturates
+            return minus_one
+        r: Me = cm_expm1_general(u)
+        return r
 
 /// sig + ((el << 48 | sign << 63) << 64) + round: the exponent and sign fields added to the significand.
 /// sign is 0, 1, or all ones (only its lowest bit counts).
@@ -370,9 +377,9 @@ routine cm_expm1_small(x: U128) -> B128
                 rnd: U64 = (lo >> 13) & 1
                 r: B128 = cm_expm1_pack(sig: a.sig >> 14, el: el +% 16382, sign: sm, round: rnd)
                 return r
-    a: CmExpm1Scaled = cm_expm1_accurate(x)
-    r: B128 = cm_expm1_round15(a, sign: sm)
-    return r
+        a2: CmExpm1Scaled = cm_expm1_accurate(x)
+        r: B128 = cm_expm1_round15(a: a2, sign: sm)
+        return r
 
 /// The fast path of e^x - 1 for |x| < 0.5 or so, before rounding: a table step above 2^-11, else a polynomial.
 /// CORE-MATH's rounding test (in {cm_expm1_small}) takes the result to be within [-3, 5) units of its last bit
@@ -771,8 +778,42 @@ routine cm_expm1_accurate_scale(wide: CmWide3, e: S64, sm: S64, x0: U128) -> CmE
             // the 1 sits inside the 3 words: subtract it, then normalize
             if has_one
                 cm_expm1_sub_bit(f, n: 3, idx: (sg + 2).to[USize](), bit: sl)
+            cm_wide_xor_words(x: f, n: 3, mask: sm.to_wrap[U64]())
+            top: USize = cm_expm1_top_word(f, n: 3)
+            ftop: U64 = f.stride(top).peek()
+            skipped_bits: USize = (2 - top) * 64
+            nz_bits: U64 = ftop.leading_zeros() + skipped_bits.to[U64]()
+            nz: S64 = nz_bits.to[S64]()
+            nel: S64 = e - (nz - 3)
+            mm: U128 = cm_wide_u128(hi: 0x3FFF, lo: U64.MAX) >> nz.min(127).to[U128]()
+            w0: U64 = f.stride(0).peek()
+            w1: U64 = f.stride(1).peek()
+            w2: U64 = f.stride(2).peek()
+            t0: U128 = cm_wide_u128(hi: w1, lo: w0) +% 8
+            if t0 & mm <= 16
+                // the 1 lies above the 3 words: the result is -1 plus f, complemented
+                r: CmExpm1Scaled = cm_expm1_superaccurate(x0)
+                return r
+            else
+                nz2: U64 = nz.to[U64]()
+                k: U64 = nz2 >> 6
+                ls: U64 = nz2 & 63
+                rs: U64 = (nz2 ^ U64.MAX) & 63
+                first: Bool = k == 0
+                mid: U64 = when
+                    first => w1
+                    else => w0
+                high: U64 = when
+                    first => w2
+                    else => w1
+                below: U64 = w0 >> 1 >> rs
+                m0: U64 = when
+                    first => (mid << ls) | below
+                    else => mid << ls
+                m1: U64 = (high << ls) | (mid >> 1 >> rs)
+                r: CmExpm1Scaled = cm_expm1_scaled(el: nel.to_wrap[U64](), m1, m0)
+                return r
         else =>
-            // the 1 lies above the 3 words: the result is -1 plus f, complemented
             w0: U64 = f.stride(0).peek()
             w1: U64 = f.stride(1).peek()
             w2: U64 = f.stride(2).peek()
@@ -815,40 +856,6 @@ routine cm_expm1_accurate_scale(wide: CmWide3, e: S64, sm: S64, x0: U128) -> CmE
                     r: CmExpm1Scaled = cm_expm1_scaled(el: U64.MAX, m1: U64.MAX, m0: (n22 >> sl).to_wrap[U64]())
                     return r
                 else => return all_ones
-    cm_wide_xor_words(x: f, n: 3, mask: sm.to_wrap[U64]())
-    top: USize = cm_expm1_top_word(f, n: 3)
-    ftop: U64 = f.stride(top).peek()
-    skipped_bits: USize = (2 - top) * 64
-    nz_bits: U64 = ftop.leading_zeros() + skipped_bits.to[U64]()
-    nz: S64 = nz_bits.to[S64]()
-    nel: S64 = e - (nz - 3)
-    mm: U128 = cm_wide_u128(hi: 0x3FFF, lo: U64.MAX) >> nz.min(127).to[U128]()
-    w0: U64 = f.stride(0).peek()
-    w1: U64 = f.stride(1).peek()
-    w2: U64 = f.stride(2).peek()
-    t0: U128 = cm_wide_u128(hi: w1, lo: w0) +% 8
-    if t0 & mm <= 16
-        r: CmExpm1Scaled = cm_expm1_superaccurate(x0)
-        return r
-    else
-        nz2: U64 = nz.to[U64]()
-        k: U64 = nz2 >> 6
-        ls: U64 = nz2 & 63
-        rs: U64 = (nz2 ^ U64.MAX) & 63
-        first: Bool = k == 0
-        mid: U64 = when
-            first => w1
-            else => w0
-        high: U64 = when
-            first => w2
-            else => w1
-        below: U64 = w0 >> 1 >> rs
-        m0: U64 = when
-            first => (mid << ls) | below
-            else => mid << ls
-        m1: U64 = (high << ls) | (mid >> 1 >> rs)
-        r: CmExpm1Scaled = cm_expm1_scaled(el: nel.to_wrap[U64](), m1, m0)
-        return r
 
 /// The super-accurate step (about 380 bits), used when even the accurate step can't decide the rounding. It takes
 /// its exponent from its own reduction of x.
@@ -874,51 +881,50 @@ routine cm_expm1_superaccurate(x0: U128) -> CmExpm1Scaled
     sg: S64 = s >> 6
     big: Bool = sg <= 0
     has_one: Bool = sg >= -5
-    e2: U64 = when
-        big =>
-            if has_one
+    if big
+        e2: U64 = when
+            has_one =>
                 cm_expm1_sub_bit(f: ft, n: 6, idx: (sg + 5).to[USize](), bit: sl)
                 becomes e.to_wrap[U64]()
-            else
-                becomes e.to_wrap[U64]()
-        else =>
-            // the 1 lies above the 6 words: complement the top two
-            f5: U64 = ft.stride(5).peek()
-            f4: U64 = ft.stride(4).peek()
-            n5: U64 = ~f5
-            n4: U64 = ~f4
-            ls: S64 = (sl ^ -1) & 63
-            ones_up: U64 = (-2 << ls).to_wrap[U64]()
-            // (~0 << 1) << ls
-            one_word: Bool = sg == 1
-            two_words: Bool = sg == 2
-            n5_up: U64 = n5 << 1 << ls.to[U64]()
-            m0_one: U64 = n5_up | (n4 >> sl.to[U64]())
-            m1_one: U64 = ones_up | (n5 >> sl.to[U64]())
-            m0_two: U64 = ones_up | (n5 >> sl.to[U64]())
-            one: CmExpm1Scaled = cm_expm1_scaled(el: U64.MAX, m1: m1_one, m0: m0_one)
-            two: CmExpm1Scaled = cm_expm1_scaled(el: U64.MAX, m1: U64.MAX, m0: m0_two)
-            all: CmExpm1Scaled = cm_expm1_scaled(el: U64.MAX, m1: U64.MAX, m0: U64.MAX)
-            when
-                one_word => return one
-                two_words => return two
-                else => return all
-    cm_wide_xor_words(x: ft, n: 6, mask: sm.to_wrap[U64]())
-    top: USize = cm_expm1_top_word(f: ft, n: 6)
-    ftop: U64 = ft.stride(top).peek()
-    skipped_bits: USize = (5 -% top) *% 64
-    nz: U64 = ftop.leading_zeros() +% skipped_bits.to[U64]()
-    nel: U64 = e2 -% (nz -% 3)
-    k: USize = (nz >> 6).to[USize]()
-    rs: U64 = (nz ^ U64.MAX) & 63
-    ls: U64 = nz & 63
-    w5: U64 = ft.stride(5 -^ k).peek()
-    w4: U64 = ft.stride(4 -^ k).peek()
-    w3: U64 = ft.stride(3 -^ k).peek()
-    m0: U64 = (w4 << ls) | (w3 >> 1 >> rs)
-    m1: U64 = (w5 << ls) | (w4 >> 1 >> rs)
-    r: CmExpm1Scaled = cm_expm1_scaled(el: nel, m1, m0)
-    return r
+            else => e.to_wrap[U64]()
+        cm_wide_xor_words(x: ft, n: 6, mask: sm.to_wrap[U64]())
+        top: USize = cm_expm1_top_word(f: ft, n: 6)
+        ftop: U64 = ft.stride(top).peek()
+        skipped_bits: USize = (5 -% top) *% 64
+        nz: U64 = ftop.leading_zeros() +% skipped_bits.to[U64]()
+        nel: U64 = e2 -% (nz -% 3)
+        k: USize = (nz >> 6).to[USize]()
+        rs: U64 = (nz ^ U64.MAX) & 63
+        ls: U64 = nz & 63
+        w5: U64 = ft.stride(5 -^ k).peek()
+        w4: U64 = ft.stride(4 -^ k).peek()
+        w3: U64 = ft.stride(3 -^ k).peek()
+        m0: U64 = (w4 << ls) | (w3 >> 1 >> rs)
+        m1: U64 = (w5 << ls) | (w4 >> 1 >> rs)
+        r: CmExpm1Scaled = cm_expm1_scaled(el: nel, m1, m0)
+        return r
+    else
+        // the 1 lies above the 6 words: complement the top two
+        f5: U64 = ft.stride(5).peek()
+        f4: U64 = ft.stride(4).peek()
+        n5: U64 = ~f5
+        n4: U64 = ~f4
+        ls: S64 = (sl ^ -1) & 63
+        ones_up: U64 = (-2 << ls).to_wrap[U64]()
+        // (~0 << 1) << ls
+        one_word: Bool = sg == 1
+        two_words: Bool = sg == 2
+        n5_up: U64 = n5 << 1 << ls.to[U64]()
+        m0_one: U64 = n5_up | (n4 >> sl.to[U64]())
+        m1_one: U64 = ones_up | (n5 >> sl.to[U64]())
+        m0_two: U64 = ones_up | (n5 >> sl.to[U64]())
+        one: CmExpm1Scaled = cm_expm1_scaled(el: U64.MAX, m1: m1_one, m0: m0_one)
+        two: CmExpm1Scaled = cm_expm1_scaled(el: U64.MAX, m1: U64.MAX, m0: m0_two)
+        all: CmExpm1Scaled = cm_expm1_scaled(el: U64.MAX, m1: U64.MAX, m0: U64.MAX)
+        when
+            one_word => return one
+            two_words => return two
+            else => return all
 
 // -- tables --------------------------------------------------------------------
 

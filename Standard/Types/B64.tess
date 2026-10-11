@@ -438,12 +438,11 @@ private routine B64.mul_add_wide(me: Me, a: Me, b: Me) -> Me
     factor_special: Bool = not factors_finite
     addend_special: Bool = not b.is_finite()
     zero_product: Bool = me == 0.0 or a == 0.0
-    zero_addend: Bool = b == 0.0
-    values2: (U128, S64, Bool) = when
+    when
         factor_special => return me * a + b
         addend_special => return b + b
         zero_product => return me * a + b
-        zero_addend => return me * a
+        b == 0.0 => return me * a
         else =>
             // an infinite or NaN factor makes the product exact, and so does a zero one
             // a nonzero product plus zero is the product, whatever the zero's sign
@@ -478,29 +477,29 @@ private routine B64.mul_add_wide(me: Me, a: Me, b: Me) -> Me
                 p_first => c_neg
                 else => p_neg
             aligned: U128 = shr_sticky(value: small, n: diff)
-            if big_neg == small_neg
-                becomes (big + aligned, e, big_neg)
-            else
-                // an exact zero is +0
-                x_larger: Bool = big >= aligned
-                m: U128 = big.abs_diff(aligned)
-                negative: Bool = when
-                    x_larger => big_neg
-                    else => not big_neg
-                becomes (m, e, negative)
-    r, e, negative = values2
-
-    // value = r × 2^e: bring the top bit to 127 and round the high half, with a sticky bit for the low one
-    if r == 0
-        return 0.0
-    lz: U128 = r.leading_zeros()
-    n: U128 = r << lz
-    high: U64 = (n >> 64).to[U64]()
-    low_sticky: Bool = n.to_wrap[U64]() != 0
-    sig: U64 = high | low_sticky.to[U64]()
-    exponent: S64 = e - lz.to[S64]() + 1150
-    result: Me = b64_round_pack(negative, exponent, sig)
-    return result
+            same: Bool = big_neg == small_neg
+            values2: (U128, Bool) = when
+                same => (big + aligned, big_neg)
+                else =>
+                    // an exact zero is +0
+                    x_larger: Bool = big >= aligned
+                    m: U128 = big.abs_diff(aligned)
+                    negative: Bool = when
+                        x_larger => big_neg
+                        else => not big_neg
+                    becomes (m, negative)
+            r, negative = values2
+            // value = r × 2^e: bring the top bit to 127 and round the high half, with a sticky bit for the low one
+            if r == 0
+                return 0.0
+            lz: U128 = r.leading_zeros()
+            n: U128 = r << lz
+            high: U64 = (n >> 64).to[U64]()
+            low_sticky: Bool = n.to_wrap[U64]() != 0
+            sig: U64 = high | low_sticky.to[U64]()
+            exponent: S64 = e - lz.to[S64]() + 1150
+            result: Me = b64_round_pack(negative, exponent, sig)
+            return result
 
 /// The quotient `q` of Euclidean division, so that `me = q * other + r` with `0 <= r < |other|`.
 /// :param other: The divisor.
@@ -878,34 +877,35 @@ routine b64_round_pack(negative: Bool, exponent: S64, sig: U64) -> B64
         else => 0
 
     overflow: Bool = exponent >= 0x7FF
-    tiny: Bool = exponent < 1
-    values2: (S64, U64) = when
+    when
         overflow => return B64.from_bits(sign | 0x7FF0000000000000)
-        tiny =>
-            // shift to the scale of exponent 1, which encodes as the subnormal field 0
-            shift: S64 = S64.sub(1, exponent)
-            all: Bool = shift >= 64
-            some: U64 = sig >> shift.min(63).to[U64]()
-            lost: Bool = when
-                all => sig != 0
-                else => sig != some << shift.min(63).to[U64]()
-            shifted: U64 = when
-                all => 0
-                else => some
-            becomes (1, shifted | lost.to[U64]())
-        else => (exponent, sig)
-    result_exponent, result_sig = values2
+        exponent < 1 => jump subnormal()
+        else => jump round(exponent, sig)
+
+    // shift to the scale of exponent 1, which encodes as the subnormal field 0
+    block subnormal()
+        shift: S64 = S64.sub(1, exponent)
+        all: Bool = shift >= 64
+        some: U64 = sig >> shift.min(63).to[U64]()
+        lost: Bool = when
+            all => sig != 0
+            else => sig != some << shift.min(63).to[U64]()
+        shifted: U64 = when
+            all => 0
+            else => some
+        jump round(1, shifted | lost.to[U64]())
 
     // a carry out of the 53 kept bits bumps the exponent, up to infinity
-    kept: U64 = result_sig >> 11
-    rest: U64 = result_sig & 0x7FF
-    odd: Bool = kept & 1 == 1
-    up: Bool = rest > 0x400 or (rest == 0x400 and odd)
-    rounded: U64 = kept + up.to[U64]()
-    biased_exponent: U64 = (result_exponent - 1).to[U64]()
-    magnitude: U64 = (biased_exponent << 52) + rounded
-    r: B64 = B64.from_bits(sign | magnitude)
-    return r
+    block round(result_exponent: S64, result_sig: U64)
+        kept: U64 = result_sig >> 11
+        rest: U64 = result_sig & 0x7FF
+        odd: Bool = kept & 1 == 1
+        up: Bool = rest > 0x400 or (rest == 0x400 and odd)
+        rounded: U64 = kept + up.to[U64]()
+        biased_exponent: U64 = (result_exponent - 1).to[U64]()
+        magnitude: U64 = (biased_exponent << 52) + rounded
+        r: B64 = B64.from_bits(sign | magnitude)
+        return r
 
 // -- float conversions -----------------------------------------------------------
 

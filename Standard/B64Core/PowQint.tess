@@ -108,72 +108,59 @@ private routine cm_b64_pow_add_qint(a: CmF64PowQint, b: CmF64PowQint) -> CmF64Po
     when
         a_zero => return b
         b.rh == 0 and b.rl == 0 => return a
-        else => jump compare()
-
-    block compare()
-        c: S64 = cm_b64_pow_cmp_qint(a, b)
-        if c == 0
-            jump tie()
-        swap: Bool = c < 0
-        aa: CmF64PowQint = when
-            swap => b
-            else => a
-        bb: CmF64PowQint = when
-            swap => a
-            else => b
-        k: S64 = aa.ex - bb.ex
-        // now |aa| > |bb| and k >= 0: align bb on aa
-        bh, bl = cm_b64_pow_shift256(h: bb.rh, l: bb.rl, n: S64.sub(0, k))
-        if aa.sgn != bb.sgn
-            jump subtract(aa, bb, bh, bl, k)
-        else
-            jump add(aa, bh, bl)
-
-    block tie()
-        if a.sgn != b.sgn
-            return cm_b64_pow_qint_zero()
-        else
-            return CmF64PowQint(rh: a.rh, rl: a.rl, ex: a.ex + 1, sgn: a.sgn)
-
-    block subtract(aa: CmF64PowQint, bb: CmF64PowQint, bh: U128, bl: U128, k: S64)
-        ch: U128 = cm_b64_pow_sub_borrow(ah: aa.rh, al: aa.rl, bh, bl)
-        cl: U128 = aa.rl -% bl
-        ex: U64 = cm_b64_pow_clz256(ch, cl)
-        if ex > 0
-            jump renormalize(aa, bb, k, ex)
-        else
-            jump normalize(ch, cl, 0, aa.ex, aa.sgn)
-
-    // shift aa by ex bits to the left, and bb by ex - k bits to the left, then subtract again
-    block renormalize(aa: CmF64PowQint, bb: CmF64PowQint, k: S64, ex: U64)
-        ah, al = cm_b64_pow_shift256(h: aa.rh, l: aa.rl, n: ex.to[S64]())
-        bh, bl = cm_b64_pow_shift256(h: bb.rh, l: bb.rl, n: ex.to[S64]() - k)
-        ch: U128 = cm_b64_pow_sub_borrow(ah, al, bh, bl)
-        cl: U128 = al -% bl
-        jump normalize(ch, cl, cm_b64_pow_clz256(ch, cl), aa.ex - ex.to[S64](), aa.sgn)
-
-    block normalize(ch: U128, cl: U128, ex: U64, rex: S64, sgn: U64)
-        h, l = cm_b64_pow_shift256(h: ch, l: cl, n: ex.to[S64]())
-        return CmF64PowQint(rh: h, rl: l, ex: rex - ex.to[S64](), sgn: sgn)
-
-    block add(aa: CmF64PowQint, bh: U128, bl: U128)
-        ch0: U128 = aa.rh +% bh
-        cy0: U128 = cm_b64_pow_carry(sum: ch0, a: aa.rh)
-        cl: U128 = aa.rl +% bl
-        low_cy: Bool = cl < aa.rl
-        ch: U128 = when
-            low_cy => ch0 +% 1
-            else => ch0
-        cy: U128 = when
-            low_cy and ch == 0 => cy0 +% 1
-            else => cy0
-        carried: Bool = cy != 0
-        sh: U128 = U128.shl(1, 127) | (ch >> 1)
-        sl: U128 = (ch << 127) | (cl >> 1)
-        if carried
-            return CmF64PowQint(rh: sh, rl: sl, ex: aa.ex + 1, sgn: aa.sgn)
-        else
-            return CmF64PowQint(rh: ch, rl: cl, ex: aa.ex, sgn: aa.sgn)
+        else =>
+            c: S64 = cm_b64_pow_cmp_qint(a, b)
+            if c == 0
+                // now |aa| > |bb| and k >= 0: align bb on aa
+                if a.sgn != b.sgn
+                    return cm_b64_pow_qint_zero()
+                else
+                    return CmF64PowQint(rh: a.rh, rl: a.rl, ex: a.ex + 1, sgn: a.sgn)
+            else
+                swap: Bool = c < 0
+                aa: CmF64PowQint = when
+                    swap => b
+                    else => a
+                bb: CmF64PowQint = when
+                    swap => a
+                    else => b
+                k: S64 = aa.ex - bb.ex
+                bh, bl = cm_b64_pow_shift256(h: bb.rh, l: bb.rl, n: S64.sub(0, k))
+                if aa.sgn != bb.sgn
+                    ch: U128 = cm_b64_pow_sub_borrow(ah: aa.rh, al: aa.rl, bh, bl)
+                    cl: U128 = aa.rl -% bl
+                    ex: U64 = cm_b64_pow_clz256(ch, cl)
+                    renorm: Bool = ex > 0
+                    values2: (U64, S64, U64) = when
+                        renorm =>
+                            // shift aa by ex bits to the left, and bb by ex - k bits to the left, then subtract again
+                            ah, al = cm_b64_pow_shift256(h: aa.rh, l: aa.rl, n: ex.to[S64]())
+                            bh2, bl2 = cm_b64_pow_shift256(h: bb.rh, l: bb.rl, n: ex.to[S64]() - k)
+                            ch2: U128 = cm_b64_pow_sub_borrow(ah, al, bh: bh2, bl: bl2)
+                            cl2: U128 = al -% bl2
+                            becomes (cm_b64_pow_clz256(ch: ch2, cl: cl2), aa.ex - ex.to[S64](), aa.sgn)
+                        else => (0, aa.ex, aa.sgn)
+                    ex2, rex, sgn = values2
+                    h, l = cm_b64_pow_shift256(h: ch, l: cl, n: ex2.to[S64]())
+                    return CmF64PowQint(rh: h, rl: l, ex: rex - ex2.to[S64](), sgn: sgn)
+                else
+                    ch0: U128 = aa.rh +% bh
+                    cy0: U128 = cm_b64_pow_carry(sum: ch0, a: aa.rh)
+                    cl: U128 = aa.rl +% bl
+                    low_cy: Bool = cl < aa.rl
+                    ch: U128 = when
+                        low_cy => ch0 +% 1
+                        else => ch0
+                    cy: U128 = when
+                        low_cy and ch == 0 => cy0 +% 1
+                        else => cy0
+                    carried: Bool = cy != 0
+                    sh: U128 = U128.shl(1, 127) | (ch >> 1)
+                    sl: U128 = (ch << 127) | (cl >> 1)
+                    if carried
+                        return CmF64PowQint(rh: sh, rl: sl, ex: aa.ex + 1, sgn: aa.sgn)
+                    else
+                        return CmF64PowQint(rh: ch, rl: cl, ex: aa.ex, sgn: aa.sgn)
 
 /// The upper half of the 256-bit difference ah:al - bh:bl.
 /// :param ah: The upper half of the minuend.
@@ -194,10 +181,9 @@ private routine cm_b64_pow_sub_borrow(ah: U128, al: U128, bh: U128, bl: U128) ->
 /// :returns: The sum, its lower limbs zero.
 private routine cm_b64_pow_add_qint_22(a: CmF64PowQint, b: CmF64PowQint) -> CmF64PowQint
     a_zero: Bool = a.rh == 0
-    b_zero: Bool = b.rh == 0
-    values2: (U128, U64, S64, U64) = when
+    when
         a_zero => return b
-        b_zero => return a
+        b.rh == 0 => return a
         else =>
             c: S64 = cm_b64_pow_cmp_qint_22(a, b)
             if c == 0
@@ -205,35 +191,38 @@ private routine cm_b64_pow_add_qint_22(a: CmF64PowQint, b: CmF64PowQint) -> CmF6
                     return cm_b64_pow_qint_zero()
                 else
                     return CmF64PowQint(rh: a.rh, rl: a.rl, ex: a.ex + 1, sgn: a.sgn)
-            swap: Bool = c < 0
-            aa: CmF64PowQint = when
-                swap => b
-                else => a
-            bb: CmF64PowQint = when
-                swap => a
-                else => b
-            k: U64 = (aa.ex - bb.ex).to_wrap[U64]()
-            bh: U128 = bb.rh >> k.to[U128]()
-            if aa.sgn != bb.sgn
-                ch: U128 = aa.rh -% bh
-                ex: U64 = ch.leading_zeros().to_wrap[U64]()
-                if ex > 0
-                    ah: U128 = aa.rh << ex.to[U128]()
-                    if not (ex >= k)
-                        ch2: U128 = ah -% (bb.rh >> (k - ex).to[U128]())
-                        becomes (ch2, ch2.leading_zeros().to_wrap[U64](), aa.ex - ex.to[S64](), aa.sgn)
-                    ch2: U128 = ah -% (bb.rh << (ex - k).to[U128]())
-                    becomes (ch2, ch2.leading_zeros().to_wrap[U64](), aa.ex - ex.to[S64](), aa.sgn)
-                else
-                    becomes (ch, 0, aa.ex, aa.sgn)
             else
-                ch: U128 = aa.rh +% bh
-                if ch < aa.rh
-                    return CmF64PowQint(rh: U128.shl(1, 127) | (ch >> 1), rl: 0, ex: aa.ex + 1, sgn: aa.sgn)
+                swap: Bool = c < 0
+                aa: CmF64PowQint = when
+                    swap => b
+                    else => a
+                bb: CmF64PowQint = when
+                    swap => a
+                    else => b
+                k: U64 = (aa.ex - bb.ex).to_wrap[U64]()
+                bh: U128 = bb.rh >> k.to[U128]()
+                if aa.sgn != bb.sgn
+                    ch: U128 = aa.rh -% bh
+                    ex: U64 = ch.leading_zeros().to_wrap[U64]()
+                    renorm: Bool = ex > 0
+                    values2: (U64, S64, U64) = when
+                        renorm =>
+                            ah: U128 = aa.rh << ex.to[U128]()
+                            if not (ex >= k)
+                                ch2: U128 = ah -% (bb.rh >> (k - ex).to[U128]())
+                                becomes (ch2.leading_zeros().to_wrap[U64](), aa.ex - ex.to[S64](), aa.sgn)
+                            else
+                                ch2: U128 = ah -% (bb.rh << (ex - k).to[U128]())
+                                becomes (ch2.leading_zeros().to_wrap[U64](), aa.ex - ex.to[S64](), aa.sgn)
+                        else => (0, aa.ex, aa.sgn)
+                    ex2, rex, sgn = values2
+                    return CmF64PowQint(rh: ch << ex2.to[U128](), rl: 0, ex: rex - ex2.to[S64](), sgn: sgn)
                 else
-                    return CmF64PowQint(rh: ch, rl: 0, ex: aa.ex, sgn: aa.sgn)
-    ch, ex, rex, sgn = values2
-    return CmF64PowQint(rh: ch << ex.to[U128](), rl: 0, ex: rex - ex.to[S64](), sgn: sgn)
+                    ch: U128 = aa.rh +% bh
+                    if ch < aa.rh
+                        return CmF64PowQint(rh: U128.shl(1, 127) | (ch >> 1), rl: 0, ex: aa.ex + 1, sgn: aa.sgn)
+                    else
+                        return CmF64PowQint(rh: ch, rl: 0, ex: aa.ex, sgn: aa.sgn)
 
 /// Normalizes a 256-bit product t6:t5 whose top bit is at position 254 or 255.
 /// :param t6: The upper 128 bits of the product.
@@ -474,12 +463,19 @@ private routine cm_b64_pow_p_3(z: CmF64PowQint) -> CmF64PowQint
         done: Bool = k == 18
         p11: Bool = k < 4
         p21: Bool = k < 8
-        p31: Bool = k < 14
-        zr: CmF64PowQint = when
+        when
             done => return cm_b64_pow_mul_qint_41(a: r.peek(), b: z)
-            p11 => cm_b64_pow_mul_qint_11(a: r.peek(), b: z)
-            p21 => cm_b64_pow_mul_qint_21(a: r.peek(), b: z)
-            p31 =>
+            p11 =>
+                zr: CmF64PowQint = cm_b64_pow_mul_qint_11(a: r.peek(), b: z)
+                next: CmF64PowQint = cm_b64_pow_add_qint_22(a: cm_b64_pow_p_3_at(k), b: zr)
+                next.poke_into(r)
+                continue with k: k + 1
+            p21 =>
+                zr: CmF64PowQint = cm_b64_pow_mul_qint_21(a: r.peek(), b: z)
+                next: CmF64PowQint = cm_b64_pow_add_qint_22(a: cm_b64_pow_p_3_at(k), b: zr)
+                next.poke_into(r)
+                continue with k: k + 1
+            k < 14 =>
                 zr: CmF64PowQint = cm_b64_pow_mul_qint_31(a: r.peek(), b: z)
                 next: CmF64PowQint = cm_b64_pow_add_qint(a: cm_b64_pow_p_3_at(k), b: zr)
                 next.poke_into(r)
@@ -489,9 +485,6 @@ private routine cm_b64_pow_p_3(z: CmF64PowQint) -> CmF64PowQint
                 next: CmF64PowQint = cm_b64_pow_add_qint(a: cm_b64_pow_p_3_at(k), b: zr)
                 next.poke_into(r)
                 continue with k: k + 1
-        next: CmF64PowQint = cm_b64_pow_add_qint_22(a: cm_b64_pow_p_3_at(k), b: zr)
-        next.poke_into(r)
-        continue with k: k + 1
 
 /// exp(y) for |y| < 0.00016923, with relative error below 2^-241.11.
 /// :param y: The reduced argument.
@@ -506,19 +499,23 @@ private routine cm_b64_pow_q_3(y: CmF64PowQint) -> CmF64PowQint
     while true with k: USize = 2
         done: Bool = k == 15
         p22: Bool = k < 7
-        p33: Bool = k < 12
-        yr: CmF64PowQint = when
+        when
             done => return r.peek()
             p22 =>
                 yr: CmF64PowQint = cm_b64_pow_mul_qint_22(a: y, b: r.peek())
                 next: CmF64PowQint = cm_b64_pow_add_qint_22(a: cm_b64_pow_q_3_at(k), b: yr)
                 next.poke_into(r)
                 continue with k: k + 1
-            p33 => cm_b64_pow_mul_qint_33(a: y, b: r.peek())
-            else => cm_b64_pow_mul_qint(a: y, b: r.peek())
-        next: CmF64PowQint = cm_b64_pow_add_qint(a: cm_b64_pow_q_3_at(k), b: yr)
-        next.poke_into(r)
-        continue with k: k + 1
+            k < 12 =>
+                yr: CmF64PowQint = cm_b64_pow_mul_qint_33(a: y, b: r.peek())
+                next: CmF64PowQint = cm_b64_pow_add_qint(a: cm_b64_pow_q_3_at(k), b: yr)
+                next.poke_into(r)
+                continue with k: k + 1
+            else =>
+                yr: CmF64PowQint = cm_b64_pow_mul_qint(a: y, b: r.peek())
+                next: CmF64PowQint = cm_b64_pow_add_qint(a: cm_b64_pow_q_3_at(k), b: yr)
+                next.poke_into(r)
+                continue with k: k + 1
 
 /// log(x) with relative error below 2^-250.74.
 /// :param x: The positive argument.

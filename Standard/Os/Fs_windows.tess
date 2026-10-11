@@ -616,24 +616,26 @@ internal routine narrow(units: @U16, count: USize, out: @Byte) -> USize
     while i < count
         unit: U16 = units.stride(i).peek()
         u: U32 = unit.to[U32]()
-        if u.between(lo: 0xD800, hi: 0xDBFF)
-            if not (i + 1 < count)
-                (n.peek() + utf8_encode_into(char: 0xFFFD.to[Char](), out: out.stride(n.peek()))).poke_into(n)
-                continue
-            low_unit: U16 = units.stride(i + 1).peek()
-            low: U32 = low_unit.to[U32]()
-            if low.between(lo: 0xDC00, hi: 0xDFFF)
-                high_half: U32 = u - 0xD800 << 10
-                cp_offset: U32 = high_half + (low - 0xDC00)
-                (n.peek() + utf8_encode_into(char: (cp_offset + 0x10000).to[Char](), out: out.stride(n.peek()))).poke_into(n)
-                continue
-            else
-                (n.peek() + utf8_encode_into(char: 0xFFFD.to[Char](), out: out.stride(n.peek()))).poke_into(n)
-                continue
-        if u.between(lo: 0xDC00, hi: 0xDFFF)
-            (n.peek() + utf8_encode_into(char: 0xFFFD.to[Char](), out: out.stride(n.peek()))).poke_into(n)
-        else
-            (n.peek() + utf8_encode_into(char: u.to[Char](), out: out.stride(n.peek()))).poke_into(n)
+        values2: (USize, U32) = when
+            u.between(lo: 0xD800, hi: 0xDBFF) =>
+                if not (i + 1 < count)
+                    becomes (i + 1, 0xFFFD)
+                else
+                    low_unit: U16 = units.stride(i + 1).peek()
+                    low: U32 = low_unit.to[U32]()
+                    if low.between(lo: 0xDC00, hi: 0xDFFF)
+                        high_half: U32 = u - 0xD800 << 10
+                        cp_offset: U32 = high_half + (low - 0xDC00)
+                        becomes (i + 2, cp_offset + 0x10000)
+                    else
+                        becomes (i + 1, 0xFFFD)
+            else =>
+                if u.between(lo: 0xDC00, hi: 0xDFFF)
+                    becomes (i + 1, 0xFFFD)
+                else
+                    becomes (i + 1, u)
+        i2, cp = values2
+        (n.peek() + utf8_encode_into(char: cp.to[Char](), out: out.stride(n.peek()))).poke_into(n)
     then
         return n.peek()
 
@@ -782,9 +784,10 @@ internal routine metadata(path: Span[Byte]) -> Result[Metadata, FsError]
             return error
         else
             return attribute_metadata(wpath2)
-    m: Result[Metadata, FsError] = handle_metadata(h)
-    c_close_handle(h)
-    return m
+    else
+        m: Result[Metadata, FsError] = handle_metadata(h)
+        c_close_handle(h)
+        return m
 
 /// path's metadata. A link describes itself (kind Symlink), from its directory entry.
 /// :param path: The path to look at.
@@ -1206,27 +1209,29 @@ internal routine DirIter.open_path(me: @Me, path: Span[Byte]) -> Result[Unit, Fs
     me.find.poke(inttoptr[USize, Addr](USize.MAX))
     me.pending.poke(false)
     n: Maybe[USize] = wide(path, out: pattern)
-    at: USize = when n
+    when n
         is USize as count =>
             // path, a separator unless it ends with one, and "*"
             if count + 2 >= PATH_CAPACITY
                 return FsError.NAME_TOO_LONG
-            if count == 0
-                becomes 0
-            last: U16 = pattern.stride(count - 1).peek()
-            if last == 0x2F or last == 0x5C
-                becomes count
-            pattern.stride(count).poke(0x5C)
-            becomes count + 1
+            at: USize = when
+                count == 0 => 0
+                else =>
+                    last: U16 = pattern.stride(count - 1).peek()
+                    if last == 0x2F or last == 0x5C
+                        becomes count
+                    else
+                        pattern.stride(count).poke(0x5C)
+                        becomes count + 1
+            pattern.stride(at).poke(0x2A)
+            pattern.stride(at + 1).poke(0)
+            find: Addr = c_find_first_file(pattern, me.data.to[@Byte]())
+            if is_invalid_handle(find)
+                return failed[Unit]()
+            me.find.poke(find)
+            me.pending.poke(true)
+            return fs_done()
         is Unit => return path_error(path)
-    pattern.stride(at).poke(0x2A)
-    pattern.stride(at + 1).poke(0)
-    find: Addr = c_find_first_file(pattern, me.data.to[@Byte]())
-    if is_invalid_handle(find)
-        return failed[Unit]()
-    me.find.poke(find)
-    me.pending.poke(true)
-    return fs_done()
 
 /// Whether the UTF-16 name is "." or "..".
 /// :param name: The 0-terminated UTF-16 name.
@@ -1291,27 +1296,23 @@ internal routine current_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsEr
     local units: @Memory[U16] <- .hollow()
 
     need: U32 = c_get_current_directory(0, null)
-    if need == 0
-        result: Result[Memory[Byte], FsError] = failed[Memory[Byte]]()
-        units.drop()
-        return result
-    made: Result[Memory[U16], AllocFailed] = Memory[U16].construct_result(count: need.to[USize](), manager: alloc)
-    when made
-        is Memory[U16] as slice =>
-            slice.poke_into(units)
-            need2: U32 = slice.count().to[U32]()
-            got: U32 = c_get_current_directory(need: need2, slice.data)
-            if got == 0 or got >= need2
-                result: Result[Memory[Byte], FsError] = failed[Memory[Byte]]()
-                units.drop()
-                return result
-            else
-                result: Result[Memory[Byte], FsError] = owned_wide(units: slice.data, count: got.to[USize](), alloc)
-                units.drop()
-                return result
-        is AllocFailed =>
-            units.drop()
-            return FsError.OUT_OF_MEMORY
+    result: Result[Memory[Byte], FsError] = when
+        need == 0 => failed[Memory[Byte]]()
+        else =>
+            made: Result[Memory[U16], AllocFailed] = Memory[U16].construct_result(count: need.to[USize](), manager: alloc)
+            when made
+                is Memory[U16] as slice =>
+                    slice.poke_into(units)
+                    need2: U32 = slice.count().to[U32]()
+                    got: U32 = c_get_current_directory(need: need2, slice.data)
+                    if got == 0 or got >= need2
+                        becomes failed[Memory[Byte]]()
+                    else
+                        becomes owned_wide(units: slice.data, count: got.to[USize](), alloc)
+                is AllocFailed =>
+                    becomes FsError.OUT_OF_MEMORY
+    units.drop()
+    return result
 
 /// Makes path the working directory.
 /// :param path: The new working directory.
@@ -1341,12 +1342,13 @@ internal routine temp_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError
             is AllocFailed => return FsError.OUT_OF_MEMORY
         buffer.data.copy(src: "C:\\Windows\\Temp", count: 15)
         return buffer
-    path_units: @U16 = units.to[@U16]()
-    last: U16 = path_units.stride((got - 1).to[USize]()).peek()
-    if last == 0x5C or last == 0x2F
-        return owned_wide(units: units.to[@U16](), count: (got - 1).to[USize](), alloc)
     else
-        return owned_wide(units: units.to[@U16](), count: got.to[USize](), alloc)
+        path_units: @U16 = units.to[@U16]()
+        last: U16 = path_units.stride((got - 1).to[USize]()).peek()
+        if last == 0x5C or last == 0x2F
+            return owned_wide(units: units.to[@U16](), count: (got - 1).to[USize](), alloc)
+        else
+            return owned_wide(units: units.to[@U16](), count: got.to[USize](), alloc)
 
 /// The environment variable name, as UTF-8 in memory from alloc, when it is set and not empty.
 /// :param name: The variable's 0-terminated UTF-16 name.
@@ -1443,26 +1445,26 @@ internal routine canonical_path(path: Span[Byte],
     if got.to[USize]() >= PATH_CAPACITY
         return FsError.NAME_TOO_LONG
     text: Result[Memory[Byte], FsError] = owned_wide(units: full.to[@U16](), count: got.to[USize](), alloc)
-    values2: (Memory[Byte], USize, USize) = when text
+    when text
         is Memory[Byte] as t =>
-            if t.has_prefix("\\\\?\\UNC\\")
-                // "\\?\UNC\server" to "\\server": keep the first two backslashes, drop "?\UNC\"
-                becomes (t, 8, 2)
-            if t.has_prefix("\\\\?\\")
-                becomes (t, 4, 0)
-            else
-                return t
+            values2: (USize, USize) = when
+                t.has_prefix("\\\\?\\UNC\\") => (8, 2)
+                else =>
+                    if t.has_prefix("\\\\?\\")
+                        becomes (4, 0)
+                    else
+                        return t
+            from, keep = values2
+            // "\\?\UNC\server" to "\\server": keep the first two backslashes, drop "?\UNC\"
+            // Moves the text from from down to keep, so the buffer's start (what free wants) stays where it is.
+
+            rest: USize = t.count() - from
+
+            each i in 0 til rest
+                t.data.stride(keep + i).poke(t.data.stride(from + i).peek())
+            then
+                return t.with_count(keep + rest)
         is FsError as error => return error
-    t, from, keep = values2
-
-    // Moves the text from from down to keep, so the buffer's start (what free wants) stays where it is.
-
-    rest: USize = t.count() - from
-
-    each i in 0 til rest
-        t.data.stride(keep + i).poke(t.data.stride(from + i).peek())
-    then
-        return t.with_count(keep + rest)
 
 // -- memory-mapped files -----------------------------------------------------------------
 
@@ -1489,52 +1491,56 @@ internal routine Mapping.map(path: Span[Byte], write: Bool, offset: U64,
         result: Result[Me, FsError] = path_error(path)
         file.close()
         return result
-    h: Addr = when
-        write => c_create_file(wpath.to[@U16](), GENERIC_READ.bitor(GENERIC_WRITE), FILE_SHARE_ALL, null, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, null)
-        else => c_create_file(wpath.to[@U16](), GENERIC_READ, FILE_SHARE_ALL, null, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, null)
-    if is_invalid_handle(h)
-        result: Result[Me, FsError] = failed[Me]()
-        file.close()
-        return result
-    file.handle.poke(h)
-    local size: @S64 <- 0
-    if c_get_file_size_ex(h, size) != 0
-        size2: U64 = size.peek().to[U64]()
-        if offset >= size2
-            result: Result[Me, FsError] = Me.empty()
-            file.close()
-            return result
-        want_bytes: U64 = count.to[U64]().min(size2 - offset)
-        want: USize = want_bytes.to[USize]()
-        grain: U64 = map_granularity().to[U64]()
-        aligned: U64 = offset - offset % grain
-        delta: USize = (offset - aligned).to[USize]()
-        protect: U32 = when
-            write => 4
-            else => 2
-        mapping: Addr = c_create_file_mapping(h, null, protect, 0, 0, null)
-        if mapping.is_null()
+    else
+        h: Addr = when
+            write => c_create_file(wpath.to[@U16](), GENERIC_READ.bitor(GENERIC_WRITE), FILE_SHARE_ALL, null, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, null)
+            else => c_create_file(wpath.to[@U16](), GENERIC_READ, FILE_SHARE_ALL, null, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, null)
+        if is_invalid_handle(h)
             result: Result[Me, FsError] = failed[Me]()
             file.close()
             return result
-        access: U32 = when
-            write => 2
-            else => 4
-        view: Addr = c_map_view_of_file(mapping, access, (aligned >> 32).to_wrap[U32](), aligned.to_wrap[U32](), want + delta)
-        e: U32 = c_get_last_error()
-        c_close_handle(mapping)
-        if view.is_null()
-            result: Result[Me, FsError] = error_of(e)
-            file.close()
-            return result
         else
-            result: Result[Me, FsError] = Me(base: view, delta: delta, count: want)
-            file.close()
-            return result
-    else
-        result: Result[Me, FsError] = failed[Me]()
-        file.close()
-        return result
+            file.handle.poke(h)
+            local size: @S64 <- 0
+            if c_get_file_size_ex(h, size) != 0
+                size2: U64 = size.peek().to[U64]()
+                if offset >= size2
+                    result: Result[Me, FsError] = Me.empty()
+                    file.close()
+                    return result
+                else
+                    want_bytes: U64 = count.to[U64]().min(size2 - offset)
+                    want: USize = want_bytes.to[USize]()
+                    grain: U64 = map_granularity().to[U64]()
+                    aligned: U64 = offset - offset % grain
+                    delta: USize = (offset - aligned).to[USize]()
+                    protect: U32 = when
+                        write => 4
+                        else => 2
+                    mapping: Addr = c_create_file_mapping(h, null, protect, 0, 0, null)
+                    if mapping.is_null()
+                        result: Result[Me, FsError] = failed[Me]()
+                        file.close()
+                        return result
+                    else
+                        access: U32 = when
+                            write => 2
+                            else => 4
+                        view: Addr = c_map_view_of_file(mapping, access, (aligned >> 32).to_wrap[U32](), aligned.to_wrap[U32](), want + delta)
+                        e: U32 = c_get_last_error()
+                        c_close_handle(mapping)
+                        if view.is_null()
+                            result: Result[Me, FsError] = error_of(e)
+                            file.close()
+                            return result
+                        else
+                            result: Result[Me, FsError] = Me(base: view, delta: delta, count: want)
+                            file.close()
+                            return result
+            else
+                result: Result[Me, FsError] = failed[Me]()
+                file.close()
+                return result
 
 /// Writes changed pages back to the file.
 /// :returns: `Unit` once they are written, at once for an empty mapping.

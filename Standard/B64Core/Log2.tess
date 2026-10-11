@@ -182,65 +182,69 @@ routine B64.log2(me: Me) -> Me
     local e: S64 = ex.to[S64]() - 0x3FF
 
     small: Bool = ex == 0
-    special: Bool = ex >= 0x7FF
     // the sign bit is set, or +inf or NaN
-    values2: (U64, S64) = when
-        small =>
-            // +0 or a subnormal
-            if tu == 0
-                return Me.from_bits(0xFFF0000000000000)
-            // normalize the mantissa
-            k: U64 = tu.leading_zeros()
-            becomes (tu << k - 11, e - (k.to[S64]() - 12))
-        special =>
-            zero: Bool = tu << 1 == 0
-            nan: Bool = tu << 1 > U64.shl(0x7FF, 53)
-            when
-                zero => return Me.from_bits(0xFFF0000000000000)
-                nan => return me + me
-                tu >> 63 == 1 => return Me.from_bits(0xFFF8000000000000)
-                else => return me
-        else => (tu, e)
-    tn, e_norm = values2
+    when
+        small => jump small()
+        ex >= 0x7FF => jump special()
+        else => jump normal(tu, e)
+
+    // +0 or a subnormal
+    block small()
+        if tu == 0
+            return Me.from_bits(0xFFF0000000000000)
+        // normalize the mantissa
+        k: U64 = tu.leading_zeros()
+        jump normal(tu << k - 11, e - (k.to[S64]() - 12))
+
+    block special()
+        zero: Bool = tu << 1 == 0
+        nan: Bool = tu << 1 > U64.shl(0x7FF, 53)
+        when
+            zero => return Me.from_bits(0xFFF0000000000000)
+            nan => return me + me
+            tu >> 63 == 1 => return Me.from_bits(0xFFF8000000000000)
+            else => return me
+
     // -0: the pole
     // the default NaN of 0/0
     // +inf
-    mbits: U64 = tn & 0x000FFFFFFFFFFFFF
-    // exact powers of two
-    if mbits == 0
-        return e_norm.to[Me]()
-    ed: Me = e_norm.to[Me]()
-    i: USize = (mbits >> 47).to[USize]()
-    d: U64 = mbits & 0x00007FFFFFFFFFFF
-    corr: S64 = CM_B64_LOG2_B1.getitem(i) * (d >> 16).to[S64]()
-    jsum: U64 = mbits +% (CM_B64_LOG2_B0.getitem(i) << 33) +% corr.to_wrap[U64]()
-    j: U64 = jsum >> 42
-    tf: Me = Me.from_bits(mbits | 0x3FF0000000000000)
-    i1: USize = (j >> 5).to[USize]()
-    i2: USize = (j & 0x1F).to[USize]()
-    r: Me = Me.from_bits(CM_B64_LOG2_R1.getitem(i1)) * Me.from_bits(CM_B64_LOG2_R2.getitem(i2))
-    o: Me = r * tf
-    dxl: Me = b64_mul_error(x: r, y: tf, p: o)
-    dxh: Me = o - 1.4426956176757812
-    // l2h
-    dx: Me = dxh + dxl
-    dx2: Me = dx * dx
-    f01: Me = dx * 0.16015081255532376 + -0.3465733131611728
-    f23: Me = dx * 0.04616693551176218 + -0.08325604151751397
-    f: Me = dx2 * (f01 + dx2 * f23)
-    lt: Me = cm_b64_log2_high(i1, i2) + ed
-    lh: Me = lt + dxh
-    ll0: Me = lt - lh + dxh
-    l12: Me = cm_b64_log2_low(i1, i2) + dxl
-    ll1: Me = ll0 + (l12 + dxh * -3.9979799673326663e-07)
-    // l2l
-    ll: Me = ll1 + f
-    lb: Me = lh + (ll - 2.64e-22)
-    ub: Me = lh + (ll + 2.64e-22)
-    if lb == ub
-        return lb
-    else
-        return cm_b64_log2_refine(x: me, a: ub)
+    block normal(tn: U64, e_norm: S64)
+        mbits: U64 = tn & 0x000FFFFFFFFFFFFF
+        // exact powers of two
+        if mbits == 0
+            return e_norm.to[Me]()
+        ed: Me = e_norm.to[Me]()
+        i: USize = (mbits >> 47).to[USize]()
+        d: U64 = mbits & 0x00007FFFFFFFFFFF
+        corr: S64 = CM_B64_LOG2_B1.getitem(i) * (d >> 16).to[S64]()
+        jsum: U64 = mbits +% (CM_B64_LOG2_B0.getitem(i) << 33) +% corr.to_wrap[U64]()
+        j: U64 = jsum >> 42
+        tf: Me = Me.from_bits(mbits | 0x3FF0000000000000)
+        i1: USize = (j >> 5).to[USize]()
+        i2: USize = (j & 0x1F).to[USize]()
+        r: Me = Me.from_bits(CM_B64_LOG2_R1.getitem(i1)) * Me.from_bits(CM_B64_LOG2_R2.getitem(i2))
+        o: Me = r * tf
+        dxl: Me = b64_mul_error(x: r, y: tf, p: o)
+        dxh: Me = o - 1.4426956176757812
+        // l2h
+        dx: Me = dxh + dxl
+        dx2: Me = dx * dx
+        f01: Me = dx * 0.16015081255532376 + -0.3465733131611728
+        f23: Me = dx * 0.04616693551176218 + -0.08325604151751397
+        f: Me = dx2 * (f01 + dx2 * f23)
+        lt: Me = cm_b64_log2_high(i1, i2) + ed
+        lh: Me = lt + dxh
+        ll0: Me = lt - lh + dxh
+        l12: Me = cm_b64_log2_low(i1, i2) + dxl
+        ll1: Me = ll0 + (l12 + dxh * -3.9979799673326663e-07)
+        // l2l
+        ll: Me = ll1 + f
+        lb: Me = lh + (ll - 2.64e-22)
+        ub: Me = lh + (ll + 2.64e-22)
+        if lb == ub
+            return lb
+        else
+            return cm_b64_log2_refine(x: me, a: ub)
 
 /// The high parts of -log2(r1[i1]) - log2(r2[i2]), summed.
 /// :param i1: The index into the first table.
@@ -269,62 +273,63 @@ private routine cm_b64_log2_refine(x: B64, a: B64) -> B64
     tu: U64 = x.bits()
     ex: U64 = tu >> 52
     e: S64 = ex.to[S64]() - 0x3FF
-    if not (ex == 0)
-        jump reduce(tu, e)
-    k: U64 = tu.leading_zeros()
-    jump reduce(tu << k - 11, e - (k.to[S64]() - 12))
-
-    block reduce(tn: U64, e: S64)
-        tf: B64 = B64.from_bits((tn & 0x000FFFFFFFFFFFFF) | 0x3FF0000000000000)
-        ed: B64 = e.to[B64]()
-        a_reduced: B64 = a - ed + 1.0000076293945312
-        v: U64 = a_reduced.bits()
-        i: U64 = v -% 0x3FF0000000000000 >> 36
-        i1: USize = (i >> 12).to[USize]()
-        nibble2: U64 = (i >> 8) & 0xF
-        i2: USize = nibble2.to[USize]()
-        nibble3: U64 = (i >> 4) & 0xF
-        i3: USize = nibble3.to[USize]()
-        i4: USize = (i & 0xF).to[USize]()
-        k1: USize = i1 * 3
-        k2: USize = (i2 + 17) * 3
-        k3: USize = (i3 + 34) * 3
-        k4: USize = (i4 + 51) * 3
-        l0: B64 = cm_b64_log2_ll_sum(k1, k2, k3, k4) + ed
-        l1: B64 = cm_b64_log2_ll_sum(k1: k1 + 1, k2: k2 + 1, k3: k3 + 1, k4: k4 + 1)
-        l2: B64 = cm_b64_log2_ll_sum(k1: k1 + 2, k2: k2 + 2, k3: k3 + 2, k4: k4 + 2)
-        t12: B64 = B64.from_bits(CM_B64_LOG2_T1.getitem(i1)) * B64.from_bits(CM_B64_LOG2_T2.getitem(i2))
-        t34: B64 = B64.from_bits(CM_B64_LOG2_T3.getitem(i3)) * B64.from_bits(CM_B64_LOG2_T4.getitem(i4))
-        th: B64 = t12 * t34
-        tl: B64 = b64_mul_error(x: t12, y: t34, p: th)
-        dh: B64 = th * tf
-        dl: B64 = b64_mul_error(x: th, y: tf, p: dh)
-        sh: B64 = tl * tf
-        sl0: B64 = b64_mul_error(x: tl, y: tf, p: sh)
-        xs: CmF64LogDd = cm_b64_log2_fasttwosum(x: dh - 1.0, y: dl)
-        xa: CmF64LogDd = cm_b64_log2_adddd(xh: xs.hi, xl: xs.lo, ch: sh, cl: sl0)
-        xh: B64 = xa.hi
-        xl: B64 = xa.lo
-        c2: B64 = xh * -0.24044917349017939 + 0.2885390081864767
-        sl: B64 = xh * (xh * c2 + -0.36067376022224085)
-        // Horner evaluation with the double-double coefficients (1/log(2), -1/(2 log(2)), 1/(3 log(2))), the low
-        // tail sl folded into the top coefficient
-        ch3: B64 = B64.add(0.4808983469629878, sl)
-        ch3_err: B64 = B64.sub(0.4808983469629878, ch3) + sl
-        cl3: B64 = ch3_err + 2.528871684882748e-17
-        m3: CmF64LogDd = cm_b64_log2_muldd_acc(xh, xl, ch: ch3, cl: cl3)
-        ch2: B64 = m3.hi + -0.7213475204444817
-        tl2: B64 = B64.sub(-0.7213475204444817, ch2) + m3.hi
-        cl2: B64 = m3.lo + (tl2 + -1.0177636870465517e-17)
-        m2: CmF64LogDd = cm_b64_log2_muldd_acc(xh, xl, ch: ch2, cl: cl2)
-        ch1: B64 = m2.hi + 1.4426950408889634
-        tl1: B64 = B64.sub(1.4426950408889634, ch1) + m2.hi
-        cl1: B64 = m2.lo + (tl1 + 2.0355273740931033e-17)
-        m1: CmF64LogDd = cm_b64_log2_muldd_acc(xh, xl, ch: ch1, cl: cl1)
-        s: CmF64LogDd = cm_b64_log2_adddd(xh: m1.hi, xl: m1.lo, ch: l1, cl: l2)
-        w0: CmF64LogDd = cm_b64_log2_fasttwosum(x: l0, y: s.hi)
-        w1: CmF64LogDd = cm_b64_log2_fasttwosum(x: w0.lo, y: s.lo)
-        return cm_b64_log2_final(v0: w0.hi, v1: w1.hi, v2: w1.lo)
+    small: Bool = ex == 0
+    values2: (U64, S64) = when
+        not small => (tu, e)
+        else =>
+            k: U64 = tu.leading_zeros()
+            becomes (tu << k - 11, e - (k.to[S64]() - 12))
+    tn, e2 = values2
+    tf: B64 = B64.from_bits((tn & 0x000FFFFFFFFFFFFF) | 0x3FF0000000000000)
+    ed: B64 = e2.to[B64]()
+    a_reduced: B64 = a - ed + 1.0000076293945312
+    v: U64 = a_reduced.bits()
+    i: U64 = v -% 0x3FF0000000000000 >> 36
+    i1: USize = (i >> 12).to[USize]()
+    nibble2: U64 = (i >> 8) & 0xF
+    i2: USize = nibble2.to[USize]()
+    nibble3: U64 = (i >> 4) & 0xF
+    i3: USize = nibble3.to[USize]()
+    i4: USize = (i & 0xF).to[USize]()
+    k1: USize = i1 * 3
+    k2: USize = (i2 + 17) * 3
+    k3: USize = (i3 + 34) * 3
+    k4: USize = (i4 + 51) * 3
+    l0: B64 = cm_b64_log2_ll_sum(k1, k2, k3, k4) + ed
+    l1: B64 = cm_b64_log2_ll_sum(k1: k1 + 1, k2: k2 + 1, k3: k3 + 1, k4: k4 + 1)
+    l2: B64 = cm_b64_log2_ll_sum(k1: k1 + 2, k2: k2 + 2, k3: k3 + 2, k4: k4 + 2)
+    t12: B64 = B64.from_bits(CM_B64_LOG2_T1.getitem(i1)) * B64.from_bits(CM_B64_LOG2_T2.getitem(i2))
+    t34: B64 = B64.from_bits(CM_B64_LOG2_T3.getitem(i3)) * B64.from_bits(CM_B64_LOG2_T4.getitem(i4))
+    th: B64 = t12 * t34
+    tl: B64 = b64_mul_error(x: t12, y: t34, p: th)
+    dh: B64 = th * tf
+    dl: B64 = b64_mul_error(x: th, y: tf, p: dh)
+    sh: B64 = tl * tf
+    sl0: B64 = b64_mul_error(x: tl, y: tf, p: sh)
+    xs: CmF64LogDd = cm_b64_log2_fasttwosum(x: dh - 1.0, y: dl)
+    xa: CmF64LogDd = cm_b64_log2_adddd(xh: xs.hi, xl: xs.lo, ch: sh, cl: sl0)
+    xh: B64 = xa.hi
+    xl: B64 = xa.lo
+    c2: B64 = xh * -0.24044917349017939 + 0.2885390081864767
+    sl: B64 = xh * (xh * c2 + -0.36067376022224085)
+    // Horner evaluation with the double-double coefficients (1/log(2), -1/(2 log(2)), 1/(3 log(2))), the low
+    // tail sl folded into the top coefficient
+    ch3: B64 = B64.add(0.4808983469629878, sl)
+    ch3_err: B64 = B64.sub(0.4808983469629878, ch3) + sl
+    cl3: B64 = ch3_err + 2.528871684882748e-17
+    m3: CmF64LogDd = cm_b64_log2_muldd_acc(xh, xl, ch: ch3, cl: cl3)
+    ch2: B64 = m3.hi + -0.7213475204444817
+    tl2: B64 = B64.sub(-0.7213475204444817, ch2) + m3.hi
+    cl2: B64 = m3.lo + (tl2 + -1.0177636870465517e-17)
+    m2: CmF64LogDd = cm_b64_log2_muldd_acc(xh, xl, ch: ch2, cl: cl2)
+    ch1: B64 = m2.hi + 1.4426950408889634
+    tl1: B64 = B64.sub(1.4426950408889634, ch1) + m2.hi
+    cl1: B64 = m2.lo + (tl1 + 2.0355273740931033e-17)
+    m1: CmF64LogDd = cm_b64_log2_muldd_acc(xh, xl, ch: ch1, cl: cl1)
+    s: CmF64LogDd = cm_b64_log2_adddd(xh: m1.hi, xl: m1.lo, ch: l1, cl: l2)
+    w0: CmF64LogDd = cm_b64_log2_fasttwosum(x: l0, y: s.hi)
+    w1: CmF64LogDd = cm_b64_log2_fasttwosum(x: w0.lo, y: s.lo)
+    return cm_b64_log2_final(v0: w0.hi, v1: w1.hi, v2: w1.lo)
 
 /// v0 + v1 rounded, where v2 is the tail below v1: when v1 has an all-zero mantissa, it's nudged one ulp toward v2 so
 /// that the sum rounds correctly.

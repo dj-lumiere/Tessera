@@ -372,60 +372,60 @@ private routine cm_b64_log1p_refine_table(x: B64, a: B64) -> B64
     th: B64 = t12 * t34
     tl: B64 = b64_mul_error(x: t12, y: t34, p: th)
     below: Bool = ixu.to_wrap[S64]() < 0x4690000000000000
+    split: Bool = below and ixu < 0xBFE0000000000000
     // 1 + x = t + dt
-    when
-        below and ixu < 0xBFE0000000000000 => jump split(je, ll0, ll1, ll2, th, tl)
-        below => jump reduce(je, ll0, ll1, ll2, th, tl, B64.add(1.0, x), 0)
-        else => jump reduce(je, ll0, ll1, ll2, th, tl, x, 0)
-
-    block split(je: S64, ll0: B64, ll1: B64, ll2: B64, th: B64, tl: B64)
-        s: CmF64LogDd = cm_b64_log1p_twosum(xh: 1.0, ch: x)
-        dtu: U64 = s.lo.bits()
-        zero: Bool = dtu << 1 == 0
-        // a zero dt of either sign counts as +0
-        dt: U64 = when
-            zero => 0
-            else => dtu
-        jump reduce(je, ll0, ll1, ll2, th, tl, s.hi, dt)
-
-    block reduce(je: S64, ll0: B64, ll1: B64, ll2: B64, th: B64, tl: B64, tf: B64, dtu: U64)
-        escale: U64 = je.to_wrap[U64]() << 52
-        t: B64 = B64.from_bits(tf.bits() -% escale)
-        dh: B64 = th * t
-        dl: B64 = b64_mul_error(x: th, y: t, p: dh)
-        sh: B64 = tl * t
-        sl: B64 = b64_mul_error(x: tl, y: t, p: sh)
-        xs0: CmF64LogDd = cm_b64_log1p_fasttwosum(x: dh - 1.0, y: dl)
-        xs: CmF64LogDd = cm_b64_log1p_fastsum(xh: xs0.hi, xl: xs0.lo, yh: sh, yl: sl)
-        if not (dtu != 0)
-            jump poly(je, ll0, ll1, ll2, xs.hi, xs.lo)
-        dt: B64 = B64.from_bits(dtu -% escale)
-        ddh: B64 = th * dt
-        ddl: B64 = b64_mul_error(x: th, y: dt, p: ddh) + tl * dt
-        xd: CmF64LogDd = cm_b64_log1p_fastsum(xh: xs.hi, xl: xs.lo, yh: ddh, yl: ddl)
-        jump poly(je, ll0, ll1, ll2, xd.hi, xd.lo)
-
-    block poly(je: S64, ll0: B64, ll1: B64, ll2: B64, xh: B64, xl: B64)
-        c01: B64 = xh * 0.14285714285714285 + -0.16666666666666666
-        c23: B64 = xh * 0.11111111112421457 + -0.12500000001309675
-        sl: B64 = xh * (c01 + xh * xh * c23)
-        // Horner evaluation of the double-double coefficients cy, in the double-double (xh, xl)
-        h0: CmF64LogDd = cm_b64_log1p_fasttwosum(x: B64.from_bits(CM_B64_LOG1P_CY.getitem(8)), y: sl)
-        cl: B64 = B64.from_bits(CM_B64_LOG1P_CY.getitem(9)) + h0.lo
-        c: CmF64LogDd = cm_b64_log1p_horner_cy(xh, xl, ch: h0.hi, cl)
-        p: CmF64LogDd = cm_b64_log1p_muldd(xh, xl, ch: c.hi, cl: c.lo)
-        if not (je != 0)
-            jump combine(ll2, ll1, ll0, p)
-        jed: B64 = je.to[B64]()
-        ln22: B64 = B64.mul(0.6931471805601177, jed) + ll2
-        ln21: B64 = B64.mul(-1.7239444525615996e-13, jed)
-        ln20: B64 = B64.mul(1.1612227229362532e-26, jed)
-        q: CmF64LogDd = cm_b64_log1p_fastsum(xh: ln21, xl: ln20, yh: ll1, yl: ll0)
-        jump combine(ln22, q.hi, q.lo, p)
-
-    block combine(ln22: B64, ln21: B64, ln20: B64, p: CmF64LogDd)
-        r: CmF64LogDd = cm_b64_log1p_sum(xh: ln21, xl: ln20, ch: p.hi, cl: p.lo)
-        return cm_b64_log1p_final(ln22, ln21: r.hi, ln20: r.lo)
+    values2: (B64, U64) = when
+        split =>
+            s: CmF64LogDd = cm_b64_log1p_twosum(xh: 1.0, ch: x)
+            dtu: U64 = s.lo.bits()
+            zero: Bool = dtu << 1 == 0
+            // a zero dt of either sign counts as +0
+            dt: U64 = when
+                zero => 0
+                else => dtu
+            becomes (s.hi, dt)
+        below => (B64.add(1.0, x), 0)
+        else => (x, 0)
+    tf, dtu = values2
+    escale: U64 = je.to_wrap[U64]() << 52
+    t: B64 = B64.from_bits(tf.bits() -% escale)
+    dh: B64 = th * t
+    dl: B64 = b64_mul_error(x: th, y: t, p: dh)
+    sh: B64 = tl * t
+    sl: B64 = b64_mul_error(x: tl, y: t, p: sh)
+    xs0: CmF64LogDd = cm_b64_log1p_fasttwosum(x: dh - 1.0, y: dl)
+    xs: CmF64LogDd = cm_b64_log1p_fastsum(xh: xs0.hi, xl: xs0.lo, yh: sh, yl: sl)
+    has_dt: Bool = dtu != 0
+    values3: (B64, B64) = when
+        not has_dt => (xs.hi, xs.lo)
+        else =>
+            dt: B64 = B64.from_bits(dtu -% escale)
+            ddh: B64 = th * dt
+            ddl: B64 = b64_mul_error(x: th, y: dt, p: ddh) + tl * dt
+            xd: CmF64LogDd = cm_b64_log1p_fastsum(xh: xs.hi, xl: xs.lo, yh: ddh, yl: ddl)
+            becomes (xd.hi, xd.lo)
+    xh, xl = values3
+    c01: B64 = xh * 0.14285714285714285 + -0.16666666666666666
+    c23: B64 = xh * 0.11111111112421457 + -0.12500000001309675
+    sl2: B64 = xh * (c01 + xh * xh * c23)
+    // Horner evaluation of the double-double coefficients cy, in the double-double (xh, xl)
+    h0: CmF64LogDd = cm_b64_log1p_fasttwosum(x: B64.from_bits(CM_B64_LOG1P_CY.getitem(8)), y: sl2)
+    cl: B64 = B64.from_bits(CM_B64_LOG1P_CY.getitem(9)) + h0.lo
+    c: CmF64LogDd = cm_b64_log1p_horner_cy(xh, xl, ch: h0.hi, cl)
+    p: CmF64LogDd = cm_b64_log1p_muldd(xh, xl, ch: c.hi, cl: c.lo)
+    scaled: Bool = je != 0
+    values4: (B64, B64, B64) = when
+        not scaled => (ll2, ll1, ll0)
+        else =>
+            jed: B64 = je.to[B64]()
+            ln22: B64 = B64.mul(0.6931471805601177, jed) + ll2
+            ln21: B64 = B64.mul(-1.7239444525615996e-13, jed)
+            ln20: B64 = B64.mul(1.1612227229362532e-26, jed)
+            q: CmF64LogDd = cm_b64_log1p_fastsum(xh: ln21, xl: ln20, yh: ll1, yl: ll0)
+            becomes (ln22, q.hi, q.lo)
+    ln22, ln21, ln20 = values4
+    r: CmF64LogDd = cm_b64_log1p_sum(xh: ln21, xl: ln20, ch: p.hi, cl: p.lo)
+    return cm_b64_log1p_final(ln22, ln21: r.hi, ln20: r.lo)
 
 /// The Horner steps of degrees 3 down to 0 over the coefficients cy, in the double-double (xh, xl), from (ch, cl).
 /// :param xh: The high part of the argument.

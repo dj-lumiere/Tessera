@@ -67,140 +67,163 @@ routine B16.atan2(me: Me, other: Me) -> Me
     local ay: U32 = uy & 0x7FFFFFFF
 
     special: Bool = ay >= 0x7F800000 or ax >= 0x7F800000
-    yzero: Bool = ay == 0
-    y_abs: U32 = when
-        special =>
-            // x or y is NaN or infinity: a NaN x wins over a NaN y, and the result is quiet
-            xnan: Bool = ax > 0x7F800000
-            ynan: Bool = ay > 0x7F800000
-            yinf: Bool = ay == 0x7F800000
-            xinf: Bool = ax == 0x7F800000
-            both: Bool = yinf and xinf
-            xneg: Bool = ux >> 31 != 0
-            when
-                xnan => return Me.from_bits(other.bits() | 0x0200)
-                ynan => return Me.from_bits(me.bits() | 0x0200)
-                both =>
-                    // +-3pi/4 or +-pi/4
-                    if xneg
-                        return B64.mul(2.356194490192345, sy).to[Me]()
-                    else
-                        return B64.mul(0.7853981633974483, sy).to[Me]()
-                xinf =>
-                    if xneg
-                        return B64.mul(3.141592653589793, sy).to[Me]()
-                    else
-                        return B64.mul(0.0, sy).to[Me]()
-                else => return B64.mul(1.5707963267948966, sy).to[Me]()
-        yzero =>
-            xzero: Bool = ax == 0
-            when
-                xzero =>
-                    // both zero: +-0 or +-pi by the signs
-                    y_slot: U32 = (uy >> 31) * 4
-                    iz: USize = (y_slot + (ux >> 31) * 2).to[USize]()
-                    off: B64 = B64.from_bits(CM_B16_ATAN2_OFF.getitem(iz))
-                    if ux >> 31 != 0
-                        return (off + B64.from_bits(CM_B16_ATAN2_OFFL.getitem(iz))).to[Me]()
-                    else
-                        return off.to[Me]()
-                ux >> 31 == 0 => return B64.mul(0.0, sy).to[Me]()
-                else =>
-                    becomes 0
-        else => ay
-    gt: Bool = y_abs > ax
-    gti: U32 = when
-        gt => 1
-        else => 0
-    mg: B64 = when
-        gt => 1.0
-        else => 0.0
-    mng: B64 = when
-        gt => 0.0
-        else => 1.0
-    sg: B64 = when
-        gt => -1.0
-        else => 1.0
-    y_slot: U32 = (uy >> 31) * 4
-    sign_slot: U32 = y_slot + (ux >> 31) * 2
-    i: USize = (sign_slot + gti).to[USize]()
-    off: B64 = B64.from_bits(CM_B16_ATAN2_OFF.getitem(i))
-    zx: B64 = other.to[B32]().to[B64]()
-    zy: B64 = me.to[B32]().to[B64]()
-    // z = x/y if |y| > |x|, and z = y/x otherwise
-    num: B64 = mg * zx + mng * zy
-    den: B64 = mg * zy + mng * zx
-    z: B64 = num / den
-    xbig: Bool = ax >= y_abs
-    d: U32 = when
-        xbig => ax -% y_abs
-        else => y_abs -% ax
-    close: Bool = d < 0x0D800000
-    r: B64 = when
-        close =>
-            // the exponents are close: a rational approximation of atan(z)/z
-            z2: B64 = z * z
-            z4: B64 = z2 * z2
-            z8: B64 = z4 * z4
-            cn0: B64 = z2 * 2.506848521335565 + 1.0
-            cn2: B64 = z2 * 0.9227540611112051 + 2.2855336234350774
-            cn4: B64 = z2 * 0.0093982071883745 + 0.15965700667756133
-            cn6: B64 = 8.116266383809054e-05
-            n0: B64 = z4 * cn2 + cn0
-            n4: B64 = z4 * cn6 + cn4
-            n: B64 = z8 * n4 + n0
-            cd0: B64 = z2 * 2.840181854668896 + 1.0
-            cd2: B64 = z2 * 1.5083284691366383 + 3.03226090832491
-            cd4: B64 = z2 * 0.03311601651598859 + 0.35061013533424623
-            cd6: B64 = 0.0008307046818566012
-            d0: B64 = z4 * cd2 + cd0
-            d4: B64 = z4 * cd6 + cd4
-            d2: B64 = z8 * d4 + d0
-            becomes n / d2
-        else => 1.0
-    zr: B64 = z * sg * r
-    res: B64 = zr + off
-    biased_bits: U64 = res.bits() +% 8
-    if biased_bits & 0xFFFFFFF <= 16
+    when
+        special => jump special()
+        ay == 0 => jump y_zero()
+        else => jump general(ay)
+
+    // x or y is NaN or infinity: a NaN x wins over a NaN y, and the result is quiet
+    block special()
+        xnan: Bool = ax > 0x7F800000
+        ynan: Bool = ay > 0x7F800000
+        yinf: Bool = ay == 0x7F800000
+        xinf: Bool = ax == 0x7F800000
+        both: Bool = yinf and xinf
+        xneg: Bool = ux >> 31 != 0
+        when
+            xnan => return Me.from_bits(other.bits() | 0x0200)
+            ynan => return Me.from_bits(me.bits() | 0x0200)
+            both => jump both_inf(xneg)
+            xinf => jump x_inf(xneg)
+            else => return B64.mul(1.5707963267948966, sy).to[Me]()
+
+    // +-3pi/4 or +-pi/4
+    block both_inf(xneg: Bool)
+        if xneg
+            return B64.mul(2.356194490192345, sy).to[Me]()
+        else
+            return B64.mul(0.7853981633974483, sy).to[Me]()
+
+    block x_inf(xneg: Bool)
+        if xneg
+            return B64.mul(3.141592653589793, sy).to[Me]()
+        else
+            return B64.mul(0.0, sy).to[Me]()
+
+    block y_zero()
+        xzero: Bool = ax == 0
+        when
+            xzero => jump zeros()
+            ux >> 31 == 0 => return B64.mul(0.0, sy).to[Me]()
+            else => jump general(0)
+
+    // both zero: +-0 or +-pi by the signs
+    block zeros()
+        y_slot: U32 = (uy >> 31) * 4
+        iz: USize = (y_slot + (ux >> 31) * 2).to[USize]()
+        off: B64 = B64.from_bits(CM_B16_ATAN2_OFF.getitem(iz))
+        if ux >> 31 != 0
+            return (off + B64.from_bits(CM_B16_ATAN2_OFFL.getitem(iz))).to[Me]()
+        else
+            return off.to[Me]()
+
+    block general(y_abs: U32)
+        gt: Bool = y_abs > ax
+        gti: U32 = when
+            gt => 1
+            else => 0
+        mg: B64 = when
+            gt => 1.0
+            else => 0.0
+        mng: B64 = when
+            gt => 0.0
+            else => 1.0
+        sg: B64 = when
+            gt => -1.0
+            else => 1.0
+        y_slot: U32 = (uy >> 31) * 4
+        sign_slot: U32 = y_slot + (ux >> 31) * 2
+        i: USize = (sign_slot + gti).to[USize]()
+        off: B64 = B64.from_bits(CM_B16_ATAN2_OFF.getitem(i))
+        zx: B64 = other.to[B32]().to[B64]()
+        zy: B64 = me.to[B32]().to[B64]()
+        // z = x/y if |y| > |x|, and z = y/x otherwise
+        num: B64 = mg * zx + mng * zy
+        den: B64 = mg * zy + mng * zx
+        z: B64 = num / den
+        xbig: Bool = ax >= y_abs
+        d: U32 = when
+            xbig => ax -% y_abs
+            else => y_abs -% ax
+        if d < 0x0D800000
+            jump rational(y_abs, gt, i, off, sg, z)
+        else
+            jump combine(y_abs, gt, i, off, sg, z, 1.0)
+
+    // the exponents are close: a rational approximation of atan(z)/z
+    block rational(y_abs: U32, gt: Bool, i: USize, off: B64, sg: B64, z: B64)
+        z2: B64 = z * z
+        z4: B64 = z2 * z2
+        z8: B64 = z4 * z4
+        cn0: B64 = z2 * 2.506848521335565 + 1.0
+        cn2: B64 = z2 * 0.9227540611112051 + 2.2855336234350774
+        cn4: B64 = z2 * 0.0093982071883745 + 0.15965700667756133
+        cn6: B64 = 8.116266383809054e-05
+        n0: B64 = z4 * cn2 + cn0
+        n4: B64 = z4 * cn6 + cn4
+        n: B64 = z8 * n4 + n0
+        cd0: B64 = z2 * 2.840181854668896 + 1.0
+        cd2: B64 = z2 * 1.5083284691366383 + 3.03226090832491
+        cd4: B64 = z2 * 0.03311601651598859 + 0.35061013533424623
+        cd6: B64 = 0.0008307046818566012
+        d0: B64 = z4 * cd2 + cd0
+        d4: B64 = z4 * cd6 + cd4
+        d: B64 = z8 * d4 + d0
+        jump combine(y_abs, gt, i, off, sg, z, n / d)
+
+    block combine(y_abs: U32, gt: Bool, i: USize, off: B64, sg: B64, z: B64, r: B64)
+        zr: B64 = z * sg * r
+        res: B64 = zr + off
+        biased_bits: U64 = res.bits() +% 8
+        if biased_bits & 0xFFFFFFF <= 16
+            jump check_tiny(y_abs, gt, i, off, sg)
+        else
+            return res.to[Me]()
+
+    block check_tiny(y_abs: U32, gt: Bool, i: USize, off: B64, sg: B64)
         exponent_gap: U32 = ax -% y_abs >> 23
         // the exponents differ by 25 or more
         if y_abs < ax and exponent_gap >= 25
             return cm_b16_atan2_tiny(y: me.to[B32](), x: other.to[B32]())
         else
-            // the fast path can't decide the rounding: redo it in double-double
-            zx2: B64 = other.to[B32]().to[B64]()
-            zy2: B64 = me.to[B32]().to[B64]()
-            n: B64 = when
-                gt => zx2
-                else => zy2
-            d2: B64 = when
-                gt => zy2
-                else => zx2
-            zh: B64 = n / d2
-            zl: B64 = zh.mul_add(a: -d2, b: n) / d2
-            z2: CmF16Atan2DD = cm_b16_atan2_muldd(xh: zh, xl: zl, ch: zh, cl: zl)
-            p0: CmF16Atan2DD = cm_b16_atan2_polydd(xh: z2.hi, xl: z2.lo)
-            p: CmF16Atan2DD = cm_b16_atan2_muldd(xh: zh * sg, xl: zl * sg, ch: p0.hi, cl: p0.lo)
-            offl: B64 = B64.from_bits(CM_B16_ATAN2_OFFL.getitem(i))
-            sh: B64 = p.hi + off
-            sh_err: B64 = off - sh + p.hi
-            sl: B64 = sh_err + p.lo + offl
-            th: B64 = sh.to[B32]().to[B64]()
-            tm: B64 = sh - th + sl
-            if th + th * 8.673617379884035e-19 == th - th * 8.673617379884035e-19
-                // th is so large that th +- th 2^-60 rounds to th: scale tm away from the rounding boundary
-                th_exponent: U64 = th.bits() & 0x7FF0000000000000
-                tthu: U64 = th_exponent -% 0x0180000000000000
-                // exponent of th, minus 24
-                beyond: Bool = tm.abs() > B64.from_bits(tthu)
-                scaled: B64 = when
-                    beyond => tm * 1.25
-                    else => tm * 0.75
-                return (th + scaled).to[Me]()
-            else
-                return (th + tm).to[Me]()
-    else
-        return res.to[Me]()
+            jump accurate(gt, i, off, sg)
+
+    // the fast path can't decide the rounding: redo it in double-double
+    block accurate(gt: Bool, i: USize, off: B64, sg: B64)
+        zx: B64 = other.to[B32]().to[B64]()
+        zy: B64 = me.to[B32]().to[B64]()
+        n: B64 = when
+            gt => zx
+            else => zy
+        d: B64 = when
+            gt => zy
+            else => zx
+        zh: B64 = n / d
+        zl: B64 = zh.mul_add(a: -d, b: n) / d
+        z2: CmF16Atan2DD = cm_b16_atan2_muldd(xh: zh, xl: zl, ch: zh, cl: zl)
+        p0: CmF16Atan2DD = cm_b16_atan2_polydd(xh: z2.hi, xl: z2.lo)
+        p: CmF16Atan2DD = cm_b16_atan2_muldd(xh: zh * sg, xl: zl * sg, ch: p0.hi, cl: p0.lo)
+        offl: B64 = B64.from_bits(CM_B16_ATAN2_OFFL.getitem(i))
+        sh: B64 = p.hi + off
+        sh_err: B64 = off - sh + p.hi
+        sl: B64 = sh_err + p.lo + offl
+        th: B64 = sh.to[B32]().to[B64]()
+        tm: B64 = sh - th + sl
+        if th + th * 8.673617379884035e-19 == th - th * 8.673617379884035e-19
+            jump nudge(th, tm)
+        else
+            return (th + tm).to[Me]()
+
+    // th is so large that th +- th 2^-60 rounds to th: scale tm away from the rounding boundary
+    block nudge(th: B64, tm: B64)
+        th_exponent: U64 = th.bits() & 0x7FF0000000000000
+        tthu: U64 = th_exponent -% 0x0180000000000000
+        // exponent of th, minus 24
+        beyond: Bool = tm.abs() > B64.from_bits(tthu)
+        scaled: B64 = when
+            beyond => tm * 1.25
+            else => tm * 0.75
+        return (th + scaled).to[Me]()
 
 /// Double-double product (xh + xl) (ch + cl).
 /// :param xh: The first factor's high part.

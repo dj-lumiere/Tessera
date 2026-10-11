@@ -58,38 +58,43 @@ routine B32.log2(me: Me) -> Me
     special: Bool = ux >= 0x7F800000
 
     // x <= -0, +inf, or NaN
-    small: Bool = ux < 0x00800000
-    ux_norm: U32 = when
+    when
         special => return cm_b32_log2_special(me)
-        small =>
-            // +0 or a subnormal
-            if ux == 0
-                return cm_b32_log2_special(me)
-            n: U32 = ux.leading_zeros() - 8
-            becomes (ux << n) -% (n << 23)
-        else => ux
+        ux < 0x00800000 => jump small()
+        else => jump normal(ux)
+
+    // +0 or a subnormal
+    block small()
+        if ux == 0
+            return cm_b32_log2_special(me)
+        n: U32 = ux.leading_zeros() - 8
+        jump normal((ux << n) -% (n << 23))
 
     // ux_norm is a normalized positive pattern (the exponent field may be below 1 for a subnormal x)
-    biased_exponent: S32 = ux_norm.to_wrap[S32]() >> 23
-    e: S64 = biased_exponent.to[S64]() - 127
-    m: U32 = ux_norm & 0x7FFFFF
-    if m == 0
-        return e.to[Me]()
-    j_bits: U32 = m + 0x10000 >> 17
-    j: USize = j_bits.to[USize]()
-    m_wide: U64 = m.to[U64]() << 29
-    xd: B64 = B64.from_bits(m_wide | 0x3FF0000000000000)
-    z: B64 = xd * B64.from_bits(CM_B32_LOG2_IX.getitem(j)) - 1.0
-    z2: B64 = z * z
-    el: B64 = e.to[B64]() - B64.from_bits(CM_B32_LOG2_LIX.getitem(j))
-    tail: B64 = z * 0.4808376657770807 + -0.7213691893530103
-    f: B64 = el + z * 1.4426950429725995 + z2 * tail
-    lb: Me = f.to[Me]()
-    ub: Me = (f + 3.256559466535691e-10).to[Me]()
-    if lb == ub
-        return lb
-    else
-        // The fast path can't decide the rounding: a longer polynomial.
+    block normal(ux_norm: U32)
+        biased_exponent: S32 = ux_norm.to_wrap[S32]() >> 23
+        e: S64 = biased_exponent.to[S64]() - 127
+        m: U32 = ux_norm & 0x7FFFFF
+        if m == 0
+            return e.to[Me]()
+        j_bits: U32 = m + 0x10000 >> 17
+        j: USize = j_bits.to[USize]()
+        m_wide: U64 = m.to[U64]() << 29
+        xd: B64 = B64.from_bits(m_wide | 0x3FF0000000000000)
+        z: B64 = xd * B64.from_bits(CM_B32_LOG2_IX.getitem(j)) - 1.0
+        z2: B64 = z * z
+        el: B64 = e.to[B64]() - B64.from_bits(CM_B32_LOG2_LIX.getitem(j))
+        tail: B64 = z * 0.4808376657770807 + -0.7213691893530103
+        f: B64 = el + z * 1.4426950429725995 + z2 * tail
+        lb: Me = f.to[Me]()
+        ub: Me = (f + 3.256559466535691e-10).to[Me]()
+        if lb == ub
+            return lb
+        else
+            jump slow(z, z2, el)
+
+    // The fast path can't decide the rounding: a longer polynomial.
+    block slow(z: B64, z2: B64, el: B64)
         c0: B64 = B64.sub(1.4426950408889683, z * 0.7213475204443797)
         c2: B64 = B64.sub(0.48089834631236367, z * 0.36067376567480197)
         c4: B64 = B64.sub(0.2885606699465501, z * 0.24038686869298112)

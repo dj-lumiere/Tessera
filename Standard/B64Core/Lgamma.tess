@@ -578,19 +578,20 @@ routine B64.ln_gamma(me: Me) -> Me
             nx == 0xFFE0000000000000 => return me.abs()
             nx > 0xFFE0000000000000 => return me + me
             else => return Me.mul(1.7415152243978685e308, 1.7415152243978685e308)
-    if me.floor() == me
-        // 0 and the negative integers are poles, and lgamma(1) = lgamma(2) = 0
-        when
-            me <= 0.0 => return Me.from_bits(0x7FF0000000000000)
-            me == 1.0 or me == 2.0 => return 0.0
-            else => pass
-    f: CmF64LgammaFast = cm_b64_lgamma_dd(me)
-    ub: Me = f.hi + (f.lo + f.eps)
-    lb: Me = f.hi + (f.lo - f.eps)
-    if ub != lb
-        return cm_b64_lgamma_accurate(me)
     else
-        return ub
+        if me.floor() == me
+            // 0 and the negative integers are poles, and lgamma(1) = lgamma(2) = 0
+            when
+                me <= 0.0 => return Me.from_bits(0x7FF0000000000000)
+                me == 1.0 or me == 2.0 => return 0.0
+                else => pass
+        f: CmF64LgammaFast = cm_b64_lgamma_dd(me)
+        ub: Me = f.hi + (f.lo + f.eps)
+        lb: Me = f.hi + (f.lo - f.eps)
+        if ub != lb
+            return cm_b64_lgamma_accurate(me)
+        else
+            return ub
 
 /// The double-double fast phase of lgamma, for a finite x that is not a pole, not
 /// 1 or 2, and below 0x1.006df1bfac84ep+1015 in magnitude.
@@ -1210,29 +1211,33 @@ private routine cm_b64_lgamma_asym_accurate(xh: B64, xl: B64) -> CmF64GammaTD
     local lg: CmF64GammaTD = cm_b64_lgamma_logd_accurate(xh)
 
     if xh >= 1.329227995784916e36
-        jump huge()
+        // log(xh + xl) = log(xh) + log(1 + xl/xh)
+        // (x - 1/2) (log x - 1) + the series in 1/x^2, with x - 1/2 split exactly past 2^52
+        // x >= 2^120: the series in 1/x is below the triple-double's precision
+        wl: B64 = xl - 0.5
+        m0: B64 = lg.hi - 1.0
+        l0x: B64 = m0 * xh
+        l0xl: B64 = b64_mul_error(x: m0, y: xh, p: l0x)
+        l1x: B64 = lg.mid * xh
+        l1xl: B64 = b64_mul_error(x: lg.mid, y: xh, p: l1x)
+        l2x: B64 = lg.lo * xh
+        s0: CmF64GammaDD = cm_b64_gamma_sumdd(xh: l1x, xl: l2x, yh: l0xl, yl: l1xl)
+        s1: CmF64GammaDD = cm_b64_gamma_sumdd(xh: s0.hi, xl: s0.lo, yh: m0 * wl, yl: lg.mid * wl)
+        return CmF64GammaTD(hi: l0x, mid: s1.hi, lo: s1.lo)
     else
-        jump series()
-
-    block series()
         zh: B64 = B64.div(1.0, xh)
         dz: B64 = xl * zh
         zh_err: B64 = zh.mul_add(a: -xh, b: 1.0) - dz
         zl: B64 = zh_err * zh
-        if xl != 0.0
-            jump shift_log(zh, zl)
-        else
-            jump weigh(lg.hi, lg.mid, lg.lo, zh, zl)
-
-    // log(xh + xl) = log(xh) + log(1 + xl/xh)
-    block shift_log(zh: B64, zl: B64)
-        dl: CmF64GammaDD = cm_b64_gamma_mulddd(x: xl, ch: zh, cl: zh.mul_add(a: -xh, b: 1.0) * zh)
-        dl2: B64 = dl.lo - dl.hi * dl.hi / 2.0
-        s: CmF64GammaDD = cm_b64_gamma_sumdd(xh: lg.mid, xl: lg.lo, yh: dl.hi, yl: dl2)
-        jump weigh(lg.hi, s.hi, s.lo, zh, zl)
-
-    // (x - 1/2) (log x - 1) + the series in 1/x^2, with x - 1/2 split exactly past 2^52
-    block weigh(l0: B64, l1: B64, l2: B64, zh: B64, zl: B64)
+        xl0: Bool = xl != 0.0
+        values2: (B64, B64, B64) = when
+            xl0 =>
+                dl: CmF64GammaDD = cm_b64_gamma_mulddd(x: xl, ch: zh, cl: zh.mul_add(a: -xh, b: 1.0) * zh)
+                dl2: B64 = dl.lo - dl.hi * dl.hi / 2.0
+                s: CmF64GammaDD = cm_b64_gamma_sumdd(xh: lg.mid, xl: lg.lo, yh: dl.hi, yl: dl2)
+                becomes (lg.hi, s.hi, s.lo)
+            else => (lg.hi, lg.mid, lg.lo)
+        l0, l1, l2 = values2
         xh_exp: U64 = xh.bits() >> 52
         big: Bool = xh_exp > 0x432
         wh: B64 = when
@@ -1250,12 +1255,11 @@ private routine cm_b64_lgamma_asym_accurate(xh: B64, xl: B64) -> CmF64GammaTD
         s0: CmF64GammaDD = cm_b64_gamma_sumdd(xh: l1x, xl: l2x, yh: l0xl, yl: l1xl)
         s1: CmF64GammaDD = cm_b64_gamma_sumdd(xh: s0.hi, xl: s0.lo, yh: m0 * wl, yl: l1 * wl)
         z2: CmF64GammaDD = cm_b64_gamma_muldd(xh: zh, xl: zl, ch: zh, cl: zl)
-        when
-            xh >= 48.0 => jump tail(l0x, s1, z2, zh, zl, 1822, 7)
-            xh >= 14.5 => jump tail(l0x, s1, z2, zh, zl, 1838, 11)
-            else => jump tail(l0x, s1, z2, zh, zl, 1862, 27)
-
-    block tail(l0x: B64, s1: CmF64GammaDD, z2: CmF64GammaDD, zh: B64, zl: B64, c: USize, n: USize)
+        values3: (USize, USize) = when
+            xh >= 48.0 => (1822, 7)
+            xh >= 14.5 => (1838, 11)
+            else => (1862, 27)
+        c, n = values3
         s2: CmF64GammaDD = cm_b64_gamma_sumdd(xh: s1.hi, xl: s1.lo, yh: cm_b64_lgamma_t(c), yl: cm_b64_lgamma_t(c + 1))
         f0: CmF64GammaDD = cm_b64_lgamma_polydd(x: z2, n, base: c + 2, l: 0.0)
         f: CmF64GammaDD = cm_b64_gamma_muldd(xh: zh, xl: zl, ch: f0.hi, cl: f0.lo)
@@ -1263,16 +1267,3 @@ private routine cm_b64_lgamma_asym_accurate(xh: B64, xl: B64) -> CmF64GammaTD
         h: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: l0x, y: s3.hi)
         h2: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: h.lo, y: s3.lo)
         return CmF64GammaTD(hi: h.hi, mid: h2.hi, lo: h2.lo)
-
-    // x >= 2^120: the series in 1/x is below the triple-double's precision
-    block huge()
-        wl: B64 = xl - 0.5
-        m0: B64 = lg.hi - 1.0
-        l0x: B64 = m0 * xh
-        l0xl: B64 = b64_mul_error(x: m0, y: xh, p: l0x)
-        l1x: B64 = lg.mid * xh
-        l1xl: B64 = b64_mul_error(x: lg.mid, y: xh, p: l1x)
-        l2x: B64 = lg.lo * xh
-        s0: CmF64GammaDD = cm_b64_gamma_sumdd(xh: l1x, xl: l2x, yh: l0xl, yl: l1xl)
-        s1: CmF64GammaDD = cm_b64_gamma_sumdd(xh: s0.hi, xl: s0.lo, yh: m0 * wl, yl: lg.mid * wl)
-        return CmF64GammaTD(hi: l0x, mid: s1.hi, lo: s1.lo)

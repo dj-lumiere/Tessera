@@ -95,28 +95,32 @@ routine soft_b64_mul(a: U64, b: U64) -> U64
     local a_size: U64 = a & MAGNITUDE
     local b_size: U64 = b & MAGNITUDE
 
-    other: U64 = when
+    when
         a_size > INFINITY => return a | QUIET
         b_size > INFINITY => return b | QUIET
-        a_size == INFINITY => b_size
-        b_size == INFINITY => a_size
+        a_size == INFINITY => jump infinite(b_size)
+        b_size == INFINITY => jump infinite(a_size)
         a_size == 0 => return sign
         b_size == 0 => return sign
-        else =>
-            // infinity times zero is NaN, times anything else infinity
-            // the 106-bit product of two 53-bit significands, its leading bit at 104 or 105. Shifted down by 50 with a
-            // sticky bit, it is a significand for an exponent of the two exponents' sum minus 1022
-            x: SoftParts64 = soft_unpack(a_size)
-            y: SoftParts64 = soft_unpack(b_size)
-            product: U128 = x.sig.to[U128]() *% y.sig.to[U128]()
-            sig: U128 = soft_shr_sticky(x: product, shift: 50)
-            sum: S32 = x.exponent + y.exponent
-            r: U64 = soft_round_pack(sign, exponent: sum - 1022, m: sig.to_wrap[U64]())
-            return r
-    if other == 0
-        return NAN
-    else
-        return sign | INFINITY
+        else => jump finite()
+
+    // infinity times zero is NaN, times anything else infinity
+    block infinite(other: U64)
+        if other == 0
+            return NAN
+        else
+            return sign | INFINITY
+
+    // the 106-bit product of two 53-bit significands, its leading bit at 104 or 105. Shifted down by 50 with a
+    // sticky bit, it is a significand for an exponent of the two exponents' sum minus 1022
+    block finite()
+        x: SoftParts64 = soft_unpack(a_size)
+        y: SoftParts64 = soft_unpack(b_size)
+        product: U128 = x.sig.to[U128]() *% y.sig.to[U128]()
+        sig: U128 = soft_shr_sticky(x: product, shift: 50)
+        sum: S32 = x.exponent + y.exponent
+        r: U64 = soft_round_pack(sign, exponent: sum - 1022, m: sig.to_wrap[U64]())
+        return r
 
 // -- division ------------------------------------------------------------------
 
@@ -289,26 +293,19 @@ routine soft_b64_powi(a: U64, n: S32) -> U64
     local base: @U64 <- a
     local result: @U64 <- ONE
 
-    jump step(n.abs_diff(0))
-
-    block step(left: U32)
-        if not (left & 1 == 1)
-            jump advance(left)
-        soft_b64_mul(a: result.peek(), b: base.peek()).poke_into(result)
-        jump advance(left)
-
-    block advance(left: U32)
+    while true with left: U32 = n.abs_diff(0)
+        if left & 1 == 1
+            soft_b64_mul(a: result.peek(), b: base.peek()).poke_into(result)
         rest: U32 = left >> 1
         if rest == 0
-            jump finish()
-        soft_b64_mul(a: base.peek(), b: base.peek()).poke_into(base)
-        jump step(rest)
-
-    block finish()
-        if n < 0
-            return soft_b64_div(a: ONE, b: result.peek())
+            break
         else
-            return result.peek()
+            soft_b64_mul(a: base.peek(), b: base.peek()).poke_into(base)
+            continue with left: rest
+    if n < 0
+        return soft_b64_div(a: ONE, b: result.peek())
+    else
+        return result.peek()
 
 // -- comparison ----------------------------------------------------------------
 

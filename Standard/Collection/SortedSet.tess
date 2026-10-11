@@ -350,22 +350,22 @@ needs T: typename
 @reshaping
 routine SortedSetNode[T].insert_nonfull(me: @Me, key: T, alloc: @MemoryManager) -> Bool
 needs T: typename
-    leaf: Bool = me.leaf.peek()
-    values2: (USize, @Me) = when
-        leaf =>
-            slot: USize = me.find_index(key)
-            count: USize = me.count.peek()
-            me.keys.shift_right(start: slot, end: count)
-            me.keys[slot] = key
-            new_count: USize = count + 1
-            me.count.poke(new_count)
-            me.subtree_count.poke(new_count)
-            return true
-        else =>
-            slot: USize = me.find_index(key)
-            child: @Me = me.children[slot]
-            child_count: USize = child.count.peek()
-            if child_count == NODE_KEYS
+    if me.leaf.peek()
+        slot: USize = me.find_index(key)
+        count: USize = me.count.peek()
+        me.keys.shift_right(start: slot, end: count)
+        me.keys[slot] = key
+        new_count: USize = count + 1
+        me.count.poke(new_count)
+        me.subtree_count.poke(new_count)
+        return true
+    else
+        slot: USize = me.find_index(key)
+        child: @Me = me.children[slot]
+        child_count: USize = child.count.peek()
+        full: Bool = child_count == NODE_KEYS
+        values2: (USize, @Me) = when
+            full =>
                 if not me.split_child(index: slot, alloc)
                     return false
                 pivot: T = me.keys[slot]
@@ -375,13 +375,12 @@ needs T: typename
                     go_right => slot + 1
                     else => slot
                 becomes (next_slot, me.children[next_slot])
-            else
-                becomes (slot, child)
-    slot, child = values2
-    if not child.insert_nonfull(key, alloc)
-        return false
-    me.recount()
-    return true
+            else => (slot, child)
+        slot2, child2 = values2
+        if not child2.insert_nonfull(key, alloc)
+            return false
+        me.recount()
+        return true
 
 /// Adds `key` to the set in sorted position unless an equal element is already present.
 /// :param key: The element to add.
@@ -403,43 +402,42 @@ needs T: typename
 @reshaping
 routine SortedSet[T].add_result(me: @Me, key: T) -> Result[Bool, AllocFailed]
 needs T: typename
-    exists: Bool = me.has(key)
-    values2: (@SortedSetNode[T], @MemoryManager) = when
-        exists => return false
-        else =>
-            alloc: @MemoryManager = me.alloc.peek()
-            root: @SortedSetNode[T] = me.root.peek()
-            if root.is_null()
-                root2: @SortedSetNode[T] = SortedSetNode[T].construct(leaf: true, alloc)
-                if root2.is_null()
-                    return AllocFailed()
-                root2.keys[0] = key
-                root2.count.poke(1)
-                root2.subtree_count.poke(1)
-                me.root.poke(root2)
-                me.count.poke(1)
-                return true
-            else
-                root_count: USize = root.count.peek()
-                if root_count == NODE_KEYS
+    if me.has(key)
+        return false
+    else
+        alloc: @MemoryManager = me.alloc.peek()
+        root: @SortedSetNode[T] = me.root.peek()
+        if root.is_null()
+            root2: @SortedSetNode[T] = SortedSetNode[T].construct(leaf: true, alloc)
+            if root2.is_null()
+                return AllocFailed()
+            root2.keys[0] = key
+            root2.count.poke(1)
+            root2.subtree_count.poke(1)
+            me.root.poke(root2)
+            me.count.poke(1)
+            return true
+        else
+            root_count: USize = root.count.peek()
+            full: Bool = root_count == NODE_KEYS
+            root2: @SortedSetNode[T] = when
+                full =>
                     new_root: @SortedSetNode[T] = SortedSetNode[T].construct(leaf: false, alloc)
                     if new_root.is_null()
                         return AllocFailed()
                     new_root.children[0] = root
                     if new_root.split_child(index: 0, alloc)
                         me.root.poke(new_root)
-                        becomes (new_root, alloc)
+                        becomes new_root
                     else
                         deallocate[SortedSetNode[T]](data: new_root, alloc)
                         return AllocFailed()
-                else
-                    becomes (root, alloc)
-    root, alloc = values2
-    if not root.insert_nonfull(key, alloc)
-        return AllocFailed()
-    next_count: USize = me.count.peek() + 1
-    next_count.poke_into(me.count)
-    return true
+                else => root
+            if not root2.insert_nonfull(key, alloc)
+                return AllocFailed()
+            next_count: USize = me.count.peek() + 1
+            next_count.poke_into(me.count)
+            return true
 
 /// Removes the key at `index` from a leaf by shifting the later keys left.
 /// :param index: The position of the key within the leaf.
@@ -546,11 +544,12 @@ routine SortedSetNode[T].ensure_min(me: @Me, i: USize, alloc: @MemoryManager) ->
 needs T: typename
     child: @Me = me.children[i]
     child_count: USize = child.count.peek()
-    ok: Bool = child_count >= NODE_MIN_KEYS
-    has_left: Bool = when
-        ok => return i
-        else =>
-            if i > 0
+    if child_count >= NODE_MIN_KEYS
+        return i
+    else
+        has_left: Bool = i > 0
+        has_left2: Bool = when
+            has_left =>
                 left: @Me = me.children[i - 1]
                 left_count: USize = left.count.peek()
                 if left_count >= NODE_MIN_KEYS
@@ -558,23 +557,22 @@ needs T: typename
                     return i
                 else
                     becomes true
-            else
-                becomes false
-    parent_count: USize = me.count.peek()
-    if i < parent_count
-        right: @Me = me.children[i + 1]
-        right_count: USize = right.count.peek()
-        if right_count >= NODE_MIN_KEYS
-            me.borrow_from_right(i)
-            return i
-        else if not has_left
-            me.merge_children(i, alloc)
-            return i
-    else if not has_left
-        crash_logic_breached()
-    merged_at: USize = i - 1
-    me.merge_children(i: merged_at, alloc)
-    return merged_at
+            else => false
+        parent_count: USize = me.count.peek()
+        if i < parent_count
+            right: @Me = me.children[i + 1]
+            right_count: USize = right.count.peek()
+            if right_count >= NODE_MIN_KEYS
+                me.borrow_from_right(i)
+                return i
+            else if not has_left2
+                me.merge_children(i, alloc)
+                return i
+        else if not has_left2
+            crash_logic_breached()
+        merged_at: USize = i - 1
+        me.merge_children(i: merged_at, alloc)
+        return merged_at
 
 /// Removes and returns the largest key in this subtree, rebalancing children on the way down.
 /// :param alloc: The allocator used when nodes merge.

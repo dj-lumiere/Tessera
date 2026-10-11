@@ -73,99 +73,125 @@ routine B16.ln_gamma(me: Me) -> Me
 
     special: Bool = tu >= 0x7F800000
     when
-        special =>
-            if tu == 0x7F800000
-                return Me.from_bits(0x7C00)
-            else
-                return (xf + xf).to[Me]()
-        fx == xf =>
-            // an integer: a pole at zero and the negative integers, and exact zeros at 1 and 2
-            pole: Bool = xf <= 0.0
-            when
-                pole => return Me.from_bits(0x7C00)
-                xf == 1.0 or xf == 2.0 => return Me.from_bits(0)
-                else => pass
-        else => pass
-    s: B64 = xf.to[B64]()
-    z: B64 = ax.to[B64]()
-    small: Bool = ax < 0.66015625
-    large: Bool = ax > 3.373096466064453
-    values2: (B64, B64) = when
-        small =>
-            // a rational approximation of lgamma(x) + log|x| near zero
-            num: B64 = B64.mul(4.246153550603663, s) * cm_b16_lgamma_r8(x: s, base: 0)
-            f: B64 = num / cm_b16_lgamma_r8(x: s, base: 8) - cm_b16_lgamma_ln(z)
-            return f.to[Me]()
-        large =>
-            // lgamma(0x1.ff4p+12) rounds to the largest finite B16, larger inputs overflow
-            when
-                xf > 8180.0 => return Me.from_bits(0x7C00)
-                xf >= 8180.0 => return Me.from_bits(0x7BFF)
-                else => pass
-            // Stirling's series
-            lz: B64 = cm_b16_lgamma_ln(z)
-            stirling_lead: B64 = (z - 0.5) * (lz - 1.0)
-            f: B64 = stirling_lead + 0.4189385332046727
-            iz: B64 = B64.div(1.0, z)
-            iz2: B64 = iz * iz
-            iz4: B64 = iz2 * iz2
-            when
-                ax > 1198.0 =>
-                    becomes (lz, f + iz * 0.08333333333333333)
-                ax > 73.90081787109375 =>
-                    p: B64 = iz2 * -0.002777571142708969 + 0.08333333332119137
-                    becomes (lz, f + iz * p)
-                ax > 10.666666984558105 =>
-                    p0: B64 = iz2 * -0.0027777773522524095 + 0.08333333333290953
-                    p2: B64 = iz2 * -0.0005771890268644819 + 0.0007935128869641844
-                    p: B64 = p0 + iz4 * p2
-                    becomes (lz, f + iz * p)
-                else =>
-                    iz8: B64 = iz4 * iz4
-                    p0: B64 = iz2 * -0.002777777717605562 + 0.08333333333309598
-                    p2: B64 = iz2 * -0.0005949176485969618 + 0.0007936447627791816
-                    p4: B64 = iz2 * -0.0017144163881980096 + 0.0008316045241367893
-                    p6: B64 = iz2 * -0.00511695529630956 + 0.003738059988828462
-                    q0: B64 = p0 + iz4 * p2
-                    q4: B64 = p4 + iz4 * p6
-                    p: B64 = q0 + iz8 * q4
-                    becomes (lz, f + iz * p)
-        else =>
-            // the reflection formula lgamma(x) = log(pi) - lgamma(-x) - log|x sin(pi x)|
-            // a rational approximation with exact zeros at 1 and 2
-            zero_factors: B64 = (z - 1.0) * (z - 2.0)
-            num: B64 = zero_factors * 4.949273735344536 * cm_b16_lgamma_r7(z)
-            f: B64 = num / cm_b16_lgamma_r8(x: z, base: 16)
-            if not (xf < 0.0)
-                return f.to[Me]()
-            zero1: Bool = tu > 0x402F95C2 and tu < 0x40301B93
-            zero2: Bool = tu > 0x401CECCB and tu < 0x401D95CA
-            when
-                zero1 =>
-                    // near the zero of lgamma at -0x1.5fb410a1bd901p+1
-                    h: B64 = s + 2.7476826467274127 - 9.055340329338315e-17
-                    f2: B64 = cm_b16_lgamma_zero_poly(h, a: CM_B16_LGAMMA_ZERO1)
-                    return f2.to[Me]()
-                zero2 =>
-                    // near the zero of lgamma at -0x1.3a7fc9600f86cp+1
-                    h: B64 = s + 2.4570247382208006 + 3.7075610815513266e-17
-                    f2: B64 = cm_b16_lgamma_zero_poly(h, a: CM_B16_LGAMMA_ZERO2)
-                    return f2.to[Me]()
-                tu > 0x40492009 and tu < 0x404940EF =>
-                    // near the zero of lgamma at -0x1.9260dbc9e59afp+1
-                    h: B64 = s + 3.14358088834998 + 2.1818179852331714e-16
-                    f2: B64 = cm_b16_lgamma_zero_poly(h, a: CM_B16_LGAMMA_ZERO3)
-                    return f2.to[Me]()
-                else => pass
-            g: B64 = B64.sub(1.1447298858494002, f)
-            lp: B64 = cm_b16_lgamma_ln(cm_b16_lgamma_sinpi((xf - fx).to[B64]()) * z)
-            return (g - lp).to[Me]()
-    lz, f = values2
-    if not (xf < 0.0)
+        special => jump special()
+        fx == xf => jump integer()
+        else => jump body()
+
+    block special()
+        if tu == 0x7F800000
+            return Me.from_bits(0x7C00)
+        else
+            return (xf + xf).to[Me]()
+
+    // an integer: a pole at zero and the negative integers, and exact zeros at 1 and 2
+    block integer()
+        pole: Bool = xf <= 0.0
+        when
+            pole => return Me.from_bits(0x7C00)
+            xf == 1.0 or xf == 2.0 => return Me.from_bits(0)
+            else => jump body()
+
+    block body()
+        s: B64 = xf.to[B64]()
+        z: B64 = ax.to[B64]()
+        small: Bool = ax < 0.66015625
+        when
+            small => jump small(s, z)
+            ax > 3.373096466064453 => jump large(z)
+            else => jump mid(s, z)
+
+    // a rational approximation of lgamma(x) + log|x| near zero
+    block small(s: B64, z: B64)
+        num: B64 = B64.mul(4.246153550603663, s) * cm_b16_lgamma_r8(x: s, base: 0)
+        f: B64 = num / cm_b16_lgamma_r8(x: s, base: 8) - cm_b16_lgamma_ln(z)
         return f.to[Me]()
-    g: B64 = B64.sub(1.1447298858494002, f) - lz
-    lp: B64 = cm_b16_lgamma_ln(cm_b16_lgamma_sinpi((xf - fx).to[B64]()))
-    return (g - lp).to[Me]()
+
+    block large(z: B64)
+        // lgamma(0x1.ff4p+12) rounds to the largest finite B16, larger inputs overflow
+        when
+            xf > 8180.0 => return Me.from_bits(0x7C00)
+            xf >= 8180.0 => return Me.from_bits(0x7BFF)
+            else => pass
+        // Stirling's series
+        lz: B64 = cm_b16_lgamma_ln(z)
+        stirling_lead: B64 = (z - 0.5) * (lz - 1.0)
+        f: B64 = stirling_lead + 0.4189385332046727
+        iz: B64 = B64.div(1.0, z)
+        iz2: B64 = iz * iz
+        iz4: B64 = iz2 * iz2
+        when
+            ax > 1198.0 => jump stirling1(lz, f, iz)
+            ax > 73.90081787109375 => jump stirling2(lz, f, iz, iz2)
+            ax > 10.666666984558105 => jump stirling4(lz, f, iz, iz2, iz4)
+            else => jump stirling8(lz, f, iz, iz2, iz4)
+
+    block stirling1(lz: B64, f: B64, iz: B64)
+        jump reflect_large(lz, f + iz * 0.08333333333333333)
+
+    block stirling2(lz: B64, f: B64, iz: B64, iz2: B64)
+        p: B64 = iz2 * -0.002777571142708969 + 0.08333333332119137
+        jump reflect_large(lz, f + iz * p)
+
+    block stirling4(lz: B64, f: B64, iz: B64, iz2: B64, iz4: B64)
+        p0: B64 = iz2 * -0.0027777773522524095 + 0.08333333333290953
+        p2: B64 = iz2 * -0.0005771890268644819 + 0.0007935128869641844
+        p: B64 = p0 + iz4 * p2
+        jump reflect_large(lz, f + iz * p)
+
+    block stirling8(lz: B64, f: B64, iz: B64, iz2: B64, iz4: B64)
+        iz8: B64 = iz4 * iz4
+        p0: B64 = iz2 * -0.002777777717605562 + 0.08333333333309598
+        p2: B64 = iz2 * -0.0005949176485969618 + 0.0007936447627791816
+        p4: B64 = iz2 * -0.0017144163881980096 + 0.0008316045241367893
+        p6: B64 = iz2 * -0.00511695529630956 + 0.003738059988828462
+        q0: B64 = p0 + iz4 * p2
+        q4: B64 = p4 + iz4 * p6
+        p: B64 = q0 + iz8 * q4
+        jump reflect_large(lz, f + iz * p)
+
+    // the reflection formula lgamma(x) = log(pi) - lgamma(-x) - log|x sin(pi x)|
+    block reflect_large(lz: B64, f: B64)
+        if not (xf < 0.0)
+            return f.to[Me]()
+        g: B64 = B64.sub(1.1447298858494002, f) - lz
+        lp: B64 = cm_b16_lgamma_ln(cm_b16_lgamma_sinpi((xf - fx).to[B64]()))
+        return (g - lp).to[Me]()
+
+    // a rational approximation with exact zeros at 1 and 2
+    block mid(s: B64, z: B64)
+        zero_factors: B64 = (z - 1.0) * (z - 2.0)
+        num: B64 = zero_factors * 4.949273735344536 * cm_b16_lgamma_r7(z)
+        f: B64 = num / cm_b16_lgamma_r8(x: z, base: 16)
+        if not (xf < 0.0)
+            return f.to[Me]()
+        zero1: Bool = tu > 0x402F95C2 and tu < 0x40301B93
+        zero2: Bool = tu > 0x401CECCB and tu < 0x401D95CA
+        when
+            zero1 => jump near_zero1(s)
+            zero2 => jump near_zero2(s)
+            tu > 0x40492009 and tu < 0x404940EF => jump near_zero3(s)
+            else => pass
+        g: B64 = B64.sub(1.1447298858494002, f)
+        lp: B64 = cm_b16_lgamma_ln(cm_b16_lgamma_sinpi((xf - fx).to[B64]()) * z)
+        return (g - lp).to[Me]()
+
+    // near the zero of lgamma at -0x1.5fb410a1bd901p+1
+    block near_zero1(s: B64)
+        h: B64 = s + 2.7476826467274127 - 9.055340329338315e-17
+        f: B64 = cm_b16_lgamma_zero_poly(h, a: CM_B16_LGAMMA_ZERO1)
+        return f.to[Me]()
+
+    // near the zero of lgamma at -0x1.3a7fc9600f86cp+1
+    block near_zero2(s: B64)
+        h: B64 = s + 2.4570247382208006 + 3.7075610815513266e-17
+        f: B64 = cm_b16_lgamma_zero_poly(h, a: CM_B16_LGAMMA_ZERO2)
+        return f.to[Me]()
+
+    // near the zero of lgamma at -0x1.9260dbc9e59afp+1
+    block near_zero3(s: B64)
+        h: B64 = s + 3.14358088834998 + 2.1818179852331714e-16
+        f: B64 = cm_b16_lgamma_zero_poly(h, a: CM_B16_LGAMMA_ZERO3)
+        return f.to[Me]()
 
 /// h ((a0 + h a1) + h^2 (a2 + h a3) + h^4 ((a4 + h a5) + h^2 (a6 + h a7))) with ak = a[k],
 /// grouped as in the original. A degree-6 polynomial passes a[7] = 0: a6 + h 0 is exactly a6.

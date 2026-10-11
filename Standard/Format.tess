@@ -734,8 +734,9 @@ needs T: typename, Writer[T]
             first: @U8 = digits.stride(at2)
             write_decimal_digits(out, first, n: 20 - at2, exponent: d.exponent)
             return
-        at2.poke_into(end)
-        continue with rest: next2
+        else
+            at2.poke_into(end)
+            continue with rest: next2
 
 /// Writes the n ASCII digits at first times 10^exponent (no leading zero). The
 /// point goes after the first digit at scientific exponent x = n - 1 + exponent.
@@ -783,16 +784,15 @@ needs T: typename, Writer[T]
             write_str(out, text: ".")
             rest: @U8 = first.stride(1)
             write_digits(out, first: rest, count: n - 1)
-
-    // e+XX / e-XX, at least two digits
-    if x < 0
-        write_str(out, text: "e-")
-        x.abs_diff(0).represent_into(out, min_digits: 2)
-        return
-    else
-        write_str(out, text: "e+")
-        x.abs_diff(0).represent_into(out, min_digits: 2)
-        return
+        // e+XX / e-XX, at least two digits
+        if x < 0
+            write_str(out, text: "e-")
+            x.abs_diff(0).represent_into(out, min_digits: 2)
+            return
+        else
+            write_str(out, text: "e+")
+            x.abs_diff(0).represent_into(out, min_digits: 2)
+            return
 
 /// Writes a binary float of at most 64 bits, given its bits and its format, as its shortest round-trip decimal.
 /// :typeparam T: The type of the Writer that receives the text.
@@ -820,19 +820,20 @@ needs T: typename, Writer[T]
         else
             write_str(out, text: "inf")
             return
-    else if negative
-        write_str(out, text: "-")
-    if mantissa | exponent == 0
-        write_str(out, text: "0.0")
-        return
-    else if mantissa_bits == 52
-        d: FloatDecimal = ryu_double_decimal(mantissa, exponent: exponent.to[S64]())
-        write_float_decimal(out, d)
-        return
     else
-        d: FloatDecimal = ryu_float_decimal(mantissa: mantissa.to[S64](), exponent: exponent.to[S64](), mantissa_bits, bias)
-        write_float_decimal(out, d)
-        return
+        if negative
+            write_str(out, text: "-")
+        if mantissa | exponent == 0
+            write_str(out, text: "0.0")
+            return
+        else if mantissa_bits == 52
+            d: FloatDecimal = ryu_double_decimal(mantissa, exponent: exponent.to[S64]())
+            write_float_decimal(out, d)
+            return
+        else
+            d: FloatDecimal = ryu_float_decimal(mantissa: mantissa.to[S64](), exponent: exponent.to[S64](), mantissa_bits, bias)
+            write_float_decimal(out, d)
+            return
 
 /// Writes the B64 as the shortest decimal that reads back as the same value, laid out positionally when the decimal exponent is in -4 .. 15 (`0.0001`, `123.5`, `1.0`) and in scientific form otherwise (`1e+16`). Specials are `inf`, `-inf` and `NaN`.
 /// :typeparam T: The type of the Writer that receives the text.
@@ -1055,23 +1056,24 @@ needs T: typename, Writer[T]
                 s: Span[Byte] = "inf"
                 write_str(out, text: s)
                 return
-    else if negative
-        write_str(out, text: "-")
-    if biased == 0 and fraction == 0
-        s: Span[Byte] = "0.0"
-        write_str(out, text: s)
-        return
     else
-        subnormal: Bool = biased == 0
-        f: U128 = when
-            subnormal => fraction
-            else => fraction | B128_IMPLICIT
-        e: S64 = when
-            subnormal => -16494
-            else => biased - 16383 - 112
-        boundary: Bool = fraction == 0 and biased > 1
-        write_float_exact(out, f, e, boundary)
-        return
+        if negative
+            write_str(out, text: "-")
+        if biased == 0 and fraction == 0
+            s: Span[Byte] = "0.0"
+            write_str(out, text: s)
+            return
+        else
+            subnormal: Bool = biased == 0
+            f: U128 = when
+                subnormal => fraction
+                else => fraction | B128_IMPLICIT
+            e: S64 = when
+                subnormal => -16494
+                else => biased - 16383 - 112
+            boundary: Bool = fraction == 0 and biased > 1
+            write_float_exact(out, f, e, boundary)
+            return
 
 // -- fixed-point floats --------------------------------------------------------
 //
@@ -1462,19 +1464,26 @@ needs TValue: typename, TWriter: typename, Writer[TWriter], Representable[TValue
     pad: USize = spec.width -^ count
     half: USize = pad / 2
     align: Align = spec.align
-    values2: (USize, USize) = when align
-        Align.LEFT => (0, pad)
-        Align.RIGHT => (pad, 0)
-        Align.CENTER => (half, pad - half)
+    when align
+        Align.LEFT =>
+            write_repeated(out, text: fill, count: 0)
+            value.represent_into(out)
+            write_repeated(out, text: fill, count: pad)
+            return
+        Align.RIGHT =>
+            write_repeated(out, text: fill, count: pad)
+            value.represent_into(out)
+            write_repeated(out, text: fill, count: 0)
+            return
+        Align.CENTER =>
+            write_repeated(out, text: fill, count: half)
+            value.represent_into(out)
+            write_repeated(out, text: fill, count: pad - half)
+            return
         Align.AFTER_SIGN =>
             local inner: @SignPadWriter[TWriter] <- SignPadWriter[TWriter](inner: out, fill: fill, pad: pad)
             value.represent_into(inner)
             return
-    before, after = values2
-    write_repeated(out, text: fill, count: before)
-    value.represent_into(out)
-    write_repeated(out, text: fill, count: after)
-    return
 
 /// Writes the first bytes after the padding, or after a leading `-` or `+`, and passes every later write straight through.
 /// :typeparam T: The inner Writer type.
@@ -1485,22 +1494,21 @@ needs T: typename, Writer[T]
     local inner: @T = me.inner.peek()
     local pad: USize = me.pad.peek()
 
-    first: Bool = pad > 0 and count > 0
-    values2: (Span[Byte], @Byte, USize) = when
-        first =>
-            fill: Span[Byte] = me.fill.peek()
-            me.pad.poke(0)
-            byte: U8 = Byte.to[U8](data.stride(0).peek())
-            // - or +
-            if byte == 45 or byte == 43
+    if pad > 0 and count > 0
+        fill: Span[Byte] = me.fill.peek()
+        me.pad.poke(0)
+        byte: U8 = Byte.to[U8](data.stride(0).peek())
+        signed: Bool = byte == 45 or byte == 43
+        // - or +
+        values2: (@Byte, USize) = when
+            signed =>
                 inner.write_bytes(data, count: 1)
-                becomes (fill, data.stride(1), count - 1)
-            else
-                becomes (fill, data, count)
-        else =>
-            inner.write_bytes(data: data, count: count)
-            return
-    fill, from, left = values2
-    write_repeated(out: inner, text: fill, count: pad)
-    inner.write_bytes(data: from, count: left)
-    return
+                becomes (data.stride(1), count - 1)
+            else => (data, count)
+        from, left = values2
+        write_repeated(out: inner, text: fill, count: pad)
+        inner.write_bytes(data: from, count: left)
+        return
+    else
+        inner.write_bytes(data: data, count: count)
+        return

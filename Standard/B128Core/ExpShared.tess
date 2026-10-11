@@ -497,50 +497,49 @@ routine cm_exp_finish(fs: CmExpWords3, x: U128, kind: U64) -> B128
     local el: S64 = fs.w2.to_wrap[S64]() >> 20
     local sig: U128 = cm_exp_fast(fs)
 
-    normal: Bool = el >= -16382
-    values2: (S64, U128) = when
-        normal =>
-            // fall back when the 11 dropped bits are too close to a rounding boundary
-            sig_low: U64 = sig.to_wrap[U64]()
-            dropped: U64 = sig_low +% 1030 & 0x7FF
-            if dropped <= 6
+    if el >= -16382
+        // fall back when the 11 dropped bits are too close to a rounding boundary
+        sig_low: U64 = sig.to_wrap[U64]()
+        dropped: U64 = sig_low +% 1030 & 0x7FF
+        close: Bool = dropped <= 6
+        values2: (S64, U128) = when
+            close =>
                 better: CmExpScaled = cm_exp_accurate(x, kind)
                 becomes (better.exponent, better.sig)
-            else
-                becomes (el, sig)
-        else =>
-            // the leading bit (at 112 after the shift) carries into the exponent field
-            if not (el > -16499)
-                return CM_EXP_ZERO
-            shift: U128 = (-16372 - el).to[U128]()
-            half: U128 = 1 << shift
-            mask: U128 = (2 << shift) -% 1
-            nudged: U128 = sig +% half +% 6
-            close: Bool = nudged & mask <= 6
-            values2: (S64, U128) = when
-                close =>
-                    better: CmExpScaled = cm_exp_accurate(x, kind)
-                    becomes (better.exponent, better.sig)
-                else => (el, sig)
-            el_final, sig_final = values2
-            // the accurate path may land one binade lower than the fast one, so the shift
-            // can reach 127. The result then rounds from its top bit alone (RF shifted by 128)
-            shift2: S128 = (-16372 - el_final).to[S128]()
-            if shift2 > 127
-                return CM_EXP_ZERO
-            round_bit: U128 = (sig_final >> shift2.to[U128]()) & 1
-            aligned: U128 = sig_final >> shift2.to[U128]() >> 1
-            bits: U128 = aligned +% round_bit
-            r: B128 = b128_of(bits)
-            return r
-    el_final, sig_final = values2
-    round_bit: U128 = (sig_final >> 10) & 1
-    biased_exponent: S64 = el_final + 16382
-    field: U128 = biased_exponent.to[U128]() << 112
-    unrounded: U128 = (sig_final >> 11) +% field
-    bits: U128 = unrounded +% round_bit
-    r: B128 = b128_of(bits)
-    return r
+            else => (el, sig)
+        el_final, sig_final = values2
+        // the leading bit (at 112 after the shift) carries into the exponent field
+        round_bit: U128 = (sig_final >> 10) & 1
+        biased_exponent: S64 = el_final + 16382
+        field: U128 = biased_exponent.to[U128]() << 112
+        unrounded: U128 = (sig_final >> 11) +% field
+        bits: U128 = unrounded +% round_bit
+        r: B128 = b128_of(bits)
+        return r
+    else
+        if not (el > -16499)
+            return CM_EXP_ZERO
+        shift: U128 = (-16372 - el).to[U128]()
+        half: U128 = 1 << shift
+        mask: U128 = (2 << shift) -% 1
+        nudged: U128 = sig +% half +% 6
+        close: Bool = nudged & mask <= 6
+        values2: (S64, U128) = when
+            close =>
+                better: CmExpScaled = cm_exp_accurate(x, kind)
+                becomes (better.exponent, better.sig)
+            else => (el, sig)
+        el_final, sig_final = values2
+        // the accurate path may land one binade lower than the fast one, so the shift
+        // can reach 127. The result then rounds from its top bit alone (RF shifted by 128)
+        shift2: S128 = (-16372 - el_final).to[S128]()
+        if shift2 > 127
+            return CM_EXP_ZERO
+        round_bit: U128 = (sig_final >> shift2.to[U128]()) & 1
+        aligned: U128 = sig_final >> shift2.to[U128]() >> 1
+        bits: U128 = aligned +% round_bit
+        r: B128 = b128_of(bits)
+        return r
 
 // -- multi-word arithmetic -------------------------------------------------------
 
@@ -597,8 +596,9 @@ routine cm_exp_mul_words(out: Span[U64], a: Span[U64], b: Span[U64], p: USize) -
                 cm_exp_add_column(columns, slot: slot + 1, word: cm_exp_hi(prod))
             then
                 continue with i: i + 1
-        0.poke_into(carry)
-        break
+        else
+            0.poke_into(carry)
+            break
 
     while q < count with q: S64 = 0
         q2: USize = q.to[USize]()
@@ -864,35 +864,33 @@ routine cm_exp_accurate(x: U128, kind: U64) -> CmExpScaled
 /// :param f2: The high word of the result.
 /// :returns: True when the bits under the rounding position leave the result undecided.
 routine cm_exp_accurate_is_close(el: S64, f0: U64, f1: U64, f2: U64) -> Bool
-    normal: Bool = el >= -16382
-    values2: (U64, U64, U64) = when
-        normal =>
-            low: U128 = cm_exp_join(hi: f1, lo: f0)
-            dropped: U128 = low +% 8 & 0x7FFFFFFFFFFFFFF
-            // 2^59 - 1
-            return dropped <= 16
-        else =>
-            // the bits below the subnormal rounding position, s of them above the low word
-            s: U64 = (-16371 - el).to[U64]()
-            low: U128 = cm_exp_join(hi: f1, lo: f0) +% 8
-            wrapped: Bool = low < 8
-            g0: U64 = low.to_wrap[U64]()
-            g1: U64 = cm_exp_hi(low)
-            g2: U64 = f2 +% wrapped.to[U64]()
-            in_g1: Bool = s < 64
-            when
-                in_g1 =>
-                    mask: U64 = (1 << s) -% 1
-                    becomes (g0, g1 & mask, 0)
-                s < 128 =>
-                    mask: U64 = (1 << s -% 64) -% 1
-                    becomes (g0, g1, g2 & mask)
-                else =>
-                    becomes (g0, g1, g2)
-    g0, g1, g2 = values2
-    small: Bool = g0 <= 16
-    clear: Bool = g1 | g2 == 0
-    return small and clear
+    if el >= -16382
+        low: U128 = cm_exp_join(hi: f1, lo: f0)
+        dropped: U128 = low +% 8 & 0x7FFFFFFFFFFFFFF
+        // 2^59 - 1
+        return dropped <= 16
+    else
+        // the bits below the subnormal rounding position, s of them above the low word
+        s: U64 = (-16371 - el).to[U64]()
+        low: U128 = cm_exp_join(hi: f1, lo: f0) +% 8
+        wrapped: Bool = low < 8
+        g0: U64 = low.to_wrap[U64]()
+        g1: U64 = cm_exp_hi(low)
+        g2: U64 = f2 +% wrapped.to[U64]()
+        in_g1: Bool = s < 64
+        in_g2: Bool = s < 128
+        values2: (U64, U64) = when
+            in_g1 =>
+                mask: U64 = (1 << s) -% 1
+                becomes (g1 & mask, 0)
+            in_g2 =>
+                mask: U64 = (1 << s -% 64) -% 1
+                becomes (g1, g2 & mask)
+            else => (g1, g2)
+        g12, g22 = values2
+        small: Bool = g0 <= 16
+        clear: Bool = g12 | g22 == 0
+        return small and clear
 
 /// The superaccurate path, on 6 words, used when the accurate result is too close to
 /// a rounding boundary.

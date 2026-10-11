@@ -531,24 +531,24 @@ needs TKey: typename, TValue: typename
 routine SortedDictNode[TKey, TValue].insert_nonfull(me: @Me, key: TKey, value: TValue,
     alloc: @MemoryManager) -> Bool
 needs TKey: typename, TValue: typename
-    leaf: Bool = me.leaf.peek()
-    values2: (USize, @Me) = when
-        leaf =>
-            slot: USize = me.find_index(key)
-            count: USize = me.count.peek()
-            me.keys.shift_right(start: slot, end: count)
-            me.values.shift_right(start: slot, end: count)
-            me.keys[slot] = key
-            me.values[slot] = value
-            new_count: USize = count + 1
-            me.count.poke(new_count)
-            me.subtree_count.poke(new_count)
-            return true
-        else =>
-            slot: USize = me.find_index(key)
-            child: @Me = me.children[slot]
-            child_count: USize = child.count.peek()
-            if child_count == NODE_KEYS
+    if me.leaf.peek()
+        slot: USize = me.find_index(key)
+        count: USize = me.count.peek()
+        me.keys.shift_right(start: slot, end: count)
+        me.values.shift_right(start: slot, end: count)
+        me.keys[slot] = key
+        me.values[slot] = value
+        new_count: USize = count + 1
+        me.count.poke(new_count)
+        me.subtree_count.poke(new_count)
+        return true
+    else
+        slot: USize = me.find_index(key)
+        child: @Me = me.children[slot]
+        child_count: USize = child.count.peek()
+        full: Bool = child_count == NODE_KEYS
+        values2: (USize, @Me) = when
+            full =>
                 if not me.split_child(index: slot, alloc)
                     return false
                 pivot: TKey = me.keys[slot]
@@ -558,13 +558,12 @@ needs TKey: typename, TValue: typename
                     go_right => slot + 1
                     else => slot
                 becomes (next_slot, me.children[next_slot])
-            else
-                becomes (slot, child)
-    slot, child = values2
-    if not child.insert_nonfull(key, value, alloc)
-        return false
-    me.recount()
-    return true
+            else => (slot, child)
+        slot2, child2 = values2
+        if not child2.insert_nonfull(key, value, alloc)
+            return false
+        me.recount()
+        return true
 
 /// Stores `value` under `key`, inserting a new entry in sorted position or replacing the value of an equal existing key.
 /// :param key: The key to store under.
@@ -590,45 +589,42 @@ routine SortedDict[TKey, TValue].setitem_result(me: @Me, key: TKey,
 needs TKey: typename, TValue: typename
     local root: @SortedDictNode[TKey, TValue] = me.root.peek()
 
-    empty: Bool = root.is_null()
-    values2: (@SortedDictNode[TKey, TValue], @MemoryManager) = when
-        empty =>
-            alloc: @MemoryManager = me.alloc.peek()
-            first_node: @SortedDictNode[TKey, TValue] = SortedDictNode[TKey, TValue].construct(leaf: true, alloc)
-            if first_node.is_null()
-                return AllocFailed()
-            first_node.keys[0] = key
-            first_node.values[0] = value
-            first_node.count.poke(1)
-            first_node.subtree_count.poke(1)
-            me.root.poke(first_node)
-            me.count.poke(1)
-            return Unit()
-        else =>
-            if root.replace(key, value)
-                return Unit()
-            else
-                alloc: @MemoryManager = me.alloc.peek()
-                root_count: USize = root.count.peek()
-                if root_count == NODE_KEYS
-                    new_root: @SortedDictNode[TKey, TValue] = SortedDictNode[TKey, TValue].construct(leaf: false, alloc)
-                    if new_root.is_null()
-                        return AllocFailed()
-                    new_root.children[0] = root
-                    if new_root.split_child(index: 0, alloc)
-                        me.root.poke(new_root)
-                        becomes (new_root, alloc)
-                    else
-                        deallocate[SortedDictNode[TKey, TValue]](data: new_root, alloc)
-                        return AllocFailed()
+    if root.is_null()
+        alloc: @MemoryManager = me.alloc.peek()
+        first_node: @SortedDictNode[TKey, TValue] = SortedDictNode[TKey, TValue].construct(leaf: true, alloc)
+        if first_node.is_null()
+            return AllocFailed()
+        first_node.keys[0] = key
+        first_node.values[0] = value
+        first_node.count.poke(1)
+        first_node.subtree_count.poke(1)
+        me.root.poke(first_node)
+        me.count.poke(1)
+        return Unit()
+    else if root.replace(key, value)
+        return Unit()
+    else
+        alloc: @MemoryManager = me.alloc.peek()
+        root_count: USize = root.count.peek()
+        full: Bool = root_count == NODE_KEYS
+        root_node: @SortedDictNode[TKey, TValue] = when
+            full =>
+                new_root: @SortedDictNode[TKey, TValue] = SortedDictNode[TKey, TValue].construct(leaf: false, alloc)
+                if new_root.is_null()
+                    return AllocFailed()
+                new_root.children[0] = root
+                if new_root.split_child(index: 0, alloc)
+                    me.root.poke(new_root)
+                    becomes new_root
                 else
-                    becomes (root, alloc)
-    root_node, alloc = values2
-    if not root_node.insert_nonfull(key, value, alloc)
-        return AllocFailed()
-    next_count: USize = me.count.peek() + 1
-    next_count.poke_into(me.count)
-    return Unit()
+                    deallocate[SortedDictNode[TKey, TValue]](data: new_root, alloc)
+                    return AllocFailed()
+            else => root
+        if not root_node.insert_nonfull(key, value, alloc)
+            return AllocFailed()
+        next_count: USize = me.count.peek() + 1
+        next_count.poke_into(me.count)
+        return Unit()
 
 /// Replaces the value of `key` somewhere in this subtree, if the key is present.
 /// :param key: The key whose value to replace.
@@ -772,11 +768,12 @@ routine SortedDictNode[TKey, TValue].ensure_min(me: @Me, i: USize, alloc: @Memor
 needs TKey: typename, TValue: typename
     child: @Me = me.children[i]
     child_count: USize = child.count.peek()
-    ok: Bool = child_count >= NODE_MIN_KEYS
-    has_left: Bool = when
-        ok => return i
-        else =>
-            if i > 0
+    if child_count >= NODE_MIN_KEYS
+        return i
+    else
+        has_left: Bool = i > 0
+        has_left2: Bool = when
+            has_left =>
                 left: @Me = me.children[i - 1]
                 left_count: USize = left.count.peek()
                 if left_count >= NODE_MIN_KEYS
@@ -784,23 +781,22 @@ needs TKey: typename, TValue: typename
                     return i
                 else
                     becomes true
-            else
-                becomes false
-    parent_count: USize = me.count.peek()
-    if i < parent_count
-        right: @Me = me.children[i + 1]
-        right_count: USize = right.count.peek()
-        if right_count >= NODE_MIN_KEYS
-            me.borrow_from_right(i)
-            return i
-        else if not has_left
-            me.merge_children(i, alloc)
-            return i
-    else if not has_left
-        crash_logic_breached()
-    merged_at: USize = i - 1
-    me.merge_children(i: merged_at, alloc)
-    return merged_at
+            else => false
+        parent_count: USize = me.count.peek()
+        if i < parent_count
+            right: @Me = me.children[i + 1]
+            right_count: USize = right.count.peek()
+            if right_count >= NODE_MIN_KEYS
+                me.borrow_from_right(i)
+                return i
+            else if not has_left2
+                me.merge_children(i, alloc)
+                return i
+        else if not has_left2
+            crash_logic_breached()
+        merged_at: USize = i - 1
+        me.merge_children(i: merged_at, alloc)
+        return merged_at
 
 /// Removes the entry with the largest key in this subtree, rebalancing children on the way down.
 /// :param out_value: Receives the removed entry's value.

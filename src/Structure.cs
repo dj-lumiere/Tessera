@@ -210,10 +210,29 @@ public sealed class Structurer
 
     private List<Stmt> EmitBlockBody(BlockDecl b, Ctx ctx) => EmitStmts(b.Stmts, new Rewriter { Rename = new(ctx.Rename) }, ctx);
 
+    /// A guard whose one arm falls through to the lines after it while the other leaves (`if not ok: jump away`,
+    /// then the rest) is the if whose arm the rest is: so a block both arms come to is the end of one if.
+    private static List<Stmt> NestFallthrough(List<Stmt> stmts)
+    {
+        for (int k = 0; k < stmts.Count - 1; k++)
+        {
+            if (stmts[k] is not IfStmt i) continue;
+            bool thenFalls = i.Then.Count == 0, elseFalls = i.Else is null || i.Else.Count == 0;
+            if (thenFalls == elseFalls) continue;
+            var leaving = thenFalls ? i.Else! : i.Then;
+            if (leaving is not [JumpStmt] || !Bodies.Leaves(leaving)) continue;
+            var rest = NestFallthrough(stmts.Skip(k + 1).ToList());
+            var nested = thenFalls ? new IfStmt(i.Cond, rest, leaving, i.Pos) : new IfStmt(i.Cond, leaving, rest, i.Pos);
+            return [.. stmts.Take(k), nested];
+        }
+        return stmts;
+    }
+
     private List<Stmt> EmitStmts(List<Stmt> stmts, Rewriter rw, Ctx ctx)
     {
         var result = new List<Stmt>();
         var scope = ctx.Scope;
+        stmts = NestFallthrough(stmts);
         for (int i = 0; i < stmts.Count; i++)
         {
             var s = stmts[i];
@@ -622,10 +641,20 @@ public sealed class Structurer
     private string? MergeOf(List<List<Stmt>> arms, Ctx ctx)
     {
         var targets = new Dictionary<string, int>();
+        // The blocks each arm reaches: the end of the if is a block every arm comes to, not one that one arm reaches
+        // from two places of its own.
+        var reachedBy = new Dictionary<string, int>();
         foreach (var arm in arms)
+        {
+            var reached = new HashSet<string>();
             foreach (var j in JumpsThrough(arm, []))
+            {
                 if (_blocks.ContainsKey(j.Block) && _siteCount[j.Block] - (IsLoopHeader(j.Block) ? BackEdges(j.Block) : 0) >= 2)
                     targets[j.Block] = targets.GetValueOrDefault(j.Block) + 1;
+                reached.Add(j.Block);
+            }
+            foreach (string block in reached) reachedBy[block] = reachedBy.GetValueOrDefault(block) + 1;
+        }
         // An arm that falls off its end goes on after the if too, where the block would be written: then the block
         // isn't the end of the if alone.
         if (arms.Any(a => !Bodies.Leaves(a))) return null;
@@ -634,6 +663,7 @@ public sealed class Structurer
             // A block an enclosing if or when already ends in is reached by falling through, not written again.
             if (block == ctx.Fallthrough || _absorbed.Contains(block)) continue;
             if (count != _siteCount[block] - (IsLoopHeader(block) ? BackEdges(block) : 0)) continue;
+            if (reachedBy.GetValueOrDefault(block) != arms.Count) continue;
             if (ctx.Loop is { } loop && !_loops[loop.Header].Contains(block)) continue;
             if (ctx.Loop is null && OuterLoopOf(block) is not null) continue;
             if (IsLoopHeader(block) && ctx.Loop is { } around && !_loops[around.Header].Contains(block)) continue;

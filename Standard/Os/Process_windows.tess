@@ -385,10 +385,10 @@ private routine quote_arg(source: @U16, n: USize, target: @U16) -> @U16
         target.poke(34)
         target.stride(1).poke(34)
         return target.stride(2)
-    if not has_any(s: units, a: 32, b: 9, c: 34)
+    else if not has_any(s: units, a: 32, b: 9, c: 34)
         target.copy(src: source, count: n)
         return target.stride(n)
-    if has_any(s: units, a: 34, b: 92, c: 34)
+    else if has_any(s: units, a: 34, b: 92, c: 34)
         // Backslashes before a quote, or before the closing quote, are doubled, and a quote gets a backslash: built
         // backwards, then reversed.
         target.poke(34)
@@ -450,13 +450,14 @@ private routine command_line(program: Span[Byte], args: Span[Span[Byte]],
             if units.is_null()
                 deallocate(data: line, alloc)
                 return null
-            if not (i == 0)
-                at.peek().poke(32)
-                at.peek().stride(1).poke_into(at)
-            end: @U16 = quote_arg(source: units, n, target: at.peek())
-            deallocate(data: units, alloc)
-            end.poke_into(at)
-            continue with i2: i + 1
+            else
+                if not (i == 0)
+                    at.peek().poke(32)
+                    at.peek().stride(1).poke_into(at)
+                end: @U16 = quote_arg(source: units, n, target: at.peek())
+                deallocate(data: units, alloc)
+                end.poke_into(at)
+                continue with i2: i + 1
         then
             at.peek().poke(0)
             return line
@@ -791,25 +792,18 @@ private routine Handles.close_child_side(me: @Me) -> Void
     close_if_open(me.out_w.peek())
     close_if_open(me.err_w.peek())
     close_if_open(me.device.peek())
-    if not not same(a: me.input.peek(), b: me.device.peek())
-        jump outputs()
-    close_if_open(me.input.peek())
-    jump outputs()
+    if not same(a: me.input.peek(), b: me.device.peek())
+        close_if_open(me.input.peek())
 
     // The pipe ends and the device were closed above. The duplicates of this process's handles go here.
-    block outputs()
-        o: Addr = me.output.peek()
-        if same(a: o, b: me.out_w.peek()) or same(a: o, b: me.device.peek())
-            jump errors()
+    o: Addr = me.output.peek()
+    if not (same(a: o, b: me.out_w.peek()) or same(a: o, b: me.device.peek()))
         close_if_open(o)
-        jump errors()
-
-    block errors()
-        e: Addr = me.error.peek()
-        if same(a: e, b: me.err_w.peek()) or same(a: e, b: me.device.peek())
-            return
-        close_if_open(e)
+    e: Addr = me.error.peek()
+    if same(a: e, b: me.err_w.peek()) or same(a: e, b: me.device.peek())
         return
+    close_if_open(e)
+    return
 
 /// An inheritable duplicate of one of this process's standard handles.
 /// :param which: `STD_INPUT_HANDLE`, `STD_OUTPUT_HANDLE`, or `STD_ERROR_HANDLE`.
@@ -836,39 +830,28 @@ private routine inherited(which: U32) -> Addr
 private routine Handles.make(me: @Me, options: ProcessOptions, sa: @SecurityAttributes) -> Bool
     me.poke(Handles.empty())
     null_in: Bool = options.stdin == InputMode.NULL
-    if not (null_in or (options.stdout == OutputMode.NULL or options.stderr == OutputMode.NULL))
-        jump pipes()
-    local name: @Array[U16, 4] <- [78, 85, 76, 0]
-    // GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING
-    device: Addr = c_create_file(name.to[@U16](), 0xC0000000, 3, sa, 3, 0, null)
-    if is_invalid(device)
-        return false
-    me.device.poke(device)
-    jump pipes()
-
-    block pipes()
-        if not (options.stdout == OutputMode.CAPTURE)
-            jump error_pipe()
+    if null_in or (options.stdout == OutputMode.NULL or options.stderr == OutputMode.NULL)
+        local name: @Array[U16, 4] <- [78, 85, 76, 0]
+        // GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING
+        device: Addr = c_create_file(name.to[@U16](), 0xC0000000, 3, sa, 3, 0, null)
+        if is_invalid(device)
+            return false
+        me.device.poke(device)
+    if options.stdout == OutputMode.CAPTURE
         if not (c_create_pipe(me.out_r, me.out_w, sa, 0) != 0)
             return false
         // HANDLE_FLAG_INHERIT off for the parent's end
         c_set_handle_information(me.out_r.peek(), 1, 0)
-        jump error_pipe()
-
-    block error_pipe()
-        if not (options.stderr == OutputMode.CAPTURE)
-            jump standard()
+    if options.stderr == OutputMode.CAPTURE
         if not (c_create_pipe(me.err_r, me.err_w, sa, 0) != 0)
             return false
         c_set_handle_information(me.err_r.peek(), 1, 0)
-        jump standard()
 
     // STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
-    block standard()
-        me.input.poke(input_handle(mode: options.stdin, device: me.device.peek()))
-        me.output.poke(output_handle(mode: options.stdout, pipe: me.out_w.peek(), device: me.device.peek(), which: 0xFFFFFFF5))
-        me.error.poke(output_handle(mode: options.stderr, pipe: me.err_w.peek(), device: me.device.peek(), which: 0xFFFFFFF4))
-        return true
+    me.input.poke(input_handle(mode: options.stdin, device: me.device.peek()))
+    me.output.poke(output_handle(mode: options.stdout, pipe: me.out_w.peek(), device: me.device.peek(), which: 0xFFFFFFF5))
+    me.error.poke(output_handle(mode: options.stderr, pipe: me.err_w.peek(), device: me.device.peek(), which: 0xFFFFFFF4))
+    return true
 
 /// The child's standard input: the null device, or a duplicate of this process's.
 /// :param mode: What the child's standard input is.
@@ -998,16 +981,12 @@ routine run_process_result(program: Span[Byte], args: Span[Span[Byte]], options:
 /// :param alloc: The allocator they came from.
 @target(os: "windows")
 private routine free_texts(line: @U16, env: @U16, alloc: @MemoryManager) -> Void
-    if line.is_null()
-        jump environment()
-    deallocate(data: line, alloc)
-    jump environment()
-
-    block environment()
-        if env.is_null()
-            return
-        deallocate(data: env, alloc)
+    if not line.is_null()
+        deallocate(data: line, alloc)
+    if env.is_null()
         return
+    deallocate(data: env, alloc)
+    return
 
 /// Reads standard output here and standard error on a helper thread when both are captured, and one alone here.
 /// :param out_pipe: The read end of the standard output pipe, or null.
@@ -1027,10 +1006,10 @@ private routine read_both(out_pipe: Addr, out: @CaptureBuffer, err: @PipeReader,
         helper.wait_finished()
         helper.give_back()
         return
-    if has_err
+    else if has_err
         read_pipe(err)
         return
-    if has_out
+    else if has_out
         read_into(pipe: out_pipe, buffer: out, alloc)
         return
     else
@@ -1084,31 +1063,36 @@ routine env_var(name: Span[Byte], alloc: @MemoryManager) -> Maybe[Memory[Byte]]
 
     local key: @Array[U16, 256] <- .hollow()
     n: Maybe[USize] = encode_utf16(text: name, out: key.to[@U16](), capacity: 256)
-    if not n.is_present()
-        jump finish(Unit())
-    c_set_last_error(0)
-    need: U32 = c_get_environment_variable(key.to[@U16](), null, 0)
-    // ERROR_ENVVAR_NOT_FOUND
-    if need == 0 and c_get_last_error() == 203
-        jump finish(Unit())
-    if need == 0
-        jump finish(Memory[Byte].construct(count: 0, manager: alloc))
-    made: @U16 = allocate[U16](count: need.to[USize](), alloc)
-    made.poke_into(units)
-    if made.is_null()
-        jump finish(Unit())
-    got: U32 = c_get_environment_variable(key.to[@U16](), made, need)
-    if got == 0 or got >= need
-        jump finish(Unit())
-    text: Result[Memory[Byte], FsError] = owned_wide(units: made, count: got.to[USize](), alloc)
-    when text
-        is Memory[Byte] as t => jump finish(t)
-        is FsError => jump finish(Unit())
+    value: Maybe[Memory[Byte]] = when
+        not n.is_present() => Unit()
+        else =>
+            c_set_last_error(0)
+            need: U32 = c_get_environment_variable(key.to[@U16](), null, 0)
+            // ERROR_ENVVAR_NOT_FOUND
+            if need == 0 and c_get_last_error() == 203
+                becomes Unit()
+            else if need == 0
+                becomes Memory[Byte].construct(count: 0, manager: alloc)
+            else
+                made: @U16 = allocate[U16](count: need.to[USize](), alloc)
+                made.poke_into(units)
+                if made.is_null()
+                    becomes Unit()
+                else
+                    got: U32 = c_get_environment_variable(key.to[@U16](), made, need)
+                    if got == 0 or got >= need
+                        becomes Unit()
+                    else
+                        text: Result[Memory[Byte], FsError] = owned_wide(units: made, count: got.to[USize](), alloc)
+                        when text
+                            is Memory[Byte] as t =>
+                                becomes t
+                            is FsError =>
+                                becomes Unit()
 
     // The UTF-16 value, when there is one: the UTF-8 copy is what goes back.
-    block finish(value: Maybe[Memory[Byte]])
-        held: @U16 = units.peek()
-        if held.is_null()
-            return value
-        deallocate(data: held, alloc)
+    held: @U16 = units.peek()
+    if held.is_null()
         return value
+    deallocate(data: held, alloc)
+    return value

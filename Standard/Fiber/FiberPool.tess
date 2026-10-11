@@ -156,11 +156,12 @@ needs T: typename
             crash_allocation()
         job.poke(PoolJob(slot: .construct(alloc), next: null, pool: me))
         return Job[T](job, issued: 0)
-    me.idle.poke(idle.next.peek())
-    me.lock.unlock()
-    idle.next.poke(null)
-    idle.slot.state.poke_atomic(TICKET_EMPTY)
-    return Job[T](job: idle, issued: idle.slot.issued.peek())
+    else
+        me.idle.poke(idle.next.peek())
+        me.lock.unlock()
+        idle.next.poke(null)
+        idle.slot.state.poke_atomic(TICKET_EMPTY)
+        return Job[T](job: idle, issued: idle.slot.issued.peek())
 
 /// Starts the pool's threads, the first time. The lock is held.
 @target(os: not "none")
@@ -187,20 +188,14 @@ private routine FiberPool.queue(me: @Me, job: @PoolJob) -> Void
     me.lock.lock()
     last: @PoolJob = me.last.peek()
     if last.is_null()
-        jump empty()
-    last.next.poke(job)
-    jump queued()
-
-    block empty()
         me.first.poke(job)
-        jump queued()
-
-    block queued()
-        me.last.poke(job)
-        me.lock.unlock()
-        me.epoch.atomic_fetch_add(1)
-        wake_all(me.epoch)
-        return
+    else
+        last.next.poke(job)
+    me.last.poke(job)
+    me.lock.unlock()
+    me.epoch.atomic_fetch_add(1)
+    wake_all(me.epoch)
+    return
 
 /// The job at the front of the queue, taken out, or null.
 /// :returns: The job, or null.
@@ -211,16 +206,14 @@ private routine FiberPool.take(me: @Me) -> @PoolJob
     if job.is_null()
         me.lock.unlock()
         return null
-    next: @PoolJob = job.next.peek()
-    me.first.poke(next)
-    if not next.is_null()
+    else
+        next: @PoolJob = job.next.peek()
+        me.first.poke(next)
+        if next.is_null()
+            me.last.poke(null)
         job.next.poke(null)
         me.lock.unlock()
         return job
-    me.last.poke(null)
-    job.next.poke(null)
-    me.lock.unlock()
-    return job
 
 /// A pool thread's work: runs this thread's fibers until none is ready, starts the next queued job as one of them,
 /// and sleeps when there is nothing, until the pool stops and its fibers are done.
@@ -240,15 +233,19 @@ private routine pool_thread(pool: @FiberPool) -> Void
         if job.is_null()
             if pool.stopping.peek_atomic() == 1 and running.count() == 0
                 break
-            wait: U64 = FIBERS.idle_wait()
-            if wait == U64.MAX
-                wait_on(at: pool.epoch, expected: seen)
-                continue
-            wait_on_for(at: pool.epoch, expected: seen, timeout_ns: wait)
+            else
+                wait: U64 = FIBERS.idle_wait()
+                if wait == U64.MAX
+                    wait_on(at: pool.epoch, expected: seen)
+                    continue
+                else
+                    wait_on_for(at: pool.epoch, expected: seen, timeout_ns: wait)
+                    continue
+        else
+            fiber: Fiber[Void] = FIBERS.get_fiber[Void]()
+            fiber.run_job(job.slot)
+            running.add_last(fiber)
             continue
-        fiber: Fiber[Void] = FIBERS.get_fiber[Void]()
-        fiber.run_job(job.slot)
-        running.add_last(fiber)
     running.destruct()
     return
 

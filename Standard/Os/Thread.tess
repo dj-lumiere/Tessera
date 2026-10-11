@@ -111,9 +111,11 @@ routine ThreadManager.destruct(me: @Me) -> Void
         worker2: @ThreadWorker = me.idle.peek()
         if worker2.is_null()
             break
-        me.idle.poke(worker2.next.peek())
-        worker2.slot.state.poke_atomic(TICKET_QUIT)
-        wake_all(worker2.slot.state)
+        else
+            me.idle.poke(worker2.next.peek())
+            worker2.slot.state.poke_atomic(TICKET_QUIT)
+            wake_all(worker2.slot.state)
+            continue
     me.lock.unlock()
     return
 
@@ -176,11 +178,12 @@ private routine ThreadManager.take_worker(me: @Me) -> @ThreadWorker
         else
             deallocate(data: worker, alloc)
             crash_task_spawn()
-    me.idle.poke(idle.next.peek())
-    me.lock.unlock()
-    idle.next.poke(null)
-    idle.slot.state.poke_atomic(TICKET_EMPTY)
-    return idle
+    else
+        me.idle.poke(idle.next.peek())
+        me.lock.unlock()
+        idle.next.poke(null)
+        idle.slot.state.poke_atomic(TICKET_EMPTY)
+        return idle
 
 /// A worker thread's loop: runs each piece of work put on its slot, and sleeps on the slot's state in between, until
 /// its manager tells it to end.
@@ -202,45 +205,20 @@ private routine worker_main(raw: Addr) -> Void
                 RUNNING_WORK.poke(null)
                 worker.slot.complete()
                 continue
-            cleanup.call()
-            RUNNING_WORK.poke(null)
-            worker.slot.complete()
-            continue
-        if state2 == TICKET_QUIT
-            break
-        wait_on(at: worker.slot.state, expected: state2)
-    alloc: @MemoryManager = worker.slot.alloc.peek()
-    worker.slot.destruct()
-    deallocate(data: worker, alloc)
-    return
-
-    block done()
-        RUNNING_WORK.poke(null)
-        worker.slot.complete()
-
-        while true
-            state2: U32 = worker.slot.state.peek_atomic()
-            if state2 == TICKET_RUNNING
-                reset_thread_locals()
-                RUNNING_WORK.poke(worker.slot)
-                runner: Callable[(Addr,), Void] = worker.slot.runner.peek()
-                runner.call(worker.slot.work.peek())
-                cleanup: Callable[(), Void] = THREAD_CLEANUP.peek()
-                if cleanup.addr().is_null()
-                    RUNNING_WORK.poke(null)
-                    worker.slot.complete()
-                    continue
+            else
                 cleanup.call()
                 RUNNING_WORK.poke(null)
                 worker.slot.complete()
                 continue
-            if state2 == TICKET_QUIT
-                break
+        else if state2 == TICKET_QUIT
+            break
+        else
             wait_on(at: worker.slot.state, expected: state2)
-        alloc: @MemoryManager = worker.slot.alloc.peek()
-        worker.slot.destruct()
-        deallocate(data: worker, alloc)
-        return
+            continue
+    alloc: @MemoryManager = worker.slot.alloc.peek()
+    worker.slot.destruct()
+    deallocate(data: worker, alloc)
+    return
 
 /// Puts every `#threadlocal` global of the program back to its starting value on this thread: a thread worker does it
 /// before each ticket's work.
@@ -603,8 +581,9 @@ private routine os_launch_fn(entry: Callable[(Addr,), Void], arg: Addr, state: A
     if result != 0
         deallocate(data: start, alloc: DEFAULT_HEAP)
         return false
-    c_pthread_detach(handle.peek())
-    return true
+    else
+        c_pthread_detach(handle.peek())
+        return true
 
 /// _SC_NPROCESSORS_ONLN, whose number differs between Linux and macOS.
 /// :returns: The sysconf number.
@@ -687,8 +666,9 @@ private routine os_launch_fn(entry: Callable[(Addr,), Void], arg: Addr, state: A
     if handle.is_null()
         deallocate(data: start, alloc: DEFAULT_HEAP)
         return false
-    c_close_handle(handle)
-    return true
+    else
+        c_close_handle(handle)
+        return true
 
 /// The number of processors the system has online, at least 1.
 /// :returns: The processor count, 1 when it can't be told.

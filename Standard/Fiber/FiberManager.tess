@@ -258,11 +258,12 @@ needs T: typename
         me.inbox_lock.unlock()
         fiber: @FiberState = me.make_fiber()
         return Fiber[T](fiber, issued: 0)
-    me.idle.poke(idle.next_idle.peek())
-    me.inbox_lock.unlock()
-    idle.next_idle.poke(null)
-    idle.slot.state.poke_atomic(TICKET_EMPTY)
-    return Fiber[T](fiber: idle, issued: idle.slot.issued.peek())
+    else
+        me.idle.poke(idle.next_idle.peek())
+        me.inbox_lock.unlock()
+        idle.next_idle.poke(null)
+        idle.slot.state.poke_atomic(TICKET_EMPTY)
+        return Fiber[T](fiber: idle, issued: idle.slot.issued.peek())
 
 /// A new fiber with a stack of its own, which first runs `fiber_start` once it has work.
 /// :returns: The fiber.
@@ -437,11 +438,12 @@ needs T: typename
     if me.current().is_null()
         work.call(arg)
         return
-    t: Thread[Void] = get_thread[Void]()
-    t.put_work(entry: work, args: arg)
-    t.wait_finished()
-    t.give_back()
-    return
+    else
+        t: Thread[Void] = get_thread[Void]()
+        t.put_work(entry: work, args: arg)
+        t.wait_finished()
+        t.give_back()
+        return
 
 // -- the tickets -------------------------------------------------------------------------------------------------
 
@@ -641,8 +643,9 @@ needs T: typename
     if manager.drives_here()
         manager.drive(awaited: slot, deadline: U64.MAX, idle_only: false)
         return
-    slot.wait()
-    return
+    else
+        slot.wait()
+        return
 
 /// Waits until the work has finished or `ns` nanoseconds have passed, whichever comes first, the way
 /// {Fiber[T].wait_finished} waits.
@@ -660,7 +663,8 @@ needs T: typename
     if manager.drives_here()
         manager.drive(awaited: slot, deadline, idle_only: false)
         return slot.is_finished()
-    return slot.wait_until(deadline, cancellable: false)
+    else
+        return slot.wait_until(deadline, cancellable: false)
 
 /// Waits until the work has finished, the way {Fiber[T].wait_finished} waits, or until the work that waits is asked to
 /// stop with `cancel()`. On the thread that drives the manager, outside a fiber, the manager runs until the work is
@@ -677,7 +681,7 @@ needs T: typename
     if manager.drives_here()
         manager.drive(awaited: slot, deadline: U64.MAX, idle_only: false)
         return Unit()
-    if slot.wait_until(deadline: U64.MAX, cancellable: true)
+    else if slot.wait_until(deadline: U64.MAX, cancellable: true)
         return Unit()
     else
         return CancelRequested()
@@ -808,9 +812,12 @@ private routine FiberManager.drive(me: @Me, awaited: @WorkSlot, deadline: U64,
             if wait == U64.MAX
                 wait_on(at: me.wake_word(), expected: seen)
                 continue
-            wait_on_for(at: me.wake_word(), expected: seen, timeout_ns: wait)
+            else
+                wait_on_for(at: me.wake_word(), expected: seen, timeout_ns: wait)
+                continue
+        else
+            me.resume(me.ready.remove_first())
             continue
-        me.resume(me.ready.remove_first())
 
 /// Runs fiber until it stops. One that stopped goes where it waits (its then): its manager does that on its own
 /// stack, after the fiber has switched away from its.
@@ -842,28 +849,21 @@ private routine FiberManager.resume(me: @Me, fiber: @FiberState) -> Void
 @noreturn
 @target(os: not "none")
 private routine fiber_start() -> Void
-    jump work()
-
-    block work()
+    while true
         fiber: @FiberState = current_waiter().fiber.to[@FiberState]()
         manager: @FiberManager = fiber.manager.peek()
         slot: @WorkSlot = fiber.work.peek()
         runner: Callable[(Addr,), Void] = slot.runner.peek()
         runner.call(slot.work.peek())
         slot.complete()
-        if slot.ptr_eq(fiber.slot)
-            jump finished(fiber, manager)
-        // A job's slot: the fiber's own work is over too.
-        fiber.work.poke(fiber.slot)
-        fiber.slot.complete()
-        jump finished(fiber, manager)
-
-    block finished(fiber: @FiberState, manager: @FiberManager)
+        if not slot.ptr_eq(fiber.slot)
+            // A job's slot: the fiber's own work is over too.
+            fiber.work.poke(fiber.slot)
+            fiber.slot.complete()
         manager.busy.atomic_fetch_sub(1)
         fiber.then.poke(commit_idle.to[Callable]())
         race_stack_switch(manager.home_race.peek())
         switch_stack(from: fiber.sp, to: manager.home.peek())
-        jump work()
 
 /// fiber is ready: in the ready queue on the manager's thread, else in its inbox, waking the thread.
 /// :param fiber: The fiber to queue.
@@ -873,13 +873,14 @@ private routine FiberManager.place_ready(me: @Me, fiber: @FiberState) -> Void
     if thread_mark().ptr_eq(me.owner.peek_atomic())
         me.ready.add_last(fiber)
         return
-    me.inbox_lock.lock()
-    me.inbox.add_last(fiber)
-    me.inbox_lock.unlock()
-    word: @U32 = me.wake_word()
-    word.atomic_fetch_add(1)
-    wake_all(word)
-    return
+    else
+        me.inbox_lock.lock()
+        me.inbox.add_last(fiber)
+        me.inbox_lock.unlock()
+        word: @U32 = me.wake_word()
+        word.atomic_fetch_add(1)
+        wake_all(word)
+        return
 
 /// Moves the fibers in the inbox to the ready queue.
 @target(os: not "none")
@@ -904,9 +905,8 @@ private routine FiberManager.fire_timers(me: @Me) -> Void
         if not (key.deadline <= now)
             return
         fiber: @FiberState = me.timers.remove()
-        if not (fiber.timer.peek() == key.seq)
-            continue
-        me.wake(fiber)
+        if fiber.timer.peek() == key.seq
+            me.wake(fiber)
     then
         return
 
@@ -964,8 +964,9 @@ private routine park_hook(manager: Addr, deadline: U64) -> Void
     if deadline == U64.MAX
         fibers.park()
         return
-    fibers.park_until(deadline)
-    return
+    else
+        fibers.park_until(deadline)
+        return
 
 /// How a Waiter wakes a fiber of a manager.
 /// :param manager: The manager.

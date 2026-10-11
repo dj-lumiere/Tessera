@@ -98,152 +98,184 @@ routine B32.powf(me: Me, exponent: Me) -> Me
     // y is ±inf or NaN
     // x is ±inf, NaN, or has its sign bit set
     when
-        unit_x =>
-            if tx >> 63 == 1
-                // x = -1
-                nan_y: Bool = ty2 > 0xFFE0000000000000
-                odd: Bool = cm_b32_pow_is_odd(exponent)
-                when
-                    nan_y => return exponent + exponent
-                    odd => return me
-                    cm_b32_pow_is_int(exponent) => return -me
-                    else => return Me.from_bits(0xFFC00000)
-            // 1^y = 1 except for a signaling NaN y
-            else if cm_b32_pow_is_signaling(exponent)
-                return me + exponent
-            else
-                return me
-        zero_y =>
-            // x^0 = 1 except for a signaling NaN x
-            if cm_b32_pow_is_signaling(me)
-                return me + exponent
-            else
-                return 1.0
-        special =>
-            // y = ±inf or NaN
-            nan_x: Bool = tx2 > 0xFFE0000000000000
-            when
-                nan_x => return me + exponent
-                ty2 == 0xFFE0000000000000 =>
-                    below_one: Bool = tx2 < 0x7FE0000000000000
-                    negative: Bool = ty >> 63 == 1
-                    if below_one != negative
-                        return 0.0
-                    else
-                        return Me.INFINITY
-                else => return me + exponent
-        tx >= 0x7FF0000000000000 =>
-            // x is ±inf, NaN, or has its sign bit set
-            inf_x: Bool = tx2 == 0xFFE0000000000000
-            nan_x: Bool = tx2 > 0xFFE0000000000000
-            nonzero: Bool = me.to[B64]() != 0.0
-            fraction: Bool = ~cm_b32_pow_is_int(exponent)
-            negative_fraction: Bool = tx > 0x7FF0000000000000 and fraction
-            when
-                inf_x =>
-                    odd: Bool = cm_b32_pow_is_odd(exponent)
-                    base: Me = when
-                        odd => me
-                        else => me.abs()
-                    if ty >> 63 == 1
-                        return Me.div(1.0, base)
-                    else
-                        return base
-                nan_x => return me + me
-                negative_fraction and nonzero => return Me.from_bits(0xFFC00000)
-                else => pass
-        else => pass
-    zero_x: Bool = tx2 == 0
-    values2: (B64, U64) = when
-        zero_x =>
-            // x = ±0
-            negative: Bool = ty >> 63 == 1
-            odd: Bool = cm_b32_pow_is_odd(exponent)
-            when
-                negative and odd => return Me.div(1.0, Me.copysign(0.0, me))
-                negative => return Me.INFINITY
-                odd => return Me.copysign(1.0, me) * 0.0
-                else => return 0.0
-        else =>
-            // |x| = 2^e xd, with 1/xd approximated from a 32-entry table
-            m: U64 = tx & 0x000FFFFFFFFFFFFF
-            biased_exponent: U64 = (tx >> 52) & 0x7FF
-            e0: S64 = biased_exponent.to[S64]() - 0x3FF
-            j: U64 = m + U64.shl(1, 46) >> 47
-            e: S64 = when
-                j > 13 => e0 + 1
-                else => e0
-            xd: B64 = B64.from_bits(m | 0x3FF0000000000000)
-            z: B64 = xd.mul_add(a: B64.from_bits(CM_B32_POW_IX.getitem(j.to[USize]())), b: -1.0)
-            z2: B64 = z * z
-            z4: B64 = z2 * z2
-            c6: B64 = z * -0.1804151705675918 + 0.20617758474822143
-            c4: B64 = z * -0.24044915938489397 + 0.28853899623008594
-            c2: B64 = z * -0.36067376022317404 + 0.4808983469635712
-            c0: B64 = z * -0.7213475204444817 + 1.4426950408889634
-            c02: B64 = z2 * c2 + c0
-            c46: B64 = z2 * c6 + c4
-            poly: B64 = z4 * c46 + c02
-            j2: USize = j.to[USize]() * 2
-            l: B64 = z * poly - B64.from_bits(CM_B32_POW_LIX.getitem(j2 + 1))
-            y16: B64 = exponent.to[B64]() * 16.0
-            e_log: B64 = e.to[B64]() - B64.from_bits(CM_B32_POW_LIX.getitem(j2))
-            zt: B64 = e_log * y16
-            t: B64 = l * y16 + zt
-            // 16 y log2(x)
-            over: Bool = t > 2048.0
-            under: Bool = t < -2400.0
-            when
-                over =>
-                    if cm_b32_pow_is_odd(exponent)
-                        return Me.copysign(1.7014118346046923e38, me) * 1.7014118346046923e38
-                    else
-                        return Me.mul(1.7014118346046923e38, 1.7014118346046923e38)
-                under =>
-                    if cm_b32_pow_is_odd(exponent)
-                        return Me.copysign(1.1754943508222875e-38, me) * 1.1754943508222875e-38
-                    else
-                        return Me.mul(1.1754943508222875e-38, 1.1754943508222875e-38)
-                t.abs() < 1.4901161193847656e-08 => return (t + 1.0).to[Me]()
-                else =>
-                    // 2^(t/16) = 2^el 2^(jl/16) 2^(h/16) with t = 16 el + jl + h
-                    ia: B64 = t.floor()
-                    h: B64 = l.mul_add(a: y16, b: zt - ia)
-                    il: S64 = ia.to[S64]()
-                    jl: S64 = il & 0xF
-                    el: S64 = il - jl >> 4
-                    s0: B64 = B64.from_bits(CM_B32_POW_TB.getitem(jl.to[USize]()))
-                    biased_el: U64 = el.to_wrap[U64]() +% 0x3FF
-                    s: B64 = s0 * B64.from_bits(biased_el << 52)
-                    h2: B64 = h * h
-                    d0: B64 = h * 0.0009383847928200837 + 0.043321698784995886
-                    d2: B64 = h * 1.4676119301623784e-07 + 1.3550807712983854e-05
-                    d4: B64 = h * 9.382438953978075e-12 + 1.271309415715539e-09
-                    poly2: B64 = h2 * (h2 * d4 + d2) + d0
-                    w: B64 = s * h
-                    rr: B64 = w * poly2 + s
-                    biased_bits: U64 = rr.bits() +% 468
-                    if biased_bits & 0xFFFFFFF <= 936
-                        return cm_b32_pow_accurate(x0: me, y0: exponent)
-                    else
-                        // an odd integer y keeps the sign of x: kk has the units bit of y on top
-                        biased_exponent2: U64 = (ty >> 52) & 0x7FF
-                        et: S64 = biased_exponent2.to[S64]() - 0x3FF
-                        left: Bool = et >= -11 and et < 53
-                        when
-                            left =>
-                                becomes (rr, ty << (et + 11).to_wrap[U64]())
-                            et < -11 and et > -75 =>
-                                becomes (rr, ty >> S64.sub(-11, et).to_wrap[U64]())
-                            else =>
-                                becomes (rr, 0)
-    rr, kk = values2
-    units_only: Bool = kk << 1 == 0
-    odd: Bool = units_only and kk != 0
-    r: B64 = when
-        odd => rr.copysign(me.to[B64]())
-        else => rr
-    return r.to[Me]()
+        unit_x => jump unit_base()
+        zero_y => jump zero_exponent()
+        special => jump special_exponent()
+        tx >= 0x7FF0000000000000 => jump unusual_base()
+        else => jump finite_base()
+
+    block unit_base()
+        if tx >> 63 == 1
+            jump minus_one()
+        else
+            jump plus_one()
+
+    // x = -1
+    block minus_one()
+        nan_y: Bool = ty2 > 0xFFE0000000000000
+        odd: Bool = cm_b32_pow_is_odd(exponent)
+        when
+            nan_y => return exponent + exponent
+            odd => return me
+            cm_b32_pow_is_int(exponent) => return -me
+            else => return Me.from_bits(0xFFC00000)
+
+    // 1^y = 1 except for a signaling NaN y
+    block plus_one()
+        if cm_b32_pow_is_signaling(exponent)
+            return me + exponent
+        else
+            return me
+
+    // x^0 = 1 except for a signaling NaN x
+    block zero_exponent()
+        if cm_b32_pow_is_signaling(me)
+            return me + exponent
+        else
+            return 1.0
+
+    // y = ±inf or NaN
+    block special_exponent()
+        nan_x: Bool = tx2 > 0xFFE0000000000000
+        when
+            nan_x => return me + exponent
+            ty2 == 0xFFE0000000000000 => jump infinite_exponent()
+            else => return me + exponent
+
+    block infinite_exponent()
+        below_one: Bool = tx2 < 0x7FE0000000000000
+        negative: Bool = ty >> 63 == 1
+        if below_one != negative
+            return 0.0
+        else
+            return Me.INFINITY
+
+    // x is ±inf, NaN, or has its sign bit set
+    block unusual_base()
+        inf_x: Bool = tx2 == 0xFFE0000000000000
+        nan_x: Bool = tx2 > 0xFFE0000000000000
+        nonzero: Bool = me.to[B64]() != 0.0
+        fraction: Bool = ~cm_b32_pow_is_int(exponent)
+        negative_fraction: Bool = tx > 0x7FF0000000000000 and fraction
+        when
+            inf_x => jump infinite_base()
+            nan_x => return me + me
+            negative_fraction and nonzero => return Me.from_bits(0xFFC00000)
+            else => jump finite_base()
+
+    block infinite_base()
+        odd: Bool = cm_b32_pow_is_odd(exponent)
+        base: Me = when
+            odd => me
+            else => me.abs()
+        if ty >> 63 == 1
+            return Me.div(1.0, base)
+        else
+            return base
+
+    block finite_base()
+        if tx2 == 0
+            jump zero_base()
+        else
+            jump reduce()
+
+    // x = ±0
+    block zero_base()
+        negative: Bool = ty >> 63 == 1
+        odd: Bool = cm_b32_pow_is_odd(exponent)
+        when
+            negative and odd => return Me.div(1.0, Me.copysign(0.0, me))
+            negative => return Me.INFINITY
+            odd => return Me.copysign(1.0, me) * 0.0
+            else => return 0.0
+
+    // |x| = 2^e xd, with 1/xd approximated from a 32-entry table
+    block reduce()
+        m: U64 = tx & 0x000FFFFFFFFFFFFF
+        biased_exponent: U64 = (tx >> 52) & 0x7FF
+        e0: S64 = biased_exponent.to[S64]() - 0x3FF
+        j: U64 = m + U64.shl(1, 46) >> 47
+        e: S64 = when
+            j > 13 => e0 + 1
+            else => e0
+        xd: B64 = B64.from_bits(m | 0x3FF0000000000000)
+        z: B64 = xd.mul_add(a: B64.from_bits(CM_B32_POW_IX.getitem(j.to[USize]())), b: -1.0)
+        z2: B64 = z * z
+        z4: B64 = z2 * z2
+        c6: B64 = z * -0.1804151705675918 + 0.20617758474822143
+        c4: B64 = z * -0.24044915938489397 + 0.28853899623008594
+        c2: B64 = z * -0.36067376022317404 + 0.4808983469635712
+        c0: B64 = z * -0.7213475204444817 + 1.4426950408889634
+        c02: B64 = z2 * c2 + c0
+        c46: B64 = z2 * c6 + c4
+        poly: B64 = z4 * c46 + c02
+        j2: USize = j.to[USize]() * 2
+        l: B64 = z * poly - B64.from_bits(CM_B32_POW_LIX.getitem(j2 + 1))
+        y16: B64 = exponent.to[B64]() * 16.0
+        e_log: B64 = e.to[B64]() - B64.from_bits(CM_B32_POW_LIX.getitem(j2))
+        zt: B64 = e_log * y16
+        t: B64 = l * y16 + zt
+        // 16 y log2(x)
+        over: Bool = t > 2048.0
+        under: Bool = t < -2400.0
+        when
+            over => jump overflow()
+            under => jump underflow()
+            t.abs() < 1.4901161193847656e-08 => return (t + 1.0).to[Me]()
+            else => jump exp2(l, y16, zt, t)
+
+    block overflow()
+        if cm_b32_pow_is_odd(exponent)
+            return Me.copysign(1.7014118346046923e38, me) * 1.7014118346046923e38
+        else
+            return Me.mul(1.7014118346046923e38, 1.7014118346046923e38)
+
+    block underflow()
+        if cm_b32_pow_is_odd(exponent)
+            return Me.copysign(1.1754943508222875e-38, me) * 1.1754943508222875e-38
+        else
+            return Me.mul(1.1754943508222875e-38, 1.1754943508222875e-38)
+
+    // 2^(t/16) = 2^el 2^(jl/16) 2^(h/16) with t = 16 el + jl + h
+    block exp2(l: B64, y16: B64, zt: B64, t: B64)
+        ia: B64 = t.floor()
+        h: B64 = l.mul_add(a: y16, b: zt - ia)
+        il: S64 = ia.to[S64]()
+        jl: S64 = il & 0xF
+        el: S64 = il - jl >> 4
+        s0: B64 = B64.from_bits(CM_B32_POW_TB.getitem(jl.to[USize]()))
+        biased_el: U64 = el.to_wrap[U64]() +% 0x3FF
+        s: B64 = s0 * B64.from_bits(biased_el << 52)
+        h2: B64 = h * h
+        d0: B64 = h * 0.0009383847928200837 + 0.043321698784995886
+        d2: B64 = h * 1.4676119301623784e-07 + 1.3550807712983854e-05
+        d4: B64 = h * 9.382438953978075e-12 + 1.271309415715539e-09
+        poly: B64 = h2 * (h2 * d4 + d2) + d0
+        w: B64 = s * h
+        rr: B64 = w * poly + s
+        biased_bits: U64 = rr.bits() +% 468
+        if biased_bits & 0xFFFFFFF <= 936
+            return cm_b32_pow_accurate(x0: me, y0: exponent)
+        else
+            jump sign(rr)
+
+    // an odd integer y keeps the sign of x: kk has the units bit of y on top
+    block sign(rr: B64)
+        biased_exponent: U64 = (ty >> 52) & 0x7FF
+        et: S64 = biased_exponent.to[S64]() - 0x3FF
+        left: Bool = et >= -11 and et < 53
+        when
+            left => jump parity(rr, ty << (et + 11).to_wrap[U64]())
+            et < -11 and et > -75 => jump parity(rr, ty >> S64.sub(-11, et).to_wrap[U64]())
+            else => jump parity(rr, 0)
+
+    block parity(rr: B64, kk: U64)
+        units_only: Bool = kk << 1 == 0
+        odd: Bool = units_only and kk != 0
+        r: B64 = when
+            odd => rr.copysign(me.to[B64]())
+            else => rr
+        return r.to[Me]()
 
 /// True when y is an integer (or ±0).
 /// :param y: The value to test.

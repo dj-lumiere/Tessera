@@ -300,43 +300,29 @@ private routine env_entry(v: EnvVar, alloc: @MemoryManager) -> @Byte
 /// :param alloc: The allocator they came from.
 @target(os: ("linux", "macos"))
 private routine Prepared.release(me: @Me, alloc: @MemoryManager) -> Void
-    jump args(0)
-
-    block args(i: USize)
-        if i == me.argc.peek()
-            jump env(0)
+    each i in 0 til me.argc.peek()
         arg_slot: @@Byte = me.argv.peek().stride(i)
         deallocate(data: arg_slot.peek(), alloc)
-        jump args(i + 1)
 
-    block env(i: USize)
-        envp: @@Byte = me.envp.peek()
-        if envp.is_null() or i == me.own_count.peek()
-            jump rest()
-        entry_slot: @@Byte = envp.stride(me.own_first.peek() + i)
-        deallocate(data: entry_slot.peek(), alloc)
-        jump env(i + 1)
-
-    block rest()
-        argv: @@Byte = me.argv.peek()
-        if argv.is_null()
-            jump arrays_done()
+    while true with i: USize = 0
+        envp2: @@Byte = me.envp.peek()
+        if envp2.is_null() or i == me.own_count.peek()
+            break
+        else
+            entry_slot: @@Byte = envp2.stride(me.own_first.peek() + i)
+            deallocate(data: entry_slot.peek(), alloc)
+            continue with i: i + 1
+    argv: @@Byte = me.argv.peek()
+    if not argv.is_null()
         deallocate(data: argv, alloc)
-        jump arrays_done()
-
-    block arrays_done()
-        envp: @@Byte = me.envp.peek()
-        if envp.is_null()
-            jump env_done()
+    envp: @@Byte = me.envp.peek()
+    if not envp.is_null()
         deallocate(data: envp, alloc)
-        jump env_done()
-
-    block env_done()
-        dir: @Byte = me.directory.peek()
-        if dir.is_null()
-            return
-        deallocate(data: dir, alloc)
+    dir: @Byte = me.directory.peek()
+    if dir.is_null()
         return
+    deallocate(data: dir, alloc)
+    return
 
 /// Builds everything the child needs before fork, so the child allocates nothing: the argument vector, the merged
 /// environment, and the directory path. What it made is right to release even when it fails.
@@ -486,43 +472,23 @@ private routine ChildStreams.destruct(me: @Me) -> Void
 @noreturn
 @target(os: ("linux", "macos"))
 private routine child(p: @Prepared, s: ChildStreams) -> Void
-    if not (s.input >= 0)
-        jump output()
-    c_dup2(s.input, 0)
-    jump output()
-
-    block output()
-        if not (s.output >= 0)
-            jump error()
+    if s.input >= 0
+        c_dup2(s.input, 0)
+    if s.output >= 0
         c_dup2(s.output, 1)
-        jump error()
-
-    block error()
-        if not (s.error >= 0)
-            jump directory()
+    if s.error >= 0
         c_dup2(s.error, 2)
-        jump directory()
-
-    block directory()
-        dir: @Byte = p.directory.peek()
-        if dir.is_null() or c_chdir(dir) == 0
-            jump environment()
-        else
-            jump failed()
-
-    block environment()
+    dir: @Byte = p.directory.peek()
+    if dir.is_null() or c_chdir(dir) == 0
         envp: @@Byte = p.envp.peek()
-        if envp.is_null()
-            jump exec()
-        environ_place().poke(envp)
-        jump exec()
-
-    block exec()
+        if not envp.is_null()
+            environ_place().poke(envp)
         argv: @@Byte = p.argv.peek()
         c_execvp(argv.peek(), argv)
-        jump failed()
-
-    block failed()
+        local e: @CInt <- errno()
+        c_write(s.report, e.to[@Byte](), 4)
+        c_exit_now(127)
+    else
         local e: @CInt <- errno()
         c_write(s.report, e.to[@Byte](), 4)
         c_exit_now(127)
@@ -631,31 +597,26 @@ private routine Plumbing.make(me: @Me, options: ProcessOptions) -> Bool
         return false
     me.exec_r.poke(fds[0])
     me.exec_w.poke(fds[1])
-    if not (options.stdout == OutputMode.CAPTURE)
-        jump error_pipe(fds.to[@CInt]())
-    if not cloexec_pipe(fds.to[@CInt]())
-        return false
-    me.out_r.poke(fds[0])
-    me.out_w.poke(fds[1])
-    jump error_pipe(fds.to[@CInt]())
-
-    block error_pipe(fds: @CInt)
-        if not (options.stderr == OutputMode.CAPTURE)
-            jump null_device()
-        if not cloexec_pipe(fds)
+    fds2: @CInt = when
+        not (options.stdout == OutputMode.CAPTURE) => fds.to[@CInt]()
+        else =>
+            if not cloexec_pipe(fds.to[@CInt]())
+                return false
+            me.out_r.poke(fds[0])
+            me.out_w.poke(fds[1])
+            becomes fds.to[@CInt]()
+    if options.stderr == OutputMode.CAPTURE
+        if not cloexec_pipe(fds2)
             return false
-        me.err_r.poke(fds.peek())
-        me.err_w.poke(fds.stride(1).peek())
-        jump null_device()
-
-    block null_device()
-        null_in: Bool = options.stdin == InputMode.NULL
-        null_out: Bool = options.stdout == OutputMode.NULL or options.stderr == OutputMode.NULL
-        if not (null_in or null_out)
-            return true
-        fd: CInt = c_open("/dev/null", read_write_cloexec())
-        me.devnull.poke(fd)
-        return fd >= 0
+        me.err_r.poke(fds2.peek())
+        me.err_w.poke(fds2.stride(1).peek())
+    null_in: Bool = options.stdin == InputMode.NULL
+    null_out: Bool = options.stdout == OutputMode.NULL or options.stderr == OutputMode.NULL
+    if not (null_in or null_out)
+        return true
+    fd: CInt = c_open("/dev/null", read_write_cloexec())
+    me.devnull.poke(fd)
+    return fd >= 0
 
 /// The fd one output stream of the child gets: the pipe's write end, the null device, or -1 (inherit).
 /// :param mode: What becomes of the stream.
@@ -787,19 +748,21 @@ private routine drain(out: PipeCapture, err: PipeCapture, alloc: @MemoryManager)
                 fd: CInt = p.fd.peek()
                 if fd < 0 or p.revents.peek() == 0
                     continue with open2: open2
-                n: SSize = c_read(fd, chunk, 4096)
-                if n > 0
-                    n2: USize = n.to[USize]()
-                    buffer: @CaptureBuffer = when
-                        i == 0 => out.buffer
-                        else => err.buffer
-                    buffer.append(chunk, n, alloc)
-                    continue with open2: open
-                if n < 0 and errno() == 4
-                    continue with open2: open2
-                c_close(fd)
-                p.fd.poke(-1)
-                continue with open2: open2 - 1
+                else
+                    n: SSize = c_read(fd, chunk, 4096)
+                    if n > 0
+                        n2: USize = n.to[USize]()
+                        buffer: @CaptureBuffer = when
+                            i == 0 => out.buffer
+                            else => err.buffer
+                        buffer.append(chunk, n, alloc)
+                        continue with open2: open
+                    else if n < 0 and errno() == 4
+                        continue with open2: open2
+                    else
+                        c_close(fd)
+                        p.fd.poke(-1)
+                        continue with open2: open2 - 1
             then
                 continue
     then
@@ -820,17 +783,18 @@ private routine reap(pid: CInt) -> Maybe[ExitStatus]
         rc2: CInt = c_waitpid(pid, status, 0)
         if rc2 < 0 and errno() == 4
             continue
-        if rc2 < 0
-            return Unit()
-        s: CInt = status.peek()
-        low: CInt = s & 0x7F
-        // WIFEXITED, else WIFSIGNALED (0x7F is a stop, which waitpid without WUNTRACED doesn't report)
-        if low == 0
-            ended: ExitStatus = Exited((s >> 8) & 0xFF)
-            return ended
         else
-            stopped: ExitStatus = Signaled(low)
-            return stopped
+            if rc2 < 0
+                return Unit()
+            s: CInt = status.peek()
+            low: CInt = s & 0x7F
+            // WIFEXITED, else WIFSIGNALED (0x7F is a stop, which waitpid without WUNTRACED doesn't report)
+            if low == 0
+                ended: ExitStatus = Exited((s >> 8) & 0xFF)
+                return ended
+            else
+                stopped: ExitStatus = Signaled(low)
+                return stopped
 
 // -- the environment ---------------------------------------------------------------------
 

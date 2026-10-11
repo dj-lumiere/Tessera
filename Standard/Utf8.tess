@@ -30,26 +30,25 @@ record Utf8Decoded
 /// :returns: The character, the position after it, and whether it was well formed.
 /// :note: A malformed or truncated sequence, or `pos` at or past `len`, gives U+FFFD with `next_pos` equal to `pos` and `ok` false.
 routine utf8_decode(bytes: @Byte, pos: USize, len: USize) -> Utf8Decoded
-    past_end: Bool = pos >= len
-    values2: (U32, U32, USize) = when
-        past_end =>
-            // single byte: 0xxxxxxx
-            // two byte: 110xxxxx 10xxxxxx
-            // three byte: 1110xxxx 10xxxxxx 10xxxxxx
-            // four byte: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
-            // An overlong form (below min, the smallest value that needs this many bytes), a surrogate, or a value
-            // past 0x10FFFF isn't a Char.
-            fffd: U32 = 0xFFFD
-            replacement: Char = fffd.to[Char]()
-            result: Utf8Decoded = Utf8Decoded(char: replacement, next_pos: pos, ok: false)
-            return result
-        else =>
-            b0: Byte = bytes.stride(pos).peek()
-            b0u: U32 = b0.to[U8]().to[U32]()
-            next: USize = pos + 1
-            if b0u < 0x80
-                becomes (b0u, 0, next)
-            else
+    if pos >= len
+        // single byte: 0xxxxxxx
+        // two byte: 110xxxxx 10xxxxxx
+        // three byte: 1110xxxx 10xxxxxx 10xxxxxx
+        // four byte: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+        // An overlong form (below min, the smallest value that needs this many bytes), a surrogate, or a value
+        // past 0x10FFFF isn't a Char.
+        fffd: U32 = 0xFFFD
+        replacement: Char = fffd.to[Char]()
+        result: Utf8Decoded = Utf8Decoded(char: replacement, next_pos: pos, ok: false)
+        return result
+    else
+        b0: Byte = bytes.stride(pos).peek()
+        b0u: U32 = b0.to[U8]().to[U32]()
+        next: USize = pos + 1
+        is_one: Bool = b0u < 0x80
+        values2: (U32, U32, USize) = when
+            is_one => (b0u, 0, next)
+            else =>
                 mask2: U32 = b0u & 0xE0
                 if mask2 == 0xC0
                     b1u: U32 = utf8_continuation(bytes, pos: next, len)
@@ -101,22 +100,23 @@ routine utf8_decode(bytes: @Byte, pos: USize, len: USize) -> Utf8Decoded
                             replacement: Char = fffd.to[Char]()
                             result: Utf8Decoded = Utf8Decoded(char: replacement, next_pos: pos, ok: false)
                             return result
-    cp, min, after = values2
-    if cp < min
-        fffd: U32 = 0xFFFD
-        replacement: Char = fffd.to[Char]()
-        result: Utf8Decoded = Utf8Decoded(char: replacement, next_pos: pos, ok: false)
-        return result
-    scalar: Maybe[Char] = cp.to_checked[Char]()
-    char: Char = when scalar
-        is Char as char => char
-        is Unit =>
+        cp, min, after = values2
+        if cp < min
             fffd: U32 = 0xFFFD
             replacement: Char = fffd.to[Char]()
             result: Utf8Decoded = Utf8Decoded(char: replacement, next_pos: pos, ok: false)
             return result
-    result: Utf8Decoded = Utf8Decoded(char: char, next_pos: after, ok: true)
-    return result
+        else
+            scalar: Maybe[Char] = cp.to_checked[Char]()
+            char: Char = when scalar
+                is Char as char => char
+                is Unit =>
+                    fffd: U32 = 0xFFFD
+                    replacement: Char = fffd.to[Char]()
+                    result: Utf8Decoded = Utf8Decoded(char: replacement, next_pos: pos, ok: false)
+                    return result
+            result: Utf8Decoded = Utf8Decoded(char: char, next_pos: after, ok: true)
+            return result
 
 /// Reads the continuation byte at `pos` and gives its six payload bits.
 /// :param bytes: The buffer to read from.

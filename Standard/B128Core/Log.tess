@@ -129,27 +129,28 @@ routine cm_log_fast(mh: U64, ml: U64, e_field: U64) -> CmWide3
         // m * r below 1: the product's leading bit (2^236) is clear
         if rhh >> 44 == 0
             continue with l: l - 0x0000100000000000
-        rhl: U64 = (rr >> 128).to_wrap[U64]()
-        rlh: U64 = (rr >> 64).to_wrap[U64]()
-        mh2: U64 = (rhh << 40) | (rhl >> 24)
-        ml2: U64 = (rhl << 40) | (rlh >> 24)
-        // ln(1 + m) for the reduced m, added to the table sum
-        sum: CmWide3 = cm_log_table_sum(e, j)
-        m: U128 = cm_wide_u128(hi: mh2, lo: ml2)
-        c6: U64 = CM_LOG_C.getitem(6)
-        c7: U64 = CM_LOG_C.getitem(7)
-        c8: U64 = CM_LOG_C.getitem(8)
-        c10: U64 = CM_LOG_C.getitem(10)
-        t10: U64 = cm_wide_mulhi(a: mh2, b: c10)
-        t8: U64 = cm_wide_mulhi(a: mh2, b: c8 -% t10)
-        f3: U128 = cm_wide_u128(hi: c7, lo: c6 -% t8)
-        f2: U128 = cm_log_coefficient(4) -% cm_wide_mulhi(a: m, b: f3)
-        f1: U128 = cm_log_coefficient(2) -% cm_wide_mulhi(a: m, b: f2)
-        f0: U128 = cm_log_coefficient(0) -% cm_wide_mulhi(a: m, b: f1)
-        p: U128 = cm_wide_mulhi(a: m, b: f0)
-        p3: CmWide3 = CmWide3(w0: cm_wide_lo(p), w1: cm_wide_hi(p), w2: 0)
-        total: CmWide3 = cm_wide_add3(a: sum, b: p3)
-        return total
+        else
+            rhl: U64 = (rr >> 128).to_wrap[U64]()
+            rlh: U64 = (rr >> 64).to_wrap[U64]()
+            mh2: U64 = (rhh << 40) | (rhl >> 24)
+            ml2: U64 = (rhl << 40) | (rlh >> 24)
+            // ln(1 + m) for the reduced m, added to the table sum
+            sum: CmWide3 = cm_log_table_sum(e, j)
+            m: U128 = cm_wide_u128(hi: mh2, lo: ml2)
+            c6: U64 = CM_LOG_C.getitem(6)
+            c7: U64 = CM_LOG_C.getitem(7)
+            c8: U64 = CM_LOG_C.getitem(8)
+            c10: U64 = CM_LOG_C.getitem(10)
+            t10: U64 = cm_wide_mulhi(a: mh2, b: c10)
+            t8: U64 = cm_wide_mulhi(a: mh2, b: c8 -% t10)
+            f3: U128 = cm_wide_u128(hi: c7, lo: c6 -% t8)
+            f2: U128 = cm_log_coefficient(4) -% cm_wide_mulhi(a: m, b: f3)
+            f1: U128 = cm_log_coefficient(2) -% cm_wide_mulhi(a: m, b: f2)
+            f0: U128 = cm_log_coefficient(0) -% cm_wide_mulhi(a: m, b: f1)
+            p: U128 = cm_wide_mulhi(a: m, b: f0)
+            p3: CmWide3 = CmWide3(w0: cm_wide_lo(p), w1: cm_wide_hi(p), w2: 0)
+            total: CmWide3 = cm_wide_add3(a: sum, b: p3)
+            return total
 
 /// Word pair (i, i + 1) of the ln(1 + r) polynomial as a 128-bit coefficient.
 /// :param i: The index of the low word in CM_LOG_C.
@@ -302,33 +303,40 @@ routine cm_log_near_one(x: U128) -> B128
     exact: Bool = x == one
     above: Bool = x > one
     plus_zero: B128 = b128_of(0)
-    values2: (CmLogNear, U64) = when
+    when
         exact => return plus_zero
-        above => (cm_log_above_one(x), 0)
-        else => (cm_log_below_one(x), 1)
-    n, neg = values2
+        above => jump normalize(cm_log_above_one(x), 0)
+        else => jump below()
+
+    block below()
+        jump normalize(cm_log_below_one(x), 1)
 
     // normalize the top bit to 127, then round (exactly when the fast test failed)
-    top_clear: Bool = n.sig >= 0
-    sig: S128 = when
-        top_clear => n.sig << 1
-        else => n.sig
-    e: U64 = when
-        top_clear => n.e + 1
-        else => n.e
-    sig_lo: U64 = cm_wide_lo(sig.to_wrap[U128]())
-    rnd: U64 = (sig_lo >> 14) & 1
-    biased: U64 = 16381 - e
-    el: U64 = biased | (neg << 15)
-    if n.hard
-        sig2: U128 = sig.to_wrap[U128]()
-        m: U128 = sig2 +% 0x2000 >> 14
+    block normalize(n: CmLogNear, neg: U64)
+        top_clear: Bool = n.sig >= 0
+        sig: S128 = when
+            top_clear => n.sig << 1
+            else => n.sig
+        e: U64 = when
+            top_clear => n.e + 1
+            else => n.e
+        sig_lo: U64 = cm_wide_lo(sig.to_wrap[U128]())
+        rnd: U64 = (sig_lo >> 14) & 1
+        biased: U64 = 16381 - e
+        el: U64 = biased | (neg << 15)
+        if n.hard
+            jump exact(sig.to_wrap[U128](), el)
+        else
+            jump fast(sig.to_wrap[U128](), el, rnd)
+
+    block fast(sig: U128, el: U64, rnd: U64)
+        r: B128 = cm_log_pack(sig: sig >> 15, el, round: rnd)
+        return r
+
+    block exact(sig: U128, el: U64)
+        m: U128 = sig +% 0x2000 >> 14
         rounded: CmLogRounding = cm_log_refine(el, m, x)
         r: B128 = cm_log_pack(sig: rounded.sig, el, round: rounded.round)
-        return r
-    else
-        sig2: U128 = sig.to_wrap[U128]()
-        r: B128 = cm_log_pack(sig: sig2 >> 15, el, round: rnd)
         return r
 
 /// ln(x) for 1 < x < 1 + 2^-29 or so: t = x - 1, ln(1 + t) = t - t^2 * P(t), before the final rounding.

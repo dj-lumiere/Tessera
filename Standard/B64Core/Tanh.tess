@@ -39,16 +39,8 @@ routine B64.tanh(me: Me) -> Me
 
     // |x| >= 0x1.30fc1931f09cap+4: tanh x rounds to ±1
     if aix >= 0x40330FC1931F09CA
-        // t = round(-2|x| 2^12 / log 2) and its bits: e^(-2|x|) = 2^ie 2^(i0/64) 2^(i1/2^12) e^dx
-        // |x| < ~3.683
-        // |x| < 1/4
-        nan: Bool = aix > 0x7FF0000000000000
-        infinite: Bool = aix == 0x7FF0000000000000
-        f: Me = Me.copysign(1.0, me)
-        when
-            nan => return me + me
-            infinite => return f
-            else => return f - Me.copysign(2.7755575615628914e-17, me)
+        jump saturated()
+    // t = round(-2|x| 2^12 / log 2) and its bits: e^(-2|x|) = 2^ie 2^(i0/64) 2^(i1/2^12) e^dx
     v0: Me = ax.mul_add(a: -11818.557774962388, b: 50331648.5)
     jt: U64 = v0.bits()
     t: Me = Me.from_bits(jt & 0xFFFFFFFFF8000000) - 50331648.0
@@ -61,99 +53,120 @@ routine B64.tanh(me: Me) -> Me
     sp: Me = cm_b64_hyp_scale(ie + 1023)
     two: Me = Me.copysign(2.0, me)
     below: Bool = aix < 0x400D76C8B4395810
-    small: Bool = aix < 0x3FD0000000000000
-    values2: (Me, Me) = when
-        small =>
-            zero: Bool = aix == 0
-            // |x| <= 0x1.d12ed0af1a27fp-27
-            when
-                zero => return me
-                aix <= 0x3E4D12ED0AF1A27F => return me.mul_add(a: -2.7755575615628914e-17, b: me)
-                else =>
-                    x2: Me = me * me
-                    x3: Me = x2 * me
-                    x4: Me = x2 * x2
-                    x8: Me = x4 * x4
-                    a1: Me = x2 * 0.003591725367929998 + -0.008863221769815069
-                    b1: Me = x2 * 0.0005287354884097332 + -0.001449063961717272
-                    p1: Me = x4 * b1 + a1
-                    a0: Me = x2 * 0.13333333333332006 + -0.3333333333333333
-                    b0: Me = x2 * 0.021869488267393555 + -0.053968253965448285
-                    p0: Me = x4 * b0 + a0
-                    p: Me = (p0 + x8 * p1) * x3
-                    r: CmF64HypDd = cm_b64_hyp_fasttwosum(x: me, y: p)
-                    e: Me = x3 * 3.885780586188048e-16
-                    lb: Me = r.hi + (r.lo - e)
-                    ub: Me = r.hi + (r.lo + e)
-                    if lb == ub
-                        return lb
-                    else
-                        return cm_b64_tanh_zero(me)
-        below =>
-            // 1/4 <= |x| < ~3.683: tanh |x| = 2 (1/2 - r / (1 + r)) with r = e^(-2|x|)
-            tt: CmF64HypDd = cm_b64_hyp_table(i0, i1)
-            th: Me = tt.hi * sp
-            tl: Me = tt.lo * sp
-            // -2|x| = t log(2) / 2^12 + dx, with log(2) / 2^13 as l2h + l2l
-            dx_hi: Me = t * -8.461269294457452e-05 - ax
-            dx: Me = dx_hi - t * -5.128070157081402e-15
-            dx2: Me = dx * dx
-            p: Me = cm_b64_tanh_poly(d: dx, d2: dx2)
-            r: CmF64HypDd = cm_b64_hyp_fasttwosum(x: th, y: tl + th * p)
-            q: CmF64HypDd = cm_b64_hyp_fasttwosum(x: 1.0, y: r.hi)
-            ql: Me = r.lo + q.lo
-            rqh: Me = Me.div(1.0, q.hi)
-            rq_err: Me = ql * rqh + rqh.mul_add(a: q.hi, b: -1.0)
-            rql: Me = rq_err * -rqh
-            pp: CmF64HypDd = cm_b64_tanh_muldd_acc(xh: r.hi, xl: r.lo, ch: rqh, cl: rql)
-            e: Me = r.hi * 2.278518628114068e-19
-            d: CmF64HypDd = cm_b64_tanh_fasttwosub(x: 0.5, y: pp.hi)
-            dh: Me = d.hi * two
-            dl: Me = (d.lo - pp.lo) * two
-            lb: Me = dh + (dl - e)
-            ub: Me = dh + (dl + e)
-            if lb == ub
-                return lb
-            else
-                becomes (th, tl)
-        else =>
-            // ~3.683 <= |x| < 0x1.30fc1931f09cap+4: tanh |x| = 1 - 2r / (1 + r) with r = e^(-2|x|)
-            t0h: Me = Me.from_bits(CM_B64_HYP_T0_HI.getitem(i0))
-            t1h: Me = Me.from_bits(CM_B64_HYP_T1_HI.getitem(i1))
-            dx: Me = Me.mul_add(-8.461269293944645e-05, a: t, b: -ax)
-            dx2: Me = dx * dx
-            p: Me = cm_b64_tanh_poly(d: dx, d2: dx2)
-            rh0: Me = t0h * t1h * sp
-            rh1: Me = rh0 + (p + Me.mul(6.591949208711867e-17, ax)) * rh0
-            e: Me = rh1 * 1.887379141862766e-15
-            rh2: Me = Me.mul(2.0, rh1) / Me.add(1.0, rh1)
-            one: Me = Me.copysign(1.0, me)
-            rh: Me = rh2.copysign(me)
-            lb: Me = one - (rh + e)
-            ub: Me = one - (rh - e)
-            if lb == ub
-                return lb
-            else
-                tt: CmF64HypDd = cm_b64_hyp_table(i0, i1)
-                becomes (tt.hi * sp, tt.lo * sp)
-    th, tl = values2
+    // |x| < ~3.683
+    // |x| < 1/4
+    when
+        aix < 0x3FD0000000000000 => jump small()
+        below => jump medium(t, i0, i1, sp, two)
+        else => jump large(t, i0, i1, sp, two)
+
+    block saturated()
+        nan: Bool = aix > 0x7FF0000000000000
+        infinite: Bool = aix == 0x7FF0000000000000
+        f: Me = Me.copysign(1.0, me)
+        when
+            nan => return me + me
+            infinite => return f
+            else => return f - Me.copysign(2.7755575615628914e-17, me)
+
+    block small()
+        zero: Bool = aix == 0
+        // |x| <= 0x1.d12ed0af1a27fp-27
+        when
+            zero => return me
+            aix <= 0x3E4D12ED0AF1A27F => return me.mul_add(a: -2.7755575615628914e-17, b: me)
+            else => jump series()
+
+    block series()
+        x2: Me = me * me
+        x3: Me = x2 * me
+        x4: Me = x2 * x2
+        x8: Me = x4 * x4
+        a1: Me = x2 * 0.003591725367929998 + -0.008863221769815069
+        b1: Me = x2 * 0.0005287354884097332 + -0.001449063961717272
+        p1: Me = x4 * b1 + a1
+        a0: Me = x2 * 0.13333333333332006 + -0.3333333333333333
+        b0: Me = x2 * 0.021869488267393555 + -0.053968253965448285
+        p0: Me = x4 * b0 + a0
+        p: Me = (p0 + x8 * p1) * x3
+        r: CmF64HypDd = cm_b64_hyp_fasttwosum(x: me, y: p)
+        e: Me = x3 * 3.885780586188048e-16
+        lb: Me = r.hi + (r.lo - e)
+        ub: Me = r.hi + (r.lo + e)
+        if lb == ub
+            return lb
+        else
+            return cm_b64_tanh_zero(me)
+
+    // 1/4 <= |x| < ~3.683: tanh |x| = 2 (1/2 - r / (1 + r)) with r = e^(-2|x|)
+    block medium(t: Me, i0: USize, i1: USize, sp: Me, two: Me)
+        tt: CmF64HypDd = cm_b64_hyp_table(i0, i1)
+        th: Me = tt.hi * sp
+        tl: Me = tt.lo * sp
+        // -2|x| = t log(2) / 2^12 + dx, with log(2) / 2^13 as l2h + l2l
+        dx_hi: Me = t * -8.461269294457452e-05 - ax
+        dx: Me = dx_hi - t * -5.128070157081402e-15
+        dx2: Me = dx * dx
+        p: Me = cm_b64_tanh_poly(d: dx, d2: dx2)
+        r: CmF64HypDd = cm_b64_hyp_fasttwosum(x: th, y: tl + th * p)
+        q: CmF64HypDd = cm_b64_hyp_fasttwosum(x: 1.0, y: r.hi)
+        ql: Me = r.lo + q.lo
+        rqh: Me = Me.div(1.0, q.hi)
+        rq_err: Me = ql * rqh + rqh.mul_add(a: q.hi, b: -1.0)
+        rql: Me = rq_err * -rqh
+        pp: CmF64HypDd = cm_b64_tanh_muldd_acc(xh: r.hi, xl: r.lo, ch: rqh, cl: rql)
+        e: Me = r.hi * 2.278518628114068e-19
+        d: CmF64HypDd = cm_b64_tanh_fasttwosub(x: 0.5, y: pp.hi)
+        dh: Me = d.hi * two
+        dl: Me = (d.lo - pp.lo) * two
+        lb: Me = dh + (dl - e)
+        ub: Me = dh + (dl + e)
+        if lb == ub
+            return lb
+        else
+            jump accurate(t, th, tl, two)
+
+    // ~3.683 <= |x| < 0x1.30fc1931f09cap+4: tanh |x| = 1 - 2r / (1 + r) with r = e^(-2|x|)
+    block large(t: Me, i0: USize, i1: USize, sp: Me, two: Me)
+        t0h: Me = Me.from_bits(CM_B64_HYP_T0_HI.getitem(i0))
+        t1h: Me = Me.from_bits(CM_B64_HYP_T1_HI.getitem(i1))
+        dx: Me = Me.mul_add(-8.461269293944645e-05, a: t, b: -ax)
+        dx2: Me = dx * dx
+        p: Me = cm_b64_tanh_poly(d: dx, d2: dx2)
+        rh0: Me = t0h * t1h * sp
+        rh1: Me = rh0 + (p + Me.mul(6.591949208711867e-17, ax)) * rh0
+        e: Me = rh1 * 1.887379141862766e-15
+        rh2: Me = Me.mul(2.0, rh1) / Me.add(1.0, rh1)
+        one: Me = Me.copysign(1.0, me)
+        rh: Me = rh2.copysign(me)
+        lb: Me = one - (rh + e)
+        ub: Me = one - (rh - e)
+        if lb == ub
+            return lb
+        else
+            jump large_accurate(t, i0, i1, sp, two)
+
+    block large_accurate(t: Me, i0: USize, i1: USize, sp: Me, two: Me)
+        tt: CmF64HypDd = cm_b64_hyp_table(i0, i1)
+        jump accurate(t, tt.hi * sp, tt.lo * sp, two)
 
     // tanh |x| = 2 (1/2 - r / (1 + r)) in double-double, with r = e^(-2|x|) = th + tl times the polynomial
-    r: CmF64HypDd = cm_b64_tanh_exp_accurate(x: Me.mul(-2.0, ax), t, th, tl)
-    q0: CmF64HypDd = cm_b64_hyp_fasttwosum(x: 1.0, y: r.hi)
-    q: CmF64HypDd = cm_b64_hyp_fasttwosum(x: q0.hi, y: r.lo + q0.lo)
-    rqh: Me = Me.div(1.0, q.hi)
-    rq_err: Me = q.lo * rqh + rqh.mul_add(a: q.hi, b: -1.0)
-    rql: Me = rq_err * -rqh
-    pp: CmF64HypDd = cm_b64_tanh_muldd_acc(xh: r.hi, xl: r.lo, ch: rqh, cl: rql)
-    d0: CmF64HypDd = cm_b64_tanh_fasttwosub(x: 0.5, y: pp.hi)
-    d: CmF64HypDd = cm_b64_hyp_fasttwosum(x: d0.hi, y: d0.lo - pp.lo)
-    res: Me = two * d.hi + two * d.lo
-    dl_near: U64 = d.lo.bits() +% 32
-    if dl_near & 0x000FFFFFFFFFFFFF < 65
-        return cm_b64_tanh_database(x: me, f: res)
-    else
-        return res
+    block accurate(t: Me, th: Me, tl: Me, two: Me)
+        r: CmF64HypDd = cm_b64_tanh_exp_accurate(x: Me.mul(-2.0, ax), t, th, tl)
+        q0: CmF64HypDd = cm_b64_hyp_fasttwosum(x: 1.0, y: r.hi)
+        q: CmF64HypDd = cm_b64_hyp_fasttwosum(x: q0.hi, y: r.lo + q0.lo)
+        rqh: Me = Me.div(1.0, q.hi)
+        rq_err: Me = q.lo * rqh + rqh.mul_add(a: q.hi, b: -1.0)
+        rql: Me = rq_err * -rqh
+        pp: CmF64HypDd = cm_b64_tanh_muldd_acc(xh: r.hi, xl: r.lo, ch: rqh, cl: rql)
+        d0: CmF64HypDd = cm_b64_tanh_fasttwosub(x: 0.5, y: pp.hi)
+        d: CmF64HypDd = cm_b64_hyp_fasttwosum(x: d0.hi, y: d0.lo - pp.lo)
+        res: Me = two * d.hi + two * d.lo
+        dl_near: U64 = d.lo.bits() +% 32
+        if dl_near & 0x000FFFFFFFFFFFFF < 65
+            return cm_b64_tanh_database(x: me, f: res)
+        else
+            return res
 
 /// The fast-path polynomial e^d - 1 ~ d ((2 + 2d) + d2 (c2 + d c3)) of tanh (scaled by 2), with d2 = d^2.
 /// :param d: The reduced argument.

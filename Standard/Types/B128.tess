@@ -192,52 +192,51 @@ routine b128_round_pack(negative: Bool, exponent: S64, sig: U128) -> U128
         negative => B128_SIGN
         else => 0
 
-    zero: Bool = sig == 0
-    values2: (U128, S64) = when
-        zero => return sign
-        else =>
-            // Put the leading bit at 115 (12 leading zeros), unless that would push
-            // the exponent below 1: then the value is subnormal at exponent 1.
-            lz: S64 = sig.leading_zeros().to[S64]()
-            shift: S64 = 12 - lz
-            // > 0: right, < 0: left
-            new_exp: S64 = exponent + shift
-            subnormal: Bool = new_exp < 1
-            amount: S64 = when
-                subnormal => 1 - exponent
-                else => shift
-            final_exp: S64 = when
-                subnormal => 1
-                else => new_exp
-            if amount > 0
-                becomes (shr_sticky(value: sig, n: amount), final_exp)
-            else
-                becomes (sig << (0 - amount).to[U128](), final_exp)
-    s, e = values2
-    extra: U128 = s & 7
-    kept: U128 = s >> 3
-    above: Bool = extra > 4
-    tie: Bool = extra == 4
-    odd: Bool = kept & 1 == 1
-    up: Bool = above or (tie and odd)
-    rounded: U128 = kept + up.to[U128]()
-    carry: Bool = rounded == 0x20000000000000000000000000000
-    // 2^113
-    final: U128 = when
-        carry => rounded >> 1
-        else => rounded
-    e2: S64 = e + carry.to[S64]()
-    normal: Bool = final >= B128_IMPLICIT
-    biased: S64 = when
-        normal => e2
-        else => 0
-    overflow: Bool = biased >= B128_EXP_MAX
-    field: U128 = biased.to[U128]() << 112
-    bits: U128 = sign | field | (final & B128_FRAC_MASK)
-    if overflow
-        return sign | B128_INF
+    if sig == 0
+        return sign
     else
-        return bits
+        // Put the leading bit at 115 (12 leading zeros), unless that would push
+        // the exponent below 1: then the value is subnormal at exponent 1.
+        lz: S64 = sig.leading_zeros().to[S64]()
+        shift: S64 = 12 - lz
+        // > 0: right, < 0: left
+        new_exp: S64 = exponent + shift
+        subnormal: Bool = new_exp < 1
+        amount: S64 = when
+            subnormal => 1 - exponent
+            else => shift
+        final_exp: S64 = when
+            subnormal => 1
+            else => new_exp
+        right: Bool = amount > 0
+        values2: (U128, S64) = when
+            right => (shr_sticky(value: sig, n: amount), final_exp)
+            else => (sig << (0 - amount).to[U128](), final_exp)
+        s, e = values2
+        extra: U128 = s & 7
+        kept: U128 = s >> 3
+        above: Bool = extra > 4
+        tie: Bool = extra == 4
+        odd: Bool = kept & 1 == 1
+        up: Bool = above or (tie and odd)
+        rounded: U128 = kept + up.to[U128]()
+        carry: Bool = rounded == 0x20000000000000000000000000000
+        // 2^113
+        final: U128 = when
+            carry => rounded >> 1
+            else => rounded
+        e2: S64 = e + carry.to[S64]()
+        normal: Bool = final >= B128_IMPLICIT
+        biased: S64 = when
+            normal => e2
+            else => 0
+        overflow: Bool = biased >= B128_EXP_MAX
+        field: U128 = biased.to[U128]() << 112
+        bits: U128 = sign | field | (final & B128_FRAC_MASK)
+        if overflow
+            return sign | B128_INF
+        else
+            return bits
 
 /// Splits finite, nonzero binary128 bits into a significand and an unbiased exponent.
 /// :param bits: The encoding of a finite, nonzero value.
@@ -930,8 +929,7 @@ routine b128_round_int(bits: U128, mode: B128Rounding) -> U128
     special: Bool = biased == B128_EXP_MAX
     whole: Bool = e >= 112
     zero: Bool = b128_is_zero_bits(bits)
-    below: Bool = e < 0
-    values2: (U128, U128, Bool) = when
+    when
         special =>
             if b128_is_nan_bits(bits)
                 return b128_quiet(bits)
@@ -939,7 +937,7 @@ routine b128_round_int(bits: U128, mode: B128Rounding) -> U128
                 return bits
         whole => return bits
         zero => return bits
-        below =>
+        e < 0 =>
             // |x| < 1: the result is ±0 or ±1 (1.0 is 0x3FFF << 112)
             sign: U128 = bits & B128_SIGN
             one: U128 = sign | 0x3FFF0000000000000000000000000000
@@ -982,22 +980,16 @@ routine b128_round_int(bits: U128, mode: B128Rounding) -> U128
             even_up: Bool = over_half or (at_half and odd)
             down: Bool = negative and inexact
             up: Bool = not negative and inexact
-            when mode
-                B128Rounding.TOWARD_ZERO =>
-                    becomes (kept, unit, false)
-                B128Rounding.DOWN =>
-                    becomes (kept, unit, down)
-                B128Rounding.UP =>
-                    becomes (kept, unit, up)
-                B128Rounding.NEAREST_AWAY =>
-                    becomes (kept, unit, away)
-                B128Rounding.NEAREST_EVEN =>
-                    becomes (kept, unit, even_up)
-    kept, unit, bump = values2
-    r: U128 = when
-        bump => kept + unit
-        else => kept
-    return r
+            bump: Bool = when mode
+                B128Rounding.TOWARD_ZERO => false
+                B128Rounding.DOWN => down
+                B128Rounding.UP => up
+                B128Rounding.NEAREST_AWAY => away
+                B128Rounding.NEAREST_EVEN => even_up
+            r: U128 = when
+                bump => kept + unit
+                else => kept
+            return r
 
 /// Rounds toward zero on the encoding, exactly.
 /// :returns: The integer part of `me`, with its sign (-0.5 gives -0.0). Infinities and NaN come back unchanged.
@@ -1108,7 +1100,7 @@ routine b128_fma_bits(x: U128, y: U128, c: U128) -> U128
     c_zero: Bool = b128_is_zero_bits(c)
     p_inf: Bool = x_inf or y_inf
     p_zero: Bool = x_zero or y_zero
-    values2: (U256, S64, Bool) = when
+    when
         x_nan => return b128_quiet(x)
         y_nan => return b128_quiet(y)
         c_nan => return b128_quiet(c)
@@ -1165,31 +1157,31 @@ routine b128_fma_bits(x: U128, y: U128, c: U128) -> U128
                 p_first => c_neg
                 else => p_neg
             aligned: U256 = shr_sticky(x: small, n: diff)
-            if big_neg == small_neg
-                becomes (big + aligned, e, big_neg)
-            else
-                // an exact zero is +0
-                a_larger: Bool = big >= aligned
-                m: U256 = big.abs_diff(aligned)
-                negative: Bool = when
-                    a_larger => big_neg
-                    else => not big_neg
-                becomes (m, e, negative)
-    r, e, negative = values2
-
-    // value = r × 2^e: bring the top bit to 255, then hand the high half (with
-    // a sticky bit for the low one) to b128_round_pack
-    if r == 0
-        return 0
-    lz: S64 = r.leading_zeros().to[S64]()
-    n: U256 = r << lz.to[U256]()
-    high: U128 = (n >> 128).to[U128]()
-    low_sticky: Bool = n.to_wrap[U128]() != 0
-    sig: U128 = high | low_sticky.to[U128]()
-    unbiased: S64 = e - lz + 128
-    exponent: S64 = unbiased + B128_BIAS + 115
-    bits: U128 = b128_round_pack(negative, exponent, sig)
-    return bits
+            same: Bool = big_neg == small_neg
+            values2: (U256, Bool) = when
+                same => (big + aligned, big_neg)
+                else =>
+                    // an exact zero is +0
+                    a_larger: Bool = big >= aligned
+                    m: U256 = big.abs_diff(aligned)
+                    negative: Bool = when
+                        a_larger => big_neg
+                        else => not big_neg
+                    becomes (m, negative)
+            r, negative = values2
+            // value = r × 2^e: bring the top bit to 255, then hand the high half (with
+            // a sticky bit for the low one) to b128_round_pack
+            if r == 0
+                return 0
+            lz: S64 = r.leading_zeros().to[S64]()
+            n: U256 = r << lz.to[U256]()
+            high: U128 = (n >> 128).to[U128]()
+            low_sticky: Bool = n.to_wrap[U128]() != 0
+            sig: U128 = high | low_sticky.to[U128]()
+            unbiased: S64 = e - lz + 128
+            exponent: S64 = unbiased + B128_BIAS + 115
+            bits: U128 = b128_round_pack(negative, exponent, sig)
+            return bits
 
 // ============================================================
 // B64's surface, and IEEE operations on the encoding
