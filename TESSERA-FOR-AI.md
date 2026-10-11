@@ -587,14 +587,28 @@ routine start() -> Void
 - Build: a value of a branch type goes where the variant is expected as it is, one level deep: `e: Expr = 5`,
   `e: Expr = Empty()`, `m: Maybe[S64] = 5`, `return(value)`, `return(Unit())`, `return(ParseError.EMPTY)`, a block
   argument, a routine argument. An untyped literal goes in through the one branch that takes it (an integer literal
-  never picks a choice branch). Two levels don't widen by themselves (`Exited` -> `ExitStatus` ->
+  never picks a choice branch). Two levels of NAMED variants don't widen by themselves (`Exited` -> `ExitStatus` ->
   `Maybe[ExitStatus]`): bind the middle type first (`status: ExitStatus = Exited(code)`, then `return(status)`). A
   select widens each side: `cond ? n : Unit()`.
 - Read with `when e`: `is S64 as n => target(n)` names the value for that arm's target (or, on the one arm that
   `continue`s, for the rest of the block), `is Empty =>` observes without naming, `is S64, is BinaryExpr => ...` puts
   several unnamed observations in one arm, `else => ...` takes the rest, and `else as rest` names what the other arms
-  leave (the one remaining branch's value, or the whole variant when several remain). Without `else`, observe every
-  branch. An `else` when every branch is already observed is an error. There's no field access on a variant.
+  leave (the one remaining branch's value, or, when several remain, the inline variant of exactly those branches, the
+  whole value past 8). Without `else`, observe every branch. An `else` when every branch is already observed is an
+  error. There's no field access on a variant.
+- Inline variants: `A | B | C` is a type, a variant with no declaration (the stdlib's `#union` variants
+  `Union2`..`Union8` in `Standard/Types/Union.tess`, so at most 8 branches, more is a build error that says to declare a
+  variant). Its branches are the types each once, ordered by their full names, so `A | B` and `B | A` are one type
+  (messages write `A | B`). `A | A` is just `A`, and an inline branch gives its branches (flattened). `|` binds
+  loosest among type forms: `@A | B` is a pointer to an A, or a B. A pointer to one goes through a name: `@(A | B)` is
+  an error, write `define Choice = A | B`, then `@Choice`. Parentheses around a lone union are an error too.
+  `define ConfigError = IoError | ParseError` names one.
+- An inline variant is NOT a layer: as a branch of another variant (`Result[S64, IoError | ParseError]`) its branches
+  are that variant's own. So `return(ParseError.INVALID)` goes into that Result directly, `is IoError as e` observes
+  it on the Result directly, and `is IoError | ParseError as e` observes several and names the value as the union. A
+  value of `A | B` goes into `A | B | C` (or any variant whose branches include A and B) by copying tag and storage.
+  Overlap rules apply to the flattened branches (`S64 | Maybe[S64]` is an error, `S64` on both levels), reported
+  where the type is written. They derive the five concepts like any variant, each when every branch has it.
 - `tessera migrate` (sources before 0.5) and `tessera migrate --step variants` rewrite `.Present(v) =>` /
   `.Absent =>` / `.Success(v) =>` / `.Failure(e) =>` arms into `is T as v` using the type written where the when's
   value is declared, `.Present(x)` / `.Success(x)` / `.Failure(x)` values into `x`, `.Absent` and `Unit.value()` into
