@@ -140,6 +140,13 @@ routine start() -> Void
   of a second `destruct()` of the same block (a quarantine of the last 256 freed blocks keeps that sure); with it off
   it is plain malloc / free, and so is a single-file build without a manifest. Debug and release behave the same.
   Double frees are the heap check's job: the builder makes no build-time check for them.
+- **A `MemoryManager` is called through its routines:** `alloc(size, align)` (a power-of-two alignment), `realloc(at,
+  size, align)`, `free(at)`, and the page routines `reserve(size)` / `commit(at, size)` / `release(at, size)` and
+  `protect(at, size, PageAccess.NONE | READ | READ_WRITE)`. Its fields are `Callable`s taking `state` first; the page
+  ones and `protect_fn` may be null (`has_pages()`, `has_protect()`), and calling an empty one crashes with
+  `NotImplementedError`. `MemoryManager.construct(alloc_fn, realloc_fn, free_fn, state)` makes one without pages. The
+  hosted managers fill everything (pages from `Standard/Os`'s `pages_reserve` and the rest). Raw `allocate[T]` asks for
+  `alignof[T]()`.
 - **The default heap comes with `Standard/Os`**, like `Out`: there `DEFAULT_HEAP` is an `@MemoryManager` ready before
   `start` (`make_heap_memory()` gives the same one), and every collection and `Slice` gets a `construct` without
   the allocator (`List[S64].construct()`, `Slice[U8].construct(n)`). Memory C frees or reallocates, or memory from C's
