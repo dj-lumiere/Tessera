@@ -481,7 +481,7 @@ public sealed class Structurer
     {
         var cond = rw.Expr(i.Cond);
         string? merge = MergeOf([i.Then, i.Else ?? []], ctx);
-        var valueArgs = merge is null ? [] : ValueArgs(merge, [i.Then, i.Else ?? []], ctx);
+        var valueArgs = merge is null ? [] : ValueArgs(merge, [i.Then, i.Else ?? []], rw, ctx);
         var armCtx = merge is null ? ctx : ctx with { Fallthrough = merge, FallthroughArgs = valueArgs };
         var then = EmitStmts(i.Then, rw, armCtx with { Scope = [.. ctx.Scope] });
         var otherwise = i.Else is null ? null : EmitStmts(i.Else, rw, armCtx with { Scope = [.. ctx.Scope] });
@@ -511,7 +511,7 @@ public sealed class Structurer
             };
             result.AddRange(ValueOf(mergeBlock, valueArgs, new WhenStmt(null, arms, i.Pos), ctx, i.Pos, out names));
         }
-        result.AddRange(Continue(mergeBlock, MergeArgs(mergeBlock, valueArgs, names, i.Pos), ctx));
+        result.AddRange(Continue(mergeBlock, MergeArgs(mergeBlock, valueArgs, names, rw, i.Pos), ctx));
         return result;
     }
 
@@ -520,21 +520,22 @@ public sealed class Structurer
         IsLoopHeader(merge.Name) ? EmitLoop(merge, args, ctx) : Inline(merge, args, ctx);
 
     /// The positions of a merge block's parameters that the when chooses: the ones not passed straight through.
-    private List<int> ValueArgs(string merge, List<List<Stmt>> arms, Ctx ctx)
+    private List<int> ValueArgs(string merge, List<List<Stmt>> arms, Rewriter rw, Ctx ctx)
     {
-        var pass = PassThrough(merge, arms, ctx);
+        var pass = PassThrough(merge, arms, rw, ctx);
         return _blocks[merge].Params.Select((p, i) => (p, i)).Where(x => !pass.Contains(x.p.Name)).Select(x => x.i).ToList();
     }
 
     /// What the merge block's lines read for each parameter: the name itself when it is passed through, else the
     /// name the when's value was bound to.
-    private static List<Expr> MergeArgs(BlockDecl merge, List<int> valueArgs, List<string> names, Pos pos)
+    private static List<Expr> MergeArgs(BlockDecl merge, List<int> valueArgs, List<string> names, Rewriter rw, Pos pos)
     {
         var args = new List<Expr>();
         for (int i = 0; i < merge.Params.Count; i++)
         {
             int at = valueArgs.IndexOf(i);
-            args.Add(new ValueRef(at < 0 ? merge.Params[i].Name : names[at], pos));
+            // A value passed straight through is read under the name it has here (a renamed one included).
+            args.Add(at < 0 ? rw.Expr(new ValueRef(merge.Params[i].Name, pos)) : new ValueRef(names[at], pos));
         }
         return args;
     }
@@ -544,7 +545,7 @@ public sealed class Structurer
     private List<Stmt> EmitWhen(WhenStmt w, Rewriter rw, Ctx ctx)
     {
         string? merge = MergeOf(w.Arms.Select(a => a.Body).ToList(), ctx);
-        var valueArgs = merge is null ? [] : ValueArgs(merge, w.Arms.Select(a => a.Body).ToList(), ctx);
+        var valueArgs = merge is null ? [] : ValueArgs(merge, w.Arms.Select(a => a.Body).ToList(), rw, ctx);
         var armCtx = merge is null ? ctx : ctx with { Fallthrough = merge, FallthroughArgs = valueArgs };
         var arms = new List<WhenArm>();
         ValueRef? elseBinding = w.ElseBinding is null ? null : rw.Expr(w.ElseBinding) as ValueRef ?? w.ElseBinding;
@@ -609,7 +610,7 @@ public sealed class Structurer
                 result.Add(when with { Arms = arms.Select(a => a.Body.Count == 0 ? a with { Body = [new PassStmt(a.Pos)] } : a).ToList() });
         }
         else result.AddRange(ValueOf(mergeBlock, valueArgs, when, ctx, w.Pos, out names));
-        result.AddRange(Continue(mergeBlock, MergeArgs(mergeBlock, valueArgs, names, w.Pos), ctx));
+        result.AddRange(Continue(mergeBlock, MergeArgs(mergeBlock, valueArgs, names, rw, w.Pos), ctx));
         return result;
     }
 
@@ -694,15 +695,20 @@ public sealed class Structurer
 
     /// The parameters of a merge block every jump to it passes straight through (the value of the same name): they
     /// aren't values the when chooses, the block reads the names as they are.
-    private HashSet<string> PassThrough(string merge, List<List<Stmt>> arms, Ctx ctx)
+    private HashSet<string> PassThrough(string merge, List<List<Stmt>> arms, Rewriter rw, Ctx ctx)
     {
         var jumps = arms.SelectMany(a => JumpsThrough(a, [])).Where(j => j.Block == merge).ToList();
         var block = _blocks[merge];
         var result = new HashSet<string>();
         for (int i = 0; i < block.Params.Count; i++)
-            if (ctx.Scope.Contains(block.Params[i].Name)
-                && jumps.All(j => j.Args.Count > i && j.Args[i] is ValueRef v && v.Name == block.Params[i].Name))
+        {
+            // Passed straight through: every jump passes the value of the parameter's name as it reads here (under
+            // its rename, when the name was bound again), and that value is visible where the block is written.
+            if (rw.Expr(new ValueRef(block.Params[i].Name, block.Pos)) is not ValueRef here || !ctx.Scope.Contains(here.Name))
+                continue;
+            if (jumps.All(j => j.Args.Count > i && j.Args[i] is ValueRef v && v.Name == block.Params[i].Name))
                 result.Add(block.Params[i].Name);
+        }
         return result;
     }
 
