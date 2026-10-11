@@ -20,8 +20,8 @@ dotnet run -- version                    # the builder's version; help prints ev
 
 A program's entry point is `routine start() -> Void`, and a nonzero exit status is `set_exit_code(n)` (Standard/Os)
 before it returns. A file may start with `module A/B` and `import` lines. Name lookup follows
-modules: a file sees its own module, `Standard/Core` (always imported: the built-in types, `Option`, `Result`,
-`Bytes`), and what it imports, so printing a number needs `import Standard/Format`, a `List` needs
+modules: a file sees its own module, `Standard/Core` (always imported: the built-in types, `Maybe`, `Result`,
+`Unit`, `Bytes`), and what it imports, so printing a number needs `import Standard/Format`, a `List` needs
 `import Standard/Collections`, and `make_heap_memory` / `Out` need `import Standard/Os` (the hosted layer,
 the only one that calls libc; a target with OS `none` has none of it). A routine declared in its type's module comes with the type; one another module adds
 to it (like `S64.represent_into` from `Standard/Format`) needs that module imported. A qualified path
@@ -67,7 +67,7 @@ routine start() -> Void
   above the annotation lines and reads, in this order: what the routine does in one or two plain sentences (from its
   real behavior), `:typeparam T:` for its own type parameters, `:param name:` for every parameter but `me` in
   order, `:returns:` unless it returns Void, then `:throws:` ("Crashes with `IndexOutOfBoundsError` when ...", or the
-  `Failure` it returns), `:absent:` (when an Option comes back Absent), `:note:`, and `:see:` as needed. No `;` in the
+  error it returns), `:absent:` (when a `Maybe` comes back `Unit`), `:note:`, and `:see:` as needed. No `;` in the
   prose, facts only. `tessera lint` (and `check` / `build` / `run` for the program's own files) warns on a routine
   without one, a parameter without its `:param` line, a `:param` line for a name that isn't a parameter, and a
   missing `:returns:`, in every file except those under a `tests`, `playground`, `scratch`, or `generated` directory, and except
@@ -120,7 +120,7 @@ routine start() -> Void
 - **Where values are: `@T` and `Slice[T]`.** `@T` is an address (a claim slot, a field, an element, memory from C)
   and frees nothing. `Slice[T]` (Core) is an address, a count, and `alloc`, the allocator the memory came from: `at(i)`
   is the checked address, and everything through it is `@T`'s own (`peek`, `poke`, `peek_volatile`,
-  `atomic_fetch_add`, ...), `getitem(i)` / `setitem(i, v)` the value shortcuts, `getitem_checked(i)` an `Option`,
+  `atomic_fetch_add`, ...), `getitem(i)` / `setitem(i, v)` the value shortcuts, `getitem_checked(i)` a `Maybe`,
   `getslice(start, count)` a checked range, `getview()` the whole of it, `to[@T]()` the first address.
   **A null `alloc` means borrowed**, and `destruct()` does nothing: `Slice[T].construct(data, count)`, `getslice`,
   `getview()`, and `to[Slice[T]]()` of a `List` / `Array` / `Bytes` are all borrowed. `.construct(count, alloc)` (a
@@ -301,15 +301,15 @@ routine start() -> Void
   ```tessera
   routine home_path(drive: Bytes, alloc: @MemoryManager) -> Result[Bytes, FsError]
       block entry()
-          p: Option[Bytes] = env_dir(name: "HOMEPATH", alloc)
+          p: Maybe[Bytes] = env_dir(name: "HOMEPATH", alloc)
           when p
-              .Present(path) => join(path)
-              .Absent => missing()
+              is Bytes as path => join(path)
+              is Unit => missing()
 
       block missing()
           claim held: @Bytes <- drive
           held.destruct()
-          return(.Failure(FsError.NOT_FOUND))
+          return(FsError.NOT_FOUND)
 
       block join(path: Bytes)
           both: Bytes = Bytes.concat(drive, path, alloc)
@@ -317,7 +317,7 @@ routine start() -> Void
           claim held_path: @Bytes <- path
           held_drive.destruct()
           held_path.destruct()
-          return(.Success(both))
+          return(both)
   ```
 
   After, the owners start empty in the head and every exit goes through `finish`:
@@ -328,15 +328,15 @@ routine start() -> Void
       local path: @Bytes <- .empty()
 
       block entry()
-          p: Option[Bytes] = env_dir(name: "HOMEPATH", alloc)
+          p: Maybe[Bytes] = env_dir(name: "HOMEPATH", alloc)
           when p
-              .Present(text) => join(text)
-              .Absent => finish(.Failure(FsError.NOT_FOUND))
+              is Bytes as text => join(text)
+              is Unit => finish(FsError.NOT_FOUND)
 
       block join(path_text: Bytes)
           path_text.poke_into(path)
           both: Bytes = Bytes.concat(a: drive.peek(), b: path.peek(), alloc)
-          jump finish(.Success(both))
+          jump finish(both)
 
       block finish(result: Result[Bytes, FsError])
           drive.destruct()
@@ -362,20 +362,20 @@ routine start() -> Void
   `branch failed ? crash_allocation() : continue`. Use it for guards instead of a block that only receives
   the values the rest needs. It is not C's "next iteration" (that's `jump loop(...)`), and a block still ends with a
   real terminator.
-- **The arm that continues keeps its payload** (let-else). When exactly one arm of a `when` on a variant continues and
-  the others leave, its payload is a block binding from the next line on, so a payload doesn't need a block of its own
-  to reach the rest of the work:
+- **The arm that continues keeps its name** (let-else). When exactly one arm of a `when` on a variant continues and
+  the others leave, the name it gives (`is T as name`, or `else as rest`) is a block binding from the next line on, so
+  the value doesn't need a block of its own to reach the rest of the work:
 
   ```tessera
   when item
-      .Present(value) => continue
-      .Absent => finish()
+      is S64 as value => continue
+      is Unit => finish()
   total.peek().add(value).poke_into(total)  // value is bound here
   ```
 
   Same rules as any block binding (not a routine parameter's, a local value's, or an earlier binding's name, and not
-  bound again later). When several arms continue, none of their payloads is bound after the `when`, nor is the
-  payload of an arm that leaves: a use is a build error saying why.
+  bound again later). When several arms continue, none of their names is bound after the `when`, nor is the
+  name of an arm that leaves: a use is a build error saying why.
 - A line that starts with `?` or `:` continues the one above. `fmt` writes every `branch`, and every select that is a
   binding's or claim's whole value, on three lines: the condition, then `? a` and `: b` 4 spaces further in.
 - An integer `when v` needs an `else` arm. A `when v` on a choice without `else` must list every member. An arm may
@@ -397,7 +397,7 @@ routine start() -> Void
   `add`, `div`, `mod`, `lt`, `ge`, `shr` (arithmetic on S, logical on U), and so on. A shift by the width or more
   shifts every bit out (0, or -1 for a negative S value shifted right).
 - Arithmetic crashes on overflow: `add`, `sub`, `mul`, `div`, `neg`, `abs`, `pow`, and a lossy `to[T]()`. Each has
-  `_checked` (returns `Option`), `_wrap` (modular), and `_clamp` (saturating) forms: `h.mul_wrap(PRIME)`,
+  `_checked` (returns `Maybe`), `_wrap` (modular), and `_clamp` (saturating) forms: `h.mul_wrap(PRIME)`,
   `n.to_clamp[U8]()`. Hashes, PRNGs, and bit tricks want `_wrap`.
 - Subtraction that can underflow crashes even if the result is unused later, so don't compute `len.sub(1)` before
   the branch that knows it's safe: pass it as a branch-arm argument (arm arguments are evaluated lazily), or compute
@@ -440,7 +440,7 @@ routine start() -> Void
   `Job.compare(a, b)`. `me` and `Me` are reserved: no other parameter, binding, or claim is named `me`, and no type is
   named `Me`. A routine meeting a concept (`eq`, `compare`, `hash`) takes `me` as the concept does. Where the
   type is expected (a binding, an argument, a block argument, a return), a leading `.` leaves it out:
-  `list: List[S64] = .construct(alloc)`, `return(.Absent)`. Not at the head of a chain or as a statement.
+  `list: List[S64] = .construct(alloc)`, `return(.empty())`. Not at the head of a chain or as a statement.
 - **`@T` or `T`** (for `me` and any parameter): take `@T` when the routine changes the value in place, or
   when copying it is unwanted (a large value); take `T` when a copy is fine and the value isn't changed. There are no
   compound-assignment methods (`add_assign` and the like): change a value in memory by load, act, store —
@@ -531,7 +531,7 @@ routine start() -> Void
   one short routine each with RazorForge's default message: `crash_overflow()` (IntegerOverflowError),
   `crash_division_by_zero()`, `crash_out_of_bounds()`, `crash_allocation()` (MemoryAllocationError),
   `crash_invalid_value()`, `crash_numeric_domain()` (`ilog2(0)`, `isqrt` of a negative), `crash_absent_value()`
-  (unwrap of Absent, pop on empty), `crash_key_not_found()`, `crash_unwrap_failure()` / `crash_unwrap_success()`
+  (unwrap of an empty Maybe, pop on empty), `crash_key_not_found()`, `crash_unwrap_failure()` / `crash_unwrap_success()`
   (UnwrapFailureError / UnwrapSuccessError), `crash_task_spawn()`, and `crash_logic_breached()` for a state the code
   rules out. A failure with its own message calls `crash(name, message)`. There's no `trap()`: every stop is a crash.
   A crash calls the crash handler; the default (Standard/Os) prints `tessera: Name: message` and the caller's place
@@ -547,7 +547,8 @@ routine start() -> Void
   `TRACE_CAPACITY`). It's on in debug and release, off in release-time and release-space; `--no-trace` / `--trace`
   or `[debug] trace = false|true` in config.toml override that. Thread-local with an OS, a plain global without.
   A handler's own helper routines should be `#untraced` (they'd push onto the trace it's reading).
-- Expected failures return `Result[TSuccess, TFailure]`. There's no `?`: `when r` with `.Success(v)` / `.Failure(e)` arms.
+- Expected failures return `Result[T, TError]`. There's no `?`: `when r` with `is T as v` / `is TError as e` arms
+  (`is S64 as v`, `is ParseError as e => return(e)`).
 
 **Records**
 
@@ -576,16 +577,41 @@ routine start() -> Void
 
 **Variants**
 
-- `variant Expr` lists cases, each with at most one payload type (`Number: S64`, `Add: BinaryExpr`, `Empty`); several
-  values go in a record or a tuple. `Option[T]` (`Absent`, `Present: T`) and `Result[TSuccess, TFailure]`
-  (`Failure: TFailure`, `Success: TSuccess`) are variants.
-- Build: `Expr.Number(5)`, `.Number(5)` where the type is known, `Expr.Empty` / `.Empty`.
-- Read with `when e`; `Expr.Number(n) => target(n)` binds the payload for that arm's target only (or, on the one
-  arm that `continue`s, for the rest of the block), `Expr.Empty` or `.Present` matches without binding. Without `else`, list every case. There's no field access on a variant.
-- Payloads overlap; a payload arm reads through a stack slot (gone at `-O`).
-- A choice or variant without `#derive` derives Representable, Diagnosable, Equatable, Hashable, and Comparable (a variant's only when
-  its payloads have them), skipping what it declares itself; `#derive(...)` lists exactly what to derive,
-  `#derive()` nothing. A record derives only what it lists.
+- A variant lists TYPES, one per line (its branches), not named cases: `variant Expr / S64 / BinaryExpr / Empty`,
+  each a type (`record BinaryExpr / left: S64 / right: S64`, `record Empty`). A value of the variant is a value of one
+  of its branch types. Several values go in a record of their own. `Maybe[T]` has branches `T` and `Unit`,
+  `Result[T, TError]` has `T` and `TError`.
+- Two branches of the same type are a build error (`Result[S64, S64]`, `Maybe[Unit]`), and so is a branch that is a
+  variant holding another branch's type (`Maybe[Maybe[S64]]`): wrap one in a record of its own. A branch can't be
+  `Void` (use `Unit`). A variant holds itself only through a pointer (`@Tree`).
+- Build: a value of a branch type goes where the variant is expected as it is, one level deep: `e: Expr = 5`,
+  `e: Expr = Empty()`, `m: Maybe[S64] = 5`, `return(value)`, `return(Unit())`, `return(ParseError.EMPTY)`, a block
+  argument, a routine argument. An untyped literal goes in through the one branch that takes it (an integer literal
+  never picks a choice branch). Two levels don't widen by themselves (`Exited` -> `ExitStatus` ->
+  `Maybe[ExitStatus]`): bind the middle type first (`status: ExitStatus = Exited(code)`, then `return(status)`). A
+  select widens each side: `cond ? n : Unit()`.
+- Read with `when e`: `is S64 as n => target(n)` names the value for that arm's target (or, on the one arm that
+  `continue`s, for the rest of the block), `is Empty =>` observes without naming, `is S64, is BinaryExpr => ...` puts
+  several unnamed observations in one arm, `else => ...` takes the rest, and `else as rest` names what the other arms
+  leave (the one remaining branch's value, or the whole variant when several remain). Without `else`, observe every
+  branch. An `else` when every branch is already observed is an error. There's no field access on a variant.
+- `tessera migrate` (sources before 0.5) and `tessera migrate --step variants` rewrite `.Present(v) =>` /
+  `.Absent =>` / `.Success(v) =>` / `.Failure(e) =>` arms into `is T as v` using the type written where the when's
+  value is declared, `.Present(x)` / `.Success(x)` / `.Failure(x)` values into `x`, `.Absent` and `Unit.value()` into
+  `Unit()`, and `Option` into `Maybe`. A `when` whose value's type isn't written in the routine, and a program's own
+  variants with named cases, are rewritten by hand (it reports the places).
+- Layout `{ i64 tag, [0 x A], [N x iW] }`: the tag's low 32 bits are the branch type's ID (FNV-1a of the type's
+  identity, never 0), the same in every variant with that type, so moving a value into a wider variant is a copy; the
+  high 32 bits are reserved for what travels with the value. Storage is the largest branch, and zero-size branches
+  (`Unit`, empty records) need none. Building with storage and an arm that names the value go through a stack slot
+  (gone at `-O`). An all-zero (`.hollow()`) variant holds no branch, and a `when` on it crashes with
+  `InvalidValueError`.
+- A choice or variant without `#derive` derives Representable, Diagnosable, Equatable, Hashable, and Comparable (a
+  variant's each only when every branch has it), skipping what it declares itself; `#derive(...)` lists exactly what
+  to derive, `#derive()` nothing. A record derives only what it lists. A variant writes the held value as that value
+  writes itself (a `Maybe[S64]` holding 4 prints `4`, an empty one `Unit`, diagnosed `Unit()`), a pointer branch its
+  address. eq: same branch and equal values. compare: by branch in declaration order, then by value. hash: the
+  branch position combined with the value's hash.
 
 ## Idioms
 
@@ -603,7 +629,7 @@ routine sum_to(n: U64) -> U64
         branch done ? return(total) : loop(i.add(1), total.add(i))
 ```
 
-Iterating a collection (`emit_checked` returns `Option[T]`, Absent past the end, `emit` crashes there; an iterator
+Iterating a collection (`emit_checked` returns `Maybe[T]`, `Unit` past the end, `emit` crashes there; an iterator
 over elements in memory, `ListIter`, `ArrayIter`, `CircularListIter`, also hands out each element's slot with
 `next` / `next_checked`):
 
@@ -615,10 +641,10 @@ routine sum_list(list: @List[S64]) -> S64
         jump next(0)
 
     block next(total: S64)
-        item: Option[S64] = iter.emit_checked()
+        item: Maybe[S64] = iter.emit_checked()
         when item
-            .Present(value) => next(total.add(value))
-            .Absent => return(total)
+            is S64 as value => next(total.add(value))
+            is Unit => return(total)
 ```
 
 Propagating a `Result`:
@@ -628,8 +654,8 @@ routine parse_or_zero(text: Bytes) -> B64
     block entry()
         r: Result[B64, ParseError] = text.to_result[B64]()
         when r
-            .Success(value) => return(value)
-            .Failure(error) => failed(error)
+            is B64 as value => return(value)
+            is ParseError as error => failed(error)
 
     block failed(error: ParseError)
         return(0.0)
@@ -646,7 +672,7 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
   the string builder). Standard input is `In`: `In.read[T]()`, `In.read_line(alloc)`, `read_word`,
   `read_count(n, alloc)`, `read_all`, `read_into_result(buffer, n)`, all through one buffer the process shares.
   `read_line` and `read_word` crash at the end of the input; `read_line_checked` / `read_word_checked` return
-  `Option[Bytes]`, Absent there (a blank line is `""`), so a loop to the end uses those. Text comes back as `Bytes`
+  `Maybe[Bytes]`, `Unit` there (a blank line is `""`), so a loop to the end uses those. Text comes back as `Bytes`
   that carry the allocator: `destruct()` releases it.
 - Reading numbers: text is converted like any value, `text.to[S32]()` (crashes with `InvalidValueError`, naming
   the text and the type, on bad text) or `text.to_result[S32]()` (`Result[T, ParseError]`: `Empty`, `Invalid`,
@@ -655,8 +681,8 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
   `routine Bytes.to_result[T](me: Bytes) -> Result[T, ParseError]`, and `to[T]` comes with it. Numbers from
   standard input: `a: S32 = In.read[S32]()` reads the next word in place (a word longer than the 8192-byte buffer
   goes through a temporary on `DEFAULT_HEAP`) and crashes at the end of the input or on a word that isn't a T;
-  `In.read_checked[T]()` gives `Option[T]` (Absent for both), `In.read_result[T]()` a `Result[T, ParseError]`
-  (`Failure(Empty)` at the end).
+  `In.read_checked[T]()` gives `Maybe[T]` (`Unit` for both), `In.read_result[T]()` a `Result[T, ParseError]`
+  (`ParseError.EMPTY` at the end).
 - `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, and
   `Bytes`. A pointer is neither Representable nor Diagnosable, so `{sum}` on a `local sum: @S64` slot is a build
   error, not its address: write the value with `{sum.peek()}`, or the address with `{sum.to[Addr]()}`
@@ -664,7 +690,7 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
   `v.represent_hex_into(out)` for an integer's bits in hex; `represent_into(out, min_digits)` (`U64`, `U128`, `U256`) and `represent_hex_into(out,
   min_digits)` (`U64`) zero-pad; `represent_fixed_into(out, digits)`; `represent_with_into(out, v, spec)` with a `FormatSpec`.
   There are no `write_decimal_*` / `write_hex_*` helpers: the integer's own method is the writer.
-- `v.diagnose_into(out)` writes a value as Tessera source: `"a\n"`, `'A'`, `b'A'`, `.Present(3)`, `[1, 2]`. A record or
+- `v.diagnose_into(out)` writes a value as Tessera source: `"a\n"`, `'A'`, `b'A'`, `Unit()`, `[1, 2]`; a variant as the value it holds diagnoses itself (`3` for a `Maybe[S64]` holding 3). A record or
   record gets routines written for it with `#derive(Representable, Diagnosable, Equatable, Hashable, Comparable)` (any subset), which
   also declares the conformance; choices and variants get all five without asking. Otherwise declare the routine: a
   bare `conform` never generates one. In a template, `{v}` writes `v.represent_into(out)`, and `{v.diagnose()}`
@@ -686,9 +712,9 @@ the allocator (`construct()` with `Standard/Os` uses the default heap), and `des
 the allocator, so the collection can be used again. Element access is
 `getitem(i)` / `setitem(i, v)` (the name says what is fetched), `at(i)` the checked address. Out-of-range access, `remove_last`
 on empty, and `getitem` of a missing key crash; the `_checked` forms (`getitem_checked`, `remove_last_checked`,
-`peek_checked`) return `Option[T]` instead. Allocation failure crashes too; each
+`peek_checked`) return `Maybe[T]` instead. Allocation failure crashes too; each
 insertion and `reserve` has a `_result` form (`add_last_result`, `setitem_result`, `add_result`) that returns
-`Result[T, AllocFailed]` and leaves the collection unchanged on a `Failure`. `_checked` always means `Option`, `_result`
+`Result[T, AllocFailed]` and leaves the collection unchanged on an `AllocFailed`. `_checked` always means `Maybe`, `_result`
 always `Result`.
 
 | Type | Key operations | Iteration order |
@@ -757,7 +783,7 @@ routine on them is one thing done there now, returning `Result[T, FsError]`, so 
 `delete_result`, `touch_result`, `map_result(write, offset, count)`, `name` / `stem` / `extension` / `parent`. A
 Directory: `create_result` / `create_all_result`, `delete_result` / `delete_all_result(alloc)`, `file(name, alloc)` /
 `subdir(name, alloc)`, `Directory.current_result` / `temp_result` / `home_result`, and a `DirIter` (`claim`,
-`open_result(dir)`, `emit_checked()` until Absent, `close()`). Path text needs no OS: `join_path`, `parent_path`,
+`open_result(dir)`, `emit_checked()` until `Unit`, `close()`). Path text needs no OS: `join_path`, `parent_path`,
 `file_name`, `file_stem`, `file_extension`. A routine that hands text back takes an allocator and returns `Bytes`
 that carry it (`read_all_result`, `join_path`, `env_var`): release them with `destruct()`. One that makes a path
 (`file`, `subdir`, `absolute_result`, `canonical_result`, `Directory.current_result` / `temp_result` /
@@ -766,10 +792,11 @@ gives it back (and does nothing for a literal path).
 
 **Processes.** `run_process_result(program, args, options, alloc)` (looked up on PATH, `args` a `Slice[Bytes]`) and
 `run_shell_result(command, options, alloc)` return `Result[ProcessOutput, ProcessError]`: an `ExitStatus`
-(`.code()`, `.is_success()`) and the captured `stdout` / `stderr` (`Bytes`, released with the output's
+(`variant ExitStatus / Exited / Signaled` over the records `Exited(code: S32)` and `Signaled(signal: S32)`, with
+`.code()`, `.is_success()`) and the captured `stdout` / `stderr` (`Bytes`, released with the output's
 `destruct()`). `ProcessOptions.default()` captures both and gives the child the null device as input; set
 `directory`, `env` / `env_count` (overrides merged into this process's environment), and each stream's mode.
-`env_var(name, alloc)` reads a variable (Absent when it isn't set), `exit(status)` ends the process at once, and
+`env_var(name, alloc)` reads a variable (`Unit` when it isn't set), `exit(status)` ends the process at once, and
 `set_exit_code(status)` sets the status `start` returning ends it with.
 
 **Targets without an OS.** A triple whose OS is `none` (`arm-none-eabi`, `riscv32-none-elf`, `aarch64-none-elf`,
@@ -835,14 +862,14 @@ byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`
 
 **Naming rules for `to`, `_into`, `from_`, `_checked`, and `_result`.**
 
-- A plain routine name crashes on failure, `name_checked` returns `Option[T]` (Absent on failure), and `name_result`
-  returns `Result[TSuccess, TFailure]` (the failure as a value): `getitem` / `getitem_checked`, `construct` / `construct_result`,
+- A plain routine name crashes on failure, `name_checked` returns `Maybe[T]` (`Unit` on failure), and `name_result`
+  returns `Result[T, TError]` (the failure as a value): `getitem` / `getitem_checked`, `construct` / `construct_result`,
   `to[T]` / `to_result[T]`, `In.read[T]` / `read_checked[T]` / `read_result[T]`. File and process routines fail for
   reasons the caller handles, so they are `_result` forms (`File.open_read_result`). A `_checked` never returns a
-  `Result` or a `Bool`, a `_result` never an `Option`, and a plain name never returns an `Option` or a `Result` just to
-  say it failed. An `Option` that is a normal outcome keeps a plain name: `Bytes.find` (not found), `env_var` (not
-  set), `Bool.then_present`; so does `atomic_compare_exchange`, whose `Result` is the answer (the old value, or the
-  value found). An iterator has the plain/`_checked` pair: `emit` crashes past the end, `emit_checked` returns Absent.
+  `Result` or a `Bool`, a `_result` never a `Maybe`, and a plain name never returns a `Maybe` or a `Result` just to
+  say it failed. A `Maybe` that is a normal outcome keeps a plain name: `Bytes.find` (not found), `env_var` (not
+  set), `Bool.then_present`; so does `atomic_compare_exchange`, whose `Result[Unit, T]` is the answer (`Unit` when it
+  wrote, the value found when not). An iterator has the plain/`_checked` pair: `emit` crashes past the end, `emit_checked` returns `Unit`.
 
 - `to[T]()` is a type conversion: one value of type A becomes a value of type B, on A (`p.to[CStr]()`, not
   `CStr.from_ptr(p)`). A conversion that can fail is `to_result[T]()`.
@@ -864,7 +891,7 @@ that `to[T]`, which would call itself there. It keeps the shape under its own na
 starts as, the "nothing yet" of a record) is a typewise routine without arguments, named by what the type holds. A
 type that holds a pointer, directly or in a field (`Slice`, `Bytes`, `FileHandle`, `Mapping`, a collection, a record
 with a `@T` field), or an OS handle, has `.empty()`. A type with no pointer inside (numbers, records and vectors of
-numbers) has `.zero()`: `Vector[T, LANES].zero()`. `Option[T]` keeps its case `.Absent`, and a bare pointer keeps the
+numbers) has `.zero()`: `Vector[T, LANES].zero()`. `Maybe[T]` is empty as `Unit()`, and a bare pointer keeps the
 literal `null` (tested with `is_null()`), so there is no `none()`, `null()`, or `nothing()` routine. A default that
 isn't empty is named for what it is: `ProcessOptions.default()` captures both streams.
 
@@ -907,15 +934,16 @@ range checks (`eq`, `lt`, `between`, `in_range`), an overflow test that goes wit
 (`mul_overflows`), and a routine that does something and says whether it worked (`Set.add`, `remove`, `try_lock`,
 `wait_for`). A `Bool` value in a block reads as a predicate too, but needs no prefix (`done`, `found`).
 
-**Name case.** Types, concepts, modules, and variant cases are `PascalCase` (`.Absent`), with acronyms written as
+**Name case.** Types, concepts, and modules are `PascalCase` (`Maybe`, `ParseError`), with acronyms written as
 words (`Utf8Decoded`). Routines, fields, blocks, and values are `snake_case`. Choice members, presets, globals, and
 value generic parameters are `UPPER_SNAKE_CASE` (`FsError.NOT_FOUND`, `U64.MAX`, `NODE_KEYS`); the build rejects a
 choice member written otherwise.
 
-**Generic parameter names.** Count only the type parameters in scope. One is `T` (`List[T]`, `Option[T]`,
+**Generic parameter names.** Count only the type parameters in scope. One is `T` (`List[T]`, `Maybe[T]`,
 `Writer[T]`, `BufWriter[T]`, `Thread.spawn[T]`, `S64.represent_into[T]`). Two or more are each `T` + its role in
-PascalCase: `Dict[TKey, TValue]`, `Result[TSuccess, TFailure]` (named for its cases), `Iterator[TItem, TIter]`,
-`Tuple2[TItem0, TItem1]`, `bitcast[TFrom, TTo]`. A routine's own type parameters count together with its owner
+PascalCase: `Dict[TKey, TValue]`, `Iterator[TItem, TIter]`,
+`Tuple2[TItem0, TItem1]`, `bitcast[TFrom, TTo]`; `Result[T, TError]` keeps plain `T` for its value and `TError`
+for the error. A routine's own type parameters count together with its owner
 type's, and the owner's keep the names the type declares: `List[T].represent_into[TWriter]`,
 `Dict[TKey, TValue].represent_into[TWriter]`, `Ptr[T].to[@TPointee]`. A value (const) parameter is named like a
 preset, UPPER_SNAKE for what it counts: `Array[T, COUNT]`, `Vector[T, LANES]`, `BigNat[LIMBS]`. Why: a type
@@ -943,7 +971,7 @@ array presets (`K.getitem(i)`, with `preset K: @Array[T, COUNT] <- [...]`).
   also have `destruct_all_values()`. Elements that are borrowed pointers are yours to release. `Array[T, COUNT]` acquires
   nothing, so it has no `destruct()`, only `destruct_all()` for elements that own something.
 - Other ways to make a value are named for what they make: `Out.writer()`, `Bytes.from_ptr(p, n)`,
-  `Option[T].Absent`, `FormatSpec.zero_padded(6)`.
+  `FormatSpec.zero_padded(6)`.
 - `deallocate(p, alloc)` (the raw layer) is not a destructor: it hands a block of memory back to its allocator.
   `Slice[T].destruct()` / `Bytes.destruct()` are the way to do it for memory that carries its allocator.
 
