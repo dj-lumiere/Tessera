@@ -170,6 +170,9 @@ public sealed class Printer
             case DropStmt d:
                 Line(s, indent, $"drop {Expr(d.Value)}");
                 break;
+            case StealStmt st:
+                Line(s, indent, $"steal {Expr(st.From)} as {st.Name}{(st.Inject is null ? "" : $" inject {Expr(st.Inject)}")}");
+                break;
             case BecomesStmt { Value: WhenExpr w } b:
                 Line(s, indent, $"becomes when{(w.When.Value is null ? "" : " " + Expr(w.When.Value))}");
                 Arms(w.When, indent + 1, asValue: true);
@@ -313,6 +316,8 @@ public sealed class Printer
                 return Binary(b.Op, b.Left, b.Right, parentPrec);
             case UnaryExpr u:
                 return Unary(u.Op, u.Operand, parentPrec);
+            case StealExpr st:
+                return $"steal {Expr(st.Value, 9)}";
             case RangeExpr r:
             {
                 string text = $"{Expr(r.From, 4)} {(r.Inclusive ? "to" : "til")} {Expr(r.To, 4)}";

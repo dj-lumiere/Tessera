@@ -121,7 +121,12 @@ public sealed record FieldDecl(string Name, TypeRef Type, List<Annotation> Annot
 
 public sealed record RecordDecl(
     string File, List<Annotation> Annotations, string Name, List<string> TypeParams, List<Clause> Clauses,
-    List<FieldDecl> Fields, Pos Pos) : Decl(File, Annotations, Pos);
+    List<FieldDecl> Fields, Pos Pos) : Decl(File, Annotations, Pos)
+{
+    /// `entity Name`: one of a kind, never copied. It lives in one place (a slot, a global, a field of another entity),
+    /// is lent as `@Name`, moves with `steal`, and ends with `drop`.
+    public bool IsEntity { get; init; }
+}
 
 public sealed record ChoiceDecl(
     string File, List<Annotation> Annotations, string Name, TypeRef Underlying, List<(string Name, Expr Value)> Members,
@@ -281,6 +286,13 @@ public sealed record BreakStmt(Pos Pos) : Stmt(Pos);
 /// this statement calls from a program's own lines.
 public sealed record DropStmt(Expr Value, Pos Pos) : Stmt(Pos);
 
+/// `steal a as b`: the entity `a` holds moves to `b`, and `a` ends. `steal place as old inject fresh`: what a place
+/// (a field or an element, through a pointer) holds moves to `old`, and `fresh` takes its place in the same line.
+public sealed record StealStmt(Expr From, string Name, Expr? Inject, Pos Pos) : Stmt(Pos)
+{
+    public Pos NamePos { get; init; }
+}
+
 /// `becomes v`: the value of the `when` arm this ends.
 public sealed record BecomesStmt(Expr Value, Pos Pos) : Stmt(Pos);
 
@@ -384,6 +396,13 @@ public sealed record BinaryExpr(string Op, Expr Left, Expr Right, Pos Pos) : Exp
 /// `-x`, `not x`, `~x`.
 public sealed record UnaryExpr(string Op, Expr Operand, Pos Pos) : Expr(Pos);
 
+/// `steal x`: the entity the name `x` holds (or its slot holds), handed on where the expression goes, and `x` ends.
+/// `Place` is the builder's own load out of a place for `steal place as old inject fresh`, which ends nothing.
+public sealed record StealExpr(Expr Value, Pos Pos) : Expr(Pos)
+{
+    public bool Place { get; init; }
+}
+
 /// `xs[i]`: `xs.getitem(i)`, and as a statement's left side `xs[i] = v` is `xs.setitem(i, v)`.
 public sealed record GetItemExpr(Expr Base, Expr Index, Pos Pos) : Expr(Pos);
 
@@ -486,6 +505,10 @@ public static class Bodies
             case BindStmt b: yield return b.Value; break;
             case ExprStmt e: yield return e.Value; break;
             case DropStmt d: yield return d.Value; break;
+            case StealStmt st:
+                yield return st.From;
+                if (st.Inject is not null) yield return st.Inject;
+                break;
             case DestructureStmt d: yield return d.Value; break;
             case IfStmt i: yield return i.Cond; break;
             case WhenStmt w:

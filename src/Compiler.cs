@@ -165,7 +165,13 @@ public sealed partial class Compiler
         {
             if (!Selected(d) || d.AnnotationNamed("llvm") is not null || d is VariantDecl { IsAnonymous: true }
                 || d is RecordDecl { Name: "USize" or "SSize" }) continue;
-            var (kind, name) = d is RecordDecl r ? ("record", r.Name) : ("variant", ((VariantDecl)d).Name);
+            var (kind, name) = d is RecordDecl r ? (r.IsEntity ? "entity" : "record", r.Name) : ("variant", ((VariantDecl)d).Name);
+            // A record holding an entity says so before anything about its lifecycle: the fix is to make it one.
+            if (d is RecordDecl { IsEntity: false } plain)
+                foreach (var f in plain.Fields)
+                    if (f.Type.Args.Count == 0 && FindRecord(f.Type.Name, plain.File, f.Pos, f.Type.Path) is { IsEntity: true } held)
+                        throw new CompileError(f.Pos, $"record '{plain.Name}' holds {held.Name} in '{f.Name}', and an entity is never copied, "
+                            + $"which a record is: declare it entity {plain.Name}, or hold a pointer, @{held.Name}");
             bool construct = d is not RecordDecl || has.Contains((d, "construct"));
             bool destruct = has.Contains((d, "destruct"));
             if (construct && destruct) continue;
@@ -1024,6 +1030,8 @@ public sealed partial class Compiler
                     TypeArgExpr te => new ConstArg(EvalConstInt(te.Expr, env, 0)),
                     _ => throw new CompileError(t.Pos, $"invalid generic argument for '{s.Name}'"),
                 });
+            if (Entities.EntityArgument(args) is { } held)
+                throw new CompileError(t.Pos, Entities.ArgumentError(held, $"{s.Name}[...]"));
             CheckRecordRequirements(s, args, t.Pos);
             return new RecordType(s, args, TransparentField);
         }
@@ -1041,6 +1049,8 @@ public sealed partial class Compiler
                     TypeArgExpr te => new ConstArg(EvalConstInt(te.Expr, env, 0)),
                     _ => throw new CompileError(t.Pos, $"invalid generic argument for '{v.Name}'"),
                 });
+            if (Entities.EntityArgument(args) is { } held)
+                throw new CompileError(t.Pos, Entities.ArgumentError(held, $"{v.Name}[...]"));
             CheckRequirements(v.Clauses, v.TypeParams, v.File, v.Pos, args, t.Pos, $"{v.Name}[{string.Join(", ", args.Select(a => a.Name))}]");
             return CheckedAt(new VariantType(v, args, VariantBranches), t.Pos);
         }
@@ -1207,6 +1217,8 @@ public sealed partial class Compiler
     {
         var decl = _records.GetValueOrDefault($"Tuple{items.Count}")?.FirstOrDefault(RecordType.IsTupleDecl)
                    ?? throw new CompileError(pos, $"a tuple has {Parser.MinTupleItems} to {Parser.MaxTupleItems} items, not {items.Count}");
+        if (Entities.EntityArgument(items) is { } held)
+            throw new CompileError(pos, $"a tuple holds {held.Name}, an entity, which is never copied: hold it through a pointer, @{held.Name}");
         CheckRecordRequirements(decl, items, pos);
         return new RecordType(decl, items, TransparentField);
     }
@@ -1222,7 +1234,12 @@ public sealed partial class Compiler
         {
             if (fields.Any(x => x.Item1 == f.Name))
                 throw new CompileError(f.Pos, $"field '{f.Name}' is declared twice");
-            fields.Add((f.Name, ResolveType(f.Type, env)));
+            var ft = ResolveType(f.Type, env);
+            // A record is copied with `=`, and so would everything in it be: an entity goes in an entity.
+            if (!s.Decl.IsEntity && Entities.Holds(ft))
+                throw new CompileError(f.Pos, $"record '{s.Decl.Name}' holds {ft.Name} in '{f.Name}', and an entity is never copied, "
+                    + $"which a record is: declare it entity {s.Decl.Name}, or hold a pointer, @{ft.Name}");
+            fields.Add((f.Name, ft));
         }
         return fields;
     }
@@ -1285,6 +1302,10 @@ public sealed partial class Compiler
                 ? inner.Leaves.Select(_ => v.Decl.Branches[Math.Min(x.i, v.Decl.Branches.Count - 1)].Pos)
                 : [v.Decl.Branches[Math.Min(x.i, v.Decl.Branches.Count - 1)].Pos]).ToList();
         branches = leaves;
+        for (int i = 0; i < branches.Count; i++)
+            if (Entities.Holds(branches[i]))
+                throw new CompileError(pos[i], $"{BranchesShown(v, branches)} has the branch {branches[i].Name}, an entity, which is never "
+                    + $"copied: hold it through a pointer, @{branches[i].Name}");
         try
         {
         for (int i = 0; i < branches.Count; i++)

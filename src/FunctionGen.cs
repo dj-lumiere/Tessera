@@ -153,7 +153,83 @@ public sealed class FunctionGen
     };
 
     /// Whether a value of `t` is a Box or a Memory itself (not a slot of one).
-    private static bool OwnedValue(DType t) => t is not PtrType && OwnedMemory(t) is not null;
+    private static bool OwnedValue(DType t) => t is not PtrType && Tracked(t);
+
+    /// Whether the memory rules follow a value of `t` (or a slot of one): a Box, a Memory, or an entity. Each must end
+    /// once on every path (drop, return, handed on), and nothing uses it after.
+    private static bool Tracked(DType? t) => OwnedMemory(t) is not null || Entities.EntityOf(t) is not null;
+
+    /// The operand of the `drop` being emitted: it ends there, so reading it isn't a copy.
+    private Expr? _dropping;
+
+    /// Why evaluating `e` would copy an entity, or null: a name holding one (not its slot), a field read out of a
+    /// record value, or a load out of memory. A new value (a call, a literal) and a pointer are never copies.
+    private string? CopiedEntity(Expr e)
+    {
+        if (_dropping is not null && e.Equals(_dropping)) return null;
+        switch (e)
+        {
+            case ValueRef r when InferQuiet(r) is RecordType { Decl.IsEntity: true } t:
+                return $"'{r.Name}' holds {t.Name}, an entity, which is never copied: hand it on with steal {r.Name}, "
+                    + "or lend its place as a pointer";
+            case FieldExpr f when !IsPlaceChain(f) && InferQuiet(f) is RecordType { Decl.IsEntity: true } t:
+                return $"this copies the {t.Name} in '{f.Name}', and an entity is never copied: lend the place as a pointer, "
+                    + "or take it out with steal place as old inject new";
+            case MethodCallExpr { Name: "peek" or "peek_atomic" or "peek_volatile" or "getitem" or "load" } m
+                when InferQuiet(m) is RecordType { Decl.IsEntity: true } t:
+                return $"'{m.Name}' reads a {t.Name} out of memory, which copies it, and an entity is never copied: "
+                    + "lend the place itself, or take it out with steal place as old inject new";
+            default:
+                return null;
+        }
+    }
+
+    /// `steal x`: what the name `x` holds (or its slot holds), and x ends here. The builder's own `Place` form loads
+    /// out of a place for `steal place as old inject fresh`, which ends nothing: the place gets `fresh` right after.
+    private Val EvalSteal(StealExpr s, DType expected)
+    {
+        if (s.Place)
+        {
+            _moving = true;
+            return Eval(new MethodCallExpr(s.Value, "peek", [], [], s.Pos), expected);
+        }
+        if (s.Value is not ValueRef r)
+            throw Err(s.Pos, "steal takes a name here (steal x): a field or an element comes out on its own line, "
+                + "steal place as old inject new");
+        var t = InferQuiet(r);
+        if (!Tracked(t))
+            throw Err(s.Pos, $"steal hands on an entity, and '{r.Name}' is {t?.Name ?? "unknown"}, a value that = copies");
+        _moving = true;
+        var v = t is PtrType ? Eval(new MethodCallExpr(r, "peek", [], [], r.Pos), expected) : Eval(r, expected);
+        if (MemOn && _memTracked.Contains(r.Name)) Mem(new MemoryRules.End(r.Name, $"steal {r.Name}", s.Pos));
+        return v;
+    }
+
+    /// `steal a as b` binds b to what a held, and a ends. `steal place as old inject fresh` binds old to what the place
+    /// held and puts fresh there, in that order, so the place is never seen empty.
+    private void EmitSteal(StealStmt st)
+    {
+        if (st.Inject is null)
+        {
+            if (st.From is not ValueRef)
+                throw Err(st.Pos, $"a place keeps a value, so taking one out puts another in: steal {new Printer().Expr(st.From)} as {st.Name} inject <new value>");
+            var stolen = new StealExpr(st.From, st.Pos);
+            var t = Infer(stolen) ?? throw Err(st.From.Pos, "cannot infer what steal takes here");
+            EmitStmt(new BindStmt(st.Name, new TypeRef("$stolen", [], st.NamePos) { Known = t }, stolen, st.Pos));
+            return;
+        }
+        if (st.From is ValueRef name)
+            throw Err(st.Pos, $"inject puts a value back in a place, and '{name.Name}' is a name: steal {name.Name} as {st.Name} moves it");
+        if (Infer(st.From) is not PtrType { Pointee: { } held } || !Tracked(held))
+            throw Err(st.From.Pos, "steal ... as ... inject ... takes an entity out of a place: a field or an element reached through a pointer");
+        var taken = new StealExpr(st.From, st.Pos) { Place = true };
+        EmitStmt(new BindStmt(st.Name, new TypeRef("$stolen", [], st.NamePos) { Known = held }, taken, st.Pos));
+        EvalAny(new MethodCallExpr(st.From, "poke", [], [st.Inject], st.Pos));
+    }
+
+    /// Set right before evaluating an expression that moves an entity rather than copying it (the operand of `steal`, a
+    /// returned name): Eval reads and clears it, so only that expression itself is exempt.
+    private bool _moving;
 
     /// The event for binding `name` to `value`, a Box or a Memory (or a slot of one): a copy of a handle, the same memory
     /// again, or new memory. A field read or a value from elsewhere isn't followed.
@@ -162,6 +238,20 @@ public sealed class FunctionGen
         if (value is ImplicitCallExpr { Name: "hollow" } or NsCallExpr { Name: "hollow" })
         {
             _memTracked.Add(name);
+            return;
+        }
+        // `b: T = steal a` (or `steal a as b`): a's life ended at the steal, and b's starts here.
+        if (value is StealExpr st)
+        {
+            _memTracked.Add(name);
+            Mem(new MemoryRules.Acquire(name, st.Place ? "taken out of a place" : "taken by steal", pos));
+            return;
+        }
+        // An entity made from a record literal, `local b: @Budget <- (left: 0)`, is new.
+        if (value is RecordLit or ArrayLit && Entities.EntityOf(InferQuiet(value)) is not null)
+        {
+            _memTracked.Add(name);
+            Mem(new MemoryRules.Acquire(name, "made here", pos));
             return;
         }
         if (MemName(value) is { } of)
@@ -538,6 +628,9 @@ public sealed class FunctionGen
         }
 
         CheckReshapingAnnotation();
+        // An entity is lent, never copied: its routines take `me: @Me`.
+        if (_decl.Params is [{ Name: "me" } me, ..] && me.Type.Name == "Me" && _inst.Params.Count > 0 && Entities.IsEntity(_inst.Params[0]))
+            throw Err(me.Pos, $"'{_decl.DisplayName}' takes me by value, which copies the {_inst.Params[0].Name}, an entity: take me: @Me");
         if (MemOn)
         {
             string first = _decl.Shared.Count > 0 ? "" : blocks[0].Name;
@@ -987,7 +1080,7 @@ public sealed class FunctionGen
                             : $"the frame slot '{b.Name}' (claimed at line {b.Pos.Line})";
                     else if (PointsAtMemory(t) && FrameView(b.Value) is { } sees) _frameViews[b.Name] = sees;
                 }
-                if (MemOn && OwnedMemory(t) is not null)
+                if (MemOn && Tracked(t))
                 {
                     if (b.Value is ClaimExpr { Contents: { } held }) MemBind(b.Name, held, b.Pos, warn: false);
                     else if (b.Value is not ClaimExpr) MemBind(b.Name, b.Value, b.Pos);
@@ -1052,9 +1145,14 @@ public sealed class FunctionGen
             case DropStmt d:
             {
                 var call = new MethodCallExpr(d.Value, "destruct", [], [], d.Pos);
-                EvalAny(call);
+                _dropping = d.Value;
+                try { EvalAny(call); }
+                finally { _dropping = null; }
                 break;
             }
+            case StealStmt st:
+                EmitSteal(st);
+                break;
             case IfStmt i:
                 EmitIf(i);
                 break;
@@ -1381,6 +1479,10 @@ public sealed class FunctionGen
             case BoolLit: return BoolType.Instance;
             case TypedIntLit t: return t.Type;
             case ValueRef r: return Lookup(r).Type;
+            case StealExpr steal:
+                return Infer(steal.Value) is var stolen && (steal.Place || stolen is PtrType { Pointee: RecordType { Decl.IsEntity: true } })
+                    ? (stolen as PtrType)?.Pointee
+                    : stolen;
             case RecordLit sl: return sl.Type is null ? null : Resolve(sl.Type);
             case FieldExpr or IndexExpr when IsPlaceChain(e):
                 return PlaceType(e) is { } pt ? new PtrType(pt) : null;
@@ -1476,7 +1578,10 @@ public sealed class FunctionGen
     /// one, so a type mismatch names it the way overload resolution does.
     private Val Eval(Expr e, DType expected, int argument = 0)
     {
+        bool moving = _moving;
+        _moving = false;
         e = AsStride(AsField(_c.AsRecordLit(Desugar(e), _env)));
+        if (!moving && CopiedEntity(e) is { } copied) throw Err(e.Pos, copied);
         // A value of a branch type is a value of the variant (one level), and so is a narrower variant's.
         if (expected is VariantType vt && WidenSource(e, vt) is { } branch)
             return WrapInVariant(Eval(e, branch, argument), vt, e.Pos);
@@ -1516,6 +1621,7 @@ public sealed class FunctionGen
             PresetRef r => EvalPresetRef(r, expected),
             RoutineRef rr => RoutineValue(rr, expected),
             LambdaExpr l => EvalLambda(l, expected),
+            StealExpr s => EvalSteal(s, expected),
             CallExpr or NsCallExpr or MethodCallExpr => EvalCall(e, expected),
             _ => throw new InvalidOperationException(e.GetType().Name),
         };
@@ -3921,6 +4027,8 @@ public sealed class FunctionGen
             return;
         }
         if (r.Value is null) throw Err(r.Pos, $"'{_decl.DisplayName}' must return a {_inst.Ret}");
+        // A returned name hands what it holds to the caller: an entity moves out here.
+        _moving = r.Value is ValueRef;
         var v = Eval(r.Value, _inst.Ret);
         if (_cur.Terminated) return;
         if (_sig.Sret)

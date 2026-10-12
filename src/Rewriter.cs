@@ -71,6 +71,7 @@ public class Rewriter
             case GetItemExpr g: return g with { Base = Expr(g.Base), Index = Expr(g.Index) };
             case BinaryExpr b: return b with { Left = Expr(b.Left), Right = Expr(b.Right) };
             case UnaryExpr u: return u with { Operand = Expr(u.Operand) };
+            case StealExpr st: return st with { Value = Expr(st.Value) };
             case RangeExpr r: return r with { From = Expr(r.From), To = Expr(r.To), Step = r.Step is null ? null : Expr(r.Step) };
             case IfExpr i: return i with { Cond = Expr(i.Cond), Then = Expr(i.Then), Else = Expr(i.Else) };
             case WhenExpr w: return w with { When = When(w.When) };

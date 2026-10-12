@@ -35,6 +35,9 @@ public sealed class LifecycleNeeds(Func<TypeRef, string, Decl?> find, bool unkno
             case RecordDecl r when r is { Name: "Memory" or "Box" } && r.Module == Compiler.CoreModule:
                 why = $"it is memory from a manager";
                 break;
+            case RecordDecl { IsEntity: true }:
+                why = "it is an entity, whose life ends with drop";
+                break;
             case RecordDecl r:
                 foreach (var f in r.Fields)
                     if (Holds(f.Type, args, d.File))

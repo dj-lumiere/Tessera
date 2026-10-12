@@ -46,7 +46,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         "jump", "branch", "when", "return", "unreachable", "continue", "else", "block", "claim", "local",
         "true", "false", "null", "routine", "record", "choice", "variant", "preset", "global", "concept", "conform",
         "protocol", "obeys", "needs", "define", "private", "internal", "module", "import", "and", "or", "not", "is", "as",
-        "todo", "if", "each", "while", "until", "becomes", "break", "pass", "drop",
+        "todo", "if", "each", "while", "until", "becomes", "break", "pass", "drop", "entity", "steal",
     ];
     /// Inside an `@external("asm")` routine: a statement may carry `@asm_prefix`, and an `if` may test a bare
     /// comparison name (`eq`, `lt[U64]`).
@@ -55,10 +55,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// The words a statement starts with, besides a binding or a call.
     private static readonly HashSet<string> StatementKeywords =
         ["jump", "branch", "when", "return", "unreachable", "todo", "if", "each", "while", "until", "continue", "break", "pass",
-         "becomes", "local", "claim", "else", "then", "drop"];
+         "becomes", "local", "claim", "else", "then", "drop", "steal"];
 
     private static readonly HashSet<string> DeclKeywords =
-        ["routine", "record", "choice", "variant", "preset", "global", "concept", "conform", "protocol", "obeys", "define"];
+        ["routine", "record", "entity", "choice", "variant", "preset", "global", "concept", "conform", "protocol", "obeys", "define"];
 
     public Module ParseModule()
     {
@@ -90,11 +90,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             bool isInternal = IsIdent("internal");
             if (isPrivate || isInternal) Next();
             if (!IsKeyword(Cur) || !DeclKeywords.Contains(Cur.Text))
-                throw Error($"expected a declaration (routine, record, choice, variant, preset, global, protocol, obeys, define), found {Describe(Cur)}");
+                throw Error($"expected a declaration (routine, record, entity, choice, variant, preset, global, protocol, obeys, define), found {Describe(Cur)}");
             Decl d = Cur.Text switch
             {
                 "routine" => ParseRoutine(annotations, inConcept: false),
-                "record" => ParseRecord(annotations),
+                "record" or "entity" => ParseRecord(annotations),
                 "choice" => ParseChoice(annotations),
                 "variant" => ParseVariant(annotations),
                 "preset" => ParsePreset(annotations),
@@ -647,8 +647,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private RecordDecl ParseRecord(List<Annotation> annotations)
     {
         var pos = Cur.Pos;
-        ExpectIdent("record");
-        var name = TypeName(Expect(TokenKind.Ident, "a record name"));
+        bool isEntity = IsIdent("entity");
+        if (isEntity) Next();
+        else ExpectIdent("record");
+        var name = TypeName(Expect(TokenKind.Ident, isEntity ? "an entity name" : "a record name"));
         var typeParams = ParseTypeParamNames();
         ExpectLineEnd();
         var clauses = ParseClauses();
@@ -677,7 +679,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             fields.Add(new FieldDecl(f.Text, ParseType(), fieldAnnotations, f.Pos, isPrivate, isInternal));
             ExpectLineEnd();
         }
-        return new RecordDecl(file, annotations, name.Text, typeParams, clauses, fields, pos);
+        return new RecordDecl(file, annotations, name.Text, typeParams, clauses, fields, pos) { IsEntity = isEntity };
     }
 
     /// `variant Name[T]`, its clauses, then one branch type per line: `S64`, `Chest`, `@Node`.
@@ -1195,6 +1197,25 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             {
                 case "if": return ParseIf(col);
                 case "each" or "while" or "until": return ParseLoop(col);
+                case "steal":
+                {
+                    Next();
+                    var from = ParsePostfix();
+                    if (!IsIdent("as"))
+                        throw Error("steal on its own line moves into a name: steal a as b, or out of a place: steal place as old inject new; " +
+                                    "as an argument it is steal a");
+                    Next();
+                    var named = ValueName("the name the stolen value goes to");
+                    Expr? inject = null;
+                    if (IsIdent("inject"))
+                    {
+                        Next();
+                        inject = ParseExpr();
+                    }
+                    ExpectLineEnd();
+                    _values!.Add(named.Text);
+                    return new StealStmt(from, named.Text, inject, pos) { NamePos = named.Pos };
+                }
                 case "drop":
                 {
                     Next();
@@ -1314,7 +1335,18 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     }
 
     /// The condition of an `if`, a `while`, or an `until`: a Bool expression, or in assembly a comparison name.
-    private Expr ParseCondition() => _inAsm && AsmCondition() is { } named ? named : ParseExpr();
+    private Expr ParseCondition()
+    {
+        // In an assembly block, `if not FLAGS.Carry` jumps when the flag is clear: the condition negated.
+        if (_inAsm && IsWordOp("not"))
+        {
+            int start = _i;
+            var not = Next();
+            if (AsmCondition() is { } negated) return new UnaryExpr("not", negated, not.Pos);
+            _i = start;
+        }
+        return _inAsm && AsmCondition() is { } named ? named : ParseExpr();
+    }
 
     /// `each x in source`, `while c`, `until c`, each with `with a: T = init, ...`, a body, and `then` with a body.
     private LoopStmt ParseLoop(int col)
@@ -1838,6 +1870,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         {
             var op = Next();
             return new UnaryExpr("not", ParseUnary(), op.Pos);
+        }
+        if (IsWordOp("steal"))
+        {
+            var op = Next();
+            return new StealExpr(ParsePostfix(), op.Pos);
         }
         return ParsePower();
     }

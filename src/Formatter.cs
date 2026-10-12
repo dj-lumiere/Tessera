@@ -98,7 +98,7 @@ public static class Formatter
                 string decl = trimmed.StartsWith("private ") ? trimmed[8..]
                     : trimmed.StartsWith("internal ") ? trimmed[9..]
                     : trimmed;
-                if (decl.StartsWith("record ")) context = "record";
+                if (decl.StartsWith("record ") || decl.StartsWith("entity ")) context = "record";
                 else if (decl.StartsWith("choice ")) context = "choice";
                 else if (decl.StartsWith("variant ")) context = "variant";
                 else if (!(trimmed.StartsWith("obeys ") || trimmed.StartsWith("needs ") || IsAnnotation(trimmed)))
@@ -742,7 +742,7 @@ public static class Formatter
             "define" => DeclKind.Define,
             "global" => DeclKind.Global,
             "preset" => DeclKind.Preset,
-            "record" or "choice" or "variant" => DeclKind.Type,
+            "record" or "entity" or "choice" or "variant" => DeclKind.Type,
             "protocol" => DeclKind.Concept,
             "obeys" => DeclKind.Conform,
             "routine" => IsEntryHeader(s, "start") || IsEntryHeader(s, "when_booted") ? DeclKind.Entry : DeclKind.Routine,
@@ -999,7 +999,7 @@ public static class Formatter
             }
             bool boundaryBefore = i == 0 || !(char.IsLetterOrDigit(line[i - 1]) || line[i - 1] is '_' or '%' or '.' or ':');
             if (boundaryBefore && string.CompareOrdinal(line, i, "Ptr[", 0, 4) == 0 && MatchingBracket(line, i + 3) is int close
-                && !(close + 1 < line.Length && line[close + 1] == '.') && !line[..i].TrimEnd().EndsWith("record", StringComparison.Ordinal))
+                && !(close + 1 < line.Length && line[close + 1] == '.') && !line[..i].TrimEnd().EndsWith("record", StringComparison.Ordinal) && !line[..i].TrimEnd().EndsWith("entity", StringComparison.Ordinal))
             {
                 sb.Append('@').Append(UseAt(line[(i + 4)..close]));
                 i = close;

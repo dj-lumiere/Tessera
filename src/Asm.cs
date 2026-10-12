@@ -1028,6 +1028,9 @@ internal sealed class AsmLowering
     {
         switch (cond)
         {
+            // `if not FLAGS.Carry`: the opposite condition.
+            case UnaryExpr { Op: "not" } not:
+                return ConditionalJump(not.Operand, label, !negate);
             case AsmCondExpr or PresetRef { Owner.Name: "FLAGS" } when _arch != Arch.Rv:
             {
                 string code = ConditionCode(cond);

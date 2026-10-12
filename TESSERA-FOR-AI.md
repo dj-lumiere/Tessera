@@ -671,6 +671,22 @@ routine start() -> None
   and `fmt` drops them. In `Callable[(A, B), R]` the first list is the parameters.
 - Use a record when the parts mean something (`quotient`, `remainder`); a tuple when they're just values.
 
+**Entities**
+
+- `entity Name` is declared like a record (fields, `construct`, `destruct`), and is one of a kind: it is never copied.
+  It lives in one place, a `local` slot (`local c: @Counter <- .construct()`), a global, or a field of another entity,
+  and is lent as a pointer (`@Counter`). Its routines take `me: @Me` (`me: Me` is a build error). Every entity
+  declares `construct` and `destruct`, and its life ends with `drop`, on every path, like memory from a manager.
+- Moving is written with `steal`. `steal a as b` moves what `a` holds to the new name `b`, and an argument moves
+  with `f(c: steal a)`: `a` ends there, and using it afterwards is a build error. A field or an element comes out
+  with `steal p.left as old inject Counter.construct()`, which binds `old` and puts the new value in the same line,
+  so the place is never empty. A returned name moves to the caller (`return c`).
+- What copies an entity is a build error that says how to move it instead: reading a name that holds one
+  (`x: Counter = c`), a field read out of a record value, and a load out of memory (`slot.peek()`).
+- A record can't hold an entity (it would copy it): declare the holder `entity` too, or hold a pointer. A type
+  argument, a tuple item, and a variant branch can't be an entity either: `List[Counter]` is a build error, and
+  `List[@Counter]` lends them.
+
 **Variants**
 
 - A variant lists TYPES, one per line (its branches), not named cases: `variant Expr / S64 / BinaryExpr / Empty`,

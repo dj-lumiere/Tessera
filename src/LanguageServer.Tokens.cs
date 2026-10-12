@@ -26,7 +26,7 @@ public static partial class LanguageServer
 
     private static readonly HashSet<string> Keywords =
     [
-        "routine", "record", "choice", "variant", "preset", "global", "protocol", "obeys", "define", "block", "local",
+        "routine", "record", "entity", "choice", "variant", "preset", "global", "protocol", "obeys", "define", "block", "local", "steal",
         "import", "module", "private", "internal", "needs", "not", "true", "false", "null", "typename",
     ];
 

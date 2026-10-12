@@ -411,3 +411,31 @@ public sealed record BuildTarget(string Arch, string Os, string Abi, int Size, s
         _ => throw new ArgumentException($"unknown #target key '{key}' (keys: arch, os, abi, size)"),
     };
 }
+
+/// Entities: a type declared `entity` is one of a kind. It is never copied, so it can't be a type argument, a variant's
+/// branch, or a field of a record (a record holding one would copy it): it lives in a slot, a global, or a field of
+/// another entity, is lent as a pointer, moves with `steal`, and ends with `drop`.
+public static class Entities
+{
+    /// Whether `t` is an entity value (not a pointer to one).
+    public static bool IsEntity(DType? t) => t is RecordType { Decl.IsEntity: true };
+
+    /// The entity `t` is, or a slot of one holds, or null.
+    public static RecordType? EntityOf(DType? t) =>
+        (t is PtrType { Pointee: RecordType inner } ? inner : t as RecordType) is { Decl.IsEntity: true } r ? r : null;
+
+    /// Whether a value of `t` holds an entity by value: the entity itself, or an array of one.
+    public static bool Holds(DType? t) => t switch
+    {
+        RecordType { Decl.IsEntity: true } => true,
+        ArrayType a => Holds(a.Elem),
+        _ => false,
+    };
+
+    /// The first type argument that holds an entity, or null.
+    public static DType? EntityArgument(IEnumerable<DType> args) => args.FirstOrDefault(Holds);
+
+    public static string ArgumentError(DType entity, string formed) =>
+        $"{formed} takes {entity.Name} as a type argument, and {entity.Name} is an entity, which is never copied: "
+        + $"hold it through a pointer, @{entity.Name}";
+}
