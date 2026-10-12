@@ -169,7 +169,7 @@ public sealed partial class Compiler
             // A record holding an entity says so before anything about its lifecycle: the fix is to make it one.
             if (d is RecordDecl { IsEntity: false } plain)
                 foreach (var f in plain.Fields)
-                    if (f.Type.Args.Count == 0 && FindRecord(f.Type.Name, plain.File, f.Pos, f.Type.Path) is { IsEntity: true } held)
+                    if (f.Type.Args.Count == 0 && !plain.TypeParams.Contains(f.Type.Name) && EntityNamed(f.Type, plain.File) is { } held)
                         throw new CompileError(f.Pos, $"record '{plain.Name}' holds {held.Name} in '{f.Name}', and an entity is never copied, "
                             + $"which a record is: declare it entity {plain.Name}, or hold a pointer, @{held.Name}");
             bool construct = d is not RecordDecl || has.Contains((d, "construct"));
@@ -1224,6 +1224,19 @@ public sealed partial class Compiler
     }
 
     /// Fields of a record type, with its type parameters substituted.
+    /// The entity a field's type names, or null: a type the file can't see is the field resolver's to report.
+    private RecordDecl? EntityNamed(TypeRef t, string file)
+    {
+        try
+        {
+            return FindRecord(t.Name, file, t.Pos, t.Path) is { IsEntity: true } entity ? entity : null;
+        }
+        catch (CompileError)
+        {
+            return null;
+        }
+    }
+
     public List<(string Name, DType Type)> Fields(RecordType s)
     {
         if (_fieldCache.TryGetValue(s.Key, out var cached)) return cached;

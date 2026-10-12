@@ -286,9 +286,10 @@ public sealed record BreakStmt(Pos Pos) : Stmt(Pos);
 /// this statement calls from a program's own lines.
 public sealed record DropStmt(Expr Value, Pos Pos) : Stmt(Pos);
 
-/// `steal a as b`: the entity `a` holds moves to `b`, and `a` ends. `steal place as old inject fresh`: what a place
-/// (a field or an element, through a pointer) holds moves to `old`, and `fresh` takes its place in the same line.
-public sealed record StealStmt(Expr From, string Name, Expr? Inject, Pos Pos) : Stmt(Pos)
+/// `steal a as b`: the entity the slot `a` holds moves to a new slot `b`, and `a` ends. `steal place as b`: what a
+/// place (a field or an element, through a pointer) holds moves to `b`, and the place is left hollow until a value is
+/// put back (`place.poke(...)`).
+public sealed record StealStmt(Expr From, string Name, Pos Pos) : Stmt(Pos)
 {
     public Pos NamePos { get; init; }
 }
@@ -396,8 +397,8 @@ public sealed record BinaryExpr(string Op, Expr Left, Expr Right, Pos Pos) : Exp
 /// `-x`, `not x`, `~x`.
 public sealed record UnaryExpr(string Op, Expr Operand, Pos Pos) : Expr(Pos);
 
-/// `steal x`: the entity the name `x` holds (or its slot holds), handed on where the expression goes, and `x` ends.
-/// `Place` is the builder's own load out of a place for `steal place as old inject fresh`, which ends nothing.
+/// `steal x`: the entity the slot `x` holds, handed on where the expression goes, and `x` ends. `Place` is the
+/// builder's own load out of a place for `steal place as b`, which leaves the place hollow.
 public sealed record StealExpr(Expr Value, Pos Pos) : Expr(Pos)
 {
     public bool Place { get; init; }
@@ -505,10 +506,7 @@ public static class Bodies
             case BindStmt b: yield return b.Value; break;
             case ExprStmt e: yield return e.Value; break;
             case DropStmt d: yield return d.Value; break;
-            case StealStmt st:
-                yield return st.From;
-                if (st.Inject is not null) yield return st.Inject;
-                break;
+            case StealStmt st: yield return st.From; break;
             case DestructureStmt d: yield return d.Value; break;
             case IfStmt i: yield return i.Cond; break;
             case WhenStmt w:

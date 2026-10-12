@@ -669,15 +669,18 @@ routine start() -> None
 **Entities**
 
 - `entity Name` is declared like a record (fields, `construct`, `destruct`), and is one of a kind: it is never copied.
-  It lives in one place, a `local` slot (`local c: @Counter <- .construct()`), a global, or a field of another entity,
-  and is lent as a pointer (`@Counter`). Its routines take `me: @Me` (`me: Me` is a build error). Every entity
-  declares `construct` and `destruct`, and its life ends with `drop`, on every path, like memory from a manager.
-- Moving is written with `steal`. `steal a as b` moves what `a` holds to the new name `b`, and an argument moves
-  with `f(c: steal a)`: `a` ends there, and using it afterwards is a build error. A field or an element comes out
-  with `steal p.left as old inject Counter.construct()`, which binds `old` and puts the new value in the same line,
-  so the place is never empty. A returned name moves to the caller (`return c`).
-- What copies an entity is a build error that says how to move it instead: reading a name that holds one
-  (`x: Counter = c`), a field read out of a record value, and a load out of memory (`slot.peek()`).
+  It lives in a place, a `local` slot (`local c: @Counter <- .construct()`), a global, or a field of another entity,
+  and every name for one is that place, `@Counter`: `x: Counter = ...` is a build error. Its routines take
+  `me: @Me` (`me: Me` is a build error). A parameter that takes one over (`c: Counter`) is a slot of the routine
+  inside it. Every entity declares `construct` and `destruct`, and its life ends with `drop`, on every path, like
+  memory from a manager.
+- Moving is written with `steal`. `steal a as b` moves what the slot `a` holds into a new slot `b`, and an argument
+  moves with `f(c: steal a)`: `a` ends there, and using it afterwards is a build error. `steal p.left as old` takes
+  what a field holds into a new slot `old` and leaves the field hollow: reading it before a value is put back
+  (`p.left.poke(Counter.construct())`) is a build error. `return c` hands what the slot `c` holds to the caller,
+  and `c` ends.
+- What copies an entity is a build error that says what to do instead: a load out of memory (`slot.peek()`), or a
+  field read out of a record value.
 - A record can't hold an entity (it would copy it): declare the holder `entity` too, or hold a pointer. A type
   argument, a tuple item, and a variant branch can't be an entity either: `List[Counter]` is a build error, and
   `List[@Counter]` lends them.

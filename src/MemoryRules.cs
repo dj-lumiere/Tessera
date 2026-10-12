@@ -150,7 +150,10 @@ public static class MemoryRules
                     case End end:
                     {
                         if (!state.Names.TryGetValue(end.Name, out var id) || !state.Groups.TryGetValue(id, out var g)) break;
-                        if (g.Ended is { } endedAt && g.Entity is { } once)
+                        if (g.Ended is { } emptiedAt && g.Entity is not null && end.Name.Contains('.'))
+                            Report(end.Pos, $"'{end.Name}' was left hollow by {g.How} on line {emptiedAt.Line}, so there is nothing to take or drop: "
+                                + $"put a value back first, {end.Name}.poke(...)");
+                        else if (g.Ended is { } endedAt && g.Entity is { } once)
                             Report(end.Pos, $"'{end.Name}' ended already ({g.How} on line {endedAt.Line}), and a {once} ends once");
                         else if (g.Ended is { } at)
                             Report(end.Pos, $"'{end.Name}' gives back memory that was given back already ({g.How} on line {at.Line}): "
@@ -162,8 +165,11 @@ public static class MemoryRules
                     case Use u:
                     {
                         if (state.Names.TryGetValue(u.Name, out var id) && state.Groups.TryGetValue(id, out var g) && g.Ended is { } at)
-                            Report(u.Pos, g.Entity is { } gone
-                                ? $"'{u.Name}' is used after {g.How} on line {at.Line} ended it: a {gone} is used before it is handed on or dropped"
+                            Report(u.Pos, g.Entity is { } gone && u.Name.Contains('.')
+                                ? $"'{u.Name}' was left hollow by {g.How} on line {at.Line}, and is read here before a {gone} is put back: "
+                                  + $"put one in first, {u.Name}.poke(...)"
+                                : g.Entity is { } gone2
+                                ? $"'{u.Name}' is used after {g.How} on line {at.Line} ended it: a {gone2} is used before it is handed on or dropped"
                                 : $"'{u.Name}' is used after its memory was given back ({g.How} on line {at.Line}): "
                                   + "use it before that, or make memory of its own with .duplicate() before it");
                         break;

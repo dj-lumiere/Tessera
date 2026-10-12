@@ -34,6 +34,9 @@ public sealed class FunctionGen
     private readonly List<LBlock> _lblocks = [];
     private readonly List<string> _allocas = [];
 
+    /// The stores that put an entity handed in into its slot, once the parameters are unpacked.
+    private readonly List<string> _paramSpills = [];
+
     /// Field addresses (GEP results) less aligned than their type, with the alignment they have.
     private readonly Dictionary<string, long> _placeAlign = [];
     private AbiSig _sig = null!;
@@ -195,7 +198,7 @@ public sealed class FunctionGen
         }
         if (s.Value is not ValueRef r)
             throw Err(s.Pos, "steal takes a name here (steal x): a field or an element comes out on its own line, "
-                + "steal place as old inject new");
+                + "steal p.left as b");
         var t = InferQuiet(r);
         if (!Tracked(t))
             throw Err(s.Pos, $"steal hands on an entity, and '{r.Name}' is {t?.Name ?? "unknown"}, a value that = copies");
@@ -205,26 +208,47 @@ public sealed class FunctionGen
         return v;
     }
 
-    /// `steal a as b` binds b to what a held, and a ends. `steal place as old inject fresh` binds old to what the place
-    /// held and puts fresh there, in that order, so the place is never seen empty.
+    /// `steal a as b`: a new slot `b` takes what the slot `a` held, and `a` ends. `steal place as b`: a new slot `b`
+    /// takes what the place held, and the place is left hollow: reading it before a value is put back is a build
+    /// error, so a hollow entity is never used by mistake.
     private void EmitSteal(StealStmt st)
     {
-        if (st.Inject is null)
+        if (st.From is ValueRef)
         {
-            if (st.From is not ValueRef)
-                throw Err(st.Pos, $"a place keeps a value, so taking one out puts another in: steal {new Printer().Expr(st.From)} as {st.Name} inject <new value>");
             var stolen = new StealExpr(st.From, st.Pos);
             var t = Infer(stolen) ?? throw Err(st.From.Pos, "cannot infer what steal takes here");
-            EmitStmt(new BindStmt(st.Name, new TypeRef("$stolen", [], st.NamePos) { Known = t }, stolen, st.Pos));
+            EmitStmt(new BindStmt(st.Name, new TypeRef("$stolen", [], st.NamePos) { Known = new PtrType(t) },
+                new ClaimExpr(st.Pos) { Contents = stolen }, st.Pos));
             return;
         }
-        if (st.From is ValueRef name)
-            throw Err(st.Pos, $"inject puts a value back in a place, and '{name.Name}' is a name: steal {name.Name} as {st.Name} moves it");
-        if (Infer(st.From) is not PtrType { Pointee: { } held } || !Tracked(held))
-            throw Err(st.From.Pos, "steal ... as ... inject ... takes an entity out of a place: a field or an element reached through a pointer");
+        if (Infer(st.From) is not PtrType { Pointee: { } held } || Entities.EntityOf(held) is null)
+            throw Err(st.From.Pos, "steal takes an entity out of a place: a field or an element reached through a pointer, steal p.left as b");
         var taken = new StealExpr(st.From, st.Pos) { Place = true };
-        EmitStmt(new BindStmt(st.Name, new TypeRef("$stolen", [], st.NamePos) { Known = held }, taken, st.Pos));
-        EvalAny(new MethodCallExpr(st.From, "poke", [], [st.Inject], st.Pos));
+        EmitStmt(new BindStmt(st.Name, new TypeRef("$stolen", [], st.NamePos) { Known = new PtrType(held) },
+            new ClaimExpr(st.Pos) { Contents = taken }, st.Pos));
+        EvalAny(new MethodCallExpr(st.From, "poke", [],
+            [new NsCallExpr(new TypeRef("$hollow", [], st.Pos) { Known = held }, "hollow", [], [], st.Pos)], st.Pos));
+        if (MemOn && PlaceKey(st.From) is { } key)
+        {
+            Mem(new MemoryRules.Acquire(key, "emptied", st.Pos) { Entity = held.Name });
+            Mem(new MemoryRules.End(key, $"steal {key}", st.Pos));
+        }
+    }
+
+    /// A place written as a chain from a name, `p.left` or `p.items[2]`, as text: what the emptied-place check follows.
+    private static string? PlaceKey(Expr e) => e switch
+    {
+        ValueRef r => r.Name,
+        FieldExpr f when PlaceKey(f.Base) is { } b => $"{b}.{f.Name}",
+        _ => null,
+    };
+
+    /// A place that steal left hollow is read: the memory rules report it when nothing was put back on the way here.
+    private void MemPlaceUse(Expr e, Pos pos)
+    {
+        if (!MemOn) return;
+        for (var at = e; at is FieldExpr f; at = f.Base)
+            if (PlaceKey(f) is { } key) Mem(new MemoryRules.Use(key, pos));
     }
 
     /// Set right before evaluating an expression that moves an entity rather than copying it (the operand of `steal`, a
@@ -439,6 +463,10 @@ public sealed class FunctionGen
     /// A return that takes a view of this routine's memory out of it.
     private void CheckReturnEscape(ReturnStmt r)
     {
+        // `return c` with c the slot of the entity returned hands over what the slot holds, not the slot.
+        if (r.Value is ValueRef named && Entities.IsEntity(_inst.Ret) && InferQuiet(named) is PtrType { Pointee: { } held }
+            && held.Equals(_inst.Ret))
+            return;
         if (r.Value is { } value && FrameView(value) is { } sees)
             throw Err(value.Pos, $"this returns a view of {sees}, which is gone once '{_decl.DisplayName}' returns: return the "
                 + "values themselves, or let the caller pass the memory in (a Span or a slot) and write there");
@@ -491,6 +519,9 @@ public sealed class FunctionGen
     {
         if (!MemOn) return;
         string? receiver = plan.Receiver is null ? null : MemName(plan.Receiver);
+        // A value put back into a place steal emptied: the place holds something again.
+        if (plan.Receiver is not null && sig.Decl.Name is "poke" or "poke_volatile" && receiver is null && PlaceKey(plan.Receiver) is { } refilled)
+            Mem(new MemoryRules.Store(refilled, null, plan.Pos));
         if (plan.Receiver is not null && sig.Decl.Name == "poke" && receiver is not null && sig.Params[0] is PtrType)
         {
             // A claim's own contents, stored where the claim stands: the claim's binding said what the slot holds.
@@ -586,7 +617,18 @@ public sealed class FunctionGen
         for (int i = 0; i < _decl.Params.Count; i++)
         {
             var p = _decl.Params[i];
-            if (!_routineParams.TryAdd(p.Name, new Val($"%a.{IrName(p.Name)}", _inst.Params[i])))
+            var given = new Val($"%a.{IrName(p.Name)}", _inst.Params[i]);
+            // An entity handed in lives in a slot of this routine's frame: inside, the name is that slot (@E), so the
+            // routine can lend it, drop it, or hand it on with steal.
+            if (Entities.IsEntity(_inst.Params[i]) && p.Name != "me" && !_c.Prechecking)
+            {
+                var held = _inst.Params[i];
+                string slot = $"%s{_allocas.Count}";
+                _allocas.Add($"{slot} = alloca {held.Llvm}, align {_c.SizeAlign(held, p.Pos).Align}");
+                _paramSpills.Add($"store {held.Llvm} {given.Op}, ptr {slot}");
+                given = new Val(slot, new PtrType(held));
+            }
+            if (!_routineParams.TryAdd(p.Name, given))
                 throw Err(p.Pos, $"parameter '{p.Name}' is declared twice");
             RecordValue(p.Pos, _inst.Params[i]);
         }
@@ -676,6 +718,7 @@ public sealed class FunctionGen
         _out.AppendLine("start:");
         foreach (var a in _allocas) _out.AppendLine($"  {a}");
         foreach (var u in unpack) _out.AppendLine($"  {u}");
+        foreach (var spill in _paramSpills) _out.AppendLine($"  {spill}");
         foreach (var r in paramRecords) _out.AppendLine($"  {r}");
         if (push is not null) _out.AppendLine($"  {push}");
         // The head's lines go on in the start block, after the parameters are unpacked and the frame is pushed.
@@ -1031,6 +1074,8 @@ public sealed class FunctionGen
             case BindStmt b:
             {
                 var t = Resolve(b.Type);
+                if (Entities.IsEntity(t))
+                    throw Err(b.Pos, $"a {t.Name} is an entity, which lives in a place: local {b.Name}: @{t.Name} <- ...");
                 var v = Eval(b.Value, t);
                 // A value every arm of which left (a when whose arms all return) is never bound: nothing runs here.
                 if (_cur.Terminated) break;
@@ -1581,7 +1626,7 @@ public sealed class FunctionGen
             StrLit s => StringLiteral(s, expected),
             ValueRef r => MemUseView(r),
             ClaimExpr c => EvalClaim(c, expected),
-            FieldExpr or IndexExpr when IsPlaceChain(e) => PlaceAsValue(e),
+            FieldExpr or IndexExpr when IsPlaceChain(e) => PlacePlain(e),
             FieldExpr f => ExtractField(f),
             IfExpr s => EvalIf(s, expected),
             WhenExpr w => EvalWhenValue(w, expected),
@@ -1625,6 +1670,13 @@ public sealed class FunctionGen
         if (argument > 0 && e is IntLit or FloatLit or NullLit or StrLit && UntypedMisfit(e, expected, ref preferred) is { } why)
             throw Err(e.Pos, $"argument {argument}: {why}");
         return Eval(e, expected, argument);
+    }
+
+    /// A place chain as its address, after the emptied-place check sees it read.
+    private Val PlacePlain(Expr e)
+    {
+        MemPlaceUse(e, e.Pos);
+        return PlaceAsValue(e);
     }
 
     private Val PlaceAsValue(Expr e)
@@ -3519,6 +3571,8 @@ public sealed class FunctionGen
         Val Address(Expr e, DType t, int argument)
         {
             if (e != access || AsStride(e) is not (FieldExpr or IndexExpr) || !IsPlaceChain(e)) return EvalArg(e, t, argument);
+            // A load reads the place: a place steal left hollow must have a value put back first.
+            if (sig.Decl.Name is "peek" or "peek_volatile") MemPlaceUse(e, e.Pos);
             var (addr, pointee) = PlaceAddress(e);
             alignSuffix = AlignSuffix(addr);
             return new Val(addr, new PtrType(pointee));
@@ -4006,9 +4060,16 @@ public sealed class FunctionGen
             return;
         }
         if (r.Value is null) throw Err(r.Pos, $"'{_decl.DisplayName}' must return a {_inst.Ret}");
-        // A returned name hands what it holds to the caller: an entity moves out here.
-        _moving = r.Value is ValueRef;
-        var v = Eval(r.Value, _inst.Ret);
+        // `return c` with c the slot of the entity the routine returns: what it holds goes to the caller, and c ends
+        // (the return takes its group along).
+        var returned = r.Value;
+        if (r.Value is ValueRef named && Entities.IsEntity(_inst.Ret) && InferQuiet(named) is PtrType { Pointee: { } held }
+            && held.Equals(_inst.Ret))
+        {
+            returned = new MethodCallExpr(named, "peek", [], [], named.Pos);
+            _moving = true;
+        }
+        var v = Eval(returned, _inst.Ret);
         if (_cur.Terminated) return;
         if (_sig.Sret)
         {

@@ -1202,19 +1202,15 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     Next();
                     var from = ParsePostfix();
                     if (!IsIdent("as"))
-                        throw Error("steal on its own line moves into a name: steal a as b, or out of a place: steal place as old inject new; " +
+                        throw Error("steal on its own line moves into a new slot: steal a as b, or out of a place: steal p.left as b; " +
                                     "as an argument it is steal a");
                     Next();
                     var named = ValueName("the name the stolen value goes to");
-                    Expr? inject = null;
                     if (IsIdent("inject"))
-                    {
-                        Next();
-                        inject = ParseExpr();
-                    }
+                        throw Error("steal leaves the place hollow, and the next line puts a new value in: steal p.left as old, then p.left.poke(value)");
                     ExpectLineEnd();
                     _values!.Add(named.Text);
-                    return new StealStmt(from, named.Text, inject, pos) { NamePos = named.Pos };
+                    return new StealStmt(from, named.Text, pos) { NamePos = named.Pos };
                 }
                 case "drop":
                 {
