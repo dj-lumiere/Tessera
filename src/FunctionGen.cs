@@ -233,8 +233,9 @@ public sealed class FunctionGen
 
     /// The event for binding `name` to `value`, a Box or a Memory (or a slot of one): a copy of a handle, the same memory
     /// again, or new memory. A field read or a value from elsewhere isn't followed.
-    private void MemBind(string name, Expr value, Pos pos, bool warn = true)
+    private void MemBind(string name, Expr value, Pos pos, bool warn = true, DType? type = null)
     {
+        string? entity = Entities.EntityOf(type)?.Name;
         if (value is ImplicitCallExpr { Name: "hollow" } or NsCallExpr { Name: "hollow" })
         {
             _memTracked.Add(name);
@@ -244,14 +245,14 @@ public sealed class FunctionGen
         if (value is StealExpr st)
         {
             _memTracked.Add(name);
-            Mem(new MemoryRules.Acquire(name, st.Place ? "taken out of a place" : "taken by steal", pos));
+            Mem(new MemoryRules.Acquire(name, st.Place ? "taken out of a place" : "taken by steal", pos) { Entity = entity });
             return;
         }
         // An entity made from a record literal, `local b: @Budget <- (left: 0)`, is new.
         if (value is RecordLit or ArrayLit && Entities.EntityOf(InferQuiet(value)) is not null)
         {
             _memTracked.Add(name);
-            Mem(new MemoryRules.Acquire(name, "made here", pos));
+            Mem(new MemoryRules.Acquire(name, "made here", pos) { Entity = entity });
             return;
         }
         if (MemName(value) is { } of)
@@ -278,7 +279,7 @@ public sealed class FunctionGen
         if (value is CallExpr or NsCallExpr or MethodCallExpr or ImplicitCallExpr or AtExpr)
         {
             _memTracked.Add(name);
-            Mem(new MemoryRules.Acquire(name, "made here", pos));
+            Mem(new MemoryRules.Acquire(name, "made here", pos) { Entity = entity });
         }
     }
 
@@ -639,7 +640,7 @@ public sealed class FunctionGen
                 if (OwnedValue(_inst.Params[i]))
                 {
                     _memTracked.Add(_decl.Params[i].Name);
-                    handed.Add(new MemoryRules.Acquire(_decl.Params[i].Name, "handed in", _decl.Params[i].Pos));
+                    handed.Add(new MemoryRules.Acquire(_decl.Params[i].Name, "handed in", _decl.Params[i].Pos) { Entity = Entities.EntityOf(_inst.Params[i])?.Name });
                 }
         }
         if (Debug) BeginSubprogram();
@@ -1082,8 +1083,8 @@ public sealed class FunctionGen
                 }
                 if (MemOn && Tracked(t))
                 {
-                    if (b.Value is ClaimExpr { Contents: { } held }) MemBind(b.Name, held, b.Pos, warn: false);
-                    else if (b.Value is not ClaimExpr) MemBind(b.Name, b.Value, b.Pos);
+                    if (b.Value is ClaimExpr { Contents: { } held }) MemBind(b.Name, held, b.Pos, warn: false, type: t);
+                    else if (b.Value is not ClaimExpr) MemBind(b.Name, b.Value, b.Pos, type: t);
                 }
                 // `claim p: @T <- value` is the claim, then `p.poke(value)`.
                 if (b.Value is ClaimExpr { Contents: { } contents } && t is PtrType)

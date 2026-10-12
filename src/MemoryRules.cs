@@ -18,7 +18,11 @@ public static class MemoryRules
     public abstract record Event(Pos Pos);
 
     /// A new group, named by `Name`: memory a call or an `at` literal gave, or a parameter handed in.
-    public sealed record Acquire(string Name, string What, Pos Pos) : Event(Pos);
+    public sealed record Acquire(string Name, string What, Pos Pos) : Event(Pos)
+    {
+        /// The entity type the group is, when it is one rather than memory from a manager: the messages name it.
+        public string? Entity { get; init; }
+    }
 
     /// `Name` is another handle of `Of`'s group.
     public sealed record Alias(string Name, string Of, Pos Pos) : Event(Pos);
@@ -59,7 +63,7 @@ public static class MemoryRules
     public sealed record ArmEnd(Pos Pos) : Event(Pos);
 
     /// A group: where it came from, and whether and where it ended.
-    private sealed record Group(string Origin, Pos Born, Pos? Ended, string? How);
+    private sealed record Group(string Origin, Pos Born, Pos? Ended, string? How, string? Entity = null);
 
     private sealed class State
     {
@@ -136,7 +140,7 @@ public static class MemoryRules
                     case Acquire a:
                     {
                         string id = $"{block}:{a.Name}:{a.Pos}";
-                        state.Groups[id] = new Group(a.Name, a.Pos, null, null);
+                        state.Groups[id] = new Group(a.Name, a.Pos, null, null, a.Entity);
                         state.Names[a.Name] = id;
                         break;
                     }
@@ -146,7 +150,9 @@ public static class MemoryRules
                     case End end:
                     {
                         if (!state.Names.TryGetValue(end.Name, out var id) || !state.Groups.TryGetValue(id, out var g)) break;
-                        if (g.Ended is { } at)
+                        if (g.Ended is { } endedAt && g.Entity is { } once)
+                            Report(end.Pos, $"'{end.Name}' ended already ({g.How} on line {endedAt.Line}), and a {once} ends once");
+                        else if (g.Ended is { } at)
                             Report(end.Pos, $"'{end.Name}' gives back memory that was given back already ({g.How} on line {at.Line}): "
                                 + $"'{g.Origin}' (from line {g.Born.Line}) and every copy of it are one memory, released once. "
                                 + "Copy it with .duplicate() to have memory of its own");
@@ -156,8 +162,10 @@ public static class MemoryRules
                     case Use u:
                     {
                         if (state.Names.TryGetValue(u.Name, out var id) && state.Groups.TryGetValue(id, out var g) && g.Ended is { } at)
-                            Report(u.Pos, $"'{u.Name}' is used after its memory was given back ({g.How} on line {at.Line}): "
-                                + "use it before that, or make memory of its own with .duplicate() before it");
+                            Report(u.Pos, g.Entity is { } gone
+                                ? $"'{u.Name}' is used after {g.How} on line {at.Line} ended it: a {gone} is used before it is handed on or dropped"
+                                : $"'{u.Name}' is used after its memory was given back ({g.How} on line {at.Line}): "
+                                  + "use it before that, or make memory of its own with .duplicate() before it");
                         break;
                     }
                     case Store st:
@@ -165,8 +173,11 @@ public static class MemoryRules
                         // A slot that is the last handle of a group that hasn't ended loses it: another handle keeps it.
                         if (state.Names.TryGetValue(st.Slot, out var id) && state.Groups.TryGetValue(id, out var g) && g.Ended is null
                             && !state.Names.Any(n => n.Key != st.Slot && n.Value == id))
-                            Report(st.Pos, $"'{st.Slot}' holds memory that hasn't been given back (from line {g.Born.Line}), and this "
-                                + $"overwrites it: give it back first (drop {st.Slot})");
+                            Report(st.Pos, g.Entity is { } held
+                                ? $"'{st.Slot}' holds a {held} (from line {g.Born.Line}) that hasn't ended, and this overwrites it: "
+                                  + $"drop {st.Slot} first, or take it out with steal {st.Slot} as old"
+                                : $"'{st.Slot}' holds memory that hasn't been given back (from line {g.Born.Line}), and this "
+                                  + $"overwrites it: give it back first (drop {st.Slot})");
                         if (st.From is { } from && state.Names.TryGetValue(from, out var fromId)) state.Names[st.Slot] = fromId;
                         else state.Names.Remove(st.Slot);
                         break;
@@ -193,8 +204,11 @@ public static class MemoryRules
                     case Exit { Returns: true } ex:
                         foreach (var (_, g) in state.Groups)
                             if (g.Ended is null)
-                                Report(ex.Pos, $"'{g.Origin}' holds memory (from line {g.Born.Line}) that isn't given back before '{routine}' "
-                                    + $"returns here: give it back first (drop {g.Origin}), return it, or hand it to a routine that takes it");
+                                Report(ex.Pos, g.Entity is { } alive
+                                    ? $"'{g.Origin}' holds a {alive} (from line {g.Born.Line}) that hasn't ended when '{routine}' returns here: "
+                                      + $"drop {g.Origin}, return it, or hand it on with steal {g.Origin}"
+                                    : $"'{g.Origin}' holds memory (from line {g.Born.Line}) that isn't given back before '{routine}' "
+                                      + $"returns here: give it back first (drop {g.Origin}), return it, or hand it to a routine that takes it");
                         break;
                     case Exit { Block: null }:
                         break;
@@ -218,7 +232,10 @@ public static class MemoryRules
                             bool reached = next.Names.ContainsValue(id);
                             if (reached) next.Groups[id] = g;
                             else if (g.Ended is null)
-                                Report(ex.Pos, ex.Region
+                                Report(ex.Pos, g.Entity is { } unseen
+                                    ? $"'{g.Origin}' holds a {unseen} (from line {g.Born.Line}) that hasn't ended, and goes out of sight here: "
+                                      + $"drop it, return it, or hand it on with steal {g.Origin}"
+                                    : ex.Region
                                     ? $"'{g.Origin}' holds memory (from line {g.Born.Line}) and goes out of sight here, at the end of the body "
                                       + "it is bound in: give the memory back first (drop it), return it, or keep it in a slot bound outside the body"
                                     : $"the memory of '{g.Origin}' (from line {g.Born.Line}) is lost here: block '{ex.Block}' doesn't get "
