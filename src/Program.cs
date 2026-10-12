@@ -485,7 +485,7 @@ static class Cli
         }
     }
 
-    /// Compiles the inputs to LLVM IR. An executable needs `routine start() -> Void`. Checking for it here gives a
+    /// Compiles the inputs to LLVM IR. An executable needs `routine start() -> None`. Checking for it here gives a
     /// clear error instead of the platform linker's (lld-link says "subsystem must be defined").
     /// <paramref name="trace"/>: whether the program keeps the crash trace, or null for the mode's default.
     /// <paramref name="heapCheck"/>: whether the default heap crashes on a block freed twice (`[debug] heap-check`).
@@ -509,10 +509,10 @@ static class Cli
         if (executable && !compiler.HasStart)
             throw compiler.MainRoutine is { } main
                 ? new CompileError(main.Pos,
-                    "no entry point: an executable's entry point is 'routine start() -> Void', and main is an ordinary routine name; " +
+                    "no entry point: an executable's entry point is 'routine start() -> None', and main is an ordinary routine name; " +
                     "rename it to start, return nothing, and set a nonzero exit status with set_exit_code (Standard/Os)")
                 : new CompileError(new Pos(ShownPath(Path.GetFullPath(inputs[0])), 1, 1),
-                    "no entry point: an executable needs 'routine start() -> Void' (use 'tessera check' to type-check a file without one)");
+                    "no entry point: an executable needs 'routine start() -> None' (use 'tessera check' to type-check a file without one)");
         return ir;
     }
 

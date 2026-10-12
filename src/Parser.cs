@@ -1243,7 +1243,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 default:
                 {
                     var leave = ParseLeave();
-                    ExpectLineEnd();
+                    // A return or becomes of a when that is a value has read the when's arms, lines and all.
+                    if (leave is not (ReturnStmt { Value: WhenExpr } or BecomesStmt { Value: WhenExpr })) ExpectLineEnd();
                     return leave;
                 }
             }

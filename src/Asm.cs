@@ -589,7 +589,7 @@ internal sealed class AsmLowering
         var rt = _sig.Ret;
         if (ret.Value is null)
             return rt is VoidType ? [] : throw new CompileError(ret.Pos, $"'{_r.DisplayName}' returns {rt}: name its register, return(R0)");
-        if (rt is VoidType) throw new CompileError(ret.Pos, $"'{_r.DisplayName}' returns nothing: return()");
+        if (rt is VoidType) throw new CompileError(ret.Pos, $"'{_r.DisplayName}' returns nothing: return");
         if (rt is RecordType { IsTuple: true } tuple)
         {
             if (ret.Value is not ArrayLit { IsTuple: true } lit || lit.Elements.Count != tuple.Args.Count)

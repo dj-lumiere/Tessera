@@ -1029,10 +1029,10 @@ public sealed class FunctionGen
                   + "parameter itself, or share a value under a name of its own"
                 : $"'{name}' is local twice in routine '{_decl.DisplayName}': a name is bound once");
         if (_values.ContainsKey(name) && _routineValues.ContainsKey(name))
-            throw Err(pos, $"block '{_blockName}' binds '{name}', like {RoutineValueKind(name)}, which every block "
-                + "already sees: a name is bound once, so give this value its own name");
+            throw Err(pos, $"'{name}' is bound here again, and it is {RoutineValueKind(name)}, which the whole routine sees: "
+                + "a name is bound once, so give this value its own name");
         if (_values.ContainsKey(name))
-            throw Err(pos, $"'{name}' is already defined in block '{_blockName}' (SSA values are bound once)");
+            throw Err(pos, $"'{name}' is bound already where this line is: a name is bound once, so give this value its own name");
         _values[name] = v;
         RecordValue(pos, v.Type);
     }
@@ -2626,6 +2626,9 @@ public sealed class FunctionGen
         // A bare name is a value, or else a preset or a global: a routine becomes a value only when the code says so.
         if (r.Owner is null && _c.FindFree(r.Name, _env.File, r.Pos, r.Path) is not null)
             throw Err(r.Pos, $"'{r.Name}' is a routine; as a value it is written {r.Name}.to[Callable]()");
+        // A name a when arm gave its value (`is S64 as n`) reads like a preset after the when: say where it lives.
+        if (r.Owner is null && r.Path is null && _hiddenPayloads.TryGetValue(r.Name, out var hidden))
+            throw Err(r.Pos, hidden);
         if (r.Owner is null && r.Path is null && BoundInRoutine(r.Name))
             throw Err(r.Pos, NotVisible(r.Name, fromNextLine: true));
         throw Err(r.Pos, $"unknown name '{(r.Owner is null ? r.Name : $"{r.Owner}.{r.Name}")}'");

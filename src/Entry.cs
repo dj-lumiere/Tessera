@@ -2,7 +2,7 @@ using System.Text;
 
 namespace Tessera;
 
-/// The program's entry. A program's entry point is `routine start() -> Void`. On a target with an operating system the
+/// The program's entry. A program's entry point is `routine start() -> None`. On a target with an operating system the
 /// builder writes the platform's C `main`, which calls `start` and returns the exit status `set_exit_code`
 /// (Standard/Os) stored, 0 when nothing did. On a target without one, a program that defines `start` gets the entry
 /// symbol `_start` and the generic startup in front of it, in this order: the stack pointer from `__stack_top` (on
@@ -46,7 +46,7 @@ public sealed partial class Compiler
     /// program without `start` points at.
     public RoutineDecl? MainRoutine => _userRoutines.FirstOrDefault(r => r.Owner is null && r.Name == "main");
 
-    /// Checks an entry routine's declaration: `routine start() -> Void` or `routine when_booted() -> Void`, a routine
+    /// Checks an entry routine's declaration: `routine start() -> None` or `routine when_booted() -> None`, a routine
     /// with a body that Tessera calls, and `when_booted` only on a target without an operating system.
     private void CheckEntryRoutine(RoutineDecl r)
     {
@@ -77,7 +77,7 @@ public sealed partial class Compiler
         if (start is null)
         {
             if (board is not null)
-                throw new CompileError(board.Pos, "when_booted runs before start, and the program has no start: add 'routine start() -> Void'");
+                throw new CompileError(board.Pos, "when_booted runs before start, and the program has no start: add 'routine start() -> None'");
             return;
         }
         if (ProvidedSymbols.Contains("main") || ProvidedSymbols.Contains("_start")) return;

@@ -29,12 +29,11 @@ static class NewProject
                 import Standard/Format
                 import Standard/Os
 
-                /// Writes a greeting.
-                routine start() -> Void
-                    block entry()
-                        out : @Out = Out.writer()
-                        out.write("Hello, world!\n")
-                        return()
+                ### Writes a greeting.
+                routine start() -> None
+                    out: @Out = Out.writer()
+                    out.write("Hello, world!\n")
+                    return
 
                 """),
             (".gitignore", """
