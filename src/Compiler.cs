@@ -873,7 +873,7 @@ public sealed partial class Compiler
     public static bool IsGenericRoutine(RoutineDecl r) =>
         r.TypeParams.Count != 0 || (r.Owner is not null && OwnerTypeParams(r).Count != 0);
 
-    private static List<string> OwnerTypeParams(RoutineDecl r)
+    internal static List<string> OwnerTypeParams(RoutineDecl r)
     {
         if (r.Owner is null) return [];
         if (r.Owner.Args.Count == 0) return ClauseTypeParams(r.Clauses).Contains(r.Owner.Name) ? [r.Owner.Name] : [];

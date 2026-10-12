@@ -194,6 +194,63 @@ public sealed class FunctionGen
     /// How a message names what `t` is: an entity itself, or a value that holds one (a variant with an entity branch).
     private static string HoldsWhat(DType t) => Entities.IsEntity(t) ? "an entity" : "a value holding an entity";
 
+    /// Whether a value of `t` (or the value a slot of `t` holds) has something to give back: its type writes a
+    /// destruct, or the memory rules follow it (Box, Memory, an entity, a value holding one).
+    private bool HasReleaseDuty(DType? t)
+    {
+        if (t is null) return false;
+        if (Tracked(t)) return true;
+        var held = t is PtrType { Pointee: { } inner } ? inner : t;
+        return held is RecordType or VariantType && _c.MethodCandidates(held, "destruct", _env.File, _decl.Pos).Count > 0;
+    }
+
+    /// The type parameters this routine's source can name: its own and its owner's.
+    private HashSet<string> SourceTypeParams => _sourceTypeParams ??= [.. _decl.TypeParams, .. Compiler.OwnerTypeParams(_decl)];
+    private HashSet<string>? _sourceTypeParams;
+
+    /// Whether the type `name` was written with in this routine's source names a type parameter (`T`, `@T`,
+    /// `List[T]`, or `Me` on a generic owner): what steal and drop do then depends on the instance. A name whose
+    /// written type the source doesn't show (a slot steal made) counts as generic, so nothing is refused by guess.
+    private bool WrittenGeneric(string name) => WrittenType(name) is not { } t || MentionsTypeParam(t);
+
+    private bool MentionsTypeParam(TypeRef t) =>
+        t.Path is null && (SourceTypeParams.Contains(t.Name) || t.Name == "Me" && SourceTypeParams.Count > 0)
+        || t.Args.Any(a => a switch
+        {
+            TypeArgType at => MentionsTypeParam(at.Type),
+            TypeArgTuple tt => tt.Types.Any(MentionsTypeParam),
+            _ => false,
+        });
+
+    /// The type `name` is written with here: a parameter's, a block parameter's, a binding's, a carried value's, or an
+    /// arm's `is T as name`. Null when the source writes none.
+    private TypeRef? WrittenType(string name)
+    {
+        foreach (var p in _decl.Params)
+            if (p.Name == name) return p.Type;
+        foreach (var b in _decl.Blocks ?? [])
+        {
+            foreach (var p in b.Params)
+                if (p.Name == name) return p.Type;
+            foreach (var s in Bodies.All(b.Stmts))
+            {
+                switch (s)
+                {
+                    case BindStmt bind when bind.Name == name && bind.Type.Known is null:
+                        return bind.Type;
+                    case LoopStmt l when l.With.FirstOrDefault(c => c.Name == name) is { } carried:
+                        return carried.Type;
+                    case WhenStmt w:
+                        foreach (var arm in w.Arms)
+                            foreach (var p in (arm.Cases ?? []).OfType<IsPattern>())
+                                if (p.Binding?.Name == name) return p.Type;
+                        break;
+                }
+            }
+        }
+        return null;
+    }
+
     /// `steal x`: what the name `x` holds (or its slot holds), and x ends here. On a value that holds no entity or
     /// memory, steal is just the value: generic code moves a `T` with steal whether T is an entity or a record. The builder's own `Place` form loads
     /// out of a place for `steal place as old inject fresh`, which ends nothing: the place gets `fresh` right after.
@@ -208,6 +265,9 @@ public sealed class FunctionGen
             throw Err(s.Pos, "steal takes a name here (steal x): a field or an element comes out on its own line, "
                 + "steal p.left as b");
         var t = InferQuiet(r);
+        if (!HasReleaseDuty(t) && !WrittenGeneric(r.Name) && !_c.Prechecking)
+            throw Err(s.Pos, $"'{r.Name}' holds {t?.Name ?? "a value"}, which has nothing to give back, so passing it on copies it: "
+                + $"write {r.Name} without steal");
         _moving = true;
         // The slot of something followed (an entity, memory) gives what it holds. A plain value, or a pointer that is
         // a value of its own, is itself.
@@ -1177,11 +1237,24 @@ public sealed class FunctionGen
                     var printer = new Printer();
                     throw Err(e.Pos, $"a value is given back with drop: drop {printer.Expr(direct.Receiver, 0)}");
                 }
+                // A call that hands back an entity (or a value holding one) has given it to this line: dropping it on
+                // the floor would leak what it holds.
+                if (e.Value is CallExpr or NsCallExpr or MethodCallExpr && InferQuiet(e.Value) is { } made && Entities.Holds(made))
+                    throw Err(e.Pos, $"this call hands you a {made.Name}, {HoldsWhat(made)}, and the line leaves it on the floor: "
+                        + "keep it in a slot (local x: @" + made.Name + " <- ...), drop it, or hand it on");
                 EvalAny(e.Value);
                 break;
             }
             case DropStmt d:
             {
+                // Nothing to give back: in generic code (a T that is a record here) drop does nothing, in code that
+                // names its types it says so.
+                if (!HasReleaseDuty(InferQuiet(d.Value)))
+                {
+                    if (d.Value is ValueRef named && WrittenGeneric(named.Name) || _c.Prechecking) break;
+                    throw Err(d.Pos, $"{new Printer().Expr(d.Value, 0)} has nothing to give back ({InferQuiet(d.Value)?.Name ?? "its type"} "
+                        + "writes no destruct): leave the drop out");
+                }
                 var call = new MethodCallExpr(d.Value, "destruct", [], [], d.Pos);
                 _dropping = d.Value;
                 try { EvalAny(call); }

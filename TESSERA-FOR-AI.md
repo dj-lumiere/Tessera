@@ -701,8 +701,14 @@ routine start() -> None
   `Shelf[Counter]` of your own that keeps them in a `Memory[T]`. Elements go in with `steal` and are reached through
   `getslot` (an `@T`), and the container's destruct ends each one before giving its memory back. `getitem`, which
   copies an element, is a build error for an entity element that points at `getslot`.
-- `steal x` works on any value: on a value that holds no entity or memory it is the value itself. So generic code moves a
-  `T` with `steal` and works whether T is an entity or a record.
+- `steal` and `drop` mark what matters: a hand-over and a give-back of something with a release duty (its type writes
+  a destruct, or it is a Box, a Memory, an entity, or a value holding one). `drop x` calls x's destruct, and x ends
+  there. In code that names its types, `steal x` or `drop x` on a value with nothing to give back is a build error
+  (the value is copied, the drop does nothing): leave the marker out. Where x's written type is a type parameter
+  (`T`, `@T`, `List[T]`, `Me` of a generic type), both are always allowed and written once for any T: for an entity T
+  they move and end it, for a record T steal is the value and drop does nothing.
+- A call that hands back an entity (or a value holding one) can't be a bare line: keep it in a slot, drop it, or hand
+  it on.
 
 **Variants**
 
