@@ -976,7 +976,9 @@ public sealed class Structurer
         {
             var bound = Rewriter.BoundInBody(rest).ToHashSet();
             var needed = Rewriter.Uses(cond).Where(bound.Contains).Distinct().ToList();
-            if (needed.Count == 0) return (cond, rest);
+            // The lines before the test run before it on every round, the last one included: a loop test sits
+            // before the body, so it can take the test's place only when nothing is left to run ahead of it.
+            if (needed.Count == 0) return rest.Count == 0 ? (cond, rest) : (null, pre);
             bool progressed = false;
             foreach (string name in needed)
             {

@@ -312,7 +312,11 @@ public sealed record TypedIntLit(long Value, int Bits, Pos Pos) : Expr(Pos)
 {
     public IntType Type => Bits == 8 ? IntType.Byte : IntType.Char;
 }
-public sealed record FloatLit(double Value, Pos Pos) : Expr(Pos);
+public sealed record FloatLit(double Value, Pos Pos) : Expr(Pos)
+{
+    /// The literal as written (`-0x1p-25`, `1e-300`), which a re-printed line keeps: a hex float stays exact.
+    public string? Text { get; init; }
+}
 public sealed record StrLit(string Value, Pos Pos) : Expr(Pos);
 public sealed record BoolLit(bool Value, Pos Pos) : Expr(Pos);
 public sealed record NullLit(Pos Pos) : Expr(Pos);

@@ -1938,7 +1938,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 return new TypedIntLit(Low64(t.IntValue), 32, t.Pos);
             case TokenKind.Float:
                 Next();
-                return new FloatLit(BitConverter.Int64BitsToDouble(Low64(t.IntValue)), t.Pos);
+                return new FloatLit(BitConverter.Int64BitsToDouble(Low64(t.IntValue)), t.Pos) { Text = t.Text };
             case TokenKind.Str:
                 Next();
                 return new StrLit(t.Text, t.Pos);

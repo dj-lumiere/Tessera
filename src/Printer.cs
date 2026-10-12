@@ -250,7 +250,7 @@ public sealed class Printer
             case TypedIntLit t:
                 return t.Bits == 8 ? $"b'{CharText(t.Value, true)}'" : $"'{CharText(t.Value, false)}'";
             case FloatLit f:
-                return FloatText(f.Value);
+                return f.Text ?? FloatText(f.Value);
             case StrLit s:
                 return Quote(s.Value);
             case BoolLit b:
@@ -461,7 +461,9 @@ public sealed class Printer
     private static string FloatText(double d)
     {
         if (double.IsNaN(d) || double.IsInfinity(d)) return d.ToString("R", CultureInfo.InvariantCulture);
+        // "R" can give a text that reads back as a neighbouring double: G17 always reads back as d itself.
         string text = d.ToString("R", CultureInfo.InvariantCulture);
+        if (double.Parse(text, CultureInfo.InvariantCulture) != d) text = d.ToString("G17", CultureInfo.InvariantCulture);
         if (!text.Contains('.') && !text.Contains('E') && !text.Contains('e')) text += ".0";
         return text.Replace("E+", "e").Replace("E-", "e-").Replace("E", "e");
     }
