@@ -160,7 +160,7 @@ public sealed class FunctionGen
 
     /// Whether the memory rules follow a value of `t` (or a slot of one): a Box, a Memory, or an entity. Each must end
     /// once on every path (drop, return, handed on), and nothing uses it after.
-    private static bool Tracked(DType? t) => OwnedMemory(t) is not null || Entities.EntityOf(t) is not null;
+    private static bool Tracked(DType? t) => OwnedMemory(t) is not null || Entities.HeldIn(t) is not null;
 
     /// The operand of the `drop` being emitted: it ends there, so reading it isn't a copy.
     private Expr? _dropping;
@@ -172,22 +172,30 @@ public sealed class FunctionGen
         if (_dropping is not null && e.Equals(_dropping)) return null;
         switch (e)
         {
-            case ValueRef r when InferQuiet(r) is RecordType { Decl.IsEntity: true } t:
-                return $"'{r.Name}' holds {t.Name}, an entity, which is never copied: hand it on with steal {r.Name}, "
+            case ValueRef r when InferQuiet(r) is { } t && Entities.Holds(t):
+                return $"'{r.Name}' holds {t.Name}, {HoldsWhat(t)}, which is never copied: hand it on with steal {r.Name}, "
                     + "or lend its place as a pointer";
-            case FieldExpr f when !IsPlaceChain(f) && InferQuiet(f) is RecordType { Decl.IsEntity: true } t:
+            case FieldExpr f when !IsPlaceChain(f) && InferQuiet(f) is { } t && Entities.Holds(t):
                 return $"this copies the {t.Name} in '{f.Name}', and an entity is never copied: lend the place as a pointer, "
                     + "or take it out with steal place as b";
-            case MethodCallExpr { Name: "peek" or "peek_atomic" or "peek_volatile" or "getitem" or "load" } m
-                when InferQuiet(m) is RecordType { Decl.IsEntity: true } t:
-                return $"'{m.Name}' reads a {t.Name} out of memory, which copies it, and an entity is never copied: "
-                    + "lend the place itself, or take it out with steal place as b";
+            // getitem gives a copy of the element, which an entity element can't be: its place is getslot's.
+            case MethodCallExpr { Name: "getitem" } item when InferQuiet(item) is { } t && Entities.Holds(t):
+                return $"getitem copies the element, and {t.Name} {(Entities.IsEntity(t) ? "is an entity" : "holds one")}, "
+                    + "which is never copied: take its place with getslot (a @" + t.Name + "), or move it out with steal place as b";
+            case MethodCallExpr { Name: "peek" or "peek_atomic" or "peek_volatile" or "load" } m
+                when InferQuiet(m) is { } t && Entities.Holds(t):
+                return $"'{m.Name}' reads a {t.Name} out of memory, which copies it, and {(Entities.IsEntity(t) ? "an entity" : "a value holding an entity")} "
+                    + "is never copied: lend the place itself, or hand it on with steal";
             default:
                 return null;
         }
     }
 
-    /// `steal x`: what the name `x` holds (or its slot holds), and x ends here. The builder's own `Place` form loads
+    /// How a message names what `t` is: an entity itself, or a value that holds one (a variant with an entity branch).
+    private static string HoldsWhat(DType t) => Entities.IsEntity(t) ? "an entity" : "a value holding an entity";
+
+    /// `steal x`: what the name `x` holds (or its slot holds), and x ends here. On a value that holds no entity or
+    /// memory, steal is just the value: generic code moves a `T` with steal whether T is an entity or a record. The builder's own `Place` form loads
     /// out of a place for `steal place as old inject fresh`, which ends nothing: the place gets `fresh` right after.
     private Val EvalSteal(StealExpr s, DType expected)
     {
@@ -200,10 +208,10 @@ public sealed class FunctionGen
             throw Err(s.Pos, "steal takes a name here (steal x): a field or an element comes out on its own line, "
                 + "steal p.left as b");
         var t = InferQuiet(r);
-        if (!Tracked(t))
-            throw Err(s.Pos, $"steal hands on an entity, and '{r.Name}' is {t?.Name ?? "unknown"}, a value that = copies");
         _moving = true;
-        var v = t is PtrType ? Eval(new MethodCallExpr(r, "peek", [], [], r.Pos), expected) : Eval(r, expected);
+        // The slot of something followed (an entity, memory) gives what it holds. A plain value, or a pointer that is
+        // a value of its own, is itself.
+        var v = t is PtrType && Tracked(t) ? Eval(new MethodCallExpr(r, "peek", [], [], r.Pos), expected) : Eval(r, expected);
         if (MemOn && _memTracked.Contains(r.Name)) Mem(new MemoryRules.End(r.Name, $"steal {r.Name}", s.Pos));
         return v;
     }
@@ -221,7 +229,7 @@ public sealed class FunctionGen
                 new ClaimExpr(st.Pos) { Contents = stolen }, st.Pos));
             return;
         }
-        if (Infer(st.From) is not PtrType { Pointee: { } held } || Entities.EntityOf(held) is null)
+        if (Infer(st.From) is not PtrType { Pointee: { } held } || !Entities.Holds(held))
             throw Err(st.From.Pos, "steal takes an entity out of a place: a field or an element reached through a pointer, steal p.left as b");
         var taken = new StealExpr(st.From, st.Pos) { Place = true };
         EmitStmt(new BindStmt(st.Name, new TypeRef("$stolen", [], st.NamePos) { Known = new PtrType(held) },
@@ -259,7 +267,7 @@ public sealed class FunctionGen
     /// again, or new memory. A field read or a value from elsewhere isn't followed.
     private void MemBind(string name, Expr value, Pos pos, bool warn = true, DType? type = null)
     {
-        string? entity = Entities.EntityOf(type)?.Name;
+        string? entity = Entities.HeldIn(type)?.Name;
         if (value is ImplicitCallExpr { Name: "hollow" } or NsCallExpr { Name: "hollow" })
         {
             _memTracked.Add(name);
@@ -273,7 +281,7 @@ public sealed class FunctionGen
             return;
         }
         // An entity made from a record literal, `local b: @Budget <- (left: 0)`, is new.
-        if (value is RecordLit or ArrayLit && Entities.EntityOf(InferQuiet(value)) is not null)
+        if (value is RecordLit or ArrayLit && Entities.HeldIn(InferQuiet(value)) is not null)
         {
             _memTracked.Add(name);
             Mem(new MemoryRules.Acquire(name, "made here", pos) { Entity = entity });
@@ -460,13 +468,18 @@ public sealed class FunctionGen
         }
     }
 
+    /// Whether `return name` hands over what the slot `name` holds: a value holding an entity (the entity, or a variant
+    /// with one) that is the routine's return type, or a branch of the variant it returns (`return c` into a
+    /// `Result[Counter, E]`).
+    private bool ReturnsSlotValue(ValueRef named) =>
+        InferQuiet(named) is PtrType { Pointee: { } held } && Entities.Holds(held)
+        && (held.Equals(_inst.Ret) || _inst.Ret is VariantType rv && rv.LeafIndex(held) >= 0);
+
     /// A return that takes a view of this routine's memory out of it.
     private void CheckReturnEscape(ReturnStmt r)
     {
         // `return c` with c the slot of the entity returned hands over what the slot holds, not the slot.
-        if (r.Value is ValueRef named && Entities.IsEntity(_inst.Ret) && InferQuiet(named) is PtrType { Pointee: { } held }
-            && held.Equals(_inst.Ret))
-            return;
+        if (r.Value is ValueRef named && ReturnsSlotValue(named)) return;
         if (r.Value is { } value && FrameView(value) is { } sees)
             throw Err(value.Pos, $"this returns a view of {sees}, which is gone once '{_decl.DisplayName}' returns: return the "
                 + "values themselves, or let the caller pass the memory in (a Span or a slot) and write there");
@@ -620,7 +633,7 @@ public sealed class FunctionGen
             var given = new Val($"%a.{IrName(p.Name)}", _inst.Params[i]);
             // An entity handed in lives in a slot of this routine's frame: inside, the name is that slot (@E), so the
             // routine can lend it, drop it, or hand it on with steal.
-            if (Entities.IsEntity(_inst.Params[i]) && p.Name != "me" && !_c.Prechecking)
+            if (Entities.Holds(_inst.Params[i]) && p.Name != "me" && !_c.Prechecking)
             {
                 var held = _inst.Params[i];
                 string slot = $"%s{_allocas.Count}";
@@ -661,7 +674,7 @@ public sealed class FunctionGen
                 if (OwnedValue(_inst.Params[i]))
                 {
                     _memTracked.Add(_decl.Params[i].Name);
-                    handed.Add(new MemoryRules.Acquire(_decl.Params[i].Name, "handed in", _decl.Params[i].Pos) { Entity = Entities.EntityOf(_inst.Params[i])?.Name });
+                    handed.Add(new MemoryRules.Acquire(_decl.Params[i].Name, "handed in", _decl.Params[i].Pos) { Entity = Entities.HeldIn(_inst.Params[i])?.Name });
                 }
         }
         if (Debug) BeginSubprogram();
@@ -1074,8 +1087,9 @@ public sealed class FunctionGen
             case BindStmt b:
             {
                 var t = Resolve(b.Type);
-                if (Entities.IsEntity(t))
-                    throw Err(b.Pos, $"a {t.Name} is an entity, which lives in a place: local {b.Name}: @{t.Name} <- ...");
+                if (Entities.Holds(t))
+                    throw Err(b.Pos, $"a {t.Name} {(Entities.IsEntity(t) ? "is an entity" : "holds an entity")}, which lives in a place: "
+                        + $"local {b.Name}: @{t.Name} <- ...");
                 var v = Eval(b.Value, t);
                 // A value every arm of which left (a when whose arms all return) is never bound: nothing runs here.
                 if (_cur.Terminated) break;
@@ -1531,7 +1545,7 @@ public sealed class FunctionGen
             case TypedIntLit t: return t.Type;
             case ValueRef r: return Lookup(r).Type;
             case StealExpr steal:
-                return Infer(steal.Value) is var stolen && (steal.Place || stolen is PtrType { Pointee: RecordType { Decl.IsEntity: true } })
+                return Infer(steal.Value) is var stolen && (steal.Place || stolen is PtrType && Tracked(stolen))
                     ? (stolen as PtrType)?.Pointee
                     : stolen;
             case RecordLit sl: return sl.Type is null ? null : Resolve(sl.Type);
@@ -1635,7 +1649,11 @@ public sealed class FunctionGen
         if (!moving && CopiedEntity(e) is { } copied) throw Err(e.Pos, copied);
         // A value of a branch type is a value of the variant (one level), and so is a narrower variant's.
         if (expected is VariantType vt && WidenSource(e, vt) is { } branch)
+        {
+            // A value being moved (steal, return c) is still moved once it is wrapped.
+            _moving = moving;
             return WrapInVariant(Eval(e, branch, argument), vt, e.Pos);
+        }
         // An argument borrows what a parameter takes as a view: a Memory lends its Span, a Box its address.
         if (argument > 0 && Lends(InferQuiet(e), expected))
             return Eval(new MethodCallExpr(e, "getview", [], [], e.Pos), expected, argument);
@@ -2100,6 +2118,10 @@ public sealed class FunctionGen
         else
         {
             var v = EvalAny(w.Value);
+            // The slot of a variant that holds an entity is observed by moving the value out of it: the when takes it.
+            if (v.Type is PtrType { Pointee: VariantType held } && Entities.Holds(held))
+                throw Err(w.Value.Pos, $"this is the slot of a {held}, which holds an entity: the when takes the value out of "
+                    + $"it, when steal {(w.Value is ValueRef slotName ? slotName.Name : "...")}");
             if (v.Type is VariantType vt) EmitVariantWhen(w, v, vt, Arm, armNames);
             else EmitSwitchWhen(w, v, Arm);
         }
@@ -2207,7 +2229,14 @@ public sealed class FunctionGen
                 label = armBlock(arm, () => BindPayload(vt, slot!, patterns[0].Type, binding));
                 armNames.Add((binding, $"is {patterns[0].Type} as {binding.Name}", patterns[0].Binding!.Pos.Line));
             }
-            else label = armBlock(arm, FailureObserved(vt, patterns[0].Type, tag));
+            else
+            {
+                // A branch that holds an entity is the arm's to end: an arm that doesn't name it would lose it.
+                if (patterns.Select(p => p.Type).FirstOrDefault(Entities.Holds) is { } lost)
+                    throw Err(arm.Pos, $"this arm observes {lost}, which {(Entities.IsEntity(lost) ? "is an entity" : "holds an entity")}, "
+                        + $"without naming it, and the arm is where it ends: name it (is {lost} as x) and drop it, return it, or hand it on");
+                label = armBlock(arm, FailureObserved(vt, patterns[0].Type, tag));
+            }
             foreach (int index in patterns.SelectMany(p => p.Leaves))
             {
                 if (!seen.Add(index)) throw Err(arm.Pos, $"two arms observe {vt.Leaves[index]}");
@@ -2219,6 +2248,10 @@ public sealed class FunctionGen
         {
             if (missing.Count == 0) throw Err(elseArm.Pos, $"every branch of {vt} has its arm, so else never runs");
             string label;
+            // What else takes is the arm's to end when it holds an entity: one such branch is named on its own.
+            if (missing.FirstOrDefault(Entities.Holds) is { } heldByElse && (w.ElseBinding is null || missing.Count > 1))
+                throw Err(elseArm.Pos, $"else takes {heldByElse}, which {(Entities.IsEntity(heldByElse) ? "is an entity" : "holds an entity")}, "
+                    + $"and the arm that takes it is where it ends: give it an arm of its own, is {heldByElse} as x");
             if (w.ElseBinding is { } rest)
             {
                 if (missing.Count == 1) label = armBlock(elseArm, () => BindPayload(vt, slot!, missing[0], rest));
@@ -2260,6 +2293,19 @@ public sealed class FunctionGen
     /// Binds what an arm observes: the value read out of the variant's stack copy as the branch type.
     private void BindPayload(VariantType vt, string slot, DType branch, ValueRef binding)
     {
+        // A branch that holds an entity stays where the when put the value: the name is that place (@E), a slot the arm
+        // owns, which ends once on every path like any other.
+        if (Entities.Holds(branch))
+        {
+            string place = EmitTmp($"getelementptr inbounds {vt.Llvm}, ptr {slot}, i32 0, i32 2");
+            Define(binding.Name, new Val(place, new PtrType(branch)), binding.Pos);
+            if (MemOn)
+            {
+                _memTracked.Add(binding.Name);
+                Mem(new MemoryRules.Acquire(binding.Name, "taken out of a variant", binding.Pos) { Entity = branch.Name });
+            }
+            return;
+        }
         string value;
         if (branch is VariantType { Decl.IsAnonymous: true } union && vt.LeafIndex(union) < 0)
             value = CopyVariant(vt, slot, union);
@@ -4110,8 +4156,7 @@ public sealed class FunctionGen
         // `return c` with c the slot of the entity the routine returns: what it holds goes to the caller, and c ends
         // (the return takes its group along).
         var returned = r.Value;
-        if (r.Value is ValueRef named && Entities.IsEntity(_inst.Ret) && InferQuiet(named) is PtrType { Pointee: { } held }
-            && held.Equals(_inst.Ret))
+        if (r.Value is ValueRef named && ReturnsSlotValue(named))
         {
             returned = new MethodCallExpr(named, "peek", [], [], named.Pos);
             _moving = true;

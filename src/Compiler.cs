@@ -1033,8 +1033,11 @@ public sealed partial class Compiler
                     TypeArgExpr te => new ConstArg(EvalConstInt(te.Expr, env, 0)),
                     _ => throw new CompileError(t.Pos, $"invalid generic argument for '{s.Name}'"),
                 });
-            if (Entities.EntityArgument(args) is { } held)
-                throw new CompileError(t.Pos, Entities.ArgumentError(held, $"{s.Name}[...]"));
+            // An entity argument is fine: a record never holds one by value (Fields says so where a field would), so a
+            // generic record that takes one holds it through memory it owns, as List[T] and Memory[T] do. A tuple holds
+            // its items by value, so it is said here, where the tuple is written.
+            if (RecordType.IsTupleDecl(s) && Entities.EntityArgument(args) is { } inTuple)
+                throw new CompileError(t.Pos, $"a tuple holds {inTuple.Name}, an entity, which is never copied: hold it through a pointer, @{inTuple.Name}");
             CheckRecordRequirements(s, args, t.Pos);
             return new RecordType(s, args, TransparentField);
         }
@@ -1052,8 +1055,7 @@ public sealed partial class Compiler
                     TypeArgExpr te => new ConstArg(EvalConstInt(te.Expr, env, 0)),
                     _ => throw new CompileError(t.Pos, $"invalid generic argument for '{v.Name}'"),
                 });
-            if (Entities.EntityArgument(args) is { } held)
-                throw new CompileError(t.Pos, Entities.ArgumentError(held, $"{v.Name}[...]"));
+            // A variant may take an entity: the value then holds one and moves like one (Entities.Holds).
             CheckRequirements(v.Clauses, v.TypeParams, v.File, v.Pos, args, t.Pos, $"{v.Name}[{string.Join(", ", args.Select(a => a.Name))}]");
             return CheckedAt(new VariantType(v, args, VariantBranches), t.Pos);
         }
@@ -1318,10 +1320,6 @@ public sealed partial class Compiler
                 ? inner.Leaves.Select(_ => v.Decl.Branches[Math.Min(x.i, v.Decl.Branches.Count - 1)].Pos)
                 : [v.Decl.Branches[Math.Min(x.i, v.Decl.Branches.Count - 1)].Pos]).ToList();
         branches = leaves;
-        for (int i = 0; i < branches.Count; i++)
-            if (Entities.Holds(branches[i]))
-                throw new CompileError(pos[i], $"{BranchesShown(v, branches)} has the branch {branches[i].Name}, an entity, which is never "
-                    + $"copied: hold it through a pointer, @{branches[i].Name}");
         try
         {
         for (int i = 0; i < branches.Count; i++)

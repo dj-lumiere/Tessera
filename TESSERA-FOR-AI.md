@@ -689,9 +689,20 @@ routine start() -> None
   and `c` ends.
 - What copies an entity is a build error that says what to do instead: a load out of memory (`slot.peek()`), or a
   field read out of a record value.
-- A record can't hold an entity (it would copy it): declare the holder `entity` too, or hold a pointer. A type
-  argument, a tuple item, and a variant branch can't be an entity either: `List[Counter]` is a build error, and
-  `List[@Counter]` lends them.
+- A record can't hold an entity by value (it would copy it): declare the holder `entity` too, or hold a pointer. A
+  tuple item can't be an entity either.
+- A variant may have an entity branch: `Result[File, FsError]`, `Maybe[Counter]`. Such a variant value holds an entity,
+  so it follows the same rules: it lives in a slot (`local r: @Result[Counter, E] <- open()`, a value binding is a build
+  error), a parameter of that type is a slot, and it moves with `steal` or `return r`. A `when` observes it as a call's
+  result (`when open()`) or out of its slot (`when steal r`), and `is Counter as c` moves the entity into the arm's own
+  slot `c`, which ends there (drop, return, or hand on). The arm that observes an entity branch must name it, and `else`
+  never takes one. `return c` from a Counter's slot returns it where the routine returns a variant with a Counter branch.
+- A container that owns its elements may take an entity as its type argument: `List[List[S64]]`, `Memory[Counter]`, a
+  `Shelf[Counter]` of your own that keeps them in a `Memory[T]`. Elements go in with `steal` and are reached through
+  `getslot` (an `@T`), and the container's destruct ends each one before giving its memory back. `getitem`, which
+  copies an element, is a build error for an entity element that points at `getslot`.
+- `steal x` works on any value: on a value that holds no entity or memory it is the value itself. So generic code moves a
+  `T` with `steal` and works whether T is an entity or a record.
 
 **Variants**
 

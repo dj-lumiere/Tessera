@@ -424,18 +424,26 @@ public static class Entities
     public static RecordType? EntityOf(DType? t) =>
         (t is PtrType { Pointee: RecordType inner } ? inner : t as RecordType) is { Decl.IsEntity: true } r ? r : null;
 
-    /// Whether a value of `t` holds an entity by value: the entity itself, or an array of one.
-    public static bool Holds(DType? t) => t switch
+    /// Whether a value of `t` holds an entity by value: the entity itself, an array of one, or a variant with a branch
+    /// that holds one (`Result[File, FsError]`). Such a value is never copied: it lives in a place and moves.
+    public static bool Holds(DType? t) => Holds(t, null);
+
+    /// Holds, with the variants already being looked through: a variant that holds itself (a build error reported where
+    /// it is declared) holds no entity through that branch.
+    private static bool Holds(DType? t, HashSet<string>? seen) => t switch
     {
         RecordType { Decl.IsEntity: true } => true,
-        ArrayType a => Holds(a.Elem),
+        ArrayType a => Holds(a.Elem, seen),
+        VariantType v when (seen ??= []).Add(v.Key) => v.Leaves.Any(l => Holds(l, seen)),
         _ => false,
     };
+
+    /// The value type a slot of `t` (or `t` itself) holds when that value holds an entity, or null: what the memory
+    /// rules follow as one thing that ends once.
+    public static DType? HeldIn(DType? t) =>
+        (t is PtrType p ? p.Pointee : t) is { } held && Holds(held) ? held : null;
 
     /// The first type argument that holds an entity, or null.
     public static DType? EntityArgument(IEnumerable<DType> args) => args.FirstOrDefault(Holds);
 
-    public static string ArgumentError(DType entity, string formed) =>
-        $"{formed} takes {entity.Name} as a type argument, and {entity.Name} is an entity, which is never copied: "
-        + $"hold it through a pointer, @{entity.Name}";
 }
