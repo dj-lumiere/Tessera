@@ -752,6 +752,8 @@ static class Cli
             // The UCRT defines printf and its family inline in the headers; 32-bit x86 has no exported symbol for
             // them, so an IR-level call needs the out-of-line copies.
             if (target is { Os: "windows", Arch: "x86" }) psi.ArgumentList.Add("-llegacy_stdio_definitions");
+            // LLVM lowers a float remainder (frem) to C's fmod / fmodf, which glibc keeps in libm, not libc.
+            if (target.Os == "linux") psi.ArgumentList.Add("-lm");
             // The linker keeps the debug information (on Windows, lld-link writes it to a .pdb next to the exe).
             psi.ArgumentList.Add("-g");
             foreach (var a in extra ?? []) psi.ArgumentList.Add(a);
