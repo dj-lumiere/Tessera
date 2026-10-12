@@ -1328,14 +1328,22 @@ public sealed class FunctionGen
                 // names its types it says so.
                 if (!HasReleaseDuty(InferQuiet(d.Value)))
                 {
-                    if ((d.Value is ValueRef named ? WrittenGeneric(named.Name) : SourceTypeParams.Count > 0) || _c.Prechecking) break;
+                    if ((d.Value is ValueRef named ? WrittenGeneric(named.Name) : SourceTypeParams.Count > 0) || _c.Prechecking)
+                    {
+                        // A value that is made here (a call's result) is still made: only its end does nothing.
+                        if (!_c.Prechecking && d.Value is not ValueRef && !IsElementPlace(d.Value) && !IsPlaceChain(d.Value))
+                            EvalAny(d.Value);
+                        break;
+                    }
                     throw Err(d.Pos, $"{new Printer().Expr(d.Value, 0)} has nothing to give back ({InferQuiet(d.Value)?.Name ?? "its type"} "
                         + "writes no destruct): leave the drop out");
                 }
                 var call = new MethodCallExpr(d.Value, "destruct", [], [], d.Pos);
                 // A value that isn't a place (a call's result, an arm's value) has no address for destruct(me: @Me):
-                // it goes into a slot of its own first, which the drop then ends.
-                if (InferQuiet(d.Value) is { } dropped and not PtrType && !Tracked(dropped) && !Planned(call))
+                // it goes into a slot of its own first, which the drop then ends. An entity value would otherwise
+                // get an unnamed slot that the statement's end ends a second time.
+                if (InferQuiet(d.Value) is { } dropped and not PtrType
+                    && (!Tracked(dropped) && !Planned(call) || MakesTemp(call)))
                 {
                     string spill = $"$drop{_tmp++}";
                     EmitStmt(new BindStmt(spill, new TypeRef("$dropped", [], d.Pos) { Known = new PtrType(dropped) },
