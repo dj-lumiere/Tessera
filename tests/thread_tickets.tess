@@ -50,10 +50,21 @@ routine slow(ns: U64) -> U64
     sleep_for(ns)
     return ns
 
+### Thread work that ends once the stepping fiber has taken all five steps, or after 10 s: it ends early only while
+### the fiber keeps running, so the count does not depend on how finely the platform sleeps.
+### :param log: The steps the fiber took.
+### :returns: The steps seen at the end.
+routine until_five_steps(log: @Log) -> U64
+    deadline: U64 = monotonic_ns() + 10000000000
+    while log.steps.peek_atomic() != 5 and monotonic_ns() < deadline
+        sleep_for(100000)
+    then
+        return log.steps.peek_atomic()
+
 ### A fiber that waits for a thread ticket: only it waits.
 routine waits_for_thread(log: @Log) -> S64
     t: Thread[U64] = get_thread[U64]()
-    t.put_work(entry: slow.to[Callable](), args: 5000000)
+    t.put_work(entry: until_five_steps.to[Callable](), args: log)
     t.wait_finished()
     t.give_back()
     return log.steps.peek().to[S64]()
@@ -61,7 +72,7 @@ routine waits_for_thread(log: @Log) -> S64
 ### A fiber that keeps stepping while the other waits.
 routine steps(log: @Log) -> S64
     while i != 5 with i: U64 = 0
-        log.steps.poke(i + 1)
+        log.steps.poke_atomic(i + 1)
         FIBERS.sleep(200000)
         continue with i: i + 1
     then

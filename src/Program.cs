@@ -832,7 +832,10 @@ static class Cli
             stdout = p.StandardOutput.ReadToEnd();
             stderr = errTask.Result;
         }
-        if (!p.WaitForExit(10_000))
+        // A test (its output captured) gets 10 s. `tessera run` waits as long as the program runs: a long check, such
+        // as the soft-float exhaustive one, takes minutes.
+        if (!captureOutput) p.WaitForExit();
+        else if (!p.WaitForExit(10_000))
         {
             p.Kill();
             feed?.Wait();
