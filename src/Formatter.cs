@@ -1078,7 +1078,7 @@ public static class Formatter
         int i = "routine ".Length;
         int j = i;
         while (j < header.Length && (char.IsLetterOrDigit(header[j]) || header[j] == '_')) j++;
-        if (j == i || !char.IsUpper(header[i])) return null;
+        if (j == i) return null;
         if (j < header.Length && header[j] == '[')
         {
             int depth = 0;

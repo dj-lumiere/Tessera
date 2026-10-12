@@ -647,6 +647,8 @@ public sealed partial class Compiler
 
     // ── Name lookup ─────────────────────────────────────────────────────────
 
+    /// The first name of every standard library module's path.
+    public const string StandardRoot = "Standard";
     public const string CoreModule = "Standard/Core";
 
     /// How private symbols name each input file (Program.FileTagPaths): its path from its package root. A stdlib file

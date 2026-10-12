@@ -113,6 +113,8 @@ public static class StructuredMigration
         {
             return;
         }
+        // A record or entity type is called to build one (`Exited(code)`): its literal names its fields.
+        foreach (var t in decls.OfType<RecordDecl>()) RecordTypes.Add(t.Name);
         foreach (var r in decls.OfType<RoutineDecl>())
         {
             bool inOrder = r.AnnotationNamed("positional") is not null || r.AnnotationNamed("external") is { Args: [{ Value: "c" }, ..] };
@@ -124,6 +126,9 @@ public static class StructuredMigration
             }
         }
     }
+
+    /// The record and entity types of the standard library and of the files read so far.
+    private static readonly HashSet<string> RecordTypes = [];
 
     /// The names declared at least once as a routine taking named arguments.
     private static readonly HashSet<string> Named = [];
@@ -143,6 +148,10 @@ public static class StructuredMigration
     /// The routine's body: its head, its lines structured, then the blocks left.
     private static string Body(RoutineDecl r, List<string> lines, string? directory, out string? reason)
     {
+        // The record types the rewritten lines may build: the standard library's and this file's (PositionalNames
+        // reads both).
+        PositionalNames(r.File);
+        Rewriter.RecordTypes = RecordTypes;
         var structurer = new Structurer(r);
         // A generator's output keeps its block graph (a generator writes blocks on purpose): only the spellings change.
         bool generated = r.File.Replace('\\', '/').Contains("/generated/");

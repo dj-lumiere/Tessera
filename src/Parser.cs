@@ -986,7 +986,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     {
         var name = Expect(TokenKind.Ident, what);
         string? path = null;
-        while (IsPathSeparator(name))
+        while (IsPathSeparator(name, first: path is null))
         {
             Next();
             path = path is null ? name.Text : $"{path}/{name.Text}";
@@ -995,10 +995,45 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return (path, name);
     }
 
-    private bool IsPathSeparator(Token before) =>
+    /// Whether the `/` at the cursor joins a module path: it sits against the name before it and the name after it,
+    /// and the path's first name starts one (StartsPath). A name's case plays no part.
+    private bool IsPathSeparator(Token before, bool first) =>
         Is(TokenKind.Slash) && PeekTok(1).Kind == TokenKind.Ident && !before.Escaped
-        && char.IsAsciiLetterUpper(before.Text[0]) && before.Pos.Line == Cur.Pos.Line
-        && before.Pos.Col + before.Text.Length == Cur.Pos.Col && Cur.Pos.Col + 1 == PeekTok(1).Pos.Col;
+        && before.Pos.Line == Cur.Pos.Line
+        && before.Pos.Col + before.Text.Length == Cur.Pos.Col && Cur.Pos.Col + 1 == PeekTok(1).Pos.Col
+        && (!first || StartsPath(before));
+
+    /// Whether `name` can start a module path: it isn't a value bound here (a value divides), and it is a module
+    /// root this file knows: Standard, the first name of its module's path or of an import, or a define. A parse
+    /// that sees no such header (a fragment the language server or a lint reparses) takes any name that isn't a value.
+    private bool StartsPath(Token name) =>
+        !name.Escaped && !(_values?.Contains(name.Text) ?? false) && (ModuleRoots is not { } roots || roots.Contains(name.Text));
+
+    private HashSet<string>? _moduleRoots;
+    private bool _moduleRootsRead;
+
+    /// The names a module path may start with in this file, or null when the tokens hold no module, import, or define
+    /// line to read them from.
+    private HashSet<string>? ModuleRoots
+    {
+        get
+        {
+            if (_moduleRootsRead) return _moduleRoots;
+            _moduleRootsRead = true;
+            var roots = new HashSet<string>();
+            for (int k = 0; k + 1 < tokens.Count; k++)
+            {
+                var t = tokens[k];
+                if (t is not { Kind: TokenKind.Ident, Escaped: false } || k > 0 && tokens[k - 1].Kind != TokenKind.Newline) continue;
+                if (t.Text is "module" or "import" && tokens[k + 1].Kind == TokenKind.Ident) roots.Add(tokens[k + 1].Text);
+                else if (t.Text == "define" && tokens[k + 1].Kind == TokenKind.Ident && k + 2 < tokens.Count
+                         && tokens[k + 2].Kind == TokenKind.Eq) roots.Add(tokens[k + 1].Text);
+            }
+            if (roots.Count == 0) return null;
+            roots.Add(Compiler.StandardRoot);
+            return _moduleRoots = roots;
+        }
+    }
 
     /// Generic arguments. A parenthesized list is a tuple type, except `Callable`'s first one, its parameter list:
     /// `Callable[(S64, S64), (S64, S64)]` takes two S64s and returns a pair.
@@ -1850,11 +1885,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return left;
     }
 
-    /// A `/` between two operands is division: a path separator sits against a PascalCase name on both sides.
+    /// A `/` between two operands is division: a path separator sits against a name that starts a path on one side
+    /// and a name on the other.
     private bool IsDivision() =>
         Is(TokenKind.Slash) && !(PeekTok(1).Kind == TokenKind.Ident && Cur.Pos.Col + 1 == PeekTok(1).Pos.Col
                                  && _i > 0 && tokens[_i - 1] is { Kind: TokenKind.Ident, Escaped: false } prev
-                                 && char.IsAsciiLetterUpper(prev.Text[0]) && prev.Pos.Col + prev.Text.Length == Cur.Pos.Col);
+                                 && prev.Pos.Col + prev.Text.Length == Cur.Pos.Col && StartsPath(prev));
 
     private Expr ParseUnary()
     {
@@ -2225,7 +2261,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// A bare name that names a visible value, and isn't a call (a call always names a routine), a path, or a record.
     private bool IsValue(Token t) =>
         _values is not null && _values.Contains(t.Text) && (t.Escaped || !ReservedValueNames.Contains(t.Text))
-        && PeekTok(1).Kind is not TokenKind.LParen && !(PeekTok(1).Kind == TokenKind.Slash && !t.Escaped && char.IsAsciiLetterUpper(t.Text[0]) && t.Pos.Col + t.Text.Length == PeekTok(1).Pos.Col);
+        && PeekTok(1).Kind is not TokenKind.LParen;
 
     /// A name a declaration gives a type or a type parameter. `Me` is the type a routine is on, so it names nothing else.
     private static Token TypeName(Token n) =>

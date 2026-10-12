@@ -8,6 +8,10 @@ public class Rewriter
     public Dictionary<string, Expr> Subst { get; init; } = [];
     public Dictionary<string, string> Rename { get; init; } = [];
 
+    /// The record and entity types calls may build (a record literal, `Exited(code)`), which the structuring migration
+    /// reads from the declarations. A call to one of them is a literal, never told apart by the name's case.
+    [ThreadStatic] public static HashSet<string>? RecordTypes;
+
     private string N(string name) => Rename.GetValueOrDefault(name, name);
 
     public List<Stmt> Body(List<Stmt> body) => body.Select(Stmt).ToList();
@@ -61,7 +65,7 @@ public class Rewriter
                 return str with { Value = RenameHoles(str.Value) };
             case LambdaExpr l: return l with { Body = Expr(l.Body) };
             case IsPattern p: return p.Binding is null ? p : p with { Binding = p.Binding with { Name = N(p.Binding.Name) } };
-            case CallExpr c: return c with { Args = c.Args.Select(Expr).ToList(), ArgNames = Names(c.Args, c.ArgNames, literal: char.IsUpper(c.Name[0])) };
+            case CallExpr c: return c with { Args = c.Args.Select(Expr).ToList(), ArgNames = Names(c.Args, c.ArgNames, literal: RecordTypes?.Contains(c.Name) ?? false) };
             // A call on a type (`B32.truediv(1.0, x)`) may pass `me` first, which is never named: its names stay as written.
             case NsCallExpr n: return n with { Args = n.Args.Select(Expr).ToList() };
             case ImplicitCallExpr ic: return ic with { Args = ic.Args.Select(Expr).ToList(), ArgNames = Names(ic.Args, ic.ArgNames) };
