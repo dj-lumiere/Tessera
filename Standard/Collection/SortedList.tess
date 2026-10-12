@@ -195,35 +195,18 @@ needs T: typename
 ### :absent: When `order >= count`.
 routine SortedList[T].getitem_checked(me: Me, order: USize) -> Maybe[T]
 needs T: typename
+    local child_order: @USize <- .hollow()
+
     count: USize = me.count
-    if order < count
-        jump select_root()
-    else
+    if order >= count
         return None()
 
-    block select_root()
-        jump select_node(me.root, order)
-
-    block select_node(node: @SortedListNode[T], remaining: USize)
+    while true with node: @SortedListNode[T] = me.root, remaining: USize = order
         if node.leaf.peek()
-            jump leaf_get(node, remaining)
-        else
-            jump internal_get(node, remaining)
-
-    block leaf_get(node: @SortedListNode[T], remaining: USize)
-        value: T = node.values[remaining]
-        return value
-
-    block internal_get(node: @SortedListNode[T], remaining: USize)
-        jump scan(node, remaining, 0)
-
-    block scan(node: @SortedListNode[T], remaining: USize, i: USize)
-        child: @SortedListNode[T] = node.children[i]
-        child_count: USize = child.subtree_count()
-        if remaining < child_count
-            jump select_node(child, remaining)
-        else
-            jump scan(node, remaining - child_count, i + 1)
+            value: T = node.values[remaining]
+            return value
+        slot: USize = node.find_child_strict(order: remaining, out_local: child_order)
+        continue with node: node.children[slot], remaining: child_order.peek()
 
 ### `getitem`, returning None instead of crashing on a position past the end.
 ### :param order: The zero-based position in sorted order.
@@ -612,8 +595,6 @@ needs T: typename
 ### :param order: The element's position within this node's subtree.
 ### :param alloc: The allocator to free merged nodes through.
 ### :returns: The removed element.
-### :note: The rebalancing is inlined: after a borrow or merge the local order has to be adjusted for the entries
-###     that moved into or out of the child, so no generic ensure_min is factored out the way the keyed B-trees do.
 @track_caller
 routine SortedListNode[T].remove(me: @Me, order: USize, alloc: @MemoryManager) -> T
 needs T: typename
@@ -625,79 +606,68 @@ needs T: typename
         me.count.poke(new_count)
         me.subtree_count.poke(new_count)
         return value
+
+    local local_order: @USize <- .hollow()
+    slot: USize = me.find_child_strict(order, out_local: local_order)
+    child_slot, child_order = me.fill_child(slot, local_order: local_order.peek(), alloc)
+    child: @Me = me.children[child_slot]
+    value: T = child.remove(order: child_order, alloc)
+    me.recount()
+    return value
+
+### Makes sure the child at `slot` has enough elements to give one up, borrowing from a sibling or merging with one
+### when it has too few, and says where the element at `local_order` of that child is afterwards.
+### :param slot: The child the removal descends into.
+### :param local_order: The element's position within that child.
+### :param alloc: The allocator to free merged nodes through.
+### :returns: The child to descend into and the element's position within it.
+### :note: After a borrow or merge the local order has to be adjusted for the entries that moved into or out of the
+###     child, so this is written for SortedList alone rather than as a generic ensure_min the way the keyed B-trees do.
+@track_caller
+private routine SortedListNode[T].fill_child(me: @Me, slot: USize, local_order: USize,
+    alloc: @MemoryManager) -> (USize, USize)
+needs T: typename
+    child: @Me = me.children[slot]
+    child_count: USize = child.count.peek()
+    if child_count >= NODE_MIN
+        return (slot, local_order)
+
+    if slot > 0
+        left: @Me = me.children[slot - 1]
+        left_count: USize = left.count.peek()
+        if left_count >= NODE_MIN
+            # Borrow/merge change the descent target's leading subtree_count, so we
+            # diff child.subtree_count() across the operation to recover
+            # the local-order offset. This works uniformly for leaves (where each
+            # moved value contributes 1) and internals (where the moved entry is a
+            # whole child subtree of arbitrary count).
+            old_count: USize = child.subtree_count()
+            me.borrow_from_left(slot)
+            moved_order: USize = local_order + (child.subtree_count() - old_count)
+            return (slot, moved_order)
+
+        parent_count: USize = me.count.peek()
+        if slot + 1 < parent_count
+            right: @Me = me.children[slot + 1]
+            right_count: USize = right.count.peek()
+            if right_count >= NODE_MIN
+                me.borrow_from_right(slot)
+                return (slot, local_order)
+        left_slot: USize = slot - 1
+        merged_order: USize = left.subtree_count() + local_order
+        me.merge_children(i: left_slot, alloc)
+        return (left_slot, merged_order)
+
+    sibling_count: USize = me.count.peek()
+    if slot + 1 >= sibling_count
+        crash_logic_breached()
+    next_sibling: @Me = me.children[slot + 1]
+    next_count: USize = next_sibling.count.peek()
+    if next_count >= NODE_MIN
+        me.borrow_from_right(slot)
     else
-        local local_order: @USize <- .hollow()
-        slot: USize = me.find_child_strict(order, out_local: local_order)
-        local_order_val: USize = local_order.peek()
-        child: @Me = me.children[slot]
-        child_count: USize = child.count.peek()
-        if child_count >= NODE_MIN
-            child2: @Me = me.children[slot]
-            value: T = child2.remove(order: local_order_val, alloc)
-            me.recount()
-            return value
-        else
-            if slot > 0
-                left: @Me = me.children[slot - 1]
-                left_count: USize = left.count.peek()
-                if left_count >= NODE_MIN
-                    # Borrow/merge change the descent target's leading subtree_count, so we
-                    # diff child.subtree_count() across the operation to recover
-                    # the local-order offset. This works uniformly for leaves (where each
-                    # moved value contributes 1) and internals (where the moved entry is a
-                    # whole child subtree of arbitrary count).
-                    child2: @Me = me.children[slot]
-                    old_count: USize = child2.subtree_count()
-                    me.borrow_from_left(slot)
-
-                    local_order2: USize = local_order_val + (child2.subtree_count() - old_count)
-                    child3: @Me = me.children[slot]
-                    value: T = child3.remove(order: local_order2, alloc)
-                    me.recount()
-                    return value
-                else
-                    parent_count: USize = me.count.peek()
-                    if slot + 1 < parent_count
-                        right: @Me = me.children[slot + 1]
-                        right_count: USize = right.count.peek()
-                        if right_count >= NODE_MIN
-                            me.borrow_from_right(slot)
-                            child2: @Me = me.children[slot]
-                            value: T = child2.remove(order: local_order_val, alloc)
-                            me.recount()
-                            return value
-                    left_slot: USize = slot - 1
-                    left2: @Me = me.children[left_slot]
-                    new_local: USize = left2.subtree_count() + local_order_val
-                    me.merge_children(i: left_slot, alloc)
-                    child2: @Me = me.children[left_slot]
-                    value: T = child2.remove(order: new_local, alloc)
-                    me.recount()
-                    return value
-            else
-                parent_count: USize = me.count.peek()
-                if slot + 1 < parent_count
-                    right: @Me = me.children[slot + 1]
-                    right_count: USize = right.count.peek()
-                    if not (right_count >= NODE_MIN)
-                        me.merge_children(i: slot, alloc)
-                        child2: @Me = me.children[slot]
-                        value: T = child2.remove(order: local_order_val, alloc)
-                        me.recount()
-                        return value
-                else
-                    crash_logic_breached()
-            me.borrow_from_right(slot)
-            child2: @Me = me.children[slot]
-            value: T = child2.remove(order: local_order_val, alloc)
-            me.recount()
-            return value
-
-    block descend(slot: USize, local_order: USize)
-        child: @Me = me.children[slot]
-        value: T = child.remove(order: local_order, alloc)
-        me.recount()
-        return value
+        me.merge_children(i: slot, alloc)
+    return (slot, local_order)
 
 ### Removes the element at position `order` in sorted order and returns it, shrinking the tree when the root empties.
 ### :param order: The zero-based position in sorted order.

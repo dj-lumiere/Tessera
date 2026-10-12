@@ -172,66 +172,88 @@ private routine cm_b64_hypot_hard(x: B64, y: B64) -> B64
     ri: U64 = sum_sq.sqrt().bits()
     rm: U64 = (ri & 0x000FFFFFFFFFFFFF) | 0x0010000000000000
     biased_exponent: S64 = (ri >> 52).to_wrap[S64]()
-    re: S64 = biased_exponent - 0x3FF
-    jump back(0, rm, re, cm_b64_hypot_sum_squares(bm, lm, de: be - le))
 
     # step the candidate three ulps down
-    block back(i: U64, rm: U64, re: S64, m2: U64)
-        if i == 3
-            jump search(rm, re, m2)
-        if rm == 0x0010000000000000
-            jump back(i + 1, 0x001FFFFFFFFFFFFF, re - 1, m2)
+    m2: U64 = cm_b64_hypot_sum_squares(bm, lm, de: be - le)
+    while i != 3 with i: U64 = 0, rm2: U64 = rm, re: S64 = biased_exponent - 0x3FF
+        if rm2 == 0x0010000000000000
+            continue with i: i + 1, rm2: 0x001FFFFFFFFFFFFF, re: re - 1
         else
-            jump back(i + 1, rm - 1, re, m2)
-
-    block search(rm: U64, re: S64, m2: U64)
-        jump step(rm, S64.add(2, re).to_wrap[U64](), re, m2)
-
-    # move the candidate up until its square reaches x^2 + y^2
-    block step(rm0: U64, k: U64, re: S64, m2: U64)
-        wide: Bool = rm0 >= 0x0020000000000000
-        rm: U64 = when
-            wide => rm0 + 2
-            else => rm0 + 1
-        tm: U64 = rm << k
-        d: S64 = (m2 -% tm *% tm).to_wrap[S64]()
-        if d <= 0
-            jump found(rm, k, re, m2, d)
-        else
-            jump step(rm, k, re, m2)
-
-    block found(rm: U64, k: U64, re: S64, m2: U64, d: S64)
-        if d == 0
-            jump finish(rm, re)
-        # compare with the midpoint below the candidate
-        narrow: Bool = rm <= 0x0020000000000000
-        sh: U64 = when
-            narrow => k - 1
-            else => k
-        tm: U64 = (rm << k) -% U64.shl(1, sh)
-        dm: S64 = (m2 -% tm *% tm).to_wrap[S64]()
-        tie: Bool = dm == 0
-        below: Bool = dm < 0
-        bit: U64 = when
-            narrow => 1
-            else => 2
-        when
-            tie => jump finish(rm - (rm & bit), re)
-            below => jump finish(rm - 1, re)
-            else => jump finish(rm, re)
-
-    # round to even
-    block finish(rm: U64, re: S64)
-        wide: Bool = rm >= 0x0020000000000000
-        m: U64 = when
-            wide => rm >> 1
-            else => rm
-        r: S64 = when
-            wide => re + 1
-            else => re
-        e: S64 = be - 1 + r
-        exponent_bits: U64 = e.to_wrap[U64]() << 52
-        return B64.from_bits(exponent_bits +% m)
+            continue with i: i + 1, rm2: rm2 - 1, re: re
+    then
+        # move the candidate up until its square reaches x^2 + y^2
+        k: U64 = S64.add(2, re).to_wrap[U64]()
+        while true with rm0: U64 = rm2
+            wide2: Bool = rm0 >= 0x0020000000000000
+            rm32: U64 = when
+                wide2 => rm0 + 2
+                else => rm0 + 1
+            tm2: U64 = rm32 << k
+            d2: S64 = (m2 -% tm2 *% tm2).to_wrap[S64]()
+            if d2 <= 0
+                if d2 == 0
+                    # compare with the midpoint below the candidate
+                    # round to even
+                    wide3: Bool = rm32 >= 0x0020000000000000
+                    m: U64 = when
+                        wide3 => rm32 >> 1
+                        else => rm32
+                    r: S64 = when
+                        wide3 => re + 1
+                        else => re
+                    e: S64 = be - 1 + r
+                    exponent_bits: U64 = e.to_wrap[U64]() << 52
+                    return B64.from_bits(exponent_bits +% m)
+                else
+                    narrow: Bool = rm32 <= 0x0020000000000000
+                    sh: U64 = when
+                        narrow => k - 1
+                        else => k
+                    tm3: U64 = (rm32 << k) -% U64.shl(1, sh)
+                    dm: S64 = (m2 -% tm3 *% tm3).to_wrap[S64]()
+                    tie: Bool = dm == 0
+                    below: Bool = dm < 0
+                    bit: U64 = when
+                        narrow => 1
+                        else => 2
+                    when
+                        tie =>
+                            rm4: U64 = rm32 - (rm32 & bit)
+                            wide3: Bool = rm4 >= 0x0020000000000000
+                            m: U64 = when
+                                wide3 => rm4 >> 1
+                                else => rm4
+                            r: S64 = when
+                                wide3 => re + 1
+                                else => re
+                            e: S64 = be - 1 + r
+                            exponent_bits: U64 = e.to_wrap[U64]() << 52
+                            return B64.from_bits(exponent_bits +% m)
+                        below =>
+                            rm4: U64 = rm32 - 1
+                            wide3: Bool = rm4 >= 0x0020000000000000
+                            m: U64 = when
+                                wide3 => rm4 >> 1
+                                else => rm4
+                            r: S64 = when
+                                wide3 => re + 1
+                                else => re
+                            e: S64 = be - 1 + r
+                            exponent_bits: U64 = e.to_wrap[U64]() << 52
+                            return B64.from_bits(exponent_bits +% m)
+                        else =>
+                            wide3: Bool = rm32 >= 0x0020000000000000
+                            m: U64 = when
+                                wide3 => rm32 >> 1
+                                else => rm32
+                            r: S64 = when
+                                wide3 => re + 1
+                                else => re
+                            e: S64 = be - 1 + r
+                            exponent_bits: U64 = e.to_wrap[U64]() << 52
+                            return B64.from_bits(exponent_bits +% m)
+            else
+                continue with rm0: rm32
 
 ### (4 bm)^2 + (lm 2^(2 - de))^2 modulo 2^64, for the hard case of hypot: bm
 ### and lm are the full mantissas of the larger and smaller leg, de >= 0 the

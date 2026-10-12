@@ -800,48 +800,43 @@ private routine cm_b64_log_dint_add(a: CmF64LogDint, b: CmF64LogDint) -> CmF64Lo
     b_zero: Bool = b.m == 0
     same_ex: Bool = a.ex == b.ex
     equal: Bool = same_ex and a.m == b.m
-    when
+    values: (CmF64LogDint, CmF64LogDint) = when
         a_zero => return b
         b_zero => return a
-        equal => jump equal()
-        a.ex > b.ex or (same_ex and a.m > b.m) => jump align(a, b)
-        else => jump align(b, a)
-
-    # |a| = |b|
-    block equal()
-        if a.sgn != b.sgn
-            return CmF64LogDint(m: 0, ex: 0, sgn: 0)
-        else
-            return CmF64LogDint(m: a.m, ex: a.ex + 1, sgn: a.sgn)
+        equal =>
+            # |a| = |b|
+            if a.sgn != b.sgn
+                return CmF64LogDint(m: 0, ex: 0, sgn: 0)
+            else
+                return CmF64LogDint(m: a.m, ex: a.ex + 1, sgn: a.sgn)
+        a.ex > b.ex or (same_ex and a.m > b.m) => (a, b)
+        else => (b, a)
+    x, y = values
 
     # from now on |x| > |y|: shift y's significand to x's exponent, rounding to nearest
-    block align(x: CmF64LogDint, y: CmF64LogDint)
-        sh: S64 = x.ex - y.ex
-        if not (sh > 0)
-            jump combine(x, y.m, y.sgn)
-        # a shift past 128 bits leaves the round bit 0, as C's guard sh <= 128 does
-        round: U128 = (y.m >> (sh - 1).to[U128]()) & 1
-        jump combine(x, y.m +% round >> sh.to[U128](), y.sgn)
-
-    block combine(x: CmF64LogDint, ym: U128, ysgn: U64)
-        if x.sgn != ysgn
-            jump normalize(x.m -% ym, x.ex, x)
-        c: U128 = x.m +% ym
-        # carry out of the 128 bits
-        if c < x.m
-            jump carry(c, x)
-        else
-            jump normalize(c, x.ex, x)
-
-    block carry(c: U128, x: CmF64LogDint)
-        rounded: U128 = c +% (c & 1)
-        jump normalize(U128.shl(1, 127) | (rounded >> 1), x.ex + 1, x)
-
-    block normalize(c: U128, m_ex: S64, x: CmF64LogDint)
-        if c == 0
-            return CmF64LogDint(m: 0, ex: m_ex - (x.ex + 64), sgn: x.sgn)
-        lz: U128 = c.leading_zeros()
-        return CmF64LogDint(m: c << lz, ex: m_ex - lz.to[S64](), sgn: x.sgn)
+    sh: S64 = x.ex - y.ex
+    values2: (U128, U64) = when
+        not (sh > 0) => (y.m, y.sgn)
+        else =>
+            # a shift past 128 bits leaves the round bit 0, as C's guard sh <= 128 does
+            round: U128 = (y.m >> (sh - 1).to[U128]()) & 1
+            becomes (y.m +% round >> sh.to[U128](), y.sgn)
+    ym, ysgn = values2
+    values3: (U128, S64) = when
+        x.sgn != ysgn => (x.m -% ym, x.ex)
+        else =>
+            c: U128 = x.m +% ym
+            # carry out of the 128 bits
+            if c < x.m
+                rounded: U128 = c +% (c & 1)
+                becomes (U128.shl(1, 127) | (rounded >> 1), x.ex + 1)
+            else
+                becomes (c, x.ex)
+    c, m_ex = values3
+    if c == 0
+        return CmF64LogDint(m: 0, ex: m_ex - (x.ex + 64), sgn: x.sgn)
+    lz: U128 = c.leading_zeros()
+    return CmF64LogDint(m: c << lz, ex: m_ex - lz.to[S64](), sgn: x.sgn)
 
 ### a b, with 126 bits of accuracy.
 ### :param a: The first factor.

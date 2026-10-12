@@ -976,24 +976,29 @@ internal routine FileHandle.open(path: Span[Byte], mode: OpenMode) -> Result[Me,
     if not c_path(path, out: cpath)
         return path_error(path)
     f: OpenFlags = open_flags()
-    when mode
-        OpenMode.READ => jump open(f.cloexec)
-        OpenMode.WRITE => jump open_creating(f, f.truncate)
-        OpenMode.APPEND => jump open_creating(f, f.append)
-        OpenMode.READ_WRITE => jump open(f.cloexec | 2)
-        OpenMode.CREATE_NEW => jump open_creating(f, f.exclude)
-
-    # Write-only and created if missing, plus how it opens (truncate, append, or exclude).
-    block open_creating(f: OpenFlags, how: CInt)
-        creating: CInt = f.cloexec | 1 | f.create
-        jump open(creating | how)
-
-    block open(flags: CInt)
-        fd: CInt = c_open(cpath, flags, 438)
-        if fd < 0
-            return failed[Me]()
-        else
-            return Me(fd: fd, failed: false)
+    how: CInt = when mode
+        OpenMode.READ =>
+            # Write-only and created if missing, plus how it opens (truncate, append, or exclude).
+            fd: CInt = c_open(cpath, f.cloexec, 438)
+            if fd < 0
+                return failed[Me]()
+            else
+                return Me(fd: fd, failed: false)
+        OpenMode.WRITE => f.truncate
+        OpenMode.APPEND => f.append
+        OpenMode.READ_WRITE =>
+            fd: CInt = c_open(cpath, f.cloexec | 2, 438)
+            if fd < 0
+                return failed[Me]()
+            else
+                return Me(fd: fd, failed: false)
+        OpenMode.CREATE_NEW => f.exclude
+    creating: CInt = f.cloexec | 1 | f.create
+    fd: CInt = c_open(cpath, creating | how, 438)
+    if fd < 0
+        return failed[Me]()
+    else
+        return Me(fd: fd, failed: false)
 
 ### Reads up to count bytes into buffer: how many, 0 at the end of the file. One call reads at most 1 GiB, and a
 ### read a signal interrupts is tried again.
@@ -1224,69 +1229,54 @@ internal routine rename_no_replace(from: Span[Byte], to: Span[Byte]) -> Result[N
 internal routine copy_file(from: Span[Byte], to: Span[Byte]) -> Result[U64, FsError]
     local src: @FileHandle <- .empty()
     local dst: @FileHandle <- .empty()
-    local total: @U64 <- 0
 
     source: Result[FileHandle, FsError] = FileHandle.open(path: from, mode: OpenMode.READ)
-    when source
+    result: Result[U64, FsError] = when source
         is FileHandle as f =>
             src.poke(f)
             dest: Result[FileHandle, FsError] = FileHandle.open(path: to, mode: OpenMode.WRITE)
-            when dest
+            becomes when dest
                 is FileHandle as f2 =>
                     dst.poke(f2)
-                    if not (set_mode(fd: dst.fd.peek(), mode: fd_mode(src.fd.peek())) == 0)
-                        # `to` is opened (made or emptied) and the copy can't be finished: it goes, so no partial copy is left.
-                        error: FsError = error_of(errno())
-                        dst.close()
-                        discard_removed: Result[None, FsError] = remove_file(to)
-                        src.close()
-                        dst.close()
-                        return error
-                    else
-                        local buffer: @Array[Byte, 16384] <- .hollow()
+                    copied: Result[U64, FsError] = copy_contents(src, dst)
+                    when copied
+                        is U64 => pass
+                        is FsError =>
+                            # `to` is opened (made or emptied) and the copy can't be finished: it goes, so no partial
+                            # copy is left.
+                            dst.close()
+                            discard_removed: Result[None, FsError] = remove_file(to)
+                    becomes copied
+                is FsError as error => error
+        is FsError as error => error
+    src.close()
+    dst.close()
+    return result
 
-                        buffer2: @Byte = buffer.to[@Byte]()
+### Gives the open file dst the permissions of src, then copies src's bytes into it, 16 KiB at a time. Neither file
+### is closed.
+### :param src: The open file to read.
+### :param dst: The open file to write.
+### :returns: The number of bytes copied.
+### :throws: Returns the reason when the permissions can't be set or a read or a write fails.
+@target(os: ("linux", "macos"))
+private routine copy_contents(src: @FileHandle, dst: @FileHandle) -> Result[U64, FsError]
+    local buffer: @Array[Byte, 16384] <- .hollow()
 
-                        while true
-                            got: Result[USize, FsError] = src.read_bytes_result(buffer: buffer2, count: 16384)
-                            when got
-                                is USize as n =>
-                                    if n == 0
-                                        result: Result[U64, FsError] = total.peek()
-                                        src.close()
-                                        dst.close()
-                                        return result
-                                    else
-                                        wrote: Result[None, FsError] = dst.write_all_result(data: buffer2, count: n)
-                                        when wrote
-                                            is None =>
-                                                (total.peek() + n.to[U64]()).poke_into(total)
-                                                continue
-                                            is FsError as error =>
-                                                dst.close()
-                                                discard_removed: Result[None, FsError] = remove_file(to)
-                                                src.close()
-                                                dst.close()
-                                                return error
-                                is FsError as error =>
-                                    dst.close()
-                                    discard_removed: Result[None, FsError] = remove_file(to)
-                                    src.close()
-                                    dst.close()
-                                    return error
-                is FsError as error =>
-                    src.close()
-                    dst.close()
-                    return error
-        is FsError as error =>
-            src.close()
-            dst.close()
-            return error
-
-    block finish(result: Result[U64, FsError])
-        src.close()
-        dst.close()
-        return result
+    if not (set_mode(fd: dst.fd.peek(), mode: fd_mode(src.fd.peek())) == 0)
+        return error_of(errno())
+    buffer2: @Byte = buffer.to[@Byte]()
+    while true with total: U64 = 0
+        got: Result[USize, FsError] = src.read_bytes_result(buffer: buffer2, count: 16384)
+        when got
+            is USize as n =>
+                if n == 0
+                    return total
+                wrote: Result[None, FsError] = dst.write_all_result(data: buffer2, count: n)
+                when wrote
+                    is None => continue with total: total + n.to[U64]()
+                    is FsError as error => return error
+            is FsError as error => return error
 
 ### Sets the permission bits of the open file fd.
 ### :param fd: The open file.

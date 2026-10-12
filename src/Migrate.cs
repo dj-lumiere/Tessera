@@ -288,6 +288,9 @@ public static class Migrate
         ["structured"] = (file, text, report) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.RewriteMarkdown(file, text, report)
             : StructuredMigration.Rewrite(file, text, report),
+        ["blocks"] = (file, text, report) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? text
+            : StructuredMigration.Rewrite(file, text, report, onlyBlocks: true),
         ["spellings"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, StructuredMigration.Spellings)
             : StructuredMigration.Spellings(text),

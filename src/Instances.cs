@@ -84,7 +84,7 @@ public sealed partial class Compiler
     private static readonly HashSet<string> KnownAnnotations =
         ["external", "symbol", "callconv", "noreturn", "variadic", "template", "target", "feature", "llvm",
          "export", "derived", "inline", "noinline", "clobbers", "readonly", "pure", "naked", "source", "track_caller",
-         "no_builtins", "untraced", "trace", "heap_check", "race_check", "reshaping", "positional", ExpensiveCallLint.Annotation, BlockLint.Generated];
+         "no_builtins", "untraced", "trace", "heap_check", "race_check", "reshaping", "positional", ExpensiveCallLint.Annotation, BlockRule.Generated];
 
     /// Annotations that describe an assembly routine and mean nothing on another.
     private static readonly string[] AsmAnnotations = ["clobbers", "readonly", "pure", "naked"];
@@ -104,6 +104,7 @@ public sealed partial class Compiler
             if (p.Register is { } placed && !asm)
                 throw new CompileError(placed.Pos,
                     $"'= {placed.Text}' places a parameter of an assembly routine in a register, and '{r.DisplayName}' is not #external(\"asm\")");
+        BlockRule.Check(r);
         CheckInlining(r);
         CheckUntraced(r);
         ExpensiveCallLint.CheckAnnotation(r);

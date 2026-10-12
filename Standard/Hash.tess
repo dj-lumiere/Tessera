@@ -123,25 +123,43 @@ routine xxh64_finalize(h: U64) -> U64
 ### :note: Reads only the `len` bytes. An empty input (`len` of 0) is valid.
 @expensive("hashes the whole buffer")
 routine xxh64(data: @Byte, len: USize, seed: U64) -> U64
-    if len >= 32
-        jump big_init()
-    else
-        jump after_block(seed +% XXH64_P5, 0)
+    stripes: (U64, USize) = when
+        len >= 32 => xxh64_stripes(data, len, seed)
+        else => (seed +% XXH64_P5, 0)
 
-    block big_init()
-        v1_0: U64 = seed +% XXH64_P1 +% XXH64_P2
-        v2_0: U64 = seed +% XXH64_P2
-        v3_0: U64 = seed
-        jump big_loop(v1_0, v2_0, v3_0, seed -% XXH64_P1, 0)
+    # After the stripes, whole 8-byte chunks go first, then one 4-byte chunk when 4 or more bytes are left, then
+    # single bytes.
+    while off < len with h: U64 = stripes.item0 +% len.to[U64](), off: USize = stripes.item1
+        rem: USize = len - off
+        when
+            rem >= 8 =>
+                k: U64 = data.read_le[U64](off)
+                mixed8: U64 = (h ^ xxh64_round(acc: 0, input: k)).rotl(27)
+                continue with h: mixed8 *% XXH64_P1 +% XXH64_P4, off: off + 8
+            rem >= 4 =>
+                k32: U32 = data.read_le[U32](off)
+                ku: U64 = k32.to[U64]()
+                mixed4: U64 = (h ^ ku *% XXH64_P1).rotl(23)
+                continue with h: mixed4 *% XXH64_P2 +% XXH64_P3, off: off + 4
+            else =>
+                b: Byte = data.stride(off).peek()
+                bu: U64 = b.to[U8]().to[U64]()
+                mixed1: U64 = (h ^ bu *% XXH64_P5).rotl(11)
+                continue with h: mixed1 *% XXH64_P1, off: off + 1
+    then
+        result: U64 = xxh64_finalize(h)
+        return result
 
-    block big_loop(v1: U64, v2: U64, v3: U64, v4: U64, off: USize)
-        remaining: USize = len - off
-        if remaining >= 32
-            jump big_step(v1, v2, v3, v4, off)
-        else
-            jump big_finish(v1, v2, v3, v4, off)
-
-    block big_step(v1: U64, v2: U64, v3: U64, v4: U64, off: USize)
+### Runs xxh64's stripe loop over the whole 32-byte stripes of an input of at least 32 bytes, one 64-bit lane per
+### 8 bytes of a stripe, then merges the four lanes into one hash.
+### :param data: The first byte of the input.
+### :param len: The number of bytes of the input, 32 or more.
+### :param seed: The seed of the hash.
+### :returns: The merged hash and the offset of the first byte after the last whole stripe.
+private routine xxh64_stripes(data: @Byte, len: USize, seed: U64) -> (U64, USize)
+    v1_0: U64 = seed +% XXH64_P1 +% XXH64_P2
+    v2_0: U64 = seed +% XXH64_P2
+    while len - off >= 32 with v1: U64 = v1_0, v2: U64 = v2_0, v3: U64 = seed, v4: U64 = seed -% XXH64_P1, off: USize = 0
         k1: U64 = data.read_le[U64](off)
         k2: U64 = data.read_le[U64](off + 8)
         k3: U64 = data.read_le[U64](off + 16)
@@ -149,9 +167,8 @@ routine xxh64(data: @Byte, len: USize, seed: U64) -> U64
         v1n: U64 = xxh64_round(acc: v1, input: k1)
         v2n: U64 = xxh64_round(acc: v2, input: k2)
         v3n: U64 = xxh64_round(acc: v3, input: k3)
-        jump big_loop(v1n, v2n, v3n, xxh64_round(acc: v4, input: k4), off + 32)
-
-    block big_finish(v1: U64, v2: U64, v3: U64, v4: U64, off: USize)
+        continue with v1: v1n, v2: v2n, v3: v3n, v4: xxh64_round(acc: v4, input: k4), off: off + 32
+    then
         r1: U64 = v1.rotl(1)
         r2: U64 = v2.rotl(7)
         r3: U64 = v3.rotl(12)
@@ -160,52 +177,7 @@ routine xxh64(data: @Byte, len: USize, seed: U64) -> U64
         h1: U64 = xxh64_merge(acc: hsum, val: v1)
         h2: U64 = xxh64_merge(acc: h1, val: v2)
         h3: U64 = xxh64_merge(acc: h2, val: v3)
-        jump after_block(xxh64_merge(acc: h3, val: v4), off)
-
-    block after_block(h: U64, off: USize)
-        jump tail8_loop(h +% len.to[U64](), off)
-
-    block tail8_loop(h: U64, off: USize)
-        rem: USize = len - off
-        if rem >= 8
-            jump tail8_step(h, off)
-        else
-            jump tail4(h, off)
-
-    block tail8_step(h: U64, off: USize)
-        k: U64 = data.read_le[U64](off)
-        mixed: U64 = (h ^ xxh64_round(acc: 0, input: k)).rotl(27)
-        jump tail8_loop(mixed *% XXH64_P1 +% XXH64_P4, off + 8)
-
-    block tail4(h: U64, off: USize)
-        rem: USize = len - off
-        if rem >= 4
-            jump tail4_step(h, off)
-        else
-            jump tail1_loop(h, off)
-
-    block tail4_step(h: U64, off: USize)
-        k32: U32 = data.read_le[U32](off)
-        ku: U64 = k32.to[U64]()
-        mixed: U64 = (h ^ ku *% XXH64_P1).rotl(23)
-        jump tail1_loop(mixed *% XXH64_P2 +% XXH64_P3, off + 4)
-
-    block tail1_loop(h: U64, off: USize)
-        rem: USize = len - off
-        if rem >= 1
-            jump tail1_step(h, off)
-        else
-            jump finalize(h)
-
-    block tail1_step(h: U64, off: USize)
-        b: Byte = data.stride(off).peek()
-        bu: U64 = b.to[U8]().to[U64]()
-        mixed: U64 = (h ^ bu *% XXH64_P5).rotl(11)
-        jump tail1_loop(mixed *% XXH64_P1, off + 1)
-
-    block finalize(h: U64)
-        result: U64 = xxh64_finalize(h)
-        return result
+        return (xxh64_merge(acc: h3, val: v4), off)
 
 # -- 8-byte fast path ------------------------------------------------------------
 #

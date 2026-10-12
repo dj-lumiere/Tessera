@@ -52,184 +52,168 @@ routine B32.ln_gamma(me: Me) -> Me
     local ax: Me = me.abs()
     local tu: U32 = ax.bits()
 
-    special: Bool = tu >= 0x7F800000
-    when
-        special => jump special()
-        fx == me => jump integer()
-        else => jump general()
-
     # +-inf gives +inf, NaN comes back quiet
-    block special()
+    if tu >= 0x7F800000
         if tu == 0x7F800000
             return me * me
-        else
-            return me + me
-
+        return me + me
     # an integer: a pole at 0 and the negative integers, and log(gamma) = 0 at 1 and 2
-    block integer()
-        pole: Bool = me <= 0.0
+    if fx == me
         when
-            pole => return Me.from_bits(0x7F800000)
+            me <= 0.0 => return Me.from_bits(0x7F800000)
             me == 1.0 or me == 2.0 => return 0.0
-            else => jump general()
+            else => pass
+    z: B64 = ax.to[B64]()
+    s: B64 = me.to[B64]()
+    f: B64 = when
+        # |x| < 0x1.52p-1: a rational approximation of log|gamma(x)| + log|x|
+        ax < 0x1.52p-1 => cm_b32_lgamma_small(s) - cm_b32_lgamma_ln(z)
+        # |x| > 0x1.afc1ap+1: Stirling's series
+        ax > 0x1.afc1ap+1 =>
+            if me >= 0x1.895f1cp+121
+                return me.mul_add(a: 0x1.4d3398p+6, b: 0x1.10f35ep+103)
+            lz: B64 = cm_b32_lgamma_ln(z)
+            series: B64 = cm_b32_lgamma_stirling(z, lz, ax)
+            large: B64 = when
+                me < 0.0 =>
+                    # log|gamma(x)| = log(pi) - log|gamma(-x)| - log(-x) - log|sin(pi x)|
+                    g: B64 = B64.sub(0x1.250d048e7a1bdp+0, series) - lz
+                    lp: B64 = cm_b32_lgamma_ln(cm_b32_lgamma_sinpi((me - fx).to[B64]()))
+                    becomes g - lp
+                else => series
+            becomes large
+        # 0x1.52p-1 <= |x| <= 0x1.afc1ap+1: a rational approximation of log(gamma(|x|))
+        else =>
+            rational: B64 = cm_b32_lgamma_middle(z)
+            near1: Bool = tu < 0x40301B93 and tu > 0x402F95C2
+            near2: Bool = tu > 0x401CECCB and tu < 0x401D95CA
+            middle: B64 = when
+                not (me < 0.0) => rational
+                near1 => cm_b32_lgamma_near1(s)
+                near2 => cm_b32_lgamma_near2(s)
+                tu > 0x40492009 and tu < 0x404940EF => cm_b32_lgamma_near3(s)
+                else =>
+                    # log|gamma(x)| = log(pi) - log(gamma(|x|)) - log|x sin(pi x)|
+                    g: B64 = B64.sub(0x1.250d048e7a1bdp+0, rational)
+                    lp: B64 = cm_b32_lgamma_ln(cm_b32_lgamma_sinpi((me - fx).to[B64]()) * z)
+                    becomes g - lp
+            becomes middle
+    r: Me = f.to[Me]()
+    biased_bits: U64 = f.bits() +% 5
+    if biased_bits & 0xFFFFFFF <= 31
+        return cm_b32_lgamma_exception(xb: me.bits(), fallback: r)
+    return r
 
-    block general()
-        z: B64 = ax.to[B64]()
-        s: B64 = me.to[B64]()
-        small: Bool = ax < 0x1.52p-1
-        when
-            small => jump small(z, s)
-            ax > 0x1.afc1ap+1 => jump large(z)
-            else => jump middle(z, s)
+### log|gamma(x)| + log|x| for |x| < 0x1.52p-1, from a rational approximation.
+### :param s: x, widened to B64.
+### :returns: The approximation of log|gamma(x)| + log|x|.
+private routine cm_b32_lgamma_small(s: B64) -> B64
+    n1: B64 = (s + 0x1.505bdf4b65acp+4) * (s + 0x1.51c80eb47e068p+2)
+    n2: B64 = (s - 0x1.0000000007cb8p+0) * (s + 0x1.4ac529250a1fcp+1)
+    n3: B64 = (s + 0x1.a8c99dbe1621ap+0) * (s + 0x1.4abdcc74115eap+0)
+    n4: B64 = (s + 0x1.1b87fe5a5b923p+0) * (s + 0x1.05b8a4d47ff64p+0)
+    num: B64 = s * 0x1.0fc0fad268c4dp+2 * (n1 * n2 * (n3 * n4))
+    d1: B64 = (s + 0x1.4db2cfe9a5265p+5) * (s + 0x1.062e99d1c4f27p+3)
+    d2: B64 = (s + 0x1.c81bc2ecf25f6p+1) * (s + 0x1.108e55c10091bp+1)
+    d3: B64 = (s + 0x1.7dd25af0b83d4p+0) * (s + 0x1.36bf1880125fcp+0)
+    d4: B64 = (s + 0x1.1379fc8023d9cp+0) * (s + 0x1.03712e41525d2p+0)
+    den: B64 = d1 * d2 * (d3 * d4)
+    return num / den
 
-    # |x| < 0x1.52p-1: a rational approximation of log|gamma(x)| + log|x|
-    block small(z: B64, s: B64)
-        n1: B64 = (s + 0x1.505bdf4b65acp+4) * (s + 0x1.51c80eb47e068p+2)
-        n2: B64 = (s - 0x1.0000000007cb8p+0) * (s + 0x1.4ac529250a1fcp+1)
-        n3: B64 = (s + 0x1.a8c99dbe1621ap+0) * (s + 0x1.4abdcc74115eap+0)
-        n4: B64 = (s + 0x1.1b87fe5a5b923p+0) * (s + 0x1.05b8a4d47ff64p+0)
-        num: B64 = s * 0x1.0fc0fad268c4dp+2 * (n1 * n2 * (n3 * n4))
-        d1: B64 = (s + 0x1.4db2cfe9a5265p+5) * (s + 0x1.062e99d1c4f27p+3)
-        d2: B64 = (s + 0x1.c81bc2ecf25f6p+1) * (s + 0x1.108e55c10091bp+1)
-        d3: B64 = (s + 0x1.7dd25af0b83d4p+0) * (s + 0x1.36bf1880125fcp+0)
-        d4: B64 = (s + 0x1.1379fc8023d9cp+0) * (s + 0x1.03712e41525d2p+0)
-        den: B64 = d1 * d2 * (d3 * d4)
-        jump narrow(num / den - cm_b32_lgamma_ln(z))
+### log(gamma(z)) for z > 0x1.afc1ap+1 from Stirling's series, with fewer correction terms the larger z is.
+### :param z: |x|, widened to B64.
+### :param lz: log(`z`).
+### :param ax: |x| as a B32, which picks the number of terms.
+### :returns: The approximation of log(gamma(`z`)).
+private routine cm_b32_lgamma_stirling(z: B64, lz: B64, ax: B32) -> B64
+    stirling_lead: B64 = (z - 0.5) * (lz - 1.0)
+    f: B64 = stirling_lead + 0x1.acfe390c97d69p-2
+    iz: B64 = B64.truediv(1.0, z)
+    iz2: B64 = iz * iz
+    exact: Bool = ax >= 0x1p+20
+    terms1: Bool = ax > 1198.0
+    terms2: Bool = ax > 0x1.279a7p+6
+    when
+        exact => return f
+        terms1 => return f + iz * 0x1.5555555555555p-4
+        terms2 =>
+            p: B64 = iz2 * -0x1.6c0fd270c465p-9 + 0x1.555555547fbadp-4
+            return f + iz * p
+        ax > 0x1.555556p+3 =>
+            iz4: B64 = iz2 * iz2
+            p0: B64 = iz2 * -0x1.6c16bdc45944fp-9 + 0x1.555555554de0bp-4
+            p2: B64 = iz2 * -0x1.2e9cfff3b29c2p-11 + 0x1.a0077f300ecb3p-11
+            p: B64 = p0 + iz4 * p2
+            return f + iz * p
+        else =>
+            iz4: B64 = iz2 * iz2
+            iz8: B64 = iz4 * iz4
+            p0: B64 = iz2 * -0x1.6c16c0e7c4cf4p-9 + 0x1.5555555551286p-4
+            p2: B64 = iz2 * -0x1.37e87ec19cb45p-11 + 0x1.a0193267fe6f2p-11
+            p4: B64 = iz2 * -0x1.c16c8946b19b6p-10 + 0x1.b40011dfff081p-11
+            p6: B64 = iz2 * -0x1.4f5843a71a338p-8 + 0x1.e9f47ace150d8p-9
+            lo: B64 = p0 + iz4 * p2
+            hi: B64 = p4 + iz4 * p6
+            p: B64 = lo + iz8 * hi
+            return f + iz * p
 
-    # |x| > 0x1.afc1ap+1: Stirling's series
-    block large(z: B64)
-        if me >= 0x1.895f1cp+121
-            return me.mul_add(a: 0x1.4d3398p+6, b: 0x1.10f35ep+103)
-        else
-            jump stirling(z)
+### log(gamma(z)) for 0x1.52p-1 <= z <= 0x1.afc1ap+1, from a rational approximation that vanishes at 1 and 2.
+### :param z: |x|, widened to B64.
+### :returns: The approximation of log(gamma(`z`)).
+private routine cm_b32_lgamma_middle(z: B64) -> B64
+    zero_factors: B64 = (z - 1.0) * (z - 2.0)
+    n0: B64 = zero_factors * 0x1.3cc0e6a0106b3p+2
+    n1: B64 = (z + 0x1.667923ff14df7p+5) * (z + 0x1.2d35f25ad8f64p+3)
+    n2: B64 = (z + 0x1.b8c9eab9d5bd3p+1) * (z + 0x1.7a4a97f494127p+0)
+    n3: B64 = (z + 0x1.3a6c8295b4445p-1) * (z + 0x1.da44e8b810024p-3)
+    n4: B64 = n3 * (z + 0x1.9061e81c77e4ap-5)
+    num: B64 = n0 * (n1 * n2 * n4)
+    d1: B64 = (z + 0x1.491a899e84c52p+6) * (z + 0x1.d202961b9e098p+3)
+    d2: B64 = (z + 0x1.4ced68c631ed6p+2) * (z + 0x1.2589eedf40738p+1)
+    d3: B64 = (z + 0x1.1302e3337271p+0) * (z + 0x1.c36b802f26dffp-2)
+    d4: B64 = (z + 0x1.3ded448acc39dp-3) * (z + 0x1.bffc491078eafp-6)
+    den: B64 = d1 * d2 * (d3 * d4)
+    return num / den
 
-    block stirling(z: B64)
-        lz: B64 = cm_b32_lgamma_ln(z)
-        stirling_lead: B64 = (z - 0.5) * (lz - 1.0)
-        f: B64 = stirling_lead + 0x1.acfe390c97d69p-2
-        iz: B64 = B64.truediv(1.0, z)
-        iz2: B64 = iz * iz
-        exact: Bool = ax >= 0x1p+20
-        terms1: Bool = ax > 1198.0
-        terms2: Bool = ax > 0x1.279a7p+6
-        when
-            exact => jump reflect_check(f, lz)
-            terms1 => jump reflect_check(f + iz * 0x1.5555555555555p-4, lz)
-            terms2 => jump terms2(f, lz, iz, iz2)
-            ax > 0x1.555556p+3 => jump terms4(f, lz, iz, iz2)
-            else => jump terms8(f, lz, iz, iz2)
+### log|gamma(x)| near the zero of lgamma at about -2.7476, as a polynomial in the distance h from that zero.
+### :param s: x, widened to B64.
+### :returns: The approximation of log|gamma(x)|.
+private routine cm_b32_lgamma_near1(s: B64) -> B64
+    h: B64 = s + 0x1.5fb410a1bd901p+1 - 0x1.a19a96d2e6f85p-54
+    hh: B64 = h * h
+    h4: B64 = hh * hh
+    a0: B64 = h * 0x1.3267f3c265a54p+3 + -0x1.ea12da904b18cp+0
+    a2: B64 = h * 0x1.f504accc3f2e4p+5 + -0x1.4185ac30cadb3p+4
+    a4: B64 = h * 0x1.43740491dc22p+9 + -0x1.8588444c679b4p+7
+    a6: B64 = h * 0x1.dac829f365795p+12 + -0x1.12400ea23f9e6p+11
+    p: B64 = a0 + hh * a2 + h4 * (a4 + hh * a6)
+    return h * p
 
-    block terms2(f: B64, lz: B64, iz: B64, iz2: B64)
-        p: B64 = iz2 * -0x1.6c0fd270c465p-9 + 0x1.555555547fbadp-4
-        jump reflect_check(f + iz * p, lz)
+### log|gamma(x)| near the zero of lgamma at about -2.4570, as a polynomial in the distance h from that zero.
+### :param s: x, widened to B64.
+### :returns: The approximation of log|gamma(x)|.
+private routine cm_b32_lgamma_near2(s: B64) -> B64
+    h: B64 = s + 0x1.3a7fc9600f86cp+1 + 0x1.55f64f98af8dp-55
+    hh: B64 = h * h
+    h4: B64 = hh * hh
+    a0: B64 = h * 0x1.36eebb002f61ap+2 + 0x1.83fe966af535fp+0
+    a2: B64 = h * 0x1.1718d7aedb0b5p+3 + 0x1.694a60589a0b3p+0
+    a4: B64 = h * 0x1.8d4297421205bp+4 + 0x1.733a045eca0d3p+2
+    p: B64 = a0 + hh * a2 + h4 * (a4 + hh * 0x1.7feea5fb29965p+4)
+    return h * p
 
-    block terms4(f: B64, lz: B64, iz: B64, iz2: B64)
-        iz4: B64 = iz2 * iz2
-        p0: B64 = iz2 * -0x1.6c16bdc45944fp-9 + 0x1.555555554de0bp-4
-        p2: B64 = iz2 * -0x1.2e9cfff3b29c2p-11 + 0x1.a0077f300ecb3p-11
-        p: B64 = p0 + iz4 * p2
-        jump reflect_check(f + iz * p, lz)
-
-    block terms8(f: B64, lz: B64, iz: B64, iz2: B64)
-        iz4: B64 = iz2 * iz2
-        iz8: B64 = iz4 * iz4
-        p0: B64 = iz2 * -0x1.6c16c0e7c4cf4p-9 + 0x1.5555555551286p-4
-        p2: B64 = iz2 * -0x1.37e87ec19cb45p-11 + 0x1.a0193267fe6f2p-11
-        p4: B64 = iz2 * -0x1.c16c8946b19b6p-10 + 0x1.b40011dfff081p-11
-        p6: B64 = iz2 * -0x1.4f5843a71a338p-8 + 0x1.e9f47ace150d8p-9
-        lo: B64 = p0 + iz4 * p2
-        hi: B64 = p4 + iz4 * p6
-        p: B64 = lo + iz8 * hi
-        jump reflect_check(f + iz * p, lz)
-
-    block reflect_check(f: B64, lz: B64)
-        if me < 0.0
-            jump reflect(f, lz)
-        else
-            jump narrow(f)
-
-    # log|gamma(x)| = log(pi) - log|gamma(-x)| - log(-x) - log|sin(pi x)|
-    block reflect(f: B64, lz: B64)
-        g: B64 = B64.sub(0x1.250d048e7a1bdp+0, f) - lz
-        lp: B64 = cm_b32_lgamma_ln(cm_b32_lgamma_sinpi((me - fx).to[B64]()))
-        jump narrow(g - lp)
-
-    # 0x1.52p-1 <= |x| <= 0x1.afc1ap+1: a rational approximation of log(gamma(|x|))
-    block middle(z: B64, s: B64)
-        zero_factors: B64 = (z - 1.0) * (z - 2.0)
-        n0: B64 = zero_factors * 0x1.3cc0e6a0106b3p+2
-        n1: B64 = (z + 0x1.667923ff14df7p+5) * (z + 0x1.2d35f25ad8f64p+3)
-        n2: B64 = (z + 0x1.b8c9eab9d5bd3p+1) * (z + 0x1.7a4a97f494127p+0)
-        n3: B64 = (z + 0x1.3a6c8295b4445p-1) * (z + 0x1.da44e8b810024p-3)
-        n4: B64 = n3 * (z + 0x1.9061e81c77e4ap-5)
-        num: B64 = n0 * (n1 * n2 * n4)
-        d1: B64 = (z + 0x1.491a899e84c52p+6) * (z + 0x1.d202961b9e098p+3)
-        d2: B64 = (z + 0x1.4ced68c631ed6p+2) * (z + 0x1.2589eedf40738p+1)
-        d3: B64 = (z + 0x1.1302e3337271p+0) * (z + 0x1.c36b802f26dffp-2)
-        d4: B64 = (z + 0x1.3ded448acc39dp-3) * (z + 0x1.bffc491078eafp-6)
-        den: B64 = d1 * d2 * (d3 * d4)
-        f: B64 = num / den
-        if me < 0.0
-            jump middle_negative(z, s, f)
-        else
-            jump narrow(f)
-
-    block middle_negative(z: B64, s: B64, f: B64)
-        near1: Bool = tu < 0x40301B93 and tu > 0x402F95C2
-        near2: Bool = tu > 0x401CECCB and tu < 0x401D95CA
-        when
-            near1 => jump near1(s)
-            near2 => jump near2(s)
-            tu > 0x40492009 and tu < 0x404940EF => jump near3(s)
-            else => jump middle_reflect(z, f)
-
-    # near the zero of lgamma at about -2.7476
-    block near1(s: B64)
-        h: B64 = s + 0x1.5fb410a1bd901p+1 - 0x1.a19a96d2e6f85p-54
-        hh: B64 = h * h
-        h4: B64 = hh * hh
-        a0: B64 = h * 0x1.3267f3c265a54p+3 + -0x1.ea12da904b18cp+0
-        a2: B64 = h * 0x1.f504accc3f2e4p+5 + -0x1.4185ac30cadb3p+4
-        a4: B64 = h * 0x1.43740491dc22p+9 + -0x1.8588444c679b4p+7
-        a6: B64 = h * 0x1.dac829f365795p+12 + -0x1.12400ea23f9e6p+11
-        p: B64 = a0 + hh * a2 + h4 * (a4 + hh * a6)
-        jump narrow(h * p)
-
-    # near the zero of lgamma at about -2.4570
-    block near2(s: B64)
-        h: B64 = s + 0x1.3a7fc9600f86cp+1 + 0x1.55f64f98af8dp-55
-        hh: B64 = h * h
-        h4: B64 = hh * hh
-        a0: B64 = h * 0x1.36eebb002f61ap+2 + 0x1.83fe966af535fp+0
-        a2: B64 = h * 0x1.1718d7aedb0b5p+3 + 0x1.694a60589a0b3p+0
-        a4: B64 = h * 0x1.8d4297421205bp+4 + 0x1.733a045eca0d3p+2
-        p: B64 = a0 + hh * a2 + h4 * (a4 + hh * 0x1.7feea5fb29965p+4)
-        jump narrow(h * p)
-
-    # near the zero of lgamma at about -3.1435
-    block near3(s: B64)
-        h: B64 = s + 0x1.9260dbc9e59afp+1 + 0x1.f717cd335a7b3p-53
-        hh: B64 = h * h
-        h4: B64 = hh * hh
-        a0: B64 = h * 0x1.9d4d297715105p+4 + 0x1.f20a65f2fac55p+2
-        a2: B64 = h * 0x1.267203d24de38p+9 + 0x1.c1137124d5b21p+6
-        a4: B64 = h * 0x1.2941214faaf0cp+14 + 0x1.99a63399a0b44p+11
-        p: B64 = a0 + hh * a2 + h4 * (a4 + hh * 0x1.bb912c0c9cdd1p+16)
-        jump narrow(h * p)
-
-    # log|gamma(x)| = log(pi) - log(gamma(|x|)) - log|x sin(pi x)|
-    block middle_reflect(z: B64, f: B64)
-        g: B64 = B64.sub(0x1.250d048e7a1bdp+0, f)
-        lp: B64 = cm_b32_lgamma_ln(cm_b32_lgamma_sinpi((me - fx).to[B64]()) * z)
-        jump narrow(g - lp)
-
-    block narrow(f: B64)
-        r: Me = f.to[Me]()
-        biased_bits: U64 = f.bits() +% 5
-        if biased_bits & 0xFFFFFFF <= 31
-            return cm_b32_lgamma_exception(xb: me.bits(), fallback: r)
-        else
-            return r
+### log|gamma(x)| near the zero of lgamma at about -3.1435, as a polynomial in the distance h from that zero.
+### :param s: x, widened to B64.
+### :returns: The approximation of log|gamma(x)|.
+private routine cm_b32_lgamma_near3(s: B64) -> B64
+    h: B64 = s + 0x1.9260dbc9e59afp+1 + 0x1.f717cd335a7b3p-53
+    hh: B64 = h * h
+    h4: B64 = hh * hh
+    a0: B64 = h * 0x1.9d4d297715105p+4 + 0x1.f20a65f2fac55p+2
+    a2: B64 = h * 0x1.267203d24de38p+9 + 0x1.c1137124d5b21p+6
+    a4: B64 = h * 0x1.2941214faaf0cp+14 + 0x1.99a63399a0b44p+11
+    p: B64 = a0 + hh * a2 + h4 * (a4 + hh * 0x1.bb912c0c9cdd1p+16)
+    return h * p
 
 ### sin(pi x) for x in [0, 1), as an even polynomial in x - 1/2 that vanishes at 0 and 1.
 ### :param x: The argument, in [0, 1).

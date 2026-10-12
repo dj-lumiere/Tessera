@@ -662,35 +662,31 @@ private routine cm_b64_tgamma_mid(x: B64) -> CmF64TgammaFast
     f: CmF64GammaDD = cm_b64_tgamma_polyddd(x: d, n: 10, base: 915, l: fl)
     jm: S64 = ri.abs().to[S64]()
     if not (jm == 0)
-        jump product(f, jm - 1)
-    1.0.poke_into(wh)
-    jump finish(f)
-
-    # w = x (x + 1) ... (x + jm - 1) in double-double
-    block product(f: CmF64GammaDD, j: S64)
-        if j == 0
-            jump finish(f)
-        else
-            jump factor(f, j)
-
-    block factor(f: CmF64GammaDD, j: S64)
-        big: Bool = xph.peek().abs() > 1.0
-        s: CmF64GammaDD = when
-            big => cm_b64_gamma_fasttwosum(x: xph.peek(), y: 1.0)
-            else => cm_b64_gamma_fasttwosum(x: 1.0, y: xph.peek())
-        xpl1: B64 = xpl.peek() + s.lo
-        w: CmF64GammaDD = cm_b64_gamma_muldd(xh: s.hi, xl: xpl1, ch: wh.peek(), cl: wl.peek())
-        next_wl: B64 = w.lo
-        next_wh: B64 = w.hi
-        next_xpl: B64 = xpl1
-        next_xph: B64 = s.hi
-        next_xph.poke_into(xph)
-        next_xpl.poke_into(xpl)
-        next_wh.poke_into(wh)
-        next_wl.poke_into(wl)
-        jump product(f, j - 1)
-
-    block finish(f: CmF64GammaDD)
+        # w = x (x + 1) ... (x + jm - 1) in double-double
+        while j != 0 with j: S64 = jm - 1
+            big: Bool = xph.peek().abs() > 1.0
+            s: CmF64GammaDD = when
+                big => cm_b64_gamma_fasttwosum(x: xph.peek(), y: 1.0)
+                else => cm_b64_gamma_fasttwosum(x: 1.0, y: xph.peek())
+            xpl1: B64 = xpl.peek() + s.lo
+            w: CmF64GammaDD = cm_b64_gamma_muldd(xh: s.hi, xl: xpl1, ch: wh.peek(), cl: wl.peek())
+            next_wl: B64 = w.lo
+            next_wh: B64 = w.hi
+            next_xpl: B64 = xpl1
+            next_xph: B64 = s.hi
+            next_xph.poke_into(xph)
+            next_xpl.poke_into(xpl)
+            next_wh.poke_into(wh)
+            next_wl.poke_into(wl)
+            continue with j: j - 1
+        then
+            rh: B64 = B64.truediv(1.0, wh.peek())
+            rh_err: B64 = rh.mul_add(a: -wh.peek(), b: 1.0) - wl.peek() * rh
+            rl: B64 = rh_err * rh
+            g: CmF64GammaDD = cm_b64_gamma_muldd(xh: rh, xl: rl, ch: f.hi, cl: f.lo)
+            return CmF64TgammaFast(status: 0, hi: g.hi, lo: g.lo, eps: g.hi * 0x1.2e3b40a0e9b4fp-70, sc: 0)
+    else
+        1.0.poke_into(wh)
         rh: B64 = B64.truediv(1.0, wh.peek())
         rh_err: B64 = rh.mul_add(a: -wh.peek(), b: 1.0) - wl.peek() * rh
         rl: B64 = rh_err * rh
@@ -743,19 +739,70 @@ private routine cm_b64_tgamma_accurate(x: B64) -> B64
     jm: S64 = CM_B64_TGAMMA_BR_BASE.getitem(k) - i
     eoff: S64 = CM_B64_TGAMMA_BR_EOFF.getitem(k)
     x1: B64 = x - 1.0
-    when
-        jm > 0 => jump up(pf, jm, eoff, x, 0.0, x, 0.0, jm - 1)
-        jm < 0 => jump down(pf, jm, eoff, x1, 0.0, x1, 0.0, S64.sub(-1, jm))
-        else => jump correct(pf.hi, pf.lo, jm, eoff)
+    # gamma(x) as (fh + fl) 2^off: pf moved from the range's reference to x
+    values: (CmF64GammaDD, S64) = when
+        jm > 0 =>
+            # below the range's reference: divide by w = x (x + 1) ... (x + jm - 1)
+            wh, wl, up_off = cm_b64_tgamma_rising(x, count: jm - 1, eoff)
+            rh: B64 = B64.truediv(1.0, wh)
+            rh_err: B64 = rh.mul_add(a: -wh, b: 1.0) - wl * rh
+            rl: B64 = rh_err * rh
+            becomes (cm_b64_gamma_muldd3(xh: pf.hi, xl: pf.lo, yh: rh, yl: rl), up_off)
+        jm < 0 =>
+            # above the range's reference: multiply by w = (x - 1) (x - 2) ... (x + jm)
+            w: CmF64GammaDD = cm_b64_tgamma_falling(x: x1, count: S64.sub(-1, jm))
+            becomes (cm_b64_gamma_muldd3(xh: pf.hi, xl: pf.lo, yh: w.hi, yl: w.lo), eoff)
+        else => (pf, eoff)
+    f, off = values
+    fh: B64 = f.hi
 
-    # below the range's reference: w = x (x + 1) ... (x + jm - 1), rescaled to stay finite
-    block up(pf: CmF64GammaDD, jm: S64, eoff: S64, xph: B64, xpl: B64, wh: B64, wl: B64, j: S64)
-        if j == 0
-            jump divide(pf, jm, eoff, wh, wl)
-        else
-            jump up_factor(pf, jm, eoff, xph, xpl, wh, wl, j)
+    # a correction term that is zero in round to nearest (the C code needs it under directed
+    # rounding)
+    fl: B64 = when
+        jm <= 0 =>
+            c1: B64 = B64.add(0x1p-54, 0x1p-107) - 0x1p-54
+            c2: B64 = B64.sub(0x1p-53, 0x1p-107) - 0x1p-53
+            crr: B64 = c1 + c2
+            becomes f.lo + fh * (jm.to[B64]() * crr)
+        else =>
+            op: B64 = B64.sub(0x1p-53, 0x1p-107)
+            om: B64 = B64.add(-0x1p-53, 0x1p-107)
+            same: Bool = op == -om
+            crr: B64 = when
+                same => B64.sub(0x1p-53, op)
+                else => 0.0
+            steps: B64 = (jm - 5).to[B64]()
+            corr: B64 = steps * crr * 0x1.0a3d70a3d70a4p+0
+            becomes f.lo - fh * corr
 
-    block up_factor(pf: CmF64GammaDD, jm: S64, eoff: S64, xph: B64, xpl: B64, wh: B64, wl: B64, j: S64)
+    # (fh + fl) 2^off, rounded at the subnormal quantum when it falls there
+    eps: B64 = B64.mul(0x1.ep-103, fh)
+    ub: B64 = fh + (fl + eps)
+    lb: B64 = fh + (fl - eps)
+    res: U64 = (fh + fl).bits()
+    exp_field: U64 = (res >> 52) & 0x7FF
+    re: S64 = exp_field.to[S64]()
+    bits: U64 = when
+        re + off <= 0 =>
+            fix_exp: S64 = off + re - 1
+            th: U64 = res -% (fix_exp.to_wrap[U64]() << 52) & 0xFFF0000000000000
+            s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: B64.from_bits(th), y: fh)
+            rounded: B64 = s.hi + (fl + s.lo)
+            becomes rounded.bits() & 0x800FFFFFFFFFFFFF
+        else => res +% (off.to_wrap[U64]() << 52)
+    if ub != lb
+        return cm_b64_tgamma_database(x, f: B64.from_bits(bits))
+    else
+        return B64.from_bits(bits)
+
+### The product x (x + 1) ... (x + count) in double-double, rescaled by 2^-500 whenever it
+### passes 2^518 so it stays finite, with the scale exponent lowered by 500 each time.
+### :param x: The first factor.
+### :param count: The number of factors after the first.
+### :param eoff: The scale exponent before the product.
+### :returns: The high and low parts of the product and the scale exponent.
+private routine cm_b64_tgamma_rising(x: B64, count: S64, eoff: S64) -> (B64, B64, S64)
+    while j != 0 with xph: B64 = x, xpl: B64 = 0.0, wh: B64 = x, wl: B64 = 0.0, j: S64 = count, off: S64 = eoff
         big: Bool = xph.abs() > 1.0
         s: CmF64GammaDD = when
             big => cm_b64_gamma_fasttwosum(x: xph, y: 1.0)
@@ -763,83 +810,24 @@ private routine cm_b64_tgamma_accurate(x: B64) -> B64
         n: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: s.hi, y: xpl + s.lo)
         w: CmF64GammaDD = cm_b64_gamma_muldd3(xh: n.hi, xl: n.lo, yh: wh, yl: wl)
         if w.hi.abs() > 0x1p+518
-            jump up(pf, jm, eoff - 500, n.hi, n.lo, w.hi * 0x1p-500, w.lo * 0x1p-500, j - 1)
+            continue with xph: n.hi, xpl: n.lo, wh: w.hi * 0x1p-500, wl: w.lo * 0x1p-500, j: j - 1, off: off - 500
         else
-            jump up(pf, jm, eoff, n.hi, n.lo, w.hi, w.lo, j - 1)
+            continue with xph: n.hi, xpl: n.lo, wh: w.hi, wl: w.lo, j: j - 1, off: off
+    then
+        return (wh, wl, off)
 
-    block divide(pf: CmF64GammaDD, jm: S64, eoff: S64, wh: B64, wl: B64)
-        rh: B64 = B64.truediv(1.0, wh)
-        rh_err: B64 = rh.mul_add(a: -wh, b: 1.0) - wl * rh
-        rl: B64 = rh_err * rh
-        m: CmF64GammaDD = cm_b64_gamma_muldd3(xh: pf.hi, xl: pf.lo, yh: rh, yl: rl)
-        jump correct(m.hi, m.lo, jm, eoff)
-
-    # above the range's reference: w = (x - 1) (x - 2) ... (x + jm)
-    block down(pf: CmF64GammaDD, jm: S64, eoff: S64, xph: B64, xpl: B64, wh: B64, wl: B64, j: S64)
-        if j == 0
-            jump multiply(pf, jm, eoff, wh, wl)
-        else
-            jump down_factor(pf, jm, eoff, xph, xpl, wh, wl, j)
-
-    block down_factor(pf: CmF64GammaDD, jm: S64, eoff: S64, xph: B64, xpl: B64, wh: B64, wl: B64, j: S64)
+### The product x (x - 1) ... (x - count) in double-double.
+### :param x: The first factor.
+### :param count: The number of factors after the first.
+### :returns: The product as a double-double.
+private routine cm_b64_tgamma_falling(x: B64, count: S64) -> CmF64GammaDD
+    while j != 0 with xph: B64 = x, xpl: B64 = 0.0, wh: B64 = x, wl: B64 = 0.0, j: S64 = count
         s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: xph, y: -1.0)
         n: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: s.hi, y: xpl + s.lo)
         w: CmF64GammaDD = cm_b64_gamma_muldd3(xh: n.hi, xl: n.lo, yh: wh, yl: wl)
-        jump down(pf, jm, eoff, n.hi, n.lo, w.hi, w.lo, j - 1)
-
-    block multiply(pf: CmF64GammaDD, jm: S64, eoff: S64, wh: B64, wl: B64)
-        m: CmF64GammaDD = cm_b64_gamma_muldd3(xh: pf.hi, xl: pf.lo, yh: wh, yl: wl)
-        jump correct(m.hi, m.lo, jm, eoff)
-
-    # a correction term that is zero in round to nearest (the C code needs it under directed rounding)
-    block correct(fh: B64, fl: B64, jm: S64, eoff: S64)
-        if jm <= 0
-            jump correct_below(fh, fl, jm, eoff)
-        else
-            jump correct_above(fh, fl, jm, eoff)
-
-    block correct_below(fh: B64, fl: B64, jm: S64, eoff: S64)
-        c1: B64 = B64.add(0x1p-54, 0x1p-107) - 0x1p-54
-        c2: B64 = B64.sub(0x1p-53, 0x1p-107) - 0x1p-53
-        crr: B64 = c1 + c2
-        jump round(fh, fl + fh * (jm.to[B64]() * crr), eoff)
-
-    block correct_above(fh: B64, fl: B64, jm: S64, eoff: S64)
-        op: B64 = B64.sub(0x1p-53, 0x1p-107)
-        om: B64 = B64.add(-0x1p-53, 0x1p-107)
-        same: Bool = op == -om
-        crr: B64 = when
-            same => B64.sub(0x1p-53, op)
-            else => 0.0
-        steps: B64 = (jm - 5).to[B64]()
-        corr: B64 = steps * crr * 0x1.0a3d70a3d70a4p+0
-        jump round(fh, fl - fh * corr, eoff)
-
-    # (fh + fl) 2^eoff, rounded at the subnormal quantum when it falls there
-    block round(fh: B64, fl: B64, eoff: S64)
-        eps: B64 = B64.mul(0x1.ep-103, fh)
-        ub: B64 = fh + (fl + eps)
-        lb: B64 = fh + (fl - eps)
-        res: U64 = (fh + fl).bits()
-        exp_field: U64 = (res >> 52) & 0x7FF
-        re: S64 = exp_field.to[S64]()
-        if re + eoff <= 0
-            jump subnormal(fh, fl, eoff, re, res, ub, lb)
-        else
-            jump done(ub, lb, res +% (eoff.to_wrap[U64]() << 52))
-
-    block subnormal(fh: B64, fl: B64, eoff: S64, re: S64, res: U64, ub: B64, lb: B64)
-        fix_exp: S64 = eoff + re - 1
-        th: U64 = res -% (fix_exp.to_wrap[U64]() << 52) & 0xFFF0000000000000
-        s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: B64.from_bits(th), y: fh)
-        rounded: B64 = s.hi + (fl + s.lo)
-        jump done(ub, lb, rounded.bits() & 0x800FFFFFFFFFFFFF)
-
-    block done(ub: B64, lb: B64, res: U64)
-        if ub != lb
-            return cm_b64_tgamma_database(x, f: B64.from_bits(res))
-        else
-            return B64.from_bits(res)
+        continue with xph: n.hi, xpl: n.lo, wh: w.hi, wl: w.lo, j: j - 1
+    then
+        return CmF64GammaDD(hi: wh, lo: wl)
 
 ### The accurate-phase range of floor(x) = i: 0 for i > 159 up to 8 for i <= 7.
 ### :param i: floor(x).

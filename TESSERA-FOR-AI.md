@@ -417,14 +417,15 @@ routine start() -> None
   arm's value, and `return`'s value are never computed on another path.
 - **Blocks, for assembly and generators.** `block name(params)` / `jump name(args)` / an `if` whose arms jump belong
   to two kinds of routine: an assembly routine (`@external("asm")`) and generated code, a routine marked
-  `@generated` (RazorForge's Tessera backend and Mini write it on every routine). Any other routine with a block or
-  a jump gets a warning that asks for `if`, `when`, and loops; the stdlib routines whose loops weren't restructured
-  yet still have them. A
-  routine written that way is a head and then blocks: the lines after the head are the entry block, `block entry()`
+  `@generated` (RazorForge's Tessera backend and Mini write it on every routine), the routines the builder derives
+  for a type included. Any other routine with a block or a jump is a build error that asks for `if`, `when`, and
+  loops. A routine written that way is a head and then blocks: the lines after the head are the entry block, `block entry()`
   is written only when it is jumped back to and in an assembly routine, a block's parameters are the values it
   takes, and each block ends in `jump`, `return`, `unreachable`, `todo`, a `@noreturn` call, or a statement whose
-  every path leaves. Hand-written code doesn't need them: `tessera migrate --step structured` rewrites a block graph
-  into the statements above wherever it can.
+  every path leaves. Hand-written code doesn't need them: `tessera migrate --step blocks` rewrites the routines
+  written with blocks into the statements above wherever it can and leaves the rest of the file as it is (a shared
+  tail some arms reach while the others return follows the `when` as its value, a short one is written at each
+  place, a loop that only returns is written inside the loop that enters it), and names the routines it could not.
 
 **Operations**
 

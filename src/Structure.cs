@@ -54,6 +54,12 @@ public sealed class Structurer
             foreach (var b in _r.Blocks!.Skip(1))
             {
                 if (_absorbed.Contains(b.Name)) continue;
+                // A block nothing jumps to never runs: it is dropped.
+                if (!_siteCount.ContainsKey(b.Name))
+                {
+                    _absorbed.Add(b.Name);
+                    continue;
+                }
                 // A small block written at every place that reached it is done with.
                 if (_duplicated.GetValueOrDefault(b.Name) == _siteCount.GetValueOrDefault(b.Name) && _siteCount.ContainsKey(b.Name))
                 {
@@ -66,7 +72,14 @@ public sealed class Structurer
             foreach (var b in _r.Blocks!.Skip(1))
                 if (!_absorbed.Contains(b.Name) && kept.All(k => k.Name != b.Name))
                     throw new GiveUp($"block '{b.Name}' was neither written in place nor kept");
-            return (Finish(entry), kept);
+            entry = Finish(entry);
+            // A jump inside a value (a value when's arm) isn't written in place: one left to a block not kept would
+            // jump nowhere.
+            foreach (var j in Bodies.Jumps(entry.Concat(kept.SelectMany(k => k.Stmts))))
+                if (_blocks.ContainsKey(j.Block) && kept.All(k => k.Name != j.Block))
+                    throw new GiveUp($"a jump to '{j.Block}' inside a value is left");
+            if (kept.Count > 0) Reason = $"block '{kept[0].Name}' is left as a block";
+            return (entry, kept);
         }
         catch (GiveUp g)
         {
@@ -354,7 +367,8 @@ public sealed class Structurer
         if (IsLoopHeader(target))
         {
             // Entering a loop from outside it: the loop is written here.
-            if (ctx.Loop is { } outer && _loops[outer.Header].Contains(target) == false && !_loops[target].Contains(outer.Header))
+            if (ctx.Loop is { } outer && _loops[outer.Header].Contains(target) == false && !_loops[target].Contains(outer.Header)
+                && !NeverComesBack(target))
             {
                 // A jump out of the current loop into another: not a shape the structured forms have.
                 throw new GiveUp($"jump from the loop at '{outer.Header}' into the loop at '{target}'");
@@ -369,13 +383,18 @@ public sealed class Structurer
         if (_siteCount[target] == 1)
             throw new GiveUp($"block '{target}' is reached from inside a loop it isn't in");
         // A small block reached from several places, each on its own: written at each.
-        if (IsSmall(block))
+        if (IsSmall(block) || _siteCount[target] <= 4 && IsShortReturning(block))
         {
             _duplicated[target] = _duplicated.GetValueOrDefault(target) + 1;
             return Inline(block, args, ctx, duplicate: true);
         }
         throw new GiveUp($"block '{target}' is reached from {_siteCount[target]} places and isn't the end of one if or when");
     }
+
+    /// Whether the loop at `header` only ends by returning: none of its blocks jumps out of it. Entered from inside
+    /// another loop, it is written there, and the loop around it never goes on.
+    private bool NeverComesBack(string header) =>
+        _loops[header].All(m => Bodies.Jumps(_blocks[m].Stmts).All(j => !_blocks.ContainsKey(j.Block) || _loops[header].Contains(j.Block)));
 
     private static bool IsEnclosingHeader(LoopFrame inner, string target)
     {
@@ -389,6 +408,20 @@ public sealed class Structurer
 
     private static bool IsSmall(BlockDecl b) =>
         b.Stmts.Count <= 4 && b.Stmts.All(s => s is BindStmt or ExprStmt or ReturnStmt or JumpStmt or UnreachableStmt or TodoStmt);
+
+    /// A block of a few lines, an if or when among them, that ends by returning on every path and jumps nowhere: as
+    /// easy to read written at each place that reaches it.
+    private static bool IsShortReturning(BlockDecl b) => Bodies.Leaves(b.Stmts) && !Bodies.Jumps(b.Stmts).Any() && Lines(b.Stmts) <= 6;
+
+    /// The lines of a body, those of its if and when arms counted. A loop counts as too many.
+    private static int Lines(List<Stmt> stmts) => stmts.Sum(s => s switch
+    {
+        IfStmt i => 1 + Lines(i.Then) + (i.Else is null ? 0 : Lines(i.Else)),
+        WhenStmt w => 1 + w.Arms.Sum(a => Lines(a.Body)),
+        LoopStmt => 100,
+        BindStmt or ExprStmt or ReturnStmt or UnreachableStmt or TodoStmt or PassStmt => 1,
+        _ => 100,
+    });
 
     /// A block's lines made ready: two guards in a row that jump to the same block with the same values become one
     /// `if a or b` (the second condition runs only when the first fails, as before), and `x: T = e` right before a
@@ -688,7 +721,7 @@ public sealed class Structurer
         if (ps.Count == 1) return [new BindStmt(names[0], ps[0].Type, value, pos)];
         if (ps.Count > Parser.MaxTupleItems) throw new GiveUp($"block '{merge.Name}' takes {ps.Count} values");
         var tuple = new TypeRef($"Tuple{ps.Count}", ps.Select(p => (TypeArg)new TypeArgType(p.Type)).ToList(), pos) { Path = "Standard/Core" };
-        string name = Fresh("values", ctx.Scope);
+        string name = ctx.Scope.Contains("values") || _routineNames.Contains("values") ? Fresh("values", ctx.Scope) : "values";
         ctx.Scope.Add(name);
         return
         [
@@ -724,7 +757,10 @@ public sealed class Structurer
             // A block an enclosing if or when already ends in is reached by falling through, not written again.
             if (block == ctx.Fallthrough || _absorbed.Contains(block)) continue;
             if (count != _siteCount[block] - (IsLoopHeader(block) ? BackEdges(block) : 0)) continue;
-            if (reachedBy.GetValueOrDefault(block) != arms.Count) continue;
+            // The arms that don't come to it return (every jump to it is from the arms): it is the end of the
+            // others, as long as two come to it and it isn't short enough to be written at each.
+            int reaching = reachedBy.GetValueOrDefault(block);
+            if (reaching != arms.Count && (reaching < 2 || count <= 4 && IsShortReturning(_blocks[block]))) continue;
             if (ctx.Loop is { } loop && !_loops[loop.Header].Contains(block)) continue;
             if (ctx.Loop is null && OuterLoopOf(block) is not null) continue;
             if (IsLoopHeader(block) && ctx.Loop is { } around && !_loops[around.Header].Contains(block)) continue;
@@ -883,11 +919,14 @@ public sealed class Structurer
             body = EmitStmts(pre, headerRw, loopCtx);
             var test = headerRw.Expr(guard.Cond);
             // A binding the loop's arms or the lines after the guard still read stays a line of the body.
+            // Both read under the names the body's lines were given: a binding renamed because its name was taken.
             var later = stayArm.Concat(exitArm).Concat(header.Stmts.Skip(at + 1)).ToList();
-            var (lifted, rest) = LiftCondition(body, test, later);
+            var usedLater = Rewriter.UsesInBody(later).Select(u => headerRw.Rename.GetValueOrDefault(u, u)).ToHashSet();
+            var (lifted, rest) = LiftCondition(body, test, usedLater);
             // `then` runs after the loop and sees only the carried values: an exit arm reading a value the
             // body binds before the guard keeps the guard a line of the body.
-            if (lifted is not null && Rewriter.UsesInBody(exitArm).Intersect(Rewriter.BoundInBody(rest)).Any())
+            if (lifted is not null && Rewriter.UsesInBody(exitArm).Select(u => headerRw.Rename.GetValueOrDefault(u, u))
+                    .Intersect(Rewriter.BoundInBody(rest)).Any())
                 (lifted, rest) = (null, body);
             if (lifted is null)
             {
@@ -967,11 +1006,10 @@ public sealed class Structurer
 
     /// The loop's condition with the Bool bindings it reads folded in, when the lines before it bind nothing else
     /// it reads: the condition and the lines left. Null when a line it needs can't be folded in.
-    private static (Expr? Cond, List<Stmt> Left) LiftCondition(List<Stmt> pre, Expr test, List<Stmt> later)
+    private static (Expr? Cond, List<Stmt> Left) LiftCondition(List<Stmt> pre, Expr test, HashSet<string> usedLater)
     {
         var rest = new List<Stmt>(pre);
         var cond = test;
-        var usedLater = Rewriter.UsesInBody(later).ToHashSet();
         for (int guard = 0; guard < 8; guard++)
         {
             var bound = Rewriter.BoundInBody(rest).ToHashSet();
@@ -1134,8 +1172,23 @@ public sealed class Structurer
         result = Map(result, ValueIf);
         result = Map(result, LegacyWhen);
         result = EachLoops(result);
+        result = FoldLiteralIfs(result);
         return result;
     }
+
+    /// An `if` on a literal `true` or `false` (a block written at a place that passed it a Bool literal) is the arm
+    /// that runs.
+    private static List<Stmt> FoldLiteralIfs(List<Stmt> body) => body.SelectMany(s =>
+    {
+        var inner = s switch
+        {
+            IfStmt i => i with { Then = FoldLiteralIfs(i.Then), Else = i.Else is null ? null : FoldLiteralIfs(i.Else) },
+            WhenStmt w => w with { Arms = w.Arms.Select(a => a with { Body = FoldLiteralIfs(a.Body) }).ToList() },
+            LoopStmt l => l with { Body = FoldLiteralIfs(l.Body), Then = l.Then is null ? null : FoldLiteralIfs(l.Then) },
+            _ => s,
+        };
+        return inner is IfStmt { Cond: BoolLit lit } chosen ? (lit.Value ? chosen.Then : chosen.Else ?? []) : [inner];
+    }).ToList();
 
     /// The names of the routine's Bool values: a `.bitor` of two of them is `or`.
     private readonly HashSet<string> _boolNames = [];

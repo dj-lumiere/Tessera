@@ -16,7 +16,10 @@ public class AsmArmTests
     private static BuildTarget CortexM33 => BuildTarget.Parse("arm-none-eabi") with { Cpu = "cortex-m33" };
 
     private const string Conditional = """
-        #[target(arch: "arm"), external("asm"), clobbers(FLAGS), pure]
+        @target(arch: "arm")
+        @external("asm")
+        @clobbers(FLAGS)
+        @pure
         routine pick(a: U32 = R2, b: U32 = R3) -> U32
             block entry()
                 cmp[U32, U32](R2, R3)
@@ -25,9 +28,11 @@ public class AsmArmTests
                 addseq[U32, U32, U32](R0, R0, R2)
                 movlo[U32, U32](R1, R3)
                 mov[U32, U32](R0, R0)
-                return(R0)
+                return R0
 
-        #[target(arch: "arm"), external("asm"), clobbers(FLAGS)]
+        @target(arch: "arm")
+        @external("asm")
+        @clobbers(FLAGS)
         routine count(n: U32 = R1) -> U32
             block entry()
                 mov[U32](R0, 0)
@@ -35,21 +40,19 @@ public class AsmArmTests
 
             block check()
                 cmp[U32](R1, 0)
-                branch eq
-                    ? done()
-                    : continue
+                if eq
+                    jump done()
                 add[U32, U32, U32](R0, R0, R1)
                 sub[U32, U32](R1, R1, 1)
                 jump check()
 
             block done()
-                return(R0)
+                return R0
 
-        routine start() -> Void
-            block entry()
-                x : U32 = pick(a: 1, b: 2)
-                y : U32 = count(4)
-                return()
+        routine start() -> None
+            x: U32 = pick(a: 1, b: 2)
+            y: U32 = count(4)
+            return
 
         """;
 
@@ -75,7 +78,8 @@ public class AsmArmTests
     public void CortexMSystemRegistersAndInstructionWords()
     {
         string asm = Build("""
-            #[target(arch: "arm"), external("asm")]
+            @target(arch: "arm")
+            @external("asm")
             routine mask() -> U32
                 block entry()
                     mrs[U32](R0, PRIMASK)
@@ -83,10 +87,11 @@ public class AsmArmTests
                     dsb(SY)
                     isb(SY)
                     dmb(ISH)
-                    return(R0)
+                    return R0
 
-            #[target(arch: "arm"), external("asm")]
-            routine restore(was: U32) -> Void
+            @target(arch: "arm")
+            @external("asm")
+            routine restore(was: U32) -> None
                 block entry()
                     msr[U32](PRIMASK, was)
                     msr[U32](BASEPRI, was)
@@ -98,13 +103,12 @@ public class AsmArmTests
                     wfi()
                     wfe()
                     sev()
-                    return()
+                    return
 
-            routine start() -> Void
-                block entry()
-                    was : U32 = mask()
-                    restore(was)
-                    return()
+            routine start() -> None
+                was: U32 = mask()
+                restore(was)
+                return
 
             """, CortexM33);
         Assert.Contains("mrs r0, PRIMASK\ncpsid i\ndsb SY\nisb SY\ndmb ISH", asm);
@@ -115,21 +119,25 @@ public class AsmArmTests
     public void CoprocessorRegistersVfpViewsRegisterListsAndAddresses()
     {
         string asm = Build("""
-            #[target(arch: "arm"), external("asm")]
+            @target(arch: "arm")
+            @external("asm")
             routine thread_id() -> U32
                 block entry()
                     mrc[U32](p15, 0, R0, c13, c0, 3)
-                    return(R0)
+                    return R0
 
-            #[target(arch: "arm"), external("asm"), pure]
+            @target(arch: "arm")
+            @external("asm")
+            @pure
             routine join(lo: U32, hi: U32) -> B64
                 block entry()
                     vmov[B64, U32, U32](D0, lo, hi)
                     `vadd.f64`[B64, B64, B64](D0, D0, D0)
                     vmov[B32, U32](S2, lo)
-                    return(D0)
+                    return D0
 
-            #[target(arch: "arm"), external("asm")]
+            @target(arch: "arm")
+            @external("asm")
             routine walk(p: @U32) -> U32
                 block entry()
                     push[U32]([R4, R5, LR])
@@ -140,15 +148,14 @@ public class AsmArmTests
                     pop[U32]([R4, R5, LR])
                     vpush[B64]([D8, D9])
                     vpop[B64]([D8, D9])
-                    return(R0)
+                    return R0
 
-            routine start() -> Void
-                block entry()
-                    t : U32 = thread_id()
-                    f : B64 = join(lo: 1, hi: 2)
-                    claim v : @U32 <- 3
-                    w : U32 = walk(v)
-                    return()
+            routine start() -> None
+                t: U32 = thread_id()
+                f: B64 = join(lo: 1, hi: 2)
+                local v: @U32 <- 3
+                w: U32 = walk(v)
+                return
 
             """, ArmLinux);
         Assert.Contains("mrc p15, #0, r0, c13, c0, #3", asm);
@@ -168,11 +175,12 @@ public class AsmArmTests
     public void OperandErrors(string instruction, string error)
     {
         string source = $$"""
-            #[target(arch: "arm"), external("asm")]
-            routine wrong() -> Void
+            @target(arch: "arm")
+            @external("asm")
+            routine wrong() -> None
                 block entry()
                     {{instruction}}
-                    return()
+                    return
 
             """;
         var e = Assert.Throws<CompileError>(() => Build(source, ArmLinux, assemble: false));
@@ -183,10 +191,12 @@ public class AsmArmTests
     public void ANakedRoutineTakesNoFloats()
     {
         const string source = """
-            #[target(arch: "arm"), external("asm"), naked]
-            routine half(x: B32 = S0) -> Void
+            @target(arch: "arm")
+            @external("asm")
+            @naked
+            routine half(x: B32 = S0) -> None
                 block entry()
-                    return()
+                    return
 
             """;
         var e = Assert.Throws<CompileError>(() => Build(source, ArmLinux, assemble: false));
@@ -197,11 +207,13 @@ public class AsmArmTests
     public void TheStackPointerCantBeListedAsChanged()
     {
         const string source = """
-            #[target(arch: "arm"), external("asm"), clobbers(R13)]
-            routine wrong() -> Void
+            @target(arch: "arm")
+            @external("asm")
+            @clobbers(R13)
+            routine wrong() -> None
                 block entry()
                     nop()
-                    return()
+                    return
 
             """;
         var e = Assert.Throws<CompileError>(() => Build(source, ArmLinux, assemble: false));

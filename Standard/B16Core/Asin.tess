@@ -21,89 +21,72 @@ routine B16.asin(me: Me) -> Me
     local au: U32 = u & 0x7FFFFFFF
     local negative: Bool = u >> 31 == 1
 
-    outside: Bool = au >= 0x3F800000  # NaN, infinity or |x| >= 1
-    when
-        outside => jump outside()
-        au >= 0x3F000000 => jump reduce()
-        else => jump reduced(v, au, false, negative)
-
-    block outside()
+    # NaN, infinity or |x| >= 1
+    if au >= 0x3F800000
         if au == 0x3F800000
-            jump signed(0x1.921fb6p+0, not negative)
-        else
-            return Me.from_bits(0xFE00)
-
-    # argument reduction: asin(x) = pi/2 - 2 asin(sqrt((1 - |x|)/2))
-    block reduce()
-        half_gap: B32 = B32.sub(1.0, v.abs()) * 0.5
-        t: B32 = half_gap.sqrt()
-        jump reduced(t, t.bits() & 0x7FFFFFFF, true, v < 0.0)
+            return cm_b16_asin_signed(r: 0x1.921fb6p+0, positive: not negative)
+        return Me.from_bits(0xFE00)
+    reduction: (B32, U32, Bool, Bool) = when
+        au >= 0x3F000000 =>
+            # argument reduction: asin(x) = pi/2 - 2 asin(sqrt((1 - |x|)/2))
+            half_gap: B32 = B32.sub(1.0, v.abs()) * 0.5
+            root: B32 = half_gap.sqrt()
+            becomes (root, root.bits() & 0x7FFFFFFF, true, v < 0.0)
+        else => (v, au, false, negative)
+    t, ta, reduce, x_neg = reduction
 
     # now 0 <= |t| <= 0.5 (the polynomials are odd, so a negative t needs no reduction)
-    block reduced(t: B32, ta: U32, reduce: Bool, x_neg: Bool)
-        tt: B32 = t * t
-        positive: Bool = ta == me.to[B32]().bits()
-        if ta < 0x3E800000
-            jump below_quarter(t, tt, ta, reduce, x_neg, positive)
-        else
-            jump above_quarter(t, tt, ta, reduce, x_neg, positive)
-
-    # |t| < 0.25
-    block below_quarter(t: B32, tt: B32, ta: U32, reduce: Bool, x_neg: Bool, positive: Bool)
-        when
-            ta <= 0x3D388000 and not reduce => jump tiny(ta, positive)
-            ta == 0x3DD30000 => jump signed(0x1.a6c00ap-4, positive)
-            ta == 0x3D688000 => jump signed(0x1.d14004p-5, positive)
-            ta == 0x3DFA0000 => jump signed(0x1.f5400ap-4, positive)
-            else => pass
-        # |x| = 0x1.a6p-4
-        # |x| = 0x1.d1p-5
-        # |x| = 0x1.f4p-4
-        # degree-5 odd polynomial for asin on [0, 0.25], evaluated as t + t^3 (c1 + c2 t^2)
-        c1: B32 = B32.mul_add(0x1.43696ep-4, a: tt, b: 0x1.552e8ep-3)
-        jump result(c1.mul_add(a: tt * t, b: t), reduce, x_neg)
-
-    # for |x| <= 0x1.71p-5, asin(x) rounds to x
-    block tiny(ta: U32, positive: Bool)
-        when
-            ta == 0 => return me
-            positive => return (v + 0x1p-26).to[Me]()
-            else => return (v - 0x1p-26).to[Me]()
-
-    # 0.25 <= |t| <= 0.5
-    block above_quarter(t: B32, tt: B32, ta: U32, reduce: Bool, x_neg: Bool, positive: Bool)
-        when
-            ta == 0x3EB24000 => jump signed(0x1.6c2012p-2, positive)
-            ta == 0x3ED96000 => jump signed(0x1.c0fffap-2, positive)
-            ta == 0x3EF0A000 => jump signed(0x1.f4fffp-2, positive)
-            else => pass
-        # |x| = 0x1.648p-2
-        # |x| = 0x1.b2cp-2
-        # |x| = 0x1.e14p-2
-        # degree-7 odd polynomial for asin on [0.25, 0.5]
-        c5: B32 = B32.mul_add(0x1.08e44p-4, a: tt, b: 0x1.258e54p-4)
-        c1: B32 = B32.mul_add(0x1.55a7ep-3, a: tt, b: 1.0)
-        p: B32 = c5.mul_add(a: tt * tt, b: c1)
-        jump result(t * p, reduce, x_neg)
-
-    block result(y: B32, reduce: Bool, x_neg: Bool)
-        if reduce
-            jump reconstruct(y, x_neg)
-        else
-            return y.to[Me]()
+    tt: B32 = t * t
+    positive: Bool = ta == me.to[B32]().bits()
+    y: B32 = when
+        ta < 0x3E800000 =>
+            # |t| < 0.25
+            # for |x| <= 0x1.71p-5, asin(x) rounds to x
+            rounds_to_x: Bool = ta <= 0x3D388000 and not reduce
+            when
+                rounds_to_x and ta == 0 => return me
+                rounds_to_x and positive => return (v + 0x1p-26).to[Me]()
+                rounds_to_x => return (v - 0x1p-26).to[Me]()
+                # |x| = 0x1.a6p-4
+                ta == 0x3DD30000 => return cm_b16_asin_signed(r: 0x1.a6c00ap-4, positive)
+                # |x| = 0x1.d1p-5
+                ta == 0x3D688000 => return cm_b16_asin_signed(r: 0x1.d14004p-5, positive)
+                # |x| = 0x1.f4p-4
+                ta == 0x3DFA0000 => return cm_b16_asin_signed(r: 0x1.f5400ap-4, positive)
+                else => pass
+            # degree-5 odd polynomial for asin on [0, 0.25], evaluated as t + t^3 (c1 + c2 t^2)
+            c1: B32 = B32.mul_add(0x1.43696ep-4, a: tt, b: 0x1.552e8ep-3)
+            becomes c1.mul_add(a: tt * t, b: t)
+        else =>
+            # 0.25 <= |t| <= 0.5
+            when
+                # |x| = 0x1.648p-2
+                ta == 0x3EB24000 => return cm_b16_asin_signed(r: 0x1.6c2012p-2, positive)
+                # |x| = 0x1.b2cp-2
+                ta == 0x3ED96000 => return cm_b16_asin_signed(r: 0x1.c0fffap-2, positive)
+                # |x| = 0x1.e14p-2
+                ta == 0x3EF0A000 => return cm_b16_asin_signed(r: 0x1.f4fffp-2, positive)
+                else => pass
+            # degree-7 odd polynomial for asin on [0.25, 0.5]
+            c5: B32 = B32.mul_add(0x1.08e44p-4, a: tt, b: 0x1.258e54p-4)
+            c1: B32 = B32.mul_add(0x1.55a7ep-3, a: tt, b: 1.0)
+            p: B32 = c5.mul_add(a: tt * tt, b: c1)
+            becomes t * p
+    if not reduce
+        return y.to[Me]()
 
     # argument reconstruction
-    block reconstruct(y: B32, x_neg: Bool)
-        r: B32 = B32.sub(0x1.921fb6p+0, y * 2.0)
-        if x_neg
-            return (-r).to[Me]()
-        else
-            return r.to[Me]()
+    r: B32 = B32.sub(0x1.921fb6p+0, y * 2.0)
+    if x_neg
+        return (-r).to[Me]()
+    return r.to[Me]()
 
-    # an explicit result r, negated for a negative x
-    block signed(r: B32, positive: Bool)
-        h: Me = r.to[Me]()
-        if positive
-            return h
-        else
-            return -h
+### An explicitly listed arc sine result `r`, rounded to B16 and negated for a negative x.
+### :param r: The result for the positive input.
+### :param positive: Whether the input is positive.
+### :returns: `r` rounded to B16, negated when `positive` is false.
+private routine cm_b16_asin_signed(r: B32, positive: Bool) -> B16
+    h: B16 = r.to[B16]()
+    if positive
+        return h
+    return -h

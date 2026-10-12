@@ -99,118 +99,105 @@ private routine cm_b64_cosh_main(x: B64) -> B64
     local th: B64 = tt.hi
     local tl: B64 = tt.lo
 
-    above5: Bool = aix > 0x4014000000000000
     # |x| > ~36.736801: e^-|x| is negligible
     when
-        aix > 0x40425E4F7B2737FA => jump huge()
-        above5 => jump mid()
-        else => jump low()
-
-    # cosh x ~ e^|x| / 2
-    block huge()
-        sp_huge: B64 = cm_b64_hyp_scale(ie + 1021)
-        rl: B64 = tl + th * pp
-        e: B64 = B64.mul(0x1.1b578c96db19bp-63, th)  # 0.12e-18 in the original
-        lb: B64 = th + (rl - e)
-        ub: B64 = th + (rl + e)
-        if lb == ub
-            return lb * sp_huge * 2.0
-        else
-            jump huge_accurate(sp_huge)
-
-    block huge_accurate(sp_huge: B64)
-        a0: CmF64HypDd = cm_b64_hyp_exp_accurate(x: ax, t, th, tl)
-        a: CmF64HypDd = cm_b64_hyp_fasttwosum(x: a0.hi, y: a0.lo)
-        hard: Bool = cm_b64_hyp_is_hard(h: a.hi, l: a.lo)
-        r0: B64 = (a.hi + a.lo) * 2.0
-        r: B64 = r0 * sp_huge
-        if hard
-            return cm_b64_cosh_database(x, f: r)
-        else
-            return r
-
-    # 5 < |x| <= ~36.736801: e^-|x| matters only to the low part
-    block mid()
-        j1: USize = (jl & 0x3F).to[USize]()
-        j0s: S64 = (jl >> 6) & 0x3F
-        j0: USize = j0s.to[USize]()
-        sm: B64 = cm_b64_hyp_scale((jl >> 12) + 1022)
-        q: CmF64HypDd = cm_b64_hyp_table(i0: j0, i1: j1)
-        th_scaled: B64 = th * sp
-        tl_scaled: B64 = tl * sp
-        qh: B64 = q.hi * sm
-        pm: B64 = cm_b64_hyp_poly(d: -dx, d2: dx2)
-        em: B64 = qh * pm + qh
-        rl: B64 = tl_scaled + em + th_scaled * pp
-        e: B64 = B64.mul(0x1.202p-63, th_scaled)
-        lb: B64 = th_scaled + (rl - e)
-        ub: B64 = th_scaled + (rl + e)
-        if lb == ub
-            return lb
-        else
-            jump mid_accurate(th_scaled, tl_scaled, qh, q, sm)
-
-    block mid_accurate(th0: B64, tl0: B64, qh: B64, q: CmF64HypDd, sm: B64)
-        a: CmF64HypDd = cm_b64_hyp_exp_accurate(x: ax, t, th: th0, tl: tl0)
-        # |x| > 0x1.f666666666666p+4
-        if aix > 0x403F666666666666
-            jump far(a, qh)
-        else
-            jump near(a, q, sm)
-
-    # e^-|x| as the one B64 qh
-    block far(a: CmF64HypDd, qh: B64)
-        rh: B64 = a.hi + qh
-        err: B64 = a.hi - rh + qh
-        jump tail(rh, err + a.lo)
-
-    # e^-|x| in double-double
-    block near(a: CmF64HypDd, q: CmF64HypDd, sm: B64)
-        m: CmF64HypDd = cm_b64_hyp_exp_accurate(x: -ax, t: -t, th: q.hi * sm, tl: q.lo * sm)
-        rh: B64 = a.hi + m.hi
-        err: B64 = a.hi - rh + m.hi
-        jump tail(rh, err + m.lo + a.lo)
-
-    # 1/8 <= |x| <= 5
-    block low()
-        j1: USize = (jl & 0x3F).to[USize]()
-        j0s: S64 = (jl >> 6) & 0x3F
-        j0: USize = j0s.to[USize]()
-        sm: B64 = cm_b64_hyp_scale((jl >> 12) + 1022)
-        q: CmF64HypDd = cm_b64_hyp_table(i0: j0, i1: j1)
-        th_scaled: B64 = th * sp
-        tl_scaled: B64 = tl * sp
-        qh: B64 = q.hi * sm
-        ql: B64 = q.lo * sm
-        pm: B64 = cm_b64_hyp_poly(d: -dx, d2: dx2)
-        fpl: B64 = tl_scaled + th_scaled * pp
-        fml: B64 = ql + qh * pm
-        rh: B64 = th_scaled + qh
-        err: B64 = th_scaled - rh + qh
-        rl: B64 = err + fml + fpl
-        e: B64 = B64.mul(0x1.c0ap-62, rh)
-        lb: B64 = rh + (rl - e)
-        ub: B64 = rh + (rl + e)
-        if lb == ub
-            return lb
-        else
-            jump low_accurate(th_scaled, tl_scaled, qh, ql)
-
-    block low_accurate(th_scaled: B64, tl_scaled: B64, qh: B64, ql: B64)
-        a: CmF64HypDd = cm_b64_hyp_exp_accurate(x: ax, t, th: th_scaled, tl: tl_scaled)
-        m: CmF64HypDd = cm_b64_hyp_exp_accurate(x: -ax, t: -t, th: qh, tl: ql)
-        rh: B64 = a.hi + m.hi
-        err: B64 = a.hi - rh + m.hi
-        jump tail(rh, err + m.lo + a.lo)
-
-    block tail(rh: B64, rl: B64)
-        s: CmF64HypDd = cm_b64_hyp_fasttwosum(x: rh, y: rl)
-        hard: Bool = cm_b64_hyp_is_hard(h: s.hi, l: s.lo)
-        r: B64 = s.hi + s.lo
-        if hard
-            return cm_b64_cosh_database(x, f: r)
-        else
-            return r
+        aix > 0x40425E4F7B2737FA =>
+            # cosh x ~ e^|x| / 2
+            sp_huge: B64 = cm_b64_hyp_scale(ie + 1021)
+            rl: B64 = tl + th * pp
+            e: B64 = B64.mul(0x1.1b578c96db19bp-63, th)  # 0.12e-18 in the original
+            lb: B64 = th + (rl - e)
+            ub: B64 = th + (rl + e)
+            if lb == ub
+                return lb * sp_huge * 2.0
+            else
+                a0: CmF64HypDd = cm_b64_hyp_exp_accurate(x: ax, t, th, tl)
+                a: CmF64HypDd = cm_b64_hyp_fasttwosum(x: a0.hi, y: a0.lo)
+                hard: Bool = cm_b64_hyp_is_hard(h: a.hi, l: a.lo)
+                r0: B64 = (a.hi + a.lo) * 2.0
+                r: B64 = r0 * sp_huge
+                if hard
+                    return cm_b64_cosh_database(x, f: r)
+                else
+                    return r
+        aix > 0x4014000000000000 =>
+            # 5 < |x| <= ~36.736801: e^-|x| matters only to the low part
+            j1: USize = (jl & 0x3F).to[USize]()
+            j0s: S64 = (jl >> 6) & 0x3F
+            j0: USize = j0s.to[USize]()
+            sm: B64 = cm_b64_hyp_scale((jl >> 12) + 1022)
+            q: CmF64HypDd = cm_b64_hyp_table(i0: j0, i1: j1)
+            th_scaled: B64 = th * sp
+            tl_scaled: B64 = tl * sp
+            qh: B64 = q.hi * sm
+            pm: B64 = cm_b64_hyp_poly(d: -dx, d2: dx2)
+            em: B64 = qh * pm + qh
+            rl: B64 = tl_scaled + em + th_scaled * pp
+            e: B64 = B64.mul(0x1.202p-63, th_scaled)
+            lb: B64 = th_scaled + (rl - e)
+            ub: B64 = th_scaled + (rl + e)
+            if lb == ub
+                return lb
+            else
+                a: CmF64HypDd = cm_b64_hyp_exp_accurate(x: ax, t, th: th_scaled, tl: tl_scaled)
+                # |x| > 0x1.f666666666666p+4
+                if aix > 0x403F666666666666
+                    # e^-|x| as the one B64 qh
+                    rh: B64 = a.hi + qh
+                    err: B64 = a.hi - rh + qh
+                    # e^-|x| in double-double
+                    # 1/8 <= |x| <= 5
+                    s: CmF64HypDd = cm_b64_hyp_fasttwosum(x: rh, y: err + a.lo)
+                    hard: Bool = cm_b64_hyp_is_hard(h: s.hi, l: s.lo)
+                    r: B64 = s.hi + s.lo
+                    if hard
+                        return cm_b64_cosh_database(x, f: r)
+                    else
+                        return r
+                else
+                    m: CmF64HypDd = cm_b64_hyp_exp_accurate(x: -ax, t: -t, th: q.hi * sm, tl: q.lo * sm)
+                    rh: B64 = a.hi + m.hi
+                    err: B64 = a.hi - rh + m.hi
+                    s: CmF64HypDd = cm_b64_hyp_fasttwosum(x: rh, y: err + m.lo + a.lo)
+                    hard: Bool = cm_b64_hyp_is_hard(h: s.hi, l: s.lo)
+                    r: B64 = s.hi + s.lo
+                    if hard
+                        return cm_b64_cosh_database(x, f: r)
+                    else
+                        return r
+        else =>
+            j1: USize = (jl & 0x3F).to[USize]()
+            j0s: S64 = (jl >> 6) & 0x3F
+            j0: USize = j0s.to[USize]()
+            sm: B64 = cm_b64_hyp_scale((jl >> 12) + 1022)
+            q: CmF64HypDd = cm_b64_hyp_table(i0: j0, i1: j1)
+            th_scaled: B64 = th * sp
+            tl_scaled: B64 = tl * sp
+            qh: B64 = q.hi * sm
+            ql: B64 = q.lo * sm
+            pm: B64 = cm_b64_hyp_poly(d: -dx, d2: dx2)
+            fpl: B64 = tl_scaled + th_scaled * pp
+            fml: B64 = ql + qh * pm
+            rh: B64 = th_scaled + qh
+            err: B64 = th_scaled - rh + qh
+            rl: B64 = err + fml + fpl
+            e: B64 = B64.mul(0x1.c0ap-62, rh)
+            lb: B64 = rh + (rl - e)
+            ub: B64 = rh + (rl + e)
+            if lb == ub
+                return lb
+            else
+                a: CmF64HypDd = cm_b64_hyp_exp_accurate(x: ax, t, th: th_scaled, tl: tl_scaled)
+                m: CmF64HypDd = cm_b64_hyp_exp_accurate(x: -ax, t: -t, th: qh, tl: ql)
+                rh2: B64 = a.hi + m.hi
+                err2: B64 = a.hi - rh2 + m.hi
+                s: CmF64HypDd = cm_b64_hyp_fasttwosum(x: rh2, y: err2 + m.lo + a.lo)
+                hard: Bool = cm_b64_hyp_is_hard(h: s.hi, l: s.lo)
+                r: B64 = s.hi + s.lo
+                if hard
+                    return cm_b64_cosh_database(x, f: r)
+                else
+                    return r
 
 ### The accurate path of cosh for 2^-26 <= |x| < 1/8: a double-double even polynomial.
 ### :param x: The argument.

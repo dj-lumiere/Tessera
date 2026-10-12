@@ -78,158 +78,108 @@ needs LIMBS: USize
     digits.set(U64.MIN)
     count: USize = text.count
     if count == 0
-        jump fail(ParseError.EMPTY)
-    else
-        jump sign()
+        return ParseError.EMPTY
 
-    block sign()
-        data: @Byte = text.data
-        c: Byte = data.stride(0).peek()
-        minus: Bool = c == b'-'
-        plus: Bool = c == b'+'
-        skip: Bool = minus or plus
-        jump body(skip.to[USize](), minus)
+    data: @Byte = text.data
+    sign_char: Byte = data.stride(0).peek()
+    negative: Bool = sign_char == b'-'
+    plus: Bool = sign_char == b'+'
+    skip: Bool = negative or plus
+    start: USize = skip.to[USize]()
+    rest: @Byte = data.stride(start)
+    left: USize = count - start
+    short_inf: Bool = matches_word(text: rest, count: left, word: "inf")
+    long_inf: Bool = matches_word(text: rest, count: left, word: "infinity")
+    inf: Bool = short_inf | long_inf
+    if inf
+        infinite_parts: DecimalParts = DecimalParts(kind: DecimalKind.INFINITY, negative, kept: 0,
+            exponent: 0, sticky: false)
+        return infinite_parts
+    if matches_word(text: rest, count: left, word: "nan")
+        nan_parts: DecimalParts = DecimalParts(kind: DecimalKind.NAN, negative, kept: 0,
+            exponent: 0, sticky: false)
+        return nan_parts
 
-    block body(start: USize, negative: Bool)
-        data: @Byte = text.data
-        rest: @Byte = data.stride(start)
-        left: USize = text.count - start
-        inf: Bool = matches_word(text: rest, count: left, word: "inf") | matches_word(text: rest, count: left, word: "infinity")
-        when
-            inf => jump special(DecimalKind.INFINITY, negative)
-            matches_word(text: rest, count: left, word: "nan") => jump special(DecimalKind.NAN, negative)
-            else => jump int_loop(start, negative, 0, 0, false, false)
-
-    block special(kind: DecimalKind, negative: Bool)
-        parts: DecimalParts = DecimalParts(kind: kind, negative: negative, kept: 0, exponent: 0, sticky: false)
-        r: Result[DecimalParts, ParseError] = parts
-        return r
-
-    # Integer digits. Leading zeros are skipped. Digits past the cap raise the exponent.
-    block int_loop(i: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool, seen: Bool)
-        if i >= text.count
-            jump done(negative, kept, exponent, sticky, seen)
-        else
-            jump int_char(i, negative, kept, exponent, sticky, seen)
-
-    block int_char(i: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool, seen: Bool)
-        data: @Byte = text.data
+    # Integer digits, then fraction digits after a point. Leading zeros are skipped. An integer digit past the cap
+    # raises the exponent, and each fraction digit kept, or each leading zero there, lowers it.
+    while i < count with i: USize = start, kept: S64 = 0, exponent: S64 = 0, sticky: Bool = false, seen: Bool = false, fraction: Bool = false
         c: Byte = data.stride(i).peek()
-        code: U8 = c.to[U8]()
-        digit: Bool = is_ascii_digit(c)
-        when
-            digit => jump int_digit(i, negative, kept, exponent, sticky, (code - b'0'.to[U8]()).to[U64]())
-            c == b'.' => jump frac_loop(i + 1, negative, kept, exponent, sticky, seen)
-            else => jump exponent_mark(i, negative, kept, exponent, sticky, seen)
+        if c == b'.' and not fraction
+            continue with i: i + 1, kept: kept, exponent: exponent, sticky: sticky, seen: seen, fraction: true
+        if not is_ascii_digit(c)
+            # After the mantissa only an exponent may follow: e or E, a sign, digits.
+            mantissa: DecimalParts = DecimalParts(kind: DecimalKind.FINITE, negative, kept,
+                exponent, sticky)
+            return parse_decimal_exponent(text, at: i, mantissa, seen)
 
-    block int_digit(i: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool, d: U64)
+        code: U8 = c.to[U8]()
+        d: U64 = (code - b'0'.to[U8]()).to[U64]()
         leading: Bool = kept == 0 and d == 0
         full: Bool = kept >= max_kept
-        next: USize = i + 1
-        when
-            leading => jump int_loop(next, negative, kept, exponent, sticky, true)
-            full => jump int_loop(next, negative, kept, exponent + 1, sticky or d != 0, true)
-            else => jump int_keep(next, negative, kept, exponent, sticky, d)
-
-    block int_keep(next: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool, d: U64)
+        if leading
+            skipped_exponent: S64 = when
+                fraction => exponent - 1
+                else => exponent
+            continue with i: i + 1, kept: kept, exponent: skipped_exponent, sticky: sticky, seen: true, fraction: fraction
+        if full
+            dropped_exponent: S64 = when
+                fraction => exponent
+                else => exponent + 1
+            continue with i: i + 1, kept: kept, exponent: dropped_exponent, sticky: sticky or d != 0, seen: true, fraction: fraction
         digits.mul_add(m: 10, addend: d)
-        jump int_loop(next, negative, kept + 1, exponent, sticky, true)
+        kept_exponent: S64 = when
+            fraction => exponent - 1
+            else => exponent
+        continue with i: i + 1, kept: kept + 1, exponent: kept_exponent, sticky: sticky, seen: true, fraction: fraction
+    then
+        if not seen
+            return ParseError.INVALID
+        parts: DecimalParts = DecimalParts(kind: DecimalKind.FINITE, negative, kept, exponent,
+            sticky)
+        return parts
 
-    # Fraction digits. Each one kept, or each leading zero, lowers the exponent.
-    block frac_loop(i: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool, seen: Bool)
-        if i >= text.count
-            jump done(negative, kept, exponent, sticky, seen)
-        else
-            jump frac_char(i, negative, kept, exponent, sticky, seen)
+### Reads the exponent that may follow a decimal's mantissa: `e` or `E`, an optional sign, and digits. The exponent
+### saturates at 1,000,000, far past any float's range.
+### :param text: The whole text.
+### :param at: The index of the first byte after the mantissa.
+### :param mantissa: What the mantissa gave: its sign, its kept digits, its exponent, and its sticky flag.
+### :param seen: True when the mantissa had at least one digit.
+### :returns: The parsed parts with the exponent added in, or the reason the text did not match.
+### :throws: Returns `ParseError.INVALID` when anything but a complete exponent follows the mantissa.
+private routine parse_decimal_exponent(text: Span[Byte], at: USize, mantissa: DecimalParts,
+    seen: Bool) -> Result[DecimalParts, ParseError]
+    data: @Byte = text.data
+    c: Byte = data.stride(at).peek()
+    mark: Bool = c | 0x20 == b'e'
+    if not (mark and seen)
+        return ParseError.INVALID
 
-    block frac_char(i: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool, seen: Bool)
-        data: @Byte = text.data
-        c: Byte = data.stride(i).peek()
-        code: U8 = c.to[U8]()
-        if is_ascii_digit(c)
-            jump frac_digit(i, negative, kept, exponent, sticky, (code - b'0'.to[U8]()).to[U64]())
-        else
-            jump exponent_mark(i, negative, kept, exponent, sticky, seen)
+    sign_at: USize = at + 1
+    if sign_at >= text.count
+        return ParseError.INVALID
+    sign_char: Byte = data.stride(sign_at).peek()
+    minus: Bool = sign_char == b'-'
+    plus: Bool = sign_char == b'+'
+    skip: USize = (minus or plus).to[USize]()
+    first: USize = sign_at + skip
+    if first >= text.count
+        return ParseError.INVALID
 
-    block frac_digit(i: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool, d: U64)
-        leading: Bool = kept == 0 and d == 0
-        full: Bool = kept >= max_kept
-        next: USize = i + 1
-        when
-            leading => jump frac_loop(next, negative, kept, exponent - 1, sticky, true)
-            full => jump frac_loop(next, negative, kept, exponent, sticky or d != 0, true)
-            else => jump frac_keep(next, negative, kept, exponent, sticky, d)
-
-    block frac_keep(next: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool, d: U64)
-        digits.mul_add(m: 10, addend: d)
-        jump frac_loop(next, negative, kept + 1, exponent - 1, sticky, true)
-
-    # After the mantissa only an exponent may follow: e or E, a sign, digits.
-    block exponent_mark(i: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool, seen: Bool)
-        data: @Byte = text.data
-        c: Byte = data.stride(i).peek()
-        mark: Bool = c | 0x20 == b'e'
-        if mark and seen
-            jump exponent_sign(i + 1, negative, kept, exponent, sticky)
-        else
-            jump fail(ParseError.INVALID)
-
-    block exponent_sign(i: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool)
-        if i >= text.count
-            jump fail(ParseError.INVALID)
-        else
-            jump read_sign(i, negative, kept, exponent, sticky)
-
-    block read_sign(i: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool)
-        data: @Byte = text.data
-        c: Byte = data.stride(i).peek()
-        minus: Bool = c == b'-'
-        plus: Bool = c == b'+'
-        skip: USize = (minus or plus).to[USize]()
-        first: USize = i + skip
-        if first < text.count
-            jump exp_loop(first, negative, kept, exponent, sticky, minus, 0)
-        else
-            jump fail(ParseError.INVALID)
-
-    # The exponent saturates at 1,000,000, far past any float's range.
-    block exp_loop(i: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool, exp_minus: Bool, value: S64)
-        if i >= text.count
-            jump exp_done(negative, kept, exponent, sticky, exp_minus, value)
-        else
-            jump exp_char(i, negative, kept, exponent, sticky, exp_minus, value)
-
-    block exp_char(i: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool, exp_minus: Bool, value: S64)
-        data: @Byte = text.data
-        c: Byte = data.stride(i).peek()
-        if is_ascii_digit(c)
-            jump exp_digit(i, negative, kept, exponent, sticky, exp_minus, value, c)
-        else
-            jump fail(ParseError.INVALID)
-
-    block exp_digit(i: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool, exp_minus: Bool, value: S64, c: Byte)
-        code: U8 = c.to[U8]()
+    while i < text.count with i: USize = first, value: S64 = 0
+        digit_char: Byte = data.stride(i).peek()
+        if not is_ascii_digit(digit_char)
+            return ParseError.INVALID
+        code: U8 = digit_char.to[U8]()
         d: S64 = (code - b'0'.to[U8]()).to[S64]()
         appended: S64 = value * 10 + d
-        jump exp_loop(i + 1, negative, kept, exponent, sticky, exp_minus, appended.min(1000000))
-
-    block exp_done(negative: Bool, kept: S64, exponent: S64, sticky: Bool, exp_minus: Bool, value: S64)
+        continue with i: i + 1, value: appended.min(1000000)
+    then
         signed: S64 = when
-            exp_minus => -value
+            minus => -value
             else => value
-        jump done(negative, kept, exponent + signed, sticky, true)
-
-    block done(negative: Bool, kept: S64, exponent: S64, sticky: Bool, seen: Bool)
-        parts: DecimalParts = DecimalParts(kind: DecimalKind.FINITE, negative: negative, kept: kept, exponent: exponent, sticky: sticky)
-        r: Result[DecimalParts, ParseError] = parts
-        if seen
-            return r
-        else
-            jump fail(ParseError.INVALID)
-
-    block fail(error: ParseError)
-        r: Result[DecimalParts, ParseError] = error
-        return r
+        parts: DecimalParts = DecimalParts(kind: DecimalKind.FINITE, negative: mantissa.negative,
+            kept: mantissa.kept, exponent: mantissa.exponent + signed, sticky: mantissa.sticky)
+        return parts
 
 # -- rounding ------------------------------------------------------------------
 

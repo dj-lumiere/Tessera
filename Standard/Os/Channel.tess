@@ -265,39 +265,27 @@ needs T: typename
     local waiter: Waiter = current_waiter()
     local node: @ChannelWait <- ChannelWait(waiter, next: null)
 
-    jump look()
-
-    block look()
+    while true
         me.lock.lock()
         if me.receivers.peek() == 0
-            jump closed()
+            me.lock.unlock()
+            return ChannelClosed()
         if me.count.peek() < me.items.count()
-            jump put()
+            me.push(value)
+            me.lock.unlock()
+            return None()
         node.next.poke(me.putters.peek())
         me.putters.poke(node)
         me.lock.unlock()
         if blocked_until_cancelled(waiter)
-            jump cancelled()
+            me.lock.lock()
+            unlink(list: me.putters, node)
+            me.lock.unlock()
+            return CancelRequested()
         waiter.park()
         me.lock.lock()
         unlink(list: me.putters, node)
         me.lock.unlock()
-        jump look()
-
-    block put()
-        me.push(value)
-        me.lock.unlock()
-        return None()
-
-    block closed()
-        me.lock.unlock()
-        return ChannelClosed()
-
-    block cancelled()
-        me.lock.lock()
-        unlink(list: me.putters, node)
-        me.lock.unlock()
-        return CancelRequested()
 
 ### Sends `value` if there is room, without waiting.
 ### :param value: The value.
@@ -322,39 +310,27 @@ needs T: typename
     local waiter: Waiter = current_waiter()
     local node: @ChannelWait <- ChannelWait(waiter, next: null)
 
-    jump look()
-
-    block look()
+    while true
         me.lock.lock()
         if me.count.peek() != 0
-            jump take()
+            value: T = me.pop()
+            me.lock.unlock()
+            return value
         if me.senders.peek() == 0
-            jump closed()
+            me.lock.unlock()
+            return ChannelClosed()
         node.next.poke(me.getters.peek())
         me.getters.poke(node)
         me.lock.unlock()
         if blocked_until_cancelled(waiter)
-            jump cancelled()
+            me.lock.lock()
+            unlink(list: me.getters, node)
+            me.lock.unlock()
+            return CancelRequested()
         waiter.park()
         me.lock.lock()
         unlink(list: me.getters, node)
         me.lock.unlock()
-        jump look()
-
-    block take()
-        value: T = me.pop()
-        me.lock.unlock()
-        return value
-
-    block closed()
-        me.lock.unlock()
-        return ChannelClosed()
-
-    block cancelled()
-        me.lock.lock()
-        unlink(list: me.getters, node)
-        me.lock.unlock()
-        return CancelRequested()
 
 ### Counts one more sender.
 @target(os: not "none")

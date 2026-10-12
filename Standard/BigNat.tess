@@ -149,67 +149,35 @@ needs LIMBS: USize
     local bit_shift: U64 = (bits % 64).to[U64]()
     local count: USize = me.count.peek()
 
-    if bit_shift == 0
-        jump move()
-    else
-        jump shift_bits(0, 0)
-
-    block shift_bits(i: USize, carry: U64)
-        if i >= count
-            jump spill(carry)
-        else
-            jump shift_one(i, carry)
-
-    block shift_one(i: USize, carry: U64)
-        limb: U64 = me.limbs[i]
-        me.limbs[i] = (limb << bit_shift) | carry
-        jump shift_bits(i + 1, limb >> 64 - bit_shift)
-
-    block spill(carry: U64)
-        if carry == 0
-            jump move()
-        else
-            jump grow(carry)
-
-    block grow(carry: U64)
-        me.push_limb(carry)
-        jump move()
+    # Bits move up within the limbs first, and the bits out of the top limb become a new limb.
+    if bit_shift != 0
+        each i in 0 til count with carry: U64 = 0
+            limb: U64 = me.limbs[i]
+            me.limbs[i] = (limb << bit_shift) | carry
+            continue with carry: limb >> 64 - bit_shift
+        then
+            if carry != 0
+                me.push_limb(carry)
 
     # Whole limbs move up by limb_shift, top first, and zeros fill the bottom.
-    block move()
-        current_count: USize = me.count.peek()
-        nothing: Bool = limb_shift == 0 or current_count == 0
-        new_count: USize = current_count + limb_shift
-        when
-            nothing => return
-            new_count <= LIMBS => jump move_loop(current_count, new_count)
-            else => crash_overflow()
+    current_count: USize = me.count.peek()
+    nothing: Bool = limb_shift == 0 or current_count == 0
+    new_count: USize = current_count + limb_shift
+    when
+        nothing => return
+        new_count <= LIMBS => pass
+        else => crash_overflow()
 
     # left limbs are still to move. The next one down is left - 1
-    block move_loop(left: USize, new_count: USize)
-        if left == 0
-            jump zero_fill(0, new_count)
-        else
-            jump move_one(left - 1, new_count)
-
-    block move_one(i: USize, new_count: USize)
+    while left != 0 with left: USize = current_count
+        i: USize = left - 1
         limb: U64 = me.limbs[i]
         me.limbs[i + limb_shift] = limb
-        jump move_loop(i, new_count)
-
-    block zero_fill(i: USize, new_count: USize)
-        if i >= limb_shift
-            jump store_count(new_count)
-        else
-            jump zero_one(i, new_count)
-
-    block zero_one(i: USize, new_count: USize)
+        continue with left: i
+    each i in 0 til limb_shift
         me.limbs[i] = 0
-        jump zero_fill(i + 1, new_count)
-
-    block store_count(new_count: USize)
-        me.count.poke(new_count)
-        return
+    me.count.poke(new_count)
+    return
 
 ### Sets `me` to `me` / 2, rounding down.
 routine BigNat[LIMBS].shr1(me: @Me) -> None

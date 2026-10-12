@@ -33,7 +33,7 @@ public class TraceTests
         Assert.Contains(ir.Split('\n'), line => line.Contains("5TRACEB") && line.Contains(storage));
     }
 
-    /// An `#inline` routine is part of each caller, like `#untraced` code: its body pushes and pops no frame, so a hot
+    /// An `@inline` routine is part of each caller, like `@untraced` code: its body pushes and pops no frame, so a hot
     /// loop that calls it pays nothing for the trace on its account. Its traced caller keeps its own frame.
     [Fact]
     public void InlineRoutineHasNoFrame()

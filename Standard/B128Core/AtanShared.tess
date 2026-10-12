@@ -468,51 +468,42 @@ routine cm_atan_limbs_mul_high(o: @U64, a: @U64, b: @U64, n: USize) -> None
 ### :param k: The left shift, not negative.
 routine cm_atan_limbs_shl_pos(a: @U64, n: USize, k: S64) -> None
     local dst: SSize = n.to[SSize]() - 1
-    local c: @S64 <- .hollow()
+    local s: S64 = k & 63
 
     src: SSize = dst - (k >> 6).to[SSize]()
-    if src >= 0
-        jump first(src.to[USize]())
-    else
-        jump clear(dst)
+    clear_from: SSize = when
+        src < 0 => dst
+        else =>
+            first_at: USize = src.to[USize]()
+            first_limb: U64 = a.stride(first_at).peek()
+            src_below: SSize = (first_at - 1).to[SSize]()
+            top_carry: S64 = first_limb.to_wrap[S64]()
+            # the limb at `at` takes the carried bits and the top of the limb at `from`, one lower
+            while from >= 0 with at: SSize = dst, from: SSize = src_below, carry: S64 = top_carry
+                at_index: USize = at.to[USize]()
+                from_index: USize = from.to[USize]()
+                next: U64 = a.stride(from_index).peek()
+                under_shift: S64 = ~k & 63
+                under_bits: U64 = next >> 1 >> under_shift.to[U64]()
+                under: S64 = under_bits.to[S64]()
+                limb_bits: S64 = (carry << s) | under
+                a.stride(at_index).poke(limb_bits.to_wrap[U64]())
+                next_at: SSize = (at_index - 1).to[SSize]()
+                next_from: SSize = (from_index -% 1).to_wrap[SSize]()
+                continue with at: next_at, from: next_from, carry: next.to_wrap[S64]()
+            then
+                last_at: USize = at.to[USize]()
+                a.stride(last_at).poke((carry << s).to_wrap[U64]())
+                becomes (last_at -% 1).to_wrap[SSize]()
 
-    block first(src: USize)
-        first_limb: U64 = a.stride(src).peek()
-        first_limb.to_wrap[S64]().poke_into(c)
-        jump move(dst, (src - 1).to[SSize]())
-
-    # the limb at target takes c's bits and the top of the next lower limb
-    block move(target: SSize, src: SSize)
-        s: S64 = k & 63
-        if src >= 0
-            jump step(target.to[USize](), src.to[USize](), s)
-        else
-            jump last(target.to[USize](), s)
-
-    block step(target: USize, src: USize, s: S64)
-        next: U64 = a.stride(src).peek()
-        under_shift: S64 = ~k & 63
-        under_bits: U64 = next >> 1 >> under_shift.to[U64]()
-        under: S64 = under_bits.to[S64]()
-        limb_bits: S64 = (c.peek() << s) | under
-        a.stride(target).poke(limb_bits.to_wrap[U64]())
-        next.to_wrap[S64]().poke_into(c)
-        jump move((target - 1).to[SSize](), (src -% 1).to_wrap[SSize]())
-
-    block last(target: USize, s: S64)
-        a.stride(target).poke((c.peek() << s).to_wrap[U64]())
-        jump clear((target -% 1).to_wrap[SSize]())
-
-    block clear(target: SSize)
-        if target < 0
-            return
-        else
-            jump clear_one(target.to[USize]())
-
-    block clear_one(target: USize)
+    # the limbs below the shifted ones become zero
+    while clear_at >= 0 with clear_at: SSize = clear_from
+        clear_one: USize = clear_at.to[USize]()
         zero: S64 = 0
-        a.stride(target).poke(zero.to[U64]())
-        jump clear((target -% 1).to_wrap[SSize]())
+        a.stride(clear_one).poke(zero.to[U64]())
+        continue with clear_at: (clear_one -% 1).to_wrap[SSize]()
+    then
+        return
 
 ### a >>= k (logical) on n limbs, k >= 0.
 ### :param a: The limbs shifted in place.
@@ -520,48 +511,34 @@ routine cm_atan_limbs_shl_pos(a: @U64, n: USize, k: S64) -> None
 ### :param k: The right shift, not negative.
 routine cm_atan_limbs_shr_pos(a: @U64, n: USize, k: S64) -> None
     local src: USize = (k >> 6).to[USize]()
-    local c: @U64 <- .hollow()
+    local s: S64 = k & 63
 
-    if src < n
-        jump first()
-    else
-        jump clear(0)
+    clear_from: USize = when
+        src >= n => 0
+        else =>
+            first_limb: U64 = a.stride(src).peek()
+            # the limb at dst takes the carried limb's bits and the bottom of the next higher limb
+            while from < n with dst: USize = 0, from: USize = src + 1, carry: U64 = first_limb
+                next: U64 = a.stride(from).peek()
+                aligned: Bool = s == 0
+                over_shift: S64 = 0 - k & 63
+                over: U64 = next << over_shift.to[U64]()
+                above: U64 = when
+                    aligned => 0
+                    else => over
+                a.stride(dst).poke((carry >> s.to[U64]()) | above)
+                continue with dst: dst + 1, from: from + 1, carry: next
+            then
+                a.stride(dst).poke(carry >> s.to[U64]())
+                becomes dst + 1
 
-    block first()
-        first_limb: U64 = a.stride(src).peek()
-        first_limb.poke_into(c)
-        jump move(0, src + 1)
-
-    # the limb at dst takes c's bits and the bottom of the next higher limb
-    block move(dst: USize, from: USize)
-        s: S64 = k & 63
-        if from < n
-            jump step(dst, from, s)
-        else
-            jump last(dst, s)
-
-    block step(dst: USize, from: USize, s: S64)
-        next: U64 = a.stride(from).peek()
-        aligned: Bool = s == 0
-        over_shift: S64 = 0 - k & 63
-        over: U64 = next << over_shift.to[U64]()
-        above: U64 = when
-            aligned => 0
-            else => over
-        a.stride(dst).poke((c.peek() >> s.to[U64]()) | above)
-        next.poke_into(c)
-        jump move(dst + 1, from + 1)
-
-    block last(dst: USize, s: S64)
-        a.stride(dst).poke(c.peek() >> s.to[U64]())
-        jump clear(dst + 1)
-
-    block clear(dst: USize)
-        if dst >= n
-            return
+    # the limbs above the shifted ones become zero
+    while clear_at < n with clear_at: USize = clear_from
         zero: S64 = 0
-        a.stride(dst).poke(zero.to[U64]())
-        jump clear(dst + 1)
+        a.stride(clear_at).poke(zero.to[U64]())
+        continue with clear_at: clear_at + 1
+    then
+        return
 
 ### a >>= k (logical), or a <<= -k when k < 0.
 ### :param a: The limbs shifted in place.
@@ -580,43 +557,35 @@ routine cm_atan_limbs_shr(a: @U64, n: USize, k: S64) -> None
 ### :param n: The number of limbs.
 ### :param k: The right shift, not negative.
 routine cm_atan_limbs_sar(a: @U64, n: USize, k: S64) -> None
-    local c: @U64 <- .hollow()
+    local s: S64 = k & 63
 
     src: USize = (k >> 6).to[USize]()
-    if not (src < n)
-        jump beyond()
-    a.stride(src).peek().poke_into(c)
-    jump move(0, src + 1)
+    fill_start: (USize, S64) = when
+        src >= n =>
+            top_at: USize = n -% 1
+            top: U64 = a.stride(top_at).peek()
+            becomes (0, top.to_wrap[S64]() >> 63)
+        else =>
+            first_limb: U64 = a.stride(src).peek()
+            # the limb at dst takes the carried limb's bits and the bottom of the next higher limb
+            while from < n with dst: USize = 0, from: USize = src + 1, carry: U64 = first_limb
+                next: U64 = a.stride(from).peek()
+                above_shift: S64 = ~k & 63
+                above: U64 = next << 1 << above_shift.to[U64]()
+                a.stride(dst).poke((carry >> s.to[U64]()) | above)
+                continue with dst: dst + 1, from: from + 1, carry: next
+            then
+                carry_signed: S64 = carry.to_wrap[S64]()
+                a.stride(dst).poke((carry_signed >> s).to_wrap[U64]())
+                becomes (dst + 1, carry_signed >> 63)
+    fill_from, sign = fill_start
 
-    block move(dst: USize, src: USize)
-        s: S64 = k & 63
-        if src < n
-            jump step(dst, src, s)
-        else
-            jump last(dst, c.peek().to_wrap[S64](), s)
-
-    block step(dst: USize, src: USize, s: S64)
-        next: U64 = a.stride(src).peek()
-        above_shift: S64 = ~k & 63
-        above: U64 = next << 1 << above_shift.to[U64]()
-        a.stride(dst).poke((c.peek() >> s.to[U64]()) | above)
-        next.poke_into(c)
-        jump move(dst + 1, src + 1)
-
-    block last(dst: USize, c_signed: S64, s: S64)
-        a.stride(dst).poke((c_signed >> s).to_wrap[U64]())
-        jump fill(dst + 1, c_signed >> 63)
-
-    block beyond()
-        top_at: USize = n -% 1
-        top: U64 = a.stride(top_at).peek()
-        jump fill(0, top.to_wrap[S64]() >> 63)
-
-    block fill(dst: USize, sign: S64)
-        if dst >= n
-            return
-        a.stride(dst).poke(sign.to_wrap[U64]())
-        jump fill(dst +% 1, sign)
+    # the top limb's sign fills the limbs above the shifted ones
+    while fill_at < n with fill_at: USize = fill_from
+        a.stride(fill_at).poke(sign.to_wrap[U64]())
+        continue with fill_at: fill_at +% 1
+    then
+        return
 
 # -- accurate path: kernel -------------------------------------------------------
 

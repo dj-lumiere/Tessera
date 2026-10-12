@@ -8,23 +8,25 @@ namespace Tessera.Tests;
 /// </summary>
 public class FinishLintTests
 {
+    // The finish convention is about blocks, so every routine below is marked @generated, the only hand-written
+    // routines that may still have blocks and jumps.
+
     [Fact]
     public void EveryExitThroughFinishIsClean()
     {
         var warnings = Lint("""
-            routine count_open(text: Bytes, alloc: @MemoryManager) -> USize
-                local stack : @List[Byte] <- .construct(alloc)
+            @generated
+            routine count_open(text: Span[Byte], alloc: @MemoryManager) -> USize
+                local stack: @List[Byte] <- .construct(alloc)
 
-                block entry()
-                    branch text.is_empty()
-                        ? finish(0)
-                        : continue
-                    stack.push(b'(')
-                    jump finish(stack.count())
+                if text.is_empty()
+                    jump finish(0)
+                stack.add_last(b'(')
+                jump finish(stack.count())
 
                 block finish(result: USize)
-                    stack.destruct()
-                    return(result)
+                    drop stack
+                    return result
             """);
         Assert.Empty(warnings);
     }
@@ -33,43 +35,41 @@ public class FinishLintTests
     public void ReturnOutsideFinishWarns()
     {
         var warnings = Lint("""
-            routine count_open(text: Bytes, alloc: @MemoryManager) -> USize
-                local stack : @List[Byte] <- .construct(alloc)
+            @generated
+            routine count_open(text: Span[Byte], alloc: @MemoryManager) -> USize
+                local stack: @List[Byte] <- .construct(alloc)
 
-                block entry()
-                    branch text.is_empty()
-                        ? return(0)
-                        : continue
-                    jump finish(stack.count())
+                if text.is_empty()
+                    return 0
+                jump finish(stack.count())
 
                 block finish(result: USize)
-                    stack.destruct()
-                    return(result)
+                    drop stack
+                    return result
             """);
         string warning = Assert.Single(warnings);
-        Assert.Contains("t.tess:6:15: warning: a return outside finish here: jump finish(...) instead", warning);
+        Assert.Contains("t.tess:6:9: warning: a return outside finish here: jump finish(...) instead", warning);
     }
 
     [Fact]
     public void EveryArmAndGuardIsChecked()
     {
         var warnings = Lint("""
+            @generated
             routine pick(n: S64) -> S64
-                block entry()
-                    branch n.lt(0)
-                        ? return(-1)
-                        : continue
-                    when
-                        n.eq(0) => return(0)
-                        else    => next()
+                if n < 0
+                    return -1
+                when
+                    n == 0 => return 0
+                    else => jump next()
 
                 block next()
                     when n
-                        1    => return(1)
-                        else => finish(n)
+                        1 => return 1
+                        else => jump finish(n)
 
                 block finish(result: S64)
-                    return(result)
+                    return result
             """);
         Assert.Equal(3, warnings.Count);
         Assert.All(warnings, w => Assert.Contains("a return outside finish", w));
@@ -79,17 +79,18 @@ public class FinishLintTests
     public void RoutineWithoutFinishIsNotChecked()
     {
         var warnings = Lint("""
+            @generated
             routine sign(n: S64) -> S64
-                local buf : @Slice[Byte] <- .hollow()
+                local buf: @Memory[Byte] <- .hollow()
 
-                block entry()
-                    branch n.lt(0)
-                        ? return(-1)
-                        : done()
+                if n < 0
+                    return -1
+                else
+                    jump done()
 
                 block done()
-                    buf.destruct()
-                    return(1)
+                    drop buf
+                    return 1
             """);
         Assert.Empty(warnings);
     }
@@ -98,14 +99,15 @@ public class FinishLintTests
     public void LintCommandReportsFinishWarnings()
     {
         var warnings = StyleLint.Check(Parse("""
+            @generated
             routine sign(n: S64) -> S64
-                block entry()
-                    branch n.lt(0)
-                        ? return(-1)
-                        : finish(1)
+                if n < 0
+                    return -1
+                else
+                    jump finish(1)
 
                 block finish(result: S64)
-                    return(result)
+                    return result
             """));
         Assert.Contains(warnings, w => w.Contains("a return outside finish"));
     }

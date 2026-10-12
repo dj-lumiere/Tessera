@@ -108,55 +108,26 @@ private routine cm_b64_pow_add_qint(a: CmF64PowQint, b: CmF64PowQint) -> CmF64Po
     when
         a_zero => return b
         b.rh == 0 and b.rl == 0 => return a
-        else => jump compare()
+        else => pass
 
-    block compare()
-        c: S64 = cm_b64_pow_cmp_qint(a, b)
-        if c == 0
-            jump tie()
-        swap: Bool = c < 0
-        aa: CmF64PowQint = when
-            swap => b
-            else => a
-        bb: CmF64PowQint = when
-            swap => a
-            else => b
-        k: S64 = aa.ex - bb.ex
-        # now |aa| > |bb| and k >= 0: align bb on aa
-        bh, bl = cm_b64_pow_shift256(h: bb.rh, l: bb.rl, n: S64.sub(0, k))
-        if aa.sgn != bb.sgn
-            jump subtract(aa, bb, bh, bl, k)
-        else
-            jump add(aa, bh, bl)
-
-    block tie()
+    c: S64 = cm_b64_pow_cmp_qint(a, b)
+    if c == 0
         if a.sgn != b.sgn
             return cm_b64_pow_qint_zero()
         else
             return CmF64PowQint(rh: a.rh, rl: a.rl, ex: a.ex + 1, sgn: a.sgn)
-
-    block subtract(aa: CmF64PowQint, bb: CmF64PowQint, bh: U128, bl: U128, k: S64)
-        ch: U128 = cm_b64_pow_sub_borrow(ah: aa.rh, al: aa.rl, bh, bl)
-        cl: U128 = aa.rl -% bl
-        ex: U64 = cm_b64_pow_clz256(ch, cl)
-        if ex > 0
-            jump renormalize(aa, bb, k, ex)
-        else
-            jump normalize(ch, cl, 0, aa.ex, aa.sgn)
-
-    # shift aa by ex bits to the left, and bb by ex - k bits to the left, then subtract again
-    block renormalize(aa: CmF64PowQint, bb: CmF64PowQint, k: S64, ex: U64)
-        ah, al = cm_b64_pow_shift256(h: aa.rh, l: aa.rl, n: ex.to[S64]())
-        bh, bl = cm_b64_pow_shift256(h: bb.rh, l: bb.rl, n: ex.to[S64]() - k)
-        ch: U128 = cm_b64_pow_sub_borrow(ah, al, bh, bl)
-        cl: U128 = al -% bl
-        jump normalize(ch, cl, cm_b64_pow_clz256(ch, cl), aa.ex - ex.to[S64](), aa.sgn)
-
-    block normalize(ch: U128, cl: U128, ex: U64, rex: S64, sgn: U64)
-        h, l = cm_b64_pow_shift256(h: ch, l: cl, n: ex.to[S64]())
-        return CmF64PowQint(rh: h, rl: l, ex: rex - ex.to[S64](), sgn: sgn)
-
-    block add(aa: CmF64PowQint, bh: U128, bl: U128)
+    swap: Bool = c < 0
+    aa: CmF64PowQint = when
+        swap => b
+        else => a
+    bb: CmF64PowQint = when
+        swap => a
+        else => b
+    k: S64 = aa.ex - bb.ex
+    # now |aa| > |bb| and k >= 0: align bb on aa
+    bh, bl = cm_b64_pow_shift256(h: bb.rh, l: bb.rl, n: S64.sub(0, k))
+    if aa.sgn == bb.sgn
+        # same signs: add, and shift right by one on a carry out
         ch0: U128 = aa.rh +% bh
         cy0: U128 = cm_b64_pow_carry(sum: ch0, a: aa.rh)
         cl: U128 = aa.rl +% bl
@@ -174,6 +145,25 @@ private routine cm_b64_pow_add_qint(a: CmF64PowQint, b: CmF64PowQint) -> CmF64Po
             return CmF64PowQint(rh: sh, rl: sl, ex: aa.ex + 1, sgn: aa.sgn)
         else
             return CmF64PowQint(rh: ch, rl: cl, ex: aa.ex, sgn: aa.sgn)
+
+    # opposite signs: subtract
+    ch: U128 = cm_b64_pow_sub_borrow(ah: aa.rh, al: aa.rl, bh, bl)
+    cl: U128 = aa.rl -% bl
+    ex: U64 = cm_b64_pow_clz256(ch, cl)
+    # the difference dh:dl to shift left by shift bits, and its exponent before that shift
+    values: (U128, U128, U64, S64) = when
+        ex > 0 =>
+            # shift aa by ex bits to the left, and bb by ex - k bits to the left, then subtract
+            # again
+            ah, al = cm_b64_pow_shift256(h: aa.rh, l: aa.rl, n: ex.to[S64]())
+            sbh, sbl = cm_b64_pow_shift256(h: bb.rh, l: bb.rl, n: ex.to[S64]() - k)
+            dh: U128 = cm_b64_pow_sub_borrow(ah, al, bh: sbh, bl: sbl)
+            dl: U128 = al -% sbl
+            becomes (dh, dl, cm_b64_pow_clz256(ch: dh, cl: dl), aa.ex - ex.to[S64]())
+        else => (ch, cl, 0, aa.ex)
+    dh, dl, shift, rex = values
+    h, l = cm_b64_pow_shift256(h: dh, l: dl, n: shift.to[S64]())
+    return CmF64PowQint(rh: h, rl: l, ex: rex - shift.to[S64](), sgn: aa.sgn)
 
 ### The upper half of the 256-bit difference ah:al - bh:bl.
 ### :param ah: The upper half of the minuend.

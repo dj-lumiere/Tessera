@@ -21,43 +21,9 @@ routine B64.acos(me: Me) -> Me
     local xu: U64 = me.bits()
     local ax: U64 = xu << 1
 
-    large: Bool = ax > 0x7FC0000000000000  # |x| > 1/2
-    # |x| < 2^-15
-    when
-        large => jump large()
-        ax <= 0x7E00000000000000 => jump tiny()
-        else => jump small()
-
-    block large()
-        neg: Bool = xu >> 63 != 0
-        f0h: Me = when
-            neg => 0x1.921fb54442d18p+1
-            else => 0.0
-        f0l: Me = when
-            neg => 0x1.1a62633145c07p-53
-            else => 0.0
-        # |x| >= 1
-        if ax >= 0x7FE0000000000000
-            jump edge(f0h, f0l)
-        # acos(x) = 2 asin(sqrt((1 - x)/2)) for x > 1/2, and pi - 2 asin(sqrt((1 + x)/2)) for x < -1/2
-        t: Me = Me.sub(2.0, Me.mul(2.0, me.abs()))
-        jd: Me = (t * 0x1p5).round_ties_even()
-        z: Me = t.sqrt().copysign(me)
-        zl: Me = z.mul_add(a: z, b: -t) * (Me.truediv(-0.5, t) * z)
-        tr: Me = Me.mul(0.25, t) - jd * 0x1p-7
-        ztr: Me = (z * tr).abs()
-        jump poly(z, zl, tr, jd, f0h, f0l, ztr * 0x1.8cp-52 + 0x1p-105)
-
-    # |x| = 1, |x| > 1 or NaN
-    block edge(f0h: Me, f0l: Me)
-        one: Bool = ax == 0x7FE0000000000000
-        when
-            one => return f0h + f0l
-            ax > 0xFFE0000000000000 => return me + me
-            else => return Me.from_bits(0xFFF8000000000000)
-
-    # pi/2 - x - x^3/6. For |x| <= 0x1.cb3b3869747f4p-55 the cubic term is dropped (the bounds agree there)
-    block tiny()
+    # |x| < 2^-15: pi/2 - x - x^3/6. For |x| <= 0x1.cb3b3869747f4p-55 the cubic term is dropped (the
+    # bounds agree there)
+    if ax <= 0x7E00000000000000
         cubic: Bool = ax > 0x791967670D2E8FE8
         v: Me = when
             cubic => me * me * Me.mul(-0x1.5555555555555p-3, me)
@@ -71,28 +37,59 @@ routine B64.acos(me: Me) -> Me
         else
             return cm_b64_acos_accurate(x: me, phi: lb)
 
-    # 2^-15 <= |x| <= 1/2: pi/2 - asin(x), sharing the arc sine's tables
-    block small()
-        t2: Me = me * me
-        jd: Me = (t2 * 0x1p7).round_ties_even()
-        t: Me = me.mul_add(a: me, b: Me.mul(-0x1p-7, jd))
-        z: Me = -me
+    large: Bool = ax > 0x7FC0000000000000  # |x| > 1/2
+    # the arc sine's piece: z + zl, t, the piece number jd, and the constant f0h + f0l added to it
+    values: (CmF64InvtrigDD, Me, Me, CmF64InvtrigDD) = when
+        large =>
+            neg: Bool = xu >> 63 != 0
+            f0h: Me = when
+                neg => 0x1.921fb54442d18p+1
+                else => 0.0
+            f0l: Me = when
+                neg => 0x1.1a62633145c07p-53
+                else => 0.0
+            # |x| = 1, |x| > 1 or NaN
+            if ax >= 0x7FE0000000000000
+                one: Bool = ax == 0x7FE0000000000000
+                when
+                    one => return f0h + f0l
+                    ax > 0xFFE0000000000000 => return me + me
+                    else => return Me.from_bits(0xFFF8000000000000)
+            # acos(x) = 2 asin(sqrt((1 - x)/2)) for x > 1/2, and pi - 2 asin(sqrt((1 + x)/2)) for x
+            # < -1/2
+            t: Me = Me.sub(2.0, Me.mul(2.0, me.abs()))
+            jd: Me = (t * 0x1p5).round_ties_even()
+            z: Me = t.sqrt().copysign(me)
+            zl: Me = z.mul_add(a: z, b: -t) * (Me.truediv(-0.5, t) * z)
+            tr: Me = Me.mul(0.25, t) - jd * 0x1p-7
+            becomes (CmF64InvtrigDD(hi: z, lo: zl), tr, jd, CmF64InvtrigDD(hi: f0h, lo: f0l))
+        else =>
+            # 2^-15 <= |x| <= 1/2: pi/2 - asin(x), sharing the arc sine's tables
+            t2: Me = me * me
+            jd: Me = (t2 * 0x1p7).round_ties_even()
+            t: Me = me.mul_add(a: me, b: Me.mul(-0x1p-7, jd))
+            z: Me = -me
+            pi_half: CmF64InvtrigDD = CmF64InvtrigDD(hi: 0x1.921fb54442d18p+0,
+                lo: 0x1.1a62633145c07p-54)
+            becomes (CmF64InvtrigDD(hi: z, lo: 0.0), t, jd, pi_half)
+    zdd, t, jd, f0 = values
+    eps: Me = when
+        large =>
+            ztr: Me = (zdd.hi * t).abs()
+            becomes ztr * 0x1.8cp-52 + 0x1p-105
         # negative for x > 0, but the rounding test still holds
-        jump poly(z, 0.0, t, jd, 0x1.921fb54442d18p+0, 0x1.1a62633145c07p-54, z * t * 0x1.81p-52)
+        else => zdd.hi * t * 0x1.81p-52
 
     # asin(z + zl) from the piece j = round(128 z^2), t = z^2 - j/128, plus f0h + f0l
-    block poly(z: Me, zl: Me, t: Me, jd: Me, f0h: Me, f0l: Me, eps: Me)
-        j: USize = jd.to[U64]().to[USize]()
-        j8: USize = j * 8
-        zdd: CmF64InvtrigDD = (hi: z, lo: zl)
-        f0: CmF64InvtrigDD = (hi: f0h, lo: f0l)
-        f: CmF64InvtrigDD = cm_b64_invtrig_asin_poly(z: zdd, t, j8, f0)
-        lb: Me = f.hi + (f.lo - eps)
-        ub: Me = f.hi + (f.lo + eps)
-        if lb == ub
-            return lb
-        else
-            return cm_b64_acos_accurate(x: me, phi: lb)
+    j: USize = jd.to[U64]().to[USize]()
+    j8: USize = j * 8
+    f: CmF64InvtrigDD = cm_b64_invtrig_asin_poly(z: zdd, t, j8, f0)
+    lb: Me = f.hi + (f.lo - eps)
+    ub: Me = f.hi + (f.lo + eps)
+    if lb == ub
+        return lb
+    else
+        return cm_b64_acos_accurate(x: me, phi: lb)
 
 ### The accurate path, for the inputs the fast path can't round: with x = cos(phi),
 ### rotates the angle by a multiple of pi/64 close to phi and evaluates the arc sine of

@@ -561,24 +561,21 @@ private routine env_entry_utf16(v: EnvVar, alloc: @MemoryManager) -> @U16
 ### :returns: True when all were made, false (and the ones made so far freed) when an allocation fails.
 @target(os: "windows")
 private routine wide_overrides(options: ProcessOptions, out: @@U16, alloc: @MemoryManager) -> Bool
-    jump next(0)
-
-    block next(i: USize)
-        if i == options.env_count
-            return true
+    while i != options.env_count with i: USize = 0
         v: EnvVar = options.env.stride(i).peek()
         units: @U16 = env_entry_utf16(v, alloc)
         if units.is_null()
-            jump undo(i)
-        out.stride(i).poke(units)
-        jump next(i + 1)
-
-    block undo(i: USize)
-        if i == 0
-            return false
-        copy_slot: @@U16 = out.stride(i - 1)
-        deallocate(data: copy_slot.peek(), alloc)
-        jump undo(i - 1)
+            while i2 != 0 with i2: USize = i
+                copy_slot: @@U16 = out.stride(i2 - 1)
+                deallocate(data: copy_slot.peek(), alloc)
+                continue with i2: i2 - 1
+            then
+                return false
+        else
+            out.stride(i).poke(units)
+            continue with i: i + 1
+    then
+        return true
 
 ### This process's environment with the overrides applied, as a sorted block, in memory from `alloc`.
 ### :param options: The environment overrides.
@@ -589,109 +586,103 @@ private routine wide_overrides(options: ProcessOptions, out: @@U16, alloc: @Memo
 private routine env_block(options: ProcessOptions, alloc: @MemoryManager) -> @U16
     local own: @@U16 = allocate[@U16](count: options.env_count.max(1), alloc)
 
-    if own.is_null() or not wide_overrides(options, out: own, alloc)
-        jump finish(null, null)
-    # A failure has freed the strings made so far, so only the array is left.
+    if own.is_null()
+        return null
+    if not wide_overrides(options, out: own, alloc)
+        # A failure has freed the strings made so far, so only the array is left.
+        deallocate(data: own, alloc)
+        return null
     parent: @U16 = c_get_environment_strings()
-    jump count(parent, parent, 0)
-
-    # How many entries the parent block has: each ends with a 0, and an empty one ends the block.
-    block count(parent: @U16, at: @U16, n: USize)
-        if at.is_null() or at.peek() == 0
-            jump collect(parent, n)
-        else
-            jump count(parent, at.stride(units_of(at) + 1), n + 1)
-
-    block collect(parent: @U16, n: USize)
-        all: @@U16 = allocate[@U16](count: (n + options.env_count).max(1), alloc)
-        if all.is_null()
-            jump done(parent, null, null)
-        else
-            jump keep(parent, all, parent, 0)
-
-    # The parent's entries no override names.
-    block keep(parent: @U16, all: @@U16, at: @U16, k: USize)
-        if at.is_null() or at.peek() == 0
-            jump add_own(parent, all, k, 0)
-        next: @U16 = at.stride(units_of(at) + 1)
-        if is_overridden(entry: at, own, m: options.env_count)
-            jump keep(parent, all, next, k)
-        all.stride(k).poke(at)
-        jump keep(parent, all, next, k + 1)
-
-    block add_own(parent: @U16, all: @@U16, k: USize, j: USize)
-        if j == options.env_count
-            jump sort(parent, all, k + options.env_count, 1)
-        all.stride(k + j).poke(own.stride(j).peek())
-        jump add_own(parent, all, k, j + 1)
-
-    # Insertion sort.
-    block sort(parent: @U16, all: @@U16, total: USize, i: USize)
-        if i >= total
-            jump measure(parent, all, total, 0, 1)
-        else
-            jump sink(parent, all, total, i, i)
-
-    block sink(parent: @U16, all: @@U16, total: USize, i: USize, j: USize)
-        if j == 0
-            jump sort(parent, all, total, i + 1)
-        a: @U16 = all.stride(j - 1).peek()
-        b: @U16 = all.stride(j).peek()
-        if not before(a: b, b: a)
-            jump sort(parent, all, total, i + 1)
-        all.stride(j - 1).poke(b)
-        all.stride(j).poke(a)
-        jump sink(parent, all, total, i, j - 1)
-
-    block measure(parent: @U16, all: @@U16, total: USize, i: USize, units: USize)
-        if i == total
-            jump build(parent, all, total, allocate[U16](count: units, alloc))
-        else
-            jump measure(parent, all, total, i + 1, units + units_of(all.stride(i).peek()) + 1)
-
-    block build(parent: @U16, all: @@U16, total: USize, block_units: @U16)
-        if block_units.is_null()
-            jump done(parent, all, null)
-        else
-            jump place(parent, all, total, block_units, block_units, 0)
-
-    block place(parent: @U16, all: @@U16, total: USize, block_units: @U16, at: @U16, i: USize)
-        if i == total
-            jump terminate(parent, all, block_units, at)
-        entry: @U16 = all.stride(i).peek()
-        n: USize = units_of(entry) + 1
-        at.copy(src: entry, count: n)
-        jump place(parent, all, total, block_units, at.stride(n), i + 1)
-
-    block terminate(parent: @U16, all: @@U16, block_units: @U16, at: @U16)
-        at.poke(0)
-        jump done(parent, all, block_units)
-
-    block done(parent: @U16, all: @@U16, result: @U16)
-        if not parent.is_null()
-            jump free_parent(all, result, parent)
-        jump release(all, result, 0)
-
-    block free_parent(all: @@U16, result: @U16, parent: @U16)
+    n: USize = count_block_entries(parent)
+    all: @@U16 = allocate[@U16](count: (n + options.env_count).max(1), alloc)
+    result: @U16 = when
+        all.is_null() => null
+        else =>
+            # The parent's entries no override names, then the overrides.
+            k: USize = keep_unnamed(all, parent, own, m: options.env_count)
+            each j in 0 til options.env_count
+                all.stride(k + j).poke(own.stride(j).peek())
+            total: USize = k + options.env_count
+            sort_entries(all, total)
+            becomes join_entries(all, total, alloc)
+    if not parent.is_null()
         c_free_environment_strings(parent)
-        jump release(all, result, 0)
-
-    block release(all: @@U16, result: @U16, j: USize)
-        if j == options.env_count
-            jump finish(result, all)
+    each j in 0 til options.env_count
         own_slot: @@U16 = own.stride(j)
         deallocate(data: own_slot.peek(), alloc)
-        jump release(all, result, j + 1)
 
-    # The arrays, each when it was made: own is null only when its allocation failed, and all is then null too.
-    block finish(result: @U16, all: @@U16)
-        if own.is_null()
-            return result
-        deallocate(data: own, alloc)
-        if all.is_null()
-            return result
+    # The arrays, each when it was made.
+    deallocate(data: own, alloc)
+    if not all.is_null()
         deallocate(data: all, alloc)
-        return result
+    return result
+
+### How many entries an environment block has: each ends with a 0, and an empty one ends the block.
+### :param parent: The block, or null for none.
+### :returns: The number of entries, 0 when `parent` is null.
+@target(os: "windows")
+private routine count_block_entries(parent: @U16) -> USize
+    until at.is_null() or at.peek() == 0 with at: @U16 = parent, n: USize = 0
+        continue with at: at.stride(units_of(at) + 1), n: n + 1
+    then
+        return n
+
+### Puts the entries of the environment block `parent` that no override names into `all`, in their order.
+### :param all: Where the entries go (pointers into `parent`), room for each.
+### :param parent: The environment block, or null for none.
+### :param own: The overrides as UTF-16 strings.
+### :param m: How many overrides `own` holds.
+### :returns: How many entries went into `all`.
+@target(os: "windows")
+private routine keep_unnamed(all: @@U16, parent: @U16, own: @@U16, m: USize) -> USize
+    until at.is_null() or at.peek() == 0 with at: @U16 = parent, k: USize = 0
+        next: @U16 = at.stride(units_of(at) + 1)
+        if is_overridden(entry: at, own, m)
+            continue with at: next, k: k
+        all.stride(k).poke(at)
+        continue with at: next, k: k + 1
+    then
+        return k
+
+### Sorts the first `total` entries of `all` in place with an insertion sort, in the order {before} gives.
+### :param all: The entries.
+### :param total: How many there are.
+@target(os: "windows")
+private routine sort_entries(all: @@U16, total: USize) -> None
+    while i < total with i: USize = 1
+        while j != 0 with j: USize = i
+            a: @U16 = all.stride(j - 1).peek()
+            b: @U16 = all.stride(j).peek()
+            if not before(a: b, b: a)
+                break
+            all.stride(j - 1).poke(b)
+            all.stride(j).poke(a)
+            continue with j: j - 1
+        continue with i: i + 1
+    return
+
+### Joins the first `total` entries of `all` into one environment block in memory from `alloc`: each entry with its
+### 0, then a 0 that ends the block.
+### :param all: The entries.
+### :param total: How many there are.
+### :param alloc: The allocator for the block.
+### :returns: The block, or null when its allocation fails.
+@target(os: "windows")
+private routine join_entries(all: @@U16, total: USize, alloc: @MemoryManager) -> @U16
+    each i in 0 til total with units: USize = 1
+        continue with units: units + units_of(all.stride(i).peek()) + 1
+    then
+        block_units: @U16 = allocate[U16](count: units, alloc)
+        if block_units.is_null()
+            return null
+        each i2 in 0 til total with at: @U16 = block_units
+            entry: @U16 = all.stride(i2).peek()
+            n: USize = units_of(entry) + 1
+            at.copy(src: entry, count: n)
+            continue with at: at.stride(n)
+        then
+            at.poke(0)
+            return block_units
 
 ### Whether one of the `m` overrides ("NAME=VALUE" each) names the parent entry's variable, ASCII letters in any case.
 ### :param entry: A "NAME=VALUE" entry of this process's environment.
@@ -889,89 +880,87 @@ private routine output_handle(mode: OutputMode, pipe: Addr, device: Addr, which:
 @expensive("starts a process")
 routine run_process_result(program: Span[Byte], args: Span[Span[Byte]], options: ProcessOptions,
     alloc: @MemoryManager) -> Result[ProcessOutput, ProcessError]
-    local line: @@U16 <- null
-    local env: @@U16 <- null
     local h: @Handles <- Handles.empty()
     local pi: @ProcessInformation <- ProcessInformation(process: null, thread: null, process_id: 0, thread_id: 0)
-
-    if has_nul(program, args, options)
-        jump finish(ProcessError.INVALID_ARGUMENT)
-    made_line: @U16 = command_line(program, args, alloc)
-    made_line.poke_into(line)
-    if made_line.is_null()
-        jump finish(ProcessError.OUT_OF_MEMORY)
     local directory: @Array[U16, PATH_CAPACITY] <- .hollow()
-    d: Span[Byte] = when options.directory
-        is Span[Byte] as d => d
-        is None => jump environment(null)
-    units: @U16 = directory.to[@U16]()
-    n: Maybe[USize] = encode_utf16(text: d, out: units, capacity: PATH_CAPACITY)
-    if n.is_present()
-        jump environment(units)
-    else
-        jump finish(ProcessError.INVALID_ARGUMENT)
 
-    block environment(directory: @U16)
-        if options.env_count == 0
-            jump handles(directory)
-        block_units: @U16 = env_block(options, alloc)
-        block_units.poke_into(env)
-        if block_units.is_null()
-            jump finish(ProcessError.OUT_OF_MEMORY)
-        else
-            jump handles(directory)
+    # Until the handles are made, a failure has only the command line (once there is one) to free.
+    if has_nul(program, args, options)
+        return ProcessError.INVALID_ARGUMENT
+    line: @U16 = command_line(program, args, alloc)
+    if line.is_null()
+        return ProcessError.OUT_OF_MEMORY
+    directory_units: @U16 = when options.directory
+        is Span[Byte] as d =>
+            units: @U16 = directory.to[@U16]()
+            n: Maybe[USize] = encode_utf16(text: d, out: units, capacity: PATH_CAPACITY)
+            if not n.is_present()
+                free_texts(line, env: null, alloc)
+                return ProcessError.INVALID_ARGUMENT
+            becomes units
+        is None => null
+    env: @U16 = when
+        options.env_count == 0 => null
+        else =>
+            block_units: @U16 = env_block(options, alloc)
+            if block_units.is_null()
+                free_texts(line, env: null, alloc)
+                return ProcessError.OUT_OF_MEMORY
+            becomes block_units
 
-    block handles(directory: @U16)
-        local sa: @SecurityAttributes <- SecurityAttributes(length: sizeof[SecurityAttributes]().to[U32](), descriptor: null, inherit_handle: 1)
-        if not h.make(options, sa)
-            jump not_started(c_get_last_error())
-        # STARTF_USESTDHANDLES
-        local si: @StartupInfo <- StartupInfo(cb: sizeof[StartupInfo]().to[U32](), reserved: null, desktop: null, title: null, x: 0, y: 0, x_size: 0, y_size: 0, x_count_chars: 0, y_count_chars: 0, fill_attribute: 0, flags: 0x100, show_window: 0, cb_reserved2: 0, reserved2: null, std_input: h.input.peek(), std_output: h.output.peek(), std_error: h.error.peek())
-        # CREATE_UNICODE_ENVIRONMENT
-        made: Bool = c_create_process(null, line.peek(), null, null, 1, 0x400, env.peek(), directory, si, pi) != 0
-        e: U32 = c_get_last_error()
-        h.close_child_side()
-        if made
-            jump started()
-        else
-            jump finish(spawn_error(e))
-
-    # The handles were partly made: the child's side of what there is closes here, the parent's side in finish.
-    block not_started(e: U32)
-        h.close_child_side()
-        jump finish(spawn_error(e))
-
-    block started()
-        local out: @CaptureBuffer <- CaptureBuffer.empty()
-        local err: @PipeReader <- PipeReader(pipe: h.err_r.peek(), buffer: CaptureBuffer.empty())
-        read_both(out_pipe: h.out_r.peek(), out, err, alloc)
-        # INFINITE
-        c_wait_for_single_object(pi.process.peek(), U32.MAX)
-        local code: @U32 <- 0
-        c_get_exit_code_process(pi.process.peek(), code)
-        errors: CaptureBuffer = moved(b: err.buffer.peek(), alloc)
-        status: ExitStatus = Exited(code: code.peek().to_wrap[S32]())
-        output: ProcessOutput = ProcessOutput(status: status, stdout: out.owned(), stderr: errors.owned())
-        if out.failed.peek() | errors.failed
-            jump lost_output(output)
-        else
-            jump finish(output)
-
-    # A capture couldn't grow and lost bytes: what was captured goes back, and the run fails.
-    block lost_output(output: ProcessOutput)
-        local held: @ProcessOutput <- output
-        drop held
-        jump finish(ProcessError.OUT_OF_MEMORY)
+    local sa: @SecurityAttributes <- SecurityAttributes(length: sizeof[SecurityAttributes]().to[U32](), descriptor: null, inherit_handle: 1)
+    result: Result[ProcessOutput, ProcessError] = when
+        not h.make(options, sa) =>
+            # The handles were partly made: the child's side of what there is closes here, the parent's side below.
+            e: U32 = c_get_last_error()
+            h.close_child_side()
+            becomes spawn_error(e)
+        else =>
+            # STARTF_USESTDHANDLES
+            local si: @StartupInfo <- StartupInfo(cb: sizeof[StartupInfo]().to[U32](), reserved: null, desktop: null, title: null, x: 0, y: 0, x_size: 0, y_size: 0, x_count_chars: 0, y_count_chars: 0, fill_attribute: 0, flags: 0x100, show_window: 0, cb_reserved2: 0, reserved2: null, std_input: h.input.peek(), std_output: h.output.peek(), std_error: h.error.peek())
+            # CREATE_UNICODE_ENVIRONMENT
+            made: Bool = c_create_process(null, line, null, null, 1, 0x400, env, directory_units, si, pi) != 0
+            e: U32 = c_get_last_error()
+            h.close_child_side()
+            becomes when
+                made => collect_output(h, pi, alloc)
+                else => spawn_error(e)
 
     # The parent's ends of the pipes, the process and thread handles, the command line, and the environment block:
     # each one this run got.
-    block finish(result: Result[ProcessOutput, ProcessError])
-        close_if_open(h.out_r.peek())
-        close_if_open(h.err_r.peek())
-        close_if_open(pi.thread.peek())
-        close_if_open(pi.process.peek())
-        free_texts(line: line.peek(), env: env.peek(), alloc)
-        return result
+    close_if_open(h.out_r.peek())
+    close_if_open(h.err_r.peek())
+    close_if_open(pi.thread.peek())
+    close_if_open(pi.process.peek())
+    free_texts(line, env, alloc)
+    return result
+
+### Reads what the started child writes to the captured pipes, waits for it to end, and gives its output.
+### :param h: The handles of the run, the parent's ends of the pipes among them.
+### :param pi: The started process.
+### :param alloc: The allocator for the captured output.
+### :returns: The {ProcessOutput}, which owns the captured bytes.
+### :throws: Returns `OutOfMemory` when a capture couldn't grow and lost bytes (what was captured is given back then).
+@target(os: "windows")
+private routine collect_output(h: @Handles, pi: @ProcessInformation,
+    alloc: @MemoryManager) -> Result[ProcessOutput, ProcessError]
+    local out: @CaptureBuffer <- CaptureBuffer.empty()
+    local err: @PipeReader <- PipeReader(pipe: h.err_r.peek(), buffer: CaptureBuffer.empty())
+    local code: @U32 <- 0
+
+    read_both(out_pipe: h.out_r.peek(), out, err, alloc)
+    # INFINITE
+    c_wait_for_single_object(pi.process.peek(), U32.MAX)
+    c_get_exit_code_process(pi.process.peek(), code)
+    errors: CaptureBuffer = moved(b: err.buffer.peek(), alloc)
+    status: ExitStatus = Exited(code: code.peek().to_wrap[S32]())
+    output: ProcessOutput = ProcessOutput(status: status, stdout: out.owned(), stderr: errors.owned())
+    if out.failed.peek() | errors.failed
+        # A capture couldn't grow and lost bytes: what was captured goes back, and the run fails.
+        local held: @ProcessOutput <- output
+        drop held
+        return ProcessError.OUT_OF_MEMORY
+    return output
 
 ### Frees the command line and the environment block, each when there is one.
 ### :param line: The command line text, or null.

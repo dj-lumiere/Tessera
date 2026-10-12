@@ -29,33 +29,18 @@ preset CM_B32_TGAMMA_EXC_DF: @Array[U32, 10] <- [0x4A800000, 0x4A800000, 0x3C000
 routine B32.gamma(me: Me) -> Me
     local tu: U32 = me.bits()
     local ax: U32 = tu << 1
-    local t0: @B64 <- .hollow()
-    local x0: @B64 <- .hollow()
     local z: B64 = me.to[B64]()
     local fx: Me = me.floor()
 
-    special: Bool = ax >= 0xFF000000
-    tiny: Bool = ax < 0x6D000000  # |x| < 0x1p-18
-    over: Bool = me >= 0x1.18522p+5
-    integer: Bool = fx == me
-    when
-        special => jump special()
-        tiny => jump tiny()
-        over => return Me.mul(0x1p127, 0x1p127)
-        integer => jump integer()
-        me < -42.0 => jump under()
-        else => jump main()
-
     # NaN or +-inf
-    block special()
+    if ax >= 0xFF000000
         infinite: Bool = ax == 0xFF000000
         when
             infinite and tu >> 31 == 1 => return Me.from_bits(0xFFC00000)
             infinite => return me
             else => return me + me
-
     # |x| < 0x1p-18: gamma(x) = 1/x - euler_gamma + O(x)
-    block tiny()
+    if ax < 0x6D000000
         c: B64 = B64.sub(0x1.fa658c23b1578p-1, z * 0x1.d0a118f324b63p-1)
         d: B64 = c * z - 0x1.2788cfc6fb619p-1
         f: B64 = B64.truediv(1.0, z) + d
@@ -63,91 +48,80 @@ routine B32.gamma(me: Me) -> Me
         biased_bits: U64 = f.bits() +% 2
         if biased_bits & 0xFFFFFFF < 4
             return cm_b32_tgamma_exception(xb: tu, fallback: r)
-        else
-            return r
-
+        return r
+    if me >= 0x1.18522p+5
+        return Me.mul(0x1p127, 0x1p127)
     # an integer: a pole (NaN) for the negative ones, (k-1)! for the positive ones
-    block integer()
-        zero: Bool = me == 0.0
+    if fx == me
         when
-            zero => return Me.truediv(1.0, me)
+            me == 0.0 => return Me.truediv(1.0, me)
             me < 0.0 => return Me.from_bits(0xFFC00000)
             else => pass
-        1.0.poke_into(t0)
-        1.0.poke_into(x0)
-        jump factorial(fx.to[S64](), 1)
-
-    block factorial(k: S64, i: S64)
-        if not (i < k)
-            return t0.peek().to[Me]()
-        next_x0: B64 = x0.peek() + 1.0
-        next_t0: B64 = t0.peek() * x0.peek()
-        next_t0.poke_into(t0)
-        next_x0.poke_into(x0)
-        jump factorial(k, i + 1)
-
+        k: S64 = fx.to[S64]()
+        while i < k with i: S64 = 1, product: B64 = 1.0, factor: B64 = 1.0
+            continue with i: i + 1, product: product * factor, factor: factor + 1.0
+        then
+            return product.to[Me]()
     # x < -42, not an integer: |gamma(x)| < 2^-151 rounds to a signed zero
-    block under()
+    if me < -42.0
         whole: S64 = fx.to[S64]()
         if whole & 1 == 0
             return Me.mul(0x1p-127, 0x1p-127)
-        else
-            return Me.mul(0x1p-127, -0x1p-127)
+        return Me.mul(0x1p-127, -0x1p-127)
 
     # gamma(23/8 + i + d) from a polynomial in d, shifted by the i factors between
-    block main()
-        m: B64 = z - 0x1.7p+1
-        i: B64 = m.round_ties_even()
-        step: B64 = B64.copysign(1.0, i)
-        d: B64 = m - i
-        d2: B64 = d * d
-        d4: B64 = d2 * d2
-        d8: B64 = d4 * d4
-        a0: B64 = d * 0x1.8f2754ddcf90dp+0 + 0x1.c9a76be577123p+0
-        a2: B64 = d * 0x1.e1f42cf0ae4a1p-2 + 0x1.0d1191949419bp+0
-        a4: B64 = d * 0x1.e1f2b30cd907bp-5 + 0x1.82b358a3ab638p-3
-        a6: B64 = d * 0x1.1522c9f3cd012p-8 + 0x1.240f6d4071bd8p-6
-        a8: B64 = d * 0x1.9808a8b96c37ep-13 + 0x1.1fd0051a0525bp-10
-        a10: B64 = d * 0x1.49c85a7e1fd04p-18 + 0x1.b3f78e01152b5p-15
-        a12: B64 = d * -0x1.368f0b7ed9e36p-23 + 0x1.471ca49184475p-19
-        a14: B64 = d * -0x1.a69ed2042842cp-25 + 0x1.882222f9049efp-23
-        b0: B64 = a0 + d2 * a2
-        b4: B64 = a4 + d2 * a6
-        b8: B64 = a8 + d2 * a10
-        b12: B64 = a12 + d2 * a14
-        lo: B64 = b0 + d4 * b4
-        hi: B64 = b8 + d4 * b12
-        f: B64 = lo + d8 * hi
-        jm: S64 = i.abs().to[S64]()
-        if jm == 0
-            jump narrow(f, i, 1.0)
-        else
-            jump shift(f, i, step, jm)
-
-    # the first factor: x - 1/2 - step/2
-    block shift(f: B64, i: B64, step: B64, jm: S64)
-        z1: B64 = z - (step * 0.5 + 0.5)
-        jump product(z1, z1, jm - 1, f, i, step)
-
-    block product(zj: B64, w: B64, j: S64, f: B64, i: B64, step: B64)
-        if j == 0
-            jump narrow(f, i, w)
-        else
-            jump product(zj - step, w * (zj - step), j - 1, f, i, step)
+    m: B64 = z - 0x1.7p+1
+    i: B64 = m.round_ties_even()
+    step: B64 = B64.copysign(1.0, i)
+    d: B64 = m - i
+    d2: B64 = d * d
+    d4: B64 = d2 * d2
+    d8: B64 = d4 * d4
+    a0: B64 = d * 0x1.8f2754ddcf90dp+0 + 0x1.c9a76be577123p+0
+    a2: B64 = d * 0x1.e1f42cf0ae4a1p-2 + 0x1.0d1191949419bp+0
+    a4: B64 = d * 0x1.e1f2b30cd907bp-5 + 0x1.82b358a3ab638p-3
+    a6: B64 = d * 0x1.1522c9f3cd012p-8 + 0x1.240f6d4071bd8p-6
+    a8: B64 = d * 0x1.9808a8b96c37ep-13 + 0x1.1fd0051a0525bp-10
+    a10: B64 = d * 0x1.49c85a7e1fd04p-18 + 0x1.b3f78e01152b5p-15
+    a12: B64 = d * -0x1.368f0b7ed9e36p-23 + 0x1.471ca49184475p-19
+    a14: B64 = d * -0x1.a69ed2042842cp-25 + 0x1.882222f9049efp-23
+    b0: B64 = a0 + d2 * a2
+    b4: B64 = a4 + d2 * a6
+    b8: B64 = a8 + d2 * a10
+    b12: B64 = a12 + d2 * a14
+    lo: B64 = b0 + d4 * b4
+    hi: B64 = b8 + d4 * b12
+    f: B64 = lo + d8 * hi
+    jm: S64 = i.abs().to[S64]()
+    w: B64 = when
+        jm == 0 => 1.0
+        else => cm_b32_tgamma_shift(z, step, count: jm)
 
     # for x below the polynomial's interval the product divides
-    block narrow(f: B64, i: B64, w: B64)
-        below: Bool = i <= -0.5
-        wv: B64 = when
-            below => B64.truediv(1.0, w)
-            else => w
-        g: B64 = f * wv
-        r: Me = g.to[Me]()
-        biased_bits: U64 = g.bits() +% 2
-        if biased_bits & 0xFFFFFFF < 8
-            return cm_b32_tgamma_exception(xb: tu, fallback: r)
-        else
-            return r
+    below: Bool = i <= -0.5
+    wv: B64 = when
+        below => B64.truediv(1.0, w)
+        else => w
+    g: B64 = f * wv
+    r: Me = g.to[Me]()
+    biased_bits: U64 = g.bits() +% 2
+    if biased_bits & 0xFFFFFFF < 8
+        return cm_b32_tgamma_exception(xb: tu, fallback: r)
+    return r
+
+### The product of the `count` factors between x and the polynomial's interval [2.375, 3.375): the first is
+### x - 1/2 - step/2, and each next one is a step further.
+### :param z: x, widened to B64.
+### :param step: 1 when x lies above the interval, -1 when below.
+### :param count: The number of factors, at least 1.
+### :returns: The product of the factors, rounded at each multiplication.
+private routine cm_b32_tgamma_shift(z: B64, step: B64, count: S64) -> B64
+    # the first factor: x - 1/2 - step/2
+    first: B64 = z - (step * 0.5 + 0.5)
+    until j == 0 with factor: B64 = first, product: B64 = first, j: S64 = count - 1
+        continue with factor: factor - step, product: product * (factor - step), j: j - 1
+    then
+        return product
 
 ### The tabulated correctly rounded gamma for a hard-to-round input with B32 bits xb, or fallback.
 ### :param xb: The B32 bits of the input.

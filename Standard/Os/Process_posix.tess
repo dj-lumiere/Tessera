@@ -342,88 +342,62 @@ private routine Prepared.make(me: @Me, program: Span[Byte], args: Span[Span[Byte
     if argv.is_null()
         return false
     me.argv.poke(argv)
-    jump string(argv, 0)
-
-    block string(argv: @@Byte, i: USize)
-        if i > arg_count
-            jump args_done(argv, i)
-        if i == 0
-            jump made(argv, i, c_string(text: program, alloc))
-        else
-            jump made(argv, i, c_string(text: args[i - 1], alloc))
-
-    block made(argv: @@Byte, i: USize, s: @Byte)
+    each i in 0 to arg_count
+        s: @Byte = when
+            i == 0 => c_string(text: program, alloc)
+            else => c_string(text: args[i - 1], alloc)
         if s.is_null()
             return false
         argv.stride(i).poke(s)
         me.argc.poke(i + 1)
-        jump string(argv, i + 1)
-
-    block args_done(argv: @@Byte, n: USize)
-        argv.stride(n).poke(null)
-        when options.directory
-            is Span[Byte] as d => jump directory(c_string(text: d, alloc))
-            is None => jump environment()
-
-    block directory(d: @Byte)
-        if d.is_null()
-            return false
-        me.directory.poke(d)
-        jump environment()
-
-    block environment()
-        if options.env_count == 0
-            return true
-        jump count(environ_place().peek(), 0)
-
-    block count(parent: @@Byte, n: USize)
-        if parent.is_null()
-            jump merge(parent, n)
-        parent_entry: @Byte = parent.stride(n).peek()
-        if parent_entry.is_null()
-            jump merge(parent, n)
-        else
-            jump count(parent, n + 1)
+    argv.stride(arg_count + 1).poke(null)
+    when options.directory
+        is Span[Byte] as d =>
+            directory: @Byte = c_string(text: d, alloc)
+            if directory.is_null()
+                return false
+            me.directory.poke(directory)
+        is None => pass
+    if options.env_count == 0
+        return true
+    parent: @@Byte = environ_place().peek()
+    n: USize = count_entries(parent)
 
     # The parent's entries the overrides don't name, pointed at as they are (the child gets the same memory), then
     # the overrides, made here.
-    block merge(parent: @@Byte, n: USize)
-        envp: @@Byte = allocate[@Byte](count: n + options.env_count + 1, alloc)
-        if envp.is_null()
-            return false
-        me.envp.poke(envp)
-        0.poke_into(first)
-        jump keep(parent, n, envp, 0)
-
-    block keep(parent: @@Byte, n: USize, envp: @@Byte, i: USize)
-        if i == n
-            jump own(envp, 0)
+    envp: @@Byte = allocate[@Byte](count: n + options.env_count + 1, alloc)
+    if envp.is_null()
+        return false
+    me.envp.poke(envp)
+    0.poke_into(first)
+    each i in 0 til n
         entry: @Byte = parent.stride(i).peek()
-        if is_overridden(entry: entry.to[CStr]().getview(), options)
-            jump keep(parent, n, envp, i + 1)
-        envp.stride(first.peek()).poke(entry)
-        (first.peek() + 1).poke_into(first)
-        jump keep(parent, n, envp, i + 1)
-
-    block own(envp: @@Byte, j: USize)
-        if j == options.env_count
-            jump env_done(envp, j)
+        if not is_overridden(entry: entry.to[CStr]().getview(), options)
+            envp.stride(first.peek()).poke(entry)
+            (first.peek() + 1).poke_into(first)
+    each j in 0 til options.env_count
         e: @Byte = env_entry(v: options.env.stride(j).peek(), alloc)
         if e.is_null()
-            jump env_failed(envp, j)
+            me.own_first.poke(first.peek())
+            me.own_count.poke(j)
+            return false
         envp.stride(first.peek() + j).poke(e)
-        jump own(envp, j + 1)
+    envp.stride(first.peek() + options.env_count).poke(null)
+    me.own_first.poke(first.peek())
+    me.own_count.poke(options.env_count)
+    return true
 
-    block env_done(envp: @@Byte, count: USize)
-        envp.stride(first.peek() + count).poke(null)
-        me.own_first.poke(first.peek())
-        me.own_count.poke(count)
-        return true
-
-    block env_failed(envp: @@Byte, count: USize)
-        me.own_first.poke(first.peek())
-        me.own_count.poke(count)
-        return false
+### How many entries a null-ended array of C strings holds before its null.
+### :param entries: The array, or null for none.
+### :returns: The number of entries, 0 when `entries` is null.
+@target(os: ("linux", "macos"))
+private routine count_entries(entries: @@Byte) -> USize
+    if entries.is_null()
+        return 0
+    while not entries.stride(n).peek().is_null() with n: USize = 0
+        continue with n: n + 1
+    then
+        return n
 
 ### Whether an override names `entry`'s variable (names compared exactly, case included).
 ### :param entry: A "NAME=VALUE" entry of this process's environment.
@@ -650,12 +624,44 @@ routine run_process_result(program: Span[Byte], args: Span[Span[Byte]], options:
     local out: @CaptureBuffer <- CaptureBuffer.empty()
     local err: @CaptureBuffer <- CaptureBuffer.empty()
 
-    if has_nul(program, args, options)
-        jump finish(ProcessError.INVALID_ARGUMENT)
-    if not p.make(program, args, options, alloc)
-        jump finish(ProcessError.OUT_OF_MEMORY)
-    if not pipes.make(options)
-        jump spawn_failed()
+    result: Result[ProcessOutput, ProcessError] = when
+        has_nul(program, args, options) => ProcessError.INVALID_ARGUMENT
+        not p.make(program, args, options, alloc) => ProcessError.OUT_OF_MEMORY
+        not pipes.make(options) => spawn_error(errno())
+        else =>
+            pid: CInt = fork_child(p, pipes, options)
+            becomes when
+                pid < 0 => spawn_error(errno())
+                else =>
+                    # 4 bytes on the report pipe are the errno of a failed exec. Its end without them is a started
+                    # program.
+                    got: SSize = read_report(fd: pipes.exec_r.peek(), report)
+                    c_close(pipes.exec_r.peek())
+                    pipes.exec_r.poke(-1)
+                    # drain closes both pipes as each ends.
+                    drain(out: PipeCapture(fd: pipes.out_r.peek(), buffer: out), err: PipeCapture(fd: pipes.err_r.peek(), buffer: err), alloc)
+                    pipes.out_r.poke(-1)
+                    pipes.err_r.poke(-1)
+                    status: Maybe[ExitStatus] = reap(pid)
+                    becomes when
+                        got == 4 => spawn_error(report.peek())
+                        else => take_output(status, out, err)
+
+    # Every descriptor still open, the prepared strings, and the captured bytes nothing took.
+    pipes.close_all()
+    p.release(alloc)
+    drop out
+    drop err
+    return result
+
+### Forks the child with what `p` and `pipes` prepared. In the parent, closes the child's ends of the pipes and the
+### null device and marks them -1 in `pipes`, so each pipe ends when the child is done with it.
+### :param p: The argument vector, environment, and directory, made.
+### :param pipes: The pipes and the null device, made.
+### :param options: The standard streams.
+### :returns: The child's process id, or a negative value with `errno` set when fork failed (nothing is closed then).
+@target(os: ("linux", "macos"))
+private routine fork_child(p: @Prepared, pipes: @Plumbing, options: ProcessOptions) -> CInt
     null_fd: CInt = pipes.devnull.peek()
     input: CInt = when
         options.stdin == InputMode.NULL => null_fd
@@ -665,7 +671,7 @@ routine run_process_result(program: Span[Byte], args: Span[Span[Byte]], options:
     if pid == 0
         child(p, s: streams)
     if pid < 0
-        jump spawn_failed()
+        return pid
     # The child's ends close here, so each pipe ends when the child is done with it.
     close_if_open(pipes.out_w.peek())
     close_if_open(pipes.err_w.peek())
@@ -675,47 +681,40 @@ routine run_process_result(program: Span[Byte], args: Span[Span[Byte]], options:
     pipes.err_w.poke(-1)
     pipes.exec_w.poke(-1)
     pipes.devnull.poke(-1)
-    jump started(pid)
+    return pid
 
-    block spawn_failed()
-        e: CInt = errno()
-        jump finish(spawn_error(e))
+### The run's output once the child has ended: its exit status and the captured bytes, which the output owns from
+### here, so the buffers are left empty and the caller has none left to release. A capture that couldn't grow lost
+### bytes: the run fails, and the caller releases what was captured.
+### :param status: How the child ended, `None` when it couldn't be waited for.
+### :param out: The captured standard output.
+### :param err: The captured standard error.
+### :returns: The {ProcessOutput}.
+### :throws: Returns `OutOfMemory` when a capture couldn't grow, `Other` when the child couldn't be waited for.
+@target(os: ("linux", "macos"))
+private routine take_output(status: Maybe[ExitStatus], out: @CaptureBuffer,
+    err: @CaptureBuffer) -> Result[ProcessOutput, ProcessError]
+    when status
+        is ExitStatus as s =>
+            if out.failed.peek() | err.failed.peek()
+                return ProcessError.OUT_OF_MEMORY
+            output: ProcessOutput = ProcessOutput(status: s, stdout: out.owned(), stderr: err.owned())
+            out.poke(CaptureBuffer.empty())
+            err.poke(CaptureBuffer.empty())
+            return output
+        is None => return ProcessError.OTHER
 
-    # 4 bytes on the report pipe are the errno of a failed exec. Its end without them is a started program.
-    block started(pid: CInt)
-        got: SSize = c_read(pipes.exec_r.peek(), report.to[@Byte](), 4)
+### Reads the exec report from the report pipe into `report`, retrying when a signal interrupts the read.
+### :param fd: The report pipe's read end.
+### :param report: Where the 4 report bytes go.
+### :returns: What the read returned: 4 for a report, 0 at the pipe's end, or negative on a failure.
+@target(os: ("linux", "macos"))
+private routine read_report(fd: CInt, report: @CInt) -> SSize
+    while true
+        got: SSize = c_read(fd, report.to[@Byte](), 4)
         if got < 0 and errno() == 4
-            jump started(pid)
-        c_close(pipes.exec_r.peek())
-        pipes.exec_r.poke(-1)
-        # drain closes both pipes as each ends.
-        drain(out: PipeCapture(fd: pipes.out_r.peek(), buffer: out), err: PipeCapture(fd: pipes.err_r.peek(), buffer: err), alloc)
-        pipes.out_r.poke(-1)
-        pipes.err_r.poke(-1)
-        status: Maybe[ExitStatus] = reap(pid)
-        if got == 4
-            jump finish(spawn_error(report.peek()))
-        when status
-            is ExitStatus as s => jump exited(s)
-            is None => jump finish(ProcessError.OTHER)
-
-    # The output owns the captured bytes from here, so finish has none left to release. A capture that couldn't
-    # grow lost bytes: the run fails, and finish releases what was captured.
-    block exited(s: ExitStatus)
-        if out.failed.peek() | err.failed.peek()
-            jump finish(ProcessError.OUT_OF_MEMORY)
-        output: ProcessOutput = ProcessOutput(status: s, stdout: out.owned(), stderr: err.owned())
-        out.poke(CaptureBuffer.empty())
-        err.poke(CaptureBuffer.empty())
-        jump finish(output)
-
-    # Every descriptor still open, the prepared strings, and the captured bytes nothing took.
-    block finish(result: Result[ProcessOutput, ProcessError])
-        pipes.close_all()
-        p.release(alloc)
-        drop out
-        drop err
-        return result
+            continue
+        return got
 
 ### Reads both pipes (-1 for one not captured) to their end, whichever has data, and closes them. When poll fails
 ### with anything but EINTR, it closes both and stops.
@@ -733,52 +732,34 @@ private routine drain(out: PipeCapture, err: PipeCapture, alloc: @MemoryManager)
     local chunk: @Byte = chunk_buffer.to[@Byte]()
 
     out_open: U32 = (out_fd >= 0).to[U32]()
-    jump wait(out_open + (err_fd >= 0).to[U32]())
-
-    block wait(open: U32)
-        if open == 0
-            return
+    while open != 0 with open: U32 = out_open + (err_fd >= 0).to[U32]()
         if poll_two(fds) < 0
-            jump interrupted(open)
-        else
-            jump stream(open, 0)
-
-    block interrupted(open: U32)
-        if errno() == 4
-            jump wait(open)
-        else
-            jump give_up()
-
-    block give_up()
-        close_if_open(fds.fd.peek())
-        close_if_open(fds.stride(1).fd.peek())
-        return
-
-    block stream(open: U32, i: USize)
-        if i == 2
-            jump wait(open)
-        p: @PollFd = fds.stride(i)
-        fd: CInt = p.fd.peek()
-        if fd < 0 or p.revents.peek() == 0
-            jump stream(open, i + 1)
-        n: SSize = c_read(fd, chunk, 4096)
-        if n > 0
-            jump keep(open, i, n.to[USize]())
-        if n < 0 and errno() == 4
-            jump stream(open, i + 1)
-        c_close(fd)
-        p.fd.poke(-1)
-        jump stream(open - 1, i + 1)
-
-    block keep(open: U32, i: USize, n: USize)
-        if i == 0
-            jump into(open, i, n, out.buffer)
-        else
-            jump into(open, i, n, err.buffer)
-
-    block into(open: U32, i: USize, n: USize, buffer: @CaptureBuffer)
-        buffer.append(chunk, n, alloc)
-        jump stream(open, i + 1)
+            if errno() == 4
+                continue with open: open
+            close_if_open(fds.fd.peek())
+            close_if_open(fds.stride(1).fd.peek())
+            return
+        each i in 0 til 2 with left: U32 = open
+            p: @PollFd = fds.stride(i)
+            fd: CInt = p.fd.peek()
+            if fd < 0 or p.revents.peek() == 0
+                continue with left: left
+            n: SSize = c_read(fd, chunk, 4096)
+            if n > 0
+                count: USize = n.to[USize]()
+                buffer: @CaptureBuffer = when
+                    i == 0 => out.buffer
+                    else => err.buffer
+                buffer.append(chunk, n: count, alloc)
+                continue with left: left
+            if n < 0 and errno() == 4
+                continue with left: left
+            c_close(fd)
+            p.fd.poke(-1)
+            continue with left: left - 1
+        then
+            continue with open: left
+    return
 
 ### Waits for the child to end, retrying when a signal interrupts the wait.
 ### :param pid: The child's process id.

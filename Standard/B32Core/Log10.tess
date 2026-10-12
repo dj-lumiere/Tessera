@@ -63,50 +63,42 @@ routine B32.log10(me: Me) -> Me
     special: Bool = ux >= 0x7F800000  # x <= -0, +inf, or NaN
     top_bits: U32 = (ux >> 24) & 0xF
     power: Bool = ux == CM_B32_LOG10_ST.getitem(top_bits.to[USize]())
-    when
+    ux_norm: U32 = when
         special => return cm_b32_log10_special(me)
-        power => jump power()
-        ux < 0x00800000 => jump small()
-        else => jump normal(ux)
-
-    # x = 10^n: n = floor((e + 1) log10(2)) for the biased exponent e
-    block power()
-        e_plus_1: U32 = (ux >> 23) -% 126
-        je: U32 = e_plus_1 *% 0x4D104D4 >> 28
-        return je.to[Me]()
-
-    # +0 or a subnormal
-    block small()
-        if ux == 0
-            return cm_b32_log10_special(me)
-        n: U32 = ux.leading_zeros() - 8
-        jump normal((ux << n) -% (n << 23))
+        power =>
+            # x = 10^n: n = floor((e + 1) log10(2)) for the biased exponent e
+            e_plus_1: U32 = (ux >> 23) -% 126
+            je: U32 = e_plus_1 *% 0x4D104D4 >> 28
+            return je.to[Me]()
+        ux < 0x00800000 =>
+            # +0 or a subnormal
+            if ux == 0
+                return cm_b32_log10_special(me)
+            n: U32 = ux.leading_zeros() - 8
+            becomes (ux << n) -% (n << 23)
+        else => ux
 
     # ux_norm is a normalized positive pattern (the exponent field may be below 1 for a subnormal x)
-    block normal(ux_norm: U32)
-        biased_exponent: S32 = ux_norm.to_wrap[S32]() >> 23
-        e: S64 = biased_exponent.to[S64]() - 127
-        ed: B64 = e.to[B64]()
-        m: U64 = (ux_norm & 0x7FFFFF).to[U64]()
-        j_bits: U64 = m + 0x10000 >> 17
-        j: USize = j_bits.to[USize]()
-        tz: B64 = B64.from_bits((m << 29) | 0x3FF0000000000000)
-        tlj: B64 = B64.from_bits(CM_B32_LOG10_TL.getitem(j))
-        z: B64 = tz * B64.from_bits(CM_B32_LOG10_TR.getitem(j)) - 1.0
-        z2: B64 = z * z
-        e_log: B64 = ed * 0x1.34413509f79ffp-2 + tlj
-        head: B64 = e_log + z * 0x1.bcb7b15d35067p-2
-        tail: B64 = z * 0x1.2870e2624ce4ep-3 + -0x1.bcbb1cd29cbafp-3
-        r: B64 = head + z2 * tail
-        ub: Me = r.to[Me]()
-        lb: Me = (r + 0x1.af23fp-34).to[Me]()
-        if ub == lb
-            return ub
-        else
-            jump slow(z, z2, ed, tlj)
-
-    # The fast path can't decide the rounding: a longer polynomial and a two-part log10(2).
-    block slow(z: B64, z2: B64, ed: B64, tlj: B64)
+    biased_exponent: S32 = ux_norm.to_wrap[S32]() >> 23
+    e: S64 = biased_exponent.to[S64]() - 127
+    ed: B64 = e.to[B64]()
+    m: U64 = (ux_norm & 0x7FFFFF).to[U64]()
+    j_bits: U64 = m + 0x10000 >> 17
+    j: USize = j_bits.to[USize]()
+    tz: B64 = B64.from_bits((m << 29) | 0x3FF0000000000000)
+    tlj: B64 = B64.from_bits(CM_B32_LOG10_TL.getitem(j))
+    z: B64 = tz * B64.from_bits(CM_B32_LOG10_TR.getitem(j)) - 1.0
+    z2: B64 = z * z
+    e_log: B64 = ed * 0x1.34413509f79ffp-2 + tlj
+    head: B64 = e_log + z * 0x1.bcb7b15d35067p-2
+    tail: B64 = z * 0x1.2870e2624ce4ep-3 + -0x1.bcbb1cd29cbafp-3
+    r: B64 = head + z2 * tail
+    ub: Me = r.to[Me]()
+    lb: Me = (r + 0x1.af23fp-34).to[Me]()
+    if ub == lb
+        return ub
+    else
+        # The fast path can't decide the rounding: a longer polynomial and a two-part log10(2).
         c01: B64 = B64.sub(0x1.bcb7b1526e50ep-2, z * 0x1.bcb7b1526e53dp-3)
         c23: B64 = B64.sub(0x1.287a7636f3fa2p-3, z * 0x1.bcb7b146a14b3p-4)
         c46: B64 = B64.sub(0x1.63c627d5219cbp-4, z * 0x1.2880736c8762dp-4) + z2 * 0x1.fc1ecf913961ap-5
@@ -114,17 +106,14 @@ routine B32.log10(me: Me) -> Me
         f1: B64 = f - ed * 0x1.0cee0ed4ca7e9p-54
         f2: B64 = f1 + (tlj - B64.from_bits(CM_B32_LOG10_TL.getitem(0)))
         el: B64 = ed * 0x1.34413509f7ap-2
-        r: B64 = el + f2
-        low_bits: U64 = r.bits() & 0x0FFFFFFF
+        r2: B64 = el + f2
+        low_bits: U64 = r2.bits() & 0x0FFFFFFF
         if low_bits == 0
-            jump nudge(el, f2, r)
+            # r lies on a B32 rounding boundary: nudge it by the rounding error of el + f
+            dr: B64 = el - r2 + f2
+            return (r2 + dr * 32.0).to[Me]()
         else
-            return r.to[Me]()
-
-    # r lies on a B32 rounding boundary: nudge it by the rounding error of el + f
-    block nudge(el: B64, f: B64, r: B64)
-        dr: B64 = el - r + f
-        return (r + dr * 32.0).to[Me]()
+            return r2.to[Me]()
 
 ### log10 of +-0 (-inf), +inf (itself), NaN (itself, quiet) or a negative input (NaN).
 ### :param x: The special input.

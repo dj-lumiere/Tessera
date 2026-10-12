@@ -32,7 +32,9 @@ public static class StructuredMigration
             return $"{indent}```tessera\n{back}{indent}```";
         });
 
-    public static string Rewrite(string file, string text, List<string> report)
+    /// `onlyBlocks`: only the routines the block warning names (blocks or jumps, not assembly, not generated) are
+    /// written again, and nothing else in the file changes.
+    public static string Rewrite(string file, string text, List<string> report, bool onlyBlocks = false)
     {
         string lf = text.Replace("\r\n", "\n");
         List<Decl> decls;
@@ -50,11 +52,15 @@ public static class StructuredMigration
         foreach (var r in decls.OfType<RoutineDecl>().Where(r => r.Blocks is not null && r.EndLine > 0).OrderByDescending(r => r.Pos.Line))
         {
             if (r.AnnotationNamed("external") is { First: "asm" }) continue;
+            if (onlyBlocks && (r.AnnotationNamed(BlockRule.Generated) is not null
+                    || r.Blocks!.Count <= 1 && !r.Blocks.Any(b => Bodies.Jumps(b.Stmts).Any()))) continue;
             string body;
             try
             {
                 body = Body(r, lines, Path.GetDirectoryName(Path.GetFullPath(file)), out string? reason);
                 if (reason is not null) report.Add($"{file}:{r.Pos.Line}: routine '{r.DisplayName}' keeps its blocks: {reason}");
+                // A routine that keeps its blocks stays as it was written.
+                if (reason is not null && onlyBlocks) continue;
             }
             catch (CompileError e)
             {
@@ -67,7 +73,7 @@ public static class StructuredMigration
             lines.InsertRange(first, body.TrimEnd('\n').Split('\n'));
         }
         string result = string.Join("\n", lines);
-        result = Spellings(result);
+        if (!onlyBlocks) result = Spellings(result);
         return result;
     }
 

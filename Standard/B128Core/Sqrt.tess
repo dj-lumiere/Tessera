@@ -66,40 +66,27 @@ routine B128.sqrt(me: Me) -> Me
     local bits: U128 = me.bits()
 
     nan: Bool = me.is_nan()
-    negative: Bool = b128_is_negative_bits(me.bits()) & ~b128_is_zero_bits(me.bits())
-    if nan or negative
-        jump special()
-    else
-        jump compute()
-
-    block special()
+    if nan or b128_is_negative_bits(me.bits()) & ~b128_is_zero_bits(me.bits())
         r: Me = b128_of(b128_sqrt_bits(me.bits()))
         return r
-
-    block compute()
+    else
         top: S64 = (bits >> 112).to[S64]()  # sign and biased exponent
         tiny: Bool = top == 0  # +0 or positive subnormal
         # negative, infinite, or NaN
-        when
-            tiny => jump subnormal()
+        values: (U128, S64) = when
+            tiny =>
+                if bits == 0
+                    return me
+                else
+                    # Moves the leading bit up to the implicit bit's place. The exponent drops below 1 to match.
+                    lz: U128 = bits.leading_zeros()
+                    shift: S64 = lz.to[S64]() - 15
+                    becomes (bits << shift.to[U128](), 1 - shift)
             top >= 0x7FFF => return cm_sqrt_special(me)
-            else => jump root(bits, top)
-
-    block subnormal()
-        if bits == 0
-            return me
-        else
-            jump normalize()
-
-    # Moves the leading bit up to the implicit bit's place. The exponent drops below 1 to match.
-    block normalize()
-        lz: U128 = bits.leading_zeros()
-        shift: S64 = lz.to[S64]() - 15
-        jump root(bits << shift.to[U128](), 1 - shift)
-
-    # x = 1.frac × 2^(exponent - 16383). The root's biased exponent is floor((exponent + 1) / 2) + 8191:
-    # the field gets one less, since the significand's leading bit lands on bit 112 and adds 1.
-    block root(norm_bits: U128, exponent: S64)
+            else => (bits, top)
+        norm_bits, exponent = values
+        # x = 1.frac × 2^(exponent - 16383). The root's biased exponent is floor((exponent + 1) / 2) + 8191:
+        # the field gets one less, since the significand's leading bit lands on bit 112 and adds 1.
         exp1: S64 = exponent + 1
         odd: S64 = exp1 & 1
         biased_exponent: S64 = (exp1 >> 1) + 8190
@@ -108,25 +95,20 @@ routine B128.sqrt(me: Me) -> Me
         radicand: U128 = cm_sqrt_radicand(frac, odd)
         approx: U128 = cm_sqrt_approx(frac, radicand, odd)
         slack: S16 = (approx << 2).to_wrap[S16]()  # the bits under the rounding point
-        if slack.between(lo: -37, hi: 13)
-            jump settle(approx, radicand, exp_field)
-        else
-            jump round(approx, exp_field)
-
-    # approx is at most one unit (of its bit 14) off: square the candidate, compare it with the
-    # radicand, and leave bit 0 saying which way the true root lies.
-    block settle(approx: U128, radicand: U128, exp_field: U128)
-        candidate: U128 = approx +% 0x2000
-        m: U128 = candidate >> 14
-        excess_bits: U128 = m *% m -% (radicand << 100)
-        excess: S128 = excess_bits.to_wrap[S128]()
-        above: U128 = (excess > 0).to[U128]()
-        below: U128 = (excess < 0).to[U128]()
-        cleared: U128 = candidate & ~0x3FFF
-        jump round(cleared -% above +% below, exp_field)
-
-    # Bit 14 is the round bit. A sqrt is never exactly halfway, so rounding it up is to nearest.
-    block round(v: U128, exp_field: U128)
+        v: U128 = when
+            slack.between(lo: -37, hi: 13) =>
+                # approx is at most one unit (of its bit 14) off: square the candidate, compare it with the
+                # radicand, and leave bit 0 saying which way the true root lies.
+                candidate: U128 = approx +% 0x2000
+                m: U128 = candidate >> 14
+                excess_bits: U128 = m *% m -% (radicand << 100)
+                excess: S128 = excess_bits.to_wrap[S128]()
+                above: U128 = (excess > 0).to[U128]()
+                below: U128 = (excess < 0).to[U128]()
+                cleared: U128 = candidate & ~0x3FFF
+                becomes cleared -% above +% below
+            else => approx
+        # Bit 14 is the round bit. A sqrt is never exactly halfway, so rounding it up is to nearest.
         round_bit: U128 = (v >> 14) & 1
         sig: U128 = (v >> 15) +% round_bit
         r: Me = b128_of(sig +% exp_field)

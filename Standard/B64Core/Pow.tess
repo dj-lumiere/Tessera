@@ -43,164 +43,137 @@ routine B64.powf(me: Me, exponent: Me) -> Me
     local xu: U64 = me.bits()
     local yu: U64 = exponent.bits()
 
-    if xu >= 0x7FF0000000000000 or yu >= 0x7FF0000000000000
-        jump unusual()
-    else
-        jump finite()
-
     # x or y is NaN or infinite, or x has its sign bit set
-    block unusual()
+    if xu >= 0x7FF0000000000000 or yu >= 0x7FF0000000000000
         nan_x: Bool = me.is_nan()
         nan_y: Bool = exponent.is_nan()
         inf_x: Bool = xu == 0x7FF0000000000000
         ninf_x: Bool = xu == 0xFFF0000000000000
         inf_y: Bool = yu == 0x7FF0000000000000
         when
-            nan_x => jump nan_base()
-            nan_y => jump nan_exponent()
-            inf_x => jump infinite_base()
-            ninf_x => jump negative_infinite_base()
-            inf_y => jump infinite_exponent()
-            yu == 0xFFF0000000000000 => jump negative_infinite_exponent()
-            else => jump finite()
+            nan_x =>
+                # NaN^±0 = 1 for a quiet NaN, and x + x quiets a signaling one
+                if exponent == 0.0 and xu & 0x0008000000000000 != 0
+                    return 1.0
+                else
+                    return me + me
+            nan_y =>
+                # 1^NaN = 1 for a quiet NaN
+                if me == 1.0 and yu & 0x0008000000000000 != 0
+                    return 1.0
+                else
+                    return exponent + exponent
+            inf_x =>
+                zero_y: Bool = exponent == 0.0
+                when
+                    zero_y => return 1.0
+                    exponent < 0.0 => return 0.0
+                    else => return Me.INFINITY
+            ninf_x =>
+                # x = -inf. A y of ±0 goes on to the finite code, which returns 1
+                ninf_y: Bool = yu == 0xFFF0000000000000
+                odd: Bool = cm_b64_pow_is_odd(exponent)
+                neg_y: Bool = exponent < 0.0
+                pos_y: Bool = exponent > 0.0
+                signed: Me = when
+                    neg_y => Me.from_bits(0x8000000000000000)
+                    else => Me.NEG_INFINITY
+                when
+                    inf_y => return exponent
+                    ninf_y => return 0.0
+                    odd => return signed
+                    neg_y => return 0.0
+                    pos_y => return Me.INFINITY
+                    else => pass
+            inf_y =>
+                # y = +inf, x finite
+                zero_x: Bool = me == 0.0
+                unit_x: Bool = me.abs() == 1.0
+                when
+                    zero_x => return 0.0
+                    unit_x => return 1.0
+                    me.abs() < 1.0 => return 0.0
+                    else => return Me.INFINITY
+            yu == 0xFFF0000000000000 =>
+                # y = -inf, x finite
+                zero_x: Bool = me == 0.0
+                unit_x: Bool = me.abs() == 1.0
+                when
+                    zero_x => return Me.INFINITY
+                    unit_x => return 1.0
+                    me.abs() < 1.0 => return Me.INFINITY
+                    else => return 0.0
+            else => pass
 
-    # NaN^±0 = 1 for a quiet NaN, and x + x quiets a signaling one
-    block nan_base()
-        if exponent == 0.0 and xu & 0x0008000000000000 != 0
-            return 1.0
-        else
-            return me + me
+    # from here on x and y are finite: the base ax = |x| and the sign s of the result
+    values: (Me, Me) = when
+        me <= 0.0 =>
+            zero_y: Bool = exponent == 0.0
+            pzero_x: Bool = xu == 0
+            nzero_x: Bool = xu == 0x8000000000000000
+            when
+                zero_y => return 1.0
+                pzero_x or nzero_x =>
+                    # x = ±0: an odd y keeps the sign of the zero (±inf for y < 0, ±0 for y > 0).
+                    # Otherwise +inf or +0
+                    odd: Bool = cm_b64_pow_is_odd(exponent)
+                    neg_y: Bool = exponent < 0.0
+                    pos_y: Bool = exponent > 0.0
+                    r: Me = when
+                        neg_y and pzero_x => Me.INFINITY
+                        neg_y => Me.NEG_INFINITY
+                        pzero_x => 0.0
+                        else => Me.from_bits(0x8000000000000000)
+                    when
+                        odd => return r
+                        pos_y => return 0.0
+                        else => return Me.INFINITY
+                ~cm_b64_pow_is_int(exponent) => return Me.NAN
+                else => pass
+            # x < 0 and y an integer: the result is negative when y is odd
+            sign: Me = when
+                exponent.abs() < 0x1p53 =>
+                    int_exponent: S64 = exponent.to[S64]()
+                    odd: Bool = int_exponent & 1 != 0
+                    becomes when
+                        odd => -1.0
+                        else => 1.0
+                else => 1.0
+            becomes (-me, sign)
+        else => (me, 1.0)
+    ax, s = values
 
-    # 1^NaN = 1 for a quiet NaN
-    block nan_exponent()
-        if me == 1.0 and yu & 0x0008000000000000 != 0
-            return 1.0
-        else
-            return exponent + exponent
-
-    block infinite_base()
-        zero_y: Bool = exponent == 0.0
-        when
-            zero_y => return 1.0
-            exponent < 0.0 => return 0.0
-            else => return Me.INFINITY
-
-    # x = -inf. A y of ±0 goes on to the finite code, which returns 1
-    block negative_infinite_base()
-        inf_y: Bool = yu == 0x7FF0000000000000
-        ninf_y: Bool = yu == 0xFFF0000000000000
-        odd: Bool = cm_b64_pow_is_odd(exponent)
-        neg_y: Bool = exponent < 0.0
-        pos_y: Bool = exponent > 0.0
-        signed: Me = when
-            neg_y => Me.from_bits(0x8000000000000000)
-            else => Me.NEG_INFINITY
-        when
-            inf_y => return exponent
-            ninf_y => return 0.0
-            odd => return signed
-            neg_y => return 0.0
-            pos_y => return Me.INFINITY
-            else => jump finite()
-
-    # y = +inf, x finite
-    block infinite_exponent()
-        zero_x: Bool = me == 0.0
-        unit_x: Bool = me.abs() == 1.0
-        when
-            zero_x => return 0.0
-            unit_x => return 1.0
-            me.abs() < 1.0 => return 0.0
-            else => return Me.INFINITY
-
-    # y = -inf, x finite
-    block negative_infinite_exponent()
-        zero_x: Bool = me == 0.0
-        unit_x: Bool = me.abs() == 1.0
-        when
-            zero_x => return Me.INFINITY
-            unit_x => return 1.0
-            me.abs() < 1.0 => return Me.INFINITY
-            else => return 0.0
-
-    # from here on x and y are finite
-    block finite()
-        if me <= 0.0
-            jump nonpositive()
-        else
-            jump phase1(me, 1.0)
-
-    block nonpositive()
-        zero_y: Bool = exponent == 0.0
-        pzero_x: Bool = xu == 0
-        nzero_x: Bool = xu == 0x8000000000000000
-        when
-            zero_y => return 1.0
-            pzero_x => jump zero_base(Me.INFINITY, 0.0)
-            nzero_x => jump zero_base(Me.NEG_INFINITY, Me.from_bits(0x8000000000000000))
-            ~cm_b64_pow_is_int(exponent) => return Me.NAN
-            else => jump negative_base()
-
-    # x = ±0: an odd y keeps the sign of the zero (pole_odd, zero_odd). Otherwise +inf or +0
-    block zero_base(pole_odd: Me, zero_odd: Me)
-        odd: Bool = cm_b64_pow_is_odd(exponent)
-        neg_y: Bool = exponent < 0.0
-        pos_y: Bool = exponent > 0.0
-        r: Me = when
-            neg_y => pole_odd
-            else => zero_odd
-        when
-            odd => return r
-            pos_y => return 0.0
-            else => return Me.INFINITY
-
-    # x < 0 and y an integer: the result is negative when y is odd
-    block negative_base()
-        if exponent.abs() < 0x1p53
-            jump parity()
-        else
-            jump phase1(-me, 1.0)
-
-    block parity()
-        int_exponent: S64 = exponent.to[S64]()
-        odd: Bool = int_exponent & 1 != 0
-        s: Me = when
-            odd => -1.0
-            else => 1.0
-        jump phase1(-me, s)
-
-    # double-double s exp(y log(ax)), with ax = |x| and s the sign of the result. A tiny or huge y skips
-    # to the next phase, to avoid a spurious underflow or overflow in y log(x)
-    block phase1(ax: Me, s: Me)
-        lg: CmF64PowLog1 = cm_b64_pow_log_1(ax)
-        ey: U64 = (yu >> 52) & 0x7FF
-        extreme: Bool = ey < 0x36 or ey >= 0x7F5
-        lh: Me = when
-            extreme => Me.NAN
-            else => lg.h
-        ll: Me = when
-            extreme => Me.NAN
-            else => lg.l
-        rh: Me = exponent * lh
-        rs: Me = b64_mul_error(x: exponent, y: lh, p: rh)
-        rl: Me = exponent.mul_add(a: ll, b: rs)
-        e: CmF64PowDd = cm_b64_pow_exp_1(rh, rl, s)
-        err: Me = when
-            lg.cancel => 0x1.57p-58
-            else => 0x1.27p-64
-        res_min: Me = e.hi + err.mul_add(a: -e.hi, b: e.lo)
-        res_max: Me = e.hi + err.mul_add(a: e.hi, b: e.lo)
-        settled: Bool = res_min == res_max
-        one: Bool = exponent == 1.0
-        two: Bool = exponent == 2.0
-        half: Bool = exponent == 0.5
-        when
-            settled => return res_max
-            one => return s * ax
-            two => return ax * ax
-            half => return ax.sqrt()
-            exponent == 0.0 => return 1.0
-            else => return cm_b64_pow_accurate(x0: me, x: ax, y: exponent, s)
+    # double-double s exp(y log(ax)). A tiny or huge y skips to the next phase, to avoid a
+    # spurious underflow or overflow in y log(x)
+    lg: CmF64PowLog1 = cm_b64_pow_log_1(ax)
+    ey: U64 = (yu >> 52) & 0x7FF
+    extreme: Bool = ey < 0x36 or ey >= 0x7F5
+    lh: Me = when
+        extreme => Me.NAN
+        else => lg.h
+    ll: Me = when
+        extreme => Me.NAN
+        else => lg.l
+    rh: Me = exponent * lh
+    rs: Me = b64_mul_error(x: exponent, y: lh, p: rh)
+    rl: Me = exponent.mul_add(a: ll, b: rs)
+    e: CmF64PowDd = cm_b64_pow_exp_1(rh, rl, s)
+    err: Me = when
+        lg.cancel => 0x1.57p-58
+        else => 0x1.27p-64
+    res_min: Me = e.hi + err.mul_add(a: -e.hi, b: e.lo)
+    res_max: Me = e.hi + err.mul_add(a: e.hi, b: e.lo)
+    settled: Bool = res_min == res_max
+    one: Bool = exponent == 1.0
+    two: Bool = exponent == 2.0
+    half: Bool = exponent == 0.5
+    when
+        settled => return res_max
+        one => return s * ax
+        two => return ax * ax
+        half => return ax.sqrt()
+        exponent == 0.0 => return 1.0
+        else => return cm_b64_pow_accurate(x0: me, x: ax, y: exponent, s)
 
 ### True when x (finite) is an integer.
 ### :param x: The finite value to test.
@@ -395,36 +368,27 @@ private routine cm_b64_pow_accurate(x0: B64, x: B64, y: B64, s: B64) -> B64
     local br: CmF64PowDint = cm_b64_pow_exp_2(ylx)
 
     underflow: Bool = br.ex < -1075
-    when
+    rounds: Bool = when
         underflow => return B64.mul(0.5, s * B64.from_bits(1))
-        br.ex < -1022 => jump subnormal()
-        else => jump normal()
-
-    # rounding test: the significand has to be shifted right by 1 <= sh <= 53 bits
-    block subnormal()
-        sh: U64 = S64.sub(0, br.ex + 1022).to_wrap[U64]()
-        lo_shifted: U64 = cm_b64_pow_lo(br.r) >> sh + 10
-        m: U64 = lo_shifted | (cm_b64_pow_hi(br.r) << U64.sub(54, sh))
-        jump round_test(m +% 14 > 28)
-
-    # rounding test on the 64 bits after the round bit
-    block normal()
-        lo_tail: U64 = cm_b64_pow_lo(br.r) >> 10
-        lo: U64 = lo_tail | (cm_b64_pow_hi(br.r) << 54)
-        jump round_test(lo +% 28 > 56)
-
-    block round_test(rounds: Bool)
-        z: CmF64PowDint = CmF64PowDint(r: br.r, ex: br.ex, sgn: sgn)
-        if rounds
-            return z.to[B64]()
-        exact: Bool = cm_b64_pow_is_exact(x, y)
-        ep: B64 = cm_b64_pow_exact_pow(x: x0, y, z, exact)
-        if not ep.is_nan()
-            return ep
-        else
-            jump phase3()
-
-    block phase3()
+        br.ex < -1022 =>
+            # rounding test: the significand has to be shifted right by 1 <= sh <= 53 bits
+            sh: U64 = S64.sub(0, br.ex + 1022).to_wrap[U64]()
+            lo_shifted: U64 = cm_b64_pow_lo(br.r) >> sh + 10
+            m: U64 = lo_shifted | (cm_b64_pow_hi(br.r) << U64.sub(54, sh))
+            becomes m +% 14 > 28
+        else =>
+            # rounding test on the 64 bits after the round bit
+            lo_tail: U64 = cm_b64_pow_lo(br.r) >> 10
+            lo: U64 = lo_tail | (cm_b64_pow_hi(br.r) << 54)
+            becomes lo +% 28 > 56
+    z: CmF64PowDint = CmF64PowDint(r: br.r, ex: br.ex, sgn: sgn)
+    if rounds
+        return z.to[B64]()
+    exact: Bool = cm_b64_pow_is_exact(x, y)
+    ep: B64 = cm_b64_pow_exact_pow(x: x0, y, z, exact)
+    if not ep.is_nan()
+        return ep
+    else
         qx: CmF64PowQint = x.to[CmF64PowQint]()
         qy: CmF64PowQint = y.to[CmF64PowQint]()
         qlx: CmF64PowQint = cm_b64_pow_log_3(qx)
@@ -445,18 +409,15 @@ private routine cm_b64_pow_accurate(x0: B64, x: B64, y: B64, s: B64) -> B64
         rl: U128 = qz.rl & 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC00
         qs: CmF64PowQint = CmF64PowQint(rh: qz.rh, rl: rl, ex: qz.ex, sgn: sgn)
         if hard
-            jump hard(qr, qz)
+            # x^y very close to 1: exp(qr) rounds to 1 (the sign of qr picks the side, which rounds to 1 anyway).
+            # Otherwise not reachable (CORE-MATH reports an unexpected worst case there)
+            near_one: Bool = qr.ex < -56
+            when
+                near_one and qr.sgn == 0 => return B64.add(1.0, 0x1p-100)
+                near_one => return B64.sub(1.0, 0x1p-100)
+                else => return qz.to[B64]()
         else
             return qs.to[B64]()
-
-    # x^y very close to 1: exp(qr) rounds to 1 (the sign of qr picks the side, which rounds to 1 anyway).
-    # Otherwise not reachable (CORE-MATH reports an unexpected worst case there)
-    block hard(qr: CmF64PowQint, qz: CmF64PowQint)
-        near_one: Bool = qr.ex < -56
-        when
-            near_one and qr.sgn == 0 => return B64.add(1.0, 0x1p-100)
-            near_one => return B64.sub(1.0, 0x1p-100)
-            else => return qz.to[B64]()
 
 ### |v| = m 2^e with m odd, for the bits u of a nonzero finite B64.
 ### :param u: The bits of the value.
@@ -601,111 +562,84 @@ private routine cm_b64_pow_exact_pow(x: B64, y: B64, z: CmF64PowDint, exact: Boo
         else => 1
 
     m, big_e = cm_b64_pow_odd_part(x.bits())
-    pow2: Bool = m == 1
     when
-        pow2 => jump power_of_two(big_e)
+        m == 1 =>
+            # x is a power of 2
+            g: B64 = big_e.to[B64]() * y
+            if not cm_b64_pow_is_int(g)
+                return B64.NAN
+            r: B64 = when
+                z.sgn != 0 => -1.0
+                else => 1.0
+            clamped: B64 = g.max(-2000.0).min(2000.0)
+            gi: S64 = clamped.to[S64]()
+            return cm_b64_pow_pow2(x: r, e: gi)
         y < 0.0 or y > 34.0 => return B64.NAN
-        else => jump split(m, big_e)
+        else =>
+            # y = n 2^big_f with n odd
+            n, big_f = cm_b64_pow_odd_part(y.bits())
+            when
+                n > 34 or big_f < -5 => return B64.NAN
+                big_f < 0 =>
+                    # -5 <= big_f < 0: big_e must be divisible by 2^-big_f. Round z to 54 bits, k 2^big_g
+                    mask: U64 = U64.shr(0xFFFFFFFFFFFFFFFF, (big_f + 64).to_wrap[U64]())
+                    e_bits: U64 = big_e.to_wrap[U64]()
+                    if e_bits & mask != 0
+                        return B64.NAN
+                    root_e: U64 = (big_e >> S64.sub(0, big_f)).to_wrap[U64]()
+                    g: S64 = (root_e *% n).to_wrap[S64]()
+                    zh: U64 = cm_b64_pow_hi(z.r)
+                    big_g: S64 = z.ex - 53
+                    rounded: U64 = (zh >> 10) + ((zh >> 9) & 1)
+                    k: S64 = rounded.to_wrap[S64]()
+                    if not exact
+                        # check that |2^big_g k - z| < 2^-116 z
+                        cnt: U64 = k.to_wrap[U64]().leading_zeros()
+                        r: U128 = cm_b64_pow_join(hi: k.to_wrap[U64]() << cnt, lo: 0)
+                        ex: S64 = big_g + 63 - cnt.to[S64]()
+                        d0: CmF64PowDint = CmF64PowDint(r: r, ex: ex, sgn: U64.sub(1, z.sgn))
+                        d1: CmF64PowDint = cm_b64_pow_add_dint(a: z, b: d0)
+                        d: CmF64PowDint = CmF64PowDint(r: d1.r, ex: d1.ex + 116, sgn: d1.sgn)
+                        if cm_b64_pow_cmp_dint_abs(a: d, b: z) >= 0
+                            return B64.NAN
+                    # k must be an odd number times 2^(g - big_g)
+                    if big_g > g
+                        return B64.NAN
+                    gg: U64 = (g - big_g).to_wrap[U64]()
+                    mask2: U64 = ~U64.shl(0xFFFFFFFFFFFFFFFE, gg)
+                    k_low: U64 = k.to_wrap[U64]() & mask2
+                    if not (k_low == U64.shl(1, gg))
+                        return B64.NAN
+                    q: S64 = (k >> gg.to_wrap[S64]()) * sg
+                    return cm_b64_pow_pow2(x: q.to[B64](), e: g)
+                else =>
+                    # y an integer, 2 <= y <= 34: k = m^y by binary powering should fit into 54 bits
+                    t: U64 = n << big_f.to_wrap[U64]()
 
-    # x is a power of 2
-    block power_of_two(big_e: S64)
-        g: B64 = big_e.to[B64]() * y
-        if not cm_b64_pow_is_int(g)
-            return B64.NAN
-        r: B64 = when
-            z.sgn != 0 => -1.0
-            else => 1.0
-        clamped: B64 = g.max(-2000.0).min(2000.0)
-        gi: S64 = clamped.to[S64]()
-        return cm_b64_pow_pow2(x: r, e: gi)
+                    ey: S64 = big_e * t.to[S64]()
 
-    # y = n 2^big_f with n odd
-    block split(m: U64, big_e: S64)
-        n, big_f = cm_b64_pow_odd_part(y.bits())
-        bad: Bool = n > 34 or big_f < -5
-        when
-            bad => return B64.NAN
-            big_f < 0 => jump root(big_e, n, big_f)
-            else => jump whole(m, big_e, n, big_f)
-
-    # -5 <= big_f < 0: big_e must be divisible by 2^-big_f. Round z to 54 bits, k 2^big_g
-    block root(big_e: S64, n: U64, big_f: S64)
-        mask: U64 = U64.shr(0xFFFFFFFFFFFFFFFF, (big_f + 64).to_wrap[U64]())
-        e_bits: U64 = big_e.to_wrap[U64]()
-        if e_bits & mask != 0
-            return B64.NAN
-        root_e: U64 = (big_e >> S64.sub(0, big_f)).to_wrap[U64]()
-        g: S64 = (root_e *% n).to_wrap[S64]()
-        zh: U64 = cm_b64_pow_hi(z.r)
-        big_g: S64 = z.ex - 53
-        rounded: U64 = (zh >> 10) + ((zh >> 9) & 1)
-        k: S64 = rounded.to_wrap[S64]()
-        if exact
-            jump place(g, big_g, k)
-        else
-            jump verify(g, big_g, k)
-
-    # check that |2^big_g k - z| < 2^-116 z
-    block verify(g: S64, big_g: S64, k: S64)
-        cnt: U64 = k.to_wrap[U64]().leading_zeros()
-        r: U128 = cm_b64_pow_join(hi: k.to_wrap[U64]() << cnt, lo: 0)
-        ex: S64 = big_g + 63 - cnt.to[S64]()
-        d0: CmF64PowDint = CmF64PowDint(r: r, ex: ex, sgn: U64.sub(1, z.sgn))
-        d1: CmF64PowDint = cm_b64_pow_add_dint(a: z, b: d0)
-        d: CmF64PowDint = CmF64PowDint(r: d1.r, ex: d1.ex + 116, sgn: d1.sgn)
-        if cm_b64_pow_cmp_dint_abs(a: d, b: z) >= 0
-            return B64.NAN
-        else
-            jump place(g, big_g, k)
-
-    # k must be an odd number times 2^(g - big_g)
-    block place(g: S64, big_g: S64, k: S64)
-        if big_g > g
-            return B64.NAN
-        gg: U64 = (g - big_g).to_wrap[U64]()
-        mask: U64 = ~U64.shl(0xFFFFFFFFFFFFFFFE, gg)
-        k_low: U64 = k.to_wrap[U64]() & mask
-        if not (k_low == U64.shl(1, gg))
-            return B64.NAN
-        q: S64 = (k >> gg.to_wrap[S64]()) * sg
-        return cm_b64_pow_pow2(x: q.to[B64](), e: g)
-
-    # y an integer, 2 <= y <= 34: k = m^y by binary powering should fit into 54 bits
-    block whole(m: U64, big_e: S64, n: U64, big_f: S64)
-        t: U64 = n << big_f.to_wrap[U64]()
-        jump powering(t, 1, m, big_e * t.to[S64]())
-
-    block powering(t: U64, k: U64, mm: U64, ey: S64)
-        done: Bool = t == 0
-        when
-            done => jump assemble(k, ey)
-            t & 1 != 0 => jump multiply(t, k, mm, ey)
-            else => jump advance(t, k, mm, ey)
-
-    block multiply(t: U64, k: U64, mm: U64, ey: S64)
-        p: U128 = mm.mul_wide(k)
-        if p > 0x7FFFFFFFFFFFFFFF
-            return B64.NAN
-        else
-            jump advance(t, p.to_wrap[U64](), mm, ey)
-
-    block advance(t: U64, k: U64, mm: U64, ey: S64)
-        next: U64 = t >> 1
-        if next != 0
-            jump square(next, k, mm, ey)
-        else
-            jump powering(next, k, mm, ey)
-
-    block square(t: U64, k: U64, mm: U64, ey: S64)
-        p2: U128 = mm.mul_wide(mm)
-        if p2 >> 64 != 0
-            return B64.NAN
-        else
-            jump powering(t, k, p2.to_wrap[U64](), ey)
-
-    block assemble(k: U64, ey: S64)
-        if k >> 54 != 0
-            return B64.NAN
-        signed_k: S64 = k.to_wrap[S64]() * sg
-        r: B64 = signed_k.to[B64]()
-        return cm_b64_pow_pow2(x: r, e: ey)
+                    while true with t2: U64 = t, k: U64 = 1, mm: U64 = m
+                        done: Bool = t2 == 0
+                        k2: U64 = when
+                            done =>
+                                if k >> 54 != 0
+                                    return B64.NAN
+                                signed_k: S64 = k.to_wrap[S64]() * sg
+                                r: B64 = signed_k.to[B64]()
+                                return cm_b64_pow_pow2(x: r, e: ey)
+                            t2 & 1 != 0 =>
+                                p: U128 = mm.mul_wide(k)
+                                if p > 0x7FFFFFFFFFFFFFFF
+                                    return B64.NAN
+                                else
+                                    becomes p.to_wrap[U64]()
+                            else => k
+                        next: U64 = t2 >> 1
+                        if next != 0
+                            p2: U128 = mm.mul_wide(mm)
+                            if p2 >> 64 != 0
+                                return B64.NAN
+                            else
+                                continue with t2: next, k: k2, mm: p2.to_wrap[U64]()
+                        else
+                            continue with t2: next, k: k2, mm: mm

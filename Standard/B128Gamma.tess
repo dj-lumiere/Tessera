@@ -547,19 +547,18 @@ routine big_stirling(b: B128Big) -> B128Big
     local inv: B128Big = b.recip()
     local inv_sq: B128Big = inv * inv
 
-    jump series(0, inv, big_zero())
-
     # power = 1 / b^(2i + 1)
-    block series(i: USize, power: B128Big, sum: B128Big)
-        if i >= 61
-            jump assemble(sum)
+    each i in 0 til 61 with power: B128Big = inv, sum: B128Big = big_zero()
         term: B128Big = big_stirling_coef(i) * power
         if big_is_negligible(term, sum)
-            jump assemble(sum)
+            half: B128Big = big_one().ldexp(-1)
+            main: B128Big = (b - half) * big_ln(b)
+            leading: B128Big = main - b + big_half_ln_two_pi()
+            r: B128Big = leading + sum
+            return r
         else
-            jump series(i + 1, power * inv_sq, sum + term)
-
-    block assemble(sum: B128Big)
+            continue with power: power * inv_sq, sum: sum + term
+    then
         half: B128Big = big_one().ldexp(-1)
         main: B128Big = (b - half) * big_ln(b)
         leading: B128Big = main - b + big_half_ln_two_pi()
@@ -690,57 +689,58 @@ routine b128_gamma(x: B128, exact: Bool) -> B128
     negative: Bool = b128_gamma_is_negative(x)
     # below -1800, |Γ| <= π / (|sin πx| Γ(1 - x)) < 2^-16700 even next to an integer: it rounds
     # to ±0
-    when
+    magnitude: B128 = when
         nan => return b128_of(b128_quiet(x.bits()))
         zero => return B128.INFINITY.copysign(x)
         invalid => return B128.NAN
         huge => return B128.INFINITY
-        tiny => jump signed(b128_of(0), negative)
-        factorial => pass
-        exact => jump slow(negative)
-        else => jump fast(negative)
-    big_one().poke_into(p)
-    jump product(2, x.to[U64]())
+        tiny => b128_of(0)
+        factorial =>
+            # Γ(n) = (n - 1)!, exact in B128Big (38! has a 114-bit odd part), rounded once
+            big_one().poke_into(p)
+            n: U64 = x.to[U64]()
+            while k < n with k: U64 = 2
+                (p.peek() * k).poke_into(p)
+                continue with k: k + 1
+            then
+                return p.peek().to[B128]()
+        exact => b128_gamma_exact(x)
+        else => b128_gamma_fast(x)
+    signed: B128 = when
+        negative => -magnitude
+        else => magnitude
+    return signed
 
-    # Γ(n) = (n - 1)!, exact in B128Big (38! has a 114-bit odd part), rounded once
-    block product(k: U64, n: U64)
-        if k >= n
-            return p.peek().to[B128]()
-        (p.peek() * k).poke_into(p)
-        jump product(k + 1, n)
-
+### |Γ(x)| from the fast tier, for x past the cases {b128_gamma} handles first. A result the fast tier can't
+### round surely comes from the exact tier.
+### :param x: The argument.
+### :returns: |Γ(x)|, rounded.
+private routine b128_gamma_fast(x: B128) -> B128
     # past ln |Γ| = 11360, Γ overflows, and below -11488 it is under half the smallest subnormal
-    block fast(negative: Bool)
-        l: LnGammaWide = wide_ln_gamma(x)
-        ln: B128 = l.value.to[B128]()
-        over: Bool = ln > b128_of(0x400C6300000000000000000000000000)  # 11360
-        under: Bool = ln < b128_of(0xC00C6700000000000000000000000000)  # -11488
-        band: S64 = B128_GAMMA_BAND.sub(l.scale.max(0))
-        when
-            over => jump signed(B128.INFINITY, negative)
-            under => jump signed(b128_of(0), negative)
-            band < GAMMA_MIN_BAND => jump slow(negative)
-            else => jump fast_exp(l.value, band, negative)
+    l: LnGammaWide = wide_ln_gamma(x)
+    ln: B128 = l.value.to[B128]()
+    over: Bool = ln > b128_of(0x400C6300000000000000000000000000)  # 11360
+    under: Bool = ln < b128_of(0xC00C6700000000000000000000000000)  # -11488
+    band: S64 = B128_GAMMA_BAND.sub(l.scale.max(0))
+    when
+        over => return B128.INFINITY
+        under => return b128_of(0)
+        band < GAMMA_MIN_BAND => return b128_gamma_exact(x)
+        else => pass
+    rounded: WideRounding = wide_round_within(u: gamma_wide_exp(l.value), k: band)
+    if rounded.ok
+        return rounded.value
+    return b128_gamma_exact(x)
 
-    block fast_exp(ln: B128Extended, band: S64, negative: Bool)
-        rounded: WideRounding = wide_round_within(u: gamma_wide_exp(ln), k: band)
-        if rounded.ok
-            jump signed(rounded.value, negative)
-        else
-            jump slow(negative)
-
-    block slow(negative: Bool)
-        l: B128Big = big_ln_gamma(x)
-        ln: B128 = l.to[B128]()
-        over: Bool = ln > b128_of(0x400C6300000000000000000000000000)  # 11360
-        # -11488
-        when
-            over => jump signed(B128.INFINITY, negative)
-            ln < b128_of(0xC00C6700000000000000000000000000) => jump signed(b128_of(0), negative)
-            else => jump signed(big_exp(l).to[B128](), negative)
-
-    block signed(r: B128, negative: Bool)
-        s: B128 = when
-            negative => -r
-            else => r
-        return s
+### |Γ(x)| from the exact tier, for x past the cases {b128_gamma} handles first.
+### :param x: The argument.
+### :returns: |Γ(x)|, rounded once.
+private routine b128_gamma_exact(x: B128) -> B128
+    l: B128Big = big_ln_gamma(x)
+    ln: B128 = l.to[B128]()
+    over: Bool = ln > b128_of(0x400C6300000000000000000000000000)  # 11360
+    # -11488
+    when
+        over => return B128.INFINITY
+        ln < b128_of(0xC00C6700000000000000000000000000) => return b128_of(0)
+        else => return big_exp(l).to[B128]()

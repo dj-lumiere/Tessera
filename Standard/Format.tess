@@ -916,119 +916,91 @@ needs T: typename, Writer[T]
     s.shl(doubling)
     plus.shl(doubling - 1)
     if e >= 0
-        jump scale_up()
-    else
-        jump scale_down()
-
-    block scale_up()
         up: USize = e.to[USize]()
         r.shl(up)
         plus.shl(up)
         minus.shl(up)
-        jump estimate()
-
-    block scale_down()
+    else
         s.shl(e.abs_diff(0).to[USize]())
-        jump estimate()
 
     # k = floor((bits(f) - 1 + e) × log10 2) + 1 is at most ceil(log10 v)//
     # divide by 10^k (multiply s, or r and the margins).
-    block estimate()
-        bits: S64 = 128 - f.leading_zeros().to[S64]()
-        k: S64 = floor_log10_pow2(bits - 1 + e) + 1
-        if k >= 0
-            jump divide_s(k)
-        else
-            jump multiply_r(k)
-
-    block divide_s(k: S64)
-        s.mul_pow10(k.to[USize]())
-        jump fixup(k)
-
-    block multiply_r(k: S64)
-        up: USize = k.abs_diff(0).to[USize]()
-        r.mul_pow10(up)
-        plus.mul_pow10(up)
-        minus.mul_pow10(up)
-        jump fixup(k)
+    bits: S64 = 128 - f.leading_zeros().to[S64]()
+    estimate: S64 = floor_log10_pow2(bits - 1 + e) + 1
+    if estimate >= 0
+        s.mul_pow10(estimate.to[USize]())
+    else
+        down: USize = estimate.abs_diff(0).to[USize]()
+        r.mul_pow10(down)
+        plus.mul_pow10(down)
+        minus.mul_pow10(down)
 
     # Raise k while the top of the interval reaches 10^k, so every number in it
     # is below 10^k and the first digit is its leading one.
-    block fixup(k: S64)
-        t.copy_from(r)
-        t.add(plus)
-        cmp: S32 = t.compare(s)
-        high: Bool = when
-            even => cmp >= 0
-            else => cmp > 0
-        if high
-            jump raise(k)
-        else
-            jump start(k)
-
-    block raise(k: S64)
+    while exact_top_reaches(r, plus, s, even) with k: S64 = estimate
         s.mul_add(m: 10, addend: 0)
-        jump fixup(k + 1)
-
-    block start(k: S64)
+        continue with k: k + 1
+    then
         local buf: @Array[U8, 48] <- .hollow()
-        jump next_digit(0, k, buf.to[@U8]())
+        digits: @U8 = buf.to[@U8]()
+        # d = floor(10r / s), r = 10r mod s, and the margins scale by 10 too.
+        while true with n: USize = 0
+            r.mul_add(m: 10, addend: 0)
+            plus.mul_add(m: 10, addend: 0)
+            minus.mul_add(m: 10, addend: 0)
+            d: U8 = take_exact_digit(r, s)
+            # low: the digits so far are already within m- of the value. High: rounding
+            # this digit up is within m+. Either one ends the output.
+            low_cmp: S32 = r.compare(minus)
+            low: Bool = when
+                even => low_cmp <= 0
+                else => low_cmp < 0
+            high: Bool = exact_top_reaches(r, plus, s, even)
+            if not (low or high)
+                digits.stride(n).poke(d + 48)
+                continue with n: n + 1
 
-    # d = floor(10r / s), r = 10r mod s, and the margins scale by 10 too.
-    block next_digit(n: USize, k: S64, digits: @U8)
-        r.mul_add(m: 10, addend: 0)
-        plus.mul_add(m: 10, addend: 0)
-        minus.mul_add(m: 10, addend: 0)
-        jump take(0, n, k, digits)
+            # Both ends reachable: the nearer one, and the even digit on an exact tie.
+            t.copy_from(r)
+            t.shl(1)
+            half: S32 = t.compare(s)
+            d_odd: Bool = d & 1 == 1
+            nearer: Bool = half > 0 or (half == 0 and d_odd)
+            both: Bool = low and high
+            round_up: Bool = when
+                both => nearer
+                else => high
+            digit: U8 = d + round_up.to[U8]()
+            digits.stride(n).poke(digit + 48)
+            count: USize = n + 1
+            write_decimal_digits(out, first: digits, n: count, exponent: k - count.to[S64]())
+            return
 
-    block take(d: U8, n: USize, k: S64, digits: @U8)
-        if r.compare(s) >= 0
-            jump take_one(d, n, k, digits)
-        else
-            jump judge(d, n, k, digits)
+### Whether the top of the rounding interval, r + m+, reaches s: at s or past it when the interval's ends read back
+### to the float (`even`), past it otherwise.
+### :param r: The remainder of the value.
+### :param plus: Half the gap to the next float, m+.
+### :param s: The scale.
+### :param even: True when the interval's ends read back to the float.
+### :returns: True when r + m+ reaches s.
+private routine exact_top_reaches(r: @BigNat[320], plus: @BigNat[320], s: @BigNat[320], even: Bool) -> Bool
+    local top: @BigNat[320] <- .hollow()
 
-    block take_one(d: U8, n: USize, k: S64, digits: @U8)
+    top.copy_from(r)
+    top.add(plus)
+    cmp: S32 = top.compare(s)
+    return if even then cmp >= 0 else cmp > 0
+
+### The next digit of the exact method: subtracts `s` from `r` as many times as it fits.
+### :param r: The remainder, below 10 × `s`. It is left below `s`.
+### :param s: The scale.
+### :returns: How many times `s` was subtracted, 0 to 9.
+private routine take_exact_digit(r: @BigNat[320], s: @BigNat[320]) -> U8
+    while r.compare(s) >= 0 with d: U8 = 0
         r.sub(s)
-        jump take(d + 1, n, k, digits)
-
-    # low: the digits so far are already within m- of the value. High: rounding
-    # this digit up is within m+. Either one ends the output.
-    block judge(d: U8, n: USize, k: S64, digits: @U8)
-        low_cmp: S32 = r.compare(minus)
-        low: Bool = when
-            even => low_cmp <= 0
-            else => low_cmp < 0
-        t.copy_from(r)
-        t.add(plus)
-        high_cmp: S32 = t.compare(s)
-        high: Bool = when
-            even => high_cmp >= 0
-            else => high_cmp > 0
-        if low or high
-            jump last(d, n, k, low, high, digits)
-        else
-            jump emit(d, n, k, digits)
-
-    block emit(d: U8, n: USize, k: S64, digits: @U8)
-        digits.stride(n).poke(d + 48)
-        jump next_digit(n + 1, k, digits)
-
-    # Both ends reachable: the nearer one, and the even digit on an exact tie.
-    block last(d: U8, n: USize, k: S64, low: Bool, high: Bool, digits: @U8)
-        t.copy_from(r)
-        t.shl(1)
-        half: S32 = t.compare(s)
-        d_odd: Bool = d & 1 == 1
-        nearer: Bool = half > 0 or (half == 0 and d_odd)
-        both: Bool = low and high
-        round_up: Bool = when
-            both => nearer
-            else => high
-        digit: U8 = d + round_up.to[U8]()
-        digits.stride(n).poke(digit + 48)
-        count: USize = n + 1
-        write_decimal_digits(out, first: digits, n: count, exponent: k - count.to[S64]())
-        return
+        continue with d: d + 1
+    then
+        return d
 
 ### Writes the B128 as the shortest decimal that reads back as the same value, laid out positionally when the decimal exponent is in -4 .. 15 (`0.0001`, `123.5`, `1.0`) and in scientific form otherwise (`1e+16`). Specials are `inf`, `-inf` and `NaN`.
 ### :typeparam T: The type of the Writer that receives the text.
@@ -1100,92 +1072,59 @@ needs T: typename, Writer[T]
 
     n.set(f)
     if e >= 0
-        jump scale_up()
-    else
-        jump scale_down()
-
-    block scale_up()
         n.shl(e.to[USize]())
-        jump print()
-
-    # round(f × 10^places / 2^-e)
-    block scale_down()
+    else
+        # round(f × 10^places / 2^-e)
         n.mul_pow10(places)
         n.shr_round_even(e.abs_diff(0).to[USize]())
-        jump print()
 
-    # The digits of n fill chars from the right, 19 at a time.
-    block print()
-        local buf: @Array[U8, 16640] <- .hollow()
-        jump chunk(buf.to[@U8](), 16640)
-
-    block chunk(chars: @U8, at: USize)
-        if n.is_zero()
-            jump skip_zeros(chars, at)
-        else
-            jump split(chars, at)
-
-    block split(chars: @U8, at: USize)
-        # 10^19
-        jump digit(chars, at, n.div_limb(10000000000000000000), 19)
-
-    block digit(chars: @U8, at: USize, rest: U64, left: USize)
-        if left == 0
-            jump chunk(chars, at)
-        else
-            jump put(chars, at, rest, left)
-
-    block put(chars: @U8, at: USize, rest: U64, left: USize)
-        to: USize = at - 1
-        low_digit: U8 = (rest % 10).to[U8]()
-        chars.stride(to).poke(low_digit + 48)
-        jump digit(chars, to, rest // 10, left - 1)
-
-    # the top chunk is zero-padded to 19 digits
-    block skip_zeros(chars: @U8, at: USize)
-        if at < 16640
-            jump look(chars, at)
-        else
-            jump lay_out(chars, at)
-
-    block look(chars: @U8, at: USize)
-        ascii: U8 = chars.stride(at).peek()
-        if ascii == 48
-            jump skip_zeros(chars, at + 1)
-        else
-            jump lay_out(chars, at)
+    local buf: @Array[U8, 16640] <- .hollow()
+    chars: @U8 = buf.to[@U8]()
+    first: USize = fill_fixed_digits(n, chars)
 
     # n has count digits at chars[first ..]. The last places of them follow the point
-    block lay_out(chars: @U8, first: USize)
-        count: USize = 16640 - first
-        if count > places
-            jump int_part(chars, first, count - places)
-        else
-            jump zero_int(chars, first)
-
-    block int_part(chars: @U8, first: USize, int_count: USize)
-        from: @U8 = chars.stride(first)
-        write_digits(out, first: from, count: int_count)
-        jump fraction(chars, first + int_count)
-
-    block zero_int(chars: @U8, first: USize)
-        write_str(out, text: "0")
-        jump fraction(chars, first)
-
-    block fraction(chars: @U8, from: USize)
-        if digits == 0
-            return
-        else
-            jump point(chars, from)
-
-    block point(chars: @U8, from: USize)
-        count: USize = 16640 - from
-        write_str(out, text: ".")
-        write_zeros(out, count: places - count)
-        start: @U8 = chars.stride(from)
-        write_digits(out, first: start, count)
-        write_zeros(out, count: digits - places)
+    count: USize = 16640 - first
+    fraction_from: USize = when
+        count > places =>
+            int_count: USize = count - places
+            from: @U8 = chars.stride(first)
+            write_digits(out, first: from, count: int_count)
+            becomes first + int_count
+        else =>
+            write_str(out, text: "0")
+            becomes first
+    if digits == 0
         return
+
+    fraction_count: USize = 16640 - fraction_from
+    write_str(out, text: ".")
+    write_zeros(out, count: places - fraction_count)
+    start: @U8 = chars.stride(fraction_from)
+    write_digits(out, first: start, count: fraction_count)
+    write_zeros(out, count: digits - places)
+    return
+
+### Writes the decimal digits of `n` into the end of `chars`, 19 at a time from the right, and finds the first digit
+### that isn't a zero. `n` ends up zero.
+### :param n: The number to write.
+### :param chars: The first of 16640 bytes the digits go into.
+### :returns: The index in `chars` of the first digit written that isn't a zero, 16640 when `n` was zero.
+private routine fill_fixed_digits(n: @BigNat[864], chars: @U8) -> USize
+    while not n.is_zero() with at: USize = 16640
+        # 10^19
+        chunk: U64 = n.div_limb(10000000000000000000)
+        each i in 0 til 19 with rest: U64 = chunk
+            to: USize = at - 1 - i
+            low_digit: U8 = (rest % 10).to[U8]()
+            chars.stride(to).poke(low_digit + 48)
+            continue with rest: rest // 10
+        continue with at: at - 19
+    then
+        # the top chunk is zero-padded to 19 digits
+        while first < 16640 and chars.stride(first).peek() == 48 with first: USize = at
+            continue with first: first + 1
+        then
+            return first
 
 ### represent_fixed_into for a binary float given its bits and its format: with shift the bias plus the fraction
 ### bits, a normal value is (1.fraction) × 2^(biased - shift).
@@ -1208,36 +1147,42 @@ needs T: typename, Writer[T]
 
     special: Bool = biased == exponent_max
     when
-        special and fraction != 0 => jump text("NaN")
-        special => jump infinity()
-        negative => jump minus()
-        else => jump magnitude()
-
-    block infinity()
-        if negative
-            jump text("-inf")
-        else
-            jump text("inf")
-
-    block text(s: Span[Byte])
-        write_str(out, text: s)
-        return
-
-    block minus()
-        write_str(out, text: "-")
-        jump magnitude()
-
-    block magnitude()
-        subnormal: Bool = biased == 0
-        implicit: U128 = 1 << mantissa_bits
-        f: U128 = when
-            subnormal => fraction
-            else => fraction | implicit
-        e: S64 = when
-            subnormal => 1 - shift
-            else => biased - shift
-        write_float_fixed(out, f, e, digits)
-        return
+        special and fraction != 0 =>
+            s: Span[Byte] = "NaN"
+            write_str(out, text: s)
+            return
+        special =>
+            if negative
+                s: Span[Byte] = "-inf"
+                write_str(out, text: s)
+                return
+            else
+                s: Span[Byte] = "inf"
+                write_str(out, text: s)
+                return
+        negative =>
+            write_str(out, text: "-")
+            subnormal: Bool = biased == 0
+            implicit: U128 = 1 << mantissa_bits
+            f: U128 = when
+                subnormal => fraction
+                else => fraction | implicit
+            e: S64 = when
+                subnormal => 1 - shift
+                else => biased - shift
+            write_float_fixed(out, f, e, digits)
+            return
+        else =>
+            subnormal: Bool = biased == 0
+            implicit: U128 = 1 << mantissa_bits
+            f: U128 = when
+                subnormal => fraction
+                else => fraction | implicit
+            e: S64 = when
+                subnormal => 1 - shift
+                else => biased - shift
+            write_float_fixed(out, f, e, digits)
+            return
 
 ### Writes the B64 with exactly `digits` digits after the point, correctly rounded from the exact binary value with ties to even. Specials are `inf`, `-inf` and `NaN`.
 ### :typeparam T: The type of the Writer that receives the text.

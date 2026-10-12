@@ -407,52 +407,41 @@ routine cm_b64_trig_dint_add(a0: CmF64TrigDint, b0: CmF64TrigDint) -> CmF64TrigD
         return b0
     c: S64 = cm_b64_trig_dint_cmp_abs(a: a0, b: b0)
     equal: Bool = c == 0
-    when
-        equal => jump equal()
-        c == -1 => jump ordered(b0, a0)
-        else => jump ordered(a0, b0)
-
-    block equal()
-        if a0.sgn ^ b0.sgn != 0
-            return cm_b64_trig_dint_zero()
-        else
-            return CmF64TrigDint(r: a0.r, ex: a0.ex + 1, sgn: a0.sgn)
+    values: (CmF64TrigDint, CmF64TrigDint) = when
+        equal =>
+            if a0.sgn ^ b0.sgn != 0
+                return cm_b64_trig_dint_zero()
+            else
+                return CmF64TrigDint(r: a0.r, ex: a0.ex + 1, sgn: a0.sgn)
+        c == -1 => (b0, a0)
+        else => (a0, b0)
+    a, b = values
 
     # |a| > |b|, so a.ex >= b.ex (or b is zero). A shift of 128 or more, or a negative one, leaves 0
-    block ordered(a: CmF64TrigDint, b: CmF64TrigDint)
-        k: S64 = a.ex - b.ex
-        bb: U128 = b.r >> k.to_wrap[U128]()
-        if a.sgn ^ b.sgn != 0
-            jump subtract(a, b, k, bb)
+    k: S64 = a.ex - b.ex
+    bb: U128 = b.r >> k.to_wrap[U128]()
+    if a.sgn ^ b.sgn != 0
+        # cc is not zero since |a| != |b|
+        cc: U128 = a.r -% bb
+        ex: U128 = cc.leading_zeros()
+        if ex > 0
+            # redo the difference with a shifted left by ex to keep the bits b lost
+            aa: U128 = a.r << ex
+            adj: Bool = k == 1
+            cc2: U128 = when
+                adj => aa -% (b.r << ex - 1)
+                else => aa -% (bb << ex)
+            rex: S64 = a.ex - ex.to[S64]()
+            ex2: U64 = cm_b64_trig_hi(cc2).leading_zeros()
+            return CmF64TrigDint(r: cc2 << ex2.to[U128](), ex: rex - ex2.to[S64](), sgn: a.sgn)
         else
-            jump same_sign(a, bb)
-
-    block same_sign(a: CmF64TrigDint, bb: U128)
+            return CmF64TrigDint(r: cc, ex: a.ex, sgn: a.sgn)
+    else
         cc: U128 = a.r +% bb
         if cc < a.r
             return CmF64TrigDint(r: U128.shl(1, 127) | (cc >> 1), ex: a.ex + 1, sgn: a.sgn)
         else
             return CmF64TrigDint(r: cc, ex: a.ex, sgn: a.sgn)
-
-    # cc is not zero since |a| != |b|
-    block subtract(a: CmF64TrigDint, b: CmF64TrigDint, k: S64, bb: U128)
-        cc: U128 = a.r -% bb
-        ex: U128 = cc.leading_zeros()
-        if ex > 0
-            jump renormalize(a, b, k, bb, ex)
-        else
-            return CmF64TrigDint(r: cc, ex: a.ex, sgn: a.sgn)
-
-    # redo the difference with a shifted left by ex to keep the bits b lost
-    block renormalize(a: CmF64TrigDint, b: CmF64TrigDint, k: S64, bb: U128, ex: U128)
-        aa: U128 = a.r << ex
-        adj: Bool = k == 1
-        cc: U128 = when
-            adj => aa -% (b.r << ex - 1)
-            else => aa -% (bb << ex)
-        rex: S64 = a.ex - ex.to[S64]()
-        ex2: U64 = cm_b64_trig_hi(cc).leading_zeros()
-        return CmF64TrigDint(r: cc << ex2.to[U128](), ex: rex - ex2.to[S64](), sgn: a.sgn)
 
 ### Normalizes a product significand r (one of its two top bits set) and builds the dint.
 ### :param r: The product significand.
@@ -640,13 +629,8 @@ private routine cm_b64_trig_t(j: U64) -> U64
 private routine cm_b64_trig_reduce(x: CmF64TrigDint) -> CmF64TrigDint
     local xhi: U64 = cm_b64_trig_hi(x.r)
 
-    if x.ex <= 1
-        jump small()
-    else
-        jump large()
-
     # |X| < 2: multiply by T[0]/2^64 + T[1]/2^128
-    block small()
+    if x.ex <= 1
         u1: U128 = xhi.mul_wide(cm_b64_trig_t(1))
         tiny: U64 = cm_b64_trig_lo(u1)
         u0: U128 = xhi.mul_wide(cm_b64_trig_t(0))
@@ -654,61 +638,65 @@ private routine cm_b64_trig_reduce(x: CmF64TrigDint) -> CmF64TrigDint
         lo: U64 = cm_b64_trig_hi(u1) +% u0_lo
         carry: U64 = (lo < u0_lo).to[U64]()
         hi: U64 = cm_b64_trig_hi(u0) +% carry
-        y: CmF64TrigDint = cm_b64_trig_normalize(CmF64TrigDint(r: cm_b64_trig_u128(hi, lo), ex: x.ex, sgn: x.sgn))
+        y: CmF64TrigDint = cm_b64_trig_normalize(CmF64TrigDint(r: cm_b64_trig_u128(hi, lo),
+            ex: x.ex, sgn: x.sgn))
         # put the upper d bits of tiny into the low word (a shift by 64 leaves nothing for d = 0)
         d: S64 = x.ex - y.ex
         extra: U64 = tiny >> S64.sub(64, d).to_wrap[U64]()
         return CmF64TrigDint(r: y.r | extra.to[U128](), ex: y.ex, sgn: y.sgn)
 
     # 2 <= e <= 1024: only T[i] .. T[i+4] contribute
-    block large()
-        e: S64 = x.ex
-        far: Bool = e >= 127
-        excess: S64 = e - 127
-        padded: S64 = excess + 64 - 1
-        i: U64 = when
-            far => (padded.div_trunc(64)).to_wrap[U64]()
-            else => 0
-        u3: U128 = xhi.mul_wide(cm_b64_trig_t(i + 3))
-        c0: U64 = cm_b64_trig_lo(u3)
-        u2: U128 = xhi.mul_wide(cm_b64_trig_t(i + 2))
-        c1: U64 = cm_b64_trig_hi(u3) +% cm_b64_trig_lo(u2)
-        c2a: U64 = cm_b64_trig_hi(u2) +% (c1 < cm_b64_trig_lo(u2)).to[U64]()
-        u1: U128 = xhi.mul_wide(cm_b64_trig_t(i + 1))
-        c2: U64 = c2a +% cm_b64_trig_lo(u1)
-        c3a: U64 = cm_b64_trig_hi(u1) +% (c2 < cm_b64_trig_lo(u1)).to[U64]()
-        u0: U128 = xhi.mul_wide(cm_b64_trig_t(i))
-        c3: U64 = c3a +% cm_b64_trig_lo(u0)
-        c4: U64 = cm_b64_trig_hi(u0) +% (c3 < cm_b64_trig_lo(u0)).to[U64]()
-        # xhi T[i]/2^128 is multiplied by 2^f
-        f: S64 = e - S64.mul(64, i.to[S64]())
-        near: Bool = f < 64
-        when
-            near => jump normalize(c4, c3, c2, c1, f.to[U64]())
-            f == 64 => jump normalize(c3, c2, c1, 0, 0)
-            else => jump extra_term(i, c3, c2, c1, c0, (f - 64).to[U64]())
-
-    # 65 <= f <= 127: one more term, carried into c1 .. c3
-    block extra_term(i: U64, c3: U64, c2: U64, c1: U64, c0: U64, g: U64)
-        w: U64 = cm_b64_trig_hi(xhi.mul_wide(cm_b64_trig_t(i + 4)))
-        c0n: U64 = c0 +% w
-        carry0: Bool = c0n < w
-        c1n: U64 = c1 +% carry0.to[U64]()
-        carry1: Bool = carry0 and c1n == 0
-        c2n: U64 = c2 +% carry1.to[U64]()
-        carry2: Bool = carry1 and c2n == 0
-        jump normalize(c3 +% carry2.to[U64](), c2n, c1n, c0n, g)
+    e: S64 = x.ex
+    far: Bool = e >= 127
+    excess: S64 = e - 127
+    padded: S64 = excess + 64 - 1
+    i: U64 = when
+        far => padded.div_trunc(64).to_wrap[U64]()
+        else => 0
+    u3: U128 = xhi.mul_wide(cm_b64_trig_t(i + 3))
+    c0: U64 = cm_b64_trig_lo(u3)
+    u2: U128 = xhi.mul_wide(cm_b64_trig_t(i + 2))
+    c1: U64 = cm_b64_trig_hi(u3) +% cm_b64_trig_lo(u2)
+    c2a: U64 = cm_b64_trig_hi(u2) +% (c1 < cm_b64_trig_lo(u2)).to[U64]()
+    u1: U128 = xhi.mul_wide(cm_b64_trig_t(i + 1))
+    c2: U64 = c2a +% cm_b64_trig_lo(u1)
+    c3a: U64 = cm_b64_trig_hi(u1) +% (c2 < cm_b64_trig_lo(u1)).to[U64]()
+    u0: U128 = xhi.mul_wide(cm_b64_trig_t(i))
+    c3: U64 = c3a +% cm_b64_trig_lo(u0)
+    c4: U64 = cm_b64_trig_hi(u0) +% (c3 < cm_b64_trig_lo(u0)).to[U64]()
+    # xhi T[i]/2^128 is multiplied by 2^f
+    f: S64 = e - S64.mul(64, i.to[S64]())
+    near: Bool = f < 64
+    # the words w3 .. w0 to shift left by s bits
+    words: (U64, U64, U64, U64) = when
+        near => (c4, c3, c2, c1)
+        f == 64 => (c3, c2, c1, 0)
+        else =>
+            # 65 <= f <= 127: one more term, carried into c1 .. c3
+            w: U64 = cm_b64_trig_hi(xhi.mul_wide(cm_b64_trig_t(i + 4)))
+            c0n: U64 = c0 +% w
+            carry0: Bool = c0n < w
+            c1n: U64 = c1 +% carry0.to[U64]()
+            carry1: Bool = carry0 and c1n == 0
+            c2n: U64 = c2 +% carry1.to[U64]()
+            carry2: Bool = carry1 and c2n == 0
+            becomes (c3 +% carry2.to[U64](), c2n, c1n, c0n)
+    s: U64 = when
+        near => f.to[U64]()
+        f == 64 => 0
+        else => (f - 64).to[U64]()
+    w3, w2, w1, w0 = words
 
     # the words w3 .. w0 shifted left by s (0 <= s < 64, and a shift by 64 leaves nothing for s = 0)
-    block normalize(w3: U64, w2: U64, w1: U64, w0: U64, s: U64)
-        back: U64 = U64.sub(64, s)
-        hi: U64 = (w3 << s) | (w2 >> back)
-        lo: U64 = (w2 << s) | (w1 >> back)
-        tiny: U64 = (w1 << s) | (w0 >> back)
-        y: CmF64TrigDint = cm_b64_trig_normalize(CmF64TrigDint(r: cm_b64_trig_u128(hi, lo), ex: 0, sgn: x.sgn))
-        # put the upper -ex bits of tiny into the low word
-        extra: U64 = tiny >> S64.add(64, y.ex).to_wrap[U64]()
-        return CmF64TrigDint(r: y.r | extra.to[U128](), ex: y.ex, sgn: y.sgn)
+    back: U64 = U64.sub(64, s)
+    hi: U64 = (w3 << s) | (w2 >> back)
+    lo: U64 = (w2 << s) | (w1 >> back)
+    tiny: U64 = (w1 << s) | (w0 >> back)
+    y: CmF64TrigDint = cm_b64_trig_normalize(CmF64TrigDint(r: cm_b64_trig_u128(hi, lo), ex: 0,
+        sgn: x.sgn))
+    # put the upper -ex bits of tiny into the low word
+    extra: U64 = tiny >> S64.add(64, y.ex).to_wrap[U64]()
+    return CmF64TrigDint(r: y.r | extra.to[U128](), ex: y.ex, sgn: y.sgn)
 
 ### Splits 0 <= X < 1 exactly as i/2^11 + X' with 0 <= X' < 2^-11, X' normalized.
 ### :param x: The dint X.

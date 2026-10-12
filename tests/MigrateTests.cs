@@ -15,7 +15,7 @@ public class MigrateTests
     [InlineData("routine F128.add(me: Me, other: Me) -> Me", "routine B128.add(me: Me, other: Me) -> Me")]
     [InlineData("v : F128Extended = f128_of(a)", "v : B128Extended = b128_of(a)")]
     [InlineData("r : F64 = x.to_f64()", "r : B64 = x.to_b64()")]
-    [InlineData("// two F128s and an F16", "// two B128s and a B16")]
+    [InlineData("# two F128s and an F16", "# two B128s and a B16")]
     [InlineData("#feature(\"F16C\")", "#feature(\"F16C\")")]
     [InlineData("bits : U64 = 0x3FF0000070097F64", "bits : U64 = 0x3FF0000070097F64")]
     [InlineData("routine quote_utf32(c: Char) -> U32", "routine quote_utf32(c: Char) -> U32")]
@@ -61,7 +61,7 @@ public class MigrateTests
     [InlineData("f : Callable<(S64, S64), Dict<S64, List<U8>>> = g.to<Callable>()",
         "f : Callable[(S64, S64), Dict[S64, List[U8]]] = g.to[Callable]()")]
     [InlineData("routine id(x: S64) -> S64", "routine id(x: S64) -> S64")]
-    [InlineData("f: Callable<#callconv(\"stdcall\"), (Addr,), U32>", "f: Callable[#callconv(\"stdcall\"), (Addr,), U32]")]
+    [InlineData("f: Callable<@callconv(\"stdcall\"), (Addr,), U32>", "f: Callable[@callconv(\"stdcall\"), (Addr,), U32]")]
     [InlineData("x.store_into(p)  // keeps `Array<S32, 3>` <- here", "x.poke_into(p)  // keeps `Array[S32, 3]` <- here")]
     [InlineData("v : S64 <- add<S64>(a, b)", "v : S64 <- add[S64](a, b)")]
     [InlineData("show(\"to<B16>\", a < b)", "show(\"to<B16>\", a < b)")]
@@ -92,7 +92,7 @@ public class MigrateTests
                 fallback: S64) -> S64
                 block entry()
                     when c
-                        Color.RED   -> red()  // -> stays in prose
+                        Color.RED   -> red()  # -> stays in prose
                         else -> other("a -> b")
                 block red()
                     return(1)
@@ -102,7 +102,7 @@ public class MigrateTests
                 fallback: S64) -> S64
                 block entry()
                     when c
-                        Color.RED   => red()  // -> stays in prose
+                        Color.RED   => red()  # -> stays in prose
                         else => other("a -> b")
                 block red()
                     return(1)
@@ -116,7 +116,7 @@ public class MigrateTests
         const string before = """
             choice Dir: U8
                 North
-                OutOfRange: 7  // a member with its value
+                OutOfRange: 7  # a member with its value
 
             variant Shape
                 Empty
@@ -128,13 +128,13 @@ public class MigrateTests
                         Dir.North => north(s.matches(.Empty))
                         .OutOfRange => far()
                 block north(empty: Bool)
-                    // Dir.North and .North in prose
+                    # Dir.North and .North in prose
                     return("{Dir.North} Dir.North")
             """;
         const string after = """
             choice Dir: U8
                 NORTH
-                OUT_OF_RANGE: 7  // a member with its value
+                OUT_OF_RANGE: 7  # a member with its value
 
             variant Shape
                 Empty
@@ -146,14 +146,14 @@ public class MigrateTests
                         Dir.NORTH => north(s.matches(.Empty))
                         .OUT_OF_RANGE => far()
                 block north(empty: Bool)
-                    // Dir.NORTH and .North in prose
+                    # Dir.NORTH and .North in prose
                     return("{Dir.NORTH} Dir.North")
             """;
         Assert.Equal(EntryMigration.Rewrite(after), Migrate.Rewrite(before));
     }
 
     [Theory]
-    [InlineData("is : USize = jf.mul(2)  // is twice", "`is` : USize = jf.mul(2)  // is twice")]
+    [InlineData("is : USize = jf.mul(2)  # is twice", "`is` : USize = jf.mul(2)  # is twice")]
     [InlineData("x : U64 = t.getitem(is.add(1)).or(m)", "x : U64 = t.getitem(`is`.add(1)).or(m)")]
     [InlineData("show(\"and or\", `as`)", "show(\"and or\", `as`)")]
     public void Writes_values_named_after_new_keywords_in_backticks(string before, string after)
@@ -250,7 +250,7 @@ public class MigrateTests
                     item: Maybe[S64] = find(text)
                     when item
                         is S64 as value => return(value)
-                        is Unit => return(ParseError.EMPTY)
+                        is None => return(ParseError.EMPTY)
 
             routine none() -> Maybe[S64]
                 block entry()
@@ -330,9 +330,10 @@ public class MigrateTests
                 name: Bytes
             """;
         string after = ConstructDestructMigration.Rewrite(before);
-        Assert.Contains("routine Point.construct(x: S64, y: S64) -> Me\n    return(Me(x, y))", after);
-        Assert.Contains("routine Point.destruct(me: @Me) -> Void\n    return()", after);
-        Assert.Contains("routine Named.destruct(me: @Me) -> Void\n    me.name.destruct()\n    return()", after);
+        // Only a type that holds something to release gets them: Point is plain data and declares neither.
+        Assert.DoesNotContain("routine Point.", after);
+        Assert.Contains("routine Named.construct(name: Bytes) -> Me\n    return Me(name)", after);
+        Assert.Contains("routine Named.destruct(me: @Me) -> None\n    me.name.destruct()\n    return", after);
         Assert.Equal(after, ConstructDestructMigration.Rewrite(after));
     }
 
@@ -369,22 +370,19 @@ public class MigrateTests
     {
         const string source = """
             routine area(width: S64, height: S64) -> S64
-                block entry()
-                    r: S64 = width.mul(height)
-                    return(r)
+                r: S64 = width * height
+                return r
 
-            #positional
+            @positional
             routine larger(a: S64, b: S64) -> S64
-                block entry()
-                    r: S64 = a.max(b)
-                    return(r)
+                r: S64 = a.max(b)
+                return r
 
-            routine start() -> Void
-                block entry()
-                    width: S64 = 3
-                    x: S64 = area(width, 4)
-                    y: S64 = larger(x, 2)
-                    return()
+            routine start() -> None
+                width: S64 = 3
+                x: S64 = area(width, 4)
+                y: S64 = larger(x, 2)
+                return
             """;
         var migration = new NamedArgsMigration();
         migration.Index("a.tess", source, library: false);

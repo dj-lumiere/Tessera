@@ -455,54 +455,47 @@ routine U256Division32.step(me: @Me, j: USize) -> U32
     local top_at: USize = j + n
     local u2: U32 = me.u[top_at]
     local u1: U32 = me.u[top_at - 1]
-    local u0: U32 = me.u[top_at - 2]
-    local d1: U32 = me.v[n - 1]
-    local d0: U32 = me.v[n - 2]
+    local u0: U64 = me.u[top_at - 2].to[U64]()
+    local d1: U64 = me.v[n - 1].to[U64]()
+    local d0: U64 = me.v[n - 2].to[U64]()
 
     # The window's top limb is at most d1, so q̂ < 2^33 and r̂ < d1.
     top_high: U64 = u2.to[U64]() << 32
     top: U64 = top_high | u1.to[U64]()
-    q_hat: U64 = top // d1.to[U64]()
+    q_first: U64 = top // d1
     # one division: a U64 one is a library call here
-    jump refine(q_hat, top - q_hat *% d1.to[U64]())
+    r_first: U64 = top - q_first *% d1
 
-    # Knuth's D3: q̂ is too big while it exceeds a limb or q̂ × d0 exceeds r̂ × 2^32 + u0. Once r̂ reaches 2^32 the
-    # test can't fail, and what is left is at most one too big.
-    block refine(q_hat: U64, r_hat: U64)
-        if q_hat > 0xFFFFFFFF
-            jump lower(q_hat, r_hat)
-        else
-            jump test(q_hat, r_hat)
-
-    block test(q_hat: U64, r_hat: U64)
-        product: U64 = q_hat * d0.to[U64]()
-        window: U64 = (r_hat << 32) | u0.to[U64]()
-        if product > window
-            jump lower(q_hat, r_hat)
-        else
-            jump subtract(q_hat.to_wrap[U32]())
-
-    block lower(q_hat: U64, r_hat: U64)
-        q_less: U64 = q_hat - 1
-        r_more: U64 = r_hat + d1.to[U64]()
-        if r_more <= 0xFFFFFFFF
-            jump refine(q_less, r_more)
-        else
-            jump subtract(q_less.to_wrap[U32]())
-
-    # Subtract q̂ × v from the window. A borrow out of its top means q̂ was one too big, so v is added back.
-    block subtract(q_hat: U32)
-        borrow: U32 = me.submul(j, len: n, m: q_hat)
-        top: U32 = me.u[top_at]
+    # Knuth's D3: lower q̂ by one, and raise r̂ by d1, while the test says q̂ is too big. What is left is at most one
+    # too big.
+    while knuth_d3_too_big(q_hat, r_hat, d0, u0) with q_hat: U64 = q_first, r_hat: U64 = r_first
+        continue with q_hat: q_hat - 1, r_hat: r_hat + d1
+    then
+        # Subtract q̂ × v from the window. A borrow out of its top means q̂ was one too big, so v is added back.
+        digit: U32 = q_hat.to_wrap[U32]()
+        borrow: U32 = me.submul(j, len: n, m: digit)
+        window_top: U32 = me.u[top_at]
         me.u[top_at] = 0  # the window's remainder is below v
-        if top < borrow
-            jump add_back(q_hat)
-        else
-            return q_hat
+        if window_top < borrow
+            me.add_back(j, n)
+            return digit - 1
+        return digit
 
-    block add_back(q_hat: U32)
-        me.add_back(j, n)
-        return q_hat - 1
+### Knuth's D3 test: q̂ is too big while it exceeds a limb or q̂ × d0 exceeds r̂ × 2^32 + u0. Once r̂ reaches 2^32
+### the test can't fail, so q̂ stands.
+### :param q_hat: The trial quotient digit q̂.
+### :param r_hat: The trial remainder r̂ of the window's top two limbs.
+### :param d0: The divisor's second limb.
+### :param u0: The window's third limb from the top.
+### :returns: True when q̂ is one or more too big.
+private routine knuth_d3_too_big(q_hat: U64, r_hat: U64, d0: U64, u0: U64) -> Bool
+    if r_hat > 0xFFFFFFFF
+        return false
+    if q_hat > 0xFFFFFFFF
+        return true
+    product: U64 = q_hat * d0
+    window: U64 = (r_hat << 32) | u0
+    return product > window
 
 ### u[j .. j+len-1] -= v[0 .. len-1] × m. Returns the limb that borrows out of the top.
 ### :param j: The first limb of `u` to subtract from.

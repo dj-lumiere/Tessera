@@ -304,40 +304,33 @@ routine cm_log_near_one(x: U128) -> B128
     exact: Bool = x == one
     above: Bool = x > one
     plus_zero: B128 = b128_of(0)
-    when
+    values: (CmLogNear, U64) = when
         exact => return plus_zero
-        above => jump normalize(cm_log_above_one(x), 0)
-        else => jump below()
-
-    block below()
-        jump normalize(cm_log_below_one(x), 1)
+        above => (cm_log_above_one(x), 0)
+        else => (cm_log_below_one(x), 1)
+    n, neg = values
 
     # normalize the top bit to 127, then round (exactly when the fast test failed)
-    block normalize(n: CmLogNear, neg: U64)
-        top_clear: Bool = n.sig >= 0
-        sig: S128 = when
-            top_clear => n.sig << 1
-            else => n.sig
-        e: U64 = when
-            top_clear => n.e + 1
-            else => n.e
-        sig_lo: U64 = cm_wide_lo(sig.to_wrap[U128]())
-        rnd: U64 = (sig_lo >> 14) & 1
-        biased: U64 = 16381 - e
-        el: U64 = biased | (neg << 15)
-        if n.hard
-            jump exact(sig.to_wrap[U128](), el)
-        else
-            jump fast(sig.to_wrap[U128](), el, rnd)
-
-    block fast(sig: U128, el: U64, rnd: U64)
-        r: B128 = cm_log_pack(sig: sig >> 15, el, round: rnd)
-        return r
-
-    block exact(sig: U128, el: U64)
-        m: U128 = sig +% 0x2000 >> 14
+    top_clear: Bool = n.sig >= 0
+    sig: S128 = when
+        top_clear => n.sig << 1
+        else => n.sig
+    e: U64 = when
+        top_clear => n.e + 1
+        else => n.e
+    sig_lo: U64 = cm_wide_lo(sig.to_wrap[U128]())
+    rnd: U64 = (sig_lo >> 14) & 1
+    biased: U64 = 16381 - e
+    el: U64 = biased | (neg << 15)
+    if n.hard
+        sig2: U128 = sig.to_wrap[U128]()
+        m: U128 = sig2 +% 0x2000 >> 14
         rounded: CmLogRounding = cm_log_refine(el, m, x)
         r: B128 = cm_log_pack(sig: rounded.sig, el, round: rounded.round)
+        return r
+    else
+        sig2: U128 = sig.to_wrap[U128]()
+        r: B128 = cm_log_pack(sig: sig2 >> 15, el, round: rnd)
         return r
 
 ### ln(x) for 1 < x < 1 + 2^-29 or so: t = x - 1, ln(1 + t) = t - t^2 * P(t), before the final rounding.

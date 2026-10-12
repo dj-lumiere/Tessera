@@ -40,115 +40,101 @@ routine B64.acosh(me: Me) -> Me
     below738: Bool = ix < 0x4087100000000000
     below2e4: Bool = ix < 0x40E0100000000000  # x < 32896
     # x < 0x1.ap+31
-    when
-        special => jump special()
-        upto_one => jump upto_one()
-        near_one => jump near_one()
-        moderate => jump moderate()
-        below738 => jump series3()
-        below2e4 => jump series2()
-        ix < 0x41EA000000000000 => jump series1()
-        else => jump log_fast(ix, 0x3FE, 0.0, 0x1.b2p-63)
-
-    block special()
-        # +inf or NaN
-        if ix == 0x7FF0000000000000 or ix << 1 > 0xFFE0000000000000
-            return me + me
-        else
-            return Me.from_bits(0xFFF8000000000000)
-
-    block upto_one()
-        if ix == 0x3FF0000000000000
-            return 0.0
-        else
-            return Me.from_bits(0xFFF8000000000000)
-
-    # 1 < x < 0x1.1e83e425aee63p+0: acosh(1 + z) = sqrt(2z) (1 + z P(z)), with sqrt(2z) = sh + sl
-    block near_one()
-        z: Me = me - 1.0
-        iz: Me = Me.truediv(-0.25, z)
-        zt: Me = Me.mul(2.0, z)
-        sh: Me = zt.sqrt()
-        sl: Me = sh.mul_add(a: sh, b: -zt) * (sh * iz)
-        z2: Me = z * z
-        z4: Me = z2 * z2
-        c2: Me = z * -0x1.6db6db6d5534cp-8 + 0x1.3333333332f95p-6
-        c4: Me = z * -0x1.6e8b8e3e40d58p-11 + 0x1.f1c71c1e04356p-10
-        c6: Me = z * -0x1.c9045534e6d9ep-14 + 0x1.1c4ba825ac4fep-12
-        c8: Me = z * -0x1.f1f4f8cc65342p-17 + 0x1.71fedae26a76bp-15
-        c24: Me = z2 * c4 + c2
-        c68: Me = z2 * c8 + c6
-        poly: Me = z * (z4 * c68 + c24) + -0x1.5555555555555p-4
-        ds: Me = (sh * z).mul_add(a: poly, b: sl)
-        eps: Me = ds * 0x1.00p-50 - Me.mul(0x1p-104, sh)
-        lb: Me = sh + (ds - eps)
-        ub: Me = sh + (ds + eps)
-        if lb == ub
-            return lb
-        else
-            return cm_b64_acosh_one(z, sh, sl)
-
-    # x < 111.75: th + tl = x + sqrt(x^2 - 1), and log(th + tl) = log(th) + tl/th
-    block moderate()
-        x2h: Me = me * me
-        wh: Me = x2h - 1.0
-        wl: Me = b64_mul_error(x: me, y: me, p: x2h)
-        sh: Me = wh.sqrt()
-        ish: Me = Me.truediv(0.5, wh)
-        sl: Me = (wl - sh.mul_add(a: sh, b: -wh)) * (sh * ish)
-        s: CmF64HypDd = cm_b64_hyp_fasttwosum(x: me, y: sh)
-        tl: Me = s.lo + sl
-        jump log_fast(s.hi.bits(), 0x3FF, tl / s.hi, 0x1.81p-63)
-
-    # 111.75 <= x < 738: log(x + sqrt(x^2 - 1)) = log(2x) + g with g a series in z = 1/x^2
-    block series3()
-        z: Me = Me.truediv(1.0, me * me)
-        c0: Me = z * -0x1.aab6691f2bae7p-5 + -0x1.7fffffebf3e6cp-4
-        c1: Me = z * c0 + -0x1.000000000005cp-2
-        jump log_fast(me.bits(), 0x3FE, z * c1 + 0x1.5c4b6148816e2p-66, 0x1.c3p-63)
-
-    # 738 <= x < 32896
-    block series2()
-        z: Me = Me.truediv(1.0, me * me)
-        c0: Me = z * -0x1.8000268641bfep-4 + -0x1.ffffffffff214p-3
-        jump log_fast(me.bits(), 0x3FE, z * c0 + -0x1.7f77c8429c6c6p-67, 0x1.9ap-63)
-
-    # 32896 <= x < 0x1.ap+31
-    block series1()
-        z: Me = Me.truediv(1.0, me * me)
-        jump log_fast(me.bits(), 0x3FE, z * -0x1.000000017d048p-2 + 0x1.7a0ed2effdd1p-67, 0x1.99p-63)
+    values: (U64, S64, Me, Me) = when
+        special =>
+            # +inf or NaN
+            if ix == 0x7FF0000000000000 or ix << 1 > 0xFFE0000000000000
+                return me + me
+            else
+                return Me.from_bits(0xFFF8000000000000)
+        upto_one =>
+            if ix == 0x3FF0000000000000
+                return 0.0
+            else
+                return Me.from_bits(0xFFF8000000000000)
+        near_one =>
+            # 1 < x < 0x1.1e83e425aee63p+0: acosh(1 + z) = sqrt(2z) (1 + z P(z)), with sqrt(2z) = sh + sl
+            z: Me = me - 1.0
+            iz: Me = Me.truediv(-0.25, z)
+            zt: Me = Me.mul(2.0, z)
+            sh: Me = zt.sqrt()
+            sl: Me = sh.mul_add(a: sh, b: -zt) * (sh * iz)
+            z2: Me = z * z
+            z4: Me = z2 * z2
+            c2: Me = z * -0x1.6db6db6d5534cp-8 + 0x1.3333333332f95p-6
+            c4: Me = z * -0x1.6e8b8e3e40d58p-11 + 0x1.f1c71c1e04356p-10
+            c6: Me = z * -0x1.c9045534e6d9ep-14 + 0x1.1c4ba825ac4fep-12
+            c8: Me = z * -0x1.f1f4f8cc65342p-17 + 0x1.71fedae26a76bp-15
+            c24: Me = z2 * c4 + c2
+            c68: Me = z2 * c8 + c6
+            poly: Me = z * (z4 * c68 + c24) + -0x1.5555555555555p-4
+            ds: Me = (sh * z).mul_add(a: poly, b: sl)
+            eps: Me = ds * 0x1.00p-50 - Me.mul(0x1p-104, sh)
+            lb: Me = sh + (ds - eps)
+            ub: Me = sh + (ds + eps)
+            if lb == ub
+                return lb
+            else
+                return cm_b64_acosh_one(z, sh, sl)
+        moderate =>
+            # x < 111.75: th + tl = x + sqrt(x^2 - 1), and log(th + tl) = log(th) + tl/th
+            x2h: Me = me * me
+            wh: Me = x2h - 1.0
+            wl: Me = b64_mul_error(x: me, y: me, p: x2h)
+            sh: Me = wh.sqrt()
+            ish: Me = Me.truediv(0.5, wh)
+            sl: Me = (wl - sh.mul_add(a: sh, b: -wh)) * (sh * ish)
+            s: CmF64HypDd = cm_b64_hyp_fasttwosum(x: me, y: sh)
+            tl: Me = s.lo + sl
+            becomes (s.hi.bits(), 0x3FF, tl / s.hi, 0x1.81p-63)
+        below738 =>
+            # 111.75 <= x < 738: log(x + sqrt(x^2 - 1)) = log(2x) + g with g a series in z = 1/x^2
+            z: Me = Me.truediv(1.0, me * me)
+            c0: Me = z * -0x1.aab6691f2bae7p-5 + -0x1.7fffffebf3e6cp-4
+            c1: Me = z * c0 + -0x1.000000000005cp-2
+            becomes (me.bits(), 0x3FE, z * c1 + 0x1.5c4b6148816e2p-66, 0x1.c3p-63)
+        below2e4 =>
+            # 738 <= x < 32896
+            z: Me = Me.truediv(1.0, me * me)
+            c0: Me = z * -0x1.8000268641bfep-4 + -0x1.ffffffffff214p-3
+            becomes (me.bits(), 0x3FE, z * c0 + -0x1.7f77c8429c6c6p-67, 0x1.9ap-63)
+        ix < 0x41EA000000000000 =>
+            # 32896 <= x < 0x1.ap+31
+            z: Me = Me.truediv(1.0, me * me)
+            becomes (me.bits(), 0x3FE, z * -0x1.000000017d048p-2 + 0x1.7a0ed2effdd1p-67, 0x1.99p-63)
+        else => (ix, 0x3FE, 0.0, 0x1.b2p-63)
+    t, off, g, eps = values
 
     # log(2^(e - off) m) + g for the bits t of 2^e m, from the tables
-    block log_fast(t: U64, off: S64, g: Me, eps: Me)
-        eb: S64 = (t >> 52).to[S64]()
-        e: S64 = eb - off
-        tm: U64 = t & 0x000FFFFFFFFFFFFF
-        ed: Me = e.to[Me]()
-        j: U64 = cm_b64_archyp_index(tm)
-        m: Me = Me.from_bits(tm | 0x3FF0000000000000)
-        i1: USize = (j >> 5).to[USize]()
-        i2: USize = (j & 0x1F).to[USize]()
-        r: Me = Me.from_bits(CM_B64_ARCHYP_R1.getitem(i1)) * Me.from_bits(CM_B64_ARCHYP_R2.getitem(i2))
-        dx: Me = r.mul_add(a: m, b: -1.0)
-        dx2: Me = dx * dx
-        f: Me = dx2 * cm_b64_archyp_log_poly(dx, dx2)
-        # log(2) as l2h + l2l with l2h on 42 bits, so l2h ed is exact
-        l1h: Me = Me.from_bits(CM_B64_ARCHYP_L1_HI.getitem(i1))
-        l2h: Me = Me.from_bits(CM_B64_ARCHYP_L2_HI.getitem(i2))
-        l1l: Me = Me.from_bits(CM_B64_ARCHYP_L1_LO.getitem(i1))
-        l2l: Me = Me.from_bits(CM_B64_ARCHYP_L2_LO.getitem(i2))
-        lh: Me = l1h + l2h + Me.mul(0x1.62e42fefa38p-1, ed)
-        t1: Me = Me.mul(0x1.ef35793c7673p-45, ed) + (l1l + l2l)
-        t2: Me = f + t1
-        t3: Me = g + t2
-        ll: Me = dx + t3
-        lb: Me = lh + (ll - eps)
-        ub: Me = lh + (ll + eps)
-        # 0x1.71547652b82fep+0 approximates 1/log(2)
-        if lb == ub
-            return lb
-        else
-            return cm_b64_acosh_refine(x: me, a: Me.mul(0x1.71547652b82fep+0, lb))
+    eb: S64 = (t >> 52).to[S64]()
+    e: S64 = eb - off
+    tm: U64 = t & 0x000FFFFFFFFFFFFF
+    ed: Me = e.to[Me]()
+    j: U64 = cm_b64_archyp_index(tm)
+    m: Me = Me.from_bits(tm | 0x3FF0000000000000)
+    i1: USize = (j >> 5).to[USize]()
+    i2: USize = (j & 0x1F).to[USize]()
+    r: Me = Me.from_bits(CM_B64_ARCHYP_R1.getitem(i1)) * Me.from_bits(CM_B64_ARCHYP_R2.getitem(i2))
+    dx: Me = r.mul_add(a: m, b: -1.0)
+    dx2: Me = dx * dx
+    f: Me = dx2 * cm_b64_archyp_log_poly(dx, dx2)
+    # log(2) as l2h + l2l with l2h on 42 bits, so l2h ed is exact
+    l1h: Me = Me.from_bits(CM_B64_ARCHYP_L1_HI.getitem(i1))
+    l2h: Me = Me.from_bits(CM_B64_ARCHYP_L2_HI.getitem(i2))
+    l1l: Me = Me.from_bits(CM_B64_ARCHYP_L1_LO.getitem(i1))
+    l2l: Me = Me.from_bits(CM_B64_ARCHYP_L2_LO.getitem(i2))
+    lh: Me = l1h + l2h + Me.mul(0x1.62e42fefa38p-1, ed)
+    t1: Me = Me.mul(0x1.ef35793c7673p-45, ed) + (l1l + l2l)
+    t2: Me = f + t1
+    t3: Me = g + t2
+    ll: Me = dx + t3
+    lb: Me = lh + (ll - eps)
+    ub: Me = lh + (ll + eps)
+    # 0x1.71547652b82fep+0 approximates 1/log(2)
+    if lb == ub
+        return lb
+    else
+        return cm_b64_acosh_refine(x: me, a: Me.mul(0x1.71547652b82fep+0, lb))
 
 ### The double-double sum (xh + xl) + (ch + cl): an exact two-sum of the high parts plus the low parts.
 ### :param xh: The high part of the first addend.

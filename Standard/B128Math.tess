@@ -564,34 +564,22 @@ routine b128_reduce(x: B128) -> Reduced
 
     # |x| < 0.5 < π/4
     if p.exponent < -1
-        jump near_zero()
-    else
-        jump window()
+        near_zero: Reduced = Reduced(quadrant: 0, theta: B128.to[B128Extended](x.abs()))
+        return near_zero
 
-    block near_zero()
-        r: Reduced = Reduced(quadrant: 0, theta: B128.to[B128Extended](x.abs()))
-        return r
-
-    block window()
-        bits_above: S64 = (p.exponent - 114).max(0)
-        start: S64 = bits_above.div_trunc(64)  # first 2/π limb used
-        window_bits: S64 = (start + 8) * 64
-        sh: S64 = window_bits - p.exponent + 112
-        local prod: @Array[S64, 12] <- .hollow()
-        limbs: @U64 = prod.to[@U64]()
-        limbs.zeroinit(12)
-        m0: U128 = p.sig & 0xFFFFFFFFFFFFFFFF
-        jump multiply(0, start, sh, m0, p.sig >> 64, limbs)
+    bits_above: S64 = (p.exponent - 114).max(0)
+    start: S64 = bits_above.div_trunc(64)  # first 2/π limb used
+    window_bits: S64 = (start + 8) * 64
+    sh: S64 = window_bits - p.exponent + 112
+    local prod: @Array[S64, 12] <- .hollow()
+    limbs: @U64 = prod.to[@U64]()
+    limbs.zeroinit(12)
+    m0: U128 = p.sig & 0xFFFFFFFFFFFFFFFF
+    m1: U128 = p.sig >> 64
 
     # limb k of W (little-endian) is TWO_OVER_PI[start + 7 - k]. Add m × w_k at limb k
-    block multiply(k: USize, start: S64, sh: S64, m0: U128, m1: U128, limbs: @U64)
-        if k >= 8
-            jump extract(sh, limbs)
-        else
-            jump term(k, start.to[USize](), sh, m0, m1, limbs)
-
-    block term(k: USize, start: USize, sh: S64, m0: U128, m1: U128, limbs: @U64)
-        index: USize = start + 7 - k
+    each k in 0 til 8
+        index: USize = start.to[USize]() + 7 - k
         w: U64 = TWO_OVER_PI.getitem(index)
         wide: U128 = w.to[U128]()
         lo_p: U128 = m0 *% wide
@@ -610,56 +598,47 @@ routine b128_reduce(x: B128) -> Reduced
         limbs.stride(k).poke(s0.to_wrap[U64]())
         limbs.stride(k1).poke(s1.to_wrap[U64]())
         limbs.stride(k2).poke(s2.to[U64]())
-        jump spill(k + 3, (s2 >> 64).to[U64](), k, start, sh, m0, m1, limbs)
-
-    # carry on up the limbs
-    block spill(j: USize, carry: U64, k: USize, start: USize, sh: S64, m0: U128, m1: U128, limbs: @U64)
-        if carry == 0 or j >= 12
-            jump multiply(k + 1, start.to[S64](), sh, m0, m1, limbs)
-        else
-            jump spill_one(j, carry, k, start, sh, m0, m1, limbs)
-
-    block spill_one(j: USize, carry: U64, k: USize, start: USize, sh: S64, m0: U128, m1: U128, limbs: @U64)
-        r: U64 = limbs.stride(j).peek()
-        s: U128 = r.to[U128]() +% carry.to[U128]()
-        limbs.stride(j).poke(s.to_wrap[U64]())
-        jump spill(j +% 1, (s >> 64).to[U64](), k, start, sh, m0, m1, limbs)
+        # carry on up the limbs
+        while carry != 0 and j < 12 with j: USize = k + 3, carry: U64 = (s2 >> 64).to[U64]()
+            r: U64 = limbs.stride(j).peek()
+            s: U128 = r.to[U128]() +% carry.to[U128]()
+            limbs.stride(j).poke(s.to_wrap[U64]())
+            continue with j: j +% 1, carry: (s >> 64).to[U64]()
 
     # quadrant: bits sh and sh+1. Fraction: the 256 bits under sh, normalized
-    block extract(sh: S64, limbs: @U64)
-        q: U64 = limbs_bits64(p: limbs, pos: sh) & 3
-        a: U64 = limbs_bits64(p: limbs, pos: sh - 64)
-        b: U64 = limbs_bits64(p: limbs, pos: sh - 128)
-        c: U64 = limbs_bits64(p: limbs, pos: sh - 192)
-        d: U64 = limbs_bits64(p: limbs, pos: sh - 256)
-        a_high: U128 = a.to[U128]() << 64
-        x_hi: U128 = a_high | b.to[U128]()
-        c_high: U128 = c.to[U128]() << 64
-        x_lo: U128 = c_high | d.to[U128]()
-        # f = X × 2^-256 in [0, 1). Past 1/2, count the next quadrant and use
-        # f - 1 = -(2^256 - X) × 2^-256, complemented on all 256 bits before
-        # normalizing: f can be 1 - 2^-120, and f - 1 taken after cutting f to
-        # 192 bits would keep only its last 72.
-        past_half: Bool = a >> 63 == 1
-        neg_lo: U128 = 0 -% x_lo
-        borrow: U128 = (x_lo != 0).to[U128]()
-        neg_hi: U128 = 0 -% x_hi -% borrow
-        use_hi: U128 = when
-            past_half => neg_hi
-            else => x_hi
-        use_lo: U128 = when
-            past_half => neg_lo
-            else => x_lo
-        magnitude: B128Extended = wide_from_256(hi: use_hi, lo: use_lo)
-        g: B128Extended = when
-            past_half => -magnitude
-            else => magnitude
-        k: U64 = when
-            past_half => q +% 1 & 3
-            else => q
-        theta: B128Extended = g * wide_table(hi: WIDE_HALF_PI_HI.to[@U128](), lo: WIDE_HALF_PI_LO.to[@U64](), exponent: WIDE_HALF_PI_EXP.to[@S64](), i: 0)
-        r: Reduced = Reduced(quadrant: k, theta: theta)
-        return r
+    q: U64 = limbs_bits64(p: limbs, pos: sh) & 3
+    a: U64 = limbs_bits64(p: limbs, pos: sh - 64)
+    b: U64 = limbs_bits64(p: limbs, pos: sh - 128)
+    c: U64 = limbs_bits64(p: limbs, pos: sh - 192)
+    d: U64 = limbs_bits64(p: limbs, pos: sh - 256)
+    a_high: U128 = a.to[U128]() << 64
+    x_hi: U128 = a_high | b.to[U128]()
+    c_high: U128 = c.to[U128]() << 64
+    x_lo: U128 = c_high | d.to[U128]()
+    # f = X × 2^-256 in [0, 1). Past 1/2, count the next quadrant and use
+    # f - 1 = -(2^256 - X) × 2^-256, complemented on all 256 bits before
+    # normalizing: f can be 1 - 2^-120, and f - 1 taken after cutting f to
+    # 192 bits would keep only its last 72.
+    past_half: Bool = a >> 63 == 1
+    neg_lo: U128 = 0 -% x_lo
+    borrow: U128 = (x_lo != 0).to[U128]()
+    neg_hi: U128 = 0 -% x_hi -% borrow
+    use_hi: U128 = when
+        past_half => neg_hi
+        else => x_hi
+    use_lo: U128 = when
+        past_half => neg_lo
+        else => x_lo
+    magnitude: B128Extended = wide_from_256(hi: use_hi, lo: use_lo)
+    g: B128Extended = when
+        past_half => -magnitude
+        else => magnitude
+    k: U64 = when
+        past_half => q +% 1 & 3
+        else => q
+    theta: B128Extended = g * wide_table(hi: WIDE_HALF_PI_HI.to[@U128](), lo: WIDE_HALF_PI_LO.to[@U64](), exponent: WIDE_HALF_PI_EXP.to[@S64](), i: 0)
+    r: Reduced = Reduced(quadrant: k, theta: theta)
+    return r
 
 ### (hi × 2^128 + lo) × 2^-256 as a B128Extended, keeping its top 192 bits.
 ### :param hi: The high 128 bits.

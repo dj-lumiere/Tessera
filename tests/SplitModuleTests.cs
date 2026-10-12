@@ -13,22 +13,19 @@ public class SplitModuleTests
     private const string Source = """
         global COUNTER: @S64
 
-        routine bump(by: S64) -> Void
-            block entry()
-                next: S64 = COUNTER.peek().add(by)
-                next.poke_into(COUNTER)
-                return()
+        routine bump(by: S64) -> None
+            next: S64 = COUNTER.peek() + by
+            next.poke_into(COUNTER)
+            return
 
-        #inline
+        @inline
         routine twice(x: S64) -> S64
-            block entry()
-                return(x.add(x))
+            return x + x
 
-        routine start() -> Void
-            block entry()
-                bump(twice(2))
-                total: S64 = COUNTER.peek()
-                return()
+        routine start() -> None
+            bump(twice(2))
+            total: S64 = COUNTER.peek()
+            return
 
         """;
 
@@ -39,7 +36,7 @@ public class SplitModuleTests
         string baseIr = baseCompiler.Generate();
         string bump = Assert.Single(baseCompiler.ExposedSymbols, s => s.Contains("bump", StringComparison.Ordinal));
         string counter = Assert.Single(baseCompiler.ExposedSymbols, s => s.Contains("COUNTER", StringComparison.Ordinal));
-        // External definitions: no internal global, no linkonce routine. An #inline routine stays the module's own.
+        // External definitions: no internal global, no linkonce routine. An @inline routine stays the module's own.
         Assert.Contains($"@{counter} = global", baseIr);
         Assert.Contains($"define void @{bump}(", baseIr);
         Assert.DoesNotContain(baseCompiler.ExposedSymbols, s => s.Contains("twice", StringComparison.Ordinal));

@@ -85,148 +85,117 @@ routine B16.powf(me: Me, exponent: Me) -> Me
     local xa: U32 = xu & 0x7FFF
     local ya: U32 = yu & 0x7FFF
 
-    when
-        xa == 0x3C00 => jump unit_base()
-        ya == 0 => jump zero_exponent()
-        ya >= 0x7C00 => jump special_exponent()
-        xa == 0 => jump zero_base()
-        xu >= 0x7C00 => jump special_base()
-        else => jump listed(xu, 0)
+    values: (U32, U64) = when
+        xa == 0x3C00 =>
+            # |x| = 1
+            # y = ±inf or NaN
+            # x = ±inf, NaN, or x < 0
+            if xu >> 15 == 1
+                # (-1)^y: ±1 for an integer y, NaN otherwise
+                when
+                    ya > 0x7C00 => return exponent + exponent
+                    cm_b16_pow_is_int(yu) =>
+                        if cm_b16_pow_is_odd(yu)
+                            return me
+                        else
+                            return -me
+                    else => return Me.from_bits(0xFE00)
+            # 1^y = 1, except for a signaling NaN y
+            else if ya > 0x7C00 and yu & 0x0200 == 0
+                return exponent + exponent
+            else
+                return me
+        ya == 0 =>
+            # x^0 = 1, except for a signaling NaN x
+            if xa > 0x7C00 and xu & 0x0200 == 0
+                return me + me
+            else
+                return 1.0
+        ya >= 0x7C00 =>
+            # |x| = 1 was handled above
+            when
+                xa > 0x7C00 => return me + me
+                ya == 0x7C00 =>
+                    # 0 when |x| < 1 and y = +inf or |x| > 1 and y = -inf, else +inf
+                    small: Bool = xa < 0x3C00
+                    if small != (yu >> 15 == 1)
+                        return Me.from_bits(0x0000)
+                    else
+                        return Me.INFINITY
+                else => return exponent + exponent
+        xa == 0 =>
+            # x = ±0: a signed zero or infinity, negative only for -0 and an odd integer y
+            odd_neg: Bool = cm_b16_pow_is_odd(yu) & (xu >> 15 != 0)
+            neg_y: Bool = yu >> 15 == 1
+            when
+                neg_y and odd_neg => return Me.NEG_INFINITY
+                neg_y => return Me.INFINITY
+                odd_neg => return Me.from_bits(0x8000)
+                else => return Me.from_bits(0x0000)
+        xu >= 0x7C00 =>
+            when
+                xa == 0x7C00 =>
+                    # ±inf: the sign survives only for an odd y, and a negative y gives a zero
+                    odd: Bool = cm_b16_pow_is_odd(yu)
+                    signed: U32 = when
+                        odd => xu
+                        else => xu & 0x7FFF
+                    neg_y: Bool = yu >> 15 == 1
+                    r: U32 = when
+                        neg_y => signed & 0x8000
+                        else => signed
+                    return Me.from_bits(r.to[U16]())
+                xa > 0x7C00 => return me + me
+                else =>
+                    # x < 0: NaN for a non-integer y, else |x|^y with the sign of an odd y
+                    if not cm_b16_pow_is_int(yu)
+                        return Me.from_bits(0xFE00)
+                    odd: Bool = cm_b16_pow_is_odd(yu)
+                    sign: U64 = when
+                        odd => 0x8000000000000000
+                        else => 0
+                    becomes (xa, sign)
+        else => (xu, 0)
 
-    # |x| = 1
-    # y = ±inf or NaN
-    # x = ±inf, NaN, or x < 0
-    block unit_base()
-        if xu >> 15 == 1
-            jump minus_one()
-        else
-            jump plus_one()
-
-    # (-1)^y: ±1 for an integer y, NaN otherwise
-    block minus_one()
-        when
-            ya > 0x7C00 => return exponent + exponent
-            cm_b16_pow_is_int(yu) => jump minus_one_int()
-            else => return Me.from_bits(0xFE00)
-
-    block minus_one_int()
-        if cm_b16_pow_is_odd(yu)
-            return me
-        else
-            return -me
-
-    # 1^y = 1, except for a signaling NaN y
-    block plus_one()
-        if ya > 0x7C00 and yu & 0x0200 == 0
-            return exponent + exponent
-        else
-            return me
-
-    # x^0 = 1, except for a signaling NaN x
-    block zero_exponent()
-        if xa > 0x7C00 and xu & 0x0200 == 0
-            return me + me
-        else
-            return 1.0
-
-    # |x| = 1 was handled above
-    block special_exponent()
-        when
-            xa > 0x7C00 => return me + me
-            ya == 0x7C00 => jump infinite_exponent()
-            else => return exponent + exponent
-
-    # 0 when |x| < 1 and y = +inf or |x| > 1 and y = -inf, else +inf
-    block infinite_exponent()
-        small: Bool = xa < 0x3C00
-        neg: Bool = yu >> 15 == 1
-        if small != neg
-            return Me.from_bits(0x0000)
-        else
-            return Me.INFINITY
-
-    # x = ±0: a signed zero or infinity, negative only for -0 and an odd integer y
-    block zero_base()
-        odd_neg: Bool = cm_b16_pow_is_odd(yu) & (xu >> 15 != 0)
-        neg_y: Bool = yu >> 15 == 1
-        when
-            neg_y and odd_neg => return Me.NEG_INFINITY
-            neg_y => return Me.INFINITY
-            odd_neg => return Me.from_bits(0x8000)
-            else => return Me.from_bits(0x0000)
-
-    block special_base()
-        when
-            xa == 0x7C00 => jump infinite_base()
-            xa > 0x7C00 => return me + me
-            else => jump negative_base()
-
-    # ±inf: the sign survives only for an odd y, and a negative y gives a zero
-    block infinite_base()
-        odd: Bool = cm_b16_pow_is_odd(yu)
-        signed: U32 = when
-            odd => xu
-            else => xu & 0x7FFF
-        neg_y: Bool = yu >> 15 == 1
-        r: U32 = when
-            neg_y => signed & 0x8000
-            else => signed
-        return Me.from_bits(r.to[U16]())
-
-    # x < 0: NaN for a non-integer y, else |x|^y with the sign of an odd y
-    block negative_base()
-        if not cm_b16_pow_is_int(yu)
-            return Me.from_bits(0xFE00)
-        odd: Bool = cm_b16_pow_is_odd(yu)
-        sign: U64 = when
-            odd => 0x8000000000000000
-            else => 0
-        jump listed(xa, sign)
+    xm, sign = values
 
     # the inputs the approximation rounds wrongly (xm = |x| from here on)
-    block listed(xm: U32, sign: U64)
-        when
-            xm == 0x1C94 and yu == 0x31BC => return B32.sub(0x1.848p-2, 0x1p-14).to[Me]()
-            xm == 0x537B and yu == 0x25BF => return B32.sub(0x1.18cp+0, 0x1p-12).to[Me]()
-            xm == 0x756B and yu == 0x112E => return B32.sub(0x1.01cp+0, 0x1p-12).to[Me]()
-            xm == 0x0D36 and yu == 0x2316 => return B32.add(0x1.cap-1, 0x1p-13).to[Me]()
-            xm == 0x273B and yu == 0x38B3 => return B32.add(0x1.f8p-4, 0x1p-16).to[Me]()
-            xm == 0x32BB and yu == 0x4242 => return B32.add(0x1.f2cp-8, 0x1p-20).to[Me]()
-            xm == 0x4D47 and yu == 0x9D5F => return B64.sub(0x1.f8p-1, 0x1p-13).to[Me]()
-            xm == 0x2E27 and yu == 0xC107 => return B64.sub(0x1.688p+8, 0x1p-4).to[Me]()
-            xm == 0x14CB and yu == 0xBE46 => return B64.sub(0x1.35cp+15, 0x1p-3).to[Me]()
-            xm == 0x7ABF and yu == 0x8CC5 => return B64.sub(0x1.fe8p-1, 0x1p-13).to[Me]()
-            xm == 0x650C and yu == 0x9BED => return B64.add(0x1.f2p-1, 0x1p-13).to[Me]()
-            xm == 0x29A0 and yu == 0xB5CF => return B64.add(0x1.8ep+1, 0x1p-11).to[Me]()
-            xm == 0x17E9 and yu == 0xB1CF => return B64.add(0x1.8ep+1, 0x1p-11).to[Me]()
-            xm == 0x5988 and yu == 0x9443 => return B64.add(0x1.fd4p-1, 0x1p-13).to[Me]()
-            else => jump classify(xm, sign)
-
-    block classify(xm: U32, sign: U64)
-        xd: B64 = Me.from_bits(xm.to[U16]()).to[B64]()
-        isex: U64 = cm_b16_pow_is_exact(xu: xm, yu, y: exponent)
-        # x = 2^E with an integer y E in range: the exact power of two
-        if isex > 0xFF
-            jump done(isex, sign)
-        ret: U64 = cm_b16_pow_exp(cm_b16_pow_log(xd) * exponent.to[B64]()).bits()
-        if isex != 0
-            jump snap(xd, isex, ret, sign)
-        else
-            jump done(ret, sign)
-
-    # y = n / 2^F in a small set: when the result is exact, round away the approximation error
-    block snap(xd: B64, isex: U64, ret: U64, sign: U64)
-        rounded: U64 = ret +% 0x0000010000000000 & 0xFFFFFE0000000000
-        test1: U64 = cm_b16_pow_fast(x: xd, y: isex >> 4).bits()
-        test2: U64 = cm_b16_pow_fast(x: B64.from_bits(rounded), y: isex & 0xF).bits()
-        exact: Bool = test1 == test2
-        r: U64 = when
-            exact => rounded
-            else => ret
-        jump done(r, sign)
-
-    block done(ret: U64, sign: U64)
-        return B64.from_bits(ret +% sign).to[Me]()
+    when
+        xm == 0x1C94 and yu == 0x31BC => return B32.sub(0x1.848p-2, 0x1p-14).to[Me]()
+        xm == 0x537B and yu == 0x25BF => return B32.sub(0x1.18cp+0, 0x1p-12).to[Me]()
+        xm == 0x756B and yu == 0x112E => return B32.sub(0x1.01cp+0, 0x1p-12).to[Me]()
+        xm == 0x0D36 and yu == 0x2316 => return B32.add(0x1.cap-1, 0x1p-13).to[Me]()
+        xm == 0x273B and yu == 0x38B3 => return B32.add(0x1.f8p-4, 0x1p-16).to[Me]()
+        xm == 0x32BB and yu == 0x4242 => return B32.add(0x1.f2cp-8, 0x1p-20).to[Me]()
+        xm == 0x4D47 and yu == 0x9D5F => return B64.sub(0x1.f8p-1, 0x1p-13).to[Me]()
+        xm == 0x2E27 and yu == 0xC107 => return B64.sub(0x1.688p+8, 0x1p-4).to[Me]()
+        xm == 0x14CB and yu == 0xBE46 => return B64.sub(0x1.35cp+15, 0x1p-3).to[Me]()
+        xm == 0x7ABF and yu == 0x8CC5 => return B64.sub(0x1.fe8p-1, 0x1p-13).to[Me]()
+        xm == 0x650C and yu == 0x9BED => return B64.add(0x1.f2p-1, 0x1p-13).to[Me]()
+        xm == 0x29A0 and yu == 0xB5CF => return B64.add(0x1.8ep+1, 0x1p-11).to[Me]()
+        xm == 0x17E9 and yu == 0xB1CF => return B64.add(0x1.8ep+1, 0x1p-11).to[Me]()
+        xm == 0x5988 and yu == 0x9443 => return B64.add(0x1.fd4p-1, 0x1p-13).to[Me]()
+        else =>
+            xd: B64 = Me.from_bits(xm.to[U16]()).to[B64]()
+            isex: U64 = cm_b16_pow_is_exact(xu: xm, yu, y: exponent)
+            # x = 2^E with an integer y E in range: the exact power of two
+            ret: U64 = when
+                isex > 0xFF => isex
+                else =>
+                    ret: U64 = cm_b16_pow_exp(cm_b16_pow_log(xd) * exponent.to[B64]()).bits()
+                    if isex != 0
+                        # y = n / 2^F in a small set: when the result is exact, round away the approximation error
+                        rounded: U64 = ret +% 0x0000010000000000 & 0xFFFFFE0000000000
+                        test1: U64 = cm_b16_pow_fast(x: xd, y: isex >> 4).bits()
+                        test2: U64 = cm_b16_pow_fast(x: B64.from_bits(rounded), y: isex & 0xF).bits()
+                        exact: Bool = test1 == test2
+                        r: U64 = when
+                            exact => rounded
+                            else => ret
+                        becomes r
+                    else
+                        becomes ret
+            return B64.from_bits(ret +% sign).to[Me]()
 
 ### Whether the B16 value with bits `u` is an integer (zero counts).
 ### :param u: The B16 bits, widened to U32.
@@ -256,58 +225,51 @@ private routine cm_b16_pow_is_exact(xu: U32, yu: U32, y: B16) -> U64
     local yexp: U32 = (yu >> 10) & 0x1F
     local yexp_tz: U32 = yexp + (yu | 0x400).trailing_zeros()
 
-    if xu & 0x3FF == 0
-        jump normal()
-    else
-        jump subnormal()
+    e: S32 = when
+        xu & 0x3FF == 0 =>
+            # x = 2^E with E >= -14
+            biased_exponent: U32 = xu >> 10
+            becomes biased_exponent.to[S32]() - 15
+        else =>
+            # x = 2^E with E < -14 when x has a single bit set
+            zero_count: U32 = xu.trailing_zeros() + xu.leading_zeros()
+            if not (zero_count == 31)
+                return cm_b16_pow_exact_fraction(yu)
+            low_zeros: S32 = xu.trailing_zeros().to[S32]()
+            becomes low_zeros - 24
+    ye_float: B32 = e.to[B32]() * y.to[B32]()
+    ye: S32 = ye_float.to[S32]()
+    integral: Bool = yexp_tz + e.to_wrap[U32]().trailing_zeros() >= 25
+    in_range: Bool = ye.between(lo: -25, hi: 15)
+    if not (integral and in_range)
+        return cm_b16_pow_exact_fraction(yu)
+    biased_power: S64 = S64.add(0x3FF, ye.to[S64]())
+    return biased_power.to_wrap[U64]() << 52
 
-    # x = 2^E with E >= -14
-    block normal()
-        biased_exponent: U32 = xu >> 10
-        jump power_of_two(biased_exponent.to[S32]() - 15)
-
-    # x = 2^E with E < -14 when x has a single bit set
-    block subnormal()
-        zero_count: U32 = xu.trailing_zeros() + xu.leading_zeros()
-        if not (zero_count == 31)
-            jump exponent_table()
-        low_zeros: S32 = xu.trailing_zeros().to[S32]()
-        jump power_of_two(low_zeros - 24)
-
-    block power_of_two(e: S32)
-        ye_float: B32 = e.to[B32]() * y.to[B32]()
-        ye: S32 = ye_float.to[S32]()
-        integral: Bool = yexp_tz + e.to_wrap[U32]().trailing_zeros() >= 25
-        in_range: Bool = ye.between(lo: -25, hi: 15)
-        if integral and in_range
-            jump power_bits(ye)
-        else
-            jump exponent_table()
-
-    block power_bits(ye: S32)
-        biased_power: S64 = S64.add(0x3FF, ye.to[S64]())
-        return biased_power.to_wrap[U64]() << 52
-
-    block exponent_table()
-        if not (yu & 0xFF == 0)
-            return 0
-        when yu
-            0x3400 => return 0x14
-            0x3800 => return 0x12
-            0x3A00 => return 0x34
-            0x3C00 => return 0x11
-            0x3D00 => return 0x54
-            0x3E00 => return 0x32
-            0x3F00 => return 0x74
-            0x4000 => return 0x21
-            0x4100 => return 0x52
-            0x4200 => return 0x31
-            0x4300 => return 0x72
-            0x4400 => return 0x41
-            0x4500 => return 0x51
-            0x4600 => return 0x61
-            0x4700 => return 0x71
-            else => return 0
+### Classifies the exponents y = n / 2^F in {1/4, 1/2, 3/4, 1, 5/4, 3/2, 7/4, 2, 5/2, 3, 7/2, 4, 5, 6, 7}, for which
+### x^y may be exactly representable.
+### :param yu: The bits of `y`.
+### :returns: (n << 4) + 2^F for a `y` in the set, else 0.
+private routine cm_b16_pow_exact_fraction(yu: U32) -> U64
+    if not (yu & 0xFF == 0)
+        return 0
+    when yu
+        0x3400 => return 0x14
+        0x3800 => return 0x12
+        0x3A00 => return 0x34
+        0x3C00 => return 0x11
+        0x3D00 => return 0x54
+        0x3E00 => return 0x32
+        0x3F00 => return 0x74
+        0x4000 => return 0x21
+        0x4100 => return 0x52
+        0x4200 => return 0x31
+        0x4300 => return 0x72
+        0x4400 => return 0x41
+        0x4500 => return 0x51
+        0x4600 => return 0x61
+        0x4700 => return 0x71
+        else => return 0
 
 ### x^y for 0 <= y < 8 by square-and-multiply (three bits of y, as in the original).
 ### :param x: The base.

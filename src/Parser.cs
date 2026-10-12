@@ -2082,7 +2082,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         {
             Next();
             var member = Next();
-            var memberTypeArgs = ParseTypeArgsOpt();
+            // `Type.f[T](args)` takes type arguments, `GLOBAL.items[i]` is an index into a member variable.
+            var memberTypeArgs = Is(TokenKind.LBracket) && !BracketsOpenCall() ? [] : ParseTypeArgsOpt();
             if (Is(TokenKind.LParen))
             {
                 var (args, names) = ParseNamedArgs();

@@ -159,84 +159,91 @@ routine B64.ln_1p(me: Me) -> Me
 
     # |x| < 0.0625
     if ax < 0x7F60000000000000
-        jump small()
-    else
-        jump large()
-
-    block small()
         # |x| < 2^-53
         if ax < 0x7940000000000000
             return cm_b64_log1p_tiny(me)
         x2: Me = me * me
         # |x| < 2^-12
         if ax < 0x7E60000000000000
-            jump very_small(x2)
+            eps: Me = Me.mul(0x1.ap-64, me)
+            # |x| < 0x1.19bp-21
+            if not (ax < 0x7D43360000000000)
+                c01: Me = me * 0x1.5555555555551p-2 + -0x1.ffffffffffffdp-2
+                c23: Me = me * 0x1.99999b442f73fp-3 + -0x1.000000d5555e1p-2
+                # |x| >= 0.0625: 1 + x = t + dt
+                # 2^53 <= x < 2^106
+                # 0.0625 < x < 2^53 or -1 < x < -0.0625
+                # scale t and dt instead of rs, which would become subnormal
+
+                ln0: Me = x2 * (c01 + x2 * c23)
+                lb: Me = me + (ln0 - eps)
+                ub: Me = me + (ln0 + eps)
+                if lb == ub
+                    return lb
+                else
+                    return cm_b64_log1p_refine(x: me, a: lb)
+            else
+                c01: Me = me * 0x1.55555555558f7p-2 + -0x1.00000000001d1p-1
+
+                ln0: Me = x2 * c01
+                lb: Me = me + (ln0 - eps)
+                ub: Me = me + (ln0 + eps)
+                if lb == ub
+                    return lb
+                else
+                    return cm_b64_log1p_refine(x: me, a: lb)
         else
-            jump medium(x2)
+            x3: Me = x2 * me
+            x4: Me = x2 * x2
+            hx: Me = Me.mul(-0.5, me)
+            ln1: Me = hx.mul_add(a: me, b: me)
+            ln0: Me = hx.mul_add(a: me, b: me - ln1)
+            f0a: Me = me * -0x1p-2 + 0x1.5555555555555p-2
+            f0b: Me = me * -0x1.555555555583bp-3 + 0x1.9999999999b41p-3
+            f1a: Me = me * -0x1.fffffffe42e43p-4 + 0x1.24924923f39ep-3
+            f1b: Me = me * -0x1.99999de10510fp-4 + 0x1.c71c75511d70bp-4
+            f2a: Me = me * -0x1.554fb43e54e0fp-4 + 0x1.7457e81b175f6p-4
+            f2b: Me = me * -0x1.28558ad5a7ac4p-4 + 0x1.3ed68744f3d18p-4
+            f0: Me = f0a + x2 * f0b
+            f1: Me = f1a + x2 * f1b
+            f2: Me = f2a + x2 * f2b
+            f: Me = f0 + x4 * (f1 + x4 * f2)
 
-    block very_small(x2: Me)
-        eps: Me = Me.mul(0x1.ap-64, me)
-        # |x| < 0x1.19bp-21
-        if not (ax < 0x7D43360000000000)
-            jump longer(x2, eps)
-        c01: Me = me * 0x1.55555555558f7p-2 + -0x1.00000000001d1p-1
-        jump decide(me, x2 * c01, eps)
+            ln02: Me = ln0 + x3 * f
 
-    block longer(x2: Me, eps: Me)
-        c01: Me = me * 0x1.5555555555551p-2 + -0x1.ffffffffffffdp-2
-        c23: Me = me * 0x1.99999b442f73fp-3 + -0x1.000000d5555e1p-2
-        jump decide(me, x2 * (c01 + x2 * c23), eps)
-
-    block medium(x2: Me)
-        x3: Me = x2 * me
-        x4: Me = x2 * x2
-        hx: Me = Me.mul(-0.5, me)
-        ln1: Me = hx.mul_add(a: me, b: me)
-        ln0: Me = hx.mul_add(a: me, b: me - ln1)
-        f0a: Me = me * -0x1p-2 + 0x1.5555555555555p-2
-        f0b: Me = me * -0x1.555555555583bp-3 + 0x1.9999999999b41p-3
-        f1a: Me = me * -0x1.fffffffe42e43p-4 + 0x1.24924923f39ep-3
-        f1b: Me = me * -0x1.99999de10510fp-4 + 0x1.c71c75511d70bp-4
-        f2a: Me = me * -0x1.554fb43e54e0fp-4 + 0x1.7457e81b175f6p-4
-        f2b: Me = me * -0x1.28558ad5a7ac4p-4 + 0x1.3ed68744f3d18p-4
-        f0: Me = f0a + x2 * f0b
-        f1: Me = f1a + x2 * f1b
-        f2: Me = f2a + x2 * f2b
-        f: Me = f0 + x4 * (f1 + x4 * f2)
-        jump decide(ln1, ln0 + x3 * f, x3 * 0x1.b6p-52)
-
-    # |x| >= 0.0625: 1 + x = t + dt
-    block large()
+            eps: Me = x3 * 0x1.b6p-52
+            lb: Me = ln1 + (ln02 - eps)
+            ub: Me = ln1 + (ln02 + eps)
+            if lb == ub
+                return lb
+            else
+                return cm_b64_log1p_refine(x: me, a: lb)
+    else
         under_2p53: Bool = ixu.to_wrap[S64]() < 0x4340000000000000
         near: Bool = under_2p53 and ixu < 0xBFF0000000000000
-        big: Bool = ixu < 0x4690000000000000  # 2^53 <= x < 2^106
-        when
-            near => jump near()
-            big => jump reduce(me, 1.0)
+        big: Bool = ixu < 0x4690000000000000
+        values: (Me, Me) = when
+            near =>
+                s: CmF64LogDd = cm_b64_log1p_fasttwosum(x: 1.0, y: me)
+                becomes (s.hi, s.lo)
+            big => (me, 1.0)
             ixu >= 0x7FF0000000000000 => return cm_b64_log1p_special(me)
-            else => jump reduce(me, 0.0)
-
-    # 0.0625 < x < 2^53 or -1 < x < -0.0625
-    block near()
-        s: CmF64LogDd = cm_b64_log1p_fasttwosum(x: 1.0, y: me)
-        jump reduce(s.hi, s.lo)
-
-    block reduce(tf: Me, dtf: Me)
+            else => (me, 0.0)
+        tf, dtf = values
         offset_bits: U64 = tf.bits() -% 0x3FE6A00000000000
         j: S64 = offset_bits.to_wrap[S64]()
         slot: S64 = (j >> 46) & 0x3F
         j1: USize = slot.to[USize]()
         je: S64 = j >> 52
         rf: U64 = CM_B64_LOG1P_RF.getitem(j1)
-        if je < 1022
-            jump scaled(j1, je, Me.from_bits(rf -% (je.to_wrap[U64]() << 52)), tf, dtf)
-        # scale t and dt instead of rs, which would become subnormal
-        sc: Me = cm_b64_log1p_scale(je)
-        jump scaled(j1, je, Me.from_bits(rf -% U64.shl(1021, 52)), tf * sc, dtf * sc)
-
-    block scaled(j1: USize, je: S64, rs: Me, tf: Me, dtf: Me)
-        dh: Me = rs * tf
-        dl: Me = b64_mul_error(x: rs, y: tf, p: dh) + rs * dtf
+        values2: (Me, Me, Me) = when
+            je < 1022 => (Me.from_bits(rf -% (je.to_wrap[U64]() << 52)), tf, dtf)
+            else =>
+                sc: Me = cm_b64_log1p_scale(je)
+                becomes (Me.from_bits(rf -% U64.shl(1021, 52)), tf * sc, dtf * sc)
+        rs, tf2, dtf2 = values2
+        dh: Me = rs * tf2
+        dl: Me = b64_mul_error(x: rs, y: tf2, p: dh) + rs * dtf2
         xs: CmF64LogDd = cm_b64_log1p_fasttwosum(x: dh - 1.0, y: dl)
         xh: Me = xs.hi
         x2: Me = xh * xh
@@ -250,9 +257,12 @@ routine B64.ln_1p(me: Me) -> Me
         lfh: Me = Me.from_bits(CM_B64_LOG1P_LF.getitem(j1 * 2 + 1))
         lfl: Me = Me.from_bits(CM_B64_LOG1P_LF.getitem(j1 * 2))
         s: CmF64LogDd = cm_b64_log1p_fastsum(xh: lfh + l1, xl: lfl + l0, yh: xh, yl: xl)
-        jump decide(s.hi, s.lo, 0x1.ap-65)
 
-    block decide(ln1: Me, ln0: Me, eps: Me)
+        ln1: Me = s.hi
+
+        ln0: Me = s.lo
+
+        eps: Me = 0x1.ap-65
         lb: Me = ln1 + (ln0 - eps)
         ub: Me = ln1 + (ln0 + eps)
         if lb == ub

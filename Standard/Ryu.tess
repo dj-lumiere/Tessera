@@ -129,111 +129,81 @@ routine ryu_has_removable_digit(vr: U64, vp: U64, vm: U64) -> Bool
 routine ryu_shorten(start: RyuDigits, accept: Bool, e10: S64) -> FloatDecimal
     vm_zeros: Bool = start.vm_zeros
     vr_zeros: Bool = start.vr_zeros
-    if vm_zeros or vr_zeros
-        jump careful(start)
-    else
-        jump fast(start)
-
-    # The usual case: no trailing zeros to track, round on the last removed digit.
-    block fast(s: RyuDigits)
-        vr: U64 = s.vr
-        vp: U64 = s.vp
-        vm: U64 = s.vm
-        if ryu_has_removable_digit(vr, vp, vm)
-            jump fast_step(s)
-        else
-            jump fast_done(s)
-
-    block fast_step(s: RyuDigits)
-        vr: U64 = s.vr
-        vp: U64 = s.vp
-        vm: U64 = s.vm
-        removed: S64 = s.removed
-        jump fast(RyuDigits(vr: vr // 10, vp: vp // 10, vm: vm // 10, removed: removed + 1, last: vr % 10, vm_zeros: false, vr_zeros: false))
-
-    block fast_done(s: RyuDigits)
-        vr: U64 = s.vr
-        vm: U64 = s.vm
-        last: U64 = s.last
-        at_low: Bool = vr == vm
-        round_up: Bool = last >= 5
-        bump: Bool = at_low or round_up
-        jump finish(vr +% bump.to[U64](), s.removed)
+    if not (vm_zeros or vr_zeros)
+        # The usual case: no trailing zeros to track, round on the last removed digit.
+        while ryu_has_removable_digit(vr: fast.vr, vp: fast.vp,
+            vm: fast.vm) with fast: RyuDigits = start
+            vr: U64 = fast.vr
+            vp: U64 = fast.vp
+            vm: U64 = fast.vm
+            removed: S64 = fast.removed
+            continue with fast: RyuDigits(vr: vr // 10, vp: vp // 10, vm: vm // 10,
+                removed: removed + 1, last: vr % 10, vm_zeros: false, vr_zeros: false)
+        then
+            vr: U64 = fast.vr
+            vm: U64 = fast.vm
+            last: U64 = fast.last
+            at_low: Bool = vr == vm
+            round_up: Bool = last >= 5
+            bump: Bool = at_low or round_up
+            return ryu_finish(digits: vr +% bump.to[U64](), removed: fast.removed, e10)
 
     # Some removed digits may all be zero: track that, so an exact tie rounds to
     # even and vm may be used when it is exactly representable.
-    block careful(s: RyuDigits)
-        vr: U64 = s.vr
-        vp: U64 = s.vp
-        vm: U64 = s.vm
-        if ryu_has_removable_digit(vr, vp, vm)
-            jump careful_step(s)
-        else
-            jump trim_vm(s)
-
-    block careful_step(s: RyuDigits)
-        vr: U64 = s.vr
-        vp: U64 = s.vp
-        vm: U64 = s.vm
-        last: U64 = s.last
-        removed: S64 = s.removed
+    while ryu_has_removable_digit(vr: careful.vr, vp: careful.vp,
+        vm: careful.vm) with careful: RyuDigits = start
+        vr: U64 = careful.vr
+        vp: U64 = careful.vp
+        vm: U64 = careful.vm
+        last: U64 = careful.last
+        removed: S64 = careful.removed
         vm_digit: U64 = vm % 10
-        vm_zeros: Bool = s.vm_zeros
-        vr_zeros: Bool = s.vr_zeros
-        jump careful(RyuDigits(vr: vr // 10, vp: vp // 10, vm: vm // 10, removed: removed + 1, last: vr % 10, vm_zeros: vm_zeros and vm_digit == 0, vr_zeros: vr_zeros and last == 0))
+        vm_zeros_left: Bool = careful.vm_zeros and vm_digit == 0
+        vr_zeros_left: Bool = careful.vr_zeros and last == 0
+        continue with careful: RyuDigits(vr: vr // 10, vp: vp // 10, vm: vm // 10,
+            removed: removed + 1, last: vr % 10, vm_zeros: vm_zeros_left, vr_zeros: vr_zeros_left)
+    then
+        # vm ends in zeros that can go too, as long as it is exactly representable.
+        while trimmed.vm_zeros and trimmed.vm % 10 == 0 with trimmed: RyuDigits = careful
+            vr: U64 = trimmed.vr
+            vp: U64 = trimmed.vp
+            vm: U64 = trimmed.vm
+            last: U64 = trimmed.last
+            removed: S64 = trimmed.removed
+            vr_zeros_left: Bool = trimmed.vr_zeros and last == 0
+            continue with trimmed: RyuDigits(vr: vr // 10, vp: vp // 10, vm: vm // 10,
+                removed: removed + 1, last: vr % 10, vm_zeros: true, vr_zeros: vr_zeros_left)
+        then
+            vr: U64 = trimmed.vr
+            vm: U64 = trimmed.vm
+            last: U64 = trimmed.last
+            # exactly halfway (…5000…): round to even
+            half: Bool = trimmed.vr_zeros and last == 5
+            vr_even: Bool = vr & 1 == 0
+            tie_down: Bool = half and vr_even
+            rounding: U64 = when
+                tie_down => 4
+                else => last
+            # vr sits on vm but vm itself doesn't read back: step up
+            vm_usable: Bool = accept and trimmed.vm_zeros
+            at_low: Bool = vr == vm and not vm_usable
+            round_up: Bool = rounding >= 5
+            bump: Bool = at_low or round_up
+            return ryu_finish(digits: vr +% bump.to[U64](), removed: trimmed.removed, e10)
 
-    # vm ends in zeros that can go too, as long as it is exactly representable.
-    block trim_vm(s: RyuDigits)
-        if s.vm_zeros
-            jump trim_check(s)
-        else
-            jump careful_done(s)
-
-    block trim_check(s: RyuDigits)
-        vm: U64 = s.vm
-        if vm % 10 == 0
-            jump trim_step(s)
-        else
-            jump careful_done(s)
-
-    block trim_step(s: RyuDigits)
-        vr: U64 = s.vr
-        vp: U64 = s.vp
-        vm: U64 = s.vm
-        last: U64 = s.last
-        removed: S64 = s.removed
-        vr_zeros: Bool = s.vr_zeros
-        jump trim_check(RyuDigits(vr: vr // 10, vp: vp // 10, vm: vm // 10, removed: removed + 1, last: vr % 10, vm_zeros: true, vr_zeros: vr_zeros and last == 0))
-
-    block careful_done(s: RyuDigits)
-        vr: U64 = s.vr
-        vm: U64 = s.vm
-        last: U64 = s.last
-        vm_zeros: Bool = s.vm_zeros
-        vr_zeros: Bool = s.vr_zeros
-        # exactly halfway (…5000…): round to even
-        half: Bool = vr_zeros and last == 5
-        vr_even: Bool = vr & 1 == 0
-        tie_down: Bool = half and vr_even
-        rounding: U64 = when
-            tie_down => 4
-            else => last
-        # vr sits on vm but vm itself doesn't read back: step up
-        vm_usable: Bool = accept and vm_zeros
-        at_low: Bool = vr == vm and not vm_usable
-        round_up: Bool = rounding >= 5
-        bump: Bool = at_low or round_up
-        jump finish(vr +% bump.to[U64](), s.removed)
-
-    # Rounding 9 up gives 10: write it as 1 at the next exponent.
-    block finish(digits: U64, removed: S64)
-        carry: Bool = digits == 10
-        shortest: U64 = when
-            carry => 1
-            else => digits
-        exponent: S64 = e10 + removed + carry.to[S64]()
-        r: FloatDecimal = FloatDecimal(digits: shortest, exponent: exponent)
-        return r
+### Writes the rounded digits as a FloatDecimal. Rounding 9 up gives 10: that is written as 1 at the next exponent.
+### :param digits: The rounded digits.
+### :param removed: How many digits were removed.
+### :param e10: The decimal exponent the digits had before any were removed.
+### :returns: The shortest decimal.
+private routine ryu_finish(digits: U64, removed: S64, e10: S64) -> FloatDecimal
+    carry: Bool = digits == 10
+    shortest: U64 = when
+        carry => 1
+        else => digits
+    exponent: S64 = e10 + removed + carry.to[S64]()
+    r: FloatDecimal = FloatDecimal(digits: shortest, exponent: exponent)
+    return r
 
 # -- B64 (d2s) -----------------------------------------------------------------
 

@@ -3,10 +3,10 @@ using Xunit;
 namespace Tessera.Tests;
 
 /// <summary>
-/// The doc lint: every routine in a library or example file has a <c>///</c> doc comment with a <c>:param</c> line for
+/// The doc lint: every routine in a library or example file has a <c>###</c> doc comment with a <c>:param</c> line for
 /// each parameter but <c>me</c> (and none for a name that isn't one), and a <c>:returns:</c> line unless it returns
-/// Void. Files under a <c>tests</c>, <c>playground</c>, <c>scratch</c>, or <c>generated</c> directory, and routines a
-/// generator wrote (<c>#source</c>), aren't held to it.
+/// None. Files under a <c>tests</c>, <c>playground</c>, <c>scratch</c>, or <c>generated</c> directory, and routines a
+/// generator wrote (<c>@source</c>), aren't held to it.
 /// </summary>
 public class DocLintTests
 {
@@ -14,12 +14,11 @@ public class DocLintTests
     public void FullyDocumentedRoutineIsClean()
     {
         var warnings = Lint("""
-            /// The sum of `me` and `other`.
-            /// :param other: The value to add.
-            /// :returns: The sum.
+            ### The sum of `me` and `other`.
+            ### :param other: The value to add.
+            ### :returns: The sum.
             routine S64.plus(me: S64, other: S64) -> S64
-                block entry()
-                    return(me.add(other))
+                return me + other
             """);
         Assert.Empty(warnings);
     }
@@ -28,10 +27,9 @@ public class DocLintTests
     public void RoutineWithoutDocWarns()
     {
         var warnings = Lint("""
-            // A plain comment is not a doc comment.
-            private routine helper() -> Void
-                block entry()
-                    return()
+            # A plain comment is not a doc comment.
+            private routine helper() -> None
+                return
             """);
         string warning = Assert.Single(warnings);
         Assert.Contains("lib/t.tess:2:9: warning: routine 'helper' has no doc comment", warning);
@@ -41,12 +39,11 @@ public class DocLintTests
     public void MissingAndUnknownParamLinesWarn()
     {
         var warnings = Lint("""
-            /// Stores a value.
-            /// :param old: A parameter that was renamed.
-            routine put(p: @S64, value: S64) -> Void
-                block entry()
-                    p.poke(value)
-                    return()
+            ### Stores a value.
+            ### :param old: A parameter that was renamed.
+            routine put(p: @S64, value: S64) -> None
+                p.poke(value)
+                return
             """);
         Assert.Equal(3, warnings.Count);
         Assert.Contains(warnings, w => w.Contains("has no :param line for 'p'"));
@@ -55,18 +52,16 @@ public class DocLintTests
     }
 
     [Fact]
-    public void MissingReturnsWarnsUnlessVoid()
+    public void MissingReturnsWarnsUnlessNone()
     {
         var warnings = Lint("""
-            /// Forty-two.
+            ### Forty-two.
             routine answer() -> S64
-                block entry()
-                    return(42)
+                return 42
 
-            /// Does nothing.
-            routine idle() -> Void
-                block entry()
-                    return()
+            ### Does nothing.
+            routine idle() -> None
+                return
             """);
         string warning = Assert.Single(warnings);
         Assert.Contains("the doc comment of 'answer' has no :returns: line, and it returns S64", warning);
@@ -76,16 +71,15 @@ public class DocLintTests
     public void DocAboveAttributesCountsAndWrappedLinesContinue()
     {
         var warnings = Lint("""
-            /// Adds two numbers.
-            /// :param a: The first number, described over
-            ///     two lines.
-            /// :param b: The second number.
-            /// :returns: The sum.
-            #inline
-            #track_caller
+            ### Adds two numbers.
+            ### :param a: The first number, described over
+            ###     two lines.
+            ### :param b: The second number.
+            ### :returns: The sum.
+            @inline
+            @track_caller
             routine plus(a: S64, b: S64) -> S64
-                block entry()
-                    return(a.add(b))
+                return a + b
             """);
         Assert.Empty(warnings);
     }
@@ -94,10 +88,10 @@ public class DocLintTests
     public void DocAboveAMultiLineAttributeCounts()
     {
         var warnings = Lint("""
-            /// The same value.
-            /// :param x: The value.
-            /// :returns: `x`.
-            #[external("llvm"),
+            ### The same value.
+            ### :param x: The value.
+            ### :returns: `x`.
+            @[external("llvm"),
                 template("{result} = add i64 {x}, 0")]
             routine same(x: S64) -> S64
             """);
@@ -108,11 +102,11 @@ public class DocLintTests
     public void ConceptRoutinesAreChecked()
     {
         var warnings = Lint("""
-            /// Types that can be compared.
-            /// :typeparam T: The type compared.
-            concept Same[T]
-            require T: typename
-                /// True when the two are the same.
+            ### Types that can be compared.
+            ### :typeparam T: The type compared.
+            protocol Same[T]
+            needs T: typename
+                ### True when the two are the same.
                 routine Me.same(me: Me, other: Me) -> Bool
             """);
         Assert.Equal(2, warnings.Count);
@@ -130,8 +124,7 @@ public class DocLintTests
     {
         var warnings = Lint("""
             routine helper() -> S64
-                block entry()
-                    return(1)
+                return 1
             """, file);
         Assert.Empty(warnings);
     }
@@ -140,10 +133,9 @@ public class DocLintTests
     public void GeneratedRoutinesAreExempt()
     {
         var warnings = Lint("""
-            #source("gcd.mini", 5, 9)
+            @source("gcd.mini", 5, 9)
             routine gcd(a: S64, b: S64) -> S64
-                block entry()
-                    return(a)
+                return a
             """);
         Assert.Empty(warnings);
     }
@@ -152,9 +144,8 @@ public class DocLintTests
     public void LintCommandReportsDocWarningsOnlyWithSourceLines()
     {
         const string source = """
-            routine helper() -> Void
-                block entry()
-                    return()
+            routine helper() -> None
+                return
             """;
         var decls = Parse(source, "lib/t.tess");
         Assert.Empty(StyleLint.Check(decls));

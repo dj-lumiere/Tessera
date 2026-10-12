@@ -20,48 +20,44 @@ routine B32.tan(me: Me) -> Me
     tiny: Bool = e < 102  # |x| < 2^-26: tan(x) rounds like x + x |x| tiny
     small: Bool = e < 115  # |x| < 2^-13
     medium: Bool = e < 155  # |x| < 2^28
-    when
+    red: CmF32TrigReduced = when
         tiny => return me.mul_add(a: me.abs(), b: me)
         small => return me.mul_add(a: me * me * 0x1.555556p-2, b: me)
-        medium => jump fast(cm_b32_tan_reduce(me.to[B64]()))
-        e < 0xFF => jump fast(cm_b32_trig_reduce_big(u: t, bias: 150))
-        else => jump special()
-
-    # NaN comes back quiet with its sign and payload, an infinity gives a NaN
-    block special()
-        if t << 9 != 0
-            return me + me
-        else
-            return Me.NAN
-
-    block fast(red: CmF32TrigReduced)
-        z: B64 = red.z
-        z2: B64 = z * z
-        z4: B64 = z2 * z2
-        n01: B64 = z2 * -0x1.fd226e573289fp-2 + 0x1.921fb54442d18p+0
-        n23: B64 = z2 * -0x1.725beb40f33e5p-13 + 0x1.b7a60c8dac9f6p-6
-        n03: B64 = z4 * n23 + n01
-        n: B64 = n03 * z
-        d01: B64 = z2 * -0x1.2395347fb829dp+0 + 0x1p+0
-        d23: B64 = z2 * -0x1.9a707ab98d1c1p-9 + 0x1.2313660f29c36p-3
-        d: B64 = z4 * d23 + d01
-        odd: Bool = red.q & 1 == 1  # an even quotient gives n/d, an odd one -d/n
-        s0: B64 = when
-            odd => 1.0
-            else => 0.0
-        s1: B64 = when
-            odd => 0.0
-            else => 1.0
-        num: B64 = n * s1 - d * s0
-        den: B64 = n * s0 + d * s1
-        r: B64 = num / den
-        biased_bits: U64 = r.bits() +% 7
-        tail: U64 = biased_bits & 0x1FFFFFFF
-        # close to a rounding boundary: only a few known arguments
-        if tail <= 14
-            return cm_b32_tan_database(x: me, r)
-        else
-            return r.to[Me]()
+        medium => cm_b32_tan_reduce(me.to[B64]())
+        e < 0xFF => cm_b32_trig_reduce_big(u: t, bias: 150)
+        else =>
+            # NaN comes back quiet with its sign and payload, an infinity gives a NaN
+            if t << 9 != 0
+                return me + me
+            else
+                return Me.NAN
+    z: B64 = red.z
+    z2: B64 = z * z
+    z4: B64 = z2 * z2
+    n01: B64 = z2 * -0x1.fd226e573289fp-2 + 0x1.921fb54442d18p+0
+    n23: B64 = z2 * -0x1.725beb40f33e5p-13 + 0x1.b7a60c8dac9f6p-6
+    n03: B64 = z4 * n23 + n01
+    n: B64 = n03 * z
+    d01: B64 = z2 * -0x1.2395347fb829dp+0 + 0x1p+0
+    d23: B64 = z2 * -0x1.9a707ab98d1c1p-9 + 0x1.2313660f29c36p-3
+    d: B64 = z4 * d23 + d01
+    odd: Bool = red.q & 1 == 1  # an even quotient gives n/d, an odd one -d/n
+    s0: B64 = when
+        odd => 1.0
+        else => 0.0
+    s1: B64 = when
+        odd => 0.0
+        else => 1.0
+    num: B64 = n * s1 - d * s0
+    den: B64 = n * s0 + d * s1
+    r: B64 = num / den
+    biased_bits: U64 = r.bits() +% 7
+    tail: U64 = biased_bits & 0x1FFFFFFF
+    # close to a rounding boundary: only a few known arguments
+    if tail <= 14
+        return cm_b32_tan_database(x: me, r)
+    else
+        return r.to[Me]()
 
 ### Reduces x (|x| < 2^28) modulo pi/2 with a two-part 2/pi: x * 2/pi = q + z. Only the low bit of q matters.
 ### :param x: The argument.
@@ -81,20 +77,19 @@ private routine cm_b32_tan_reduce(x: B64) -> CmF32TrigReduced
 ### :returns: The tabulated tangent for a listed `x`, else `r` rounded to B32.
 private routine cm_b32_tan_database(x: B32, r: B64) -> B32
     ax: U32 = x.bits() & 0x7FFFFFFF
-    when ax
-        0x3F8A1F62 => jump exact(0x1.ddf9f6p+0, -0x1.891d24p-52)
-        0x4D56D355 => jump exact(0x1.e80304p-3, 0x1.419f46p-58)
-        0x57D7B0ED => jump exact(0x1.60d1c8p-2, -0x1.2d6c3ap-55)
-        0x5980445E => jump exact(0x1.ca1edp+0, 0x1.f6053p-53)
-        0x63FC86FE => jump exact(0x1.597f9cp-1, 0x1.925978p-53)
-        0x6A662711 => jump exact(-0x1.f33584p+1, 0x1.d7254ap-51)
-        0x6AD36709 => jump exact(-0x1.c5612ep-1, -0x1.26c33ep-53)
-        0x72B505BB => jump exact(-0x1.e42a1ep+0, -0x1.1dc906p-52)
+    values: (B32, B32) = when ax
+        0x3F8A1F62 => (0x1.ddf9f6p+0, -0x1.891d24p-52)
+        0x4D56D355 => (0x1.e80304p-3, 0x1.419f46p-58)
+        0x57D7B0ED => (0x1.60d1c8p-2, -0x1.2d6c3ap-55)
+        0x5980445E => (0x1.ca1edp+0, 0x1.f6053p-53)
+        0x63FC86FE => (0x1.597f9cp-1, 0x1.925978p-53)
+        0x6A662711 => (-0x1.f33584p+1, 0x1.d7254ap-51)
+        0x6AD36709 => (-0x1.c5612ep-1, -0x1.26c33ep-53)
+        0x72B505BB => (-0x1.e42a1ep+0, -0x1.1dc906p-52)
         else => return r.to[B32]()
-
-    block exact(rh: B32, rl: B32)
-        sign_bit: U32 = x.bits() >> 31
-        if sign_bit == 1
-            return -rh - rl
-        else
-            return rh + rl
+    rh, rl = values
+    sign_bit: U32 = x.bits() >> 31
+    if sign_bit == 1
+        return -rh - rl
+    else
+        return rh + rl
