@@ -540,7 +540,7 @@ public sealed partial class Compiler
             return;
         }
         if (!c.IsStorage && t is ArrayType)
-            throw new CompileError(c.Pos, $"an array preset lives in memory: preset {c.Name}: @{t} <- {{ ... }}");
+            throw new CompileError(c.Pos, $"an array preset lives in memory: preset {c.Name}: @{t} <- [...]");
         if (c.IsStorage)
         {
             if (c.Value is not null) PresetInitializer(c.Value, t, env);

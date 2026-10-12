@@ -13,6 +13,10 @@ public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
     /// A type the builder filled in rather than one written: `x.to()` takes the type its value goes to.
     public DType? Known { get; init; }
 
+    /// `NAME[x].member` reads as a type's arguments (`Array[T, 4].construct()`) and as an index (`TABLE[i].field`)
+    /// alike: the parser keeps the index reading here, and the checker takes it when NAME isn't a type.
+    public Expr? AsIndex { get; init; }
+
     public override string ToString() =>
         Path is null && Name == UnionName ? string.Join(" | ", Args)
         : Path is null && Name == "Ptr" && Args is [TypeArgType inner] ? $"@{inner}"

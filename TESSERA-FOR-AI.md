@@ -1154,7 +1154,9 @@ range checks (`eq`, `lt`, `between`, `in_range`), an overflow test that goes wit
 **Name case.** Types, protocols, and modules are `PascalCase` (`Maybe`, `ParseError`), with acronyms written as
 words (`Utf8Decoded`). Routines, fields, and values are `snake_case`. Choice members, presets, globals, and
 value generic parameters are `UPPER_SNAKE_CASE` (`FsError.NOT_FOUND`, `U64.MAX`, `NODE_KEYS`); the build rejects a
-choice member written otherwise.
+choice member written otherwise. Case is a convention, never grammar: the parser doesn't read a name's spelling to
+decide what `[...]` after it is. Before `(` it is a routine's or type's arguments, alone it is an index, and before
+`.member` (`Array[T, 4].count()`, `TABLE[i].field`) the checker decides by what the name is.
 
 **Generic parameter names.** Count only the type parameters in scope. One is `T` (`List[T]`, `Maybe[T]`,
 `Writer[T]`, `BufWriter[T]`, `Thread[T]`, `S64.represent_into[T]`). Two or more are each `T` + its role in

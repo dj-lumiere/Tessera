@@ -1245,7 +1245,7 @@ public sealed class FunctionGen
     // ── Places ──────────────────────────────────────────────────────────────
 
     /// The preset in memory a place chain starts from (`K`, `K[i]`, `K[i].f`), if any.
-    private PresetRef? PresetArrayRoot(Expr place) => AsStride(AsField(place)) switch
+    private PresetRef? PresetArrayRoot(Expr place) => AsStride(AsField(AsIndexed(place))) switch
     {
         FieldExpr f => PresetArrayRoot(f.Base),
         IndexExpr ix => PresetArrayRoot(ix.Base),
@@ -1463,6 +1463,33 @@ public sealed class FunctionGen
             _ => false,
         }));
 
+    /// `NAME[x].member` keeps both readings of its brackets (TypeRef.AsIndex): when NAME is a value (a global, a
+    /// preset) rather than a type, the brackets index it, `TABLE[i].field` and `TABLE[i].f(...)`.
+    private Expr AsIndexed(Expr e) => e switch
+    {
+        PresetRef { Owner: { AsIndex: { } index } o } r when !NamesType(o) =>
+            new FieldExpr(IndexedValue(o, index), r.Name, r.Pos),
+        NsCallExpr { Owner: { AsIndex: { } index } o } n when !NamesType(o) =>
+            new MethodCallExpr(IndexedValue(o, index), n.Name, n.TypeArgs, n.Args, n.Pos) { ArgNames = n.ArgNames },
+        _ => e,
+    };
+
+    /// `NAME[index]` as a value: the item of the global or preset NAME.
+    private static Expr IndexedValue(TypeRef o, Expr index) =>
+        new GetItemExpr(new PresetRef(null, o.Name, o.Pos) { Path = o.Path }, index, o.Pos);
+
+    /// Whether `o` names a type. A name that is no type but is a global or a preset is a value. Any other name is
+    /// reported as the type it was read as.
+    private bool NamesType(TypeRef o)
+    {
+        try
+        {
+            Resolve(o);
+            return true;
+        }
+        catch (CompileError) when (_c.FindPreset("", o.Name, _env.File, o.Pos, o.Path) is not null) { return false; }
+    }
+
     /// `NAME.field` parses like `Type.PRESET`. When NAME is a global or preset rather than a type, it's a field of the
     /// place NAME names: `STATS.calls` is `FieldExpr(STATS, calls)`.
     private Expr AsField(Expr e) =>
@@ -1489,7 +1516,7 @@ public sealed class FunctionGen
 
     private DType? Infer(Expr e)
     {
-        e = AsStride(AsField(_c.AsRecordLit(Desugar(e), _env)));
+        e = AsStride(AsField(AsIndexed(_c.AsRecordLit(Desugar(e), _env))));
         switch (e)
         {
             case WhenExpr: return null;
@@ -1604,7 +1631,7 @@ public sealed class FunctionGen
     {
         bool moving = _moving;
         _moving = false;
-        e = AsStride(AsField(_c.AsRecordLit(Desugar(e), _env)));
+        e = AsStride(AsField(AsIndexed(_c.AsRecordLit(Desugar(e), _env))));
         if (!moving && CopiedEntity(e) is { } copied) throw Err(e.Pos, copied);
         // A value of a branch type is a value of the variant (one level), and so is a narrower variant's.
         if (expected is VariantType vt && WidenSource(e, vt) is { } branch)
@@ -2395,8 +2422,8 @@ public sealed class FunctionGen
         return new Val("", VoidType.Instance);
     }
 
-    /// `Array[T, COUNT] { a, b, c }` or `Vector[T, LANES] { a, b, c }`: the elements in order, each typed by T. A bare
-    /// `{ a, b, c }` takes the type the value goes to.
+    /// `[a, b, c]` where an `Array[T, COUNT]` or a `Vector[T, LANES]` goes: the elements in order, each typed by T, the
+    /// type taken from where the value goes.
     private Val EvalElementsLit(ArrayLit lit, DType expected)
     {
         var t = expected;
@@ -2845,6 +2872,8 @@ public sealed class FunctionGen
                 InferTypeArgs(r, env, ic.Args, expected, 0);
                 return new CallPlan(r, env, null, ic.Args, ic.Pos);
             }
+            case NsCallExpr { Owner.AsIndex: not null } indexed when AsIndexed(indexed) is MethodCallExpr onItem:
+                return PlanCall(onItem, expected);
             case NsCallExpr n:
             {
                 var owner = TryResolveOwner(n.Owner);

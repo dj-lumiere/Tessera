@@ -2024,13 +2024,44 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new AtExpr(literal, ParsePostfix(), pos);
     }
 
-    /// Whether a name takes type arguments in `[...]` (`List[S64]`, `U8`, `T`): PascalCase, or a short all-capitals
-    /// name. A value's or a preset's `[i]` is an index.
-    private static bool TakesTypeArgs(string name)
+    /// Whether the `[...]` at the cursor sits against the name before it and is followed by `.member`: a type's
+    /// arguments (`Array[T, 4].construct()`) or an index (`TABLE[i].field`), which only the name's meaning decides.
+    private bool BracketsBeforeMember()
     {
-        if (name.Length == 0 || !char.IsAsciiLetterUpper(name[0])) return false;
-        if (name.Contains('_')) return false;
-        return name.Any(char.IsAsciiLetterLower) || name.Any(char.IsAsciiDigit) || name.Length <= 2;
+        if (!IndexFollows()) return false;
+        int k = AfterTypeArgs(0);
+        return PeekTok(k).Kind == TokenKind.Dot && PeekTok(k + 1).Kind == TokenKind.Ident;
+    }
+
+    /// The `[...]` at the cursor read both ways: as type arguments and as one index. Each is null when the brackets
+    /// don't read that way, and the cursor ends after the brackets.
+    private (List<TypeArg>? Types, Expr? Index) ParseTypeArgsOrIndex()
+    {
+        int start = _i;
+        List<TypeArg>? types = null;
+        int typesEnd = -1;
+        try
+        {
+            types = ParseTypeArgs();
+            typesEnd = _i;
+        }
+        catch (CompileError) { types = null; }
+        _i = start;
+        Expr? index = null;
+        int indexEnd = -1;
+        CompileError? indexError = null;
+        try
+        {
+            Next();
+            index = ParseExpr();
+            Expect(TokenKind.RBracket, "']'");
+            indexEnd = _i;
+        }
+        catch (CompileError e) { index = null; indexError = e; }
+        if (types is not null && index is not null && typesEnd != indexEnd) index = null;
+        if (types is null && index is null) throw indexError!;
+        _i = types is not null ? typesEnd : indexEnd;
+        return (types, index);
     }
 
     /// Whether the `[...]` at the cursor is followed by `(` or `.to[Callable]`: a generic routine's arguments
@@ -2049,7 +2080,22 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     {
         var pos = Cur.Pos;
         var (path, name) = ParseQualifiedName("a name");
-        var typeArgs = Is(TokenKind.LBracket) && (TakesTypeArgs(name.Text) || path is not null || BracketsOpenCall()) ? ParseTypeArgs() : [];
+        // Which `[...]` a name takes is never read off the name's spelling. Before `(` (or `.to[Callable]`) it is a
+        // routine's or a type's arguments, after a module path a type's, and before `.member` it may be either: both
+        // readings are kept and the checker picks by what the name is. Anywhere else it is an index.
+        List<TypeArg> typeArgs = [];
+        Expr? asIndex = null;
+        if (Is(TokenKind.LBracket))
+        {
+            if (BracketsOpenCall() || path is not null) typeArgs = ParseTypeArgs();
+            else if (BracketsBeforeMember())
+            {
+                var (types, index) = ParseTypeArgsOrIndex();
+                if (types is null) return new GetItemExpr(new PresetRef(null, name.Text, pos) { Path = path }, index!, pos);
+                typeArgs = types;
+                asIndex = index;
+            }
+        }
 
         // `f(args)` calls a routine and `Point(x: 1, y: 2)` builds a record field by field: which one the name is,
         // the checker says, once names are resolved.
@@ -2062,7 +2108,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 { Path = path, ArgNames = names, WrittenTypeArgs = numbers ? typeArgs : null });
         }
 
-        var owner = new TypeRef(name.Text, typeArgs, pos) { Path = path };
+        var owner = new TypeRef(name.Text, typeArgs, pos) { Path = path, AsIndex = asIndex };
 
         if (typeArgs.All(a => a is TypeArgType) && Is(TokenKind.Dot) && PeekTok(1) is { Kind: TokenKind.Ident, Text: "to" }
             && PeekTok(2).Kind == TokenKind.LBracket && PeekTok(3) is { Kind: TokenKind.Ident, Text: "Callable" })
