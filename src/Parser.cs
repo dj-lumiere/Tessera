@@ -792,11 +792,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var type = ParseType();
         if (Is(TokenKind.Eq))
             throw Error($"a global takes its contents with '<-': global {name.Text}: {type} <- value");
-        // `global NAME: Span[T] <- [0] x 26`: the literal gives the elements and how many there are.
+        // `global NAME: Span[T] <- [0] * 26`: the literal gives the elements and how many there are.
         if (IsSpanType(type))
         {
             Expect(TokenKind.LeftArrow,
-                $"'<-' and the elements, which give the count: global {name.Text}: {type} <- [0] x 26");
+                $"'<-' and the elements, which give the count: global {name.Text}: {type} <- [0] * 26");
             var elements = ParseExpr();
             ExpectLineEnd();
             return new PresetDecl(file, annotations, null, name.Text, type, elements, pos)
@@ -1952,13 +1952,16 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 if (!Is(TokenKind.RBracket))
                     do elems.Add(ParseExpr()); while (Accept(TokenKind.Comma));
                 Expect(TokenKind.RBracket, "']'");
-                // `[0] x 256`: the elements repeated, as many times as a count the build knows.
-                if (Cur is { Kind: TokenKind.Ident, Text: "x", Escaped: false } && !_inAsm)
+                // `[0] * 256`: the elements repeated, as many times as a count the build knows. A bracket literal followed by
+                // `*` is always a repeat: a Vector literal is bound to a name before it is multiplied.
+                if (Cur is { Kind: TokenKind.Op, Text: "*" } && !_inAsm)
                 {
                     Next();
-                    if (elems.Count == 0) throw Error("'[] x n' repeats nothing; write the elements to repeat: [0] x n");
+                    if (elems.Count == 0) throw Error("'[] * n' repeats nothing: write the elements to repeat, [0] * n");
                     return AtManager(new ArrayLit(elems, t.Pos) { Repeat = ParsePostfix() });
                 }
+                if (Cur is { Kind: TokenKind.Ident, Text: "x", Escaped: false } && !_inAsm)
+                    throw Error("the elements repeat with '*': [0] * n (tessera migrate --step repeat rewrites the old '[0] x n')");
                 return AtManager(new ArrayLit(elems, t.Pos));
             }
             case TokenKind.Ident when _inAsm && AsmCondition() is { } condition:
@@ -2125,7 +2128,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 $"memory from a manager is a Memory[T]: {name}: Memory{type.ToString()[4..]} <- ... at manager, or the literal alone for a Span in the frame");
         if (IsSpanType(type) && contents is not ArrayLit { IsTuple: false })
             throw new CompileError(contents.Pos,
-                $"a Span in the frame takes an array literal, which gives its count: {name}: {type} <- [0] x 64");
+                $"a Span in the frame takes an array literal, which gives its count: {name}: {type} <- [0] * 64");
         return new BindStmt(name, type, new ClaimExpr(pos) { Contents = contents }, pos);
     }
 

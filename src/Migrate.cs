@@ -60,7 +60,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division";
+        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.tess", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -302,7 +302,16 @@ public static class Migrate
         ["drop"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, DropStatements)
             : DropStatements(text),
+        ["repeat"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, RepeatStar)
+            : RepeatStar(text),
     };
+
+    private static readonly Regex RepeatX = new(@"\] x (?=[\w(])", RegexOptions.Compiled);
+
+    /// An array literal repeats with `*`: `[0] x n` is `[0] * n`. Only `] x ` followed by a name, a number or `(` is
+    /// the old form, so prose such as `c[1] x + ...` stays.
+    public static string RepeatStar(string text) => RepeatX.Replace(text, "] * ");
 
     private static readonly Regex Contains = new(@"\.contains(?=\s*\()", RegexOptions.Compiled);
 

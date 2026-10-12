@@ -334,7 +334,7 @@ public sealed class Printer
             {
                 string items = string.Join(", ", a.Elements.Select(x => Expr(x)));
                 if (a.IsTuple) return $"({items})";
-                return a.Repeat is null ? $"[{items}]" : $"[{items}] x {Expr(a.Repeat, 9)}";
+                return a.Repeat is null ? $"[{items}]" : $"[{items}] * {Expr(a.Repeat, 9)}";
             }
             case AtExpr at:
                 return $"{Expr(at.Value)} at {Expr(at.Manager, 9)}";

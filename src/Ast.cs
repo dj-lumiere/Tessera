@@ -425,12 +425,12 @@ public sealed record ArrayLit(List<Expr> Elements, Pos Pos) : Expr(Pos)
     /// `(a, b)`: a tuple, where `[a, b]` is an Array or a Vector.
     public bool IsTuple { get; init; }
 
-    /// `[0] x 256`: how many times the elements repeat, a count the build knows (a literal or a preset). Null when
+    /// `[0] * 256`: how many times the elements repeat, a count the build knows (a literal or a preset). Null when
     /// they are written out.
     public Expr? Repeat { get; init; }
 }
 
-/// `[0] x n at manager` (a `Memory[T]`) or `(value: 1, next: null) at manager` (a `Box[T]`): the literal in memory
+/// `[0] * n at manager` (a `Memory[T]`) or `(value: 1, next: null) at manager` (a `Box[T]`): the literal in memory
 /// taken from the manager, which `drop` gives back. A repeat count here may be known only while running.
 public sealed record AtExpr(Expr Value, Expr Manager, Pos Pos) : Expr(Pos);
 

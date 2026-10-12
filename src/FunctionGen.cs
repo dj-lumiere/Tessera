@@ -1635,7 +1635,7 @@ public sealed class FunctionGen
         {
             throw Err(lit.Repeat.Pos,
                 "a Span in the frame has a count the build knows; for a count known only while running, "
-                + "claim the memory from a manager: claim xs: Memory[T] <- [0] x n at manager");
+                + "claim the memory from a manager: claim xs: Memory[T] <- [0] * n at manager");
         }
         var array = new ArrayType(elem, count);
         _c.EnsureTypeDefined(array);
@@ -1662,7 +1662,7 @@ public sealed class FunctionGen
         if (expected is RecordType { Decl.Name: "Memory", Args: [_] } memory && memory.Decl.Module == Compiler.CoreModule)
         {
             if (a.Value is not ArrayLit { IsTuple: false } lit)
-                throw Err(a.Value.Pos, $"a {expected} at a manager is an array literal: [a, b] at manager, or [0] x n at manager");
+                throw Err(a.Value.Pos, $"a {expected} at a manager is an array literal: [a, b] at manager, or [0] * n at manager");
             var owner = new TypeRef("Memory", [], a.Pos) { Known = memory };
             Expr times = lit.Repeat ?? new IntLit(1, lit.Pos);
             var call = new NsCallExpr(owner, "construct", [], [lit with { Repeat = null }, times, a.Manager], a.Pos)
@@ -2262,7 +2262,7 @@ public sealed class FunctionGen
                 ? $"(a, b) is a tuple, and a {t} isn't one"
                 : $"only an Array or a Vector takes its elements in order; a record names its fields: {t}(name: value)"),
         };
-        if (lit.IsTuple && lit.Repeat is not null) throw Err(lit.Repeat.Pos, "a tuple doesn't repeat; an Array does: [a] x n");
+        if (lit.IsTuple && lit.Repeat is not null) throw Err(lit.Repeat.Pos, "a tuple doesn't repeat; an Array does: [a] * n");
         var elements = _c.Elements(lit, _env);
         if (elements.Count != count)
             throw Err(lit.Pos, $"{t} needs {count} element(s), got {elements.Count}");

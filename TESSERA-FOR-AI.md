@@ -126,7 +126,7 @@ routine start() -> None
   an error. `<-` fills memory and `=` only binds a name to a value, so `local p: @T = v` is a
   value, not a slot. An array value comes from `[1, 2, x]` or a load (COUNT values at `first: @T` are
   `first.to[@Array[T, COUNT]]().peek()`);
-  a bare `[1, 2]` isn't a value. `[a, b] x 3` repeats the elements (`a, b, a, b, a, b`). Where the type is known from where the value goes (a typed binding, a `preset` or
+  a bare `[1, 2]` isn't a value. `[a, b] * 3` repeats the elements (`a, b, a, b, a, b`). A bracket literal followed by `*` is always that repeat, so a Vector literal is bound to a name before it is multiplied. Where the type is known from where the value goes (a typed binding, a `preset` or
   `global`, an argument, an element of an outer literal, the pointer of `poke_into`), the type can be left off:
   `preset SORTED: @Array[S64, 3] <- [-8, 0, 7]`, `p: Point = (x: 1, y: 2)`, like `.absent()`. Write the type
   where it isn't on the same line: `sum2([7, 8])` compiles, but prefer `sum2([7, 8])`. A receiver
@@ -176,11 +176,11 @@ routine start() -> None
 - **Static and frame memory as a Span.** `preset NAME: Span[T] <- [a, b]` is read-only static data (a write faults
   on a hosted target, the build doesn't catch it). `preset GREETING: Span[Byte] <- "hello"` is a string literal's
   bytes, and a Span preset of text Spans may name it: `preset WORDS: Span[Span[Byte]] <- [GREETING, "world"]` (a
-  `global` can't take a string literal: it is read-only). `global NAME: Span[T] <- [0] x 26` is mutable static memory (the
-  literal is required: it gives the count). `local xs: Span[T] <- [0] x 64` in the body or in the head puts the values in the routine's frame, with a count the build knows (a literal count or a
+  `global` can't take a string literal: it is read-only). `global NAME: Span[T] <- [0] * 26` is mutable static memory (the
+  literal is required: it gives the count). `local xs: Span[T] <- [0] * 64` in the body or in the head puts the values in the routine's frame, with a count the build knows (a literal count or a
   preset). An array literal passed as an argument where a Span is expected is a frame Span too: `total([4, 5, 6])`.
   A frame Span must not leave the routine. `preset NAME: @Array[T, N] <- [...]` is still a `Ptr` to an array.
-- **Memory from a manager is written with `at`.** `local words: Memory[U64] <- [0] x n at DEFAULT_HEAP` (the count
+- **Memory from a manager is written with `at`.** `local words: Memory[U64] <- [0] * n at DEFAULT_HEAP` (the count
   may be a runtime value: it calls `Memory[T].construct(values: Span[T], times: USize, manager)`), and
   `local node: Box[Node] <- (value: 1, next: null) at DEFAULT_HEAP` (it calls `Box[T].construct(value, manager)`).
   An `at` literal is bound with `<-` in a `local` line: `x: Memory[T] = ... at m` is a build error that says to
@@ -1150,8 +1150,8 @@ the type's own).
 **Arrays and `stride`.** `p.stride(i)` is the address of the i-th `T` of a `@T` (a
 `USize`, or an `SSize` to move back; `offset` counts bytes); it's a place, so `p.stride(i).f` works. On a
 `@Array[T, COUNT]` that is the i-th whole array, so array elements are `arr.getitem(i)` / `arr.setitem(index: i, value: v)` / `arr.getslot(i)`
-(bounds checked), or `arr.to[@T]().stride(i).peek()` unchecked. An array literal is `[1, 2, 3]`, and `[0] x 256`
-repeats its elements (`[1, 2] x 3` = `[1, 2, 1, 2, 1, 2]`; the count is a number or a preset, or a runtime value in an `at` literal). The same holds for array fields (`node.keys.getitem(i)`) and
+(bounds checked), or `arr.to[@T]().stride(i).peek()` unchecked. An array literal is `[1, 2, 3]`, and `[0] * 256`
+repeats its elements (`[1, 2] * 3` = `[1, 2, 1, 2, 1, 2]`; the count is a number or a preset, or a runtime value in an `at` literal). The same holds for array fields (`node.keys.getitem(i)`) and
 array presets (`K.getitem(i)`, with `preset K: @Array[T, COUNT] <- [...]`), and for Span presets and globals
 (`preset K: Span[T] <- [...]`, `K.getitem(i)`, `K.count()`).
 

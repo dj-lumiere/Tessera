@@ -1178,14 +1178,14 @@ public sealed partial class Compiler
         }
     }
 
-    /// An array literal's elements in order: `[1, 2] x 3` is 1, 2, 1, 2, 1, 2.
+    /// An array literal's elements in order: `[1, 2] * 3` is 1, 2, 1, 2, 1, 2.
     public List<Expr> Elements(ArrayLit lit, TypeEnv env)
     {
         if (lit.Repeat is null) return lit.Elements;
         long times = EvalConstInt(lit.Repeat, env, 0);
-        if (times < 0) throw new CompileError(lit.Repeat.Pos, $"'x {times}' repeats a negative number of times");
+        if (times < 0) throw new CompileError(lit.Repeat.Pos, $"'* {times}' repeats a negative number of times");
         if (times * lit.Elements.Count > 1 << 24)
-            throw new CompileError(lit.Repeat.Pos, $"'x {times}' makes {times * lit.Elements.Count} elements, too many for a literal");
+            throw new CompileError(lit.Repeat.Pos, $"'* {times}' makes {times * lit.Elements.Count} elements, too many for a literal");
         var all = new List<Expr>((int)(times * lit.Elements.Count));
         for (long i = 0; i < times; i++) all.AddRange(lit.Elements);
         return all;
@@ -1553,7 +1553,7 @@ public sealed partial class Compiler
             throw new CompileError(c.Type.Pos, $"expected Span[T], found {span}");
         if (c.Value is not ArrayLit { IsTuple: false } lit)
             throw new CompileError(c.Value!.Pos,
-                $"a Span in static memory takes an array literal, which gives its count: {c.Name}: {span} <- [a, b], or <- [0] x 26");
+                $"a Span in static memory takes an array literal, which gives its count: {c.Name}: {span} <- [a, b], or <- [0] * 26");
         return new ArrayType(elem, Elements(lit, env).Count);
     }
 
