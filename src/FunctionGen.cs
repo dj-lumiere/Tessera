@@ -177,11 +177,11 @@ public sealed class FunctionGen
                     + "or lend its place as a pointer";
             case FieldExpr f when !IsPlaceChain(f) && InferQuiet(f) is RecordType { Decl.IsEntity: true } t:
                 return $"this copies the {t.Name} in '{f.Name}', and an entity is never copied: lend the place as a pointer, "
-                    + "or take it out with steal place as old inject new";
+                    + "or take it out with steal place as b";
             case MethodCallExpr { Name: "peek" or "peek_atomic" or "peek_volatile" or "getitem" or "load" } m
                 when InferQuiet(m) is RecordType { Decl.IsEntity: true } t:
                 return $"'{m.Name}' reads a {t.Name} out of memory, which copies it, and an entity is never copied: "
-                    + "lend the place itself, or take it out with steal place as old inject new";
+                    + "lend the place itself, or take it out with steal place as b";
             default:
                 return null;
         }
