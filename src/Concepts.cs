@@ -380,6 +380,9 @@ public sealed partial class Compiler
             if (ownTypeParams) continue;
             var want = ResolveType(req.Params[i].Type, renv);
             var have = ResolveType(method.Params[i].Type, menv);
+            // An entity is never a value: where the concept takes the type itself, the entity's routine takes its
+            // place, `@Me` for `Me`.
+            if (Entities.Holds(want) && have is PtrType { Pointee: { } lent } && lent.Equals(want)) continue;
             if (!want.Equals(have))
                 throw new CompileError(at, $"{claim}: parameter {i + 1} of {where} is {have}; the concept wants {want}");
         }

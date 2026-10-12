@@ -23,7 +23,7 @@ private preset SLOT_TOMBSTONE: USize = SLOT_EMPTY.sub(1)
 
 ### An insertion-ordered hash set. Keys live in parallel arrays (each a {Memory[T]} holding the capacity and the manager) in the order they were first added, and an open-addressed slot table with linear probing maps a hash to its entry. Removal marks the entry dead, so surviving elements keep their order until the next rehash.
 ### :typeparam T: The element type, which must provide hashing and equality.
-record Set[T]
+entity Set[T]
 obeys Destructible[Set[T]]
 obeys Representable[Set[T]] when T: typename, Diagnosable[T]
 obeys Diagnosable[Set[T]] when T: typename, Diagnosable[T]
@@ -41,20 +41,10 @@ needs T: typename, HashEquatable[T]
 ### :returns: A new empty Set.
 routine Set[T].construct(alloc: @MemoryManager) -> Me
 needs T: typename
-    keys: Memory[T] = Memory[T].construct(count: 0, manager: alloc)
-    hashes: Memory[U64] = Memory[U64].construct(count: 0, manager: alloc)
-    entry_states: Memory[U8] = Memory[U8].construct(count: 0, manager: alloc)
-    slots: Memory[USize] = Memory[USize].construct(count: 0, manager: alloc)
-    set: Me = Me(keys: keys, hashes: hashes, entry_states: entry_states, slots: slots, count: 0,
-        entries_count: 0)
-    return set
-
-### The number of elements currently stored.
-### :returns: The count of elements, `0` when the set is empty.
-routine Set[T].count(me: Me) -> USize
-needs T: typename
-    count: USize = me.count
-    return count
+    return Me(keys: Memory[T].construct(count: 0, manager: alloc),
+        hashes: Memory[U64].construct(count: 0, manager: alloc),
+        entry_states: Memory[U8].construct(count: 0, manager: alloc),
+        slots: Memory[USize].construct(count: 0, manager: alloc), count: 0, entries_count: 0)
 
 ### The number of elements currently stored.
 ### :returns: The count of elements, `0` when the set is empty.
@@ -65,30 +55,24 @@ needs T: typename
 
 ### Whether the set holds no elements.
 ### :returns: `true` when the count is `0`.
-routine Set[T].is_empty(me: Me) -> Bool
-needs T: typename
-    count: USize = me.count
-    return count == 0
-
-### Whether the set holds no elements.
-### :returns: `true` when the count is `0`.
 routine Set[T].is_empty(me: @Me) -> Bool
 needs T: typename
-    return me.peek().is_empty()
+    count: USize = me.count.peek()
+    return count == 0
 
 ### Probes the slot table for `key`, linearly from `hash` modulo capacity.
 ### :param key: The key being looked for.
 ### :param hash: The hash of `key`.
 ### :returns: The slot holding `key` if found, otherwise the slot where it should be installed: the first tombstone seen, else the first empty slot.
-routine Set[T].slot(me: Me, key: T, hash: U64) -> USize
+routine Set[T].slot(me: @Me, key: T, hash: U64) -> USize
 needs T: typename
     local first_tombstone: @USize <- SLOT_EMPTY
 
-    capacity: USize = me.slots.count
+    capacity: USize = me.slots.count.peek()
     mask: USize = capacity - 1
 
     while true with index: USize = hash.to_wrap[USize]() & mask
-        slots: @USize = me.slots.data
+        slots: @USize = me.slots.data.peek()
         entry_idx: USize = slots.stride(index).peek()
         is_empty: Bool = entry_idx == SLOT_EMPTY
         when
@@ -103,33 +87,33 @@ needs T: typename
                 next_tombstone: USize = when
                     seen => first_tombstone.peek()
                     else => index
-                capacity2: USize = me.slots.count
+                capacity2: USize = me.slots.count.peek()
                 next: USize = index + 1 & capacity2 - 1
                 next_tombstone.poke_into(first_tombstone)
                 continue with index: next
             else =>
-                hashes: @U64 = me.hashes.data
+                hashes: @U64 = me.hashes.data.peek()
                 entry_hash: U64 = hashes.stride(entry_idx).peek()
                 if entry_hash == hash
-                    keys: @T = me.keys.data
+                    keys: @T = me.keys.data.peek()
                     entry_key: T = keys.stride(entry_idx).peek()
                     if entry_key == key
                         return index
-                capacity2: USize = me.slots.count
+                capacity2: USize = me.slots.count.peek()
                 continue with index: index + 1 & capacity2 - 1
 
 ### The entry index of `key`.
 ### :param key: The element to look for.
 ### :returns: The index of the element's entry, or `SLOT_EMPTY` when it is absent.
-routine Set[T].find(me: Me, key: T) -> USize
+routine Set[T].find(me: @Me, key: T) -> USize
 needs T: typename
-    capacity: USize = me.slots.count
+    capacity: USize = me.slots.count.peek()
     if capacity == 0
         return SLOT_EMPTY
     else
         hash: U64 = key.hash()
         slot: USize = me.slot(key, hash)
-        slots: @USize = me.slots.data
+        slots: @USize = me.slots.data.peek()
         entry_idx: USize = slots.stride(slot).peek()
         if entry_idx < SLOT_TOMBSTONE
             return entry_idx
@@ -139,24 +123,9 @@ needs T: typename
 ### Whether `key` is in the set.
 ### :param key: The element to look for.
 ### :returns: `true` when an equal element is live.
-routine Set[T].has(me: Me, key: T) -> Bool
-needs T: typename
-    return me.find(key) != SLOT_EMPTY
-
-### Whether `key` is not there: the opposite of `has`.
-### :param key: The value to look for.
-### :returns: `true` when `has` would be `false`.
-routine Set[T].lacks(me: Me, key: T) -> Bool
-needs T: typename
-    there: Bool = me.has(key)
-    return not there
-
-### Whether `key` is in the set.
-### :param key: The element to look for.
-### :returns: `true` when an equal element is live.
 routine Set[T].has(me: @Me, key: T) -> Bool
 needs T: typename
-    return me.peek().has(key)
+    return me.find(key) != SLOT_EMPTY
 
 ### Whether `key` is not there: the opposite of `has`.
 ### :param key: The value to look for.
@@ -170,12 +139,9 @@ needs T: typename
 ### matching counts, every element of `me` being in `other` is enough.
 ### :param other: The set to compare with.
 ### :returns: True when the two hold the same elements.
-routine Set[T].eq(me: Me, other: Me) -> Bool
+routine Set[T].eq(me: @Me, other: @Me) -> Bool
 needs T: typename
-    local a: @Me <- me
-    local b: @Me <- other
-
-    return a.eq_at(b)
+    return me.eq_at(other)
 
 ### `eq`, through pointers to the two sets.
 ### :param other: The set to compare with.
@@ -273,7 +239,7 @@ needs T: typename
 ### :returns: True when a new entry was appended, false when an equal element was already live.
 routine Set[T].add_direct(me: @Me, key: T, hash: U64) -> Bool
 needs T: typename
-    local slot: USize = me.peek().slot(key, hash)
+    local slot: USize = me.slot(key, hash)
 
     slots: @USize = me.slots.data.peek()
     entry_idx: USize = slots.stride(slot).peek()
@@ -328,7 +294,7 @@ needs T: typename
         return false
     else
         hash: U64 = key.hash()
-        slot: USize = me.peek().slot(key, hash)
+        slot: USize = me.slot(key, hash)
         slots: @USize = me.slots.data.peek()
         entry_idx: USize = slots.stride(slot).peek()
         if entry_idx < SLOT_TOMBSTONE
@@ -342,35 +308,22 @@ needs T: typename
         else
             return false
 
-### Gives the set's memory back to its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
+### Ends every element (drop: an element with something to give back gives it back, a plain value gives nothing),
+### then gives the set's memory back to its allocator and resets it to the empty state, so it can be reused or
+### destructed again.
 ### :note: Does nothing on a hollow instance (`.hollow()`, no allocator), and only resets the fields of a never-filled one.
 @track_caller
 routine Set[T].destruct(me: @Me) -> None
 needs T: typename
+    keys: @T = me.keys.data.peek()
+    states: @U8 = me.entry_states.data.peek()
+    each i in 0 til me.entries_count.peek()
+        if states.stride(i).peek() == 1
+            drop keys.stride(i)
     destruct_set_arrays[T](keys: me.keys, hashes: me.hashes, entry_states: me.entry_states,
         slots: me.slots)
     me.count.poke(0)
     me.entries_count.poke(0)
-    return
-
-### Destructs every element, then the collection itself: for elements the collection owns, such as inner lists.
-### Elements that are only borrowed (a `Ptr` to memory owned elsewhere) must not be destructed this way.
-@track_caller
-routine Set[T].destruct_all(me: @Me) -> None
-needs T: typename, Destructible[T]
-    local iter_val: SetIter[T] = .construct(me)
-    local iter: @SetIter[T] <- iter_val
-    local slot: @T <- .hollow()
-
-    while true
-        item: Maybe[T] = iter.emit_checked()
-        when item
-            is T as value =>
-                slot.poke(value)
-                drop slot
-                continue
-            is None => break
-    drop me
     return
 
 # -- text -----------------------------------------------------------------------
@@ -378,11 +331,9 @@ needs T: typename, Destructible[T]
 ### The elements in insertion order, each diagnosed (strings quoted): {1, 2, 3}.
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
-routine Set[T].represent_into[TWriter](me: Me, out: @TWriter) -> None
+routine Set[T].represent_into[TWriter](me: @Me, out: @TWriter) -> None
 needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
-    local whole: @Me <- me
-
-    iter_val: SetIter[T] = .construct(whole)
+    iter_val: SetIter[T] = .construct(me)
     local iter: @SetIter[T] <- iter_val
     diagnose_items[T, SetIter[T], TWriter](out, iter, open: "{", close: "}")
     return
@@ -390,11 +341,9 @@ needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
 ### The elements in insertion order, each diagnosed: {1, 2, 3}.
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
-routine Set[T].diagnose_into[TWriter](me: Me, out: @TWriter) -> None
+routine Set[T].diagnose_into[TWriter](me: @Me, out: @TWriter) -> None
 needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
-    local whole: @Me <- me
-
-    iter_val: SetIter[T] = .construct(whole)
+    iter_val: SetIter[T] = .construct(me)
     local iter: @SetIter[T] <- iter_val
     diagnose_items[T, SetIter[T], TWriter](out, iter, open: "{", close: "}")
     return

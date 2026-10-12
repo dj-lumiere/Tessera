@@ -261,6 +261,16 @@ public sealed class FunctionGen
             _moving = true;
             return Eval(new MethodCallExpr(s.Value, "peek", [], [], s.Pos), expected);
         }
+        // `steal p.stride(i)`, `steal xs.getslot(i)`: the value an element's place holds, moved out. A container
+        // takes an element out this way and stops counting the place, so the place itself isn't marked.
+        if (s.Value is not ValueRef && InferQuiet(s.Value) is PtrType { Pointee: { } element } && s.Value is MethodCallExpr or IndexExpr)
+        {
+            if (!HasReleaseDuty(element) && SourceTypeParams.Count == 0 && !_c.Prechecking)
+                throw Err(s.Pos, $"the place holds {element.Name}, which has nothing to give back, so reading it copies it: "
+                    + "read it with peek() instead of steal");
+            _moving = true;
+            return Eval(new MethodCallExpr(s.Value, "peek", [], [], s.Pos), expected);
+        }
         if (s.Value is not ValueRef r)
             throw Err(s.Pos, "steal takes a name here (steal x): a field or an element comes out on its own line, "
                 + "steal p.left as b");
@@ -368,7 +378,9 @@ public sealed class FunctionGen
             Mem(new MemoryRules.Alias(name, same.Of, pos));
             return;
         }
-        if (value is CallExpr or NsCallExpr or MethodCallExpr or ImplicitCallExpr or AtExpr)
+        // A call that gives a pointer to an entity (`xs.getslot(i)`) lends its place: what owns the entity ends it.
+        if (value is CallExpr or NsCallExpr or MethodCallExpr or ImplicitCallExpr or AtExpr
+            && !(entity is not null && InferQuiet(value) is PtrType))
         {
             _memTracked.Add(name);
             Mem(new MemoryRules.Acquire(name, "made here", pos) { Entity = entity });
@@ -1251,7 +1263,7 @@ public sealed class FunctionGen
                 // names its types it says so.
                 if (!HasReleaseDuty(InferQuiet(d.Value)))
                 {
-                    if (d.Value is ValueRef named && WrittenGeneric(named.Name) || _c.Prechecking) break;
+                    if ((d.Value is ValueRef named ? WrittenGeneric(named.Name) : SourceTypeParams.Count > 0) || _c.Prechecking) break;
                     throw Err(d.Pos, $"{new Printer().Expr(d.Value, 0)} has nothing to give back ({InferQuiet(d.Value)?.Name ?? "its type"} "
                         + "writes no destruct): leave the drop out");
                 }
@@ -1618,7 +1630,8 @@ public sealed class FunctionGen
             case TypedIntLit t: return t.Type;
             case ValueRef r: return Lookup(r).Type;
             case StealExpr steal:
-                return Infer(steal.Value) is var stolen && (steal.Place || stolen is PtrType && Tracked(stolen))
+                return Infer(steal.Value) is var stolen && (steal.Place || stolen is PtrType && Tracked(stolen)
+                    || steal.Value is MethodCallExpr or IndexExpr && stolen is PtrType)
                     ? (stolen as PtrType)?.Pointee
                     : stolen;
             case RecordLit sl: return sl.Type is null ? null : Resolve(sl.Type);
@@ -2696,7 +2709,8 @@ public sealed class FunctionGen
         if (s.TransparentField is not null)
         {
             var only = Eval(given[fields[0].Name], fields[0].Type);
-            MemTakeAlong(given[fields[0].Name], $"kept in a {s.Name}");
+            if (!(fields[0].Type is PtrType && Entities.HeldIn(fields[0].Type) is not null))
+                MemTakeAlong(given[fields[0].Name], $"kept in a {s.Name}");
             return new Val(only.Op, s);
         }
 
@@ -2705,7 +2719,9 @@ public sealed class FunctionGen
         for (int i = 0; i < fields.Count; i++)
         {
             var v = Eval(given[fields[i].Name], fields[i].Type);
-            MemTakeAlong(given[fields[i].Name], $"kept in a {s.Name}");
+            // A field that is a pointer to an entity lends the entity's place: the slot it came from still owns it.
+            if (!(fields[i].Type is PtrType && Entities.HeldIn(fields[i].Type) is not null))
+                MemTakeAlong(given[fields[i].Name], $"kept in a {s.Name}");
             acc = EmitTmp($"insertvalue {s.Llvm} {acc}, {fields[i].Type.Llvm} {v.Op}, {shape.ValuePath(i)}");
         }
         return new Val(acc, s);
@@ -3431,6 +3447,10 @@ public sealed class FunctionGen
                 + $"{typewise.Owner!.Name}.{m.Name}(...)");
         // A pointer writes neither its value nor its address on its own: `{sum}` on a slot would print where the sum
         // is, so the line says which one it means.
+        if (rt is PtrType { Pointee: { } shown } && m.Name is "represent_into" or "diagnose_into"
+            && SourceTypeParams.Count > 0 && !Entities.Holds(shown)
+            && _c.FindMethod(shown, m.Name, _env.File, m.Pos, FromTypeParameter(shown) || Derived) is not null)
+            return PlanMethod(m with { Receiver = new MethodCallExpr(m.Receiver, "peek", [], [], m.Receiver.Pos) }, expected);
         if (rt is PtrType { Pointee: not null } && m.Name is "represent_into" or "diagnose_into")
         {
             string concept = m.Name == "represent_into" ? "Representable" : "Diagnosable";
@@ -3441,7 +3461,17 @@ public sealed class FunctionGen
         }
         // `p.eq(q)` where T.eq takes values: the load is written, not implied.
         if (rt is PtrType { Pointee: { } held } && _c.FindMethod(held, m.Name, _env.File, m.Pos, FromTypeParameter(held) || Derived) is not null)
+        {
+            // Generic code reaches elements through their places (`p.eq(q)` on two `@T`): an entity T's routine takes
+            // the place, a record T's takes the value, which is read here (a record copies freely).
+            if (SourceTypeParams.Count > 0 && !Entities.Holds(held))
+            {
+                Expr Load(Expr x) => InferQuiet(x) is PtrType { Pointee: { } p } && p.Equals(held)
+                    ? new MethodCallExpr(x, "peek", [], [], x.Pos) : x;
+                return PlanMethod(m with { Receiver = Load(m.Receiver), Args = m.Args.Select(Load).ToList() }, expected);
+            }
             throw Err(m.Pos, $"{held}.{m.Name} takes the value, not a pointer to it; peek it: .peek().{m.Name}(...)");
+        }
         // Memory is read through a typed pointer only; an Addr says where, not what.
         if (rt is PtrType { Pointee: null } && m.Name is "peek" or "poke" or "peek_volatile" or "poke_volatile")
             throw Err(m.Pos, $"an Addr has no pointee type to {m.Name}; cast it first: .to[@T]().{m.Name}(...)");

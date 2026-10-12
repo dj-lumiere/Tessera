@@ -15,7 +15,7 @@ import Standard/Format
 
 ### A growable sequence with spare room on both sides of its live range, so `add_first` and `add_last` are both amortized constant time without shifting elements. Logical element `i` lives at `storage.data[start + i]`. When either side runs out, the live range is moved to the center of a new buffer.
 ### :typeparam T: The element type.
-record CircularList[T]
+entity CircularList[T]
 obeys Destructible[CircularList[T]]
 obeys Representable[CircularList[T]] when T: typename, Diagnosable[T]
 obeys Diagnosable[CircularList[T]] when T: typename, Diagnosable[T]
@@ -30,35 +30,20 @@ needs T: typename
 ### :returns: A new empty CircularList.
 routine CircularList[T].construct(alloc: @MemoryManager) -> Me
 needs T: typename
-    storage: Memory[T] = Memory[T].construct(count: 0, manager: alloc)
-    circular_list: Me = Me(storage: storage, start: 0, count: 0)
-    return circular_list
-
-### The number of elements currently stored.
-### :returns: The count of elements, `0` when the list is empty.
-routine CircularList[T].count(me: Me) -> USize
-needs T: typename
-    count: USize = me.count
-    return count
+    return Me(storage: Memory[T].construct(count: 0, manager: alloc), start: 0, count: 0)
 
 ### The number of elements currently stored.
 ### :returns: The count of elements, `0` when the list is empty.
 routine CircularList[T].count(me: @Me) -> USize
 needs T: typename
-    count: USize = me.peek().count()
+    count: USize = me.count.peek()
     return count
 
 ### Whether the list holds no elements.
 ### :returns: `true` when the count is `0`.
 routine CircularList[T].is_empty(me: @Me) -> Bool
 needs T: typename
-    return me.peek().is_empty()
-
-### Whether the list holds no elements.
-### :returns: `true` when the count is `0`.
-routine CircularList[T].is_empty(me: Me) -> Bool
-needs T: typename
-    count: USize = me.count
+    count: USize = me.count.peek()
     return count == 0
 
 ### Moves the elements into a new buffer of `new_capacity`, centered in it.
@@ -93,9 +78,9 @@ needs T: typename
 ### instead of doubling each time its window drifts to the end.
 ### :param capacity: The current capacity.
 ### :returns: Twice `capacity` when the list is more than half full, else `capacity`.
-routine CircularList[T].grown_capacity(me: Me, capacity: USize) -> USize
+routine CircularList[T].grown_capacity(me: @Me, capacity: USize) -> USize
 needs T: typename
-    count: USize = me.count
+    count: USize = me.count.peek()
     crowded: Bool = count * 2 > capacity
     new_capacity: USize = when
         crowded => capacity * 2
@@ -116,7 +101,7 @@ needs T: typename
         if capacity == 0
             return me.recenter(4)
         else
-            return me.recenter(me.peek().grown_capacity(capacity))
+            return me.recenter(me.grown_capacity(capacity))
 
 ### Makes room for one element after the last: when the buffer's end is reached, recenters into a buffer of 4 (none
 ### yet) or of {CircularList[T].grown_capacity}.
@@ -133,7 +118,7 @@ needs T: typename
     else if capacity == 0
         return me.recenter(4)
     else
-        return me.recenter(me.peek().grown_capacity(capacity))
+        return me.recenter(me.grown_capacity(capacity))
 
 ### Appends `value` after the last element.
 ### :param value: The element to add.
@@ -142,8 +127,7 @@ needs T: typename
 @reshaping
 routine CircularList[T].add_last(me: @Me, value: T) -> None
 needs T: typename
-    pushed: Result[None, AllocFailed] = me.add_last_result(value)
-    when pushed
+    when me.add_last_result(steal value)
         is None => return
         is AllocFailed => crash_allocation()
 
@@ -160,7 +144,7 @@ needs T: typename
     start: USize = me.start.peek()
     count: USize = me.count.peek()
     index: USize = start + count
-    data.stride(index).poke(value)
+    data.stride(index).poke(steal value)
     me.count.poke(count + 1)
     return None()
 
@@ -171,8 +155,7 @@ needs T: typename
 @reshaping
 routine CircularList[T].add_first(me: @Me, value: T) -> None
 needs T: typename
-    pushed: Result[None, AllocFailed] = me.add_first_result(value)
-    when pushed
+    when me.add_first_result(steal value)
         is None => return
         is AllocFailed => crash_allocation()
 
@@ -188,7 +171,7 @@ needs T: typename
     data: @T = me.storage.data.peek()
     start: USize = me.start.peek()
     new_start: USize = start - 1
-    data.stride(new_start).poke(value)
+    data.stride(new_start).poke(steal value)
     me.start.poke(new_start)
     next_count: USize = me.count.peek() + 1
     next_count.poke_into(me.count)
@@ -200,8 +183,7 @@ needs T: typename
 @track_caller
 routine CircularList[T].remove_last(me: @Me) -> T
 needs T: typename
-    popped: Maybe[T] = me.remove_last_checked()
-    when popped
+    when me.remove_last_checked()
         is T as value => return value
         is None => crash_absent_value()
 
@@ -219,9 +201,8 @@ needs T: typename
         data: @T = me.storage.data.peek()
         start: USize = me.start.peek()
         index: USize = start + new_count
-        value: T = data.stride(index).peek()
         me.count.poke(new_count)
-        return value
+        return steal data.stride(index)
 
 ### Removes the first element and returns it. Every remaining element's index drops by one.
 ### :returns: The removed element.
@@ -229,8 +210,7 @@ needs T: typename
 @track_caller
 routine CircularList[T].remove_first(me: @Me) -> T
 needs T: typename
-    popped: Maybe[T] = me.remove_first_checked()
-    when popped
+    when me.remove_first_checked()
         is T as value => return value
         is None => crash_absent_value()
 
@@ -246,73 +226,9 @@ needs T: typename
     else
         data: @T = me.storage.data.peek()
         start: USize = me.start.peek()
-        value: T = data.stride(start).peek()
         me.start.poke(start + 1)
         me.count.poke(count - 1)
-        return value
-
-### Reads the element at logical position `index`, counted from the front.
-### :param index: The zero-based position to read.
-### :returns: A copy of the element.
-### :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
-@track_caller
-routine CircularList[T].getitem(me: Me, index: USize) -> T
-needs T: typename
-    count: USize = me.count
-    if index < count
-        data: @T = me.storage.data
-        start: USize = me.start
-        value: T = data.stride(start + index).peek()
-        return value
-    else
-        crash_out_of_bounds()
-
-### `getitem`, returning None instead of crashing on an index past the end.
-### :param index: The zero-based position to read.
-### :returns: A copy of the element.
-### :absent: When `index >= count`.
-routine CircularList[T].getitem_checked(me: Me, index: USize) -> Maybe[T]
-needs T: typename
-    count: USize = me.count
-    if index < count
-        data: @T = me.storage.data
-        start: USize = me.start
-        value: T = data.stride(start + index).peek()
-        return value
-    else
-        return None()
-
-### The address of element `index`, checked like getitem: a place to read or write in place. It stays valid until
-### the list grows, shrinks, or is destructed.
-### :param index: The zero-based position.
-### :returns: The element's address.
-### :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
-@track_caller
-routine CircularList[T].getslot(me: Me, index: USize) -> @T
-needs T: typename
-    count: USize = me.count
-    if index < count
-        data: @T = me.storage.data
-        start: USize = me.start
-        element: @T = data.stride(start + index)
-        return element
-    else
-        crash_out_of_bounds()
-
-### `at`, returning None instead of crashing on an index past the end.
-### :param index: The zero-based position.
-### :returns: The element's address.
-### :absent: When `index >= count`.
-routine CircularList[T].getslot_checked(me: Me, index: USize) -> Maybe[@T]
-needs T: typename
-    count: USize = me.count
-    if index < count
-        data: @T = me.storage.data
-        start: USize = me.start
-        element: @T = data.stride(start + index)
-        return element
-    else
-        return None()
+        return steal data.stride(start)
 
 ### Reads the element at logical position `index`, counted from the front.
 ### :param index: The zero-based position to read.
@@ -321,8 +237,13 @@ needs T: typename
 @track_caller
 routine CircularList[T].getitem(me: @Me, index: USize) -> T
 needs T: typename
-    value: T = me.peek()[index]
-    return value
+    count: USize = me.count.peek()
+    if index < count
+        data: @T = me.storage.data.peek()
+        start: USize = me.start.peek()
+        return data.stride(start + index).peek()
+    else
+        crash_out_of_bounds()
 
 ### `getitem`, returning None instead of crashing on an index past the end.
 ### :param index: The zero-based position to read.
@@ -330,8 +251,13 @@ needs T: typename
 ### :absent: When `index >= count`.
 routine CircularList[T].getitem_checked(me: @Me, index: USize) -> Maybe[T]
 needs T: typename
-    value: Maybe[T] = me.peek().getitem_checked(index)
-    return value
+    count: USize = me.count.peek()
+    if index < count
+        data: @T = me.storage.data.peek()
+        start: USize = me.start.peek()
+        return data.stride(start + index).peek()
+    else
+        return None()
 
 ### The address of element `index`, checked like getitem: a place to read or write in place. It stays valid until
 ### the list grows, shrinks, or is destructed.
@@ -341,8 +267,14 @@ needs T: typename
 @track_caller
 routine CircularList[T].getslot(me: @Me, index: USize) -> @T
 needs T: typename
-    element: @T = me.peek().getslot(index)
-    return element
+    count: USize = me.count.peek()
+    if index < count
+        data: @T = me.storage.data.peek()
+        start: USize = me.start.peek()
+        element: @T = data.stride(start + index)
+        return element
+    else
+        crash_out_of_bounds()
 
 ### `at`, returning None instead of crashing on an index past the end.
 ### :param index: The zero-based position.
@@ -350,18 +282,21 @@ needs T: typename
 ### :absent: When `index >= count`.
 routine CircularList[T].getslot_checked(me: @Me, index: USize) -> Maybe[@T]
 needs T: typename
-    element: Maybe[@T] = me.peek().getslot_checked(index)
-    return element
+    count: USize = me.count.peek()
+    if index < count
+        data: @T = me.storage.data.peek()
+        start: USize = me.start.peek()
+        element: @T = data.stride(start + index)
+        return element
+    else
+        return None()
 
 ### Whether two lists hold equal elements in the same logical order, regardless of where each sits in its buffer.
 ### :param other: The list to compare with.
 ### :returns: `true` when the counts match and every element pair is equal.
-routine CircularList[T].eq(me: Me, other: Me) -> Bool
+routine CircularList[T].eq(me: @Me, other: @Me) -> Bool
 needs T: typename, Equatable[T]
-    local a: @Me <- me
-    local b: @Me <- other
-
-    return a.eq_at(b)
+    return me.eq_at(other)
 
 ### `eq`, through pointers to the two lists.
 ### :param other: The list to compare with.
@@ -379,9 +314,7 @@ needs T: typename, Equatable[T]
         pb: @T = other.storage.data.peek()
 
         each i in 0 til la
-            x: T = pa.stride(sa + i).peek()
-            y: T = pb.stride(sb + i).peek()
-            if x == y
+            if pa.stride(sa + i).eq(pb.stride(sb + i))
                 continue
             else
                 return false
@@ -390,9 +323,9 @@ needs T: typename, Equatable[T]
     else
         return false
 
-### Overwrites the element at logical position `index` with `value`.
+### Overwrites the element at logical position `index` with `value`: the element there is ended first (drop).
 ### :param index: The zero-based position to write.
-### :param value: The value to store.
+### :param value: The value to store, taken over.
 ### :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
 @track_caller
 routine CircularList[T].setitem(me: @Me, index: USize, value: T) -> None
@@ -401,50 +334,45 @@ needs T: typename
     if index < count
         data: @T = me.storage.data.peek()
         start: USize = me.start.peek()
-        data.stride(start + index).poke(value)
+        drop data.stride(start + index)
+        data.stride(start + index).poke(steal value)
         return
     else
         crash_out_of_bounds()
 
-### Removes every element and re-centers the start index. The buffer and its capacity are kept for reuse, and elements are not destructed.
+### Removes every element (each is ended, drop) and re-centers the start index. The buffer and its capacity are kept
+### for reuse.
 routine CircularList[T].clear(me: @Me) -> None
 needs T: typename
+    me.drop_elements()
     capacity: USize = me.storage.count.peek()
     start: USize = capacity // 2
     me.start.poke(start)
     me.count.poke(0)
     return
 
-### Gives the list's memory back to its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
+### Ends every element (drop: an element with something to give back gives it back, a plain value or a borrowed
+### pointer gives nothing).
+private routine CircularList[T].drop_elements(me: @Me) -> None
+needs T: typename
+    data: @T = me.storage.data.peek()
+    start: USize = me.start.peek()
+    each i in 0 til me.count.peek()
+        drop data.stride(start + i)
+    return
+
+### Ends every element, then gives the list's memory back to its allocator and resets it to the empty state, so it
+### can be reused or destructed again.
 ### :note: Does nothing on a hollow instance (`.hollow()`, no allocator), and only resets the fields of a never-filled one.
 @track_caller
 routine CircularList[T].destruct(me: @Me) -> None
 needs T: typename
     if me.storage.manager.peek().is_null()
         return
+    me.drop_elements()
     me.storage.give_back()
     me.start.poke(0)
     me.count.poke(0)
-    return
-
-### Destructs every element, then the collection itself: for elements the collection owns, such as inner lists.
-### Elements that are only borrowed (a `Ptr` to memory owned elsewhere) must not be destructed this way.
-@track_caller
-routine CircularList[T].destruct_all(me: @Me) -> None
-needs T: typename, Destructible[T]
-    local iter_val: CircularListIter[T] = .construct(me)
-    local iter: @CircularListIter[T] <- iter_val
-    local slot: @T <- .hollow()
-
-    while true
-        item: Maybe[T] = iter.emit_checked()
-        when item
-            is T as value =>
-                slot.poke(value)
-                drop slot
-                continue
-            is None => break
-    drop me
     return
 
 # -- text -----------------------------------------------------------------------
@@ -452,23 +380,25 @@ needs T: typename, Destructible[T]
 ### The elements from the front, each diagnosed (strings quoted): [1, 2, 3].
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
-routine CircularList[T].represent_into[TWriter](me: Me, out: @TWriter) -> None
+routine CircularList[T].represent_into[TWriter](me: @Me, out: @TWriter) -> None
 needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
-    local whole: @Me <- me
-
-    iter_val: CircularListIter[T] = .construct(whole)
-    local iter: @CircularListIter[T] <- iter_val
-    diagnose_items[T, CircularListIter[T], TWriter](out, iter, open: "[", close: "]")
+    write_str(out, text: "[")
+    each i in 0 til me.count()
+        if i != 0
+            write_str(out, text: ", ")
+        me.getslot(i).diagnose_into(out)
+    write_str(out, text: "]")
     return
 
 ### The elements from the front, each diagnosed: [1, 2, 3].
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
-routine CircularList[T].diagnose_into[TWriter](me: Me, out: @TWriter) -> None
+routine CircularList[T].diagnose_into[TWriter](me: @Me, out: @TWriter) -> None
 needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
-    local whole: @Me <- me
-
-    iter_val: CircularListIter[T] = .construct(whole)
-    local iter: @CircularListIter[T] <- iter_val
-    diagnose_items[T, CircularListIter[T], TWriter](out, iter, open: "[", close: "]")
+    write_str(out, text: "[")
+    each i in 0 til me.count()
+        if i != 0
+            write_str(out, text: ", ")
+        me.getslot(i).diagnose_into(out)
+    write_str(out, text: "]")
     return

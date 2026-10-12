@@ -24,7 +24,7 @@ private preset SLOT_TOMBSTONE: USize = SLOT_EMPTY.sub(1)
 ### An insertion-ordered hash map. Entries live in parallel arrays (each a {Memory[T]} holding the capacity and the manager) in the order they were first inserted, and an open-addressed slot table with linear probing maps a key hash to its entry. Removal marks the entry dead, so surviving entries keep their order until the next rehash.
 ### :typeparam TKey: The key type, which must provide hashing and equality.
 ### :typeparam TValue: The value type.
-record Dict[TKey, TValue]
+entity Dict[TKey, TValue]
 obeys Destructible[Dict[TKey, TValue]]
 obeys Representable[Dict[TKey, TValue]] when TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue]
 obeys Diagnosable[Dict[TKey, TValue]] when TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue]
@@ -43,21 +43,11 @@ needs TKey: typename, TValue: typename, HashEquatable[TKey]
 ### :returns: A new empty Dict.
 routine Dict[TKey, TValue].construct(alloc: @MemoryManager) -> Me
 needs TKey: typename, TValue: typename
-    keys: Memory[TKey] = Memory[TKey].construct(count: 0, manager: alloc)
-    values: Memory[TValue] = Memory[TValue].construct(count: 0, manager: alloc)
-    hashes: Memory[U64] = Memory[U64].construct(count: 0, manager: alloc)
-    entry_states: Memory[U8] = Memory[U8].construct(count: 0, manager: alloc)
-    slots: Memory[USize] = Memory[USize].construct(count: 0, manager: alloc)
-    map: Me = Me(keys: keys, values: values, hashes: hashes, entry_states: entry_states,
-        slots: slots, count: 0, entries_count: 0)
-    return map
-
-### The number of entries currently stored.
-### :returns: The count of entries, `0` when the dict is empty.
-routine Dict[TKey, TValue].count(me: Me) -> USize
-needs TKey: typename, TValue: typename
-    count: USize = me.count
-    return count
+    return Me(keys: Memory[TKey].construct(count: 0, manager: alloc),
+        values: Memory[TValue].construct(count: 0, manager: alloc),
+        hashes: Memory[U64].construct(count: 0, manager: alloc),
+        entry_states: Memory[U8].construct(count: 0, manager: alloc),
+        slots: Memory[USize].construct(count: 0, manager: alloc), count: 0, entries_count: 0)
 
 ### The number of entries currently stored.
 ### :returns: The count of entries, `0` when the dict is empty.
@@ -68,31 +58,25 @@ needs TKey: typename, TValue: typename
 
 ### Whether the dict holds no entries.
 ### :returns: `true` when the count is `0`.
-routine Dict[TKey, TValue].is_empty(me: Me) -> Bool
-needs TKey: typename, TValue: typename
-    count: USize = me.count
-    return count == 0
-
-### Whether the dict holds no entries.
-### :returns: `true` when the count is `0`.
 routine Dict[TKey, TValue].is_empty(me: @Me) -> Bool
 needs TKey: typename, TValue: typename
-    return me.peek().is_empty()
+    count: USize = me.count.peek()
+    return count == 0
 
 ### Probes the slot table for `key`, from `hash` modulo the capacity. The table must have at least one slot.
 ### :param key: The key to look for.
 ### :param hash: The key's hash.
 ### :returns: The slot holding the key, or else the slot a new entry should take: the first tombstone seen, else the
 ###     first empty slot.
-routine Dict[TKey, TValue].slot(me: Me, key: TKey, hash: U64) -> USize
+routine Dict[TKey, TValue].slot(me: @Me, key: TKey, hash: U64) -> USize
 needs TKey: typename, TValue: typename
     local first_tombstone: @USize <- SLOT_EMPTY
 
-    capacity: USize = me.slots.count
+    capacity: USize = me.slots.count.peek()
     mask: USize = capacity - 1
 
     while true with index: USize = hash.to_wrap[USize]() & mask
-        slots: @USize = me.slots.data
+        slots: @USize = me.slots.data.peek()
         entry_idx: USize = slots.stride(index).peek()
         is_empty: Bool = entry_idx == SLOT_EMPTY
         when
@@ -107,33 +91,33 @@ needs TKey: typename, TValue: typename
                 next_tombstone: USize = when
                     seen => first_tombstone.peek()
                     else => index
-                capacity2: USize = me.slots.count
+                capacity2: USize = me.slots.count.peek()
                 next: USize = index + 1 & capacity2 - 1
                 next_tombstone.poke_into(first_tombstone)
                 continue with index: next
             else =>
-                hashes: @U64 = me.hashes.data
+                hashes: @U64 = me.hashes.data.peek()
                 entry_hash: U64 = hashes.stride(entry_idx).peek()
                 if entry_hash == hash
-                    keys: @TKey = me.keys.data
+                    keys: @TKey = me.keys.data.peek()
                     entry_key: TKey = keys.stride(entry_idx).peek()
                     if entry_key == key
                         return index
-                capacity2: USize = me.slots.count
+                capacity2: USize = me.slots.count.peek()
                 continue with index: index + 1 & capacity2 - 1
 
 ### The entry index of `key`.
 ### :param key: The key to look for.
 ### :returns: The index of the key's entry, or `SLOT_EMPTY` when the key is absent.
-routine Dict[TKey, TValue].find(me: Me, key: TKey) -> USize
+routine Dict[TKey, TValue].find(me: @Me, key: TKey) -> USize
 needs TKey: typename, TValue: typename
-    capacity: USize = me.slots.count
+    capacity: USize = me.slots.count.peek()
     if capacity == 0
         return SLOT_EMPTY
     else
         hash: U64 = TKey.hash(key)
         slot: USize = me.slot(key, hash)
-        slots: @USize = me.slots.data
+        slots: @USize = me.slots.data.peek()
         entry_idx: USize = slots.stride(slot).peek()
         if entry_idx < SLOT_TOMBSTONE
             return entry_idx
@@ -143,24 +127,9 @@ needs TKey: typename, TValue: typename
 ### Whether `key` is present.
 ### :param key: The key to look for.
 ### :returns: `true` when an entry with an equal key is live.
-routine Dict[TKey, TValue].has_key(me: Me, key: TKey) -> Bool
-needs TKey: typename, TValue: typename
-    return me.find(key) != SLOT_EMPTY
-
-### Whether `key` is not a key: the opposite of `has_key`.
-### :param key: The key to look for.
-### :returns: `true` when `has_key` would be `false`.
-routine Dict[TKey, TValue].lacks_key(me: Me, key: TKey) -> Bool
-needs TKey: typename, TValue: typename
-    there: Bool = me.has_key(key)
-    return not there
-
-### Whether `key` is present.
-### :param key: The key to look for.
-### :returns: `true` when an entry with an equal key is live.
 routine Dict[TKey, TValue].has_key(me: @Me, key: TKey) -> Bool
 needs TKey: typename, TValue: typename
-    return me.peek().has_key(key)
+    return me.find(key) != SLOT_EMPTY
 
 ### Whether `key` is not a key: the opposite of `has_key`.
 ### :param key: The key to look for.
@@ -174,12 +143,9 @@ needs TKey: typename, TValue: typename
 ### matching counts, every key of `me` being in `other` with an equal value is enough.
 ### :param other: The dict to compare with.
 ### :returns: True when the two hold the same pairs.
-routine Dict[TKey, TValue].eq(me: Me, other: Me) -> Bool
+routine Dict[TKey, TValue].eq(me: @Me, other: @Me) -> Bool
 needs TKey: typename, TValue: typename, Equatable[TValue]
-    local a: @Me <- me
-    local b: @Me <- other
-
-    return a.eq_at(b)
+    return me.eq_at(other)
 
 ### `eq`, through pointers to the two dicts.
 ### :param other: The dict to compare with.
@@ -197,13 +163,11 @@ needs TKey: typename, TValue: typename, Equatable[TValue]
             if s == 1
                 keys: @TKey = me.keys.data.peek()
                 key: TKey = keys.stride(i).peek()
-                eb: USize = other.peek().find(key)
+                eb: USize = other.find(key)
                 if eb < SLOT_TOMBSTONE
                     values_a: @TValue = me.values.data.peek()
                     values_b: @TValue = other.values.data.peek()
-                    va: TValue = values_a.stride(i).peek()
-                    vb: TValue = values_b.stride(eb).peek()
-                    if va == vb
+                    if values_a.stride(i).eq(values_b.stride(eb))
                         continue
                     else
                         return false
@@ -260,9 +224,8 @@ needs TKey: typename, TValue: typename
                                 old_values: @TValue = values.data.peek()
                                 old_hashes: @U64 = hashes.data.peek()
                                 key: TKey = old_keys.stride(i).peek()
-                                value: TValue = old_values.stride(i).peek()
                                 hash: U64 = old_hashes.stride(i).peek()
-                                me.setitem_direct(key, value, hash)
+                                me.setitem_direct(key, value: steal old_values.stride(i), hash)
                         drop fresh
                         return true
     drop fresh
@@ -294,13 +257,14 @@ needs TKey: typename, TValue: typename
 ### :param hash: The key's hash, so rehash can pass the stored one instead of hashing every key again.
 routine Dict[TKey, TValue].setitem_direct(me: @Me, key: TKey, value: TValue, hash: U64) -> None
 needs TKey: typename, TValue: typename
-    local slot: USize = me.peek().slot(key, hash)
+    local slot: USize = me.slot(key, hash)
     local slots: @USize = me.slots.data.peek()
     local entry_idx: USize = slots.stride(slot).peek()
 
     if entry_idx < SLOT_TOMBSTONE
         values: @TValue = me.values.data.peek()
-        values.stride(entry_idx).poke(value)
+        drop values.stride(entry_idx)
+        values.stride(entry_idx).poke(steal value)
         return
     else
         new_idx: USize = me.entries_count.peek()
@@ -309,7 +273,7 @@ needs TKey: typename, TValue: typename
         hashes: @U64 = me.hashes.data.peek()
         entry_states: @U8 = me.entry_states.data.peek()
         keys.stride(new_idx).poke(key)
-        values.stride(new_idx).poke(value)
+        values.stride(new_idx).poke(steal value)
         hashes.stride(new_idx).poke(hash)
         entry_states.stride(new_idx).poke(1)
         slots.stride(slot).poke(new_idx)
@@ -326,8 +290,7 @@ needs TKey: typename, TValue: typename
 @reshaping
 routine Dict[TKey, TValue].setitem(me: @Me, key: TKey, value: TValue) -> None
 needs TKey: typename, TValue: typename
-    put: Result[None, AllocFailed] = me.setitem_result(key, value)
-    when put
+    when me.setitem_result(key, value: steal value)
         is None => return
         is AllocFailed => crash_allocation()
 
@@ -342,24 +305,8 @@ routine Dict[TKey, TValue].setitem_result(me: @Me, key: TKey,
 needs TKey: typename, TValue: typename
     if not me.ensure()
         return AllocFailed()
-    me.setitem_direct(key, value, hash: TKey.hash(key))
+    me.setitem_direct(key, value: steal value, hash: TKey.hash(key))
     return None()
-
-### Reads the value stored under `key`.
-### :param key: The key to look up.
-### :returns: A copy of the value.
-### :throws: Crashes with `KeyNotFoundError` when the key is absent. See {Dict[TKey, TValue].getitem_checked}.
-@track_caller
-routine Dict[TKey, TValue].getitem(me: Me, key: TKey) -> TValue
-needs TKey: typename, TValue: typename
-    local entry_idx: USize = me.find(key)
-
-    if entry_idx < SLOT_TOMBSTONE
-        values: @TValue = me.values.data
-        value: TValue = values.stride(entry_idx).peek()
-        return value
-    else
-        crash_key_not_found()
 
 ### Reads the value stored under `key`.
 ### :param key: The key to look up.
@@ -368,23 +315,14 @@ needs TKey: typename, TValue: typename
 @track_caller
 routine Dict[TKey, TValue].getitem(me: @Me, key: TKey) -> TValue
 needs TKey: typename, TValue: typename
-    value: TValue = me.peek()[key]
-    return value
-
-### `getitem`, returning None instead of crashing on a missing key.
-### :param key: The key to look up.
-### :returns: A copy of the value.
-### :absent: When the key is not present.
-routine Dict[TKey, TValue].getitem_checked(me: Me, key: TKey) -> Maybe[TValue]
-needs TKey: typename, TValue: typename
     local entry_idx: USize = me.find(key)
 
     if entry_idx < SLOT_TOMBSTONE
-        values: @TValue = me.values.data
+        values: @TValue = me.values.data.peek()
         value: TValue = values.stride(entry_idx).peek()
         return value
     else
-        return None()
+        crash_key_not_found()
 
 ### `getitem`, returning None instead of crashing on a missing key.
 ### :param key: The key to look up.
@@ -392,25 +330,14 @@ needs TKey: typename, TValue: typename
 ### :absent: When the key is not present.
 routine Dict[TKey, TValue].getitem_checked(me: @Me, key: TKey) -> Maybe[TValue]
 needs TKey: typename, TValue: typename
-    value: Maybe[TValue] = me.peek().getitem_checked(key)
-    return value
-
-### The address of the value under `key`, checked like getitem: a place to update the value in place. Only the
-### value: changing a key in place would lose it. It stays valid until the dict grows, rehashes, or is destructed.
-### :param key: The key to look up.
-### :returns: The value's address.
-### :throws: Crashes with `KeyNotFoundError` when the key is absent.
-@track_caller
-routine Dict[TKey, TValue].getslot(me: Me, key: TKey) -> @TValue
-needs TKey: typename, TValue: typename
     local entry_idx: USize = me.find(key)
 
     if entry_idx < SLOT_TOMBSTONE
-        values: @TValue = me.values.data
-        value: @TValue = values.stride(entry_idx)
+        values: @TValue = me.values.data.peek()
+        value: TValue = values.stride(entry_idx).peek()
         return value
     else
-        crash_key_not_found()
+        return None()
 
 ### The address of the value under `key`, checked like getitem: a place to update the value in place. Only the
 ### value: changing a key in place would lose it. It stays valid until the dict grows, rehashes, or is destructed.
@@ -420,23 +347,14 @@ needs TKey: typename, TValue: typename
 @track_caller
 routine Dict[TKey, TValue].getslot(me: @Me, key: TKey) -> @TValue
 needs TKey: typename, TValue: typename
-    value: @TValue = me.peek().getslot(key)
-    return value
-
-### `at`, returning None instead of crashing on a missing key.
-### :param key: The key to look up.
-### :returns: The value's address.
-### :absent: When the key is not present.
-routine Dict[TKey, TValue].getslot_checked(me: Me, key: TKey) -> Maybe[@TValue]
-needs TKey: typename, TValue: typename
     local entry_idx: USize = me.find(key)
 
     if entry_idx < SLOT_TOMBSTONE
-        values: @TValue = me.values.data
+        values: @TValue = me.values.data.peek()
         value: @TValue = values.stride(entry_idx)
         return value
     else
-        return None()
+        crash_key_not_found()
 
 ### `at`, returning None instead of crashing on a missing key.
 ### :param key: The key to look up.
@@ -444,8 +362,14 @@ needs TKey: typename, TValue: typename
 ### :absent: When the key is not present.
 routine Dict[TKey, TValue].getslot_checked(me: @Me, key: TKey) -> Maybe[@TValue]
 needs TKey: typename, TValue: typename
-    value: Maybe[@TValue] = me.peek().getslot_checked(key)
-    return value
+    local entry_idx: USize = me.find(key)
+
+    if entry_idx < SLOT_TOMBSTONE
+        values: @TValue = me.values.data.peek()
+        value: @TValue = values.stride(entry_idx)
+        return value
+    else
+        return None()
 
 ### Removes the entry for `key`. Removal keeps the entries array's layout: the entry is marked dead and its slot
 ### becomes a tombstone, so surviving entries keep their order until the next rehash.
@@ -458,12 +382,16 @@ needs TKey: typename, TValue: typename
         return false
     else
         hash: U64 = TKey.hash(key)
-        slot: USize = me.peek().slot(key, hash)
+        slot: USize = me.slot(key, hash)
         slots: @USize = me.slots.data.peek()
         entry_idx: USize = slots.stride(slot).peek()
         if entry_idx < SLOT_TOMBSTONE
             slots2: @USize = me.slots.data.peek()
             entry_states: @U8 = me.entry_states.data.peek()
+            keys: @TKey = me.keys.data.peek()
+            values: @TValue = me.values.data.peek()
+            drop keys.stride(entry_idx)
+            drop values.stride(entry_idx)
             slots2.stride(slot).poke(SLOT_TOMBSTONE)
             entry_states.stride(entry_idx).poke(0)
             remaining_count: USize = me.count.peek() - 1
@@ -472,13 +400,22 @@ needs TKey: typename, TValue: typename
         else
             return false
 
-### Gives the dict's memory back to its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
+### Ends every key and value (drop: one with something to give back gives it back, a plain value or a borrowed
+### pointer gives nothing), then gives the dict's memory back to its allocator and resets it to the empty state, so
+### it can be reused or destructed again.
 ### :note: Does nothing on a hollow instance (`.hollow()`, no allocator), and only resets the fields of a never-filled one.
 @track_caller
 routine Dict[TKey, TValue].destruct(me: @Me) -> None
 needs TKey: typename, TValue: typename
     if me.keys.manager.peek().is_null()
         return
+    keys: @TKey = me.keys.data.peek()
+    values: @TValue = me.values.data.peek()
+    states: @U8 = me.entry_states.data.peek()
+    each i in 0 til me.entries_count.peek()
+        if states.stride(i).peek() == 1
+            drop keys.stride(i)
+            drop values.stride(i)
     me.keys.give_back()
     me.values.give_back()
     me.hashes.give_back()
@@ -488,57 +425,14 @@ needs TKey: typename, TValue: typename
     me.entries_count.poke(0)
     return
 
-### Destructs every key and value, then the dictionary itself.
-@track_caller
-routine Dict[TKey, TValue].destruct_all(me: @Me) -> None
-needs TKey: typename, TValue: typename, Destructible[TKey], Destructible[TValue]
-    local iter_val: DictIter[TKey, TValue] = .construct(me)
-    local iter: @DictIter[TKey, TValue] <- iter_val
-    local key_slot: @TKey <- .hollow()
-    local value_slot: @TValue <- .hollow()
-
-    while true
-        item: Maybe[KVPair[TKey, TValue]] = iter.emit_checked()
-        when item
-            is KVPair[TKey, TValue] as entry =>
-                key_slot.poke(entry.key)
-                drop key_slot
-                value_slot.poke(entry.value)
-                drop value_slot
-                continue
-            is None => break
-    drop me
-    return
-
-### Destructs every value (the keys own nothing), then the dictionary itself.
-@track_caller
-routine Dict[TKey, TValue].destruct_all_values(me: @Me) -> None
-needs TKey: typename, TValue: typename, Destructible[TValue]
-    local iter_val: DictIter[TKey, TValue] = .construct(me)
-    local iter: @DictIter[TKey, TValue] <- iter_val
-    local value_slot: @TValue <- .hollow()
-
-    while true
-        item: Maybe[KVPair[TKey, TValue]] = iter.emit_checked()
-        when item
-            is KVPair[TKey, TValue] as entry =>
-                value_slot.poke(entry.value)
-                drop value_slot
-                continue
-            is None => break
-    drop me
-    return
-
 # -- text -----------------------------------------------------------------------
 
 ### The entries in insertion order, keys and values diagnosed (strings quoted): {"a": 1, "b": 2}.
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
-routine Dict[TKey, TValue].represent_into[TWriter](me: Me, out: @TWriter) -> None
+routine Dict[TKey, TValue].represent_into[TWriter](me: @Me, out: @TWriter) -> None
 needs TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue], TWriter: typename, Writer[TWriter]
-    local whole: @Me <- me
-
-    iter_val: DictIter[TKey, TValue] = .construct(whole)
+    iter_val: DictIter[TKey, TValue] = .construct(me)
     local iter: @DictIter[TKey, TValue] <- iter_val
     diagnose_entries[TKey, TValue, DictIter[TKey, TValue], TWriter](out, iter)
     return
@@ -546,11 +440,9 @@ needs TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue], 
 ### The entries in insertion order, keys and values diagnosed: {"a": 1, "b": 2}.
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
-routine Dict[TKey, TValue].diagnose_into[TWriter](me: Me, out: @TWriter) -> None
+routine Dict[TKey, TValue].diagnose_into[TWriter](me: @Me, out: @TWriter) -> None
 needs TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue], TWriter: typename, Writer[TWriter]
-    local whole: @Me <- me
-
-    iter_val: DictIter[TKey, TValue] = .construct(whole)
+    iter_val: DictIter[TKey, TValue] = .construct(me)
     local iter: @DictIter[TKey, TValue] <- iter_val
     diagnose_entries[TKey, TValue, DictIter[TKey, TValue], TWriter](out, iter)
     return

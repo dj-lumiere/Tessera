@@ -30,50 +30,29 @@ record Edge
     to: USize
     weight: S64
 
-### adj[u] is a separately heap-allocated List[Edge] reached through a pointer
-### slot.  Storing @List[Edge] (not List[Edge]) means loading adj[u] gives a
-### callable method receiver directly — no address-of-element operation needed.
-record Graph
-    adj: @List[@List[Edge]]
+### adj owns one List[Edge] per node: getslot(u) lends node u's list in place, and dropping the graph ends every
+### list with it.
+entity Graph
+    adj: List[List[Edge]]
     num_nodes: USize
 
 # ── Graph ─────────────────────────────────────────────────────────────────────
 
 routine Graph.construct(num_nodes: USize, alloc: @MemoryManager) -> Me
-    local adj: @List[@List[Edge]] = allocate[List[@List[Edge]]](count: 1, alloc)
-
-    if adj.is_null()
-        crash_allocation()
-    adj_val: List[@List[Edge]] = .construct(alloc)
-    adj.poke(adj_val)
+    local adj: @List[List[Edge]] <- .construct(alloc)
 
     each i in 0 til num_nodes
-        list: @List[Edge] = allocate[List[Edge]](count: 1, alloc)
-        if list.is_null()
-            crash_allocation()
-        empty: List[Edge] = .construct(alloc)
-        list.poke(empty)
-        adj.add_last(list)
-    g: Me = Me(adj: adj, num_nodes: num_nodes)
-    return g
+        adj.add_last(List[Edge].construct(alloc))
+    then
+        return Me(adj: steal adj, num_nodes)
 
+@reshaping
 routine Graph.add_edge(me: @Me, from: USize, to: USize, weight: S64) -> None
-    adj: @List[@List[Edge]] = me.adj.peek()
-    list: @List[Edge] = adj[from]
-    edge: Edge = Edge(to: to, weight: weight)
-    list.add_last(edge)
+    me.adj.getslot(from).add_last(Edge(to, weight))
     return
 
-routine Graph.destruct(me: @Me, alloc: @MemoryManager) -> None
-    local n: USize = me.num_nodes.peek()
-    local adj: @List[@List[Edge]] = me.adj.peek()
-
-    each i in 0 til n
-        list: @List[Edge] = adj[i]
-        list.destruct()
-        deallocate(data: list, alloc)
-    adj.destruct()
-    deallocate(data: adj, alloc)
+routine Graph.destruct(me: @Me) -> None
+    drop me.adj
     return
 
 # ── Dijkstra ─────────────────────────────────────────────────────────────────
@@ -104,8 +83,7 @@ routine dijkstra(graph:  @Graph, source: USize, dist:   @S64, alloc:  @MemoryMan
         if d > best
             continue
         else
-            adj: @List[@List[Edge]] = graph.adj.peek()
-            list: @List[Edge] = adj[u]
+            list: @List[Edge] = graph.adj.getslot(u)
 
             len: USize = list.count()
 
@@ -146,8 +124,7 @@ routine dijkstra(graph:  @Graph, source: USize, dist:   @S64, alloc:  @MemoryMan
 
 routine start() -> None
     local alloc: @MemoryManager <- make_heap_memory()
-    local g: Graph = .construct(num_nodes: 6, alloc)
-    local graph: @Graph <- g
+    local graph: @Graph <- .construct(num_nodes: 6, alloc)
     local distances: @Memory[S64] <- .hollow()
 
     graph.add_edge(from: 0, to: 1, weight: 7)
@@ -169,6 +146,6 @@ routine start() -> None
     each i in 0 til 6
         d: S64 = distances[i]
         c_printf("  node %zu  dist %lld\n", i, d)
-    graph.destruct(alloc)
+    drop graph
     drop distances
     return

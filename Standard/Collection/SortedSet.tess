@@ -25,7 +25,7 @@ needs T: typename, Comparable[T]
 
 ### A set kept in sorted order, stored as an order-statistic B-tree. Elements are unique, lookup and insertion are `O(log n)`, and iteration is in ascending order.
 ### :typeparam T: The element type, ordered by its `Comparable` conformance.
-record SortedSet[T]
+entity SortedSet[T]
 obeys Destructible[SortedSet[T]]
 obeys Representable[SortedSet[T]] when T: typename, Diagnosable[T]
 obeys Diagnosable[SortedSet[T]] when T: typename, Diagnosable[T]
@@ -45,35 +45,21 @@ needs T: typename
 ### :returns: A new empty SortedSet.
 routine SortedSet[T].construct(alloc: @MemoryManager) -> Me
 needs T: typename
-    set: Me = Me(root: null, count: 0, alloc: alloc)
-    return set
-
-### The number of elements currently stored.
-### :returns: The count of elements, `0` when the set is empty.
-routine SortedSet[T].count(me: Me) -> USize
-needs T: typename
-    count: USize = me.count
-    return count
+    return Me(root: null, count: 0, alloc: alloc)
 
 ### The number of elements currently stored.
 ### :returns: The count of elements, `0` when the set is empty.
 routine SortedSet[T].count(me: @Me) -> USize
 needs T: typename
-    result: USize = me.peek().count()
-    return result
-
-### Whether the set holds no elements.
-### :returns: `true` when the count is `0`.
-routine SortedSet[T].is_empty(me: Me) -> Bool
-needs T: typename
-    count: USize = me.count
-    return count == 0
+    count: USize = me.count.peek()
+    return count
 
 ### Whether the set holds no elements.
 ### :returns: `true` when the count is `0`.
 routine SortedSet[T].is_empty(me: @Me) -> Bool
 needs T: typename
-    return me.peek().is_empty()
+    count: USize = me.count.peek()
+    return count == 0
 
 ### A new empty node from `alloc`.
 ### :param leaf: Whether the node is a leaf.
@@ -145,12 +131,9 @@ needs T: typename
 ### without a `contains` lookup per element.
 ### :param other: The set to compare with.
 ### :returns: True when the counts match and every element pair is equal.
-routine SortedSet[T].eq(me: Me, other: Me) -> Bool
+routine SortedSet[T].eq(me: @Me, other: @Me) -> Bool
 needs T: typename
-    local a: @Me <- me
-    local b: @Me <- other
-
-    return a.eq_at(b)
+    return me.eq_at(other)
 
 ### `eq`, through pointers to the two sets.
 ### :param other: The set to compare with.
@@ -186,9 +169,9 @@ needs T: typename
 ### Whether an element equal to `key` is in the set.
 ### :param key: The element to look for.
 ### :returns: `true` when an equal element is present.
-routine SortedSet[T].has(me: Me, key: T) -> Bool
+routine SortedSet[T].has(me: @Me, key: T) -> Bool
 needs T: typename
-    root: @SortedSetNode[T] = me.root
+    root: @SortedSetNode[T] = me.root.peek()
     if root.is_null()
         return false
     else
@@ -208,21 +191,6 @@ needs T: typename
 ### Whether `key` is not there: the opposite of `has`.
 ### :param key: The value to look for.
 ### :returns: `true` when `has` would be `false`.
-routine SortedSet[T].lacks(me: Me, key: T) -> Bool
-needs T: typename
-    there: Bool = me.has(key)
-    return not there
-
-### Whether an element equal to `key` is in the set.
-### :param key: The element to look for.
-### :returns: `true` when an equal element is present.
-routine SortedSet[T].has(me: @Me, key: T) -> Bool
-needs T: typename
-    return me.peek().has(key)
-
-### Whether `key` is not there: the opposite of `has`.
-### :param key: The value to look for.
-### :returns: `true` when `has` would be `false`.
 routine SortedSet[T].lacks(me: @Me, key: T) -> Bool
 needs T: typename
     there: Bool = me.has(key)
@@ -233,13 +201,13 @@ needs T: typename
 ### :returns: A copy of the element.
 ### :throws: Crashes with `IndexOutOfBoundsError` when `rank >= count`.
 @track_caller
-routine SortedSet[T].get_by_rank(me: Me, rank: USize) -> T
+routine SortedSet[T].get_by_rank(me: @Me, rank: USize) -> T
 needs T: typename
-    count: USize = me.count
+    count: USize = me.count.peek()
     if rank >= count
         crash_out_of_bounds()
 
-    while true with node: @SortedSetNode[T] = me.root, remaining: USize = rank, i: USize = 0
+    while true with node: @SortedSetNode[T] = me.root.peek(), remaining: USize = rank, i: USize = 0
         node_count: USize = node.count.peek()
         is_leaf: Bool = node.leaf.peek()
         if i >= node_count
@@ -260,16 +228,6 @@ needs T: typename
             key: T = node.keys[i]
             return key
         continue with node: node, remaining: after_child - 1, i: i + 1
-
-### The `rank`-th smallest element (0 is the smallest).
-### :param rank: The zero-based rank.
-### :returns: A copy of the element.
-### :throws: Crashes with `IndexOutOfBoundsError` when `rank >= count`.
-@track_caller
-routine SortedSet[T].get_by_rank(me: @Me, rank: USize) -> T
-needs T: typename
-    result: T = me.peek().get_by_rank(rank)
-    return result
 
 ### Splits the full child at `index` around its middle: the middle element moves up into this node and the upper
 ### half into a new right sibling.
@@ -716,36 +674,14 @@ needs T: typename
     me.count.poke(0)
     return
 
-### Destructs every element, then the collection itself: for elements the collection owns, such as inner lists.
-### Elements that are only borrowed (a `Ptr` to memory owned elsewhere) must not be destructed this way.
-@track_caller
-routine SortedSet[T].destruct_all(me: @Me) -> None
-needs T: typename, Destructible[T]
-    local iter_val: SortedSetIter[T] = .construct(me)
-    local iter: @SortedSetIter[T] <- iter_val
-    local slot: @T <- .hollow()
-
-    while true
-        item: Maybe[T] = iter.emit_checked()
-        when item
-            is T as value =>
-                slot.poke(value)
-                drop slot
-                continue
-            is None => break
-    drop me
-    return
-
 # -- text -----------------------------------------------------------------------
 
 ### The elements in sorted order, each diagnosed (strings quoted): {1, 2, 3}.
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
-routine SortedSet[T].represent_into[TWriter](me: Me, out: @TWriter) -> None
+routine SortedSet[T].represent_into[TWriter](me: @Me, out: @TWriter) -> None
 needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
-    local whole: @Me <- me
-
-    iter_val: SortedSetIter[T] = .construct(whole)
+    iter_val: SortedSetIter[T] = .construct(me)
     local iter: @SortedSetIter[T] <- iter_val
     diagnose_items[T, SortedSetIter[T], TWriter](out, iter, open: "{", close: "}")
     return
@@ -753,11 +689,9 @@ needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
 ### The elements in sorted order, each diagnosed: {1, 2, 3}.
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
-routine SortedSet[T].diagnose_into[TWriter](me: Me, out: @TWriter) -> None
+routine SortedSet[T].diagnose_into[TWriter](me: @Me, out: @TWriter) -> None
 needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
-    local whole: @Me <- me
-
-    iter_val: SortedSetIter[T] = .construct(whole)
+    iter_val: SortedSetIter[T] = .construct(me)
     local iter: @SortedSetIter[T] <- iter_val
     diagnose_items[T, SortedSetIter[T], TWriter](out, iter, open: "{", close: "}")
     return
