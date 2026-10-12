@@ -197,11 +197,13 @@ routine start() -> None
   `steal m`, or moved into an entity's field). The errors and their fixes:
   - `'m' holds a Memory[Byte] (from line N) that hasn't ended when 'r' returns here`: drop it, return it, or hand it
     on. Also what a path that skips the release gets (dropped in one arm of an `if`, not the other).
-  - `'m' ended already (steal m on line N), and a Memory[Byte] ends once`, and `'m' is used after steal m on line N
-    ended it`: a slot handed on is gone.
+  - `'m' ended already (drop m on line N), and a Memory[Byte] ends once` (a second `drop`, or a drop after
+    `steal m`), and `'m' is used after drop m on line N ended it`: a slot dropped or handed on is gone. A `drop`
+    leaves the slot empty at run time, but the build counts the drop: the slot holds nothing again until a value is
+    put in it (`poke`).
   - `'s' holds a Memory[Byte] (from line N) that hasn't ended, and this overwrites it`: a `poke` into a slot that
     holds live memory. Drop it first, or use `replace(value: new)`.
-  A `drop` of a slot leaves it hollow, so a second `drop s` of the same slot does nothing and is no error. The check
+  The check
   follows one routine's own flow: what a callee does with a slot it was lent is the callee's, so that case is the
   generation check's.
 - **The escape check (rule 3).** A routine doesn't return a view of its frame (a local slot, a frame Span, and

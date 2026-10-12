@@ -160,6 +160,9 @@ public sealed class FunctionGen
 
     /// Whether the memory rules follow a value of `t` (or a slot of one): a Box, a Memory, or an entity. Each must end
     /// once on every path (drop, return, handed on), and nothing uses it after.
+    /// The names bound by a claim (`local x: @T <- value`): each is a slot of the frame, so `steal x` takes what it holds.
+    private readonly HashSet<string> _claimedSlots = [];
+
     private static bool Tracked(DType? t) => OwnedMemory(t) is not null || Entities.HeldIn(t) is not null;
 
     /// The operand of the `drop` being emitted: it ends there, so reading it isn't a copy.
@@ -268,15 +271,32 @@ public sealed class FunctionGen
             _moving = true;
             return Eval(new MethodCallExpr(s.Value, "peek", [], [], s.Pos), expected);
         }
-        // `steal p.stride(i)`, `steal xs.getslot(i)`: the value an element's place holds, moved out. A container
-        // takes an element out this way and stops counting the place, so the place itself isn't marked.
+        // `steal p.stride(i)`, `steal xs.getslot(i)`: the value an element's place holds, moved out, and the place left
+        // hollow, as `steal p.left` leaves a field: reading it again before a value is put back (`.poke(...)`) is a
+        // build error, followed by the place's spelling.
         if (s.Value is not ValueRef && InferQuiet(s.Value) is PtrType { Pointee: { } element } && s.Value is MethodCallExpr or IndexExpr)
         {
             if (!HasReleaseDuty(element) && SourceTypeParams.Count == 0 && !_c.Prechecking)
                 throw Err(s.Pos, $"the place holds {element.Name}, which has nothing to give back, so reading it copies it: "
                     + "read it with peek() instead of steal");
-            _moving = true;
-            return Eval(new MethodCallExpr(s.Value, "peek", [], [], s.Pos), expected);
+            if (!HasReleaseDuty(element) || !Entities.Holds(element) && OwnedMemory(element) is null)
+            {
+                _moving = true;
+                return Eval(new MethodCallExpr(s.Value, "peek", [], [], s.Pos), expected);
+            }
+            // The place's address once, its value out, then the hollow value in.
+            var place = Eval(s.Value, new PtrType(element));
+            _c.EnsureTypeDefined(element);
+            long align = _c.SizeAlign(element, s.Pos).Align;
+            var taken = new Val(EmitTmp($"load {element.Llvm}, ptr {place.Op}, align {align}"), element);
+            var hollow = Eval(new NsCallExpr(new TypeRef("$hollow", [], s.Pos) { Known = element }, "hollow", [], [], s.Pos), element);
+            Line($"store {element.Llvm} {hollow.Op}, ptr {place.Op}, align {align}");
+            if (MemOn && PlaceKey(s.Value) is { } key)
+            {
+                Mem(new MemoryRules.Acquire(key, "emptied", s.Pos) { Entity = element.Name });
+                Mem(new MemoryRules.End(key, $"steal {key}", s.Pos));
+            }
+            return taken;
         }
         if (s.Value is not ValueRef r)
             throw Err(s.Pos, "steal takes a name here (steal x): a field or an element comes out on its own line, "
@@ -286,9 +306,9 @@ public sealed class FunctionGen
             throw Err(s.Pos, $"'{r.Name}' holds {t?.Name ?? "a value"}, which has nothing to give back, so passing it on copies it: "
                 + $"write {r.Name} without steal");
         _moving = true;
-        // The slot of something followed (an entity, memory) gives what it holds. A plain value, or a pointer that is
-        // a value of its own, is itself.
-        var v = t is PtrType && Tracked(t) ? Eval(new MethodCallExpr(r, "peek", [], [], r.Pos), expected) : Eval(r, expected);
+        // The slot of something followed (an entity, memory), or a slot claimed with `local x: @T <- ...` whatever it
+        // holds, gives what it holds. A plain value, or a pointer that is a value of its own, is itself.
+        var v = t is PtrType && (Tracked(t) || _claimedSlots.Contains(r.Name)) ? Eval(new MethodCallExpr(r, "peek", [], [], r.Pos), expected) : Eval(r, expected);
         if (MemOn && _memTracked.Contains(r.Name)) Mem(new MemoryRules.End(r.Name, $"steal {r.Name}", s.Pos));
         return v;
     }
@@ -320,20 +340,31 @@ public sealed class FunctionGen
         }
     }
 
-    /// A place written as a chain from a name, `p.left` or `p.items[2]`, as text: what the emptied-place check follows.
+    /// A place written as a chain from a name, `p.left`, `xs.getslot(i)` or `p.stride(i)`, as text: what the
+    /// emptied-place check follows.
     private static string? PlaceKey(Expr e) => e switch
     {
         ValueRef r => r.Name,
         FieldExpr f when PlaceKey(f.Base) is { } b => $"{b}.{f.Name}",
+        MethodCallExpr { Name: "stride" or "getslot", TypeArgs.Count: 0, Args: [var at] } m when PlaceKey(m.Receiver) is { } b =>
+            $"{b}.{m.Name}({new Printer().Expr(at, 0)})",
+        IndexExpr ix when PlaceKey(ix.Base) is { } b => $"{b}.stride({new Printer().Expr(ix.Index, 0)})",
         _ => null,
     };
+
+    /// Whether `e` is an element's place (`xs.getslot(i)`, `p.stride(i)`), which steal can leave hollow.
+    private static bool IsElementPlace(Expr e) =>
+        e is MethodCallExpr { Name: "stride" or "getslot", TypeArgs.Count: 0, Args.Count: 1 } or IndexExpr;
 
     /// A place that steal left hollow is read: the memory rules report it when nothing was put back on the way here.
     private void MemPlaceUse(Expr e, Pos pos)
     {
         if (!MemOn) return;
-        for (var at = e; at is FieldExpr f; at = f.Base)
+        var at = e;
+        for (; at is FieldExpr f; at = f.Base)
             if (PlaceKey(f) is { } key) Mem(new MemoryRules.Use(key, pos));
+        // A field of an element (`xs.getslot(i).count`) reads the element's place too.
+        if (IsElementPlace(at) && PlaceKey(at) is { } element) Mem(new MemoryRules.Use(element, pos));
     }
 
     /// Set right before evaluating an expression that moves an entity rather than copying it (the operand of `steal`, a
@@ -612,8 +643,13 @@ public sealed class FunctionGen
         if (!MemOn) return;
         string? receiver = plan.Receiver is null ? null : MemName(plan.Receiver);
         // A value put back into a place steal emptied: the place holds something again.
-        if (plan.Receiver is not null && sig.Decl.Name is "poke" or "poke_volatile" && receiver is null && PlaceKey(plan.Receiver) is { } refilled)
-            Mem(new MemoryRules.Store(refilled, null, plan.Pos));
+        bool refilling = plan.Receiver is not null && sig.Decl.Name is "poke" or "poke_volatile" && receiver is null
+            && PlaceKey(plan.Receiver) is not null;
+        if (refilling) Mem(new MemoryRules.Store(PlaceKey(plan.Receiver!)!, null, plan.Pos));
+        // An element's place read or lent (`xs.getslot(i).peek()`, `use(xs.getslot(i))`): a place steal left hollow
+        // must have a value put back first.
+        foreach (var at in plan.Receiver is { } r && !refilling ? plan.Args.Prepend(r) : plan.Args)
+            if (IsElementPlace(at) && PlaceKey(at) is { } element) Mem(new MemoryRules.Use(element, at.Pos));
         if (plan.Receiver is not null && sig.Decl.Name == "poke" && receiver is not null && sig.Params[0] is PtrType)
         {
             // A claim's own contents, stored where the claim stands: the claim's binding said what the slot holds.
@@ -629,11 +665,11 @@ public sealed class FunctionGen
                 : new MemoryRules.End(receiver, "stored away", plan.Pos));
             return;
         }
-        // A slot's drop leaves the slot hollow: the slot holds nothing after it, so a second drop of it gives nothing back.
+        // A slot's drop ends what it holds, once: dropping it again, or reading it, before a new value is put in is a
+        // build error, whatever the slot holds at run time.
         if (receiver is not null && sig.Decl.Name is "destruct" or "destruct_all" && sig.Params[0] is PtrType)
         {
             Mem(new MemoryRules.End(receiver, sig.Decl.Name is "destruct" ? $"drop {receiver}" : $"{receiver}.destruct_all()", plan.Pos));
-            Mem(new MemoryRules.Store(receiver, null, plan.Pos));
             return;
         }
         if (receiver is not null)
@@ -1208,6 +1244,7 @@ public sealed class FunctionGen
                     _viewNames.Add(b.Name);
                     Mem(new MemoryRules.ViewOf(b.Name, ResolveRoot(made), b.Pos));
                 }
+                if (b.Value is ClaimExpr) _claimedSlots.Add(b.Name);
                 if (MemOn)
                 {
                     if (b.Value is ClaimExpr)
@@ -1672,6 +1709,7 @@ public sealed class FunctionGen
             case ValueRef r: return Lookup(r).Type;
             case StealExpr steal:
                 return Infer(steal.Value) is var stolen && (steal.Place || stolen is PtrType && Tracked(stolen)
+                    || stolen is PtrType && steal.Value is ValueRef { Name: var claimed } && _claimedSlots.Contains(claimed)
                     || steal.Value is MethodCallExpr or IndexExpr && stolen is PtrType)
                     ? (stolen as PtrType)?.Pointee
                     : stolen;
