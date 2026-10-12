@@ -192,7 +192,8 @@ private routine InputBuffer.spill_word(me: @Me, length: USize, spill: @Memory[By
             is None => break
     if text.failed.peek()
         crash_allocation()
-    text.owned().poke_into(spill)
+    spill.replace(value: text.owned())
+    drop text
     return spill.getview()
 
 ### A pointer to standard input, for passing where a Reader is taken (`@R`). Every value of {In} is the same stream,
@@ -299,25 +300,26 @@ routine In.read_bytes_result(me: @Me, buffer: @Byte, count: USize) -> Result[USi
 ### :returns: The bytes read (empty when the allocation fails).
 @expensive("allocates what it reads")
 routine In.read_count(count: USize, alloc: @MemoryManager) -> Memory[Byte]
-    local made: Result[Memory[Byte], AllocFailed] = Memory[Byte].construct_result(
-        count: count.max(1), manager: alloc)
+    local buffer: @Memory[Byte] <- Memory[Byte].construct(count: 0, manager: alloc)
 
-    buffer: Memory[Byte] = when made
-        is Memory[Byte] as buffer => buffer
-        is AllocFailed => return Memory[Byte].construct(count: 0, manager: alloc)
+    when Memory[Byte].construct_result(count: count.max(1), manager: alloc)
+        is Memory[Byte] as made => buffer.replace(value: steal made)
+        is AllocFailed => return buffer
 
     while n != count with n: USize = 0
-        got: Result[USize, FsError] = Me.read_into_result(buffer: buffer.data.stride(n),
+        got: Result[USize, FsError] = Me.read_into_result(buffer: buffer.data.peek().stride(n),
             count: count - n)
         k: USize = when got
             is USize as k => k
-            is FsError => return buffer.with_count(n)
+            is FsError => 0
         if k == 0
-            return buffer.with_count(n)
+            buffer.keep_first(n)
+            return buffer
         else
             continue with n: n + k
     then
-        return buffer.with_count(n)
+        buffer.keep_first(n)
+        return buffer
 
 ### What the rest of the input is, in memory from `alloc`. Drop it.
 ### :param alloc: The allocator for the bytes.
@@ -332,9 +334,11 @@ routine In.read_all(alloc: @MemoryManager) -> Memory[Byte]
         got2: Result[USize, FsError] = Me.read_into_result(buffer: chunk, count: 4096)
         n2: USize = when got2
             is USize as n2 => n2
-            is FsError => return text.owned()
+            is FsError => 0
         if n2 == 0
-            return text.owned()
+            local all: @Memory[Byte] <- text.owned()
+            drop text
+            return all
         text.append(chunk, n: n2, alloc)
 
 ### The next line, without its "\n" (or "\r\n"), in memory from alloc. A last line with no "\n" still counts, and a
@@ -345,8 +349,7 @@ routine In.read_all(alloc: @MemoryManager) -> Memory[Byte]
 @track_caller
 @expensive("allocates what it reads")
 routine In.read_line(alloc: @MemoryManager) -> Memory[Byte]
-    line: Maybe[Memory[Byte]] = Me.read_line_checked(alloc)
-    when line
+    when Me.read_line_checked(alloc)
         is Memory[Byte] as text => return text
         is None => crash(name: "AbsentValueError",
             message: "The input ended before In.read_line() found a line to read.")
@@ -361,7 +364,7 @@ routine In.read_line_checked(alloc: @MemoryManager) -> Maybe[Memory[Byte]]
     local b: @InputBuffer = STDIN_BUFFER
 
     b.lock.lock()
-    line: Maybe[Memory[Byte]] = b.line(alloc)
+    local line: @Maybe[Memory[Byte]] <- b.line(alloc)
     b.lock.unlock()
     return line
 
@@ -377,22 +380,27 @@ private routine InputBuffer.line(me: @Me, alloc: @MemoryManager) -> Maybe[Memory
         when c
             is Byte as byte =>
                 if byte == b'\n'
-                    return trim_cr(text.owned())
+                    local line: @Memory[Byte] <- text.owned()
+                    drop text
+                    return trim_cr(steal line)
                 local single: @Byte <- byte
                 text.append(chunk: single, n: 1, alloc)
                 continue with any: true
             is None =>
+                local rest: @Memory[Byte] <- text.owned()
+                drop text
                 if any
-                    return trim_cr(text.owned())
+                    return trim_cr(steal rest)
+                drop rest
                 return None()
 
 ### `line` without a "\r" at its end. The memory and its allocator stay the same, only the count drops.
 ### :param line: The line.
 ### :returns: The line, one byte shorter when it ended in "\r".
 private routine trim_cr(line: Memory[Byte]) -> Memory[Byte]
-    if not line.has_suffix("\r")
-        return line
-    return line.with_count(line.count - 1)
+    if line.getview().has_suffix("\r")
+        line.keep_first(line.count() - 1)
+    return line
 
 ### Whether `c` separates words: a space, tab, line feed, or carriage return.
 ### :param c: The byte to test.
@@ -410,8 +418,7 @@ private routine is_space(c: Byte) -> Bool
 @track_caller
 @expensive("allocates what it reads")
 routine In.read_word(alloc: @MemoryManager) -> Memory[Byte]
-    word: Maybe[Memory[Byte]] = Me.read_word_checked(alloc)
-    when word
+    when Me.read_word_checked(alloc)
         is Memory[Byte] as text => return text
         is None => crash(name: "AbsentValueError",
             message: "The input ended before In.read_word() found a word to read.")
@@ -426,7 +433,7 @@ routine In.read_word_checked(alloc: @MemoryManager) -> Maybe[Memory[Byte]]
     local b: @InputBuffer = STDIN_BUFFER
 
     b.lock.lock()
-    word: Maybe[Memory[Byte]] = b.owned_word(alloc)
+    local word: @Maybe[Memory[Byte]] <- b.owned_word(alloc)
     b.lock.unlock()
     return word
 
@@ -448,7 +455,9 @@ private routine InputBuffer.owned_word(me: @Me, alloc: @MemoryManager) -> Maybe[
                 single.poke(byte)
                 text.append(chunk: single, n: 1, alloc)
                 break
-            is None => return None()
+            is None =>
+                drop text
+                return None()
 
     # The rest of the word, up to the next white space (put back) or the end of the input.
     while true
@@ -461,7 +470,9 @@ private routine InputBuffer.owned_word(me: @Me, alloc: @MemoryManager) -> Maybe[
                 single.poke(byte2)
                 text.append(chunk: single, n: 1, alloc)
             is None => break
-    return text.owned()
+    local word: @Memory[Byte] <- text.owned()
+    drop text
+    return word
 
 ### Whether standard input is a terminal (a console on Windows), not a pipe or a file.
 ### :returns: `true` for a terminal.

@@ -217,7 +217,7 @@ internal routine read_file(path: Span[Byte], alloc: @MemoryManager) -> Result[Me
     when opened
         is FileHandle as f =>
             local f2: @FileHandle <- f
-            text: Result[Memory[Byte], FsError] = read_rest(f: f2, alloc)
+            local text: @Result[Memory[Byte], FsError] <- read_rest(f: f2, alloc)
             f2.close()
             return text
         is FsError as error => return error
@@ -251,11 +251,9 @@ private routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Memor
                     drop buffer
                     return FsError.OUT_OF_MEMORY
         is FsError => 64
-    made: Result[Memory[Byte], AllocFailed] = Memory[Byte].construct_result(count: capacity,
-        manager: alloc)
-    when made
+    when Memory[Byte].construct_result(count: capacity, manager: alloc)
         is Memory[Byte] as slice =>
-            slice.poke_into(buffer)
+            buffer.replace(value: steal slice)
             while true with count: USize = 0
                 capacity2: USize = buffer.count()
                 if count == capacity2
@@ -277,10 +275,8 @@ private routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Memor
                     when got
                         is USize as n =>
                             if n == 0
-                                text: Memory[Byte] = buffer.peek().with_count(count)
-                                buffer.poke(.hollow())
-                                drop buffer
-                                return text
+                                buffer.keep_first(count)
+                                return buffer
                             else
                                 continue with count: count + n
                         is FsError as error =>
@@ -393,13 +389,14 @@ routine join_path(a: Span[Byte], b: Span[Byte], alloc: @MemoryManager) -> Memory
         else => 1
     prefix_count: USize = a.count() + sep
     count: USize = prefix_count + b.count()
-    memory: Memory[Byte] = Memory[Byte].construct(count: count.max(1), manager: alloc)
-    buffer: @Byte = memory.data
+    local memory: @Memory[Byte] <- Memory[Byte].construct(count: count.max(1), manager: alloc)
+    buffer: @Byte = memory.data.peek()
     buffer.copy(src: a.data, count: a.count())
     if not ends
         buffer.stride(a.count()).poke(path_separator())
-    memory.data.stride(a.count() + sep).copy(src: b.data, count: b.count())
-    return memory.with_count(count)
+    buffer.stride(a.count() + sep).copy(src: b.data, count: b.count())
+    memory.keep_first(count)
+    return memory
 
 ### Where path's last component ends, trailing separators left out.
 ### :param path: The path to look at.

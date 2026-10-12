@@ -658,13 +658,12 @@ internal routine wide_length(units: @U16) -> USize
 @target(os: "windows")
 internal routine owned_wide(units: @U16, count: USize,
     alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
-    made: Result[Memory[Byte], AllocFailed] = Memory[Byte].construct_result(
-        count: (count * 3).max(1), manager: alloc)
-    buffer: Memory[Byte] = when made
-        is Memory[Byte] as buffer => buffer
+    when Memory[Byte].construct_result(count: (count * 3).max(1), manager: alloc)
+        is Memory[Byte] as buffer =>
+            n: USize = narrow(units, count, out: buffer.data.peek())
+            buffer.keep_first(n)
+            return buffer
         is AllocFailed => return FsError.OUT_OF_MEMORY
-    n: USize = narrow(units, count, out: buffer.data)
-    return buffer.with_count(n)
 
 # -- metadata ------------------------------------------------------------------------
 
@@ -1320,27 +1319,23 @@ routine DirIter.close(me: @Me) -> None
 ### :throws: Returns the reason when the OS can't report it, `OutOfMemory` when `alloc` fails.
 @target(os: "windows")
 internal routine current_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
-    local units: @Memory[U16] <- .hollow()
-
     need: U32 = c_get_current_directory(0, null)
-    result: Result[Memory[Byte], FsError] = when
-        need == 0 => failed[Memory[Byte]]()
-        else =>
-            made: Result[Memory[U16], AllocFailed] = Memory[U16].construct_result(
-                count: need.to[USize](), manager: alloc)
-            when made
-                is Memory[U16] as slice =>
-                    slice.poke_into(units)
-                    need2: U32 = slice.count().to[U32]()
-                    got: U32 = c_get_current_directory(need2, slice.data)
-                    if got == 0 or got >= need2
-                        becomes failed[Memory[Byte]]()
-                    else
-                        becomes owned_wide(units: slice.data, count: got.to[USize](), alloc)
-                is AllocFailed =>
-                    becomes FsError.OUT_OF_MEMORY
-    drop units
-    return result
+    if need == 0
+        return failed[Memory[Byte]]()
+    when Memory[U16].construct_result(count: need.to[USize](), manager: alloc)
+        is Memory[U16] as units =>
+            need2: U32 = units.count().to[U32]()
+            data: @U16 = units.data.peek()
+            got: U32 = c_get_current_directory(need2, data)
+            if got == 0 or got >= need2
+                local lost: @Result[Memory[Byte], FsError] <- failed[Memory[Byte]]()
+                drop units
+                return lost
+            local text: @Result[Memory[Byte], FsError] <- owned_wide(units: data,
+                count: got.to[USize](), alloc)
+            drop units
+            return text
+        is AllocFailed => return FsError.OUT_OF_MEMORY
 
 ### Makes path the working directory.
 ### :param path: The new working directory.
@@ -1366,13 +1361,11 @@ internal routine temp_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError
 
     got: U32 = c_get_temp_path(PATH_CAPACITY.to[U32](), units.to[@U16]())
     if got == 0 or got.to[USize]() >= PATH_CAPACITY
-        made: Result[Memory[Byte], AllocFailed] = Memory[Byte].construct_result(count: 15,
-            manager: alloc)
-        buffer: Memory[Byte] = when made
-            is Memory[Byte] as buffer => buffer
+        when Memory[Byte].construct_result(count: 15, manager: alloc)
+            is Memory[Byte] as buffer =>
+                buffer.data.peek().copy(src: "C:\\Windows\\Temp", count: 15)
+                return buffer
             is AllocFailed => return FsError.OUT_OF_MEMORY
-        buffer.data.copy(src: "C:\\Windows\\Temp", count: 15)
-        return buffer
     else
         path_units: @U16 = units.to[@U16]()
         last: U16 = path_units.stride((got - 1).to[USize]()).peek()
@@ -1393,9 +1386,7 @@ private routine env_dir(name: CWStr, alloc: @MemoryManager) -> Maybe[Memory[Byte
     got: U32 = c_get_environment_variable(name, units.to[@U16](), PATH_CAPACITY.to[U32]())
     if got == 0 or got.to[USize]() >= PATH_CAPACITY
         return None()
-    text: Result[Memory[Byte], FsError] = owned_wide(units: units.to[@U16](),
-        count: got.to[USize](), alloc)
-    when text
+    when owned_wide(units: units.to[@U16](), count: got.to[USize](), alloc)
         is Memory[Byte] as t => return t
         is FsError => return None()
 
@@ -1406,29 +1397,22 @@ private routine env_dir(name: CWStr, alloc: @MemoryManager) -> Maybe[Memory[Byte
 ###     with `MemoryAllocationError` when `alloc` fails joining HOMEDRIVE and HOMEPATH.
 @target(os: "windows")
 internal routine home_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
-    local drive: @Memory[Byte] <- .hollow()
-    local path: @Memory[Byte] <- .hollow()
-
-    profile: Maybe[Memory[Byte]] = env_dir(name: "USERPROFILE", alloc)
-    result: Result[Memory[Byte], FsError] = when profile
-        is Memory[Byte] as dir => dir
-        is None =>
-            d: Maybe[Memory[Byte]] = env_dir(name: "HOMEDRIVE", alloc)
-            when d
-                is Memory[Byte] as text =>
-                    text.poke_into(drive)
-                    p: Maybe[Memory[Byte]] = env_dir(name: "HOMEPATH", alloc)
-                    when p
-                        is Memory[Byte] as text2 =>
-                            text2.poke_into(path)
-                            becomes Span[Byte].concat(a: drive, b: path, alloc)
-                        is None =>
-                            becomes FsError.NOT_FOUND
+    when env_dir(name: "USERPROFILE", alloc)
+        is Memory[Byte] as dir => return dir
+        is None => pass
+    when env_dir(name: "HOMEDRIVE", alloc)
+        is Memory[Byte] as drive =>
+            when env_dir(name: "HOMEPATH", alloc)
+                is Memory[Byte] as path =>
+                    local joined: @Memory[Byte] <- Span[Byte].concat(a: drive.getview(),
+                        b: path.getview(), alloc)
+                    drop drive
+                    drop path
+                    return joined
                 is None =>
-                    becomes FsError.NOT_FOUND
-    drop drive
-    drop path
-    return result
+                    drop drive
+                    return FsError.NOT_FOUND
+        is None => return FsError.NOT_FOUND
 
 ### path made absolute by the text: the working directory in front of a relative path, and "." and ".." taken out
 ### (GetFullPathNameW), nothing looked up.
@@ -1480,12 +1464,10 @@ internal routine canonical_path(path: Span[Byte],
         return error_of(e)
     if got.to[USize]() >= PATH_CAPACITY
         return FsError.NAME_TOO_LONG
-    text: Result[Memory[Byte], FsError] = owned_wide(units: full.to[@U16](), count: got.to[USize](),
-        alloc)
-    when text
+    when owned_wide(units: full.to[@U16](), count: got.to[USize](), alloc)
         is Memory[Byte] as t =>
-            unc: Bool = t.has_prefix("\\\\?\\UNC\\")
-            if not unc and not t.has_prefix("\\\\?\\")
+            unc: Bool = t.getview().has_prefix("\\\\?\\UNC\\")
+            if not unc and not t.getview().has_prefix("\\\\?\\")
                 return t
             from: USize = when
                 unc => 8
@@ -1497,11 +1479,13 @@ internal routine canonical_path(path: Span[Byte],
             # Moves the text from from down to keep, so the buffer's start (what free wants) stays where it is.
 
             rest: USize = t.count() - from
+            data: @Byte = t.data.peek()
 
             each i in 0 til rest
-                t.data.stride(keep + i).poke(t.data.stride(from + i).peek())
+                data.stride(keep + i).poke(data.stride(from + i).peek())
             then
-                return t.with_count(keep + rest)
+                t.keep_first(keep + rest)
+                return t
         is FsError as error => return error
 
 # -- memory-mapped files -----------------------------------------------------------------

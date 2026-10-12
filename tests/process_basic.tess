@@ -44,53 +44,78 @@ routine show_dir() -> Span[Byte]
 routine quoting_ok(alloc: @MemoryManager) -> Bool
     # cmd's echo prints its command line as it is, so the quoting itself shows
     local args: @Array[Span[Byte], 5] <- ["/c", "echo", "a b", "c\"d", ""]
-
-    r: ProcessOutput = run_process_result(program: "cmd.exe", args: args.getview(),
+    local r: @ProcessOutput <- run_process_result(program: "cmd.exe", args: args.getview(),
         options: ProcessOptions.default(), alloc).unwrap()
-    return line(r.stdout) == "\"a b\" \"c\\\"d\" \"\""
+
+    ok: Bool = line(r.stdout.getview()) == "\"a b\" \"c\\\"d\" \"\""
+    drop r
+    return ok
 
 @target(os: not "windows")
 routine quoting_ok(alloc: @MemoryManager) -> Bool
     local args: @Array[Span[Byte], 6] <- ["-c", "printf '%s|' \"$@\"", "sh", "a b", "c\"d", ""]
-
-    r: ProcessOutput = run_process_result(program: "/bin/sh", args: args.getview(),
+    local r: @ProcessOutput <- run_process_result(program: "/bin/sh", args: args.getview(),
         options: ProcessOptions.default(), alloc).unwrap()
-    return r.stdout == "a b|c\"d||"
+
+    ok: Bool = r.stdout.getview() == "a b|c\"d||"
+    drop r
+    return ok
 
 routine options() -> ProcessOptions
     return ProcessOptions.default()
+
+### Whether the variable `name` is set, its value read and dropped.
+routine is_set(name: Span[Byte], alloc: @MemoryManager) -> Bool
+    when env_var(name, alloc)
+        is Memory[Byte] as value =>
+            drop value
+            return true
+        is None => return false
 
 routine start() -> None
     local alloc: @MemoryManager <- make_heap_memory()
 
     options: ProcessOptions = ProcessOptions.default()
-    hello: ProcessOutput = run_shell_result(command: "echo hello", options, alloc).unwrap()
-    Out.write("echo: [{line(hello.stdout)}], status {hello.status.code()}, success {hello.status.is_success()}\n")
-    three: ProcessOutput = run_shell_result(command: "exit 3", options, alloc).unwrap()
-    Out.write("exit 3: status {three.status.code()}, success {three.status.is_success()}\n")
-    oops: ProcessOutput = run_shell_result(command: "echo oops>&2", options, alloc).unwrap()
-    Out.write("stderr: [{line(oops.stderr)}], stdout empty {oops.stdout.is_empty()}\n")
+    local hello: @ProcessOutput <- run_shell_result(command: "echo hello", options, alloc).unwrap()
+    hello_status: ExitStatus = hello.status.peek()
+    Out.write("echo: [{line(hello.stdout.getview())}], status {hello_status.code()}, success {hello_status.is_success()}\n")
+    local three: @ProcessOutput <- run_shell_result(command: "exit 3", options, alloc).unwrap()
+    three_status: ExitStatus = three.status.peek()
+    Out.write("exit 3: status {three_status.code()}, success {three_status.is_success()}\n")
+    local oops: @ProcessOutput <- run_shell_result(command: "echo oops>&2", options, alloc).unwrap()
+    Out.write("stderr: [{line(oops.stderr.getview())}], stdout empty {oops.stdout.count() == 0}\n")
     Out.write("arguments as given: {quoting_ok(alloc)}\n")
     local vars: @Array[EnvVar, 1] <- [EnvVar(name: "TESSERA_PROBE", value: "a value, with commas")]
     with_env: ProcessOptions = ProcessOptions(directory: None(), env: vars.to[@EnvVar](),
         env_count: 1, stdin: InputMode.NULL, stdout: OutputMode.CAPTURE, stderr: OutputMode.CAPTURE)
-    r: ProcessOutput = run_shell_result(command: show_var(), options: with_env, alloc).unwrap()
-    Out.write("override: [{line(r.stdout)}]\n")
-    path: Maybe[Memory[Byte]] = env_var(name: "PATH", alloc)
-    none: Maybe[Memory[Byte]] = env_var(name: "TESSERA_NO_SUCH_VARIABLE", alloc)
-    Out.write("PATH set: {path.is_present()}, unset: {none.is_absent()}\n")
-    tmp: Span[Byte] = Directory.temp_result(alloc).unwrap().path
+    local r: @ProcessOutput <- run_shell_result(command: show_var(), options: with_env,
+        alloc).unwrap()
+    Out.write("override: [{line(r.stdout.getview())}]\n")
+    path_set: Bool = is_set(name: "PATH", alloc)
+    unset: Bool = not is_set(name: "TESSERA_NO_SUCH_VARIABLE", alloc)
+    Out.write("PATH set: {path_set}, unset: {unset}\n")
+    local tmp_path: @Memory[Byte] <- Directory.temp_result(alloc).unwrap()
+    tmp: Span[Byte] = tmp_path.getview()
     name: Span[Byte] = file_name(tmp)
     in_tmp: ProcessOptions = ProcessOptions(directory: tmp, env: null, env_count: 0,
         stdin: InputMode.NULL, stdout: OutputMode.CAPTURE, stderr: OutputMode.CAPTURE)
-    r2: ProcessOutput = run_shell_result(command: show_dir(), options: in_tmp, alloc).unwrap()
-    here: Bool = line(r2.stdout).has_suffix(name)
+    local r2: @ProcessOutput <- run_shell_result(command: show_dir(), options: in_tmp,
+        alloc).unwrap()
+    here: Bool = line(r2.stdout.getview()).has_suffix(name)
     Out.write("directory: {here}\n")
     quiet: ProcessOptions = ProcessOptions(directory: None(), env: null, env_count: 0,
         stdin: InputMode.NULL, stdout: OutputMode.NULL, stderr: OutputMode.CAPTURE)
-    q: ProcessOutput = run_shell_result(command: "echo dropped", options: quiet, alloc).unwrap()
-    Out.write("discarded output: empty {q.stdout.is_empty()}, status {q.status.code()}\n")
-    missing: Result[ProcessOutput, ProcessError] = run_process_result(
-        program: "tessera-no-such-program", args: .hollow(), options: options(), alloc)
-    Out.write("missing program: {error_name(missing.unwrap_failure())}\n")
+    local q: @ProcessOutput <- run_shell_result(command: "echo dropped", options: quiet,
+        alloc).unwrap()
+    Out.write("discarded output: empty {q.stdout.count() == 0}, status {q.status.peek().code()}\n")
+    missing: ProcessError = run_process_result(program: "tessera-no-such-program", args: .hollow(),
+        options: options(), alloc).unwrap_failure()
+    Out.write("missing program: {error_name(missing)}\n")
+    drop q
+    drop r2
+    drop tmp_path
+    drop r
+    drop oops
+    drop three
+    drop hello
     return

@@ -191,6 +191,13 @@ public sealed class FunctionGen
         }
     }
 
+    /// Whether `call` resolves to a routine as written, without emitting it.
+    private bool Planned(Expr call)
+    {
+        try { return PlanCall(call, null) is not null; }
+        catch (CompileError) { return false; }
+    }
+
     /// How a message names what `t` is: an entity itself, or a value that holds one (a variant with an entity branch).
     private static string HoldsWhat(DType t) => Entities.IsEntity(t) ? "an entity" : "a value holding an entity";
 
@@ -1268,6 +1275,16 @@ public sealed class FunctionGen
                         + "writes no destruct): leave the drop out");
                 }
                 var call = new MethodCallExpr(d.Value, "destruct", [], [], d.Pos);
+                // A value that isn't a place (a call's result, an arm's value) has no address for destruct(me: @Me):
+                // it goes into a slot of its own first, which the drop then ends.
+                if (InferQuiet(d.Value) is { } dropped and not PtrType && !Tracked(dropped) && !Planned(call))
+                {
+                    string spill = $"$drop{_tmp++}";
+                    EmitStmt(new BindStmt(spill, new TypeRef("$dropped", [], d.Pos) { Known = new PtrType(dropped) },
+                        new ClaimExpr(d.Pos) { Contents = d.Value }, d.Pos));
+                    EmitStmt(new DropStmt(new ValueRef(spill, d.Pos), d.Pos));
+                    break;
+                }
                 _dropping = d.Value;
                 try { EvalAny(call); }
                 finally { _dropping = null; }
@@ -2684,7 +2701,9 @@ public sealed class FunctionGen
         for (int i = 0; i < lit.Elements.Count; i++)
         {
             var v = Eval(lit.Elements[i], s.Args[i]);
-            MemTakeAlong(lit.Elements[i], "kept in a tuple");
+            // An item that is a pointer to an entity lends the entity's place: the slot it came from still owns it.
+            if (!(s.Args[i] is PtrType && Entities.HeldIn(s.Args[i]) is not null))
+                MemTakeAlong(lit.Elements[i], "kept in a tuple");
             acc = EmitTmp($"insertvalue {s.Llvm} {acc}, {s.Args[i].Llvm} {v.Op}, {shape.ValuePath(i)}");
         }
         return new Val(acc, s);
@@ -3653,7 +3672,12 @@ public sealed class FunctionGen
         // `failure_of(result)`: the number of the failure a Result holds (Trace.tess), 0 for none or a value.
         if (e is CallExpr { Name: "failure_of", TypeArgs.Count: 0, Args: [var held] } && _c.FindFree("failure_of", _env.File, e.Pos) is null)
         {
-            var v = EvalAny(held);
+            // Only the failure's number is read: a Result holding an entity isn't copied by it.
+            var outer = _dropping;
+            _dropping = held;
+            Val v;
+            try { v = EvalAny(held); }
+            finally { _dropping = outer; }
             if (v.Type is not VariantType) throw Err(held.Pos, $"failure_of takes a Result, not {v.Type}");
             return FailureOf(v);
         }

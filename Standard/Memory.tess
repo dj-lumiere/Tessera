@@ -348,66 +348,52 @@ private routine copy_bytes(dst: Addr, src: Addr, bytes: USize) -> None
 # ============================================================
 
 ### A NUL-terminated copy of some text, for C, in memory from an allocator: `text.to[OwnedCStr](alloc)`. It lends a
-### `CStr` with `to[CStr]()` and gives the memory back with `destruct()`.
-record OwnedCStr
-obeys Destructible[OwnedCStr]
+### `CStr` with `to[CStr]()` and gives the memory back when dropped.
+entity OwnedCStr
     storage: Memory[CChar]
 
 ### A copy of some text in wide characters ending with a 0, for C, in memory from an allocator:
-### `text.to[OwnedCWStr](alloc)`. It lends a `CWStr` with `to[CWStr]()` and gives the memory back with `destruct()`.
-record OwnedCWStr
-obeys Destructible[OwnedCWStr]
+### `text.to[OwnedCWStr](alloc)`. It lends a `CWStr` with `to[CWStr]()` and gives the memory back when dropped.
+entity OwnedCWStr
     storage: Memory[CWChar]
 
 ### Makes a `OwnedCStr` from its fields.
 ### :param storage: Its `storage`.
 ### :returns: The new value.
 routine OwnedCStr.construct(storage: Memory[CChar]) -> Me
-    return Me(storage)
+    return Me(storage: steal storage)
 
 ### Makes a `OwnedCWStr` from its fields.
 ### :param storage: Its `storage`.
 ### :returns: The new value.
 routine OwnedCWStr.construct(storage: Memory[CWChar]) -> Me
-    return Me(storage)
+    return Me(storage: steal storage)
 
-### The text, borrowed: valid until `destruct()`.
-### :returns: The NUL-terminated text.
-routine OwnedCStr.to[CStr](me: Me) -> CStr
-    text: CStr = me.storage.data.to[CStr]()
-    return text
-
-### The text, borrowed: valid until `destruct()`.
+### The text, borrowed: valid until it is dropped.
 ### :returns: The NUL-terminated text.
 routine OwnedCStr.to[CStr](me: @Me) -> CStr
-    text: CStr = me.peek().to[CStr]()
+    text: CStr = me.storage.data.peek().to[CStr]()
     return text
 
 ### Gives the memory back to the allocator it came from.
 @track_caller
 routine OwnedCStr.destruct(me: @Me) -> None
-    me.storage.destruct()
+    drop me.storage
     return
 
-### The text, borrowed: valid until `destruct()`.
-### :returns: The 0-terminated wide text.
-routine OwnedCWStr.to[CWStr](me: Me) -> CWStr
-    text: CWStr = me.storage.data.to[CWStr]()
-    return text
-
-### The text, borrowed: valid until `destruct()`.
+### The text, borrowed: valid until it is dropped.
 ### :returns: The 0-terminated wide text.
 routine OwnedCWStr.to[CWStr](me: @Me) -> CWStr
-    text: CWStr = me.peek().to[CWStr]()
+    text: CWStr = me.storage.data.peek().to[CWStr]()
     return text
 
 ### Gives the memory back to the allocator it came from.
 @track_caller
 routine OwnedCWStr.destruct(me: @Me) -> None
-    me.storage.destruct()
+    drop me.storage
     return
 
-### Copies me into memory from alloc and ends it with a NUL: an {OwnedCStr}, released with `destruct()`.
+### Copies me into memory from alloc and ends it with a NUL: an {OwnedCStr}, dropped when done.
 ### :param alloc: The allocator the copy's memory comes from.
 ### :returns: The NUL-terminated copy.
 ### :throws: Crashes with `MemoryAllocationError` when the allocator fails.
@@ -415,32 +401,21 @@ routine OwnedCWStr.destruct(me: @Me) -> None
 @expensive("allocates a copy")
 routine Span[Byte].to[OwnedCStr](me: Me, alloc: @MemoryManager) -> OwnedCStr
     count: USize = me.count
-    buffer: Memory[CChar] = Memory[CChar].construct(count: count + 1, manager: alloc)
-    buffer.data.to[@Byte]().copy(src: me.data, count)
-    buffer.data.stride(count).poke(0)
-    owned: OwnedCStr = OwnedCStr(storage: buffer)
-    return owned
-
-### Copies me into memory from alloc and ends it with a NUL: an {OwnedCStr}, released with `destruct()`.
-### :param alloc: The allocator the copy's memory comes from.
-### :returns: The NUL-terminated copy.
-### :throws: Crashes with `MemoryAllocationError` when the allocator fails.
-@track_caller
-@expensive("allocates a copy")
-routine Span[Byte].to[OwnedCStr](me: @Me, alloc: @MemoryManager) -> OwnedCStr
-    owned: OwnedCStr = me.peek().to[OwnedCStr](alloc)
-    return owned
+    local buffer: @Memory[CChar] <- Memory[CChar].construct(count: count + 1, manager: alloc)
+    buffer.data.peek().to[@Byte]().copy(src: me.data, count)
+    buffer.data.peek().stride(count).poke(0)
+    return OwnedCStr(storage: steal buffer)
 
 ### Converts me to wide characters in memory from alloc, ending with a 0: UTF-16 on Windows, UTF-32 elsewhere. An
-### {OwnedCWStr}, released with `destruct()`. A UTF-8 byte count bounds both unit counts, so one allocation is enough.
+### {OwnedCWStr}, dropped when done. A UTF-8 byte count bounds both unit counts, so one allocation is enough.
 ### :param alloc: The allocator the copy's memory comes from.
 ### :returns: The 0-terminated wide copy.
 ### :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 @track_caller
 @expensive("allocates a copy")
 routine Span[Byte].to[OwnedCWStr](me: Me, alloc: @MemoryManager) -> OwnedCWStr
-    local storage: Memory[CWChar] = Memory[CWChar].construct(count: me.count + 1, manager: alloc)
-    local units: @CWChar = storage.data
+    local storage: @Memory[CWChar] <- Memory[CWChar].construct(count: me.count + 1, manager: alloc)
+    local units: @CWChar = storage.data.peek()
     local iter: @BytesCharsIter <- me.chars()
     local n: @USize <- 0
 
@@ -453,19 +428,7 @@ routine Span[Byte].to[OwnedCWStr](me: Me, alloc: @MemoryManager) -> OwnedCWStr
                 continue
             is None => break
     units.stride(n.peek()).poke(0)
-    owned: OwnedCWStr = OwnedCWStr(storage: storage)
-    return owned
-
-### Converts me to wide characters in memory from alloc, ending with a 0: an {OwnedCWStr}, released with
-### `destruct()`.
-### :param alloc: The allocator the copy's memory comes from.
-### :returns: The 0-terminated wide copy.
-### :throws: Crashes with `MemoryAllocationError` when the allocator fails.
-@track_caller
-@expensive("allocates a copy")
-routine Span[Byte].to[OwnedCWStr](me: @Me, alloc: @MemoryManager) -> OwnedCWStr
-    owned: OwnedCWStr = me.peek().to[OwnedCWStr](alloc)
-    return owned
+    return OwnedCWStr(storage: steal storage)
 
 ### Writes `char` at `out` as UTF-16, one unit or a surrogate pair, and returns
 ### how many units it wrote.

@@ -1515,13 +1515,12 @@ routine DirIter.close(me: @Me) -> None
 ### :throws: Returns `OutOfMemory` when `alloc` fails.
 @target(os: ("linux", "macos"))
 private routine owned(p: @Byte, n: USize, alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
-    made: Result[Memory[Byte], AllocFailed] = Memory[Byte].construct_result(count: n.max(1),
-        manager: alloc)
-    buffer: Memory[Byte] = when made
-        is Memory[Byte] as buffer => buffer
+    when Memory[Byte].construct_result(count: n.max(1), manager: alloc)
+        is Memory[Byte] as buffer =>
+            buffer.data.peek().copy(src: p, count: n)
+            buffer.keep_first(n)
+            return buffer
         is AllocFailed => return FsError.OUT_OF_MEMORY
-    buffer.data.copy(src: p, count: n)
-    return buffer.with_count(n)
 
 ### The value of the environment variable name, when it is set and not empty.
 ### :param name: The variable's name.
@@ -1544,23 +1543,21 @@ private routine nonempty_env(name: CStr) -> Maybe[@Byte]
 @target(os: ("linux", "macos"))
 internal routine current_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
     while true with capacity: USize = 256
-        made2: Result[Memory[Byte], AllocFailed] = Memory[Byte].construct_result(count: capacity,
-            manager: alloc)
-        buffer2: Memory[Byte] = when made2
-            is Memory[Byte] as buffer2 => buffer2
+        when Memory[Byte].construct_result(count: capacity, manager: alloc)
+            is Memory[Byte] as buffer2 =>
+                data: @Byte = buffer2.data.peek()
+                if c_getcwd(data, capacity).is_not_null()
+                    count: USize = data.to[CStr]().count()
+                    buffer2.keep_first(count)
+                    return buffer2
+                e: CInt = errno()
+                drop buffer2
+                # ERANGE: a bigger buffer
+                if e == 34
+                    continue with capacity: capacity * 2
+                else
+                    return error_of(e)
             is AllocFailed => return FsError.OUT_OF_MEMORY
-        if c_getcwd(buffer2.data, capacity).is_not_null()
-            # ERANGE: a bigger buffer
-            count: USize = buffer2.data.to[CStr]().count()
-            return buffer2.with_count(count)
-        else
-            e: CInt = errno()
-            local held: @Memory[Byte] <- buffer2
-            drop held
-            if e == 34
-                continue with capacity: capacity * 2
-            else
-                return error_of(e)
 
 ### Makes path the working directory.
 ### :param path: The new working directory.
@@ -1608,12 +1605,10 @@ internal routine absolute_path(path: Span[Byte],
     alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
     if path.has_prefix("/")
         return owned(p: path.data, n: path.count(), alloc)
-    cwd: Result[Memory[Byte], FsError] = current_dir(alloc)
-    when cwd
+    when current_dir(alloc)
         is Memory[Byte] as dir =>
-            full: Memory[Byte] = join_path(a: dir, b: path, alloc)
-            local cwd2: @Memory[Byte] <- dir
-            drop cwd2
+            local full: @Memory[Byte] <- join_path(a: dir.getview(), b: path, alloc)
+            drop dir
             return full
         is FsError as error => return error
 
@@ -1633,8 +1628,8 @@ internal routine canonical_path(path: Span[Byte],
     resolved: @Byte = c_realpath(cpath.to[@Byte](), null)
     if resolved.is_null()
         return failed[Memory[Byte]]()
-    copied: Result[Memory[Byte], FsError] = owned(p: resolved, n: resolved.to[CStr]().count(),
-        alloc)
+    local copied: @Result[Memory[Byte], FsError] <- owned(p: resolved,
+        n: resolved.to[CStr]().count(), alloc)
     c_free(resolved)
     return copied
 

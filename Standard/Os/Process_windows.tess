@@ -707,7 +707,7 @@ private routine is_overridden(entry: @U16, own: @@U16, m: USize) -> Bool
 
 ### What a helper thread reads standard error into: a buffer on the malloc heap, safe to fill from another thread.
 @target(os: "windows")
-private record PipeReader
+private entity PipeReader
     pipe: Addr
     buffer: CaptureBuffer
 
@@ -723,17 +723,29 @@ private record Handles
     error: Addr
     device: Addr  # the null device
 
+### What a start works with: the handles and the process (filled here, closed by the caller), the security attributes
+### for inheritable handles, the command line, the environment block (or null), and the starting directory (or null).
+@target(os: "windows")
+private record Launch
+    h: @Handles
+    pi: @ProcessInformation
+    sa: @SecurityAttributes
+    line: @U16
+    env: @U16
+    directory: @U16
+
 ### Makes a `PipeReader` from its fields.
 ### :param pipe: Its `pipe`.
 ### :param buffer: Its `buffer`.
 ### :returns: The new value.
 @target(os: "windows")
 private routine PipeReader.construct(pipe: Addr, buffer: CaptureBuffer) -> Me
-    return Me(pipe, buffer)
+    return Me(pipe, buffer: steal buffer)
 
-### Releases nothing: a `PipeReader` holds no memory of its own.
+### Gives the buffer's memory back.
 @target(os: "windows")
 private routine PipeReader.destruct(me: @Me) -> None
+    drop me.buffer
     return
 
 ### Makes a `Handles` from its fields.
@@ -917,27 +929,8 @@ routine run_process_result(program: Span[Byte], args: Span[Span[Byte]], options:
 
     local sa: @SecurityAttributes <- SecurityAttributes(
         length: sizeof[SecurityAttributes]().to[U32](), descriptor: null, inherit_handle: 1)
-    result: Result[ProcessOutput, ProcessError] = when
-        not h.make(options, sa) =>
-            # The handles were partly made: the child's side of what there is closes here, the parent's side below.
-            e: U32 = c_get_last_error()
-            h.close_child_side()
-            becomes spawn_error(e)
-        else =>
-            # STARTF_USESTDHANDLES
-            local si: @StartupInfo <- StartupInfo(cb: sizeof[StartupInfo]().to[U32](),
-                reserved: null, desktop: null, title: null, x: 0, y: 0, x_size: 0, y_size: 0,
-                x_count_chars: 0, y_count_chars: 0, fill_attribute: 0, flags: 0x100, show_window: 0,
-                cb_reserved2: 0, reserved2: null, std_input: h.input.peek(),
-                std_output: h.output.peek(), std_error: h.error.peek())
-            # CREATE_UNICODE_ENVIRONMENT
-            made: Bool = c_create_process(null, line, null, null, 1, 0x400, env, directory_units,
-                si, pi) != 0
-            e: U32 = c_get_last_error()
-            h.close_child_side()
-            becomes when
-                made => collect_output(h, pi, alloc)
-                else => spawn_error(e)
+    local result: @Result[ProcessOutput, ProcessError] <- start_and_collect(options,
+        launch: Launch(h, pi, sa, line, env, directory: directory_units), alloc)
 
     # The parent's ends of the pipes, the process and thread handles, the command line, and the environment block:
     # each one this run got.
@@ -947,6 +940,55 @@ routine run_process_result(program: Span[Byte], args: Span[Span[Byte]], options:
     close_if_open(pi.process.peek())
     free_texts(line, env, alloc)
     return result
+
+### Makes a `Launch` from its fields.
+### :param h: Its `h`.
+### :param pi: Its `pi`.
+### :param sa: Its `sa`.
+### :param line: Its `line`.
+### :param env: Its `env`.
+### :param directory: Its `directory`.
+### :returns: The new value.
+@target(os: "windows")
+private routine Launch.construct(h: @Handles, pi: @ProcessInformation, sa: @SecurityAttributes,
+    line: @U16, env: @U16, directory: @U16) -> Me
+    return Me(h, pi, sa, line, env, directory)
+
+### Releases nothing: a `Launch` only points at what its caller holds.
+@target(os: "windows")
+private routine Launch.destruct(me: @Me) -> None
+    return
+
+### Makes the handles, starts the child, and collects its output. What it opens stays in the launch's handles and
+### process for the caller to close.
+### :param options: The standard streams.
+### :param launch: The handles, process, attributes, and texts of the start.
+### :param alloc: The allocator for the captured output.
+### :returns: The {ProcessOutput}, or the {ProcessError}.
+@target(os: "windows")
+private routine start_and_collect(options: ProcessOptions, launch: Launch,
+    alloc: @MemoryManager) -> Result[ProcessOutput, ProcessError]
+    h: @Handles = launch.h
+    pi: @ProcessInformation = launch.pi
+    if not h.make(options, sa: launch.sa)
+        # The handles were partly made: the child's side of what there is closes here, the parent's side in the caller.
+        e: U32 = c_get_last_error()
+        h.close_child_side()
+        return spawn_error(e)
+    # STARTF_USESTDHANDLES
+    local si: @StartupInfo <- StartupInfo(cb: sizeof[StartupInfo]().to[U32](), reserved: null,
+        desktop: null, title: null, x: 0, y: 0, x_size: 0, y_size: 0, x_count_chars: 0,
+        y_count_chars: 0, fill_attribute: 0, flags: 0x100, show_window: 0, cb_reserved2: 0,
+        reserved2: null, std_input: h.input.peek(), std_output: h.output.peek(),
+        std_error: h.error.peek())
+    # CREATE_UNICODE_ENVIRONMENT
+    made: Bool = c_create_process(null, launch.line, null, null, 1, 0x400, launch.env,
+        launch.directory, si, pi) != 0
+    e2: U32 = c_get_last_error()
+    h.close_child_side()
+    if made
+        return collect_output(h, pi, alloc)
+    return spawn_error(e2)
 
 ### Reads what the started child writes to the captured pipes, waits for it to end, and gives its output.
 ### :param h: The handles of the run, the parent's ends of the pipes among them.
@@ -965,14 +1007,17 @@ private routine collect_output(h: @Handles, pi: @ProcessInformation,
     # INFINITE
     c_wait_for_single_object(pi.process.peek(), U32.MAX)
     c_get_exit_code_process(pi.process.peek(), code)
-    errors: CaptureBuffer = moved(b: err.buffer.peek(), alloc)
+    local errors: @CaptureBuffer <- moved(b: err.buffer, alloc)
+    drop err
     status: ExitStatus = Exited(code: code.peek().to_wrap[S32]())
-    output: ProcessOutput = ProcessOutput(status: status, stdout: out.owned(),
+    lost: Bool = out.failed.peek() | errors.failed.peek()
+    local output: @ProcessOutput <- ProcessOutput(status: status, stdout: out.owned(),
         stderr: errors.owned())
-    if out.failed.peek() | errors.failed
+    drop out
+    drop errors
+    if lost
         # A capture couldn't grow and lost bytes: what was captured goes back, and the run fails.
-        local held: @ProcessOutput <- output
-        drop held
+        drop output
         return ProcessError.OUT_OF_MEMORY
     return output
 
@@ -1032,22 +1077,21 @@ private routine read_into(pipe: Addr, buffer: @CaptureBuffer, alloc: @MemoryMana
     then
         return
 
-### What a helper thread captured on the malloc heap, copied into `alloc` (and the heap copy given back).
+### What a helper thread captured on the malloc heap, copied into `alloc`. The heap copy goes back with its holder.
 ### :param b: The buffer filled on the malloc heap.
 ### :param alloc: The allocator for the copy.
 ### :returns: The copy in memory from `alloc`, `failed` when the helper's buffer lost bytes or the copy couldn't be
 ###     allocated.
 @target(os: "windows")
-private routine moved(b: CaptureBuffer, alloc: @MemoryManager) -> CaptureBuffer
-    if b.storage.data.is_null()
-        return CaptureBuffer(storage: .hollow(), count: 0, failed: b.failed)
-    local held: @CaptureBuffer <- b
+private routine moved(b: @CaptureBuffer, alloc: @MemoryManager) -> CaptureBuffer
     local copied: @CaptureBuffer <- CaptureBuffer.empty()
-    copied.append(chunk: b.storage.data, n: b.count, alloc)
-    drop held
-    lost: Bool = copied.failed.peek() | b.failed
+
+    data: @Byte = b.storage.data.peek()
+    if data.is_not_null()
+        copied.append(chunk: data, n: b.count.peek(), alloc)
+    lost: Bool = copied.failed.peek() | b.failed.peek()
     copied.failed.poke(lost)
-    return copied.peek()
+    return copied
 
 # -- the environment ---------------------------------------------------------------------
 
@@ -1064,33 +1108,9 @@ routine env_var(name: Span[Byte], alloc: @MemoryManager) -> Maybe[Memory[Byte]]
     local key: @Array[U16, 256] <- .hollow()
 
     n: Maybe[USize] = encode_utf16(text: name, out: key.to[@U16](), capacity: 256)
-    value: Maybe[Memory[Byte]] = when
-        not n.is_present() => None()
-        else =>
-            c_set_last_error(0)
-            need: U32 = c_get_environment_variable(key.to[@U16](), null, 0)
-            # ERROR_ENVVAR_NOT_FOUND
-            if need == 0 and c_get_last_error() == 203
-                becomes None()
-            else if need == 0
-                becomes Memory[Byte].construct(count: 0, manager: alloc)
-            else
-                made: @U16 = allocate[U16](count: need.to[USize](), alloc)
-                made.poke_into(units)
-                if made.is_null()
-                    becomes None()
-                else
-                    got: U32 = c_get_environment_variable(key.to[@U16](), made, need)
-                    if got == 0 or got >= need
-                        becomes None()
-                    else
-                        text: Result[Memory[Byte], FsError] = owned_wide(units: made,
-                            count: got.to[USize](), alloc)
-                        when text
-                            is Memory[Byte] as t =>
-                                becomes t
-                            is FsError =>
-                                becomes None()
+    if not n.is_present()
+        return None()
+    local value: @Maybe[Memory[Byte]] <- env_value(key: key.to[@U16](), units, alloc)
 
     # The UTF-16 value, when there is one: the UTF-8 copy is what goes back.
     held: @U16 = units.peek()
@@ -1098,3 +1118,30 @@ routine env_var(name: Span[Byte], alloc: @MemoryManager) -> Maybe[Memory[Byte]]
         return value
     deallocate(data: held, alloc)
     return value
+
+### The value of the variable whose UTF-16 name is at `key`, as UTF-8 in memory from `alloc`. The UTF-16 copy it reads
+### into goes into `units`, for the caller to give back.
+### :param key: The 0-terminated UTF-16 name.
+### :param units: Where the UTF-16 copy's address goes, null when there is none.
+### :param alloc: The allocator for both copies.
+### :returns: The value's bytes.
+### :absent: When the variable isn't set, or the value can't be read or allocated.
+@target(os: "windows")
+private routine env_value(key: @U16, units: @@U16, alloc: @MemoryManager) -> Maybe[Memory[Byte]]
+    c_set_last_error(0)
+    need: U32 = c_get_environment_variable(key, null, 0)
+    # ERROR_ENVVAR_NOT_FOUND
+    if need == 0 and c_get_last_error() == 203
+        return None()
+    if need == 0
+        return Memory[Byte].construct(count: 0, manager: alloc)
+    made: @U16 = allocate[U16](count: need.to[USize](), alloc)
+    made.poke_into(units)
+    if made.is_null()
+        return None()
+    got: U32 = c_get_environment_variable(key, made, need)
+    if got == 0 or got >= need
+        return None()
+    when owned_wide(units: made, count: got.to[USize](), alloc)
+        is Memory[Byte] as t => return t
+        is FsError => return None()

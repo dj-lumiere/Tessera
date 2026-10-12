@@ -28,7 +28,7 @@ import Standard/Collections
 import Standard/Os
 
 ### Runs jobs on its threads, each thread's fibers on that thread.
-record FiberPool
+entity FiberPool
     ### Guards the queue, the idle jobs, and the threads.
     lock: ExclusiveLock
     ### The jobs whose work waits for a thread, in order.
@@ -78,8 +78,8 @@ routine FiberPool.construct(threads: USize) -> Me
 @target(os: not "none")
 @track_caller
 routine FiberPool.destruct(me: @Me) -> None
-    local threads: @Memory[Thread[None]] = me.threads
-    local started: USize = threads.count()
+    threads: @Memory[Thread[None]] = me.threads
+    started: USize = threads.count()
 
     me.stopping.poke_atomic(1)
     me.epoch.atomic_fetch_add(1)
@@ -95,7 +95,7 @@ routine FiberPool.destruct(me: @Me) -> None
         job.slot.destruct()
         deallocate(data: job, alloc: me.alloc.peek())
         continue with job: next
-    threads.destruct()
+    drop me.threads
     me.idle.poke(null)
     return
 
@@ -170,11 +170,12 @@ needs T: typename
 @track_caller
 private routine FiberPool.start_threads(me: @Me) -> None
     local count: USize = me.count.peek()
-    local threads: @Memory[Thread[None]] = me.threads
+
+    threads: @Memory[Thread[None]] = me.threads
 
     if not (threads.count() == 0)
         return
-    threads.poke(.construct(count, manager: me.alloc.peek()))
+    threads.replace(value: Memory[Thread[None]].construct(count, manager: me.alloc.peek()))
 
     each i in 0 til count
         t: Thread[None] = get_thread[None]()

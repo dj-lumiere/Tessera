@@ -65,10 +65,9 @@ record ProcessOptions
     stdout: OutputMode
     stderr: OutputMode
 
-### What run_process hands back. A captured stream is in memory from the allocator, and `destruct()` releases both.
-### One not captured is empty and holds nothing.
-record ProcessOutput
-obeys Destructible[ProcessOutput]
+### What run_process hands back. A captured stream is in memory from the allocator, and dropping the output releases
+### both. One not captured is empty and holds nothing.
+entity ProcessOutput
     status: ExitStatus
     stdout: Memory[Byte]
     stderr: Memory[Byte]
@@ -109,13 +108,13 @@ routine ProcessOptions.destruct(me: @Me) -> None
 ### :returns: The new value.
 routine ProcessOutput.construct(status: ExitStatus, stdout: Memory[Byte],
     stderr: Memory[Byte]) -> Me
-    return Me(status, stdout, stderr)
+    return Me(status, stdout: steal stdout, stderr: steal stderr)
 
 ### Gives both captured streams back to the allocator they came from.
 @track_caller
 routine ProcessOutput.destruct(me: @Me) -> None
-    me.stdout.destruct()
-    me.stderr.destruct()
+    drop me.stdout
+    drop me.stderr
     return
 
 ### No directory and no overrides, the null device as input, and both output streams captured.
@@ -199,7 +198,7 @@ routine exit(status: S32) -> None
 
 ### A captured stream as it grows, in memory from an allocator: `storage` holds the capacity, `count` the bytes in
 ### use.
-internal record CaptureBuffer
+internal entity CaptureBuffer
     storage: Memory[Byte]
     count: USize
     failed: Bool  # an allocation failed: what came after was dropped
@@ -210,11 +209,11 @@ internal record CaptureBuffer
 ### :param failed: Its `failed`.
 ### :returns: The new value.
 internal routine CaptureBuffer.construct(storage: Memory[Byte], count: USize, failed: Bool) -> Me
-    return Me(storage, count, failed)
+    return Me(storage: steal storage, count, failed)
 
 ### Gives the buffer's memory back.
 internal routine CaptureBuffer.destruct(me: @Me) -> None
-    me.storage.destruct()
+    drop me.storage
     return
 
 ### An empty capture buffer that holds no memory yet. Its `failed` is read when the run ends: a capture that lost
@@ -239,11 +238,9 @@ internal routine CaptureBuffer.append(me: @Me, chunk: @Byte, n: USize,
 
         bigger: USize = doubled.max(need).max(256)
         if me.storage.data.peek().is_null()
-            made: Result[Memory[Byte], AllocFailed] = Memory[Byte].construct_result(count: bigger,
-                manager: alloc)
-            when made
+            when Memory[Byte].construct_result(count: bigger, manager: alloc)
                 is Memory[Byte] as memory =>
-                    me.storage.poke(memory)
+                    me.storage.replace(value: steal memory)
                     me.storage.getslot(me.count.peek()).copy(src: chunk, count: n)
                     next_count: USize = me.count.peek() + n
                     next_count.poke_into(me.count)
@@ -265,16 +262,12 @@ internal routine CaptureBuffer.append(me: @Me, chunk: @Byte, n: USize,
     next_count.poke_into(me.count)
     return
 
-### What was captured, owned by the caller, who drops it.
-### :returns: The captured bytes.
-internal routine CaptureBuffer.owned(me: Me) -> Memory[Byte]
-    return Memory[Byte](data: me.storage.data, count: me.count, manager: me.storage.manager,
-        generation: me.storage.generation)
-
-### What was captured, owned by the caller, who drops it.
+### What was captured, owned by the caller, who drops it. The buffer is left empty.
 ### :returns: The captured bytes.
 internal routine CaptureBuffer.owned(me: @Me) -> Memory[Byte]
-    return me.peek().owned()
+    me.storage.keep_first(me.count.peek())
+    me.count.poke(0)
+    return me.storage.take()
 
 ### Whether a NUL is inside any text the child would get, or an override's name holds a '=': what run_process_result
 ### turns down with InvalidArgument before it allocates anything, so a later failure to allocate is OutOfMemory.

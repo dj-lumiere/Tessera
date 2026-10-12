@@ -488,6 +488,16 @@ private record PipeCapture
     ### The buffer the stream's bytes go into.
     buffer: @CaptureBuffer
 
+### What a run works in: the prepared strings, the pipes, and the two captures, all released by the caller of
+### run_child, and the allocator they come from.
+@target(os: ("linux", "macos"))
+private record ChildRun
+    p: @Prepared
+    pipes: @Plumbing
+    out: @CaptureBuffer
+    err: @CaptureBuffer
+    alloc: @MemoryManager
+
 ### Makes a `Plumbing` from its fields.
 ### :param out_r: Its `out_r`.
 ### :param out_w: Its `out_w`.
@@ -620,33 +630,10 @@ routine run_process_result(program: Span[Byte], args: Span[Span[Byte]], options:
     alloc: @MemoryManager) -> Result[ProcessOutput, ProcessError]
     local p: @Prepared <- Prepared.empty()
     local pipes: @Plumbing <- Plumbing.empty()
-    local report: @CInt <- 0
     local out: @CaptureBuffer <- CaptureBuffer.empty()
     local err: @CaptureBuffer <- CaptureBuffer.empty()
-
-    result: Result[ProcessOutput, ProcessError] = when
-        has_nul(program, args, options) => ProcessError.INVALID_ARGUMENT
-        not p.make(program, args, options, alloc) => ProcessError.OUT_OF_MEMORY
-        not pipes.make(options) => spawn_error(errno())
-        else =>
-            pid: CInt = fork_child(p, pipes, options)
-            becomes when
-                pid < 0 => spawn_error(errno())
-                else =>
-                    # 4 bytes on the report pipe are the errno of a failed exec. Its end without them is a started
-                    # program.
-                    got: SSize = read_report(fd: pipes.exec_r.peek(), report)
-                    c_close(pipes.exec_r.peek())
-                    pipes.exec_r.poke(-1)
-                    # drain closes both pipes as each ends.
-                    drain(out: PipeCapture(fd: pipes.out_r.peek(), buffer: out),
-                        err: PipeCapture(fd: pipes.err_r.peek(), buffer: err), alloc)
-                    pipes.out_r.poke(-1)
-                    pipes.err_r.poke(-1)
-                    status: Maybe[ExitStatus] = reap(pid)
-                    becomes when
-                        got == 4 => spawn_error(report.peek())
-                        else => take_output(status, out, err)
+    local result: @Result[ProcessOutput, ProcessError] <- run_child(program, args, options,
+        run: ChildRun(p, pipes, out, err, alloc))
 
     # Every descriptor still open, the prepared strings, and the captured bytes nothing took.
     pipes.close_all()
@@ -654,6 +641,64 @@ routine run_process_result(program: Span[Byte], args: Span[Span[Byte]], options:
     drop out
     drop err
     return result
+
+### Makes a `ChildRun` from its fields.
+### :param p: Its `p`.
+### :param pipes: Its `pipes`.
+### :param out: Its `out`.
+### :param err: Its `err`.
+### :param alloc: Its `alloc`.
+### :returns: The new value.
+@target(os: ("linux", "macos"))
+private routine ChildRun.construct(p: @Prepared, pipes: @Plumbing, out: @CaptureBuffer,
+    err: @CaptureBuffer, alloc: @MemoryManager) -> Me
+    return Me(p, pipes, out, err, alloc)
+
+### Releases nothing: a `ChildRun` only points at what its caller holds.
+@target(os: ("linux", "macos"))
+private routine ChildRun.destruct(me: @Me) -> None
+    return
+
+### Prepares, starts, and waits for the child, capturing into the run's buffers. What it opens and makes stays in the
+### run for the caller to release.
+### :param program: The program to run.
+### :param args: The arguments.
+### :param options: The directory, environment, and standard streams.
+### :param run: The prepared strings, pipes, captures, and allocator.
+### :returns: The {ProcessOutput}, or the {ProcessError}.
+@target(os: ("linux", "macos"))
+private routine run_child(program: Span[Byte], args: Span[Span[Byte]], options: ProcessOptions,
+    run: ChildRun) -> Result[ProcessOutput, ProcessError]
+    local report: @CInt <- 0
+
+    p: @Prepared = run.p
+    pipes: @Plumbing = run.pipes
+    out: @CaptureBuffer = run.out
+    err: @CaptureBuffer = run.err
+    alloc: @MemoryManager = run.alloc
+
+    if has_nul(program, args, options)
+        return ProcessError.INVALID_ARGUMENT
+    if not p.make(program, args, options, alloc)
+        return ProcessError.OUT_OF_MEMORY
+    if not pipes.make(options)
+        return spawn_error(errno())
+    pid: CInt = fork_child(p, pipes, options)
+    if pid < 0
+        return spawn_error(errno())
+    # 4 bytes on the report pipe are the errno of a failed exec. Its end without them is a started program.
+    got: SSize = read_report(fd: pipes.exec_r.peek(), report)
+    c_close(pipes.exec_r.peek())
+    pipes.exec_r.poke(-1)
+    # drain closes both pipes as each ends.
+    drain(out: PipeCapture(fd: pipes.out_r.peek(), buffer: out),
+        err: PipeCapture(fd: pipes.err_r.peek(), buffer: err), alloc)
+    pipes.out_r.poke(-1)
+    pipes.err_r.poke(-1)
+    status: Maybe[ExitStatus] = reap(pid)
+    if got == 4
+        return spawn_error(report.peek())
+    return take_output(status, out, err)
 
 ### Forks the child with what `p` and `pipes` prepared. In the parent, closes the child's ends of the pipes and the
 ### null device and marks them -1 in `pipes`, so each pipe ends when the child is done with it.
@@ -702,11 +747,7 @@ private routine take_output(status: Maybe[ExitStatus], out: @CaptureBuffer,
         is ExitStatus as s =>
             if out.failed.peek() | err.failed.peek()
                 return ProcessError.OUT_OF_MEMORY
-            output: ProcessOutput = ProcessOutput(status: s, stdout: out.owned(),
-                stderr: err.owned())
-            out.poke(CaptureBuffer.empty())
-            err.poke(CaptureBuffer.empty())
-            return output
+            return ProcessOutput(status: s, stdout: out.owned(), stderr: err.owned())
         is None => return ProcessError.OTHER
 
 ### Reads the exec report from the report pipe into `report`, retrying when a signal interrupts the read.
@@ -813,10 +854,9 @@ routine env_var(name: Span[Byte], alloc: @MemoryManager) -> Maybe[Memory[Byte]]
     if value.is_null()
         return None()
     n: USize = value.to[CStr]().count()
-    made: Result[Memory[Byte], AllocFailed] = Memory[Byte].construct_result(count: n.max(1),
-        manager: alloc)
-    owned: Memory[Byte] = when made
-        is Memory[Byte] as owned => owned
+    when Memory[Byte].construct_result(count: n.max(1), manager: alloc)
+        is Memory[Byte] as owned =>
+            owned.data.peek().copy(src: value, count: n)
+            owned.keep_first(n)
+            return owned
         is AllocFailed => return None()
-    owned.data.copy(src: value, count: n)
-    return owned.with_count(n)

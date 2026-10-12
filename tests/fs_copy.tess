@@ -26,8 +26,10 @@ routine copy_of(root: Directory, count: USize, alloc: @MemoryManager) -> None
     each i in 0 til count
         letter: U8 = (i % 26).to[U8]() + 97
         text.add_last(letter.bits())
-    source: File = root.file(name: "source.txt", alloc)
-    target: File = root.file(name: "target.txt", alloc)
+    local source_path: @Memory[Byte] <- root.join(name: "source.txt", alloc)
+    local target_path: @Memory[Byte] <- root.join(name: "target.txt", alloc)
+    source: File = File.at(source_path.getview())
+    target: File = File.at(target_path.getview())
     discard_written: Result[None, FsError] = source.write_all_result(text.getview())
     r: Result[U64, FsError] = source.copy_to_result(target)
     when r
@@ -35,23 +37,34 @@ routine copy_of(root: Directory, count: USize, alloc: @MemoryManager) -> None
             same: Bool = size_of(target) == n
             Out.write("{count} bytes: copied {n}, the copy has as many {same}\n")
         is FsError => Out.write("{count} bytes: failed\n")
+    drop target_path
+    drop source_path
     drop text
     return
 
 routine start() -> None
     local alloc: @MemoryManager <- make_heap_memory()
-    local tmp: Directory = Directory.temp_result(alloc).unwrap()
-    local root: Directory = tmp.subdir(name: "tessera_fs_copy", alloc)
+    local tmp_path: @Memory[Byte] <- Directory.temp_result(alloc).unwrap()
+    local root_path: @Memory[Byte] <- Directory.at(tmp_path.getview()).join(name: "tessera_fs_copy",
+        alloc)
+
+    root: Directory = Directory.at(root_path.getview())
 
     discard_old: Result[None, FsError] = root.delete_all_result(alloc)
     discard_made: Result[None, FsError] = root.create_all_result()
     copy_of(root, count: 0, alloc)
     copy_of(root, count: 5, alloc)
     copy_of(root, count: 100000, alloc)
-    inner: Directory = root.subdir(name: "inner", alloc)
-    target: File = root.file(name: "from_directory.txt", alloc)
+    local inner_path: @Memory[Byte] <- root.join(name: "inner", alloc)
+    local target_path: @Memory[Byte] <- root.join(name: "from_directory.txt", alloc)
+    inner: Directory = Directory.at(inner_path.getview())
+    target: File = File.at(target_path.getview())
     discard_inner: Result[None, FsError] = inner.create_result()
     r: Result[U64, FsError] = File.at(inner.path).copy_to_result(target)
     Out.write("copying a directory fails: {r.is_failure()}, leaves a file behind: {target.is_present()}\n")
     discard_gone: Result[None, FsError] = root.delete_all_result(alloc)
+    drop target_path
+    drop inner_path
+    drop root_path
+    drop tmp_path
     return

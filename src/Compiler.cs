@@ -169,9 +169,10 @@ public sealed partial class Compiler
             // A record holding an entity says so before anything about its lifecycle: the fix is to make it one.
             if (d is RecordDecl { IsEntity: false } plain)
                 foreach (var f in plain.Fields)
-                    if (f.Type.Args.Count == 0 && !plain.TypeParams.Contains(f.Type.Name) && EntityNamed(f.Type, plain.File) is { } held)
-                        throw new CompileError(f.Pos, $"record '{plain.Name}' holds {held.Name} in '{f.Name}', and an entity is never copied, "
-                            + $"which a record is: declare it entity {plain.Name}, or hold a pointer, @{held.Name}");
+                    if (!(f.Type.Args.Count == 0 && plain.TypeParams.Contains(f.Type.Name)) && f.Type.Name is not ("Ptr" or "Addr")
+                        && EntityNamed(f.Type, plain.File) is not null)
+                        throw new CompileError(f.Pos, $"record '{plain.Name}' holds {f.Type} in '{f.Name}', and an entity is never copied, "
+                            + $"which a record is: declare it entity {plain.Name}, or hold a pointer, @{f.Type}");
             bool construct = d is not RecordDecl || has.Contains((d, "construct"));
             bool destruct = has.Contains((d, "destruct"));
             if (construct && destruct) continue;

@@ -118,7 +118,7 @@ routine start() -> None
 - A field of a record value is read with plain `=`: `key: K = pair.key`.
 - `local p: @T <- v` makes a slot for the routine call (a stack slot in practice) and stores `v` in it where the
   line stands. Its type comes from the binding, which is one of three: `@T` (a slot), `Span[T]` (values in the
-  frame, below), or `Memory[T]` / `Box[T]` with `at manager` (below). Anything else is a build error. The
+  frame, below), or `@Memory[T]` / `@Box[T]` with `at manager` (below). Anything else is a build error. The
   contents are required: `local list: @List[S64] <- .construct(alloc)`, no `list_val` and no separate store. A
   slot that a routine fills later (an out parameter, `out.construct(...)`, an iterator's slot) starts as
   `local p: @T <- .hollow()`: `T.hollow()`, which every type has, is the all-zero value (`0`, `false`, null, a
@@ -139,17 +139,19 @@ routine start() -> None
   through it is `@T`'s own: `peek_volatile`, `atomic_fetch_add`, ...), `getitem(i)` / `setitem(i, v)`,
   `getitem_checked(i)` (a `Maybe`), `getslice(start, count)`, `getview()`, `to[@T]()`. `Box[T]` (`{at, manager,
   generation}`) and `Memory[T]` (`{data, count, manager, generation}`, `Types/Memory.tess`) are memory TAKEN from a
-  `MemoryManager`: read and written with `load` / `store` (`m.load(i)`, `m.store(index: i, value: v)`,
-  `b.load()`, `b.store(v)`), and given back exactly once, with the statement `drop m` or by handing the value to a routine that
-  takes a `Memory` / `Box` by value (that routine gives it back then). `drop x` calls the type's `destruct`: a
-  program never writes `x.destruct()` itself (a build error: "a value is given back with drop: drop x"), only a type's
-  own `destruct` / `destruct_all` body gives its members back by calling theirs. `Memory[T].destruct` has a value
-  overload (`destruct(me: Me)`) and a `@Me` overload that also leaves the slot hollow, so `drop m` takes a value and
-  `drop slot` a slot. `.hollow()` holds nothing: `drop` on it does nothing, a
-  read crashes with
-  `InvalidValueError`. `Memory[T]` also has `construct(count, manager)` (uninitialized), `construct_result`,
-  `count()`, `getslot(i)`, `getview()`, `with_count(n)`, `duplicate()` (memory of its own), `replace(new)`,
-  `give_back()`, `resize(n)` / `resize_result(n)`, and `destruct_all()` (destructs every value, then gives the memory back). `Array[T, COUNT]` is the run of values
+  `MemoryManager`, and both are ENTITIES (Entities, below): never copied, kept in a slot
+  (`local m: @Memory[Byte] <- Memory[Byte].construct(count: 4, manager: alloc)`), every routine takes `me: @Me`.
+  Read and written with `load` / `store` (`m.load(i)`, `m.store(index: i, value: v)`, `b.load()`, `b.store(v)`, the
+  stored value taken over), and given back exactly once, with the statement `drop m`, by `return m`, or by handing it
+  on with `steal m` to a routine that takes a `Memory` / `Box` by value (that routine gives it back then). `drop x`
+  calls the type's `destruct`: a program never writes `x.destruct()` itself (a build error: "a value is given back
+  with drop: drop x"), only a type's own `destruct` body gives its members back. `drop` leaves the slot hollow:
+  `.hollow()` holds nothing, `drop` on it does nothing, a read crashes with `InvalidValueError`. `Memory[T]` also has
+  `construct(count, manager)` (uninitialized), `construct_result` (a `Result[Memory[T], AllocFailed]`, observed with
+  `when Memory[T].construct_result(...)`), `count()`, `getslot(i)`, `getview()`, `keep_first(n)` (only the first n in
+  use, no copy), `duplicate()` (memory of its own), `replace(value: new)`, `take()` (moves the memory out, leaving
+  this one empty with the same manager), `give_back()`, `resize(n)` / `resize_result(n)`, and `destruct_all()`
+  (destructs every value, then gives the memory back). `Array[T, COUNT]` is the run of values
   whose count is in the type, a value. `getview()` gives a `Span` of anything holding contiguous elements (a `Memory`,
   a `List`, an `Array` through a pointer, a `SliceWriter`, a `CStr`). `Span[T].construct(data, count)` wraps memory
   from C (the count is yours to get right). The raw layer, `allocate[T](count, alloc)` /
@@ -160,8 +162,9 @@ routine start() -> None
 - **The generation check.** Every block a Memory or a Box takes starts with a 16-byte stamp holding a generation (a
   number no other block of the program had), and the value keeps its copy. `drop` clears the stamp, and `load`,
   `store`, `getslot`, and `getview` compare the two first: a block given back crashes with `DestructedMemoryError`
-  instead of reading freed memory. `resize` gives the moved block a new generation, so an older copy fails too. A plain copy
-  (`b = a`) is the SAME memory, not a second owner: drop exactly one. A Span or `@T` carries no generation (the check
+  instead of reading freed memory. `resize` gives the moved block a new generation, so an older holder fails too. A
+  Memory is never copied, so a second holder of the same block only comes from raw code the build doesn't follow (a
+  `steal` out of an element place reads the bits and leaves them). A Span or `@T` carries no generation (the check
   runs when the view is made). With `[debug] heap-check = true` in config.toml (any build mode, off by default,
   always on under `tessera test`) `DEFAULT_HEAP` also keeps a header in front of each block and crashes with
   `DoubleFreeError` at the line of a second free of the same block (a quarantine of the last 256 freed blocks keeps
@@ -180,38 +183,27 @@ routine start() -> None
   literal is required: it gives the count). `local xs: Span[T] <- [0] * 64` in the body or in the head puts the values in the routine's frame, with a count the build knows (a literal count or a
   preset). An array literal passed as an argument where a Span is expected is a frame Span too: `total([4, 5, 6])`.
   A frame Span must not leave the routine. `preset NAME: @Array[T, N] <- [...]` is still a `Ptr` to an array.
-- **Memory from a manager is written with `at`.** `local words: Memory[U64] <- [0] * n at DEFAULT_HEAP` (the count
+- **Memory from a manager is written with `at`.** `local words: @Memory[U64] <- [0] * n at DEFAULT_HEAP` (the count
   may be a runtime value: it calls `Memory[T].construct(values: Span[T], times: USize, manager)`), and
-  `local node: Box[Node] <- (value: 1, next: null) at DEFAULT_HEAP` (it calls `Box[T].construct(value, manager)`).
-  An `at` literal is bound with `<-` in a `local` line: `x: Memory[T] = ... at m` is a build error that says to
-  bind it so. The bound name is the Memory / Box value itself.
+  `local node: @Box[Node] <- (value: 1, next: null) at DEFAULT_HEAP` (it calls `Box[T].construct(value, manager)`).
+  An `at` literal is bound with `<-` in a `local` line, into the slot like any entity.
 - **The five rules.** 1. `@T` / `Span[T]` only view (peek / poke), never give back. 2. `Box` / `Memory` come from a
   manager: `load` / `store`, given back exactly once or handed over, empty or not. 3. A `@T` / `Span` viewing this
   routine's memory (a local slot, a frame Span) does not leave the routine. 4. A routine that moves memory says
   `@reshaping`, and isn't called while that memory is viewed. 5. A global `Box` / `Memory` is changed with `replace`,
   and the program's end gives the last one back. The build checks all five, as below. Build errors unless marked.
-- **The group check (rule 2), in every routine without type parameters.** A Box / Memory that a call or an `at`
-  literal gives, or a by-value parameter hands in, plus every copy of it (`b = a`, `slot.peek()`, `m.with_count(n)`,
-  the carried values it is passed to, the slots it is stored in) is ONE group. A group ends exactly once on every
-  path: `drop x` / `destruct_all()`, being returned, being handed to a parameter that takes a Box /
-  Memory by value, being kept in a record or tuple literal, or being chosen as a value of another type (a
-  `Result` that holds it). Memory taken out of a variant (`is Memory[T] as m`) is that arm's group. The errors and
-  their fixes:
-  - `'m' holds memory (from line N) that isn't given back before 'r' returns here`: give it back first (`drop m`), return it,
-    or hand it on. Also what a path that skips the release gets (given back in one arm of an `if`, not the other): give
-    it back on every path, or keep it in a head slot and give it back at the routine's one `return`.
-  - `'m' gives back memory that was given back already`: drop one copy only, or make memory of its own with
-    `.duplicate()`.
-  - `'m' is used after its memory was given back`: use it before the `drop`, or `.duplicate()` it.
-  - `'m' holds memory (from line N) and goes out of sight here, at the end of the body it is bound in`: a value bound
-    under an `if`, a loop, or a `when` arm isn't there after it. Give the memory back first, return it, or keep it in
-    a slot bound outside that body (a head `local m: @Memory[T] <- .hollow()`).
-  - `'s' holds memory that hasn't been given back ..., and this overwrites it`: a `poke` into the last slot that
-    holds live memory. Give it back first (`drop s` leaves the slot hollow, then poke).
-  A `drop` of a slot leaves it hollow, so a second `drop s` of the same slot does nothing and is no error. `b = a`
-  of a Box / Memory is a WARNING (`'b' and 'a' are the same memory, released once whichever one gives it back`):
-  write `a.duplicate()` for memory of its own, or `a.getview()` to lend it. The check follows one routine's own
-  flow: what a callee does with a slot it was lent is the callee's, so that case is the generation check's.
+- **The group check (rule 2), in every routine without type parameters.** A Box / Memory is an entity, so the entity
+  rules apply: it lives in a slot, and it ends exactly once on every path (`drop m`, `return m`, handed on with
+  `steal m`, or moved into an entity's field). The errors and their fixes:
+  - `'m' holds a Memory[Byte] (from line N) that hasn't ended when 'r' returns here`: drop it, return it, or hand it
+    on. Also what a path that skips the release gets (dropped in one arm of an `if`, not the other).
+  - `'m' ended already (steal m on line N), and a Memory[Byte] ends once`, and `'m' is used after steal m on line N
+    ended it`: a slot handed on is gone.
+  - `'s' holds a Memory[Byte] (from line N) that hasn't ended, and this overwrites it`: a `poke` into a slot that
+    holds live memory. Drop it first, or use `replace(value: new)`.
+  A `drop` of a slot leaves it hollow, so a second `drop s` of the same slot does nothing and is no error. The check
+  follows one routine's own flow: what a callee does with a slot it was lent is the callee's, so that case is the
+  generation check's.
 - **The escape check (rule 3).** A routine doesn't return a view of its frame (a local slot, a frame Span, and
   every view made from them with `getslot` / `getslice` / `stride` / `offset` / `to` / a Span's `getview`) or of a
   Box / Memory it holds (`m.getview()`, `m.getslot(i)`), and doesn't store one through a parameter (`out.poke(x)`)
@@ -245,7 +237,7 @@ routine start() -> None
     again: @S64 = xs.getslot(0)  # take it again after
     ```
 - **A global holding a Box / Memory (rule 5).** `global CACHE: @Memory[Byte]` starts hollow. Only
-  `CACHE.replace(new)` changes it (it gives the old memory back, then stores the new one: `poke` is an error), and
+  `CACHE.replace(value: new)` changes it (it gives the old memory back, then stores the new one: `poke` is an error), and
   no other routine than `start` drops it. Nothing has to: a global lives as long as the program, and the program's
   end gives its memory back (the process's memory goes with it, and a device without an OS runs until reset).
 
@@ -253,7 +245,7 @@ routine start() -> None
   global CACHE: @Memory[Byte]
 
   routine refill(count: USize, fill: Byte) -> None
-      CACHE.replace(Memory[Byte].construct(values: [fill], times: count, manager: DEFAULT_HEAP))
+      CACHE.replace(value: Memory[Byte].construct(values: [fill], times: count, manager: DEFAULT_HEAP))
       return
 
   routine start() -> None
@@ -574,9 +566,9 @@ routine start() -> None
   `compare`, `hash`, ...). A literal is a `Span[Byte]` of the program image, `Span[Byte].construct(data, count)`
   wraps bytes from C, and text made from other text (`slice`, `getslice`, the iterators, `buf.getview()` of a
   `List[Byte]`) views the same memory. Text a routine takes memory for (`Span[Byte].concat`, `In.read_line`,
-  `File.read_all_result`, `join_path`, `env_var`, ...) comes back as a `Memory[Byte]`: give it back once
-  (`line: Memory[Byte] = In.read_line()`, then `drop line`: a Memory a routine returns is bound with `=`, and
-  `local ... <-` takes only an `at` literal for a Memory or a Box). A Memory lends itself to a text routine at
+  `File.read_all_result`, `join_path`, `env_var`, ...) comes back as a `Memory[Byte]`: keep it in a slot and give it
+  back once (`local line: @Memory[Byte] <- In.read_line()`, then `drop line`), and observe a `Result` / `Maybe` of one
+  with `when` (`when In.read_line_checked(alloc)` then `is Memory[Byte] as line => ...`). A Memory lends itself to a text routine at
   a receiver or an argument (`line.find("=")`, `out.write("{line.getview()}")` in a template). Escapes: `\xXX` is one byte (strings, `b'..'`), `\uXXXXXX` one
   character by exactly six hex digits (strings, `'..'`), so `"\u01F600"` equals `"\xF0\x9F\x98\x80"`.
   Source files must be UTF-8.
@@ -689,8 +681,14 @@ routine start() -> None
   and `c` ends.
 - What copies an entity is a build error that says what to do instead: a load out of memory (`slot.peek()`), or a
   field read out of a record value.
-- A record can't hold an entity by value (it would copy it): declare the holder `entity` too, or hold a pointer. A
-  tuple item can't be an entity either.
+- A record can't hold an entity by value (it would copy it), a generic one included (`nodes: Memory[T]`): declare the
+  holder `entity` too, or hold a pointer. A tuple item can't be an entity either. A record or tuple item that is a
+  pointer to an entity (`(pool, 0, 10)` for a `(@FiberPool, U64, U64)`) lends the entity's place: the slot it came
+  from still owns it.
+- In the standard library, these are entities: `Memory[T]`, `Box[T]`, every collection (`List`, `Set`, `Dict`, the
+  sorted ones, `CircularList`, `PriorityQueue`), `Channel[T]` / `SharedChannel[T]`, `FiberPool`, `FiberManager`,
+  `OwnedCStr` / `OwnedCWStr`, and `ProcessOutput`. A `MemoryManager`, a `Span`, a `@T`, an iterator, a `File` and a
+  `Directory` (which borrow their path) stay records.
 - A variant may have an entity branch: `Result[File, FsError]`, `Maybe[Counter]`. Such a variant value holds an entity,
   so it follows the same rules: it lives in a slot (`local r: @Result[Counter, E] <- open()`, a value binding is a build
   error), a parameter of that type is a slot, and it moves with `steal` or `return r`. A `when` observes it as a call's
@@ -706,7 +704,8 @@ routine start() -> None
   there. In code that names its types, `steal x` or `drop x` on a value with nothing to give back is a build error
   (the value is copied, the drop does nothing): leave the marker out. Where x's written type is a type parameter
   (`T`, `@T`, `List[T]`, `Me` of a generic type), both are always allowed and written once for any T: for an entity T
-  they move and end it, for a record T steal is the value and drop does nothing.
+  they move and end it, for a record T steal is the value and drop does nothing. `drop` on a value that isn't a place
+  (a call's result, an arm's value) puts it in a slot of its own first, so its destruct gets an address.
 - A call that hands back an entity (or a value holding one) can't be a bare line: keep it in a slot, drop it, or hand
   it on.
 
@@ -1013,19 +1012,26 @@ routine on them is one thing done there now, returning `Result[T, FsError]`, so 
 `close` does nothing); `read_all_result(alloc)` / `write_all_result(data)`, `is_present`,
 `metadata_result` (`kind`, `size`, times in ns), `copy_to_result`, `move_to_result`, `move_to_if_absent_result`,
 `delete_result`, `touch_result`, `map_result(write, offset, count)`, `name` / `stem` / `extension` / `parent`. A
-Directory: `create_result` / `create_all_result`, `delete_result` / `delete_all_result(alloc)`, `file(name, alloc)` /
-`subdir(name, alloc)`, `Directory.current_result` / `temp_result` / `home_result`, and a `DirIter` (a local slot,
+Directory: `create_result` / `create_all_result`, `delete_result` / `delete_all_result(alloc)`, `join(name, alloc)`
+(the entry's path), `Directory.current_result` / `temp_result` / `home_result`, and a `DirIter` (a local slot,
 `open_result(dir)`, `emit_checked()` until `None`, `close()`). Path text needs no OS: `join_path`, `parent_path`,
 `file_name`, `file_stem`, `file_extension`. A routine that hands text back takes an allocator and returns a `Memory[Byte]`
-from it (`read_all_result`, `join_path`, `env_var`): give it back with `drop`. One that makes a path
-(`file`, `subdir`, `absolute_result`, `canonical_result`, `Directory.current_result` / `temp_result` /
-`home_result`) returns a `File` / `Directory` whose path is held in a `Memory[Byte]`: `drop file` / `drop dir`
-gives it back (and does nothing for a literal path, whose memory is hollow).
+from it (`read_all_result`, `join_path`, `env_var`): give it back with `drop`. A `File` and a `Directory` only
+borrow their path, so one that makes a path (`join`, `absolute_result`, `canonical_result`,
+`Directory.current_result` / `temp_result` / `home_result`) returns the path's `Memory[Byte]`, and the caller keeps
+it in a slot, names it with `File.at(p.getview())`, and drops it:
+
+```tessera
+local p: @Memory[Byte] <- dir.join(name: "notes.txt", alloc)
+File.at(p.getview()).touch_result()
+drop p
+```
 
 **Processes.** `run_process_result(program, args, options, alloc)` (looked up on PATH, `args` a `Span[Span[Byte]]`) and
 `run_shell_result(command, options, alloc)` return `Result[ProcessOutput, ProcessError]`: an `ExitStatus`
 (`variant ExitStatus / Exited / Signaled` over the records `Exited(code: S32)` and `Signaled(signal: S32)`, with
-`.code()`, `.is_success()`) and the captured `stdout` / `stderr` (`Memory[Byte]`, released with `drop output`). `ProcessOptions.default()` captures both and gives the child the null device as input; set
+`.code()`, `.is_success()`) and the captured `stdout` / `stderr` (`Memory[Byte]`). A `ProcessOutput` is an entity:
+`local out: @ProcessOutput <- run_shell_result(...).unwrap()` or `when run_shell_result(...)`, then `drop out`. `ProcessOptions.default()` captures both and gives the child the null device as input; set
 `directory`, `env` / `env_count` (overrides merged into this process's environment), and each stream's mode.
 `env_var(name, alloc)` reads a variable (`None` when it isn't set), `exit(status)` ends the process at once, and
 `set_exit_code(status)` sets the status `start` returning ends it with.
@@ -1204,10 +1210,9 @@ array presets (`K.getitem(i)`, with `preset K: @Array[T, COUNT] <- [...]`), and 
   place instead, through a pointer: `out.construct(inner)` for `BufWriter[T]`.
 - `destruct(me: @Me)` is the destructor: it releases what `construct` acquired (and what the value acquired since)
   and leaves the value empty. The statement `drop x` calls it, and nothing runs it for you. A program's own line
-  `x.destruct()` is a build error: only a `destruct` / `destruct_all` body calls a member's `destruct` by name. A collection's `destruct` doesn't touch its
-  elements; `destruct_all()` destructs them first (elements must obey `Destructible[T]`), and `Dict` / `SortedDict`
-  also have `destruct_all_values()`. Elements that are borrowed pointers are yours to release. `Array[T, COUNT]` acquires
-  nothing, so it has no `destruct()`, only `destruct_all()` for elements that own something.
+  `x.destruct()` is a build error: only a `destruct` body calls a member's `destruct` by name. A collection owns its
+  elements, and its `destruct` ends each one before giving its memory back. Elements that are borrowed pointers are
+  yours to release. `Array[T, COUNT]` acquires nothing, so it has no `destruct()`.
 - Other ways to make a value are named for what they make: `Out.writer()`, `Xoshiro256.from_seed(seed)`,
   `FormatSpec.zero_padded(6)`.
 - `deallocate(p, alloc)` (the raw layer) is not a destructor: it hands a block of memory back to its allocator.
