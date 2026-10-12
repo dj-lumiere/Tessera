@@ -274,8 +274,9 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                 case '#': kind = TokenKind.Hash; break;    // the old spelling of an annotation, which the parser reports
                 case '_': kind = TokenKind.Underscore; break;
                 case '=':
-                    // `=>` leads a `when` arm to its target, `==` compares.
+                    // `=>` leads a `when` arm to its target, `==` compares values, `===` compares addresses.
                     if (Peek() == '>') { Advance(); kind = TokenKind.FatArrow; text = "=>"; }
+                    else if (Peek() == '=' && Peek(1) == '=') { Advance(); Advance(); kind = TokenKind.Op; text = "==="; }
                     else if (Peek() == '=') { Advance(); kind = TokenKind.Op; text = "=="; }
                     else kind = TokenKind.Eq;
                     break;
@@ -309,6 +310,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                     Advance();
                     kind = TokenKind.Op;
                     text = "!=";
+                    if (Peek() == '=') { Advance(); text = "!=="; }
                     break;
                 case '<':
                     kind = TokenKind.Op;

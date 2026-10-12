@@ -1727,7 +1727,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return left;
     }
 
-    private static readonly HashSet<string> ComparisonOps = ["==", "!=", "<", "<=", ">", ">=", "<=>"];
+    private static readonly HashSet<string> ComparisonOps = ["==", "!=", "===", "!==", "<", "<=", ">", ">=", "<=>"];
 
     /// `a < b`, and a chain `a < b <= c` (`a < b and b <= c`, with b written once: a name, a literal, or a field).
     private Expr ParseComparison()

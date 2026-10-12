@@ -432,13 +432,13 @@ routine start() -> None
 
 - **Operators are routine calls.** `a + b` is `a.add(b)`, `a - b` `sub`, `*` `mul`, `/` `div`, `%` `mod`, `**`
   `pow` (the exponent a `U32`), `+% -% *%` the `_wrap` forms, `+^ -^ *^` the `_clamp` forms, `== != < <= > >=` `eq`
-  .. `ge`, `<=>` `compare`, `& | ^ << >>` `bitand` / `bitor` / `bitxor` / `shl` / `shr`, unary `-x` `neg` and `~x`
+  .. `ge`, `<=>` `compare`, `=== !==` `ptr_eq` / `ptr_ne` (two addresses, `@T` or `Addr`), `& | ^ << >>` `bitand` / `bitor` / `bitxor` / `shl` / `shr`, unary `-x` `neg` and `~x`
   `bitnot`, `xs[i]` `getitem(i)` and `xs[i] = v` `setitem(index: i, value: v)`. A type takes an operator by
   declaring the routine, and a literal on the left takes the right side's type (`1 + x` is `T.add(1, x)`). Precedence,
   tightest first: calls and `[i]`, `**`, the unary `- not ~`, `* / %`, `+ -`, the bitwise operators (one level: two
   different ones side by side need parentheses, `(a & b) | c`), ranges `til` / `to` (only walked by `each`),
   comparisons (chained one way: `<`, `<=`, `==` together or `>`, `>=`, `==` together, `1 < b <= 3 < a`, the middle a
-  name, literal or field, and `!=` and `<=>` don't chain), `and` / `or` (one level: mixed, they need parentheses, `a or (b and c)`).
+  name, literal or field, and `!=`, `===`, `!==` and `<=>` don't chain), `and` / `or` (one level: mixed, they need parentheses, `a or (b and c)`).
   `and` / `or` / `not` are `Bool`'s own, and the right side of `and` / `or` runs only when the left leaves the answer
   open. The method spellings still work (`i.add(1).bitand(mask)`), and a chain of pure calls reads left to right.
 - A chain holds at most three calls (`(sum.peek() + x).poke_into(sum)` is fine). Everything call-shaped counts
@@ -510,7 +510,7 @@ routine start() -> None
   `SliceWriter`) and a value too. This holds for the collections, `Span`, and `Memory`, and a type of your own
   that people keep in slots does the same for the reads they call there. It's never automatic, and three kinds stay
   value-only because on a pointer they'd be about the pointer: `eq` / `compare` / `hash` (a pointer compares only
-  through `ptr_eq`, so `a.peek().eq(b.peek())`), `represent_into` / `diagnose_into` (a pointer isn't
+  by address, `a === b`, so values compare as `a.peek() == b.peek()`), `represent_into` / `diagnose_into` (a pointer isn't
   Representable, so `{list}` on a slot is a build error that asks for `{list.peek()}`), and a generic `to[T]` (it
   would hide `Ptr`'s `to<@U>`). You can't call a pointer method on a temporary:
   `DictIter[TKey, TValue].construct(m).emit_checked()` fails with "has no method 'emit_checked'"; put the iterator in a local

@@ -3,7 +3,8 @@ namespace Tessera;
 /// The operators and the routines they stand for: `a + b` is `a.add(b)`, `-x` is `x.neg()`. A type takes an operator
 /// by declaring the routine. `/` is `truediv` (true division: floats and the types built on them), `//` is `div`
 /// and `%` is `mod`, both Euclidean (the remainder is never negative). `div_trunc` / `mod_trunc` are the quotient
-/// toward zero and the remainder with the dividend's sign, which no operator spells. Precedence, tightest first: calls and `[i]`, `**`, the unary
+/// toward zero and the remainder with the dividend's sign, which no operator spells. `===` / `!==` compare two pointers by
+/// address (`ptr_eq` / `ptr_ne`), `==` / `!=` compare values. Precedence, tightest first: calls and `[i]`, `**`, the unary
 /// `- not ~`, `* / // %`, `+ -`, the bitwise operators (one level), ranges, comparisons (chained), `and` / `or` (one
 /// level).
 public static class Operators
@@ -14,6 +15,7 @@ public static class Operators
         ["+%"] = "add_wrap", ["-%"] = "sub_wrap", ["*%"] = "mul_wrap",
         ["+^"] = "add_clamp", ["-^"] = "sub_clamp", ["*^"] = "mul_clamp",
         ["=="] = "eq", ["!="] = "ne", ["<"] = "lt", ["<="] = "le", [">"] = "gt", [">="] = "ge", ["<=>"] = "compare",
+        ["==="] = "ptr_eq", ["!=="] = "ptr_ne",
         ["&"] = "bitand", ["|"] = "bitor", ["^"] = "bitxor", ["<<"] = "shl", [">>"] = "shr", [">>>"] = "ushr",
     };
 
@@ -35,7 +37,7 @@ public static class Operators
     public static int Precedence(string op) => op switch
     {
         "and" or "or" => 1,
-        "==" or "!=" or "<" or "<=" or ">" or ">=" or "<=>" => 2,
+        "==" or "!=" or "===" or "!==" or "<" or "<=" or ">" or ">=" or "<=>" => 2,
         "til" or "to" => 3,
         "&" or "|" or "^" or "<<" or ">>" or ">>>" => 4,
         "+" or "-" or "+%" or "-%" or "+^" or "-^" => 5,

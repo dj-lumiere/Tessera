@@ -1268,6 +1268,8 @@ public sealed class Structurer
                     var operand = OperatorizeExpr(m.Receiver);
                     if (operand is BinaryExpr { Op: "==" } eq) return eq with { Op = "!=" };
                     if (operand is BinaryExpr { Op: "!=" } ne) return ne with { Op = "==" };
+                    if (operand is BinaryExpr { Op: "===" } same) return same with { Op = "!==" };
+                    if (operand is BinaryExpr { Op: "!==" } differ) return differ with { Op = "===" };
                     if (operand is BinaryExpr { Op: "<" } lt) return lt with { Op = ">=" };
                     if (operand is BinaryExpr { Op: ">=" } ge) return ge with { Op = "<" };
                     if (operand is BinaryExpr { Op: ">" } gt) return gt with { Op = "<=" };
@@ -1286,7 +1288,7 @@ public sealed class Structurer
         /// Whether an expression reads as a Bool: a comparison, `and` / `or` / `not`, a literal, or a name that says so.
         private bool IsBoolish(Expr e) => e switch
         {
-            BinaryExpr { Op: "==" or "!=" or "<" or "<=" or ">" or ">=" or "and" or "or" } => true,
+            BinaryExpr { Op: "==" or "!=" or "===" or "!==" or "<" or "<=" or ">" or ">=" or "and" or "or" } => true,
             UnaryExpr { Op: "not" } => true,
             BoolLit => true,
             ValueRef v => boolNames.Contains(v.Name) || BoolName(v.Name),

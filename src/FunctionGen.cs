@@ -2339,6 +2339,14 @@ public sealed class FunctionGen
                 if (b.Op == "/" && TryInfer(b.Left is IntLit or FloatLit ? b.Right : b.Left) is IntType)
                     throw Err(b.Pos, "'/' is true division: integers divide with '//' (the Euclidean quotient, whose remainder is never negative), or '.div_trunc()' for the quotient toward zero");
 
+                // A pointer has no value comparison of its own: `==` on one would hide a load.
+                if (b.Op is "==" or "!=" && TryInfer(b.Left) is PtrType)
+                    throw Err(b.Pos, $"'{b.Op}' compares values, and the left side is an address: compare the addresses with '{(b.Op == "==" ? "===" : "!==")}', or what they point at with a.peek() {b.Op} b.peek()");
+
+                // `===` / `!==` compare addresses: values compare with `==` / `!=`.
+                if (b.Op is "===" or "!==" && TryInfer(b.Left) is { } sameType and not PtrType)
+                    throw Err(b.Pos, $"'{b.Op}' compares two addresses (@T or Addr), and the left side is {sameType.Name}: values compare with '{b.Op[..2]}'");
+
                 if (b.Left is IntLit or FloatLit && Infer(b.Right) is { } rightType)
                     return new NsCallExpr(new TypeRef("$operand", [], b.Pos) { Known = rightType }, name, [], [b.Left, b.Right], b.Pos) { FromOperator = true };
                 return new MethodCallExpr(b.Left, name, [], [b.Right], b.Pos) { FromOperator = true };
