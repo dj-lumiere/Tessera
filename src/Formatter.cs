@@ -1032,7 +1032,9 @@ public static class Formatter
         {
             if (!result[i].StartsWith("routine ")) continue;
             string? owner = Owner(result[i]);
-            if (owner is null || owner == "Me") continue;
+            // A routine on None keeps its `-> None`: that is the routine returning nothing, which a routine has to
+            // spell as None, not Me.
+            if (owner is null || owner == "Me" || owner == "None") continue;
             int end = i + 1;
             while (end < result.Count && (result[end].Length == 0 || result[end].StartsWith(' ') || result[end].StartsWith("needs ")))
                 end++;

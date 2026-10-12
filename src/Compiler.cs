@@ -624,7 +624,8 @@ public sealed partial class Compiler
     private string ResetThreadLocals()
     {
         var f = new StringBuilder();
-        f.AppendLine("define internal void @tessera.reset_thread_locals() {");
+        // Nothing unwinds through it: without nounwind a 32-bit ARM object would ask for an unwinding personality.
+        f.AppendLine($"define internal void @tessera.reset_thread_locals() nounwind{UnwindTable} {{");
         for (int i = 0; i < _threadLocals.Count; i++)
         {
             var (name, llvm, init) = _threadLocals[i];

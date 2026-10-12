@@ -89,7 +89,9 @@ private routine StartupInfo.construct(cb: U32, reserved: Addr, desktop: Addr, ti
     y: U32, x_size: U32, y_size: U32, x_count_chars: U32, y_count_chars: U32, fill_attribute: U32,
     flags: U32, show_window: U16, cb_reserved2: U16, reserved2: Addr, std_input: Addr,
     std_output: Addr, std_error: Addr) -> Me
-    return Me(cb, reserved, desktop, title, x, y, x_size, y_size, x_count_chars, y_count_chars, fill_attribute, flags, show_window, cb_reserved2, reserved2, std_input, std_output, std_error)
+    return Me(cb, reserved, desktop, title, x, y, x_size, y_size, x_count_chars, y_count_chars,
+        fill_attribute, flags, show_window, cb_reserved2, reserved2, std_input, std_output,
+        std_error)
 
 ### Releases nothing: a `StartupInfo` holds no memory of its own.
 @target(os: "windows")
@@ -545,7 +547,8 @@ private routine env_entry_utf16(v: EnvVar, alloc: @MemoryManager) -> @U16
         is USize as n =>
             # '='
             units.stride(n).poke(61)
-            value_units: Maybe[USize] = encode_utf16(text: v.value, out: units.stride(n + 1), capacity: room - n - 1)
+            value_units: Maybe[USize] = encode_utf16(text: v.value, out: units.stride(n + 1),
+                capacity: room - n - 1)
             if value_units.is_present()
                 return units
         is None => pass
@@ -757,20 +760,21 @@ private routine Handles.destruct(me: @Me) -> None
 ### :returns: The {Handles} with every handle null.
 @target(os: "windows")
 private routine Handles.empty() -> Me
-    return Me(out_r: null, out_w: null, err_r: null, err_w: null, input: null, output: null, error: null, device: null)
+    return Me(out_r: null, out_w: null, err_r: null, err_w: null, input: null, output: null,
+        error: null, device: null)
 
-### Reads the pipe to its end into the reader's buffer, from the malloc heap.
+### Reads the pipe to its end into the reader's buffer, from the malloc heap. The buffer grows from DEFAULT_HEAP, which
+### lives as long as the program: the buffer keeps its manager's address and is given back after this routine returns.
 ### :param r: The pipe and the buffer.
 @target(os: "windows")
 @reshaping(r)
 private routine read_pipe(r: @PipeReader) -> None
-    local heap: @MemoryManager <- make_heap_memory()
     local n: @U32 <- 0
     local chunk_buffer: @Array[Byte, 4096] <- .hollow()
     local chunk: @Byte = chunk_buffer.to[@Byte]()
 
     while c_read_file(r.pipe.peek(), chunk, 4096, n, null) != 0 and n.peek() > 0
-        r.buffer.append(chunk, n: n.peek().to[USize](), alloc: heap)
+        r.buffer.append(chunk, n: n.peek().to[USize](), alloc: DEFAULT_HEAP)
     then
         return
 
@@ -838,8 +842,10 @@ private routine Handles.make(me: @Me, options: ProcessOptions, sa: @SecurityAttr
 
     # STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
     me.input.poke(input_handle(mode: options.stdin, device: me.device.peek()))
-    me.output.poke(output_handle(mode: options.stdout, pipe: me.out_w.peek(), device: me.device.peek(), which: 0xFFFFFFF5))
-    me.error.poke(output_handle(mode: options.stderr, pipe: me.err_w.peek(), device: me.device.peek(), which: 0xFFFFFFF4))
+    me.output.poke(output_handle(mode: options.stdout, pipe: me.out_w.peek(),
+        device: me.device.peek(), which: 0xFFFFFFF5))
+    me.error.poke(output_handle(mode: options.stderr, pipe: me.err_w.peek(),
+        device: me.device.peek(), which: 0xFFFFFFF4))
     return true
 
 ### The child's standard input: the null device, or a duplicate of this process's.
@@ -881,7 +887,8 @@ private routine output_handle(mode: OutputMode, pipe: Addr, device: Addr, which:
 routine run_process_result(program: Span[Byte], args: Span[Span[Byte]], options: ProcessOptions,
     alloc: @MemoryManager) -> Result[ProcessOutput, ProcessError]
     local h: @Handles <- Handles.empty()
-    local pi: @ProcessInformation <- ProcessInformation(process: null, thread: null, process_id: 0, thread_id: 0)
+    local pi: @ProcessInformation <- ProcessInformation(process: null, thread: null, process_id: 0,
+        thread_id: 0)
     local directory: @Array[U16, PATH_CAPACITY] <- .hollow()
 
     # Until the handles are made, a failure has only the command line (once there is one) to free.
@@ -908,7 +915,8 @@ routine run_process_result(program: Span[Byte], args: Span[Span[Byte]], options:
                 return ProcessError.OUT_OF_MEMORY
             becomes block_units
 
-    local sa: @SecurityAttributes <- SecurityAttributes(length: sizeof[SecurityAttributes]().to[U32](), descriptor: null, inherit_handle: 1)
+    local sa: @SecurityAttributes <- SecurityAttributes(
+        length: sizeof[SecurityAttributes]().to[U32](), descriptor: null, inherit_handle: 1)
     result: Result[ProcessOutput, ProcessError] = when
         not h.make(options, sa) =>
             # The handles were partly made: the child's side of what there is closes here, the parent's side below.
@@ -917,9 +925,14 @@ routine run_process_result(program: Span[Byte], args: Span[Span[Byte]], options:
             becomes spawn_error(e)
         else =>
             # STARTF_USESTDHANDLES
-            local si: @StartupInfo <- StartupInfo(cb: sizeof[StartupInfo]().to[U32](), reserved: null, desktop: null, title: null, x: 0, y: 0, x_size: 0, y_size: 0, x_count_chars: 0, y_count_chars: 0, fill_attribute: 0, flags: 0x100, show_window: 0, cb_reserved2: 0, reserved2: null, std_input: h.input.peek(), std_output: h.output.peek(), std_error: h.error.peek())
+            local si: @StartupInfo <- StartupInfo(cb: sizeof[StartupInfo]().to[U32](),
+                reserved: null, desktop: null, title: null, x: 0, y: 0, x_size: 0, y_size: 0,
+                x_count_chars: 0, y_count_chars: 0, fill_attribute: 0, flags: 0x100, show_window: 0,
+                cb_reserved2: 0, reserved2: null, std_input: h.input.peek(),
+                std_output: h.output.peek(), std_error: h.error.peek())
             # CREATE_UNICODE_ENVIRONMENT
-            made: Bool = c_create_process(null, line, null, null, 1, 0x400, env, directory_units, si, pi) != 0
+            made: Bool = c_create_process(null, line, null, null, 1, 0x400, env, directory_units,
+                si, pi) != 0
             e: U32 = c_get_last_error()
             h.close_child_side()
             becomes when
@@ -954,7 +967,8 @@ private routine collect_output(h: @Handles, pi: @ProcessInformation,
     c_get_exit_code_process(pi.process.peek(), code)
     errors: CaptureBuffer = moved(b: err.buffer.peek(), alloc)
     status: ExitStatus = Exited(code: code.peek().to_wrap[S32]())
-    output: ProcessOutput = ProcessOutput(status: status, stdout: out.owned(), stderr: errors.owned())
+    output: ProcessOutput = ProcessOutput(status: status, stdout: out.owned(),
+        stderr: errors.owned())
     if out.failed.peek() | errors.failed
         # A capture couldn't grow and lost bytes: what was captured goes back, and the run fails.
         local held: @ProcessOutput <- output
@@ -1047,8 +1061,8 @@ private routine moved(b: CaptureBuffer, alloc: @MemoryManager) -> CaptureBuffer
 @expensive("allocates a copy of the variable")
 routine env_var(name: Span[Byte], alloc: @MemoryManager) -> Maybe[Memory[Byte]]
     local units: @@U16 <- null
-
     local key: @Array[U16, 256] <- .hollow()
+
     n: Maybe[USize] = encode_utf16(text: name, out: key.to[@U16](), capacity: 256)
     value: Maybe[Memory[Byte]] = when
         not n.is_present() => None()
@@ -1070,7 +1084,8 @@ routine env_var(name: Span[Byte], alloc: @MemoryManager) -> Maybe[Memory[Byte]]
                     if got == 0 or got >= need
                         becomes None()
                     else
-                        text: Result[Memory[Byte], FsError] = owned_wide(units: made, count: got.to[USize](), alloc)
+                        text: Result[Memory[Byte], FsError] = owned_wide(units: made,
+                            count: got.to[USize](), alloc)
                         when text
                             is Memory[Byte] as t =>
                                 becomes t

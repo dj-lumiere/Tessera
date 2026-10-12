@@ -18,6 +18,21 @@ public class FormatterTests
     }
 
     [Fact]
+    public void ARoutineOnNoneKeepsReturningNone()
+    {
+        const string source = "routine None.show(me: Me) -> None\n    return\n";
+        Assert.Equal(source, Formatter.Format(source));
+    }
+
+    [Fact]
+    public void ARoutineOnItsOwnerWritesMe()
+    {
+        const string source = "routine U64.twice(me: U64) -> U64\n    return me + me\n";
+        const string expected = "routine U64.twice(me: Me) -> Me\n    return me + me\n";
+        Assert.Equal(expected, Formatter.Format(source));
+    }
+
+    [Fact]
     public void LambdaParameterParenthesesStay()
     {
         const string source = "routine f() -> None\n    double: Callable[(S64,), S64] = (x) => x * 2\n    return\n";
