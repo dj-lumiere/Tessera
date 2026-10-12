@@ -10,7 +10,7 @@ import Standard/Os
 ### The size of a file, or U64.MAX when it can't be read.
 ### :param f: The file.
 ### :returns: Its size in bytes.
-routine size_of(f: File) -> U64
+routine size_of(f: @File) -> U64
     m: Result[Metadata, FsError] = f.metadata_result()
     when m
         is Metadata as info => return info.size
@@ -20,16 +20,14 @@ routine size_of(f: File) -> U64
 ### :param root: The test's directory.
 ### :param count: The file's size.
 ### :param alloc: The allocator for the paths and the text.
-routine copy_of(root: Directory, count: USize, alloc: @MemoryManager) -> None
+routine copy_of(root: @Directory, count: USize, alloc: @MemoryManager) -> None
     local text: @List[Byte] <- .construct(alloc)
 
     each i in 0 til count
         letter: U8 = (i % 26).to[U8]() + 97
         text.add_last(letter.bits())
-    local source_path: @Memory[Byte] <- root.join(name: "source.txt", alloc)
-    local target_path: @Memory[Byte] <- root.join(name: "target.txt", alloc)
-    source: File = File.at(source_path.getview())
-    target: File = File.at(target_path.getview())
+    local source: @File <- root.file(name: "source.txt", alloc)
+    local target: @File <- root.file(name: "target.txt", alloc)
     discard_written: Result[None, FsError] = source.write_all_result(text.getview())
     r: Result[U64, FsError] = source.copy_to_result(target)
     when r
@@ -37,34 +35,29 @@ routine copy_of(root: Directory, count: USize, alloc: @MemoryManager) -> None
             same: Bool = size_of(target) == n
             Out.write("{count} bytes: copied {n}, the copy has as many {same}\n")
         is FsError => Out.write("{count} bytes: failed\n")
-    drop target_path
-    drop source_path
+    drop target
+    drop source
     drop text
     return
 
 routine start() -> None
     local alloc: @MemoryManager <- make_heap_memory()
-    local tmp_path: @Memory[Byte] <- Directory.temp_result(alloc).unwrap()
-    local root_path: @Memory[Byte] <- Directory.at(tmp_path.getview()).join(name: "tessera_fs_copy",
-        alloc)
-
-    root: Directory = Directory.at(root_path.getview())
+    local tmp: @Directory <- Directory.temp_result(alloc).unwrap()
+    local root: @Directory <- tmp.subdir(name: "tessera_fs_copy", alloc)
 
     discard_old: Result[None, FsError] = root.delete_all_result(alloc)
     discard_made: Result[None, FsError] = root.create_all_result()
     copy_of(root, count: 0, alloc)
     copy_of(root, count: 5, alloc)
     copy_of(root, count: 100000, alloc)
-    local inner_path: @Memory[Byte] <- root.join(name: "inner", alloc)
-    local target_path: @Memory[Byte] <- root.join(name: "from_directory.txt", alloc)
-    inner: Directory = Directory.at(inner_path.getview())
-    target: File = File.at(target_path.getview())
+    local inner: @Directory <- root.subdir(name: "inner", alloc)
+    local target: @File <- root.file(name: "from_directory.txt", alloc)
     discard_inner: Result[None, FsError] = inner.create_result()
-    r: Result[U64, FsError] = File.at(inner.path).copy_to_result(target)
+    r: Result[U64, FsError] = File.at(inner.path.peek()).copy_to_result(target)
     Out.write("copying a directory fails: {r.is_failure()}, leaves a file behind: {target.is_present()}\n")
     discard_gone: Result[None, FsError] = root.delete_all_result(alloc)
-    drop target_path
-    drop inner_path
-    drop root_path
-    drop tmp_path
+    drop target
+    drop inner
+    drop root
+    drop tmp
     return

@@ -33,20 +33,20 @@ routine report(what: Span[Byte], r: Result[None, FsError]) -> None
             return
 
 ### The file's text, or the error's name.
-routine contents(f: File, alloc: @MemoryManager) -> Memory[Byte]
+routine contents(f: @File, alloc: @MemoryManager) -> Memory[Byte]
     when f.read_all_result(alloc)
         is Memory[Byte] as text => return text
         is FsError as error => return Span[Byte].concat(a: error_name(error), b: "", alloc)
 
 ### Writes the file's text, or the error's name, after `what`.
-routine show_contents(what: Span[Byte], f: File, alloc: @MemoryManager) -> None
+routine show_contents(what: Span[Byte], f: @File, alloc: @MemoryManager) -> None
     local text: @Memory[Byte] <- contents(f, alloc)
 
     Out.write("{what}{text}")
     drop text
     return
 
-routine size_of(f: File) -> U64
+routine size_of(f: @File) -> U64
     m: Result[Metadata, FsError] = f.metadata_result()
     when m
         is Metadata as info => return info.size
@@ -54,27 +54,21 @@ routine size_of(f: File) -> U64
 
 routine start() -> None
     local alloc: @MemoryManager <- make_heap_memory()
-    local tmp_path: @Memory[Byte] <- Directory.temp_result(alloc).unwrap()
-
-    tmp: Directory = Directory.at(tmp_path.getview())
-    local root_path: @Memory[Byte] <- tmp.join(name: "tessera_fs_basic", alloc)
-    root: Directory = Directory.at(root_path.getview())
+    local tmp: @Directory <- Directory.temp_result(alloc).unwrap()
+    local root: @Directory <- tmp.subdir(name: "tessera_fs_basic", alloc)
     local iter: @DirIter <- .hollow()
     local count: @U64 <- .hollow()
     local dirs: @U64 <- .hollow()
     local korean: @Bool <- .hollow()
 
     root.delete_all_result(alloc)
-    local deep_path: @Memory[Byte] <- root.join(name: "a/b/c", alloc)
-    deep: Directory = Directory.at(deep_path.getview())
+    local deep: @Directory <- root.subdir(name: "a/b/c", alloc)
     report(what: "create_all", r: deep.create_all_result())
     report(what: "create_all again", r: deep.create_all_result())
-    as_file: Bool = File.at(deep.path).is_file()
+    as_file: Bool = File.at(deep.path.peek()).is_file()
     Out.write("directory exists: {deep.is_present()}, is a file: {as_file}\n")
-    local a_path: @Memory[Byte] <- root.join(name: "a", alloc)
-    a: Directory = Directory.at(a_path.getview())
-    local hello_path: @Memory[Byte] <- a.join(name: "hello.txt", alloc)
-    hello: File = File.at(hello_path.getview())
+    local a: @Directory <- root.subdir(name: "a", alloc)
+    local hello: @File <- a.file(name: "hello.txt", alloc)
     report(what: "write_all", r: hello.write_all_result("hello, 세계\n"))
     show_contents(what: "read_all: ", f: hello, alloc)
     Out.write("size: {size_of(hello)}\n")
@@ -94,10 +88,8 @@ routine start() -> None
     size: U64 = both.size_result().unwrap()
     Out.write("size: {size}\n")
     both.close()
-    local copied_path: @Memory[Byte] <- a.join(name: "copy.txt", alloc)
-    copied: File = File.at(copied_path.getview())
-    local renamed_path: @Memory[Byte] <- a.join(name: "renamed.txt", alloc)
-    renamed: File = File.at(renamed_path.getview())
+    local copied: @File <- a.file(name: "copy.txt", alloc)
+    local renamed: @File <- a.file(name: "renamed.txt", alloc)
     bytes: U64 = hello.copy_to_result(copied).unwrap()
     Out.write("copy_to: {bytes} bytes, ")
     show_contents(what: "", f: copied, alloc)
@@ -107,8 +99,7 @@ routine start() -> None
     report(what: "move_to_if_absent onto a file", r: renamed.move_to_if_absent_result(hello))
     new_file: Result[FileHandle, FsError] = hello.create_new_result()
     Out.write("create_new on a file: {error_name(new_file.unwrap_failure())}\n")
-    local missing_path: @Memory[Byte] <- a.join(name: "missing.txt", alloc)
-    missing: Result[FileHandle, FsError] = File.at(missing_path.getview()).open_read_result()
+    missing: Result[FileHandle, FsError] = a.file(name: "missing.txt", alloc).open_read_result()
     Out.write("open missing: {error_name(missing.unwrap_failure())}\n")
     report(what: "set_readonly", r: renamed.set_readonly_result(true))
     ro: Bool = renamed.metadata_result().unwrap().readonly
@@ -116,8 +107,7 @@ routine start() -> None
     report(what: "set_readonly off", r: renamed.set_readonly_result(false))
     rw: Bool = renamed.metadata_result().unwrap().readonly
     Out.write("readonly: {rw}\n")
-    local touched_path: @Memory[Byte] <- a.join(name: "파일.txt", alloc)
-    touched: File = File.at(touched_path.getview())
+    local touched: @File <- a.file(name: "파일.txt", alloc)
     report(what: "touch", r: touched.touch_result())
     Out.write("touched: {touched.is_file()}, size {size_of(touched)}\n")
     report(what: "open listing", r: iter.open_result(a))
@@ -138,8 +128,10 @@ routine start() -> None
             is None => break
     iter.close()
     Out.write("entries: {count.peek()}, directories: {dirs.peek()}, Korean name listed: {korean.peek()}\n")
-    f: File = File.at("/a/b/archive.tar.gz")
-    Out.write("name {f.name()}, stem {f.stem()}, extension {f.extension()}, parent {f.parent().path}\n")
+    local f: @File <- File.at("/a/b/archive.tar.gz")
+    local parent: @Directory <- f.parent()
+
+    Out.write("name {f.name()}, stem {f.stem()}, extension {f.extension()}, parent {parent.path.peek()}\n")
     p1: Span[Byte] = parent_path("a/b")
     p2: Span[Byte] = parent_path("file.txt")
     p3: Span[Byte] = parent_path("/")
@@ -150,12 +142,12 @@ routine start() -> None
     s1: Span[Byte] = file_stem(".hidden")
     Out.write("hidden: stem [{s1}], extension [{e1}]; no extension: [{e2}]\n")
     report(what: "set_current", r: root.set_current_result())
-    local cwd: @Memory[Byte] <- Directory.current_result(alloc).unwrap()
-    local canonical: @Memory[Byte] <- root.canonical_result(alloc).unwrap()
-    local absolute: @Memory[Byte] <- File.at("x.txt").absolute_result(alloc).unwrap()
-    cwd_ok: Bool = Directory.at(cwd.getview()).name() == "tessera_fs_basic"
-    canonical_ok: Bool = Directory.at(canonical.getview()).name() == "tessera_fs_basic"
-    absolute_ok: Bool = File.at(absolute.getview()).name() == "x.txt"
+    local cwd: @Directory <- Directory.current_result(alloc).unwrap()
+    local canonical: @Directory <- root.canonical_result(alloc).unwrap()
+    local absolute: @File <- File.at("x.txt").absolute_result(alloc).unwrap()
+    cwd_ok: Bool = cwd.name() == "tessera_fs_basic"
+    canonical_ok: Bool = canonical.name() == "tessera_fs_basic"
+    absolute_ok: Bool = absolute.name() == "x.txt"
     Out.write("names right: current {cwd_ok}, canonical {canonical_ok}, absolute {absolute_ok}\n")
     report(what: "set_current back", r: tmp.set_current_result())
     whole: Mapping = hello.map_result(write: false, offset: 0, count: USize.MAX).unwrap()
@@ -178,13 +170,14 @@ routine start() -> None
     drop cwd
     drop canonical
     drop absolute
-    drop touched_path
-    drop missing_path
-    drop renamed_path
-    drop copied_path
-    drop hello_path
-    drop a_path
-    drop deep_path
-    drop root_path
-    drop tmp_path
+    drop parent
+    drop f
+    drop touched
+    drop renamed
+    drop copied
+    drop hello
+    drop a
+    drop deep
+    drop root
+    drop tmp
     return

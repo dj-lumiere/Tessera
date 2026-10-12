@@ -687,8 +687,12 @@ routine start() -> None
   from still owns it.
 - In the standard library, these are entities: `Memory[T]`, `Box[T]`, every collection (`List`, `Set`, `Dict`, the
   sorted ones, `CircularList`, `PriorityQueue`), `Channel[T]` / `SharedChannel[T]`, `FiberPool`, `FiberManager`,
-  `OwnedCStr` / `OwnedCWStr`, and `ProcessOutput`. A `MemoryManager`, a `Span`, a `@T`, an iterator, a `File` and a
-  `Directory` (which borrow their path) stay records.
+  `OwnedCStr` / `OwnedCWStr`, `ProcessOutput`, and `File` / `Directory` (each holds the memory of a path it made). A
+  `MemoryManager`, a `Span`, a `@T`, and an iterator stay records.
+- An entity value a routine taking `me: @Me` is called on, or that goes where an `@E` is taken, needs no slot of its
+  own: `File.at(p).is_file()`, `src.copy_to_result(File.at(dst))`. The builder puts it in an unnamed slot that ends when
+  the statement does (a condition's and a `when` subject's as soon as they are read, when what they give borrows
+  nothing from it; a returned value's before the return).
 - A variant may have an entity branch: `Result[File, FsError]`, `Maybe[Counter]`. Such a variant value holds an entity,
   so it follows the same rules: it lives in a slot (`local r: @Result[Counter, E] <- open()`, a value binding is a build
   error), a parameter of that type is a slot, and it moves with `steal` or `return r`. A `when` observes it as a call's
@@ -1012,19 +1016,19 @@ routine on them is one thing done there now, returning `Result[T, FsError]`, so 
 `close` does nothing); `read_all_result(alloc)` / `write_all_result(data)`, `is_present`,
 `metadata_result` (`kind`, `size`, times in ns), `copy_to_result`, `move_to_result`, `move_to_if_absent_result`,
 `delete_result`, `touch_result`, `map_result(write, offset, count)`, `name` / `stem` / `extension` / `parent`. A
-Directory: `create_result` / `create_all_result`, `delete_result` / `delete_all_result(alloc)`, `join(name, alloc)`
-(the entry's path), `Directory.current_result` / `temp_result` / `home_result`, and a `DirIter` (a local slot,
+Directory: `create_result` / `create_all_result`, `delete_result` / `delete_all_result(alloc)`, `file(name, alloc)` /
+`subdir(name, alloc)`, `Directory.current_result` / `temp_result` / `home_result`, and a `DirIter` (a local slot,
 `open_result(dir)`, `emit_checked()` until `None`, `close()`). Path text needs no OS: `join_path`, `parent_path`,
 `file_name`, `file_stem`, `file_extension`. A routine that hands text back takes an allocator and returns a `Memory[Byte]`
-from it (`read_all_result`, `join_path`, `env_var`): give it back with `drop`. A `File` and a `Directory` only
-borrow their path, so one that makes a path (`join`, `absolute_result`, `canonical_result`,
-`Directory.current_result` / `temp_result` / `home_result`) returns the path's `Memory[Byte]`, and the caller keeps
-it in a slot, names it with `File.at(p.getview())`, and drops it:
+from it (`read_all_result`, `join_path`, `env_var`): give it back with `drop`. A `File` and a `Directory` are
+entities: one that makes a path (`file`, `subdir`, `absolute_result`, `canonical_result`, `Directory.current_result` /
+`temp_result` / `home_result`) returns a `File` / `Directory` whose path is held in a `Memory[Byte]`, kept in a slot
+and given back with `drop file` / `drop dir` (which gives nothing back for a borrowed path, such as a literal's):
 
 ```tessera
-local p: @Memory[Byte] <- dir.join(name: "notes.txt", alloc)
-File.at(p.getview()).touch_result()
-drop p
+local notes: @File <- dir.file(name: "notes.txt", alloc)
+notes.touch_result()
+drop notes
 ```
 
 **Processes.** `run_process_result(program, args, options, alloc)` (looked up on PATH, `args` a `Span[Span[Byte]]`) and

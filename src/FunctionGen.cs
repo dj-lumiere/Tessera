@@ -1153,9 +1153,28 @@ public sealed class FunctionGen
 
     private void EmitStmt(Stmt s)
     {
-        try { EmitStmtCore(s); }
+        int mark = _statementTemps.Count;
+        int outerMark = _statementMark;
+        _statementMark = mark;
+        try
+        {
+            // A returned value read through a temporary slot is bound first, so the slot ends before the return.
+            if (s is ReturnStmt { Value: { } returned } r && !Entities.Holds(_inst.Ret) && _inst.Ret is not VoidType
+                && MakesTemp(returned))
+            {
+                string name = $"$returned{_tmp++}";
+                EmitStmt(new BindStmt(name, new TypeRef("$returned", [], r.Pos) { Known = _inst.Ret }, returned, r.Pos) { Source = s.Source });
+                EmitStmtCore(r with { Value = new ValueRef(name, r.Pos) });
+            }
+            else EmitStmtCore(s);
+            FlushTemps(mark);
+        }
         catch (CompileError e) when (s.Source is { } source && !e.FromSource) { throw FromSource(e, source); }
+        finally { _statementMark = outerMark; }
     }
+
+    /// Where the temporary slots of the statement being emitted start in _statementTemps.
+    private int _statementMark;
 
     private void EmitStmtCore(Stmt s)
     {
@@ -1206,6 +1225,8 @@ public sealed class FunctionGen
                 if (b.Value is ClaimExpr { Contents: { } contents } && t is PtrType)
                 {
                     // The store is the builder's, so a mismatch is said as a binding's, not as an argument's.
+                    // A claim filled while another is (a temporary slot inside the contents) puts the outer one back.
+                    var outerClaim = _claimContents;
                     _claimContents = contents;
                     try
                     {
@@ -1213,7 +1234,7 @@ public sealed class FunctionGen
                     }
                     finally
                     {
-                        _claimContents = null;
+                        _claimContents = outerClaim;
                     }
                 }
                 break;
@@ -1338,6 +1359,8 @@ public sealed class FunctionGen
                 var frame = _valueWhens.Peek();
                 var v = Eval(bc.Value, frame.Type);
                 MemTakeAlong(bc.Value, "the when's value");
+                // The arm ends here: the temporary slots its value was read through end before it leaves.
+                FlushTemps(_statementMark);
                 frame.Incoming.Add((_cur.Label, v.Op));
                 MemEdge(frame.JoinRegion, frame.OuterNames, pos: bc.Pos);
                 Terminate($"br label %{frame.Join.Label}");
@@ -1644,6 +1667,7 @@ public sealed class FunctionGen
             case AtExpr: return null;
             case LambdaExpr: return null;
             case BoolLit: return BoolType.Instance;
+            case TempSlotExpr slot: return Infer(slot.Value) is { } slotted ? new PtrType(slotted) : null;
             case TypedIntLit t: return t.Type;
             case ValueRef r: return Lookup(r).Type;
             case StealExpr steal:
@@ -1772,6 +1796,7 @@ public sealed class FunctionGen
             StrLit s => StringLiteral(s, expected),
             ValueRef r => MemUseView(r),
             ClaimExpr c => EvalClaim(c, expected),
+            TempSlotExpr slot => EvalTempSlot(slot),
             FieldExpr or IndexExpr when IsPlaceChain(e) => PlacePlain(e),
             FieldExpr f => ExtractField(f),
             IfExpr s => EvalIf(s, expected),
@@ -1821,8 +1846,15 @@ public sealed class FunctionGen
     /// A place argument is its address, as everywhere else: memory is never read implicitly (see Memory-Model, The Rule).
     /// When the parameter wants what is stored there, the error says to peek it. `argument` is the argument's position
     /// (1 for the first), or 0 for a receiver or the contents of a claim.
+    /// Whether an entity value `actual` goes where a pointer to it (`expected`, `@E`) is taken: it is put in a slot of
+    /// its own for the statement (TempSlotExpr), `src.copy_to_result(File.at(dst))`.
+    private static bool SlotsTemp(DType actual, DType expected) =>
+        actual is not PtrType && expected is PtrType { Pointee: { } pointee } && pointee.Equals(actual) && Entities.Holds(actual);
+
     private Val EvalArg(Expr e, DType expected, int argument)
     {
+        if (e is not TempSlotExpr && InferQuiet(e) is { } given && SlotsTemp(given, expected))
+            return Eval(new TempSlotExpr(e, e.Pos), expected, argument);
         if (AsStride(e) is FieldExpr or IndexExpr && IsPlaceChain(e) && PlaceType(e) is { } t && Compatible(t, expected)
             && !(expected is PtrType { Pointee: { } pe } && pe.Equals(t)))
             throw Err(e.Pos, argument > 0
@@ -1904,6 +1936,72 @@ public sealed class FunctionGen
             return new Val(EmitTmp($"insertvalue {st.Llvm} {a}, {_c.USize.Llvm} {Compiler.Utf8Length(s.Value)}, 1"), st);
         }
         throw Mismatch(s.Pos, expected, "a string literal");
+    }
+
+    /// The slots of entity values a routine was called on in the statement being emitted, ended when it is done.
+    private readonly List<(string Name, Pos Pos)> _statementTemps = [];
+
+    /// An entity value in a slot of its own for a routine taking `me: @Me`: bound like `local t: @E <- value`, ended
+    /// by FlushTemps when the statement is done.
+    private Val EvalTempSlot(TempSlotExpr slot)
+    {
+        var held = Infer(slot.Value) ?? throw Err(slot.Pos, "this value's type isn't known here: bind it in a slot first");
+        string name = $"$temp{_tmp++}";
+        var line = _lineSource;
+        EmitStmtCore(new BindStmt(name, new TypeRef("$temp", [], slot.Pos) { Known = new PtrType(held) },
+            new ClaimExpr(slot.Pos) { Contents = slot.Value }, slot.Pos));
+        _lineSource = line;
+        _statementTemps.Add((name, slot.Pos));
+        return _values[name];
+    }
+
+    /// Ends the statement's temporary slots made since `from`, the last made first.
+    private void FlushTemps(int from)
+    {
+        while (_statementTemps.Count > from)
+        {
+            var (name, pos) = _statementTemps[^1];
+            _statementTemps.RemoveAt(_statementTemps.Count - 1);
+            if (!_cur.Terminated) EmitStmtCore(new DropStmt(new ValueRef(name, pos), pos));
+        }
+    }
+
+    /// Whether a value of `t` may point into memory something else owns: a pointer, a Span, or a record, array, or
+    /// variant holding one. An entity owns what it points at.
+    private bool MayBorrow(DType? t, HashSet<string>? seen) => t switch
+    {
+        PtrType => true,
+        RecordType { Decl.IsEntity: true } => false,
+        _ when t is not null && Compiler.IsCoreSpan(t, out _) => true,
+        RecordType r when (seen ??= []).Add(r.Key) =>
+            r.Decl.Fields.Any(f => MayBorrow(FieldOf(r, f.Name, f.Pos).Type, seen)),
+        ArrayType a => MayBorrow(a.Elem, seen),
+        VariantType vt when (seen ??= []).Add(vt.Key) => vt.Leaves.Any(l => MayBorrow(l, seen)),
+        _ => false,
+    };
+
+    /// Whether evaluating `e` puts an entity value in a temporary slot (a routine taking `me: @Me` is called on it).
+    private bool MakesTemp(Expr e)
+    {
+        switch (e)
+        {
+            case MethodCallExpr m:
+                try
+                {
+                    if (PlanCall(m, null) is { Receiver: TempSlotExpr }) return true;
+                }
+                catch (CompileError) { }
+                return MakesTemp(m.Receiver) || m.Args.Any(MakesTemp);
+            case CallExpr c: return c.Args.Any(MakesTemp);
+            case NsCallExpr n: return n.Args.Any(MakesTemp);
+            case BinaryExpr b: return MakesTemp(b.Left) || MakesTemp(b.Right);
+            case UnaryExpr u: return MakesTemp(u.Operand);
+            case FieldExpr f: return MakesTemp(f.Base);
+            case GetItemExpr g: return MakesTemp(g.Base) || MakesTemp(g.Index);
+            case ArrayLit a: return a.Elements.Any(MakesTemp);
+            case RecordLit r: return r.Fields.Any(f => MakesTemp(f.Value));
+            default: return false;
+        }
     }
 
     private Val EvalClaim(ClaimExpr a, DType expected)
@@ -2220,7 +2318,11 @@ public sealed class FunctionGen
         }
         else
         {
+            int subjectTemps = _statementTemps.Count;
             var v = EvalAny(w.Value);
+            // The subject read through a temporary slot (`when File.at(p).read_all_result(alloc)`): a subject that
+            // borrows nothing from it ends it here, before an arm can leave.
+            if (!MayBorrow(v.Type, null)) FlushTemps(subjectTemps);
             // The slot of a variant that holds an entity is observed by moving the value out of it: the when takes it.
             if (v.Type is PtrType { Pointee: VariantType held } && Entities.Holds(held))
                 throw Err(w.Value.Pos, $"this is the slot of a {held}, which holds an entity: the when takes the value out of "
@@ -3128,7 +3230,7 @@ public sealed class FunctionGen
                 {
                     // A value of a branch type goes into its variant, and memory lends its view: fits an exact
                     // overload beats.
-                    if (Widens(at, pt) || Lends(at, pt)) preferred = false;
+                    if (Widens(at, pt) || Lends(at, pt) || SlotsTemp(at, pt)) preferred = false;
                     else if (!at.Equals(pt)) return No(ArgumentMismatch(i + 1, at.ToString(), pt));
                     continue;
                 }
@@ -3441,6 +3543,11 @@ public sealed class FunctionGen
         // `Memory[Byte]` is `line.getview().trim()`, checked once.
         if (OwnedMemory(rt) is not null && m.Name != "getview")
             return PlanMethod(m with { Receiver = new MethodCallExpr(m.Receiver, "getview", [], [], m.Receiver.Pos) }, expected);
+
+        // An entity value (a call's result) has no place for a routine taking `me: @Me`: it goes into a slot of its
+        // own, which ends with the statement (`File.at(p).is_file()`).
+        if (m.Receiver is not TempSlotExpr && rt is not PtrType && Entities.Holds(rt))
+            return PlanMethod(m with { Receiver = new TempSlotExpr(m.Receiver, m.Receiver.Pos) }, expected);
 
         // Choices are distinct from their underlying integer, but every choice compares: `eq` / `ne` lower to the
         // prelude's `ieq` / `ine`.
@@ -4238,7 +4345,9 @@ public sealed class FunctionGen
     private void EmitIf(IfStmt i)
     {
         var outerNames = _values.Keys.ToHashSet();
+        int temps = _statementTemps.Count;
         var c = Eval(i.Cond, BoolType.Instance);
+        FlushTemps(temps);
         var thenB = NewLBlock("then");
         var elseB = i.Else is null ? null : NewLBlock("else");
         var join = NewLBlock("endif");
@@ -4460,11 +4569,19 @@ public sealed class FunctionGen
         switch (l.Kind)
         {
             case LoopKind.While:
+            {
+                int temps = _statementTemps.Count;
                 cond = Eval(l.Cond!, BoolType.Instance).Op;
+                FlushTemps(temps);
                 break;
+            }
             case LoopKind.Until:
+            {
+                int temps = _statementTemps.Count;
                 cond = EmitTmp($"xor i1 {Eval(l.Cond!, BoolType.Instance).Op}, true");
+                FlushTemps(temps);
                 break;
+            }
             case LoopKind.For when frame.Range is { } r:
             {
                 string index = _values[r.Name].Op;
