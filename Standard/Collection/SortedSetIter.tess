@@ -4,7 +4,7 @@
 # on an inline stack, so a full traversal is O(n) and the iterator allocates
 # nothing.
 #
-# Satisfies concept Iterator[T, SortedSetIter[T]].
+# Satisfies concept SlotIterator[T, SortedSetIter[T]] (and so Iterator).
 
 module Standard/Collections
 
@@ -14,7 +14,7 @@ private preset ITER_DEPTH: USize = 64
 ### `nodes[d]` and `indices[d]` for each level `d < depth`: the node, and in it the next key to yield. Every child
 ### left of that key has been walked already.
 record SortedSetIter[T]
-obeys Iterator[T, SortedSetIter[T]]
+obeys SlotIterator[T, SortedSetIter[T]]
 needs T: typename, Comparable[T]
     nodes: Array[@SortedSetNode[T], ITER_DEPTH]
     indices: Array[USize, ITER_DEPTH]
@@ -55,10 +55,11 @@ needs T: typename
         else
             continue with current: current.children[0]
 
-### Yields the next element in ascending order, climbing to a parent or descending to the next leaf as needed.
-### :returns: The next element, smallest first.
-### :absent: After the largest element has been yielded.
-routine SortedSetIter[T].emit_checked(me: @Me) -> Maybe[T]
+### Hands out the next element's slot in ascending order, climbing to a parent or descending to the next leaf as
+### needed. Changing the element in place can break the order.
+### :returns: The next element's address, smallest first.
+### :absent: After the largest element has been handed out.
+routine SortedSetIter[T].next_checked(me: @Me) -> Maybe[@T]
 needs T: typename
     while true
         depth2: USize = me.depth.peek()
@@ -70,22 +71,39 @@ needs T: typename
             index: USize = me.indices[level]
             count: USize = node.count.peek()
             if index < count
-                key: T = node.keys[index]
+                at: @T = node.keys.getslot(index)
                 leaf: Bool = node.leaf.peek()
                 me.indices[level] = index + 1
-                if leaf
-                    some: Maybe[T] = key
-                    return some
-                else
+                if not leaf
                     right: @SortedSetNode[T] = node.children[index + 1]
                     me.push_leftmost(right)
-                    some: Maybe[T] = key
-                    return some
+                return at
             else
                 me.depth.poke(level)
                 continue
-    none: Maybe[T] = None()
-    return none
+    return None()
+
+### Hands out the next element's slot and advances the iterator, crashing when there is none.
+### :returns: The next element's address, smallest first.
+### :throws: Crashes with `AbsentValueError` after the last element has been handed out.
+@track_caller
+routine SortedSetIter[T].next(me: @Me) -> @T
+needs T: typename
+    slot: Maybe[@T] = me.next_checked()
+    when slot
+        is @T as element => return element
+        is None => crash_absent_value()
+
+### Yields the next element in ascending order.
+### :returns: The next element, smallest first.
+### :absent: After the largest element has been yielded.
+routine SortedSetIter[T].emit_checked(me: @Me) -> Maybe[T]
+needs T: typename
+    when me.next_checked()
+        is @T as at =>
+            value: T = at.peek()
+            return value
+        is None => return None()
 
 ### Yields the next element and advances the iterator, crashing when there is none.
 ### :returns: The next element, smallest first.

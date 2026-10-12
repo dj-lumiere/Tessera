@@ -13,9 +13,9 @@ private preset NODE_KEYS: USize = 7
 private preset NODE_CHILDREN: USize = NODE_KEYS.add(1)
 private preset NODE_MIN_KEYS: USize = NODE_KEYS.add(1).div_trunc(2)
 
-### One node of a {SortedSet[T]} B-tree: up to `NODE_KEYS` keys inline, and for internal nodes the child pointers between them. `subtree_count` is the total keys in the subtree.
+### One node of a {SortedSet[T]} B-tree: up to `NODE_KEYS` keys inline, and for internal nodes the child pointers between them. `subtree_count` is the total keys in the subtree. It is an entity, so an entity element can live in it: the set makes and frees nodes, and its keys move in and out with steal.
 ### :typeparam T: The element type.
-record SortedSetNode[T]
+entity SortedSetNode[T]
 needs T: typename, Comparable[T]
     leaf: Bool
     count: USize
@@ -35,7 +35,7 @@ needs T: typename, Comparable[T]
     count: USize
     alloc: @MemoryManager
 
-### Releases nothing: a `SortedSetNode` holds no memory of its own.
+### Releases nothing: the set ends a node's keys and frees the node itself (`free_recursive`).
 routine SortedSetNode[T].destruct(me: @Me) -> None
 needs T: typename
     return
@@ -112,14 +112,13 @@ needs T: typename
         me.subtree_count.poke(sum.peek())
         return
 
-### Finds where `key` sits among this node's keys.
+### Finds where the key at `key` sits among this node's keys, compared through their places.
 ### :param key: The key to locate.
 ### :returns: The index of the first key not less than `key`, or the key count when every key is smaller. It is also the child to descend into.
-routine SortedSetNode[T].find_index(me: @Me, key: T) -> USize
+routine SortedSetNode[T].find_index(me: @Me, key: @T) -> USize
 needs T: typename
     while i < me.count.peek() with i: USize = 0
-        node_key: T = me.keys[i]
-        cmp: S32 = key.compare(node_key)
+        cmp: S32 = key.compare(me.keys.getslot(i))
         if cmp <= 0
             return i
         else
@@ -154,22 +153,21 @@ needs T: typename
 
     # both have the same count, so both run out together
     while true
-        x: Maybe[T] = a.emit_checked()
-        y: Maybe[T] = b.emit_checked()
+        x: Maybe[@T] = a.next_checked()
+        y: Maybe[@T] = b.next_checked()
         when x
-            is T as x_item =>
-                y2: T = y.unwrap()
-                cmp: S32 = x_item.compare(y2)
+            is @T as x_item =>
+                cmp: S32 = x_item.compare(y.unwrap())
                 if cmp == 0
                     continue
                 else
                     return false
             is None => return true
 
-### Whether an element equal to `key` is in the set.
+### Whether an element equal to the one at `key` is in the set, read through its place.
 ### :param key: The element to look for.
 ### :returns: `true` when an equal element is present.
-routine SortedSet[T].has(me: @Me, key: T) -> Bool
+routine SortedSet[T].has(me: @Me, key: @T) -> Bool
 needs T: typename
     root: @SortedSetNode[T] = me.root.peek()
     if root.is_null()
@@ -179,8 +177,7 @@ needs T: typename
             i: USize = node.find_index(key)
             count: USize = node.count.peek()
             if i < count
-                node_key: T = node.keys[i]
-                cmp: S32 = key.compare(node_key)
+                cmp: S32 = key.compare(node.keys.getslot(i))
                 if cmp == 0
                     return true
             if node.leaf.peek()
@@ -188,12 +185,32 @@ needs T: typename
             else
                 continue with node: node.children[i]
 
+### Whether an element equal to `key` is in the set.
+### :param key: The element to look for.
+### :returns: `true` when an equal element is present.
+routine SortedSet[T].has(me: @Me, key: T) -> Bool
+needs T: typename
+    local probe: @T <- steal key
+
+    there: Bool = me.has(probe)
+
+    drop probe
+    return there
+
+### Whether the one at `key` is not there: the opposite of `has`.
+### :param key: The value to look for.
+### :returns: `true` when `has` would be `false`.
+routine SortedSet[T].lacks(me: @Me, key: @T) -> Bool
+needs T: typename
+    there: Bool = me.has(key)
+    return not there
+
 ### Whether `key` is not there: the opposite of `has`.
 ### :param key: The value to look for.
 ### :returns: `true` when `has` would be `false`.
 routine SortedSet[T].lacks(me: @Me, key: T) -> Bool
 needs T: typename
-    there: Bool = me.has(key)
+    there: Bool = me.has(steal key)
     return not there
 
 ### The `rank`-th smallest element (0 is the smallest).
@@ -257,8 +274,7 @@ needs T: typename
             me.children[i + 1] = child
             continue with i: i - 1
         then
-            middle_key: T = left.keys[mid]
-            me.keys[index] = middle_key
+            me.keys.getslot(index).poke(steal left.keys.getslot(mid))
             me.children[index + 1] = right
             left.count.poke(mid)
             next_count: USize = me.count.peek() + 1
@@ -281,8 +297,7 @@ needs T: typename
                 me.children[i2 + 1] = child
                 continue with i2: i2 - 1
             then
-                middle_key: T = left.keys[mid]
-                me.keys[index] = middle_key
+                me.keys.getslot(index).poke(steal left.keys.getslot(mid))
                 me.children[index + 1] = right
                 left.count.poke(mid)
                 next_count: USize = me.count.peek() + 1
@@ -296,31 +311,33 @@ needs T: typename
 ### already be in the subtree (`add_result` checks first).
 ### :param key: The element to insert.
 ### :param alloc: The allocator for nodes made by splits.
-### :returns: True when it inserted, false when a split failed to allocate. The tree then holds the same elements,
-###     some nodes already split.
+### :returns: True when it inserted, false when a split failed to allocate (the key ends then). The tree then holds the
+###     same elements, some nodes already split.
 @reshaping
 routine SortedSetNode[T].insert_nonfull(me: @Me, key: T, alloc: @MemoryManager) -> Bool
 needs T: typename
+    local probe: @T <- steal key
+
     if me.leaf.peek()
-        slot: USize = me.find_index(key)
+        slot: USize = me.find_index(key: probe)
         count: USize = me.count.peek()
         me.keys.shift_right(start: slot, end: count)
-        me.keys[slot] = key
+        me.keys.getslot(slot).poke(steal probe)
         new_count: USize = count + 1
         me.count.poke(new_count)
         me.subtree_count.poke(new_count)
         return true
     else
-        slot: USize = me.find_index(key)
+        slot: USize = me.find_index(key: probe)
         child: @Me = me.children[slot]
         child_count: USize = child.count.peek()
         full: Bool = child_count == NODE_KEYS
         values2: (USize, @Me) = when
             full =>
                 if not me.split_child(index: slot, alloc)
+                    drop probe
                     return false
-                pivot: T = me.keys[slot]
-                cmp: S32 = key.compare(pivot)
+                cmp: S32 = probe.compare(me.keys.getslot(slot))
                 go_right: Bool = cmp > 0
                 next_slot: USize = when
                     go_right => slot + 1
@@ -328,7 +345,7 @@ needs T: typename
                 becomes (next_slot, me.children[next_slot])
             else => (slot, child)
         slot2, child2 = values2
-        if not child2.insert_nonfull(key, alloc)
+        if not child2.insert_nonfull(key: steal probe, alloc)
             return false
         me.recount()
         return true
@@ -341,19 +358,22 @@ needs T: typename
 @reshaping
 routine SortedSet[T].add(me: @Me, key: T) -> Bool
 needs T: typename
-    added: Result[Bool, AllocFailed] = me.add_result(key)
+    added: Result[Bool, AllocFailed] = me.add_result(steal key)
     when added
         is Bool as is_new => return is_new
         is AllocFailed => crash_allocation()
 
-### `add`, returning an error instead of crashing when the allocator fails.
+### `add`, returning an error instead of crashing when the allocator fails. A key that doesn't go in ends.
 ### :param key: The element to add.
 ### :returns: A value holding whether `key` was new.
 ### :throws: Returns `AllocFailed` when a node cannot be allocated.
 @reshaping
 routine SortedSet[T].add_result(me: @Me, key: T) -> Result[Bool, AllocFailed]
 needs T: typename
-    if me.has(key)
+    local probe: @T <- steal key
+
+    if me.has(probe)
+        drop probe
         return false
     else
         alloc: @MemoryManager = me.alloc.peek()
@@ -361,8 +381,9 @@ needs T: typename
         if root.is_null()
             root2: @SortedSetNode[T] = SortedSetNode[T].construct(leaf: true, alloc)
             if root2.is_null()
+                drop probe
                 return AllocFailed()
-            root2.keys[0] = key
+            root2.keys.getslot(0).poke(steal probe)
             root2.count.poke(1)
             root2.subtree_count.poke(1)
             me.root.poke(root2)
@@ -375,6 +396,7 @@ needs T: typename
                 full =>
                     new_root: @SortedSetNode[T] = SortedSetNode[T].construct(leaf: false, alloc)
                     if new_root.is_null()
+                        drop probe
                         return AllocFailed()
                     new_root.children[0] = root
                     if new_root.split_child(index: 0, alloc)
@@ -382,9 +404,10 @@ needs T: typename
                         becomes new_root
                     else
                         deallocate[SortedSetNode[T]](data: new_root, alloc)
+                        drop probe
                         return AllocFailed()
                 else => root
-            if not root2.insert_nonfull(key, alloc)
+            if not root2.insert_nonfull(key: steal probe, alloc)
                 return AllocFailed()
             next_count: USize = me.count.peek() + 1
             next_count.poke_into(me.count)
@@ -395,13 +418,14 @@ needs T: typename
 ### :returns: The removed key.
 routine SortedSetNode[T].remove_leaf_at(me: @Me, index: USize) -> T
 needs T: typename
-    old: T = me.keys[index]
+    local old: @T <- steal me.keys.getslot(index)
+
     count: USize = me.count.peek()
     me.keys.shift_left(start: index, end: count)
     new_count: USize = count - 1
     me.count.poke(new_count)
     me.subtree_count.poke(new_count)
-    return old
+    return steal old
 
 # Capacity = NODE_KEYS, t = NODE_MIN_KEYS. Non-root nodes maintain
 # count >= NODE_MIN_KEYS - 1.
@@ -419,10 +443,8 @@ needs T: typename
     local child_count: USize = child.count.peek()
 
     child.keys.shift_right(start: 0, end: child_count)
-    pivot: T = me.keys[separator]
-    child.keys[0] = pivot
-    new_pivot: T = left.keys[left_count - 1]
-    me.keys[separator] = new_pivot
+    child.keys.getslot(0).poke(steal me.keys.getslot(separator))
+    me.keys.getslot(separator).poke(steal left.keys.getslot(left_count - 1))
     if not child.leaf.peek()
         children: USize = child_count + 1
         child.children.shift_right(start: 0, end: children)
@@ -444,10 +466,8 @@ needs T: typename
     local child_count: USize = child.count.peek()
     local right_count: USize = right.count.peek()
 
-    pivot: T = me.keys[i]
-    child.keys[child_count] = pivot
-    new_pivot: T = right.keys[0]
-    me.keys[i] = new_pivot
+    child.keys.getslot(child_count).poke(steal me.keys.getslot(i))
+    me.keys.getslot(i).poke(steal right.keys.getslot(0))
     right.keys.shift_left(start: 0, end: right_count)
     if not child.leaf.peek()
         moved: @Me = right.children[0]
@@ -470,8 +490,7 @@ needs T: typename
     local left_count: USize = left.count.peek()
     local right_count: USize = right.count.peek()
 
-    pivot: T = me.keys[i]
-    left.keys[left_count] = pivot
+    left.keys.getslot(left_count).poke(steal me.keys.getslot(i))
     dst_start: USize = left_count + 1
     left.keys.copy(dst_start, src: right.keys, src_start: 0, count: right_count)
     if not left.leaf.peek()
@@ -534,15 +553,15 @@ needs T: typename
     if me.leaf.peek()
         count: USize = me.count.peek()
         index: USize = count - 1
-        key: T = me.remove_leaf_at(index)
-        return key
+        local key: @T <- me.remove_leaf_at(index)
+        return steal key
     else
         count: USize = me.count.peek()
         actual: USize = me.ensure_min(i: count, alloc)
         child: @Me = me.children[actual]
-        key: T = child.take_max(alloc)
+        local key: @T <- child.take_max(alloc)
         me.recount()
-        return key
+        return steal key
 
 ### Removes and returns the smallest key in this subtree, rebalancing children on the way down.
 ### :param alloc: The allocator used when nodes merge.
@@ -550,38 +569,39 @@ needs T: typename
 routine SortedSetNode[T].take_min(me: @Me, alloc: @MemoryManager) -> T
 needs T: typename
     if me.leaf.peek()
-        key: T = me.remove_leaf_at(0)
-        return key
+        local key: @T <- me.remove_leaf_at(0)
+        return steal key
     else
         actual: USize = me.ensure_min(i: 0, alloc)
         child: @Me = me.children[actual]
-        key: T = child.take_min(alloc)
+        local key: @T <- child.take_min(alloc)
         me.recount()
-        return key
+        return steal key
 
-### Removes `key` from this subtree, rebalancing children on the way down so no node underflows.
-### :param key: The key to remove.
+### Removes the key equal to the one at `key` from this subtree and ends it, rebalancing children on the way down so
+### no node underflows.
+### :param key: The key to remove, read through its place.
 ### :param alloc: The allocator used when nodes merge.
 ### :returns: `true` when the key was found and removed, `false` otherwise.
-routine SortedSetNode[T].remove(me: @Me, key: T, alloc: @MemoryManager) -> Bool
+routine SortedSetNode[T].remove(me: @Me, key: @T, alloc: @MemoryManager) -> Bool
 needs T: typename
     local slot: USize = me.find_index(key)
 
     count: USize = me.count.peek()
     if slot < count
-        node_key: T = me.keys[slot]
-        cmp: S32 = key.compare(node_key)
+        cmp: S32 = key.compare(me.keys.getslot(slot))
         if cmp == 0
             if me.leaf.peek()
-                me.remove_leaf_at(slot)
+                drop me.remove_leaf_at(slot)
                 return true
             else
                 left: @Me = me.children[slot]
                 left_count: USize = left.count.peek()
                 if left_count >= NODE_MIN_KEYS
                     left2: @Me = me.children[slot]
-                    replacement: T = left2.take_max(alloc)
-                    me.keys[slot] = replacement
+                    local replacement: @T <- left2.take_max(alloc)
+                    drop me.keys.getslot(slot)
+                    me.keys.getslot(slot).poke(steal replacement)
                     me.recount()
                     return true
                 else
@@ -589,8 +609,9 @@ needs T: typename
                     right_count: USize = right.count.peek()
                     if right_count >= NODE_MIN_KEYS
                         right2: @Me = me.children[slot + 1]
-                        replacement: T = right2.take_min(alloc)
-                        me.keys[slot] = replacement
+                        local replacement: @T <- right2.take_min(alloc)
+                        drop me.keys.getslot(slot)
+                        me.keys.getslot(slot).poke(steal replacement)
                         me.recount()
                         return true
                     else
@@ -608,10 +629,10 @@ needs T: typename
         me.recount()
         return removed
 
-### Removes `key` from the set, shrinking the tree when the root empties.
-### :param key: The element to remove.
+### Removes the element equal to the one at `key` and ends it, shrinking the tree when the root empties.
+### :param key: The element to remove, read through its place.
 ### :returns: `true` when an element was removed, `false` when it was not present.
-routine SortedSet[T].remove(me: @Me, key: T) -> Bool
+routine SortedSet[T].remove(me: @Me, key: @T) -> Bool
 needs T: typename
     local root: @SortedSetNode[T] = me.root.peek()
 
@@ -640,11 +661,25 @@ needs T: typename
         else
             return false
 
-### Frees this node and every node below it through `alloc`. An internal node has `count` keys and `count + 1`
-### children. The elements are not destructed.
+### Removes the element equal to `key` and ends it, and `key` too.
+### :param key: The element to remove.
+### :returns: `true` when an element was removed, `false` when it was not present.
+routine SortedSet[T].remove(me: @Me, key: T) -> Bool
+needs T: typename
+    local probe: @T <- steal key
+
+    removed: Bool = me.remove(probe)
+
+    drop probe
+    return removed
+
+### Ends the keys of this node and every node below it (drop) and frees the nodes through `alloc`. An internal node has
+### `count` keys and `count + 1` children.
 ### :param alloc: The allocator the nodes came from.
 routine SortedSetNode[T].free_recursive(me: @Me, alloc: @MemoryManager) -> None
 needs T: typename
+    each i in 0 til me.count.peek()
+        drop me.keys.getslot(i)
     if me.leaf.peek()
         deallocate[Me](data: me, alloc)
         return
@@ -660,7 +695,7 @@ needs T: typename
             deallocate[Me](data: me, alloc)
             return
 
-### Frees the set's memory through its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
+### Ends every element (drop), frees the set's memory through its allocator, and resets it to the empty state, so it can be reused or destructed again.
 ### :note: Safe to call on a never-filled instance, where it only resets the fields.
 @track_caller
 routine SortedSet[T].destruct(me: @Me) -> None
@@ -683,7 +718,7 @@ routine SortedSet[T].represent_into[TWriter](me: @Me, out: @TWriter) -> None
 needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
     iter_val: SortedSetIter[T] = .construct(me)
     local iter: @SortedSetIter[T] <- iter_val
-    diagnose_items[T, SortedSetIter[T], TWriter](out, iter, open: "{", close: "}")
+    diagnose_slots[T, SortedSetIter[T], TWriter](out, iter, open: "{", close: "}")
     return
 
 ### The elements in sorted order, each diagnosed: {1, 2, 3}.
@@ -693,5 +728,5 @@ routine SortedSet[T].diagnose_into[TWriter](me: @Me, out: @TWriter) -> None
 needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
     iter_val: SortedSetIter[T] = .construct(me)
     local iter: @SortedSetIter[T] <- iter_val
-    diagnose_items[T, SortedSetIter[T], TWriter](out, iter, open: "{", close: "}")
+    diagnose_slots[T, SortedSetIter[T], TWriter](out, iter, open: "{", close: "}")
     return

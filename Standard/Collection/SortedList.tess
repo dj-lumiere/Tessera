@@ -20,9 +20,9 @@ private preset NODE_VALUES: USize = 7
 private preset NODE_CHILDREN: USize = NODE_VALUES.add(1)
 private preset NODE_MIN: USize = NODE_VALUES.add(1).div_trunc(2)
 
-### One node of a {SortedList[T]} B-tree: up to `NODE_VALUES` values inline, and for internal nodes the child pointers. An internal node keeps no separator values, and its `count` is its child count. A leaf's `count` is its value count. `subtree_count` is the total values below the node.
+### One node of a {SortedList[T]} B-tree: up to `NODE_VALUES` values inline, and for internal nodes the child pointers. An internal node keeps no separator values, and its `count` is its child count. A leaf's `count` is its value count. `subtree_count` is the total values below the node. It is an entity, so an entity element can live in it: the list makes and frees nodes, and its values move in and out with steal.
 ### :typeparam T: The element type.
-record SortedListNode[T]
+entity SortedListNode[T]
 needs T: typename
     leaf: Bool
     count: USize
@@ -42,7 +42,7 @@ needs T: typename, Comparable[T]
     count: USize
     alloc: @MemoryManager
 
-### Releases nothing: a `SortedListNode` holds no memory of its own.
+### Releases nothing: the list ends a node's values and frees the node itself (`free_recursive`).
 routine SortedListNode[T].destruct(me: @Me) -> None
 needs T: typename
     return
@@ -140,12 +140,11 @@ needs T: typename, Equatable[T]
 
     # both have the same count, so both run out together
     while true
-        x: Maybe[T] = a.emit_checked()
-        y: Maybe[T] = b.emit_checked()
+        x: Maybe[@T] = a.next_checked()
+        y: Maybe[@T] = b.next_checked()
         when x
-            is T as x_item =>
-                y2: T = y.unwrap()
-                if x_item == y2
+            is @T as x_item =>
+                if x_item.eq(y.unwrap())
                     continue
                 else
                     return false
@@ -169,6 +168,30 @@ needs T: typename
 ### :absent: When `order >= count`.
 routine SortedList[T].getitem_checked(me: @Me, order: USize) -> Maybe[T]
 needs T: typename
+    when me.getslot_checked(order)
+        is @T as at =>
+            value: T = at.peek()
+            return value
+        is None => return None()
+
+### The place of the element at position `order` in sorted order: the way to reach an entity element without taking it
+### out. Changing it in place can break the order. It stays valid until the list changes.
+### :param order: The zero-based position in sorted order.
+### :returns: The element's address.
+### :throws: Crashes with `IndexOutOfBoundsError` when `order >= count`.
+@track_caller
+routine SortedList[T].getslot(me: @Me, order: USize) -> @T
+needs T: typename
+    when me.getslot_checked(order)
+        is @T as at => return at
+        is None => crash_out_of_bounds()
+
+### `getslot`, returning None instead of crashing on a position past the end.
+### :param order: The zero-based position in sorted order.
+### :returns: The element's address.
+### :absent: When `order >= count`.
+routine SortedList[T].getslot_checked(me: @Me, order: USize) -> Maybe[@T]
+needs T: typename
     local child_order: @USize <- .hollow()
 
     count: USize = me.count.peek()
@@ -177,8 +200,8 @@ needs T: typename
 
     while true with node: @SortedListNode[T] = me.root.peek(), remaining: USize = order
         if node.leaf.peek()
-            value: T = node.values[remaining]
-            return value
+            at: @T = node.values.getslot(remaining)
+            return at
         slot: USize = node.find_child_strict(order: remaining, out_local: child_order)
         continue with node: node.children[slot], remaining: child_order.peek()
 
@@ -209,41 +232,76 @@ needs T: typename
 @reshaping
 routine SortedList[T].add_result(me: @Me, value: T) -> Result[None, AllocFailed]
 needs T: typename
-    order: USize = me.bound(value, or_equal: true)
-    if me.insert_at(order, value)
+    local probe: @T <- steal value
+
+    order: USize = me.bound(value: probe, or_equal: true)
+
+    if me.insert_at(order, value: steal probe)
         return None()
     else
         return AllocFailed()
 
-### The number of elements less than `value`: the position of its first copy if it's there, and where push would put
+### The number of elements less than the one at `value`: the position of its first equal if it's there, and where
+### add would put it if not. It is read through its place.
+### :param value: The value to rank.
+### :returns: The count of smaller elements.
+routine SortedList[T].rank(me: @Me, value: @T) -> USize
+needs T: typename
+    rank: USize = me.bound(value, or_equal: false)
+    return rank
+
+### The number of elements less than `value`: the position of its first equal if it's there, and where add would put
 ### it if not.
 ### :param value: The value to rank.
 ### :returns: The count of smaller elements.
 routine SortedList[T].rank(me: @Me, value: T) -> USize
 needs T: typename
-    rank: USize = me.bound(value, or_equal: false)
+    local probe: @T <- steal value
+
+    rank: USize = me.bound(value: probe, or_equal: false)
+
+    drop probe
     return rank
+
+### Whether an element equal to the one at `value` is in the list, read through its place.
+### :param value: The value to look for.
+### :returns: `true` when an equal element is present.
+routine SortedList[T].has(me: @Me, value: @T) -> Bool
+needs T: typename
+    local rank: USize = me.rank(value)
+
+    count: USize = me.count.peek()
+    if rank < count
+        return me.getslot(rank).compare(value) == 0
+    else
+        return false
 
 ### Whether an element equal to `value` is in the list.
 ### :param value: The value to look for.
 ### :returns: `true` when an equal element is present.
 routine SortedList[T].has(me: @Me, value: T) -> Bool
 needs T: typename
-    local rank: USize = me.rank(value)
+    local probe: @T <- steal value
 
-    count: USize = me.count.peek()
-    if rank < count
-        at: T = me[rank]
-        return at.compare(value) == 0
-    else
-        return false
+    there: Bool = me.has(probe)
+
+    drop probe
+    return there
+
+### Whether the one at `value` is not there: the opposite of `has`.
+### :param value: The value to look for.
+### :returns: `true` when `has` would be `false`.
+routine SortedList[T].lacks(me: @Me, value: @T) -> Bool
+needs T: typename
+    there: Bool = me.has(value)
+    return not there
 
 ### Whether `value` is not there: the opposite of `has`.
 ### :param value: The value to look for.
 ### :returns: `true` when `has` would be `false`.
 routine SortedList[T].lacks(me: @Me, value: T) -> Bool
 needs T: typename
-    there: Bool = me.has(value)
+    there: Bool = me.has(steal value)
     return not there
 
 ### The number of elements less than `value`, or with `or_equal`, less than or equal to it. Binary search over
@@ -251,12 +309,11 @@ needs T: typename
 ### :param value: The value to compare against.
 ### :param or_equal: Whether elements equal to `value` count too.
 ### :returns: The count.
-private routine SortedList[T].bound(me: @Me, value: T, or_equal: Bool) -> USize
+private routine SortedList[T].bound(me: @Me, value: @T, or_equal: Bool) -> USize
 needs T: typename
     while lo < hi with lo: USize = 0, hi: USize = me.count.peek()
         mid: USize = lo + (hi - lo) // 2
-        at: T = me[mid]
-        order: S32 = at.compare(value)
+        order: S32 = me.getslot(mid).compare(value)
         below: Bool = order < 0
         equal: Bool = order == 0 and or_equal
         if below or equal
@@ -357,8 +414,8 @@ needs T: typename
 ### :param order: The position within this node's subtree to insert before.
 ### :param value: The element to insert.
 ### :param alloc: The allocator for nodes made by splits.
-### :returns: True when it inserted, false when a split failed to allocate. The tree then holds the same elements,
-###     some nodes already split.
+### :returns: True when it inserted, false when a split failed to allocate (the value ends then). The tree then holds
+###     the same elements, some nodes already split.
 @reshaping
 routine SortedListNode[T].insert_nonfull(me: @Me, order: USize, value: T,
     alloc: @MemoryManager) -> Bool
@@ -366,7 +423,7 @@ needs T: typename
     if me.leaf.peek()
         count: USize = me.count.peek()
         me.values.shift_right(start: order, end: count)
-        me.values[order] = value
+        me.values.getslot(order).poke(steal value)
         new_count: USize = count + 1
         me.count.poke(new_count)
         me.subtree_count.poke(new_count)
@@ -381,6 +438,7 @@ needs T: typename
         values2: (USize, @Me, USize) = when
             full =>
                 if not me.split_child(index: slot, alloc)
+                    drop value
                     return false
                 left: @Me = me.children[slot]
                 left_count: USize = left.subtree_count()
@@ -392,7 +450,7 @@ needs T: typename
                     becomes (slot, me.children[slot], local_order_val)
             else => (slot, child, local_order_val)
         slot2, child2, local_order2 = values2
-        if not child2.insert_nonfull(order: local_order2, value, alloc)
+        if not child2.insert_nonfull(order: local_order2, value: steal value, alloc)
             return false
         me.recount()
         return true
@@ -400,7 +458,8 @@ needs T: typename
 ### Inserts `value` before position `order`. push picks the position, so the order holds.
 ### :param order: The position to insert before, at most the count.
 ### :param value: The element to insert.
-### :returns: True when it inserted, false when the allocator failed (the list keeps the same elements).
+### :returns: True when it inserted, false when the allocator failed (the list keeps the same elements and the value
+###     ends).
 ### :throws: Crashes with `IndexOutOfBoundsError` when `order > count`.
 @track_caller
 @reshaping
@@ -413,8 +472,9 @@ needs T: typename
         if root.is_null()
             root2: @SortedListNode[T] = SortedListNode[T].construct(leaf: true, alloc)
             if root2.is_null()
+                drop value
                 return false
-            root2.values[0] = value
+            root2.values.getslot(0).poke(steal value)
             root2.count.poke(1)
             root2.subtree_count.poke(1)
             me.root.poke(root2)
@@ -427,6 +487,7 @@ needs T: typename
                 full =>
                     new_root: @SortedListNode[T] = SortedListNode[T].construct(leaf: false, alloc)
                     if new_root.is_null()
+                        drop value
                         return false
                     new_root.children[0] = root
                     new_root.count.poke(1)
@@ -435,9 +496,10 @@ needs T: typename
                         becomes new_root
                     else
                         deallocate[SortedListNode[T]](data: new_root, alloc)
+                        drop value
                         return false
                 else => root
-            if not root2.insert_nonfull(order, value, alloc)
+            if not root2.insert_nonfull(order, value: steal value, alloc)
                 return false
             next_count: USize = me.count.peek() + 1
             next_count.poke_into(me.count)
@@ -461,8 +523,7 @@ needs T: typename
 
     if child.leaf.peek()
         child.values.shift_right(start: 0, end: child_count)
-        v: T = left.values[left_count - 1]
-        child.values[0] = v
+        child.values.getslot(0).poke(steal left.values.getslot(left_count - 1))
     else
         child.children.shift_right(start: 0, end: child_count)
         moved: @Me = left.children[left_count - 1]
@@ -484,8 +545,7 @@ needs T: typename
     local right_count: USize = right.count.peek()
 
     if child.leaf.peek()
-        v: T = right.values[0]
-        child.values[child_count] = v
+        child.values.getslot(child_count).poke(steal right.values.getslot(0))
         right.values.shift_left(start: 0, end: right_count)
     else
         moved: @Me = right.children[0]
@@ -531,21 +591,21 @@ needs T: typename
 routine SortedListNode[T].remove(me: @Me, order: USize, alloc: @MemoryManager) -> T
 needs T: typename
     if me.leaf.peek()
-        value: T = me.values[order]
+        local value: @T <- steal me.values.getslot(order)
         count: USize = me.count.peek()
         me.values.shift_left(start: order, end: count)
         new_count: USize = count - 1
         me.count.poke(new_count)
         me.subtree_count.poke(new_count)
-        return value
+        return steal value
 
     local local_order: @USize <- .hollow()
     slot: USize = me.find_child_strict(order, out_local: local_order)
     child_slot, child_order = me.fill_child(slot, local_order: local_order.peek(), alloc)
     child: @Me = me.children[child_slot]
-    value: T = child.remove(order: child_order, alloc)
+    local value: @T <- child.remove(order: child_order, alloc)
     me.recount()
-    return value
+    return steal value
 
 ### Makes sure the child at `slot` has enough elements to give one up, borrowing from a sibling or merging with one
 ### when it has too few, and says where the element at `local_order` of that child is afterwards.
@@ -612,7 +672,7 @@ needs T: typename
     if order < count
         alloc: @MemoryManager = me.alloc.peek()
         root: @SortedListNode[T] = me.root.peek()
-        value: T = root.remove(order, alloc)
+        local value: @T <- root.remove(order, alloc)
         remaining_count: USize = me.count.peek() - 1
         remaining_count.poke_into(me.count)
         if root.leaf.peek()
@@ -621,9 +681,9 @@ needs T: typename
                 alloc2: @MemoryManager = me.alloc.peek()
                 deallocate[SortedListNode[T]](data: root, alloc: alloc2)
                 me.root.poke(null)
-                return value
+                return steal value
             else
-                return value
+                return steal value
         else
             root_count: USize = root.count.peek()
             if root_count == 1
@@ -631,18 +691,20 @@ needs T: typename
                 new_root: @SortedListNode[T] = root.children[0]
                 deallocate[SortedListNode[T]](data: root, alloc: alloc2)
                 me.root.poke(new_root)
-                return value
+                return steal value
             else
-                return value
+                return steal value
     else
         crash_out_of_bounds()
 
-### Frees this node and every node below it through `alloc`. An internal node uses `count` as its child count. The
-### values are not destructed.
+### Ends the values below this node (drop) and frees this node and every node below it through `alloc`. An internal
+### node uses `count` as its child count.
 ### :param alloc: The allocator the nodes came from.
 routine SortedListNode[T].free_recursive(me: @Me, alloc: @MemoryManager) -> None
 needs T: typename
     if me.leaf.peek()
+        each i in 0 til me.count.peek()
+            drop me.values.getslot(i)
         deallocate[Me](data: me, alloc)
         return
     else
@@ -655,7 +717,7 @@ needs T: typename
             deallocate[Me](data: me, alloc)
             return
 
-### Frees every node of the tree through the allocator and resets the list to empty. The stored values themselves are not destructed.
+### Ends every element (drop), frees every node of the tree through the allocator, and resets the list to empty.
 @track_caller
 routine SortedList[T].destruct(me: @Me) -> None
 needs T: typename
@@ -677,7 +739,7 @@ routine SortedList[T].represent_into[TWriter](me: @Me, out: @TWriter) -> None
 needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
     iter_val: SortedListIter[T] = .construct(me)
     local iter: @SortedListIter[T] <- iter_val
-    diagnose_items[T, SortedListIter[T], TWriter](out, iter, open: "[", close: "]")
+    diagnose_slots[T, SortedListIter[T], TWriter](out, iter, open: "[", close: "]")
     return
 
 ### The elements in sorted order, each diagnosed: [1, 2, 3].
@@ -687,5 +749,5 @@ routine SortedList[T].diagnose_into[TWriter](me: @Me, out: @TWriter) -> None
 needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
     iter_val: SortedListIter[T] = .construct(me)
     local iter: @SortedListIter[T] <- iter_val
-    diagnose_items[T, SortedListIter[T], TWriter](out, iter, open: "[", close: "]")
+    diagnose_slots[T, SortedListIter[T], TWriter](out, iter, open: "[", close: "]")
     return

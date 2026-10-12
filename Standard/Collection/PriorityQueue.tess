@@ -4,9 +4,10 @@
 # Comparable[TPriority]: the entry with the smallest priority by compare sits at
 # the top and comes out first. Entries whose priorities compare equal come out
 # in no particular order. A Reversed[TPriority] priority takes the largest
-# first. The element only rides along and needs no concept. The heap array is a
-# Memory of PriorityEntry whose count is the capacity, and it keeps the
-# allocator.
+# first. The element only rides along and needs no concept. The heap is two
+# parallel arrays, the priorities and the elements, each a Memory whose count is
+# the capacity and which keeps the allocator. Priorities are compared through
+# their places, and entries move with steal, so either may be an entity.
 
 module Standard/Collections
 
@@ -14,7 +15,8 @@ import Standard/Alloc
 import Standard/Format
 
 ### One entry of a PriorityQueue: the priority it is ordered by and the element it carries. `first_entry` and
-### `remove_entry` hand it back.
+### `remove_entry` hand it back. It is a record, so it holds neither an entity priority nor an entity element: those
+### come out with `first_slot` / `priority_slot` and `remove`.
 ### :typeparam TPriority: The priority type.
 ### :typeparam TElement: The element type.
 record PriorityEntry[TPriority, TElement]
@@ -30,7 +32,8 @@ obeys Destructible[PriorityQueue[TPriority, TElement]]
 obeys Representable[PriorityQueue[TPriority, TElement]] when TPriority: typename, TElement: typename, Diagnosable[TPriority], Diagnosable[TElement]
 obeys Diagnosable[PriorityQueue[TPriority, TElement]] when TPriority: typename, TElement: typename, Diagnosable[TPriority], Diagnosable[TElement]
 needs TPriority: typename, TElement: typename, Comparable[TPriority]
-    storage: Memory[PriorityEntry[TPriority, TElement]]
+    priorities: Memory[TPriority]
+    elements: Memory[TElement]
     count: USize
 
 ### Makes a `PriorityEntry` from its fields.
@@ -51,9 +54,8 @@ needs TPriority: typename, TElement: typename
 ### :returns: A new empty PriorityQueue.
 routine PriorityQueue[TPriority, TElement].construct(alloc: @MemoryManager) -> Me
 needs TPriority: typename, TElement: typename
-    return Me(
-        storage: Memory[PriorityEntry[TPriority, TElement]].construct(count: 0, manager: alloc),
-        count: 0)
+    return Me(priorities: Memory[TPriority].construct(count: 0, manager: alloc),
+        elements: Memory[TElement].construct(count: 0, manager: alloc), count: 0)
 
 ### The number of entries currently stored.
 ### :returns: The count of entries, `0` when the queue is empty.
@@ -69,7 +71,15 @@ needs TPriority: typename, TElement: typename
     count: USize = me.count.peek()
     return count == 0
 
-### Grows the heap array to hold at least `capacity` entries without further allocation.
+### The number of entries the two arrays both have room for.
+### :returns: The smaller of the two array counts.
+private routine PriorityQueue[TPriority, TElement].capacity(me: @Me) -> USize
+needs TPriority: typename, TElement: typename
+    priorities: USize = me.priorities.count.peek()
+    elements: USize = me.elements.count.peek()
+    return priorities.min(elements)
+
+### Grows the heap arrays to hold at least `capacity` entries without further allocation.
 ### :param capacity: The number of entries to make room for.
 ### :throws: Crashes with `MemoryAllocationError` when the allocator fails. See {PriorityQueue[TPriority, TElement].reserve_result}.
 @track_caller
@@ -84,7 +94,7 @@ needs TPriority: typename, TElement: typename
 
 ### `reserve`, returning an error instead of crashing when the allocator fails.
 ### :param capacity: The number of entries to make room for.
-### :returns: A value once the heap array holds at least `capacity` entries.
+### :returns: A value once the heap arrays hold at least `capacity` entries.
 ### :throws: Returns `AllocFailed` when the allocator fails.
 @expensive("reallocates to exactly the capacity asked for")
 @reshaping
@@ -96,28 +106,33 @@ needs TPriority: typename, TElement: typename
     else
         return AllocFailed()
 
-### Grows the heap array to at least `capacity` entries.
+### Grows both heap arrays to at least `capacity` entries. When the second one fails the first keeps its new size,
+### and the queue goes on using the room both have.
 ### :param capacity: The number of entries to make room for.
-### :returns: True when the array is big enough, false when the allocator failed (the queue is left as it was).
+### :returns: True when the arrays are big enough, false when the allocator failed (the entries are left as they were).
 @reshaping
 private routine PriorityQueue[TPriority, TElement].make_capacity(me: @Me, capacity: USize) -> Bool
 needs TPriority: typename, TElement: typename
-    old_capacity: USize = me.storage.count.peek()
-    if old_capacity >= capacity
+    if me.capacity() >= capacity
         return true
-    resized: Result[None, AllocFailed] = me.storage.resize_result(capacity)
-    when resized
-        is None => return true
-        is AllocFailed => return false
+    if me.priorities.count.peek() < capacity
+        when me.priorities.resize_result(capacity)
+            is None => pass
+            is AllocFailed => return false
+    if me.elements.count.peek() < capacity
+        when me.elements.resize_result(capacity)
+            is None => pass
+            is AllocFailed => return false
+    return true
 
-### Makes room for `wanted` entries: an empty array starts at 8 slots (or `wanted`, when larger), and a full one
-### doubles until the request fits.
-### :param wanted: The entry count the array must hold.
-### :returns: True when the array is big enough, false when the allocator failed (the queue is left as it was).
+### Makes room for `wanted` entries: empty arrays start at 8 slots (or `wanted`, when larger), and full ones double
+### until the request fits.
+### :param wanted: The entry count the arrays must hold.
+### :returns: True when the arrays are big enough, false when the allocator failed (the entries are left as they were).
 @reshaping
 private routine PriorityQueue[TPriority, TElement].make_room(me: @Me, wanted: USize) -> Bool
 needs TPriority: typename, TElement: typename
-    local capacity: USize = me.storage.count.peek()
+    local capacity: USize = me.capacity()
 
     if capacity >= wanted
         return true
@@ -136,7 +151,27 @@ needs TPriority: typename, TElement: typename
             else
                 continue with grown: next2
 
-### Adds `element` with `priority` and sifts the entry up to its place in the heap.
+### Whether the priority at `a` comes before the one at `b`, compared through their places.
+### :param a: The first entry's index.
+### :param b: The second entry's index.
+### :returns: `true` when the priority at `a` is smaller.
+private routine PriorityQueue[TPriority, TElement].before(me: @Me, a: USize, b: USize) -> Bool
+needs TPriority: typename, TElement: typename
+    priorities: @TPriority = me.priorities.data.peek()
+    return priorities.stride(a).compare(priorities.stride(b)) < 0
+
+### Exchanges the entries at `a` and `b`, each priority and element moved, never copied.
+### :param a: The first entry's index.
+### :param b: The second entry's index.
+private routine PriorityQueue[TPriority, TElement].swap(me: @Me, a: USize, b: USize) -> None
+needs TPriority: typename, TElement: typename
+    priorities: @TPriority = me.priorities.data.peek()
+    elements: @TElement = me.elements.data.peek()
+    swap_places[TPriority](a: priorities.stride(a), b: priorities.stride(b))
+    swap_places[TElement](a: elements.stride(a), b: elements.stride(b))
+    return
+
+### Adds `element` with `priority` and sifts the entry up to its place in the heap. Both move in.
 ### :param priority: The priority the element is ordered by, the smallest first.
 ### :param element: The element to add.
 ### :throws: Crashes with `MemoryAllocationError` when the allocator fails. See {PriorityQueue[TPriority, TElement].add_result}.
@@ -145,7 +180,8 @@ needs TPriority: typename, TElement: typename
 routine PriorityQueue[TPriority, TElement].add(me: @Me, priority: TPriority,
     element: TElement) -> None
 needs TPriority: typename, TElement: typename
-    pushed: Result[None, AllocFailed] = me.add_result(priority, element)
+    pushed: Result[None, AllocFailed] = me.add_result(priority: steal priority,
+        element: steal element)
     when pushed
         is None => return
         is AllocFailed => crash_allocation()
@@ -154,31 +190,28 @@ needs TPriority: typename, TElement: typename
 ### :param priority: The priority the element is ordered by, the smallest first.
 ### :param element: The element to add.
 ### :returns: A value once the entry is in the heap.
-### :throws: Returns `AllocFailed` when the heap array must grow and the allocator fails.
+### :throws: Returns `AllocFailed` when the heap arrays must grow and the allocator fails.
 @reshaping
 routine PriorityQueue[TPriority, TElement].add_result(me: @Me, priority: TPriority,
     element: TElement) -> Result[None, AllocFailed]
 needs TPriority: typename, TElement: typename
-    local data_at: @@PriorityEntry[TPriority, TElement] = me.storage.data
-
     count: USize = me.count.peek()
     wanted: USize = count + 1
     if not me.make_room(wanted)
+        # nothing took the entry: it ends here
+        drop priority
+        drop element
         return AllocFailed()
-    data: @PriorityEntry[TPriority, TElement] = data_at.peek()
-    data.stride(count).poke(PriorityEntry[TPriority, TElement](priority: priority,
-        element: element))
+    priorities: @TPriority = me.priorities.data.peek()
+    elements: @TElement = me.elements.data.peek()
+    priorities.stride(count).poke(steal priority)
+    elements.stride(count).poke(steal element)
     me.count.poke(wanted)
 
     while index != 0 with index: USize = count
         parent: USize = (index - 1) // 2
-        data2: @PriorityEntry[TPriority, TElement] = data_at.peek()
-        child_entry: PriorityEntry[TPriority, TElement] = data2.stride(index).peek()
-        parent_entry: PriorityEntry[TPriority, TElement] = data2.stride(parent).peek()
-        if child_entry.priority.compare(parent_entry.priority) < 0
-            data3: @PriorityEntry[TPriority, TElement] = data_at.peek()
-            data3.stride(parent).poke(child_entry)
-            data3.stride(index).poke(parent_entry)
+        if me.before(a: index, b: parent)
+            me.swap(a: index, b: parent)
             continue with index: parent
         else
             return None()
@@ -191,18 +224,42 @@ needs TPriority: typename, TElement: typename
 @track_caller
 routine PriorityQueue[TPriority, TElement].first(me: @Me) -> TElement
 needs TPriority: typename, TElement: typename
-    top: PriorityEntry[TPriority, TElement] = me.first_entry()
-    return top.element
+    top: @TElement = me.first_slot()
+    return top.peek()
 
 ### `first`, returning None instead of crashing on an empty queue.
 ### :returns: A copy of the top element.
 ### :absent: When the queue is empty.
 routine PriorityQueue[TPriority, TElement].first_checked(me: @Me) -> Maybe[TElement]
 needs TPriority: typename, TElement: typename
-    top: Maybe[PriorityEntry[TPriority, TElement]] = me.first_entry_checked()
-    when top
-        is PriorityEntry[TPriority, TElement] as found => return found.element
-        is None => return None()
+    if me.count.peek() == 0
+        return None()
+    elements: @TElement = me.elements.data.peek()
+    top: TElement = elements.stride(0).peek()
+    return top
+
+### The place of the element with the smallest priority, the top: the way to reach an entity element without taking
+### it out. It stays valid until the queue changes.
+### :returns: The top element's address.
+### :throws: Crashes with `AbsentValueError` when the queue is empty.
+@track_caller
+routine PriorityQueue[TPriority, TElement].first_slot(me: @Me) -> @TElement
+needs TPriority: typename, TElement: typename
+    if me.count.peek() == 0
+        crash_absent_value()
+    elements: @TElement = me.elements.data.peek()
+    return elements.stride(0)
+
+### The place of the smallest priority, the top's. Changing it in place breaks the heap order.
+### :returns: The top priority's address.
+### :throws: Crashes with `AbsentValueError` when the queue is empty.
+@track_caller
+routine PriorityQueue[TPriority, TElement].priority_slot(me: @Me) -> @TPriority
+needs TPriority: typename, TElement: typename
+    if me.count.peek() == 0
+        crash_absent_value()
+    priorities: @TPriority = me.priorities.data.peek()
+    return priorities.stride(0)
 
 ### Reads the top entry, the smallest priority with its element, without removing it.
 ### :returns: A copy of the top entry.
@@ -224,28 +281,36 @@ needs TPriority: typename, TElement: typename
     if count == 0
         return None()
     else
-        data: @PriorityEntry[TPriority, TElement] = me.storage.data.peek()
-        top: PriorityEntry[TPriority, TElement] = data.stride(0).peek()
+        priorities: @TPriority = me.priorities.data.peek()
+        elements: @TElement = me.elements.data.peek()
+        top: PriorityEntry[TPriority, TElement] = .construct(priority: priorities.stride(0).peek(),
+            element: elements.stride(0).peek())
         return top
 
-### Removes the element with the smallest priority, the top, and returns it, then restores the heap order.
+### Removes the element with the smallest priority, the top, and returns it (it moves out, its priority ends), then
+### restores the heap order.
 ### :returns: The removed top element.
 ### :throws: Crashes with `AbsentValueError` when the queue is empty. See {PriorityQueue[TPriority, TElement].remove_checked}.
 @track_caller
 routine PriorityQueue[TPriority, TElement].remove(me: @Me) -> TElement
 needs TPriority: typename, TElement: typename
-    top: PriorityEntry[TPriority, TElement] = me.remove_entry()
-    return top.element
+    if me.count.peek() == 0
+        crash_absent_value()
+    priorities: @TPriority = me.priorities.data.peek()
+    elements: @TElement = me.elements.data.peek()
+    drop priorities.stride(0)
+    local top: @TElement <- steal elements.stride(0)
+    me.close_top()
+    return steal top
 
 ### `remove`, returning None instead of crashing on an empty queue.
 ### :returns: The removed top element.
 ### :absent: When the queue is empty.
 routine PriorityQueue[TPriority, TElement].remove_checked(me: @Me) -> Maybe[TElement]
 needs TPriority: typename, TElement: typename
-    top: Maybe[PriorityEntry[TPriority, TElement]] = me.remove_entry_checked()
-    when top
-        is PriorityEntry[TPriority, TElement] as found => return found.element
-        is None => return None()
+    if me.count.peek() == 0
+        return None()
+    return me.remove()
 
 ### Removes the top entry, the smallest priority with its element, and returns it, then restores the heap order.
 ### :returns: The removed top entry.
@@ -263,53 +328,48 @@ needs TPriority: typename, TElement: typename
 ### :absent: When the queue is empty.
 routine PriorityQueue[TPriority, TElement].remove_entry_checked(me: @Me) -> Maybe[PriorityEntry[TPriority, TElement]]
 needs TPriority: typename, TElement: typename
-    local count: USize = me.count.peek()
-    local data_at: @@PriorityEntry[TPriority, TElement] = me.storage.data
-
-    if count == 0
+    if me.count.peek() == 0
         return None()
-    else
-        data: @PriorityEntry[TPriority, TElement] = data_at.peek()
-        result: PriorityEntry[TPriority, TElement] = data.stride(0).peek()
-        new_count: USize = count - 1
-        me.count.poke(new_count)
-        if new_count == 0
-            return result
-        else
-            data2: @PriorityEntry[TPriority, TElement] = data_at.peek()
-            last: PriorityEntry[TPriority, TElement] = data2.stride(new_count).peek()
-            data2.stride(0).poke(last)
+    priorities: @TPriority = me.priorities.data.peek()
+    elements: @TElement = me.elements.data.peek()
+    top: PriorityEntry[TPriority, TElement] = .construct(priority: steal priorities.stride(0),
+        element: steal elements.stride(0))
+    me.close_top()
+    return top
 
-            while true with index: USize = 0
-                heap_count2: USize = me.count.peek()
-                left2: USize = index * 2 + 1
-                right2: USize = left2 + 1
-                if left2 < heap_count2
-                    heap_count3: USize = me.count.peek()
-                    has_right: Bool = right2 < heap_count3
+### Fills the top the removal emptied with the last entry and sifts it down, one entry fewer.
+private routine PriorityQueue[TPriority, TElement].close_top(me: @Me) -> None
+needs TPriority: typename, TElement: typename
+    local new_count: USize = me.count.peek() - 1
+
+    me.count.poke(new_count)
+    if new_count == 0
+        return
+    priorities: @TPriority = me.priorities.data.peek()
+    elements: @TElement = me.elements.data.peek()
+    priorities.stride(0).poke(steal priorities.stride(new_count))
+    elements.stride(0).poke(steal elements.stride(new_count))
+
+    while true with index: USize = 0
+        left: USize = index * 2 + 1
+        right: USize = left + 1
+        if left < new_count
+            has_right: Bool = right < new_count
+            child: USize = when
+                has_right =>
+                    right_smaller: Bool = me.before(a: right, b: left)
                     child: USize = when
-                        has_right =>
-                            data3: @PriorityEntry[TPriority, TElement] = data_at.peek()
-                            left_entry: PriorityEntry[TPriority, TElement] = data3.stride(left2).peek()
-                            right_entry: PriorityEntry[TPriority, TElement] = data3.stride(right2).peek()
-                            right_smaller: Bool = right_entry.priority.compare(left_entry.priority) < 0
-                            child: USize = when
-                                right_smaller => right2
-                                else => left2
-                            becomes child
-                        else => left2
-                    data3: @PriorityEntry[TPriority, TElement] = data_at.peek()
-                    index_entry: PriorityEntry[TPriority, TElement] = data3.stride(index).peek()
-                    child_entry: PriorityEntry[TPriority, TElement] = data3.stride(child).peek()
-                    if child_entry.priority.compare(index_entry.priority) < 0
-                        data4: @PriorityEntry[TPriority, TElement] = data_at.peek()
-                        data4.stride(index).poke(child_entry)
-                        data4.stride(child).poke(index_entry)
-                        continue with index: child
-                    else
-                        return result
-                else
-                    return result
+                        right_smaller => right
+                        else => left
+                    becomes child
+                else => left
+            if me.before(a: child, b: index)
+                me.swap(a: index, b: child)
+                continue with index: child
+            else
+                return
+        else
+            return
 
 ### Removes every entry (each priority and element is ended, drop) by resetting the count to `0`. The array and its
 ### capacity are kept for reuse.
@@ -323,11 +383,11 @@ needs TPriority: typename, TElement: typename
 ### borrowed pointer gives nothing).
 private routine PriorityQueue[TPriority, TElement].drop_entries(me: @Me) -> None
 needs TPriority: typename, TElement: typename
-    data: @PriorityEntry[TPriority, TElement] = me.storage.data.peek()
+    priorities: @TPriority = me.priorities.data.peek()
+    elements: @TElement = me.elements.data.peek()
     each i in 0 til me.count.peek()
-        item: @PriorityEntry[TPriority, TElement] = data.stride(i)
-        drop item.priority
-        drop item.element
+        drop priorities.stride(i)
+        drop elements.stride(i)
     return
 
 ### Ends every entry, then gives the queue's memory back to its allocator and resets it to the empty state, so it can
@@ -336,10 +396,11 @@ needs TPriority: typename, TElement: typename
 @track_caller
 routine PriorityQueue[TPriority, TElement].destruct(me: @Me) -> None
 needs TPriority: typename, TElement: typename
-    if me.storage.manager.peek().is_null()
+    if me.priorities.manager.peek().is_null()
         return
     me.drop_entries()
-    me.storage.give_back()
+    me.priorities.give_back()
+    me.elements.give_back()
     me.count.poke(0)
     return
 
@@ -367,10 +428,24 @@ needs TPriority: typename, TElement: typename, Diagnosable[TPriority], Diagnosab
     each at in 0 til count
         if not (at == 0)
             write_str(out, text: ", ")
-        data: @PriorityEntry[TPriority, TElement] = me.storage.data.peek()
-        item: PriorityEntry[TPriority, TElement] = data.stride(at).peek()
-        item.priority.diagnose_into(out)
+        priorities: @TPriority = me.priorities.data.peek()
+        elements: @TElement = me.elements.data.peek()
+        priorities.stride(at).diagnose_into(out)
         write_str(out, text: ": ")
-        item.element.diagnose_into(out)
+        elements.stride(at).diagnose_into(out)
     write_str(out, text: "]")
+    return
+
+# -- moving ---------------------------------------------------------------------
+
+### Exchanges what the places `a` and `b` hold, each moved, never copied.
+### :typeparam T: The type the places hold.
+### :param a: The first place.
+### :param b: The second place.
+internal routine swap_places[T](a: @T, b: @T) -> None
+needs T: typename
+    local first: @T <- steal a.stride(0)
+
+    a.poke(steal b.stride(0))
+    b.poke(steal first)
     return

@@ -59,10 +59,10 @@ needs TKey: typename, TValue: typename
         else
             continue with current: current.children[0]
 
-### Yields the next entry in ascending key order, climbing to a parent or descending to the next leaf as needed.
-### :returns: The next key and value pair, smallest key first.
-### :absent: After the entry with the largest key has been yielded.
-routine SortedDictIter[TKey, TValue].emit_checked(me: @Me) -> Maybe[KVPair[TKey, TValue]]
+### Steps to the next entry in ascending key order, climbing to a parent or descending to the next leaf as needed.
+### :returns: Where the next entry lives, smallest key first.
+### :absent: After the entry with the largest key.
+internal routine SortedDictIter[TKey, TValue].next_spot(me: @Me) -> Maybe[SortedDictSpot[TKey, TValue]]
 needs TKey: typename, TValue: typename
     while true
         depth2: USize = me.depth.peek()
@@ -74,24 +74,30 @@ needs TKey: typename, TValue: typename
             index: USize = me.indices[level]
             count: USize = node.count.peek()
             if index < count
-                key: TKey = node.keys[index]
-                value: TValue = node.values[index]
-                pair: KVPair[TKey, TValue] = KVPair[TKey, TValue](key: key, value: value)
                 leaf: Bool = node.leaf.peek()
                 me.indices[level] = index + 1
-                if leaf
-                    some: Maybe[KVPair[TKey, TValue]] = pair
-                    return some
-                else
+                if not leaf
                     right: @SortedDictNode[TKey, TValue] = node.children[index + 1]
                     me.push_leftmost(right)
-                    some: Maybe[KVPair[TKey, TValue]] = pair
-                    return some
+                return SortedDictSpot[TKey, TValue](node: node, index: index)
             else
                 me.depth.poke(level)
                 continue
-    none: Maybe[KVPair[TKey, TValue]] = None()
-    return none
+    return None()
+
+### Yields the next entry in ascending key order.
+### :returns: The next key and value pair, smallest key first.
+### :absent: After the entry with the largest key has been yielded.
+routine SortedDictIter[TKey, TValue].emit_checked(me: @Me) -> Maybe[KVPair[TKey, TValue]]
+needs TKey: typename, TValue: typename
+    when me.next_spot()
+        is SortedDictSpot[TKey, TValue] as spot =>
+            node: @SortedDictNode[TKey, TValue] = spot.node
+            pair: KVPair[TKey, TValue] = KVPair[TKey, TValue](
+                key: node.keys.getslot(spot.index).peek(),
+                value: node.values.getslot(spot.index).peek())
+            return pair
+        is None => return None()
 
 ### Yields the next element and advances the iterator, crashing when there is none.
 ### :returns: The next element, smallest key first.

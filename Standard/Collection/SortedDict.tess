@@ -13,10 +13,10 @@ private preset NODE_KEYS: USize = 7
 private preset NODE_CHILDREN: USize = NODE_KEYS.add(1)
 private preset NODE_MIN_KEYS: USize = NODE_KEYS.add(1).div_trunc(2)
 
-### One node of a {SortedDict[TKey, TValue]} B-tree: up to `NODE_KEYS` keys and values inline, and for internal nodes the child pointers between them. `subtree_count` is the total entries in the subtree.
+### One node of a {SortedDict[TKey, TValue]} B-tree: up to `NODE_KEYS` keys and values inline, and for internal nodes the child pointers between them. `subtree_count` is the total entries in the subtree. It is an entity, so an entity key or value can live in it: the dict makes and frees nodes, and its keys and values move in and out with steal.
 ### :typeparam TKey: The key type.
 ### :typeparam TValue: The value type.
-record SortedDictNode[TKey, TValue]
+entity SortedDictNode[TKey, TValue]
 needs TKey: typename, TValue: typename, Comparable[TKey]
     leaf: Bool
     count: USize
@@ -38,13 +38,13 @@ needs TKey: typename, TValue: typename, Comparable[TKey]
     count: USize
     alloc: @MemoryManager
 
-### Where the entry of a rank lives: its node and its index there.
-private record SortedDictSpot[TKey, TValue]
+### Where an entry lives: its node and its index there.
+internal record SortedDictSpot[TKey, TValue]
 needs TKey: typename, TValue: typename
     node: @SortedDictNode[TKey, TValue]
     index: USize
 
-### Releases nothing: a `SortedDictNode` holds no memory of its own.
+### Releases nothing: the dict ends a node's keys and values and frees the node itself (`free_recursive`).
 routine SortedDictNode[TKey, TValue].destruct(me: @Me) -> None
 needs TKey: typename, TValue: typename
     return
@@ -53,13 +53,13 @@ needs TKey: typename, TValue: typename
 ### :param node: Its `node`.
 ### :param index: Its `index`.
 ### :returns: The new value.
-private routine SortedDictSpot[TKey, TValue].construct(node: @SortedDictNode[TKey, TValue],
+internal routine SortedDictSpot[TKey, TValue].construct(node: @SortedDictNode[TKey, TValue],
     index: USize) -> Me
 needs TKey: typename, TValue: typename, Comparable[TKey]
     return Me(node, index)
 
 ### Releases nothing: a `SortedDictSpot` holds no memory of its own.
-private routine SortedDictSpot[TKey, TValue].destruct(me: @Me) -> None
+internal routine SortedDictSpot[TKey, TValue].destruct(me: @Me) -> None
 needs TKey: typename, TValue: typename, Comparable[TKey]
     return
 
@@ -135,20 +135,51 @@ needs TKey: typename, TValue: typename
         me.subtree_count.poke(sum.peek())
         return
 
-### Finds where `key` sits among this node's keys.
+### Finds where the key at `key` sits among this node's keys, compared through their places.
 ### :param key: The key to locate.
 ### :returns: The index of the first key not less than `key`, or the key count when every key is smaller. It is also the child to descend into.
-routine SortedDictNode[TKey, TValue].find_index(me: @Me, key: TKey) -> USize
+routine SortedDictNode[TKey, TValue].find_index(me: @Me, key: @TKey) -> USize
 needs TKey: typename, TValue: typename
     while i < me.count.peek() with i: USize = 0
-        node_key: TKey = me.keys[i]
-        cmp: S32 = key.compare(node_key)
+        cmp: S32 = key.compare(me.keys.getslot(i))
         if cmp <= 0
             return i
         else
             continue with i: i + 1
     then
         return i
+
+### Where the entry with a key equal to the one at `key` lives, compared through the places.
+### :param key: The key to look for.
+### :returns: The entry's node and its index there.
+### :absent: When the key is not present.
+private routine SortedDict[TKey, TValue].find_spot(me: @Me,
+    key: @TKey) -> Maybe[SortedDictSpot[TKey, TValue]]
+needs TKey: typename, TValue: typename
+    root: @SortedDictNode[TKey, TValue] = me.root.peek()
+    if root.is_null()
+        return None()
+
+    while true with node: @SortedDictNode[TKey, TValue] = root
+        i: USize = node.find_index(key)
+        count: USize = node.count.peek()
+        if i < count
+            if key.compare(node.keys.getslot(i)) == 0
+                return SortedDictSpot[TKey, TValue](node: node, index: i)
+        if node.leaf.peek()
+            return None()
+        else
+            continue with node: node.children[i]
+
+### Reads the value stored under the key at `key`, read through its place.
+### :param key: The key to look up.
+### :returns: A copy of the value.
+### :throws: Crashes with `KeyNotFoundError` when the key is absent. See {SortedDict[TKey, TValue].getitem_checked}.
+@track_caller
+routine SortedDict[TKey, TValue].getitem(me: @Me, key: @TKey) -> TValue
+needs TKey: typename, TValue: typename
+    at: @TValue = me.getslot(key)
+    return at.peek()
 
 ### Reads the value stored under `key`.
 ### :param key: The key to look up.
@@ -157,10 +188,20 @@ needs TKey: typename, TValue: typename
 @track_caller
 routine SortedDict[TKey, TValue].getitem(me: @Me, key: TKey) -> TValue
 needs TKey: typename, TValue: typename
-    found: Maybe[TValue] = me.getitem_checked(key)
-    when found
-        is TValue as value => return value
-        is None => crash_key_not_found()
+    at: @TValue = me.getslot(steal key)
+    return at.peek()
+
+### `getitem`, returning None instead of crashing on a missing key.
+### :param key: The key to look up, read through its place.
+### :returns: A copy of the value.
+### :absent: When the key is not present.
+routine SortedDict[TKey, TValue].getitem_checked(me: @Me, key: @TKey) -> Maybe[TValue]
+needs TKey: typename, TValue: typename
+    when me.getslot_checked(key)
+        is @TValue as at =>
+            value: TValue = at.peek()
+            return value
+        is None => return None()
 
 ### `getitem`, returning None instead of crashing on a missing key.
 ### :param key: The key to look up.
@@ -168,23 +209,26 @@ needs TKey: typename, TValue: typename
 ### :absent: When the key is not present.
 routine SortedDict[TKey, TValue].getitem_checked(me: @Me, key: TKey) -> Maybe[TValue]
 needs TKey: typename, TValue: typename
-    root: @SortedDictNode[TKey, TValue] = me.root.peek()
-    if root.is_null()
-        return None()
-    else
-        while true with node: @SortedDictNode[TKey, TValue] = root
-            i: USize = node.find_index(key)
-            count: USize = node.count.peek()
-            if i < count
-                node_key: TKey = node.keys[i]
-                cmp: S32 = key.compare(node_key)
-                if cmp == 0
-                    value: TValue = node.values[i]
-                    return value
-            if node.leaf.peek()
-                return None()
-            else
-                continue with node: node.children[i]
+    local probe: @TKey <- steal key
+
+    found: Maybe[TValue] = me.getitem_checked(probe)
+
+    drop probe
+    return found
+
+### The address of the value under the key at `key`, checked like getitem: a place to update the value in place.
+### Only the value: changing a key in place would break the order. It stays valid until the dict changes shape or is
+### destructed.
+### :param key: The key to look up, read through its place.
+### :returns: The value's address.
+### :throws: Crashes with `KeyNotFoundError` when the key is absent.
+@track_caller
+routine SortedDict[TKey, TValue].getslot(me: @Me, key: @TKey) -> @TValue
+needs TKey: typename, TValue: typename
+    found: Maybe[@TValue] = me.getslot_checked(key)
+    when found
+        is @TValue as value => return value
+        is None => crash_key_not_found()
 
 ### The address of the value under `key`, checked like getitem: a place to update the value in place. Only the
 ### value: changing a key in place would break the order. It stays valid until the dict changes shape or is
@@ -195,34 +239,36 @@ needs TKey: typename, TValue: typename
 @track_caller
 routine SortedDict[TKey, TValue].getslot(me: @Me, key: TKey) -> @TValue
 needs TKey: typename, TValue: typename
-    found: Maybe[@TValue] = me.getslot_checked(key)
+    found: Maybe[@TValue] = me.getslot_checked(steal key)
     when found
         is @TValue as value => return value
         is None => crash_key_not_found()
 
-### `at`, returning None instead of crashing on a missing key.
+### `getslot`, returning None instead of crashing on a missing key.
+### :param key: The key to look up, read through its place.
+### :returns: The value's address.
+### :absent: When the key is not present.
+routine SortedDict[TKey, TValue].getslot_checked(me: @Me, key: @TKey) -> Maybe[@TValue]
+needs TKey: typename, TValue: typename
+    when me.find_spot(key)
+        is SortedDictSpot[TKey, TValue] as spot =>
+            node: @SortedDictNode[TKey, TValue] = spot.node
+            value: @TValue = node.values.getslot(spot.index)
+            return value
+        is None => return None()
+
+### `getslot`, returning None instead of crashing on a missing key.
 ### :param key: The key to look up.
 ### :returns: The value's address.
 ### :absent: When the key is not present.
 routine SortedDict[TKey, TValue].getslot_checked(me: @Me, key: TKey) -> Maybe[@TValue]
 needs TKey: typename, TValue: typename
-    root: @SortedDictNode[TKey, TValue] = me.root.peek()
-    if root.is_null()
-        return None()
-    else
-        while true with node: @SortedDictNode[TKey, TValue] = root
-            i: USize = node.find_index(key)
-            count: USize = node.count.peek()
-            if i < count
-                node_key: TKey = node.keys[i]
-                cmp: S32 = key.compare(node_key)
-                if cmp == 0
-                    value: @TValue = node.values.getslot(i)
-                    return value
-            if node.leaf.peek()
-                return None()
-            else
-                continue with node: node.children[i]
+    local probe: @TKey <- steal key
+
+    found: Maybe[@TValue] = me.getslot_checked(probe)
+
+    drop probe
+    return found
 
 ### Whether two dicts hold the same key-value pairs. Both are sorted by key, so comparing the pairs in order is
 ### enough.
@@ -251,48 +297,57 @@ needs TKey: typename, TValue: typename, Equatable[TValue]
 
     # both have the same count, so both run out together
     while true
-        x: Maybe[KVPair[TKey, TValue]] = a.emit_checked()
-        y: Maybe[KVPair[TKey, TValue]] = b.emit_checked()
+        x: Maybe[SortedDictSpot[TKey, TValue]] = a.next_spot()
+        y: Maybe[SortedDictSpot[TKey, TValue]] = b.next_spot()
         when x
-            is KVPair[TKey, TValue] as x_item =>
-                y2: KVPair[TKey, TValue] = y.unwrap()
-                cmp: S32 = x_item.key.compare(y2.key)
+            is SortedDictSpot[TKey, TValue] as x_spot =>
+                y_spot: SortedDictSpot[TKey, TValue] = y.unwrap()
+                x_node: @SortedDictNode[TKey, TValue] = x_spot.node
+                y_node: @SortedDictNode[TKey, TValue] = y_spot.node
+                cmp: S32 = x_node.keys.getslot(x_spot.index).compare(y_node.keys.getslot(y_spot.index))
                 if not (cmp == 0)
                     return false
-                if x_item.value == y2.value
+                if x_node.values.getslot(x_spot.index).eq(y_node.values.getslot(y_spot.index))
                     continue
                 else
                     return false
             is None => return true
+
+### Whether the key at `key` is present, read through its place.
+### :param key: The key to look for.
+### :returns: `true` when an equal key is in the map.
+routine SortedDict[TKey, TValue].has_key(me: @Me, key: @TKey) -> Bool
+needs TKey: typename, TValue: typename
+    when me.find_spot(key)
+        is SortedDictSpot[TKey, TValue] => return true
+        is None => return false
 
 ### Whether `key` is present.
 ### :param key: The key to look for.
 ### :returns: `true` when an equal key is in the map.
 routine SortedDict[TKey, TValue].has_key(me: @Me, key: TKey) -> Bool
 needs TKey: typename, TValue: typename
-    root: @SortedDictNode[TKey, TValue] = me.root.peek()
-    if root.is_null()
-        return false
-    else
-        while true with node: @SortedDictNode[TKey, TValue] = root
-            i: USize = node.find_index(key)
-            count: USize = node.count.peek()
-            if i < count
-                node_key: TKey = node.keys[i]
-                cmp: S32 = key.compare(node_key)
-                if cmp == 0
-                    return true
-            if node.leaf.peek()
-                return false
-            else
-                continue with node: node.children[i]
+    local probe: @TKey <- steal key
+
+    there: Bool = me.has_key(probe)
+
+    drop probe
+    return there
+
+### Whether the key at `key` is not a key: the opposite of `has_key`.
+### :param key: The key to look for.
+### :returns: `true` when `has_key` would be `false`.
+routine SortedDict[TKey, TValue].lacks_key(me: @Me, key: @TKey) -> Bool
+needs TKey: typename, TValue: typename
+    there: Bool = me.has_key(key)
+    return not there
 
 ### Whether `key` is not a key: the opposite of `has_key`.
 ### :param key: The key to look for.
 ### :returns: `true` when `has_key` would be `false`.
 routine SortedDict[TKey, TValue].lacks_key(me: @Me, key: TKey) -> Bool
 needs TKey: typename, TValue: typename
-    there: Bool = me.has_key(key)
+    there: Bool = me.has_key(steal key)
     return not there
 
 ### The node and index of the `rank`-th smallest key.
@@ -382,10 +437,8 @@ needs TKey: typename, TValue: typename
             me.children[i + 1] = child
             continue with i: i - 1
         then
-            middle_key: TKey = left.keys[mid]
-            middle_value: TValue = left.values[mid]
-            me.keys[index] = middle_key
-            me.values[index] = middle_value
+            me.keys.getslot(index).poke(steal left.keys.getslot(mid))
+            me.values.getslot(index).poke(steal left.values.getslot(mid))
             me.children[index + 1] = right
             left.count.poke(mid)
             next_count: USize = me.count.peek() + 1
@@ -409,10 +462,8 @@ needs TKey: typename, TValue: typename
                 me.children[i2 + 1] = child
                 continue with i2: i2 - 1
             then
-                middle_key: TKey = left.keys[mid]
-                middle_value: TValue = left.values[mid]
-                me.keys[index] = middle_key
-                me.values[index] = middle_value
+                me.keys.getslot(index).poke(steal left.keys.getslot(mid))
+                me.values.getslot(index).poke(steal left.values.getslot(mid))
                 me.children[index + 1] = right
                 left.count.poke(mid)
                 next_count: USize = me.count.peek() + 1
@@ -427,34 +478,37 @@ needs TKey: typename, TValue: typename
 ### :param key: The key to insert.
 ### :param value: The value to insert.
 ### :param alloc: The allocator for nodes made by splits.
-### :returns: True when it inserted, false when a split failed to allocate. The tree then holds the same entries,
-###     some nodes already split.
+### :returns: True when it inserted, false when a split failed to allocate (the key and value end then). The tree then
+###     holds the same entries, some nodes already split.
 @reshaping
 routine SortedDictNode[TKey, TValue].insert_nonfull(me: @Me, key: TKey, value: TValue,
     alloc: @MemoryManager) -> Bool
 needs TKey: typename, TValue: typename
+    local probe: @TKey <- steal key
+
     if me.leaf.peek()
-        slot: USize = me.find_index(key)
+        slot: USize = me.find_index(key: probe)
         count: USize = me.count.peek()
         me.keys.shift_right(start: slot, end: count)
         me.values.shift_right(start: slot, end: count)
-        me.keys[slot] = key
-        me.values[slot] = value
+        me.keys.getslot(slot).poke(steal probe)
+        me.values.getslot(slot).poke(steal value)
         new_count: USize = count + 1
         me.count.poke(new_count)
         me.subtree_count.poke(new_count)
         return true
     else
-        slot: USize = me.find_index(key)
+        slot: USize = me.find_index(key: probe)
         child: @Me = me.children[slot]
         child_count: USize = child.count.peek()
         full: Bool = child_count == NODE_KEYS
         values2: (USize, @Me) = when
             full =>
                 if not me.split_child(index: slot, alloc)
+                    drop probe
+                    drop value
                     return false
-                pivot: TKey = me.keys[slot]
-                cmp: S32 = key.compare(pivot)
+                cmp: S32 = probe.compare(me.keys.getslot(slot))
                 go_right: Bool = cmp > 0
                 next_slot: USize = when
                     go_right => slot + 1
@@ -462,7 +516,7 @@ needs TKey: typename, TValue: typename
                 becomes (next_slot, me.children[next_slot])
             else => (slot, child)
         slot2, child2 = values2
-        if not child2.insert_nonfull(key, value, alloc)
+        if not child2.insert_nonfull(key: steal probe, value: steal value, alloc)
             return false
         me.recount()
         return true
@@ -475,12 +529,13 @@ needs TKey: typename, TValue: typename
 @reshaping
 routine SortedDict[TKey, TValue].setitem(me: @Me, key: TKey, value: TValue) -> None
 needs TKey: typename, TValue: typename
-    put: Result[None, AllocFailed] = me.setitem_result(key, value)
+    put: Result[None, AllocFailed] = me.setitem_result(key: steal key, value: steal value)
     when put
         is None => return
         is AllocFailed => crash_allocation()
 
-### `setitem`, returning an error instead of crashing when the allocator fails.
+### `setitem`, returning an error instead of crashing when the allocator fails. A key already there keeps its place
+### and the new key ends, the old value ends and the new one takes its place.
 ### :param key: The key to store under.
 ### :param value: The value to store.
 ### :returns: A value once the value is stored.
@@ -489,22 +544,30 @@ needs TKey: typename, TValue: typename
 routine SortedDict[TKey, TValue].setitem_result(me: @Me, key: TKey,
     value: TValue) -> Result[None, AllocFailed]
 needs TKey: typename, TValue: typename
+    local probe: @TKey <- steal key
     local root: @SortedDictNode[TKey, TValue] = me.root.peek()
 
+    when me.getslot_checked(probe)
+        is @TValue as old =>
+            drop probe
+            drop old
+            old.poke(steal value)
+            return None()
+        is None => pass
     if root.is_null()
         alloc: @MemoryManager = me.alloc.peek()
         first_node: @SortedDictNode[TKey, TValue] = SortedDictNode[TKey, TValue].construct(
             leaf: true, alloc)
         if first_node.is_null()
+            drop probe
+            drop value
             return AllocFailed()
-        first_node.keys[0] = key
-        first_node.values[0] = value
+        first_node.keys.getslot(0).poke(steal probe)
+        first_node.values.getslot(0).poke(steal value)
         first_node.count.poke(1)
         first_node.subtree_count.poke(1)
         me.root.poke(first_node)
         me.count.poke(1)
-        return None()
-    else if root.replace(key, value)
         return None()
     else
         alloc: @MemoryManager = me.alloc.peek()
@@ -515,6 +578,8 @@ needs TKey: typename, TValue: typename
                 new_root: @SortedDictNode[TKey, TValue] = SortedDictNode[TKey, TValue].construct(
                     leaf: false, alloc)
                 if new_root.is_null()
+                    drop probe
+                    drop value
                     return AllocFailed()
                 new_root.children[0] = root
                 if new_root.split_child(index: 0, alloc)
@@ -522,48 +587,31 @@ needs TKey: typename, TValue: typename
                     becomes new_root
                 else
                     deallocate[SortedDictNode[TKey, TValue]](data: new_root, alloc)
+                    drop probe
+                    drop value
                     return AllocFailed()
             else => root
-        if not root_node.insert_nonfull(key, value, alloc)
+        if not root_node.insert_nonfull(key: steal probe, value: steal value, alloc)
             return AllocFailed()
         next_count: USize = me.count.peek() + 1
         next_count.poke_into(me.count)
         return None()
 
-### Replaces the value of `key` somewhere in this subtree, if the key is present.
-### :param key: The key whose value to replace.
-### :param value: The new value.
-### :returns: `true` when the key was found and its value replaced, `false` when it is absent.
-routine SortedDictNode[TKey, TValue].replace(me: @Me, key: TKey, value: TValue) -> Bool
-needs TKey: typename, TValue: typename
-    local slot: USize = me.find_index(key)
-
-    count: USize = me.count.peek()
-    if slot < count
-        node_key: TKey = me.keys[slot]
-        cmp: S32 = key.compare(node_key)
-        if cmp == 0
-            me.values[slot] = value
-            return true
-    if me.leaf.peek()
-        return false
-    else
-        child: @Me = me.children[slot]
-        return child.replace(key, value)
-
-### Removes the key and value at `index` from a leaf by shifting the later entries left.
+### Removes the key and value at `index` from a leaf by shifting the later entries left. The key must already be
+### taken out (or ended).
 ### :param index: The position of the entry within the leaf.
 ### :returns: The removed value.
 routine SortedDictNode[TKey, TValue].remove_leaf_at(me: @Me, index: USize) -> TValue
 needs TKey: typename, TValue: typename
-    old: TValue = me.values[index]
+    local old: @TValue <- steal me.values.getslot(index)
+
     count: USize = me.count.peek()
     me.keys.shift_left(start: index, end: count)
     me.values.shift_left(start: index, end: count)
     new_count: USize = count - 1
     me.count.poke(new_count)
     me.subtree_count.poke(new_count)
-    return old
+    return steal old
 
 # Capacity = NODE_KEYS, t = NODE_MIN_KEYS. Non-root nodes maintain
 # count >= NODE_MIN_KEYS - 1.
@@ -582,14 +630,10 @@ needs TKey: typename, TValue: typename
 
     child.keys.shift_right(start: 0, end: child_count)
     child.values.shift_right(start: 0, end: child_count)
-    pivot_key: TKey = me.keys[separator]
-    pivot_value: TValue = me.values[separator]
-    child.keys[0] = pivot_key
-    child.values[0] = pivot_value
-    new_pivot_key: TKey = left.keys[left_count - 1]
-    new_pivot_value: TValue = left.values[left_count - 1]
-    me.keys[separator] = new_pivot_key
-    me.values[separator] = new_pivot_value
+    child.keys.getslot(0).poke(steal me.keys.getslot(separator))
+    child.values.getslot(0).poke(steal me.values.getslot(separator))
+    me.keys.getslot(separator).poke(steal left.keys.getslot(left_count - 1))
+    me.values.getslot(separator).poke(steal left.values.getslot(left_count - 1))
     if not child.leaf.peek()
         children: USize = child_count + 1
         child.children.shift_right(start: 0, end: children)
@@ -611,14 +655,10 @@ needs TKey: typename, TValue: typename
     local child_count: USize = child.count.peek()
     local right_count: USize = right.count.peek()
 
-    pivot_key: TKey = me.keys[i]
-    pivot_value: TValue = me.values[i]
-    child.keys[child_count] = pivot_key
-    child.values[child_count] = pivot_value
-    new_pivot_key: TKey = right.keys[0]
-    new_pivot_value: TValue = right.values[0]
-    me.keys[i] = new_pivot_key
-    me.values[i] = new_pivot_value
+    child.keys.getslot(child_count).poke(steal me.keys.getslot(i))
+    child.values.getslot(child_count).poke(steal me.values.getslot(i))
+    me.keys.getslot(i).poke(steal right.keys.getslot(0))
+    me.values.getslot(i).poke(steal right.values.getslot(0))
     right.keys.shift_left(start: 0, end: right_count)
     right.values.shift_left(start: 0, end: right_count)
     if not child.leaf.peek()
@@ -643,10 +683,8 @@ needs TKey: typename, TValue: typename
     local left_count: USize = left.count.peek()
     local right_count: USize = right.count.peek()
 
-    pivot_key: TKey = me.keys[i]
-    pivot_value: TValue = me.values[i]
-    left.keys[left_count] = pivot_key
-    left.values[left_count] = pivot_value
+    left.keys.getslot(left_count).poke(steal me.keys.getslot(i))
+    left.values.getslot(left_count).poke(steal me.values.getslot(i))
     dst_start: USize = left_count + 1
     left.keys.copy(dst_start, src: right.keys, src_start: 0, count: right_count)
     left.values.copy(dst_start, src: right.values, src_start: 0, count: right_count)
@@ -713,17 +751,16 @@ needs TKey: typename, TValue: typename
     if me.leaf.peek()
         count: USize = me.count.peek()
         index: USize = count - 1
-        key: TKey = me.keys[index]
-        value: TValue = me.remove_leaf_at(index)
-        out_value.poke(steal value)
-        return key
+        local key: @TKey <- steal me.keys.getslot(index)
+        out_value.poke(me.remove_leaf_at(index))
+        return steal key
     else
         count: USize = me.count.peek()
         actual: USize = me.ensure_min(i: count, alloc)
         child: @Me = me.children[actual]
-        key: TKey = child.take_max_key(out_value, alloc)
+        local key: @TKey <- child.take_max_key(out_value, alloc)
         me.recount()
-        return key
+        return steal key
 
 ### Removes the entry with the smallest key in this subtree, rebalancing children on the way down.
 ### :param out_value: Receives the removed entry's value.
@@ -733,32 +770,32 @@ routine SortedDictNode[TKey, TValue].take_min_key(me: @Me, out_value: @TValue,
     alloc: @MemoryManager) -> TKey
 needs TKey: typename, TValue: typename
     if me.leaf.peek()
-        key: TKey = me.keys[0]
-        value: TValue = me.remove_leaf_at(0)
-        out_value.poke(steal value)
-        return key
+        local key: @TKey <- steal me.keys.getslot(0)
+        out_value.poke(me.remove_leaf_at(0))
+        return steal key
     else
         actual: USize = me.ensure_min(i: 0, alloc)
         child: @Me = me.children[actual]
-        key: TKey = child.take_min_key(out_value, alloc)
+        local key: @TKey <- child.take_min_key(out_value, alloc)
         me.recount()
-        return key
+        return steal key
 
-### Removes the entry for `key` from this subtree, rebalancing children on the way down so no node underflows.
-### :param key: The key to remove.
+### Removes the entry for the key at `key` from this subtree and ends its key and value, rebalancing children on the
+### way down so no node underflows.
+### :param key: The key to remove, read through its place.
 ### :param alloc: The allocator used when nodes merge.
 ### :returns: `true` when the key was found and removed, `false` otherwise.
-routine SortedDictNode[TKey, TValue].remove(me: @Me, key: TKey, alloc: @MemoryManager) -> Bool
+routine SortedDictNode[TKey, TValue].remove(me: @Me, key: @TKey, alloc: @MemoryManager) -> Bool
 needs TKey: typename, TValue: typename
     local slot: USize = me.find_index(key)
 
     count: USize = me.count.peek()
     if slot < count
-        node_key: TKey = me.keys[slot]
-        cmp: S32 = key.compare(node_key)
+        cmp: S32 = key.compare(me.keys.getslot(slot))
         if cmp == 0
             if me.leaf.peek()
-                me.remove_leaf_at(slot)
+                drop me.keys.getslot(slot)
+                drop me.remove_leaf_at(slot)
                 return true
             else
                 left: @Me = me.children[slot]
@@ -766,10 +803,11 @@ needs TKey: typename, TValue: typename
                 if left_count >= NODE_MIN_KEYS
                     local out: @TValue <- .hollow()
                     left2: @Me = me.children[slot]
-                    replacement_key: TKey = left2.take_max_key(out_value: out, alloc)
-                    replacement_value: TValue = out.peek()
-                    me.keys[slot] = replacement_key
-                    me.values[slot] = replacement_value
+                    local replacement: @TKey <- left2.take_max_key(out_value: out, alloc)
+                    drop me.keys.getslot(slot)
+                    drop me.values.getslot(slot)
+                    me.keys.getslot(slot).poke(steal replacement)
+                    me.values.getslot(slot).poke(steal out)
                     me.recount()
                     return true
                 else
@@ -778,10 +816,11 @@ needs TKey: typename, TValue: typename
                     if right_count >= NODE_MIN_KEYS
                         local out: @TValue <- .hollow()
                         right2: @Me = me.children[slot + 1]
-                        replacement_key: TKey = right2.take_min_key(out_value: out, alloc)
-                        replacement_value: TValue = out.peek()
-                        me.keys[slot] = replacement_key
-                        me.values[slot] = replacement_value
+                        local replacement: @TKey <- right2.take_min_key(out_value: out, alloc)
+                        drop me.keys.getslot(slot)
+                        drop me.values.getslot(slot)
+                        me.keys.getslot(slot).poke(steal replacement)
+                        me.values.getslot(slot).poke(steal out)
                         me.recount()
                         return true
                     else
@@ -799,11 +838,11 @@ needs TKey: typename, TValue: typename
         me.recount()
         return removed
 
-### Removes the entry for `key`, shrinking the tree when the root empties.
-### :param key: The key to remove.
+### Removes the entry for the key at `key` and ends its key and value, shrinking the tree when the root empties.
+### :param key: The key to remove, read through its place.
 ### :returns: `true` when an entry was removed, `false` when the key was not present.
 @reshaping
-routine SortedDict[TKey, TValue].remove(me: @Me, key: TKey) -> Bool
+routine SortedDict[TKey, TValue].remove(me: @Me, key: @TKey) -> Bool
 needs TKey: typename, TValue: typename
     local root: @SortedDictNode[TKey, TValue] = me.root.peek()
 
@@ -832,11 +871,27 @@ needs TKey: typename, TValue: typename
         else
             return false
 
-### Frees this node and every node below it through `alloc`. An internal node has `count` keys and `count + 1`
-### children. The keys and values are not destructed.
+### Removes the entry for `key` and ends its key and value, and `key` too.
+### :param key: The key to remove.
+### :returns: `true` when an entry was removed, `false` when the key was not present.
+@reshaping
+routine SortedDict[TKey, TValue].remove(me: @Me, key: TKey) -> Bool
+needs TKey: typename, TValue: typename
+    local probe: @TKey <- steal key
+
+    removed: Bool = me.remove(probe)
+
+    drop probe
+    return removed
+
+### Ends the keys and values of this node and every node below it (drop) and frees the nodes through `alloc`. An
+### internal node has `count` keys and `count + 1` children.
 ### :param alloc: The allocator the nodes came from.
 routine SortedDictNode[TKey, TValue].free_recursive(me: @Me, alloc: @MemoryManager) -> None
 needs TKey: typename, TValue: typename
+    each i in 0 til me.count.peek()
+        drop me.keys.getslot(i)
+        drop me.values.getslot(i)
     if me.leaf.peek()
         deallocate[Me](data: me, alloc)
         return
@@ -852,7 +907,7 @@ needs TKey: typename, TValue: typename
             deallocate[Me](data: me, alloc)
             return
 
-### Frees the dict's memory through its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
+### Ends every key and value (drop), frees the dict's memory through its allocator, and resets it to the empty state, so it can be reused or destructed again.
 ### :note: Safe to call on a never-filled instance, where it only resets the fields.
 @track_caller
 routine SortedDict[TKey, TValue].destruct(me: @Me) -> None
@@ -873,9 +928,7 @@ needs TKey: typename, TValue: typename
 ### :param out: The writer to write to.
 routine SortedDict[TKey, TValue].represent_into[TWriter](me: @Me, out: @TWriter) -> None
 needs TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue], TWriter: typename, Writer[TWriter]
-    iter_val: SortedDictIter[TKey, TValue] = .construct(me)
-    local iter: @SortedDictIter[TKey, TValue] <- iter_val
-    diagnose_entries[TKey, TValue, SortedDictIter[TKey, TValue], TWriter](out, iter)
+    me.write_entries(out)
     return
 
 ### The entries in key order, keys and values diagnosed: {"a": 1, "b": 2}.
@@ -883,7 +936,28 @@ needs TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue], 
 ### :param out: The writer to write to.
 routine SortedDict[TKey, TValue].diagnose_into[TWriter](me: @Me, out: @TWriter) -> None
 needs TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue], TWriter: typename, Writer[TWriter]
+    me.write_entries(out)
+    return
+
+### Writes {key: value, ...} in key order, each key and value diagnosed through its place.
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param out: The writer to write to.
+private routine SortedDict[TKey, TValue].write_entries[TWriter](me: @Me, out: @TWriter) -> None
+needs TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue], TWriter: typename, Writer[TWriter]
     iter_val: SortedDictIter[TKey, TValue] = .construct(me)
     local iter: @SortedDictIter[TKey, TValue] <- iter_val
-    diagnose_entries[TKey, TValue, SortedDictIter[TKey, TValue], TWriter](out, iter)
+
+    write_str(out, text: "{")
+    while true with first: Bool = true
+        when iter.next_spot()
+            is SortedDictSpot[TKey, TValue] as spot =>
+                if not first
+                    write_str(out, text: ", ")
+                node: @SortedDictNode[TKey, TValue] = spot.node
+                node.keys.getslot(spot.index).diagnose_into(out)
+                write_str(out, text: ": ")
+                node.values.getslot(spot.index).diagnose_into(out)
+                continue with first: false
+            is None => break
+    write_str(out, text: "}")
     return

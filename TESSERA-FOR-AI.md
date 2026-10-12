@@ -781,7 +781,8 @@ routine sum_to(n: U64) -> U64
 ```
 
 Iterating a collection (`emit_checked` returns `Maybe[T]`, `None` past the end, `emit` crashes there; an iterator
-over elements in memory, `ListIter`, `ArrayIter`, `CircularListIter`, `DictValues` (a dict's values, never its keys),
+over elements in memory, `ListIter`, `ArrayIter`, `CircularListIter`, `SortedListIter`, `SortedSetIter`, `DictValues`
+(a dict's values, never its keys),
 also hands out each element's slot with
 `next` / `next_checked`):
 
@@ -875,10 +876,19 @@ says `@reshaping(name)`.
 | `CircularList[T]` | `add_first`, `add_last`, `remove_first`, `remove_last`, `getitem`, `setitem` | front to back |
 | `Dict[TKey, TValue]` | `setitem` (adds or replaces), `getitem`, `has_key` / `lacks_key`, `remove` | **insertion order (guaranteed)** |
 | `Set[T]` | `add`, `has` / `lacks`, `remove` | **insertion order (guaranteed)** |
-| `SortedDict[TKey, TValue]` | `setitem`, `getitem`, `has_key` / `lacks_key`, `remove`, `get_by_rank(rank)` (a `KVPair` copy), `value_ptr_by_rank(rank)` | ascending key |
+| `SortedDict[TKey, TValue]` | `setitem`, `getitem`, `getslot`, `has_key` / `lacks_key`, `remove`, `get_by_rank(rank)` (a `KVPair` copy), `value_ptr_by_rank(rank)` | ascending key |
 | `SortedSet[T]` | `add`, `has` / `lacks`, `remove`, `get_by_rank(rank)` | ascending |
-| `SortedList[T]` | `add` (sorted, after equals), `getitem` / `get_by_rank`, `rank(v)`, `has` / `lacks`, `remove(i)` (`T: Comparable[T]`) | ascending |
-| `PriorityQueue[TPriority, TElement]` | `add(priority, element)`, `remove` / `peek` (the element), `remove_entry` / `peek_entry` (a `PriorityEntry` with `priority` and `element`); a min-heap on `TPriority: Comparable[TPriority]`, the smallest first, `Reversed[T]` priorities for the largest first | none (the top first) |
+| `SortedList[T]` | `add` (sorted, after equals), `getitem` / `getslot` / `get_by_rank`, `rank(v)`, `has` / `lacks`, `remove(i)` (`T: Comparable[T]`) | ascending |
+| `PriorityQueue[TPriority, TElement]` | `add(priority, element)`, `remove` (the element moves out) / `first` (a copy), `first_slot` / `priority_slot` (the top's places), `remove_entry` / `first_entry` (a `PriorityEntry` record with `priority` and `element`); a min-heap on `TPriority: Comparable[TPriority]`, the smallest first, `Reversed[T]` priorities for the largest first | none (the top first) |
+
+Keys and elements may be entities in every collection: `Set[File]`, `Dict[Counter, List[S64]]`, `SortedSet[Counter]`,
+`PriorityQueue[Job, Counter]`. Hashing, `eq`, and `compare` read them through their places (`@T`), so neither an entity
+nor a record key is copied for a lookup. They move in with `steal` (a key that doesn't go in, because an equal one is
+already there, ends at once), and `remove`, a replaced value, `clear`, and destruct end them. Every lookup takes a key's
+place (`set.has(probe)`, lent) or a key value (`set.has(Counter.construct(3))`, which ends after the lookup). An entity
+element is read through `getslot` and the slot iterators (`next` / `next_checked` on `SortedListIter`,
+`SortedSetIter`), never copied: `getitem`, `get_by_rank`, `first`, and a `PriorityEntry` are for record elements.
+Changing a key in place through its slot breaks the collection's order.
 
 No collection is unordered. Hash collections keep insertion order: updating a present key keeps its position, and
 removing then re-adding moves it to the end, so output never depends on the (keyed, per-run) hash. Iterators are
