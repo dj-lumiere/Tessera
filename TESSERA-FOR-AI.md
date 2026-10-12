@@ -474,7 +474,9 @@ routine start() -> None
   `text.json_quote_into(out)` in `Standard/Json`.
 - A literal must fit its type: `-1` isn't a `U64`, and `255` isn't an `S8`.
 - A hex float (`0x1p-25`, `0x1.8p3`) spells a power-of-two value exactly, so it goes only into a binary float (`B16`,
-  `BF16`, `B32`, `B64`) that holds it exactly: anywhere else, or one the type would round, is a build error.
+  `BF16`, `B32`, `B64`, and `B128` with its 113 significant bits) that holds it exactly: anywhere else, or one the
+  type would round, overflow, or flush below its smallest subnormal, is a build error that says which. A decimal
+  float literal isn't a `B128` yet: write a hex float, or convert a `B64` (`B64.to[B128](1.5)`).
 - `Byte` is memory with no arithmetic; there are no wider raw-bits types. `x.bits()` and `b.to[U8]()` /
   `b.to[S8]()` move between it and the numbers, and `S64` <-> `U64` is `to_wrap[U64]()` / `to_wrap[S64]()`. It has
   comparison, `hash`, `bitand` / `bitor` / `bitxor` / `bitnot`, and `shl` / `shr`. Memory and text are `@Byte`;

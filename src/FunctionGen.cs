@@ -1657,16 +1657,17 @@ public sealed class FunctionGen
     /// only into a binary float that holds that value: anywhere else, or rounded, it is a build error.
     private Val EvalFloatLit(FloatLit f, DType expected)
     {
-        bool hex = f.Text is { } text && text.TrimStart('-').StartsWith("0x", StringComparison.OrdinalIgnoreCase);
-        if (expected is not FloatType ft)
-            throw hex
-                ? Err(f.Pos, $"the hex float '{f.Text}' is used as {expected.Name} here, and a hex float spells a power-of-two "
-                    + "value exactly, so only B16, BF16, B32 and B64 take one: write the value in decimal, or give it a binary float type")
-                : Mismatch(f.Pos, expected, "a float literal");
-        if (hex && !ft.Holds(f.Value))
-            throw Err(f.Pos, $"the hex float '{f.Text}' isn't exactly a {ft.Name}, and a hex float spells its value exactly: "
-                + $"drop the digits {ft.Name} can't hold, or make it a wider binary float");
-        return new Val(ft.Constant(f.Value), ft);
+        if (!HexFloat.IsHex(f.Text))
+        {
+            if (expected is FloatType decimalTarget) return new Val(decimalTarget.Constant(f.Value), decimalTarget);
+            if (HexFloat.IsB128(expected))
+                throw Err(f.Pos, $"a decimal float literal can't be a B128 yet: write it as a hex float (0x1.8p0), or convert a B64, "
+                    + $"B64.to[B128]({new Printer().Expr(f)})");
+            throw Mismatch(f.Pos, expected, "a float literal");
+        }
+        return Compiler.HexFloatConst(f, expected, f.Pos) is { } bits
+            ? new Val(Compiler.ConstLlvm(bits), expected)
+            : throw new InvalidOperationException();
     }
 
     /// A place argument is its address, as everywhere else: memory is never read implicitly (see Memory-Model, The Rule).
@@ -3074,8 +3075,8 @@ public sealed class FunctionGen
                 if (!size) preferred = false;
                 return null;
             }
-            case FloatLit:
-                return pt is FloatType ? null : $"a float literal can't be a {pt}";
+            case FloatLit fl:
+                return pt is FloatType || HexFloat.IsHex(fl.Text) && HexFloat.IsB128(pt) ? null : $"a float literal can't be a {pt}";
             case NullLit:
                 return pt is PtrType or CallableType ? null : $"null can't be a {pt}";
             case StrLit:
@@ -3161,7 +3162,7 @@ public sealed class FunctionGen
     private static bool LiteralCanBe(Expr literal, DType? t) => literal switch
     {
         IntLit => t is IntType { IsNumber: true },
-        FloatLit => t is FloatType,
+        FloatLit f => t is FloatType || HexFloat.IsHex(f.Text) && HexFloat.IsB128(t),
         ArrayLit { IsTuple: true } => t is RecordType { IsTuple: true },
         ArrayLit => t is ArrayType or VectorType,
         RecordLit => t is RecordType,

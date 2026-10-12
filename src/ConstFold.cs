@@ -40,6 +40,25 @@ public sealed partial class Compiler
         finally { _foldingPresets.Remove(key); }
     }
 
+    /// A hex float as a constant of `t`: the bits of its value when `t` is a binary float (B16 to B64, or B128) that
+    /// holds it exactly, else a build error that says why.
+    public static ConstVal HexFloatConst(FloatLit f, DType t, Pos pos)
+    {
+        var (fraction, exponent) = t switch
+        {
+            FloatType ft => HexFloat.Format(ft),
+            _ when HexFloat.IsB128(t) => (HexFloat.B128Fraction, HexFloat.B128Exponent),
+            _ => throw new CompileError(pos, $"the hex float '{f.Text}' is used as {t.Name} here, and a hex float spells a "
+                + "power-of-two value exactly, so only B16, BF16, B32, B64 and B128 take one: write the value in decimal, or give "
+                + "it a binary float type"),
+        };
+        if (HexFloat.Encode(f.Text!, fraction, exponent) is not { } bits)
+            throw new CompileError(pos, $"the hex float '{f.Text}' isn't exactly a {t.Name}: {HexFloat.Why(f.Text!, fraction, exponent, t.Name)}, "
+                + "and a hex float spells its value exactly, so write one the type holds"
+                + (HexFloat.IsB128(t) ? "" : ", or use a wider binary float"));
+        return new ConstVal(t, bits);
+    }
+
     /// The LLVM constant for a folded value.
     public static string ConstLlvm(ConstVal v)
     {
@@ -131,6 +150,8 @@ public sealed partial class Compiler
                 return new ConstVal(tl.Type, tl.Value);
             case BoolLit b:
                 return new ConstVal(BoolType.Instance, b.Value ? 1 : 0);
+            case FloatLit f when HexFloat.IsHex(f.Text) && hint is not null:
+                return HexFloatConst(f, hint, f.Pos);
             case FloatLit f:
                 if (hint is FloatType ft) return new ConstVal(ft, FloatBits(ft, f.Value));
                 throw new CompileError(f.Pos, hint is null

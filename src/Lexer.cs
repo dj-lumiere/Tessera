@@ -553,8 +553,8 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         return j < src.Length && char.IsAsciiDigit(src[j]);
     }
 
-    /// `0x1.8p+46`: hex digits scaled by a power of two. The value must be exactly a B64 (float literals are held
-    /// as doubles), so a hex float never rounds.
+    /// `0x1.8p+46`: hex digits scaled by a power of two. A hex float never rounds: the binary float it goes into must
+    /// hold it exactly, which is checked where it is used.
     private Token ReadHexFloat(int start, int digitsStart, Pos pos)
     {
         string intDigits = src[digitsStart.._i].Replace("_", "");
@@ -577,21 +577,9 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         if (!int.TryParse(src[expStart.._i], System.Globalization.CultureInfo.InvariantCulture, out int exponent))
             throw new CompileError(pos, $"malformed float literal '{text}'");
 
-        BigInteger mantissa = BigInteger.Zero;
-        foreach (char d in intDigits + fracDigits) mantissa = mantissa * 16 + Convert.ToInt32(d.ToString(), 16);
-        long scale = (long)exponent - 4L * fracDigits.Length;
-        bool negative = src[start] == '-';
-        if (mantissa.IsZero)
-            return new Token(TokenKind.Float, text, pos, BitConverter.DoubleToInt64Bits(negative ? -0.0 : 0.0));
-
-        // m × 2^scale with m odd is exactly a double when m has at most 53 bits, its lowest bit is at or above
-        // 2^-1074 (the smallest subnormal), and its top bit at or below 2^1023.
-        while (mantissa.IsEven) { mantissa >>= 1; scale++; }
-        long bits = (long)mantissa.GetBitLength();
-        if (bits > 53 || scale < -1074 || scale + bits - 1 > 1023)
-            throw new CompileError(pos, $"hex float literal '{text}' is not exactly a B64");
-        double value = Math.ScaleB((double)mantissa, (int)scale);
-        return new Token(TokenKind.Float, text, pos, BitConverter.DoubleToInt64Bits(negative ? -value : value));
+        // The literal keeps its text: where it is used, the type it goes into must hold it exactly (HexFloat.Encode),
+        // B128's 113 bits included. The double here is only a stand-in for the text.
+        return new Token(TokenKind.Float, text, pos, BitConverter.DoubleToInt64Bits(HexFloat.Approximate(text)));
     }
 
     private Token ReadFloat(int start, Pos pos)

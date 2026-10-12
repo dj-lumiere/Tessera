@@ -158,12 +158,6 @@ public sealed class FloatType : DType
         : this == BF16 ? $"0xR{ToBFloat16Bits((float)value):X4}"
         : Hex(this == B32 ? (float)value : value);
 
-    /// Whether `value` is exactly a value of this type: what a hex float literal must be, since it spells one exactly.
-    public bool Holds(double value) => this == B16 ? (double)(Half)value == value
-        : this == BF16 ? (double)(float)value == value && (BitConverter.SingleToUInt32Bits((float)value) & 0xFFFF) == 0
-        : this == B32 ? (double)(float)value == value
-        : true;
-
     /// An LLVM constant with exactly these IEEE bits.
     public string FromBits(BigInteger bits) => this == B16 ? $"0xH{(ushort)(bits & ushort.MaxValue):X4}"
         : this == BF16 ? $"0xR{(ushort)(bits & ushort.MaxValue):X4}"
