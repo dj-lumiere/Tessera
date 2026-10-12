@@ -84,7 +84,7 @@ public sealed partial class Compiler
     private static readonly HashSet<string> KnownAnnotations =
         ["external", "symbol", "callconv", "noreturn", "variadic", "template", "target", "feature", "llvm",
          "export", "derived", "inline", "noinline", "clobbers", "readonly", "pure", "naked", "source", "track_caller",
-         "no_builtins", "untraced", "trace", "heap_check", "race_check", "reshaping", "positional", ExpensiveCallLint.Annotation];
+         "no_builtins", "untraced", "trace", "heap_check", "race_check", "reshaping", "positional", ExpensiveCallLint.Annotation, BlockLint.Generated];
 
     /// Annotations that describe an assembly routine and mean nothing on another.
     private static readonly string[] AsmAnnotations = ["clobbers", "readonly", "pure", "naked"];
@@ -94,7 +94,7 @@ public sealed partial class Compiler
     {
         foreach (var a in r.Annotations)
             if (!KnownAnnotations.Contains(a.Name))
-                throw new CompileError(a.Pos, $"annotation '#{a.Name}' is not supported by this builder yet");
+                throw new CompileError(a.Pos, $"annotation '@{a.Name}' is not supported by this builder yet");
         if (r.AnnotationNamed("callconv") is { } callconv) CheckCallConv(callconv);
         bool asm = IsAsm(r);
         foreach (var a in r.Annotations)

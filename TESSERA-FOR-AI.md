@@ -415,8 +415,11 @@ routine start() -> None
   the build warns once per routine).
 - An arm's or a pass's expressions run only when that arm or pass is taken: a `continue with` argument, a `when`
   arm's value, and `return`'s value are never computed on another path.
-- **Blocks, for generators.** `block name(params)` / `jump name(args)` are the form a code generator writes
-  (RazorForge's Tessera backend, Mini), and the form of the stdlib routines whose loops can't be restructured. A
+- **Blocks, for assembly and generators.** `block name(params)` / `jump name(args)` / an `if` whose arms jump belong
+  to two kinds of routine: an assembly routine (`@external("asm")`) and generated code, a routine marked
+  `@generated` (RazorForge's Tessera backend and Mini write it on every routine). Any other routine with a block or
+  a jump gets a warning that asks for `if`, `when`, and loops; the stdlib routines whose loops weren't restructured
+  yet still have them. A
   routine written that way is a head and then blocks: the lines after the head are the entry block, `block entry()`
   is written only when it is jumped back to and in an assembly routine, a block's parameters are the values it
   takes, and each block ends in `jump`, `return`, `unreachable`, `todo`, a `@noreturn` call, or a statement whose
