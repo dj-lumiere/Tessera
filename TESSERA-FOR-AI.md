@@ -188,8 +188,8 @@ routine start() -> None
 - **The five rules.** 1. `@T` / `Span[T]` only view (peek / poke), never give back. 2. `Box` / `Memory` come from a
   manager: `load` / `store`, given back exactly once or handed over, empty or not. 3. A `@T` / `Span` viewing this
   routine's memory (a local slot, a frame Span) does not leave the routine. 4. A routine that moves memory says
-  `@reshaping`, and isn't called while that memory is viewed. 5. A global `Box` / `Memory` is changed with `replace`
-  and given back in `start`'s `finish` block. The build checks all five, as below. Build errors unless marked.
+  `@reshaping`, and isn't called while that memory is viewed. 5. A global `Box` / `Memory` is changed with `replace`,
+  and the program's end gives the last one back. The build checks all five, as below. Build errors unless marked.
 - **The group check (rule 2), in every routine without type parameters.** A Box / Memory that a call or an `at`
   literal gives, or a by-value parameter hands in, plus every copy of it (`b = a`, `slot.peek()`, `m.with_count(n)`,
   the carried values it is passed to, the slots it is stored in) is ONE group. A group ends exactly once on every
@@ -246,9 +246,8 @@ routine start() -> None
     ```
 - **A global holding a Box / Memory (rule 5).** `global CACHE: @Memory[Byte]` starts hollow. Only
   `CACHE.replace(new)` changes it (it gives the old memory back, then stores the new one: `poke` is an error), and
-  only `start` gives it back, in a block of `start` named `finish` that ends with its `return`, which every other
-  way out of `start` reaches with `jump finish()` (the build looks for that name: the one place a hand-written
-  routine still has a block, see "Blocks, for generators" below):
+  no other routine than `start` drops it. Nothing has to: a global lives as long as the program, and the program's
+  end gives its memory back (the process's memory goes with it, and a device without an OS runs until reset).
 
   ```tessera
   global CACHE: @Memory[Byte]
@@ -258,12 +257,8 @@ routine start() -> None
       return
 
   routine start() -> None
-      refill(count: 4, fill: 0x41)
-      jump finish()
-
-      block finish()
-          drop CACHE
-          return
+      refill(count: 4, fill: b'\x41')
+      return
   ```
 
   `Box[T].replace` works the same. `Memory[T].give_back()` gives the memory back and keeps the manager, so a later

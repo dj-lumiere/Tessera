@@ -375,13 +375,10 @@ public sealed class FunctionGen
 
     // ── Globals that hold memory ─────────────────────────────────────────────
 
-    /// The globals of the program that hold a Box or a Memory, which `start`'s finish block gives back, by name, and the
-    /// blocks of `start` each is dropped in.
-    private readonly Dictionary<string, HashSet<string>> _globalDrops = [];
-
-    /// A global that holds a Box or a Memory lives as long as `start`: it always holds one value (`.hollow()` to start
-    /// with), another routine changes it only with `replace`, which gives the old memory back first, and only `start`'s
-    /// finish block drops it.
+    /// A global that holds a Box or a Memory lives as long as the program: it always holds one value (`.hollow()` to
+    /// start with), and a routine changes it only with `replace`, which gives the old memory back first. The program's
+    /// end gives the last one back (the process's memory goes with it, and a device without an OS runs until reset), so
+    /// nothing has to drop it. `start` may still drop one, which leaves it hollow.
     private void CheckGlobalMemoryCall(CallPlan plan)
     {
         if (plan.Receiver is not PresetRef { Owner: null } r
@@ -391,29 +388,11 @@ public sealed class FunctionGen
         switch (plan.Decl.Name)
         {
             case "destruct" or "destruct_all" when !Compiler.IsEntryRoutine(_decl):
-                throw Err(plan.Pos, $"'{g.Name}' is a global that holds memory, which start's finish block gives back: "
-                    + $"change it with {g.Name}.replace(...), which gives the old memory back first");
-            case "destruct" or "destruct_all":
-                (_globalDrops.TryGetValue(g.Name, out var blocks) ? blocks : _globalDrops[g.Name] = []).Add(_blockName);
-                break;
+                throw Err(plan.Pos, $"'{g.Name}' is a global that holds memory for the whole program, and the program's end gives "
+                    + $"it back: change it with {g.Name}.replace(...), which gives the old memory back first");
             case "poke" or "poke_volatile":
                 throw Err(plan.Pos, $"'{g.Name}' is a global that holds memory, and this overwrites it: "
                     + $"{g.Name}.replace(...) gives the old memory back and puts the new one in");
-        }
-    }
-
-    /// `start` gives back every global that holds memory in its finish block.
-    private void CheckGlobalMemoryFinish()
-    {
-        if (_c.Prechecking || !Compiler.IsEntryRoutine(_decl)) return;
-        foreach (var (g, t) in _c.ProgramGlobals())
-        {
-            // A global's declared type is what it holds: its name is the address.
-            if (OwnedMemory(t) is null) continue;
-            if (_globalDrops.TryGetValue(g.Name, out var blocks) && blocks.Contains("finish")) continue;
-            throw Err(_decl.Pos, $"'{g.Name}' (line {g.Pos.Line}) is a global that holds memory, and start's finish block "
-                + $"doesn't give it back: give it back before start returns (drop {g.Name}), and "
-                + "jump there instead of returning elsewhere");
         }
     }
 
@@ -647,7 +626,6 @@ public sealed class FunctionGen
         EmitHead();
         foreach (var b in blocks) EmitBlock(b);
         _c.NoteExpensiveCalls(ExpensiveCallLint.Check(_decl, _expensiveCalls));
-        CheckGlobalMemoryFinish();
         if (MemOn && MemoryRules.Check(_decl.DisplayName, _decl.Pos, blocks[0].Name, _memEvents, _routineValues.Keys.ToHashSet()) is [var memoryError, ..])
             throw memoryError;
 
