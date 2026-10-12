@@ -1616,9 +1616,7 @@ public sealed class FunctionGen
         {
             IntLit i => IntConst(i.Value, i.Pos, expected, i.HexDigits),
             TypedIntLit t => TypedConst(t),
-            FloatLit f => expected is FloatType ft
-                ? new Val(ft.Constant(f.Value), ft)
-                : throw Mismatch(f.Pos, expected, "a float literal"),
+            FloatLit f => EvalFloatLit(f, expected),
             BoolLit b => new Val(b.Value ? "true" : "false", BoolType.Instance),
             NullLit n => expected is PtrType or CallableType
                 ? new Val("null", expected)
@@ -1653,6 +1651,22 @@ public sealed class FunctionGen
         if (!Compatible(v.Type, expected))
             throw argument > 0 ? Err(e.Pos, ArgumentMismatch(argument, v.Type.ToString(), expected)) : Mismatch(e.Pos, expected, v.Type.ToString());
         return v;
+    }
+
+    /// A float literal as the binary float it goes into. A hex float (`0x1p-25`) spells a value exactly, so it goes
+    /// only into a binary float that holds that value: anywhere else, or rounded, it is a build error.
+    private Val EvalFloatLit(FloatLit f, DType expected)
+    {
+        bool hex = f.Text is { } text && text.TrimStart('-').StartsWith("0x", StringComparison.OrdinalIgnoreCase);
+        if (expected is not FloatType ft)
+            throw hex
+                ? Err(f.Pos, $"the hex float '{f.Text}' is used as {expected.Name} here, and a hex float spells a power-of-two "
+                    + "value exactly, so only B16, BF16, B32 and B64 take one: write the value in decimal, or give it a binary float type")
+                : Mismatch(f.Pos, expected, "a float literal");
+        if (hex && !ft.Holds(f.Value))
+            throw Err(f.Pos, $"the hex float '{f.Text}' isn't exactly a {ft.Name}, and a hex float spells its value exactly: "
+                + $"drop the digits {ft.Name} can't hold, or make it a wider binary float");
+        return new Val(ft.Constant(f.Value), ft);
     }
 
     /// A place argument is its address, as everywhere else: memory is never read implicitly (see Memory-Model, The Rule).
