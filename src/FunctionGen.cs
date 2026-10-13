@@ -1269,6 +1269,9 @@ public sealed class FunctionGen
                             throw Err(fill.Pos,
                                 $"'.uninit()' leaves the slot's bytes as they were, and {slotType} holds a pointer ({where}): "
                                 + "a read or a drop would follow whatever was there. Start it with <- .hollow()");
+                        if (_c.UninitFill)
+                            Line($"call void @llvm.memset.p0.{_c.USize.Llvm}(ptr {op}, i8 -86, {_c.USize.Llvm} "
+                                + $"{_c.SizeAlign(slotType, fill.Pos).Size}, i1 false)");
                     }
                     else
                         EvalCall(new MethodCallExpr(new ValueRef(b.Name, b.Pos), "zeroinit", [], [new IntLit(1, fill.Pos)], fill.Pos),

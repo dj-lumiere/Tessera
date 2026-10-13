@@ -15,6 +15,10 @@ public sealed partial class Compiler
     /// program doesn't, since that program brings its own runtime.
     public bool EmitLibraryExports { get; init; } = true;
 
+    /// `--uninit-fill` / `[debug] uninit-fill`: whether a slot that starts `<- .uninit()` is filled with 0xAA bytes, so
+    /// a read before the routine fills it shows a value that stands out. Off by default: the slot is left as it was.
+    public bool UninitFill { get; init; }
+
     /// Builds the base of a program split over two modules: a base built once, and a delta built for each edit that
     /// links against it. Every routine this module defines, except an `#inline` one, and every global it defines is
     /// left for the other module to link to: no linkonce_odr, no internal linkage. Their symbols are

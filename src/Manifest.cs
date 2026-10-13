@@ -31,6 +31,8 @@ namespace Tessera;
 /// failure-traces = 16                  # the failures each thread remembers where they were made (32)
 /// race-check = true                   # stop on a data race between threads, with both places (slow, for a run
 ///                                     # that looks for races, Linux and macOS on x86_64 and aarch64)
+/// uninit-fill = true                  # fill every slot that starts <- .uninit() with 0xAA bytes (default: off,
+///                                     # the slot keeps whatever was there)
 /// heap-check = true                   # the default heap crashes on a block freed twice (DoubleFreeError), in
 ///                                     # every mode (default: off, plain malloc and free; `tessera test` always
 ///                                     # turns it on)
@@ -73,6 +75,10 @@ public sealed record Manifest(
     /// the manifest turns it on, whatever the mode, so debug and release builds behave the same.
     public bool HeapCheck { get; init; }
 
+    /// `[debug] uninit-fill`: whether a slot that starts `<- .uninit()` is filled with 0xAA bytes. Off unless the
+    /// manifest turns it on.
+    public bool UninitFill { get; init; }
+
     /// `[debug] race-check`: whether the program stops on a data race between threads. Off unless the manifest turns
     /// it on.
     public bool RaceCheck { get; init; }
@@ -104,7 +110,7 @@ public sealed record Manifest(
     {
         ["package"] = ["name", "version", "description", "authors", "license", "repository", "tessera-version"],
         ["target"] = ["executable", "triple", "cpu", "features", "mode", "library", "sources", "c-libraries", "library-paths", "link-script"],
-        ["debug"] = ["emit-llvm", "trace", "heap-check", "race-check", "trace-frames", "failure-traces"],
+        ["debug"] = ["emit-llvm", "trace", "heap-check", "race-check", "uninit-fill", "trace-frames", "failure-traces"],
     };
 
     /// <paramref name="defaultTarget"/> is the triple used when [target] names none (the host if null).
@@ -190,6 +196,7 @@ public sealed record Manifest(
             Trace = Bool(debug, "trace", path),
             HeapCheck = Bool(debug, "heap-check", path) ?? false,
             RaceCheck = Bool(debug, "race-check", path) ?? false,
+            UninitFill = Bool(debug, "uninit-fill", path) ?? false,
             TraceFrames = TraceSize(debug, "trace-frames", path, powerOfTwo: true),
             FailureTraces = TraceSize(debug, "failure-traces", path, powerOfTwo: false),
         };

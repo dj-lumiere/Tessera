@@ -37,6 +37,9 @@ static class Cli
                  report of both places when two threads touch the same memory, one of them writing, with neither an
                  atomic access nor a lock between them. It is slow, so it is for runs that look for such races, on
                  Linux and macOS on x86_64 and aarch64. check checks its declarations too.
+        uninit fill: --uninit-fill (or [debug] uninit-fill = true in config.toml) fills every slot that starts
+                 <- .uninit() with 0xAA bytes, so a read before its routine fills it stands out. Off by default: the
+                 slot keeps whatever was there.
         heap check: with [debug] heap-check = true in config.toml the default heap checks every free and crashes with
                  DoubleFreeError at the line that frees a block a second time, in every mode. It is off otherwise
                  (a build without a manifest too), except that test always turns it on. check checks both sides.
@@ -349,7 +352,7 @@ static class Cli
     }
 
     private sealed record Options(List<string> Inputs, string? Output, bool EmitLlvm, BuildTarget Target, BuildMode Mode,
-        bool StdlibExports, bool? Trace, bool RaceCheck);
+        bool StdlibExports, bool? Trace, bool RaceCheck, bool UninitFill);
 
     /// Whether the data race check runs on the target: hosted Linux and macOS on x86-64 and AArch64, where clang has
     /// its runtime.
@@ -386,7 +389,7 @@ static class Cli
     {
         var inputs = new List<string>();
         string? output = null;
-        bool emit = false, stdlibExports = true, race = false;
+        bool emit = false, stdlibExports = true, race = false, uninitFill = false;
         bool? trace = null;
         var mode = BuildMode.Debug;
         var targetArgs = new TargetArgs();
@@ -398,6 +401,7 @@ static class Cli
                 case "-o" when i + 1 < args.Length: output = args[++i]; break;
                 case "--emit-llvm": emit = true; break;
                 case "--no-stdlib-exports": stdlibExports = false; break;
+                case "--uninit-fill": uninitFill = true; break;
                 case "--mode": mode = ParseMode(args, ref i); break;
                 case "--race-check": race = true; break;
                 default:
@@ -409,7 +413,7 @@ static class Cli
         if (inputs.Count == 0) throw new ToolError("no input files");
         var target = targetArgs.Build();
         if (race) RequireRaceCheckable(target);
-        return new Options(inputs, output, emit, target, mode, stdlibExports, trace, race);
+        return new Options(inputs, output, emit, target, mode, stdlibExports, trace, race, uninitFill);
     }
 
     /// Parses every input, plus the whole standard library, into one compilation and lowers it to LLVM IR.
@@ -491,7 +495,8 @@ static class Cli
     /// <paramref name="heapCheck"/>: whether the default heap crashes on a block freed twice (`[debug] heap-check`).
     public static string Compile(IEnumerable<string> files, BuildTarget target, bool executable = true,
         IReadOnlyList<string>? roots = null, BuildMode mode = BuildMode.Debug, bool stdlibExports = true, bool lint = true,
-        bool? trace = null, bool heapCheck = false, bool raceCheck = false, int? traceFrames = null, int? failureTraces = null)
+        bool? trace = null, bool heapCheck = false, bool raceCheck = false, int? traceFrames = null, int? failureTraces = null,
+        bool uninitFill = false)
     {
         var inputs = files.ToList();
         var decls = LoadDecls(inputs, target);
@@ -502,6 +507,7 @@ static class Cli
             Optimized = mode.IsOptimized(),
             EmitLibraryExports = stdlibExports,
             StdlibParent = Path.GetDirectoryName(StdlibDir()),
+            UninitFill = uninitFill,
         };
         compiler.SetTraceSizes(traceFrames, failureTraces);
         string ir = compiler.Generate();
@@ -655,7 +661,8 @@ static class Cli
     {
         if (m.RaceCheck) RequireRaceCheckable(m.Target);
         string ir = Compile(m.Sources, m.Target, roots: m.Roots, mode: m.Mode, trace: m.Traced,
-            heapCheck: m.HeapCheck, raceCheck: m.RaceCheck, traceFrames: m.TraceFrames, failureTraces: m.FailureTraces);
+            heapCheck: m.HeapCheck, raceCheck: m.RaceCheck, traceFrames: m.TraceFrames, failureTraces: m.FailureTraces,
+            uninitFill: m.UninitFill);
         Directory.CreateDirectory(m.OutputDirectory);
         if (m.EmitLlvm) File.WriteAllText(Path.ChangeExtension(m.ExecutablePath, ".ll"), ir);
         Link(ir, m.ExecutablePath, m.Target, m.Mode, m.LinkArguments().Concat(RaceLink(m.RaceCheck)));
@@ -671,7 +678,7 @@ static class Cli
         }
         var o = ParseOptions(args);
         string ir = Compile(o.Inputs, o.Target, executable: !o.EmitLlvm, mode: o.Mode, stdlibExports: o.StdlibExports,
-            trace: o.Trace, raceCheck: o.RaceCheck);
+            trace: o.Trace, raceCheck: o.RaceCheck, uninitFill: o.UninitFill);
         string stem = Path.ChangeExtension(o.Inputs[0], null);
 
         if (o.EmitLlvm)
@@ -698,7 +705,8 @@ static class Cli
         string exe = TempExe();
         try
         {
-            Link(Compile(o.Inputs, o.Target, mode: o.Mode, trace: o.Trace, raceCheck: o.RaceCheck), exe, o.Target, o.Mode,
+            Link(Compile(o.Inputs, o.Target, mode: o.Mode, trace: o.Trace, raceCheck: o.RaceCheck, uninitFill: o.UninitFill), exe,
+                o.Target, o.Mode,
                 RaceLink(o.RaceCheck));
             var (code, _, _) = Exec(exe, captureOutput: false);
             return code;
