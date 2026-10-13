@@ -1023,7 +1023,7 @@ static class Cli
             ir = Compile(sources, target, mode: manifest?.Mode ?? _testMode, lint: false,
                 trace: manifest is null ? _testTrace : manifest.Traced, heapCheck: true,
                 raceCheck: manifest?.RaceCheck ?? false, traceFrames: manifest?.TraceFrames,
-                failureTraces: manifest?.FailureTraces);
+                failureTraces: manifest?.FailureTraces, uninitFill: manifest?.UninitFill ?? false);
         }
         catch (ManifestError e)
         {
