@@ -199,6 +199,7 @@ static class Cli
         foreach (var file in files)
             if (!File.Exists(file)) throw new ToolError($"no such file: {file}");
         var expensive = ExpensiveCallsIn(files);
+        var programRoots = ProgramModuleRoots(files);
         int count = 0, expensiveCount = 0;
         var linesOf = StyleLint.SavedFiles();
         foreach (var file in files)
@@ -206,7 +207,7 @@ static class Cli
             List<Decl> decls;
             try
             {
-                decls = ParseFile(Path.GetFullPath(file), isLibrary: false);
+                decls = ParseFile(Path.GetFullPath(file), isLibrary: false, programRoots: programRoots);
             }
             catch (CompileError)
             {
@@ -584,6 +585,9 @@ static class Cli
         // declarations come out in the same order on every run. The first file in that order that fails is the one
         // reported, as if they had been parsed one after another. A stdlib file parsed before in this process and
         // unchanged since is taken as it was (StandardLibrary).
+        // A qualified path may reach any module of the program without an import (`Physics/Point`), so every input
+        // file's parser knows the modules the inputs declare.
+        var programRoots = ProgramModuleRoots(inputs);
         var parsed = new List<Decl>?[jobs.Count];
         var failed = new ExceptionDispatchInfo?[jobs.Count];
         Parallel.For(0, jobs.Count, i =>
@@ -597,7 +601,7 @@ static class Cli
                     return;
                 }
                 if (!File.Exists(path)) throw new ToolError($"no such file: {path}");
-                parsed[i] = ParseFile(path, isLibrary, shownAs);
+                parsed[i] = ParseFile(path, isLibrary, shownAs, programRoots);
             }
             catch (Exception e)
             {
@@ -616,11 +620,25 @@ static class Cli
         return decls;
     }
 
-    private static List<Decl> ParseFile(string path, bool isLibrary, string? shownAs = null)
+    private static List<Decl> ParseFile(string path, bool isLibrary, string? shownAs = null,
+        IReadOnlySet<string>? programRoots = null)
     {
         string shown = shownAs ?? ShownPath(path);
         var tokens = new Lexer(shown, SourceText.Read(path, shown)).Lex();
-        return new Parser(tokens, shown, isLibrary).ParseModule().Decls;
+        return new Parser(tokens, shown, isLibrary, programModuleRoots: programRoots).ParseModule().Decls;
+    }
+
+    /// The first name of every module the files declare on their `module` lines. A file that can't be read names none
+    /// (its own parse reports it).
+    private static HashSet<string> ProgramModuleRoots(IEnumerable<string> files)
+    {
+        var roots = new HashSet<string>();
+        foreach (string file in files)
+        {
+            if (!File.Exists(file)) continue;
+            if (Parser.DeclaredModuleRoot(File.ReadLines(file)) is { } root) roots.Add(root);
+        }
+        return roots;
     }
 
     /// A path as error messages show it: relative to the working directory when it's inside it.

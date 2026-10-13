@@ -5,7 +5,7 @@ namespace Tessera;
 /// Recursive-descent parser. Layout is not significant: declarations are found by their keywords, statements are
 /// separated by newlines, and a block ends at its terminator.
 public sealed class Parser(List<Token> tokens, string file, bool isLibrary = false, IEnumerable<string>? values = null,
-    bool acceptLegacy = false)
+    bool acceptLegacy = false, IEnumerable<string>? programModuleRoots = null)
 {
     private int _i;
 
@@ -1065,16 +1065,18 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         && (!first || StartsPath(before));
 
     /// Whether `name` can start a module path: it isn't a value bound here (a value divides), and it is a module
-    /// root this file knows: Standard, the first name of its module's path or of an import, or a define. A parse
-    /// that sees no such header (a fragment the language server or a lint reparses) takes any name that isn't a value.
+    /// root this file knows: Standard, the first name of its module's path or of an import, a define, or the first
+    /// name of a module another file of the program declares (a qualified path reaches a module without an import).
+    /// A parse that sees no such name (a fragment the language server or a lint reparses) takes any name that isn't a
+    /// value.
     private bool StartsPath(Token name) =>
         !name.Escaped && !(_values?.Contains(name.Text) ?? false) && (ModuleRoots is not { } roots || roots.Contains(name.Text));
 
     private HashSet<string>? _moduleRoots;
     private bool _moduleRootsRead;
 
-    /// The names a module path may start with in this file, or null when the tokens hold no module, import, or define
-    /// line to read them from.
+    /// The names a module path may start with in this file, or null when neither the tokens (a module, import, or
+    /// define line) nor the program's other files name one.
     private HashSet<string>? ModuleRoots
     {
         get
@@ -1090,10 +1092,29 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 else if (t.Text == "define" && tokens[k + 1].Kind == TokenKind.Ident && k + 2 < tokens.Count
                          && tokens[k + 2].Kind == TokenKind.Eq) roots.Add(tokens[k + 1].Text);
             }
+            if (programModuleRoots is not null) roots.UnionWith(programModuleRoots);
             if (roots.Count == 0) return null;
             roots.Add(Compiler.StandardRoot);
             return _moduleRoots = roots;
         }
+    }
+
+    /// The first name of the module a file declares on its `module` line (`Physics` for `module Physics/Units`), or
+    /// null for a file without one. Only the lines before the first declaration are read: a module line comes first,
+    /// after comments and blank lines.
+    public static string? DeclaredModuleRoot(IEnumerable<string> lines)
+    {
+        foreach (string raw in lines)
+        {
+            string line = raw.Trim();
+            if (line.Length == 0 || line.StartsWith('#')) continue;
+            if (!line.StartsWith("module ")) return null;
+            string path = line["module ".Length..].Trim();
+            int end = 0;
+            while (end < path.Length && (char.IsLetterOrDigit(path[end]) || path[end] == '_')) end++;
+            return end == 0 ? null : path[..end];
+        }
+        return null;
     }
 
     /// Generic arguments. A parenthesized list is a tuple type, except `Callable`'s first one, its parameter list:
