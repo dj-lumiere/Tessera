@@ -33,6 +33,10 @@ public sealed partial class Compiler
     private RoutineDecl? EntryRoutine(string name)
     {
         var found = _userRoutines.Where(r => r.Owner is null && r.Name == name).ToList();
+        if (found.Count > 1 && found.FirstOrDefault(r => r.IsScript) is { } script)
+            throw new CompileError(found.First(r => r != script).Pos,
+                $"{Path.GetFileName(script.File)} runs its top-level lines as the program's start, and this is another "
+                + "start: a program has one entry, so keep one");
         if (found.Count > 1)
             throw new CompileError(found[1].Pos,
                 $"the program has two '{name}' routines (also at {found[0].Pos}), and it has one entry: keep one");
@@ -40,6 +44,9 @@ public sealed partial class Compiler
     }
 
     /// Whether the program defines its entry point, `start`.
+    /// The `start` a file's top-level lines make, or null when the file has none.
+    public RoutineDecl? ScriptStartIn(string file) => _userRoutines.FirstOrDefault(r => r.IsScript && r.File == file);
+
     public bool HasStart => _userRoutines.Any(r => r.Owner is null && r.Name == StartName);
 
     /// The program's `main`, a routine of that name in one of its files: an ordinary routine, which the error for a

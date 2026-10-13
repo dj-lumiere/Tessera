@@ -416,7 +416,8 @@ public static class Formatter
                 string t = lines[j].TrimStart();
                 if (continued[j] || t.Length == 0 || t.StartsWith("needs ") || t.StartsWith("obeys ") || t.StartsWith("#") || IsAnnotation(t))
                     continue;
-                if (!t.StartsWith("local ")) break;
+                // A `local` line at the left edge belongs to the file's top-level lines, not to this routine.
+                if (!t.StartsWith("local ") || lines[j][0] != ' ') break;
                 lastShared = j;
                 result[j] = "    " + t;
             }
@@ -476,9 +477,24 @@ public static class Formatter
         if (line.StartsWith("needs ") || line.StartsWith("obeys "))
             return false;   // continues the declaration above, even after a multi-line header
         if (Indent(line) == 0)
+        {
+            // The file's top-level lines read like a body: a line after the body of an `if` or a loop among them
+            // follows it directly, as it would inside a routine.
+            if (IsTopLevelLine(line) && Indent(prev) > 0 && IsTopLevelLine(TopLevelOpener(lines, continued, i)))
+                return false;
             // a top-level line after a routine or record body, or a declaration after a body-less routine
             return prev.Length > 0 && (Indent(prev) > 0 || (StartsDeclaration(line) && IsRoutineHeader(prev)));
+        }
         return false;
+    }
+
+    /// The nearest top-level code line before `i`: the line that opened the body `i` follows.
+    private static string TopLevelOpener(List<string> lines, List<bool> continued, int i)
+    {
+        for (int j = i - 1; j >= 0; j--)
+            if (!continued[j] && lines[j].Length > 0 && lines[j][0] != ' ' && !lines[j].StartsWith('#') && !IsAnnotation(lines[j]))
+                return lines[j];
+        return "";
     }
 
     /// `routine ...`, `private routine ...`, or `internal routine ...`.
@@ -750,6 +766,12 @@ public static class Formatter
         };
     }
 
+    /// Whether a line is one of the file's top-level lines (script mode): at the left edge, and no declaration, comment,
+    /// annotation, or `needs` line.
+    private static bool IsTopLevelLine(string line) =>
+        line.Length > 0 && line[0] != ' ' && !line.StartsWith('#') && !IsAnnotation(line) && !line.StartsWith("needs ")
+        && DeclKindOf(line) is null;
+
     /// Whether a line is the header of the entry routine `name` (`routine start()`).
     private static bool IsEntryHeader(string line, string name) =>
         line.StartsWith($"routine {name}(", StringComparison.Ordinal) || line.StartsWith($"routine {name} (", StringComparison.Ordinal);
@@ -758,6 +780,8 @@ public static class Formatter
     /// already in order comes back unchanged, so the pass never moves blank lines it doesn't have to.
     private static List<string> OrderDeclarations(List<string> lines)
     {
+        // A file with top-level lines runs them in the order written, between its declarations, so nothing moves.
+        if (lines.Any(IsTopLevelLine)) return lines;
         // The file's opening comment, followed by a blank line, stays on top.
         int start = 0;
         while (start < lines.Count && lines[start].StartsWith("#") && !IsDivider(lines[start])) start++;

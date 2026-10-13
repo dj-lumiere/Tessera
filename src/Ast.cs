@@ -113,6 +113,10 @@ public sealed record RoutineDecl(
     public int HeaderEndLine { get; init; }
     public int EndLine { get; init; }
 
+    /// The `start` the builder makes of a file's top-level lines (script mode): their `local` lines are its head, the
+    /// other lines its entry block, in the order written, and the end of the file is its `return`.
+    public bool IsScript { get; init; }
+
     public string DisplayName => (Owner is null ? Name : $"{Owner}.{Name}")
         + (Fixed.Count == 0 ? "" : $"[{string.Join(", ", Fixed)}]");
 }
@@ -264,7 +268,11 @@ public sealed record LoopStmt(LoopKind Kind, Expr? Cond, List<Carried> With, Lis
 public sealed record Carried(string Name, TypeRef Type, Expr Init, Pos Pos);
 
 /// `return`, `return v`, or `return if c then a else b`.
-public sealed record ReturnStmt(Expr? Value, Pos Pos) : Stmt(Pos);
+public sealed record ReturnStmt(Expr? Value, Pos Pos) : Stmt(Pos)
+{
+    /// The `return` the end of a file's top-level lines stands for: skipped when every path already left before it.
+    public bool AtFileEnd { get; init; }
+}
 
 /// `jump name(args)`: on to a block of the routine (a generator's escape hatch).
 public sealed record JumpStmt(string Block, List<Expr> Args, Pos Pos) : Stmt(Pos)

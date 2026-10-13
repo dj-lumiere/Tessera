@@ -113,7 +113,9 @@ public static partial class LanguageServer
 
         string[] lines = text.Replace("\r\n", "\n").Split('\n');
         var symbols = new JsonArray();
-        var top = decls.Where(d => d is not ImportDecl && d.Pos.Line > 0).OrderBy(d => d.Pos.Line).ToList();
+        // The start a file's top-level lines make has no header of its own to show, and spans the declarations between.
+        var top = decls.Where(d => d is not ImportDecl and not RoutineDecl { IsScript: true } && d.Pos.Line > 0)
+            .OrderBy(d => d.Pos.Line).ToList();
         for (int i = 0; i < top.Count; i++)
         {
             var d = top[i];

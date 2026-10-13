@@ -20,7 +20,10 @@ dotnet run -- version                    # the builder's version; help prints ev
 ```
 
 A program's entry point is `routine start() -> None`, and a nonzero exit status is `set_exit_code(n)` (Standard/Os)
-before it returns. A file may start with `module A/B` and `import` lines. Name lookup follows
+before it returns. The entry file may instead write its lines at the top level (script mode): they are `start`, run
+top to bottom with declarations seen everywhere, leading `local` lines are its head, and the end of the file is its
+`return` (memory must be given back by then). A routine can't read a top-level binding (pass it, or use a `global`),
+an imported file has no top-level lines, and a file with them declares no `start`. A file may start with `module A/B` and `import` lines. Name lookup follows
 modules: a file sees its own module, `Standard/Core` (always imported: the built-in types, `Maybe`, `Result`,
 `None`, `Span`, `Memory`, `Box`), and what it imports, so printing a number needs `import Standard/Format`, a `List` needs
 `import Standard/Collections`, and `make_heap_memory` / `Out` need `import Standard/Os` (the hosted layer,

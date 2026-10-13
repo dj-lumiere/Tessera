@@ -40,6 +40,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private string _blockName = "";
     private List<BindStmt> _routineShared = [];
 
+    /// A file's top-level lines so far (script mode), gathered between its declarations into one `start`: the head's
+    /// `local` lines, the other lines, the names they bind (seen by the lines after them), and where the first one is.
+    private List<Stmt>? _scriptLines;
+    private List<BindStmt> _scriptHead = [];
+    private readonly HashSet<string> _scriptNames = [];
+    private Pos _scriptPos;
+
     /// Names a value can only have between backticks: the words a statement, a target, or an expression starts with.
     internal static readonly HashSet<string> ReservedValueNames =
     [
@@ -89,6 +96,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             bool isPrivate = IsIdent("private");
             bool isInternal = IsIdent("internal");
             if (isPrivate || isInternal) Next();
+            if (annotations.Count == 0 && !isPrivate && !isInternal && Cur.Pos.Col == 1
+                && (!IsKeyword(Cur) || !DeclKeywords.Contains(Cur.Text)) && !isLibrary)
+            {
+                ParseScriptLines();
+                SkipNewlines();
+                continue;
+            }
             if (!IsKeyword(Cur) || !DeclKeywords.Contains(Cur.Text))
                 throw Error($"expected a declaration (routine, record, entity, choice, variant, preset, global, protocol, obeys, define), found {Describe(Cur)}");
             Decl d = Cur.Text switch
@@ -109,9 +123,56 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             decls.Add(d with { IsLibrary = isLibrary, IsPrivate = isPrivate, IsInternal = isInternal, Module = module });
             SkipNewlines();
         }
+        if (_scriptLines is not null) decls.Add(ScriptStart(decls) with { Module = module });
         if (Legacy.Count > 0 && !acceptLegacy && !AcceptLegacyEverywhere)
             throw new CompileError(Legacy[0].Pos, $"{Legacy[0].Message} (tessera migrate rewrites it)");
         return new Module(decls);
+    }
+
+    /// A run of top-level lines (script mode): the file's lines outside any declaration, read like a routine's body.
+    /// The first run may open with `local` lines, the head. A name bound here is seen by the top-level lines after it,
+    /// across the declarations in between, and by no routine.
+    private void ParseScriptLines()
+    {
+        bool first = _scriptLines is null;
+        if (first) _scriptPos = Cur.Pos;
+        _scriptLines ??= [];
+        if (IsBlockHeader())
+            throw Error("a file's top-level lines are one body without blocks: put work that needs blocks in a routine");
+        _routineValues = [.. _scriptNames];
+        _routineDisplay = Compiler.StartName;
+        _blockName = "entry";
+        if (first)
+        {
+            _scriptHead = ParseHead(Compiler.StartName);
+            _scriptNames.UnionWith(_scriptHead.Select(s => s.Name));
+        }
+        _values = [.. _scriptNames];
+        int at = _i;
+        var lines = ParseBody(0, routineLevel: true);
+        if (_i == at) throw Error($"expected a declaration or a line of the file's top-level code, found {Describe(Cur)}");
+        foreach (var line in lines)
+        {
+            if (line is BindStmt b) _scriptNames.Add(b.Name);
+            else if (line is DestructureStmt d) _scriptNames.UnionWith(d.Names.Select(n => n.Name));
+        }
+        _scriptLines.AddRange(lines);
+        _values = null;
+    }
+
+    /// The `start` a file's top-level lines make: no parameters, returns nothing, and the end of the file returns.
+    private RoutineDecl ScriptStart(List<Decl> decls)
+    {
+        if (decls.OfType<RoutineDecl>().FirstOrDefault(r => r is { Owner: null, Name: Compiler.StartName }) is { } written)
+            throw new CompileError(written.Pos,
+                $"this file's top-level lines are its start (from line {_scriptPos.Line}), and it also declares routine "
+                + "start: keep one, the lines or the routine");
+        var lines = _scriptLines!;
+        if (lines.Count == 0 || lines[^1] is not ReturnStmt) lines.Add(new ReturnStmt(null, tokens[^1].Pos) { AtFileEnd = true });
+        var entry = new BlockDecl("entry", [], lines, _scriptPos);
+        ResolveBlockCalls([entry]);
+        return new RoutineDecl(file, [], null, Compiler.StartName, [], [], new TypeRef("None", [], _scriptPos), [], [entry], _scriptPos)
+            { Shared = _scriptHead, IsScript = true };
     }
 
     /// `define Fmt = Standard/Format`, `define Numbers = Standard/Collections/List[S64]`.

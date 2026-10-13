@@ -1114,7 +1114,10 @@ public sealed class FunctionGen
         foreach (var s in body)
         {
             if (_cur.Terminated)
+            {
+                if (s is ReturnStmt { AtFileEnd: true }) continue;
                 throw Err(s.Pos, "this line can't run: every path through the line before it leaves (returns, jumps, breaks, continues, or never comes back)");
+            }
             EmitStmt(s);
         }
     }
@@ -1632,8 +1635,22 @@ public sealed class FunctionGen
             throw Err(r.Pos, $"the lambda uses '{r.Name}', a value of routine '{outer.Routine}', and a lambda uses only its "
                 + "own parameters, presets, and globals: pass it as a parameter, or write a routine");
         if (!BoundInRoutine(r.Name))
-            throw Err(r.Pos, $"'{r.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
+            throw Err(r.Pos, ScriptBinding(r.Name) ?? $"'{r.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
         throw Err(r.Pos, NotVisible(r.Name));
+    }
+
+    /// The message for a routine reading `name` that the file's top-level lines bind: those lines are the program's
+    /// start, so their names are its own. Null when they bind no such name, or this is that start.
+    private string? ScriptBinding(string name)
+    {
+        if (_decl.IsScript || _c.ScriptStartIn(_decl.File) is not { } script) return null;
+        bool binds = script.Shared.Any(s => s.Name == name)
+                     || script.Blocks![0].Stmts.Any(s => s is BindStmt b && b.Name == name
+                                                         || s is DestructureStmt d && d.Names.Any(n => n.Name == name));
+        return binds
+            ? $"'{name}' is bound by the file's top-level lines, which only those lines see, and '{_decl.DisplayName}' is a "
+              + $"routine of its own: pass it as an argument, or make it a global"
+            : null;
     }
 
     /// A name bound in the routine, used where it isn't visible.
@@ -1653,7 +1670,7 @@ public sealed class FunctionGen
             return;
         if (BoundInRoutine(owner.Name))
             throw Err(owner.Pos, NotVisible(owner.Name, fromNextLine: true));
-        throw Err(owner.Pos, $"'{owner.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
+        throw Err(owner.Pos, ScriptBinding(owner.Name) ?? $"'{owner.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
     }
 
     /// Whether some body of this routine binds `name`: a parameter, a block parameter, a carried value, or a binding.
@@ -2750,6 +2767,11 @@ public sealed class FunctionGen
             // A name another block binds isn't seen here: say so, rather than what the name would be as a preset.
             if (value is PresetRef { Owner: null, Path: null } named && ResolvePreset(named) is null && BoundInRoutine(named.Name))
                 throw Err(at, NotVisible(named.Name, fromNextLine: true));
+            // A name nothing binds is said to be unknown: written to the writer, it would be read as a call with the
+            // writer for its receiver, and the error would be about the writer.
+            if (value is PresetRef { Owner: null, Path: null } unknown && ResolvePreset(unknown) is null
+                && _c.FindFree(unknown.Name, _env.File, at, null) is null)
+                throw Err(at, ScriptBinding(unknown.Name) ?? $"unknown name '{unknown.Name}'");
             Flush();
             _templateHole = source.Trim();
             try
@@ -3022,6 +3044,8 @@ public sealed class FunctionGen
             throw Err(r.Pos, hidden);
         if (r.Owner is null && r.Path is null && BoundInRoutine(r.Name))
             throw Err(r.Pos, NotVisible(r.Name, fromNextLine: true));
+        if (r.Owner is null && r.Path is null && ScriptBinding(r.Name) is { } fromScript)
+            throw Err(r.Pos, fromScript);
         throw Err(r.Pos, $"unknown name '{(r.Owner is null ? r.Name : $"{r.Owner}.{r.Name}")}'");
     }
 

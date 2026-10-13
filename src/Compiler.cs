@@ -120,6 +120,13 @@ public sealed partial class Compiler
         {
             if (!_modules.Contains(imp.Path))
                 throw new CompileError(imp.Pos, $"unknown module '{imp.Path}'");
+            // Only the program's entry file runs top-level lines: in a file another one imports, they would be a second
+            // start nobody asked for.
+            if (_userRoutines.FirstOrDefault(r => r.IsScript && r.Module == imp.Path && r.Module != "" && r.File != imp.File)
+                is { } imported)
+                throw new CompileError(imported.Pos,
+                    $"this file has top-level lines, and {Path.GetFileName(imp.File)} imports it (line {imp.Pos.Line}): only "
+                    + "the program's entry file runs top-level lines, so put these in a routine the importer calls");
             if (!imp.IsLibrary && IsOsModule(imp.Path) && !Target.HasOs)
                 throw new CompileError(imp.Pos, NoOs(imp.Path));
         }

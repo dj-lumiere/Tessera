@@ -18,6 +18,16 @@ public class FormatterTests
     }
 
     [Fact]
+    public void AScriptKeepsItsOrderAndItsBodiesTight()
+    {
+        // Top-level lines run in the order written, so no declaration moves past them, and a line after an `if` body
+        // among them follows it directly, as in a routine.
+        const string source = "import Standard/Os\n\nlocal n: @S64 <- 1\n\nroutine twice(x: S64) -> S64\n    return x * 2\n\n"
+                              + "if n.peek() > 0\n    n.poke(twice(x: n.peek()))\nelse\n    n.poke(0)\nset_exit_code(code: 0)\n";
+        Assert.Equal(source, Formatter.Format(source));
+    }
+
+    [Fact]
     public void ARoutineOnNoneKeepsReturningNone()
     {
         const string source = "routine None.show(me: Me) -> None\n    return\n";
