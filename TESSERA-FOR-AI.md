@@ -143,7 +143,8 @@ routine start() -> None
   memory from C). `Span[T]` (Core, `Types/Span.te`) is `{data, count}`, a borrowed run of values. Both only VIEW
   memory and release nothing: `peek` / `poke` on a `@T`, and on a Span `getslot(i)` (the checked `@T`, so everything
   through it is `@T`'s own: `peek_volatile`, `atomic_fetch_add`, ...), `getitem(i)` / `setitem(i, v)`,
-  `getitem_checked(i)` (a `Maybe`), `getslice(start, count)`, `getview()`, `to[@T]()`. `Box[T]` (`{at, manager,
+  `getitem_checked(i)` (a `Maybe`), `swap(first, second)` (the two values trade places, moved), `getslice(start, count)`,
+  `getview()`, `to[@T]()`. `Box[T]` (`{at, manager,
   generation}`) and `Memory[T]` (`{data, count, manager, generation}`, `Types/Memory.te`) are memory TAKEN from a
   `MemoryManager`, and both are ENTITIES (Entities, below): never copied, kept in a slot
   (`local m: @Memory[Byte] <- Memory[Byte].construct(count: 4, manager: alloc)`), every routine takes `me: @Me`.
@@ -154,7 +155,7 @@ routine start() -> None
   with drop: drop x"), only a type's own `destruct` body gives its members back. `drop` leaves the slot hollow:
   `.hollow()` holds nothing, `drop` on it does nothing, a read crashes with `InvalidValueError`. `Memory[T]` also has
   `construct(count, manager)` (uninitialized), `construct_result` (a `Result[Memory[T], AllocFailed]`, observed with
-  `when Memory[T].construct_result(...)`), `count()`, `getslot(i)`, `getview()`, `keep_first(n)` (only the first n in
+  `when Memory[T].construct_result(...)`), `count()`, `getslot(i)`, `swap(first, second)`, `getview()`, `keep_first(n)` (only the first n in
   use, no copy), `duplicate()` (memory of its own), `replace(value: new)`, `take()` (moves the memory out, leaving
   this one empty with the same manager), `give_back()`, `resize(n)` / `resize_result(n)`, and `destruct_all()`
   (destructs every value, then gives the memory back). `Array[T, COUNT]` is the run of values
@@ -730,7 +731,8 @@ routine start() -> None
   never takes one. `return c` from a Counter's slot returns it where the routine returns a variant with a Counter branch.
 - A container that owns its elements may take an entity as its type argument: `List[List[S64]]`, `Memory[Counter]`, a
   `Shelf[Counter]` of your own that keeps them in a `Memory[T]`. Elements go in with `steal` and are reached through
-  `getslot` (an `@T`), and the container's destruct ends each one before giving its memory back. `getitem`, which
+  `getslot` (an `@T`), two of them trade places with `swap(first, second)` (both moved, neither place left hollow:
+  never a steal / poke dance by hand), and the container's destruct ends each one before giving its memory back. `getitem`, which
   copies an element, is a build error for an entity element that points at `getslot`.
 - `steal` and `drop` mark what matters: a hand-over and a give-back of something with a release duty (its type writes
   a destruct, or it is a Box, a Memory, an entity, or a value holding one). `drop x` calls x's destruct, and x ends
@@ -883,7 +885,10 @@ All in `Standard/Collection/`, documented in `../Tessera-Wiki/docs/Collections.m
 storage in a `Memory[T]`: a `List` is `storage` (a Memory whose count is the capacity) and `count`. `construct(alloc)` keeps
 the allocator (`construct()` with `Standard/Os` uses the default heap), and `drop list` releases storage and keeps
 the allocator, so the collection can be used again. Element access is
-`getitem(i)` / `setitem(i, v)` (the name says what is fetched), `getslot(i)` the checked address, and `getview()` /
+`getitem(i)` / `setitem(i, v)` (the name says what is fetched), `getslot(i)` the checked address, `swap(first, second)`
+(the two elements trade places in place, moved, never copied, so entity elements swap too, a no-op for the same index,
+and an index past the end crashes like `getitem`: on `List`, `CircularList`, `Array` through its pointer, `Span`, and
+`Memory`), and `getview()` /
 `getslice(start, count)` a `Span[T]` of the elements (a List is not lent on its own: pass `list.getview()` where a
 Span is expected). Out-of-range access, `remove_last`
 on empty, and `getitem` of a missing key crash. The `_checked` forms (`getitem_checked`, `remove_last_checked`,
@@ -898,9 +903,9 @@ says `@reshaping(name)`.
 
 | Type | Key operations | Iteration order |
 |------|----------------|-----------------|
-| `Array[T, COUNT]` | `[a, b]` literal, `getslot`, `getitem` (on a value or a pointer: `[2, 3, 5].getitem(i)`), `setitem`, `getslice`, `getview` (through a pointer), `shift_left`, `shift_right`, `copy`, `destruct_all` (no `destruct`: it acquires nothing) | index |
-| `List[T]` | `add_last`, `remove_last`, `getitem`, `setitem`, `getslot`, `getslice`, `getview`, `clear`, `reserve` | index |
-| `CircularList[T]` | `add_first`, `add_last`, `remove_first`, `remove_last`, `getitem`, `setitem` | front to back |
+| `Array[T, COUNT]` | `[a, b]` literal, `getslot`, `getitem` (on a value or a pointer: `[2, 3, 5].getitem(i)`), `setitem`, `swap` (through a pointer), `getslice`, `getview` (through a pointer), `shift_left`, `shift_right`, `copy`, `destruct_all` (no `destruct`: it acquires nothing) | index |
+| `List[T]` | `add_last`, `remove_last`, `getitem`, `setitem`, `getslot`, `swap`, `getslice`, `getview`, `clear`, `reserve` | index |
+| `CircularList[T]` | `add_first`, `add_last`, `remove_first`, `remove_last`, `getitem`, `setitem`, `getslot`, `swap` | front to back |
 | `Dict[TKey, TValue]` | `setitem` (adds or replaces), `getitem`, `has_key` / `lacks_key`, `remove` | **insertion order (guaranteed)** |
 | `Set[T]` | `add`, `has` / `lacks`, `remove` | **insertion order (guaranteed)** |
 | `SortedDict[TKey, TValue]` | `setitem`, `getitem`, `getslot`, `has_key` / `lacks_key`, `remove`, `get_by_rank(rank)` (a `KVPair` copy), `value_ptr_by_rank(rank)` | ascending key |
