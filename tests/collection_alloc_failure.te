@@ -20,30 +20,34 @@ routine c_realloc(ptr: Addr, size: USize) -> Addr
 @symbol("free")
 routine c_free(ptr: Addr) -> None
 
-# -- the budgeted allocator: state points at the number of calls still allowed --------------------------------------
+# -- the budgeted allocator: a manager that allows `left` more calls, then fails -----------------------------------
 
-routine take_budget(state: Addr) -> Bool
-    budget: @USize = state.to[@USize]()
-    left: USize = budget.peek()
+record Budget
+    left: USize
+
+obeys MemoryManageable[Budget]
+
+routine Budget.take(me: @Me) -> Bool
+    left: USize = me.left.peek()
     if left == 0
         return false
-    (left - 1).poke_into(budget)
+    (left - 1).poke_into(me.left)
     return true
 
-routine budget_alloc(state: Addr, size: USize, align: USize) -> Addr
-    if take_budget(state)
+routine Budget.alloc(me: @Me, size: USize, align: USize) -> Addr
+    if me.take()
         return c_malloc(size)
     else
         return null
 
-routine budget_realloc(state: Addr, old: Addr, size: USize, align: USize) -> Addr
-    if take_budget(state)
-        return c_realloc(old, size)
+routine Budget.realloc(me: @Me, at: Addr, size: USize, align: USize) -> Addr
+    if me.take()
+        return c_realloc(at, size)
     else
         return null
 
-routine budget_free(state: Addr, ptr: Addr) -> None
-    c_free(ptr)
+routine Budget.free(me: @Me, at: Addr) -> None
+    c_free(at)
     return
 
 # -- sequences ------------------------------------------------------------------------------------------------------
@@ -339,11 +343,10 @@ routine checked_forms(budget: @USize, alloc: @MemoryManager) -> None
     return
 
 routine start() -> None
-    local budget: @USize <- 0
-    local budgeted: MemoryManager = MemoryManager(alloc_fn: budget_alloc.to[Callable](),
-        realloc_fn: budget_realloc.to[Callable](), free_fn: budget_free.to[Callable](),
-        reserve_fn: null, commit_fn: null, release_fn: null, protect_fn: null, state: budget)
-    local alloc: @MemoryManager <- budgeted
+    local manager: @Budget <- (left: 0)
+    local alloc: @MemoryManager <- manager.to[MemoryManager]()
+
+    budget: @USize = manager.left
 
     each grant in 0 to 2
         list_case(budget, grant, alloc)

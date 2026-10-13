@@ -137,7 +137,16 @@ public sealed partial class Compiler
         if (_precheck is { } scope && scope.GivenKeys.Contains(key)) return null;
         if (_conformsCache.TryGetValue(key, out var cached)) return cached;
         _conformsCache[key] = null;   // assume it holds while checking, so recursive constraints terminate
-        string? result = ConformsUncached(concept, args, file, at, key);
+        string? result;
+        try { result = ConformsUncached(concept, args, file, at, key); }
+        catch (CompileError)
+        {
+            // A conformance that is declared but doesn't meet its concept (a required routine missing) holds for no
+            // one: the next query reports it again instead of finding it assumed.
+            _conformsCache.Remove(key);
+            _verified.Remove(key);
+            throw;
+        }
         _conformsCache[key] = result;
         return result;
     }

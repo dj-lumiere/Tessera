@@ -554,6 +554,24 @@ public sealed class FunctionGen
     private static bool PointsAtMemory(DType? t) => t is PtrType || t is RecordType { Decl.Name: "Span" } span
         && span.Decl.Module == Compiler.CoreModule;
 
+    /// The manager a `MemoryManager` table is made from (`arena` in `arena.to[MemoryManager]()`), or null when `e` isn't
+    /// such a conversion. The table holds the manager's address, so it is a view of the manager.
+    private Expr? TableManager(Expr e) =>
+        e is MethodCallExpr { Name: "to", TypeArgs.Count: 1, Args.Count: 0 } m
+        && InferQuiet(m) is RecordType { Decl: { Name: "MemoryManager", Module: "Standard/Alloc" } }
+        && InferQuiet(m.Receiver) is PtrType { Pointee: not RecordType { Decl.Name: "MemoryManager" } }
+            ? m.Receiver
+            : null;
+
+    /// Records that `name` now holds the table of the manager `manager`: a view of it the manager must outlive.
+    private void NoteTable(string name, Expr manager, Pos pos)
+    {
+        if (RootName(manager) is not { } root || root == name) return;
+        _rootOf[name] = root;
+        _viewNames.Add(name);
+        Mem(new MemoryRules.ViewOf(name, ResolveRoot(root), pos) { Holds = true });
+    }
+
     /// What the value of `e` sees of this routine's memory, or null: a name that sees it, a view of a Box or a Memory the
     /// routine holds, or a pointer or Span made from one.
     private string? FrameView(Expr e)
@@ -563,6 +581,9 @@ public sealed class FunctionGen
         {
             case ValueRef r:
                 return _frameViews.GetValueOrDefault(r.Name);
+            // A manager's table holds the manager's address.
+            case MethodCallExpr when TableManager(e) is { } manager:
+                return FrameView(manager);
             case MethodCallExpr { Name: "getview" or "to" or "getslot" or "getslot_checked" } m when MemName(m.Receiver) is { } owned:
                 return $"the memory '{owned}' holds";
             // A view made from a view (a slot of it, a part of it) sees the same memory. What other routines give
@@ -1269,6 +1290,12 @@ public sealed class FunctionGen
                     Mem(new MemoryRules.ViewOf(b.Name, ResolveRoot(made), b.Pos));
                 }
                 if (b.Value is ClaimExpr) _claimedSlots.Add(b.Name);
+                if ((b.Value is ClaimExpr { Contents: { } claimed } ? claimed : b.Value) is { } made2
+                    && TableManager(made2) is { } manager)
+                {
+                    NoteTable(b.Name, manager, b.Pos);
+                    if (MemOn && b.Value is not ClaimExpr && FrameView(manager) is { } managerSees) _frameViews[b.Name] = managerSees;
+                }
                 if (MemOn)
                 {
                     if (b.Value is ClaimExpr)
@@ -1533,7 +1560,7 @@ public sealed class FunctionGen
     {
         if (field.IsPrivate && s.Decl.File != _env.File)
             throw Err(pos, $"field '{field.Name}' of {s} is private to {s.Decl.File}");
-        if (field.IsInternal && s.Decl.Module != _c.ModuleOf(_env.File))
+        if (field.IsInternal && !_c.InternalReaches(s.Decl, _env.File))
             throw Err(pos, $"field '{field.Name}' of {s} is internal to {s.Decl.Module}");
     }
 
@@ -3331,6 +3358,16 @@ public sealed class FunctionGen
         var tier = taking.Where(f => !f.Generic).ToList() is { Count: > 0 } concrete ? concrete : taking;
         if (tier.Count > 1 && tier.Where(f => _c.OwnerArgsSpecific(f.Decl)).ToList() is { Count: > 0 } specific) tier = specific;
         if (tier.Count > 1 && tier.Where(f => f.Preferred).ToList() is { Count: > 0 } preferred) tier = preferred;
+        // Of overloads with the same parameter types, the one whose constraints include another's (and more) wins.
+        if (tier.Count > 1)
+        {
+            var closures = tier.ToDictionary(f => f, f =>
+            {
+                try { return _c.ConstraintClosure(f.Decl, f.Env); }
+                catch (CompileError) { return []; }
+            });
+            tier = tier.Where(f => !tier.Any(g => g != f && closures[f].IsProperSubsetOf(closures[g]))).ToList();
+        }
         if (tier.Count == 1) return tier[0];
         string hint = args.Any(a => a is IntLit)
             ? "an untyped integer literal prefers USize (SSize when negative), and that doesn't settle it here; "
@@ -4060,6 +4097,8 @@ public sealed class FunctionGen
         if (sig.IsTrackCaller) args.Add(CallerPlace(plan.Pos));
         MemCall(plan, sig, offset);
         CheckStoreEscape(plan, sig);
+        if (sig.Decl.Name is "poke" && plan.Receiver is ValueRef slot && plan.Args is [var stored] && TableManager(stored) is { } held)
+            NoteTable(slot.Name, held, plan.Pos);
         if (!sig.IsTemplate || plan.Decl.AnnotationNamed("reshaping") is not null) CheckReshapingCall(plan);
         CheckGlobalMemoryCall(plan);
 

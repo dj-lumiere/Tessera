@@ -45,6 +45,6 @@ public sealed partial class Compiler
 
     private bool Reachable(Decl d, string file, string home) =>
         d.IsPrivate ? d.File == file
-        : d.IsInternal ? d.Module == ModuleOf(file)
+        : d.IsInternal ? InternalReaches(d, file)
         : d.Module == home || Visible(d, file, null);
 }

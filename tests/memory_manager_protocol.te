@@ -1,0 +1,105 @@
+# A memory manager of your own obeys MemoryManageable, and m.to[MemoryManager]() makes the table a List or a Box
+# takes. A bump arena over a buffer in the frame: each block starts where the last one ended, with its size in front
+# of it so realloc knows it, and nothing is given back one block at a time. A list that outgrows the buffer gets
+# AllocFailed from add_last_result.
+
+import Standard/Alloc
+import Standard/Collections
+import Standard/Format
+import Standard/Os
+
+### The room in front of each block for its size, and the alignment the arena starts at.
+preset HEADER: USize = 16
+
+### A bump arena over a buffer it doesn't own.
+entity Bump
+    base: USize
+    capacity: USize
+    used: USize
+    blocks: USize
+
+obeys MemoryManageable[Bump]
+
+### An arena over `buffer`, from its first address aligned to `HEADER`.
+### :param buffer: The memory the blocks come from.
+### :returns: The arena.
+routine Bump.construct(buffer: Span[Byte]) -> Me
+    start: USize = ptrtoint[@Byte, USize](buffer.data)
+    aligned: USize = start + HEADER - 1 & ~(HEADER - 1)
+    return Me(base: aligned, capacity: buffer.count - (aligned - start), used: 0, blocks: 0)
+
+### Nothing to give back: the buffer is the caller's.
+routine Bump.destruct(me: @Me) -> None
+    return
+
+### The next block of `size` bytes at `align`, after a header that holds its size.
+### :param size: The number of bytes.
+### :param align: The alignment, a power of two.
+### :returns: The block, or null when the buffer has no room left.
+routine Bump.alloc(me: @Me, size: USize, align: USize) -> Addr
+    step: USize = align.max(HEADER)
+    first: USize = me.base.peek() + me.used.peek() + HEADER
+    at: USize = first + step - 1 & ~(step - 1)
+    if at + size - me.base.peek() > me.capacity.peek()
+        return null
+    (at + size - me.base.peek()).poke_into(me.used)
+    me.blocks.peek().add(1).poke_into(me.blocks)
+    block_start: Addr = inttoptr[USize, Addr](at)
+    size_of(block_start).poke(size)
+    return block_start
+
+### Resizes a block: the last block grows in place while the buffer has room, any other moves to a new block.
+### :param at: The block, or null for a new one.
+### :param size: The new size in bytes.
+### :param align: The block's alignment.
+### :returns: The block, or null with the block left as it was.
+routine Bump.realloc(me: @Me, at: Addr, size: USize, align: USize) -> Addr
+    if at.is_null()
+        return me.alloc(size, align)
+    old: USize = size_of(at).peek()
+    start: USize = ptrtoint[Addr, USize](at)
+    last: Bool = start + old == me.base.peek() + me.used.peek()
+    if last and start + size - me.base.peek() <= me.capacity.peek()
+        (start + size - me.base.peek()).poke_into(me.used)
+        size_of(at).poke(size)
+        return at
+    moved: Addr = me.alloc(size, align)
+    if moved.is_null()
+        return null
+    moved.to[@Byte]().copy(src: at.to[@Byte](), count: old.min(size))
+    return moved
+
+### Gives nothing back: the arena's blocks go together with the arena.
+### :param at: The block.
+routine Bump.free(me: @Me, at: Addr) -> None
+    return
+
+### Where the size of the block at `at` is kept.
+### :param at: A block of the arena.
+### :returns: The size's place.
+routine size_of(at: Addr) -> @USize
+    return at.offset(-8).to[@USize]()
+
+routine start() -> None
+    local buffer: Span[Byte] <- [b'\x00'] * 1024
+    local arena: @Bump <- .construct(buffer)
+    local table: @MemoryManager <- arena.to[MemoryManager]()
+    local squares: @List[S64] <- .construct(table)
+    local answer: @Box[S64] <- .construct(value: 42, manager: table)
+
+    each i in 1 to 10
+        squares.add_last(i.to[S64]() * i.to[S64]())
+    Out.write("squares: {squares}\n")
+    Out.write("box: {answer.load()}\n")
+    Out.write("arena: {arena.blocks.peek()} blocks, {arena.used.peek()} bytes used\n")
+    while true with n: S64 = 0
+        added: Result[None, AllocFailed] = squares.add_last_result(n)
+        when added
+            is None => continue with n: n + 1
+            is AllocFailed =>
+                Out.write("full after {squares.count()} squares\n")
+                break
+    drop answer
+    drop squares
+    drop arena
+    return

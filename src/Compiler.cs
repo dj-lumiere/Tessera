@@ -88,6 +88,7 @@ public sealed partial class Compiler
             if (d is RoutineDecl { Owner: not null, Name: "construct" or "destruct" } life) _lifeRoutines.Add(life);
             if (!Selected(d)) continue;
             _fileModule.TryAdd(d.File, d.Module);
+            if (d.IsLibrary) _libraryFiles.Add(d.File);
             RegisterConcepts(d);
             switch (d)
             {
@@ -683,6 +684,14 @@ public sealed partial class Compiler
     /// The module a file declares, or "" for the solution's root.
     public string ModuleOf(string file) => _fileModule.GetValueOrDefault(file, "");
 
+    /// The files of the standard library.
+    private readonly HashSet<string> _libraryFiles = [];
+
+    /// Whether `file` reaches an `internal` declaration: a file of its module, or, for one of the standard library, any
+    /// file of the standard library (the library is one whole, and a program never sees its internals).
+    public bool InternalReaches(Decl d, string file) =>
+        d.Module == ModuleOf(file) || d.IsLibrary && _libraryFiles.Contains(file);
+
     private static string ShowModule(string module) => module == "" ? "the root module" : module;
 
     /// Whether `file` sees `d`: by its plain name when `path` is null, or through `path/name`. A plain name reaches
@@ -693,7 +702,7 @@ public sealed partial class Compiler
         if (path is not null && d.Module != path) return false;
         if (d.IsPrivate) return d.File == file;
         string from = ModuleOf(file);
-        if (d.IsInternal) return d.Module == from;
+        if (d.IsInternal) return InternalReaches(d, file);
         return path is not null || d.Module == from || d.Module == CoreModule
                || (_fileImports.TryGetValue(file, out var imports) && imports.Contains(d.Module));
     }
@@ -1706,6 +1715,15 @@ public sealed partial class Compiler
         {
             if (fields.All(f => f.Name != name)) throw new CompileError(pos, $"{s} has no field '{name}'");
             if (!given.TryAdd(name, value)) throw new CompileError(pos, $"field '{name}' is given twice");
+            // A `private` field is given only in the record's file, an `internal` one only where its module's
+            // internals reach, as in a routine's literal.
+            if (s.Decl.Fields.FirstOrDefault(f => f.Name == name) is { } field)
+            {
+                if (field.IsPrivate && s.Decl.File != env.File)
+                    throw new CompileError(pos, $"field '{name}' of {s} is private to {s.Decl.File}");
+                if (field.IsInternal && !InternalReaches(s.Decl, env.File))
+                    throw new CompileError(pos, $"field '{name}' of {s} is internal to {s.Decl.Module}");
+            }
         }
         if (fields.FirstOrDefault(f => !given.ContainsKey(f.Name)) is { Name: not null } missing)
             throw new CompileError(lit.Pos, $"the literal for {s} leaves out field '{missing.Name}'");

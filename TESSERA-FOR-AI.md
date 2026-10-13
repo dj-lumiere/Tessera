@@ -116,8 +116,7 @@ routine start() -> None
   and result types come from that `Callable`. It sees its parameters, presets, globals, and routines, never a value of
   the routine around it (a build error: pass it as a parameter). It is a plain function pointer.
 - A `Callable` value is called with `.call(args)`. One stored in a field is loaded first:
-  `free_fn: Callable[…] = alloc.free_fn.peek()`, then `free_fn.call(state, raw)`. `alloc.free_fn(...)` is an
-  error.
+  `handler: Callable[…] = me.handler.peek()`, then `handler.call(x)`. `me.handler(...)` is an error.
 - A field of a record value is read with plain `=`: `key: K = pair.key`.
 - `local p: @T <- v` makes a slot for the routine call (a stack slot in practice) and stores `v` in it where the
   line stands. Its type comes from the binding, which is one of three: `@T` (a slot), `Span[T]` (values in the
@@ -264,12 +263,27 @@ routine start() -> None
 
   `Box[T].replace` works the same. `Memory[T].give_back()` gives the memory back and keeps the manager, so a later
   `resize` draws from it again (what a collection's `destruct` does with its storage).
-- **A `MemoryManager` is called through its routines:** `alloc(size, align)` (a power-of-two alignment), `realloc(at,
-  size, align)`, `free(at)`, and the page routines `reserve(size)` / `commit(at, size)` / `release(at, size)` and
-  `protect(at, size, PageAccess.NONE | READ | READ_WRITE)`. Its fields are `Callable`s taking `state` first, the page
-  ones and `protect_fn` may be null (`has_pages()`, `has_protect()`), and calling an empty one crashes with
-  `NotImplementedError`. `MemoryManager.construct(alloc_fn, realloc_fn, free_fn, state)` makes one without pages. The
-  hosted managers fill everything (pages from `Standard/Os/Pages.te`). Raw `allocate[T]` asks for `alignof[T]()`.
+- **A memory manager is a type that obeys `MemoryManageable`** (Standard/Alloc): three routines on `me: @Me`,
+  `alloc(size: USize, align: USize) -> Addr` (null when it can't), `realloc(at: Addr, size: USize, align: USize) ->
+  Addr` (null, the block left as it was, when it can't: every manager has one, since only it knows a block's size),
+  and `free(at: Addr) -> None`. One that handles pages obeys `PageManageable` too (it refines `MemoryManageable`):
+  `reserve(size)`, `commit(at, size) -> Bool`, `release(at, size)`, and `protect(at, size, access: PageAccess) ->
+  Bool` (false where its pages can't change what they allow). `m.to[MemoryManager]()` on the manager's slot makes the
+  table every allocating routine takes as `@MemoryManager`: routines that call m's own, and m's address. Keep it in a
+  slot: `local arena: @Bump <- .construct(buffer)`, `local table: @MemoryManager <- arena.to[MemoryManager]()`,
+  `local xs: @List[S64] <- .construct(table)`. A manager of plain data is a `record`, one with a state worth keeping
+  apart (an arena) an `entity`. The table is called through `alloc`, `realloc`, `free`, `reserve` / `commit` /
+  `release`, and `protect(at, size, PageAccess.NONE | READ | READ_WRITE)`, with `has_pages()` / `has_protect()`
+  (both true for a `PageManageable` manager, both false otherwise, and calling an empty one crashes with
+  `NotImplementedError`). Its fields and `MemoryManager.construct` are internal to the standard library, whose
+  hosted managers are built from C routines (pages from `Standard/Os/Pages.te`). Raw `allocate[T]` asks for
+  `alignof[T]()`.
+- **The table views its manager.** In a routine without type parameters, using a table after its manager's slot
+  ended is a build error: `'table' is the table of the manager 'arena', which ended at drop arena on line N, so the
+  table points at a manager that isn't there: a manager outlives its table. Use 'table' before line N, or end 'arena'
+  after the table's last use` (the same for `steal arena`), and returning a table of a frame slot's manager is the
+  escape check's error. Memory already taken through the table (a `List`, a `Box`) that outlives the manager isn't
+  followed: that is the program's to get right.
 - **The default heap comes with `Standard/Os`**, like `Out`: there `DEFAULT_HEAP` is an `@MemoryManager` ready before
   `start` (`make_heap_memory()` gives the same one), and every collection and `Memory` gets a `construct` without
   the manager (`List[S64].construct()`, `Memory[U8].construct(n)`). Memory C frees or reallocates, or memory from C's
@@ -557,7 +571,10 @@ routine start() -> None
   one, and a routine on an owner with its type arguments named (`routine Thread[None].put_work`) beats the generic
   owner's (`Thread[T].put_work`) for that receiver. An owner argument may nest the routine's type parameter:
   `routine List[Thread[T]].wait_all_finished(me: @Me)` with `needs T: typename` exists only for a `List` of
-  `Thread[...]`, binds `T` from the receiver, and doesn't clash with `List[Fiber[T]].wait_all_finished`. Anything else ambiguous, or nothing fitting, is an error listing
+  `Thread[...]`, binds `T` from the receiver, and doesn't clash with `List[Fiber[T]].wait_all_finished`. Two generic
+  routines may have the same parameter types when their `needs` differ, and a call takes the one whose constraints
+  include the other's and more (`T.to[MemoryManager]` with `PageManageable[T]` over the one with
+  `MemoryManageable[T]`). Anything else ambiguous, or nothing fitting, is an error listing
   the overloads. Same parameter types, or a difference only in the return type, is an error. A free routine's set is one module's (the file's own module
   hides an import's same name). A routine value of an overloaded name is picked by its Callable type
   (`f.to[Callable[(S64,), S64]]()`, or where it goes); an overloaded `@export` / `@external("c")` names its C
@@ -644,7 +661,8 @@ routine start() -> None
 **Records**
 
 - `private` before a declaration or a record field hides it from other files (`private routine helper(...)`,
-  `private count: U64`). Inside the declaring file it's used as usual.
+  `private count: U64`). Inside the declaring file it's used as usual. `internal` hides it from other modules, and one in
+  the standard library is seen by the whole standard library and by no program.
 - A name is unique under its parent, wherever it's declared: you can add `routine U64.double(...)` to a stdlib type,
   but not a second `U64.midpoint` with the same parameter types (one with other parameter types is an overload). Private names don't count outside their file.
 
@@ -1068,7 +1086,8 @@ Collections all check there. `Standard/Os` drops out of the build, so importing 
 build error ("Standard/Os needs an operating system ..."); there's no `Out`, files, threads, `@threadlocal`, fiber `FiberManager` (`Standard/Fiber`'s
 `switch_stack` and `initial_stack` are there, which `tests/freestanding_fiber` switches stacks with),
 `make_heap_memory`, `DEFAULT_HEAP`, or `construct()` without an allocator. The program exports its own crash handler (`@export("tessera_crash_handler")` with `@noreturn`, which
-may loop forever), passes its own `MemoryManager` if it allocates, and brings its link script. A program that defines `start` has
+may loop forever), passes the table of a manager of its own if it allocates (a type that obeys `MemoryManageable`, such as a bump arena over a
+buffer, and `arena.to[MemoryManager]()`), and brings its link script. A program that defines `start` has
 `when_booted` as its entry symbol: the reset lands there (on Cortex-M through a vector table in section
 `.isr_vector`, its first word `__stack_top` and its second `when_booted`, the system exceptions halting; elsewhere the
 link script's `ENTRY(when_booted)`). Its prologue sets the stack pointer from `__stack_top` (the Cortex-M core does

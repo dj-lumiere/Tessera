@@ -8,23 +8,21 @@ import Standard/Os
 record Counts
     live: S64
 
-routine counting_alloc(state: Addr, size: USize, align: USize) -> Addr
-    counts: @Counts = state.to[@Counts]()
-    more: S64 = counts.live.peek() + 1
-    more.poke_into(counts.live)
-    malloc: Callable[(Addr, USize, USize), Addr] = DEFAULT_HEAP.alloc_fn.peek()
-    return malloc.call(null, size, align)
+obeys MemoryManageable[Counts]
 
-routine counting_realloc(state: Addr, old: Addr, size: USize, align: USize) -> Addr
-    realloc: Callable[(Addr, Addr, USize, USize), Addr] = DEFAULT_HEAP.realloc_fn.peek()
-    return realloc.call(null, old, size, align)
+routine Counts.alloc(me: @Me, size: USize, align: USize) -> Addr
+    more: S64 = me.live.peek() + 1
+    more.poke_into(me.live)
+    return DEFAULT_HEAP.alloc(size, align)
 
-routine counting_free(state: Addr, memory: Addr) -> None
-    counts: @Counts = state.to[@Counts]()
-    fewer: S64 = counts.live.peek() - 1
-    fewer.poke_into(counts.live)
-    free: Callable[(Addr, Addr), None] = DEFAULT_HEAP.free_fn.peek()
-    free.call(null, memory)
+@reshaping(at)
+routine Counts.realloc(me: @Me, at: Addr, size: USize, align: USize) -> Addr
+    return DEFAULT_HEAP.realloc(at, size, align)
+
+routine Counts.free(me: @Me, at: Addr) -> None
+    fewer: S64 = me.live.peek() - 1
+    fewer.poke_into(me.live)
+    DEFAULT_HEAP.free(at)
     return
 
 routine literal() -> None
@@ -64,11 +62,8 @@ routine values(counts: @Counts, alloc: @MemoryManager) -> None
 
 routine start() -> None
     local counts: @Counts <- (live: 0)
+    local alloc: @MemoryManager <- counts.to[MemoryManager]()
 
-    counting: MemoryManager = MemoryManager(alloc_fn: counting_alloc.to[Callable](),
-        realloc_fn: counting_realloc.to[Callable](), free_fn: counting_free.to[Callable](),
-        reserve_fn: null, commit_fn: null, release_fn: null, protect_fn: null, state: counts)
-    local alloc: @MemoryManager <- counting
     literal()
     text(counts, alloc)
     values(counts, alloc)

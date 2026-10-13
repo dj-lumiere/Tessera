@@ -1,9 +1,11 @@
 # Tessera stdlib: MemoryManager pattern and memory routines
 #
-# The MemoryManager record is a manual vtable: callers pass @MemoryManager to any
-# routine that performs heap allocation. Nothing here needs an operating system:
-# make_heap_memory(), backed by libc malloc / realloc / free, is in
-# Standard/Os (Os/Heap.te).
+# A memory manager is a type that obeys MemoryManageable (and PageManageable when
+# it handles pages). m.to[MemoryManager]() makes the MemoryManager table that
+# callers pass as @MemoryManager to any routine that allocates: routines that
+# forward to m's own, with m's address as the table's state. Nothing here needs
+# an operating system: make_heap_memory(), backed by libc malloc / realloc /
+# free, is in Standard/Os (Os/Heap.te).
 #
 # Heap memory reaches user code as a Memory[T] (Types/Memory.te) or a Box[T]:
 # an address, a count, and this manager, released with drop(). allocate,
@@ -33,50 +35,211 @@ choice PageAccess: U8
     READ
     READ_WRITE
 
-### A memory manager: the routines that hand out memory, plus an opaque `state` passed to each. Callers pass
-### `@MemoryManager` to any routine that allocates, so no allocation is hidden. `alloc_fn`, `realloc_fn`, and `free_fn`
-### are always there. The page routines (`reserve_fn`, `commit_fn`, `release_fn`) and `protect_fn` may be null, for a
-### manager that doesn't handle pages (an arena, a pool), and calling one that is null crashes.
+### The table of a memory manager that allocating routines take as `@MemoryManager`, so no allocation is hidden. A
+### manager makes it with `m.to[MemoryManager]()`: routines that call the manager's own, and the manager's address. The
+### page routines (`reserve`, `commit`, `release`, `protect`) are there when the manager obeys `PageManageable`, and
+### calling one that isn't crashes. The table views the manager: the manager outlives it, which the build checks
+### inside a routine.
 record MemoryManager
     ### Allocates `size` bytes aligned to `align` (a power of two), or returns null: `(state, size, align)`.
-    alloc_fn: Callable[(Addr, USize, USize), Addr]
+    internal alloc_fn: Callable[(Addr, USize, USize), Addr]
     ### Resizes a block to `size` bytes, keeping its contents and its alignment `align`, or returns null and leaves it
     ### as it was: `(state, at, size, align)`.
-    realloc_fn: Callable[(Addr, Addr, USize, USize), Addr]
+    internal realloc_fn: Callable[(Addr, Addr, USize, USize), Addr]
     ### Gives a block back: `(state, at)`.
-    free_fn: Callable[(Addr, Addr), None]
+    internal free_fn: Callable[(Addr, Addr), None]
     ### Reserves `size` bytes of address space, no page usable yet, or returns null: `(state, size)`.
-    reserve_fn: Callable[(Addr, USize), Addr]
+    internal reserve_fn: Callable[(Addr, USize), Addr]
     ### Makes reserved pages readable and writable, false when it can't: `(state, at, size)`.
-    commit_fn: Callable[(Addr, Addr, USize), Bool]
+    internal commit_fn: Callable[(Addr, Addr, USize), Bool]
     ### Gives a whole reservation back: `(state, at, size)` with `at` and `size` as reserved.
-    release_fn: Callable[(Addr, Addr, USize), None]
+    internal release_fn: Callable[(Addr, Addr, USize), None]
     ### Sets what pages allow, false when it can't: `(state, at, size, access)`.
-    protect_fn: Callable[(Addr, Addr, USize, PageAccess), Bool]
-    ### What the routines share, passed to each of them.
-    state: Addr
+    internal protect_fn: Callable[(Addr, Addr, USize, PageAccess), Bool]
+    ### What the routines share, passed to each of them: the manager's address.
+    internal state: Addr
 
 ### The error of a `_result` operation whose allocator returned null, such as
 ### `List.push_result`. The collection is left as it was before the call.
 @derive(Representable, Diagnosable, Equatable, Hashable)
 record AllocFailed
 
+### A type that hands out memory: it allocates blocks, resizes them, and takes them back. A value of it in a slot
+### becomes the table every allocating routine takes with `m.to[MemoryManager]()`.
+### :typeparam T: The manager type.
+protocol MemoryManageable[T]
+needs T: typename
+    ### Allocates `size` bytes aligned to `align` (a power of two), or returns null when it can't.
+    ### :param size: The number of bytes.
+    ### :param align: The alignment, a power of two.
+    ### :returns: The block, or null.
+    routine Me.alloc(me: @Me, size: USize, align: USize) -> Addr
+
+    ### Resizes the block at `at` to `size` bytes, keeping its contents up to the smaller size and its alignment `align`.
+    ### Only the manager knows how large a block is, so every manager has its own.
+    ### :param at: The block, from this manager, or null for a new one.
+    ### :param size: The new size in bytes.
+    ### :param align: The alignment the block was allocated with, a power of two.
+    ### :returns: The resized block, which may have moved, or null with the block left as it was when it can't.
+    ### :note: A manager whose realloc calls another manager's realloc on `at` marks it `@reshaping(at)`.
+    routine Me.realloc(me: @Me, at: Addr, size: USize, align: USize) -> Addr
+
+    ### Takes the block at `at` back.
+    ### :param at: The block, from this manager. Null does nothing in the stdlib's managers.
+    routine Me.free(me: @Me, at: Addr) -> None
+
+### A memory manager that also handles pages: it reserves address space, commits pages of it, gives a reservation back,
+### and sets what pages allow. Its table's `has_pages()` and `has_protect()` are true. A manager whose pages can't
+### change what they allow returns false from `protect`.
+### :typeparam T: The manager type.
+protocol PageManageable[T]
+obeys MemoryManageable[T]
+needs T: typename
+    ### Reserves `size` bytes of address space, no page of it usable yet.
+    ### :param size: The number of bytes, rounded up to whole pages by the manager.
+    ### :returns: The reservation's start, or null when the space can't be reserved.
+    routine Me.reserve(me: @Me, size: USize) -> Addr
+
+    ### Makes `size` bytes of reserved pages at `at` readable and writable.
+    ### :param at: The first page, page aligned, inside a reservation of this manager.
+    ### :param size: The number of bytes, a whole number of pages.
+    ### :returns: False when the pages can't be committed.
+    routine Me.commit(me: @Me, at: Addr, size: USize) -> Bool
+
+    ### Gives a whole reservation back, committed pages and all.
+    ### :param at: The reservation's start, as `reserve` returned it.
+    ### :param size: The size `reserve` was asked for.
+    routine Me.release(me: @Me, at: Addr, size: USize) -> None
+
+    ### Sets what `size` bytes of pages at `at` allow.
+    ### :param at: The first page, page aligned.
+    ### :param size: The number of bytes, a whole number of pages.
+    ### :param access: What the pages allow.
+    ### :returns: False when the access can't be set.
+    routine Me.protect(me: @Me, at: Addr, size: USize, access: PageAccess) -> Bool
+
 ### Releases nothing: a `MemoryManager` holds no memory of its own.
 routine MemoryManager.destruct(me: @Me) -> None
     return
 
-### A memory manager that hands out blocks and doesn't handle pages: its page routines and `protect_fn` are null.
+### A table that hands out blocks and doesn't handle pages: its page routines and `protect_fn` are null. For the
+### standard library's own managers built from C routines, everything else makes its table with `m.to[MemoryManager]()`.
 ### :param alloc_fn: Allocates `(state, size, align)`.
 ### :param realloc_fn: Resizes `(state, at, size, align)`.
 ### :param free_fn: Gives a block back `(state, at)`.
 ### :param state: What the three routines share.
-### :returns: The manager.
-routine MemoryManager.construct(alloc_fn: Callable[(Addr, USize, USize), Addr],
+### :returns: The table.
+internal routine MemoryManager.construct(alloc_fn: Callable[(Addr, USize, USize), Addr],
     realloc_fn: Callable[(Addr, Addr, USize, USize), Addr], free_fn: Callable[(Addr, Addr), None],
     state: Addr) -> Me
     manager: Me = Me(alloc_fn, realloc_fn, free_fn, reserve_fn: null, commit_fn: null,
         release_fn: null, protect_fn: null, state)
     return manager
+
+### The table of a manager that hands out blocks and doesn't handle pages: routines that call its `alloc`, `realloc`,
+### and `free`, with its address. Its page routines are empty (`has_pages()` and `has_protect()` are false).
+### :typeparam T: The manager type.
+### :returns: The table, which views the manager: the manager outlives every use of it.
+routine T.to[MemoryManager](me: @Me) -> MemoryManager
+needs T: typename, MemoryManageable[T]
+    table: MemoryManager = MemoryManager(alloc_fn: forward_alloc[T].to[Callable](),
+        realloc_fn: forward_realloc[T].to[Callable](), free_fn: forward_free[T].to[Callable](),
+        reserve_fn: null, commit_fn: null, release_fn: null, protect_fn: null, state: me)
+    return table
+
+### The table of a manager that handles pages: routines that call its `alloc`, `realloc`, `free`, `reserve`, `commit`,
+### `release`, and `protect`, with its address (`has_pages()` and `has_protect()` are true).
+### :typeparam T: The manager type.
+### :returns: The table, which views the manager: the manager outlives every use of it.
+routine T.to[MemoryManager](me: @Me) -> MemoryManager
+needs T: typename, PageManageable[T]
+    table: MemoryManager = MemoryManager(alloc_fn: forward_alloc[T].to[Callable](),
+        realloc_fn: forward_realloc[T].to[Callable](), free_fn: forward_free[T].to[Callable](),
+        reserve_fn: forward_reserve[T].to[Callable](), commit_fn: forward_commit[T].to[Callable](),
+        release_fn: forward_release[T].to[Callable](),
+        protect_fn: forward_protect[T].to[Callable](), state: me)
+    return table
+
+# The table's routines: each turns the state back into the manager it came from and calls the manager's own. This is
+# the one place a table's state is read as a manager.
+
+### Calls the manager's `alloc`.
+### :typeparam M: The manager type.
+### :param state: The manager's address.
+### :param size: The number of bytes.
+### :param align: The alignment, a power of two.
+### :returns: The block, or null.
+internal routine forward_alloc[M](state: Addr, size: USize, align: USize) -> Addr
+needs M: typename, MemoryManageable[M]
+    manager: @M = state.to[@M]()
+    return manager.alloc(size, align)
+
+### Calls the manager's `realloc`.
+### :typeparam M: The manager type.
+### :param state: The manager's address.
+### :param at: The block, or null.
+### :param size: The new size in bytes.
+### :param align: The block's alignment.
+### :returns: The resized block, or null with the block left as it was.
+@reshaping(at)
+internal routine forward_realloc[M](state: Addr, at: Addr, size: USize, align: USize) -> Addr
+needs M: typename, MemoryManageable[M]
+    manager: @M = state.to[@M]()
+    return manager.realloc(at, size, align)
+
+### Calls the manager's `free`.
+### :typeparam M: The manager type.
+### :param state: The manager's address.
+### :param at: The block.
+internal routine forward_free[M](state: Addr, at: Addr) -> None
+needs M: typename, MemoryManageable[M]
+    manager: @M = state.to[@M]()
+    manager.free(at)
+    return
+
+### Calls the manager's `reserve`.
+### :typeparam M: The manager type.
+### :param state: The manager's address.
+### :param size: The number of bytes.
+### :returns: The reservation's start, or null.
+internal routine forward_reserve[M](state: Addr, size: USize) -> Addr
+needs M: typename, PageManageable[M]
+    manager: @M = state.to[@M]()
+    return manager.reserve(size)
+
+### Calls the manager's `commit`.
+### :typeparam M: The manager type.
+### :param state: The manager's address.
+### :param at: The first page.
+### :param size: The number of bytes.
+### :returns: False when the pages can't be committed.
+internal routine forward_commit[M](state: Addr, at: Addr, size: USize) -> Bool
+needs M: typename, PageManageable[M]
+    manager: @M = state.to[@M]()
+    return manager.commit(at, size)
+
+### Calls the manager's `release`.
+### :typeparam M: The manager type.
+### :param state: The manager's address.
+### :param at: The reservation's start.
+### :param size: The size reserved.
+internal routine forward_release[M](state: Addr, at: Addr, size: USize) -> None
+needs M: typename, PageManageable[M]
+    manager: @M = state.to[@M]()
+    manager.release(at, size)
+    return
+
+### Calls the manager's `protect`.
+### :typeparam M: The manager type.
+### :param state: The manager's address.
+### :param at: The first page.
+### :param size: The number of bytes.
+### :param access: What the pages allow.
+### :returns: False when the access can't be set.
+internal routine forward_protect[M](state: Addr, at: Addr, size: USize, access: PageAccess) -> Bool
+needs M: typename, PageManageable[M]
+    manager: @M = state.to[@M]()
+    return manager.protect(at, size, access)
 
 ### Allocates `size` bytes aligned to `align` from this manager.
 ### :param size: The number of bytes.

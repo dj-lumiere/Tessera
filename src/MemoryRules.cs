@@ -52,7 +52,12 @@ public static class MemoryRules
     public sealed record ArmBegin(Pos Pos) : Event(Pos);
 
     /// `Name` is a view of the memory `Root` names: an address or a Span into it.
-    public sealed record ViewOf(string Name, string Root, Pos Pos) : Event(Pos);
+    public sealed record ViewOf(string Name, string Root, Pos Pos) : Event(Pos)
+    {
+        /// The view holds the address of `Root`'s slot itself (a manager's table holds the manager's): `Root` must not
+        /// end while the view is still used.
+        public bool Holds { get; init; }
+    }
 
     /// A `#reshaping` routine may move the memory `Root` names: the views of it no longer see it.
     public sealed record Reshape(string Root, string How, Pos Pos) : Event(Pos);
@@ -74,7 +79,10 @@ public static class MemoryRules
         public Dictionary<string, string> Views = [];
         public Dictionary<string, (Pos Pos, string How)> Stale = [];
 
-        public State Copy() => new() { Names = new(Names), Groups = new(Groups), Views = new(Views), Stale = new(Stale) };
+        /// The views that hold their root's slot (ViewOf.Holds).
+        public HashSet<string> Holding = [];
+
+        public State Copy() => new() { Names = new(Names), Groups = new(Groups), Views = new(Views), Stale = new(Stale), Holding = new(Holding) };
 
         /// The same state with its groups named by the first handle that names each, so states that differ only in
         /// how a group got its id are one.
@@ -89,6 +97,7 @@ public static class MemoryRules
                 Groups = Groups.Where(g => rename.ContainsKey(g.Key)).ToDictionary(g => rename[g.Key], g => g.Value),
                 Views = new(Views),
                 Stale = new(Stale),
+                Holding = new(Holding),
             };
         }
 
@@ -98,7 +107,8 @@ public static class MemoryRules
             + "|" + string.Join(";", Groups.OrderBy(g => g.Key, StringComparer.Ordinal)
                 .Select(g => $"{g.Key}:{(g.Value.Ended is null ? "live" : "ended")}"))
             + "|" + string.Join(";", Views.OrderBy(v => v.Key, StringComparer.Ordinal).Select(v => $"{v.Key}>{v.Value}"))
-            + "|" + string.Join(";", Stale.Keys.Order(StringComparer.Ordinal));
+            + "|" + string.Join(";", Stale.Keys.Order(StringComparer.Ordinal))
+            + "|" + string.Join(";", Holding.Order(StringComparer.Ordinal));
     }
 
     /// The errors of one routine: each a message at its place, first one first. `routineWide` names the handles every
@@ -191,12 +201,21 @@ public static class MemoryRules
                     case ViewOf v:
                         state.Views[v.Name] = v.Root;
                         state.Stale.Remove(v.Name);
+                        if (v.Holds) state.Holding.Add(v.Name);
+                        else state.Holding.Remove(v.Name);
                         break;
                     case Reshape rs:
                         foreach (var (view, root) in state.Views)
                             if (root == rs.Root) state.Stale[view] = (rs.Pos, rs.How);
                         break;
                     case UseView uv:
+                        // A table used after the manager it was made from ended points at a slot that holds nothing.
+                        if (state.Holding.Contains(uv.Name) && state.Views.TryGetValue(uv.Name, out var manager)
+                            && state.Names.TryGetValue(manager, out var managerId) && state.Groups.TryGetValue(managerId, out var mg)
+                            && mg.Ended is { } managerEnd)
+                            Report(uv.Pos, $"'{uv.Name}' is the table of the manager '{manager}', which ended at {mg.How} on line "
+                                + $"{managerEnd.Line}, so the table points at a manager that isn't there: a manager outlives its "
+                                + $"table. Use '{uv.Name}' before line {managerEnd.Line}, or end '{manager}' after the table's last use");
                         if (state.Stale.TryGetValue(uv.Name, out var moved) && state.Views.TryGetValue(uv.Name, out var viewed))
                             Report(uv.Pos, $"'{uv.Name}' is a view of '{viewed}', and {moved.How} on line {moved.Pos.Line} may have moved that memory: "
                                 + $"use the view before, or keep a position (a USize) and take the view again after");
@@ -241,6 +260,7 @@ public static class MemoryRules
                             {
                                 next.Views[view] = root;
                                 if (state.Stale.TryGetValue(view, out var stale)) next.Stale[view] = stale;
+                                if (state.Holding.Contains(view)) next.Holding.Add(view);
                             }
                         // A group no name of the next block reaches is lost there, unless it has ended.
                         foreach (var (id, g) in state.Groups)

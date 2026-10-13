@@ -10,38 +10,56 @@ import Standard/Os
 ### The bytes the command prints at least (200 lines of 48 x's and a line ending).
 preset LONG_COUNT: USize = 9800
 
-### An allocator call that always fails.
-### :param state: Unused.
+### A memory manager that gives nothing.
+record Refusing
+
+### A memory manager that gives blocks from the default heap (it gives any alignment, the C heap only malloc's own) and
+### never grows one.
+record NoGrow
+
+obeys MemoryManageable[Refusing]
+obeys MemoryManageable[NoGrow]
+
+### Always fails.
 ### :param size: Unused.
+### :param align: Unused.
 ### :returns: Null.
-routine refuse_alloc(state: Addr, size: USize, align: USize) -> Addr
+routine Refusing.alloc(me: @Me, size: USize, align: USize) -> Addr
     return null
 
-### A reallocation that always fails, leaving the block as it was.
-### :param state: Unused.
-### :param old: Unused.
+### Always fails, leaving the block as it was.
+### :param at: Unused.
 ### :param size: Unused.
+### :param align: Unused.
 ### :returns: Null.
-routine refuse_realloc(state: Addr, old: Addr, size: USize, align: USize) -> Addr
+routine Refusing.realloc(me: @Me, at: Addr, size: USize, align: USize) -> Addr
     return null
-
-### The default heap's allocation (it gives any alignment, the C heap only malloc's own), for an allocator that
-### only refuses to grow.
-### :param state: Unused.
-### :param size: The size in bytes.
-### :returns: The block, or null.
-routine heap_alloc(state: Addr, size: USize, align: USize) -> Addr
-    heap: MemoryManager = DEFAULT_HEAP.peek()
-    fn: Callable[(Addr, USize, USize), Addr] = heap.alloc_fn
-    return fn.call(heap.state, size, align)
 
 ### The default heap's free.
-### :param state: Unused.
-### :param ptr: The block.
-routine heap_free(state: Addr, ptr: Addr) -> None
-    heap: MemoryManager = DEFAULT_HEAP.peek()
-    fn: Callable[(Addr, Addr), None] = heap.free_fn
-    fn.call(heap.state, ptr)
+### :param at: The block.
+routine Refusing.free(me: @Me, at: Addr) -> None
+    DEFAULT_HEAP.free(at)
+    return
+
+### The default heap's allocation.
+### :param size: The size in bytes.
+### :param align: The alignment.
+### :returns: The block, or null.
+routine NoGrow.alloc(me: @Me, size: USize, align: USize) -> Addr
+    return DEFAULT_HEAP.alloc(size, align)
+
+### Always fails, leaving the block as it was.
+### :param at: Unused.
+### :param size: Unused.
+### :param align: Unused.
+### :returns: Null.
+routine NoGrow.realloc(me: @Me, at: Addr, size: USize, align: USize) -> Addr
+    return null
+
+### The default heap's free.
+### :param at: The block.
+routine NoGrow.free(me: @Me, at: Addr) -> None
+    DEFAULT_HEAP.free(at)
     return
 
 ### The command that prints the 200 lines, through cmd.exe.
@@ -82,8 +100,10 @@ routine run(label: Span[Byte], alloc: @MemoryManager) -> None
             return
 
 routine start() -> None
-    local nothing: @MemoryManager <- (alloc_fn: refuse_alloc.to[Callable](), realloc_fn: refuse_realloc.to[Callable](), free_fn: heap_free.to[Callable](), reserve_fn: null, commit_fn: null, release_fn: null, protect_fn: null, state: null)
-    local no_grow: @MemoryManager <- (alloc_fn: heap_alloc.to[Callable](), realloc_fn: refuse_realloc.to[Callable](), free_fn: heap_free.to[Callable](), reserve_fn: null, commit_fn: null, release_fn: null, protect_fn: null, state: null)
+    local refusing: @Refusing <- .hollow()
+    local no_growing: @NoGrow <- .hollow()
+    local nothing: @MemoryManager <- refusing.to[MemoryManager]()
+    local no_grow: @MemoryManager <- no_growing.to[MemoryManager]()
 
     run(label: "an allocator that gives nothing", alloc: nothing)
     run(label: "an allocator that can't grow a capture", alloc: no_grow)

@@ -24,7 +24,7 @@ public sealed partial class Compiler
         if (r.Fixed.Count > 0)
         {
             var fixedArgs = r.Fixed.Select(t => ResolveType(t, env)).ToList();
-            steps.Add(new Step(UnqualifiedName(r.Name, r), "FP:" + r.DisplayName + "@" + r.Module, () => m.TemplateArgs(fixedArgs), null));
+            steps.Add(new Step(UnqualifiedName(r.Name, r) + ConstraintTag(r), "FP:" + r.DisplayName + "@" + r.Module, () => m.TemplateArgs(fixedArgs), null));
             m.Name(steps, function: true);
             m.Type(ret);
             m.Params(ps);
@@ -32,7 +32,7 @@ public sealed partial class Compiler
         }
         var fnParams = r.TypeParams.Select((p, i) => (p, i)).ToDictionary(x => x.p, x => x.i);
         Action? targs = r.TypeParams.Count == 0 ? null : () => m.TemplateArgs(r.TypeParams.Select(p => env.Get(p)!).ToList());
-        steps.Add(new Step(UnqualifiedName(r.Name, r), "FP:" + r.DisplayName + "@" + r.Module, targs, null));
+        steps.Add(new Step(UnqualifiedName(r.Name, r) + ConstraintTag(r), "FP:" + r.DisplayName + "@" + r.Module, targs, null));
         m.Name(steps, function: true);
         if (r.TypeParams.Count == 0)
         {

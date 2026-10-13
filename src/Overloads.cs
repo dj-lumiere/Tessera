@@ -59,6 +59,53 @@ public sealed partial class Compiler
         return key;
     }
 
+    /// The routines that share their parameter types with an overload that has other constraints: each one's symbol
+    /// carries its constraints, and a call picks the one whose constraints say the most.
+    private readonly HashSet<RoutineDecl> _constraintOverloads = [];
+
+    /// A routine's `needs` concepts as written, each type parameter as the slot it fills, in order: two routines with the
+    /// same parameter types and different keys are told apart by their constraints.
+    private string ConstraintKey(RoutineDecl r)
+    {
+        var slots = new Dictionary<string, string>();
+        for (int i = 0; i < r.TypeParams.Count; i++) slots[r.TypeParams[i]] = $"$R{i}";
+        if (r.Owner is not null)
+        {
+            if (IsBlanketOwner(r)) slots[r.Owner.Name] = "$Me";
+            for (int i = 0; i < r.Owner.Args.Count; i++)
+                if (r.Owner.Args[i] is TypeArgType { Type: { Args.Count: 0, Path: null } a } && ClauseTypeParamsOrOwnerArg(r, a.Name))
+                    slots.TryAdd(a.Name, $"$O{i}");
+        }
+        return string.Join(", ", r.Clauses.Where(c => c.Kind == "require").SelectMany(c => c.Concepts)
+            .Select(c => SlotText(c, slots)).Order(StringComparer.Ordinal));
+    }
+
+    /// The Itanium ABI tag a routine with a constraint overload carries, so the two have symbols of their own: its
+    /// concepts' names. Empty for every other routine.
+    private string ConstraintTag(RoutineDecl r)
+    {
+        if (!_constraintOverloads.Contains(r)) return "";
+        string names = string.Join("_", r.Clauses.Where(c => c.Kind == "require").SelectMany(c => c.Concepts)
+            .Select(c => c.Name).Order(StringComparer.Ordinal));
+        return "B" + Source("needs_" + names);
+    }
+
+    /// Every concept a routine's constraints make hold under `env`, with the ones they refine, each as `Name[args]`.
+    public HashSet<string> ConstraintClosure(RoutineDecl r, TypeEnv env)
+    {
+        var closure = new HashSet<string>();
+        void Add(ConceptDecl concept, List<DType> args)
+        {
+            if (!closure.Add(ConformsKey(concept, args))) return;
+            var cenv = ConceptEnv(concept, args);
+            foreach (var s in concept.Clauses.Where(c => c.Kind == "conform").SelectMany(c => c.Concepts))
+                Add(FindConcept(s, concept.File), ConceptArgs(s, cenv));
+        }
+        foreach (var c in r.Clauses.Where(c => c.Kind == "require").SelectMany(c => c.Concepts))
+            Add(FindConcept(c, r.File), ConceptArgs(c, env));
+        return closure;
+    }
+
     /// Whether a name in a routine owner's `<...>` is a type parameter (it names no type): `T` in `List[T].push`.
     private bool ClauseTypeParamsOrOwnerArg(RoutineDecl r, string name) =>
         OwnerTypeParams(r).Contains(name) && !(IntType.FromName(name) is not null || DeclaresType(name));
@@ -97,6 +144,14 @@ public sealed partial class Compiler
                     if (!sameParent(a, b)) continue;
                     if (b.IsLibrary && !a.IsLibrary) (a, b) = (b, a);   // report at the user's declaration
                     var (ka, kb) = (SignatureKey(a), SignatureKey(b));
+                    // Two generic routines with the same parameter types but different constraints: a call takes the
+                    // one whose constraints say more (`PageManageable[T]` over `MemoryManageable[T]`, which it refines).
+                    if (ka.Params == kb.Params && ka.Ret == kb.Ret && ConstraintKey(a) != ConstraintKey(b))
+                    {
+                        _constraintOverloads.Add(a);
+                        _constraintOverloads.Add(b);
+                        continue;
+                    }
                     if (ka.Params == kb.Params)
                         throw new CompileError(b.Pos, ka.Ret == kb.Ret
                             ? $"routine '{b.DisplayName}' is already declared at {a.Pos} with the same parameter types"
@@ -193,13 +248,16 @@ public sealed partial class Compiler
             string home = ownerDecl?.Module ?? CoreModule;
             var visible = methods.Where(m =>
                 m.IsPrivate ? m.File == file
-                : m.IsInternal ? m.Module == ModuleOf(file)
+                : m.IsInternal ? InternalReaches(m, file)
                 : anyModule || m.Module == home || Visible(m, file, null)).ToList();
             if (visible.Count == 0)
                 throw new CompileError(pos, Hidden(methods[0], $"routine '{owner}.{name}'", null));
             return LocalHides(visible, file);
         }
-        return required.Count > 0 ? required : BlanketCandidates(name, file, pos, anyModule);
+        if (required.Count > 0) return required;
+        // A routine on every type defined for type arguments (`T.to[MemoryManager]`) is in the set only for the type
+        // arguments it is for, so `p.to[@U]()` still reaches Ptr's own.
+        return BlanketCandidates(name, file, pos, anyModule, m => fits?.Invoke(m) ?? m.Fixed.Count == 0);
     }
 
     /// Whether a routine written for given type arguments of its owner (`Thread[Void].put_work`) is one for
@@ -250,9 +308,11 @@ public sealed partial class Compiler
     }
 
     /// The routines on every type (`T.name`) with this name, as `file` sees them.
-    public List<RoutineDecl> BlanketCandidates(string name, string file, Pos pos, bool anyModule = true)
+    public List<RoutineDecl> BlanketCandidates(string name, string file, Pos pos, bool anyModule = true,
+        Func<RoutineDecl, bool>? fits = null)
     {
-        var all = _blanket.GetValueOrDefault(name)?.Where(b => anyModule || Visible(b, file, null) || !b.IsPrivate && !b.IsInternal).ToList();
+        var all = _blanket.GetValueOrDefault(name)?.Where(b => (fits?.Invoke(b) ?? true)
+            && (anyModule || Visible(b, file, null) || !b.IsPrivate && !b.IsInternal)).ToList();
         if (all is null || all.Count == 0) return [];
         var visible = all.Where(c => Visible(c, file, null)).ToList();
         if (visible.Count == 0) throw new CompileError(pos, Hidden(all[0], $"routine 'T.{name}'", null));
