@@ -122,7 +122,10 @@ routine start() -> None
   contents are required: `local list: @List[S64] <- .construct(alloc)`, no `list_val` and no separate store. A
   slot that a routine fills later (an out parameter, `out.construct(...)`, an iterator's slot) starts as
   `local p: @T <- .hollow()`: `T.hollow()`, which every type has, is the all-zero value (`0`, `false`, null, a
-  collection with no memory, a choice's first member), and every `destruct` leaves it alone. A slot without `<-` is
+  collection with no memory, a choice's first member), and every `destruct` leaves it alone (`<- .hollow()` is a
+  memset in place). A slot whose type holds no pointer (no `Ptr`, `Addr`, `Callable`, `Span`, `Box`, `Memory`) may
+  start `<- .uninit()`: nothing is written, for a buffer a routine fills right away. Read it only after the fill.
+  `.uninit()` elsewhere, or on a type holding a pointer, is a build error. A slot without `<-` is
   an error. `<-` fills memory and `=` only binds a name to a value, so `local p: @T = v` is a
   value, not a slot. An array value comes from `[1, 2, x]` or a load (COUNT values at `first: @T` are
   `first.to[@Array[T, COUNT]]().peek()`);

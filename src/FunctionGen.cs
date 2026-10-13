@@ -1258,6 +1258,23 @@ public sealed class FunctionGen
                     if (b.Value is ClaimExpr { Contents: { } held }) MemBind(b.Name, held, b.Pos, warn: false, type: t);
                     else if (b.Value is not ClaimExpr) MemBind(b.Name, b.Value, b.Pos, type: t);
                 }
+                // `<- .hollow()` zeroes the slot in place (a memset), never through a whole-slot value: a big array's
+                // all-zero value as one store takes LLVM minutes and can crash it. `<- .uninit()` writes nothing.
+                if (b.Value is ClaimExpr { Contents: ImplicitCallExpr { Name: "hollow" or "uninit", Args.Count: 0, TypeArgs.Count: 0 } fill }
+                    && t is PtrType { Pointee: { } slotType })
+                {
+                    if (fill.Name == "uninit")
+                    {
+                        if (PointerIn(slotType, slotType.Name, []) is { } where)
+                            throw Err(fill.Pos,
+                                $"'.uninit()' leaves the slot's bytes as they were, and {slotType} holds a pointer ({where}): "
+                                + "a read or a drop would follow whatever was there. Start it with <- .hollow()");
+                    }
+                    else
+                        EvalCall(new MethodCallExpr(new ValueRef(b.Name, b.Pos), "zeroinit", [], [new IntLit(1, fill.Pos)], fill.Pos),
+                            VoidType.Instance);
+                    break;
+                }
                 // `claim p: @T <- value` is the claim, then `p.poke(value)`.
                 if (b.Value is ClaimExpr { Contents: { } contents } && t is PtrType)
                 {
@@ -2047,6 +2064,33 @@ public sealed class FunctionGen
             case ArrayLit a: return a.Elements.Any(MakesTemp);
             case RecordLit r: return r.Fields.Any(f => MakesTemp(f.Value));
             default: return false;
+        }
+    }
+
+    /// Where `type` holds a pointer (a Ptr, an Addr, a Callable, or the Span, Box, or Memory over one), as a path
+    /// from `path` (`Reader.buf.data`), or null when it holds none.
+    private string? PointerIn(DType type, string path, HashSet<string> seen)
+    {
+        switch (type)
+        {
+            case PtrType or CallableType:
+                return path;
+            case ArrayType a:
+                return PointerIn(a.Elem, $"{path}[...]", seen);
+            case VectorType v:
+                return PointerIn(v.Elem, $"{path}[...]", seen);
+            case RecordType r when seen.Add(r.Key):
+                foreach (var (name, field) in _c.Fields(r))
+                    if (PointerIn(field, $"{path}.{name}", seen) is { } found)
+                        return found;
+                return null;
+            case VariantType v when seen.Add(v.Key):
+                foreach (var branch in v.Branches)
+                    if (PointerIn(branch, $"{path} as {branch.Name}", seen) is { } found)
+                        return found;
+                return null;
+            default:
+                return null;
         }
     }
 
@@ -3155,6 +3199,8 @@ public sealed class FunctionGen
                 InferTypeArgs(r, env, c.Args, expected, 0);
                 return new CallPlan(r, env, null, c.Args, c.Pos);
             }
+            case ImplicitCallExpr { Name: "uninit" } uninit:
+                throw Err(uninit.Pos, "'.uninit()' only starts a slot whose routine fills it: local buf: @T <- .uninit()");
             case ImplicitCallExpr ic:
             {
                 // The type the value is going to is the owner: `.absent()` where an Option<T> is expected.
