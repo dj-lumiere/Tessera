@@ -1,6 +1,6 @@
 # Tessera stdlib collection: SortedDict[TKey, TValue]
 #
-# Order-statistic B-tree map with a fixed node key capacity of NODE_KEYS.
+# Order-statistic B-tree map with a fixed node key capacity of SORTED_DICT_NODE_KEYS.
 # Nodes store keys/values/children inline with fixed arrays.
 # The allocator is stored in SortedDict. Node helpers still receive it as a parameter.
 
@@ -9,11 +9,11 @@ module Standard/Collections
 import Standard/Alloc
 import Standard/Format
 
-private preset NODE_KEYS: USize = 7
-private preset NODE_CHILDREN: USize = NODE_KEYS.add(1)
-private preset NODE_MIN_KEYS: USize = NODE_KEYS.add(1).div_trunc(2)
+private preset SORTED_DICT_NODE_KEYS: USize = 7
+private preset SORTED_DICT_NODE_CHILDREN: USize = SORTED_DICT_NODE_KEYS.add(1)
+private preset SORTED_DICT_NODE_MIN_KEYS: USize = SORTED_DICT_NODE_KEYS.add(1).div_trunc(2)
 
-### One node of a {SortedDict[TKey, TValue]} B-tree: up to `NODE_KEYS` keys and values inline, and for internal nodes the child pointers between them. `subtree_count` is the total entries in the subtree. It is an entity, so an entity key or value can live in it: the dict makes and frees nodes, and its keys and values move in and out with steal.
+### One node of a {SortedDict[TKey, TValue]} B-tree: up to `SORTED_DICT_NODE_KEYS` keys and values inline, and for internal nodes the child pointers between them. `subtree_count` is the total entries in the subtree. It is an entity, so an entity key or value can live in it: the dict makes and frees nodes, and its keys and values move in and out with steal.
 ### :typeparam TKey: The key type.
 ### :typeparam TValue: The value type.
 entity SortedDictNode[TKey, TValue]
@@ -21,9 +21,9 @@ needs TKey: typename, TValue: typename, Comparable[TKey]
     leaf: Bool
     count: USize
     subtree_count: USize
-    keys: Array[TKey, NODE_KEYS]
-    values: Array[TValue, NODE_KEYS]
-    children: Array[@SortedDictNode[TKey, TValue], NODE_CHILDREN]
+    keys: Array[TKey, SORTED_DICT_NODE_KEYS]
+    values: Array[TValue, SORTED_DICT_NODE_KEYS]
+    children: Array[@SortedDictNode[TKey, TValue], SORTED_DICT_NODE_CHILDREN]
 
 ### A map kept in ascending key order, stored as an order-statistic B-tree. Keys are unique, lookup and insertion are `O(log n)`, and iteration is in ascending key order.
 ### :typeparam TKey: The key type, ordered by its `Comparable` conformance.
@@ -39,7 +39,7 @@ needs TKey: typename, TValue: typename, Comparable[TKey]
     alloc: @MemoryManager
 
 ### Where an entry lives: its node and its index there.
-internal record SortedDictSpot[TKey, TValue]
+private record SortedDictSpot[TKey, TValue]
 needs TKey: typename, TValue: typename
     node: @SortedDictNode[TKey, TValue]
     index: USize
@@ -53,13 +53,13 @@ needs TKey: typename, TValue: typename
 ### :param node: Its `node`.
 ### :param index: Its `index`.
 ### :returns: The new value.
-internal routine SortedDictSpot[TKey, TValue].construct(node: @SortedDictNode[TKey, TValue],
+private routine SortedDictSpot[TKey, TValue].construct(node: @SortedDictNode[TKey, TValue],
     index: USize) -> Me
 needs TKey: typename, TValue: typename, Comparable[TKey]
     return Me(node, index)
 
 ### Releases nothing: a `SortedDictSpot` holds no memory of its own.
-internal routine SortedDictSpot[TKey, TValue].destruct(me: @Me) -> None
+private routine SortedDictSpot[TKey, TValue].destruct(me: @Me) -> None
 needs TKey: typename, TValue: typename, Comparable[TKey]
     return
 
@@ -421,9 +421,9 @@ needs TKey: typename, TValue: typename
 
     if right.is_null()
         return false
-    mid: USize = NODE_KEYS.div_trunc(2)
+    mid: USize = SORTED_DICT_NODE_KEYS.div_trunc(2)
     right_start: USize = mid + 1
-    right_count: USize = NODE_KEYS.sub(right_start)
+    right_count: USize = SORTED_DICT_NODE_KEYS.sub(right_start)
     right.keys.copy(dst_start: 0, src: left.keys, src_start: right_start, count: right_count)
     right.values.copy(dst_start: 0, src: left.values, src_start: right_start, count: right_count)
     right.count.poke(right_count)
@@ -501,7 +501,7 @@ needs TKey: typename, TValue: typename
         slot: USize = me.find_index(key: probe)
         child: @Me = me.children[slot]
         child_count: USize = child.count.peek()
-        full: Bool = child_count == NODE_KEYS
+        full: Bool = child_count == SORTED_DICT_NODE_KEYS
         values2: (USize, @Me) = when
             full =>
                 if not me.split_child(index: slot, alloc)
@@ -572,7 +572,7 @@ needs TKey: typename, TValue: typename
     else
         alloc: @MemoryManager = me.alloc.peek()
         root_count: USize = root.count.peek()
-        full: Bool = root_count == NODE_KEYS
+        full: Bool = root_count == SORTED_DICT_NODE_KEYS
         root_node: @SortedDictNode[TKey, TValue] = when
             full =>
                 new_root: @SortedDictNode[TKey, TValue] = SortedDictNode[TKey, TValue].construct(
@@ -613,9 +613,9 @@ needs TKey: typename, TValue: typename
     me.subtree_count.poke(new_count)
     return steal old
 
-# Capacity = NODE_KEYS, t = NODE_MIN_KEYS. Non-root nodes maintain
-# count >= NODE_MIN_KEYS - 1.
-# Helpers below ensure a child has count >= NODE_MIN_KEYS (= t) before any deletion
+# Capacity = SORTED_DICT_NODE_KEYS, t = SORTED_DICT_NODE_MIN_KEYS. Non-root nodes maintain
+# count >= SORTED_DICT_NODE_MIN_KEYS - 1.
+# Helpers below ensure a child has count >= SORTED_DICT_NODE_MIN_KEYS (= t) before any deletion
 # descent so the child can absorb a one-key drop without underflowing.
 
 ### Rotates one entry from child `i - 1` through the parent into the front of child `i`, so child `i` gains an entry. Subtree counts are updated.
@@ -702,7 +702,7 @@ needs TKey: typename, TValue: typename
     me.recount()
     return
 
-### Makes sure child `i` has at least `NODE_MIN_KEYS` keys before a deletion descends into it, by borrowing from a sibling or merging with one.
+### Makes sure child `i` has at least `SORTED_DICT_NODE_MIN_KEYS` keys before a deletion descends into it, by borrowing from a sibling or merging with one.
 ### :param i: The index of the child about to be descended into.
 ### :param alloc: The allocator that frees a merged node.
 ### :returns: The index of the child to descend into, which differs from `i` when a merge with the left sibling happened.
@@ -711,7 +711,7 @@ routine SortedDictNode[TKey, TValue].ensure_min(me: @Me, i: USize, alloc: @Memor
 needs TKey: typename, TValue: typename
     child: @Me = me.children[i]
     child_count: USize = child.count.peek()
-    if child_count >= NODE_MIN_KEYS
+    if child_count >= SORTED_DICT_NODE_MIN_KEYS
         return i
     else
         has_left: Bool = i > 0
@@ -719,7 +719,7 @@ needs TKey: typename, TValue: typename
             has_left =>
                 left: @Me = me.children[i - 1]
                 left_count: USize = left.count.peek()
-                if left_count >= NODE_MIN_KEYS
+                if left_count >= SORTED_DICT_NODE_MIN_KEYS
                     me.borrow_from_left(i)
                     return i
                 else
@@ -729,7 +729,7 @@ needs TKey: typename, TValue: typename
         if i < parent_count
             right: @Me = me.children[i + 1]
             right_count: USize = right.count.peek()
-            if right_count >= NODE_MIN_KEYS
+            if right_count >= SORTED_DICT_NODE_MIN_KEYS
                 me.borrow_from_right(i)
                 return i
             else if not has_left2
@@ -800,7 +800,7 @@ needs TKey: typename, TValue: typename
             else
                 left: @Me = me.children[slot]
                 left_count: USize = left.count.peek()
-                if left_count >= NODE_MIN_KEYS
+                if left_count >= SORTED_DICT_NODE_MIN_KEYS
                     local out: @TValue <- .hollow()
                     left2: @Me = me.children[slot]
                     local replacement: @TKey <- left2.take_max_key(out_value: out, alloc)
@@ -813,7 +813,7 @@ needs TKey: typename, TValue: typename
                 else
                     right: @Me = me.children[slot + 1]
                     right_count: USize = right.count.peek()
-                    if right_count >= NODE_MIN_KEYS
+                    if right_count >= SORTED_DICT_NODE_MIN_KEYS
                         local out: @TValue <- .hollow()
                         right2: @Me = me.children[slot + 1]
                         local replacement: @TKey <- right2.take_min_key(out_value: out, alloc)

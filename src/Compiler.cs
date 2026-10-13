@@ -88,7 +88,6 @@ public sealed partial class Compiler
             if (d is RoutineDecl { Owner: not null, Name: "construct" or "destruct" } life) _lifeRoutines.Add(life);
             if (!Selected(d)) continue;
             _fileModule.TryAdd(d.File, d.Module);
-            if (d.IsLibrary) _libraryFiles.Add(d.File);
             RegisterConcepts(d);
             switch (d)
             {
@@ -218,7 +217,7 @@ public sealed partial class Compiler
                 throw new CompileError(a.Target.Pos, $"define {a.Name} = {a.Target}: that's neither a module nor a type");
             var clash = (_records.GetValueOrDefault(a.Name) ?? []).Cast<Decl>()
                 .Concat(_variants.GetValueOrDefault(a.Name) ?? []).Concat(_choices.GetValueOrDefault(a.Name) ?? [])
-                .FirstOrDefault(d => d.Module == a.Module && !(d.IsPrivate && d.File != a.File));
+                .FirstOrDefault(d => d.Module == a.Module);
             if (clash is not null)
                 throw new CompileError(a.Pos, $"define '{a.Name}' is already declared as a type at {clash.Pos}");
         }
@@ -277,8 +276,8 @@ public sealed partial class Compiler
 
     /// One name under one parent names one declaration, wherever it's declared: two modules may each have a
     /// `Point`, but a routine added to a type from another file can't reuse a name the type already has. A `private`
-    /// declaration doesn't claim its name outside its file, so it may share the name with a declaration in another
-    /// file. In its own file it's the one that's visible (Pick).
+    /// declaration doesn't claim its name outside its module, so it may share the name with a declaration in another
+    /// module. In its own module it's the one that's visible (Pick).
     private static void RejectDuplicates<T>(IEnumerable<List<T>> groups, Func<T, string> what, Func<T, T, bool> sameParent)
         where T : Decl
     {
@@ -287,7 +286,7 @@ public sealed partial class Compiler
                 for (int j = i + 1; j < group.Count; j++)
                 {
                     var (a, b) = (group[i], group[j]);
-                    if ((a.IsPrivate || b.IsPrivate) && a.File != b.File) continue;
+                    if ((a.IsPrivate || b.IsPrivate) && a.Module != b.Module) continue;
                     if (!sameParent(a, b)) continue;
                     if (b.IsLibrary && !a.IsLibrary) (a, b) = (b, a);   // report at the user's declaration
                     throw new CompileError(b.Pos, $"{what(b)} is already declared at {a.Pos}");
@@ -684,42 +683,33 @@ public sealed partial class Compiler
     /// The module a file declares, or "" for the solution's root.
     public string ModuleOf(string file) => _fileModule.GetValueOrDefault(file, "");
 
-    /// The files of the standard library.
-    private readonly HashSet<string> _libraryFiles = [];
+    /// Whether `file` reaches a `private` declaration: a file of the declaration's module.
+    public bool PrivateReaches(Decl d, string file) => d.Module == ModuleOf(file);
 
-    /// Whether `file` reaches an `internal` declaration: a file of its module, or, for one of the standard library, any
-    /// file of the standard library (the library is one whole, and a program never sees its internals).
-    public bool InternalReaches(Decl d, string file) =>
-        d.Module == ModuleOf(file) || d.IsLibrary && _libraryFiles.Contains(file);
-
-    private static string ShowModule(string module) => module == "" ? "the root module" : module;
+    public static string ShowModule(string module) => module == "" ? "the root module" : module;
 
     /// Whether `file` sees `d`: by its plain name when `path` is null, or through `path/name`. A plain name reaches
     /// the file's own module, Standard/Core (always imported), and the modules the file imports. `private` limits a
-    /// declaration to its file and `internal` to its module, qualified or not.
+    /// declaration to its module, qualified or not.
     public bool Visible(Decl d, string file, string? path)
     {
         if (path is not null && d.Module != path) return false;
-        if (d.IsPrivate) return d.File == file;
+        if (d.IsPrivate) return PrivateReaches(d, file);
         string from = ModuleOf(file);
-        if (d.IsInternal) return InternalReaches(d, file);
         return path is not null || d.Module == from || d.Module == CoreModule
                || (_fileImports.TryGetValue(file, out var imports) && imports.Contains(d.Module));
     }
 
     private string Hidden(Decl d, string what, string? path) =>
         path is not null && d.Module != path ? $"{what} isn't in {path}; it's in {ShowModule(d.Module)}"
-        : d.IsPrivate ? $"{what} is private to {d.File}"
-        : d.IsInternal ? $"{what} is internal to {ShowModule(d.Module)}"
+        : d.IsPrivate ? $"{what} is private to {ShowModule(d.Module)}"
         : $"{what} is in {ShowModule(d.Module)}; import {d.Module} or write {d.Module}/...";
 
-    /// Of the declarations a file sees under one name, the ones that win: the file's own (a `private` one shares its
-    /// name with declarations in other files), else its module's, else all of them, from Standard/Core and the
-    /// imports alike.
+    /// Of the declarations a file sees under one name, the ones that win: its module's (a `private` one shares its
+    /// name with declarations in other modules), else all of them, from Standard/Core and the imports alike.
     private List<T> Nearest<T>(List<T> visible, string file) where T : Decl
     {
         if (visible.Count <= 1) return visible;
-        if (visible.Where(c => c.File == file).ToList() is { Count: > 0 } local) return local;
         string module = ModuleOf(file);
         if (visible.Where(c => c.Module == module).ToList() is { Count: > 0 } own) return own;
         return visible;
@@ -1422,7 +1412,7 @@ public sealed partial class Compiler
     public Dictionary<RoutineDecl, (HashSet<string> Names, string Routine)> LambdaOuter { get; } = [];
 
     /// The routine `(a, b) => body` becomes as a `ct`: its parameters typed by `ct`, one `entry` block that returns
-    /// the body (or runs it, for a Void result), private to the file it is written in.
+    /// the body (or runs it, for a Void result), private to the module of the file it is written in.
     public RoutineDecl LambdaRoutine(LambdaExpr l, CallableType ct, RoutineDecl around, TypeEnv env, IEnumerable<string> outer)
     {
         string bindings = string.Join(",", env.All.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => $"{kv.Key}={kv.Value.Key}"));
@@ -1715,15 +1705,9 @@ public sealed partial class Compiler
         {
             if (fields.All(f => f.Name != name)) throw new CompileError(pos, $"{s} has no field '{name}'");
             if (!given.TryAdd(name, value)) throw new CompileError(pos, $"field '{name}' is given twice");
-            // A `private` field is given only in the record's file, an `internal` one only where its module's
-            // internals reach, as in a routine's literal.
-            if (s.Decl.Fields.FirstOrDefault(f => f.Name == name) is { } field)
-            {
-                if (field.IsPrivate && s.Decl.File != env.File)
-                    throw new CompileError(pos, $"field '{name}' of {s} is private to {s.Decl.File}");
-                if (field.IsInternal && !InternalReaches(s.Decl, env.File))
-                    throw new CompileError(pos, $"field '{name}' of {s} is internal to {s.Decl.Module}");
-            }
+            // A `private` field is given only in the record's module, as in a routine's literal.
+            if (s.Decl.Fields.FirstOrDefault(f => f.Name == name) is { IsPrivate: true } && !PrivateReaches(s.Decl, env.File))
+                throw new CompileError(pos, $"field '{name}' of {s} is private to {ShowModule(s.Decl.Module)}");
         }
         if (fields.FirstOrDefault(f => !given.ContainsKey(f.Name)) is { Name: not null } missing)
             throw new CompileError(lit.Pos, $"the literal for {s} leaves out field '{missing.Name}'");

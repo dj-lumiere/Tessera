@@ -3,7 +3,7 @@
 # Insertion-ordered open-addressed hash set. Two layers:
 #   - Entries arrays (keys/hashes/entry_states) hold live and dead entries in
 #     the order they were first inserted. Iteration walks these.
-#   - Slots is an index table: each cell is SLOT_EMPTY, SLOT_TOMBSTONE, or an
+#   - Slots is an index table: each cell is SET_SLOT_EMPTY, SET_SLOT_TOMBSTONE, or an
 #     entry index >= 0. Linear probing on the hash mod capacity.
 #
 # Every array is a Memory of the same count, the capacity, and each keeps
@@ -18,8 +18,8 @@ module Standard/Collections
 import Standard/Alloc
 import Standard/Format
 
-private preset SLOT_EMPTY:     USize = USize.MAX
-private preset SLOT_TOMBSTONE: USize = SLOT_EMPTY.sub(1)
+private preset SET_SLOT_EMPTY: USize = USize.MAX
+private preset SET_SLOT_TOMBSTONE: USize = SET_SLOT_EMPTY.sub(1)
 
 ### An insertion-ordered hash set. Keys live in parallel arrays (each a {Memory[T]} holding the capacity and the manager) in the order they were first added, and an open-addressed slot table with linear probing maps a hash to its entry. Removal marks the entry dead, so surviving elements keep their order until the next rehash.
 ### :typeparam T: The element type, which must provide hashing and equality.
@@ -66,7 +66,7 @@ needs T: typename
 ### :returns: The slot holding `key` if found, otherwise the slot where it should be installed: the first tombstone seen, else the first empty slot.
 routine Set[T].slot(me: @Me, key: @T, hash: U64) -> USize
 needs T: typename
-    local first_tombstone: @USize <- SLOT_EMPTY
+    local first_tombstone: @USize <- SET_SLOT_EMPTY
 
     capacity: USize = me.slots.count.peek()
     mask: USize = capacity - 1
@@ -74,16 +74,16 @@ needs T: typename
     while true with index: USize = hash.to_wrap[USize]() & mask
         slots: @USize = me.slots.data.peek()
         entry_idx: USize = slots.stride(index).peek()
-        is_empty: Bool = entry_idx == SLOT_EMPTY
+        is_empty: Bool = entry_idx == SET_SLOT_EMPTY
         when
             is_empty =>
-                has_tombstone: Bool = first_tombstone.peek() != SLOT_EMPTY
+                has_tombstone: Bool = first_tombstone.peek() != SET_SLOT_EMPTY
                 slot: USize = when
                     has_tombstone => first_tombstone.peek()
                     else => index
                 return slot
-            entry_idx == SLOT_TOMBSTONE =>
-                seen: Bool = first_tombstone.peek() != SLOT_EMPTY
+            entry_idx == SET_SLOT_TOMBSTONE =>
+                seen: Bool = first_tombstone.peek() != SET_SLOT_EMPTY
                 next_tombstone: USize = when
                     seen => first_tombstone.peek()
                     else => index
@@ -104,28 +104,28 @@ needs T: typename
 
 ### The entry index of `key`.
 ### :param key: The element to look for.
-### :returns: The index of the element's entry, or `SLOT_EMPTY` when it is absent.
+### :returns: The index of the element's entry, or `SET_SLOT_EMPTY` when it is absent.
 routine Set[T].find(me: @Me, key: @T) -> USize
 needs T: typename
     capacity: USize = me.slots.count.peek()
     if capacity == 0
-        return SLOT_EMPTY
+        return SET_SLOT_EMPTY
     else
         hash: U64 = key.hash()
         slot: USize = me.slot(key, hash)
         slots: @USize = me.slots.data.peek()
         entry_idx: USize = slots.stride(slot).peek()
-        if entry_idx < SLOT_TOMBSTONE
+        if entry_idx < SET_SLOT_TOMBSTONE
             return entry_idx
         else
-            return SLOT_EMPTY
+            return SET_SLOT_EMPTY
 
 ### Whether the element at `key` is in the set: read through its place, so an entity key is only lent.
 ### :param key: The element to look for.
 ### :returns: `true` when an equal element is live.
 routine Set[T].has(me: @Me, key: @T) -> Bool
 needs T: typename
-    return me.find(key) != SLOT_EMPTY
+    return me.find(key) != SET_SLOT_EMPTY
 
 ### Whether `key` is in the set.
 ### :param key: The element to look for.
@@ -213,7 +213,7 @@ needs T: typename
                     each i in 0 til new_capacity
                         slot_cells: @USize = slots.data.peek()
                         state_cells: @U8 = entry_states.data.peek()
-                        slot_cells.stride(i).poke(SLOT_EMPTY)
+                        slot_cells.stride(i).poke(SET_SLOT_EMPTY)
                         state_cells.stride(i).poke(0)
                     # Swaps the new arrays into the set, so the claimed slices hold the old ones from here on.
                     old_count: USize = me.entries_count.peek()
@@ -266,7 +266,7 @@ needs T: typename
 
     slots: @USize = me.slots.data.peek()
     entry_idx: USize = slots.stride(slot).peek()
-    if entry_idx < SLOT_TOMBSTONE
+    if entry_idx < SET_SLOT_TOMBSTONE
         # an equal element is already there: the new one ends here
         drop probe
         return false
@@ -327,12 +327,12 @@ needs T: typename
         slot: USize = me.slot(key, hash)
         slots: @USize = me.slots.data.peek()
         entry_idx: USize = slots.stride(slot).peek()
-        if entry_idx < SLOT_TOMBSTONE
+        if entry_idx < SET_SLOT_TOMBSTONE
             slots2: @USize = me.slots.data.peek()
             entry_states: @U8 = me.entry_states.data.peek()
             keys: @T = me.keys.data.peek()
             drop keys.stride(entry_idx)
-            slots2.stride(slot).poke(SLOT_TOMBSTONE)
+            slots2.stride(slot).poke(SET_SLOT_TOMBSTONE)
             entry_states.stride(entry_idx).poke(0)
             remaining_count: USize = me.count.peek() - 1
             remaining_count.poke_into(me.count)

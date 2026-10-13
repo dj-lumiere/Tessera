@@ -4,8 +4,9 @@
 # it handles pages). m.to[MemoryManager]() makes the MemoryManager table that
 # callers pass as @MemoryManager to any routine that allocates: routines that
 # forward to m's own, with m's address as the table's state. Nothing here needs
-# an operating system: make_heap_memory(), backed by libc malloc / realloc /
-# free, is in Standard/Os (Os/Heap.te).
+# an operating system. On a target with one, DefaultMemory.te builds the hosted
+# tables (DEFAULT_HEAP, DEFAULT_STACKS, make_c_heap_memory) from the routines of
+# Standard/Os (Os/Heap.te, Os/Stack.te, Os/Pages.te).
 #
 # Heap memory reaches user code as a Memory[T] (Types/Memory.te) or a Box[T]:
 # an address, a count, and this manager, released with drop(). allocate,
@@ -42,22 +43,22 @@ choice PageAccess: U8
 ### inside a routine.
 record MemoryManager
     ### Allocates `size` bytes aligned to `align` (a power of two), or returns null: `(state, size, align)`.
-    internal alloc_fn: Callable[(Addr, USize, USize), Addr]
+    private alloc_fn: Callable[(Addr, USize, USize), Addr]
     ### Resizes a block to `size` bytes, keeping its contents and its alignment `align`, or returns null and leaves it
     ### as it was: `(state, at, size, align)`.
-    internal realloc_fn: Callable[(Addr, Addr, USize, USize), Addr]
+    private realloc_fn: Callable[(Addr, Addr, USize, USize), Addr]
     ### Gives a block back: `(state, at)`.
-    internal free_fn: Callable[(Addr, Addr), None]
+    private free_fn: Callable[(Addr, Addr), None]
     ### Reserves `size` bytes of address space, no page usable yet, or returns null: `(state, size)`.
-    internal reserve_fn: Callable[(Addr, USize), Addr]
+    private reserve_fn: Callable[(Addr, USize), Addr]
     ### Makes reserved pages readable and writable, false when it can't: `(state, at, size)`.
-    internal commit_fn: Callable[(Addr, Addr, USize), Bool]
+    private commit_fn: Callable[(Addr, Addr, USize), Bool]
     ### Gives a whole reservation back: `(state, at, size)` with `at` and `size` as reserved.
-    internal release_fn: Callable[(Addr, Addr, USize), None]
+    private release_fn: Callable[(Addr, Addr, USize), None]
     ### Sets what pages allow, false when it can't: `(state, at, size, access)`.
-    internal protect_fn: Callable[(Addr, Addr, USize, PageAccess), Bool]
+    private protect_fn: Callable[(Addr, Addr, USize, PageAccess), Bool]
     ### What the routines share, passed to each of them: the manager's address.
-    internal state: Addr
+    private state: Addr
 
 ### The error of a `_result` operation whose allocator returned null, such as
 ### `List.push_result`. The collection is left as it was before the call.
@@ -122,14 +123,14 @@ needs T: typename
 routine MemoryManager.destruct(me: @Me) -> None
     return
 
-### A table that hands out blocks and doesn't handle pages: its page routines and `protect_fn` are null. For the
-### standard library's own managers built from C routines, everything else makes its table with `m.to[MemoryManager]()`.
+### A table that hands out blocks and doesn't handle pages: its page routines and `protect_fn` are null. For
+### Standard/Alloc's own tables built from C routines, everything else makes its table with `m.to[MemoryManager]()`.
 ### :param alloc_fn: Allocates `(state, size, align)`.
 ### :param realloc_fn: Resizes `(state, at, size, align)`.
 ### :param free_fn: Gives a block back `(state, at)`.
 ### :param state: What the three routines share.
 ### :returns: The table.
-internal routine MemoryManager.construct(alloc_fn: Callable[(Addr, USize, USize), Addr],
+private routine MemoryManager.construct(alloc_fn: Callable[(Addr, USize, USize), Addr],
     realloc_fn: Callable[(Addr, Addr, USize, USize), Addr], free_fn: Callable[(Addr, Addr), None],
     state: Addr) -> Me
     manager: Me = Me(alloc_fn, realloc_fn, free_fn, reserve_fn: null, commit_fn: null,
@@ -169,7 +170,7 @@ needs T: typename, PageManageable[T]
 ### :param size: The number of bytes.
 ### :param align: The alignment, a power of two.
 ### :returns: The block, or null.
-internal routine forward_alloc[M](state: Addr, size: USize, align: USize) -> Addr
+private routine forward_alloc[M](state: Addr, size: USize, align: USize) -> Addr
 needs M: typename, MemoryManageable[M]
     manager: @M = state.to[@M]()
     return manager.alloc(size, align)
@@ -182,7 +183,7 @@ needs M: typename, MemoryManageable[M]
 ### :param align: The block's alignment.
 ### :returns: The resized block, or null with the block left as it was.
 @reshaping(at)
-internal routine forward_realloc[M](state: Addr, at: Addr, size: USize, align: USize) -> Addr
+private routine forward_realloc[M](state: Addr, at: Addr, size: USize, align: USize) -> Addr
 needs M: typename, MemoryManageable[M]
     manager: @M = state.to[@M]()
     return manager.realloc(at, size, align)
@@ -191,7 +192,7 @@ needs M: typename, MemoryManageable[M]
 ### :typeparam M: The manager type.
 ### :param state: The manager's address.
 ### :param at: The block.
-internal routine forward_free[M](state: Addr, at: Addr) -> None
+private routine forward_free[M](state: Addr, at: Addr) -> None
 needs M: typename, MemoryManageable[M]
     manager: @M = state.to[@M]()
     manager.free(at)
@@ -202,7 +203,7 @@ needs M: typename, MemoryManageable[M]
 ### :param state: The manager's address.
 ### :param size: The number of bytes.
 ### :returns: The reservation's start, or null.
-internal routine forward_reserve[M](state: Addr, size: USize) -> Addr
+private routine forward_reserve[M](state: Addr, size: USize) -> Addr
 needs M: typename, PageManageable[M]
     manager: @M = state.to[@M]()
     return manager.reserve(size)
@@ -213,7 +214,7 @@ needs M: typename, PageManageable[M]
 ### :param at: The first page.
 ### :param size: The number of bytes.
 ### :returns: False when the pages can't be committed.
-internal routine forward_commit[M](state: Addr, at: Addr, size: USize) -> Bool
+private routine forward_commit[M](state: Addr, at: Addr, size: USize) -> Bool
 needs M: typename, PageManageable[M]
     manager: @M = state.to[@M]()
     return manager.commit(at, size)
@@ -223,7 +224,7 @@ needs M: typename, PageManageable[M]
 ### :param state: The manager's address.
 ### :param at: The reservation's start.
 ### :param size: The size reserved.
-internal routine forward_release[M](state: Addr, at: Addr, size: USize) -> None
+private routine forward_release[M](state: Addr, at: Addr, size: USize) -> None
 needs M: typename, PageManageable[M]
     manager: @M = state.to[@M]()
     manager.release(at, size)
@@ -236,7 +237,7 @@ needs M: typename, PageManageable[M]
 ### :param size: The number of bytes.
 ### :param access: What the pages allow.
 ### :returns: False when the access can't be set.
-internal routine forward_protect[M](state: Addr, at: Addr, size: USize, access: PageAccess) -> Bool
+private routine forward_protect[M](state: Addr, at: Addr, size: USize, access: PageAccess) -> Bool
 needs M: typename, PageManageable[M]
     manager: @M = state.to[@M]()
     return manager.protect(at, size, access)

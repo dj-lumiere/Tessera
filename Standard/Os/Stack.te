@@ -23,34 +23,6 @@ import Standard/Alloc
 
 # -- pages, POSIX ------------------------------------------------------------------
 
-### Binds the C `mmap` function, which maps pages into the address space.
-### :param addr: Where to put the mapping, or null to let the system choose.
-### :param length: The number of bytes.
-### :param prot: The `PROT_*` access the pages allow.
-### :param flags: The `MAP_*` flags.
-### :param fd: The file to map, or -1 for anonymous memory.
-### :param offset: The offset into the file.
-### :returns: The mapping's start, or MAP_FAILED (-1) with `errno` set.
-@external("c")
-@symbol("mmap")
-@target(os: ("linux", "macos"))
-private routine c_mmap(addr: Addr, length: USize, prot: CInt, flags: CInt, fd: CInt,
-    offset: SSize) -> Addr
-
-### MAP_PRIVATE | MAP_ANONYMOUS, whose second bit differs between Linux and the BSDs, and on Linux MAP_NORESERVE:
-### the pages are counted against memory only once touched.
-### :returns: The flags.
-@target(os: "macos")
-private routine map_private_anonymous() -> CInt
-    return 0x1002
-
-### MAP_PRIVATE | MAP_ANONYMOUS, whose second bit differs between Linux and the BSDs, and on Linux MAP_NORESERVE:
-### the pages are counted against memory only once touched.
-### :returns: The flags.
-@target(os: "linux")
-private routine map_private_anonymous() -> CInt
-    return 0x4022
-
 ### `length` bytes of pages for a stack, the bottom one closed with the length written in it.
 ### :param length: The number of bytes, a whole number of pages.
 ### :param page: The page size in bytes.
@@ -68,18 +40,6 @@ private routine stack_map(length: USize, page: USize) -> Addr
         return at
 
 # -- pages, Windows ----------------------------------------------------------------
-
-### Binds the Win32 `VirtualAlloc` function, which reserves or commits pages.
-### :param addr: Where to put the pages, or null to let the system choose.
-### :param size: The number of bytes.
-### :param type: The `MEM_*` allocation type, such as `MEM_RESERVE` or `MEM_COMMIT`.
-### :param protect: The `PAGE_*` protection.
-### :returns: The start of the pages, or null with the last error set.
-@external("c")
-@symbol("VirtualAlloc")
-@callconv("stdcall")
-@target(os: "windows")
-private routine c_virtual_alloc(addr: Addr, size: USize, type: U32, protect: U32) -> Addr
 
 ### `length` bytes reserved for a stack: the bottom page committed and closed with the length written in it, the top
 ### two committed, and below them a guard page Windows moves down as the stack grows into it. A stack of fewer than
@@ -114,11 +74,6 @@ private routine stack_map(length: USize, page: USize) -> Addr
 
 # -- the allocator -----------------------------------------------------------------
 
-### The hosted stack allocator, ready before `start` runs: whole pages, with a guard page below each stack. Each
-### thread's FIBERS takes its fibers' stacks from it.
-@target(os: not "none")
-global DEFAULT_STACKS: @MemoryManager <- (alloc_fn: stack_alloc_fn.to[Callable](), realloc_fn: stack_realloc_fn.to[Callable](), free_fn: stack_free_fn.to[Callable](), reserve_fn: os_reserve_fn.to[Callable](), commit_fn: os_commit_fn.to[Callable](), release_fn: os_release_fn.to[Callable](), protect_fn: os_protect_fn.to[Callable](), state: null)
-
 ### The stack allocator's alloc function: rounds `size` up to whole pages and adds the guard page below them.
 ### :param state: Unused, the stack allocator has no state.
 ### :param size: The stack size wanted, in bytes.
@@ -128,7 +83,7 @@ global DEFAULT_STACKS: @MemoryManager <- (alloc_fn: stack_alloc_fn.to[Callable](
 ### :throws: Crashes with `IntegerOverflowError` when `size` rounded up to pages, plus the guard page, doesn't fit in
 ###     USize.
 @target(os: not "none")
-private routine stack_alloc_fn(state: Addr, size: USize, align: USize) -> Addr
+routine stack_alloc_fn(state: Addr, size: USize, align: USize) -> Addr
     local page: USize = page_size()
     local padded_size: USize = size + page - 1
     local pages: USize = padded_size // page
@@ -148,7 +103,7 @@ private routine stack_alloc_fn(state: Addr, size: USize, align: USize) -> Addr
 ### :param align: The alignment the stack has.
 ### :returns: Always null.
 @target(os: not "none")
-private routine stack_realloc_fn(state: Addr, old_ptr: Addr, size: USize, align: USize) -> Addr
+routine stack_realloc_fn(state: Addr, old_ptr: Addr, size: USize, align: USize) -> Addr
     return null
 
 ### The stack allocator's free function: reopens the bottom page to read the length written in it, then releases the
@@ -156,7 +111,7 @@ private routine stack_realloc_fn(state: Addr, old_ptr: Addr, size: USize, align:
 ### :param state: Unused, the stack allocator has no state.
 ### :param ptr: A stack from {make_stack_memory}.
 @target(os: not "none")
-private routine stack_free_fn(state: Addr, ptr: Addr) -> None
+routine stack_free_fn(state: Addr, ptr: Addr) -> None
     page: USize = page_size()
     base: Addr = ptr.offset(-page.to[SSize]())
     pages_protect(at: base, size: page, access: PageAccess.READ_WRITE)
@@ -165,13 +120,9 @@ private routine stack_free_fn(state: Addr, ptr: Addr) -> None
     return
 
 ### A MemoryManager for stacks: whole pages, with a guard page below that stops the program when a stack overflows. Its
-### page routines are the operating system's.
+### page routines are the operating system's. It is {DEFAULT_STACKS}.
 ### :returns: The allocator, which holds no state and needs nothing to free.
 @target(os: not "none")
 routine make_stack_memory() -> MemoryManager
-    alloc: MemoryManager = MemoryManager(alloc_fn: stack_alloc_fn.to[Callable](),
-        realloc_fn: stack_realloc_fn.to[Callable](), free_fn: stack_free_fn.to[Callable](),
-        reserve_fn: os_reserve_fn.to[Callable](), commit_fn: os_commit_fn.to[Callable](),
-        release_fn: os_release_fn.to[Callable](), protect_fn: os_protect_fn.to[Callable](),
-        state: null)
+    alloc: MemoryManager = DEFAULT_STACKS.peek()
     return alloc

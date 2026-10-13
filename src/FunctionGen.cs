@@ -1554,14 +1554,11 @@ public sealed class FunctionGen
         return (i, fields[i].Type);
     }
 
-    /// A `private` field is read, written, and given in a record literal only in the record's own file, and an
-    /// `internal` one only in its module.
+    /// A `private` field is read, written, and given in a record literal only in the record's own module.
     private void CheckFieldVisible(RecordType s, FieldDecl field, Pos pos)
     {
-        if (field.IsPrivate && s.Decl.File != _env.File)
-            throw Err(pos, $"field '{field.Name}' of {s} is private to {s.Decl.File}");
-        if (field.IsInternal && !_c.InternalReaches(s.Decl, _env.File))
-            throw Err(pos, $"field '{field.Name}' of {s} is internal to {s.Decl.Module}");
+        if (field.IsPrivate && !_c.PrivateReaches(s.Decl, _env.File))
+            throw Err(pos, $"field '{field.Name}' of {s} is private to {Compiler.ShowModule(s.Decl.Module)}");
     }
 
     /// Whether `t` is what one of the instance's type parameters stands for. A method called on such a value is found

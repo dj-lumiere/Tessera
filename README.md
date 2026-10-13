@@ -147,7 +147,7 @@ sources = ["src"]
 
 ## What works today
 
-- **Modules:** namespaces with `import`, qualified paths, `define`, and `private` / `internal`; `Standard/Core` is
+- **Modules:** namespaces with `import`, qualified paths, `define`, and `private` (visible inside its module); `Standard/Core` is
   always imported. Two modules may declare the same name, and symbols follow the Itanium C++ mangling.
 - **Solutions:** described by a `config.toml`, or every file on the command line; the stdlib is built in with it.
 - **Standard library:** written in Tessera and layered so that only `Standard/Os` needs libc; a target without an

@@ -10,20 +10,6 @@ import Standard/Alloc
 
 # -- the C library -------------------------------------------------------------------
 
-### Binds the C `__errno_location` function: where the calling thread's `errno` is.
-### :returns: The address of `errno`.
-@external("c")
-@symbol("__errno_location")
-@target(os: "linux")
-private routine c_errno_place() -> @CInt
-
-### Binds the C `__error` function: where the calling thread's `errno` is.
-### :returns: The address of `errno`.
-@external("c")
-@symbol("__error")
-@target(os: "macos")
-private routine c_errno_place() -> @CInt
-
 ### Binds the C `open64` function: opens or creates a file. A third, variadic argument gives the permission bits of a
 ### file it creates.
 ### :param path: The NUL-terminated path.
@@ -33,7 +19,7 @@ private routine c_errno_place() -> @CInt
 @symbol("open64")
 @variadic
 @target(os: "linux")
-private routine c_open(path: @Byte, flags: CInt) -> CInt
+private routine c_open(path: CStr, flags: CInt) -> CInt
 
 ### Binds the C `open` function: opens or creates a file. A third, variadic argument gives the permission bits of a
 ### file it creates.
@@ -44,7 +30,7 @@ private routine c_open(path: @Byte, flags: CInt) -> CInt
 @symbol("open")
 @variadic
 @target(os: "macos")
-private routine c_open(path: @Byte, flags: CInt) -> CInt
+private routine c_open(path: CStr, flags: CInt) -> CInt
 
 ### Binds the C `close` function: closes a file descriptor.
 ### :param fd: The descriptor to close.
@@ -253,13 +239,6 @@ private routine c_getenv(name: CStr) -> @Byte
 @symbol("realpath")
 @target(os: ("linux", "macos"))
 private routine c_realpath(path: @Byte, resolved: Addr) -> @Byte
-
-### Binds the C `free` function: gives memory from C's malloc back.
-### :param ptr: The memory, or null.
-@external("c")
-@symbol("free")
-@target(os: ("linux", "macos"))
-private routine c_free(ptr: Addr) -> None
 
 ### Binds the C `opendir` function: opens a directory listing.
 ### :param path: The NUL-terminated path of the directory.
@@ -926,7 +905,7 @@ private routine path_mode(cpath: @Byte) -> Maybe[U32]
 ### :returns: The metadata.
 ### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
-internal routine metadata(path: Span[Byte]) -> Result[Metadata, FsError]
+private routine metadata(path: Span[Byte]) -> Result[Metadata, FsError]
     local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if c_path(path, out: cpath.to[@Byte]())
@@ -939,7 +918,7 @@ internal routine metadata(path: Span[Byte]) -> Result[Metadata, FsError]
 ### :returns: The metadata.
 ### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
-internal routine symlink_metadata(path: Span[Byte]) -> Result[Metadata, FsError]
+private routine symlink_metadata(path: Span[Byte]) -> Result[Metadata, FsError]
     local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if c_path(path, out: cpath.to[@Byte]())
@@ -981,7 +960,7 @@ routine FileHandle.empty() -> Me
 ### :returns: The open handle.
 ### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
-internal routine FileHandle.open(path: Span[Byte], mode: OpenMode) -> Result[Me, FsError]
+private routine FileHandle.open(path: Span[Byte], mode: OpenMode) -> Result[Me, FsError]
     local cpath_buffer: @Array[Byte, PATH_CAPACITY] <- .hollow()
     local cpath: @Byte = cpath_buffer.to[@Byte]()
 
@@ -991,7 +970,7 @@ internal routine FileHandle.open(path: Span[Byte], mode: OpenMode) -> Result[Me,
     how: CInt = when mode
         OpenMode.READ =>
             # Write-only and created if missing, plus how it opens (truncate, append, or exclude).
-            fd: CInt = c_open(cpath, f.cloexec, 438)
+            fd: CInt = c_open(cpath.to[CStr](), f.cloexec, 438)
             if fd < 0
                 return failed[Me]()
             else
@@ -999,14 +978,14 @@ internal routine FileHandle.open(path: Span[Byte], mode: OpenMode) -> Result[Me,
         OpenMode.WRITE => f.truncate
         OpenMode.APPEND => f.append
         OpenMode.READ_WRITE =>
-            fd: CInt = c_open(cpath, f.cloexec | 2, 438)
+            fd: CInt = c_open(cpath.to[CStr](), f.cloexec | 2, 438)
             if fd < 0
                 return failed[Me]()
             else
                 return Me(fd: fd, failed: false)
         OpenMode.CREATE_NEW => f.exclude
     creating: CInt = f.cloexec | 1 | f.create
-    fd: CInt = c_open(cpath, creating | how, 438)
+    fd: CInt = c_open(cpath.to[CStr](), creating | how, 438)
     if fd < 0
         return failed[Me]()
     else
@@ -1037,7 +1016,7 @@ routine FileHandle.read_bytes_result(me: @Me, buffer: @Byte, count: USize) -> Re
 ### :returns: The count written.
 ### :throws: Returns the reason when the write fails.
 @target(os: ("linux", "macos"))
-internal routine FileHandle.write_some(me: @Me, data: @Byte, count: USize) -> Result[USize, FsError]
+private routine FileHandle.write_some(me: @Me, data: @Byte, count: USize) -> Result[USize, FsError]
     wrote: SSize = c_write(me.fd.peek(), data, count.min(1073741824))
     if wrote >= 0
         return wrote.to[USize]()
@@ -1135,7 +1114,7 @@ private routine make_dir(cpath: @Byte) -> CInt
 ### :throws: Returns the reason, `AlreadyExists` when something is at `path`, `InvalidPath` or
 ###     `NameTooLong` when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
-internal routine create_dir(path: Span[Byte]) -> Result[None, FsError]
+private routine create_dir(path: Span[Byte]) -> Result[None, FsError]
     local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if c_path(path, out: cpath.to[@Byte]())
@@ -1148,7 +1127,7 @@ internal routine create_dir(path: Span[Byte]) -> Result[None, FsError]
 ### :returns: `Unit` once it is gone.
 ### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
-internal routine remove_file(path: Span[Byte]) -> Result[None, FsError]
+private routine remove_file(path: Span[Byte]) -> Result[None, FsError]
     local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if c_path(path, out: cpath.to[@Byte]())
@@ -1162,7 +1141,7 @@ internal routine remove_file(path: Span[Byte]) -> Result[None, FsError]
 ### :throws: Returns the reason, `DirectoryNotEmpty` when something is in it, `InvalidPath` or
 ###     `NameTooLong` when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
-internal routine remove_dir(path: Span[Byte]) -> Result[None, FsError]
+private routine remove_dir(path: Span[Byte]) -> Result[None, FsError]
     local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if c_path(path, out: cpath.to[@Byte]())
@@ -1176,7 +1155,7 @@ internal routine remove_dir(path: Span[Byte]) -> Result[None, FsError]
 ### :returns: `Unit` once it is renamed.
 ### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when a path doesn't fit a C path.
 @target(os: ("linux", "macos"))
-internal routine rename(from: Span[Byte], to: Span[Byte]) -> Result[None, FsError]
+private routine rename(from: Span[Byte], to: Span[Byte]) -> Result[None, FsError]
     local a: @Array[Byte, PATH_CAPACITY] <- .hollow()
     local b: @Array[Byte, PATH_CAPACITY] <- .hollow()
 
@@ -1213,7 +1192,7 @@ private routine rename_exclusive(a: @Byte, b: @Byte) -> CInt
 ### :throws: Returns the reason, `AlreadyExists` when something is at `to`, `InvalidPath` or
 ###     `NameTooLong` when a path doesn't fit a C path.
 @target(os: ("linux", "macos"))
-internal routine rename_no_replace(from: Span[Byte], to: Span[Byte]) -> Result[None, FsError]
+private routine rename_no_replace(from: Span[Byte], to: Span[Byte]) -> Result[None, FsError]
     local a: @Array[Byte, PATH_CAPACITY] <- .hollow()
     local b: @Array[Byte, PATH_CAPACITY] <- .hollow()
 
@@ -1243,7 +1222,7 @@ internal routine rename_no_replace(from: Span[Byte], to: Span[Byte]) -> Result[N
 ### :throws: Returns the reason when a file can't be opened, read, or written, or the permissions can't
 ###     be set. A failure once `to` is opened removes it, so no partial copy is left.
 @target(os: ("linux", "macos"))
-internal routine copy_file(from: Span[Byte], to: Span[Byte]) -> Result[U64, FsError]
+private routine copy_file(from: Span[Byte], to: Span[Byte]) -> Result[U64, FsError]
     local src: @FileHandle <- .empty()
     local dst: @FileHandle <- .empty()
 
@@ -1333,7 +1312,7 @@ private routine change_mode(cpath: @Byte, mode: U32) -> CInt
 ### :returns: `Unit` once the permissions are set.
 ### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
-internal routine set_readonly(path: Span[Byte], readonly: Bool) -> Result[None, FsError]
+private routine set_readonly(path: Span[Byte], readonly: Bool) -> Result[None, FsError]
     local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if not c_path(path, out: cpath.to[@Byte]())
@@ -1356,7 +1335,7 @@ internal routine set_readonly(path: Span[Byte], readonly: Bool) -> Result[None, 
 ### :param access: What to check for.
 ### :returns: True when allowed. False when not, when nothing is there, or when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
-internal routine is_accessible(path: Span[Byte], access: Access) -> Bool
+private routine is_accessible(path: Span[Byte], access: Access) -> Bool
     local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if not c_path(path, out: cpath.to[@Byte]())
@@ -1372,13 +1351,13 @@ internal routine is_accessible(path: Span[Byte], access: Access) -> Bool
 ### :returns: `Unit` once the times are set.
 ### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
-internal routine touch(path: Span[Byte]) -> Result[None, FsError]
+private routine touch(path: Span[Byte]) -> Result[None, FsError]
     local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if not c_path(path, out: cpath.to[@Byte]())
         return path_error(path)
     f: OpenFlags = open_flags()
-    fd: CInt = c_open(cpath.to[@Byte](), f.cloexec | 1 | f.create, 438)
+    fd: CInt = c_open(cpath.to[@Byte]().to[CStr](), f.cloexec | 1 | f.create, 438)
     if fd < 0
         return failed[None]()
     c_close(fd)
@@ -1417,7 +1396,7 @@ routine DirIter.destruct(me: @Me) -> None
 ### :returns: `Unit` once the listing is open.
 ### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
-internal routine DirIter.open_path(me: @Me, path: Span[Byte]) -> Result[None, FsError]
+private routine DirIter.open_path(me: @Me, path: Span[Byte]) -> Result[None, FsError]
     me.dir.poke(null)
     if not c_path(path, out: me.path.to[@Byte]())
         return path_error(path)
@@ -1541,7 +1520,7 @@ private routine nonempty_env(name: CStr) -> Maybe[@Byte]
 ### :returns: The path.
 ### :throws: Returns the reason when the OS can't report it, `OutOfMemory` when `alloc` fails.
 @target(os: ("linux", "macos"))
-internal routine current_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
+private routine current_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
     while true with capacity: USize = 256
         when Memory[Byte].construct_result(count: capacity, manager: alloc)
             is Memory[Byte] as buffer2 =>
@@ -1564,7 +1543,7 @@ internal routine current_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsEr
 ### :returns: `Unit` once it is changed.
 ### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
-internal routine set_current_dir(path: Span[Byte]) -> Result[None, FsError]
+private routine set_current_dir(path: Span[Byte]) -> Result[None, FsError]
     local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if c_path(path, out: cpath.to[@Byte]())
@@ -1577,7 +1556,7 @@ internal routine set_current_dir(path: Span[Byte]) -> Result[None, FsError]
 ### :returns: The path.
 ### :throws: Returns `OutOfMemory` when `alloc` fails.
 @target(os: ("linux", "macos"))
-internal routine temp_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
+private routine temp_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
     t: Maybe[@Byte] = nonempty_env("TMPDIR")
     when t
         is @Byte as dir => return owned(p: dir, n: dir.to[CStr]().count(), alloc)
@@ -1588,7 +1567,7 @@ internal routine temp_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError
 ### :returns: The path.
 ### :throws: Returns `NotFound` when HOME is not set or empty, `OutOfMemory` when `alloc` fails.
 @target(os: ("linux", "macos"))
-internal routine home_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
+private routine home_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
     h: Maybe[@Byte] = nonempty_env("HOME")
     when h
         is @Byte as dir => return owned(p: dir, n: dir.to[CStr]().count(), alloc)
@@ -1601,7 +1580,7 @@ internal routine home_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError
 ### :throws: Returns the reason when the working directory can't be read, `OutOfMemory` when `alloc`
 ###     fails for it. Crashes with `MemoryAllocationError` when `alloc` fails for the joined path.
 @target(os: ("linux", "macos"))
-internal routine absolute_path(path: Span[Byte],
+private routine absolute_path(path: Span[Byte],
     alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
     if path.has_prefix("/")
         return owned(p: path.data, n: path.count(), alloc)
@@ -1619,7 +1598,7 @@ internal routine absolute_path(path: Span[Byte],
 ### :throws: Returns the reason, such as `NotFound`, `OutOfMemory` when `alloc` fails, `InvalidPath`
 ###     or `NameTooLong` when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
-internal routine canonical_path(path: Span[Byte],
+private routine canonical_path(path: Span[Byte],
     alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
     local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
 
@@ -1652,7 +1631,7 @@ private routine is_map_failed(p: Addr) -> Bool
 ### :returns: The mapping.
 ### :throws: Returns the reason when the file can't be opened, measured, or mapped.
 @target(os: ("linux", "macos"))
-internal routine Mapping.map(path: Span[Byte], write: Bool, offset: U64,
+private routine Mapping.map(path: Span[Byte], write: Bool, offset: U64,
     count: USize) -> Result[Me, FsError]
     local file: @FileHandle <- .empty()
     local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
@@ -1663,7 +1642,7 @@ internal routine Mapping.map(path: Span[Byte], write: Bool, offset: U64,
             flags: CInt = when
                 write => 2
                 else => 0
-            fd: CInt = c_open(cpath.to[@Byte](), flags | open_flags().cloexec, 0)
+            fd: CInt = c_open(cpath.to[@Byte]().to[CStr](), flags | open_flags().cloexec, 0)
             if fd < 0
                 becomes failed[Me]()
             else

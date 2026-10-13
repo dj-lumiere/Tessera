@@ -9,13 +9,13 @@
 
 module Standard/Core
 
-private preset SIGN:     U32 = 0x80000000
-private preset MAGNITUDE: U32 = 0x7FFFFFFF
-private preset INFINITY: U32 = 0x7F800000
-private preset QUIET:    U32 = 0x00400000
-private preset NAN:      U32 = 0x7FC00000
-private preset IMPLICIT: U32 = 0x00800000
-private preset ONE:      U32 = 0x3F800000
+private preset B32_SIGN: U32 = 0x80000000
+private preset B32_MAGNITUDE: U32 = 0x7FFFFFFF
+private preset B32_INFINITY: U32 = 0x7F800000
+private preset B32_QUIET: U32 = 0x00400000
+private preset B32_NAN: U32 = 0x7FC00000
+private preset B32_IMPLICIT: U32 = 0x00800000
+private preset B32_ONE: U32 = 0x3F800000
 
 # -- addition ------------------------------------------------------------------
 
@@ -26,19 +26,19 @@ private preset ONE:      U32 = 0x3F800000
 ### -0 only when both are -0 (an exact zero sum of nonzero values is +0).
 @no_builtins
 routine soft_b32_add(a: U32, b: U32) -> U32
-    local a_size: U32 = a & MAGNITUDE
-    local b_size: U32 = b & MAGNITUDE
+    local a_size: U32 = a & B32_MAGNITUDE
+    local b_size: U32 = b & B32_MAGNITUDE
 
     when
-        a_size > INFINITY => return a | QUIET
-        b_size > INFINITY => return b | QUIET
-        a_size == INFINITY =>
+        a_size > B32_INFINITY => return a | B32_QUIET
+        b_size > B32_INFINITY => return b | B32_QUIET
+        a_size == B32_INFINITY =>
             # inf + inf keeps the sign, and inf - inf is NaN
-            if a ^ b == SIGN
-                return NAN
+            if a ^ b == B32_SIGN
+                return B32_NAN
             else
                 return a
-        b_size == INFINITY => return b
+        b_size == B32_INFINITY => return b
         a_size == 0 =>
             if b_size == 0
                 return a & b
@@ -56,14 +56,14 @@ routine soft_b32_add(a: U32, b: U32) -> U32
                 else => b
             # each significand gets three bits below it (half, and the rest), and the smaller one shifts right to the larger
             # one's exponent with the bits it loses folded into a sticky bit
-            x_parts: SoftParts32 = soft_unpack(magnitude: larger & MAGNITUDE, sig_bits: 23)
-            y_parts: SoftParts32 = soft_unpack(magnitude: smaller & MAGNITUDE, sig_bits: 23)
+            x_parts: SoftParts32 = soft_unpack(magnitude: larger & B32_MAGNITUDE, sig_bits: 23)
+            y_parts: SoftParts32 = soft_unpack(magnitude: smaller & B32_MAGNITUDE, sig_bits: 23)
             x_sig: U32 = x_parts.sig << 3
             y_sig: U32 = y_parts.sig << 3
             apart: U32 = (x_parts.exponent - y_parts.exponent).to[U32]()
             aligned: U32 = soft_shr_sticky(x: y_sig, shift: apart)
-            sign: U32 = larger & SIGN
-            if larger ^ smaller < SIGN
+            sign: U32 = larger & B32_SIGN
+            if larger ^ smaller < B32_SIGN
                 return soft_round_pack(sign, exponent: x_parts.exponent, m: x_sig + aligned,
                     format: B32.FORMAT.peek())
             else
@@ -82,7 +82,7 @@ routine soft_b32_add(a: U32, b: U32) -> U32
 ### :returns: The bits of `a - b`.
 @no_builtins
 routine soft_b32_sub(a: U32, b: U32) -> U32
-    r: U32 = soft_b32_add(a, b: b ^ SIGN)
+    r: U32 = soft_b32_add(a, b: b ^ B32_SIGN)
     return r
 
 # -- multiplication ------------------------------------------------------------
@@ -94,24 +94,24 @@ routine soft_b32_sub(a: U32, b: U32) -> U32
 ### signs.
 @no_builtins
 routine soft_b32_mul(a: U32, b: U32) -> U32
-    local sign: U32 = (a ^ b) & SIGN
-    local a_size: U32 = a & MAGNITUDE
-    local b_size: U32 = b & MAGNITUDE
+    local sign: U32 = (a ^ b) & B32_SIGN
+    local a_size: U32 = a & B32_MAGNITUDE
+    local b_size: U32 = b & B32_MAGNITUDE
 
     when
-        a_size > INFINITY => return a | QUIET
-        b_size > INFINITY => return b | QUIET
-        a_size == INFINITY =>
+        a_size > B32_INFINITY => return a | B32_QUIET
+        b_size > B32_INFINITY => return b | B32_QUIET
+        a_size == B32_INFINITY =>
             # infinity times zero is NaN, times anything else infinity
             if b_size == 0
-                return NAN
+                return B32_NAN
             else
-                return sign | INFINITY
-        b_size == INFINITY =>
+                return sign | B32_INFINITY
+        b_size == B32_INFINITY =>
             if a_size == 0
-                return NAN
+                return B32_NAN
             else
-                return sign | INFINITY
+                return sign | B32_INFINITY
         a_size == 0 => return sign
         b_size == 0 => return sign
         else =>
@@ -135,27 +135,27 @@ routine soft_b32_mul(a: U32, b: U32) -> U32
 ### value over zero is a signed infinity.
 @no_builtins
 routine soft_b32_div(a: U32, b: U32) -> U32
-    local sign: U32 = (a ^ b) & SIGN
-    local a_size: U32 = a & MAGNITUDE
-    local b_size: U32 = b & MAGNITUDE
+    local sign: U32 = (a ^ b) & B32_SIGN
+    local a_size: U32 = a & B32_MAGNITUDE
+    local b_size: U32 = b & B32_MAGNITUDE
     local rem: @U32 <- .hollow()
     local quotient: @U32 <- .hollow()
 
     when
-        a_size > INFINITY => return a | QUIET
-        b_size > INFINITY => return b | QUIET
-        a_size == INFINITY =>
-            if b_size == INFINITY
-                return NAN
+        a_size > B32_INFINITY => return a | B32_QUIET
+        b_size > B32_INFINITY => return b | B32_QUIET
+        a_size == B32_INFINITY =>
+            if b_size == B32_INFINITY
+                return B32_NAN
             else
-                return sign | INFINITY
-        b_size == INFINITY => return sign
+                return sign | B32_INFINITY
+        b_size == B32_INFINITY => return sign
         a_size == 0 =>
             if b_size == 0
-                return NAN
+                return B32_NAN
             else
                 return sign
-        b_size == 0 => return sign | INFINITY
+        b_size == 0 => return sign | B32_INFINITY
         else =>
             # a dividend below the divisor doubles, so the quotient is in [1, 2)
             x: SoftParts32 = soft_unpack(magnitude: a_size, sig_bits: 23)
@@ -199,15 +199,15 @@ routine soft_b32_div(a: U32, b: U32) -> U32
 ### for any other negative value.
 @no_builtins
 routine soft_b32_sqrt(a: U32) -> U32
-    local size: U32 = a & MAGNITUDE
+    local size: U32 = a & B32_MAGNITUDE
     local rem: @U64 <- .hollow()
     local res: @U64 <- .hollow()
 
     when
-        size > INFINITY => return a | QUIET
+        size > B32_INFINITY => return a | B32_QUIET
         size == 0 => return a
-        a >= SIGN => return NAN
-        size == INFINITY => return a
+        a >= B32_SIGN => return B32_NAN
+        size == B32_INFINITY => return a
         else =>
             # an odd unbiased exponent moves one bit into the significand, so the root's exponent is a whole half. The
             # significand scaled by 2^27 has a 26-bit root, the 24 kept bits and two below them
@@ -254,15 +254,15 @@ routine soft_b32_sqrt(a: U32) -> U32
 ### itself when `|a| < |b|`, and a zero with `a`'s sign when the division is exact.
 @no_builtins
 routine soft_b32_mod(a: U32, b: U32) -> U32
-    local sign: U32 = a & SIGN
-    local a_size: U32 = a & MAGNITUDE
-    local b_size: U32 = b & MAGNITUDE
+    local sign: U32 = a & B32_SIGN
+    local a_size: U32 = a & B32_MAGNITUDE
+    local b_size: U32 = b & B32_MAGNITUDE
 
     when
-        a_size > INFINITY => return a | QUIET
-        b_size > INFINITY => return b | QUIET
-        a_size == INFINITY => return NAN
-        b_size == 0 => return NAN
+        a_size > B32_INFINITY => return a | B32_QUIET
+        b_size > B32_INFINITY => return b | B32_QUIET
+        a_size == B32_INFINITY => return B32_NAN
+        b_size == 0 => return B32_NAN
         a_size < b_size => return a
         a_size == b_size => return sign
         else =>
@@ -297,7 +297,7 @@ routine soft_b32_mod(a: U32, b: U32) -> U32
 @no_builtins
 routine soft_b32_powi(a: U32, n: S32) -> U32
     local base: @U32 <- a
-    local result: @U32 <- ONE
+    local result: @U32 <- B32_ONE
 
     while true with left: U32 = n.abs_diff(0)
         if left & 1 == 1
@@ -309,7 +309,7 @@ routine soft_b32_powi(a: U32, n: S32) -> U32
             soft_b32_mul(a: base.peek(), b: base.peek()).poke_into(base)
             continue with left: rest
     if n < 0
-        return soft_b32_div(a: ONE, b: result.peek())
+        return soft_b32_div(a: B32_ONE, b: result.peek())
     else
         return result.peek()
 
@@ -343,8 +343,8 @@ routine soft_b32_ge(a: U32, b: U32) -> S32
 ### :returns: True when `a` or `b` is NaN.
 @no_builtins
 routine soft_b32_unordered(a: U32, b: U32) -> Bool
-    a_nan: Bool = a & MAGNITUDE > INFINITY
-    b_nan: Bool = b & MAGNITUDE > INFINITY
+    a_nan: Bool = a & B32_MAGNITUDE > B32_INFINITY
+    b_nan: Bool = b & B32_MAGNITUDE > B32_INFINITY
     return a_nan or b_nan
 
 ### Two numbers (not NaN) in order: equal zeros first, then as sign-magnitude integers, whose order flips when both
@@ -354,7 +354,7 @@ routine soft_b32_unordered(a: U32, b: U32) -> Bool
 ### :returns: -1 when `a < b`, 0 when they are equal (+0 equals -0), 1 when `a > b`.
 private routine soft_b32_order(a: U32, b: U32) -> S32
     both: U32 = a | b
-    if both & MAGNITUDE == 0
+    if both & B32_MAGNITUDE == 0
         return 0
     x: S32 = a.to_wrap[S32]()
     y: S32 = b.to_wrap[S32]()

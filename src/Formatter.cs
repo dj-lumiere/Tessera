@@ -54,7 +54,7 @@ public static class Formatter
     }
 
     private static readonly System.Text.RegularExpressions.Regex TopLevelSlot =
-        new(@"^((?:private |internal )?(?:preset|global) [A-Za-z_`][\w.`]*) +:", System.Text.RegularExpressions.RegexOptions.Compiled);
+        new(@"^((?:private )?(?:preset|global) [A-Za-z_`][\w.`]*) +:", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     private static string Clean(string line)
     {
@@ -95,9 +95,7 @@ public static class Formatter
 
             if (indent == 0 && trimmed.Length > 0)
             {
-                string decl = trimmed.StartsWith("private ") ? trimmed[8..]
-                    : trimmed.StartsWith("internal ") ? trimmed[9..]
-                    : trimmed;
+                string decl = trimmed.StartsWith("private ") ? trimmed[8..] : trimmed;
                 if (decl.StartsWith("record ") || decl.StartsWith("entity ")) context = "record";
                 else if (decl.StartsWith("choice ")) context = "choice";
                 else if (decl.StartsWith("variant ")) context = "variant";
@@ -497,9 +495,9 @@ public static class Formatter
         return "";
     }
 
-    /// `routine ...`, `private routine ...`, or `internal routine ...`.
+    /// `routine ...` or `private routine ...`.
     private static bool IsRoutineHeader(string line) =>
-        line.StartsWith("routine ") || line.StartsWith("private routine ") || line.StartsWith("internal routine ");
+        line.StartsWith("routine ") || line.StartsWith("private routine ");
 
     private static bool StartsDeclaration(string line) =>
         line.StartsWith("routine ") || line.StartsWith("record ") || line.StartsWith("choice ") ||
@@ -748,7 +746,7 @@ public static class Formatter
     private static DeclKind? DeclKindOf(string line)
     {
         if (line.Length == 0 || line[0] == ' ') return null;
-        string s = line.StartsWith("private ") ? line[8..] : line.StartsWith("internal ") ? line[9..] : line;
+        string s = line.StartsWith("private ") ? line[8..] : line;
         int space = s.IndexOf(' ');
         string word = space < 0 ? s : s[..space];
         return word switch
@@ -907,8 +905,7 @@ public static class Formatter
     {
         string trimmed = line.TrimStart();
         bool signature = trimmed.StartsWith("routine ", StringComparison.Ordinal)
-                         || trimmed.StartsWith("private routine ", StringComparison.Ordinal)
-                         || trimmed.StartsWith("internal routine ", StringComparison.Ordinal);
+                         || trimmed.StartsWith("private routine ", StringComparison.Ordinal);
         var sb = new StringBuilder();
         for (int i = 0; i < line.Length; i++)
         {

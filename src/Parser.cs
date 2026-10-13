@@ -52,7 +52,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     [
         "jump", "branch", "when", "return", "unreachable", "continue", "else", "block", "claim", "local",
         "true", "false", "null", "routine", "record", "choice", "variant", "preset", "global", "concept", "conform",
-        "protocol", "obeys", "needs", "define", "private", "internal", "module", "import", "and", "or", "not", "is", "as",
+        "protocol", "obeys", "needs", "define", "private", "module", "import", "and", "or", "not", "is", "as",
         "todo", "if", "each", "while", "until", "becomes", "break", "pass", "drop", "entity", "steal",
     ];
     /// Inside an `@external("asm")` routine: a statement may carry `@asm_prefix`, and an `if` may test a bare
@@ -94,9 +94,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (IsIdent("import")) throw Error("imports go at the top of the file, after the module line");
             var annotations = ParseAnnotations();
             bool isPrivate = IsIdent("private");
-            bool isInternal = IsIdent("internal");
-            if (isPrivate || isInternal) Next();
-            if (annotations.Count == 0 && !isPrivate && !isInternal && Cur.Pos.Col == 1
+            if (isPrivate) Next();
+            if (annotations.Count == 0 && !isPrivate && Cur.Pos.Col == 1
                 && (!IsKeyword(Cur) || !DeclKeywords.Contains(Cur.Text)) && !isLibrary)
             {
                 ParseScriptLines();
@@ -120,7 +119,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (d is not RoutineDecl && annotations.FirstOrDefault(a => a.Name == ExpensiveCallLint.Annotation) is { } expensive)
                 throw new CompileError(expensive.Pos,
                     "@expensive marks a routine, the one whose calls cost a lot: put it on the routine declaration");
-            decls.Add(d with { IsLibrary = isLibrary, IsPrivate = isPrivate, IsInternal = isInternal, Module = module });
+            decls.Add(d with { IsLibrary = isLibrary, IsPrivate = isPrivate, Module = module });
             SkipNewlines();
         }
         if (_scriptLines is not null) decls.Add(ScriptStart(decls) with { Module = module });
@@ -274,7 +273,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// annotation at the start of a line (one inside a body sits further in).
     private bool AtDeclStart() =>
         Is(TokenKind.Eof) || (Is(TokenKind.Hash) && Cur.Pos.Col == 1)
-        || (IsKeyword(Cur) && (DeclKeywords.Contains(Cur.Text) || Cur.Text is "private" or "internal") && Cur.Pos.Col == 1);
+        || (IsKeyword(Cur) && (DeclKeywords.Contains(Cur.Text) || Cur.Text is "private") && Cur.Pos.Col == 1);
 
     // ── Annotations and clauses ──────────────────────────────────────────────
 
@@ -724,12 +723,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             int start = _i;
             var fieldAnnotations = ParseAnnotations();
             bool isPrivate = IsIdent("private") && PeekTok(1).Kind == TokenKind.Ident;
-            bool isInternal = IsIdent("internal") && PeekTok(1).Kind == TokenKind.Ident;
-            if (isPrivate || isInternal) Next();
+            if (isPrivate) Next();
             if (!(Is(TokenKind.Ident) && PeekTok(1).Kind == TokenKind.Colon))
             {
                 _i = start;
-                if (fieldAnnotations.Count > 0 || isPrivate || isInternal || AtDeclStart()) break;
+                if (fieldAnnotations.Count > 0 || isPrivate || AtDeclStart()) break;
             }
 
             var f = Expect(TokenKind.Ident, "a field name");
@@ -737,7 +735,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 throw new CompileError(expensive.Pos,
                     "@expensive marks a routine, the one whose calls cost a lot, not a field");
             Expect(TokenKind.Colon, "':' after the field name");
-            fields.Add(new FieldDecl(f.Text, ParseType(), fieldAnnotations, f.Pos, isPrivate, isInternal));
+            fields.Add(new FieldDecl(f.Text, ParseType(), fieldAnnotations, f.Pos, isPrivate));
             ExpectLineEnd();
         }
         return new RecordDecl(file, annotations, name.Text, typeParams, clauses, fields, pos) { IsEntity = isEntity };

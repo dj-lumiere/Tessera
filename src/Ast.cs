@@ -76,10 +76,8 @@ public abstract record Decl(string File, List<Annotation> Annotations, Pos Pos)
     public Annotation? AnnotationNamed(string name) => Annotations.FirstOrDefault(a => a.Name == name);
     /// True for declarations loaded from the standard library, which are checked only when used.
     public bool IsLibrary { get; init; }
-    /// `private`: visible only in the declaring file.
+    /// `private`: visible only in the declaring module.
     public bool IsPrivate { get; init; }
-    /// `internal`: visible only in the declaring module.
-    public bool IsInternal { get; init; }
     /// The module the declaring file names (`Standard/Format`), or "" for a file without a `module` line.
     public string Module { get; init; } = "";
 }
@@ -121,8 +119,7 @@ public sealed record RoutineDecl(
         + (Fixed.Count == 0 ? "" : $"[{string.Join(", ", Fixed)}]");
 }
 
-public sealed record FieldDecl(string Name, TypeRef Type, List<Annotation> Annotations, Pos Pos, bool IsPrivate = false,
-    bool IsInternal = false)
+public sealed record FieldDecl(string Name, TypeRef Type, List<Annotation> Annotations, Pos Pos, bool IsPrivate = false)
 {
     public Annotation? AnnotationNamed(string name) => Annotations.FirstOrDefault(a => a.Name == name);
 }

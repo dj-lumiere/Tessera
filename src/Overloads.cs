@@ -139,8 +139,8 @@ public sealed partial class Compiler
                 for (int j = i + 1; j < group.Count; j++)
                 {
                     var (a, b) = (group[i], group[j]);
-                    // A `private` routine claims its name only in its file (see RejectDuplicates).
-                    if ((a.IsPrivate || b.IsPrivate) && a.File != b.File) continue;
+                    // A `private` routine claims its name only in its module (see RejectDuplicates).
+                    if ((a.IsPrivate || b.IsPrivate) && a.Module != b.Module) continue;
                     if (!sameParent(a, b)) continue;
                     if (b.IsLibrary && !a.IsLibrary) (a, b) = (b, a);   // report at the user's declaration
                     var (ka, kb) = (SignatureKey(a), SignatureKey(b));
@@ -185,7 +185,7 @@ public sealed partial class Compiler
 
     /// The free routines a plain or qualified name means from `file`: its overload set. The set is one module's (the
     /// file's own module first, else the one import that has the name; two imports offering it make it ambiguous, as
-    /// with any name), and a private routine of the file hides one of the module's with the same parameter types.
+    /// with any name).
     /// Empty if nothing has the name.
     public List<RoutineDecl> FreeCandidates(string name, string file, Pos pos, string? path = null)
     {
@@ -218,13 +218,15 @@ public sealed partial class Compiler
         return LocalHides(scope, file);
     }
 
-    /// A routine declared in `file` hides one declared elsewhere with the same parameter types.
+    /// A routine declared in `file`'s module hides one declared in another module with the same parameter types.
     private List<RoutineDecl> LocalHides(List<RoutineDecl> set, string file)
     {
         if (set.Count == 1) return set;
-        var local = set.Where(r => r.File == file).Select(r => SignatureKey(r).Params).ToHashSet();
+        string module = ModuleOf(file);
+        var local = set.Where(r => r.Module == module).Select(r => SignatureKey(r).Params).ToHashSet();
         if (local.Count == 0) return set;
-        return set.Where(r => r.File == file || !local.Contains(SignatureKey(r).Params)).OrderBy(r => r.File == file ? 0 : 1).ToList();
+        return set.Where(r => r.Module == module || !local.Contains(SignatureKey(r).Params))
+            .OrderBy(r => r.Module == module ? 0 : 1).ToList();
     }
 
     /// The routines on a type with this name that `file` may call: its overload set. One declared in the type's own
@@ -247,8 +249,7 @@ public sealed partial class Compiler
         {
             string home = ownerDecl?.Module ?? CoreModule;
             var visible = methods.Where(m =>
-                m.IsPrivate ? m.File == file
-                : m.IsInternal ? InternalReaches(m, file)
+                m.IsPrivate ? PrivateReaches(m, file)
                 : anyModule || m.Module == home || Visible(m, file, null)).ToList();
             if (visible.Count == 0)
                 throw new CompileError(pos, Hidden(methods[0], $"routine '{owner}.{name}'", null));
@@ -298,7 +299,7 @@ public sealed partial class Compiler
         var ownerDecl = OwnerDecl(seen);
         foreach (var m in all)
         {
-            if (m == seen || m.IsPrivate || m.IsInternal || OwnerDecl(m) != ownerDecl || Visible(m, file, null)) continue;
+            if (m == seen || m.IsPrivate || OwnerDecl(m) != ownerDecl || Visible(m, file, null)) continue;
             int count = m.Params.Count - (m.Params is [{ Name: "me" }, ..] ? 1 : 0);
             if (count == args)
                 return $"; the '{seen.DisplayName}' that takes {args} argument(s) is in {m.Module}, "
@@ -312,7 +313,7 @@ public sealed partial class Compiler
         Func<RoutineDecl, bool>? fits = null)
     {
         var all = _blanket.GetValueOrDefault(name)?.Where(b => (fits?.Invoke(b) ?? true)
-            && (anyModule || Visible(b, file, null) || !b.IsPrivate && !b.IsInternal)).ToList();
+            && (anyModule || Visible(b, file, null) || !b.IsPrivate)).ToList();
         if (all is null || all.Count == 0) return [];
         var visible = all.Where(c => Visible(c, file, null)).ToList();
         if (visible.Count == 0) throw new CompileError(pos, Hidden(all[0], $"routine 'T.{name}'", null));

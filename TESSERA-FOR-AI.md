@@ -276,8 +276,8 @@ routine start() -> None
   apart (an arena) an `entity`. The table is called through `alloc`, `realloc`, `free`, `reserve` / `commit` /
   `release`, and `protect(at, size, PageAccess.NONE | READ | READ_WRITE)`, with `has_pages()` / `has_protect()`
   (both true for a `PageManageable` manager, both false otherwise, and calling an empty one crashes with
-  `NotImplementedError`). Its fields and `MemoryManager.construct` are internal to the standard library, whose
-  hosted managers are built from C routines (pages from `Standard/Os/Pages.te`). Raw `allocate[T]` asks for
+  `NotImplementedError`). Its fields and `MemoryManager.construct` are private to `Standard/Alloc`, which also
+  builds the hosted tables from the C-backed routines of `Standard/Os` (pages from `Standard/Os/Pages.te`). Raw `allocate[T]` asks for
   `alignof[T]()`.
 - **The table views its manager.** In a routine without type parameters, using a table after its manager's slot
   ended is a build error: `'table' is the table of the manager 'arena', which ended at drop arena on line N, so the
@@ -285,11 +285,13 @@ routine start() -> None
   after the table's last use` (the same for `steal arena`), and returning a table of a frame slot's manager is the
   escape check's error. Memory already taken through the table (a `List`, a `Box`) that outlives the manager isn't
   followed: that is the program's to get right.
-- **The default heap comes with `Standard/Os`**, like `Out`: there `DEFAULT_HEAP` is an `@MemoryManager` ready before
-  `start` (`make_heap_memory()` gives the same one), and every collection and `Memory` gets a `construct` without
-  the manager (`List[S64].construct()`, `Memory[U8].construct(n)`). Memory C frees or reallocates, or memory from C's
-  malloc, goes through `make_c_heap_memory()` (plain malloc in every build). A file that doesn't import
-  `Standard/Os`, and every program for a target without an OS, passes a manager.
+- **The default heap comes with a target that has an OS.** `Standard/Alloc` then has `DEFAULT_HEAP`, an
+  `@MemoryManager` ready before `start`, and `DEFAULT_STACKS` (fiber stacks), whose routines are `Standard/Os`'s.
+  `Standard/Os` has `make_heap_memory()` (the same table as `DEFAULT_HEAP`), `make_stack_memory()`, and, like `Out`,
+  a `construct` without the manager for every collection and `Memory` (`List[S64].construct()`,
+  `Memory[U8].construct(n)`). Memory C frees or reallocates, or memory from C's malloc, goes through
+  `Standard/Alloc`'s `make_c_heap_memory()` (plain malloc in every build). A file that doesn't import `Standard/Os`,
+  and every program for a target without an OS, passes a manager.
 - **Memory is declared `@T` (or `Span[T]`), and its contents go in with `<-`.** A name that is an address is
   written with its pointer type, and the declared type is the name's type everywhere:
   `local p: @T <- v` (a stack slot, `<- .hollow()` if a routine fills it), `global NAME: @T [<- value]` (mutable,
@@ -661,11 +663,12 @@ routine start() -> None
 
 **Records**
 
-- `private` before a declaration or a record field hides it from other files (`private routine helper(...)`,
-  `private count: U64`). Inside the declaring file it's used as usual. `internal` hides it from other modules, and one in
-  the standard library is seen by the whole standard library and by no program.
+- `private` before a declaration or a record field hides it from other modules (`private routine helper(...)`,
+  `private count: U64`). In every file of the declaring module it's used as usual, so two private declarations of
+  one name in two files of a module clash like any two declarations. The standard library follows the same rule: a
+  private name of one stdlib module is hidden from the others.
 - A name is unique under its parent, wherever it's declared: you can add `routine U64.double(...)` to a stdlib type,
-  but not a second `U64.midpoint` with the same parameter types (one with other parameter types is an overload). Private names don't count outside their file.
+  but not a second `U64.midpoint` with the same parameter types (one with other parameter types is an overload). Private names don't count outside their module.
 
 - Every record is a struct of its fields, one field included (`record Meters / value: B64` is `{ double }`); only a
   library `@llvm("iN")` record with no fields is an integer underneath (`B128` is an `i128`). `@layout(align: N)` sets

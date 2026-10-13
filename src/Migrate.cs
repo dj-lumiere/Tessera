@@ -28,6 +28,8 @@ namespace Tessera;
 ///
 /// 0.5: a module path is written with `/`, `Standard/Os`, `Standard/Format/write_str(...)`, in code and in comments,
 /// never inside a string.
+///
+/// 0.5: `private` hides a declaration from other modules and `internal` is gone (`--step visibility`).
 public static class Migrate
 {
     /// `F64`, its plural in prose (`F64s`), and a name built on it (`F128Extended`, `F64Core`). `F16C` is the x86 instruction set, not a type.
@@ -308,7 +310,16 @@ public static class Migrate
         ["repeat"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, RepeatStar)
             : RepeatStar(text),
+        ["visibility"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, ModuleVisibility)
+            : ModuleVisibility(text),
     };
+
+    private static readonly Regex InternalWord = new(@"^(    )?internal (?=\S)", RegexOptions.Compiled | RegexOptions.Multiline);
+
+    /// `private` hides a declaration or a field from other modules, and there is no `internal`: an `internal` at the
+    /// start of a declaration or a field line becomes `private`.
+    private static string ModuleVisibility(string text) => InternalWord.Replace(text, "$1private ");
 
     private static readonly Regex RepeatX = new(@"\] x (?=[\w(])", RegexOptions.Compiled);
 

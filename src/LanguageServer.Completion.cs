@@ -213,7 +213,7 @@ public static partial class LanguageServer
 
     private static IEnumerable<FieldDecl> FieldsOf(Compiler compiler, TypeRef? type, string file) =>
         type is not null && compiler.TypeDeclQuiet(type.Name, file, type.Path) is RecordDecl record
-            ? record.Fields.Where(f => !f.IsPrivate || record.File == file)
+            ? record.Fields.Where(f => !f.IsPrivate || compiler.PrivateReaches(record, file))
             : [];
 
     private static TypeRef? PresetTypeOf(Compiler compiler, string name, string file)

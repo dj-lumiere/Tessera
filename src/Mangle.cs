@@ -9,8 +9,8 @@ namespace Tessera;
 /// `_ZN8Standard6Format9write_strE...` followed by its parameter types.
 ///
 /// Where Tessera has no C++ counterpart: a `private` declaration carries its file as an ABI tag
-/// (`9make_roomB24stdlib_collection_List_tess`), since two files may each declare one; an integer generic argument is
-/// a literal of the named `USize` type (`LN8Standard4Core5USizeE8E`); and `Callable` is a C function pointer.
+/// (`9make_roomB24stdlib_collection_List_tess`), an integer generic argument is a literal of the named `USize` type
+/// (`LN8Standard4Core5USizeE8E`), and `Callable` is a C function pointer.
 public sealed partial class Compiler
 {
     /// The symbol of a routine instance. `ps` and `ret` are its resolved parameter and return types.

@@ -3,7 +3,7 @@
 # Insertion-ordered open-addressed hash map. Two layers:
 #   - Entries arrays (keys/values/hashes/entry_states) hold live and dead
 #     entries in the order they were first inserted. Iteration walks these.
-#   - Slots is an index table: each cell is SLOT_EMPTY, SLOT_TOMBSTONE, or an
+#   - Slots is an index table: each cell is DICT_SLOT_EMPTY, DICT_SLOT_TOMBSTONE, or an
 #     entry index >= 0. Linear probing on the hash mod capacity.
 #
 # Every array is a Memory of the same count, the capacity, and each keeps
@@ -18,8 +18,8 @@ module Standard/Collections
 import Standard/Alloc
 import Standard/Format
 
-private preset SLOT_EMPTY:     USize = USize.MAX
-private preset SLOT_TOMBSTONE: USize = SLOT_EMPTY.sub(1)
+private preset DICT_SLOT_EMPTY: USize = USize.MAX
+private preset DICT_SLOT_TOMBSTONE: USize = DICT_SLOT_EMPTY.sub(1)
 
 ### An insertion-ordered hash map. Entries live in parallel arrays (each a {Memory[T]} holding the capacity and the manager) in the order they were first inserted, and an open-addressed slot table with linear probing maps a key hash to its entry. Removal marks the entry dead, so surviving entries keep their order until the next rehash.
 ### :typeparam TKey: The key type, which must provide hashing and equality.
@@ -70,7 +70,7 @@ needs TKey: typename, TValue: typename
 ###     first empty slot.
 routine Dict[TKey, TValue].slot(me: @Me, key: @TKey, hash: U64) -> USize
 needs TKey: typename, TValue: typename
-    local first_tombstone: @USize <- SLOT_EMPTY
+    local first_tombstone: @USize <- DICT_SLOT_EMPTY
 
     capacity: USize = me.slots.count.peek()
     mask: USize = capacity - 1
@@ -78,16 +78,16 @@ needs TKey: typename, TValue: typename
     while true with index: USize = hash.to_wrap[USize]() & mask
         slots: @USize = me.slots.data.peek()
         entry_idx: USize = slots.stride(index).peek()
-        is_empty: Bool = entry_idx == SLOT_EMPTY
+        is_empty: Bool = entry_idx == DICT_SLOT_EMPTY
         when
             is_empty =>
-                has_tombstone: Bool = first_tombstone.peek() != SLOT_EMPTY
+                has_tombstone: Bool = first_tombstone.peek() != DICT_SLOT_EMPTY
                 slot: USize = when
                     has_tombstone => first_tombstone.peek()
                     else => index
                 return slot
-            entry_idx == SLOT_TOMBSTONE =>
-                seen: Bool = first_tombstone.peek() != SLOT_EMPTY
+            entry_idx == DICT_SLOT_TOMBSTONE =>
+                seen: Bool = first_tombstone.peek() != DICT_SLOT_EMPTY
                 next_tombstone: USize = when
                     seen => first_tombstone.peek()
                     else => index
@@ -108,25 +108,25 @@ needs TKey: typename, TValue: typename
 
 ### The entry index of the key at `key`, read through its place, so an entity key is only lent.
 ### :param key: The key to look for.
-### :returns: The index of the key's entry, or `SLOT_EMPTY` when the key is absent.
+### :returns: The index of the key's entry, or `DICT_SLOT_EMPTY` when the key is absent.
 routine Dict[TKey, TValue].find(me: @Me, key: @TKey) -> USize
 needs TKey: typename, TValue: typename
     capacity: USize = me.slots.count.peek()
     if capacity == 0
-        return SLOT_EMPTY
+        return DICT_SLOT_EMPTY
     else
         hash: U64 = key.hash()
         slot: USize = me.slot(key, hash)
         slots: @USize = me.slots.data.peek()
         entry_idx: USize = slots.stride(slot).peek()
-        if entry_idx < SLOT_TOMBSTONE
+        if entry_idx < DICT_SLOT_TOMBSTONE
             return entry_idx
         else
-            return SLOT_EMPTY
+            return DICT_SLOT_EMPTY
 
 ### The entry index of `key`, which ends here.
 ### :param key: The key to look for.
-### :returns: The index of the key's entry, or `SLOT_EMPTY` when the key is absent.
+### :returns: The index of the key's entry, or `DICT_SLOT_EMPTY` when the key is absent.
 private routine Dict[TKey, TValue].find_value(me: @Me, key: TKey) -> USize
 needs TKey: typename, TValue: typename
     local probe: @TKey <- steal key
@@ -141,14 +141,14 @@ needs TKey: typename, TValue: typename
 ### :returns: `true` when an entry with an equal key is live.
 routine Dict[TKey, TValue].has_key(me: @Me, key: @TKey) -> Bool
 needs TKey: typename, TValue: typename
-    return me.find(key) != SLOT_EMPTY
+    return me.find(key) != DICT_SLOT_EMPTY
 
 ### Whether `key` is present.
 ### :param key: The key to look for.
 ### :returns: `true` when an entry with an equal key is live.
 routine Dict[TKey, TValue].has_key(me: @Me, key: TKey) -> Bool
 needs TKey: typename, TValue: typename
-    return me.find_value(steal key) != SLOT_EMPTY
+    return me.find_value(steal key) != DICT_SLOT_EMPTY
 
 ### Whether the key at `key` is not a key: the opposite of `has_key`.
 ### :param key: The key to look for.
@@ -190,7 +190,7 @@ needs TKey: typename, TValue: typename, Equatable[TValue]
             if s == 1
                 keys: @TKey = me.keys.data.peek()
                 eb: USize = other.find(keys.stride(i))
-                if eb < SLOT_TOMBSTONE
+                if eb < DICT_SLOT_TOMBSTONE
                     values_a: @TValue = me.values.data.peek()
                     values_b: @TValue = other.values.data.peek()
                     if values_a.stride(i).eq(values_b.stride(eb))
@@ -230,7 +230,7 @@ needs TKey: typename, TValue: typename
                         each i in 0 til new_capacity
                             slot_cells: @USize = slots.data.peek()
                             state_cells: @U8 = entry_states.data.peek()
-                            slot_cells.stride(i).poke(SLOT_EMPTY)
+                            slot_cells.stride(i).poke(DICT_SLOT_EMPTY)
                             state_cells.stride(i).poke(0)
                         # Swaps the new arrays into the dict, so the claimed slices hold the old ones from here on.
                         old_count: USize = me.entries_count.peek()
@@ -288,7 +288,7 @@ needs TKey: typename, TValue: typename
     local slots: @USize = me.slots.data.peek()
     local entry_idx: USize = slots.stride(slot).peek()
 
-    if entry_idx < SLOT_TOMBSTONE
+    if entry_idx < DICT_SLOT_TOMBSTONE
         drop probe
         values: @TValue = me.values.data.peek()
         drop values.stride(entry_idx)
@@ -350,7 +350,7 @@ routine Dict[TKey, TValue].getitem(me: @Me, key: @TKey) -> TValue
 needs TKey: typename, TValue: typename
     local entry_idx: USize = me.find(key)
 
-    if entry_idx < SLOT_TOMBSTONE
+    if entry_idx < DICT_SLOT_TOMBSTONE
         values: @TValue = me.values.data.peek()
         value: TValue = values.stride(entry_idx).peek()
         return value
@@ -366,7 +366,7 @@ routine Dict[TKey, TValue].getitem(me: @Me, key: TKey) -> TValue
 needs TKey: typename, TValue: typename
     local entry_idx: USize = me.find_value(steal key)
 
-    if entry_idx < SLOT_TOMBSTONE
+    if entry_idx < DICT_SLOT_TOMBSTONE
         values: @TValue = me.values.data.peek()
         value: TValue = values.stride(entry_idx).peek()
         return value
@@ -381,7 +381,7 @@ routine Dict[TKey, TValue].getitem_checked(me: @Me, key: @TKey) -> Maybe[TValue]
 needs TKey: typename, TValue: typename
     local entry_idx: USize = me.find(key)
 
-    if entry_idx < SLOT_TOMBSTONE
+    if entry_idx < DICT_SLOT_TOMBSTONE
         values: @TValue = me.values.data.peek()
         value: TValue = values.stride(entry_idx).peek()
         return value
@@ -396,7 +396,7 @@ routine Dict[TKey, TValue].getitem_checked(me: @Me, key: TKey) -> Maybe[TValue]
 needs TKey: typename, TValue: typename
     local entry_idx: USize = me.find_value(steal key)
 
-    if entry_idx < SLOT_TOMBSTONE
+    if entry_idx < DICT_SLOT_TOMBSTONE
         values: @TValue = me.values.data.peek()
         value: TValue = values.stride(entry_idx).peek()
         return value
@@ -413,7 +413,7 @@ routine Dict[TKey, TValue].getslot(me: @Me, key: @TKey) -> @TValue
 needs TKey: typename, TValue: typename
     local entry_idx: USize = me.find(key)
 
-    if entry_idx < SLOT_TOMBSTONE
+    if entry_idx < DICT_SLOT_TOMBSTONE
         values: @TValue = me.values.data.peek()
         value: @TValue = values.stride(entry_idx)
         return value
@@ -430,7 +430,7 @@ routine Dict[TKey, TValue].getslot(me: @Me, key: TKey) -> @TValue
 needs TKey: typename, TValue: typename
     local entry_idx: USize = me.find_value(steal key)
 
-    if entry_idx < SLOT_TOMBSTONE
+    if entry_idx < DICT_SLOT_TOMBSTONE
         values: @TValue = me.values.data.peek()
         value: @TValue = values.stride(entry_idx)
         return value
@@ -445,7 +445,7 @@ routine Dict[TKey, TValue].getslot_checked(me: @Me, key: @TKey) -> Maybe[@TValue
 needs TKey: typename, TValue: typename
     local entry_idx: USize = me.find(key)
 
-    if entry_idx < SLOT_TOMBSTONE
+    if entry_idx < DICT_SLOT_TOMBSTONE
         values: @TValue = me.values.data.peek()
         value: @TValue = values.stride(entry_idx)
         return value
@@ -460,7 +460,7 @@ routine Dict[TKey, TValue].getslot_checked(me: @Me, key: TKey) -> Maybe[@TValue]
 needs TKey: typename, TValue: typename
     local entry_idx: USize = me.find_value(steal key)
 
-    if entry_idx < SLOT_TOMBSTONE
+    if entry_idx < DICT_SLOT_TOMBSTONE
         values: @TValue = me.values.data.peek()
         value: @TValue = values.stride(entry_idx)
         return value
@@ -481,14 +481,14 @@ needs TKey: typename, TValue: typename
         slot: USize = me.slot(key, hash)
         slots: @USize = me.slots.data.peek()
         entry_idx: USize = slots.stride(slot).peek()
-        if entry_idx < SLOT_TOMBSTONE
+        if entry_idx < DICT_SLOT_TOMBSTONE
             slots2: @USize = me.slots.data.peek()
             entry_states: @U8 = me.entry_states.data.peek()
             keys: @TKey = me.keys.data.peek()
             values: @TValue = me.values.data.peek()
             drop keys.stride(entry_idx)
             drop values.stride(entry_idx)
-            slots2.stride(slot).poke(SLOT_TOMBSTONE)
+            slots2.stride(slot).poke(DICT_SLOT_TOMBSTONE)
             entry_states.stride(entry_idx).poke(0)
             remaining_count: USize = me.count.peek() - 1
             remaining_count.poke_into(me.count)
@@ -582,7 +582,7 @@ needs TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue], 
 ### :param into: The empty slice to fill, which carries the allocator.
 ### :param count: The number of elements to allocate.
 ### :returns: True when it allocated, false when the allocator failed (leaving `into` empty).
-internal routine make_array[T](into: @Memory[T], count: USize) -> Bool
+private routine make_array[T](into: @Memory[T], count: USize) -> Bool
 needs T: typename
     alloc: @MemoryManager = into.manager.peek()
     when Memory[T].construct_result(count, manager: alloc)
@@ -595,7 +595,7 @@ needs T: typename
 ### :typeparam T: The element type.
 ### :param a: The first slice.
 ### :param b: The second slice.
-internal routine swap_slices[T](a: @Memory[T], b: @Memory[T]) -> None
+private routine swap_slices[T](a: @Memory[T], b: @Memory[T]) -> None
 needs T: typename
     local first: @Memory[T] <- steal a.stride(0)
 

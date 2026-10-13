@@ -8,7 +8,7 @@ namespace Tessera;
 /// header as the source writes it (its line and the `conform`/`require`/`when` lines under it), its doc comment, its
 /// fields or cases, and the routines and presets declared on it. Routines on a type declared in another file, free
 /// routines, presets, and aliases follow. A `{Name}` in a doc comment links to the type's section when the library
-/// declares that type. Private and internal declarations, and files under a `tests`, `playground`, `scratch`, or
+/// declares that type. Private declarations, and files under a `tests`, `playground`, `scratch`, or
 /// `generated` directory, are left out.
 public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse)
 {
@@ -131,7 +131,7 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse)
 
     // ── Types ───────────────────────────────────────────────────────────────
 
-    private static bool IsPublic(Decl d) => !d.IsPrivate && !d.IsInternal;
+    private static bool IsPublic(Decl d) => !d.IsPrivate;
 
     private static string? TypeName(Decl d) => d switch
     {
@@ -235,9 +235,9 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse)
 
         switch (type)
         {
-            case RecordDecl record when record.Fields.Any(f => !f.IsPrivate && !f.IsInternal):
+            case RecordDecl record when record.Fields.Any(f => !f.IsPrivate):
                 sb.Append("**Fields**\n\n");
-                foreach (var f in record.Fields.Where(f => !f.IsPrivate && !f.IsInternal))
+                foreach (var f in record.Fields.Where(f => !f.IsPrivate))
                     AppendItem(sb, page, Line(page, f.Pos.Line), f.Pos.Line);
                 sb.Append('\n');
                 break;
