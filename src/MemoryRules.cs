@@ -105,7 +105,7 @@ public static class MemoryRules
     /// block sees (the routine's parameters and the values of its head): the rest live in their block only. Each path is
     /// followed with its own state, and a block is entered again only with a state it hasn't been entered with.
     public static List<CompileError> Check(string routine, Pos routinePos, string firstBlock, IReadOnlyDictionary<string, List<Event>> events,
-        IReadOnlySet<string> routineWide)
+        IReadOnlySet<string> routineWide, Func<string, bool>? fromOutside = null)
     {
         var errors = new List<CompileError>();
         var reported = new HashSet<string>();
@@ -208,6 +208,14 @@ public static class MemoryRules
                         if (arms.Count > 0) state = arms.Pop();
                         break;
                     case Exit { Returns: true } ex:
+                        // A place the caller reaches too (through a parameter, `me`, or a global) that steal left hollow:
+                        // the caller would read the hole after the routine returns.
+                        foreach (var (name, id) in state.Names)
+                            if (name.Contains('.') && fromOutside?.Invoke(name[..name.IndexOf('.')]) == true
+                                && state.Groups.TryGetValue(id, out var hole) && hole is { Ended: { } emptiedAt, Entity: { } lost })
+                                Report(ex.Pos, $"'{name}' was left hollow by {hole.How} on line {emptiedAt.Line}, and '{routine}' "
+                                    + $"returns here: whoever reaches that place after the call finds no {lost}. Put one back first, "
+                                    + $"{name}.poke(...)");
                         foreach (var (_, g) in state.Groups)
                             if (g.Ended is null)
                                 Report(ex.Pos, g.Entity is { } alive
@@ -221,7 +229,9 @@ public static class MemoryRules
                     case Exit ex:
                     {
                         var next = new State();
-                        bool Sees(string name) => routineWide.Contains(name) || ex.Visible?.Contains(name) == true;
+                        // A place (`sets.getslot(b)`, `me.left`) goes wherever the name it is reached through goes.
+                        bool Sees(string name) => routineWide.Contains(name) || ex.Visible?.Contains(name) == true
+                            || name.IndexOf('.') is > 0 and var dot && Sees(name[..dot]);
                         foreach (var (name, id) in state.Names)
                             if (Sees(name)) next.Names[name] = id;
                         foreach (var (param, arg) in ex.Args)

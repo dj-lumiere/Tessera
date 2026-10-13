@@ -686,7 +686,9 @@ routine start() -> None
 - Moving is written with `steal`. `steal a as b` moves what the slot `a` holds into a new slot `b`, and an argument
   moves with `f(c: steal a)`: `a` ends there, and using it afterwards is a build error. `steal p.left as old` takes
   what a field holds into a new slot `old` and leaves the field hollow: reading it before a value is put back
-  (`p.left.poke(Counter.construct())`) is a build error. `return c` hands what the slot `c` holds to the caller,
+  (`p.left.poke(Counter.construct())`) is a build error, and so is returning while a place reached through a
+  parameter, `me`, or a global is still hollow (the caller would find the hole). The place is zeroed in place, so a
+  `destruct` that reaches it anyway does nothing. `return c` hands what the slot `c` holds to the caller,
   and `c` ends.
 - What copies an entity is a build error that says what to do instead: a load out of memory (`slot.peek()`), or a
   field read out of a record value.

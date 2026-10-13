@@ -289,13 +289,13 @@ public sealed class FunctionGen
                 _moving = true;
                 return Eval(new MethodCallExpr(s.Value, "peek", [], [], s.Pos), expected);
             }
-            // The place's address once, its value out, then the hollow value in.
+            // The place's address once, its value out, then zeroed in place (a memset: a whole all-zero value of a big
+            // element as one store takes LLVM minutes and can crash it).
             var place = Eval(s.Value, new PtrType(element));
             _c.EnsureTypeDefined(element);
-            long align = _c.SizeAlign(element, s.Pos).Align;
+            var (size, align) = _c.SizeAlign(element, s.Pos);
             var taken = new Val(EmitTmp($"load {element.Llvm}, ptr {place.Op}, align {align}"), element);
-            var hollow = Eval(new NsCallExpr(new TypeRef("$hollow", [], s.Pos) { Known = element }, "hollow", [], [], s.Pos), element);
-            Line($"store {element.Llvm} {hollow.Op}, ptr {place.Op}, align {align}");
+            Line($"call void @llvm.memset.p0.{_c.USize.Llvm}(ptr {place.Op}, i8 0, {_c.USize.Llvm} {size}, i1 false)");
             if (MemOn && PlaceKey(s.Value) is { } key)
             {
                 Mem(new MemoryRules.Acquire(key, "emptied", s.Pos) { Entity = element.Name });
@@ -336,8 +336,8 @@ public sealed class FunctionGen
         var taken = new StealExpr(st.From, st.Pos) { Place = true };
         EmitStmt(new BindStmt(st.Name, new TypeRef("$stolen", [], st.NamePos) { Known = new PtrType(held) },
             new ClaimExpr(st.Pos) { Contents = taken }, st.Pos));
-        EvalAny(new MethodCallExpr(st.From, "poke", [],
-            [new NsCallExpr(new TypeRef("$hollow", [], st.Pos) { Known = held }, "hollow", [], [], st.Pos)], st.Pos));
+        // Left hollow, zeroed in place.
+        EvalAny(new MethodCallExpr(st.From, "zeroinit", [], [new IntLit(1, st.Pos)], st.Pos));
         if (MemOn && PlaceKey(st.From) is { } key)
         {
             Mem(new MemoryRules.Acquire(key, "emptied", st.Pos) { Entity = held.Name });
@@ -812,7 +812,12 @@ public sealed class FunctionGen
         EmitHead();
         foreach (var b in blocks) EmitBlock(b);
         _c.NoteExpensiveCalls(ExpensiveCallLint.Check(_decl, _expensiveCalls));
-        if (MemOn && MemoryRules.Check(_decl.DisplayName, _decl.Pos, blocks[0].Name, _memEvents, _routineValues.Keys.ToHashSet()) is [var memoryError, ..])
+        // A place reached through a parameter, `me`, or a global outlives the routine: one is from outside when its root
+        // is a parameter or a name the routine doesn't bind.
+        var parameters = _decl.Params.Select(p => p.Name).ToHashSet();
+        bool FromOutside(string root) => parameters.Contains(root) || !BoundInRoutine(root);
+        if (MemOn && MemoryRules.Check(_decl.DisplayName, _decl.Pos, blocks[0].Name, _memEvents, _routineValues.Keys.ToHashSet(),
+                FromOutside) is [var memoryError, ..])
             throw memoryError;
 
         // A BF16 parameter arrives as its i16 bits (see Instance.PassesBf16AsBits) and is bitcast back on entry.
