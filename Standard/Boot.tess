@@ -1,11 +1,12 @@
-# Tessera stdlib: the startup steps of a program without an operating system
+# Tessera stdlib: the startup steps of a program for a target without an operating system
 #
-# A program for a target without an operating system that defines `start` gets its entry from the builder. `_start`
-# sets the stack pointer from the link script's `__stack_top` (on Cortex-M the core loads it from the vector table's
-# first word) and runs the steps here in order: zero_bss, copy_data where the code runs from flash (32-bit ARM and
-# RISC-V), enable_fpu when the target has a floating-point unit the build may use, then the program's when_booted
-# (its board step, when it has one) and start, then halt. A global's first value is build-time data in the program
-# image, so nothing runs before these steps, and none of them reads a global.
+# Such a program's entry is `when_booted`: the reset sends the core there. The stack pointer is part of its prologue
+# (on Cortex-M the core loads it from the vector table's first word, elsewhere the builder's first instructions load
+# `__stack_top`), then its body readies the core and memory, here: zero_bss, copy_data where the code runs from flash
+# (32-bit ARM and RISC-V), enable_fpu when the target has a floating-point unit the build may use, which prepare_core
+# runs together, and then whatever the board needs. When it returns, start runs, then halt. A program without
+# when_booted gets one that runs prepare_core. A global's first value is build-time data in the program image, so
+# nothing runs before these steps, and none of them reads a global.
 #
 # The link script defines the symbols they use: `__stack_top`, `__bss_start` and `__bss_end` around .bss, and on a
 # target that runs from flash `__data_start` and `__data_end` around .data in RAM with `__data_load`, where its first
@@ -47,7 +48,7 @@ global DATA_LOAD: @Byte
 
 ### Zeroes .bss, the globals whose first value is all zero bytes: `__bss_start` up to `__bss_end`.
 @target(os: "none")
-internal routine zero_bss() -> None
+routine zero_bss() -> None
     first: USize = ptrtoint[Addr, USize](BSS_START)
     after: USize = ptrtoint[Addr, USize](BSS_END)
     BSS_START.zeroinit(after - first)
@@ -56,7 +57,7 @@ internal routine zero_bss() -> None
 ### Copies .data's first values from flash (`__data_load`) into RAM (`__data_start` up to `__data_end`), on a target
 ### whose code runs from flash.
 @target(os: "none")
-internal routine copy_data() -> None
+routine copy_data() -> None
     first: USize = ptrtoint[Addr, USize](DATA_START)
     after: USize = ptrtoint[Addr, USize](DATA_END)
     DATA_START.copy(src: DATA_LOAD, count: after - first)
@@ -64,19 +65,19 @@ internal routine copy_data() -> None
 
 ### Turns SSE on: CR0.EM off and CR0.MP on, then CR4.OSFXSR and CR4.OSXMMEXCPT.
 @target(arch: "x86_64", os: "none")
-internal routine enable_fpu() -> None
+routine enable_fpu() -> None
     allow_sse()
     return
 
 ### Turns the FP and SIMD registers on at EL1: CPACR_EL1.FPEN = 0b11.
 @target(arch: "aarch64", os: "none")
-internal routine enable_fpu() -> None
+routine enable_fpu() -> None
     allow_fp_access()
     return
 
 ### Turns the FPU on in machine mode: mstatus.FS = Initial.
 @target(arch: "riscv32", os: "none")
-internal routine enable_fpu() -> None
+routine enable_fpu() -> None
     allow_fp_access()
     return
 
@@ -85,13 +86,77 @@ internal routine enable_fpu() -> None
 ### there for a Thumb build.
 @target(arch: "arm", os: "none")
 @feature("thumb-mode")
-internal routine enable_fpu() -> None
+routine enable_fpu() -> None
     local cpacr: @U32 = inttoptr[USize, @U32](0xE000ED88)
 
     access: U32 = cpacr.peek_volatile()
     cpacr.poke_volatile(access | 0xF00000)
     data_barrier()
     instruction_barrier()
+    return
+
+### Readies the core and memory before anything reads a global: zeroes .bss, turns the FPU on.
+@target(arch: "x86_64", os: "none")
+@feature("sse")
+routine prepare_core() -> None
+    zero_bss()
+    enable_fpu()
+    return
+
+### Readies the core and memory before anything reads a global: zeroes .bss.
+@target(arch: "x86_64", os: "none")
+@feature(not "sse")
+routine prepare_core() -> None
+    zero_bss()
+    return
+
+### Readies the core and memory before anything reads a global: zeroes .bss, turns the FPU on.
+@target(arch: "aarch64", os: "none")
+@feature("fp-armv8")
+routine prepare_core() -> None
+    zero_bss()
+    enable_fpu()
+    return
+
+### Readies the core and memory before anything reads a global: zeroes .bss.
+@target(arch: "aarch64", os: "none")
+@feature(not "fp-armv8")
+routine prepare_core() -> None
+    zero_bss()
+    return
+
+### Readies the core and memory before anything reads a global: zeroes .bss, copies .data from flash, turns the FPU on.
+@target(arch: "arm", os: "none")
+@feature("vfp2sp")
+routine prepare_core() -> None
+    zero_bss()
+    copy_data()
+    enable_fpu()
+    return
+
+### Readies the core and memory before anything reads a global: zeroes .bss, copies .data from flash.
+@target(arch: "arm", os: "none")
+@feature(not "vfp2sp")
+routine prepare_core() -> None
+    zero_bss()
+    copy_data()
+    return
+
+### Readies the core and memory before anything reads a global: zeroes .bss, copies .data from flash, turns the FPU on.
+@target(arch: "riscv32", os: "none")
+@feature("f")
+routine prepare_core() -> None
+    zero_bss()
+    copy_data()
+    enable_fpu()
+    return
+
+### Readies the core and memory before anything reads a global: zeroes .bss, copies .data from flash.
+@target(arch: "riscv32", os: "none")
+@feature(not "f")
+routine prepare_core() -> None
+    zero_bss()
+    copy_data()
     return
 
 ### Halts the core for good once `start` has returned: it waits for interrupts, forever. On Cortex-M the vector

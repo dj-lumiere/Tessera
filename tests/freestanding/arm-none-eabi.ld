@@ -2,7 +2,7 @@
    starts flash (4 MiB, room for freestanding_float's whole soft-float runtime at -O0), the code runs from flash, and .data's first values are copied from there into RAM. It defines the
    symbols the builder's entry uses: __stack_top (the vector table's first word), __bss_start and __bss_end, and
    __data_start, __data_end and __data_load. */
-ENTRY(_start)
+ENTRY(when_booted)
 MEMORY
 {
     FLASH (rx) : ORIGIN = 0x00000000, LENGTH = 4M

@@ -1,7 +1,7 @@
 /* A link script for tests/freestanding and tests/freestanding_float on x86_64-none-elf: a loader puts the program in
    RAM at 2 MiB, so .data needs no copy. It defines the symbols the builder's entry uses: __stack_top, __bss_start and
    __bss_end. */
-ENTRY(_start)
+ENTRY(when_booted)
 SECTIONS
 {
     . = 0x200000;

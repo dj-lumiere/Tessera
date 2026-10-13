@@ -917,8 +917,9 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
   still running when `start` returns may or may not get its store in. `exit_code()` reads it back. A crash keeps its
   own status (82 by default). `main` is an ordinary routine name; a program with `main` and no `start` is a build
   error that says so. `start` with parameters or a result is an error too.
-- `routine when_booted() -> None` is the board step of a program for a target without an operating system (below);
-  with one it is a build error.
+- `routine when_booted() -> None` is the entry of a program for a target without an operating system (below): the
+  reset lands there, it readies the core and memory (`prepare_core()`) and the board, then `start` runs. With an
+  operating system it is a build error.
 - Every routine with a body is its head's `local` lines (if it has any) and then its statements. A routine without
   a body must be `@external`.
 
@@ -1065,15 +1066,17 @@ Collections all check there. `Standard/Os` drops out of the build, so importing 
 build error ("Standard/Os needs an operating system ..."); there's no `Out`, files, threads, `@threadlocal`, fiber `FiberManager` (`Standard/Fiber`'s
 `switch_stack` and `initial_stack` are there, which `tests/freestanding_fiber` switches stacks with),
 `make_heap_memory`, `DEFAULT_HEAP`, or `construct()` without an allocator. The program exports its own crash handler (`@export("tessera_crash_handler")` with `@noreturn`, which
-may loop forever), passes its own `MemoryManager` if it allocates, and brings its link script. A program that defines `start` gets its
-entry from the builder: `_start` (on Cortex-M also a vector table in section `.isr_vector`, its first word
-`__stack_top` and its second `_start`, the system exceptions halting) runs, in order, the stack pointer from
-`__stack_top`, .bss zeroed (`__bss_start` to `__bss_end`), .data copied from flash (`__data_load` to `__data_start` ..
-`__data_end`) on 32-bit ARM and RISC-V, which run from flash (x86_64 and AArch64 are loaded into RAM, so their .data
-is in place), the FPU turned on when the build may use one (x86_64 SSE: CR0.EM off, CR0.MP, CR4.OSFXSR and
-OSXMMEXCPT on; AArch64 at EL1: CPACR_EL1.FPEN; Cortex-M: CPACR's CP10 and CP11, then dsb and isb; RISC-V in machine
-mode: mstatus.FS), then the program's `when_booted()` if it has one (clocks, pins, a serial port), `start()`, and
-a loop that halts (`hlt` / `wfi`). The link script defines those symbols (`tests/freestanding/<target>.ld` are
+may loop forever), passes its own `MemoryManager` if it allocates, and brings its link script. A program that defines `start` has
+`when_booted` as its entry symbol: the reset lands there (on Cortex-M through a vector table in section
+`.isr_vector`, its first word `__stack_top` and its second `when_booted`, the system exceptions halting; elsewhere the
+link script's `ENTRY(when_booted)`). Its prologue sets the stack pointer from `__stack_top` (the Cortex-M core does
+that from the vector table). Its body is the program's `when_booted()`: first `prepare_core()` from Standard/Boot
+(`zero_bss()`: .bss zeroed, `__bss_start` to `__bss_end`; `copy_data()` on 32-bit ARM and RISC-V, which run from
+flash: `__data_load` to `__data_start` .. `__data_end`; `enable_fpu()` when the build may use an FPU), then the board's
+own steps (clocks, pins, a serial port). Touching a global before `prepare_core()` (or `zero_bss()`) is a build error,
+and so is a `when_booted` that never calls it. Work that touches no global (a watchdog) may come first. Without
+`when_booted` the program gets one that runs `prepare_core()`. Then `start()` runs, then a loop that halts (`hlt` /
+`wfi`). The link script defines those symbols (`tests/freestanding/<target>.ld` are
 small ones) and, on RISC-V, no `__global_pointer$` (the entry leaves gp alone). On 32-bit ARM the entry is a Cortex-M
 reset vector, so the build names a Cortex-M CPU (`--cpu cortex-m3`). The steps are `Standard/Boot.tess`. A program
 without `start` brings its own entry instead. x86_64 code without an OS is built without the red zone. A program
