@@ -1,7 +1,7 @@
 namespace Tessera;
 
 /// The crash trace: a traced build keeps, per thread, the program's routines it is in, so a crash handler can say how
-/// the program got where it crashed (Standard/Trace.tess holds the storage and the routines the builder calls). Each
+/// the program got where it crashed (Standard/Trace.te holds the storage and the routines the builder calls). Each
 /// traced routine calls trace_push on entry with its name, file, and declaration's place, trace_at before each call it
 /// makes with the call's line and column, and trace_pop just before it returns, after its return value is computed, so
 /// a callee in `return(f(x))` runs with the caller's frame still there. The standard library isn't traced: a crash in
@@ -50,7 +50,7 @@ public sealed partial class Compiler
 
     private readonly Dictionary<string, Instance> _traceRoutines = [];
 
-    /// A call to one of Standard/Trace.tess's routines the builder places (trace_push, trace_at, trace_pop), with
+    /// A call to one of Standard/Trace.te's routines the builder places (trace_push, trace_at, trace_pop), with
     /// these LLVM operands. They are #inline, so the call is their few loads and stores.
     public string TraceCall(string name, params string[] args)
     {

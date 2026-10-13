@@ -40,7 +40,7 @@ public class TraceTests
     {
         string root = FindRoot();
         Directory.SetCurrentDirectory(root);
-        string ir = Cli.Compile([Path.Combine(root, "tests", "trace_frames", "src", "main.tess")], BuildTarget.Host(),
+        string ir = Cli.Compile([Path.Combine(root, "tests", "trace_frames", "src", "main.te")], BuildTarget.Host(),
             lint: false, trace: true);
         string inline = Body(ir, "@_Z4pass");
         Assert.DoesNotContain("trace_push", inline);
@@ -74,15 +74,15 @@ public class TraceTests
         var target = BuildTarget.Parse(triple);
         if (target.Arch == "arm" && !target.HasOs) target = target with { Cpu = "cortex-m3" };
         string program = target.HasOs
-            ? Path.Combine(root, "tests", "trace_frames", "src", "main.tess")
-            : Path.Combine(root, "tests", "freestanding", "main.tess");
+            ? Path.Combine(root, "tests", "trace_frames", "src", "main.te")
+            : Path.Combine(root, "tests", "freestanding", "main.te");
         return Cli.Compile([program], target, lint: false, trace: trace);
     }
 
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "Prelude.tess"))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "Prelude.te"))
                 && Directory.Exists(Path.Combine(dir.FullName, "tests")))
                 return dir.FullName;
         throw new InvalidOperationException("can't find the Tessera repository above the test assembly");

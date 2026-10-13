@@ -47,9 +47,9 @@ public class HeapCheckTests
         Directory.CreateDirectory(dir);
         try
         {
-            File.WriteAllText(Path.Combine(dir, "main.tess"), "");
+            File.WriteAllText(Path.Combine(dir, "main.te"), "");
             File.WriteAllText(Path.Combine(dir, Manifest.FileName),
-                "[package]\nname = \"plain\"\n\n[target]\nmode = \"debug\"\nexecutable = \"main.tess\"\n");
+                "[package]\nname = \"plain\"\n\n[target]\nmode = \"debug\"\nexecutable = \"main.te\"\n");
             Assert.False(Manifest.Load(Path.Combine(dir, Manifest.FileName)).HeapCheck);
         }
         finally
@@ -58,19 +58,19 @@ public class HeapCheckTests
         }
     }
 
-    /// tests/slice_borrowed.tess allocates and frees through DEFAULT_HEAP.
+    /// tests/slice_borrowed.te allocates and frees through DEFAULT_HEAP.
     private static string CompileSliceProgram(BuildMode mode, bool heapCheck)
     {
         string root = FindRoot();
         Directory.SetCurrentDirectory(root);
-        return Cli.Compile([Path.Combine(root, "tests", "slice_borrowed.tess")], BuildTarget.Host(), mode: mode,
+        return Cli.Compile([Path.Combine(root, "tests", "slice_borrowed.te")], BuildTarget.Host(), mode: mode,
             lint: false, heapCheck: heapCheck);
     }
 
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "Prelude.tess"))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "Prelude.te"))
                 && Directory.Exists(Path.Combine(dir.FullName, "tests")))
                 return dir.FullName;
         throw new InvalidOperationException("can't find the Tessera repository above the test assembly");

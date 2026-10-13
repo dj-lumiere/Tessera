@@ -224,7 +224,7 @@ public class AsmArmTests
     /// per line. With assemble, clang also assembles the IR for the target, which fails on any line it doesn't take.
     private static string Build(string source, BuildTarget target, bool assemble = true)
     {
-        var decls = new Parser(new Lexer("arm.tess", source).Lex(), "arm.tess").ParseModule().Decls;
+        var decls = new Parser(new Lexer("arm.te", source).Lex(), "arm.te").ParseModule().Decls;
         decls.AddRange(StandardLibrary.Load(Path.Combine(FindRoot(), "Standard")));
         string ir = new Compiler(target, decls).Generate();
         if (assemble) Assemble(ir, target);
@@ -263,7 +263,7 @@ public class AsmArmTests
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "Prelude.tess"))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "Prelude.te"))
                 && Directory.Exists(Path.Combine(dir.FullName, "tests")))
                 return dir.FullName;
         throw new InvalidOperationException("can't find the Tessera repository above the test assembly");

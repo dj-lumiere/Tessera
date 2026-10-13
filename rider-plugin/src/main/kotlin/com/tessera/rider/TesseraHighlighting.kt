@@ -26,7 +26,7 @@ object TesseraLanguage : Language("tessera") {
 /** Highlights Tessera code outside a file (a hover's code block) with the same TextMate grammar the editor uses. */
 class TesseraSyntaxHighlighterFactory : SyntaxHighlighterFactory() {
     override fun getSyntaxHighlighter(project: Project?, virtualFile: VirtualFile?): SyntaxHighlighter =
-        TextMateService.getInstance().getLanguageDescriptorByExtension("tess")
+        TextMateService.getInstance().getLanguageDescriptorByExtension("te")
             ?.let { TextMateHighlighter(TextMateHighlightingLexer(it, LINE_LIMIT)) }
             ?: PlainSyntaxHighlighter()
 

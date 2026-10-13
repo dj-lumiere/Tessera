@@ -1,0 +1,484 @@
+# Tessera stdlib: B128 sin_pi, cos_pi, tan_pi
+#
+# sin(πx), cos(πx), and tan(πx), correctly rounded. The reduction is exact:
+# with r = 2x rounded to the nearest integer, d = 2x - r is a B128 in
+# [-1/2, 1/2] and πx = r π/2 + θ with θ = d π/2, |θ| <= π/4, so no multiple of
+# π is ever subtracted in floating point. Then two tiers, as in RazorForge's
+# B128 sinpi / cospi / tanpi:
+#
+# - fast: θ, sin θ, and cos θ in B128Extended (Standard/B128Math.te). The result is
+#   kept when all of it × (1 ± 2^-B128_PI_BAND) rounds to the same B128.
+# - exact: otherwise the same formulas in 384-bit fixed point on BigNat
+#   (error below 2^-370 relative), rounded once.
+#
+# The band is measured, not proven: on 30000 random reduced angles (every
+# quadrant, all three functions, |d| from 2^-16382 to 1/2) the fast tier's
+# worst relative error against mpmath was 2^-150.2, the size of the B128Extended
+# series' first dropped term at |θ| = π/4, so 2^-145 leaves about 5 bits.
+# Results near a rounding boundary do occur: cos_pi(x) = 1 - (πx)²/2 + …
+# lies within 2^-226 of the midpoint below 1 for x near 2^-56.5 / π, where
+# the fast tier alone rounds the wrong way (tests/b128_extra.te has them).
+
+module Standard/Core
+
+import Standard/Format
+
+preset B128_PI_BAND: S64 = 145
+
+### floor(π × 2^384), least significant limb first (386 bits)
+preset PI_FIXED_384: @Array[U64, 7] <- [0xBE5466CF34E90C6C, 4983270260364809079, 589684135938649225,
+    0xA4093822299F31D0, 1376283091369227076, 2611923443488327891, 3]
+
+preset PI_FIXED_BITS: S64 = 384
+
+# -- the exact reduction -------------------------------------------------------
+
+### πx = quadrant × π/2 + d × π/2, with quadrant = r mod 4 and d = 2x - r exact.
+record PiReduced
+    quadrant: S64
+    d: B128
+
+### Which of sin θ and cos θ gives the result, over which (tan), and its sign
+### before θ's own sign is applied:
+###   sin: sin θ, cos θ, -sin θ, -cos θ  for quadrants 0..3
+###   cos: cos θ, -sin θ, -cos θ, sin θ
+###   tan: sin θ / cos θ in even quadrants, -cos θ / sin θ in odd ones
+record PiPick
+    over_sin: Bool  # the numerator is sin θ (else cos θ)
+    divide: Bool  # tan: divide by the other one
+    negative: Bool
+
+### The exact reduction of πx: r = 2x rounded to nearest (ties to even), quadrant = r mod 4, and d = 2x - r. For
+### a finite x that is not an integer (so |x| < 2^112 and 2x can't overflow).
+### :param x: The argument.
+### :returns: The quadrant and d.
+routine b128_pi_reduce(x: B128) -> PiReduced
+    twice: B128 = x + x
+    nearest: B128 = twice.round_ties_even()
+    d: B128 = twice - nearest
+    nearest_int: S128 = nearest.to_clamp[S128]()
+    q: S64 = (nearest_int & 3).to[S64]()  # two's complement: mod 4 for negatives too
+    r: PiReduced = PiReduced(quadrant: q, d: d)
+    return r
+
+### Whether x (an integer) is odd. From 2^113 on, every B128 is even.
+### :param x: An integer-valued B128.
+### :returns: True when x is odd.
+routine b128_integer_is_odd(x: B128) -> Bool
+    big: Bool = x.abs() >= b128_of(0x40700000000000000000000000000000)  # 2^113
+    whole: S128 = x.to_clamp[S128]()
+    odd: Bool = whole & 1 == 1
+    return not big and odd
+
+### Which of sin θ and cos θ gives sin, cos, or tan of πx in a quadrant, whether tan divides by the other one,
+### and the sign before θ's own.
+### :param quadrant: The quadrant, 0 to 3.
+### :param kind: The function.
+### :returns: The pick.
+routine b128_pi_pick(quadrant: S64, kind: TrigKind) -> PiPick
+    odd: Bool = quadrant & 1 == 1
+    even: Bool = not odd
+    upper: Bool = quadrant >= 2
+    middle: Bool = quadrant == 1 or quadrant == 2
+    sin: PiPick = PiPick(over_sin: even, divide: false, negative: upper)
+    cos: PiPick = PiPick(over_sin: odd, divide: false, negative: middle)
+    tan: PiPick = PiPick(over_sin: even, divide: true, negative: odd)
+    when kind
+        TrigKind.SIN => return sin
+        TrigKind.COS => return cos
+        TrigKind.TAN => return tan
+
+# -- fast tier: B128Extended -----------------------------------------------------------
+
+record WideRounding
+    ok: Bool
+    value: B128
+
+### u rounded to B128, and whether all of u × (1 ± 2^-k) rounds to the same value.
+### :param u: The value to round.
+### :param k: The band, as a power of two.
+### :returns: The rounded value and whether the band agrees (`ok`). `value` is kept even when `ok` is false.
+routine wide_round_within(u: B128Extended, k: S64) -> WideRounding
+    r: B128 = u.to[B128]()
+    magnitude: B128Extended = u.abs()
+    delta: B128Extended = B128Extended(negative: false, exponent: u.exponent - k, hi: u.hi,
+        lo: u.lo)
+    low: B128 = (magnitude - delta).to[B128]()
+    high: B128 = (magnitude + delta).to[B128]()
+    kept: U128 = r.abs().bits()
+    low_kept: Bool = low.bits() == kept
+    ok: Bool = low_kept and high.bits() == kept
+    w: WideRounding = WideRounding(ok: ok, value: r)
+    return w
+
+### The fast tier's result in B128Extended from θ = d π/2 (d nonzero, |d| <= 1/2).
+### :param d: The reduced argument.
+### :param pick: Which function of θ, and its sign.
+### :returns: sin, cos, or tan of πx at 192 bits.
+routine wide_pi_trig(d: B128, pick: PiPick) -> B128Extended
+    local theta: B128Extended = d.to[B128Extended]() * wide_half_pi()
+
+    tan: Bool = pick.divide
+    over_sin: Bool = pick.over_sin
+    v: B128Extended = when
+        tan =>
+            s: B128Extended = wide_sin_core(theta)
+            c: B128Extended = wide_cos_core(theta)
+            top: B128Extended = when
+                pick.over_sin => s
+                else => c
+            under: B128Extended = when
+                pick.over_sin => c
+                else => s
+            becomes top / under
+        over_sin => wide_sin_core(theta)
+        else => wide_cos_core(theta)
+    negative: Bool = pick.negative
+    r: B128Extended = when
+        negative => -v
+        else => v
+    return r
+
+# -- exact tier: 384-bit fixed point on BigNat ---------------------------------
+
+### Sets `me` to a × b (`me` must be neither).
+### :param a: The first factor.
+### :param b: The second factor.
+### :throws: Crashes with `IntegerOverflowError` when the product's limb count could exceed `LIMBS`.
+@track_caller
+routine BigNat[LIMBS].set_product(me: @Me, a: @Me, b: @Me) -> None
+needs LIMBS: USize
+    local a_count: USize = a.count.peek()
+    local b_count: USize = b.count.peek()
+    local count: USize = a_count + b_count
+    local carry: @U128 <- .hollow()
+
+    if count <= LIMBS
+        each i in 0 til count
+            me.limbs[i] = 0
+        # row i adds a[i] × b at limb i
+        each i in 0 til a_count
+            a_limb: U64 = a.limbs[i]
+            0.poke_into(carry)
+
+            each j in 0 til b_count
+                # limb + a × b + carry < 2^128 for 64-bit a, b, limb, and carry
+                at: USize = i + j
+                b_limb: U64 = b.limbs[j]
+                limb: U64 = me.limbs[at]
+                product: U128 = a_limb.mul_wide(b_limb)
+                sum: U128 = product + limb.to[U128]() + carry.peek()
+                me.limbs[at] = sum.to_wrap[U64]()
+                (sum >> 64).poke_into(carry)
+            then
+                me.limbs[i + b_count] = carry.peek().to[U64]()
+                continue
+        me.count.poke(count)
+        me.trim()
+        return
+    else
+        crash_overflow()
+
+### The 128 bits of `me` from bit `pos` up (zeros past the top).
+### :param pos: The lowest bit to take.
+### :returns: The 128 bits.
+routine BigNat[LIMBS].bits128(me: @Me, pos: USize) -> U128
+needs LIMBS: USize
+    at: USize = pos // 64
+    offset: U128 = (pos % 64).to[U128]()
+    l0: U128 = me.limb_or_zero(at).to[U128]()
+    l1: U128 = me.limb_or_zero(at + 1).to[U128]()
+    l2: U128 = me.limb_or_zero(at + 2).to[U128]()
+    pair: U128 = (l1 << 64) | l0
+    low: U128 = pair >> offset
+    # two shifts, so a zero offset never shifts by 128
+    high: U128 = l2 << 127 - offset << 1
+    r: U128 = low | high
+    return r
+
+### Limb i of `me`, or 0 past its count.
+### :param i: The limb's index.
+### :returns: The limb.
+routine BigNat[LIMBS].limb_or_zero(me: @Me, i: USize) -> U64
+needs LIMBS: USize
+    count: USize = me.count.peek()
+    if i < count
+        limb: U64 = me.limbs[i]
+        return limb
+    else
+        return 0
+
+### n × 2^e rounded once to B128 (n > 0).
+### :param n: The magnitude.
+### :param e: The power of two it is scaled by.
+### :param negative: The result's sign.
+### :returns: The rounded B128.
+routine big_to_b128(n: @BigNat[24], e: S64, negative: Bool) -> B128
+    length: USize = n.bit_length()
+    shift: USize = length -^ 125
+    sticky: Bool = n.has_any_below(shift)
+    top: U128 = n.bits128(shift)
+    sig: U128 = top | sticky.to[U128]()
+    shifted: S64 = e + shift.to[S64]()
+    exponent: S64 = shifted + B128_BIAS + 115
+    bits: U128 = b128_round_pack(negative, exponent, sig)
+    r: B128 = b128_of(bits)
+    return r
+
+### (num / den) × 2^scale rounded once to B128: a 126- or 127-bit quotient with the remainder as the sticky bit.
+### Both operands are consumed.
+### :param num: The numerator's magnitude.
+### :param den: The denominator's magnitude, nonzero.
+### :param scale: The quotient's power of two: the numerator's minus the denominator's.
+### :param negative: The result's sign.
+### :returns: The rounded B128.
+routine big_quotient_to_b128(num: @BigNat[24], den: @BigNat[24], scale: S64, negative: Bool) -> B128
+    local den_bits: S64 = den.bit_length().to[S64]()
+    local num_bits: S64 = num.bit_length().to[S64]()
+    local shift: S64 = 126 + den_bits - num_bits
+
+    if shift >= 0
+        num.shl(shift.to[USize]())
+    else
+        den.shl(shift.abs_diff(0).to[USize]())
+    local scratch: @BigNat[24] <- .hollow()
+    q: U128 = num.div_small(divisor: den, scratch, bits: 127)
+    sticky: Bool = not num.is_zero()
+    sig: U128 = q | sticky.to[U128]()
+    quotient_e: S64 = scale - shift
+    exponent: S64 = quotient_e + B128_BIAS + 115
+    bits: U128 = b128_round_pack(negative, exponent, sig)
+    r: B128 = b128_of(bits)
+    return r
+
+### Sets `out` to Σ (-u)^k / (j0 (j0 + 1) … (j0 + 2k - 1)) in fixed point with 2^384 as 1: j0 = 2 gives
+### sin θ / θ, j0 = 1 gives cos θ, for u = θ² <= (π/4)². Each term is off by under 1.5 units (one rounding, one
+### truncation). The sum takes about 50 terms.
+### :param out: The sum.
+### :param u: θ² in fixed point.
+### :param j0: 2 for the sine series, 1 for the cosine.
+routine big_trig_series(out: @BigNat[24], u: @BigNat[24], j0: U64) -> None
+    local term: @BigNat[24] <- .hollow()
+    local product: @BigNat[24] <- .hollow()
+    local minus: @BigNat[24] <- .hollow()
+    local j: @U64 <- j0
+
+    one: U64 = 1
+    term.set(one)
+    term.shl(PI_FIXED_BITS.to[USize]())
+    out.copy_from(term)
+    minus.set(U64.MIN)
+
+    # term ← term × u / (j (j + 1)), and the signs alternate, starting with minus
+    while true with subtract: Bool = true
+        product.set_product(a: term, b: u)
+        product.shr_round_even(PI_FIXED_BITS.to[USize]())
+        term.copy_from(product)
+        divisor: U64 = j.peek() * (j.peek() + 1)
+        dropped: U64 = term.div_limb(divisor)
+        if term.is_zero()
+            break
+        else if subtract
+            minus.add(term)
+            (j.peek() + 2).poke_into(j)
+            continue with subtract: false
+        else
+            out.add(term)
+            (j.peek() + 2).poke_into(j)
+            continue with subtract: true
+    out.sub(minus)
+    return
+
+### The exact tier's result from θ = d π/2 (d nonzero, |d| <= 1/2) in fixed point. With |d| = m × 2^(e - 112)
+### and T = floor(π 2^384) × m, |θ| = T × 2^(e - 113 - 384). Then sin θ = |θ| × S × 2^-384 and
+### cos θ = C × 2^-384 for the series S and C.
+### :param d: The reduced argument.
+### :param pick: Which function of θ, and its sign.
+### :returns: The result, rounded once.
+routine b128_pi_trig_exact(d: B128, pick: PiPick) -> B128
+    local p: B128Parts = b128_unpack(d.bits())
+    local pi: @BigNat[24] <- .hollow()
+    local c: @BigNat[24] <- .hollow()
+    local sin: @BigNat[24] <- .hollow()
+
+    pi.set(U64.MIN)
+
+    each i in 0 til 7
+        limb: U64 = PI_FIXED_384.getitem(i)
+        pi.push_limb(limb)
+    local m: @BigNat[24] <- .hollow()
+    local t: @BigNat[24] <- .hollow()
+    local theta: @BigNat[24] <- .hollow()
+    local u: @BigNat[24] <- .hollow()
+    local s: @BigNat[24] <- .hollow()
+    m.set(p.sig)
+    t.set_product(a: pi, b: m)
+    # θ in fixed point (for u only, where its relative accuracy doesn't matter)
+    theta.copy_from(t)
+    theta.shr_round_even((113 - p.exponent).to[USize]())
+    u.set_product(a: theta, b: theta)
+    u.shr_round_even(PI_FIXED_BITS.to[USize]())
+    big_trig_series(out: s, u, j0: 2)
+    big_trig_series(out: c, u, j0: 1)
+    sin.set_product(a: t, b: s)
+    sig_e: S64 = p.exponent - 113
+    sin_e: S64 = sig_e - PI_FIXED_BITS - PI_FIXED_BITS
+    cos_e: S64 = 0 - PI_FIXED_BITS
+    # sin θ has θ's sign: it flips the result when sin θ is on top or below
+    theta_negative: Bool = b128_is_negative_bits(d.bits())
+    sin_used: Bool = pick.over_sin | pick.divide
+    flip: Bool = theta_negative and sin_used
+    negative: Bool = pick.negative ^ flip
+    tan: Bool = pick.divide
+    when
+        tan =>
+            if pick.over_sin
+                r: B128 = big_quotient_to_b128(num: sin, den: c, scale: sin_e - cos_e, negative)
+                return r
+            else
+                r: B128 = big_quotient_to_b128(num: c, den: sin, scale: cos_e - sin_e, negative)
+                return r
+        pick.over_sin => return big_to_b128(n: sin, e: sin_e, negative)
+        else => return big_to_b128(n: c, e: cos_e, negative)
+
+# -- the two tiers -------------------------------------------------------------
+
+### sin, cos, or tan of π x for a finite non-integer x that is not a half-integer (and for tan not a
+### quarter-integer).
+### :param red: The exact reduction of x.
+### :param kind: The function.
+### :param exact: True skips the fast tier (the tests use it to check the exact tier on its own).
+### :returns: The correctly rounded result.
+routine b128_pi_trig_general(red: PiReduced, kind: TrigKind, exact: Bool) -> B128
+    local pick: PiPick = b128_pi_pick(quadrant: red.quadrant, kind)
+
+    if not exact
+        w: B128Extended = wide_pi_trig(d: red.d, pick)
+        rounded: WideRounding = wide_round_within(u: w, k: B128_PI_BAND)
+        if rounded.ok
+            return rounded.value
+    r: B128 = b128_pi_trig_exact(d: red.d, pick)
+    return r
+
+# -- sin_pi, cos_pi, tan_pi ----------------------------------------------------
+
+### sin(π me), correctly rounded: ±0 (me's sign) at the integers, ±1 at the half-integers, NaN for
+### infinities. A NaN comes back quieted.
+### :returns: sin(π `me`).
+routine B128.sin_pi(me: Me) -> Me
+    r: Me = b128_sin_pi(x: me, exact: false)
+    return r
+
+### cos(π me), correctly rounded: ±1 at the integers, +0 at the half-integers, NaN for infinities. A NaN
+### comes back quieted.
+### :returns: cos(π `me`).
+routine B128.cos_pi(me: Me) -> Me
+    r: Me = b128_cos_pi(x: me, exact: false)
+    return r
+
+### tan(π me), correctly rounded. At an integer n it is +0 for a positive even n or a negative odd one and -0
+### otherwise. At n + 1/2 it is +inf for an even n and -inf for an odd one (IEEE 754 tanPi, C23 tanpi). It is
+### NaN for infinities, and a NaN comes back quieted.
+### :returns: tan(π `me`).
+routine B128.tan_pi(me: Me) -> Me
+    r: Me = b128_tan_pi(x: me, exact: false)
+    return r
+
+### sin(π x), correctly rounded, as {B128.sin_pi}.
+### :param x: The argument.
+### :param exact: True skips the fast tier.
+### :returns: sin(π x).
+routine b128_sin_pi(x: B128, exact: Bool) -> B128
+    bits: U128 = x.bits()
+    nan: Bool = b128_is_nan_bits(bits)
+    infinite: Bool = x.is_infinite()
+    integer: Bool = x.trunc() == x  # zeros too
+    zero: B128 = b128_of(bits & B128_SIGN)
+    when
+        nan => return b128_of(b128_quiet(bits))
+        infinite => return B128.NAN
+        integer => return zero
+        else =>
+            red: PiReduced = b128_pi_reduce(x)
+            if b128_is_zero_bits(red.d.bits())
+                # sin at n + 1/2 is 1 in quadrant 1 and -1 in quadrant 3
+                one: B128 = b128_of(B128_ONE)
+                r: B128 = when
+                    red.quadrant == 1 => one
+                    else => -one
+                return r
+            else
+                r: B128 = b128_pi_trig_general(red, kind: TrigKind.SIN, exact)
+                return r
+
+### cos(π x), correctly rounded, as {B128.cos_pi}.
+### :param x: The argument.
+### :param exact: True skips the fast tier.
+### :returns: cos(π x).
+routine b128_cos_pi(x: B128, exact: Bool) -> B128
+    bits: U128 = x.bits()
+    nan: Bool = b128_is_nan_bits(bits)
+    infinite: Bool = x.is_infinite()
+    when
+        nan => return b128_of(b128_quiet(bits))
+        infinite => return B128.NAN
+        x.trunc() == x =>
+            one: B128 = b128_of(B128_ONE)
+            odd: Bool = b128_integer_is_odd(x)
+            r: B128 = when
+                odd => -one
+                else => one
+            return r
+        else =>
+            red: PiReduced = b128_pi_reduce(x)
+            half: Bool = b128_is_zero_bits(red.d.bits())
+            zero: B128 = b128_of(0)
+            if half
+                return zero
+            r: B128 = b128_pi_trig_general(red, kind: TrigKind.COS, exact)
+            return r
+
+### tan(π x), correctly rounded, as {B128.tan_pi}.
+### :param x: The argument.
+### :param exact: True skips the fast tier.
+### :returns: tan(π x).
+routine b128_tan_pi(x: B128, exact: Bool) -> B128
+    bits: U128 = x.bits()
+    nan: Bool = b128_is_nan_bits(bits)
+    infinite: Bool = x.is_infinite()
+    when
+        nan => return b128_of(b128_quiet(bits))
+        infinite => return B128.NAN
+        x.trunc() == x =>
+            # the sign of x, flipped for odd n
+            odd: Bool = b128_integer_is_odd(x)
+            negative: Bool = b128_is_negative_bits(x.bits()) ^ odd
+            sign: U128 = when
+                negative => B128_SIGN
+                else => 0
+            r: B128 = b128_of(sign)
+            return r
+        else =>
+            red: PiReduced = b128_pi_reduce(x)
+            half: Bool = b128_is_zero_bits(red.d.bits())
+            abs_d: B128 = red.d.abs()
+            # |d| = 1/2
+            when
+                half =>
+                    # n + 1/2 has 2x = 2n + 1: quadrant 1 for an even n, 3 for an odd one
+                    r: B128 = when
+                        red.quadrant == 1 => B128.INFINITY
+                        else => B128.NEG_INFINITY
+                    return r
+                abs_d.bits() == 0x3FFE0000000000000000000000000000 =>
+                    # θ = ±π/4: tan θ = sign(d) in even quadrants, -cot θ = -sign(d) in odd ones
+                    one: B128 = b128_of(B128_ONE)
+                    odd: Bool = red.quadrant & 1 == 1
+                    negative: Bool = b128_is_negative_bits(red.d.bits()) ^ odd
+                    r: B128 = when
+                        negative => -one
+                        else => one
+                    return r
+                else =>
+                    r: B128 = b128_pi_trig_general(red, kind: TrigKind.TAN, exact)
+                    return r

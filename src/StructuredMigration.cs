@@ -93,7 +93,7 @@ public static class StructuredMigration
         {
             own = new HashSet<string>(_stdlibPositional);
             // A page's examples see the standard library's routines, not a lexed page.
-            if (File.Exists(file) && file.EndsWith(".tess", StringComparison.Ordinal)) Collect(file, File.ReadAllText(file), own);
+            if (File.Exists(file) && file.EndsWith(".te", StringComparison.Ordinal)) Collect(file, File.ReadAllText(file), own);
             PositionalByFile[file] = own;
         }
         return own;

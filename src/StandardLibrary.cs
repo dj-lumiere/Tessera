@@ -23,13 +23,13 @@ public static class StandardLibrary
     /// The stdlib files parsed so far in this process, by full path.
     private static readonly ConcurrentDictionary<string, ParsedFile> Parsed = new(StringComparer.OrdinalIgnoreCase);
 
-    /// The declarations of every `.tess` file under `directory`, in the order of the files' full paths, so they come
-    /// out the same on every run. Each file is named from the directory (`Standard/Collection/List.tess`) wherever the
+    /// The declarations of every `.te` file under `directory`, in the order of the files' full paths, so they come
+    /// out the same on every run. Each file is named from the directory (`Standard/Collection/List.te`) wherever the
     /// build runs. The files are parsed in parallel, those parsed before and unchanged since taken as they were. The
     /// first file in that order that fails to parse is the one reported, as if they had been parsed one after another.
     public static List<Decl> Load(string directory)
     {
-        var files = new DirectoryInfo(directory).GetFiles("*.tess", SearchOption.AllDirectories)
+        var files = new DirectoryInfo(directory).GetFiles("*.te", SearchOption.AllDirectories)
             .OrderBy(f => f.FullName, StringComparer.Ordinal)
             .ToList();
         var parsed = new List<Decl>?[files.Count];

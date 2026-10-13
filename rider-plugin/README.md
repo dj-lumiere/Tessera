@@ -1,6 +1,6 @@
 # Tessera for Rider
 
-A Rider plugin for Tessera (`.tess`): syntax highlighting from `../Tessera.tmbundle`, `//` comment toggling and
+A Rider plugin for Tessera (`.te`): syntax highlighting from `../Tessera.tmbundle`, `//` comment toggling and
 bracket pairing (`bundle/`), the Tessera file icon, and the Tessera language server (`tessera lsp`): the builder's errors
 and style warnings as you type, semantic colors, hover (declaration, `///` doc, and what each type parameter stands for), go to
 definition, the file structure view, and

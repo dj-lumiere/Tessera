@@ -1,0 +1,1147 @@
+# Tessera stdlib: running another program on Windows (see Process.te)
+#
+# CreateProcessW with a command line quoted so the child's CommandLineToArgvW reads back each argument as it was
+# given, and, with overrides, a Unicode environment block: this process's variables (from GetEnvironmentStringsW,
+# so nothing is lost to a code page) with the overridden ones replaced, names compared without case as Windows does,
+# sorted as Windows wants. The child's three standard handles are always given: a pipe, the null device, or a
+# duplicate of this process's own. When both output streams are captured, a helper thread reads standard error into
+# the malloc heap (the caller's allocator may not be safe to share between threads) while this thread reads standard
+# output.
+
+module Standard/Os
+
+import Standard/Alloc
+
+### SECURITY_ATTRIBUTES
+@target(os: "windows")
+private record SecurityAttributes
+    length: U32
+    descriptor: Addr
+    inherit_handle: CInt
+
+### STARTUPINFOW
+@target(os: "windows")
+private record StartupInfo
+    cb: U32
+    reserved: Addr
+    desktop: Addr
+    title: Addr
+    x: U32
+    y: U32
+    x_size: U32
+    y_size: U32
+    x_count_chars: U32
+    y_count_chars: U32
+    fill_attribute: U32
+    flags: U32
+    show_window: U16
+    cb_reserved2: U16
+    reserved2: Addr
+    std_input: Addr
+    std_output: Addr
+    std_error: Addr
+
+### PROCESS_INFORMATION
+@target(os: "windows")
+private record ProcessInformation
+    process: Addr
+    thread: Addr
+    process_id: U32
+    thread_id: U32
+
+### Makes a `SecurityAttributes` from its fields.
+### :param length: Its `length`.
+### :param descriptor: Its `descriptor`.
+### :param inherit_handle: Its `inherit_handle`.
+### :returns: The new value.
+@target(os: "windows")
+private routine SecurityAttributes.construct(length: U32, descriptor: Addr,
+    inherit_handle: CInt) -> Me
+    return Me(length, descriptor, inherit_handle)
+
+### Releases nothing: a `SecurityAttributes` holds no memory of its own.
+@target(os: "windows")
+private routine SecurityAttributes.destruct(me: @Me) -> None
+    return
+
+### Makes a `StartupInfo` from its fields.
+### :param cb: Its `cb`.
+### :param reserved: Its `reserved`.
+### :param desktop: Its `desktop`.
+### :param title: Its `title`.
+### :param x: Its `x`.
+### :param y: Its `y`.
+### :param x_size: Its `x_size`.
+### :param y_size: Its `y_size`.
+### :param x_count_chars: Its `x_count_chars`.
+### :param y_count_chars: Its `y_count_chars`.
+### :param fill_attribute: Its `fill_attribute`.
+### :param flags: Its `flags`.
+### :param show_window: Its `show_window`.
+### :param cb_reserved2: Its `cb_reserved2`.
+### :param reserved2: Its `reserved2`.
+### :param std_input: Its `std_input`.
+### :param std_output: Its `std_output`.
+### :param std_error: Its `std_error`.
+### :returns: The new value.
+@target(os: "windows")
+private routine StartupInfo.construct(cb: U32, reserved: Addr, desktop: Addr, title: Addr, x: U32,
+    y: U32, x_size: U32, y_size: U32, x_count_chars: U32, y_count_chars: U32, fill_attribute: U32,
+    flags: U32, show_window: U16, cb_reserved2: U16, reserved2: Addr, std_input: Addr,
+    std_output: Addr, std_error: Addr) -> Me
+    return Me(cb, reserved, desktop, title, x, y, x_size, y_size, x_count_chars, y_count_chars,
+        fill_attribute, flags, show_window, cb_reserved2, reserved2, std_input, std_output,
+        std_error)
+
+### Releases nothing: a `StartupInfo` holds no memory of its own.
+@target(os: "windows")
+private routine StartupInfo.destruct(me: @Me) -> None
+    return
+
+### Makes a `ProcessInformation` from its fields.
+### :param process: Its `process`.
+### :param thread: Its `thread`.
+### :param process_id: Its `process_id`.
+### :param thread_id: Its `thread_id`.
+### :returns: The new value.
+@target(os: "windows")
+private routine ProcessInformation.construct(process: Addr, thread: Addr, process_id: U32,
+    thread_id: U32) -> Me
+    return Me(process, thread, process_id, thread_id)
+
+### Releases nothing: a `ProcessInformation` holds no memory of its own.
+@target(os: "windows")
+private routine ProcessInformation.destruct(me: @Me) -> None
+    return
+
+### Binds the Win32 `GetLastError` function.
+### :returns: The calling thread's last error code.
+@external("c")
+@symbol("GetLastError")
+@callconv("stdcall")
+@target(os: "windows")
+private routine c_get_last_error() -> U32
+
+### Binds the Win32 `SetLastError` function.
+### :param code: The error code to set as the calling thread's last error.
+@external("c")
+@symbol("SetLastError")
+@callconv("stdcall")
+@target(os: "windows")
+private routine c_set_last_error(code: U32) -> None
+
+### Binds the Win32 `CreateFileW` function, which opens or creates a file or device.
+### :param name: The path, UTF-16 and 0-terminated.
+### :param access: The `GENERIC_*` access wanted.
+### :param share: The `FILE_SHARE_*` sharing allowed.
+### :param security: The security attributes, which say whether the handle is inheritable.
+### :param disposition: What to do when the file exists or doesn't, such as `OPEN_EXISTING`.
+### :param flags: The `FILE_ATTRIBUTE_*` and `FILE_FLAG_*` flags.
+### :param template: A template file handle, or null.
+### :returns: The handle, or INVALID_HANDLE_VALUE with the last error set.
+@external("c")
+@symbol("CreateFileW")
+@callconv("stdcall")
+@target(os: "windows")
+private routine c_create_file(name: @U16, access: U32, share: U32, security: @SecurityAttributes,
+    disposition: U32, flags: U32, template: Addr) -> Addr
+
+### Binds the Win32 `CreatePipe` function, which makes an anonymous pipe.
+### :param read: Where the read end's handle goes.
+### :param write: Where the write end's handle goes.
+### :param security: The security attributes, which say whether the handles are inheritable.
+### :param size: The buffer size in bytes, 0 for the default.
+### :returns: Nonzero on success, 0 with the last error set.
+@external("c")
+@symbol("CreatePipe")
+@callconv("stdcall")
+@target(os: "windows")
+private routine c_create_pipe(read: @Addr, write: @Addr, security: @SecurityAttributes,
+    size: U32) -> CInt
+
+### Binds the Win32 `SetHandleInformation` function, which sets a handle's flags.
+### :param handle: The handle.
+### :param mask: The flags to change, such as `HANDLE_FLAG_INHERIT`.
+### :param flags: The new values of the flags in `mask`.
+### :returns: Nonzero on success, 0 with the last error set.
+@external("c")
+@symbol("SetHandleInformation")
+@callconv("stdcall")
+@target(os: "windows")
+private routine c_set_handle_information(handle: Addr, mask: U32, flags: U32) -> CInt
+
+### Binds the Win32 `GetStdHandle` function, which gives one of the process's standard handles.
+### :param which: `STD_INPUT_HANDLE`, `STD_OUTPUT_HANDLE`, or `STD_ERROR_HANDLE`.
+### :returns: The handle, null when there is none, or INVALID_HANDLE_VALUE with the last error set.
+@external("c")
+@symbol("GetStdHandle")
+@callconv("stdcall")
+@target(os: "windows")
+private routine c_get_std_handle(which: U32) -> Addr
+
+### Binds the Win32 `GetCurrentProcess` function.
+### :returns: The pseudo-handle of the current process (needs no closing).
+@external("c")
+@symbol("GetCurrentProcess")
+@callconv("stdcall")
+@target(os: "windows")
+private routine c_get_current_process() -> Addr
+
+### Binds the Win32 `DuplicateHandle` function, which copies a handle from one process into another.
+### :param from_process: The process that owns `handle`.
+### :param handle: The handle to copy.
+### :param to_process: The process that gets the copy.
+### :param copy: Where the copy goes.
+### :param access: The access the copy has (ignored with `DUPLICATE_SAME_ACCESS`).
+### :param inherit: Nonzero to make the copy inheritable.
+### :param options: The `DUPLICATE_*` flags.
+### :returns: Nonzero on success, 0 with the last error set.
+@external("c")
+@symbol("DuplicateHandle")
+@callconv("stdcall")
+@target(os: "windows")
+private routine c_duplicate_handle(from_process: Addr, handle: Addr, to_process: Addr, copy: @Addr,
+    access: U32, inherit: CInt, options: U32) -> CInt
+
+### Binds the Win32 `CreateProcessW` function, which starts a program.
+### :param application: The program's path, or null to take it from `command_line`.
+### :param command_line: The command line, UTF-16 and 0-terminated (the call may write to it).
+### :param process_attrs: The process handle's security attributes, or null.
+### :param thread_attrs: The thread handle's security attributes, or null.
+### :param inherit: Nonzero for the child to inherit this process's inheritable handles.
+### :param flags: The creation flags, such as `CREATE_UNICODE_ENVIRONMENT`.
+### :param environment: The environment block, or null to inherit this process's.
+### :param directory: The child's working directory, UTF-16 and 0-terminated, or null for this process's.
+### :param startup: The window and standard handle settings.
+### :param info: Where the process and thread handles and ids go.
+### :returns: Nonzero on success, 0 with the last error set.
+@external("c")
+@symbol("CreateProcessW")
+@callconv("stdcall")
+@target(os: "windows")
+private routine c_create_process(application: Addr, command_line: @U16, process_attrs: Addr,
+    thread_attrs: Addr, inherit: CInt, flags: U32, environment: Addr, directory: @U16,
+    startup: @StartupInfo, info: @ProcessInformation) -> CInt
+
+### Binds the Win32 `ReadFile` function, which reads bytes from a file or pipe.
+### :param handle: The handle to read from.
+### :param buffer: Where the bytes go.
+### :param size: The most bytes to read.
+### :param read: Where the number of bytes read goes (0 at end of input).
+### :param overlapped: Null for a synchronous read.
+### :returns: Nonzero on success, 0 with the last error set (a pipe whose writer closed reports this too).
+@external("c")
+@symbol("ReadFile")
+@callconv("stdcall")
+@target(os: "windows")
+private routine c_read_file(handle: Addr, buffer: @Byte, size: U32, read: @U32,
+    overlapped: Addr) -> CInt
+
+### Binds the Win32 `WaitForSingleObject` function, which waits until an object is signaled.
+### :param handle: The object, such as a process.
+### :param millis: The longest wait in milliseconds, `INFINITE` (U32 MAX) for no limit.
+### :returns: `WAIT_OBJECT_0`, `WAIT_TIMEOUT`, or `WAIT_FAILED` with the last error set.
+@external("c")
+@symbol("WaitForSingleObject")
+@callconv("stdcall")
+@target(os: "windows")
+private routine c_wait_for_single_object(handle: Addr, millis: U32) -> U32
+
+### Binds the Win32 `GetExitCodeProcess` function, which reads a process's exit code.
+### :param process: The process.
+### :param code: Where the exit code goes (`STILL_ACTIVE` while it runs).
+### :returns: Nonzero on success, 0 with the last error set.
+@external("c")
+@symbol("GetExitCodeProcess")
+@callconv("stdcall")
+@target(os: "windows")
+private routine c_get_exit_code_process(process: Addr, code: @U32) -> CInt
+
+### Binds the Win32 `CloseHandle` function, which closes a handle.
+### :param handle: The handle.
+### :returns: Nonzero on success, 0 with the last error set.
+@external("c")
+@symbol("CloseHandle")
+@callconv("stdcall")
+@target(os: "windows")
+private routine c_close_handle(handle: Addr) -> CInt
+
+### Binds the Win32 `GetEnvironmentStringsW` function, which copies the process's environment block.
+### :returns: The block ("NAME=VALUE" strings, each 0-terminated, then an empty one), or null on failure. Free it with
+###     `FreeEnvironmentStringsW`.
+@external("c")
+@symbol("GetEnvironmentStringsW")
+@callconv("stdcall")
+@target(os: "windows")
+private routine c_get_environment_strings() -> @U16
+
+### Binds the Win32 `FreeEnvironmentStringsW` function, which frees a block from `GetEnvironmentStringsW`.
+### :param strings: The block.
+### :returns: Nonzero on success, 0 with the last error set.
+@external("c")
+@symbol("FreeEnvironmentStringsW")
+@callconv("stdcall")
+@target(os: "windows")
+private routine c_free_environment_strings(strings: @U16) -> CInt
+
+### Binds the Win32 `GetEnvironmentVariableW` function, which looks up an environment variable.
+### :param name: The variable's name, UTF-16 and 0-terminated.
+### :param buffer: Where the value goes, or null to ask for the size.
+### :param size: The units `buffer` has room for, the terminating 0 included.
+### :returns: The value's units without the 0 when it fit, the units needed with the 0 when it didn't, or 0 with the
+###     last error set (`ERROR_ENVVAR_NOT_FOUND` when it isn't set).
+@external("c")
+@symbol("GetEnvironmentVariableW")
+@callconv("stdcall")
+@target(os: "windows")
+private routine c_get_environment_variable(name: @U16, buffer: @U16, size: U32) -> U32
+
+### The {ProcessError} for the Win32 error code a failed start reported.
+### :param e: The error code.
+### :returns: NotFound, PermissionDenied, OutOfMemory, or InvalidArgument for those errors, else Other.
+@target(os: "windows")
+private routine spawn_error(e: U32) -> ProcessError
+    when e
+        2, 3, 267 => return ProcessError.NOT_FOUND
+        5 => return ProcessError.PERMISSION_DENIED
+        8, 14 => return ProcessError.OUT_OF_MEMORY
+        123, 87 => return ProcessError.INVALID_ARGUMENT
+        else => return ProcessError.OTHER
+
+### Whether `h` is null or INVALID_HANDLE_VALUE.
+### :param h: The handle to test.
+### :returns: `true` when it holds no usable handle.
+@target(os: "windows")
+private routine is_invalid(h: Addr) -> Bool
+    return h.is_null() or ptrtoint[Addr, USize](h) == USize.MAX
+
+### Whether two handles are the same value.
+### :param a: One handle.
+### :param b: The other.
+### :returns: `true` when they are equal.
+@target(os: "windows")
+private routine same(a: Addr, b: Addr) -> Bool
+    return ptrtoint[Addr, USize](a) == ptrtoint[Addr, USize](b)
+
+### Closes `h` unless it holds no usable handle.
+### :param h: The handle, or null or INVALID_HANDLE_VALUE for none.
+@target(os: "windows")
+private routine close_if_open(h: Addr) -> None
+    if is_invalid(h)
+        return
+    c_close_handle(h)
+    return
+
+### `text` as UTF-16 with a 0 after it, in memory from `alloc`.
+### :param text: The UTF-8 text.
+### :param alloc: The allocator for the units.
+### :returns: The units and their count without the 0, or null and 0 when `text` has a NUL or the allocation fails.
+@target(os: "windows")
+private routine utf16(text: Span[Byte], alloc: @MemoryManager) -> (@U16, USize)
+    local units: @U16 = allocate[U16](count: text.count() + 1, alloc)
+
+    if units.is_null()
+        return (null, 0)
+    n: Maybe[USize] = encode_utf16(text, out: units, capacity: text.count() + 1)
+    when n
+        is USize as count => return (units, count)
+        is None =>
+            deallocate(data: units, alloc)
+            return (null, 0)
+
+# -- the command line --------------------------------------------------------------------
+
+### Whether one of the units of `s` is `a`, `b`, or `c`.
+### :param s: The units to look at.
+### :param a: One unit to look for.
+### :param b: Another unit to look for.
+### :param c: A third unit to look for.
+### :returns: True when one of them is there.
+@target(os: "windows")
+private routine has_any(s: Span[U16], a: U16, b: U16, c: U16) -> Bool
+    local n: USize = s.count()
+
+    each i in 0 til n
+        u: U16 = s[i]
+        if u == a or u == b or u == c
+            return true
+        else
+            continue
+    then
+        return false
+
+### Writes one argument at `target` as CommandLineToArgvW reads it back, quoted only when it has to be (empty, or
+### holding a space, a tab, or a quote).
+### :param source: The argument's first UTF-16 unit.
+### :param n: How many units the argument has.
+### :param target: Where it is written, with room for 2 * `n` + 2 units.
+### :returns: The unit just after what was written.
+@target(os: "windows")
+private routine quote_arg(source: @U16, n: USize, target: @U16) -> @U16
+    local start: @U16 = target.stride(1)
+    local units: Span[U16] = Span[U16].construct(data: source, count: n)
+
+    if n == 0
+        # ' ', '\t', '"'
+        # '"', '\\'
+        target.poke(34)
+        target.stride(1).poke(34)
+        return target.stride(2)
+    else if not has_any(s: units, a: 32, b: 9, c: 34)
+        target.copy(src: source, count: n)
+        return target.stride(n)
+    else if has_any(s: units, a: 34, b: 92, c: 34)
+        # Backslashes before a quote, or before the closing quote, are doubled, and a quote gets a backslash: built
+        # backwards, then reversed.
+        target.poke(34)
+
+        while i != 0 with i: USize = n, at: @U16 = start, before_quote: Bool = true
+            u: U16 = source.stride(i - 1).peek()
+            at.poke(u)
+            if (before_quote and u == 92) or u == 34
+                at.stride(1).poke(92)
+                continue with i: i - 1, at: at.stride(2), before_quote: true
+            else
+                continue with i: i - 1, at: at.stride(1), before_quote: false
+        then
+            end: @U16 = at
+
+            while ptrtoint[@U16, USize](a) < ptrtoint[@U16, USize](b) with a: @U16 = start, b: @U16 = at.stride(-1)
+                t: U16 = a.peek()
+                a.poke(b.peek())
+                b.poke(t)
+                continue with a: a.stride(1), b: b.stride(-1)
+            then
+                end.poke(34)
+                return end.stride(1)
+    else
+        target.poke(34)
+        target.stride(1).copy(src: source, count: n)
+        target.stride(n + 1).poke(34)
+        return target.stride(n + 2)
+
+### The program and the arguments as one 0-terminated UTF-16 command line, each quoted by {quote_arg}, in memory from
+### `alloc`.
+### :param program: The program to run.
+### :param args: The arguments, not including the program name.
+### :param alloc: The allocator for the line and the working memory.
+### :returns: The command line, or null when an allocation fails (the texts were checked for a NUL before).
+@target(os: "windows")
+private routine command_line(program: Span[Byte], args: Span[Span[Byte]],
+    alloc: @MemoryManager) -> @U16
+    local arg_count: USize = args.count()
+    local at: @@U16 <- .hollow()
+
+    program_bound: USize = program.count() * 2
+
+    # A UTF-8 byte count bounds the UTF-16 unit count, so 2 * bytes + 3 units bound an argument and its space.
+    each i in 0 til arg_count with capacity: USize = program_bound + 3
+        argument: Span[Byte] = args[i]
+        continue with capacity: capacity + argument.count() * 2 + 3
+    then
+        line: @U16 = allocate[U16](count: capacity + 1, alloc)
+        if line.is_null()
+            return null
+        line.poke_into(at)
+        # 0 is the program, i the argument i - 1.
+        each i2 in 0 to arg_count
+            arg: Span[Byte] = when
+                i2 == 0 => program
+                else => args[i2 - 1]
+            units, n = utf16(text: arg, alloc)
+            if units.is_null()
+                deallocate(data: line, alloc)
+                return null
+            else
+                if not (i2 == 0)
+                    at.peek().poke(32)
+                    at.peek().stride(1).poke_into(at)
+                end: @U16 = quote_arg(source: units, n, target: at.peek())
+                deallocate(data: units, alloc)
+                end.poke_into(at)
+                continue
+        then
+            at.peek().poke(0)
+            return line
+
+# -- the environment block ---------------------------------------------------------------
+
+### The units of a "NAME=VALUE" entry before its '=' (a leading '=' belongs to the name, as in "=C:=C:\\").
+### :param entry: The entry, 0-terminated and not empty.
+### :returns: The name's length in units (the whole entry's when it has no '=').
+@target(os: "windows")
+private routine key_units(entry: @U16) -> USize
+    while true with i: USize = 1
+        u2: U16 = entry.stride(i).peek()
+        if u2 == 0 or u2 == 61
+            return i
+        else
+            continue with i: i + 1
+
+### A UTF-16 unit with ASCII capitals lowered, for comparing environment names the way Windows does (without regard to
+### case).
+### :param u: The unit.
+### :returns: The lowered unit, or `u` when it isn't an ASCII capital.
+@target(os: "windows")
+private routine ascii_lower(u: U16) -> U16
+    if u.between(lo: 65, hi: 90)
+        return u + 32
+    else
+        return u
+
+### The order Windows keeps an environment block in: unit by unit with ASCII capitals lowered, over the whole
+### 0-terminated entry.
+### :param a: One entry.
+### :param b: The other entry.
+### :returns: True when `a` sorts before `b`.
+@target(os: "windows")
+private routine before(a: @U16, b: @U16) -> Bool
+    while true with i: USize = 0
+        x2: U16 = ascii_lower(a.stride(i).peek())
+        y2: U16 = ascii_lower(b.stride(i).peek())
+        if x2 != y2
+            return x2 < y2
+        if x2 == 0
+            return false
+        else
+            continue with i: i + 1
+
+### Whether the entry's name is the `n` units of `name`, ASCII letters in any case.
+### :param entry: A "NAME=VALUE" entry, 0-terminated.
+### :param name: The name's first unit.
+### :param n: How many units the name has.
+### :returns: True when the names match.
+@target(os: "windows")
+private routine names(entry: @U16, name: @U16, n: USize) -> Bool
+    if key_units(entry) == n
+        each i in 0 til n
+            if ascii_lower(entry.stride(i).peek()) == ascii_lower(name.stride(i).peek())
+                continue
+            else
+                return false
+        then
+            return true
+    else
+        return false
+
+### The units of a 0-terminated string, the 0 not counted.
+### :param s: The string.
+### :returns: Its length in units.
+@target(os: "windows")
+private routine units_of(s: @U16) -> USize
+    return wide_length(s)
+
+### One override as a 0-terminated "NAME=VALUE" UTF-16 string, in memory from `alloc`.
+### :param v: The override, its texts without a NUL (checked before).
+### :param alloc: The allocator for the string.
+### :returns: The string, or null when the allocation fails.
+@target(os: "windows")
+private routine env_entry_utf16(v: EnvVar, alloc: @MemoryManager) -> @U16
+    local room: USize = v.name.count() + v.value.count() + 2
+    local units: @U16 = allocate[U16](count: room, alloc)
+
+    if units.is_null()
+        return null
+    name_units: Maybe[USize] = encode_utf16(text: v.name, out: units, capacity: room)
+    when name_units
+        is USize as n =>
+            # '='
+            units.stride(n).poke(61)
+            value_units: Maybe[USize] = encode_utf16(text: v.value, out: units.stride(n + 1),
+                capacity: room - n - 1)
+            if value_units.is_present()
+                return units
+        is None => pass
+
+    # Not reached after the NUL check, which leaves the texts encodable in the room counted for them.
+    deallocate(data: units, alloc)
+    return null
+
+### The overrides as "NAME=VALUE" UTF-16 strings, in memory from `alloc`.
+### :param options: The environment overrides.
+### :param out: Where the strings go, room for one per override.
+### :param alloc: The allocator for the strings.
+### :returns: True when all were made, false (and the ones made so far freed) when an allocation fails.
+@target(os: "windows")
+private routine wide_overrides(options: ProcessOptions, out: @@U16, alloc: @MemoryManager) -> Bool
+    while i != options.env_count with i: USize = 0
+        v: EnvVar = options.env.stride(i).peek()
+        units: @U16 = env_entry_utf16(v, alloc)
+        if units.is_null()
+            while i2 != 0 with i2: USize = i
+                copy_slot: @@U16 = out.stride(i2 - 1)
+                deallocate(data: copy_slot.peek(), alloc)
+                continue with i2: i2 - 1
+            then
+                return false
+        else
+            out.stride(i).poke(units)
+            continue with i: i + 1
+    then
+        return true
+
+### This process's environment with the overrides applied, as a sorted block, in memory from `alloc`.
+### :param options: The environment overrides.
+### :param alloc: The allocator for the block and the working memory.
+### :returns: The UTF-16 environment block, or null when an allocation fails (the overrides were checked for a NUL
+###     before).
+@target(os: "windows")
+private routine env_block(options: ProcessOptions, alloc: @MemoryManager) -> @U16
+    local own: @@U16 = allocate[@U16](count: options.env_count.max(1), alloc)
+
+    if own.is_null()
+        return null
+    if not wide_overrides(options, out: own, alloc)
+        # A failure has freed the strings made so far, so only the array is left.
+        deallocate(data: own, alloc)
+        return null
+    parent: @U16 = c_get_environment_strings()
+    n: USize = count_block_entries(parent)
+    all: @@U16 = allocate[@U16](count: (n + options.env_count).max(1), alloc)
+    result: @U16 = when
+        all.is_null() => null
+        else =>
+            # The parent's entries no override names, then the overrides.
+            k: USize = keep_unnamed(all, parent, own, m: options.env_count)
+            each j in 0 til options.env_count
+                all.stride(k + j).poke(own.stride(j).peek())
+            total: USize = k + options.env_count
+            sort_entries(all, total)
+            becomes join_entries(all, total, alloc)
+    if not parent.is_null()
+        c_free_environment_strings(parent)
+    each j in 0 til options.env_count
+        own_slot: @@U16 = own.stride(j)
+        deallocate(data: own_slot.peek(), alloc)
+
+    # The arrays, each when it was made.
+    deallocate(data: own, alloc)
+    if not all.is_null()
+        deallocate(data: all, alloc)
+    return result
+
+### How many entries an environment block has: each ends with a 0, and an empty one ends the block.
+### :param parent: The block, or null for none.
+### :returns: The number of entries, 0 when `parent` is null.
+@target(os: "windows")
+private routine count_block_entries(parent: @U16) -> USize
+    until at.is_null() or at.peek() == 0 with at: @U16 = parent, n: USize = 0
+        continue with at: at.stride(units_of(at) + 1), n: n + 1
+    then
+        return n
+
+### Puts the entries of the environment block `parent` that no override names into `all`, in their order.
+### :param all: Where the entries go (pointers into `parent`), room for each.
+### :param parent: The environment block, or null for none.
+### :param own: The overrides as UTF-16 strings.
+### :param m: How many overrides `own` holds.
+### :returns: How many entries went into `all`.
+@target(os: "windows")
+private routine keep_unnamed(all: @@U16, parent: @U16, own: @@U16, m: USize) -> USize
+    until at.is_null() or at.peek() == 0 with at: @U16 = parent, k: USize = 0
+        next: @U16 = at.stride(units_of(at) + 1)
+        if is_overridden(entry: at, own, m)
+            continue with at: next, k: k
+        all.stride(k).poke(at)
+        continue with at: next, k: k + 1
+    then
+        return k
+
+### Sorts the first `total` entries of `all` in place with an insertion sort, in the order {before} gives.
+### :param all: The entries.
+### :param total: How many there are.
+@target(os: "windows")
+private routine sort_entries(all: @@U16, total: USize) -> None
+    while i < total with i: USize = 1
+        while j != 0 with j: USize = i
+            a: @U16 = all.stride(j - 1).peek()
+            b: @U16 = all.stride(j).peek()
+            if not before(a: b, b: a)
+                break
+            all.stride(j - 1).poke(b)
+            all.stride(j).poke(a)
+            continue with j: j - 1
+        continue with i: i + 1
+    return
+
+### Joins the first `total` entries of `all` into one environment block in memory from `alloc`: each entry with its
+### 0, then a 0 that ends the block.
+### :param all: The entries.
+### :param total: How many there are.
+### :param alloc: The allocator for the block.
+### :returns: The block, or null when its allocation fails.
+@target(os: "windows")
+private routine join_entries(all: @@U16, total: USize, alloc: @MemoryManager) -> @U16
+    each i in 0 til total with units: USize = 1
+        continue with units: units + units_of(all.stride(i).peek()) + 1
+    then
+        block_units: @U16 = allocate[U16](count: units, alloc)
+        if block_units.is_null()
+            return null
+        each i2 in 0 til total with at: @U16 = block_units
+            entry: @U16 = all.stride(i2).peek()
+            n: USize = units_of(entry) + 1
+            at.copy(src: entry, count: n)
+            continue with at: at.stride(n)
+        then
+            at.poke(0)
+            return block_units
+
+### Whether one of the `m` overrides ("NAME=VALUE" each) names the parent entry's variable, ASCII letters in any case.
+### :param entry: A "NAME=VALUE" entry of this process's environment.
+### :param own: The overrides as UTF-16 strings.
+### :param m: How many overrides `own` holds.
+### :returns: True when an override has the same name.
+@target(os: "windows")
+private routine is_overridden(entry: @U16, own: @@U16, m: USize) -> Bool
+    each j in 0 til m
+        o: @U16 = own.stride(j).peek()
+        if names(entry, name: o, n: key_units(o))
+            return true
+        else
+            continue
+    then
+        return false
+
+# -- running -----------------------------------------------------------------------------
+
+### What a helper thread reads standard error into: a buffer on the malloc heap, safe to fill from another thread.
+@target(os: "windows")
+private entity PipeReader
+    pipe: Addr
+    buffer: CaptureBuffer
+
+### The handles a run uses: null where it has none.
+@target(os: "windows")
+private record Handles
+    out_r: Addr
+    out_w: Addr
+    err_r: Addr
+    err_w: Addr
+    input: Addr  # what the child gets as each standard handle (owned here: closed after the start)
+    output: Addr
+    error: Addr
+    device: Addr  # the null device
+
+### What a start works with: the handles and the process (filled here, closed by the caller), the security attributes
+### for inheritable handles, the command line, the environment block (or null), and the starting directory (or null).
+@target(os: "windows")
+private record Launch
+    h: @Handles
+    pi: @ProcessInformation
+    sa: @SecurityAttributes
+    line: @U16
+    env: @U16
+    directory: @U16
+
+### Makes a `PipeReader` from its fields.
+### :param pipe: Its `pipe`.
+### :param buffer: Its `buffer`.
+### :returns: The new value.
+@target(os: "windows")
+private routine PipeReader.construct(pipe: Addr, buffer: CaptureBuffer) -> Me
+    return Me(pipe, buffer: steal buffer)
+
+### Gives the buffer's memory back.
+@target(os: "windows")
+private routine PipeReader.destruct(me: @Me) -> None
+    drop me.buffer
+    return
+
+### Makes a `Handles` from its fields.
+### :param out_r: Its `out_r`.
+### :param out_w: Its `out_w`.
+### :param err_r: Its `err_r`.
+### :param err_w: Its `err_w`.
+### :param input: Its `input`.
+### :param output: Its `output`.
+### :param error: Its `error`.
+### :param device: Its `device`.
+### :returns: The new value.
+@target(os: "windows")
+private routine Handles.construct(out_r: Addr, out_w: Addr, err_r: Addr, err_w: Addr, input: Addr,
+    output: Addr, error: Addr, device: Addr) -> Me
+    return Me(out_r, out_w, err_r, err_w, input, output, error, device)
+
+### Releases nothing: a `Handles` holds no memory of its own.
+@target(os: "windows")
+private routine Handles.destruct(me: @Me) -> None
+    return
+
+### No handles at all: what a run starts from, so closing them is right on every path.
+### :returns: The {Handles} with every handle null.
+@target(os: "windows")
+private routine Handles.empty() -> Me
+    return Me(out_r: null, out_w: null, err_r: null, err_w: null, input: null, output: null,
+        error: null, device: null)
+
+### Reads the pipe to its end into the reader's buffer, from the malloc heap. The buffer grows from DEFAULT_HEAP, which
+### lives as long as the program: the buffer keeps its manager's address and is given back after this routine returns.
+### :param r: The pipe and the buffer.
+@target(os: "windows")
+@reshaping(r)
+private routine read_pipe(r: @PipeReader) -> None
+    local n: @U32 <- 0
+    local chunk_buffer: @Array[Byte, 4096] <- .hollow()
+    local chunk: @Byte = chunk_buffer.to[@Byte]()
+
+    while c_read_file(r.pipe.peek(), chunk, 4096, n, null) != 0 and n.peek() > 0
+        r.buffer.append(chunk, n: n.peek().to[USize](), alloc: DEFAULT_HEAP)
+    then
+        return
+
+### Closes this process's copies of the handles the child was given (its ends of the pipes, the null device, and any
+### standard handle duplicated only for it), so end-of-file reaches the parent when the child exits.
+@target(os: "windows")
+private routine Handles.close_child_side(me: @Me) -> None
+    close_if_open(me.out_w.peek())
+    close_if_open(me.err_w.peek())
+    close_if_open(me.device.peek())
+    if not same(a: me.input.peek(), b: me.device.peek())
+        close_if_open(me.input.peek())
+
+    # The pipe ends and the device were closed above. The duplicates of this process's handles go here.
+    o: Addr = me.output.peek()
+    if not (same(a: o, b: me.out_w.peek()) or same(a: o, b: me.device.peek()))
+        close_if_open(o)
+    e: Addr = me.error.peek()
+    if same(a: e, b: me.err_w.peek()) or same(a: e, b: me.device.peek())
+        return
+    close_if_open(e)
+    return
+
+### An inheritable duplicate of one of this process's standard handles.
+### :param which: `STD_INPUT_HANDLE`, `STD_OUTPUT_HANDLE`, or `STD_ERROR_HANDLE`.
+### :returns: The duplicate, or null when there is no such handle or it can't be duplicated.
+@target(os: "windows")
+private routine inherited(which: U32) -> Addr
+    h: Addr = c_get_std_handle(which)
+    if is_invalid(h)
+        return null
+    local copy: @Addr <- null
+    this_process: Addr = c_get_current_process()
+    # DUPLICATE_SAME_ACCESS
+    if c_duplicate_handle(this_process, h, this_process, copy, 0, 1, 2) != 0
+        return copy.peek()
+    else
+        return null
+
+### Makes the handles `options` call for: the null device when a stream is the null device, a pipe for each captured
+### stream (the parent's end not inheritable), and the three handles the child gets.
+### :param options: The standard streams.
+### :param sa: The security attributes that make the child's handles inheritable.
+### :returns: True when all were made. What was made before a failure is kept for closing.
+@target(os: "windows")
+private routine Handles.make(me: @Me, options: ProcessOptions, sa: @SecurityAttributes) -> Bool
+    me.poke(Handles.empty())
+    null_in: Bool = options.stdin == InputMode.NULL
+    if null_in or (options.stdout == OutputMode.NULL or options.stderr == OutputMode.NULL)
+        local name: @Array[U16, 4] <- [78, 85, 76, 0]
+        # GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING
+        device: Addr = c_create_file(name.to[@U16](), 0xC0000000, 3, sa, 3, 0, null)
+        if is_invalid(device)
+            return false
+        me.device.poke(device)
+    if options.stdout == OutputMode.CAPTURE
+        if not (c_create_pipe(me.out_r, me.out_w, sa, 0) != 0)
+            return false
+        # HANDLE_FLAG_INHERIT off for the parent's end
+        c_set_handle_information(me.out_r.peek(), 1, 0)
+    if options.stderr == OutputMode.CAPTURE
+        if not (c_create_pipe(me.err_r, me.err_w, sa, 0) != 0)
+            return false
+        c_set_handle_information(me.err_r.peek(), 1, 0)
+
+    # STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
+    me.input.poke(input_handle(mode: options.stdin, device: me.device.peek()))
+    me.output.poke(output_handle(mode: options.stdout, pipe: me.out_w.peek(),
+        device: me.device.peek(), which: 0xFFFFFFF5))
+    me.error.poke(output_handle(mode: options.stderr, pipe: me.err_w.peek(),
+        device: me.device.peek(), which: 0xFFFFFFF4))
+    return true
+
+### The child's standard input: the null device, or a duplicate of this process's.
+### :param mode: What the child's standard input is.
+### :param device: The null device, for `Null`.
+### :returns: The handle, or null when this process's can't be duplicated.
+@target(os: "windows")
+private routine input_handle(mode: InputMode, device: Addr) -> Addr
+    when mode
+        InputMode.NULL => return device
+        InputMode.INHERIT => return inherited(0xFFFFFFF6)
+
+### One of the child's output handles: the pipe's write end, the null device, or a duplicate of this process's.
+### :param mode: What becomes of the stream.
+### :param pipe: The pipe's write end, for `Capture`.
+### :param device: The null device, for `Null`.
+### :param which: `STD_OUTPUT_HANDLE` or `STD_ERROR_HANDLE`, for `Inherit`.
+### :returns: The handle, or null when this process's can't be duplicated.
+@target(os: "windows")
+private routine output_handle(mode: OutputMode, pipe: Addr, device: Addr, which: U32) -> Addr
+    when mode
+        OutputMode.CAPTURE => return pipe
+        OutputMode.NULL => return device
+        OutputMode.INHERIT => return inherited(which)
+
+### Starts `program` with CreateProcessW, waits for it, and returns how it ended and what it captured. The arguments
+### are joined into one quoted command line, and when both streams are captured, standard error is read on a helper
+### thread so neither pipe fills while the other is read. This is the Windows half. Linux and macOS use fork and
+### execvp.
+### :param program: The program to run.
+### :param args: The arguments, not including the program name.
+### :param options: The directory, environment overrides, and standard streams.
+### :param alloc: The allocator for the captured output and the working memory.
+### :returns: The {ProcessOutput}, or a {ProcessError} (InvalidArgument for a NUL in the command, the
+### directory, or a variable, or a directory too long for a path, OutOfMemory when the working memory or the
+### captured output can't be allocated).
+@target(os: "windows")
+@expensive("starts a process")
+routine run_process_result(program: Span[Byte], args: Span[Span[Byte]], options: ProcessOptions,
+    alloc: @MemoryManager) -> Result[ProcessOutput, ProcessError]
+    local h: @Handles <- Handles.empty()
+    local pi: @ProcessInformation <- ProcessInformation(process: null, thread: null, process_id: 0,
+        thread_id: 0)
+    local directory: @Array[U16, PATH_CAPACITY] <- .hollow()
+
+    # Until the handles are made, a failure has only the command line (once there is one) to free.
+    if has_nul(program, args, options)
+        return ProcessError.INVALID_ARGUMENT
+    line: @U16 = command_line(program, args, alloc)
+    if line.is_null()
+        return ProcessError.OUT_OF_MEMORY
+    directory_units: @U16 = when options.directory
+        is Span[Byte] as d =>
+            units: @U16 = directory.to[@U16]()
+            n: Maybe[USize] = encode_utf16(text: d, out: units, capacity: PATH_CAPACITY)
+            if not n.is_present()
+                free_texts(line, env: null, alloc)
+                return ProcessError.INVALID_ARGUMENT
+            becomes units
+        is None => null
+    env: @U16 = when
+        options.env_count == 0 => null
+        else =>
+            block_units: @U16 = env_block(options, alloc)
+            if block_units.is_null()
+                free_texts(line, env: null, alloc)
+                return ProcessError.OUT_OF_MEMORY
+            becomes block_units
+
+    local sa: @SecurityAttributes <- SecurityAttributes(
+        length: sizeof[SecurityAttributes]().to[U32](), descriptor: null, inherit_handle: 1)
+    local result: @Result[ProcessOutput, ProcessError] <- start_and_collect(options,
+        launch: Launch(h, pi, sa, line, env, directory: directory_units), alloc)
+
+    # The parent's ends of the pipes, the process and thread handles, the command line, and the environment block:
+    # each one this run got.
+    close_if_open(h.out_r.peek())
+    close_if_open(h.err_r.peek())
+    close_if_open(pi.thread.peek())
+    close_if_open(pi.process.peek())
+    free_texts(line, env, alloc)
+    return result
+
+### Makes a `Launch` from its fields.
+### :param h: Its `h`.
+### :param pi: Its `pi`.
+### :param sa: Its `sa`.
+### :param line: Its `line`.
+### :param env: Its `env`.
+### :param directory: Its `directory`.
+### :returns: The new value.
+@target(os: "windows")
+private routine Launch.construct(h: @Handles, pi: @ProcessInformation, sa: @SecurityAttributes,
+    line: @U16, env: @U16, directory: @U16) -> Me
+    return Me(h, pi, sa, line, env, directory)
+
+### Releases nothing: a `Launch` only points at what its caller holds.
+@target(os: "windows")
+private routine Launch.destruct(me: @Me) -> None
+    return
+
+### Makes the handles, starts the child, and collects its output. What it opens stays in the launch's handles and
+### process for the caller to close.
+### :param options: The standard streams.
+### :param launch: The handles, process, attributes, and texts of the start.
+### :param alloc: The allocator for the captured output.
+### :returns: The {ProcessOutput}, or the {ProcessError}.
+@target(os: "windows")
+private routine start_and_collect(options: ProcessOptions, launch: Launch,
+    alloc: @MemoryManager) -> Result[ProcessOutput, ProcessError]
+    h: @Handles = launch.h
+    pi: @ProcessInformation = launch.pi
+    if not h.make(options, sa: launch.sa)
+        # The handles were partly made: the child's side of what there is closes here, the parent's side in the caller.
+        e: U32 = c_get_last_error()
+        h.close_child_side()
+        return spawn_error(e)
+    # STARTF_USESTDHANDLES
+    local si: @StartupInfo <- StartupInfo(cb: sizeof[StartupInfo]().to[U32](), reserved: null,
+        desktop: null, title: null, x: 0, y: 0, x_size: 0, y_size: 0, x_count_chars: 0,
+        y_count_chars: 0, fill_attribute: 0, flags: 0x100, show_window: 0, cb_reserved2: 0,
+        reserved2: null, std_input: h.input.peek(), std_output: h.output.peek(),
+        std_error: h.error.peek())
+    # CREATE_UNICODE_ENVIRONMENT
+    made: Bool = c_create_process(null, launch.line, null, null, 1, 0x400, launch.env,
+        launch.directory, si, pi) != 0
+    e2: U32 = c_get_last_error()
+    h.close_child_side()
+    if made
+        return collect_output(h, pi, alloc)
+    return spawn_error(e2)
+
+### Reads what the started child writes to the captured pipes, waits for it to end, and gives its output.
+### :param h: The handles of the run, the parent's ends of the pipes among them.
+### :param pi: The started process.
+### :param alloc: The allocator for the captured output.
+### :returns: The {ProcessOutput}, which owns the captured bytes.
+### :throws: Returns `OutOfMemory` when a capture couldn't grow and lost bytes (what was captured is given back then).
+@target(os: "windows")
+private routine collect_output(h: @Handles, pi: @ProcessInformation,
+    alloc: @MemoryManager) -> Result[ProcessOutput, ProcessError]
+    local out: @CaptureBuffer <- CaptureBuffer.empty()
+    local err: @PipeReader <- PipeReader(pipe: h.err_r.peek(), buffer: CaptureBuffer.empty())
+    local code: @U32 <- 0
+
+    read_both(out_pipe: h.out_r.peek(), out, err, alloc)
+    # INFINITE
+    c_wait_for_single_object(pi.process.peek(), U32.MAX)
+    c_get_exit_code_process(pi.process.peek(), code)
+    local errors: @CaptureBuffer <- moved(b: err.buffer, alloc)
+    drop err
+    status: ExitStatus = Exited(code: code.peek().to_wrap[S32]())
+    lost: Bool = out.failed.peek() | errors.failed.peek()
+    local output: @ProcessOutput <- ProcessOutput(status: status, stdout: out.owned(),
+        stderr: errors.owned())
+    drop out
+    drop errors
+    if lost
+        # A capture couldn't grow and lost bytes: what was captured goes back, and the run fails.
+        drop output
+        return ProcessError.OUT_OF_MEMORY
+    return output
+
+### Frees the command line and the environment block, each when there is one.
+### :param line: The command line text, or null.
+### :param env: The environment block, or null.
+### :param alloc: The allocator they came from.
+@target(os: "windows")
+private routine free_texts(line: @U16, env: @U16, alloc: @MemoryManager) -> None
+    if not line.is_null()
+        deallocate(data: line, alloc)
+    if env.is_null()
+        return
+    deallocate(data: env, alloc)
+    return
+
+### Reads standard output here and standard error on a helper thread when both are captured, and one alone here.
+### :param out_pipe: The read end of the standard output pipe, or null.
+### :param out: The buffer standard output goes into.
+### :param err: The standard error pipe (null when not captured) and the malloc-heap buffer it goes into.
+### :param alloc: The allocator `out` grows from.
+@target(os: "windows")
+@reshaping(out, err)
+private routine read_both(out_pipe: Addr, out: @CaptureBuffer, err: @PipeReader,
+    alloc: @MemoryManager) -> None
+    has_out: Bool = out_pipe.is_not_null()
+    has_err: Bool = err.pipe.peek().is_not_null()
+    if has_out and has_err
+        helper: Thread[None] = get_thread[None]()
+        helper.put_work(entry: read_pipe.to[Callable](), args: err)
+        read_into(pipe: out_pipe, buffer: out, alloc)
+        helper.wait_finished()
+        helper.give_back()
+        return
+    else if has_err
+        read_pipe(err)
+        return
+    else if has_out
+        read_into(pipe: out_pipe, buffer: out, alloc)
+        return
+    else
+        return
+
+### Reads a pipe to its end into `buffer`, from `alloc`.
+### :param pipe: The pipe's read end.
+### :param buffer: The buffer the bytes go into.
+### :param alloc: The allocator `buffer` grows from.
+@target(os: "windows")
+@reshaping(buffer)
+private routine read_into(pipe: Addr, buffer: @CaptureBuffer, alloc: @MemoryManager) -> None
+    local n: @U32 <- 0
+    local chunk_buffer: @Array[Byte, 4096] <- .hollow()
+    local chunk: @Byte = chunk_buffer.to[@Byte]()
+
+    while c_read_file(pipe, chunk, 4096, n, null) != 0 and n.peek() > 0
+        buffer.append(chunk, n: n.peek().to[USize](), alloc)
+    then
+        return
+
+### What a helper thread captured on the malloc heap, copied into `alloc`. The heap copy goes back with its holder.
+### :param b: The buffer filled on the malloc heap.
+### :param alloc: The allocator for the copy.
+### :returns: The copy in memory from `alloc`, `failed` when the helper's buffer lost bytes or the copy couldn't be
+###     allocated.
+@target(os: "windows")
+private routine moved(b: @CaptureBuffer, alloc: @MemoryManager) -> CaptureBuffer
+    local copied: @CaptureBuffer <- CaptureBuffer.empty()
+
+    data: @Byte = b.storage.data.peek()
+    if data.is_not_null()
+        copied.append(chunk: data, n: b.count.peek(), alloc)
+    lost: Bool = copied.failed.peek() | b.failed.peek()
+    copied.failed.poke(lost)
+    return copied
+
+# -- the environment ---------------------------------------------------------------------
+
+### The value of the environment variable `name`, in memory from `alloc`. Drop it.
+### :param name: The variable's name.
+### :param alloc: The allocator for the value.
+### :returns: The value's bytes (UTF-8).
+### :absent: When the variable isn't set, `name` doesn't fit in 256 UTF-16 units or holds a NUL, or the value can't be
+###     read or allocated.
+@target(os: "windows")
+@expensive("allocates a copy of the variable")
+routine env_var(name: Span[Byte], alloc: @MemoryManager) -> Maybe[Memory[Byte]]
+    local units: @@U16 <- null
+    local key: @Array[U16, 256] <- .hollow()
+
+    n: Maybe[USize] = encode_utf16(text: name, out: key.to[@U16](), capacity: 256)
+    if not n.is_present()
+        return None()
+    local value: @Maybe[Memory[Byte]] <- env_value(key: key.to[@U16](), units, alloc)
+
+    # The UTF-16 value, when there is one: the UTF-8 copy is what goes back.
+    held: @U16 = units.peek()
+    if held.is_null()
+        return value
+    deallocate(data: held, alloc)
+    return value
+
+### The value of the variable whose UTF-16 name is at `key`, as UTF-8 in memory from `alloc`. The UTF-16 copy it reads
+### into goes into `units`, for the caller to give back.
+### :param key: The 0-terminated UTF-16 name.
+### :param units: Where the UTF-16 copy's address goes, null when there is none.
+### :param alloc: The allocator for both copies.
+### :returns: The value's bytes.
+### :absent: When the variable isn't set, or the value can't be read or allocated.
+@target(os: "windows")
+private routine env_value(key: @U16, units: @@U16, alloc: @MemoryManager) -> Maybe[Memory[Byte]]
+    c_set_last_error(0)
+    need: U32 = c_get_environment_variable(key, null, 0)
+    # ERROR_ENVVAR_NOT_FOUND
+    if need == 0 and c_get_last_error() == 203
+        return None()
+    if need == 0
+        return Memory[Byte].construct(count: 0, manager: alloc)
+    made: @U16 = allocate[U16](count: need.to[USize](), alloc)
+    made.poke_into(units)
+    if made.is_null()
+        return None()
+    got: U32 = c_get_environment_variable(key, made, need)
+    if got == 0 or got >= need
+        return None()
+    when owned_wide(units: made, count: got.to[USize](), alloc)
+        is Memory[Byte] as t => return t
+        is FsError => return None()

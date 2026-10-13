@@ -1,0 +1,315 @@
+# Tessera stdlib: correctly rounded two-argument arc tangent of B128
+#
+# Ported from CORE-MATH, src/binary128/atan2/atan2q.c via RazorForge's B128Atan2.rf.
+# Copyright (c) 2026 Alexei Sibidanov <sibid@uvic.ca>
+# MIT license: see LICENSE-CORE-MATH
+#
+# B128.atan2(y, x) is the exact angle of the point (x, y), in [-π, π], rounded to nearest,
+# ties to even. The ratio b/a of min(|x|, |y|) to max(|x|, |y|) is reduced against a table angle
+# atan(t) with t = TN[i] / 2^15, the series runs in AtanShared.te, and the angle is rebuilt as
+# ±(PHI0[i] + f) plus a quadrant offset 0, π/2 or π, and y's sign goes on last. Zero and infinite
+# coordinates follow C99 Annex F (signed zeros pick 0 or π, infinities the multiples of π/4).
+# NaN in gives NaN out as in every B128 operation: y quieted when it is NaN, else x quieted, the payload kept.
+
+module Standard/Core
+
+### 0, π, 3π/4, π/4, π/2 as (lo, hi) pairs of fixed point with 2 integer bits
+preset CM_ATAN2_RS: @Array[U64, 10] <- [0x0000000000000000, 0x0000000000000000, 0x62633145C06E0E69,
+    0x6487ED5110B4611A, 0xC9CA64F450528ACE, 0x4B65F1FCCC8748D3, 0x9898CC51701B839A,
+    0x1921FB54442D1846, 0x313198A2E0370734, 0x3243F6A8885A308D]
+
+### reciprocal estimates of the top mantissa bits of max(|x|, |y|), for the table-index guess
+preset CM_ATAN2_RCP: @Array[U64, 128] <- [0, 248, 240, 232, 224, 217, 210, 202, 195, 188, 181, 174,
+    168, 161, 155, 148, 142, 135, 129, 123, 117, 111, 105, 100, 94, 88, 83, 77, 72, 66, 61, 56, 51,
+    46, 41, 36, 31, 26, 21, 16, 12, 7, 3, 254, 250, 245, 241, 236, 232, 228, 224, 220, 216, 212,
+    208, 204, 200, 196, 192, 188, 185, 181, 177, 174, 170, 167, 163, 160, 156, 153, 149, 146, 143,
+    140, 136, 133, 130, 127, 124, 121, 118, 115, 112, 109, 106, 103, 100, 97, 94, 92, 89, 86, 83,
+    81, 78, 75, 73, 70, 67, 65, 62, 60, 57, 55, 52, 50, 48, 45, 43, 41, 38, 36, 34, 31, 29, 27, 25,
+    22, 20, 18, 16, 14, 12, 10, 8, 6, 4, 2]
+
+### the table index from the estimated ratio min/max × 2^7
+preset CM_ATAN2_IND: @Array[U64, 129] <- [0, 0, 1, 1, 2, 3, 3, 4, 5, 5, 6, 6, 7, 8, 8, 9, 10, 10,
+    11, 11, 12, 13, 13, 14, 15, 15, 16, 16, 17, 18, 18, 19, 19, 20, 21, 21, 22, 22, 23, 23, 24, 25,
+    25, 26, 26, 27, 27, 28, 29, 29, 30, 30, 31, 31, 32, 32, 33, 33, 34, 34, 35, 36, 36, 37, 37, 38,
+    38, 39, 39, 40, 40, 41, 41, 41, 42, 42, 43, 43, 44, 44, 45, 45, 46, 46, 47, 47, 47, 48, 48, 49,
+    49, 50, 50, 50, 51, 51, 52, 52, 52, 53, 53, 54, 54, 54, 55, 55, 56, 56, 56, 57, 57, 57, 58, 58,
+    58, 59, 59, 60, 60, 60, 61, 61, 61, 62, 62, 62, 63, 63, 63]
+
+### atan2(y, x) for y = `me`: the angle of the point (x, y), correctly rounded to nearest (a CORE-MATH port).
+### Zeros and infinities follow IEEE's rules (signed zeros pick 0 or pi, two infinities a multiple of pi/4).
+### :param x: The x coordinate.
+### :returns: The angle in [-pi, pi], with the sign of `me`. A NaN argument comes back quieted (`me` first).
+routine B128.atan2(me: Me, x: Me) -> Me
+    local x_neg: Bool = b128_is_negative_bits(x.bits())
+    local y_sign: U128 = me.bits() & B128_SIGN
+    local magnitude: U128 = B128_SIGN.bitnot()
+    local xa: U128 = x.bits() & magnitude
+    local ya: U128 = me.bits() & magnitude
+
+    if not (xa >= B128_INF or ya >= B128_INF)
+        red: CmAtanReduction = cm_atan2_reduce(xa, ya)
+        if not red.zero
+            kd: U128 = cm_atan_join(hi: red.kd2, lo: red.kd1)
+            f: U128 = cm_atan_fast_core(kn: red.kn, kd, dn: red.dn)
+            in_table: Bool = (red.isct != 0) | red.g
+            table: Bool = in_table or x_neg
+            x_negative: Bool = when
+                table =>
+                    # the angle ±(PHI0[isct] + f) + (0, π/2 or π): negated when exactly one of |x| < |y| and
+                    # x < 0 holds
+                    placed: CmAtanU192 = cm_atan_place(f, dn: red.dn + 1)
+                    phi: CmAtanU192 = cm_atan_row_top(table: CM_ATAN_PHI0.to[@U64](), row: red.isct)
+                    angle: CmAtanU192 = cm_atan_u192_add(a: phi, b: placed)
+                    flip: Bool = red.g ^ x_neg
+                    negated: CmAtanU192 = cm_atan_u192_not(angle)
+                    signed: CmAtanU192 = when
+                        flip => negated
+                        else => angle
+                    q: USize = cm_atan2_quadrant(g: red.g, x_neg)
+                    offset: CmAtanU192 = cm_atan_row_top(table: CM_ATAN_QOFF.to[@U64](), row: q)
+                    final: CmAtanU192 = cm_atan_u192_add(a: offset, b: signed)
+                    rounded: CmAtanRounded = cm_atan_round_fixed(final)
+                    result: Me = b128_of(rounded.bits | y_sign)
+                    if rounded.hard
+                        becomes x_neg
+                    else
+                        return result
+                else =>
+                    rounded: CmAtanRounded = cm_atan_round_direct(f, dn: red.dn)
+                    result: Me = b128_of(rounded.bits | y_sign)
+                    if rounded.hard
+                        becomes false
+                    else
+                        return result
+            r: Me = cm_atan2_accurate(red, x_neg: x_negative, y_sign)
+            return r
+    r: Me = cm_atan2_special(y: me, x)
+    return r
+
+### The row of the quadrant offset: 0 (none), 1 (pi/2 when |x| < |y|), 2 (pi when x < 0, |x| >= |y|).
+### :param g: True when |x| < |y|.
+### :param x_neg: True when x is negative.
+### :returns: The row of CM_ATAN_QOFF to add, 0, 1 or 2.
+routine cm_atan2_quadrant(g: Bool, x_neg: Bool) -> USize
+    left: USize = when
+        x_neg => 2
+        else => 0
+    q: USize = when
+        g => 1
+        else => left
+    return q
+
+### Reduces b/a for a = max(|x|, |y|), b = min(|x|, |y|) (sign-stripped bits) against the table
+### angle atan(TN[isct] / 2^15). Subnormal coordinates are normalized first.
+### :param xa: The bits of |x|, finite.
+### :param ya: The bits of |y|, finite.
+### :returns: The reduced argument, `g` set when |x| < |y|, and `zero` set when b = 0.
+routine cm_atan2_reduce(xa: U128, ya: U128) -> CmAtanReduction
+    local g: Bool = xa < ya
+    local a: U128 = when
+
+        g => ya
+        else => xa
+    local b: U128 = when
+        g => xa
+        else => ya
+    local xn: S64 = (a >> 112).to[S64]()
+
+    yn: S64 = (b >> 112).to[S64]()
+    b_subnormal: Bool = yn == 0
+    values2: (U128, U128, S64, S64) = when
+        b_subnormal =>
+            # subnormal b (or a too): normalize the significand, extending the exponent below 1
+            b_zero: Bool = b == 0
+            none: CmAtanReduction = CmAtanReduction(zero: true, g: g, isct: 0, dn: 0, kn: 0, kd0: 0,
+                kd1: 0, kd2: 0)
+            lz_b: U128 = b.leading_zeros()
+            ns_b: S64 = lz_b.to[S64]() - 15
+            b_norm: U128 = b << ns_b.max(0).to[U128]()
+            yn2: S64 = 1 - ns_b
+            a_subnormal: Bool = xn == 0
+            lz_a: U128 = a.leading_zeros()
+            ns_a: S64 = lz_a.to[S64]() - 15
+            a_norm: U128 = a << ns_a.max(0).to[U128]()
+            a_used: U128 = when
+                a_subnormal => a_norm
+                else => a
+            xn_used: S64 = when
+                a_subnormal => 1 - ns_a
+                else => xn
+            if b_zero
+                return none
+            else
+                becomes (a_used, b_norm, xn_used, yn2)
+        else => (a, b, xn, yn)
+    a_raw, b_raw, a_exponent, yn2 = values2
+
+    # the table index from b × (1/a) estimated in a few bits, then corrected by one
+    dn: S64 = a_exponent - yn2
+    a_hi: U64 = (a_raw >> 64).to[U64]()
+    ah: U64 = (a_hi & 0x0000FFFFFFFFFFFF) | 0x0001000000000000
+    b_hi: U64 = (b_raw >> 64).to[U64]()
+    bh: U64 = (b_hi & 0x0000FFFFFFFFFFFF) | 0x0001000000000000
+    a_full: U128 = cm_atan_join(hi: ah, lo: a_raw.to_wrap[U64]())
+    b_full: U128 = cm_atan_join(hi: bh, lo: b_raw.to_wrap[U64]())
+    inda_bits: U64 = (ah >> 41) & 127
+    inda: USize = inda_bits.to[USize]()
+    rcp: U64 = CM_ATAN2_RCP.getitem(inda)
+    at_zero: U64 = (inda == 0).to[U64]()
+    rsc: U64 = at_zero + (inda < 43).to[U64]() + 2
+    rcpx: U64 = (rsc << 8) | rcp
+    ratio_wide: U64 = (bh >> 10) *% rcpx
+    ratio: U64 = ratio_wide >> 41
+    near: Bool = dn < 64
+    scaled: U64 = ratio >> dn.min(63).to[U64]()
+    k: USize = when
+        near => scaled.to[USize]()
+        else => 0
+
+    guess: USize = CM_ATAN2_IND.getitem(k).to[USize]()
+    next_at: USize = guess + 1
+    next_tn: U64 = CM_ATAN_TN.getitem(next_at)
+    ah2: U64 = (a_full >> 64).to[U64]()
+    bh2: U64 = (b_full >> 64).to[U64]()
+    next_product: U64 = (ah2 >> 15) *% next_tn
+    below: Bool = next_product < bh2 >> dn.min(63).to[U64]()
+    bump: Bool = near and below
+    isct: USize = guess + bump.to[USize]()
+    if isct == 0
+        # b/a itself: kn = b, kd = a
+        kn: U128 = b_full << 15
+        kd: U128 = a_full << 15
+        r: CmAtanReduction = CmAtanReduction(zero: false, g: g, isct: 0, dn: dn, kn: kn, kd0: 0,
+            kd1: kd.to_wrap[U64](), kd2: (kd >> 64).to[U64]())
+        return r
+    else
+        # kn = b - a t, kd = a + b t (scaled), the index moved down one when kn goes negative
+        first: USize = isct.min(63)
+        first_tn: U64 = CM_ATAN_TN.getitem(first)
+        shift: S128 = dn.to[S128]()
+        kn_first_bits: U128 = (b_full << 15) -% (a_full *% first_tn.to[U128]() << shift.to[U128]())
+        kn_first: S128 = kn_first_bits.to_wrap[S128]()
+        over: Bool = kn_first < 0
+        isct2: USize = when
+            over => first - 1
+            else => first
+        tn: U64 = CM_ATAN_TN.getitem(isct2)
+        kn_raw: U128 = (b_full << 15) -% (a_full *% tn.to[U128]() << shift.to[U128]())
+        kn_zero: Bool = kn_raw == 0
+        nzn_raw: S64 = kn_raw.leading_zeros().to[S64]()
+        nzn: S64 = when
+            kn_zero => 0
+            else => nzn_raw
+        kn: U128 = kn_raw << nzn.to[U128]()
+        # kd = a × 2^(15 + dn) + b t as 192 bits, then normalized
+        sl: S64 = dn + 15
+        a_word: U64 = (a_full >> 64).to[U64]()
+        a_top: U64 = a_word >> (49 - dn).to[U64]()
+        a_shifted: CmAtanU192 = CmAtanU192(top: a_top, low: a_full << sl.to[U128]())
+        bt: CmAtanU192 = CmAtanU192(top: 0, low: b_full *% tn.to[U128]())
+        # shift kd left until its top bit is set: a whole limb first if the top one is empty
+        kd: CmAtanU192 = cm_atan_u192_add(a: a_shifted, b: bt)
+        empty: Bool = kd.top == 0
+        top0: U64 = when
+            empty => (kd.low >> 64).to[U64]()
+            else => kd.top
+        low0: U128 = when
+            empty => kd.low << 64
+            else => kd.low
+        z: S64 = top0.leading_zeros().to[S64]()
+        low0_hi: U64 = (low0 >> 64).to[U64]()
+        under_shift: S64 = ~z & 63
+        under: U64 = low0_hi >> 1 >> under_shift.to[U64]()
+        kd2: U64 = (top0 << z.to[U64]()) | under
+        low: U128 = low0 << z.to[U128]()
+        empty_bits: S64 = empty.to[S64]() * 64
+        nzd: S64 = empty_bits + z
+        dn_new: S64 = nzn - nzd + 64
+        r: CmAtanReduction = CmAtanReduction(zero: false, g: g, isct: isct2, dn: dn_new, kn: kn,
+            kd0: low.to_wrap[S64](), kd1: (low >> 64).to[U64](), kd2: kd2)
+        return r
+
+### The accurate path of atan2: the same reduction, the series and the reconstruction in 6 limbs.
+### :param red: The reduction from {cm_atan2_reduce}.
+### :param x_neg: True when x is negative.
+### :param y_sign: The sign bit of y, in place in a B128's bits.
+### :returns: atan2(y, x), correctly rounded.
+routine cm_atan2_accurate(red: CmAtanReduction, x_neg: Bool, y_sign: U128) -> B128
+    local f_buf: @Array[S64, 8] <- .hollow()
+    local f: @U64 = f_buf.to[@U64]()
+
+    cm_atan_accurate_core(red, f)
+    in_table: Bool = (red.isct != 0) | red.g
+    if in_table or x_neg
+        dn: S64 = red.dn
+        cm_atan_limbs_shr(a: f, n: 6, k: dn + 1)
+        row: USize = red.isct * 6
+        phi: @U64 = CM_ATAN_PHI0.to[@U64]().stride(row)
+        cm_atan_limbs_add(dst: f, a: phi, b: f, n: 6)
+        if red.g ^ x_neg
+            cm_atan_limbs_not(a: f, n: 6)
+        q: USize = cm_atan2_quadrant(g: red.g, x_neg)
+        row2: USize = q * 6
+        offset: @U64 = CM_ATAN_QOFF.to[@U64]().stride(row2)
+        cm_atan_limbs_add(dst: f, a: offset, b: f, n: 6)
+        bits: U128 = cm_atan_round_limbs(f, dn: -1)
+        r: B128 = b128_of(bits | y_sign)
+        return r
+    else
+        bits: U128 = cm_atan_round_limbs(f, dn: red.dn)
+        r: B128 = b128_of(bits | y_sign)
+        return r
+
+### atan2 for NaN, infinite or zero coordinates.
+### :param y: The y coordinate.
+### :param x: The x coordinate.
+### :returns: `y` quieted when it is NaN, else `x` quieted when it is, else the exact-case angle: 0 or pi on the x
+###     axis, ±pi/4 or ±3pi/4 for two infinities, otherwise ±pi/2, with the sign of `y`.
+routine cm_atan2_special(y: B128, x: B128) -> B128
+    local magnitude: U128 = B128_SIGN.bitnot()
+    local ix: U128 = x.bits() & magnitude
+    local iy: U128 = y.bits() & magnitude
+    local x_class: S64 = cm_atan_class(hi: (ix >> 64).to[U64](), lo: ix.to_wrap[U64]())
+    local y_class: S64 = cm_atan_class(hi: (iy >> 64).to[U64](), lo: iy.to_wrap[U64]())
+
+    if x_class >= 2 or y_class >= 2
+        return b128_nan_of(a: y, b: x)
+    else
+        # the angle's row in RS: 0 or π on the x axis, π/4 or 3π/4 for two infinities, else π/2
+        x_bits: U128 = x.bits()
+        xs: U64 = (x_bits >> 127).to[U64]()
+        x_inf: Bool = x_class == 1
+        y_inf: Bool = y_class == 1
+        on_axis: U64 = when
+            iy == 0 => xs
+            else => 4
+        steep: U64 = when
+            y_inf => 4
+            else => on_axis
+        flat: U64 = when
+            x_inf => xs
+            else => steep
+        corner: Bool = x_inf and y_inf
+        idx: U64 = when
+            corner => 3 - xs
+            else => flat
+        lo_at: USize = idx.to[USize]() * 2
+        hi_at: USize = lo_at + 1
+        ol: U64 = CM_ATAN2_RS.getitem(lo_at)
+        oh: U64 = CM_ATAN2_RS.getitem(hi_at)
+        y_sign: U128 = y.bits() & B128_SIGN
+        zero: B128 = b128_of(y_sign)
+        if oh == 0
+            return zero
+        k: U64 = oh.leading_zeros()
+        rnd: U64 = (ol >> 14 - k) & 1
+        frac: U64 = ol << 49 + k
+        up: U64 = when
+            frac == 0 => 0
+            else => rnd
+        xn: U64 = 0x4000 - k
+        v0: U64 = (ol >> 15 - k) | (oh << 49 + k)
+        v1: U64 = oh >> 15 - k
+        bits: U128 = cm_atan_join(hi: v1, lo: v0) +% cm_atan_join(hi: xn << 48, lo: up)
+        r: B128 = b128_of(bits | y_sign)
+        return r

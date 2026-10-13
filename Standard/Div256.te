@@ -1,0 +1,537 @@
+# Tessera stdlib: 256-bit division
+#
+# LLVM expands i256 udiv and sdiv into a loop that retires one quotient bit per
+# iteration (hundreds of nanoseconds). wide_divrem runs Knuth's algorithm D
+# (TAOCP vol. 2, 4.3.1) over 64-bit limbs instead, with the digit steps from
+# WideDiv.te, and U256 / S256 division calls it through wide_div, wide_rem,
+# wide_div and wide_rem.
+#
+# A target narrower than 64 bits has its own wide_divrem over 32-bit limbs (the
+# end of this file): there a U64 limb product is a U128, which LLVM spells out
+# in 32-bit pieces, and LLVM's own U128 division is a bit-at-a-time loop or a
+# library call. U128 division uses the same 32-bit code there (Div128.te). It
+# suits 32-bit x86. A target without a 64-by-32 divide (Cortex-M, RV32, AVR)
+# would want its own digit step, which is open (Roadmap).
+#
+# The entry points crash on a zero divisor (DivisionByZeroError), and the signed
+# quotient on MIN / -1 (IntegerOverflowError). The routines behind them assume
+# a nonzero divisor.
+
+module Standard/Core
+
+record U256DivRem
+    quotient: U256
+    remainder: U256
+
+# -- limbs ---------------------------------------------------------------------
+
+### The 64-bit limb `index` of `x` (0 is the least significant), for `index` < 4.
+### :param x: The value.
+### :param index: The limb's position, below 4.
+### :returns: The limb.
+private routine u256_limb(x: U256, index: USize) -> U64
+    shift: U256 = (index * 64).to[U256]()
+    r: U64 = (x >> shift).to_wrap[U64]()
+    return r
+
+### The integer with limbs (l3, l2, l1, l0), most significant first.
+### :param l3: The most significant limb.
+### :param l2: The second limb from the top.
+### :param l1: The second limb from the bottom.
+### :param l0: The least significant limb.
+### :returns: The integer.
+private routine u256_from_limbs(l3: U64, l2: U64, l1: U64, l0: U64) -> U256
+    top: U256 = l3.to[U256]() << 64
+    high: U256 = top | l2.to[U256]()
+    mid: U256 = (high << 64) | l1.to[U256]()
+    r: U256 = (mid << 64) | l0.to[U256]()
+    return r
+
+# -- entry points --------------------------------------------------------------
+
+### Unsigned quotient and remainder.
+### :param u: The dividend.
+### :param d: The divisor.
+### :returns: The quotient and the remainder.
+### :throws: Crashes with `DivisionByZeroError` when `d` is 0.
+@target(size: 64)
+@track_caller
+@expensive("divides in software")
+routine wide_divrem(u: U256, d: U256) -> U256DivRem
+    if d == 0
+        crash_division_by_zero()
+    if u < d
+        return U256DivRem(quotient: 0, remainder: u)
+
+    # d <= u, so when u fits in 128 bits, both do.
+    else if u >> 128 == 0
+        a: U128 = u.to[U128]()
+        b: U128 = d.to[U128]()
+        r: U256DivRem = U256DivRem(quotient: (a // b).to[U256](), remainder: (a % b).to[U256]())
+        return r
+    else if d >> 64 == 0
+        r: U256DivRem = u256_divrem_by_limb(u, d: d.to[U64]())
+        return r
+    else
+        r: U256DivRem = u256_divrem_knuth(u, d)
+        return r
+
+### Unsigned quotient.
+### :param u: The dividend.
+### :param d: The divisor.
+### :returns: The quotient.
+### :throws: Crashes with `DivisionByZeroError` when `d` is 0.
+@track_caller
+@expensive("divides in software")
+routine wide_div(u: U256, d: U256) -> U256
+    r: U256DivRem = wide_divrem(u, d)
+    return r.quotient
+
+### Unsigned remainder.
+### :param u: The dividend.
+### :param d: The divisor.
+### :returns: The remainder.
+### :throws: Crashes with `DivisionByZeroError` when `d` is 0.
+@track_caller
+@expensive("divides in software")
+routine wide_rem(u: U256, d: U256) -> U256
+    r: U256DivRem = wide_divrem(u, d)
+    return r.remainder
+
+### Signed quotient, truncated toward zero. The magnitudes go through wide_divrem: `abs_diff(0)` is exact even
+### for MIN.
+### :param u: The dividend.
+### :param d: The divisor.
+### :returns: The quotient.
+### :throws: Crashes with `DivisionByZeroError` when `d` is 0, and with `IntegerOverflowError` on `MIN / -1`.
+@track_caller
+@expensive("divides in software")
+routine wide_div(u: S256, d: S256) -> S256
+    if u == S256.MIN and d == -1
+        crash_overflow()
+    magnitudes: U256DivRem = wide_divrem(u: u.abs_diff(0), d: d.abs_diff(0))
+    quotient: S256 = magnitudes.quotient.to_wrap[S256]()
+    if u.is_negative() ^ d.is_negative()
+        return quotient.neg_wrap()
+    else
+        return quotient
+
+### Signed remainder, with the dividend's sign (MIN % -1 is 0). The magnitudes go through wide_divrem.
+### :param u: The dividend.
+### :param d: The divisor.
+### :returns: The remainder.
+### :throws: Crashes with `DivisionByZeroError` when `d` is 0.
+@track_caller
+@expensive("divides in software")
+routine wide_rem(u: S256, d: S256) -> S256
+    magnitudes: U256DivRem = wide_divrem(u: u.abs_diff(0), d: d.abs_diff(0))
+    remainder: S256 = magnitudes.remainder.to_wrap[S256]()
+    if u.is_negative()
+        return remainder.neg_wrap()
+    else
+        return remainder
+
+# -- one-limb divisor ----------------------------------------------------------
+
+### u / d and u % d for a nonzero one-limb d: normalize so d's top bit is set, then one 2-by-1 step per dividend
+### limb, most significant first.
+### :param u: The dividend.
+### :param d: The divisor, not zero.
+### :returns: The quotient and the remainder.
+private routine u256_divrem_by_limb(u: U256, d: U64) -> U256DivRem
+    shift: U64 = d.leading_zeros()
+    d_norm: U64 = d << shift
+    v: U64 = div_2by1_prepare(d_norm)
+    u_norm: U256 = u << shift.to[U256]()
+    # The bits shifted out of the top. A funnel shift by 0 gives 0, where a
+    # plain shr by 64 would be poison.
+    u_over: U64 = fshl[U64](hi: 0, lo: u256_limb(x: u, index: 3), amt: shift)
+    s3: Div2By1 = div_2by1(u1: u_over, u0: u256_limb(x: u_norm, index: 3), d: d_norm, v)
+    s2: Div2By1 = div_2by1(u1: s3.remainder, u0: u256_limb(x: u_norm, index: 2), d: d_norm, v)
+    s1: Div2By1 = div_2by1(u1: s2.remainder, u0: u256_limb(x: u_norm, index: 1), d: d_norm, v)
+    s0: Div2By1 = div_2by1(u1: s1.remainder, u0: u256_limb(x: u_norm, index: 0), d: d_norm, v)
+    q: U256 = u256_from_limbs(l3: s3.quotient, l2: s2.quotient, l1: s1.quotient, l0: s0.quotient)
+    rem: U64 = s0.remainder >> shift
+    r: U256DivRem = U256DivRem(quotient: q, remainder: rem.to[U256]())
+    return r
+
+# -- algorithm D ---------------------------------------------------------------
+
+### The working state of algorithm D for an n-limb divisor, 2 <= n <= 4. Both
+### operands are shifted left until the divisor's top bit is set. The shifted
+### dividend takes a fifth limb. Each step divides the window u[j .. j+n] by v
+### and leaves the window's remainder in u[j .. j+n-1], so u ends as the
+### (shifted) remainder.
+private record U256Division
+    u: Array[U64, 5]  # the normalized dividend, least significant limb first
+    v: Array[U64, 4]  # the normalized divisor
+    n: USize  # the divisor's limb count
+    reciprocal: U64  # the reciprocal div_3by2_prepare works out for v's top two limbs
+
+### u / d and u % d for a divisor of two or more limbs, by algorithm D.
+### :param u: The dividend, at least `d`.
+### :param d: The divisor, at least 2^64.
+### :returns: The quotient and the remainder.
+private routine u256_divrem_knuth(u: U256, d: U256) -> U256DivRem
+    local lz: U64 = d.leading_zeros().to[U64]()
+    local shift: U64 = lz & 63
+    local state: @U256Division <- .hollow()
+    local q: @U256 <- 0
+
+    n: USize = 4 - (lz >> 6).to[USize]()
+    state.construct(u, d, n, shift)
+
+    # Quotient digits come out most significant first, from j = 4 - n down to 0.
+    while true with j: USize = 4 - n
+        q_digit2: U64 = state.step(j)
+        q_next2: U256 = (q.peek() << 64) | q_digit2.to[U256]()
+        if j == 0
+            l3: U64 = state.u[3]
+            l2: U64 = state.u[2]
+            l1: U64 = state.u[1]
+            l0: U64 = state.u[0]
+            shifted: U256 = u256_from_limbs(l3, l2, l1, l0)
+            remainder: U256 = shifted >> shift.to[U256]()
+            r: U256DivRem = U256DivRem(quotient: q_next2, remainder: remainder)
+            return r
+        else
+            q_next2.poke_into(q)
+            continue with j: j - 1
+
+### Fills the state for dividing `u` by the `n`-limb `d`: both shifted left by `shift`, the bits shifted out of the
+### dividend's top in a fifth limb, and the reciprocal of the divisor's top two limbs.
+### :param u: The dividend.
+### :param d: The divisor.
+### :param n: The divisor's limb count, 2 to 4.
+### :param shift: The normalizing shift, which sets the divisor's top bit.
+routine U256Division.construct(me: @Me, u: U256, d: U256, n: USize, shift: U64) -> None
+    u_norm: U256 = u << shift.to[U256]()
+    d_norm: U256 = d << shift.to[U256]()
+    # A funnel shift by 0 gives 0, where a plain shr by 64 would be poison.
+    u_over: U64 = fshl[U64](hi: 0, lo: u256_limb(x: u, index: 3), amt: shift)
+    me.u[0] = u256_limb(x: u_norm, index: 0)
+    me.u[1] = u256_limb(x: u_norm, index: 1)
+    me.u[2] = u256_limb(x: u_norm, index: 2)
+    me.u[3] = u256_limb(x: u_norm, index: 3)
+    me.u[4] = u_over
+    me.v[0] = u256_limb(x: d_norm, index: 0)
+    me.v[1] = u256_limb(x: d_norm, index: 1)
+    me.v[2] = u256_limb(x: d_norm, index: 2)
+    me.v[3] = u256_limb(x: d_norm, index: 3)
+    me.n.poke(n)
+    d1: U64 = u256_limb(x: d_norm, index: n - 1)
+    d0: U64 = u256_limb(x: d_norm, index: n - 2)
+    top_divisor: Divisor3By2 = div_3by2_prepare(d1, d0)
+    me.reciprocal.poke(top_divisor.reciprocal)
+    return
+
+### One step: the quotient digit of the window u[j .. j+n] by v, which replaces the window with its remainder.
+### :param j: The window's lowest limb.
+### :returns: The quotient digit.
+routine U256Division.step(me: @Me, j: USize) -> U64
+    local n: USize = me.n.peek()
+    local top_at: USize = j + n
+    local u2: U64 = me.u[top_at]
+    local u1: U64 = me.u[top_at - 1]
+    local u0: U64 = me.u[top_at - 2]
+    local d1: U64 = me.v[n - 1]
+    local d0: U64 = me.v[n - 2]
+
+    # The window's remainder is below v, so its top limb ends as 0.
+    me.u[top_at] = 0
+    # div_3by2 needs (u2, u1) < (d1, d0). When they are equal the digit is 2^64 - 1 exactly.
+    if u2 == d1 and u1 == d0
+        me.submul(j, len: n, m: U64.MAX)
+        return U64.MAX
+    else
+        # The top three limbs over the top two divisor limbs give q̂ and the
+        # remainder of those limbs. Subtracting q̂ times the lower divisor limbs
+        # finishes the window. q̂ can be one too big for n >= 3: then that
+        # subtraction borrows, and v is added back.
+        divisor: Divisor3By2 = Divisor3By2(high: d1, low: d0, reciprocal: me.reciprocal.peek())
+        top: Div3By2 = div_3by2(u2, u1, u0, divisor)
+        q_hat: U64 = top.quotient
+        borrow: U64 = me.submul(j, len: n - 2, m: q_hat)
+        rhat: U128 = top.remainder
+        taken: U128 = borrow.to[U128]()
+        rest: U128 = rhat -% taken
+        low_at: USize = j + n - 2
+        me.u[low_at] = rest.to_wrap[U64]()
+        me.u[low_at + 1] = (rest >> 64).to[U64]()
+        if rhat < taken
+            me.add_back(j, n)
+            return q_hat - 1
+        else
+            return q_hat
+
+### u[j .. j+len-1] -= v[0 .. len-1] × m.
+### :param j: The first limb of `u` to subtract from.
+### :param len: The number of limbs.
+### :param m: The multiplier.
+### :returns: The limb that borrows out of the top.
+routine U256Division.submul(me: @Me, j: USize, len: USize, m: U64) -> U64
+    local borrow: @U64 <- 0
+
+    each i in 0 til len
+        # v × m + borrow < 2^128, and when its high limb is 2^64 - 1 its low limb is 0,
+        # so the next borrow fits a limb.
+        at: USize = j + i
+        v_limb: U64 = me.v[i]
+        u_limb: U64 = me.u[at]
+        product: U128 = v_limb.mul_wide(m) + borrow.peek().to[U128]()
+        low: U64 = product.to_wrap[U64]()
+        wrapped: Bool = u_limb < low
+        me.u[at] = u_limb -% low
+        high: U64 = (product >> 64).to[U64]()
+        (high + wrapped.to[U64]()).poke_into(borrow)
+    then
+        return borrow.peek()
+
+### u[j .. j+n-1] += v, dropping the carry out of the top: it cancels the borrow
+### that made the window negative.
+### :param j: The window's lowest limb.
+### :param n: The divisor's limb count.
+routine U256Division.add_back(me: @Me, j: USize, n: USize) -> None
+    local carry: @U64 <- 0
+
+    each i in 0 til n
+        at: USize = j + i
+        v_limb: U64 = me.v[i]
+        u_limb: U64 = me.u[at]
+        limb_sum: U128 = u_limb.to[U128]() + v_limb.to[U128]()
+        sum: U128 = limb_sum + carry.peek().to[U128]()
+        me.u[at] = sum.to_wrap[U64]()
+        (sum >> 64).to[U64]().poke_into(carry)
+    then
+        return
+
+# -- targets narrower than 64 bits -----------------------------------------------
+#
+# The same algorithm D over 32-bit limbs, the textbook form (Hacker's
+# Delight, divmnu): a digit is estimated from the top two dividend limbs over
+# the top divisor limb, a U64 by U32 division, and corrected with the next
+# divisor limb (Knuth's step D3), which leaves it at most one too big.
+#
+# The dividend has up to eight limbs: U256 division passes all eight, and U128
+# division on these targets (Div128.te) passes its value widened with four,
+# so the digit loop runs over the limbs the dividend actually has.
+
+### The working state of algorithm D over 32-bit limbs for an n-limb divisor, 2 <= n <= 8, laid out like
+### U256Division: both operands normalized, the dividend with a ninth limb.
+private record U256Division32
+    u: Array[U32, 9]  # the normalized dividend, least significant limb first
+    v: Array[U32, 8]  # the normalized divisor
+    n: USize  # the divisor's limb count
+
+### Unsigned quotient and remainder.
+### :param u: The dividend.
+### :param d: The divisor.
+### :returns: The quotient and the remainder.
+### :throws: Crashes with `DivisionByZeroError` when `d` is 0.
+@target(size: not 64)
+@track_caller
+@expensive("divides in software")
+routine wide_divrem(u: U256, d: U256) -> U256DivRem
+    if d == 0
+        crash_division_by_zero()
+    if u < d
+        return U256DivRem(quotient: 0, remainder: u)
+
+    # d <= u, so when u fits in 64 bits, both do.
+    else if u >> 64 == 0
+        a: U64 = u.to[U64]()
+        b: U64 = d.to[U64]()
+        r: U256DivRem = U256DivRem(quotient: (a // b).to[U256](), remainder: (a % b).to[U256]())
+        return r
+    else if d >> 32 == 0
+        r: U256DivRem = divrem_by_word32(u, d: d.to[U32](), words: 8)
+        return r
+    else
+        r: U256DivRem = divrem_knuth32(u, d, words: 8)
+        return r
+
+### Writes the eight 32-bit limbs of x to dst, least significant first. Targets are little-endian, so the limbs
+### are the U256's own bytes, and reading them costs no 256-bit shifts.
+### :param x: The value.
+### :param dst: The first of the eight limbs to write.
+private routine u256_store_words(x: U256, dst: @U32) -> None
+    local slot: @U256 <- x
+    local src: @U32 = slot.to[@U32]()
+
+    each i in 0 til 8
+        limb: U32 = src.stride(i).peek()
+        limb.poke_into(dst.stride(i))
+    then
+        return
+
+### The U256 whose eight 32-bit limbs are at src, least significant first.
+### :param src: The first of the eight limbs.
+### :returns: The integer.
+private routine u256_load_words(src: @U32) -> U256
+    local slot: @U256 <- .hollow()
+
+    each i in 0 til 8
+        limb: U32 = src.stride(i).peek()
+        limb.poke_into(slot.to[@U32]().stride(i))
+    return slot.peek()
+
+### u / d for a nonzero one-limb d: one U64 by U32 division per dividend limb, most significant first. No
+### normalizing: the U64 division takes any divisor.
+### :param u: The dividend, below 2^(32 × `words`).
+### :param d: The divisor, nonzero.
+### :param words: The dividend's 32-bit limb count, at most 8 (4 for a U128 widened to a U256).
+### :returns: The quotient and the remainder.
+routine divrem_by_word32(u: U256, d: U32, words: USize) -> U256DivRem
+    local limb_slots: @Array[U32, 8] <- .hollow()
+    local limbs: @U32 = limb_slots.to[@U32]()
+    local q: @U256 <- 0
+    local rem: @U64 <- 0
+
+    u256_store_words(x: u, dst: limbs)
+
+    while i != 0 with i: USize = words
+        at: USize = i - 1
+        divisor: U64 = d.to[U64]()
+        limb: U32 = limbs.stride(at).peek()
+        window: U64 = (rem.peek() << 32) | limb.to[U64]()
+        digit: U64 = window // divisor
+        q_next: U256 = (q.peek() << 32) | digit.to[U256]()
+        next_rem: U64 = window - digit * divisor
+        next_q: U256 = q_next
+        next_q.poke_into(q)
+        next_rem.poke_into(rem)
+        continue with i: at
+    return U256DivRem(quotient: q.peek(), remainder: rem.peek().to[U256]())
+
+### u / d for a divisor of two or more 32-bit limbs.
+### :param u: The dividend, below 2^(32 × `words`) and at least `d`.
+### :param d: The divisor, at least 2^32.
+### :param words: The dividend's 32-bit limb count, at most 8 (4 for a U128 widened to a U256).
+### :returns: The quotient and the remainder.
+routine divrem_knuth32(u: U256, d: U256, words: USize) -> U256DivRem
+    local lz: U64 = d.leading_zeros().to[U64]()
+    local n: USize = 8 - (lz >> 5).to[USize]()
+    local shift: U32 = (lz & 31).to[U32]()
+    local state: @U256Division32 <- .hollow()
+    local q: @U256 <- 0
+
+    state.construct(u, d, n, shift)
+
+    # Quotient digits come out most significant first, from j = words - n down to 0. A dividend of fewer than eight
+    # limbs carries its normalization overflow in limb `words`, which the first step reads as its top limb.
+    while true with j: USize = words - n
+        q_digit2: U32 = state.step(j)
+        q_next2: U256 = (q.peek() << 32) | q_digit2.to[U256]()
+        if j == 0
+            shifted: U256 = u256_load_words(state.u.to[@U32]())
+            remainder: U256 = shifted >> shift.to[U256]()
+            return U256DivRem(quotient: q_next2, remainder: remainder)
+        else
+            q_next2.poke_into(q)
+            continue with j: j - 1
+
+### Fills the state for dividing `u` by the `n`-limb `d`: both shifted left by `shift`, the bits shifted out of the
+### dividend's top in a ninth limb.
+### :param u: The dividend.
+### :param d: The divisor.
+### :param n: The divisor's 32-bit limb count, 2 to 8.
+### :param shift: The normalizing shift, which sets the divisor's top bit.
+routine U256Division32.construct(me: @Me, u: U256, d: U256, n: USize, shift: U32) -> None
+    u_norm: U256 = u << shift.to[U256]()
+    d_norm: U256 = d << shift.to[U256]()
+    # A funnel shift by 0 gives 0, where a plain shr by 32 would be poison.
+    u_over: U32 = fshl[U32](hi: 0, lo: (u >> 224).to_wrap[U32](), amt: shift)
+    u256_store_words(x: u_norm, dst: me.u.to[@U32]())
+    me.u[8] = u_over
+    u256_store_words(x: d_norm, dst: me.v.to[@U32]())
+    me.n.poke(n)
+    return
+
+### One step: the quotient digit of the window u[j .. j+n] by v, which replaces the window with its remainder.
+### :param j: The window's lowest limb.
+### :returns: The quotient digit.
+routine U256Division32.step(me: @Me, j: USize) -> U32
+    local n: USize = me.n.peek()
+    local top_at: USize = j + n
+    local u2: U32 = me.u[top_at]
+    local u1: U32 = me.u[top_at - 1]
+    local u0: U64 = me.u[top_at - 2].to[U64]()
+    local d1: U64 = me.v[n - 1].to[U64]()
+    local d0: U64 = me.v[n - 2].to[U64]()
+
+    # The window's top limb is at most d1, so q̂ < 2^33 and r̂ < d1.
+    top_high: U64 = u2.to[U64]() << 32
+    top: U64 = top_high | u1.to[U64]()
+    q_first: U64 = top // d1
+    # one division: a U64 one is a library call here
+    r_first: U64 = top - q_first *% d1
+
+    # Knuth's D3: lower q̂ by one, and raise r̂ by d1, while the test says q̂ is too big. What is left is at most one
+    # too big.
+    while knuth_d3_too_big(q_hat, r_hat, d0, u0) with q_hat: U64 = q_first, r_hat: U64 = r_first
+        continue with q_hat: q_hat - 1, r_hat: r_hat + d1
+    then
+        # Subtract q̂ × v from the window. A borrow out of its top means q̂ was one too big, so v is added back.
+        digit: U32 = q_hat.to_wrap[U32]()
+        borrow: U32 = me.submul(j, len: n, m: digit)
+        window_top: U32 = me.u[top_at]
+        me.u[top_at] = 0  # the window's remainder is below v
+        if window_top < borrow
+            me.add_back(j, n)
+            return digit - 1
+        return digit
+
+### Knuth's D3 test: q̂ is too big while it exceeds a limb or q̂ × d0 exceeds r̂ × 2^32 + u0. Once r̂ reaches 2^32
+### the test can't fail, so q̂ stands.
+### :param q_hat: The trial quotient digit q̂.
+### :param r_hat: The trial remainder r̂ of the window's top two limbs.
+### :param d0: The divisor's second limb.
+### :param u0: The window's third limb from the top.
+### :returns: True when q̂ is one or more too big.
+private routine knuth_d3_too_big(q_hat: U64, r_hat: U64, d0: U64, u0: U64) -> Bool
+    if r_hat > 0xFFFFFFFF
+        return false
+    if q_hat > 0xFFFFFFFF
+        return true
+    product: U64 = q_hat * d0
+    window: U64 = (r_hat << 32) | u0
+    return product > window
+
+### u[j .. j+len-1] -= v[0 .. len-1] × m. Returns the limb that borrows out of the top.
+### :param j: The first limb of `u` to subtract from.
+### :param len: The number of limbs.
+### :param m: The multiplier.
+### :returns: The limb that borrows out of the top.
+routine U256Division32.submul(me: @Me, j: USize, len: USize, m: U32) -> U32
+    local borrow: @U32 <- 0
+
+    each i in 0 til len
+        # v × m + borrow < 2^64, and when its high limb is 2^32 - 1 its low limb is 0, so the next borrow fits a limb.
+        at: USize = j + i
+        v_limb: U32 = me.v[i]
+        u_limb: U32 = me.u[at]
+        product: U64 = v_limb.mul_wide(m) + borrow.peek().to[U64]()
+        low: U32 = product.to_wrap[U32]()
+        wrapped: Bool = u_limb < low
+        me.u[at] = u_limb -% low
+        high: U32 = (product >> 32).to[U32]()
+        (high + wrapped.to[U32]()).poke_into(borrow)
+    then
+        return borrow.peek()
+
+### u[j .. j+n-1] += v, dropping the carry out of the top: it cancels the borrow that made the window negative.
+### :param j: The window's lowest limb.
+### :param n: The divisor's limb count.
+routine U256Division32.add_back(me: @Me, j: USize, n: USize) -> None
+    local carry: @U32 <- 0
+
+    each i in 0 til n
+        at: USize = j + i
+        v_limb: U32 = me.v[i]
+        u_limb: U32 = me.u[at]
+        limb_sum: U64 = u_limb.to[U64]() + v_limb.to[U64]()
+        sum: U64 = limb_sum + carry.peek().to[U64]()
+        me.u[at] = sum.to_wrap[U32]()
+        (sum >> 32).to[U32]().poke_into(carry)
+    then
+        return

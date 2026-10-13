@@ -385,13 +385,13 @@ public class MigrateTests
                 return
             """;
         var migration = new NamedArgsMigration();
-        migration.Index("a.tess", source, library: false);
+        migration.Index("a.te", source, library: false);
         var report = new List<string>();
-        string after = migration.Rewrite("a.tess", source, report);
+        string after = migration.Rewrite("a.te", source, report);
         Assert.Contains("x: S64 = area(width, height: 4)", after);
         Assert.Contains("y: S64 = larger(x, 2)", after);
         Assert.Empty(report);
-        Assert.Equal(after, migration.Rewrite("a.tess", after, report));
+        Assert.Equal(after, migration.Rewrite("a.te", after, report));
     }
 
     [Theory]

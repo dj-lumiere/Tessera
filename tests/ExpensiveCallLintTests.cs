@@ -49,7 +49,7 @@ public class ExpensiveCallLintTests
                     jump loop(i + 1, total + step)
             """);
         string warning = Assert.Single(warnings);
-        Assert.Contains("t.tess:24:21: warning: 'costly' allocates (@expensive), and this call is on a loop: "
+        Assert.Contains("t.te:24:21: warning: 'costly' allocates (@expensive), and this call is on a loop: "
             + "block 'loop' jumps back to itself, so it runs on every pass", warning);
         Assert.Contains("Move it out of the loop", warning);
     }
@@ -76,7 +76,7 @@ public class ExpensiveCallLintTests
                     jump head(i + 1, total)
             """);
         string warning = Assert.Single(warnings);
-        Assert.Contains("t.tess:28:21: warning: 'unexplained' is @expensive, and this call is on a loop: "
+        Assert.Contains("t.te:28:21: warning: 'unexplained' is @expensive, and this call is on a loop: "
             + "block 'body' is on the loop that 'latch' closes by going back to 'head'", warning);
     }
 
@@ -140,9 +140,9 @@ public class ExpensiveCallLintTests
                     jump loop(i + 1, total + step)
             """);
         Assert.Equal(2, warnings.Count);
-        Assert.Contains("t.tess:27:38: warning: 'costly' allocates (@expensive), and this call is on a loop: "
+        Assert.Contains("t.te:27:38: warning: 'costly' allocates (@expensive), and this call is on a loop: "
             + "block 'loop' jumps back to itself", warnings[0]);
-        Assert.Contains("t.tess:30:21: warning: 'costly' allocates (@expensive), and this call is on a loop: "
+        Assert.Contains("t.te:30:21: warning: 'costly' allocates (@expensive), and this call is on a loop: "
             + "block 'even' goes back to 'loop', closing a loop", warnings[1]);
     }
 
@@ -209,7 +209,7 @@ public class ExpensiveCallLintTests
                 n: S64 = costly()
                 return
             """);
-        var errors = new Compiler(BuildTarget.Host(), WithStdlib(decls)).CheckAll(scope: f => f == "t.tess");
+        var errors = new Compiler(BuildTarget.Host(), WithStdlib(decls)).CheckAll(scope: f => f == "t.te");
         Assert.Contains(errors, e => e.Message.Contains("@expensive takes nothing, or one string"));
     }
 
@@ -217,12 +217,12 @@ public class ExpensiveCallLintTests
     {
         var decls = Parse(Callees + source);
         var compiler = new Compiler(BuildTarget.Host(), WithStdlib(decls));
-        Assert.Empty(compiler.CheckAll(scope: f => f == "t.tess"));
+        Assert.Empty(compiler.CheckAll(scope: f => f == "t.te"));
         return StyleLint.Check(decls, built: [compiler]).Where(w => w.Contains("@expensive")).ToList();
     }
 
     private static List<Decl> Parse(string source) =>
-        new Parser(new Lexer("t.tess", source).Lex(), "t.tess").ParseModule().Decls;
+        new Parser(new Lexer("t.te", source).Lex(), "t.te").ParseModule().Decls;
 
     private static List<Decl> WithStdlib(List<Decl> decls) =>
         [.. decls, .. StandardLibrary.Load(Path.Combine(FindRoot(), "Standard"))];
@@ -230,7 +230,7 @@ public class ExpensiveCallLintTests
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "Prelude.tess"))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "Prelude.te"))
                 && Directory.Exists(Path.Combine(dir.FullName, "tests")))
                 return dir.FullName;
         throw new InvalidOperationException("can't find the Tessera repository above the test assembly");

@@ -11,7 +11,7 @@ public class StructurerTests
     private static string Blocks(string text, out List<string> report)
     {
         report = [];
-        return StructuredMigration.Rewrite("structurer_test.tess", text, report, onlyBlocks: true);
+        return StructuredMigration.Rewrite("structurer_test.te", text, report, onlyBlocks: true);
     }
 
     [Fact]

@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 
 namespace Tessera;
 
-/// `tessera migrate`: rewrites .tess sources from the spelling of an earlier release to the current one, so a release
+/// `tessera migrate`: rewrites .te sources from the spelling of an earlier release to the current one, so a release
 /// that renames things is one command for a program. It changes only what the rules below name, and reports the
 /// files it changed.
 ///
@@ -37,7 +37,7 @@ public static class Migrate
 
     private static readonly Regex LowerFloat = new(@"(?<![A-Za-z0-9])f(16|32|64|128)(?![A-Za-z0-9])", RegexOptions.Compiled);
 
-    /// Rewrites every .tess file under the given files and directories in place.
+    /// Rewrites every .te file under the given files and directories in place.
     public static int Run(string[] args)
     {
         bool check = args.Contains("--check");
@@ -62,7 +62,7 @@ public static class Migrate
         // The entry step also rewrites the examples of documentation pages.
         bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat";
         var files = paths.SelectMany(p => Directory.Exists(p)
-            ? Directory.EnumerateFiles(p, "*.tess", SearchOption.AllDirectories)
+            ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
             : p.EndsWith(".md", StringComparison.Ordinal) && !entryPages ? [] : [p]).Order().ToList();
         var changedFiles = new HashSet<string>();
@@ -1010,7 +1010,7 @@ public static class Migrate
             yield break;
         }
 
-        foreach (string file in Directory.EnumerateFiles(dir, "*.tess", SearchOption.AllDirectories))
+        foreach (string file in Directory.EnumerateFiles(dir, "*.te", SearchOption.AllDirectories))
             yield return (file, File.ReadAllText(file));
     }
 

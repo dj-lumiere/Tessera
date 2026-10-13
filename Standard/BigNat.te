@@ -1,0 +1,401 @@
+# Tessera stdlib: BigNat, fixed-capacity big naturals
+#
+# Exact arithmetic for float parsing and printing (FloatConvert.te,
+# Format.te). Limbs are U64, least significant first, no heap. N is the
+# capacity in limbs, so each use sizes its own: B64 parsing needs 72, B128
+# printing 320, B128 parsing 864.
+
+module Standard/Format
+
+preset POW10_U64: @Array[U64, 20] <- [1, 10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000,
+    1000000000, 10000000000, 100000000000, 1000000000000, 10000000000000, 100000000000000,
+    1000000000000000, 10000000000000000, 100000000000000000, 1000000000000000000,
+    10000000000000000000]
+
+### A natural number in U64 limbs, least significant first. `count` limbs are
+### in use and the top one is nonzero (zero has count 0). Fixed capacity:
+### growing past LIMBS limbs crashes with Overflow.
+record BigNat[LIMBS]
+needs LIMBS: USize
+    limbs: Array[U64, LIMBS]
+    count: USize
+
+### Sets `me` to a U64 value.
+### :param value: The new value.
+routine BigNat[LIMBS].set(me: @Me, value: U64) -> None
+needs LIMBS: USize
+    me.limbs[0] = value
+    me.count.poke((value != 0).to[USize]())
+    return
+
+### Sets `me` to a U128 value, in up to two limbs.
+### :param value: The new value.
+routine BigNat[LIMBS].set(me: @Me, value: U128) -> None
+needs LIMBS: USize
+    low: U64 = value.to_wrap[U64]()
+    high: U64 = (value >> 64).to[U64]()
+    me.limbs[0] = low
+    me.limbs[1] = high
+    two: Bool = high != 0
+    one: Bool = low != 0
+    used: USize = when
+        two => 2
+        else => one.to[USize]()
+    me.count.poke(used)
+    return
+
+### Copies the limbs and count of `other` into `me`.
+### :param other: The number to copy.
+routine BigNat[LIMBS].copy_from(me: @Me, other: @Me) -> None
+needs LIMBS: USize
+    value: Me = other.peek()
+    me.poke(value)
+    return
+
+### True when `me` is zero (it has no limbs in use).
+### :returns: True when `me` is zero.
+routine BigNat[LIMBS].is_zero(me: @Me) -> Bool
+needs LIMBS: USize
+    count: USize = me.count.peek()
+    return count == 0
+
+### The number of bits `me` needs: the position of its top set bit plus one, 0 for zero.
+### :returns: The bit length.
+routine BigNat[LIMBS].bit_length(me: @Me) -> USize
+needs LIMBS: USize
+    local count: USize = me.count.peek()
+
+    if count == 0
+        return 0
+    else
+        top_at: USize = count - 1
+        top: U64 = me.limbs[top_at]
+        full_bits: USize = top_at * 64 + 64
+        bits: USize = full_bits - top.leading_zeros().to[USize]()
+        return bits
+
+### Appends limb as the new top limb.
+### :param limb: The new top limb.
+### :throws: Crashes with `IntegerOverflowError` when all `LIMBS` limbs are already in use.
+@track_caller
+routine BigNat[LIMBS].push_limb(me: @Me, limb: U64) -> None
+needs LIMBS: USize
+    local count: USize = me.count.peek()
+
+    if count < LIMBS
+        me.limbs[count] = limb
+        me.count.poke(count + 1)
+        return
+    else
+        crash_overflow()
+
+### Drops zero limbs from the top.
+routine BigNat[LIMBS].trim(me: @Me) -> None
+needs LIMBS: USize
+    while count != 0 with count: USize = me.count.peek()
+        at: USize = count - 1
+        top: U64 = me.limbs[at]
+        if top == 0
+            continue with count: at
+        else
+            me.count.poke(count)
+            return
+    then
+        me.count.poke(count)
+        return
+
+### Sets `me` to `me` × `m` + `addend`.
+### :param m: The factor.
+### :param addend: The value added after multiplying.
+### :throws: Crashes with `IntegerOverflowError` when the result needs more than `LIMBS` limbs.
+routine BigNat[LIMBS].mul_add(me: @Me, m: U64, addend: U64) -> None
+needs LIMBS: USize
+    local count: USize = me.count.peek()
+
+    each i in 0 til count with carry: U128 = addend.to[U128]()
+        # limb × m + carry < 2^128, so the sum can't overflow
+        limb: U64 = me.limbs[i]
+        product: U128 = limb.mul_wide(m) + carry
+        me.limbs[i] = product.to_wrap[U64]()
+        continue with carry: product >> 64
+    then
+        high: U64 = carry.to[U64]()
+        if high == 0
+            return
+        else
+            me.push_limb(high)
+            return
+
+### Sets `me` to `me` × 10^`k`.
+### :param k: The power of ten.
+### :throws: Crashes with `IntegerOverflowError` when the result needs more than `LIMBS` limbs.
+routine BigNat[LIMBS].mul_pow10(me: @Me, k: USize) -> None
+needs LIMBS: USize
+    while left >= 19 with left: USize = k
+        me.mul_add(m: 10000000000000000000, addend: 0)  # 10^19
+        continue with left: left - 19
+    then
+        factor: U64 = POW10_U64.getitem(left)
+        me.mul_add(m: factor, addend: 0)
+        return
+
+### Sets `me` to `me` × 2^`bits`.
+### :param bits: How many bits to shift left.
+### :throws: Crashes with `IntegerOverflowError` when the result needs more than `LIMBS` limbs.
+@track_caller
+routine BigNat[LIMBS].shl(me: @Me, bits: USize) -> None
+needs LIMBS: USize
+    local limb_shift: USize = bits // 64
+    local bit_shift: U64 = (bits % 64).to[U64]()
+    local count: USize = me.count.peek()
+
+    # Bits move up within the limbs first, and the bits out of the top limb become a new limb.
+    if bit_shift != 0
+        each i in 0 til count with carry: U64 = 0
+            limb: U64 = me.limbs[i]
+            me.limbs[i] = (limb << bit_shift) | carry
+            continue with carry: limb >> 64 - bit_shift
+        then
+            if carry != 0
+                me.push_limb(carry)
+
+    # Whole limbs move up by limb_shift, top first, and zeros fill the bottom.
+    current_count: USize = me.count.peek()
+    nothing: Bool = limb_shift == 0 or current_count == 0
+    new_count: USize = current_count + limb_shift
+    when
+        nothing => return
+        new_count <= LIMBS => pass
+        else => crash_overflow()
+
+    # left limbs are still to move. The next one down is left - 1
+    while left != 0 with left: USize = current_count
+        i: USize = left - 1
+        limb: U64 = me.limbs[i]
+        me.limbs[i + limb_shift] = limb
+        continue with left: i
+    each i in 0 til limb_shift
+        me.limbs[i] = 0
+    me.count.poke(new_count)
+    return
+
+### Sets `me` to `me` / 2, rounding down.
+routine BigNat[LIMBS].shr1(me: @Me) -> None
+needs LIMBS: USize
+    local carry: @U64 <- 0
+
+    # left limbs are still to shift, top first
+    while left != 0 with left: USize = me.count.peek()
+        i: USize = left - 1
+        limb: U64 = me.limbs[i]
+        me.limbs[i] = (limb >> 1) | (carry.peek() << 63)
+        (limb & 1).poke_into(carry)
+        continue with left: i
+    me.trim()
+    return
+
+### Compares `me` with `other`.
+### :param other: The number to compare with.
+### :returns: -1, 0, or 1 as `me` is below, equal to, or above `other`.
+routine BigNat[LIMBS].compare(me: @Me, other: @Me) -> S32
+needs LIMBS: USize
+    a_count: USize = me.count.peek()
+    b_count: USize = other.count.peek()
+    shorter: Bool = a_count < b_count
+    when
+        shorter => return -1
+        a_count > b_count => return 1
+        else =>
+            # left limbs are still to compare, top first
+            while left != 0 with left: USize = a_count
+                i: USize = left - 1
+                a: U64 = me.limbs[i]
+                b: U64 = other.limbs[i]
+                below: Bool = a < b
+                when
+                    below => return -1
+                    a > b => return 1
+                    else => continue with left: i
+            then
+                return 0
+
+### Sets `me` to `me` - `other`.
+### :param other: The number to subtract.
+### :throws: Crashes with `IntegerOverflowError` when `other` is larger than `me`.
+@track_caller
+routine BigNat[LIMBS].sub(me: @Me, other: @Me) -> None
+needs LIMBS: USize
+    local a_count: USize = me.count.peek()
+    local b_count: USize = other.count.peek()
+    local borrow: @U64 <- 0
+
+    if b_count > a_count
+        crash_overflow()
+    else
+        each i in 0 til a_count
+            a: U64 = me.limbs[i]
+            b_limb: U64 = other.limbs[i]
+            in_b: Bool = i < b_count
+            b: U64 = when
+                in_b => b_limb
+                else => 0
+            me.limbs[i] = a -% b -% borrow.peek()
+            # a - b - borrow goes negative when a < b, or a == b with a borrow in
+            under: Bool = a < b
+            even_out: Bool = a == b and borrow.peek() == 1
+            next: U64 = (under or even_out).to[U64]()
+            next.poke_into(borrow)
+        # a borrow out of the top limb means `other` was larger
+        if borrow.peek() != 0
+            crash_overflow()
+        me.trim()
+        return
+
+### For a quotient below 2^`bits` (at most 127): returns floor(`me` / `divisor`) and leaves the remainder in
+### `me`. `scratch` holds the shifted divisor.
+### :param divisor: The divisor.
+### :param scratch: Working space, overwritten.
+### :param bits: An upper bound on the quotient's bit length, at least 1.
+### :returns: The quotient.
+### :throws: Crashes with `IntegerOverflowError` when `bits` is 0, or when `divisor` shifted left by `bits` - 1 needs
+###     more than `LIMBS` limbs.
+@expensive("divides limb by limb in software")
+routine BigNat[LIMBS].div_small(me: @Me, divisor: @Me, scratch: @Me, bits: USize) -> U128
+needs LIMBS: USize
+    local q: @U128 <- 0
+
+    scratch.copy_from(divisor)
+    scratch.shl(bits - 1)
+
+    # left quotient bits are still to find, top first
+    while left != 0 with left: USize = bits
+        i: USize = left - 1
+        if me.compare(scratch) >= 0
+            me.sub(scratch)
+            (q.peek() | (1 << i.to[U128]())).poke_into(q)
+        scratch.shr1()
+        continue with left: i
+    then
+        return q.peek()
+
+### Sets `me` to `me` + `other`.
+### :param other: The number to add.
+### :throws: Crashes with `IntegerOverflowError` when the sum needs more than `LIMBS` limbs.
+routine BigNat[LIMBS].add(me: @Me, other: @Me) -> None
+needs LIMBS: USize
+    local a_count: USize = me.count.peek()
+    local b_count: USize = other.count.peek()
+    local count: USize = a_count.max(b_count)
+
+    each i in 0 til count with carry: U64 = 0
+        a_limb: U64 = me.limbs[i]
+        b_limb: U64 = other.limbs[i]
+        a: U64 = when
+            i < a_count => a_limb
+            else => 0
+        b: U64 = when
+            i < b_count => b_limb
+            else => 0
+        limb_sum: U128 = a.to[U128]() + b.to[U128]()
+        sum: U128 = limb_sum + carry.to[U128]()
+        me.limbs[i] = sum.to_wrap[U64]()
+        continue with carry: (sum >> 64).to[U64]()
+    then
+        me.count.poke(count)
+        if carry == 0
+            return
+        else
+            me.push_limb(carry)
+            return
+
+### Sets `me` to floor(`me` / `d`) and returns the remainder.
+### :param d: The divisor.
+### :returns: The remainder.
+### :throws: Crashes with `DivisionByZeroError` when `d` is 0 and `me` is not zero.
+@expensive("divides limb by limb in software")
+routine BigNat[LIMBS].div_limb(me: @Me, d: U64) -> U64
+needs LIMBS: USize
+    local divisor: U128 = d.to[U128]()
+    local rem: @U128 <- 0
+
+    # left limbs are still to divide, top first
+    while left != 0 with left: USize = me.count.peek()
+        i: USize = left - 1
+        limb: U64 = me.limbs[i]
+        cur: U128 = (rem.peek() << 64) | limb.to[U128]()
+        me.limbs[i] = (cur // divisor).to[U64]()
+        (cur % divisor).poke_into(rem)
+        continue with left: i
+    me.trim()
+    return rem.peek().to[U64]()
+
+### Whether bit `i` of `me` is set (0 is the lowest).
+### :param i: The bit position.
+### :returns: True when the bit is set.
+routine BigNat[LIMBS].has_bit(me: @Me, i: USize) -> Bool
+needs LIMBS: USize
+    local count: USize = me.count.peek()
+    local at: USize = i // 64
+
+    if at < count
+        limb: U64 = me.limbs[at]
+        bit_value: U64 = (limb >> (i % 64).to[U64]()) & 1
+        return bit_value == 1
+    else
+        return false
+
+### Whether any bit below bit `n` of `me` is set.
+### :param n: The bit position, exclusive.
+### :returns: True when a bit below `n` is set.
+routine BigNat[LIMBS].has_any_below(me: @Me, n: USize) -> Bool
+needs LIMBS: USize
+    local count: USize = me.count.peek()
+    local whole: USize = (n // 64).min(count)
+
+    each i in 0 til whole
+        limb: U64 = me.limbs[i]
+        if limb != 0
+            return true
+        else
+            continue
+    if whole < count
+        limb: U64 = me.limbs[whole]
+        low: U64 = (1 << (n % 64).to[U64]()) - 1
+        return limb & low != 0
+    else
+        return false
+
+### Sets `me` to `me` / 2^`bits`, rounded to nearest, ties to even.
+### :param bits: How many bits to shift right, at least 1.
+### :throws: Crashes with `IntegerOverflowError` when `bits` is 0.
+routine BigNat[LIMBS].shr_round_even(me: @Me, bits: USize) -> None
+needs LIMBS: USize
+    local half_at: USize = bits - 1
+    local half: Bool = me.has_bit(half_at)
+    local sticky: Bool = me.has_any_below(half_at)
+    local limb_shift: USize = bits // 64
+    local bit_shift: U64 = (bits % 64).to[U64]()
+    local count: USize = me.count.peek()
+    local kept: USize = count -^ limb_shift
+
+    # limb i takes the bits of limbs i + shift and i + shift + 1
+    each i in 0 til kept
+        from: USize = i + limb_shift
+        low: U64 = me.limbs[from]
+        next_at: USize = from + 1
+        has_next: Bool = next_at < count
+        next_limb: U64 = me.limbs[next_at.min(count - 1)]
+        next: U64 = when
+            has_next => next_limb
+            else => 0
+        # two shifts, so a zero bit shift never shifts by 64
+        high: U64 = next << 63 - bit_shift << 1
+        me.limbs[i] = (low >> bit_shift) | high
+    me.count.poke(kept)
+    me.trim()
+    odd: Bool = me.has_bit(0)
+    if half and (sticky or odd)
+        me.mul_add(m: 1, addend: 1)
+        return
+    else
+        return

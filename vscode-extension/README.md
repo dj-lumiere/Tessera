@@ -1,6 +1,6 @@
 # Tessera for VS Code
 
-Tessera (`.tess`) in VS Code: highlighting from `../Tessera.tmbundle`, comment toggling and bracket pairing,
+Tessera (`.te`) in VS Code: highlighting from `../Tessera.tmbundle`, comment toggling and bracket pairing,
 and the Tessera language server (`tessera lsp`): errors as you type, semantic colors, hover, completion, go to
 definition, rename, find usages and formatting.
 

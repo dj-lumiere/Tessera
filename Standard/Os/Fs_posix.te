@@ -1,0 +1,1736 @@
+# Tessera stdlib: files and the filesystem on Linux and macOS (see Fs.te)
+#
+# Metadata on Linux comes from statx, whose struct is the same on every architecture and word size and has the
+# creation time, on macOS from the 64-bit-inode stat ($INODE64 on x86-64). Linux's calls are the 64-bit-offset ones
+# (open64, lseek64, ...), so a 32-bit build handles files past 2 GiB too.
+
+module Standard/Os
+
+import Standard/Alloc
+
+# -- the C library -------------------------------------------------------------------
+
+### Binds the C `__errno_location` function: where the calling thread's `errno` is.
+### :returns: The address of `errno`.
+@external("c")
+@symbol("__errno_location")
+@target(os: "linux")
+private routine c_errno_place() -> @CInt
+
+### Binds the C `__error` function: where the calling thread's `errno` is.
+### :returns: The address of `errno`.
+@external("c")
+@symbol("__error")
+@target(os: "macos")
+private routine c_errno_place() -> @CInt
+
+### Binds the C `open64` function: opens or creates a file. A third, variadic argument gives the permission bits of a
+### file it creates.
+### :param path: The NUL-terminated path.
+### :param flags: The `O_*` flags.
+### :returns: The new file descriptor, or -1 with `errno` set.
+@external("c")
+@symbol("open64")
+@variadic
+@target(os: "linux")
+private routine c_open(path: @Byte, flags: CInt) -> CInt
+
+### Binds the C `open` function: opens or creates a file. A third, variadic argument gives the permission bits of a
+### file it creates.
+### :param path: The NUL-terminated path.
+### :param flags: The `O_*` flags.
+### :returns: The new file descriptor, or -1 with `errno` set.
+@external("c")
+@symbol("open")
+@variadic
+@target(os: "macos")
+private routine c_open(path: @Byte, flags: CInt) -> CInt
+
+### Binds the C `close` function: closes a file descriptor.
+### :param fd: The descriptor to close.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("close")
+@target(os: ("linux", "macos"))
+private routine c_close(fd: CInt) -> CInt
+
+### Binds the C `lseek64` function: moves a descriptor's file position.
+### :param fd: The open file.
+### :param offset: The distance to move.
+### :param whence: Where `offset` counts from: 0 the start, 1 the current position, 2 the end.
+### :returns: The new position from the start, or -1 with `errno` set.
+@external("c")
+@symbol("lseek64")
+@target(os: "linux")
+private routine c_lseek(fd: CInt, offset: S64, whence: CInt) -> S64
+
+### Binds the C `lseek` function: moves a descriptor's file position.
+### :param fd: The open file.
+### :param offset: The distance to move.
+### :param whence: Where `offset` counts from: 0 the start, 1 the current position, 2 the end.
+### :returns: The new position from the start, or -1 with `errno` set.
+@external("c")
+@symbol("lseek")
+@target(os: "macos")
+private routine c_lseek(fd: CInt, offset: S64, whence: CInt) -> S64
+
+### Binds the C `ftruncate64` function: cuts a file to a size, or extends it with zeros.
+### :param fd: The open file.
+### :param size: The new size in bytes.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("ftruncate64")
+@target(os: "linux")
+private routine c_ftruncate(fd: CInt, size: S64) -> CInt
+
+### Binds the C `ftruncate` function: cuts a file to a size, or extends it with zeros.
+### :param fd: The open file.
+### :param size: The new size in bytes.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("ftruncate")
+@target(os: "macos")
+private routine c_ftruncate(fd: CInt, size: S64) -> CInt
+
+### Binds the C `fsync` function: waits until a file's written data is on the storage device.
+### :param fd: The open file.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("fsync")
+@target(os: ("linux", "macos"))
+private routine c_fsync(fd: CInt) -> CInt
+
+### Binds the C `mkdir` function: makes a directory.
+### :param path: The NUL-terminated path of the new directory.
+### :param mode: Its permission bits, before the umask.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("mkdir")
+@target(os: "linux")
+private routine c_mkdir(path: @Byte, mode: U32) -> CInt
+
+### Binds the C `mkdir` function: makes a directory.
+### :param path: The NUL-terminated path of the new directory.
+### :param mode: Its permission bits, before the umask.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("mkdir")
+@target(os: "macos")
+private routine c_mkdir(path: @Byte, mode: U16) -> CInt
+
+### Binds the C `chmod` function: sets a file's permission bits.
+### :param path: The NUL-terminated path, a link followed.
+### :param mode: The new permission bits.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("chmod")
+@target(os: "linux")
+private routine c_chmod(path: @Byte, mode: U32) -> CInt
+
+### Binds the C `chmod` function: sets a file's permission bits.
+### :param path: The NUL-terminated path, a link followed.
+### :param mode: The new permission bits.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("chmod")
+@target(os: "macos")
+private routine c_chmod(path: @Byte, mode: U16) -> CInt
+
+### Binds the C `fchmod` function: sets the permission bits of an open file.
+### :param fd: The open file.
+### :param mode: The new permission bits.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("fchmod")
+@target(os: "linux")
+private routine c_fchmod(fd: CInt, mode: U32) -> CInt
+
+### Binds the C `fchmod` function: sets the permission bits of an open file.
+### :param fd: The open file.
+### :param mode: The new permission bits.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("fchmod")
+@target(os: "macos")
+private routine c_fchmod(fd: CInt, mode: U16) -> CInt
+
+### Binds the C `rmdir` function: removes an empty directory.
+### :param path: The NUL-terminated path.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("rmdir")
+@target(os: ("linux", "macos"))
+private routine c_rmdir(path: @Byte) -> CInt
+
+### Binds the C `unlink` function: removes a file or a link, not a directory.
+### :param path: The NUL-terminated path.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("unlink")
+@target(os: ("linux", "macos"))
+private routine c_unlink(path: @Byte) -> CInt
+
+### Binds the C `rename` function: renames a file or directory, replacing what is at the new name.
+### :param from: The current NUL-terminated path.
+### :param to: The new NUL-terminated path.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("rename")
+@target(os: ("linux", "macos"))
+private routine c_rename(from: @Byte, to: @Byte) -> CInt
+
+### Binds the C `renameat2` function: renames a file or directory, with flags such as `RENAME_NOREPLACE`.
+### :param from_dir: The directory `from` is relative to, `AT_FDCWD` for the working directory.
+### :param from: The current NUL-terminated path.
+### :param to_dir: The directory `to` is relative to, `AT_FDCWD` for the working directory.
+### :param to: The new NUL-terminated path.
+### :param flags: The `RENAME_*` flags.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("renameat2")
+@target(os: "linux")
+private routine c_renameat2(from_dir: CInt, from: @Byte, to_dir: CInt, to: @Byte,
+    flags: U32) -> CInt
+
+### Binds the C `renamex_np` function: renames a file or directory, with flags such as `RENAME_EXCL`.
+### :param from: The current NUL-terminated path.
+### :param to: The new NUL-terminated path.
+### :param flags: The `RENAME_*` flags.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("renamex_np")
+@target(os: "macos")
+private routine c_renamex_np(from: @Byte, to: @Byte, flags: U32) -> CInt
+
+### Binds the C `access` function: checks whether this process may read, write, or run a file.
+### :param path: The NUL-terminated path.
+### :param mode: `R_OK` (4), `W_OK` (2), `X_OK` (1), or `F_OK` (0) to ask only whether it exists.
+### :returns: 0 when allowed, or -1 with `errno` set.
+@external("c")
+@symbol("access")
+@target(os: ("linux", "macos"))
+private routine c_access(path: @Byte, mode: CInt) -> CInt
+
+### Binds the C `utimes` function: sets a file's access and modification times.
+### :param path: The NUL-terminated path.
+### :param times: Two `struct timeval`s, or null for now.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("utimes")
+@target(os: ("linux", "macos"))
+private routine c_utimes(path: @Byte, times: Addr) -> CInt
+
+### Binds the C `getcwd` function: copies the working directory, NUL-terminated, into a buffer.
+### :param buf: The buffer.
+### :param size: Its size in bytes.
+### :returns: `buf`, or null with `errno` set (`ERANGE` when the buffer is too small).
+@external("c")
+@symbol("getcwd")
+@target(os: ("linux", "macos"))
+private routine c_getcwd(buf: @Byte, size: USize) -> @Byte
+
+### Binds the C `chdir` function: changes the working directory.
+### :param path: The NUL-terminated path of the new working directory.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("chdir")
+@target(os: ("linux", "macos"))
+private routine c_chdir(path: @Byte) -> CInt
+
+### Binds the C `getenv` function: looks up an environment variable.
+### :param name: The variable's name.
+### :returns: Its NUL-terminated value, owned by the C library, or null when it isn't set.
+@external("c")
+@symbol("getenv")
+@target(os: ("linux", "macos"))
+private routine c_getenv(name: CStr) -> @Byte
+
+### Binds the C `realpath` function: makes a path absolute with every link, ".", and ".." resolved.
+### :param path: The NUL-terminated path, which must exist.
+### :param resolved: A buffer of `PATH_MAX` bytes, or null to get memory from C's malloc.
+### :returns: The resolved path, or null with `errno` set.
+@external("c")
+@symbol("realpath")
+@target(os: ("linux", "macos"))
+private routine c_realpath(path: @Byte, resolved: Addr) -> @Byte
+
+### Binds the C `free` function: gives memory from C's malloc back.
+### :param ptr: The memory, or null.
+@external("c")
+@symbol("free")
+@target(os: ("linux", "macos"))
+private routine c_free(ptr: Addr) -> None
+
+### Binds the C `opendir` function: opens a directory listing.
+### :param path: The NUL-terminated path of the directory.
+### :returns: A `DIR` handle, or null with `errno` set.
+@external("c")
+@symbol("opendir")
+@target(os: "linux")
+private routine c_opendir(path: @Byte) -> Addr
+
+### Binds the C `opendir$INODE64` function: opens a directory listing.
+### :param path: The NUL-terminated path of the directory.
+### :returns: A `DIR` handle, or null with `errno` set.
+@external("c")
+@symbol("opendir$INODE64")
+@target(os: "macos", arch: "x86_64")
+private routine c_opendir(path: @Byte) -> Addr
+
+### Binds the C `opendir` function: opens a directory listing.
+### :param path: The NUL-terminated path of the directory.
+### :returns: A `DIR` handle, or null with `errno` set.
+@external("c")
+@symbol("opendir")
+@target(os: "macos", arch: not "x86_64")
+private routine c_opendir(path: @Byte) -> Addr
+
+### Binds the C `readdir64` function: reads the next entry of a directory listing.
+### :param dir: The `DIR` handle.
+### :returns: The entry's `struct dirent64`, valid until the next call, or null at the end or on an error.
+@external("c")
+@symbol("readdir64")
+@target(os: "linux")
+private routine c_readdir(dir: Addr) -> @Byte
+
+### Binds the C `readdir$INODE64` function: reads the next entry of a directory listing.
+### :param dir: The `DIR` handle.
+### :returns: The entry's `struct dirent`, valid until the next call, or null at the end or on an error.
+@external("c")
+@symbol("readdir$INODE64")
+@target(os: "macos", arch: "x86_64")
+private routine c_readdir(dir: Addr) -> @Byte
+
+### Binds the C `readdir` function: reads the next entry of a directory listing.
+### :param dir: The `DIR` handle.
+### :returns: The entry's `struct dirent`, valid until the next call, or null at the end or on an error.
+@external("c")
+@symbol("readdir")
+@target(os: "macos", arch: not "x86_64")
+private routine c_readdir(dir: Addr) -> @Byte
+
+### Binds the C `closedir` function: closes a directory listing.
+### :param dir: The `DIR` handle.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("closedir")
+@target(os: ("linux", "macos"))
+private routine c_closedir(dir: Addr) -> CInt
+
+### Binds the C `mmap64` function: maps part of a file into memory.
+### :param addr: Where to put the mapping, or null to let the OS choose.
+### :param length: The bytes to map.
+### :param prot: The `PROT_*` flags.
+### :param flags: `MAP_SHARED` or `MAP_PRIVATE`, with other `MAP_*` flags.
+### :param fd: The open file.
+### :param offset: Where in the file to start, a multiple of the page size.
+### :returns: The mapping's address, or `MAP_FAILED` (all ones) with `errno` set.
+@external("c")
+@symbol("mmap64")
+@target(os: "linux")
+private routine c_mmap(addr: Addr, length: USize, prot: CInt, flags: CInt, fd: CInt,
+    offset: S64) -> Addr
+
+### Binds the C `mmap` function: maps part of a file into memory.
+### :param addr: Where to put the mapping, or null to let the OS choose.
+### :param length: The bytes to map.
+### :param prot: The `PROT_*` flags.
+### :param flags: `MAP_SHARED` or `MAP_PRIVATE`, with other `MAP_*` flags.
+### :param fd: The open file.
+### :param offset: Where in the file to start, a multiple of the page size.
+### :returns: The mapping's address, or `MAP_FAILED` (all ones) with `errno` set.
+@external("c")
+@symbol("mmap")
+@target(os: "macos")
+private routine c_mmap(addr: Addr, length: USize, prot: CInt, flags: CInt, fd: CInt,
+    offset: S64) -> Addr
+
+### Binds the C `munmap` function: removes a mapping.
+### :param addr: The mapping's address.
+### :param length: Its length in bytes.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("munmap")
+@target(os: ("linux", "macos"))
+private routine c_munmap(addr: Addr, length: USize) -> CInt
+
+### Binds the C `msync` function: writes a mapping's changed pages back to its file.
+### :param addr: The mapping's address.
+### :param length: The bytes to write back.
+### :param flags: `MS_SYNC` to wait for the write, or `MS_ASYNC`.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("msync")
+@target(os: ("linux", "macos"))
+private routine c_msync(addr: Addr, length: USize, flags: CInt) -> CInt
+
+### Binds the C `madvise` function: tells the OS how a mapping will be used.
+### :param addr: The mapping's address.
+### :param length: The bytes the advice covers.
+### :param advice: An `MADV_*` value.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("madvise")
+@target(os: ("linux", "macos"))
+private routine c_madvise(addr: Addr, length: USize, advice: CInt) -> CInt
+
+# -- the numbers that differ between Linux and macOS --------------------------------------
+
+### O_CREAT, O_TRUNC, O_APPEND, O_EXCL, O_CLOEXEC (O_RDONLY 0, O_WRONLY 1, O_RDWR 2 everywhere).
+private record OpenFlags
+    create: CInt
+    truncate: CInt
+    append: CInt
+    exclude: CInt
+    cloexec: CInt
+
+### ENAMETOOLONG, ENOTEMPTY, ELOOP, and what renameat2 / renamex_np fail with when the filesystem can't do it.
+private record ErrnoNumbers
+    name_too_long: CInt
+    not_empty: CInt
+    loop: CInt
+    unsupported: CInt
+
+### Makes a `OpenFlags` from its fields.
+### :param create: Its `create`.
+### :param truncate: Its `truncate`.
+### :param append: Its `append`.
+### :param exclude: Its `exclude`.
+### :param cloexec: Its `cloexec`.
+### :returns: The new value.
+private routine OpenFlags.construct(create: CInt, truncate: CInt, append: CInt, exclude: CInt,
+    cloexec: CInt) -> Me
+    return Me(create, truncate, append, exclude, cloexec)
+
+### Releases nothing: a `OpenFlags` holds no memory of its own.
+private routine OpenFlags.destruct(me: @Me) -> None
+    return
+
+### Makes a `ErrnoNumbers` from its fields.
+### :param name_too_long: Its `name_too_long`.
+### :param not_empty: Its `not_empty`.
+### :param loop: Its `loop`.
+### :param unsupported: Its `unsupported`.
+### :returns: The new value.
+private routine ErrnoNumbers.construct(name_too_long: CInt, not_empty: CInt, loop: CInt,
+    unsupported: CInt) -> Me
+    return Me(name_too_long, not_empty, loop, unsupported)
+
+### Releases nothing: a `ErrnoNumbers` holds no memory of its own.
+private routine ErrnoNumbers.destruct(me: @Me) -> None
+    return
+
+### The `O_*` open flags whose values differ, Linux's.
+### :returns: `O_CREAT`, `O_TRUNC`, `O_APPEND`, `O_EXCL`, and `O_CLOEXEC` on Linux.
+@target(os: "linux")
+private routine open_flags() -> OpenFlags
+    return OpenFlags(create: 0x40, truncate: 0x200, append: 0x400, exclude: 0x80, cloexec: 0x80000)
+
+### The `O_*` open flags whose values differ, macOS's.
+### :returns: `O_CREAT`, `O_TRUNC`, `O_APPEND`, `O_EXCL`, and `O_CLOEXEC` on macOS.
+@target(os: "macos")
+private routine open_flags() -> OpenFlags
+    return OpenFlags(create: 0x200, truncate: 0x400, append: 0x8, exclude: 0x800,
+        cloexec: 0x1000000)
+
+### The errno values that differ between Linux and macOS, Linux's.
+### :returns: `ENAMETOOLONG`, `ENOTEMPTY`, `ELOOP`, and `ENOSYS` as the unsupported one.
+@target(os: "linux")
+private routine errno_numbers() -> ErrnoNumbers
+    # ENOSYS for unsupported (EINVAL is checked too)
+    return ErrnoNumbers(name_too_long: 36, not_empty: 39, loop: 40, unsupported: 38)
+
+### The errno values that differ between Linux and macOS, macOS's.
+### :returns: `ENAMETOOLONG`, `ENOTEMPTY`, `ELOOP`, and `ENOTSUP` as the unsupported one.
+@target(os: "macos")
+private routine errno_numbers() -> ErrnoNumbers
+    # ENOTSUP for unsupported
+    return ErrnoNumbers(name_too_long: 63, not_empty: 66, loop: 62, unsupported: 45)
+
+### The `MS_SYNC` flag of msync on Linux.
+### :returns: 4.
+@target(os: "linux")
+private routine ms_sync() -> CInt
+    return 4
+
+### The `MS_SYNC` flag of msync on macOS.
+### :returns: 0x10.
+@target(os: "macos")
+private routine ms_sync() -> CInt
+    return 0x10
+
+### Where a Linux `struct dirent64` (readdir64's) has `d_type`.
+### :returns: The byte offset 18.
+@target(os: "linux")
+private routine dirent_type_at() -> USize
+    return 18
+
+### Where a macOS `struct dirent` (64-bit inodes) has `d_type`.
+### :returns: The byte offset 20.
+@target(os: "macos")
+private routine dirent_type_at() -> USize
+    return 20
+
+### Where a Linux `struct dirent64` (readdir64's) has `d_name`.
+### :returns: The byte offset 19.
+@target(os: "linux")
+private routine dirent_name_at() -> USize
+    return 19
+
+### Where a macOS `struct dirent` (64-bit inodes) has `d_name`.
+### :returns: The byte offset 21.
+@target(os: "macos")
+private routine dirent_name_at() -> USize
+    return 21
+
+# -- errors and paths ----------------------------------------------------------------
+
+### The calling thread's `errno`.
+### :returns: The value of `errno`.
+@target(os: ("linux", "macos"))
+private routine errno() -> CInt
+    return c_errno_place().peek()
+
+### The FsError for an errno value.
+### :param e: The errno value.
+### :returns: The matching FsError, `Other` for a value with no match.
+@target(os: ("linux", "macos"))
+private routine error_of(e: CInt) -> FsError
+    n: ErrnoNumbers = errno_numbers()
+    when
+        e == 2 => return FsError.NOT_FOUND
+        e == 1 or e == 13 => return FsError.PERMISSION_DENIED
+        e == 17 => return FsError.ALREADY_EXISTS
+        e == 20 => return FsError.NOT_A_DIRECTORY
+        e == 21 => return FsError.IS_A_DIRECTORY
+        e == n.not_empty => return FsError.DIRECTORY_NOT_EMPTY
+        e == 18 => return FsError.CROSS_DEVICE
+        e == n.name_too_long => return FsError.NAME_TOO_LONG
+        e == 22 or e == n.loop => return FsError.INVALID_PATH
+        e == 28 => return FsError.NO_SPACE
+        e == 30 => return FsError.READ_ONLY
+        e == 16 or e == 26 => return FsError.BUSY
+        e == 12 => return FsError.OUT_OF_MEMORY
+        else => return FsError.OTHER
+
+### The FsError for the calling thread's `errno`.
+### :returns: The matching FsError.
+@target(os: ("linux", "macos"))
+private routine last_error() -> FsError
+    return error_of(errno())
+
+### A failure carrying the FsError for the calling thread's `errno`.
+### :typeparam T: The success type of the result.
+### :returns: The error that FsError.
+@target(os: ("linux", "macos"))
+private routine failed[T]() -> Result[T, FsError]
+needs T: typename
+    return last_error()
+
+### A C return code as a result: 0 is success, anything else the last error.
+### :param rc: The return code.
+### :returns: `Unit` for 0, else the FsError for `errno`.
+@target(os: ("linux", "macos"))
+private routine checked(rc: CInt) -> Result[None, FsError]
+    if rc == 0
+        return fs_done()
+    else
+        return failed[None]()
+
+### path with a NUL after it in out (PATH_CAPACITY bytes): false if path has a NUL or doesn't fit.
+### :param path: The path to copy.
+### :param out: The buffer, `PATH_CAPACITY` bytes.
+### :returns: True when `path` was copied.
+@target(os: ("linux", "macos"))
+private routine c_path(path: Span[Byte], out: @Byte) -> Bool
+    n: USize = path.count()
+    if n >= PATH_CAPACITY
+        return false
+    if path.has("\0")
+        return false
+    out.copy(src: path.data, count: n)
+    out.stride(n).poke(0x00)
+    return true
+
+### dir, a '/', and name (NUL-terminated) in out: false if it doesn't fit.
+### :param dir: The directory's bytes, no NUL needed.
+### :param dir_count: How many bytes of `dir` to use.
+### :param name: The NUL-terminated entry name.
+### :param out: The buffer, `PATH_CAPACITY` bytes.
+### :returns: True when the path fit.
+@target(os: ("linux", "macos"))
+private routine c_child_path(dir: @Byte, dir_count: USize, name: @Byte, out: @Byte) -> Bool
+    name_count: USize = name.to[CStr]().count()
+    total: USize = dir_count + 1 + name_count
+    if total >= PATH_CAPACITY
+        return false
+    out.copy(src: dir, count: dir_count)
+    out.stride(dir_count).poke(b'/')
+    out.stride(dir_count + 1).copy(src: name, count: name_count)
+    out.stride(total).poke(0x00)
+    return true
+
+# -- metadata ------------------------------------------------------------------------
+
+# AT_FDCWD, AT_SYMLINK_NOFOLLOW, AT_EMPTY_PATH, and STATX_BASIC_STATS | STATX_BTIME
+preset AT_FDCWD:            CInt = -100
+preset AT_SYMLINK_NOFOLLOW: CInt = 0x100
+preset AT_EMPTY_PATH:       CInt = 0x1000
+preset STATX_WANTED:        U32  = 0xFFF
+preset STATX_BTIME:         U32  = 0x800
+
+### struct statx_timestamp
+@target(os: "linux")
+private record StatxTime
+    sec: S64
+    nsec: U32
+    reserved: S32
+
+### struct statx: 256 bytes on every architecture.
+@target(os: "linux")
+private record Statx
+    mask: U32
+    blksize: U32
+    attributes: U64
+    nlink: U32
+    uid: U32
+    gid: U32
+    mode: U16
+    spare0: U16
+    ino: U64
+    size: U64
+    blocks: U64
+    attributes_mask: U64
+    atime: StatxTime
+    btime: StatxTime
+    ctime: StatxTime
+    mtime: StatxTime
+    spare: Array[U64, 16]
+
+### struct stat with 64-bit inodes.
+@target(os: "macos")
+private record DarwinStat
+    dev: S32
+    mode: U16
+    nlink: U16
+    ino: U64
+    uid: U32
+    gid: U32
+    rdev: S32
+    atime: Timespec
+    mtime: Timespec
+    ctime: Timespec
+    birthtime: Timespec
+    size: S64
+    blocks: S64
+    blksize: S32
+    flags: U32
+    gen: U32
+    lspare: S32
+    qspare: Array[S64, 2]
+
+### Makes a `Statx` from its fields.
+### :param mask: Its `mask`.
+### :param blksize: Its `blksize`.
+### :param attributes: Its `attributes`.
+### :param nlink: Its `nlink`.
+### :param uid: Its `uid`.
+### :param gid: Its `gid`.
+### :param mode: Its `mode`.
+### :param spare0: Its `spare0`.
+### :param ino: Its `ino`.
+### :param size: Its `size`.
+### :param blocks: Its `blocks`.
+### :param attributes_mask: Its `attributes_mask`.
+### :param atime: Its `atime`.
+### :param btime: Its `btime`.
+### :param ctime: Its `ctime`.
+### :param mtime: Its `mtime`.
+### :param spare: Its `spare`.
+### :returns: The new value.
+@target(os: "linux")
+private routine Statx.construct(mask: U32, blksize: U32, attributes: U64, nlink: U32, uid: U32,
+    gid: U32, mode: U16, spare0: U16, ino: U64, size: U64, blocks: U64, attributes_mask: U64,
+    atime: StatxTime, btime: StatxTime, ctime: StatxTime, mtime: StatxTime,
+    spare: Array[U64, 16]) -> Me
+    return Me(mask, blksize, attributes, nlink, uid, gid, mode, spare0, ino, size, blocks,
+        attributes_mask, atime, btime, ctime, mtime, spare)
+
+### Makes a `DarwinStat` from its fields.
+### :param dev: Its `dev`.
+### :param mode: Its `mode`.
+### :param nlink: Its `nlink`.
+### :param ino: Its `ino`.
+### :param uid: Its `uid`.
+### :param gid: Its `gid`.
+### :param rdev: Its `rdev`.
+### :param atime: Its `atime`.
+### :param mtime: Its `mtime`.
+### :param ctime: Its `ctime`.
+### :param birthtime: Its `birthtime`.
+### :param size: Its `size`.
+### :param blocks: Its `blocks`.
+### :param blksize: Its `blksize`.
+### :param flags: Its `flags`.
+### :param gen: Its `gen`.
+### :param lspare: Its `lspare`.
+### :param qspare: Its `qspare`.
+### :returns: The new value.
+@target(os: "macos")
+private routine DarwinStat.construct(dev: S32, mode: U16, nlink: U16, ino: U64, uid: U32, gid: U32,
+    rdev: S32, atime: Timespec, mtime: Timespec, ctime: Timespec, birthtime: Timespec, size: S64,
+    blocks: S64, blksize: S32, flags: U32, gen: U32, lspare: S32, qspare: Array[S64, 2]) -> Me
+    return Me(dev, mode, nlink, ino, uid, gid, rdev, atime, mtime, ctime, birthtime, size, blocks,
+        blksize, flags, gen, lspare, qspare)
+
+### Releases nothing: a `DarwinStat` holds no memory of its own.
+@target(os: "macos")
+private routine DarwinStat.destruct(me: @Me) -> None
+    return
+
+### The FileKind for a `st_mode` value, by its `S_IFMT` bits.
+### :param mode: The mode, type bits included.
+### :returns: `File`, `Directory`, `Symlink`, or `Other`.
+@target(os: ("linux", "macos"))
+private routine mode_kind(mode: U32) -> FileKind
+    # S_IFMT
+    when mode & 61440
+        32768 => return FileKind.FILE
+        16384 => return FileKind.DIRECTORY
+        40960 => return FileKind.SYMLINK
+        else => return FileKind.OTHER
+
+### Seconds and nanoseconds as nanoseconds since 1970, wrapping on overflow.
+### :param sec: The seconds.
+### :param nsec: The nanoseconds.
+### :returns: `sec * 1000000000 + nsec`.
+@target(os: ("linux", "macos"))
+private routine ns_of(sec: S64, nsec: S64) -> S64
+    return sec *% 1000000000 +% nsec
+
+### Binds the C `statx` function: reads a file's metadata into a `struct statx`.
+### :param dir: The directory `path` is relative to (`AT_FDCWD`), or the open file itself with `AT_EMPTY_PATH`.
+### :param path: The NUL-terminated path.
+### :param flags: The `AT_*` flags.
+### :param mask: The `STATX_*` fields wanted.
+### :param out: Where the struct goes.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("statx")
+@target(os: "linux")
+private routine c_statx(dir: CInt, path: @Byte, flags: CInt, mask: U32, out: @Statx) -> CInt
+
+### The Metadata in a `struct statx`. The creation time is None when the filesystem didn't fill `btime`, and
+### read-only means the owner has no write permission.
+### :returns: The metadata.
+@target(os: "linux")
+private routine Statx.to[Metadata](me: Me) -> Metadata
+    mode: U32 = me.mode.to[U32]()
+    modified: S64 = ns_of(sec: me.mtime.sec, nsec: me.mtime.nsec.to[S64]())
+    born: Bool = me.mask & STATX_BTIME != 0
+    created: Maybe[S64] = when
+        born => ns_of(sec: me.btime.sec, nsec: me.btime.nsec.to[S64]())
+        else => None()
+    return Metadata(kind: mode_kind(mode), size: me.size, modified_ns: modified,
+        created_ns: created, readonly: mode & 128 == 0)
+
+### statx of dir + path with flags: the raw struct.
+### :param dir: The directory `cpath` is relative to, or the open file with `AT_EMPTY_PATH`.
+### :param cpath: The NUL-terminated path.
+### :param flags: The `AT_*` flags.
+### :param out: Where the struct goes.
+### :returns: True when statx succeeded.
+@target(os: "linux")
+private routine stat_raw(dir: CInt, cpath: @Byte, flags: CInt, out: @Statx) -> Bool
+    return c_statx(dir, cpath, flags, STATX_WANTED, out) == 0
+
+### The metadata of the NUL-terminated cpath.
+### :param cpath: The NUL-terminated path.
+### :param follow: True to describe what a link points at, false to describe the link itself.
+### :returns: The metadata.
+### :throws: Returns the FsError for `errno` when statx fails.
+@target(os: "linux")
+private routine metadata_of(cpath: @Byte, follow: Bool) -> Result[Metadata, FsError]
+    local st: @Statx <- .hollow()
+
+    flags: CInt = when
+        follow => 0
+        else => AT_SYMLINK_NOFOLLOW
+    if stat_raw(dir: AT_FDCWD, cpath, flags, out: st)
+        return st.peek().to[Metadata]()
+    else
+        return failed[Metadata]()
+
+### The metadata of the open file fd.
+### :param fd: The open file.
+### :returns: The metadata.
+### :throws: Returns the FsError for `errno` when statx fails.
+@target(os: "linux")
+private routine fd_metadata(fd: CInt) -> Result[Metadata, FsError]
+    local st: @Statx <- .hollow()
+
+    if stat_raw(dir: fd, cpath: "", flags: AT_EMPTY_PATH, out: st)
+        return st.peek().to[Metadata]()
+    else
+        return failed[Metadata]()
+
+### The permission bits of the open file fd, or 0o666 when they can't be read.
+### :param fd: The open file.
+### :returns: The permission bits, `S_IFMT` left out.
+@target(os: "linux")
+private routine fd_mode(fd: CInt) -> U32
+    local st: @Statx <- .hollow()
+
+    if stat_raw(dir: fd, cpath: "", flags: AT_EMPTY_PATH, out: st)
+        mode: U32 = st.mode.peek().to[U32]()
+        return mode & 4095
+    else
+        return 438
+
+### The `st_mode` of the NUL-terminated cpath, a link followed.
+### :param cpath: The NUL-terminated path.
+### :returns: The mode, type bits included.
+### :absent: When statx fails.
+@target(os: "linux")
+private routine path_mode(cpath: @Byte) -> Maybe[U32]
+    local st: @Statx <- .hollow()
+
+    if stat_raw(dir: AT_FDCWD, cpath, flags: 0, out: st)
+        return st.mode.peek().to[U32]()
+    else
+        return None()
+
+### Binds the C `stat$INODE64` function: reads a file's metadata, a link followed.
+### :param path: The NUL-terminated path.
+### :param out: Where the struct goes.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("stat$INODE64")
+@target(os: "macos", arch: "x86_64")
+private routine c_stat(path: @Byte, out: @DarwinStat) -> CInt
+
+### Binds the C `stat` function: reads a file's metadata, a link followed.
+### :param path: The NUL-terminated path.
+### :param out: Where the struct goes.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("stat")
+@target(os: "macos", arch: not "x86_64")
+private routine c_stat(path: @Byte, out: @DarwinStat) -> CInt
+
+### Binds the C `lstat$INODE64` function: reads a file's metadata, a link describing itself.
+### :param path: The NUL-terminated path.
+### :param out: Where the struct goes.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("lstat$INODE64")
+@target(os: "macos", arch: "x86_64")
+private routine c_lstat(path: @Byte, out: @DarwinStat) -> CInt
+
+### Binds the C `lstat` function: reads a file's metadata, a link describing itself.
+### :param path: The NUL-terminated path.
+### :param out: Where the struct goes.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("lstat")
+@target(os: "macos", arch: not "x86_64")
+private routine c_lstat(path: @Byte, out: @DarwinStat) -> CInt
+
+### Binds the C `fstat$INODE64` function: reads the metadata of an open file.
+### :param fd: The open file.
+### :param out: Where the struct goes.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("fstat$INODE64")
+@target(os: "macos", arch: "x86_64")
+private routine c_fstat(fd: CInt, out: @DarwinStat) -> CInt
+
+### Binds the C `fstat` function: reads the metadata of an open file.
+### :param fd: The open file.
+### :param out: Where the struct goes.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("fstat")
+@target(os: "macos", arch: not "x86_64")
+private routine c_fstat(fd: CInt, out: @DarwinStat) -> CInt
+
+### The Metadata in a macOS `struct stat`, the birth time as the creation time. Read-only means the owner has no
+### write permission.
+### :returns: The metadata.
+@target(os: "macos")
+private routine DarwinStat.to[Metadata](me: Me) -> Metadata
+    mode: U32 = me.mode.to[U32]()
+    modified: S64 = ns_of(sec: me.mtime.sec, nsec: me.mtime.nsec)
+    created: S64 = ns_of(sec: me.birthtime.sec, nsec: me.birthtime.nsec)
+    return Metadata(kind: mode_kind(mode), size: me.size.to_wrap[U64](), modified_ns: modified,
+        created_ns: created, readonly: mode & 128 == 0)
+
+### The metadata of the NUL-terminated cpath.
+### :param cpath: The NUL-terminated path.
+### :param follow: True to describe what a link points at (stat), false to describe the link itself (lstat).
+### :returns: The metadata.
+### :throws: Returns the FsError for `errno` when the call fails.
+@target(os: "macos")
+private routine metadata_of(cpath: @Byte, follow: Bool) -> Result[Metadata, FsError]
+    local st: @DarwinStat <- .hollow()
+
+    rc: CInt = when
+        follow => c_stat(cpath, st)
+        else => c_lstat(cpath, st)
+    if rc == 0
+        return st.peek().to[Metadata]()
+    else
+        return failed[Metadata]()
+
+### The metadata of the open file fd.
+### :param fd: The open file.
+### :returns: The metadata.
+### :throws: Returns the FsError for `errno` when fstat fails.
+@target(os: "macos")
+private routine fd_metadata(fd: CInt) -> Result[Metadata, FsError]
+    local st: @DarwinStat <- .hollow()
+
+    if c_fstat(fd, st) == 0
+        return st.peek().to[Metadata]()
+    else
+        return failed[Metadata]()
+
+### The permission bits of the open file fd, or 0o666 when they can't be read.
+### :param fd: The open file.
+### :returns: The permission bits, `S_IFMT` left out.
+@target(os: "macos")
+private routine fd_mode(fd: CInt) -> U32
+    local st: @DarwinStat <- .hollow()
+
+    if c_fstat(fd, st) == 0
+        mode: U32 = st.mode.peek().to[U32]()
+        return mode & 4095
+    else
+        return 438
+
+### The `st_mode` of the NUL-terminated cpath, a link followed.
+### :param cpath: The NUL-terminated path.
+### :returns: The mode, type bits included.
+### :absent: When stat fails.
+@target(os: "macos")
+private routine path_mode(cpath: @Byte) -> Maybe[U32]
+    local st: @DarwinStat <- .hollow()
+
+    if c_stat(cpath, st) == 0
+        return st.mode.peek().to[U32]()
+    else
+        return None()
+
+### path's metadata, a link followed to what it points at.
+### :param path: The path to look at.
+### :returns: The metadata.
+### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
+@target(os: ("linux", "macos"))
+internal routine metadata(path: Span[Byte]) -> Result[Metadata, FsError]
+    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+
+    if c_path(path, out: cpath.to[@Byte]())
+        return metadata_of(cpath: cpath.to[@Byte](), follow: true)
+    else
+        return path_error(path)
+
+### path's metadata. A link describes itself (kind Symlink).
+### :param path: The path to look at.
+### :returns: The metadata.
+### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
+@target(os: ("linux", "macos"))
+internal routine symlink_metadata(path: Span[Byte]) -> Result[Metadata, FsError]
+    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+
+    if c_path(path, out: cpath.to[@Byte]())
+        return metadata_of(cpath: cpath.to[@Byte](), follow: false)
+    else
+        return path_error(path)
+
+# -- file handles ------------------------------------------------------------------------
+
+### An open file, from a File's open_read_result and the like: a Reader and a Writer. claim it, and close it when done.
+@target(os: ("linux", "macos"))
+record FileHandle
+    fd: CInt
+    failed: Bool  # a write_bytes failed (write_all_result reports each failure itself)
+
+### Makes a `FileHandle` from its fields.
+### :param fd: Its `fd`.
+### :param failed: Its `failed`.
+### :returns: The new value.
+@target(os: ("linux", "macos"))
+routine FileHandle.construct(fd: CInt, failed: Bool) -> Me
+    return Me(fd, failed)
+
+### Releases nothing: a `FileHandle` holds no memory of its own.
+@target(os: ("linux", "macos"))
+routine FileHandle.destruct(me: @Me) -> None
+    return
+
+### A handle to no file, whose close() does nothing: the start value of a slot that a finish block closes.
+### :returns: The empty handle.
+@target(os: ("linux", "macos"))
+routine FileHandle.empty() -> Me
+    return Me(fd: -1, failed: false)
+
+### Opens path in mode. The file is opened close-on-exec, and one it makes gets the permissions 0o666 before the
+### umask.
+### :param path: The file to open.
+### :param mode: How to open it.
+### :returns: The open handle.
+### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
+@target(os: ("linux", "macos"))
+internal routine FileHandle.open(path: Span[Byte], mode: OpenMode) -> Result[Me, FsError]
+    local cpath_buffer: @Array[Byte, PATH_CAPACITY] <- .hollow()
+    local cpath: @Byte = cpath_buffer.to[@Byte]()
+
+    if not c_path(path, out: cpath)
+        return path_error(path)
+    f: OpenFlags = open_flags()
+    how: CInt = when mode
+        OpenMode.READ =>
+            # Write-only and created if missing, plus how it opens (truncate, append, or exclude).
+            fd: CInt = c_open(cpath, f.cloexec, 438)
+            if fd < 0
+                return failed[Me]()
+            else
+                return Me(fd: fd, failed: false)
+        OpenMode.WRITE => f.truncate
+        OpenMode.APPEND => f.append
+        OpenMode.READ_WRITE =>
+            fd: CInt = c_open(cpath, f.cloexec | 2, 438)
+            if fd < 0
+                return failed[Me]()
+            else
+                return Me(fd: fd, failed: false)
+        OpenMode.CREATE_NEW => f.exclude
+    creating: CInt = f.cloexec | 1 | f.create
+    fd: CInt = c_open(cpath, creating | how, 438)
+    if fd < 0
+        return failed[Me]()
+    else
+        return Me(fd: fd, failed: false)
+
+### Reads up to count bytes into buffer: how many, 0 at the end of the file. One call reads at most 1 GiB, and a
+### read a signal interrupts is tried again.
+### :param buffer: Where the bytes go.
+### :param count: The most bytes to read.
+### :returns: The count read, 0 at the end of the file.
+### :throws: Returns the reason when the read fails.
+@target(os: ("linux", "macos"))
+@expensive("asks the operating system")
+routine FileHandle.read_bytes_result(me: @Me, buffer: @Byte, count: USize) -> Result[USize, FsError]
+    got: SSize = c_read(me.fd.peek(), buffer, count.min(1073741824))
+    if got >= 0
+        return got.to[USize]()
+    # EINTR: a signal came first, so ask again
+    if errno() == 4
+        return me.read_bytes_result(buffer, count)
+    else
+        return failed[USize]()
+
+### Writes up to count bytes: how many it did. One call writes at most 1 GiB, and a write a signal interrupts is
+### tried again.
+### :param data: The first byte to write.
+### :param count: The most bytes to write.
+### :returns: The count written.
+### :throws: Returns the reason when the write fails.
+@target(os: ("linux", "macos"))
+internal routine FileHandle.write_some(me: @Me, data: @Byte, count: USize) -> Result[USize, FsError]
+    wrote: SSize = c_write(me.fd.peek(), data, count.min(1073741824))
+    if wrote >= 0
+        return wrote.to[USize]()
+    if errno() == 4
+        return me.write_some(data, count)
+    else
+        return failed[USize]()
+
+### Moves the position: the new one, from the start.
+### :param offset: The distance to move, negative to go back.
+### :param from: Where `offset` counts from.
+### :returns: The new position from the start.
+### :throws: Returns the reason, such as a position before the start.
+@target(os: ("linux", "macos"))
+@expensive("asks the operating system")
+routine FileHandle.seek_result(me: @Me, offset: S64, from: SeekFrom) -> Result[U64, FsError]
+    fd: CInt = me.fd.peek()
+    # SEEK_SET, SEEK_CUR, SEEK_END
+    at: S64 = when from
+        SeekFrom.START => c_lseek(fd, offset, 0)
+        SeekFrom.CURRENT => c_lseek(fd, offset, 1)
+        SeekFrom.END => c_lseek(fd, offset, 2)
+    if at >= 0
+        return at.to[U64]()
+    else
+        return failed[U64]()
+
+### The metadata of the open file.
+### :returns: The metadata.
+### :throws: Returns the reason when the OS can't report it.
+@target(os: ("linux", "macos"))
+@expensive("asks the operating system")
+routine FileHandle.metadata_result(me: @Me) -> Result[Metadata, FsError]
+    return fd_metadata(me.fd.peek())
+
+### The size of the open file in bytes.
+### :returns: The size.
+### :throws: Returns the reason when the OS can't report it.
+@target(os: ("linux", "macos"))
+@expensive("asks the operating system")
+routine FileHandle.size_result(me: @Me) -> Result[U64, FsError]
+    m: Result[Metadata, FsError] = fd_metadata(me.fd.peek())
+    when m
+        is Metadata as info => return info.size
+        is FsError as error => return error
+
+### Truncates or extends (with zeros) the file to size bytes. The position stays.
+### :param size: The new size in bytes.
+### :returns: `Unit` once the size is set.
+### :throws: Returns the reason when the OS refuses. Crashes with `IntegerOverflowError` when `size`
+###     doesn't fit in S64.
+@target(os: ("linux", "macos"))
+@expensive("asks the operating system")
+routine FileHandle.set_size_result(me: @Me, size: U64) -> Result[None, FsError]
+    return checked(c_ftruncate(me.fd.peek(), size.to[S64]()))
+
+### Waits until what was written is on the storage device.
+### :returns: `Unit` once it is.
+### :throws: Returns the reason when the OS reports an error.
+@target(os: ("linux", "macos"))
+@expensive("asks the operating system")
+routine FileHandle.sync_result(me: @Me) -> Result[None, FsError]
+    return checked(c_fsync(me.fd.peek()))
+
+### Closes the file and leaves the handle empty, so a second close does nothing.
+@target(os: ("linux", "macos"))
+@expensive("asks the operating system")
+routine FileHandle.close(me: @Me) -> None
+    fd: CInt = me.fd.peek()
+    if fd < 0
+        return
+    c_close(fd)
+    me.fd.poke(-1)
+    return
+
+# -- directories and names -------------------------------------------------------------
+
+### Makes the directory cpath with the permissions 0o777 before the umask.
+### :param cpath: The NUL-terminated path.
+### :returns: 0, or -1 with `errno` set.
+@target(os: "linux")
+private routine make_dir(cpath: @Byte) -> CInt
+    return c_mkdir(cpath, 511)
+
+### Makes the directory cpath with the permissions 0o777 before the umask.
+### :param cpath: The NUL-terminated path.
+### :returns: 0, or -1 with `errno` set.
+@target(os: "macos")
+private routine make_dir(cpath: @Byte) -> CInt
+    return c_mkdir(cpath, 511)
+
+### Makes the directory path (its parent must exist).
+### :param path: The directory to make.
+### :returns: `Unit` once it is made.
+### :throws: Returns the reason, `AlreadyExists` when something is at `path`, `InvalidPath` or
+###     `NameTooLong` when `path` doesn't fit a C path.
+@target(os: ("linux", "macos"))
+internal routine create_dir(path: Span[Byte]) -> Result[None, FsError]
+    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+
+    if c_path(path, out: cpath.to[@Byte]())
+        return checked(make_dir(cpath.to[@Byte]()))
+    else
+        return path_error(path)
+
+### Removes a file (or a link), not a directory.
+### :param path: The file to remove.
+### :returns: `Unit` once it is gone.
+### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
+@target(os: ("linux", "macos"))
+internal routine remove_file(path: Span[Byte]) -> Result[None, FsError]
+    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+
+    if c_path(path, out: cpath.to[@Byte]())
+        return checked(c_unlink(cpath.to[@Byte]()))
+    else
+        return path_error(path)
+
+### Removes an empty directory.
+### :param path: The directory to remove.
+### :returns: `Unit` once it is gone.
+### :throws: Returns the reason, `DirectoryNotEmpty` when something is in it, `InvalidPath` or
+###     `NameTooLong` when `path` doesn't fit a C path.
+@target(os: ("linux", "macos"))
+internal routine remove_dir(path: Span[Byte]) -> Result[None, FsError]
+    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+
+    if c_path(path, out: cpath.to[@Byte]())
+        return checked(c_rmdir(cpath.to[@Byte]()))
+    else
+        return path_error(path)
+
+### Renames from to to, replacing what is at to. Between filesystems it fails with CrossDevice.
+### :param from: The current path.
+### :param to: The new path.
+### :returns: `Unit` once it is renamed.
+### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when a path doesn't fit a C path.
+@target(os: ("linux", "macos"))
+internal routine rename(from: Span[Byte], to: Span[Byte]) -> Result[None, FsError]
+    local a: @Array[Byte, PATH_CAPACITY] <- .hollow()
+    local b: @Array[Byte, PATH_CAPACITY] <- .hollow()
+
+    if not c_path(path: from, out: a.to[@Byte]())
+        return path_error(from)
+    if c_path(path: to, out: b.to[@Byte]())
+        return checked(c_rename(a.to[@Byte](), b.to[@Byte]()))
+    else
+        return path_error(to)
+
+### Renames a to b unless something is at b, in one step (renameat2 with `RENAME_NOREPLACE`).
+### :param a: The current NUL-terminated path.
+### :param b: The new NUL-terminated path.
+### :returns: 0, or -1 with `errno` set.
+@target(os: "linux")
+private routine rename_exclusive(a: @Byte, b: @Byte) -> CInt
+    # RENAME_NOREPLACE
+    return c_renameat2(AT_FDCWD, a, AT_FDCWD, b, 1)
+
+### Renames a to b unless something is at b, in one step (renamex_np with `RENAME_EXCL`).
+### :param a: The current NUL-terminated path.
+### :param b: The new NUL-terminated path.
+### :returns: 0, or -1 with `errno` set.
+@target(os: "macos")
+private routine rename_exclusive(a: @Byte, b: @Byte) -> CInt
+    # RENAME_EXCL
+    return c_renamex_np(a, b, 4)
+
+### Renames from to to, failing with AlreadyExists if something is at to. On a filesystem that can't do that in one
+### step, it looks first, so another process could slip a file in between.
+### :param from: The current path.
+### :param to: The new path.
+### :returns: `Unit` once it is renamed.
+### :throws: Returns the reason, `AlreadyExists` when something is at `to`, `InvalidPath` or
+###     `NameTooLong` when a path doesn't fit a C path.
+@target(os: ("linux", "macos"))
+internal routine rename_no_replace(from: Span[Byte], to: Span[Byte]) -> Result[None, FsError]
+    local a: @Array[Byte, PATH_CAPACITY] <- .hollow()
+    local b: @Array[Byte, PATH_CAPACITY] <- .hollow()
+
+    if not c_path(path: from, out: a.to[@Byte]())
+        return path_error(from)
+    if not c_path(path: to, out: b.to[@Byte]())
+        return path_error(to)
+    if rename_exclusive(a: a.to[@Byte](), b: b.to[@Byte]()) == 0
+        return fs_done()
+    e: CInt = errno()
+    if e == 22 or e == errno_numbers().unsupported
+        a2: @Byte = a.to[@Byte]()
+
+        b2: @Byte = b.to[@Byte]()
+        there: Maybe[U32] = path_mode(b2)
+        if there.is_present()
+            return FsError.ALREADY_EXISTS
+        else
+            return checked(c_rename(a2, b2))
+    else
+        return error_of(e)
+
+### Copies from's bytes and permissions into to (made, or replaced): the bytes copied.
+### :param from: The file to copy.
+### :param to: The file to write.
+### :returns: The number of bytes copied.
+### :throws: Returns the reason when a file can't be opened, read, or written, or the permissions can't
+###     be set. A failure once `to` is opened removes it, so no partial copy is left.
+@target(os: ("linux", "macos"))
+internal routine copy_file(from: Span[Byte], to: Span[Byte]) -> Result[U64, FsError]
+    local src: @FileHandle <- .empty()
+    local dst: @FileHandle <- .empty()
+
+    source: Result[FileHandle, FsError] = FileHandle.open(path: from, mode: OpenMode.READ)
+    result: Result[U64, FsError] = when source
+        is FileHandle as f =>
+            src.poke(f)
+            dest: Result[FileHandle, FsError] = FileHandle.open(path: to, mode: OpenMode.WRITE)
+            becomes when dest
+                is FileHandle as f2 =>
+                    dst.poke(f2)
+                    copied: Result[U64, FsError] = copy_contents(src, dst)
+                    when copied
+                        is U64 => pass
+                        is FsError =>
+                            # `to` is opened (made or emptied) and the copy can't be finished: it goes, so no partial
+                            # copy is left.
+                            dst.close()
+                            discard_removed: Result[None, FsError] = remove_file(to)
+                    becomes copied
+                is FsError as error => error
+        is FsError as error => error
+    src.close()
+    dst.close()
+    return result
+
+### Gives the open file dst the permissions of src, then copies src's bytes into it, 16 KiB at a time. Neither file
+### is closed.
+### :param src: The open file to read.
+### :param dst: The open file to write.
+### :returns: The number of bytes copied.
+### :throws: Returns the reason when the permissions can't be set or a read or a write fails.
+@target(os: ("linux", "macos"))
+private routine copy_contents(src: @FileHandle, dst: @FileHandle) -> Result[U64, FsError]
+    local buffer: @Array[Byte, 16384] <- .hollow()
+
+    if not (set_mode(fd: dst.fd.peek(), mode: fd_mode(src.fd.peek())) == 0)
+        return error_of(errno())
+    buffer2: @Byte = buffer.to[@Byte]()
+    while true with total: U64 = 0
+        got: Result[USize, FsError] = src.read_bytes_result(buffer: buffer2, count: 16384)
+        when got
+            is USize as n =>
+                if n == 0
+                    return total
+                wrote: Result[None, FsError] = dst.write_all_result(data: buffer2, count: n)
+                when wrote
+                    is None => continue with total: total + n.to[U64]()
+                    is FsError as error => return error
+            is FsError as error => return error
+
+### Sets the permission bits of the open file fd.
+### :param fd: The open file.
+### :param mode: The new permission bits.
+### :returns: 0, or -1 with `errno` set.
+@target(os: "linux")
+private routine set_mode(fd: CInt, mode: U32) -> CInt
+    return c_fchmod(fd, mode)
+
+### Sets the permission bits of the open file fd.
+### :param fd: The open file.
+### :param mode: The new permission bits, of which the low 16 bits are used.
+### :returns: 0, or -1 with `errno` set.
+@target(os: "macos")
+private routine set_mode(fd: CInt, mode: U32) -> CInt
+    return c_fchmod(fd, mode.to_wrap[U16]())
+
+### Sets the permission bits of cpath, a link followed.
+### :param cpath: The NUL-terminated path.
+### :param mode: The new permission bits.
+### :returns: 0, or -1 with `errno` set.
+@target(os: "linux")
+private routine change_mode(cpath: @Byte, mode: U32) -> CInt
+    return c_chmod(cpath, mode)
+
+### Sets the permission bits of cpath, a link followed.
+### :param cpath: The NUL-terminated path.
+### :param mode: The new permission bits, of which the low 16 bits are used.
+### :returns: 0, or -1 with `errno` set.
+@target(os: "macos")
+private routine change_mode(cpath: @Byte, mode: U32) -> CInt
+    return c_chmod(cpath, mode.to_wrap[U16]())
+
+### Read-only takes every write permission away, and writable gives the owner's back.
+### :param path: The file to change.
+### :param readonly: True to make it read-only, false to make it writable by its owner.
+### :returns: `Unit` once the permissions are set.
+### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
+@target(os: ("linux", "macos"))
+internal routine set_readonly(path: Span[Byte], readonly: Bool) -> Result[None, FsError]
+    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+
+    if not c_path(path, out: cpath.to[@Byte]())
+        return path_error(path)
+    there: Maybe[U32] = path_mode(cpath.to[@Byte]())
+    when there
+        is U32 as mode =>
+            cpath2: @Byte = cpath.to[@Byte]()
+
+            mode2: U32 = mode & 4095
+            # S_IWUSR | S_IWGRP | S_IWOTH, or S_IWUSR
+            if readonly
+                return checked(change_mode(cpath: cpath2, mode: mode2 & ~146))
+            else
+                return checked(change_mode(cpath: cpath2, mode: mode2 | 128))
+        is None => return failed[None]()
+
+### Whether this process may read, write, or execute path.
+### :param path: The path to check.
+### :param access: What to check for.
+### :returns: True when allowed. False when not, when nothing is there, or when `path` doesn't fit a C path.
+@target(os: ("linux", "macos"))
+internal routine is_accessible(path: Span[Byte], access: Access) -> Bool
+    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+
+    if not c_path(path, out: cpath.to[@Byte]())
+        return false
+    # R_OK, W_OK, X_OK
+    when access
+        Access.READ => return c_access(cpath.to[@Byte](), 4) == 0
+        Access.WRITE => return c_access(cpath.to[@Byte](), 2) == 0
+        Access.EXECUTE => return c_access(cpath.to[@Byte](), 1) == 0
+
+### Makes the file if it's missing, and sets its access and modification times to now.
+### :param path: The file to touch.
+### :returns: `Unit` once the times are set.
+### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
+@target(os: ("linux", "macos"))
+internal routine touch(path: Span[Byte]) -> Result[None, FsError]
+    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+
+    if not c_path(path, out: cpath.to[@Byte]())
+        return path_error(path)
+    f: OpenFlags = open_flags()
+    fd: CInt = c_open(cpath.to[@Byte](), f.cloexec | 1 | f.create, 438)
+    if fd < 0
+        return failed[None]()
+    c_close(fd)
+    return checked(c_utimes(cpath.to[@Byte](), null))
+
+# -- directory listings ------------------------------------------------------------------
+
+### The entries of a directory, "." and ".." left out, in the order the OS gives them. claim one, open it on a
+### Directory, call next until None, and close it.
+@target(os: ("linux", "macos"))
+record DirIter
+    dir: Addr
+    path: Array[Byte, PATH_CAPACITY]  # the directory, NUL-terminated
+    count: USize  # the directory's byte count
+    name: @Byte  # the last entry's name, in readdir's buffer
+
+### Makes a `DirIter` from its fields.
+### :param dir: Its `dir`.
+### :param path: Its `path`.
+### :param count: Its `count`.
+### :param name: Its `name`.
+### :returns: The new value.
+@target(os: ("linux", "macos"))
+routine DirIter.construct(dir: Addr, path: Array[Byte, PATH_CAPACITY], count: USize,
+    name: @Byte) -> Me
+    return Me(dir, path, count, name)
+
+### Releases nothing: a `DirIter` holds no memory of its own.
+@target(os: ("linux", "macos"))
+routine DirIter.destruct(me: @Me) -> None
+    return
+
+### Opens the listing of the directory at path. The handle is null until the open succeeds, so close() is safe
+### after a failure.
+### :param path: The directory to list.
+### :returns: `Unit` once the listing is open.
+### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
+@target(os: ("linux", "macos"))
+internal routine DirIter.open_path(me: @Me, path: Span[Byte]) -> Result[None, FsError]
+    me.dir.poke(null)
+    if not c_path(path, out: me.path.to[@Byte]())
+        return path_error(path)
+    me.count.poke(path.count())
+    me.name.poke(null)
+    dir: Addr = c_opendir(me.path.to[@Byte]())
+    if dir.is_null()
+        return failed[None]()
+    me.dir.poke(dir)
+    return fs_done()
+
+### Whether name is "." or "..".
+### :param name: The NUL-terminated name.
+### :returns: True for "." and "..".
+@target(os: ("linux", "macos"))
+private routine is_dot_name(name: @Byte) -> Bool
+    if not (name.peek() == b'.')
+        return false
+    second: Byte = name.stride(1).peek()
+    if second == 0x00
+        return true
+    if second == b'.'
+        third: Byte = name.stride(2).peek()
+        return third == 0x00
+    else
+        return false
+
+### The next entry, or None at the end (a failure partway reads as the end).
+### :returns: The next entry, its name valid until the next call.
+### :absent: At the end of the listing, or when reading it fails.
+@target(os: ("linux", "macos"))
+routine DirIter.emit_checked(me: @Me) -> Maybe[DirEntry]
+    entry: @Byte = c_readdir(me.dir.peek())
+    if entry.is_null()
+        return None()
+    name: @Byte = entry.stride(dirent_name_at())
+    if is_dot_name(name)
+        return me.emit_checked()
+    me.name.poke(name)
+    # DT_DIR, DT_REG, DT_LNK. DT_UNKNOWN (some filesystems) asks lstat
+    d_type: Byte = entry.stride(dirent_type_at()).peek()
+    kind: FileKind = when d_type.to[U8]()
+        4 => FileKind.DIRECTORY
+        8 => FileKind.FILE
+        10 => FileKind.SYMLINK
+        0 =>
+            m: Result[Metadata, FsError] = me.entry_metadata_of(false)
+            when m
+                is Metadata as info =>
+                    becomes info.kind
+                is FsError =>
+                    becomes FileKind.OTHER
+        else => FileKind.OTHER
+    return DirEntry(name: name.to[CStr]().getview(), kind: kind)
+
+### The metadata of the entry next last returned, a link followed.
+### :returns: The metadata.
+### :throws: Returns the reason, `NameTooLong` when the entry's full path doesn't fit a C path.
+@target(os: ("linux", "macos"))
+@expensive("asks the operating system")
+routine DirIter.entry_metadata_result(me: @Me) -> Result[Metadata, FsError]
+    return me.entry_metadata_of(true)
+
+### The metadata of the entry next last returned, by its full path.
+### :param follow: True to describe what a link points at, false to describe the link itself.
+### :returns: The metadata.
+### :throws: Returns the reason, `NameTooLong` when the entry's full path doesn't fit a C path.
+@target(os: ("linux", "macos"))
+private routine DirIter.entry_metadata_of(me: @Me, follow: Bool) -> Result[Metadata, FsError]
+    local full: @Array[Byte, PATH_CAPACITY] <- .hollow()
+
+    if c_child_path(dir: me.path.to[@Byte](), dir_count: me.count.peek(), name: me.name.peek(),
+        out: full.to[@Byte]())
+        return metadata_of(cpath: full.to[@Byte](), follow)
+    else
+        return FsError.NAME_TOO_LONG
+
+### Closes the listing and leaves the handle null, so a second close does nothing.
+@target(os: ("linux", "macos"))
+routine DirIter.close(me: @Me) -> None
+    dir: Addr = me.dir.peek()
+    if dir.is_null()
+        return
+    c_closedir(dir)
+    me.dir.poke(null)
+    return
+
+# -- the working directory and well-known directories -------------------------------------
+
+### A copy of the n bytes at p, in memory from alloc.
+### :param p: The first byte to copy.
+### :param n: How many bytes to copy.
+### :param alloc: The allocator for the copy.
+### :returns: The copy.
+### :throws: Returns `OutOfMemory` when `alloc` fails.
+@target(os: ("linux", "macos"))
+private routine owned(p: @Byte, n: USize, alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
+    when Memory[Byte].construct_result(count: n.max(1), manager: alloc)
+        is Memory[Byte] as buffer =>
+            buffer.data.peek().copy(src: p, count: n)
+            buffer.keep_first(n)
+            return buffer
+        is AllocFailed => return FsError.OUT_OF_MEMORY
+
+### The value of the environment variable name, when it is set and not empty.
+### :param name: The variable's name.
+### :returns: The NUL-terminated value, owned by the C library.
+### :absent: When the variable is not set or is empty.
+@target(os: ("linux", "macos"))
+private routine nonempty_env(name: CStr) -> Maybe[@Byte]
+    value: @Byte = c_getenv(name)
+    if value.is_null()
+        return None()
+    if value.peek() == 0x00
+        return None()
+    else
+        return value
+
+### The working directory, in memory from alloc.
+### :param alloc: The allocator for the text.
+### :returns: The path.
+### :throws: Returns the reason when the OS can't report it, `OutOfMemory` when `alloc` fails.
+@target(os: ("linux", "macos"))
+internal routine current_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
+    while true with capacity: USize = 256
+        when Memory[Byte].construct_result(count: capacity, manager: alloc)
+            is Memory[Byte] as buffer2 =>
+                data: @Byte = buffer2.data.peek()
+                if c_getcwd(data, capacity).is_not_null()
+                    count: USize = data.to[CStr]().count()
+                    buffer2.keep_first(count)
+                    return buffer2
+                e: CInt = errno()
+                drop buffer2
+                # ERANGE: a bigger buffer
+                if e == 34
+                    continue with capacity: capacity * 2
+                else
+                    return error_of(e)
+            is AllocFailed => return FsError.OUT_OF_MEMORY
+
+### Makes path the working directory.
+### :param path: The new working directory.
+### :returns: `Unit` once it is changed.
+### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
+@target(os: ("linux", "macos"))
+internal routine set_current_dir(path: Span[Byte]) -> Result[None, FsError]
+    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+
+    if c_path(path, out: cpath.to[@Byte]())
+        return checked(c_chdir(cpath.to[@Byte]()))
+    else
+        return path_error(path)
+
+### TMPDIR, or /tmp when it is not set or empty, in memory from alloc.
+### :param alloc: The allocator for the text.
+### :returns: The path.
+### :throws: Returns `OutOfMemory` when `alloc` fails.
+@target(os: ("linux", "macos"))
+internal routine temp_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
+    t: Maybe[@Byte] = nonempty_env("TMPDIR")
+    when t
+        is @Byte as dir => return owned(p: dir, n: dir.to[CStr]().count(), alloc)
+        is None => return owned(p: "/tmp", n: 4, alloc)
+
+### HOME, in memory from alloc. NotFound when it isn't set or is empty.
+### :param alloc: The allocator for the text.
+### :returns: The path.
+### :throws: Returns `NotFound` when HOME is not set or empty, `OutOfMemory` when `alloc` fails.
+@target(os: ("linux", "macos"))
+internal routine home_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
+    h: Maybe[@Byte] = nonempty_env("HOME")
+    when h
+        is @Byte as dir => return owned(p: dir, n: dir.to[CStr]().count(), alloc)
+        is None => return FsError.NOT_FOUND
+
+### path made absolute by the text alone: the working directory in front of a relative path, nothing resolved.
+### :param path: The path to make absolute.
+### :param alloc: The allocator for the result.
+### :returns: The absolute path.
+### :throws: Returns the reason when the working directory can't be read, `OutOfMemory` when `alloc`
+###     fails for it. Crashes with `MemoryAllocationError` when `alloc` fails for the joined path.
+@target(os: ("linux", "macos"))
+internal routine absolute_path(path: Span[Byte],
+    alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
+    if path.has_prefix("/")
+        return owned(p: path.data, n: path.count(), alloc)
+    when current_dir(alloc)
+        is Memory[Byte] as dir =>
+            local full: @Memory[Byte] <- join_path(a: dir.getview(), b: path, alloc)
+            drop dir
+            return full
+        is FsError as error => return error
+
+### The absolute path with every link, ".", and ".." resolved, and path must exist.
+### :param path: The path to resolve.
+### :param alloc: The allocator for the result.
+### :returns: The resolved path.
+### :throws: Returns the reason, such as `NotFound`, `OutOfMemory` when `alloc` fails, `InvalidPath`
+###     or `NameTooLong` when `path` doesn't fit a C path.
+@target(os: ("linux", "macos"))
+internal routine canonical_path(path: Span[Byte],
+    alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
+    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+
+    if not c_path(path, out: cpath.to[@Byte]())
+        return path_error(path)
+    resolved: @Byte = c_realpath(cpath.to[@Byte](), null)
+    if resolved.is_null()
+        return failed[Memory[Byte]]()
+    local copied: @Result[Memory[Byte], FsError] <- owned(p: resolved,
+        n: resolved.to[CStr]().count(), alloc)
+    c_free(resolved)
+    return copied
+
+# -- memory-mapped files -----------------------------------------------------------------
+
+### Whether p is `MAP_FAILED`, the all-ones address mmap returns on failure.
+### :param p: The address mmap returned.
+### :returns: True for `MAP_FAILED`.
+@target(os: ("linux", "macos"))
+private routine is_map_failed(p: Addr) -> Bool
+    # MAP_FAILED, (void*)-1
+    return ptrtoint[Addr, USize](p) == USize.MAX
+
+### Maps count bytes of path from offset (USize.MAX: to the end), clamped to the file. Past the end, or an empty
+### file, gives an empty mapping. write maps it shared, so stores reach the file. Otherwise it's read-only.
+### :param path: The file to map.
+### :param write: True for a shared, writable mapping.
+### :param offset: Where in the file the mapping starts.
+### :param count: The most bytes to map.
+### :returns: The mapping.
+### :throws: Returns the reason when the file can't be opened, measured, or mapped.
+@target(os: ("linux", "macos"))
+internal routine Mapping.map(path: Span[Byte], write: Bool, offset: U64,
+    count: USize) -> Result[Me, FsError]
+    local file: @FileHandle <- .empty()
+    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+
+    result: Result[Me, FsError] = when
+        not c_path(path, out: cpath.to[@Byte]()) => path_error(path)
+        else =>
+            flags: CInt = when
+                write => 2
+                else => 0
+            fd: CInt = c_open(cpath.to[@Byte](), flags | open_flags().cloexec, 0)
+            if fd < 0
+                becomes failed[Me]()
+            else
+                file.fd.poke(fd)
+                m: Result[Metadata, FsError] = fd_metadata(fd)
+                when m
+                    is Metadata as info =>
+                        size: U64 = info.size
+                        if offset >= size
+                            becomes Me.empty()
+                        else
+                            want_bytes: U64 = count.to[U64]().min(size - offset)
+                            want: USize = want_bytes.to[USize]()
+                            page: U64 = map_granularity().to[U64]()
+                            aligned: U64 = offset - offset % page
+                            delta: USize = (offset - aligned).to[USize]()
+                            # PROT_READ | PROT_WRITE and MAP_SHARED, or PROT_READ and MAP_PRIVATE
+                            prot: CInt = when
+                                write => 3
+                                else => 1
+                            share: CInt = when
+                                write => 1
+                                else => 2
+                            p: Addr = c_mmap(null, want + delta, prot, share, fd, aligned.to[S64]())
+                            # the mapping keeps the file open on its own, and errno is read before finish closes the descriptor
+                            if is_map_failed(p)
+                                becomes failed[Me]()
+                            else
+                                becomes Me(base: p, delta: delta, count: want)
+                    is FsError as error =>
+                        becomes error
+    file.close()
+    return result
+
+### Writes changed pages back to the file.
+### :returns: `Unit` once they are written, at once for an empty mapping.
+### :throws: Returns the reason when msync fails.
+@target(os: ("linux", "macos"))
+routine Mapping.flush_result(me: Me) -> Result[None, FsError]
+    if me.base.is_null()
+        return fs_done()
+    else
+        return checked(c_msync(me.base, me.delta + me.count, ms_sync()))
+
+### Writes changed pages back and unmaps.
+@target(os: ("linux", "macos"))
+routine Mapping.unmap(me: Me) -> None
+    if me.base.is_null()
+        return
+    c_msync(me.base, me.delta + me.count, ms_sync())
+    c_munmap(me.base, me.delta + me.count)
+    return
+
+### Asks the OS to read the whole mapping in now.
+@target(os: ("linux", "macos"))
+routine Mapping.prefetch(me: Me) -> None
+    if me.base.is_null()
+        return
+    # MADV_WILLNEED
+    c_madvise(me.base, me.delta + me.count, 3)
+    return
+
+### Tells the OS the mapping will be read front to back.
+@target(os: ("linux", "macos"))
+routine Mapping.advise_sequential(me: Me) -> None
+    if me.base.is_null()
+        return
+    # MADV_SEQUENTIAL
+    c_madvise(me.base, me.delta + me.count, 2)
+    return

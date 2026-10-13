@@ -43,7 +43,7 @@ public static partial class ConstructDestructMigration
     /// holding something.
     public static string Rewrite(string text)
     {
-        var holds = Holding([("generated.tess", text)], unknownHolds: true);
+        var holds = Holding([("generated.te", text)], unknownHolds: true);
         return Rewrite(text, Declared([text]), holds);
     }
 

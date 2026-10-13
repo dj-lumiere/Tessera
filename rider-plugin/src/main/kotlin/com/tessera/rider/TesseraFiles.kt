@@ -11,11 +11,11 @@ import javax.swing.Icon
 
 internal const val PLUGIN_ID = "com.tessera.rider"
 
-internal fun VirtualFile.isTessera(): Boolean = extension.equals("tess", ignoreCase = true)
+internal fun VirtualFile.isTessera(): Boolean = extension.equals("te", ignoreCase = true)
 
 /**
  * Registers the TextMate bundle shipped next to the plugin's jar: the grammar from Tessera.tmbundle plus the comment and
- * bracket rules of language-configuration.json. `.tess` files open as TextMate files, highlighted by that grammar.
+ * bracket rules of language-configuration.json. `.te` files open as TextMate files, highlighted by that grammar.
  */
 class TesseraBundleProvider : TextMateBundleProvider {
     override fun getBundles(): List<TextMateBundleProvider.PluginBundle> {
@@ -24,7 +24,7 @@ class TesseraBundleProvider : TextMateBundleProvider {
     }
 }
 
-/** Gives `.tess` files the Tessera icon in place of the generic TextMate one. */
+/** Gives `.te` files the Tessera icon in place of the generic TextMate one. */
 class TesseraIconProvider : FileIconProvider {
     override fun getIcon(file: VirtualFile, flags: Int, project: Project?): Icon? =
         if (file.isTessera()) ICON else null

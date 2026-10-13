@@ -1,7 +1,7 @@
 namespace Tessera;
 
 /// `tessera new [folder]`: starts a solution in the folder (the current one when none is given, made when missing).
-/// Writes config.toml (the package named after the folder), a main.tess that prints a greeting, a .gitignore for build
+/// Writes config.toml (the package named after the folder), a main.te that prints a greeting, a .gitignore for build
 /// output, and the VS Code files that recommend the Tessera extension and bind run and build. A file that is already
 /// there is kept as it is.
 static class NewProject
@@ -21,11 +21,11 @@ static class NewProject
                 tessera-version = "{version}"
 
                 [target]
-                executable = "main.tess"
+                executable = "main.te"
                 mode = "debug"
 
                 """),
-            ("main.tess", """
+            ("main.te", """
                 import Standard/Format
                 import Standard/Os
 

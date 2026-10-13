@@ -117,7 +117,7 @@ public sealed partial class Compiler
         _entry.AppendLine("; The program's entry: start, then the exit status set_exit_code stored.");
         _entry.AppendLine($"define i32 @main() {EntryAttrs(start.Pos)} {{");
         _entry.AppendLine("entry:");
-        // A traced build reports a hardware fault the way it reports a crash (Standard/Os/Faults.tess). The race check
+        // A traced build reports a hardware fault the way it reports a crash (Standard/Os/Faults.te). The race check
         // reports faults itself.
         if (Trace && !RaceCheck) _entry.AppendLine($"  {EntryCall(EntryHelper(OsModule, "install_fault_handlers", start.Pos))}");
         _entry.AppendLine($"  {EntryCall(startInst)}");

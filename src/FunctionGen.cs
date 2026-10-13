@@ -2309,7 +2309,7 @@ public sealed class FunctionGen
         && (leaf.Equals(error) || error is VariantType { Decl.IsAnonymous: true } union && union.LeafIndex(leaf) >= 0);
 
     /// The tag of a variant made from a value of `leaf`: the leaf's type ID, and for a failure in a traced build the
-    /// failure's number in the high half (Trace.tess's failure_note), wrapping the failure the arm it is made in observed.
+    /// failure's number in the high half (Trace.te's failure_note), wrapping the failure the arm it is made in observed.
     private string FailureTag(DType leaf, VariantType vt, uint id, Pos at)
     {
         if (!_c.Trace || _c.Prechecking || !IsFailure(leaf, vt)) return $"{id}";
@@ -2615,7 +2615,7 @@ public sealed class FunctionGen
         Terminate($"switch i32 {id}, label %{defaultLabel} [ {string.Join(" ", cases)} ]");
     }
 
-    /// An arm without a name that observes a failure: a failure made in it wraps that one (Trace.tess).
+    /// An arm without a name that observes a failure: a failure made in it wraps that one (Trace.te).
     private Action? FailureObserved(VariantType vt, DType observed, string tag)
     {
         if (!_c.Trace || _c.Prechecking || !IsFailure(observed, vt)) return null;
@@ -2657,7 +2657,7 @@ public sealed class FunctionGen
         }
         Define(binding.Name, new Val(value, branch), binding.Pos);
         DescribeValue(binding.Name, value, branch, binding.Pos);
-        // A failure made in an arm that observed one wraps it (Trace.tess).
+        // A failure made in an arm that observed one wraps it (Trace.te).
         if (_c.Trace && !_c.Prechecking && IsFailure(branch, vt))
         {
             string tagAt = EmitTmp($"getelementptr inbounds {vt.Llvm}, ptr {slot}, i32 0, i32 0");
@@ -3922,7 +3922,7 @@ public sealed class FunctionGen
         if (e is CallExpr { Name: "type_name", TypeArgs.Count: 1, Args.Count: 0 } tn
             && _c.FindFree(tn.Name, _env.File, tn.Pos) is null)
             return StringLiteral(new StrLit(Resolve(tn.TypeArgs[0]).Name, tn.Pos), BytesType(tn.Pos));
-        // `failure_of(result)`: the number of the failure a Result holds (Trace.tess), 0 for none or a value.
+        // `failure_of(result)`: the number of the failure a Result holds (Trace.te), 0 for none or a value.
         if (e is CallExpr { Name: "failure_of", TypeArgs.Count: 0, Args: [var held] } && _c.FindFree("failure_of", _env.File, e.Pos) is null)
         {
             // Only the failure's number is read: a Result holding an entity isn't copied by it.

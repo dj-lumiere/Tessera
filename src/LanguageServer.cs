@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 
 namespace Tessera;
 
-/// The Tessera language server, `tessera lsp`: the Language Server Protocol over standard input and output. A `.tess`
+/// The Tessera language server, `tessera lsp`: the Language Server Protocol over standard input and output. A `.te`
 /// document that opens or changes is checked the way `tessera check` checks it (its own routines and presets, and every
 /// instance they reach), as the editor holds it, saved or not, together with the files its solution builds with
 /// (`config.toml`'s import closure, or the file alone) and the standard library. Its errors and its style warnings
@@ -313,7 +313,7 @@ public static partial class LanguageServer
         catch (ManifestError e)
         {
             // A config.toml it can't read, often another language's (a RazorForge folder that keeps its Tessera
-            // translation, main.tess, next to main.rf): the document is checked alone, and says why.
+            // translation, main.te, next to main.rf): the document is checked alone, and says why.
             return (BuildTarget.Host(), [file], Ko($"checked on its own: {e.Message}", $"이 파일만 검사합니다: {e.Message}"));
         }
         if (!IsUnder(file, manifest.Directory)) return (manifest.Target, [file], null);
@@ -326,7 +326,7 @@ public static partial class LanguageServer
     /// The standard library's declarations, each file parsed again only when it changed on disk.
     private static IEnumerable<Decl> StdlibDecls(string stdlib)
     {
-        var files = Directory.GetFiles(stdlib, "*.tess", SearchOption.AllDirectories).Order().ToList();
+        var files = Directory.GetFiles(stdlib, "*.te", SearchOption.AllDirectories).Order().ToList();
         foreach (var gone in Stdlib.Keys.Except(files, StringComparer.OrdinalIgnoreCase).ToList()) Stdlib.Remove(gone);
         var all = new List<Decl>();
         foreach (var f in files)
@@ -471,7 +471,7 @@ public static partial class LanguageServer
         return null;
     }
 
-    /// A `file:` URI's path. Clients escape the drive's colon (JetBrains IDEs send `file:///l%3A/x.tess`).
+    /// A `file:` URI's path. Clients escape the drive's colon (JetBrains IDEs send `file:///l%3A/x.te`).
     private static string PathOf(string uri)
     {
         if (!uri.StartsWith("file:", StringComparison.OrdinalIgnoreCase)) return uri;

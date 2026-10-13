@@ -13,9 +13,9 @@ namespace Tessera;
 /// version = "0.1.0"
 ///
 /// [target]
-/// executable = "src/main.tess"        # the entry file (it has start), the output build/main
+/// executable = "src/main.te"          # the entry file (it has start), the output build/main
 /// library = ["../shared"]             # source directories of other solutions this one builds with
-/// sources = ["../lib/hash.tess"]      # files (or directories of them) built in whatever the entry imports
+/// sources = ["../lib/hash.te"]        # files (or directories of them) built in whatever the entry imports
 /// mode = "release"                    # "debug" (-O0, the default), "release" (-O2), "release-time" (-O3),
 ///                                     # or "release-space" (-Os). Every mode has debug information.
 /// triple = "arm-none-eabi"            # default: the host
@@ -155,11 +155,12 @@ public sealed record Manifest(
         string Resolve(string p) => System.IO.Path.GetFullPath(System.IO.Path.Combine(dir, p));
 
         string entryName = Str(target, "executable", path)
-                           ?? throw new ManifestError(path, "[target] needs the entry file: executable = \"main.tess\"");
+                           ?? throw new ManifestError(path, "[target] needs the entry file: executable = \"main.te\"");
         string entry = Resolve(entryName);
         if (!File.Exists(entry)) throw new ManifestError(path, $"[target] executable: no such file: {entryName}");
-        if (!entry.EndsWith(".tess", StringComparison.OrdinalIgnoreCase))
-            throw new ManifestError(path, $"[target] executable is a .tess file: {entryName}");
+        if (!entry.EndsWith(".te", StringComparison.OrdinalIgnoreCase))
+            throw new ManifestError(path,
+                $"[target] executable: {entryName} is not a Tessera source (Tessera sources end in .te)");
 
         var roots = new List<string> { dir };
         foreach (var lib in Strs(target, "library", path) ?? [])
@@ -173,10 +174,10 @@ public sealed record Manifest(
         {
             string full = Resolve(extra);
             string[] files = System.IO.Directory.Exists(full)
-                ? System.IO.Directory.GetFiles(full, "*.tess", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()
-                : File.Exists(full) && full.EndsWith(".tess", StringComparison.OrdinalIgnoreCase)
+                ? System.IO.Directory.GetFiles(full, "*.te", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()
+                : File.Exists(full) && full.EndsWith(".te", StringComparison.OrdinalIgnoreCase)
                     ? [full]
-                    : throw new ManifestError(path, $"[target] sources: no such .tess file or directory: {extra}");
+                    : throw new ManifestError(path, $"[target] sources: no such .te file or directory: {extra}");
             foreach (var file in files)
                 if (!sources.Contains(file, StringComparer.OrdinalIgnoreCase)) sources.Add(file);
         }
@@ -213,7 +214,7 @@ public sealed record Manifest(
     {
         var byModule = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         foreach (var root in roots)
-            foreach (var file in System.IO.Directory.GetFiles(root, "*.tess", SearchOption.AllDirectories)
+            foreach (var file in System.IO.Directory.GetFiles(root, "*.te", SearchOption.AllDirectories)
                          .Where(f => !IsUnder(f, buildDir)).Order(StringComparer.Ordinal))
                 if (Header(file).Module is { } module)
                 {

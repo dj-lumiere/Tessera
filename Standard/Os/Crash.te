@@ -1,0 +1,76 @@
+# Tessera stdlib: the default crash handler
+#
+# Standard/Core's crash calls tessera_crash_handler, a link-time symbol. This
+# is the hosted default: the crash's name and message, the place on a second
+# line, then the crash trace (Trace.te), most recent frame first, on stderr,
+# then exit status 82.
+#
+#     tessera: IndexOutOfBoundsError: Index is out of bounds for the collection.
+#       at examples/grid.te:12:9
+#     Stack trace:
+#       0: at fill (examples/grid.te:12:9)
+#       1: at start (examples/grid.te:30:5)
+#
+# A trace deeper than the frames it keeps ends with "  ... (40 frames total)",
+# and an untraced build prints no trace.
+#
+# A program replaces it by exporting its own routine under the same name. A
+# target without an operating system has no default, so a program for one
+# exports a handler (halt, blink an LED, reset) or fails to link.
+
+module Standard/Os
+
+import Standard/Format
+
+### The hosted default crash handler, exported under the link-time name the core crash calls. It writes `tessera:
+### <name>: <message>`, the source location on a second line, and the crash trace to standard error, then exits with
+### status 82. A program replaces it by exporting its own routine under the same name.
+### :param name: The kind of failure, such as `IntegerOverflowError`.
+### :param message: What happened.
+### :param place: Where the crash happened: file, line, and column (0 when only the line is known).
+@export("tessera_crash_handler")
+@noreturn
+routine default_crash_handler(name: Span[Byte], message: Span[Byte], place: @SourceLocation) -> None
+    Err.write("tessera: {name}")
+    if not (message.count == 0)
+        Err.write(": {message}")
+    file: Span[Byte] = place.file.peek()
+    line: U32 = place.line.peek()
+    Err.write("\n  at {file}:{line}")
+    column: U32 = place.column.peek()
+    if not (column == 0)
+        Err.write(":{column}")
+    Err.write("\n")
+    write_trace()
+    c_exit(82)
+
+### Writes the running thread's crash trace to standard error, most recent frame first, in RazorForge's shape: `Stack
+### trace:`, then `  0: at <routine> (<file>:<line>:<column>)` per frame, and `  ... (<n> frames total)` when there were
+### more than the trace keeps. Writes nothing when the trace is empty (an untraced build).
+internal routine write_trace() -> None
+    local depth: USize = trace_depth()
+    local shown: USize = depth.min(TRACE_CAPACITY)
+
+    if depth == 0
+        return
+    Err.write("Stack trace:\n")
+
+    each back in 0 til shown
+        at: TraceFrame = trace_frame(back)
+        name: Span[Byte] = at.name.getview()
+        file: Span[Byte] = at.file.getview()
+        line: U32 = at.line
+        if line == 0
+            # A frame that made no call yet (the fault came first) has no place within its routine.
+            Err.write("  {back}: at {name} ({file}")
+        else
+            Err.write("  {back}: at {name} ({file}:{line}")
+            column: U32 = at.column
+            if not (column == 0)
+                Err.write(":{column}")
+        Err.write(")\n")
+    total_depth: USize = trace_depth()
+    if not (total_depth > TRACE_CAPACITY)
+        return
+    Err.write("  ... ({total_depth} frames total)\n")
+    return

@@ -85,7 +85,7 @@ public sealed partial class Compiler
         if (_diUnit >= 0) return _diUnit;
         _diUnit = MetaReserve();
         string version = typeof(Compiler).Assembly.GetName().Version?.ToString(3) ?? "0";
-        MetaSet(_diUnit, $"distinct !DICompileUnit(language: DW_LANG_C99, file: !{DiFile(_rootFile ?? "main.tess")}, "
+        MetaSet(_diUnit, $"distinct !DICompileUnit(language: DW_LANG_C99, file: !{DiFile(_rootFile ?? "main.te")}, "
             + $"producer: {MetaString("tessera " + version)}, isOptimized: {(Optimized ? "true" : "false")}, "
             + "runtimeVersion: 0, emissionKind: FullDebug)");
         return _diUnit;

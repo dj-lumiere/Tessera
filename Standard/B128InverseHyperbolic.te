@@ -1,0 +1,510 @@
+# Tessera stdlib: B128 asinh, acosh, atanh
+#
+# The inverse hyperbolic functions, correctly rounded (to nearest, ties to even). CORE-MATH has no binary128
+# versions, so they run in three tiers:
+#
+# - quick: below 2^-17 (asinh, atanh) or y = x - 1 below 2^-34 (acosh), a short series in 128-bit fixed point.
+#   Elsewhere ln_1p(w) for the w below, with w in fixed point (B128Frac.te) and the logarithm from CORE-MATH's
+#   fast ln path (B128Core/Log.te) before its rounding. The result is rounded unless it lies too close to a
+#   rounding midpoint for its proven error bound. About one random argument in a thousand goes on.
+# - fast: the formulas below in B128Extended (192 bits, B128Math.te). The result is kept when all of it
+#   × (1 ± 2^-band) rounds to the same B128 (wide_round_within).
+# - exact: otherwise the same formulas in B128Big (448 bits, B128Big.te), within about 2^-420 relative, rounded
+#   once.
+#
+# On a = |x| (asinh and atanh are odd), with y = x - 1 for acosh:
+#
+#   asinh a = ln_1p(a + a² / (1 + sqrt(1 + a²)))   (the fast tier uses ln(a + sqrt(a² + 1)) from 1/2 on)
+#   acosh x = ln_1p(y + sqrt(y (y + 2)))           (the fast tier uses ln(x + sqrt(x² - 1)) from y = 1/2 on)
+#   atanh a = ln_1p(2a / (1 - a)) / 2
+#
+# None of them cancels: y and 1 - a are exact where it matters, every other sum adds positive terms, and ln_1p
+# keeps its relative accuracy near 0, so asinh(2^-16494) and acosh(1 + 2^-112) are as accurate as the rest. Both
+# wide types have S64 exponents, so a² can't overflow for a near B128.MAX.
+#
+# Exact cases: asinh(±0) = ±0, acosh(1) = +0, and atanh(±0) = ±0 (atanh(±1) = ±inf is a pole) are answered first.
+# No other input gives a B128 or a midpoint between two, since both are rational: for an algebraic x the results
+# are nonzero and e^asinh x = x + sqrt(x² + 1), e^acosh x = x + sqrt(x² - 1), and e^(2 atanh x) = (1 + x) / (1 - x)
+# are algebraic, while e^y is transcendental for every nonzero algebraic y (Hermite-Lindemann), so the results are
+# transcendental.
+#
+# The bands are measured, not proven: on 50000 random inputs per function (every exponent from the subnormals to
+# B128.MAX, plus runs around the switch points, 1 + tiny for acosh, and 1 - tiny for atanh) the fast tier's worst
+# relative error against mpmath was 2^-137.9 for each of the three. That is the log series' first dropped term
+# (wide_log stops at t^51 for t = (m - 1) / (m + 1) up to 0.1716, so 2^-138.0 of ln m at m = sqrt(2)), so
+# 2^-133 leaves about 5 bits. Random inputs miss the band about once in a million. Results near a rounding
+# boundary do occur, where the fast tier alone could round the wrong way: asinh x = x - x³/6 + … and
+# atanh x = x + x³/3 + … can be tuned to within 2^-114 ulp of a midpoint for x near 2^-56 (2^-41 ulp near
+# 2^-21), and acosh(1 + y) with y = 2k² 2^-112, which is sqrt(2y) = 2k 2^-56 less corrections with small
+# denominators, lands within 2^-39 ulp of one for about one k in a thousand (tests/b128_inverse_hyperbolic.te
+# has some of each).
+#
+# The quick tier's bounds are proven, in units of the result's last bit (a relative 2^-128 to 2^-127):
+#
+# - Below 2^-58, asinh x and atanh x round to x itself: x³/3 < 2^-117.5 x stays under half an ulp of x (the half
+#   ulp below a power of two included, and far under a subnormal's), so the tier returns x.
+# - The series (cm_inv_series): asinh a = a (1 - c/6 + 3c²/40 - 15c³/336 + r) and atanh a = a (1 + c/3 + c²/5 +
+#   c³/7 + r) with c = a², and acosh(1 + y) = sqrt(2y) (1 - y/12 + 3y²/160 - 5y³/896 + r). The series alternate
+#   (atanh's terms shrink by c), so r is below the next term, 35c⁴/1152, c⁴/(9 (1 - c)), and 35y⁴/18432: under
+#   2^-139 for a < 2^-17 and y < 2^-34. The polynomial is kept in units of 2^-128: its three divisions floor,
+#   and c, c², c³ are cut to whole units, together under 3.7 units. The product with the leading term floors once
+#   more (4.7 units of the leading term's last bit), and a borrow shifts the result up a bit, which doubles that
+#   (a carry halves it). That is at most (4.7 + 2.01) × 2 = 13.42 units for acosh (its sqrt within 2.01,
+#   B128Frac.te) and 4.7 × 2 = 9.4 for asinh and atanh, so the gates are B128_ACOSH_SERIES_GATE = 14 and
+#   B128_INV_SERIES_GATE = 10.
+# - The logarithm (cm_inv_ln_1p): w is formed in fixed point within a relative ρ (below), and 1 + w is split
+#   exactly into a B128 z (for w < 1, 1 plus the bits of w down to 2^-112, else 1 + w cut to 113 bits) and the
+#   rest d = 1 + w - z < 2^-112 z. Then ln(1 + w) = ln z + ln(1 + d/z): ln z from CORE-MATH's fast ln path, which
+#   its rounding test takes to be within 13 units of 2^-148 (cm_log_fast), z is outside its window near 1 (w is at
+#   least 2^-17), and d/z within 2 units of 2^-148, whose square is far below one more. As ln(1 + w) > 2^-18, its
+#   fraction drops at least 3 bits of 2^-148, so these (16 units of 2^-148) are at most 3 units with that
+#   truncation. ρ reaches the result as at most ρ w / (1 + w) <= ρ ln(1 + w) for w < 1, and as ρ <= 1.443 ρ
+#   ln(1 + w) from w >= 1 on, where 1 + w is cut to 128 bits too (one more 2^-127 in ρ). The worst ρ, in units
+#   of 2^-127: asinh's w = a + a²/(1 + sqrt(1 + a²)) below 1 is within 3.4 (its quotient within 4.8, at most half
+#   of w) and from a = 1 on z = a + sqrt(a² + 1) within 2.9, acosh's w = y + sqrt(y (y + 2)) within 3.01 and from
+#   x = 2 on z = x + sqrt(x² - 1) within 2.68, and atanh's w = 2a / (1 - a) within 3, all one more when 1 + w is
+#   cut. The worst is 1.443 × 2 × 4.4 + 3 = 15.7 units, so B128_INV_LOG_GATE = 16.
+#
+# The gates are bounds rounded up, so the exact result lies on the rounded side of the midpoint (or in the same
+# rounding cell at a binade's edge) whenever the guard bits sit farther from it than the gate (cm_frac_round).
+# From 2^16380 on, asinh and acosh go on to the fast tier (their z would leave B128's exponent range).
+
+module Standard/Core
+
+preset B128_ASINH_BAND: S64 = 133
+preset B128_ACOSH_BAND: S64 = 133
+preset B128_ATANH_BAND: S64 = 133
+
+### The quick tier's gate for the asinh and atanh series, in units of the result's last bit.
+### :note: Proven: the series result is within 9.4 units (the derivation is at the top of this file).
+preset B128_INV_SERIES_GATE: U64 = 10
+
+### The quick tier's gate for the acosh series.
+### :note: Proven: within 13.42 units (the derivation is at the top of this file).
+preset B128_ACOSH_SERIES_GATE: U64 = 14
+
+### The quick tier's gate on the logarithm paths.
+### :note: Proven: within 15.7 units (the derivation is at the top of this file).
+preset B128_INV_LOG_GATE: U64 = 16
+
+### The bits of 2^-58: below it asinh x and atanh x round to x.
+preset B128_INV_TINY_BITS: U128 = 0x3FC50000000000000000000000000000
+
+### The bits of 2^-17: the series below, the logarithm from there on.
+preset B128_INV_SERIES_BITS: U128 = 0x3FEE0000000000000000000000000000
+
+### The bits of 2^16380: from there asinh and acosh skip the quick tier.
+preset B128_INV_HUGE_BITS: U128 = 0x7FFB0000000000000000000000000000
+
+# -- quick tier: series and CORE-MATH's fast ln ------------------------------------
+
+### A finite positive normal B128 as a fraction, exactly.
+### :param u: Its bits.
+### :returns: The same value.
+routine cm_inv_frac(u: U128) -> CmFrac
+    mantissa: U128 = (u & B128_FRAC_MASK) | B128_IMPLICIT
+    exponent: S64 = b128_exponent(u) - 16382
+    r: CmFrac = CmFrac(frac: mantissa << 15, exponent: exponent)
+    return r
+
+### The series term's polynomial in units of 2^-128: for asinh c/6 - 3c²/40 + 15c³/336, for atanh c/3 + c²/5 +
+### c³/7, and for acosh c/12 - 3c²/160 + 5c³/896, each within 3.7 units.
+### :param c: c × 2^128, below 2^96.
+### :param k: 0 for asinh, 1 for atanh, 2 for acosh.
+### :returns: The polynomial, its value below 2^-33.
+routine cm_inv_poly(c: U128, k: U64) -> U128
+    local c2: U128 = (c.mul_wide(c) >> 128).to_wrap[U128]()
+    local c3: U128 = (c2.mul_wide(c) >> 128).to_wrap[U128]()
+
+    when k
+        0 =>
+            first: U128 = c // 6
+            second: U128 = c2 * 3 // 40
+            third: U128 = c3 * 15 // 336
+            r: U128 = first - second + third
+            return r
+        1 =>
+            first: U128 = c // 3
+            second: U128 = c2 // 5
+            third: U128 = c3 // 7
+            r: U128 = first + second + third
+            return r
+        else =>
+            first: U128 = c // 12
+            second: U128 = c2 * 3 // 160
+            third: U128 = c3 * 5 // 896
+            r: U128 = first - second + third
+            return r
+
+### lead × (1 - p) for asinh and acosh, lead × (1 + p) for atanh, p in units of 2^-128.
+### :param lead: The leading term.
+### :param p: The polynomial from {cm_inv_poly}.
+### :param k: 0 for asinh, 1 for atanh, 2 for acosh.
+### :returns: The series' value.
+routine cm_inv_series(lead: CmFrac, p: U128, k: U64) -> CmFrac
+    local product: U128 = (lead.frac.mul_wide(p) >> 128).to_wrap[U128]()
+    local term: CmFrac = cm_frac_normalize(v: product, exponent: lead.exponent)
+
+    if k == 1
+        return cm_frac_add(a: lead, b: term)
+    else
+        return cm_frac_sub(a: lead, b: term)
+
+### ln(1 + w) for w >= 2^-17 given as a fraction (cut to 113 bits plus the rest, the rest added to CORE-MATH's
+### fast ln of the cut part), within 3 units of ln(1 + w) for the w given.
+### :param w: The argument, at least 2^-17.
+### :returns: ln(1 + w).
+routine cm_inv_ln_1p(w: CmFrac) -> CmFrac
+    if not (w.exponent <= 0)
+        return cm_inv_ln(cm_frac_add(a: w, b: CmFrac(frac: CM_FRAC_TOP, exponent: 1)))
+    # z = 1 + k 2^-112 holds w's bits down to 2^-112, the rest is d = rest × 2^(w.exponent - 128)
+    shift: S64 = 16 - w.exponent
+    k: U128 = w.frac >> shift.to[U128]()
+    rest: U128 = w.frac & U128.shl(1, shift.to[U128]()) - 1
+    bits: U128 = B128_ONE.bitor(k)
+    # d / z × 2^148 = rest × 2^(w.exponent + 83) / (z × 2^63), z × 2^63 cut to 64 bits
+    top: U64 = (B128_IMPLICIT.bitor(k) >> 49).to[U64]()
+    scaled: U128 = rest << (w.exponent + 83).to[U128]()
+    r: CmFrac = cm_inv_ln_finish(bits, numer: scaled, divisor: top)
+    return r
+
+### ln z for z >= 2 given as a fraction below 2^16384: ln of z cut to 113 bits from CORE-MATH's fast ln path, plus
+### the rest over the cut part, within 3 units of ln z.
+### :param z: The argument.
+### :returns: ln z.
+routine cm_inv_ln(z: CmFrac) -> CmFrac
+    rest: U128 = z.frac & 0x7FFF
+    cut: U128 = z.frac - rest
+    biased: U128 = (z.exponent + 16382).to[U128]() << 112
+    mantissa: U128 = (cut >> 15) & B128_FRAC_MASK
+    # d / z × 2^148 = rest × 2^148 / cut = rest × 2^84 / (cut × 2^-64), cut × 2^-64 cut to 64 bits
+    top: U64 = (cut >> 64).to[U64]()
+    r: CmFrac = cm_inv_ln_finish(bits: biased | mantissa, numer: rest << 84, divisor: top)
+    return r
+
+### ln z plus d/z, for the B128 z with bits `bits` (outside ln's window near 1) and d/z = numer / divisor × 2^-148
+### below 2^-112. The floor of that quotient is within 1 + 2^-25 of d/z in units of 2^-148, as d/z is below 2^37 of
+### them and the divisor is cut by under 2^-63 relative.
+### :param bits: The B128's bits, its logarithm above 2^-18.
+### :param numer: The rest's numerator, below 2^99.
+### :param divisor: z × 2^63 over a power of two, cut to 64 bits, its top bit set.
+### :returns: The sum, its fraction cut at least 3 bits below 2^-148's units.
+routine cm_inv_ln_finish(bits: U128, numer: U128, divisor: U64) -> CmFrac
+    hi: U64 = cm_wide_hi(bits)
+    e_field: U64 = hi & 0xFFFF000000000000
+    log: CmWide3 = cm_log_fast(mh: hi, ml: cm_wide_lo(bits), e_field)
+    high: U64 = (numer >> 64).to[U64]()
+    quotient: Div2By1 = div_2by1(u1: high, u0: numer.to_wrap[U64](), d: divisor,
+        v: div_2by1_prepare(divisor))
+    extra: U64 = quotient.quotient
+    sum: CmWide3 = cm_wide_add3(a: log, b: CmWide3(w0: extra, w1: 0, w2: 0))
+    # the sum is above 2^130, so its top word holds the leading bit
+    shift: U64 = 64 - sum.w2.leading_zeros()
+    upper: U256 = sum.w2.to[U256]() << 128
+    middle: U256 = sum.w1.to[U256]() << 64
+    whole: U256 = upper | middle | sum.w0.to[U256]()
+    frac: U128 = (whole >> shift.to[U256]()).to_wrap[U128]()
+    exponent: S64 = shift.to[S64]() - 20
+    r: CmFrac = CmFrac(frac: frac, exponent: exponent)
+    return r
+
+### The quick tier of asinh on a > 0 (the derivation is at the top of this file).
+### :param a: The magnitude, finite and nonzero.
+### :returns: The bits of asinh a, correctly rounded.
+### :absent: When the result lies too close to a rounding midpoint, or a >= 2^16380.
+routine cm_asinh_quick(a: B128) -> Maybe[U128]
+    local u: U128 = a.bits()
+    local one: CmFrac = CmFrac(frac: CM_FRAC_TOP, exponent: 1)
+
+    tiny: Bool = u < B128_INV_TINY_BITS
+    series: Bool = u < B128_INV_SERIES_BITS
+    below: Bool = u < B128_ONE
+    when
+        tiny => return u
+        series =>
+            x: CmFrac = cm_inv_frac(u)
+            c: U128 = (x.frac.mul_wide(x.frac) >> (128 - x.exponent * 2).to[U256]()).to_wrap[U128]()
+            t: CmFrac = cm_inv_series(lead: x, p: cm_inv_poly(c, k: 0), k: 0)
+            r: Maybe[U128] = cm_frac_round(frac: t.frac, exponent: t.exponent, sign: 0,
+                gate: B128_INV_SERIES_GATE)
+            return r
+        below =>
+            # w = a + a² / (1 + sqrt(1 + a²))
+            x: CmFrac = cm_inv_frac(u)
+            xx: CmFrac = cm_frac_mul(a: x, b: x)
+            op: CmFrac = cm_frac_add(a: one, b: xx)
+            root: CmFrac = cm_frac_sqrt(n: op.frac.to[U256]() << 128, e: op.exponent)
+            q: CmFrac = cm_frac_div(a: xx, b: cm_frac_add(a: root, b: one))
+            t: CmFrac = cm_inv_ln_1p(cm_frac_add(a: x, b: q))
+            r: Maybe[U128] = cm_frac_round(frac: t.frac, exponent: t.exponent, sign: 0,
+                gate: B128_INV_LOG_GATE)
+            return r
+        u >= B128_INV_HUGE_BITS => return None()
+        else =>
+            # z = a + sqrt(a² + 1)
+            x: CmFrac = cm_inv_frac(u)
+            s: CmFrac = cm_frac_add(a: cm_frac_mul(a: x, b: x), b: one)
+            root: CmFrac = cm_frac_sqrt(n: s.frac.to[U256]() << 128, e: s.exponent)
+            t: CmFrac = cm_inv_ln(cm_frac_add(a: root, b: x))
+            r: Maybe[U128] = cm_frac_round(frac: t.frac, exponent: t.exponent, sign: 0,
+                gate: B128_INV_LOG_GATE)
+            return r
+
+### The quick tier of acosh on x > 1 (the derivation is at the top of this file).
+### :param x: The argument, finite and above 1.
+### :returns: The bits of acosh x, correctly rounded.
+### :absent: When the result lies too close to a rounding midpoint, or x >= 2^16380.
+routine cm_acosh_quick(x: B128) -> Maybe[U128]
+    local u: U128 = x.bits()
+    local one: CmFrac = CmFrac(frac: CM_FRAC_TOP, exponent: 1)
+    local v: CmFrac = cm_inv_frac(u)
+
+    below_two: Bool = v.exponent == 1
+    when
+        below_two =>
+            # y = x - 1 is exact
+            y: CmFrac = cm_frac_normalize(v: v.frac - CM_FRAC_TOP, exponent: 1)
+            if y.exponent < -33
+                root: CmFrac = cm_frac_sqrt(n: y.frac.to[U256]() << 128, e: y.exponent + 1)
+                c: U128 = y.frac >> (0 - y.exponent).to[U128]()
+                t: CmFrac = cm_inv_series(lead: root, p: cm_inv_poly(c, k: 2), k: 2)
+                r: Maybe[U128] = cm_frac_round(frac: t.frac, exponent: t.exponent, sign: 0,
+                    gate: B128_ACOSH_SERIES_GATE)
+                return r
+            else
+                # w = y + sqrt(y (y + 2))
+                two: CmFrac = CmFrac(frac: CM_FRAC_TOP, exponent: 2)
+                product: U256 = y.frac.mul_wide(cm_frac_add(a: two, b: y).frac)
+                root: CmFrac = cm_inv_sqrt_product(p: product, e: y.exponent + 2)
+                t: CmFrac = cm_inv_ln_1p(cm_frac_add(a: root, b: y))
+                r: Maybe[U128] = cm_frac_round(frac: t.frac, exponent: t.exponent, sign: 0,
+                    gate: B128_INV_LOG_GATE)
+                return r
+        u >= B128_INV_HUGE_BITS => return None()
+        else =>
+            # z = x + sqrt(x² - 1)
+            s: CmFrac = cm_frac_sub(a: cm_frac_mul(a: v, b: v), b: one)
+            root: CmFrac = cm_frac_sqrt(n: s.frac.to[U256]() << 128, e: s.exponent)
+            t: CmFrac = cm_inv_ln(cm_frac_add(a: v, b: root))
+            r: Maybe[U128] = cm_frac_round(frac: t.frac, exponent: t.exponent, sign: 0,
+                gate: B128_INV_LOG_GATE)
+            return r
+
+### sqrt(p × 2^(e - 256)) for a product p of two fractions (p >= 2^254), shifted to set its top bit first.
+### :param p: The product.
+### :param e: The sum of the factors' exponents.
+### :returns: The square root, within 2.01 units.
+routine cm_inv_sqrt_product(p: U256, e: S64) -> CmFrac
+    if p >> 255 == 1
+        return cm_frac_sqrt(n: p, e)
+    else
+        return cm_frac_sqrt(n: p << 1, e: e - 1)
+
+### The quick tier of atanh on 0 < a < 1 (the derivation is at the top of this file).
+### :param a: The magnitude.
+### :returns: The bits of atanh a, correctly rounded.
+### :absent: When the result lies too close to a rounding midpoint.
+routine cm_atanh_quick(a: B128) -> Maybe[U128]
+    local u: U128 = a.bits()
+    local one: CmFrac = CmFrac(frac: CM_FRAC_TOP, exponent: 1)
+
+    tiny: Bool = u < B128_INV_TINY_BITS
+    when
+        tiny => return u
+        u < B128_INV_SERIES_BITS =>
+            x: CmFrac = cm_inv_frac(u)
+            c: U128 = (x.frac.mul_wide(x.frac) >> (128 - x.exponent * 2).to[U256]()).to_wrap[U128]()
+            t: CmFrac = cm_inv_series(lead: x, p: cm_inv_poly(c, k: 1), k: 1)
+            r: Maybe[U128] = cm_frac_round(frac: t.frac, exponent: t.exponent, sign: 0,
+                gate: B128_INV_SERIES_GATE)
+            return r
+        else =>
+            # w = 2a / (1 - a): 1 - a is exact from 1/2 on, else within a unit
+            x: CmFrac = cm_inv_frac(u)
+            upper: Bool = x.exponent == 0
+            exact: CmFrac = cm_frac_normalize(v: 0 -% x.frac, exponent: 0)
+            computed: CmFrac = cm_frac_sub(a: one, b: x)
+            gap: CmFrac = when
+                upper => exact
+                else => computed
+            twice: CmFrac = CmFrac(frac: x.frac, exponent: x.exponent + 1)
+            t: CmFrac = cm_inv_ln_1p(cm_frac_div(a: twice, b: gap))
+            r: Maybe[U128] = cm_frac_round(frac: t.frac, exponent: t.exponent - 1, sign: 0,
+                gate: B128_INV_LOG_GATE)
+            return r
+
+# -- fast tier: B128Extended ---------------------------------------------------
+
+### asinh a for a > 0: ln_1p(a + a²/(1 + sqrt(a² + 1))) below 1/2, else ln(a + sqrt(a² + 1)).
+### :param a: The argument, positive.
+### :returns: asinh a at 192 bits.
+routine wide_asinh(a: B128Extended) -> B128Extended
+    local aa: B128Extended = a * a
+    local root: B128Extended = (aa + wide_one()).sqrt()
+
+    if a.exponent < -1
+        r: B128Extended = wide_ln_1p(a + aa / (wide_one() + root))
+        return r
+    else
+        return wide_log(a + root)
+
+### acosh x for x > 1. Here y = x - 1 is exact wherever it's used (below 1/2).
+### :param x: The argument, above 1.
+### :returns: acosh x at 192 bits.
+routine wide_acosh(x: B128) -> B128Extended
+    local w: B128Extended = x.to[B128Extended]()
+    local y: B128Extended = w - wide_one()
+
+    if y.exponent < -1
+        root: B128Extended = (y * (y + S64.to[B128Extended](2))).sqrt()
+        r: B128Extended = wide_ln_1p(y + root)
+        return r
+    else
+        radicand: B128Extended = w * w - wide_one()
+        root: B128Extended = radicand.sqrt()
+        r: B128Extended = wide_log(w + root)
+        return r
+
+### atanh a for 0 < a < 1, as ln_1p(2a / (1 - a)) / 2.
+### :param a: The argument.
+### :returns: atanh a at 192 bits.
+routine wide_atanh(a: B128) -> B128Extended
+    w: B128Extended = a.to[B128Extended]()
+    arg: B128Extended = w.ldexp(1) / (wide_one() - w)
+    r: B128Extended = wide_ln_1p(arg).ldexp(-1)
+    return r
+
+# -- exact tier: B128Big -------------------------------------------------------
+
+### asinh a for a > 0, as ln_1p(a + a²/(1 + sqrt(a² + 1))).
+### :param a: The argument, positive.
+### :returns: asinh a at 448 bits.
+routine big_asinh(a: B128) -> B128Big
+    b: B128Big = a.to[B128Big]()
+    one: B128Big = big_one()
+    bb: B128Big = b * b
+    root: B128Big = (bb + one).sqrt()
+    r: B128Big = big_ln_1p(b + bb / (one + root))
+    return r
+
+### acosh x for x > 1, as ln_1p(y + sqrt(y (y + 2))) with y = x - 1.
+### :param x: The argument, above 1.
+### :returns: acosh x at 448 bits.
+routine big_acosh(x: B128) -> B128Big
+    y: B128Big = x.to[B128Big]() - big_one()
+    root: B128Big = (y * (y + S64.to[B128Big](2))).sqrt()
+    r: B128Big = big_ln_1p(y + root)
+    return r
+
+### atanh a for 0 < a < 1, as ln_1p(2a / (1 - a)) / 2.
+### :param a: The argument.
+### :returns: atanh a at 448 bits.
+routine big_atanh(a: B128) -> B128Big
+    b: B128Big = a.to[B128Big]()
+    arg: B128Big = b.ldexp(1) / (big_one() - b)
+    r: B128Big = big_ln_1p(arg).ldexp(-1)
+    return r
+
+# -- asinh, acosh, atanh -------------------------------------------------------
+
+### asinh, correctly rounded: ±0 and ±inf are their own, and a NaN comes back quieted.
+### :returns: asinh(`me`).
+routine B128.asinh(me: Me) -> Me
+    r: Me = b128_asinh(x: me, exact: false)
+    return r
+
+### acosh, correctly rounded: +0 at 1, +inf at +inf, NaN below 1, and a NaN comes back quieted.
+### :returns: acosh(`me`).
+routine B128.acosh(me: Me) -> Me
+    r: Me = b128_acosh(x: me, exact: false)
+    return r
+
+### atanh, correctly rounded: ±0 at ±0, ±inf at ±1, NaN beyond, and a NaN comes back quieted.
+### :returns: atanh(`me`).
+routine B128.atanh(me: Me) -> Me
+    r: Me = b128_atanh(x: me, exact: false)
+    return r
+
+### asinh x, correctly rounded, as {B128.asinh}.
+### :param x: The argument.
+### :param exact: True skips the quick and fast tiers (the tests use it to check the exact tier on its own).
+### :returns: asinh x.
+routine b128_asinh(x: B128, exact: Bool) -> B128
+    bits: U128 = x.bits()
+    nan: Bool = b128_is_nan_bits(bits)
+    zero: Bool = b128_is_zero_bits(bits)
+    when
+        nan => return b128_of(b128_quiet(bits))
+        zero => return x
+        x.is_infinite() => return x
+        else =>
+            a: B128 = x.abs()
+            if not exact
+                q: Maybe[U128] = cm_asinh_quick(a)
+                when q
+                    is U128 as found => return b128_of(found).copysign(x)
+                    is None => pass
+                w: B128Extended = wide_asinh(a.to[B128Extended]())
+                rounded: WideRounding = wide_round_within(u: w, k: B128_ASINH_BAND)
+                if rounded.ok
+                    return rounded.value.copysign(x)
+            magnitude: B128 = big_asinh(a).to[B128]()
+            r: B128 = magnitude.copysign(x)
+            return r
+
+### acosh x, correctly rounded, as {B128.acosh}.
+### :param x: The argument.
+### :param exact: True skips the quick and fast tiers.
+### :returns: acosh x.
+routine b128_acosh(x: B128, exact: Bool) -> B128
+    bits: U128 = x.bits()
+    nan: Bool = b128_is_nan_bits(bits)
+    one: B128 = b128_of(B128_ONE)
+    below: Bool = x < one
+    unit: Bool = x == one
+    when
+        nan => return b128_of(b128_quiet(bits))
+        below => return B128.NAN
+        unit => return b128_of(0)
+        x.is_infinite() => return x
+        else =>
+            if not exact
+                q: Maybe[U128] = cm_acosh_quick(x)
+                when q
+                    is U128 as found => return b128_of(found)
+                    is None => pass
+                rounded: WideRounding = wide_round_within(u: wide_acosh(x), k: B128_ACOSH_BAND)
+                if rounded.ok
+                    return rounded.value
+            r: B128 = big_acosh(x).to[B128]()
+            return r
+
+### atanh x, correctly rounded, as {B128.atanh}.
+### :param x: The argument.
+### :param exact: True skips the quick and fast tiers.
+### :returns: atanh x.
+routine b128_atanh(x: B128, exact: Bool) -> B128
+    local bits: U128 = x.bits()
+    local nan: Bool = b128_is_nan_bits(bits)
+    local zero: Bool = b128_is_zero_bits(bits)
+    local a: B128 = x.abs()
+
+    one: B128 = b128_of(B128_ONE)
+    at_one: Bool = a == one
+    when
+        nan => return b128_of(b128_quiet(bits))
+        zero => return x
+        a > one => return B128.NAN
+        at_one => return B128.INFINITY.copysign(x)
+        else =>
+            if not exact
+                q: Maybe[U128] = cm_atanh_quick(a)
+                when q
+                    is U128 as found => return b128_of(found).copysign(x)
+                    is None => pass
+                rounded: WideRounding = wide_round_within(u: wide_atanh(a), k: B128_ATANH_BAND)
+                if rounded.ok
+                    return rounded.value.copysign(x)
+            magnitude: B128 = big_atanh(a).to[B128]()
+            r: B128 = magnitude.copysign(x)
+            return r

@@ -20,7 +20,7 @@
   <a href="https://github.com/dj-lumiere/RazorForge">RazorForge</a>
 </p>
 
-Tessera (`.tess`) keeps every step of a program on the page, and keeps writing it bearable. Nothing happens between
+Tessera (`.te`) keeps every step of a program on the page, and keeps writing it bearable. Nothing happens between
 the lines: a value is bound once and never reassigned, a load and a store are calls you can see (`p.peek()`,
 `p.poke(v)`), memory is taken from a manager and given back by hand, and the builder checks that it was.
 
@@ -99,7 +99,7 @@ dotnet test tests                # optional: every golden test and example as an
 ### Hello, world
 
 ```bash
-dotnet run -- run examples/hello.tess
+dotnet run -- run examples/hello.te
 ```
 
 [`examples/`](examples/README.md) continues from there, one idea per program, in reading order.
@@ -114,16 +114,16 @@ starting points.
 ## Command line
 
 ```
-tessera new   [<folder>]                      Start a solution: config.toml, main.tess, .gitignore, .vscode/
+tessera new   [<folder>]                      Start a solution: config.toml, main.te, .gitignore, .vscode/
 tessera build                                 Build the solution its config.toml describes (here or above)
 tessera run                                   Build it and run it
-tessera build <file.tess>... [-o <out>]       Build an executable from these files
+tessera build <file.te>... [-o <out>]         Build an executable from these files
               [--emit-llvm] [<target>] [--mode <mode>]  (--emit-llvm writes LLVM IR instead)
-tessera run   <file.tess>... [<target>] [--mode <mode>]  Build and run these files
+tessera run   <file.te>... [<target>] [--mode <mode>]  Build and run these files
 tessera test  [<target>] [--mode <mode>] <dir-or-file>...  Run golden tests
-tessera check [<target>] [<file.tess>...]     Type-check every non-generic routine, the stdlib included
-tessera fmt   [--check] <file-or-dir>...      Format .tess files in place
-tessera migrate [--check] <file-or-dir>...    Rewrite .tess files to this release's spellings
+tessera check [<target>] [<file.te>...]       Type-check every non-generic routine, the stdlib included
+tessera fmt   [--check] <file-or-dir>...      Format .te files in place
+tessera migrate [--check] <file-or-dir>...    Rewrite .te files to this release's spellings
 tessera help | version
 ```
 
@@ -186,17 +186,17 @@ The documentation lives at [tessera.lumi-dev.xyz](https://tessera.lumi-dev.xyz/)
 ```
 Tessera/
 ├── src/                 # The builder, in C#: emits LLVM IR text and links through clang
-├── Standard/              # The standard library (.tess), the source of truth for the current design
+├── Standard/              # The standard library (.te), the source of truth for the current design
 ├── tests/               # Golden tests, including Dijkstra, a lazy segment tree, SHA-256, and a calculator
 │   └── Tessera.Tests.csproj  # runs each golden test and example as its own xUnit case
 ├── examples/            # Introductory programs, one idea each, in reading order
-├── playground/          # Gitignored: your own programs (the Rider configuration *Playground* runs main.tess)
+├── playground/          # Gitignored: your own programs (the Rider configuration *Playground* runs main.te)
 ├── Tessera.tmbundle/    # TextMate grammar
 ├── Tessera.csproj       # Builder project
 └── TESSERA-FOR-AI.md    # Reference for AI assistants
 ```
 
-Each golden test is `<name>.tess`, or a directory `<name>/` whose files are built together (several modules, or a
+Each golden test is `<name>.te`, or a directory `<name>/` whose files are built together (several modules, or a
 `config.toml` to build from), with one of:
 
 - `<name>.expected`: the program's stdout

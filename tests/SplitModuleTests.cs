@@ -58,7 +58,7 @@ public class SplitModuleTests
 
     private static List<Decl> Decls()
     {
-        var decls = new Parser(new Lexer("split.tess", Source).Lex(), "split.tess").ParseModule().Decls;
+        var decls = new Parser(new Lexer("split.te", Source).Lex(), "split.te").ParseModule().Decls;
         decls.AddRange(StandardLibrary.Load(Path.Combine(FindRoot(), "Standard")));
         return decls;
     }
@@ -66,7 +66,7 @@ public class SplitModuleTests
     private static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Standard", "Prelude.tess"))
+            if (File.Exists(Path.Combine(dir.FullName, "Standard", "Prelude.te"))
                 && Directory.Exists(Path.Combine(dir.FullName, "tests")))
                 return dir.FullName;
         throw new InvalidOperationException("can't find the Tessera repository above the test assembly");

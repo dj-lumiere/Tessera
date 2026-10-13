@@ -9,16 +9,16 @@ static class Cli
 {
     private const string Usage = """
         usage:
-          tessera new   [<folder>]      start a solution: config.toml, main.tess, .gitignore, VS Code files
-          tessera check [<target>] [<trace>] [<file.tess>...]   type-check every non-generic routine, the stdlib included
+          tessera new   [<folder>]      start a solution: config.toml, main.te, .gitignore, VS Code files
+          tessera check [<target>] [<trace>] [<file.te>...]   type-check every non-generic routine, the stdlib included
           tessera build                 build the solution its config.toml describes (here or above)
-          tessera build <file.tess>... [-o <out>] [--emit-llvm] [--no-stdlib-exports] [<target>] [--mode <mode>] [<trace>] [--race-check]
+          tessera build <file.te>... [-o <out>] [--emit-llvm] [--no-stdlib-exports] [<target>] [--mode <mode>] [<trace>] [--race-check]
           tessera run                   build it and run it
-          tessera run   <file.tess>... [<target>] [--mode <mode>] [<trace>] [--race-check]
-          tessera test  [<target>] [--mode <mode>] [<trace>] <dir-or-file.tess>...
-          tessera fmt   [--check] <file-or-dir>...   format .tess files in place (--check: list files that would change)
+          tessera run   <file.te>... [<target>] [--mode <mode>] [<trace>] [--race-check]
+          tessera test  [<target>] [--mode <mode>] [<trace>] <dir-or-file.te>...
+          tessera fmt   [--check] <file-or-dir>...   format .te files in place (--check: list files that would change)
           tessera fmt   -               format the source on standard input to standard output (for an editor)
-          tessera migrate [--check] [--named-args] <file-or-dir>...   rewrite .tess files to this release's spellings (--check: list them, --named-args: only name call arguments)
+          tessera migrate [--check] [--named-args] <file-or-dir>...   rewrite .te files to this release's spellings (--check: list them, --named-args: only name call arguments)
           tessera lsp                   run the language server on standard input and output (for an editor)
           tessera lint  <file-or-dir>...   print the style warnings (see lint below), the stdlib's too
           tessera docs  <source-dir> <output-dir>   write the API reference pages of a library from its /// docs
@@ -48,7 +48,7 @@ static class Cli
 
         All input files form one compilation unit. Without files, build and run read config.toml, which sets
         everything the flags would; its output goes to build/ next to it.
-        test: every <name>.tess in each <dir>, and every subdirectory <name>/ (its files compiled together), is
+        test: every <name>.te in each <dir>, and every subdirectory <name>/ (its files compiled together), is
               built and run. Its stdout must equal <name>.expected (if present), and its exit code must equal
               the number in <name>.exit (default 0). If <name>.error exists, the build must fail with a message
               containing its text. <name>.input, if present, is its standard input (else it reads an empty one).
@@ -147,7 +147,7 @@ static class Cli
             return 0;
         }
         var files = paths.SelectMany(p => Directory.Exists(p)
-            ? Directory.EnumerateFiles(p, "*.tess", SearchOption.AllDirectories)
+            ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
             : [p]).Order().ToList();
         int changed = 0;
         foreach (var file in files)
@@ -194,7 +194,7 @@ static class Cli
     {
         if (args.Length == 0) return Fail("lint: give files or directories to lint");
         var files = args.SelectMany(p => Directory.Exists(p)
-            ? Directory.EnumerateFiles(p, "*.tess", SearchOption.AllDirectories)
+            ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
             : [p]).Order().ToList();
         foreach (var file in files)
             if (!File.Exists(file)) throw new ToolError($"no such file: {file}");
@@ -561,14 +561,14 @@ static class Cli
         var inputs = files.Select(Path.GetFullPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var jobs = inputs.Select(f => (Path: f, IsLibrary: false, ShownAs: (string?)null, Stamp: default(StandardLibrary.FileStamp)))
             .ToList();
-        // Stdlib files are named from the stdlib directory (Standard/Collection/List.tess) wherever the build runs, so
+        // Stdlib files are named from the stdlib directory (Standard/Collection/List.te) wherever the build runs, so
         // the file tags in private symbols don't depend on the working directory. A stdlib that can't be found is
         // reported after the inputs' own errors, as when the inputs were read first.
         ExceptionDispatchInfo? stdlibError = null;
         try
         {
             string stdlib = StdlibDir();
-            foreach (var f in new DirectoryInfo(stdlib).GetFiles("*.tess", SearchOption.AllDirectories)
+            foreach (var f in new DirectoryInfo(stdlib).GetFiles("*.te", SearchOption.AllDirectories)
                          .OrderBy(f => f.FullName))
                 if (!inputs.Contains(f.FullName))
                     jobs.Add((f.FullName, true, StandardLibrary.ShownAs(stdlib, f.FullName),
@@ -632,7 +632,7 @@ static class Cli
 
     private static string? _stdlib;
 
-    /// The standard library: $TESSERA_STDLIB, or the nearest `Standard/` (with a Prelude.tess) above the working
+    /// The standard library: $TESSERA_STDLIB, or the nearest `Standard/` (with a Prelude.te) above the working
     /// directory or the builder binary.
     internal static string StdlibDir()
     {
@@ -641,7 +641,7 @@ static class Cli
             return _stdlib = env;
         foreach (var start in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
             for (var dir = new DirectoryInfo(start); dir is not null; dir = dir.Parent)
-                if (File.Exists(Path.Combine(dir.FullName, "Standard", "Prelude.tess")))
+                if (File.Exists(Path.Combine(dir.FullName, "Standard", "Prelude.te")))
                     return _stdlib = Path.Combine(dir.FullName, "Standard");
         throw new ToolError("cannot find the standard library; set TESSERA_STDLIB to the stdlib directory");
     }
@@ -755,7 +755,7 @@ static class Cli
             if (target.Os == "windows" && BuiltinsLibrary(target) is { } builtins) psi.ArgumentList.Add(builtins);
             // lld-link reports in English whatever the system locale, and links faster than link.exe.
             if (target.Os == "windows") psi.ArgumentList.Add("-fuse-ld=lld");
-            // WaitOnAddress and WakeByAddress (Standard/Os/Wait.tess) live in synchronization.lib, not kernel32.
+            // WaitOnAddress and WakeByAddress (Standard/Os/Wait.te) live in synchronization.lib, not kernel32.
             if (target.Os == "windows") psi.ArgumentList.Add("-lsynchronization");
             // The UCRT defines printf and its family inline in the headers; 32-bit x86 has no exported symbol for
             // them, so an IR-level call needs the out-of-line copies.
@@ -874,8 +874,8 @@ static class Cli
         }
         var target = targetArgs.Build();
         args = [.. dirs];
-        if (args.Length == 0) throw new ToolError("test takes one or more directories or .tess files");
-        // A test is one file, or a subdirectory whose .tess files are compiled together (several modules); its
+        if (args.Length == 0) throw new ToolError("test takes one or more directories or .te files");
+        // A test is one file, or a subdirectory whose .te files are compiled together (several modules); its
         // .expected / .exit / .error files sit next to it either way.
         // A subdirectory with a config.toml builds through it.
         var tests = new List<(string Stem, string[] Sources)>();
@@ -883,13 +883,14 @@ static class Cli
         {
             if (File.Exists(dir))
             {
-                if (Path.GetExtension(dir) != ".tess") throw new ToolError($"{dir} is not a .tess file");
+                if (Path.GetExtension(dir) != ".te")
+                    throw new ToolError($"{dir} is not a Tessera source (Tessera sources end in .te)");
                 tests.Add((Path.ChangeExtension(dir, null), [dir]));
                 continue;
             }
             if (!Directory.Exists(dir)) throw new ToolError($"{dir} does not exist");
             var found = TestsIn(dir);
-            if (found.Count == 0) throw new ToolError($"no .tess files in {dir}");
+            if (found.Count == 0) throw new ToolError($"no .te files in {dir}");
             tests.AddRange(found);
         }
         bool qualify = args.Length > 1;
@@ -975,14 +976,14 @@ static class Cli
     /// A <name>.serial file marks a test that runs by itself, with no other test building or running beside it.
     internal static bool RunsAlone(string stem) => File.Exists(stem + ".serial");
 
-    /// The golden tests in a directory: every <name>.tess, and every subdirectory <name>/ (its .tess files compiled
+    /// The golden tests in a directory: every <name>.te, and every subdirectory <name>/ (its .te files compiled
     /// together, or built through its config.toml). A test's .expected / .exit / .error files sit next to it.
     internal static List<(string Stem, string[] Sources)> TestsIn(string dir) =>
-        Directory.GetFiles(dir, "*.tess").Select(f => (Path.ChangeExtension(f, null), new[] { f }))
+        Directory.GetFiles(dir, "*.te").Select(f => (Path.ChangeExtension(f, null), new[] { f }))
             .Concat(Directory.GetDirectories(dir)
                 .Select(d => (d, File.Exists(Path.Combine(d, Manifest.FileName))
                     ? [Path.Combine(d, Manifest.FileName)]
-                    : Directory.GetFiles(d, "*.tess", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()))
+                    : Directory.GetFiles(d, "*.te", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()))
                 .Where(t => t.Item2.Length > 0))
             .OrderBy(t => t.Item1, StringComparer.Ordinal).ToList();
 

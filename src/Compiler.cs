@@ -867,7 +867,7 @@ public sealed partial class Compiler
     }
 
     /// Sets the trace sizes the manifest gives (`[debug] trace-frames`, `failure-traces`): the standard library's
-    /// TRACE_CAPACITY and FAILURE_FRAMES, and FAILURE_TRACES (Trace.tess). Null keeps a size as the library has it.
+    /// TRACE_CAPACITY and FAILURE_FRAMES, and FAILURE_TRACES (Trace.te). Null keeps a size as the library has it.
     public void SetTraceSizes(int? frames, int? failures)
     {
         void Set(string name, int? value)

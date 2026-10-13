@@ -8,14 +8,14 @@ answer.
 ## Toolchain
 
 ```sh
-dotnet run -- run   file.tess        # build and run (the whole stdlib is always available)
-dotnet run -- run --mode release file.tess   # the same at -O2 (also release-time -O3, release-space -Os)
-dotnet run -- run --no-trace file.tess   # without the crash trace (--trace keeps it; build, run, test, check)
-dotnet run -- run --race-check file.tess # stop at the first data race, exit 82 (build too, Linux/macOS on x86_64 and aarch64)
-dotnet run -- check file.tess        # type-check only
+dotnet run -- run   file.te        # build and run (the whole stdlib is always available)
+dotnet run -- run --mode release file.te   # the same at -O2 (also release-time -O3, release-space -Os)
+dotnet run -- run --no-trace file.te   # without the crash trace (--trace keeps it; build, run, test, check)
+dotnet run -- run --race-check file.te # stop at the first data race, exit 82 (build too, Linux/macOS on x86_64 and aarch64)
+dotnet run -- check file.te        # type-check only
 dotnet run -- test tests examples             # golden tests
 dotnet run -- fmt <files or dirs>        # format in place (--check to only list)
-dotnet run -- build                      # build config.toml's entry (executable = "main.tess") and its imports into build/
+dotnet run -- build                      # build config.toml's entry (executable = "main.te") and its imports into build/
 dotnet run -- version                    # the builder's version; help prints every command
 ```
 
@@ -141,11 +141,11 @@ routine start() -> None
   body reuses one slot, but its `<-` runs on every pass: it can't carry a value from one pass to the next. A slot
   that does is declared in the routine's head (below), or the value is carried with `with`.
 - **Where values are: four types.** `@T` (a `Ptr`) is the address of one value (a local slot, a field, an element,
-  memory from C). `Span[T]` (Core, `Types/Span.tess`) is `{data, count}`, a borrowed run of values. Both only VIEW
+  memory from C). `Span[T]` (Core, `Types/Span.te`) is `{data, count}`, a borrowed run of values. Both only VIEW
   memory and release nothing: `peek` / `poke` on a `@T`, and on a Span `getslot(i)` (the checked `@T`, so everything
   through it is `@T`'s own: `peek_volatile`, `atomic_fetch_add`, ...), `getitem(i)` / `setitem(i, v)`,
   `getitem_checked(i)` (a `Maybe`), `getslice(start, count)`, `getview()`, `to[@T]()`. `Box[T]` (`{at, manager,
-  generation}`) and `Memory[T]` (`{data, count, manager, generation}`, `Types/Memory.tess`) are memory TAKEN from a
+  generation}`) and `Memory[T]` (`{data, count, manager, generation}`, `Types/Memory.te`) are memory TAKEN from a
   `MemoryManager`, and both are ENTITIES (Entities, below): never copied, kept in a slot
   (`local m: @Memory[Byte] <- Memory[Byte].construct(count: 4, manager: alloc)`), every routine takes `me: @Me`.
   Read and written with `load` / `store` (`m.load(i)`, `m.store(index: i, value: v)`, `b.load()`, `b.store(v)`, the
@@ -269,7 +269,7 @@ routine start() -> None
   `protect(at, size, PageAccess.NONE | READ | READ_WRITE)`. Its fields are `Callable`s taking `state` first, the page
   ones and `protect_fn` may be null (`has_pages()`, `has_protect()`), and calling an empty one crashes with
   `NotImplementedError`. `MemoryManager.construct(alloc_fn, realloc_fn, free_fn, state)` makes one without pages. The
-  hosted managers fill everything (pages from `Standard/Os/Pages.tess`). Raw `allocate[T]` asks for `alignof[T]()`.
+  hosted managers fill everything (pages from `Standard/Os/Pages.te`). Raw `allocate[T]` asks for `alignof[T]()`.
 - **The default heap comes with `Standard/Os`**, like `Out`: there `DEFAULT_HEAP` is an `@MemoryManager` ready before
   `start` (`make_heap_memory()` gives the same one), and every collection and `Memory` gets a `construct` without
   the manager (`List[S64].construct()`, `Memory[U8].construct(n)`). Memory C frees or reallocates, or memory from C's
@@ -521,7 +521,7 @@ routine start() -> None
   slot first.
 - **A constraint is said once, where it belongs.** A record's (or variant's) `needs` constraints hold in every
   routine on it, wherever the routine is declared (an extension routine in another module, such as
-  `Standard/Os/Defaults.tess`, included): a constraint is a fact about the type, said where the type is declared. So a
+  `Standard/Os/Defaults.te`, included): a constraint is a fact about the type, said where the type is declared. So a
   routine on a record lists its type parameters and only the constraints it adds: `SortedDict[TKey, TValue].has_key`
   calls `key.compare(...)` with `needs TKey: typename, TValue: typename`, and `SortedDict.eq` adds just
   `Equatable[TValue]`. The same goes for an `obeys ... when` on the type: it lists only the conditions that
@@ -570,7 +570,7 @@ routine start() -> None
 - When every operand is a literal, name the type with a typewise call: `S64.eq(0, 1)`, `U128.shl(1, 100)`. There are
   no literal suffixes (`0u64`).
 - Text is a `Span[Byte]` (UTF-8 by convention, unchecked: `is_utf8` checks, and `chars()` reads a bad sequence as
-  U+FFFD), and owned text is a `Memory[Byte]`. The text routines are on `Span[Byte]` (`Types/ByteSpan.tess`:
+  U+FFFD), and owned text is a `Memory[Byte]`. The text routines are on `Span[Byte]` (`Types/ByteSpan.te`:
   `find`, `has`, `has_prefix`, `slice(start, end)`, `byte_at`, `bytes()`, `chars()`, `concat(a, b, alloc)`, `eq`,
   `compare`, `hash`, ...). A literal is a `Span[Byte]` of the program image, `Span[Byte].construct(data, count)`
   wraps bytes from C, and text made from other text (`slice`, `getslice`, the iterators, `buf.getview()` of a
@@ -606,7 +606,7 @@ routine start() -> None
   the caller's line; mark a routine of your own the same way when its crashes are its caller's fault.
 - The crash trace: the builder keeps a shadow stack of the program's routines (not the stdlib's, not `@inline` or
   `@untraced` ones, not the handler), and the default handler prints it after the place, innermost first:
-  `Stack trace:` then `  0: at fill (grid.tess:12:9)`, and `  ... (40 frames total)` past the 32 it keeps. A handler
+  `Stack trace:` then `  0: at fill (grid.te:12:9)`, and `  ... (40 frames total)` past the 32 it keeps. A handler
   of your own reads it with `trace_depth()` (`USize`, 0 in an untraced build) and `trace_frame(back)` (a
   `TraceFrame`: `name` / `file` as `CStr`, `line` / `column`; 0 is the innermost, `back` below `trace_depth()` and
   `TRACE_CAPACITY`). It's on in debug and release, off in release-time and release-space; `--no-trace` / `--trace`
@@ -624,7 +624,7 @@ routine start() -> None
   `is E`) records that failure as the one it wraps. Untraced builds note nothing (number 0).
 - `unwrap` of a failure crashes with `UnwrapFailureError`: `Attempted to unwrap the value of a Failure, which holds
   Problem.BAD_INPUT.` (the error as `diagnose` writes it if its type is Diagnosable, else `a ParseFailed`), then
-  `The failure was made at:` with its frames (`  0: at load (f.tess:44:34)`, innermost first), then `It wraps the
+  `The failure was made at:` with its frames (`  0: at load (f.te:44:34)`, innermost first), then `It wraps the
   failure made at:` plus frames for each wrapped failure, innermost wrap first. A failure made on another thread, or
   pushed out of the ring, prints `  (not remembered here: made on another thread, or later failures took its place)`.
   The default handler then adds the place and `Stack trace:` of the unwrap as for any crash.
@@ -637,7 +637,7 @@ routine start() -> None
   signal stack every thread gets (so a stack overflow is reported too). Windows: the unhandled-exception filter
   (AccessViolation, StackOverflow, IllegalInstruction, IntegerDivideByZero, IntegerOverflow). The report on stderr:
   `tessera: SegmentationFault (SIGSEGV): <meaning>`, the crash trace (a frame that made no call yet shows only its
-  file: `  0: at read (f.tess)`), then `Platform stack:` (`backtrace_symbols_fd` on Linux/macOS, raw `0x...`
+  file: `  0: at read (f.te)`), then `Platform stack:` (`backtrace_symbols_fd` on Linux/macOS, raw `0x...`
   addresses on Windows). Then the fault ends the program as it would have (handler is one-shot, the signal is raised
   again): exit status 139 for SIGSEGV on Linux, not 82.
 
@@ -746,7 +746,7 @@ routine start() -> None
   whole value past 8). Without `else`, observe every branch. An `else` when every branch is already observed is an
   error. There's no field access on a variant.
 - Inline variants: `A | B | C` is a type, a variant with no declaration (the stdlib's `@union` variants
-  `Union2`..`Union8` in `Standard/Types/Union.tess`, so at most 8 branches, more is a build error that says to declare a
+  `Union2`..`Union8` in `Standard/Types/Union.te`, so at most 8 branches, more is a build error that says to declare a
   variant). Its branches are the types each once, ordered by their full names, so `A | B` and `B | A` are one type
   (messages write `A | B`). `A | A` is just `A`, and an inline branch gives its branches (flattened). `|` binds
   loosest among type forms: `@A | B` is a pointer to an A, or a B. A pointer to one goes through a name: `@(A | B)` is
@@ -818,7 +818,7 @@ routine parse_or_zero(text: Span[Byte]) -> B64
 
 ## Output
 
-Format through `Standard/Format.tess`, not printf. printf is for C interop demos only: it can't print `S128`, `B16`,
+Format through `Standard/Format.te`, not printf. printf is for C interop demos only: it can't print `S128`, `B16`,
 `BF16`, or `B128`, and a mismatched format is undefined behavior.
 
 - Writers: `Out` / `Err` (the console's standard output and error, unbuffered; `Out.writer()` is the pointer a
@@ -948,7 +948,7 @@ code waiting on several tickets at once.
   does), `give_back_all()` (and empties the list), `wait_any_finished() -> USize` (the position of a finished one,
   crashes on an empty list), `cancel_all()`, `take_finished()` / `take_finished(alloc)` (moves finished tickets out
   into a new list, both keep their order), and `give_back_finished()`.
-- **Threads** (`Standard/Os/Thread.tess`, what both tickets share in `Work.tess`, who waits in `Waiter.tess`):
+- **Threads** (`Standard/Os/Thread.te`, what both tickets share in `Work.te`, who waits in `Waiter.te`):
   `get_thread[T]()` takes one from `DEFAULT_THREADS` (the hosted manager, OS threads,
   blocks from `DEFAULT_HEAP`), `get_thread[T](manager)` from another. A `ThreadManager` is a record of a launch routine,
   its state, the idle threads, and an allocator: `ThreadManager.construct(alloc)` is OS threads with another allocator,
@@ -957,7 +957,7 @@ code waiting on several tickets at once.
   starts no thread crashes `get_thread` with `TaskSpawnError`. `manager.launch_unwatched(entry, arg)` (entry takes an
   `@T`, `arg` is one and outlives the thread) starts a thread nobody waits for: only for a runtime's own threads that
   live as long as the program. `cpu_count()`.
-- **Fibers** (`Standard/Fiber/FiberManager.tess`): `FIBERS.get_fiber[T]()`, the same flow and crashes. `FIBERS` is each thread's own
+- **Fibers** (`Standard/Fiber/FiberManager.te`): `FIBERS.get_fiber[T]()`, the same flow and crashes. `FIBERS` is each thread's own
   `FiberManager`, made on first use (64 KiB stacks from `DEFAULT_STACKS`), and on a thread ticket it goes when the
   work is over. `FiberManager.construct(stack_size, stacks, alloc)` makes another (`make_stack_memory()` for guard
   pages), `drop manager` frees it. A manager runs its fibers on ONE thread, the one that drives it, and never moves
@@ -967,23 +967,23 @@ code waiting on several tickets at once.
   Inside a fiber, waiting parks only that fiber: `wait_finished` of a fiber or THREAD ticket, `park()` (until
   `wake(handle)` from any thread, the handle from `current()`, may return early so loop on the condition),
   `park_until(deadline)`, `sleep(ns)`, and `run_blocking(work, arg)` (a blocking call on a thread ticket), which
-  `read` / `write` (`Standard/Fiber/Io.tess`) use. A blocking call made directly stops every fiber of its thread.
+  `read` / `write` (`Standard/Fiber/Io.te`) use. A blocking call made directly stops every fiber of its thread.
   `yield()` lets the other ready fibers go first. Outside a fiber `sleep` waits the thread, `park` returns,
-  `run_blocking` just calls. More cores = thread tickets, each driving its own `FIBERS` (`tests/fiber_workers.tess`),
+  `run_blocking` just calls. More cores = thread tickets, each driving its own `FIBERS` (`tests/fiber_workers.te`),
   or a FiberPool. A thread that drives a manager between other work loops on `run_until_idle()` and sleeps on a word
   of its own: `wake_through(word)` makes a wake from another thread change that word (and `wake_all` it),
   `idle_wait() -> U64` is how long it may sleep before a fiber with a deadline is due (`U64.MAX` for none).
-- **FiberPool** (`Standard/Fiber/FiberPool.tess`, M:N): `local pool: @FiberPool <- .construct(threads: 0)` (0 = one
+- **FiberPool** (`Standard/Fiber/FiberPool.te`, M:N): `local pool: @FiberPool <- .construct(threads: 0)` (0 = one
   thread per processor), `j: Job[T] = pool.get_job[T]()`, then the ticket flow (`put_work`, `check_finished`,
   `wait_finished(_for, _result)`, `retrieve(_result)`, `cancel`, `give_back`). Work waits in the pool's queue until a
   pool thread is free, then runs as a fiber of that thread and NEVER moves. A job may put work on more jobs and wait:
   the waiting job parks, its thread runs other jobs, the finishing thread wakes it (recursive splitting:
-  `tests/fiber_pool.tess`). Jobs don't choose their thread, so they share values like threads do (atomics, locks,
+  `tests/fiber_pool.te`). Jobs don't choose their thread, so they share values like threads do (atomics, locks,
   channels). Threads start with the first `get_job` and end at `drop pool`: give every job back first.
 - `migrate --step threads` rewrites `x: Thread = Thread.spawn(entry: f, arg: s)` / `x.join()` /
   `Thread.spawn(...).detach()` into tickets and `launch_unwatched`.
 
-**Atomics.** `Atomic[T]` (Core, `Atomic.tess`) is a record aligned to T's size whose every access is atomic: the
+**Atomics.** `Atomic[T]` (Core, `Atomic.te`) is a record aligned to T's size whose every access is atomic: the
 form for state a program shares between threads (`hits: Atomic[U64]` in a shared record, `Atomic[U64].construct(value:
 0)` or `.construct(value: 0)`). Threads share its place, `@Atomic[T]`, never copies. Routines: `peek` / `poke`,
 `swap`, `compare_exchange` / `compare_exchange_weak` (`Result[None, T]`: `None` when it wrote, the value found when
@@ -1007,7 +1007,7 @@ and looks again), may return early, so loop. `sleep_for(ns)` waits the same way.
 waited-for thing knows is a `Waiter` (`current_waiter()`: a fiber parks through its manager, a thread on a word of its
 own), with `park()` / `park_until(deadline)` / `wake()`. All in Standard/Os.
 
-**Channels** (Standard/Os/Channel.tess): `Channel[T]` (one receiver) and `SharedChannel[T]` (many, each value to
+**Channels** (Standard/Os/Channel.te): `Channel[T]` (one receiver) and `SharedChannel[T]` (many, each value to
 one), shared as `@Channel[T]`: `local ch: @Channel[U64] <- .construct(capacity: 8)` (or `construct(capacity, alloc)`),
 `send_result(value) -> Result[None, ChannelClosed | CancelRequested]` (waits while full), `send_if_room(value) ->
 Bool` (never waits), `receive_result() -> Result[T, ChannelClosed | CancelRequested]` (waits while empty, match it
@@ -1022,7 +1022,7 @@ routine (stdlib too) is instrumented with ThreadSanitizer, and the program stops
 touching the same memory, one writing, neither an atomic access nor a lock between them) with exit status 82 and a
 report of both places on stderr. Linux and macOS on x86_64 and aarch64 only (elsewhere an error). Slow: for runs that
 look for races. It sees the races a run has, not every possible one. Fibers tell the check which stack runs
-(`Standard/Os/RaceCheck.tess`). `tessera check` checks the stdlib's `@race_check("on")` / `@race_check("off")` sides
+(`Standard/Os/RaceCheck.te`). `tessera check` checks the stdlib's `@race_check("on")` / `@race_check("off")` sides
 too. A golden test of a race (`tests/race_check/` with `race_check.exit` holding `82`) expects the stop, and passes on
 a target without the check.
 
@@ -1080,14 +1080,14 @@ and so is a `when_booted` that never calls it. Work that touches no global (a wa
 `when_booted` the program gets one that runs `prepare_core()`. Then `start()` runs, then a loop that halts (`hlt` /
 `wfi`). The link script defines those symbols (`tests/freestanding/<target>.ld` are
 small ones) and, on RISC-V, no `__global_pointer$` (the entry leaves gp alone). On 32-bit ARM the entry is a Cortex-M
-reset vector, so the build names a Cortex-M CPU (`--cpu cortex-m3`). The steps are `Standard/Boot.tess`. A program
+reset vector, so the build names a Cortex-M CPU (`--cpu cortex-m3`). The steps are `Standard/Boot.te`. A program
 without `start` brings its own entry instead. x86_64 code without an OS is built without the red zone. A program
 that hashes (a `Dict`, a `Set`, any `hash()`) also exports the hash key, `@export("tessera_hash_key")` above `routine
 board_key(key: @SipKey) -> None` filling 128 secret random bits (from the board's TRNG, never a fixed value or a cycle
 counter), unless the build enables a random number instruction (`--feature rdrnd` / `rdseed` on x86-64, `rand` on
 AArch64, `zkr` on RISC-V), from which the stdlib exports it. Without either the link fails on `tessera_hash_key`. The
 stdlib supplies `memcpy` / `memmove` / `memset` / `memcmp` (and ARM's `__aeabi_mem*`) there, weak, from
-`Standard/Freestanding.tess`, and the whole compiler runtime from `Standard/SoftFloat/`, so nothing needs compiler-rt
+`Standard/Freestanding.te`, and the whole compiler runtime from `Standard/SoftFloat/`, so nothing needs compiler-rt
 or libgcc: the soft-float routines LLVM calls for B16 / BF16 / B32 / B64 without a floating-point unit (`__addsf3`,
 `__aeabi_dmul`, `__truncsfhf2`, `sqrtf`, ...), integer division (`__udivdi3`, `__aeabi_uldivmod`, ...), and
 `__clzsi2`, written with integer operations only, weak and `@no_builtins`. Each export wraps an ordinary routine
@@ -1258,7 +1258,7 @@ syntax sugar to shorten code; readability comes from decomposition and naming.
 
 ## Tests
 
-`tests/<name>.tess` with `<name>.expected` (stdout), `<name>.exit` (exit code), or `<name>.error` (expected
+`tests/<name>.te` with `<name>.expected` (stdout), `<name>.exit` (exit code), or `<name>.error` (expected
 compile-error text). Programs in `examples/` carry `.expected` files too. The large tests are ordinary checked-in
 files. Their expected values were checked against an independent reference (Python models, mpmath), so edit them
 like any other test.
