@@ -7,7 +7,7 @@
 <p align="center"><strong>A statement-centred low-level language: a value is bound once, memory comes from a manager and is given back by hand, and the build checks it.</strong></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.0-informational.svg" alt="Version 0.1.0">
+  <img src="https://img.shields.io/badge/version-0.5.0-informational.svg" alt="Version 0.5.0">
   <img src="https://img.shields.io/badge/status-early%20alpha-orange.svg" alt="Status: early alpha">
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT">
 </p>
@@ -36,12 +36,13 @@ routine two_sum(list: @S32, count: USize, target: S32) -> Maybe[(USize, USize)]
 ```
 
 Two `each` loops make the O(n²) search, and the numbers come as a pointer and a count: `stride` is the address of
-one, read with an explicit `peek`. The answer is a `Maybe` of a tuple: the tuple itself, built with `(...)` from where
-it goes, or `None()` when there is none.
+one, read with an explicit `peek`. The answer is a `Maybe` of a tuple: the tuple itself, built with `(...)` and typed
+by the return type, or `None()` when there is none.
 
 > **Early alpha.** The language is still changing, and the builder works but is incomplete. Every commit runs the
-> golden tests on Linux, Windows, and macOS, 64- and 32-bit, and checks 32-bit ARM, aarch64 Linux, and riscv64
-> builds in CI. Expect changes between releases, and expect bugs.
+> golden tests on Linux, Windows, and macOS, 64- and 32-bit, checks 32-bit ARM and aarch64 Linux builds, and builds
+> for four targets without an operating system (32-bit ARM, riscv32, aarch64, x86_64) in CI. Expect changes between
+> releases, and expect bugs.
 
 ## What we are trying to keep
 
@@ -63,7 +64,7 @@ way: each level is made of whole pieces of the level below.
 |---------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **statement** | One step: a binding (`x: S64 = a + b`), a load (`p.peek()`), a store (`p.poke(v)`), a local slot (`local p: @S64 <- 0`), a call, a `return`.                                             |
 | **routine**   | A body of statements with a head of `local` lines: `if` / `else`, `each` / `while` / `until` loops with carried values, and `when` to choose. Every value is bound once, and every path ends in a `return`. |
-| **module**    | A namespace for routines, types, and constants (`Standard/Format`). It's declared in the source, not tied to files.                                                                        |
+| **module**    | A namespace for routines, types, and constants (`Standard/Format`). Its path comes from the file's location, and a `module` line overrides it.                                             |
 | **solution**  | The code built together to make one application.                                                                                                                                           |
 
 **Operators are routine calls.** `a + b` is `a.add(b)`, `a +% b` is `a.add_wrap(b)`, and `a >> 1` is `a.shr(1)`
@@ -73,19 +74,21 @@ overflow crashes unless the wrapping (`+%`) or clamping (`+^`) form was written.
 **Loops carry their values by name.** `while n > 1 with n: U64 = start, steps: U64 = 0` names what each pass
 changes, `continue with n: n / 2, steps: steps + 1` passes the next values, and `then` sees the last ones.
 
-**`=` only binds.** Memory is read and written by `peek` and `poke` calls, and every binding states its type.
+**`=` only binds.** Memory is read and written by `peek` and `poke` calls, `<-` fills a new slot, and every binding
+states its type. A slot may start `<- .hollow()` (all zero) or, when it holds no pointer, `<- .uninit()` (nothing
+written until a routine fills it).
 
 **Copy or share.** Handing a value on copies it. To share something instead, you make a place to keep it (a `local`
 slot, a `Box` or `Memory` from a memory manager) and hand out that place's address. Giving the memory back comes
 with the place, and the build checks it.
 
-**Sum types are variants.** `Maybe` and `Result` are variants, read with a `when` whose arms bind the payload;
-choices and variants print, compare, and hash without being asked. Tuples of two to four values
-(`-> (U64, U64)`, `q, r = div_rem(a, b)`) cover results that are just several values; a record names the parts
+**Sum types are variants.** `Maybe` and `Result` are variants, read with a `when` whose arms bind the value, and
+`A | B` is a variant written inline, with no declaration. Choices print, compare, and hash without being asked, and a
+variant prints, tests equality, and hashes when every branch does. Tuples of two to four values
+(`-> (U64, U64)`, `q, r = div_rem(a, b)`) cover results that are just several values, and a record names the parts
 when they mean something.
 
-**Nothing hidden.** No implicit conversions, destructors, exceptions, vtables, or allocations: every runtime
-operation is written in the source.
+**Nothing implicit.** There are no implicit conversions, destructors, exceptions, vtables, or allocations.
 
 ## Quick start
 
@@ -151,10 +154,17 @@ sources = ["src"]
 
 ## What works today
 
-- **Modules:** namespaces with `import`, qualified paths, `define`, and `private` (visible inside its module); `Standard/Core` is
-  always imported. Two modules may declare the same name, and symbols follow the Itanium C++ mangling.
-- **Solutions:** described by a `config.toml`, or every file on the command line; the stdlib is built in with it.
-- **Standard library:** written in Tessera and layered so that only `Standard/Os` needs libc; a target without an
+- **Modules:** namespaces with `import`, qualified paths, `define`, and `private` (visible only inside its module).
+  `Standard/Core` is always imported. Two modules may declare the same name, and symbols follow the Itanium C++ mangling.
+- **Solutions:** described by a `config.toml`, or every file on the command line, and the stdlib is built in with it.
+  The entry is `routine start()`, or the entry file's top-level lines (script mode). On a target without an operating
+  system, `when_booted()` runs first and readies the core with `prepare_core()`.
+- **Memory managers:** any type that obeys `MemoryManageable` (and `PageManageable` for pages) is one, and
+  `m.to[MemoryManager]()` makes the table every allocating routine takes. `steal` hands a `Box` or `Memory` on and
+  leaves the slot zeroed.
+- **Threads and fibers:** a `ThreadManager` (or a fiber manager) hands out tickets, each used top to bottom: put
+  work on it, wait, retrieve the result, give it back.
+- **Standard library:** written in Tessera and layered so that only `Standard/Os` needs libc, and a target without an
   operating system builds without it.
 - **Builder:** emits LLVM IR text and links through `clang`, with a formatter (`fmt`) and a type-checker (`check`).
 - **Tooling:** a TextMate grammar ([`Tessera.tmbundle/`](Tessera.tmbundle/)).
@@ -194,7 +204,7 @@ The documentation lives at [tessera.lumi-dev.xyz](https://tessera.lumi-dev.xyz/)
 ```
 Tessera/
 ├── src/                 # The builder, in C#: emits LLVM IR text and links through clang
-├── Standard/              # The standard library (.te), the source of truth for the current design
+├── Standard/            # The standard library (.te), the source of truth for the current design
 ├── tests/               # Golden tests, including Dijkstra, a lazy segment tree, SHA-256, and a calculator
 │   └── Tessera.Tests.csproj  # runs each golden test and example as its own xUnit case
 ├── examples/            # Introductory programs, one idea each, in reading order
@@ -221,5 +231,5 @@ disagree, the stdlib wins. Report bugs at
 
 ## License
 
-MIT; see [`LICENSE`](LICENSE). The float math in `Standard/B16Core/`, `B32Core/`, `B64Core/`, and `B128Core/` is
-based on CORE-MATH, also MIT; each of those directories carries its `LICENSE-CORE-MATH`.
+MIT, see [`LICENSE`](LICENSE). The float math in `Standard/B16Core/`, `B32Core/`, `B64Core/`, and `B128Core/` is
+based on CORE-MATH, also MIT. Each of those directories carries its `LICENSE-CORE-MATH`.
