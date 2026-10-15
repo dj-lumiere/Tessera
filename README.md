@@ -75,6 +75,10 @@ changes, `continue with n: n / 2, steps: steps + 1` passes the next values, and 
 
 **`=` only binds.** Memory is read and written by `peek` and `poke` calls, and every binding states its type.
 
+**Copy or share.** Handing a value on copies it. To share something instead, you make a place to keep it (a `local`
+slot, a `Box` or `Memory` from a memory manager) and hand out that place's address. Giving the memory back comes
+with the place, and the build checks it.
+
 **Sum types are variants.** `Maybe` and `Result` are variants, read with a `when` whose arms bind the payload;
 choices and variants print, compare, and hash without being asked. Tuples of two to four values
 (`-> (U64, U64)`, `q, r = div_rem(a, b)`) cover results that are just several values; a record names the parts
@@ -163,6 +167,10 @@ emit Tessera source instead of LLVM IR (`[target] backend = "tessera"`), and
 [Ingrid](https://github.com/dj-lumiere/Ingrid)'s shared math, hashing, and algorithm libraries are moving into
 Tessera so that both languages build on one implementation. Tessera itself stands alone: this repository builds
 and runs without the others.
+
+All three look at data the same way: a value is either copied or shared. They differ in how sharing is set up.
+Suflae shares every entity for you, RazorForge asks you to say how each thing is shared, and Tessera asks you to
+make the place that is shared.
 
 ## Documentation
 
