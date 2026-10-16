@@ -66,7 +66,7 @@ way: each level is made of whole pieces of the level below.
 | **routine**   | A body of statements with a head of `local` lines: `if` / `else`, `each` / `while` / `until` loops with carried values, and `when` to choose. Every value is bound once, and every path ends in a `return`. |
 | **module**    | A namespace for routines, types, and constants (`Standard/Format`). Its path comes from the file's location, and a `module` line overrides it.                                             |
 | **solution**  | Modules gathered into one executable. Its `config.toml` describes it.                                                                                                                      |
-| **library**   | A solution built in a special form that another solution embeds.                                                                                                                           |
+| **library**   | A package a solution uses as it is and doesn't change: an object file, a static library, or an archive.                                                                                    |
 
 **Operators are routine calls.** `a + b` is `a.add(b)`, `a +% b` is `a.add_wrap(b)`, and `a >> 1` is `a.shr(1)`
 (arithmetic on a signed value, logical on an unsigned one): a type takes an operator by declaring the routine, and an
