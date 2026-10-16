@@ -65,9 +65,8 @@ way: each level is made of whole pieces of the level below.
 | **statement** | One step: a binding (`x: S64 = a + b`), a load (`p.peek()`), a store (`p.poke(v)`), a local slot (`local p: @S64 <- 0`), a call, a `return`.                                             |
 | **routine**   | A body of statements with a head of `local` lines: `if` / `else`, `each` / `while` / `until` loops with carried values, and `when` to choose. Every value is bound once, and every path ends in a `return`. |
 | **module**    | A namespace for routines, types, and constants (`Standard/Format`). Its path comes from the file's location, and a `module` line overrides it.                                             |
-| **project**   | Modules built together.                                                                                                                                                                    |
-| **library**   | A project built in a special form that another code base can embed.                                                                                                                        |
-| **solution**  | Projects and libraries put together to make one executable. Its `config.toml` describes it.                                                                                                |
+| **solution**  | Modules gathered into one executable. Its `config.toml` describes it.                                                                                                                      |
+| **library**   | A solution built in a special form that another solution embeds.                                                                                                                           |
 
 **Operators are routine calls.** `a + b` is `a.add(b)`, `a +% b` is `a.add_wrap(b)`, and `a >> 1` is `a.shr(1)`
 (arithmetic on a signed value, logical on an unsigned one): a type takes an operator by declaring the routine, and an
@@ -142,7 +141,7 @@ debugger stops on Tessera lines and shows routine parameters, bindings, and loop
 From a checkout, run it as `dotnet run -- <command>`. `<target>` is `--target <arch-os-abi>` (default: this
 machine), `--cpu <name>`, and `--feature <name>[,...]`. With files, all of them form one solution. Without files,
 `build` and `run` read the nearest `config.toml`, which names the package and sets the target, mode, sources,
-other projects, and link options (see
+module folders, and link options (see
 [Modules → The solution manifest](https://tessera.lumi-dev.xyz/Modules/#the-solution-manifest)):
 
 ```toml
