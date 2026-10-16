@@ -65,7 +65,7 @@ way: each level is made of whole pieces of the level below.
 | **statement** | One step: a binding (`x: S64 = a + b`), a load (`p.peek()`), a store (`p.poke(v)`), a local slot (`local p: @S64 <- 0`), a call, a `return`.                                             |
 | **routine**   | A body of statements with a head of `local` lines: `if` / `else`, `each` / `while` / `until` loops with carried values, and `when` to choose. Every value is bound once, and every path ends in a `return`. |
 | **module**    | A namespace for routines, types, and constants (`Standard/Format`). Its path comes from the file's location, and a `module` line overrides it.                                             |
-| **project**   | The code one `config.toml` describes. A **library** is a project made for other projects to use, listed under `library`.                                                                   |
+| **project**   | The code one `config.toml` describes. A **library** is a project built in a special form that another code base can embed.                                                                 |
 
 **Operators are routine calls.** `a + b` is `a.add(b)`, `a +% b` is `a.add_wrap(b)`, and `a >> 1` is `a.shr(1)`
 (arithmetic on a signed value, logical on an unsigned one): a type takes an operator by declaring the routine, and an
