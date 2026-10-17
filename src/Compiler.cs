@@ -1599,10 +1599,10 @@ public sealed partial class Compiler
     public ArrayType SpanStorage(PresetDecl c, DType span, TypeEnv env)
     {
         if (!IsCoreSpan(span, out var elem))
-            throw new CompileError(c.Type.Pos, $"expected Span[T], found {span}");
+            throw new CompileError(c.Type.Pos, $"expected @[T], found {span}");
         if (c.Value is not ArrayLit { IsTuple: false } lit)
             throw new CompileError(c.Value!.Pos,
-                $"a Span in static memory takes an array literal, which gives its count: {c.Name}: {span} <- [a, b], or <- [0] * 26");
+                $"a span (@[T]) in static memory takes an array literal, which gives its count: {c.Name}: {span} <- [a, b], or <- [0] * 26");
         return new ArrayType(elem, Elements(lit, env).Count);
     }
 
@@ -1650,7 +1650,7 @@ public sealed partial class Compiler
         if (e is StrLit s)
         {
             if (span is not RecordType { Args: [IntType { Kind: IntKind.Byte }] })
-                throw new CompileError(e.Pos, $"a string literal is a Span[Byte], and this is a {span}");
+                throw new CompileError(e.Pos, $"a string literal is a @[Byte], and this is a {span}");
             return $"{{ ptr {StringGlobal(s.Value)}, {Count.Llvm} {Utf8Length(s.Value)} }}";
         }
         if (e is PresetRef { Owner: null } r && FindPreset("", r.Name, env.File, r.Pos, r.Path) is { IsSpan: true } target)

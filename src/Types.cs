@@ -239,6 +239,7 @@ public sealed class RecordType(RecordDecl decl, List<DType> args, Func<RecordTyp
     public List<DType> Args { get; } = args;
     public override string Name =>
         IsTuple ? $"({string.Join(", ", Args.Select(a => a.Name))})"
+        : Decl is { Name: "Span", Module: "Standard/Core" } && Args is [var elem] ? $"@[{elem.Name}]"
         : Args.Count == 0 ? Decl.Name : $"{Decl.Name}[{string.Join(", ", Args.Select(a => a.Name))}]";
     public override string Key => DeclKey(Decl, Decl.Name, Args);
 

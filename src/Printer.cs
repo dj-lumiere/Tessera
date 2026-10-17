@@ -390,6 +390,7 @@ public sealed class Printer
     {
         if (t.Path is null && t.Name == TypeRef.UnionName) return string.Join(" | ", t.Args.Select(TypeArgText));
         if (t.Path is null && t.Name == "Ptr" && t.Args is [TypeArgType inner]) return $"@{Type(inner.Type)}";
+        if (t.Path is null && t.Name == "Span" && t.Args is [TypeArgType elem]) return $"@[{Type(elem.Type)}]";
         if (t.Path == "Standard/Core" && t.Name.StartsWith("Tuple", StringComparison.Ordinal) && t.Name.Length == 6 && t.Args.All(a => a is TypeArgType))
             return $"({string.Join(", ", t.Args.Select(TypeArgText))})";
         string name = (t.Path is null ? "" : t.Path + "/") + Name(t.Name);

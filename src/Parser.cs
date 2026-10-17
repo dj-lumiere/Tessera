@@ -13,6 +13,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// new one. The parser reads them so `tessera migrate` can rewrite them, and reports the first one otherwise.
     public List<(Pos Pos, string Message)> Legacy { get; } = [];
 
+    /// `Span[T]`, the old spelling of a span.
+    private void OldSpan(Pos pos) => Old(pos, "a span is written @[T]: @[Byte], @[Byte].construct(...), routine @[Byte].find");
+
     private void Old(Pos pos, string message)
     {
         Legacy.Add((pos, message));
@@ -822,7 +825,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (IsSpanType(type))
         {
             if (Is(TokenKind.Eq))
-                throw Error($"a Span preset takes its elements with '<-': preset {name}: {type} <- [a, b]");
+                throw Error($"a span (@[T]) preset takes its elements with '<-': preset {name}: {type} <- [a, b]");
             Expect(TokenKind.LeftArrow, $"'<-' and the elements: preset {name}: {type} <- [a, b]");
             var elements = ParseExpr();
             ExpectLineEnd();
@@ -870,7 +873,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
         var pointee = PointeeOf(type)
                       ?? throw new CompileError(type.Pos,
-                          $"a global's name is the address of its memory: global {name.Text}: @{type}, or global {name.Text}: Span[{type}] <- [...] for a run of them");
+                          $"a global's name is the address of its memory: global {name.Text}: @{type}, or global {name.Text}: @[{type}] <- [...] for a run of them");
         Expr? value = Accept(TokenKind.LeftArrow) ? ParseExpr() : null;
         ExpectLineEnd();
         return new PresetDecl(file, annotations, null, name.Text, pointee, value, pos) { IsGlobal = true, IsStorage = true };
@@ -897,14 +900,16 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         // parameters (a multi-type concept), or, indented under the concept, on a fixed type with the concept's
         // parameters as its type arguments (`routine Bytes.to_result[T](...)`). They have no body.
         var routines = new List<RoutineDecl>();
-        while (IsIdent("routine") && PeekTok(1) is { Kind: TokenKind.Ident } owner
-                                  && (owner.Text == "Me" || typeParams.Contains(owner.Text) || Cur.Pos.Col > 1)
-                                  && PeekTok(AfterTypeArgs(2)).Kind == TokenKind.Dot)
+        while (IsIdent("routine") && (PeekTok(1) is { Kind: TokenKind.Ident } owner
+                                       && (owner.Text == "Me" || typeParams.Contains(owner.Text) || Cur.Pos.Col > 1)
+                                       && PeekTok(AfterTypeArgs(2)).Kind == TokenKind.Dot
+                                   // a span owner, `routine @[Byte].to_result[T](...)`
+                                   || PeekTok(1).Kind == TokenKind.At && PeekTok(2).Kind == TokenKind.LBracket && Cur.Pos.Col > 1))
             routines.Add(ParseRoutine([], inConcept: true, conceptParams: typeParams));
         return new ConceptDecl(file, annotations, name.Text, typeParams, clauses, routines, pos);
     }
 
-    /// The token offset past the type arguments that may start at `k` (`[Byte]` in `Span[Byte].to_result`), or `k`.
+    /// The token offset past the type arguments that may start at `k` (`[Byte]` in `List[Byte].to_result`), or `k`.
     private int AfterTypeArgs(int k)
     {
         if (PeekTok(k).Kind != TokenKind.LBracket) return k;
@@ -952,10 +957,16 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     private TypeRef ParseTypeAtom()
     {
-        // `@T` is `Ptr[T]`.
+        // `@T` is `Ptr[T]`, and `@[T]` is `Span[T]`: many Ts, viewed.
         if (Is(TokenKind.At))
         {
             var at = Next().Pos;
+            if (Accept(TokenKind.LBracket))
+            {
+                var elem = ParseType();
+                Expect(TokenKind.RBracket, "']' closing @[T]");
+                return new TypeRef("Span", [new TypeArgType(elem)], at);
+            }
             if (Is(TokenKind.LParen) && UnionInParens())
                 throw new CompileError(Cur.Pos,
                     "a pointer to a variant written inline goes through a name: define Choice = A | B, then @Choice");
@@ -972,7 +983,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             return TupleType(items, pos);
         }
         var (path, name) = ParseQualifiedName("a type");
-        return new TypeRef(name.Text, ParseTypeArgs(callable: name.Text == "Callable" && path is null), name.Pos) { Path = path };
+        var args = ParseTypeArgs(callable: name.Text == "Callable" && path is null);
+        if (path is null && name.Text == "Span" && args.Count == 1) OldSpan(name.Pos);
+        return new TypeRef(name.Text, args, name.Pos) { Path = path };
     }
 
     /// The number of names in a lambda's parameter list at the cursor, `(a, b) =>`, or null when the parentheses aren't
@@ -2050,6 +2063,22 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     private Expr ParsePrimary()
     {
+        // `@[T].construct(...)`, `@[Byte].MAX_SOMETHING`: a routine or a preset of the span type.
+        if (Is(TokenKind.At) && PeekTok(1).Kind == TokenKind.LBracket)
+        {
+            var spanPos = Cur.Pos;
+            var owner = ParseTypeAtom();
+            Expect(TokenKind.Dot, "'.' and a routine of the span type: @[T].construct(...)");
+            var member = Expect(TokenKind.Ident, "a routine name");
+            var memberTypeArgs = ParseTypeArgsOpt();
+            if (Is(TokenKind.LParen))
+            {
+                var (args, names) = ParseNamedArgs();
+                return new NsCallExpr(owner, member.Text, memberTypeArgs, args, spanPos) { ArgNames = names };
+            }
+            if (memberTypeArgs.Count != 0) throw Error("expected '(' after generic arguments");
+            return new PresetRef(owner, member.Text, spanPos);
+        }
         var t = Cur;
         switch (t.Kind)
         {
@@ -2234,6 +2263,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 { Path = path, ArgNames = names, WrittenTypeArgs = numbers ? typeArgs : null });
         }
 
+        if (path is null && name.Text == "Span" && typeArgs.Count == 1 && asIndex is null) OldSpan(pos);
         var owner = new TypeRef(name.Text, typeArgs, pos) { Path = path, AsIndex = asIndex };
 
         if (typeArgs.All(a => a is TypeArgType) && Is(TokenKind.Dot) && PeekTok(1) is { Kind: TokenKind.Ident, Text: "to" }
@@ -2309,7 +2339,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             throw new CompileError(pos, $"a slot takes its contents with '<-': local {name}: {type} <- value");
         if (type is not { Name: "Ptr", Args.Count: 1 } && !IsSpanType(type) && !IsManagedType(type))
             throw new CompileError(type.Pos,
-                $"local makes memory: local p: @T <- value, local xs: Span[T] <- [...], or local m: Memory[T] <- [...] at manager; found {type}");
+                $"local makes memory: local p: @T <- value, local xs: @[T] <- [...], or local m: Memory[T] <- [...] at manager; found {type}");
         if (!Is(TokenKind.LeftArrow))
             throw new CompileError(pos,
                 $"a slot says what it starts with: local {name}: {type} <- value, or <- .hollow() when a routine it's passed to fills it");
@@ -2332,10 +2362,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     $"a {type.Name} is memory from a manager, which the contents name: {name}: {type} <- [...] at manager");
         if (IsSpanType(type) && contents is AtExpr)
             throw new CompileError(contents.Pos,
-                $"memory from a manager is a Memory[T]: {name}: Memory{type.ToString()[4..]} <- ... at manager, or the literal alone for a Span in the frame");
+                $"memory from a manager is a Memory[T]: {name}: Memory[{(type.Args is [TypeArgType elem] ? elem.ToString() : "T")}] <- ... at manager, or the literal alone for a span (@[T]) in the frame");
         if (IsSpanType(type) && contents is not ArrayLit { IsTuple: false })
             throw new CompileError(contents.Pos,
-                $"a Span in the frame takes an array literal, which gives its count: {name}: {type} <- [0] * 64");
+                $"a span (@[T]) in the frame takes an array literal, which gives its count: {name}: {type} <- [0] * 64");
         return new BindStmt(name, type, new ClaimExpr(pos) { Contents = contents }, pos);
     }
 

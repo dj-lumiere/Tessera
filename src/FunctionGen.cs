@@ -619,7 +619,7 @@ public sealed class FunctionGen
         if (r.Value is ValueRef named && ReturnsSlotValue(named)) return;
         if (r.Value is { } value && FrameView(value) is { } sees)
             throw Err(value.Pos, $"this returns a view of {sees}, which is gone once '{_decl.DisplayName}' returns: return the "
-                + "values themselves, or let the caller pass the memory in (a Span or a slot) and write there");
+                + "values themselves, or let the caller pass the memory in (a span or a slot) and write there");
     }
 
     /// A store that keeps a view of this routine's memory where it outlives the routine: through a pointer the routine
@@ -1301,7 +1301,7 @@ public sealed class FunctionGen
                 {
                     if (b.Value is ClaimExpr)
                         _frameViews[b.Name] = Compiler.IsCoreSpan(t, out _)
-                            ? $"the frame Span '{b.Name}' (claimed at line {b.Pos.Line})"
+                            ? $"the frame span '{b.Name}' (claimed at line {b.Pos.Line})"
                             : $"the frame slot '{b.Name}' (claimed at line {b.Pos.Line})";
                     else if (PointsAtMemory(t) && FrameView(b.Value) is { } sees) _frameViews[b.Name] = sees;
                 }
@@ -2191,7 +2191,7 @@ public sealed class FunctionGen
         catch (CompileError) when (lit.Repeat is not null)
         {
             throw Err(lit.Repeat.Pos,
-                "a Span in the frame has a count the build knows; for a count known only while running, "
+                "a span (@[T]) in the frame has a count the build knows; for a count known only while running, "
                 + "claim the memory from a manager: claim xs: Memory[T] <- [0] * n at manager");
         }
         var array = new ArrayType(elem, count);

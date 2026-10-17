@@ -401,6 +401,16 @@ public class MigrateTests
     }
 
     [Theory]
+    [InlineData("x: Span[Byte] = Span[Byte].construct(data: d, count: n)", "x: @[Byte] = @[Byte].construct(data: d, count: n)")]
+    [InlineData("routine Span[Byte].find(me: Me, needle: Me) -> Maybe[U64]", "routine @[Byte].find(me: Me, needle: Me) -> Maybe[U64]")]
+    [InlineData("record Span[T]", "record Span[T]")]
+    [InlineData("list: @List[Span[Byte]]", "list: @List[@[Byte]]")]
+    public void Span_is_written_with_brackets(string before, string after)
+    {
+        Assert.Equal(after, Migrate.SpanSpelling(before));
+    }
+
+    [Theory]
     [InlineData("    if a\n        pass\n    else if b\n        pass\n", "    if a\n        pass\n    elseif b\n        pass\n")]
     [InlineData("x: S64 = if c then 1 else 2\n", "x: S64 = if c then 1 else 2\n")]
     public void Else_if_becomes_one_word(string before, string after)

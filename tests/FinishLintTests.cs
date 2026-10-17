@@ -16,7 +16,7 @@ public class FinishLintTests
     {
         var warnings = Lint("""
             @generated
-            routine count_open(text: Span[Byte], alloc: @MemoryManager) -> U64
+            routine count_open(text: @[Byte], alloc: @MemoryManager) -> U64
                 local stack: @List[Byte] <- .construct(alloc)
 
                 if text.is_empty()
@@ -36,7 +36,7 @@ public class FinishLintTests
     {
         var warnings = Lint("""
             @generated
-            routine count_open(text: Span[Byte], alloc: @MemoryManager) -> U64
+            routine count_open(text: @[Byte], alloc: @MemoryManager) -> U64
                 local stack: @List[Byte] <- .construct(alloc)
 
                 if text.is_empty()

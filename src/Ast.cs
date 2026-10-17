@@ -20,6 +20,7 @@ public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
     public override string ToString() =>
         Path is null && Name == UnionName ? string.Join(" | ", Args)
         : Path is null && Name == "Ptr" && Args is [TypeArgType inner] ? $"@{inner}"
+        : Path is null && Name == "Span" && Args is [TypeArgType elem] ? $"@[{elem}]"
         : (Path is null ? "" : Path + "/") + (Args.Count == 0 ? Name : $"{Name}[{string.Join(", ", Args)}]");
     public static TypeRef Simple(string name, Pos pos) => new(name, [], pos);
 

@@ -25,19 +25,19 @@ the lines: a value is bound once and never reassigned, a load and a store are ca
 `p.poke(v)`), memory is taken from a manager and given back by hand, and the builder checks that it was.
 
 ```tessera
-routine two_sum(list: @S32, count: U64, target: S32) -> Maybe[(U64, U64)]
-    each left_idx in 0 til count
-        each right_idx in left_idx + 1 til count
-            left_val: S32 = list.stride(left_idx).peek()
-            right_val: S32 = list.stride(right_idx).peek()
+routine two_sum(list: @[S32], target: S32) -> Maybe[(U64, U64)]
+    each left_idx in 0 til list.count
+        each right_idx in left_idx + 1 til list.count
+            left_val: S32 = list.getitem(left_idx)
+            right_val: S32 = list.getitem(right_idx)
             if left_val + right_val == target
                 return (left_idx, right_idx)
     return None()
 ```
 
-Two `each` loops make the O(n²) search, and the numbers come as a pointer and a count: `stride` is the address of
-one, read with an explicit `peek`. The answer is a `Maybe` of a tuple: the tuple itself, built with `(...)` and typed
-by the return type, or `None()` when there is none.
+Two `each` loops make the O(n²) search, and the numbers come as a span, `@[S32]`: the address and the count of a run
+of values, carried together, so `getitem` checks each position against the count. The answer is a `Maybe` of a
+tuple: the tuple itself, built with `(...)` and typed by the return type, or `None()` when there is none.
 
 > **Early alpha.** The language is still changing, and the builder works but is incomplete. Every commit runs the
 > golden tests on Linux, Windows, and macOS, 64- and 32-bit, checks 32-bit ARM and aarch64 Linux builds, and builds

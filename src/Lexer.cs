@@ -258,9 +258,11 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                 case '?': kind = TokenKind.Question; break;
                 case '.': kind = TokenKind.Dot; break;
                 case '@':
-                    // At the head of a line, `@name` is an annotation (a lowercase name, or a `[list]`). Before a type
-                    // name it is a pointer: `@T`.
-                    kind = char.IsAsciiLetterLower(Peek()) || Peek() == '[' ? TokenKind.Hash : TokenKind.At;
+                    // `@name` is an annotation (a lowercase name), and so is a list of them, `@[name, ...]`. Before a
+                    // type it is a pointer, `@T`, or a span, `@[T]`.
+                    kind = char.IsAsciiLetterLower(Peek()) || Peek() == '[' && char.IsAsciiLetterLower(Peek(1))
+                        ? TokenKind.Hash
+                        : TokenKind.At;
                     break;
                 case '|':
                     if (Peek() == '|') throw new CompileError(pos, "'or' joins two Bool values; '|' is bitor");

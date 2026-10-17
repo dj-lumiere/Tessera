@@ -62,7 +62,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif";
+        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -319,7 +319,17 @@ public static class Migrate
         ["elseif"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, ElseIfWord)
             : ElseIfWord(text),
+        ["span"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, SpanSpelling)
+            : SpanSpelling(text),
     };
+
+    // `Span[` anywhere but in the type's own declaration (`record Span[T]`).
+    private static readonly Regex SpanWord = new(@"(?<!\w)(?<!\brecord )Span\[", RegexOptions.Compiled);
+
+    /// A span is written `@[T]` (many Ts, as `@T` is one): `Span[Byte]` becomes `@[Byte]`, in types, routine owners
+    /// (`routine @[Byte].find`), and calls (`@[Byte].construct(...)`).
+    public static string SpanSpelling(string text) => SpanWord.Replace(text, "@[");
 
     private static readonly Regex ElseIf = new(@"^([ \t]*)else if\b", RegexOptions.Compiled | RegexOptions.Multiline);
 
