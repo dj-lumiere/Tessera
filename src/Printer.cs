@@ -198,7 +198,7 @@ public sealed class Printer
         if (i.Else is [IfStmt chained])
         {
             FlushComments(chained.Pos.Line, indent);
-            If(chained, indent, "else if");
+            If(chained, indent, "elseif");
             return;
         }
         _sb.Append(Indent(indent)).Append("else\n");

@@ -50,7 +50,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// Names a value can only have between backticks: the words a statement, a target, or an expression starts with.
     internal static readonly HashSet<string> ReservedValueNames =
     [
-        "jump", "branch", "when", "return", "unreachable", "continue", "else", "block", "claim", "local",
+        "jump", "branch", "when", "return", "unreachable", "continue", "else", "elseif", "block", "claim", "local",
         "true", "false", "null", "routine", "record", "choice", "variant", "preset", "global", "concept", "conform",
         "protocol", "obeys", "needs", "define", "secret", "module", "import", "and", "or", "not", "is", "as",
         "todo", "if", "each", "while", "until", "becomes", "break", "pass", "drop", "entity", "steal",
@@ -62,7 +62,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// The words a statement starts with, besides a binding or a call.
     private static readonly HashSet<string> StatementKeywords =
         ["jump", "branch", "when", "return", "unreachable", "todo", "if", "each", "while", "until", "continue", "break", "pass",
-         "becomes", "local", "claim", "else", "then", "drop", "steal"];
+         "becomes", "local", "claim", "else", "elseif", "then", "drop", "steal"];
 
     private static readonly HashSet<string> DeclKeywords =
         ["routine", "record", "entity", "choice", "variant", "preset", "global", "concept", "conform", "protocol", "obeys", "define"];
@@ -1342,6 +1342,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 }
                 case "when": return ParseWhen(col, asValue: false);
                 case "else": throw Error("'else' follows the body of an if or a when arm, at the same column as the if");
+                case "elseif": throw Error("'elseif' follows the body of an if, at the same column as the if");
                 case "then": throw Error("'then' follows the body of a loop, at the same column as the loop");
                 case "local":
                 {
@@ -1428,7 +1429,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return ParseExpr();
     }
 
-    /// `if c` and its body, then `else if c2` / `else` and theirs at the same column.
+    /// `if c` and its body, then `elseif c2` / `else` and theirs at the same column.
     private IfStmt ParseIf(int col)
     {
         var pos = Next().Pos;
@@ -1436,10 +1437,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         ExpectLineEnd();
         var then = ParseBody(col);
         List<Stmt>? otherwise = null;
-        if (IsIdent("else") && Cur.Pos.Col == col)
+        if (IsIdent("elseif") && Cur.Pos.Col == col) otherwise = [ParseIf(col)];
+        else if (IsIdent("else") && Cur.Pos.Col == col)
         {
             Next();
-            if (IsIdent("if") && !StartsValue()) otherwise = [ParseIf(col)];
+            if (IsIdent("if") && !StartsValue())
+                throw Error("'else if' is one word: elseif c (tessera migrate --step elseif rewrites it)");
             else
             {
                 ExpectLineEnd();

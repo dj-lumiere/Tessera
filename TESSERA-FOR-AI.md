@@ -366,8 +366,9 @@ routine start() -> None
 - **A routine's parameters and head values are seen everywhere, so no binding, carried value, or `when` name takes
   one's name.** A value that starts from one and changes (a loop counter, a shrinking count) gets its own name as a
   carried value (`while at < count with at: U64 = start`) or a local slot.
-- **`if c` / `else`.** The lines under `if c` run when `c` holds, the lines under `else` (optional) when it doesn't,
-  and `if not c` negates. An `if` is a statement, not a value: `x: T = if ...` is a build error ("if c then a else b
+- **`if c` / `elseif d` / `else`.** The lines under `if c` run when `c` holds, `elseif d` (one word, `else if` is a
+  build error) tests the next condition, the lines under `else` (optional) run when none held, and `if not c`
+  negates. An `if` is a statement, not a value: `x: T = if ...` is a build error ("if c then a else b
   is a value only after return; elsewhere choose with when"). A guard is an `if` whose arm leaves (`return`,
   `break`, `continue`, a `@noreturn` call), and the lines after it are the other case:
 

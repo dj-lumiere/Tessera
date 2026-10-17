@@ -62,7 +62,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size";
+        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -316,7 +316,15 @@ public static class Migrate
         ["size"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, SizeTypes)
             : SizeTypes(text),
+        ["elseif"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, ElseIfWord)
+            : ElseIfWord(text),
     };
+
+    private static readonly Regex ElseIf = new(@"^([ \t]*)else if\b", RegexOptions.Compiled | RegexOptions.Multiline);
+
+    /// `else if c` is one word, `elseif c`, at the start of the line where an `if` chain goes on.
+    public static string ElseIfWord(string text) => ElseIf.Replace(text, "$1elseif");
 
     private static readonly Regex SizeWord = new(@"\b(USize|SSize)\b", RegexOptions.Compiled);
 

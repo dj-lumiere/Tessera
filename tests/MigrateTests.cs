@@ -400,6 +400,14 @@ public class MigrateTests
         Assert.Equal(after, migration.Rewrite("a.te", after, report));
     }
 
+    [Theory]
+    [InlineData("    if a\n        pass\n    else if b\n        pass\n", "    if a\n        pass\n    elseif b\n        pass\n")]
+    [InlineData("x: S64 = if c then 1 else 2\n", "x: S64 = if c then 1 else 2\n")]
+    public void Else_if_becomes_one_word(string before, string after)
+    {
+        Assert.Equal(after, Migrate.ElseIfWord(before));
+    }
+
     [Fact]
     public void Size_types_become_U64_and_C_sizes_at_the_C_boundary()
     {
