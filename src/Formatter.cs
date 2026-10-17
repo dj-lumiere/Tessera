@@ -54,7 +54,7 @@ public static class Formatter
     }
 
     private static readonly System.Text.RegularExpressions.Regex TopLevelSlot =
-        new(@"^((?:private )?(?:preset|global) [A-Za-z_`][\w.`]*) +:", System.Text.RegularExpressions.RegexOptions.Compiled);
+        new(@"^((?:secret )?(?:preset|global) [A-Za-z_`][\w.`]*) +:", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     private static string Clean(string line)
     {
@@ -95,7 +95,7 @@ public static class Formatter
 
             if (indent == 0 && trimmed.Length > 0)
             {
-                string decl = trimmed.StartsWith("private ") ? trimmed[8..] : trimmed;
+                string decl = trimmed.StartsWith("secret ") ? trimmed[7..] : trimmed;
                 if (decl.StartsWith("record ") || decl.StartsWith("entity ")) context = "record";
                 else if (decl.StartsWith("choice ")) context = "choice";
                 else if (decl.StartsWith("variant ")) context = "variant";
@@ -248,8 +248,8 @@ public static class Formatter
     /// payload).
     private static (string Name, string Tail)? SplitField(string s)
     {
-        // A private field keeps its keyword in front: `private count: USize`.
-        int i = s.StartsWith("private ", StringComparison.Ordinal) ? "private ".Length : 0;
+        // A secret field keeps its keyword in front: `secret count: U64`.
+        int i = s.StartsWith("secret ", StringComparison.Ordinal) ? "secret ".Length : 0;
         int nameStart = i;
         while (i < s.Length && (char.IsLetterOrDigit(s[i]) || s[i] == '_')) i++;
         if (i == nameStart) return null;
@@ -495,9 +495,9 @@ public static class Formatter
         return "";
     }
 
-    /// `routine ...` or `private routine ...`.
+    /// `routine ...` or `secret routine ...`.
     private static bool IsRoutineHeader(string line) =>
-        line.StartsWith("routine ") || line.StartsWith("private routine ");
+        line.StartsWith("routine ") || line.StartsWith("secret routine ");
 
     private static bool StartsDeclaration(string line) =>
         line.StartsWith("routine ") || line.StartsWith("record ") || line.StartsWith("choice ") ||
@@ -746,7 +746,7 @@ public static class Formatter
     private static DeclKind? DeclKindOf(string line)
     {
         if (line.Length == 0 || line[0] == ' ') return null;
-        string s = line.StartsWith("private ") ? line[8..] : line;
+        string s = line.StartsWith("secret ") ? line[7..] : line;
         int space = s.IndexOf(' ');
         string word = space < 0 ? s : s[..space];
         return word switch
@@ -905,7 +905,7 @@ public static class Formatter
     {
         string trimmed = line.TrimStart();
         bool signature = trimmed.StartsWith("routine ", StringComparison.Ordinal)
-                         || trimmed.StartsWith("private routine ", StringComparison.Ordinal);
+                         || trimmed.StartsWith("secret routine ", StringComparison.Ordinal);
         var sb = new StringBuilder();
         for (int i = 0; i < line.Length; i++)
         {

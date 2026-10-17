@@ -32,7 +32,7 @@ obeys Writer[Out]
 record Err
 obeys Writer[Err]
 
-private choice StdStream: U8
+secret choice StdStream: U8
     INPUT
     OUTPUT
     ERROR
@@ -55,7 +55,7 @@ global STDIN_BUFFER: @InputBuffer
 preset IN_BUFFER: USize = 8192
 
 ### Standard input's one buffer: bytes read from the OS and not handed out yet, in bytes[start, end).
-private record InputBuffer
+secret record InputBuffer
     lock: ExclusiveLock
     bytes: Array[Byte, IN_BUFFER]
     start: USize
@@ -63,7 +63,7 @@ private record InputBuffer
 
 ### Fills the empty buffer from the OS with one read.
 ### :returns: True when bytes came, false at the end of the input (or on a failure, which reads as the end).
-private routine InputBuffer.fill(me: @Me) -> Bool
+secret routine InputBuffer.fill(me: @Me) -> Bool
     got: Result[USize, FsError] = stdin_read(buffer: me.bytes.to[@Byte](), count: IN_BUFFER)
     n: USize = when got
         is USize as n => n
@@ -75,7 +75,7 @@ private routine InputBuffer.fill(me: @Me) -> Bool
 ### The next byte, filling the buffer when it is empty. The lock is held.
 ### :returns: The byte.
 ### :absent: At the end of the input.
-private routine InputBuffer.emit_checked(me: @Me) -> Maybe[Byte]
+secret routine InputBuffer.emit_checked(me: @Me) -> Maybe[Byte]
     if me.start.peek() < me.end.peek() or me.fill()
         at: USize = me.start.peek()
         me.start.poke(at + 1)
@@ -85,7 +85,7 @@ private routine InputBuffer.emit_checked(me: @Me) -> Maybe[Byte]
         return None()
 
 ### Puts back the byte emit_checked just handed out. The lock is held.
-private routine InputBuffer.unread(me: @Me) -> None
+secret routine InputBuffer.unread(me: @Me) -> None
     previous_start: USize = me.start.peek() - 1
     previous_start.poke_into(me.start)
     return
@@ -93,7 +93,7 @@ private routine InputBuffer.unread(me: @Me) -> None
 ### Reads more input after what the buffer holds, into its free end. The buffer must have room after what it holds.
 ### The lock is held.
 ### :returns: True when bytes came, false at the end of the input (or on a failure, which reads as the end).
-private routine InputBuffer.fill_more(me: @Me) -> Bool
+secret routine InputBuffer.fill_more(me: @Me) -> Bool
     local end: USize = me.end.peek()
 
     free: @Byte = me.bytes.to[@Byte]().stride(end)
@@ -106,7 +106,7 @@ private routine InputBuffer.fill_more(me: @Me) -> Bool
 
 ### Moves the bytes the buffer holds to its front, so the free space after them is as large as it can be. The lock is
 ### held.
-private routine InputBuffer.compact(me: @Me) -> None
+secret routine InputBuffer.compact(me: @Me) -> None
     local from: USize = me.start.peek()
     local held: USize = me.end.peek() - from
     local buffered: @Byte = me.bytes.to[@Byte]()
@@ -129,7 +129,7 @@ private routine InputBuffer.compact(me: @Me) -> None
 ### :returns: The word.
 ### :absent: At the end of the input.
 ### :throws: Crashes with `MemoryAllocationError` when a word longer than the buffer can't be copied.
-private routine InputBuffer.word(me: @Me, spill: @Memory[Byte]) -> Maybe[Span[Byte]]
+secret routine InputBuffer.word(me: @Me, spill: @Memory[Byte]) -> Maybe[Span[Byte]]
     # White space up to the word's first byte, which is put back.
     while true
         c: Maybe[Byte] = me.emit_checked()
@@ -161,7 +161,7 @@ private routine InputBuffer.word(me: @Me, spill: @Memory[Byte]) -> Maybe[Span[By
 ### Hands out the first `length` bytes the buffer holds as a view of it, and moves past them. The lock is held.
 ### :param length: How many bytes the word has.
 ### :returns: The word, good until the buffer is read into again.
-private routine InputBuffer.take_word(me: @Me, length: USize) -> Span[Byte]
+secret routine InputBuffer.take_word(me: @Me, length: USize) -> Span[Byte]
     from: USize = me.start.peek()
     buffered: @Byte = me.bytes.to[@Byte]()
     word: Span[Byte] = Span[Byte].construct(data: buffered.stride(from), count: length)
@@ -175,7 +175,7 @@ private routine InputBuffer.take_word(me: @Me, length: USize) -> Span[Byte]
 ### :param spill: Where the word is kept, hollow before.
 ### :returns: The word, a view of `spill`.
 ### :throws: Crashes with `MemoryAllocationError` when the word can't be copied.
-private routine InputBuffer.spill_word(me: @Me, length: USize, spill: @Memory[Byte]) -> Span[Byte]
+secret routine InputBuffer.spill_word(me: @Me, length: USize, spill: @Memory[Byte]) -> Span[Byte]
     local text: @CaptureBuffer <- CaptureBuffer.empty()
 
     text.append(chunk: me.bytes.to[@Byte](), n: length, alloc: DEFAULT_HEAP)
@@ -372,7 +372,7 @@ routine In.read_line_checked(alloc: @MemoryManager) -> Maybe[Memory[Byte]]
 ### :param alloc: The allocator for the line.
 ### :returns: The line.
 ### :absent: At the end of the input.
-private routine InputBuffer.line(me: @Me, alloc: @MemoryManager) -> Maybe[Memory[Byte]]
+secret routine InputBuffer.line(me: @Me, alloc: @MemoryManager) -> Maybe[Memory[Byte]]
     local text: @CaptureBuffer <- CaptureBuffer.empty()
 
     while true with any: Bool = false
@@ -397,7 +397,7 @@ private routine InputBuffer.line(me: @Me, alloc: @MemoryManager) -> Maybe[Memory
 ### `line` without a "\r" at its end. The memory and its allocator stay the same, only the count drops.
 ### :param line: The line.
 ### :returns: The line, one byte shorter when it ended in "\r".
-private routine trim_cr(line: Memory[Byte]) -> Memory[Byte]
+secret routine trim_cr(line: Memory[Byte]) -> Memory[Byte]
     if line.getview().has_suffix("\r")
         line.keep_first(line.count() - 1)
     return line
@@ -405,7 +405,7 @@ private routine trim_cr(line: Memory[Byte]) -> Memory[Byte]
 ### Whether `c` separates words: a space, tab, line feed, or carriage return.
 ### :param c: The byte to test.
 ### :returns: `true` for white space.
-private routine is_space(c: Byte) -> Bool
+secret routine is_space(c: Byte) -> Bool
     blank: Bool = c == b' ' or c == b'\t'
     line_end: Bool = c == b'\n' or c == b'\r'
     return blank or line_end
@@ -441,7 +441,7 @@ routine In.read_word_checked(alloc: @MemoryManager) -> Maybe[Memory[Byte]]
 ### :param alloc: The allocator for the word.
 ### :returns: The word.
 ### :absent: At the end of the input.
-private routine InputBuffer.owned_word(me: @Me, alloc: @MemoryManager) -> Maybe[Memory[Byte]]
+secret routine InputBuffer.owned_word(me: @Me, alloc: @MemoryManager) -> Maybe[Memory[Byte]]
     local text: @CaptureBuffer <- CaptureBuffer.empty()
     local single: @Byte <- .hollow()
 
@@ -563,27 +563,27 @@ routine Err.enable_colors() -> Bool
 @external("c")
 @symbol("isatty")
 @target(os: ("linux", "macos"))
-private routine c_isatty(fd: CInt) -> CInt
+secret routine c_isatty(fd: CInt) -> CInt
 
 ### Binds the C `__errno_location` function (Linux).
 ### :returns: The address of the calling thread's `errno`.
 @external("c")
 @symbol("__errno_location")
 @target(os: "linux")
-private routine c_errno_place() -> @CInt
+secret routine c_errno_place() -> @CInt
 
 ### Binds the C `__error` function (macOS).
 ### :returns: The address of the calling thread's `errno`.
 @external("c")
 @symbol("__error")
 @target(os: "macos")
-private routine c_errno_place() -> @CInt
+secret routine c_errno_place() -> @CInt
 
 ### The file descriptor of a standard stream: 0 for input, 1 for output, 2 for error.
 ### :param stream: The stream.
 ### :returns: The descriptor.
 @target(os: ("linux", "macos"))
-private routine fd_of(stream: StdStream) -> CInt
+secret routine fd_of(stream: StdStream) -> CInt
     when stream
         StdStream.INPUT => return 0
         StdStream.OUTPUT => return 1
@@ -593,7 +593,7 @@ private routine fd_of(stream: StdStream) -> CInt
 ### :param stream: The stream.
 ### :returns: `true` for a terminal.
 @target(os: ("linux", "macos"))
-private routine stream_is_terminal(stream: StdStream) -> Bool
+secret routine stream_is_terminal(stream: StdStream) -> Bool
     return c_isatty(fd_of(stream)) != 0
 
 ### Writes all `count` bytes to standard output or error, looping over partial writes and retrying after EINTR.
@@ -602,7 +602,7 @@ private routine stream_is_terminal(stream: StdStream) -> Bool
 ### :param count: How many bytes there are.
 ### :returns: `true` when every byte was written, `false` if the OS refused.
 @target(os: ("linux", "macos"))
-private routine stream_write(stream: StdStream, data: @Byte, count: USize) -> Bool
+secret routine stream_write(stream: StdStream, data: @Byte, count: USize) -> Bool
     fd: CInt = fd_of(stream)
 
     while remaining != 0 with at: @Byte = data, remaining: USize = count
@@ -624,7 +624,7 @@ private routine stream_write(stream: StdStream, data: @Byte, count: USize) -> Bo
 ### :param count: The most bytes to read.
 ### :returns: How many bytes were read, 0 at its end, or the error Other when the read fails.
 @target(os: ("linux", "macos"))
-private routine stdin_read(buffer: @Byte, count: USize) -> Result[USize, FsError]
+secret routine stdin_read(buffer: @Byte, count: USize) -> Result[USize, FsError]
     got: SSize = c_read(0, buffer, count.min(1073741824))
     if got >= 0
         return got.to[USize]()
@@ -638,7 +638,7 @@ private routine stdin_read(buffer: @Byte, count: USize) -> Result[USize, FsError
 ### :param stream: The stream.
 ### :returns: `true` when the stream is a terminal.
 @target(os: ("linux", "macos"))
-private routine stream_enable_colors(stream: StdStream) -> Bool
+secret routine stream_enable_colors(stream: StdStream) -> Bool
     return stream_is_terminal(stream)
 
 # -- Windows -----------------------------------------------------------------------------
@@ -655,13 +655,13 @@ global CONSOLE_INPUT: @ConsoleReadBuffer
 
 ### The start of a UTF-8 sequence a write to the console ended in the middle of, for standard output and error.
 @target(os: "windows")
-private record PendingUtf8
+secret record PendingUtf8
     bytes: Array[Byte, 4]
     count: USize
 
 ### ReadConsoleW's text as UTF-8, not yet handed out, and a high surrogate whose low half hasn't come.
 @target(os: "windows")
-private record ConsoleReadBuffer
+secret record ConsoleReadBuffer
     bytes: Array[Byte, 16384]
     start: USize
     end: USize
@@ -674,7 +674,7 @@ private record ConsoleReadBuffer
 @symbol("GetStdHandle")
 @callconv("stdcall")
 @target(os: "windows")
-private routine c_get_std_handle(which: U32) -> Addr
+secret routine c_get_std_handle(which: U32) -> Addr
 
 ### Binds the Win32 `GetConsoleMode` function, which reads a console's mode.
 ### :param console: The console handle.
@@ -684,7 +684,7 @@ private routine c_get_std_handle(which: U32) -> Addr
 @symbol("GetConsoleMode")
 @callconv("stdcall")
 @target(os: "windows")
-private routine c_get_console_mode(console: Addr, mode: @U32) -> CInt
+secret routine c_get_console_mode(console: Addr, mode: @U32) -> CInt
 
 ### Binds the Win32 `SetConsoleMode` function, which sets a console's mode.
 ### :param console: The console handle.
@@ -694,7 +694,7 @@ private routine c_get_console_mode(console: Addr, mode: @U32) -> CInt
 @symbol("SetConsoleMode")
 @callconv("stdcall")
 @target(os: "windows")
-private routine c_set_console_mode(console: Addr, mode: U32) -> CInt
+secret routine c_set_console_mode(console: Addr, mode: U32) -> CInt
 
 ### Binds the Win32 `WriteConsoleW` function, which writes UTF-16 text to a console.
 ### :param console: The console handle.
@@ -707,7 +707,7 @@ private routine c_set_console_mode(console: Addr, mode: U32) -> CInt
 @symbol("WriteConsoleW")
 @callconv("stdcall")
 @target(os: "windows")
-private routine c_write_console(console: Addr, units: @U16, count: U32, written: @U32,
+secret routine c_write_console(console: Addr, units: @U16, count: U32, written: @U32,
     reserved: Addr) -> CInt
 
 ### Binds the Win32 `ReadConsoleW` function, which reads UTF-16 text from a console.
@@ -721,7 +721,7 @@ private routine c_write_console(console: Addr, units: @U16, count: U32, written:
 @symbol("ReadConsoleW")
 @callconv("stdcall")
 @target(os: "windows")
-private routine c_read_console(console: Addr, units: @U16, count: U32, read: @U32,
+secret routine c_read_console(console: Addr, units: @U16, count: U32, read: @U32,
     control: Addr) -> CInt
 
 ### Binds the Win32 `WriteFile` function, which writes bytes to a file or pipe.
@@ -735,7 +735,7 @@ private routine c_read_console(console: Addr, units: @U16, count: U32, read: @U3
 @symbol("WriteFile")
 @callconv("stdcall")
 @target(os: "windows")
-private routine c_write_file(file: Addr, data: @Byte, count: U32, written: @U32,
+secret routine c_write_file(file: Addr, data: @Byte, count: U32, written: @U32,
     overlapped: Addr) -> CInt
 
 ### Binds the Win32 `ReadFile` function, which reads bytes from a file or pipe.
@@ -749,7 +749,7 @@ private routine c_write_file(file: Addr, data: @Byte, count: U32, written: @U32,
 @symbol("ReadFile")
 @callconv("stdcall")
 @target(os: "windows")
-private routine c_read_file(file: Addr, buffer: @Byte, count: U32, read: @U32,
+secret routine c_read_file(file: Addr, buffer: @Byte, count: U32, read: @U32,
     overlapped: Addr) -> CInt
 
 ### Binds the Win32 `GetLastError` function.
@@ -758,13 +758,13 @@ private routine c_read_file(file: Addr, buffer: @Byte, count: U32, read: @U32,
 @symbol("GetLastError")
 @callconv("stdcall")
 @target(os: "windows")
-private routine c_get_last_error() -> U32
+secret routine c_get_last_error() -> U32
 
 ### The Windows handle of a standard stream.
 ### :param stream: The stream.
 ### :returns: The handle, null or INVALID_HANDLE_VALUE when the process has none.
 @target(os: "windows")
-private routine handle_of(stream: StdStream) -> Addr
+secret routine handle_of(stream: StdStream) -> Addr
     # STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
     when stream
         StdStream.INPUT => return c_get_std_handle(0xFFFFFFF6)
@@ -775,14 +775,14 @@ private routine handle_of(stream: StdStream) -> Addr
 ### :param h: The handle to test.
 ### :returns: `true` when it can be used.
 @target(os: "windows")
-private routine is_usable(h: Addr) -> Bool
+secret routine is_usable(h: Addr) -> Bool
     return h.is_not_null() and ptrtoint[Addr, USize](h) != USize.MAX
 
 ### Whether `h` is a console (GetConsoleMode accepts it), not a pipe or a file.
 ### :param h: The handle to test.
 ### :returns: `true` for a console.
 @target(os: "windows")
-private routine is_console(h: Addr) -> Bool
+secret routine is_console(h: Addr) -> Bool
     local mode: @U32 <- 0
 
     return c_get_console_mode(h, mode) != 0
@@ -791,7 +791,7 @@ private routine is_console(h: Addr) -> Bool
 ### :param stream: The stream.
 ### :returns: `true` for a console.
 @target(os: "windows")
-private routine stream_is_terminal(stream: StdStream) -> Bool
+secret routine stream_is_terminal(stream: StdStream) -> Bool
     h: Addr = handle_of(stream)
     if is_usable(h)
         return is_console(h)
@@ -803,7 +803,7 @@ private routine stream_is_terminal(stream: StdStream) -> Bool
 ### :param stream: The stream.
 ### :returns: `true` when the stream is a console and virtual terminal processing is now on.
 @target(os: "windows")
-private routine stream_enable_colors(stream: StdStream) -> Bool
+secret routine stream_enable_colors(stream: StdStream) -> Bool
     h: Addr = handle_of(stream)
     if not is_usable(h)
         return false
@@ -820,7 +820,7 @@ private routine stream_enable_colors(stream: StdStream) -> Bool
 ### :returns: `true` when every byte was written (or held as an unfinished sequence), `false` if the OS refused (or
 ###     the process has no such stream).
 @target(os: "windows")
-private routine stream_write(stream: StdStream, data: @Byte, count: USize) -> Bool
+secret routine stream_write(stream: StdStream, data: @Byte, count: USize) -> Bool
     h: Addr = handle_of(stream)
     if not is_usable(h)
         return false
@@ -835,7 +835,7 @@ private routine stream_write(stream: StdStream, data: @Byte, count: USize) -> Bo
 ### :param count: How many bytes there are.
 ### :returns: `true` when every byte was written, `false` on the first failure.
 @target(os: "windows")
-private routine file_write(h: Addr, data: @Byte, count: USize) -> Bool
+secret routine file_write(h: Addr, data: @Byte, count: USize) -> Bool
     local wrote: @U32 <- 0
 
     while remaining != 0 with at: @Byte = data, remaining: USize = count
@@ -852,7 +852,7 @@ private routine file_write(h: Addr, data: @Byte, count: USize) -> Bool
 ### :param b: The sequence's first byte.
 ### :returns: 1 to 4.
 @target(os: "windows")
-private routine sequence_length(b: Byte) -> USize
+secret routine sequence_length(b: Byte) -> USize
     u: U8 = b.to[U8]()
     when
         u < 0xC0 => return 1
@@ -866,7 +866,7 @@ private routine sequence_length(b: Byte) -> USize
 ### :param count: How many bytes there are.
 ### :returns: The number of bytes up to the end of the last complete sequence (`count` when none is cut off).
 @target(os: "windows")
-private routine complete_end(data: @Byte, count: USize) -> USize
+secret routine complete_end(data: @Byte, count: USize) -> USize
     until i == 0 or seen == 3 with i: USize = count, seen: USize = 0
         b: Byte = data.stride(i - 1).peek()
         top_bits: U8 = b.to[U8]() & 0xC0
@@ -886,7 +886,7 @@ private routine complete_end(data: @Byte, count: USize) -> USize
 ### :param stream: Standard output or error.
 ### :returns: The record for that stream.
 @target(os: "windows")
-private routine pending_of(stream: StdStream) -> @PendingUtf8
+secret routine pending_of(stream: StdStream) -> @PendingUtf8
     if stream == StdStream.ERROR
         return PENDING_ERROR
     else
@@ -900,7 +900,7 @@ private routine pending_of(stream: StdStream) -> @PendingUtf8
 ### :param count: How many bytes there are.
 ### :returns: `true` when the text was written (or held), `false` if the console refused.
 @target(os: "windows")
-private routine console_write(stream: StdStream, h: Addr, data: @Byte, count: USize) -> Bool
+secret routine console_write(stream: StdStream, h: Addr, data: @Byte, count: USize) -> Bool
     local pending: @PendingUtf8 = pending_of(stream)
     local held: USize = pending.count.peek()
 
@@ -933,7 +933,7 @@ private routine console_write(stream: StdStream, h: Addr, data: @Byte, count: US
 ### :param count: How many bytes there are.
 ### :returns: `true` when all of it was written, `false` if the console refused.
 @target(os: "windows")
-private routine console_text(h: Addr, data: @Byte, count: USize) -> Bool
+secret routine console_text(h: Addr, data: @Byte, count: USize) -> Bool
     local written: @U32 <- 0
     local iter: @BytesCharsIter <- Span[Byte].construct(data, count).chars()
     local unit_buffer: @Array[U16, 2048] <- .hollow()
@@ -969,7 +969,7 @@ private routine console_text(h: Addr, data: @Byte, count: USize) -> Bool
 ### :param written: Scratch space for the count each call wrote.
 ### :returns: `true` when all were written, `false` if the console refused.
 @target(os: "windows")
-private routine write_units(h: Addr, units: @U16, n: USize, written: @U32) -> Bool
+secret routine write_units(h: Addr, units: @U16, n: USize, written: @U32) -> Bool
     if n == 0
         return true
     ok: CInt = c_write_console(h, units, n.to[U32](), written, null)
@@ -985,7 +985,7 @@ private routine write_units(h: Addr, units: @U16, n: USize, written: @U32) -> Bo
 ### :returns: How many bytes were read, 0 at its end (Ctrl+Z at the start of a console read, a closed pipe, or no
 ###     standard input), or the error Other when the read fails.
 @target(os: "windows")
-private routine stdin_read(buffer: @Byte, count: USize) -> Result[USize, FsError]
+secret routine stdin_read(buffer: @Byte, count: USize) -> Result[USize, FsError]
     h: Addr = handle_of(StdStream.INPUT)
     if not is_usable(h)
         return 0
@@ -1007,7 +1007,7 @@ private routine stdin_read(buffer: @Byte, count: USize) -> Result[USize, FsError
 ### :returns: How many bytes were handed out, 0 at the end of the input (Ctrl+Z first), or the error Other when
 ###     ReadConsoleW fails.
 @target(os: "windows")
-private routine console_read(h: Addr, buffer: @Byte, count: USize) -> Result[USize, FsError]
+secret routine console_read(h: Addr, buffer: @Byte, count: USize) -> Result[USize, FsError]
     local input: @ConsoleReadBuffer = CONSOLE_INPUT
 
     if input.start.peek() < input.end.peek()

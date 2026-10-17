@@ -27,7 +27,7 @@ public static partial class LanguageServer
     private static readonly HashSet<string> Keywords =
     [
         "routine", "record", "entity", "choice", "variant", "preset", "global", "protocol", "obeys", "define", "block", "local", "steal",
-        "import", "module", "private", "needs", "not", "true", "false", "null", "typename",
+        "import", "module", "secret", "needs", "not", "true", "false", "null", "typename",
     ];
 
     /// A document's last successful check: its text, the declarations parsed from it, and the builder that checked them

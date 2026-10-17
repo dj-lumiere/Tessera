@@ -702,7 +702,7 @@ public sealed partial class Compiler
 
     private string Hidden(Decl d, string what, string? path) =>
         path is not null && d.Module != path ? $"{what} isn't in {path}; it's in {ShowModule(d.Module)}"
-        : d.IsPrivate ? $"{what} is private to {ShowModule(d.Module)}"
+        : d.IsPrivate ? $"{what} is secret to {ShowModule(d.Module)}"
         : $"{what} is in {ShowModule(d.Module)}; import {d.Module} or write {d.Module}/...";
 
     /// Of the declarations a file sees under one name, the ones that win: its module's (a `private` one shares its
@@ -1707,7 +1707,7 @@ public sealed partial class Compiler
             if (!given.TryAdd(name, value)) throw new CompileError(pos, $"field '{name}' is given twice");
             // A `private` field is given only in the record's module, as in a routine's literal.
             if (s.Decl.Fields.FirstOrDefault(f => f.Name == name) is { IsPrivate: true } && !PrivateReaches(s.Decl, env.File))
-                throw new CompileError(pos, $"field '{name}' of {s} is private to {ShowModule(s.Decl.Module)}");
+                throw new CompileError(pos, $"field '{name}' of {s} is secret to {ShowModule(s.Decl.Module)}");
         }
         if (fields.FirstOrDefault(f => !given.ContainsKey(f.Name)) is { Name: not null } missing)
             throw new CompileError(lit.Pos, $"the literal for {s} leaves out field '{missing.Name}'");

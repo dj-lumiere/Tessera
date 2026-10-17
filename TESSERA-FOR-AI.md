@@ -74,7 +74,7 @@ routine start() -> None
 
 - `#` for comments, `###` for Markdown doc comments directly above a declaration, field, or choice member.
   `;` is not a comment (it was until 2026-09-28) and is rejected.
-- **Every routine has a doc comment**, private ones, externals, and a protocol's required routines included. It sits
+- **Every routine has a doc comment**, secret ones, externals, and a protocol's required routines included. It sits
   above the annotation lines and reads, in this order: what the routine does in one or two plain sentences (from its
   real behavior), `:typeparam T:` for its own type parameters, `:param name:` for every parameter but `me` in
   order, `:returns:` unless it returns `None`, then `:throws:` ("Crashes with `IndexOutOfBoundsError` when ...", or the
@@ -276,7 +276,7 @@ routine start() -> None
   apart (an arena) an `entity`. The table is called through `alloc`, `realloc`, `free`, `reserve` / `commit` /
   `release`, and `protect(at, size, PageAccess.NONE | READ | READ_WRITE)`, with `has_pages()` / `has_protect()`
   (both true for a `PageManageable` manager, both false otherwise, and calling an empty one crashes with
-  `NotImplementedError`). Its fields and `MemoryManager.construct` are private to `Standard/Alloc`, which also
+  `NotImplementedError`). Its fields and `MemoryManager.construct` are secret to `Standard/Alloc`, which also
   builds the hosted tables from the C-backed routines of `Standard/Os` (pages from `Standard/Os/Pages.te`). Raw `allocate[T]` asks for
   `alignof[T]()`.
 - **The table views its manager.** In a routine without type parameters, using a table after its manager's slot
@@ -663,12 +663,13 @@ routine start() -> None
 
 **Records**
 
-- `private` before a declaration or a record field hides it from other modules (`private routine helper(...)`,
-  `private count: U64`). In every file of the declaring module it's used as usual, so two private declarations of
+- `secret` before a declaration or a record field hides it from other modules (`secret routine helper(...)`,
+  `secret count: U64`). In every file of the declaring module it's used as usual, so two secret declarations of
   one name in two files of a module clash like any two declarations. The standard library follows the same rule: a
-  private name of one stdlib module is hidden from the others.
+  secret name of one stdlib module is hidden from the others. The word was `private` before 0.5 (`private` is now a build error naming `secret`, `migrate --step visibility` rewrites it).
+
 - A name is unique under its parent, wherever it's declared: you can add `routine U64.double(...)` to a stdlib type,
-  but not a second `U64.midpoint` with the same parameter types (one with other parameter types is an overload). Private names don't count outside their module.
+  but not a second `U64.midpoint` with the same parameter types (one with other parameter types is an overload). Secret names don't count outside their module.
 
 - Every record is a struct of its fields, one field included (`record Meters / value: B64` is `{ double }`); only a
   library `@llvm("iN")` record with no fields is an integer underneath (`B128` is an `i128`). `@layout(align: N)` sets

@@ -17,13 +17,13 @@
 module Standard/Core
 
 ### The process's key, filled the first time `hash_key()` runs.
-private global HASH_KEY: @SipKey
+secret global HASH_KEY: @SipKey
 ### Where the key stands: 0 not drawn, 1 being drawn, 2 ready.
-private global HASH_KEY_STATE: @U32
+secret global HASH_KEY_STATE: @U32
 
-private preset KEY_UNDRAWN: U32 = 0
-private preset KEY_DRAWING: U32 = 1
-private preset KEY_READY:   U32 = 2
+secret preset KEY_UNDRAWN: U32 = 0
+secret preset KEY_DRAWING: U32 = 1
+secret preset KEY_READY:   U32 = 2
 
 ### The key source the program links against: fills `key` with 128 secret random bits. Export a routine with this
 ### signature as "tessera_hash_key" to supply it: Standard/Os does with the OS's random source, and so does the stdlib
@@ -31,7 +31,7 @@ private preset KEY_READY:   U32 = 2
 ### :param key: The key to fill.
 @external("c")
 @symbol("tessera_hash_key")
-private routine hash_key_source(key: @SipKey) -> None
+secret routine hash_key_source(key: @SipKey) -> None
 
 ### 128 fresh secret random bits from the source the hash key comes from (`tessera_hash_key`), drawn anew on every
 ### call, unlike `hash_key()`, which draws once per process. For seeding a generator (`Xoshiro256.from_entropy()`)
@@ -62,7 +62,7 @@ routine hash_key() -> SipKey
 ### :returns: The 128-bit key.
 @target(os: not "none")
 @noinline
-private routine draw_hash_key() -> SipKey
+secret routine draw_hash_key() -> SipKey
     claimed: Result[None, U32] = HASH_KEY_STATE.atomic_compare_exchange(expected: KEY_UNDRAWN,
         new: KEY_DRAWING)
     when claimed
@@ -94,7 +94,7 @@ routine hash_key() -> SipKey
 ### :returns: The 128-bit key.
 @target(os: "none")
 @noinline
-private routine draw_hash_key() -> SipKey
+secret routine draw_hash_key() -> SipKey
     hash_key_source(HASH_KEY)
     HASH_KEY_STATE.poke_volatile(KEY_READY)
     return HASH_KEY.peek()
@@ -117,7 +117,7 @@ routine hash_combine(first: U64, second: U64) -> U64
 ### entropy per bit gives the 128-bit key its full strength.
 @target(arch: "riscv32", os: "none")
 @feature("zkr")
-private preset SEED_SAMPLES: USize = 32
+secret preset SEED_SAMPLES: USize = 32
 
 ### RDRAND once: the random value, and 1 when the CPU had one ready (the carry flag), 0 when not.
 ### :returns: The value and 1, or an unspecified value and 0 when the CPU had none ready.
@@ -125,7 +125,7 @@ private preset SEED_SAMPLES: USize = 32
 @feature("rdrnd")
 @external("asm")
 @clobbers(FLAGS)
-private routine rdrand_step() -> (U64, U8)
+secret routine rdrand_step() -> (U64, U8)
     block entry()
         rdrand[U64](R0)  # rdrand rax
         setc[U8](R1)  # setc cl
@@ -137,7 +137,7 @@ private routine rdrand_step() -> (U64, U8)
 ### :throws: Crashes with `InvalidValueError` when RDRAND fails 10 times in a row.
 @target(arch: "x86_64", os: "none")
 @feature("rdrnd")
-private routine rdrand_word() -> U64
+secret routine rdrand_word() -> U64
     while attempt < 10 with attempt: U32 = 0
         value, ok = rdrand_step()
         if ok != 0
@@ -164,7 +164,7 @@ routine rdrand_hash_key(key: @SipKey) -> None
 @feature(not "rdrnd", "rdseed")
 @external("asm")
 @clobbers(FLAGS)
-private routine rdseed_step() -> (U64, U8)
+secret routine rdseed_step() -> (U64, U8)
     block entry()
         rdseed[U64](R0)  # rdseed rax
         setc[U8](R1)  # setc cl
@@ -174,7 +174,7 @@ private routine rdseed_step() -> (U64, U8)
 @target(arch: "x86_64", os: "none")
 @feature(not "rdrnd", "rdseed")
 @external("asm")
-private routine rdseed_pause() -> None
+secret routine rdseed_pause() -> None
     block entry()
         pause()  # pause
         return
@@ -185,7 +185,7 @@ private routine rdseed_pause() -> None
 ### :throws: Crashes with `InvalidValueError` when RDSEED fails 1000 times in a row.
 @target(arch: "x86_64", os: "none")
 @feature(not "rdrnd", "rdseed")
-private routine rdseed_word() -> U64
+secret routine rdseed_word() -> U64
     while attempt < 1000 with attempt: U32 = 0
         value, ok = rdseed_step()
         if ok != 0
@@ -214,7 +214,7 @@ routine rdseed_hash_key(key: @SipKey) -> None
 @feature("rand")
 @external("asm")
 @clobbers(FLAGS)
-private routine rndr_step() -> (U64, U8)
+secret routine rndr_step() -> (U64, U8)
     block entry()
         mrs[U64](R0, RNDR)  # mrs x0, RNDR
         cset[U8](R1, ne)  # cset w1, ne
@@ -226,7 +226,7 @@ private routine rndr_step() -> (U64, U8)
 ### :throws: Crashes with `InvalidValueError` when RNDR fails 10 times in a row.
 @target(arch: "aarch64", os: "none")
 @feature("rand")
-private routine rndr_word() -> U64
+secret routine rndr_word() -> U64
     while attempt < 10 with attempt: U32 = 0
         value, ok = rndr_step()
         if ok != 0
@@ -253,7 +253,7 @@ routine rndr_hash_key(key: @SipKey) -> None
 @target(arch: "riscv32", os: "none")
 @feature("zkr")
 @external("asm")
-private routine seed_poll() -> U32
+secret routine seed_poll() -> U32
     block entry()
         csrrw[U32, U32](R10, seed, ZERO)  # csrrw a0, seed, zero
         return R10
@@ -264,7 +264,7 @@ private routine seed_poll() -> U32
 ### :throws: Crashes with `InvalidValueError` when the source reports DEAD (an unrecoverable failure).
 @target(arch: "riscv32", os: "none")
 @feature("zkr")
-private routine seed_sample() -> U16
+secret routine seed_sample() -> U16
     while true
         word: U64 = seed_poll().to[U64]()
         state: U64 = (word >> 30) & 3

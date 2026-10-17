@@ -155,7 +155,7 @@ sources = ["src"]
 
 ## What works today
 
-- **Modules:** namespaces with `import`, qualified paths, `define`, and `private` (visible only inside its module).
+- **Modules:** namespaces with `import`, qualified paths, `define`, and `secret` (visible only inside its module).
   `Standard/Core` is always imported. Two modules may declare the same name, and symbols follow the Itanium C++ mangling.
 - **Solutions:** described by a `config.toml`, or every file on the command line, and the stdlib is built in with it.
   The entry is `routine start()`, or the entry file's top-level lines (script mode). On a target without an operating

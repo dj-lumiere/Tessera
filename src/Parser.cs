@@ -52,7 +52,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     [
         "jump", "branch", "when", "return", "unreachable", "continue", "else", "block", "claim", "local",
         "true", "false", "null", "routine", "record", "choice", "variant", "preset", "global", "concept", "conform",
-        "protocol", "obeys", "needs", "define", "private", "module", "import", "and", "or", "not", "is", "as",
+        "protocol", "obeys", "needs", "define", "secret", "module", "import", "and", "or", "not", "is", "as",
         "todo", "if", "each", "while", "until", "becomes", "break", "pass", "drop", "entity", "steal",
     ];
     /// Inside an `@external("asm")` routine: a statement may carry `@asm_prefix`, and an `if` may test a bare
@@ -93,7 +93,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (IsIdent("module")) throw Error("a file names its module once, on its first line");
             if (IsIdent("import")) throw Error("imports go at the top of the file, after the module line");
             var annotations = ParseAnnotations();
-            bool isPrivate = IsIdent("private");
+            if (IsIdent("private") && Cur.Pos.Col == 1) throw Error(PrivateRenamed);
+            bool isPrivate = IsIdent("secret");
             if (isPrivate) Next();
             if (annotations.Count == 0 && !isPrivate && Cur.Pos.Col == 1
                 && (!IsKeyword(Cur) || !DeclKeywords.Contains(Cur.Text)) && !isLibrary)
@@ -217,6 +218,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private bool IsIdent(string text) => IsKeyword(Cur) && Cur.Text == text;
 
     /// A name that can be a keyword: an identifier not written between backticks.
+    private const string PrivateRenamed =
+        "'private' is now 'secret': `secret routine helper(...)`, `secret count: U64` (tessera migrate --step visibility rewrites it)";
+
     private static bool IsKeyword(Token t) => t is { Kind: TokenKind.Ident, Escaped: false };
 
     private Token Expect(TokenKind k, string what)
@@ -273,7 +277,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// annotation at the start of a line (one inside a body sits further in).
     private bool AtDeclStart() =>
         Is(TokenKind.Eof) || (Is(TokenKind.Hash) && Cur.Pos.Col == 1)
-        || (IsKeyword(Cur) && (DeclKeywords.Contains(Cur.Text) || Cur.Text is "private") && Cur.Pos.Col == 1);
+        || (IsKeyword(Cur) && (DeclKeywords.Contains(Cur.Text) || Cur.Text is "secret") && Cur.Pos.Col == 1);
 
     // ── Annotations and clauses ──────────────────────────────────────────────
 
@@ -722,7 +726,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             // declaration otherwise.
             int start = _i;
             var fieldAnnotations = ParseAnnotations();
-            bool isPrivate = IsIdent("private") && PeekTok(1).Kind == TokenKind.Ident;
+            if (IsIdent("private") && PeekTok(1).Kind == TokenKind.Ident) throw Error(PrivateRenamed);
+            bool isPrivate = IsIdent("secret") && PeekTok(1).Kind == TokenKind.Ident;
             if (isPrivate) Next();
             if (!(Is(TokenKind.Ident) && PeekTok(1).Kind == TokenKind.Colon))
             {

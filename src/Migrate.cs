@@ -29,7 +29,7 @@ namespace Tessera;
 /// 0.5: a module path is written with `/`, `Standard/Os`, `Standard/Format/write_str(...)`, in code and in comments,
 /// never inside a string.
 ///
-/// 0.5: `private` hides a declaration from other modules and `internal` is gone (`--step visibility`).
+/// 0.5: `secret` hides a declaration from other modules, and `internal` and `private` are gone (`--step visibility`).
 public static class Migrate
 {
     /// `F64`, its plural in prose (`F64s`), and a name built on it (`F128Extended`, `F64Core`). `F16C` is the x86 instruction set, not a type.
@@ -315,11 +315,11 @@ public static class Migrate
             : ModuleVisibility(text),
     };
 
-    private static readonly Regex InternalWord = new(@"^(    )?internal (?=\S)", RegexOptions.Compiled | RegexOptions.Multiline);
+    private static readonly Regex InternalWord = new(@"^(    )?(?:internal|private) (?=\S)", RegexOptions.Compiled | RegexOptions.Multiline);
 
-    /// `private` hides a declaration or a field from other modules, and there is no `internal`: an `internal` at the
-    /// start of a declaration or a field line becomes `private`.
-    private static string ModuleVisibility(string text) => InternalWord.Replace(text, "$1private ");
+    /// `secret` hides a declaration or a field from other modules, and there is no `internal` or `private`: either word
+    /// at the start of a declaration or a field line becomes `secret`.
+    private static string ModuleVisibility(string text) => InternalWord.Replace(text, "$1secret ");
 
     private static readonly Regex RepeatX = new(@"\] x (?=[\w(])", RegexOptions.Compiled);
 
@@ -332,7 +332,7 @@ public static class Migrate
     private static readonly Regex Drop = new(@"\.drop\(\)", RegexOptions.Compiled);
 
     private static readonly Regex DestructLine = new(@"^(\s*)([A-Za-z_`][\w`]*(?:\.[A-Za-z_`][\w`]*(?:\([^()]*\))?)*)\.destruct\(\)\s*(//.*)?$", RegexOptions.Compiled);
-    private static readonly Regex RoutineLine = new(@"^(?:(?:private|internal)\s+)?routine\s+(?:[^\s(]+\.)?([A-Za-z_]\w*)", RegexOptions.Compiled);
+    private static readonly Regex RoutineLine = new(@"^(?:(?:private|internal|secret)\s+)?routine\s+(?:[^\s(]+\.)?([A-Za-z_]\w*)", RegexOptions.Compiled);
 
     /// A value given back on a line of its own, `x.destruct()` (a name, or a place such as `me.storage`), is the
     /// statement `drop x`. A type's own `destruct` and `destruct_all` keep their calls.
@@ -404,9 +404,9 @@ public static class Migrate
         for (int i = 0; i < lines.Length; i++)
         {
             string line = lines[i];
-            var header = Regex.Match(line, @"^(?:(?:private|internal)\s+)?routine\s+([A-Z]\w*)(?:\[[^\]]*\])?\.");
+            var header = Regex.Match(line, @"^(?:(?:private|internal|secret)\s+)?routine\s+([A-Z]\w*)(?:\[[^\]]*\])?\.");
             if (header.Success) owner = header.Groups[1].Value;
-            else if (Regex.IsMatch(line, @"^(?:(?:private|internal)\s+)?routine\s")) owner = null;
+            else if (Regex.IsMatch(line, @"^(?:(?:private|internal|secret)\s+)?routine\s")) owner = null;
             var sb = new StringBuilder(line);
             int comment = line.TrimStart().StartsWith("#", StringComparison.Ordinal) ? line.IndexOf("#", StringComparison.Ordinal) : CommentStart(sb, 0, sb.Length);
             string code = line[..comment];
@@ -471,7 +471,7 @@ public static class Migrate
                 {
                     asmPending = true;
                 }
-                else if (Regex.IsMatch(line, @"^(private\s+|public\s+)?routine\s"))
+                else if (Regex.IsMatch(line, @"^(private\s+|secret\s+|public\s+)?routine\s"))
                 {
                     inAsmBody = asmPending;
                     asmPending = false;
@@ -503,9 +503,9 @@ public static class Migrate
         for (int i = 0; i < lines.Length; i++)
         {
             string line = lines[i];
-            var header = Regex.Match(line, @"^(?:(?:private|internal)\s+)?routine\s+([A-Z]\w*)(?:\[[^\]]*\])?\.");
+            var header = Regex.Match(line, @"^(?:(?:private|internal|secret)\s+)?routine\s+([A-Z]\w*)(?:\[[^\]]*\])?\.");
             if (header.Success) owner = header.Groups[1].Value;
-            else if (Regex.IsMatch(line, @"^(?:(?:private|internal)\s+)?routine\s")) owner = null;
+            else if (Regex.IsMatch(line, @"^(?:(?:private|internal|secret)\s+)?routine\s")) owner = null;
             var sb = new StringBuilder(line);
             int comment = line.TrimStart().StartsWith("#", StringComparison.Ordinal) ? line.IndexOf("#", StringComparison.Ordinal) : CommentStart(sb, 0, sb.Length);
             string code = line[..comment];
@@ -565,7 +565,7 @@ public static class Migrate
             string line = lines[i];
             if (line.Length > 0 && !char.IsWhiteSpace(line[0]))
             {
-                bool routineLine = Regex.IsMatch(line, @"^(?:(?:private|internal)\s+)?routine\s");
+                bool routineLine = Regex.IsMatch(line, @"^(?:(?:private|internal|secret)\s+)?routine\s");
                 if ((line.StartsWith("#[", StringComparison.Ordinal) || line.StartsWith('@')) && line.Contains("external(\"asm\")", StringComparison.Ordinal)) asmPending = true;
                 else if (routineLine) { inAsm = asmPending; asmPending = false; }
                 else if (!line.StartsWith('#') && !line.StartsWith('@')) { inAsm = false; asmPending = false; }
@@ -647,8 +647,8 @@ public static class Migrate
         for (int i = 0; i < lines.Length; i++)
         {
             string line = lines[i];
-            var header = Regex.Match(line, @"^(?:(?:private|internal)\s+)?routine\s+([A-Z]\w*)(?:\[[^\]]*\])?\.");
-            bool routineLine = Regex.IsMatch(line, @"^(?:(?:private|internal)\s+)?routine\s");
+            var header = Regex.Match(line, @"^(?:(?:private|internal|secret)\s+)?routine\s+([A-Z]\w*)(?:\[[^\]]*\])?\.");
+            bool routineLine = Regex.IsMatch(line, @"^(?:(?:private|internal|secret)\s+)?routine\s");
             if (header.Success) owner = header.Groups[1].Value;
             else if (routineLine) owner = null;
             // An assembly routine's lines are instructions (`push[U64](R5)`), not calls of collection routines.
@@ -1035,7 +1035,7 @@ public static class Migrate
         public HashSet<string> VariantCases { get; } = new();
 
         private static readonly Regex Declaration =
-            new(@"^(?:(?:private|internal)\s+)?(choice|variant)\s+([A-Za-z_]\w*)", RegexOptions.Compiled);
+            new(@"^(?:(?:private|internal|secret)\s+)?(choice|variant)\s+([A-Za-z_]\w*)", RegexOptions.Compiled);
 
         private static readonly Regex Leading = new(@"^\s+([A-Za-z_]\w*)", RegexOptions.Compiled);
 
@@ -1055,7 +1055,7 @@ public static class Migrate
         }
 
         private static readonly Regex TypeDeclaration =
-            new(@"^(?:(?:private|internal)\s+)?(?:choice|variant|record)\s+([A-Za-z_]\w*)", RegexOptions.Compiled | RegexOptions.Multiline);
+            new(@"^(?:(?:private|internal|secret)\s+)?(?:choice|variant|record)\s+([A-Za-z_]\w*)", RegexOptions.Compiled | RegexOptions.Multiline);
 
         private static HashSet<string> DeclaredTypes(string text) =>
             TypeDeclaration.Matches(text).Select(m => m.Groups[1].Value).ToHashSet();
@@ -1103,7 +1103,7 @@ public static class Migrate
 
     private static readonly Regex ShortMember = new(@"(?<![\w)\]`])\.([A-Z][A-Za-z0-9_]*)\b(?!\s*\()", RegexOptions.Compiled);
 
-    private static readonly Regex ChoiceHeader = new(@"^(?:(?:private|internal)\s+)?choice\s", RegexOptions.Compiled);
+    private static readonly Regex ChoiceHeader = new(@"^(?:(?:private|internal|secret)\s+)?choice\s", RegexOptions.Compiled);
 
     /// The text with choice members in SCREAMING_SNAKE_CASE (`Ordering.LESS`): in each choice's declaration, where
     /// its choice names it (in code and in comments), and in code in the short form `.LESS`.

@@ -14,13 +14,13 @@ namespace Tessera;
 /// standard library together, a library folder together, and a test or an example file on its own.
 public static partial class ConstructDestructMigration
 {
-    [GeneratedRegex(@"^(?:(private|internal)\s+)?(record|variant)\s+(`[^`]+`|[A-Z]\w*)(\[[^\]]*\])?\s*(//.*)?$")]
+    [GeneratedRegex(@"^(?:(private|internal|secret)\s+)?(record|variant)\s+(`[^`]+`|[A-Z]\w*)(\[[^\]]*\])?\s*(//.*)?$")]
     private static partial Regex TypeHeader();
 
-    [GeneratedRegex(@"^(?:(?:private|internal)\s+)?routine\s+(`[^`]+`|[A-Z]\w*)(?:\[[^\]]*\])?\.(construct|destruct)\b")]
+    [GeneratedRegex(@"^(?:(?:private|internal|secret)\s+)?routine\s+(`[^`]+`|[A-Z]\w*)(?:\[[^\]]*\])?\.(construct|destruct)\b")]
     private static partial Regex LifeRoutine();
 
-    [GeneratedRegex(@"^    (?:(?:private|internal)\s+)?(`?[A-Za-z_]\w*`?)\s*:\s*([^/]+?)\s*(//.*)?$")]
+    [GeneratedRegex(@"^    (?:(?:private|internal|secret)\s+)?(`?[A-Za-z_]\w*`?)\s*:\s*([^/]+?)\s*(//.*)?$")]
     private static partial Regex Field();
 
     /// The field types whose values hold memory and have a `destruct` of their own.
@@ -62,7 +62,7 @@ public static partial class ConstructDestructMigration
             }
             catch (CompileError)
             {
-                foreach (Match m in Regex.Matches(text, @"^(?:(?:private|internal)\s+)?(?:record|variant)\s+(\w+)", RegexOptions.Multiline))
+                foreach (Match m in Regex.Matches(text, @"^(?:(?:private|internal|secret)\s+)?(?:record|variant)\s+(\w+)", RegexOptions.Multiline))
                     unparsed.Add(m.Groups[1].Value);
                 continue;
             }

@@ -8,7 +8,7 @@ namespace Tessera;
 /// (`jump entry()`, an arm `=> entry()`) keeps the line, so the target stays written, and so does an assembly routine.
 public static partial class EntryMigration
 {
-    [GeneratedRegex(@"^(?:(?:private|internal)\s+)?routine\s")]
+    [GeneratedRegex(@"^(?:(?:private|internal|secret)\s+)?routine\s")]
     private static partial Regex RoutineLine();
 
     [GeneratedRegex(@"^    block entry\(\)\s*(//.*)?$")]

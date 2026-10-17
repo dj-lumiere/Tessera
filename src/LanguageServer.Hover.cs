@@ -69,7 +69,7 @@ public static partial class LanguageServer
     }
 
     private static readonly Regex DeclarationWords =
-        new(@"^(?:private\s+)?(?:routine|record|variant|choice|concept)\s+");
+        new(@"^(?:secret\s+)?(?:routine|record|variant|choice|concept)\s+");
 
     /// The declaration's first line with each bound parameter written out (`Array[Byte, 400].to[@Byte](...)` for
     /// `Array[T, COUNT].to[@T](...)`), so a parameter used inside a larger type (`<@T>`) reads as what it stands for.

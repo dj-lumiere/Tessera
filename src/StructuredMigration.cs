@@ -340,7 +340,7 @@ public static class StructuredMigration
             line = line.Replace("Callable[#", "Callable[@");
             if (Keyword.Match(line) is { Success: true } k)
                 line = k.Groups[1].Value + k.Groups[2].Value switch { "require" => "needs", "conform" => "obeys", _ => "protocol" } + line[k.Length..];
-            if (line.StartsWith("routine ") || line.StartsWith("private routine ") || line.StartsWith("internal routine "))
+            if (line.StartsWith("routine ") || line.StartsWith("private routine ") || line.StartsWith("secret routine ") || line.StartsWith("internal routine "))
             {
                 // the annotation lines above said whether this routine is assembly
                 result.Add(line);

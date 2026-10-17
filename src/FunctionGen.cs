@@ -1558,7 +1558,7 @@ public sealed class FunctionGen
     private void CheckFieldVisible(RecordType s, FieldDecl field, Pos pos)
     {
         if (field.IsPrivate && !_c.PrivateReaches(s.Decl, _env.File))
-            throw Err(pos, $"field '{field.Name}' of {s} is private to {Compiler.ShowModule(s.Decl.Module)}");
+            throw Err(pos, $"field '{field.Name}' of {s} is secret to {Compiler.ShowModule(s.Decl.Module)}");
     }
 
     /// Whether `t` is what one of the instance's type parameters stands for. A method called on such a value is found

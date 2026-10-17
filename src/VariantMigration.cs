@@ -17,7 +17,7 @@ namespace Tessera;
 /// variant of the program's own (`variant Shape` with named cases) is rewritten by hand too: each case becomes a type.
 public static partial class VariantMigration
 {
-    private static readonly Regex RoutineHeader = new(@"^(?:(?:private|internal)\s+)?routine\s+([A-Z]\w*(?:\[[^\]]*\])?)?", RegexOptions.Compiled);
+    private static readonly Regex RoutineHeader = new(@"^(?:(?:private|internal|secret)\s+)?routine\s+([A-Z]\w*(?:\[[^\]]*\])?)?", RegexOptions.Compiled);
 
     /// The source with 0.5's variant spellings. `report` collects the places left for a hand rewrite.
     public static string Rewrite(string text, List<string>? report = null, string file = "")
