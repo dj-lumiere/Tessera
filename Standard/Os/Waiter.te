@@ -24,8 +24,8 @@ global RUNNING_FIBER: @Waiter
 @target(os: not "none")
 global THREAD_WAKE: @U32
 
-### How long a fiber parks at a time in wait_while: 50 microseconds.
-preset FIBER_POLL_NS: U64 = 50000
+### How long a fiber parks at a time in wait_while.
+preset FIBER_POLL: Duration = 50us
 
 ### Who is waiting, and how to park and wake it: a fiber, with its manager and the manager's routines, or a thread,
 ### with a null `fiber` and the word it sleeps on.
@@ -34,9 +34,9 @@ record Waiter
     fiber: Addr
     ### The fiber's manager, or the word the thread sleeps on: what the routines here are given.
     manager: Addr
-    ### Parks until a wake or a deadline in `monotonic_ns` time (`U64.MAX` for none), given `manager`. It may return
-    ### without either.
-    park_fn: Callable[(Addr, U64), None]
+    ### Parks until a wake or a deadline in `monotonic_now` time (`Duration.MAX` for none), given `manager`. It may
+    ### return without either.
+    park_fn: Callable[(Addr, Duration), None]
     ### Wakes the waiter from any thread, given `manager` and `fiber`: makes its park return, now or at once when it
     ### parks next.
     wake_fn: Callable[(Addr, Addr), None]
@@ -47,7 +47,7 @@ record Waiter
 ### :param park_fn: Its `park_fn`.
 ### :param wake_fn: Its `wake_fn`.
 ### :returns: The new value.
-routine Waiter.construct(fiber: Addr, manager: Addr, park_fn: Callable[(Addr, U64), None],
+routine Waiter.construct(fiber: Addr, manager: Addr, park_fn: Callable[(Addr, Duration), None],
     wake_fn: Callable[(Addr, Addr), None]) -> Me
     return Me(fiber, manager, park_fn, wake_fn)
 
@@ -87,13 +87,13 @@ routine Waiter.same(me: Me, other: Me) -> Bool
 
 ### Parks until a wake. It may return without one, so the waiter looks again at what it waits for.
 routine Waiter.park(me: Me) -> None
-    me.park_fn.call(me.manager, U64.MAX)
+    me.park_fn.call(me.manager, Duration.MAX)
     return
 
-### Parks until a wake or until `deadline`, in `monotonic_ns` time. It may return before either, so the waiter looks
+### Parks until a wake or until `deadline`, in `monotonic_now` time. It may return before either, so the waiter looks
 ### again at what it waits for and at the time.
 ### :param deadline: When to stop waiting.
-routine Waiter.park_until(me: Me, deadline: U64) -> None
+routine Waiter.park_until(me: Me, deadline: Duration) -> None
     me.park_fn.call(me.manager, deadline)
     return
 
@@ -104,35 +104,35 @@ routine Waiter.wake(me: Me) -> None
     me.wake_fn.call(me.manager, me.fiber)
     return
 
-### Waits at least `ns` nanoseconds, the way the running code waits: a thread sleeps, and a fiber parks while its
-### thread goes on with the other fibers.
-### :param ns: The least time to wait, in nanoseconds.
+### Waits at least `duration`, the way the running code waits: a thread sleeps, and a fiber parks while its thread
+### goes on with the other fibers.
+### :param duration: The least time to wait.
 @target(os: not "none")
-routine sleep_for(ns: U64) -> None
-    local deadline: U64 = monotonic_ns() +^ ns
+routine waitfor(duration: Duration) -> None
+    local deadline: Duration = monotonic_now() +^ duration
     local waiter: Waiter = current_waiter()
 
-    while monotonic_ns() < deadline
+    while monotonic_now() < deadline
         waiter.park_until(deadline)
     then
         return
 
 ### How a thread parks: sleeps on its word until a wake marks it, or the deadline.
 ### :param word: The thread's THREAD_WAKE.
-### :param deadline: When to stop, in `monotonic_ns` time, or `U64.MAX`.
+### :param deadline: When to stop, in `monotonic_now` time, or `Duration.MAX`.
 @target(os: not "none")
-secret routine thread_park(word: Addr, deadline: U64) -> None
+secret routine thread_park(word: Addr, deadline: Duration) -> None
     local at: @U32 = word.to[@U32]()
 
     if at.atomic_swap(0) == 1
         return
-    if deadline == U64.MAX
+    if deadline == Duration.MAX
         wait_on(at, expected: 0)
     else
-        now: U64 = monotonic_ns()
+        now: Duration = monotonic_now()
         if now >= deadline
             return
-        wait_on_for(at, expected: 0, timeout_ns: deadline - now)
+        wait_on_for(at, expected: 0, timeout: deadline - now)
     at.poke_atomic(0)
     return
 
@@ -160,21 +160,21 @@ routine wait_while(at: @U32, expected: U32) -> None
     else
         if not (at.peek_atomic() == expected)
             return
-        waiter.park_until(monotonic_ns() +^ FIBER_POLL_NS)
+        waiter.park_until(monotonic_now() +^ FIBER_POLL)
         return
 
-### As {wait_while}, giving up `timeout_ns` nanoseconds after the call.
+### As {wait_while}, giving up `timeout` after the call.
 ### :param at: The word.
 ### :param expected: The value it holds while waiting goes on.
-### :param timeout_ns: The longest wait in nanoseconds.
+### :param timeout: The longest wait.
 @target(os: not "none")
-routine wait_while_for(at: @U32, expected: U32, timeout_ns: U64) -> None
+routine wait_while_for(at: @U32, expected: U32, timeout: Duration) -> None
     waiter: Waiter = RUNNING_FIBER.peek()
     if not waiter.is_fiber()
-        wait_on_for(at, expected, timeout_ns)
+        wait_on_for(at, expected, timeout)
         return
     else
         if not (at.peek_atomic() == expected)
             return
-        waiter.park_until(monotonic_ns() +^ timeout_ns.min(FIBER_POLL_NS))
+        waiter.park_until(monotonic_now() +^ timeout.min(FIBER_POLL))
         return

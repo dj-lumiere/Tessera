@@ -135,6 +135,18 @@ public sealed partial class Compiler
         return ((v % span) + span) % span;
     }
 
+    /// A unit literal's count in nanoseconds or bytes. A Duration or a ByteSize holds a U64, so a larger one is a build
+    /// error that says how far it reaches.
+    public static BigInteger UnitCount(UnitLit u)
+    {
+        var value = u.Value;
+        if (value > ulong.MaxValue)
+            throw new CompileError(u.Pos, u.TypeName == "Duration"
+                ? $"{u.Text} is longer than a Duration holds: at most 18446744073709551615ns, about 584 years"
+                : $"{u.Text} is larger than a ByteSize holds: at most 18446744073709551615b, 16 EiB less a byte");
+        return value;
+    }
+
     private ConstVal Fold(Expr e, DType? hint, TypeEnv env)
     {
         switch (AsRecordLit(e, env))
@@ -148,6 +160,8 @@ public sealed partial class Compiler
                 return new ConstVal(null, il.Value);
             case TypedIntLit tl:
                 return new ConstVal(tl.Type, tl.Value);
+            case UnitLit u:
+                return new ConstVal(ResolveType(new TypeRef(u.TypeName, [], u.Pos) { Path = CoreModule }, env), UnitCount(u));
             case BoolLit b:
                 return new ConstVal(BoolType.Instance, b.Value ? 1 : 0);
             case FloatLit f when HexFloat.IsHex(f.Text) && hint is not null:

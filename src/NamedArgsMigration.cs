@@ -256,7 +256,7 @@ internal sealed class NamedArgsMigration
 
         private bool Adjacent(int a, int b) => Tokens[a].Pos.Line == Tokens[b].Pos.Line && TokenEnd(a) == Offset(Tokens[b].Pos);
 
-        private static bool IsPrimary(Token t) => t.Kind is TokenKind.Ident or TokenKind.Int or TokenKind.Float or TokenKind.Str or TokenKind.Char or TokenKind.Byte;
+        private static bool IsPrimary(Token t) => t.Kind is TokenKind.Ident or TokenKind.Int or TokenKind.Unit or TokenKind.Float or TokenKind.Str or TokenKind.Char or TokenKind.Byte;
 
         /// The last token of the operand that starts at `k`: unary signs, a primary or a bracketed group, its calls,
         /// indexes and members, and a `**` power after it. -1 where the operand has a shape this does not read.

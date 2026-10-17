@@ -22,7 +22,7 @@
 # - park() until wake() is called with its handle (from current()), from any thread. A wake that comes first isn't
 #   lost: the next park returns at once. park may also return without a wake, so a fiber checks what it waits for
 #   again in a loop.
-# - sleep(ns) until that many nanoseconds have passed.
+# - waitfor(duration) until that much time has passed.
 # - wait_finished() of another ticket, a fiber's or a thread's: the thread that finishes its work wakes the fiber.
 # - run_blocking() a call that may block the thread (reading a pipe, a socket, a file): a thread ticket runs it while
 #   the fiber waits. read and write (Standard/Fiber/Io.te) are built on it.
@@ -50,7 +50,7 @@ secret preset FIBER_NOTIFIED: U32 = 1
 secret preset FIBER_PARKING:  U32 = 2
 secret preset FIBER_PARKED:   U32 = 3
 ### The stack size of a fiber of FIBERS, the manager each thread makes on first use: 64 KiB.
-preset DEFAULT_FIBER_STACK: U64 = 65536
+preset DEFAULT_FIBER_STACK: ByteSize = 64kib
 
 ### One fiber: a stack and the work on it, from the first ticket that takes it until its manager goes. A pointer to it
 ### is the fiber's handle (see current and wake).
@@ -91,7 +91,7 @@ needs T: typename
 ### started waiting when they are due together.
 secret record TimerKey
 obeys Comparable[TimerKey]
-    deadline: U64
+    deadline: Duration
     seq: U64
 
 ### Runs fibers on one thread, the one that drives it, and hands them out as tickets.
@@ -101,7 +101,7 @@ entity FiberManager
     ### The fibers' stacks.
     stacks: @MemoryManager
     ### The size of each fiber's stack in bytes.
-    stack_size: U64
+    stack_size: ByteSize
     ### The `thread_mark()` of the thread that drives it.
     owner: Addr
     ### The driving loop's stack pointer while a fiber runs.
@@ -194,12 +194,13 @@ routine TimerKey.compare(me: Me, other: Me) -> S32
 
 ### A manager whose fibers have stacks of `stack_size` bytes from `stacks`, driven by the thread that makes it until
 ### another drives it.
-### :param stack_size: The size of each fiber's stack in bytes.
+### :param stack_size: The size of each fiber's stack.
 ### :param stacks: Where the fibers' stacks come from.
 ### :param alloc: Where the fiber records and the queues come from.
 ### :returns: The manager, with no fibers.
 @target(os: not "none")
-routine FiberManager.construct(stack_size: U64, stacks: @MemoryManager, alloc: @MemoryManager) -> Me
+routine FiberManager.construct(stack_size: ByteSize, stacks: @MemoryManager,
+    alloc: @MemoryManager) -> Me
     return Me(alloc, stacks, stack_size, owner: thread_mark(), home: .hollow(),
         home_race: .hollow(), current: .hollow(), ready: CircularList[@FiberState].construct(alloc),
         inbox_lock: .construct(), inbox: CircularList[@FiberState].construct(alloc), epoch: 0,
@@ -273,7 +274,7 @@ needs T: typename
 @target(os: not "none")
 @track_caller
 secret routine FiberManager.make_fiber(me: @Me) -> @FiberState
-    size: U64 = me.stack_size.peek()
+    size: U64 = me.stack_size.peek().bytes()
     stack: @Byte = allocate[Byte](count: size, alloc: me.stacks.peek())
     if stack.is_hollow()
         crash_allocation()
@@ -328,12 +329,12 @@ routine FiberManager.park(me: @Me) -> None
         fiber.wake_state.poke_atomic(FIBER_RUNNING)
         return
 
-### Inside a fiber: park, and a wake comes on its own at `deadline` (in `monotonic_ns` time) if none came before.
+### Inside a fiber: park, and a wake comes on its own at `deadline` (in `monotonic_now` time) if none came before.
 ### Outside a fiber it returns.
 ### :param deadline: When the fiber goes on without a wake.
 @target(os: not "none")
 @reshaping
-routine FiberManager.park_until(me: @Me, deadline: U64) -> None
+routine FiberManager.park_until(me: @Me, deadline: Duration) -> None
     local fiber: @FiberState = me.current()
 
     if fiber.is_hollow()
@@ -369,20 +370,20 @@ routine FiberManager.wake(me: @Me, fiber: @FiberState) -> None
     me.place_ready(fiber)
     return
 
-### Inside a fiber: waits at least ns nanoseconds while the thread goes on with the other fibers. Outside one the
-### thread waits.
-### :param ns: The least time to wait, in nanoseconds.
+### Inside a fiber: waits at least `duration` while the thread goes on with the other fibers. Outside one the thread
+### waits.
+### :param duration: The least time to wait.
 @target(os: not "none")
 @reshaping
-routine FiberManager.sleep(me: @Me, ns: U64) -> None
-    local deadline: U64 = monotonic_ns() +^ ns
+routine FiberManager.waitfor(me: @Me, duration: Duration) -> None
+    local deadline: Duration = monotonic_now() +^ duration
     local fiber: @FiberState = me.current()
 
     if fiber.is_hollow()
         sleep_thread(deadline)
         return
     else
-        while monotonic_ns() < deadline
+        while monotonic_now() < deadline
             me.park_until(deadline)
         then
             return
@@ -392,7 +393,7 @@ routine FiberManager.sleep(me: @Me, ns: U64) -> None
 @reshaping
 routine FiberManager.run(me: @Me) -> None
     me.ensure()
-    me.drive(awaited: .hollow(), deadline: U64.MAX, idle_only: false)
+    me.drive(awaited: .hollow(), deadline: Duration.MAX, idle_only: false)
     return
 
 ### Runs the fibers that are ready, and those they make ready, until none is, then returns: for a thread that takes
@@ -401,14 +402,14 @@ routine FiberManager.run(me: @Me) -> None
 @reshaping
 routine FiberManager.run_until_idle(me: @Me) -> None
     me.ensure()
-    me.drive(awaited: .hollow(), deadline: U64.MAX, idle_only: true)
+    me.drive(awaited: .hollow(), deadline: Duration.MAX, idle_only: true)
     return
 
 ### How long the thread that drives the manager may sleep before a fiber waiting with a deadline is due: for a thread
 ### that drives it between other work and sleeps on a word of its own (see wake_through).
-### :returns: The nanoseconds until the earliest deadline (0 when it has passed), or `U64.MAX` for none.
+### :returns: The time until the earliest deadline (0 when it has passed), or `Duration.MAX` for none.
 @target(os: not "none")
-routine FiberManager.idle_wait(me: @Me) -> U64
+routine FiberManager.idle_wait(me: @Me) -> Duration
     me.ensure()
     return me.timer_wait()
 
@@ -646,24 +647,24 @@ needs T: typename
     local manager: @FiberManager = fiber.manager.peek()
 
     if manager.drives_here()
-        manager.drive(awaited: slot, deadline: U64.MAX, idle_only: false)
+        manager.drive(awaited: slot, deadline: Duration.MAX, idle_only: false)
         return
     else
         slot.wait()
         return
 
-### Waits until the work has finished or `ns` nanoseconds have passed, whichever comes first, the way
+### Waits until the work has finished or `timeout` has passed, whichever comes first, the way
 ### {Fiber[T].wait_finished} waits.
-### :param ns: The longest wait, in nanoseconds.
+### :param timeout: The longest wait.
 ### :returns: True when the work has finished, false when the time ran out first.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].wait_finished_for(me: Me, ns: U64) -> Bool
+routine Fiber[T].wait_finished_for(me: Me, timeout: Duration) -> Bool
 needs T: typename
     local slot: @WorkSlot = me.work_slot()
     local fiber: @FiberState = me.fiber
     local manager: @FiberManager = fiber.manager.peek()
-    local deadline: U64 = monotonic_ns() +^ ns
+    local deadline: Duration = monotonic_now() +^ timeout
 
     if manager.drives_here()
         manager.drive(awaited: slot, deadline, idle_only: false)
@@ -684,9 +685,9 @@ needs T: typename
     local manager: @FiberManager = fiber.manager.peek()
 
     if manager.drives_here()
-        manager.drive(awaited: slot, deadline: U64.MAX, idle_only: false)
+        manager.drive(awaited: slot, deadline: Duration.MAX, idle_only: false)
         return None()
-    elseif slot.wait_until(deadline: U64.MAX, cancellable: true)
+    elseif slot.wait_until(deadline: Duration.MAX, cancellable: true)
         return None()
     else
         return CancelRequested()
@@ -791,11 +792,11 @@ secret routine FiberManager.drives_here(me: @Me) -> Bool
 ### Runs the fibers on this thread until `awaited` has finished (when not null), or no fiber has work left (when it is
 ### null), or `deadline` has passed. With `idle_only` it returns as soon as no fiber is ready.
 ### :param awaited: The work to run until, or null.
-### :param deadline: When to stop, in `monotonic_ns` time (`U64.MAX` for never).
+### :param deadline: When to stop, in `monotonic_now` time (`Duration.MAX` for never).
 ### :param idle_only: True to return once no fiber is ready.
 @target(os: not "none")
 @reshaping
-secret routine FiberManager.drive(me: @Me, awaited: @WorkSlot, deadline: U64,
+secret routine FiberManager.drive(me: @Me, awaited: @WorkSlot, deadline: Duration,
     idle_only: Bool) -> None
     me.owner.poke_atomic(thread_mark())
 
@@ -812,15 +813,15 @@ secret routine FiberManager.drive(me: @Me, awaited: @WorkSlot, deadline: U64,
         if me.ready.is_empty()
             if idle_only
                 return
-            now: U64 = monotonic_ns()
+            now: Duration = monotonic_now()
             if now >= deadline
                 return
-            wait: U64 = me.timer_wait().min(deadline - now)
-            if wait == U64.MAX
+            wait: Duration = me.timer_wait().min(deadline - now)
+            if wait == Duration.MAX
                 wait_on(at: me.wake_word(), expected: seen)
                 continue
             else
-                wait_on_for(at: me.wake_word(), expected: seen, timeout_ns: wait)
+                wait_on_for(at: me.wake_word(), expected: seen, timeout: wait)
                 continue
         else
             me.resume(me.ready.remove_first())
@@ -906,7 +907,7 @@ secret routine FiberManager.take_inbox(me: @Me) -> None
 @target(os: not "none")
 @reshaping
 secret routine FiberManager.fire_timers(me: @Me) -> None
-    local now: U64 = monotonic_ns()
+    local now: Duration = monotonic_now()
 
     until me.timers.is_empty()
         key: TimerKey = me.timers.first_entry().priority
@@ -918,14 +919,14 @@ secret routine FiberManager.fire_timers(me: @Me) -> None
     then
         return
 
-### How long the thread may sleep: until the earliest timer is due, or U64.MAX for no limit.
-### :returns: The nanoseconds until the earliest deadline (0 when it has passed), or `U64.MAX`.
+### How long the thread may sleep: until the earliest timer is due, or Duration.MAX for no limit.
+### :returns: The time until the earliest deadline (0 when it has passed), or `Duration.MAX`.
 @target(os: not "none")
-secret routine FiberManager.timer_wait(me: @Me) -> U64
+secret routine FiberManager.timer_wait(me: @Me) -> Duration
     if me.timers.is_empty()
-        return U64.MAX
-    deadline: U64 = me.timers.first_entry().priority.deadline
-    return deadline -^ monotonic_ns()
+        return Duration.MAX
+    deadline: Duration = me.timers.first_entry().priority.deadline
+    return deadline -^ monotonic_now()
 
 # -- where a stopped fiber goes ---------------------------------------------------------------------------------
 #
@@ -961,15 +962,15 @@ secret routine commit_idle(manager: @FiberManager, fiber: @FiberState) -> None
     fiber.wake_state.poke_atomic(FIBER_RUNNING)
     return
 
-### How a Waiter parks a fiber of a manager: until a wake, or a deadline other than U64.MAX.
+### How a Waiter parks a fiber of a manager: until a wake, or a deadline other than Duration.MAX.
 ### :param manager: The manager.
-### :param deadline: When the fiber goes on without a wake, or `U64.MAX`.
+### :param deadline: When the fiber goes on without a wake, or `Duration.MAX`.
 @target(os: not "none")
 @reshaping(manager)
-secret routine park_hook(manager: Addr, deadline: U64) -> None
+secret routine park_hook(manager: Addr, deadline: Duration) -> None
     local fibers: @FiberManager = manager.to[@FiberManager]()
 
-    if deadline == U64.MAX
+    if deadline == Duration.MAX
         fibers.park()
         return
     else
@@ -987,16 +988,16 @@ secret routine wake_hook(manager: Addr, fiber: Addr) -> None
     return
 
 ### A thread outside a fiber waits until deadline.
-### :param deadline: When to stop waiting, in `monotonic_ns` time.
+### :param deadline: When to stop waiting, in `monotonic_now` time.
 @target(os: not "none")
-secret routine sleep_thread(deadline: U64) -> None
+secret routine sleep_thread(deadline: Duration) -> None
     local never: @U32 <- 0
 
     while true
-        now2: U64 = monotonic_ns()
+        now2: Duration = monotonic_now()
         if now2 >= deadline
             return
-        wait_on_for(at: never, expected: 0, timeout_ns: deadline - now2)
+        wait_on_for(at: never, expected: 0, timeout: deadline - now2)
 
 ### Writes new at at if expected is there, and says whether it did.
 ### :param at: The place.

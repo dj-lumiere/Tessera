@@ -195,7 +195,7 @@ public static partial class LanguageServer
             TokenKind.Ident when !t.Escaped && PlannedKeywords.Contains(t.Text) => "keyword",
             TokenKind.Ident when i > 0 && tokens[i - 1].Kind == TokenKind.Hash => "decorator",
             TokenKind.Hash => "decorator",
-            TokenKind.Int or TokenKind.Float or TokenKind.Byte or TokenKind.Char => "number",
+            TokenKind.Int or TokenKind.Unit or TokenKind.Float or TokenKind.Byte or TokenKind.Char => "number",
             TokenKind.At or TokenKind.LeftArrow or TokenKind.Arrow or TokenKind.FatArrow or TokenKind.Question or TokenKind.ColonEq
                 or TokenKind.Eq => "operator",
             _ => null,

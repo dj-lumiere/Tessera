@@ -2111,6 +2111,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             case TokenKind.Int:
                 Next();
                 return new IntLit(t.IntValue, t.Pos, HexDigits(t.Text));
+            case TokenKind.Unit:
+                Next();
+                return new UnitLit(t.IntValue, t.Text.TrimStart('0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '_'), t.Text, t.Pos);
             case TokenKind.Byte:
                 Next();
                 return new TypedIntLit(Low64(t.IntValue), 8, t.Pos);

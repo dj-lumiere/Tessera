@@ -255,6 +255,8 @@ public sealed class Printer
                 return f.Text ?? FloatText(f.Value);
             case StrLit s:
                 return Quote(s.Value);
+            case UnitLit u:
+                return u.Text;
             case BoolLit b:
                 return b.Value ? "true" : "false";
             case ValueRef v:

@@ -330,6 +330,15 @@ public sealed record FloatLit(double Value, Pos Pos) : Expr(Pos)
     public string? Text { get; init; }
 }
 public sealed record StrLit(string Value, Pos Pos) : Expr(Pos);
+/// `20ms`, `4kib`: a whole number with a time unit (a `Duration`) or a size unit (a `ByteSize`), as written.
+public sealed record UnitLit(BigInteger Count, string Unit, string Text, Pos Pos) : Expr(Pos)
+{
+    /// The type the unit makes, `Duration` or `ByteSize`.
+    public string TypeName => Lexer.Units[Unit].Type;
+
+    /// The value in the type's own count: nanoseconds or bytes.
+    public BigInteger Value => Count * Lexer.Units[Unit].Scale;
+}
 public sealed record BoolLit(bool Value, Pos Pos) : Expr(Pos);
 /// A value: a parameter, a block parameter, or a binding.
 public sealed record ValueRef(string Name, Pos Pos) : Expr(Pos);

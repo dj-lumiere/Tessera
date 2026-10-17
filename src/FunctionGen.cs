@@ -1800,6 +1800,7 @@ public sealed class FunctionGen
             case BoolLit: return BoolType.Instance;
             case TempSlotExpr slot: return Infer(slot.Value) is { } slotted ? new PtrType(slotted) : null;
             case TypedIntLit t: return t.Type;
+            case UnitLit u: return UnitType(u);
             case ValueRef r: return Lookup(r).Type;
             case StealExpr steal:
                 return Infer(steal.Value) is var stolen && (steal.Place || stolen is PtrType && Tracked(stolen)
@@ -1920,6 +1921,7 @@ public sealed class FunctionGen
         {
             IntLit i => IntConst(i.Value, i.Pos, expected, i.HexDigits),
             TypedIntLit t => TypedConst(t),
+            UnitLit u => UnitConst(u),
             FloatLit f => EvalFloatLit(f, expected),
             BoolLit b => new Val(b.Value ? "true" : "false", BoolType.Instance),
             StrLit s => StringLiteral(s, expected),
@@ -3589,6 +3591,17 @@ public sealed class FunctionGen
             default:
                 return null;
         }
+    }
+
+    /// The type a unit literal makes: Core's `Duration` for a time unit, `ByteSize` for a size unit.
+    private DType UnitType(UnitLit u) =>
+        _c.ResolveType(new TypeRef(u.TypeName, [], u.Pos) { Path = Compiler.CoreModule }, _env);
+
+    /// A unit literal's value, its count in nanoseconds or bytes, which must fit the type's U64.
+    private Val UnitConst(UnitLit u)
+    {
+        var t = UnitType(u);
+        return new Val(Compiler.UnitCount(u).ToString(System.Globalization.CultureInfo.InvariantCulture), t);
     }
 
     /// An argument as an overload error lists it: its type, or what kind of untyped value it is.

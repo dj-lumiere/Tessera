@@ -223,7 +223,7 @@ routine start() -> None
   `@reshaping(items, keys)` names parameters. The base: `MemoryManager.realloc` (`@reshaping(at)`), `reallocate[T]`
   (`@reshaping(ptr)`), `Memory[T].resize` / `resize_result`, and every growing collection mutator: `List.add_last` /
   `reserve` / `ensure_capacity`, `Dict.setitem`, `Set.add`, `CircularList.add_last` / `add_first`,
-  `PriorityQueue.add` / `reserve`, their `_result` forms, and the `FiberManager` routines (`run`, `sleep`, `wake`,
+  `PriorityQueue.add` / `reserve`, their `_result` forms, and the `FiberManager` routines (`run`, `waitfor`, `wake`,
   ...). Freeing (`free`, `destruct`) isn't moving.
   - A routine that calls a `@reshaping` routine on memory reached from its own parameter must say so:
     `'grow' may move the memory of 'items' here ('List[T].add_last' is @reshaping): mark it @reshaping(items)`.
@@ -593,7 +593,20 @@ routine start() -> None
   these sets have no `S64` overload, so a bare literal argument several overloads take is ambiguous: pass a typed
   value (`m.set(U64.MIN)` on a `BigNat`, or bind `one: U64 = 1` first).
 - When every operand is a literal, name the type with a typewise call: `S64.eq(0, 1)`, `U128.shl(1, 100)`. There are
-  no literal suffixes (`0u64`).
+  no type suffixes (`0u64`).
+- **Time and size literals.** A whole decimal number with a unit right after it is typed by the unit: `w d h m s ms
+  us ns` make a `Duration`, `b kb mb gb kib mib gib` a `ByteSize` (`kb`, `mb`, `gb` count by 1000, `kib`, `mib`,
+  `gib` by 1024): `20ms`, `5m`, `1_000b`, `4kib`. Both are Core records over a `U64` (nanoseconds, bytes), never
+  negative. There are no fractions (`1.5s` is a build error that asks for `1500ms`), and one that doesn't fit the
+  `U64` (`40000w`) is a build error too. `Duration` has `+ - * // %` (`d * 3`, `d // 3`, `d // 1ms` counts, `d % 1s`),
+  `+^` / `-^` (`add_clamp` / `sub_clamp`, stopping at `Duration.MAX` and 0), the comparisons, `min` / `max`, `hash`,
+  `Duration.from_nanoseconds(n)` / `from_microseconds` / `from_milliseconds` / `from_seconds`, the counts back
+  `d.nanoseconds()` / `microseconds()` / `milliseconds()` / `seconds()` (whole, rounded down), `Duration.zero()`,
+  `is_zero()`, and `Duration.MAX`. `ByteSize` has the same arithmetic, `ByteSize.construct(bytes: n)` and
+  `size.bytes()`. `{d}` writes `1s 500ms` / `4KiB`, `{d.diagnose()}` the literal (`1500ms`, `4kib`). A time is a
+  `Duration` wherever the stdlib takes one: waits, timeouts, deadlines (a deadline is a reading of `monotonic_now()`
+  plus a `Duration`), page and stack sizes are `ByteSize`. The memory manager routines (`alloc(size, align)`, the page
+  routines) and `sizeof` stay `U64` byte counts, and a count of elements is a count.
 - Text is a `@[Byte]` (UTF-8 by convention, unchecked: `is_utf8` checks, and `chars()` reads a bad sequence as
   U+FFFD), and owned text is a `Memory[Byte]`. The text routines are on `@[Byte]` (`Types/ByteSpan.te`:
   `find`, `has`, `has_prefix`, `slice(start, end)`, `byte_at`, `bytes()`, `chars()`, `concat(a, b, alloc)`, `eq`,
@@ -959,7 +972,7 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 
 **Threads, fibers, and FiberPool jobs are tickets.** A manager hands one out, and it is used in one flow, top to bottom:
 `t: Thread[S64] = get_thread[S64]()`, `t.put_work(entry: f.to[Callable](), args: x)` (it runs from here on),
-`t.check_finished()` to look without waiting or `t.wait_finished()` / `t.wait_finished_for(ns) -> Bool` to wait,
+`t.check_finished()` to look without waiting or `t.wait_finished()` / `t.wait_finished_for(timeout) -> Bool` (`timeout` a `Duration`) to wait,
 `r: S64 = t.retrieve()`, then more work on the same ticket or `t.give_back()`. `T` is the result type, `Thread[None]`
 for none. `args` is nothing, one value, or a tuple of two to four (`args: (a, b)`), copied into a block from the
 manager's allocator. A pointer argument must outlive the work, so wait before releasing what it points to. One piece
@@ -990,21 +1003,21 @@ code waiting on several tickets at once.
   `@T`, `arg` is one and outlives the thread) starts a thread nobody waits for: only for a runtime's own threads that
   live as long as the program. `cpu_count()`.
 - **Fibers** (`Standard/Fiber/FiberManager.te`): `FIBERS.get_fiber[T]()`, the same flow and crashes. `FIBERS` is each thread's own
-  `FiberManager`, made on first use (64 KiB stacks from `DEFAULT_STACKS`), and on a thread ticket it goes when the
-  work is over. `FiberManager.construct(stack_size, stacks, alloc)` makes another (`make_stack_memory()` for guard
+  `FiberManager`, made on first use (`64kib` stacks from `DEFAULT_STACKS`), and on a thread ticket it goes when the
+  work is over. `FiberManager.construct(stack_size, stacks, alloc)` (`stack_size` a `ByteSize`) makes another (`make_stack_memory()` for guard
   pages), `drop manager` frees it. A manager runs its fibers on ONE thread, the one that drives it, and never moves
   them: cooperative, a fiber runs until it yields, parks, sleeps, waits, or its work finishes, so its fibers share
   values without locks between those points. Driving: `wait_finished()` outside a fiber on the manager's thread runs
   the manager until that work is done, `run()` until no fiber has work, `run_until_idle()` until none is ready.
   Inside a fiber, waiting parks only that fiber: `wait_finished` of a fiber or THREAD ticket, `park()` (until
   `wake(handle)` from any thread, the handle from `current()`, may return early so loop on the condition),
-  `park_until(deadline)`, `sleep(ns)`, and `run_blocking(work, arg)` (a blocking call on a thread ticket), which
+  `park_until(deadline)`, `waitfor(duration)`, and `run_blocking(work, arg)` (a blocking call on a thread ticket), which
   `read` / `write` (`Standard/Fiber/Io.te`) use. A blocking call made directly stops every fiber of its thread.
-  `yield()` lets the other ready fibers go first. Outside a fiber `sleep` waits the thread, `park` returns,
+  `yield()` lets the other ready fibers go first. Outside a fiber `waitfor` waits the thread, `park` returns,
   `run_blocking` just calls. More cores = thread tickets, each driving its own `FIBERS` (`tests/fiber_workers.te`),
   or a FiberPool. A thread that drives a manager between other work loops on `run_until_idle()` and sleeps on a word
   of its own: `wake_through(word)` makes a wake from another thread change that word (and `wake_all` it),
-  `idle_wait() -> U64` is how long it may sleep before a fiber with a deadline is due (`U64.MAX` for none).
+  `idle_wait() -> Duration` is how long it may sleep before a fiber with a deadline is due (`Duration.MAX` for none).
 - **FiberPool** (`Standard/Fiber/FiberPool.te`, M:N): `local pool: @FiberPool <- .construct(threads: 0)` (0 = one
   thread per processor), `j: Job[T] = pool.get_job[T]()`, then the ticket flow (`put_work`, `check_finished`,
   `wait_finished(_for, _result)`, `retrieve(_result)`, `cancel`, `give_back`). Work waits in the pool's queue until a
@@ -1030,12 +1043,15 @@ error). `Bool` has none: use a `U8`.
 stdlib wait does what fits the code running it. `ExclusiveLock` (`lock` / `unlock` / `try_lock`) and `MultiReadLock`
 (`lock_read` / `unlock_read` / `try_lock_read`, `lock_write` / `unlock_write` / `try_lock_write`, many readers or one
 writer, writer-preferring: a waiting writer holds off later readers) park a waiting fiber a short while at a time.
-`SignalCaster` (a condition variable for an ExclusiveLock: `wait(mutex)`, `wait_for(mutex, timeout_ns)` /
-`wait_until(mutex, deadline_ns)` returning whether it returned in time, `cast_one()` / `cast_all()`, and a wait may
+`SignalCaster` (a condition variable for an ExclusiveLock: `wait(mutex)`, `wait_for(mutex, timeout)` /
+`wait_until(mutex, deadline)` returning whether it returned in time, `cast_one()` / `cast_all()`, and a wait may
 return without a wake, so the waiter checks its condition again in a loop). No lock guards: unlock explicitly on
 every path. `wait_on` / `wait_on_for` / `wake_one` / `wake_all` on a `@U32` make a THREAD sleep. `wait_while(at,
-expected)` / `wait_while_for(at, expected, timeout_ns)` are that wait for whoever runs (a fiber parks 50 µs at a time
-and looks again), may return early, so loop. `sleep_for(ns)` waits the same way. `monotonic_ns()`. A waiter the
+expected)` / `wait_while_for(at, expected, timeout)` are that wait for whoever runs (a fiber parks `50us` at a time
+and looks again), may return early, so loop. `waitfor(duration)` waits at least that long the same way (`waitfor(20ms)`).
+`monotonic_now()` reads the clock that only goes forward, as a `Duration` since a start the system picks: subtract
+two readings to measure, add a timeout for a deadline (`monotonic_now() +^ timeout` when it may be `Duration.MAX`).
+Every timeout and deadline above is a `Duration`, and "none" is `Duration.MAX`. A waiter the
 waited-for thing knows is a `Waiter` (`current_waiter()`: a fiber parks through its manager, a thread on a word of its
 own), with `park()` / `park_until(deadline)` / `wake()`. All in Standard/Os.
 

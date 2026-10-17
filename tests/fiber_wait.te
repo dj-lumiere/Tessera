@@ -1,6 +1,6 @@
 # Fibers that wait without holding up their thread: two fibers hand a turn back and forth a thousand times with park
 # and wake, eight fibers sleep until different times and wake in that order, and a fiber starts ten others and waits
-# for each. Outside a fiber, sleep waits the thread, and wait_finished of a fiber whose work is done returns at once.
+# for each. Outside a fiber, waitfor waits the thread, and wait_finished of a fiber whose work is done returns at once.
 
 import Standard/Alloc
 import Standard/Fiber
@@ -21,7 +21,7 @@ record Sleepers
     order: Array[U64, 8]  # the sleepers' numbers in the order they woke
     next: U64
     short: U64  # sleepers that woke too early
-    base: U64  # the time their wake-up times count from, in monotonic_ns
+    base: Duration  # the time their wake-up times count from, in monotonic_now time
 
 record Sleeper
     all: @Sleepers
@@ -55,7 +55,7 @@ routine PingPong.destruct(me: @Me) -> None
 ### :param base: Its `base`.
 ### :returns: The new value.
 routine Sleepers.construct(sched: @FiberManager, order: Array[U64, 8], next: U64, short: U64,
-    base: U64) -> Me
+    base: Duration) -> Me
     return Me(sched, order, next, short, base)
 
 ### Releases nothing: a `Sleepers` holds no memory of its own.
@@ -122,10 +122,10 @@ routine sleeper(s: @Sleeper) -> None
     local all: @Sleepers = s.all.peek()
 
     id: U64 = s.id.peek()
-    delay: U64 = (8 - id) * 30000000
-    wake_at: U64 = delay + all.base.peek()
-    all.sched.peek().sleep(wake_at -^ monotonic_ns())
-    early: Bool = monotonic_ns() < wake_at
+    delay: Duration = 30ms * (8 - id)
+    wake_at: Duration = delay + all.base.peek()
+    all.sched.peek().waitfor(wake_at -^ monotonic_now())
+    early: Bool = monotonic_now() < wake_at
     slot: U64 = all.next.atomic_fetch_add(1)
     order_slots: @U64 = all.order.to[@U64]()
     order_slots.stride(slot).poke(id)
@@ -138,7 +138,7 @@ routine sleeper(s: @Sleeper) -> None
 ### A child adds its share, sleeping and yielding on the way so the parent waits on children still running.
 routine child(family: @Family) -> None
     sched: @FiberManager = family.sched.peek()
-    sched.sleep(1000000)
+    sched.waitfor(1ms)
     family.sum.atomic_fetch_add(1)
     sched.yield()
     family.sum.atomic_fetch_add(9)
@@ -163,7 +163,7 @@ routine parent(family: @Family) -> None
 routine start() -> None
     local alloc: @MemoryManager <- make_heap_memory()
     local stacks: @MemoryManager <- make_stack_memory()
-    local sched: @FiberManager <- .construct(stack_size: 65536, stacks, alloc)
+    local sched: @FiberManager <- .construct(stack_size: 64kib, stacks, alloc)
     local game: @PingPong <- PingPong(sched: sched, turn: 0, ping: .hollow(), pong: .hollow(),
         handoffs: 0)
     local sleepers: @Sleepers <- .hollow()
@@ -173,10 +173,10 @@ routine start() -> None
     local players: @Array[Fiber[None], 2] <- .hollow()
 
     # Outside a fiber, sleep waits the thread.
-    before: U64 = monotonic_ns()
-    sched.sleep(5000000)
-    elapsed: U64 = monotonic_ns() - before
-    waited: Bool = elapsed >= 5000000
+    before: Duration = monotonic_now()
+    sched.waitfor(5ms)
+    elapsed: Duration = monotonic_now() - before
+    waited: Bool = elapsed >= 5ms
     Out.write("thread slept: {waited}\n")
 
     pinger: Fiber[None] = sched.get_fiber[None]()
@@ -187,7 +187,7 @@ routine start() -> None
     players[1] = ponger
 
     sleepers.poke(Sleepers(sched: sched, order: [0, 0, 0, 0, 0, 0, 0, 0], next: 0, short: 0,
-        base: monotonic_ns()))
+        base: monotonic_now()))
 
     each i: U64 in 0 til 8
         s: @Sleeper = sleeper_at.stride(i)

@@ -63,6 +63,7 @@ obeys Representable[U8], Representable[U16], Representable[U32], Representable[U
 obeys Representable[CSize], Representable[CSSize]
 obeys Representable[B16], Representable[BF16], Representable[B32], Representable[B64], Representable[B128]
 obeys Representable[Bool], Representable[Char], Representable[@[Byte]], Representable[Addr], Representable[None]
+obeys Representable[Duration], Representable[ByteSize]
 obeys Representable[Array[T, COUNT]] when T: typename, COUNT: U64, Diagnosable[T]
 
 obeys HexRepresentable[S8], HexRepresentable[S16], HexRepresentable[S32], HexRepresentable[S64], HexRepresentable[S128], HexRepresentable[S256]
@@ -626,6 +627,60 @@ routine None.represent_into[T](me: Me, out: @T) -> None
 needs T: typename, Writer[T]
     write_str(out, text: "None")
     return
+
+### Writes the duration in its parts, largest first, each with its unit and only those that aren't 0: `1d 2h 30m`,
+### `1s 500ms`, `0s` for no time.
+### :typeparam T: The type of the Writer that receives the text.
+### :param out: The Writer the text is written to.
+routine Duration.represent_into[T](me: Me, out: @T) -> None
+needs T: typename, Writer[T]
+    ns: U64 = me.nanoseconds()
+    if ns == 0
+        write_str(out, text: "0s")
+        return
+    days: Bool = write_unit_part(out, count: ns // 86400000000000, unit: "d", after: false)
+    hours: Bool = write_unit_part(out, count: ns // 3600000000000 % 24, unit: "h", after: days)
+    minutes: Bool = write_unit_part(out, count: ns // 60000000000 % 60, unit: "m", after: hours)
+    seconds: Bool = write_unit_part(out, count: ns // 1000000000 % 60, unit: "s", after: minutes)
+    millis: Bool = write_unit_part(out, count: ns // 1000000 % 1000, unit: "ms", after: seconds)
+    micros: Bool = write_unit_part(out, count: ns // 1000 % 1000, unit: "us", after: millis)
+    drop write_unit_part(out, count: ns % 1000, unit: "ns", after: micros)
+    return
+
+### Writes the size in binary parts, largest first, each with its unit and only those that aren't 0: `1GiB 512MiB`,
+### `4KiB`, `0B` for none.
+### :typeparam T: The type of the Writer that receives the text.
+### :param out: The Writer the text is written to.
+routine ByteSize.represent_into[T](me: Me, out: @T) -> None
+needs T: typename, Writer[T]
+    bytes: U64 = me.bytes()
+    if bytes == 0
+        write_str(out, text: "0B")
+        return
+    pib: Bool = write_unit_part(out, count: bytes >> 50, unit: "PiB", after: false)
+    tib: Bool = write_unit_part(out, count: (bytes >> 40) & 1023, unit: "TiB", after: pib)
+    gib: Bool = write_unit_part(out, count: (bytes >> 30) & 1023, unit: "GiB", after: tib)
+    mib: Bool = write_unit_part(out, count: (bytes >> 20) & 1023, unit: "MiB", after: gib)
+    kib: Bool = write_unit_part(out, count: (bytes >> 10) & 1023, unit: "KiB", after: mib)
+    drop write_unit_part(out, count: bytes & 1023, unit: "B", after: kib)
+    return
+
+### Writes one part of a duration or a size, `30m`, when its count isn't 0, after a space when a part came before.
+### :typeparam T: The type of the Writer that receives the text.
+### :param out: The Writer the text is written to.
+### :param count: The count of the unit.
+### :param unit: The unit's name.
+### :param after: Whether a part came before.
+### :returns: Whether a part has been written now, this one or one before.
+secret routine write_unit_part[T](out: @T, count: U64, unit: @[Byte], after: Bool) -> Bool
+needs T: typename, Writer[T]
+    if count == 0
+        return after
+    if after
+        write_str(out, text: " ")
+    count.represent_into(out)
+    write_str(out, text: unit)
+    return true
 
 ### Writes `true` or `false`.
 ### :typeparam T: The type of the Writer that receives the text.

@@ -11,6 +11,7 @@ public enum TokenKind
     At,          // @ (a pointer type: @T is Ptr<T>)
     Op,          // an operator: + - * / % ** == != < <= > >= <=> & | ^ ~ << >> >>> and the +% +^ forms
     Int,         // 42, -5, 0xFF
+    Unit,        // 20ms, 4kib: a whole number with a time or size unit (IntValue is the number, Text the literal)
     Byte,        // b'A': a Byte
     Char,        // 'A': a Char, a Unicode scalar value
     Str,         // "..."
@@ -353,7 +354,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
     {
         if (_tokens.Count == 0) return false;
         var t = _tokens[^1];
-        bool operand = t.Kind is TokenKind.Ident or TokenKind.Int or TokenKind.Float or TokenKind.Byte or TokenKind.Char
+        bool operand = t.Kind is TokenKind.Ident or TokenKind.Int or TokenKind.Unit or TokenKind.Float or TokenKind.Byte or TokenKind.Char
             or TokenKind.Str or TokenKind.RParen or TokenKind.RBracket;
         bool word = t.Kind == TokenKind.Ident && !t.Escaped && t.Text is "return" or "becomes" or "and" or "or" or "not"
             or "if" or "while" or "until" or "then" or "else" or "elseif" or "in" or "to" or "til" or "by" or "with" or "when" or "jump";
@@ -480,7 +481,8 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         if (Peek() == '-') { neg = true; Advance(); }
 
         int radix = 10;
-        if (Peek() == '0' && (Peek(1) is 'x' or 'b' or 'o'))
+        // `0b` is a binary number only when a binary digit follows: `0b` alone is a size of 0 bytes.
+        if (Peek() == '0' && (Peek(1) is 'x' or 'o' || Peek(1) == 'b' && Peek(2) is '0' or '1' or '_'))
         {
             radix = Peek(1) switch { 'x' => 16, 'b' => 2, _ => 8 };
             Advance();
@@ -499,11 +501,18 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         bool fraction = radix == 10 && Peek() == '.' && char.IsAsciiDigit(Peek(1));
         bool exponent = radix == 10 && (Peek() is 'e' or 'E')
                         && (char.IsAsciiDigit(Peek(1)) || (Peek(1) is '+' or '-' && char.IsAsciiDigit(Peek(2))));
-        if (fraction || exponent) return ReadFloat(start, pos);
+        if (fraction || exponent)
+        {
+            var number = ReadFloat(start, pos);
+            if (radix == 10 && UnitAt(_i) is { } fractionUnit)
+                throw new CompileError(pos, $"a {UnitKind(fractionUnit)} literal takes a whole number: write it in a smaller unit, such as 1500ms for 1.5s");
+            return number;
+        }
 
         var digits = src.AsSpan(digitsStart, _i - digitsStart);
         if (digits.Length == digits.Count('_')) throw new CompileError(pos, "malformed number");
-        if (_i < src.Length && char.IsAsciiLetterOrDigit(src[_i]))
+        string? unit = radix == 10 ? UnitAt(_i) : null;
+        if (unit is null && _i < src.Length && char.IsAsciiLetterOrDigit(src[_i]))
             throw new CompileError(pos, $"unexpected '{src[_i]}' in a number");
 
         // The digits gather in a ulong while it can't overflow (below 2^59, times 16 plus 15), then in a BigInteger.
@@ -532,10 +541,51 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         if (neg && mag > (MaxLiteral >> 1) + 1)
             throw new CompileError(pos, $"integer literal is below the {MaxLiteralBits}-bit range");
 
+        if (unit is not null)
+        {
+            if (neg) throw new CompileError(pos, $"a {UnitKind(unit)} is never negative, so '-{src[digitsStart.._i]}{unit}' isn't one");
+            _i += unit.Length;
+            _col += unit.Length;
+            return new Token(TokenKind.Unit, src[start.._i], pos, mag);
+        }
+
         // A magnitude above a type's signed range is that type's two's-complement bit pattern (IntConst).
         BigInteger value = neg ? -mag : mag;
         return new Token(TokenKind.Int, src[start.._i], pos, value);
     }
+
+    /// The time units (a `Duration`) and the size units (a `ByteSize`) a whole number may end in, each with its size:
+    /// nanoseconds in a time unit, bytes in a size unit.
+    public static readonly Dictionary<string, (string Type, ulong Scale)> Units = new()
+    {
+        ["ns"] = ("Duration", 1),
+        ["us"] = ("Duration", 1_000),
+        ["ms"] = ("Duration", 1_000_000),
+        ["s"] = ("Duration", 1_000_000_000),
+        ["m"] = ("Duration", 60_000_000_000),
+        ["h"] = ("Duration", 3_600_000_000_000),
+        ["d"] = ("Duration", 86_400_000_000_000),
+        ["w"] = ("Duration", 604_800_000_000_000),
+        ["b"] = ("ByteSize", 1),
+        ["kb"] = ("ByteSize", 1_000),
+        ["mb"] = ("ByteSize", 1_000_000),
+        ["gb"] = ("ByteSize", 1_000_000_000),
+        ["kib"] = ("ByteSize", 1UL << 10),
+        ["mib"] = ("ByteSize", 1UL << 20),
+        ["gib"] = ("ByteSize", 1UL << 30),
+    };
+
+    /// The unit the letters at `at` spell, when they are a whole unit and nothing of a name follows.
+    private string? UnitAt(int at)
+    {
+        int end = at;
+        while (end < src.Length && char.IsAsciiLetterLower(src[end])) end++;
+        if (end == at || end < src.Length && (char.IsAsciiLetterOrDigit(src[end]) || src[end] == '_')) return null;
+        string word = src[at..end];
+        return Units.ContainsKey(word) ? word : null;
+    }
+
+    private static string UnitKind(string unit) => Units[unit].Type == "Duration" ? "duration" : "size";
 
     /// After a hex literal's integer digits: an optional `.` and hex fraction, then a `p` exponent. The exponent is
     /// required, as in C, so `0x10.add(1)` stays a method call on an integer (`a` and `d` are hex digits too).
