@@ -11,12 +11,11 @@ import Standard/Alloc
 preset GENERIC_READ:                 U32 = 0x80000000
 preset GENERIC_WRITE:                U32 = 0x40000000
 preset FILE_APPEND_ONLY:             U32 = 0x120114  # FILE_GENERIC_WRITE without FILE_WRITE_DATA
-preset FILE_WRITE_ATTRIBUTES:        U32 = 0x100
 preset FILE_SHARE_ALL:               U32 = 7  # read, write, and delete
 preset CREATE_NEW:                   U32 = 1
 preset CREATE_ALWAYS:                U32 = 2
 preset OPEN_EXISTING:                U32 = 3
-preset OPEN_ALWAYS:                  U32 = 4
+preset TRUNCATE_EXISTING:            U32 = 5
 preset FILE_ATTRIBUTE_READONLY:      U32 = 0x1
 preset FILE_ATTRIBUTE_DIRECTORY:     U32 = 0x10
 preset FILE_ATTRIBUTE_NORMAL:        U32 = 0x80
@@ -353,27 +352,6 @@ secret routine c_get_full_path_name(path: @U16, size: U32, buffer: @U16, part: A
 @target(os: "windows")
 secret routine c_get_final_path_name_by_handle(file: Addr, buffer: @U16, size: U32,
     flags: U32) -> U32
-
-### Binds the Win32 `GetSystemTimeAsFileTime` function: reads the current time.
-### :param time: Where the time goes, as a FILETIME.
-@external("c")
-@symbol("GetSystemTimeAsFileTime")
-@callconv("stdcall")
-@target(os: "windows")
-secret routine c_get_system_time_as_file_time(time: @FileTime) -> None
-
-### Binds the Win32 `SetFileTime` function: sets a file's times.
-### :param file: The open file, with `FILE_WRITE_ATTRIBUTES` access.
-### :param created: The new creation time, or null to leave it.
-### :param accessed: The new last-access time, or null to leave it.
-### :param written: The new last-write time, or null to leave it.
-### :returns: Nonzero, or 0 with the last error set.
-@external("c")
-@symbol("SetFileTime")
-@callconv("stdcall")
-@target(os: "windows")
-secret routine c_set_file_time(file: Addr, created: Addr, accessed: @FileTime,
-    written: @FileTime) -> CInt
 
 ### Binds the Win32 `CreateFileMappingW` function: makes a file-mapping object for an open file.
 ### :param file: The open file.
@@ -792,7 +770,8 @@ routine FileHandle.destruct(me: @Me) -> None
 routine FileHandle.empty() -> Me
     return Me(handle: inttoptr[U64, Addr](U64.MAX), failed: false)
 
-### Opens path in mode. Other handles may read, write, and delete the file while it is open.
+### Opens path in mode. Other handles may read, write, and delete the file while it is open. Only CreateNew and
+### CreateReplacing make a file: the other modes fail with NotFound when nothing is there.
 ### :param path: The file to open.
 ### :param mode: How to open it.
 ### :returns: The open handle.
@@ -805,10 +784,11 @@ secret routine FileHandle.open(path: @[Byte], mode: OpenMode) -> Result[Me, FsEr
         return path_error(path)
     values2: (@U16, U32, U32) = when mode
         OpenMode.READ => (wpath.to[@U16](), GENERIC_READ, OPEN_EXISTING)
-        OpenMode.WRITE => (wpath.to[@U16](), GENERIC_WRITE, CREATE_ALWAYS)
-        OpenMode.APPEND => (wpath.to[@U16](), FILE_APPEND_ONLY, OPEN_ALWAYS)
+        OpenMode.WRITE => (wpath.to[@U16](), GENERIC_WRITE, TRUNCATE_EXISTING)
+        OpenMode.APPEND => (wpath.to[@U16](), FILE_APPEND_ONLY, OPEN_EXISTING)
         OpenMode.READ_WRITE => (wpath.to[@U16](), GENERIC_READ.bitor(GENERIC_WRITE), OPEN_EXISTING)
         OpenMode.CREATE_NEW => (wpath.to[@U16](), GENERIC_WRITE, CREATE_NEW)
+        OpenMode.CREATE_REPLACING => (wpath.to[@U16](), GENERIC_WRITE, CREATE_ALWAYS)
     wpath2, access, disposition = values2
     h: Addr = c_create_file(wpath2, access, FILE_SHARE_ALL, null, disposition,
         FILE_ATTRIBUTE_NORMAL, null)
@@ -1036,14 +1016,16 @@ secret routine copy_progress(total_size: S64, transferred: S64, stream_size: S64
     data.to[@U64]().poke(transferred.to_wrap[U64]())
     return 0
 
-### Copies from into to (made, or replaced): the bytes copied, as CopyFileExW reports them while it copies.
+### Copies from into to, which is made, or replaced when `replacing`: the bytes copied, as CopyFileExW reports them
+### while it copies.
 ### :param from: The file to copy.
 ### :param to: The file to write.
+### :param replacing: Whether a file already at `to` is replaced. When false, one there fails the copy.
 ### :returns: The number of bytes copied.
-### :throws: Returns the reason when the copy fails, `InvalidPath` or `NameTooLong` when a path doesn't
-###     fit a C path.
+### :throws: Returns the reason when the copy fails, `AlreadyExists` when something is at `to` and `replacing` is
+###     false, `InvalidPath` or `NameTooLong` when a path doesn't fit a C path.
 @target(os: "windows")
-secret routine copy_file(from: @[Byte], to: @[Byte]) -> Result[U64, FsError]
+secret routine copy_file(from: @[Byte], to: @[Byte], replacing: Bool) -> Result[U64, FsError]
     local a: @Array[U16, PATH_CAPACITY] <- .hollow()
     local b: @Array[U16, PATH_CAPACITY] <- .hollow()
     local copied: @U64 <- 0
@@ -1052,8 +1034,12 @@ secret routine copy_file(from: @[Byte], to: @[Byte]) -> Result[U64, FsError]
         return path_error(from)
     if not wide_path(path: to, out: b.to[@U16]())
         return path_error(to)
+    # COPY_FILE_FAIL_IF_EXISTS
+    flags: U32 = when
+        replacing => 0
+        else => 1
     if c_copy_file_ex(a.to[@U16](), b.to[@U16](), copy_progress.to[Callable](), copied, null,
-        0) != 0
+        flags) != 0
         return copied.peek()
     else
         return failed[U64]()
@@ -1124,26 +1110,6 @@ secret routine is_accessible(path: @[Byte], access: Access) -> Bool
                 return false
             else
                 return is_program_extension(file_extension(path))
-
-### Makes the file if it's missing, and sets its access and modification times to now.
-### :param path: The file to touch.
-### :returns: `Unit` once the times are set.
-### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
-@target(os: "windows")
-secret routine touch(path: @[Byte]) -> Result[None, FsError]
-    local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
-
-    if not wide_path(path, out: wpath.to[@U16]())
-        return path_error(path)
-    h: Addr = c_create_file(wpath.to[@U16](), FILE_WRITE_ATTRIBUTES, FILE_SHARE_ALL, null,
-        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL.bitor(FILE_FLAG_BACKUP_SEMANTICS), null)
-    if is_invalid_handle(h)
-        return failed[None]()
-    local now: @FileTime <- FileTime(low: 0, high: 0)
-    c_get_system_time_as_file_time(now)
-    set: Result[None, FsError] = checked(c_set_file_time(h, null, now, now))
-    c_close_handle(h)
-    return set
 
 # -- directory listings ------------------------------------------------------------------
 

@@ -470,7 +470,7 @@ public sealed record ArrayLit(List<Expr> Elements, Pos Pos) : Expr(Pos)
 /// taken from the manager, which `drop` gives back. A repeat count here may be known only while running.
 public sealed record AtExpr(Expr Value, Expr Manager, Pos Pos) : Expr(Pos);
 
-/// An entity value that a routine taking `me: @Me` is called on (`File.at(p).is_file()`): the builder puts it in a slot
+/// An entity value that a routine taking `me: @Me` is called on (`Counter.at(n).get()`): the builder puts it in a slot
 /// of its own, which ends when the statement does (a condition's when the condition has been read).
 public sealed record TempSlotExpr(Expr Value, Pos Pos) : Expr(Pos);
 

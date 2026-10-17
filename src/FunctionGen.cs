@@ -1979,7 +1979,7 @@ public sealed class FunctionGen
     /// When the parameter wants what is stored there, the error says to peek it. `argument` is the argument's position
     /// (1 for the first), or 0 for a receiver or the contents of a claim.
     /// Whether an entity value `actual` goes where a pointer to it (`expected`, `@E`) is taken: it is put in a slot of
-    /// its own for the statement (TempSlotExpr), `src.copy_to_result(File.at(dst))`.
+    /// its own for the statement (TempSlotExpr), `FileManager.is_file(at: File.at(p))`.
     private static bool SlotsTemp(DType actual, DType expected) =>
         actual is not PtrType && expected is PtrType { Pointee: { } pointee } && pointee.Equals(actual) && Entities.Holds(actual);
 
@@ -2112,20 +2112,17 @@ public sealed class FunctionGen
         _ => false,
     };
 
-    /// Whether evaluating `e` puts an entity value in a temporary slot (a routine taking `me: @Me` is called on it).
+    /// Whether evaluating `e` puts an entity value in a temporary slot: a routine taking `me: @Me` is called on it, or
+    /// it is an argument where the routine takes `@E` (`FileManager.is_present(at: File.at(p))`).
     private bool MakesTemp(Expr e)
     {
         switch (e)
         {
             case MethodCallExpr m:
-                try
-                {
-                    if (PlanCall(m, null) is { Receiver: TempSlotExpr }) return true;
-                }
-                catch (CompileError) { }
+                if (CallSlotsTemp(m, receiverSlots: true)) return true;
                 return MakesTemp(m.Receiver) || m.Args.Any(MakesTemp);
-            case CallExpr c: return c.Args.Any(MakesTemp);
-            case NsCallExpr n: return n.Args.Any(MakesTemp);
+            case CallExpr c: return CallSlotsTemp(c, receiverSlots: false) || c.Args.Any(MakesTemp);
+            case NsCallExpr n: return CallSlotsTemp(n, receiverSlots: false) || n.Args.Any(MakesTemp);
             case BinaryExpr b: return MakesTemp(b.Left) || MakesTemp(b.Right);
             case UnaryExpr u: return MakesTemp(u.Operand);
             case FieldExpr f: return MakesTemp(f.Base);
@@ -2134,6 +2131,25 @@ public sealed class FunctionGen
             case RecordLit r: return r.Fields.Any(f => MakesTemp(f.Value));
             default: return false;
         }
+    }
+
+    /// Whether the call `e` puts its receiver (when `receiverSlots`) or one of its arguments in a temporary slot. A call
+    /// that can't be planned here makes none.
+    private bool CallSlotsTemp(Expr e, bool receiverSlots)
+    {
+        try
+        {
+            if (PlanCall(e, null) is not { } plan) return false;
+            if (receiverSlots && plan.Receiver is TempSlotExpr) return true;
+            var sig = _c.Signature(plan.Decl, plan.Env);
+            int offset = plan.Receiver is null ? 0 : 1;
+            for (int i = 0; i < plan.Args.Count && i + offset < sig.Params.Count; i++)
+                if (plan.Args[i] is not TempSlotExpr && InferQuiet(plan.Args[i]) is { } given
+                    && SlotsTemp(given, sig.Params[i + offset]))
+                    return true;
+        }
+        catch (CompileError) { }
+        return false;
     }
 
     /// Where `type` holds a pointer (a Ptr, an Addr, a Callable, or the Span, Box, or Memory over one), as a path
@@ -2479,7 +2495,7 @@ public sealed class FunctionGen
         {
             int subjectTemps = _statementTemps.Count;
             var v = EvalAny(w.Value);
-            // The subject read through a temporary slot (`when File.at(p).read_all_result(alloc)`): a subject that
+            // The subject read through a temporary slot (`when Counter.at(n).get()`): a subject that
             // borrows nothing from it ends it here, before an arm can leave.
             if (!MayBorrow(v.Type, null)) FlushTemps(subjectTemps);
             // The slot of a variant that holds an entity is observed by moving the value out of it: the when takes it.
@@ -3728,7 +3744,7 @@ public sealed class FunctionGen
             return PlanMethod(m with { Receiver = new MethodCallExpr(m.Receiver, "getview", [], [], m.Receiver.Pos) }, expected);
 
         // An entity value (a call's result) has no place for a routine taking `me: @Me`: it goes into a slot of its
-        // own, which ends with the statement (`File.at(p).is_file()`).
+        // own, which ends with the statement (`Counter.at(n).get()`).
         if (m.Receiver is not TempSlotExpr && rt is not PtrType && Entities.Holds(rt))
             return PlanMethod(m with { Receiver = new TempSlotExpr(m.Receiver, m.Receiver.Pos) }, expected);
 

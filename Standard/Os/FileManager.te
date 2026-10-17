@@ -1,0 +1,375 @@
+# Tessera stdlib: FileManager, the one place where the file system is asked or changed
+#
+# A File or a Directory (File.te) only says where. Every routine that does something at a path is a FileManager
+# routine, called on the type: there is no FileManager value. Each one is one thing done at the path now, and a
+# routine that can fail for a reason the caller handles returns a Result with an FsError (a `_result` form).
+#
+# Nothing makes a file on the side. Opening for writing or appending, writing, and mapping need a file that is there
+# (NotFound when it isn't), and make_file_result is the one way to make one:
+#
+#     local log: @File <- dir.file(name: "log.txt", alloc)
+#     FileManager.make_file_result(at: log, replacing: false).unwrap()
+#     local h: @FileHandle <- FileManager.open_write_result(at: log).unwrap()
+#     h.write("total = {total}\n")
+#     h.close()
+#
+# Moving and copying refuse to replace what is at the destination unless `replacing` is true.
+
+module Standard/Os
+
+import Standard/Alloc
+
+### The file system: making, opening, reading, writing, mapping, deleting, moving, copying, asking about, setting,
+### and listing files and directories, and the working, temporary, and home directories. Its routines are called on
+### the type (`FileManager.read_all_result(at: notes, alloc)`).
+record FileManager
+
+# -- making ------------------------------------------------------------------------------
+
+### Makes an empty file at the path. The directory it goes in must exist.
+### :param at: Where the file goes.
+### :param replacing: What happens when a file is already there: `true` empties it, `false` fails with AlreadyExists.
+### :returns: Success, or the {FsError} the OS reported: `AlreadyExists` when something is there and `replacing` is
+###     false (or when a directory is there).
+@expensive("asks the operating system")
+routine FileManager.make_file_result(at: @File, replacing: Bool) -> Result[None, FsError]
+    mode: OpenMode = when
+        replacing => OpenMode.CREATE_REPLACING
+        else => OpenMode.CREATE_NEW
+    when FileHandle.open(path: at.path.peek(), mode)
+        is FileHandle as f =>
+            local made: @FileHandle <- f
+            made.close()
+            return fs_done()
+        is FsError as error => return error
+
+### Makes the directory.
+### :param at: Where the directory goes.
+### :param parents: `true` also makes every missing directory on the way, like mkdir -p, and a directory already at
+###     the path is fine. `false` needs the parent to exist and fails with AlreadyExists when something is there.
+### :returns: Success, or the {FsError} the OS reported.
+@expensive("asks the operating system")
+routine FileManager.make_directory_result(at: @Directory, parents: Bool) -> Result[None, FsError]
+    if parents
+        return create_dir_all(at.path.peek())
+    else
+        return create_dir(at.path.peek())
+
+# -- reading and writing -----------------------------------------------------------------
+
+### The whole file, in memory from alloc (drop it).
+### :param at: The file to read.
+### :param alloc: The allocator for the bytes.
+### :returns: The file's bytes, or the {FsError} the OS reported, `OutOfMemory` when `alloc` fails or the file is too
+###     large for the address space (4 GiB or more on a 32-bit target).
+@expensive("asks the operating system")
+routine FileManager.read_all_result(at: @File,
+    alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
+    return read_file(path: at.path.peek(), alloc)
+
+### Writes data as the whole content of the file, which must exist. What it held before is gone.
+### :param at: The file to write.
+### :param data: The bytes that become the file.
+### :returns: Success, or the {FsError} the OS reported (NotFound when nothing is there).
+@expensive("asks the operating system")
+routine FileManager.write_all_result(at: @File, data: @[Byte]) -> Result[None, FsError]
+    return write_file(path: at.path.peek(), data)
+
+# -- opening -----------------------------------------------------------------------------
+
+### Opens the file for reading.
+### :param at: The file to open.
+### :returns: The open {FileHandle}, or the {FsError} the OS reported (NotFound when nothing is there).
+@expensive("asks the operating system")
+routine FileManager.open_read_result(at: @File) -> Result[FileHandle, FsError]
+    return FileHandle.open(path: at.path.peek(), mode: OpenMode.READ)
+
+### Opens the file for writing and empties it.
+### :param at: The file to open.
+### :returns: The open {FileHandle}, or the {FsError} the OS reported (NotFound when nothing is there).
+@expensive("asks the operating system")
+routine FileManager.open_write_result(at: @File) -> Result[FileHandle, FsError]
+    return FileHandle.open(path: at.path.peek(), mode: OpenMode.WRITE)
+
+### Opens the file for writing at its end.
+### :param at: The file to open.
+### :returns: The open {FileHandle}, or the {FsError} the OS reported (NotFound when nothing is there).
+@expensive("asks the operating system")
+routine FileManager.open_append_result(at: @File) -> Result[FileHandle, FsError]
+    return FileHandle.open(path: at.path.peek(), mode: OpenMode.APPEND)
+
+### Opens the file for reading and writing, keeping what it holds.
+### :param at: The file to open.
+### :returns: The open {FileHandle}, or the {FsError} the OS reported (NotFound when nothing is there).
+@expensive("asks the operating system")
+routine FileManager.open_read_write_result(at: @File) -> Result[FileHandle, FsError]
+    return FileHandle.open(path: at.path.peek(), mode: OpenMode.READ_WRITE)
+
+### Maps count bytes from offset (U64.MAX: to the end) into memory, clamped to the file. Past the end, or an empty
+### file, gives an empty mapping.
+### :param at: The file to map.
+### :param write: Whether stores to the mapping reach the file. Otherwise it's read-only.
+### :param offset: The byte offset in the file to map from.
+### :param count: The number of bytes to map, or `U64.MAX` for the rest of the file.
+### :returns: The {Mapping}, or the {FsError} the OS reported (NotFound when nothing is there).
+@expensive("asks the operating system")
+routine FileManager.map_result(at: @File, write: Bool, offset: U64,
+    count: U64) -> Result[Mapping, FsError]
+    return Mapping.map(path: at.path.peek(), write, offset, count)
+
+# -- deleting, moving, copying -------------------------------------------------------------
+
+### Deletes the file (or a link, not what it points at).
+### :param at: The file to delete.
+### :returns: Success, or the {FsError} the OS reported.
+@expensive("asks the operating system")
+routine FileManager.delete_result(at: @File) -> Result[None, FsError]
+    return remove_file(at.path.peek())
+
+### Deletes the directory, which must be empty.
+### :param at: The directory to delete.
+### :returns: Success, or the {FsError} the OS reported (DirectoryNotEmpty when something is in it).
+@expensive("asks the operating system")
+routine FileManager.delete_result(at: @Directory) -> Result[None, FsError]
+    return remove_dir(at.path.peek())
+
+### Deletes the directory and everything in it. A link inside is deleted, not followed.
+### :param at: The directory to delete.
+### :param alloc: The allocator for the child paths.
+### :returns: Success, or the {FsError} the OS reported. The first failure stops the deleting partway.
+@expensive("asks the operating system")
+routine FileManager.delete_all_result(at: @Directory,
+    alloc: @MemoryManager) -> Result[None, FsError]
+    return remove_dir_all(path: at.path.peek(), alloc)
+
+### Moves (renames) the file. Between file systems it fails with CrossDevice: copy and delete instead.
+### :param from: The file to move.
+### :param to: The file's new path.
+### :param replacing: Whether a file already at `to` is replaced. When false, one there fails the move.
+### :returns: Success, or the {FsError} the OS reported (AlreadyExists when something is at `to` and `replacing` is
+###     false).
+@expensive("asks the operating system")
+routine FileManager.move_result(from: @File, to: @File, replacing: Bool) -> Result[None, FsError]
+    if replacing
+        return rename(from: from.path.peek(), to: to.path.peek())
+    else
+        return rename_no_replace(from: from.path.peek(), to: to.path.peek())
+
+### Moves (renames) the directory. Between file systems it fails with CrossDevice.
+### :param from: The directory to move.
+### :param to: The directory's new path.
+### :param replacing: Whether an empty directory already at `to` is replaced (on Linux and macOS). When false,
+###     anything there fails the move.
+### :returns: Success, or the {FsError} the OS reported (AlreadyExists when something is at `to` and `replacing` is
+###     false).
+@expensive("asks the operating system")
+routine FileManager.move_result(from: @Directory, to: @Directory,
+    replacing: Bool) -> Result[None, FsError]
+    if replacing
+        return rename(from: from.path.peek(), to: to.path.peek())
+    else
+        return rename_no_replace(from: from.path.peek(), to: to.path.peek())
+
+### Copies the bytes (and on Linux and macOS the permissions) of the file. On Linux and macOS a copy that fails once
+### `to` is opened removes it, so no partial file is left.
+### :param from: The file to copy.
+### :param to: The file to write.
+### :param replacing: Whether a file already at `to` is replaced. When false, one there fails the copy.
+### :returns: The number of bytes copied, or the {FsError} the OS reported (AlreadyExists when something is at `to`
+###     and `replacing` is false).
+@expensive("asks the operating system")
+routine FileManager.copy_result(from: @File, to: @File, replacing: Bool) -> Result[U64, FsError]
+    return copy_file(from: from.path.peek(), to: to.path.peek(), replacing)
+
+# -- asking ------------------------------------------------------------------------------
+
+### Whether something is at the path, of any kind (a link counts as what it points at).
+### :param at: The path to look at.
+### :returns: True when something is there.
+@expensive("asks the operating system")
+routine FileManager.is_present(at: @File) -> Bool
+    return is_present(at.path.peek())
+
+### Whether something is at the path, of any kind (a link counts as what it points at).
+### :param at: The path to look at.
+### :returns: True when something is there.
+@expensive("asks the operating system")
+routine FileManager.is_present(at: @Directory) -> Bool
+    return is_present(at.path.peek())
+
+### Whether a file is at the path, not a directory or anything else (a link counts as what it points at).
+### :param at: The path to look at.
+### :returns: True when a file is there.
+@expensive("asks the operating system")
+routine FileManager.is_file(at: @File) -> Bool
+    return is_kind(path: at.path.peek(), kind: FileKind.FILE)
+
+### Whether a directory is at the path (a link counts as what it points at).
+### :param at: The path to look at.
+### :returns: True when a directory is there.
+@expensive("asks the operating system")
+routine FileManager.is_directory(at: @Directory) -> Bool
+    return is_kind(path: at.path.peek(), kind: FileKind.DIRECTORY)
+
+### The file's metadata, a link followed to what it points at.
+### :param at: The file to look at.
+### :returns: The {Metadata}, or the {FsError} the OS reported.
+@expensive("asks the operating system")
+routine FileManager.metadata_result(at: @File) -> Result[Metadata, FsError]
+    return metadata(at.path.peek())
+
+### The directory's metadata, a link followed to what it points at.
+### :param at: The directory to look at.
+### :returns: The {Metadata}, or the {FsError} the OS reported.
+@expensive("asks the operating system")
+routine FileManager.metadata_result(at: @Directory) -> Result[Metadata, FsError]
+    return metadata(at.path.peek())
+
+### The metadata of a link itself (kind Symlink), or of what isn't one.
+### :param at: The path to look at.
+### :returns: The {Metadata}, or the {FsError} the OS reported.
+@expensive("asks the operating system")
+routine FileManager.link_metadata_result(at: @File) -> Result[Metadata, FsError]
+    return symlink_metadata(at.path.peek())
+
+### Whether this process may read, write, or run the file.
+### :param at: The file to look at.
+### :param access: The kind of access to test for.
+### :returns: `true` when the OS allows it, `false` when it refuses or the path can't be examined.
+@expensive("asks the operating system")
+routine FileManager.is_accessible(at: @File, access: Access) -> Bool
+    return is_accessible(path: at.path.peek(), access)
+
+### Whether this process may read, write, or enter the directory.
+### :param at: The directory to look at.
+### :param access: The kind of access to test for.
+### :returns: `true` when the OS allows it, `false` when it refuses or the path can't be examined.
+@expensive("asks the operating system")
+routine FileManager.is_accessible(at: @Directory, access: Access) -> Bool
+    return is_accessible(path: at.path.peek(), access)
+
+# -- setting -----------------------------------------------------------------------------
+
+### Sets or clears the file's read-only state. On Linux and macOS read-only takes every write permission away and
+### writable gives the user's own back. On Windows it sets or clears the read-only attribute.
+### :param at: The file to change.
+### :param readonly: `true` to make the file read-only, `false` to make it writable.
+### :returns: Success, or the {FsError} the OS reported (for example NotFound).
+@expensive("asks the operating system")
+routine FileManager.set_readonly_result(at: @File, readonly: Bool) -> Result[None, FsError]
+    return set_readonly(path: at.path.peek(), readonly)
+
+### Sets or clears the directory's read-only state, as for a file.
+### :param at: The directory to change.
+### :param readonly: `true` to make the directory read-only, `false` to make it writable.
+### :returns: Success, or the {FsError} the OS reported.
+@expensive("asks the operating system")
+routine FileManager.set_readonly_result(at: @Directory, readonly: Bool) -> Result[None, FsError]
+    return set_readonly(path: at.path.peek(), readonly)
+
+### Makes the file exactly size bytes long: cut short, or grown with zero bytes. The file must exist.
+### :param at: The file to change.
+### :param size: The new size in bytes.
+### :returns: Success, or the {FsError} the OS reported (NotFound when nothing is there).
+@expensive("asks the operating system")
+routine FileManager.set_size_result(at: @File, size: U64) -> Result[None, FsError]
+    when FileHandle.open(path: at.path.peek(), mode: OpenMode.READ_WRITE)
+        is FileHandle as f =>
+            local opened: @FileHandle <- f
+            set: Result[None, FsError] = opened.set_size_result(size)
+            opened.close()
+            return set
+        is FsError as error => return error
+
+# -- listing -----------------------------------------------------------------------------
+
+### Starts listing the directory's entries into iter: call `iter.emit_checked()` until it gives None, then
+### `iter.close()`.
+### :param at: The directory to list.
+### :param iter: The listing to start, a local slot.
+### :returns: Success, or the {FsError} the OS reported.
+@expensive("asks the operating system")
+routine FileManager.list_result(at: @Directory, iter: @DirIter) -> Result[None, FsError]
+    return iter.open_path(at.path.peek())
+
+# -- paths -------------------------------------------------------------------------------
+
+### The file's path made absolute by its text: the working directory in front of a relative one (on Windows "." and
+### ".." taken out too), nothing else looked up. The new path is in memory from alloc: drop the File.
+### :param at: The file whose path is used.
+### :param alloc: The allocator for the new path.
+### :returns: The absolute {File}, or the {FsError} the OS reported.
+@expensive("asks the operating system")
+routine FileManager.absolute_result(at: @File, alloc: @MemoryManager) -> Result[File, FsError]
+    when absolute_path(path: at.path.peek(), alloc)
+        is Memory[Byte] as p => return File.construct(path: steal p)
+        is FsError as error => return error
+
+### The directory's path made absolute by its text, as for a file. The new path is in memory from alloc: drop the
+### Directory.
+### :param at: The directory whose path is used.
+### :param alloc: The allocator for the new path.
+### :returns: The absolute {Directory}, or the {FsError} the OS reported.
+@expensive("asks the operating system")
+routine FileManager.absolute_result(at: @Directory,
+    alloc: @MemoryManager) -> Result[Directory, FsError]
+    return directory_of(absolute_path(path: at.path.peek(), alloc))
+
+### The file's absolute path with every link, ".", and ".." resolved. The file must exist. The new path is in memory
+### from alloc: drop the File.
+### :param at: The file whose path is used.
+### :param alloc: The allocator for the new path.
+### :returns: The canonical {File}, or the {FsError} the OS reported (NotFound when it is missing).
+@expensive("asks the operating system")
+routine FileManager.canonical_result(at: @File, alloc: @MemoryManager) -> Result[File, FsError]
+    when canonical_path(path: at.path.peek(), alloc)
+        is Memory[Byte] as p => return File.construct(path: steal p)
+        is FsError as error => return error
+
+### The directory's absolute path with every link, ".", and ".." resolved. The directory must exist. The new path is
+### in memory from alloc: drop the Directory.
+### :param at: The directory whose path is used.
+### :param alloc: The allocator for the new path.
+### :returns: The canonical {Directory}, or the {FsError} the OS reported (NotFound when it is missing).
+@expensive("asks the operating system")
+routine FileManager.canonical_result(at: @Directory,
+    alloc: @MemoryManager) -> Result[Directory, FsError]
+    return directory_of(canonical_path(path: at.path.peek(), alloc))
+
+# -- the working, temporary, and home directories --------------------------------------------
+
+### The working directory, its path in memory from alloc (drop it).
+### :param alloc: The allocator for the new path.
+### :returns: The working {Directory}, or the {FsError} the OS reported.
+@expensive("asks the operating system")
+routine FileManager.current_directory_result(alloc: @MemoryManager) -> Result[Directory, FsError]
+    return directory_of(current_dir(alloc))
+
+### Makes the directory the working directory.
+### :param at: The new working directory.
+### :returns: Success, or the {FsError} the OS reported.
+@expensive("asks the operating system")
+routine FileManager.set_current_directory_result(at: @Directory) -> Result[None, FsError]
+    return set_current_dir(at.path.peek())
+
+### The temporary directory (TMPDIR or /tmp, on Windows GetTempPathW's), its path in memory from alloc (drop it).
+### :param alloc: The allocator for the new path.
+### :returns: The temporary {Directory}, or the {FsError} the OS reported.
+@expensive("asks the operating system")
+routine FileManager.temp_directory_result(alloc: @MemoryManager) -> Result[Directory, FsError]
+    return directory_of(temp_dir(alloc))
+
+### The user's home directory (HOME, on Windows USERPROFILE), its path in memory from alloc (drop it).
+### :param alloc: The allocator for the new path.
+### :returns: The home {Directory}, or the {FsError} the OS reported (NotFound when it can't be told).
+@expensive("asks the operating system")
+routine FileManager.home_directory_result(alloc: @MemoryManager) -> Result[Directory, FsError]
+    return directory_of(home_dir(alloc))
+
+### Wraps the path of a successful result as a {Directory}, passing a failure through unchanged.
+### :param r: A path result.
+### :returns: The same outcome, with the path as a {Directory}.
+secret routine directory_of(r: Result[Memory[Byte], FsError]) -> Result[Directory, FsError]
+    when steal r
+        is Memory[Byte] as p => return Directory.construct(path: steal p)
+        is FsError as error => return error

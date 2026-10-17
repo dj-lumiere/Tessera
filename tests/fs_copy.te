@@ -1,6 +1,6 @@
-# File.copy_to_result reports the bytes it copied (an empty file, a small one, and one of several chunks), each copy
-# the same size as its source, and a copy that fails (the source is a directory) leaves nothing at the destination:
-# on Linux and macOS the destination used to stay behind, made and empty, after the read failed.
+# FileManager.copy_result reports the bytes it copied (an empty file, a small one, and one of several chunks), each
+# copy the same size as its source, and a copy that fails (the source is a directory) leaves nothing at the
+# destination: on Linux and macOS the destination used to stay behind, made and empty, after the read failed.
 
 import Standard/Alloc
 import Standard/Collections
@@ -11,7 +11,7 @@ import Standard/Os
 ### :param f: The file.
 ### :returns: Its size in bytes.
 routine size_of(f: @File) -> U64
-    m: Result[Metadata, FsError] = f.metadata_result()
+    m: Result[Metadata, FsError] = FileManager.metadata_result(at: f)
     when m
         is Metadata as info => return info.size
         is FsError => return U64.MAX
@@ -28,8 +28,10 @@ routine copy_of(root: @Directory, count: U64, alloc: @MemoryManager) -> None
         text.add_last(letter.bits())
     local source: @File <- root.file(name: "source.txt", alloc)
     local target: @File <- root.file(name: "target.txt", alloc)
-    discard_written: Result[None, FsError] = source.write_all_result(text.getview())
-    r: Result[U64, FsError] = source.copy_to_result(target)
+    discard_made: Result[None, FsError] = FileManager.make_file_result(at: source, replacing: true)
+    discard_written: Result[None, FsError] = FileManager.write_all_result(at: source,
+        data: text.getview())
+    r: Result[U64, FsError] = FileManager.copy_result(from: source, to: target, replacing: true)
     when r
         is U64 as n =>
             same: Bool = size_of(target) == n
@@ -42,20 +44,23 @@ routine copy_of(root: @Directory, count: U64, alloc: @MemoryManager) -> None
 
 routine start() -> None
     local alloc: @MemoryManager <- make_heap_memory()
-    local tmp: @Directory <- Directory.temp_result(alloc).unwrap()
+    local tmp: @Directory <- FileManager.temp_directory_result(alloc).unwrap()
     local root: @Directory <- tmp.subdir(name: "tessera_fs_copy", alloc)
 
-    discard_old: Result[None, FsError] = root.delete_all_result(alloc)
-    discard_made: Result[None, FsError] = root.create_all_result()
+    discard_old: Result[None, FsError] = FileManager.delete_all_result(at: root, alloc)
+    discard_made: Result[None, FsError] = FileManager.make_directory_result(at: root, parents: true)
     copy_of(root, count: 0, alloc)
     copy_of(root, count: 5, alloc)
     copy_of(root, count: 100000, alloc)
     local inner: @Directory <- root.subdir(name: "inner", alloc)
     local target: @File <- root.file(name: "from_directory.txt", alloc)
-    discard_inner: Result[None, FsError] = inner.create_result()
-    r: Result[U64, FsError] = File.at(inner.path.peek()).copy_to_result(target)
-    Out.write("copying a directory fails: {r.is_failure()}, leaves a file behind: {target.is_present()}\n")
-    discard_gone: Result[None, FsError] = root.delete_all_result(alloc)
+    discard_inner: Result[None, FsError] = FileManager.make_directory_result(at: inner,
+        parents: false)
+    r: Result[U64, FsError] = FileManager.copy_result(from: File.at(inner.path.peek()), to: target,
+        replacing: false)
+    left: Bool = FileManager.is_present(at: target)
+    Out.write("copying a directory fails: {r.is_failure()}, leaves a file behind: {left}\n")
+    discard_gone: Result[None, FsError] = FileManager.delete_all_result(at: root, alloc)
     drop target
     drop inner
     drop root

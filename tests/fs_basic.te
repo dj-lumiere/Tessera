@@ -1,6 +1,7 @@
-# Standard/Os files and directories, in a directory of its own under the temporary directory: directories made and
-# deleted, files written (bytes and formatted text through a FileHandle), read, appended, sized, copied, and moved,
-# listings (a non-ASCII name too), the working directory, path text, and memory mappings.
+# Standard/Os files and directories through FileManager, in a directory of its own under the temporary directory:
+# directories made and deleted, files made (and not made on the side), written (bytes and formatted text through a
+# FileHandle), read, appended, sized, copied, and moved, listings (a non-ASCII name too), the working directory, path
+# text, and memory mappings.
 
 import Standard/Alloc
 import Standard/Format
@@ -34,7 +35,7 @@ routine report(what: @[Byte], r: Result[None, FsError]) -> None
 
 ### The file's text, or the error's name.
 routine contents(f: @File, alloc: @MemoryManager) -> Memory[Byte]
-    when f.read_all_result(alloc)
+    when FileManager.read_all_result(at: f, alloc)
         is Memory[Byte] as text => return text
         is FsError as error => return @[Byte].concat(a: error_name(error), b: "", alloc)
 
@@ -47,37 +48,56 @@ routine show_contents(what: @[Byte], f: @File, alloc: @MemoryManager) -> None
     return
 
 routine size_of(f: @File) -> U64
-    m: Result[Metadata, FsError] = f.metadata_result()
+    m: Result[Metadata, FsError] = FileManager.metadata_result(at: f)
     when m
         is Metadata as info => return info.size
         is FsError => return U64.MAX
 
 routine start() -> None
     local alloc: @MemoryManager <- make_heap_memory()
-    local tmp: @Directory <- Directory.temp_result(alloc).unwrap()
+    local tmp: @Directory <- FileManager.temp_directory_result(alloc).unwrap()
     local root: @Directory <- tmp.subdir(name: "tessera_fs_basic", alloc)
     local iter: @DirIter <- .hollow()
     local count: @U64 <- .hollow()
     local dirs: @U64 <- .hollow()
     local korean: @Bool <- .hollow()
 
-    root.delete_all_result(alloc)
+    FileManager.delete_all_result(at: root, alloc)
     local deep: @Directory <- root.subdir(name: "a/b/c", alloc)
-    report(what: "create_all", r: deep.create_all_result())
-    report(what: "create_all again", r: deep.create_all_result())
-    as_file: Bool = File.at(deep.path.peek()).is_file()
-    Out.write("directory exists: {deep.is_present()}, is a file: {as_file}\n")
+    report(what: "make_directory without parents",
+        r: FileManager.make_directory_result(at: deep, parents: false))
+    report(what: "make_directory with parents",
+        r: FileManager.make_directory_result(at: deep, parents: true))
+    report(what: "make_directory with parents again",
+        r: FileManager.make_directory_result(at: deep, parents: true))
+    report(what: "make_directory again",
+        r: FileManager.make_directory_result(at: deep, parents: false))
+    as_file: Bool = FileManager.is_file(at: File.at(deep.path.peek()))
+    Out.write("directory exists: {FileManager.is_directory(at: deep)}, is a file: {as_file}\n")
     local a: @Directory <- root.subdir(name: "a", alloc)
     local hello: @File <- a.file(name: "hello.txt", alloc)
-    report(what: "write_all", r: hello.write_all_result("hello, 세계\n"))
+    report(what: "write_all before make_file",
+        r: FileManager.write_all_result(at: hello, data: "x"))
+    early: Result[FileHandle, FsError] = FileManager.open_write_result(at: hello)
+    Out.write("open_write before make_file: {error_name(early.unwrap_failure())}\n")
+    early_append: Result[FileHandle, FsError] = FileManager.open_append_result(at: hello)
+    Out.write("open_append before make_file: {error_name(early_append.unwrap_failure())}\n")
+    early_map: Result[Mapping, FsError] = FileManager.map_result(at: hello, write: true, offset: 0,
+        count: U64.MAX)
+    Out.write("map before make_file: {error_name(early_map.unwrap_failure())}\n")
+    report(what: "set_size before make_file", r: FileManager.set_size_result(at: hello, size: 4))
+    Out.write("still missing: {not FileManager.is_present(at: hello)}\n")
+    report(what: "make_file", r: FileManager.make_file_result(at: hello, replacing: false))
+    report(what: "write_all", r: FileManager.write_all_result(at: hello, data: "hello, 세계\n"))
     show_contents(what: "read_all: ", f: hello, alloc)
+    report(what: "make_file again", r: FileManager.make_file_result(at: hello, replacing: false))
     Out.write("size: {size_of(hello)}\n")
-    local appended: @FileHandle <- hello.open_append_result().unwrap()
+    local appended: @FileHandle <- FileManager.open_append_result(at: hello).unwrap()
     appended.write("more")
     Out.write("formatted write failed: {appended.has_failed()}\n")
     appended.close()
     Out.write("size after append: {size_of(hello)}\n")
-    local both: @FileHandle <- hello.open_read_write_result().unwrap()
+    local both: @FileHandle <- FileManager.open_read_write_result(at: hello).unwrap()
     at: U64 = both.seek_result(offset: -4, from: SeekFrom.END).unwrap()
     Out.write("seek to end - 4: {at}\n")
     local tail: @Array[Byte, 8] <- .hollow()
@@ -90,27 +110,37 @@ routine start() -> None
     both.close()
     local copied: @File <- a.file(name: "copy.txt", alloc)
     local renamed: @File <- a.file(name: "renamed.txt", alloc)
-    bytes: U64 = hello.copy_to_result(copied).unwrap()
-    Out.write("copy_to: {bytes} bytes, ")
+    bytes: U64 = FileManager.copy_result(from: hello, to: copied, replacing: false).unwrap()
+    Out.write("copy: {bytes} bytes, ")
     show_contents(what: "", f: copied, alloc)
     Out.write("\n")
-    report(what: "move_to", r: copied.move_to_result(renamed))
-    Out.write("old there: {copied.is_present()}, new there: {renamed.is_present()}\n")
-    report(what: "move_to_if_absent onto a file", r: renamed.move_to_if_absent_result(hello))
-    new_file: Result[FileHandle, FsError] = hello.create_new_result()
-    Out.write("create_new on a file: {error_name(new_file.unwrap_failure())}\n")
-    missing: Result[FileHandle, FsError] = a.file(name: "missing.txt", alloc).open_read_result()
+    again: Result[U64, FsError] = FileManager.copy_result(from: hello, to: copied, replacing: false)
+    Out.write("copy onto a file: {error_name(again.unwrap_failure())}\n")
+    replaced: U64 = FileManager.copy_result(from: hello, to: copied, replacing: true).unwrap()
+    Out.write("copy replacing a file: {replaced} bytes\n")
+    report(what: "move", r: FileManager.move_result(from: copied, to: renamed, replacing: false))
+    Out.write("old there: {FileManager.is_present(at: copied)}, new there: {FileManager.is_present(at: renamed)}\n")
+    report(what: "move onto a file",
+        r: FileManager.move_result(from: renamed, to: hello, replacing: false))
+    missing: Result[FileHandle, FsError] = FileManager.open_read_result(at: a.file(
+        name: "missing.txt", alloc))
     Out.write("open missing: {error_name(missing.unwrap_failure())}\n")
-    report(what: "set_readonly", r: renamed.set_readonly_result(true))
-    ro: Bool = renamed.metadata_result().unwrap().readonly
+    report(what: "set_readonly", r: FileManager.set_readonly_result(at: renamed, readonly: true))
+    ro: Bool = FileManager.metadata_result(at: renamed).unwrap().readonly
     Out.write("readonly: {ro}\n")
-    report(what: "set_readonly off", r: renamed.set_readonly_result(false))
-    rw: Bool = renamed.metadata_result().unwrap().readonly
+    report(what: "set_readonly off",
+        r: FileManager.set_readonly_result(at: renamed, readonly: false))
+    rw: Bool = FileManager.metadata_result(at: renamed).unwrap().readonly
     Out.write("readonly: {rw}\n")
-    local touched: @File <- a.file(name: "파일.txt", alloc)
-    report(what: "touch", r: touched.touch_result())
-    Out.write("touched: {touched.is_file()}, size {size_of(touched)}\n")
-    report(what: "open listing", r: iter.open_result(a))
+    report(what: "make_file replacing",
+        r: FileManager.make_file_result(at: renamed, replacing: true))
+    Out.write("emptied: size {size_of(renamed)}\n")
+    local made: @File <- a.file(name: "파일.txt", alloc)
+    report(what: "make_file 파일.txt", r: FileManager.make_file_result(at: made, replacing: false))
+    Out.write("made: {FileManager.is_file(at: made)}, size {size_of(made)}\n")
+    report(what: "set_size 3", r: FileManager.set_size_result(at: made, size: 3))
+    Out.write("size: {size_of(made)}\n")
+    report(what: "open listing", r: FileManager.list_result(at: a, iter))
     0.poke_into(count)
     0.poke_into(dirs)
     false.poke_into(korean)
@@ -132,47 +162,55 @@ routine start() -> None
     local parent: @Directory <- f.parent()
 
     Out.write("name {f.name()}, stem {f.stem()}, extension {f.extension()}, parent {parent.path.peek()}\n")
-    p1: @[Byte] = parent_path("a/b")
-    p2: @[Byte] = parent_path("file.txt")
-    p3: @[Byte] = parent_path("/")
-    p4: @[Byte] = parent_path("/a")
-    Out.write("parent_path: [{p1}] [{p2}] [{p3}] [{p4}]\n")
-    e1: @[Byte] = file_extension(".hidden")
-    e2: @[Byte] = file_extension("file")
-    s1: @[Byte] = file_stem(".hidden")
-    Out.write("hidden: stem [{s1}], extension [{e1}]; no extension: [{e2}]\n")
-    report(what: "set_current", r: root.set_current_result())
-    local cwd: @Directory <- Directory.current_result(alloc).unwrap()
-    local canonical: @Directory <- root.canonical_result(alloc).unwrap()
-    local absolute: @File <- File.at("x.txt").absolute_result(alloc).unwrap()
+    local d1: @Directory <- File.at("a/b").parent()
+    local d2: @Directory <- File.at("file.txt").parent()
+    local d3: @Directory <- Directory.at("/").parent()
+    local d4: @Directory <- Directory.at("/a").parent()
+    Out.write("parent: [{d1.path.peek()}] [{d2.path.peek()}] [{d3.path.peek()}] [{d4.path.peek()}]\n")
+    local hidden: @File <- File.at(".hidden")
+    local plain: @File <- File.at("file")
+    Out.write("hidden: stem [{hidden.stem()}], extension [{hidden.extension()}], no extension: [{plain.extension()}]\n")
+    report(what: "set_current", r: FileManager.set_current_directory_result(at: root))
+    local cwd: @Directory <- FileManager.current_directory_result(alloc).unwrap()
+    local canonical: @Directory <- FileManager.canonical_result(at: root, alloc).unwrap()
+    local absolute: @File <- FileManager.absolute_result(at: File.at("x.txt"), alloc).unwrap()
     cwd_ok: Bool = cwd.name() == "tessera_fs_basic"
     canonical_ok: Bool = canonical.name() == "tessera_fs_basic"
     absolute_ok: Bool = absolute.name() == "x.txt"
     Out.write("names right: current {cwd_ok}, canonical {canonical_ok}, absolute {absolute_ok}\n")
-    report(what: "set_current back", r: tmp.set_current_result())
-    whole: Mapping = hello.map_result(write: false, offset: 0, count: U64.MAX).unwrap()
+    report(what: "set_current back", r: FileManager.set_current_directory_result(at: tmp))
+    whole: Mapping = FileManager.map_result(at: hello, write: false, offset: 0,
+        count: U64.MAX).unwrap()
     w: @[Byte] = @[Byte].construct(data: whole.data(), count: whole.count())
     Out.write("map: {w}\n")
     whole.unmap()
-    part: Mapping = hello.map_result(write: false, offset: 1, count: 3).unwrap()
+    part: Mapping = FileManager.map_result(at: hello, write: false, offset: 1, count: 3).unwrap()
     p: @[Byte] = @[Byte].construct(data: part.data(), count: part.count())
     Out.write("map 1..4: {p}\n")
     part.unmap()
-    past: Mapping = hello.map_result(write: false, offset: 100, count: 3).unwrap()
+    past: Mapping = FileManager.map_result(at: hello, write: false, offset: 100, count: 3).unwrap()
     Out.write("map past the end: {past.count()}\n")
-    rw2: Mapping = hello.map_result(write: true, offset: 0, count: U64.MAX).unwrap()
+    rw2: Mapping = FileManager.map_result(at: hello, write: true, offset: 0,
+        count: U64.MAX).unwrap()
     rw2.data().poke(b'J')
     rw2.unmap()
     show_contents(what: "after a mapped store: ", f: hello, alloc)
     Out.write("\n")
-    report(what: "delete_all", r: root.delete_all_result(alloc))
-    Out.write("root there: {root.is_present()}\n")
+    report(what: "delete a non-empty directory", r: FileManager.delete_result(at: a))
+    report(what: "delete_all", r: FileManager.delete_all_result(at: root, alloc))
+    Out.write("root there: {FileManager.is_present(at: root)}\n")
     drop cwd
     drop canonical
     drop absolute
+    drop plain
+    drop hidden
+    drop d4
+    drop d3
+    drop d2
+    drop d1
     drop parent
     drop f
-    drop touched
+    drop made
     drop renamed
     drop copied
     drop hello

@@ -1,4 +1,4 @@
-# Tessera stdlib: files and the filesystem, the parts File.te (File, Directory) is built on
+# Tessera stdlib: files and the filesystem, the parts FileManager.te is built on
 #
 # Paths are @[Byte], UTF-8 by convention, as every Tessera text is. Each call copies its path into a stack buffer with
 # the terminator the OS wants (UTF-16 on Windows), so nothing allocates for a path. A path too long for that buffer
@@ -52,10 +52,11 @@ record Metadata
 
 choice OpenMode: U8
     READ  # an existing file, for reading
-    WRITE  # for writing: made if missing, emptied if not
-    APPEND  # for writing at the end: made if missing
+    WRITE  # an existing file, emptied, for writing
+    APPEND  # an existing file, for writing at its end
     READ_WRITE  # an existing file, for both
     CREATE_NEW  # for writing, made here: AlreadyExists if something is there
+    CREATE_REPLACING  # for writing, made here, or emptied when a file is there
 
 choice SeekFrom: U8
     START
@@ -277,11 +278,11 @@ secret routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Memory
             drop buffer
             return FsError.OUT_OF_MEMORY
 
-### Writes data as the whole file: made if missing, replaced if not.
+### Writes data as the whole content of the existing file at path, which is emptied first.
 ### :param path: The file to write.
 ### :param data: The bytes that become the file.
 ### :returns: `Unit` once every byte is written.
-### :throws: Returns the reason when the file can't be opened or written.
+### :throws: Returns the reason when the file can't be opened or written, `NotFound` when nothing is at `path`.
 secret routine write_file(path: @[Byte], data: @[Byte]) -> Result[None, FsError]
     opened: Result[FileHandle, FsError] = FileHandle.open(path, mode: OpenMode.WRITE)
     when opened
@@ -334,7 +335,8 @@ routine FileHandle.has_failed(me: @Me) -> Bool
 
 # -- paths (no OS calls) -----------------------------------------------------------------
 #
-# A separator is '/' everywhere, and '\' too on Windows. These look at the text only: nothing is resolved.
+# A separator is '/' everywhere, and '\' too on Windows. These look at the text only: nothing is resolved. The
+# public form of the secret ones is a File or Directory member: name, stem, extension, parent, file, and subdir.
 
 ### Whether b is a path separator: '/' or '\' on Windows.
 ### :param b: The byte to test.
@@ -371,7 +373,7 @@ routine path_separator() -> Byte
 ### :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 @track_caller
 @expensive("allocates the joined path")
-routine join_path(a: @[Byte], b: @[Byte], alloc: @MemoryManager) -> Memory[Byte]
+secret routine join_path(a: @[Byte], b: @[Byte], alloc: @MemoryManager) -> Memory[Byte]
     ends: Bool = when
         a.is_empty() => true
         else => is_separator(a.byte_at(a.count() - 1).bits())
@@ -417,7 +419,7 @@ secret routine name_start(path: @[Byte], end: U64) -> U64
 ### The last component: "/a/b/file.txt" gives "file.txt", "/a/b/" gives "b".
 ### :param path: The path to look at.
 ### :returns: The component, borrowed from `path` (empty when `path` is empty or only separators).
-routine file_name(path: @[Byte]) -> @[Byte]
+secret routine file_name(path: @[Byte]) -> @[Byte]
     end: U64 = name_end(path)
     start: U64 = name_start(path, end)
     return path.slice(start, end)
@@ -425,7 +427,7 @@ routine file_name(path: @[Byte]) -> @[Byte]
 ### The directory part: "/a/b/c" gives "/a/b", "a/b" gives "a", "file.txt" gives "", and "/" stays "/".
 ### :param path: The path to look at.
 ### :returns: The directory part, borrowed from `path`.
-routine parent_path(path: @[Byte]) -> @[Byte]
+secret routine parent_path(path: @[Byte]) -> @[Byte]
     local end: U64 = name_end(path)
 
     start: U64 = name_start(path, end)
@@ -463,7 +465,7 @@ secret routine last_dot(name: @[Byte]) -> U64
 ### The name without its extension: "file.txt" gives "file", "archive.tar.gz" gives "archive.tar".
 ### :param path: The path whose last component is used.
 ### :returns: The stem, borrowed from `path`.
-routine file_stem(path: @[Byte]) -> @[Byte]
+secret routine file_stem(path: @[Byte]) -> @[Byte]
     name: @[Byte] = file_name(path)
     dot: U64 = last_dot(name)
     if dot == 0
@@ -474,7 +476,7 @@ routine file_stem(path: @[Byte]) -> @[Byte]
 ### The extension without its dot: "file.txt" gives "txt", "file" and ".hidden" give "".
 ### :param path: The path whose last component is used.
 ### :returns: The extension, borrowed from `path`.
-routine file_extension(path: @[Byte]) -> @[Byte]
+secret routine file_extension(path: @[Byte]) -> @[Byte]
     name: @[Byte] = file_name(path)
     dot: U64 = last_dot(name)
     if dot == 0

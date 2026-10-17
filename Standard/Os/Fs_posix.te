@@ -196,15 +196,6 @@ secret routine c_renamex_np(from: @Byte, to: @Byte, flags: U32) -> CInt
 @target(os: ("linux", "macos"))
 secret routine c_access(path: @Byte, mode: CInt) -> CInt
 
-### Binds the C `utimes` function: sets a file's access and modification times.
-### :param path: The NUL-terminated path.
-### :param times: Two `struct timeval`s, or null for now.
-### :returns: 0, or -1 with `errno` set.
-@external("c")
-@symbol("utimes")
-@target(os: ("linux", "macos"))
-secret routine c_utimes(path: @Byte, times: Addr) -> CInt
-
 ### Binds the C `getcwd` function: copies the working directory, NUL-terminated, into a buffer.
 ### :param buf: The buffer.
 ### :param size: Its size in bytes.
@@ -953,7 +944,7 @@ routine FileHandle.empty() -> Me
     return Me(fd: -1, failed: false)
 
 ### Opens path in mode. The file is opened close-on-exec, and one it makes gets the permissions 0o666 before the
-### umask.
+### umask. Only CreateNew and CreateReplacing make a file: the other modes fail with NotFound when nothing is there.
 ### :param path: The file to open.
 ### :param mode: How to open it.
 ### :returns: The open handle.
@@ -966,25 +957,15 @@ secret routine FileHandle.open(path: @[Byte], mode: OpenMode) -> Result[Me, FsEr
     if not c_path(path, out: cpath)
         return path_error(path)
     f: OpenFlags = open_flags()
+    # O_RDONLY is 0, O_WRONLY 1, O_RDWR 2
     how: CInt = when mode
-        OpenMode.READ =>
-            # Write-only and created if missing, plus how it opens (truncate, append, or exclude).
-            fd: CInt = c_open(cpath.to[CStr](), f.cloexec, 438)
-            if fd < 0
-                return failed[Me]()
-            else
-                return Me(fd: fd, failed: false)
-        OpenMode.WRITE => f.truncate
-        OpenMode.APPEND => f.append
-        OpenMode.READ_WRITE =>
-            fd: CInt = c_open(cpath.to[CStr](), f.cloexec | 2, 438)
-            if fd < 0
-                return failed[Me]()
-            else
-                return Me(fd: fd, failed: false)
-        OpenMode.CREATE_NEW => f.exclude
-    creating: CInt = f.cloexec | 1 | f.create
-    fd: CInt = c_open(cpath.to[CStr](), creating | how, 438)
+        OpenMode.READ => 0
+        OpenMode.WRITE => 1 | f.truncate
+        OpenMode.APPEND => 1 | f.append
+        OpenMode.READ_WRITE => 2
+        OpenMode.CREATE_NEW => 1 | f.create | f.exclude
+        OpenMode.CREATE_REPLACING => 1 | f.create | f.truncate
+    fd: CInt = c_open(cpath.to[CStr](), f.cloexec | how, 438)
     if fd < 0
         return failed[Me]()
     else
@@ -1214,14 +1195,16 @@ secret routine rename_no_replace(from: @[Byte], to: @[Byte]) -> Result[None, FsE
     else
         return error_of(e)
 
-### Copies from's bytes and permissions into to (made, or replaced): the bytes copied.
+### Copies from's bytes and permissions into to, which is made, or replaced when `replacing`: the bytes copied.
 ### :param from: The file to copy.
 ### :param to: The file to write.
+### :param replacing: Whether a file already at `to` is replaced. When false, one there fails the copy.
 ### :returns: The number of bytes copied.
 ### :throws: Returns the reason when a file can't be opened, read, or written, or the permissions can't
-###     be set. A failure once `to` is opened removes it, so no partial copy is left.
+###     be set, `AlreadyExists` when something is at `to` and `replacing` is false. A failure once `to` is opened
+###     removes it, so no partial copy is left.
 @target(os: ("linux", "macos"))
-secret routine copy_file(from: @[Byte], to: @[Byte]) -> Result[U64, FsError]
+secret routine copy_file(from: @[Byte], to: @[Byte], replacing: Bool) -> Result[U64, FsError]
     local src: @FileHandle <- .empty()
     local dst: @FileHandle <- .empty()
 
@@ -1229,7 +1212,10 @@ secret routine copy_file(from: @[Byte], to: @[Byte]) -> Result[U64, FsError]
     result: Result[U64, FsError] = when source
         is FileHandle as f =>
             src.poke(f)
-            dest: Result[FileHandle, FsError] = FileHandle.open(path: to, mode: OpenMode.WRITE)
+            making: OpenMode = when
+                replacing => OpenMode.CREATE_REPLACING
+                else => OpenMode.CREATE_NEW
+            dest: Result[FileHandle, FsError] = FileHandle.open(path: to, mode: making)
             becomes when dest
                 is FileHandle as f2 =>
                     dst.poke(f2)
@@ -1344,23 +1330,6 @@ secret routine is_accessible(path: @[Byte], access: Access) -> Bool
         Access.READ => return c_access(cpath.to[@Byte](), 4) == 0
         Access.WRITE => return c_access(cpath.to[@Byte](), 2) == 0
         Access.EXECUTE => return c_access(cpath.to[@Byte](), 1) == 0
-
-### Makes the file if it's missing, and sets its access and modification times to now.
-### :param path: The file to touch.
-### :returns: `Unit` once the times are set.
-### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
-@target(os: ("linux", "macos"))
-secret routine touch(path: @[Byte]) -> Result[None, FsError]
-    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
-
-    if not c_path(path, out: cpath.to[@Byte]())
-        return path_error(path)
-    f: OpenFlags = open_flags()
-    fd: CInt = c_open(cpath.to[@Byte]().to[CStr](), f.cloexec | 1 | f.create, 438)
-    if fd < 0
-        return failed[None]()
-    c_close(fd)
-    return checked(c_utimes(cpath.to[@Byte](), null))
 
 # -- directory listings ------------------------------------------------------------------
 

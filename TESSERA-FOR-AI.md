@@ -600,7 +600,7 @@ routine start() -> None
   `compare`, `hash`, ...). A literal is a `@[Byte]` of the program image, `@[Byte].construct(data, count)`
   wraps bytes from C, and text made from other text (`slice`, `getslice`, the iterators, `buf.getview()` of a
   `List[Byte]`) views the same memory. Text a routine takes memory for (`@[Byte].concat`, `In.read_line`,
-  `File.read_all_result`, `join_path`, `env_var`, ...) comes back as a `Memory[Byte]`: keep it in a slot and give it
+  `FileManager.read_all_result`, `env_var`, ...) comes back as a `Memory[Byte]`: keep it in a slot and give it
   back once (`local line: @Memory[Byte] <- In.read_line()`, then `drop line`), and observe a `Result` / `Maybe` of one
   with `when` (`when In.read_line_checked(alloc)` then `is Memory[Byte] as line => ...`). A Memory lends itself to a text routine at
   a receiver or an argument (`line.find("=")`, `out.write("{line.getview()}")` in a template). Escapes: `\xXX` is one byte (strings, `b'..'`), `\uXXXXXX` one
@@ -729,7 +729,7 @@ routine start() -> None
   `OwnedCStr` / `OwnedCWStr`, `ProcessOutput`, and `File` / `Directory` (each holds the memory of a path it made). A
   `MemoryManager`, a `@[T]`, a `@T`, and an iterator stay records.
 - An entity value a routine taking `me: @Me` is called on, or that goes where an `@E` is taken, needs no slot of its
-  own: `File.at(p).is_file()`, `src.copy_to_result(File.at(dst))`. The builder puts it in an unnamed slot that ends when
+  own: `Counter.at(n).get()`, `FileManager.is_file(at: File.at(p))`. The builder puts it in an unnamed slot that ends when
   the statement does (a condition's and a `when` subject's as soon as they are read, when what they give borrows
   nothing from it; a returned value's before the return).
 - A variant may have an entity branch: `Result[File, FsError]`, `Maybe[Counter]`. Such a variant value holds an entity,
@@ -1062,26 +1062,43 @@ Fibers run on System V and Windows x86-64 (where the switch moves the thread blo
 outside Windows, and 32-bit ARM (ARM and Thumb code, Cortex-M included).
 On any other target a program that switches fibers fails to link (`tessera_fibers_unsupported_on_this_target`).
 
-**Files.** `File.at(path)` and `Directory.at(path)` are paths (`@[Byte]`, UTF-8, the W calls on Windows), and each
-routine on them is one thing done there now, returning `Result[T, FsError]`, so each is a `_result` form. A File:
-`open_read_result` / `open_write_result` / `open_append_result` / `open_read_write_result` / `create_new_result` give a
-`FileHandle` (keep it in a local slot: `read_bytes_result`, `write_all_result`, `h.write("...")`, `seek_result`, `size_result`,
-`set_size_result`, `sync_result`, `close`, which leaves it empty, and `FileHandle.empty()` a handle to nothing whose
-`close` does nothing); `read_all_result(alloc)` / `write_all_result(data)`, `is_present`,
-`metadata_result` (`kind`, `size`, times in ns), `copy_to_result`, `move_to_result`, `move_to_if_absent_result`,
-`delete_result`, `touch_result`, `map_result(write, offset, count)`, `name` / `stem` / `extension` / `parent`. A
-Directory: `create_result` / `create_all_result`, `delete_result` / `delete_all_result(alloc)`, `file(name, alloc)` /
-`subdir(name, alloc)`, `Directory.current_result` / `temp_result` / `home_result`, and a `DirIter` (a local slot,
-`open_result(dir)`, `emit_checked()` until `None`, `close()`). Path text needs no OS: `join_path`, `parent_path`,
-`file_name`, `file_stem`, `file_extension`. A routine that hands text back takes an allocator and returns a `Memory[Byte]`
-from it (`read_all_result`, `join_path`, `env_var`): give it back with `drop`. A `File` and a `Directory` are
-entities: one that makes a path (`file`, `subdir`, `absolute_result`, `canonical_result`, `Directory.current_result` /
-`temp_result` / `home_result`) returns a `File` / `Directory` whose path is held in a `Memory[Byte]`, kept in a slot
-and given back with `drop file` / `drop dir` (which gives nothing back for a borrowed path, such as a literal's):
+**Files.** `File.at(path)` and `Directory.at(path)` say where (`@[Byte]`, UTF-8, the W calls on Windows) and nothing
+else: their only routines read the path's text (`name`, `stem`, `extension`, `parent`, and a Directory's
+`file(name, alloc)` / `subdir(name, alloc)`). Everything done at a path is a `FileManager` routine, called on the type
+(there is no FileManager value), taking `at:` / `from:` / `to:` as `@File` / `@Directory`, and one that can fail
+returns `Result[T, FsError]` (a `_result` form). There is one way to do each thing:
+
+- making: `make_file_result(at, replacing)` (an empty file; one already there is `ALREADY_EXISTS` unless `replacing`,
+  which empties it), `make_directory_result(at, parents)` (`parents` is mkdir -p, a directory already there is fine).
+  Nothing else makes a file: `open_write_result`, `open_append_result`, `write_all_result`, `set_size_result`, and
+  `map_result` on a missing file fail with `NOT_FOUND`.
+- reading and writing: `read_all_result(at, alloc)` (a `Memory[Byte]`, drop it), `write_all_result(at, data)` (the
+  whole content, the file emptied first).
+- opening: `open_read_result` / `open_write_result` (emptied) / `open_append_result` / `open_read_write_result` give a
+  `FileHandle` (keep it in a local slot: `read_bytes_result`, `write_all_result`, `h.write("...")`, `seek_result`,
+  `size_result`, `set_size_result`, `sync_result`, `close`, which leaves it empty, and `FileHandle.empty()` a handle to
+  nothing whose `close` does nothing), `map_result(at, write, offset, count)` a `Mapping`.
+- deleting, moving, copying: `delete_result(at)` (a file, or an empty directory), `delete_all_result(at, alloc)`,
+  `move_result(from, to, replacing)` (files or directories), `copy_result(from, to, replacing)` (the bytes copied). With
+  `replacing` false, something at `to` fails with `ALREADY_EXISTS`.
+- asking: `is_present(at)` (anything there), `is_file(at)`, `is_directory(at)`, `metadata_result(at)` (`kind`, `size`,
+  times in ns, `readonly`), `link_metadata_result(at)`, `is_accessible(at, access)`.
+- setting: `set_readonly_result(at, readonly)`, `set_size_result(at, size)`.
+- listing: `list_result(at, iter)` starts a `DirIter` (a local slot, `local iter: @DirIter <- .hollow()`), then
+  `iter.emit_checked()` until `None`, then `iter.close()`.
+- paths: `absolute_result(at, alloc)`, `canonical_result(at, alloc)`, `current_directory_result(alloc)`,
+  `set_current_directory_result(at)`, `temp_directory_result(alloc)`, `home_directory_result(alloc)`.
+
+Each routine that takes `alloc` has an overload without it that uses the default heap. A routine that hands text back
+takes an allocator and returns a `Memory[Byte]` from it (`read_all_result`, `env_var`): give it back with `drop`. A
+`File` and a `Directory` are entities: one that makes a path (`file`, `subdir`, `absolute_result`, `canonical_result`,
+the well-known directories) returns a `File` / `Directory` whose path is held in a `Memory[Byte]`, kept in a slot and
+given back with `drop file` / `drop dir` (which gives nothing back for a path it only views, such as a literal's):
 
 ```tessera
 local notes: @File <- dir.file(name: "notes.txt", alloc)
-notes.touch_result()
+FileManager.make_file_result(at: notes, replacing: false).unwrap()
+FileManager.write_all_result(at: notes, data: "first line\n").unwrap()
 drop notes
 ```
 
@@ -1163,7 +1180,7 @@ byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`
 - A plain routine name crashes on failure, `name_checked` returns `Maybe[T]` (`None` on failure), and `name_result`
   returns `Result[T, TError]` (the failure as a value): `getitem` / `getitem_checked`, `construct` / `construct_result`,
   `to[T]` / `to_result[T]`, `In.read[T]` / `read_checked[T]` / `read_result[T]`. File and process routines fail for
-  reasons the caller handles, so they are `_result` forms (`File.open_read_result`). A `_checked` never returns a
+  reasons the caller handles, so they are `_result` forms (`FileManager.open_read_result`). A `_checked` never returns a
   `Result` or a `Bool`, a `_result` never a `Maybe`, and a plain name never returns a `Maybe` or a `Result` just to
   say it failed. A `Maybe` that is a normal outcome keeps a plain name: `@[Byte].find` (not found), `env_var` (not
   set), `Bool.then_present`; so does `atomic_compare_exchange`, whose `Result[None, T]` is the answer (`None` when it
@@ -1223,7 +1240,7 @@ emitter writes), and `Callable` types. `tessera lint` warns on the rest (`check`
 program's own files).
 
 **`Bool` routines: `is_`, `has_`, or membership.** A routine that answers a question names which kind: `is_` asks about
-a state of the value (`is_empty`, `is_null`, `is_finite`, `is_utf8`, `file.is_present()`, `file.is_accessible(access)`),
+a state of the value (`is_empty`, `is_null`, `is_finite`, `is_utf8`, `FileManager.is_present(at: file)`, `FileManager.is_accessible(at: file, access)`),
 `has_` about a part it has (`text.has_prefix(p)` / `has_suffix(s)`, `n.has_bit(i)`, `SliceWriter.has_overflowed()`),
 and membership is `has` / `lacks` (`set.has(x)`, `text.has(needle)`, `set.lacks(x)`) and `has_key` / `lacks_key` for
 a dict's key (`dict.has_key(k)`). There are no other bare
