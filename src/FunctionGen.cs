@@ -1793,7 +1793,7 @@ public sealed class FunctionGen
             case IfExpr ie: return Infer(ie.Then) ?? Infer(ie.Else);
             case RangeExpr r: throw Err(r.Pos, "a range is walked by each: each i in a til b");
             case BinaryExpr { Op: "and" or "or" } or UnaryExpr { Op: "not" }: return BoolType.Instance;
-            case IntLit or FloatLit or NullLit or StrLit: return null;
+            case IntLit or FloatLit or StrLit: return null;
             case ArrayLit: return null;
             case AtExpr: return null;
             case LambdaExpr: return null;
@@ -1922,9 +1922,6 @@ public sealed class FunctionGen
             TypedIntLit t => TypedConst(t),
             FloatLit f => EvalFloatLit(f, expected),
             BoolLit b => new Val(b.Value ? "true" : "false", BoolType.Instance),
-            NullLit n => expected is PtrType or CallableType
-                ? new Val("null", expected)
-                : throw Mismatch(n.Pos, expected, "null"),
             StrLit s => StringLiteral(s, expected),
             ValueRef r => MemUseView(r),
             ClaimExpr c => EvalClaim(c, expected),
@@ -1994,7 +1991,7 @@ public sealed class FunctionGen
                 : $"expected {expected}, found the place {new PtrType(t)}; read it first with .peek()");
         // A literal says why it can't be the parameter's type the way overload resolution does.
         bool preferred = true;
-        if (argument > 0 && e is IntLit or FloatLit or NullLit or StrLit && UntypedMisfit(e, expected, ref preferred) is { } why)
+        if (argument > 0 && e is IntLit or FloatLit or StrLit && UntypedMisfit(e, expected, ref preferred) is { } why)
             throw Err(e.Pos, $"argument {argument}: {why}");
         return Eval(e, expected, argument);
     }
@@ -2316,7 +2313,7 @@ public sealed class FunctionGen
             }).ToList();
             return shaped.Count == 1 ? shaped[0] : null;
         }
-        if (e is not (IntLit or FloatLit or NullLit or StrLit)) return null;
+        if (e is not (IntLit or FloatLit or StrLit)) return null;
         var fits = vt.Leaves.Where(b =>
         {
             bool preferred = true;
@@ -3542,7 +3539,7 @@ public sealed class FunctionGen
     private string? UntypedMisfit(Expr arg, DType pt, ref bool preferred)
     {
         // A literal goes into a variant through the one branch that takes it.
-        if (pt is VariantType variant && arg is IntLit or FloatLit or NullLit or StrLit or ArrayLit or RecordLit { Type: null })
+        if (pt is VariantType variant && arg is IntLit or FloatLit or StrLit or ArrayLit or RecordLit { Type: null })
         {
             if (UntypedBranch(arg, variant) is not { } branch)
                 return $"this literal fits no single branch of {variant}; give it the branch's type";
@@ -3561,8 +3558,6 @@ public sealed class FunctionGen
             }
             case FloatLit fl:
                 return pt is FloatType || HexFloat.IsHex(fl.Text) && HexFloat.IsB128(pt) ? null : $"a float literal can't be a {pt}";
-            case NullLit:
-                return pt is PtrType or CallableType ? null : $"null can't be a {pt}";
             case StrLit:
                 return pt is PtrType { Pointee: null or IntType { Kind: IntKind.Byte } } or RecordType { Name: "CStr" or "CWStr" } || IsByteSpan(pt)
                     ? null
@@ -3602,7 +3597,6 @@ public sealed class FunctionGen
         IntLit i => $"the integer literal {i.Value}",
         FloatLit => "a float literal",
         StrLit => "a string literal",
-        NullLit => "null",
         ArrayLit { IsTuple: true } => "(...)",
         ArrayLit => "[...]",
         RecordLit => "(name: ...)",

@@ -209,7 +209,8 @@ secret routine Prepared.destruct(me: @Me) -> None
 ### :returns: The empty {Prepared}.
 @target(os: ("linux", "macos"))
 secret routine Prepared.empty() -> Me
-    return Me(argv: null, argc: 0, envp: null, own_first: 0, own_count: 0, directory: null)
+    return Me(argv: .hollow(), argc: 0, envp: .hollow(), own_first: 0, own_count: 0,
+        directory: .hollow())
 
 ### `text` with a NUL after it, in memory from `alloc`.
 ### :param text: The bytes to copy.
@@ -219,8 +220,8 @@ secret routine Prepared.empty() -> Me
 secret routine c_string(text: @[Byte], alloc: @MemoryManager) -> @Byte
     n: U64 = text.count()
     p: @Byte = allocate[Byte](count: n + 1, alloc)
-    if p.is_null()
-        return null
+    if p.is_hollow()
+        return .hollow()
     p.copy(src: text.data, count: n)
     p.stride(n).poke(0x00)
     return p
@@ -234,8 +235,8 @@ secret routine env_entry(v: EnvVar, alloc: @MemoryManager) -> @Byte
     n: U64 = v.name.count()
     m: U64 = v.value.count()
     p: @Byte = allocate[Byte](count: n + m + 2, alloc)
-    if p.is_null()
-        return null
+    if p.is_hollow()
+        return .hollow()
     p.copy(src: v.name.data, count: n)
     p.stride(n).poke(b'=')
     p.stride(n + 1).copy(src: v.value.data, count: m)
@@ -252,20 +253,20 @@ secret routine Prepared.release(me: @Me, alloc: @MemoryManager) -> None
 
     while true with i: U64 = 0
         envp2: @@Byte = me.envp.peek()
-        if envp2.is_null() or i == me.own_count.peek()
+        if envp2.is_hollow() or i == me.own_count.peek()
             break
         else
             entry_slot: @@Byte = envp2.stride(me.own_first.peek() + i)
             deallocate(data: entry_slot.peek(), alloc)
             continue with i: i + 1
     argv: @@Byte = me.argv.peek()
-    if not argv.is_null()
+    if not argv.is_hollow()
         deallocate(data: argv, alloc)
     envp: @@Byte = me.envp.peek()
-    if not envp.is_null()
+    if not envp.is_hollow()
         deallocate(data: envp, alloc)
     dir: @Byte = me.directory.peek()
-    if dir.is_null()
+    if dir.is_hollow()
         return
     deallocate(data: dir, alloc)
     return
@@ -285,22 +286,22 @@ secret routine Prepared.make(me: @Me, program: @[Byte], args: @[@[Byte]], option
 
     me.poke(Prepared.empty())
     argv: @@Byte = allocate[@Byte](count: arg_count + 2, alloc)
-    if argv.is_null()
+    if argv.is_hollow()
         return false
     me.argv.poke(argv)
     each i in 0 to arg_count
         s: @Byte = when
             i == 0 => c_string(text: program, alloc)
             else => c_string(text: args[i - 1], alloc)
-        if s.is_null()
+        if s.is_hollow()
             return false
         argv.stride(i).poke(s)
         me.argc.poke(i + 1)
-    argv.stride(arg_count + 1).poke(null)
+    argv.stride(arg_count + 1).poke(.hollow())
     when options.directory
         is @[Byte] as d =>
             directory: @Byte = c_string(text: d, alloc)
-            if directory.is_null()
+            if directory.is_hollow()
                 return false
             me.directory.poke(directory)
         is None => pass
@@ -312,7 +313,7 @@ secret routine Prepared.make(me: @Me, program: @[Byte], args: @[@[Byte]], option
     # The parent's entries the overrides don't name, pointed at as they are (the child gets the same memory), then
     # the overrides, made here.
     envp: @@Byte = allocate[@Byte](count: n + options.env_count + 1, alloc)
-    if envp.is_null()
+    if envp.is_hollow()
         return false
     me.envp.poke(envp)
     0.poke_into(first)
@@ -323,12 +324,12 @@ secret routine Prepared.make(me: @Me, program: @[Byte], args: @[@[Byte]], option
             (first.peek() + 1).poke_into(first)
     each j in 0 til options.env_count
         e: @Byte = env_entry(v: options.env.stride(j).peek(), alloc)
-        if e.is_null()
+        if e.is_hollow()
             me.own_first.poke(first.peek())
             me.own_count.poke(j)
             return false
         envp.stride(first.peek() + j).poke(e)
-    envp.stride(first.peek() + options.env_count).poke(null)
+    envp.stride(first.peek() + options.env_count).poke(.hollow())
     me.own_first.poke(first.peek())
     me.own_count.poke(options.env_count)
     return true
@@ -338,9 +339,9 @@ secret routine Prepared.make(me: @Me, program: @[Byte], args: @[@[Byte]], option
 ### :returns: The number of entries, 0 when `entries` is null.
 @target(os: ("linux", "macos"))
 secret routine count_entries(entries: @@Byte) -> U64
-    if entries.is_null()
+    if entries.is_hollow()
         return 0
-    while not entries.stride(n).peek().is_null() with n: U64 = 0
+    while not entries.stride(n).peek().is_hollow() with n: U64 = 0
         continue with n: n + 1
     then
         return n
@@ -399,9 +400,9 @@ secret routine child(p: @Prepared, s: ChildStreams) -> None
     if s.error >= 0
         c_dup2(s.error, 2)
     dir: @Byte = p.directory.peek()
-    if dir.is_null() or c_chdir(dir) == 0
+    if dir.is_hollow() or c_chdir(dir) == 0
         envp: @@Byte = p.envp.peek()
-        if not envp.is_null()
+        if not envp.is_hollow()
             environ_place().poke(envp)
         argv: @@Byte = p.argv.peek()
         c_execvp(argv.peek(), argv)
@@ -797,7 +798,7 @@ routine env_var(name: @[Byte], alloc: @MemoryManager) -> Maybe[Memory[Byte]]
     key_end: @Byte = key.to[@Byte]().stride(name.count())
     key_end.poke(0x00)
     value: @Byte = c_getenv(key.to[@Byte]().to[CStr]())
-    if value.is_null()
+    if value.is_hollow()
         return None()
     n: U64 = value.to[CStr]().count()
     when Memory[Byte].construct_result(count: n.max(1), manager: alloc)

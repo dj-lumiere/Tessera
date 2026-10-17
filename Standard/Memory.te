@@ -133,8 +133,8 @@ routine MemoryManager.destruct(me: @Me) -> None
 secret routine MemoryManager.construct(alloc_fn: Callable[(Addr, U64, U64), Addr],
     realloc_fn: Callable[(Addr, Addr, U64, U64), Addr], free_fn: Callable[(Addr, Addr), None],
     state: Addr) -> Me
-    manager: Me = Me(alloc_fn, realloc_fn, free_fn, reserve_fn: null, commit_fn: null,
-        release_fn: null, protect_fn: null, state)
+    manager: Me = Me(alloc_fn, realloc_fn, free_fn, reserve_fn: .hollow(), commit_fn: .hollow(),
+        release_fn: .hollow(), protect_fn: .hollow(), state)
     return manager
 
 ### The table of a manager that hands out blocks and doesn't handle pages: routines that call its `alloc`, `realloc`,
@@ -145,7 +145,8 @@ routine T.to[MemoryManager](me: @Me) -> MemoryManager
 needs T: typename, MemoryManageable[T]
     table: MemoryManager = MemoryManager(alloc_fn: forward_alloc[T].to[Callable](),
         realloc_fn: forward_realloc[T].to[Callable](), free_fn: forward_free[T].to[Callable](),
-        reserve_fn: null, commit_fn: null, release_fn: null, protect_fn: null, state: me)
+        reserve_fn: .hollow(), commit_fn: .hollow(), release_fn: .hollow(), protect_fn: .hollow(),
+        state: me)
     return table
 
 ### The table of a manager that handles pages: routines that call its `alloc`, `realloc`, `free`, `reserve`, `commit`,
@@ -270,7 +271,7 @@ routine MemoryManager.realloc(me: @Me, at: Addr, size: U64, align: U64) -> Addr
     realloc_fn: Callable[(Addr, Addr, U64, U64), Addr] = me.realloc_fn.peek()
     note_call_place(caller_location())
     block_start: Addr = realloc_fn.call(me.state.peek(), at, size, align)
-    note_call_place(null)
+    note_call_place(.hollow())
     return block_start
 
 ### Gives the block at `at` back to this manager, the one it came from.
@@ -281,20 +282,20 @@ routine MemoryManager.free(me: @Me, at: Addr) -> None
     free_fn: Callable[(Addr, Addr), None] = me.free_fn.peek()
     note_call_place(caller_location())
     free_fn.call(me.state.peek(), at)
-    note_call_place(null)
+    note_call_place(.hollow())
     return
 
 ### Whether this manager handles pages: `reserve`, `commit`, and `release` are there.
 ### :returns: True when its page routines are filled in.
 routine MemoryManager.has_pages(me: @Me) -> Bool
     reserve_fn: Callable[(Addr, U64), Addr] = me.reserve_fn.peek()
-    return reserve_fn.addr().is_not_null()
+    return reserve_fn.addr().is_not_hollow()
 
 ### Whether this manager can set what pages allow: `protect` is there.
 ### :returns: True when its protect routine is filled in.
 routine MemoryManager.has_protect(me: @Me) -> Bool
     protect_fn: Callable[(Addr, Addr, U64, PageAccess), Bool] = me.protect_fn.peek()
-    return protect_fn.addr().is_not_null()
+    return protect_fn.addr().is_not_hollow()
 
 ### Reserves `size` bytes of address space: whole pages, none of them usable until `commit`.
 ### :param size: The number of bytes, rounded up to whole pages by the manager.
@@ -304,7 +305,7 @@ routine MemoryManager.has_protect(me: @Me) -> Bool
 @expensive("asks for address space")
 routine MemoryManager.reserve(me: @Me, size: U64) -> Addr
     reserve_fn: Callable[(Addr, U64), Addr] = me.reserve_fn.peek()
-    if reserve_fn.addr().is_null()
+    if reserve_fn.addr().is_hollow()
         crash_no_pages()
     at: Addr = reserve_fn.call(me.state.peek(), size)
     return at
@@ -318,7 +319,7 @@ routine MemoryManager.reserve(me: @Me, size: U64) -> Addr
 @expensive("asks for memory")
 routine MemoryManager.commit(me: @Me, at: Addr, size: U64) -> Bool
     commit_fn: Callable[(Addr, Addr, U64), Bool] = me.commit_fn.peek()
-    if commit_fn.addr().is_null()
+    if commit_fn.addr().is_hollow()
         crash_no_pages()
     return commit_fn.call(me.state.peek(), at, size)
 
@@ -330,7 +331,7 @@ routine MemoryManager.commit(me: @Me, at: Addr, size: U64) -> Bool
 @expensive("gives memory back")
 routine MemoryManager.release(me: @Me, at: Addr, size: U64) -> None
     release_fn: Callable[(Addr, Addr, U64), None] = me.release_fn.peek()
-    if release_fn.addr().is_null()
+    if release_fn.addr().is_hollow()
         crash_no_pages()
     release_fn.call(me.state.peek(), at, size)
     return
@@ -346,7 +347,7 @@ routine MemoryManager.release(me: @Me, at: Addr, size: U64) -> None
 @expensive("asks the operating system")
 routine MemoryManager.protect(me: @Me, at: Addr, size: U64, access: PageAccess) -> Bool
     protect_fn: Callable[(Addr, Addr, U64, PageAccess), Bool] = me.protect_fn.peek()
-    if protect_fn.addr().is_null()
+    if protect_fn.addr().is_hollow()
         crash(name: "NotImplementedError",
             message: "This memory manager can't set what pages allow: its protect is empty.")
     return protect_fn.call(me.state.peek(), at, size, access)
@@ -463,7 +464,7 @@ routine allocator_call_place() -> @SourceLocation
 ### :returns: The place, or null.
 @heap_check("off")
 routine allocator_call_place() -> @SourceLocation
-    return null
+    return .hollow()
 
 ### Copies `count` values of `T` from `src` to the values at this address, as raw bytes (`llvm.memcpy`):
 ### `dst.copy(src, count)`.

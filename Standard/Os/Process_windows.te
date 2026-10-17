@@ -249,7 +249,7 @@ secret routine spawn_error(e: U32) -> ProcessError
 ### :returns: `true` when it holds no usable handle.
 @target(os: "windows")
 secret routine is_invalid(h: Addr) -> Bool
-    return h.is_null() or ptrtoint[Addr, U64](h) == U64.MAX
+    return h.is_hollow() or ptrtoint[Addr, U64](h) == U64.MAX
 
 ### Whether two handles are the same value.
 ### :param a: One handle.
@@ -276,14 +276,14 @@ secret routine close_if_open(h: Addr) -> None
 secret routine utf16(text: @[Byte], alloc: @MemoryManager) -> (@U16, U64)
     local units: @U16 = allocate[U16](count: text.count() + 1, alloc)
 
-    if units.is_null()
-        return (null, 0)
+    if units.is_hollow()
+        return (.hollow(), 0)
     n: Maybe[U64] = encode_utf16(text, out: units, capacity: text.count() + 1)
     when n
         is U64 as count => return (units, count)
         is None =>
             deallocate(data: units, alloc)
-            return (null, 0)
+            return (.hollow(), 0)
 
 # -- the command line --------------------------------------------------------------------
 
@@ -375,8 +375,8 @@ secret routine command_line(program: @[Byte], args: @[@[Byte]], alloc: @MemoryMa
         continue with capacity: capacity + argument.count() * 2 + 3
     then
         line: @U16 = allocate[U16](count: capacity + 1, alloc)
-        if line.is_null()
-            return null
+        if line.is_hollow()
+            return .hollow()
         line.poke_into(at)
         # 0 is the program, i the argument i - 1.
         each i2 in 0 to arg_count
@@ -384,9 +384,9 @@ secret routine command_line(program: @[Byte], args: @[@[Byte]], alloc: @MemoryMa
                 i2 == 0 => program
                 else => args[i2 - 1]
             units, n = utf16(text: arg, alloc)
-            if units.is_null()
+            if units.is_hollow()
                 deallocate(data: line, alloc)
-                return null
+                return .hollow()
             else
                 if not (i2 == 0)
                     at.peek().poke(32)
@@ -475,8 +475,8 @@ secret routine env_entry_utf16(v: EnvVar, alloc: @MemoryManager) -> @U16
     local room: U64 = v.name.count() + v.value.count() + 2
     local units: @U16 = allocate[U16](count: room, alloc)
 
-    if units.is_null()
-        return null
+    if units.is_hollow()
+        return .hollow()
     name_units: Maybe[U64] = encode_utf16(text: v.name, out: units, capacity: room)
     when name_units
         is U64 as n =>
@@ -490,7 +490,7 @@ secret routine env_entry_utf16(v: EnvVar, alloc: @MemoryManager) -> @U16
 
     # Not reached after the NUL check, which leaves the texts encodable in the room counted for them.
     deallocate(data: units, alloc)
-    return null
+    return .hollow()
 
 ### The overrides as "NAME=VALUE" UTF-16 strings, in memory from `alloc`.
 ### :param options: The environment overrides.
@@ -502,7 +502,7 @@ secret routine wide_overrides(options: ProcessOptions, out: @@U16, alloc: @Memor
     while i != options.env_count with i: U64 = 0
         v: EnvVar = options.env.stride(i).peek()
         units: @U16 = env_entry_utf16(v, alloc)
-        if units.is_null()
+        if units.is_hollow()
             while i2 != 0 with i2: U64 = i
                 copy_slot: @@U16 = out.stride(i2 - 1)
                 deallocate(data: copy_slot.peek(), alloc)
@@ -524,17 +524,17 @@ secret routine wide_overrides(options: ProcessOptions, out: @@U16, alloc: @Memor
 secret routine env_block(options: ProcessOptions, alloc: @MemoryManager) -> @U16
     local own: @@U16 = allocate[@U16](count: options.env_count.max(1), alloc)
 
-    if own.is_null()
-        return null
+    if own.is_hollow()
+        return .hollow()
     if not wide_overrides(options, out: own, alloc)
         # A failure has freed the strings made so far, so only the array is left.
         deallocate(data: own, alloc)
-        return null
+        return .hollow()
     parent: @U16 = c_get_environment_strings()
     n: U64 = count_block_entries(parent)
     all: @@U16 = allocate[@U16](count: (n + options.env_count).max(1), alloc)
     result: @U16 = when
-        all.is_null() => null
+        all.is_hollow() => .hollow()
         else =>
             # The parent's entries no override names, then the overrides.
             k: U64 = keep_unnamed(all, parent, own, m: options.env_count)
@@ -543,7 +543,7 @@ secret routine env_block(options: ProcessOptions, alloc: @MemoryManager) -> @U16
             total: U64 = k + options.env_count
             sort_entries(all, total)
             becomes join_entries(all, total, alloc)
-    if not parent.is_null()
+    if not parent.is_hollow()
         c_free_environment_strings(parent)
     each j in 0 til options.env_count
         own_slot: @@U16 = own.stride(j)
@@ -551,7 +551,7 @@ secret routine env_block(options: ProcessOptions, alloc: @MemoryManager) -> @U16
 
     # The arrays, each when it was made.
     deallocate(data: own, alloc)
-    if not all.is_null()
+    if not all.is_hollow()
         deallocate(data: all, alloc)
     return result
 
@@ -560,7 +560,7 @@ secret routine env_block(options: ProcessOptions, alloc: @MemoryManager) -> @U16
 ### :returns: The number of entries, 0 when `parent` is null.
 @target(os: "windows")
 secret routine count_block_entries(parent: @U16) -> U64
-    until at.is_null() or at.peek() == 0 with at: @U16 = parent, n: U64 = 0
+    until at.is_hollow() or at.peek() == 0 with at: @U16 = parent, n: U64 = 0
         continue with at: at.stride(units_of(at) + 1), n: n + 1
     then
         return n
@@ -573,7 +573,7 @@ secret routine count_block_entries(parent: @U16) -> U64
 ### :returns: How many entries went into `all`.
 @target(os: "windows")
 secret routine keep_unnamed(all: @@U16, parent: @U16, own: @@U16, m: U64) -> U64
-    until at.is_null() or at.peek() == 0 with at: @U16 = parent, k: U64 = 0
+    until at.is_hollow() or at.peek() == 0 with at: @U16 = parent, k: U64 = 0
         next: @U16 = at.stride(units_of(at) + 1)
         if is_overridden(entry: at, own, m)
             continue with at: next, k: k
@@ -611,8 +611,8 @@ secret routine join_entries(all: @@U16, total: U64, alloc: @MemoryManager) -> @U
         continue with units: units + units_of(all.stride(i).peek()) + 1
     then
         block_units: @U16 = allocate[U16](count: units, alloc)
-        if block_units.is_null()
-            return null
+        if block_units.is_hollow()
+            return .hollow()
         each i2 in 0 til total with at: @U16 = block_units
             entry: @U16 = all.stride(i2).peek()
             n: U64 = units_of(entry) + 1
@@ -707,8 +707,8 @@ secret routine Handles.destruct(me: @Me) -> None
 ### :returns: The {Handles} with every handle null.
 @target(os: "windows")
 secret routine Handles.empty() -> Me
-    return Me(out_r: null, out_w: null, err_r: null, err_w: null, input: null, output: null,
-        error: null, device: null)
+    return Me(out_r: .hollow(), out_w: .hollow(), err_r: .hollow(), err_w: .hollow(),
+        input: .hollow(), output: .hollow(), error: .hollow(), device: .hollow())
 
 ### Reads the pipe to its end into the reader's buffer, from the malloc heap. The buffer grows from DEFAULT_HEAP, which
 ### lives as long as the program: the buffer keeps its manager's address and is given back after this routine returns.
@@ -720,7 +720,7 @@ secret routine read_pipe(r: @PipeReader) -> None
     local chunk_buffer: @Array[Byte, 4096] <- .hollow()
     local chunk: @Byte = chunk_buffer.to[@Byte]()
 
-    while c_read_file(r.pipe.peek(), chunk, 4096, n, null) != 0 and n.peek() > 0
+    while c_read_file(r.pipe.peek(), chunk, 4096, n, .hollow()) != 0 and n.peek() > 0
         r.buffer.append(chunk, n: n.peek().to[U64](), alloc: DEFAULT_HEAP)
     then
         return
@@ -752,14 +752,14 @@ secret routine Handles.close_child_side(me: @Me) -> None
 secret routine inherited(which: U32) -> Addr
     h: Addr = c_get_std_handle(which)
     if is_invalid(h)
-        return null
-    local copy: @Addr <- null
+        return .hollow()
+    local copy: @Addr <- .hollow()
     this_process: Addr = c_get_current_process()
     # DUPLICATE_SAME_ACCESS
     if c_duplicate_handle(this_process, h, this_process, copy, 0, 1, 2) != 0
         return copy.peek()
     else
-        return null
+        return .hollow()
 
 ### Makes the handles `options` call for: the null device when a stream is the null device, a pipe for each captured
 ### stream (the parent's end not inheritable), and the three handles the child gets.
@@ -773,7 +773,7 @@ secret routine Handles.make(me: @Me, options: ProcessOptions, sa: @SecurityAttri
     if null_in or (options.stdout == OutputMode.NULL or options.stderr == OutputMode.NULL)
         local name: @Array[U16, 4] <- [78, 85, 76, 0]
         # GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING
-        device: Addr = c_create_file(name.to[@U16](), 0xC0000000, 3, sa.to[Addr](), 3, 0, null)
+        device: Addr = c_create_file(name.to[@U16](), 0xC0000000, 3, sa.to[Addr](), 3, 0, .hollow())
         if is_invalid(device)
             return false
         me.device.poke(device)
@@ -834,36 +834,36 @@ secret routine output_handle(mode: OutputMode, pipe: Addr, device: Addr, which: 
 routine run_process_result(program: @[Byte], args: @[@[Byte]], options: ProcessOptions,
     alloc: @MemoryManager) -> Result[ProcessOutput, ProcessError]
     local h: @Handles <- Handles.empty()
-    local pi: @ProcessInformation <- ProcessInformation(process: null, thread: null, process_id: 0,
-        thread_id: 0)
+    local pi: @ProcessInformation <- ProcessInformation(process: .hollow(), thread: .hollow(),
+        process_id: 0, thread_id: 0)
     local directory: @Array[U16, PATH_CAPACITY] <- .hollow()
 
     # Until the handles are made, a failure has only the command line (once there is one) to free.
     if has_nul(program, args, options)
         return ProcessError.INVALID_ARGUMENT
     line: @U16 = command_line(program, args, alloc)
-    if line.is_null()
+    if line.is_hollow()
         return ProcessError.OUT_OF_MEMORY
     directory_units: @U16 = when options.directory
         is @[Byte] as d =>
             units: @U16 = directory.to[@U16]()
             n: Maybe[U64] = encode_utf16(text: d, out: units, capacity: PATH_CAPACITY)
             if not n.is_present()
-                free_texts(line, env: null, alloc)
+                free_texts(line, env: .hollow(), alloc)
                 return ProcessError.INVALID_ARGUMENT
             becomes units
-        is None => null
+        is None => .hollow()
     env: @U16 = when
-        options.env_count == 0 => null
+        options.env_count == 0 => .hollow()
         else =>
             block_units: @U16 = env_block(options, alloc)
-            if block_units.is_null()
-                free_texts(line, env: null, alloc)
+            if block_units.is_hollow()
+                free_texts(line, env: .hollow(), alloc)
                 return ProcessError.OUT_OF_MEMORY
             becomes block_units
 
     local sa: @SecurityAttributes <- SecurityAttributes(
-        length: sizeof[SecurityAttributes]().to[U32](), descriptor: null, inherit_handle: 1)
+        length: sizeof[SecurityAttributes]().to[U32](), descriptor: .hollow(), inherit_handle: 1)
     local result: @Result[ProcessOutput, ProcessError] <- start_and_collect(options,
         launch: Launch(h, pi, sa, line, env, directory: directory_units), alloc)
 
@@ -911,14 +911,14 @@ secret routine start_and_collect(options: ProcessOptions, launch: Launch,
         h.close_child_side()
         return spawn_error(e)
     # STARTF_USESTDHANDLES
-    local si: @StartupInfo <- StartupInfo(cb: sizeof[StartupInfo]().to[U32](), reserved: null,
-        desktop: null, title: null, x: 0, y: 0, x_size: 0, y_size: 0, x_count_chars: 0,
+    local si: @StartupInfo <- StartupInfo(cb: sizeof[StartupInfo]().to[U32](), reserved: .hollow(),
+        desktop: .hollow(), title: .hollow(), x: 0, y: 0, x_size: 0, y_size: 0, x_count_chars: 0,
         y_count_chars: 0, fill_attribute: 0, flags: 0x100, show_window: 0, cb_reserved2: 0,
-        reserved2: null, std_input: h.input.peek(), std_output: h.output.peek(),
+        reserved2: .hollow(), std_input: h.input.peek(), std_output: h.output.peek(),
         std_error: h.error.peek())
     # CREATE_UNICODE_ENVIRONMENT
-    made: Bool = c_create_process(null, launch.line, null, null, 1, 0x400, launch.env,
-        launch.directory, si, pi) != 0
+    made: Bool = c_create_process(.hollow(), launch.line, .hollow(), .hollow(), 1, 0x400,
+        launch.env, launch.directory, si, pi) != 0
     e2: U32 = c_get_last_error()
     h.close_child_side()
     if made
@@ -962,9 +962,9 @@ secret routine collect_output(h: @Handles, pi: @ProcessInformation,
 ### :param alloc: The allocator they came from.
 @target(os: "windows")
 secret routine free_texts(line: @U16, env: @U16, alloc: @MemoryManager) -> None
-    if not line.is_null()
+    if not line.is_hollow()
         deallocate(data: line, alloc)
-    if env.is_null()
+    if env.is_hollow()
         return
     deallocate(data: env, alloc)
     return
@@ -978,8 +978,8 @@ secret routine free_texts(line: @U16, env: @U16, alloc: @MemoryManager) -> None
 @reshaping(out, err)
 secret routine read_both(out_pipe: Addr, out: @CaptureBuffer, err: @PipeReader,
     alloc: @MemoryManager) -> None
-    has_out: Bool = out_pipe.is_not_null()
-    has_err: Bool = err.pipe.peek().is_not_null()
+    has_out: Bool = out_pipe.is_not_hollow()
+    has_err: Bool = err.pipe.peek().is_not_hollow()
     if has_out and has_err
         helper: Thread[None] = get_thread[None]()
         helper.put_work(entry: read_pipe.to[Callable](), args: err)
@@ -1007,7 +1007,7 @@ secret routine read_into(pipe: Addr, buffer: @CaptureBuffer, alloc: @MemoryManag
     local chunk_buffer: @Array[Byte, 4096] <- .hollow()
     local chunk: @Byte = chunk_buffer.to[@Byte]()
 
-    while c_read_file(pipe, chunk, 4096, n, null) != 0 and n.peek() > 0
+    while c_read_file(pipe, chunk, 4096, n, .hollow()) != 0 and n.peek() > 0
         buffer.append(chunk, n: n.peek().to[U64](), alloc)
     then
         return
@@ -1022,7 +1022,7 @@ secret routine moved(b: @CaptureBuffer, alloc: @MemoryManager) -> CaptureBuffer
     local copied: @CaptureBuffer <- CaptureBuffer.empty()
 
     data: @Byte = b.storage.data.peek()
-    if data.is_not_null()
+    if data.is_not_hollow()
         copied.append(chunk: data, n: b.count.peek(), alloc)
     lost: Bool = copied.failed.peek() | b.failed.peek()
     copied.failed.poke(lost)
@@ -1039,7 +1039,7 @@ secret routine moved(b: @CaptureBuffer, alloc: @MemoryManager) -> CaptureBuffer
 @target(os: "windows")
 @expensive("allocates a copy of the variable")
 routine env_var(name: @[Byte], alloc: @MemoryManager) -> Maybe[Memory[Byte]]
-    local units: @@U16 <- null
+    local units: @@U16 <- .hollow()
     local key: @Array[U16, 256] <- .hollow()
 
     n: Maybe[U64] = encode_utf16(text: name, out: key.to[@U16](), capacity: 256)
@@ -1049,7 +1049,7 @@ routine env_var(name: @[Byte], alloc: @MemoryManager) -> Maybe[Memory[Byte]]
 
     # The UTF-16 value, when there is one: the UTF-8 copy is what goes back.
     held: @U16 = units.peek()
-    if held.is_null()
+    if held.is_hollow()
         return value
     deallocate(data: held, alloc)
     return value
@@ -1064,7 +1064,7 @@ routine env_var(name: @[Byte], alloc: @MemoryManager) -> Maybe[Memory[Byte]]
 @target(os: "windows")
 secret routine env_value(key: @U16, units: @@U16, alloc: @MemoryManager) -> Maybe[Memory[Byte]]
     c_set_last_error(0)
-    need: U32 = c_get_environment_variable(key, null, 0)
+    need: U32 = c_get_environment_variable(key, .hollow(), 0)
     # ERROR_ENVVAR_NOT_FOUND
     if need == 0 and c_get_last_error() == 203
         return None()
@@ -1072,7 +1072,7 @@ secret routine env_value(key: @U16, units: @@U16, alloc: @MemoryManager) -> Mayb
         return Memory[Byte].construct(count: 0, manager: alloc)
     made: @U16 = allocate[U16](count: need.to[U64](), alloc)
     made.poke_into(units)
-    if made.is_null()
+    if made.is_hollow()
         return None()
     got: U32 = c_get_environment_variable(key, made, need)
     if got == 0 or got >= need

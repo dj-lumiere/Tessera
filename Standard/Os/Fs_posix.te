@@ -1365,13 +1365,13 @@ routine DirIter.destruct(me: @Me) -> None
 ### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
 secret routine DirIter.open_path(me: @Me, path: @[Byte]) -> Result[None, FsError]
-    me.dir.poke(null)
+    me.dir.poke(.hollow())
     if not c_path(path, out: me.path.to[@Byte]())
         return path_error(path)
     me.count.poke(path.count())
-    me.name.poke(null)
+    me.name.poke(.hollow())
     dir: Addr = c_opendir(me.path.to[@Byte]())
-    if dir.is_null()
+    if dir.is_hollow()
         return failed[None]()
     me.dir.poke(dir)
     return fs_done()
@@ -1398,7 +1398,7 @@ secret routine is_dot_name(name: @Byte) -> Bool
 @target(os: ("linux", "macos"))
 routine DirIter.emit_checked(me: @Me) -> Maybe[DirEntry]
     entry: @Byte = c_readdir(me.dir.peek())
-    if entry.is_null()
+    if entry.is_hollow()
         return None()
     name: @Byte = entry.stride(dirent_name_at())
     if is_dot_name(name)
@@ -1446,10 +1446,10 @@ secret routine DirIter.entry_metadata_of(me: @Me, follow: Bool) -> Result[Metada
 @target(os: ("linux", "macos"))
 routine DirIter.close(me: @Me) -> None
     dir: Addr = me.dir.peek()
-    if dir.is_null()
+    if dir.is_hollow()
         return
     c_closedir(dir)
-    me.dir.poke(null)
+    me.dir.poke(.hollow())
     return
 
 # -- the working directory and well-known directories -------------------------------------
@@ -1476,7 +1476,7 @@ secret routine owned(p: @Byte, n: U64, alloc: @MemoryManager) -> Result[Memory[B
 @target(os: ("linux", "macos"))
 secret routine nonempty_env(name: CStr) -> Maybe[@Byte]
     value: @Byte = c_getenv(name)
-    if value.is_null()
+    if value.is_hollow()
         return None()
     if value.peek() == 0x00
         return None()
@@ -1493,7 +1493,7 @@ secret routine current_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsErro
         when Memory[Byte].construct_result(count: capacity, manager: alloc)
             is Memory[Byte] as buffer2 =>
                 data: @Byte = buffer2.data.peek()
-                if c_getcwd(data, capacity.to[CSize]()).is_not_null()
+                if c_getcwd(data, capacity.to[CSize]()).is_not_hollow()
                     count: U64 = data.to[CStr]().count()
                     buffer2.keep_first(count)
                     return buffer2
@@ -1570,8 +1570,8 @@ secret routine canonical_path(path: @[Byte], alloc: @MemoryManager) -> Result[Me
 
     if not c_path(path, out: cpath.to[@Byte]())
         return path_error(path)
-    resolved: @Byte = c_realpath(cpath.to[@Byte](), null)
-    if resolved.is_null()
+    resolved: @Byte = c_realpath(cpath.to[@Byte](), .hollow())
+    if resolved.is_hollow()
         return failed[Memory[Byte]]()
     local copied: @Result[Memory[Byte], FsError] <- owned(p: resolved,
         n: resolved.to[CStr]().count(), alloc)
@@ -1632,7 +1632,7 @@ secret routine Mapping.map(path: @[Byte], write: Bool, offset: U64,
                             share: CInt = when
                                 write => 1
                                 else => 2
-                            p: Addr = c_mmap(null, (want + delta).to[CSize](), prot, share, fd,
+                            p: Addr = c_mmap(.hollow(), (want + delta).to[CSize](), prot, share, fd,
                                 aligned.to[S64]())
                             # the mapping keeps the file open on its own, and errno is read before finish closes the descriptor
                             if is_map_failed(p)
@@ -1649,7 +1649,7 @@ secret routine Mapping.map(path: @[Byte], write: Bool, offset: U64,
 ### :throws: Returns the reason when msync fails.
 @target(os: ("linux", "macos"))
 routine Mapping.flush_result(me: Me) -> Result[None, FsError]
-    if me.base.is_null()
+    if me.base.is_hollow()
         return fs_done()
     else
         return checked(c_msync(me.base, (me.delta + me.count).to[CSize](), ms_sync()))
@@ -1657,7 +1657,7 @@ routine Mapping.flush_result(me: Me) -> Result[None, FsError]
 ### Writes changed pages back and unmaps.
 @target(os: ("linux", "macos"))
 routine Mapping.unmap(me: Me) -> None
-    if me.base.is_null()
+    if me.base.is_hollow()
         return
     c_msync(me.base, (me.delta + me.count).to[CSize](), ms_sync())
     c_munmap(me.base, (me.delta + me.count).to[CSize]())
@@ -1666,7 +1666,7 @@ routine Mapping.unmap(me: Me) -> None
 ### Asks the OS to read the whole mapping in now.
 @target(os: ("linux", "macos"))
 routine Mapping.prefetch(me: Me) -> None
-    if me.base.is_null()
+    if me.base.is_hollow()
         return
     # MADV_WILLNEED
     c_madvise(me.base, (me.delta + me.count).to[CSize](), 3)
@@ -1675,7 +1675,7 @@ routine Mapping.prefetch(me: Me) -> None
 ### Tells the OS the mapping will be read front to back.
 @target(os: ("linux", "macos"))
 routine Mapping.advise_sequential(me: Me) -> None
-    if me.base.is_null()
+    if me.base.is_hollow()
         return
     # MADV_SEQUENTIAL
     c_madvise(me.base, (me.delta + me.count).to[CSize](), 2)

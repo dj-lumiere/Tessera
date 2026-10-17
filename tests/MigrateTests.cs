@@ -418,6 +418,20 @@ public class MigrateTests
         Assert.Equal(after, Migrate.ElseIfWord(before));
     }
 
+    [Theory]
+    [InlineData("    local p: @@Node <- null", "    local p: @@Node <- .hollow()")]
+    [InlineData("    return null", "    return .hollow()")]
+    [InlineData("    at: Addr = c_realloc(null, n)", "    at: Addr = c_realloc(.hollow(), n)")]
+    [InlineData("    if p.is_null()", "    if p.is_hollow()")]
+    [InlineData("    if p.is_not_null()", "    if p.is_not_hollow()")]
+    [InlineData("    Out.write(\"null\")  # null, or `null`", "    Out.write(\"null\")  # null, or `.hollow()`")]
+    [InlineData("    fd: CInt = c_open(\"/dev/null\", 2)", "    fd: CInt = c_open(\"/dev/null\", 2)")]
+    [InlineData("    null_in: Bool = `null`", "    null_in: Bool = `null`")]
+    public void Null_becomes_hollow(string before, string after)
+    {
+        Assert.Equal(after, Migrate.HollowSpelling(before));
+    }
+
     [Fact]
     public void Size_types_become_U64_and_C_sizes_at_the_C_boundary()
     {

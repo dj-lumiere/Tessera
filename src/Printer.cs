@@ -257,8 +257,6 @@ public sealed class Printer
                 return Quote(s.Value);
             case BoolLit b:
                 return b.Value ? "true" : "false";
-            case NullLit:
-                return "null";
             case ValueRef v:
                 return Name(v.Name);
             case LambdaExpr l:

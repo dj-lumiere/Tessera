@@ -44,7 +44,7 @@ target. `tests/SplitModuleTests.cs` shows the pair.
 `tessera migrate` rewrites sources to this release's spellings. Each step also runs alone with `--step`, and each
 rewrites the ```tessera blocks of `.md` pages too: `structured` (routine bodies into `if` / `each` / `while` / `when`,
 keeping blocks where it can't), `spellings` (`@` annotations, `needs` / `obeys` / `protocol`, `return x`),
-`none` (`None` for nothing), `destruct` (`destruct` on `Memory` / `Box`), `drop` (a line `x.destruct()` into `drop x`),
+`none` (`None` for nothing), `hollow` (`null` into `.hollow()`, `is_null()` into `is_hollow()`), `destruct` (`destruct` on `Memory` / `Box`), `drop` (a line `x.destruct()` into `drop x`),
 and the earlier `iterators`, `variants`, `membership`, `lifecycle`, `memory`, `threads`, `entry`, and `--named-args`.
 An old spelling is a build error that names the migration, and builds only with `TESSERA_ACCEPT_OLD_SYNTAX=1` set.
 
@@ -90,7 +90,7 @@ routine start() -> None
   nearest visible value (the routine's parameters, its head `local` lines, earlier bindings in the body it is in),
   else a preset, global, or type;
   a call `f(...)` always names a routine. A routine as a value is `f.to[Callable]()` (never a bare `f`), a generic one's instance `f[S64].to[Callable]()`, and a value
-  named like a keyword (`each`, `null`, `return`, ...) is written between backticks: `` `each` ``. The type says
+  named like a keyword (`each`, `return`, ...) is written between backticks: `` `each` ``. The type says
   whether a value is a pointer (`@T`, or `Addr` for an address with no pointee type, C's `void*`). `@T`
   passes where an `Addr` is expected; the other way takes `a.to[@T]()`. `@T` is how the record `Ptr[T]` is
   written (`@@Byte`, `@Array[@S32, 3]`); it keeps its name only where routines are declared on it or called through
@@ -123,7 +123,7 @@ routine start() -> None
   frame, below), or `@Memory[T]` / `@Box[T]` with `at manager` (below). Anything else is a build error. The
   contents are required: `local list: @List[S64] <- .construct(alloc)`, no `list_val` and no separate store. A
   slot that a routine fills later (an out parameter, `out.construct(...)`, an iterator's slot) starts as
-  `local p: @T <- .hollow()`: `T.hollow()`, which every type has, is the all-zero value (`0`, `false`, null, a
+  `local p: @T <- .hollow()`: `T.hollow()`, which every type has, is the all-zero value (`0`, `false`, a pointer to nothing, a
   collection with no memory, a choice's first member), and every `destruct` leaves it alone (`<- .hollow()` is a
   memset in place). A slot whose type holds no pointer (no `Ptr`, `Addr`, `Callable`, `@[T]`, `Box`, `Memory`) may
   start `<- .uninit()`: nothing is written, for a buffer a routine fills right away. Read it only after the fill
@@ -192,7 +192,7 @@ routine start() -> None
   A frame span must not leave the routine. `preset NAME: @Array[T, N] <- [...]` is still a `Ptr` to an array.
 - **Memory from a manager is written with `at`.** `local words: @Memory[U64] <- [0] * n at DEFAULT_HEAP` (the count
   may be a runtime value: it calls `Memory[T].construct(values: @[T], times: U64, manager)`), and
-  `local node: @Box[Node] <- (value: 1, next: null) at DEFAULT_HEAP` (it calls `Box[T].construct(value, manager)`).
+  `local node: @Box[Node] <- (value: 1, next: .hollow()) at DEFAULT_HEAP` (it calls `Box[T].construct(value, manager)`).
   An `at` literal is bound with `<-` in a `local` line, into the slot like any entity.
 - **The five rules.** 1. `@T` / `@[T]` only view (peek / poke), never give back. 2. `Box` / `Memory` come from a
   manager: `load` / `store`, given back exactly once or handed over, empty or not. 3. A `@T` / `@[T]` viewing this
@@ -265,8 +265,8 @@ routine start() -> None
   `Box[T].replace` works the same. `Memory[T].give_back()` gives the memory back and keeps the manager, so a later
   `resize` draws from it again (what a collection's `destruct` does with its storage).
 - **A memory manager is a type that obeys `MemoryManageable`** (Standard/Alloc): three routines on `me: @Me`,
-  `alloc(size: U64, align: U64) -> Addr` (null when it can't), `realloc(at: Addr, size: U64, align: U64) ->
-  Addr` (null, the block left as it was, when it can't: every manager has one, since only it knows a block's size),
+  `alloc(size: U64, align: U64) -> Addr` (`.hollow()` when it can't), `realloc(at: Addr, size: U64, align: U64) ->
+  Addr` (`.hollow()`, the block left as it was, when it can't: every manager has one, since only it knows a block's size),
   and `free(at: Addr) -> None`. One that handles pages obeys `PageManageable` too (it refines `MemoryManageable`):
   `reserve(size)`, `commit(at, size) -> Bool`, `release(at, size)`, and `protect(at, size, access: PageAccess) ->
   Bool` (false where its pages can't change what they allow). `m.to[MemoryManager]()` on the manager's slot makes the
@@ -297,9 +297,9 @@ routine start() -> None
   `local p: @T <- v` (a stack slot, `<- .hollow()` if a routine fills it), `global NAME: @T [<- value]` (mutable,
   all-zero without a value), `preset NAME: @T <- value` (read-only), and the span forms above. `preset NAME: T = value` is a value, not memory: folded at build time, with
   no address. A global or a preset in memory is part of the program image, there before `start` runs (nothing runs
-  before it to compute one, on any target), so its contents are known at build time: literals, presets, `null`, `[...]` (an array), `T(field: value)` (a record field by field), a routine for
+  before it to compute one, on any target), so its contents are known at build time: literals, presets, `.hollow()`, `[...]` (an array), `T(field: value)` (a record field by field), a routine for
   a `Callable` (`f.to[Callable]()`), or the name of another global or preset in memory (its
-  address, and a global holding a pointer is `@@T`: `global HEAD: @@Node <- null`). Use them as `TICKS.peek()`,
+  address, and a global holding a pointer is `@@T`: `global HEAD: @@Node <- .hollow()`). Use them as `TICKS.peek()`,
   `STATS.calls.poke(n)`, `K.getitem(i)`. Writing a `@T` preset's memory is a build error. Neither kind is a buildtime
   constant: a preset value is (`Array[S64, N]` with `preset N: U64 = 4`). An array preset is always in memory.
 - `@external("c")` and `@symbol("environ")` above `global ENVIRON: @@@Byte` declare a C variable (C's `extern`): no `<-`, read and
@@ -526,7 +526,7 @@ routine start() -> None
   when copying it is unwanted (a large value); take `T` when a copy is fine and the value isn't changed. There are no
   compound assignments (`+=`, `add_assign`): change a value in memory by load, act, store —
   `(p.peek() + 1).poke_into(p)`.
-- **Methods through a pointer.** `p.m()` finds `T.m(me: @Me)` first, then `Ptr`'s own methods (`is_null`,
+- **Methods through a pointer.** `p.m()` finds `T.m(me: @Me)` first, then `Ptr`'s own methods (`is_hollow`,
   `offset`, `to[@U]`, ...). Value methods (`me: Me`, such as every collection's `eq`) aren't reachable through a
   pointer, because that would hide a load: load first (`a.peek().eq(b.peek())`). Don't name your own pointer methods after `Ptr`'s.
 - **Collection methods that change the collection take `me: @Me`**, so it must live in memory (a `local`
@@ -655,7 +655,7 @@ routine start() -> None
   The default handler then adds the place and `Stack trace:` of the unwrap as for any crash.
 - Builtins for that: `failure_of(result) -> U32` (the failure number in a Result's tag, 0 for none or a value),
   `write_failure_trace(seq: n, out: w)` (Standard/Core, writes the `The failure was made at:` part to any Writer,
-  nothing for 0), `failure_trace(seq) -> @FailureTrace` (null when not remembered), and
+  nothing for 0), `failure_trace(seq) -> @FailureTrace` (hollow when not remembered), and
   `diagnose_or_name(value: v, out: w)` (writes any value: `diagnose_into` when it is Diagnosable, else `a <Type>`).
 - Hardware faults: a traced build's entry calls `install_fault_handlers()` before `start` (not under `--race-check`,
   which reports faults itself). Linux/macOS: SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT, each handler on a 64 KiB
@@ -1207,8 +1207,11 @@ that `to[T]`, which would call itself there. It keeps the shape under its own na
 `.hollow()`, all bytes zero, which every `destruct` and `drop` leaves alone: the empty value of a `Memory`, a `Box`, a
 `@[T]`, and a record holding them. A type whose empty value isn't all zero, or means something of its own, names it
 `.empty()` (`FileHandle.empty()`, an OS handle, `Mapping.empty()`). A type with no pointer inside (numbers, records and vectors of
-numbers) has `.zero()`: `Vector[T, LANES].zero()`. `Maybe[T]` is empty as `None()`, and a bare pointer keeps the
-literal `null` (tested with `is_null()`), so there is no `none()`, `null()`, or `nothing()` routine. A default that
+numbers) has `.zero()`: `Vector[T, LANES].zero()`. `Maybe[T]` is empty as `None()`, and a pointer to nothing is
+`.hollow()` too (tested with `is_hollow()` / `is_not_hollow()`), so there is no `none()` or `nothing()` routine, and
+no `null`: writing it is a build error that asks for `.hollow()` (`tessera migrate --step hollow` rewrites `null` and
+`is_null()`). `.hollow()` is typed by where it goes: where nothing gives the type (a variant with a pointer branch,
+an argument to a generic routine), name it, `Ptr[Node].hollow()`, `Addr.hollow()`, `T.hollow()`. A default that
 isn't empty is named for what it is: `ProcessOptions.default()` captures both streams.
 
 **The allocator comes last.** A routine that takes an `@MemoryManager` takes it as its last parameter:
@@ -1240,7 +1243,7 @@ emitter writes), and `Callable` types. `tessera lint` warns on the rest (`check`
 program's own files).
 
 **`Bool` routines: `is_`, `has_`, or membership.** A routine that answers a question names which kind: `is_` asks about
-a state of the value (`is_empty`, `is_null`, `is_finite`, `is_utf8`, `FileManager.is_present(at: file)`, `FileManager.is_accessible(at: file, access)`),
+a state of the value (`is_empty`, `is_hollow`, `is_finite`, `is_utf8`, `FileManager.is_present(at: file)`, `FileManager.is_accessible(at: file, access)`),
 `has_` about a part it has (`text.has_prefix(p)` / `has_suffix(s)`, `n.has_bit(i)`, `SliceWriter.has_overflowed()`),
 and membership is `has` / `lacks` (`set.has(x)`, `text.has(needle)`, `set.lacks(x)`) and `has_key` / `lacks_key` for
 a dict's key (`dict.has_key(k)`). There are no other bare

@@ -174,7 +174,7 @@ needs T: typename
 routine Fiber[T].destruct(me: @Me) -> None
 needs T: typename
     fiber: @FiberState = me.fiber.peek()
-    if fiber.is_null()
+    if fiber.is_hollow()
         return
     if fiber.slot.issued.peek() == me.issued.peek()
         crash(name: "TicketNotGivenBackError",
@@ -200,20 +200,20 @@ routine TimerKey.compare(me: Me, other: Me) -> S32
 ### :returns: The manager, with no fibers.
 @target(os: not "none")
 routine FiberManager.construct(stack_size: U64, stacks: @MemoryManager, alloc: @MemoryManager) -> Me
-    return Me(alloc, stacks, stack_size, owner: thread_mark(), home: null, home_race: null,
-        current: null, ready: CircularList[@FiberState].construct(alloc), inbox_lock: .construct(),
-        inbox: CircularList[@FiberState].construct(alloc), epoch: 0, alert: null, busy: 0,
-        idle: null, all: null, timers: PriorityQueue[TimerKey, @FiberState].construct(alloc),
-        timer_seq: 0)
+    return Me(alloc, stacks, stack_size, owner: thread_mark(), home: .hollow(),
+        home_race: .hollow(), current: .hollow(), ready: CircularList[@FiberState].construct(alloc),
+        inbox_lock: .construct(), inbox: CircularList[@FiberState].construct(alloc), epoch: 0,
+        alert: .hollow(), busy: 0, idle: .hollow(), all: .hollow(),
+        timers: PriorityQueue[TimerKey, @FiberState].construct(alloc), timer_seq: 0)
 
 ### Frees every fiber with its stack, and the queues. The fibers whose work never finished are dropped where they
 ### stand.
 @target(os: not "none")
 routine FiberManager.destruct(me: @Me) -> None
-    if me.alloc.peek().is_null()
+    if me.alloc.peek().is_hollow()
         return
     else
-        until fiber.is_null() with fiber: @FiberState = me.all.peek()
+        until fiber.is_hollow() with fiber: @FiberState = me.all.peek()
             next: @FiberState = fiber.next_all.peek()
             fiber.destruct()
             race_stack_free(fiber.race.peek())
@@ -229,7 +229,7 @@ routine FiberManager.destruct(me: @Me) -> None
 ### Makes the manager on first use, if it is a hollow one (FIBERS starts hollow).
 @target(os: not "none")
 secret routine FiberManager.ensure(me: @Me) -> None
-    if me.alloc.peek().is_null()
+    if me.alloc.peek().is_hollow()
         # A thread worker releases its FIBERS before it takes the next ticket's work.
         me.poke(FiberManager.construct(stack_size: DEFAULT_FIBER_STACK, stacks: DEFAULT_STACKS,
             alloc: DEFAULT_HEAP))
@@ -257,14 +257,14 @@ needs T: typename
     me.ensure()
     me.inbox_lock.lock()
     idle: @FiberState = me.idle.peek()
-    if idle.is_null()
+    if idle.is_hollow()
         me.inbox_lock.unlock()
         fiber: @FiberState = me.make_fiber()
         return Fiber[T](fiber, issued: 0)
     else
         me.idle.poke(idle.next_idle.peek())
         me.inbox_lock.unlock()
-        idle.next_idle.poke(null)
+        idle.next_idle.poke(.hollow())
         idle.slot.state.poke_atomic(TICKET_EMPTY)
         return Fiber[T](fiber: idle, issued: idle.slot.issued.peek())
 
@@ -275,15 +275,15 @@ needs T: typename
 secret routine FiberManager.make_fiber(me: @Me) -> @FiberState
     size: U64 = me.stack_size.peek()
     stack: @Byte = allocate[Byte](count: size, alloc: me.stacks.peek())
-    if stack.is_null()
+    if stack.is_hollow()
         crash_allocation()
     fiber: @FiberState = allocate[FiberState](count: 1, alloc: me.alloc.peek())
-    if fiber.is_null()
+    if fiber.is_hollow()
         crash_allocation()
     sp: Addr = initial_stack(stack, size, entry: fiber_start.addr())
     fiber.poke(FiberState(sp, stack, manager: me, slot: .construct(alloc: me.alloc.peek()),
         work: fiber.slot, then: requeue.to[Callable](), wake_state: FIBER_RUNNING, timer: 0,
-        trace_depth: 0, race: race_stack_new(), next_idle: null, next_all: me.all.peek()))
+        trace_depth: 0, race: race_stack_new(), next_idle: .hollow(), next_all: me.all.peek()))
     me.all.poke(fiber)
     return fiber
 
@@ -295,14 +295,14 @@ routine FiberManager.current(me: @Me) -> @FiberState
     if waiter.manager === me
         return waiter.fiber.to[@FiberState]()
     else
-        return null
+        return .hollow()
 
 ### Inside a fiber: lets the other ready fibers run first, then goes on. Outside one it does nothing.
 @target(os: not "none")
 routine FiberManager.yield(me: @Me) -> None
     local fiber: @FiberState = me.current()
 
-    if fiber.is_null()
+    if fiber.is_hollow()
         return
     # The manager queues the fiber once it is back on its own stack (see resume).
     race_stack_switch(me.home_race.peek())
@@ -315,7 +315,7 @@ routine FiberManager.yield(me: @Me) -> None
 routine FiberManager.park(me: @Me) -> None
     local fiber: @FiberState = me.current()
 
-    if fiber.is_null()
+    if fiber.is_hollow()
         return
     if compare_exchange(at: fiber.wake_state, expected: FIBER_RUNNING, new: FIBER_PARKING)
         # A wake came first: this park is over before it starts.
@@ -336,7 +336,7 @@ routine FiberManager.park(me: @Me) -> None
 routine FiberManager.park_until(me: @Me, deadline: U64) -> None
     local fiber: @FiberState = me.current()
 
-    if fiber.is_null()
+    if fiber.is_hollow()
         return
     seq: U64 = me.timer_seq.peek() + 1
     me.timer_seq.poke(seq)
@@ -378,7 +378,7 @@ routine FiberManager.sleep(me: @Me, ns: U64) -> None
     local deadline: U64 = monotonic_ns() +^ ns
     local fiber: @FiberState = me.current()
 
-    if fiber.is_null()
+    if fiber.is_hollow()
         sleep_thread(deadline)
         return
     else
@@ -392,7 +392,7 @@ routine FiberManager.sleep(me: @Me, ns: U64) -> None
 @reshaping
 routine FiberManager.run(me: @Me) -> None
     me.ensure()
-    me.drive(awaited: null, deadline: U64.MAX, idle_only: false)
+    me.drive(awaited: .hollow(), deadline: U64.MAX, idle_only: false)
     return
 
 ### Runs the fibers that are ready, and those they make ready, until none is, then returns: for a thread that takes
@@ -401,7 +401,7 @@ routine FiberManager.run(me: @Me) -> None
 @reshaping
 routine FiberManager.run_until_idle(me: @Me) -> None
     me.ensure()
-    me.drive(awaited: null, deadline: U64.MAX, idle_only: true)
+    me.drive(awaited: .hollow(), deadline: U64.MAX, idle_only: true)
     return
 
 ### How long the thread that drives the manager may sleep before a fiber waiting with a deadline is due: for a thread
@@ -426,7 +426,7 @@ routine FiberManager.wake_through(me: @Me, word: @U32) -> None
 @target(os: not "none")
 secret routine FiberManager.wake_word(me: @Me) -> @U32
     alert: @U32 = me.alert.peek()
-    if alert.is_null()
+    if alert.is_hollow()
         return me.epoch
     else
         return alert
@@ -440,7 +440,7 @@ secret routine FiberManager.wake_word(me: @Me) -> @U32
 @target(os: not "none")
 routine FiberManager.run_blocking[T](me: @Me, work: Callable[(@T,), None], arg: @T) -> None
 needs T: typename
-    if me.current().is_null()
+    if me.current().is_hollow()
         work.call(arg)
         return
     else
@@ -800,7 +800,7 @@ secret routine FiberManager.drive(me: @Me, awaited: @WorkSlot, deadline: U64,
     me.owner.poke_atomic(thread_mark())
 
     while true
-        if awaited.is_null()
+        if awaited.is_hollow()
             if me.busy.peek_atomic() == 0
                 return
         elseif awaited.is_finished()
@@ -846,7 +846,7 @@ secret routine FiberManager.resume(me: @Me, fiber: @FiberState) -> None
     trace_switch(own).poke_into(fiber.trace_depth)
     RUNNING_FIBER.poke(outer_fiber)
     RUNNING_WORK.poke(outer_work)
-    me.current.poke(null)
+    me.current.poke(.hollow())
     then: Callable[(@FiberManager, @FiberState), None] = fiber.then.peek()
     fiber.then.poke(requeue.to[Callable]())
     then.call(me, fiber)

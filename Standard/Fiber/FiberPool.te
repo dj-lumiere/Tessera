@@ -71,8 +71,8 @@ routine FiberPool.construct(threads: U64) -> Me
     count: U64 = when
         threads == 0 => cpu_count()
         else => threads
-    return Me(lock: .construct(), first: null, last: null, idle: null, epoch: 0, stopping: 0, count,
-        threads: .hollow(), alloc: DEFAULT_HEAP)
+    return Me(lock: .construct(), first: .hollow(), last: .hollow(), idle: .hollow(), epoch: 0,
+        stopping: 0, count, threads: .hollow(), alloc: DEFAULT_HEAP)
 
 ### Stops the pool: its threads finish the work they have, then end, and the idle jobs go. Give every job back first.
 @target(os: not "none")
@@ -90,13 +90,13 @@ routine FiberPool.destruct(me: @Me) -> None
         t.wait_finished()
         t.give_back()
 
-    until job.is_null() with job: @PoolJob = me.idle.peek()
+    until job.is_hollow() with job: @PoolJob = me.idle.peek()
         next: @PoolJob = job.next.peek()
         job.slot.destruct()
         deallocate(data: job, alloc: me.alloc.peek())
         continue with job: next
     drop me.threads
-    me.idle.poke(null)
+    me.idle.poke(.hollow())
     return
 
 ### Makes a `PoolJob` from its fields.
@@ -130,7 +130,7 @@ needs T: typename
 routine Job[T].destruct(me: @Me) -> None
 needs T: typename
     job: @PoolJob = me.job.peek()
-    if job.is_null()
+    if job.is_hollow()
         return
     if job.slot.issued.peek() == me.issued.peek()
         crash(name: "TicketNotGivenBackError",
@@ -150,18 +150,18 @@ needs T: typename
     me.lock.lock()
     me.start_threads()
     idle: @PoolJob = me.idle.peek()
-    if idle.is_null()
+    if idle.is_hollow()
         me.lock.unlock()
         alloc: @MemoryManager = me.alloc.peek()
         job: @PoolJob = allocate[PoolJob](count: 1, alloc)
-        if job.is_null()
+        if job.is_hollow()
             crash_allocation()
-        job.poke(PoolJob(slot: .construct(alloc), next: null, pool: me))
+        job.poke(PoolJob(slot: .construct(alloc), next: .hollow(), pool: me))
         return Job[T](job, issued: 0)
     else
         me.idle.poke(idle.next.peek())
         me.lock.unlock()
-        idle.next.poke(null)
+        idle.next.poke(.hollow())
         idle.slot.state.poke_atomic(TICKET_EMPTY)
         return Job[T](job: idle, issued: idle.slot.issued.peek())
 
@@ -190,7 +190,7 @@ secret routine FiberPool.start_threads(me: @Me) -> None
 secret routine FiberPool.queue(me: @Me, job: @PoolJob) -> None
     me.lock.lock()
     last: @PoolJob = me.last.peek()
-    if last.is_null()
+    if last.is_hollow()
         me.first.poke(job)
     else
         last.next.poke(job)
@@ -206,15 +206,15 @@ secret routine FiberPool.queue(me: @Me, job: @PoolJob) -> None
 secret routine FiberPool.take(me: @Me) -> @PoolJob
     me.lock.lock()
     job: @PoolJob = me.first.peek()
-    if job.is_null()
+    if job.is_hollow()
         me.lock.unlock()
-        return null
+        return .hollow()
     else
         next: @PoolJob = job.next.peek()
         me.first.poke(next)
-        if next.is_null()
-            me.last.poke(null)
-        job.next.poke(null)
+        if next.is_hollow()
+            me.last.poke(.hollow())
+        job.next.poke(.hollow())
         me.lock.unlock()
         return job
 
@@ -233,7 +233,7 @@ secret routine pool_thread(pool: @FiberPool) -> None
         FIBERS.run_until_idle()
         give_back_finished(running)
         job: @PoolJob = pool.take()
-        if job.is_null()
+        if job.is_hollow()
             if pool.stopping.peek_atomic() == 1 and running.count() == 0
                 break
             else

@@ -104,9 +104,9 @@ secret routine c_aligned_free(ptr: Addr) -> None
 routine c_heap_alloc_fn(state: Addr, size: U64, align: U64) -> Addr
     if align <= MALLOC_ALIGN
         return c_malloc(size.to[CSize]())
-    local out: @Addr <- null
+    local out: @Addr <- .hollow()
     if c_posix_memalign(out, align.to[CSize](), size.to[CSize]()) != 0
-        return null
+        return .hollow()
     else
         return out.peek()
 
@@ -136,9 +136,9 @@ routine c_heap_realloc_fn(state: Addr, old_ptr: Addr, size: U64, align: U64) -> 
     if align <= MALLOC_ALIGN
         return c_realloc(old_ptr, size.to[CSize]())
     fresh: Addr = c_heap_alloc_fn(state, size, align)
-    if fresh.is_null()
-        return null
-    if old_ptr.is_null()
+    if fresh.is_hollow()
+        return .hollow()
+    if old_ptr.is_hollow()
         return fresh
     kept: U64 = c_block_size(old_ptr).min(size.to[CSize]()).to[U64]()
     fresh.to[@Byte]().copy(src: old_ptr.to[@Byte](), count: kept)
@@ -290,8 +290,8 @@ routine checked_heap_alloc_fn(state: Addr, size: U64, align: U64) -> Addr
     when total
         is U64 as bytes =>
             raw: Addr = c_malloc(bytes.to[CSize]())
-            if raw.is_null()
-                return null
+            if raw.is_hollow()
+                return .hollow()
             # The first address HEADER_ROOM bytes in that is a multiple of the alignment.
             lowest: U64 = ptrtoint[Addr, U64](raw) + HEADER_ROOM
             aligned: U64 = lowest + step - 1 & ~(step - 1)
@@ -301,7 +301,7 @@ routine checked_heap_alloc_fn(state: Addr, size: U64, align: U64) -> Addr
             header.size.poke(size)
             header.raw.poke(raw)
             return block_start
-        is None => return null
+        is None => return .hollow()
 
 ### The checked heap's realloc function: a new block, the contents copied over (as many bytes as both sizes allow),
 ### and the old block freed through the same checks as `checked_heap_free_fn`.
@@ -313,15 +313,15 @@ routine checked_heap_alloc_fn(state: Addr, size: U64, align: U64) -> Addr
 ### :throws: Crashes with `InvalidValueError` when `old_ptr` was freed already or isn't a block of this heap.
 @heap_check("on")
 routine checked_heap_realloc_fn(state: Addr, old_ptr: Addr, size: U64, align: U64) -> Addr
-    if old_ptr.is_null()
+    if old_ptr.is_hollow()
         return checked_heap_alloc_fn(state, size, align)
     header: @BlockHeader = header_of(old_ptr)
     tag: U64 = header.tag.peek_atomic()
     when
         tag == LIVE =>
             new_ptr: Addr = checked_heap_alloc_fn(state, size, align)
-            if new_ptr.is_null()
-                return null
+            if new_ptr.is_hollow()
+                return .hollow()
             kept: U64 = header.size.peek().min(size)
             new_ptr.to[@Byte]().copy(src: old_ptr.to[@Byte](), count: kept)
             release_block(old_ptr)
@@ -338,7 +338,7 @@ routine checked_heap_realloc_fn(state: Addr, old_ptr: Addr, size: U64, align: U6
 ###     isn't a block of this heap.
 @heap_check("on")
 routine checked_heap_free_fn(state: Addr, ptr: Addr) -> None
-    if ptr.is_null()
+    if ptr.is_hollow()
         return
     release_block(ptr)
     return
@@ -367,7 +367,7 @@ secret routine release_block(block_start: Addr) -> None
             turn: U64 = QUARANTINE_NEXT.atomic_fetch_add(1)
             slot: @Addr = QUARANTINE.getslot(turn & QUARANTINE_MASK)
             evicted: Addr = slot.atomic_swap(header)
-            if evicted.is_null()
+            if evicted.is_hollow()
                 return
             c_free(evicted.to[@BlockHeader]().raw.peek())
             return
@@ -385,7 +385,7 @@ secret routine release_block(block_start: Addr) -> None
 @noreturn
 secret routine heap_crash(name: @[Byte], message: @[Byte]) -> None
     place: @SourceLocation = allocator_call_place()
-    if place.is_not_null()
+    if place.is_not_hollow()
         crash_at(name, message, place)
     else
         crash(name, message)

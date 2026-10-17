@@ -19,7 +19,7 @@ import Standard/Alloc
 ### The hosted thread manager: the operating system's threads, with the work blocks from DEFAULT_HEAP. Ready before
 ### `start` runs.
 @target(os: not "none")
-global DEFAULT_THREADS: @ThreadManager <- (launch_fn: os_launch_fn.to[Callable](), state: null, lock: (state: 0), idle: null, alloc: DEFAULT_HEAP)
+global DEFAULT_THREADS: @ThreadManager <- (launch_fn: os_launch_fn.to[Callable](), state: .hollow(), lock: (state: 0), idle: .hollow(), alloc: DEFAULT_HEAP)
 
 ### A ticket for a thread, from {get_thread}: it runs one piece of work at a time, whose result is a `T` (`Void` for
 ### none), until {Thread[T].give_back}.
@@ -65,7 +65,7 @@ needs T: typename
 routine Thread[T].destruct(me: @Me) -> None
 needs T: typename
     worker: @ThreadWorker = me.worker.peek()
-    if worker.is_null()
+    if worker.is_hollow()
         return
     if worker.slot.issued.peek() == me.issued.peek()
         crash(name: "TicketNotGivenBackError",
@@ -94,15 +94,15 @@ routine ThreadWorker.destruct(me: @Me) -> None
 ### :returns: The manager, with no threads yet.
 routine ThreadManager.construct(launch_fn: Callable[(Callable[(Addr,), None], Addr, Addr), Bool],
     state: Addr, alloc: @MemoryManager) -> Me
-    return Me(launch_fn, state, lock: .construct(), idle: null, alloc)
+    return Me(launch_fn, state, lock: .construct(), idle: .hollow(), alloc)
 
 ### A manager of the operating system's threads, with the workers and the work blocks from `alloc`.
 ### :param alloc: Where the workers and the work blocks come from.
 ### :returns: The manager, with no threads yet.
 @target(os: not "none")
 routine ThreadManager.construct(alloc: @MemoryManager) -> Me
-    return Me(launch_fn: os_launch_fn.to[Callable](), state: null, lock: .construct(), idle: null,
-        alloc)
+    return Me(launch_fn: os_launch_fn.to[Callable](), state: .hollow(), lock: .construct(),
+        idle: .hollow(), alloc)
 
 ### Ends the idle threads. Every ticket goes back first: a ticket given back to a manager that is gone reaches memory
 ### that is gone, and its thread never ends.
@@ -111,7 +111,7 @@ routine ThreadManager.destruct(me: @Me) -> None
 
     while true
         worker2: @ThreadWorker = me.idle.peek()
-        if worker2.is_null()
+        if worker2.is_hollow()
             break
         else
             me.idle.poke(worker2.next.peek())
@@ -167,13 +167,13 @@ needs T: typename
 secret routine ThreadManager.take_worker(me: @Me) -> @ThreadWorker
     me.lock.lock()
     idle: @ThreadWorker = me.idle.peek()
-    if idle.is_null()
+    if idle.is_hollow()
         me.lock.unlock()
         alloc: @MemoryManager = me.alloc.peek()
         worker: @ThreadWorker = allocate[ThreadWorker](count: 1, alloc)
-        if worker.is_null()
+        if worker.is_hollow()
             crash_allocation()
-        worker.poke(ThreadWorker(slot: .construct(alloc), next: null, manager: me))
+        worker.poke(ThreadWorker(slot: .construct(alloc), next: .hollow(), manager: me))
         place: Addr = worker
         if me.launch_fn.peek().call(worker_main.to[Callable](), place, me.state.peek())
             return worker
@@ -183,7 +183,7 @@ secret routine ThreadManager.take_worker(me: @Me) -> @ThreadWorker
     else
         me.idle.poke(idle.next.peek())
         me.lock.unlock()
-        idle.next.poke(null)
+        idle.next.poke(.hollow())
         idle.slot.state.poke_atomic(TICKET_EMPTY)
         return idle
 
@@ -203,13 +203,13 @@ secret routine worker_main(raw: Addr) -> None
             runner: Callable[(Addr,), None] = worker.slot.runner.peek()
             runner.call(worker.slot.work.peek())
             cleanup: Callable[(), None] = THREAD_CLEANUP.peek()
-            if cleanup.addr().is_null()
-                RUNNING_WORK.poke(null)
+            if cleanup.addr().is_hollow()
+                RUNNING_WORK.poke(.hollow())
                 worker.slot.complete()
                 continue
             else
                 cleanup.call()
-                RUNNING_WORK.poke(null)
+                RUNNING_WORK.poke(.hollow())
                 worker.slot.complete()
                 continue
         elseif state2 == TICKET_QUIT
@@ -526,8 +526,8 @@ secret routine thread_body(raw: Addr) -> None
 @target(os: not "none")
 secret routine thread_start(entry: Callable[(Addr,), None], arg: Addr) -> @ThreadStart
     start: @ThreadStart = allocate[ThreadStart](count: 1, alloc: DEFAULT_HEAP)
-    if start.is_null()
-        return null
+    if start.is_hollow()
+        return .hollow()
     start.poke(ThreadStart(entry, arg))
     return start
 
@@ -559,7 +559,7 @@ secret routine c_pthread_detach(thread: Addr) -> CInt
 @target(os: ("linux", "macos"))
 secret routine posix_thread_main(arg: Addr) -> Addr
     thread_body(arg)
-    return null
+    return .hollow()
 
 ### DEFAULT_THREADS' `launch_fn`: an operating system thread that runs `entry(arg)` and ends when it returns. Its
 ### manager's workers don't return until they are told to end, and nobody waits for the thread itself.
@@ -570,10 +570,10 @@ secret routine posix_thread_main(arg: Addr) -> Addr
 @target(os: ("linux", "macos"))
 secret routine os_launch_fn(entry: Callable[(Addr,), None], arg: Addr, state: Addr) -> Bool
     start: @ThreadStart = thread_start(entry, arg)
-    if start.is_null()
+    if start.is_hollow()
         return false
-    local handle: @Addr <- null
-    result: CInt = c_pthread_create(handle, null, posix_thread_main.to[Callable](), start)
+    local handle: @Addr <- .hollow()
+    result: CInt = c_pthread_create(handle, .hollow(), posix_thread_main.to[Callable](), start)
     if result != 0
         deallocate(data: start, alloc: DEFAULT_HEAP)
         return false
@@ -647,10 +647,11 @@ secret routine windows_thread_main(arg: Addr) -> U32
 @target(os: "windows")
 secret routine os_launch_fn(entry: Callable[(Addr,), None], arg: Addr, state: Addr) -> Bool
     start: @ThreadStart = thread_start(entry, arg)
-    if start.is_null()
+    if start.is_hollow()
         return false
-    handle: Addr = c_create_thread(null, 0, windows_thread_main.to[Callable](), start, 0, null)
-    if handle.is_null()
+    handle: Addr = c_create_thread(.hollow(), 0, windows_thread_main.to[Callable](), start, 0,
+        .hollow())
+    if handle.is_hollow()
         deallocate(data: start, alloc: DEFAULT_HEAP)
         return false
     else

@@ -62,7 +62,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span";
+        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -322,7 +322,73 @@ public static class Migrate
         ["span"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, SpanSpelling)
             : SpanSpelling(text),
+        ["hollow"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, HollowSpelling)
+            : HollowSpelling(text),
     };
+
+    private static readonly Regex NullWord = new(@"(?<![\w`.])null(?![\w`])", RegexOptions.Compiled);
+    private static readonly Regex NullTest = new(@"\bis_(not_)?null\b", RegexOptions.Compiled);
+    private static readonly Regex NullQuoted = new(@"`null`", RegexOptions.Compiled);
+
+    /// There is no `null`: a pointer that holds nothing is `.hollow()`, the all-zero value every type has, and it is
+    /// tested with `is_hollow()` / `is_not_hollow()`. In code (outside string and character literals) `null` becomes
+    /// `.hollow()`, and in comments only a quoted `` `null` `` does. `is_null` / `is_not_null` become `is_hollow` /
+    /// `is_not_hollow` in both.
+    public static string HollowSpelling(string text)
+    {
+        var lines = text.Split('\n');
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string line = lines[i];
+            int comment = CommentStart(line);
+            string code = comment < 0 ? line : line[..comment];
+            string rest = comment < 0 ? "" : line[comment..];
+            code = string.Concat(CodeAndLiterals(code).Select(part => part.Literal
+                ? part.Text
+                : NullTest.Replace(NullWord.Replace(part.Text, ".hollow()"), m => m.Groups[1].Success ? "is_not_hollow" : "is_hollow")));
+            rest = NullTest.Replace(NullQuoted.Replace(rest, "`.hollow()`"), m => m.Groups[1].Success ? "is_not_hollow" : "is_hollow");
+            lines[i] = code + rest;
+        }
+        return string.Join('\n', lines);
+    }
+
+    /// Where a line's comment starts (a `#` outside a string or a character literal), or -1.
+    private static int CommentStart(string line)
+    {
+        int at = 0;
+        foreach (var (literal, part) in CodeAndLiterals(line))
+        {
+            if (!literal && part.IndexOf('#') is var hash and >= 0) return at + hash;
+            at += part.Length;
+        }
+        return -1;
+    }
+
+    /// A line cut into code and string or character literals (`"..."`, `'.'`, `b'.'`), each literal with its quotes.
+    private static IEnumerable<(bool Literal, string Text)> CodeAndLiterals(string line)
+    {
+        int start = 0;
+        int i = 0;
+        while (i < line.Length)
+        {
+            char c = line[i];
+            bool quote = c == '"' || c == '\'' && (i == 0 || !char.IsLetterOrDigit(line[i - 1]) || line[i - 1] == 'b' && (i < 2 || !char.IsLetterOrDigit(line[i - 2])));
+            if (!quote)
+            {
+                i++;
+                continue;
+            }
+            if (i > start) yield return (false, line[start..i]);
+            int end = i + 1;
+            while (end < line.Length && line[end] != c)
+                end += line[end] == '\\' ? 2 : 1;
+            end = Math.Min(end + 1, line.Length);
+            yield return (true, line[i..end]);
+            start = i = end;
+        }
+        if (start < line.Length) yield return (false, line[start..]);
+    }
 
     // `Span[` anywhere but in the type's own declaration (`record Span[T]`).
     private static readonly Regex SpanWord = new(@"(?<!\w)(?<!\brecord )Span\[", RegexOptions.Compiled);

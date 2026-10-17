@@ -331,7 +331,6 @@ public sealed record FloatLit(double Value, Pos Pos) : Expr(Pos)
 }
 public sealed record StrLit(string Value, Pos Pos) : Expr(Pos);
 public sealed record BoolLit(bool Value, Pos Pos) : Expr(Pos);
-public sealed record NullLit(Pos Pos) : Expr(Pos);
 /// A value: a parameter, a block parameter, or a binding.
 public sealed record ValueRef(string Name, Pos Pos) : Expr(Pos);
 /// `(a, b) => a.add(b)`: a routine written where its value goes, its parameters typed by the Callable it becomes.

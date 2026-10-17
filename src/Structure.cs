@@ -550,7 +550,7 @@ public sealed class Structurer
     /// those, with no call that could run at another time.
     private static bool IsPure(Expr e) => e switch
     {
-        ValueRef or IntLit or TypedIntLit or FloatLit or BoolLit or NullLit or PresetRef => true,
+        ValueRef or IntLit or TypedIntLit or FloatLit or BoolLit or PresetRef => true,
         FieldExpr f => IsPure(f.Base),
         MethodCallExpr { Args.Count: <= 1 } m when OldOperatorFor(m.Name) is not null || m.Name is "neg" or "bitnot" =>
             IsPure(m.Receiver) && m.Args.All(IsPure),

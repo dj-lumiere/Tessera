@@ -2056,7 +2056,15 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 if (Is(TokenKind.LParen))
                 {
                     var (args, names) = ParseNamedArgs();
-                    e = new MethodCallExpr(e, name.Text, typeArgs, args, pos) { ArgNames = names };
+                    string method = name.Text;
+                    // `is_null` is gone with `null`: a pointer holding nothing is hollow.
+                    if (method is "is_null" or "is_not_null" && !name.Escaped && args.Count == 0)
+                    {
+                        string hollow = method == "is_null" ? "is_hollow" : "is_not_hollow";
+                        Old(name.Pos, $"a pointer that holds nothing is hollow: p.{hollow}(), not p.{method}()");
+                        method = hollow;
+                    }
+                    e = new MethodCallExpr(e, method, typeArgs, args, pos) { ArgNames = names };
                 }
                 else if (typeArgs.Count != 0)
                     throw Error("expected '(' after generic arguments");
@@ -2178,7 +2186,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 {
                     case "true": Next(); return new BoolLit(true, t.Pos);
                     case "false": Next(); return new BoolLit(false, t.Pos);
-                    case "null": Next(); return new NullLit(t.Pos);
+                    case "null":
+                        // `null` is gone: a pointer that holds nothing is the all-zero value every type has.
+                        Next();
+                        Old(t.Pos, "a pointer that holds nothing is written .hollow() (T.hollow() where nothing gives the type), not null");
+                        return new ImplicitCallExpr("hollow", [], [], t.Pos);
                     case "if": throw Error("if c then a else b is a value only after return; elsewhere choose with when");
                     case "when": throw Error("a when that gives a value is a binding's whole value: x: T = when ...");
                 }

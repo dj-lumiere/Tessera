@@ -7,7 +7,7 @@
 # `duplicate()` makes memory of its own.
 #
 # A literal names the manager with `at`: `claim xs: Memory[U64] <- [0] * n at heap` is a Memory of n zeros (the count
-# may be known only while running), and `claim node: Box[Node] <- (value: 1, next: null) at heap` a Box of one value.
+# may be known only while running), and `claim node: Box[Node] <- (value: 1, next: .hollow()) at heap` a Box of one value.
 #
 # Every block starts with a stamp: the generation the block was given when it was taken, a number no other block of
 # the program has. The value keeps its own copy. `drop()` clears the block's stamp before giving the memory back, and
@@ -78,7 +78,7 @@ needs T: typename
 @track_caller
 secret routine check_generation[T](data: @T, generation: U64) -> None
 needs T: typename
-    if data.is_null()
+    if data.is_hollow()
         crash(name: "InvalidValueError",
             message: "This memory holds nothing: it is hollow, or was dropped.")
     now: U64 = stamp_of[T](data).generation.peek()
@@ -100,8 +100,8 @@ needs T: typename
     room: U64 = stamp_room[T]()
     size: U64 = sizeof[T]() * count + room
     taken: Addr = manager.alloc(size, align: room)
-    if taken.is_null()
-        return (null, 0)
+    if taken.is_hollow()
+        return (.hollow(), 0)
     data: @T = taken.offset(room.to[S64]()).to[@T]()
     generation: U64 = next_generation()
     generation.poke_into(stamp_of[T](data).generation)
@@ -180,9 +180,9 @@ needs T: typename
 routine Memory[T].construct_result(count: U64, manager: @MemoryManager) -> Result[Me, AllocFailed]
 needs T: typename
     if count == 0
-        return Me(data: null, count: 0, manager, generation: 0)
+        return Me(data: .hollow(), count: 0, manager, generation: 0)
     data, generation = take_block[T](count, manager)
-    if data.is_null()
+    if data.is_hollow()
         return AllocFailed()
     return Me(data, count, manager, generation)
 
@@ -318,14 +318,14 @@ needs T: typename
     local manager: @MemoryManager = me.manager.peek()
     local data: @T = me.data.peek()
 
-    if manager.is_null()
+    if manager.is_hollow()
         crash(name: "InvalidValueError",
             message: "This memory is hollow (it has no manager), so it can't be resized.")
     if count == 0
         drop me
         me.manager.poke(manager)
         return None()
-    elseif data.is_null()
+    elseif data.is_hollow()
         when Me.construct_result(count, manager)
             is Me as memory =>
                 me.poke(steal memory)
@@ -337,7 +337,7 @@ needs T: typename
         raw: Addr = data
         grown: Addr = manager.realloc(at: raw.offset(-room.to[S64]()),
             size: sizeof[T]() * count + room, align: room)
-        if grown.is_null()
+        if grown.is_hollow()
             return AllocFailed()
         moved: @T = grown.offset(room.to[S64]()).to[@T]()
         generation: U64 = next_generation()
@@ -352,7 +352,7 @@ needs T: typename
 routine Memory[T].destruct(me: @Me) -> None
 needs T: typename
     data: @T = me.data.peek()
-    if not data.is_null()
+    if not data.is_hollow()
         check_generation[T](data, generation: me.generation.peek())
         give_block[T](data, manager: me.manager.peek())
     me.poke(.hollow())
@@ -425,7 +425,7 @@ needs T: typename
 routine Box[T].construct(value: T, manager: @MemoryManager) -> Me
 needs T: typename
     at, generation = take_block[T](count: 1, manager)
-    if at.is_null()
+    if at.is_hollow()
         crash_allocation()
     at.poke(steal value)
     return Me(at, manager, generation)
@@ -473,7 +473,7 @@ needs T: typename
 routine Box[T].destruct(me: @Me) -> None
 needs T: typename
     at: @T = me.at.peek()
-    if not at.is_null()
+    if not at.is_hollow()
         check_generation[T](data: at, generation: me.generation.peek())
         give_block[T](data: at, manager: me.manager.peek())
     me.poke(.hollow())
