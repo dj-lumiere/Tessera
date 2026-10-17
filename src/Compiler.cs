@@ -38,8 +38,11 @@ public sealed partial class Compiler
     /// Records a definition `ExposeDefinitions` left for another module.
     public void NoteExposed(string symbol) => _exposedSymbols.Add(symbol);
 
-    /// The target's USize: lengths, indices, counts, sizeof / alignof, and integer generic arguments.
-    public IntType USize => new(Target.Size, IntKind.Unsigned, isSize: true);
+    /// The type of lengths, indices, counts, sizeof / alignof, and integer generic arguments: U64 on every target.
+    public IntType Count => IntType.U(64);
+
+    /// C's `size_t` on the target (CSize): the pointer width.
+    public IntType CSize => new(Target.Size, IntKind.Unsigned, isSize: true);
 
     private readonly Dictionary<string, List<RecordDecl>> _records = [];
     private readonly Dictionary<string, List<VariantDecl>> _variants = [];
@@ -175,7 +178,7 @@ public sealed partial class Compiler
         foreach (var d in _records.Values.SelectMany(g => g).Cast<Decl>().Concat(_variants.Values.SelectMany(g => g)))
         {
             if (!Selected(d) || d.AnnotationNamed("llvm") is not null || d is VariantDecl { IsAnonymous: true }
-                || d is RecordDecl { Name: "USize" or "SSize" }) continue;
+                || d is RecordDecl { Name: "CSize" or "CSSize" }) continue;
             var (kind, name) = d is RecordDecl r ? (r.IsEntity ? "entity" : "record", r.Name) : ("variant", ((VariantDecl)d).Name);
             // A record holding an entity says so before anything about its lifecycle: the fix is to make it one.
             if (d is RecordDecl { IsEntity: false } plain)
@@ -1648,7 +1651,7 @@ public sealed partial class Compiler
         {
             if (span is not RecordType { Args: [IntType { Kind: IntKind.Byte }] })
                 throw new CompileError(e.Pos, $"a string literal is a Span[Byte], and this is a {span}");
-            return $"{{ ptr {StringGlobal(s.Value)}, {USize.Llvm} {Utf8Length(s.Value)} }}";
+            return $"{{ ptr {StringGlobal(s.Value)}, {Count.Llvm} {Utf8Length(s.Value)} }}";
         }
         if (e is PresetRef { Owner: null } r && FindPreset("", r.Name, env.File, r.Pos, r.Path) is { IsSpan: true } target)
         {
@@ -1662,7 +1665,7 @@ public sealed partial class Compiler
             string address = target.IsGlobal
                 ? GlobalVariable(target, storage, targetEnv)
                 : PresetStorageGlobal(target, storage, targetEnv);
-            return $"{{ ptr {address}, {USize.Llvm} {storage.Count} }}";
+            return $"{{ ptr {address}, {Count.Llvm} {storage.Count} }}";
         }
         return null;
     }

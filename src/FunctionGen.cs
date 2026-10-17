@@ -296,7 +296,7 @@ public sealed class FunctionGen
             _c.EnsureTypeDefined(element);
             var (size, align) = _c.SizeAlign(element, s.Pos);
             var taken = new Val(EmitTmp($"load {element.Llvm}, ptr {place.Op}, align {align}"), element);
-            Line($"call void @llvm.memset.p0.{_c.USize.Llvm}(ptr {place.Op}, i8 0, {_c.USize.Llvm} {size}, i1 false)");
+            Line($"call void @llvm.memset.p0.{_c.Count.Llvm}(ptr {place.Op}, i8 0, {_c.Count.Llvm} {size}, i1 false)");
             if (MemOn && PlaceKey(s.Value) is { } key)
             {
                 Mem(new MemoryRules.Acquire(key, "emptied", s.Pos) { Entity = element.Name });
@@ -1322,7 +1322,7 @@ public sealed class FunctionGen
                                 $"'.uninit()' leaves the slot's bytes as they were, and {slotType} holds a pointer ({where}): "
                                 + "a read or a drop would follow whatever was there. Start it with <- .hollow()");
                         if (_c.UninitFill)
-                            Line($"call void @llvm.memset.p0.{_c.USize.Llvm}(ptr {op}, i8 -86, {_c.USize.Llvm} "
+                            Line($"call void @llvm.memset.p0.{_c.Count.Llvm}(ptr {op}, i8 -86, {_c.Count.Llvm} "
                                 + $"{_c.SizeAlign(slotType, fill.Pos).Size}, i1 false)");
                     }
                     else
@@ -1648,12 +1648,15 @@ public sealed class FunctionGen
 
     private Val EvalIndex(Expr e)
     {
-        DType literal = e is IntLit lit && lit.Value.Sign < 0 ? new IntType(_c.Target.Size, IntKind.Signed, isSize: true) : _c.USize;
+        DType literal = e is IntLit lit && lit.Value.Sign < 0 ? IntType.S(64) : _c.Count;
         var i = Eval(e, Infer(e) ?? literal);
-        if (i.Type is not IntType { IsSize: true } it) throw Err(e.Pos, $"stride takes a USize or an SSize, not {i.Type}");
-        // GEP reads its index as signed, so a narrower unsigned index is widened to the pointer width first.
+        if (i.Type is not IntType { IsNumber: true } it || !(it.IsSize || it.Bits == 64))
+            throw Err(e.Pos, $"stride takes a U64 or an S64 (or C's CSize / CSSize), not {i.Type}");
+        // GEP reads its index as signed at the pointer width: a wider index is cut to it (a count past the address
+        // space can't name memory), a narrower unsigned one is widened with zeros.
         int width = _c.Target.Size;
-        if (it.IsUnsigned && it.Bits < width) return new Val(EmitTmp($"zext {it.Llvm} {i.Op} to i{width}"), _c.USize);
+        if (it.Bits > width) return new Val(EmitTmp($"trunc {it.Llvm} {i.Op} to i{width}"), _c.CSize);
+        if (it.IsUnsigned && it.Bits < width) return new Val(EmitTmp($"zext {it.Llvm} {i.Op} to i{width}"), _c.CSize);
         return i;
     }
 
@@ -1767,7 +1770,7 @@ public sealed class FunctionGen
 
     /// `p.stride(n)` on a pointer is built in: the address n Ts past p (LLVM GEP's first index; on a
     /// `Ptr[Array[T, COUNT]]` that's n whole arrays). It's a place like `p.f`, so it chains (`p.stride(i).f`) and a
-    /// load or store through it keeps a dense record's real alignment. n is a USize or an SSize (negative moves back).
+    /// load or store through it keeps a dense record's real alignment. n is a U64 or an S64 (negative moves back).
     private Expr AsStride(Expr e) =>
         e is MethodCallExpr { Name: "stride", TypeArgs.Count: 0, Args: [var n] } m && Infer(m.Receiver) is PtrType
             ? new IndexExpr(m.Receiver, n, m.Pos)
@@ -1836,7 +1839,7 @@ public sealed class FunctionGen
     {
         if (e is CallExpr { Name: "sizeof" or "alignof", TypeArgs.Count: 1, Args.Count: 0 } c
             && _c.FindFree(c.Name, _env.File, c.Pos) is null)
-            return _c.USize;
+            return _c.Count;
         if (e is CallExpr { Name: "caller_location", TypeArgs.Count: 0, Args.Count: 0 } cl
             && _c.FindFree(cl.Name, _env.File, cl.Pos) is null)
             return SourceLocationPtr(cl.Pos);
@@ -2062,7 +2065,7 @@ public sealed class FunctionGen
             _c.EnsureTypeDefined(st);
             // A literal's bytes belong to the program image: a view of them, which releases nothing.
             string a = EmitTmp($"insertvalue {st.Llvm} poison, ptr {g}, 0");
-            return new Val(EmitTmp($"insertvalue {st.Llvm} {a}, {_c.USize.Llvm} {Compiler.Utf8Length(s.Value)}, 1"), st);
+            return new Val(EmitTmp($"insertvalue {st.Llvm} {a}, {_c.Count.Llvm} {Compiler.Utf8Length(s.Value)}, 1"), st);
         }
         throw Mismatch(s.Pos, expected, "a string literal");
     }
@@ -2205,7 +2208,7 @@ public sealed class FunctionGen
     {
         _c.EnsureTypeDefined(span);
         string data = EmitTmp($"insertvalue {span.Llvm} poison, ptr {address}, 0");
-        return new Val(EmitTmp($"insertvalue {span.Llvm} {data}, {_c.USize.Llvm} {count}, 1"), span);
+        return new Val(EmitTmp($"insertvalue {span.Llvm} {data}, {_c.Count.Llvm} {count}, 1"), span);
     }
 
     /// `[...] at manager` is a `Memory[T]` of the elements, the pattern written out and repeated as many times as the
@@ -3019,7 +3022,7 @@ public sealed class FunctionGen
         if (r.Owner is null)
         {
             if (_env.Get(r.Name) is ConstArg ca)
-                return new PresetInfo(_c.USize, exp => IntConst(ca.Value, r.Pos, exp));
+                return new PresetInfo(_c.Count, exp => IntConst(ca.Value, r.Pos, exp));
             var c = _c.FindPreset("", r.Name, file, r.Pos, r.Path);
             if (c is { IsGlobal: true } && _memoryReady == false)
                 throw Err(r.Pos,
@@ -3335,14 +3338,14 @@ public sealed class FunctionGen
 
     /// How one overload takes a call's arguments: its environment with the type parameters the arguments bind, or why it
     /// doesn't take them. `Generic`: it has type parameters of its own (or is on every type). `Preferred`: every
-    /// untyped integer literal among the arguments lands on a USize (an SSize when negative).
+    /// untyped integer literal among the arguments lands on an S64.
     private sealed record Fit(RoutineDecl Decl, Compiler.TypeEnv Env, string? Why, bool Generic, bool Preferred);
 
     /// Picks the overload a call means. An overload fits when each argument's type is its parameter's type exactly (an
     /// implicit conversion such as `@T` to `Addr` doesn't count) and an untyped argument can be its parameter's type.
     /// Of the ones that fit, one without type parameters of its own beats a generic one, and one written for its owner's
     /// type arguments (`Thread[Void].put_work`) beats the one for any; then one where every untyped
-    /// integer literal is a USize (SSize if negative) beats the rest. Anything else that is left is ambiguous.
+    /// integer literal is an S64 beats the rest. Anything else that is left is ambiguous.
     private Fit ChooseOverload(List<(RoutineDecl Decl, Compiler.TypeEnv Env)> set, List<TypeRef> typeArgs, List<Expr> args,
         int firstArgParam, DType? expected, Pos pos, string what)
     {
@@ -3368,7 +3371,7 @@ public sealed class FunctionGen
         }
         if (tier.Count == 1) return tier[0];
         string hint = args.Any(a => a is IntLit)
-            ? "an untyped integer literal prefers USize (SSize when negative), and that doesn't settle it here; "
+            ? "an untyped integer literal prefers S64, and that doesn't settle it here; "
               + "give the literal its type by binding it first (n: U8 = 1)"
             : args.Any(a => a is FloatLit)
                 ? "a float literal can be any float type; give it its type by binding it first (x: B64 = 1.5)"
@@ -3519,7 +3522,7 @@ public sealed class FunctionGen
     }
 
     /// Why an argument without a type of its own can't be a `pt`, or null if it can. An integer literal not landing on a
-    /// USize (SSize when negative) clears `preferred`.
+    /// S64 clears `preferred`.
     private string? UntypedMisfit(Expr arg, DType pt, ref bool preferred)
     {
         // A literal goes into a variant through the one branch that takes it.
@@ -3537,8 +3540,7 @@ public sealed class FunctionGen
                 var it = pt switch { IntType x => x, ChoiceType ch => ch.Underlying, _ => null };
                 if (it is null) return $"an integer literal can't be a {pt}";
                 if (it.Literal(i.Value, i.HexDigits, out var error) is null) return error;
-                bool size = pt is IntType { IsSize: true } && (i.Value.Sign < 0 ? it.IsSigned : it.IsUnsigned);
-                if (!size) preferred = false;
+                if (pt is not IntType { IsSize: false, Kind: IntKind.Signed, Bits: 64 }) preferred = false;
                 return null;
             }
             case FloatLit fl:
@@ -4053,9 +4055,9 @@ public sealed class FunctionGen
         var t = Resolve(c.TypeArgs[0]);
         _c.EnsureTypeDefined(t);
         string op = c.Name == "sizeof"
-            ? $"ptrtoint (ptr getelementptr ({t.Llvm}, ptr null, i32 1) to {_c.USize.Llvm})"
-            : $"ptrtoint (ptr getelementptr ({{ i1, {t.Llvm} }}, ptr null, i32 0, i32 1) to {_c.USize.Llvm})";
-        return new Val(op, _c.USize);
+            ? $"ptrtoint (ptr getelementptr ({t.Llvm}, ptr null, i32 1) to {_c.Count.Llvm})"
+            : $"ptrtoint (ptr getelementptr ({{ i1, {t.Llvm} }}, ptr null, i32 0, i32 1) to {_c.Count.Llvm})";
+        return new Val(op, _c.Count);
     }
 
     private Val EmitCall(CallPlan plan)
@@ -4467,8 +4469,8 @@ public sealed class FunctionGen
                 sb.Append(laneOf switch { BoolType => 1, IntType it => it.Bits, _ => _c.SizeAlign(laneOf, pos).Size * 8 });
                 continue;
             }
-            // `{USize}` / `{SSize}`: the target's pointer-width integer type.
-            if (key is "USize" or "SSize")
+            // `{CSize}` / `{CSSize}`: the target's pointer-width integer type.
+            if (key is "CSize" or "CSSize")
             {
                 sb.Append(_c.Target.ResolveTargetType(key)!.Llvm);
                 continue;
@@ -4697,7 +4699,9 @@ public sealed class FunctionGen
         {
             if (l.Source is RangeExpr range)
             {
-                var indexType = Infer(range.From) ?? Infer(range.To) ?? _c.USize;
+                var indexType = l.VarType is { } written
+                    ? Resolve(written)
+                    : Infer(range.From) ?? Infer(range.To) ?? IntType.S(64);
                 if (indexType is not IntType it) throw Err(range.Pos, $"a range walks integers, and this one is over {indexType}");
                 var from = Eval(range.From, it);
                 var to = Eval(range.To, it);
@@ -4724,6 +4728,8 @@ public sealed class FunctionGen
                     throw Err(l.Source!.Pos, $"each walks a range (a til b) or an iterator in memory (one whose emit_checked gives Maybe[T]); this is {iterator.Type}");
                 iteratorMaybe = vt;
                 itemType = vt.Leaves.First(leaf => leaf is not RecordType { Decl.Name: "None" });
+                if (l.VarType is { } written && Resolve(written) is var declared && !declared.Equals(itemType))
+                    throw Err(l.VarPos, $"'{l.Var}' is written as {declared}, and this iterator hands out {itemType}");
             }
         }
 

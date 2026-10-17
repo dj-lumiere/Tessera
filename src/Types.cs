@@ -41,8 +41,8 @@ public abstract class DType : IEquatable<DType>
 /// What an integer's bits mean. A `Byte` is 8 bits of memory with no arithmetic; a `Char` is a Unicode scalar value.
 public enum IntKind { Signed, Unsigned, Byte, Char }
 
-/// `IsSize` marks USize / SSize: the target's pointer width, a type of its own that never equals the fixed-width
-/// integer of the same width.
+/// `IsSize` marks CSize / CSSize: C's `size_t` / `ssize_t`, the target's pointer width, a type of its own that never
+/// equals the fixed-width integer of the same width. Counts, indices and sizes are U64 / S64 on every target.
 public sealed class IntType(int bits, IntKind kind, bool isSize = false) : DType
 {
     public int Bits { get; } = bits;
@@ -79,8 +79,8 @@ public sealed class IntType(int bits, IntKind kind, bool isSize = false) : DType
 
     public override string Name => Kind switch
     {
-        IntKind.Signed when IsSize => "SSize",
-        IntKind.Unsigned when IsSize => "USize",
+        IntKind.Signed when IsSize => "CSSize",
+        IntKind.Unsigned when IsSize => "CSize",
         IntKind.Signed => $"S{Bits}",
         IntKind.Unsigned => $"U{Bits}",
         IntKind.Byte => "Byte",
@@ -371,12 +371,12 @@ public sealed record BuildTarget(string Arch, string Os, string Abi, int Size, s
         return Parse($"{arch}-linux-gnu");
     }
 
-    /// The types whose width the target decides: USize / SSize, and the C ABI aliases, which resolve to fixed-width
-    /// integers (see Type-System → C ABI Aliases).
+    /// The types whose width the target decides: CSize / CSSize (C's `size_t` / `ssize_t`), and the C ABI aliases,
+    /// which resolve to fixed-width integers (see Type-System → C ABI Aliases).
     public DType? ResolveTargetType(string name) => name switch
     {
-        "USize" => new IntType(Size, IntKind.Unsigned, isSize: true),
-        "SSize" => new IntType(Size, IntKind.Signed, isSize: true),
+        "CSize" => new IntType(Size, IntKind.Unsigned, isSize: true),
+        "CSSize" => new IntType(Size, IntKind.Signed, isSize: true),
         // int is 16-bit on AVR and 32-bit everywhere else; long is 32-bit on Windows (LLP64) and at least 32 bits
         // elsewhere (AVR's pointers are 16-bit, its long isn't); wchar_t is unsigned 16-bit on Windows, int on AVR,
         // unsigned on ARM and AArch64 except Apple's, and int elsewhere.

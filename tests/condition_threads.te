@@ -15,9 +15,9 @@ import Standard/Os
 ### The values the producer hands over.
 preset ROUNDS: U64 = 10000
 ### The threads at the gate.
-preset GATE_THREADS: USize = 4
+preset GATE_THREADS: U64 = 4
 ### The waiters of each kind in the deadline test.
-preset TIMED_THREADS: USize = 3
+preset TIMED_THREADS: U64 = 3
 ### How long a waiter whose condition never comes true waits.
 preset SHORT_NS: U64 = 20000000
 ### The deadline of a waiter whose condition comes true, far enough away never to be reached.
@@ -36,9 +36,9 @@ record Gate
     lock: ExclusiveLock
     cond: SignalCaster  # the gate threads wait here
     progress: SignalCaster  # the main thread waits here for the gate threads
-    waiting: USize  # gate threads that have reached the gate
-    tokens: USize  # passes not yet taken
-    passed: USize  # gate threads through the gate
+    waiting: U64  # gate threads that have reached the gate
+    tokens: U64  # passes not yet taken
+    passed: U64  # gate threads through the gate
     open: Bool
 
 ### The deadline test: waiters for a condition that never comes true and for one that does, and a thread that takes
@@ -47,12 +47,12 @@ record Timed
     lock: ExclusiveLock
     cond: SignalCaster  # the waiters wait here
     progress: SignalCaster  # the main thread waits here for the waiters
-    waiting: USize
+    waiting: U64
     ready: Bool  # what the in-time waiters wait for
     stop: Bool  # tells the waking thread to stop
-    timed_out: USize  # waiters that gave up at their deadline, not before
-    in_time: USize  # waiters that saw ready before their deadline
-    wrong: USize  # waiters that did neither
+    timed_out: U64  # waiters that gave up at their deadline, not before
+    in_time: U64  # waiters that saw ready before their deadline
+    wrong: U64  # waiters that did neither
 
 # -- the mailbox ---------------------------------------------------------------------
 
@@ -98,7 +98,7 @@ routine consume(box: @Mailbox) -> (U64, Bool)
 
 ### Counts the calling thread in at the gate, with the lock held.
 routine arrive(gate: @Gate) -> None
-    arrived: USize = gate.waiting.peek() + 1
+    arrived: U64 = gate.waiting.peek() + 1
     arrived.poke_into(gate.waiting)
     gate.progress.cast_all()
     return
@@ -109,10 +109,10 @@ routine take_token(gate: @Gate) -> None
     arrive(gate)
 
     while true
-        left2: USize = gate.tokens.peek()
+        left2: U64 = gate.tokens.peek()
         if left2 > 0
             gate.tokens.poke(left2 - 1)
-            through: USize = gate.passed.peek() + 1
+            through: U64 = gate.passed.peek() + 1
             through.poke_into(gate.passed)
             gate.progress.cast_all()
             gate.lock.unlock()
@@ -128,21 +128,21 @@ routine pass_open(gate: @Gate) -> None
 
     until gate.open.peek()
         gate.cond.wait(gate.lock)
-    through: USize = gate.passed.peek() + 1
+    through: U64 = gate.passed.peek() + 1
     through.poke_into(gate.passed)
     gate.lock.unlock()
     return
 
 ### Waits, with the gate's lock held, until `count` gate threads have reached the gate. Each holds the lock from
 ### arriving until its wait releases it, so all of them are waiting by then.
-routine await_waiting(gate: @Gate, count: USize) -> None
+routine await_waiting(gate: @Gate, count: U64) -> None
     while gate.waiting.peek() < count
         gate.progress.wait(gate.lock)
     then
         return
 
 ### Waits, with the gate's lock held, until `count` gate threads are through.
-routine await_passed(gate: @Gate, count: USize) -> None
+routine await_passed(gate: @Gate, count: U64) -> None
     while gate.passed.peek() < count
         gate.progress.wait(gate.lock)
     then
@@ -160,7 +160,7 @@ routine hand_tokens(gate: @Gate) -> Bool
         gate.tokens.poke(1)
         gate.cond.cast_one()
         await_passed(gate, count: round)
-        through: USize = gate.passed.peek()
+        through: U64 = gate.passed.peek()
         one: Bool = through == round and gate.tokens.peek() == 0
         (exact.peek() & one).poke_into(exact)
     gate.lock.unlock()
@@ -179,14 +179,14 @@ routine open_gate(gate: @Gate) -> None
 
 ### Counts the calling thread in, with the lock held.
 routine arrive_timed(timed: @Timed) -> None
-    arrived: USize = timed.waiting.peek() + 1
+    arrived: U64 = timed.waiting.peek() + 1
     arrived.poke_into(timed.waiting)
     timed.progress.cast_all()
     return
 
 ### Adds one to `counter`, with the lock held.
-routine count_in(counter: @USize) -> None
-    next_count: USize = counter.peek() + 1
+routine count_in(counter: @U64) -> None
+    next_count: U64 = counter.peek() + 1
     next_count.poke_into(counter)
     return
 
@@ -268,16 +268,16 @@ record ThreadSlots
     ### The array the threads go into.
     threads: @Array[Thread[None], 8]
     ### The first slot of the run.
-    first: USize
+    first: U64
     ### How many slots the run has.
-    count: USize
+    count: U64
 
 ### Makes a `ThreadSlots` from its fields.
 ### :param threads: Its `threads`.
 ### :param first: Its `first`.
 ### :param count: Its `count`.
 ### :returns: The new value.
-routine ThreadSlots.construct(threads: @Array[Thread[None], 8], first: USize, count: USize) -> Me
+routine ThreadSlots.construct(threads: @Array[Thread[None], 8], first: U64, count: U64) -> Me
     return Me(threads, first, count)
 
 ### Releases nothing: a `ThreadSlots` holds no memory of its own.
@@ -288,7 +288,7 @@ routine ThreadSlots.destruct(me: @Me) -> None
 routine spawn_many[T](body: Callable[(@T,), None], state: @T, slots: ThreadSlots) -> None
 needs T: typename
     local threads: @Array[Thread[None], 8] = slots.threads
-    local end: USize = slots.first + slots.count
+    local end: U64 = slots.first + slots.count
 
     each i in slots.first til end
         t: Thread[None] = get_thread[None]()
@@ -298,7 +298,7 @@ needs T: typename
         return
 
 ### Joins the threads in `threads` below `count`.
-routine join_many(threads: @Array[Thread[None], 8], count: USize) -> None
+routine join_many(threads: @Array[Thread[None], 8], count: U64) -> None
     each i in 0 til count
         t: Thread[None] = threads[i]
         t.wait_finished()

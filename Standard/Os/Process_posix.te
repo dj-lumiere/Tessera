@@ -114,7 +114,7 @@ secret routine c_ns_get_environ() -> @@@Byte
 @external("c")
 @symbol("poll")
 @target(os: "linux")
-secret routine c_poll(fds: @PollFd, count: USize, timeout: CInt) -> CInt
+secret routine c_poll(fds: @PollFd, count: CSize, timeout: CInt) -> CInt
 
 ### Binds the C `poll` function (macOS), which waits until one of several descriptors is ready.
 ### :param fds: The poll entries.
@@ -181,10 +181,10 @@ secret routine spawn_error(e: CInt) -> ProcessError
 @target(os: ("linux", "macos"))
 secret record Prepared
     argv: @@Byte  # the program and the arguments, then null
-    argc: USize  # how many strings argv holds (made so far, when it couldn't finish)
+    argc: U64  # how many strings argv holds (made so far, when it couldn't finish)
     envp: @@Byte  # the parent's entries not overridden, the overrides, then null
-    own_first: USize  # where envp's own (allocated) entries start
-    own_count: USize
+    own_first: U64  # where envp's own (allocated) entries start
+    own_count: U64
     directory: @Byte
 
 ### Makes a `Prepared` from its fields.
@@ -196,8 +196,8 @@ secret record Prepared
 ### :param directory: Its `directory`.
 ### :returns: The new value.
 @target(os: ("linux", "macos"))
-secret routine Prepared.construct(argv: @@Byte, argc: USize, envp: @@Byte, own_first: USize,
-    own_count: USize, directory: @Byte) -> Me
+secret routine Prepared.construct(argv: @@Byte, argc: U64, envp: @@Byte, own_first: U64,
+    own_count: U64, directory: @Byte) -> Me
     return Me(argv, argc, envp, own_first, own_count, directory)
 
 ### Releases nothing: a `Prepared` holds no memory of its own.
@@ -217,7 +217,7 @@ secret routine Prepared.empty() -> Me
 ### :returns: The NUL-terminated copy, or null when the allocation fails.
 @target(os: ("linux", "macos"))
 secret routine c_string(text: Span[Byte], alloc: @MemoryManager) -> @Byte
-    n: USize = text.count()
+    n: U64 = text.count()
     p: @Byte = allocate[Byte](count: n + 1, alloc)
     if p.is_null()
         return null
@@ -231,8 +231,8 @@ secret routine c_string(text: Span[Byte], alloc: @MemoryManager) -> @Byte
 ### :returns: The NUL-terminated entry, or null when the allocation fails.
 @target(os: ("linux", "macos"))
 secret routine env_entry(v: EnvVar, alloc: @MemoryManager) -> @Byte
-    n: USize = v.name.count()
-    m: USize = v.value.count()
+    n: U64 = v.name.count()
+    m: U64 = v.value.count()
     p: @Byte = allocate[Byte](count: n + m + 2, alloc)
     if p.is_null()
         return null
@@ -250,7 +250,7 @@ secret routine Prepared.release(me: @Me, alloc: @MemoryManager) -> None
         arg_slot: @@Byte = me.argv.peek().stride(i)
         deallocate(data: arg_slot.peek(), alloc)
 
-    while true with i: USize = 0
+    while true with i: U64 = 0
         envp2: @@Byte = me.envp.peek()
         if envp2.is_null() or i == me.own_count.peek()
             break
@@ -280,8 +280,8 @@ secret routine Prepared.release(me: @Me, alloc: @MemoryManager) -> None
 @target(os: ("linux", "macos"))
 secret routine Prepared.make(me: @Me, program: Span[Byte], args: Span[Span[Byte]],
     options: ProcessOptions, alloc: @MemoryManager) -> Bool
-    local arg_count: USize = args.count()
-    local first: @USize <- .hollow()
+    local arg_count: U64 = args.count()
+    local first: @U64 <- .hollow()
 
     me.poke(Prepared.empty())
     argv: @@Byte = allocate[@Byte](count: arg_count + 2, alloc)
@@ -307,7 +307,7 @@ secret routine Prepared.make(me: @Me, program: Span[Byte], args: Span[Span[Byte]
     if options.env_count == 0
         return true
     parent: @@Byte = environ_place().peek()
-    n: USize = count_entries(parent)
+    n: U64 = count_entries(parent)
 
     # The parent's entries the overrides don't name, pointed at as they are (the child gets the same memory), then
     # the overrides, made here.
@@ -337,10 +337,10 @@ secret routine Prepared.make(me: @Me, program: Span[Byte], args: Span[Span[Byte]
 ### :param entries: The array, or null for none.
 ### :returns: The number of entries, 0 when `entries` is null.
 @target(os: ("linux", "macos"))
-secret routine count_entries(entries: @@Byte) -> USize
+secret routine count_entries(entries: @@Byte) -> U64
     if entries.is_null()
         return 0
-    while not entries.stride(n).peek().is_null() with n: USize = 0
+    while not entries.stride(n).peek().is_null() with n: U64 = 0
         continue with n: n + 1
     then
         return n
@@ -633,7 +633,7 @@ secret routine run_child(program: Span[Byte], args: Span[Span[Byte]], options: P
     if pid < 0
         return spawn_error(errno())
     # 4 bytes on the report pipe are the errno of a failed exec. Its end without them is a started program.
-    got: SSize = read_report(fd: pipes.exec_r.peek(), report)
+    got: S64 = read_report(fd: pipes.exec_r.peek(), report)
     c_close(pipes.exec_r.peek())
     pipes.exec_r.poke(-1)
     # drain closes both pipes as each ends.
@@ -701,9 +701,9 @@ secret routine take_output(status: Maybe[ExitStatus], out: @CaptureBuffer,
 ### :param report: Where the 4 report bytes go.
 ### :returns: What the read returned: 4 for a report, 0 at the pipe's end, or negative on a failure.
 @target(os: ("linux", "macos"))
-secret routine read_report(fd: CInt, report: @CInt) -> SSize
+secret routine read_report(fd: CInt, report: @CInt) -> S64
     while true
-        got: SSize = c_read(fd, report.to[@Byte](), 4)
+        got: S64 = c_read(fd, report.to[@Byte](), 4).to[S64]()
         if got < 0 and errno() == 4
             continue
         return got
@@ -732,14 +732,14 @@ secret routine drain(out: PipeCapture, err: PipeCapture, alloc: @MemoryManager) 
             close_if_open(fds.fd.peek())
             close_if_open(fds.stride(1).fd.peek())
             return
-        each i in 0 til 2 with left: U32 = open
+        each i: U64 in 0 til 2 with left: U32 = open
             p: @PollFd = fds.stride(i)
             fd: CInt = p.fd.peek()
             if fd < 0 or p.revents.peek() == 0
                 continue with left: left
-            n: SSize = c_read(fd, chunk, 4096)
+            n: S64 = c_read(fd, chunk, 4096).to[S64]()
             if n > 0
-                count: USize = n.to[USize]()
+                count: U64 = n.to[U64]()
                 buffer: @CaptureBuffer = when
                     i == 0 => out.buffer
                     else => err.buffer
@@ -799,7 +799,7 @@ routine env_var(name: Span[Byte], alloc: @MemoryManager) -> Maybe[Memory[Byte]]
     value: @Byte = c_getenv(key.to[@Byte]().to[CStr]())
     if value.is_null()
         return None()
-    n: USize = value.to[CStr]().count()
+    n: U64 = value.to[CStr]().count()
     when Memory[Byte].construct_result(count: n.max(1), manager: alloc)
         is Memory[Byte] as owned =>
             owned.data.peek().copy(src: value, count: n)

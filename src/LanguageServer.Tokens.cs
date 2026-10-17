@@ -484,11 +484,11 @@ public static partial class LanguageServer
             var lines = LinesOf(analysis, ptr);
             int at = Array.FindIndex(lines, l => l.Contains("`p.stride(n)`", StringComparison.Ordinal));
             Pos? where = at < 0 ? null : new Pos(ptr, at + 1, lines[at].IndexOf("stride", StringComparison.Ordinal) + 1);
-            Func<string?> hover = () => HoverText("routine Ptr[T].stride(me: Me, n: USize) -> Me",
-                Ko("The address `n` `T`s past this one; an `SSize` moves back. Built into the builder: it is a place like a "
+            Func<string?> hover = () => HoverText("routine Ptr[T].stride(me: Me, n: U64) -> Me",
+                Ko("The address `n` `T`s past this one; an `S64` moves back. Built into the builder: it is a place like a "
                    + "field, so it chains (`p.stride(i).f`), and a load or a store through it keeps a dense record's "
                    + "alignment.",
-                    "이 주소에서 `T` `n`개만큼 떨어진 주소입니다. `SSize`면 뒤로 갑니다. builder에 내장되어 있습니다. 필드처럼 "
+                    "이 주소에서 `T` `n`개만큼 떨어진 주소입니다. `S64`면 뒤로 갑니다. builder에 내장되어 있습니다. 필드처럼 "
                    + "place라서 이어 쓸 수 있고(`p.stride(i).f`), 이를 거친 load나 store는 dense record의 정렬을 그대로 "
                    + "지킵니다."), [("T", pointee)]);
             return where is null ? hover : At(where.Value, "stride", hover);
@@ -983,7 +983,7 @@ public static partial class LanguageServer
                     foreach (var a in call.Args) Expr(a);
                     break;
                 case NsCallExpr ns:
-                    // `Option[USize].Present(mid)` makes a case; `SORTED.to[@S64]()` calls a routine on a preset the
+                    // `Option[U64].Present(mid)` makes a case; `SORTED.to[@S64]()` calls a routine on a preset the
                     // parser couldn't tell from a type.
                     if (TypeKind(ns.Owner) is null && ns.Owner.Path is null && ns.Owner.Args.Count == 0 &&
                         IsPreset(ns.Owner.Name))

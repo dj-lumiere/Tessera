@@ -9,9 +9,9 @@ module Standard/Collections
 import Standard/Alloc
 import Standard/Format
 
-secret preset SORTED_DICT_NODE_KEYS: USize = 7
-secret preset SORTED_DICT_NODE_CHILDREN: USize = SORTED_DICT_NODE_KEYS.add(1)
-secret preset SORTED_DICT_NODE_MIN_KEYS: USize = SORTED_DICT_NODE_KEYS.add(1).div_trunc(2)
+secret preset SORTED_DICT_NODE_KEYS: U64 = 7
+secret preset SORTED_DICT_NODE_CHILDREN: U64 = SORTED_DICT_NODE_KEYS.add(1)
+secret preset SORTED_DICT_NODE_MIN_KEYS: U64 = SORTED_DICT_NODE_KEYS.add(1).div_trunc(2)
 
 ### One node of a {SortedDict[TKey, TValue]} B-tree: up to `SORTED_DICT_NODE_KEYS` keys and values inline, and for internal nodes the child pointers between them. `subtree_count` is the total entries in the subtree. It is an entity, so an entity key or value can live in it: the dict makes and frees nodes, and its keys and values move in and out with steal.
 ### :typeparam TKey: The key type.
@@ -19,8 +19,8 @@ secret preset SORTED_DICT_NODE_MIN_KEYS: USize = SORTED_DICT_NODE_KEYS.add(1).di
 entity SortedDictNode[TKey, TValue]
 needs TKey: typename, TValue: typename, Comparable[TKey]
     leaf: Bool
-    count: USize
-    subtree_count: USize
+    count: U64
+    subtree_count: U64
     keys: Array[TKey, SORTED_DICT_NODE_KEYS]
     values: Array[TValue, SORTED_DICT_NODE_KEYS]
     children: Array[@SortedDictNode[TKey, TValue], SORTED_DICT_NODE_CHILDREN]
@@ -35,14 +35,14 @@ obeys Diagnosable[SortedDict[TKey, TValue]] when TKey: typename, TValue: typenam
 obeys Equatable[SortedDict[TKey, TValue]] when TKey: typename, TValue: typename, Equatable[TValue]
 needs TKey: typename, TValue: typename, Comparable[TKey]
     root: @SortedDictNode[TKey, TValue]
-    count: USize
+    count: U64
     alloc: @MemoryManager
 
 ### Where an entry lives: its node and its index there.
 secret record SortedDictSpot[TKey, TValue]
 needs TKey: typename, TValue: typename
     node: @SortedDictNode[TKey, TValue]
-    index: USize
+    index: U64
 
 ### Releases nothing: the dict ends a node's keys and values and frees the node itself (`free_recursive`).
 routine SortedDictNode[TKey, TValue].destruct(me: @Me) -> None
@@ -54,7 +54,7 @@ needs TKey: typename, TValue: typename
 ### :param index: Its `index`.
 ### :returns: The new value.
 secret routine SortedDictSpot[TKey, TValue].construct(node: @SortedDictNode[TKey, TValue],
-    index: USize) -> Me
+    index: U64) -> Me
 needs TKey: typename, TValue: typename, Comparable[TKey]
     return Me(node, index)
 
@@ -72,16 +72,16 @@ needs TKey: typename, TValue: typename
 
 ### The number of entries currently stored.
 ### :returns: The count of entries, `0` when the dict is empty.
-routine SortedDict[TKey, TValue].count(me: @Me) -> USize
+routine SortedDict[TKey, TValue].count(me: @Me) -> U64
 needs TKey: typename, TValue: typename
-    count: USize = me.count.peek()
+    count: U64 = me.count.peek()
     return count
 
 ### Whether the dict holds no entries.
 ### :returns: `true` when the count is `0`.
 routine SortedDict[TKey, TValue].is_empty(me: @Me) -> Bool
 needs TKey: typename, TValue: typename
-    count: USize = me.count.peek()
+    count: U64 = me.count.peek()
     return count == 0
 
 ### A new empty node from `alloc`.
@@ -102,20 +102,20 @@ needs TKey: typename, TValue: typename
 
 ### The number of entries in the subtree below this node.
 ### :returns: The node's subtree count, or `0` for a null node.
-routine SortedDictNode[TKey, TValue].subtree_count(me: @Me) -> USize
+routine SortedDictNode[TKey, TValue].subtree_count(me: @Me) -> U64
 needs TKey: typename, TValue: typename
     if me.is_null()
         return 0
     else
-        count: USize = me.subtree_count.peek()
+        count: U64 = me.subtree_count.peek()
         return count
 
 ### Recomputes this node's subtree count from its own keys and its children's counts. Call it after the node's contents change.
 routine SortedDictNode[TKey, TValue].recount(me: @Me) -> None
 needs TKey: typename, TValue: typename
     local leaf: Bool = me.leaf.peek()
-    local count: USize = me.count.peek()
-    local sum: @USize <- .hollow()
+    local count: U64 = me.count.peek()
+    local sum: @U64 <- .hollow()
 
     if leaf
         me.subtree_count.poke(count)
@@ -125,10 +125,10 @@ needs TKey: typename, TValue: typename
 
         each i in 0 to count
             child: @Me = me.children[i]
-            child_count: USize = child.subtree_count()
-            with_child: USize = sum.peek() + child_count
+            child_count: U64 = child.subtree_count()
+            with_child: U64 = sum.peek() + child_count
             has_key: Bool = i < count
-            next_sum: USize = when
+            next_sum: U64 = when
                 has_key => with_child + 1
                 else => with_child
             next_sum.poke_into(sum)
@@ -138,9 +138,9 @@ needs TKey: typename, TValue: typename
 ### Finds where the key at `key` sits among this node's keys, compared through their places.
 ### :param key: The key to locate.
 ### :returns: The index of the first key not less than `key`, or the key count when every key is smaller. It is also the child to descend into.
-routine SortedDictNode[TKey, TValue].find_index(me: @Me, key: @TKey) -> USize
+routine SortedDictNode[TKey, TValue].find_index(me: @Me, key: @TKey) -> U64
 needs TKey: typename, TValue: typename
-    while i < me.count.peek() with i: USize = 0
+    while i < me.count.peek() with i: U64 = 0
         cmp: S32 = key.compare(me.keys.getslot(i))
         if cmp <= 0
             return i
@@ -161,8 +161,8 @@ needs TKey: typename, TValue: typename
         return None()
 
     while true with node: @SortedDictNode[TKey, TValue] = root
-        i: USize = node.find_index(key)
-        count: USize = node.count.peek()
+        i: U64 = node.find_index(key)
+        count: U64 = node.count.peek()
         if i < count
             if key.compare(node.keys.getslot(i)) == 0
                 return SortedDictSpot[TKey, TValue](node: node, index: i)
@@ -286,8 +286,8 @@ needs TKey: typename, TValue: typename, Equatable[TValue]
     local a: @SortedDictIter[TKey, TValue] <- .hollow()
     local b: @SortedDictIter[TKey, TValue] <- .hollow()
 
-    la: USize = me.count.peek()
-    lb: USize = other.count.peek()
+    la: U64 = me.count.peek()
+    lb: U64 = other.count.peek()
     if not (la == lb)
         return false
     a_val: SortedDictIter[TKey, TValue] = .construct(me)
@@ -356,14 +356,14 @@ needs TKey: typename, TValue: typename
 ### :throws: Crashes with `IndexOutOfBoundsError` when `rank >= count`.
 @track_caller
 secret routine SortedDict[TKey, TValue].locate_rank(me: @Me,
-    rank: USize) -> SortedDictSpot[TKey, TValue]
+    rank: U64) -> SortedDictSpot[TKey, TValue]
 needs TKey: typename, TValue: typename
-    count: USize = me.count.peek()
+    count: U64 = me.count.peek()
     if rank >= count
         crash_out_of_bounds()
 
-    while true with node: @SortedDictNode[TKey, TValue] = me.root.peek(), remaining: USize = rank, i: USize = 0
-        node_count: USize = node.count.peek()
+    while true with node: @SortedDictNode[TKey, TValue] = me.root.peek(), remaining: U64 = rank, i: U64 = 0
+        node_count: U64 = node.count.peek()
         is_leaf: Bool = node.leaf.peek()
         if i >= node_count
             if is_leaf
@@ -374,10 +374,10 @@ needs TKey: typename, TValue: typename
                 return SortedDictSpot[TKey, TValue](node: node, index: i)
             continue with node: node, remaining: remaining, i: i + 1
         child: @SortedDictNode[TKey, TValue] = node.children[i]
-        child_count: USize = child.subtree_count()
+        child_count: U64 = child.subtree_count()
         if remaining < child_count
             continue with node: child, remaining: remaining, i: 0
-        after_child: USize = remaining - child_count
+        after_child: U64 = remaining - child_count
         if after_child == 0
             return SortedDictSpot[TKey, TValue](node: node, index: i)
         continue with node: node, remaining: after_child - 1, i: i + 1
@@ -387,7 +387,7 @@ needs TKey: typename, TValue: typename
 ### :param rank: The zero-based rank.
 ### :returns: The key and its value.
 ### :throws: Crashes with `IndexOutOfBoundsError` when `rank >= count`.
-routine SortedDict[TKey, TValue].get_by_rank(me: @Me, rank: USize) -> KVPair[TKey, TValue]
+routine SortedDict[TKey, TValue].get_by_rank(me: @Me, rank: U64) -> KVPair[TKey, TValue]
 needs TKey: typename, TValue: typename
     spot: SortedDictSpot[TKey, TValue] = me.locate_rank(rank)
     node: @SortedDictNode[TKey, TValue] = spot.node
@@ -399,7 +399,7 @@ needs TKey: typename, TValue: typename
 ### :param rank: The zero-based rank.
 ### :returns: The value's address.
 ### :throws: Crashes with `IndexOutOfBoundsError` when `rank >= count`.
-routine SortedDict[TKey, TValue].value_ptr_by_rank(me: @Me, rank: USize) -> @TValue
+routine SortedDict[TKey, TValue].value_ptr_by_rank(me: @Me, rank: U64) -> @TValue
 needs TKey: typename, TValue: typename
     spot: SortedDictSpot[TKey, TValue] = me.locate_rank(rank)
     node: @SortedDictNode[TKey, TValue] = spot.node
@@ -412,7 +412,7 @@ needs TKey: typename, TValue: typename
 ### :param alloc: The allocator for the new node.
 ### :returns: True when it split, false when the allocator failed (before anything moved).
 @reshaping
-routine SortedDictNode[TKey, TValue].split_child(me: @Me, index: USize,
+routine SortedDictNode[TKey, TValue].split_child(me: @Me, index: U64,
     alloc: @MemoryManager) -> Bool
 needs TKey: typename, TValue: typename
     local left: @Me = me.children[index]
@@ -421,18 +421,18 @@ needs TKey: typename, TValue: typename
 
     if right.is_null()
         return false
-    mid: USize = SORTED_DICT_NODE_KEYS.div_trunc(2)
-    right_start: USize = mid + 1
-    right_count: USize = SORTED_DICT_NODE_KEYS.sub(right_start)
+    mid: U64 = SORTED_DICT_NODE_KEYS.div_trunc(2)
+    right_start: U64 = mid + 1
+    right_count: U64 = SORTED_DICT_NODE_KEYS.sub(right_start)
     right.keys.copy(dst_start: 0, src: left.keys, src_start: right_start, count: right_count)
     right.values.copy(dst_start: 0, src: left.values, src_start: right_start, count: right_count)
     right.count.poke(right_count)
     if leaf
-        parent_count: USize = me.count.peek()
+        parent_count: U64 = me.count.peek()
         me.keys.shift_right(start: index, end: parent_count)
         me.values.shift_right(start: index, end: parent_count)
 
-        until i < index + 1 with i: USize = parent_count
+        until i < index + 1 with i: U64 = parent_count
             child: @Me = me.children[i]
             me.children[i + 1] = child
             continue with i: i - 1
@@ -441,7 +441,7 @@ needs TKey: typename, TValue: typename
             me.values.getslot(index).poke(steal left.values.getslot(mid))
             me.children[index + 1] = right
             left.count.poke(mid)
-            next_count: USize = me.count.peek() + 1
+            next_count: U64 = me.count.peek() + 1
             next_count.poke_into(me.count)
             left.recount()
             right.recount()
@@ -449,15 +449,15 @@ needs TKey: typename, TValue: typename
             return true
     else
         each i in 0 to right_count
-            src: USize = mid + 1 + i
+            src: U64 = mid + 1 + i
             child: @Me = left.children[src]
             right.children[i] = child
         then
-            parent_count: USize = me.count.peek()
+            parent_count: U64 = me.count.peek()
             me.keys.shift_right(start: index, end: parent_count)
             me.values.shift_right(start: index, end: parent_count)
 
-            until i2 < index + 1 with i2: USize = parent_count
+            until i2 < index + 1 with i2: U64 = parent_count
                 child: @Me = me.children[i2]
                 me.children[i2 + 1] = child
                 continue with i2: i2 - 1
@@ -466,7 +466,7 @@ needs TKey: typename, TValue: typename
                 me.values.getslot(index).poke(steal left.values.getslot(mid))
                 me.children[index + 1] = right
                 left.count.poke(mid)
-                next_count: USize = me.count.peek() + 1
+                next_count: U64 = me.count.peek() + 1
                 next_count.poke_into(me.count)
                 left.recount()
                 right.recount()
@@ -487,22 +487,22 @@ needs TKey: typename, TValue: typename
     local probe: @TKey <- steal key
 
     if me.leaf.peek()
-        slot: USize = me.find_index(key: probe)
-        count: USize = me.count.peek()
+        slot: U64 = me.find_index(key: probe)
+        count: U64 = me.count.peek()
         me.keys.shift_right(start: slot, end: count)
         me.values.shift_right(start: slot, end: count)
         me.keys.getslot(slot).poke(steal probe)
         me.values.getslot(slot).poke(steal value)
-        new_count: USize = count + 1
+        new_count: U64 = count + 1
         me.count.poke(new_count)
         me.subtree_count.poke(new_count)
         return true
     else
-        slot: USize = me.find_index(key: probe)
+        slot: U64 = me.find_index(key: probe)
         child: @Me = me.children[slot]
-        child_count: USize = child.count.peek()
+        child_count: U64 = child.count.peek()
         full: Bool = child_count == SORTED_DICT_NODE_KEYS
-        values2: (USize, @Me) = when
+        values2: (U64, @Me) = when
             full =>
                 if not me.split_child(index: slot, alloc)
                     drop probe
@@ -510,7 +510,7 @@ needs TKey: typename, TValue: typename
                     return false
                 cmp: S32 = probe.compare(me.keys.getslot(slot))
                 go_right: Bool = cmp > 0
-                next_slot: USize = when
+                next_slot: U64 = when
                     go_right => slot + 1
                     else => slot
                 becomes (next_slot, me.children[next_slot])
@@ -571,7 +571,7 @@ needs TKey: typename, TValue: typename
         return None()
     else
         alloc: @MemoryManager = me.alloc.peek()
-        root_count: USize = root.count.peek()
+        root_count: U64 = root.count.peek()
         full: Bool = root_count == SORTED_DICT_NODE_KEYS
         root_node: @SortedDictNode[TKey, TValue] = when
             full =>
@@ -593,7 +593,7 @@ needs TKey: typename, TValue: typename
             else => root
         if not root_node.insert_nonfull(key: steal probe, value: steal value, alloc)
             return AllocFailed()
-        next_count: USize = me.count.peek() + 1
+        next_count: U64 = me.count.peek() + 1
         next_count.poke_into(me.count)
         return None()
 
@@ -601,14 +601,14 @@ needs TKey: typename, TValue: typename
 ### taken out (or ended).
 ### :param index: The position of the entry within the leaf.
 ### :returns: The removed value.
-routine SortedDictNode[TKey, TValue].remove_leaf_at(me: @Me, index: USize) -> TValue
+routine SortedDictNode[TKey, TValue].remove_leaf_at(me: @Me, index: U64) -> TValue
 needs TKey: typename, TValue: typename
     local old: @TValue <- steal me.values.getslot(index)
 
-    count: USize = me.count.peek()
+    count: U64 = me.count.peek()
     me.keys.shift_left(start: index, end: count)
     me.values.shift_left(start: index, end: count)
-    new_count: USize = count - 1
+    new_count: U64 = count - 1
     me.count.poke(new_count)
     me.subtree_count.poke(new_count)
     return steal old
@@ -620,13 +620,13 @@ needs TKey: typename, TValue: typename
 
 ### Rotates one entry from child `i - 1` through the parent into the front of child `i`, so child `i` gains an entry. Subtree counts are updated.
 ### :param i: The index of the child that is short of keys.
-routine SortedDictNode[TKey, TValue].borrow_from_left(me: @Me, i: USize) -> None
+routine SortedDictNode[TKey, TValue].borrow_from_left(me: @Me, i: U64) -> None
 needs TKey: typename, TValue: typename
-    local separator: USize = i - 1
+    local separator: U64 = i - 1
     local left: @Me = me.children[separator]
     local child: @Me = me.children[i]
-    local left_count: USize = left.count.peek()
-    local child_count: USize = child.count.peek()
+    local left_count: U64 = left.count.peek()
+    local child_count: U64 = child.count.peek()
 
     child.keys.shift_right(start: 0, end: child_count)
     child.values.shift_right(start: 0, end: child_count)
@@ -635,7 +635,7 @@ needs TKey: typename, TValue: typename
     me.keys.getslot(separator).poke(steal left.keys.getslot(left_count - 1))
     me.values.getslot(separator).poke(steal left.values.getslot(left_count - 1))
     if not child.leaf.peek()
-        children: USize = child_count + 1
+        children: U64 = child_count + 1
         child.children.shift_right(start: 0, end: children)
         moved: @Me = left.children[left_count]
         child.children[0] = moved
@@ -648,12 +648,12 @@ needs TKey: typename, TValue: typename
 
 ### Rotates one entry from child `i + 1` through the parent into the end of child `i`, so child `i` gains an entry. Subtree counts are updated.
 ### :param i: The index of the child that is short of keys.
-routine SortedDictNode[TKey, TValue].borrow_from_right(me: @Me, i: USize) -> None
+routine SortedDictNode[TKey, TValue].borrow_from_right(me: @Me, i: U64) -> None
 needs TKey: typename, TValue: typename
     local child: @Me = me.children[i]
     local right: @Me = me.children[i + 1]
-    local child_count: USize = child.count.peek()
-    local right_count: USize = right.count.peek()
+    local child_count: U64 = child.count.peek()
+    local right_count: U64 = right.count.peek()
 
     child.keys.getslot(child_count).poke(steal me.keys.getslot(i))
     child.values.getslot(child_count).poke(steal me.values.getslot(i))
@@ -675,24 +675,24 @@ needs TKey: typename, TValue: typename
 ### Merges child `i + 1` and the separating entry into child `i` and frees the emptied node, shrinking this node by one key.
 ### :param i: The index of the left child of the pair.
 ### :param alloc: The allocator that frees the merged node.
-routine SortedDictNode[TKey, TValue].merge_children(me: @Me, i: USize,
+routine SortedDictNode[TKey, TValue].merge_children(me: @Me, i: U64,
     alloc: @MemoryManager) -> None
 needs TKey: typename, TValue: typename
     local left: @Me = me.children[i]
     local right: @Me = me.children[i + 1]
-    local left_count: USize = left.count.peek()
-    local right_count: USize = right.count.peek()
+    local left_count: U64 = left.count.peek()
+    local right_count: U64 = right.count.peek()
 
     left.keys.getslot(left_count).poke(steal me.keys.getslot(i))
     left.values.getslot(left_count).poke(steal me.values.getslot(i))
-    dst_start: USize = left_count + 1
+    dst_start: U64 = left_count + 1
     left.keys.copy(dst_start, src: right.keys, src_start: 0, count: right_count)
     left.values.copy(dst_start, src: right.values, src_start: 0, count: right_count)
     if not left.leaf.peek()
         left.children.copy(dst_start: left_count + 1, src: right.children, src_start: 0,
             count: right_count + 1)
     left.count.poke(left_count + 1 + right_count)
-    parent_count: USize = me.count.peek()
+    parent_count: U64 = me.count.peek()
     me.keys.shift_left(start: i, end: parent_count)
     me.values.shift_left(start: i, end: parent_count)
     me.children.shift_left(start: i + 1, end: parent_count + 1)
@@ -707,10 +707,10 @@ needs TKey: typename, TValue: typename
 ### :param alloc: The allocator that frees a merged node.
 ### :returns: The index of the child to descend into, which differs from `i` when a merge with the left sibling happened.
 @track_caller
-routine SortedDictNode[TKey, TValue].ensure_min(me: @Me, i: USize, alloc: @MemoryManager) -> USize
+routine SortedDictNode[TKey, TValue].ensure_min(me: @Me, i: U64, alloc: @MemoryManager) -> U64
 needs TKey: typename, TValue: typename
     child: @Me = me.children[i]
-    child_count: USize = child.count.peek()
+    child_count: U64 = child.count.peek()
     if child_count >= SORTED_DICT_NODE_MIN_KEYS
         return i
     else
@@ -718,17 +718,17 @@ needs TKey: typename, TValue: typename
         has_left2: Bool = when
             has_left =>
                 left: @Me = me.children[i - 1]
-                left_count: USize = left.count.peek()
+                left_count: U64 = left.count.peek()
                 if left_count >= SORTED_DICT_NODE_MIN_KEYS
                     me.borrow_from_left(i)
                     return i
                 else
                     becomes true
             else => false
-        parent_count: USize = me.count.peek()
+        parent_count: U64 = me.count.peek()
         if i < parent_count
             right: @Me = me.children[i + 1]
-            right_count: USize = right.count.peek()
+            right_count: U64 = right.count.peek()
             if right_count >= SORTED_DICT_NODE_MIN_KEYS
                 me.borrow_from_right(i)
                 return i
@@ -737,7 +737,7 @@ needs TKey: typename, TValue: typename
                 return i
         else if not has_left2
             crash_logic_breached()
-        merged_at: USize = i - 1
+        merged_at: U64 = i - 1
         me.merge_children(i: merged_at, alloc)
         return merged_at
 
@@ -749,14 +749,14 @@ routine SortedDictNode[TKey, TValue].take_max_key(me: @Me, out_value: @TValue,
     alloc: @MemoryManager) -> TKey
 needs TKey: typename, TValue: typename
     if me.leaf.peek()
-        count: USize = me.count.peek()
-        index: USize = count - 1
+        count: U64 = me.count.peek()
+        index: U64 = count - 1
         local key: @TKey <- steal me.keys.getslot(index)
         out_value.poke(me.remove_leaf_at(index))
         return steal key
     else
-        count: USize = me.count.peek()
-        actual: USize = me.ensure_min(i: count, alloc)
+        count: U64 = me.count.peek()
+        actual: U64 = me.ensure_min(i: count, alloc)
         child: @Me = me.children[actual]
         local key: @TKey <- child.take_max_key(out_value, alloc)
         me.recount()
@@ -774,7 +774,7 @@ needs TKey: typename, TValue: typename
         out_value.poke(me.remove_leaf_at(0))
         return steal key
     else
-        actual: USize = me.ensure_min(i: 0, alloc)
+        actual: U64 = me.ensure_min(i: 0, alloc)
         child: @Me = me.children[actual]
         local key: @TKey <- child.take_min_key(out_value, alloc)
         me.recount()
@@ -787,9 +787,9 @@ needs TKey: typename, TValue: typename
 ### :returns: `true` when the key was found and removed, `false` otherwise.
 routine SortedDictNode[TKey, TValue].remove(me: @Me, key: @TKey, alloc: @MemoryManager) -> Bool
 needs TKey: typename, TValue: typename
-    local slot: USize = me.find_index(key)
+    local slot: U64 = me.find_index(key)
 
-    count: USize = me.count.peek()
+    count: U64 = me.count.peek()
     if slot < count
         cmp: S32 = key.compare(me.keys.getslot(slot))
         if cmp == 0
@@ -799,7 +799,7 @@ needs TKey: typename, TValue: typename
                 return true
             else
                 left: @Me = me.children[slot]
-                left_count: USize = left.count.peek()
+                left_count: U64 = left.count.peek()
                 if left_count >= SORTED_DICT_NODE_MIN_KEYS
                     local out: @TValue <- .hollow()
                     left2: @Me = me.children[slot]
@@ -812,7 +812,7 @@ needs TKey: typename, TValue: typename
                     return true
                 else
                     right: @Me = me.children[slot + 1]
-                    right_count: USize = right.count.peek()
+                    right_count: U64 = right.count.peek()
                     if right_count >= SORTED_DICT_NODE_MIN_KEYS
                         local out: @TValue <- .hollow()
                         right2: @Me = me.children[slot + 1]
@@ -832,7 +832,7 @@ needs TKey: typename, TValue: typename
     if me.leaf.peek()
         return false
     else
-        actual: USize = me.ensure_min(i: slot, alloc)
+        actual: U64 = me.ensure_min(i: slot, alloc)
         child: @Me = me.children[actual]
         removed: Bool = child.remove(key, alloc)
         me.recount()
@@ -851,9 +851,9 @@ needs TKey: typename, TValue: typename
     else
         alloc: @MemoryManager = me.alloc.peek()
         if root.remove(key, alloc)
-            remaining_count: USize = me.count.peek() - 1
+            remaining_count: U64 = me.count.peek() - 1
             remaining_count.poke_into(me.count)
-            root_count: USize = root.count.peek()
+            root_count: U64 = root.count.peek()
             if root_count == 0
                 if root.leaf.peek()
                     alloc2: @MemoryManager = me.alloc.peek()
@@ -896,9 +896,9 @@ needs TKey: typename, TValue: typename
         deallocate[Me](data: me, alloc)
         return
     else
-        count: USize = me.count.peek()
+        count: U64 = me.count.peek()
 
-        child_count: USize = count + 1
+        child_count: U64 = count + 1
 
         each i in 0 til child_count
             child: @Me = me.children[i]

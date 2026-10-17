@@ -22,22 +22,22 @@ record Harness
 ### One phase of the run: its number and how many operations of which kinds it makes.
 record Phase
     ### The phase's number, as checkpoints print it.
-    number: USize
+    number: U64
     ### How many operations the phase runs.
-    ops: USize
+    ops: U64
     ### How many distinct keys the operations draw from.
-    keys: USize
+    keys: U64
     ### The weight of add among the operations.
-    adds: USize
+    adds: U64
     ### Whether removes go by rank instead of by key.
     by_rank: Bool
 
 ### Where a checkpoint is taken: the phase, the operations so far, and the running results checksum.
 record Checkpoint
     ### The phase's number.
-    phase: USize
+    phase: U64
     ### The operations run so far in the phase.
-    op: USize
+    op: U64
     ### The checksum of every result so far.
     results: S64
 
@@ -52,12 +52,12 @@ routine Harness.construct(out: @BufWriter[Out], rng: @Rng) -> Me
 routine Harness.destruct(me: @Me) -> None
     return
 
-routine Rng.below(me: @Me, bound: USize) -> USize
+routine Rng.below(me: @Me, bound: U64) -> U64
     state: U64 = me.state.peek()
     next: U64 = state *% 6364136223846793005 +% 1442695040888963407
     me.state.poke(next)
     bucket: U64 = (next >> 33) % bound.to[U64]()
-    value: USize = bucket.to[USize]()
+    value: U64 = bucket.to[U64]()
     return value
 
 routine mix(hash: S64, value: S64) -> S64
@@ -81,7 +81,7 @@ routine iteration_hash(set: @SortedSet[S64]) -> S64
 
 # Folds the elements at ranks 0, count / 3, count / 2, and count - 1 (0 for an empty set).
 routine rank_hash(set: @SortedSet[S64]) -> S64
-    local count: USize = set.count()
+    local count: U64 = set.count()
 
     if count == 0
         return 0
@@ -98,7 +98,7 @@ routine rank_hash(set: @SortedSet[S64]) -> S64
 routine checkpoint(out: @BufWriter[Out], set: @SortedSet[S64], at: Checkpoint) -> None
     out.write("phase {at.phase}")
     labeled(out, label: "op", value: at.op.to[S64]())
-    size: USize = set.count()
+    size: U64 = set.count()
     labeled(out, label: "length", value: size.to[S64]())
     labeled(out, label: "results", value: at.results)
     labeled(out, label: "ranks", value: rank_hash(set))
@@ -113,33 +113,33 @@ routine checkpoint(out: @BufWriter[Out], set: @SortedSet[S64], at: Checkpoint) -
 @generated
 routine run_phase(harness: Harness, set: @SortedSet[S64], phase: Phase, results: S64) -> S64
     local rng: @Rng = harness.rng
-    local ops: USize = phase.ops
-    local keys: USize = phase.keys
-    local adds: USize = phase.adds
+    local ops: U64 = phase.ops
+    local keys: U64 = phase.keys
+    local adds: U64 = phase.adds
     local by_rank: Bool = phase.by_rank
 
     jump next(0, results)
 
-    block next(op: USize, checksum: S64)
+    block next(op: U64, checksum: S64)
         if op >= ops
             return checksum
         else
             jump pick(op, checksum)
 
-    block pick(op: USize, checksum: S64)
+    block pick(op: U64, checksum: S64)
         key: S64 = rng.below(keys).to[S64]()
-        kind: USize = rng.below(10)
+        kind: U64 = rng.below(10)
         is_add: Bool = kind < adds
         when
             is_add => jump add(op, checksum, key)
             kind < 7 => jump remove(op, checksum, key)
             else => jump lookup(op, checksum, key)
 
-    block add(op: USize, checksum: S64, key: S64)
+    block add(op: U64, checksum: S64, key: S64)
         added: Bool = set + key
         jump record(op, checksum, added.to[S64]())
 
-    block remove(op: USize, checksum: S64, key: S64)
+    block remove(op: U64, checksum: S64, key: S64)
         empty: Bool = set.is_empty()
         nonempty: Bool = not empty
         if by_rank and nonempty
@@ -147,27 +147,27 @@ routine run_phase(harness: Harness, set: @SortedSet[S64], phase: Phase, results:
         else
             jump remove_key(op, checksum, key)
 
-    block remove_rank(op: USize, checksum: S64)
-        rank: USize = rng.below(set.count())
+    block remove_rank(op: U64, checksum: S64)
+        rank: U64 = rng.below(set.count())
         jump remove_key(op, checksum, set.get_by_rank(rank))
 
-    block remove_key(op: USize, checksum: S64, key: S64)
+    block remove_key(op: U64, checksum: S64, key: S64)
         removed: Bool = set.remove(key)
         jump record(op, checksum, mix(hash: key, value: removed.to[S64]()))
 
-    block lookup(op: USize, checksum: S64, key: S64)
+    block lookup(op: U64, checksum: S64, key: S64)
         found: Bool = set.has(key)
         jump record(op, checksum, found.to[S64]())
 
-    block record(op: USize, checksum: S64, result: S64)
+    block record(op: U64, checksum: S64, result: S64)
         mixed: S64 = mix(hash: checksum, value: result)
-        op_next: USize = op + 1
+        op_next: U64 = op + 1
         if op_next % 500 == 0
             jump report(op_next, mixed)
         else
             jump next(op_next, mixed)
 
-    block report(op: USize, checksum: S64)
+    block report(op: U64, checksum: S64)
         checkpoint(out: harness.out, set,
             at: Checkpoint(phase: phase.number, op: op, results: checksum))
         jump next(op, checksum)
@@ -175,11 +175,11 @@ routine run_phase(harness: Harness, set: @SortedSet[S64], phase: Phase, results:
 # Adds from's elements to to by rank, starting from the middle, so to is built in a different order.
 @reshaping(to)
 routine copy_rotated(from: @SortedSet[S64], to: @SortedSet[S64]) -> None
-    local count: USize = from.count()
-    local half: USize = count // 2
+    local count: U64 = from.count()
+    local half: U64 = count // 2
 
     each i in 0 til count
-        rank: USize = (i + half) % count
+        rank: U64 = (i + half) % count
         to.add(from.get_by_rank(rank))
     then
         return
@@ -214,7 +214,7 @@ routine start() -> None
     report_eq(out, label: "extra element equal", equal: set.eq(copied))
     copied.remove(-1)
     report_eq(out, label: "extra element removed equal", equal: set.eq(copied))
-    size: USize = set.count()
+    size: U64 = set.count()
     last: S64 = set.get_by_rank(size - 1)
     copied.remove(last)
     copied.add(last + 1)

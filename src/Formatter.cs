@@ -10,7 +10,7 @@ namespace Tessera;
 /// - a top-level section comment (a group of `//` lines with a `// --`, `// ==`, or `// ──` divider) has a blank line
 ///   before and after it;
 /// - a binding, a local line, a record field, a choice member and a variant case write their `:` right after
-///   the name with one space after it (`count: USize = 0`), `=`, `->`, `=>` and `<-` have one space on each side, and
+///   the name with one space after it (`count: U64 = 0`), `=`, `->`, `=>` and `<-` have one space on each side, and
 ///   nothing is aligned with the line above.
 /// - a routine's head, its `local` lines, sits 4 spaces in right under the header (and its `needs` lines), with no
 ///   blank line inside it, and exactly one blank line between it and the first block.
@@ -61,7 +61,7 @@ public static class Formatter
         int tabs = 0;
         while (tabs < line.Length && line[tabs] == '\t') tabs++;
         line = (new string(' ', tabs * 4) + line[tabs..]).TrimEnd();
-        // a preset's or a global's `:` sits right after its name: `preset COUNT: USize = 100`
+        // a preset's or a global's `:` sits right after its name: `preset COUNT: U64 = 100`
         line = TopLevelSlot.Replace(line, "$1:");
         // an inline comment sits two spaces after its code
         int comment = TopLevelComment(line);

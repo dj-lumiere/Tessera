@@ -17,7 +17,7 @@ import Standard/Alloc
 import Standard/Format
 
 ### The longest path a call takes, in bytes (UTF-16 units on Windows), not counting the terminator.
-preset PATH_CAPACITY: USize = 4096
+preset PATH_CAPACITY: U64 = 4096
 
 ### Why a filesystem call failed.
 choice FsError: U8
@@ -75,8 +75,8 @@ record DirEntry
 ### Part of a file mapped into memory by Mapping.map. unmap it when done.
 record Mapping
     base: Addr  # what the OS mapped, from an aligned offset (null for an empty mapping)
-    delta: USize  # from base to the first byte asked for
-    count: USize  # the bytes mapped from there
+    delta: U64  # from base to the first byte asked for
+    count: U64  # the bytes mapped from there
 
 ### Makes a `DirEntry` from its fields.
 ### :param name: Its `name`.
@@ -95,7 +95,7 @@ routine DirEntry.destruct(me: @Me) -> None
 ### :param delta: Its `delta`.
 ### :param count: Its `count`.
 ### :returns: The new value.
-routine Mapping.construct(base: Addr, delta: USize, count: USize) -> Me
+routine Mapping.construct(base: Addr, delta: U64, count: U64) -> Me
     return Me(base, delta, count)
 
 ### Releases nothing: a `Mapping` holds no memory of its own.
@@ -228,25 +228,16 @@ secret routine read_file(path: Span[Byte], alloc: @MemoryManager) -> Result[Memo
 ### :param alloc: The allocator for the text.
 ### :returns: The bytes read.
 ### :throws: Returns the reason when a read fails, `OutOfMemory` when `alloc` fails or the file is too
-###     large for the address space (it reports a size, or grows to one, that a USize can't hold).
+###     large for the address space (it reports a size, or grows to one, that a U64 can't hold).
 secret routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
     local buffer: @Memory[Byte] <- .hollow()
 
     size: Result[U64, FsError] = f.size_result()
-    capacity: USize = when size
+    capacity: U64 = when size
         is U64 as n =>
             room: Maybe[U64] = n.add_checked(1)
             when room
-                is U64 as with_one =>
-                    size_guess: Maybe[USize] = with_one.to_checked[USize]()
-                    when size_guess
-                        is USize as guess =>
-                            becomes guess.max(64)
-                        is None =>
-                            # count bytes read so far, and the buffer's count is its capacity
-                            # The text takes the memory over, so buffer goes back to empty and finish has nothing to give back.
-                            drop buffer
-                            return FsError.OUT_OF_MEMORY
+                is U64 as with_one => becomes with_one.max(64)
                 is None =>
                     drop buffer
                     return FsError.OUT_OF_MEMORY
@@ -254,12 +245,12 @@ secret routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Memory
     when Memory[Byte].construct_result(count: capacity, manager: alloc)
         is Memory[Byte] as slice =>
             buffer.replace(value: steal slice)
-            while true with count: USize = 0
-                capacity2: USize = buffer.count()
+            while true with count: U64 = 0
+                capacity2: U64 = buffer.count()
                 if count == capacity2
-                    doubled: Maybe[USize] = count.mul_checked(2)
+                    doubled: Maybe[U64] = count.mul_checked(2)
                     when doubled
-                        is USize as capacity3 =>
+                        is U64 as capacity3 =>
                             bigger: Result[None, AllocFailed] = buffer.resize_result(capacity3)
                             when bigger
                                 is None => continue with count: count
@@ -270,10 +261,10 @@ secret routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Memory
                             drop buffer
                             return FsError.OUT_OF_MEMORY
                 else
-                    got: Result[USize, FsError] = f.read_bytes_result(buffer: buffer.getslot(count),
+                    got: Result[U64, FsError] = f.read_bytes_result(buffer: buffer.getslot(count),
                         count: capacity2 - count)
                     when got
-                        is USize as n =>
+                        is U64 as n =>
                             if n == 0
                                 buffer.keep_first(count)
                                 return buffer
@@ -312,11 +303,11 @@ obeys Writer[FileHandle]
 ### :returns: `Unit` once all of them are written.
 ### :throws: Returns the reason when a write fails, `Other` when a write makes no progress.
 @expensive("asks the operating system")
-routine FileHandle.write_all_result(me: @Me, data: @Byte, count: USize) -> Result[None, FsError]
-    while remaining != 0 with at: @Byte = data, remaining: USize = count
-        wrote: Result[USize, FsError] = me.write_some(data: at, count: remaining)
-        n: USize = when wrote
-            is USize as n => n
+routine FileHandle.write_all_result(me: @Me, data: @Byte, count: U64) -> Result[None, FsError]
+    while remaining != 0 with at: @Byte = data, remaining: U64 = count
+        wrote: Result[U64, FsError] = me.write_some(data: at, count: remaining)
+        n: U64 = when wrote
+            is U64 as n => n
             is FsError as error => return error
         if n == 0
             return FsError.OTHER
@@ -329,7 +320,7 @@ routine FileHandle.write_all_result(me: @Me, data: @Byte, count: USize) -> Resul
 ### :param data: The first byte to write.
 ### :param count: How many bytes to write.
 @expensive("asks the operating system")
-routine FileHandle.write_bytes(me: @Me, data: @Byte, count: USize) -> None
+routine FileHandle.write_bytes(me: @Me, data: @Byte, count: U64) -> None
     wrote: Result[None, FsError] = me.write_all_result(data, count)
     if wrote.is_success()
         return
@@ -384,11 +375,11 @@ routine join_path(a: Span[Byte], b: Span[Byte], alloc: @MemoryManager) -> Memory
     ends: Bool = when
         a.is_empty() => true
         else => is_separator(a.byte_at(a.count() - 1).bits())
-    sep: USize = when
+    sep: U64 = when
         ends => 0
         else => 1
-    prefix_count: USize = a.count() + sep
-    count: USize = prefix_count + b.count()
+    prefix_count: U64 = a.count() + sep
+    count: U64 = prefix_count + b.count()
     local memory: @Memory[Byte] <- Memory[Byte].construct(count: count.max(1), manager: alloc)
     buffer: @Byte = memory.data.peek()
     buffer.copy(src: a.data, count: a.count())
@@ -401,8 +392,8 @@ routine join_path(a: Span[Byte], b: Span[Byte], alloc: @MemoryManager) -> Memory
 ### Where path's last component ends, trailing separators left out.
 ### :param path: The path to look at.
 ### :returns: The index just past the component's last byte, 0 when `path` is empty or only separators.
-secret routine name_end(path: Span[Byte]) -> USize
-    while end != 0 with end: USize = path.count()
+secret routine name_end(path: Span[Byte]) -> U64
+    while end != 0 with end: U64 = path.count()
         if is_separator(path.byte_at(end - 1).bits())
             continue with end: end - 1
         else
@@ -414,8 +405,8 @@ secret routine name_end(path: Span[Byte]) -> USize
 ### :param path: The path to look at.
 ### :param end: Where the component ends, from {name_end}.
 ### :returns: The index just after the separator before the component, or 0 when there is none.
-secret routine name_start(path: Span[Byte], end: USize) -> USize
-    while i != 0 with i: USize = end
+secret routine name_start(path: Span[Byte], end: U64) -> U64
+    while i != 0 with i: U64 = end
         if is_separator(path.byte_at(i - 1).bits())
             return i
         else
@@ -427,17 +418,17 @@ secret routine name_start(path: Span[Byte], end: USize) -> USize
 ### :param path: The path to look at.
 ### :returns: The component, borrowed from `path` (empty when `path` is empty or only separators).
 routine file_name(path: Span[Byte]) -> Span[Byte]
-    end: USize = name_end(path)
-    start: USize = name_start(path, end)
+    end: U64 = name_end(path)
+    start: U64 = name_start(path, end)
     return path.slice(start, end)
 
 ### The directory part: "/a/b/c" gives "/a/b", "a/b" gives "a", "file.txt" gives "", and "/" stays "/".
 ### :param path: The path to look at.
 ### :returns: The directory part, borrowed from `path`.
 routine parent_path(path: Span[Byte]) -> Span[Byte]
-    local end: USize = name_end(path)
+    local end: U64 = name_end(path)
 
-    start: USize = name_start(path, end)
+    start: U64 = name_start(path, end)
     if start == 0
         # Separators before the name go too, but a leading root separator stays.
         # No separator before the name: the root if path is only separators, else nothing.
@@ -446,7 +437,7 @@ routine parent_path(path: Span[Byte]) -> Span[Byte]
         else
             return path.slice(start: 0, end: 0)
     else
-        while i != 0 with i: USize = start
+        while i != 0 with i: U64 = start
             if is_separator(path.byte_at(i - 1).bits())
                 continue with i: i - 1
             else
@@ -457,11 +448,11 @@ routine parent_path(path: Span[Byte]) -> Span[Byte]
 ### The last '.' of a name after its first character, or 0: a hidden file's leading dot isn't an extension.
 ### :param name: The file name to look at.
 ### :returns: The index of that dot, or 0 when there is none.
-secret routine last_dot(name: Span[Byte]) -> USize
+secret routine last_dot(name: Span[Byte]) -> U64
     if name.count() < 2
         return 0
     else
-        while i != 0 with i: USize = name.count() - 1
+        while i != 0 with i: U64 = name.count() - 1
             if name.byte_at(i) == 46
                 return i
             else
@@ -474,7 +465,7 @@ secret routine last_dot(name: Span[Byte]) -> USize
 ### :returns: The stem, borrowed from `path`.
 routine file_stem(path: Span[Byte]) -> Span[Byte]
     name: Span[Byte] = file_name(path)
-    dot: USize = last_dot(name)
+    dot: U64 = last_dot(name)
     if dot == 0
         return name
     else
@@ -485,7 +476,7 @@ routine file_stem(path: Span[Byte]) -> Span[Byte]
 ### :returns: The extension, borrowed from `path`.
 routine file_extension(path: Span[Byte]) -> Span[Byte]
     name: Span[Byte] = file_name(path)
-    dot: USize = last_dot(name)
+    dot: U64 = last_dot(name)
     if dot == 0
         return name.slice(start: 0, end: 0)
     else
@@ -508,5 +499,5 @@ routine Mapping.data(me: Me) -> @Byte
 
 ### The number of bytes mapped, from `data()` on.
 ### :returns: The byte count, 0 for an empty mapping.
-routine Mapping.count(me: Me) -> USize
+routine Mapping.count(me: Me) -> U64
     return me.count

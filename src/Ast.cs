@@ -4,7 +4,7 @@ namespace Tessera;
 
 // ── Types as written ────────────────────────────────────────────────────────
 
-/// A type as written in source: `S64`, `@Byte` (a `Ptr[Byte]`), `Array[T, 8]`, `Callable[(Addr, USize), Addr]`.
+/// A type as written in source: `S64`, `@Byte` (a `Ptr[Byte]`), `Array[T, 8]`, `Callable[(Addr, U64), Addr]`.
 public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
 {
     /// The module a qualified name was written with: `Standard/Collections` in `Standard/Collections/List[T]`.
@@ -63,7 +63,7 @@ public sealed record Param(string Name, TypeRef Type, Pos Pos)
 /// a needs line and "conform" for an obeys line. Tokens keeps the raw text; the parsed parts are below.
 public sealed record Clause(string Kind, List<Token> Tokens)
 {
-    /// needs: the declared parameters and their kinds (`T: typename`, `N: USize`).
+    /// needs: the declared parameters and their kinds (`T: typename`, `N: U64`).
     public List<(string Name, TypeRef Kind, Pos Pos)> Params { get; init; } = [];
     /// needs: the protocol constraints; obeys: the protocols obeyed.
     public List<TypeRef> Concepts { get; init; } = [];
@@ -257,6 +257,8 @@ public sealed record LoopStmt(LoopKind Kind, Expr? Cond, List<Carried> With, Lis
 {
     /// `each x in source`: the name each element is bound to, and what is walked (a range, or an iterator in memory).
     public string? Var { get; init; }
+    /// `each k: U64 in 0 til n`: the type written for the element, or null. A range walks that integer type.
+    public TypeRef? VarType { get; init; }
     public Pos VarPos { get; init; }
     public Expr? Source { get; init; }
 }

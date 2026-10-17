@@ -27,7 +27,7 @@ public sealed class ArchetypeType(string name, int id) : DType
 /// or global.
 public sealed partial class Compiler
 {
-    /// What a value generic parameter (`COUNT: USize`) stands for while a body is checked: any count works, and a body
+    /// What a value generic parameter (`COUNT: U64`) stands for while a body is checked: any count works, and a body
     /// whose build depends on the count's value is checked again at each instantiation.
     private const long PrecheckCount = 8;
 
@@ -165,7 +165,7 @@ public sealed partial class Compiler
         t is { Name: "Me", Args.Count: 0 } || t is { Name: "Ptr", Args: [TypeArgType { Type: { Name: "Me", Args.Count: 0 } }] };
 
     /// The kinds the `require` and `conform ... when` clauses declare for their parameters: `typename`, or a value
-    /// type such as `USize`.
+    /// type such as `U64`.
     private static Dictionary<string, TypeRef> DeclaredKinds(List<Clause> clauses)
     {
         var kinds = new Dictionary<string, TypeRef>();

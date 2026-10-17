@@ -9,17 +9,17 @@ module Standard/Collections
 import Standard/Alloc
 import Standard/Format
 
-secret preset SORTED_SET_NODE_KEYS: USize = 7
-secret preset SORTED_SET_NODE_CHILDREN: USize = SORTED_SET_NODE_KEYS.add(1)
-secret preset SORTED_SET_NODE_MIN_KEYS: USize = SORTED_SET_NODE_KEYS.add(1).div_trunc(2)
+secret preset SORTED_SET_NODE_KEYS: U64 = 7
+secret preset SORTED_SET_NODE_CHILDREN: U64 = SORTED_SET_NODE_KEYS.add(1)
+secret preset SORTED_SET_NODE_MIN_KEYS: U64 = SORTED_SET_NODE_KEYS.add(1).div_trunc(2)
 
 ### One node of a {SortedSet[T]} B-tree: up to `SORTED_SET_NODE_KEYS` keys inline, and for internal nodes the child pointers between them. `subtree_count` is the total keys in the subtree. It is an entity, so an entity element can live in it: the set makes and frees nodes, and its keys move in and out with steal.
 ### :typeparam T: The element type.
 entity SortedSetNode[T]
 needs T: typename, Comparable[T]
     leaf: Bool
-    count: USize
-    subtree_count: USize
+    count: U64
+    subtree_count: U64
     keys: Array[T, SORTED_SET_NODE_KEYS]
     children: Array[@SortedSetNode[T], SORTED_SET_NODE_CHILDREN]
 
@@ -32,7 +32,7 @@ obeys Diagnosable[SortedSet[T]] when T: typename, Diagnosable[T]
 obeys Equatable[SortedSet[T]] when T: typename
 needs T: typename, Comparable[T]
     root: @SortedSetNode[T]
-    count: USize
+    count: U64
     alloc: @MemoryManager
 
 ### Releases nothing: the set ends a node's keys and frees the node itself (`free_recursive`).
@@ -49,16 +49,16 @@ needs T: typename
 
 ### The number of elements currently stored.
 ### :returns: The count of elements, `0` when the set is empty.
-routine SortedSet[T].count(me: @Me) -> USize
+routine SortedSet[T].count(me: @Me) -> U64
 needs T: typename
-    count: USize = me.count.peek()
+    count: U64 = me.count.peek()
     return count
 
 ### Whether the set holds no elements.
 ### :returns: `true` when the count is `0`.
 routine SortedSet[T].is_empty(me: @Me) -> Bool
 needs T: typename
-    count: USize = me.count.peek()
+    count: U64 = me.count.peek()
     return count == 0
 
 ### A new empty node from `alloc`.
@@ -79,20 +79,20 @@ needs T: typename
 
 ### The number of keys in the subtree below this node.
 ### :returns: The node's subtree count, or `0` for a null node.
-routine SortedSetNode[T].subtree_count(me: @Me) -> USize
+routine SortedSetNode[T].subtree_count(me: @Me) -> U64
 needs T: typename
     if me.is_null()
         return 0
     else
-        count: USize = me.subtree_count.peek()
+        count: U64 = me.subtree_count.peek()
         return count
 
 ### Recomputes this node's subtree count from its own keys and its children's counts. Call it after the node's contents change.
 routine SortedSetNode[T].recount(me: @Me) -> None
 needs T: typename
     local leaf: Bool = me.leaf.peek()
-    local count: USize = me.count.peek()
-    local sum: @USize <- .hollow()
+    local count: U64 = me.count.peek()
+    local sum: @U64 <- .hollow()
 
     if leaf
         me.subtree_count.poke(count)
@@ -102,10 +102,10 @@ needs T: typename
 
         each i in 0 to count
             child: @Me = me.children[i]
-            child_count: USize = child.subtree_count()
-            with_child: USize = sum.peek() + child_count
+            child_count: U64 = child.subtree_count()
+            with_child: U64 = sum.peek() + child_count
             has_key: Bool = i < count
-            next_sum: USize = when
+            next_sum: U64 = when
                 has_key => with_child + 1
                 else => with_child
             next_sum.poke_into(sum)
@@ -115,9 +115,9 @@ needs T: typename
 ### Finds where the key at `key` sits among this node's keys, compared through their places.
 ### :param key: The key to locate.
 ### :returns: The index of the first key not less than `key`, or the key count when every key is smaller. It is also the child to descend into.
-routine SortedSetNode[T].find_index(me: @Me, key: @T) -> USize
+routine SortedSetNode[T].find_index(me: @Me, key: @T) -> U64
 needs T: typename
-    while i < me.count.peek() with i: USize = 0
+    while i < me.count.peek() with i: U64 = 0
         cmp: S32 = key.compare(me.keys.getslot(i))
         if cmp <= 0
             return i
@@ -142,8 +142,8 @@ needs T: typename
     local a: @SortedSetIter[T] <- .hollow()
     local b: @SortedSetIter[T] <- .hollow()
 
-    la: USize = me.count.peek()
-    lb: USize = other.count.peek()
+    la: U64 = me.count.peek()
+    lb: U64 = other.count.peek()
     if not (la == lb)
         return false
     a_val: SortedSetIter[T] = .construct(me)
@@ -174,8 +174,8 @@ needs T: typename
         return false
     else
         while true with node: @SortedSetNode[T] = root
-            i: USize = node.find_index(key)
-            count: USize = node.count.peek()
+            i: U64 = node.find_index(key)
+            count: U64 = node.count.peek()
             if i < count
                 cmp: S32 = key.compare(node.keys.getslot(i))
                 if cmp == 0
@@ -218,14 +218,14 @@ needs T: typename
 ### :returns: A copy of the element.
 ### :throws: Crashes with `IndexOutOfBoundsError` when `rank >= count`.
 @track_caller
-routine SortedSet[T].get_by_rank(me: @Me, rank: USize) -> T
+routine SortedSet[T].get_by_rank(me: @Me, rank: U64) -> T
 needs T: typename
-    count: USize = me.count.peek()
+    count: U64 = me.count.peek()
     if rank >= count
         crash_out_of_bounds()
 
-    while true with node: @SortedSetNode[T] = me.root.peek(), remaining: USize = rank, i: USize = 0
-        node_count: USize = node.count.peek()
+    while true with node: @SortedSetNode[T] = me.root.peek(), remaining: U64 = rank, i: U64 = 0
+        node_count: U64 = node.count.peek()
         is_leaf: Bool = node.leaf.peek()
         if i >= node_count
             if is_leaf
@@ -237,10 +237,10 @@ needs T: typename
                 return key
             continue with node: node, remaining: remaining, i: i + 1
         child: @SortedSetNode[T] = node.children[i]
-        child_count: USize = child.subtree_count()
+        child_count: U64 = child.subtree_count()
         if remaining < child_count
             continue with node: child, remaining: remaining, i: 0
-        after_child: USize = remaining - child_count
+        after_child: U64 = remaining - child_count
         if after_child == 0
             key: T = node.keys[i]
             return key
@@ -252,7 +252,7 @@ needs T: typename
 ### :param alloc: The allocator for the new node.
 ### :returns: True when it split, false when the allocator failed (before anything moved).
 @reshaping
-routine SortedSetNode[T].split_child(me: @Me, index: USize, alloc: @MemoryManager) -> Bool
+routine SortedSetNode[T].split_child(me: @Me, index: U64, alloc: @MemoryManager) -> Bool
 needs T: typename
     local left: @Me = me.children[index]
     local leaf: Bool = left.leaf.peek()
@@ -260,16 +260,16 @@ needs T: typename
 
     if right.is_null()
         return false
-    mid: USize = SORTED_SET_NODE_KEYS.div_trunc(2)
-    right_start: USize = mid + 1
-    right_count: USize = SORTED_SET_NODE_KEYS.sub(right_start)
+    mid: U64 = SORTED_SET_NODE_KEYS.div_trunc(2)
+    right_start: U64 = mid + 1
+    right_count: U64 = SORTED_SET_NODE_KEYS.sub(right_start)
     right.keys.copy(dst_start: 0, src: left.keys, src_start: right_start, count: right_count)
     right.count.poke(right_count)
     if leaf
-        parent_count: USize = me.count.peek()
+        parent_count: U64 = me.count.peek()
         me.keys.shift_right(start: index, end: parent_count)
 
-        until i < index + 1 with i: USize = parent_count
+        until i < index + 1 with i: U64 = parent_count
             child: @Me = me.children[i]
             me.children[i + 1] = child
             continue with i: i - 1
@@ -277,7 +277,7 @@ needs T: typename
             me.keys.getslot(index).poke(steal left.keys.getslot(mid))
             me.children[index + 1] = right
             left.count.poke(mid)
-            next_count: USize = me.count.peek() + 1
+            next_count: U64 = me.count.peek() + 1
             next_count.poke_into(me.count)
             left.recount()
             right.recount()
@@ -285,14 +285,14 @@ needs T: typename
             return true
     else
         each i in 0 to right_count
-            src: USize = mid + 1 + i
+            src: U64 = mid + 1 + i
             child: @Me = left.children[src]
             right.children[i] = child
         then
-            parent_count: USize = me.count.peek()
+            parent_count: U64 = me.count.peek()
             me.keys.shift_right(start: index, end: parent_count)
 
-            until i2 < index + 1 with i2: USize = parent_count
+            until i2 < index + 1 with i2: U64 = parent_count
                 child: @Me = me.children[i2]
                 me.children[i2 + 1] = child
                 continue with i2: i2 - 1
@@ -300,7 +300,7 @@ needs T: typename
                 me.keys.getslot(index).poke(steal left.keys.getslot(mid))
                 me.children[index + 1] = right
                 left.count.poke(mid)
-                next_count: USize = me.count.peek() + 1
+                next_count: U64 = me.count.peek() + 1
                 next_count.poke_into(me.count)
                 left.recount()
                 right.recount()
@@ -319,27 +319,27 @@ needs T: typename
     local probe: @T <- steal key
 
     if me.leaf.peek()
-        slot: USize = me.find_index(key: probe)
-        count: USize = me.count.peek()
+        slot: U64 = me.find_index(key: probe)
+        count: U64 = me.count.peek()
         me.keys.shift_right(start: slot, end: count)
         me.keys.getslot(slot).poke(steal probe)
-        new_count: USize = count + 1
+        new_count: U64 = count + 1
         me.count.poke(new_count)
         me.subtree_count.poke(new_count)
         return true
     else
-        slot: USize = me.find_index(key: probe)
+        slot: U64 = me.find_index(key: probe)
         child: @Me = me.children[slot]
-        child_count: USize = child.count.peek()
+        child_count: U64 = child.count.peek()
         full: Bool = child_count == SORTED_SET_NODE_KEYS
-        values2: (USize, @Me) = when
+        values2: (U64, @Me) = when
             full =>
                 if not me.split_child(index: slot, alloc)
                     drop probe
                     return false
                 cmp: S32 = probe.compare(me.keys.getslot(slot))
                 go_right: Bool = cmp > 0
-                next_slot: USize = when
+                next_slot: U64 = when
                     go_right => slot + 1
                     else => slot
                 becomes (next_slot, me.children[next_slot])
@@ -390,7 +390,7 @@ needs T: typename
             me.count.poke(1)
             return true
         else
-            root_count: USize = root.count.peek()
+            root_count: U64 = root.count.peek()
             full: Bool = root_count == SORTED_SET_NODE_KEYS
             root2: @SortedSetNode[T] = when
                 full =>
@@ -409,20 +409,20 @@ needs T: typename
                 else => root
             if not root2.insert_nonfull(key: steal probe, alloc)
                 return AllocFailed()
-            next_count: USize = me.count.peek() + 1
+            next_count: U64 = me.count.peek() + 1
             next_count.poke_into(me.count)
             return true
 
 ### Removes the key at `index` from a leaf by shifting the later keys left.
 ### :param index: The position of the key within the leaf.
 ### :returns: The removed key.
-routine SortedSetNode[T].remove_leaf_at(me: @Me, index: USize) -> T
+routine SortedSetNode[T].remove_leaf_at(me: @Me, index: U64) -> T
 needs T: typename
     local old: @T <- steal me.keys.getslot(index)
 
-    count: USize = me.count.peek()
+    count: U64 = me.count.peek()
     me.keys.shift_left(start: index, end: count)
-    new_count: USize = count - 1
+    new_count: U64 = count - 1
     me.count.poke(new_count)
     me.subtree_count.poke(new_count)
     return steal old
@@ -434,19 +434,19 @@ needs T: typename
 
 ### Rotates one key from child `i - 1` through the parent into the front of child `i`, so child `i` gains a key. Subtree counts are updated.
 ### :param i: The index of the child that is short of keys.
-routine SortedSetNode[T].borrow_from_left(me: @Me, i: USize) -> None
+routine SortedSetNode[T].borrow_from_left(me: @Me, i: U64) -> None
 needs T: typename
-    local separator: USize = i - 1
+    local separator: U64 = i - 1
     local left: @Me = me.children[separator]
     local child: @Me = me.children[i]
-    local left_count: USize = left.count.peek()
-    local child_count: USize = child.count.peek()
+    local left_count: U64 = left.count.peek()
+    local child_count: U64 = child.count.peek()
 
     child.keys.shift_right(start: 0, end: child_count)
     child.keys.getslot(0).poke(steal me.keys.getslot(separator))
     me.keys.getslot(separator).poke(steal left.keys.getslot(left_count - 1))
     if not child.leaf.peek()
-        children: USize = child_count + 1
+        children: U64 = child_count + 1
         child.children.shift_right(start: 0, end: children)
         moved: @Me = left.children[left_count]
         child.children[0] = moved
@@ -459,12 +459,12 @@ needs T: typename
 
 ### Rotates one key from child `i + 1` through the parent into the end of child `i`, so child `i` gains a key. Subtree counts are updated.
 ### :param i: The index of the child that is short of keys.
-routine SortedSetNode[T].borrow_from_right(me: @Me, i: USize) -> None
+routine SortedSetNode[T].borrow_from_right(me: @Me, i: U64) -> None
 needs T: typename
     local child: @Me = me.children[i]
     local right: @Me = me.children[i + 1]
-    local child_count: USize = child.count.peek()
-    local right_count: USize = right.count.peek()
+    local child_count: U64 = child.count.peek()
+    local right_count: U64 = right.count.peek()
 
     child.keys.getslot(child_count).poke(steal me.keys.getslot(i))
     me.keys.getslot(i).poke(steal right.keys.getslot(0))
@@ -483,21 +483,21 @@ needs T: typename
 ### Merges child `i + 1` and the separating key into child `i` and frees the emptied node, shrinking this node by one key.
 ### :param i: The index of the left child of the pair.
 ### :param alloc: The allocator that frees the merged node.
-routine SortedSetNode[T].merge_children(me: @Me, i: USize, alloc: @MemoryManager) -> None
+routine SortedSetNode[T].merge_children(me: @Me, i: U64, alloc: @MemoryManager) -> None
 needs T: typename
     local left: @Me = me.children[i]
     local right: @Me = me.children[i + 1]
-    local left_count: USize = left.count.peek()
-    local right_count: USize = right.count.peek()
+    local left_count: U64 = left.count.peek()
+    local right_count: U64 = right.count.peek()
 
     left.keys.getslot(left_count).poke(steal me.keys.getslot(i))
-    dst_start: USize = left_count + 1
+    dst_start: U64 = left_count + 1
     left.keys.copy(dst_start, src: right.keys, src_start: 0, count: right_count)
     if not left.leaf.peek()
         left.children.copy(dst_start: left_count + 1, src: right.children, src_start: 0,
             count: right_count + 1)
     left.count.poke(left_count + 1 + right_count)
-    parent_count: USize = me.count.peek()
+    parent_count: U64 = me.count.peek()
     me.keys.shift_left(start: i, end: parent_count)
     me.children.shift_left(start: i + 1, end: parent_count + 1)
     me.count.poke(parent_count - 1)
@@ -511,10 +511,10 @@ needs T: typename
 ### :param alloc: The allocator that frees a merged node.
 ### :returns: The index of the child to descend into, which differs from `i` when a merge with the left sibling happened.
 @track_caller
-routine SortedSetNode[T].ensure_min(me: @Me, i: USize, alloc: @MemoryManager) -> USize
+routine SortedSetNode[T].ensure_min(me: @Me, i: U64, alloc: @MemoryManager) -> U64
 needs T: typename
     child: @Me = me.children[i]
-    child_count: USize = child.count.peek()
+    child_count: U64 = child.count.peek()
     if child_count >= SORTED_SET_NODE_MIN_KEYS
         return i
     else
@@ -522,17 +522,17 @@ needs T: typename
         has_left2: Bool = when
             has_left =>
                 left: @Me = me.children[i - 1]
-                left_count: USize = left.count.peek()
+                left_count: U64 = left.count.peek()
                 if left_count >= SORTED_SET_NODE_MIN_KEYS
                     me.borrow_from_left(i)
                     return i
                 else
                     becomes true
             else => false
-        parent_count: USize = me.count.peek()
+        parent_count: U64 = me.count.peek()
         if i < parent_count
             right: @Me = me.children[i + 1]
-            right_count: USize = right.count.peek()
+            right_count: U64 = right.count.peek()
             if right_count >= SORTED_SET_NODE_MIN_KEYS
                 me.borrow_from_right(i)
                 return i
@@ -541,7 +541,7 @@ needs T: typename
                 return i
         else if not has_left2
             crash_logic_breached()
-        merged_at: USize = i - 1
+        merged_at: U64 = i - 1
         me.merge_children(i: merged_at, alloc)
         return merged_at
 
@@ -551,13 +551,13 @@ needs T: typename
 routine SortedSetNode[T].take_max(me: @Me, alloc: @MemoryManager) -> T
 needs T: typename
     if me.leaf.peek()
-        count: USize = me.count.peek()
-        index: USize = count - 1
+        count: U64 = me.count.peek()
+        index: U64 = count - 1
         local key: @T <- me.remove_leaf_at(index)
         return steal key
     else
-        count: USize = me.count.peek()
-        actual: USize = me.ensure_min(i: count, alloc)
+        count: U64 = me.count.peek()
+        actual: U64 = me.ensure_min(i: count, alloc)
         child: @Me = me.children[actual]
         local key: @T <- child.take_max(alloc)
         me.recount()
@@ -572,7 +572,7 @@ needs T: typename
         local key: @T <- me.remove_leaf_at(0)
         return steal key
     else
-        actual: USize = me.ensure_min(i: 0, alloc)
+        actual: U64 = me.ensure_min(i: 0, alloc)
         child: @Me = me.children[actual]
         local key: @T <- child.take_min(alloc)
         me.recount()
@@ -585,9 +585,9 @@ needs T: typename
 ### :returns: `true` when the key was found and removed, `false` otherwise.
 routine SortedSetNode[T].remove(me: @Me, key: @T, alloc: @MemoryManager) -> Bool
 needs T: typename
-    local slot: USize = me.find_index(key)
+    local slot: U64 = me.find_index(key)
 
-    count: USize = me.count.peek()
+    count: U64 = me.count.peek()
     if slot < count
         cmp: S32 = key.compare(me.keys.getslot(slot))
         if cmp == 0
@@ -596,7 +596,7 @@ needs T: typename
                 return true
             else
                 left: @Me = me.children[slot]
-                left_count: USize = left.count.peek()
+                left_count: U64 = left.count.peek()
                 if left_count >= SORTED_SET_NODE_MIN_KEYS
                     left2: @Me = me.children[slot]
                     local replacement: @T <- left2.take_max(alloc)
@@ -606,7 +606,7 @@ needs T: typename
                     return true
                 else
                     right: @Me = me.children[slot + 1]
-                    right_count: USize = right.count.peek()
+                    right_count: U64 = right.count.peek()
                     if right_count >= SORTED_SET_NODE_MIN_KEYS
                         right2: @Me = me.children[slot + 1]
                         local replacement: @T <- right2.take_min(alloc)
@@ -623,7 +623,7 @@ needs T: typename
     if me.leaf.peek()
         return false
     else
-        actual: USize = me.ensure_min(i: slot, alloc)
+        actual: U64 = me.ensure_min(i: slot, alloc)
         child: @Me = me.children[actual]
         removed: Bool = child.remove(key, alloc)
         me.recount()
@@ -641,9 +641,9 @@ needs T: typename
     else
         alloc: @MemoryManager = me.alloc.peek()
         if root.remove(key, alloc)
-            remaining_count: USize = me.count.peek() - 1
+            remaining_count: U64 = me.count.peek() - 1
             remaining_count.poke_into(me.count)
-            root_count: USize = root.count.peek()
+            root_count: U64 = root.count.peek()
             if root_count == 0
                 if root.leaf.peek()
                     alloc2: @MemoryManager = me.alloc.peek()
@@ -684,9 +684,9 @@ needs T: typename
         deallocate[Me](data: me, alloc)
         return
     else
-        count: USize = me.count.peek()
+        count: U64 = me.count.peek()
 
-        child_count: USize = count + 1
+        child_count: U64 = count + 1
 
         each i in 0 til child_count
             child: @Me = me.children[i]

@@ -867,7 +867,7 @@ public sealed class Structurer
         {
             var p = header.Params[i];
             // The name passed back must be the header's own parameter: a block with a parameter or a value of the
-            // same name passes its own (`next(k: USize)` jumping `step(k, ...)` after `step` jumped `next(k - 1)`).
+            // same name passes its own (`next(k: U64)` jumping `step(k, ...)` after `step` jumped `next(k - 1)`).
             if (!backEdges.All(x => x.Jump.Args.Count > i && x.Jump.Args[i] is ValueRef v && v.Name == p.Name &&
                     PassesHeaderValue(x.From, p.Name, header.Name, members, []))) continue;
             invariant.Add(p.Name);
@@ -1095,10 +1095,10 @@ public sealed class Structurer
             if (step is not BinaryExpr { Op: "+", Left: ValueRef l, Right: IntLit { Value: var one } } || l.Name != index.Name || one != 1)
                 return loop;
         }
-        // The index of `each` takes the type of a bound, or `USize` when both are bare numbers: a counter of another
+        // The index of `each` takes the type of a bound, or `S64` when both are bare numbers: a counter of another
         // type between bare numbers stays a `while`, which names the type.
         var counter = loop.With.First(c => c.Name == index.Name);
-        if (counter.Init is IntLit && cmp.Right is IntLit && counter.Type is not { Name: "USize", Path: null, Args.Count: 0 })
+        if (counter.Init is IntLit && cmp.Right is IntLit && counter.Type is not { Name: "S64", Path: null, Args.Count: 0 })
             return loop;
         var with = loop.With.Where(c => c.Name != index.Name).ToList();
         var rewritten = StripIndex(loop.Body, index.Name);

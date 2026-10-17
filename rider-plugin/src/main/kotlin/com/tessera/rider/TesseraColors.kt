@@ -138,13 +138,13 @@ class TesseraColorSettingsPage : ColorSettingsPage {
             <field>y</field>: <record>S64</record>
 
         <attr>#track_caller</attr>
-        <kw>routine</kw> <routine>find</routine><<tp>T</tp>: <concept>Eq</concept>>(<param>data</param>: <op>@</op><tp>T</tp>, <param>length</param>: <record>USize</record>, <param>target</param>: <tp>T</tp>) -> <record>Option</record><<record>USize</record>>
-            <kw>shared</kw> <shared>step</shared> : <record>USize</record> = <num>1</num>
+        <kw>routine</kw> <routine>find</routine><<tp>T</tp>: <concept>Eq</concept>>(<param>data</param>: <op>@</op><tp>T</tp>, <param>length</param>: <record>U64</record>, <param>target</param>: <tp>T</tp>) -> <record>Option</record><<record>U64</record>>
+            <kw>shared</kw> <shared>step</shared> : <record>U64</record> = <num>1</num>
 
             <kw>block</kw> <block>entry</block>()
                 <term>jump</term> <block>scan</block>(<num>0</num>)
 
-            <kw>block</kw> <block>scan</block>(<param>i</param>: <record>USize</record>)
+            <kw>block</kw> <block>scan</block>(<param>i</param>: <record>U64</record>)
                 <value>done</value> : <record>Bool</record> = <param>i</param>.<routine>ge</routine>(<param>length</param>)
                 <term>branch</term> <value>done</value>
                     ? <term>return</term>(.<const>Absent</const>)

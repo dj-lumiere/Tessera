@@ -28,11 +28,11 @@ public class DocLintTests
     {
         var warnings = Lint("""
             # A plain comment is not a doc comment.
-            private routine helper() -> None
+            secret routine helper() -> None
                 return
             """);
         string warning = Assert.Single(warnings);
-        Assert.Contains("lib/t.te:2:9: warning: routine 'helper' has no doc comment", warning);
+        Assert.Contains("lib/t.te:2:8: warning: routine 'helper' has no doc comment", warning);
     }
 
     [Fact]

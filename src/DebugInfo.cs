@@ -42,7 +42,7 @@ public sealed partial class Compiler
         if (_places.TryGetValue(key, out var name)) return name;
         name = $"@.place.{_places.Count}";
         _places[key] = name;
-        string text = StringGlobal(file), usize = USize.Llvm;
+        string text = StringGlobal(file), usize = Count.Llvm;
         _globals.AppendLine($"{name} = private unnamed_addr constant {{ {{ ptr, {usize} }}, i32, i32 }} "
             + $"{{ {{ ptr, {usize} }} {{ ptr {text}, {usize} {Utf8Length(file)} }}, i32 {pos.Line}, i32 {pos.Col} }}");
         return name;

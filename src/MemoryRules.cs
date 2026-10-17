@@ -218,7 +218,7 @@ public static class MemoryRules
                                 + $"table. Use '{uv.Name}' before line {managerEnd.Line}, or end '{manager}' after the table's last use");
                         if (state.Stale.TryGetValue(uv.Name, out var moved) && state.Views.TryGetValue(uv.Name, out var viewed))
                             Report(uv.Pos, $"'{uv.Name}' is a view of '{viewed}', and {moved.How} on line {moved.Pos.Line} may have moved that memory: "
-                                + $"use the view before, or keep a position (a USize) and take the view again after");
+                                + $"use the view before, or keep a position (a U64) and take the view again after");
                         break;
                     case ArmBegin:
                         arms.Push(state.Copy());

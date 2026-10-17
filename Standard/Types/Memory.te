@@ -30,9 +30,9 @@ secret global LAST_GENERATION: @U64
 secret global LAST_GENERATION: @U64
 
 ### The bytes the stamp takes in front of the values.
-secret preset STAMP_SIZE: USize = 16
+secret preset STAMP_SIZE: U64 = 16
 ### The offset from the values back to the stamp.
-secret preset STAMP_BACK: SSize = -16
+secret preset STAMP_BACK: S64 = -16
 
 ### The stamp in front of a block's values: its generation, 0 once dropped.
 secret record BlockStamp
@@ -56,7 +56,7 @@ secret routine next_generation() -> U64
 ### The room in front of the values of a `T`: the stamp, rounded up to keep the values aligned.
 ### :typeparam T: The value type.
 ### :returns: The room in bytes.
-secret routine stamp_room[T]() -> USize
+secret routine stamp_room[T]() -> U64
 needs T: typename
     return alignof[T]().max(STAMP_SIZE)
 
@@ -93,16 +93,16 @@ needs T: typename
 ### :param count: The number of values, more than 0.
 ### :param manager: Where the memory comes from.
 ### :returns: The first value's address and its generation, or a null address when the manager has none to give.
-### :throws: Crashes with `IntegerOverflowError` when the size doesn't fit in USize.
+### :throws: Crashes with `IntegerOverflowError` when the size doesn't fit in U64.
 @expensive("allocates memory")
-secret routine take_block[T](count: USize, manager: @MemoryManager) -> (@T, U64)
+secret routine take_block[T](count: U64, manager: @MemoryManager) -> (@T, U64)
 needs T: typename
-    room: USize = stamp_room[T]()
-    size: USize = sizeof[T]() * count + room
+    room: U64 = stamp_room[T]()
+    size: U64 = sizeof[T]() * count + room
     taken: Addr = manager.alloc(size, align: room)
     if taken.is_null()
         return (null, 0)
-    data: @T = taken.offset(room.to[SSize]()).to[@T]()
+    data: @T = taken.offset(room.to[S64]()).to[@T]()
     generation: U64 = next_generation()
     generation.poke_into(stamp_of[T](data).generation)
     return (data, generation)
@@ -117,7 +117,7 @@ secret routine give_block[T](data: @T, manager: @MemoryManager) -> None
 needs T: typename
     stamp_of[T](data).generation.poke(0)
     raw: Addr = data
-    manager.free(raw.offset(-stamp_room[T]().to[SSize]()))
+    manager.free(raw.offset(-stamp_room[T]().to[S64]()))
     return
 
 # == Memory[T] ====================================================================================================
@@ -129,7 +129,7 @@ needs T: typename
 entity Memory[T]
 needs T: typename
     data: @T
-    count: USize
+    count: U64
     manager: @MemoryManager
     generation: U64
 
@@ -142,7 +142,7 @@ needs T: typename
 ###     {Memory[T].construct_result}.
 @track_caller
 @expensive("allocates memory")
-routine Memory[T].construct(count: USize, manager: @MemoryManager) -> Me
+routine Memory[T].construct(count: U64, manager: @MemoryManager) -> Me
 needs T: typename
     when Me.construct_result(count, manager)
         is Me as memory => return memory
@@ -154,11 +154,11 @@ needs T: typename
 ### :param times: How many times they are written.
 ### :param manager: Where the memory comes from and goes back to.
 ### :returns: The memory, `times` runs of `values`.
-### :throws: Crashes with `IntegerOverflowError` when the count doesn't fit in a USize, and with
+### :throws: Crashes with `IntegerOverflowError` when the count doesn't fit in a U64, and with
 ###     `MemoryAllocationError` when the manager has no memory to give.
 @track_caller
 @expensive("allocates memory")
-routine Memory[T].construct(values: Span[T], times: USize, manager: @MemoryManager) -> Me
+routine Memory[T].construct(values: Span[T], times: U64, manager: @MemoryManager) -> Me
 needs T: typename
     local made: @Me <- Me.construct(count: values.count * times, manager)
     local view: Span[T] = made.getview()
@@ -177,7 +177,7 @@ needs T: typename
 ### :returns: The memory.
 ### :throws: Returns `AllocFailed` when the manager has no memory to give.
 @expensive("allocates memory")
-routine Memory[T].construct_result(count: USize, manager: @MemoryManager) -> Result[Me, AllocFailed]
+routine Memory[T].construct_result(count: U64, manager: @MemoryManager) -> Result[Me, AllocFailed]
 needs T: typename
     if count == 0
         return Me(data: null, count: 0, manager, generation: 0)
@@ -188,7 +188,7 @@ needs T: typename
 
 ### The number of values.
 ### :returns: The count.
-routine Memory[T].count(me: @Me) -> USize
+routine Memory[T].count(me: @Me) -> U64
 needs T: typename
     return me.count.peek()
 
@@ -200,7 +200,7 @@ needs T: typename
 routine Memory[T].getview(me: @Me) -> Span[T]
 needs T: typename
     data: @T = me.data.peek()
-    count: USize = me.count.peek()
+    count: U64 = me.count.peek()
     if count == 0
         return Span[T].construct(data, count: 0)
     check_generation[T](data, generation: me.generation.peek())
@@ -221,7 +221,7 @@ needs T: typename
 ### :throws: Crashes with `DestructedMemoryError` when the memory was dropped or moved, and with `IndexOutOfBoundsError`
 ###     when `index >= count`.
 @track_caller
-routine Memory[T].load(me: @Me, index: USize) -> T
+routine Memory[T].load(me: @Me, index: U64) -> T
 needs T: typename
     return me.getview()[index]
 
@@ -231,7 +231,7 @@ needs T: typename
 ### :throws: Crashes with `DestructedMemoryError` when the memory was dropped or moved, and with `IndexOutOfBoundsError`
 ###     when `index >= count`.
 @track_caller
-routine Memory[T].store(me: @Me, index: USize, value: T) -> None
+routine Memory[T].store(me: @Me, index: U64, value: T) -> None
 needs T: typename
     me.getview().getslot(index).poke(steal value)
     return
@@ -243,7 +243,7 @@ needs T: typename
 ### :throws: Crashes with `DestructedMemoryError` when the memory was dropped or moved, and with `IndexOutOfBoundsError`
 ###     when `index >= count`.
 @track_caller
-routine Memory[T].getslot(me: @Me, index: USize) -> @T
+routine Memory[T].getslot(me: @Me, index: U64) -> @T
 needs T: typename
     return me.getview().getslot(index)
 
@@ -255,7 +255,7 @@ needs T: typename
 ### :throws: Crashes with `DestructedMemoryError` when the memory was dropped or moved, and with `IndexOutOfBoundsError`
 ###     when `first >= count` or `second >= count`.
 @track_caller
-routine Memory[T].swap(me: @Me, first: USize, second: USize) -> None
+routine Memory[T].swap(me: @Me, first: U64, second: U64) -> None
 needs T: typename
     me.getview().swap(first, second)
     return
@@ -265,7 +265,7 @@ needs T: typename
 ### :param count: How many of the values are in use, at most `count()`.
 ### :throws: Crashes with `IndexOutOfBoundsError` when `count` is more than the memory holds.
 @track_caller
-routine Memory[T].keep_first(me: @Me, count: USize) -> None
+routine Memory[T].keep_first(me: @Me, count: U64) -> None
 needs T: typename
     if count > me.count.peek()
         crash_out_of_bounds()
@@ -297,7 +297,7 @@ needs T: typename
 @track_caller
 @expensive("reallocates memory")
 @reshaping
-routine Memory[T].resize(me: @Me, count: USize) -> None
+routine Memory[T].resize(me: @Me, count: U64) -> None
 needs T: typename
     resized: Result[None, AllocFailed] = me.resize_result(count)
     when resized
@@ -313,7 +313,7 @@ needs T: typename
 @track_caller
 @expensive("reallocates memory")
 @reshaping
-routine Memory[T].resize_result(me: @Me, count: USize) -> Result[None, AllocFailed]
+routine Memory[T].resize_result(me: @Me, count: U64) -> Result[None, AllocFailed]
 needs T: typename
     local manager: @MemoryManager = me.manager.peek()
     local data: @T = me.data.peek()
@@ -333,13 +333,13 @@ needs T: typename
             is AllocFailed => return AllocFailed()
     else
         check_generation[T](data, generation: me.generation.peek())
-        room: USize = stamp_room[T]()
+        room: U64 = stamp_room[T]()
         raw: Addr = data
-        grown: Addr = manager.realloc(at: raw.offset(-room.to[SSize]()),
+        grown: Addr = manager.realloc(at: raw.offset(-room.to[S64]()),
             size: sizeof[T]() * count + room, align: room)
         if grown.is_null()
             return AllocFailed()
-        moved: @T = grown.offset(room.to[SSize]()).to[@T]()
+        moved: @T = grown.offset(room.to[S64]()).to[@T]()
         generation: U64 = next_generation()
         generation.poke_into(stamp_of[T](moved).generation)
         me.poke(Me(data: moved, count, manager, generation))

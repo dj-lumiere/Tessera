@@ -330,8 +330,8 @@ internal sealed class NamedArgsMigration
             return true;
         }
 
-        private static readonly HashSet<string> UnsignedNames = ["U8", "U16", "U32", "U64", "U128", "U256", "USize", "Byte"];
-        private static readonly HashSet<string> SignedNames = ["S8", "S16", "S32", "S64", "S128", "S256", "SSize"];
+        private static readonly HashSet<string> UnsignedNames = ["U8", "U16", "U32", "U64", "U128", "U256", "CSize", "Byte"];
+        private static readonly HashSet<string> SignedNames = ["S8", "S16", "S32", "S64", "S128", "S256", "CSSize"];
         private static readonly HashSet<string> FloatNames = ["B16", "BF16", "B32", "B64", "B128"];
 
         /// A `/` or `%` and what it becomes. `/` on an unsigned integer is `//` (the same quotient). `/` on a signed

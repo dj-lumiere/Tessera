@@ -22,24 +22,24 @@ record Harness
 ### One phase of the run: its number and how many operations of which kinds it makes.
 record Phase
     ### The phase's number, as checkpoints print it.
-    number: USize
+    number: U64
     ### How many operations the phase runs.
-    ops: USize
+    ops: U64
     ### How many distinct keys the operations draw from.
-    keys: USize
+    keys: U64
     ### The weight of put among the operations.
-    puts: USize
+    puts: U64
     ### The weight of remove by key.
-    removes: USize
+    removes: U64
     ### The weight of remove by rank.
-    rank_removes: USize
+    rank_removes: U64
 
 ### Where a checkpoint is taken: the phase, the operations so far, and the running results checksum.
 record Checkpoint
     ### The phase's number.
-    phase: USize
+    phase: U64
     ### The operations run so far in the phase.
-    op: USize
+    op: U64
     ### The checksum of every result so far.
     results: S64
 
@@ -54,12 +54,12 @@ routine Harness.construct(out: @BufWriter[Out], rng: @Rng) -> Me
 routine Harness.destruct(me: @Me) -> None
     return
 
-routine Rng.below(me: @Me, bound: USize) -> USize
+routine Rng.below(me: @Me, bound: U64) -> U64
     state: U64 = me.state.peek()
     next: U64 = state *% 6364136223846793005 +% 1442695040888963407
     me.state.poke(next)
     bucket: U64 = (next >> 33) % bound.to[U64]()
-    value: USize = bucket.to[USize]()
+    value: U64 = bucket.to[U64]()
     return value
 
 routine mix(hash: S64, value: S64) -> S64
@@ -85,14 +85,14 @@ routine iteration_hash(map: @SortedDict[S64, S64]) -> S64
         value: S64 = pair.value
         mix(hash: mix(hash: hash.peek(), value: key), value).poke_into(hash)
 
-routine rank_hash_at(map: @SortedDict[S64, S64], hash: S64, rank: USize) -> S64
+routine rank_hash_at(map: @SortedDict[S64, S64], hash: S64, rank: U64) -> S64
     key: S64 = map.get_by_rank(rank).key
     value: S64 = map.get_by_rank(rank).value
     return mix(hash: mix(hash, value: key), value)
 
 # Folds get_by_rank at the first, middle, and last rank, or 0 for an empty map.
 routine rank_hash(map: @SortedDict[S64, S64]) -> S64
-    local count: USize = map.count()
+    local count: U64 = map.count()
 
     if count == 0
         return 0
@@ -105,7 +105,7 @@ routine rank_hash(map: @SortedDict[S64, S64]) -> S64
 routine checkpoint(out: @BufWriter[Out], map: @SortedDict[S64, S64], at: Checkpoint) -> None
     out.write("phase {at.phase}")
     labeled(out, label: "op", value: at.op.to[S64]())
-    size: USize = map.count()
+    size: U64 = map.count()
     labeled(out, label: "length", value: size.to[S64]())
     labeled(out, label: "results", value: at.results)
     labeled(out, label: "iteration", value: iteration_hash(map))
@@ -119,15 +119,15 @@ routine checkpoint(out: @BufWriter[Out], map: @SortedDict[S64, S64], at: Checkpo
 @reshaping(map)
 routine run_phase(harness: Harness, map: @SortedDict[S64, S64], phase: Phase, results: S64) -> S64
     local rng: @Rng = harness.rng
-    local ops: USize = phase.ops
-    local keys: USize = phase.keys
-    local puts: USize = phase.puts
-    local removes: USize = phase.removes
-    local rank_removes: USize = phase.rank_removes
+    local ops: U64 = phase.ops
+    local keys: U64 = phase.keys
+    local puts: U64 = phase.puts
+    local removes: U64 = phase.removes
+    local rank_removes: U64 = phase.rank_removes
 
-    while op < ops with op: USize = 0, checksum: S64 = results
+    while op < ops with op: U64 = 0, checksum: S64 = results
         key: S64 = rng.below(keys).to[S64]()
-        kind: USize = rng.below(10)
+        kind: U64 = rng.below(10)
         is_put: Bool = kind < puts
         is_remove: Bool = kind < removes
         is_rank_remove: Bool = kind < rank_removes
@@ -140,11 +140,11 @@ routine run_phase(harness: Harness, map: @SortedDict[S64, S64], phase: Phase, re
                 removed: Bool = map.remove(key)
                 becomes removed.to[S64]()
             is_rank_remove =>
-                count: USize = map.count()
+                count: U64 = map.count()
                 if count == 0
                     becomes -2
                 else
-                    rank: USize = rng.below(count)
+                    rank: U64 = rng.below(count)
                     key2: S64 = map.get_by_rank(rank).key
                     removed: Bool = map.remove(key2)
                     becomes mix(hash: key2, value: removed.to[S64]())
@@ -154,7 +154,7 @@ routine run_phase(harness: Harness, map: @SortedDict[S64, S64], phase: Phase, re
                 else
                     becomes -1
         mixed: S64 = mix(hash: checksum, value: result)
-        op_next: USize = op + 1
+        op_next: U64 = op + 1
         if op_next % 500 == 0
             checkpoint(out: harness.out, map,
                 at: Checkpoint(phase: phase.number, op: op_next, results: mixed))
@@ -165,8 +165,8 @@ routine run_phase(harness: Harness, map: @SortedDict[S64, S64], phase: Phase, re
 # Copies from into to from the largest key down, so the two trees are built by a different insertion order.
 @reshaping(to)
 routine copy_reversed(from: @SortedDict[S64, S64], to: @SortedDict[S64, S64]) -> None
-    while rank_end != 0 with rank_end: USize = from.count()
-        rank: USize = rank_end - 1
+    while rank_end != 0 with rank_end: U64 = from.count()
+        rank: U64 = rank_end - 1
         to[from.get_by_rank(rank).key] = from.get_by_rank(rank).value
         continue with rank_end: rank
     then

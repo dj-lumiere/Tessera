@@ -28,14 +28,14 @@ import Standard/Alloc
 ### :param page: The page size in bytes.
 ### :returns: The start of the mapping, or null when the pages can't be mapped.
 @target(os: ("linux", "macos"))
-secret routine stack_map(length: USize, page: USize) -> Addr
+secret routine stack_map(length: U64, page: U64) -> Addr
     # PROT_READ | PROT_WRITE, no file
-    local at: Addr = c_mmap(null, length, 3, map_private_anonymous(), -1, 0)
+    local at: Addr = c_mmap(null, length.to[CSize](), 3, map_private_anonymous(), -1, 0)
 
-    if ptrtoint[Addr, SSize](at) == -1
+    if ptrtoint[Addr, S64](at) == -1
         return null
     else
-        length.poke_into(at.to[@USize]())
+        length.poke_into(at.to[@U64]())
         pages_protect(at, size: page, access: PageAccess.NONE)
         return at
 
@@ -48,28 +48,28 @@ secret routine stack_map(length: USize, page: USize) -> Addr
 ### :param page: The page size in bytes.
 ### :returns: The start of the reservation, or null when the space can't be reserved.
 @target(os: "windows")
-secret routine stack_map(length: USize, page: USize) -> Addr
+secret routine stack_map(length: U64, page: U64) -> Addr
     # MEM_RESERVE, PAGE_NOACCESS
-    local at: Addr = c_virtual_alloc(null, length, 0x2000, 1)
+    local at: Addr = c_virtual_alloc(null, length.to[CSize](), 0x2000, 1)
 
     if at.is_null()
         return null
     else
         # MEM_COMMIT, PAGE_READWRITE
-        c_virtual_alloc(at, page, 0x1000, 4)
-        length.poke_into(at.to[@USize]())
+        c_virtual_alloc(at, page.to[CSize](), 0x1000, 4)
+        length.poke_into(at.to[@U64]())
         pages_protect(at, size: page, access: PageAccess.NONE)
-        pages: USize = length // page - 1
+        pages: U64 = length // page - 1
         if pages < 3
             # Too small to grow: all of it committed.
-            c_virtual_alloc(at.offset(page.to[SSize]()), pages * page, 0x1000, 4)
+            c_virtual_alloc(at.offset(page.to[S64]()), (pages * page).to[CSize](), 0x1000, 4)
             return at
         else
             # PAGE_READWRITE | PAGE_GUARD for the page below the top two
-            two: USize = page * 2
-            c_virtual_alloc(at.offset((length - two).to[SSize]()), two, 0x1000, 4)
-            guard_offset: USize = length - two - page
-            c_virtual_alloc(at.offset(guard_offset.to[SSize]()), page, 0x1000, 0x104)
+            two: U64 = page * 2
+            c_virtual_alloc(at.offset((length - two).to[S64]()), two.to[CSize](), 0x1000, 4)
+            guard_offset: U64 = length - two - page
+            c_virtual_alloc(at.offset(guard_offset.to[S64]()), page.to[CSize](), 0x1000, 0x104)
             return at
 
 # -- the allocator -----------------------------------------------------------------
@@ -81,19 +81,19 @@ secret routine stack_map(length: USize, page: USize) -> Addr
 ### :returns: The lowest usable address of the stack (just above the guard page), null when the pages can't be
 ### reserved.
 ### :throws: Crashes with `IntegerOverflowError` when `size` rounded up to pages, plus the guard page, doesn't fit in
-###     USize.
+###     U64.
 @target(os: not "none")
-routine stack_alloc_fn(state: Addr, size: USize, align: USize) -> Addr
-    local page: USize = page_size()
-    local padded_size: USize = size + page - 1
-    local pages: USize = padded_size // page
-    local length: USize = (pages + 1) * page
+routine stack_alloc_fn(state: Addr, size: U64, align: U64) -> Addr
+    local page: U64 = page_size()
+    local padded_size: U64 = size + page - 1
+    local pages: U64 = padded_size // page
+    local length: U64 = (pages + 1) * page
     local base: Addr = stack_map(length, page)
 
     if base.is_null()
         return null
     else
-        stack: Addr = base.offset(page.to[SSize]())
+        stack: Addr = base.offset(page.to[S64]())
         return stack
 
 ### The stack allocator's realloc function: a stack doesn't grow past its size, so this always fails.
@@ -103,7 +103,7 @@ routine stack_alloc_fn(state: Addr, size: USize, align: USize) -> Addr
 ### :param align: The alignment the stack has.
 ### :returns: Always null.
 @target(os: not "none")
-routine stack_realloc_fn(state: Addr, old_ptr: Addr, size: USize, align: USize) -> Addr
+routine stack_realloc_fn(state: Addr, old_ptr: Addr, size: U64, align: U64) -> Addr
     return null
 
 ### The stack allocator's free function: reopens the bottom page to read the length written in it, then releases the
@@ -112,10 +112,10 @@ routine stack_realloc_fn(state: Addr, old_ptr: Addr, size: USize, align: USize) 
 ### :param ptr: A stack from {make_stack_memory}.
 @target(os: not "none")
 routine stack_free_fn(state: Addr, ptr: Addr) -> None
-    page: USize = page_size()
-    base: Addr = ptr.offset(-page.to[SSize]())
+    page: U64 = page_size()
+    base: Addr = ptr.offset(-page.to[S64]())
     pages_protect(at: base, size: page, access: PageAccess.READ_WRITE)
-    length: USize = base.to[@USize]().peek()
+    length: U64 = base.to[@U64]().peek()
     pages_release(at: base, size: length)
     return
 

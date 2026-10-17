@@ -25,7 +25,7 @@ the lines: a value is bound once and never reassigned, a load and a store are ca
 `p.poke(v)`), memory is taken from a manager and given back by hand, and the builder checks that it was.
 
 ```tessera
-routine two_sum(list: @S32, count: USize, target: S32) -> Maybe[(USize, USize)]
+routine two_sum(list: @S32, count: U64, target: S32) -> Maybe[(U64, U64)]
     each left_idx in 0 til count
         each right_idx in left_idx + 1 til count
             left_val: S32 = list.stride(left_idx).peek()

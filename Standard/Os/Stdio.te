@@ -44,7 +44,7 @@ needs T: typename
     ### :param buffer: Where the bytes go.
     ### :param count: The most bytes to read.
     ### :returns: How many bytes were read, 0 at the end, or a {FsError}.
-    routine Me.read_bytes_result(me: @Me, buffer: @Byte, count: USize) -> Result[USize, FsError]
+    routine Me.read_bytes_result(me: @Me, buffer: @Byte, count: U64) -> Result[U64, FsError]
 
 # -- In ----------------------------------------------------------------------------------
 
@@ -52,21 +52,21 @@ needs T: typename
 global STDIN_BUFFER: @InputBuffer
 
 ### The size in bytes of standard input's buffer, and the read size at or above which a read skips the buffer.
-preset IN_BUFFER: USize = 8192
+preset IN_BUFFER: U64 = 8192
 
 ### Standard input's one buffer: bytes read from the OS and not handed out yet, in bytes[start, end).
 secret record InputBuffer
     lock: ExclusiveLock
     bytes: Array[Byte, IN_BUFFER]
-    start: USize
-    end: USize
+    start: U64
+    end: U64
 
 ### Fills the empty buffer from the OS with one read.
 ### :returns: True when bytes came, false at the end of the input (or on a failure, which reads as the end).
 secret routine InputBuffer.fill(me: @Me) -> Bool
-    got: Result[USize, FsError] = stdin_read(buffer: me.bytes.to[@Byte](), count: IN_BUFFER)
-    n: USize = when got
-        is USize as n => n
+    got: Result[U64, FsError] = stdin_read(buffer: me.bytes.to[@Byte](), count: IN_BUFFER)
+    n: U64 = when got
+        is U64 as n => n
         is FsError => 0
     me.start.poke(0)
     me.end.poke(n)
@@ -77,7 +77,7 @@ secret routine InputBuffer.fill(me: @Me) -> Bool
 ### :absent: At the end of the input.
 secret routine InputBuffer.emit_checked(me: @Me) -> Maybe[Byte]
     if me.start.peek() < me.end.peek() or me.fill()
-        at: USize = me.start.peek()
+        at: U64 = me.start.peek()
         me.start.poke(at + 1)
         buffered: @Byte = me.bytes.to[@Byte]()
         return buffered.stride(at).peek()
@@ -86,7 +86,7 @@ secret routine InputBuffer.emit_checked(me: @Me) -> Maybe[Byte]
 
 ### Puts back the byte emit_checked just handed out. The lock is held.
 secret routine InputBuffer.unread(me: @Me) -> None
-    previous_start: USize = me.start.peek() - 1
+    previous_start: U64 = me.start.peek() - 1
     previous_start.poke_into(me.start)
     return
 
@@ -94,12 +94,12 @@ secret routine InputBuffer.unread(me: @Me) -> None
 ### The lock is held.
 ### :returns: True when bytes came, false at the end of the input (or on a failure, which reads as the end).
 secret routine InputBuffer.fill_more(me: @Me) -> Bool
-    local end: USize = me.end.peek()
+    local end: U64 = me.end.peek()
 
     free: @Byte = me.bytes.to[@Byte]().stride(end)
-    got: Result[USize, FsError] = stdin_read(buffer: free, count: IN_BUFFER.sub(end))
+    got: Result[U64, FsError] = stdin_read(buffer: free, count: IN_BUFFER.sub(end))
     when got
-        is USize as n =>
+        is U64 as n =>
             me.end.poke(end + n)
             return n > 0
         is FsError => return false
@@ -107,8 +107,8 @@ secret routine InputBuffer.fill_more(me: @Me) -> Bool
 ### Moves the bytes the buffer holds to its front, so the free space after them is as large as it can be. The lock is
 ### held.
 secret routine InputBuffer.compact(me: @Me) -> None
-    local from: USize = me.start.peek()
-    local held: USize = me.end.peek() - from
+    local from: U64 = me.start.peek()
+    local held: U64 = me.end.peek() - from
     local buffered: @Byte = me.bytes.to[@Byte]()
 
     me.start.poke(0)
@@ -142,8 +142,8 @@ secret routine InputBuffer.word(me: @Me, spill: @Memory[Byte]) -> Maybe[Span[Byt
             is None => return None()
 
     # length bytes of the word are known
-    while true with length: USize = 1
-        at: USize = me.start.peek() + length
+    while true with length: U64 = 1
+        at: U64 = me.start.peek() + length
         if at < me.end.peek()
             buffered: @Byte = me.bytes.to[@Byte]()
             following: Byte = buffered.stride(at).peek()
@@ -161,8 +161,8 @@ secret routine InputBuffer.word(me: @Me, spill: @Memory[Byte]) -> Maybe[Span[Byt
 ### Hands out the first `length` bytes the buffer holds as a view of it, and moves past them. The lock is held.
 ### :param length: How many bytes the word has.
 ### :returns: The word, good until the buffer is read into again.
-secret routine InputBuffer.take_word(me: @Me, length: USize) -> Span[Byte]
-    from: USize = me.start.peek()
+secret routine InputBuffer.take_word(me: @Me, length: U64) -> Span[Byte]
+    from: U64 = me.start.peek()
     buffered: @Byte = me.bytes.to[@Byte]()
     word: Span[Byte] = Span[Byte].construct(data: buffered.stride(from), count: length)
     me.start.poke(from + length)
@@ -175,7 +175,7 @@ secret routine InputBuffer.take_word(me: @Me, length: USize) -> Span[Byte]
 ### :param spill: Where the word is kept, hollow before.
 ### :returns: The word, a view of `spill`.
 ### :throws: Crashes with `MemoryAllocationError` when the word can't be copied.
-secret routine InputBuffer.spill_word(me: @Me, length: USize, spill: @Memory[Byte]) -> Span[Byte]
+secret routine InputBuffer.spill_word(me: @Me, length: U64, spill: @Memory[Byte]) -> Span[Byte]
     local text: @CaptureBuffer <- CaptureBuffer.empty()
 
     text.append(chunk: me.bytes.to[@Byte](), n: length, alloc: DEFAULT_HEAP)
@@ -208,23 +208,23 @@ routine In.reader() -> @Me
 ### :param buffer: Where the bytes go.
 ### :param count: The most bytes to read.
 ### :returns: How many bytes were read, 0 at the end, or a {FsError} when the OS read fails.
-routine In.read_into_result(buffer: @Byte, count: USize) -> Result[USize, FsError]
+routine In.read_into_result(buffer: @Byte, count: U64) -> Result[U64, FsError]
     local b: @InputBuffer = STDIN_BUFFER
 
     b.lock.lock()
     if not (b.start.peek() < b.end.peek())
         # Nothing held: a read that wants a bufferful or more goes straight to the caller's buffer.
         if count >= IN_BUFFER
-            read: Result[USize, FsError] = stdin_read(buffer, count)
+            read: Result[U64, FsError] = stdin_read(buffer, count)
             b.lock.unlock()
             return read
         else if not b.fill()
             b.lock.unlock()
             return 0
-    available: USize = b.end.peek() - b.start.peek()
-    n: USize = available.min(count)
+    available: U64 = b.end.peek() - b.start.peek()
+    n: U64 = available.min(count)
     buffer.copy(src: b.bytes.to[@Byte]().stride(b.start.peek()), count: n)
-    next_start: USize = b.start.peek() + n
+    next_start: U64 = b.start.peek() + n
     next_start.poke_into(b.start)
     b.lock.unlock()
     return n
@@ -291,7 +291,7 @@ needs T: typename, Parsable[T]
 ### :param buffer: Where the bytes go.
 ### :param count: The most bytes to read.
 ### :returns: How many bytes were read, 0 at the end, or a {FsError}.
-routine In.read_bytes_result(me: @Me, buffer: @Byte, count: USize) -> Result[USize, FsError]
+routine In.read_bytes_result(me: @Me, buffer: @Byte, count: U64) -> Result[U64, FsError]
     return Me.read_into_result(buffer, count)
 
 ### Up to `count` bytes, in memory from `alloc`: fewer only at the end of the input or on a read failure. Drop them.
@@ -299,18 +299,18 @@ routine In.read_bytes_result(me: @Me, buffer: @Byte, count: USize) -> Result[USi
 ### :param alloc: The manager for the bytes.
 ### :returns: The bytes read (empty when the allocation fails).
 @expensive("allocates what it reads")
-routine In.read_count(count: USize, alloc: @MemoryManager) -> Memory[Byte]
+routine In.read_count(count: U64, alloc: @MemoryManager) -> Memory[Byte]
     local buffer: @Memory[Byte] <- Memory[Byte].construct(count: 0, manager: alloc)
 
     when Memory[Byte].construct_result(count: count.max(1), manager: alloc)
         is Memory[Byte] as made => buffer.replace(value: steal made)
         is AllocFailed => return buffer
 
-    while n != count with n: USize = 0
-        got: Result[USize, FsError] = Me.read_into_result(buffer: buffer.data.peek().stride(n),
+    while n != count with n: U64 = 0
+        got: Result[U64, FsError] = Me.read_into_result(buffer: buffer.data.peek().stride(n),
             count: count - n)
-        k: USize = when got
-            is USize as k => k
+        k: U64 = when got
+            is U64 as k => k
             is FsError => 0
         if k == 0
             buffer.keep_first(n)
@@ -331,9 +331,9 @@ routine In.read_all(alloc: @MemoryManager) -> Memory[Byte]
     local chunk: @Byte = chunk_buffer.to[@Byte]()
 
     while true
-        got2: Result[USize, FsError] = Me.read_into_result(buffer: chunk, count: 4096)
-        n2: USize = when got2
-            is USize as n2 => n2
+        got2: Result[U64, FsError] = Me.read_into_result(buffer: chunk, count: 4096)
+        n2: U64 = when got2
+            is U64 as n2 => n2
             is FsError => 0
         if n2 == 0
             local all: @Memory[Byte] <- text.owned()
@@ -493,7 +493,7 @@ routine Out.writer() -> @Me
 ### :param count: How many bytes there are.
 ### :returns: Success, or the error Other if the OS refused (or the process has no standard output).
 @expensive("makes a system call")
-routine Out.write_all_result(data: @Byte, count: USize) -> Result[None, FsError]
+routine Out.write_all_result(data: @Byte, count: U64) -> Result[None, FsError]
     if stream_write(stream: StdStream.OUTPUT, data, count)
         return None()
     else
@@ -503,7 +503,7 @@ routine Out.write_all_result(data: @Byte, count: USize) -> Result[None, FsError]
 ### :param data: The bytes to write.
 ### :param count: How many bytes there are.
 @expensive("makes a system call")
-routine Out.write_bytes(me: @Me, data: @Byte, count: USize) -> None
+routine Out.write_bytes(me: @Me, data: @Byte, count: U64) -> None
     stream_write(stream: StdStream.OUTPUT, data, count)
     return
 
@@ -530,7 +530,7 @@ routine Err.writer() -> @Me
 ### :param count: How many bytes there are.
 ### :returns: Success, or the error Other if the OS refused (or the process has no standard error).
 @expensive("makes a system call")
-routine Err.write_all_result(data: @Byte, count: USize) -> Result[None, FsError]
+routine Err.write_all_result(data: @Byte, count: U64) -> Result[None, FsError]
     if stream_write(stream: StdStream.ERROR, data, count)
         return None()
     else
@@ -540,7 +540,7 @@ routine Err.write_all_result(data: @Byte, count: USize) -> Result[None, FsError]
 ### :param data: The bytes to write.
 ### :param count: How many bytes there are.
 @expensive("makes a system call")
-routine Err.write_bytes(me: @Me, data: @Byte, count: USize) -> None
+routine Err.write_bytes(me: @Me, data: @Byte, count: U64) -> None
     stream_write(stream: StdStream.ERROR, data, count)
     return
 
@@ -602,13 +602,13 @@ secret routine stream_is_terminal(stream: StdStream) -> Bool
 ### :param count: How many bytes there are.
 ### :returns: `true` when every byte was written, `false` if the OS refused.
 @target(os: ("linux", "macos"))
-secret routine stream_write(stream: StdStream, data: @Byte, count: USize) -> Bool
+secret routine stream_write(stream: StdStream, data: @Byte, count: U64) -> Bool
     fd: CInt = fd_of(stream)
 
-    while remaining != 0 with at: @Byte = data, remaining: USize = count
-        wrote: SSize = c_write(fd_of(stream), at, remaining.min(1073741824))
+    while remaining != 0 with at: @Byte = data, remaining: U64 = count
+        wrote: S64 = c_write(fd_of(stream), at, remaining.min(1073741824).to[CSize]()).to[S64]()
         if wrote > 0
-            continue with at: at.stride(wrote.to[USize]()), remaining: remaining - wrote.to[USize]()
+            continue with at: at.stride(wrote.to[U64]()), remaining: remaining - wrote.to[U64]()
         else
             errno: CInt = c_errno_place().peek()
             # EINTR: a signal came first, so try again
@@ -624,10 +624,10 @@ secret routine stream_write(stream: StdStream, data: @Byte, count: USize) -> Boo
 ### :param count: The most bytes to read.
 ### :returns: How many bytes were read, 0 at its end, or the error Other when the read fails.
 @target(os: ("linux", "macos"))
-secret routine stdin_read(buffer: @Byte, count: USize) -> Result[USize, FsError]
-    got: SSize = c_read(0, buffer, count.min(1073741824))
+secret routine stdin_read(buffer: @Byte, count: U64) -> Result[U64, FsError]
+    got: S64 = c_read(0, buffer, count.min(1073741824).to[CSize]()).to[S64]()
     if got >= 0
-        return got.to[USize]()
+        return got.to[U64]()
     errno: CInt = c_errno_place().peek()
     if errno == 4
         return stdin_read(buffer, count)
@@ -657,14 +657,14 @@ global CONSOLE_INPUT: @ConsoleReadBuffer
 @target(os: "windows")
 secret record PendingUtf8
     bytes: Array[Byte, 4]
-    count: USize
+    count: U64
 
 ### ReadConsoleW's text as UTF-8, not yet handed out, and a high surrogate whose low half hasn't come.
 @target(os: "windows")
 secret record ConsoleReadBuffer
     bytes: Array[Byte, 16384]
-    start: USize
-    end: USize
+    start: U64
+    end: U64
     high: U16
 
 ### Binds the Win32 `GetStdHandle` function, which gives one of the process's standard handles.
@@ -776,7 +776,7 @@ secret routine handle_of(stream: StdStream) -> Addr
 ### :returns: `true` when it can be used.
 @target(os: "windows")
 secret routine is_usable(h: Addr) -> Bool
-    return h.is_not_null() and ptrtoint[Addr, USize](h) != USize.MAX
+    return h.is_not_null() and ptrtoint[Addr, U64](h) != U64.MAX
 
 ### Whether `h` is a console (GetConsoleMode accepts it), not a pipe or a file.
 ### :param h: The handle to test.
@@ -820,7 +820,7 @@ secret routine stream_enable_colors(stream: StdStream) -> Bool
 ### :returns: `true` when every byte was written (or held as an unfinished sequence), `false` if the OS refused (or
 ###     the process has no such stream).
 @target(os: "windows")
-secret routine stream_write(stream: StdStream, data: @Byte, count: USize) -> Bool
+secret routine stream_write(stream: StdStream, data: @Byte, count: U64) -> Bool
     h: Addr = handle_of(stream)
     if not is_usable(h)
         return false
@@ -835,12 +835,12 @@ secret routine stream_write(stream: StdStream, data: @Byte, count: USize) -> Boo
 ### :param count: How many bytes there are.
 ### :returns: `true` when every byte was written, `false` on the first failure.
 @target(os: "windows")
-secret routine file_write(h: Addr, data: @Byte, count: USize) -> Bool
+secret routine file_write(h: Addr, data: @Byte, count: U64) -> Bool
     local wrote: @U32 <- 0
 
-    while remaining != 0 with at: @Byte = data, remaining: USize = count
+    while remaining != 0 with at: @Byte = data, remaining: U64 = count
         ok: CInt = c_write_file(h, at, remaining.min(1073741824).to[U32](), wrote, null)
-        n: USize = wrote.peek().to[USize]()
+        n: U64 = wrote.peek().to[U64]()
         if ok != 0 and n > 0
             continue with at: at.stride(n), remaining: remaining - n
         else
@@ -852,7 +852,7 @@ secret routine file_write(h: Addr, data: @Byte, count: USize) -> Bool
 ### :param b: The sequence's first byte.
 ### :returns: 1 to 4.
 @target(os: "windows")
-secret routine sequence_length(b: Byte) -> USize
+secret routine sequence_length(b: Byte) -> U64
     u: U8 = b.to[U8]()
     when
         u < 0xC0 => return 1
@@ -866,15 +866,15 @@ secret routine sequence_length(b: Byte) -> USize
 ### :param count: How many bytes there are.
 ### :returns: The number of bytes up to the end of the last complete sequence (`count` when none is cut off).
 @target(os: "windows")
-secret routine complete_end(data: @Byte, count: USize) -> USize
-    until i == 0 or seen == 3 with i: USize = count, seen: USize = 0
+secret routine complete_end(data: @Byte, count: U64) -> U64
+    until i == 0 or seen == 3 with i: U64 = count, seen: U64 = 0
         b: Byte = data.stride(i - 1).peek()
         top_bits: U8 = b.to[U8]() & 0xC0
         # a continuation byte: 10xxxxxx
         if top_bits == 0x80
             continue with i: i - 1, seen: seen + 1
         else
-            sequence_end: USize = i - 1 + sequence_length(b)
+            sequence_end: U64 = i - 1 + sequence_length(b)
             if sequence_end > count
                 return i - 1
             else
@@ -900,16 +900,16 @@ secret routine pending_of(stream: StdStream) -> @PendingUtf8
 ### :param count: How many bytes there are.
 ### :returns: `true` when the text was written (or held), `false` if the console refused.
 @target(os: "windows")
-secret routine console_write(stream: StdStream, h: Addr, data: @Byte, count: USize) -> Bool
+secret routine console_write(stream: StdStream, h: Addr, data: @Byte, count: U64) -> Bool
     local pending: @PendingUtf8 = pending_of(stream)
-    local held: USize = pending.count.peek()
+    local held: U64 = pending.count.peek()
 
-    values2: (@Byte, USize) = when
+    values2: (@Byte, U64) = when
         held == 0 => (data, count)
         else =>
             # The bytes the held sequence still needs come first.
-            need: USize = sequence_length(pending.bytes[0]) - held
-            taken: USize = need.min(count)
+            need: U64 = sequence_length(pending.bytes[0]) - held
+            taken: U64 = need.min(count)
             pending.bytes.to[@Byte]().stride(held).copy(src: data, count: taken)
             if taken < need
                 pending.count.poke(held + taken)
@@ -922,7 +922,7 @@ secret routine console_write(stream: StdStream, h: Addr, data: @Byte, count: USi
                     return false
 
     at, n = values2
-    cut: USize = complete_end(data: at, count: n)
+    cut: U64 = complete_end(data: at, count: n)
     pending.bytes.to[@Byte]().copy(src: at.stride(cut), count: n - cut)
     pending.count.poke(n - cut)
     return console_text(h, data: at, count: cut)
@@ -933,13 +933,13 @@ secret routine console_write(stream: StdStream, h: Addr, data: @Byte, count: USi
 ### :param count: How many bytes there are.
 ### :returns: `true` when all of it was written, `false` if the console refused.
 @target(os: "windows")
-secret routine console_text(h: Addr, data: @Byte, count: USize) -> Bool
+secret routine console_text(h: Addr, data: @Byte, count: U64) -> Bool
     local written: @U32 <- 0
     local iter: @BytesCharsIter <- Span[Byte].construct(data, count).chars()
     local unit_buffer: @Array[U16, 2048] <- .hollow()
     local units: @U16 = unit_buffer.to[@U16]()
 
-    while true with n: USize = 0
+    while true with n: U64 = 0
         if n >= 2046
             if write_units(h, units, n, written)
                 continue with n: 0
@@ -969,11 +969,11 @@ secret routine console_text(h: Addr, data: @Byte, count: USize) -> Bool
 ### :param written: Scratch space for the count each call wrote.
 ### :returns: `true` when all were written, `false` if the console refused.
 @target(os: "windows")
-secret routine write_units(h: Addr, units: @U16, n: USize, written: @U32) -> Bool
+secret routine write_units(h: Addr, units: @U16, n: U64, written: @U32) -> Bool
     if n == 0
         return true
     ok: CInt = c_write_console(h, units, n.to[U32](), written, null)
-    w: USize = written.peek().to[USize]()
+    w: U64 = written.peek().to[U64]()
     if ok != 0 and w > 0
         return write_units(h, units: units.stride(w), n: n - w, written)
     else
@@ -985,7 +985,7 @@ secret routine write_units(h: Addr, units: @U16, n: USize, written: @U32) -> Boo
 ### :returns: How many bytes were read, 0 at its end (Ctrl+Z at the start of a console read, a closed pipe, or no
 ###     standard input), or the error Other when the read fails.
 @target(os: "windows")
-secret routine stdin_read(buffer: @Byte, count: USize) -> Result[USize, FsError]
+secret routine stdin_read(buffer: @Byte, count: U64) -> Result[U64, FsError]
     h: Addr = handle_of(StdStream.INPUT)
     if not is_usable(h)
         return 0
@@ -993,7 +993,7 @@ secret routine stdin_read(buffer: @Byte, count: USize) -> Result[USize, FsError]
         return console_read(h, buffer, count)
     local got: @U32 <- 0
     if c_read_file(h, buffer, count.min(1073741824).to[U32](), got, null) != 0
-        return got.peek().to[USize]()
+        return got.peek().to[U64]()
     # ERROR_BROKEN_PIPE: the writing end closed, which is the end
     if c_get_last_error() == 109
         return 0
@@ -1007,15 +1007,15 @@ secret routine stdin_read(buffer: @Byte, count: USize) -> Result[USize, FsError]
 ### :returns: How many bytes were handed out, 0 at the end of the input (Ctrl+Z first), or the error Other when
 ###     ReadConsoleW fails.
 @target(os: "windows")
-secret routine console_read(h: Addr, buffer: @Byte, count: USize) -> Result[USize, FsError]
+secret routine console_read(h: Addr, buffer: @Byte, count: U64) -> Result[U64, FsError]
     local input: @ConsoleReadBuffer = CONSOLE_INPUT
 
     if input.start.peek() < input.end.peek()
         # Ctrl+Z first: the end of the input
         # A high surrogate at the end waits for its low half. One held from the last read goes in front.
-        start: USize = input.start.peek()
-        available: USize = input.end.peek() - start
-        n: USize = available.min(count)
+        start: U64 = input.start.peek()
+        available: U64 = input.end.peek() - start
+        n: U64 = available.min(count)
         buffer.copy(src: input.bytes.to[@Byte]().stride(start), count: n)
         input.start.poke(start + n)
         return n
@@ -1024,7 +1024,7 @@ secret routine console_read(h: Addr, buffer: @Byte, count: USize) -> Result[USiz
         local got: @U32 <- 0
         if not (c_read_console(h, units.to[@U16](), 4096, got, null) != 0)
             return FsError.OTHER
-        n: USize = got.peek().to[USize]()
+        n: U64 = got.peek().to[U64]()
         if n == 0
             return 0
         if units[0] == 0x1A
@@ -1033,28 +1033,28 @@ secret routine console_read(h: Addr, buffer: @Byte, count: USize) -> Result[USiz
             units2: @U16 = units.to[@U16]()
             local joined: @Array[U16, 4097] <- .hollow()
             high: U16 = input.high.peek()
-            lead: USize = when
+            lead: U64 = when
                 high == 0 => 0
                 else => 1
             joined.to[@U16]().poke(high)
             joined.to[@U16]().stride(lead).copy(src: units2, count: n)
-            total: USize = n + lead
+            total: U64 = n + lead
             joined_units: @U16 = joined.to[@U16]()
             last: U16 = joined_units.stride(total - 1).peek()
-            values: (@U16, USize, U16) = when
+            values: (@U16, U64, U16) = when
                 last.between(lo: 0xD800, hi: 0xDBFF) => (joined.to[@U16](), total - 1, last)
                 else => (joined.to[@U16](), total, 0)
             joined2, units3, high2 = values
             input.high.poke(high2)
-            made: USize = narrow(units: joined2, count: units3, out: input.bytes.to[@Byte]())
+            made: U64 = narrow(units: joined2, count: units3, out: input.bytes.to[@Byte]())
             input.start.poke(0)
             input.end.poke(made)
             if made == 0
                 return console_read(h, buffer, count)
             else
-                start: USize = input.start.peek()
-                available: USize = input.end.peek() - start
-                n2: USize = available.min(count)
+                start: U64 = input.start.peek()
+                available: U64 = input.end.peek() - start
+                n2: U64 = available.min(count)
                 buffer.copy(src: input.bytes.to[@Byte]().stride(start), count: n2)
                 input.start.poke(start + n2)
                 return n2

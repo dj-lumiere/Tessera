@@ -378,7 +378,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     private bool IsClauseStart() => IsIdent("needs") || IsIdent("obeys") || IsIdent("require") || IsIdent("conform");
 
-    /// One clause line. `needs` lists parameters (`T: typename`, `N: USize`) and protocol constraints (`Equatable[T]`);
+    /// One clause line. `needs` lists parameters (`T: typename`, `N: U64`) and protocol constraints (`Equatable[T]`);
     /// `obeys` lists protocols, optionally followed by `when` and the constraints under which it holds.
     private Clause ParseClause()
     {
@@ -397,7 +397,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var when = new List<TypeRef>();
         bool AtEnd() => Is(TokenKind.Newline) || Is(TokenKind.Eof);
 
-        // `T: typename`, `N: USize` declare parameters; anything else is a concept constraint.
+        // `T: typename`, `N: U64` declare parameters; anything else is a concept constraint.
         void ParseRequireList(List<TypeRef> constraints)
         {
             do
@@ -485,7 +485,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private static IEnumerable<string> NamesIn(TypeRef t) =>
         new[] { t.Name }.Concat(t.Args.OfType<TypeArgType>().SelectMany(a => NamesIn(a.Type)));
 
-    /// The names a routine's `require` clauses declare (`T: typename`, `N: USize`).
+    /// The names a routine's `require` clauses declare (`T: typename`, `N: U64`).
     private static HashSet<string> RequiredNames(List<Clause> clauses)
     {
         var names = new HashSet<string>();
@@ -1472,6 +1472,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var kind = word.Text switch { "each" => LoopKind.For, "while" => LoopKind.While, _ => LoopKind.Until };
         string? variable = null;
         Pos varPos = default;
+        TypeRef? varType = null;
         Expr? source = null, cond = null;
         // The carried values are visible in the condition (`while n > 1 with n: U64 = start`): their names are
         // read off the line before the condition is parsed.
@@ -1482,6 +1483,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             var name = ValueName("the name each element takes: each x in ...");
             variable = name.Text;
             varPos = name.Pos;
+            if (Accept(TokenKind.Colon)) varType = ParseType();
             if (!IsIdent("in")) throw Error($"expected 'in' after '{variable}': each {variable} in ...");
             Next();
             source = ParseExpr();
@@ -1518,7 +1520,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (then.Count == 0) throw new CompileError(word.Pos, "then needs lines of its own under it");
         }
         if (_values is not null && outer is not null) _values = outer;
-        return new LoopStmt(kind, cond, with, body, then, word.Pos) { Var = variable, VarPos = varPos, Source = source };
+        return new LoopStmt(kind, cond, with, body, then, word.Pos) { Var = variable, VarPos = varPos, VarType = varType, Source = source };
     }
 
     /// The names after `with` on the current line: `a` and `b` in `while c with a: T = x, b: U = y`.

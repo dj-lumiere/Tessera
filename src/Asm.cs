@@ -424,7 +424,7 @@ internal sealed class AsmLowering
     {
         IntType it => it.Bits,
         BoolType => 8,
-        PtrType or CallableType => _c.USize.Bits,
+        PtrType or CallableType => _c.CSize.Bits,
         FloatType ft => ft.Bits,
         VectorType vt => checked((int)(Bits(vt.Elem, pos) * vt.Count)),
         _ => throw new CompileError(pos, $"an assembly operand is an integer, a float, a pointer or a vector, not {t}"),
@@ -964,7 +964,7 @@ internal sealed class AsmLowering
     /// An address register as the assembler writes it: always the full width.
     private string AddressText(Expr e)
     {
-        var addr = _c.USize;
+        var addr = _c.CSize;
         if (e is ValueRef v)
         {
             int i = ParamIndex(v);
@@ -1052,7 +1052,7 @@ internal sealed class AsmLowering
                     throw new CompileError(pos, $"a RISC-V branch compares two registers: {name}[U64](R10, R11)");
                 var (left, right) = (c.Args[0], c.Args[1]);
                 bool? signed = Signedness(name, types.Count == 1 ? types[0] : null, pos);
-                var operandType = types.Count == 1 ? _c.ResolveType(types[0], _sig.Env) : _c.USize;
+                var operandType = types.Count == 1 ? _c.ResolveType(types[0], _sig.Env) : _c.CSize;
                 string a = CompareOperand(left, operandType), b = CompareOperand(right, operandType);
                 string u = signed == false ? "u" : "";
                 return name switch

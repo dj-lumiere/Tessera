@@ -96,7 +96,7 @@ public static partial class ConstructDestructMigration
             string name = header.Groups[3].Value;
             string typeArgs = header.Groups[4].Value;
             // The pointer-width integers are machine types written as records.
-            if (name is "USize" or "SSize") continue;
+            if (name is "USize" or "SSize" or "CSize" or "CSSize") continue;
             var annotations = AnnotationsAbove(lines, i);
             if (annotations.Any(a => a.StartsWith("#llvm", StringComparison.Ordinal) || a.StartsWith("#union", StringComparison.Ordinal)
                                      || a.StartsWith("@llvm", StringComparison.Ordinal) || a.StartsWith("@union", StringComparison.Ordinal)
@@ -230,7 +230,7 @@ public static partial class ConstructDestructMigration
         return head.Trim().Split('/')[^1];
     }
 
-    /// The `T: typename` and `COUNT: USize` parts of a type's `require` lines, which each of its routines lists.
+    /// The `T: typename` and `COUNT: U64` parts of a type's `require` lines, which each of its routines lists.
     private static string Kinds(List<string> require)
     {
         var parts = new List<string>();

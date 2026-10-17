@@ -213,7 +213,7 @@ secret routine c_utimes(path: @Byte, times: Addr) -> CInt
 @external("c")
 @symbol("getcwd")
 @target(os: ("linux", "macos"))
-secret routine c_getcwd(buf: @Byte, size: USize) -> @Byte
+secret routine c_getcwd(buf: @Byte, size: CSize) -> @Byte
 
 ### Binds the C `chdir` function: changes the working directory.
 ### :param path: The NUL-terminated path of the new working directory.
@@ -307,7 +307,7 @@ secret routine c_closedir(dir: Addr) -> CInt
 @external("c")
 @symbol("mmap64")
 @target(os: "linux")
-secret routine c_mmap(addr: Addr, length: USize, prot: CInt, flags: CInt, fd: CInt,
+secret routine c_mmap(addr: Addr, length: CSize, prot: CInt, flags: CInt, fd: CInt,
     offset: S64) -> Addr
 
 ### Binds the C `mmap` function: maps part of a file into memory.
@@ -321,7 +321,7 @@ secret routine c_mmap(addr: Addr, length: USize, prot: CInt, flags: CInt, fd: CI
 @external("c")
 @symbol("mmap")
 @target(os: "macos")
-secret routine c_mmap(addr: Addr, length: USize, prot: CInt, flags: CInt, fd: CInt,
+secret routine c_mmap(addr: Addr, length: CSize, prot: CInt, flags: CInt, fd: CInt,
     offset: S64) -> Addr
 
 ### Binds the C `munmap` function: removes a mapping.
@@ -331,7 +331,7 @@ secret routine c_mmap(addr: Addr, length: USize, prot: CInt, flags: CInt, fd: CI
 @external("c")
 @symbol("munmap")
 @target(os: ("linux", "macos"))
-secret routine c_munmap(addr: Addr, length: USize) -> CInt
+secret routine c_munmap(addr: Addr, length: CSize) -> CInt
 
 ### Binds the C `msync` function: writes a mapping's changed pages back to its file.
 ### :param addr: The mapping's address.
@@ -341,7 +341,7 @@ secret routine c_munmap(addr: Addr, length: USize) -> CInt
 @external("c")
 @symbol("msync")
 @target(os: ("linux", "macos"))
-secret routine c_msync(addr: Addr, length: USize, flags: CInt) -> CInt
+secret routine c_msync(addr: Addr, length: CSize, flags: CInt) -> CInt
 
 ### Binds the C `madvise` function: tells the OS how a mapping will be used.
 ### :param addr: The mapping's address.
@@ -351,7 +351,7 @@ secret routine c_msync(addr: Addr, length: USize, flags: CInt) -> CInt
 @external("c")
 @symbol("madvise")
 @target(os: ("linux", "macos"))
-secret routine c_madvise(addr: Addr, length: USize, advice: CInt) -> CInt
+secret routine c_madvise(addr: Addr, length: CSize, advice: CInt) -> CInt
 
 # -- the numbers that differ between Linux and macOS --------------------------------------
 
@@ -441,25 +441,25 @@ secret routine ms_sync() -> CInt
 ### Where a Linux `struct dirent64` (readdir64's) has `d_type`.
 ### :returns: The byte offset 18.
 @target(os: "linux")
-secret routine dirent_type_at() -> USize
+secret routine dirent_type_at() -> U64
     return 18
 
 ### Where a macOS `struct dirent` (64-bit inodes) has `d_type`.
 ### :returns: The byte offset 20.
 @target(os: "macos")
-secret routine dirent_type_at() -> USize
+secret routine dirent_type_at() -> U64
     return 20
 
 ### Where a Linux `struct dirent64` (readdir64's) has `d_name`.
 ### :returns: The byte offset 19.
 @target(os: "linux")
-secret routine dirent_name_at() -> USize
+secret routine dirent_name_at() -> U64
     return 19
 
 ### Where a macOS `struct dirent` (64-bit inodes) has `d_name`.
 ### :returns: The byte offset 21.
 @target(os: "macos")
-secret routine dirent_name_at() -> USize
+secret routine dirent_name_at() -> U64
     return 21
 
 # -- errors and paths ----------------------------------------------------------------
@@ -522,7 +522,7 @@ secret routine checked(rc: CInt) -> Result[None, FsError]
 ### :returns: True when `path` was copied.
 @target(os: ("linux", "macos"))
 secret routine c_path(path: Span[Byte], out: @Byte) -> Bool
-    n: USize = path.count()
+    n: U64 = path.count()
     if n >= PATH_CAPACITY
         return false
     if path.has("\0")
@@ -538,9 +538,9 @@ secret routine c_path(path: Span[Byte], out: @Byte) -> Bool
 ### :param out: The buffer, `PATH_CAPACITY` bytes.
 ### :returns: True when the path fit.
 @target(os: ("linux", "macos"))
-secret routine c_child_path(dir: @Byte, dir_count: USize, name: @Byte, out: @Byte) -> Bool
-    name_count: USize = name.to[CStr]().count()
-    total: USize = dir_count + 1 + name_count
+secret routine c_child_path(dir: @Byte, dir_count: U64, name: @Byte, out: @Byte) -> Bool
+    name_count: U64 = name.to[CStr]().count()
+    total: U64 = dir_count + 1 + name_count
     if total >= PATH_CAPACITY
         return false
     out.copy(src: dir, count: dir_count)
@@ -999,15 +999,15 @@ secret routine FileHandle.open(path: Span[Byte], mode: OpenMode) -> Result[Me, F
 ### :throws: Returns the reason when the read fails.
 @target(os: ("linux", "macos"))
 @expensive("asks the operating system")
-routine FileHandle.read_bytes_result(me: @Me, buffer: @Byte, count: USize) -> Result[USize, FsError]
-    got: SSize = c_read(me.fd.peek(), buffer, count.min(1073741824))
+routine FileHandle.read_bytes_result(me: @Me, buffer: @Byte, count: U64) -> Result[U64, FsError]
+    got: S64 = c_read(me.fd.peek(), buffer, count.min(1073741824).to[CSize]()).to[S64]()
     if got >= 0
-        return got.to[USize]()
+        return got.to[U64]()
     # EINTR: a signal came first, so ask again
     if errno() == 4
         return me.read_bytes_result(buffer, count)
     else
-        return failed[USize]()
+        return failed[U64]()
 
 ### Writes up to count bytes: how many it did. One call writes at most 1 GiB, and a write a signal interrupts is
 ### tried again.
@@ -1016,14 +1016,14 @@ routine FileHandle.read_bytes_result(me: @Me, buffer: @Byte, count: USize) -> Re
 ### :returns: The count written.
 ### :throws: Returns the reason when the write fails.
 @target(os: ("linux", "macos"))
-secret routine FileHandle.write_some(me: @Me, data: @Byte, count: USize) -> Result[USize, FsError]
-    wrote: SSize = c_write(me.fd.peek(), data, count.min(1073741824))
+secret routine FileHandle.write_some(me: @Me, data: @Byte, count: U64) -> Result[U64, FsError]
+    wrote: S64 = c_write(me.fd.peek(), data, count.min(1073741824).to[CSize]()).to[S64]()
     if wrote >= 0
-        return wrote.to[USize]()
+        return wrote.to[U64]()
     if errno() == 4
         return me.write_some(data, count)
     else
-        return failed[USize]()
+        return failed[U64]()
 
 ### Moves the position: the new one, from the start.
 ### :param offset: The distance to move, negative to go back.
@@ -1263,9 +1263,9 @@ secret routine copy_contents(src: @FileHandle, dst: @FileHandle) -> Result[U64, 
         return error_of(errno())
     buffer2: @Byte = buffer.to[@Byte]()
     while true with total: U64 = 0
-        got: Result[USize, FsError] = src.read_bytes_result(buffer: buffer2, count: 16384)
+        got: Result[U64, FsError] = src.read_bytes_result(buffer: buffer2, count: 16384)
         when got
-            is USize as n =>
+            is U64 as n =>
                 if n == 0
                     return total
                 wrote: Result[None, FsError] = dst.write_all_result(data: buffer2, count: n)
@@ -1371,7 +1371,7 @@ secret routine touch(path: Span[Byte]) -> Result[None, FsError]
 record DirIter
     dir: Addr
     path: Array[Byte, PATH_CAPACITY]  # the directory, NUL-terminated
-    count: USize  # the directory's byte count
+    count: U64  # the directory's byte count
     name: @Byte  # the last entry's name, in readdir's buffer
 
 ### Makes a `DirIter` from its fields.
@@ -1381,7 +1381,7 @@ record DirIter
 ### :param name: Its `name`.
 ### :returns: The new value.
 @target(os: ("linux", "macos"))
-routine DirIter.construct(dir: Addr, path: Array[Byte, PATH_CAPACITY], count: USize,
+routine DirIter.construct(dir: Addr, path: Array[Byte, PATH_CAPACITY], count: U64,
     name: @Byte) -> Me
     return Me(dir, path, count, name)
 
@@ -1493,7 +1493,7 @@ routine DirIter.close(me: @Me) -> None
 ### :returns: The copy.
 ### :throws: Returns `OutOfMemory` when `alloc` fails.
 @target(os: ("linux", "macos"))
-secret routine owned(p: @Byte, n: USize, alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
+secret routine owned(p: @Byte, n: U64, alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
     when Memory[Byte].construct_result(count: n.max(1), manager: alloc)
         is Memory[Byte] as buffer =>
             buffer.data.peek().copy(src: p, count: n)
@@ -1521,12 +1521,12 @@ secret routine nonempty_env(name: CStr) -> Maybe[@Byte]
 ### :throws: Returns the reason when the OS can't report it, `OutOfMemory` when `alloc` fails.
 @target(os: ("linux", "macos"))
 secret routine current_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
-    while true with capacity: USize = 256
+    while true with capacity: U64 = 256
         when Memory[Byte].construct_result(count: capacity, manager: alloc)
             is Memory[Byte] as buffer2 =>
                 data: @Byte = buffer2.data.peek()
-                if c_getcwd(data, capacity).is_not_null()
-                    count: USize = data.to[CStr]().count()
+                if c_getcwd(data, capacity.to[CSize]()).is_not_null()
+                    count: U64 = data.to[CStr]().count()
                     buffer2.keep_first(count)
                     return buffer2
                 e: CInt = errno()
@@ -1620,9 +1620,9 @@ secret routine canonical_path(path: Span[Byte],
 @target(os: ("linux", "macos"))
 secret routine is_map_failed(p: Addr) -> Bool
     # MAP_FAILED, (void*)-1
-    return ptrtoint[Addr, USize](p) == USize.MAX
+    return ptrtoint[Addr, U64](p) == U64.MAX
 
-### Maps count bytes of path from offset (USize.MAX: to the end), clamped to the file. Past the end, or an empty
+### Maps count bytes of path from offset (U64.MAX: to the end), clamped to the file. Past the end, or an empty
 ### file, gives an empty mapping. write maps it shared, so stores reach the file. Otherwise it's read-only.
 ### :param path: The file to map.
 ### :param write: True for a shared, writable mapping.
@@ -1632,7 +1632,7 @@ secret routine is_map_failed(p: Addr) -> Bool
 ### :throws: Returns the reason when the file can't be opened, measured, or mapped.
 @target(os: ("linux", "macos"))
 secret routine Mapping.map(path: Span[Byte], write: Bool, offset: U64,
-    count: USize) -> Result[Me, FsError]
+    count: U64) -> Result[Me, FsError]
     local file: @FileHandle <- .empty()
     local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
 
@@ -1655,10 +1655,10 @@ secret routine Mapping.map(path: Span[Byte], write: Bool, offset: U64,
                             becomes Me.empty()
                         else
                             want_bytes: U64 = count.to[U64]().min(size - offset)
-                            want: USize = want_bytes.to[USize]()
+                            want: U64 = want_bytes.to[U64]()
                             page: U64 = map_granularity().to[U64]()
                             aligned: U64 = offset - offset % page
-                            delta: USize = (offset - aligned).to[USize]()
+                            delta: U64 = (offset - aligned).to[U64]()
                             # PROT_READ | PROT_WRITE and MAP_SHARED, or PROT_READ and MAP_PRIVATE
                             prot: CInt = when
                                 write => 3
@@ -1666,7 +1666,7 @@ secret routine Mapping.map(path: Span[Byte], write: Bool, offset: U64,
                             share: CInt = when
                                 write => 1
                                 else => 2
-                            p: Addr = c_mmap(null, want + delta, prot, share, fd, aligned.to[S64]())
+                            p: Addr = c_mmap(null, (want + delta).to[CSize](), prot, share, fd, aligned.to[S64]())
                             # the mapping keeps the file open on its own, and errno is read before finish closes the descriptor
                             if is_map_failed(p)
                                 becomes failed[Me]()
@@ -1685,15 +1685,15 @@ routine Mapping.flush_result(me: Me) -> Result[None, FsError]
     if me.base.is_null()
         return fs_done()
     else
-        return checked(c_msync(me.base, me.delta + me.count, ms_sync()))
+        return checked(c_msync(me.base, (me.delta + me.count).to[CSize](), ms_sync()))
 
 ### Writes changed pages back and unmaps.
 @target(os: ("linux", "macos"))
 routine Mapping.unmap(me: Me) -> None
     if me.base.is_null()
         return
-    c_msync(me.base, me.delta + me.count, ms_sync())
-    c_munmap(me.base, me.delta + me.count)
+    c_msync(me.base, (me.delta + me.count).to[CSize](), ms_sync())
+    c_munmap(me.base, (me.delta + me.count).to[CSize]())
     return
 
 ### Asks the OS to read the whole mapping in now.
@@ -1702,7 +1702,7 @@ routine Mapping.prefetch(me: Me) -> None
     if me.base.is_null()
         return
     # MADV_WILLNEED
-    c_madvise(me.base, me.delta + me.count, 3)
+    c_madvise(me.base, (me.delta + me.count).to[CSize](), 3)
     return
 
 ### Tells the OS the mapping will be read front to back.
@@ -1711,5 +1711,5 @@ routine Mapping.advise_sequential(me: Me) -> None
     if me.base.is_null()
         return
     # MADV_SEQUENTIAL
-    c_madvise(me.base, me.delta + me.count, 2)
+    c_madvise(me.base, (me.delta + me.count).to[CSize](), 2)
     return

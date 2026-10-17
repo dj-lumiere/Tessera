@@ -30,10 +30,10 @@ preset IO_REPARSE_TAG_MOUNT_POINT:   U32 = 0xA0000003
 
 ### WIN32_FIND_DATAW: the fields of a WIN32_FILE_ATTRIBUTE_DATA (attributes, times, size), the reparse tag, then the
 ### name.
-preset FIND_DATA_WORDS:  USize = 148
+preset FIND_DATA_WORDS:  U64 = 148
 
-preset FIND_REPARSE_TAG: USize = 36
-preset FIND_NAME:        USize = 44
+preset FIND_REPARSE_TAG: U64 = 36
+preset FIND_NAME:        U64 = 44
 
 ### FILETIME: 100-nanosecond ticks since 1601-01-01 UTC.
 @target(os: "windows")
@@ -68,7 +68,7 @@ secret record HandleInfo
 @target(os: "windows")
 secret record MemoryRange
     address: Addr
-    size: USize
+    size: U64
 
 ### Makes a `HandleInfo` from its fields.
 ### :param attributes: Its `attributes`.
@@ -94,7 +94,7 @@ secret routine HandleInfo.construct(attributes: U32, created: FileTime, accessed
 ### :param size: Its `size`.
 ### :returns: The new value.
 @target(os: "windows")
-secret routine MemoryRange.construct(address: Addr, size: USize) -> Me
+secret routine MemoryRange.construct(address: Addr, size: U64) -> Me
     return Me(address, size)
 
 ### Releases nothing: a `MemoryRange` holds no memory of its own.
@@ -403,7 +403,7 @@ secret routine c_create_file_mapping(file: Addr, security: Addr, protect: U32, s
 @callconv("stdcall")
 @target(os: "windows")
 secret routine c_map_view_of_file(mapping: Addr, access: U32, offset_high: U32, offset_low: U32,
-    size: USize) -> Addr
+    size: CSize) -> Addr
 
 ### Binds the Win32 `UnmapViewOfFile` function: removes a mapped view.
 ### :param view: The view's address.
@@ -422,7 +422,7 @@ secret routine c_unmap_view_of_file(view: Addr) -> CInt
 @symbol("FlushViewOfFile")
 @callconv("stdcall")
 @target(os: "windows")
-secret routine c_flush_view_of_file(view: Addr, size: USize) -> CInt
+secret routine c_flush_view_of_file(view: Addr, size: CSize) -> CInt
 
 ### Binds the Win32 `GetCurrentProcess` function: a handle to the calling process.
 ### :returns: The pseudo-handle, which needs no closing.
@@ -442,7 +442,7 @@ secret routine c_get_current_process() -> Addr
 @symbol("PrefetchVirtualMemory")
 @callconv("stdcall")
 @target(os: "windows")
-secret routine c_prefetch_virtual_memory(process: Addr, count: USize, ranges: @MemoryRange,
+secret routine c_prefetch_virtual_memory(process: Addr, count: CSize, ranges: @MemoryRange,
     flags: U32) -> CInt
 
 # -- errors and paths ----------------------------------------------------------------
@@ -497,7 +497,7 @@ secret routine checked(ok: CInt) -> Result[None, FsError]
 @target(os: "windows")
 secret routine is_invalid_handle(h: Addr) -> Bool
     # INVALID_HANDLE_VALUE, (HANDLE)-1
-    return ptrtoint[Addr, USize](h) == USize.MAX
+    return ptrtoint[Addr, U64](h) == U64.MAX
 
 ### text as UTF-16 with a 0 after it in out, which has room for capacity units: its length in units, or None if
 ### text has a NUL or doesn't fit. (A UTF-8 byte count bounds the unit count, so length + 1 units always fit.)
@@ -507,10 +507,10 @@ secret routine is_invalid_handle(h: Addr) -> Bool
 ### :returns: The length in units, the 0 left out.
 ### :absent: When `text` has a NUL or doesn't fit with its 0.
 @target(os: "windows")
-secret routine encode_utf16(text: Span[Byte], out: @U16, capacity: USize) -> Maybe[USize]
+secret routine encode_utf16(text: Span[Byte], out: @U16, capacity: U64) -> Maybe[U64]
     local iter: @BytesCharsIter <- text.chars()
 
-    while true with n: USize = 0
+    while true with n: U64 = 0
         c: Maybe[Char] = iter.emit_checked()
         when c
             is Char as char =>
@@ -542,7 +542,7 @@ secret routine encode_utf16(text: Span[Byte], out: @U16, capacity: USize) -> May
 ### :returns: The length in units, the 0 left out.
 ### :absent: When `path` has a NUL or doesn't fit.
 @target(os: "windows")
-secret routine wide(path: Span[Byte], out: @U16) -> Maybe[USize]
+secret routine wide(path: Span[Byte], out: @U16) -> Maybe[U64]
     return encode_utf16(text: path, out, capacity: PATH_CAPACITY)
 
 ### path as UTF-16 in out: whether it fit.
@@ -551,7 +551,7 @@ secret routine wide(path: Span[Byte], out: @U16) -> Maybe[USize]
 ### :returns: True when it was converted. False when `path` has a NUL or doesn't fit.
 @target(os: "windows")
 secret routine wide_path(path: Span[Byte], out: @U16) -> Bool
-    n: Maybe[USize] = wide(path, out)
+    n: Maybe[U64] = wide(path, out)
     return n.is_present()
 
 ### count UTF-16 units at units as UTF-8 at out (room for 3 bytes a unit): the bytes written. An unpaired surrogate
@@ -561,13 +561,13 @@ secret routine wide_path(path: Span[Byte], out: @U16) -> Bool
 ### :param out: Where the UTF-8 goes.
 ### :returns: The bytes written.
 @target(os: "windows")
-secret routine narrow(units: @U16, count: USize, out: @Byte) -> USize
-    local n: @USize <- 0
+secret routine narrow(units: @U16, count: U64, out: @Byte) -> U64
+    local n: @U64 <- 0
 
-    while i < count with i: USize = 0
+    while i < count with i: U64 = 0
         unit: U16 = units.stride(i).peek()
         u: U32 = unit.to[U32]()
-        values2: (USize, U32) = when
+        values2: (U64, U32) = when
             u.between(lo: 0xD800, hi: 0xDBFF) =>
                 if not (i + 1 < count)
                     becomes (i + 1, 0xFFFD)
@@ -595,8 +595,8 @@ secret routine narrow(units: @U16, count: USize, out: @Byte) -> USize
 ### :param units: A 0-terminated UTF-16 string.
 ### :returns: The count of units before the 0.
 @target(os: "windows")
-secret routine wide_length(units: @U16) -> USize
-    while units.stride(i).peek() != 0 with i: USize = 0
+secret routine wide_length(units: @U16) -> U64
+    while units.stride(i).peek() != 0 with i: U64 = 0
         continue with i: i + 1
     then
         return i
@@ -608,11 +608,11 @@ secret routine wide_length(units: @U16) -> USize
 ### :returns: The UTF-8 text.
 ### :throws: Returns `OutOfMemory` when `alloc` fails.
 @target(os: "windows")
-secret routine owned_wide(units: @U16, count: USize,
+secret routine owned_wide(units: @U16, count: U64,
     alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
     when Memory[Byte].construct_result(count: (count * 3).max(1), manager: alloc)
         is Memory[Byte] as buffer =>
-            n: USize = narrow(units, count, out: buffer.data.peek())
+            n: U64 = narrow(units, count, out: buffer.data.peek())
             buffer.keep_first(n)
             return buffer
         is AllocFailed => return FsError.OUT_OF_MEMORY
@@ -791,7 +791,7 @@ routine FileHandle.destruct(me: @Me) -> None
 ### :returns: The empty handle.
 @target(os: "windows")
 routine FileHandle.empty() -> Me
-    return Me(handle: inttoptr[USize, Addr](USize.MAX), failed: false)
+    return Me(handle: inttoptr[U64, Addr](U64.MAX), failed: false)
 
 ### Opens path in mode. Other handles may read, write, and delete the file while it is open.
 ### :param path: The file to open.
@@ -826,12 +826,12 @@ secret routine FileHandle.open(path: Span[Byte], mode: OpenMode) -> Result[Me, F
 ### :throws: Returns the reason when the read fails.
 @target(os: "windows")
 @expensive("asks the operating system")
-routine FileHandle.read_bytes_result(me: @Me, buffer: @Byte, count: USize) -> Result[USize, FsError]
+routine FileHandle.read_bytes_result(me: @Me, buffer: @Byte, count: U64) -> Result[U64, FsError]
     local got: @U32 <- 0
 
     ok: CInt = c_read_file(me.handle.peek(), buffer, count.min(1073741824).to[U32](), got, null)
     if ok != 0
-        return got.peek().to[USize]()
+        return got.peek().to[U64]()
     # ERROR_BROKEN_PIPE: the writing end closed, which is the end
     e: U32 = c_get_last_error()
     if e == 109
@@ -845,14 +845,14 @@ routine FileHandle.read_bytes_result(me: @Me, buffer: @Byte, count: USize) -> Re
 ### :returns: The count written.
 ### :throws: Returns the reason when the write fails.
 @target(os: "windows")
-secret routine FileHandle.write_some(me: @Me, data: @Byte, count: USize) -> Result[USize, FsError]
+secret routine FileHandle.write_some(me: @Me, data: @Byte, count: U64) -> Result[U64, FsError]
     local wrote: @U32 <- 0
 
     ok: CInt = c_write_file(me.handle.peek(), data, count.min(1073741824).to[U32](), wrote, null)
     if ok != 0
-        return wrote.peek().to[USize]()
+        return wrote.peek().to[U64]()
     else
-        return failed[USize]()
+        return failed[U64]()
 
 ### Moves the position: the new one, from the start.
 ### :param offset: The distance to move, negative to go back.
@@ -924,7 +924,7 @@ routine FileHandle.close(me: @Me) -> None
     if is_invalid_handle(h)
         return
     c_close_handle(h)
-    me.handle.poke(inttoptr[USize, Addr](USize.MAX))
+    me.handle.poke(inttoptr[U64, Addr](U64.MAX))
     return
 
 # -- directories and names -------------------------------------------------------------
@@ -1183,15 +1183,15 @@ secret routine DirIter.open_path(me: @Me, path: Span[Byte]) -> Result[None, FsEr
     local pattern_buffer: @Array[U16, PATH_CAPACITY] <- .hollow()
     local pattern: @U16 = pattern_buffer.to[@U16]()
 
-    me.find.poke(inttoptr[USize, Addr](USize.MAX))
+    me.find.poke(inttoptr[U64, Addr](U64.MAX))
     me.pending.poke(false)
-    n: Maybe[USize] = wide(path, out: pattern)
+    n: Maybe[U64] = wide(path, out: pattern)
     when n
-        is USize as count =>
+        is U64 as count =>
             # path, a separator unless it ends with one, and "*"
             if count + 2 >= PATH_CAPACITY
                 return FsError.NAME_TOO_LONG
-            at: USize = when
+            at: U64 = when
                 count == 0 => 0
                 else =>
                     last: U16 = pattern.stride(count - 1).peek()
@@ -1239,7 +1239,7 @@ routine DirIter.emit_checked(me: @Me) -> Maybe[DirEntry]
         name: @U16 = data.stride(FIND_NAME).to[@U16]()
         if is_dot_wide(name)
             return me.emit_checked()
-        n: USize = narrow(units: name, count: wide_length(name), out: me.name.to[@Byte]())
+        n: U64 = narrow(units: name, count: wide_length(name), out: me.name.to[@Byte]())
         info: Metadata = from_find_data(data)
         return DirEntry(name: Span[Byte].construct(data: me.name.to[@Byte](), count: n),
             kind: info.kind)
@@ -1260,7 +1260,7 @@ routine DirIter.close(me: @Me) -> None
     if is_invalid_handle(find)
         return
     c_find_close(find)
-    me.find.poke(inttoptr[USize, Addr](USize.MAX))
+    me.find.poke(inttoptr[U64, Addr](U64.MAX))
     return
 
 # -- the working directory and well-known directories -------------------------------------
@@ -1274,7 +1274,7 @@ secret routine current_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsErro
     need: U32 = c_get_current_directory(0, null)
     if need == 0
         return failed[Memory[Byte]]()
-    when Memory[U16].construct_result(count: need.to[USize](), manager: alloc)
+    when Memory[U16].construct_result(count: need.to[U64](), manager: alloc)
         is Memory[U16] as units =>
             need2: U32 = units.count().to[U32]()
             data: @U16 = units.data.peek()
@@ -1284,7 +1284,7 @@ secret routine current_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsErro
                 drop units
                 return lost
             local text: @Result[Memory[Byte], FsError] <- owned_wide(units: data,
-                count: got.to[USize](), alloc)
+                count: got.to[U64](), alloc)
             drop units
             return text
         is AllocFailed => return FsError.OUT_OF_MEMORY
@@ -1312,7 +1312,7 @@ secret routine temp_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
     local units: @Array[U16, PATH_CAPACITY] <- .hollow()
 
     got: U32 = c_get_temp_path(PATH_CAPACITY.to[U32](), units.to[@U16]())
-    if got == 0 or got.to[USize]() >= PATH_CAPACITY
+    if got == 0 or got.to[U64]() >= PATH_CAPACITY
         when Memory[Byte].construct_result(count: 15, manager: alloc)
             is Memory[Byte] as buffer =>
                 buffer.data.peek().copy(src: "C:\\Windows\\Temp", count: 15)
@@ -1320,11 +1320,11 @@ secret routine temp_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
             is AllocFailed => return FsError.OUT_OF_MEMORY
     else
         path_units: @U16 = units.to[@U16]()
-        last: U16 = path_units.stride((got - 1).to[USize]()).peek()
+        last: U16 = path_units.stride((got - 1).to[U64]()).peek()
         if last == 0x5C or last == 0x2F
-            return owned_wide(units: units.to[@U16](), count: (got - 1).to[USize](), alloc)
+            return owned_wide(units: units.to[@U16](), count: (got - 1).to[U64](), alloc)
         else
-            return owned_wide(units: units.to[@U16](), count: got.to[USize](), alloc)
+            return owned_wide(units: units.to[@U16](), count: got.to[U64](), alloc)
 
 ### The environment variable name, as UTF-8 in memory from alloc, when it is set and not empty.
 ### :param name: The variable's 0-terminated UTF-16 name.
@@ -1337,9 +1337,9 @@ secret routine env_dir(name: CWStr, alloc: @MemoryManager) -> Maybe[Memory[Byte]
 
     got: U32 = c_get_environment_variable(name.to[@CWChar](), units.to[@U16](),
         PATH_CAPACITY.to[U32]())
-    if got == 0 or got.to[USize]() >= PATH_CAPACITY
+    if got == 0 or got.to[U64]() >= PATH_CAPACITY
         return None()
-    when owned_wide(units: units.to[@U16](), count: got.to[USize](), alloc)
+    when owned_wide(units: units.to[@U16](), count: got.to[U64](), alloc)
         is Memory[Byte] as t => return t
         is FsError => return None()
 
@@ -1386,10 +1386,10 @@ secret routine absolute_path(path: Span[Byte],
         null)
     if got == 0
         return failed[Memory[Byte]]()
-    if got.to[USize]() >= PATH_CAPACITY
+    if got.to[U64]() >= PATH_CAPACITY
         return FsError.NAME_TOO_LONG
     else
-        return owned_wide(units: full.to[@U16](), count: got.to[USize](), alloc)
+        return owned_wide(units: full.to[@U16](), count: got.to[U64](), alloc)
 
 ### The absolute path with every link, ".", and ".." resolved, and path must exist. The "\\?\" prefix the OS gives is
 ### taken off ("\\?\UNC\server\share" becomes "\\server\share").
@@ -1415,23 +1415,23 @@ secret routine canonical_path(path: Span[Byte],
     c_close_handle(h)
     if got == 0
         return error_of(e)
-    if got.to[USize]() >= PATH_CAPACITY
+    if got.to[U64]() >= PATH_CAPACITY
         return FsError.NAME_TOO_LONG
-    when owned_wide(units: full.to[@U16](), count: got.to[USize](), alloc)
+    when owned_wide(units: full.to[@U16](), count: got.to[U64](), alloc)
         is Memory[Byte] as t =>
             unc: Bool = t.getview().has_prefix("\\\\?\\UNC\\")
             if not unc and not t.getview().has_prefix("\\\\?\\")
                 return t
-            from: USize = when
+            from: U64 = when
                 unc => 8
                 else => 4
-            keep: USize = when
+            keep: U64 = when
                 unc => 2
                 else => 0
             # "\\?\UNC\server" to "\\server": keep the first two backslashes, drop "?\UNC\"
             # Moves the text from from down to keep, so the buffer's start (what free wants) stays where it is.
 
-            rest: USize = t.count() - from
+            rest: U64 = t.count() - from
             data: @Byte = t.data.peek()
 
             each i in 0 til rest
@@ -1443,7 +1443,7 @@ secret routine canonical_path(path: Span[Byte],
 
 # -- memory-mapped files -----------------------------------------------------------------
 
-### Maps count bytes of path from offset (USize.MAX: to the end), clamped to the file. Past the end, or an empty
+### Maps count bytes of path from offset (U64.MAX: to the end), clamped to the file. Past the end, or an empty
 ### file, gives an empty mapping. write maps it so stores reach the file. Otherwise it's read-only (opened for a
 ### front-to-back read).
 ### :param path: The file to map.
@@ -1454,7 +1454,7 @@ secret routine canonical_path(path: Span[Byte],
 ### :throws: Returns the reason when the file can't be opened, measured, or mapped.
 @target(os: "windows")
 secret routine Mapping.map(path: Span[Byte], write: Bool, offset: U64,
-    count: USize) -> Result[Me, FsError]
+    count: U64) -> Result[Me, FsError]
     local file: @FileHandle <- .empty()
     local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
 
@@ -1487,10 +1487,10 @@ secret routine Mapping.map(path: Span[Byte], write: Bool, offset: U64,
                     return result
                 else
                     want_bytes: U64 = count.to[U64]().min(size2 - offset)
-                    want: USize = want_bytes.to[USize]()
+                    want: U64 = want_bytes.to[U64]()
                     grain: U64 = map_granularity().to[U64]()
                     aligned: U64 = offset - offset % grain
-                    delta: USize = (offset - aligned).to[USize]()
+                    delta: U64 = (offset - aligned).to[U64]()
                     protect: U32 = when
                         write => 4
                         else => 2
@@ -1504,7 +1504,7 @@ secret routine Mapping.map(path: Span[Byte], write: Bool, offset: U64,
                             write => 2
                             else => 4
                         view: Addr = c_map_view_of_file(mapping, access,
-                            (aligned >> 32).to_wrap[U32](), aligned.to_wrap[U32](), want + delta)
+                            (aligned >> 32).to_wrap[U32](), aligned.to_wrap[U32](), (want + delta).to[CSize]())
                         e: U32 = c_get_last_error()
                         c_close_handle(mapping)
                         if view.is_null()

@@ -400,6 +400,31 @@ public class MigrateTests
         Assert.Equal(after, migration.Rewrite("a.te", after, report));
     }
 
+    [Fact]
+    public void Size_types_become_U64_and_C_sizes_at_the_C_boundary()
+    {
+        const string before = """
+            @external("c")
+            @symbol("write")
+            routine c_write(fd: CInt, buf: Addr,
+                    count: USize) -> SSize
+
+            routine USize.twice(me: Me) -> USize
+                return me * 2
+
+            routine span_count(n: USize) -> USize
+                each k in 0 til 4
+                    pass
+                return n
+            """;
+        string after = Migrate.SizeTypes(before);
+        Assert.Contains("count: CSize) -> CSSize", after);
+        Assert.Contains("routine CSize.twice(me: Me) -> CSize", after);
+        Assert.Contains("routine span_count(n: U64) -> U64", after);
+        Assert.Contains("each k: U64 in 0 til 4", after);
+        Assert.Equal(after, Migrate.SizeTypes(after));
+    }
+
     [Theory]
     [InlineData("#aggregate\nrecord A\n    x: S8\n", "record A\n    x: S8\n")]
     [InlineData("#[aggregate, layout(align: 32)]\nrecord A\n", "#[layout(align: 32)]\nrecord A\n")]

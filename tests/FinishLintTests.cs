@@ -16,7 +16,7 @@ public class FinishLintTests
     {
         var warnings = Lint("""
             @generated
-            routine count_open(text: Span[Byte], alloc: @MemoryManager) -> USize
+            routine count_open(text: Span[Byte], alloc: @MemoryManager) -> U64
                 local stack: @List[Byte] <- .construct(alloc)
 
                 if text.is_empty()
@@ -24,7 +24,7 @@ public class FinishLintTests
                 stack.add_last(b'(')
                 jump finish(stack.count())
 
-                block finish(result: USize)
+                block finish(result: U64)
                     drop stack
                     return result
             """);
@@ -36,14 +36,14 @@ public class FinishLintTests
     {
         var warnings = Lint("""
             @generated
-            routine count_open(text: Span[Byte], alloc: @MemoryManager) -> USize
+            routine count_open(text: Span[Byte], alloc: @MemoryManager) -> U64
                 local stack: @List[Byte] <- .construct(alloc)
 
                 if text.is_empty()
                     return 0
                 jump finish(stack.count())
 
-                block finish(result: USize)
+                block finish(result: U64)
                     drop stack
                     return result
             """);

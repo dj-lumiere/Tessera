@@ -73,22 +73,22 @@ public class StructurerTests
     public void A_loop_that_only_returns_is_written_inside_the_loop_that_enters_it()
     {
         const string before = """
-            routine first_then_count(n: USize) -> USize
+            routine first_then_count(n: U64) -> U64
                 jump find(n)
 
-                block find(i: USize)
+                block find(i: U64)
                     if i == 0
                         return 0
                     else
                         jump look(i - 1)
 
-                block look(t: USize)
+                block look(t: U64)
                     if t % 2 == 0
                         jump find(t)
                     else
                         jump count(0, t)
 
-                block count(k: USize, at: USize)
+                block count(k: U64, at: U64)
                     if k >= at
                         return k
                     else

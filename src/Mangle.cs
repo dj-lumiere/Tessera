@@ -9,8 +9,8 @@ namespace Tessera;
 /// `_ZN8Standard6Format9write_strE...` followed by its parameter types.
 ///
 /// Where Tessera has no C++ counterpart: a `private` declaration carries its file as an ABI tag
-/// (`9make_roomB24stdlib_collection_List_tess`), an integer generic argument is a literal of the named `USize` type
-/// (`LN8Standard4Core5USizeE8E`), and `Callable` is a C function pointer.
+/// (`9make_roomB24stdlib_collection_List_tess`), an integer generic argument is a literal of the named `U64` type
+/// (`LN8Standard4Core3U64E8E`), and `Callable` is a C function pointer.
 public sealed partial class Compiler
 {
     /// The symbol of a routine instance. `ps` and `ret` are its resolved parameter and return types.
@@ -179,7 +179,7 @@ public sealed partial class Compiler
                 case PtrType { Pointee: { } p }: return Core("Ptr", [p], t);
                 case ArrayType a: return Core("Array", [a.Elem, new ConstArg(a.Count)], t);
                 case VectorType v: return Core("Vector", [v.Elem, new ConstArg(v.Count)], t);
-                default: return Core(t.OwnerName, [], t);   // S64, Bool, B32, USize, Addr, ...
+                default: return Core(t.OwnerName, [], t);   // S64, Bool, B32, CSize, Addr, ...
             }
         }
 
@@ -215,11 +215,11 @@ public sealed partial class Compiler
             else Type(a);
         }
 
-        /// An integer generic argument: a literal of the named USize type.
+        /// An integer generic argument: a literal of the named U64 type.
         private void Literal(long value)
         {
             Out("L");
-            Type(c.USize);
+            Type(c.Count);
             Out(value < 0 ? "n" + (-value).ToString(CultureInfo.InvariantCulture) : value.ToString(CultureInfo.InvariantCulture));
             Out("E");
         }

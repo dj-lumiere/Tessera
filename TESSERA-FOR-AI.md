@@ -191,7 +191,7 @@ routine start() -> None
   preset). An array literal passed as an argument where a Span is expected is a frame Span too: `total([4, 5, 6])`.
   A frame Span must not leave the routine. `preset NAME: @Array[T, N] <- [...]` is still a `Ptr` to an array.
 - **Memory from a manager is written with `at`.** `local words: @Memory[U64] <- [0] * n at DEFAULT_HEAP` (the count
-  may be a runtime value: it calls `Memory[T].construct(values: Span[T], times: USize, manager)`), and
+  may be a runtime value: it calls `Memory[T].construct(values: Span[T], times: U64, manager)`), and
   `local node: @Box[Node] <- (value: 1, next: null) at DEFAULT_HEAP` (it calls `Box[T].construct(value, manager)`).
   An `at` literal is bound with `<-` in a `local` line, into the slot like any entity.
 - **The five rules.** 1. `@T` / `Span[T]` only view (peek / poke), never give back. 2. `Box` / `Memory` come from a
@@ -232,7 +232,7 @@ routine start() -> None
     error.
   - In a routine without type parameters, a view (an address or a Span) of memory used after a `@reshaping` call
     that may move it is an error: `'first' is a view of 'xs', and 'grow' on line N may have moved that memory`. Keep
-    a position (a `USize` index) and take the view again after the call:
+    a position (a `U64` index) and take the view again after the call:
 
     ```tessera
     @reshaping(items)
@@ -253,7 +253,7 @@ routine start() -> None
   ```tessera
   global CACHE: @Memory[Byte]
 
-  routine refill(count: USize, fill: Byte) -> None
+  routine refill(count: U64, fill: Byte) -> None
       CACHE.replace(value: Memory[Byte].construct(values: [fill], times: count, manager: DEFAULT_HEAP))
       return
 
@@ -265,7 +265,7 @@ routine start() -> None
   `Box[T].replace` works the same. `Memory[T].give_back()` gives the memory back and keeps the manager, so a later
   `resize` draws from it again (what a collection's `destruct` does with its storage).
 - **A memory manager is a type that obeys `MemoryManageable`** (Standard/Alloc): three routines on `me: @Me`,
-  `alloc(size: USize, align: USize) -> Addr` (null when it can't), `realloc(at: Addr, size: USize, align: USize) ->
+  `alloc(size: U64, align: U64) -> Addr` (null when it can't), `realloc(at: Addr, size: U64, align: U64) ->
   Addr` (null, the block left as it was, when it can't: every manager has one, since only it knows a block's size),
   and `free(at: Addr) -> None`. One that handles pages obeys `PageManageable` too (it refines `MemoryManageable`):
   `reserve(size)`, `commit(at, size) -> Bool`, `release(at, size)`, and `protect(at, size, access: PageAccess) ->
@@ -301,7 +301,7 @@ routine start() -> None
   a `Callable` (`f.to[Callable]()`), or the name of another global or preset in memory (its
   address, and a global holding a pointer is `@@T`: `global HEAD: @@Node <- null`). Use them as `TICKS.peek()`,
   `STATS.calls.poke(n)`, `K.getitem(i)`. Writing a `@T` preset's memory is a build error. Neither kind is a buildtime
-  constant: a preset value is (`Array[S64, N]` with `preset N: USize = 4`). An array preset is always in memory.
+  constant: a preset value is (`Array[S64, N]` with `preset N: U64 = 4`). An array preset is always in memory.
 - `@external("c")` and `@symbol("environ")` above `global ENVIRON: @@@Byte` declare a C variable (C's `extern`): no `<-`, read and
   written like any global; dllimport on Windows.
 - `@threadlocal` above `global NAME: @T [<- value]` gives each thread its own copy, starting from the value; the name is the
@@ -356,7 +356,7 @@ routine start() -> None
   made inside an arm or a loop isn't there after it. What must outlive its arm is a value chosen with `when`
   (below), a head slot, or a loop's carried value. This is the most common error.
 - **The head: `local` lines.** Between the routine's header (and its `needs` lines) and the first statement, a
-  routine may declare values and slots the whole body sees: `local n: USize = values.count()` (a value) and
+  routine may declare values and slots the whole body sees: `local n: U64 = values.count()` (a value) and
   `local sum: @U64 <- 0` or `<- .hollow()` (a slot). The head holds only local lines, top to bottom, each seeing the
   routine's parameters, presets, globals, and the local lines above it, and its expressions may call routines. It runs
   once when the routine starts. `fmt` puts the head 4 spaces in right under the header, with one blank line after
@@ -365,7 +365,7 @@ routine start() -> None
   `` `local` ``, `` `drop` ``).
 - **A routine's parameters and head values are seen everywhere, so no binding, carried value, or `when` name takes
   one's name.** A value that starts from one and changes (a loop counter, a shrinking count) gets its own name as a
-  carried value (`while at < count with at: USize = start`) or a local slot.
+  carried value (`while at < count with at: U64 = start`) or a local slot.
 - **`if c` / `else`.** The lines under `if c` run when `c` holds, the lines under `else` (optional) when it doesn't,
   and `if not c` negates. An `if` is a statement, not a value: `x: T = if ...` is a build error ("if c then a else b
   is a value only after return; elsewhere choose with when"). A guard is an `if` whose arm leaves (`return`,
@@ -381,7 +381,8 @@ routine start() -> None
   ```
 
 - **Loops.** `each i in 0 til n` walks the half-open range, `each i in 1 to n` the inclusive one, `each i in n to 1
-  by -1` steps, and `each x in iter` reads an iterator in memory (one whose `emit_checked` gives `Maybe[T]`) until
+  by -1` steps. A range walks the type of its bounds, `S64` when both are bare numbers; `each k: U64 in 0 til 27`
+  names the type (for an index, say), and `each x in iter` reads an iterator in memory (one whose `emit_checked` gives `Maybe[T]`) until
   it gives `None`. `while c` runs while `c` holds and `until c` until it does, both tested before each pass. `break`
   leaves the loop (it takes no value: a result a `break` decides goes in a head slot), `continue` starts the next
   pass.
@@ -480,9 +481,10 @@ routine start() -> None
   order, stopping at the first that holds.
 - Range checks: `c.between(b'0', b'9')` is the closed `[lo, hi]`, `i.in_range(0, len)` the half-open
   `[lo, end)`, on every integer, float, `Byte`, and `Char`.
-- Lengths, indices, counts, sizes, and `sizeof` / `alignof` are `USize`; value generic parameters are `USize` (`COUNT: USize`).
-  `USize` / `SSize` are the pointer-width integers (C's `size_t` / `ssize_t`), types of their own that never mix with
-  `U64` / `S64`: convert with `n.to[U64]()` / `x.to[USize]()`. Hashes stay `U64`.
+- Lengths, indices, counts, sizes, and `sizeof` / `alignof` are `U64` on every target; value generic parameters are
+  `U64` (`COUNT: U64`). `CSize` / `CSSize` are C's `size_t` / `ssize_t` (the pointer width), used only at the C
+  boundary (`@external("c")` signatures): types of their own that never mix with `U64` / `S64`, so a C call converts
+  with `n.to[CSize]()` (crashes if it doesn't fit) and a C result with `r.to[S64]()`.
 - `compare` returns `S32` (-1 / 0 / 1), `hash` returns `U64`, `abs_diff` returns the unsigned type.
 - **`hash()` is keyed.** Every stdlib `hash()` (and every `@derive(Hashable)`) is SipHash-2-4 under a secret 128-bit
   key drawn once per process (`hash_key()`), so a hash value differs from run to run: never print one, store one, or
@@ -572,7 +574,7 @@ routine start() -> None
 - **Overloads.** Routines of one name under one parent (a module's free routines, one type's routines) may differ in
   their parameter types (`me` included); a call picks the one whose parameter types are its arguments' types
   exactly. No implicit conversion counts there (a `@T` isn't an `Addr` overload's argument), and an untyped integer
-  literal prefers `USize` (`SSize` if negative) when several take it. An exact concrete overload beats a generic
+  literal prefers `S64` when several take it. An exact concrete overload beats a generic
   one, and a routine on an owner with its type arguments named (`routine Thread[None].put_work`) beats the generic
   owner's (`Thread[T].put_work`) for that receiver. An owner argument may nest the routine's type parameter:
   `routine List[Thread[T]].wait_all_finished(me: @Me)` with `needs T: typename` exists only for a `List` of
@@ -587,7 +589,7 @@ routine start() -> None
   (`add_wrap`, not an `add` that wraps). Don't put a parameter's type in a name the overloads already tell apart
   (the stdlib's `wide_divrem(u, d)` for `U128` and `U256`, `soft_divmod`, `xxh64(data, len, seed)` beside
   `xxh64(v, seed)`); a type that only passes through (the Writer, an element) is a type parameter instead. Most of
-  these sets have no `USize` overload, so a bare literal argument several overloads take is ambiguous: pass a typed
+  these sets have no `S64` overload, so a bare literal argument several overloads take is ambiguous: pass a typed
   value (`m.set(U64.MIN)` on a `BigNat`, or bind `one: U64 = 1` first).
 - When every operand is a literal, name the type with a typewise call: `S64.eq(0, 1)`, `U128.shl(1, 100)`. There are
   no literal suffixes (`0u64`).
@@ -629,7 +631,7 @@ routine start() -> None
 - The crash trace: the builder keeps a shadow stack of the program's routines (not the stdlib's, not `@inline` or
   `@untraced` ones, not the handler), and the default handler prints it after the place, innermost first:
   `Stack trace:` then `  0: at fill (grid.te:12:9)`, and `  ... (40 frames total)` past the 32 it keeps. A handler
-  of your own reads it with `trace_depth()` (`USize`, 0 in an untraced build) and `trace_frame(back)` (a
+  of your own reads it with `trace_depth()` (`U64`, 0 in an untraced build) and `trace_frame(back)` (a
   `TraceFrame`: `name` / `file` as `CStr`, `line` / `column`; 0 is the innermost, `back` below `trace_depth()` and
   `TRACE_CAPACITY`). It's on in debug and release, off in release-time and release-space; `--no-trace` / `--trace`
   or `[debug] trace = false|true` in config.toml override that. Thread-local with an OS, a plain global without.
@@ -974,7 +976,7 @@ code waiting on several tickets at once.
   ticket's work nothing cancels them.
 - **Lists of tickets**: `List[Thread[T]]` (Standard/Os), `List[Fiber[T]]` and `List[Job[T]]` (Standard/Fiber) have
   `wait_all_finished()`, `retrieve_all()` / `retrieve_all(alloc)` (results in list order, crashes as `retrieve`
-  does), `give_back_all()` (and empties the list), `wait_any_finished() -> USize` (the position of a finished one,
+  does), `give_back_all()` (and empties the list), `wait_any_finished() -> U64` (the position of a finished one,
   crashes on an empty list), `cancel_all()`, `take_finished()` / `take_finished(alloc)` (moves finished tickets out
   into a new list, both keep their order), and `give_back_finished()`.
 - **Threads** (`Standard/Os/Thread.te`, what both tickets share in `Work.te`, who waits in `Waiter.te`):
@@ -1254,7 +1256,7 @@ is, not the type of a value. `@derive` follows the rule (`T` for the Writer of a
 the type's own).
 
 **Arrays and `stride`.** `p.stride(i)` is the address of the i-th `T` of a `@T` (a
-`USize`, or an `SSize` to move back; `offset` counts bytes); it's a place, so `p.stride(i).f` works. On a
+`U64`, or an `S64` to move back; `offset` counts bytes); it's a place, so `p.stride(i).f` works. On a
 `@Array[T, COUNT]` that is the i-th whole array, so array elements are `arr.getitem(i)` / `arr.setitem(index: i, value: v)` / `arr.getslot(i)`
 (bounds checked), or `arr.to[@T]().stride(i).peek()` unchecked. An array literal is `[1, 2, 3]`, and `[0] * 256`
 repeats its elements (`[1, 2] * 3` = `[1, 2, 1, 2, 1, 2]`; the count is a number or a preset, or a runtime value in an `at` literal). The same holds for array fields (`node.keys.getitem(i)`) and

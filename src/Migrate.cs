@@ -313,7 +313,84 @@ public static class Migrate
         ["visibility"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, ModuleVisibility)
             : ModuleVisibility(text),
+        ["size"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, SizeTypes)
+            : SizeTypes(text),
     };
+
+    private static readonly Regex SizeWord = new(@"\b(USize|SSize)\b", RegexOptions.Compiled);
+
+    // `each k in 0 til 27`: a range of bare numbers walked USize, and walks S64 now, so the loop that walked
+    // counts says U64.
+    private static readonly Regex LiteralRange = new(@"(\beach \w+) in ([0-9][0-9_]* (?:til|to) [0-9][0-9_]*)(?=\s*(?:$|with\b|by [0-9]))",
+        RegexOptions.Compiled | RegexOptions.Multiline);
+
+    // A declaration whose head, before any `(`, names USize / SSize: one on the type (`routine USize.add`), or one of a
+    // per-type family written for it (`routine Span[Byte].to_result[SSize]`). It stays the C type's.
+    private static readonly Regex SizeOwned = new(@"^(?:secret |dangerous )*(?:routine|preset|record) [^(=:]*\b(?:USize|SSize)\b",
+        RegexOptions.Compiled);
+
+    /// Counts, indices and sizes are U64 / S64 on every target, and C's `size_t` / `ssize_t` are CSize / CSSize. In the
+    /// declaration of a C routine or global (under `@external("c")`), and in a routine or preset declared on USize /
+    /// SSize or written for it (`to_result[SSize]`), the old name becomes the C one, everywhere else the
+    /// fixed-width one, and a template's `{USize}` / `{SSize}` placeholder, whose operands are now U64 / S64, `i64`. A
+    /// range of bare numbers walked USize and walks S64 now: its loop gets `: U64` (`each k: U64 in 0 til 27`).
+    public static string SizeTypes(string text)
+    {
+        var lines = text.Split('\n');
+        bool external = false;
+        int depth = 0;
+        // Inside a declaration on USize / SSize or written for it (see SizeOwned), the type is C's.
+        bool sizeOwner = false;
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string line = lines[i];
+            string trimmed = line.TrimStart();
+            if (line.Length > 0 && !char.IsWhiteSpace(line[0]) && !line.StartsWith('#') && !line.StartsWith('@'))
+                sizeOwner = SizeOwned.IsMatch(line);
+            // A conformance list names each type it covers (`obeys AtomicAddable[U64], AtomicAddable[USize]`): those
+            // stay the C type's, while a parameter kind in its `when` (`COUNT: USize`) is a count.
+            bool conformance = trimmed.StartsWith("obeys ", StringComparison.Ordinal);
+            if (depth == 0)
+            {
+                if (trimmed.StartsWith("@external(\"c\"", StringComparison.Ordinal)) external = true;
+                else if (!trimmed.StartsWith('@') && trimmed.Length > 0 && !trimmed.StartsWith('#'))
+                {
+                    bool declaration = trimmed.StartsWith("routine ", StringComparison.Ordinal) ||
+                                       trimmed.StartsWith("dangerous routine ", StringComparison.Ordinal) ||
+                                       trimmed.StartsWith("secret ", StringComparison.Ordinal) ||
+                                       trimmed.StartsWith("global ", StringComparison.Ordinal);
+                    if (!(declaration && external)) external = false;
+                }
+            }
+            bool c = external || sizeOwner;
+            // A template's operands were USize / SSize and are now U64 / S64, so the placeholder is their LLVM type.
+            line = line.Replace("{USize}", "i64", StringComparison.Ordinal)
+                       .Replace("{SSize}", "i64", StringComparison.Ordinal);
+            if (conformance)
+                line = line.Replace("[USize]", "[CSize]", StringComparison.Ordinal)
+                           .Replace("[SSize]", "[CSSize]", StringComparison.Ordinal);
+            line = SizeWord.Replace(line, m => (c, m.Value) switch
+            {
+                (true, "USize") => "CSize",
+                (true, _) => "CSSize",
+                (false, "USize") => "U64",
+                _ => "S64",
+            });
+            lines[i] = line;
+            if (external)
+            {
+                foreach (char ch in line)
+                    depth += ch switch { '(' or '[' => 1, ')' or ']' => -1, _ => 0 };
+                if (depth <= 0 && !trimmed.StartsWith('@') && trimmed.Length > 0)
+                {
+                    depth = 0;
+                    external = false;
+                }
+            }
+        }
+        return LiteralRange.Replace(string.Join('\n', lines), "$1: U64 in $2");
+    }
 
     private static readonly Regex InternalWord = new(@"^(    )?(?:internal|private) (?=\S)", RegexOptions.Compiled | RegexOptions.Multiline);
 

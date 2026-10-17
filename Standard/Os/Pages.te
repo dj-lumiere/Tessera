@@ -26,8 +26,8 @@ import Standard/Alloc
 @external("c")
 @symbol("mmap")
 @target(os: ("linux", "macos"))
-secret routine c_page_map(addr: Addr, length: USize, prot: CInt, flags: CInt, fd: CInt,
-    offset: SSize) -> Addr
+secret routine c_page_map(addr: Addr, length: CSize, prot: CInt, flags: CInt, fd: CInt,
+    offset: CSSize) -> Addr
 
 ### Binds the C `mprotect` function, which changes the access pages allow.
 ### :param addr: The start of the pages, page aligned.
@@ -37,7 +37,7 @@ secret routine c_page_map(addr: Addr, length: USize, prot: CInt, flags: CInt, fd
 @external("c")
 @symbol("mprotect")
 @target(os: ("linux", "macos"))
-secret routine c_page_protect(addr: Addr, length: USize, prot: CInt) -> CInt
+secret routine c_page_protect(addr: Addr, length: CSize, prot: CInt) -> CInt
 
 ### Binds the C `munmap` function, which removes a mapping.
 ### :param addr: The start of the pages, page aligned.
@@ -46,7 +46,7 @@ secret routine c_page_protect(addr: Addr, length: USize, prot: CInt) -> CInt
 @external("c")
 @symbol("munmap")
 @target(os: ("linux", "macos"))
-secret routine c_page_unmap(addr: Addr, length: USize) -> CInt
+secret routine c_page_unmap(addr: Addr, length: CSize) -> CInt
 
 ### MAP_PRIVATE | MAP_ANONYMOUS, whose second bit differs between Linux and the BSDs.
 ### :returns: The flags.
@@ -73,14 +73,14 @@ secret routine posix_protection(access: PageAccess) -> CInt
 ### Reserves `size` bytes of address space, rounded up to whole pages, no page usable yet.
 ### :param size: The number of bytes.
 ### :returns: The reservation's start, or null when the space can't be reserved.
-### :throws: Crashes with `IntegerOverflowError` when `size` rounded up to pages doesn't fit in USize.
+### :throws: Crashes with `IntegerOverflowError` when `size` rounded up to pages doesn't fit in U64.
 @target(os: ("linux", "macos"))
 @expensive("asks for address space")
-routine pages_reserve(size: USize) -> Addr
-    local at: Addr = c_page_map(null, length: whole_pages(size), prot: 0,
+routine pages_reserve(size: U64) -> Addr
+    local at: Addr = c_page_map(null, length: whole_pages(size).to[CSize](), prot: 0,
         flags: map_private_anonymous(), fd: -1, offset: 0)
 
-    if ptrtoint[Addr, SSize](at) == -1
+    if ptrtoint[Addr, S64](at) == -1
         return null
     else
         return at
@@ -91,16 +91,16 @@ routine pages_reserve(size: USize) -> Addr
 ### :returns: False when the pages can't be committed.
 @target(os: ("linux", "macos"))
 @expensive("asks for memory")
-routine pages_commit(at: Addr, size: USize) -> Bool
-    return c_page_protect(at, size, 3) == 0
+routine pages_commit(at: Addr, size: U64) -> Bool
+    return c_page_protect(at, size.to[CSize](), 3) == 0
 
 ### Gives a whole reservation back to the operating system.
 ### :param at: The reservation's start.
 ### :param size: The size it was reserved with.
 @target(os: ("linux", "macos"))
 @expensive("gives memory back")
-routine pages_release(at: Addr, size: USize) -> None
-    c_page_unmap(at, whole_pages(size))
+routine pages_release(at: Addr, size: U64) -> None
+    c_page_unmap(at, whole_pages(size).to[CSize]())
     return
 
 ### Sets what `size` bytes of pages at `at` allow.
@@ -110,8 +110,8 @@ routine pages_release(at: Addr, size: USize) -> None
 ### :returns: False when the access can't be set.
 @target(os: ("linux", "macos"))
 @expensive("asks the operating system")
-routine pages_protect(at: Addr, size: USize, access: PageAccess) -> Bool
-    return c_page_protect(at, size, posix_protection(access)) == 0
+routine pages_protect(at: Addr, size: U64, access: PageAccess) -> Bool
+    return c_page_protect(at, size.to[CSize](), posix_protection(access)) == 0
 
 # -- Windows -----------------------------------------------------------------------
 
@@ -125,7 +125,7 @@ routine pages_protect(at: Addr, size: USize, access: PageAccess) -> Bool
 @symbol("VirtualAlloc")
 @callconv("stdcall")
 @target(os: "windows")
-secret routine c_virtual_alloc(addr: Addr, size: USize, type: U32, protect: U32) -> Addr
+secret routine c_virtual_alloc(addr: Addr, size: CSize, type: U32, protect: U32) -> Addr
 
 ### Binds the Win32 `VirtualProtect` function, which changes the protection of committed pages.
 ### :param addr: The start of the pages.
@@ -137,7 +137,7 @@ secret routine c_virtual_alloc(addr: Addr, size: USize, type: U32, protect: U32)
 @symbol("VirtualProtect")
 @callconv("stdcall")
 @target(os: "windows")
-secret routine c_virtual_protect(addr: Addr, size: USize, protect: U32, old: @U32) -> CInt
+secret routine c_virtual_protect(addr: Addr, size: CSize, protect: U32, old: @U32) -> CInt
 
 ### Binds the Win32 `VirtualFree` function, which decommits or releases pages.
 ### :param addr: The start of the pages (the reservation's start for `MEM_RELEASE`).
@@ -148,7 +148,7 @@ secret routine c_virtual_protect(addr: Addr, size: USize, protect: U32, old: @U3
 @symbol("VirtualFree")
 @callconv("stdcall")
 @target(os: "windows")
-secret routine c_virtual_free(addr: Addr, size: USize, type: U32) -> CInt
+secret routine c_virtual_free(addr: Addr, size: CSize, type: U32) -> CInt
 
 ### The `PAGE_*` value for an access: PAGE_NOACCESS 1, PAGE_READONLY 2, PAGE_READWRITE 4.
 ### :param access: What the pages allow.
@@ -163,12 +163,12 @@ secret routine windows_protection(access: PageAccess) -> U32
 ### Reserves `size` bytes of address space, rounded up to whole pages, no page usable yet.
 ### :param size: The number of bytes.
 ### :returns: The reservation's start, or null when the space can't be reserved.
-### :throws: Crashes with `IntegerOverflowError` when `size` rounded up to pages doesn't fit in USize.
+### :throws: Crashes with `IntegerOverflowError` when `size` rounded up to pages doesn't fit in U64.
 @target(os: "windows")
 @expensive("asks for address space")
-routine pages_reserve(size: USize) -> Addr
+routine pages_reserve(size: U64) -> Addr
     # MEM_RESERVE, PAGE_NOACCESS
-    at: Addr = c_virtual_alloc(null, whole_pages(size), 0x2000, 1)
+    at: Addr = c_virtual_alloc(null, whole_pages(size).to[CSize](), 0x2000, 1)
     return at
 
 ### Makes `size` bytes of reserved pages at `at` readable and writable.
@@ -177,16 +177,16 @@ routine pages_reserve(size: USize) -> Addr
 ### :returns: False when the pages can't be committed.
 @target(os: "windows")
 @expensive("asks for memory")
-routine pages_commit(at: Addr, size: USize) -> Bool
+routine pages_commit(at: Addr, size: U64) -> Bool
     # MEM_COMMIT, PAGE_READWRITE
-    return c_virtual_alloc(at, size, 0x1000, 4).is_not_null()
+    return c_virtual_alloc(at, size.to[CSize](), 0x1000, 4).is_not_null()
 
 ### Gives a whole reservation back to the operating system.
 ### :param at: The reservation's start.
 ### :param size: The size it was reserved with (Windows releases the whole reservation whatever it says).
 @target(os: "windows")
 @expensive("gives memory back")
-routine pages_release(at: Addr, size: USize) -> None
+routine pages_release(at: Addr, size: U64) -> None
     # MEM_RELEASE frees the whole reservation, whatever its size
     c_virtual_free(at, 0, 0x8000)
     return
@@ -198,21 +198,21 @@ routine pages_release(at: Addr, size: USize) -> None
 ### :returns: False when the access can't be set.
 @target(os: "windows")
 @expensive("asks the operating system")
-routine pages_protect(at: Addr, size: USize, access: PageAccess) -> Bool
+routine pages_protect(at: Addr, size: U64, access: PageAccess) -> Bool
     local old: @U32 <- 0
 
-    return c_virtual_protect(at, size, windows_protection(access), old) != 0
+    return c_virtual_protect(at, size.to[CSize](), windows_protection(access), old) != 0
 
 # -- shared ------------------------------------------------------------------------
 
 ### `size` rounded up to whole pages.
 ### :param size: The number of bytes.
 ### :returns: The smallest multiple of the page size that holds `size` bytes.
-### :throws: Crashes with `IntegerOverflowError` when it doesn't fit in USize.
+### :throws: Crashes with `IntegerOverflowError` when it doesn't fit in U64.
 @target(os: not "none")
-routine whole_pages(size: USize) -> USize
-    page: USize = page_size()
-    pages: USize = (size + page - 1) // page
+routine whole_pages(size: U64) -> U64
+    page: U64 = page_size()
+    pages: U64 = (size + page - 1) // page
     return pages * page
 
 ### A manager's reserve routine over the operating system's pages.
@@ -220,7 +220,7 @@ routine whole_pages(size: USize) -> USize
 ### :param size: The number of bytes.
 ### :returns: The reservation's start, or null.
 @target(os: not "none")
-routine os_reserve_fn(state: Addr, size: USize) -> Addr
+routine os_reserve_fn(state: Addr, size: U64) -> Addr
     return pages_reserve(size)
 
 ### A manager's commit routine over the operating system's pages.
@@ -229,7 +229,7 @@ routine os_reserve_fn(state: Addr, size: USize) -> Addr
 ### :param size: The number of bytes.
 ### :returns: False when the pages can't be committed.
 @target(os: not "none")
-routine os_commit_fn(state: Addr, at: Addr, size: USize) -> Bool
+routine os_commit_fn(state: Addr, at: Addr, size: U64) -> Bool
     return pages_commit(at, size)
 
 ### A manager's release routine over the operating system's pages.
@@ -237,7 +237,7 @@ routine os_commit_fn(state: Addr, at: Addr, size: USize) -> Bool
 ### :param at: The reservation's start.
 ### :param size: The size it was reserved with.
 @target(os: not "none")
-routine os_release_fn(state: Addr, at: Addr, size: USize) -> None
+routine os_release_fn(state: Addr, at: Addr, size: U64) -> None
     pages_release(at, size)
     return
 
@@ -248,5 +248,5 @@ routine os_release_fn(state: Addr, at: Addr, size: USize) -> None
 ### :param access: What the pages allow.
 ### :returns: False when the access can't be set.
 @target(os: not "none")
-routine os_protect_fn(state: Addr, at: Addr, size: USize, access: PageAccess) -> Bool
+routine os_protect_fn(state: Addr, at: Addr, size: U64, access: PageAccess) -> Bool
     return pages_protect(at, size, access)

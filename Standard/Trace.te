@@ -46,9 +46,9 @@ secret global TRACE: @TraceStack
 secret global TRACE: @TraceStack
 
 ### The number of frames the trace keeps: the innermost ones, when the program is deeper.
-preset TRACE_CAPACITY: USize = 32
+preset TRACE_CAPACITY: U64 = 32
 ### The mask that turns a depth into a slot of the ring.
-secret preset TRACE_MASK: USize = TRACE_CAPACITY.sub(1)
+secret preset TRACE_MASK: U64 = TRACE_CAPACITY.sub(1)
 
 ### One routine on the trace: its name and its source file, as C strings (RazorForge keeps its frames the same way),
 ### and the place it has reached: the line and column of the call it is in. The column is 0 where a `#source` gave
@@ -63,7 +63,7 @@ record TraceFrame
 ### is in.
 secret record TraceStack
     frames: Array[TraceFrame, TRACE_CAPACITY]
-    depth: USize
+    depth: U64
 
 ### Makes a `TraceFrame` from its fields.
 ### :param name: Its `name`.
@@ -82,7 +82,7 @@ routine TraceFrame.destruct(me: @Me) -> None
 ### :param frames: Its `frames`.
 ### :param depth: Its `depth`.
 ### :returns: The new value.
-secret routine TraceStack.construct(frames: Array[TraceFrame, TRACE_CAPACITY], depth: USize) -> Me
+secret routine TraceStack.construct(frames: Array[TraceFrame, TRACE_CAPACITY], depth: U64) -> Me
     return Me(frames, depth)
 
 ### Releases nothing: a `TraceStack` holds no memory of its own.
@@ -98,13 +98,13 @@ secret routine TraceStack.destruct(me: @Me) -> None
 @trace("on")
 secret routine trace_push(name: CStr, file: CStr) -> None
     stack: @TraceStack = TRACE
-    depth: USize = stack.depth.peek()
-    slot: USize = band[USize](depth, TRACE_MASK)
+    depth: U64 = stack.depth.peek()
+    slot: U64 = band[U64](depth, TRACE_MASK)
     frames: @TraceFrame = bitcast[@TraceStack, @TraceFrame](stack)
     frame: @TraceFrame = frames.stride(slot)
     name.poke_into(frame.name)
     file.poke_into(frame.file)
-    add[USize](depth, 1).poke_into(stack.depth)
+    add[U64](depth, 1).poke_into(stack.depth)
     return
 
 ### Moves the innermost frame to a call: the builder calls it before each call a traced routine makes.
@@ -114,9 +114,9 @@ secret routine trace_push(name: CStr, file: CStr) -> None
 @trace("on")
 secret routine trace_at(line: U32, column: U32) -> None
     stack: @TraceStack = TRACE
-    depth: USize = stack.depth.peek()
-    top: USize = sub[USize](depth, 1)
-    slot: USize = band[USize](top, TRACE_MASK)
+    depth: U64 = stack.depth.peek()
+    top: U64 = sub[U64](depth, 1)
+    slot: U64 = band[U64](top, TRACE_MASK)
     frames: @TraceFrame = bitcast[@TraceStack, @TraceFrame](stack)
     frame: @TraceFrame = frames.stride(slot)
     line.poke_into(frame.line)
@@ -128,23 +128,23 @@ secret routine trace_at(line: U32, column: U32) -> None
 @trace("on")
 secret routine trace_pop() -> None
     stack: @TraceStack = TRACE
-    depth: USize = stack.depth.peek()
-    sub[USize](depth, 1).poke_into(stack.depth)
+    depth: U64 = stack.depth.peek()
+    sub[U64](depth, 1).poke_into(stack.depth)
     return
 
 ### The number of frames the running thread is in: the traced routines that have started and not returned. It may be
 ### more than TRACE_CAPACITY, the frames the trace keeps.
 ### :returns: The depth, or 0 in an untraced build.
 @trace("on")
-routine trace_depth() -> USize
+routine trace_depth() -> U64
     stack: @TraceStack = TRACE
-    depth: USize = stack.depth.peek()
+    depth: U64 = stack.depth.peek()
     return depth
 
 ### The number of frames the running thread is in: always 0, since this build keeps no trace.
 ### :returns: 0.
 @trace("off")
-routine trace_depth() -> USize
+routine trace_depth() -> U64
     return 0
 
 ### A frame of the running thread's trace, counting from the innermost: 0 is the routine that crashed, or that called
@@ -153,12 +153,12 @@ routine trace_depth() -> USize
 ### :returns: The frame. Past those bounds it's what an older frame left in the ring: never a crash, since a crash
 ### handler reads it.
 @trace("on")
-routine trace_frame(back: USize) -> TraceFrame
+routine trace_frame(back: U64) -> TraceFrame
     stack: @TraceStack = TRACE
-    depth: USize = stack.depth.peek()
-    newest: USize = depth -% 1
-    at: USize = newest -% back
-    slot: USize = at & TRACE_MASK
+    depth: U64 = stack.depth.peek()
+    newest: U64 = depth -% 1
+    at: U64 = newest -% back
+    slot: U64 = at & TRACE_MASK
     frames: @TraceFrame = bitcast[@TraceStack, @TraceFrame](stack)
     frame: TraceFrame = frames.stride(slot).peek()
     return frame
@@ -167,7 +167,7 @@ routine trace_frame(back: USize) -> TraceFrame
 ### :param back: How many frames out from the innermost.
 ### :returns: A frame with empty names and line 0.
 @trace("off")
-routine trace_frame(back: USize) -> TraceFrame
+routine trace_frame(back: U64) -> TraceFrame
     frame: TraceFrame = (name: "", file: "", line: 0, column: 0)
     return frame
 
@@ -177,9 +177,9 @@ routine trace_frame(back: USize) -> TraceFrame
 ### :param depth: The depth of the stack about to run.
 ### :returns: The depth the thread had.
 @trace("on")
-routine trace_switch(depth: USize) -> USize
+routine trace_switch(depth: U64) -> U64
     stack: @TraceStack = TRACE
-    was: USize = stack.depth.peek()
+    was: U64 = stack.depth.peek()
     stack.depth.poke(depth)
     return was
 
@@ -187,7 +187,7 @@ routine trace_switch(depth: USize) -> USize
 ### :param depth: The depth of the stack about to run.
 ### :returns: 0.
 @trace("off")
-routine trace_switch(depth: USize) -> USize
+routine trace_switch(depth: U64) -> U64
     return 0
 
 # -- the failures' traces -----------------------------------------------------------------------------------------
@@ -214,20 +214,20 @@ secret global FAILURES: @FailureTable
 secret global FAILURE_COUNT: @U32
 
 ### The frames a failure's trace keeps: its innermost ones.
-preset FAILURE_FRAMES: USize = 32
+preset FAILURE_FRAMES: U64 = 32
 ### The failures each thread remembers: the most recent ones.
-preset FAILURE_TRACES: USize = 32
+preset FAILURE_TRACES: U64 = 32
 
 ### Where one failure was made: its number, the failure it wraps (0 for none), and the trace then.
 record FailureTrace
     seq: U32
     previous: U32
-    depth: USize
+    depth: U64
     frames: Array[TraceFrame, FAILURE_FRAMES]
 
 ### The recent failures of a thread, a ring.
 secret record FailureTable
-    next: USize
+    next: U64
     entries: Array[FailureTrace, FAILURE_TRACES]
 
 ### Makes a `FailureTrace` from its fields.
@@ -236,7 +236,7 @@ secret record FailureTable
 ### :param depth: Its `depth`.
 ### :param frames: Its `frames`.
 ### :returns: The new value.
-routine FailureTrace.construct(seq: U32, previous: U32, depth: USize,
+routine FailureTrace.construct(seq: U32, previous: U32, depth: U64,
     frames: Array[TraceFrame, FAILURE_FRAMES]) -> Me
     return Me(seq, previous, depth, frames)
 
@@ -248,7 +248,7 @@ routine FailureTrace.destruct(me: @Me) -> None
 ### :param next: Its `next`.
 ### :param entries: Its `entries`.
 ### :returns: The new value.
-secret routine FailureTable.construct(next: USize,
+secret routine FailureTable.construct(next: U64,
     entries: Array[FailureTrace, FAILURE_TRACES]) -> Me
     return Me(next, entries)
 
@@ -264,9 +264,9 @@ secret routine FailureTable.destruct(me: @Me) -> None
 routine failure_note(previous: U32) -> U32
     local table: @FailureTable = FAILURES
     local seq: U32 = next_failure_number()
-    local slot: USize = table.next.peek()
+    local slot: U64 = table.next.peek()
     local entry: @FailureTrace = table.entries.to[@FailureTrace]().stride(slot)
-    local depth: USize = trace_depth()
+    local depth: U64 = trace_depth()
 
     table.next.poke((slot + 1) % FAILURE_TRACES)
     entry.seq.poke(seq)

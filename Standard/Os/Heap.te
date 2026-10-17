@@ -13,14 +13,14 @@ module Standard/Os
 import Standard/Alloc
 
 ### The alignment malloc gives every block: twice a pointer's size (8 on 32-bit targets, 16 on 64-bit ones).
-secret preset MALLOC_ALIGN: USize = sizeof[Addr]().mul(2)
+secret preset MALLOC_ALIGN: U64 = sizeof[Addr]().mul(2)
 
 ### Binds the C `malloc` function, which allocates a block of memory.
 ### :param size: The number of bytes.
 ### :returns: The new block, or null when the allocation fails.
 @external("c")
 @symbol("malloc")
-secret routine c_malloc(size: USize) -> Addr
+secret routine c_malloc(size: CSize) -> Addr
 
 ### Binds the C `realloc` function, which resizes a block, keeping its contents up to the smaller size.
 ### :param ptr: The block to resize, or null for a new one.
@@ -28,7 +28,7 @@ secret routine c_malloc(size: USize) -> Addr
 ### :returns: The resized block (possibly moved), or null when the allocation fails and `ptr` is untouched.
 @external("c")
 @symbol("realloc")
-secret routine c_realloc(ptr: Addr, size: USize) -> Addr
+secret routine c_realloc(ptr: Addr, size: CSize) -> Addr
 
 ### Binds the C `free` function, which gives a block back to the C heap.
 ### :param ptr: The block to free. Null does nothing.
@@ -51,7 +51,7 @@ routine make_heap_memory() -> MemoryManager
 @external("c")
 @symbol("posix_memalign")
 @target(os: ("linux", "macos"))
-secret routine c_posix_memalign(out: @Addr, align: USize, size: USize) -> CInt
+secret routine c_posix_memalign(out: @Addr, align: CSize, size: CSize) -> CInt
 
 ### Binds glibc's `malloc_usable_size`, the size a malloc block holds.
 ### :param ptr: The block.
@@ -59,7 +59,7 @@ secret routine c_posix_memalign(out: @Addr, align: USize, size: USize) -> CInt
 @external("c")
 @symbol("malloc_usable_size")
 @target(os: "linux")
-secret routine c_block_size(ptr: Addr) -> USize
+secret routine c_block_size(ptr: Addr) -> CSize
 
 ### Binds macOS's `malloc_size`, the size a malloc block holds.
 ### :param ptr: The block.
@@ -67,7 +67,7 @@ secret routine c_block_size(ptr: Addr) -> USize
 @external("c")
 @symbol("malloc_size")
 @target(os: "macos")
-secret routine c_block_size(ptr: Addr) -> USize
+secret routine c_block_size(ptr: Addr) -> CSize
 
 ### Binds the C runtime's `_aligned_malloc`, an aligned block that `_aligned_free` gives back.
 ### :param size: The number of bytes.
@@ -76,7 +76,7 @@ secret routine c_block_size(ptr: Addr) -> USize
 @external("c")
 @symbol("_aligned_malloc")
 @target(os: "windows")
-secret routine c_aligned_malloc(size: USize, align: USize) -> Addr
+secret routine c_aligned_malloc(size: CSize, align: CSize) -> Addr
 
 ### Binds the C runtime's `_aligned_realloc`, which resizes an `_aligned_malloc` block keeping its alignment.
 ### :param ptr: The block, or null for a new one.
@@ -86,7 +86,7 @@ secret routine c_aligned_malloc(size: USize, align: USize) -> Addr
 @external("c")
 @symbol("_aligned_realloc")
 @target(os: "windows")
-secret routine c_aligned_realloc(ptr: Addr, size: USize, align: USize) -> Addr
+secret routine c_aligned_realloc(ptr: Addr, size: CSize, align: CSize) -> Addr
 
 ### Binds the C runtime's `_aligned_free`, which gives an `_aligned_malloc` block back.
 ### :param ptr: The block. Null does nothing.
@@ -101,11 +101,11 @@ secret routine c_aligned_free(ptr: Addr) -> None
 ### :param align: The alignment, a power of two.
 ### :returns: The new block, null when the heap has no room.
 @target(os: ("linux", "macos"))
-routine c_heap_alloc_fn(state: Addr, size: USize, align: USize) -> Addr
+routine c_heap_alloc_fn(state: Addr, size: U64, align: U64) -> Addr
     if align <= MALLOC_ALIGN
-        return c_malloc(size)
+        return c_malloc(size.to[CSize]())
     local out: @Addr <- null
-    if c_posix_memalign(out, align, size) != 0
+    if c_posix_memalign(out, align.to[CSize](), size.to[CSize]()) != 0
         return null
     else
         return out.peek()
@@ -117,9 +117,9 @@ routine c_heap_alloc_fn(state: Addr, size: USize, align: USize) -> Addr
 ### :returns: The new block, null when malloc fails.
 ### :throws: Crashes with `InvalidValueError` when `align` is past malloc's own.
 @target(os: "windows")
-routine c_heap_alloc_fn(state: Addr, size: USize, align: USize) -> Addr
+routine c_heap_alloc_fn(state: Addr, size: U64, align: U64) -> Addr
     if align <= MALLOC_ALIGN
-        return c_malloc(size)
+        return c_malloc(size.to[CSize]())
     else
         crash(name: "InvalidValueError",
             message: "The C heap can't give a block aligned past malloc's own on Windows: use DEFAULT_HEAP.")
@@ -132,15 +132,15 @@ routine c_heap_alloc_fn(state: Addr, size: USize, align: USize) -> Addr
 ### :param align: The block's alignment.
 ### :returns: The resized block (possibly moved), null when the heap has no room and the old block is untouched.
 @target(os: ("linux", "macos"))
-routine c_heap_realloc_fn(state: Addr, old_ptr: Addr, size: USize, align: USize) -> Addr
+routine c_heap_realloc_fn(state: Addr, old_ptr: Addr, size: U64, align: U64) -> Addr
     if align <= MALLOC_ALIGN
-        return c_realloc(old_ptr, size)
+        return c_realloc(old_ptr, size.to[CSize]())
     fresh: Addr = c_heap_alloc_fn(state, size, align)
     if fresh.is_null()
         return null
     if old_ptr.is_null()
         return fresh
-    kept: USize = c_block_size(old_ptr).min(size)
+    kept: U64 = c_block_size(old_ptr).min(size.to[CSize]()).to[U64]()
     fresh.to[@Byte]().copy(src: old_ptr.to[@Byte](), count: kept)
     c_free(old_ptr)
     return fresh
@@ -152,8 +152,8 @@ routine c_heap_realloc_fn(state: Addr, old_ptr: Addr, size: USize, align: USize)
 ### :param align: The block's alignment, at most malloc's own.
 ### :returns: The resized block (possibly moved), null when realloc fails and the old block is untouched.
 @target(os: "windows")
-routine c_heap_realloc_fn(state: Addr, old_ptr: Addr, size: USize, align: USize) -> Addr
-    return c_realloc(old_ptr, size)
+routine c_heap_realloc_fn(state: Addr, old_ptr: Addr, size: U64, align: U64) -> Addr
+    return c_realloc(old_ptr, size.to[CSize]())
 
 ### The C heap's free function: free of a block from this allocator.
 ### :param state: Unused, the heap allocator has no state.
@@ -168,7 +168,7 @@ routine c_heap_free_fn(state: Addr, ptr: Addr) -> None
 ### :param align: The alignment, a power of two.
 ### :returns: The new block, null when the heap has no room.
 @target(os: ("linux", "macos"))
-routine plain_heap_alloc_fn(state: Addr, size: USize, align: USize) -> Addr
+routine plain_heap_alloc_fn(state: Addr, size: U64, align: U64) -> Addr
     return c_heap_alloc_fn(state, size, align)
 
 ### The default heap's realloc function with the heap check off: the C heap's.
@@ -178,7 +178,7 @@ routine plain_heap_alloc_fn(state: Addr, size: USize, align: USize) -> Addr
 ### :param align: The block's alignment.
 ### :returns: The resized block, null when the heap has no room and the old block is untouched.
 @target(os: ("linux", "macos"))
-routine plain_heap_realloc_fn(state: Addr, old_ptr: Addr, size: USize, align: USize) -> Addr
+routine plain_heap_realloc_fn(state: Addr, old_ptr: Addr, size: U64, align: U64) -> Addr
     return c_heap_realloc_fn(state, old_ptr, size, align)
 
 ### The default heap's free function with the heap check off: free.
@@ -195,8 +195,8 @@ routine plain_heap_free_fn(state: Addr, ptr: Addr) -> None
 ### :param align: The alignment, a power of two.
 ### :returns: The new block, null when the heap has no room.
 @target(os: "windows")
-routine plain_heap_alloc_fn(state: Addr, size: USize, align: USize) -> Addr
-    return c_aligned_malloc(size, align.max(MALLOC_ALIGN))
+routine plain_heap_alloc_fn(state: Addr, size: U64, align: U64) -> Addr
+    return c_aligned_malloc(size.to[CSize](), align.max(MALLOC_ALIGN).to[CSize]())
 
 ### The default heap's realloc function on Windows: `_aligned_realloc`, keeping the alignment.
 ### :param state: Unused.
@@ -205,8 +205,8 @@ routine plain_heap_alloc_fn(state: Addr, size: USize, align: USize) -> Addr
 ### :param align: The block's alignment.
 ### :returns: The resized block, null when the heap has no room and the old block is untouched.
 @target(os: "windows")
-routine plain_heap_realloc_fn(state: Addr, old_ptr: Addr, size: USize, align: USize) -> Addr
-    return c_aligned_realloc(old_ptr, size, align.max(MALLOC_ALIGN))
+routine plain_heap_realloc_fn(state: Addr, old_ptr: Addr, size: U64, align: U64) -> Addr
+    return c_aligned_realloc(old_ptr, size.to[CSize](), align.max(MALLOC_ALIGN).to[CSize]())
 
 ### The default heap's free function on Windows: `_aligned_free`.
 ### :param state: Unused.
@@ -242,26 +242,26 @@ routine plain_heap_free_fn(state: Addr, ptr: Addr) -> None
 secret global QUARANTINE: @Array[Addr, QUARANTINE_SIZE]
 ### The number of blocks that have gone into the quarantine, whose low bits pick the next slot.
 @heap_check("on")
-secret global QUARANTINE_NEXT: @USize
+secret global QUARANTINE_NEXT: @U64
 
 ### The room kept in front of a block for its header, a multiple of every alignment malloc gives.
-secret preset HEADER_ROOM: USize = 32
+secret preset HEADER_ROOM: U64 = 32
 
 ### The offset from a block back to its header.
-secret preset HEADER_BACK: SSize = -32
+secret preset HEADER_BACK: S64 = -32
 ### The tag of a block that is in use.
-secret preset LIVE: USize = 0x7E55A11E
+secret preset LIVE: U64 = 0x7E55A11E
 ### The tag of a block that has been freed.
-secret preset FREED: USize = 0x7E55F4EE
+secret preset FREED: U64 = 0x7E55F4EE
 ### How many freed blocks the checked heap holds back from malloc.
-secret preset QUARANTINE_SIZE: USize = 256
+secret preset QUARANTINE_SIZE: U64 = 256
 ### The mask that turns the running count of frees into a quarantine slot.
-secret preset QUARANTINE_MASK: USize = QUARANTINE_SIZE.sub(1)
+secret preset QUARANTINE_MASK: U64 = QUARANTINE_SIZE.sub(1)
 
 ### What the checked heap keeps in front of each block.
 secret record BlockHeader
-    tag: USize
-    size: USize
+    tag: U64
+    size: U64
     raw: Addr
 
 ### Makes a `BlockHeader` from its fields.
@@ -269,7 +269,7 @@ secret record BlockHeader
 ### :param size: Its `size`.
 ### :param raw: Its `raw`.
 ### :returns: The new value.
-secret routine BlockHeader.construct(tag: USize, size: USize, raw: Addr) -> Me
+secret routine BlockHeader.construct(tag: U64, size: U64, raw: Addr) -> Me
     return Me(tag, size, raw)
 
 ### Releases nothing: a `BlockHeader` holds no memory of its own.
@@ -283,19 +283,19 @@ secret routine BlockHeader.destruct(me: @Me) -> None
 ### :param align: The alignment, a power of two.
 ### :returns: The block after the header, null when malloc fails or the size can't hold a header too.
 @heap_check("on")
-routine checked_heap_alloc_fn(state: Addr, size: USize, align: USize) -> Addr
-    local step: USize = align.max(MALLOC_ALIGN)
+routine checked_heap_alloc_fn(state: Addr, size: U64, align: U64) -> Addr
+    local step: U64 = align.max(MALLOC_ALIGN)
 
-    total: Maybe[USize] = size.add_checked(HEADER_ROOM.add(step))
+    total: Maybe[U64] = size.add_checked(HEADER_ROOM.add(step))
     when total
-        is USize as bytes =>
-            raw: Addr = c_malloc(bytes)
+        is U64 as bytes =>
+            raw: Addr = c_malloc(bytes.to[CSize]())
             if raw.is_null()
                 return null
             # The first address HEADER_ROOM bytes in that is a multiple of the alignment.
-            lowest: USize = ptrtoint[Addr, USize](raw) + HEADER_ROOM
-            aligned: USize = lowest + step - 1 & ~(step - 1)
-            block_start: Addr = inttoptr[USize, Addr](aligned)
+            lowest: U64 = ptrtoint[Addr, U64](raw) + HEADER_ROOM
+            aligned: U64 = lowest + step - 1 & ~(step - 1)
+            block_start: Addr = inttoptr[U64, Addr](aligned)
             header: @BlockHeader = header_of(block_start)
             header.tag.poke(LIVE)
             header.size.poke(size)
@@ -312,17 +312,17 @@ routine checked_heap_alloc_fn(state: Addr, size: USize, align: USize) -> Addr
 ### :returns: The new block, null when malloc fails and the old block is untouched.
 ### :throws: Crashes with `InvalidValueError` when `old_ptr` was freed already or isn't a block of this heap.
 @heap_check("on")
-routine checked_heap_realloc_fn(state: Addr, old_ptr: Addr, size: USize, align: USize) -> Addr
+routine checked_heap_realloc_fn(state: Addr, old_ptr: Addr, size: U64, align: U64) -> Addr
     if old_ptr.is_null()
         return checked_heap_alloc_fn(state, size, align)
     header: @BlockHeader = header_of(old_ptr)
-    tag: USize = header.tag.peek_atomic()
+    tag: U64 = header.tag.peek_atomic()
     when
         tag == LIVE =>
             new_ptr: Addr = checked_heap_alloc_fn(state, size, align)
             if new_ptr.is_null()
                 return null
-            kept: USize = header.size.peek().min(size)
+            kept: U64 = header.size.peek().min(size)
             new_ptr.to[@Byte]().copy(src: old_ptr.to[@Byte](), count: kept)
             release_block(old_ptr)
             return new_ptr
@@ -361,10 +361,10 @@ secret routine header_of(block_start: Addr) -> @BlockHeader
 secret routine release_block(block_start: Addr) -> None
     local header: @BlockHeader = header_of(block_start)
 
-    was: USize = header.tag.atomic_swap(FREED)
+    was: U64 = header.tag.atomic_swap(FREED)
     when
         was == LIVE =>
-            turn: USize = QUARANTINE_NEXT.atomic_fetch_add(1)
+            turn: U64 = QUARANTINE_NEXT.atomic_fetch_add(1)
             slot: @Addr = QUARANTINE.getslot(turn & QUARANTINE_MASK)
             evicted: Addr = slot.atomic_swap(header)
             if evicted.is_null()
