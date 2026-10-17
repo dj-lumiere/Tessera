@@ -366,30 +366,36 @@ public class MigrateTests
     }
 
     [Fact]
-    public void Names_the_arguments_of_a_call_to_a_routine_taking_two_or_more()
+    public void Names_the_arguments_of_a_call_to_a_routine_taking_three_or_more()
     {
         const string source = """
+            routine volume(width: S64, height: S64, depth: S64) -> S64
+                r: S64 = width * height * depth
+                return r
+
             routine area(width: S64, height: S64) -> S64
                 r: S64 = width * height
                 return r
 
             @positional
-            routine larger(a: S64, b: S64) -> S64
-                r: S64 = a.max(b)
+            routine largest(a: S64, b: S64, c: S64) -> S64
+                r: S64 = a.max(b).max(c)
                 return r
 
             routine start() -> None
                 width: S64 = 3
-                x: S64 = area(width, 4)
-                y: S64 = larger(x, 2)
+                x: S64 = volume(width, 4, 5)
+                y: S64 = largest(x, 2, 1)
+                z: S64 = area(x, 2)
                 return
             """;
         var migration = new NamedArgsMigration();
         migration.Index("a.te", source, library: false);
         var report = new List<string>();
         string after = migration.Rewrite("a.te", source, report);
-        Assert.Contains("x: S64 = area(width, height: 4)", after);
-        Assert.Contains("y: S64 = larger(x, 2)", after);
+        Assert.Contains("x: S64 = volume(width, height: 4, depth: 5)", after);
+        Assert.Contains("y: S64 = largest(x, 2, 1)", after);
+        Assert.Contains("z: S64 = area(x, 2)", after);
         Assert.Empty(report);
         Assert.Equal(after, migration.Rewrite("a.te", after, report));
     }

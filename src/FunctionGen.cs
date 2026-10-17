@@ -4005,9 +4005,9 @@ public sealed class FunctionGen
         return EmitCall(plan);
     }
 
-    /// A routine that takes two or more arguments besides `me` has each one named, in the order of its parameters:
-    /// `copy(dest: d, source: s)`. A value already called like its parameter goes by its name alone
-    /// (`copy(dest, source: s)`). A routine marked `#positional` (its arguments alike, as in `max(a, b)`) and a C
+    /// A routine that takes three or more arguments besides `me` has each one named, in the order of its parameters:
+    /// `copy(dest: d, source: s, count: n)`. Two may go in order. A value already called like its parameter goes by
+    /// its name alone (`copy(dest, source: s, count: n)`). A routine marked `#positional` (its arguments alike, as in `max(a, b)`) and a C
     /// routine take them in order, and a name written there still has to be the parameter's.
     private void CheckArgNames(Expr e, CallPlan plan)
     {
@@ -4025,7 +4025,7 @@ public sealed class FunctionGen
         if (offset < 0) return;
         var named = r.Params.Skip(offset).Where(p => p.Name != "me").ToList();
         bool inOrder = r.AnnotationNamed("positional") is not null || r.AnnotationNamed("external") is { First: "c" };
-        bool needsNames = named.Count >= 2 && !inOrder;
+        bool needsNames = named.Count >= 3 && !inOrder;
         string Shape() => $"{r.DisplayName}({string.Join(", ", named.Select(p => $"{p.Name}: ..."))})";
         for (int i = 0; i < plan.Args.Count; i++)
         {

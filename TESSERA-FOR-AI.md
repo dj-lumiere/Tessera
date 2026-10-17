@@ -1197,11 +1197,12 @@ isn't empty is named for what it is: `ProcessOptions.default()` captures both st
 job goes just before it. So the form without the allocator
 (`construct()` with `Standard/Os`) is the same call with the last argument left off.
 
-**Named arguments.** A call to a routine taking two or more arguments besides `me` names each one, in the order of
-the parameters (`area(width: 3, height: 4)`); a name out of place is a build error. A value already called like its
-parameter goes by its name alone (`area(width, height: 4)`), so bind values under their parameters' names
-(`retries: U32 = 3`, then `connect(host, retries)`). One argument besides `me` goes without a name (`len.add(1)`,
-`list.getitem(0)`), and `me` is never named (`S64.max(a, b)`). `@positional` routines (the raw operations: `add[T](a,
+**Named arguments.** A call to a routine taking three or more arguments besides `me` names each one, in the order
+of the parameters (`box(width: 3, height: 4, depth: 5)`); a name out of place is a build error. A value already
+called like its parameter goes by its name alone (`box(width, height: 4, depth: 5)`), so bind values under their
+parameters' names (`retries: U32 = 3`, then `connect(host, port: 80, retries)`). One or two arguments besides `me`
+may go without names (`len.add(1)`, `area(3, 4)`), a name written there still has to be the parameter's, and `me` is
+never named (`S64.max(a, b)`). `@positional` routines (the raw operations: `add[T](a,
 b)`, `ieq`, `band`, `fadd`, ...) and C externals take their arguments in order. An operator's right side is its
 one argument.
 `tessera migrate --named-args` names the arguments of existing calls.

@@ -2,8 +2,8 @@ using System.Text;
 
 namespace Tessera;
 
-/// The `migrate` step that names the arguments of a call to a routine taking two or more besides `me`:
-/// `copy(d, s)` becomes `copy(dest: d, source: s)`. It reads the source as the builder does and finds each call's
+/// The `migrate` step that names the arguments of a call to a routine taking three or more besides `me`:
+/// `copy(d, s, n)` becomes `copy(dest: d, source: s, count: n)`. It reads the source as the builder does and finds each call's
 /// routine among the declarations of the standard library and the files being migrated: by its name and how many
 /// arguments it takes, then by the types it can tell from the source (a parameter's or binding's declared type, a
 /// field's, what a routine returns), the way the build would choose among overloads. A value already called like its
@@ -696,7 +696,7 @@ internal sealed class NamedArgsMigration
             if (written is not null && written.All(n => n is not null)) return;
             List<string?> NamesOf(Signature s) =>
                 s.Params.Skip(c.FirstParam(s)).Select(p => p.Name == "me" ? null : p.Name).ToList();
-            bool Needs(Signature s) => !s.InOrder && NamesOf(s).Count(n => n is not null) >= 2;
+            bool Needs(Signature s) => !s.InOrder && NamesOf(s).Count(n => n is not null) >= 3;
             if (!c.Routines.Any(Needs)) return;
             var labels = NamesOf(c.Routines.First(Needs));
             // One that takes its arguments in order (a C routine) still takes the same names, when they are its own.
