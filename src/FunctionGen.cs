@@ -165,7 +165,7 @@ public sealed class FunctionGen
     private static bool OwnedValue(DType t) => t is not PtrType && Tracked(t);
 
     /// Whether the memory rules follow a value of `t` (or a slot of one): a Box, a Memory, or an entity. Each must end
-    /// once on every path (drop, return, handed on), and nothing uses it after.
+    /// once on every path (drop, return, handed over), and nothing uses it after.
     /// The names bound by a claim (`local x: @T <- value`): each is a slot of the frame, so `steal x` takes what it holds.
     private readonly HashSet<string> _claimedSlots = [];
 
@@ -182,19 +182,19 @@ public sealed class FunctionGen
         switch (e)
         {
             case ValueRef r when InferQuiet(r) is { } t && Entities.Holds(t):
-                return $"'{r.Name}' holds {t.Name}, {HoldsWhat(t)}, which is never copied: hand it on with steal {r.Name}, "
+                return $"'{r.Name}' holds {t.Name}, {HoldsWhat(t)}, which is never copied: hand it over with steal {r.Name}, "
                     + "or lend its place as a pointer";
             case FieldExpr f when !IsPlaceChain(f) && InferQuiet(f) is { } t && Entities.Holds(t):
-                return $"this copies the {t.Name} in '{f.Name}', and an entity is never copied: lend the place as a pointer, "
+                return $"this copies the {t.Name} in '{f.Name}', and an entity is never copied: pass the place as a pointer, "
                     + "or take it out with steal place as b";
             // getitem gives a copy of the element, which an entity element can't be: its place is getslot's.
             case MethodCallExpr { Name: "getitem" } item when InferQuiet(item) is { } t && Entities.Holds(t):
                 return $"getitem copies the element, and {t.Name} {(Entities.IsEntity(t) ? "is an entity" : "holds one")}, "
-                    + "which is never copied: take its place with getslot (a @" + t.Name + "), or move it out with steal place as b";
+                    + "which is never copied: take its place with getslot (a @" + t.Name + "), or hand it over with steal place as b";
             case MethodCallExpr { Name: "peek" or "peek_atomic" or "peek_volatile" or "load" } m
                 when InferQuiet(m) is { } t && Entities.Holds(t):
                 return $"'{m.Name}' reads a {t.Name} out of memory, which copies it, and {(Entities.IsEntity(t) ? "an entity" : "a value holding an entity")} "
-                    + "is never copied: lend the place itself, or hand it on with steal";
+                    + "is never copied: pass the place itself, or hand it over with steal";
             default:
                 return null;
         }
@@ -785,7 +785,7 @@ public sealed class FunctionGen
             var p = _decl.Params[i];
             var given = new Val($"%a.{IrName(p.Name)}", _inst.Params[i]);
             // An entity handed in lives in a slot of this routine's frame: inside, the name is that slot (@E), so the
-            // routine can lend it, drop it, or hand it on with steal.
+            // routine can lend it, drop it, or hand it over with steal.
             if (Entities.Holds(_inst.Params[i]) && p.Name != "me" && !_c.Prechecking)
             {
                 var held = _inst.Params[i];
@@ -1390,7 +1390,7 @@ public sealed class FunctionGen
                 // the floor would leak what it holds.
                 if (e.Value is CallExpr or NsCallExpr or MethodCallExpr && InferQuiet(e.Value) is { } made && Entities.Holds(made))
                     throw Err(e.Pos, $"this call hands you a {made.Name}, {HoldsWhat(made)}, and the line leaves it on the floor: "
-                        + "keep it in a slot (local x: @" + made.Name + " <- ...), drop it, or hand it on");
+                        + "keep it in a slot (local x: @" + made.Name + " <- ...), drop it, or hand it over");
                 EvalAny(e.Value);
                 break;
             }
@@ -2598,7 +2598,7 @@ public sealed class FunctionGen
                 // A branch that holds an entity is the arm's to end: an arm that doesn't name it would lose it.
                 if (patterns.Select(p => p.Type).FirstOrDefault(Entities.Holds) is { } lost)
                     throw Err(arm.Pos, $"this arm observes {lost}, which {(Entities.IsEntity(lost) ? "is an entity" : "holds an entity")}, "
-                        + $"without naming it, and the arm is where it ends: name it (is {lost} as x) and drop it, return it, or hand it on");
+                        + $"without naming it, and the arm is where it ends: name it (is {lost} as x) and drop it, return it, or hand it over");
                 label = armBlock(arm, FailureObserved(vt, patterns[0].Type, tag));
             }
             foreach (int index in patterns.SelectMany(p => p.Leaves))

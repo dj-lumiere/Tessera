@@ -200,12 +200,12 @@ routine start() -> None
   `@reshaping`, and isn't called while that memory is viewed. 5. A global `Box` / `Memory` is changed with `replace`,
   and the program's end gives the last one back. The build checks all five, as below. Build errors unless marked.
 - **The group check (rule 2), in every routine without type parameters.** A Box / Memory is an entity, so the entity
-  rules apply: it lives in a slot, and it ends exactly once on every path (`drop m`, `return m`, handed on with
-  `steal m`, or moved into an entity's field). The errors and their fixes:
+  rules apply: it lives in a slot, and it ends exactly once on every path (`drop m`, `return m`, handed over with
+  `steal m`, or handed over to an entity's field). The errors and their fixes:
   - `'m' holds a Memory[Byte] (from line N) that hasn't ended when 'r' returns here`: drop it, return it, or hand it
     on. Also what a path that skips the release gets (dropped in one arm of an `if`, not the other).
   - `'m' ended already (drop m on line N), and a Memory[Byte] ends once` (a second `drop`, or a drop after
-    `steal m`), and `'m' is used after drop m on line N ended it`: a slot dropped or handed on is gone. A `drop`
+    `steal m`), and `'m' is used after drop m on line N ended it`: a slot dropped or handed over is gone. A `drop`
     leaves the slot empty at run time, but the build counts the drop: the slot holds nothing again until a value is
     put in it (`poke`).
   - `'s' holds a Memory[Byte] (from line N) that hasn't ended, and this overwrites it`: a `poke` into a slot that
@@ -711,8 +711,8 @@ routine start() -> None
   `me: @Me` (`me: Me` is a build error). A parameter that takes one over (`c: Counter`) is a slot of the routine
   inside it. Every entity declares `construct` and `destruct`, and its life ends with `drop`, on every path, like
   memory from a manager.
-- Moving is written with `steal`. `steal a as b` moves what the slot `a` holds into a new slot `b`, and an argument
-  moves with `f(c: steal a)`: `a` ends there, and using it afterwards is a build error. `steal p.left as old` takes
+- Handing over is written with `steal`. `steal a as b` hands what the slot `a` holds over to a new slot `b`, and an
+  argument is handed over with `f(c: steal a)`: `a` ends there, and using it afterwards is a build error. `steal p.left as old` takes
   what a field holds into a new slot `old` and leaves the field hollow: reading it before a value is put back
   (`p.left.poke(Counter.construct())`) is a build error, and so is returning while a place reached through a
   parameter, `me`, or a global is still hollow (the caller would find the hole). The place is zeroed in place, so a
@@ -734,8 +734,8 @@ routine start() -> None
   nothing from it; a returned value's before the return).
 - A variant may have an entity branch: `Result[File, FsError]`, `Maybe[Counter]`. Such a variant value holds an entity,
   so it follows the same rules: it lives in a slot (`local r: @Result[Counter, E] <- open()`, a value binding is a build
-  error), a parameter of that type is a slot, and it moves with `steal` or `return r`. A `when` observes it as a call's
-  result (`when open()`) or out of its slot (`when steal r`), and `is Counter as c` moves the entity into the arm's own
+  error), a parameter of that type is a slot, and it is handed over with `steal` or `return r`. A `when` observes it as a call's
+  result (`when open()`) or out of its slot (`when steal r`), and `is Counter as c` hands the entity over to the arm's own
   slot `c`, which ends there (drop, return, or hand on). The arm that observes an entity branch must name it, and `else`
   never takes one. `return c` from a Counter's slot returns it where the routine returns a variant with a Counter branch.
 - A container that owns its elements may take an entity as its type argument: `List[List[S64]]`, `Memory[Counter]`, a
@@ -748,7 +748,7 @@ routine start() -> None
   there. In code that names its types, `steal x` or `drop x` on a value with nothing to give back is a build error
   (the value is copied, the drop does nothing): leave the marker out. Where x's written type is a type parameter
   (`T`, `@T`, `List[T]`, `Me` of a generic type), both are always allowed and written once for any T: for an entity T
-  they move and end it, for a record T steal is the value and drop does nothing. `drop` on a value that isn't a place
+  they hand it over and end it, for a record T steal is the value and drop does nothing. `drop` on a value that isn't a place
   (a call's result, an arm's value) puts it in a slot of its own first, so its destruct gets an address.
 - A call that hands back an entity (or a value holding one) can't be a bare line: keep it in a slot, drop it, or hand
   it on.
@@ -924,7 +924,7 @@ says `@reshaping(name)`.
 
 Keys and elements may be entities in every collection: `Set[File]`, `Dict[Counter, List[S64]]`, `SortedSet[Counter]`,
 `PriorityQueue[Job, Counter]`. Hashing, `eq`, and `compare` read them through their places (`@T`), so neither an entity
-nor a record key is copied for a lookup. They move in with `steal` (a key that doesn't go in, because an equal one is
+nor a record key is copied for a lookup. They are handed over with `steal` (a key that doesn't go in, because an equal one is
 already there, ends at once), and `remove`, a replaced value, `clear`, and destruct end them. Every lookup takes a key's
 place (`set.has(probe)`, lent) or a key value (`set.has(Counter.construct(3))`, which ends after the lookup). An entity
 element is read through `getslot` and the slot iterators (`next` / `next_checked` on `SortedListIter`,

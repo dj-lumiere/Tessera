@@ -413,7 +413,7 @@ public sealed record BinaryExpr(string Op, Expr Left, Expr Right, Pos Pos) : Exp
 /// `-x`, `not x`, `~x`.
 public sealed record UnaryExpr(string Op, Expr Operand, Pos Pos) : Expr(Pos);
 
-/// `steal x`: the entity the slot `x` holds, handed on where the expression goes, and `x` ends. `Place` is the
+/// `steal x`: the entity the slot `x` holds, handed over where the expression goes, and `x` ends. `Place` is the
 /// builder's own load out of a place for `steal place as b`, which leaves the place hollow.
 public sealed record StealExpr(Expr Value, Pos Pos) : Expr(Pos)
 {

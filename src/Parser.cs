@@ -1353,8 +1353,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     Next();
                     var from = ParsePostfix();
                     if (!IsIdent("as"))
-                        throw Error("steal on its own line moves into a new slot: steal a as b, or out of a place: steal p.left as b; " +
-                                    "as an argument it is steal a");
+                        throw Error("steal on its own line hands a value over to a new slot (steal a as b) or out of a place " +
+                                    "(steal p.left as b). As an argument it is steal a");
                     Next();
                     var named = ValueName("the name the stolen value goes to");
                     if (IsIdent("inject"))

@@ -27,7 +27,7 @@ public static class MemoryRules
     /// `Name` is another handle of `Of`'s group.
     public sealed record Alias(string Name, string Of, Pos Pos) : Event(Pos);
 
-    /// The group of `Name` ends: dropped, returned, or handed on.
+    /// The group of `Name` ends: dropped, returned, or handed over.
     public sealed record End(string Name, string How, Pos Pos) : Event(Pos);
 
     /// The memory of `Name` is read, written, or viewed.
@@ -179,7 +179,7 @@ public static class MemoryRules
                                 ? $"'{u.Name}' was left hollow by {g.How} on line {at.Line}, and is read here before a {gone} is put back: "
                                   + $"put one in first, {u.Name}.poke(...)"
                                 : g.Entity is { } gone2
-                                ? $"'{u.Name}' is used after {g.How} on line {at.Line} ended it: a {gone2} is used before it is handed on or dropped"
+                                ? $"'{u.Name}' is used after {g.How} on line {at.Line} ended it: a {gone2} is used before it is handed over or dropped"
                                 : $"'{u.Name}' is used after its memory was given back ({g.How} on line {at.Line}): "
                                   + "use it before that, or make memory of its own with .duplicate() before it");
                         break;
@@ -239,7 +239,7 @@ public static class MemoryRules
                             if (g.Ended is null)
                                 Report(ex.Pos, g.Entity is { } alive
                                     ? $"'{g.Origin}' holds a {alive} (from line {g.Born.Line}) that hasn't ended when '{routine}' returns here: "
-                                      + $"drop {g.Origin}, return it, or hand it on with steal {g.Origin}"
+                                      + $"drop {g.Origin}, return it, or hand it over with steal {g.Origin}"
                                     : $"'{g.Origin}' holds memory (from line {g.Born.Line}) that isn't given back before '{routine}' "
                                       + $"returns here: give it back first (drop {g.Origin}), return it, or hand it to a routine that takes it");
                         break;
@@ -270,7 +270,7 @@ public static class MemoryRules
                             else if (g.Ended is null)
                                 Report(ex.Pos, g.Entity is { } unseen
                                     ? $"'{g.Origin}' holds a {unseen} (from line {g.Born.Line}) that hasn't ended, and goes out of sight here: "
-                                      + $"drop it, return it, or hand it on with steal {g.Origin}"
+                                      + $"drop it, return it, or hand it over with steal {g.Origin}"
                                     : ex.Region
                                     ? $"'{g.Origin}' holds memory (from line {g.Born.Line}) and goes out of sight here, at the end of the body "
                                       + "it is bound in: give the memory back first (drop it), return it, or keep it in a slot bound outside the body"
