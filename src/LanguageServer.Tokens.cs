@@ -658,7 +658,15 @@ public static partial class LanguageServer
 
         private void Annotations(List<Annotation> attributes)
         {
-            foreach (var a in attributes) Mark(a.Pos, a.Name, "decorator");
+            foreach (var a in attributes)
+            {
+                Mark(a.Pos, a.Name, "decorator");
+                // The `@` that opens a list of them (`@[inline, untraced]`) is the annotation's mark too, as the `@`
+                // of `@inline` is, not the `@` of a pointer or a span type.
+                int at = tokens.FindIndex(t => t.Pos == a.Pos);
+                if (at >= 2 && tokens[at - 1].Kind == TokenKind.LBracket && tokens[at - 2].Kind == TokenKind.At)
+                    _kinds.TryAdd((tokens[at - 2].Pos.Line, tokens[at - 2].Pos.Col), "decorator");
+            }
         }
 
         private void Decl(Decl d)
