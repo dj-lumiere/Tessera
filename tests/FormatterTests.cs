@@ -10,6 +10,16 @@ namespace Tessera.Tests;
 public class FormatterTests
 {
     [Fact]
+    public void ASpanBranchStaysATypeAndAnAnnotationListSplits()
+    {
+        // Where the line stands decides: under a variant header `@[Byte]` is a branch type, before a declaration
+        // `@[inline, cold]` is a list of annotations.
+        const string source = "variant Token\n    S64\n    @[Byte]\n\n@[inline, cold]\nroutine f() -> None\n    return\n";
+        const string expected = "variant Token\n    S64\n    @[Byte]\n\n@inline\n@cold\nroutine f() -> None\n    return\n";
+        Assert.Equal(expected, Formatter.Format(source));
+    }
+
+    [Fact]
     public void OneBlankLineBetweenTheHeadAndTheEntryLines()
     {
         const string source = "routine f(n: S64) -> S64\n    local m: @S64 <- n + 1\n    return m.peek()\n";

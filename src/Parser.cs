@@ -279,15 +279,33 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// True at the start of the next top-level declaration (or the end of the file): a declaration keyword, or an
     /// annotation at the start of a line (one inside a body sits further in).
     private bool AtDeclStart() =>
-        Is(TokenKind.Eof) || (Is(TokenKind.Hash) && Cur.Pos.Col == 1)
+        Is(TokenKind.Eof) || (AtAnnotation() && Cur.Pos.Col == 1)
         || (IsKeyword(Cur) && (DeclKeywords.Contains(Cur.Text) || Cur.Text is "secret") && Cur.Pos.Col == 1);
 
     // ── Annotations and clauses ──────────────────────────────────────────────
 
+    /// Whether annotations start here: `@name`, or a list of them, `@[name, ...]`, alone on its line. `@[` that goes
+    /// on after its `]` (`@[Byte].construct(...)`) opens a span instead. Asked only where an annotation may stand
+    /// (before a declaration, a field, a block or a line), never where a type does (a variant's branch lines).
+    private bool AtAnnotation()
+    {
+        if (Is(TokenKind.Hash)) return true;
+        if (!Is(TokenKind.At) || PeekTok(1).Kind != TokenKind.LBracket) return false;
+        int depth = 0;
+        for (int k = 1; ; k++)
+        {
+            var t = PeekTok(k);
+            if (t.Kind is TokenKind.Eof or TokenKind.Newline) return false;
+            if (t.Kind == TokenKind.LBracket) depth++;
+            else if (t.Kind == TokenKind.RBracket && --depth == 0)
+                return PeekTok(k + 1).Kind is TokenKind.Newline or TokenKind.Eof;
+        }
+    }
+
     private List<Annotation> ParseAnnotations()
     {
         var annotations = new List<Annotation>();
-        while (Is(TokenKind.Hash))
+        while (AtAnnotation())
         {
             var hash = Next();
             if (hash.Text == "#") Old(hash.Pos, "an annotation is written @name, not #name");
@@ -467,7 +485,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private (bool IsBlock, Pos? Source) NextBlockSource()
     {
         // `block: S64 = 1` is a value named like the keyword, which the line itself reports.
-        if (!Is(TokenKind.Hash)) return (IsBlockHeader(), null);
+        if (!AtAnnotation()) return (IsBlockHeader(), null);
         int start = _i;
         var annotations = ParseAnnotations();
         if (!IsBlockHeader())
@@ -648,7 +666,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         {
             int start = _i;
             Pos? lineSource = null;
-            if (Is(TokenKind.Hash))
+            if (AtAnnotation())
             {
                 var lineAnnotations = ParseAnnotations();
                 if (!IsIdent("local"))
@@ -1238,7 +1256,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     : "this line sits further out than the body it is in, and further in than the line that opens the body");
             Pos? lineSource = null;
             List<Annotation> prefixes = [];
-            if (Is(TokenKind.Hash))
+            if (AtAnnotation())
             {
                 foreach (var a in ParseAnnotations())
                 {
@@ -1267,7 +1285,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private bool AtBodyEnd(int parentCol, bool routineLevel)
     {
         if (Is(TokenKind.Eof)) return true;
-        if (!Is(TokenKind.Hash))
+        if (!AtAnnotation())
             return Cur.Pos.Col <= parentCol || AtDeclStart() || (routineLevel && IsBlockHeader());
         int start = _i;
         try

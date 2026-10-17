@@ -40,7 +40,7 @@ public static class Formatter
         lines = UseSelf(lines);
         lines = JoinContinuations(lines);
         lines = OrderDeclarations(lines);
-        lines = lines.SelectMany(SplitAnnotationList).ToList();
+        lines = lines.SelectMany((l, i) => InVariantBody(lines, i) ? [l] : SplitAnnotationList(l)).ToList();
         lines = lines.Select(DropGroupingParens).ToList();
         lines = HeadLayout(lines);
         lines = Align(lines);
@@ -334,6 +334,21 @@ public static class Formatter
 
     private static bool IsDoc(string line) => line.TrimStart().StartsWith("###");
 
+    /// Whether line `i` is a branch line of a variant (`@[Byte]` there is a span type, not an annotation list): further in
+    /// than the left edge, under a `variant` header.
+    private static bool InVariantBody(List<string> lines, int i)
+    {
+        if (Indent(lines[i]) == 0 || IsBlank(lines[i])) return false;
+        for (int j = i - 1; j >= 0; j--)
+        {
+            string l = lines[j];
+            if (IsBlank(l) || Indent(l) > 0 || l.StartsWith('#') || l.StartsWith("needs ") || l.StartsWith("obeys ")) continue;
+            string decl = l.StartsWith("secret ") ? l[7..] : l;
+            return decl.StartsWith("variant ");
+        }
+        return false;
+    }
+
     private static bool IsAnnotation(string line) =>
         line.TrimStart() is var t && (t.StartsWith("#") || t.StartsWith("@[") || (t.StartsWith("@") && t.Length > 1 && char.IsAsciiLetterLower(t[1])));
 
@@ -382,7 +397,7 @@ public static class Formatter
             {
                 // the blank goes before the comments and annotations (with their continuation lines) that lead in
                 int at = result.Count;
-                while (at > 0 && (resultContinued[at - 1] || IsLeading(result[at - 1], Indent(line)))) at--;
+                while (at > 0 && (resultContinued[at - 1] || IsLeading(result[at - 1], Indent(line)) && !InVariantBody(result, at - 1))) at--;
                 if (at > 0 && !IsBlank(result[at - 1]))
                 {
                     result.Insert(at, "");
@@ -412,7 +427,7 @@ public static class Formatter
             for (; j < lines.Count; j++)
             {
                 string t = lines[j].TrimStart();
-                if (continued[j] || t.Length == 0 || t.StartsWith("needs ") || t.StartsWith("obeys ") || t.StartsWith("#") || IsAnnotation(t))
+                if (continued[j] || t.Length == 0 || t.StartsWith("needs ") || t.StartsWith("obeys ") || t.StartsWith("#") || IsAnnotation(t) && !InVariantBody(lines, j))
                     continue;
                 // A `local` line at the left edge belongs to the file's top-level lines, not to this routine.
                 if (!t.StartsWith("local ") || lines[j][0] != ' ') break;
@@ -511,7 +526,7 @@ public static class Formatter
             if (continued[j]) continue;
             string t = lines[j].TrimStart();
             if (t.Length == 0) return "";
-            if (!t.StartsWith("#") && !IsAnnotation(t)) return lines[j];
+            if (!t.StartsWith("#") && !(IsAnnotation(t) && !InVariantBody(lines, j))) return lines[j];
         }
         return "";
     }
@@ -1189,9 +1204,10 @@ public static class Formatter
         var result = new List<string>(lines);
         for (int i = 0; i < result.Count; i++)
         {
-            if (!IsAnnotation(result[i])) continue;
+            if (!IsAnnotation(result[i]) || InVariantBody(result, i)) continue;
             int annotationEnd = i;
-            while (annotationEnd + 1 < result.Count && IsAnnotation(result[annotationEnd + 1])) annotationEnd++;
+            while (annotationEnd + 1 < result.Count && IsAnnotation(result[annotationEnd + 1]) && !InVariantBody(result, annotationEnd + 1))
+                annotationEnd++;
             int docEnd = annotationEnd;
             while (docEnd + 1 < result.Count && IsDoc(result[docEnd + 1])) docEnd++;
             if (docEnd == annotationEnd) continue;
