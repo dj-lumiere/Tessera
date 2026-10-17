@@ -197,7 +197,7 @@ public sealed class Structurer
         public List<string> Carried { get; } = carried;
         /// The block the loop goes on to: jumps to it are `break`, and the header's exit lands in `then`.
         public string? Post { get; set; }
-        /// The header's exit arm, written as `then` when it is the only way to Post.
+        /// The header's exit arm, written as `then` when the loop has no `break` (a `break` runs `then` too).
         public List<Stmt>? ThenBody { get; set; }
         public bool PostHasParams { get; set; }
         /// A jump out of this loop back to an enclosing loop's header: a `break`, then that loop's `continue` after
@@ -960,6 +960,10 @@ public sealed class Structurer
         // The last line of a loop without carried values needn't say continue.
         if (carried.Count == 0 && body.Count > 1 && body[^1] is ContinueStmt { With: null }) body.RemoveAt(body.Count - 1);
         if (body is [ContinueStmt { With: null }]) body = [new PassStmt(header.Pos)];
+        // `then` runs after a `break` too, so the header's exit arm can only be the loop's `then` when the body has no
+        // `break` of its own.
+        if (then is not null && Bodies.BreaksOut(body))
+            throw new GiveUp($"the loop at '{header.Name}' leaves from its header to lines of its own and breaks out elsewhere");
         var loop = new LoopStmt(kind, cond, with, body, then, header.Pos);
         var result = new List<Stmt>(before) { loop };
         if (frame.OuterContinue is { } onward)

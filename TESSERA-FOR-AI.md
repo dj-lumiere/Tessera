@@ -391,10 +391,12 @@ routine start() -> None
   without them is a build error ("the body of a loop that carries values ends here without passing them on"). The
   values after `continue with` are evaluated only on that path, so `n - 1` under `if n > 0` never underflows. `each`
   carries values the same way: `each i in 0 til n with total: U64 = 0`, `continue with total: total + i`.
-- **`then`.** A loop may be followed by `then` at the loop's own column. Its lines run only when the loop ends on its
-  own (the condition fails, the range or iterator is exhausted), not after a `break`, and they see the carried
-  values' last values (not the `each` variable). The lines after the loop (or after `then`) see nothing the loop
-  bound.
+- **`then`.** A loop may be followed by `then` at the loop's own column. Its lines run once whenever the loop is left
+  for the line after it: when the loop ends on its own (the condition fails, the range or iterator is exhausted) and
+  after its own `break` (a `break` of a loop inside only leaves that loop). A `return` leaves the routine and skips
+  them. They see the carried values' last values (not the `each` variable). A loop whose `then` leaves (ends in
+  `return`, say) always leaves, so nothing may follow it. Loops have no `else`: the case where the loop would not run
+  even once is an `if` before the loop. The lines after the loop (or after `then`) see nothing the loop bound.
 
   ```tessera
   routine collatz_steps(start: U64) -> U64

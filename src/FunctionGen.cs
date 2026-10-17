@@ -77,14 +77,15 @@ public sealed class FunctionGen
     /// The `when`s that are values being emitted, innermost last: where `becomes` goes.
     private readonly Stack<ValueFrame> _valueWhens = new();
 
-    private sealed class LoopFrame(LBlock header, string headerRegion, LBlock after, string afterRegion, bool hasWith)
+    private sealed class LoopFrame(LBlock header, string headerRegion, LBlock then, string thenRegion, bool hasWith)
     {
         public LBlock Header { get; } = header;
         public string HeaderRegion { get; } = headerRegion;
-        public LBlock After { get; } = after;
-        public string AfterRegion { get; } = afterRegion;
+        /// The `then` block: the header's exit and every `break` go to it.
+        public LBlock Then { get; } = then;
+        public string ThenRegion { get; } = thenRegion;
         public bool HasWith { get; } = hasWith;
-        /// Whether a `break` was written: the block after the loop is reached.
+        /// Whether a `break` was written: `then` is reached even when the loop never ends on its own.
         public bool Breaks { get; set; }
         /// The carried values, in the order of their phis: name, type, and the `with` names a continue must give.
         public List<(string Name, DType Type)> Carried { get; } = [];
@@ -1462,8 +1463,8 @@ public sealed class FunctionGen
                 if (_loops.Count == 0) throw Err(br.Pos, "break leaves a loop, and there is no loop here");
                 var loop = _loops.Peek();
                 loop.Breaks = true;
-                MemEdge(loop.AfterRegion, loop.OuterNames, pos: br.Pos);
-                Terminate($"br label %{loop.After.Label}");
+                MemEdge(loop.ThenRegion, loop.HeaderNames, pos: br.Pos);
+                Terminate($"br label %{loop.Then.Label}");
                 break;
             }
             case PassStmt:
@@ -4672,7 +4673,7 @@ public sealed class FunctionGen
         var after = NewLBlock("after");
         string headerRegion = NewRegion("loop"), bodyRegion = NewRegion("body"), thenRegion = NewRegion("then"),
             afterRegion = NewRegion("after");
-        var frame = new LoopFrame(header, headerRegion, after, afterRegion, l.With.Count > 0);
+        var frame = new LoopFrame(header, headerRegion, thenB, thenRegion, l.With.Count > 0);
         frame.OuterNames.UnionWith(outerNames);
 
         // The first values: the carried values' inits, a range's start, all evaluated once, before the header.
@@ -4830,20 +4831,21 @@ public sealed class FunctionGen
             _loops.Pop();
         }
 
-        // `then`, with the carried values as they are when the loop ends on its own.
+        // `then`, with the carried values as they are when the loop is left: on its own end or at a `break`.
         _cur = thenB;
         EnterRegion(thenRegion);
         _values = new Dictionary<string, Val>(headerValues);
         if (frame.Range is { } range2) _values.Remove(range2.Name);
         _values.Remove(LiveFlag);
         if (l.Then is not null) EmitBody(l.Then);
-        bool afterReached = frame.Breaks;
+        bool afterReached = false;
         if (!_cur.Terminated)
         {
             MemEdge(afterRegion, outerNames, pos: l.Pos);
             Terminate($"br label %{after.Label}");
-            // A loop on `true` never ends on its own: its then, and what follows it, never run.
-            afterReached |= l.Cond is not BoolLit { Value: true };
+            // A loop on `true` without a `break` is never left but by a return: its then, and what follows it,
+            // never run.
+            afterReached = frame.Breaks || l.Cond is not BoolLit { Value: true };
         }
 
         // The phis, now that every round's values are known.

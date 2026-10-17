@@ -250,7 +250,7 @@ public sealed record WhenArm(Expr? Cond, List<Expr>? Cases, List<Stmt> Body, Pos
 public enum LoopKind { For, While, Until }
 
 /// `each x in source`, `while cond`, `until cond`, each with its carried values (`with a: T = init, ...`), its body,
-/// and the `then` body that runs when the loop ends on its own. The carried values are visible in the body and in
+/// and the `then` body that runs once the loop is left for the line after it (on its own end and after a `break`). The carried values are visible in the body and in
 /// `then`, bound anew on every round by `continue with a: ..., ...`.
 public sealed record LoopStmt(LoopKind Kind, Expr? Cond, List<Carried> With, List<Stmt> Body, List<Stmt>? Then, Pos Pos)
     : Stmt(Pos)
@@ -288,7 +288,7 @@ public sealed record TodoStmt(Expr Crash, string Block, Pos Pos) : Stmt(Pos);
 /// `continue`, or `continue with a: a2, b: b2` in a loop with carried values: the next round.
 public sealed record ContinueStmt(List<(string Name, Expr Value, Pos Pos)>? With, Pos Pos) : Stmt(Pos);
 
-/// `break`: out of the loop, skipping its `then`.
+/// `break`: out of the loop, on to its `then`.
 public sealed record BreakStmt(Pos Pos) : Stmt(Pos);
 
 /// `drop x`: `x` (a value, or a place such as `me.storage`) is given back here through its type's `destruct`, which only
@@ -563,8 +563,9 @@ public static class Bodies
             IfStmt i => i.Else is not null && Leaves(i.Then) && Leaves(i.Else),
             // Whether the arms cover every case, the build checks.
             WhenStmt w => w.Arms.All(a => Leaves(a.Body)),
+            // Every way out of a loop but a return runs its `then`, so a `then` that leaves makes the loop leave.
+            LoopStmt { Then: { } then } when Leaves(then) => true,
             LoopStmt { Kind: LoopKind.While, Cond: BoolLit { Value: true } } l => !BreaksOut(l.Body),
-            LoopStmt { Then: { } then } l => Leaves(then),
             _ => false,
         };
     }
