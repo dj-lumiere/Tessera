@@ -1090,6 +1090,13 @@ public sealed partial class Compiler
         if (t.Args.Count == 0 && t.Name is "F16" or "F32" or "F64" or "F128")
             throw new CompileError(t.Pos, $"unknown type '{t}'. Did you mean 'B{t.Name[1..]}'?");
 
+        // The console is Console: Console.show / Console.alert / Console.ask_*, and the streams' types are
+        // ConsoleOutput, ConsoleErrors and ConsoleInput.
+        if (t.Args.Count == 0 && t.Name is "Out" or "Err" or "In")
+            throw new CompileError(t.Pos, $"unknown type '{t}': the console is Console (Console.show, Console.alert, " +
+                "Console.ask_line, Console.output()), and its streams are ConsoleOutput, ConsoleErrors and ConsoleInput " +
+                "(tessera migrate --step console rewrites the old spelling)");
+
         throw new CompileError(t.Pos, $"unknown type '{t}'");
     }
 

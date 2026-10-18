@@ -185,7 +185,7 @@ public static partial class LanguageServer
     private static string? Lexical(List<Token> tokens, int i)
     {
         var t = tokens[i];
-        // A name after `.` is a member (`Out.writer`, `x.shared`), whatever word it spells.
+        // A name after `.` is a member (`Console.output`, `x.shared`), whatever word it spells.
         bool member = i > 0 && tokens[i - 1].Kind == TokenKind.Dot;
         return t.Kind switch
         {
@@ -556,7 +556,7 @@ public static partial class LanguageServer
             : fallback is not null ? RoutineHover(fallback, call)
             : null;
 
-        /// `out.write("x = {x}\n")`, `Out.write("...")`: a template the builder expands in place, which no routine declares.
+        /// `out.write("x = {x}\n")`, `Console.show("...")`: a template the builder expands in place, which no routine declares.
         private Func<string?> TemplateHover()
         {
             Func<string?> hover = () => HoverText("out.write(template: @[Byte]) -> None",
@@ -1003,8 +1003,12 @@ public static partial class LanguageServer
                     else
                         Mark(ns.Owner.Pos, ns.Name, "function",
                             CallHover(ns.Pos, ns.Name, MethodOn(NsOwner(ns.Owner), ns.Name, ns.TypeArgs) ?? ConceptMethod(ns.Owner, ns.Name))
-                            ?? (ns.Name == "write" ? TemplateHover() : null));
-                    if (ns.Name == "write" && ns.Args is [StrLit nsTemplate]) TemplateHoles(nsTemplate);
+                            ?? (ns.Name is "write" or "show" or "alert" ? TemplateHover() : null));
+                    // `Console.show("x = {x}")` and `Console.alert(...)` take a template like a Writer's write.
+                    StrLit? nsTemplate = ns.Name == "write" && ns.Args is [StrLit written] ? written
+                        : ns.Name is "show" or "alert" && ns.Args is [StrLit shown, ..] ? shown
+                        : null;
+                    if (nsTemplate is not null) TemplateHoles(nsTemplate);
                     foreach (var t in ns.TypeArgs) Type(t);
                     foreach (var a in ns.Args) Expr(a);
                     break;

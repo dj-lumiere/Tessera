@@ -1684,7 +1684,7 @@ public sealed class FunctionGen
             throw Err(r.Pos, $"the lambda uses '{r.Name}', a value of routine '{outer.Routine}', and a lambda uses only its "
                 + "own parameters, presets, and globals: pass it as a parameter, or write a routine");
         if (!BoundInRoutine(r.Name))
-            throw Err(r.Pos, ScriptBinding(r.Name) ?? $"'{r.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
+            throw Err(r.Pos, ScriptBinding(r.Name) ?? OldConsoleName(r.Name) ?? $"'{r.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
         throw Err(r.Pos, NotVisible(r.Name));
     }
 
@@ -1711,6 +1711,12 @@ public sealed class FunctionGen
               + "(an if, a loop, a when arm) it is bound in, and a block's values only in that block"
               + (fromNextLine ? "" : "");
 
+    /// The console's old names (`Out.write`, `In.read_line`) point at Console, else null.
+    private static string? OldConsoleName(string name) => name is "Out" or "Err" or "In"
+        ? $"'{name}' is not defined: the console is Console (Console.show, Console.alert, Console.ask_line, " +
+          "Console.output()) (tessera migrate --step console rewrites the old spelling)"
+        : null;
+
     /// `b.poke(20)` where `b` names no type, preset, global, or routine: a value that isn't there.
     private void UnknownReceiver(TypeRef owner)
     {
@@ -1719,7 +1725,7 @@ public sealed class FunctionGen
             return;
         if (BoundInRoutine(owner.Name))
             throw Err(owner.Pos, NotVisible(owner.Name, fromNextLine: true));
-        throw Err(owner.Pos, ScriptBinding(owner.Name) ?? $"'{owner.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
+        throw Err(owner.Pos, ScriptBinding(owner.Name) ?? OldConsoleName(owner.Name) ?? $"'{owner.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
     }
 
     /// Whether some body of this routine binds `name`: a parameter, a block parameter, a carried value, or a binding.
@@ -1821,7 +1827,7 @@ public sealed class FunctionGen
                     .Count(o => rr.TypeArgs.Count == 0 || o.TypeParams.Count == rr.TypeArgs.Count) > 1
                     ? null
                     : RoutineValue(rr, null).Type;
-            case NsCallExpr or MethodCallExpr when TemplateWriter(e) is not null:
+            case NsCallExpr or MethodCallExpr when TemplateCall(e) is not null:
                 return VoidType.Instance;
             case CallExpr or NsCallExpr or MethodCallExpr:
                 return InferCall(e, null);
@@ -1942,8 +1948,8 @@ public sealed class FunctionGen
             ImplicitMemberExpr m => throw Err(m.Pos,
                 $"'.{m.Name}' isn't a value of {expected}: a leading '.' starts a call on the type, .{m.Name}(...)"),
             ImplicitCallExpr => EvalCall(e, expected),
-            NsCallExpr or MethodCallExpr when TemplateWriter(e) is { } writer =>
-                ExpandTemplate(writer, (StrLit)(e is NsCallExpr ns ? ns.Args[0] : ((MethodCallExpr)e).Args[0])),
+            NsCallExpr or MethodCallExpr when TemplateCall(e) is var (writer, template) =>
+                ExpandTemplate(writer, template),
             PresetRef r => EvalPresetRef(r, expected),
             RoutineRef rr => RoutineValue(rr, expected),
             LambdaExpr l => EvalLambda(l, expected),
@@ -2743,6 +2749,32 @@ public sealed class FunctionGen
     /// Where a write template finds write_str, whatever the file imports.
     private const string FormatModule = "Standard/Format";
 
+    /// A call that writes a template, with the writer it goes to and the template: a Writer's `.write("x = {x}\n")`
+    /// (TemplateWriter), or `Console.show("x = {x}")` / `Console.alert("...")`, which write to `Console.output()` /
+    /// `Console.errors()` and end the line with `end:`'s text, "\n" when it isn't given. Null for an ordinary call.
+    private (Expr Writer, StrLit Template)? TemplateCall(Expr e)
+    {
+        if (TemplateWriter(e) is { } writer)
+            return (writer, (StrLit)(e is NsCallExpr ns ? ns.Args[0] : ((MethodCallExpr)e).Args[0]));
+        if (e is not NsCallExpr { Name: "show" or "alert", TypeArgs.Count: 0, Args: [StrLit text, ..] } call ||
+            TryResolveOwner(call.Owner) is not { } owner || owner.Name != "Console" ||
+            _c.FindMethod(owner, call.Name, _env.File, call.Pos) is not null)
+            return null;
+        string stream = call.Name == "show" ? "output" : "errors";
+        if (_c.FindMethod(owner, stream, _env.File, call.Pos) is null) return null;
+        string end = "\n";
+        if (call.Args.Count == 2)
+        {
+            if (call.ArgNames is not [null, "end"] || call.Args[1] is not StrLit endText)
+                throw Err(call.Pos, $"Console.{call.Name} takes the text and, after it, end: with a string literal (end: \"\" for none)");
+            // The end is written as it is: a brace in it is a brace, not a hole.
+            end = endText.Value.Replace("{", "{{").Replace("}", "}}");
+        }
+        else if (call.Args.Count != 1)
+            throw Err(call.Pos, $"Console.{call.Name} takes the text and, after it, end: with a string literal (end: \"\" for none)");
+        return (new NsCallExpr(call.Owner, stream, [], [], call.Pos), text with { Value = text.Value + end });
+    }
+
     /// The writer a `.write("x = {x}\n")` writes to, or null when the call is an ordinary one: on a type, a stateless
     /// Writer (`ConsoleOutput.write("...")` writes to `ConsoleOutput.writer()`); on a value, the Writer it points at
     /// (`handle.write("...")`). A type with a `write` routine of its own keeps it.
@@ -2774,7 +2806,7 @@ public sealed class FunctionGen
     /// are literal braces. Nothing is allocated: each piece goes straight to the writer.
     private Val ExpandTemplate(Expr writer, StrLit template)
     {
-        // The writer is evaluated once (`Out.writer()`, `files.stride(i)`), and every piece writes to that value, held
+        // The writer is evaluated once (`Console.output()`, `files.stride(i)`), and every piece writes to that value, held
         // under a name no source can spell.
         if (writer is not ValueRef)
         {
@@ -3204,7 +3236,7 @@ public sealed class FunctionGen
 
     private bool IsNoReturn(Expr e) => AddrOfCallable(e) is null && e switch
     {
-        NsCallExpr or MethodCallExpr when TemplateWriter(e) is not null => false,
+        NsCallExpr or MethodCallExpr when TemplateCall(e) is not null => false,
         CallExpr or NsCallExpr or MethodCallExpr => PlanCall(e, null) is { } p && p.Decl.AnnotationNamed("noreturn") is not null,
         ImplicitCallExpr => false,
         _ => false,

@@ -62,7 +62,7 @@ routine start() -> None
 
     list.add_last(42)
     first: S64 = list[0]
-    Out.write("first: {first}, as source: {first.diagnose()}\n")
+    Console.show("first: {first}, as source: {first.diagnose()}")
 
     drop list
     return
@@ -327,7 +327,7 @@ routine start() -> None
 - `@expensive` (or `@expensive("allocates heap memory")`, the reason reading after the routine's name) marks a routine
   that costs a lot on every call and every target: allocation and freeing (`allocate`, `reallocate`, `deallocate`,
   `Memory[T].construct` / `resize`, `@[Byte].concat`, `List[T].reserve`), the operating system (`Out` / `Err` writes,
-  allocating `In` reads, file and directory operations, `FileHandle` I/O, processes, `launch_unwatched`), `U256` / `S256`
+  allocating `Console.ask` reads, file and directory operations, `FileHandle` I/O, processes, `launch_unwatched`), `U256` / `S256`
   division and `BigNat` division, and whole-buffer hashes. It changes nothing in the output and goes on routines
   only. `tessera lint` (and `check` / `build` / `run` for the program's own files, and the language server) warns on a
   direct call to one inside a loop (`each`, `while`, `until`), since it runs on every round. Not reported: a call
@@ -612,10 +612,10 @@ routine start() -> None
   `find`, `has`, `has_prefix`, `slice(start, end)`, `byte_at`, `bytes()`, `chars()`, `concat(a, b, alloc)`, `eq`,
   `compare`, `hash`, ...). A literal is a `@[Byte]` of the program image, `@[Byte].construct(data, count)`
   wraps bytes from C, and text made from other text (`slice`, `getslice`, the iterators, `buf.getview()` of a
-  `List[Byte]`) views the same memory. Text a routine takes memory for (`@[Byte].concat`, `In.read_line`,
+  `List[Byte]`) views the same memory. Text a routine takes memory for (`@[Byte].concat`, `Console.ask_line`,
   `FileManager.read_all_result`, `env_var`, ...) comes back as a `Memory[Byte]`: keep it in a slot and give it
-  back once (`local line: @Memory[Byte] <- In.read_line()`, then `drop line`), and observe a `Result` / `Maybe` of one
-  with `when` (`when In.read_line_checked(alloc)` then `is Memory[Byte] as line => ...`). A Memory lends itself to a text routine at
+  back once (`local line: @Memory[Byte] <- Console.ask_line()`, then `drop line`), and observe a `Result` / `Maybe` of one
+  with `when` (`when Console.ask_line_checked(alloc)` then `is Memory[Byte] as line => ...`). A Memory lends itself to a text routine at
   a receiver or an argument (`line.find("=")`, `out.write("{line.getview()}")` in a template). Escapes: `\xXX` is one byte (strings, `b'..'`), `\uXXXXXX` one
   character by exactly six hex digits (strings, `'..'`), so `"\u01F600"` equals `"\xF0\x9F\x98\x80"`.
   Source files must be UTF-8.
@@ -863,22 +863,27 @@ routine parse_or_zero(text: @[Byte]) -> B64
 Format through `Standard/Format.te`, not printf. printf is for C interop demos only: it can't print `S128`, `B16`,
 `BF16`, or `B128`, and a mismatched format is undefined behavior.
 
-- Writers: `Out` / `Err` (the console's standard output and error, unbuffered; `Out.writer()` is the pointer a
-  Writer parameter takes), a `FileHandle`, `BufWriter[T]` (`out.construct(inner)`, then `flush()`),
-  `SliceWriter` (into a caller buffer), `List[Byte]` (growing text: `buf.write("...")`, then `buf.getview()`: it is
-  the string builder). Standard input is `In`: `In.read[T]()`, `In.read_line(alloc)`, `read_word`,
-  `read_count(n, alloc)`, `read_all`, `read_into_result(buffer, n)`, all through one buffer the process shares.
-  `read_line` and `read_word` crash at the end of the input, and `read_line_checked` / `read_word_checked` return
-  `Maybe[Memory[Byte]]`, `None` there (a blank line is empty), so a loop to the end uses those. Text comes back as a
-  `Memory[Byte]` from the manager: `drop line` gives it back.
+- The console is `Console` (`Standard/Os`): `Console.show("x = {x}")` writes one line to standard output,
+  `Console.alert("...")` one line to standard error, and `end:` changes the line end (`Console.show("loading",
+  end: "")`, a string literal). Both expand their template like a Writer's `write` (below). Standard input:
+  `Console.ask[T]()`, `Console.ask_line()` / `ask_line(alloc)`, `ask_word`, `ask_bytes(n)`, `ask_all`, all through one
+  buffer the process shares. `ask_line` and `ask_word` crash at the end of the input, and `ask_line_checked` /
+  `ask_word_checked` return `Maybe[Memory[Byte]]`, `None` there (a blank line is empty), so a loop to the end uses
+  those. Text comes back as a `Memory[Byte]` from the manager: `drop line` gives it back. There are no `In` / `Out` /
+  `Err` types and no `print`.
+- Writers: `Console.output()` / `Console.errors()` (`@ConsoleOutput` / `@ConsoleErrors`, standard output and error,
+  unbuffered, also `is_terminal()`, `enable_colors()`, `write_all_result(data, count)`), a `FileHandle`,
+  `BufWriter[T]` (`out.construct(inner)`, then `flush()`), `SliceWriter` (into a caller buffer), `List[Byte]`
+  (growing text: `buf.write("...")`, then `buf.getview()`: it is the string builder). `Console.input()` is standard
+  input as a Reader (`@ConsoleInput`, with `read_into_result(buffer, n)` and `is_terminal()`).
 - Reading numbers: text is converted like any value, `text.to[S32]()` (crashes with `InvalidValueError`, naming
   the text and the type, on bad text) or `text.to_result[S32]()` (`Result[T, ParseError]`: `Empty`, `Invalid`,
   `OutOfRange`), for every integer type (an optional sign and decimal digits) and every float type. There is no
   `parse`. A type is readable from text when it obeys `Parsable[T]`, which asks for one routine,
   `routine @[Byte].to_result[T](me: @[Byte]) -> Result[T, ParseError]`, and `to[T]` comes with it. Numbers from
-  standard input: `a: S32 = In.read[S32]()` reads the next word in place (a word longer than the 8192-byte buffer
+  standard input: `a: S32 = Console.ask[S32]()` reads the next word in place (a word longer than the 8192-byte buffer
   goes through a temporary on `DEFAULT_HEAP`) and crashes at the end of the input or on a word that isn't a T;
-  `In.read_checked[T]()` gives `Maybe[T]` (`None` for both), `In.read_result[T]()` a `Result[T, ParseError]`
+  `Console.ask_checked[T]()` gives `Maybe[T]` (`None` for both), `Console.ask_result[T]()` a `Result[T, ParseError]`
   (`ParseError.EMPTY` at the end).
 - `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, and
   `@[Byte]` (a `Memory[Byte]` writes through its view: `{line.getview()}`). A pointer is neither Representable nor Diagnosable, so `{sum}` on a `local sum: @S64` slot is a build
@@ -897,9 +902,8 @@ Format through `Standard/Format.te`, not printf. printf is for C interop demos o
   `write_str` / `.represent_into` calls, a brace holds one expression (loads and chains allowed, and literals:
   `"{sum2([7, 8])}"`), `{{` is a literal brace,
   and there are no format options. The template is a method on any Writer: `out.write("...")` on a pointer
-  to one (`buf.write(...)`, `handle.write(...)`), and `Out.write("x = {x}\n")` / `Err.write(...)` on a stateless
-  one (it writes to `T.writer()`). It's only ever a method: there is no free `write(out, "...")`, and no
-  `print` / `eprint`.
+  to one (`buf.write(...)`, `handle.write(...)`, `Console.output().write(...)`). It's only ever a method: there is
+  no free `write(out, "...")`, and no `print` / `eprint` (the console's lines are `Console.show` / `Console.alert`).
 
 ## Collections
 
@@ -1195,7 +1199,7 @@ byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`
 
 - A plain routine name crashes on failure, `name_checked` returns `Maybe[T]` (`None` on failure), and `name_result`
   returns `Result[T, TError]` (the failure as a value): `getitem` / `getitem_checked`, `construct` / `construct_result`,
-  `to[T]` / `to_result[T]`, `In.read[T]` / `read_checked[T]` / `read_result[T]`. File and process routines fail for
+  `to[T]` / `to_result[T]`, `Console.ask[T]` / `ask_checked[T]` / `ask_result[T]`. File and process routines fail for
   reasons the caller handles, so they are `_result` forms (`FileManager.open_read_result`). A `_checked` never returns a
   `Result` or a `Bool`, a `_result` never a `Maybe`, and a plain name never returns a `Maybe` or a `Result` just to
   say it failed. A `Maybe` that is a normal outcome keeps a plain name: `@[Byte].find` (not found), `env_var` (not
@@ -1232,7 +1236,7 @@ isn't empty is named for what it is: `ProcessOptions.default()` captures both st
 
 **The allocator comes last.** A routine that takes an `@MemoryManager` takes it as its last parameter:
 `List[T].construct(alloc)`, `Memory[T].construct(count, manager)`, `allocate[T](count, alloc)`,
-`deallocate(p, alloc)`, `In.read_line(alloc)`, `ThreadManager.construct(alloc)`. A second allocator for another
+`deallocate(p, alloc)`, `Console.ask_line(alloc)`, `ThreadManager.construct(alloc)`. A second allocator for another
 job goes just before it. So the form without the allocator
 (`construct()` with `Standard/Os`) is the same call with the last argument left off.
 
@@ -1311,7 +1315,7 @@ array presets (`K.getitem(i)`, with `preset K: @Array[T, COUNT] <- [...]`), and 
   `x.destruct()` is a build error: only a `destruct` body calls a member's `destruct` by name. A collection owns its
   elements, and its `destruct` ends each one before giving its memory back. Elements that are borrowed pointers are
   yours to release. `Array[T, COUNT]` acquires nothing, so it has no `destruct()`.
-- Other ways to make a value are named for what they make: `Out.writer()`, `Xoshiro256.from_seed(seed)`,
+- Other ways to make a value are named for what they make: `Console.output()`, `Xoshiro256.from_seed(seed)`,
   `FormatSpec.zero_padded(6)`.
 - `deallocate(p, alloc)` (the raw layer) is not a destructor: it hands a block of memory back to its allocator.
   `drop m` on a `Memory[T]` / `Box[T]` is the way to do it for memory taken from a manager.

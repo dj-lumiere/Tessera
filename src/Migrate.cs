@@ -325,6 +325,9 @@ public static class Migrate
         ["hollow"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, HollowSpelling)
             : HollowSpelling(text),
+        ["console"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, ConsoleMigration.Rewrite)
+            : ConsoleMigration.Rewrite(text),
     };
 
     private static readonly Regex NullWord = new(@"(?<![\w`.])null(?![\w`])", RegexOptions.Compiled);

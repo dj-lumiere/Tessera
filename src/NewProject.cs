@@ -31,8 +31,7 @@ static class NewProject
 
                 ### Writes a greeting.
                 routine start() -> None
-                    out: @Out = Out.writer()
-                    out.write("Hello, world!\n")
+                    Console.show("Hello, world!")
                     return
 
                 """),
