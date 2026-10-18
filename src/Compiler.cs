@@ -152,6 +152,7 @@ public sealed partial class Compiler
         RejectOverloadClashes(_free.Values, SameModule);
         RejectOverloadClashes(_methods.Values, (a, b) => OwnerDecl(a) == OwnerDecl(b) && SameFixed(a, b) && SameOwnerArgs(a, b));
         RejectOverloadClashes(_blanket.Values, (_, _) => true);
+        RejectPointerReceiverClashes();
         CheckAliases();
         CheckLifecycle();
     }
@@ -194,9 +195,9 @@ public sealed partial class Compiler
             if (needs.Why(d) is not { } why) continue;
             if (!construct)
                 throw new CompileError(d.Pos, $"{kind} '{name}' holds something to release ({why}), so it says how it is "
-                    + $"made: routine {name}.construct(...) -> Me (for plain fields, taking them in order and returning Me(...))");
+                    + $"made: common routine {name}.construct(...) -> Me (for plain fields, taking them in order and returning Me(...))");
             throw new CompileError(d.Pos, $"{kind} '{name}' holds something to release ({why}), so it says how it is "
-                + $"released: routine {name}.destruct(me: @Me) -> None");
+                + $"released: routine @{name}.destruct() -> None");
         }
     }
 

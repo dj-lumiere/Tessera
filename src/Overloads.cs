@@ -165,6 +165,31 @@ public sealed partial class Compiler
                 }
     }
 
+    /// `p.name()` on a `@X` finds `routine @X.name` first and `routine Ptr[T].name` (any T) after it: the more specific
+    /// receiver wins. `routine Ptr[X].name` for that same X is as specific as `routine @X.name`, so with the same
+    /// parameters a call couldn't choose, and one of them takes another name.
+    private void RejectPointerReceiverClashes()
+    {
+        static string Rest(RoutineDecl r) => string.Join(", ", r.Params.Skip(1).Select(p => p.Type.ToString()));
+        foreach (var ((owner, name), group) in _methods)
+        {
+            if (owner != "Ptr") continue;
+            foreach (var onPtr in group)
+            {
+                if (!HasReceiver(onPtr) || onPtr.Owner!.Args is not [TypeArgType { Type: var pointee }]) continue;
+                if (pointee is { Args.Count: 0, Path: null } && ClauseTypeParamsOrOwnerArg(onPtr, pointee.Name)) continue;
+                foreach (var other in _methods.GetValueOrDefault((pointee.Name, name)) ?? [])
+                {
+                    if (!other.TakesAddress || other.Owner!.ToString() != pointee.ToString() || Rest(other) != Rest(onPtr)) continue;
+                    if ((other.IsPrivate || onPtr.IsPrivate) && other.Module != onPtr.Module) continue;
+                    var (kept, reported) = onPtr.IsLibrary && !other.IsLibrary ? (onPtr, other) : (other, onPtr);
+                    throw new CompileError(reported.Pos, $"'{reported.Header}' and '{kept.Header}' (at {kept.Pos}) are the same "
+                        + $"routine for a call on a @{pointee}, so a call couldn't choose: give one of them another name");
+                }
+            }
+        }
+    }
+
     /// An overloaded routine's C name can't default to the routine's name, which its overloads share.
     private static void CheckOverloadSymbol(RoutineDecl r, RoutineDecl other)
     {
@@ -337,14 +362,13 @@ public sealed partial class Compiler
         return null;
     }
 
-    /// A routine's signature as it's declared, for listing overloads: `routine Point.scale(me: Point, by: S64) -> Point`.
+    /// A routine's signature as it's declared, for listing overloads: `routine Point.scale(by: S64) -> Point`.
     public static string ShowSignature(RoutineDecl r)
     {
-        var sb = new StringBuilder("routine ");
-        sb.Append(r.Owner is null ? r.Name : $"{r.Owner}.{r.Name}");
+        var sb = new StringBuilder(r.Header);
         var generics = r.Fixed.Count > 0 ? r.Fixed.Select(f => f.ToString()) : r.TypeParams;
         if (generics.Any()) sb.Append('[').Append(string.Join(", ", generics)).Append(']');
-        sb.Append('(').Append(string.Join(", ", r.Params.Select(p => $"{p.Name}: {p.Type}"))).Append(')');
+        sb.Append('(').Append(string.Join(", ", r.Params.Where(p => !p.Implicit).Select(p => $"{p.Name}: {p.Type}"))).Append(')');
         if (r.ReturnType.Name != "None" || r.ReturnType.Args.Count != 0) sb.Append(" -> ").Append(r.ReturnType);
         return sb.ToString();
     }

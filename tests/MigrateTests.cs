@@ -332,8 +332,8 @@ public class MigrateTests
         string after = ConstructDestructMigration.Rewrite(before);
         // Only a type that holds something to release gets them: Point is plain data and declares neither.
         Assert.DoesNotContain("routine Point.", after);
-        Assert.Contains("routine Named.construct(name: Bytes) -> Me\n    return Me(name)", after);
-        Assert.Contains("routine Named.destruct(me: @Me) -> None\n    me.name.destruct()\n    return", after);
+        Assert.Contains("common routine Named.construct(name: Bytes) -> Me\n    return Me(name)", after);
+        Assert.Contains("routine @Named.destruct() -> None\n    me.name.destruct()\n    return", after);
         Assert.Equal(after, ConstructDestructMigration.Rewrite(after));
     }
 

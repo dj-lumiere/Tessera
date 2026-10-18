@@ -58,6 +58,10 @@ public sealed record Param(string Name, TypeRef Type, Pos Pos)
 {
     /// `hi: U64 = R2`: the register an assembly routine's parameter arrives in, as written.
     public Token? Register { get; init; }
+
+    /// The receiver `me` of a routine on a type, which the header doesn't write: `me: Me` for `routine Point.scaled`,
+    /// `me: @Me` for `routine @Point.move`.
+    public bool Implicit { get; init; }
 }
 
 /// `needs T: typename, N: U64, Equatable[T]` or `obeys Equatable[Option[T]] when Equatable[T]`. Kind is "require" for
@@ -118,6 +122,21 @@ public sealed record RoutineDecl(
 
     public string DisplayName => (Owner is null ? Name : $"{Owner}.{Name}")
         + (Fixed.Count == 0 ? "" : $"[{string.Join(", ", Fixed)}]");
+
+    /// A routine on a type that takes no me, called on its type: `common routine Point.origin()`.
+    public bool IsCommon => Owner is not null && Params is not [{ Name: "me" }, ..];
+
+    /// A routine that takes me by its address: `routine @Point.move(...)`.
+    public bool TakesAddress => Params is [{ Name: "me", Type: { Name: "Ptr", Path: null } }, ..];
+
+    /// The header up to the parameters, as written: `routine Point.scaled`, `routine @Point.move`,
+    /// `common routine Point.origin`, `routine gcd`.
+    public string Header => (IsCommon ? "common routine " : "routine ") + (TakesAddress ? "@" : "")
+        + (Owner is null ? Name : $"{OwnerAsWritten}.{Name}");
+
+    /// The owner as a header writes it: `Ptr[Cell]` for a routine on the pointer type, since `@Cell.read` would take a
+    /// Cell's address.
+    private string OwnerAsWritten => Owner is { Name: "Ptr", Path: null, Args: [TypeArgType p] } ? $"Ptr[{p.Type}]" : $"{Owner}";
 }
 
 public sealed record FieldDecl(string Name, TypeRef Type, List<Annotation> Annotations, Pos Pos, bool IsPrivate = false)

@@ -30,6 +30,9 @@ namespace Tessera;
 /// never inside a string.
 ///
 /// 0.5: `secret` hides a declaration from other modules, and `internal` and `private` are gone (`--step visibility`).
+///
+/// 0.5: a routine on a type takes me without writing it: `routine P.f(x: T)` takes it as a value, `routine @P.f(x: T)`
+/// by its address, and `common routine P.f(...)` takes none (`--step receiver`).
 public static class Migrate
 {
     /// `F64`, its plural in prose (`F64s`), and a name built on it (`F128Extended`, `F64Core`). `F16C` is the x86 instruction set, not a type.
@@ -62,7 +65,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges";
+        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -334,6 +337,9 @@ public static class Migrate
         ["guards"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, GuardMigration.Rewrite)
             : GuardMigration.Rewrite(text),
+        ["receiver"] = (file, text, report) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, t => ReceiverMigration.Rewrite(t, report, file))
+            : ReceiverMigration.Rewrite(text, report, file),
     };
 
     private static readonly Regex NullWord = new(@"(?<![\w`.])null(?![\w`])", RegexOptions.Compiled);

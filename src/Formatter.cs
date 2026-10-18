@@ -510,12 +510,19 @@ public static class Formatter
         return "";
     }
 
-    /// `routine ...` or `secret routine ...`.
-    private static bool IsRoutineHeader(string line) =>
-        line.StartsWith("routine ") || line.StartsWith("secret routine ");
+    /// `routine ...`, with `secret` and `common` in front if any.
+    private static bool IsRoutineHeader(string line) => RoutineWord(line) >= 0;
+
+    /// Where `routine ` starts in a routine header (after `secret ` and `common `), or -1 for another line.
+    private static int RoutineWord(string line)
+    {
+        int i = line.StartsWith("secret ", StringComparison.Ordinal) ? "secret ".Length : 0;
+        if (string.CompareOrdinal(line, i, "common ", 0, "common ".Length) == 0) i += "common ".Length;
+        return string.CompareOrdinal(line, i, "routine ", 0, "routine ".Length) == 0 ? i : -1;
+    }
 
     private static bool StartsDeclaration(string line) =>
-        line.StartsWith("routine ") || line.StartsWith("record ") || line.StartsWith("choice ") ||
+        line.StartsWith("routine ") || line.StartsWith("common routine ") || line.StartsWith("record ") || line.StartsWith("choice ") ||
         line.StartsWith("variant ") || line.StartsWith("protocol ") || line.StartsWith("#") || IsAnnotation(line);
 
     /// The nearest line before `i` that isn't a comment, annotation, continuation, or blank.
@@ -762,6 +769,7 @@ public static class Formatter
     {
         if (line.Length == 0 || line[0] == ' ') return null;
         string s = line.StartsWith("secret ") ? line[7..] : line;
+        if (s.StartsWith("common routine ", StringComparison.Ordinal)) s = s["common ".Length..];
         int space = s.IndexOf(' ');
         string word = space < 0 ? s : s[..space];
         return word switch
@@ -919,8 +927,7 @@ public static class Formatter
     private static string DropGroupingParens(string line)
     {
         string trimmed = line.TrimStart();
-        bool signature = trimmed.StartsWith("routine ", StringComparison.Ordinal)
-                         || trimmed.StartsWith("secret routine ", StringComparison.Ordinal);
+        bool signature = RoutineWord(trimmed) >= 0;
         var sb = new StringBuilder();
         for (int i = 0; i < line.Length; i++)
         {
@@ -1066,8 +1073,15 @@ public static class Formatter
         var result = new List<string>(lines);
         for (int i = 0; i < result.Count; i++)
         {
-            if (!result[i].StartsWith("routine ")) continue;
-            string? owner = Owner(result[i]);
+            // `routine ` or `common routine `, and `@` when me is taken by its address.
+            int word = result[i].StartsWith("common routine ", StringComparison.Ordinal) ? "common ".Length
+                : result[i].StartsWith("routine ", StringComparison.Ordinal) ? 0 : -1;
+            if (word < 0) continue;
+            int ownerStart = word + "routine ".Length;
+            if (ownerStart < result[i].Length && result[i][ownerStart] == '@' && ownerStart + 1 < result[i].Length
+                && result[i][ownerStart + 1] != '[')
+                ownerStart++;
+            string? owner = Owner(result[i], ownerStart);
             // A routine on None keeps its `-> None`: that is the routine returning nothing, which a routine has to
             // spell as None, not Me.
             if (owner is null || owner == "Me" || owner == "None") continue;
@@ -1084,7 +1098,7 @@ public static class Formatter
             string Replace(string line) => atOwner is null ? ReplaceType(line, owner) : ReplaceType(ReplaceType(line, owner), atOwner);
             if (!typeParameter)
             {
-                int ownerEnd = "routine ".Length + owner.Length + 1;
+                int ownerEnd = ownerStart + owner.Length + 1;
                 result[i] = result[i][..ownerEnd] + Replace(result[i][ownerEnd..]);
             }
             for (int j = i + 1; j < end; j++)
@@ -1108,10 +1122,10 @@ public static class Formatter
         return end;
     }
 
-    /// `U64` in `routine U64.min(...)`, `List[T]` in `routine List[T].push(...)`.
-    private static string? Owner(string header)
+    /// `U64` in `routine U64.min(...)`, `List[T]` in `routine List[T].push(...)`, read from `start`.
+    private static string? Owner(string header, int start)
     {
-        int i = "routine ".Length;
+        int i = start;
         int j = i;
         while (j < header.Length && (char.IsLetterOrDigit(header[j]) || header[j] == '_')) j++;
         if (j == i) return null;

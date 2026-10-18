@@ -17,7 +17,7 @@ public static partial class ConstructDestructMigration
     [GeneratedRegex(@"^(?:(private|internal|secret)\s+)?(record|variant)\s+(`[^`]+`|[A-Z]\w*)(\[[^\]]*\])?\s*(//.*)?$")]
     private static partial Regex TypeHeader();
 
-    [GeneratedRegex(@"^(?:(?:private|internal|secret)\s+)?routine\s+(`[^`]+`|[A-Z]\w*)(?:\[[^\]]*\])?\.(construct|destruct)\b")]
+    [GeneratedRegex(@"^(?:(?:private|internal|secret)\s+)?(?:common\s+)?routine\s+@?(`[^`]+`|[A-Z]\w*)(?:\[[^\]]*\])?\.(construct|destruct)\b")]
     private static partial Regex LifeRoutine();
 
     [GeneratedRegex(@"^    (?:(?:private|internal|secret)\s+)?(`?[A-Za-z_]\w*`?)\s*:\s*([^/]+?)\s*(//.*)?$")]
@@ -138,7 +138,7 @@ public static partial class ConstructDestructMigration
                 foreach (var (field, _) in fields) added.Append($"### :param {field.Trim('`')}: Its `{field.Trim('`')}`.\n");
                 added.Append("### :returns: The new value.\n");
                 string ps = string.Join(", ", fields.Select(f => $"{f.Name}: {f.Type}"));
-                added.Append(target).Append($"{visibility}routine {owner}.construct({ps}) -> Me\n");
+                added.Append(target).Append($"{visibility}common routine {owner}.construct({ps}) -> Me\n");
                 if (kinds.Length > 0) added.Append($"needs {kinds}\n");
                 added.Append($"    return Me({string.Join(", ", fields.Select(f => f.Name))})\n");
             }
@@ -149,7 +149,7 @@ public static partial class ConstructDestructMigration
                 added.Append(owned.Count == 0
                     ? $"### Releases nothing: a `{name.Trim('`')}` holds no memory of its own.\n"
                     : $"### Releases the memory its {string.Join(" and ", owned.Select(f => $"`{f.Name.Trim('`')}`"))} hold{(owned.Count == 1 ? "s" : "")}.\n");
-                added.Append(target).Append($"{visibility}routine {owner}.destruct(me: @Me) -> None\n");
+                added.Append(target).Append($"{visibility}routine @{owner}.destruct() -> None\n");
                 if (kinds.Length > 0) added.Append($"needs {kinds}\n");
                 foreach (var (field, _) in owned) added.Append($"    me.{field}.destruct()\n");
                 added.Append("    return\n");

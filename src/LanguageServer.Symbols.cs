@@ -148,7 +148,7 @@ public static partial class LanguageServer
             case RoutineDecl r:
                 kind = r.Owner is null ? 12 : 6;
                 name = r.Owner is null ? r.Name : $"{r.Owner}.{r.Name}";
-                detail = $"({string.Join(", ", r.Params.Select(p => $"{p.Name}: {p.Type}"))}) -> {r.ReturnType}";
+                detail = $"({string.Join(", ", r.Params.Where(p => !p.Implicit).Select(p => $"{p.Name}: {p.Type}"))}) -> {r.ReturnType}";
                 // LSP symbol kind 13: Variable.
                 foreach (var shared in r.Shared)
                     children.Add(Node(lines, shared.Name, 13, shared.Pos, shared.Name, shared.Pos.Line, $"local {shared.Type}"));
@@ -181,7 +181,7 @@ public static partial class LanguageServer
                 kind = 11;
                 foreach (var r in concept.Routines)
                     children.Add(Node(lines, r.Name, 6, r.Pos, r.Name, r.Pos.Line,
-                        $"({string.Join(", ", r.Params.Select(p => $"{p.Name}: {p.Type}"))}) -> {r.ReturnType}"));
+                        $"({string.Join(", ", r.Params.Where(p => !p.Implicit).Select(p => $"{p.Name}: {p.Type}"))}) -> {r.ReturnType}"));
                 break;
             case PresetDecl p:
                 kind = p.IsGlobal ? 13 : 14;

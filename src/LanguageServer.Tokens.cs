@@ -27,7 +27,7 @@ public static partial class LanguageServer
     private static readonly HashSet<string> Keywords =
     [
         "routine", "record", "entity", "choice", "variant", "preset", "global", "protocol", "obeys", "define", "block", "local", "steal",
-        "import", "module", "secret", "needs", "not", "true", "false", "typename",
+        "import", "module", "secret", "common", "needs", "not", "true", "false", "typename",
     ];
 
     /// A document's last successful check: its text, the declarations parsed from it, and the builder that checked them
@@ -484,7 +484,7 @@ public static partial class LanguageServer
             var lines = LinesOf(analysis, ptr);
             int at = Array.FindIndex(lines, l => l.Contains("`p.stride(n)`", StringComparison.Ordinal));
             Pos? where = at < 0 ? null : new Pos(ptr, at + 1, lines[at].IndexOf("stride", StringComparison.Ordinal) + 1);
-            Func<string?> hover = () => HoverText("routine Ptr[T].stride(me: Me, n: U64) -> Me",
+            Func<string?> hover = () => HoverText("routine Ptr[T].stride(n: U64) -> Me",
                 Ko("The address `n` `T`s past this one; an `S64` moves back. Built into the builder: it is a place like a "
                    + "field, so it chains (`p.stride(i).f`), and a load or a store through it keeps a dense record's "
                    + "alignment.",

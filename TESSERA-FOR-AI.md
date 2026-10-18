@@ -147,7 +147,7 @@ routine start() -> None
   `getview()`, `to[@T]()`. `Box[T]` (`{at, manager,
   generation}`) and `Memory[T]` (`{data, count, manager, generation}`, `Types/Memory.te`) are memory TAKEN from a
   `MemoryManager`, and both are ENTITIES (Entities, below): never copied, kept in a slot
-  (`local m: @Memory[Byte] <- Memory[Byte].construct(count: 4, manager: alloc)`), every routine takes `me: @Me`.
+  (`local m: @Memory[Byte] <- Memory[Byte].construct(count: 4, manager: alloc)`), every routine takes `me` by its address (`routine @Memory[T].load(...)`).
   Read and written with `load` / `store` (`m.load(i)`, `m.store(index: i, value: v)`, `b.load()`, `b.store(v)`, the
   stored value taken over), and given back exactly once, with the statement `drop m`, by `return m`, or by handing it
   on with `steal m` to a routine that takes a `Memory` / `Box` by value (that routine gives it back then). `drop x`
@@ -264,7 +264,7 @@ routine start() -> None
 
   `Box[T].replace` works the same. `Memory[T].give_back()` gives the memory back and keeps the manager, so a later
   `resize` draws from it again (what a collection's `destruct` does with its storage).
-- **A memory manager is a type that obeys `MemoryManageable`** (Standard/Alloc): three routines on `me: @Me`,
+- **A memory manager is a type that obeys `MemoryManageable`** (Standard/Alloc): three routines taking `me` by its address (`routine @M.alloc(...)`),
   `alloc(size: U64, align: U64) -> Addr` (`.hollow()` when it can't), `realloc(at: Addr, size: U64, align: U64) ->
   Addr` (`.hollow()`, the block left as it was, when it can't: every manager has one, since only it knows a block's size),
   and `free(at: Addr) -> None`. One that handles pages obeys `PageManageable` too (it refines `MemoryManageable`):
@@ -518,23 +518,27 @@ routine start() -> None
 
 **Routines and generics**
 
-- `routine name(a: T, p: @U) -> R`. Methods are `routine Type.name(me: @Me, ...)` (pointer receiver)
-  or `(me: Me, ...)` (value receiver). The name `me` is what makes a method: only a first parameter named
-  `me` (typed `Me` or `@Me`) allows `x.name(...)`; anything else is typewise: `List[S64].construct(alloc)`,
-  `Job.compare(a, b)`. `me` and `Me` are reserved: no other parameter, binding, or slot is named `me`, and no type is
-  named `Me`. A routine meeting a protocol (`eq`, `compare`, `hash`) takes `me` as the protocol does. Where the
+- `routine name(a: T, p: @U) -> R`. A routine on a type takes `me` without writing it, and the header says how:
+  `routine Type.name(...)` takes a copy (`me` is a `Me`), `routine @Type.name(...)` the address (`me` is a `@Me`),
+  and `common routine Type.name(...)` takes none and is typewise: `List[S64].construct(alloc)`, `Job.compare(a, b)`.
+  Writing `me` among the parameters is a build error (`tessera migrate --step receiver` rewrites the old spelling),
+  `common` on a routine on no type too. Modifier order: `secret common routine`. `@[T]` is the span type, so
+  `routine @[Byte].trim()` is on a span and `routine @@[Byte].clear()` takes a span's address. `me` and `Me` are
+  reserved: no parameter, binding, or slot is named `me`, and no type is named `Me`. A routine meeting a protocol (`eq`, `compare`, `hash`) takes `me` as the protocol does. Where the
   type is expected (a binding, an argument, a carried value, a return), a leading `.` leaves it out:
   `list: List[S64] = .construct(alloc)`, `return .hollow()`. Not at the head of a chain or as a statement.
 - **`@T` or `T`** (for `me` and any parameter): take `@T` when the routine changes the value in place, or
   when copying it is unwanted (a large value); take `T` when a copy is fine and the value isn't changed. There are no
   compound assignments (`+=`, `add_assign`): change a value in memory by load, act, store —
   `(p.peek() + 1).poke_into(p)`.
-- **Methods through a pointer.** `p.m()` finds `T.m(me: @Me)` first, then `Ptr`'s own methods (`is_hollow`,
-  `offset`, `to[@U]`, ...). Value methods (`me: Me`, such as every collection's `eq`) aren't reachable through a
-  pointer, because that would hide a load: load first (`a.peek().eq(b.peek())`). Don't name your own pointer methods after `Ptr`'s.
-- **Collection methods that change the collection take `me: @Me`**, so it must live in memory (a `local`
-  slot) before you call them. **Read-only ones come in both receiver forms**: next to the `me: Me` routine, a
-  `me: @Me` one that forwards to it (`return me.peek().m(...)`, or reads the fields), so a slot or a field
+- **Methods through a pointer.** `p.m()` finds `routine @T.m` first, then `Ptr`'s own methods (`is_hollow`,
+  `offset`, `to[@U]`, ...): the more specific receiver wins. A `routine Ptr[X].m` and a `routine @X.m` with the same
+  parameters are the same call, a build error asking to rename one. Value methods (`routine T.m`, such as every
+  collection's `eq`) aren't reachable through a pointer, because that would hide a load: load first
+  (`a.peek().eq(b.peek())`).
+- **Collection methods that change the collection take `me` by its address (`routine @List[T].push(...)`)**, so it
+  must live in memory (a `local` slot) before you call them. **Read-only ones come in both receiver forms**: next to
+  the `routine List[T].m` one, a `routine @List[T].m` that forwards to it (`return me.peek().m(...)`, or reads the fields), so a slot or a field
   reads directly (`list.count()`, `primes.getview()`, `line.find("=")` on a `@@[Byte]` slot, `w.getview()` on a
   `SliceWriter`) and a value too. This holds for the collections, `@[T]`, and `Memory`, and a type of your own
   that people keep in slots does the same for the reads they call there. It's never automatic, and three kinds stay
@@ -581,7 +585,7 @@ routine start() -> None
   literal prefers `S64` when several take it. An exact concrete overload beats a generic
   one, and a routine on an owner with its type arguments named (`routine Thread[None].put_work`) beats the generic
   owner's (`Thread[T].put_work`) for that receiver. An owner argument may nest the routine's type parameter:
-  `routine List[Thread[T]].wait_all_finished(me: @Me)` with `needs T: typename` exists only for a `List` of
+  `routine @List[Thread[T]].wait_all_finished()` with `needs T: typename` exists only for a `List` of
   `Thread[...]`, binds `T` from the receiver, and doesn't clash with `List[Fiber[T]].wait_all_finished`. Two generic
   routines may have the same parameter types when their `needs` differ, and a call takes the one whose constraints
   include the other's and more (`T.to[MemoryManager]` with `PageManageable[T]` over the one with
@@ -702,7 +706,7 @@ routine start() -> None
   library `@llvm("iN")` record with no fields is an integer underneath (`B128` is an `i128`). `@layout(align: N)` sets
   a record's alignment, `@aligned` a field's.
 - A record can't contain itself by value; go through a `Ptr`.
-- **A type that holds something to release declares a `construct` (returning `Me`) and a `destruct(me: @Me) -> None`**
+- **A type that holds something to release declares a `common routine T.construct(...)` (returning `Me`) and a `routine @T.destruct() -> None`**
   (a variant only the `destruct`), a build error otherwise that names what it holds. It holds something when a field
   (a branch, for a variant) is an address (`@T`, `Addr`), a `Box` or `Memory`, a value of a type parameter, or a value
   of a type that itself holds something (a `List`, a `CStr`, a record with such a field). Its `destruct`
@@ -730,7 +734,7 @@ routine start() -> None
 - `entity Name` is declared like a record (fields, `construct`, `destruct`), and is one of a kind: it is never copied.
   It lives in a place, a `local` slot (`local c: @Counter <- .construct()`), a global, or a field of another entity,
   and every name for one is that place, `@Counter`: `x: Counter = ...` is a build error. Its routines take
-  `me: @Me` (`me: Me` is a build error). A parameter that takes one over (`c: Counter`) is a slot of the routine
+  `me` by its address, `routine @Counter.f(...)` (`routine Counter.f(...)` is a build error). A parameter that takes one over (`c: Counter`) is a slot of the routine
   inside it. Every entity declares `construct` and `destruct`, and its life ends with `drop`, on every path, like
   memory from a manager.
 - Handing over is written with `steal`. `steal a as b` hands what the slot `a` holds over to a new slot `b`, and an
@@ -750,7 +754,7 @@ routine start() -> None
   sorted ones, `CircularList`, `PriorityQueue`), `Channel[T]` / `SharedChannel[T]`, `ThreadPoolManager`, `FiberManager`,
   `CStr` / `CWStr`, `ProcessOutput`, and `File` / `Directory` (each holds the memory of a path it made). A
   `MemoryManager`, a `@[T]`, a `@T`, and an iterator stay records.
-- An entity value a routine taking `me: @Me` is called on, or that goes where an `@E` is taken, needs no slot of its
+- An entity value a `routine @E.f` is called on, or that goes where an `@E` is taken, needs no slot of its
   own: `Counter.at(n).get()`, `FileManager.is_file(at: File.at(p))`. The builder puts it in an unnamed slot that ends when
   the statement does (a condition's and a `when` subject's as soon as they are read, when what they give borrows
   nothing from it; a returned value's before the return).
@@ -889,7 +893,7 @@ Format through `Standard/Format.te`, not printf. printf is for C interop demos o
   the text and the type, on bad text) or `text.to_result[S32]()` (`Result[T, ParseError]`: `Empty`, `Invalid`,
   `OutOfRange`), for every integer type (an optional sign and decimal digits) and every float type. There is no
   `parse`. A type is readable from text when it obeys `Parsable[T]`, which asks for one routine,
-  `routine @[Byte].to_result[T](me: @[Byte]) -> Result[T, ParseError]`, and `to[T]` comes with it. Numbers from
+  `routine @[Byte].to_result[T]() -> Result[T, ParseError]`, and `to[T]` comes with it. Numbers from
   standard input: `a: S32 = Console.ask[S32]()` reads the next word in place (a word longer than the 8192-byte buffer
   goes through a temporary on `DEFAULT_HEAP`) and crashes at the end of the input or on a word that isn't a T;
   `Console.ask_checked[T]()` gives `Maybe[T]` (`None` for both), `Console.ask_result[T]()` a `Result[T, ParseError]`
@@ -1325,7 +1329,7 @@ array presets (`K.getitem(i)`, with `preset K: @Array[T, COUNT] <- [...]`), and 
 - `Type.construct(...) -> Me` is the constructor, a typewise routine: `List[S64].construct(alloc)`,
   `ListIter[T].construct(list)`, `CountWriter.construct()`. A type too large to return by value constructs in
   place instead, through a pointer: `out.construct(inner)` for `BufWriter[T]`.
-- `destruct(me: @Me)` is the destructor: it releases what `construct` acquired (and what the value acquired since)
+- `routine @T.destruct()` is the destructor: it releases what `construct` acquired (and what the value acquired since)
   and leaves the value empty. The statement `drop x` calls it, and nothing runs it for you. A program's own line
   `x.destruct()` is a build error: only a `destruct` body calls a member's `destruct` by name. A collection owns its
   elements, and its `destruct` ends each one before giving its memory back. Elements that are borrowed pointers are

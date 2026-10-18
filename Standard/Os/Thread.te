@@ -55,14 +55,14 @@ record ThreadManager
 ### :param worker: Its `worker`.
 ### :param issued: Its `issued`.
 ### :returns: The new value.
-routine Thread[T].construct(worker: @ThreadWorker, issued: U64) -> Me
+common routine Thread[T].construct(worker: @ThreadWorker, issued: U64) -> Me
 needs T: typename
     return Me(worker, issued)
 
 ### Crashes when the ticket wasn't given back: its thread would be lost, and its work might still run.
 ### :throws: Crashes with `TicketNotGivenBackError` for a ticket that still holds its thread.
 @track_caller
-routine Thread[T].destruct(me: @Me) -> None
+routine @Thread[T].destruct() -> None
 needs T: typename
     worker: @ThreadWorker = me.worker.peek()
     if worker.is_hollow()
@@ -77,11 +77,11 @@ needs T: typename
 ### :param next: Its `next`.
 ### :param manager: Its `manager`.
 ### :returns: The new value.
-routine ThreadWorker.construct(slot: WorkSlot, next: @Me, manager: @ThreadManager) -> Me
+common routine ThreadWorker.construct(slot: WorkSlot, next: @Me, manager: @ThreadManager) -> Me
     return Me(slot, next, manager)
 
 ### Releases the block of its last work.
-routine ThreadWorker.destruct(me: @Me) -> None
+routine @ThreadWorker.destruct() -> None
     me.slot.destruct()
     return
 
@@ -91,7 +91,7 @@ routine ThreadWorker.destruct(me: @Me) -> None
 ### :param state: What `launch_fn` is given.
 ### :param alloc: Where the workers and the work blocks come from.
 ### :returns: The manager, with no threads yet.
-routine ThreadManager.construct(launch_fn: Callable[(Callable[(Addr,), None], Addr, Addr), Bool],
+common routine ThreadManager.construct(launch_fn: Callable[(Callable[(Addr,), None], Addr, Addr), Bool],
     state: Addr, alloc: @MemoryManager) -> Me
     return Me(launch_fn, state, lock: .construct(), idle: .hollow(), alloc)
 
@@ -99,13 +99,13 @@ routine ThreadManager.construct(launch_fn: Callable[(Callable[(Addr,), None], Ad
 ### :param alloc: Where the workers and the work blocks come from.
 ### :returns: The manager, with no threads yet.
 @target(os: not "none")
-routine ThreadManager.construct(alloc: @MemoryManager) -> Me
+common routine ThreadManager.construct(alloc: @MemoryManager) -> Me
     return Me(launch_fn: os_launch_fn.to[Callable](), state: .hollow(), lock: .construct(),
         idle: .hollow(), alloc)
 
 ### Ends the idle threads. Every ticket goes back first: a ticket given back to a manager that is gone reaches memory
 ### that is gone, and its thread never ends.
-routine ThreadManager.destruct(me: @Me) -> None
+routine @ThreadManager.destruct() -> None
     me.lock.lock()
 
     while true
@@ -150,7 +150,7 @@ needs T: typename
 ### :throws: Crashes with `TaskSpawnError` when no thread starts.
 @track_caller
 @expensive("starts a thread")
-routine ThreadManager.launch_unwatched[T](me: @Me, entry: Callable[(@T,), None], arg: @T) -> None
+routine @ThreadManager.launch_unwatched[T](entry: Callable[(@T,), None], arg: @T) -> None
 needs T: typename
     erased: Callable[(Addr,), None] = bitcast(entry)
     state: Addr = arg
@@ -161,7 +161,7 @@ needs T: typename
 ### An idle worker, or a new one on a thread of its own.
 ### :returns: The worker, with an empty slot.
 @track_caller
-secret routine ThreadManager.take_worker(me: @Me) -> @ThreadWorker
+secret routine @ThreadManager.take_worker() -> @ThreadWorker
     me.lock.lock()
     idle: @ThreadWorker = me.idle.peek()
     if idle.is_hollow()
@@ -226,7 +226,7 @@ routine reset_thread_locals() -> None
 ### :returns: The slot.
 ### :throws: Crashes with `TicketGivenBackError` for a ticket given back.
 @track_caller
-routine Thread[T].work_slot(me: Me) -> @WorkSlot
+routine Thread[T].work_slot() -> @WorkSlot
 needs T: typename
     worker: @ThreadWorker = me.worker
     worker.slot.check_ticket(me.issued)
@@ -236,7 +236,7 @@ needs T: typename
 ### :param runner: Runs the work.
 ### :param work: Its block.
 @track_caller
-secret routine Thread[T].start(me: Me, runner: Callable[(Addr,), None], work: Addr) -> None
+secret routine Thread[T].start(runner: Callable[(Addr,), None], work: Addr) -> None
 needs T: typename
     me.work_slot().put(runner, work)
     return
@@ -246,7 +246,7 @@ needs T: typename
 ### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @track_caller
-routine Thread[T].put_work(me: Me, entry: Callable[(), T]) -> None
+routine Thread[T].put_work(entry: Callable[(), T]) -> None
 needs T: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -260,7 +260,7 @@ needs T: typename
 ### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @track_caller
-routine Thread[T].put_work[A](me: Me, entry: Callable[(A,), T], args: A) -> None
+routine Thread[T].put_work[A](entry: Callable[(A,), T], args: A) -> None
 needs T: typename, A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -274,7 +274,7 @@ needs T: typename, A: typename
 ### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @track_caller
-routine Thread[T].put_work[A, B](me: Me, entry: Callable[(A, B), T], args: (A, B)) -> None
+routine Thread[T].put_work[A, B](entry: Callable[(A, B), T], args: (A, B)) -> None
 needs T: typename, A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -288,7 +288,7 @@ needs T: typename, A: typename, B: typename
 ### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @track_caller
-routine Thread[T].put_work[A, B, C](me: Me, entry: Callable[(A, B, C), T], args: (A, B, C)) -> None
+routine Thread[T].put_work[A, B, C](entry: Callable[(A, B, C), T], args: (A, B, C)) -> None
 needs T: typename, A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -302,7 +302,7 @@ needs T: typename, A: typename, B: typename, C: typename
 ### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @track_caller
-routine Thread[T].put_work[A, B, C, D](me: Me, entry: Callable[(A, B, C, D), T],
+routine Thread[T].put_work[A, B, C, D](entry: Callable[(A, B, C, D), T],
     args: (A, B, C, D)) -> None
 needs T: typename, A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
@@ -316,7 +316,7 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
 ### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @track_caller
-routine Thread[None].put_work(me: Me, entry: Callable[(), None]) -> None
+routine Thread[None].put_work(entry: Callable[(), None]) -> None
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_voidwork0(entry, alloc: slot.alloc.peek())
@@ -329,7 +329,7 @@ routine Thread[None].put_work(me: Me, entry: Callable[(), None]) -> None
 ### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @track_caller
-routine Thread[None].put_work[A](me: Me, entry: Callable[(A,), None], args: A) -> None
+routine Thread[None].put_work[A](entry: Callable[(A,), None], args: A) -> None
 needs A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -343,7 +343,7 @@ needs A: typename
 ### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @track_caller
-routine Thread[None].put_work[A, B](me: Me, entry: Callable[(A, B), None], args: (A, B)) -> None
+routine Thread[None].put_work[A, B](entry: Callable[(A, B), None], args: (A, B)) -> None
 needs A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -357,7 +357,7 @@ needs A: typename, B: typename
 ### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @track_caller
-routine Thread[None].put_work[A, B, C](me: Me, entry: Callable[(A, B, C), None],
+routine Thread[None].put_work[A, B, C](entry: Callable[(A, B, C), None],
     args: (A, B, C)) -> None
 needs A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
@@ -372,7 +372,7 @@ needs A: typename, B: typename, C: typename
 ### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @track_caller
-routine Thread[None].put_work[A, B, C, D](me: Me, entry: Callable[(A, B, C, D), None],
+routine Thread[None].put_work[A, B, C, D](entry: Callable[(A, B, C, D), None],
     args: (A, B, C, D)) -> None
 needs A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
@@ -384,7 +384,7 @@ needs A: typename, B: typename, C: typename, D: typename
 ### Whether the work has finished, without waiting: true once it has, and for a ticket with no work.
 ### :returns: True unless the work runs.
 @track_caller
-routine Thread[T].check_finished(me: Me) -> Bool
+routine Thread[T].check_finished() -> Bool
 needs T: typename
     return me.work_slot().is_finished()
 
@@ -392,7 +392,7 @@ needs T: typename
 ### and the thread that finishes the work wakes it.
 @target(os: not "none")
 @track_caller
-routine Thread[T].wait_finished(me: Me) -> None
+routine Thread[T].wait_finished() -> None
 needs T: typename
     me.work_slot().wait()
     return
@@ -402,7 +402,7 @@ needs T: typename
 ### :returns: True when the work has finished, false when the time ran out first.
 @target(os: not "none")
 @track_caller
-routine Thread[T].wait_finished_for(me: Me, timeout: Duration) -> Bool
+routine Thread[T].wait_finished_for(timeout: Duration) -> Bool
 needs T: typename
     return me.work_slot().wait_until(deadline: Clock.monotonic() +^ timeout, cancellable: false)
 
@@ -410,7 +410,7 @@ needs T: typename
 ### :returns: `Unit` when the work has finished, `CancelRequested` when the waiting work was cancelled first.
 @target(os: not "none")
 @track_caller
-routine Thread[T].wait_finished_result(me: Me) -> Result[None, CancelRequested]
+routine Thread[T].wait_finished_result() -> Result[None, CancelRequested]
 needs T: typename
     if me.work_slot().wait_until(deadline: Duration.MAX, cancellable: true)
         return None()
@@ -421,7 +421,7 @@ needs T: typename
 ### :throws: Crashes with `TicketBusyError` while the work runs, with `NoWorkError` when there was none, and with
 ###     `CancelledWorkError` when it was cancelled (`retrieve_result` tells that apart).
 @track_caller
-routine Thread[T].retrieve(me: Me) -> T
+routine Thread[T].retrieve() -> T
 needs T: typename
     slot: @WorkSlot = me.work_slot()
     place: @T = slot.result_place[T]()
@@ -434,7 +434,7 @@ needs T: typename
 ### :throws: Crashes with `TicketBusyError` while the work runs, with `NoWorkError` when there was none, and with
 ###     `CancelledWorkError` when it was cancelled.
 @track_caller
-routine Thread[None].retrieve(me: Me) -> None
+routine Thread[None].retrieve() -> None
     slot: @WorkSlot = me.work_slot()
     slot.result_place[Byte]()
     if slot.is_cancelled()
@@ -446,7 +446,7 @@ routine Thread[None].retrieve(me: Me) -> None
 ### :returns: The result or `CancelRequested`.
 ### :throws: Crashes with `TicketBusyError` while the work runs, and with `NoWorkError` when there was none.
 @track_caller
-routine Thread[T].retrieve_result(me: Me) -> Result[T, CancelRequested]
+routine Thread[T].retrieve_result() -> Result[T, CancelRequested]
 needs T: typename
     slot: @WorkSlot = me.work_slot()
     place: @T = slot.result_place[T]()
@@ -456,7 +456,7 @@ needs T: typename
 
 ### Asks the work to stop: `cancel_requested()` turns true inside it, and the work stops where it looks.
 @track_caller
-routine Thread[T].cancel(me: Me) -> None
+routine Thread[T].cancel() -> None
 needs T: typename
     me.work_slot().request_cancel()
     return
@@ -465,7 +465,7 @@ needs T: typename
 ### :throws: Crashes with `TicketBusyError` while the work runs, and with `TicketGivenBackError` for a ticket given
 ###     back already.
 @track_caller
-routine Thread[T].give_back(me: Me) -> None
+routine Thread[T].give_back() -> None
 needs T: typename
     me.work_slot().give_back()
     worker: @ThreadWorker = me.worker
@@ -487,11 +487,11 @@ secret record ThreadStart
 ### :param entry: Its `entry`.
 ### :param arg: Its `arg`.
 ### :returns: The new value.
-secret routine ThreadStart.construct(entry: Callable[(Addr,), None], arg: Addr) -> Me
+secret common routine ThreadStart.construct(entry: Callable[(Addr,), None], arg: Addr) -> Me
     return Me(entry, arg)
 
 ### Releases nothing: a `ThreadStart` holds no memory of its own.
-secret routine ThreadStart.destruct(me: @Me) -> None
+secret routine @ThreadStart.destruct() -> None
     return
 
 ### Every new operating system thread's first Tessera routine, whatever the system's entry signature: frees the start

@@ -816,9 +816,10 @@ public sealed class FunctionGen
         }
 
         CheckReshapingAnnotation();
-        // An entity is lent, never copied: its routines take `me: @Me`.
+        // An entity is lent, never copied: its routines take me by its address, `routine @E.name(...)`.
         if (_decl.Params is [{ Name: "me" } me, ..] && me.Type.Name == "Me" && _inst.Params.Count > 0 && Entities.IsEntity(_inst.Params[0]))
-            throw Err(me.Pos, $"'{_decl.DisplayName}' takes me by value, which copies the {_inst.Params[0].Name}, an entity: take me: @Me");
+            throw Err(me.Pos, $"'{_decl.DisplayName}' takes me by value, which copies the {_inst.Params[0].Name}, an entity: "
+                + $"take it by its address, routine @{_decl.Owner}.{_decl.Name}(...)");
         if (MemOn)
         {
             string first = _decl.Shared.Count > 0 ? "" : blocks[0].Name;
@@ -3729,7 +3730,8 @@ public sealed class FunctionGen
             }
         }
 
-        // Receivers behind a pointer: `p.m()` finds T.m(me: @Me) first, then Ptr<T>.m(me: Me).
+        // Receivers behind a pointer: `p.m()` finds `routine @T.m` first, then `routine Ptr[T].m`. The more specific
+        // receiver wins, and the two can't be the same routine (RejectPointerReceiverClashes).
         var candidates = new List<(DType Owner, bool PassesPointer)>();
         if (rt is PtrType { Pointee: { } pointee })
         {
@@ -3875,7 +3877,7 @@ public sealed class FunctionGen
     private DType? BlanketReceiverType(MethodCallExpr m)
     {
         if (_c.BlanketCandidates(m.Name, _env.File, m.Pos) is not [{ Owner: { } owner } r] || !Compiler.HasReceiver(r)
-            || r.Params[0].Type is not { Args.Count: 0 } self || self.Name != owner.Name)
+            || r.Params[0].Type is not { Args.Count: 0 } self || (self.Name != owner.Name && self.Name != "Me"))
             return null;
         var env = new Compiler.TypeEnv(r.File);
         var unbound = new HashSet<string> { owner.Name };

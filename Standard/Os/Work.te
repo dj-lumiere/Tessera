@@ -77,7 +77,7 @@ record CancelRequested
 ### :param blocked: Its `blocked`.
 ### :param issued: Its `issued`.
 ### :returns: The new value.
-routine WorkSlot.construct(state: U32, runner: Callable[(Addr,), None], work: Addr,
+common routine WorkSlot.construct(state: U32, runner: Callable[(Addr,), None], work: Addr,
     alloc: @MemoryManager, cancel: U32, lock: ExclusiveLock, waiter: Waiter, blocked: Waiter,
     issued: U64) -> Me
     return Me(state, runner, work, alloc, cancel, lock, waiter, blocked, issued)
@@ -85,12 +85,12 @@ routine WorkSlot.construct(state: U32, runner: Callable[(Addr,), None], work: Ad
 ### An empty slot whose work blocks come from `alloc`.
 ### :param alloc: Where the work's blocks come from.
 ### :returns: The slot.
-routine WorkSlot.construct(alloc: @MemoryManager) -> Me
+common routine WorkSlot.construct(alloc: @MemoryManager) -> Me
     return Me(state: TICKET_EMPTY, runner: no_work.to[Callable](), work: .hollow(), alloc,
         cancel: 0, lock: .construct(), waiter: .hollow(), blocked: .hollow(), issued: 0)
 
 ### Gives back the block of the last work.
-routine WorkSlot.destruct(me: @Me) -> None
+routine @WorkSlot.destruct() -> None
     me.free_work()
     return
 
@@ -113,7 +113,7 @@ routine cancel_requested() -> Bool
 ### :param issued: The ticket's number.
 ### :throws: Crashes with `TicketGivenBackError` for a ticket that was given back.
 @track_caller
-routine WorkSlot.check_ticket(me: @Me, issued: U64) -> None
+routine @WorkSlot.check_ticket(issued: U64) -> None
     if me.issued.peek() == issued
         return
     crash(name: "TicketGivenBackError",
@@ -122,7 +122,7 @@ routine WorkSlot.check_ticket(me: @Me, issued: U64) -> None
 ### Crashes when work runs: a ticket runs one piece of work at a time.
 ### :throws: Crashes with `TicketBusyError` while the work runs.
 @track_caller
-routine WorkSlot.check_free(me: @Me) -> None
+routine @WorkSlot.check_free() -> None
     if me.state.peek_atomic() == TICKET_RUNNING
         crash(name: "TicketBusyError",
             message: "This ticket's work hasn't finished: a ticket runs one piece of work at a time, so wait_finished() first.")
@@ -133,7 +133,7 @@ routine WorkSlot.check_free(me: @Me) -> None
 ### :param work: Its block, from the slot's allocator.
 ### :throws: Crashes with `TicketBusyError` while the last work runs.
 @track_caller
-routine WorkSlot.put(me: @Me, runner: Callable[(Addr,), None], work: Addr) -> None
+routine @WorkSlot.put(runner: Callable[(Addr,), None], work: Addr) -> None
     me.check_free()
     me.free_work()
     me.runner.poke(runner)
@@ -145,7 +145,7 @@ routine WorkSlot.put(me: @Me, runner: Callable[(Addr,), None], work: Addr) -> No
     return
 
 ### Gives the block of the last work back, if there is one.
-routine WorkSlot.free_work(me: @Me) -> None
+routine @WorkSlot.free_work() -> None
     work: Addr = me.work.peek()
     if work.is_hollow()
         return
@@ -155,13 +155,13 @@ routine WorkSlot.free_work(me: @Me) -> None
 
 ### Whether no work runs: it finished, or there was none.
 ### :returns: True unless the work runs.
-routine WorkSlot.is_finished(me: @Me) -> Bool
+routine @WorkSlot.is_finished() -> Bool
     return me.state.peek_atomic() != TICKET_RUNNING
 
 ### Waits until the work has finished. A fiber parks and the thread goes on with its manager's other fibers. A thread
 ### sleeps.
 @target(os: not "none")
-routine WorkSlot.wait(me: @Me) -> None
+routine @WorkSlot.wait() -> None
     me.wait_until(deadline: Duration.MAX, cancellable: false)
     return
 
@@ -171,7 +171,7 @@ routine WorkSlot.wait(me: @Me) -> None
 ### :param cancellable: True to stop waiting when the waiting work is cancelled.
 ### :returns: True when the work has finished.
 @target(os: not "none")
-routine WorkSlot.wait_until(me: @Me, deadline: Duration, cancellable: Bool) -> Bool
+routine @WorkSlot.wait_until(deadline: Duration, cancellable: Bool) -> Bool
     local waiter: Waiter = current_waiter()
 
     # The waiter goes in under the lock, which `complete` takes after it marks the work done: either this sees it
@@ -211,7 +211,7 @@ routine blocked_until_cancelled(waiter: Waiter) -> Bool
 ### :param waiter: The waiter.
 ### :returns: True when the work has finished already (`waiter` isn't kept).
 @target(os: not "none")
-routine WorkSlot.register(me: @Me, waiter: Waiter) -> Bool
+routine @WorkSlot.register(waiter: Waiter) -> Bool
     me.lock.lock()
     if me.is_finished()
         me.lock.unlock()
@@ -223,7 +223,7 @@ routine WorkSlot.register(me: @Me, waiter: Waiter) -> Bool
 ### Forgets `waiter` if it is the one woken when the work finishes: a wait on several tickets that is over.
 ### :param waiter: The waiter.
 @target(os: not "none")
-routine WorkSlot.unregister(me: @Me, waiter: Waiter) -> None
+routine @WorkSlot.unregister(waiter: Waiter) -> None
     me.lock.lock()
     if me.waiter.peek().same(waiter)
         me.waiter.poke(.hollow())
@@ -233,7 +233,7 @@ routine WorkSlot.unregister(me: @Me, waiter: Waiter) -> None
 ### Marks the work finished and wakes whoever waits for it: the thread that runs it calls this once the routine
 ### returns.
 @target(os: not "none")
-routine WorkSlot.complete(me: @Me) -> None
+routine @WorkSlot.complete() -> None
     me.state.poke_atomic(TICKET_DONE)
     wake_all(me.state)
     me.lock.lock()
@@ -249,7 +249,7 @@ routine WorkSlot.complete(me: @Me) -> None
 ### :throws: Crashes with `TicketBusyError` while the work runs, and with `NoWorkError` when no work was put on the
 ###     ticket.
 @track_caller
-routine WorkSlot.result_place[T](me: @Me) -> @T
+routine @WorkSlot.result_place[T]() -> @T
 needs T: typename
     state: U32 = me.state.peek_atomic()
     if not (state == TICKET_DONE)
@@ -262,13 +262,13 @@ needs T: typename
 
 ### Whether `cancel()` asked the work to stop.
 ### :returns: True once it did.
-routine WorkSlot.is_cancelled(me: @Me) -> Bool
+routine @WorkSlot.is_cancelled() -> Bool
     return me.cancel.peek_atomic() == 1
 
 ### Asks the work to stop: `cancel_requested()` turns true inside it, and a cancellable wait it is in (a `_result`
 ### one) ends.
 @target(os: not "none")
-routine WorkSlot.request_cancel(me: @Me) -> None
+routine @WorkSlot.request_cancel() -> None
     me.cancel.poke_atomic(1)
     me.lock.lock()
     blocked: Waiter = me.blocked.peek()
@@ -279,7 +279,7 @@ routine WorkSlot.request_cancel(me: @Me) -> None
 ### Ends the ticket that holds the slot: gives the last work's block back and gives the slot a new number.
 ### :throws: Crashes with `TicketBusyError` while the work runs.
 @track_caller
-routine WorkSlot.give_back(me: @Me) -> None
+routine @WorkSlot.give_back() -> None
     if me.state.peek_atomic() == TICKET_RUNNING
         crash(name: "TicketBusyError",
             message: "This ticket's work hasn't finished: wait_finished() before give_back(), so nothing it still uses goes away.")
@@ -368,12 +368,12 @@ needs A: typename, B: typename, C: typename, D: typename
 ### :param result: Its `result`.
 ### :param entry: Its `entry`.
 ### :returns: The new value.
-routine Work0[T].construct(result: T, entry: Callable[(), T]) -> Me
+common routine Work0[T].construct(result: T, entry: Callable[(), T]) -> Me
 needs T: typename
     return Me(result, entry)
 
 ### Releases nothing: a `Work0` holds the work's arguments, which its routine owns once it runs.
-routine Work0[T].destruct(me: @Me) -> None
+routine @Work0[T].destruct() -> None
 needs T: typename
     return
 
@@ -409,12 +409,12 @@ needs T: typename
 ### :param entry: Its `entry`.
 ### :param first: Its `first`.
 ### :returns: The new value.
-routine Work1[T, A].construct(result: T, entry: Callable[(A,), T], first: A) -> Me
+common routine Work1[T, A].construct(result: T, entry: Callable[(A,), T], first: A) -> Me
 needs T: typename, A: typename
     return Me(result, entry, first)
 
 ### Releases nothing: a `Work1` holds the work's arguments, which its routine owns once it runs.
-routine Work1[T, A].destruct(me: @Me) -> None
+routine @Work1[T, A].destruct() -> None
 needs T: typename, A: typename
     return
 
@@ -453,12 +453,12 @@ needs T: typename, A: typename
 ### :param first: Its `first`.
 ### :param second: Its `second`.
 ### :returns: The new value.
-routine Work2[T, A, B].construct(result: T, entry: Callable[(A, B), T], first: A, second: B) -> Me
+common routine Work2[T, A, B].construct(result: T, entry: Callable[(A, B), T], first: A, second: B) -> Me
 needs T: typename, A: typename, B: typename
     return Me(result, entry, first, second)
 
 ### Releases nothing: a `Work2` holds the work's arguments, which its routine owns once it runs.
-routine Work2[T, A, B].destruct(me: @Me) -> None
+routine @Work2[T, A, B].destruct() -> None
 needs T: typename, A: typename, B: typename
     return
 
@@ -499,13 +499,13 @@ needs T: typename, A: typename, B: typename
 ### :param second: Its `second`.
 ### :param third: Its `third`.
 ### :returns: The new value.
-routine Work3[T, A, B, C].construct(result: T, entry: Callable[(A, B, C), T], first: A, second: B,
+common routine Work3[T, A, B, C].construct(result: T, entry: Callable[(A, B, C), T], first: A, second: B,
     third: C) -> Me
 needs T: typename, A: typename, B: typename, C: typename
     return Me(result, entry, first, second, third)
 
 ### Releases nothing: a `Work3` holds the work's arguments, which its routine owns once it runs.
-routine Work3[T, A, B, C].destruct(me: @Me) -> None
+routine @Work3[T, A, B, C].destruct() -> None
 needs T: typename, A: typename, B: typename, C: typename
     return
 
@@ -548,13 +548,13 @@ needs T: typename, A: typename, B: typename, C: typename
 ### :param third: Its `third`.
 ### :param fourth: Its `fourth`.
 ### :returns: The new value.
-routine Work4[T, A, B, C, D].construct(result: T, entry: Callable[(A, B, C, D), T], first: A,
+common routine Work4[T, A, B, C, D].construct(result: T, entry: Callable[(A, B, C, D), T], first: A,
     second: B, third: C, fourth: D) -> Me
 needs T: typename, A: typename, B: typename, C: typename, D: typename
     return Me(result, entry, first, second, third, fourth)
 
 ### Releases nothing: a `Work4` holds the work's arguments, which its routine owns once it runs.
-routine Work4[T, A, B, C, D].destruct(me: @Me) -> None
+routine @Work4[T, A, B, C, D].destruct() -> None
 needs T: typename, A: typename, B: typename, C: typename, D: typename
     return
 
@@ -619,12 +619,12 @@ routine make_voidwork0(entry: Callable[(), None],
 ### :param entry: Its `entry`.
 ### :param first: Its `first`.
 ### :returns: The new value.
-routine VoidWork1[A].construct(entry: Callable[(A,), None], first: A) -> Me
+common routine VoidWork1[A].construct(entry: Callable[(A,), None], first: A) -> Me
 needs A: typename
     return Me(entry, first)
 
 ### Releases nothing: a `VoidWork1` holds the work's arguments, which its routine owns once it runs.
-routine VoidWork1[A].destruct(me: @Me) -> None
+routine @VoidWork1[A].destruct() -> None
 needs A: typename
     return
 
@@ -661,12 +661,12 @@ needs A: typename
 ### :param first: Its `first`.
 ### :param second: Its `second`.
 ### :returns: The new value.
-routine VoidWork2[A, B].construct(entry: Callable[(A, B), None], first: A, second: B) -> Me
+common routine VoidWork2[A, B].construct(entry: Callable[(A, B), None], first: A, second: B) -> Me
 needs A: typename, B: typename
     return Me(entry, first, second)
 
 ### Releases nothing: a `VoidWork2` holds the work's arguments, which its routine owns once it runs.
-routine VoidWork2[A, B].destruct(me: @Me) -> None
+routine @VoidWork2[A, B].destruct() -> None
 needs A: typename, B: typename
     return
 
@@ -705,13 +705,13 @@ needs A: typename, B: typename
 ### :param second: Its `second`.
 ### :param third: Its `third`.
 ### :returns: The new value.
-routine VoidWork3[A, B, C].construct(entry: Callable[(A, B, C), None], first: A, second: B,
+common routine VoidWork3[A, B, C].construct(entry: Callable[(A, B, C), None], first: A, second: B,
     third: C) -> Me
 needs A: typename, B: typename, C: typename
     return Me(entry, first, second, third)
 
 ### Releases nothing: a `VoidWork3` holds the work's arguments, which its routine owns once it runs.
-routine VoidWork3[A, B, C].destruct(me: @Me) -> None
+routine @VoidWork3[A, B, C].destruct() -> None
 needs A: typename, B: typename, C: typename
     return
 
@@ -752,13 +752,13 @@ needs A: typename, B: typename, C: typename
 ### :param third: Its `third`.
 ### :param fourth: Its `fourth`.
 ### :returns: The new value.
-routine VoidWork4[A, B, C, D].construct(entry: Callable[(A, B, C, D), None], first: A, second: B,
+common routine VoidWork4[A, B, C, D].construct(entry: Callable[(A, B, C, D), None], first: A, second: B,
     third: C, fourth: D) -> Me
 needs A: typename, B: typename, C: typename, D: typename
     return Me(entry, first, second, third, fourth)
 
 ### Releases nothing: a `VoidWork4` holds the work's arguments, which its routine owns once it runs.
-routine VoidWork4[A, B, C, D].destruct(me: @Me) -> None
+routine @VoidWork4[A, B, C, D].destruct() -> None
 needs A: typename, B: typename, C: typename, D: typename
     return
 

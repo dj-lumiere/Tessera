@@ -102,7 +102,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (IsIdent("private") && Cur.Pos.Col == 1) throw Error(PrivateRenamed);
             bool isPrivate = IsIdent("secret");
             if (isPrivate) Next();
-            if (annotations.Count == 0 && !isPrivate && Cur.Pos.Col == 1
+            bool isCommon = IsIdent("common") && PeekTok(1) is { Kind: TokenKind.Ident, Text: "routine" };
+            if (isCommon) Next();
+            if (annotations.Count == 0 && !isPrivate && !isCommon && Cur.Pos.Col == 1
                 && (!IsKeyword(Cur) || !DeclKeywords.Contains(Cur.Text)) && !isLibrary)
             {
                 ParseScriptLines();
@@ -113,7 +115,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 throw Error($"expected a declaration (routine, record, entity, choice, variant, preset, global, protocol, obeys, define), found {Describe(Cur)}");
             Decl d = Cur.Text switch
             {
-                "routine" => ParseRoutine(annotations, inConcept: false),
+                "routine" => ParseRoutine(annotations, inConcept: false, isCommon: isCommon),
                 "record" or "entity" => ParseRecord(annotations),
                 "choice" => ParseChoice(annotations),
                 "variant" => ParseVariant(annotations),
@@ -285,7 +287,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// annotation at the start of a line (one inside a body sits further in).
     private bool AtDeclStart() =>
         Is(TokenKind.Eof) || (AtAnnotation() && Cur.Pos.Col == 1)
-        || (IsKeyword(Cur) && (DeclKeywords.Contains(Cur.Text) || Cur.Text is "secret") && Cur.Pos.Col == 1);
+        || (IsKeyword(Cur) && (DeclKeywords.Contains(Cur.Text) || Cur.Text is "secret") && Cur.Pos.Col == 1)
+        || (IsIdent("common") && PeekTok(1) is { Kind: TokenKind.Ident, Text: "routine" } && Cur.Pos.Col == 1);
 
     // ── Annotations and clauses ──────────────────────────────────────────────
 
@@ -533,12 +536,15 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     // ── Declarations ────────────────────────────────────────────────────────
 
-    private RoutineDecl ParseRoutine(List<Annotation> annotations, bool inConcept, List<string>? conceptParams = null)
+    private RoutineDecl ParseRoutine(List<Annotation> annotations, bool inConcept, List<string>? conceptParams = null,
+        bool isCommon = false)
     {
         var pos = Cur.Pos;
         ExpectIdent("routine");
 
-        // `name`, `name[T]`, `Owner.name`, `Owner[T].name[U]`
+        // `name`, `name[T]`, `Owner.name`, `Owner[T].name[U]`, and `@Owner.name`, which takes me by its address. `@[T]`
+        // is the Span type, so `@[Byte].trim` is a routine on a span, and `@@[Byte].clear` takes the span's address.
+        var receiverAt = Is(TokenKind.At) && PeekTok(1).Kind != TokenKind.LBracket ? Next().Pos : (Pos?)null;
         var first = ParseType();
         TypeRef? owner = null;
         string name;
@@ -553,6 +559,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
         else
         {
+            if (receiverAt is { } at)
+                throw new CompileError(at, "'@' before a routine's name takes me by its address, and only a routine on a "
+                    + "type has me: routine @Owner.name(...)");
             name = first.Name;
             typeParams = first.Args.Select(a => a is TypeArgType { Type.Args.Count: 0 } t
                 ? t.Type.Name
@@ -562,7 +571,18 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
 
         _inAsm = annotations.Any(a => a is { Name: "external", First: "asm" });
-        var parameters = ParseParams(receiver: true);
+        var parameters = ParseParams();
+        if (isCommon && owner is null)
+            throw new CompileError(pos, $"'common' marks a routine on a type that takes no me, and '{name}' is on no type: "
+                + "drop 'common'");
+        // A routine on a type takes me, its receiver, without writing it: as a value (`routine Point.scaled(...)`) or by
+        // its address (`routine @Point.move(...)`). A `common` one takes none and is called on its type.
+        if (owner is not null && !isCommon)
+            parameters.Insert(0, new Param("me", receiverAt is { } meAt
+                ? new TypeRef("Ptr", [new TypeArgType(new TypeRef("Me", [], meAt))], meAt)
+                : new TypeRef("Me", [], first.Pos), receiverAt ?? first.Pos) { Implicit = true });
+        else if (receiverAt is { } commonAt)
+            throw new CompileError(commonAt, "a common routine takes no me, so nothing is taken by its address: drop the '@'");
         _routineValues = parameters.Select(p => p.Name).ToList();
         Expect(TokenKind.Arrow, "'->' and a return type");
         var ret = ParseType();
@@ -923,13 +943,28 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         // parameters (a multi-type concept), or, indented under the concept, on a fixed type with the concept's
         // parameters as its type arguments (`routine Bytes.to_result[T](...)`). They have no body.
         var routines = new List<RoutineDecl>();
-        while (IsIdent("routine") && (PeekTok(1) is { Kind: TokenKind.Ident } owner
-                                       && (owner.Text == "Me" || typeParams.Contains(owner.Text) || Cur.Pos.Col > 1)
-                                       && PeekTok(AfterTypeArgs(2)).Kind == TokenKind.Dot
-                                   // a span owner, `routine @[Byte].to_result[T](...)`
-                                   || PeekTok(1).Kind == TokenKind.At && PeekTok(2).Kind == TokenKind.LBracket && Cur.Pos.Col > 1))
-            routines.Add(ParseRoutine([], inConcept: true, conceptParams: typeParams));
+        while (ConceptRoutineNext(typeParams) is var (isRoutine, common) && isRoutine)
+        {
+            if (common) Next();
+            routines.Add(ParseRoutine([], inConcept: true, conceptParams: typeParams, isCommon: common));
+        }
         return new ConceptDecl(file, annotations, name.Text, typeParams, clauses, routines, pos);
+    }
+
+    /// Whether a required routine of a concept comes next, and whether it is `common`.
+    private (bool IsRoutine, bool Common) ConceptRoutineNext(List<string> typeParams)
+    {
+        bool common = IsIdent("common") && PeekTok(1) is { Kind: TokenKind.Ident, Text: "routine" };
+        int k = common ? 1 : 0;
+        if (!(PeekTok(k) is { Kind: TokenKind.Ident, Text: "routine" })) return (false, false);
+        // `@Me.name`: me by its address.
+        int o = PeekTok(k + 1).Kind == TokenKind.At && PeekTok(k + 2).Kind == TokenKind.Ident ? k + 2 : k + 1;
+        bool named = PeekTok(o) is { Kind: TokenKind.Ident } owner
+                     && (owner.Text == "Me" || typeParams.Contains(owner.Text) || Cur.Pos.Col > 1)
+                     && PeekTok(AfterTypeArgs(o + 1)).Kind == TokenKind.Dot;
+        // a span owner, `routine @[Byte].to_result[T](...)`
+        bool span = PeekTok(k + 1).Kind == TokenKind.At && PeekTok(k + 2).Kind == TokenKind.LBracket && Cur.Pos.Col > 1;
+        return (named || span, common);
     }
 
     /// The token offset past the type arguments that may start at `k` (`[Byte]` in `List[Byte].to_result`), or `k`.
@@ -955,7 +990,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         {
             do
             {
-                var n = ValueName("a parameter name", receiver);
+                var n = ValueName("a parameter name", receiver: true);
+                if (!n.Escaped && n.Text == "me")
+                    throw new CompileError(n.Pos, "me isn't written among the parameters: `routine Owner.name(...)` takes me "
+                        + "as a value, `routine @Owner.name(...)` by its address, and `common routine Owner.name(...)` takes "
+                        + "none (tessera migrate --step receiver rewrites the old spelling)");
                 Expect(TokenKind.Colon, "':'");
                 var type = ParseType();
                 // `hi: U64 = R2`: the register an assembly routine's parameter arrives in.

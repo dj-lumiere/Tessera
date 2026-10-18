@@ -175,7 +175,7 @@ public static class Derive
     }
 
     private static string WriterHeader(string self, string method, string writer) =>
-        $"routine {self}.{method}[{writer}](me: Me, out: @{writer}) -> None\n";
+        $"routine {self}.{method}[{writer}](out: @{writer}) -> None\n";
 
     private static string RecordSource(RecordDecl r, string concept, string method)
     {
@@ -197,15 +197,15 @@ public static class Derive
                 break;
             }
             case "eq":
-                Header(sb, $"routine {self}.eq(me: Me, other: Me) -> Bool", constraints);
+                Header(sb, $"routine {self}.eq(other: Me) -> Bool", constraints);
                 EqBody(sb, r);
                 break;
             case "hash":
-                Header(sb, $"routine {self}.hash(me: Me) -> U64", constraints);
+                Header(sb, $"routine {self}.hash() -> U64", constraints);
                 HashBody(sb, r);
                 break;
             case "compare":
-                Header(sb, $"routine {self}.compare(me: Me, other: Me) -> S32", constraints);
+                Header(sb, $"routine {self}.compare(other: Me) -> S32", constraints);
                 CompareBody(sb, r);
                 break;
         }
@@ -368,7 +368,7 @@ public static class Derive
             {
                 bool eq = method == "eq";
                 string ret = eq ? "Bool" : "S32";
-                Header(sb, $"routine {self}.{method}(me: Me, other: Me) -> {ret}", constraints);
+                Header(sb, $"routine {self}.{method}(other: Me) -> {ret}", constraints);
                 sb.Append("    block entry()\n        when me\n");
                 for (int i = 0; i < branches.Count; i++)
                     sb.Append($"            is {branches[i].Type} as a => jump left{i}(a)\n");
@@ -396,7 +396,7 @@ public static class Derive
             }
             case "hash":
             {
-                Header(sb, $"routine {self}.hash(me: Me) -> U64", constraints);
+                Header(sb, $"routine {self}.hash() -> U64", constraints);
                 sb.Append("    block entry()\n        when me\n");
                 for (int i = 0; i < branches.Count; i++)
                     sb.Append($"            is {branches[i].Type} as a => branch{i}(a)\n");
@@ -437,20 +437,20 @@ public static class Derive
                 sb.Append("        return\n");
                 break;
             case "eq":
-                sb.Append($"routine {c.Name}.eq(me: Me, other: Me) -> Bool\n");
+                sb.Append($"routine {c.Name}.eq(other: Me) -> Bool\n");
                 sb.Append("    block entry()\n");
                 sb.Append("        r: Bool = ieq[Me](a: me, b: other)\n");
                 sb.Append("        return r\n");
                 break;
             case "hash":
-                sb.Append($"routine {c.Name}.hash(me: Me) -> U64\n");
+                sb.Append($"routine {c.Name}.hash() -> U64\n");
                 sb.Append("    block entry()\n");
                 sb.Append($"        v: {u} = bitcast[Me, {u}](me)\n");
                 sb.Append("        r: U64 = v.hash()\n");
                 sb.Append("        return r\n");
                 break;
             case "compare":
-                sb.Append($"routine {c.Name}.compare(me: Me, other: Me) -> S32\n");
+                sb.Append($"routine {c.Name}.compare(other: Me) -> S32\n");
                 sb.Append("    block entry()\n");
                 sb.Append($"        a: {u} = bitcast[Me, {u}](me)\n");
                 sb.Append($"        b: {u} = bitcast[Me, {u}](other)\n");

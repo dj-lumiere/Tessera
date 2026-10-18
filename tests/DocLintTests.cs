@@ -17,7 +17,7 @@ public class DocLintTests
             ### The sum of `me` and `other`.
             ### :param other: The value to add.
             ### :returns: The sum.
-            routine S64.plus(me: S64, other: S64) -> S64
+            routine S64.plus(other: S64) -> S64
                 return me + other
             """);
         Assert.Empty(warnings);
@@ -107,7 +107,7 @@ public class DocLintTests
             protocol Same[T]
             needs T: typename
                 ### True when the two are the same.
-                routine Me.same(me: Me, other: Me) -> Bool
+                routine Me.same(other: Me) -> Bool
             """);
         Assert.Equal(2, warnings.Count);
         Assert.Contains(warnings, w => w.Contains("'Me.same' has no :param line for 'other'"));

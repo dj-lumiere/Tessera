@@ -82,7 +82,7 @@ secret record MemoryRange
 ### :param index_low: Its `index_low`.
 ### :returns: The new value.
 @target(os: "windows")
-secret routine HandleInfo.construct(attributes: U32, created: FileTime, accessed: FileTime,
+secret common routine HandleInfo.construct(attributes: U32, created: FileTime, accessed: FileTime,
     written: FileTime, volume_serial: U32, size_high: U32, size_low: U32, links: U32,
     index_high: U32, index_low: U32) -> Me
     return Me(attributes, created, accessed, written, volume_serial, size_high, size_low, links,
@@ -93,12 +93,12 @@ secret routine HandleInfo.construct(attributes: U32, created: FileTime, accessed
 ### :param size: Its `size`.
 ### :returns: The new value.
 @target(os: "windows")
-secret routine MemoryRange.construct(address: Addr, size: U64) -> Me
+secret common routine MemoryRange.construct(address: Addr, size: U64) -> Me
     return Me(address, size)
 
 ### Releases nothing: a `MemoryRange` holds no memory of its own.
 @target(os: "windows")
-secret routine MemoryRange.destruct(me: @Me) -> None
+secret routine @MemoryRange.destruct() -> None
     return
 
 ### Binds the Win32 `CreateFileW` function: opens or creates a file, a directory with backup semantics, or a device.
@@ -651,7 +651,7 @@ secret routine from_find_data(data: @Byte) -> Metadata
 ### The Metadata in a `BY_HANDLE_FILE_INFORMATION`. It has no reparse tag, so a link reads as a directory or a file.
 ### :returns: The metadata.
 @target(os: "windows")
-secret routine HandleInfo.to[Metadata](me: Me) -> Metadata
+secret routine HandleInfo.to[Metadata]() -> Metadata
     parts: AttributeData = AttributeData(attributes: me.attributes, created: me.created,
         accessed: me.accessed, written: me.written, size_high: me.size_high, size_low: me.size_low)
     return make_metadata(data: parts, tag: 0)
@@ -750,18 +750,18 @@ record FileHandle
 ### :param failed: Its `failed`.
 ### :returns: The new value.
 @target(os: "windows")
-routine FileHandle.construct(handle: Addr, failed: Bool) -> Me
+common routine FileHandle.construct(handle: Addr, failed: Bool) -> Me
     return Me(handle, failed)
 
 ### Releases nothing: a `FileHandle` holds no memory of its own.
 @target(os: "windows")
-routine FileHandle.destruct(me: @Me) -> None
+routine @FileHandle.destruct() -> None
     return
 
 ### A handle to no file, whose close() does nothing: the start value of a slot that a finish block closes.
 ### :returns: The empty handle.
 @target(os: "windows")
-routine FileHandle.empty() -> Me
+common routine FileHandle.empty() -> Me
     return Me(handle: inttoptr[U64, Addr](U64.MAX), failed: false)
 
 ### Opens path in mode. Other handles may read, write, and delete the file while it is open. Only CreateNew and
@@ -771,7 +771,7 @@ routine FileHandle.empty() -> Me
 ### :returns: The open handle.
 ### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 @target(os: "windows")
-secret routine FileHandle.open(path: @[Byte], mode: OpenMode) -> Result[Me, FsError]
+secret common routine FileHandle.open(path: @[Byte], mode: OpenMode) -> Result[Me, FsError]
     local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
 
     if not wide_path(path, out: wpath.to[@U16]())
@@ -798,7 +798,7 @@ secret routine FileHandle.open(path: @[Byte], mode: OpenMode) -> Result[Me, FsEr
 ### :throws: Returns the reason when the read fails.
 @target(os: "windows")
 @expensive("asks the operating system")
-routine FileHandle.read_bytes_result(me: @Me, buffer: @Byte, count: U64) -> Result[U64, FsError]
+routine @FileHandle.read_bytes_result(buffer: @Byte, count: U64) -> Result[U64, FsError]
     local got: @U32 <- 0
 
     ok: CInt = c_read_file(me.handle.peek(), buffer, count.min(1073741824).to[U32](), got,
@@ -817,7 +817,7 @@ routine FileHandle.read_bytes_result(me: @Me, buffer: @Byte, count: U64) -> Resu
 ### :returns: The count written.
 ### :throws: Returns the reason when the write fails.
 @target(os: "windows")
-secret routine FileHandle.write_some(me: @Me, data: @Byte, count: U64) -> Result[U64, FsError]
+secret routine @FileHandle.write_some(data: @Byte, count: U64) -> Result[U64, FsError]
     local wrote: @U32 <- 0
 
     ok: CInt = c_write_file(me.handle.peek(), data, count.min(1073741824).to[U32](), wrote,
@@ -833,7 +833,7 @@ secret routine FileHandle.write_some(me: @Me, data: @Byte, count: U64) -> Result
 ### :throws: Returns the reason, such as a position before the start.
 @target(os: "windows")
 @expensive("asks the operating system")
-routine FileHandle.seek_result(me: @Me, offset: S64, from: SeekFrom) -> Result[U64, FsError]
+routine @FileHandle.seek_result(offset: S64, from: SeekFrom) -> Result[U64, FsError]
     local at: @S64 <- 0
 
     # FILE_BEGIN, FILE_CURRENT, FILE_END
@@ -850,7 +850,7 @@ routine FileHandle.seek_result(me: @Me, offset: S64, from: SeekFrom) -> Result[U
 ### :throws: Returns the reason when the OS can't report it.
 @target(os: "windows")
 @expensive("asks the operating system")
-routine FileHandle.metadata_result(me: @Me) -> Result[Metadata, FsError]
+routine @FileHandle.metadata_result() -> Result[Metadata, FsError]
     return handle_metadata(me.handle.peek())
 
 ### The size of the open file in bytes.
@@ -858,7 +858,7 @@ routine FileHandle.metadata_result(me: @Me) -> Result[Metadata, FsError]
 ### :throws: Returns the reason when the OS can't report it.
 @target(os: "windows")
 @expensive("asks the operating system")
-routine FileHandle.size_result(me: @Me) -> Result[U64, FsError]
+routine @FileHandle.size_result() -> Result[U64, FsError]
     local size: @S64 <- 0
 
     if c_get_file_size_ex(me.handle.peek(), size) != 0
@@ -872,7 +872,7 @@ routine FileHandle.size_result(me: @Me) -> Result[U64, FsError]
 ###     doesn't fit in S64.
 @target(os: "windows")
 @expensive("asks the operating system")
-routine FileHandle.set_size_result(me: @Me, size: U64) -> Result[None, FsError]
+routine @FileHandle.set_size_result(size: U64) -> Result[None, FsError]
     local end: @S64 <- size.to[S64]()
 
     # FileEndOfFileInfo
@@ -883,13 +883,13 @@ routine FileHandle.set_size_result(me: @Me, size: U64) -> Result[None, FsError]
 ### :throws: Returns the reason when the OS reports an error.
 @target(os: "windows")
 @expensive("asks the operating system")
-routine FileHandle.sync_result(me: @Me) -> Result[None, FsError]
+routine @FileHandle.sync_result() -> Result[None, FsError]
     return checked(c_flush_file_buffers(me.handle.peek()))
 
 ### Closes the file and leaves the handle empty, so a second close does nothing.
 @target(os: "windows")
 @expensive("asks the operating system")
-routine FileHandle.close(me: @Me) -> None
+routine @FileHandle.close() -> None
     h: Addr = me.handle.peek()
     if is_invalid_handle(h)
         return
@@ -1113,13 +1113,13 @@ record DirIter
 ### :param name: Its `name`.
 ### :returns: The new value.
 @target(os: "windows")
-routine DirIter.construct(find: Addr, data: Array[U32, FIND_DATA_WORDS], pending: Bool,
+common routine DirIter.construct(find: Addr, data: Array[U32, FIND_DATA_WORDS], pending: Bool,
     name: Array[Byte, 1024]) -> Me
     return Me(find, data, pending, name)
 
 ### Releases nothing: a `DirIter` holds no memory of its own.
 @target(os: "windows")
-routine DirIter.destruct(me: @Me) -> None
+routine @DirIter.destruct() -> None
     return
 
 ### Opens the listing of the directory at path, a search for `path\*`. The handle is invalid until the search starts,
@@ -1128,7 +1128,7 @@ routine DirIter.destruct(me: @Me) -> None
 ### :returns: `Unit` once the listing is open.
 ### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 @target(os: "windows")
-secret routine DirIter.open_path(me: @Me, path: @[Byte]) -> Result[None, FsError]
+secret routine @DirIter.open_path(path: @[Byte]) -> Result[None, FsError]
     local pattern_buffer: @Array[U16, PATH_CAPACITY] <- .hollow()
     local pattern: @U16 = pattern_buffer.to[@U16]()
 
@@ -1178,7 +1178,7 @@ secret routine is_dot_wide(name: @U16) -> Bool
 ### :returns: The next entry, its name valid until the next call.
 ### :absent: At the end of the listing, or when reading it fails.
 @target(os: "windows")
-routine DirIter.emit_checked(me: @Me) -> Maybe[DirEntry]
+routine @DirIter.emit_checked() -> Maybe[DirEntry]
     if is_invalid_handle(me.find.peek())
         return None()
     if me.pending.peek() or c_find_next_file(me.find.peek(), me.data.to[@Byte]()) != 0
@@ -1197,12 +1197,12 @@ routine DirIter.emit_checked(me: @Me) -> Maybe[DirEntry]
 ### :returns: The metadata, which never fails here.
 @target(os: "windows")
 @expensive("asks the operating system")
-routine DirIter.entry_metadata_result(me: @Me) -> Result[Metadata, FsError]
+routine @DirIter.entry_metadata_result() -> Result[Metadata, FsError]
     return from_find_data(me.data.to[@Byte]())
 
 ### Ends the listing and leaves the handle invalid, so a second close does nothing.
 @target(os: "windows")
-routine DirIter.close(me: @Me) -> None
+routine @DirIter.close() -> None
     find: Addr = me.find.peek()
     if is_invalid_handle(find)
         return
@@ -1394,7 +1394,7 @@ secret routine canonical_path(path: @[Byte], alloc: @MemoryManager) -> Result[Me
 ### :returns: The mapping.
 ### :throws: Returns the reason when the file can't be opened, measured, or mapped.
 @target(os: "windows")
-secret routine Mapping.map(path: @[Byte], write: Bool, offset: U64,
+secret common routine Mapping.map(path: @[Byte], write: Bool, offset: U64,
     count: U64) -> Result[Me, FsError]
     local file: @FileHandle <- .empty()
     local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
@@ -1462,14 +1462,14 @@ secret routine Mapping.map(path: @[Byte], write: Bool, offset: U64,
 ### :returns: `Unit` once they are written, at once for an empty mapping.
 ### :throws: Returns the reason when FlushViewOfFile fails.
 @target(os: "windows")
-routine Mapping.flush_result(me: Me) -> Result[None, FsError]
+routine Mapping.flush_result() -> Result[None, FsError]
     if me.base.is_hollow()
         return fs_done()
     return checked(c_flush_view_of_file(me.base, 0))
 
 ### Writes changed pages back and unmaps.
 @target(os: "windows")
-routine Mapping.unmap(me: Me) -> None
+routine Mapping.unmap() -> None
     if me.base.is_hollow()
         return
     c_flush_view_of_file(me.base, 0)
@@ -1478,7 +1478,7 @@ routine Mapping.unmap(me: Me) -> None
 
 ### Asks the OS to read the whole mapping in now.
 @target(os: "windows")
-routine Mapping.prefetch(me: Me) -> None
+routine Mapping.prefetch() -> None
     if me.base.is_hollow()
         return
     local range: @MemoryRange <- MemoryRange(address: me.base, size: me.delta + me.count)
@@ -1487,5 +1487,5 @@ routine Mapping.prefetch(me: Me) -> None
 
 ### Tells the OS the mapping will be read front to back: a read-only mapping's file was already opened that way.
 @target(os: "windows")
-routine Mapping.advise_sequential(me: Me) -> None
+routine Mapping.advise_sequential() -> None
     return

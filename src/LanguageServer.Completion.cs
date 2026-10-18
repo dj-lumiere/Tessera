@@ -102,7 +102,7 @@ public static partial class LanguageServer
     }
 
     private static string Signature(RoutineDecl r) =>
-        $"({string.Join(", ", r.Params.Select(p => $"{p.Name}: {p.Type}"))}) -> {r.ReturnType}";
+        $"({string.Join(", ", r.Params.Where(p => !p.Implicit).Select(p => $"{p.Name}: {p.Type}"))}) -> {r.ReturnType}";
 
     /// What follows `receiver.`: a value's routines and fields, or a type's routines, presets, and cases.
     private static void Members(Analysis analysis, CompletionScope scope, string head,
