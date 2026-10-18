@@ -625,12 +625,41 @@ public sealed partial class Compiler
             if (!_exported.Contains(symbol)) declares.AppendLine(line);
         foreach (var sb in new[] { _typeDefs, _globals, declares })
             if (sb.Length > 0) o.Append(sb).AppendLine();
-        o.Append(_functions);
+        o.Append(MovesWaitingJobs ? TraceOutOfLine(_functions.ToString()) : _functions);
         o.Append(ResetThreadLocals());
         o.Append(RaceCheckOptions());
         o.Append(_entry);
         o.Append(DebugTrailer());
         return o.ToString();
+    }
+
+    /// Whether the program runs ThreadPoolManager jobs, which may wake on another thread than the one they waited on.
+    private bool MovesWaitingJobs => _instances.Values.Any(i =>
+        i.Decl.IsLibrary && i.Decl.Name == "pool_thread" && i.Decl.Module == "Standard/Fiber");
+
+    /// The functions with trace_push, trace_at and trace_pop called out of line. LLVM may work out a thread-local's
+    /// address once per function, so the inlined ones would go on writing the trace of the thread a job started on
+    /// after it wakes on another: called, each finds the trace of the thread it runs on.
+    private string TraceOutOfLine(string functions)
+    {
+        foreach (var inst in _traceRoutines.Values)
+        {
+            string head = $" @{Quote(inst.Symbol)}(";
+            int at = functions.IndexOf("define " , StringComparison.Ordinal);
+            while (at >= 0)
+            {
+                int end = functions.IndexOf('\n', at);
+                string line = functions[at..end];
+                if (line.Contains(head, StringComparison.Ordinal))
+                {
+                    functions = functions[..at] + line.Replace(" alwaysinline", " noinline") + functions[end..];
+                    break;
+                }
+                at = functions.IndexOf("\ndefine ", end, StringComparison.Ordinal);
+                if (at >= 0) at++;
+            }
+        }
+        return functions;
     }
 
     /// `@tessera.reset_thread_locals`, what the stdlib's `reset_thread_locals()` calls: it stores each `@threadlocal`

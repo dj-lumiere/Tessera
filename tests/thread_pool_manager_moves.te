@@ -1,0 +1,62 @@
+# A ThreadPoolManager goes on with a waiting job on whichever of its threads is free: the job waits for a child on the
+# second thread while a job that never waits holds its own, so the second thread goes on with it once the child is done.
+
+import Standard/Fiber
+import Standard/Format
+import Standard/Os
+
+### Spins until `release` is 1: work that keeps its thread without waiting.
+### :param release: Set to 1 to end it.
+routine hold(release: @U32) -> None
+    while release.peek_atomic() == 0
+        continue
+    return
+
+### Says it started, then spins for 50 ms without waiting.
+### :param started: Set to 1 when it starts.
+routine child(started: @U32) -> None
+    started.poke_atomic(1)
+    deadline: Duration = monotonic_now() +^ 50ms
+    while monotonic_now() < deadline
+        continue
+    return
+
+### The manager running the code that calls it: each thread of the pool has its own.
+### :returns: The manager, as an address.
+routine running_manager() -> Addr
+    return current_waiter().manager
+
+### Waits for `child` on the second thread while `hold` keeps this thread, and says whether it went on on another
+### thread.
+### :param pool: The pool.
+### :returns: True when it went on on another thread than the one it waited on.
+routine watch(pool: @ThreadPoolManager) -> Bool
+    local started: @U32 <- 0
+    local release: @U32 <- 0
+    c: Job[None] = pool.get_job[None]()
+    c.put_work(entry: child.to[Callable](), args: started)
+    # The child runs on the other thread: this one is busy here until this job waits.
+    while started.peek_atomic() == 0
+        continue
+    h: Job[None] = pool.get_job[None]()
+    h.put_work(entry: hold.to[Callable](), args: release)
+    before: Addr = running_manager()
+    # The wait frees this thread, which takes `hold`, the only job left in the queue.
+    c.wait_finished()
+    after: Addr = running_manager()
+    release.poke_atomic(1)
+    h.wait_finished()
+    c.give_back()
+    h.give_back()
+    return before.ptr_ne(after)
+
+### Runs `watch` on a pool of two threads.
+routine start() -> None
+    local pool: @ThreadPoolManager <- .construct(threads: 2)
+    j: Job[Bool] = pool.get_job[Bool]()
+    j.put_work(entry: watch.to[Callable](), args: pool)
+    j.wait_finished()
+    Console.show("went on on another thread: {j.retrieve()}")
+    j.give_back()
+    drop pool
+    return

@@ -1,16 +1,20 @@
 # Tessera stdlib: ThreadPoolManager, fibers over many threads
 #
-# A ThreadPoolManager runs work on a number of threads, each with a FiberManager of its own (its FIBERS). A job is a ticket in
-# the same flow as a thread's or a fiber's (Work.te): `pool.get_job[T]()`, `put_work`, `wait_finished`, `retrieve`,
-# `give_back`. Work put on a job waits in the pool's queue until a thread of the pool is free, and that thread runs it
-# as one of its fibers. A job that has started never moves: it stays on its thread, so fibers of one thread take turns
-# there as they always do. Only work that hasn't started goes to whichever thread is free first.
+# A ThreadPoolManager runs work on a number of threads, each with a FiberManager of its own (its FIBERS). A job is a
+# ticket in the same flow as a thread's or a fiber's (Work.te): `pool.get_job[T]()`, `put_work`, `wait_finished`,
+# `retrieve`, `give_back`. Work put on a job waits in the pool's queue until a thread of the pool is free, and that
+# thread runs it on a fiber the pool keeps. Like any fiber, it runs until it waits, and nothing interrupts it there.
+#
+# While a job waits, it belongs to no thread: the wake that ends the wait puts it in the pool's queue of woken fibers,
+# and whichever thread of the pool is free first goes on with it (the thread it waited on, or one that had nothing to
+# do). A job therefore may wake on another thread than the one it waited on, so it doesn't rely on a `@threadlocal`
+# global across a wait. Fibers a job makes with FIBERS stay on their thread, as every manager's fibers do.
 #
 # A job's work may itself put work on more jobs and wait for them: the waiting job parks, its thread goes on with
-# other work, and the thread that finishes a child wakes it. That is how work splits itself in parts on every core
-# without a thread per part:
+# other work, and a free thread goes on with it once a child wakes it. That is how work splits itself in parts on
+# every core without a thread per part:
 #
-#     claim pool: @ThreadPoolManager <- .construct(threads: 0)   # 0: one thread per processor
+#     local pool: @ThreadPoolManager <- .construct(threads: 0)   # 0: one thread per processor
 #     j: Job[U64] = pool.get_job[U64]()
 #     j.put_work(entry: sum_range.to[Callable](), args: (pool, 0, 1000000))
 #     j.wait_finished()
@@ -18,8 +22,9 @@
 #     j.give_back()
 #     pool.destruct()
 #
-# A thread of the pool sleeps when it has nothing to run, until work is queued, a wake comes for one of its fibers, or
-# one of them is due. The pool's threads start with the first job and end when the pool is destructed.
+# A thread of the pool sleeps when it has nothing to run, until work or a woken job is queued, a wake comes for one of
+# its own fibers, or one of them is due. The pool's threads start with the first job and end when the pool is
+# destructed.
 
 module Standard/Fiber
 
@@ -27,9 +32,10 @@ import Standard/Alloc
 import Standard/Collections
 import Standard/Os
 
-### Runs jobs on its threads, each thread's fibers on that thread.
+### Runs jobs on its threads, each thread's fibers on that thread, and a waiting job on whichever thread is free when it
+### wakes.
 entity ThreadPoolManager
-    ### Guards the queue, the idle jobs, and the threads.
+    ### Guards the queue, the idle jobs, the woken fibers, the kept fibers, and the threads.
     lock: ExclusiveLock
     ### The jobs whose work waits for a thread, in order.
     first: @PoolJob
@@ -45,8 +51,14 @@ entity ThreadPoolManager
     count: U64
     ### The threads' tickets.
     threads: Memory[Thread[None]]
-    ### Where the jobs and the threads' tickets come from.
+    ### Where the jobs, the fibers, and the threads' tickets come from.
     alloc: @MemoryManager
+    ### The fibers running jobs that were woken, for the first free thread to go on with.
+    woken: CircularList[@FiberState]
+    ### Every fiber the pool made, through `next_all`.
+    fibers: @FiberState
+    ### The fibers whose job is over, waiting for the next, through `next_idle`.
+    spare: @FiberState
 
 ### One job of a pool: its work, and its place in the queue or among the idle ones.
 record PoolJob
@@ -72,9 +84,11 @@ routine ThreadPoolManager.construct(threads: U64) -> Me
         threads == 0 => cpu_count()
         else => threads
     return Me(lock: .construct(), first: .hollow(), last: .hollow(), idle: .hollow(), epoch: 0,
-        stopping: 0, count, threads: .hollow(), alloc: DEFAULT_HEAP)
+        stopping: 0, count, threads: .hollow(), alloc: DEFAULT_HEAP,
+        woken: CircularList[@FiberState].construct(alloc: DEFAULT_HEAP), fibers: .hollow(), spare: .hollow())
 
-### Stops the pool: its threads finish the work they have, then end, and the idle jobs go. Give every job back first.
+### Stops the pool: its threads finish the work they have, then end, and the idle jobs and the fibers go. Give every
+### job back first.
 @target(os: not "none")
 @track_caller
 routine ThreadPoolManager.destruct(me: @Me) -> None
@@ -97,6 +111,17 @@ routine ThreadPoolManager.destruct(me: @Me) -> None
         continue with job: next
     drop me.threads
     me.idle.poke(.hollow())
+
+    until fiber.is_hollow() with fiber: @FiberState = me.fibers.peek()
+        next: @FiberState = fiber.next_all.peek()
+        fiber.destruct()
+        race_stack_free(fiber.race.peek())
+        deallocate(data: fiber.stack.peek().to[@Byte](), alloc: DEFAULT_STACKS)
+        deallocate(data: fiber, alloc: me.alloc.peek())
+        continue with fiber: next
+    me.fibers.poke(.hollow())
+    me.spare.poke(.hollow())
+    me.woken.destruct()
     return
 
 ### Makes a `PoolJob` from its fields.
@@ -218,23 +243,109 @@ secret routine ThreadPoolManager.take(me: @Me) -> @PoolJob
         me.lock.unlock()
         return job
 
-### A pool thread's work: runs this thread's fibers until none is ready, starts the next queued job as one of them,
-### and sleeps when there is nothing, until the pool stops and its fibers are done.
+### Puts `fiber`, a pool's fiber a wake made ready, in the queue of woken fibers and wakes the threads.
+### :param fiber: The fiber.
+@target(os: not "none")
+@reshaping
+secret routine ThreadPoolManager.queue_woken(me: @Me, fiber: @FiberState) -> None
+    me.lock.lock()
+    me.woken.add_last(fiber)
+    me.lock.unlock()
+    me.epoch.atomic_fetch_add(1)
+    wake_all(me.epoch)
+    return
+
+### The fiber at the front of the queue of woken fibers, taken out, or null.
+### :returns: The fiber, or null.
+@target(os: not "none")
+@reshaping
+secret routine ThreadPoolManager.take_woken(me: @Me) -> @FiberState
+    me.lock.lock()
+    if me.woken.is_empty()
+        me.lock.unlock()
+        return .hollow()
+    else
+        fiber: @FiberState = me.woken.remove_first()
+        me.lock.unlock()
+        return fiber
+
+### Keeps `fiber`, whose job is over, for the next job.
+### :param fiber: The fiber.
+@target(os: not "none")
+secret routine ThreadPoolManager.keep_fiber(me: @Me, fiber: @FiberState) -> None
+    me.lock.lock()
+    fiber.next_idle.poke(me.spare.peek())
+    me.spare.poke(fiber)
+    me.lock.unlock()
+    return
+
+### A fiber for a job: one kept from an earlier job, or a new one with a stack of its own.
+### :returns: The fiber.
+### :throws: Crashes with `MemoryAllocationError` when there is no memory for the fiber or its stack.
+@target(os: not "none")
+@track_caller
+secret routine ThreadPoolManager.take_fiber(me: @Me) -> @FiberState
+    me.lock.lock()
+    spare: @FiberState = me.spare.peek()
+    if spare.is_not_hollow()
+        me.spare.poke(spare.next_idle.peek())
+        me.lock.unlock()
+        spare.next_idle.poke(.hollow())
+        # No manager runs it until a thread adopts it, which counts it among that thread's busy fibers.
+        spare.manager.poke_atomic(.hollow())
+        return spare
+    me.lock.unlock()
+    alloc: @MemoryManager = me.alloc.peek()
+    size: U64 = DEFAULT_FIBER_STACK.bytes()
+    stack: @Byte = allocate[Byte](count: size, alloc: DEFAULT_STACKS)
+    if stack.is_hollow()
+        crash_allocation()
+    fiber: @FiberState = allocate[FiberState](count: 1, alloc)
+    if fiber.is_hollow()
+        crash_allocation()
+    sp: Addr = initial_stack(stack, size, entry: fiber_start.addr())
+    fiber.poke(FiberState(sp, stack, manager: .hollow(), slot: .construct(alloc), work: fiber.slot,
+        then: requeue.to[Callable](), wake_state: FIBER_RUNNING, timer: 0, trace_depth: 0, race: race_stack_new(),
+        next_idle: .hollow(), next_all: .hollow(), pool: me))
+    me.lock.lock()
+    fiber.next_all.poke(me.fibers.peek())
+    me.fibers.poke(fiber)
+    me.lock.unlock()
+    return fiber
+
+### Makes `fiber` one of this thread's: it counts among FIBERS' busy fibers instead of its last manager's, and goes in
+### FIBERS' ready queue.
+### :param fiber: A pool's fiber, ready to run.
+@target(os: not "none")
+secret routine adopt(fiber: @FiberState) -> None
+    from: @FiberManager = fiber.manager.peek_atomic()
+    if from !== FIBERS
+        FIBERS.busy.atomic_fetch_add(1)
+        fiber.manager.poke_atomic(FIBERS)
+        if from.is_not_hollow()
+            from.busy.atomic_fetch_sub(1)
+    FIBERS.ready.add_last(fiber)
+    return
+
+### A pool thread's work: runs this thread's fibers until none is ready, goes on with a woken job or starts the next
+### queued one, and sleeps when there is nothing, until the pool stops and its fibers are done.
 ### :param pool: The pool.
 @target(os: not "none")
+@reshaping(pool)
 secret routine pool_thread(pool: @ThreadPoolManager) -> None
-    local running: @List[Fiber[None]] <- .construct(alloc: DEFAULT_HEAP)
-
     FIBERS.wake_through(pool.epoch)
 
     # Reads the epoch before looking, so work or a wake that comes in between changes it and the sleep returns.
     while true
         seen: U32 = pool.epoch.peek_atomic()
         FIBERS.run_until_idle()
-        give_back_finished(running)
+        woken: @FiberState = pool.take_woken()
+        if woken.is_not_hollow()
+            adopt(woken)
+            continue
         job: @PoolJob = pool.take()
         if job.is_hollow()
-            if pool.stopping.peek_atomic() == 1 and running.count() == 0
+            if pool.stopping.peek_atomic() == 1 and FIBERS.busy.peek_atomic() == 0
                 break
             else
                 wait: Duration = FIBERS.idle_wait()
@@ -245,31 +356,12 @@ secret routine pool_thread(pool: @ThreadPoolManager) -> None
                     wait_on_for(at: pool.epoch, expected: seen, timeout: wait)
                     continue
         else
-            fiber: Fiber[None] = FIBERS.get_fiber[None]()
-            fiber.run_job(job.slot)
-            running.add_last(fiber)
+            fiber: @FiberState = pool.take_fiber()
+            fiber.slot.state.poke_atomic(TICKET_RUNNING)
+            fiber.work.poke(job.slot)
+            adopt(fiber)
             continue
-    drop running
     return
-
-### Gives back the fibers in `running` whose job is done, and takes them out.
-### :param running: The fibers running jobs.
-@target(os: not "none")
-secret routine give_back_finished(running: @List[Fiber[None]]) -> None
-    while i < running.count() with i: U64 = 0
-        fiber: Fiber[None] = running[i]
-        if fiber.check_finished()
-            # The last fiber takes the finished one's place, and is looked at next.
-            fiber.give_back()
-            last: Fiber[None] = running.remove_last()
-            if not (i < running.count())
-                return
-            running[i] = last
-            continue with i: i
-        else
-            continue with i: i + 1
-    then
-        return
 
 # -- the tickets -------------------------------------------------------------------------------------------------
 

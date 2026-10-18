@@ -909,12 +909,27 @@ static class Cli
         {
             if (File.Exists(dir))
             {
+                // A solution's manifest is the test of its folder, as when the folder's parent is given.
+                if (Path.GetFileName(dir) == Manifest.FileName)
+                {
+                    tests.Add((Path.GetDirectoryName(dir)!, [dir]));
+                    continue;
+                }
                 if (Path.GetExtension(dir) != ".te")
                     throw new ToolError($"{dir} is not a Tessera source (Tessera sources end in .te)");
                 tests.Add((Path.ChangeExtension(dir, null), [dir]));
                 continue;
             }
             if (!Directory.Exists(dir)) throw new ToolError($"{dir} does not exist");
+            // A folder with its expected output next to it is one test, as when its parent is given.
+            string stem = dir.TrimEnd('/', '\\');
+            if (new[] { ".expected", ".exit", ".error" }.Any(ext => File.Exists(stem + ext)))
+            {
+                tests.Add((stem, File.Exists(Path.Combine(stem, Manifest.FileName))
+                    ? [Path.Combine(stem, Manifest.FileName)]
+                    : Directory.GetFiles(stem, "*.te", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()));
+                continue;
+            }
             var found = TestsIn(dir);
             if (found.Count == 0) throw new ToolError($"no .te files in {dir}");
             tests.AddRange(found);

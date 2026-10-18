@@ -5,7 +5,8 @@
 # `give_back` hands the fiber back to its manager, which keeps it, stack and all, for the next ticket.
 #
 # A manager runs its fibers on one thread, the one that drives it, and never moves them: they take turns, and one runs
-# until it yields, parks, sleeps, or its work finishes. Nothing cuts in between, so fibers of one manager share
+# until it yields, parks, sleeps, or its work finishes. (A ThreadPoolManager's jobs are fibers the pool keeps, which a
+# wake hands to whichever of its threads is free, see ThreadPoolManager.te.) Nothing cuts in between, so fibers of one manager share
 # values without a lock between those points. Each thread has a manager of its own, FIBERS, made on first use. A
 # program that wants more cores takes thread tickets and drives a manager on each.
 #
@@ -59,6 +60,7 @@ record FiberState
     sp: Addr
     ### The bottom of its stack, from the manager's stack allocator.
     stack: Addr
+    ### The manager running it. Only a ThreadPoolManager's fiber changes manager, while it waits.
     manager: @FiberManager
     slot: WorkSlot
     ### The slot whose work it runs: its own, or a ThreadPoolManager job's it was given.
@@ -75,8 +77,10 @@ record FiberState
     race: Addr
     ### The next fiber given back, waiting for a ticket.
     next_idle: @FiberState
-    ### The next of all the manager's fibers.
+    ### The next of all the manager's fibers, or of all the pool's for a pool's fiber.
     next_all: @FiberState
+    ### The ThreadPoolManager that keeps it and runs it on any of its threads, or null for a fiber of one manager.
+    pool: @ThreadPoolManager
 
 ### A ticket for a fiber, from {FiberManager.get_fiber}: it runs one piece of work at a time, whose result is a `T`
 ### (`Void` for none), until {Fiber[T].give_back}.
@@ -144,13 +148,14 @@ entity FiberManager
 ### :param race: Its `race`.
 ### :param next_idle: Its `next_idle`.
 ### :param next_all: Its `next_all`.
+### :param pool: Its `pool`.
 ### :returns: The new value.
 @target(os: not "none")
 routine FiberState.construct(sp: Addr, stack: Addr, manager: @FiberManager, slot: WorkSlot,
     work: @WorkSlot, then: Callable[(@FiberManager, @Me), None], wake_state: U32, timer: U64,
-    trace_depth: U64, race: Addr, next_idle: @Me, next_all: @Me) -> Me
+    trace_depth: U64, race: Addr, next_idle: @Me, next_all: @Me, pool: @ThreadPoolManager) -> Me
     return Me(sp, stack, manager, slot, work, then, wake_state, timer, trace_depth, race, next_idle,
-        next_all)
+        next_all, pool)
 
 ### Releases the block of its last work. Its stack is its manager's to give back.
 @target(os: not "none")
@@ -284,7 +289,7 @@ secret routine FiberManager.make_fiber(me: @Me) -> @FiberState
     sp: Addr = initial_stack(stack, size, entry: fiber_start.addr())
     fiber.poke(FiberState(sp, stack, manager: me, slot: .construct(alloc: me.alloc.peek()),
         work: fiber.slot, then: requeue.to[Callable](), wake_state: FIBER_RUNNING, timer: 0,
-        trace_depth: 0, race: race_stack_new(), next_idle: .hollow(), next_all: me.all.peek()))
+        trace_depth: 0, race: race_stack_new(), next_idle: .hollow(), next_all: me.all.peek(), pool: .hollow()))
     me.all.poke(fiber)
     return fiber
 
@@ -341,10 +346,11 @@ routine FiberManager.park_until(me: @Me, deadline: Duration) -> None
         return
     seq: U64 = me.timer_seq.peek() + 1
     me.timer_seq.poke(seq)
-    fiber.timer.poke(seq)
+    # Atomic: a pool's fiber may go on on another thread while this manager's timer still holds it.
+    fiber.timer.poke_atomic(seq)
     me.timers.add(priority: TimerKey(deadline, seq), element: fiber)
     me.park()
-    fiber.timer.poke(0)
+    fiber.timer.poke_atomic(0)
     return
 
 ### Lets fiber, one of this manager's fibers, go on: if it is parked it is queued, and if not its next park returns at
@@ -383,8 +389,9 @@ routine FiberManager.waitfor(me: @Me, duration: Duration) -> None
         sleep_thread(deadline)
         return
     else
+        # A pool's fiber may go on on another thread after a park, so each park goes through the manager running it.
         while monotonic_now() < deadline
-            me.park_until(deadline)
+            fiber.manager.peek().park_until(deadline)
         then
             return
 
@@ -760,23 +767,6 @@ needs T: typename
     manager.inbox_lock.unlock()
     return
 
-### Runs the work put on `job`, a slot outside the manager (a ThreadPoolManager job's), on the ticket's fiber: the ticket's
-### work is over when the job's is.
-### :param job: The slot whose work to run, with its work put on.
-### :throws: Crashes with `TicketBusyError` while the ticket's fiber has work.
-@target(os: not "none")
-@track_caller
-routine Fiber[None].run_job(me: Me, job: @WorkSlot) -> None
-    slot: @WorkSlot = me.work_slot()
-    slot.check_free()
-    fiber: @FiberState = me.fiber
-    manager: @FiberManager = fiber.manager.peek()
-    slot.state.poke_atomic(TICKET_RUNNING)
-    fiber.work.poke(job)
-    manager.busy.atomic_fetch_add(1)
-    manager.place_ready(fiber)
-    return
-
 # -- driving ----------------------------------------------------------------------------------------------------
 
 ### Whether a wait for one of this manager's fibers on this thread should drive the manager: the code isn't a fiber,
@@ -858,9 +848,10 @@ secret routine FiberManager.resume(me: @Me, fiber: @FiberState) -> None
 @noreturn
 @target(os: not "none")
 secret routine fiber_start() -> None
+    # Read once: the routine runs on this one fiber's stack for good, and a pool's fiber may go on on another thread,
+    # where this thread's RUNNING_FIBER is another fiber's.
+    fiber: @FiberState = current_waiter().fiber.to[@FiberState]()
     while true
-        fiber: @FiberState = current_waiter().fiber.to[@FiberState]()
-        manager: @FiberManager = fiber.manager.peek()
         slot: @WorkSlot = fiber.work.peek()
         runner: Callable[(Addr,), None] = slot.runner.peek()
         runner.call(slot.work.peek())
@@ -869,16 +860,23 @@ secret routine fiber_start() -> None
             # A job's slot: the fiber's own work is over too.
             fiber.work.poke(fiber.slot)
             fiber.slot.complete()
+        # Read last: the work and the completes may park, and a pool's fiber may go on on another thread after that.
+        manager: @FiberManager = fiber.manager.peek()
         manager.busy.atomic_fetch_sub(1)
         fiber.then.poke(commit_idle.to[Callable]())
         race_stack_switch(manager.home_race.peek())
         switch_stack(from: fiber.sp, to: manager.home.peek())
 
-### fiber is ready: in the ready queue on the manager's thread, else in its inbox, waking the thread.
+### fiber is ready: in the ready queue on the manager's thread, else in its inbox, waking the thread. A pool's fiber
+### goes to its pool instead, for whichever of the pool's threads is free first.
 ### :param fiber: The fiber to queue.
 @target(os: not "none")
 @reshaping
 secret routine FiberManager.place_ready(me: @Me, fiber: @FiberState) -> None
+    pool: @ThreadPoolManager = fiber.pool.peek()
+    if pool.is_not_hollow()
+        pool.queue_woken(fiber)
+        return
     if thread_mark() === me.owner.peek_atomic()
         me.ready.add_last(fiber)
         return
@@ -914,7 +912,7 @@ secret routine FiberManager.fire_timers(me: @Me) -> None
         if not (key.deadline <= now)
             return
         fiber: @FiberState = me.timers.remove()
-        if fiber.timer.peek() == key.seq
+        if fiber.timer.peek_atomic() == key.seq
             me.wake(fiber)
     then
         return
@@ -960,15 +958,19 @@ secret routine commit_park(manager: @FiberManager, fiber: @FiberState) -> None
 @target(os: not "none")
 secret routine commit_idle(manager: @FiberManager, fiber: @FiberState) -> None
     fiber.wake_state.poke_atomic(FIBER_RUNNING)
+    pool: @ThreadPoolManager = fiber.pool.peek()
+    if pool.is_not_hollow()
+        pool.keep_fiber(fiber)
     return
 
-### How a Waiter parks a fiber of a manager: until a wake, or a deadline other than Duration.MAX.
-### :param manager: The manager.
+### How a Waiter parks a fiber of a manager: until a wake, or a deadline other than Duration.MAX. The fiber parks
+### through the manager running it now, which is the Waiter's own unless a pool's fiber went on on another thread.
+### :param manager: The manager the Waiter was made with.
 ### :param deadline: When the fiber goes on without a wake, or `Duration.MAX`.
 @target(os: not "none")
 @reshaping(manager)
 secret routine park_hook(manager: Addr, deadline: Duration) -> None
-    local fibers: @FiberManager = manager.to[@FiberManager]()
+    local fibers: @FiberManager = RUNNING_FIBER.peek().manager.to[@FiberManager]()
 
     if deadline == Duration.MAX
         fibers.park()
@@ -977,14 +979,16 @@ secret routine park_hook(manager: Addr, deadline: Duration) -> None
         fibers.park_until(deadline)
         return
 
-### How a Waiter wakes a fiber of a manager.
-### :param manager: The manager.
+### How a Waiter wakes a fiber of a manager: through the manager running the fiber now, which is the Waiter's own
+### unless a pool's fiber went on on another thread.
+### :param manager: The manager the Waiter was made with.
 ### :param fiber: The fiber.
 @target(os: not "none")
 @reshaping(manager)
 secret routine wake_hook(manager: Addr, fiber: Addr) -> None
-    fibers: @FiberManager = manager.to[@FiberManager]()
-    fibers.wake(fiber.to[@FiberState]())
+    state: @FiberState = fiber.to[@FiberState]()
+    fibers: @FiberManager = state.manager.peek_atomic()
+    fibers.wake(state)
     return
 
 ### A thread outside a fiber waits until deadline.

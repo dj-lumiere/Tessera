@@ -1025,10 +1025,15 @@ code waiting on several tickets at once.
 - **ThreadPoolManager** (`Standard/Fiber/ThreadPoolManager.te`, M:N): `local pool: @ThreadPoolManager <- .construct(threads: 0)` (0 = one
   thread per processor), `j: Job[T] = pool.get_job[T]()`, then the ticket flow (`put_work`, `check_finished`,
   `wait_finished(_for, _result)`, `retrieve(_result)`, `cancel`, `give_back`). Work waits in the pool's queue until a
-  pool thread is free, then runs as a fiber of that thread and NEVER moves. A job may put work on more jobs and wait:
-  the waiting job parks, its thread runs other jobs, the finishing thread wakes it (recursive splitting:
-  `tests/thread_pool_manager.te`). Jobs don't choose their thread, so they share values like threads do (atomics, locks,
-  channels). Threads start with the first `get_job` and end at `drop pool`: give every job back first.
+  pool thread is free, then runs as a fiber the POOL keeps (not a thread's `FIBERS`). It runs until it waits, like any
+  fiber. A wake of a waiting job puts it in the pool's queue of woken fibers, and whichever pool thread is free first
+  goes on with it, so a job may wake on another thread than the one it waited on (work stealing at wait points only,
+  `tests/thread_pool_manager_moves.te`): don't rely on a `@threadlocal` global across a wait in a job. Fibers a job
+  makes with `FIBERS` stay on their thread. A job may put work on more jobs and wait: the waiting job parks, its
+  thread runs other jobs (recursive splitting: `tests/thread_pool_manager.te`). Jobs don't choose their thread, so they
+  share values like threads do (atomics, locks, channels). Threads start with the first `get_job` and end at
+  `drop pool`: give every job back first. In a program that runs pool jobs, the builder calls the crash trace's
+  `trace_push` / `trace_at` / `trace_pop` out of line, so each finds the trace of the thread it runs on.
 - `migrate --step threads` rewrites `x: Thread = Thread.spawn(entry: f, arg: s)` / `x.join()` /
   `Thread.spawn(...).detach()` into tickets and `launch_unwatched`.
 
