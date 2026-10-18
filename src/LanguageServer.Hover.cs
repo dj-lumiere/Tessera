@@ -174,7 +174,8 @@ public static partial class LanguageServer
         {
             string l = lines[i].Trim();
             if (l.StartsWith("###")) doc.Add(l[3..].StartsWith(' ') ? l[4..] : l[3..]);
-            else if (!l.StartsWith('#')) break;
+            // An annotation (`@llvm("i32")`, `@track_caller`) sits between a declaration and its doc comment.
+            else if (!l.StartsWith('#') && !l.StartsWith('@')) break;
         }
         doc.Reverse();
         return doc.Count > 0 ? string.Join("\n", doc) : null;

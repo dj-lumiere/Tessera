@@ -15,6 +15,9 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse)
     private sealed record Page(string SourcePath, string PagePath, string Title, List<Decl> Decls, string[] Lines)
     {
         public Dictionary<string, string> Anchors { get; } = new(StringComparer.Ordinal);
+
+        /// The member anchors written on the page so far.
+        public HashSet<string> MemberAnchors { get; } = new(StringComparer.Ordinal);
         public string? Summary { get; set; }
     }
 
@@ -27,6 +30,10 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse)
 
     /// Every public type of the library by name: the page declaring it and its anchor there.
     private readonly Dictionary<string, (string Page, string Anchor)> _types = new(StringComparer.Ordinal);
+
+    /// Every public routine and preset by what a `{...}` names: `Owner.name` for one on a type, `name` for a free one.
+    /// Overloads share the anchor of the first, and the first page that declares a name keeps it.
+    private readonly Dictionary<string, (string Page, string Anchor)> _members = new(StringComparer.Ordinal);
 
     /// Writes the pages under `outputRoot`, first removing every `.md` file there so a page whose source is gone
     /// doesn't linger (stylesheets, scripts, and images stay). Returns the files read, the pages written, and the
@@ -58,6 +65,7 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse)
         }
 
         foreach (var page in _pages) RegisterTypes(page);
+        foreach (var page in _pages) RegisterMembers(page);
 
         Directory.CreateDirectory(outputRoot);
         foreach (string old in Directory.EnumerateFiles(outputRoot, "*.md", SearchOption.AllDirectories)) File.Delete(old);
@@ -166,6 +174,40 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse)
         }
     }
 
+    /// The anchor of a routine or preset on a page: `b16-total_compare` on a type, `routine-wait_on` and
+    /// `preset-max_frames` for a free one.
+    private static string MemberAnchor(string? owner, string name, bool routine) =>
+        (owner is null ? (routine ? "routine" : "preset") : owner.ToLowerInvariant()) + "-" + name.ToLowerInvariant();
+
+    private void RegisterMembers(Page page)
+    {
+        foreach (var d in page.Decls.Where(IsPublic))
+        {
+            var (owner, name, routine) = d switch
+            {
+                RoutineDecl r => (r.Owner?.Name, r.Name, true),
+                PresetDecl p => (p.Owner?.Name, p.Name, false),
+                _ => ((string?)null, (string?)null, false),
+            };
+            if (name is null) continue;
+            string key = owner is null ? name : $"{owner}.{name}";
+            // The page that declares the type keeps the type's members: `{B64.to[S8]}` goes to B64's page, not to
+            // the first file that adds a `to` to B64.
+            bool home = owner is not null && _types.TryGetValue(owner, out var typeAt) && typeAt.Page == page.PagePath;
+            if (home || !_members.ContainsKey(key)) _members[key] = (page.PagePath, MemberAnchor(owner, name, routine));
+        }
+        foreach (var c in page.Decls.OfType<ConceptDecl>().Where(IsPublic))
+            foreach (var r in c.Routines)
+                _members[$"{c.Name}.{r.Name}"] = (page.PagePath, MemberAnchor(c.Name, r.Name, true));
+    }
+
+    /// The heading of a routine or preset, with its anchor the first time the page has it (overloads share one).
+    private static string MemberHeading(Page page, HashSet<string> written, string? owner, string name, bool routine)
+    {
+        string anchor = MemberAnchor(owner, name, routine);
+        return written.Add(anchor) ? $"### `{name}` {{ #{anchor} }}\n\n" : $"### `{name}`\n\n";
+    }
+
     // ── Pages ───────────────────────────────────────────────────────────────
 
     private string? RenderPage(Page page)
@@ -256,7 +298,7 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse)
                 sb.Append('\n');
                 break;
             case ConceptDecl concept:
-                foreach (var r in concept.Routines) RenderRoutine(sb, page, r);
+                foreach (var r in concept.Routines) RenderRoutine(sb, page, r, concept.Name);
                 break;
         }
 
@@ -264,16 +306,16 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse)
         foreach (var r in routines) RenderRoutine(sb, page, r);
     }
 
-    private void RenderRoutine(StringBuilder sb, Page page, RoutineDecl routine)
+    private void RenderRoutine(StringBuilder sb, Page page, RoutineDecl routine, string? owner = null)
     {
-        sb.Append($"### `{routine.Name}`\n\n");
+        sb.Append(MemberHeading(page, page.MemberAnchors, owner ?? routine.Owner?.Name, routine.Name, routine: true));
         AppendCode(sb, string.Join("\n", HeaderLines(page.Lines, routine.Pos.Line)));
         AppendDoc(sb, page, DocAbove(page, DocLine(routine)));
     }
 
     private void RenderPreset(StringBuilder sb, Page page, PresetDecl preset)
     {
-        sb.Append($"### `{preset.Name}`\n\n");
+        sb.Append(MemberHeading(page, page.MemberAnchors, preset.Owner?.Name, preset.Name, routine: false));
         AppendCode(sb, Line(page, preset.Pos.Line));
         AppendDoc(sb, page, DocAbove(page, DocLine(preset)));
     }
@@ -319,7 +361,7 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse)
         {
             string l = page.Lines[i].Trim();
             if (l.StartsWith("###")) doc.Add(l[3..].StartsWith(' ') ? l[4..] : l[3..]);
-            else if (!l.StartsWith('#')) break;
+            else if (!l.StartsWith('#') && !l.StartsWith('@')) break;
         }
         doc.Reverse();
         return doc.Count > 0 ? string.Join("\n", doc) : null;
@@ -424,11 +466,29 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse)
     private string LinkifyProse(Page page, string text) => BraceReference.Replace(text, m =>
     {
         string inner = m.Groups[1].Value.Trim();
-        var type = TypeReference.Match(inner);
-        return type.Success && _types.TryGetValue(type.Groups[1].Value, out var target)
+        return Target(inner) is { } target
             ? $"[`{inner}`]({LinkTo(page, target.Page, target.Anchor)})"
             : $"`{inner}`";
     });
+
+    /// Where a `{...}` reference points: a type (`{List[T]}`), a routine or preset on one (`{B16.to_checked[S8]}`,
+    /// `{Duration.MAX}`), or a free routine or preset (`{wait_on}`). Null for anything else (a parameter, an expression).
+    private (string Page, string Anchor)? Target(string inner)
+    {
+        string text = inner.EndsWith("()", StringComparison.Ordinal) ? inner[..^2] : inner;
+        var type = TypeReference.Match(text);
+        if (type.Success && _types.TryGetValue(type.Groups[1].Value, out var t)) return t;
+        int depth = 0, dot = -1;
+        for (int i = 0; i < text.Length; i++)
+        {
+            if (text[i] == '[') depth++;
+            else if (text[i] == ']') depth--;
+            else if (text[i] == '.' && depth == 0) dot = i;
+        }
+        static string Bare(string s) => s.IndexOf('[') is var b and >= 0 ? s[..b] : s;
+        string key = dot < 0 ? Bare(text) : $"{Bare(text[..dot])}.{Bare(text[(dot + 1)..])}";
+        return _members.TryGetValue(key, out var member) ? member : null;
+    }
 
     private static string LinkTo(Page from, string page, string anchor)
     {
