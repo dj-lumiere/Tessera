@@ -1162,7 +1162,7 @@ or libgcc: the soft-float routines LLVM calls for B16 / BF16 / B32 / B64 without
 scripts, and requires that nothing is left undefined; the golden run skips them).
 
 **Assembly.** An `@external("asm")` routine with `@target(arch: ...)` is assembly in Tessera's syntax, put in place at
-each call (`../Tessera-Wiki/docs/Inline-Assembly.md`): one instruction per line written like a call, operands in the
+each call (`../Tessera-Wiki/docs/20b-assembly.md`): one instruction per line written like a call, operands in the
 assembler's order, one type argument per register operand (`add[U64, U64](R0, R3)`), registers by Tessera's names
 (`R0`..., `V0`..., `SP`, `ZERO`, `FLAGS`), parameters by name, `reg.offset(n)` for memory, and labelled blocks with `jump` and `if` on a flag condition
 (`if eq`, `if lt[U64]`) for jumps. System registers and the words some instructions take are written as the architecture's manual spells them
