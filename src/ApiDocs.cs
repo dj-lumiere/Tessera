@@ -310,7 +310,7 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse)
 
     // ── Doc comments ────────────────────────────────────────────────────────
 
-    /// The `///` lines right above a 1-based line, past any annotation lines (`#track_caller`), without their markers;
+    /// The `///` lines right above a 1-based line, past any annotation lines (`@track_caller`), without their markers;
     /// null when there are none.
     private static string? DocAbove(Page page, int line)
     {

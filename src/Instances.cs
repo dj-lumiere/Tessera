@@ -11,12 +11,12 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
 
     public bool IsExternalC => Decl.AnnotationNamed("external") is { First: "c" };
     public bool IsTemplate => Decl.AnnotationNamed("template") is not null;
-    /// An `#external("asm")` routine: its body is put in place at each call as inline assembly.
+    /// An `@external("asm")` routine: its body is put in place at each call as inline assembly.
     public bool IsAsm => Compiler.IsAsm(Decl);
-    /// A `#naked` assembly routine: emitted as a function of its own, called like any routine.
+    /// A `@naked` assembly routine: emitted as a function of its own, called like any routine.
     public bool IsNaked => Compiler.IsNaked(Decl);
 
-    /// `#track_caller`: its last parameter is the place it was called from, which the routine doesn't declare.
+    /// `@track_caller`: its last parameter is the place it was called from, which the routine doesn't declare.
     public bool IsTrackCaller => Compiler.IsTrackCaller(Decl);
     public bool NoReturn => Decl.AnnotationNamed("noreturn") is not null;
     public bool Variadic => Decl.AnnotationNamed("variadic") is not null;
@@ -99,11 +99,11 @@ public sealed partial class Compiler
         bool asm = IsAsm(r);
         foreach (var a in r.Annotations)
             if (!asm && AsmAnnotations.Contains(a.Name))
-                throw new CompileError(a.Pos, $"#{a.Name} describes an assembly routine, and '{r.DisplayName}' is not #external(\"asm\")");
+                throw new CompileError(a.Pos, $"@{a.Name} describes an assembly routine, and '{r.DisplayName}' is not @external(\"asm\")");
         foreach (var p in r.Params)
             if (p.Register is { } placed && !asm)
                 throw new CompileError(placed.Pos,
-                    $"'= {placed.Text}' places a parameter of an assembly routine in a register, and '{r.DisplayName}' is not #external(\"asm\")");
+                    $"'= {placed.Text}' places a parameter of an assembly routine in a register, and '{r.DisplayName}' is not @external(\"asm\")");
         BlockRule.Check(r);
         CheckInlining(r);
         CheckUntraced(r);
@@ -123,11 +123,11 @@ public sealed partial class Compiler
             ps.Add(t);
         }
         CheckReceiver(r, env, ps);
-        // `#track_caller`: the place of each call comes in as a last, hidden parameter (see caller_location()).
+        // `@track_caller`: the place of each call comes in as a last, hidden parameter (see caller_location()).
         if (IsTrackCaller(r))
         {
             if (r.Blocks is null || r.AnnotationNamed("external") is not null)
-                throw new CompileError(r.AnnotationNamed("track_caller")!.Pos, $"#track_caller needs a routine with a body, and '{r.DisplayName}' has none");
+                throw new CompileError(r.AnnotationNamed("track_caller")!.Pos, $"@track_caller needs a routine with a body, and '{r.DisplayName}' has none");
             ps.Add(new PtrType(null));
         }
         var ret = ResolveType(r.ReturnType, env, allowVoid: true);
@@ -141,11 +141,11 @@ public sealed partial class Compiler
         string symbol;
         if (asm && r.AnnotationNamed("export") is null) symbol = MangleRoutine(r, env, ps, ret);
         else if (r.AnnotationNamed("external") is { } external && !asm) symbol = r.AnnotationNamed("symbol")?.First ?? r.Name;
-        // `#export("name")` defines the routine under that plain C name: Tessera's own calls use it too, so a caller in
+        // `@export("name")` defines the routine under that plain C name: Tessera's own calls use it too, so a caller in
         // another module and one here reach the same definition, which LLVM can inline (an alias it can't see through).
         else if (r.AnnotationNamed("export") is { } export)
         {
-            symbol = export.First ?? throw new CompileError(export.Pos, "#export needs a symbol name");
+            symbol = export.First ?? throw new CompileError(export.Pos, "@export needs a symbol name");
             if (r.TypeParams.Count != 0 || OwnerTypeParams(r).Count != 0)
                 throw new CompileError(export.Pos, $"'{r.DisplayName}' is generic, and one C name can't name every instance");
         }
@@ -160,11 +160,11 @@ public sealed partial class Compiler
     {
         var external = r.AnnotationNamed("external");
         if (external is not null && external.First is not ("c" or "llvm" or "asm"))
-            throw new CompileError(external.Pos, "only #external(\"c\"), #external(\"llvm\") and #external(\"asm\") are supported");
+            throw new CompileError(external.Pos, "only @external(\"c\"), @external(\"llvm\") and @external(\"asm\") are supported");
         if (asm && r.Blocks is null)
             throw new CompileError(r.Pos, $"assembly routine '{r.DisplayName}' needs its instructions: a 'block entry()'");
         if (external is { First: "llvm" } && r.AnnotationNamed("template") is null)
-            throw new CompileError(r.Pos, $"#external(\"llvm\") routine '{r.DisplayName}' needs a #template");
+            throw new CompileError(r.Pos, $"@external(\"llvm\") routine '{r.DisplayName}' needs a @template");
         if (external is not null && !asm && r.Blocks is not null)
             throw new CompileError(r.Pos, $"external routine '{r.DisplayName}' cannot have a body");
         if (external is null && r.Blocks is null)
@@ -200,7 +200,7 @@ public sealed partial class Compiler
         var sig = Signature(r, env);
         // A generic body being checked calls routines without making instances of them: each is checked on its own.
         if (Prechecking) return sig;
-        // An #external declaration and an #export definition of one C name are one routine; the definition is the
+        // An @external declaration and an @export definition of one C name are one routine; the definition is the
         // instance, whichever was reached first, and the declaration is never emitted (see _exported).
         if (_instances.TryGetValue(sig.Symbol, out var existing) && !(existing.IsExternalC && r.AnnotationNamed("export") is not null))
         {

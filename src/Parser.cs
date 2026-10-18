@@ -590,7 +590,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (inConcept)
             return new RoutineDecl(file, annotations, owner, name, typeParams, parameters, ret, clauses, null, pos) { Fixed = fixedArgs };
 
-        // Only an #external routine is declared without a body. Every other one has its head (the routine's local
+        // Only an @external routine is declared without a body. Every other one has its head (the routine's local
         // lines, if it has any), then its entry block: written `block entry()`, or the lines before the first block.
         string display = owner is null ? name : $"{owner}.{name}";
         _routineDisplay = display;

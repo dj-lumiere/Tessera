@@ -25,14 +25,14 @@ static class Cli
           tessera help                  print this text
           tessera version               print the builder's version
 
-        --no-stdlib-exports: leave out the standard library's #export routines (the default crash handler, the B16 and
+        --no-stdlib-exports: leave out the standard library's @export routines (the default crash handler, the B16 and
                 BF16 conversion helpers), for a library that is linked into a program which has them already.
         <mode>: debug (-O0, the default), release (-O2), release-time (-O3), or release-space (-Os), as a
                 manifest's mode. Every mode has debug information: DWARF, or CodeView and a .pdb on Windows, so a
                 debugger shows Tessera lines, routine parameters, bindings and block parameters.
         <trace>: --no-trace leaves out the crash trace (the program's routines on the crash report), --trace keeps it.
                  Without either, debug and release builds keep it and release-time and release-space leave it out;
-                 check keeps it. A routine marked #untraced is left out of it in any build.
+                 check keeps it. A routine marked @untraced is left out of it in any build.
         race check: --race-check (or [debug] race-check = true in config.toml) builds a program that stops with a
                  report of both places when two threads touch the same memory, one of them writing, with neither an
                  atomic access nor a lock between them. It is slow, so it is for runs that look for such races, on
@@ -44,7 +44,7 @@ static class Cli
                  DoubleFreeError at the line that frees a block a second time, in every mode. It is off otherwise
                  (a build without a manifest too), except that test always turns it on. check checks both sides.
         <target>: --target <arch-os-abi> (default: this machine), --cpu <name> (default: the triple's baseline, such
-                  as x86-64 v1), --feature <name>[,<name>...] (a leading - removes one). #feature reads the result.
+                  as x86-64 v1), --feature <name>[,<name>...] (a leading - removes one). @feature reads the result.
 
         All input files form one compilation unit. Without files, build and run read config.toml, which sets
         everything the flags would; its output goes to build/ next to it.
@@ -58,7 +58,7 @@ static class Cli
               C ABI signatures and generated code exempt) that should take a record instead, and in a library or example file (one not under a
               tests, playground, scratch, or generated directory) on a routine without a /// doc comment, or whose doc lacks
               a :param line for a parameter (me aside), has one for a name that isn't a parameter, or lacks
-              :returns: when it returns a value. It also warns on a call to an #expensive routine from a block on a
+              :returns: when it returns a value. It also warns on a call to an @expensive routine from a block on a
               loop (it builds the files to know which routine each call is). check, build, and run print the same
               warnings for the program's own files. Exits 1 when there is one, the expensive calls aside: there is
               no way yet to accept one that is meant, so they don't fail it.
@@ -432,7 +432,7 @@ static class Cli
             files.Add(args[i]);
         }
         var target = targetArgs.Build();
-        // Both sides of the heap-check selection: the #heap_check("on") declarations and the #heap_check("off") ones.
+        // Both sides of the heap-check selection: the @heap_check("on") declarations and the @heap_check("off") ones.
         // An error both sides share is reported once.
         var errors = new List<CompileError>();
         var reported = new HashSet<string>();
@@ -794,7 +794,12 @@ static class Cli
             string linkerOutput = outTask.Result;
             p.WaitForExit();
             if (p.ExitCode != 0)
-                throw new ToolError($"clang failed (this is a builder bug if the IR is invalid):\n{linkerOutput}{err}");
+                // An instruction of an assembly routine the assembler doesn't know (a misspelt mnemonic, an operand it
+                // can't take) is the program's mistake, reported by the assembler, not a fault of the builder.
+                throw new ToolError(err.Contains("<inline asm>", StringComparison.Ordinal)
+                    ? $"the assembler doesn't accept an instruction of an assembly routine. Check its mnemonic and " +
+                      $"operands:\n{err}"
+                    : $"clang failed (this is a builder bug if the IR is invalid):\n{linkerOutput}{err}");
         }
         finally
         {

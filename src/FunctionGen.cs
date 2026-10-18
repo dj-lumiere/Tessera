@@ -111,10 +111,10 @@ public sealed class FunctionGen
     // location the next operation gets, and each block's records for its parameters, written after its phis.
     private bool Debug => _c.DebugInfo && !_c.Prechecking;
 
-    /// A `#track_caller` routine's hidden parameter: the place it was called from.
+    /// A `@track_caller` routine's hidden parameter: the place it was called from.
     private const string CallerParam = "%a.caller";
 
-    /// The `#source` of the statement or terminator being emitted, the place a call there reports.
+    /// The `@source` of the statement or terminator being emitted, the place a call there reports.
     private Pos? _lineSource;
     private int _sp;
     private int _spFile;
@@ -129,7 +129,7 @@ public sealed class FunctionGen
     private readonly List<ExpensiveCallLint.Call> _expensiveCalls = [];
 
     /// While an arm's arguments are evaluated, the block it goes to (ExpensiveCallLint.LeavesRoutine for a return or a
-    /// `#noreturn` call). Null on a block's own lines and conditions.
+    /// `@noreturn` call). Null on a block's own lines and conditions.
     private string? _arm;
 
     // ── The memory model's group check (MemoryRules.cs) ─────────────────────
@@ -764,7 +764,7 @@ public sealed class FunctionGen
         catch (CompileError e) when (_decl.Source is { } source && !e.FromSource) { throw FromSource(e, source); }
     }
 
-    /// A build error inside something a `#source` names is reported at that place, with the generated line after it:
+    /// A build error inside something a `@source` names is reported at that place, with the generated line after it:
     /// the generator's input is what its author reads.
     private static CompileError FromSource(CompileError e, Pos source) =>
         new(source, $"{e.Text} (in the generated Tessera at {e.Pos})") { Final = e.Final, FromSource = true };
@@ -964,7 +964,7 @@ public sealed class FunctionGen
         (_scope, _spFile, _scopeFile) = (_sp, file, file);
     }
 
-    /// A DILocation in the current scope. A place in another file (a `#source`) is in that file's view of the scope.
+    /// A DILocation in the current scope. A place in another file (a `@source`) is in that file's view of the scope.
     private int Location(Pos pos)
     {
         int file = _c.DiFile(pos.File);
@@ -1038,7 +1038,7 @@ public sealed class FunctionGen
     /// no second update.
     private (LBlock Block, Pos Pos)? _tracedAt;
 
-    /// The routine's place, its `#source` if it has one: the frame names its file.
+    /// The routine's place, its `@source` if it has one: the frame names its file.
     private Pos FramePlace => _decl.Source ?? _decl.Pos;
 
     /// The entry's trace_push: the routine's name and its file, with the declaration's debug location (a call LLVM
@@ -1050,7 +1050,7 @@ public sealed class FunctionGen
         return Debug ? $"{call}, !dbg !{Location(at)}" : call;
     }
 
-    /// Before a call: the frame's line and column become the call's, its statement's `#source` one if it has one. A
+    /// Before a call: the frame's line and column become the call's, its statement's `@source` one if it has one. A
     /// frame is only read while its routine is in a call, so this is the only place it gets them: a call placed in
     /// another file than the frame's names the routine's own declaration instead.
     private void TraceAt(Pos callPos)
@@ -3128,10 +3128,10 @@ public sealed class FunctionGen
         if (r.TypeArgs.Count > 0) return GenericRoutineValue(r, set, expected);
         var routine = set.Count == 1 ? set[0] : OverloadForValue(r, set, expected);
         if (Recorded) _c.CallUses.TryAdd((r.Pos, r.Name), new Compiler.CallUse(routine, []));
-        // An #inline routine is inlined at every call, so there's no call of its own for a pointer to name.
+        // An @inline routine is inlined at every call, so there's no call of its own for a pointer to name.
         if (routine.AnnotationNamed("inline") is not null)
-            throw Err(r.Pos, $"'{r.Name}' is #inline, so it can't be a Callable value: it's inlined at every call, "
-                             + "and a call through a pointer can't be; wrap it in a routine without #inline");
+            throw Err(r.Pos, $"'{r.Name}' is @inline, so it can't be a Callable value: it's inlined at every call, "
+                             + "and a call through a pointer can't be; wrap it in a routine without @inline");
         if (routine.TypeParams.Count != 0)
             throw Err(r.Pos, $"'{r.Name}' is generic, so it has no one address to take; wrap an instance in a routine");
         var inst = _c.RequireInstance(routine, new Compiler.TypeEnv(routine.File));
@@ -3171,7 +3171,7 @@ public sealed class FunctionGen
         if (chosen is not { } c) throw Err(r.Pos, $"no overload of '{r.Name}' is {want}");
         if (Recorded) _c.CallUses.TryAdd((r.Pos, r.Name), new Compiler.CallUse(c.Decl, []));
         if (c.Decl.AnnotationNamed("inline") is not null)
-            throw Err(r.Pos, $"'{r.Name}' is #inline, so it can't be a Callable value: it's inlined at every call");
+            throw Err(r.Pos, $"'{r.Name}' is @inline, so it can't be a Callable value: it's inlined at every call");
         var own = new CallableType(c.Inst.CallConv, c.Inst.Params, c.Inst.Ret);
         if (r.Callable is { } shown && Resolve(shown) is var ct && !ct.Equals(own))
             throw Err(r.Pos, $"routine '{r.Name}' is {own}, not {ct}");
@@ -3212,11 +3212,11 @@ public sealed class FunctionGen
 
     /// The code address of a Callable: `fn.addr()`, or `routine_name.addr()` (typed by the routine's own
     /// signature). An `Addr` for C code that takes a function as `void*`; calling it again needs a `Callable`.
-    /// A call through an address passes no place, so a `#track_caller` routine has none.
+    /// A call through an address passes no place, so a `@track_caller` routine has none.
     private void NotThroughAddress(RoutineDecl r, Pos pos)
     {
         if (Compiler.IsTrackCaller(r))
-            throw Err(pos, $"'{r.DisplayName}' is #track_caller: each call passes the place it's made from, so it has no address to call through");
+            throw Err(pos, $"'{r.DisplayName}' is @track_caller: each call passes the place it's made from, so it has no address to call through");
     }
 
     private (Expr Callee, CallableType Callable)? AddrOfCallable(Expr e)
@@ -4162,9 +4162,9 @@ public sealed class FunctionGen
             args, inst.Params, inst.Ret, inst.PassesBf16AsBits, i => inst.ParamExt(_c.Target, i));
     }
 
-    /// The place a call to a `#track_caller` routine passes: a `#track_caller` routine passes on the place it was
+    /// The place a call to a `@track_caller` routine passes: a `@track_caller` routine passes on the place it was
     /// called from, so a crash deep in the stdlib reports the line that called into it; any other passes its own
-    /// line, the `#source` one if it has one.
+    /// line, the `@source` one if it has one.
     private Val CallerPlace(Pos callPos) =>
         _inst.IsTrackCaller
             ? new Val(CallerParam, new PtrType(null))
@@ -4194,14 +4194,14 @@ public sealed class FunctionGen
     private static bool IsByteSpan(DType t) =>
         t is RecordType { Decl.Name: "Span", Args: [IntType { Kind: IntKind.Byte }] } span && span.Decl.Module == Compiler.CoreModule;
 
-    /// `caller_location()`: inside a `#track_caller` routine, where it was called from.
+    /// `caller_location()`: inside a `@track_caller` routine, where it was called from.
     private DType SourceLocationPtr(Pos pos) =>
         new PtrType(_c.ResolveType(TypeRef.Simple("SourceLocation", pos), _env));
 
     private Val CallerLocation(Pos pos)
     {
         if (!_inst.IsTrackCaller)
-            throw Err(pos, $"caller_location() is the place a #track_caller routine was called from, and '{_decl.DisplayName}' isn't one");
+            throw Err(pos, $"caller_location() is the place a @track_caller routine was called from, and '{_decl.DisplayName}' isn't one");
         return new Val(CallerParam, SourceLocationPtr(pos));
     }
 
@@ -4321,9 +4321,9 @@ public sealed class FunctionGen
     /// A routine every solution may emit from the same source (a generic routine's instance, or a stdlib routine
     /// compiled into each solution until the stdlib is prebuilt) is linkonce_odr: the linker keeps one copy. COFF and
     /// ELF deduplicate through a comdat. Mach-O has none and relies on the weak definition. A stdlib routine with an
-    /// #export is weak instead, so the program's own export of that name wins at link time too.
+    /// @export is weak instead, so the program's own export of that name wins at link time too.
     /// The base of a split program (Compiler.ExposeDefinitions) defines each routine once for the delta to link to: a
-    /// plain external definition, an export still weak. An `#inline` routine stays in its own module (the delta
+    /// plain external definition, an export still weak. An `@inline` routine stays in its own module (the delta
     /// defines its own copy), so one that would be external is internal there.
     private (string Linkage, string Comdat) Linkage()
     {
@@ -4348,7 +4348,7 @@ public sealed class FunctionGen
         return (exported ? "weak " : "linkonce_odr ", " comdat");
     }
 
-    /// A #naked assembly routine: a function whose whole body is the assembly. Its parameters stay where the call put
+    /// A @naked assembly routine: a function whose whole body is the assembly. Its parameters stay where the call put
     /// them (the assembly names their registers), and the assembly returns by itself, so `unreachable` follows it.
     private void EmitNaked()
     {
@@ -4412,7 +4412,7 @@ public sealed class FunctionGen
         return sb.ToString();
     }
 
-    /// Expands an `#external("llvm")` routine's `#template` in place.
+    /// Expands an `@external("llvm")` routine's `@template` in place.
     private Val ExpandTemplate(Instance sig, List<Val> args, Pos pos, string suffix = "")
     {
         string text = sig.Decl.AnnotationNamed("template")!.First! + suffix;

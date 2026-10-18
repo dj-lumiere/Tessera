@@ -2,13 +2,13 @@ using System.Text;
 
 namespace Tessera;
 
-/// `#derive(Representable, Diagnosable, Equatable, Hashable, Comparable)` on a record, choice, or variant: the builder declares the
+/// `@derive(Representable, Diagnosable, Equatable, Hashable, Comparable)` on a record, choice, or variant: the builder declares the
 /// conformance and writes the routine. Each routine is generated as Tessera source, parsed in the type's file (so it sees private
 /// fields), and checked like any other routine.
 ///
-/// A choice or variant without `#derive` derives all five, except what it declares itself (a routine of the name, or a
+/// A choice or variant without `@derive` derives all five, except what it declares itself (a routine of the name, or a
 /// `conform`). Those conformances hold only when the payloads have them (`Comparable[Shape] when Comparable[Circle]`), and
-/// their routines are checked only when something uses them, as library routines are. `#derive()` derives nothing.
+/// their routines are checked only when something uses them, as library routines are. `@derive()` derives nothing.
 /// Generated code names Standard/Format by its path, and finds its fields' and payloads' methods whatever module
 /// declares them, so it needs no import.
 public static class Derive
@@ -49,7 +49,7 @@ public static class Derive
                     string concept = arg.Value;
                     if (!Methods.TryGetValue(concept, out var method))
                         throw new CompileError(annotation.Pos,
-                            $"#derive can't derive '{concept}'; it derives {string.Join(", ", Methods.Keys)}");
+                            $"@derive can't derive '{concept}'; it derives {string.Join(", ", Methods.Keys)}");
                     Check(type, concept, method, declared, annotation.Pos);
                     derived.AddRange(Parse(type, Source(type, concept, method, implicitly: false), implicitly: false));
                 }
@@ -66,7 +66,7 @@ public static class Derive
         _ => "",
     };
 
-    /// Whether a choice or variant without `#derive` gets this concept: not when it declares the routine or the
+    /// Whether a choice or variant without `@derive` gets this concept: not when it declares the routine or the
     /// conformance itself, nor what can't hold (a pointer payload compares only by address, through ptr_eq; a choice
     /// with no members has nothing to write).
     private static bool Implicit(Decl type, string concept, string method, HashSet<(string, string)> declared,
@@ -113,7 +113,7 @@ public static class Derive
         }
         if (type is not RecordDecl r) return;
         if (r.AnnotationNamed("llvm") is not null)
-            throw new CompileError(at, $"{name} is an #llvm record, so it has no fields to derive {concept} from");
+            throw new CompileError(at, $"{name} is an @llvm record, so it has no fields to derive {concept} from");
         if (r.Clauses.Any(c => c.Kind == "conform" && c.Concepts.Any(x => x.Name == concept)))
             throw new CompileError(at, $"{name} derives {concept}, which declares the conformance; drop 'conform {concept}[...]'");
         // A pointer compares by address only through ptr_eq, on purpose (see Type-System, Ptr<T> and T's API),
@@ -129,7 +129,7 @@ public static class Derive
     private static IEnumerable<Decl> Parse(Decl type, string source, bool implicitly)
     {
         var tokens = new Lexer(type.File, source, type.Pos.Line, type.Pos.Col).Lex();
-        // The type's #target / #feature carry over, so the derived code exists exactly where the type does.
+        // The type's @target / @feature carry over, so the derived code exists exactly where the type does.
         var selection = type.Annotations.Where(a => a.Name is "target" or "feature").ToList();
         var mark = new Annotation("derived", implicitly ? [new AnnotationArg(null, "implicit", false)] : [], type.Pos);
         foreach (var g in new Parser(tokens, type.File, type.IsLibrary, acceptLegacy: true).ParseModule().Decls)
@@ -140,7 +140,7 @@ public static class Derive
             };
     }
 
-    /// Whether a routine was derived without the type asking (a choice or variant with no `#derive`).
+    /// Whether a routine was derived without the type asking (a choice or variant with no `@derive`).
     public static bool IsImplicit(Decl d) => d.AnnotationNamed("derived") is { Args: [{ Value: "implicit" }] };
 
     // ── Records ─────────────────────────────────────────────────────────────

@@ -7,7 +7,7 @@ namespace Tessera;
 /// The CPU a build targets and its feature set, as clang resolves them for the triple, `--cpu`, and `--feature`.
 /// Without `--cpu` it's the triple's default: x86-64 (v1, SSE2) on x86_64, pentium4 on x86, generic on AArch64,
 /// arm1176jzf-s on 32-bit ARM, and so on. Every routine Tessera defines carries the result as its `target-cpu` and
-/// `target-features`, and `#feature` reads the same set, so the code a declaration selects is the code LLVM gets.
+/// `target-features`, and `@feature` reads the same set, so the code a declaration selects is the code LLVM gets.
 public sealed class CpuModel
 {
     /// The models by target, CPU, and features. Builds may run side by side in one process (the xUnit tests), so it
@@ -134,7 +134,7 @@ public sealed class CpuModel
     /// for the result as before (For), and gets it without waiting for clang when it's done by then.
     public static void Prefetch(BuildTarget target) => _ = Run(target, target.Features);
 
-    /// Starts the runs that `#feature` checks of these names would make (Has), for the names the target's CPU doesn't
+    /// Starts the runs that `@feature` checks of these names would make (Has), for the names the target's CPU doesn't
     /// list. Each starts once the CPU's own run is done, since that run says which names it lists.
     public static void PrefetchFeatures(BuildTarget target, IEnumerable<string> names)
     {
@@ -151,7 +151,7 @@ public sealed class CpuModel
         }, TaskScheduler.Default);
     }
 
-    /// The names `#feature` asks about in the declarations a build of the target can select: those whose `#target`
+    /// The names `@feature` asks about in the declarations a build of the target can select: those whose `@target`
     /// annotations before it match. Only a guess at what the build will ask (PrefetchFeatures), so an annotation it
     /// can't read is passed over.
     public static IEnumerable<string> FeaturesNamed(IEnumerable<Decl> decls, BuildTarget target)

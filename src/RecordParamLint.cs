@@ -5,9 +5,9 @@ namespace Tessera;
 /// the few parameters that don't belong to the group, so the count drops below MaxParameters. The allocator counts
 /// like any other parameter (it may stay a separate last parameter beside the record).
 ///
-/// Exempt: an `#external` declaration, an `#export` routine, and a C callback with a `#callconv` (their signature is
+/// Exempt: an `@external` declaration, an `@export` routine, and a C callback with a `@callconv` (their signature is
 /// a C ABI), a type's `construct` (its parameters are the type's own parts, the record already), a routine a generator
-/// wrote (`#source(...)`), and any file under a directory named `generated`. A concept's required routines are
+/// wrote (`@source(...)`), and any file under a directory named `generated`. A concept's required routines are
 /// checked like any other, since every type that meets the concept repeats the signature.
 ///
 /// A warning, like ChainLint's: `tessera check`, `build`, and `run` print it for the program's own files, and
@@ -45,8 +45,8 @@ public static class RecordParamLint
     /// The parameters that count: all of them but a `me` receiver.
     public static int Count(RoutineDecl r) => r.Params.Count(p => p.Name != "me");
 
-    /// Whether a routine's signature is set by a C ABI rather than by its author: an `#external` declaration, an
-    /// `#export`, or a callback another convention calls (`#callconv("stdcall")`, as a C API's progress routine).
+    /// Whether a routine's signature is set by a C ABI rather than by its author: an `@external` declaration, an
+    /// `@export`, or a callback another convention calls (`@callconv("stdcall")`, as a C API's progress routine).
     private static bool IsCAbi(RoutineDecl r) =>
         r.AnnotationNamed("external") is not null || r.AnnotationNamed("export") is not null || r.AnnotationNamed("callconv") is { First: not "fast" };
 

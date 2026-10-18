@@ -8,7 +8,7 @@ namespace Tessera;
 ///
 /// A library or example file is any file not under a directory named `tests`, `playground`, `scratch`, or
 /// `generated`: golden tests, throwaway programs, and a generator's output (whose documentation is its source) aren't
-/// held to it. A routine with `#source(...)` (written by a generator, such as Mini's
+/// held to it. A routine with `@source(...)` (written by a generator, such as Mini's
 /// output) isn't either: its documentation is the source it came from.
 ///
 /// The doc comment is read from the source lines, which the caller gives by the file's name as its declarations carry
@@ -72,7 +72,7 @@ public static class DocLint
                 + $"{r.ReturnType}");
     }
 
-    /// The `///` lines right above a 1-based line, past any annotation lines (`#track_caller`), without their markers;
+    /// The `///` lines right above a 1-based line, past any annotation lines (`@track_caller`), without their markers;
     /// null when there are none.
     public static List<string>? DocAbove(IReadOnlyList<string> lines, int line)
     {

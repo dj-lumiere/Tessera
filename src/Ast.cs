@@ -45,7 +45,7 @@ public sealed record TypeArgExpr(Expr Expr) : TypeArg { public override string T
 
 /// An annotation argument: `"c"`, `64`, `size: 64`, `os: !"windows"`, or a buildtime expression such as
 /// `max(alignof[A](), alignof[B]())` (then Expr is set and Value is empty), or a key's list of values, `os: ("linux",
-/// "macos")` (then Values holds them and Value is the first), which #target matches when the target's value is any of
+/// "macos")` (then Values holds them and Value is the first), which @target matches when the target's value is any of
 /// them (with `not`, none of them).
 public sealed record AnnotationArg(string? Key, string Value, bool Negated, Expr? Expr = null, List<string>? Values = null);
 
@@ -139,7 +139,7 @@ public sealed record ChoiceDecl(
     Pos Pos) : Decl(File, Annotations, Pos);
 
 /// `variant Cell` and its branches, one type per line: a value of the variant is a value of one of them, which `when`
-/// observes with `is T as t`. A variant written inline, `A | B`, is one of the stdlib's `#union` variants
+/// observes with `is T as t`. A variant written inline, `A | B`, is one of the stdlib's `@union` variants
 /// (`Union2[A, B]`, its branches in the order of their types' names), and is shown as written.
 public sealed record VariantDecl(
     string File, List<Annotation> Annotations, string Name, List<string> TypeParams, List<Clause> Clauses,

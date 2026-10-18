@@ -165,7 +165,7 @@ public static partial class LanguageServer
         }
     }
 
-    /// The `///` lines right above a line, past any annotation lines (`#track_caller`), without their markers.
+    /// The `///` lines right above a line, past any annotation lines (`@track_caller`), without their markers.
     private static string? DocAbove(Analysis analysis, Pos pos)
     {
         var lines = LinesOf(analysis, pos.File);

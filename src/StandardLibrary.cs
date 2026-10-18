@@ -4,7 +4,7 @@ using System.Runtime.ExceptionServices;
 namespace Tessera;
 
 /// The standard library's declarations, each file parsed once per process. Parsing doesn't depend on the target (a
-/// `#target` annotation is read when the Compiler selects declarations), so every build of a process shares them: the
+/// `@target` annotation is read when the Compiler selects declarations), so every build of a process shares them: the
 /// test runner parses the stdlib once for the whole suite, the xUnit tests share it across their parallel cases, and a
 /// builder that keeps running (RazorForge's compile daemon) parses it once for all its builds. A build only reads
 /// declarations, so sharing them is safe. A file changed on disk since it was parsed is parsed again.

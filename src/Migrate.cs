@@ -192,7 +192,7 @@ public static class Migrate
             }
         }
 
-        // `#aggregate` is gone (every record is a struct): its lines and list entries are taken out of every file.
+        // `@aggregate` is gone (every record is a struct): its lines and list entries are taken out of every file.
         if (!namedArgsOnly)
             foreach (string file in files)
             {
@@ -249,7 +249,7 @@ public static class Migrate
         return check && changedFiles.Count > 0 ? 1 : 0;
     }
 
-    /// The source without `#aggregate`: a line of its own goes, and in a list (`#[aggregate, layout(...)]`) the entry.
+    /// The source without `@aggregate`: a line of its own goes, and in a list (`#[aggregate, layout(...)]`) the entry.
     public static string WithoutAggregate(string text)
     {
         text = Regex.Replace(text, @"(?m)^[ \t]*#(\[aggregate\]|aggregate)[ \t]*\r?\n", "");
@@ -1530,7 +1530,7 @@ public static class Migrate
             }
             else if (c == '"')
             {
-                // A string inside the list (`Callable<#callconv("stdcall"), ...>`) holds no bracket of it.
+                // A string inside the list (`Callable<@callconv("stdcall"), ...>`) holds no bracket of it.
                 int after = SkipLiteral(sb, k, end);
                 if (after == k) return -1;
                 k = after - 1;

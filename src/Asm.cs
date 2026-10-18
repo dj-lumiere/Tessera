@@ -3,7 +3,7 @@ using System.Text;
 
 namespace Tessera;
 
-/// An `#external("asm")` routine lowered to one LLVM inline-assembly call: its text, the operands the builder places,
+/// An `@external("asm")` routine lowered to one LLVM inline-assembly call: its text, the operands the builder places,
 /// and what it changes. Outputs come first in LLVM's operand numbering, then the inputs, each tied to its parameter's
 /// output (the builder never assumes an input register keeps its value).
 public sealed record AsmPlan(
@@ -23,7 +23,7 @@ public sealed partial class Compiler
 
     public static bool IsAsm(RoutineDecl r) => r.AnnotationNamed("external") is { First: "asm" };
 
-    /// A `#naked` assembly routine: a function of its own whose whole body is the assembly, not put in place.
+    /// A `@naked` assembly routine: a function of its own whose whole body is the assembly, not put in place.
     public static bool IsNaked(RoutineDecl r) => IsAsm(r) && r.AnnotationNamed("naked") is not null;
 
     /// The plan of an assembly routine's instance, built once and checked even if the routine is never called.
@@ -72,9 +72,9 @@ internal sealed class AsmLowering
     /// Every fixed register the body names, by LLVM register name: each counts as changed.
     private readonly Dictionary<string, Pos> _named = [];
     private bool _flagsTested;
-    /// The first system register the body names (RNDR, mstatus, CR3), which rules out #pure and #readonly.
+    /// The first system register the body names (RNDR, mstatus, CR3), which rules out @pure and @readonly.
     private PresetRef? _systemRegister;
-    /// `#naked`: the body is a whole function, entered by a call under the C convention and left by `ret`.
+    /// `@naked`: the body is a whole function, entered by a call under the C convention and left by `ret`.
     private readonly bool _naked;
     /// 32-bit ARM built as Thumb code (every Cortex-M, or a `thumb-mode` build): a conditional instruction needs an
     /// `it` block before it, which the builder writes.
@@ -87,7 +87,7 @@ internal sealed class AsmLowering
         _r = sig.Decl;
         if (_r.AnnotationNamed("target") is not { } target || !target.Args.Any(a => a is { Key: "arch", Negated: false, Values: null or { Count: 1 } }))
             throw new CompileError(_r.Pos,
-                $"assembly belongs to one architecture: give '{_r.DisplayName}' #target(arch: \"{c.Target.Arch}\")");
+                $"assembly belongs to one architecture: give '{_r.DisplayName}' @target(arch: \"{c.Target.Arch}\")");
         _arch = c.Target.Arch switch
         {
             "x86_64" => Arch.X86,
@@ -148,19 +148,19 @@ internal sealed class AsmLowering
 
         string text = Body();
         // A system register changes on its own (a counter, a random number) or writing it changes the machine, so the
-        // optimizer may never merge, drop or move the routine as #pure or #readonly would let it.
+        // optimizer may never merge, drop or move the routine as @pure or @readonly would let it.
         if (_systemRegister is { } sys && (_r.AnnotationNamed("pure") ?? _r.AnnotationNamed("readonly")) is { } weaker)
             throw new CompileError(weaker.Pos,
                 $"'{_r.DisplayName}' names the system register {sys.Name} (line {sys.Pos.Line}), whose value changes on its "
-                + $"own or whose writing changes the machine, so it keeps its side effects: drop #{weaker.Name}");
+                + $"own or whose writing changes the machine, so it keeps its side effects: drop @{weaker.Name}");
         return new AsmPlan(text, _arch == Arch.X86, _outputs, inputs, Clobbers(), resultOutputs,
             SideEffect: _r.AnnotationNamed("pure") is null && _r.AnnotationNamed("readonly") is null,
             Memory: _r.AnnotationNamed("pure") is not null ? "none" : _r.AnnotationNamed("readonly") is not null ? "read" : null);
     }
 
-    // ── #naked ──────────────────────────────────────────────────────────────
+    // ── @naked ──────────────────────────────────────────────────────────────
 
-    /// A #naked routine is entered by a call, so each parameter is where the C calling convention puts it, and the
+    /// A @naked routine is entered by a call, so each parameter is where the C calling convention puts it, and the
     /// result goes where it expects one. Each parameter names that register (`from: @Addr = R7`), and the builder
     /// checks it against the convention, since the routine itself can't move anything.
     private void CheckNakedRegisters(List<Result> results)
@@ -171,12 +171,12 @@ internal sealed class AsmLowering
             var p = _r.Params[i];
             var cls = ClassOf(_sig.Params[i], p.Pos);
             if (_sig.Params[i].Repr is VectorType)
-                throw new CompileError(p.Pos, "a #naked routine takes integers, pointers and floats, which arrive in registers");
+                throw new CompileError(p.Pos, "a @naked routine takes integers, pointers and floats, which arrive in registers");
             if (_arch == Arch.Arm && cls != RegClass.Gpr) throw new CompileError(p.Pos, ArmNakedFloats);
             var abi = cls == RegClass.Gpr ? ArgRegister(true, ints++, i, p.Pos) : ArgRegister(false, floats++, i, p.Pos);
             if (p.Register is not { } placed)
                 throw new CompileError(p.Pos,
-                    $"a #naked routine names where each parameter arrives: {p.Name}: {_sig.Params[i]} = {abi.Written}");
+                    $"a @naked routine names where each parameter arrives: {p.Name}: {_sig.Params[i]} = {abi.Written}");
             var reg = ParamRegister(i);
             if (reg.Class != abi.Class || reg.Index != abi.Index)
                 throw new CompileError(placed.Pos,
@@ -186,21 +186,21 @@ internal sealed class AsmLowering
         foreach (var item in results)
         {
             if (item.Reg is null)
-                throw new CompileError(_r.Pos, "a #naked routine returns in the convention's result register, not a parameter's");
+                throw new CompileError(_r.Pos, "a @naked routine returns in the convention's result register, not a parameter's");
             bool isInt = ClassOf(item.Type, _r.Pos) == RegClass.Gpr;
             if (!isInt && _arch == Arch.Arm) throw new CompileError(_r.Pos, ArmNakedFloats);
             var abi = new Reg(isInt ? RegClass.Gpr : _arch == Arch.Rv ? RegClass.Fpr : RegClass.Vec,
                 _arch == Arch.Rv ? 10 : 0, "");
             abi = abi with { Written = WrittenName(abi) };
             if (results.Count > 1 || item.Reg.Class != abi.Class || item.Reg.Index != abi.Index)
-                throw new CompileError(_r.Pos, $"a #naked routine returns its {item.Type} in {Shown(abi)}: return({abi.Written})");
+                throw new CompileError(_r.Pos, $"a @naked routine returns its {item.Type} in {Shown(abi)}: return({abi.Written})");
         }
     }
 
     /// Where 32-bit ARM's C convention passes a float depends on the float ABI (core registers, or VFP ones), so a
-    /// #naked routine there takes and returns only what goes in core registers.
+    /// @naked routine there takes and returns only what goes in core registers.
     private const string ArmNakedFloats =
-        "a #naked routine on 32-bit ARM takes and returns integers and pointers: where a float goes depends on the float ABI";
+        "a @naked routine on 32-bit ARM takes and returns integers and pointers: where a float goes depends on the float ABI";
 
     /// The register the C calling convention passes the n-th integer (or float) argument in. `position` is the
     /// parameter's place among all of them, which Windows x64 counts instead.
@@ -217,7 +217,7 @@ internal sealed class AsmLowering
             _ => 8,
         };
         if (index >= count)
-            throw new CompileError(pos, "this parameter goes on the stack, and a #naked routine reads only parameters in registers");
+            throw new CompileError(pos, "this parameter goes on the stack, and a @naked routine reads only parameters in registers");
         var reg = (_arch, integer) switch
         {
             (Arch.X86, true) => new Reg(RegClass.Gpr, windows ? win64[index] : sysV[index], ""),
@@ -246,14 +246,14 @@ internal sealed class AsmLowering
         if (_r.TypeParams.Count != 0)
             throw new CompileError(_r.Pos, $"an assembly routine takes no type parameters, and '{_r.DisplayName}' has some");
         if (_r.AnnotationNamed("pure") is not null && _r.AnnotationNamed("readonly") is not null)
-            throw new CompileError(_r.Pos, "#pure already touches no memory; #readonly says less, so write one of them");
+            throw new CompileError(_r.Pos, "@pure already touches no memory; @readonly says less, so write one of them");
         if (_naked)
         {
             foreach (var name in new[] { "clobbers", "pure", "readonly", "inline", "callconv" })
                 if (_r.AnnotationNamed(name) is { } a)
                     throw new CompileError(a.Pos, name == "inline"
-                        ? "a #naked routine is called, never put in place"
-                        : $"a #naked routine keeps the C calling convention by itself, so it takes no #{name}");
+                        ? "a @naked routine is called, never put in place"
+                        : $"a @naked routine keeps the C calling convention by itself, so it takes no @{name}");
         }
         else if (_r.AnnotationNamed("inline") is not null || _r.AnnotationNamed("noinline") is not null || _r.AnnotationNamed("export") is not null)
             throw new CompileError(_r.Pos, "an assembly routine is put in place at each call; it has no function to inline, keep, or export");
@@ -768,7 +768,7 @@ internal sealed class AsmLowering
 
     private string Jump() => _arch switch { Arch.X86 => "jmp", Arch.A64 or Arch.Arm => "b", _ => "j" };
 
-    /// A #naked routine's return: 32-bit ARM's `bx lr`, every other architecture's `ret`.
+    /// A @naked routine's return: 32-bit ARM's `bx lr`, every other architecture's `ret`.
     private string Ret() => _arch == Arch.Arm ? "bx lr" : "ret";
 
     /// An instruction that must be the last of an `it` block: a branch, or one that writes the PC.
@@ -789,7 +789,7 @@ internal sealed class AsmLowering
         foreach (var a in es.Annotations)
         {
             if (a.Name != "asm_prefix" || a.Args is not [{ Key: null, Negated: false, Expr: null } p] || p.Value.Length == 0)
-                throw new CompileError(a.Pos, "an instruction takes #asm_prefix(\"lock\"), the prefix as the assembler spells it");
+                throw new CompileError(a.Pos, "an instruction takes @asm_prefix(\"lock\"), the prefix as the assembler spells it");
             prefix += Escape(p.Value) + " ";
         }
 
@@ -858,7 +858,7 @@ internal sealed class AsmLowering
             {
                 var reg = Register(p.Name, p.Pos);
                 if (reg.Class == RegClass.Flags)
-                    throw new CompileError(p.Pos, "FLAGS is read by a branch condition (FLAGS.Carry, lt[U64]), not as an operand");
+                    throw new CompileError(p.Pos, "FLAGS is read by the condition of an if (if FLAGS.Carry, if lt[U64]), not as an operand");
                 if (reg.Class == RegClass.Pc && _arch is not (Arch.A64 or Arch.Arm))
                     throw new CompileError(p.Pos, "PC is read through offset: PC.offset(8)");
                 Name(reg, t, p.Pos);
@@ -894,7 +894,7 @@ internal sealed class AsmLowering
                 {
                     var reg = Register(p.Name, p.Pos);
                     if (reg.Class == RegClass.Flags)
-                        throw new CompileError(p.Pos, "FLAGS is read by a branch condition (FLAGS.Carry, lt[U32]), not as an operand");
+                        throw new CompileError(p.Pos, "FLAGS is read by the condition of an if (if FLAGS.Carry, if lt[U32]), not as an operand");
                     Name(reg, t, p.Pos);
                     texts.Add(RegText(reg, t, p.Pos));
                     break;
@@ -1038,9 +1038,9 @@ internal sealed class AsmLowering
                 return jump + (negate ? Opposite(code) : code) + " " + label;
             }
             case AsmCondExpr or PresetRef { Owner.Name: "FLAGS" }:
-                throw new CompileError(cond.Pos, "RISC-V has no flags: compare two registers, branch lt[U64](R10, R11) ? … : …");
+                throw new CompileError(cond.Pos, "RISC-V has no flags: the if compares two registers, as in if lt[U64](R10, R11)");
             case NsCallExpr or MethodCallExpr when _arch == Arch.Rv:
-                throw new CompileError(cond.Pos, "a RISC-V branch compares two registers, written like a call: lt[U64](R10, R11)");
+                throw new CompileError(cond.Pos, "an if on RISC-V compares two registers, written like a call: if lt[U64](R10, R11)");
             case CallExpr { Path: null } c when _arch == Arch.Rv:
             {
                 var (name, types, pos) = (c.Name, c.TypeArgs, c.Pos);
@@ -1049,7 +1049,7 @@ internal sealed class AsmLowering
                 if (negate)
                     name = name switch { "eq" => "ne", "ne" => "eq", "lt" => "ge", "ge" => "lt", "gt" => "le", _ => "gt" };
                 if (c.Args.Count != 2 || types.Count > 1)
-                    throw new CompileError(pos, $"a RISC-V branch compares two registers: {name}[U64](R10, R11)");
+                    throw new CompileError(pos, $"an if on RISC-V compares two registers: if {name}[U64](R10, R11)");
                 var (left, right) = (c.Args[0], c.Args[1]);
                 bool? signed = Signedness(name, types.Count == 1 ? types[0] : null, pos);
                 var operandType = types.Count == 1 ? _c.ResolveType(types[0], _sig.Env) : _c.CSize;
@@ -1067,8 +1067,8 @@ internal sealed class AsmLowering
             }
             default:
                 throw new CompileError(cond.Pos, _arch == Arch.Rv
-                    ? "a RISC-V branch compares two registers: lt[U64](R10, R11)"
-                    : "an assembly branch tests the flags: eq, ne, lt[U64] … or a FLAGS field such as FLAGS.Carry");
+                    ? "an if on RISC-V compares two registers: if lt[U64](R10, R11)"
+                    : "an if in assembly tests the flags: eq, ne, lt[U64] … or a FLAGS field such as FLAGS.Carry");
         }
     }
 
@@ -1100,16 +1100,16 @@ internal sealed class AsmLowering
     {
         Arch.A64 => ConditionCode(cond),
         Arch.X86 => throw new CompileError(cond.Pos,
-            "x86 spells a condition in the mnemonic (setc, cmovb), so it isn't an operand; a branch tests it"),
+            "x86 spells a condition in the mnemonic (setc, cmovb), so it isn't an operand. An if tests it."),
         Arch.Arm => throw new CompileError(cond.Pos,
-            "32-bit ARM spells a condition in the mnemonic (moveq, addne), so it isn't an operand: a branch tests it"),
-        _ => throw new CompileError(cond.Pos, "RISC-V has no flags: compare two registers, branch lt[U64](R10, R11) ? … : …"),
+            "32-bit ARM spells a condition in the mnemonic (moveq, addne), so it isn't an operand. An if tests it."),
+        _ => throw new CompileError(cond.Pos, "RISC-V has no flags: the if compares two registers, as in if lt[U64](R10, R11)"),
     };
 
     private string CompareOperand(Expr e, DType t) => e switch
     {
         PresetRef or ValueRef => Operand(e, t),
-        _ => throw new CompileError(e.Pos, "a RISC-V branch compares registers or parameters"),
+        _ => throw new CompileError(e.Pos, "an if on RISC-V compares registers or parameters"),
     };
 
     /// Whether an ordered comparison is signed, from its type; null for eq and ne, which need none.
@@ -1172,7 +1172,7 @@ internal sealed class AsmLowering
             foreach (var a in annotation.Args)
             {
                 if (a.Key is not null || a.Negated || a.Expr is not null)
-                    throw new CompileError(annotation.Pos, "#clobbers lists registers, FLAGS and MEMORY: #clobbers(R2, FLAGS)");
+                    throw new CompileError(annotation.Pos, "@clobbers lists registers, FLAGS and MEMORY: @clobbers(R2, FLAGS)");
                 if (a.Value == "MEMORY") { Add("~{memory}"); continue; }
                 if (a.Value == "FLAGS")
                 {
@@ -1183,8 +1183,8 @@ internal sealed class AsmLowering
                 var reg = Register(a.Value, annotation.Pos);
                 if (reg.Class == RegClass.Sp || IsStackOrZero(reg) && reg.Index != 0)
                     throw new CompileError(annotation.Pos, "SP can't be changed: assembly that moves the stack pointer breaks the routine around it");
-                if (reg.Class is not (RegClass.Gpr or RegClass.Vec or RegClass.Fpr))
-                    throw new CompileError(annotation.Pos, $"{a.Value} can't be listed in #clobbers");
+                if (reg.Class is not (RegClass.Gpr or RegClass.Vec or RegClass.Fpr or RegClass.Single or RegClass.Double))
+                    throw new CompileError(annotation.Pos, $"{a.Value} can't be listed in @clobbers");
                 if (IsStackOrZero(reg)) continue;
                 string name = LlvmName(reg, null);
                 if (!_fixedOutputs.ContainsKey(name)) Add($"~{{{name}}}");
@@ -1192,7 +1192,7 @@ internal sealed class AsmLowering
         }
         // A branch on the flags means an instruction here set them.
         if (_flagsTested) Add(FlagsClobber);
-        // Without #pure or #readonly, the assembly may read and write any memory.
+        // Without @pure or @readonly, the assembly may read and write any memory.
         if (_r.AnnotationNamed("pure") is null && _r.AnnotationNamed("readonly") is null) Add("~{memory}");
         if (_arch == Arch.X86)
         {

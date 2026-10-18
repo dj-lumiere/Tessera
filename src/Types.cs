@@ -217,7 +217,7 @@ public sealed class VectorType(DType elem, long count) : DType
     public override string OwnerName => "Vector";
 }
 
-/// `Callable[(params), ret]`, or `Callable[#callconv("fast"), (params), ret]`: a function pointer.
+/// `Callable[(params), ret]`, or `Callable[@callconv("fast"), (params), ret]`: a function pointer.
 public sealed class CallableType(string callConv, List<DType> parameters, DType ret) : DType
 {
     public string CallConv { get; } = callConv;
@@ -232,7 +232,7 @@ public sealed class CallableType(string callConv, List<DType> parameters, DType 
 }
 
 /// A user or library record, instantiated with concrete arguments. A record with exactly one field is transparent:
-/// it lowers to its field's type (`record Meters / value: U64` is an `i64`), unless it is marked `#aggregate`.
+/// it lowers to its field's type (`record Meters / value: U64` is an `i64`), unless it is marked `@aggregate`.
 public sealed class RecordType(RecordDecl decl, List<DType> args, Func<RecordType, DType?> transparentField) : DType
 {
     public RecordDecl Decl { get; } = decl;
@@ -249,7 +249,7 @@ public sealed class RecordType(RecordDecl decl, List<DType> args, Func<RecordTyp
     public static bool IsTupleDecl(RecordDecl d) =>
         d.Module == "Standard/Core" && d.Name is "Tuple2" or "Tuple3" or "Tuple4";
 
-    /// The type a transparent or library `#llvm("iN")` record lowers to, or null for an aggregate.
+    /// The type a transparent or library `@llvm("iN")` record lowers to, or null for an aggregate.
     public DType? TransparentField => transparentField(this);
 
     public override DType Repr => TransparentField?.Repr ?? this;
@@ -402,14 +402,14 @@ public sealed record BuildTarget(string Arch, string Os, string Abi, int Size, s
     /// Whether the target has an operating system, which the hosted layer (Standard/Os) needs.
     public bool HasOs => Os != "none";
 
-    /// Evaluates one `#target(key: value)` predicate.
+    /// Evaluates one `@target(key: value)` predicate.
     public bool Matches(string key, string value) => key switch
     {
         "arch" => Arch == value,
         "os" => Os == value,
         "abi" => Abi == value,
         "size" => Size.ToString(CultureInfo.InvariantCulture) == value,
-        _ => throw new ArgumentException($"unknown #target key '{key}' (keys: arch, os, abi, size)"),
+        _ => throw new ArgumentException($"unknown @target key '{key}' (keys: arch, os, abi, size)"),
     };
 }
 

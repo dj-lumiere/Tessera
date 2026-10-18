@@ -311,7 +311,7 @@ public static class StructuredMigration
             }
             string trimmed = line.TrimStart();
             // A comment line: `//` in a source not moved to `#` comments yet, `# ...` or `###` in one that is. An old
-            // annotation (`#inline`, `#[a, b]`) is not one.
+            // annotation (`@inline`, `#[a, b]`) is not one.
             if (trimmed.StartsWith("//") || trimmed == "#" || trimmed.StartsWith("# ") || trimmed.StartsWith("##"))
             {
                 result.Add(line);
@@ -336,7 +336,7 @@ public static class StructuredMigration
                 inAsm = trimmed.Contains("external(\"asm\")");
                 continue;
             }
-            // An annotation inside a Callable type (`Callable[#callconv("stdcall"), ...]`) is written @ too.
+            // An annotation inside a Callable type (`Callable[@callconv("stdcall"), ...]`) is written @ too.
             line = line.Replace("Callable[#", "Callable[@");
             if (Keyword.Match(line) is { Success: true } k)
                 line = k.Groups[1].Value + k.Groups[2].Value switch { "require" => "needs", "conform" => "obeys", _ => "protocol" } + line[k.Length..];

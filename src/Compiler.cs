@@ -20,7 +20,7 @@ public sealed partial class Compiler
     public bool UninitFill { get; init; }
 
     /// Builds the base of a program split over two modules: a base built once, and a delta built for each edit that
-    /// links against it. Every routine this module defines, except an `#inline` one, and every global it defines is
+    /// links against it. Every routine this module defines, except an `@inline` one, and every global it defines is
     /// left for the other module to link to: no linkonce_odr, no internal linkage. Their symbols are
     /// `ExposedSymbols` after `Generate`, the set the delta passes as `ProvidedSymbols`.
     public bool ExposeDefinitions { get; init; }
@@ -72,12 +72,12 @@ public sealed partial class Compiler
 
     /// <paramref name="trace"/>: whether the program's routines keep the crash trace (Trace.cs). A builder that uses
     /// Tessera as a library passes false unless it wants Tessera's trace in what it builds.
-    /// <paramref name="heapCheck"/>: whether the standard library's `#heap_check("on")` declarations are kept (the
-    /// default heap catches a block freed twice) instead of its `#heap_check("off")` ones. It is the manifest's
+    /// <paramref name="heapCheck"/>: whether the standard library's `@heap_check("on")` declarations are kept (the
+    /// default heap catches a block freed twice) instead of its `@heap_check("off")` ones. It is the manifest's
     /// `[debug] heap-check`, the same in every build mode.
     /// <paramref name="raceCheck"/>: whether the program runs with the data race check (`[debug] race-check`,
-    /// `--race-check`): every routine is instrumented, and the standard library's `#race_check("on")` declarations are
-    /// kept instead of its `#race_check("off")` ones.
+    /// `--race-check`): every routine is instrumented, and the standard library's `@race_check("on")` declarations are
+    /// kept instead of its `@race_check("off")` ones.
     public Compiler(BuildTarget target, IEnumerable<Decl> decls, bool trace = false, bool heapCheck = false,
         bool raceCheck = false)
     {
@@ -167,7 +167,7 @@ public sealed partial class Compiler
     }
 
     /// Every type says how it is made and how it is released: a record declares a `construct` and a `destruct`, and a
-    /// variant a `destruct` (its values are made from its branches). A machine type (`#llvm`) and a variant written
+    /// variant a `destruct` (its values are made from its branches). A machine type (`@llvm`) and a variant written
     /// inline are exempt, and so is a choice, which holds a member and nothing to release.
     private void CheckLifecycle()
     {
@@ -332,12 +332,12 @@ public sealed partial class Compiler
         foreach (var a in d.Annotations)
         {
             if (a.Name != "target" && a.Args.FirstOrDefault(arg => arg.Values is not null) is { } listed)
-                throw new CompileError(a.Pos, $"only #target takes a list of values; #{a.Name}'s '{listed.Key}' takes one");
+                throw new CompileError(a.Pos, $"only @target takes a list of values; @{a.Name}'s '{listed.Key}' takes one");
             if (a.Name == "target")
             {
                 foreach (var arg in a.Args)
                 {
-                    if (arg.Key is null) throw new CompileError(a.Pos, "#target arguments are written key: value");
+                    if (arg.Key is null) throw new CompileError(a.Pos, "@target arguments are written key: value");
                     // A list matches when any of its values does; `not` before it, when none does. Every value is
                     // checked, so a misspelled key is an error whatever the target.
                     bool m;
@@ -351,7 +351,7 @@ public sealed partial class Compiler
                 var cpu = CpuModel.For(Target, a.Pos);
                 foreach (var arg in a.Args)
                 {
-                    if (arg.Key is not null) throw new CompileError(a.Pos, "#feature takes feature names, as in #feature(\"avx2\")");
+                    if (arg.Key is not null) throw new CompileError(a.Pos, "@feature takes feature names, as in @feature(\"avx2\")");
                     if (cpu.Has(arg.Value, a.Pos) == arg.Negated) return false;
                 }
             }
@@ -359,24 +359,24 @@ public sealed partial class Compiler
         return true;
     }
 
-    /// Whether the heap check is on: the standard library keeps its `#heap_check("on")` declarations (the default
-    /// heap's checks) and drops its `#heap_check("off")` ones. With it off it is the other way around. The build mode
+    /// Whether the heap check is on: the standard library keeps its `@heap_check("on")` declarations (the default
+    /// heap's checks) and drops its `@heap_check("off")` ones. With it off it is the other way around. The build mode
     /// has no say in it.
     public bool HeapCheck { get; }
 
-    /// `#heap_check("on")` / `#heap_check("off")` keeps a standard library declaration only with the heap check on or
-    /// only with it off, the way `#trace` follows the trace setting: the default heap's checking allocator is there
+    /// `@heap_check("on")` / `@heap_check("off")` keeps a standard library declaration only with the heap check on or
+    /// only with it off, the way `@trace` follows the trace setting: the default heap's checking allocator is there
     /// only with the check on, and the plain malloc / free one only with it off.
     private bool HeapCheckSelected(Decl d)
     {
         if (d.AnnotationNamed("heap_check") is not { } a) return true;
         if (!d.IsLibrary)
-            throw new CompileError(a.Pos, "#heap_check selects standard library declarations by the heap-check setting");
+            throw new CompileError(a.Pos, "@heap_check selects standard library declarations by the heap-check setting");
         return a.First switch
         {
             "on" => HeapCheck,
             "off" => !HeapCheck,
-            _ => throw new CompileError(a.Pos, "#heap_check takes \"on\" or \"off\""),
+            _ => throw new CompileError(a.Pos, "@heap_check takes \"on\" or \"off\""),
         };
     }
 
@@ -384,18 +384,18 @@ public sealed partial class Compiler
     /// with neither an atomic access nor a lock between them, stop the program with a report of both places.
     public bool RaceCheck { get; }
 
-    /// `#race_check("on")` / `#race_check("off")` keeps a standard library declaration only with the race check on or
+    /// `@race_check("on")` / `@race_check("off")` keeps a standard library declaration only with the race check on or
     /// only with it off: the fiber switch tells the check which stack runs only with it on.
     private bool RaceCheckSelected(Decl d)
     {
         if (d.AnnotationNamed("race_check") is not { } a) return true;
         if (!d.IsLibrary)
-            throw new CompileError(a.Pos, "#race_check selects standard library declarations by the race-check setting");
+            throw new CompileError(a.Pos, "@race_check selects standard library declarations by the race-check setting");
         return a.First switch
         {
             "on" => RaceCheck,
             "off" => !RaceCheck,
-            _ => throw new CompileError(a.Pos, "#race_check takes \"on\" or \"off\""),
+            _ => throw new CompileError(a.Pos, "@race_check takes \"on\" or \"off\""),
         };
     }
 
@@ -563,17 +563,17 @@ public sealed partial class Compiler
         else PresetConst(c, t, self, c.Pos);
     }
 
-    /// `#threadlocal` gives each thread its own copy of a global. A preset is read-only, so the threads can share one,
+    /// `@threadlocal` gives each thread its own copy of a global. A preset is read-only, so the threads can share one,
     /// and a target without an operating system has no threads to give copies to.
     private void CheckThreadLocal(PresetDecl c, Annotation tl)
     {
         if (!c.IsGlobal)
-            throw new CompileError(tl.Pos, $"#threadlocal marks a global; '{c.Name}' is a preset, which is read-only, so every thread can share it");
+            throw new CompileError(tl.Pos, $"@threadlocal marks a global; '{c.Name}' is a preset, which is read-only, so every thread can share it");
         if (tl.Args.Count != 0)
-            throw new CompileError(tl.Pos, "#threadlocal takes no arguments");
+            throw new CompileError(tl.Pos, "@threadlocal takes no arguments");
         if (!Target.HasOs)
             throw new CompileError(tl.Pos,
-                $"'{c.Name}' is #threadlocal, and target {Target.Arch}-{Target.Os}-{Target.Abi} has no operating system to run threads");
+                $"'{c.Name}' is @threadlocal, and target {Target.Arch}-{Target.Os}-{Target.Abi} has no operating system to run threads");
     }
 
     /// `#[external("c"), symbol("environ")] global ENVIRON: @@@Byte` is a C variable the program links against: C's
@@ -583,12 +583,12 @@ public sealed partial class Compiler
         if (!c.IsGlobal)
             throw new CompileError(ext.Pos, $"an external variable is a global: #[external(\"c\"), symbol(\"{c.Name}\")] global {c.Name}: @T");
         if (ext.First != "c")
-            throw new CompileError(ext.Pos, $"a global can only be #external(\"c\"), a C variable; found #external(\"{ext.First}\")");
+            throw new CompileError(ext.Pos, $"a global can only be @external(\"c\"), a C variable; found @external(\"{ext.First}\")");
         if (c.Value is not null)
             throw new CompileError(c.Value.Pos, $"'{c.Name}' is a C variable: its contents are the C side's, so it takes no '<-'");
     }
 
-    /// The symbol of a C variable: its #symbol, or its own name.
+    /// The symbol of a C variable: its @symbol, or its own name.
     private static string ExternalSymbol(PresetDecl c) => c.AnnotationNamed("symbol")?.First ?? c.Name;
 
     /// Instantiates a routine that needs no type arguments: user code is always checked, even if unused.
@@ -618,7 +618,7 @@ public sealed partial class Compiler
         var o = new StringBuilder();
         o.AppendLine($"target triple = \"{Target.LlvmTriple}\"");
         o.AppendLine();
-        // An external routine that an `#export` in this solution defines (the crash handler) is that definition,
+        // An external routine that an `@export` in this solution defines (the crash handler) is that definition,
         // not a declaration.
         var declares = new StringBuilder();
         foreach (var (symbol, line) in _declares)
@@ -633,7 +633,7 @@ public sealed partial class Compiler
         return o.ToString();
     }
 
-    /// `@tessera.reset_thread_locals`, what the stdlib's `reset_thread_locals()` calls: it stores each `#threadlocal`
+    /// `@tessera.reset_thread_locals`, what the stdlib's `reset_thread_locals()` calls: it stores each `@threadlocal`
     /// global's starting value in the running thread's copy. A thread manager's worker calls it before each ticket's
     /// work, so the work starts from the values a new thread would.
     private string ResetThreadLocals()
@@ -1110,18 +1110,18 @@ public sealed partial class Compiler
         return new CallableType(cc, ps.Types.Select(p => ResolveType(p, env)).ToList(), returned);
     }
 
-    /// `#callconv("fast")`, `#callconv("cold")`, or `#callconv("stdcall")`; every other routine uses the default, the C
+    /// `@callconv("fast")`, `@callconv("cold")`, or `@callconv("stdcall")`; every other routine uses the default, the C
     /// convention.
     public static string CheckCallConv(Annotation annotation) => annotation.First switch
     {
         "fast" or "cold" or "stdcall" => annotation.First,
         _ => throw new CompileError(annotation.Pos,
-            $"#callconv takes \"fast\", \"cold\", or \"stdcall\", not {(annotation.First is null ? "nothing" : $"\"{annotation.First}\"")}"),
+            $"@callconv takes \"fast\", \"cold\", or \"stdcall\", not {(annotation.First is null ? "nothing" : $"\"{annotation.First}\"")}"),
     };
 
     private readonly Dictionary<string, HashSet<string>> _calls = [];
 
-    /// Records a direct call, for finding the #inline routines that reach themselves.
+    /// Records a direct call, for finding the @inline routines that reach themselves.
     public void RecordCall(Instance caller, Instance callee)
     {
         if (Prechecking) return;
@@ -1129,7 +1129,7 @@ public sealed partial class Compiler
         callees.Add(callee.Symbol);
     }
 
-    /// An #inline routine that calls itself, directly or through other routines, can't be inlined at every call: the
+    /// An @inline routine that calls itself, directly or through other routines, can't be inlined at every call: the
     /// inlining never ends. One error per such routine, naming the cycle.
     private List<CompileError> InlineRecursion()
     {
@@ -1157,27 +1157,27 @@ public sealed partial class Compiler
             for (string at = closing; at != inst.Symbol; at = from[at]) path.Insert(1, _instances[at].Decl.DisplayName);
             path.Add(inst.Decl.DisplayName);
             errors.Add(new CompileError(inst.Decl.AnnotationNamed("inline")!.Pos,
-                $"'{inst.Decl.DisplayName}' is #inline, and it calls itself ({string.Join(" -> ", path)}); "
+                $"'{inst.Decl.DisplayName}' is @inline, and it calls itself ({string.Join(" -> ", path)}); "
                 + "a recursive routine can't be inlined at every call"));
         }
         return errors;
     }
 
-    /// `#inline` asks LLVM to inline the routine at every call (`alwaysinline`), `#noinline` never to (`noinline`).
-    /// Neither takes arguments, a routine can't ask for both, and both need a body here: an `#external` routine has none.
+    /// `@inline` asks LLVM to inline the routine at every call (`alwaysinline`), `@noinline` never to (`noinline`).
+    /// Neither takes arguments, a routine can't ask for both, and both need a body here: an `@external` routine has none.
     private static void CheckInlining(RoutineDecl r)
     {
         var inline = r.AnnotationNamed("inline");
         var noinline = r.AnnotationNamed("noinline");
         if (inline is not null && noinline is not null)
-            throw new CompileError(noinline.Pos, $"'{r.DisplayName}' is #inline and #noinline; it can only be one");
+            throw new CompileError(noinline.Pos, $"'{r.DisplayName}' is @inline and @noinline; it can only be one");
         foreach (var a in new[] { inline, noinline })
         {
             if (a is null) continue;
             if (a.Args.Count != 0)
-                throw new CompileError(a.Pos, $"#{a.Name} takes no arguments");
+                throw new CompileError(a.Pos, $"@{a.Name} takes no arguments");
             if (r.AnnotationNamed("external") is not null)
-                throw new CompileError(a.Pos, $"#{a.Name} needs a body, and '{r.DisplayName}' is #external");
+                throw new CompileError(a.Pos, $"@{a.Name} needs a body, and '{r.DisplayName}' is @external");
         }
     }
 
@@ -1287,18 +1287,18 @@ public sealed partial class Compiler
 
     private readonly HashSet<string> _definingTypes = [];
 
-    /// A record is a struct of its fields, however many it has: written as it is laid out. Only a library `#llvm("iN")`
+    /// A record is a struct of its fields, however many it has: written as it is laid out. Only a library `@llvm("iN")`
     /// record with no fields lowers to something else, an N-bit integer.
     private DType? TransparentField(RecordType s)
     {
         var d = s.Decl;
         if (d.AnnotationNamed("aggregate") is { } aggregate)
-            throw new CompileError(aggregate.Pos, $"record '{d.Name}' is a struct already, as every record is: remove #aggregate");
-        // A library `#llvm("iN")` record (B128) is an integer of that width underneath. Built-in names never get here.
+            throw new CompileError(aggregate.Pos, $"record '{d.Name}' is a struct already, as every record is: remove @aggregate");
+        // A library `@llvm("iN")` record (B128) is an integer of that width underneath. Built-in names never get here.
         if (d.AnnotationNamed("llvm") is { } llvm)
             return llvm.First is ['i', .. var digits] && int.TryParse(digits, NumberStyles.None, CultureInfo.InvariantCulture, out int bits)
                 ? IntType.U(bits)
-                : throw new CompileError(d.Pos, $"#llvm on a library record takes an integer type (\"i128\"), got \"{llvm.First}\"");
+                : throw new CompileError(d.Pos, $"@llvm on a library record takes an integer type (\"i128\"), got \"{llvm.First}\"");
         return null;
     }
 
@@ -1539,13 +1539,13 @@ public sealed partial class Compiler
 
     private readonly Dictionary<string, string> _globalVars = [];
 
-    /// The `#threadlocal` globals this module defines, with their starting values, which `reset_thread_locals()` stores
+    /// The `@threadlocal` globals this module defines, with their starting values, which `reset_thread_locals()` stores
     /// again.
     private readonly List<(string Name, string Llvm, string Init)> _threadLocals = [];
 
     /// A global is a private mutable global variable, emitted once on first use: its value, or all-zero bytes. A
-    /// `#threadlocal` one is LLVM's `thread_local`: each thread starts from a copy of that value. An
-    /// `#external("c")` one is declared, not defined: the C variable of its #symbol.
+    /// `@threadlocal` one is LLVM's `thread_local`: each thread starts from a copy of that value. An
+    /// `@external("c")` one is declared, not defined: the C variable of its @symbol.
     public string GlobalVariable(PresetDecl c, DType t, TypeEnv env)
     {
         if (Prechecking) return "@precheck";
@@ -1658,7 +1658,7 @@ public sealed partial class Compiler
         if (e is PresetRef { Owner: null } r && FindPreset("", r.Name, env.File, r.Pos, r.Path) is { IsSpan: true } target)
         {
             if (target.AnnotationNamed("threadlocal") is not null)
-                throw new CompileError(e.Pos, $"'{target.Name}' is #threadlocal: its address differs per thread, so it can't initialize a global");
+                throw new CompileError(e.Pos, $"'{target.Name}' is @threadlocal: its address differs per thread, so it can't initialize a global");
             var targetEnv = new TypeEnv(target.File);
             var targetSpan = ResolveType(target.Type, targetEnv);
             if (!targetSpan.Equals(span)) throw new CompileError(e.Pos, $"expected {span}, found {targetSpan}");
@@ -1687,7 +1687,7 @@ public sealed partial class Compiler
             && target is { IsStorage: true, IsSpan: false })
         {
             if (target.AnnotationNamed("threadlocal") is not null)
-                throw new CompileError(e.Pos, $"'{target.Name}' is #threadlocal: its address differs per thread, so it can't initialize a global");
+                throw new CompileError(e.Pos, $"'{target.Name}' is @threadlocal: its address differs per thread, so it can't initialize a global");
             var targetEnv = new TypeEnv(target.File);
             var pointee = ResolveType(target.Type, targetEnv);
             var address = new PtrType(pointee);
@@ -1746,7 +1746,7 @@ public sealed partial class Compiler
             catch (CompileError) { continue; }
             if (!new CallableType(sig.CallConv, sig.Params, sig.Ret).Equals(want)) continue;
             if (routine.AnnotationNamed("inline") is not null)
-                throw new CompileError(r.Pos, $"'{r.Name}' is #inline, so it can't be a Callable value: it's inlined at every call");
+                throw new CompileError(r.Pos, $"'{r.Name}' is @inline, so it can't be a Callable value: it's inlined at every call");
             if (!sig.PassesBf16AsBits && (Instance.IsBf16(sig.Ret) || sig.Params.Any(Instance.IsBf16)))
                 throw new CompileError(r.Pos, $"routine '{r.Name}' passes BF16 the C way, so it can't be a Callable; wrap it in a Tessera routine");
             var inst = RequireInstance(routine, new TypeEnv(routine.File));

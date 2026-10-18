@@ -82,7 +82,7 @@ public sealed partial class Compiler
         return u >= span >> 1 ? u - span : u;
     }
 
-    /// A fieldless `#llvm("iN")` record (B128): its width, or null.
+    /// A fieldless `@llvm("iN")` record (B128): its width, or null.
     private static int? BitRecordWidth(DType t) =>
         t is RecordType { Decl: var d } && d.Fields.Count == 0 && d.AnnotationNamed("llvm")?.First is ['i', .. var digits]
         && int.TryParse(digits, NumberStyles.None, CultureInfo.InvariantCulture, out int bits)

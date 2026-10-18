@@ -200,7 +200,7 @@ public class AsmArmTests
 
             """;
         var e = Assert.Throws<CompileError>(() => Build(source, ArmLinux, assemble: false));
-        Assert.Contains("a #naked routine on 32-bit ARM takes and returns integers and pointers", e.Text);
+        Assert.Contains("a @naked routine on 32-bit ARM takes and returns integers and pointers", e.Text);
     }
 
     [Fact]

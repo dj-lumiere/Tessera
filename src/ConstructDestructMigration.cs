@@ -7,8 +7,8 @@ namespace Tessera;
 /// made and how it is released: such a record without a `construct` gets one taking its fields in order, and such a
 /// record or variant without a `destruct` gets one that releases the fields that are collections or owned C strings
 /// and otherwise nothing. A type of plain data needs neither, and the step takes away the ones that only take the
-/// fields (`return(Me(...))`) or only return (`return()`). A machine type (`#llvm`) and a variant written inline
-/// (`#union`) are left alone.
+/// fields (`return(Me(...))`) or only return (`return()`). A machine type (`@llvm`) and a variant written inline
+/// (`@union`) are left alone.
 ///
 /// The routines a type already has count wherever they are declared in the files that make one program: the whole
 /// standard library together, a library folder together, and a test or an example file on its own.

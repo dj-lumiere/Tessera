@@ -24,7 +24,7 @@ public static class ExpensiveCallLint
 
     /// A call the build resolved to an `#expensive` routine, in the block it was written in.
     /// `Arm` is the block an arm goes to when the call is among that arm's arguments (LeavesRoutine for a return or a
-    /// `#noreturn` call), null when it is on one of the block's own lines or conditions.
+    /// `@noreturn` call), null when it is on one of the block's own lines or conditions.
     public sealed record Call(string Block, string? Arm, Pos Pos, RoutineDecl Callee)
     {
         /// Written in the body of an `each`, `while` or `until`.

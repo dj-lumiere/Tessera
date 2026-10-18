@@ -26,7 +26,7 @@ public enum TokenKind
 
 public readonly record struct Pos(string File, int Line, int Col)
 {
-    /// `file:line:col`, or `file:line` for a place with no column (a `#source` that gives none).
+    /// `file:line:col`, or `file:line` for a place with no column (a `@source` that gives none).
     public override string ToString() => Col > 0 ? $"{File}:{Line}:{Col}" : $"{File}:{Line}";
 }
 
@@ -120,7 +120,7 @@ public sealed class CompileError(Pos pos, string message) : Exception($"{pos}: e
     /// The message without its place.
     public string Text { get; } = message;
 
-    /// Already moved to the place a `#source` names, so an enclosing one leaves it.
+    /// Already moved to the place a `@source` names, so an enclosing one leaves it.
     public bool FromSource { get; init; }
 
     /// An error no fallback may swallow: a lookup that tries a name as a type and then as something else still
