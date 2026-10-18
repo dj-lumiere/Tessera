@@ -543,10 +543,11 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
 
         if (unit is not null)
         {
-            if (neg) throw new CompileError(pos, $"a {UnitKind(unit)} is never negative, so '-{src[digitsStart.._i]}{unit}' isn't one");
+            if (neg && Units[unit].Type != "Duration")
+                throw new CompileError(pos, $"a {UnitKind(unit)} is never negative, so '-{src[digitsStart.._i]}{unit}' isn't one");
             _i += unit.Length;
             _col += unit.Length;
-            return new Token(TokenKind.Unit, src[start.._i], pos, mag);
+            return new Token(TokenKind.Unit, src[start.._i], pos, neg ? -mag : mag);
         }
 
         // A magnitude above a type's signed range is that type's two's-complement bit pattern (IntConst).

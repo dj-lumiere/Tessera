@@ -327,7 +327,7 @@ routine FiberManager.park(me: @Me) -> None
     fiber.wake_state.poke_atomic(FIBER_RUNNING)
     return
 
-### Inside a fiber: park, and a wake comes on its own at `deadline` (in `monotonic_now` time) if none came before.
+### Inside a fiber: park, and a wake comes on its own at `deadline` (in `Clock.monotonic()` time) if none came before.
 ### Outside a fiber it returns.
 ### :param deadline: When the fiber goes on without a wake.
 @target(os: not "none")
@@ -372,14 +372,14 @@ routine FiberManager.wake(me: @Me, fiber: @FiberState) -> None
 @target(os: not "none")
 @reshaping
 routine FiberManager.waitfor(me: @Me, duration: Duration) -> None
-    local deadline: Duration = monotonic_now() +^ duration
+    local deadline: Duration = Clock.monotonic() +^ duration
     local fiber: @FiberState = me.current()
 
     if fiber.is_hollow()
         sleep_thread(deadline)
         return
     # A pool's fiber may go on on another thread after a park, so each park goes through the manager running it.
-    while monotonic_now() < deadline
+    while Clock.monotonic() < deadline
         fiber.manager.peek().park_until(deadline)
     then
         return
@@ -657,7 +657,7 @@ needs T: typename
     local slot: @WorkSlot = me.work_slot()
     local fiber: @FiberState = me.fiber
     local manager: @FiberManager = fiber.manager.peek()
-    local deadline: Duration = monotonic_now() +^ timeout
+    local deadline: Duration = Clock.monotonic() +^ timeout
 
     if manager.drives_here()
         manager.drive(awaited: slot, deadline, idle_only: false)
@@ -762,7 +762,7 @@ secret routine FiberManager.drives_here(me: @Me) -> Bool
 ### Runs the fibers on this thread until `awaited` has finished (when not null), or no fiber has work left (when it is
 ### null), or `deadline` has passed. With `idle_only` it returns as soon as no fiber is ready.
 ### :param awaited: The work to run until, or null.
-### :param deadline: When to stop, in `monotonic_now` time (`Duration.MAX` for never).
+### :param deadline: When to stop, in `Clock.monotonic()` time (`Duration.MAX` for never).
 ### :param idle_only: True to return once no fiber is ready.
 @target(os: not "none")
 @reshaping
@@ -783,7 +783,7 @@ secret routine FiberManager.drive(me: @Me, awaited: @WorkSlot, deadline: Duratio
         if me.ready.is_empty()
             if idle_only
                 return
-            now: Duration = monotonic_now()
+            now: Duration = Clock.monotonic()
             if now >= deadline
                 return
             wait: Duration = me.timer_wait().min(deadline - now)
@@ -882,7 +882,7 @@ secret routine FiberManager.take_inbox(me: @Me) -> None
 @target(os: not "none")
 @reshaping
 secret routine FiberManager.fire_timers(me: @Me) -> None
-    local now: Duration = monotonic_now()
+    local now: Duration = Clock.monotonic()
 
     until me.timers.is_empty()
         key: TimerKey = me.timers.first_entry().priority
@@ -901,7 +901,7 @@ secret routine FiberManager.timer_wait(me: @Me) -> Duration
     if me.timers.is_empty()
         return Duration.MAX
     deadline: Duration = me.timers.first_entry().priority.deadline
-    return deadline -^ monotonic_now()
+    return deadline -^ Clock.monotonic()
 
 # -- where a stopped fiber goes ---------------------------------------------------------------------------------
 #
@@ -968,13 +968,13 @@ secret routine wake_hook(manager: Addr, fiber: Addr) -> None
     return
 
 ### A thread outside a fiber waits until deadline.
-### :param deadline: When to stop waiting, in `monotonic_now` time.
+### :param deadline: When to stop waiting, in `Clock.monotonic()` time.
 @target(os: not "none")
 secret routine sleep_thread(deadline: Duration) -> None
     local never: @U32 <- 0
 
     while true
-        now2: Duration = monotonic_now()
+        now2: Duration = Clock.monotonic()
         if now2 >= deadline
             return
         wait_on_for(at: never, expected: 0, timeout: deadline - now2)

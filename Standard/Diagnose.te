@@ -37,7 +37,7 @@ obeys Diagnosable[U8], Diagnosable[U16], Diagnosable[U32], Diagnosable[U64], Dia
 obeys Diagnosable[CSize], Diagnosable[CSSize]
 obeys Diagnosable[B16], Diagnosable[BF16], Diagnosable[B32], Diagnosable[B64], Diagnosable[B128]
 obeys Diagnosable[Bool], Diagnosable[Char], Diagnosable[Byte], Diagnosable[@[Byte]], Diagnosable[None], Diagnosable[Addr]
-obeys Diagnosable[Duration], Diagnosable[ByteSize]
+obeys Diagnosable[Duration], Diagnosable[Moment], Diagnosable[ByteSize]
 obeys Diagnosable[Array[T, COUNT]] when T: typename, COUNT: U64, Diagnosable[T]
 
 # -- text ----------------------------------------------------------------------
@@ -145,12 +145,15 @@ needs T: typename, Writer[T]
 
 # -- values that read the same both ways ---------------------------------------
 
-### Writes the duration as a Tessera literal in the largest unit that holds it exactly: `90s`, `1500ms`, `2w`, `0s`.
+### Writes the duration as a Tessera literal in the largest unit that holds it exactly: `90s`, `1500ms`, `2w`, `-5s`,
+### `0s`.
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine Duration.diagnose_into[T](me: Me, out: @T) -> None
 needs T: typename, Writer[T]
-    ns: U64 = me.nanoseconds()
+    if me.is_negative()
+        write_str(out, text: "-")
+    ns: U128 = duration_nanoseconds(me).abs().to[U128]()
     when
         ns == 0 => write_str(out, text: "0s")
         ns % 604800000000000 == 0 => write_unit_literal(out, count: ns // 604800000000000,
@@ -164,12 +167,22 @@ needs T: typename, Writer[T]
         else => write_unit_literal(out, count: ns, unit: "ns")
     return
 
+### Writes the moment as the call that makes it, `Moment.from_epoch(1760862600s)`, its time since 1970 as a literal.
+### :typeparam T: The type of the Writer that receives the text.
+### :param out: The Writer the text is written to.
+routine Moment.diagnose_into[T](me: Me, out: @T) -> None
+needs T: typename, Writer[T]
+    write_str(out, text: "Moment.from_epoch(")
+    me.since_epoch().diagnose_into(out)
+    write_str(out, text: ")")
+    return
+
 ### Writes the size as a Tessera literal in the largest unit that holds it exactly: `4kib`, `1gb`, `1500b`, `0b`.
 ### :typeparam T: The type of the Writer that receives the text.
 ### :param out: The Writer the text is written to.
 routine ByteSize.diagnose_into[T](me: Me, out: @T) -> None
 needs T: typename, Writer[T]
-    bytes: U64 = me.bytes()
+    bytes: U128 = me.bytes().to[U128]()
     when
         bytes == 0 => write_str(out, text: "0b")
         bytes % 1073741824 == 0 => write_unit_literal(out, count: bytes // 1073741824, unit: "gib")
@@ -186,7 +199,7 @@ needs T: typename, Writer[T]
 ### :param out: The Writer the text is written to.
 ### :param count: The count of the unit.
 ### :param unit: The unit as a literal spells it.
-secret routine write_unit_literal[T](out: @T, count: U64, unit: @[Byte]) -> None
+secret routine write_unit_literal[T](out: @T, count: U128, unit: @[Byte]) -> None
 needs T: typename, Writer[T]
     count.represent_into(out)
     write_str(out, text: unit)

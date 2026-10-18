@@ -34,7 +34,7 @@ record Waiter
     fiber: Addr
     ### The fiber's manager, or the word the thread sleeps on: what the routines here are given.
     manager: Addr
-    ### Parks until a wake or a deadline in `monotonic_now` time (`Duration.MAX` for none), given `manager`. It may
+    ### Parks until a wake or a deadline in `Clock.monotonic()` time (`Duration.MAX` for none), given `manager`. It may
     ### return without either.
     park_fn: Callable[(Addr, Duration), None]
     ### Wakes the waiter from any thread, given `manager` and `fiber`: makes its park return, now or at once when it
@@ -93,7 +93,7 @@ routine Waiter.park(me: Me) -> None
     me.park_fn.call(me.manager, Duration.MAX)
     return
 
-### Parks until a wake or until `deadline`, in `monotonic_now` time. It may return before either, so the waiter looks
+### Parks until a wake or until `deadline`, in `Clock.monotonic()` time. It may return before either, so the waiter looks
 ### again at what it waits for and at the time.
 ### :param deadline: When to stop waiting.
 routine Waiter.park_until(me: Me, deadline: Duration) -> None
@@ -112,17 +112,17 @@ routine Waiter.wake(me: Me) -> None
 ### :param duration: The least time to wait.
 @target(os: not "none")
 routine waitfor(duration: Duration) -> None
-    local deadline: Duration = monotonic_now() +^ duration
+    local deadline: Duration = Clock.monotonic() +^ duration
     local waiter: Waiter = current_waiter()
 
-    while monotonic_now() < deadline
+    while Clock.monotonic() < deadline
         waiter.park_until(deadline)
     then
         return
 
 ### How a thread parks: sleeps on its word until a wake marks it, or the deadline.
 ### :param word: The thread's THREAD_WAKE.
-### :param deadline: When to stop, in `monotonic_now` time, or `Duration.MAX`.
+### :param deadline: When to stop, in `Clock.monotonic()` time, or `Duration.MAX`.
 @target(os: not "none")
 secret routine thread_park(word: Addr, deadline: Duration) -> None
     local at: @U32 = word.to[@U32]()
@@ -132,7 +132,7 @@ secret routine thread_park(word: Addr, deadline: Duration) -> None
     if deadline == Duration.MAX
         wait_on(at, expected: 0)
     else
-        now: Duration = monotonic_now()
+        now: Duration = Clock.monotonic()
         if now >= deadline
             return
         wait_on_for(at, expected: 0, timeout: deadline - now)
@@ -163,7 +163,7 @@ routine wait_while(at: @U32, expected: U32) -> None
         return
     if not (at.peek_atomic() == expected)
         return
-    waiter.park_until(monotonic_now() +^ FIBER_POLL)
+    waiter.park_until(Clock.monotonic() +^ FIBER_POLL)
     return
 
 ### As {wait_while}, giving up `timeout` after the call.
@@ -179,5 +179,5 @@ routine wait_while_for(at: @U32, expected: U32, timeout: Duration) -> None
         return
     if not (at.peek_atomic() == expected)
         return
-    waiter.park_until(monotonic_now() +^ timeout.min(FIBER_POLL))
+    waiter.park_until(Clock.monotonic() +^ timeout.min(FIBER_POLL))
     return

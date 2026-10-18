@@ -2104,14 +2104,15 @@ public sealed class FunctionGen
     }
 
     /// Whether a value of `t` may point into memory something else owns: a pointer, a Span, or a record, array, or
-    /// variant holding one. An entity owns what it points at.
+    /// variant holding one. An entity owns what it points at. A secret field counts too: this asks about the layout,
+    /// not about reading the field.
     private bool MayBorrow(DType? t, HashSet<string>? seen) => t switch
     {
         PtrType => true,
         RecordType { Decl.IsEntity: true } => false,
         _ when t is not null && Compiler.IsCoreSpan(t, out _) => true,
         RecordType r when (seen ??= []).Add(r.Key) =>
-            r.Decl.Fields.Any(f => MayBorrow(FieldOf(r, f.Name, f.Pos).Type, seen)),
+            _c.Fields(r).Any(f => MayBorrow(f.Type, seen)),
         ArrayType a => MayBorrow(a.Elem, seen),
         VariantType vt when (seen ??= []).Add(vt.Key) => vt.Leaves.Any(l => MayBorrow(l, seen)),
         _ => false,
@@ -3629,11 +3630,14 @@ public sealed class FunctionGen
     private DType UnitType(UnitLit u) =>
         _c.ResolveType(new TypeRef(u.TypeName, [], u.Pos) { Path = Compiler.CoreModule }, _env);
 
-    /// A unit literal's value, its count in nanoseconds or bytes, which must fit the type's U64.
+    /// A unit literal's value: a Duration's seconds and nanoseconds, or a ByteSize's count of bytes.
     private Val UnitConst(UnitLit u)
     {
         var t = UnitType(u);
-        return new Val(Compiler.UnitCount(u).ToString(System.Globalization.CultureInfo.InvariantCulture), t);
+        var count = Compiler.UnitCount(u);
+        return new Val(Compiler.IsDuration(t)
+            ? Compiler.DurationLlvm(count)
+            : count.ToString(System.Globalization.CultureInfo.InvariantCulture), t);
     }
 
     /// An argument as an overload error lists it: its type, or what kind of untyped value it is.

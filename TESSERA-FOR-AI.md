@@ -599,15 +599,21 @@ routine start() -> None
   no type suffixes (`0u64`).
 - **Time and size literals.** A whole decimal number with a unit right after it is typed by the unit: `w d h m s ms
   us ns` make a `Duration`, `b kb mb gb kib mib gib` a `ByteSize` (`kb`, `mb`, `gb` count by 1000, `kib`, `mib`,
-  `gib` by 1024): `20ms`, `5m`, `1_000b`, `4kib`. Both are Core records over a `U64` (nanoseconds, bytes), never
-  negative. There are no fractions (`1.5s` is a build error that asks for `1500ms`), and one that doesn't fit the
-  `U64` (`40000w`) is a build error too. `Duration` has `+ - * // %` (`d * 3`, `d // 3`, `d // 1ms` counts, `d % 1s`),
-  `+^` / `-^` (`add_clamp` / `sub_clamp`, stopping at `Duration.MAX` and 0), the comparisons, `min` / `max`, `hash`,
-  `Duration.from_nanoseconds(n)` / `from_microseconds` / `from_milliseconds` / `from_seconds`, the counts back
-  `d.nanoseconds()` / `microseconds()` / `milliseconds()` / `seconds()` (whole, rounded down), `Duration.zero()`,
-  `is_zero()`, and `Duration.MAX`. `ByteSize` has the same arithmetic, `ByteSize.construct(bytes: n)` and
+  `gib` by 1024): `20ms`, `5m`, `1_000b`, `4kib`. `Duration` is a Core record of `secs: S64` + `nanos: U32` (0 up to
+  999999999), signed (`-5s` is a literal, `1s - 2s` is `-1s`), about 292 billion years either way. `ByteSize` is a
+  `U64` count of bytes, never negative. There are no fractions (`1.5s` is a build error that asks for `1500ms`), and a
+  literal the type doesn't hold is a build error too. `Duration` has `+ - * // %` with `S64` counts (`d * 3`, `d // 3`,
+  `d // 1ms` counts, `d % 1s`), unary `-` / `abs()`, `+^` / `-^` (`add_clamp` / `sub_clamp`, stopping at the ends of
+  the range), the comparisons, `min` / `max`, `hash`, `Duration.from_nanoseconds(n)` / `from_microseconds` /
+  `from_milliseconds` / `from_seconds` (`S64`), `Duration.from_parts(seconds:, nanoseconds:)`, the counts back
+  `d.nanoseconds()` / `microseconds()` / `milliseconds()` / `seconds()` (`S64`, rounded down, crash when out of range),
+  `d.nanoseconds_clamp()`, `d.subsecond_nanoseconds()`, `Duration.zero()`, `is_zero()`, `is_negative()`, and
+  `Duration.MAX`. `Moment` (Core) is the same layout counted from 1970-01-01 UTC: `Moment.from_timestamp(s)` /
+  `from_epoch(d)` / `epoch()`, `m.timestamp()` / `since_epoch()`, `year()` / `month()` / `day()` / `hour()` /
+  `minute()` / `second()` / `day_of_week()` (0 = Monday, UTC, Gregorian), `m + d`, `m - d`, `m - m` (a `Duration`),
+  comparisons, `{m}` = `2026-01-01 00:00:00`. `ByteSize` has the same arithmetic, `ByteSize.construct(bytes: n)` and
   `size.bytes()`. `{d}` writes `1s 500ms` / `4KiB`, `{d.diagnose()}` the literal (`1500ms`, `4kib`). A time is a
-  `Duration` wherever the stdlib takes one: waits, timeouts, deadlines (a deadline is a reading of `monotonic_now()`
+  `Duration` wherever the stdlib takes one: waits, timeouts, deadlines (a deadline is a reading of `Clock.monotonic()`
   plus a `Duration`), page and stack sizes are `ByteSize`. The memory manager routines (`alloc(size, align)`, the page
   routines) and `sizeof` stay `U64` byte counts, and a count of elements is a count.
 - Text is a `@[Byte]` (UTF-8 by convention, unchecked: `is_utf8` checks, and `chars()` reads a bad sequence as
@@ -1061,9 +1067,10 @@ return without a wake, so the waiter checks its condition again in a loop). No l
 every path. `wait_on` / `wait_on_for` / `wake_one` / `wake_all` on a `@U32` make a THREAD sleep. `wait_while(at,
 expected)` / `wait_while_for(at, expected, timeout)` are that wait for whoever runs (a fiber parks `50us` at a time
 and looks again), may return early, so loop. `waitfor(duration)` waits at least that long the same way (`waitfor(20ms)`).
-`monotonic_now()` reads the clock that only goes forward, as a `Duration` since a start the system picks: subtract
-two readings to measure, add a timeout for a deadline (`monotonic_now() +^ timeout` when it may be `Duration.MAX`).
-Every timeout and deadline above is a `Duration`, and "none" is `Duration.MAX`. A waiter the
+`Clock.monotonic()` reads the clock that only goes forward, as a `Duration` since a start the system picks: subtract
+two readings to measure, add a timeout for a deadline (`Clock.monotonic() +^ timeout` when it may be `Duration.MAX`).
+`Clock.now()` is the date and time (a `Moment`), `CpuClock.now()` the process's processor time (a `Duration`).
+Every timeout and deadline above is a `Duration`, and "none" is `Duration.MAX`. A negative timeout waits not at all. A waiter the
 waited-for thing knows is a `Waiter` (`current_waiter()`: a fiber parks through its manager, a thread on a word of its
 own), with `park()` / `park_until(deadline)` / `wake()`. All in Standard/Os.
 

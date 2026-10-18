@@ -1675,7 +1675,7 @@ public sealed partial class Compiler
         if (IsCoreSpan(t, out _) && SpanInitializer(e, t, env) is { } span) return span;
         if (t is RecordType record && record.Decl.AnnotationNamed("llvm") is null && e is RecordLit recordLit)
             return RecordInitializer(recordLit, record, env);
-        if (t is not (IntType or BoolType or FloatType or ChoiceType) && BitRecordWidth(t) is null)
+        if (t is not (IntType or BoolType or FloatType or ChoiceType) && BitRecordWidth(t) is null && !IsDuration(t))
             throw new CompileError(e.Pos, $"a preset array element or global initializer can't be a {t.Name}");
         return ConstLlvm(Typed(Fold(e, t, env), t, e.Pos));
     }

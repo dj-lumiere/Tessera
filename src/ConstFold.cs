@@ -68,6 +68,7 @@ public sealed partial class Compiler
             case FloatType ft: return ft.FromBits(v.Value);
             case IntType it: return SignedForm(v.Value, it.Bits).ToString(CultureInfo.InvariantCulture);
             case ChoiceType ct: return SignedForm(v.Value, ct.Underlying.Bits).ToString(CultureInfo.InvariantCulture);
+            case RecordType rt when IsDuration(rt): return DurationLlvm(v.Value);
             default:
                 int bits = BitRecordWidth(v.Type!) ?? throw new InvalidOperationException($"no constant form for {v.Type!.Name}");
                 return SignedForm(v.Value, bits).ToString(CultureInfo.InvariantCulture);
@@ -135,14 +136,33 @@ public sealed partial class Compiler
         return ((v % span) + span) % span;
     }
 
-    /// A unit literal's count in nanoseconds or bytes. A Duration or a ByteSize holds a U64, so a larger one is a build
-    /// error that says how far it reaches.
+    /// Core's `Duration`: whole seconds (S64) and the nanoseconds past them (U32).
+    public static bool IsDuration(DType t) => t is RecordType { Decl: { Name: "Duration", Module: CoreModule } };
+
+    /// The `Duration` constant of `ns` nanoseconds: the seconds rounded down and the nanoseconds past them.
+    public static string DurationLlvm(BigInteger ns)
+    {
+        var secs = BigInteger.DivRem(ns, Billion, out var nanos);
+        if (nanos.Sign < 0) { secs -= 1; nanos += Billion; }
+        return $"{{ i64 {secs.ToString(CultureInfo.InvariantCulture)}, i32 {SignedForm(nanos, 32).ToString(CultureInfo.InvariantCulture)} }}";
+    }
+
+    private static readonly BigInteger Billion = 1_000_000_000;
+
+    /// The most nanoseconds a Duration holds: the largest S64 count of seconds and 999999999 nanoseconds.
+    private static readonly BigInteger DurationMax = (BigInteger)long.MaxValue * Billion + (Billion - 1);
+
+    /// The fewest nanoseconds a Duration holds: the smallest S64 count of seconds.
+    private static readonly BigInteger DurationMin = (BigInteger)long.MinValue * Billion;
+
+    /// A unit literal's count in nanoseconds or bytes. A ByteSize holds a U64 and a Duration S64 seconds, so a larger
+    /// one is a build error that says how far it reaches.
     public static BigInteger UnitCount(UnitLit u)
     {
         var value = u.Value;
-        if (value > ulong.MaxValue)
+        if (u.TypeName == "Duration" ? value > DurationMax || value < DurationMin : value > ulong.MaxValue)
             throw new CompileError(u.Pos, u.TypeName == "Duration"
-                ? $"{u.Text} is longer than a Duration holds: at most 18446744073709551615ns, about 584 years"
+                ? $"{u.Text} is longer than a Duration holds: {DurationMin}ns up to {DurationMax}ns, about 292 billion years either way"
                 : $"{u.Text} is larger than a ByteSize holds: at most 18446744073709551615b, 16 EiB less a byte");
         return value;
     }

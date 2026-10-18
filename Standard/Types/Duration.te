@@ -1,161 +1,247 @@
 # Tessera stdlib: Duration, a span of time
 #
-# A Duration counts nanoseconds in a U64, so it holds up to about 584 years and is never negative. A literal with a
-# time unit is one: 20ms, 1s, 5m, 2h, 3d, 1w, 50us, 100ns. A deadline is a Duration too: a reading of the monotonic
-# clock (Standard/Os) plus how long to wait. Arithmetic crashes when the result doesn't fit, and +^ / -^ stop at the
-# ends instead.
+# A Duration is whole seconds in an S64 and the nanoseconds past them in a U32 (0 up to 999999999), the same as a
+# Moment, so it may be negative and spans about 292 billion years either way. A literal with a time unit is one: 20ms,
+# 1s, 5m, 2h, 3d, 1w, 50us, 100ns. A deadline is a Duration too: a reading of `Clock.monotonic()` plus how long to wait.
+# Arithmetic crashes when the result doesn't fit, and +^ / -^ stop at the ends instead.
 
 module Standard/Core
 
-### The longest duration, about 584 years: also what a wait without a deadline waits until.
-preset Duration.MAX: Duration = 18446744073709551615ns
+### The longest duration, about 292 billion years: also what a wait without a deadline waits until.
+preset Duration.MAX: Duration = 9223372036854775807999999999ns
 
-### A span of time in nanoseconds, from 0 up to about 584 years. A literal with a time unit is one (`20ms`, `1s`,
-### `5m`). Arithmetic crashes on overflow and on a result below 0, and `add_clamp` / `sub_clamp` (`+^`, `-^`) stop at
-### the ends instead.
-@llvm("i64")
+### A span of time: whole seconds and the nanoseconds past them, negative or positive. A literal with a time unit is one
+### (`20ms`, `1s`, `5m`). Arithmetic crashes on overflow, and `add_clamp` / `sub_clamp` (`+^`, `-^`) stop at the ends
+### instead.
 record Duration
 obeys Equatable[Duration], Comparable[Duration], Hashable[Duration]
+    ### The whole seconds, rounded down (-1.5s is -2 seconds and 500000000 nanoseconds).
+    secret secs: S64
+    ### The nanoseconds past `secs`, 0 up to 999999999.
+    secret nanos: U32
+
+### Makes a `Duration` from its fields.
+### :param secs: Its `secs`.
+### :param nanos: Its `nanos`.
+### :returns: The new value.
+routine Duration.construct(secs: S64, nanos: U32) -> Me
+    return Me(secs, nanos)
+
+### Releases nothing: a `Duration` holds no memory of its own.
+routine Duration.destruct(me: @Me) -> None
+    return
+
+# -- the count of nanoseconds --------------------------------------------------
+
+### The whole span in nanoseconds, which an S128 always holds.
+### :returns: The nanoseconds.
+secret routine Duration.total(me: Me) -> S128
+    return me.secs.to[S128]() * 1000000000 + me.nanos.to[S128]()
+
+### The duration of `ns` nanoseconds.
+### :param ns: The nanoseconds.
+### :returns: The duration.
+### :throws: Crashes with `IntegerOverflowError` when it is beyond {Duration.MAX} either way.
+@track_caller
+secret routine Duration.of_total(ns: S128) -> Me
+    secs: S128 = ns // 1000000000
+    nanos: S128 = ns % 1000000000
+    return Me(secs: secs.to[S64](), nanos: nanos.to[U32]())
+
+### The duration of `ns` nanoseconds, stopping at the ends of the range.
+### :param ns: The nanoseconds.
+### :returns: The duration, or the end it went past.
+secret routine Duration.of_total_clamp(ns: S128) -> Me
+    secs: S128 = ns // 1000000000
+    if secs > 9223372036854775807
+        return Me(secs: 9223372036854775807, nanos: 999999999)
+    if secs < -9223372036854775808
+        return Me(secs: -9223372036854775808, nanos: 0)
+    return Me(secs: secs.to[S64](), nanos: (ns % 1000000000).to[U32]())
 
 # -- counts --------------------------------------------------------------------
+
+### The duration of `seconds` seconds and `nanoseconds` nanoseconds: a reading of a clock that gives the two apart.
+### :param seconds: The whole seconds, negative for a negative duration.
+### :param nanoseconds: The nanoseconds added to them, 1000000000 or more carried into the seconds.
+### :returns: The duration.
+### :throws: Crashes with `IntegerOverflowError` when it is beyond {Duration.MAX}.
+@track_caller
+routine Duration.from_parts(seconds: S64, nanoseconds: U32) -> Me
+    if nanoseconds < 1000000000
+        return Me(secs: seconds, nanos: nanoseconds)
+    return Me.of_total(seconds.to[S128]() * 1000000000 + nanoseconds.to[S128]())
 
 ### The duration of `count` nanoseconds.
 ### :param count: The nanoseconds.
 ### :returns: The duration.
-routine Duration.from_nanoseconds(count: U64) -> Me
-    r: Me = bitcast[U64, Me](count)
-    return r
+routine Duration.from_nanoseconds(count: S64) -> Me
+    return Me.of_total(count.to[S128]())
 
 ### The duration of `count` microseconds.
 ### :param count: The microseconds.
 ### :returns: The duration.
-### :throws: Crashes with `IntegerOverflowError` when it is longer than {Duration.MAX}.
-@track_caller
-routine Duration.from_microseconds(count: U64) -> Me
-    return Me.from_nanoseconds(count * 1000)
+routine Duration.from_microseconds(count: S64) -> Me
+    return Me.of_total(count.to[S128]() * 1000)
 
 ### The duration of `count` milliseconds.
 ### :param count: The milliseconds.
 ### :returns: The duration.
-### :throws: Crashes with `IntegerOverflowError` when it is longer than {Duration.MAX}.
-@track_caller
-routine Duration.from_milliseconds(count: U64) -> Me
-    return Me.from_nanoseconds(count * 1000000)
+routine Duration.from_milliseconds(count: S64) -> Me
+    return Me.of_total(count.to[S128]() * 1000000)
 
 ### The duration of `count` seconds.
 ### :param count: The seconds.
 ### :returns: The duration.
-### :throws: Crashes with `IntegerOverflowError` when it is longer than {Duration.MAX}.
-@track_caller
-routine Duration.from_seconds(count: U64) -> Me
-    return Me.from_nanoseconds(count * 1000000000)
+routine Duration.from_seconds(count: S64) -> Me
+    return Me(secs: count, nanos: 0)
 
 ### The duration in nanoseconds.
 ### :returns: The nanoseconds.
-routine Duration.nanoseconds(me: Me) -> U64
-    r: U64 = bitcast[Me, U64](me)
-    return r
+### :throws: Crashes with `IntegerOverflowError` when it doesn't fit an S64 (more than about 292 years either way).
+@track_caller
+routine Duration.nanoseconds(me: Me) -> S64
+    return me.total().to[S64]()
+
+### The duration in nanoseconds, stopping at the ends of an S64: for a wait that takes a count of nanoseconds.
+### :returns: The nanoseconds, or the end of S64 it went past.
+routine Duration.nanoseconds_clamp(me: Me) -> S64
+    return me.total().to_clamp[S64]()
 
 ### The duration in whole microseconds, rounded down.
 ### :returns: The microseconds.
-routine Duration.microseconds(me: Me) -> U64
-    return me.nanoseconds() // 1000
+### :throws: Crashes with `IntegerOverflowError` when it doesn't fit an S64.
+@track_caller
+routine Duration.microseconds(me: Me) -> S64
+    return (me.total() // 1000).to[S64]()
 
 ### The duration in whole milliseconds, rounded down.
 ### :returns: The milliseconds.
-routine Duration.milliseconds(me: Me) -> U64
-    return me.nanoseconds() // 1000000
+### :throws: Crashes with `IntegerOverflowError` when it doesn't fit an S64.
+@track_caller
+routine Duration.milliseconds(me: Me) -> S64
+    return (me.total() // 1000000).to[S64]()
 
 ### The duration in whole seconds, rounded down.
 ### :returns: The seconds.
-routine Duration.seconds(me: Me) -> U64
-    return me.nanoseconds() // 1000000000
+routine Duration.seconds(me: Me) -> S64
+    return me.secs
 
-### No time at all, 0 nanoseconds.
+### The nanoseconds past the whole seconds, 0 up to 999999999.
+### :returns: The nanoseconds.
+routine Duration.subsecond_nanoseconds(me: Me) -> U32
+    return me.nanos
+
+### No time.
 ### :returns: The zero duration.
 routine Duration.zero() -> Me
-    return Me.from_nanoseconds(0)
+    return Me(secs: 0, nanos: 0)
 
-### Whether the duration is 0.
-### :returns: True for no time at all.
+### Whether the duration is no time.
+### :returns: True for 0.
 routine Duration.is_zero(me: Me) -> Bool
-    return me.nanoseconds() == 0
+    return me.secs == 0 and me.nanos == 0
+
+### Whether the duration is below 0.
+### :returns: True for a negative duration.
+routine Duration.is_negative(me: Me) -> Bool
+    return me.secs < 0
 
 # -- arithmetic ----------------------------------------------------------------
 
 ### The two durations together: `me + other`.
 ### :param other: The duration to add.
 ### :returns: The sum.
-### :throws: Crashes with `IntegerOverflowError` when it is longer than {Duration.MAX}.
+### :throws: Crashes with `IntegerOverflowError` when it is beyond {Duration.MAX} either way.
 @track_caller
 routine Duration.add(me: Me, other: Me) -> Me
-    return Me.from_nanoseconds(me.nanoseconds() + other.nanoseconds())
+    return Me.of_total(me.total() + other.total())
 
-### The two durations together, stopping at {Duration.MAX}: `me +^ other`. A deadline that may be "never" is
-### computed this way: `monotonic_now() +^ timeout`.
+### The two durations together, stopping at the ends: `me +^ other`. A deadline that may be "never" is computed this
+### way: `Clock.monotonic() +^ timeout`.
 ### :param other: The duration to add.
-### :returns: The sum, or {Duration.MAX}.
+### :returns: The sum, or the end it went past.
 routine Duration.add_clamp(me: Me, other: Me) -> Me
-    return Me.from_nanoseconds(me.nanoseconds() +^ other.nanoseconds())
+    return Me.of_total_clamp(me.total() + other.total())
 
-### What is left of `me` after `other`: `me - other`.
+### What is left of `me` after `other`: `me - other`. It is negative when `other` is longer.
 ### :param other: The duration to take away.
 ### :returns: The difference.
-### :throws: Crashes with `IntegerOverflowError` when `other` is longer than `me`.
+### :throws: Crashes with `IntegerOverflowError` when it is beyond {Duration.MAX} either way.
 @track_caller
 routine Duration.sub(me: Me, other: Me) -> Me
-    return Me.from_nanoseconds(me.nanoseconds() - other.nanoseconds())
+    return Me.of_total(me.total() - other.total())
 
-### What is left of `me` after `other`, stopping at 0: `me -^ other`. The time left until a deadline is
-### `deadline -^ monotonic_now()`.
+### What is left of `me` after `other`, stopping at the ends: `me -^ other`.
 ### :param other: The duration to take away.
-### :returns: The difference, or 0 when `other` is longer.
+### :returns: The difference, or the end it went past.
 routine Duration.sub_clamp(me: Me, other: Me) -> Me
-    return Me.from_nanoseconds(me.nanoseconds() -^ other.nanoseconds())
+    return Me.of_total_clamp(me.total() - other.total())
+
+### The duration the other way: `-me`.
+### :returns: The negated duration.
+### :throws: Crashes with `IntegerOverflowError` for the most negative duration.
+@track_caller
+routine Duration.neg(me: Me) -> Me
+    return Me.of_total(-me.total())
+
+### The length of the duration, whichever way it goes.
+### :returns: The duration, made positive.
+### :throws: Crashes with `IntegerOverflowError` for the most negative duration.
+@track_caller
+routine Duration.abs(me: Me) -> Me
+    if me.secs < 0
+        return me.neg()
+    return me
 
 ### The duration `factor` times over: `me * factor`.
 ### :param factor: How many times.
 ### :returns: The product.
-### :throws: Crashes with `IntegerOverflowError` when it is longer than {Duration.MAX}.
+### :throws: Crashes with `IntegerOverflowError` when it is beyond {Duration.MAX} either way.
 @track_caller
-routine Duration.mul(me: Me, factor: U64) -> Me
-    return Me.from_nanoseconds(me.nanoseconds() * factor)
+routine Duration.mul(me: Me, factor: S64) -> Me
+    return Me.of_total(me.total() * factor.to[S128]())
 
 ### The duration cut into `parts` equal parts, one of them rounded down to the nanosecond: `me // parts`.
 ### :param parts: How many parts.
 ### :returns: One part.
 ### :throws: Crashes with `DivisionByZeroError` when `parts` is 0.
 @track_caller
-routine Duration.div(me: Me, parts: U64) -> Me
-    return Me.from_nanoseconds(me.nanoseconds() // parts)
+routine Duration.div(me: Me, parts: S64) -> Me
+    return Me.of_total(me.total() // parts.to[S128]())
 
-### How many whole times `other` fits in `me`: `me // other`.
-### :param other: The duration to count.
+### How many times `other` fits in `me`, rounded down: `me // other`.
+### :param other: The duration to measure with.
 ### :returns: The count.
-### :throws: Crashes with `DivisionByZeroError` when `other` is 0.
+### :throws: Crashes with `DivisionByZeroError` when `other` is 0, and with `IntegerOverflowError` when the count
+###     doesn't fit an S64.
 @track_caller
-routine Duration.div(me: Me, other: Me) -> U64
-    return me.nanoseconds() // other.nanoseconds()
+routine Duration.div(me: Me, other: Me) -> S64
+    return (me.total() // other.total()).to[S64]()
 
 ### What is left of `me` after taking out `other` as many whole times as it fits: `me % other`.
 ### :param other: The duration to take out.
-### :returns: The rest.
+### :returns: The rest, 0 up to `|other|`.
 ### :throws: Crashes with `DivisionByZeroError` when `other` is 0.
 @track_caller
 routine Duration.mod(me: Me, other: Me) -> Me
-    return Me.from_nanoseconds(me.nanoseconds() % other.nanoseconds())
+    return Me.of_total(me.total() % other.total())
 
 ### The shorter of the two durations.
 ### :param other: The other duration.
 ### :returns: The shorter one.
 routine Duration.min(me: Me, other: Me) -> Me
-    return Me.from_nanoseconds(me.nanoseconds().min(other.nanoseconds()))
+    if other.lt(me)
+        return other
+    return me
 
 ### The longer of the two durations.
 ### :param other: The other duration.
 ### :returns: The longer one.
 routine Duration.max(me: Me, other: Me) -> Me
-    return Me.from_nanoseconds(me.nanoseconds().max(other.nanoseconds()))
+    if me.lt(other)
+        return other
+    return me
 
 # -- comparison and hashing ----------------------------------------------------
 
@@ -163,45 +249,51 @@ routine Duration.max(me: Me, other: Me) -> Me
 ### :param other: The duration to compare with.
 ### :returns: True when they are as long.
 routine Duration.eq(me: Me, other: Me) -> Bool
-    return me.nanoseconds() == other.nanoseconds()
+    return me.secs == other.secs and me.nanos == other.nanos
 
 ### Whether the two durations differ.
 ### :param other: The duration to compare with.
 ### :returns: True when they differ.
 routine Duration.ne(me: Me, other: Me) -> Bool
-    return me.nanoseconds() != other.nanoseconds()
+    return not me.eq(other)
 
 ### Whether `me` is shorter than `other`.
 ### :param other: The duration to compare with.
 ### :returns: `me < other`.
 routine Duration.lt(me: Me, other: Me) -> Bool
-    return me.nanoseconds() < other.nanoseconds()
+    if me.secs == other.secs
+        return me.nanos < other.nanos
+    return me.secs < other.secs
 
 ### Whether `me` is at most as long as `other`.
 ### :param other: The duration to compare with.
 ### :returns: `me <= other`.
 routine Duration.le(me: Me, other: Me) -> Bool
-    return me.nanoseconds() <= other.nanoseconds()
+    return not other.lt(me)
 
 ### Whether `me` is longer than `other`.
 ### :param other: The duration to compare with.
 ### :returns: `me > other`.
 routine Duration.gt(me: Me, other: Me) -> Bool
-    return me.nanoseconds() > other.nanoseconds()
+    return other.lt(me)
 
 ### Whether `me` is at least as long as `other`.
 ### :param other: The duration to compare with.
 ### :returns: `me >= other`.
 routine Duration.ge(me: Me, other: Me) -> Bool
-    return me.nanoseconds() >= other.nanoseconds()
+    return not me.lt(other)
 
 ### Three-way comparison of `me` and `other`.
 ### :param other: The duration to compare with.
 ### :returns: -1, 0, or 1 as `me` is shorter, as long, or longer.
 routine Duration.compare(me: Me, other: Me) -> S32
-    return me.nanoseconds().compare(other.nanoseconds())
+    if me.lt(other)
+        return -1
+    if other.lt(me)
+        return 1
+    return 0
 
-### The keyed hash of the nanoseconds.
+### The keyed hash of the seconds and the nanoseconds.
 ### :returns: The hash.
 routine Duration.hash(me: Me) -> U64
-    return me.nanoseconds().hash()
+    return me.secs.hash() ^ (me.nanos.to[U64]() * 0x9E3779B97F4A7C15).hash()
