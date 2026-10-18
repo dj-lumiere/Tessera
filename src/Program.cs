@@ -301,7 +301,7 @@ static class Cli
             try
             {
                 var manifest = Manifest.Load(path);
-                return (manifest.Target, Manifest.ImportClosure(file, manifest.Roots, manifest.OutputDirectory));
+                return (manifest.Target, Manifest.ImportClosure(file, manifest.Roots, manifest.OutputDirectory, manifest.RootFiles));
             }
             catch (ManifestError)
             {
@@ -626,18 +626,20 @@ static class Cli
     {
         string shown = shownAs ?? ShownPath(path);
         var tokens = new Lexer(shown, SourceText.Read(path, shown)).Lex();
-        return new Parser(tokens, shown, isLibrary, programModuleRoots: programRoots).ParseModule().Decls;
+        return new Parser(tokens, shown, isLibrary, programModuleRoots: programRoots,
+            placeModule: Manifest.PlaceModule(path)).ParseModule().Decls;
     }
 
-    /// The first name of every module the files declare on their `module` lines. A file that can't be read names none
-    /// (its own parse reports it).
+    /// The first name of every module the files declare on their `module` lines or take from their place in the
+    /// solution. A file that can't be read names none (its own parse reports it).
     private static HashSet<string> ProgramModuleRoots(IEnumerable<string> files)
     {
         var roots = new HashSet<string>();
         foreach (string file in files)
         {
             if (!File.Exists(file)) continue;
-            if (Parser.DeclaredModuleRoot(File.ReadLines(file)) is { } root) roots.Add(root);
+            if ((Parser.DeclaredModuleRoot(File.ReadLines(file)) ?? Manifest.PlaceModule(file)?.Split('/')[0]) is { } root)
+                roots.Add(root);
         }
         return roots;
     }

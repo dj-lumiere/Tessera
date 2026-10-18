@@ -65,6 +65,9 @@ public sealed record Manifest(
     /// directory (another package's root).
     public List<string> Roots { get; init; } = [];
 
+    /// The entry and the files `sources` lists: without a `module` line they belong to the root module.
+    public List<string> RootFiles { get; init; } = [];
+
     /// `[debug] trace`: whether the program keeps the crash trace, or null for the mode's default.
     public bool? Trace { get; init; }
 
@@ -173,7 +176,8 @@ public sealed record Manifest(
             if (!System.IO.Directory.Exists(full)) throw new ManifestError(path, $"[target] module-paths: no such directory: {lib}");
             roots.Add(full);
         }
-        var sources = ImportClosure(entry, roots, System.IO.Path.Combine(dir, "build"));
+        // The entry and the files `sources` lists belong to the root module unless they have a `module` line.
+        var rootFiles = new List<string> { System.IO.Path.GetFullPath(entry) };
         foreach (var extra in Strs(target, "sources", path) ?? [])
         {
             string full = Resolve(extra);
@@ -182,9 +186,11 @@ public sealed record Manifest(
                 : File.Exists(full) && full.EndsWith(".te", StringComparison.OrdinalIgnoreCase)
                     ? [full]
                     : throw new ManifestError(path, $"[target] sources: no such .te file or directory: {extra}");
-            foreach (var file in files)
-                if (!sources.Contains(file, StringComparer.OrdinalIgnoreCase)) sources.Add(file);
+            rootFiles.AddRange(files.Select(System.IO.Path.GetFullPath));
         }
+        var sources = ImportClosure(entry, roots, System.IO.Path.Combine(dir, "build"), rootFiles);
+        foreach (var file in rootFiles)
+            if (!sources.Contains(file, StringComparer.OrdinalIgnoreCase)) sources.Add(file);
 
         string? linkScript = Str(target, "link-script", path) is { } ls ? Resolve(ls) : null;
         if (linkScript is not null && !File.Exists(linkScript))
@@ -198,6 +204,7 @@ public sealed record Manifest(
             Bool(debug, "emit-llvm", path) ?? false)
         {
             Roots = roots,
+            RootFiles = rootFiles,
             Trace = Bool(debug, "trace", path),
             HeapCheck = Bool(debug, "heap-check", path) ?? false,
             RaceCheck = Bool(debug, "race-check", path) ?? false,
@@ -210,22 +217,60 @@ public sealed record Manifest(
     /// The entry and every file the build needs from the roots: those declaring a module the entry imports, then
     /// those declaring what they import, and so on. Standard/ modules are the standard library's, always built in;
     /// a module no root declares is left for the build to report where it is imported.
-    internal static List<string> ImportClosure(string entry, List<string> roots, string buildDir) =>
-        ImportClosure(entry, ModuleFiles(roots, buildDir));
+    internal static List<string> ImportClosure(string entry, List<string> roots, string buildDir,
+        IReadOnlyCollection<string> rootFiles) =>
+        ImportClosure(entry, ModuleFiles(roots, buildDir, rootFiles));
 
-    /// The files under the roots (not under buildDir) that declare a module, by the module they declare.
-    internal static Dictionary<string, List<string>> ModuleFiles(List<string> roots, string buildDir)
+    /// The modules files of a solution take from their place, by full path: a file without a `module` line under the
+    /// manifest's folder or a `module-paths` folder (ModuleFiles with `solution`). The parser gives such a file this
+    /// module, as if it had the line (Program.ParseFile, the language server).
+    internal static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> PlaceModules =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// The module a file takes from its place in a solution, or null when it has a `module` line or isn't in one.
+    internal static string? PlaceModule(string file) =>
+        PlaceModules.TryGetValue(System.IO.Path.GetFullPath(file), out var module) ? module : null;
+
+    /// The files under the roots (not under buildDir) that declare a module, by the module they declare. In a
+    /// solution (`rootFiles` given: the roots are a manifest's folder and its `module-paths` folders) a file without a
+    /// `module` line is the module its place names, under the deepest root that holds it (`money/tax.te` is
+    /// Money/Tax), and PlaceModules records it for the parser. The entry and the `sources` files (`rootFiles`) stay in
+    /// the root module.
+    internal static Dictionary<string, List<string>> ModuleFiles(List<string> roots, string buildDir,
+        IReadOnlyCollection<string>? rootFiles = null)
     {
+        bool solution = rootFiles is not null;
+        var inRoot = new HashSet<string>(rootFiles ?? [], StringComparer.OrdinalIgnoreCase);
         var byModule = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-        foreach (var root in roots)
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var root in roots.OrderByDescending(r => System.IO.Path.GetFullPath(r).Length))
             foreach (var file in System.IO.Directory.GetFiles(root, "*.te", SearchOption.AllDirectories)
                          .Where(f => !IsUnder(f, buildDir)).Order(StringComparer.Ordinal))
-                if (Header(file).Module is { } module)
+            {
+                string full = System.IO.Path.GetFullPath(file);
+                if (!seen.Add(full)) continue;
+                string? module = Header(file).Module;
+                if (module is null && solution && !inRoot.Contains(full))
                 {
-                    if (!byModule.TryGetValue(module, out var files)) byModule[module] = files = [];
-                    files.Add(System.IO.Path.GetFullPath(file));
+                    module = ModuleByPlace(root, full);
+                    PlaceModules[full] = module;
                 }
+                else PlaceModules.TryRemove(full, out _);
+                if (module is null) continue;
+                if (!byModule.TryGetValue(module, out var files)) byModule[module] = files = [];
+                files.Add(full);
+            }
         return byModule;
+    }
+
+    /// The module a file's place in a folder names: each folder and the file's name, PascalCased (spaces and
+    /// underscores dropped, each word capitalized), joined with `/`.
+    internal static string ModuleByPlace(string root, string file)
+    {
+        var parts = System.IO.Path.GetRelativePath(root, file).Split('/', '\\');
+        parts[^1] = System.IO.Path.GetFileNameWithoutExtension(parts[^1]);
+        return string.Join('/', parts.Select(part => string.Concat(part.Split(' ', '_', '-')
+            .Where(w => w.Length > 0).Select(w => char.ToUpperInvariant(w[0]) + w[1..]))));
     }
 
     /// The entry and every file the build needs from `byModule` (ModuleFiles), as the overload above.
@@ -241,7 +286,9 @@ public sealed record Manifest(
         Add(System.IO.Path.GetFullPath(entry));
         while (pending.Count > 0)
         {
-            var (own, imports) = Header(pending.Dequeue());
+            string next = pending.Dequeue();
+            var (own, imports) = Header(next);
+            own ??= PlaceModule(next);
             // The rest of the file's own module comes along: a module may span files.
             foreach (var module in own is null ? imports : imports.Prepend(own))
                 if (!module.StartsWith("Standard/", StringComparison.Ordinal) && byModule.TryGetValue(module, out var files))

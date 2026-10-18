@@ -222,7 +222,8 @@ public static partial class LanguageServer
                 string sourceText = source.Equals(file, StringComparison.OrdinalIgnoreCase)
                     ? text
                     : OpenText(source) ?? SourceText.Read(source, Shown(source));
-                decls.AddRange(ParseRecovering(Shown(source), sourceText, IsUnder(source, stdlib), parseErrors));
+                decls.AddRange(ParseRecovering(Shown(source), sourceText, IsUnder(source, stdlib), parseErrors,
+                    Manifest.PlaceModule(source)));
             }
             decls.AddRange(StdlibDecls(stdlib).Where(d => !own.Contains(d.File)));
 
@@ -270,11 +271,12 @@ public static partial class LanguageServer
     /// whole, each top-level declaration is parsed on its own (one starts at a line of its own column 0 after a blank
     /// line, its doc and annotation lines included) and those that parse are kept, at their own lines. Each one that
     /// doesn't adds its error. A half-written routine leaves the rest of the file named, colored, and completed.
-    private static List<Decl> ParseRecovering(string shown, string text, bool library, List<CompileError> errors)
+    private static List<Decl> ParseRecovering(string shown, string text, bool library, List<CompileError> errors,
+        string? placeModule = null)
     {
         try
         {
-            return new Parser(new Lexer(shown, text).Lex(), shown, library).ParseModule().Decls;
+            return new Parser(new Lexer(shown, text).Lex(), shown, library, placeModule: placeModule).ParseModule().Decls;
         }
         catch (CompileError) { }
 
@@ -290,7 +292,8 @@ public static partial class LanguageServer
             string chunk = string.Join("\n", lines[from..to]);
             try
             {
-                decls.AddRange(new Parser(new Lexer(shown, chunk, from + 1, 1).Lex(), shown, library).ParseModule().Decls);
+                decls.AddRange(new Parser(new Lexer(shown, chunk, from + 1, 1).Lex(), shown, library, placeModule: placeModule)
+                    .ParseModule().Decls);
             }
             catch (CompileError e)
             {
@@ -317,7 +320,7 @@ public static partial class LanguageServer
             return (BuildTarget.Host(), [file], Ko($"checked on its own: {e.Message}", $"이 파일만 검사합니다: {e.Message}"));
         }
         if (!IsUnder(file, manifest.Directory)) return (manifest.Target, [file], null);
-        return (manifest.Target, Manifest.ImportClosure(file, manifest.Roots, manifest.OutputDirectory), null);
+        return (manifest.Target, Manifest.ImportClosure(file, manifest.Roots, manifest.OutputDirectory, manifest.RootFiles), null);
     }
 
     private static readonly Dictionary<string, (DateTime Stamp, List<Decl> Decls)> Stdlib =

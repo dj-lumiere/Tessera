@@ -5,7 +5,7 @@ namespace Tessera;
 /// Recursive-descent parser. Layout is not significant: declarations are found by their keywords, statements are
 /// separated by newlines, and a block ends at its terminator.
 public sealed class Parser(List<Token> tokens, string file, bool isLibrary = false, IEnumerable<string>? values = null,
-    bool acceptLegacy = false, IEnumerable<string>? programModuleRoots = null)
+    bool acceptLegacy = false, IEnumerable<string>? programModuleRoots = null, string? placeModule = null)
 {
     private int _i;
 
@@ -74,7 +74,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     {
         var decls = new List<Decl>();
         SkipNewlines();
-        string module = "";
+        // A file of a solution without a `module` line is the module its place names (Manifest.PlaceModules).
+        string module = placeModule ?? "";
         if (IsIdent("module"))
         {
             var pos = Next().Pos;
@@ -83,6 +84,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             decls.Add(new ModuleDecl(file, module, pos) { IsLibrary = isLibrary, Module = module });
             SkipNewlines();
         }
+        else if (module != "")
+            decls.Add(new ModuleDecl(file, module, Cur.Pos) { IsLibrary = isLibrary, Module = module });
         while (IsIdent("import"))
         {
             var pos = Next().Pos;
