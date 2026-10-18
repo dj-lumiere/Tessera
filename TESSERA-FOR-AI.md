@@ -417,8 +417,8 @@ routine start() -> None
   a variant (`is S64 as n =>`, `is None =>`, `is A, is B =>`), `else =>`, and `else as rest =>`. The one line after
   `=>` is a call, `return`, `break`, `continue`, or `pass` (go on after the `when`), or the arm takes its lines under
   it. Only the taken arm runs. An integer `when v` needs `else`, a choice `when v` without `else` lists every member,
-  a variant `when` without `else` observes every branch. There are no range patterns: test ranges with `between` /
-  `in_range` in a condition `when`.
+  a variant `when` without `else` observes every branch. There are no range patterns: test ranges with a chained
+  comparison (`b'0' <= c <= b'9' =>`) in a condition `when`.
 - **`when` as a value.** `x: T = when ...` (and `return when ...`, `becomes when ...`) gives one value from the arm
   taken: a one-line arm's expression (`is S64 as n => n`, `n < 10 => Size.SMALL`), the `becomes v` that ends a
   multi-line arm, or the arm leaves with `return`, `break`, or `continue`. A name an arm gives (`is T as name`) is
@@ -481,8 +481,9 @@ routine start() -> None
   `if` that knows it's safe: compute it under that `if`, or in the `continue with` of the pass that uses it (those
   values are evaluated only on that path). A value `when` runs only the arm taken, and tests its conditions in
   order, stopping at the first that holds.
-- Range checks: `c.between(b'0', b'9')` is the closed `[lo, hi]`, `i.in_range(0, len)` the half-open
-  `[lo, end)`, on every integer, float, `Byte`, and `Char`.
+- Range checks are chained comparisons: `b'0' <= c <= b'9'` is the closed `[lo, hi]`, `0 <= i < len` the half-open
+  `[lo, end)`. There is no `between` / `in_range` (calling one is a build error naming the chain, and
+  `tessera migrate --step ranges` rewrites them, reporting a call whose middle isn't a name, field or literal).
 - Lengths, indices, counts, sizes, and `sizeof` / `alignof` are `U64` on every target; value generic parameters are
   `U64` (`COUNT: U64`). `CSize` / `CSSize` are C's `size_t` / `ssize_t` (the pointer width), used only at the C
   boundary (`@external("c")` signatures): types of their own that never mix with `U64` / `S64`, so a C call converts
@@ -1278,7 +1279,7 @@ never `can_[x]`: `is_readable`, `is_writable`, `is_seekable` (not `can_read`, `c
 symbol keeps its own name (`rf_fs_can_read`). A vector mask asks
 `is_all_true()`, `is_any_true()`, `is_none_true()`. A free routine with a family prefix keeps the prefix first
 (`f128_is_integer`, `ryu_is_multiple_of_pow5`). Not questions in this sense, so they keep their names: comparisons and
-range checks (`eq`, `lt`, `between`, `in_range`), an overflow test that goes with its operation
+(`eq`, `lt`, `compare`), an overflow test that goes with its operation
 (`mul_overflows`), and a routine that does something and says whether it worked (`Set.add`, `remove`, `try_lock`,
 `wait_for`). A `Bool` value in a body reads as a predicate too, but needs no prefix (`done`, `found`).
 

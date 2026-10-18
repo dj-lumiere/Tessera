@@ -3842,6 +3842,11 @@ public sealed class FunctionGen
         // A value of a type parameter has the routines its constraints give it, and the error says which would.
         if (_c.Prechecking && (rt as ArchetypeType ?? (rt as PtrType)?.Pointee as ArchetypeType) is { } param)
             throw _c.PrecheckNoMethod(param, m.Name, DescribeReceiver(m.Receiver, rt), rt, m.Pos);
+        // The range checks are chained comparisons.
+        if (m.Name is "between" or "in_range" && m.Args.Count == 2)
+            throw Err(m.Pos, m.Name == "between"
+                ? "a range check is a chained comparison: `lo <= x <= hi` (bind x to a name first when it is a call)"
+                : "a range check is a chained comparison: `lo <= x < end` (bind x to a name first when it is a call)");
         throw Err(m.Pos, $"{rt} has no method '{m.Name}'");
     }
 
