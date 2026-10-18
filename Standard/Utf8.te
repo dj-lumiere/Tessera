@@ -41,20 +41,35 @@ routine utf8_decode(bytes: @Byte, pos: U64, len: U64) -> Utf8Decoded
         replacement: Char = fffd.to[Char]()
         result: Utf8Decoded = Utf8Decoded(char: replacement, next_pos: pos, ok: false)
         return result
-    else
-        b0: Byte = bytes.stride(pos).peek()
-        b0u: U32 = b0.to[U8]().to[U32]()
-        next: U64 = pos + 1
-        is_one: Bool = b0u < 0x80
-        values2: (U32, U32, U64) = when
-            is_one => (b0u, 0, next)
-            else =>
-                mask2: U32 = b0u & 0xE0
-                if mask2 == 0xC0
+    b0: Byte = bytes.stride(pos).peek()
+    b0u: U32 = b0.to[U8]().to[U32]()
+    next: U64 = pos + 1
+    is_one: Bool = b0u < 0x80
+    values2: (U32, U32, U64) = when
+        is_one => (b0u, 0, next)
+        else =>
+            mask2: U32 = b0u & 0xE0
+            if mask2 == 0xC0
+                b1u: U32 = utf8_continuation(bytes, pos: next, len)
+                if b1u <= 0x3F
+                    hi: U32 = (b0u & 0x1F) << 6
+                    becomes (hi | b1u, 0x80, next + 1)
+                else
+                    fffd: U32 = 0xFFFD
+                    replacement: Char = fffd.to[Char]()
+                    result: Utf8Decoded = Utf8Decoded(char: replacement, next_pos: pos,
+                        ok: false)
+                    return result
+            else
+                mask3: U32 = b0u & 0xF0
+                if mask3 == 0xE0
+                    n2: U64 = next + 1
                     b1u: U32 = utf8_continuation(bytes, pos: next, len)
-                    if b1u <= 0x3F
-                        hi: U32 = (b0u & 0x1F) << 6
-                        becomes (hi | b1u, 0x80, next + 1)
+                    b2u: U32 = utf8_continuation(bytes, pos: n2, len)
+                    if b1u | b2u <= 0x3F
+                        hi: U32 = (b0u & 0x0F) << 12
+                        mid: U32 = b1u << 6
+                        becomes (hi | mid | b2u, 0x800, n2 + 1)
                     else
                         fffd: U32 = 0xFFFD
                         replacement: Char = fffd.to[Char]()
@@ -62,15 +77,20 @@ routine utf8_decode(bytes: @Byte, pos: U64, len: U64) -> Utf8Decoded
                             ok: false)
                         return result
                 else
-                    mask3: U32 = b0u & 0xF0
-                    if mask3 == 0xE0
+                    mask4: U32 = b0u & 0xF8
+                    if mask4 == 0xF0
                         n2: U64 = next + 1
+                        n3: U64 = n2 + 1
                         b1u: U32 = utf8_continuation(bytes, pos: next, len)
                         b2u: U32 = utf8_continuation(bytes, pos: n2, len)
-                        if b1u | b2u <= 0x3F
-                            hi: U32 = (b0u & 0x0F) << 12
-                            mid: U32 = b1u << 6
-                            becomes (hi | mid | b2u, 0x800, n2 + 1)
+                        b3u: U32 = utf8_continuation(bytes, pos: n3, len)
+                        continuation_bits: U32 = b1u | b2u | b3u
+                        if continuation_bits <= 0x3F
+                            p0: U32 = (b0u & 0x07) << 18
+                            p1: U32 = b1u << 12
+                            p2: U32 = b2u << 6
+                            upper: U32 = p0 | p1 | p2
+                            becomes (upper | b3u, 0x10000, n3 + 1)
                         else
                             fffd: U32 = 0xFFFD
                             replacement: Char = fffd.to[Char]()
@@ -78,49 +98,27 @@ routine utf8_decode(bytes: @Byte, pos: U64, len: U64) -> Utf8Decoded
                                 ok: false)
                             return result
                     else
-                        mask4: U32 = b0u & 0xF8
-                        if mask4 == 0xF0
-                            n2: U64 = next + 1
-                            n3: U64 = n2 + 1
-                            b1u: U32 = utf8_continuation(bytes, pos: next, len)
-                            b2u: U32 = utf8_continuation(bytes, pos: n2, len)
-                            b3u: U32 = utf8_continuation(bytes, pos: n3, len)
-                            continuation_bits: U32 = b1u | b2u | b3u
-                            if continuation_bits <= 0x3F
-                                p0: U32 = (b0u & 0x07) << 18
-                                p1: U32 = b1u << 12
-                                p2: U32 = b2u << 6
-                                upper: U32 = p0 | p1 | p2
-                                becomes (upper | b3u, 0x10000, n3 + 1)
-                            else
-                                fffd: U32 = 0xFFFD
-                                replacement: Char = fffd.to[Char]()
-                                result: Utf8Decoded = Utf8Decoded(char: replacement, next_pos: pos,
-                                    ok: false)
-                                return result
-                        else
-                            fffd: U32 = 0xFFFD
-                            replacement: Char = fffd.to[Char]()
-                            result: Utf8Decoded = Utf8Decoded(char: replacement, next_pos: pos,
-                                ok: false)
-                            return result
-        cp, min, after = values2
-        if cp < min
+                        fffd: U32 = 0xFFFD
+                        replacement: Char = fffd.to[Char]()
+                        result: Utf8Decoded = Utf8Decoded(char: replacement, next_pos: pos,
+                            ok: false)
+                        return result
+    cp, min, after = values2
+    if cp < min
+        fffd: U32 = 0xFFFD
+        replacement: Char = fffd.to[Char]()
+        result: Utf8Decoded = Utf8Decoded(char: replacement, next_pos: pos, ok: false)
+        return result
+    scalar: Maybe[Char] = cp.to_checked[Char]()
+    when scalar
+        is Char as char =>
+            result: Utf8Decoded = Utf8Decoded(char: char, next_pos: after, ok: true)
+            return result
+        is None =>
             fffd: U32 = 0xFFFD
             replacement: Char = fffd.to[Char]()
             result: Utf8Decoded = Utf8Decoded(char: replacement, next_pos: pos, ok: false)
             return result
-        else
-            scalar: Maybe[Char] = cp.to_checked[Char]()
-            when scalar
-                is Char as char =>
-                    result: Utf8Decoded = Utf8Decoded(char: char, next_pos: after, ok: true)
-                    return result
-                is None =>
-                    fffd: U32 = 0xFFFD
-                    replacement: Char = fffd.to[Char]()
-                    result: Utf8Decoded = Utf8Decoded(char: replacement, next_pos: pos, ok: false)
-                    return result
 
 ### Reads the continuation byte at `pos` and gives its six payload bits.
 ### :param bytes: The buffer to read from.
@@ -134,8 +132,7 @@ routine utf8_continuation(bytes: @Byte, pos: U64, len: U64) -> U32
     bu: U32 = b.to[U8]().to[U32]()
     if bu & 0xC0 == 0x80
         return bu & 0x3F
-    else
-        return 0xFF
+    return 0xFF
 
 # -- encode --------------------------------------------------------------------
 
@@ -149,13 +146,13 @@ routine utf8_encode_into(char: Char, out: @Byte) -> U64
     if cp < 0x80
         out.stride(0).poke(cp.to[U8]().bits())
         return 1
-    elseif cp < 0x800
+    if cp < 0x800
         hi: U32 = (cp >> 6) | 0xC0
         lo: U32 = (cp & 0x3F) | 0x80
         out.stride(0).poke(hi.to[U8]().bits())
         out.stride(1).poke(lo.to[U8]().bits())
         return 2
-    elseif cp < 0x10000
+    if cp < 0x10000
         b0: U32 = (cp >> 12) | 0xE0
         middle_six: U32 = (cp >> 6) & 0x3F
         b1: U32 = middle_six | 0x80
@@ -164,15 +161,14 @@ routine utf8_encode_into(char: Char, out: @Byte) -> U64
         out.stride(1).poke(b1.to[U8]().bits())
         out.stride(2).poke(b2.to[U8]().bits())
         return 3
-    else
-        b0: U32 = (cp >> 18) | 0xF0
-        upper_six: U32 = (cp >> 12) & 0x3F
-        b1: U32 = upper_six | 0x80
-        middle_six: U32 = (cp >> 6) & 0x3F
-        b2: U32 = middle_six | 0x80
-        b3: U32 = (cp & 0x3F) | 0x80
-        out.stride(0).poke(b0.to[U8]().bits())
-        out.stride(1).poke(b1.to[U8]().bits())
-        out.stride(2).poke(b2.to[U8]().bits())
-        out.stride(3).poke(b3.to[U8]().bits())
-        return 4
+    b0: U32 = (cp >> 18) | 0xF0
+    upper_six: U32 = (cp >> 12) & 0x3F
+    b1: U32 = upper_six | 0x80
+    middle_six: U32 = (cp >> 6) & 0x3F
+    b2: U32 = middle_six | 0x80
+    b3: U32 = (cp & 0x3F) | 0x80
+    out.stride(0).poke(b0.to[U8]().bits())
+    out.stride(1).poke(b1.to[U8]().bits())
+    out.stride(2).poke(b2.to[U8]().bits())
+    out.stride(3).poke(b3.to[U8]().bits())
+    return 4

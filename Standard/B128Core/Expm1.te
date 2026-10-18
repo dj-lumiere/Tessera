@@ -194,46 +194,43 @@ routine cm_expm1_general(u: U128) -> B128
             a: CmExpm1Scaled = cm_expm1_accurate(u)
             r: B128 = cm_expm1_round15(a, sign: sm)
             return r
-        else
-            res_lo: U64 = cm_wide_lo(signed2)
-            rnd: U64 = (res_lo >> (14 - nz).to[U64]()) & 1
-            sig: U128 = signed2 >> (15 - nz).to[U128]()
-            e: S64 = el - (nz - 4) + 16382
-            r: B128 = cm_expm1_pack(sig, el: e.to[U64](), sign: sm, round: rnd)
-            return r
-    else
-        # x < -2.77 or e^x < 1/16: the result is -(1 - e^x), with its leading bit at a fixed place
-        neg: U128 = 0 -% res
-        rb_fits: Bool = s + 14 <= 127
-        tm_fits: Bool = s + 15 <= 127
-        rb_shift: S64 = (s + 14).min(127)
-        rb_bit: U128 = 1 << rb_shift.to[U128]()
-        tm_shift: S64 = (s + 15).min(127)
-        tm_bits: U128 = (1 << tm_shift.to[U128]()) -% 1
-        rb: U128 = when
-            rb_fits => rb_bit
-            else => 0
-        tm_in: U128 = when
-            tm_fits => tm_bits
-            else => 0
-        tm: U128 = when
-            rb_fits => tm_in
-            else => U128.MAX
-        tail: U128 = tm & neg +% rb
-        if tail <= 6
-            a: CmExpm1Scaled = cm_expm1_accurate(u)
-            r: B128 = cm_expm1_round15(a, sign: sm)
-            return r
-        else
-            neg2: S128 = neg.to_wrap[S128]()
-            in_range: Bool = s < 128
-            shifted: S128 = neg2 >> s.min(127).to[S128]()
-            res2: S128 = when
-                in_range => shifted
-                else => -1
-            scaled: CmExpm1Scaled = CmExpm1Scaled(el: U64.MAX, sig: res2.to_wrap[U128]())
-            r: B128 = cm_expm1_round15(a: scaled, sign: sm)
-            return r
+        res_lo: U64 = cm_wide_lo(signed2)
+        rnd: U64 = (res_lo >> (14 - nz).to[U64]()) & 1
+        sig: U128 = signed2 >> (15 - nz).to[U128]()
+        e: S64 = el - (nz - 4) + 16382
+        r: B128 = cm_expm1_pack(sig, el: e.to[U64](), sign: sm, round: rnd)
+        return r
+    # x < -2.77 or e^x < 1/16: the result is -(1 - e^x), with its leading bit at a fixed place
+    neg: U128 = 0 -% res
+    rb_fits: Bool = s + 14 <= 127
+    tm_fits: Bool = s + 15 <= 127
+    rb_shift: S64 = (s + 14).min(127)
+    rb_bit: U128 = 1 << rb_shift.to[U128]()
+    tm_shift: S64 = (s + 15).min(127)
+    tm_bits: U128 = (1 << tm_shift.to[U128]()) -% 1
+    rb: U128 = when
+        rb_fits => rb_bit
+        else => 0
+    tm_in: U128 = when
+        tm_fits => tm_bits
+        else => 0
+    tm: U128 = when
+        rb_fits => tm_in
+        else => U128.MAX
+    tail: U128 = tm & neg +% rb
+    if tail <= 6
+        a: CmExpm1Scaled = cm_expm1_accurate(u)
+        r: B128 = cm_expm1_round15(a, sign: sm)
+        return r
+    neg2: S128 = neg.to_wrap[S128]()
+    in_range: Bool = s < 128
+    shifted: S128 = neg2 >> s.min(127).to[S128]()
+    res2: S128 = when
+        in_range => shifted
+        else => -1
+    scaled: CmExpm1Scaled = CmExpm1Scaled(el: U64.MAX, sig: res2.to_wrap[U128]())
+    r: B128 = cm_expm1_round15(a: scaled, sign: sm)
+    return r
 
 ### Rounds a result whose round bit is bit 14 of the significand.
 ### :param a: The result, its leading bit at 127.
@@ -357,28 +354,27 @@ routine cm_expm1_small(x: U128) -> B128
     same: B128 = b128_of(x)
     if exact
         return same
+    # the leading bit is at 127 or 126: round at bit 14 or 13, exactly when too close to a midpoint
+    a: CmExpm1Scaled = cm_expm1_small_fast(x)
+    off: U64 = 4 - sm
+    lo: U64 = cm_wide_lo(a.sig)
+    if a.sig >> 127 == 1
+        top_nudged: U64 = lo +% 0x4000 +% off
+        tail: U64 = top_nudged & 0x7FFF
+        if not (tail <= 6)
+            r: B128 = cm_expm1_round15(a, sign: sm)
+            return r
     else
-        # the leading bit is at 127 or 126: round at bit 14 or 13, exactly when too close to a midpoint
-        a: CmExpm1Scaled = cm_expm1_small_fast(x)
-        off: U64 = 4 - sm
-        lo: U64 = cm_wide_lo(a.sig)
-        if a.sig >> 127 == 1
-            top_nudged: U64 = lo +% 0x4000 +% off
-            tail: U64 = top_nudged & 0x7FFF
-            if not (tail <= 6)
-                r: B128 = cm_expm1_round15(a, sign: sm)
-                return r
-        else
-            el: U64 = a.el -% 1
-            below_nudged: U64 = lo +% 0x2000 +% off
-            tail: U64 = below_nudged & 0x3FFF
-            if not (tail <= 6)
-                rnd: U64 = (lo >> 13) & 1
-                r: B128 = cm_expm1_pack(sig: a.sig >> 14, el: el +% 16382, sign: sm, round: rnd)
-                return r
-        a2: CmExpm1Scaled = cm_expm1_accurate(x)
-        r: B128 = cm_expm1_round15(a: a2, sign: sm)
-        return r
+        el: U64 = a.el -% 1
+        below_nudged: U64 = lo +% 0x2000 +% off
+        tail: U64 = below_nudged & 0x3FFF
+        if not (tail <= 6)
+            rnd: U64 = (lo >> 13) & 1
+            r: B128 = cm_expm1_pack(sig: a.sig >> 14, el: el +% 16382, sign: sm, round: rnd)
+            return r
+    a2: CmExpm1Scaled = cm_expm1_accurate(x)
+    r: B128 = cm_expm1_round15(a: a2, sign: sm)
+    return r
 
 ### The fast path of e^x - 1 for |x| < 0.5 or so, before rounding: a table step above 2^-11, else a polynomial.
 ### CORE-MATH's rounding test (in {cm_expm1_small}) takes the result to be within [-3, 5) units of its last bit
@@ -393,8 +389,7 @@ routine cm_expm1_small_fast(x: U128) -> CmExpm1Scaled
     sj: U64 = 37 -% e
     if sj < 49
         return cm_expm1_small_table(x, sm, e, sj)
-    else
-        return cm_expm1_small_poly(x, sm, e: e.to_wrap[S64]())
+    return cm_expm1_small_poly(x, sm, e: e.to_wrap[S64]())
 
 ### 2^-11 < |x| < 0.5 or so: two 5-bit indices j0, j1 of |x| pick exp(x_j) - 1 from the tables, and a
 ### polynomial in the rest combines with them.
@@ -586,17 +581,16 @@ routine cm_expm1_small_poly(x: U128, sm: U64, e: S64) -> CmExpm1Scaled
     if neg
         r: CmExpm1Scaled = CmExpm1Scaled(el: e.to_wrap[U64](), sig: m0 -% f)
         return r
-    else
-        # x + x^2 * P(x) may carry into a new top bit
-        sum: U128 = f +% m0
-        carried: Bool = sum < f
-        halved: U128 = (sum >> 1) | 0x80000000000000000000000000000000
-        sig: U128 = when
-            carried => halved
-            else => sum
-        el: S64 = e + carried.to[S64]()
-        r: CmExpm1Scaled = CmExpm1Scaled(el: el.to_wrap[U64](), sig: sig)
-        return r
+    # x + x^2 * P(x) may carry into a new top bit
+    sum: U128 = f +% m0
+    carried: Bool = sum < f
+    halved: U128 = (sum >> 1) | 0x80000000000000000000000000000000
+    sig: U128 = when
+        carried => halved
+        else => sum
+    el: S64 = e + carried.to[S64]()
+    r: CmExpm1Scaled = CmExpm1Scaled(el: el.to_wrap[U64](), sig: sig)
+    return r
 
 # -- accurate steps ------------------------------------------------------------
 
@@ -795,25 +789,24 @@ routine cm_expm1_accurate_scale(wide: CmWide3, e: S64, sm: S64, x0: U128) -> CmE
                 # the 1 lies above the 3 words: the result is -1 plus f, complemented
                 r: CmExpm1Scaled = cm_expm1_superaccurate(x0)
                 return r
-            else
-                nz2: U64 = nz.to[U64]()
-                k: U64 = nz2 >> 6
-                ls: U64 = nz2 & 63
-                rs: U64 = (nz2 ^ U64.MAX) & 63
-                first: Bool = k == 0
-                mid: U64 = when
-                    first => w1
-                    else => w0
-                high: U64 = when
-                    first => w2
-                    else => w1
-                below: U64 = w0 >> 1 >> rs
-                m0: U64 = when
-                    first => (mid << ls) | below
-                    else => mid << ls
-                m1: U64 = (high << ls) | (mid >> 1 >> rs)
-                r: CmExpm1Scaled = cm_expm1_scaled(el: nel.to_wrap[U64](), m1, m0)
-                return r
+            nz2: U64 = nz.to[U64]()
+            k: U64 = nz2 >> 6
+            ls: U64 = nz2 & 63
+            rs: U64 = (nz2 ^ U64.MAX) & 63
+            first: Bool = k == 0
+            mid: U64 = when
+                first => w1
+                else => w0
+            high: U64 = when
+                first => w2
+                else => w1
+            below: U64 = w0 >> 1 >> rs
+            m0: U64 = when
+                first => (mid << ls) | below
+                else => mid << ls
+            m1: U64 = (high << ls) | (mid >> 1 >> rs)
+            r: CmExpm1Scaled = cm_expm1_scaled(el: nel.to_wrap[U64](), m1, m0)
+            return r
         else =>
             w0: U64 = f.stride(0).peek()
             w1: U64 = f.stride(1).peek()
@@ -906,27 +899,26 @@ routine cm_expm1_superaccurate(x0: U128) -> CmExpm1Scaled
         m1: U64 = (w5 << ls) | (w4 >> 1 >> rs)
         r: CmExpm1Scaled = cm_expm1_scaled(el: nel, m1, m0)
         return r
-    else
-        # the 1 lies above the 6 words: complement the top two
-        f5: U64 = ft.stride(5).peek()
-        f4: U64 = ft.stride(4).peek()
-        n5: U64 = ~f5
-        n4: U64 = ~f4
-        ls: S64 = (sl ^ -1) & 63
-        ones_up: U64 = (-2 << ls).to_wrap[U64]()  # (~0 << 1) << ls
-        one_word: Bool = sg == 1
-        two_words: Bool = sg == 2
-        n5_up: U64 = n5 << 1 << ls.to[U64]()
-        m0_one: U64 = n5_up | (n4 >> sl.to[U64]())
-        m1_one: U64 = ones_up | (n5 >> sl.to[U64]())
-        m0_two: U64 = ones_up | (n5 >> sl.to[U64]())
-        one: CmExpm1Scaled = cm_expm1_scaled(el: U64.MAX, m1: m1_one, m0: m0_one)
-        two: CmExpm1Scaled = cm_expm1_scaled(el: U64.MAX, m1: U64.MAX, m0: m0_two)
-        all: CmExpm1Scaled = cm_expm1_scaled(el: U64.MAX, m1: U64.MAX, m0: U64.MAX)
-        when
-            one_word => return one
-            two_words => return two
-            else => return all
+    # the 1 lies above the 6 words: complement the top two
+    f5: U64 = ft.stride(5).peek()
+    f4: U64 = ft.stride(4).peek()
+    n5: U64 = ~f5
+    n4: U64 = ~f4
+    ls: S64 = (sl ^ -1) & 63
+    ones_up: U64 = (-2 << ls).to_wrap[U64]()  # (~0 << 1) << ls
+    one_word: Bool = sg == 1
+    two_words: Bool = sg == 2
+    n5_up: U64 = n5 << 1 << ls.to[U64]()
+    m0_one: U64 = n5_up | (n4 >> sl.to[U64]())
+    m1_one: U64 = ones_up | (n5 >> sl.to[U64]())
+    m0_two: U64 = ones_up | (n5 >> sl.to[U64]())
+    one: CmExpm1Scaled = cm_expm1_scaled(el: U64.MAX, m1: m1_one, m0: m0_one)
+    two: CmExpm1Scaled = cm_expm1_scaled(el: U64.MAX, m1: U64.MAX, m0: m0_two)
+    all: CmExpm1Scaled = cm_expm1_scaled(el: U64.MAX, m1: U64.MAX, m0: U64.MAX)
+    when
+        one_word => return one
+        two_words => return two
+        else => return all
 
 # -- tables --------------------------------------------------------------------
 

@@ -149,23 +149,22 @@ routine wide_normalize(negative: Bool, exponent: S64, hi: U128, lo: U64) -> B128
     nothing: B128Extended = wide_zero()
     if zero
         return nothing
-    else
-        # a whole empty top limb moves in 64 bits at a time
-        while upper >> 64 == 0 with upper: U128 = hi, lower: U64 = lo
-            new_hi: U128 = (upper << 64) | lower.to[U128]()
-            (adjusted.peek() - 64).poke_into(adjusted)
-            continue with upper: new_hi, lower: 0
-        then
-            s: S64 = upper.leading_zeros().to[S64]()
-            some: Bool = s > 0
-            carry: U128 = when
-                some => lower.to[U128]() >> (64 - s).to[U128]()
-                else => 0
-            new_hi: U128 = (upper << s.to[U128]()) | carry
-            new_lo: U64 = lower << s.to[U64]()
-            w: B128Extended = B128Extended(negative: negative, exponent: adjusted.peek() - s,
-                hi: new_hi, lo: new_lo)
-            return w
+    # a whole empty top limb moves in 64 bits at a time
+    while upper >> 64 == 0 with upper: U128 = hi, lower: U64 = lo
+        new_hi: U128 = (upper << 64) | lower.to[U128]()
+        (adjusted.peek() - 64).poke_into(adjusted)
+        continue with upper: new_hi, lower: 0
+    then
+        s: S64 = upper.leading_zeros().to[S64]()
+        some: Bool = s > 0
+        carry: U128 = when
+            some => lower.to[U128]() >> (64 - s).to[U128]()
+            else => 0
+        new_hi: U128 = (upper << s.to[U128]()) | carry
+        new_lo: U64 = lower << s.to[U64]()
+        w: B128Extended = B128Extended(negative: negative, exponent: adjusted.peek() - s,
+            hi: new_hi, lo: new_lo)
+        return w
 
 ### `me` in B128Extended, exactly. For a finite `me` (±0 gives +0).
 ### :returns: The widened value.
@@ -192,13 +191,12 @@ routine B128Extended.to[B128](me: Me) -> B128
     plus_zero: B128 = b128_of(0)
     if zero
         return plus_zero
-    else
-        # value ~ hi × 2^(exponent - 127): b128_round_pack wants sig × 2^(biased - 16383 - 115)
-        sticky: U128 = (me.lo != 0).to[U128]()
-        sig: U128 = me.hi | sticky
-        bits: U128 = b128_round_pack(negative: me.negative, exponent: me.exponent + 16371, sig)
-        r: B128 = b128_of(bits)
-        return r
+    # value ~ hi × 2^(exponent - 127): b128_round_pack wants sig × 2^(biased - 16383 - 115)
+    sticky: U128 = (me.lo != 0).to[U128]()
+    sig: U128 = me.hi | sticky
+    bits: U128 = b128_round_pack(negative: me.negative, exponent: me.exponent + 16371, sig)
+    r: B128 = b128_of(bits)
+    return r
 
 ### mantissa >> n (bits shifted out are dropped), as a positive B128Extended with exponent 0.
 ### :param hi: Mantissa bits 191..64.
@@ -263,12 +261,11 @@ routine B128Extended.add(me: Me, other: Me) -> Me
                 negative, exponent, hi2, lo2 = values2
                 r: Me = Me(negative: negative, exponent: exponent, hi: hi2, lo: lo2)
                 return r
-            else
-                lo: U64 = big.lo -% aligned.lo
-                borrow: U128 = (big.lo < aligned.lo).to[U128]()
-                hi: U128 = big.hi -% aligned.hi -% borrow
-                r: Me = wide_normalize(negative: big.negative, exponent: big.exponent, hi, lo)
-                return r
+            lo: U64 = big.lo -% aligned.lo
+            borrow: U128 = (big.lo < aligned.lo).to[U128]()
+            hi: U128 = big.hi -% aligned.hi -% borrow
+            r: Me = wide_normalize(negative: big.negative, exponent: big.exponent, hi, lo)
+            return r
 
 ### The difference `me` - `other`.
 ### :param other: The value to subtract.
@@ -287,54 +284,53 @@ routine B128Extended.mul(me: Me, other: Me) -> Me
     nothing: Me = wide_zero()
     if zero
         return nothing
-    else
-        a2: U128 = me.hi >> 64
-        a1: U128 = me.hi & 0xFFFFFFFFFFFFFFFF
-        a0: U128 = me.lo.to[U128]()
-        b2: U128 = other.hi >> 64
-        b1: U128 = other.hi & 0xFFFFFFFFFFFFFFFF
-        b0: U128 = other.lo.to[U128]()
-        # columns 1..5 of the schoolbook product, and column 0 only feeds carries into 1
-        c0: U128 = a0 *% b0 >> 64
-        t1: U128 = a0 *% b1
-        t1b: U128 = a1 *% b0
-        s1: U128 = c0 + (t1 & 0xFFFFFFFFFFFFFFFF) + (t1b & 0xFFFFFFFFFFFFFFFF)
-        c1: U128 = s1 >> 64
-        k1: U128 = c1 + (t1 >> 64) + (t1b >> 64)
-        t2a: U128 = a0 *% b2
-        t2b: U128 = a1 *% b1
-        t2c: U128 = a2 *% b0
-        s2ab: U128 = k1 + (t2a & 0xFFFFFFFFFFFFFFFF) + (t2b & 0xFFFFFFFFFFFFFFFF)
-        s2: U128 = s2ab + (t2c & 0xFFFFFFFFFFFFFFFF)
-        c2: U128 = s2 >> 64
-        k2ab: U128 = c2 + (t2a >> 64) + (t2b >> 64)
-        k2: U128 = k2ab + (t2c >> 64)
-        t3a: U128 = a1 *% b2
-        t3b: U128 = a2 *% b1
-        s3: U128 = k2 + (t3a & 0xFFFFFFFFFFFFFFFF) + (t3b & 0xFFFFFFFFFFFFFFFF)
-        c3: U128 = s3 >> 64
-        k3: U128 = c3 + (t3a >> 64) + (t3b >> 64)
-        t4: U128 = a2 *% b2
-        s4: U128 = k3 + (t4 & 0xFFFFFFFFFFFFFFFF)
-        k4: U128 = (s4 >> 64) + (t4 >> 64)
-        # limbs r5 r4 r3 (and r2 for the shift): product = r5..r0 × 2^(64 i)
-        r2: U64 = s2.to_wrap[U64]()
-        r3: U64 = s3.to_wrap[U64]()
-        r4: U64 = s4.to_wrap[U64]()
-        r5: U64 = k4.to_wrap[S64]().to_wrap[U64]()
-        top: Bool = r5 >> 63 == 1  # bit 383 set
-        r5_high: U128 = r5.to[U128]() << 64
-        hi_full: U128 = r5_high | r4.to[U128]()
-        hi: U128 = when
-            top => hi_full
-            else => (hi_full << 1) | (r3.to[U128]() >> 63)
-        lo: U64 = when
-            top => r3
-            else => (r3 << 1) | (r2 >> 63)
-        exponent: S64 = me.exponent + other.exponent + top.to[S64]()
-        negative: Bool = me.negative ^ other.negative
-        r: Me = Me(negative: negative, exponent: exponent, hi: hi, lo: lo)
-        return r
+    a2: U128 = me.hi >> 64
+    a1: U128 = me.hi & 0xFFFFFFFFFFFFFFFF
+    a0: U128 = me.lo.to[U128]()
+    b2: U128 = other.hi >> 64
+    b1: U128 = other.hi & 0xFFFFFFFFFFFFFFFF
+    b0: U128 = other.lo.to[U128]()
+    # columns 1..5 of the schoolbook product, and column 0 only feeds carries into 1
+    c0: U128 = a0 *% b0 >> 64
+    t1: U128 = a0 *% b1
+    t1b: U128 = a1 *% b0
+    s1: U128 = c0 + (t1 & 0xFFFFFFFFFFFFFFFF) + (t1b & 0xFFFFFFFFFFFFFFFF)
+    c1: U128 = s1 >> 64
+    k1: U128 = c1 + (t1 >> 64) + (t1b >> 64)
+    t2a: U128 = a0 *% b2
+    t2b: U128 = a1 *% b1
+    t2c: U128 = a2 *% b0
+    s2ab: U128 = k1 + (t2a & 0xFFFFFFFFFFFFFFFF) + (t2b & 0xFFFFFFFFFFFFFFFF)
+    s2: U128 = s2ab + (t2c & 0xFFFFFFFFFFFFFFFF)
+    c2: U128 = s2 >> 64
+    k2ab: U128 = c2 + (t2a >> 64) + (t2b >> 64)
+    k2: U128 = k2ab + (t2c >> 64)
+    t3a: U128 = a1 *% b2
+    t3b: U128 = a2 *% b1
+    s3: U128 = k2 + (t3a & 0xFFFFFFFFFFFFFFFF) + (t3b & 0xFFFFFFFFFFFFFFFF)
+    c3: U128 = s3 >> 64
+    k3: U128 = c3 + (t3a >> 64) + (t3b >> 64)
+    t4: U128 = a2 *% b2
+    s4: U128 = k3 + (t4 & 0xFFFFFFFFFFFFFFFF)
+    k4: U128 = (s4 >> 64) + (t4 >> 64)
+    # limbs r5 r4 r3 (and r2 for the shift): product = r5..r0 × 2^(64 i)
+    r2: U64 = s2.to_wrap[U64]()
+    r3: U64 = s3.to_wrap[U64]()
+    r4: U64 = s4.to_wrap[U64]()
+    r5: U64 = k4.to_wrap[S64]().to_wrap[U64]()
+    top: Bool = r5 >> 63 == 1  # bit 383 set
+    r5_high: U128 = r5.to[U128]() << 64
+    hi_full: U128 = r5_high | r4.to[U128]()
+    hi: U128 = when
+        top => hi_full
+        else => (hi_full << 1) | (r3.to[U128]() >> 63)
+    lo: U64 = when
+        top => r3
+        else => (r3 << 1) | (r2 >> 63)
+    exponent: S64 = me.exponent + other.exponent + top.to[S64]()
+    negative: Bool = me.negative ^ other.negative
+    r: Me = Me(negative: negative, exponent: exponent, hi: hi, lo: lo)
+    return r
 
 ### me / other by Newton's method on the reciprocal: y ← y + y(1 - other·y), from a B64 seed
 ### (53 bits → 106 → 212).
@@ -929,8 +925,7 @@ routine B128.log(me: Me, base: Me) -> Me
     one: Bool = x_bits == B128_ONE or base_bits == B128_ONE
     if x_ok and base_ok and not one
         return b128_log_base(x: me, base, exact: false)
-    else
-        return me.ln() / base.ln()
+    return me.ln() / base.ln()
 
 # -- powers and roots ----------------------------------------------------------
 

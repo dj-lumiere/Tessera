@@ -49,25 +49,24 @@ routine big_make(negative: Bool, exponent: S64, m: @BigNat[16]) -> B128Big
     if m.is_zero()
         r: B128Big = B128Big(negative: false, exponent: 0, mant: m.peek())
         return r
-    else
-        while true
-            length: U64 = m.bit_length()
-            long: Bool = length > BIG_BITS
-            when
-                long =>
-                    # rounding up can carry to 2^BIG_BITS, which the next pass shifts down
-                    n: U64 = length - BIG_BITS
-                    m.shr_round_even(n)
-                    (adjusted.peek() + n.to[S64]()).poke_into(adjusted)
-                    continue
-                length < BIG_BITS =>
-                    n: U64 = BIG_BITS.sub(length)
-                    m.shl(n)
-                    (adjusted.peek() - n.to[S64]()).poke_into(adjusted)
-                    continue
-                else => break
-        r: B128Big = B128Big(negative: negative, exponent: adjusted.peek(), mant: m.peek())
-        return r
+    while true
+        length: U64 = m.bit_length()
+        long: Bool = length > BIG_BITS
+        when
+            long =>
+                # rounding up can carry to 2^BIG_BITS, which the next pass shifts down
+                n: U64 = length - BIG_BITS
+                m.shr_round_even(n)
+                (adjusted.peek() + n.to[S64]()).poke_into(adjusted)
+                continue
+            length < BIG_BITS =>
+                n: U64 = BIG_BITS.sub(length)
+                m.shl(n)
+                (adjusted.peek() - n.to[S64]()).poke_into(adjusted)
+                continue
+            else => break
+    r: B128Big = B128Big(negative: negative, exponent: adjusted.peek(), mant: m.peek())
+    return r
 
 ### Zero, as a B128Big (+0, with an empty mantissa).
 ### :returns: +0.
@@ -188,18 +187,17 @@ routine B128Big.top(me: Me) -> S64
 routine B128Big.to[B128](me: Me) -> B128
     if me.is_zero()
         return b128_of(0)
-    else
-        # the top 125 bits with a sticky bit, as big_to_b128 hands them to b128_round_pack
-        local m: @BigNat[16] <- me.mant
-        shift: U64 = BIG_BITS.sub(125)
-        sticky: Bool = m.has_any_below(shift)
-        top: U128 = m.bits128(shift)
-        sig: U128 = top | sticky.to[U128]()
-        shifted: S64 = me.exponent + shift.to[S64]()
-        exponent: S64 = shifted + B128_BIAS + 115
-        bits: U128 = b128_round_pack(negative: me.negative, exponent, sig)
-        r: B128 = b128_of(bits)
-        return r
+    # the top 125 bits with a sticky bit, as big_to_b128 hands them to b128_round_pack
+    local m: @BigNat[16] <- me.mant
+    shift: U64 = BIG_BITS.sub(125)
+    sticky: Bool = m.has_any_below(shift)
+    top: U128 = m.bits128(shift)
+    sig: U128 = top | sticky.to[U128]()
+    shifted: S64 = me.exponent + shift.to[S64]()
+    exponent: S64 = shifted + B128_BIAS + 115
+    bits: U128 = b128_round_pack(negative: me.negative, exponent, sig)
+    r: B128 = b128_of(bits)
+    return r
 
 ### The top 192 bits, truncated: seeds for Newton's method and for reductions.
 ### :returns: The truncated B128Extended.
@@ -285,20 +283,19 @@ routine B128Big.add(me: Me, other: Me) -> Me
             d: S64 = big.exponent - small.exponent
             if d > BIG_BITS.to[S64]() + 66
                 return big
+            x.poke(big.mant)
+            y.poke(small.mant)
+            x.shl(64)
+            if d <= 64
+                y.shl((64 - d).to[U64]())
             else
-                x.poke(big.mant)
-                y.poke(small.mant)
-                x.shl(64)
-                if d <= 64
-                    y.shl((64 - d).to[U64]())
-                else
-                    y.shr_round_even((d - 64).to[U64]())
-                if big.negative == small.negative
-                    x.add(y)
-                else
-                    x.sub(y)
-                r: Me = big_make(negative: big.negative, exponent: big.exponent - 64, m: x)
-                return r
+                y.shr_round_even((d - 64).to[U64]())
+            if big.negative == small.negative
+                x.add(y)
+            else
+                x.sub(y)
+            r: Me = big_make(negative: big.negative, exponent: big.exponent - 64, m: x)
+            return r
 
 ### The difference, rounded once: `me` plus the negation of `other`.
 ### :param other: The value to subtract.
@@ -440,8 +437,7 @@ routine big_exp_m1(x: B128Big) -> B128Big
                 next2: B128Big = term * x / (j + 1)
                 if big_is_negligible(term: next2, sum)
                     return sum
-                else
-                    continue with j: j + 1, term: next2, sum: sum + next2
+                continue with j: j + 1, term: next2, sum: sum + next2
         else => return big_exp(x) - big_one()
 
 # -- ln, ln_1p -----------------------------------------------------------------
@@ -468,15 +464,14 @@ routine big_ln(x: B128Big) -> B128Big
     u: B128Big = m - one  # exact
     if e == 0 and (u.is_zero() or u.top() < -20)
         return big_ln_1p(u)
-    else
-        one2: B128Big = big_one()
-        y0: B128Big = B128Extended.to[B128Big](wide_log(m.to[B128Extended]()))
-        y1: B128Big = y0 + (m * big_exp(-y0) - one2)
-        y2: B128Big = y1 + (m * big_exp(-y1) - one2)
-        k_hi: B128Big = big_ln2_hi() * e
-        k: B128Big = k_hi + big_ln2_lo() * e
-        r: B128Big = y2 + k
-        return r
+    one2: B128Big = big_one()
+    y0: B128Big = B128Extended.to[B128Big](wide_log(m.to[B128Extended]()))
+    y1: B128Big = y0 + (m * big_exp(-y0) - one2)
+    y2: B128Big = y1 + (m * big_exp(-y1) - one2)
+    k_hi: B128Big = big_ln2_hi() * e
+    k: B128Big = k_hi + big_ln2_lo() * e
+    r: B128Big = y2 + k
+    return r
 
 ### ln(1 + u) for u > -1: below 2^-20 its series u - u²/2 + u³/3 - …, else ln of 1 + u.
 ### :param u: The argument, above -1.
@@ -496,8 +491,7 @@ routine big_ln_1p(u: B128Big) -> B128Big
                     else => term2
                 if big_is_negligible(term: term2, sum)
                     return sum
-                else
-                    continue with j: j + 1, power: next_power2, sum: sum + signed2
+                continue with j: j + 1, power: next_power2, sum: sum + signed2
         else => return big_ln(big_one() + u)
 
 ### ln `x` / ln `base` in B128Big (within about 2^-430 relative), rounded to a B128 that narrows correctly to a binary
@@ -550,8 +544,7 @@ routine big_sin_core(t: B128Big) -> B128Big
         next2: B128Big = term * u / ((j + 1) * (j + 2))
         if big_is_negligible(term: next2, sum)
             return sum
-        else
-            continue with j: j + 2, term: next2, sum: sum + next2
+        continue with j: j + 2, term: next2, sum: sum + next2
 
 ### cos θ = Σ (-θ²)^k / (2k)! for |θ| <= π/4.
 ### :param t: θ, with |θ| <= π/4.
@@ -567,8 +560,7 @@ routine big_cos_core(t: B128Big) -> B128Big
         next2: B128Big = term * u / ((j + 1) * (j + 2))
         if big_is_negligible(term: next2, sum)
             return sum
-        else
-            continue with j: j + 2, term: next2, sum: sum + next2
+        continue with j: j + 2, term: next2, sum: sum + next2
 
 ### Reduces |x| by π/2 (Payne-Hanek). With |x| = m × 2^(e - 112), the bits of 2/π that land below 4 are a window W
 ### of 14 limbs (896 bits) from limb s on: |x| × 2/π mod 4 = m W × 2^-sh. The bits above sh give the quadrant, the
@@ -588,51 +580,50 @@ routine big_reduce(x: B128) -> BigReduced
     if p.exponent < -1
         r: BigReduced = BigReduced(quadrant: 0, theta: B128.to[B128Big](x.abs()))
         return r
-    else
-        bits_above: S64 = (p.exponent - 114).max(0)
-        s: U64 = bits_above.div_trunc(64).to[U64]()
-        window_bits: U64 = (s + 14) * 64
-        window_gap: S64 = window_bits.to[S64]() - p.exponent
-        sh: S64 = window_gap + 112
-        w.set(U64.MIN)
-        # limb k of W, least significant first, is TWO_OVER_PI[s + 13 - k]
-        each k: U64 in 0 til 14
-            limb: U64 = TWO_OVER_PI.getitem(s + 13 - k)
-            w.push_limb(limb)
+    bits_above: S64 = (p.exponent - 114).max(0)
+    s: U64 = bits_above.div_trunc(64).to[U64]()
+    window_bits: U64 = (s + 14) * 64
+    window_gap: S64 = window_bits.to[S64]() - p.exponent
+    sh: S64 = window_gap + 112
+    w.set(U64.MIN)
+    # limb k of W, least significant first, is TWO_OVER_PI[s + 13 - k]
+    each k: U64 in 0 til 14
+        limb: U64 = TWO_OVER_PI.getitem(s + 13 - k)
+        w.push_limb(limb)
+    then
+        local m: @BigNat[24] <- .hollow()
+        w.trim()
+        m.set(p.sig)
+        prod.set_product(a: m, b: w)
+        at: U64 = sh.to[U64]()
+        whole_low: U64 = prod.bits128(at).to_wrap[U64]()
+        quadrant: U64 = whole_low & 3
+        past_half: Bool = prod.has_bit(at - 1)
+        f.set(U64.MIN)
+        quadrant.poke_into(q)
+        # copy the bits under sh into f, 64 at a time from the bottom (sh is a whole number of limbs past any
+        # leftover bits, which bits128 reads across)
+        while i * 64 < at with i: U64 = 0
+            pos2: U64 = i * 64
+            left: U64 = at - pos2
+            word: U64 = prod.bits128(pos2).to_wrap[U64]()
+            mask: U64 = U64.MAX >> (64 - left.min(64)).to[U64]()
+            f.push_limb(word & mask)
+            continue with i: i + 1
         then
-            local m: @BigNat[24] <- .hollow()
-            w.trim()
-            m.set(p.sig)
-            prod.set_product(a: m, b: w)
-            at: U64 = sh.to[U64]()
-            whole_low: U64 = prod.bits128(at).to_wrap[U64]()
-            quadrant: U64 = whole_low & 3
-            past_half: Bool = prod.has_bit(at - 1)
-            f.set(U64.MIN)
-            quadrant.poke_into(q)
-            # copy the bits under sh into f, 64 at a time from the bottom (sh is a whole number of limbs past any
-            # leftover bits, which bits128 reads across)
-            while i * 64 < at with i: U64 = 0
-                pos2: U64 = i * 64
-                left: U64 = at - pos2
-                word: U64 = prod.bits128(pos2).to_wrap[U64]()
-                mask: U64 = U64.MAX >> (64 - left.min(64)).to[U64]()
-                f.push_limb(word & mask)
-                continue with i: i + 1
-            then
-                f.trim()
-                values2: (Bool, @BigNat[16]) = when
-                    past_half =>
-                        # f - 1 = -(2^sh - F) × 2^-sh, taken exactly before any rounding
-                        local c: @BigNat[16] <- .hollow()
-                        one: U64 = 1
-                        c.set(one)
-                        c.shl(at)
-                        c.sub(f)
-                        q.poke(q.peek() +% 1 & 3)
-                        becomes (true, c)
-                    else => (false, f)
-                negative, g = values2
-                frac: B128Big = big_make(negative, exponent: 0 - at.to[S64](), m: g)
-                r: BigReduced = BigReduced(quadrant: q.peek(), theta: frac * big_half_pi())
-                return r
+            f.trim()
+            values2: (Bool, @BigNat[16]) = when
+                past_half =>
+                    # f - 1 = -(2^sh - F) × 2^-sh, taken exactly before any rounding
+                    local c: @BigNat[16] <- .hollow()
+                    one: U64 = 1
+                    c.set(one)
+                    c.shl(at)
+                    c.sub(f)
+                    q.poke(q.peek() +% 1 & 3)
+                    becomes (true, c)
+                else => (false, f)
+            negative, g = values2
+            frac: B128Big = big_make(negative, exponent: 0 - at.to[S64](), m: g)
+            r: BigReduced = BigReduced(quadrant: q.peek(), theta: frac * big_half_pi())
+            return r

@@ -52,19 +52,18 @@ routine B128.hypot(me: Me, other: Me) -> Me
                     a_only: Me = b128_of(a)
                     if b_zero
                         return a_only
+                    # A subnormal leg moves its leading bit up to the implicit bit's place, and its exponent
+                    # drops below 1 to match. Only then can the larger leg be subnormal too.
+                    lz_b: U128 = b.leading_zeros()
+                    shift: S64 = lz_b.to[S64]() - 15
+                    b_norm: U128 = b << shift.to[U128]()
+                    b_exp2: S64 = 1 - shift
+                    if a_exp == 0
+                        lz_a: U128 = a.leading_zeros()
+                        shift2: S64 = lz_a.to[S64]() - 15
+                        becomes (a << shift2.to[U128](), 1 - shift2, b_norm, b_exp2)
                     else
-                        # A subnormal leg moves its leading bit up to the implicit bit's place, and its exponent
-                        # drops below 1 to match. Only then can the larger leg be subnormal too.
-                        lz_b: U128 = b.leading_zeros()
-                        shift: S64 = lz_b.to[S64]() - 15
-                        b_norm: U128 = b << shift.to[U128]()
-                        b_exp2: S64 = 1 - shift
-                        if a_exp == 0
-                            lz_a: U128 = a.leading_zeros()
-                            shift2: S64 = lz_a.to[S64]() - 15
-                            becomes (a << shift2.to[U128](), 1 - shift2, b_norm, b_exp2)
-                        else
-                            becomes (a, a_exp, b_norm, b_exp2)
+                        becomes (a, a_exp, b_norm, b_exp2)
                 else => (a, a_exp, b, b_exp)
             a_leg, a_exp2, b_leg, b_exp2 = values2
             # Both legs as 1.frac × 2^(exponent - 16383) with the leading bit placed at bit 127.
@@ -75,45 +74,43 @@ routine B128.hypot(me: Me, other: Me) -> Me
             if gap > 56
                 r: Me = cm_hypot_round(v: a_top | 1, exponent: a_exp2)
                 return r
-            else
-                # s = a² + b² in fixed point (b aligned to a), normalized with an even or odd shift so its
-                # square root can reuse the sqrt refinement. A carry out of the sum bumps the exponent.
-                a_sq: U128 = cm_hypot_sqr_hi(a_top)
-                b_sq: U128 = cm_hypot_sqr_hi(b_top >> gap.to[U128]())
-                s: U128 = a_sq +% b_sq
-                carried: Bool = s < a_sq
-                carry: S64 = carried.to[S64]()
-                s_hi: S64 = (s >> 64).to_wrap[S64]()
-                zeros: S64 = s_hi.leading_zeros()
-                lead: S64 = when
-                    carried => 0
-                    else => zeros
-                shift: S64 = 1 - carry + lead
-                odd: S64 = shift & 1
-                frac: U128 = s << shift.to[U128]()
-                exponent: S64 = a_exp2 + carry
-                radicand: U128 = cm_sqrt_radicand(frac, odd)
-                approx: U128 = cm_sqrt_approx(frac, radicand, odd)
-                slack: S16 = (approx << 2).to_wrap[S16]()  # the bits under the rounding point
-                if slack > -37 and slack < 13
-                    # approx is at most one unit (of its bit 14) off: square the candidate, compare it with the
-                    # exact sum of squares, and leave bit 0 saying which way the true root lies. Rounding up
-                    # can wrap the candidate to 0, which means 2^128: the exponent takes the carry.
-                    candidate: U128 = approx +% 0x2000 & ~0x3FFF
-                    wrapped: Bool = candidate == 0
-                    excess: S128 = cm_hypot_excess(c: candidate >> 13, a_top, b_top, gap)
-                    top_bit: U128 = when
-                        wrapped => B128_SIGN
-                        else => 0
-                    above: U128 = (excess < 0).to[U128]()  # the sum is below the square
-                    below: U128 = (excess > 0).to[U128]()
-                    lowered: U128 = (candidate | top_bit) -% above
-                    v: U128 = lowered +% below
-                    r: Me = cm_hypot_round(v, exponent: exponent + wrapped.to[S64]())
-                    return r
-                else
-                    r: Me = cm_hypot_round(v: approx, exponent)
-                    return r
+            # s = a² + b² in fixed point (b aligned to a), normalized with an even or odd shift so its
+            # square root can reuse the sqrt refinement. A carry out of the sum bumps the exponent.
+            a_sq: U128 = cm_hypot_sqr_hi(a_top)
+            b_sq: U128 = cm_hypot_sqr_hi(b_top >> gap.to[U128]())
+            s: U128 = a_sq +% b_sq
+            carried: Bool = s < a_sq
+            carry: S64 = carried.to[S64]()
+            s_hi: S64 = (s >> 64).to_wrap[S64]()
+            zeros: S64 = s_hi.leading_zeros()
+            lead: S64 = when
+                carried => 0
+                else => zeros
+            shift: S64 = 1 - carry + lead
+            odd: S64 = shift & 1
+            frac: U128 = s << shift.to[U128]()
+            exponent: S64 = a_exp2 + carry
+            radicand: U128 = cm_sqrt_radicand(frac, odd)
+            approx: U128 = cm_sqrt_approx(frac, radicand, odd)
+            slack: S16 = (approx << 2).to_wrap[S16]()  # the bits under the rounding point
+            if slack > -37 and slack < 13
+                # approx is at most one unit (of its bit 14) off: square the candidate, compare it with the
+                # exact sum of squares, and leave bit 0 saying which way the true root lies. Rounding up
+                # can wrap the candidate to 0, which means 2^128: the exponent takes the carry.
+                candidate: U128 = approx +% 0x2000 & ~0x3FFF
+                wrapped: Bool = candidate == 0
+                excess: S128 = cm_hypot_excess(c: candidate >> 13, a_top, b_top, gap)
+                top_bit: U128 = when
+                    wrapped => B128_SIGN
+                    else => 0
+                above: U128 = (excess < 0).to[U128]()  # the sum is below the square
+                below: U128 = (excess > 0).to[U128]()
+                lowered: U128 = (candidate | top_bit) -% above
+                v: U128 = lowered +% below
+                r: Me = cm_hypot_round(v, exponent: exponent + wrapped.to[S64]())
+                return r
+            r: Me = cm_hypot_round(v: approx, exponent)
+            return r
 
 ### Rounds v (leading bit at 127, sticky information in its low bits) times 2^(exponent - 16383) to
 ### the nearest B128, ties to even: a normal result, +inf on overflow, or a subnormal.
@@ -128,35 +125,33 @@ routine cm_hypot_round(v: U128, exponent: S64) -> B128
         infinity: B128 = B128.INFINITY
         if overflow
             return infinity
-        else
-            # The leading bit lands on bit 112 and adds 1 to the exponent field e.
-            rest: U128 = v & 0x7FFF
-            tie: Bool = rest == 0x4000
-            up: U128 = rest >> 14
-            kept: U128 = v >> 15
-            even: U128 = kept & 1
-            round_up: U128 = when
-                tie => even
-                else => up
-            exponent_field: U128 = e.to[U128]() << 112
-            field: U128 = exponent_field | round_up
-            r: B128 = b128_of(kept +% field)
-            return r
-    else
-        # e <= 0: shift out 15 - e bits (at most 127) and round them.
-        one: U128 = 1
-        shift: S128 = (15 - e).to[S128]()
-        half: U128 = one << (14 - e).to[U128]()
-        rest: U128 = v & (one << shift.to[U128]()) -% 1
-        tie: Bool = rest == half
-        up: U128 = rest >> (14 - e).to[U128]()
-        kept: U128 = v >> shift.to[U128]()
+        # The leading bit lands on bit 112 and adds 1 to the exponent field e.
+        rest: U128 = v & 0x7FFF
+        tie: Bool = rest == 0x4000
+        up: U128 = rest >> 14
+        kept: U128 = v >> 15
         even: U128 = kept & 1
         round_up: U128 = when
             tie => even
             else => up
-        r: B128 = b128_of(kept +% round_up)
+        exponent_field: U128 = e.to[U128]() << 112
+        field: U128 = exponent_field | round_up
+        r: B128 = b128_of(kept +% field)
         return r
+    # e <= 0: shift out 15 - e bits (at most 127) and round them.
+    one: U128 = 1
+    shift: S128 = (15 - e).to[S128]()
+    half: U128 = one << (14 - e).to[U128]()
+    rest: U128 = v & (one << shift.to[U128]()) -% 1
+    tie: Bool = rest == half
+    up: U128 = rest >> (14 - e).to[U128]()
+    kept: U128 = v >> shift.to[U128]()
+    even: U128 = kept & 1
+    round_up: U128 = when
+        tie => even
+        else => up
+    r: B128 = b128_of(kept +% round_up)
+    return r
 
 ### a² + b² - c², reduced mod 2^128 and read as signed, where a and b are the legs (leading bit
 ### at 127, b not yet aligned) and c the candidate root, all shifted down 13 bits. The sum is

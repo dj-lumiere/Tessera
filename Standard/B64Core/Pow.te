@@ -55,14 +55,12 @@ routine B64.powf(me: Me, exponent: Me) -> Me
                 # NaN^±0 = 1 for a quiet NaN, and x + x quiets a signaling one
                 if exponent == 0.0 and xu & 0x0008000000000000 != 0
                     return 1.0
-                else
-                    return me + me
+                return me + me
             nan_y =>
                 # 1^NaN = 1 for a quiet NaN
                 if me == 1.0 and yu & 0x0008000000000000 != 0
                     return 1.0
-                else
-                    return exponent + exponent
+                return exponent + exponent
             inf_x =>
                 zero_y: Bool = exponent == 0.0
                 when
@@ -303,8 +301,7 @@ secret routine cm_b64_pow_log_1(x: B64) -> CmF64PowLog1
     if cancel
         n: CmF64PowDd = cm_b64_pow_fast_two_sum(a: s.hi, b: s.lo)
         return CmF64PowLog1(h: n.hi, l: n.lo, cancel: true)
-    else
-        return plain
+    return plain
 
 ### s exp(rh + rl) as a double-double. NaN when the result may underflow or overflow (left to the next phase).
 ### :param rh: The high part of the exponent.
@@ -319,15 +316,13 @@ secret routine cm_b64_pow_exp_1(rh: B64, rl: B64, s: B64) -> CmF64PowDd
                 # sure overflow
                 big: B64 = B64.mul(0x1.fffffffffffffp+1023, s)
                 return CmF64PowDd(hi: big, lo: big)
-            else
-                return CmF64PowDd(hi: B64.NAN, lo: B64.NAN)
+            return CmF64PowDd(hi: B64.NAN, lo: B64.NAN)
         rh < -0x1.483b8cca421afp+9 =>
             if rh < -0x1.74910ee4e8a27p+9
                 # sure underflow
                 lo: B64 = B64.from_bits(1) * B64.mul(0.5, s)
                 return CmF64PowDd(hi: B64.mul(0.0, s), lo: lo)
-            else
-                return CmF64PowDd(hi: B64.NAN, lo: B64.NAN)
+            return CmF64PowDd(hi: B64.NAN, lo: B64.NAN)
         else =>
             # rh = k log(2)/2^12 + z, and 2^(k/2^12) = 2^(k >> 12) T2[k mod 64] T1[(k >> 6) mod 64]
             k: B64 = (rh * 0x1.71547652b82fep+12).round_ties_even()
@@ -389,36 +384,35 @@ secret routine cm_b64_pow_accurate(x0: B64, x: B64, y: B64, s: B64) -> B64
     ep: B64 = cm_b64_pow_exact_pow(x: x0, y, z, exact)
     if not ep.is_nan()
         return ep
+    qx: CmF64PowQint = x.to[CmF64PowQint]()
+    qy: CmF64PowQint = y.to[CmF64PowQint]()
+    qlx: CmF64PowQint = cm_b64_pow_log_3(qx)
+    qr: CmF64PowQint = cm_b64_pow_mul_qint_41(a: qlx, b: qy)
+    qz: CmF64PowQint = cm_b64_pow_exp_3(qr)
+    hh: U64 = cm_b64_pow_hi(qz.rh)
+    hl: U64 = cm_b64_pow_lo(qz.rh)
+    lh: U64 = cm_b64_pow_hi(qz.rl)
+    ll: U64 = cm_b64_pow_lo(qz.rl)
+    r1: U64 = (hh << 54) | (hl >> 10)
+    r2: U64 = (hl << 54) | (lh >> 10)
+    r3: U64 = (lh << 54) | (ll >> 10)
+    top_zero: Bool = r1 == 0 and r2 == 0
+    low: Bool = top_zero and r3 <= 60
+    r1_ones: Bool = ~r1 == 0
+    high: Bool = r1_ones and ~r2 == 0 and r3 +% 120 <= 60
+    hard: Bool = low or high
+    rl: U128 = qz.rl & 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC00
+    qs: CmF64PowQint = CmF64PowQint(rh: qz.rh, rl: rl, ex: qz.ex, sgn: sgn)
+    if hard
+        # x^y very close to 1: exp(qr) rounds to 1 (the sign of qr picks the side, which rounds to 1 anyway).
+        # Otherwise not reachable (CORE-MATH reports an unexpected worst case there)
+        near_one: Bool = qr.ex < -56
+        when
+            near_one and qr.sgn == 0 => return B64.add(1.0, 0x1p-100)
+            near_one => return B64.sub(1.0, 0x1p-100)
+            else => return qz.to[B64]()
     else
-        qx: CmF64PowQint = x.to[CmF64PowQint]()
-        qy: CmF64PowQint = y.to[CmF64PowQint]()
-        qlx: CmF64PowQint = cm_b64_pow_log_3(qx)
-        qr: CmF64PowQint = cm_b64_pow_mul_qint_41(a: qlx, b: qy)
-        qz: CmF64PowQint = cm_b64_pow_exp_3(qr)
-        hh: U64 = cm_b64_pow_hi(qz.rh)
-        hl: U64 = cm_b64_pow_lo(qz.rh)
-        lh: U64 = cm_b64_pow_hi(qz.rl)
-        ll: U64 = cm_b64_pow_lo(qz.rl)
-        r1: U64 = (hh << 54) | (hl >> 10)
-        r2: U64 = (hl << 54) | (lh >> 10)
-        r3: U64 = (lh << 54) | (ll >> 10)
-        top_zero: Bool = r1 == 0 and r2 == 0
-        low: Bool = top_zero and r3 <= 60
-        r1_ones: Bool = ~r1 == 0
-        high: Bool = r1_ones and ~r2 == 0 and r3 +% 120 <= 60
-        hard: Bool = low or high
-        rl: U128 = qz.rl & 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC00
-        qs: CmF64PowQint = CmF64PowQint(rh: qz.rh, rl: rl, ex: qz.ex, sgn: sgn)
-        if hard
-            # x^y very close to 1: exp(qr) rounds to 1 (the sign of qr picks the side, which rounds to 1 anyway).
-            # Otherwise not reachable (CORE-MATH reports an unexpected worst case there)
-            near_one: Bool = qr.ex < -56
-            when
-                near_one and qr.sgn == 0 => return B64.add(1.0, 0x1p-100)
-                near_one => return B64.sub(1.0, 0x1p-100)
-                else => return qz.to[B64]()
-        else
-            return qs.to[B64]()
+        return qs.to[B64]()
 
 ### |v| = m 2^e with m odd, for the bits u of a nonzero finite B64.
 ### :param u: The bits of the value.
@@ -472,8 +466,7 @@ secret routine cm_b64_pow_is_exact(x: B64, y: B64) -> Bool
                     ez: S64 = ey + tb
                     if ez <= -1074 or ez > 1024
                         return false
-                    else
-                        return ey >= -1074
+                    return ey >= -1074
         else =>
             # y < 0 or y not an integer: |y| = n 2^f and |x| = m 2^e with m, n odd
             n, f = cm_b64_pow_odd_part(wu)
@@ -489,9 +482,8 @@ secret routine cm_b64_pow_is_exact(x: B64, y: B64) -> Bool
                         ez: S64 = (product << f.to_wrap[U64]()).to_wrap[S64]()
                         if small
                             return ez >= -1074 and ez < 1024
-                        else
-                            ez2: S64 = 1024
-                            return ez2 >= -1074 and ez2 < 1024
+                        ez2: S64 = 1024
+                        return ez2 >= -1074 and ez2 < 1024
                     else =>
                         te: U64 = e.to_wrap[U64]().trailing_zeros()
                         nf: S64 = S64.sub(0, f)
@@ -511,8 +503,7 @@ secret routine cm_b64_pow_is_exact(x: B64, y: B64) -> Bool
                     sq: B64 = dm.sqrt().round()
                     if sq * sq == dm
                         continue with m2: sq.to[U64](), e2: e2 >> 1
-                    else
-                        return false
+                    return false
                 then
                     # now |x^y| = (m 2^e)^n with m and n odd
                     wide_m: Bool = m2 > 1
@@ -633,15 +624,12 @@ secret routine cm_b64_pow_exact_pow(x: B64, y: B64, z: CmF64PowDint, exact: Bool
                                 p: U128 = mm.mul_wide(k)
                                 if p > 0x7FFFFFFFFFFFFFFF
                                     return B64.NAN
-                                else
-                                    becomes p.to_wrap[U64]()
+                                becomes p.to_wrap[U64]()
                             else => k
                         next: U64 = t2 >> 1
                         if next != 0
                             p2: U128 = mm.mul_wide(mm)
                             if p2 >> 64 != 0
                                 return B64.NAN
-                            else
-                                continue with t2: next, k: k2, mm: p2.to_wrap[U64]()
-                        else
-                            continue with t2: next, k: k2, mm: mm
+                            continue with t2: next, k: k2, mm: p2.to_wrap[U64]()
+                        continue with t2: next, k: k2, mm: mm

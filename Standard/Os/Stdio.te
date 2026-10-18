@@ -88,8 +88,7 @@ secret routine InputBuffer.emit_checked(me: @Me) -> Maybe[Byte]
         me.start.poke(at + 1)
         buffered: @Byte = me.bytes.to[@Byte]()
         return buffered.stride(at).peek()
-    else
-        return None()
+    return None()
 
 ### Puts back the byte emit_checked just handed out. The lock is held.
 secret routine InputBuffer.unread(me: @Me) -> None
@@ -322,8 +321,7 @@ routine Console.ask_bytes(count: U64, alloc: @MemoryManager) -> Memory[Byte]
         if k == 0
             buffer.keep_first(n)
             return buffer
-        else
-            continue with n: n + k
+        continue with n: n + k
     then
         buffer.keep_first(n)
         return buffer
@@ -503,8 +501,7 @@ routine Console.output() -> @ConsoleOutput
 routine ConsoleOutput.write_all_result(me: @Me, data: @Byte, count: U64) -> Result[None, FsError]
     if stream_write(stream: StdStream.OUTPUT, data, count)
         return None()
-    else
-        return FsError.OTHER
+    return FsError.OTHER
 
 ### The Writer side of standard output: a failed write is dropped ({ConsoleOutput.write_all_result} reports it).
 ### :param data: The bytes to write.
@@ -540,8 +537,7 @@ routine Console.errors() -> @ConsoleErrors
 routine ConsoleErrors.write_all_result(me: @Me, data: @Byte, count: U64) -> Result[None, FsError]
     if stream_write(stream: StdStream.ERROR, data, count)
         return None()
-    else
-        return FsError.OTHER
+    return FsError.OTHER
 
 ### The Writer side of standard error: a failed write is dropped ({ConsoleErrors.write_all_result} reports it).
 ### :param data: The bytes to write.
@@ -616,13 +612,11 @@ secret routine stream_write(stream: StdStream, data: @Byte, count: U64) -> Bool
         wrote: S64 = c_write(fd_of(stream), at, remaining.min(1073741824).to[CSize]()).to[S64]()
         if wrote > 0
             continue with at: at.stride(wrote.to[U64]()), remaining: remaining - wrote.to[U64]()
-        else
-            errno: CInt = c_errno_place().peek()
-            # EINTR: a signal came first, so try again
-            if wrote < 0 and errno == 4
-                continue with at: at, remaining: remaining
-            else
-                return false
+        errno: CInt = c_errno_place().peek()
+        # EINTR: a signal came first, so try again
+        if wrote < 0 and errno == 4
+            continue with at: at, remaining: remaining
+        return false
     then
         return true
 
@@ -638,8 +632,7 @@ secret routine stdin_read(buffer: @Byte, count: U64) -> Result[U64, FsError]
     errno: CInt = c_errno_place().peek()
     if errno == 4
         return stdin_read(buffer, count)
-    else
-        return FsError.OTHER
+    return FsError.OTHER
 
 ### Whether ANSI color sequences work on the stream: a terminal takes them as it is.
 ### :param stream: The stream.
@@ -802,8 +795,7 @@ secret routine stream_is_terminal(stream: StdStream) -> Bool
     h: Addr = handle_of(stream)
     if is_usable(h)
         return is_console(h)
-    else
-        return false
+    return false
 
 ### Whether ANSI color sequences work on the stream: a console needs virtual terminal processing turned on, which
 ### this does. A pipe or a file can't show them.
@@ -833,8 +825,7 @@ secret routine stream_write(stream: StdStream, data: @Byte, count: U64) -> Bool
         return false
     if is_console(h)
         return console_write(stream, h, data, count)
-    else
-        return file_write(h, data, count)
+    return file_write(h, data, count)
 
 ### Writes all `count` bytes to a pipe or file handle with WriteFile as they are, looping over partial writes.
 ### :param h: The handle.
@@ -850,8 +841,7 @@ secret routine file_write(h: Addr, data: @Byte, count: U64) -> Bool
         n: U64 = wrote.peek().to[U64]()
         if ok != 0 and n > 0
             continue with at: at.stride(n), remaining: remaining - n
-        else
-            return false
+        return false
     then
         return true
 
@@ -880,12 +870,10 @@ secret routine complete_end(data: @Byte, count: U64) -> U64
         # a continuation byte: 10xxxxxx
         if top_bits == 0x80
             continue with i: i - 1, seen: seen + 1
-        else
-            sequence_end: U64 = i - 1 + sequence_length(b)
-            if sequence_end > count
-                return i - 1
-            else
-                return count
+        sequence_end: U64 = i - 1 + sequence_length(b)
+        if sequence_end > count
+            return i - 1
+        return count
     then
         return count
 
@@ -896,8 +884,7 @@ secret routine complete_end(data: @Byte, count: U64) -> U64
 secret routine pending_of(stream: StdStream) -> @PendingUtf8
     if stream == StdStream.ERROR
         return PENDING_ERROR
-    else
-        return PENDING_OUTPUT
+    return PENDING_OUTPUT
 
 ### Writes UTF-8 to a console as UTF-16, finishing a sequence an earlier write left open and holding one this
 ### write leaves open.
@@ -921,12 +908,11 @@ secret routine console_write(stream: StdStream, h: Addr, data: @Byte, count: U64
             if taken < need
                 pending.count.poke(held + taken)
                 return true
+            pending.count.poke(0)
+            if console_text(h, data: pending.bytes.to[@Byte](), count: held + taken)
+                becomes (data.stride(taken), count - taken)
             else
-                pending.count.poke(0)
-                if console_text(h, data: pending.bytes.to[@Byte](), count: held + taken)
-                    becomes (data.stride(taken), count - taken)
-                else
-                    return false
+                return false
 
     at, n = values2
     cut: U64 = complete_end(data: at, count: n)
@@ -950,24 +936,21 @@ secret routine console_text(h: Addr, data: @Byte, count: U64) -> Bool
         if n >= 2046
             if write_units(h, units, n, written)
                 continue with n: 0
-            else
-                return false
-        else
-            c: Maybe[Char] = iter.emit_checked()
-            when c
-                is Char as char =>
-                    cp: U32 = char.to[U32]()
-                    if cp < 0x10000
-                        units.stride(n).poke(cp.to[U16]())
-                        continue with n: n + 1
-                    else
-                        v: U32 = cp - 0x10000
-                        high_surrogate: U32 = (v >> 10) + 0xD800
-                        units.stride(n).poke(high_surrogate.to[U16]())
-                        low_surrogate: U32 = (v & 0x3FF) + 0xDC00
-                        units.stride(n + 1).poke(low_surrogate.to[U16]())
-                        continue with n: n + 2
-                is None => return write_units(h, units, n, written)
+            return false
+        c: Maybe[Char] = iter.emit_checked()
+        when c
+            is Char as char =>
+                cp: U32 = char.to[U32]()
+                if cp < 0x10000
+                    units.stride(n).poke(cp.to[U16]())
+                    continue with n: n + 1
+                v: U32 = cp - 0x10000
+                high_surrogate: U32 = (v >> 10) + 0xD800
+                units.stride(n).poke(high_surrogate.to[U16]())
+                low_surrogate: U32 = (v & 0x3FF) + 0xDC00
+                units.stride(n + 1).poke(low_surrogate.to[U16]())
+                continue with n: n + 2
+            is None => return write_units(h, units, n, written)
 
 ### Writes `n` UTF-16 units to a console, however many calls that takes.
 ### :param h: The console handle.
@@ -983,8 +966,7 @@ secret routine write_units(h: Addr, units: @U16, n: U64, written: @U32) -> Bool
     w: U64 = written.peek().to[U64]()
     if ok != 0 and w > 0
         return write_units(h, units: units.stride(w), n: n - w, written)
-    else
-        return false
+    return false
 
 ### Reads up to `count` bytes of standard input: from the console as UTF-8, or from a pipe or a file as they are.
 ### :param buffer: Where the bytes go.
@@ -1004,8 +986,7 @@ secret routine stdin_read(buffer: @Byte, count: U64) -> Result[U64, FsError]
     # ERROR_BROKEN_PIPE: the writing end closed, which is the end
     if c_get_last_error() == 109
         return 0
-    else
-        return FsError.OTHER
+    return FsError.OTHER
 
 ### Hands out UTF-8 from CONSOLE_INPUT, reading the console (as UTF-16) when it is empty.
 ### :param h: The console handle.
@@ -1026,42 +1007,39 @@ secret routine console_read(h: Addr, buffer: @Byte, count: U64) -> Result[U64, F
         buffer.copy(src: input.bytes.to[@Byte]().stride(start), count: n)
         input.start.poke(start + n)
         return n
-    else
-        local units: @Array[U16, 4096] <- .hollow()
-        local got: @U32 <- 0
-        if not (c_read_console(h, units.to[@U16](), 4096, got, .hollow()) != 0)
-            return FsError.OTHER
-        n: U64 = got.peek().to[U64]()
-        if n == 0
-            return 0
-        if units[0] == 0x1A
-            return 0
-        else
-            units2: @U16 = units.to[@U16]()
-            local joined: @Array[U16, 4097] <- .hollow()
-            high: U16 = input.high.peek()
-            lead: U64 = when
-                high == 0 => 0
-                else => 1
-            joined.to[@U16]().poke(high)
-            joined.to[@U16]().stride(lead).copy(src: units2, count: n)
-            total: U64 = n + lead
-            joined_units: @U16 = joined.to[@U16]()
-            last: U16 = joined_units.stride(total - 1).peek()
-            values: (@U16, U64, U16) = when
-                last.between(lo: 0xD800, hi: 0xDBFF) => (joined.to[@U16](), total - 1, last)
-                else => (joined.to[@U16](), total, 0)
-            joined2, units3, high2 = values
-            input.high.poke(high2)
-            made: U64 = narrow(units: joined2, count: units3, out: input.bytes.to[@Byte]())
-            input.start.poke(0)
-            input.end.poke(made)
-            if made == 0
-                return console_read(h, buffer, count)
-            else
-                start: U64 = input.start.peek()
-                available: U64 = input.end.peek() - start
-                n2: U64 = available.min(count)
-                buffer.copy(src: input.bytes.to[@Byte]().stride(start), count: n2)
-                input.start.poke(start + n2)
-                return n2
+    local units: @Array[U16, 4096] <- .hollow()
+    local got: @U32 <- 0
+    if not (c_read_console(h, units.to[@U16](), 4096, got, .hollow()) != 0)
+        return FsError.OTHER
+    n: U64 = got.peek().to[U64]()
+    if n == 0
+        return 0
+    if units[0] == 0x1A
+        return 0
+    units2: @U16 = units.to[@U16]()
+    local joined: @Array[U16, 4097] <- .hollow()
+    high: U16 = input.high.peek()
+    lead: U64 = when
+        high == 0 => 0
+        else => 1
+    joined.to[@U16]().poke(high)
+    joined.to[@U16]().stride(lead).copy(src: units2, count: n)
+    total: U64 = n + lead
+    joined_units: @U16 = joined.to[@U16]()
+    last: U16 = joined_units.stride(total - 1).peek()
+    values: (@U16, U64, U16) = when
+        last.between(lo: 0xD800, hi: 0xDBFF) => (joined.to[@U16](), total - 1, last)
+        else => (joined.to[@U16](), total, 0)
+    joined2, units3, high2 = values
+    input.high.poke(high2)
+    made: U64 = narrow(units: joined2, count: units3, out: input.bytes.to[@Byte]())
+    input.start.poke(0)
+    input.end.poke(made)
+    if made == 0
+        return console_read(h, buffer, count)
+    start: U64 = input.start.peek()
+    available: U64 = input.end.peek() - start
+    n2: U64 = available.min(count)
+    buffer.copy(src: input.bytes.to[@Byte]().stride(start), count: n2)
+    input.start.poke(start + n2)
+    return n2

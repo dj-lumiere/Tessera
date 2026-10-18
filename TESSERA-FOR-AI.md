@@ -370,7 +370,8 @@ routine start() -> None
   build error) tests the next condition, the lines under `else` (optional) run when none held, and `if not c`
   negates. An `if` is a statement, not a value: `x: T = if ...` is a build error ("if c then a else b
   is a value only after return; elsewhere choose with when"). A guard is an `if` whose arm leaves (`return`,
-  `break`, `continue`, a `@noreturn` call), and the lines after it are the other case:
+  `break`, `continue`, a `@noreturn` call), and the lines after it are the other case (no `else` after a guard:
+  `tessera migrate --step guards` removes it when every arm of an `if` / `elseif` chain leaves):
 
   ```tessera
   routine classify(n: S64) -> S64

@@ -184,8 +184,7 @@ needs T: typename
     if fiber.slot.issued.peek() == me.issued.peek()
         crash(name: "TicketNotGivenBackError",
             message: "This fiber ticket was never given back: wait_finished() and give_back() before it goes.")
-    else
-        return
+    return
 
 ### Orders two timer keys by when they are due: the earlier deadline first, and the earlier wait first for the same
 ### deadline.
@@ -194,8 +193,7 @@ needs T: typename
 routine TimerKey.compare(me: Me, other: Me) -> S32
     if me.deadline == other.deadline
         return me.seq.compare(other.seq)
-    else
-        return me.deadline.compare(other.deadline)
+    return me.deadline.compare(other.deadline)
 
 ### A manager whose fibers have stacks of `stack_size` bytes from `stacks`, driven by the thread that makes it until
 ### another drives it.
@@ -218,19 +216,18 @@ routine FiberManager.construct(stack_size: ByteSize, stacks: @MemoryManager,
 routine FiberManager.destruct(me: @Me) -> None
     if me.alloc.peek().is_hollow()
         return
-    else
-        until fiber.is_hollow() with fiber: @FiberState = me.all.peek()
-            next: @FiberState = fiber.next_all.peek()
-            fiber.destruct()
-            race_stack_free(fiber.race.peek())
-            deallocate(data: fiber.stack.peek().to[@Byte](), alloc: me.stacks.peek())
-            deallocate(data: fiber, alloc: me.alloc.peek())
-            continue with fiber: next
-        me.ready.destruct()
-        me.inbox.destruct()
-        me.timers.destruct()
-        me.poke(.hollow())
-        return
+    until fiber.is_hollow() with fiber: @FiberState = me.all.peek()
+        next: @FiberState = fiber.next_all.peek()
+        fiber.destruct()
+        race_stack_free(fiber.race.peek())
+        deallocate(data: fiber.stack.peek().to[@Byte](), alloc: me.stacks.peek())
+        deallocate(data: fiber, alloc: me.alloc.peek())
+        continue with fiber: next
+    me.ready.destruct()
+    me.inbox.destruct()
+    me.timers.destruct()
+    me.poke(.hollow())
+    return
 
 ### Makes the manager on first use, if it is a hollow one (FIBERS starts hollow).
 @target(os: not "none")
@@ -243,8 +240,7 @@ secret routine FiberManager.ensure(me: @Me) -> None
             return
         THREAD_CLEANUP.poke(release_fibers.to[Callable]())
         return
-    else
-        return
+    return
 
 ### Releases this thread's FIBERS: what a thread worker calls once a ticket's work is over.
 @target(os: not "none")
@@ -267,12 +263,11 @@ needs T: typename
         me.inbox_lock.unlock()
         fiber: @FiberState = me.make_fiber()
         return Fiber[T](fiber, issued: 0)
-    else
-        me.idle.poke(idle.next_idle.peek())
-        me.inbox_lock.unlock()
-        idle.next_idle.poke(.hollow())
-        idle.slot.state.poke_atomic(TICKET_EMPTY)
-        return Fiber[T](fiber: idle, issued: idle.slot.issued.peek())
+    me.idle.poke(idle.next_idle.peek())
+    me.inbox_lock.unlock()
+    idle.next_idle.poke(.hollow())
+    idle.slot.state.poke_atomic(TICKET_EMPTY)
+    return Fiber[T](fiber: idle, issued: idle.slot.issued.peek())
 
 ### A new fiber with a stack of its own, which first runs `fiber_start` once it has work.
 ### :returns: The fiber.
@@ -300,8 +295,7 @@ routine FiberManager.current(me: @Me) -> @FiberState
     waiter: Waiter = current_waiter()
     if waiter.manager === me
         return waiter.fiber.to[@FiberState]()
-    else
-        return .hollow()
+    return .hollow()
 
 ### Inside a fiber: lets the other ready fibers run first, then goes on. Outside one it does nothing.
 @target(os: not "none")
@@ -330,9 +324,8 @@ routine FiberManager.park(me: @Me) -> None
         race_stack_switch(me.home_race.peek())
         switch_stack(from: fiber.sp, to: me.home.peek())
         return
-    else
-        fiber.wake_state.poke_atomic(FIBER_RUNNING)
-        return
+    fiber.wake_state.poke_atomic(FIBER_RUNNING)
+    return
 
 ### Inside a fiber: park, and a wake comes on its own at `deadline` (in `monotonic_now` time) if none came before.
 ### Outside a fiber it returns.
@@ -364,15 +357,12 @@ routine FiberManager.wake(me: @Me, fiber: @FiberState) -> None
         if state == FIBER_PARKED
             if compare_exchange(at: fiber.wake_state, expected: FIBER_PARKED, new: FIBER_RUNNING)
                 break
-            else
-                continue
-        else
-            if state == FIBER_NOTIFIED
-                return
-            if compare_exchange(at: fiber.wake_state, expected: state, new: FIBER_NOTIFIED)
-                return
-            else
-                continue
+            continue
+        if state == FIBER_NOTIFIED
+            return
+        if compare_exchange(at: fiber.wake_state, expected: state, new: FIBER_NOTIFIED)
+            return
+        continue
     me.place_ready(fiber)
     return
 
@@ -388,12 +378,11 @@ routine FiberManager.waitfor(me: @Me, duration: Duration) -> None
     if fiber.is_hollow()
         sleep_thread(deadline)
         return
-    else
-        # A pool's fiber may go on on another thread after a park, so each park goes through the manager running it.
-        while monotonic_now() < deadline
-            fiber.manager.peek().park_until(deadline)
-        then
-            return
+    # A pool's fiber may go on on another thread after a park, so each park goes through the manager running it.
+    while monotonic_now() < deadline
+        fiber.manager.peek().park_until(deadline)
+    then
+        return
 
 ### Runs the fibers until none has work left. The thread that calls it drives the manager from here on.
 @target(os: not "none")
@@ -436,8 +425,7 @@ secret routine FiberManager.wake_word(me: @Me) -> @U32
     alert: @U32 = me.alert.peek()
     if alert.is_hollow()
         return me.epoch
-    else
-        return alert
+    return alert
 
 ### Runs work(arg), a call that may block the thread it runs on, without stopping the other fibers: inside a fiber a
 ### thread ticket runs it while the fiber waits, and the fiber goes on once it returns. Outside a fiber it is just
@@ -451,12 +439,11 @@ needs T: typename
     if me.current().is_hollow()
         work.call(arg)
         return
-    else
-        t: Thread[None] = get_thread[None]()
-        t.put_work(entry: work, args: arg)
-        t.wait_finished()
-        t.give_back()
-        return
+    t: Thread[None] = get_thread[None]()
+    t.put_work(entry: work, args: arg)
+    t.wait_finished()
+    t.give_back()
+    return
 
 # -- the tickets -------------------------------------------------------------------------------------------------
 
@@ -656,9 +643,8 @@ needs T: typename
     if manager.drives_here()
         manager.drive(awaited: slot, deadline: Duration.MAX, idle_only: false)
         return
-    else
-        slot.wait()
-        return
+    slot.wait()
+    return
 
 ### Waits until the work has finished or `timeout` has passed, whichever comes first, the way
 ### {Fiber[T].wait_finished} waits.
@@ -676,8 +662,7 @@ needs T: typename
     if manager.drives_here()
         manager.drive(awaited: slot, deadline, idle_only: false)
         return slot.is_finished()
-    else
-        return slot.wait_until(deadline, cancellable: false)
+    return slot.wait_until(deadline, cancellable: false)
 
 ### Waits until the work has finished, the way {Fiber[T].wait_finished} waits, or until the work that waits is asked to
 ### stop with `cancel()`. On the thread that drives the manager, outside a fiber, the manager runs until the work is
@@ -694,10 +679,9 @@ needs T: typename
     if manager.drives_here()
         manager.drive(awaited: slot, deadline: Duration.MAX, idle_only: false)
         return None()
-    elseif slot.wait_until(deadline: Duration.MAX, cancellable: true)
+    if slot.wait_until(deadline: Duration.MAX, cancellable: true)
         return None()
-    else
-        return CancelRequested()
+    return CancelRequested()
 
 ### The finished work's result.
 ### :returns: The result.
@@ -712,8 +696,7 @@ needs T: typename
     if slot.is_cancelled()
         crash(name: "CancelledWorkError",
             message: "This ticket's work was cancelled, so its result may be cut short: retrieve_result() tells a cancelled one apart.")
-    else
-        return place.peek()
+    return place.peek()
 
 ### Gives nothing: work with no result. It checks that the work has finished and wasn't cancelled.
 ### :throws: Crashes with `TicketBusyError` while the work runs, with `NoWorkError` when there was none, and with
@@ -726,8 +709,7 @@ routine Fiber[None].retrieve(me: Me) -> None
     if slot.is_cancelled()
         crash(name: "CancelledWorkError",
             message: "This ticket's work was cancelled, so it may have stopped short: retrieve_result() tells a cancelled one apart.")
-    else
-        return
+    return
 
 ### The finished work's result, or `CancelRequested` when `cancel()` asked it to stop before it finished.
 ### :returns: The result or `CancelRequested`.
@@ -740,8 +722,7 @@ needs T: typename
     place: @T = slot.result_place[T]()
     if slot.is_cancelled()
         return CancelRequested()
-    else
-        return place.peek()
+    return place.peek()
 
 ### Asks the work to stop: `cancel_requested()` turns true inside it, and the work stops where it looks.
 @target(os: not "none")
@@ -776,8 +757,7 @@ needs T: typename
 secret routine FiberManager.drives_here(me: @Me) -> Bool
     if current_waiter().is_fiber()
         return false
-    else
-        return thread_mark() === me.owner.peek_atomic()
+    return thread_mark() === me.owner.peek_atomic()
 
 ### Runs the fibers on this thread until `awaited` has finished (when not null), or no fiber has work left (when it is
 ### null), or `deadline` has passed. With `idle_only` it returns as soon as no fiber is ready.
@@ -810,12 +790,10 @@ secret routine FiberManager.drive(me: @Me, awaited: @WorkSlot, deadline: Duratio
             if wait == Duration.MAX
                 wait_on(at: me.wake_word(), expected: seen)
                 continue
-            else
-                wait_on_for(at: me.wake_word(), expected: seen, timeout: wait)
-                continue
-        else
-            me.resume(me.ready.remove_first())
+            wait_on_for(at: me.wake_word(), expected: seen, timeout: wait)
             continue
+        me.resume(me.ready.remove_first())
+        continue
 
 ### Runs fiber until it stops. One that stopped goes where it waits (its then): its manager does that on its own
 ### stack, after the fiber has switched away from its.
@@ -880,14 +858,13 @@ secret routine FiberManager.place_ready(me: @Me, fiber: @FiberState) -> None
     if thread_mark() === me.owner.peek_atomic()
         me.ready.add_last(fiber)
         return
-    else
-        me.inbox_lock.lock()
-        me.inbox.add_last(fiber)
-        me.inbox_lock.unlock()
-        word: @U32 = me.wake_word()
-        word.atomic_fetch_add(1)
-        wake_all(word)
-        return
+    me.inbox_lock.lock()
+    me.inbox.add_last(fiber)
+    me.inbox_lock.unlock()
+    word: @U32 = me.wake_word()
+    word.atomic_fetch_add(1)
+    wake_all(word)
+    return
 
 ### Moves the fibers in the inbox to the ready queue.
 @target(os: not "none")
@@ -975,9 +952,8 @@ secret routine park_hook(manager: Addr, deadline: Duration) -> None
     if deadline == Duration.MAX
         fibers.park()
         return
-    else
-        fibers.park_until(deadline)
-        return
+    fibers.park_until(deadline)
+    return
 
 ### How a Waiter wakes a fiber of a manager: through the manager running the fiber now, which is the Waiter's own
 ### unless a pool's fiber went on on another thread.
