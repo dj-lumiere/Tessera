@@ -173,6 +173,15 @@ public sealed partial class Compiler
                     : $"a float literal can't be a {hint.Name}");
             case PresetRef r:
                 return FoldPresetRef(r, env);
+            case UnaryExpr { Op: "not" } n:
+                return new ConstVal(BoolType.Instance, FoldBool(n.Operand, env) ? 0 : 1);
+            case BinaryExpr { Op: "and" or "or" } l:
+            {
+                bool left = FoldBool(l.Left, env);
+                // As at run time, the right side counts only when the left leaves the answer open.
+                bool value = l.Op == "and" ? left && FoldBool(l.Right, env) : left || FoldBool(l.Right, env);
+                return new ConstVal(BoolType.Instance, value ? 1 : 0);
+            }
             case MethodCallExpr m:
                 return FoldMethod(m.Receiver, m.Name, m.TypeArgs, m.Args, hint, env, m.Pos);
             case NsCallExpr n:
@@ -373,14 +382,15 @@ public sealed partial class Compiler
         return new ConstVal(to, a);
     }
 
+    /// A Bool operand of `and`, `or` or `not` in a preset.
+    private bool FoldBool(Expr e, TypeEnv env) => !Typed(Fold(e, BoolType.Instance, env), BoolType.Instance, e.Pos, 0).Value.IsZero;
+
     private ConstVal ApplyBool(BigInteger a, string name, List<Expr> args, int firstArgument, TypeEnv env, Pos pos)
     {
-        if (name == "bitnot" && args.Count == 0) return new ConstVal(BoolType.Instance, a.IsZero ? 1 : 0);
-        if (args.Count == 1 && name is "bitand" or "bitor" or "bitxor")
+        if (args.Count == 1 && name is "eq" or "ne")
         {
             BigInteger b = Typed(Fold(args[0], BoolType.Instance, env), BoolType.Instance, args[0].Pos, firstArgument).Value;
-            BigInteger v = name switch { "bitand" => a & b, "bitor" => a | b, _ => a ^ b };
-            return new ConstVal(BoolType.Instance, v);
+            return new ConstVal(BoolType.Instance, (a == b) == (name == "eq") ? 1 : 0);
         }
         throw new CompileError(pos, $"Bool.{name} can't run at build time; a preset is made of {PresetForms}");
     }

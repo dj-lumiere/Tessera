@@ -3842,6 +3842,15 @@ public sealed class FunctionGen
         // A value of a type parameter has the routines its constraints give it, and the error says which would.
         if (_c.Prechecking && (rt as ArchetypeType ?? (rt as PtrType)?.Pointee as ArchetypeType) is { } param)
             throw _c.PrecheckNoMethod(param, m.Name, DescribeReceiver(m.Receiver, rt), rt, m.Pos);
+        // A Bool is combined with words, which also read left to right and stop early.
+        if (rt is BoolType && m.Name is "bitand" or "bitor" or "bitxor" or "bitnot")
+            throw Err(m.Pos, m.Name switch
+            {
+                "bitand" => "a Bool takes `and`, not `&`",
+                "bitor" => "a Bool takes `or`, not `|`",
+                "bitxor" => "a Bool takes `!=` for one or the other but not both, not `^`",
+                _ => "a Bool takes `not`, not `~`"
+            });
         // The range checks are chained comparisons.
         if (m.Name is "between" or "in_range" && m.Args.Count == 2)
             throw Err(m.Pos, m.Name == "between"

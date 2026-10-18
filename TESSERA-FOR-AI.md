@@ -462,7 +462,8 @@ routine start() -> None
   comparisons (chained one way: `<`, `<=`, `==` together or `>`, `>=`, `==` together, `1 < b <= 3 < a`, the middle a
   name, literal or field, and `!=`, `===`, `!==` and `<=>` don't chain), `and` / `or` (one level: mixed, they need parentheses, `a or (b and c)`).
   `and` / `or` / `not` are `Bool`'s own, and the right side of `and` / `or` runs only when the left leaves the answer
-  open. The method spellings still work (`i.add(1).bitand(mask)`), and a chain of pure calls reads left to right.
+  open. `Bool` has no `& | ^ ~` (a build error naming `and` / `or` / `!=` / `not`): `!=` is the exclusive or of two
+  `Bool`s. The method spellings still work (`i.add(1).bitand(mask)`), and a chain of pure calls reads left to right.
 - A chain holds at most three calls (`(sum.peek() + x).poke_into(sum)` is fine). Everything call-shaped counts
   (`x.f()`, `T.f()`, `f()`, `.stride(i)`, `.to[T]()`), a field doesn't, and each argument and each `{...}`
   write-template hole is its own chain. A fourth call gets a binding instead. A read-modify-write is load, then the operation, then the store (`(x.peek() + y).poke_into(x)`): the basic

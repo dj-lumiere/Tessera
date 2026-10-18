@@ -255,7 +255,7 @@ public static class Derive
             sb.Append($"        a{i}: {f.Type} = me.{f.Name}\n");
             sb.Append($"        b{i}: {f.Type} = other.{f.Name}\n");
             sb.Append($"        e{i}: Bool = a{i}.eq(b{i})\n");
-            if (i > 0) sb.Append($"        all{i}: Bool = all{i - 1}.bitand(e{i})\n");
+            if (i > 0) sb.Append($"        all{i}: Bool = all{i - 1} and e{i}\n");
             else sb.Append("        all0: Bool = e0\n");
         }
         sb.Append($"        return all{r.Fields.Count - 1}\n");
