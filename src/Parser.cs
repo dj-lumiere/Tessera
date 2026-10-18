@@ -153,7 +153,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         _values = [.. _scriptNames];
         int at = _i;
         var lines = ParseBody(0, routineLevel: true);
-        if (_i == at) throw Error($"expected a declaration or a line of the file's top-level code, found {Describe(Cur)}");
+        // A first run that is only `local` lines is a head with an empty body: the end of the file returns.
+        if (_i == at && !(first && _scriptHead!.Count > 0))
+            throw Error($"expected a declaration or a line of the file's top-level code, found {Describe(Cur)}");
         foreach (var line in lines)
         {
             if (line is BindStmt b) _scriptNames.Add(b.Name);

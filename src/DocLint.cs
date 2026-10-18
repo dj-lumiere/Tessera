@@ -32,7 +32,8 @@ public static class DocLint
             };
             foreach (var r in routines)
             {
-                if (r.Source is not null) continue;
+                // The `start` the builder makes of a script's top-level lines has no line of its own to document.
+                if (r.Source is not null || r.IsScript) continue;
                 if (linesOf(r.File) is not { } lines) continue;
                 Routine(r, lines, warnings);
             }

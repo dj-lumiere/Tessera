@@ -40,9 +40,9 @@ static class Cli
         uninit fill: --uninit-fill (or [debug] uninit-fill = true in config.toml) fills every slot that starts
                  <- .uninit() with 0xAA bytes, so a read before its routine fills it stands out. Off by default: the
                  slot keeps whatever was there.
-        heap check: with [debug] heap-check = true in config.toml the default heap checks every free and crashes with
-                 DoubleFreeError at the line that frees a block a second time, in every mode. It is off otherwise
-                 (a build without a manifest too), except that test always turns it on. check checks both sides.
+        heap check: --heap-check (or [debug] heap-check = true in config.toml) makes the default heap check every
+                 free and crash with DoubleFreeError at the line that frees a block a second time, in every mode. It
+                 is off otherwise, except that test always turns it on. check checks both sides.
         <target>: --target <arch-os-abi> (default: this machine), --cpu <name> (default: the triple's baseline, such
                   as x86-64 v1), --feature <name>[,<name>...] (a leading - removes one). @feature reads the result.
 
@@ -353,7 +353,7 @@ static class Cli
     }
 
     private sealed record Options(List<string> Inputs, string? Output, bool EmitLlvm, BuildTarget Target, BuildMode Mode,
-        bool StdlibExports, bool? Trace, bool RaceCheck, bool UninitFill);
+        bool StdlibExports, bool? Trace, bool RaceCheck, bool UninitFill, bool HeapCheck = false);
 
     /// Whether the data race check runs on the target: hosted Linux and macOS on x86-64 and AArch64, where clang has
     /// its runtime.
@@ -390,7 +390,7 @@ static class Cli
     {
         var inputs = new List<string>();
         string? output = null;
-        bool emit = false, stdlibExports = true, race = false, uninitFill = false;
+        bool emit = false, stdlibExports = true, race = false, uninitFill = false, heapCheck = false;
         bool? trace = null;
         var mode = BuildMode.Debug;
         var targetArgs = new TargetArgs();
@@ -403,6 +403,7 @@ static class Cli
                 case "--emit-llvm": emit = true; break;
                 case "--no-stdlib-exports": stdlibExports = false; break;
                 case "--uninit-fill": uninitFill = true; break;
+                case "--heap-check": heapCheck = true; break;
                 case "--mode": mode = ParseMode(args, ref i); break;
                 case "--race-check": race = true; break;
                 default:
@@ -414,7 +415,7 @@ static class Cli
         if (inputs.Count == 0) throw new ToolError("no input files");
         var target = targetArgs.Build();
         if (race) RequireRaceCheckable(target);
-        return new Options(inputs, output, emit, target, mode, stdlibExports, trace, race, uninitFill);
+        return new Options(inputs, output, emit, target, mode, stdlibExports, trace, race, uninitFill, heapCheck);
     }
 
     /// Parses every input, plus the whole standard library, into one compilation and lowers it to LLVM IR.
@@ -696,7 +697,7 @@ static class Cli
         }
         var o = ParseOptions(args);
         string ir = Compile(o.Inputs, o.Target, executable: !o.EmitLlvm, mode: o.Mode, stdlibExports: o.StdlibExports,
-            trace: o.Trace, raceCheck: o.RaceCheck, uninitFill: o.UninitFill);
+            trace: o.Trace, raceCheck: o.RaceCheck, uninitFill: o.UninitFill, heapCheck: o.HeapCheck);
         string stem = Path.ChangeExtension(o.Inputs[0], null);
 
         if (o.EmitLlvm)
@@ -723,7 +724,7 @@ static class Cli
         string exe = TempExe();
         try
         {
-            Link(Compile(o.Inputs, o.Target, mode: o.Mode, trace: o.Trace, raceCheck: o.RaceCheck, uninitFill: o.UninitFill), exe,
+            Link(Compile(o.Inputs, o.Target, mode: o.Mode, trace: o.Trace, raceCheck: o.RaceCheck, uninitFill: o.UninitFill, heapCheck: o.HeapCheck), exe,
                 o.Target, o.Mode,
                 RaceLink(o.RaceCheck));
             var (code, _, _) = Exec(exe, captureOutput: false);

@@ -14,7 +14,7 @@ namespace Tessera;
 ///
 /// [target]
 /// executable = "src/main.te"          # the entry file (it has start), the output build/main
-/// library = ["../shared"]             # source directories of other solutions this one builds with
+/// module-paths = ["../shared"]        # folders whose modules join this solution
 /// sources = ["../lib/hash.te"]        # files (or directories of them) built in whatever the entry imports
 /// mode = "release"                    # "debug" (-O0, the default), "release" (-O2), "release-time" (-O3),
 ///                                     # or "release-space" (-Os). Every mode has debug information.
@@ -39,7 +39,7 @@ namespace Tessera;
 /// ```
 ///
 /// The build is the entry file and what it imports, found as RazorForge finds modules: the files under the
-/// manifest's directory and the library directories that declare an imported module (`module Greeting`), and in
+/// manifest's directory and the module-paths folders that declare an imported module (`module Greeting`), and in
 /// turn what those import. So a directory may hold several programs, each its own entry, and a file only one of them
 /// imports isn't built into the others. The standard library is always there. `sources` adds files to the build as
 /// they are, imported or not: code that declares no module (a library llvm-linked into another language's programs,
@@ -61,7 +61,7 @@ public sealed record Manifest(
 {
     public const string FileName = "config.toml";
 
-    /// The package roots its sources are named from in symbols: the manifest's directory, and each `library`
+    /// The package roots its sources are named from in symbols: the manifest's directory, and each `module-paths`
     /// directory (another package's root).
     public List<string> Roots { get; init; } = [];
 
@@ -109,7 +109,7 @@ public sealed record Manifest(
     private static readonly Dictionary<string, HashSet<string>> Keys = new()
     {
         ["package"] = ["name", "version", "description", "authors", "license", "repository", "tessera-version"],
-        ["target"] = ["executable", "triple", "cpu", "features", "mode", "library", "sources", "c-libraries", "library-paths", "link-script"],
+        ["target"] = ["executable", "triple", "cpu", "features", "mode", "module-paths", "sources", "c-libraries", "library-paths", "link-script"],
         ["debug"] = ["emit-llvm", "trace", "heap-check", "race-check", "uninit-fill", "trace-frames", "failure-traces"],
     };
 
@@ -163,10 +163,14 @@ public sealed record Manifest(
                 $"[target] executable: {entryName} is not a Tessera source (Tessera sources end in .te)");
 
         var roots = new List<string> { dir };
-        foreach (var lib in Strs(target, "library", path) ?? [])
+        // `module-paths` lists folders whose modules join the solution, found by import like the manifest's own folder.
+        if (target.ContainsKey("library"))
+            throw new ManifestError(path, "[target] library is named module-paths: module-paths = [\"../shared\"] lists the " +
+                "folders whose modules join the solution");
+        foreach (var lib in Strs(target, "module-paths", path) ?? [])
         {
             string full = Resolve(lib);
-            if (!System.IO.Directory.Exists(full)) throw new ManifestError(path, $"[target] library: no such directory: {lib}");
+            if (!System.IO.Directory.Exists(full)) throw new ManifestError(path, $"[target] module-paths: no such directory: {lib}");
             roots.Add(full);
         }
         var sources = ImportClosure(entry, roots, System.IO.Path.Combine(dir, "build"));

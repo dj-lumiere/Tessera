@@ -1782,7 +1782,7 @@ public sealed partial class Compiler
 
     public static int Utf8Length(string value) => SourceText.Utf8(value).Length;
 
-    /// A wide string literal ending in a 0 unit, for a CWStr: UTF-16 units where `wchar_t` is 16 bits (Windows),
+    /// A wide string literal ending in a 0 unit, for a CWStrView: UTF-16 units where `wchar_t` is 16 bits (Windows),
     /// UTF-32 code points elsewhere.
     public string WideStringGlobal(string value)
     {

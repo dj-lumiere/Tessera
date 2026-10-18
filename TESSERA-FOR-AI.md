@@ -160,7 +160,7 @@ routine start() -> None
   this one empty with the same manager), `give_back()`, `resize(n)` / `resize_result(n)`, and `destruct_all()`
   (destructs every value, then gives the memory back). `Array[T, COUNT]` is the run of values
   whose count is in the type, a value. `getview()` gives a `@[T]` of anything holding contiguous elements (a `Memory`,
-  a `List`, an `Array` through a pointer, a `SliceWriter`, a `CStr`). `@[T].construct(data, count)` wraps memory
+  a `List`, an `Array` through a pointer, a `SliceWriter`, a `CStrView`). `@[T].construct(data, count)` wraps memory
   from C (the count is yours to get right). The raw layer, `allocate[T](count, alloc)` /
   `reallocate[T](p, count, alloc)` / `deallocate(p, alloc)`, is for node-based structures and C interop, with no
   stamp and no check. `@T` has no `free`. `dst.copy(src, count)` copies `count` values of `T` (memcpy, no overlap),
@@ -172,7 +172,7 @@ routine start() -> None
   instead of reading freed memory. `resize` gives the moved block a new generation, so an older holder fails too. A
   Memory is never copied, so a second holder of the same block only comes from raw code the build doesn't follow (a
   `steal` out of an element place reads the bits and leaves them). A span or `@T` carries no generation (the check
-  runs when the view is made). With `[debug] heap-check = true` in config.toml (any build mode, off by default,
+  runs when the view is made). With `[debug] heap-check = true` in config.toml or `--heap-check` (any build mode, off by default,
   always on under `tessera test`) `DEFAULT_HEAP` also keeps a header in front of each block and crashes with
   `DoubleFreeError` at the line of a second free of the same block (a quarantine of the last 256 freed blocks keeps
   that sure, raw layer included). With it off it is plain malloc / free, and so is a single-file build without a
@@ -619,13 +619,13 @@ routine start() -> None
   a receiver or an argument (`line.find("=")`, `out.write("{line.getview()}")` in a template). Escapes: `\xXX` is one byte (strings, `b'..'`), `\uXXXXXX` one
   character by exactly six hex digits (strings, `'..'`), so `"\u01F600"` equals `"\xF0\x9F\x98\x80"`.
   Source files must be UTF-8.
-- String literals are a `@[Byte]` where one is expected, `CStr` / `CWStr` (terminated C text) where one of those
-  is, and a NUL-terminated `@Byte` where a pointer is. Declare C string parameters as `s: CStr`. A `CStr` is
-  `(data: @CChar)` (C's `char`, `S8` or `U8` as the target has it), symmetric with `CWStr` over `@CWChar`, so
-  a pointer becomes one with `p.to[CStr]()` (on a `@CChar` or a `@Byte`). A `CStr` stays one pointer (C's ABI), so
+- String literals are a `@[Byte]` where one is expected, `CStrView` / `CWStrView` (terminated C text) where one of those
+  is, and a NUL-terminated `@Byte` where a pointer is. Declare C string parameters as `s: CStrView`. A `CStrView` is
+  `(data: @CChar)` (C's `char`, `S8` or `U8` as the target has it), symmetric with `CWStrView` over `@CWChar`, so
+  a pointer becomes one with `p.to[CStrView]()` (on a `@CChar` or a `@Byte`). A `CStrView` stays one pointer (C's ABI), so
   it carries no allocator, and `c.getview()` is its text as a `@[Byte]`. A `@[Byte]` has no terminator: bind
-  `s.to[OwnedCStr](alloc)` in a local slot (a copy that lends `to[CStr]()` and is given back with `drop`) or use
-  `buf.to[CStr]()` on a `List[Byte]`.
+  `s.to[CStr](alloc)` in a local slot (a copy that lends `to[CStrView]()` and is given back with `drop`) or use
+  `buf.to[CStrView]()` on a `List[Byte]`.
 
 **Errors**
 
@@ -646,7 +646,7 @@ routine start() -> None
   `@untraced` ones, not the handler), and the default handler prints it after the place, innermost first:
   `Stack trace:` then `  0: at fill (grid.te:12:9)`, and `  ... (40 frames total)` past the 32 it keeps. A handler
   of your own reads it with `trace_depth()` (`U64`, 0 in an untraced build) and `trace_frame(back)` (a
-  `TraceFrame`: `name` / `file` as `CStr`, `line` / `column`; 0 is the innermost, `back` below `trace_depth()` and
+  `TraceFrame`: `name` / `file` as `CStrView`, `line` / `column`; 0 is the innermost, `back` below `trace_depth()` and
   `TRACE_CAPACITY`). It's on in debug and release, off in release-time and release-space; `--no-trace` / `--trace`
   or `[debug] trace = false|true` in config.toml override that. Thread-local with an OS, a plain global without.
   A handler's own helper routines should be `@untraced` (they'd push onto the trace it's reading).
@@ -696,7 +696,7 @@ routine start() -> None
 - **A type that holds something to release declares a `construct` (returning `Me`) and a `destruct(me: @Me) -> None`**
   (a variant only the `destruct`), a build error otherwise that names what it holds. It holds something when a field
   (a branch, for a variant) is an address (`@T`, `Addr`), a `Box` or `Memory`, a value of a type parameter, or a value
-  of a type that itself holds something (a `List`, an `OwnedCStr`, a record with such a field). Its `destruct`
+  of a type that itself holds something (a `List`, a `CStr`, a record with such a field). Its `destruct`
   gives those fields back (`drop me.storage`). A type of plain data (numbers, `Bool`, choices, records and variants of those) declares
   neither: `Point(x: 1, y: 2)` makes it and nothing releases it. It may still declare them, and a plain type used where
   generic code asks for `Destructible[T]` (`destruct_all`) declares a `destruct` that does nothing. `tessera migrate
@@ -735,11 +735,11 @@ routine start() -> None
   field read out of a record value.
 - A record can't hold an entity by value (it would copy it), a generic one included (`nodes: Memory[T]`): declare the
   holder `entity` too, or hold a pointer. A tuple item can't be an entity either. A record or tuple item that is a
-  pointer to an entity (`(pool, 0, 10)` for a `(@FiberPool, U64, U64)`) lends the entity's place: the slot it came
+  pointer to an entity (`(pool, 0, 10)` for a `(@ThreadPoolManager, U64, U64)`) lends the entity's place: the slot it came
   from still owns it.
 - In the standard library, these are entities: `Memory[T]`, `Box[T]`, every collection (`List`, `Set`, `Dict`, the
-  sorted ones, `CircularList`, `PriorityQueue`), `Channel[T]` / `SharedChannel[T]`, `FiberPool`, `FiberManager`,
-  `OwnedCStr` / `OwnedCWStr`, `ProcessOutput`, and `File` / `Directory` (each holds the memory of a path it made). A
+  sorted ones, `CircularList`, `PriorityQueue`), `Channel[T]` / `SharedChannel[T]`, `ThreadPoolManager`, `FiberManager`,
+  `CStr` / `CWStr`, `ProcessOutput`, and `File` / `Directory` (each holds the memory of a path it made). A
   `MemoryManager`, a `@[T]`, a `@T`, and an iterator stay records.
 - An entity value a routine taking `me: @Me` is called on, or that goes where an `@E` is taken, needs no slot of its
   own: `Counter.at(n).get()`, `FileManager.is_file(at: File.at(p))`. The builder puts it in an unnamed slot that ends when
@@ -974,7 +974,7 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 - Every routine with a body is its head's `local` lines (if it has any) and then its statements. A routine without
   a body must be `@external`.
 
-**Threads, fibers, and FiberPool jobs are tickets.** A manager hands one out, and it is used in one flow, top to bottom:
+**Threads, fibers, and ThreadPoolManager jobs are tickets.** A manager hands one out, and it is used in one flow, top to bottom:
 `t: Thread[S64] = get_thread[S64]()`, `t.put_work(entry: f.to[Callable](), args: x)` (it runs from here on),
 `t.check_finished()` to look without waiting or `t.wait_finished()` / `t.wait_finished_for(timeout) -> Bool` (`timeout` a `Duration`) to wait,
 `r: S64 = t.retrieve()`, then more work on the same ticket or `t.give_back()`. `T` is the result type, `Thread[None]`
@@ -986,7 +986,7 @@ of work at a time: `put_work` or `give_back` while it runs crashes with `TicketB
 stopping is safe and returns. `retrieve()` of cancelled work crashes with `CancelledWorkError` (a `Thread[None]` /
 `Fiber[None]` / `Job[None]` one too), and `retrieve_result() -> Result[T, CancelRequested]` tells them apart. Before
 each piece of work a thread puts every `@threadlocal` global back to its starting value. The same flow on all three
-ticket kinds: `Thread[T]`, `Fiber[T]`, `Job[T]` (a FiberPool's). `work_slot()` gives the ticket's `@WorkSlot`, for
+ticket kinds: `Thread[T]`, `Fiber[T]`, `Job[T]` (a ThreadPoolManager's). `work_slot()` gives the ticket's `@WorkSlot`, for
 code waiting on several tickets at once.
 - **Cancellable waits**: `wait_finished_result() -> Result[None, CancelRequested]` (on all three tickets) and a
   channel's `send_result` / `receive_result` end with `CancelRequested` as soon as the WAITING work's own ticket is
@@ -1019,15 +1019,15 @@ code waiting on several tickets at once.
   `read` / `write` (`Standard/Fiber/Io.te`) use. A blocking call made directly stops every fiber of its thread.
   `yield()` lets the other ready fibers go first. Outside a fiber `waitfor` waits the thread, `park` returns,
   `run_blocking` just calls. More cores = thread tickets, each driving its own `FIBERS` (`tests/fiber_workers.te`),
-  or a FiberPool. A thread that drives a manager between other work loops on `run_until_idle()` and sleeps on a word
+  or a ThreadPoolManager. A thread that drives a manager between other work loops on `run_until_idle()` and sleeps on a word
   of its own: `wake_through(word)` makes a wake from another thread change that word (and `wake_all` it),
   `idle_wait() -> Duration` is how long it may sleep before a fiber with a deadline is due (`Duration.MAX` for none).
-- **FiberPool** (`Standard/Fiber/FiberPool.te`, M:N): `local pool: @FiberPool <- .construct(threads: 0)` (0 = one
+- **ThreadPoolManager** (`Standard/Fiber/ThreadPoolManager.te`, M:N): `local pool: @ThreadPoolManager <- .construct(threads: 0)` (0 = one
   thread per processor), `j: Job[T] = pool.get_job[T]()`, then the ticket flow (`put_work`, `check_finished`,
   `wait_finished(_for, _result)`, `retrieve(_result)`, `cancel`, `give_back`). Work waits in the pool's queue until a
   pool thread is free, then runs as a fiber of that thread and NEVER moves. A job may put work on more jobs and wait:
   the waiting job parks, its thread runs other jobs, the finishing thread wakes it (recursive splitting:
-  `tests/fiber_pool.te`). Jobs don't choose their thread, so they share values like threads do (atomics, locks,
+  `tests/thread_pool_manager.te`). Jobs don't choose their thread, so they share values like threads do (atomics, locks,
   channels). Threads start with the first `get_job` and end at `drop pool`: give every job back first.
 - `migrate --step threads` rewrites `x: Thread = Thread.spawn(entry: f, arg: s)` / `x.join()` /
   `Thread.spawn(...).detach()` into tickets and `launch_unwatched`.
@@ -1185,8 +1185,8 @@ routine, block, or statement it wrote: debug information and build errors then p
 **Naming conversions.** `to[T]` is the standard spelling of a type conversion: a routine whose job is turning a
 value into another type is the method `x.to[T]()` on the type it converts from, the target a fixed type argument
 (each pair of types is its own routine, `routine S32.to[S64]`): `n.to[S64]()`, `x.to_wrap[U8]()`, `arr.to[@T]()`,
-`p.to[@U]()`, `b.to[U8]()` on a `Byte`, `s.to[OwnedCStr](alloc)` / `s.to[OwnedCWStr](alloc)` on a `@[Byte]` (a conversion may take
-parameters), `buf.to[CStr]()` on a `List[Byte]`, `m.to[@T]()` on a `Memory` or a `@[T]`,
+`p.to[@U]()`, `b.to[U8]()` on a `Byte`, `s.to[CStr](alloc)` / `s.to[CWStr](alloc)` on a `@[Byte]` (a conversion may take
+parameters), `buf.to[CStrView]()` on a `List[Byte]`, `m.to[@T]()` on a `Memory` or a `@[T]`,
 `a.to[Vector[B32, 4]]()` on an `Array`, `n.to[B128Big]()`, `f.to[B128Extended]()`. Its variants keep the family
 (`to_wrap`, `to_clamp`, `to_checked`, `to_nearest[S64]()` on a `B128Extended`). There is no `to_s64`, `as_[type]`,
 `y_from_x`, or `x_to_y`, and a routine that differs from another only in the type it produces takes the type as a
@@ -1206,8 +1206,8 @@ byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`
   set), `Bool.then_present`; so does `atomic_compare_exchange`, whose `Result[None, T]` is the answer (`None` when it
   wrote, the value found when not). An iterator has the plain/`_checked` pair: `emit` crashes past the end, `emit_checked` returns `None`.
 
-- `to[T]()` is a type conversion: one value of type A becomes a value of type B, on A (`p.to[CStr]()`, not
-  `CStr.from_ptr(p)`). A conversion that can fail is `to_result[T]()`.
+- `to[T]()` is a type conversion: one value of type A becomes a value of type B, on A (`p.to[CStrView]()`, not
+  `CStrView.from_ptr(p)`). A conversion that can fail is `to_result[T]()`.
 - `_into` is the argument-swapped form of a routine that acts on a place: `p.poke(v)` is `v.poke_into(p)`. The
   plain form's receiver is the place acted on, and the `_into` form's receiver is the thing being put there, with the
   place as the argument. So a chain reads left to right and ends at the place: `x.peek().add(1).poke_into(x)`,

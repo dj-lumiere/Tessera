@@ -19,7 +19,7 @@ import Standard/Alloc
 @symbol("open64")
 @variadic
 @target(os: "linux")
-secret routine c_open(path: CStr, flags: CInt) -> CInt
+secret routine c_open(path: CStrView, flags: CInt) -> CInt
 
 ### Binds the C `open` function: opens or creates a file. A third, variadic argument gives the permission bits of a
 ### file it creates.
@@ -30,7 +30,7 @@ secret routine c_open(path: CStr, flags: CInt) -> CInt
 @symbol("open")
 @variadic
 @target(os: "macos")
-secret routine c_open(path: CStr, flags: CInt) -> CInt
+secret routine c_open(path: CStrView, flags: CInt) -> CInt
 
 ### Binds the C `close` function: closes a file descriptor.
 ### :param fd: The descriptor to close.
@@ -219,7 +219,7 @@ secret routine c_chdir(path: @Byte) -> CInt
 @external("c")
 @symbol("getenv")
 @target(os: ("linux", "macos"))
-secret routine c_getenv(name: CStr) -> @Byte
+secret routine c_getenv(name: CStrView) -> @Byte
 
 ### Binds the C `realpath` function: makes a path absolute with every link, ".", and ".." resolved.
 ### :param path: The NUL-terminated path, which must exist.
@@ -529,7 +529,7 @@ secret routine c_path(path: @[Byte], out: @Byte) -> Bool
 ### :returns: True when the path fit.
 @target(os: ("linux", "macos"))
 secret routine c_child_path(dir: @Byte, dir_count: U64, name: @Byte, out: @Byte) -> Bool
-    name_count: U64 = name.to[CStr]().count()
+    name_count: U64 = name.to[CStrView]().count()
     total: U64 = dir_count + 1 + name_count
     if total >= PATH_CAPACITY
         return false
@@ -965,7 +965,7 @@ secret routine FileHandle.open(path: @[Byte], mode: OpenMode) -> Result[Me, FsEr
         OpenMode.READ_WRITE => 2
         OpenMode.CREATE_NEW => 1 | f.create | f.exclude
         OpenMode.CREATE_REPLACING => 1 | f.create | f.truncate
-    fd: CInt = c_open(cpath.to[CStr](), f.cloexec | how, 438)
+    fd: CInt = c_open(cpath.to[CStrView](), f.cloexec | how, 438)
     if fd < 0
         return failed[Me]()
     else
@@ -1418,7 +1418,7 @@ routine DirIter.emit_checked(me: @Me) -> Maybe[DirEntry]
                 is FsError =>
                     becomes FileKind.OTHER
         else => FileKind.OTHER
-    return DirEntry(name: name.to[CStr]().getview(), kind: kind)
+    return DirEntry(name: name.to[CStrView]().getview(), kind: kind)
 
 ### The metadata of the entry next last returned, a link followed.
 ### :returns: The metadata.
@@ -1474,7 +1474,7 @@ secret routine owned(p: @Byte, n: U64, alloc: @MemoryManager) -> Result[Memory[B
 ### :returns: The NUL-terminated value, owned by the C library.
 ### :absent: When the variable is not set or is empty.
 @target(os: ("linux", "macos"))
-secret routine nonempty_env(name: CStr) -> Maybe[@Byte]
+secret routine nonempty_env(name: CStrView) -> Maybe[@Byte]
     value: @Byte = c_getenv(name)
     if value.is_hollow()
         return None()
@@ -1494,7 +1494,7 @@ secret routine current_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsErro
             is Memory[Byte] as buffer2 =>
                 data: @Byte = buffer2.data.peek()
                 if c_getcwd(data, capacity.to[CSize]()).is_not_hollow()
-                    count: U64 = data.to[CStr]().count()
+                    count: U64 = data.to[CStrView]().count()
                     buffer2.keep_first(count)
                     return buffer2
                 e: CInt = errno()
@@ -1527,7 +1527,7 @@ secret routine set_current_dir(path: @[Byte]) -> Result[None, FsError]
 secret routine temp_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
     t: Maybe[@Byte] = nonempty_env("TMPDIR")
     when t
-        is @Byte as dir => return owned(p: dir, n: dir.to[CStr]().count(), alloc)
+        is @Byte as dir => return owned(p: dir, n: dir.to[CStrView]().count(), alloc)
         is None => return owned(p: "/tmp", n: 4, alloc)
 
 ### HOME, in memory from alloc. NotFound when it isn't set or is empty.
@@ -1538,7 +1538,7 @@ secret routine temp_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
 secret routine home_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsError]
     h: Maybe[@Byte] = nonempty_env("HOME")
     when h
-        is @Byte as dir => return owned(p: dir, n: dir.to[CStr]().count(), alloc)
+        is @Byte as dir => return owned(p: dir, n: dir.to[CStrView]().count(), alloc)
         is None => return FsError.NOT_FOUND
 
 ### path made absolute by the text alone: the working directory in front of a relative path, nothing resolved.
@@ -1574,7 +1574,7 @@ secret routine canonical_path(path: @[Byte], alloc: @MemoryManager) -> Result[Me
     if resolved.is_hollow()
         return failed[Memory[Byte]]()
     local copied: @Result[Memory[Byte], FsError] <- owned(p: resolved,
-        n: resolved.to[CStr]().count(), alloc)
+        n: resolved.to[CStrView]().count(), alloc)
     c_free(resolved)
     return copied
 
@@ -1608,7 +1608,7 @@ secret routine Mapping.map(path: @[Byte], write: Bool, offset: U64,
             flags: CInt = when
                 write => 2
                 else => 0
-            fd: CInt = c_open(cpath.to[@Byte]().to[CStr](), flags | open_flags().cloexec, 0)
+            fd: CInt = c_open(cpath.to[@Byte]().to[CStrView](), flags | open_flags().cloexec, 0)
             if fd < 0
                 becomes failed[Me]()
             else

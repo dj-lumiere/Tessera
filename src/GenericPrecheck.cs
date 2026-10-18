@@ -94,7 +94,7 @@ public sealed partial class Compiler
             ? $"the needs of '{r.DisplayName}'"
             : $"the needs of '{r.DisplayName}', or to {ownerName}'s if every one of its instances needs it";
         _precheck = new PrecheckScope($"'{r.DisplayName}'", fix);
-        // A receiver written as a fixed type (`Ptr[T].to[CStr](me: @CChar)`) fixes the owner's parameters it matches.
+        // A receiver written as a fixed type (`Ptr[T].to[CStrView](me: @CChar)`) fixes the owner's parameters it matches.
         if (r.Owner is { Args.Count: > 0 } fixedOwner && HasReceiver(r) && !NamesMe(r.Params[0].Type)
             && ResolveTypeQuiet(r.Params[0].Type, new TypeEnv(r.File)) is { } receiver)
         {

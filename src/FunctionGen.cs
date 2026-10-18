@@ -2046,18 +2046,18 @@ public sealed class FunctionGen
 
     private Val StringLiteral(StrLit s, DType expected)
     {
-        // A string literal is a Span[Byte] (data + count, UTF-8) where one is expected, a CStr or CWStr (a pointer to
+        // A string literal is a Span[Byte] (data + count, UTF-8) where one is expected, a CStrView or CWStrView (a pointer to
         // NUL-terminated text) where one of those is expected, and a NUL-terminated @Byte where a pointer is.
         string g = _c.StringGlobal(s.Value);
         if (expected is PtrType { Pointee: null or IntType { Kind: IntKind.Byte } })
             return new Val(g, expected);
-        // CStr and CWStr are records of one field, the pointer to the text.
-        if (expected is RecordType { Name: "CStr" } cs)
+        // CStrView and CWStrView are records of one field, the pointer to the text.
+        if (expected is RecordType { Name: "CStrView" } cs)
         {
             _c.EnsureTypeDefined(cs);
             return new Val(EmitTmp($"insertvalue {cs.Llvm} poison, ptr {g}, 0"), cs);
         }
-        if (expected is RecordType { Name: "CWStr" } cw)
+        if (expected is RecordType { Name: "CWStrView" } cw)
         {
             if (SourceText.HasRawByte(s.Value))
                 throw Err(s.Pos, "a wide string holds characters; a \\x escape above 7F is a raw byte");
@@ -3593,7 +3593,7 @@ public sealed class FunctionGen
             case FloatLit fl:
                 return pt is FloatType || HexFloat.IsHex(fl.Text) && HexFloat.IsB128(pt) ? null : $"a float literal can't be a {pt}";
             case StrLit:
-                return pt is PtrType { Pointee: null or IntType { Kind: IntKind.Byte } } or RecordType { Name: "CStr" or "CWStr" } || IsByteSpan(pt)
+                return pt is PtrType { Pointee: null or IntType { Kind: IntKind.Byte } } or RecordType { Name: "CStrView" or "CWStrView" } || IsByteSpan(pt)
                     ? null
                     : $"a string literal can't be a {pt}";
             case ArrayLit a:

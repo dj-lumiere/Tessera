@@ -1,6 +1,6 @@
-# Tessera stdlib: FiberPool, fibers over many threads
+# Tessera stdlib: ThreadPoolManager, fibers over many threads
 #
-# A FiberPool runs work on a number of threads, each with a FiberManager of its own (its FIBERS). A job is a ticket in
+# A ThreadPoolManager runs work on a number of threads, each with a FiberManager of its own (its FIBERS). A job is a ticket in
 # the same flow as a thread's or a fiber's (Work.te): `pool.get_job[T]()`, `put_work`, `wait_finished`, `retrieve`,
 # `give_back`. Work put on a job waits in the pool's queue until a thread of the pool is free, and that thread runs it
 # as one of its fibers. A job that has started never moves: it stays on its thread, so fibers of one thread take turns
@@ -10,7 +10,7 @@
 # other work, and the thread that finishes a child wakes it. That is how work splits itself in parts on every core
 # without a thread per part:
 #
-#     claim pool: @FiberPool <- .construct(threads: 0)   # 0: one thread per processor
+#     claim pool: @ThreadPoolManager <- .construct(threads: 0)   # 0: one thread per processor
 #     j: Job[U64] = pool.get_job[U64]()
 #     j.put_work(entry: sum_range.to[Callable](), args: (pool, 0, 1000000))
 #     j.wait_finished()
@@ -28,7 +28,7 @@ import Standard/Collections
 import Standard/Os
 
 ### Runs jobs on its threads, each thread's fibers on that thread.
-entity FiberPool
+entity ThreadPoolManager
     ### Guards the queue, the idle jobs, and the threads.
     lock: ExclusiveLock
     ### The jobs whose work waits for a thread, in order.
@@ -52,9 +52,9 @@ entity FiberPool
 record PoolJob
     slot: WorkSlot
     next: @PoolJob
-    pool: @FiberPool
+    pool: @ThreadPoolManager
 
-### A ticket for a job of a FiberPool, from {FiberPool.get_job}: it runs one piece of work at a time, whose result is a
+### A ticket for a job of a ThreadPoolManager, from {ThreadPoolManager.get_job}: it runs one piece of work at a time, whose result is a
 ### `T` (`Void` for none), until {Job[T].give_back}.
 ### :typeparam T: The type of the work's result.
 record Job[T]
@@ -67,7 +67,7 @@ needs T: typename
 ### :param threads: How many threads, or 0 for one per processor.
 ### :returns: The pool, with no threads yet.
 @target(os: not "none")
-routine FiberPool.construct(threads: U64) -> Me
+routine ThreadPoolManager.construct(threads: U64) -> Me
     count: U64 = when
         threads == 0 => cpu_count()
         else => threads
@@ -77,7 +77,7 @@ routine FiberPool.construct(threads: U64) -> Me
 ### Stops the pool: its threads finish the work they have, then end, and the idle jobs go. Give every job back first.
 @target(os: not "none")
 @track_caller
-routine FiberPool.destruct(me: @Me) -> None
+routine ThreadPoolManager.destruct(me: @Me) -> None
     threads: @Memory[Thread[None]] = me.threads
     started: U64 = threads.count()
 
@@ -105,7 +105,7 @@ routine FiberPool.destruct(me: @Me) -> None
 ### :param pool: Its `pool`.
 ### :returns: The new value.
 @target(os: not "none")
-routine PoolJob.construct(slot: WorkSlot, next: @Me, pool: @FiberPool) -> Me
+routine PoolJob.construct(slot: WorkSlot, next: @Me, pool: @ThreadPoolManager) -> Me
     return Me(slot, next, pool)
 
 ### Releases the block of its last work.
@@ -145,7 +145,7 @@ needs T: typename
 ###     the pool's threads can't start.
 @target(os: not "none")
 @track_caller
-routine FiberPool.get_job[T](me: @Me) -> Job[T]
+routine ThreadPoolManager.get_job[T](me: @Me) -> Job[T]
 needs T: typename
     me.lock.lock()
     me.start_threads()
@@ -168,7 +168,7 @@ needs T: typename
 ### Starts the pool's threads, the first time. The lock is held.
 @target(os: not "none")
 @track_caller
-secret routine FiberPool.start_threads(me: @Me) -> None
+secret routine ThreadPoolManager.start_threads(me: @Me) -> None
     local count: U64 = me.count.peek()
 
     threads: @Memory[Thread[None]] = me.threads
@@ -187,7 +187,7 @@ secret routine FiberPool.start_threads(me: @Me) -> None
 ### Puts `job` behind the others in the queue and wakes the threads.
 ### :param job: The job, with its work put on.
 @target(os: not "none")
-secret routine FiberPool.queue(me: @Me, job: @PoolJob) -> None
+secret routine ThreadPoolManager.queue(me: @Me, job: @PoolJob) -> None
     me.lock.lock()
     last: @PoolJob = me.last.peek()
     if last.is_hollow()
@@ -203,7 +203,7 @@ secret routine FiberPool.queue(me: @Me, job: @PoolJob) -> None
 ### The job at the front of the queue, taken out, or null.
 ### :returns: The job, or null.
 @target(os: not "none")
-secret routine FiberPool.take(me: @Me) -> @PoolJob
+secret routine ThreadPoolManager.take(me: @Me) -> @PoolJob
     me.lock.lock()
     job: @PoolJob = me.first.peek()
     if job.is_hollow()
@@ -222,7 +222,7 @@ secret routine FiberPool.take(me: @Me) -> @PoolJob
 ### and sleeps when there is nothing, until the pool stops and its fibers are done.
 ### :param pool: The pool.
 @target(os: not "none")
-secret routine pool_thread(pool: @FiberPool) -> None
+secret routine pool_thread(pool: @ThreadPoolManager) -> None
     local running: @List[Fiber[None]] <- .construct(alloc: DEFAULT_HEAP)
 
     FIBERS.wake_through(pool.epoch)
@@ -543,7 +543,7 @@ routine Job[T].give_back(me: Me) -> None
 needs T: typename
     me.work_slot().give_back()
     job: @PoolJob = me.job
-    pool: @FiberPool = job.pool.peek()
+    pool: @ThreadPoolManager = job.pool.peek()
     pool.lock.lock()
     job.next.poke(pool.idle.peek())
     pool.idle.poke(job)
