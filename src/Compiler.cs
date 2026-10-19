@@ -153,6 +153,7 @@ public sealed partial class Compiler
         RejectOverloadClashes(_methods.Values, (a, b) => OwnerDecl(a) == OwnerDecl(b) && SameFixed(a, b) && SameOwnerArgs(a, b));
         RejectOverloadClashes(_blanket.Values, (_, _) => true);
         RejectPointerReceiverClashes();
+        RejectIdentityRoutines();
         CheckAliases();
         CheckLifecycle();
     }

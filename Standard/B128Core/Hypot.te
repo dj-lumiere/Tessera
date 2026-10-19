@@ -21,12 +21,13 @@ record CmHypotSquare
 
 ### sqrt(x² + y²) without overflow or underflow, correctly rounded to nearest (a CORE-MATH port). A signaling NaN
 ### gives NaN, as it does in every operation, and otherwise an infinite leg gives +inf, even with a quiet NaN in the
-### other leg (IEEE 754's hypot(±inf, qNaN)). A NaN comes back quieted (`me` first), the payload kept.
-### :param other: The other leg.
-### :returns: sqrt(`me`² + `other`²), +inf when it overflows.
-routine B128.hypot(other: Me) -> Me
-    local x_abs: U128 = me.bits() & B128_SIGN.bitnot()
-    local y_abs: U128 = other.bits() & B128_SIGN.bitnot()
+### other leg (IEEE 754's hypot(±inf, qNaN)). A NaN comes back quieted (`x` first), the payload kept.
+### :param x: One leg.
+### :param y: The other leg.
+### :returns: sqrt(`x`² + `y`²), +inf when it overflows.
+routine hypot(x: B128, y: B128) -> B128
+    local x_abs: U128 = x.bits() & B128_SIGN.bitnot()
+    local y_abs: U128 = y.bits() & B128_SIGN.bitnot()
     local swap: Bool = x_abs < y_abs
     local a: U128 = when  # the larger leg
 
@@ -36,12 +37,12 @@ routine B128.hypot(other: Me) -> Me
         swap => x_abs
         else => y_abs
 
-    signaling: Bool = b128_is_signaling(me) or b128_is_signaling(other)
-    inf: Bool = me.is_infinite() or other.is_infinite()
+    signaling: Bool = b128_is_signaling(x) or b128_is_signaling(y)
+    inf: Bool = x.is_infinite() or y.is_infinite()
     when
-        signaling => return b128_nan_of(a: me, b: other)
-        inf => return Me.INFINITY
-        me.is_nan() or other.is_nan() => return b128_nan_of(a: me, b: other)
+        signaling => return b128_nan_of(a: x, b: y)
+        inf => return B128.INFINITY
+        x.is_nan() or y.is_nan() => return b128_nan_of(a: x, b: y)
         else =>
             a_exp: S64 = (a >> 112).to[S64]()
             b_exp: S64 = (b >> 112).to[S64]()
@@ -49,7 +50,7 @@ routine B128.hypot(other: Me) -> Me
             values2: (U128, S64, U128, S64) = when
                 b_tiny =>
                     b_zero: Bool = b == 0
-                    a_only: Me = b128_of(a)
+                    a_only: B128 = b128_of(a)
                     if b_zero
                         return a_only
                     # A subnormal leg moves its leading bit up to the implicit bit's place, and its exponent
@@ -72,7 +73,7 @@ routine B128.hypot(other: Me) -> Me
             b_top: U128 = (b_leg << 15) | B128_SIGN
             # b only matters as a sticky bit
             if gap > 56
-                r: Me = cm_hypot_round(v: a_top | 1, exponent: a_exp2)
+                r: B128 = cm_hypot_round(v: a_top | 1, exponent: a_exp2)
                 return r
             # s = a² + b² in fixed point (b aligned to a), normalized with an even or odd shift so its
             # square root can reuse the sqrt refinement. A carry out of the sum bumps the exponent.
@@ -107,9 +108,9 @@ routine B128.hypot(other: Me) -> Me
                 below: U128 = (excess > 0).to[U128]()
                 lowered: U128 = (candidate | top_bit) -% above
                 v: U128 = lowered +% below
-                r: Me = cm_hypot_round(v, exponent: exponent + wrapped.to[S64]())
+                r: B128 = cm_hypot_round(v, exponent: exponent + wrapped.to[S64]())
                 return r
-            r: Me = cm_hypot_round(v: approx, exponent)
+            r: B128 = cm_hypot_round(v: approx, exponent)
             return r
 
 ### Rounds v (leading bit at 127, sticky information in its low bits) times 2^(exponent - 16383) to

@@ -1,0 +1,384 @@
+# Tessera stdlib collection: BitArray[BITS]
+#
+# BITS bits packed eight to a byte in an inline Array[Byte, (BITS + 7) // 8]:
+# a record, copied by value, with no heap memory. Bit i lives in byte i // 8,
+# at bit i % 8 (least significant first), and the unused high bits of the last
+# byte are always 0. Reads come in both receiver forms, changes take the
+# address.
+
+module Standard/Collections
+
+import Standard/Format
+
+### `BITS` `Bool` values packed eight to a byte, stored inline: a record copied by value, with no heap memory. Bit `i` is bit `i % 8` of byte `i // 8`, and the unused high bits of the last byte are always 0. Every index is bounds-checked.
+### :typeparam BITS: The number of bits, fixed at build time.
+record BitArray[BITS]
+obeys Equatable[BitArray[BITS]]
+obeys Representable[BitArray[BITS]]
+obeys Diagnosable[BitArray[BITS]]
+needs BITS: U64
+    bytes: Array[Byte, (BITS + 7) // 8]
+
+### A BitArray with every bit clear, the same as `.hollow()`.
+### :returns: `BITS` `false` bits.
+common routine BitArray[BITS].zero() -> Me
+needs BITS: U64
+    return Me.hollow()
+
+### The number of bits, which is the buildtime constant `BITS`.
+### :returns: `BITS`.
+common routine BitArray[BITS].count() -> U64
+needs BITS: U64
+    return BITS
+
+### Whether the array holds no bits at all.
+### :returns: `true` when `BITS` is `0`.
+common routine BitArray[BITS].is_empty() -> Bool
+needs BITS: U64
+    return BITS == 0
+
+### The first byte of the bits, for the byte-level routines.
+### :returns: The address of byte `0`.
+secret routine @BitArray[BITS].data() -> @Byte
+needs BITS: U64
+    data: @Byte = bitcast[@Me, @Byte](me)
+    return data
+
+# -- bit access -------------------------------------------------------------------
+
+### Reads the bit at `index` of a BitArray value.
+### :param index: The zero-based position to read.
+### :returns: The bit.
+### :throws: Crashes with `IndexOutOfBoundsError` when `index >= BITS`. See {BitArray[BITS].getitem_checked}.
+@track_caller
+routine BitArray[BITS].getitem(index: U64) -> Bool
+needs BITS: U64
+    local slot: @Me <- me
+
+    value: Bool = slot[index]
+    return value
+
+### Reads the bit at `index`.
+### :param index: The zero-based position to read.
+### :returns: The bit.
+### :throws: Crashes with `IndexOutOfBoundsError` when `index >= BITS`. See {BitArray[BITS].getitem_checked}.
+@track_caller
+routine @BitArray[BITS].getitem(index: U64) -> Bool
+needs BITS: U64
+    if index < BITS
+        return bit_read(data: me.data(), index)
+    crash_out_of_bounds()
+
+### `getitem` on a BitArray value, returning None instead of crashing on an index past the end.
+### :param index: The zero-based position to read.
+### :returns: The bit.
+### :absent: When `index >= BITS`.
+routine BitArray[BITS].getitem_checked(index: U64) -> Maybe[Bool]
+needs BITS: U64
+    local slot: @Me <- me
+
+    return slot.getitem_checked(index)
+
+### `getitem`, returning None instead of crashing on an index past the end.
+### :param index: The zero-based position to read.
+### :returns: The bit.
+### :absent: When `index >= BITS`.
+routine @BitArray[BITS].getitem_checked(index: U64) -> Maybe[Bool]
+needs BITS: U64
+    if index < BITS
+        value: Bool = bit_read(data: me.data(), index)
+        return value
+    return None()
+
+### Sets the bit at `index` to `value`, in place.
+### :param index: The zero-based position to write.
+### :param value: The bit's new value.
+### :throws: Crashes with `IndexOutOfBoundsError` when `index >= BITS`.
+@track_caller
+routine @BitArray[BITS].setitem(index: U64, value: Bool) -> None
+needs BITS: U64
+    if index < BITS
+        bit_write(data: me.data(), index, value)
+        return
+    crash_out_of_bounds()
+
+### Inverts the bit at `index`, in place.
+### :param index: The zero-based position to invert.
+### :throws: Crashes with `IndexOutOfBoundsError` when `index >= BITS`.
+@track_caller
+routine @BitArray[BITS].flip(index: U64) -> None
+needs BITS: U64
+    if index < BITS
+        data: @Byte = me.data()
+        value: Bool = not bit_read(data, index)
+        bit_write(data, index, value)
+        return
+    crash_out_of_bounds()
+
+### Sets every bit to `value`, in place.
+### :param value: The value every bit takes.
+routine @BitArray[BITS].set_all(value: Bool) -> None
+needs BITS: U64
+    bit_fill(data: me.data(), bits: BITS, value)
+    return
+
+### Inverts every bit, in place. {BitArray[BITS].bitnot} gives the inverted copy instead.
+routine @BitArray[BITS].flip_all() -> None
+needs BITS: U64
+    bit_flip_all(data: me.data(), bits: BITS)
+    return
+
+# -- counting and searching -------------------------------------------------------
+
+### Counts the bits of a BitArray value that are set.
+### :returns: The number of `true` bits.
+routine BitArray[BITS].count_trues() -> U64
+needs BITS: U64
+    local slot: @Me <- me
+
+    return slot.count_trues()
+
+### Counts the bits that are set, a byte at a time.
+### :returns: The number of `true` bits.
+routine @BitArray[BITS].count_trues() -> U64
+needs BITS: U64
+    return bit_count_ones(data: me.data(), bits: BITS)
+
+### Counts the bits of a BitArray value that are clear.
+### :returns: The number of `false` bits.
+routine BitArray[BITS].count_falses() -> U64
+needs BITS: U64
+    return BITS - me.count_trues()
+
+### Counts the bits that are clear.
+### :returns: The number of `false` bits.
+routine @BitArray[BITS].count_falses() -> U64
+needs BITS: U64
+    return BITS - me.count_trues()
+
+### Whether at least one bit of a BitArray value is set.
+### :returns: `true` when some bit is `true`.
+routine BitArray[BITS].is_any_true() -> Bool
+needs BITS: U64
+    local slot: @Me <- me
+
+    return slot.is_any_true()
+
+### Whether at least one bit is set.
+### :returns: `true` when some bit is `true`.
+routine @BitArray[BITS].is_any_true() -> Bool
+needs BITS: U64
+    return bit_any(data: me.data(), bits: BITS)
+
+### Whether every bit of a BitArray value is set.
+### :returns: `true` when no bit is `false`, also when `BITS` is `0`.
+routine BitArray[BITS].is_all_true() -> Bool
+needs BITS: U64
+    return me.count_trues() == BITS
+
+### Whether every bit is set.
+### :returns: `true` when no bit is `false`, also when `BITS` is `0`.
+routine @BitArray[BITS].is_all_true() -> Bool
+needs BITS: U64
+    return me.count_trues() == BITS
+
+### Whether no bit of a BitArray value is set.
+### :returns: `true` when no bit is `true`.
+routine BitArray[BITS].is_none_true() -> Bool
+needs BITS: U64
+    return not me.is_any_true()
+
+### Whether no bit is set.
+### :returns: `true` when no bit is `true`.
+routine @BitArray[BITS].is_none_true() -> Bool
+needs BITS: U64
+    return not me.is_any_true()
+
+### Whether some bit of a BitArray value has `value`.
+### :param value: The bit value to look for.
+### :returns: `true` when at least one bit equals `value`.
+routine BitArray[BITS].has(value: Bool) -> Bool
+needs BITS: U64
+    local slot: @Me <- me
+
+    return slot.has(value)
+
+### Whether some bit has `value`.
+### :param value: The bit value to look for.
+### :returns: `true` when at least one bit equals `value`.
+routine @BitArray[BITS].has(value: Bool) -> Bool
+needs BITS: U64
+    if value
+        return me.is_any_true()
+    return me.count_falses() != 0
+
+### Whether no bit of a BitArray value has `value`.
+### :param value: The bit value to look for.
+### :returns: `true` when no bit equals `value`.
+routine BitArray[BITS].lacks(value: Bool) -> Bool
+needs BITS: U64
+    return not me.has(value)
+
+### Whether no bit has `value`.
+### :param value: The bit value to look for.
+### :returns: `true` when no bit equals `value`.
+routine @BitArray[BITS].lacks(value: Bool) -> Bool
+needs BITS: U64
+    return not me.has(value)
+
+### The position of the first `true` bit of a BitArray value.
+### :returns: The lowest position whose bit is `true`.
+### :absent: When no bit is `true`.
+routine BitArray[BITS].first_true() -> Maybe[U64]
+needs BITS: U64
+    local slot: @Me <- me
+
+    return slot.first_true()
+
+### The position of the first `true` bit.
+### :returns: The lowest position whose bit is `true`.
+### :absent: When no bit is `true`.
+routine @BitArray[BITS].first_true() -> Maybe[U64]
+needs BITS: U64
+    return bit_find(data: me.data(), bits: BITS, from: 0, value: true)
+
+### The position of the next `true` bit of a BitArray value after `after`.
+### :param after: The position to look past.
+### :returns: The lowest position above `after` whose bit is `true`.
+### :absent: When no bit after `after` is `true`.
+routine BitArray[BITS].next_true(after: U64) -> Maybe[U64]
+needs BITS: U64
+    local slot: @Me <- me
+
+    return slot.next_true(after)
+
+### The position of the next `true` bit after `after`.
+### :param after: The position to look past.
+### :returns: The lowest position above `after` whose bit is `true`.
+### :absent: When no bit after `after` is `true`.
+routine @BitArray[BITS].next_true(after: U64) -> Maybe[U64]
+needs BITS: U64
+    if after >= BITS
+        return None()
+    return bit_find(data: me.data(), bits: BITS, from: after + 1, value: true)
+
+### The position of the first `false` bit of a BitArray value.
+### :returns: The lowest position whose bit is `false`.
+### :absent: When no bit is `false`.
+routine BitArray[BITS].first_false() -> Maybe[U64]
+needs BITS: U64
+    local slot: @Me <- me
+
+    return slot.first_false()
+
+### The position of the first `false` bit.
+### :returns: The lowest position whose bit is `false`.
+### :absent: When no bit is `false`.
+routine @BitArray[BITS].first_false() -> Maybe[U64]
+needs BITS: U64
+    return bit_find(data: me.data(), bits: BITS, from: 0, value: false)
+
+### The position of the next `false` bit of a BitArray value after `after`.
+### :param after: The position to look past.
+### :returns: The lowest position above `after` whose bit is `false`.
+### :absent: When no bit after `after` is `false`.
+routine BitArray[BITS].next_false(after: U64) -> Maybe[U64]
+needs BITS: U64
+    local slot: @Me <- me
+
+    return slot.next_false(after)
+
+### The position of the next `false` bit after `after`.
+### :param after: The position to look past.
+### :returns: The lowest position above `after` whose bit is `false`.
+### :absent: When no bit after `after` is `false`.
+routine @BitArray[BITS].next_false(after: U64) -> Maybe[U64]
+needs BITS: U64
+    if after >= BITS
+        return None()
+    return bit_find(data: me.data(), bits: BITS, from: after + 1, value: false)
+
+# -- combining --------------------------------------------------------------------
+
+### The bitwise and: a bit is set where it is set in both (`a & b`).
+### :param other: The array to combine with.
+### :returns: A new BitArray.
+routine BitArray[BITS].bitand(other: Me) -> Me
+needs BITS: U64
+    local result: @Me <- me
+    local right: @Me <- other
+
+    bit_and_into(data: result.data(), other: right.data(), bits: BITS)
+    return result.peek()
+
+### The bitwise or: a bit is set where it is set in either (`a | b`).
+### :param other: The array to combine with.
+### :returns: A new BitArray.
+routine BitArray[BITS].bitor(other: Me) -> Me
+needs BITS: U64
+    local result: @Me <- me
+    local right: @Me <- other
+
+    bit_or_into(data: result.data(), other: right.data(), bits: BITS)
+    return result.peek()
+
+### The bitwise exclusive or: a bit is set where exactly one of the two is set (`a ^ b`).
+### :param other: The array to combine with.
+### :returns: A new BitArray.
+routine BitArray[BITS].bitxor(other: Me) -> Me
+needs BITS: U64
+    local result: @Me <- me
+    local right: @Me <- other
+
+    bit_xor_into(data: result.data(), other: right.data(), bits: BITS)
+    return result.peek()
+
+### The bitwise not: every bit inverted (`~a`). {BitArray[BITS].flip_all} inverts in place instead.
+### :returns: A new BitArray.
+routine BitArray[BITS].bitnot() -> Me
+needs BITS: U64
+    local result: @Me <- me
+
+    result.flip_all()
+    return result.peek()
+
+# -- comparing --------------------------------------------------------------------
+
+### Whether two arrays hold the same bits, compared a byte at a time.
+### :param other: The array to compare with.
+### :returns: `true` when every bit is equal.
+routine BitArray[BITS].eq(other: Me) -> Bool
+needs BITS: U64
+    local left: @Me <- me
+    local right: @Me <- other
+
+    return bit_eq(data: left.data(), other: right.data(), bits: BITS)
+
+### Whether two arrays differ in some bit (`a != b`).
+### :param other: The array to compare with.
+### :returns: `true` when at least one bit differs.
+routine BitArray[BITS].ne(other: Me) -> Bool
+needs BITS: U64
+    return not me.eq(other)
+
+# -- text -------------------------------------------------------------------------
+
+### The bits in order, like a list of `Bool`: [true, false, true].
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param out: The writer to write to.
+routine BitArray[BITS].represent_into[TWriter](out: @TWriter) -> None
+needs BITS: U64, TWriter: typename, Writer[TWriter]
+    local slot: @Me <- me
+
+    bit_write_text(data: slot.data(), bits: BITS, out)
+    return
+
+### The bits in order, like a list of `Bool`: [true, false, true].
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param out: The writer to write to.
+routine BitArray[BITS].diagnose_into[TWriter](out: @TWriter) -> None
+needs BITS: U64, TWriter: typename, Writer[TWriter]
+    local slot: @Me <- me
+
+    bit_write_text(data: slot.data(), bits: BITS, out)
+    return

@@ -1,0 +1,124 @@
+# Tessera stdlib: the correctly rounded log2(1 + x) of BF16
+#
+# In B32: for x >= 0x1.6cp+12 log2(1 + x) rounds like log2(x), taken from the log2 tables. For |x| <= 0x1.84p-7 the
+# Taylor terms x/ln(2) - x^2/(2 ln(2)) round correctly. A few exact or hard values are listed. Otherwise 1 + x is
+# exact: its exponent gives an integer part, the upper 6 bits of its mantissa m pick r ~ 1/m and -log2(r) from a table,
+# leaving log2(1 + z) for a small z = r m - 1. Round to nearest only: log2_1p(-1) = -inf, x < -1 gives the quiet NaN,
+# log2_1p(+inf) = +inf, and a positive NaN comes back quiet. Uses CM_BF16_LOG2_T1 from Log2.te.
+#
+# Ported from CORE-MATH, src/binaryb16/log2p1/log2p1_bf16.c.
+# Copyright (c) 2025 Paul Zimmermann
+# MIT license: see LICENSE-CORE-MATH
+
+module Standard/Core
+
+### B32 bit patterns of log2(x2) for 1 <= x2 < 2, where i2 is the lower 7 bits of the encoding of x2, with entry 0
+### slightly above 0 so that exact powers of 2 also round correctly upward.
+preset CM_BF16_LOG2P1_T2: @Array[U32, 128] <- [0x00800000, 0x3C37F286, 0x3CB73CB4, 0x3D08E68F, 0x3D35D69C, 0x3D626FD6,
+    0x3D8759C5, 0x3D9D517F, 0x3DB31FB8, 0x3DC8C50B, 0x3DDE4212, 0x3DF39761, 0x3E0462C4, 0x3E0EE68D, 0x3E19574F,
+    0x3E23B550, 0x3E2E00D2, 0x3E383A17, 0x3E42615F, 0x3E4C76E8, 0x3E567AF1, 0x3E606DB6, 0x3E6A4F72, 0x3E74205F,
+    0x3E7DE0B6, 0x3E83C857, 0x3E88983F, 0x3E8D602E, 0x3E92203D, 0x3E96D888, 0x3E9B8926, 0x3EA03232, 0x3EA4D3C2,
+    0x3EA96DF0, 0x3EAE00D2, 0x3EB28C7F, 0x3EB7110E, 0x3EBB8E96, 0x3EC0052B, 0x3EC474E4, 0x3EC8DDD4, 0x3ECD4012,
+    0x3ED19BB0, 0x3ED5F0C4, 0x3EDA3F60, 0x3EDE8797, 0x3EE2C97D, 0x3EE70525, 0x3EEB3A9F, 0x3EEF69FF, 0x3EF39355,
+    0x3EF7B6B4, 0x3EFBD42B, 0x3EFFEBCD, 0x3F01FED4, 0x3F0404E8, 0x3F060828, 0x3F08089E, 0x3F0A0650, 0x3F0C0146,
+    0x3F0DF989, 0x3F0FEF1F, 0x3F11E20F, 0x3F13D260, 0x3F15C01A, 0x3F17AB44, 0x3F1993E3, 0x3F1B7A00, 0x3F1D5DA0,
+    0x3F1F3ECA, 0x3F211D84, 0x3F22F9D5, 0x3F24D3C2, 0x3F26AB53, 0x3F28808C, 0x3F2A5374, 0x3F2C2411, 0x3F2DF268,
+    0x3F2FBE80, 0x3F31885C, 0x3F335004, 0x3F35157D, 0x3F36D8CB, 0x3F3899F5, 0x3F3A58FF, 0x3F3C15EE, 0x3F3DD0C8,
+    0x3F3F8991, 0x3F41404F, 0x3F42F506, 0x3F44A7BA, 0x3F465872, 0x3F480731, 0x3F49B3FB, 0x3F4B5ED7, 0x3F4D07C7,
+    0x3F4EAED0, 0x3F5053F7, 0x3F51F740, 0x3F5398AF, 0x3F553848, 0x3F56D60F, 0x3F587209, 0x3F5A0C3A, 0x3F5BA4A4,
+    0x3F5D3B4E, 0x3F5ED039, 0x3F60636A, 0x3F61F4E5, 0x3F6384AD, 0x3F6512C7, 0x3F669F35, 0x3F6829FB, 0x3F69B31E,
+    0x3F6B3A9F, 0x3F6CC083, 0x3F6E44CD, 0x3F6FC781, 0x3F7148A1, 0x3F72C832, 0x3F744636, 0x3F75C2B0, 0x3F773DA4,
+    0x3F78B714, 0x3F7A2F04, 0x3F7BA578, 0x3F7D1A71, 0x3F7E8DF2]
+
+### B32 bit patterns of i - 8 for 0 <= i <= 20, the base-2 logarithm of the power of 2 taken out of 1 + x.
+preset CM_BF16_LOG2P1_R0: @Array[U32, 21] <- [0xC1000000, 0xC0E00000, 0xC0C00000, 0xC0A00000, 0xC0800000, 0xC0400000,
+    0xC0000000, 0xBF800000, 0x80000000, 0x3F800000, 0x40000000, 0x40400000, 0x40800000, 0x40A00000, 0x40C00000,
+    0x40E00000, 0x41000000, 0x41100000, 0x41200000, 0x41300000, 0x41400000]
+
+### Pairs of B32 bit patterns {r, -log2(r)} (flattened) for 0 <= i < 64, where r approximates 1/(1 + i/64).
+preset CM_BF16_LOG2P1_R: @Array[U32, 128] <- [0x3F7E0000, 0x3C3963DD, 0x3F7A2000, 0x3D093194, 0x3F766000, 0x3D62759B,
+    0x3F72C000, 0x3D9D067B, 0x3F6F3000, 0x3DC8B52D, 0x3F6BC000, 0x3DF37A86, 0x3F686000, 0x3E0F0A9E, 0x3F652000,
+    0x3E23D961, 0x3F620000, 0x3E382302, 0x3F5EF000, 0x3E4C4AE8, 0x3F5BF000, 0x3E604EB2, 0x3F590000, 0x3E742BEA,
+    0x3F563000, 0x3E83B8D5, 0x3F537000, 0x3E8D4469, 0x3F50B000, 0x3E96EFFA, 0x3F4E1000, 0x3EA049A4, 0x3F4B8000,
+    0x3EA987E8, 0x3F490000, 0x3EB2A95A, 0x3F46A000, 0x3EBB7103, 0x3F443000, 0x3EC48FF1, 0x3F41E000, 0x3ECD521B,
+    0x3F3FA000, 0x3ED5F17C, 0x3F3D7000, 0x3EDE6C8B, 0x3F3B4000, 0x3EE700D1, 0x3F392000, 0x3EEF6F0B, 0x3F371000,
+    0x3EF7B59F, 0x3F351000, 0x3EFFD2EA, 0x3F331000, 0x3F0403A4, 0x3F312000, 0x3F080841, 0x3F2F4000, 0x3F0BF675,
+    0x3F2D6000, 0x3F0FEF7B, 0x3F2B9000, 0x3F13D11D, 0x3F29D000, 0x3F179A7F, 0x3F281000, 0x3F1B6DEB, 0x3F265000,
+    0x3F1F4B98, 0x3F24B000, 0x3F22EBF2, 0x3F230000, 0x3F26B9C0, 0x3F217000, 0x3F2A4874, 0x3F1FE000, 0x3F2DE004,
+    0x3F1E5000, 0x3F31809B, 0x3F1CD000, 0x3F3504B8, 0x3F1B5000, 0x3F38917B, 0x3F19D000, 0x3F3C2710, 0x3F187000,
+    0x3F3F7813, 0x3F170000, 0x3F42F7E8, 0x3F15A000, 0x3F4658CE, 0x3F144000, 0x3F49C1B0, 0x3F12F000, 0x3F4D0A7B,
+    0x3F11A000, 0x3F505AD1, 0x3F106000, 0x3F5389E5, 0x3F0F1000, 0x3F56E95C, 0x3F0DE000, 0x3F59FD70, 0x3F0CA000,
+    0x3F5D4228, 0x3F0B7000, 0x3F6063F5, 0x3F0A4000, 0x3F638C9D, 0x3F092000, 0x3F669124, 0x3F07F000, 0x3F69C77F,
+    0x3F06E000, 0x3F6CAD66, 0x3F05C000, 0x3F6FC557, 0x3F04B000, 0x3F72B76D, 0x3F03A000, 0x3F75AF93, 0x3F029000,
+    0x3F78ADE2, 0x3F018000, 0x3F7BB274, 0x3F008000, 0x3F7E8F64]
+
+### log2(1 + `me`), accurate near 0 and correctly rounded (to nearest, ties to even). log2_1p(-1) = -inf, `me` < -1
+### (-inf and a negative NaN included) gives the quiet NaN, log2_1p(+inf) = +inf, and a positive NaN comes back quiet.
+### :returns: log2(1 + `me`).
+routine BF16.log2_1p() -> Me
+    v: B32 = me.to[B32]()
+    u: U32 = v.bits()
+    au: U32 = u & 0x7FFFFFFF
+    if u >= 0xBF800000
+        # x <= -1, and every negative NaN: -1 gives -inf, the rest the quiet NaN.
+        if u == 0xBF800000
+            return BF16.NEG_INFINITY
+        return BF16.NAN
+    if u >> 23 == 0xFF
+        # +inf or a positive NaN
+        return me + me
+    if au >= 0x45B60000
+        # For x >= 0x1.6cp+12, log2(1 + x) rounds to the same value as log2(x), except when x is a power of 2: then
+        # i2 = 0, and entry 0 of CM_BF16_LOG2P1_T2 is slightly above 0 so that this also rounds correctly upward.
+        i1: U64 = (u >> 23).to[U64]()
+        i2: U64 = ((u >> 16) & 0x7F).to[U64]()
+        t1: B32 = B32.from_bits(CM_BF16_LOG2_T1.getitem(i1))
+        t2: B32 = B32.from_bits(CM_BF16_LOG2P1_T2.getitem(i2))
+        return (t1 + t2).to[Me]()
+    if au <= 0x3BA00000
+        # For |x| <= 0x1.84p-7 the Taylor terms round correctly. A zero keeps its sign.
+        if au == 0
+            return me
+        return cm_bf16_log2p1_tiny(v).to[Me]()
+    # Exact results and hard cases
+    when u >> 16
+        0x437F => return 8.0
+        0x42FE => return 7.0
+        0x427C => return 6.0
+        0x41F8 => return 5.0
+        0x4170 => return 4.0
+        0x40E0 => return 3.0
+        0x4040 => return 2.0
+        0x3F80 => return 1.0
+        0xBF00 => return -1.0
+        0xBF40 => return -2.0
+        0xBF60 => return -3.0
+        0xBF70 => return -4.0
+        0xBF78 => return -5.0
+        0xBF7C => return -6.0
+        0xBF7E => return -7.0
+        0xBF7F => return -8.0
+        0x3C73 => return B32.to[Me](0x1.5c0024p-6)
+        else =>
+            # Now 0x1.86p-7 <= |x| <= 0x1.6ap+12, so 1 + x is exact in B32.
+            w: B32 = v + 1.0
+            wb: U32 = w.bits()
+            i: U64 = (wb >> 23).to[U64]()
+            # Reduce 1 + x to m in [1, 2): log2(1 + x) = (i - 127) + log2(m).
+            m: B32 = B32.from_bits((wb & 0x7FFFFF) | 0x3F800000)
+            # the upper 6 bits of the fraction of m
+            j: U64 = ((m.bits() >> 17) & 0x3F).to[U64]()
+            r: B32 = B32.from_bits(CM_BF16_LOG2P1_R.getitem(j * 2))
+            logr: B32 = B32.from_bits(CM_BF16_LOG2P1_R.getitem(j * 2 + 1))
+            # z = r m - 1 is exact, and r m = 1 + z gives log2(m) = -log2(r) + log2(1 + z).
+            z: B32 = r.mul_add(a: m, b: -1.0)
+            e: B32 = B32.from_bits(CM_BF16_LOG2P1_R0.getitem(i - 119))
+            return (e + (logr + cm_bf16_log2p1_tiny(z))).to[Me]()
+
+### log2(1 + x) for a tiny B32 `x`, by the Taylor terms x/ln(2) - x^2/(2 ln(2)).
+### :param x: The tiny argument.
+### :returns: The approximation of log2(1 + `x`).
+secret routine cm_bf16_log2p1_tiny(x: B32) -> B32
+    # 0x1.715476p+0 is 1/ln(2) rounded to B32.
+    t: B32 = x * 0x1.715476p+0
+    return t.mul_add(a: -0.5 * x, b: t)

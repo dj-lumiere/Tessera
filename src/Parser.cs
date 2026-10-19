@@ -1228,7 +1228,15 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     private TypeArg ParseTypeArg()
     {
-        if (Is(TokenKind.Int)) return new TypeArgInt(Low64(Next().IntValue));
+        int start = _i;
+        if (Is(TokenKind.Int))
+        {
+            var count = new TypeArgInt(Low64(Next().IntValue));
+            if (EndsTypeArg()) return count;
+            // `8 * COUNT`: a buildtime integer expression
+            _i = start;
+            return new TypeArgExpr(ParseExpr());
+        }
         if (Is(TokenKind.Hash))
         {
             var hash = Next();
@@ -1239,21 +1247,39 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         {
             // A one-element tuple is written `(T,)`, so a trailing comma is allowed.
             var types = new List<TypeRef>();
-            while (!Is(TokenKind.RParen))
+            bool tuple = true;
+            while (tuple && !Is(TokenKind.RParen))
             {
+                if (!StartsType())
+                {
+                    tuple = false;
+                    break;
+                }
                 types.Add(ParseType());
-                if (!Accept(TokenKind.Comma)) break;
+                if (!Accept(TokenKind.Comma) && !Is(TokenKind.RParen)) tuple = false;
             }
-            Expect(TokenKind.RParen, "')'");
-            return new TypeArgTuple(types);
+            if (tuple)
+            {
+                Expect(TokenKind.RParen, "')'");
+                if (EndsTypeArg()) return new TypeArgTuple(types);
+            }
+            // `(BITS + 7) // 8`: a buildtime integer expression, not a tuple of types
+            _i = start;
+            return new TypeArgExpr(ParseExpr());
         }
-        // `sizeof[T]()` reads like a type until the '(': back up and parse it as an expression.
-        int start = _i;
+        // `sizeof[T]()` reads like a type until the '(', and `COUNT * 2` until the operator: back up and parse it as an
+        // expression.
         var type = ParseType();
-        if (!Is(TokenKind.LParen)) return new TypeArgType(type);
+        if (EndsTypeArg()) return new TypeArgType(type);
         _i = start;
         return new TypeArgExpr(ParseExpr());
     }
+
+    /// Whether the token after a type argument ends it: the `,` before the next one or the `]` closing the list.
+    private bool EndsTypeArg() => Is(TokenKind.Comma) || Is(TokenKind.RBracket);
+
+    /// Whether the current token can start a type: a name, `@` or `(`.
+    private bool StartsType() => Is(TokenKind.Ident) || Is(TokenKind.At) || Is(TokenKind.LParen);
 
     // ── Blocks and bodies ───────────────────────────────────────────────────
 

@@ -2986,9 +2986,11 @@ public sealed class FunctionGen
                 if (b.Op is "==" or "!=" && TryInfer(b.Left) is PtrType)
                     throw Err(b.Pos, $"'{b.Op}' compares values, and the left side is an address: compare the addresses with '{(b.Op == "==" ? "===" : "!==")}', or what they point at with a.peek() {b.Op} b.peek()");
 
-                // `===` / `!==` compare addresses: values compare with `==` / `!=`.
-                if (b.Op is "===" or "!==" && TryInfer(b.Left) is { } sameType and not PtrType)
-                    throw Err(b.Pos, $"'{b.Op}' compares two addresses (@T or Addr), and the left side is {sameType.Name}: values compare with '{b.Op[..2]}'");
+                // `===` / `!==` ask whether two names reach the same memory, which an address or a span has: values
+                // compare with `==` / `!=`.
+                if (b.Op is "===" or "!==" && TryInfer(b.Left) is { } sameType and not PtrType and not RecordType { Decl.Name: "Addr" or "Span" })
+                    throw Err(b.Pos, $"'{b.Op}' asks whether two names reach the same memory, which an address (@T, Addr) or a span (@[T]) has, "
+                        + $"and the left side is {sameType.Name}: values compare with '{b.Op[..2]}'");
 
                 if (b.Left is IntLit or FloatLit && Infer(b.Right) is { } rightType)
                     return new NsCallExpr(new TypeRef("$operand", [], b.Pos) { Known = rightType }, name, [], [b.Left, b.Right], b.Pos) { FromOperator = true };

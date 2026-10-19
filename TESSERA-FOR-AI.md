@@ -296,7 +296,8 @@ routine start() -> None
   written with its pointer type, and the declared type is the name's type everywhere:
   `local p: @T <- v` (a stack slot, `<- .hollow()` if a routine fills it), `global NAME: @T [<- value]` (mutable,
   all-zero without a value), `preset NAME: @T <- value` (read-only), and the span forms above. `preset NAME: T = value` is a value, not memory: folded at build time, with
-  no address. A global or a preset in memory is part of the program image, there before `start` runs (nothing runs
+  no address. Its value may use operators like a body (`(SIZE + 7) // 8` is `SIZE.add(7).div(8)`), and so may a type
+  argument where a count goes: `Array[Byte, (BITS + 7) // 8]` with `needs BITS: U64`. A global or a preset in memory is part of the program image, there before `start` runs (nothing runs
   before it to compute one, on any target), so its contents are known at build time: literals, presets, `.hollow()`, `[...]` (an array), `T(field: value)` (a record field by field), a routine for
   a `Callable` (`f.to[Callable]()`), or the name of another global or preset in memory (its
   address, and a global holding a pointer is `@@T`: `global HEAD: @@Node <- .hollow()`). Use them as `TICKS.peek()`,
@@ -454,7 +455,7 @@ routine start() -> None
 
 - **Operators are routine calls.** `a + b` is `a.add(b)`, `a - b` `sub`, `*` `mul`, `/` `div`, `%` `mod`, `**`
   `pow` (the exponent a `U32`), `+% -% *%` the `_wrap` forms, `+^ -^ *^` the `_clamp` forms, `== != < <= > >=` `eq`
-  .. `ge`, `<=>` `compare`, `=== !==` `ptr_eq` / `ptr_ne` (two addresses, `@T` or `Addr`), `& | ^ << >>` `bitand` / `bitor` / `bitxor` / `shl` / `shr`, unary `-x` `neg` and `~x`
+  .. `ge`, `<=>` `compare`, `=== !==` `same` / `notsame` (two addresses, `@T` or `Addr`), `& | ^ << >>` `bitand` / `bitor` / `bitxor` / `shl` / `shr`, unary `-x` `neg` and `~x`
   `bitnot`, `xs[i]` `getitem(i)` and `xs[i] = v` `setitem(index: i, value: v)`. A type takes an operator by
   declaring the routine, and a literal on the left takes the right side's type (`1 + x` is `T.add(1, x)`). Precedence,
   tightest first: calls and `[i]`, `**`, the unary `- not ~`, `* / %`, `+ -`, the bitwise operators (one level: two

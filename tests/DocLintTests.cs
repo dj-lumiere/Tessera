@@ -104,14 +104,14 @@ public class DocLintTests
         var warnings = Lint("""
             ### Types that can be compared.
             ### :typeparam T: The type compared.
-            protocol Same[T]
+            protocol Matching[T]
             needs T: typename
                 ### True when the two are the same.
-                routine Me.same(other: Me) -> Bool
+                routine Me.matches(other: Me) -> Bool
             """);
         Assert.Equal(2, warnings.Count);
-        Assert.Contains(warnings, w => w.Contains("'Me.same' has no :param line for 'other'"));
-        Assert.Contains(warnings, w => w.Contains("'Me.same' has no :returns: line"));
+        Assert.Contains(warnings, w => w.Contains("'Me.matches' has no :param line for 'other'"));
+        Assert.Contains(warnings, w => w.Contains("'Me.matches' has no :returns: line"));
     }
 
     [Theory]

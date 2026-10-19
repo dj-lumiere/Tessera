@@ -1,0 +1,369 @@
+# Tessera stdlib collection: BitList
+#
+# A growable run of bits packed eight to a byte: a Memory[Byte] whose count is
+# the capacity in bytes, and the number of bits in use. Bit i lives in byte
+# i // 8, at bit i % 8 (least significant first), and the unused high bits of
+# the last byte are always 0.
+
+module Standard/Collections
+
+import Standard/Alloc
+import Standard/Format
+
+### A growable run of `Bool` values packed eight to a byte on the heap: `storage` holds the capacity in bytes (a {Memory[Byte]}, which keeps the manager) and `count` the bits in use. Bit `i` is bit `i % 8` of byte `i // 8`, and the unused high bits of the last byte are always 0. The buffer grows by doubling, and the list is released with `destruct`.
+entity BitList
+obeys Destructible[BitList]
+obeys Equatable[BitList]
+obeys Representable[BitList]
+obeys Diagnosable[BitList]
+    storage: Memory[Byte]
+    count: U64
+
+### Creates an empty BitList that draws its storage from `alloc`. Nothing is allocated until the first bit is added.
+### :param alloc: The allocator the list stores and later frees its memory with.
+### :returns: A new empty BitList.
+common routine BitList.construct(alloc: @MemoryManager) -> Me
+    return Me(storage: Memory[Byte].construct(count: 0, manager: alloc), count: 0)
+
+### The number of bits currently stored.
+### :returns: The count of bits, `0` when the list is empty.
+routine @BitList.count() -> U64
+    count: U64 = me.count.peek()
+    return count
+
+### Whether the list holds no bits.
+### :returns: `true` when the count is `0`.
+routine @BitList.is_empty() -> Bool
+    return me.count.peek() == 0
+
+### The number of bits the buffer holds before it has to grow.
+### :returns: The capacity in bits, a multiple of 8.
+routine @BitList.capacity() -> U64
+    return me.storage.count.peek() * 8
+
+# -- growing --------------------------------------------------------------------
+
+### Grows the buffer to hold at least `capacity` bits without further allocation. A smaller request leaves the buffer
+### unchanged.
+### :param capacity: The number of bits to make room for.
+### :throws: Crashes with `MemoryAllocationError` when the allocator fails. See {BitList.reserve_result} for a recoverable form.
+@track_caller
+@expensive("reallocates to exactly the capacity asked for")
+@reshaping
+routine @BitList.reserve(capacity: U64) -> None
+    if me.make_capacity(capacity)
+        return
+    crash_allocation()
+
+### `reserve`, returning an error instead of crashing when the allocator fails.
+### :param capacity: The number of bits to make room for.
+### :returns: A value once the buffer holds at least `capacity` bits.
+### :throws: Returns `AllocFailed` when the allocator fails.
+@expensive("reallocates to exactly the capacity asked for")
+@reshaping
+routine @BitList.reserve_result(capacity: U64) -> Result[None, AllocFailed]
+    if me.make_capacity(capacity)
+        return None()
+    return AllocFailed()
+
+### Grows the buffer to the bytes that hold at least `capacity` bits.
+### :param capacity: The number of bits to make room for.
+### :returns: True when the buffer is big enough, false when the allocator failed (the list is left as it was).
+@reshaping
+secret routine @BitList.make_capacity(capacity: U64) -> Bool
+    wanted: U64 = bit_byte_count(capacity)
+    if me.storage.count.peek() >= wanted
+        return true
+    resized: Result[None, AllocFailed] = me.storage.resize_result(wanted)
+    when resized
+        is None => return true
+        is AllocFailed => return false
+
+### Makes room for `wanted` bits: an empty buffer starts at 8 bytes (or the bytes `wanted` needs, when more), and a
+### full one doubles until the request fits.
+### :param wanted: The bit count the buffer must hold.
+### :returns: True when the buffer is big enough, false when the allocator failed (the list is left as it was).
+@reshaping
+secret routine @BitList.make_room(wanted: U64) -> Bool
+    local capacity: U64 = me.storage.count.peek()
+    local wanted_bytes: U64 = bit_byte_count(wanted)
+
+    if capacity >= wanted_bytes
+        return true
+    if capacity == 0
+        base: U64 = 8
+        use_wanted: Bool = wanted_bytes > base
+        new_capacity: U64 = when
+            use_wanted => wanted_bytes
+            else => base
+        return me.make_capacity(new_capacity * 8)
+    while true with grown: U64 = capacity
+        next2: U64 = grown * 2
+        if next2 >= wanted_bytes
+            return me.make_capacity(next2 * 8)
+        continue with grown: next2
+
+### Appends `value` after the last bit, growing the buffer when it is full.
+### :param value: The bit to append.
+### :throws: Crashes with `MemoryAllocationError` when the allocator fails. See {BitList.add_last_result} for a recoverable form.
+@track_caller
+@reshaping
+routine @BitList.add_last(value: Bool) -> None
+    when me.add_last_result(value)
+        is None => return
+        is AllocFailed => crash_allocation()
+
+### `add_last`, returning an error instead of crashing when the allocator fails.
+### :param value: The bit to append.
+### :returns: A value once the bit is appended.
+### :throws: Returns `AllocFailed` when the buffer must grow and the allocator fails.
+@reshaping
+routine @BitList.add_last_result(value: Bool) -> Result[None, AllocFailed]
+    count: U64 = me.count.peek()
+    wanted: U64 = count + 1
+    if not me.make_room(wanted)
+        return AllocFailed()
+    data: @Byte = me.storage.data.peek()
+    if count % 8 == 0
+        data.stride(count // 8).poke(0x00)
+    bit_write(data, index: count, value)
+    me.count.poke(wanted)
+    return None()
+
+### Removes the last bit and returns it. The buffer is kept.
+### :returns: The removed bit.
+### :throws: Crashes with `AbsentValueError` when the list is empty. See {BitList.remove_last_checked}.
+@track_caller
+routine @BitList.remove_last() -> Bool
+    when me.remove_last_checked()
+        is Bool as value => return value
+        is None => crash_absent_value()
+
+### `remove_last`, returning None instead of crashing on an empty list.
+### :returns: The removed bit.
+### :absent: When the list is empty.
+routine @BitList.remove_last_checked() -> Maybe[Bool]
+    local count: U64 = me.count.peek()
+
+    if count == 0
+        return None()
+    index: U64 = count - 1
+    data: @Byte = me.storage.data.peek()
+    value: Bool = bit_read(data, index)
+    bit_write(data, index, value: false)
+    me.count.poke(index)
+    return value
+
+### Removes every bit by resetting the count to `0`. The buffer and its capacity are kept for reuse.
+routine @BitList.clear() -> None
+    me.count.poke(0)
+    return
+
+# -- bit access -----------------------------------------------------------------
+
+### Reads the bit at `index`.
+### :param index: The zero-based position to read.
+### :returns: The bit.
+### :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`. See {BitList.getitem_checked}.
+@track_caller
+routine @BitList.getitem(index: U64) -> Bool
+    if index < me.count.peek()
+        return bit_read(data: me.storage.data.peek(), index)
+    crash_out_of_bounds()
+
+### `getitem`, returning None instead of crashing on an index past the end.
+### :param index: The zero-based position to read.
+### :returns: The bit.
+### :absent: When `index >= count`.
+routine @BitList.getitem_checked(index: U64) -> Maybe[Bool]
+    if index < me.count.peek()
+        value: Bool = bit_read(data: me.storage.data.peek(), index)
+        return value
+    return None()
+
+### Sets the bit at `index` to `value`.
+### :param index: The zero-based position to write.
+### :param value: The bit's new value.
+### :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
+@track_caller
+routine @BitList.setitem(index: U64, value: Bool) -> None
+    if index < me.count.peek()
+        bit_write(data: me.storage.data.peek(), index, value)
+        return
+    crash_out_of_bounds()
+
+### Inverts the bit at `index`.
+### :param index: The zero-based position to invert.
+### :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
+@track_caller
+routine @BitList.flip(index: U64) -> None
+    if index < me.count.peek()
+        data: @Byte = me.storage.data.peek()
+        value: Bool = not bit_read(data, index)
+        bit_write(data, index, value)
+        return
+    crash_out_of_bounds()
+
+### Sets every bit to `value`. The count stays as it is.
+### :param value: The value every bit takes.
+routine @BitList.set_all(value: Bool) -> None
+    bit_fill(data: me.storage.data.peek(), bits: me.count.peek(), value)
+    return
+
+### Inverts every bit, the bitwise not of the list in place.
+routine @BitList.flip_all() -> None
+    bit_flip_all(data: me.storage.data.peek(), bits: me.count.peek())
+    return
+
+# -- counting and searching -------------------------------------------------------
+
+### Counts the bits that are set, a byte at a time.
+### :returns: The number of `true` bits.
+routine @BitList.count_trues() -> U64
+    return bit_count_ones(data: me.storage.data.peek(), bits: me.count.peek())
+
+### Counts the bits that are clear.
+### :returns: The number of `false` bits.
+routine @BitList.count_falses() -> U64
+    return me.count.peek() - me.count_trues()
+
+### Whether at least one bit is set.
+### :returns: `true` when some bit is `true`, `false` for an empty list.
+routine @BitList.is_any_true() -> Bool
+    return bit_any(data: me.storage.data.peek(), bits: me.count.peek())
+
+### Whether every bit is set.
+### :returns: `true` when no bit is `false`, also for an empty list.
+routine @BitList.is_all_true() -> Bool
+    return me.count_trues() == me.count.peek()
+
+### Whether no bit is set.
+### :returns: `true` when no bit is `true`, also for an empty list.
+routine @BitList.is_none_true() -> Bool
+    return not me.is_any_true()
+
+### Whether some bit has `value`.
+### :param value: The bit value to look for.
+### :returns: `true` when at least one bit equals `value`.
+routine @BitList.has(value: Bool) -> Bool
+    if value
+        return me.is_any_true()
+    return me.count_falses() != 0
+
+### Whether no bit has `value`.
+### :param value: The bit value to look for.
+### :returns: `true` when no bit equals `value`.
+routine @BitList.lacks(value: Bool) -> Bool
+    return not me.has(value)
+
+### The position of the first `true` bit.
+### :returns: The lowest position whose bit is `true`.
+### :absent: When no bit is `true`.
+routine @BitList.first_true() -> Maybe[U64]
+    return bit_find(data: me.storage.data.peek(), bits: me.count.peek(), from: 0, value: true)
+
+### The position of the next `true` bit after `after`.
+### :param after: The position to look past.
+### :returns: The lowest position above `after` whose bit is `true`.
+### :absent: When no bit after `after` is `true`.
+routine @BitList.next_true(after: U64) -> Maybe[U64]
+    count: U64 = me.count.peek()
+    if after >= count
+        return None()
+    return bit_find(data: me.storage.data.peek(), bits: count, from: after + 1, value: true)
+
+### The position of the first `false` bit.
+### :returns: The lowest position whose bit is `false`.
+### :absent: When no bit is `false`.
+routine @BitList.first_false() -> Maybe[U64]
+    return bit_find(data: me.storage.data.peek(), bits: me.count.peek(), from: 0, value: false)
+
+### The position of the next `false` bit after `after`.
+### :param after: The position to look past.
+### :returns: The lowest position above `after` whose bit is `false`.
+### :absent: When no bit after `after` is `false`.
+routine @BitList.next_false(after: U64) -> Maybe[U64]
+    count: U64 = me.count.peek()
+    if after >= count
+        return None()
+    return bit_find(data: me.storage.data.peek(), bits: count, from: after + 1, value: false)
+
+# -- combining --------------------------------------------------------------------
+
+### Keeps a bit set only where it is set in `other` too: the bitwise and, in place.
+### :param other: The list to combine in, with the same count.
+### :throws: Crashes with `InvalidValueError` when the counts differ.
+@track_caller
+routine @BitList.and_with(other: @Me) -> None
+    bits: U64 = me.same_count(other)
+    bit_and_into(data: me.storage.data.peek(), other: other.storage.data.peek(), bits)
+    return
+
+### Sets a bit where it is set in `other`: the bitwise or, in place.
+### :param other: The list to combine in, with the same count.
+### :throws: Crashes with `InvalidValueError` when the counts differ.
+@track_caller
+routine @BitList.or_with(other: @Me) -> None
+    bits: U64 = me.same_count(other)
+    bit_or_into(data: me.storage.data.peek(), other: other.storage.data.peek(), bits)
+    return
+
+### Inverts a bit where it is set in `other`: the bitwise exclusive or, in place.
+### :param other: The list to combine in, with the same count.
+### :throws: Crashes with `InvalidValueError` when the counts differ.
+@track_caller
+routine @BitList.xor_with(other: @Me) -> None
+    bits: U64 = me.same_count(other)
+    bit_xor_into(data: me.storage.data.peek(), other: other.storage.data.peek(), bits)
+    return
+
+### The count both lists share, for combining them.
+### :param other: The other list.
+### :returns: The count of bits.
+### :throws: Crashes with `InvalidValueError` when the counts differ.
+@track_caller
+secret routine @BitList.same_count(other: @BitList) -> U64
+    count: U64 = me.count.peek()
+    if count == other.count.peek()
+        return count
+    crash(name: "InvalidValueError", message: "The two bit lists hold different numbers of bits.")
+
+# -- comparing and releasing ------------------------------------------------------
+
+### Whether two lists hold the same bits in the same order.
+### :param other: The list to compare with.
+### :returns: `true` when the counts match and every bit is equal.
+routine @BitList.eq(other: @Me) -> Bool
+    count: U64 = me.count.peek()
+    if count != other.count.peek()
+        return false
+    return bit_eq(data: me.storage.data.peek(), other: other.storage.data.peek(), bits: count)
+
+### Gives the list's memory back to its allocator and resets it to the empty state, so it can be reused or destructed
+### again.
+### :note: Does nothing on a hollow list (`.hollow()`, no allocator).
+@track_caller
+routine @BitList.destruct() -> None
+    if me.storage.manager.peek().is_hollow()
+        return
+    me.storage.give_back()
+    me.count.poke(0)
+    return
+
+# -- text -------------------------------------------------------------------------
+
+### The bits in order, like a list of `Bool`: [true, false, true].
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param out: The writer to write to.
+routine @BitList.represent_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    bit_write_text(data: me.storage.data.peek(), bits: me.count.peek(), out)
+    return
+
+### The bits in order, like a list of `Bool`: [true, false, true].
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param out: The writer to write to.
+routine @BitList.diagnose_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    bit_write_text(data: me.storage.data.peek(), bits: me.count.peek(), out)
+    return

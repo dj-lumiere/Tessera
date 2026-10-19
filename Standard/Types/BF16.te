@@ -7,7 +7,9 @@ module Standard/Core
 
 ### A 16-bit bfloat16 floating-point number, mapped to LLVM `bfloat`: B32's 8-bit exponent with a 7-bit stored mantissa.
 ### It keeps B32's range (finite magnitudes up to about 3.4e38) with an 8-bit significand (2 to 3 significant decimal digits).
-### :note: Targets without BF16 arithmetic (x86) compute in B32 and round back. The math functions compute in B32 and round once to BF16.
+### :note: Targets without BF16 arithmetic (x86) compute in B32 and round back. The math functions are correctly rounded:
+###     most are ports of CORE-MATH's bfloat16 functions (`BF16Core/`), and the few that are faster through B32's
+###     CORE-MATH ports go through B32 and round once (`BF16Core/ThroughB32.te`).
 ### :see: {B16} for more precision in a smaller range.
 @llvm("bfloat")
 record BF16
@@ -415,21 +417,6 @@ routine BF16.fract() -> Me
 
 # -- powers --------------------------------------------------------------------
 
-### The square root, computed in B32 and rounded once to BF16.
-### :returns: The square root. NaN for negative values (other than -0.0).
-routine BF16.sqrt() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.sqrt().to[Me]()
-    return r
-
-### The cube root, defined for every input: negative values give negative roots. Computed with B32's correctly rounded CORE-MATH port and rounded once to BF16.
-### :returns: The correctly rounded BF16 result.
-### :note: No BF16 input rounds wrongly through B32: every one was checked against mpmath.
-routine BF16.cbrt() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.cbrt().to[Me]()
-    return r
-
 ### `me` raised to an integer power, correctly rounded. The B64 power (`n` converts exactly) rounds correctly to
 ### BF16 unless it lands exactly on a BF16 midpoint. There the B128 power decides (checked for every x and n that
 ### reach it).
@@ -441,101 +428,6 @@ routine BF16.powi(n: S32) -> Me
         r2: B128 = me.to[B128]().powf(n.to[B128]())
         return r2.to[Me]()
     return r.to[Me]()
-
-### `me` raised to the power `exponent`, correctly rounded.
-### Computed in B32 and rounded to BF16. When the B32 result lands exactly on a BF16 midpoint, the B64 power decides the rounding instead.
-### :param exponent: The power to raise `me` to.
-### :returns: The correctly rounded BF16 result, following C `pow` for the special cases (NaN for a negative base with a non-integer exponent).
-routine BF16.powf(exponent: Me) -> Me
-    narrow: B32 = me.to[B32]().powf(exponent.to[B32]())
-    if bf16_is_on_midpoint(narrow)
-        # On a BF16 midpoint the B32 result can't tell which way to round. The B64 one can (checked on all pairs:
-        # where it too is a midpoint, the result is exact and ties to even).
-        r: B64 = me.to[B64]().powf(exponent.to[B64]())
-        return r.to[Me]()
-    return narrow.to[Me]()
-
-### e raised to `me`, computed in B32 and rounded once to BF16.
-### :returns: e^`me`.
-routine BF16.exp() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.exp().to[Me]()
-    return r
-
-### 2 raised to `me`, computed in B32 and rounded once to BF16.
-### :returns: 2^`me`.
-routine BF16.exp2() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.exp2().to[Me]()
-    return r
-
-### 10 raised to `me`, correctly rounded. The B32 power rounds correctly to BF16 unless it lands exactly on a BF16
-### midpoint. There the B64 one decides (checked for every BF16).
-### :returns: 10^`me`.
-routine BF16.exp10() -> Me
-    narrow: B32 = me.to[B32]().exp10()
-    if bf16_is_on_midpoint(narrow)
-        r: B64 = me.to[B64]().exp10()
-        return r.to[Me]()
-    return narrow.to[Me]()
-
-### sin(pi * `me`), computed in B32 and rounded once to BF16 (correctly rounded, checked for every BF16).
-### :returns: sin(pi * `me`), NaN for an infinity or NaN.
-routine BF16.sin_pi() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.sin_pi().to[Me]()
-    return r
-
-### cos(pi * `me`), computed in B32 and rounded once to BF16 (correctly rounded, checked for every BF16).
-### :returns: cos(pi * `me`), NaN for an infinity or NaN.
-routine BF16.cos_pi() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.cos_pi().to[Me]()
-    return r
-
-### tan(pi * `me`), computed in B32 and rounded once to BF16 (correctly rounded, checked for every BF16).
-### :returns: tan(pi * `me`): ±infinity at an odd multiple of 1/2, NaN for an infinity or NaN.
-routine BF16.tan_pi() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.tan_pi().to[Me]()
-    return r
-
-### e^`me` - 1, accurate near 0. Computed in B32 and rounded once to BF16.
-### :returns: e^`me` - 1.
-routine BF16.exp_m1() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.exp_m1().to[Me]()
-    return r
-
-### The natural logarithm, computed in B32 and rounded once to BF16.
-### :returns: ln(`me`), -inf at +-0.0 and NaN below 0.
-routine BF16.ln() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.ln().to[Me]()
-    return r
-
-### The base-2 logarithm. Computed with B32's correctly rounded CORE-MATH port and rounded once to BF16.
-### :returns: The correctly rounded BF16 result, -inf at +-0.0 and NaN below 0.
-### :note: No BF16 input rounds wrongly through B32: every one was checked against mpmath.
-routine BF16.log2() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.log2().to[Me]()
-    return r
-
-### The base-10 logarithm. Computed with B32's correctly rounded CORE-MATH port and rounded once to BF16.
-### :returns: The correctly rounded BF16 result, -inf at +-0.0 and NaN below 0.
-### :note: No BF16 input rounds wrongly through B32: every one was checked against mpmath.
-routine BF16.log10() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.log10().to[Me]()
-    return r
-
-### ln(1 + `me`), accurate near 0. Computed in B32 and rounded once to BF16.
-### :returns: ln(1 + `me`).
-routine BF16.ln_1p() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.ln_1p().to[Me]()
-    return r
 
 ### The logarithm with an arbitrary base, ln(`me`) / ln(`base`), correctly rounded to BF16. The quotient of the two
 ### correctly rounded B64 logarithms is within about 2^-51 of the true value, so it rounds to BF16 correctly unless it
@@ -556,158 +448,9 @@ routine BF16.log(base: Me) -> Me
         return (num2 / den2).to[Me]()
     return wide.to[Me]()
 
-### sqrt(`me`^2 + `other`^2), correctly rounded. Squares of 16-bit floats cannot overflow B32. Computed in B32, and
-### in B64 when the B32 result lands on a BF16 midpoint.
-### :param other: The other side.
-### :returns: The length of the hypotenuse.
-routine BF16.hypot(other: Me) -> Me
-    narrow: B32 = me.to[B32]().hypot(other.to[B32]())
-    if bf16_is_on_midpoint(narrow)
-        # As in powf: the B64 result decides, and where it too is a midpoint the result is exact.
-        r: B64 = me.to[B64]().hypot(other.to[B64]())
-        return r.to[Me]()
-    return narrow.to[Me]()
-
 # -- trigonometry --------------------------------------------------------------
 
-### The sine of `me` in radians, computed in B32 and rounded once to BF16.
-### :returns: sin(`me`), NaN for an infinity or NaN.
-routine BF16.sin() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.sin().to[Me]()
-    return r
-
-### The cosine of `me` in radians, computed in B32 and rounded once to BF16.
-### :returns: cos(`me`), NaN for an infinity or NaN.
-routine BF16.cos() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.cos().to[Me]()
-    return r
-
-### The tangent of `me` in radians, computed in B32 and rounded once to BF16.
-### :returns: tan(`me`), NaN for an infinity or NaN.
-routine BF16.tan() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.tan().to[Me]()
-    return r
-
-### The arcsine, in radians in [-pi/2, pi/2]. Computed with B32's correctly rounded CORE-MATH port and rounded once to BF16.
-### :returns: The correctly rounded BF16 result, NaN outside [-1, 1].
-### :note: No BF16 input rounds wrongly through B32: every one was checked against mpmath.
-routine BF16.asin() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.asin().to[Me]()
-    return r
-
-### The arccosine, in radians in [0, pi]. Computed with B32's correctly rounded CORE-MATH port and rounded once to BF16.
-### :returns: The correctly rounded BF16 result, NaN outside [-1, 1].
-### :note: No BF16 input rounds wrongly through B32: every one was checked against mpmath.
-routine BF16.acos() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.acos().to[Me]()
-    return r
-
-### The arctangent, in radians in (-pi/2, pi/2). Computed with B32's correctly rounded CORE-MATH port and rounded once to BF16.
-### :returns: The correctly rounded BF16 result.
-### :note: No BF16 input rounds wrongly through B32: every one was checked against mpmath.
-routine BF16.atan() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.atan().to[Me]()
-    return r
-
-### The hyperbolic sine. Computed with B32's correctly rounded CORE-MATH port and rounded once to BF16.
-### :returns: The correctly rounded BF16 result, infinity on overflow.
-### :note: No BF16 input rounds wrongly through B32: every one was checked against mpmath.
-routine BF16.sinh() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.sinh().to[Me]()
-    return r
-
-### The hyperbolic cosine, at least 1. Computed with B32's correctly rounded CORE-MATH port and rounded once to BF16.
-### :returns: The correctly rounded BF16 result, infinity on overflow.
-### :note: No BF16 input rounds wrongly through B32: every one was checked against mpmath.
-routine BF16.cosh() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.cosh().to[Me]()
-    return r
-
-### The hyperbolic tangent, in [-1, 1]. Computed with B32's correctly rounded CORE-MATH port and rounded once to BF16.
-### :returns: The correctly rounded BF16 result.
-### :note: No BF16 input rounds wrongly through B32: every one was checked against mpmath.
-routine BF16.tanh() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.tanh().to[Me]()
-    return r
-
-### The inverse hyperbolic sine. Computed with B32's correctly rounded CORE-MATH port and rounded once to BF16.
-### :returns: The correctly rounded BF16 result.
-### :note: No BF16 input rounds wrongly through B32: every one was checked against mpmath.
-routine BF16.asinh() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.asinh().to[Me]()
-    return r
-
-### The inverse hyperbolic cosine. Computed with B32's correctly rounded CORE-MATH port and rounded once to BF16.
-### :returns: The correctly rounded BF16 result, NaN below 1.
-### :note: No BF16 input rounds wrongly through B32: every one was checked against mpmath.
-routine BF16.acosh() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.acosh().to[Me]()
-    return r
-
-### The inverse hyperbolic tangent. Computed with B32's correctly rounded CORE-MATH port and rounded once to BF16.
-### :returns: The correctly rounded BF16 result, +-inf at +-1 and NaN outside [-1, 1].
-### :note: No BF16 input rounds wrongly through B32: every one was checked against mpmath.
-routine BF16.atanh() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.atanh().to[Me]()
-    return r
-
-### The angle of the point (`other`, `me`): `me` is y and `other` is x. Computed in B32, and in B64 when the B32
-### result lands on a BF16 midpoint.
-### :param other: The x coordinate.
-### :returns: The angle in radians, in [-pi, pi].
-routine BF16.atan2(other: Me) -> Me
-    narrow: B32 = me.to[B32]().atan2(other.to[B32]())
-    if bf16_is_on_midpoint(narrow)
-        r: B64 = me.to[B64]().atan2(other.to[B64]())
-        if bf16_is_on_midpoint(r)
-            # Still a midpoint in B64: x > 0 and |y / x| tiny (checked on all pairs), where atan2 = atan(y / x) lies
-            # just inside y / x. One B64 ulp toward zero puts it on the right side.
-            inside: B64 = B64.from_bits(r.bits() - 1)
-            return inside.to[Me]()
-        return r.to[Me]()
-    return narrow.to[Me]()
-
 # -- special functions ---------------------------------------------------------
-
-### The error function, computed in B32 and rounded once to BF16.
-### :returns: erf(`me`), in [-1, 1].
-routine BF16.erf() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.erf().to[Me]()
-    return r
-
-### 1 - erf(`me`), accurate where erf is near 1. Computed in B32 and rounded once to BF16.
-### :returns: erfc(`me`), in [0, 2].
-routine BF16.erfc() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.erfc().to[Me]()
-    return r
-
-### The gamma function, computed in B32 and rounded once to BF16.
-### :returns: Γ(`me`): ±inf at ±0, NaN at the negative integers and -inf.
-routine BF16.gamma() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.gamma().to[Me]()
-    return r
-
-### The logarithm of the absolute value of the gamma function, computed in B32 and rounded once to BF16.
-### :returns: ln |Γ(`me`)|: +inf at 0 and the negative integers.
-routine BF16.ln_gamma() -> Me
-    wide: B32 = me.to[B32]()
-    r: Me = wide.ln_gamma().to[Me]()
-    return r
 
 ### Converts an angle from radians to degrees by multiplying by 180 / pi (the constant rounded to BF16).
 ### :returns: `me` in degrees, rounded once.
@@ -723,17 +466,8 @@ routine BF16.to_radians() -> Me
 
 # -- rounding from wider results -------------------------------------------------
 #
-# The math functions compute in B32 with its correctly rounded CORE-MATH ports and round to BF16. That
-# rounding is itself correct unless the B32 result lands exactly on a BF16 midpoint: B32 rounding keeps order
-# and every BF16 midpoint is a B32 value. For the one-argument functions no input rounds wrongly (every BF16
-# input checked with mpmath). The two-argument ones (powf, hypot, atan2) go through B64 at a midpoint.
-
-### Whether `r` lies exactly between two BF16 values: it is finite and its low 16 bits are 0x8000.
-### :param r: The B32 result to test.
-### :returns: `true` on a BF16 midpoint.
-secret routine bf16_is_on_midpoint(r: B32) -> Bool
-    low: U32 = r.bits() & 0xFFFF
-    return r.is_finite() and low == 0x8000
+# powi and log(base:) compute in B64 (and in B128 near a tie) and round once to BF16. That rounding is correct
+# unless the wide result lies on or near a BF16 midpoint, which these two test for.
 
 ### Whether the normal B64 `r` is within 2^16 of its own units (2^-36 relative) of a BF16 midpoint.
 ### :param r: The B64 result to test.

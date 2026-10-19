@@ -202,6 +202,11 @@ public sealed partial class Compiler
                 bool value = l.Op == "and" ? left && FoldBool(l.Right, env) : left || FoldBool(l.Right, env);
                 return new ConstVal(BoolType.Instance, value ? 1 : 0);
             }
+            // An operator is the routine it stands for, as in a body: `(BITS + 7) // 8` is `BITS.add(7).div(8)`.
+            case BinaryExpr b when Operators.Routine(b.Op) is { } routine:
+                return FoldMethod(b.Left, routine, [], [b.Right], hint, env, b.Pos);
+            case UnaryExpr u when Operators.UnaryRoutine(u.Op) is { } routine:
+                return FoldMethod(u.Operand, routine, [], [], hint, env, u.Pos);
             case MethodCallExpr m:
                 return FoldMethod(m.Receiver, m.Name, m.TypeArgs, m.Args, hint, env, m.Pos);
             case NsCallExpr n:

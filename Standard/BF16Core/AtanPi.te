@@ -1,0 +1,84 @@
+# Tessera stdlib: the correctly rounded arc tangent of BF16 divided by pi
+#
+# Evaluated in B32 on t = |x|, reduced to [0, 1] by atan(t) = pi/2 - atan(1/t), with an odd degree-5 minimax
+# polynomial for atan on [0, 0.25] and degree-3 ones on [0.25, 0.5], [0.5, 0.75] and [0.75, 1], scaled by 1/pi.
+# Round to nearest only: +-inf gives +-0.5, NaN comes back quiet.
+#
+# Ported from CORE-MATH, src/binaryb16/atanpi/atanpi_bf16.c.
+# Copyright (c) 2025 Paul Zimmermann
+# MIT license: see LICENSE-CORE-MATH
+
+module Standard/Core
+
+### The arc tangent of `me` divided by pi, in [-0.5, 0.5], correctly rounded (to nearest, ties to even). +-inf gives
+### +-0.5, +-1 gives +-0.25, +-0 comes back as itself, and NaN comes back quiet.
+### :returns: atan(`me`) / pi.
+routine BF16.atan_pi() -> Me
+    local v: B32 = me.to[B32]()
+    local u: U32 = v.bits()
+    local au: U32 = u & 0x7FFFFFFF
+    # for x < 0, atan(-x) = -atan(x)
+    local neg: Bool = u >> 31 != 0
+    local s: B32 = when
+        neg => -1.0
+        else => 1.0
+
+    # For x >= 0x1.46p+8 atanpi(x) rounds like 0x1.fffffep-2 (just below 0.5), and atanpi(-x) like its negation.
+    if au >= 0x43A30000
+        # NaN, infinity or |x| >= 0x1.46p+8
+        if au <= 0x7F800000
+            h: B32 = when
+                au == 0x7F800000 => 0.5
+                else => 0x1.fffffep-2
+            return (s * h).to[Me]()
+        return me + me
+
+    # now t >= 0. For x > 1, atan(x) = pi/2 - atan(1/x).
+    reduce: Bool = au > 0x3F800000
+    t: B32 = when
+        reduce => B32.truediv(1.0, B32.from_bits(au))
+        else => B32.from_bits(au)
+
+    # now 0 <= t <= 1
+    y: B32 = when
+        t <= 0.25 =>
+            # For |x| <= 0x1.6cp-7 atanpi(x) rounds like x/pi (the B32 product).
+            if not reduce and au <= 0x3C360000
+                if au == 0
+                    return me
+                # |x| = 0x1.92p-125: the result directly, which avoids a spurious underflow
+                if au == 0x01490000
+                    if neg
+                        return B32.to[Me](-0x1.ffd7ap-127)
+                    return B32.to[Me](0x1.ffd7ap-127)
+                return (v * 0x1.45f306p-2).to[Me]()
+            tt: B32 = t * t
+            c1: B32 = B32.mul_add(-0x1.551f2ap-2, a: tt, b: 1.0)
+            c: B32 = B32.mul_add(0x1.82264ep-3, a: tt * tt, b: c1)
+            becomes t * c
+        # the degree-3 polynomial p0 + p1 t + p2 t^2 + p3 t^3 for the subinterval holding t
+        t <= 0.5 =>
+            c2: B32 = B32.mul_add(-0x1.1304c6p-3, a: t, b: -0x1.12e4fcp-3)
+            y0: B32 = B32.mul_add(0x1.08b988p+0, a: t, b: -0x1.90db86p-9)
+            becomes c2.mul_add(a: t * t, b: y0)
+        t <= 0.75 =>
+            c2: B32 = B32.mul_add(0x1.2c6dc4p-6, a: t, b: -0x1.6c86fap-2)
+            y0: B32 = B32.mul_add(0x1.248264p+0, a: t, b: -0x1.576262p-6)
+            becomes c2.mul_add(a: t * t, b: y0)
+        else =>
+            # |x| = 1
+            if au == 0x3F800000
+                return (s * 0.25).to[Me]()
+            c2: B32 = B32.mul_add(0x1.3cf48ap-4, a: t, b: -0x1.ef1362p-2)
+            y0: B32 = B32.mul_add(0x1.3c169p+0, a: t, b: -0x1.622642p-5)
+            becomes c2.mul_add(a: t * t, b: y0)
+
+    # argument reconstruction
+    r: B32 = when
+        reduce => B32.sub(0x1.921fb6p+0, y)
+        else => y
+    # times 1/pi, with the sign of x
+    k: B32 = when
+        neg => -0x1.45f306p-2
+        else => 0x1.45f306p-2
+    return (r * k).to[Me]()

@@ -67,7 +67,7 @@ public static class Derive
     };
 
     /// Whether a choice or variant without `@derive` gets this concept: not when it declares the routine or the
-    /// conformance itself, nor what can't hold (a pointer payload compares only by address, through ptr_eq; a choice
+    /// conformance itself, nor what can't hold (a pointer payload compares only by address, through same; a choice
     /// with no members has nothing to write).
     private static bool Implicit(Decl type, string concept, string method, HashSet<(string, string)> declared,
         HashSet<(string, string)> conformed)
@@ -116,7 +116,7 @@ public static class Derive
             throw new CompileError(at, $"{name} is an @llvm record, so it has no fields to derive {concept} from");
         if (r.Clauses.Any(c => c.Kind == "conform" && c.Concepts.Any(x => x.Name == concept)))
             throw new CompileError(at, $"{name} derives {concept}, which declares the conformance; drop 'conform {concept}[...]'");
-        // A pointer compares by address only through ptr_eq, on purpose (see Type-System, Ptr<T> and T's API),
+        // A pointer compares by address only through same, on purpose (see Type-System, Ptr<T> and T's API),
         // so there's nothing to derive.
         if (concept is "Equatable" or "Hashable" or "Comparable"
             && r.Fields.FirstOrDefault(f => f.Type.Name is "Ptr" or "Addr") is { } pointer)

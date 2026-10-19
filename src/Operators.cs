@@ -4,7 +4,7 @@ namespace Tessera;
 /// by declaring the routine. `/` is `truediv` (true division: floats and the types built on them), `//` is `div`
 /// and `%` is `mod`, both Euclidean (the remainder is never negative). `div_trunc` / `mod_trunc` are the quotient
 /// toward zero and the remainder with the dividend's sign, which no operator spells. `===` / `!==` compare two pointers by
-/// address (`ptr_eq` / `ptr_ne`), `==` / `!=` compare values. Precedence, tightest first: calls and `[i]`, `**`, the unary
+/// address (`same` / `notsame`), `==` / `!=` compare values. Precedence, tightest first: calls and `[i]`, `**`, the unary
 /// `- not ~`, `* / // %`, `+ -`, the bitwise operators (one level), ranges, comparisons (chained), `and` / `or` (one
 /// level).
 public static class Operators
@@ -15,7 +15,7 @@ public static class Operators
         ["+%"] = "add_wrap", ["-%"] = "sub_wrap", ["*%"] = "mul_wrap",
         ["+^"] = "add_clamp", ["-^"] = "sub_clamp", ["*^"] = "mul_clamp",
         ["=="] = "eq", ["!="] = "ne", ["<"] = "lt", ["<="] = "le", [">"] = "gt", [">="] = "ge", ["<=>"] = "compare",
-        ["==="] = "ptr_eq", ["!=="] = "ptr_ne",
+        ["==="] = "same", ["!=="] = "notsame",
         ["&"] = "bitand", ["|"] = "bitor", ["^"] = "bitxor", ["<<"] = "shl", [">>"] = "shr", [">>>"] = "ushr",
     };
 

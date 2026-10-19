@@ -1,0 +1,704 @@
+# Tessera stdlib: the correctly rounded compound function (1 + x)^y of BF16
+#
+# (1 + x)^y = 2^(y log2(1 + x)). The fast path computes log2(1 + x) in B64 (x - x^2/2 for tiny x, else a 46-entry
+# table reduction and a degree-7 polynomial), multiplies by y, and takes 2^t with a 33-entry table and a degree-4
+# polynomial, then checks that an error bound around the result rounds to one BF16. When it doesn't, the accurate path
+# redoes both steps in double-double arithmetic, with a separate test for the results that are exact or midpoints.
+# Round to nearest only. The special cases follow IEEE 754's compound: compound(x, +-0) and compound(+-0, y) are 1
+# (unless the other operand is a signaling NaN), x < -1 gives NaN, compound(-1, y) is +inf for y < 0 and +0 for y > 0,
+# and compound(+inf, y) is +inf for y > 0 and +0 for y < 0.
+#
+# Ported from CORE-MATH, src/binaryb16/compound/compound_bf16.c.
+# Copyright (c) 2025 Alexei Sibidanov and Paul Zimmermann
+# MIT license: see LICENSE-CORE-MATH
+
+module Standard/Core
+
+### A double-double number hi + lo, with |lo| at most about one ulp of hi.
+record CmBF16CompoundDd
+    hi: B64
+    lo: B64
+
+### For 0 <= i < 46, inv[i] approximates 1/t for 1/2 + (i + 13)/64 <= t < 1/2 + (i + 14)/64, as B64 bits.
+preset CM_BF16_COMPOUND_INV: @Array[U64, 46] <- [0x3FF6800000000000, 0x3FF6000000000000, 0x3FF5800000000000,
+    0x3FF5000000000000, 0x3FF4C00000000000, 0x3FF4400000000000, 0x3FF4000000000000, 0x3FF3800000000000,
+    0x3FF3400000000000, 0x3FF2C00000000000, 0x3FF2800000000000, 0x3FF2000000000000, 0x3FF1C00000000000,
+    0x3FF1800000000000, 0x3FF1400000000000, 0x3FF1000000000000, 0x3FF0C00000000000, 0x3FF0800000000000,
+    0x3FF0000000000000, 0x3FF0000000000000, 0x3FEF400000000000, 0x3FEEC00000000000, 0x3FEE400000000000,
+    0x3FEE000000000000, 0x3FED800000000000, 0x3FED000000000000, 0x3FECA00000000000, 0x3FEC400000000000,
+    0x3FEBE00000000000, 0x3FEB800000000000, 0x3FEB200000000000, 0x3FEAC00000000000, 0x3FEA800000000000,
+    0x3FEA200000000000, 0x3FE9C00000000000, 0x3FE9800000000000, 0x3FE9200000000000, 0x3FE8C00000000000,
+    0x3FE8800000000000, 0x3FE8400000000000, 0x3FE8000000000000, 0x3FE7C00000000000, 0x3FE7600000000000,
+    0x3FE7200000000000, 0x3FE6E00000000000, 0x3FE6A00000000000]
+
+### Entries 2 i and 2 i + 1 are a double-double approximation of -log2(inv[i]), as B64 bits.
+preset CM_BF16_COMPOUND_LOG2INV: @Array[U64, 92] <- [0xBFDF7A8568CB06CF, 0x3C68F3673FFDD785, 0xBFDD6753E032EA0F,
+    0x3C1C141E66FAAAAD, 0xBFDB47EBF73882A1, 0x3C76FAE441C09D76, 0xBFD91BBA891F1709, 0x3C72D352BEA51E59,
+    0xBFD800A563161C54, 0xBC69575B04FA6FBD, 0xBFD5C01A39FBD688, 0x3C7817FD3B7D7E5D, 0xBFD49A784BCD1B8B,
+    0x3C1B6D40900B2502, 0xBFD24407AB0E073A, 0x3C7F6E91AD16ECFF, 0xBFD11307DAD30B76, 0x3C6A7B47D2C352D9,
+    0xBFCD49EE4C325970, 0x3C5B85A54D7EE2FD, 0xBFCACF5E2DB4EC94, 0x3C401EE1343FE7CA, 0xBFC5C01A39FBD688,
+    0x3C6817FD3B7D7E5D, 0xBFC32AE9E278AE1A, 0xBC4F51F2C075A74C, 0xBFC08C588CDA79E4, 0x3C6A7610E40BD6AB,
+    0xBFBBC84240ADABBA, 0xBC58ECB169B9465F, 0xBFB663F6FAC91316, 0xBC5F3314E0985116, 0xBFB0EB389FA29F9B,
+    0x3C530C22D15199B8, 0xBFA6BAD3758EFD87, 0xBC389B03784B5BE1, 0x0000000000000000, 0x0000000000000000,
+    0x0000000000000000, 0x0000000000000000, 0x3FA184B8E4C56AF8, 0x3C3491F06C085BC2, 0x3FAD6EBD1F1FEBFE,
+    0x3C0155660710EB2A, 0x3FB4C560FE68AF88, 0x3C2C141E66FAAAAD, 0x3FB7D60496CFBB4C, 0x3C59CED1447E30AD,
+    0x3FBE0B1AE8F2FD56, 0x3C592CE9636C90A0, 0x3FC22DADC2AB3497, 0xBC5696E2866C718E, 0x3FC494F863B8DF35,
+    0xBC61562D61AF73F8, 0x3FC7046031C79F85, 0xBC60798D1AA21694, 0x3FC97C1CB13C7EC1, 0xBC6E95734ABD2FCC,
+    0x3FCBFC67A7FFF4CC, 0x3C2BC0AF7B82E7D7, 0x3FCE857D3D361368, 0xBC6086FCE864A1F6, 0x3FD08BCE0D95FA38,
+    0xBC53D56EFE4338FE, 0x3FD169C05363F158, 0x3C7C8D43E017579B, 0x3FD2BAA0C34BE1EC, 0xBC50132AE5E417CD,
+    0x3FD4106017C3ECA3, 0xBC7C658D602E66B0, 0x3FD4F6FBB2CEC598, 0x3C7E393A16B94B52, 0x3FD6552B49986277,
+    0x3C7AC9080333C605, 0x3FD7B89F02CF2AAD, 0x3C68F89E2EB553B2, 0x3FD8A8980ABFBD32, 0x3C799AA6DF8B7D83,
+    0x3FD99B072A96C6B2, 0x3C7BCA36FD02DEF0, 0x3FDA8FF971810A5E, 0x3C5817FD3B7D7E5D, 0x3FDB877C57B1B070,
+    0xBC501D98C3531027, 0x3FDCFFAE611AD12B, 0x3C78A38B4175D665, 0x3FDDFDD89D586E2B, 0x3C438C8946414C6A,
+    0x3FDEFEC61B011F85, 0x3C76D261F1753E0B, 0x3FE0014332BE0033, 0xBC87398FE685F171]
+
+### For 0 <= i <= 32, (i - 16)/2^5, as B64 bits.
+preset CM_BF16_COMPOUND_EXP2_T: @Array[U64, 33] <- [0xBFE0000000000000, 0xBFDE000000000000, 0xBFDC000000000000,
+    0xBFDA000000000000, 0xBFD8000000000000, 0xBFD6000000000000, 0xBFD4000000000000, 0xBFD2000000000000,
+    0xBFD0000000000000, 0xBFCC000000000000, 0xBFC8000000000000, 0xBFC4000000000000, 0xBFC0000000000000,
+    0xBFB8000000000000, 0xBFB0000000000000, 0xBFA0000000000000, 0x0000000000000000, 0x3FA0000000000000,
+    0x3FB0000000000000, 0x3FB8000000000000, 0x3FC0000000000000, 0x3FC4000000000000, 0x3FC8000000000000,
+    0x3FCC000000000000, 0x3FD0000000000000, 0x3FD2000000000000, 0x3FD4000000000000, 0x3FD6000000000000,
+    0x3FD8000000000000, 0x3FDA000000000000, 0x3FDC000000000000, 0x3FDE000000000000, 0x3FE0000000000000]
+
+### Entries 2 i and 2 i + 1 are a double-double approximation of 2^((i - 16)/2^5), as B64 bits.
+preset CM_BF16_COMPOUND_EXP2_U: @Array[U64, 66] <- [0x3FE6A09E667F3BCD, 0xBC8BDD3413B26456, 0x3FE71F75E8EC5F74,
+    0xBC716E4786887A99, 0x3FE7A11473EB0187, 0xBC741577EE04992F, 0x3FE82589994CCE13, 0xBC8D4C1DD41532D8,
+    0x3FE8ACE5422AA0DB, 0x3C86E9F156864B27, 0x3FE93737B0CDC5E5, 0xBC575FC781B57EBC, 0x3FE9C49182A3F090,
+    0x3C6C7C46B071F2BE, 0x3FEA5503B23E255D, 0xBC8D2F6EDB8D41E1, 0x3FEAE89F995AD3AD, 0x3C87A1CD345DCC81,
+    0x3FEB7F76F2FB5E47, 0xBC65584F7E54AC3B, 0x3FEC199BDD85529C, 0x3C711065895048DD, 0x3FECB720DCEF9069,
+    0x3C6503CBD1E949DB, 0x3FED5818DCFBA487, 0x3C72ED02D75B3707, 0x3FEDFC97337B9B5F, 0xBC81A5CD4F184B5C,
+    0x3FEEA4AFA2A490DA, 0xBC8E9C23179C2893, 0x3FEF50765B6E4540, 0x3C89D3E12DD8A18B, 0x3FF0000000000000,
+    0x0000000000000000, 0x3FF059B0D3158574, 0x3C8D73E2A475B465, 0x3FF0B5586CF9890F, 0x3C98A62E4ADC610B,
+    0x3FF11301D0125B51, 0xBC96C51039449B3A, 0x3FF172B83C7D517B, 0xBC819041B9D78A76, 0x3FF1D4873168B9AA,
+    0x3C9E016E00A2643C, 0x3FF2387A6E756238, 0x3C99B07EB6C70573, 0x3FF29E9DF51FDEE1, 0x3C8612E8AFAD1255,
+    0x3FF306FE0A31B715, 0x3C86F46AD23182E4, 0x3FF371A7373AA9CB, 0xBC963AEABF42EAE2, 0x3FF3DEA64C123422,
+    0x3C8ADA0911F09EBC, 0x3FF44E086061892D, 0x3C489B7A04EF80D0, 0x3FF4BFDAD5362A27, 0x3C7D4397AFEC42E2,
+    0x3FF5342B569D4F82, 0xBC807ABE1DB13CAD, 0x3FF5AB07DD485429, 0x3C96324C054647AD, 0x3FF6247EB03A5585,
+    0xBC9383C17E40B497, 0x3FF6A09E667F3BCD, 0xBC9BDD3413B26456]
+
+### For -29 <= e <= 128, entry e + 29 is 2^-e, as B64 bits.
+preset CM_BF16_COMPOUND_SCALE: @Array[U64, 158] <- [0x41C0000000000000, 0x41B0000000000000, 0x41A0000000000000,
+    0x4190000000000000, 0x4180000000000000, 0x4170000000000000, 0x4160000000000000, 0x4150000000000000,
+    0x4140000000000000, 0x4130000000000000, 0x4120000000000000, 0x4110000000000000, 0x4100000000000000,
+    0x40F0000000000000, 0x40E0000000000000, 0x40D0000000000000, 0x40C0000000000000, 0x40B0000000000000,
+    0x40A0000000000000, 0x4090000000000000, 0x4080000000000000, 0x4070000000000000, 0x4060000000000000,
+    0x4050000000000000, 0x4040000000000000, 0x4030000000000000, 0x4020000000000000, 0x4010000000000000,
+    0x4000000000000000, 0x3FF0000000000000, 0x3FE0000000000000, 0x3FD0000000000000, 0x3FC0000000000000,
+    0x3FB0000000000000, 0x3FA0000000000000, 0x3F90000000000000, 0x3F80000000000000, 0x3F70000000000000,
+    0x3F60000000000000, 0x3F50000000000000, 0x3F40000000000000, 0x3F30000000000000, 0x3F20000000000000,
+    0x3F10000000000000, 0x3F00000000000000, 0x3EF0000000000000, 0x3EE0000000000000, 0x3ED0000000000000,
+    0x3EC0000000000000, 0x3EB0000000000000, 0x3EA0000000000000, 0x3E90000000000000, 0x3E80000000000000,
+    0x3E70000000000000, 0x3E60000000000000, 0x3E50000000000000, 0x3E40000000000000, 0x3E30000000000000,
+    0x3E20000000000000, 0x3E10000000000000, 0x3E00000000000000, 0x3DF0000000000000, 0x3DE0000000000000,
+    0x3DD0000000000000, 0x3DC0000000000000, 0x3DB0000000000000, 0x3DA0000000000000, 0x3D90000000000000,
+    0x3D80000000000000, 0x3D70000000000000, 0x3D60000000000000, 0x3D50000000000000, 0x3D40000000000000,
+    0x3D30000000000000, 0x3D20000000000000, 0x3D10000000000000, 0x3D00000000000000, 0x3CF0000000000000,
+    0x3CE0000000000000, 0x3CD0000000000000, 0x3CC0000000000000, 0x3CB0000000000000, 0x3CA0000000000000,
+    0x3C90000000000000, 0x3C80000000000000, 0x3C70000000000000, 0x3C60000000000000, 0x3C50000000000000,
+    0x3C40000000000000, 0x3C30000000000000, 0x3C20000000000000, 0x3C10000000000000, 0x3C00000000000000,
+    0x3BF0000000000000, 0x3BE0000000000000, 0x3BD0000000000000, 0x3BC0000000000000, 0x3BB0000000000000,
+    0x3BA0000000000000, 0x3B90000000000000, 0x3B80000000000000, 0x3B70000000000000, 0x3B60000000000000,
+    0x3B50000000000000, 0x3B40000000000000, 0x3B30000000000000, 0x3B20000000000000, 0x3B10000000000000,
+    0x3B00000000000000, 0x3AF0000000000000, 0x3AE0000000000000, 0x3AD0000000000000, 0x3AC0000000000000,
+    0x3AB0000000000000, 0x3AA0000000000000, 0x3A90000000000000, 0x3A80000000000000, 0x3A70000000000000,
+    0x3A60000000000000, 0x3A50000000000000, 0x3A40000000000000, 0x3A30000000000000, 0x3A20000000000000,
+    0x3A10000000000000, 0x3A00000000000000, 0x39F0000000000000, 0x39E0000000000000, 0x39D0000000000000,
+    0x39C0000000000000, 0x39B0000000000000, 0x39A0000000000000, 0x3990000000000000, 0x3980000000000000,
+    0x3970000000000000, 0x3960000000000000, 0x3950000000000000, 0x3940000000000000, 0x3930000000000000,
+    0x3920000000000000, 0x3910000000000000, 0x3900000000000000, 0x38F0000000000000, 0x38E0000000000000,
+    0x38D0000000000000, 0x38C0000000000000, 0x38B0000000000000, 0x38A0000000000000, 0x3890000000000000,
+    0x3880000000000000, 0x3870000000000000, 0x3860000000000000, 0x3850000000000000, 0x3840000000000000,
+    0x3830000000000000, 0x3820000000000000, 0x3810000000000000, 0x3800000000000000, 0x37F0000000000000]
+
+### For 1 <= y <= 5, the largest odd m such that m^y fits in 9 bits.
+preset CM_BF16_COMPOUND_XMAX: @Array[U32, 6] <- [0, 511, 21, 7, 3, 3]
+
+### The degree-7 polynomial approximating log2(1 + z) for |z| <= 1/64 (entry i is degree i), as B64 bits.
+preset CM_BF16_COMPOUND_P: @Array[U64, 8] <- [0x0000000000000000, 0x3FF71547652B82FE, 0xBFE71547652B8D11,
+    0x3FDEC709DC3A5014, 0xBFD715475B144983, 0x3FD2776C3FDA300E, 0xBFCEC990162358CE, 0x3FCA645337C29E27]
+
+### The degree-13 polynomial approximating log2(1 + z) for |z| <= 1/64: degrees 1 to 5 as double-doubles (entries 0
+### to 9), degrees 6 to 13 as B64 (entries 10 to 17), as B64 bits.
+preset CM_BF16_COMPOUND_P2: @Array[U64, 18] <- [0x3FF71547652B82FE, 0x3C7777D0FFDA0D80, 0xBFE71547652B82FE,
+    0xBC6777D0FD20B49C, 0x3FDEC709DC3A03FD, 0x3C7D27F05171B74A, 0xBFD71547652B82FE, 0xBC57814E70B828B0,
+    0x3FD2776C50EF9BFE, 0x3C7E4F63E12BFF83, 0xBFCEC709DC3A03F4, 0x3FCA61762A7ADECC, 0xBFC71547652D8849,
+    0x3FC484B13D7E7029, 0xBFC2776C1B2A40FD, 0x3FC0C9A80F9B7C1C, 0xBFBECC6801121200, 0x3FBC6E4B91FD10E5]
+
+### The degree-4 polynomial approximating 2^z for |z| <= 2^-6 (entry i is degree i), as B64 bits.
+preset CM_BF16_COMPOUND_Q: @Array[U64, 5] <- [0x3FF0000000000000, 0x3FE62E42FEF6D01A, 0x3FCEBFBDFF7FEEBA,
+    0x3FAC6B167E579BEE, 0x3F83B2B3428D06DE]
+
+### The degree-8 polynomial approximating 2^z for |z| <= 2^-6: degree 0 (entry 0), degrees 1 to 3 as double-doubles
+### (entries 1 to 6), degrees 4 to 8 as B64 (entries 7 to 11), as B64 bits.
+preset CM_BF16_COMPOUND_Q2: @Array[U64, 12] <- [0x3FF0000000000000, 0x3FE62E42FEFA39EF, 0x3C7ABC9D45534D06,
+    0x3FCEBFBDFF82C58F, 0xBC65E4383CF9DDF7, 0x3FAC6B08D704A0C0, 0xBC46CBC55586C8F1, 0x3F83B2AB6FBA4E77,
+    0x3F55D87FE789AEC5, 0x3F2430912F879DAA, 0x3EEFFCC774B2367A, 0x3EB62C017B9BDFE6]
+
+### The compound function (1 + `me`)^`exponent`, correctly rounded (to nearest, ties to even), accurate when `me` is
+### near 0. compound(x, +-0) is 1 for x >= -1 or a quiet NaN, compound(+-0, y) is 1 unless y is a signaling NaN,
+### compound(x, y) is NaN for x < -1, compound(-1, y) is +inf for y < 0 and +0 for y > 0, compound(+inf, y) is +inf
+### for y > 0 and +0 for y < 0, overflow gives +inf and underflow +0. Any other NaN comes back quiet.
+### :param exponent: The power to raise 1 + `me` to.
+### :returns: (1 + `me`)^`exponent`.
+routine BF16.compound(exponent: Me) -> Me
+    local x: B32 = me.to[B32]()
+    local y: B32 = exponent.to[B32]()
+    local nx: U32 = x.bits()
+    local ny: U32 = y.bits()
+    local ax: U32 = nx << 1
+    local ay: U32 = ny << 1
+
+    # x <= -1 (the bits of -1 are 0xBF800000)
+    if nx >= 0xBF800000
+        return cm_bf16_compound_special(x: me, y: exponent)
+    # now x > -1: x = +-0, +inf, NaN, y = +-0, +-inf or NaN
+    if ax == 0 or ax >= 0xFF000000 or ay == 0 or ay >= 0xFF000000
+        return cm_bf16_compound_special(x: me, y: exponent)
+    xd: B64 = x.to[B64]()
+    yd: B64 = y.to[B64]()
+    # l approximates log2(1 + x) with relative error < 2^-47.997, and 2^-149 <= |l| < 128
+    l: B64 = when
+        ax < 0x62000000 =>
+            # |x| < 2^-29: log2(1 + x) ~ (x - x^2/2)/log(2), x^2/2 is exact
+            t0: B64 = xd - (xd * xd) * 0.5
+            becomes B64.mul(0x1.71547652b82fep+0, t0)
+        else => cm_bf16_compound_log2p1(xd)
+    # 2^-298 <= |t| < 2^135, so neither overflows nor underflows in B64
+    t: B64 = l * yd
+    tu: U64 = t.bits()
+    # |t| >= 128: overflow for t >= 128, underflow for t <= -150
+    if (tu << 1) >= 0x80C0000000000000
+        if tu >= 0xC062C00000000000
+            return B32.mul(0x1p-126, 0x1p-126).to[Me]()
+        if tu >> 63 == 0
+            return B32.mul(0x1p+126, 0x1p+126).to[Me]()
+    # 2^t rounds to 1 when |t| <= 0x1.715476ba97f14p-25
+    if (tu << 1) <= 0x3E6715476BA97F14
+        if tu >> 63 != 0
+            return B32.sub(1.0, 0x1p-25).to[Me]()
+        return B32.add(1.0, 0x1p-25).to[Me]()
+    exact: Bool = cm_bf16_compound_is_exact(x, y)
+    res: Me = cm_bf16_compound_exp2_fast(t)
+    if res != -1.0
+        return res
+    # the fast path's rounding test failed
+    return cm_bf16_compound_accurate(x, y, exact)
+
+### compound(x, y) for x <= -1, x = +-0, +-inf or NaN, or y = +-0, +-inf or NaN.
+### :param x: The base minus 1.
+### :param y: The exponent.
+### :returns: (1 + x)^y for those special cases.
+@noinline
+secret routine cm_bf16_compound_special(x: BF16, y: BF16) -> BF16
+    local nx: U16 = x.bits()
+    local ny: U16 = y.bits()
+    local ax: U16 = nx << 1
+    local ay: U16 = ny << 1
+    local xf: B32 = x.to[B32]()
+    local yf: B32 = y.to[B32]()
+
+    if ax == 0 or ay == 0
+        # compound(0, y) = 1 except for y a signaling NaN
+        if ax == 0
+            if cm_bf16_compound_is_signaling(y)
+                return (xf + yf).to[BF16]()
+            return 1.0
+        # compound(x, 0) = 1 except for x a signaling NaN or x < -1
+        if cm_bf16_compound_is_signaling(x)
+            return (xf + yf).to[BF16]()
+        if xf < -1.0
+            return B32.truediv(0.0, 0.0).to[BF16]()
+        return 1.0
+    # the bits of -1 are 0xBF80
+    if ay >= 0xFF00
+        # y = +-inf or NaN, x = 0 was handled above
+        if ax > 0xFF00
+            return (xf + yf).to[BF16]()
+        if ay == 0xFF00
+            # x < -1 gives NaN
+            if nx > 0xBF80
+                return B32.truediv(0.0, 0.0).to[BF16]()
+            # +0 for (x = -1 or |1 + x| < 1) and y = +inf, or 1 + x > 1 and y = -inf, +inf for the other two
+            sy: U16 = ny >> 15
+            if nx == 0xBF80
+                if sy == 0
+                    return 0.0
+                return B32.truediv(1.0, 0.0).to[BF16]()
+            if xf < 0.0
+                if sy == 0
+                    return 0.0
+                return B32.truediv(1.0, 0.0).to[BF16]()
+            if xf > 0.0
+                if sy != 0
+                    return 0.0
+                return B32.truediv(1.0, 0.0).to[BF16]()
+            return 1.0
+        return (xf + yf).to[BF16]()
+    # since -1 < x < 0 can't reach here, this means x = +-inf, NaN, or x <= -1
+    if nx >= 0x7F80
+        if ax == 0xFF00
+            # compound(-inf, y) is NaN, (1 + inf)^y = +inf for y > 0, +0 for y < 0
+            if nx >> 15 != 0
+                return B32.truediv(0.0, 0.0).to[BF16]()
+            if ny >> 15 != 0
+                return B32.truediv(1.0, xf).to[BF16]()
+            return x
+        if ax > 0xFF00
+            return (xf + yf).to[BF16]()
+        # x < -1 gives NaN
+        if nx > 0xBF80
+            return B32.truediv(0.0, 0.0).to[BF16]()
+        # now x = -1: +inf for y < 0, +0 for y > 0
+        if ny >> 15 != 0
+            return B32.truediv(1.0, 0.0).to[BF16]()
+        return 0.0
+    return 0.0
+
+### Whether a BF16 is a signaling NaN.
+### :param x: The value.
+### :returns: True for a signaling NaN.
+secret routine cm_bf16_compound_is_signaling(x: BF16) -> Bool
+    u: U16 = x.bits() & 0x7FFF
+    return 0x7F80 < u < 0x7FC0
+
+### Whether a B32 is an integer (infinities and NaN count as integers).
+### :param y: The value.
+### :returns: True for an integer.
+secret routine cm_bf16_compound_isint(y: B32) -> Bool
+    wy: U32 = y.bits()
+    ey: S32 = ((wy >> 23) & 0xFF).to[S32]() - 127
+    s: S32 = ey + 9
+    if ey >= 0
+        if s >= 32
+            return true
+        return wy << s.to[U32]() == 0
+    return wy << 1 == 0
+
+### Coefficient k of the CM_BF16_COMPOUND_P polynomial.
+### :param k: The degree.
+### :returns: The coefficient.
+### :throws: Crashes with `IndexOutOfBoundsError` when `k` is past the table.
+secret routine cm_bf16_compound_p(k: U64) -> B64
+    return B64.from_bits(CM_BF16_COMPOUND_P.getitem(k))
+
+### An approximation of log2(1 + z) for |z| <= 1/64, with relative error < 2^-49.642.
+### :param z: The argument.
+### :returns: log2(1 + `z`), less than 2^-5.459 in magnitude.
+secret routine cm_bf16_compound_p1(z: B64) -> B64
+    z2: B64 = z * z
+    c5: B64 = cm_bf16_compound_p(6).mul_add(a: z, b: cm_bf16_compound_p(5))
+    c3: B64 = cm_bf16_compound_p(4).mul_add(a: z, b: cm_bf16_compound_p(3))
+    c1: B64 = cm_bf16_compound_p(2).mul_add(a: z, b: cm_bf16_compound_p(1))
+    z4: B64 = z2 * z2
+    d5: B64 = cm_bf16_compound_p(7).mul_add(a: z2, b: c5)
+    d1: B64 = c3.mul_add(a: z2, b: c1)
+    e1: B64 = d5.mul_add(a: z4, b: d1)
+    return z * e1
+
+### An approximation of log2(1 + x) for -1 < x < 2^128, with relative error < 2^-47.997.
+### :param x: The argument.
+### :returns: log2(1 + `x`).
+secret routine cm_bf16_compound_log2p1(x: B64) -> B64
+    # For x < 2^53, 1 + x is exact.
+    u: B64 = 1.0 + x
+    vu: U64 = u.bits()
+    m: U64 = vu & 0xFFFFFFFFFFFFF
+    # 2^e/sqrt(2) < u < 2^e sqrt(2), with -29 <= e <= 128
+    e: S64 = ((vu >> 52).to[S64]() - 0x3FF) + (m >= 0x6A09E667F3BCD).to[S64]()
+    # u = 2^e t with 1/sqrt(2) < t < sqrt(2), so log2(u) = e + log2(t)
+    t: B64 = B64.from_bits(vu -% (e * 0x10000000000000).to_wrap[U64]())
+    # t + 2 lies in the binade [2, 4)
+    i: U64 = ((t + 2.0).bits() >> 45) - 0x2002D
+    r: B64 = B64.from_bits(CM_BF16_COMPOUND_INV.getitem(i))
+    # exact, -1/64 <= z <= 1/64: log2(t) = -log2(r) + log2(r t)
+    z: B64 = r.mul_add(a: t, b: -1.0)
+    p: B64 = cm_bf16_compound_p1(z)
+    return e.to[B64]() + (B64.from_bits(CM_BF16_COMPOUND_LOG2INV.getitem(2 * i)) + p)
+
+### Whether (1 + x)^y is exact or a midpoint in BF16, for x and y not zero. It can be only when (a) y is an integer
+### with 0 <= y <= 5, (b) y < 0 with 1 + x = 2^e and |y| = n 2^-k where 2^k divides e, or (c) y = n 2^f with
+### -3 <= f <= -1 and 1 <= n <= 5.
+### :param x: The base minus 1.
+### :param y: The exponent.
+### :returns: True when the power is exact or a midpoint.
+secret routine cm_bf16_compound_is_exact(x: B32, y: B32) -> Bool
+    # ulp(x) = 2^e0, and only 2^-31 <= ulp(x) <= 2^-6 can give an exact or midpoint power
+    e0: S32 = ((x.bits() << 1) >> 24).to[S32]() - 0x96
+    if e0 < -31 or -6 < e0
+        return false
+    # the same for 1 + x
+    v: U32 = B32.add(1.0, x).bits()
+    e1: S32 = ((v << 1) >> 24).to[S32]() - 0x96
+    if y >= 0.0 and cm_bf16_compound_isint(y)
+        return cm_bf16_compound_is_exact_int(v, e: e1, y)
+    # |y| = n 2^f with n odd
+    wu: U32 = y.bits()
+    f0: S32 = ((wu << 1) >> 24).to[S32]() - 0x96
+    n0: U32 = when
+        f0 >= -149 => (wu & 0x7FFFFF) | 0x800000
+        else => wu & 0x7FFFFF
+    f1: S32 = when
+        f0 >= -149 => f0
+        else => f0 + 1
+    tn: U32 = n0.trailing_zeros()
+    n: U32 = n0 >> tn
+    f: S32 = f1 + tn.to[S32]()
+    # |1 + x| = m 2^e with m odd
+    m0: U32 = when
+        e1 >= -149 => (v & 0x7FFFFF) | 0x800000
+        else => v & 0x7FFFFF
+    e2: S32 = when
+        e1 >= -149 => e1
+        else => e1 + 1
+    tm: U32 = m0.trailing_zeros()
+    m: U32 = m0 >> tm
+    e: S32 = e2 + tm.to[S32]()
+    if y < 0.0
+        # Only (a) y an integer and 1 + x = 2^e, or (b) y = -n/2^k with k >= 1 and 2^k dividing e.
+        if m != 1
+            return false
+        # in case (a) f >= 0, in case (b) f < 0 and k = -f
+        te: S32 = e.to_wrap[U32]().trailing_zeros().to[S32]()
+        if -f > te
+            return false
+        ez: S32 = when
+            e >= 0 and f >= 0 => (-(e << f)) *% n.to_wrap[S32]()
+            e >= 0 => (-(e >> (-f))) *% n.to_wrap[S32]()
+            f >= 0 => ((-e) << f) *% n.to_wrap[S32]()
+            else => ((-e) >> (-f)) *% n.to_wrap[S32]()
+        return -133 <= ez < 128
+    # Now y > 0 is no integer, y = n 2^f with n odd and f < 0. As x^(n 2^f) = (x^(2^f))^n with n odd, x is an exact
+    # (2^k)th power with k = -f, so a square: m is a square and e is even.
+    while f2 != 0 with f2: S32 = f, e3: S32 = e, m1: U32 = m
+        if e3 & 1 != 0
+            return false
+        dm: B32 = m1.to[B32]()
+        s: B32 = dm.sqrt().round()
+        if s * s != dm
+            return false
+        continue with f2: f2 + 1, e3: e3.div_trunc(2), m1: s.to[U32]()
+    then
+        return cm_bf16_compound_is_exact_odd(m: m1, e: e3, n)
+
+### The end of cm_bf16_compound_is_exact for y >= 0 an integer: (1 + x)^y with 1 + x = m 2^e, m odd, is exact for
+### y = 0 or 1, for m = 1 and -133 <= e y < 128, and for 2 <= y <= 5 when m^y fits in 9 bits.
+### :param v: The B32 bits of 1 + x.
+### :param e: The exponent of the ulp of 1 + x.
+### :param y: The exponent of the power, a nonnegative integer.
+### :returns: True when the power is exact or a midpoint.
+secret routine cm_bf16_compound_is_exact_int(v: U32, e: S32, y: B32) -> Bool
+    m0: U32 = (v & 0x7FFFFF) | 0x800000
+    t: U32 = m0.trailing_zeros()
+    m: U32 = m0 >> t
+    e1: S32 = e + t.to[S32]()
+    # 1 + x = m 2^e1
+    if y == 0.0 or y == 1.0
+        return y == 0.0 or t >= 16
+    if m == 1
+        ye: B32 = y * e1.to[B32]()
+        return -133.0 <= ye < 128.0
+    # now for y < 0 or 5 < y it can't be exact
+    if y < 0.0 or 5.0 < y
+        return false
+    y_int: S32 = y.to[S32]()
+    if m > CM_BF16_COMPOUND_XMAX.getitem(y_int.to[U64]())
+        return false
+    # |x^y| = m^y 2^(e1 y)
+    each i: S32 in 2 til y_int with my: U64 = (m *% m).to[U64]()
+        continue with my: my *% m.to[U64]()
+    then
+        # 2^(t2 - 1) <= m^y < 2^t2, so 2^(e1 y + t2 - 1) <= |x^y| < 2^(e1 y + t2)
+        t2: S32 = 32 - my.to_wrap[U32]().leading_zeros().to[S32]()
+        ez: S32 = e1 * y_int + t2
+        if ez <= -133 or 128 < ez
+            return false
+        # m is odd, so x^y is an odd multiple of 2^(e1 y)
+        return e1 * y_int >= -133
+
+### The end of cm_bf16_compound_is_exact for y > 0 not an integer: |x^y| = (m 2^e)^n with m and n odd.
+### :param m: The odd part of the base's root.
+### :param e: The exponent of the base's root.
+### :param n: The odd numerator of y.
+### :returns: True when the power is exact or a midpoint.
+secret routine cm_bf16_compound_is_exact_odd(m: U32, e: S32, n: U32) -> Bool
+    # for 5 < n it can't be exact, unless m = 1
+    if m > 1
+        if 5 < n
+            return false
+        if m > CM_BF16_COMPOUND_XMAX.getitem(n.to[U64]())
+            return false
+    # |x^y| = m^n 2^(e n)
+    while n0 > 1 with n0: U32 = n, my: U32 = m
+        continue with n0: n0 - 1, my: my *% m
+    then
+        # t significant bits of m^n: x^y is an odd multiple of 2^(e n), so e n >= -133, and e n + t <= 128
+        t: S32 = 32 - my.leading_zeros().to[S32]()
+        en: S32 = e * n.to_wrap[S32]()
+        return -133 <= en and en + t <= 128
+
+### Entry k of CM_BF16_COMPOUND_Q.
+### :param k: The degree.
+### :returns: The coefficient.
+### :throws: Crashes with `IndexOutOfBoundsError` when `k` is past the table.
+secret routine cm_bf16_compound_q(k: U64) -> B64
+    return B64.from_bits(CM_BF16_COMPOUND_Q.getitem(k))
+
+### An approximation of 2^z for |z| <= 2^-6, with absolute error < 2^-43.549.
+### :param z: The argument.
+### :returns: 2^`z`.
+secret routine cm_bf16_compound_q1(z: B64) -> B64
+    z2: B64 = z * z
+    c3: B64 = cm_bf16_compound_q(4).mul_add(a: z, b: cm_bf16_compound_q(3))
+    c0: B64 = cm_bf16_compound_q(1).mul_add(a: z, b: cm_bf16_compound_q(0))
+    c2: B64 = c3.mul_add(a: z, b: cm_bf16_compound_q(2))
+    return c2.mul_add(a: z2, b: c0)
+
+### 2^t rounded to BF16, or -1 when the rounding test fails or the result may underflow, for t within 2^-40.680 of
+### y log2(1 + x) and 0x1.7154759a0df53p-24 <= |t| <= 150.
+### :param t: The approximation of y log2(1 + x).
+### :returns: The correctly rounded power, or -1.
+secret routine cm_bf16_compound_exp2_fast(t: B64) -> BF16
+    if t <= -134.0
+        return B64.to[BF16](0x1p-134)
+    # 0 <= |k| <= 150, and |r| <= 1/2 exactly
+    k: B64 = t.round_ties_even()
+    r: B64 = t - k
+    # 2.5 <= 3.015625 + r <= 3.5015625: adding 2^-6 rounds i to nearest, r is near (i - 16)/2^5
+    i: U64 = ((3.015625 + r).bits() >> 46) - 0x10010
+    # now |r1| <= 2^-6, exactly, and 2^t = 2^k exp2_U[i] 2^r1
+    r1: B64 = r - B64.from_bits(CM_BF16_COMPOUND_EXP2_T.getitem(i))
+    v: B64 = B64.from_bits(CM_BF16_COMPOUND_EXP2_U.getitem(2 * i)) * cm_bf16_compound_q1(r1)
+    # The total absolute error on v is below 2^-40.849 < 0x1.1dp-41. Scale v and the error by 2^k.
+    scale: U64 = (k.to[S64]() * 0x10000000000000).to_wrap[U64]()
+    vs: B64 = B64.from_bits(v.bits() +% scale)
+    # a potential underflow goes to the accurate path
+    if vs < 0x1.00000000008e2p-126
+        return -1.0
+    err: B64 = B64.from_bits(B64.bits(0x1.1dp-41) +% scale)
+    lb: BF16 = (vs - err).to[BF16]()
+    rb: BF16 = (vs + err).to[BF16]()
+    if lb != rb
+        return -1.0
+    return lb
+
+### hi + lo = a b exactly.
+### :param a: The first factor.
+### :param b: The second factor.
+### :returns: The product as a double-double.
+secret routine cm_bf16_compound_a_mul(a: B64, b: B64) -> CmBF16CompoundDd
+    hi: B64 = a * b
+    return CmBF16CompoundDd(hi: hi, lo: a.mul_add(a: b, b: -hi))
+
+### a (bh + bl) as a double-double.
+### :param a: The B64 factor.
+### :param bh: The high part of the double-double factor.
+### :param bl: The low part of the double-double factor.
+### :returns: The product.
+secret routine cm_bf16_compound_s_mul(a: B64, bh: B64, bl: B64) -> CmBF16CompoundDd
+    p: CmBF16CompoundDd = cm_bf16_compound_a_mul(a, b: bh)
+    return CmBF16CompoundDd(hi: p.hi, lo: a.mul_add(a: bl, b: p.lo))
+
+### (ah + al) (bh + bl) - al bl as a double-double, al bl being negligible when al <= ulp(ah) and bl <= ulp(bh).
+### :param ah: The high part of the first factor.
+### :param al: The low part of the first factor.
+### :param bh: The high part of the second factor.
+### :param bl: The low part of the second factor.
+### :returns: The product.
+secret routine cm_bf16_compound_d_mul(ah: B64, al: B64, bh: B64, bl: B64) -> CmBF16CompoundDd
+    p: CmBF16CompoundDd = cm_bf16_compound_a_mul(a: ah, b: bh)
+    t: B64 = al.mul_add(a: bh, b: p.lo)
+    return CmBF16CompoundDd(hi: p.hi, lo: ah.mul_add(a: bl, b: t))
+
+### s + t = a + b for |a| >= |b| (Fast2Sum), with an error below 2^-105 |s|.
+### :param a: The larger addend.
+### :param b: The smaller addend.
+### :returns: The rounded sum and its error.
+secret routine cm_bf16_compound_fast_two_sum(a: B64, b: B64) -> CmBF16CompoundDd
+    s: B64 = a + b
+    e: B64 = s - a
+    return CmBF16CompoundDd(hi: s, lo: b - e)
+
+### Coefficient k of CM_BF16_COMPOUND_P2.
+### :param k: The entry.
+### :returns: The coefficient.
+### :throws: Crashes with `IndexOutOfBoundsError` when `k` is past the table.
+secret routine cm_bf16_compound_p2c(k: U64) -> B64
+    return B64.from_bits(CM_BF16_COMPOUND_P2.getitem(k))
+
+### One Horner step in double-double: v z + c.
+### :param v: The running value.
+### :param z: The variable.
+### :param c: The coefficient.
+### :returns: The new running value.
+secret routine cm_bf16_compound_dd_step(v: CmBF16CompoundDd, z: CmBF16CompoundDd,
+        c: CmBF16CompoundDd) -> CmBF16CompoundDd
+    p: CmBF16CompoundDd = cm_bf16_compound_d_mul(ah: v.hi, al: v.lo, bh: z.hi, bl: z.lo)
+    s: CmBF16CompoundDd = cm_bf16_compound_fast_two_sum(a: c.hi, b: p.hi)
+    return CmBF16CompoundDd(hi: s.hi, lo: p.lo + (s.lo + c.lo))
+
+### A double-double approximation of log2(1 + zh + zl) for |zh + zl| <= 1/64, with relative error < 2^-93.777.
+### :param zh: The high part of the argument.
+### :param zl: The low part of the argument.
+### :returns: log2(1 + zh + zl).
+secret routine cm_bf16_compound_p2(zh: B64, zl: B64) -> CmBF16CompoundDd
+    # The relative accuracy can't beat 2^-93.777, so the low part needs only about 41 accurate bits. Since
+    # |p7 z^7/p1| < 2^-44, the terms of degree 7 and up are evaluated in B64 only.
+    each i: U64 in 0 til 6 with h: B64 = cm_bf16_compound_p2c(17)
+        continue with h: h.mul_add(a: zh, b: cm_bf16_compound_p2c(16 - i))
+    then
+        # now in double-double: h + l = h z + p6
+        z: CmBF16CompoundDd = CmBF16CompoundDd(hi: zh, lo: zl)
+        q: CmBF16CompoundDd = cm_bf16_compound_s_mul(a: h, bh: zh, bl: zl)
+        s: CmBF16CompoundDd = cm_bf16_compound_fast_two_sum(a: cm_bf16_compound_p2c(10), b: q.hi)
+        l6: B64 = q.lo + s.lo
+        # (h + l) z + p5, p4, p3, p2, p1
+        d5: CmBF16CompoundDd = cm_bf16_compound_dd_step(v: CmBF16CompoundDd(hi: s.hi, lo: l6), z,
+            c: CmBF16CompoundDd(hi: cm_bf16_compound_p2c(8), lo: cm_bf16_compound_p2c(9)))
+        d4: CmBF16CompoundDd = cm_bf16_compound_dd_step(v: d5, z,
+            c: CmBF16CompoundDd(hi: cm_bf16_compound_p2c(6), lo: cm_bf16_compound_p2c(7)))
+        d3: CmBF16CompoundDd = cm_bf16_compound_dd_step(v: d4, z,
+            c: CmBF16CompoundDd(hi: cm_bf16_compound_p2c(4), lo: cm_bf16_compound_p2c(5)))
+        d2: CmBF16CompoundDd = cm_bf16_compound_dd_step(v: d3, z,
+            c: CmBF16CompoundDd(hi: cm_bf16_compound_p2c(2), lo: cm_bf16_compound_p2c(3)))
+        d1: CmBF16CompoundDd = cm_bf16_compound_dd_step(v: d2, z,
+            c: CmBF16CompoundDd(hi: cm_bf16_compound_p2c(0), lo: cm_bf16_compound_p2c(1)))
+        # the final multiplication by z
+        return cm_bf16_compound_d_mul(ah: d1.hi, al: d1.lo, bh: zh, bl: zl)
+
+### A double-double approximation of log2(1 + x) for -1 < x < 2^128 representable in B32, with relative error below
+### 2^-91.123 and |lo| < 2^-48.574 |hi|.
+### :param x: The argument.
+### :returns: log2(1 + `x`).
+secret routine cm_bf16_compound_log2p1_accurate(x: B64) -> CmBF16CompoundDd
+    # h + l = 1 + x + eps with |eps| <= 2^-105 |h| and |l| <= ulp(h): exact by Fast2Sum's condition when
+    # 2^-53 <= |x| <= 1 or 1 < x < 2^54
+    s: CmBF16CompoundDd = when
+        1.0 >= x =>
+            when
+                x.abs() >= 0x1p-53 => becomes cm_bf16_compound_fast_two_sum(a: 1.0, b: x)
+                else => becomes CmBF16CompoundDd(hi: 1.0, lo: x)
+        else => cm_bf16_compound_fast_two_sum(a: x, b: 1.0)
+    vu: U64 = s.hi.bits()
+    m: U64 = vu & 0xFFFFFFFFFFFFF
+    # 2^e/sqrt(2) < h < 2^e sqrt(2), with -29 <= e <= 128: divide h and l by 2^e
+    e: S64 = ((vu >> 52).to[S64]() - 0x3FF) + (m >= 0x6A09E667F3BCD).to[S64]()
+    sc: B64 = B64.from_bits(CM_BF16_COMPOUND_SCALE.getitem((e + 29).to[U64]()))
+    h: B64 = s.hi * sc
+    l: B64 = s.lo * sc
+    # now |h| < sqrt(2) and |l| <= 2^-52, 1 + x ~ 2^e (h + l), log2(1 + x) ~ e + log2(h + l)
+    i: U64 = ((2.0 + h).bits() >> 45) - 0x2002D
+    r: B64 = B64.from_bits(CM_BF16_COMPOUND_INV.getitem(i))
+    # zh exactly, -1/64 <= zh <= 1/64, zh + zl = r (h + l) - 1, log2(h + l) = -log2(r) + log2(1 + zh + zl)
+    zh0: B64 = r.mul_add(a: h, b: -1.0)
+    zl0: B64 = r * l
+    z: CmBF16CompoundDd = cm_bf16_compound_fast_two_sum(a: zh0, b: zl0)
+    p: CmBF16CompoundDd = cm_bf16_compound_p2(zh: z.hi, zl: z.lo)
+    # |log2inv[i][0]| < 1 and e is an integer, so Fast2Sum's condition holds
+    li: B64 = B64.from_bits(CM_BF16_COMPOUND_LOG2INV.getitem(2 * i))
+    a: CmBF16CompoundDd = cm_bf16_compound_fast_two_sum(a: e.to[B64](), b: li)
+    al: B64 = a.lo + B64.from_bits(CM_BF16_COMPOUND_LOG2INV.getitem(2 * i + 1))
+    b: CmBF16CompoundDd = cm_bf16_compound_fast_two_sum(a: a.hi, b: p.hi)
+    return CmBF16CompoundDd(hi: b.hi, lo: al + (b.lo + p.lo))
+
+### Coefficient k of CM_BF16_COMPOUND_Q2.
+### :param k: The entry.
+### :returns: The coefficient.
+### :throws: Crashes with `IndexOutOfBoundsError` when `k` is past the table.
+secret routine cm_bf16_compound_q2c(k: U64) -> B64
+    return B64.from_bits(CM_BF16_COMPOUND_Q2.getitem(k))
+
+### A double-double approximation of 2^(h + l) for |h| <= 2^-6 and |l| <= 2^-58, with absolute error < 2^-85.218.
+### :param h: The high part of the argument.
+### :param l: The low part of the argument.
+### :returns: 2^(h + l).
+secret routine cm_bf16_compound_q2(h: B64, l: B64) -> CmBF16CompoundDd
+    z: CmBF16CompoundDd = CmBF16CompoundDd(hi: h, lo: l)
+    h2: B64 = h * h
+    c7: B64 = cm_bf16_compound_q2c(11).mul_add(a: h, b: cm_bf16_compound_q2c(10))
+    c5: B64 = cm_bf16_compound_q2c(9).mul_add(a: h, b: cm_bf16_compound_q2c(8))
+    d5: B64 = c7.mul_add(a: h2, b: c5)
+    # ulp(c5 h^5) <= 2^-86, so c5 h stays in B64
+    q: CmBF16CompoundDd = cm_bf16_compound_fast_two_sum(a: cm_bf16_compound_q2c(7), b: d5 * h)
+    # multiply by h + l and add the coefficients of degree 3, 2 and 1
+    q3: CmBF16CompoundDd = cm_bf16_compound_dd_step(v: q, z,
+        c: CmBF16CompoundDd(hi: cm_bf16_compound_q2c(5), lo: cm_bf16_compound_q2c(6)))
+    q2: CmBF16CompoundDd = cm_bf16_compound_dd_step(v: q3, z,
+        c: CmBF16CompoundDd(hi: cm_bf16_compound_q2c(3), lo: cm_bf16_compound_q2c(4)))
+    q1: CmBF16CompoundDd = cm_bf16_compound_dd_step(v: q2, z,
+        c: CmBF16CompoundDd(hi: cm_bf16_compound_q2c(1), lo: cm_bf16_compound_q2c(2)))
+    # multiply by h + l and add the coefficient of degree 0
+    p: CmBF16CompoundDd = cm_bf16_compound_d_mul(ah: q1.hi, al: q1.lo, bh: h, bl: l)
+    s: CmBF16CompoundDd = cm_bf16_compound_fast_two_sum(a: cm_bf16_compound_q2c(0), b: p.hi)
+    return CmBF16CompoundDd(hi: s.hi, lo: p.lo + s.lo)
+
+### (1 + x)^y correctly rounded, from h + l within a relative error of 2^-91.120 of y log2(1 + x), with |h + l| < 150
+### and |l| < 2^-48.445 |h|.
+### :param t: y log2(1 + x) as a double-double.
+### :param x: The base minus 1.
+### :param y: The exponent.
+### :param exact: Whether (1 + x)^y is exact or a midpoint.
+### :returns: The correctly rounded power.
+secret routine cm_bf16_compound_exp2_accurate(t: CmBF16CompoundDd, x: B32, y: B32, exact: Bool) -> BF16
+    local h: B64 = t.hi
+    local l: B64 = t.lo
+
+    if y == 1.0
+        return B32.add(1.0, x).to[BF16]()
+    # |k| <= 150
+    k: B64 = h.round_ties_even()
+    # h + l tiny: 2^h rounds to 1 (also to 1- or 1+ for the other rounding modes)
+    if k == 0.0 and h.abs() <= 0x1.716001718d0dfp-12
+        return (1.0 + h * 0.5).to[BF16]()
+    # |r| <= 1/2, exactly, and r is a multiple of ulp(h), so the Fast2Sum is exact
+    s: CmBF16CompoundDd = cm_bf16_compound_fast_two_sum(a: h - k, b: l)
+    # 2.5 <= 3.015625 + h <= 3.5015625: adding 2^-6 rounds i to nearest, h is near (i - 16)/2^5
+    i: U64 = ((3.015625 + s.hi).bits() >> 46) - 0x10010
+    # now |h| <= 2^-6, exactly, and 2^(h + l) = 2^k exp2_U[i] 2^(h + l)
+    hr: B64 = s.hi - B64.from_bits(CM_BF16_COMPOUND_EXP2_T.getitem(i))
+    # renormalize: |l| <= ulp(2^-6) = 2^-58
+    z: CmBF16CompoundDd = cm_bf16_compound_fast_two_sum(a: hr, b: s.lo)
+    # 0.989 < qh < 1.011, |ql| < 2^-51.959, |qh + ql - 2^(h+l)| < 2^-85.210
+    q: CmBF16CompoundDd = cm_bf16_compound_q2(h: z.hi, l: z.lo)
+    uh: B64 = B64.from_bits(CM_BF16_COMPOUND_EXP2_U.getitem(2 * i))
+    ul: B64 = B64.from_bits(CM_BF16_COMPOUND_EXP2_U.getitem(2 * i + 1))
+    p: CmBF16CompoundDd = cm_bf16_compound_d_mul(ah: uh, al: ul, bh: q.hi, bl: q.lo)
+    w: CmBF16CompoundDd = cm_bf16_compound_fast_two_sum(a: p.hi, b: p.lo)
+    scale: U64 = (k.to[S64]() * 0x10000000000000).to_wrap[U64]()
+    # The total absolute error on qh + ql is below 2^-83.242. As |ql| < ulp(qh), the rounding test can fail only when
+    # the last 53 - 25 = 28 bits of qh are a signed number in [-1, 1].
+    wu: U64 = w.hi.bits()
+    if (wu +% 1) & 0xFFFFFFF <= 2
+        vu: U64 = (w.hi + (w.lo - 0x1.b1p-84)).bits() +% scale
+        wwu: U64 = (w.hi + (w.lo + 0x1.b1p-84)).bits() +% scale
+        left: BF16 = B64.from_bits(vu).to[BF16]()
+        right: BF16 = B64.from_bits(wwu).to[BF16]()
+        # exact or midpoint: the bound with more trailing zeros is the right one
+        if exact
+            if vu.trailing_zeros() >= wwu.trailing_zeros()
+                return left
+            return right
+        # (1 + x)^y rounds like x^y where x^y is exact for y = 1/2, 1/4, 3/4 and x >= 2^8
+        if y == 0.5 or y == 0.25 or y == 0.75
+            return right
+    # multiply qh + ql by 2^k: 0.69 < qh + ql < 1.44, so the scaling neither overflows nor underflows
+    v: B64 = w.hi + w.lo
+    # When qh fits in 25 bits and qh + ql rounds to qh, round to odd to avoid a double rounding.
+    odd: Bool = wu << 36 == 0 and v == w.hi and w.lo != 0.0
+    vu: U64 = when
+        odd and w.lo > 0.0 => v.bits() +% 1
+        odd => v.bits() -% 1
+        else => v.bits()
+    return B64.from_bits(vu +% scale).to[BF16]()
+
+### (1 + x)^y through the double-double path, for when the fast path's rounding test failed.
+### :param x: The base minus 1.
+### :param y: The exponent.
+### :param exact: Whether (1 + x)^y is exact or a midpoint.
+### :returns: The correctly rounded power.
+secret routine cm_bf16_compound_accurate(x: B32, y: B32, exact: Bool) -> BF16
+    # h + l approximates log2(1 + x) with relative error below 2^-91.123, and |l| < 2^-48.574 |h|
+    lg: CmBF16CompoundDd = cm_bf16_compound_log2p1_accurate(x.to[B64]())
+    # y log2(1 + x): 2^-298 <= |h + l| < 2^135, so no overflow or underflow, relative error below 2^-91.120
+    t: CmBF16CompoundDd = cm_bf16_compound_s_mul(a: y.to[B64](), bh: lg.hi, bl: lg.lo)
+    return cm_bf16_compound_exp2_accurate(t, x, y, exact)

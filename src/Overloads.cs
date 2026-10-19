@@ -190,6 +190,27 @@ public sealed partial class Compiler
         }
     }
 
+    /// The types `===` and `!==` work on: what `same` and `notsame` mean. Only memory has an identity, a place that two
+    /// names can reach, so the standard library's addresses and spans declare them and nothing else does.
+    private static readonly HashSet<string> IdentityOwners = ["Ptr", "Addr", "Span"];
+
+    /// `a === b` is `a.same(b)`: whether two names reach the same memory. A routine `same` or `notsame` on any other
+    /// type would give `===` another meaning, so it is a build error that points at `==` (`eq`).
+    private void RejectIdentityRoutines()
+    {
+        foreach (var ((owner, name), group) in _methods)
+        {
+            if (name is not ("same" or "notsame")) continue;
+            foreach (var r in group)
+            {
+                if (r.IsLibrary && IdentityOwners.Contains(owner)) continue;
+                throw new CompileError(r.Pos, $"'{r.Header}' would be what {(name == "same" ? "===" : "!==")} means on {owner}, and === asks "
+                    + "whether two names reach the same memory, which only an address (@T, Addr) or a span (@[T]) has: compare values "
+                    + "with ==, which is eq, or give the routine another name");
+            }
+        }
+    }
+
     /// An overloaded routine's C name can't default to the routine's name, which its overloads share.
     private static void CheckOverloadSymbol(RoutineDecl r, RoutineDecl other)
     {
