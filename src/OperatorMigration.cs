@@ -182,7 +182,7 @@ public static partial class OperatorMigration
         Add("Subtractable", null, Same("sub"));
         Add("Multiplicable", null, Same("mul"));
         Add("Divisible", null, Same("truediv"));
-        Add("FloorDivisible", null, Same("div"), Same("mod"));
+        Add("FloorDivisible", null, Same("floordiv"), Same("mod"));
         Add("Negatable", null, Unary("neg"));
         Add("WrappingAddable", null, Same("add_wrap"));
         Add("WrappingSubtractable", null, Same("sub_wrap"));
@@ -192,7 +192,7 @@ public static partial class OperatorMigration
         Add("ClampingMultiplicable", null, Same("mul_clamp"));
         Add("Bitwiseable", null, Same("bitand"), Same("bitor"), Same("bitxor"));
         Add("Invertible", null, Unary("bitnot"));
-        Add("Shiftable", null, Same("shl"), Same("shr"));
+        Add("Shiftable", null, Same("shift_left"), Same("arith_shift_right"));
         Add("DurationAddable", null, With("add", "Duration"));
         Add("ClampingDurationAddable", null, With("add_clamp", "Duration"));
         Add("DurationSubtractable", null, With("sub", "Duration"), Same("sub", "Duration"));
@@ -202,10 +202,10 @@ public static partial class OperatorMigration
         // The pairings with a type of their own: each other operand type its routines take.
         bool Other(string t) => !IsMe(t) && Norm(t) != "@Me" && t is not ("Duration" or "ByteSize");
         Add("Exponentiable", null, Same("pow"));
-        foreach (var (name, protocol) in new[] { ("mul", "Scalable"), ("truediv", "ScalarDivisible"), ("div", "ScalarFloorDivisible") })
+        foreach (var (name, protocol) in new[] { ("mul", "Scalable"), ("truediv", "ScalarDivisible"), ("floordiv", "ScalarFloorDivisible") })
             foreach (var r in own.Where(r => r.Name == name && ValueReceiver(r) && r.Params.Count == 1 && Other(r.Params[0]) && IsMe(r.Ret)))
                 Add(protocol, r.Params[0], r);
-        foreach (var r in own.Where(r => r.Name == "div" && ValueReceiver(r) && r.Params.Count == 1 && IsMe(r.Params[0]) && Other(r.Ret)))
+        foreach (var r in own.Where(r => r.Name == "floordiv" && ValueReceiver(r) && r.Params.Count == 1 && IsMe(r.Params[0]) && Other(r.Ret)))
             Add("RatioDivisible", r.Ret, r, Same("mod"));
 
         var get = Find("getitem", r => ValueReceiver(r) && r.Params.Count == 1 && r.Params[0] == "U64");

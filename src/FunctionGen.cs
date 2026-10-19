@@ -3761,7 +3761,7 @@ public sealed class FunctionGen
             // An untyped literal receiver takes its type from the arguments: through the parameters of a routine on
             // every type (`7.poke_into(p)` with `dest: @T`), or else as the first typed argument
             // (`0.sub(x)`). Failing both, it takes its type from context.
-            // The result's type says the receiver's only for a routine that returns Me (`x: U64 = 1.shl(3)`), so it
+            // The result's type says the receiver's only for a routine that returns Me (`x: U64 = 1.shift_left(3)`), so it
             // is borrowed only when it's a type the literal could have.
             rt = BlanketReceiverType(m) ?? m.Args.Select(Infer).FirstOrDefault(t => t is not null)
                  ?? (LiteralCanBe(m.Receiver, expected) ? expected : null);

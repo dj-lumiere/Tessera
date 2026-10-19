@@ -15,12 +15,12 @@ public static class Operators
 {
     private static readonly Dictionary<string, string> Binary = new()
     {
-        ["+"] = "add", ["-"] = "sub", ["*"] = "mul", ["/"] = "truediv", ["//"] = "div", ["%"] = "mod", ["**"] = "pow",
+        ["+"] = "add", ["-"] = "sub", ["*"] = "mul", ["/"] = "truediv", ["//"] = "floordiv", ["%"] = "mod", ["**"] = "pow",
         ["+%"] = "add_wrap", ["-%"] = "sub_wrap", ["*%"] = "mul_wrap",
         ["+^"] = "add_clamp", ["-^"] = "sub_clamp", ["*^"] = "mul_clamp",
         ["=="] = "eq", ["!="] = "ne", ["<"] = "lt", ["<="] = "le", [">"] = "gt", [">="] = "ge", ["<=>"] = "compare",
         ["==="] = "same", ["!=="] = "notsame",
-        ["&"] = "bitand", ["|"] = "bitor", ["^"] = "bitxor", ["<<"] = "shl", [">>"] = "shr", [">>>"] = "ushr",
+        ["&"] = "bitand", ["|"] = "bitor", ["^"] = "bitxor", ["<<"] = "shift_left", [">>"] = "arith_shift_right", [">>>"] = "logical_shift_right",
     };
 
     /// The protocols that give an operator to a type, by the routine the operator calls: the first is the operator's
@@ -31,7 +31,7 @@ public static class Operators
         ["sub"] = ["Subtractable", "DurationSubtractable", "OffsetSubtractable"],
         ["mul"] = ["Multiplicable", "Scalable"],
         ["truediv"] = ["Divisible", "ScalarDivisible"],
-        ["div"] = ["FloorDivisible", "ScalarFloorDivisible", "RatioDivisible"],
+        ["floordiv"] = ["FloorDivisible", "ScalarFloorDivisible", "RatioDivisible"],
         ["mod"] = ["FloorDivisible", "RatioDivisible"],
         ["pow"] = ["Exponentiable"],
         ["add_wrap"] = ["WrappingAddable"], ["sub_wrap"] = ["WrappingSubtractable"], ["mul_wrap"] = ["WrappingMultiplicable"],
@@ -42,7 +42,7 @@ public static class Operators
         ["gt"] = ["Comparable", "LaneComparable"], ["ge"] = ["Comparable", "LaneComparable"],
         ["compare"] = ["Comparable"],
         ["bitand"] = ["Bitwiseable"], ["bitor"] = ["Bitwiseable"], ["bitxor"] = ["Bitwiseable"],
-        ["shl"] = ["Shiftable"], ["shr"] = ["Shiftable"], ["ushr"] = ["Shiftable"],
+        ["shift_left"] = ["Shiftable"], ["arith_shift_right"] = ["Shiftable"], ["logical_shift_right"] = ["Shiftable"],
         ["neg"] = ["Negatable"], ["bitnot"] = ["Invertible"],
         ["getitem"] = ["ViewingIndexable", "KeyFindable"], ["setitem"] = ["ModifyingIndexable", "KeyFindable"],
     };

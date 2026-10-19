@@ -202,7 +202,7 @@ public sealed partial class Compiler
                 bool value = l.Op == "and" ? left && FoldBool(l.Right, env) : left || FoldBool(l.Right, env);
                 return new ConstVal(BoolType.Instance, value ? 1 : 0);
             }
-            // An operator is the routine it stands for, as in a body: `(BITS + 7) // 8` is `BITS.add(7).div(8)`.
+            // An operator is the routine it stands for, as in a body: `(BITS + 7) // 8` is `BITS.add(7).floordiv(8)`.
             case BinaryExpr b when Operators.Routine(b.Op) is { } routine:
                 return FoldMethod(b.Left, routine, [], [b.Right], hint, env, b.Pos);
             case UnaryExpr u when Operators.UnaryRoutine(u.Op) is { } routine:
@@ -290,7 +290,7 @@ public sealed partial class Compiler
     {
         bool conversion = IsConversion(name, typeArgs);
         var receiver = Fold(receiverExpr, conversion ? null : hint, env);
-        // An untyped literal takes its type from the argument: `1.shl(n)`-style chains of presets.
+        // An untyped literal takes its type from the argument: `1.shift_left(n)`-style chains of presets.
         if (receiver.Type is null && args.Count == 1 && !conversion)
         {
             var arg = Fold(args[0], null, env);
@@ -357,17 +357,17 @@ public sealed partial class Compiler
                 case "add": v = a + b; break;
                 case "sub": v = a - b; break;
                 case "mul": v = a * b; break;
-                case "div" or "mod" or "div_trunc" or "mod_trunc":
+                case "floordiv" or "mod" or "div_trunc" or "mod_trunc":
                 {
                     if (b.IsZero) throw new CompileError(pos, $"{name} by zero in a preset");
                     BigInteger q = BigInteger.DivRem(a, b, out BigInteger r);
-                    // `div` / `mod` are Euclidean: the remainder is never negative.
-                    if (name is "div" or "mod" && r.Sign < 0)
+                    // `floordiv` / `mod` are Euclidean: the remainder is never negative.
+                    if (name is "floordiv" or "mod" && r.Sign < 0)
                     {
                         r += BigInteger.Abs(b);
                         q -= b.Sign;
                     }
-                    v = name is "div" or "div_trunc" ? q : r;
+                    v = name is "floordiv" or "div_trunc" ? q : r;
                     break;
                 }
                 case "min": return new ConstVal(it, BigInteger.Min(a, b));
@@ -376,9 +376,9 @@ public sealed partial class Compiler
                 case "bitor": return new ConstVal(it, Wrap(Unsigned(a, it.Bits) | Unsigned(b, it.Bits), it));
                 case "bitxor": return new ConstVal(it, Wrap(Unsigned(a, it.Bits) ^ Unsigned(b, it.Bits), it));
                 // a shift by BITS or more (or a negative amount) shifts every bit out
-                case "shl":
+                case "shift_left":
                     return new ConstVal(it, b < 0 || b >= it.Bits ? 0 : Wrap(a << (int)b, it));
-                case "shr":
+                case "arith_shift_right":
                     if (b < 0 || b >= it.Bits) return new ConstVal(it, it.IsSigned && a < 0 ? -1 : 0);
                     return new ConstVal(it, it.IsSigned ? a >> (int)b : Unsigned(a, it.Bits) >> (int)b);
                 default:

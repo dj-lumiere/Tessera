@@ -296,7 +296,7 @@ routine start() -> None
   written with its pointer type, and the declared type is the name's type everywhere:
   `local p: @T <- v` (a stack slot, `<- .hollow()` if a routine fills it), `global NAME: @T [<- value]` (mutable,
   all-zero without a value), `preset NAME: @T <- value` (read-only), and the span forms above. `preset NAME: T = value` is a value, not memory: folded at build time, with
-  no address. Its value may use operators like a body (`(SIZE + 7) // 8` is `SIZE.add(7).div(8)`), and so may a type
+  no address. Its value may use operators like a body (`(SIZE + 7) // 8` is `SIZE.add(7).floordiv(8)`), and so may a type
   argument where a count goes: `Array[Byte, (BITS + 7) // 8]` with `needs BITS: U64`. A global or a preset in memory is part of the program image, there before `start` runs (nothing runs
   before it to compute one, on any target), so its contents are known at build time: literals, presets, `.hollow()`, `[...]` (an array), `T(field: value)` (a record field by field), a routine for
   a `Callable` (`f.to[Callable]()`), or the name of another global or preset in memory (its
@@ -339,7 +339,7 @@ routine start() -> None
   only on some targets (64-bit division on 32-bit, 128-bit division, `popcount`) or only now and then (`List.push`),
   nor blocking waits (`SignalCaster.wait`, `wait_on`, `wait_finished`), which belong in loops.
 - A `preset` value is folded by the builder, and only from literals, other presets, integer and `Bool` arithmetic and
-  conversions (`add`, `shl`, `bitor`, `to[U128]()`, `to_wrap[U8]()`, …), B32/B64 `add`/`sub`/`mul`/`div`/`neg`,
+  conversions (`add`, `shift_left`, `bitor`, `to[U128]()`, `to_wrap[U8]()`, …), B32/B64 `add`/`sub`/`mul`/`truediv`/`neg`,
   `max`/`min`/`sizeof`/`alignof`, and `T.from_bits(0x…)` for floats and B128. A routine call is an error; nothing
   runs at build time. Overflow or an out-of-range conversion in a preset is a build error.
 - `p.to[@U]()` reinterprets memory: any sizes, no strict aliasing, but you own bounds, alignment, and value validity
@@ -453,9 +453,9 @@ routine start() -> None
 
 **Operations**
 
-- **Operators are routine calls.** `a + b` is `a.add(b)`, `a - b` `sub`, `*` `mul`, `/` `truediv`, `//` `div`, `%` `mod`, `**`
+- **Operators are routine calls.** `a + b` is `a.add(b)`, `a - b` `sub`, `*` `mul`, `/` `truediv`, `//` `floordiv` (`tessera migrate --step names` rewrites `div`, `shl`, `shr` and their forms), `%` `mod`, `**`
   `pow` (the exponent the base's own type, a negative one a `NumericDomainError` crash, `pow_checked` gives `None`), `+% -% *%` the `_wrap` forms, `+^ -^ *^` the `_clamp` forms, `== != < <= > >=` `eq`
-  .. `ge`, `<=>` `compare`, `=== !==` `same` / `notsame` (no protocol: only `@T`, `Addr` and spans declare them), `& | ^ << >>` `bitand` / `bitor` / `bitxor` / `shl` / `shr`, unary `-x` `neg` and `~x`
+  .. `ge`, `<=>` `compare`, `=== !==` `same` / `notsame` (no protocol: only `@T`, `Addr` and spans declare them), `& | ^ << >> >>>` `bitand` / `bitor` / `bitxor` / `shift_left` / `arith_shift_right` / `logical_shift_right` (no integer type declares `logical_shift_right` yet, so `>>>` builds nowhere), unary `-x` `neg` and `~x`
   `bitnot`, `xs[i]` `getitem(i)` and `xs[i] = v` `setitem(index: i, value: v)`. **A type takes an operator only by
   obeying its protocol** (Standard/Algorithm/Operators.te, the names RazorForge uses): `Addable` `+`, `Subtractable`
   `-`, `Multiplicable` `*`, `Divisible` `/`, `FloorDivisible` `//` `%`, `Exponentiable` `**`, `Negatable` unary `-`,
@@ -487,9 +487,9 @@ routine start() -> None
   `examples` to 0 warnings, the expensive calls on loops aside (they don't fail `lint`). When the chain sits in a `when` arm or a later `when` condition, don't hoist it
   above (that would run it on paths that didn't): bind it under the arm.
 - Signedness lives on the type. `S8` .. `S256` are signed and `U8` .. `U256` unsigned; the methods are plain
-  `add`, `div`, `mod`, `lt`, `ge`, `shr` (arithmetic on S, logical on U), and so on. A shift by the width or more
+  `add`, `floordiv`, `mod`, `lt`, `ge`, `arith_shift_right` (`>>`: arithmetic on S, logical on U), and so on. A shift by the width or more
   shifts every bit out (0, or -1 for a negative S value shifted right).
-- Arithmetic crashes on overflow: `add`, `sub`, `mul`, `div`, `neg`, `abs`, `pow`, and a lossy `to[T]()`. Each has
+- Arithmetic crashes on overflow: `add`, `sub`, `mul`, `floordiv`, `neg`, `abs`, `pow`, and a lossy `to[T]()`. Each has
   `_checked` (returns `Maybe`), `_wrap` (modular), and `_clamp` (saturating) forms: `h.mul_wrap(PRIME)`,
   `n.to_clamp[U8]()`. Hashes, PRNGs, and bit tricks want `_wrap`.
 - Subtraction that can underflow crashes even if the result is unused later, so don't compute `len - 1` before the
@@ -520,7 +520,7 @@ routine start() -> None
   float literal isn't a `B128` yet: write a hex float, or convert a `B64` (`B64.to[B128](1.5)`).
 - `Byte` is memory with no arithmetic; there are no wider raw-bits types. `x.bits()` and `b.to[U8]()` /
   `b.to[S8]()` move between it and the numbers, and `S64` <-> `U64` is `to_wrap[U64]()` / `to_wrap[S64]()`. It has
-  comparison, `hash`, `bitand` / `bitor` / `bitxor` / `bitnot`, and `shl` / `shr`. Memory and text are `@Byte`;
+  comparison, `hash`, `bitand` / `bitor` / `bitxor` / `bitnot`, and `shift_left` / `arith_shift_right`. Memory and text are `@Byte`;
   a byte literal `b'A'` is a `Byte`, and a `Byte` hex literal has exactly two digits (`0x0A`).
 - `Char` is a Unicode scalar value (`'A'`), compared and hashed but not added; `c.to[U32]()` and `n.to[Char]()`
   convert.
@@ -528,7 +528,7 @@ routine start() -> None
   `to[S64]()` (crashes on NaN or out of range), `to_checked[S64]()`, or `to_clamp[S64]()`. A conversion names the type
   it goes to as a type argument, so `x.to[T]()` works in generic code.
 - Floats are `B16`, `BF16`, `B32`, `B64`, and software `B128` (an `i128`; stdlib code reads it with `f128_bits`):
-  `add`, `mul`, `div`, `mod`, and so on. `x.bits()` gives the bits as the same-width `U`, `B64.from_bits(u)` goes back.
+  `add`, `mul`, `truediv`, `floordiv`, `mod`, and so on. `x.bits()` gives the bits as the same-width `U`, `B64.from_bits(u)` goes back.
 
 **Routines and generics**
 
@@ -613,7 +613,7 @@ routine start() -> None
   `xxh64(v, seed)`); a type that only passes through (the Writer, an element) is a type parameter instead. Most of
   these sets have no `S64` overload, so a bare literal argument several overloads take is ambiguous: pass a typed
   value (`m.set(U64.MIN)` on a `BigNat`, or bind `one: U64 = 1` first).
-- When every operand is a literal, name the type with a typewise call: `S64.eq(0, 1)`, `U128.shl(1, 100)`. There are
+- When every operand is a literal, name the type with a typewise call: `S64.eq(0, 1)`, `U128.shift_left(1, 100)`. There are
   no type suffixes (`0u64`).
 - **Time and size literals.** A whole decimal number with a unit right after it is typed by the unit: `w d h m s ms
   us ns` make a `Duration`, `b kb mb gb kib mib gib` a `ByteSize` (`kb`, `mb`, `gb` count by 1000, `kib`, `mib`,

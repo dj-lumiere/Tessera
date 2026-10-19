@@ -36,6 +36,9 @@ namespace Tessera;
 ///
 /// 0.5: an operator works on a type only when the type obeys the operator's protocol, so a type that declares operator
 /// routines gets the `obeys` lines they meet (`--step operators`).
+///
+/// 0.5: `//` is `floordiv`, `<<` is `shift_left`, `>>` is `arith_shift_right` and `>>>` is `logical_shift_right`, with
+/// their checked and wrapping forms (`--step names`).
 public static class Migrate
 {
     /// `F64`, its plural in prose (`F64s`), and a name built on it (`F128Extended`, `F64Core`). `F16C` is the x86 instruction set, not a type.
@@ -68,7 +71,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators";
+        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -346,6 +349,9 @@ public static class Migrate
         ["operators"] = (file, text, report) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, t => OperatorMigration.Rewrite(t, report, file))
             : OperatorMigration.Rewrite(text, report, file),
+        ["names"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, RoutineNameMigration.Rewrite)
+            : RoutineNameMigration.Rewrite(text),
     };
 
     private static readonly Regex NullWord = new(@"(?<![\w`.])null(?![\w`])", RegexOptions.Compiled);
@@ -670,7 +676,7 @@ public static class Migrate
             lines[i] = inAsmBody ? RewriteTypeArguments(line) : RewriteNames(line);
         }
 
-        return ThreadMigration.Rewrite(EntryMigration.Rewrite(MembershipNames(VariantMigration.Rewrite(IteratorNames(Renames(CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names)))))))))));
+        return RoutineNameMigration.Rewrite(ThreadMigration.Rewrite(EntryMigration.Rewrite(MembershipNames(VariantMigration.Rewrite(IteratorNames(Renames(CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names))))))))))));
     }
 
     private static readonly Regex IteratorNext = new(@"\.next(?=\s*\()", RegexOptions.Compiled);

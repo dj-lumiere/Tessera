@@ -1163,6 +1163,8 @@ public sealed class Structurer
     {
         "div" => "/",
         "mod" => "%",
+        "shl" => "<<",
+        "shr" => ">>",
         "truediv" or "div_trunc" or "mod_trunc" => null,
         _ => Operators.OperatorFor(routine),
     };
