@@ -4,9 +4,9 @@ namespace Tessera;
 
 /// The program's entry. A program's entry point is `routine start() -> None`. On a target with an operating system the
 /// builder writes the platform's C `main`, which calls `start` and returns the exit status `set_exit_code`
-/// (Standard/Os) stored, 0 when nothing did. On a target without one, the entry symbol is `when_booted`: the reset sends
+/// (Standard/Os) stored, 0 when nothing did. On a target without one, the entry symbol is `when_power_on`: the reset sends
 /// the core there, its prologue sets the stack pointer from `__stack_top` (on Cortex-M the vector table's first word
-/// does that), and its body is the program's `when_booted()`, which readies the core and memory (Standard/Boot's
+/// does that), and its body is the program's `when_power_on()`, which readies the core and memory (Standard/Boot's
 /// prepare_core: .bss zeroed, .data copied where the code runs from flash, the FPU on) and the board, or prepare_core
 /// alone when the program has none. Then `start()` runs, then a loop that halts the core. Without `start` such a
 /// program brings its own entry.
@@ -16,7 +16,7 @@ public sealed partial class Compiler
     public const string StartName = "start";
 
     /// The name of the board step that runs before `start` on a target without an operating system.
-    public const string WhenBootedName = "when_booted";
+    public const string WhenPowerOnName = "when_power_on";
 
     /// The module of the startup steps the generated entry calls on a target without an operating system.
     private const string BootModule = "Standard/Boot";
@@ -26,7 +26,7 @@ public sealed partial class Compiler
 
     /// Whether `r` is one of the program's entry routines by its name: a free routine in one of the program's files.
     public static bool IsEntryRoutine(RoutineDecl r) =>
-        !r.IsLibrary && r.Owner is null && r.Name is StartName or WhenBootedName;
+        !r.IsLibrary && r.Owner is null && r.Name is StartName or WhenPowerOnName;
 
     /// The program's routine of an entry name, or null. Two of them (in two modules) is an error.
     private RoutineDecl? EntryRoutine(string name)
@@ -52,17 +52,17 @@ public sealed partial class Compiler
     /// program without `start` points at.
     public RoutineDecl? MainRoutine => _userRoutines.FirstOrDefault(r => r.Owner is null && r.Name == "main");
 
-    /// Checks an entry routine's declaration: `routine start() -> None` or `routine when_booted() -> None`, a routine
-    /// with a body that Tessera calls, and `when_booted` only on a target without an operating system.
+    /// Checks an entry routine's declaration: `routine start() -> None` or `routine when_power_on() -> None`, a routine
+    /// with a body that Tessera calls, and `when_power_on` only on a target without an operating system.
     private void CheckEntryRoutine(RoutineDecl r)
     {
         string shape = $"routine {r.Name}() -> None";
         string what = r.Name == StartName
             ? "start is the program's entry point"
-            : "when_booted is the board step that runs before start";
-        if (r.Name == WhenBootedName && Target.HasOs)
+            : "when_power_on is the board step that runs before start";
+        if (r.Name == WhenPowerOnName && Target.HasOs)
             throw new CompileError(r.Pos,
-                $"when_booted is the board step of a program for a target without an operating system, and " +
+                $"when_power_on is the board step of a program for a target without an operating system, and " +
                 $"{Target.Arch}-{Target.Os}-{Target.Abi} has one: do that work at the top of start");
         bool returnsVoid = ResolveType(r.ReturnType, new TypeEnv(r.File), allowVoid: true) is VoidType;
         if (r.TypeParams.Count != 0 || r.Params.Count != 0 || !returnsVoid)
@@ -79,14 +79,14 @@ public sealed partial class Compiler
     private void PlanEntry()
     {
         var start = EntryRoutine(StartName);
-        var board = EntryRoutine(WhenBootedName);
+        var board = EntryRoutine(WhenPowerOnName);
         if (start is null)
         {
             if (board is not null)
-                throw new CompileError(board.Pos, "when_booted runs before start, and the program has no start: add 'routine start() -> None'");
+                throw new CompileError(board.Pos, "when_power_on runs before start, and the program has no start: add 'routine start() -> None'");
             return;
         }
-        if (ProvidedSymbols.Contains("main") || ProvidedSymbols.Contains(WhenBootedName)) return;
+        if (ProvidedSymbols.Contains("main") || ProvidedSymbols.Contains(WhenPowerOnName)) return;
         var startInst = RequireInstance(start, new TypeEnv(start.File));
         if (Target.HasOs) PlanHostedMain(start, startInst);
         else PlanBoot(start, startInst, board is null ? null : RequireInstance(board, new TypeEnv(board.File)));
@@ -127,9 +127,9 @@ public sealed partial class Compiler
         _entry.AppendLine();
     }
 
-    /// The entry of a program without an operating system, the symbol `when_booted`: the reset sends the core there
+    /// The entry of a program without an operating system, the symbol `when_power_on`: the reset sends the core there
     /// (the Cortex-M vector table's reset word on 32-bit ARM, the link script's ENTRY elsewhere). Its body is the
-    /// program's `when_booted`, or else Standard/Boot's prepare_core, then `start`, then halt. Setting the stack pointer
+    /// program's `when_power_on`, or else Standard/Boot's prepare_core, then `start`, then halt. Setting the stack pointer
     /// is its prologue: the Cortex-M core loads it from the vector table, and elsewhere the symbol is a naked stub that
     /// loads `__stack_top` (the one step no routine can do, since a routine already uses the stack) and calls the body.
     private void PlanBoot(RoutineDecl start, Instance startInst, Instance? board)
@@ -145,11 +145,11 @@ public sealed partial class Compiler
                 $"the builder has no entry for {Target.Arch} without an operating system: bring your own entry instead of start");
         var halt = EntryHelper(BootModule, "halt", start.Pos);
         var steps = new List<Instance> { board ?? EntryHelper(BootModule, "prepare_core", start.Pos), startInst, halt };
-        if (ExposeDefinitions) NoteExposed(WhenBootedName);
+        if (ExposeDefinitions) NoteExposed(WhenPowerOnName);
 
         string attrs = EntryAttrs(start.Pos);
-        string body = armM ? WhenBootedName : "tessera_boot";
-        _entry.AppendLine("; The program's entry without an operating system: when_booted readies the core, then start, then a halt.");
+        string body = armM ? WhenPowerOnName : "tessera_boot";
+        _entry.AppendLine("; The program's entry without an operating system: when_power_on readies the core, then start, then a halt.");
         _entry.AppendLine($"define void @{body}() noreturn {attrs} {{");
         _entry.AppendLine("entry:");
         foreach (var step in steps) _entry.AppendLine($"  {EntryCall(step)}");
@@ -161,7 +161,7 @@ public sealed partial class Compiler
         {
             // The Cortex-M vector table: the stack top (the core loads SP from it), the reset entry, and the system
             // exceptions, each of which halts. The link script puts .isr_vector at the start of flash.
-            var slots = new List<string> { "ptr @__stack_top", $"ptr @{WhenBootedName}" };
+            var slots = new List<string> { "ptr @__stack_top", $"ptr @{WhenPowerOnName}" };
             for (int exception = 2; exception < 16; exception++)
                 slots.Add(exception is 7 or 8 or 9 or 10 or 13 ? "ptr null" : $"ptr @{Quote(halt.Symbol)}");
             _entry.AppendLine($"@tessera_vectors = constant [16 x ptr] [{string.Join(", ", slots)}], section \".isr_vector\", align 4");
@@ -174,7 +174,7 @@ public sealed partial class Compiler
             "aarch64" => "adrp x0, __stack_top\\0Aadd x0, x0, :lo12:__stack_top\\0Amov sp, x0\\0Amov x29, xzr\\0Abl tessera_boot\\0Abrk #0",
             _ => "la sp, __stack_top\\0Amv s0, zero\\0Acall tessera_boot\\0Aunimp",
         };
-        _entry.AppendLine($"define void @{WhenBootedName}() naked noreturn nounwind {cpu.FnAttrs} {{");
+        _entry.AppendLine($"define void @{WhenPowerOnName}() naked noreturn nounwind {cpu.FnAttrs} {{");
         _entry.AppendLine("entry:");
         _entry.AppendLine($"  call void asm sideeffect \"{asm}\", \"\"()");
         _entry.AppendLine("  unreachable");

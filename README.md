@@ -159,7 +159,7 @@ sources = ["src"]
   `Standard/Core` is always imported. Two modules may declare the same name, and symbols follow the Itanium C++ mangling.
 - **Solutions:** described by a `config.toml`, or every file on the command line, and the stdlib is built in with it.
   The entry is `routine start()`, or the entry file's top-level lines (script mode). On a target without an operating
-  system, `when_booted()` runs first and readies the core with `prepare_core()`.
+  system, `when_power_on()` runs first and readies the core with `prepare_core()`.
 - **Memory managers:** any type that obeys `MemoryManageable` (and `PageManageable` for pages) is one, and
   `m.to[MemoryManager]()` makes the table every allocating routine takes. `steal` hands a `Box` or `Memory` on and
   leaves the slot zeroed.

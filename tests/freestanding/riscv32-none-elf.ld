@@ -2,7 +2,7 @@
    .data's first values are copied from there into RAM. It defines the symbols the builder's entry uses: __stack_top,
    __bss_start and __bss_end, and __data_start, __data_end and __data_load. It doesn't define __global_pointer$,
    since the entry leaves gp alone. */
-ENTRY(when_booted)
+ENTRY(when_power_on)
 MEMORY
 {
     FLASH (rx) : ORIGIN = 0x20000000, LENGTH = 4M

@@ -52,7 +52,7 @@ public sealed class FunctionGen
     /// The source of the write-template hole being expanded (`sum` for `{sum}`), so an error about it can quote it.
     private string? _templateHole;
 
-    /// In a program's `when_booted` without an operating system: whether it has readied memory yet (called Standard/Boot's
+    /// In a program's `when_power_on` without an operating system: whether it has readied memory yet (called Standard/Boot's
     /// prepare_core or zero_bss). Until then .bss holds whatever the reset left and .data isn't copied, so no global is
     /// touched. Null in any other routine.
     private bool? _memoryReady;
@@ -749,16 +749,16 @@ public sealed class FunctionGen
 
     public void Emit()
     {
-        // A program's own when_booted, without an operating system, readies memory before it touches a global, and
+        // A program's own when_power_on, without an operating system, readies memory before it touches a global, and
         // readies it at all: nothing else zeroes .bss or copies .data.
-        bool bootEntry = !_decl.IsLibrary && _decl is { Owner: null, Name: Compiler.WhenBootedName } && !_c.Target.HasOs;
+        bool bootEntry = !_decl.IsLibrary && _decl is { Owner: null, Name: Compiler.WhenPowerOnName } && !_c.Target.HasOs;
         _memoryReady = bootEntry ? false : null;
         try
         {
             EmitRoutine();
             if (_memoryReady == false)
                 throw Err(_decl.Pos,
-                    "when_booted is the program's entry, and nothing else readies memory: call prepare_core() "
+                    "when_power_on is the program's entry, and nothing else readies memory: call prepare_core() "
                     + "(Standard/Boot) in it, before anything touches a global");
         }
         catch (CompileError e) when (_decl.Source is { } source && !e.FromSource) { throw FromSource(e, source); }
@@ -3127,7 +3127,7 @@ public sealed class FunctionGen
             var c = _c.FindPreset("", r.Name, file, r.Pos, r.Path);
             if (c is { IsGlobal: true } && _memoryReady == false)
                 throw Err(r.Pos,
-                    $"when_booted touches the global '{c.Name}' before it readies memory: until prepare_core() (Standard/Boot) "
+                    $"when_power_on touches the global '{c.Name}' before it readies memory: until prepare_core() (Standard/Boot) "
                     + "zeroes .bss and copies .data, a global holds whatever the reset left. Call prepare_core() first: "
                     + "work that touches no global (a watchdog, a clock register) may come before it");
             return c is null ? null : PresetValue(c, null);

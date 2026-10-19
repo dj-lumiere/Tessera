@@ -25,7 +25,7 @@ namespace Tessera;
 ///   `x.add(1)`. Those around an operation (`(a + b) * c`), a call's arguments, a tuple type, and `(a, b)` stay.
 /// - top-level declarations come in one order: module, imports (sorted), defines, globals, presets, types (records,
 ///   choices, variants), concepts, standalone conformances, routines, and the entry
-///   routines last (`when_booted`, then `start`). Within a kind the written order
+///   routines last (`when_power_on`, then `start`). Within a kind the written order
 ///   stays, a declaration keeps the comments and annotations above it, and a file divided by section comments is
 ///   ordered section by section. A file already in order is left as it is;
 /// - inside `routine Owner.name`, the owner type is written `Me` after the header names it (`List[T]` in a
@@ -782,7 +782,7 @@ public static class Formatter
             "record" or "entity" or "choice" or "variant" => DeclKind.Type,
             "protocol" => DeclKind.Concept,
             "obeys" => DeclKind.Conform,
-            "routine" => IsEntryHeader(s, "start") || IsEntryHeader(s, "when_booted") ? DeclKind.Entry : DeclKind.Routine,
+            "routine" => IsEntryHeader(s, "start") || IsEntryHeader(s, "when_power_on") ? DeclKind.Entry : DeclKind.Routine,
             _ => null,
         };
     }
