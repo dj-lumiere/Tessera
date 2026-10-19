@@ -772,9 +772,11 @@ routine start() -> None
   without one) holds
   one handler per kind of event, a `Callable[(CpuEvent,), None]` (`CpuEvent` has `kind`, `code`, `place`, `address`),
   and hands back the one before so it can be put back (`.hollow()` is the system's action):
-  `before = CpuEventManager.when_terminated(h)` (SIGTERM, a console window closed or a shutdown on Windows: when `h`
-  returns, the process ends with `exit_code()`), `when_interrupted(h)` (SIGINT, Ctrl+C: the program goes on after
-  `h`), `when_faulted(h)` (in place of the fault report below, the fault then ends the process), `holder(kind)`, and
+  `before = CpuEventManager.when_terminated(h)` (SIGTERM, a console window closed or a shutdown on Windows: `h`
+  decides, it calls `ProcessManager.exit_process` to end, and when it returns the program goes on, except that
+  Windows ends the process itself after a closed console window, a logoff or a shutdown),
+  `when_interrupted(h)` (SIGINT, Ctrl+C: the program goes on after `h`, and an interrupt that comes while `h` is still
+  running is ignored), `when_faulted(h)` (in place of the fault report below, the fault then ends the process), `holder(kind)`, and
   `CpuEventManager.raise(kind)` sends one to this process (the real signal on Linux and macOS). A handler runs inside
   the signal handler on Linux and macOS: an atomic or a `Console` line, no lock. Without an OS: `when_power_off`
   (passed on by `CpuEventManager.power_off()`, which the board's shutdown interrupt handler calls, then the core

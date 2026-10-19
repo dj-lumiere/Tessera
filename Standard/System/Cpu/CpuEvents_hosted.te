@@ -7,10 +7,12 @@
 # back the one before when a new one takes a slot, so the old one can be put back.
 #
 # - when_terminated: a request to end, SIGTERM on Linux and macOS, a console window closed, a logoff, or a shutdown
-#   on Windows. When the handler returns, the process ends with ProcessManager.exit_process and the status
-#   set_exit_code stored last. Without a handler the system ends the process.
-# - when_interrupted: SIGINT, Ctrl+C or Ctrl+Break on Windows. When the handler returns, the program goes on. Without
-#   a handler the system ends the process.
+#   on Windows. The handler decides: to end, it calls ProcessManager.exit_process itself, and when it returns the
+#   program goes on (on Windows the system still ends the process once the handler of a closed console window, a
+#   logoff or a shutdown returns). Without a handler the system ends the process.
+# - when_interrupted: SIGINT, Ctrl+C or Ctrl+Break on Windows. When the handler returns, the program goes on. An
+#   interrupt that comes while the handler is still running is ignored. Without a handler the system ends the
+#   process.
 # - when_faulted: a fault. The handler takes the place of the fault report, and the fault ends the process when it
 #   returns, as it would have.
 #
@@ -92,7 +94,9 @@ common routine CpuEventManager.holder(kind: CpuEventKind) -> Callable[(CpuEvent,
     return bitcast(HOLDERS.getslot(slot_of(kind)).peek_atomic())
 
 ### Sets the handler of a request to end the process: SIGTERM on Linux and macOS, a console window closed, a logoff,
-### or a shutdown on Windows. When it returns, the process ends with the status {set_exit_code} stored last.
+### or a shutdown on Windows. The handler decides: to end, it calls {ProcessManager.exit_process}, and when it returns
+### the program goes on (on Windows the system still ends the process once the handler of a closed console window, a
+### logoff or a shutdown returns).
 ### :param holder: The handler, or `.hollow()` to let the system end the process.
 ### :returns: The handler before, `.hollow()` for none: pass it back to put it back.
 @target(os: not "none")
@@ -102,7 +106,7 @@ common routine CpuEventManager.when_terminated(holder: Callable[(CpuEvent,), Non
     return before
 
 ### Sets the handler of an interrupt from the keyboard: SIGINT, Ctrl+C or Ctrl+Break on Windows. When it returns, the
-### program goes on.
+### program goes on. An interrupt that comes while it is still running is ignored.
 ### :param holder: The handler, or `.hollow()` to let the system end the process.
 ### :returns: The handler before, `.hollow()` for none: pass it back to put it back.
 @target(os: not "none")
@@ -122,7 +126,12 @@ common routine CpuEventManager.when_faulted(holder: Callable[(CpuEvent,), None])
         install_fault_handlers()
     return before
 
-### Gives `event` to its handler: what the system's delivery calls. A request to end then ends the process.
+### 1 while the when_interrupted handler runs.
+@target(os: not "none")
+secret global INTERRUPT_RUNNING: @U32
+
+### Gives `event` to its handler: what the system's delivery calls. An interrupt that comes while the interrupt
+### handler is still running is taken and ignored.
 ### :param event: The event.
 ### :returns: False when no handler holds the slot, so the system's own action is due.
 @target(os: not "none")
@@ -130,9 +139,13 @@ secret routine deliver(event: CpuEvent) -> Bool
     holder: Callable[(CpuEvent,), None] = CpuEventManager.holder(event.kind)
     if holder.addr().is_hollow()
         return false
+    if event.kind != CpuEventKind.INTERRUPTED
+        holder.call(event)
+        return true
+    if INTERRUPT_RUNNING.atomic_swap(1) == 1
+        return true
     holder.call(event)
-    if event.kind == CpuEventKind.TERMINATED
-        ProcessManager.exit_process(exit_code())
+    INTERRUPT_RUNNING.poke_atomic(0)
     return true
 
 # -- Linux and macOS ----------------------------------------------------------------------------------------------
@@ -143,6 +156,14 @@ secret preset SA_RESTART: U32 = 0x10000000
 ### SA_RESTART: a system call the signal cut into goes on.
 @target(os: "macos")
 secret preset SA_RESTART: U32 = 0x0002
+### SA_RESTART and SA_NODEFER: a second SIGINT comes while the handler runs, so deliver can ignore it, instead of
+### waiting to run the handler again when it returns.
+@target(os: "linux")
+secret preset INTERRUPT_FLAGS: U32 = 0x50000000
+### SA_RESTART and SA_NODEFER: a second SIGINT comes while the handler runs, so deliver can ignore it, instead of
+### waiting to run the handler again when it returns.
+@target(os: "macos")
+secret preset INTERRUPT_FLAGS: U32 = 0x0012
 
 ### The signal of a kind: SIGTERM 15, SIGINT 2, SIGSEGV 11 (the same on Linux and macOS).
 ### :param kind: The kind.
@@ -170,7 +191,10 @@ secret routine listen(kind: CpuEventKind, on: Bool) -> None
     local act: @Array[Byte, 160] <- .hollow()
 
     if on
-        fill_action(act: act.to[@Byte](), handler: on_signal.to[Callable](), flags: SA_RESTART)
+        chosen: U32 = when
+            kind == CpuEventKind.INTERRUPTED => INTERRUPT_FLAGS
+            else => SA_RESTART
+        fill_action(act: act.to[@Byte](), handler: on_signal.to[Callable](), flags: chosen)
     c_sigaction(signal_of(kind), act.to[Addr](), .hollow())
     return
 
