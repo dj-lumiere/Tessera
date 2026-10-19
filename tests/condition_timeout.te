@@ -1,7 +1,7 @@
 # A SignalCaster on one thread, where nothing wakes it. A wait with a timeout gives up and says so (false), and only
 # once the time is up: the loop that waits, as every waiter does, ends at the timeout. A deadline that has already
 # passed returns false at once. A wake with nobody waiting is not kept for a later wait, which times out too. The
-# mutex is held again after every wait.
+# access is held again after every wait.
 
 import Standard/Os
 
@@ -10,9 +10,9 @@ preset TIMEOUT: Duration = 2ms
 ### Waits until `deadline`, again after every return before it (nothing changes the condition here, so any return
 ### before the deadline is one without a wake).
 ### :returns: Whether the last wait returned in time: false once the deadline has passed.
-routine wait_out(cond: @SignalCaster, lock: @ExclusiveLock, deadline: Duration) -> Bool
+routine wait_out(cond: @SignalCaster, lock: @ExclusiveAccess, deadline: Duration) -> Bool
     while true
-        in_time2: Bool = cond.wait_until(mutex: lock, deadline)
+        in_time2: Bool = cond.wait_until(access: lock, deadline)
         if in_time2
             continue
         else
@@ -20,21 +20,21 @@ routine wait_out(cond: @SignalCaster, lock: @ExclusiveLock, deadline: Duration) 
 
 ### Waits with wait_for for TIMEOUT from `start`, and on until then after every return before it.
 ### :returns: Whether the last wait returned in time: false once the time is up.
-routine wait_for_out(cond: @SignalCaster, lock: @ExclusiveLock, start: Duration) -> Bool
-    in_time: Bool = cond.wait_for(mutex: lock, timeout: TIMEOUT)
+routine wait_for_out(cond: @SignalCaster, lock: @ExclusiveAccess, start: Duration) -> Bool
+    in_time: Bool = cond.wait_for(access: lock, timeout: TIMEOUT)
     if in_time
         return wait_out(cond, lock, deadline: start + TIMEOUT)
     else
         return in_time
 
-### Says whether the calling thread holds `lock`: a try_lock that fails.
-routine report_held(lock: @ExclusiveLock) -> None
-    took: Bool = lock.try_lock()
-    Console.show("mutex held again: {not took}")
+### Says whether the calling thread holds the access again, as the AccessManager lists it.
+routine report_held() -> None
+    held: U64 = AccessManager.held_count()
+    Console.show("access held again: {held == 1}")
     return
 
 routine start() -> None
-    local lock: @ExclusiveLock <- .construct()
+    local lock: @ExclusiveAccess <- .construct()
     local cond: @SignalCaster <- .construct()
 
     lock.lock()
@@ -43,10 +43,10 @@ routine start() -> None
     in_time: Bool = wait_out(cond, lock, deadline)
     elapsed: Duration = Clock.monotonic() - start
     Console.show("wait until 2 ms: in time {in_time}, waited the timeout {elapsed >= TIMEOUT}")
-    report_held(lock)
-    late: Bool = cond.wait_until(mutex: lock, deadline: start)
+    report_held()
+    late: Bool = cond.wait_until(access: lock, deadline: start)
     Console.show("wait until a passed deadline: in time {late}")
-    report_held(lock)
+    report_held()
     cond.cast_one()
     cond.cast_all()
     before: Duration = Clock.monotonic()
@@ -54,6 +54,6 @@ routine start() -> None
     waited: Duration = Clock.monotonic() - before
     enough: Bool = waited >= TIMEOUT
     Console.show("wait for 2 ms after an earlier wake: in time {timed}, waited the timeout {enough}")
-    report_held(lock)
+    report_held()
     lock.unlock()
     return

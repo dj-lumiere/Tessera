@@ -36,6 +36,10 @@ namespace Tessera;
 /// heap-check = true                   # the default heap crashes on a block freed twice (DoubleFreeError), in
 ///                                     # every mode (default: off, plain malloc and free; `tessera test` always
 ///                                     # turns it on)
+/// deadlock-check = false              # threads or fibers waiting on each other for accesses stop the program
+///                                     # with a crash naming them (default: on in debug, off in the release modes)
+/// access-order = true                 # two accesses taken in opposite orders stop the program before they wait
+///                                     # on each other (default: off, it costs time on every access taken)
 /// ```
 ///
 /// The build is the entry file and what it imports, found as RazorForge finds modules: the files under the
@@ -86,6 +90,17 @@ public sealed record Manifest(
     /// it on.
     public bool RaceCheck { get; init; }
 
+    /// `[debug] deadlock-check`: whether threads or fibers waiting on each other for accesses stop the program, or
+    /// null for the mode's default (on in debug, off in the release modes).
+    public bool? DeadlockCheck { get; init; }
+
+    /// Whether the build checks for deadlocks: `[debug] deadlock-check`, else the mode's default.
+    public bool DeadlockChecked => DeadlockCheck ?? Mode.DeadlockCheckedByDefault();
+
+    /// `[debug] access-order`: whether two accesses taken in opposite orders stop the program. Off unless the
+    /// manifest turns it on.
+    public bool AccessOrder { get; init; }
+
     /// `[debug] trace-frames`: the frames a crash trace and a failure's trace keep (a power of two), or null for 32.
     public int? TraceFrames { get; init; }
 
@@ -113,7 +128,8 @@ public sealed record Manifest(
     {
         ["package"] = ["name", "version", "description", "authors", "license", "repository", "tessera-version"],
         ["target"] = ["executable", "triple", "cpu", "features", "mode", "module-paths", "sources", "c-libraries", "library-paths", "link-script"],
-        ["debug"] = ["emit-llvm", "trace", "heap-check", "race-check", "uninit-fill", "trace-frames", "failure-traces"],
+        ["debug"] = ["emit-llvm", "trace", "heap-check", "race-check", "uninit-fill", "trace-frames", "failure-traces",
+            "deadlock-check", "access-order"],
     };
 
     /// <paramref name="defaultTarget"/> is the triple used when [target] names none (the host if null).
@@ -209,6 +225,8 @@ public sealed record Manifest(
             HeapCheck = Bool(debug, "heap-check", path) ?? false,
             RaceCheck = Bool(debug, "race-check", path) ?? false,
             UninitFill = Bool(debug, "uninit-fill", path) ?? false,
+            DeadlockCheck = Bool(debug, "deadlock-check", path),
+            AccessOrder = Bool(debug, "access-order", path) ?? false,
             TraceFrames = TraceSize(debug, "trace-frames", path, powerOfTwo: true),
             FailureTraces = TraceSize(debug, "failure-traces", path, powerOfTwo: false),
         };

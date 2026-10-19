@@ -1,11 +1,12 @@
-# MultiReadLock: four threads read a pair of counters that must always be equal while two threads write them, each
+# MultiReadAccess: four threads read a pair of counters that must always be equal while two threads write them, each
 # reader under lock_read and each writer under lock_write. No reader ever sees them differ, and the writers' updates
-# all land. try_lock_write fails while a reader holds the lock, and try_lock_read while a writer does.
+# all land. From another thread, try_lock_write fails while a reader holds the access, and try_lock_read while a writer
+# does.
 
 import Standard/Os
 
 record Pair
-    lock: MultiReadLock
+    lock: MultiReadAccess
     a: U64
     b: U64
     torn: Atomic[U64]
@@ -31,6 +32,26 @@ routine write_many(pair: @Pair) -> None
     then
         return
 
+routine try_write(pair: @Pair) -> Bool
+    taken: Bool = pair.lock.try_lock_write()
+    if taken
+        pair.lock.unlock_write()
+    return taken
+
+routine try_read(pair: @Pair) -> Bool
+    taken: Bool = pair.lock.try_lock_read()
+    if taken
+        pair.lock.unlock_read()
+    return taken
+
+routine elsewhere(entry: Callable[(@Pair,), Bool], pair: @Pair) -> Bool
+    t: Thread[Bool] = get_thread[Bool]()
+    t.put_work(entry, args: pair)
+    t.wait_finished()
+    taken: Bool = t.retrieve()
+    t.give_back()
+    return taken
+
 routine start() -> None
     local pair: @Pair <- Pair(lock: .construct(), a: 0, b: 0, torn: Atomic[U64](value: 0))
     local threads: @Array[Thread[None], 6] <- .hollow()
@@ -50,10 +71,10 @@ routine start() -> None
         t.give_back()
     Console.show("a {pair.a.peek()}, b {pair.b.peek()}, torn reads {pair.torn.peek()}")
     pair.lock.lock_read()
-    write_while_read: Bool = pair.lock.try_lock_write()
+    write_while_read: Bool = elsewhere(entry: try_write.to[Callable](), pair)
     pair.lock.unlock_read()
     pair.lock.lock_write()
-    read_while_written: Bool = pair.lock.try_lock_read()
+    read_while_written: Bool = elsewhere(entry: try_read.to[Callable](), pair)
     pair.lock.unlock_write()
     Console.show("try_lock_write while read: {write_while_read}, try_lock_read while written: {read_while_written}")
     return

@@ -31,4 +31,8 @@ public static class BuildModes
     /// Whether the mode keeps the crash trace unless told otherwise: debug and release do, as RazorForge's do;
     /// release-time and release-space, the modes for the last bit of speed or size, leave it out.
     public static bool TracedByDefault(this BuildMode mode) => mode is BuildMode.Debug or BuildMode.Release;
+
+    /// Whether the mode looks for deadlocks unless told otherwise (`[debug] deadlock-check`): a debug build does, the
+    /// release modes don't.
+    public static bool DeadlockCheckedByDefault(this BuildMode mode) => mode == BuildMode.Debug;
 }

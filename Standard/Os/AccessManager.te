@@ -1,0 +1,894 @@
+# Tessera stdlib: AccessManager
+#
+# An ExclusiveAccess or a MultiReadAccess holds its own state: free or taken, and the id of the flow holding it (a
+# flow is a thread, a fiber, or another language's agent). Taking a free one is one atomic step, and the
+# AccessManager has no part in it beyond noting the access in the flow's list. When the access is taken, the flow has
+# to wait, and the waiting goes through here:
+#
+# - Each flow has one AccessFlow record: what it holds (a short list) and what it waits for (one slot). A thread's is
+#   thread-local, a fiber's or an agent's is made when it first takes an access and given back with the fiber or
+#   agent. Whoever switches fibers or agents on a thread tells the AccessManager which one runs (switch_flow).
+# - A flow about to wait first publishes what it waits for, then (with the deadlock check on) follows the chain: the
+#   flow holding that access, what that flow waits for, and so on. A chain that comes back to it is a deadlock, and
+#   the program stops with a crash that names every flow in the cycle and where each took the access it holds. A
+#   chain seen once is looked at again after a short wait, so a holder that was letting go is never reported.
+# - Taking an access the flow already holds stops the program with ReenterDuringAccessError.
+# - With the access-order check on, every access taken while others are held records the order of the pair, and a
+#   pair taken in the opposite order stops the program before the two can wait on each other.
+# - It parks a waiting flow the way the flow waits (a thread sleeps, a fiber parks), or the way another language's
+#   runtime asks (set_park), and keeps how many times and how long each access was waited for.
+
+module Standard/Os
+
+### The slot of the fiber or agent running on this thread, where its AccessFlow is (made when first needed), or
+### hollow while the thread runs its own code.
+@threadlocal
+global RUNNING_FLOW: @@@AccessFlow
+
+### This thread's own flow, for the code it runs outside every fiber and agent.
+@threadlocal
+global THREAD_FLOW: @AccessFlow
+### The number the next flow takes.
+global NEXT_FLOW: @U64 <- 1
+### Whether the deadlock check is on: DEADLOCK_CHECK, or what AccessManager.configure set.
+global DEADLOCK_ON: @Bool <- DEADLOCK_CHECK
+### Whether the access-order check is on: ACCESS_ORDER, or what AccessManager.configure set.
+global ORDER_ON: @Bool <- ACCESS_ORDER
+### How the crash reports name the flows: WORDS_TESSERA, WORDS_RAZORFORGE, or WORDS_SUFLAE.
+global WORDS: @U8
+### The flow the reports call `start()` in RazorForge's and Suflae's words, hollow in Tessera's.
+global MAIN_FLOW: @@AccessFlow
+
+### The code of a `Callable[(@U32, U32, Duration), None]` that parks a waiting flow, or hollow for the stdlib's own.
+global PARK: @Addr
+
+### The code of a `Callable[(@SourceLocation,), None]` that writes the place of the code taking an access, or hollow.
+global PLACE: @Addr
+
+### The pairs the access-order check recorded.
+global ORDERS: @Array[AccessOrder, ORDER_SLOTS]
+### How many of ORDERS are in use.
+global ORDER_COUNT: @U64
+
+### 1 while a flow reads or changes ORDERS. A plain flag: the check's own bookkeeping takes no access.
+global ORDER_FLAG: @U32
+
+### Whether a flow about to wait follows the chain of holders and stops the program on a deadlock. The builder sets it
+### from `[debug] deadlock-check`: on in a debug build, off in the release modes.
+preset DEADLOCK_CHECK: Bool = true
+
+### Whether every access taken while the flow holds others records the order of the two, and stops the program on two
+### accesses taken in opposite orders. The builder sets it from `[debug] access-order`, off unless turned on.
+preset ACCESS_ORDER: Bool = false
+
+### How many accesses one flow's list keeps. A flow may hold more: those past the list aren't known to the checks.
+preset HELD_SLOTS: U64 = 16
+
+### How many pairs the access-order check keeps. Once it is full, new pairs aren't recorded.
+preset ORDER_SLOTS: U64 = 1024
+### An access held for reading.
+preset ACCESS_READ: U8 = 1
+### An access held for writing.
+preset ACCESS_WRITE: U8 = 2
+### An ExclusiveAccess.
+preset ACCESS_EXCLUSIVE: U8 = 1
+### A MultiReadAccess.
+preset ACCESS_MULTI_READ: U8 = 2
+
+### A value named for opening only to check that it differs from the others (another language's access token).
+preset ACCESS_IDENTITY: U8 = 0
+
+### A flow that is a thread, in the crash report.
+preset FLOW_THREAD: U8 = 0
+### A flow that is a fiber, in the crash report.
+preset FLOW_FIBER: U8 = 1
+### The crash reports name threads and fibers (Tessera).
+preset WORDS_TESSERA: U8 = 0
+### The crash reports name agents and `start()` (RazorForge).
+preset WORDS_RAZORFORGE: U8 = 1
+### The crash reports name agents and the entities they share (Suflae).
+preset WORDS_SUFLAE: U8 = 2
+
+### 1 once a flow reports a deadlock or an access-order error: the other flows of the cycle, which may see it at the
+### same moment, wait for that report to end the program instead of writing their own over it.
+global REPORTING: @U32
+
+### How long a flow that saw a deadlock waits before it looks again, so a holder that was letting go isn't reported.
+preset DEADLOCK_RECHECK: Duration = 2ms
+
+### One access in a flow's list: one it holds, or one a builder-written block named for opening together.
+record HeldAccess
+    ### The access (its address), or the value named for an identity check.
+    access: Addr
+    ### What it is: ACCESS_EXCLUSIVE, ACCESS_MULTI_READ, or ACCESS_IDENTITY.
+    kind: U8
+    ### How it is held: ACCESS_READ or ACCESS_WRITE.
+    mode: U8
+    ### Where it was taken (or named).
+    place: SourceLocation
+
+### What the AccessManager keeps for one flow: what it holds, what it waits for, and what a block named for opening.
+record AccessFlow
+    ### The flow's number, from 1 in the order flows first took an access, 0 before that.
+    number: U64
+    ### FLOW_THREAD or FLOW_FIBER, for the crash report.
+    kind: U8
+    ### The access it waits for, or hollow while it doesn't wait.
+    waiting_for: Addr
+    ### Where that access keeps the id of the flow holding it.
+    waiting_holder: @U64
+    ### Where it asked for the access it waits for.
+    waiting_place: SourceLocation
+    ### How many accesses it holds. Only the first HELD_SLOTS are in `held`.
+    count: U64
+    ### The accesses it holds, the first taken first.
+    held: Array[HeldAccess, HELD_SLOTS]
+    ### How many accesses a block named and hasn't opened yet.
+    pending_count: U64
+    ### The accesses a block named, to open together.
+    pending: Array[HeldAccess, HELD_SLOTS]
+
+### Two accesses one flow took in this order: `second` while it held `first`.
+record AccessOrder
+    ### The access held.
+    first: Addr
+    ### The access taken while `first` was held.
+    second: Addr
+    ### Where `second` was taken.
+    place: SourceLocation
+
+### What a flow waits for: the access, where it keeps its holder's id, and the word the flow sleeps on while it waits.
+record AccessWait
+    ### The access.
+    access: Addr
+    ### Where the access keeps the id of the flow holding it.
+    holder: @U64
+    ### The word the flow sleeps on, hollow when there is none.
+    word: @U32
+    ### The value the word holds while the wait goes on.
+    expected: U32
+    ### Whether the flow waits the way another language's runtime asked (set_park), as an access that runtime takes
+    ### does, or the stdlib's own way (a thread sleeps, a fiber parks), as the stdlib's and that runtime's own do.
+    hooked: Bool
+
+### The program's manager of who holds which access and who waits for what. Its routines are called on the type.
+record AccessManager
+
+### Makes a `HeldAccess` from its fields.
+### :param access: Its `access`.
+### :param kind: Its `kind`.
+### :param mode: Its `mode`.
+### :param place: Its `place`.
+### :returns: The new value.
+common routine HeldAccess.construct(access: Addr, kind: U8, mode: U8, place: SourceLocation) -> Me
+    return Me(access, kind, mode, place)
+
+### Releases nothing: a `HeldAccess` holds no memory of its own.
+routine @HeldAccess.destruct() -> None
+    return
+
+### Makes an `AccessFlow` from its fields.
+### :param number: Its `number`.
+### :param kind: Its `kind`.
+### :param waiting_for: Its `waiting_for`.
+### :param waiting_holder: Its `waiting_holder`.
+### :param waiting_place: Its `waiting_place`.
+### :param count: Its `count`.
+### :param held: Its `held`.
+### :param pending_count: Its `pending_count`.
+### :param pending: Its `pending`.
+### :returns: The new value.
+common routine AccessFlow.construct(number: U64, kind: U8, waiting_for: Addr, waiting_holder: @U64,
+    waiting_place: SourceLocation, count: U64, held: Array[HeldAccess, HELD_SLOTS],
+    pending_count: U64, pending: Array[HeldAccess, HELD_SLOTS]) -> Me
+    return Me(number, kind, waiting_for, waiting_holder, waiting_place, count, held, pending_count,
+        pending)
+
+### Releases nothing: an `AccessFlow` holds no memory of its own.
+routine @AccessFlow.destruct() -> None
+    return
+
+### Makes an `AccessOrder` from its fields.
+### :param first: Its `first`.
+### :param second: Its `second`.
+### :param place: Its `place`.
+### :returns: The new value.
+common routine AccessOrder.construct(first: Addr, second: Addr, place: SourceLocation) -> Me
+    return Me(first, second, place)
+
+### Releases nothing: an `AccessOrder` holds no memory of its own.
+routine @AccessOrder.destruct() -> None
+    return
+
+### Makes an `AccessWait` from its fields.
+### :param access: Its `access`.
+### :param holder: Its `holder`.
+### :param word: Its `word`.
+### :param expected: Its `expected`.
+### :param hooked: Its `hooked`.
+### :returns: The new value.
+common routine AccessWait.construct(access: Addr, holder: @U64, word: @U32, expected: U32, hooked: Bool) -> Me
+    return Me(access, holder, word, expected, hooked)
+
+### Releases nothing: an `AccessWait` holds no memory of its own.
+routine @AccessWait.destruct() -> None
+    return
+
+# -- flows ---------------------------------------------------------------------------------------------------------
+
+### The flow running here: the running fiber's or agent's (made the first time it is needed), else this thread's own.
+### Never inlined, like the other readers of RUNNING_FLOW on the way to a wait: a pool fiber may go on on another
+### thread after a park.
+### :returns: The flow.
+@noinline
+routine current_flow() -> @AccessFlow
+    slot: @@AccessFlow = RUNNING_FLOW.peek()
+    flow: @AccessFlow = when
+        slot.is_hollow() => THREAD_FLOW
+        else => fiber_flow(slot)
+    if flow.number.peek() == 0
+        flow.number.poke(NEXT_FLOW.atomic_fetch_add(1))
+    return flow
+
+### The flow kept in a fiber's or an agent's slot, made there the first time it is needed.
+### :param slot: The fiber's or agent's slot.
+### :returns: The flow.
+### :throws: Crashes with `MemoryAllocationError` when the flow's memory can't be had.
+secret routine fiber_flow(slot: @@AccessFlow) -> @AccessFlow
+    flow: @AccessFlow = slot.peek()
+    if flow.is_not_hollow()
+        return flow
+    made: @AccessFlow = allocate[AccessFlow](count: 1, alloc: C_HEAP)
+    if made.is_hollow()
+        crash_allocation()
+    made.poke(.hollow())
+    made.kind.poke(FLOW_FIBER)
+    slot.poke(made)
+    return made
+
+### The id the accesses keep of the flow holding them: its address.
+### :param flow: The flow.
+### :returns: Its id.
+secret routine flow_id(flow: @AccessFlow) -> U64
+    return ptrtoint[Addr, U64](flow)
+
+### The flow an access keeps the id of.
+### :param id: The id.
+### :returns: The flow.
+secret routine flow_of(id: U64) -> @AccessFlow
+    return inttoptr[U64, Addr](id).to[@AccessFlow]()
+
+### Makes the fiber or agent whose slot is `slot` the one running on this thread, and gives back the slot of the one
+### before. A fiber manager or an agent scheduler calls it around each switch, `.hollow()` for the thread's own code.
+### :param slot: Where the fiber or agent keeps its flow, hollow until its first access.
+### :returns: The slot that ran before, to pass back after the switch.
+common routine AccessManager.switch_flow(slot: @@AccessFlow) -> @@AccessFlow
+    before: @@AccessFlow = RUNNING_FLOW.peek()
+    RUNNING_FLOW.poke(slot)
+    return before
+
+### Gives back the flow a fiber or an agent kept in `slot`, when the fiber or agent itself goes, and leaves the slot
+### hollow.
+### :param slot: The slot.
+common routine AccessManager.end_flow(slot: @@AccessFlow) -> None
+    flow: @AccessFlow = slot.peek()
+    if flow.is_hollow()
+        return
+    deallocate(data: flow, alloc: C_HEAP)
+    slot.poke(.hollow())
+    return
+
+### The id of the flow running here, the one an access keeps while this flow holds it.
+### :returns: The id, never 0.
+common routine AccessManager.flow_id() -> U64
+    return flow_id(current_flow())
+
+### Sets the checks for a program whose runtime was built once for every program (another language's): the deadlock
+### check, the access-order check, how the crash reports name the flows, and where the code taking an access is. The
+### flow calling it is the one the reports call `start()`.
+### :param deadlock_check: Whether a flow about to wait looks for a deadlock.
+### :param access_order: Whether accesses taken in opposite orders stop the program.
+### :param words: WORDS_TESSERA, WORDS_RAZORFORGE, or WORDS_SUFLAE.
+### :param place: A routine that writes the place of the code taking an access, or `.hollow()`.
+common routine AccessManager.configure(deadlock_check: Bool, access_order: Bool, words: U8,
+    place: Callable[(@SourceLocation,), None]) -> None
+    DEADLOCK_ON.poke(deadlock_check)
+    ORDER_ON.poke(access_order)
+    WORDS.poke(words)
+    PLACE.poke_atomic(place.addr())
+    MAIN_FLOW.poke(current_flow())
+    return
+
+### Sets how a waiting flow parks, for a runtime whose agents the stdlib's waits don't know: the routine is given the
+### word the flow waits on (hollow when there is none), the value it holds while the wait goes on, and the deadline
+### (`Duration.MAX` for none), and may return early.
+### :param park: The routine, or `.hollow()` for the stdlib's own wait.
+common routine AccessManager.set_park(park: Callable[(@U32, U32, Duration), None]) -> None
+    PARK.poke_atomic(park.addr())
+    return
+
+### Where the code taking an access is, for the crash reports: the routine set with `configure` writes it. An empty
+### place when no routine was set, or when neither check is on (nothing would report it).
+### :returns: The place.
+common routine AccessManager.place_here() -> SourceLocation
+    local place: @SourceLocation <- .hollow()
+
+    hook: Addr = PLACE.peek_atomic()
+    if hook.is_hollow()
+        return place.peek()
+    if not (DEADLOCK_ON.peek() or ORDER_ON.peek())
+        return place.peek()
+    writer: Callable[(@SourceLocation,), None] = bitcast(hook)
+    writer.call(place)
+    return place.peek()
+
+# -- taking accesses by kind, for another language's runtime ---------------------------------------------------------
+
+### Takes an access of the given kind, waiting while another flow holds it: an `ExclusiveAccess` (any mode) or a
+### `MultiReadAccess` for reading or writing. An `ACCESS_IDENTITY` entry takes nothing.
+### :param access: The access.
+### :param kind: ACCESS_EXCLUSIVE, ACCESS_MULTI_READ, or ACCESS_IDENTITY.
+### :param mode: ACCESS_READ or ACCESS_WRITE.
+### :param place: Where it is taken.
+### :throws: Crashes with `ReenterDuringAccessError` when the calling flow already holds it, and with `DeadlockError`
+### (with the deadlock check on) when the flows waiting for each other close a cycle.
+@target(os: not "none")
+common routine AccessManager.take(access: Addr, kind: U8, mode: U8, place: @SourceLocation) -> None
+    if kind == ACCESS_EXCLUSIVE
+        access.to[@ExclusiveAccess]().lock_at(place)
+        return
+    if kind != ACCESS_MULTI_READ
+        return
+    multi: @MultiReadAccess = access.to[@MultiReadAccess]()
+    if mode == ACCESS_READ
+        multi.lock_read_at(place)
+        return
+    multi.lock_write_at(place)
+    return
+
+### Takes an access of the given kind if it is free, without waiting. An `ACCESS_IDENTITY` entry always succeeds.
+### :param access: The access.
+### :param kind: ACCESS_EXCLUSIVE, ACCESS_MULTI_READ, or ACCESS_IDENTITY.
+### :param mode: ACCESS_READ or ACCESS_WRITE.
+### :param place: Where it is taken.
+### :returns: True when it took the access.
+### :throws: Crashes with `ReenterDuringAccessError` when the calling flow already holds it.
+@target(os: not "none")
+common routine AccessManager.try_take(access: Addr, kind: U8, mode: U8, place: @SourceLocation) -> Bool
+    if kind == ACCESS_EXCLUSIVE
+        return access.to[@ExclusiveAccess]().try_lock_at(place)
+    if kind != ACCESS_MULTI_READ
+        return true
+    multi: @MultiReadAccess = access.to[@MultiReadAccess]()
+    if mode == ACCESS_READ
+        return multi.try_lock_read_at(place)
+    return multi.try_lock_write_at(place)
+
+### Gives up an access of the given kind that the calling flow holds. An `ACCESS_IDENTITY` entry gives up nothing.
+### :param access: The access.
+### :param kind: ACCESS_EXCLUSIVE, ACCESS_MULTI_READ, or ACCESS_IDENTITY.
+### :param mode: ACCESS_READ or ACCESS_WRITE.
+@target(os: not "none")
+common routine AccessManager.give_up(access: Addr, kind: U8, mode: U8) -> None
+    if kind == ACCESS_EXCLUSIVE
+        access.to[@ExclusiveAccess]().unlock()
+        return
+    if kind != ACCESS_MULTI_READ
+        return
+    multi: @MultiReadAccess = access.to[@MultiReadAccess]()
+    if mode == ACCESS_READ
+        multi.unlock_read()
+        return
+    multi.unlock_write()
+    return
+
+### Names an access for a block a builder wrote, which opens several together: they are opened by
+### {AccessManager.open_enlisted} or {AccessManager.try_open_enlisted}, in the order of their addresses, so two flows
+### that name the same accesses in different orders can't wait on each other. An `ACCESS_IDENTITY` entry is a value
+### only checked to differ from the others.
+### :param access: The access, or the value.
+### :param kind: ACCESS_EXCLUSIVE, ACCESS_MULTI_READ, or ACCESS_IDENTITY.
+### :param mode: ACCESS_READ or ACCESS_WRITE.
+### :throws: Crashes with `InvalidValueError` when a block names more than HELD_SLOTS.
+common routine AccessManager.enlist(access: Addr, kind: U8, mode: U8) -> None
+    flow: @AccessFlow = current_flow()
+    count: U64 = flow.pending_count.peek()
+    if count >= HELD_SLOTS
+        crash(name: "InvalidValueError", message: "A block opens more accesses at once than the AccessManager keeps.")
+    flow.pending.getslot(count).poke(HeldAccess(access, kind, mode, place: .hollow()))
+    flow.pending_count.poke(count + 1)
+    return
+
+### Puts the accesses `flow` named in the order of their addresses, and stops the program when one is named twice.
+### :param flow: The flow.
+### :param place: Where the block opens them.
+### :returns: How many there are.
+### :throws: Crashes with `AliasedTokensError` when two names of the block are the same value.
+secret routine sort_enlisted(flow: @AccessFlow, place: @SourceLocation) -> U64
+    local count: U64 = flow.pending_count.peek()
+
+    each i in 1 til count
+        each back in 0 til i
+            at: U64 = i - back
+            low: @HeldAccess = flow.pending.getslot(at - 1)
+            high: @HeldAccess = flow.pending.getslot(at)
+            low_address: U64 = ptrtoint[Addr, U64](low.access.peek())
+            high_address: U64 = ptrtoint[Addr, U64](high.access.peek())
+            if low_address == high_address
+                crash_at(name: "AliasedTokensError",
+                    message: "Two names this block opens are the same entity. Opening it twice would give two tokens on one entity, so a change through one could move what the other reads. Name it once.",
+                    place: known_place(place))
+            if low_address < high_address
+                break
+            entry: HeldAccess = low.peek()
+            low.poke(high.peek())
+            high.poke(entry)
+            continue
+        continue
+    then
+        return count
+
+### Opens the accesses named with {AccessManager.enlist}, the lowest address first, waiting for each.
+### :param place: Where the block opens them.
+### :throws: Crashes with `AliasedTokensError` when two names are the same value, with `ReenterDuringAccessError` when
+### the flow holds one already, and with `DeadlockError` (with the deadlock check on) on a cycle.
+@target(os: not "none")
+common routine AccessManager.open_enlisted(place: @SourceLocation) -> None
+    local flow: @AccessFlow = current_flow()
+    local count: U64 = sort_enlisted(flow, place)
+
+    flow.pending_count.poke(0)
+    each i in 0 til count
+        entry: HeldAccess = flow.pending.getslot(i).peek()
+        AccessManager.take(access: entry.access, kind: entry.kind, mode: entry.mode, place)
+    then
+        return
+
+### Opens the accesses named with {AccessManager.enlist} only if every one is free right now, the lowest address
+### first, without waiting. When one is taken, the ones it opened are given up again and none stays open.
+### :param place: Where the block opens them.
+### :returns: True when it opened them all.
+### :throws: Crashes with `AliasedTokensError` when two names are the same value, and with `ReenterDuringAccessError`
+### when the flow holds one already.
+@target(os: not "none")
+common routine AccessManager.try_open_enlisted(place: @SourceLocation) -> Bool
+    local flow: @AccessFlow = current_flow()
+    local count: U64 = sort_enlisted(flow, place)
+
+    flow.pending_count.poke(0)
+    each i in 0 til count
+        entry: HeldAccess = flow.pending.getslot(i).peek()
+        if AccessManager.try_take(access: entry.access, kind: entry.kind, mode: entry.mode, place)
+            continue
+        # Gives up the ones before it, the last opened first.
+        each back in 0 til i
+            opened: HeldAccess = flow.pending.getslot(i - 1 - back).peek()
+            AccessManager.give_up(access: opened.access, kind: opened.kind, mode: opened.mode)
+        return false
+    then
+        return true
+
+# -- the held list -------------------------------------------------------------------------------------------------
+
+### How `flow` holds `access`: ACCESS_READ, ACCESS_WRITE, or 0 when it doesn't (as far as its list goes).
+### :param flow: The flow.
+### :param access: The access.
+### :returns: The mode, or 0.
+secret routine held_mode(flow: @AccessFlow, access: Addr) -> U8
+    local kept: U64 = flow.count.peek().min(HELD_SLOTS)
+
+    each i in 0 til kept
+        entry: @HeldAccess = flow.held.getslot(i)
+        if entry.access.peek() === access
+            return entry.mode.peek()
+        continue
+    then
+        return 0
+
+### Notes that `flow` took an access, after checking the order against what it already holds.
+### :param flow: The flow.
+### :param taken: The access, how it is held, and where it was taken.
+secret routine note_taken(flow: @AccessFlow, taken: HeldAccess) -> None
+    local count: U64 = flow.count.peek()
+
+    if ORDER_ON.peek()
+        check_order(flow, taken)
+    if count < HELD_SLOTS
+        flow.held.getslot(count).poke(taken)
+    flow.count.poke(count + 1)
+    return
+
+### Notes that `flow` gave `access` up: the entry leaves the list, and the ones after it move down.
+### :param flow: The flow.
+### :param access: The access.
+secret routine note_released(flow: @AccessFlow, access: Addr) -> None
+    local count: U64 = flow.count.peek()
+    local kept: U64 = count.min(HELD_SLOTS)
+    local at: @U64 <- HELD_SLOTS
+
+    if count == 0
+        return
+    each back in 0 til kept
+        i: U64 = kept - 1 - back
+        if flow.held.getslot(i).access.peek() === access
+            at.poke(i)
+            break
+        continue
+    found: U64 = at.peek()
+    if found < HELD_SLOTS
+        each j in found til kept - 1
+            flow.held.getslot(j).poke(flow.held.getslot(j + 1).peek())
+        # One held past the list now belongs at its end, and the list doesn't know it: an empty entry stands there.
+        if count > HELD_SLOTS
+            flow.held.getslot(HELD_SLOTS - 1).poke(.hollow())
+    flow.count.poke(count - 1)
+    return
+
+### The accesses the running flow holds, as far as its list goes (the first HELD_SLOTS), the first taken first. For
+### debugging: each entry says the access, how it is held, and where it was taken.
+### :returns: A view of the list, valid until the flow takes or gives up an access.
+common routine AccessManager.held() -> @[HeldAccess]
+    flow: @AccessFlow = current_flow()
+    kept: U64 = flow.count.peek().min(HELD_SLOTS)
+    return @[HeldAccess].construct(data: flow.held.getslot(0), count: kept)
+
+### How many accesses the running flow holds, those past its list included.
+### :returns: The count.
+common routine AccessManager.held_count() -> U64
+    return current_flow().count.peek()
+
+### Writes the accesses the running flow holds to standard error, one line each: how it is held, the access's address,
+### and where it was taken.
+common routine AccessManager.alert_held() -> None
+    held: @[HeldAccess] = Me.held()
+    total: U64 = Me.held_count()
+
+    Console.alert("accesses held: {total}")
+    each i in 0 til held.count
+        entry: HeldAccess = held.getitem(i)
+        how: @[Byte] = when
+            entry.mode == ACCESS_READ => "read"
+            else => "write"
+        at: Addr = entry.access
+        file: @[Byte] = entry.place.file
+        Console.alert("  {how} {at} taken at {file}:{entry.place.line}:{entry.place.column}")
+    then
+        return
+
+### The place a crash report gives: `place`, or hollow when it names no file (another language's agent that moved to
+### another thread since its runtime last knew where it was), so the report leaves the place out.
+### :param place: The place.
+### :returns: `place`, or hollow.
+secret routine known_place(place: @SourceLocation) -> @SourceLocation
+    if place.file.peek().count == 0
+        return .hollow()
+    return place
+
+### Stops the program: the flow takes an access it already holds.
+### :param place: Where it takes it again.
+@noreturn
+secret routine crash_reenter(place: @SourceLocation) -> None
+    words: U8 = WORDS.peek()
+    message: @[Byte] = when
+        words == WORDS_TESSERA => "This thread or fiber already holds the access it takes here. Waiting for it would never end, and going in would see its own work half done. Don't take it again inside: the code that holds it does the work."
+        else => "This agent opens access to a Guarded it already has open. Waiting for it would never end, and going in would see the work of its own block half done. Pass the token you already have instead of opening it again."
+    crash_at(name: "ReenterDuringAccessError", message, place: known_place(place))
+
+# -- waiting -------------------------------------------------------------------------------------------------------
+
+### Parks the running flow while the wait's word holds its value, until `deadline` (`Duration.MAX` for none), the way
+### it waits: through the routine set_park set for a hooked wait, else a thread sleeps and a fiber parks a short while
+### at a time. It may return early.
+### :param wait: What the flow waits for: the word (hollow when there is none: it then waits a short while), the value
+### it holds while the wait goes on, and how the flow waits.
+### :param deadline: When to stop, in `Clock.monotonic()` time.
+@target(os: not "none")
+secret routine park(wait: AccessWait, deadline: Duration) -> None
+    local word: @U32 = wait.word
+    local expected: U32 = wait.expected
+    local hook: Addr = PARK.peek_atomic()
+
+    if wait.hooked and hook.is_not_hollow()
+        parker: Callable[(@U32, U32, Duration), None] = bitcast(hook)
+        parker.call(word, expected, deadline)
+        return
+    if word.is_hollow()
+        waitfor(FIBER_POLL)
+        return
+    if deadline == Duration.MAX
+        wait_while(at: word, expected)
+        return
+    now: Duration = Clock.monotonic()
+    if now >= deadline
+        return
+    wait_while_for(at: word, expected, timeout: deadline - now)
+    return
+
+### Publishes that `flow` waits for an access, and looks for a deadlock when the check is on.
+### :param flow: The flow about to wait.
+### :param wait: What it waits for.
+### :param place: Where it asked for the access.
+@target(os: not "none")
+secret routine begin_wait(flow: @AccessFlow, wait: AccessWait, place: @SourceLocation) -> None
+    flow.waiting_place.poke(place.peek())
+    flow.waiting_holder.poke_atomic(wait.holder)
+    # Published last: a flow that sees it reads the holder and the place written before.
+    flow.waiting_for.poke_atomic(wait.access)
+    if DEADLOCK_ON.peek()
+        check_deadlock(flow, wait)
+    return
+
+### Notes that `flow` no longer waits.
+### :param flow: The flow.
+secret routine end_wait(flow: @AccessFlow) -> None
+    flow.waiting_for.poke_atomic(.hollow())
+    return
+
+### Waits once for an access: publishes the wait, looks for a deadlock, parks, and clears the wait. The caller looks
+### at the access again after it returns.
+### :param flow: The flow.
+### :param wait: What it waits for.
+### :param deadline: When to stop waiting, `Duration.MAX` for never.
+### :param place: Where the flow asked for the access.
+@target(os: not "none")
+secret routine wait_once(flow: @AccessFlow, wait: AccessWait, deadline: Duration,
+    place: @SourceLocation) -> None
+    begin_wait(flow, wait, place)
+    park(wait, deadline)
+    end_wait(flow)
+    return
+
+### For code that waits for an access in its own way (a Roamed entity's lock): publishes that the running flow waits
+### for `access`, whose holder's id `holder` keeps, and looks for a deadlock when the check is on. Call `end_wait`
+### once the flow holds the access or stops waiting.
+### :param access: The access.
+### :param holder: Where the access keeps its holder's id.
+### :param place: Where the flow asked for it.
+@target(os: not "none")
+common routine AccessManager.begin_wait(access: Addr, holder: @U64, place: @SourceLocation) -> None
+    begin_wait(flow: current_flow(), wait: AccessWait(access, holder, word: .hollow(), expected: 0, hooked: true),
+        place)
+    return
+
+### Notes that the running flow no longer waits (see begin_wait).
+common routine AccessManager.end_wait() -> None
+    end_wait(current_flow())
+    return
+
+### Adds one wait that began at `since` to an access's statistics.
+### :param waits: The access's count of waits.
+### :param waited: The access's total nanoseconds waited.
+### :param since: When the wait began, in `Clock.monotonic()` time.
+secret routine note_wait(waits: @U64, waited: @U64, since: Duration) -> None
+    spent: Duration = Clock.monotonic() - since
+    waits.atomic_fetch_add(1)
+    waited.atomic_fetch_add(spent.nanoseconds_clamp().to_clamp[U64]())
+    return
+
+# -- deadlocks -----------------------------------------------------------------------------------------------------
+
+### How many flows the chain from `start` passes before it comes back to `start`, or 0 when it doesn't.
+### :param start: The flow about to wait.
+### :returns: The cycle's length, or 0.
+secret routine cycle_length(start: @AccessFlow) -> U64
+    each step: U64 in 0 til 64 with current: @AccessFlow = start
+        waits_for: Addr = current.waiting_for.peek_atomic()
+        if waits_for.is_hollow()
+            return 0
+        holder_at: @U64 = current.waiting_holder.peek_atomic()
+        id: U64 = holder_at.peek_atomic()
+        if id == 0
+            return 0
+        next: @AccessFlow = flow_of(id)
+        if next === start
+            return step + 1
+        continue with current: next
+    then
+        return 0
+
+### Stops the program when the chain from `flow` comes back to it twice, a short wait apart: a deadlock.
+### :param flow: The flow about to wait.
+### :param wait: What it waits for.
+@target(os: not "none")
+secret routine check_deadlock(flow: @AccessFlow, wait: AccessWait) -> None
+    local recheck_at: Duration = Clock.monotonic() +^ DEADLOCK_RECHECK
+    local word: @U32 = wait.word
+    local expected: U32 = wait.expected
+
+    if cycle_length(flow) == 0
+        return
+    # A holder letting go just now looks the same for a moment: wait a little and look again.
+    while Clock.monotonic() < recheck_at
+        if word.is_not_hollow()
+            if word.peek_atomic() != expected
+                return
+        park(wait, deadline: recheck_at)
+    then
+        length: U64 = cycle_length(flow)
+        if length == 0
+            return
+        report_deadlock(flow, length)
+
+### Waits for the report another flow is writing to end the program: a second report would be written over it.
+@noreturn
+@target(os: not "none")
+secret routine wait_for_report() -> None
+    while true
+        wait_on(at: REPORTING, expected: 1)
+    then
+        unreachable
+
+### Where `flow` took `access`, as far as its list goes, or an empty place.
+### :param flow: The flow.
+### :param access: The access.
+### :returns: The place.
+secret routine taken_at(flow: @AccessFlow, access: Addr) -> SourceLocation
+    local kept: U64 = flow.count.peek().min(HELD_SLOTS)
+
+    each i in 0 til kept
+        entry: @HeldAccess = flow.held.getslot(i)
+        if entry.access.peek() === access
+            return entry.place.peek()
+        continue
+    then
+        return .hollow()
+
+### Writes how the crash reports call `flow`.
+### :param out: Where to write.
+### :param flow: The flow.
+secret routine write_flow(out: @SliceWriter, flow: @AccessFlow) -> None
+    words: U8 = WORDS.peek()
+    number: U64 = flow.number.peek()
+    if words != WORDS_TESSERA and flow === MAIN_FLOW.peek()
+        out.write("start()")
+        return
+    if words != WORDS_TESSERA
+        out.write("agent {number}")
+        return
+    if flow.kind.peek() == FLOW_FIBER
+        out.write("fiber {number}")
+        return
+    out.write("thread {number}")
+    return
+
+### Writes a place as `file:line:column`, or nothing for an empty one.
+### :param out: Where to write.
+### :param place: The place.
+### :returns: Whether it wrote one.
+secret routine write_place(out: @SliceWriter, place: SourceLocation) -> Bool
+    file: @[Byte] = place.file
+    if file.count == 0
+        return false
+    out.write("{file}:{place.line}:{place.column}")
+    return true
+
+### Stops the program on a deadlock: each flow of the cycle on a line of its own, what it waits for, and where its
+### holder took it.
+### :param flow: The flow that closed the cycle.
+### :param length: How many flows the cycle has.
+@noreturn
+secret routine report_deadlock(flow: @AccessFlow, length: U64) -> None
+    local buffer: @Array[Byte, 2048] <- .uninit()
+    local out: @SliceWriter <- SliceWriter.construct(data: buffer.to[@Byte](), capacity: 2048)
+    local words: U8 = WORDS.peek()
+
+    if REPORTING.atomic_swap(1) != 0
+        wait_for_report()
+
+    when
+        words == WORDS_TESSERA => out.write("These threads and fibers wait on each other, so none of them can go on:")
+        words == WORDS_SUFLAE => out.write("These agents wait on each other for the entities they share, so none of them can go on:")
+        else => out.write("These agents wait on each other for access, so none of them can go on:")
+    each step in 0 til length with current: @AccessFlow = flow
+        access: Addr = current.waiting_for.peek_atomic()
+        holder_at: @U64 = current.waiting_holder.peek_atomic()
+        holder: @AccessFlow = flow_of(holder_at.peek_atomic())
+        out.write("\n  ")
+        write_flow(out, flow: current)
+        when
+            words == WORDS_SUFLAE => out.write(" waits for an entity ")
+            else => out.write(" waits for an access ")
+        write_flow(out, flow: holder)
+        when
+            words == WORDS_SUFLAE => out.write(" is using")
+            else => out.write(" holds")
+        taken: SourceLocation = taken_at(flow: holder, access)
+        if taken.file.count != 0
+            out.write(", taken at ")
+            write_place(out, place: taken)
+        continue with current: holder
+    then
+        when
+            words == WORDS_TESSERA => out.write("\nTake the accesses in the same order everywhere.")
+            words == WORDS_SUFLAE => out.write("\nUse the shared entities in the same order in every agent.")
+            else => out.write("\nOpen them together in one block, which takes them in address order, or open them in the same order everywhere.")
+        # Suflae's agents wait inside the statements the builder brackets, so no place of the program's would help.
+        place: @SourceLocation = when
+            words == WORDS_SUFLAE => .hollow()
+            else => known_place(flow.waiting_place)
+        crash_at(name: "DeadlockError", message: out.getview(), place)
+
+# -- access order --------------------------------------------------------------------------------------------------
+
+### Takes ORDER_FLAG, the plain flag that guards ORDERS.
+@target(os: not "none")
+secret routine lock_orders() -> None
+    while ORDER_FLAG.atomic_swap(1) != 0
+        wait_while(at: ORDER_FLAG, expected: 1)
+    then
+        return
+
+### Gives ORDER_FLAG up.
+@target(os: not "none")
+secret routine unlock_orders() -> None
+    ORDER_FLAG.poke_atomic(0)
+    wake_all(ORDER_FLAG)
+    return
+
+### The index of the recorded pair (`first`, `second`), or ORDER_SLOTS when there is none. ORDER_FLAG is held.
+### :param first: The access held.
+### :param second: The access taken while it was.
+### :returns: The index, or ORDER_SLOTS.
+secret routine find_order(first: Addr, second: Addr) -> U64
+    local count: U64 = ORDER_COUNT.peek()
+
+    each i in 0 til count
+        entry: @AccessOrder = ORDERS.getslot(i)
+        if entry.first.peek() === first and entry.second.peek() === second
+            return i
+        continue
+    then
+        return ORDER_SLOTS
+
+### Records the order of the access taken against each access `flow` already holds, and stops the program when one
+### pair was taken the other way round before.
+### :param flow: The flow taking the access.
+### :param taken: The access it takes and where.
+@target(os: not "none")
+secret routine check_order(flow: @AccessFlow, taken: HeldAccess) -> None
+    local kept: U64 = flow.count.peek().min(HELD_SLOTS)
+    local access: Addr = taken.access
+    local place: @SourceLocation <- taken.place
+
+    lock_orders()
+    each i in 0 til kept
+        earlier: Addr = flow.held.getslot(i).access.peek()
+        if earlier.is_hollow() or earlier === access
+            continue
+        opposite: U64 = find_order(first: access, second: earlier)
+        if opposite < ORDER_SLOTS
+            unlock_orders()
+            report_order(place, before: ORDERS.getslot(opposite).place.peek())
+        count: U64 = ORDER_COUNT.peek()
+        if count < ORDER_SLOTS and find_order(first: earlier, second: access) == ORDER_SLOTS
+            ORDERS.getslot(count).poke(AccessOrder(first: earlier, second: access,
+                place: place.peek()))
+            ORDER_COUNT.poke(count + 1)
+        continue
+    then
+        unlock_orders()
+        return
+
+### Stops the program on two accesses taken in opposite orders.
+### :param place: Where the second order is taken.
+### :param before: Where the first order took its second access.
+@noreturn
+secret routine report_order(place: @SourceLocation, before: SourceLocation) -> None
+    local buffer: @Array[Byte, 1024] <- .uninit()
+    local out: @SliceWriter <- SliceWriter.construct(data: buffer.to[@Byte](), capacity: 1024)
+    local words: U8 = WORDS.peek()
+
+    if REPORTING.atomic_swap(1) != 0
+        wait_for_report()
+
+    when
+        words == WORDS_TESSERA => out.write("This takes an access while holding another, and the two were taken in the opposite order before")
+        else => out.write("This opens an access while holding another, and the two were opened in the opposite order before")
+    if before.file.count != 0
+        out.write(" (at ")
+        write_place(out, place: before)
+        out.write(")")
+    when
+        words == WORDS_TESSERA => out.write(". Two threads or fibers doing both could wait on each other. Take the accesses in the same order everywhere.")
+        else => out.write(". Two agents doing both could wait on each other. Open them together in one block, or open them in the same order everywhere.")
+    crash_at(name: "AccessOrderError", message: out.getview(), place: known_place(place))

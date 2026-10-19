@@ -1,10 +1,10 @@
-# Four threads add to one counter under a ExclusiveLock, so no increment is lost: the ExclusiveLock is atomics plus wait_on /
-# wake_one, the same on every operating system.
+# Four threads add to one counter under an ExclusiveAccess, so no increment is lost: the ExclusiveAccess is atomics plus
+# wait_on / wake_one, the same on every operating system. try_lock from another thread fails while it is held.
 
 import Standard/Os
 
 record Shared
-    lock: ExclusiveLock
+    lock: ExclusiveAccess
     count: U64
 
 routine add_many(state: @Shared) -> None
@@ -16,6 +16,12 @@ routine add_many(state: @Shared) -> None
         continue with i: i + 1
     then
         return
+
+routine try_take(state: @Shared) -> Bool
+    taken: Bool = state.lock.try_lock()
+    if taken
+        state.lock.unlock()
+    return taken
 
 routine start() -> None
     local state: @Shared <- Shared(lock: .construct(), count: 0)
@@ -39,7 +45,11 @@ routine start() -> None
     Console.show("{state.count.peek()}")
     Console.show("cpus: {cpu_count().gt(0)}")
     first: Bool = state.lock.try_lock()
-    second: Bool = state.lock.try_lock()
+    t5: Thread[Bool] = get_thread[Bool]()
+    t5.put_work(entry: try_take.to[Callable](), args: state)
+    t5.wait_finished()
+    second: Bool = t5.retrieve()
+    t5.give_back()
     state.lock.unlock()
     Console.show("try_lock: {first} then {second}")
     return

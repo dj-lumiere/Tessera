@@ -1,0 +1,283 @@
+# Tessera stdlib: MultiReadAccess
+#
+# Access that many readers hold at once, or one writer alone: for a place that several threads really do read and
+# write. Writers come first: once a writer waits, a reader that comes later waits too, so a stream of readers can't
+# keep a writer out forever. Two U32s: the readers holding it (with a bit for a writer holding it instead), and the
+# writers waiting or holding. It keeps the id of the writer holding it (or of a reader while only readers do), and
+# how often and how long flows waited for it. The last reader out wakes a waiting writer, and a writer going out
+# wakes everyone who waits. A flow that waits goes through the AccessManager, like ExclusiveAccess. Taking it again,
+# for reading or for writing, from a flow that holds it stops the program with ReenterDuringAccessError. It starts
+# free and needs nothing given back.
+
+module Standard/Os
+
+### The bit of `MultiReadAccess.state` that a writer holding the access sets.
+secret preset WRITE_HELD: U32 = 0x80000000
+
+### Access that many readers hold at once, or one writer alone, and a writer that waits goes before the readers that
+### come after it. Taking it again from a flow that holds it stops the program with `ReenterDuringAccessError`, and a
+### wait goes through the {AccessManager}. It starts free and needs nothing given back.
+record MultiReadAccess
+    ### The readers holding it, or WRITE_HELD while a writer does.
+    state: U32
+    ### The writers waiting for it or holding it.
+    writers: U32
+    ### The id of the writer holding it, or of a reader while only readers hold it, 0 when no flow is known to.
+    holder: U64
+    ### How many times a flow had to wait for it.
+    waits: U64
+    ### How long flows waited for it in all, in nanoseconds.
+    waited: U64
+
+### A free access.
+### :returns: The access.
+common routine MultiReadAccess.construct() -> Me
+    return Me(state: 0, writers: 0, holder: 0, waits: 0, waited: 0)
+
+### Takes the access for reading, waiting while a writer holds it or waits for it.
+### :throws: Crashes with `ReenterDuringAccessError` when the calling flow already holds it, and with `DeadlockError`
+### (with the deadlock check on) when the flows waiting for each other close a cycle.
+@track_caller
+@target(os: not "none")
+routine @MultiReadAccess.lock_read() -> None
+    me.take_read(place: caller_location(), deadline: Duration.MAX, hooked: false)
+    return
+
+### As {MultiReadAccess.lock_read}, giving `place` as where it is taken: for another language's runtime, whose agents
+### wait the way it asked the {AccessManager}.
+### :param place: Where the access is taken.
+### :throws: Crashes with `ReenterDuringAccessError` when the calling flow already holds it.
+@target(os: not "none")
+routine @MultiReadAccess.lock_read_at(place: @SourceLocation) -> None
+    me.take_read(place, deadline: Duration.MAX, hooked: true)
+    return
+
+### Takes the access for reading, waiting at most `timeout`.
+### :param timeout: The longest wait.
+### :returns: True when it took the access, false when the time ran out first.
+### :throws: Crashes with `ReenterDuringAccessError` when the calling flow already holds it.
+@track_caller
+@target(os: not "none")
+routine @MultiReadAccess.lock_read_within(timeout: Duration) -> Bool
+    deadline: Duration = Clock.monotonic() +^ timeout
+    return me.take_read(place: caller_location(), deadline, hooked: false)
+
+### Takes the access for reading if no writer holds it or waits for it, without waiting.
+### :returns: True when it took the access.
+### :throws: Crashes with `ReenterDuringAccessError` when the calling flow already holds it.
+@track_caller
+routine @MultiReadAccess.try_lock_read() -> Bool
+    return me.try_take_read(place: caller_location())
+
+### As {MultiReadAccess.try_lock_read}, giving `place` as where it is taken.
+### :param place: Where the access is taken.
+### :returns: True when it took the access.
+### :throws: Crashes with `ReenterDuringAccessError` when the calling flow already holds it.
+routine @MultiReadAccess.try_lock_read_at(place: @SourceLocation) -> Bool
+    return me.try_take_read(place)
+
+### Gives up the access taken for reading. The last reader out wakes a waiting writer.
+@target(os: not "none")
+routine @MultiReadAccess.unlock_read() -> None
+    local flow: @AccessFlow = current_flow()
+    local found: @U64 <- 0
+
+    note_released(flow, access: me)
+    # Only the reader whose id it keeps clears it: another reader may still hold the access.
+    me.holder.atomic_compare_exchange_raw(expected: flow_id(flow), new: 0, previous: found)
+    before: U32 = me.state.atomic_fetch_sub_release(1)
+    if not (before == 1 and me.writers.peek_atomic() != 0)
+        return
+    wake_all(me.state)
+    return
+
+### Takes the access for writing, waiting until no one holds it. From the moment it waits, readers that come later
+### wait behind it.
+### :throws: Crashes with `ReenterDuringAccessError` when the calling flow already holds it, and with `DeadlockError`
+### (with the deadlock check on) when the flows waiting for each other close a cycle.
+@track_caller
+@target(os: not "none")
+routine @MultiReadAccess.lock_write() -> None
+    me.take_write(place: caller_location(), deadline: Duration.MAX, hooked: false)
+    return
+
+### As {MultiReadAccess.lock_write}, giving `place` as where it is taken: for another language's runtime, whose agents
+### wait the way it asked the {AccessManager}.
+### :param place: Where the access is taken.
+### :throws: Crashes with `ReenterDuringAccessError` when the calling flow already holds it.
+@target(os: not "none")
+routine @MultiReadAccess.lock_write_at(place: @SourceLocation) -> None
+    me.take_write(place, deadline: Duration.MAX, hooked: true)
+    return
+
+### Takes the access for writing, waiting at most `timeout`.
+### :param timeout: The longest wait.
+### :returns: True when it took the access, false when the time ran out first.
+### :throws: Crashes with `ReenterDuringAccessError` when the calling flow already holds it.
+@track_caller
+@target(os: not "none")
+routine @MultiReadAccess.lock_write_within(timeout: Duration) -> Bool
+    deadline: Duration = Clock.monotonic() +^ timeout
+    return me.take_write(place: caller_location(), deadline, hooked: false)
+
+### Takes the access for writing if no one holds it, without waiting.
+### :returns: True when it took the access.
+### :throws: Crashes with `ReenterDuringAccessError` when the calling flow already holds it.
+@track_caller
+@target(os: not "none")
+routine @MultiReadAccess.try_lock_write() -> Bool
+    return me.try_take_write(place: caller_location())
+
+### As {MultiReadAccess.try_lock_write}, giving `place` as where it is taken.
+### :param place: Where the access is taken.
+### :returns: True when it took the access.
+### :throws: Crashes with `ReenterDuringAccessError` when the calling flow already holds it.
+@target(os: not "none")
+routine @MultiReadAccess.try_lock_write_at(place: @SourceLocation) -> Bool
+    return me.try_take_write(place)
+
+### Gives up the access taken for writing, and wakes everyone who waits for it.
+@target(os: not "none")
+routine @MultiReadAccess.unlock_write() -> None
+    flow: @AccessFlow = current_flow()
+    note_released(flow, access: me)
+    me.holder.poke_atomic(0)
+    me.state.poke_atomic_release(0)
+    me.writers.atomic_fetch_sub_release(1)
+    wake_all(me.state)
+    wake_all(me.writers)
+    return
+
+### How many times a flow had to wait for the access.
+### :returns: The count.
+routine @MultiReadAccess.wait_count() -> U64
+    return me.waits.peek_atomic()
+
+### How long flows waited for the access in all.
+### :returns: The total.
+routine @MultiReadAccess.waited() -> Duration
+    nanos: U64 = me.waited.peek_atomic()
+    return Duration.from_nanoseconds(nanos.to_clamp[S64]())
+
+### Takes the access for reading, waiting until `deadline` at most.
+### :param place: Where it is taken.
+### :param deadline: When to give up, in `Clock.monotonic()` time, `Duration.MAX` for never.
+### :param hooked: Whether the flow waits the way another language's runtime asked.
+### :returns: True when it took the access.
+### :throws: Crashes with `ReenterDuringAccessError` when the calling flow already holds it.
+@target(os: not "none")
+secret routine @MultiReadAccess.take_read(place: @SourceLocation, deadline: Duration, hooked: Bool) -> Bool
+    local flow: @AccessFlow = current_flow()
+    local started: Duration = Clock.monotonic()
+
+    if held_mode(flow, access: me) != 0
+        crash_reenter(place)
+    while true with waited: Bool = false
+        state2: U32 = me.state.peek_atomic()
+        writers2: U32 = me.writers.peek_atomic()
+        if writers2 == 0 and state2 & WRITE_HELD == 0
+            if me.try_add_reader(state2)
+                me.holder.poke_atomic(flow_id(flow))
+                if waited
+                    note_wait(waits: me.waits, waited: me.waited, since: started)
+                note_taken(flow,
+                    taken: HeldAccess(access: me, kind: ACCESS_MULTI_READ, mode: ACCESS_READ, place: place.peek()))
+                return true
+            continue with waited: waited
+        if deadline != Duration.MAX
+            if Clock.monotonic() >= deadline
+                note_wait(waits: me.waits, waited: me.waited, since: started)
+                return false
+        if writers2 != 0
+            wait_once(flow,
+                wait: AccessWait(access: me, holder: me.holder, word: me.writers, expected: writers2, hooked),
+                deadline, place)
+            continue with waited: true
+        wait_once(flow,
+            wait: AccessWait(access: me, holder: me.holder, word: me.state, expected: state2, hooked),
+            deadline, place)
+        continue with waited: true
+
+### Takes the access for reading if no writer holds it or waits for it, without waiting.
+### :param place: Where it is taken.
+### :returns: True when it took the access.
+### :throws: Crashes with `ReenterDuringAccessError` when the calling flow already holds it.
+secret routine @MultiReadAccess.try_take_read(place: @SourceLocation) -> Bool
+    local flow: @AccessFlow = current_flow()
+
+    if held_mode(flow, access: me) != 0
+        crash_reenter(place)
+    while true
+        state2: U32 = me.state.peek_atomic()
+        if me.writers.peek_atomic() != 0 or state2 & WRITE_HELD != 0
+            return false
+        if me.try_add_reader(state2)
+            me.holder.poke_atomic(flow_id(flow))
+            note_taken(flow,
+                taken: HeldAccess(access: me, kind: ACCESS_MULTI_READ, mode: ACCESS_READ, place: place.peek()))
+            return true
+        continue
+
+### Takes the access for writing, waiting until `deadline` at most.
+### :param place: Where it is taken.
+### :param deadline: When to give up, in `Clock.monotonic()` time, `Duration.MAX` for never.
+### :param hooked: Whether the flow waits the way another language's runtime asked.
+### :returns: True when it took the access.
+### :throws: Crashes with `ReenterDuringAccessError` when the calling flow already holds it.
+@target(os: not "none")
+secret routine @MultiReadAccess.take_write(place: @SourceLocation, deadline: Duration, hooked: Bool) -> Bool
+    local flow: @AccessFlow = current_flow()
+    local started: Duration = Clock.monotonic()
+
+    if held_mode(flow, access: me) != 0
+        crash_reenter(place)
+    me.writers.atomic_fetch_add(1)
+    while true with waited: Bool = false
+        state: U32 = me.state.peek_atomic()
+        if state == 0
+            if me.state.atomic_compare_exchange_acquire(expected: 0, new: WRITE_HELD).is_success()
+                me.holder.poke_atomic(flow_id(flow))
+                if waited
+                    note_wait(waits: me.waits, waited: me.waited, since: started)
+                note_taken(flow,
+                    taken: HeldAccess(access: me, kind: ACCESS_MULTI_READ, mode: ACCESS_WRITE, place: place.peek()))
+                return true
+            continue with waited: waited
+        if deadline != Duration.MAX
+            if Clock.monotonic() >= deadline
+                # A reader that saw this writer for a moment waits on the count: it looks again.
+                me.writers.atomic_fetch_sub(1)
+                wake_all(me.writers)
+                note_wait(waits: me.waits, waited: me.waited, since: started)
+                return false
+        wait_once(flow,
+            wait: AccessWait(access: me, holder: me.holder, word: me.state, expected: state, hooked),
+            deadline, place)
+        continue with waited: true
+
+### Takes the access for writing if no one holds it, without waiting.
+### :param place: Where it is taken.
+### :returns: True when it took the access.
+### :throws: Crashes with `ReenterDuringAccessError` when the calling flow already holds it.
+@target(os: not "none")
+secret routine @MultiReadAccess.try_take_write(place: @SourceLocation) -> Bool
+    local flow: @AccessFlow = current_flow()
+
+    if held_mode(flow, access: me) != 0
+        crash_reenter(place)
+    me.writers.atomic_fetch_add(1)
+    if me.state.atomic_compare_exchange_acquire(expected: 0, new: WRITE_HELD).is_success()
+        me.holder.poke_atomic(flow_id(flow))
+        note_taken(flow,
+            taken: HeldAccess(access: me, kind: ACCESS_MULTI_READ, mode: ACCESS_WRITE, place: place.peek()))
+        return true
+    # A reader that saw this writer for a moment waits on the count: it looks again.
+    me.writers.atomic_fetch_sub(1)
+    wake_all(me.writers)
+    return false
+
+### One more reader, if the state is still `state`.
+### :param state: The state read before.
+### :returns: True when the reader is in.
+secret routine @MultiReadAccess.try_add_reader(state: U32) -> Bool
+    return me.state.atomic_compare_exchange_acquire(expected: state, new: state + 1).is_success()

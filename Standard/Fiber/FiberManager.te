@@ -111,6 +111,8 @@ record FiberState
     timer: U64
     ### Its crash trace depth while it isn't running (Trace.te).
     trace_depth: U64
+    ### What the AccessManager keeps of it: the accesses it holds and what it waits for, made at its first access.
+    access: @AccessFlow
     ### Its stack's handle for the data race check, or null without it.
     race: Addr
     ### The next fiber given back, waiting for a ticket.
@@ -155,7 +157,7 @@ entity FiberManager
     ### The fibers ready to go on, in order. Only the manager's thread touches it.
     ready: CircularList[@FiberState]
     ### Guards `inbox` and `idle`.
-    inbox_lock: ExclusiveLock
+    inbox_lock: ExclusiveAccess
     ### Fibers woken or started from other threads, for the manager's thread to take in.
     inbox: CircularList[@FiberState]
     ### Changes when the inbox gets a fiber. The manager's thread waits on it.
@@ -183,6 +185,7 @@ entity FiberManager
 ### :param wake_state: Its `wake_state`.
 ### :param timer: Its `timer`.
 ### :param trace_depth: Its `trace_depth`.
+### :param access: Its `access`.
 ### :param race: Its `race`.
 ### :param next_idle: Its `next_idle`.
 ### :param next_all: Its `next_all`.
@@ -191,8 +194,9 @@ entity FiberManager
 @target(os: not "none")
 common routine FiberState.construct(sp: Addr, stack: StackManager, manager: @FiberManager, slot: WorkSlot,
     work: @WorkSlot, then: Callable[(@FiberManager, @Me), None], wake_state: U32, timer: U64,
-    trace_depth: U64, race: Addr, next_idle: @Me, next_all: @Me, pool: @ThreadPoolManager) -> Me
-    return Me(sp, stack, manager, slot, work, then, wake_state, timer, trace_depth, race, next_idle,
+    trace_depth: U64, access: @AccessFlow, race: Addr, next_idle: @Me, next_all: @Me,
+    pool: @ThreadPoolManager) -> Me
+    return Me(sp, stack, manager, slot, work, then, wake_state, timer, trace_depth, access, race, next_idle,
         next_all, pool)
 
 ### Releases the block of its last work. Its stack is its manager's to give back.
@@ -258,6 +262,7 @@ routine @FiberManager.destruct() -> None
     until fiber.is_hollow() with fiber: @FiberState = me.all.peek()
         next: @FiberState = fiber.next_all.peek()
         fiber.destruct()
+        AccessManager.end_flow(fiber.access)
         race_stack_free(fiber.race.peek())
         give_back_stack(stack: fiber.stack.peek(), pages: me.stacks.peek())
         deallocate(data: fiber, alloc: me.alloc.peek())
@@ -322,7 +327,8 @@ secret routine @FiberManager.make_fiber() -> @FiberState
     sp: Addr = initial_stack(stack: stack.bottom, size: stack.size().bytes(), entry: fiber_start.addr())
     fiber.poke(FiberState(sp, stack, manager: me, slot: .construct(alloc: me.alloc.peek()),
         work: fiber.slot, then: requeue.to[Callable](), wake_state: FIBER_RUNNING, timer: 0,
-        trace_depth: 0, race: race_stack_new(), next_idle: .hollow(), next_all: me.all.peek(), pool: .hollow()))
+        trace_depth: 0, access: .hollow(), race: race_stack_new(), next_idle: .hollow(), next_all: me.all.peek(),
+        pool: .hollow()))
     me.all.poke(fiber)
     return fiber
 
@@ -847,6 +853,8 @@ secret routine @FiberManager.resume(fiber: @FiberState) -> None
     # The fiber's crash trace depth goes in while it runs and comes back out with it, and the thread's own stays as
     # it was.
     own: U64 = trace_switch(fiber.trace_depth.peek())
+    # The AccessManager sees the fiber as the flow running here while it runs.
+    outer_flow: @@AccessFlow = AccessManager.switch_flow(fiber.access)
     # The running flow's StackManager is the fiber's while it runs.
     outer_stack: @StackManager = RUNNING_STACK.peek()
     RUNNING_STACK.poke(fiber.stack)
@@ -855,6 +863,7 @@ secret routine @FiberManager.resume(fiber: @FiberState) -> None
     switch_stack(from: me.home, to: fiber.sp.peek())
     RUNNING_STACK.poke(outer_stack)
     trace_switch(own).poke_into(fiber.trace_depth)
+    AccessManager.switch_flow(outer_flow)
     RUNNING_FIBER.poke(outer_fiber)
     RUNNING_WORK.poke(outer_work)
     me.current.poke(.hollow())

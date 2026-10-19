@@ -52,6 +52,9 @@ namespace Tessera;
 /// 0.5: a standard library module is its folder, and the language's base is `Standard/System` with the modules under it,
 /// which every file sees without an import: `Standard/Core`, `Standard/Format`, `Standard/Alloc`, `Standard/Boot`, and
 /// `Standard/Json` are gone into it (`--step modules`).
+///
+/// 0.5: a lock gives access, so `ExclusiveLock` is `ExclusiveAccess`, `MultiReadLock` is `MultiReadAccess`, and a
+/// `SignalCaster` wait names the access it gives up (`access:`, not `mutex:`) (`--step access`).
 public static class Migrate
 {
     /// `F64`, its plural in prose (`F64s`), and a name built on it (`F128Extended`, `F64Core`). `F16C` is the x86 instruction set, not a type.
@@ -84,7 +87,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf" or "managers" or "float-presets" or "modules";
+        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf" or "managers" or "float-presets" or "modules" or "access";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -377,6 +380,9 @@ public static class Migrate
         ["modules"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, ModuleMigration.Rewrite)
             : ModuleMigration.Rewrite(text),
+        ["access"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, AccessMigration.Rewrite)
+            : AccessMigration.Rewrite(text),
     };
 
     private static readonly Regex InfNanWord = new(@"(?<![\w`.])(inf|nan)(?![\w`])", RegexOptions.Compiled);
@@ -733,7 +739,7 @@ public static class Migrate
             lines[i] = inAsmBody ? RewriteTypeArguments(line) : RewriteNames(line);
         }
 
-        return FloatPresetMigration.Rewrite(ManagerMigration.Rewrite(RoutineNameMigration.Rewrite(ThreadMigration.Rewrite(EntryMigration.Rewrite(MembershipNames(VariantMigration.Rewrite(IteratorNames(Renames(CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names))))))))))))));
+        return AccessMigration.Rewrite(FloatPresetMigration.Rewrite(ManagerMigration.Rewrite(RoutineNameMigration.Rewrite(ThreadMigration.Rewrite(EntryMigration.Rewrite(MembershipNames(VariantMigration.Rewrite(IteratorNames(Renames(CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names)))))))))))))));
     }
 
     private static readonly Regex IteratorNext = new(@"\.next(?=\s*\()", RegexOptions.Compiled);
@@ -773,7 +779,7 @@ public static class Migrate
     /// The 0.5 names of the managers and the lock types (whole words, in code and in comments).
     private static readonly Dictionary<string, string> TypeRenames = new()
     {
-        ["Allocator"] = "MemoryManager", ["Mutex"] = "ExclusiveLock", ["Condition"] = "SignalCaster",
+        ["Allocator"] = "MemoryManager", ["Mutex"] = "ExclusiveAccess", ["Condition"] = "SignalCaster",
         ["Scheduler"] = "FiberManager", ["make_heap_allocator"] = "make_heap_memory",
         ["make_c_heap_allocator"] = "make_c_heap_memory", ["make_stack_allocator"] = "make_stack_memory",
     };

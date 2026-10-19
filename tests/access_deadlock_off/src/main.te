@@ -1,0 +1,51 @@
+import Standard/Os
+
+record Pair
+    first: ExclusiveAccess
+    second: ExclusiveAccess
+    ready: Atomic[U64]
+    done: Atomic[U64]
+
+routine forward(pair: @Pair) -> Bool
+    pair.first.lock()
+    pair.ready.fetch_add(1)
+    while pair.ready.peek() < 2
+        waitfor(1ms)
+    got: Bool = pair.second.lock_within(100ms)
+    if got
+        pair.second.unlock()
+    pair.done.fetch_add(1)
+    while pair.done.peek() < 2
+        waitfor(1ms)
+    pair.first.unlock()
+    return got
+
+routine backward(pair: @Pair) -> Bool
+    pair.second.lock()
+    pair.ready.fetch_add(1)
+    while pair.ready.peek() < 2
+        waitfor(1ms)
+    got: Bool = pair.first.lock_within(100ms)
+    if got
+        pair.first.unlock()
+    pair.done.fetch_add(1)
+    while pair.done.peek() < 2
+        waitfor(1ms)
+    pair.second.unlock()
+    return got
+
+routine start() -> None
+    local pair: @Pair <- Pair(first: .construct(), second: .construct(),
+        ready: .construct(value: 0), done: .construct(value: 0))
+
+    a: Thread[Bool] = get_thread[Bool]()
+    b: Thread[Bool] = get_thread[Bool]()
+    a.put_work(entry: forward.to[Callable](), args: pair)
+    b.put_work(entry: backward.to[Callable](), args: pair)
+    a.wait_finished()
+    b.wait_finished()
+    either: Bool = a.retrieve() or b.retrieve()
+    a.give_back()
+    b.give_back()
+    Console.show("one of them got its second access: {either}")
+    return

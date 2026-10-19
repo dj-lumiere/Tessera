@@ -942,6 +942,20 @@ public sealed partial class Compiler
         Set("FAILURE_TRACES", failures);
     }
 
+    /// Sets the AccessManager's checks the manifest or the mode gives: the standard library's DEADLOCK_CHECK
+    /// (`[debug] deadlock-check`) and ACCESS_ORDER (`[debug] access-order`) presets (AccessManager.te).
+    public void SetAccessChecks(bool deadlockCheck, bool accessOrder)
+    {
+        void Set(string name, bool value)
+        {
+            if (!_presets.TryGetValue(("", name), out var list)) return;
+            for (int i = 0; i < list.Count; i++)
+                if (list[i] is { IsLibrary: true, Value: { } old }) list[i] = list[i] with { Value = new BoolLit(value, old.Pos) };
+        }
+        Set("DEADLOCK_CHECK", deadlockCheck);
+        Set("ACCESS_ORDER", accessOrder);
+    }
+
     /// Whether a routine has type parameters, its own or its owner's.
     public static bool IsGenericRoutine(RoutineDecl r) =>
         r.TypeParams.Count != 0 || (r.Owner is not null && OwnerTypeParams(r).Count != 0);
@@ -1155,6 +1169,9 @@ public sealed partial class Compiler
             throw new CompileError(t.Pos, $"unknown type '{t}': the console is Console (Console.show, Console.alert, " +
                 "Console.ask_line, Console.output()), and its streams are ConsoleOutput, ConsoleErrors and ConsoleInput " +
                 "(tessera migrate --step console rewrites the old spelling)");
+
+        if (t.Args.Count == 0 && AccessMigration.OldTypeName(t.Name) is { } renamed)
+            throw new CompileError(t.Pos, $"unknown type '{t}': {renamed}");
 
         throw new CompileError(t.Pos, $"unknown type '{t}'");
     }

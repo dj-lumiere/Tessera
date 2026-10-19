@@ -495,10 +495,13 @@ static class Cli
     /// clear error instead of the platform linker's (lld-link says "subsystem must be defined").
     /// <paramref name="trace"/>: whether the program keeps the crash trace, or null for the mode's default.
     /// <paramref name="heapCheck"/>: whether the default heap crashes on a block freed twice (`[debug] heap-check`).
+    /// <paramref name="deadlockCheck"/>: whether flows waiting on each other for accesses stop the program
+    /// (`[debug] deadlock-check`), or null for the mode's default. <paramref name="accessOrder"/>: whether accesses
+    /// taken in opposite orders do (`[debug] access-order`).
     public static string Compile(IEnumerable<string> files, BuildTarget target, bool executable = true,
         IReadOnlyList<string>? roots = null, BuildMode mode = BuildMode.Debug, bool stdlibExports = true, bool lint = true,
         bool? trace = null, bool heapCheck = false, bool raceCheck = false, int? traceFrames = null, int? failureTraces = null,
-        bool uninitFill = false)
+        bool uninitFill = false, bool? deadlockCheck = null, bool accessOrder = false)
     {
         var inputs = files.ToList();
         var decls = LoadDecls(inputs, target);
@@ -512,6 +515,7 @@ static class Cli
             UninitFill = uninitFill,
         };
         compiler.SetTraceSizes(traceFrames, failureTraces);
+        compiler.SetAccessChecks(deadlockCheck ?? mode.DeadlockCheckedByDefault(), accessOrder);
         string ir = compiler.Generate();
         if (lint) Lint(decls, inputs, [compiler]);
         if (executable && !compiler.HasStart)
@@ -683,7 +687,7 @@ static class Cli
         if (m.RaceCheck) RequireRaceCheckable(m.Target);
         string ir = Compile(m.Sources, m.Target, roots: m.Roots, mode: m.Mode, trace: m.Traced,
             heapCheck: m.HeapCheck, raceCheck: m.RaceCheck, traceFrames: m.TraceFrames, failureTraces: m.FailureTraces,
-            uninitFill: m.UninitFill);
+            uninitFill: m.UninitFill, deadlockCheck: m.DeadlockCheck, accessOrder: m.AccessOrder);
         Directory.CreateDirectory(m.OutputDirectory);
         if (m.EmitLlvm) File.WriteAllText(Path.ChangeExtension(m.ExecutablePath, ".ll"), ir);
         Link(ir, m.ExecutablePath, m.Target, m.Mode, m.LinkArguments().Concat(RaceLink(m.RaceCheck)));
@@ -1064,7 +1068,8 @@ static class Cli
             ir = Compile(sources, target, mode: manifest?.Mode ?? _testMode, lint: false,
                 trace: manifest is null ? _testTrace : manifest.Traced, heapCheck: true,
                 raceCheck: manifest?.RaceCheck ?? false, traceFrames: manifest?.TraceFrames,
-                failureTraces: manifest?.FailureTraces, uninitFill: manifest?.UninitFill ?? false);
+                failureTraces: manifest?.FailureTraces, uninitFill: manifest?.UninitFill ?? false,
+                deadlockCheck: manifest?.DeadlockCheck, accessOrder: manifest?.AccessOrder ?? false);
         }
         catch (ManifestError e)
         {

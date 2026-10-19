@@ -1,0 +1,41 @@
+# Two fibers of one thread take two accesses in opposite orders. A fiber that waits parks, so the other runs and
+# closes the cycle: the deadlock check stops the program with DeadlockError instead of parking both forever.
+
+import Standard/Fiber
+import Standard/Os
+
+record Pair
+    first: ExclusiveAccess
+    second: ExclusiveAccess
+
+routine forward(pair: @Pair) -> None
+    pair.first.lock()
+    FIBERS.waitfor(10ms)
+    pair.second.lock()
+    pair.second.unlock()
+    pair.first.unlock()
+    return
+
+routine backward(pair: @Pair) -> None
+    pair.second.lock()
+    FIBERS.waitfor(10ms)
+    pair.first.lock()
+    pair.first.unlock()
+    pair.second.unlock()
+    return
+
+routine start() -> None
+    local pair: @Pair <- Pair(first: .construct(), second: .construct())
+
+    Console.show("starting")
+    f: Fiber[None] = FIBERS.get_fiber[None]()
+    g: Fiber[None] = FIBERS.get_fiber[None]()
+    f.put_work(entry: forward.to[Callable](), args: pair)
+    g.put_work(entry: backward.to[Callable](), args: pair)
+    f.wait_finished()
+    g.wait_finished()
+    f.give_back()
+    g.give_back()
+    drop FIBERS
+    Console.show("not reached")
+    return

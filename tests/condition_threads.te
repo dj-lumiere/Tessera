@@ -2,7 +2,7 @@
 # on one SignalCaster while the main thread waits for a value on another: every value arrives, in order. Four threads
 # wait at a gate for a token: each wake_one with one token lets exactly one through, and none is lost though all
 # four were waiting. Four threads wait at a closed gate: one wake_all lets every one through. Waiters with a
-# deadline under contention, while another thread takes the mutex and wakes everyone over and over: those whose
+# deadline under contention, while another thread takes the access and wakes everyone over and over: those whose
 # condition never comes true give up at their deadline (the spurious wakes don't extend it), and those whose
 # condition comes true return in time.
 #
@@ -23,7 +23,7 @@ preset LONG: Duration = 10s
 
 ### A one-value mailbox between the producer thread and the main thread.
 record Mailbox
-    lock: ExclusiveLock
+    lock: ExclusiveAccess
     not_full: SignalCaster  # the producer waits here for room
     not_empty: SignalCaster  # the main thread waits here for a value
     full: Bool
@@ -31,7 +31,7 @@ record Mailbox
 
 ### Where the gate threads wait: for a token (wake_one) or for the gate to open (wake_all).
 record Gate
-    lock: ExclusiveLock
+    lock: ExclusiveAccess
     cond: SignalCaster  # the gate threads wait here
     progress: SignalCaster  # the main thread waits here for the gate threads
     waiting: U64  # gate threads that have reached the gate
@@ -40,9 +40,9 @@ record Gate
     open: Bool
 
 ### The deadline test: waiters for a condition that never comes true and for one that does, and a thread that takes
-### the mutex and wakes everyone until told to stop.
+### the access and wakes everyone until told to stop.
 record Timed
-    lock: ExclusiveLock
+    lock: ExclusiveAccess
     cond: SignalCaster  # the waiters wait here
     progress: SignalCaster  # the main thread waits here for the waiters
     waiting: U64
@@ -195,7 +195,7 @@ routine wait_never(timed: @Timed) -> None
 
     deadline: Duration = Clock.monotonic() + SHORT
 
-    while timed.cond.wait_until(mutex: timed.lock, deadline)
+    while timed.cond.wait_until(access: timed.lock, deadline)
         pass
     then
         if Clock.monotonic() >= deadline
@@ -221,7 +221,7 @@ routine wait_ready(timed: @Timed) -> None
             jump wait(deadline)
 
     block wait(deadline: Duration)
-        if timed.cond.wait_until(mutex: timed.lock, deadline)
+        if timed.cond.wait_until(access: timed.lock, deadline)
             jump look(deadline)
         else
             jump late()
@@ -236,7 +236,7 @@ routine wait_ready(timed: @Timed) -> None
         timed.lock.unlock()
         return
 
-### Takes the mutex and wakes every waiter, over and over, until stop.
+### Takes the access and wakes every waiter, over and over, until stop.
 routine wake_everyone(timed: @Timed) -> None
     while true
         timed.lock.lock()

@@ -70,6 +70,8 @@ keeping blocks where it can't), `spellings` (`@` annotations, `needs` / `obeys` 
 `float-presets` (`B64.INFINITY` / `NEG_INFINITY` / `NAN` into `inf` / `-inf` / `nan`),
 `modules` (drops the imports of `Standard/Core`, `Standard/Format`, `Standard/Alloc`, `Standard/Boot`, and
 `Standard/Json`, and points their paths at the module of `Standard/System` each name is in),
+`access` (`ExclusiveLock` / `MultiReadLock` into `ExclusiveAccess` / `MultiReadAccess`, a `SignalCaster` wait's
+`mutex:` into `access:`),
 and the earlier `iterators`, `variants`, `membership`, `lifecycle`, `memory`, `threads`, `entry`, and `--named-args`.
 An old spelling is a build error that names the migration, and builds only with `TESSERA_ACCEPT_OLD_SYNTAX=1` set.
 
@@ -1162,14 +1164,24 @@ not), `fetch_add` / `fetch_sub` (integers, wrapping), `fetch_and` / `fetch_or` /
 another process, a futex word). What T allows depends on the target (capability protocols, a wider access is a build
 error). `Bool` has none: use a `U8`.
 
-**Locks and waits.** A thread waiting sleeps, a fiber waiting parks (its thread goes on with the other fibers): every
-stdlib wait does what fits the code running it. `ExclusiveLock` (`lock` / `unlock` / `try_lock`) and `MultiReadLock`
-(`lock_read` / `unlock_read` / `try_lock_read`, `lock_write` / `unlock_write` / `try_lock_write`, many readers or one
-writer, writer-preferring: a waiting writer holds off later readers) park a waiting fiber a short while at a time.
-`SignalCaster` (a condition variable for an ExclusiveLock: `wait(mutex)`, `wait_for(mutex, timeout)` /
-`wait_until(mutex, deadline)` returning whether it returned in time, `cast_one()` / `cast_all()`, and a wait may
-return without a wake, so the waiter checks its condition again in a loop). No lock guards: unlock explicitly on
-every path. `wait_on` / `wait_on_for` / `wake_one` / `wake_all` on a `@U32` make a THREAD sleep. `wait_while(at,
+**Accesses and waits.** A thread waiting sleeps, a fiber waiting parks (its thread goes on with the other fibers): every
+stdlib wait does what fits the code running it. `ExclusiveAccess` (`lock` / `unlock` / `try_lock` / `lock_within(timeout)
+-> Bool`, starts free with `.construct()`) and `MultiReadAccess` (`lock_read` / `unlock_read` / `try_lock_read` /
+`lock_read_within`, `lock_write` / `unlock_write` / `try_lock_write` / `lock_write_within`, many readers or one writer,
+writer-preferring: a waiting writer holds off later readers) park a waiting fiber a short while at a time. Each keeps
+the id of the flow (thread or fiber) holding it and `wait_count()` / `waited()` statistics. Taking one again from the
+flow that holds it (reading or writing, `try_lock` too) crashes with `ReenterDuringAccessError`: don't take it again
+inside, the code that holds it does the work. A flow that has to wait goes through the `AccessManager`
+(Standard/Os/AccessManager.te): it records which flow holds which access (`AccessManager.held()` /
+`held_count()` / `alert_held()` for the running flow) and what each waits for, and with `[debug] deadlock-check` (on
+in a `debug` build, off in the release modes, `= false` / `= true` overrides) a flow about to wait follows the chain of
+holders and crashes with `DeadlockError`, naming the threads and fibers and where each took its access, instead of
+waiting forever. `[debug] access-order = true` (off by default, time on every access) crashes with `AccessOrderError`
+on two accesses taken in opposite orders. The builder sets them as the presets `DEADLOCK_CHECK` / `ACCESS_ORDER`.
+`SignalCaster` (a condition variable for an ExclusiveAccess: `wait(access)`, `wait_for(access, timeout)` /
+`wait_until(access, deadline)` returning whether it returned in time, `cast_one()` / `cast_all()`, and a wait may
+return without a wake, so the waiter checks its condition again in a loop). No guards: unlock explicitly on
+every path. `tessera migrate --step access` rewrites `ExclusiveLock` / `MultiReadLock` and `mutex:`. `wait_on` / `wait_on_for` / `wake_one` / `wake_all` on a `@U32` make a THREAD sleep. `wait_while(at,
 expected)` / `wait_while_for(at, expected, timeout)` are that wait for whoever runs (a fiber parks `50us` at a time
 and looks again), may return early, so loop. `waitfor(duration)` waits at least that long the same way (`waitfor(20ms)`).
 `Clock.monotonic()` reads the clock that only goes forward, as a `Duration` since a start the system picks: subtract
