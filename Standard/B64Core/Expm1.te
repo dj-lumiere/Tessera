@@ -79,7 +79,7 @@ secret preset CM_B64_EXPM1_DB: @Array[U64, 38] <- [0x3FBE923C188EA79B, 0x3FD1A04
 ### e^me - 1, correctly rounded (to nearest, ties to even) and accurate near 0. +inf gives +inf, -inf gives -1,
 ### overflow gives +inf, and NaN comes back quiet.
 ### :returns: e^`me` - 1, correctly rounded.
-routine B64.exp_m1() -> Me
+routine B64.exp_m1_unchecked() -> Me
     local ux: U64 = me.bits()
     local aix: U64 = ux & 0x7FFFFFFFFFFFFFFF
 
@@ -88,29 +88,29 @@ routine B64.exp_m1() -> Me
         tiny: Bool = aix < 0x3CA0000000000000  # |x| < 2^-53
         when
             aix == 0 => return me
-            tiny => return Me.mul_add(0x1p-54, a: me.abs(), b: me)
+            tiny => return Me.mul_add_unchecked(0x1p-54, a: me.abs(), b: me)
             else =>
                 # e^x - 1 = (e^(i/128) - 1) + e^(i/128) (e^(z/128) - 1), with |i| <= 32 and |z| <= 1/2
-                sx: Me = Me.mul(0x1p7, me)
+                sx: Me = Me.mul_unchecked(0x1p7, me)
                 fx: Me = sx.round_ties_even()
-                z: Me = sx - fx
-                z2: Me = z * z
+                z: Me = sx -! fx
+                z2: Me = z *! z
                 slot: S64 = fx.to[S64]() + 32
                 i: U64 = slot.to[U64]()
                 th: Me = Me.from_bits(CM_B64_EXPM1_TZ.getitem(i * 2 + 1))
                 tl: Me = Me.from_bits(CM_B64_EXPM1_TZ.getitem(i * 2))
-                fh: Me = z * 0x1p-7
-                q4: Me = Me.add(0x1.11111ad1ad69dp-42, z * 0x1.6c16c168b1fb5p-52)
-                q3: Me = Me.add(0x1.555555555599cp-33, z * q4)
-                q1: Me = Me.add(0x1p-15, z * 0x1.55555555551adp-24)
-                fl: Me = z2 * (q1 + z2 * q3)
-                eps: Me = z2 * 0x1.ap-65 + 0x1p-104
+                fh: Me = z *! 0x1p-7
+                q4: Me = Me.add_unchecked(0x1.11111ad1ad69dp-42, z *! 0x1.6c16c168b1fb5p-52)
+                q3: Me = Me.add_unchecked(0x1.555555555599cp-33, z *! q4)
+                q1: Me = Me.add_unchecked(0x1p-15, z *! 0x1.55555555551adp-24)
+                fl: Me = z2 *! (q1 +! z2 *! q3)
+                eps: Me = z2 *! 0x1.ap-65 +! 0x1p-104
                 r: CmF64ExpDd = cm_b64_exp_fasttwosum(x: th, y: fh)
-                rl: Me = r.lo + (tl + fl)
+                rl: Me = r.lo +! (tl +! fl)
                 p: CmF64ExpDd = cm_b64_exp_muldd(xh: th, xl: tl, ch: fh, cl: fl)
                 f: CmF64ExpDd = cm_b64_exp_fastsum(xh: r.hi, xl: rl, yh: p.hi, yl: p.lo)
-                ub: Me = f.hi + (f.lo + eps)
-                lb: Me = f.hi + (f.lo - eps)
+                ub: Me = f.hi +! (f.lo +! eps)
+                lb: Me = f.hi +! (f.lo -! eps)
                 if ub == lb
                     return lb
                 return cm_b64_expm1_accurate(me)
@@ -122,7 +122,7 @@ routine B64.exp_m1() -> Me
             inf: Bool = aix == 0x7FF0000000000000
             positive: Bool = ux >> 63 == 0
             when
-                nan => return me + me
+                nan => return me +! me
                 inf =>
                     if positive
                         return me
@@ -133,21 +133,21 @@ routine B64.exp_m1() -> Me
         if ux >= 0xC0425E4F7B2737FA
             # the result is within an ulp of -1
             if ux >= 0xC042B708872320E2
-                return Me.add(-1.0, 0x1p-55)
-            d: Me = Me.add(0x1.25e4f7b2737fap+5, me) + 0x1.8486612173c69p-51
-            return d * 0x1.71547652b82fep-54 - 0x1.fffffffffffffp-1
-        t: Me = (me * 0x1.71547652b82fep+12).round_ties_even()
+                return Me.add_unchecked(-1.0, 0x1p-55)
+            d: Me = Me.add_unchecked(0x1.25e4f7b2737fap+5, me) +! 0x1.8486612173c69p-51
+            return d *! 0x1.71547652b82fep-54 -! 0x1.fffffffffffffp-1
+        t: Me = (me *! 0x1.71547652b82fep+12).round_ties_even()
         jt: S64 = t.to[S64]()
         ie: S64 = jt >> 12
         tt: CmF64ExpDd = cm_b64_exp_table_2pow(jt.to_wrap[U64]())
-        dx: Me = me - t * 0x1.62e42ffp-13 + t * 0x1.718432a1b0e26p-47
-        dx2: Me = dx * dx
-        p01: Me = Me.add(1.0, dx * 0x1p-1)
-        p23: Me = Me.add(0x1.55555557e54ffp-3, dx * 0x1.55555553a12f4p-5)
-        p: Me = p01 + dx2 * p23
-        tx: Me = tt.hi * dx
-        fl: Me = tt.lo + tx * p
-        eps: Me = Me.mul(1.64e-19, tt.hi)
+        dx: Me = me -! t *! 0x1.62e42ffp-13 +! t *! 0x1.718432a1b0e26p-47
+        dx2: Me = dx *! dx
+        p01: Me = Me.add_unchecked(1.0, dx *! 0x1p-1)
+        p23: Me = Me.add_unchecked(0x1.55555557e54ffp-3, dx *! 0x1.55555553a12f4p-5)
+        p: Me = p01 +! dx2 *! p23
+        tx: Me = tt.hi *! dx
+        fl: Me = tt.lo +! tx *! p
+        eps: Me = Me.mul_unchecked(1.64e-19, tt.hi)
         # off = -2^-ie, so that 2^ie (fh + fl + off) = e^x - 1
         off_bits: U64 = S64.sub(3071, ie).to_wrap[U64]()
         off: Me = Me.from_bits(off_bits << 52)
@@ -162,9 +162,9 @@ routine B64.exp_m1() -> Me
                 becomes (s.hi, s.lo)
             else => (tt.hi, 0.0)
         fh, e = values2
-        fe: Me = fl + e
-        ub: Me = fh + (fe + eps)
-        lb: Me = fh + (fe - eps)
+        fe: Me = fl +! e
+        ub: Me = fh +! (fe +! eps)
+        lb: Me = fh +! (fe -! eps)
         if ub == lb
             return cm_b64_exp_ldexp(x: lb, e: ie)
         return cm_b64_expm1_accurate(me)
@@ -180,8 +180,8 @@ secret routine cm_b64_expm1_accurate(x: B64) -> B64
         f1: CmF64ExpDd = cm_b64_expm1_mulddd(xh: p.hi, xl: p.lo, c: x)
         f2: CmF64ExpDd = cm_b64_expm1_mulddd(xh: f1.hi, xl: f1.lo, c: x)
         f3: CmF64ExpDd = cm_b64_expm1_mulddd(xh: f2.hi, xl: f2.lo, c: x)
-        hx: B64 = B64.mul(0.5, x)
-        x2h: B64 = x * hx
+        hx: B64 = B64.mul_unchecked(0.5, x)
+        x2h: B64 = x *! hx
         x2l: B64 = b64_mul_error(x, y: hx, p: x2h)
         f: CmF64ExpDd = cm_b64_exp_fastsum(xh: x2h, xl: x2l, yh: f3.hi, yl: f3.lo)
         a1: CmF64ExpDd = cm_b64_exp_fasttwosum(x, y: f.hi)
@@ -199,22 +199,22 @@ secret routine cm_b64_expm1_accurate(x: B64) -> B64
             u: U64 = when
                 same => u1 +% 1
                 else => u1 -% 1
-            return v0 + B64.from_bits(u)
-        return a3.hi + a4.hi
-    t: B64 = (x * 0x1.71547652b82fep+12).round_ties_even()
+            return v0 +! B64.from_bits(u)
+        return a3.hi +! a4.hi
+    t: B64 = (x *! 0x1.71547652b82fep+12).round_ties_even()
     jt: S64 = t.to[S64]()
     ie: S64 = jt >> 12
     tt: CmF64ExpDd = cm_b64_exp_table_2pow(jt.to_wrap[U64]())
     # Cody-Waite reduction with a triple-double log(2)/2^12
-    dx: B64 = x - t * 0x1.62e42ffp-13
-    dxl: B64 = B64.mul(0x1.718432a1b0e26p-47, t)
-    dxl3: B64 = B64.mul(0x1.9ff0342542fc3p-102, t)
-    dxle: B64 = B64.mul_add(0x1.718432a1b0e26p-47, a: t, b: -dxl)
+    dx: B64 = x -! t *! 0x1.62e42ffp-13
+    dxl: B64 = B64.mul_unchecked(0x1.718432a1b0e26p-47, t)
+    dxl3: B64 = B64.mul_unchecked(0x1.9ff0342542fc3p-102, t)
+    dxle: B64 = B64.mul_add_unchecked(0x1.718432a1b0e26p-47, a: t, b: -dxl)
     # the rounding error of dxl
-    dxll: B64 = dxl3 + dxle
-    dxh: B64 = dx + dxl
-    dxe: B64 = dx - dxh + dxl
-    dxlo: B64 = dxe + dxll
+    dxll: B64 = dxl3 +! dxle
+    dxh: B64 = dx +! dxl
+    dxe: B64 = dx -! dxh +! dxl
+    dxlo: B64 = dxe +! dxll
     p: CmF64ExpDd = cm_b64_expm1_poly_exp(xh: dxh, xl: dxlo)
     f1: CmF64ExpDd = cm_b64_exp_muldd(xh: dxh, xl: dxlo, ch: p.hi, cl: p.lo)
     f2: CmF64ExpDd = cm_b64_exp_muldd(xh: f1.hi, xl: f1.lo, ch: tt.hi, cl: tt.lo)
@@ -232,7 +232,7 @@ secret routine cm_b64_expm1_accurate(x: B64) -> B64
             becomes (s.hi, f.lo, s.lo)
         else => (f.hi, f.lo, 0.0)
     fh, fl, e = values2
-    s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: fh, y: fl + e)
+    s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: fh, y: fl +! e)
     lo_bits: U64 = s.lo.bits()
     d: U64 = lo_bits +% 8 & 0x000FFFFFFFFFFFFF
     if d <= 8
@@ -245,16 +245,16 @@ secret routine cm_b64_expm1_accurate(x: B64) -> B64
 ### :returns: The polynomial value as a double-double.
 secret routine cm_b64_expm1_poly_small(x: B64) -> CmF64ExpDd
     c5: B64 = B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CL.getitem(5))
-    c4: B64 = B64.add(B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CL.getitem(4)), x * c5)
-    c3: B64 = B64.add(B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CL.getitem(3)), x * c4)
-    c2: B64 = B64.add(B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CL.getitem(2)), x * c3)
-    c1: B64 = B64.add(B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CL.getitem(1)), x * c2)
-    c0: B64 = B64.add(B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CL.getitem(0)), x * c1)
-    fl: B64 = x * c0
+    c4: B64 = B64.add_unchecked(B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CL.getitem(4)), x *! c5)
+    c3: B64 = B64.add_unchecked(B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CL.getitem(3)), x *! c4)
+    c2: B64 = B64.add_unchecked(B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CL.getitem(2)), x *! c3)
+    c1: B64 = B64.add_unchecked(B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CL.getitem(1)), x *! c2)
+    c0: B64 = B64.add_unchecked(B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CL.getitem(0)), x *! c1)
+    fl: B64 = x *! c0
     h0: CmF64ExpDd = cm_b64_exp_fasttwosum(x: B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CH.getitem(20)),
         y: fl)
 
-    while i != 0 with i: U64 = 10, ch: B64 = h0.hi, cl: B64 = B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CH.getitem(21)) + h0.lo
+    while i != 0 with i: U64 = 10, ch: B64 = h0.hi, cl: B64 = B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CH.getitem(21)) +! h0.lo
         i2: U64 = i - 1
         m: CmF64ExpDd = cm_b64_expm1_mulddd(xh: ch, xl: cl, c: x)
         c02: B64 = B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CH.getitem(i2 * 2))
@@ -296,8 +296,8 @@ secret routine cm_b64_expm1_poly_exp(xh: B64, xl: B64) -> CmF64ExpDd
 ### :param c: The double factor.
 ### :returns: The product as a double-double, not renormalized.
 secret routine cm_b64_expm1_mulddd(xh: B64, xl: B64, c: B64) -> CmF64ExpDd
-    h: B64 = c * xh
-    lo: B64 = c * xl + b64_mul_error(x: c, y: xh, p: h)
+    h: B64 = c *! xh
+    lo: B64 = c *! xl +! b64_mul_error(x: c, y: xh, p: h)
     return CmF64ExpDd(hi: h, lo: lo)
 
 ### Looks x up among the arguments whose e^x - 1 lies too close to a rounding

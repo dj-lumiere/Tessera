@@ -47,7 +47,7 @@ secret preset CM_B64_ASIN_DB_L: @Array[U64, 29] <- [0xBAFFFFFFFFFFFFFF, 0xB79636
 
 ### arcsin(`me`), correctly rounded.
 ### :returns: The arc sine of `me`, in radians.
-routine B64.asin() -> Me
+routine B64.asin_unchecked() -> Me
     local xu: U64 = me.bits()
     local ax: U64 = xu << 1
 
@@ -66,40 +66,40 @@ routine B64.asin() -> Me
             if ax >= 0x7FE0000000000000
                 one: Bool = ax == 0x7FE0000000000000
                 when
-                    one => return f0h + f0l
-                    ax > 0xFFE0000000000000 => return me + me
+                    one => return f0h +! f0l
+                    ax > 0xFFE0000000000000 => return me +! me
                     else => return Me.from_bits(0xFFF8000000000000)
             # asin(x) = pi/2 - 2 asin(sqrt((1 - x)/2)), and for x < -1/2 -pi/2 + 2 asin(sqrt((1 -
             # |x|)/2))
-            t: Me = Me.sub(2.0, Me.mul(2.0, me.abs()))
-            jd: Me = (t * 0x1p5).round_ties_even()
-            z: Me = t.sqrt().copysign(-me)
-            zl: Me = z.mul_add(a: z, b: -t) * (Me.truediv(-0.5, t) * z)
-            tr: Me = Me.mul(0.25, t) - jd * 0x1p-7
+            t: Me = Me.sub_unchecked(2.0, Me.mul_unchecked(2.0, me.abs()))
+            jd: Me = (t *! 0x1p5).round_ties_even()
+            z: Me = t.sqrt_unchecked().copysign(-me)
+            zl: Me = z.mul_add_unchecked(a: z, b: -t) *! (Me.truediv_unchecked(-0.5, t) *! z)
+            tr: Me = Me.mul_unchecked(0.25, t) -! jd *! 0x1p-7
             becomes (CmF64InvtrigDD(hi: z, lo: zl), tr, jd, CmF64InvtrigDD(hi: f0h, lo: f0l))
         else =>
             # |x| <= 1/2: below 0x1.7137449123ef6p-26, |asin(x) - x| is under half an ulp of asin(x)
             if ax < 0x7CAE26E892247DEC
-                return Me.mul_add(0x1p-55, a: me, b: me)
-            t2: Me = me * me
-            jd: Me = (t2 * 0x1p7).round_ties_even()
-            t: Me = me.mul_add(a: me, b: Me.mul(-0x1p-7, jd))
+                return Me.mul_add_unchecked(0x1p-55, a: me, b: me)
+            t2: Me = me *! me
+            jd: Me = (t2 *! 0x1p7).round_ties_even()
+            t: Me = me.mul_add_unchecked(a: me, b: Me.mul_unchecked(-0x1p-7, jd))
             becomes (CmF64InvtrigDD(hi: me, lo: 0.0), t, jd, CmF64InvtrigDD(hi: 0.0, lo: 0.0))
     zdd, t, jd, f0 = values
     eps: Me = when
         large =>
-            ztr: Me = (zdd.hi * t).abs()
-            becomes ztr * 0x1.99p-52
+            ztr: Me = (zdd.hi *! t).abs()
+            becomes ztr *! 0x1.99p-52
         else =>
-            xt: Me = (me * t).abs()
-            becomes xt * 0x1.77p-52
+            xt: Me = (me *! t).abs()
+            becomes xt *! 0x1.77p-52
 
     # asin(z + zl) from the piece j = round(128 z^2), t = z^2 - j/128, plus f0h + f0l
     j: U64 = jd.to[U64]().to[U64]()
     j8: U64 = j * 8
     f: CmF64InvtrigDD = cm_b64_invtrig_asin_poly(z: zdd, t, j8, f0)
-    lb: Me = f.hi + (f.lo - eps)
-    ub: Me = f.hi + (f.lo + eps)
+    lb: Me = f.hi +! (f.lo -! eps)
+    ub: Me = f.hi +! (f.lo +! eps)
     if lb == ub
         return lb
     return cm_b64_asin_accurate(x: me, phi: lb)
@@ -113,16 +113,16 @@ routine B64.asin() -> Me
 secret routine cm_b64_asin_accurate(x: B64, phi: B64) -> B64
     # jf = round(|phi| 64/pi), 0 <= jf <= 32
     abs_phi: B64 = phi.abs()
-    jfd: B64 = (abs_phi * 0x1.45f306dc9c883p+4).round_ties_even()
+    jfd: B64 = (abs_phi *! 0x1.45f306dc9c883p+4).round_ties_even()
     r: CmF64InvtrigDD = cm_b64_invtrig_rotate(x, jf: jfd.to[U64]().to[U64]())
     sgn: B64 = B64.copysign(1.0, x)
-    jt: B64 = jfd * sgn  # -32 <= jt <= 32
+    jt: B64 = jfd *! sgn  # -32 <= jt <= 32
     sq: CmF64InvtrigDD = cm_b64_invtrig_muldd(xh: r.hi, xl: r.lo, ch: r.hi, cl: r.lo)
-    f: CmF64InvtrigDD = cm_b64_invtrig_asin_dd(v: r.hi * sgn, dv: r.lo * sgn, v2: sq.hi, dv2: sq.lo)
+    f: CmF64InvtrigDD = cm_b64_invtrig_asin_dd(v: r.hi *! sgn, dv: r.lo *! sgn, v2: sq.hi, dv2: sq.lo)
     # jt pi/64 in three parts. Since |jt| <= 32, ph and pl are exact
-    ph0: B64 = jt * 0x1.921fb54442dp-5
-    pl0: B64 = B64.mul(0x1.8469898cc518p-53, jt)
-    ps0: B64 = B64.mul(-0x1.fc8f8cbb5bf6cp-102, jt)
+    ph0: B64 = jt *! 0x1.921fb54442dp-5
+    pl0: B64 = B64.mul_unchecked(0x1.8469898cc518p-53, jt)
+    ps0: B64 = B64.mul_unchecked(-0x1.fc8f8cbb5bf6cp-102, jt)
     q1: CmF64InvtrigDD = cm_b64_invtrig_fastsum(xh: f.hi, xl: f.lo, yh: pl0, yl: ps0)
     q2: CmF64InvtrigDD = cm_b64_invtrig_fasttwosum(x: ph0, y: q1.hi)
     q3: CmF64InvtrigDD = cm_b64_invtrig_fasttwosum(x: q2.lo, y: q1.lo)
@@ -135,7 +135,7 @@ secret routine cm_b64_asin_accurate(x: B64, phi: B64) -> B64
     tn: U64 = (th & 0x7FF0000000000000) -% 0x0350000000000000
     dn: S64 = (tl -% tn).to_wrap[S64]()
     de: U64 = tn -% tl >> 52
-    res: B64 = ph + pl
+    res: B64 = ph +! pl
     if -2 <= dn <= 0 or de > 47
         # the inputs whose arc sine is too close to a rounding boundary
         ax: B64 = x.abs()
@@ -144,8 +144,8 @@ secret routine cm_b64_asin_accurate(x: B64, phi: B64) -> B64
                 rh: B64 = B64.from_bits(CM_B64_ASIN_DB_H.getitem(k))
                 rl: B64 = B64.from_bits(CM_B64_ASIN_DB_L.getitem(k))
                 if x > 0.0
-                    return rh + rl
-                return -rh - rl
+                    return rh +! rl
+                return -rh -! rl
             continue
         then
             return res

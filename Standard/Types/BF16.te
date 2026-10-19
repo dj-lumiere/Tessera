@@ -15,6 +15,7 @@ module Standard/Core
 record BF16
 obeys Equatable[BF16], Comparable[BF16], Hashable[BF16]
 obeys Numeric[BF16], Divisible[BF16], Negatable[BF16]
+obeys UncheckedArithmetic[BF16]
 
 # -- constants -----------------------------------------------------------------
 
@@ -78,21 +79,21 @@ routine BF16.max(other: Me) -> Me
 ### Adds `other` to `me`, rounded to nearest (ties to even).
 ### :param other: The value to add.
 ### :returns: `me + other`: infinity on overflow, NaN when either operand is NaN or for `inf + -inf`.
-routine BF16.add(other: Me) -> Me
+routine BF16.add_unchecked(other: Me) -> Me
     r: Me = fadd[Me](me, other)
     return r
 
 ### Subtracts `other` from `me`, rounded to nearest (ties to even).
 ### :param other: The value to subtract.
 ### :returns: `me - other`: infinity on overflow, NaN when either operand is NaN or for `inf - inf`.
-routine BF16.sub(other: Me) -> Me
+routine BF16.sub_unchecked(other: Me) -> Me
     r: Me = fsub[Me](me, other)
     return r
 
 ### Multiplies `me` by `other`, rounded to nearest (ties to even).
 ### :param other: The factor.
 ### :returns: `me * other`: infinity on overflow, NaN when either operand is NaN or for `0 * inf`.
-routine BF16.mul(other: Me) -> Me
+routine BF16.mul_unchecked(other: Me) -> Me
     r: Me = fmul[Me](me, other)
     return r
 
@@ -127,7 +128,7 @@ routine BF16.ge(other: Me) -> Bool
 ### Divides `me` by `other`, rounded to nearest (ties to even).
 ### :param other: The divisor.
 ### :returns: `me / other`: a signed infinity for a nonzero value divided by zero, NaN for `0 / 0`, `inf / inf`, or a NaN operand.
-routine BF16.truediv(other: Me) -> Me
+routine BF16.truediv_unchecked(other: Me) -> Me
     r: Me = fdiv[Me](me, other)
     return r
 
@@ -248,14 +249,14 @@ routine BF16.is_sign_negative() -> Bool
 ### values is a BF16.
 ### :param other: The divisor.
 ### :returns: `me - q * other` for `q` the quotient rounded toward zero. NaN when `other` is 0 or `me` is infinite.
-routine BF16.mod_trunc(other: Me) -> Me
-    remainder: B32 = me.to[B32]().mod_trunc(other.to[B32]())
+routine BF16.mod_trunc_unchecked(other: Me) -> Me
+    remainder: B32 = me.to[B32]().mod_trunc_unchecked(other.to[B32]())
     r: Me = remainder.to[Me]()
     return r
 
 ### The reciprocal `1 / me`, rounded once.
 ### :returns: `1 / me`: a signed infinity for a signed zero, a signed zero for an infinity, NaN for NaN.
-routine BF16.recip() -> Me
+routine BF16.recip_unchecked() -> Me
     r: Me = fdiv[Me](1.0, me)
     return r
 
@@ -264,8 +265,8 @@ routine BF16.recip() -> Me
 ### :param a: The factor to multiply `me` by.
 ### :param b: The addend.
 ### :returns: `me * a + b`, correctly rounded.
-routine BF16.mul_add(a: Me, b: Me) -> Me
-    product: B64 = me.to[B64]() * a.to[B64]()
+routine BF16.mul_add_unchecked(a: Me, b: Me) -> Me
+    product: B64 = me.to[B64]() *! a.to[B64]()
     sum: B64 = b64_add_round_to_odd(a: product, b: b.to[B64]())
     r: Me = sum.to[Me]()
     return r
@@ -273,14 +274,14 @@ routine BF16.mul_add(a: Me, b: Me) -> Me
 ### The quotient `q` of Euclidean division, so that `me = q * other + r` with `0 <= r < |other|`.
 ### :param other: The divisor.
 ### :returns: The truncated quotient, moved one step down (for a positive `other`) or up when the remainder is negative.
-routine BF16.floordiv(other: Me) -> Me
-    q: Me = me.truediv(other).trunc()
-    rem: Me = me.mod_trunc(other)
+routine BF16.floordiv_unchecked(other: Me) -> Me
+    q: Me = me.truediv_unchecked(other).trunc()
+    rem: Me = me.mod_trunc_unchecked(other)
     if not (rem < 0.0)
         return q
     positive_divisor: Bool = other > 0.0
-    down: Me = q - 1.0
-    up: Me = q + 1.0
+    down: Me = q -! 1.0
+    up: Me = q +! 1.0
     r: Me = when
         positive_divisor => down
         else => up
@@ -290,12 +291,12 @@ routine BF16.floordiv(other: Me) -> Me
 ### :param other: The divisor.
 ### :returns: The remainder, in `0 ..< |other|` for a finite `other`. When the exact remainder is a tiny negative value,
 ###     `|other|` plus it would round to `|other|`, so the largest value below `|other|` comes back instead.
-routine BF16.mod(other: Me) -> Me
-    rem: Me = me.mod_trunc(other)
+routine BF16.mod_unchecked(other: Me) -> Me
+    rem: Me = me.mod_trunc_unchecked(other)
     if not (rem < 0.0)
         return rem
     magnitude: Me = other.abs()
-    r: Me = rem + magnitude
+    r: Me = rem +! magnitude
     # a tiny negative remainder plus |other| rounds up to |other|: the largest value below it is the nearest
     # one in range
     if r == magnitude and magnitude.is_finite()
@@ -309,7 +310,7 @@ routine BF16.mod(other: Me) -> Me
 ### :returns: The smaller of `me` and `other`.
 routine BF16.minimum(other: Me) -> Me
     if me.is_nan() or other.is_nan()
-        return me + other
+        return me +! other
     # equal values have equal bits except ±0, where bitor picks the negative one
     if me == other
         return Me.from_bits(me.bits() | other.bits())
@@ -324,7 +325,7 @@ routine BF16.minimum(other: Me) -> Me
 ### :returns: The larger of `me` and `other`.
 routine BF16.maximum(other: Me) -> Me
     if me.is_nan() or other.is_nan()
-        return me + other
+        return me +! other
     # equal values have equal bits except ±0, where bitand picks the positive one
     if me == other
         return Me.from_bits(me.bits() & other.bits())
@@ -406,7 +407,7 @@ routine BF16.trunc() -> Me
 ### :returns: `me - me.trunc()`, NaN for an infinity or NaN.
 routine BF16.fract() -> Me
     whole: Me = me.trunc()
-    r: Me = me - whole
+    r: Me = me -! whole
     return r
 
 # -- powers --------------------------------------------------------------------
@@ -416,10 +417,10 @@ routine BF16.fract() -> Me
 ### reach it).
 ### :param n: The exponent.
 ### :returns: `me` to the power `n`.
-routine BF16.powi(n: S32) -> Me
-    r: B64 = me.to[B64]().powf(n.to[B64]())
+routine BF16.powi_unchecked(n: S32) -> Me
+    r: B64 = me.to[B64]().powf_unchecked(n.to[B64]())
     if bf16_is_on_midpoint(r)
-        r2: B128 = me.to[B128]().powf(n.to[B128]())
+        r2: B128 = me.to[B128]().powf_unchecked(n.to[B128]())
         return r2.to[Me]()
     return r.to[Me]()
 
@@ -432,14 +433,14 @@ routine BF16.powi(n: S32) -> Me
 ### :note: No result is exactly a BF16 midpoint: that would take x^(2^e) = base^m with an odd m of 9 bits, which
 ###     8-bit significands and exponents within ±133 rule out, so the B128 quotient decides every case it gets. A scan
 ###     of every pair of positive finite inputs found two quotients in the band, both rounded the same in B128.
-routine BF16.log(base: Me) -> Me
-    num: B64 = me.to[B64]().ln()
-    den: B64 = base.to[B64]().ln()
-    wide: B64 = num / den
+routine BF16.log_unchecked(base: Me) -> Me
+    num: B64 = me.to[B64]().ln_unchecked()
+    den: B64 = base.to[B64]().ln_unchecked()
+    wide: B64 = num /! den
     if bf16_is_near_midpoint(wide)
-        num2: B128 = me.to[B128]().ln()
-        den2: B128 = base.to[B128]().ln()
-        return (num2 / den2).to[Me]()
+        num2: B128 = me.to[B128]().ln_unchecked()
+        den2: B128 = base.to[B128]().ln_unchecked()
+        return (num2 /! den2).to[Me]()
     return wide.to[Me]()
 
 # -- trigonometry --------------------------------------------------------------
@@ -448,14 +449,14 @@ routine BF16.log(base: Me) -> Me
 
 ### Converts an angle from radians to degrees by multiplying by 180 / pi (the constant rounded to BF16).
 ### :returns: `me` in degrees, rounded once.
-routine BF16.to_degrees() -> Me
-    r: Me = me * 57.2957795130823208767981548141051703
+routine BF16.to_degrees_unchecked() -> Me
+    r: Me = me *! 57.2957795130823208767981548141051703
     return r
 
 ### Converts an angle from degrees to radians by multiplying by pi / 180 (the constant rounded to BF16).
 ### :returns: `me` in radians, rounded once.
 routine BF16.to_radians() -> Me
-    r: Me = me * 0.0174532925199432957692369076848861271
+    r: Me = me *! 0.0174532925199432957692369076848861271
     return r
 
 # -- rounding from wider results -------------------------------------------------
@@ -483,9 +484,9 @@ secret routine bf16_is_on_midpoint(r: B64) -> Bool
     if a < 0x1p-126
         # BF16 keeps 7 fraction bits: a midpoint has bit 44 set and nothing below it.
         # Below 2^-126 BF16's quantum is 2^-133: a midpoint is an odd multiple of 2^-134.
-        t: B64 = a * 0x1p134
+        t: B64 = a *! 0x1p134
         whole: Bool = t.trunc() == t
-        odd: Bool = t.mod_trunc(2.0) == 1.0
+        odd: Bool = t.mod_trunc_unchecked(2.0) == 1.0
         return whole and odd
     low: U64 = a.bits() & 0x1FFFFFFFFFFF
     return a.is_finite() and low == 0x100000000000
@@ -854,3 +855,464 @@ routine BF16.to_clamp[U128]() -> U128
 routine BF16.is_trunc_in_range(lo: Me, hi: Me) -> Bool
     whole: Me = me.trunc()
     return lo <= whole < hi
+
+# -- checked forms -----------------------------------------------------------
+#
+# The default form of each operation whose finite arguments can give an infinite or NaN result crashes there:
+# such a result is almost always a bug. Each has an _unchecked form, which gives the raw IEEE 754 value, and the
+# operators +! -! *! /! spell the unchecked arithmetic. Finite results are the same bits in both forms.
+
+### `me` when it is finite: the last step of a checked BF16 operation.
+### :returns: `me`.
+### :throws: Crashes with `NumericOverflowError` when `me` is infinite, and with `NumericDomainError` when it is NaN.
+@track_caller
+secret routine BF16.require_finite() -> Me
+    if me.is_finite()
+        return me
+    if me.is_nan()
+        crash_numeric_domain()
+    crash_float_overflow()
+
+### `me`, the result of dividing `dividend` by `divisor`, when it is finite: the last step of a checked BF16 division.
+### :param dividend: The value divided.
+### :param divisor: The value divided by.
+### :returns: `me`.
+### :throws: Crashes with `DivisionByZeroError` when `me` isn't finite because `divisor` is zero and `dividend` isn't,
+###     else as {BF16.require_finite}.
+@track_caller
+secret routine BF16.require_finite_quotient(dividend: Me, divisor: Me) -> Me
+    if me.is_finite()
+        return me
+    if divisor == 0.0 and not (dividend == 0.0)
+        crash_division_by_zero()
+    r: Me = me.require_finite()
+    return r
+
+### Adds `other` to `me`, rounded to nearest (ties to even). {BF16.add_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: `me + other`.
+### :throws: Crashes with `NumericOverflowError` when the sum is too large for BF16 or an operand is infinite, and
+###     with `NumericDomainError` when it is NaN: a NaN operand, or infinities of opposite signs.
+@track_caller
+routine BF16.add(other: Me) -> Me
+    r: Me = me.add_unchecked(other)
+    checked: Me = r.require_finite()
+    return checked
+
+### Subtracts `other` from `me`, rounded to nearest (ties to even). {BF16.sub_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: `me - other`.
+### :throws: Crashes with `NumericOverflowError` when the difference is too large for BF16 or an operand is infinite,
+###     and with `NumericDomainError` when it is NaN: a NaN operand, or infinities of the same sign.
+@track_caller
+routine BF16.sub(other: Me) -> Me
+    r: Me = me.sub_unchecked(other)
+    checked: Me = r.require_finite()
+    return checked
+
+### Multiplies `me` by `other`, rounded to nearest (ties to even). {BF16.mul_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: `me * other`.
+### :throws: Crashes with `NumericOverflowError` when the product is too large for BF16 or a factor is infinite, and
+###     with `NumericDomainError` when it is NaN: a NaN factor, or zero times infinity.
+@track_caller
+routine BF16.mul(other: Me) -> Me
+    r: Me = me.mul_unchecked(other)
+    checked: Me = r.require_finite()
+    return checked
+
+### Divides `me` by `other`, rounded to nearest (ties to even). {BF16.truediv_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: `me / other`.
+### :throws: Crashes with `DivisionByZeroError` when `other` is zero and `me` isn't, with `NumericOverflowError` when
+###     the quotient is too large for BF16 or `me` is infinite, and with `NumericDomainError` when it is NaN: `0 / 0`,
+###     `inf / inf`, or a NaN operand.
+@track_caller
+routine BF16.truediv(other: Me) -> Me
+    r: Me = me.truediv_unchecked(other)
+    checked: Me = r.require_finite_quotient(dividend: me, divisor: other)
+    return checked
+
+### Fused multiply-add: `me * a + b` with a single rounding (to nearest, ties to even). {BF16.mul_add_unchecked} gives the raw IEEE 754 result.
+### :param a: The factor `me` is multiplied by.
+### :param b: The addend.
+### :returns: `me * a + b`, rounded once.
+### :throws: Crashes with `NumericOverflowError` when the result is too large for BF16 or an operand is infinite, and
+###     with `NumericDomainError` when it is NaN: a NaN operand, `0 * inf`, or infinities that cancel.
+@track_caller
+routine BF16.mul_add(a: Me, b: Me) -> Me
+    r: Me = me.mul_add_unchecked(a, b)
+    checked: Me = r.require_finite()
+    return checked
+
+### The quotient `q` of Euclidean division, so that `me = q * other + r` with `0 <= r < |other|`. {BF16.floordiv_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: The quotient `q`.
+### :throws: Crashes with `DivisionByZeroError` when `other` is zero and `me` isn't, with `NumericOverflowError` when
+###     the quotient is too large for BF16 or infinite, and with `NumericDomainError` when it is NaN: `0 // 0`, an
+###     infinite `me`, or a NaN operand.
+@track_caller
+routine BF16.floordiv(other: Me) -> Me
+    r: Me = me.floordiv_unchecked(other)
+    checked: Me = r.require_finite_quotient(dividend: me, divisor: other)
+    return checked
+
+### The least non-negative remainder of `me / other` (Euclidean). {BF16.mod_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: The remainder, in `[0, |other|)`.
+### :throws: Crashes with `DivisionByZeroError` when `other` is zero and `me` isn't, with `NumericOverflowError` when
+###     the remainder is infinite (a negative `me` and an infinite `other`), and with `NumericDomainError` when it is
+###     NaN: `0 % 0`, an infinite `me`, or a NaN operand.
+@track_caller
+routine BF16.mod(other: Me) -> Me
+    r: Me = me.mod_unchecked(other)
+    checked: Me = r.require_finite_quotient(dividend: me, divisor: other)
+    return checked
+
+### The remainder of `me / other` with the sign of `me` (C fmod). Exact. {BF16.mod_trunc_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: The remainder.
+### :throws: Crashes with `DivisionByZeroError` when `other` is zero and `me` isn't, and with `NumericDomainError`
+###     when the remainder is NaN: a zero `other` and `me`, an infinite `me`, or a NaN operand.
+@track_caller
+routine BF16.mod_trunc(other: Me) -> Me
+    r: Me = me.mod_trunc_unchecked(other)
+    checked: Me = r.require_finite_quotient(dividend: me, divisor: other)
+    return checked
+
+### The reciprocal `1 / me`, rounded once. {BF16.recip_unchecked} gives the raw IEEE 754 result.
+### :returns: `1 / me`.
+### :throws: Crashes with `DivisionByZeroError` when `me` is zero, with `NumericOverflowError` when `1 / me` is too
+###     large for BF16 (a tiny subnormal `me`), and with `NumericDomainError` when `me` is NaN.
+@track_caller
+routine BF16.recip() -> Me
+    r: Me = me.recip_unchecked()
+    checked: Me = r.require_finite_quotient(dividend: 1.0, divisor: me)
+    return checked
+
+### The square root of `me`, correctly rounded. -0.0 gives -0.0. {BF16.sqrt_unchecked} gives the raw IEEE 754 result.
+### :returns: The square root.
+### :throws: Crashes with `NumericOverflowError` when `me` is +inf, and with `NumericDomainError` when `me` is
+###     negative (other than -0.0) or NaN.
+@track_caller
+routine BF16.sqrt() -> Me
+    r: Me = me.sqrt_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### e^`me`, correctly rounded. {BF16.exp_unchecked} gives the raw IEEE 754 result.
+### :returns: e^`me`.
+### :throws: Crashes with `NumericOverflowError` when e^`me` is too large for BF16 or `me` is +inf, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine BF16.exp() -> Me
+    r: Me = me.exp_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### 2^`me`, correctly rounded. {BF16.exp2_unchecked} gives the raw IEEE 754 result.
+### :returns: 2^`me`.
+### :throws: Crashes with `NumericOverflowError` when 2^`me` is too large for BF16 or `me` is +inf, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine BF16.exp2() -> Me
+    r: Me = me.exp2_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### 10^`me`, correctly rounded. {BF16.exp10_unchecked} gives the raw IEEE 754 result.
+### :returns: 10^`me`.
+### :throws: Crashes with `NumericOverflowError` when 10^`me` is too large for BF16 or `me` is +inf, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine BF16.exp10() -> Me
+    r: Me = me.exp10_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### e^`me` - 1, correctly rounded and accurate near 0. {BF16.exp_m1_unchecked} gives the raw IEEE 754 result.
+### :returns: e^`me` - 1.
+### :throws: Crashes with `NumericOverflowError` when the result is too large for BF16 or `me` is +inf, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine BF16.exp_m1() -> Me
+    r: Me = me.exp_m1_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The natural logarithm of `me`, correctly rounded. {BF16.ln_unchecked} gives the raw IEEE 754 result.
+### :returns: ln(`me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is zero (the logarithm is -inf) or +inf, and with
+###     `NumericDomainError` when `me` is negative or NaN.
+@track_caller
+routine BF16.ln() -> Me
+    r: Me = me.ln_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The base-2 logarithm of `me`, correctly rounded. {BF16.log2_unchecked} gives the raw IEEE 754 result.
+### :returns: log2(`me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is zero (the logarithm is -inf) or +inf, and with
+###     `NumericDomainError` when `me` is negative or NaN.
+@track_caller
+routine BF16.log2() -> Me
+    r: Me = me.log2_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The base-10 logarithm of `me`, correctly rounded. {BF16.log10_unchecked} gives the raw IEEE 754 result.
+### :returns: log10(`me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is zero (the logarithm is -inf) or +inf, and with
+###     `NumericDomainError` when `me` is negative or NaN.
+@track_caller
+routine BF16.log10() -> Me
+    r: Me = me.log10_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### ln(1 + `me`), correctly rounded and accurate near 0. {BF16.ln_1p_unchecked} gives the raw IEEE 754 result.
+### :returns: ln(1 + `me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is -1 (the logarithm is -inf) or +inf, and with
+###     `NumericDomainError` when `me` is below -1 or NaN.
+@track_caller
+routine BF16.ln_1p() -> Me
+    r: Me = me.ln_1p_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The logarithm of `me` in base `base`, ln(`me`) / ln(`base`) correctly rounded. {BF16.log_unchecked} gives the raw IEEE 754 result.
+### :param base: The base of the logarithm.
+### :returns: log base `base` of `me`.
+### :throws: Crashes with `NumericOverflowError` when the quotient is infinite (`me` zero or +inf, or `base` 1), and
+###     with `NumericDomainError` when it is NaN: a negative or NaN argument, or both logarithms zero or both
+###     infinite.
+@track_caller
+routine BF16.log(base: Me) -> Me
+    r: Me = me.log_unchecked(base)
+    checked: Me = r.require_finite()
+    return checked
+
+### `me` raised to the power `exponent`, correctly rounded. {BF16.powf_unchecked} gives the raw IEEE 754 result.
+### :param exponent: The exponent.
+### :returns: `me` ^ `exponent`.
+### :throws: Crashes with `NumericOverflowError` when the power is too large for BF16, or infinite (a zero `me` with a
+###     negative `exponent`), and with `NumericDomainError` when it is NaN: a negative `me` with an `exponent` that
+###     isn't an integer, or a NaN operand.
+@track_caller
+routine BF16.powf(exponent: Me) -> Me
+    r: Me = me.powf_unchecked(exponent)
+    checked: Me = r.require_finite()
+    return checked
+
+### `me` raised to the integer power `n`, correctly rounded. {BF16.powi_unchecked} gives the raw IEEE 754 result.
+### :param n: The exponent.
+### :returns: `me` ^ `n`.
+### :throws: Crashes with `NumericOverflowError` when the power is too large for BF16, or infinite (a zero `me` with a
+###     negative `n`), and with `NumericDomainError` when `me` is NaN.
+@track_caller
+routine BF16.powi(n: S32) -> Me
+    r: Me = me.powi_unchecked(n)
+    checked: Me = r.require_finite()
+    return checked
+
+### tan(pi * `me`), correctly rounded. {BF16.tan_pi_unchecked} gives the raw IEEE 754 result.
+### :returns: tan(pi * `me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is an odd multiple of 0.5 (a pole), and with
+###     `NumericDomainError` when `me` is infinite or NaN.
+@track_caller
+routine BF16.tan_pi() -> Me
+    r: Me = me.tan_pi_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The arcsine of `me` in radians, correctly rounded. {BF16.asin_unchecked} gives the raw IEEE 754 result.
+### :returns: asin(`me`), in [-pi/2, pi/2].
+### :throws: Crashes with `NumericDomainError` when `me` is outside [-1, 1] or NaN.
+@track_caller
+routine BF16.asin() -> Me
+    r: Me = me.asin_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The arccosine of `me` in radians, correctly rounded. {BF16.acos_unchecked} gives the raw IEEE 754 result.
+### :returns: acos(`me`), in [0, pi].
+### :throws: Crashes with `NumericDomainError` when `me` is outside [-1, 1] or NaN.
+@track_caller
+routine BF16.acos() -> Me
+    r: Me = me.acos_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The hyperbolic sine of `me`, correctly rounded. {BF16.sinh_unchecked} gives the raw IEEE 754 result.
+### :returns: sinh(`me`).
+### :throws: Crashes with `NumericOverflowError` when the result is too large for BF16 or `me` is infinite, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine BF16.sinh() -> Me
+    r: Me = me.sinh_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The hyperbolic cosine of `me`, correctly rounded. {BF16.cosh_unchecked} gives the raw IEEE 754 result.
+### :returns: cosh(`me`).
+### :throws: Crashes with `NumericOverflowError` when the result is too large for BF16 or `me` is infinite, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine BF16.cosh() -> Me
+    r: Me = me.cosh_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The inverse hyperbolic cosine of `me`, correctly rounded. {BF16.acosh_unchecked} gives the raw IEEE 754 result.
+### :returns: acosh(`me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is +inf, and with `NumericDomainError` when `me` is below 1
+###     or NaN.
+@track_caller
+routine BF16.acosh() -> Me
+    r: Me = me.acosh_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The inverse hyperbolic tangent of `me`, correctly rounded. {BF16.atanh_unchecked} gives the raw IEEE 754 result.
+### :returns: atanh(`me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is 1 or -1 (the result is infinite), and with
+###     `NumericDomainError` when `me` is outside [-1, 1] or NaN.
+@track_caller
+routine BF16.atanh() -> Me
+    r: Me = me.atanh_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The gamma function of `me`, correctly rounded. {BF16.gamma_unchecked} gives the raw IEEE 754 result.
+### :returns: Gamma(`me`).
+### :throws: Crashes with `NumericOverflowError` when the result is too large for BF16, `me` is a zero (a pole), or
+###     `me` is +inf, and with `NumericDomainError` when `me` is a negative integer, -inf, or NaN.
+@track_caller
+routine BF16.gamma() -> Me
+    r: Me = me.gamma_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### ln(|Gamma(`me`)|), correctly rounded. {BF16.ln_gamma_unchecked} gives the raw IEEE 754 result.
+### :returns: ln(|Gamma(`me`)|).
+### :throws: Crashes with `NumericOverflowError` when `me` is zero or a negative integer (a pole), the result is too
+###     large for BF16, or `me` is infinite, and with `NumericDomainError` when `me` is NaN.
+@track_caller
+routine BF16.ln_gamma() -> Me
+    r: Me = me.ln_gamma_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### Converts an angle from radians to degrees by multiplying by 180 / pi (the constant rounded to BF16). {BF16.to_degrees_unchecked} gives the raw IEEE 754 result.
+### :returns: `me` in degrees, rounded once.
+### :throws: Crashes with `NumericOverflowError` when the result is too large for BF16 or `me` is infinite, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine BF16.to_degrees() -> Me
+    r: Me = me.to_degrees_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The reciprocal square root `1 / sqrt(me)`, correctly rounded. {BF16.recip_sqrt_unchecked} gives the raw IEEE 754 result.
+### :returns: `1 / sqrt(me)`.
+### :throws: Crashes with `NumericOverflowError` when `me` is zero (the result is infinite), and with
+###     `NumericDomainError` when `me` is negative or NaN.
+@track_caller
+routine BF16.recip_sqrt() -> Me
+    r: Me = me.recip_sqrt_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### (1 + `me`) raised to the power `exponent`, correctly rounded. {BF16.compound_unchecked} gives the raw IEEE 754 result.
+### :param exponent: The exponent.
+### :returns: (1 + `me`) ^ `exponent`.
+### :throws: Crashes with `NumericOverflowError` when the power is too large for BF16, or infinite (`me` -1 with a
+###     negative `exponent`), and with `NumericDomainError` when `me` is below -1 or an operand is NaN.
+@track_caller
+routine BF16.compound(exponent: Me) -> Me
+    r: Me = me.compound_unchecked(exponent)
+    checked: Me = r.require_finite()
+    return checked
+
+### 2^`me` - 1, correctly rounded and accurate near 0. {BF16.exp2_m1_unchecked} gives the raw IEEE 754 result.
+### :returns: 2^`me` - 1.
+### :throws: Crashes with `NumericOverflowError` when the result is too large for BF16 or `me` is +inf, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine BF16.exp2_m1() -> Me
+    r: Me = me.exp2_m1_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### 10^`me` - 1, correctly rounded and accurate near 0. {BF16.exp10_m1_unchecked} gives the raw IEEE 754 result.
+### :returns: 10^`me` - 1.
+### :throws: Crashes with `NumericOverflowError` when the result is too large for BF16 or `me` is +inf, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine BF16.exp10_m1() -> Me
+    r: Me = me.exp10_m1_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### log2(1 + `me`), correctly rounded and accurate near 0. {BF16.log2_1p_unchecked} gives the raw IEEE 754 result.
+### :returns: log2(1 + `me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is -1 (the logarithm is -inf) or +inf, and with
+###     `NumericDomainError` when `me` is below -1 or NaN.
+@track_caller
+routine BF16.log2_1p() -> Me
+    r: Me = me.log2_1p_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### log10(1 + `me`), correctly rounded and accurate near 0. {BF16.log10_1p_unchecked} gives the raw IEEE 754 result.
+### :returns: log10(1 + `me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is -1 (the logarithm is -inf) or +inf, and with
+###     `NumericDomainError` when `me` is below -1 or NaN.
+@track_caller
+routine BF16.log10_1p() -> Me
+    r: Me = me.log10_1p_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### asin(`me`) / pi, correctly rounded. {BF16.asin_pi_unchecked} gives the raw IEEE 754 result.
+### :returns: asin(`me`) / pi, in [-0.5, 0.5].
+### :throws: Crashes with `NumericDomainError` when `me` is outside [-1, 1] or NaN.
+@track_caller
+routine BF16.asin_pi() -> Me
+    r: Me = me.asin_pi_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### acos(`me`) / pi, correctly rounded. {BF16.acos_pi_unchecked} gives the raw IEEE 754 result.
+### :returns: acos(`me`) / pi, in [0, 1].
+### :throws: Crashes with `NumericDomainError` when `me` is outside [-1, 1] or NaN.
+@track_caller
+routine BF16.acos_pi() -> Me
+    r: Me = me.acos_pi_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### sqrt(x^2 + y^2), correctly rounded, with no overflow on the way. {hypot_unchecked} gives the raw IEEE 754 result.
+### :param x: The first leg.
+### :param y: The second leg.
+### :returns: sqrt(x^2 + y^2).
+### :throws: Crashes with `NumericOverflowError` when the result is too large for BF16 or a leg is infinite, and
+###     with `NumericDomainError` when a leg is NaN and none is infinite.
+@track_caller
+routine hypot(x: BF16, y: BF16) -> BF16
+    r: BF16 = hypot_unchecked(x: x, y: y)
+    checked: BF16 = r.require_finite()
+    return checked
+
+### sqrt(x^2 + y^2 + z^2), correctly rounded, with no overflow on the way. {hypot_unchecked} gives the raw IEEE 754 result.
+### :param x: The first leg.
+### :param y: The second leg.
+### :param z: The third leg.
+### :returns: sqrt(x^2 + y^2 + z^2).
+### :throws: Crashes with `NumericOverflowError` when the result is too large for BF16 or a leg is infinite, and
+###     with `NumericDomainError` when a leg is NaN and none is infinite.
+@track_caller
+routine hypot(x: BF16, y: BF16, z: BF16) -> BF16
+    r: BF16 = hypot_unchecked(x: x, y: y, z: z)
+    checked: BF16 = r.require_finite()
+    return checked

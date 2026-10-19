@@ -119,13 +119,13 @@ secret record CmF64ExpDd
 ### e^`me`, correctly rounded (to nearest). Overflow gives +inf, underflow a correctly rounded subnormal or +0, and
 ### NaN comes back quiet.
 ### :returns: e^`me`.
-routine B64.exp() -> Me
+routine B64.exp_unchecked() -> Me
     local ux: U64 = me.bits()
     local aix: U64 = ux & 0x7FFFFFFFFFFFFFFF
 
     # |x| <= 2^-54: e^x rounds to 1
     when
-        aix <= 0x3C90000000000000 => return Me.add(1.0, me)
+        aix <= 0x3C90000000000000 => return Me.add_unchecked(1.0, me)
         aix >= 0x40862E42FEFA39F0 =>
             # |x| >= 0x1.62e42fefa39fp+9, infinite or NaN
             nan: Bool = aix > 0x7FF0000000000000
@@ -133,7 +133,7 @@ routine B64.exp() -> Me
             positive: Bool = ux >> 63 == 0
             # x <= -0x1.74910d52d3052p+9
             when
-                nan => return me + me
+                nan => return me +! me
                 inf =>
                     if positive
                         return me
@@ -142,33 +142,33 @@ routine B64.exp() -> Me
                 aix >= 0x40874910D52D3052 => return 0.0
                 else => pass
         else => pass
-    t: Me = (me * 0x1.71547652b82fep+12).round_ties_even()
+    t: Me = (me *! 0x1.71547652b82fep+12).round_ties_even()
     jt: S64 = t.to[S64]()
     ie: S64 = jt >> 12
     tt: CmF64ExpDd = cm_b64_exp_table_2pow(jt.to_wrap[U64]())
     # Cody-Waite reduction: |t| < 2^23 and the high part of log(2)/2^12 fits in 29 bits, so its product is exact
-    dx: Me = me - t * 0x1.62e42ffp-13 + t * 0x1.718432a1b0e26p-47
-    dx2: Me = dx * dx
+    dx: Me = me -! t *! 0x1.62e42ffp-13 +! t *! 0x1.718432a1b0e26p-47
+    dx2: Me = dx *! dx
     # 1 + dx (c0 + c1 dx + c2 dx^2 + c3 dx^3) approximates e^dx with absolute error below 2^-76.173
-    p01: Me = Me.add(1.0, dx * 0x1p-1)
-    p23: Me = Me.add(0x1.55555557e54ffp-3, dx * 0x1.55555553a12f4p-5)
-    p: Me = p01 + dx2 * p23
-    tx: Me = tt.hi * dx
-    fl: Me = tt.lo + tx * p
+    p01: Me = Me.add_unchecked(1.0, dx *! 0x1p-1)
+    p23: Me = Me.add_unchecked(0x1.55555557e54ffp-3, dx *! 0x1.55555553a12f4p-5)
+    p: Me = p01 +! dx2 *! p23
+    tx: Me = tt.hi *! dx
+    fl: Me = tt.lo +! tx *! p
     # x < -0x1.6232bdd7abcd2p+9: subnormal result
     if ux > 0xC086232BDD7ABCD2
         bias_e: U64 = S64.sub(1, ie).to_wrap[U64]()
         bias: Me = Me.from_bits(bias_e << 52)
         s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: bias, y: tt.hi)
-        sl: Me = fl + s.lo
-        ub: Me = s.hi + (sl + 1.64e-19)
-        lb: Me = s.hi + (sl - 1.64e-19)
+        sl: Me = fl +! s.lo
+        ub: Me = s.hi +! (sl +! 1.64e-19)
+        lb: Me = s.hi +! (sl -! 1.64e-19)
         if ub == lb
             return Me.from_bits(lb.bits() & 0x000FFFFFFFFFFFFF)
         return cm_b64_exp_accurate(me)
     fh: Me = tt.hi
-    ub: Me = fh + (fl + 1.64e-19)
-    lb: Me = fh + (fl - 1.64e-19)
+    ub: Me = fh +! (fl +! 1.64e-19)
+    lb: Me = fh +! (fl -! 1.64e-19)
     if ub == lb
         return cm_b64_exp_ldexp(x: lb, e: ie)
     return cm_b64_exp_accurate(me)
@@ -180,21 +180,21 @@ secret routine cm_b64_exp_accurate(x: B64) -> B64
     ux: U64 = x.bits()
     ebits: U64 = (ux >> 52) & 0x7FF
     if ebits < 0x3C9
-        return B64.add(1.0, x)
-    t: B64 = (x * 0x1.71547652b82fep+12).round_ties_even()
+        return B64.add_unchecked(1.0, x)
+    t: B64 = (x *! 0x1.71547652b82fep+12).round_ties_even()
     jt: S64 = t.to[S64]()
     ie: S64 = jt >> 12
     tt: CmF64ExpDd = cm_b64_exp_table_2pow(jt.to_wrap[U64]())
     # Cody-Waite reduction with a triple-double log(2)/2^12
-    dx: B64 = x - t * 0x1.62e42ffp-13
-    dxl: B64 = B64.mul(0x1.718432a1b0e26p-47, t)
-    dxl3: B64 = B64.mul(0x1.9ff0342542fc3p-102, t)
-    dxle: B64 = B64.mul_add(0x1.718432a1b0e26p-47, a: t, b: -dxl)
+    dx: B64 = x -! t *! 0x1.62e42ffp-13
+    dxl: B64 = B64.mul_unchecked(0x1.718432a1b0e26p-47, t)
+    dxl3: B64 = B64.mul_unchecked(0x1.9ff0342542fc3p-102, t)
+    dxle: B64 = B64.mul_add_unchecked(0x1.718432a1b0e26p-47, a: t, b: -dxl)
     # the rounding error of dxl
-    dxll: B64 = dxl3 + dxle
-    dxh: B64 = dx + dxl
-    dxe: B64 = dx - dxh + dxl
-    dxlo: B64 = dxe + dxll
+    dxll: B64 = dxl3 +! dxle
+    dxh: B64 = dx +! dxl
+    dxe: B64 = dx -! dxh +! dxl
+    dxlo: B64 = dxe +! dxll
     p: CmF64ExpDd = cm_b64_exp_poly_acc(xh: dxh, xl: dxlo)
     f: CmF64ExpDd = cm_b64_exp_muldd(xh: dxh, xl: dxlo, ch: p.hi, cl: p.lo)
     # x < -0x1.6232bdd7abcd2p+9: subnormal result
@@ -205,8 +205,8 @@ secret routine cm_b64_exp_accurate(x: B64) -> B64
             g: CmF64ExpDd = cm_b64_exp_muldd(xh: f.hi, xl: f.lo, ch: tt.hi, cl: tt.lo)
             h: CmF64ExpDd = cm_b64_exp_fastsum(xh: tt.hi, xl: tt.lo, yh: g.hi, yl: g.lo)
             s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: bias, y: h.hi)
-            fl: B64 = h.lo + s.lo
-            res: B64 = s.hi + fl
+            fl: B64 = h.lo +! s.lo
+            res: B64 = s.hi +! fl
             return B64.from_bits(res.bits() & 0x000FFFFFFFFFFFFF)
         tt.hi == 1.0 =>
             # 2^(k/2^12) is exactly 1: add it in without a product
@@ -307,9 +307,9 @@ secret routine cm_b64_exp_pick(f: B64, t: U64, dr: B64) -> B64
     below: Bool = r0 & 3 == t
     same: Bool = jf & 3 == t
     when
-        below => return B64.from_bits(r0) + dr
-        same => return B64.from_bits(jf) + dr
-        r2 & 3 == t => return B64.from_bits(r2) + dr
+        below => return B64.from_bits(r0) +! dr
+        same => return B64.from_bits(jf) +! dr
+        r2 & 3 == t => return B64.from_bits(r2) +! dr
         else => return f
 
 ### The double-double value of 2^((j mod 2^12) / 2^12), as the product of the
@@ -340,9 +340,9 @@ secret routine cm_b64_exp_ldexp(x: B64, e: S64) -> B64
 ### :param y: The smaller addend.
 ### :returns: The rounded sum and its exact error.
 secret routine cm_b64_exp_fasttwosum(x: B64, y: B64) -> CmF64ExpDd
-    s: B64 = x + y
-    z: B64 = s - x
-    return CmF64ExpDd(hi: s, lo: y - z)
+    s: B64 = x +! y
+    z: B64 = s -! x
+    return CmF64ExpDd(hi: s, lo: y -! z)
 
 ### Double-double sum (xh + xl) + (yh + yl), for |xh| >= |yh|.
 ### :param xh: The high part of the first addend.
@@ -352,7 +352,7 @@ secret routine cm_b64_exp_fasttwosum(x: B64, y: B64) -> CmF64ExpDd
 ### :returns: The sum as a double-double.
 secret routine cm_b64_exp_fastsum(xh: B64, xl: B64, yh: B64, yl: B64) -> CmF64ExpDd
     s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: xh, y: yh)
-    return CmF64ExpDd(hi: s.hi, lo: xl + yl + s.lo)
+    return CmF64ExpDd(hi: s.hi, lo: xl +! yl +! s.lo)
 
 ### Double-double product (xh + xl) (ch + cl).
 ### :param xh: The high part of the first factor.
@@ -361,9 +361,9 @@ secret routine cm_b64_exp_fastsum(xh: B64, xl: B64, yh: B64, yl: B64) -> CmF64Ex
 ### :param cl: The low part of the second factor.
 ### :returns: The product as a double-double.
 secret routine cm_b64_exp_muldd(xh: B64, xl: B64, ch: B64, cl: B64) -> CmF64ExpDd
-    ahhh: B64 = ch * xh
-    cross: B64 = ch * xl + cl * xh
-    lo: B64 = cross + b64_mul_error(x: ch, y: xh, p: ahhh)
+    ahhh: B64 = ch *! xh
+    cross: B64 = ch *! xl +! cl *! xh
+    lo: B64 = cross +! b64_mul_error(x: ch, y: xh, p: ahhh)
     return CmF64ExpDd(hi: ahhh, lo: lo)
 
 ### Double-word fused multiply-add `a` `b` + `c` (Jeannerod, Joldes, Louvet and
@@ -374,9 +374,9 @@ secret routine cm_b64_exp_muldd(xh: B64, xl: B64, ch: B64, cl: B64) -> CmF64ExpD
 ### :param c: The addend, as a double-double.
 ### :returns: The result as a double-double.
 secret routine cm_b64_exp_fastfma_dw(a: CmF64ExpDd, b: CmF64ExpDd, c: CmF64ExpDd) -> CmF64ExpDd
-    dh: B64 = a.hi.mul_add(a: b.hi, b: c.hi)
-    t: B64 = c.hi - dh
-    e: B64 = a.hi.mul_add(a: b.hi, b: t)
-    f: B64 = e + c.lo
-    g: B64 = a.hi * b.lo + f
-    return CmF64ExpDd(hi: dh, lo: a.lo * b.hi + g)
+    dh: B64 = a.hi.mul_add_unchecked(a: b.hi, b: c.hi)
+    t: B64 = c.hi -! dh
+    e: B64 = a.hi.mul_add_unchecked(a: b.hi, b: t)
+    f: B64 = e +! c.lo
+    g: B64 = a.hi *! b.lo +! f
+    return CmF64ExpDd(hi: dh, lo: a.lo *! b.hi +! g)

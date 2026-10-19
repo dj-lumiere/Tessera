@@ -339,9 +339,10 @@ routine start() -> None
   only on some targets (64-bit division on 32-bit, 128-bit division, `popcount`) or only now and then (`List.push`),
   nor blocking waits (`SignalCaster.wait`, `wait_on`, `wait_finished`), which belong in loops.
 - A `preset` value is folded by the builder, and only from literals, other presets, integer and `Bool` arithmetic and
-  conversions (`add`, `shift_left`, `bitor`, `to[U128]()`, `to_wrap[U8]()`, …), B32/B64 `add`/`sub`/`mul`/`truediv`/`neg`,
-  `max`/`min`/`sizeof`/`alignof`, and `T.from_bits(0x…)` for floats and B128. A routine call is an error; nothing
-  runs at build time. Overflow or an out-of-range conversion in a preset is a build error.
+  conversions (`add`, `shift_left`, `bitor`, `to[U128]()`, `to_wrap[U8]()`, …), B32/B64 `add`/`sub`/`mul`/`truediv` (and
+  their `_unchecked` forms, `+! -! *! /!`)/`neg`, `max`/`min`/`sizeof`/`alignof`, and `T.from_bits(0x…)` for floats and
+  B128. A routine call is an error; nothing runs at build time. Overflow, an out-of-range conversion, or a checked
+  float operation giving inf or NaN in a preset is a build error.
 - `p.to[@U]()` reinterprets memory: any sizes, no strict aliasing, but you own bounds, alignment, and value validity
   (`Bool`, `Char`, choices). Pointers may alias.
 
@@ -453,14 +454,28 @@ routine start() -> None
 
 **Operations**
 
+- **Float operations crash on a result that isn't finite.** On `B16`, `BF16`, `B32`, `B64`, `B128` the default `+ - * /`
+  (`add` .. `truediv`), `mul_add`, `floordiv` / `mod` / `mod_trunc`, `recip`, `sqrt`, the exponentials and
+  logarithms, `log(base)`, `powf`, `powi`, `tan_pi`, `asin`, `acos`, `sinh`, `cosh`, `acosh`, `atanh`, `gamma`,
+  `ln_gamma`, `hypot`, `to_degrees` (plus `B16.tan`, BF16's `recip_sqrt` / `compound` / `exp2_m1` / `exp10_m1` /
+  `log2_1p` / `log10_1p` / `asin_pi` / `acos_pi`, B128's `rem` / `fdim` / `scalbn` / `logb` / `next_up` / `next_down`)
+  are `@track_caller` and crash with `NumericOverflowError` on an infinity, `NumericDomainError` on NaN, and
+  `DivisionByZeroError` for a nonzero value over zero. Inf and NaN are almost always bugs, so the raw IEEE 754 value is
+  asked for by name: each has an `_unchecked` form (`exp_unchecked`, `hypot_unchecked(x:, y:)`), and `+! -! *! /!` are
+  `add_unchecked` .. `truediv_unchecked`. A finite result is the same bits in both forms. Routines whose finite
+  arguments always give a finite result (`sin`, `cos`, `tan` but B16's, `atan`, `atan2`, `tanh`, `asinh`, `erf`,
+  `erfc`, `cbrt`, rounding, `abs`) have one form. Stdlib float implementations and Ingrid's exports use the unchecked
+  forms, so a C caller never crashes. **Vector operations are unchecked**: integer lanes' `+ - *` and `sum` wrap,
+  float lanes give the raw IEEE result (a per-lane check costs the SIMD gain), so Vector has no `+% -% *%`
+  (`+^ -^` still clamp).
 - **Operators are routine calls.** `a + b` is `a.add(b)`, `a - b` `sub`, `*` `mul`, `/` `truediv`, `//` `floordiv` (`tessera migrate --step names` rewrites `div`, `shl`, `shr` and their forms), `%` `mod`, `**`
-  `pow` (the exponent the base's own type, a negative one a `NumericDomainError` crash, `pow_checked` gives `None`), `+% -% *%` the `_wrap` forms, `+^ -^ *^` the `_clamp` forms, `== != < <= > >=` `eq`
+  `pow` (the exponent the base's own type, a negative one a `NumericDomainError` crash, `pow_checked` gives `None`), `+% -% *%` the `_wrap` forms, `+^ -^ *^` the `_clamp` forms, `+! -! *! /!` the floats' `_unchecked` forms, `== != < <= > >=` `eq`
   .. `ge`, `<=>` `compare`, `=== !==` `same` / `notsame` (no protocol: only `@T`, `Addr` and spans declare them), `& | ^ << >> >>>` `bitand` / `bitor` / `bitxor` / `shift_left` / `arith_shift_right` / `logical_shift_right` (no integer type declares `logical_shift_right` yet, so `>>>` builds nowhere), unary `-x` `neg` and `~x`
   `bitnot`, `xs[i]` `getitem(i)` and `xs[i] = v` `setitem(index: i, value: v)`. **A type takes an operator only by
   obeying its protocol** (Standard/Algorithm/Operators.te, the names RazorForge uses): `Addable` `+`, `Subtractable`
   `-`, `Multiplicable` `*`, `Divisible` `/`, `FloorDivisible` `//` `%`, `Exponentiable` `**`, `Negatable` unary `-`,
   `Bitwiseable` `& | ^`, `Invertible` `~`, `Shiftable` `<< >>`, `WrappingAddable` .. (`WrappingArithmetic` groups
-  them), `ClampingAddable` .. (`ClampingArithmetic`), `Numeric` (`+ - * // %`), `Equatable` `==` `!=`, `Comparable`
+  them), `ClampingAddable` .. (`ClampingArithmetic`), `UncheckedAddable` .. (`UncheckedArithmetic`: `+! -! *! /!`), `Numeric` (`+ - * // %`), `Equatable` `==` `!=`, `Comparable`
   `< <= > >= <=>`, `ViewingIndexable[T, TItem]` `xs[i]`, `ModifyingIndexable[T, TItem]` `xs[i] = v`,
   `KeyFindable[T, TKey, TValue]` `d[k]` / `d[k] = v`, `LaneComparable[T, TMask]` (Vector's mask compares), and the
   pairings `DurationAddable` / `ClampingDurationAddable` / `DurationSubtractable` (Moment), `OffsetAddable` /
@@ -471,7 +486,7 @@ routine start() -> None
   calls (the integers for speed, the floats' `lt` .. `ge` because `compare` says 0 for NaN, and a NaN `!=` is true).
   `tessera migrate --step operators` adds the `obeys` lines. A literal on the left takes the right side's type
   (`1 + x` is `T.add(1, x)`). Precedence,
-  tightest first: calls and `[i]`, `**`, the unary `- not ~`, `* / %`, `+ -`, the bitwise operators (one level: two
+  tightest first: calls and `[i]`, `**`, the unary `- not ~`, `* / %` (and their `%` `^` `!` forms), `+ -`, the bitwise operators (one level: two
   different ones side by side need parentheses, `(a & b) | c`), ranges `til` / `to` (only walked by `each`),
   comparisons (chained one way: `<`, `<=`, `==` together or `>`, `>=`, `==` together, `1 < b <= 3 < a`, the middle a
   name, literal or field, and `!=`, `===`, `!==` and `<=>` don't chain), `and` / `or` (one level: mixed, they need parentheses, `a or (b and c)`).

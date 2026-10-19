@@ -38,7 +38,7 @@ secret preset CM_BF16_LOG10P1_R: @Array[U32, 128] <- [0x3F7E0000, 0x3B5F3B5F, 0x
 ### log10(1 + `me`), accurate near 0 and correctly rounded (to nearest, ties to even). log10_1p(-1) = -inf, `me` < -1
 ### (-inf and a negative NaN included) gives the quiet NaN, log10_1p(+inf) = +inf, and a positive NaN comes back quiet.
 ### :returns: log10(1 + `me`).
-routine BF16.log10_1p() -> Me
+routine BF16.log10_1p_unchecked() -> Me
     v: B32 = me.to[B32]()
     u: U32 = v.bits()
     au: U32 = u & 0x7FFFFFFF
@@ -49,14 +49,14 @@ routine BF16.log10_1p() -> Me
         return BF16.NAN
     if u >> 23 == 0xFF
         # +inf or a positive NaN
-        return me + me
+        return me +! me
     if au >= 0x45DF0000
         # For x >= 0x1.bep+12, log10(1 + x) rounds to the same value as log10(x).
         i1: U64 = (u >> 23).to[U64]()
         i2: U64 = ((u >> 16) & 0x7F).to[U64]()
         t1: B32 = B32.from_bits(CM_BF16_LOG10_T1.getitem(i1))
         t2: B32 = B32.from_bits(CM_BF16_LOG10_T2.getitem(i2))
-        return (t1 + t2).to[Me]()
+        return (t1 +! t2).to[Me]()
     if au <= 0x3BA00000
         # For |x| <= 0x1.4p-8 the Taylor terms round correctly. A zero keeps its sign.
         if au == 0
@@ -71,7 +71,7 @@ routine BF16.log10_1p() -> Me
                 return B32.to[Me](0x1.febaf8p-127)
             return B32.to[Me](-0x1.febaf8p-127)
         # 0x1.bcb7b2p-2 is 1/ln(10) rounded to B32.
-        return (v * 0x1.bcb7b2p-2).to[Me]()
+        return (v *! 0x1.bcb7b2p-2).to[Me]()
     # Exact results
     if u == 0x41100000
         # x = 9
@@ -80,7 +80,7 @@ routine BF16.log10_1p() -> Me
         # x = 99
         return 2.0
     # Now 0x1.42p-8 <= |x| <= 0x1.bcp+12, so 1 + x is exact in B32.
-    w: B32 = v + 1.0
+    w: B32 = v +! 1.0
     wb: U32 = w.bits()
     i: U64 = (wb >> 23).to[U64]()
     # Reduce 1 + x to m in [1, 2): log10(1 + x) = log10(2^(i - 127)) + log10(m).
@@ -90,14 +90,14 @@ routine BF16.log10_1p() -> Me
     r: B32 = B32.from_bits(CM_BF16_LOG10P1_R.getitem(j * 2))
     logr: B32 = B32.from_bits(CM_BF16_LOG10P1_R.getitem(j * 2 + 1))
     # z = r m - 1 is exact, and r m = 1 + z gives log10(m) = -log10(r) + log10(1 + z).
-    z: B32 = r.mul_add(a: m, b: -1.0)
+    z: B32 = r.mul_add_unchecked(a: m, b: -1.0)
     e: B32 = B32.from_bits(CM_BF16_LOG10P1_R0.getitem(i - 119))
-    return (e + (logr + cm_bf16_log10p1_tiny(z))).to[Me]()
+    return (e +! (logr +! cm_bf16_log10p1_tiny(z))).to[Me]()
 
 ### log10(1 + x) for a tiny B32 `x`, by the Taylor terms x/ln(10) - x^2/(2 ln(10)).
 ### :param x: The tiny argument.
 ### :returns: The approximation of log10(1 + `x`).
 secret routine cm_bf16_log10p1_tiny(x: B32) -> B32
     # 0x1.bcb7b2p-2 is 1/ln(10) rounded to B32.
-    t: B32 = x * 0x1.bcb7b2p-2
-    return t.mul_add(a: -0.5 * x, b: t)
+    t: B32 = x *! 0x1.bcb7b2p-2
+    return t.mul_add_unchecked(a: -0.5 *! x, b: t)

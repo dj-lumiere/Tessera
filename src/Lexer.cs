@@ -9,7 +9,7 @@ public enum TokenKind
     Ident,       // routine, S64, entry, add, count, ...
     Hash,        // @ at the head of a line or in a type argument list (starts an annotation), or the old `#`
     At,          // @ (a pointer type: @T is Ptr<T>)
-    Op,          // an operator: + - * / % ** == != < <= > >= <=> & | ^ ~ << >> >>> and the +% +^ forms
+    Op,          // an operator: + - * / % ** == != < <= > >= <=> & | ^ ~ << >> >>> and the +% +^ +! forms
     Int,         // 42, -5, 0xFF
     Unit,        // 20ms, 4kib: a whole number with a time or size unit (IntValue is the number, Text the literal)
     Byte,        // b'A': a Byte
@@ -270,6 +270,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                 case '/':
                     // `//` is Euclidean division. A lone `/` is a module path (Standard/Os) or division.
                     if (Peek() == '/') { Advance(); kind = TokenKind.Op; text = "//"; }
+                    else if (Peek() == '!' && Peek(1) != '=') { Advance(); kind = TokenKind.Op; text = "/!"; }
                     else kind = TokenKind.Slash;
                     break;
                 case '#': kind = TokenKind.Hash; break;    // the old spelling of an annotation, which the parser reports
@@ -340,11 +341,13 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
 
     private Pos Here() => new(file, _line, _col);
 
-    /// `+%` wraps and `+^` clamps: the overflow form of an arithmetic operator, read after its first character.
+    /// `+%` wraps, `+^` clamps, and `+!` gives the raw IEEE 754 result of a float operation: the other forms of an
+    /// arithmetic operator, read after its first character.
     private string OverflowForm(string op)
     {
         if (Peek() == '%') { Advance(); return op + "%"; }
         if (Peek() == '^') { Advance(); return op + "^"; }
+        if (Peek() == '!' && Peek(1) != '=') { Advance(); return op + "!"; }
         return op;
     }
 

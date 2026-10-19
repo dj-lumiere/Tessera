@@ -77,7 +77,7 @@ secret preset CM_B64_TAN_PI_DB: @Array[U64, 147] <- [0x3C8B44453E2404E7, 0x3CA56
 ### negative odd one and -0 otherwise, n + 1/2 gives +inf for an even n and -inf for an odd one, n +- 1/4 gives
 ### +-1, +-inf gives NaN, and NaN comes back quiet.
 ### :returns: tan(pi `me`), correctly rounded.
-routine B64.tan_pi() -> Me
+routine B64.tan_pi_unchecked() -> Me
     local ixu: U64 = me.bits()
     local ax: U64 = ixu & 0x7FFFFFFFFFFFFFFF
     local neg: U64 = ixu >> 63
@@ -91,7 +91,7 @@ routine B64.tan_pi() -> Me
         # on x86-64
         if ax >= 0x7FF0000000000000
             if ax > 0x7FF0000000000000
-                return me + me
+                return me +! me
             return Me.from_bits(0xFFF8000000000000)
         sb: U64 = (ax >> 52) - 1069  # 2^(46 + sb) <= |x| < 2^(47 + sb)
         # |x| >= 2^53: an even integer
@@ -140,7 +140,7 @@ routine B64.tan_pi() -> Me
         # x mod 2^-8 = 0: the residual takes the sign of x
         aligned: Bool = k << 1 == 0
         zs: Me = when
-            aligned => one * z
+            aligned => one *! z
             else => z
         return cm_b64_tan_pi_reduced(x: me, iq, flip, zs)
 
@@ -156,17 +156,17 @@ routine B64.tan_pi() -> Me
                 sc: Me = Me.from_bits(U64.sub(2045, e) << 52)
                 isc: Me = Me.from_bits(e + 1 << 52)
                 r: CmF64TrigDD = cm_b64_trig_pi_mulddd(xh: 0x1.921fb54442d18p+1,
-                    xl: 0x1.1a62633145c07p-53, c: me * sc)
-                res: Me = r.hi * isc
+                    xl: 0x1.1a62633145c07p-53, c: me *! sc)
+                res: Me = r.hi *! isc
                 # a subnormal result: round at the subnormal's precision by adding and removing
                 # 2^-1022 at the scaled size
                 if res.abs() < 0x1p-1022
                     o: Me = Me.copysign(0x1p-1022, me)
-                    v0b: Me = (o + res) * sc
-                    v0h: Me = res * sc
-                    tl: Me = r.lo + (r.hi - v0h)
-                    v0: Me = v0b + tl
-                    return v0 * isc - o
+                    v0b: Me = (o +! res) *! sc
+                    v0h: Me = res *! sc
+                    tl: Me = r.lo +! (r.hi -! v0h)
+                    v0: Me = v0b +! tl
+                    return v0 *! isc -! o
                 return cm_b64_tan_pi_check(x: me, th: r.hi, tl: r.lo, res)
             r: CmF64TrigDD = cm_b64_trig_pi_mulddd(xh: 0x1.921fb54442d18p+1,
                 xl: 0x1.1a62633145c07p-53, c: me)
@@ -174,26 +174,26 @@ routine B64.tan_pi() -> Me
         else => pass
 
     # 2^-53 <= |x| < 2^-12: pi x + (pi^3/3) x^3 + ...
-    x2: Me = me * me
-    x3: Me = me * x2
-    f2: Me = Me.add(0x1.466bc6775aa2ap+5, x2 * 0x1.46000158496c2p+7)
-    f1: Me = Me.add(0x1.4abbce625be53p+3, x2 * f2)
-    f: Me = x3 * f1
+    x2: Me = me *! me
+    x3: Me = me *! x2
+    f2: Me = Me.add_unchecked(0x1.466bc6775aa2ap+5, x2 *! 0x1.46000158496c2p+7)
+    f1: Me = Me.add_unchecked(0x1.4abbce625be53p+3, x2 *! f2)
+    f: Me = x3 *! f1
     px: CmF64TrigDD = cm_b64_trig_pi_mulddd(xh: 0x1.921fb54442d18p+1, xl: 0x1.1a62633145c07p-53,
         c: me)
     t: CmF64TrigDD = cm_b64_tan_pi_fastsumddd(xh: px.hi, xl: px.lo, c: f)
-    eps: Me = me * (x2 * 0x1.1p-47 + 0x1p-101)
-    lb: Me = t.hi + (t.lo - eps)
-    ub: Me = t.hi + (t.lo + eps)
+    eps: Me = me *! (x2 *! 0x1.1p-47 +! 0x1p-101)
+    lb: Me = t.hi +! (t.lo -! eps)
+    ub: Me = t.hi +! (t.lo +! eps)
     if lb == ub
         return lb
 
     # the fast path can't decide the rounding: a longer double-double polynomial
     dx2: Me = b64_mul_error(x: me, y: me, p: x2)
     x2dd: CmF64TrigDD = (hi: x2, lo: dx2)
-    dx3: Me = b64_mul_error(x: x2, y: me, p: x3) + dx2 * me
-    cl1: Me = Me.add(0x1.45f472e3aed7dp+9, x2 * 0x1.45f33be0e9598p+11)
-    cl: Me = x2 * cl1
+    dx3: Me = b64_mul_error(x: x2, y: me, p: x3) +! dx2 *! me
+    cl1: Me = Me.add_unchecked(0x1.45f472e3aed7dp+9, x2 *! 0x1.45f33be0e9598p+11)
+    cl: Me = x2 *! cl1
     q0: CmF64TrigDD = cm_b64_trig_pi_poly_start(c0: 0x1.45fff9b48e95ep+7, c1: 0x1.a5047910ae0efp-49,
         l: cl)
     q1: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: x2dd, p: q0,
@@ -202,7 +202,7 @@ routine B64.tan_pi() -> Me
         c: CmF64TrigDD(hi: 0x1.4abbce625be53p+3, lo: -0x1.05511c68476a8p-51))
     q3: CmF64TrigDD = cm_b64_trig_pi_muldd(xh: x3, xl: dx3, ch: q2.hi, cl: q2.lo)
     sv: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: px.hi, b: q3.hi)
-    tl: Me = q3.lo + px.lo + sv.lo
+    tl: Me = q3.lo +! px.lo +! sv.lo
     q: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: sv.hi, b: tl)
     return cm_b64_tan_pi_check(x: me, th: q.hi, tl: q.lo, res: q.hi)
 
@@ -215,31 +215,31 @@ routine B64.tan_pi() -> Me
 ### :param zs: The residual, 2^69 times the part of x the table entry leaves.
 ### :returns: tan(pi `x`), correctly rounded.
 secret routine cm_b64_tan_pi_reduced(x: B64, iq: U64, flip: U64, zs: B64) -> B64
-    z2: B64 = zs * zs
-    z4: B64 = z2 * z2
-    z3: B64 = zs * z2
-    c01: B64 = B64.add(0x1.4abbce625be51p-207, z2 * 0x1.466bc6776a9b1p-345)
-    c23: B64 = B64.add(0x1.45fff6eb26045p-483, z2 * 0x1.4627663861052p-621)
-    f: B64 = z3 * (c01 + z4 * c23)
-    eps0: B64 = z3 * 0x1p-256 + B64.copysign(0x1p-104, zs)
+    z2: B64 = zs *! zs
+    z4: B64 = z2 *! z2
+    z3: B64 = zs *! z2
+    c01: B64 = B64.add_unchecked(0x1.4abbce625be51p-207, z2 *! 0x1.466bc6776a9b1p-345)
+    c23: B64 = B64.add_unchecked(0x1.45fff6eb26045p-483, z2 *! 0x1.4627663861052p-621)
+    f: B64 = z3 *! (c01 +! z4 *! c23)
+    eps0: B64 = z3 *! 0x1p-256 +! B64.copysign(0x1p-104, zs)
     p0: CmF64TrigDD = cm_b64_trig_pi_mulddd(xh: 0x1.921fb54442d18p-69, xl: 0x1.1a62633145c07p-123,
         c: zs)
     p1: CmF64TrigDD = cm_b64_tan_pi_fastsumddd(xh: p0.hi, xl: p0.lo, c: f)
     p: CmF64TrigDD = cm_b64_tan_pi_combine(th: p1.hi, tl: p1.lo, iq, flip)
-    eps: B64 = eps0 + eps0 * (p.hi * p.hi)
-    lb: B64 = p.hi + (p.lo - eps)
-    ub: B64 = p.hi + (p.lo + eps)
+    eps: B64 = eps0 +! eps0 *! (p.hi *! p.hi)
+    lb: B64 = p.hi +! (p.lo -! eps)
+    ub: B64 = p.hi +! (p.lo +! eps)
     if lb == ub
         return lb
 
     # the fast path can't decide the rounding: a longer double-double polynomial of tan(pi z 2^-69)
-    z: B64 = zs * 0x1p-63
-    zz: B64 = z * z
+    z: B64 = zs *! 0x1p-63
+    zz: B64 = z *! z
     dz2: B64 = b64_mul_error(x: z, y: z, p: zz)
     z2dd: CmF64TrigDD = (hi: zz, lo: dz2)
-    cl2: B64 = B64.add(0x1.45f3030c82af4p-78, zz * 0x1.464490600a978p-90)
-    cl1: B64 = B64.add(0x1.45f32f25dab7fp-66, zz * cl2)
-    cl: B64 = zz * cl1
+    cl2: B64 = B64.add_unchecked(0x1.45f3030c82af4p-78, zz *! 0x1.464490600a978p-90)
+    cl1: B64 = B64.add_unchecked(0x1.45f32f25dab7fp-66, zz *! cl2)
+    cl: B64 = zz *! cl1
     q0: CmF64TrigDD = cm_b64_trig_pi_poly_start(c0: 0x1.45f472e3af011p-54,
         c1: 0x1.90612a0755449p-110, l: cl)
     q1: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: z2dd, p: q0,
@@ -287,7 +287,7 @@ secret routine cm_b64_tan_pi_entry(j: U64) -> B64
     i: U64 = j.to[U64]() * 2
     nl: B64 = B64.from_bits(CM_B64_TAN_PI_T.getitem(i))
     nh: B64 = B64.from_bits(CM_B64_TAN_PI_T.getitem(i + 1))
-    return nh + nl
+    return nh +! nl
 
 ### The exact tangent at a multiple of 1/4 (jq counts quarter turns, as a two's-complement bit pattern, only its two
 ### low bits matter, neg is the input's sign bit): +-inf at half-integers, a signed zero at integers.
@@ -313,7 +313,7 @@ secret routine cm_b64_tan_pi_exact(jq: U64, neg: U64) -> B64
 ### :returns: The sum as a double-double.
 secret routine cm_b64_tan_pi_fastsumddd(xh: B64, xl: B64, c: B64) -> CmF64TrigDD
     t: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: xh, b: c)
-    return CmF64TrigDD(hi: t.hi, lo: xl + t.lo)
+    return CmF64TrigDD(hi: t.hi, lo: xl +! t.lo)
 
 ### Combines tan(pi z') = th + tl for the small residual angle with the table entry tan(pi iq/64) by the tangent
 ### addition formula, in double-double arithmetic (iq in 0..32, where 32 is the pole, handled as -1/t, and flip = 1
@@ -328,8 +328,8 @@ secret routine cm_b64_tan_pi_combine(th: B64, tl: B64, iq: U64, flip: U64) -> Cm
         # the denominator 1 - (th + tl) n
         # the numerator n + (th + tl)
         # 1 - (mh + ml) imh
-        ith: B64 = B64.truediv(-1.0, th)
-        il: B64 = (ith.mul_add(a: th, b: 1.0) + tl * ith) * ith
+        ith: B64 = B64.truediv_unchecked(-1.0, th)
+        il: B64 = (ith.mul_add_unchecked(a: th, b: 1.0) +! tl *! ith) *! ith
         return CmF64TrigDD(hi: ith, lo: il)
     i: U64 = iq.to[U64]() * 2
     entry_l: B64 = B64.from_bits(CM_B64_TAN_PI_T.getitem(i))
@@ -342,17 +342,17 @@ secret routine cm_b64_tan_pi_combine(th: B64, tl: B64, iq: U64, flip: U64) -> Cm
         negate => -entry_l
         else => entry_l
     mp: CmF64TrigDD = cm_b64_trig_pi_muldd(xh: th, xl: tl, ch: nh0, cl: nl0)
-    mh: B64 = B64.sub(1.0, mp.hi)
-    dm: B64 = B64.sub(1.0, mh) - mp.hi
-    ml: B64 = dm - mp.lo
+    mh: B64 = B64.sub_unchecked(1.0, mp.hi)
+    dm: B64 = B64.sub_unchecked(1.0, mh) -! mp.hi
+    ml: B64 = dm -! mp.lo
     ns: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: nh0, b: th)
     nh: B64 = ns.hi
-    nl: B64 = nl0 + (ns.lo + tl)
-    imh: B64 = B64.truediv(1.0, mh)
-    rh: B64 = nh * imh
-    rem: B64 = (-mh).mul_add(a: imh, b: 1.0) - ml * imh
-    corr: B64 = (nl + nh * rem) * imh
-    rl: B64 = b64_mul_error(x: nh, y: imh, p: rh) + corr
+    nl: B64 = nl0 +! (ns.lo +! tl)
+    imh: B64 = B64.truediv_unchecked(1.0, mh)
+    rh: B64 = nh *! imh
+    rem: B64 = (-mh).mul_add_unchecked(a: imh, b: 1.0) -! ml *! imh
+    corr: B64 = (nl +! nh *! rem) *! imh
+    rl: B64 = b64_mul_error(x: nh, y: imh, p: rh) +! corr
     return CmF64TrigDD(hi: rh, lo: rl)
 
 ### Looks up an input whose correctly rounded tangent the fast path can't decide, using tan(pi (x + 1)) = tan(pi x)
@@ -372,10 +372,10 @@ secret routine cm_b64_tan_pi_database(x: B64, f: B64) -> B64
             e2: U64 = e.to_wrap[U64]()
             whole: U64 = ~U64.arith_shift_right(0xFFFFFFFFFFFFFFFF, e2 + 12)
             t: B64 = B64.from_bits(aix & whole)
-            ax: B64 = x.abs() - t
+            ax: B64 = x.abs() -! t
             p: U64 = ((aix | 0x0010000000000000) >> U64.sub(52, e2)) & 1
             if p == 1
-                becomes (B64.sub(0.5, ax), p)
+                becomes (B64.sub_unchecked(0.5, ax), p)
             else
                 becomes (ax, p)
         else => (x.abs(), 0)
@@ -390,7 +390,7 @@ secret routine cm_b64_tan_pi_database(x: B64, f: B64) -> B64
         if key == ax
             r: B64 = B64.from_bits(CM_B64_TAN_PI_DB.getitem(i * 3 + 1))
             dr: B64 = B64.from_bits(CM_B64_TAN_PI_DB.getitem(i * 3 + 2))
-            return sgn * r + sgn * dr
+            return sgn *! r +! sgn *! dr
         continue
     then
         return f

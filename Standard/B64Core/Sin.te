@@ -389,12 +389,12 @@ routine B64.sin() -> Me
     if au <= 0x7CAE26E892247DEC
         if au == 0
             return me
-        return me.mul_add(a: -0x1p-54, b: me)
+        return me.mul_add_unchecked(a: -0x1p-54, b: me)
     e: U64 = (ux >> 52) & 0x7FF
     moderate: Bool = e < 1054
     when
         moderate => return cm_b64_sin_moderate(x: me, sbit: ux >> 63)
-        e == 0x7FF => return me - me
+        e == 0x7FF => return me -! me
         else => return cm_b64_sin_large(me)
 
 ### The high half of a 128 x 128-bit fixed-point product, floor(a b / 2^128) up to the dropped low-times-low
@@ -426,11 +426,11 @@ secret routine cm_b64_sin_u128_to_b64(r: U128, sbit: U64) -> B64
         else => 0x3CA0000000000000
     # +-2^-53 scaled by 2^-sh
     v: B64 = B64.from_bits(vbits -% (sh.to[U64]() << 52))
-    a: B64 = h.to[B64]() * v
+    a: B64 = h.to[B64]() *! v
     scale: B64 = when
         rbit == 1 => 0x1p-53
         else => 0x1p-54
-    return a + a * scale
+    return a +! a *! scale
 
 ### (xh + xl) + (yh + yl) in double-double, for |xh| >= |yh|.
 ### :param xh: The high part of the larger addend.
@@ -440,7 +440,7 @@ secret routine cm_b64_sin_u128_to_b64(r: U128, sbit: U64) -> B64
 ### :returns: The sum as a double-double.
 secret routine cm_b64_sin_fastsum(xh: B64, xl: B64, yh: B64, yl: B64) -> CmF64TrigDD
     s: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: xh, b: yh)
-    return CmF64TrigDD(hi: s.hi, lo: xl + yl + s.lo)
+    return CmF64TrigDD(hi: s.hi, lo: xl +! yl +! s.lo)
 
 ### (xh + xl) (ch + cl) in double-double.
 ### :param xh: The high part of the first factor.
@@ -450,9 +450,9 @@ secret routine cm_b64_sin_fastsum(xh: B64, xl: B64, yh: B64, yl: B64) -> CmF64Tr
 ### :returns: The product as a double-double.
 @inline
 secret routine cm_b64_sin_muldd(xh: B64, xl: B64, ch: B64, cl: B64) -> CmF64TrigDD
-    ahhh: B64 = xh * ch
-    cross: B64 = xh * cl + xl * ch
-    lo: B64 = cross + b64_mul_error(x: xh, y: ch, p: ahhh)
+    ahhh: B64 = xh *! ch
+    cross: B64 = xh *! cl +! xl *! ch
+    lo: B64 = cross +! b64_mul_error(x: xh, y: ch, p: ahhh)
     return CmF64TrigDD(hi: ahhh, lo: lo)
 
 ### Word j of the 1/(2pi) table: 1/(2pi) ~ sum of T[j] / 2^(64j).
@@ -484,7 +484,7 @@ secret routine cm_b64_sin_reduce_large(x: B64) -> CmF64SinReduced
     # the next 53 bits of u after the first 15
     next53: U128 = (u << 15) >> 75
     t: B64 = next53.to[B64]()
-    r: B64 = t * 0x1p-68 - 0x1p-16
+    r: B64 = t *! 0x1p-68 -! 0x1p-16
     return CmF64SinReduced(k: cm_b64_trig_lo(u >> 113), r: r)
 
 ### sin(u) in 128-bit fixed point, for the reduced angle u = 2 pi r with 0 <= r < 2^-14.
@@ -628,15 +628,15 @@ secret routine cm_b64_sin_small_accurate(x: B64) -> B64
     c3h: B64 = -0x1.5555555555555p-3
     c3l: B64 = -0x1.55554b00de7e8p-57
     c5: B64 = 0x1.111111110848p-7
-    x2h: B64 = x * x
+    x2h: B64 = x *! x
     x2l: B64 = b64_mul_error(x, y: x, p: x2h)
-    h: B64 = c5 * x2h + c3l
+    h: B64 = c5 *! x2h +! c3l
     s: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: c3h, b: h)
     p0: CmF64TrigDD = cm_b64_sin_muldd(xh: s.hi, xl: s.lo, ch: x2h, cl: x2l)
     p: CmF64TrigDD = cm_b64_sin_muldd(xh: p0.hi, xl: p0.lo, ch: x, cl: 0.0)
     q: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: x, b: p.hi)
-    l: B64 = p.lo + q.lo
-    return q.hi + l
+    l: B64 = p.lo +! q.lo
+    return q.hi +! l
 
 ### sin of j/2^15 turns (j = 2^7 i1 + i2) plus r, from the tables of sin and cos at i1 pi/2^7 and i2 pi/2^14 and
 ### the polynomial values sh ~ sin(r) and ch ~ cos(r) - 1: (Sh, Sl + Sh ch + Ch sh).
@@ -660,8 +660,8 @@ secret routine cm_b64_sin_combine(i1: U64, i2: U64, sh: B64, ch: B64) -> CmF64Tr
     p1: CmF64TrigDD = cm_b64_sin_muldd(xh: s1h, xl: s1l, ch: c2h, cl: c2l)
     p2: CmF64TrigDD = cm_b64_sin_muldd(xh: s2h, xl: s2l, ch: c1h, cl: c1l)
     s: CmF64TrigDD = cm_b64_sin_fastsum(xh: p1.hi, xl: p1.lo, yh: p2.hi, yl: p2.lo)
-    cc: B64 = c1h * c2h - s1h * s2h
-    return CmF64TrigDD(hi: s.hi, lo: s.lo + s.hi * ch + cc * sh)
+    cc: B64 = c1h *! c2h -! s1h *! s2h
+    return CmF64TrigDD(hi: s.hi, lo: s.lo +! s.hi *! ch +! cc *! sh)
 
 ### sin of k/2^15 turns plus the remaining angle, as an unevaluated sum hi + lo: cm_b64_sin_combine at the low 14
 ### bits of k, negated when bit 14 is set (k pi/2^14 >= pi). The cosine and the tangent call it a quarter turn
@@ -685,11 +685,11 @@ secret routine cm_b64_sin_turn(k: U64, sh: B64, ch: B64) -> CmF64TrigDD
 @inline
 secret routine cm_b64_sin_reduce_moderate(ax: B64) -> CmF64SinReduced
     # |invpi/2^14 - 1/pi| < 2^-55.496
-    k: B64 = B64.mul(0x1.45f306dc9c883p+12, ax).round_ties_even()
+    k: B64 = B64.mul_unchecked(0x1.45f306dc9c883p+12, ax).round_ties_even()
     # |2^14 (pih + pil) + pi| < 2^-108.041, and rh is exact
-    rh: B64 = k.mul_add(a: -0x1.921fb54442d18p-13, b: ax)
-    rl: B64 = k * -0x1.1a62633145c07p-67
-    return CmF64SinReduced(k: k.to[S64]().to_wrap[U64](), r: rh + rl)
+    rh: B64 = k.mul_add_unchecked(a: -0x1.921fb54442d18p-13, b: ax)
+    rl: B64 = k *! -0x1.1a62633145c07p-67
+    return CmF64SinReduced(k: k.to[S64]().to_wrap[U64](), r: rh +! rl)
 
 ### sin(k pi/2^14 + r) for a reduction from cm_b64_sin_reduce_moderate, as an unevaluated sum hi + lo within
 ### 0x1.dep-64 of sin(x) (the bound of CORE-MATH's sin.c fast path). The bound holds for every k, so at k + 2^13
@@ -699,11 +699,11 @@ secret routine cm_b64_sin_reduce_moderate(ax: B64) -> CmF64SinReduced
 ### :returns: The sine as an unevaluated sum.
 @inline
 secret routine cm_b64_sin_moderate_parts(k: U64, r: B64) -> CmF64TrigDD
-    r2: B64 = r * r
+    r2: B64 = r *! r
     # r - c3 r^3 approximates sin(r) with absolute error < 2^-76.494, -r^2/2 + c4 r^4 approximates
     # cos(r) - 1 with absolute error < 2^-92.723, for |r| <= 2^-13.339
-    sh: B64 = r * B64.sub(1.0, B64.mul(0x1.55555553068fp-3, r2))
-    ch: B64 = r2 * B64.add(-0.5, B64.mul(0x1.55555553bfd3p-5, r2))
+    sh: B64 = r *! B64.sub_unchecked(1.0, B64.mul_unchecked(0x1.55555553068fp-3, r2))
+    ch: B64 = r2 *! B64.add_unchecked(-0.5, B64.mul_unchecked(0x1.55555553bfd3p-5, r2))
     return cm_b64_sin_turn(k, sh, ch)
 
 ### sin(2 pi (k/2^15 + r)) for a reduction from cm_b64_sin_reduce_large, as an unevaluated sum hi + lo within
@@ -714,9 +714,9 @@ secret routine cm_b64_sin_moderate_parts(k: U64, r: B64) -> CmF64TrigDD
 ### :returns: The sine as an unevaluated sum.
 @inline
 secret routine cm_b64_sin_large_parts(k: U64, r: B64) -> CmF64TrigDD
-    r2: B64 = r * r
-    sh: B64 = r * B64.sub(0x1.921fb54442d18p+2, B64.mul(0x1.4abbcdb6b26d1p+5, r2))
-    ch: B64 = r2 * B64.add(-0x1.3bd3cc9be45dep+4, B64.mul(0x1.03c1eee483083p+6, r2))
+    r2: B64 = r *! r
+    sh: B64 = r *! B64.sub_unchecked(0x1.921fb54442d18p+2, B64.mul_unchecked(0x1.4abbcdb6b26d1p+5, r2))
+    ch: B64 = r2 *! B64.add_unchecked(-0x1.3bd3cc9be45dep+4, B64.mul_unchecked(0x1.03c1eee483083p+6, r2))
     return cm_b64_sin_turn(k, sh, ch)
 
 ### The fast path for 0x1.7137449123ef6p-26 < |x| < 2^31, where sbit is the sign bit of x.
@@ -734,9 +734,9 @@ secret routine cm_b64_sin_moderate(x: B64, sbit: U64) -> B64
     fl0: B64 = when
         flip => -f.lo
         else => f.lo
-    fl: B64 = fl0 - 0x1.dep-64
-    lb: B64 = fh + fl
-    ub: B64 = fh + (fl + 0x1.dep-63)
+    fl: B64 = fl0 -! 0x1.dep-64
+    lb: B64 = fh +! fl
+    ub: B64 = fh +! (fl +! 0x1.dep-63)
     done: Bool = ub == lb
     when
         done => return lb
@@ -756,8 +756,8 @@ secret routine cm_b64_sin_large(x: B64) -> B64
     fl: B64 = when
         flip => -f.lo
         else => f.lo
-    lb: B64 = fh + (fl - 0x1.41p-63)
-    ub: B64 = fh + (fl + 0x1.41p-63)
+    lb: B64 = fh +! (fl -! 0x1.41p-63)
+    ub: B64 = fh +! (fl +! 0x1.41p-63)
     if lb == ub
         return lb
     return cm_b64_sin_large_accurate(x)

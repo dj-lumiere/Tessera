@@ -54,6 +54,7 @@ preset B128.EPSILON:      B128 = B128.from_bits(0x3F8F00000000000000000000000000
 record B128
 obeys Equatable[B128], Comparable[B128], Hashable[B128]
 obeys Numeric[B128], Divisible[B128], Negatable[B128]
+obeys UncheckedArithmetic[B128]
 
 # -- bits ----------------------------------------------------------------------
 
@@ -282,14 +283,14 @@ secret routine b128_nan_of(a: B128, b: B128) -> B128
 ### :param other: The value to add.
 ### :returns: `me + other`: infinity on overflow, NaN when either operand is NaN or for `inf + -inf`.
 ### :see: {b128_add_bits} for the algorithm.
-routine B128.add(other: Me) -> Me
+routine B128.add_unchecked(other: Me) -> Me
     r: Me = b128_of(b128_add_bits(a: me.bits(), b: other.bits()))
     return r
 
 ### Subtracts `other` from `me` in software: adds `other` with its sign flipped, rounded to nearest (ties to even).
 ### :param other: The value to subtract.
 ### :returns: `me - other`: infinity on overflow, NaN when either operand is NaN or for `inf - inf`.
-routine B128.sub(other: Me) -> Me
+routine B128.sub_unchecked(other: Me) -> Me
     r: Me = b128_of(b128_add_bits(a: me.bits(), b: other.bits() ^ B128_SIGN))
     return r
 
@@ -386,7 +387,7 @@ secret routine b128_add_bits(a: U128, b: U128) -> U128
 ### Multiplies `me` by `other` in software, rounded to nearest (ties to even).
 ### :param other: The factor.
 ### :returns: `me * other`: infinity on overflow, NaN when either operand is NaN or for `0 * inf`.
-routine B128.mul(other: Me) -> Me
+routine B128.mul_unchecked(other: Me) -> Me
     r: Me = b128_of(b128_mul_bits(a: me.bits(), b: other.bits()))
     return r
 
@@ -441,7 +442,7 @@ secret routine b128_mul_bits(a: U128, b: U128) -> U128
 ### Divides `me` by `other` in software, rounded to nearest (ties to even).
 ### :param other: The divisor.
 ### :returns: `me / other`: a signed infinity for a nonzero value divided by zero, NaN for `0 / 0`, `inf / inf`, or a NaN operand.
-routine B128.truediv(other: Me) -> Me
+routine B128.truediv_unchecked(other: Me) -> Me
     r: Me = b128_of(b128_div_bits(a: me.bits(), b: other.bits()))
     return r
 
@@ -566,7 +567,7 @@ routine isqrt_256(hi: U128, lo: U128) -> U128
     even: S64 = shift + (shift & 1)
     top: U64 = (hi >> (even - 128).to[U128]()).to[U64]()
     # B64's root of top is within 2^-50 relative: + 2 makes the seed an overestimate
-    root: B64 = top.to[B64]().sqrt()
+    root: B64 = top.to[B64]().sqrt_unchecked()
     guess: U64 = root.to[U64]() + 2
 
     while true with x: U128 = guess.to[U128]() << (even.div_trunc(2)).to[U128]()
@@ -1014,7 +1015,7 @@ routine B128.round_ties_even() -> Me
 ### :returns: `me - me.trunc()`, NaN for an infinity or NaN.
 routine B128.fract() -> Me
     whole: Me = me.trunc()
-    r: Me = me - whole
+    r: Me = me -! whole
     return r
 
 ### The smaller value, or the other one if one operand is NaN. Equal values, -0.0 and +0.0 included, give `me`.
@@ -1064,7 +1065,7 @@ routine shr_sticky(x: U256, n: S64) -> U256
 ### :param b: The addend.
 ### :returns: `me * a + b`, correctly rounded.
 ### :see: {b128_fma_bits}
-routine B128.mul_add(a: Me, b: Me) -> Me
+routine B128.mul_add_unchecked(a: Me, b: Me) -> Me
     r: Me = b128_of(b128_fma_bits(x: me.bits(), y: a.bits(), c: b.bits()))
     return r
 
@@ -1212,9 +1213,9 @@ routine B128.hash() -> U64
 
 ### The reciprocal `1 / me`, rounded once.
 ### :returns: `1 / me`: a signed infinity for a signed zero, a signed zero for an infinity, NaN for NaN.
-routine B128.recip() -> Me
+routine B128.recip_unchecked() -> Me
     one: Me = b128_of(B128_ONE)
-    r: Me = one / me
+    r: Me = one /! me
     return r
 
 # -- sign and classification ---------------------------------------------------
@@ -1300,7 +1301,7 @@ secret routine b128_remainder_parts(a: U128, b: U128) -> B128Remainder
 ### :param other: The divisor.
 ### :returns: `me - q * other` for `q` the quotient rounded toward zero. `me` when `other` is infinite or `me` is
 ###     a zero, NaN when `other` is 0 or `me` is infinite, and a NaN operand comes back quieted.
-routine B128.mod_trunc(other: Me) -> Me
+routine B128.mod_trunc_unchecked(other: Me) -> Me
     a: U128 = me.bits()
     b: U128 = other.bits()
     a_nan: Bool = b128_is_nan_bits(a)
@@ -1321,7 +1322,7 @@ routine B128.mod_trunc(other: Me) -> Me
 ### :param other: The divisor.
 ### :returns: The remainder. `me` when `other` is infinite or `me` is a zero, NaN when `other` is 0 or `me` is
 ###     infinite, and a NaN operand comes back quieted.
-routine B128.rem(other: Me) -> Me
+routine B128.rem_unchecked(other: Me) -> Me
     a: U128 = me.bits()
     b: U128 = other.bits()
     a_nan: Bool = b128_is_nan_bits(a)
@@ -1338,11 +1339,11 @@ routine B128.rem(other: Me) -> Me
             parts: B128Remainder = b128_remainder_parts(a: me.bits(), b: other.bits())
             r: Me = parts.magnitude
             divisor: Me = other.abs()
-            twice: Me = r + r
+            twice: Me = r +! r
             over: Bool = twice > divisor
             tie: Bool = (twice == divisor) and parts.odd
             nearest: Bool = over or tie
-            down: Me = r - divisor
+            down: Me = r -! divisor
             m: Me = when
                 nearest => down
                 else => r
@@ -1355,17 +1356,17 @@ routine B128.rem(other: Me) -> Me
 ### The quotient `q` of Euclidean division, so that `me = q * other + r` with `0 <= r < |other|`.
 ### :param other: The divisor.
 ### :returns: The truncated quotient, moved one step down (for a positive `other`) or up when the remainder is negative.
-routine B128.floordiv(other: Me) -> Me
-    local q: Me = me.truediv(other).trunc()
+routine B128.floordiv_unchecked(other: Me) -> Me
+    local q: Me = me.truediv_unchecked(other).trunc()
 
-    rem: Me = me.mod_trunc(other)
+    rem: Me = me.mod_trunc_unchecked(other)
     zero: Me = b128_of(0)
     if rem < zero
         one: Me = b128_of(B128_ONE)
         zero2: Me = b128_of(0)
         positive_divisor: Bool = other > zero2
-        down: Me = q - one
-        up: Me = q + one
+        down: Me = q -! one
+        up: Me = q +! one
         r: Me = when
             positive_divisor => down
             else => up
@@ -1376,13 +1377,13 @@ routine B128.floordiv(other: Me) -> Me
 ### :param other: The divisor.
 ### :returns: The remainder, in `0 ..< |other|` for a finite `other`. When the exact remainder is a tiny negative value,
 ###     `|other|` plus it would round to `|other|`, so the largest value below `|other|` comes back instead.
-routine B128.mod(other: Me) -> Me
-    rem: Me = me.mod_trunc(other)
+routine B128.mod_unchecked(other: Me) -> Me
+    rem: Me = me.mod_trunc_unchecked(other)
     zero: Me = b128_of(0)
     if not (rem < zero)
         return rem
     magnitude: Me = other.abs()
-    r: Me = rem + magnitude
+    r: Me = rem +! magnitude
     # a tiny negative remainder plus |other| rounds up to |other|: the largest value below it is the nearest
     # one in range
     if r == magnitude and magnitude.is_finite()
@@ -1392,14 +1393,14 @@ routine B128.mod(other: Me) -> Me
 ### The positive difference (C fdim).
 ### :param other: The value to subtract.
 ### :returns: `me - other` when `me > other`, else +0. NaN when either is NaN.
-routine B128.fdim(other: Me) -> Me
+routine B128.fdim_unchecked(other: Me) -> Me
     unordered: Bool = not b128_ordered(a: me.bits(), b: other.bits())
     above: Bool = me > other
     subtract: Bool = unordered or above
     zero: Me = b128_of(0)
     if not subtract
         return zero
-    r: Me = me - other
+    r: Me = me -! other
     return r
 
 ### (`me` + `other`) / 2 with one rounding and no intermediate overflow (Rust's midpoint): halving is exact except
@@ -1415,13 +1416,13 @@ routine B128.midpoint(other: Me) -> Me
     small: Bool = abs_a <= hi and abs_b <= hi
     a_tiny: Bool = abs_a < lo
     b_tiny: Bool = abs_b < lo
-    sum: Me = me + other
-    a_half: Me = me * half
-    b_half: Me = other * half
-    both: Me = sum * half
-    a_whole: Me = me + b_half
-    b_whole: Me = a_half + other
-    halves: Me = a_half + b_half
+    sum: Me = me +! other
+    a_half: Me = me *! half
+    b_half: Me = other *! half
+    both: Me = sum *! half
+    a_whole: Me = me +! b_half
+    b_whole: Me = a_half +! other
+    halves: Me = a_half +! b_half
     when
         small => return both
         a_tiny => return a_whole
@@ -1487,7 +1488,7 @@ record B128Frexp
 ### The least value above `me` (IEEE 754 nextUp).
 ### :returns: The next value up: the smallest subnormal after ±0, +inf stays +inf, -tiny steps to -0, and a NaN comes
 ###     back quieted.
-routine B128.next_up() -> Me
+routine B128.next_up_unchecked() -> Me
     bits: U128 = me.bits()
     nan: Bool = b128_is_nan_bits(bits)
     top: Bool = bits == B128_INF
@@ -1503,8 +1504,8 @@ routine B128.next_up() -> Me
 
 ### The greatest value below `me` (IEEE 754 nextDown), as `-(-me).next_up()`.
 ### :returns: The next value down: -inf stays -inf, and a NaN comes back quieted.
-routine B128.next_down() -> Me
-    negated_up: Me = (-me).next_up()
+routine B128.next_down_unchecked() -> Me
+    negated_up: Me = (-me).next_up_unchecked()
     r: Me = -negated_up
     return r
 
@@ -1512,7 +1513,7 @@ routine B128.next_down() -> Me
 ### even (C scalbn).
 ### :param n: The power of two to scale by.
 ### :returns: The scaled value. Zeros and infinities come back unchanged, and a NaN comes back quieted.
-routine B128.scalbn(n: S64) -> Me
+routine B128.scalbn_unchecked(n: S64) -> Me
     local bits: U128 = me.bits()
 
     nan: Bool = b128_is_nan_bits(bits)
@@ -1531,7 +1532,7 @@ routine B128.scalbn(n: S64) -> Me
 
 ### floor(log2 |`me`|) as a float (IEEE 754 logB).
 ### :returns: The unbiased exponent: -inf for ±0, +inf for ±inf, and a NaN comes back quieted.
-routine B128.logb() -> Me
+routine B128.logb_unchecked() -> Me
     bits: U128 = me.bits()
     nan: Bool = b128_is_nan_bits(bits)
     zero: Bool = b128_is_zero_bits(bits)
@@ -1559,7 +1560,7 @@ routine B128.frexp() -> B128Frexp
         else =>
             p: B128Parts = b128_unpack(me.bits())
             e: S64 = p.exponent + 1
-            r: B128Frexp = B128Frexp(fraction: me.scalbn(0 - e), exponent: e)
+            r: B128Frexp = B128Frexp(fraction: me.scalbn_unchecked(0 - e), exponent: e)
             return r
 
 # -- integer conversions ---------------------------------------------------------
@@ -1880,3 +1881,448 @@ routine B128.to_checked[U128]() -> Maybe[U128]
     value: U128 = me.to_clamp[U128]()
     r: Maybe[U128] = fits.then_present(value)
     return r
+
+# -- checked forms -----------------------------------------------------------
+#
+# The default form of each operation whose finite arguments can give an infinite or NaN result crashes there:
+# such a result is almost always a bug. Each has an _unchecked form, which gives the raw IEEE 754 value, and the
+# operators +! -! *! /! spell the unchecked arithmetic. Finite results are the same bits in both forms.
+
+### `me` when it is finite: the last step of a checked B128 operation.
+### :returns: `me`.
+### :throws: Crashes with `NumericOverflowError` when `me` is infinite, and with `NumericDomainError` when it is NaN.
+@track_caller
+secret routine B128.require_finite() -> Me
+    if me.is_finite()
+        return me
+    if me.is_nan()
+        crash_numeric_domain()
+    crash_float_overflow()
+
+### `me`, the result of dividing `dividend` by `divisor`, when it is finite: the last step of a checked B128 division.
+### :param dividend: The value divided.
+### :param divisor: The value divided by.
+### :returns: `me`.
+### :throws: Crashes with `DivisionByZeroError` when `me` isn't finite because `divisor` is zero and `dividend` isn't,
+###     else as {B128.require_finite}.
+@track_caller
+secret routine B128.require_finite_quotient(dividend: Me, divisor: Me) -> Me
+    if me.is_finite()
+        return me
+    if b128_is_zero_bits(divisor.bits()) and not (b128_is_zero_bits(dividend.bits()))
+        crash_division_by_zero()
+    r: Me = me.require_finite()
+    return r
+
+### Adds `other` to `me`, rounded to nearest (ties to even). {B128.add_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: `me + other`.
+### :throws: Crashes with `NumericOverflowError` when the sum is too large for B128 or an operand is infinite, and
+###     with `NumericDomainError` when it is NaN: a NaN operand, or infinities of opposite signs.
+@track_caller
+routine B128.add(other: Me) -> Me
+    r: Me = me.add_unchecked(other)
+    checked: Me = r.require_finite()
+    return checked
+
+### Subtracts `other` from `me`, rounded to nearest (ties to even). {B128.sub_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: `me - other`.
+### :throws: Crashes with `NumericOverflowError` when the difference is too large for B128 or an operand is infinite,
+###     and with `NumericDomainError` when it is NaN: a NaN operand, or infinities of the same sign.
+@track_caller
+routine B128.sub(other: Me) -> Me
+    r: Me = me.sub_unchecked(other)
+    checked: Me = r.require_finite()
+    return checked
+
+### Multiplies `me` by `other`, rounded to nearest (ties to even). {B128.mul_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: `me * other`.
+### :throws: Crashes with `NumericOverflowError` when the product is too large for B128 or a factor is infinite, and
+###     with `NumericDomainError` when it is NaN: a NaN factor, or zero times infinity.
+@track_caller
+routine B128.mul(other: Me) -> Me
+    r: Me = me.mul_unchecked(other)
+    checked: Me = r.require_finite()
+    return checked
+
+### Divides `me` by `other`, rounded to nearest (ties to even). {B128.truediv_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: `me / other`.
+### :throws: Crashes with `DivisionByZeroError` when `other` is zero and `me` isn't, with `NumericOverflowError` when
+###     the quotient is too large for B128 or `me` is infinite, and with `NumericDomainError` when it is NaN: `0 / 0`,
+###     `inf / inf`, or a NaN operand.
+@track_caller
+routine B128.truediv(other: Me) -> Me
+    r: Me = me.truediv_unchecked(other)
+    checked: Me = r.require_finite_quotient(dividend: me, divisor: other)
+    return checked
+
+### Fused multiply-add: `me * a + b` with a single rounding (to nearest, ties to even). {B128.mul_add_unchecked} gives the raw IEEE 754 result.
+### :param a: The factor `me` is multiplied by.
+### :param b: The addend.
+### :returns: `me * a + b`, rounded once.
+### :throws: Crashes with `NumericOverflowError` when the result is too large for B128 or an operand is infinite, and
+###     with `NumericDomainError` when it is NaN: a NaN operand, `0 * inf`, or infinities that cancel.
+@track_caller
+routine B128.mul_add(a: Me, b: Me) -> Me
+    r: Me = me.mul_add_unchecked(a, b)
+    checked: Me = r.require_finite()
+    return checked
+
+### The quotient `q` of Euclidean division, so that `me = q * other + r` with `0 <= r < |other|`. {B128.floordiv_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: The quotient `q`.
+### :throws: Crashes with `DivisionByZeroError` when `other` is zero and `me` isn't, with `NumericOverflowError` when
+###     the quotient is too large for B128 or infinite, and with `NumericDomainError` when it is NaN: `0 // 0`, an
+###     infinite `me`, or a NaN operand.
+@track_caller
+routine B128.floordiv(other: Me) -> Me
+    r: Me = me.floordiv_unchecked(other)
+    checked: Me = r.require_finite_quotient(dividend: me, divisor: other)
+    return checked
+
+### The least non-negative remainder of `me / other` (Euclidean). {B128.mod_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: The remainder, in `[0, |other|)`.
+### :throws: Crashes with `DivisionByZeroError` when `other` is zero and `me` isn't, with `NumericOverflowError` when
+###     the remainder is infinite (a negative `me` and an infinite `other`), and with `NumericDomainError` when it is
+###     NaN: `0 % 0`, an infinite `me`, or a NaN operand.
+@track_caller
+routine B128.mod(other: Me) -> Me
+    r: Me = me.mod_unchecked(other)
+    checked: Me = r.require_finite_quotient(dividend: me, divisor: other)
+    return checked
+
+### The remainder of `me / other` with the sign of `me` (C fmod). Exact. {B128.mod_trunc_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: The remainder.
+### :throws: Crashes with `DivisionByZeroError` when `other` is zero and `me` isn't, and with `NumericDomainError`
+###     when the remainder is NaN: a zero `other` and `me`, an infinite `me`, or a NaN operand.
+@track_caller
+routine B128.mod_trunc(other: Me) -> Me
+    r: Me = me.mod_trunc_unchecked(other)
+    checked: Me = r.require_finite_quotient(dividend: me, divisor: other)
+    return checked
+
+### The reciprocal `1 / me`, rounded once. {B128.recip_unchecked} gives the raw IEEE 754 result.
+### :returns: `1 / me`.
+### :throws: Crashes with `DivisionByZeroError` when `me` is zero, with `NumericOverflowError` when `1 / me` is too
+###     large for B128 (a tiny subnormal `me`), and with `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B128.recip() -> Me
+    r: Me = me.recip_unchecked()
+    checked: Me = r.require_finite_quotient(dividend: b128_of(B128_ONE), divisor: me)
+    return checked
+
+### The square root of `me`, correctly rounded. -0.0 gives -0.0. {B128.sqrt_unchecked} gives the raw IEEE 754 result.
+### :returns: The square root.
+### :throws: Crashes with `NumericOverflowError` when `me` is +inf, and with `NumericDomainError` when `me` is
+###     negative (other than -0.0) or NaN.
+@track_caller
+routine B128.sqrt() -> Me
+    r: Me = me.sqrt_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### e^`me`, correctly rounded. {B128.exp_unchecked} gives the raw IEEE 754 result.
+### :returns: e^`me`.
+### :throws: Crashes with `NumericOverflowError` when e^`me` is too large for B128 or `me` is +inf, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B128.exp() -> Me
+    r: Me = me.exp_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### 2^`me`, correctly rounded. {B128.exp2_unchecked} gives the raw IEEE 754 result.
+### :returns: 2^`me`.
+### :throws: Crashes with `NumericOverflowError` when 2^`me` is too large for B128 or `me` is +inf, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B128.exp2() -> Me
+    r: Me = me.exp2_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### 10^`me`, correctly rounded. {B128.exp10_unchecked} gives the raw IEEE 754 result.
+### :returns: 10^`me`.
+### :throws: Crashes with `NumericOverflowError` when 10^`me` is too large for B128 or `me` is +inf, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B128.exp10() -> Me
+    r: Me = me.exp10_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### e^`me` - 1, correctly rounded and accurate near 0. {B128.exp_m1_unchecked} gives the raw IEEE 754 result.
+### :returns: e^`me` - 1.
+### :throws: Crashes with `NumericOverflowError` when the result is too large for B128 or `me` is +inf, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B128.exp_m1() -> Me
+    r: Me = me.exp_m1_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The natural logarithm of `me`, correctly rounded. {B128.ln_unchecked} gives the raw IEEE 754 result.
+### :returns: ln(`me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is zero (the logarithm is -inf) or +inf, and with
+###     `NumericDomainError` when `me` is negative or NaN.
+@track_caller
+routine B128.ln() -> Me
+    r: Me = me.ln_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The base-2 logarithm of `me`, correctly rounded. {B128.log2_unchecked} gives the raw IEEE 754 result.
+### :returns: log2(`me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is zero (the logarithm is -inf) or +inf, and with
+###     `NumericDomainError` when `me` is negative or NaN.
+@track_caller
+routine B128.log2() -> Me
+    r: Me = me.log2_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The base-10 logarithm of `me`, correctly rounded. {B128.log10_unchecked} gives the raw IEEE 754 result.
+### :returns: log10(`me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is zero (the logarithm is -inf) or +inf, and with
+###     `NumericDomainError` when `me` is negative or NaN.
+@track_caller
+routine B128.log10() -> Me
+    r: Me = me.log10_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### ln(1 + `me`), correctly rounded and accurate near 0. {B128.ln_1p_unchecked} gives the raw IEEE 754 result.
+### :returns: ln(1 + `me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is -1 (the logarithm is -inf) or +inf, and with
+###     `NumericDomainError` when `me` is below -1 or NaN.
+@track_caller
+routine B128.ln_1p() -> Me
+    r: Me = me.ln_1p_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The logarithm of `me` in base `base`, ln(`me`) / ln(`base`) correctly rounded. {B128.log_unchecked} gives the raw IEEE 754 result.
+### :param base: The base of the logarithm.
+### :returns: log base `base` of `me`.
+### :throws: Crashes with `NumericOverflowError` when the quotient is infinite (`me` zero or +inf, or `base` 1), and
+###     with `NumericDomainError` when it is NaN: a negative or NaN argument, or both logarithms zero or both
+###     infinite.
+@track_caller
+routine B128.log(base: Me) -> Me
+    r: Me = me.log_unchecked(base)
+    checked: Me = r.require_finite()
+    return checked
+
+### `me` raised to the power `exponent`, correctly rounded. {B128.powf_unchecked} gives the raw IEEE 754 result.
+### :param exponent: The exponent.
+### :returns: `me` ^ `exponent`.
+### :throws: Crashes with `NumericOverflowError` when the power is too large for B128, or infinite (a zero `me` with a
+###     negative `exponent`), and with `NumericDomainError` when it is NaN: a negative `me` with an `exponent` that
+###     isn't an integer, or a NaN operand.
+@track_caller
+routine B128.powf(exponent: Me) -> Me
+    r: Me = me.powf_unchecked(exponent)
+    checked: Me = r.require_finite()
+    return checked
+
+### `me` raised to the integer power `n`, correctly rounded. {B128.powi_unchecked} gives the raw IEEE 754 result.
+### :param n: The exponent.
+### :returns: `me` ^ `n`.
+### :throws: Crashes with `NumericOverflowError` when the power is too large for B128, or infinite (a zero `me` with a
+###     negative `n`), and with `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B128.powi(n: S32) -> Me
+    r: Me = me.powi_unchecked(n)
+    checked: Me = r.require_finite()
+    return checked
+
+### tan(pi * `me`), correctly rounded. {B128.tan_pi_unchecked} gives the raw IEEE 754 result.
+### :returns: tan(pi * `me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is an odd multiple of 0.5 (a pole), and with
+###     `NumericDomainError` when `me` is infinite or NaN.
+@track_caller
+routine B128.tan_pi() -> Me
+    r: Me = me.tan_pi_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The arcsine of `me` in radians, correctly rounded. {B128.asin_unchecked} gives the raw IEEE 754 result.
+### :returns: asin(`me`), in [-pi/2, pi/2].
+### :throws: Crashes with `NumericDomainError` when `me` is outside [-1, 1] or NaN.
+@track_caller
+routine B128.asin() -> Me
+    r: Me = me.asin_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The arccosine of `me` in radians, correctly rounded. {B128.acos_unchecked} gives the raw IEEE 754 result.
+### :returns: acos(`me`), in [0, pi].
+### :throws: Crashes with `NumericDomainError` when `me` is outside [-1, 1] or NaN.
+@track_caller
+routine B128.acos() -> Me
+    r: Me = me.acos_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The hyperbolic sine of `me`, correctly rounded. {B128.sinh_unchecked} gives the raw IEEE 754 result.
+### :returns: sinh(`me`).
+### :throws: Crashes with `NumericOverflowError` when the result is too large for B128 or `me` is infinite, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B128.sinh() -> Me
+    r: Me = me.sinh_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The hyperbolic cosine of `me`, correctly rounded. {B128.cosh_unchecked} gives the raw IEEE 754 result.
+### :returns: cosh(`me`).
+### :throws: Crashes with `NumericOverflowError` when the result is too large for B128 or `me` is infinite, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B128.cosh() -> Me
+    r: Me = me.cosh_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The inverse hyperbolic cosine of `me`, correctly rounded. {B128.acosh_unchecked} gives the raw IEEE 754 result.
+### :returns: acosh(`me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is +inf, and with `NumericDomainError` when `me` is below 1
+###     or NaN.
+@track_caller
+routine B128.acosh() -> Me
+    r: Me = me.acosh_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The inverse hyperbolic tangent of `me`, correctly rounded. {B128.atanh_unchecked} gives the raw IEEE 754 result.
+### :returns: atanh(`me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is 1 or -1 (the result is infinite), and with
+###     `NumericDomainError` when `me` is outside [-1, 1] or NaN.
+@track_caller
+routine B128.atanh() -> Me
+    r: Me = me.atanh_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The gamma function of `me`, correctly rounded. {B128.gamma_unchecked} gives the raw IEEE 754 result.
+### :returns: Gamma(`me`).
+### :throws: Crashes with `NumericOverflowError` when the result is too large for B128, `me` is a zero (a pole), or
+###     `me` is +inf, and with `NumericDomainError` when `me` is a negative integer, -inf, or NaN.
+@track_caller
+routine B128.gamma() -> Me
+    r: Me = me.gamma_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### ln(|Gamma(`me`)|), correctly rounded. {B128.ln_gamma_unchecked} gives the raw IEEE 754 result.
+### :returns: ln(|Gamma(`me`)|).
+### :throws: Crashes with `NumericOverflowError` when `me` is zero or a negative integer (a pole), the result is too
+###     large for B128, or `me` is infinite, and with `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B128.ln_gamma() -> Me
+    r: Me = me.ln_gamma_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### Converts an angle from radians to degrees by multiplying by 180 / pi (the constant rounded to B128). {B128.to_degrees_unchecked} gives the raw IEEE 754 result.
+### :returns: `me` in degrees, rounded once.
+### :throws: Crashes with `NumericOverflowError` when the result is too large for B128 or `me` is infinite, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B128.to_degrees() -> Me
+    r: Me = me.to_degrees_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The IEEE 754 remainder of `me / other`, the quotient rounded to the nearest integer (ties to even). Exact. {B128.rem_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: The remainder.
+### :throws: Crashes with `DivisionByZeroError` when `other` is zero and `me` isn't, and with `NumericDomainError`
+###     when the remainder is NaN: a zero `other` and `me`, an infinite `me`, or a NaN operand.
+@track_caller
+routine B128.rem(other: Me) -> Me
+    r: Me = me.rem_unchecked(other)
+    checked: Me = r.require_finite_quotient(dividend: me, divisor: other)
+    return checked
+
+### The positive difference: `me - other` when `me > other`, else +0. {B128.fdim_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: max(`me - other`, 0).
+### :throws: Crashes with `NumericOverflowError` when the difference is too large for B128 or an operand is infinite,
+###     and with `NumericDomainError` when an operand is NaN.
+@track_caller
+routine B128.fdim(other: Me) -> Me
+    r: Me = me.fdim_unchecked(other)
+    checked: Me = r.require_finite()
+    return checked
+
+### `me` times 2^`n`, exactly unless the result is subnormal. {B128.scalbn_unchecked} gives the raw IEEE 754 result.
+### :param n: The power of two.
+### :returns: `me` * 2^`n`.
+### :throws: Crashes with `NumericOverflowError` when the result is too large for B128 or `me` is infinite, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B128.scalbn(n: S64) -> Me
+    r: Me = me.scalbn_unchecked(n)
+    checked: Me = r.require_finite()
+    return checked
+
+### The least B128 greater than `me`. {B128.next_up_unchecked} gives the raw IEEE 754 result.
+### :returns: The next value up.
+### :throws: Crashes with `NumericOverflowError` when `me` is `MAX` or +inf (the result is +inf), and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B128.next_up() -> Me
+    r: Me = me.next_up_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The greatest B128 less than `me`. {B128.next_down_unchecked} gives the raw IEEE 754 result.
+### :returns: The next value down.
+### :throws: Crashes with `NumericOverflowError` when `me` is `MIN` or -inf (the result is -inf), and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B128.next_down() -> Me
+    r: Me = me.next_down_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The unbiased exponent of `me` as a B128: floor(log2(|`me`|)). {B128.logb_unchecked} gives the raw IEEE 754 result.
+### :returns: The exponent.
+### :throws: Crashes with `NumericOverflowError` when `me` is zero (the exponent is -inf) or infinite, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B128.logb() -> Me
+    r: Me = me.logb_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### sqrt(x^2 + y^2), correctly rounded, with no overflow on the way. {hypot_unchecked} gives the raw IEEE 754 result.
+### :param x: The first leg.
+### :param y: The second leg.
+### :returns: sqrt(x^2 + y^2).
+### :throws: Crashes with `NumericOverflowError` when the result is too large for B128 or a leg is infinite, and
+###     with `NumericDomainError` when a leg is NaN and none is infinite.
+@track_caller
+routine hypot(x: B128, y: B128) -> B128
+    r: B128 = hypot_unchecked(x: x, y: y)
+    checked: B128 = r.require_finite()
+    return checked
+
+### sqrt(x^2 + y^2 + z^2), correctly rounded, with no overflow on the way. {hypot_unchecked} gives the raw IEEE 754 result.
+### :param x: The first leg.
+### :param y: The second leg.
+### :param z: The third leg.
+### :returns: sqrt(x^2 + y^2 + z^2).
+### :throws: Crashes with `NumericOverflowError` when the result is too large for B128 or a leg is infinite, and
+###     with `NumericDomainError` when a leg is NaN and none is infinite.
+@track_caller
+routine hypot(x: B128, y: B128, z: B128) -> B128
+    r: B128 = hypot_unchecked(x: x, y: y, z: z)
+    checked: B128 = r.require_finite()
+    return checked

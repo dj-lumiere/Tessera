@@ -12,6 +12,7 @@ module Standard/Core
 record B64
 obeys Equatable[B64], Comparable[B64], Hashable[B64]
 obeys Numeric[B64], Divisible[B64], Negatable[B64]
+obeys UncheckedArithmetic[B64]
 
 # -- constants -----------------------------------------------------------------
 
@@ -38,7 +39,7 @@ routine B64.min(other: Me) -> Me
     self_nan: Bool = me.is_nan()
     other_nan: Bool = other.is_nan()
     when
-        self_nan and other_nan => return me + other
+        self_nan and other_nan => return me +! other
         self_nan => return other
         other_nan => return me
         else =>
@@ -56,7 +57,7 @@ routine B64.max(other: Me) -> Me
     self_nan: Bool = me.is_nan()
     other_nan: Bool = other.is_nan()
     when
-        self_nan and other_nan => return me + other
+        self_nan and other_nan => return me +! other
         self_nan => return other
         other_nan => return me
         else =>
@@ -70,21 +71,21 @@ routine B64.max(other: Me) -> Me
 ### Adds `other` to `me`, rounded to nearest (ties to even).
 ### :param other: The value to add.
 ### :returns: `me + other`: infinity on overflow, NaN when either operand is NaN or for `inf + -inf`.
-routine B64.add(other: Me) -> Me
+routine B64.add_unchecked(other: Me) -> Me
     r: Me = fadd[Me](me, other)
     return r
 
 ### Subtracts `other` from `me`, rounded to nearest (ties to even).
 ### :param other: The value to subtract.
 ### :returns: `me - other`: infinity on overflow, NaN when either operand is NaN or for `inf - inf`.
-routine B64.sub(other: Me) -> Me
+routine B64.sub_unchecked(other: Me) -> Me
     r: Me = fsub[Me](me, other)
     return r
 
 ### Multiplies `me` by `other`, rounded to nearest (ties to even).
 ### :param other: The factor.
 ### :returns: `me * other`: infinity on overflow, NaN when either operand is NaN or for `0 * inf`.
-routine B64.mul(other: Me) -> Me
+routine B64.mul_unchecked(other: Me) -> Me
     r: Me = fmul[Me](me, other)
     return r
 
@@ -119,7 +120,7 @@ routine B64.ge(other: Me) -> Bool
 ### Divides `me` by `other`, rounded to nearest (ties to even).
 ### :param other: The divisor.
 ### :returns: `me / other`: a signed infinity for a nonzero value divided by zero, NaN for `0 / 0`, `inf / inf`, or a NaN operand.
-routine B64.truediv(other: Me) -> Me
+routine B64.truediv_unchecked(other: Me) -> Me
     r: Me = fdiv[Me](me, other)
     return r
 
@@ -266,11 +267,11 @@ routine B64.is_sign_negative() -> Bool
 ### :param other: The divisor.
 ### :returns: The remainder. NaN when either operand is NaN, `me` is infinite, or `other` is 0. Otherwise `me`
 ###     itself when `other` is infinite or `me` is a zero.
-routine B64.mod_trunc(other: Me) -> Me
+routine B64.mod_trunc_unchecked(other: Me) -> Me
     nan: Bool = me.is_nan() or other.is_nan()
     invalid: Bool = me.is_infinite() or other == 0.0
     when
-        nan => return me + other
+        nan => return me +! other
         invalid => return Me.NAN
         other.is_infinite() or me == 0.0 => return me
         else =>
@@ -306,7 +307,7 @@ routine B64.mod_trunc(other: Me) -> Me
 
 ### The reciprocal `1 / me`, rounded once.
 ### :returns: `1 / me`: a signed infinity for a signed zero, a signed zero for an infinity, NaN for NaN.
-routine B64.recip() -> Me
+routine B64.recip_unchecked() -> Me
     r: Me = fdiv[Me](1.0, me)
     return r
 
@@ -315,7 +316,7 @@ routine B64.recip() -> Me
 ### :param b: The addend.
 ### :returns: `me * a + b` rounded once to nearest (ties to even). NaN for a NaN operand, `inf * 0`, or `inf - inf`.
 @target(arch: "aarch64")
-routine B64.mul_add(a: Me, b: Me) -> Me
+routine B64.mul_add_unchecked(a: Me, b: Me) -> Me
     r: Me = fma[Me](me, a, b)
     return r
 
@@ -325,7 +326,7 @@ routine B64.mul_add(a: Me, b: Me) -> Me
 ### :returns: `me * a + b` rounded once to nearest (ties to even). NaN for a NaN operand, `inf * 0`, or `inf - inf`.
 @target(arch: "x86_64")
 @feature("fma")
-routine B64.mul_add(a: Me, b: Me) -> Me
+routine B64.mul_add_unchecked(a: Me, b: Me) -> Me
     r: Me = fma[Me](me, a, b)
     return r
 
@@ -336,7 +337,7 @@ routine B64.mul_add(a: Me, b: Me) -> Me
 @target(arch: "x86_64")
 @feature(not "fma")
 @inline
-routine B64.mul_add(a: Me, b: Me) -> Me
+routine B64.mul_add_unchecked(a: Me, b: Me) -> Me
     r: Me = me.mul_add_soft(a, b)
     return r
 
@@ -346,7 +347,7 @@ routine B64.mul_add(a: Me, b: Me) -> Me
 ### :returns: `me * a + b` rounded once to nearest (ties to even). NaN for a NaN operand, `inf * 0`, or `inf - inf`.
 @target(arch: not ("aarch64", "x86_64"))
 @inline
-routine B64.mul_add(a: Me, b: Me) -> Me
+routine B64.mul_add_unchecked(a: Me, b: Me) -> Me
     r: Me = me.mul_add_soft(a, b)
     return r
 
@@ -387,21 +388,21 @@ secret routine B64.mul_add_soft(a: Me, b: Me) -> Me
         # R = z + r + d, and when |r| + |d| is below the distance from z to its nearer boundary, z is the answer.
         # The check runs beside the next operation, and only a sum within a few ulps of a tie of z falls back to
         # rounding tl + e to odd.
-        p: Me = me * a
+        p: Me = me *! a
         e: Me = b64_dekker_error(x: a, y: me, p)
-        th: Me = b + p
-        bv: Me = th - b
-        av: Me = th - bv
-        tl: Me = b - av + (p - bv)
-        s: Me = tl + e
-        z: Me = th + s
-        sv: Me = s - tl
-        su: Me = s - sv
-        d: Me = tl - su + (e - sv)
-        zv: Me = z - th
-        zu: Me = z - zv
-        r: Me = th - zu + (s - zv)
-        w: Me = r.abs() + d.abs()
+        th: Me = b +! p
+        bv: Me = th -! b
+        av: Me = th -! bv
+        tl: Me = b -! av +! (p -! bv)
+        s: Me = tl +! e
+        z: Me = th +! s
+        sv: Me = s -! tl
+        su: Me = s -! sv
+        d: Me = tl -! su +! (e -! sv)
+        zv: Me = z -! th
+        zu: Me = z -! zv
+        r: Me = th -! zu +! (s -! zv)
+        w: Me = r.abs() +! d.abs()
         # |r + d| <= |r| + |d|, and w, that sum rounded, is below a power of two only when the sum is. The
         # boundaries of z are half an ulp away, the power of two with the exponent field of z less 53, and a
         # quarter ulp below a power of two, one field less (for z not tiny: a field of 55 or more).
@@ -414,7 +415,7 @@ secret routine B64.mul_add_soft(a: Me, b: Me) -> Me
         inside: Bool = w_field < boundary
         if normal and inside
             return z
-        return th + b64_add_round_to_odd(a: tl, b: e)
+        return th +! b64_add_round_to_odd(a: tl, b: e)
     return me.mul_add_wide(a, b)
 
 ### me * a + b with a single rounding, for every operand: the slow path of {B64.mul_add_soft}, kept out of line so
@@ -430,10 +431,10 @@ secret routine B64.mul_add_wide(a: Me, b: Me) -> Me
     addend_special: Bool = not b.is_finite()
     zero_product: Bool = me == 0.0 or a == 0.0
     when
-        factor_special => return me * a + b
-        addend_special => return b + b
-        zero_product => return me * a + b
-        b == 0.0 => return me * a
+        factor_special => return me *! a +! b
+        addend_special => return b +! b
+        zero_product => return me *! a +! b
+        b == 0.0 => return me *! a
         else =>
             # an infinite or NaN factor makes the product exact, and so does a zero one
             # a nonzero product plus zero is the product, whatever the zero's sign
@@ -495,14 +496,14 @@ secret routine B64.mul_add_wide(a: Me, b: Me) -> Me
 ### The quotient `q` of Euclidean division, so that `me = q * other + r` with `0 <= r < |other|`.
 ### :param other: The divisor.
 ### :returns: The quotient `q`. NaN when either operand is NaN.
-routine B64.floordiv(other: Me) -> Me
-    q: Me = me.truediv(other).trunc()
-    rem: Me = me.mod_trunc(other)
+routine B64.floordiv_unchecked(other: Me) -> Me
+    q: Me = me.truediv_unchecked(other).trunc()
+    rem: Me = me.mod_trunc_unchecked(other)
     if not (rem < 0.0)
         return q
     positive_divisor: Bool = other > 0.0
-    down: Me = q - 1.0
-    up: Me = q + 1.0
+    down: Me = q -! 1.0
+    up: Me = q +! 1.0
     r: Me = when
         positive_divisor => down
         else => up
@@ -512,12 +513,12 @@ routine B64.floordiv(other: Me) -> Me
 ### :param other: The divisor.
 ### :returns: The remainder, in `0 ..< |other|` for a finite `other`. When the exact remainder is a tiny negative value,
 ###     `|other|` plus it would round to `|other|`, so the largest value below `|other|` comes back instead.
-routine B64.mod(other: Me) -> Me
-    rem: Me = me.mod_trunc(other)
+routine B64.mod_unchecked(other: Me) -> Me
+    rem: Me = me.mod_trunc_unchecked(other)
     if not (rem < 0.0)
         return rem
     magnitude: Me = other.abs()
-    r: Me = rem + magnitude
+    r: Me = rem +! magnitude
     # a tiny negative remainder plus |other| rounds up to |other|: the largest value below it is the nearest
     # one in range
     if r == magnitude and magnitude.is_finite()
@@ -531,7 +532,7 @@ routine B64.mod(other: Me) -> Me
 ### :returns: The smaller value, or NaN when either operand is NaN.
 routine B64.minimum(other: Me) -> Me
     if me.is_nan() or other.is_nan()
-        return me + other
+        return me +! other
     # equal values have equal bits except ±0, where bitor picks the negative one
     if me == other
         return Me.from_bits(me.bits() | other.bits())
@@ -546,7 +547,7 @@ routine B64.minimum(other: Me) -> Me
 ### :returns: The larger value, or NaN when either operand is NaN.
 routine B64.maximum(other: Me) -> Me
     if me.is_nan() or other.is_nan()
-        return me + other
+        return me +! other
     # equal values have equal bits except ±0, where bitand picks the positive one
     if me == other
         return Me.from_bits(me.bits() & other.bits())
@@ -606,7 +607,7 @@ routine B64.floor() -> Me
     t: Me = me.trunc()
     down: Bool = t > me
     r: Me = when
-        down => t - 1.0
+        down => t -! 1.0
         else => t
     return r
 
@@ -624,7 +625,7 @@ routine B64.ceil() -> Me
     t: Me = me.trunc()
     up: Bool = t < me
     r: Me = when
-        up => t + 1.0
+        up => t +! 1.0
         else => t
     return r
 
@@ -640,9 +641,9 @@ routine B64.round() -> Me
 @target(arch: not "aarch64")
 routine B64.round() -> Me
     t: Me = me.trunc()
-    fraction: Me = me - t
+    fraction: Me = me -! t
     half: Bool = fraction.abs() >= 0.5
-    away: Me = t + Me.copysign(1.0, me)
+    away: Me = t +! Me.copysign(1.0, me)
     r: Me = when
         half => away
         else => t
@@ -664,7 +665,7 @@ routine B64.round_ties_even() -> Me
     magnitude: Me = me.abs()
     if magnitude >= 4503599627370496.0
         return me
-    rounded: Me = magnitude + 4503599627370496.0 - 4503599627370496.0
+    rounded: Me = magnitude +! 4503599627370496.0 -! 4503599627370496.0
     r: Me = rounded.copysign(me)
     return r
 
@@ -685,7 +686,7 @@ routine B64.trunc() -> Me
     special: Bool = field == 0x7FF
     integral: Bool = field >= 1075
     when
-        special => return me + me
+        special => return me +! me
         integral => return me
         field < 1023 => return Me.from_bits(bits & 0x8000000000000000)
         else =>
@@ -698,7 +699,7 @@ routine B64.trunc() -> Me
 ### :returns: The fractional part. NaN for an infinity or NaN.
 routine B64.fract() -> Me
     whole: Me = me.trunc()
-    r: Me = me - whole
+    r: Me = me -! whole
     return r
 
 # -- powers --------------------------------------------------------------------
@@ -709,15 +710,15 @@ routine B64.fract() -> Me
 
 ### The square root of `me`.
 ### :returns: The square root: NaN for negative values other than -0.0, which gives -0.0.
-routine B64.sqrt() -> Me
+routine B64.sqrt_unchecked() -> Me
     r: Me = sqrt[Me](me)
     return r
 
 ### me raised to an integer power, correctly rounded: powf with n converted, which is exact.
 ### :param n: The integer exponent.
 ### :returns: `me` to the power `n`, rounded once.
-routine B64.powi(n: S32) -> Me
-    r: Me = me.powf(n.to[Me]())
+routine B64.powi_unchecked(n: S32) -> Me
+    r: Me = me.powf_unchecked(n.to[Me]())
     return r
 
 ### The logarithm of `me` in base `base`, ln(`me`) / ln(`base`) correctly rounded (to nearest, ties to even). Three
@@ -732,7 +733,7 @@ routine B64.powi(n: S32) -> Me
 ### :note: The first tier decides all but about 2 in a million random pairs. Within about 2^-12 of 1 its absolute
 ###     bound is too wide and the B128 tier decides. Some pairs near 1 need the last tier: the true quotient of
 ###     log(1 - 2^-52, 1 + 2^-50) lies within 2^-154 of a midpoint.
-routine B64.log(base: Me) -> Me
+routine B64.log_unchecked(base: Me) -> Me
     x_ok: Bool = me > 0.0 and me.is_finite()
     base_ok: Bool = base > 0.0 and base.is_finite()
     one: Bool = me == 1.0 or base == 1.0
@@ -741,30 +742,30 @@ routine B64.log(base: Me) -> Me
         when r
             is Me as v => return v
             is None =>
-                q: B128 = me.to[B128]().ln() / base.to[B128]().ln()
-                width: B128 = q.abs().scalbn(-109)
-                left: Me = (q - width).to[Me]()
-                right: Me = (q + width).to[Me]()
+                q: B128 = me.to[B128]().ln_unchecked() /! base.to[B128]().ln_unchecked()
+                width: B128 = q.abs().scalbn_unchecked(-109)
+                left: Me = (q -! width).to[Me]()
+                right: Me = (q +! width).to[Me]()
                 if left == right
                     return left
                 r2: B128 = big_log_ratio(x: me.to[B128](), base: base.to[B128](),
                     fraction_bits: 52)
                 return r2.to[Me]()
     else
-        return me.ln() / base.ln()
+        return me.ln_unchecked() /! base.ln_unchecked()
 
 # -- special functions ---------------------------------------------------------
 
 ### Converts an angle from radians to degrees by multiplying by 180 / pi (the constant rounded to B64).
 ### :returns: `me` in degrees, rounded once.
-routine B64.to_degrees() -> Me
-    r: Me = me * 57.2957795130823208767981548141051703
+routine B64.to_degrees_unchecked() -> Me
+    r: Me = me *! 57.2957795130823208767981548141051703
     return r
 
 ### Converts an angle from degrees to radians by multiplying by pi / 180 (the constant rounded to B64).
 ### :returns: `me` in radians, rounded once.
 routine B64.to_radians() -> Me
-    r: Me = me * 0.0174532925199432957692369076848861271
+    r: Me = me *! 0.0174532925199432957692369076848861271
     return r
 
 # -- classification ------------------------------------------------------------
@@ -890,13 +891,13 @@ secret routine b64_round_pack(negative: Bool, exponent: S64, sig: U64) -> B64
 ### :param b: The second addend, finite.
 ### :returns: `a + b` rounded to odd, or the plain sum when it is infinite or NaN.
 secret routine b64_add_round_to_odd(a: B64, b: B64) -> B64
-    local s: B64 = a + b
+    local s: B64 = a +! b
 
     if s.is_finite()
         # TwoSum: e is exactly (a + b) - s.
-        bv: B64 = s - a
-        av: B64 = s - bv
-        e: B64 = a - av + (b - bv)
+        bv: B64 = s -! a
+        av: B64 = s -! bv
+        e: B64 = a -! av +! (b -! bv)
         inexact: Bool = e != 0.0
         low_bit: U64 = s.bits() & 1
         even: Bool = low_bit == 0
@@ -920,7 +921,7 @@ secret routine b64_add_round_to_odd(a: B64, b: B64) -> B64
 @target(arch: "aarch64")
 @inline
 secret routine b64_mul_error(x: B64, y: B64, p: B64) -> B64
-    e: B64 = x.mul_add(a: y, b: -p)
+    e: B64 = x.mul_add_unchecked(a: y, b: -p)
     return e
 
 ### The rounding error of the product `p = x * y`: `x * y - p` rounded once, as `x.mul_add(y, p.neg())` gives it,
@@ -934,7 +935,7 @@ secret routine b64_mul_error(x: B64, y: B64, p: B64) -> B64
 @feature("fma")
 @inline
 secret routine b64_mul_error(x: B64, y: B64, p: B64) -> B64
-    e: B64 = x.mul_add(a: y, b: -p)
+    e: B64 = x.mul_add_unchecked(a: y, b: -p)
     return e
 
 ### The rounding error of the product `p = x * y`: the same value as `x.mul_add(y, p.neg())`, by Dekker's product
@@ -981,7 +982,7 @@ secret routine b64_mul_error_soft(x: B64, y: B64, p: B64) -> B64
     factors: Bool = x_normal and y_normal
     if factors and inside
         return b64_dekker_error(x, y, p)
-    return x.mul_add(a: y, b: -p)
+    return x.mul_add_unchecked(a: y, b: -p)
 
 ### The rounding error of the product `p = x * y` (rounded to nearest), exactly: `x * y - p`, by Dekker's
 ### product. Each factor splits into a high part of 26 bits (its encoding rounded to nearest at bit 27, then
@@ -997,14 +998,14 @@ secret routine b64_mul_error_soft(x: B64, y: B64, p: B64) -> B64
 secret routine b64_dekker_error(x: B64, y: B64, p: B64) -> B64
     xr: U64 = x.bits() +% 0x4000000
     xh: B64 = B64.from_bits(xr & 0xFFFFFFFFF8000000)
-    xl: B64 = x - xh
+    xl: B64 = x -! xh
     yr: U64 = y.bits() +% 0x4000000
     yh: B64 = B64.from_bits(yr & 0xFFFFFFFFF8000000)
-    yl: B64 = y - yh
-    t1: B64 = p - xh * yh
-    t2: B64 = t1 - xh * yl
-    t3: B64 = t2 - xl * yh
-    e: B64 = xl * yl - t3
+    yl: B64 = y -! yh
+    t1: B64 = p -! xh *! yh
+    t2: B64 = t1 -! xh *! yl
+    t3: B64 = t2 -! xl *! yh
+    e: B64 = xl *! yl -! t3
     return e
 
 ### Narrows to B32 with round-to-odd, then rounds that to B16. B32's 24 bits are
@@ -1342,3 +1343,385 @@ routine B64.to_clamp[U128]() -> U128
 routine B64.is_trunc_in_range(lo: Me, hi: Me) -> Bool
     whole: Me = me.trunc()
     return lo <= whole < hi
+
+# -- checked forms -----------------------------------------------------------
+#
+# The default form of each operation whose finite arguments can give an infinite or NaN result crashes there:
+# such a result is almost always a bug. Each has an _unchecked form, which gives the raw IEEE 754 value, and the
+# operators +! -! *! /! spell the unchecked arithmetic. Finite results are the same bits in both forms.
+
+### `me` when it is finite: the last step of a checked B64 operation.
+### :returns: `me`.
+### :throws: Crashes with `NumericOverflowError` when `me` is infinite, and with `NumericDomainError` when it is NaN.
+@track_caller
+secret routine B64.require_finite() -> Me
+    if me.is_finite()
+        return me
+    if me.is_nan()
+        crash_numeric_domain()
+    crash_float_overflow()
+
+### `me`, the result of dividing `dividend` by `divisor`, when it is finite: the last step of a checked B64 division.
+### :param dividend: The value divided.
+### :param divisor: The value divided by.
+### :returns: `me`.
+### :throws: Crashes with `DivisionByZeroError` when `me` isn't finite because `divisor` is zero and `dividend` isn't,
+###     else as {B64.require_finite}.
+@track_caller
+secret routine B64.require_finite_quotient(dividend: Me, divisor: Me) -> Me
+    if me.is_finite()
+        return me
+    if divisor == 0.0 and not (dividend == 0.0)
+        crash_division_by_zero()
+    r: Me = me.require_finite()
+    return r
+
+### Adds `other` to `me`, rounded to nearest (ties to even). {B64.add_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: `me + other`.
+### :throws: Crashes with `NumericOverflowError` when the sum is too large for B64 or an operand is infinite, and with
+###     `NumericDomainError` when it is NaN: a NaN operand, or infinities of opposite signs.
+@track_caller
+routine B64.add(other: Me) -> Me
+    r: Me = me.add_unchecked(other)
+    checked: Me = r.require_finite()
+    return checked
+
+### Subtracts `other` from `me`, rounded to nearest (ties to even). {B64.sub_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: `me - other`.
+### :throws: Crashes with `NumericOverflowError` when the difference is too large for B64 or an operand is infinite,
+###     and with `NumericDomainError` when it is NaN: a NaN operand, or infinities of the same sign.
+@track_caller
+routine B64.sub(other: Me) -> Me
+    r: Me = me.sub_unchecked(other)
+    checked: Me = r.require_finite()
+    return checked
+
+### Multiplies `me` by `other`, rounded to nearest (ties to even). {B64.mul_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: `me * other`.
+### :throws: Crashes with `NumericOverflowError` when the product is too large for B64 or a factor is infinite, and
+###     with `NumericDomainError` when it is NaN: a NaN factor, or zero times infinity.
+@track_caller
+routine B64.mul(other: Me) -> Me
+    r: Me = me.mul_unchecked(other)
+    checked: Me = r.require_finite()
+    return checked
+
+### Divides `me` by `other`, rounded to nearest (ties to even). {B64.truediv_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: `me / other`.
+### :throws: Crashes with `DivisionByZeroError` when `other` is zero and `me` isn't, with `NumericOverflowError` when
+###     the quotient is too large for B64 or `me` is infinite, and with `NumericDomainError` when it is NaN: `0 / 0`,
+###     `inf / inf`, or a NaN operand.
+@track_caller
+routine B64.truediv(other: Me) -> Me
+    r: Me = me.truediv_unchecked(other)
+    checked: Me = r.require_finite_quotient(dividend: me, divisor: other)
+    return checked
+
+### Fused multiply-add: `me * a + b` with a single rounding (to nearest, ties to even). {B64.mul_add_unchecked} gives the raw IEEE 754 result.
+### :param a: The factor `me` is multiplied by.
+### :param b: The addend.
+### :returns: `me * a + b`, rounded once.
+### :throws: Crashes with `NumericOverflowError` when the result is too large for B64 or an operand is infinite, and
+###     with `NumericDomainError` when it is NaN: a NaN operand, `0 * inf`, or infinities that cancel.
+@track_caller
+routine B64.mul_add(a: Me, b: Me) -> Me
+    r: Me = me.mul_add_unchecked(a, b)
+    checked: Me = r.require_finite()
+    return checked
+
+### The quotient `q` of Euclidean division, so that `me = q * other + r` with `0 <= r < |other|`. {B64.floordiv_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: The quotient `q`.
+### :throws: Crashes with `DivisionByZeroError` when `other` is zero and `me` isn't, with `NumericOverflowError` when
+###     the quotient is too large for B64 or infinite, and with `NumericDomainError` when it is NaN: `0 // 0`, an
+###     infinite `me`, or a NaN operand.
+@track_caller
+routine B64.floordiv(other: Me) -> Me
+    r: Me = me.floordiv_unchecked(other)
+    checked: Me = r.require_finite_quotient(dividend: me, divisor: other)
+    return checked
+
+### The least non-negative remainder of `me / other` (Euclidean). {B64.mod_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: The remainder, in `[0, |other|)`.
+### :throws: Crashes with `DivisionByZeroError` when `other` is zero and `me` isn't, with `NumericOverflowError` when
+###     the remainder is infinite (a negative `me` and an infinite `other`), and with `NumericDomainError` when it is
+###     NaN: `0 % 0`, an infinite `me`, or a NaN operand.
+@track_caller
+routine B64.mod(other: Me) -> Me
+    r: Me = me.mod_unchecked(other)
+    checked: Me = r.require_finite_quotient(dividend: me, divisor: other)
+    return checked
+
+### The remainder of `me / other` with the sign of `me` (C fmod). Exact. {B64.mod_trunc_unchecked} gives the raw IEEE 754 result.
+### :param other: The other operand.
+### :returns: The remainder.
+### :throws: Crashes with `DivisionByZeroError` when `other` is zero and `me` isn't, and with `NumericDomainError`
+###     when the remainder is NaN: a zero `other` and `me`, an infinite `me`, or a NaN operand.
+@track_caller
+routine B64.mod_trunc(other: Me) -> Me
+    r: Me = me.mod_trunc_unchecked(other)
+    checked: Me = r.require_finite_quotient(dividend: me, divisor: other)
+    return checked
+
+### The reciprocal `1 / me`, rounded once. {B64.recip_unchecked} gives the raw IEEE 754 result.
+### :returns: `1 / me`.
+### :throws: Crashes with `DivisionByZeroError` when `me` is zero, with `NumericOverflowError` when `1 / me` is too
+###     large for B64 (a tiny subnormal `me`), and with `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B64.recip() -> Me
+    r: Me = me.recip_unchecked()
+    checked: Me = r.require_finite_quotient(dividend: 1.0, divisor: me)
+    return checked
+
+### The square root of `me`, correctly rounded. -0.0 gives -0.0. {B64.sqrt_unchecked} gives the raw IEEE 754 result.
+### :returns: The square root.
+### :throws: Crashes with `NumericOverflowError` when `me` is +inf, and with `NumericDomainError` when `me` is
+###     negative (other than -0.0) or NaN.
+@track_caller
+routine B64.sqrt() -> Me
+    r: Me = me.sqrt_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### e^`me`, correctly rounded. {B64.exp_unchecked} gives the raw IEEE 754 result.
+### :returns: e^`me`.
+### :throws: Crashes with `NumericOverflowError` when e^`me` is too large for B64 or `me` is +inf, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B64.exp() -> Me
+    r: Me = me.exp_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### 2^`me`, correctly rounded. {B64.exp2_unchecked} gives the raw IEEE 754 result.
+### :returns: 2^`me`.
+### :throws: Crashes with `NumericOverflowError` when 2^`me` is too large for B64 or `me` is +inf, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B64.exp2() -> Me
+    r: Me = me.exp2_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### 10^`me`, correctly rounded. {B64.exp10_unchecked} gives the raw IEEE 754 result.
+### :returns: 10^`me`.
+### :throws: Crashes with `NumericOverflowError` when 10^`me` is too large for B64 or `me` is +inf, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B64.exp10() -> Me
+    r: Me = me.exp10_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### e^`me` - 1, correctly rounded and accurate near 0. {B64.exp_m1_unchecked} gives the raw IEEE 754 result.
+### :returns: e^`me` - 1.
+### :throws: Crashes with `NumericOverflowError` when the result is too large for B64 or `me` is +inf, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B64.exp_m1() -> Me
+    r: Me = me.exp_m1_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The natural logarithm of `me`, correctly rounded. {B64.ln_unchecked} gives the raw IEEE 754 result.
+### :returns: ln(`me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is zero (the logarithm is -inf) or +inf, and with
+###     `NumericDomainError` when `me` is negative or NaN.
+@track_caller
+routine B64.ln() -> Me
+    r: Me = me.ln_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The base-2 logarithm of `me`, correctly rounded. {B64.log2_unchecked} gives the raw IEEE 754 result.
+### :returns: log2(`me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is zero (the logarithm is -inf) or +inf, and with
+###     `NumericDomainError` when `me` is negative or NaN.
+@track_caller
+routine B64.log2() -> Me
+    r: Me = me.log2_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The base-10 logarithm of `me`, correctly rounded. {B64.log10_unchecked} gives the raw IEEE 754 result.
+### :returns: log10(`me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is zero (the logarithm is -inf) or +inf, and with
+###     `NumericDomainError` when `me` is negative or NaN.
+@track_caller
+routine B64.log10() -> Me
+    r: Me = me.log10_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### ln(1 + `me`), correctly rounded and accurate near 0. {B64.ln_1p_unchecked} gives the raw IEEE 754 result.
+### :returns: ln(1 + `me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is -1 (the logarithm is -inf) or +inf, and with
+###     `NumericDomainError` when `me` is below -1 or NaN.
+@track_caller
+routine B64.ln_1p() -> Me
+    r: Me = me.ln_1p_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The logarithm of `me` in base `base`, ln(`me`) / ln(`base`) correctly rounded. {B64.log_unchecked} gives the raw IEEE 754 result.
+### :param base: The base of the logarithm.
+### :returns: log base `base` of `me`.
+### :throws: Crashes with `NumericOverflowError` when the quotient is infinite (`me` zero or +inf, or `base` 1), and
+###     with `NumericDomainError` when it is NaN: a negative or NaN argument, or both logarithms zero or both
+###     infinite.
+@track_caller
+routine B64.log(base: Me) -> Me
+    r: Me = me.log_unchecked(base)
+    checked: Me = r.require_finite()
+    return checked
+
+### `me` raised to the power `exponent`, correctly rounded. {B64.powf_unchecked} gives the raw IEEE 754 result.
+### :param exponent: The exponent.
+### :returns: `me` ^ `exponent`.
+### :throws: Crashes with `NumericOverflowError` when the power is too large for B64, or infinite (a zero `me` with a
+###     negative `exponent`), and with `NumericDomainError` when it is NaN: a negative `me` with an `exponent` that
+###     isn't an integer, or a NaN operand.
+@track_caller
+routine B64.powf(exponent: Me) -> Me
+    r: Me = me.powf_unchecked(exponent)
+    checked: Me = r.require_finite()
+    return checked
+
+### `me` raised to the integer power `n`, correctly rounded. {B64.powi_unchecked} gives the raw IEEE 754 result.
+### :param n: The exponent.
+### :returns: `me` ^ `n`.
+### :throws: Crashes with `NumericOverflowError` when the power is too large for B64, or infinite (a zero `me` with a
+###     negative `n`), and with `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B64.powi(n: S32) -> Me
+    r: Me = me.powi_unchecked(n)
+    checked: Me = r.require_finite()
+    return checked
+
+### tan(pi * `me`), correctly rounded. {B64.tan_pi_unchecked} gives the raw IEEE 754 result.
+### :returns: tan(pi * `me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is an odd multiple of 0.5 (a pole), and with
+###     `NumericDomainError` when `me` is infinite or NaN.
+@track_caller
+routine B64.tan_pi() -> Me
+    r: Me = me.tan_pi_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The arcsine of `me` in radians, correctly rounded. {B64.asin_unchecked} gives the raw IEEE 754 result.
+### :returns: asin(`me`), in [-pi/2, pi/2].
+### :throws: Crashes with `NumericDomainError` when `me` is outside [-1, 1] or NaN.
+@track_caller
+routine B64.asin() -> Me
+    r: Me = me.asin_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The arccosine of `me` in radians, correctly rounded. {B64.acos_unchecked} gives the raw IEEE 754 result.
+### :returns: acos(`me`), in [0, pi].
+### :throws: Crashes with `NumericDomainError` when `me` is outside [-1, 1] or NaN.
+@track_caller
+routine B64.acos() -> Me
+    r: Me = me.acos_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The hyperbolic sine of `me`, correctly rounded. {B64.sinh_unchecked} gives the raw IEEE 754 result.
+### :returns: sinh(`me`).
+### :throws: Crashes with `NumericOverflowError` when the result is too large for B64 or `me` is infinite, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B64.sinh() -> Me
+    r: Me = me.sinh_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The hyperbolic cosine of `me`, correctly rounded. {B64.cosh_unchecked} gives the raw IEEE 754 result.
+### :returns: cosh(`me`).
+### :throws: Crashes with `NumericOverflowError` when the result is too large for B64 or `me` is infinite, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B64.cosh() -> Me
+    r: Me = me.cosh_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The inverse hyperbolic cosine of `me`, correctly rounded. {B64.acosh_unchecked} gives the raw IEEE 754 result.
+### :returns: acosh(`me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is +inf, and with `NumericDomainError` when `me` is below 1
+###     or NaN.
+@track_caller
+routine B64.acosh() -> Me
+    r: Me = me.acosh_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The inverse hyperbolic tangent of `me`, correctly rounded. {B64.atanh_unchecked} gives the raw IEEE 754 result.
+### :returns: atanh(`me`).
+### :throws: Crashes with `NumericOverflowError` when `me` is 1 or -1 (the result is infinite), and with
+###     `NumericDomainError` when `me` is outside [-1, 1] or NaN.
+@track_caller
+routine B64.atanh() -> Me
+    r: Me = me.atanh_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### The gamma function of `me`, correctly rounded. {B64.gamma_unchecked} gives the raw IEEE 754 result.
+### :returns: Gamma(`me`).
+### :throws: Crashes with `NumericOverflowError` when the result is too large for B64, `me` is a zero (a pole), or
+###     `me` is +inf, and with `NumericDomainError` when `me` is a negative integer, -inf, or NaN.
+@track_caller
+routine B64.gamma() -> Me
+    r: Me = me.gamma_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### ln(|Gamma(`me`)|), correctly rounded. {B64.ln_gamma_unchecked} gives the raw IEEE 754 result.
+### :returns: ln(|Gamma(`me`)|).
+### :throws: Crashes with `NumericOverflowError` when `me` is zero or a negative integer (a pole), the result is too
+###     large for B64, or `me` is infinite, and with `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B64.ln_gamma() -> Me
+    r: Me = me.ln_gamma_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### Converts an angle from radians to degrees by multiplying by 180 / pi (the constant rounded to B64). {B64.to_degrees_unchecked} gives the raw IEEE 754 result.
+### :returns: `me` in degrees, rounded once.
+### :throws: Crashes with `NumericOverflowError` when the result is too large for B64 or `me` is infinite, and with
+###     `NumericDomainError` when `me` is NaN.
+@track_caller
+routine B64.to_degrees() -> Me
+    r: Me = me.to_degrees_unchecked()
+    checked: Me = r.require_finite()
+    return checked
+
+### sqrt(x^2 + y^2), correctly rounded, with no overflow on the way. {hypot_unchecked} gives the raw IEEE 754 result.
+### :param x: The first leg.
+### :param y: The second leg.
+### :returns: sqrt(x^2 + y^2).
+### :throws: Crashes with `NumericOverflowError` when the result is too large for B64 or a leg is infinite, and
+###     with `NumericDomainError` when a leg is NaN and none is infinite.
+@track_caller
+routine hypot(x: B64, y: B64) -> B64
+    r: B64 = hypot_unchecked(x: x, y: y)
+    checked: B64 = r.require_finite()
+    return checked
+
+### sqrt(x^2 + y^2 + z^2), correctly rounded, with no overflow on the way. {hypot_unchecked} gives the raw IEEE 754 result.
+### :param x: The first leg.
+### :param y: The second leg.
+### :param z: The third leg.
+### :returns: sqrt(x^2 + y^2 + z^2).
+### :throws: Crashes with `NumericOverflowError` when the result is too large for B64 or a leg is infinite, and
+###     with `NumericDomainError` when a leg is NaN and none is infinite.
+@track_caller
+routine hypot(x: B64, y: B64, z: B64) -> B64
+    r: B64 = hypot_unchecked(x: x, y: y, z: z)
+    checked: B64 = r.require_finite()
+    return checked

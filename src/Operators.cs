@@ -5,7 +5,9 @@ namespace Tessera;
 /// isn't enough. `==` is Equatable's `eq` and `!=` is not-eq. `<`, `<=`, `>`, `>=` come from Comparable's `compare`
 /// (`a < b` is `a.compare(b) < 0`). A type may declare its own `ne` / `lt` / `le` / `gt` / `ge`, which the operator
 /// then calls: the integers do, for speed, and the floats declare `lt` / `le` / `gt` / `ge`, since their `compare`
-/// can't say that NaN is unordered. `/` is `truediv` (true division: floats and the types built on them), `//` is `div`
+/// can't say that NaN is unordered. `+!`, `-!`, `*!` and `/!` are a float's `add_unchecked`, `sub_unchecked`,
+/// `mul_unchecked` and `truediv_unchecked`: the raw IEEE 754 result, where `+ - * /` crash on an infinite or NaN one.
+/// `/` is `truediv` (true division: floats and the types built on them), `//` is `div`
 /// and `%` is `mod`, both Euclidean (the remainder is never negative). `div_trunc` / `mod_trunc` are the quotient
 /// toward zero and the remainder with the dividend's sign, which no operator spells. `===` / `!==` compare two pointers by
 /// address (`same` / `notsame`), `==` / `!=` compare values. Precedence, tightest first: calls and `[i]`, `**`, the unary
@@ -18,6 +20,7 @@ public static class Operators
         ["+"] = "add", ["-"] = "sub", ["*"] = "mul", ["/"] = "truediv", ["//"] = "floordiv", ["%"] = "mod", ["**"] = "pow",
         ["+%"] = "add_wrap", ["-%"] = "sub_wrap", ["*%"] = "mul_wrap",
         ["+^"] = "add_clamp", ["-^"] = "sub_clamp", ["*^"] = "mul_clamp",
+        ["+!"] = "add_unchecked", ["-!"] = "sub_unchecked", ["*!"] = "mul_unchecked", ["/!"] = "truediv_unchecked",
         ["=="] = "eq", ["!="] = "ne", ["<"] = "lt", ["<="] = "le", [">"] = "gt", [">="] = "ge", ["<=>"] = "compare",
         ["==="] = "same", ["!=="] = "notsame",
         ["&"] = "bitand", ["|"] = "bitor", ["^"] = "bitxor", ["<<"] = "shift_left", [">>"] = "arith_shift_right", [">>>"] = "logical_shift_right",
@@ -37,6 +40,8 @@ public static class Operators
         ["add_wrap"] = ["WrappingAddable"], ["sub_wrap"] = ["WrappingSubtractable"], ["mul_wrap"] = ["WrappingMultiplicable"],
         ["add_clamp"] = ["ClampingAddable", "ClampingDurationAddable"], ["sub_clamp"] = ["ClampingSubtractable"],
         ["mul_clamp"] = ["ClampingMultiplicable"],
+        ["add_unchecked"] = ["UncheckedAddable"], ["sub_unchecked"] = ["UncheckedSubtractable"],
+        ["mul_unchecked"] = ["UncheckedMultiplicable"], ["truediv_unchecked"] = ["UncheckedDivisible"],
         ["eq"] = ["Equatable", "LaneComparable"], ["ne"] = ["Equatable", "LaneComparable"],
         ["lt"] = ["Comparable", "LaneComparable"], ["le"] = ["Comparable", "LaneComparable"],
         ["gt"] = ["Comparable", "LaneComparable"], ["ge"] = ["Comparable", "LaneComparable"],
@@ -82,8 +87,8 @@ public static class Operators
         "==" or "!=" or "===" or "!==" or "<" or "<=" or ">" or ">=" or "<=>" => 2,
         "til" or "to" => 3,
         "&" or "|" or "^" or "<<" or ">>" or ">>>" => 4,
-        "+" or "-" or "+%" or "-%" or "+^" or "-^" => 5,
-        "*" or "/" or "//" or "%" or "*%" or "*^" => 6,
+        "+" or "-" or "+%" or "-%" or "+^" or "-^" or "+!" or "-!" => 5,
+        "*" or "/" or "//" or "%" or "*%" or "*^" or "*!" or "/!" => 6,
         "**" => 8,
         _ => 9,
     };

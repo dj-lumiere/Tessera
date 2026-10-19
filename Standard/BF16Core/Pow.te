@@ -160,7 +160,7 @@ secret preset CM_BF16_POW_T5: @Array[U64, 64] <- [0x3FF0000000000000, 0x3FF000B1
 ### -0 and an odd integer `exponent`), overflow gives an infinity and underflow a zero. Any other NaN comes back quiet.
 ### :param exponent: The power to raise `me` to.
 ### :returns: `me`^`exponent`.
-routine BF16.powf(exponent: Me) -> Me
+routine BF16.powf_unchecked(exponent: Me) -> Me
     local x: B32 = me.to[B32]()
     local y: B32 = exponent.to[B32]()
     local ux: U16 = me.bits()
@@ -171,31 +171,31 @@ routine BF16.powf(exponent: Me) -> Me
         if ux >> 15 != 0
             # x = -1
             if uy & 0x7FFF > 0x7F80
-                return (y + y).to[Me]()
+                return (y +! y).to[Me]()
             if cm_bf16_pow_isint(uy)
                 if cm_bf16_pow_isodd(uy)
                     return me
                 return -me
-            return B32.truediv(0.0, 0.0).to[Me]()
+            return B32.truediv_unchecked(0.0, 0.0).to[Me]()
         # 1^y = 1 except when y is a signaling NaN
         if uy & 0x7FFF > 0x7F80 and uy & 0x0040 == 0
-            return (y + y).to[Me]()
+            return (y +! y).to[Me]()
         return me
     if uy & 0x7FFF == 0
         # x^0 = 1 except when x is a signaling NaN
         if ux & 0x7FFF > 0x7F80 and ux & 0x0040 == 0
-            return (x + x).to[Me]()
+            return (x +! x).to[Me]()
         return 1.0
     if uy & 0x7FFF >= 0x7F80
         # y = +-inf or NaN (|x| = 1 was handled above)
         if ux & 0x7FFF > 0x7F80
-            return (x + x).to[Me]()
+            return (x +! x).to[Me]()
         if uy & 0x7FFF == 0x7F80
             # +0 for |x| < 1 and y = +inf or |x| > 1 and y = -inf, +inf for the other two
             if (ux & 0x7FFF < 0x3F80) != (uy >> 15 != 0)
                 return 0.0
             return BF16.INFINITY
-        return (y + y).to[Me]()
+        return (y +! y).to[Me]()
     if ux & 0x7FFF == 0
         # x = +-0: the result is -0 or -inf only for x = -0 and an odd integer y
         if uy >> 15 != 0
@@ -217,15 +217,15 @@ routine BF16.powf(exponent: Me) -> Me
                 else => even
             return Me.from_bits(signed)
         if ux & 0x7FFF > 0x7F80
-            return (x + x).to[Me]()
+            return (x +! x).to[Me]()
         if not cm_bf16_pow_isint(uy)
-            return B32.truediv(0.0, 0.0).to[Me]()
+            return B32.truediv_unchecked(0.0, 0.0).to[Me]()
     # x > 0 here, or x < 0 with an integer y: then |x|^y, negative for an odd y
     sign: U64 = when
         ux >= 0x7F80 and cm_bf16_pow_isodd(uy) => 0x8000000000000000
         else => 0
     logx: B64 = cm_bf16_pow_log(ux & 0x7FFF)
-    ylogx: B64 = exponent.to[B64]() * logx
+    ylogx: B64 = exponent.to[B64]() *! logx
     return cm_bf16_pow_exp(ylogx, sign)
 
 ### Whether the BF16 with bits v is an integer (zeros, infinities and NaN count as integers).
@@ -252,7 +252,7 @@ secret routine cm_bf16_pow_log(u: U16) -> B64
     i2: U64 = (u & 0x7F).to[U64]()
     if i1 == 0
         return B64.from_bits(CM_BF16_POW_T3.getitem(i2))
-    return B64.from_bits(CM_BF16_POW_T1.getitem(i1.to[U64]())) + B64.from_bits(CM_BF16_POW_T2.getitem(i2))
+    return B64.from_bits(CM_BF16_POW_T1.getitem(i1.to[U64]())) +! B64.from_bits(CM_BF16_POW_T2.getitem(i2))
 
 ### exp(ylogx) rounded to BF16, with the sign bit `sign` added, correctly rounded including the exact and midpoint
 ### cases. Overflow gives an infinity and underflow a zero.
@@ -274,22 +274,22 @@ secret routine cm_bf16_pow_exp(ylogx: B64, sign: U64) -> BF16
     # x^y rounds to 1
     if ylogx.abs() <= 0x1p-9
         r: B64 = when
-            sign == 0 => 1.0 + ylogx
-            else => -1.0 - ylogx
+            sign == 0 => 1.0 +! ylogx
+            else => -1.0 -! ylogx
         return r.to[BF16]()
     # ylogx = e log(2) + i1 log(2)/2^6 + i2 log(2)/2^12 + r, with 2^12/log(2) and -log(2)/2^12 rounded to B64
-    jd: B64 = B64.mul(0x1.71547652b82fep+12, ylogx).trunc()
+    jd: B64 = B64.mul_unchecked(0x1.71547652b82fep+12, ylogx).trunc()
     j: S32 = jd.to[S32]()
     e: S32 = j >> 12
     i1: U64 = ((j >> 6) & 0x3F).to[U64]()
     i2: U64 = (j & 0x3F).to[U64]()
     # |r| < 2^-13 log(2), exp(r) from a degree-3 polynomial
-    r: B64 = jd.mul_add(a: -0x1.62e42fefa39efp-13, b: ylogx)
-    rr: B64 = r * r
-    c2: B64 = 0.5 + 0x1.5555555555555p-3 * r
-    c0: B64 = 1.0 + r
-    t: B64 = B64.from_bits(CM_BF16_POW_T4.getitem(i1)) * B64.from_bits(CM_BF16_POW_T5.getitem(i2))
-    expr: B64 = (c0 + c2 * rr) * t
+    r: B64 = jd.mul_add_unchecked(a: -0x1.62e42fefa39efp-13, b: ylogx)
+    rr: B64 = r *! r
+    c2: B64 = 0.5 +! 0x1.5555555555555p-3 *! r
+    c0: B64 = 1.0 +! r
+    t: B64 = B64.from_bits(CM_BF16_POW_T4.getitem(i1)) *! B64.from_bits(CM_BF16_POW_T5.getitem(i2))
+    expr: B64 = (c0 +! c2 *! rr) *! t
     u: U64 = expr.bits() +% (sign +% (e.to[S64]().to_wrap[U64]() << 52))
     # Round the low bits to nearest to catch the exact and midpoint values.
     rounded: U64 = when

@@ -17,7 +17,7 @@ module Standard/Core
 ### :param y: The second leg.
 ### :param z: The third leg.
 ### :returns: The length of the vector (`x`, `y`, `z`).
-routine hypot(x: B64, y: B64, z: B64) -> B64
+routine hypot_unchecked(x: B64, y: B64, z: B64) -> B64
     local xi: U64 = x.bits() & 0x7FFFFFFFFFFFFFFF
     local yi: U64 = y.bits() & 0x7FFFFFFFFFFFFFFF
     local zi: U64 = z.bits() & 0x7FFFFFFFFFFFFFFF
@@ -31,26 +31,26 @@ routine hypot(x: B64, y: B64, z: B64) -> B64
     sx: B64 = cm_b64_hypot3_scaled(bits: xi, top)
     sy: B64 = cm_b64_hypot3_scaled(bits: yi, top)
     sz: B64 = cm_b64_hypot3_scaled(bits: zi, top)
-    x2: B64 = sx * sx
-    y2: B64 = sy * sy
-    z2: B64 = sz * sz
+    x2: B64 = sx *! sx
+    y2: B64 = sy *! sy
+    z2: B64 = sz *! sz
     dx2: B64 = b64_mul_error(x: sx, y: sx, p: x2)
     dy2: B64 = b64_mul_error(x: sy, y: sy, p: y2)
     dz2: B64 = b64_mul_error(x: sz, y: sz, p: z2)
     # The sum of squares as hi + lo: two exact two-sums, then the small terms added up, under 2^-98 off.
-    s1: B64 = x2 + y2
+    s1: B64 = x2 +! y2
     e1: B64 = cm_b64_hypot3_sum_error(a: x2, b: y2, s: s1)
-    s2: B64 = s1 + z2
+    s2: B64 = s1 +! z2
     e2: B64 = cm_b64_hypot3_sum_error(a: s1, b: z2, s: s2)
-    lo0: B64 = e1 + e2 + (dx2 + dy2 + dz2)
-    hi: B64 = s2 + lo0  # s2 is at least 1, far above lo0: a fast two-sum
-    lo: B64 = lo0 - (hi - s2)
+    lo0: B64 = e1 +! e2 +! (dx2 +! dy2 +! dz2)
+    hi: B64 = s2 +! lo0  # s2 is at least 1, far above lo0: a fast two-sum
+    lo: B64 = lo0 -! (hi -! s2)
     # One correction step: th + tl is within 2^-96 of sqrt(hi + lo) relative.
-    th: B64 = hi.sqrt()
-    residual: B64 = th.mul_add(a: -th, b: hi)  # exact for a correctly rounded th
-    tl: B64 = B64.truediv(residual + lo, th + th)
-    s: B64 = th + tl  # a fast two-sum: s is the candidate, sl what lies beyond it
-    sl: B64 = tl - (s - th)
+    th: B64 = hi.sqrt_unchecked()
+    residual: B64 = th.mul_add_unchecked(a: -th, b: hi)  # exact for a correctly rounded th
+    tl: B64 = B64.truediv_unchecked(residual +! lo, th +! th)
+    s: B64 = th +! tl  # a fast two-sum: s is the candidate, sl what lies beyond it
+    sl: B64 = tl -! (s -! th)
     if cm_b64_hypot3_near_boundary(s, sl)
         return cm_b64_hypot3_exact(x: xi, y: yi, z: zi)
     t: U64 = s.bits() +% ((top - 1023).to_wrap[U64]() << 52)
@@ -88,8 +88,8 @@ secret routine cm_b64_hypot3_scaled(bits: U64, top: S64) -> B64
 ### :param s: `a + b` rounded to nearest.
 ### :returns: `a + b - s`.
 secret routine cm_b64_hypot3_sum_error(a: B64, b: B64, s: B64) -> B64
-    bb: B64 = s - a
-    e: B64 = a - (s - bb) + (b - bb)
+    bb: B64 = s -! a
+    e: B64 = a -! (s -! bb) +! (b -! bb)
     return e
 
 ### Whether the root s + sl (within 2^-96 of the true root relative) lies too close to a rounding boundary of `s` for
@@ -103,13 +103,13 @@ secret routine cm_b64_hypot3_near_boundary(s: B64, sl: B64) -> Bool
     local half: B64 = B64.from_bits(e - 0x0350000000000000)  # half an ulp of s
     local eps: B64 = B64.from_bits(e - 0x05A0000000000000)  # 2^-90 times s's binade
 
-    off: B64 = sl.abs() - half
+    off: B64 = sl.abs() -! half
     if off.abs() <= eps
         return true
     # Below a power of two the grid is twice as fine, so the midpoint under s is a quarter ulp away.
     power: Bool = s.bits() & 0x000FFFFFFFFFFFFF == 0
     below: Bool = power and sl < 0.0
-    quarter: B64 = sl.abs() - half * 0.5
+    quarter: B64 = sl.abs() -! half *! 0.5
     return below and quarter.abs() <= eps
 
 ### hypot of three legs where one of them is infinite or NaN.

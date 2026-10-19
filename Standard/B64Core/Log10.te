@@ -307,7 +307,7 @@ secret preset CM_B64_LOG10_POW10: @Array[U64, 32] <- [0x3FF0000000000000, 0x4024
 ### log10 me, correctly rounded (to nearest, ties to even). 10^n gives exactly n for n in 0..22, log10(±0) = -inf,
 ### log10(+inf) = +inf, a negative argument gives NaN, and NaN comes back quiet.
 ### :returns: The base-10 logarithm of `me`.
-routine B64.log10() -> Me
+routine B64.log10_unchecked() -> Me
     local u: U64 = me.bits()
     local biased_exponent: S64 = (u >> 52).to[S64]()
     local e: S64 = biased_exponent - 0x3FF
@@ -319,7 +319,7 @@ routine B64.log10() -> Me
             nan_inf: Bool = e == 0x400 or (e == 0xC00 and u != 0xFFF0000000000000)
             negative: Bool = me < 0.0
             when
-                nan_inf => return me + me
+                nan_inf => return me +! me
                 negative => return Me.from_bits(0xFFF8000000000000)
                 me == 0.0 => return Me.from_bits(0xFFF0000000000000)
                 else =>
@@ -327,7 +327,7 @@ routine B64.log10() -> Me
                     # the default NaN of 0/0
                     # the pole
                     # scale into the normal range
-                    us: U64 = (me * 0x1p52).bits()
+                    us: U64 = (me *! 0x1p52).bits()
                     scaled_exponent: S64 = (us >> 52).to[S64]()
                     becomes (us, scaled_exponent - 0x3FF - 52)
         else => (u, e)
@@ -337,8 +337,8 @@ routine B64.log10() -> Me
     if u_norm == CM_B64_LOG10_POW10.getitem(n.to[U64]())
         return n.to[Me]()
     hl: CmF64LogDd = cm_b64_log10_fast(e: e_norm, mbits: u_norm & 0x000FFFFFFFFFFFFF)
-    left: Me = hl.hi + (hl.lo - 0x1.04p-69)  # the fast path's maximal absolute error
-    right: Me = hl.hi + (hl.lo + 0x1.04p-69)
+    left: Me = hl.hi +! (hl.lo -! 0x1.04p-69)  # the fast path's maximal absolute error
+    right: Me = hl.hi +! (hl.lo +! 0x1.04p-69)
     if left == right
         return left
     # the fast path fails with probability about 2^-11.5: log x in dint arithmetic, times 1/log(10)
@@ -362,23 +362,23 @@ secret routine cm_b64_log10_fast(e: S64, mbits: U64) -> CmF64LogDd
     r: B64 = B64.from_bits(CM_B64_LOG10_INVERSE.getitem(k))
     l1: B64 = B64.from_bits(CM_B64_LOG10_LOG_INV.getitem(k * 2))
     l2: B64 = B64.from_bits(CM_B64_LOG10_LOG_INV.getitem(k * 2 + 1))
-    z: B64 = r.mul_add(a: y, b: -1.0)  # exact
+    z: B64 = r.mul_add_unchecked(a: y, b: -1.0)  # exact
     # P(z) - z, for |z| < 0.00212097167968735
-    z2: B64 = z * z
-    p45: B64 = B64.mul_add(-0x1.55362255e0f63p-3, a: z, b: 0x1.999a14758b084p-3)
-    p23: B64 = B64.mul_add(-0x1.0000000537df6p-2, a: z, b: 0x1.555555554f4d8p-2)
-    ph0: B64 = p45.mul_add(a: z2, b: p23)
-    ph1: B64 = ph0.mul_add(a: z, b: -0x1.ffffffffffffap-2)
-    ph: B64 = ph1 * z2
+    z2: B64 = z *! z
+    p45: B64 = B64.mul_add_unchecked(-0x1.55362255e0f63p-3, a: z, b: 0x1.999a14758b084p-3)
+    p23: B64 = B64.mul_add_unchecked(-0x1.0000000537df6p-2, a: z, b: 0x1.555555554f4d8p-2)
+    ph0: B64 = p45.mul_add_unchecked(a: z2, b: p23)
+    ph1: B64 = ph0.mul_add_unchecked(a: z, b: -0x1.ffffffffffffap-2)
+    ph: B64 = ph1 *! z2
     # add e log(2): log2_h is an integer multiple of 2^-42, so e log2_h + l1 is exact
     eed: B64 = ee.to[B64]()
-    hi: B64 = eed.mul_add(a: 0x1.62e42fefa38p-1, b: l1)
-    h: B64 = hi + z
-    lo0: B64 = z - (h - hi)
-    lo1: B64 = ph + (lo0 + l2)
-    lo: B64 = eed.mul_add(a: 0x1.ef35793c7673p-45, b: lo1)
+    hi: B64 = eed.mul_add_unchecked(a: 0x1.62e42fefa38p-1, b: l1)
+    h: B64 = hi +! z
+    lo0: B64 = z -! (h -! hi)
+    lo1: B64 = ph +! (lo0 +! l2)
+    lo: B64 = eed.mul_add_unchecked(a: 0x1.ef35793c7673p-45, b: lo1)
     # multiply by the double-double 1/log(10), neglecting the low*low term
-    ph10: B64 = h * 0x1.bcb7b1526e50ep-2
-    s: B64 = h.mul_add(a: 0x1.bcb7b1526e50ep-2, b: -ph10)
-    t: B64 = lo.mul_add(a: 0x1.bcb7b1526e50ep-2, b: s)
-    return CmF64LogDd(hi: ph10, lo: h.mul_add(a: 0x1.95355baaafad3p-57, b: t))
+    ph10: B64 = h *! 0x1.bcb7b1526e50ep-2
+    s: B64 = h.mul_add_unchecked(a: 0x1.bcb7b1526e50ep-2, b: -ph10)
+    t: B64 = lo.mul_add_unchecked(a: 0x1.bcb7b1526e50ep-2, b: s)
+    return CmF64LogDd(hi: ph10, lo: h.mul_add_unchecked(a: 0x1.95355baaafad3p-57, b: t))

@@ -11,14 +11,15 @@ public sealed partial class Compiler
 {
     // Presets fold to constants here, and only these forms fold: literals; other presets; add, sub, mul, div, mod,
     // min, max, the bitwise operations and shifts, neg, and the integer conversions to<T>() and to_wrap<T>(); the
-    // bitwise operations of Bool; add, sub, mul, div, and neg of B32 and B64; max, min, sizeof, and alignof; and
-    // T.from_bits(...) for a float or a bit-pattern record. Each follows the stdlib routine's meaning, and what would
-    // crash at run time (overflow, a zero divisor, a value out of range) is a build error. Nothing else runs at
-    // build time: a routine call in a preset is an error, not code at each use.
+    // bitwise operations of Bool; add, sub, mul, truediv, their _unchecked forms, and neg of B32 and B64; max, min,
+    // sizeof, and alignof; and T.from_bits(...) for a float or a bit-pattern record. Each follows the stdlib routine's
+    // meaning, and what would crash at run time (overflow, a zero divisor, a value out of range, a float result that
+    // is infinite or NaN) is a build error. Nothing else runs at build time: a routine call in a preset is an error,
+    // not code at each use.
 
     private const string PresetForms =
-        "literals, other presets, integer and Bool arithmetic and conversions, B32/B64 add/sub/mul/truediv/neg, " +
-        "max/min, sizeof/alignof, and T.from_bits(...)";
+        "literals, other presets, integer and Bool arithmetic and conversions, B32/B64 add/sub/mul/truediv (and their " +
+        "_unchecked forms)/neg, max/min, sizeof/alignof, and T.from_bits(...)";
 
     private readonly Dictionary<string, ConstVal> _presetValues = [];
     private readonly HashSet<string> _foldingPresets = [];
@@ -420,24 +421,41 @@ public sealed partial class Compiler
         throw new CompileError(pos, $"Bool.{name} can't run at build time; a preset is made of {PresetForms}");
     }
 
-    /// B32 and B64 arithmetic, rounded to nearest like the hardware (C# float and double are IEEE).
+    /// B32 and B64 arithmetic, rounded to nearest like the hardware (C# float and double are IEEE). The checked
+    /// forms (`+ - * /`) crash at run time on a result that is infinite or NaN, so such a result is a build error here,
+    /// and the `_unchecked` forms (`+! -! *! /!`) give it as IEEE 754 does.
     private ConstVal ApplyFloat(BigInteger bits, FloatType ft, string name, List<Expr> args, int firstArgument, TypeEnv env, Pos pos)
     {
         bool f32 = ft == FloatType.B32;
         double a = f32 ? BitConverter.UInt32BitsToSingle((uint)bits) : BitConverter.UInt64BitsToDouble((ulong)bits);
         if (name == "neg" && args.Count == 0) return new ConstVal(ft, bits ^ (BigInteger.One << (ft.Bits - 1)));
-        if (args.Count == 1 && name is "add" or "sub" or "mul" or "truediv")
+        string op = name.EndsWith("_unchecked", StringComparison.Ordinal) ? name[..^"_unchecked".Length] : name;
+        if (args.Count == 1 && op is "add" or "sub" or "mul" or "truediv")
         {
             BigInteger bb = Typed(Fold(args[0], ft, env), ft, args[0].Pos, firstArgument).Value;
+            double result;
+            BigInteger resultBits;
             if (f32)
             {
                 float x = (float)a, y = BitConverter.UInt32BitsToSingle((uint)bb);
-                float r = name switch { "add" => x + y, "sub" => x - y, "mul" => x * y, _ => x / y };
-                return new ConstVal(ft, BitConverter.SingleToUInt32Bits(r));
+                float r = op switch { "add" => x + y, "sub" => x - y, "mul" => x * y, _ => x / y };
+                result = r;
+                resultBits = BitConverter.SingleToUInt32Bits(r);
             }
-            double yd = BitConverter.UInt64BitsToDouble((ulong)bb);
-            double rd = name switch { "add" => a + yd, "sub" => a - yd, "mul" => a * yd, _ => a / yd };
-            return new ConstVal(ft, BitConverter.DoubleToUInt64Bits(rd));
+            else
+            {
+                double yd = BitConverter.UInt64BitsToDouble((ulong)bb);
+                result = op switch { "add" => a + yd, "sub" => a - yd, "mul" => a * yd, _ => a / yd };
+                resultBits = BitConverter.DoubleToUInt64Bits(result);
+            }
+            if (op == name && !double.IsFinite(result))
+            {
+                string got = double.IsNaN(result) ? "NaN" : result > 0 ? "+inf" : "-inf";
+                string symbol = Operators.OperatorFor(name)!;
+                throw new CompileError(pos, $"{ft.Name}.{name} gives {got} in this preset, and a float operation whose result "
+                    + $"isn't finite crashes: write {name}_unchecked (the operator '{symbol}!') for the raw IEEE 754 value");
+            }
+            return new ConstVal(ft, resultBits);
         }
         throw new CompileError(pos, $"{ft.Name}.{name} can't run at build time; a preset is made of {PresetForms}");
     }

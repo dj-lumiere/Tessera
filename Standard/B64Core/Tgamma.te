@@ -460,15 +460,15 @@ secret record CmF64GammaLogArg
 
 ### Γ(me): ±inf at ±0, NaN at the negative integers and -inf.
 ### :returns: Γ(`me`), correctly rounded.
-routine B64.gamma() -> Me
+routine B64.gamma_unchecked() -> Me
     local f: CmF64TgammaFast = cm_b64_tgamma_dd(me)
 
     st: U64 = f.status
     when st
         0 =>
             # the fast phase decides unless the error bound straddles a rounding boundary
-            ub: Me = f.hi + (f.lo + f.eps)
-            lb: Me = f.hi + (f.lo - f.eps)
+            ub: Me = f.hi +! (f.lo +! f.eps)
+            lb: Me = f.hi +! (f.lo -! f.eps)
             if ub != lb
                 return cm_b64_tgamma_accurate(me)
             return Me.from_bits(ub.bits() +% (f.sc.to_wrap[U64]() << 52))
@@ -483,14 +483,14 @@ routine B64.gamma() -> Me
                 th: U64 = f.hi.bits() +% (shift_exp.to_wrap[U64]() << 52)
                 s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: Me.from_bits(th & 0xFFF0000000000000),
                     y: f.hi)
-                rl: Me = f.lo + s.lo
-                ub: Me = s.hi + (rl + f.eps)
-                lb: Me = s.hi + (rl - f.eps)
+                rl: Me = f.lo +! s.lo
+                ub: Me = s.hi +! (rl +! f.eps)
+                lb: Me = s.hi +! (rl -! f.eps)
                 if ub != lb
                     return cm_b64_tgamma_accurate(me)
                 return Me.from_bits(ub.bits() & 0x800FFFFFFFFFFFFF)
-            ub: Me = f.hi + (f.lo + f.eps)
-            lb: Me = f.hi + (f.lo - f.eps)
+            ub: Me = f.hi +! (f.lo +! f.eps)
+            lb: Me = f.hi +! (f.lo -! f.eps)
             if ub != lb
                 return cm_b64_tgamma_accurate(me)
             return Me.from_bits(ub.bits() -% (e.to_wrap[U64]() << 52))
@@ -515,24 +515,24 @@ secret routine cm_b64_tgamma_special(x: B64) -> B64
             when
                 infinite and t >> 63 == 1 => return B64.from_bits(0xFFF8000000000000)
                 infinite => return x
-                else => return x + x
+                else => return x +! x
         ax < 0x71E0000000000000 =>
             # |x| < 2^-112: gamma(x) rounds to 1/x (the C code steps below it for x = 2^k under
             # directed rounding, and r - 0.5 is r in round to nearest)
             if x == 0x1p-1024
-                return B64.add(0x1.fffffffffffffp+1023, 0x1p+970)
-            r: B64 = B64.truediv(1.0, x)
+                return B64.add_unchecked(0x1.fffffffffffffp+1023, 0x1p+970)
+            r: B64 = B64.truediv_unchecked(1.0, x)
             if x == 0.0
                 return r
-            if r.mul_add(a: x, b: -1.0) == 0.0
-                return r - 0.5
+            if r.mul_add_unchecked(a: x, b: -1.0) == 0.0
+                return r -! 0.5
             return r
-        x >= 0x1.573fae561f648p+7 => return B64.add(0x1.fp+1023, 0x1.fp+1023)
+        x >= 0x1.573fae561f648p+7 => return B64.add_unchecked(0x1.fp+1023, 0x1.fp+1023)
         fx == x =>
             # an integer: +-0 is a pole of the sign of x, a negative integer a NaN pole, and k gives (k-1)!
             zero: Bool = x == 0.0
             when
-                zero => return B64.truediv(1.0, x)
+                zero => return B64.truediv_unchecked(1.0, x)
                 x < 0.0 => return B64.from_bits(0xFFF8000000000000)
                 else => pass
             1.0.poke_into(th)
@@ -543,14 +543,14 @@ secret routine cm_b64_tgamma_special(x: B64) -> B64
 
             each i in 1 til k
                 m: CmF64GammaDD = cm_b64_gamma_mulddd(x: x0.peek(), ch: th.peek(), cl: tl.peek())
-                next_x0: B64 = x0.peek() + 1.0
+                next_x0: B64 = x0.peek() +! 1.0
                 next_tl: B64 = m.lo
                 next_th: B64 = m.hi
                 next_th.poke_into(th)
                 next_tl.poke_into(tl)
                 next_x0.poke_into(x0)
             then
-                return th.peek() + tl.peek()
+                return th.peek() +! tl.peek()
         else =>
             # x <= -184, not an integer: |gamma(x)| < 2^-1078 rounds to a zero with the sign of gamma
             fits: Bool = fx >= -0x1p+62
@@ -558,8 +558,8 @@ secret routine cm_b64_tgamma_special(x: B64) -> B64
                 fits => fx.to[S64]()
                 else => 0
             if kk & 1 == 0
-                return B64.mul(0x1p-1022, 0x1p-1022)
-            return B64.mul(0x1p-1022, -0x1p-1022)
+                return B64.mul_unchecked(0x1p-1022, 0x1p-1022)
+            return B64.mul_unchecked(0x1p-1022, -0x1p-1022)
 
 ### The double-double fast phase of gamma.
 ### :param x: The argument.
@@ -582,22 +582,22 @@ secret routine cm_b64_tgamma_dd(x: B64) -> CmF64TgammaFast
 ### :param x: The argument.
 ### :returns: The fast-phase result (status 0).
 secret routine cm_b64_tgamma_small(x: B64) -> CmF64TgammaFast
-    x2: B64 = x * x
-    x4: B64 = x2 * x2
-    x8: B64 = x4 * x4
+    x2: B64 = x *! x
+    x4: B64 = x2 *! x2
+    x8: B64 = x4 *! x4
     c0: B64 = cm_b64_tgamma_pair4(x, x2, q: 899)
     c4: B64 = cm_b64_tgamma_pair4(x, x2, q: 903)
     c8: B64 = cm_b64_tgamma_pair4(x, x2, q: 907)
     c12: B64 = cm_b64_tgamma_pair4(x, x2, q: 911)
-    lo: B64 = c0 + x4 * c4
-    hi: B64 = c8 + x4 * c12
-    cl: B64 = x * (lo + x8 * hi)
+    lo: B64 = c0 +! x4 *! c4
+    hi: B64 = c8 +! x4 *! c12
+    cl: B64 = x *! (lo +! x8 *! hi)
     p: CmF64GammaDD = cm_b64_tgamma_polyddd(x, n: 5, base: 889, l: cl)
-    fh: B64 = B64.truediv(1.0, x)
-    fl: B64 = fh.mul_add(a: -x, b: 1.0) * fh
+    fh: B64 = B64.truediv_unchecked(1.0, x)
+    fl: B64 = fh.mul_add_unchecked(a: -x, b: 1.0) *! fh
     f: CmF64GammaDD = cm_b64_gamma_fastsum(xh: fh, xl: fl, yh: p.hi, yl: p.lo)
-    x6_scaled: B64 = x2 * x4 * 0x1.203af9ee75616p-48
-    eps: B64 = f.hi * (x6_scaled + 0x1.9d35025bff857p-62)
+    x6_scaled: B64 = x2 *! x4 *! 0x1.203af9ee75616p-48
+    eps: B64 = f.hi *! (x6_scaled +! 0x1.9d35025bff857p-62)
     return CmF64TgammaFast(status: 0, hi: f.hi, lo: f.lo, eps: eps, sc: 0)
 
 ### Fast phase for -184 < x < -3: gamma(x) = pi / (sin(pi x) gamma(1 - x)).
@@ -609,12 +609,12 @@ secret routine cm_b64_tgamma_reflect(x: B64) -> CmF64TgammaFast
     ex: CmF64TgammaExp = cm_b64_tgamma_expd(x: lg.hi, l: lg.lo)
     ix: B64 = x.floor()
     ip: S64 = ix.to[S64]()
-    sp: CmF64GammaDD = cm_b64_tgamma_sinpid(x - ix)
+    sp: CmF64GammaDD = cm_b64_tgamma_sinpid(x -! ix)
     m: CmF64GammaDD = cm_b64_gamma_muldd(xh: sp.hi, xl: sp.lo, ch: ex.hi, cl: ex.lo)
-    rcp: B64 = B64.truediv(1.0, m.hi)
-    rh: B64 = rcp * 0x1.921fb54442d18p+1
-    err: B64 = rh.mul_add(a: m.hi, b: -0x1.921fb54442d18p+1)
-    rl: B64 = rcp * (B64.sub(0x1.1a62633145c07p-53, m.lo * rh) - err)
+    rcp: B64 = B64.truediv_unchecked(1.0, m.hi)
+    rh: B64 = rcp *! 0x1.921fb54442d18p+1
+    err: B64 = rh.mul_add_unchecked(a: m.hi, b: -0x1.921fb54442d18p+1)
+    rl: B64 = rcp *! (B64.sub_unchecked(0x1.1a62633145c07p-53, m.lo *! rh) -! err)
     odd: Bool = ip & 1 != 0
     sh: B64 = when
         odd => -rh
@@ -622,7 +622,7 @@ secret routine cm_b64_tgamma_reflect(x: B64) -> CmF64TgammaFast
     sl: B64 = when
         odd => -rl
         else => rl
-    eps: B64 = sh * B64.sub(0x1.48ad3caefe280p-67, x * 0x1.61019f74442b7p-73)
+    eps: B64 = sh *! B64.sub_unchecked(0x1.48ad3caefe280p-67, x *! 0x1.61019f74442b7p-73)
     ok: Bool = ip >= -170
     st: U64 = when
         ok => 0
@@ -635,7 +635,7 @@ secret routine cm_b64_tgamma_reflect(x: B64) -> CmF64TgammaFast
 secret routine cm_b64_tgamma_stirling(x: B64) -> CmF64TgammaFast
     lg: CmF64GammaDD = cm_b64_tgamma_lgamma_asym(xh: x, xl: 0.0)
     ex: CmF64TgammaExp = cm_b64_tgamma_expd(x: lg.hi, l: lg.lo)
-    eps: B64 = ex.hi * (x * 0x1.bce27bce24d11p-73 + 0x1.2e3b40a0e9b4fp-69)
+    eps: B64 = ex.hi *! (x *! 0x1.bce27bce24d11p-73 +! 0x1.2e3b40a0e9b4fp-69)
     return CmF64TgammaFast(status: 0, hi: ex.hi, lo: ex.lo, eps: eps, sc: ex.e)
 
 ### Fast phase for -3 <= x <= 4: a polynomial around 3.5 + i, shifted by the
@@ -648,13 +648,13 @@ secret routine cm_b64_tgamma_mid(x: B64) -> CmF64TgammaFast
     local wh: @B64 <- x
     local wl: @B64 <- 0.0
 
-    ri: B64 = (x - 3.5).round_ties_even()
-    d: B64 = x - (ri + 3.5)
-    d2: B64 = d * d
-    d4: B64 = d2 * d2
+    ri: B64 = (x -! 3.5).round_ties_even()
+    d: B64 = x -! (ri +! 3.5)
+    d2: B64 = d *! d
+    d4: B64 = d2 *! d2
     lo: B64 = cm_b64_tgamma_pair4(x: d, x2: d2, q: 961)
     hi: B64 = cm_b64_tgamma_pair4(x: d, x2: d2, q: 965)
-    fl: B64 = d * (lo + d4 * hi)
+    fl: B64 = d *! (lo +! d4 *! hi)
     f: CmF64GammaDD = cm_b64_tgamma_polyddd(x: d, n: 10, base: 915, l: fl)
     jm: S64 = ri.abs().to[S64]()
     if not (jm == 0)
@@ -664,7 +664,7 @@ secret routine cm_b64_tgamma_mid(x: B64) -> CmF64TgammaFast
             s: CmF64GammaDD = when
                 big => cm_b64_gamma_fasttwosum(x: xph.peek(), y: 1.0)
                 else => cm_b64_gamma_fasttwosum(x: 1.0, y: xph.peek())
-            xpl1: B64 = xpl.peek() + s.lo
+            xpl1: B64 = xpl.peek() +! s.lo
             w: CmF64GammaDD = cm_b64_gamma_muldd(xh: s.hi, xl: xpl1, ch: wh.peek(), cl: wl.peek())
             next_wl: B64 = w.lo
             next_wh: B64 = w.hi
@@ -676,19 +676,19 @@ secret routine cm_b64_tgamma_mid(x: B64) -> CmF64TgammaFast
             next_wl.poke_into(wl)
             continue with j: j - 1
         then
-            rh: B64 = B64.truediv(1.0, wh.peek())
-            rh_err: B64 = rh.mul_add(a: -wh.peek(), b: 1.0) - wl.peek() * rh
-            rl: B64 = rh_err * rh
+            rh: B64 = B64.truediv_unchecked(1.0, wh.peek())
+            rh_err: B64 = rh.mul_add_unchecked(a: -wh.peek(), b: 1.0) -! wl.peek() *! rh
+            rl: B64 = rh_err *! rh
             g: CmF64GammaDD = cm_b64_gamma_muldd(xh: rh, xl: rl, ch: f.hi, cl: f.lo)
-            return CmF64TgammaFast(status: 0, hi: g.hi, lo: g.lo, eps: g.hi * 0x1.2e3b40a0e9b4fp-70,
+            return CmF64TgammaFast(status: 0, hi: g.hi, lo: g.lo, eps: g.hi *! 0x1.2e3b40a0e9b4fp-70,
                 sc: 0)
     else
         1.0.poke_into(wh)
-        rh: B64 = B64.truediv(1.0, wh.peek())
-        rh_err: B64 = rh.mul_add(a: -wh.peek(), b: 1.0) - wl.peek() * rh
-        rl: B64 = rh_err * rh
+        rh: B64 = B64.truediv_unchecked(1.0, wh.peek())
+        rh_err: B64 = rh.mul_add_unchecked(a: -wh.peek(), b: 1.0) -! wl.peek() *! rh
+        rl: B64 = rh_err *! rh
         g: CmF64GammaDD = cm_b64_gamma_muldd(xh: rh, xl: rl, ch: f.hi, cl: f.lo)
-        return CmF64TgammaFast(status: 0, hi: g.hi, lo: g.lo, eps: g.hi * 0x1.2e3b40a0e9b4fp-70,
+        return CmF64TgammaFast(status: 0, hi: g.hi, lo: g.lo, eps: g.hi *! 0x1.2e3b40a0e9b4fp-70,
             sc: 0)
 
 ### Entry i of CM_B64_TGAMMA_T as a B64.
@@ -703,9 +703,9 @@ secret routine cm_b64_tgamma_t(i: U64) -> B64
 ### :param q: The index of the first coefficient.
 ### :returns: The four-term polynomial's value.
 secret routine cm_b64_tgamma_pair4(x: B64, x2: B64, q: U64) -> B64
-    a: B64 = cm_b64_tgamma_t(q) + x * cm_b64_tgamma_t(q + 1)
-    b: B64 = cm_b64_tgamma_t(q + 2) + x * cm_b64_tgamma_t(q + 3)
-    return a + x2 * b
+    a: B64 = cm_b64_tgamma_t(q) +! x *! cm_b64_tgamma_t(q + 1)
+    b: B64 = cm_b64_tgamma_t(q + 2) +! x *! cm_b64_tgamma_t(q + 3)
+    return a +! x2 *! b
 
 ### The correctly rounded gamma of a tabulated hard-to-round x, or f otherwise.
 ### :param x: The argument.
@@ -718,7 +718,7 @@ secret routine cm_b64_tgamma_database(x: B64, f: B64) -> B64
         key: B64 = cm_b64_tgamma_t(base)
         when
             key < x => continue with a: m + 1, b: b
-            key == x => return cm_b64_tgamma_t(base + 1) + cm_b64_tgamma_t(base + 2)
+            key == x => return cm_b64_tgamma_t(base + 1) +! cm_b64_tgamma_t(base + 2)
             else => continue with a: a, b: m - 1
     then
         return f
@@ -730,21 +730,21 @@ secret routine cm_b64_tgamma_accurate(x: B64) -> B64
     if x.abs() < 0.25
         return cm_b64_tgamma_accurate_small(x)
     ix: B64 = x.floor()
-    d: B64 = B64.mul(2.0, x - (ix + 0.5))
+    d: B64 = B64.mul_unchecked(2.0, x -! (ix +! 0.5))
     i: S64 = ix.to[S64]()
     k: U64 = cm_b64_tgamma_range(i)
     pf: CmF64GammaDD = cm_b64_tgamma_poly3(d, k)
     jm: S64 = CM_B64_TGAMMA_BR_BASE.getitem(k) - i
     eoff: S64 = CM_B64_TGAMMA_BR_EOFF.getitem(k)
-    x1: B64 = x - 1.0
+    x1: B64 = x -! 1.0
     # gamma(x) as (fh + fl) 2^off: pf moved from the range's reference to x
     values: (CmF64GammaDD, S64) = when
         jm > 0 =>
             # below the range's reference: divide by w = x (x + 1) ... (x + jm - 1)
             wh, wl, up_off = cm_b64_tgamma_rising(x, count: jm - 1, eoff)
-            rh: B64 = B64.truediv(1.0, wh)
-            rh_err: B64 = rh.mul_add(a: -wh, b: 1.0) - wl * rh
-            rl: B64 = rh_err * rh
+            rh: B64 = B64.truediv_unchecked(1.0, wh)
+            rh_err: B64 = rh.mul_add_unchecked(a: -wh, b: 1.0) -! wl *! rh
+            rl: B64 = rh_err *! rh
             becomes (cm_b64_gamma_muldd3(xh: pf.hi, xl: pf.lo, yh: rh, yl: rl), up_off)
         jm < 0 =>
             # above the range's reference: multiply by w = (x - 1) (x - 2) ... (x + jm)
@@ -758,26 +758,26 @@ secret routine cm_b64_tgamma_accurate(x: B64) -> B64
     # rounding)
     fl: B64 = when
         jm <= 0 =>
-            c1: B64 = B64.add(0x1p-54, 0x1p-107) - 0x1p-54
-            c2: B64 = B64.sub(0x1p-53, 0x1p-107) - 0x1p-53
-            crr: B64 = c1 + c2
-            becomes f.lo + fh * (jm.to[B64]() * crr)
+            c1: B64 = B64.add_unchecked(0x1p-54, 0x1p-107) -! 0x1p-54
+            c2: B64 = B64.sub_unchecked(0x1p-53, 0x1p-107) -! 0x1p-53
+            crr: B64 = c1 +! c2
+            becomes f.lo +! fh *! (jm.to[B64]() *! crr)
         else =>
-            op: B64 = B64.sub(0x1p-53, 0x1p-107)
-            om: B64 = B64.add(-0x1p-53, 0x1p-107)
+            op: B64 = B64.sub_unchecked(0x1p-53, 0x1p-107)
+            om: B64 = B64.add_unchecked(-0x1p-53, 0x1p-107)
             same: Bool = op == -om
             crr: B64 = when
-                same => B64.sub(0x1p-53, op)
+                same => B64.sub_unchecked(0x1p-53, op)
                 else => 0.0
             steps: B64 = (jm - 5).to[B64]()
-            corr: B64 = steps * crr * 0x1.0a3d70a3d70a4p+0
-            becomes f.lo - fh * corr
+            corr: B64 = steps *! crr *! 0x1.0a3d70a3d70a4p+0
+            becomes f.lo -! fh *! corr
 
     # (fh + fl) 2^off, rounded at the subnormal quantum when it falls there
-    eps: B64 = B64.mul(0x1.ep-103, fh)
-    ub: B64 = fh + (fl + eps)
-    lb: B64 = fh + (fl - eps)
-    res: U64 = (fh + fl).bits()
+    eps: B64 = B64.mul_unchecked(0x1.ep-103, fh)
+    ub: B64 = fh +! (fl +! eps)
+    lb: B64 = fh +! (fl -! eps)
+    res: U64 = (fh +! fl).bits()
     exp_field: U64 = (res >> 52) & 0x7FF
     re: S64 = exp_field.to[S64]()
     bits: U64 = when
@@ -785,7 +785,7 @@ secret routine cm_b64_tgamma_accurate(x: B64) -> B64
             fix_exp: S64 = off + re - 1
             th: U64 = res -% (fix_exp.to_wrap[U64]() << 52) & 0xFFF0000000000000
             s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: B64.from_bits(th), y: fh)
-            rounded: B64 = s.hi + (fl + s.lo)
+            rounded: B64 = s.hi +! (fl +! s.lo)
             becomes rounded.bits() & 0x800FFFFFFFFFFFFF
         else => res +% (off.to_wrap[U64]() << 52)
     if ub != lb
@@ -804,10 +804,10 @@ secret routine cm_b64_tgamma_rising(x: B64, count: S64, eoff: S64) -> (B64, B64,
         s: CmF64GammaDD = when
             big => cm_b64_gamma_fasttwosum(x: xph, y: 1.0)
             else => cm_b64_gamma_fasttwosum(x: 1.0, y: xph)
-        n: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: s.hi, y: xpl + s.lo)
+        n: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: s.hi, y: xpl +! s.lo)
         w: CmF64GammaDD = cm_b64_gamma_muldd3(xh: n.hi, xl: n.lo, yh: wh, yl: wl)
         if w.hi.abs() > 0x1p+518
-            continue with xph: n.hi, xpl: n.lo, wh: w.hi * 0x1p-500, wl: w.lo * 0x1p-500, j: j - 1, off: off - 500
+            continue with xph: n.hi, xpl: n.lo, wh: w.hi *! 0x1p-500, wl: w.lo *! 0x1p-500, j: j - 1, off: off - 500
         continue with xph: n.hi, xpl: n.lo, wh: w.hi, wl: w.lo, j: j - 1, off: off
     then
         return (wh, wl, off)
@@ -819,7 +819,7 @@ secret routine cm_b64_tgamma_rising(x: B64, count: S64, eoff: S64) -> (B64, B64,
 secret routine cm_b64_tgamma_falling(x: B64, count: S64) -> CmF64GammaDD
     while j != 0 with xph: B64 = x, xpl: B64 = 0.0, wh: B64 = x, wl: B64 = 0.0, j: S64 = count
         s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: xph, y: -1.0)
-        n: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: s.hi, y: xpl + s.lo)
+        n: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: s.hi, y: xpl +! s.lo)
         w: CmF64GammaDD = cm_b64_gamma_muldd3(xh: n.hi, xl: n.lo, yh: wh, yl: wl)
         continue with xph: n.hi, xpl: n.lo, wh: w.hi, wl: w.lo, j: j - 1
     then
@@ -844,30 +844,30 @@ secret routine cm_b64_tgamma_range(i: S64) -> U64
 ### :param x: The argument.
 ### :returns: gamma(`x`), correctly rounded.
 secret routine cm_b64_tgamma_accurate_small(x: B64) -> B64
-    x2: B64 = x * x
-    x4: B64 = x2 * x2
+    x2: B64 = x *! x
+    x4: B64 = x2 *! x2
     c0: B64 = cm_b64_tgamma_pair4(x, x2, q: 227)
     c4: B64 = cm_b64_tgamma_pair4(x, x2, q: 231)
-    c: B64 = c0 + x4 * c4
-    p: CmF64GammaDD = cm_b64_tgamma_polyddd(x, n: 28, base: 171, l: x * c)
-    fh: B64 = B64.truediv(1.0, x)
-    dh: B64 = fh.mul_add(a: -x, b: 1.0)
-    fl: B64 = dh * fh
-    fll: B64 = fl.mul_add(a: -x, b: dh) * fh
+    c: B64 = c0 +! x4 *! c4
+    p: CmF64GammaDD = cm_b64_tgamma_polyddd(x, n: 28, base: 171, l: x *! c)
+    fh: B64 = B64.truediv_unchecked(1.0, x)
+    dh: B64 = fh.mul_add_unchecked(a: -x, b: 1.0)
+    fl: B64 = dh *! fh
+    fll: B64 = fl.mul_add_unchecked(a: -x, b: dh) *! fh
     s: CmF64GammaDD = cm_b64_gamma_sumdd(xh: fl, xl: fll, yh: p.hi, yl: p.lo)
     s2: CmF64GammaDD = cm_b64_gamma_twosum(x: s.hi, y: s.lo)
     a: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: fh, y: s2.hi)
     b: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: a.lo, y: s2.lo)
-    et: B64 = cm_b64_gamma_fasttwosum(x: a.hi, y: B64.mul(2.0, b.hi)).lo
+    et: B64 = cm_b64_gamma_fasttwosum(x: a.hi, y: B64.mul_unchecked(2.0, b.hi)).lo
     if et == 0.0
         # fh + fl is a rounding midpoint: move fl toward fll
         fh2: B64 = a.hi
         fl2: B64 = b.hi
-        sign_product: B64 = B64.copysign(1.0, fl2) * B64.copysign(1.0, b.lo)
+        sign_product: B64 = B64.copysign(1.0, fl2) *! B64.copysign(1.0, b.lo)
         if sign_product > 0.0
-            return fh2 + fl2 * B64.add(1.0, 0x1p-50)
-        return fh2 + fl2 * B64.sub(1.0, 0x1p-50)
-    return a.hi + b.hi
+            return fh2 +! fl2 *! B64.add_unchecked(1.0, 0x1p-50)
+        return fh2 +! fl2 *! B64.sub_unchecked(1.0, 0x1p-50)
+    return a.hi +! b.hi
 
 ### The double-double polynomial c[0] + c[1] x + ... + (c[n-1] + l) x^(n-1) of the
 ### (high, low) pairs of CM_B64_TGAMMA_T from base, at a double-double x.
@@ -884,7 +884,7 @@ secret routine cm_b64_tgamma_polydd(x: CmF64GammaDD, n: U64, base: U64, l: B64) 
     k: U64 = base + i * 2
     s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: cm_b64_tgamma_t(k), y: l)
     s.hi.poke_into(ch)
-    (s.lo + cm_b64_tgamma_t(k + 1)).poke_into(cl)
+    (s.lo +! cm_b64_tgamma_t(k + 1)).poke_into(cl)
 
     while i2 != 0 with i2: U64 = i
         i3: U64 = i2 - 1
@@ -914,7 +914,7 @@ secret routine cm_b64_tgamma_polyddd(x: B64, n: U64, base: U64, l: B64) -> CmF64
     k: U64 = base + i * 2
     s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: cm_b64_tgamma_t(k), y: l)
     s.hi.poke_into(ch)
-    (s.lo + cm_b64_tgamma_t(k + 1)).poke_into(cl)
+    (s.lo +! cm_b64_tgamma_t(k + 1)).poke_into(cl)
 
     while i2 != 0 with i2: U64 = i
         i3: U64 = i2 - 1
@@ -944,7 +944,7 @@ secret routine cm_b64_tgamma_polyd(x: B64, n: U64, base: U64) -> B64
 
     while i2 != 0 with i2: U64 = i
         i3: U64 = i2 - 1
-        (cm_b64_tgamma_t(base + i3 * 2) + x * ch.peek()).poke_into(ch)
+        (cm_b64_tgamma_t(base + i3 * 2) +! x *! ch.peek()).poke_into(ch)
         continue with i2: i3
     then
         return ch.peek()
@@ -956,16 +956,16 @@ secret routine cm_b64_tgamma_polyd(x: B64, n: U64, base: U64) -> B64
 ### :param x2: The low part of the triple-double.
 ### :returns: The product as a triple-double.
 secret routine cm_b64_tgamma_sprod(x: B64, x0: B64, x1: B64, x2: B64) -> CmF64GammaTD
-    z0: B64 = x * x0
+    z0: B64 = x *! x0
     z0l: B64 = b64_mul_error(x, y: x0, p: z0)
-    z1: B64 = x * x1
-    z2: B64 = x * x2 + b64_mul_error(x, y: x1, p: z1)
+    z1: B64 = x *! x1
+    z2: B64 = x *! x2 +! b64_mul_error(x, y: x1, p: z1)
     # split z0 so that ulp(high part) = 2^-25 (exact for |z0| <= 2^26)
-    zh: B64 = z0 + 0x1.8p+27 - 0x1.8p+27
-    e: B64 = z0 - zh
+    zh: B64 = z0 +! 0x1.8p+27 -! 0x1.8p+27
+    e: B64 = z0 -! zh
     s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: e, y: z0l)
     t: CmF64GammaDD = cm_b64_gamma_twosum(x: s.hi, y: z1)
-    return CmF64GammaTD(hi: zh, mid: t.hi, lo: t.lo + s.lo + z2)
+    return CmF64GammaTD(hi: zh, mid: t.hi, lo: t.lo +! s.lo +! z2)
 
 ### The accurate-phase polynomial of range k: imax double coefficients at chbase,
 ### weighted by triple-double powers of d, plus a double-double tail of jmax pairs
@@ -994,7 +994,7 @@ secret routine cm_b64_tgamma_poly3(d: B64, k: U64) -> CmF64GammaDD
         a: CmF64GammaDD = cm_b64_gamma_sumdd(xh: s1.peek(), xl: s2.peek(), yh: f.hi, yl: f.lo)
         next_s2: B64 = a.lo
         next_s1: B64 = a.hi
-        next_s0: B64 = s0.peek() + t.hi * chi
+        next_s0: B64 = s0.peek() +! t.hi *! chi
         next_t2: B64 = t.lo
         next_t1: B64 = t.mid
         next_t0: B64 = t.hi
@@ -1014,25 +1014,25 @@ secret routine cm_b64_tgamma_poly3(d: B64, k: U64) -> CmF64GammaDD
 ### :param x: The argument.
 ### :returns: sin(pi `x`) as a double-double.
 secret routine cm_b64_tgamma_sinpid(x: B64) -> CmF64GammaDD
-    from_half: B64 = (x - 0.5).abs()
-    y: B64 = from_half * 128.0
+    from_half: B64 = (x -! 0.5).abs()
+    y: B64 = from_half *! 128.0
     ix: B64 = y.round_ties_even()
-    d: B64 = ix - y
-    d2: B64 = d * d
+    d: B64 = ix -! y
+    d2: B64 = d *! d
     ky: U64 = ix.to[S64]().to[U64]()
     kx: U64 = U64.sub(64, ky)
     sh: B64 = cm_b64_tgamma_t(kx * 2 + 1170)
     sl: B64 = cm_b64_tgamma_t(kx * 2 + 1169)
     ch: B64 = cm_b64_tgamma_t(ky * 2 + 1170)
     cl: B64 = cm_b64_tgamma_t(ky * 2 + 1169)
-    pp_tail: B64 = d2 * 0x1.e1f4826790653p-59 + -0x1.55d3c7e3bd8bfp-42
-    pp: B64 = d2 * (d2 * pp_tail + 0x1.03c1f081b5ac4p-26)
-    qq_tail: B64 = d2 * -0x1.32d26e446373ap-50 + 0x1.466bc67748efcp-34
-    qq: B64 = d2 * (d2 * qq_tail + -0x1.4abbce625be53p-19)
+    pp_tail: B64 = d2 *! 0x1.e1f4826790653p-59 +! -0x1.55d3c7e3bd8bfp-42
+    pp: B64 = d2 *! (d2 *! pp_tail +! 0x1.03c1f081b5ac4p-26)
+    qq_tail: B64 = d2 *! -0x1.32d26e446373ap-50 +! 0x1.466bc67748efcp-34
+    qq: B64 = d2 *! (d2 *! qq_tail +! -0x1.4abbce625be53p-19)
     q: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: 0x1.921fb54442d18p-6, y: qq)
-    c: CmF64GammaDD = cm_b64_gamma_muldd(xh: q.hi, xl: q.lo + 0x1.1a624b88c9448p-60, ch, cl)
+    c: CmF64GammaDD = cm_b64_gamma_muldd(xh: q.hi, xl: q.lo +! 0x1.1a624b88c9448p-60, ch, cl)
     t0: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: -0x1.3bd3cc9be45dep-12, y: pp)
-    th: CmF64GammaDD = cm_b64_gamma_mulddd(x: d, ch: t0.hi, cl: t0.lo + -0x1.692b66e3cf6e8p-66)
+    th: CmF64GammaDD = cm_b64_gamma_mulddd(x: d, ch: t0.hi, cl: t0.lo +! -0x1.692b66e3cf6e8p-66)
     ph: CmF64GammaDD = cm_b64_gamma_muldd(xh: th.hi, xl: th.lo, ch: sh, cl: sl)
     c1: CmF64GammaDD = cm_b64_gamma_fastsum(xh: c.hi, xl: c.lo, yh: ph.hi, yl: ph.lo)
     c2: CmF64GammaDD = cm_b64_gamma_mulddd(x: d, ch: c1.hi, cl: c1.lo)
@@ -1046,7 +1046,7 @@ secret routine cm_b64_tgamma_expd(x: B64, l: B64) -> CmF64TgammaExp
     m: CmF64GammaDD = cm_b64_gamma_muldd(xh: x, xl: l, ch: 0x1.71547652b82fep+10,
         cl: 0x1.777d0ffda0d24p-46)
     ix: B64 = m.hi.round_ties_even()
-    s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: m.hi - ix, y: m.lo)
+    s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: m.hi -! ix, y: m.lo)
     k: S64 = ix.to[S64]()
     slot0: S64 = (k >> 5) & 31
     i0: U64 = slot0.to[U64]()
@@ -1054,11 +1054,11 @@ secret routine cm_b64_tgamma_expd(x: B64, l: B64) -> CmF64TgammaExp
     r: CmF64GammaDD = cm_b64_gamma_muldd(xh: cm_b64_tgamma_t(i0 * 2 + 1300),
         xl: cm_b64_tgamma_t(i0 * 2 + 1299), ch: cm_b64_tgamma_t(i1 * 2 + 1364),
         cl: cm_b64_tgamma_t(i1 * 2 + 1363))
-    fl: B64 = s.hi * cm_b64_tgamma_polyd(x: s.hi, n: 4, base: 1429)
+    fl: B64 = s.hi *! cm_b64_tgamma_polyd(x: s.hi, n: 4, base: 1429)
     f: CmF64GammaDD = cm_b64_tgamma_polydd(x: s, n: 1, base: 1427, l: fl)
     g: CmF64GammaDD = cm_b64_gamma_muldd(xh: s.hi, xl: s.lo, ch: f.hi, cl: f.lo)
     o: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: 1.0, y: g.hi)
-    h: CmF64GammaDD = cm_b64_gamma_muldd(xh: r.hi, xl: r.lo, ch: o.hi, cl: g.lo + o.lo)
+    h: CmF64GammaDD = cm_b64_gamma_muldd(xh: r.hi, xl: r.lo, ch: o.hi, cl: g.lo +! o.lo)
     return CmF64TgammaExp(hi: h.hi, lo: h.lo, e: k >> 10)
 
 ### c[q] + z c[q+2] for the entries c of CM_B64_TGAMMA_T.
@@ -1066,21 +1066,21 @@ secret routine cm_b64_tgamma_expd(x: B64, l: B64) -> CmF64TgammaExp
 ### :param q: The index of the first coefficient.
 ### :returns: c[q] + `z` c[q+2].
 secret routine cm_b64_tgamma_stride2(z: B64, q: U64) -> B64
-    return cm_b64_tgamma_t(q) + z * cm_b64_tgamma_t(q + 2)
+    return cm_b64_tgamma_t(q) +! z *! cm_b64_tgamma_t(q + 2)
 
 ### ln(gamma(x)) for x = xh + xl > 3 from Stirling's asymptotic series.
 ### :param xh: The high part of x.
 ### :param xl: The low part of x.
 ### :returns: ln(gamma(x)) as a double-double.
 secret routine cm_b64_tgamma_lgamma_asym(xh: B64, xl: B64) -> CmF64GammaDD
-    local zh: B64 = B64.truediv(1.0, xh)
-    local dz: B64 = xl * zh
-    local zh_err: B64 = zh.mul_add(a: -xh, b: 1.0) - dz
-    local zl: B64 = zh_err * zh
+    local zh: B64 = B64.truediv_unchecked(1.0, xh)
+    local dz: B64 = xl *! zh
+    local zh_err: B64 = zh.mul_add_unchecked(a: -xh, b: 1.0) -! dz
+    local zl: B64 = zh_err *! zh
     local lg: CmF64GammaDD = cm_b64_gamma_logd(xh)
-    local l: CmF64GammaDD = cm_b64_gamma_muldd(xh: xh - 0.5, xl, ch: lg.hi - 1.0, cl: lg.lo + dz)
+    local l: CmF64GammaDD = cm_b64_gamma_muldd(xh: xh -! 0.5, xl, ch: lg.hi -! 1.0, cl: lg.lo +! dz)
     local z2: CmF64GammaDD = cm_b64_gamma_muldd(xh: zh, xl: zl, ch: zh, cl: zl)
-    local x2: B64 = z2.hi * z2.hi
+    local x2: B64 = z2.hi *! z2.hi
 
     big: Bool = xh > 11.5
     values2: (CmF64GammaDD, CmF64GammaDD) = when
@@ -1091,22 +1091,22 @@ secret routine cm_b64_tgamma_lgamma_asym(xh: B64, xl: B64) -> CmF64GammaDD
             q0: B64 = cm_b64_tgamma_stride2(z: z2.hi, q: 1441)
             q2: B64 = cm_b64_tgamma_stride2(z: z2.hi, q: 1445)
             q4: B64 = cm_b64_tgamma_stride2(z: z2.hi, q: 1449)
-            fl: B64 = z2.hi * (q0 + x2 * (q2 + x2 * q4))
+            fl: B64 = z2.hi *! (q0 +! x2 *! (q2 +! x2 *! q4))
             becomes (a, cm_b64_tgamma_polydd(x: z2, n: 1, base: 1439, l: fl))
         else =>
             a: CmF64GammaDD = cm_b64_gamma_fastsum(xh: l.hi, xl: l.lo, yh: cm_b64_tgamma_t(1453),
                 yl: cm_b64_tgamma_t(1454))
-            x4: B64 = x2 * x2
+            x4: B64 = x2 *! x2
             # the high parts of the pairs 3..12
             q0: B64 = cm_b64_tgamma_stride2(z: z2.hi, q: 1459)
             q2: B64 = cm_b64_tgamma_stride2(z: z2.hi, q: 1463)
             q4: B64 = cm_b64_tgamma_stride2(z: z2.hi, q: 1467)
             q6: B64 = cm_b64_tgamma_stride2(z: z2.hi, q: 1471)
             q8: B64 = cm_b64_tgamma_stride2(z: z2.hi, q: 1475)
-            hi: B64 = q4 + x2 * (q6 + x2 * q8)
-            lo: B64 = q0 + x2 * q2
-            q: B64 = lo + x4 * hi
-            becomes (a, cm_b64_tgamma_polydd(x: z2, n: 2, base: 1455, l: z2.hi * q))
+            hi: B64 = q4 +! x2 *! (q6 +! x2 *! q8)
+            lo: B64 = q0 +! x2 *! q2
+            q: B64 = lo +! x4 *! hi
+            becomes (a, cm_b64_tgamma_polydd(x: z2, n: 2, base: 1455, l: z2.hi *! q))
     a, f = values2
     g: CmF64GammaDD = cm_b64_gamma_muldd(xh: zh, xl: zl, ch: f.hi, cl: f.lo)
     return cm_b64_gamma_fastsum(xh: a.hi, xl: a.lo, yh: g.hi, yl: g.lo)
@@ -1140,33 +1140,33 @@ secret routine cm_b64_gamma_log_arg(x: B64) -> CmF64GammaLogArg
 ### :returns: ln(`x`) as a double-double.
 secret routine cm_b64_gamma_logd(x: B64) -> CmF64GammaDD
     a: CmF64GammaLogArg = cm_b64_gamma_log_arg(x)
-    r: B64 = cm_b64_tgamma_t(a.i1 + 969) * cm_b64_tgamma_t(a.i2 + 1002)
-    o: B64 = r * a.tf
+    r: B64 = cm_b64_tgamma_t(a.i1 + 969) *! cm_b64_tgamma_t(a.i2 + 1002)
+    o: B64 = r *! a.tf
     dxl: B64 = b64_mul_error(x: r, y: a.tf, p: o)
-    dxh: B64 = o - 1.0
-    dx: B64 = r.mul_add(a: a.tf, b: -1.0)
-    dx2: B64 = dx * dx
-    p0: B64 = dx * 0x1.55555555543d5p-2 + -0x1.fffffffffffd3p-2
-    p2: B64 = dx * 0x1.999a692c56e4ep-3 + -0x1.000002bb2d74ep-2
-    f: B64 = dx2 * (p0 + dx2 * p2)
+    dxh: B64 = o -! 1.0
+    dx: B64 = r.mul_add_unchecked(a: a.tf, b: -1.0)
+    dx2: B64 = dx *! dx
+    p0: B64 = dx *! 0x1.55555555543d5p-2 +! -0x1.fffffffffffd3p-2
+    p2: B64 = dx *! 0x1.999a692c56e4ep-3 +! -0x1.000002bb2d74ep-2
+    f: B64 = dx2 *! (p0 +! dx2 *! p2)
     k1: U64 = a.i1 * 2 + 1035
     k2: U64 = a.i2 * 2 + 1101
-    lt0: B64 = cm_b64_tgamma_t(k1 + 1) + cm_b64_tgamma_t(k2 + 1)
-    lt: B64 = lt0 + a.ed * 0x1.62e42fef8p-1
-    lh: B64 = lt + dxh
-    ll: B64 = lt - lh + dxh
-    lo0: B64 = cm_b64_tgamma_t(k1) + cm_b64_tgamma_t(k2)
-    lo: B64 = lo0 + a.ed * 0x1.1cf79abc9e3b4p-36 + dxl
-    return CmF64GammaDD(hi: lh, lo: ll + lo + f)
+    lt0: B64 = cm_b64_tgamma_t(k1 + 1) +! cm_b64_tgamma_t(k2 + 1)
+    lt: B64 = lt0 +! a.ed *! 0x1.62e42fef8p-1
+    lh: B64 = lt +! dxh
+    ll: B64 = lt -! lh +! dxh
+    lo0: B64 = cm_b64_tgamma_t(k1) +! cm_b64_tgamma_t(k2)
+    lo: B64 = lo0 +! a.ed *! 0x1.1cf79abc9e3b4p-36 +! dxl
+    return CmF64GammaDD(hi: lh, lo: ll +! lo +! f)
 
 ### x + y and its rounding error, for |x| >= |y| (or x = 0).
 ### :param x: The larger addend.
 ### :param y: The smaller addend.
 ### :returns: The rounded sum and its error.
 secret routine cm_b64_gamma_fasttwosum(x: B64, y: B64) -> CmF64GammaDD
-    s: B64 = x + y
-    z: B64 = s - x
-    return CmF64GammaDD(hi: s, lo: y - z)
+    s: B64 = x +! y
+    z: B64 = s -! x
+    return CmF64GammaDD(hi: s, lo: y -! z)
 
 ### x + y and its rounding error, for any magnitudes.
 ### :param x: The first addend.
@@ -1185,7 +1185,7 @@ secret routine cm_b64_gamma_twosum(x: B64, y: B64) -> CmF64GammaDD
 ### :returns: The sum as a double-double.
 secret routine cm_b64_gamma_fastsum(xh: B64, xl: B64, yh: B64, yl: B64) -> CmF64GammaDD
     s: CmF64GammaDD = cm_b64_gamma_fasttwosum(x: xh, y: yh)
-    return CmF64GammaDD(hi: s.hi, lo: xl + yl + s.lo)
+    return CmF64GammaDD(hi: s.hi, lo: xl +! yl +! s.lo)
 
 ### (xh + xl) + (yh + yl), for any magnitudes.
 ### :param xh: The high part of the first double-double.
@@ -1198,7 +1198,7 @@ secret routine cm_b64_gamma_sumdd(xh: B64, xl: B64, yh: B64, yl: B64) -> CmF64Ga
     s: CmF64GammaDD = when
         xbig => cm_b64_gamma_fasttwosum(x: xh, y: yh)
         else => cm_b64_gamma_fasttwosum(x: yh, y: xh)
-    return CmF64GammaDD(hi: s.hi, lo: xl + yl + s.lo)
+    return CmF64GammaDD(hi: s.hi, lo: xl +! yl +! s.lo)
 
 ### (xh + xl) (ch + cl), not renormalized.
 ### :param xh: The high part of the first double-double.
@@ -1207,10 +1207,10 @@ secret routine cm_b64_gamma_sumdd(xh: B64, xl: B64, yh: B64, yl: B64) -> CmF64Ga
 ### :param cl: The low part of the double-double factor.
 ### :returns: The product as a double-double.
 secret routine cm_b64_gamma_muldd(xh: B64, xl: B64, ch: B64, cl: B64) -> CmF64GammaDD
-    ahhh: B64 = ch * xh
+    ahhh: B64 = ch *! xh
     err: B64 = b64_mul_error(x: ch, y: xh, p: ahhh)
-    cross: B64 = ch * xl + cl * xh
-    return CmF64GammaDD(hi: ahhh, lo: cross + err)
+    cross: B64 = ch *! xl +! cl *! xh
+    return CmF64GammaDD(hi: ahhh, lo: cross +! err)
 
 ### (xh + xl) (yh + yl), renormalized.
 ### :param xh: The high part of the first double-double.
@@ -1219,12 +1219,12 @@ secret routine cm_b64_gamma_muldd(xh: B64, xl: B64, ch: B64, cl: B64) -> CmF64Ga
 ### :param yl: The low part of the second double-double.
 ### :returns: The product as a double-double.
 secret routine cm_b64_gamma_muldd3(xh: B64, xl: B64, yh: B64, yl: B64) -> CmF64GammaDD
-    ch: B64 = xh * yh
+    ch: B64 = xh *! yh
     cl1: B64 = b64_mul_error(x: xh, y: yh, p: ch)
-    tl0: B64 = xl * yl
-    tl1: B64 = tl0 + xh * yl
-    cl2: B64 = tl1 + xl * yh
-    return cm_b64_gamma_fasttwosum(x: ch, y: cl1 + cl2)
+    tl0: B64 = xl *! yl
+    tl1: B64 = tl0 +! xh *! yl
+    cl2: B64 = tl1 +! xl *! yh
+    return cm_b64_gamma_fasttwosum(x: ch, y: cl1 +! cl2)
 
 ### x (ch + cl) for a double x.
 ### :param x: The double factor.
@@ -1232,6 +1232,6 @@ secret routine cm_b64_gamma_muldd3(xh: B64, xl: B64, yh: B64, yl: B64) -> CmF64G
 ### :param cl: The low part of the double-double factor.
 ### :returns: The product as a double-double.
 secret routine cm_b64_gamma_mulddd(x: B64, ch: B64, cl: B64) -> CmF64GammaDD
-    ahhh: B64 = ch * x
+    ahhh: B64 = ch *! x
     err: B64 = b64_mul_error(x: ch, y: x, p: ahhh)
-    return CmF64GammaDD(hi: ahhh, lo: cl * x + err)
+    return CmF64GammaDD(hi: ahhh, lo: cl *! x +! err)

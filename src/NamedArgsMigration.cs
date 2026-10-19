@@ -654,7 +654,7 @@ internal sealed class NamedArgsMigration
                 case CallExpr c when !_types.ContainsKey(c.Name):
                     return Returned(FreeCall(c.Name, c.Args), null);
                 // Arithmetic keeps its operands' type, and a literal takes the other side's.
-                case BinaryExpr { Op: "+" or "-" or "*" or "/" or "//" or "%" or "**" or "+%" or "-%" or "*%" or "+^" or "-^" or "*^" or "&" or "|" or "^" or "<<" or ">>" or ">>>" } b:
+                case BinaryExpr { Op: "+" or "-" or "*" or "/" or "//" or "%" or "**" or "+%" or "-%" or "*%" or "+^" or "-^" or "*^" or "+!" or "-!" or "*!" or "/!" or "&" or "|" or "^" or "<<" or ">>" or ">>>" } b:
                     return b.Left is IntLit or FloatLit ? TypeOf(b.Right) : TypeOf(b.Left) ?? TypeOf(b.Right);
                 case UnaryExpr { Op: "-" or "~" } u:
                     return TypeOf(u.Operand);

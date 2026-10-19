@@ -17,7 +17,7 @@ secret preset CM_B32_EXP10_EX: @Array[U32, 10] <- [0x41200000, 0x42C80000, 0x447
 ### 10^me, correctly rounded (to nearest, ties to even). 10^-inf = +0, 10^+inf = +inf, overflow gives +inf,
 ### underflow a correctly rounded subnormal or +0, and NaN comes back quiet. 10^n is exact for n in 0..10.
 ### :returns: 10^`me`.
-routine B32.exp10() -> Me
+routine B32.exp10_unchecked() -> Me
     local tu: U32 = me.bits()
     local z: B64 = me.to[B64]()
     local ux: U32 = tu << 1
@@ -31,20 +31,20 @@ routine B32.exp10() -> Me
         when
             tiny =>
                 # x > 0x1.344134p+5
-                c23: B64 = z * 0x1.0470591de2ca4p+1 + 0x1.53524c73cea69p+1
-                c13: B64 = z * c23 + 0x1.26bb1bbb55516p+1
-                r: B64 = B64.add(1.0, z * c13)  # 1 + z (c1 + z (c2 + z c3))
+                c23: B64 = z *! 0x1.0470591de2ca4p+1 +! 0x1.53524c73cea69p+1
+                c13: B64 = z *! c23 +! 0x1.26bb1bbb55516p+1
+                r: B64 = B64.add_unchecked(1.0, z *! c13)  # 1 + z (c1 + z (c2 + z c3))
                 return r.to[Me]()
             special =>
                 # infinities and NaN, which comes back quiet with its sign and payload
                 when
-                    ux > 0xFF000000 => return me + me
+                    ux > 0xFF000000 => return me +! me
                     negative => return 0.0
                     else => return Me.INFINITY
             tu > 0xC23369F4 =>
                 # the result underflows to a tiny subnormal or zero
-                scaled: B64 = (z + 0x1.66d3e7bd9a403p+5) * 0x1.a934f0979a37p-149
-                y: B64 = B64.add(0x1p-149, scaled)
+                scaled: B64 = (z +! 0x1.66d3e7bd9a403p+5) *! 0x1.a934f0979a37p-149
+                y: B64 = B64.add_unchecked(0x1p-149, scaled)
                 clamped: B64 = y.max(0x1p-151)
                 return clamped.to[Me]()
             negative => pass
@@ -60,30 +60,30 @@ routine B32.exp10() -> Me
                 below: U32 = bt - 1 & 0x7551101
                 n: U32 = below.count_ones()
                 return Me.from_bits(CM_B32_EXP10_EX.getitem(n.to[U64]()))
-    a: B64 = B64.mul(0x1.a934f0979a371p+6, z)  # 32 x log2(10)
+    a: B64 = B64.mul_unchecked(0x1.a934f0979a371p+6, z)  # 32 x log2(10)
     ia: B64 = a.round_ties_even()
-    h: B64 = a - ia
+    h: B64 = a -! ia
     ja: S64 = ia.to[S64]()
     entry: U64 = CM_B32_EXPM1_TD.getitem((ja.to_wrap[U64]() & 0x1F).to[U64]())
     scale: U64 = (ja >> 5).to_wrap[U64]() << 52
     sv: B64 = B64.from_bits(entry +% scale)  # 2^(round(32 x log2(10)) / 32)
-    h2: B64 = h * h
-    p01: B64 = B64.add(1.0, h * 0x1.62e42fef4c4e7p-6)
-    p23: B64 = B64.add(0x1.ebfd1b232f475p-13, h * 0x1.c6b19384ecd93p-20)
-    r: B64 = (p01 + h2 * p23) * sv
+    h2: B64 = h *! h
+    p01: B64 = B64.add_unchecked(1.0, h *! 0x1.62e42fef4c4e7p-6)
+    p23: B64 = B64.add_unchecked(0x1.ebfd1b232f475p-13, h *! 0x1.c6b19384ecd93p-20)
+    r: B64 = (p01 +! h2 *! p23) *! sv
     ub: Me = r.to[Me]()
-    lb: Me = (r - r * 0x1.3edbbe4560327p-33).to[Me]()
+    lb: Me = (r -! r *! 0x1.3edbbe4560327p-33).to[Me]()
     if ub == lb
         return ub
     # The fast path can't decide the rounding: redo it with a longer reduction and polynomial.
-    h_hi: B64 = B64.mul(0x1.a934f09p+1, z) - ia * 0.03125
-    h3: B64 = h_hi + B64.mul(0x1.e68dc57f2496p-29, z)
-    h22: B64 = h3 * h3
-    w: B64 = sv * h3
-    c01: B64 = B64.add(0x1.62e42fefa39efp-1, h3 * 0x1.ebfbdff82c58fp-3)
-    c23: B64 = B64.add(0x1.c6b08d702e0edp-5, h3 * 0x1.3b2ab6fb92e5ep-7)
-    c45: B64 = B64.add(0x1.5d886e6d54203p-10, h3 * 0x1.430976b8ce6efp-13)
-    c25: B64 = c23 + h22 * c45
-    c05: B64 = c01 + h22 * c25
-    r2: B64 = sv + w * c05
+    h_hi: B64 = B64.mul_unchecked(0x1.a934f09p+1, z) -! ia *! 0.03125
+    h3: B64 = h_hi +! B64.mul_unchecked(0x1.e68dc57f2496p-29, z)
+    h22: B64 = h3 *! h3
+    w: B64 = sv *! h3
+    c01: B64 = B64.add_unchecked(0x1.62e42fefa39efp-1, h3 *! 0x1.ebfbdff82c58fp-3)
+    c23: B64 = B64.add_unchecked(0x1.c6b08d702e0edp-5, h3 *! 0x1.3b2ab6fb92e5ep-7)
+    c45: B64 = B64.add_unchecked(0x1.5d886e6d54203p-10, h3 *! 0x1.430976b8ce6efp-13)
+    c25: B64 = c23 +! h22 *! c45
+    c05: B64 = c01 +! h22 *! c25
+    r2: B64 = sv +! w *! c05
     return r2.to[Me]()

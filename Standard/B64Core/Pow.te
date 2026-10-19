@@ -39,7 +39,7 @@ secret record CmF64PowLog1
 ### NaN comes back quiet.
 ### :param exponent: The power to raise `me` to.
 ### :returns: `me` raised to `exponent`.
-routine B64.powf(exponent: Me) -> Me
+routine B64.powf_unchecked(exponent: Me) -> Me
     local xu: U64 = me.bits()
     local yu: U64 = exponent.bits()
 
@@ -55,12 +55,12 @@ routine B64.powf(exponent: Me) -> Me
                 # NaN^±0 = 1 for a quiet NaN, and x + x quiets a signaling one
                 if exponent == 0.0 and xu & 0x0008000000000000 != 0
                     return 1.0
-                return me + me
+                return me +! me
             nan_y =>
                 # 1^NaN = 1 for a quiet NaN
                 if me == 1.0 and yu & 0x0008000000000000 != 0
                     return 1.0
-                return exponent + exponent
+                return exponent +! exponent
             inf_x =>
                 zero_y: Bool = exponent == 0.0
                 when
@@ -152,24 +152,24 @@ routine B64.powf(exponent: Me) -> Me
     ll: Me = when
         extreme => Me.NAN
         else => lg.l
-    rh: Me = exponent * lh
+    rh: Me = exponent *! lh
     rs: Me = b64_mul_error(x: exponent, y: lh, p: rh)
-    rl: Me = exponent.mul_add(a: ll, b: rs)
+    rl: Me = exponent.mul_add_unchecked(a: ll, b: rs)
     e: CmF64PowDd = cm_b64_pow_exp_1(rh, rl, s)
     err: Me = when
         lg.cancel => 0x1.57p-58
         else => 0x1.27p-64
-    res_min: Me = e.hi + err.mul_add(a: -e.hi, b: e.lo)
-    res_max: Me = e.hi + err.mul_add(a: e.hi, b: e.lo)
+    res_min: Me = e.hi +! err.mul_add_unchecked(a: -e.hi, b: e.lo)
+    res_max: Me = e.hi +! err.mul_add_unchecked(a: e.hi, b: e.lo)
     settled: Bool = res_min == res_max
     one: Bool = exponent == 1.0
     two: Bool = exponent == 2.0
     half: Bool = exponent == 0.5
     when
         settled => return res_max
-        one => return s * ax
-        two => return ax * ax
-        half => return ax.sqrt()
+        one => return s *! ax
+        two => return ax *! ax
+        half => return ax.sqrt_unchecked()
         exponent == 0.0 => return 1.0
         else => return cm_b64_pow_accurate(x0: me, x: ax, y: exponent, s)
 
@@ -184,7 +184,7 @@ secret routine cm_b64_pow_is_int(x: B64) -> Bool
 ### :returns: True when `y` is an odd integer.
 secret routine cm_b64_pow_is_odd(y: B64) -> Bool
     whole: Bool = cm_b64_pow_is_int(y)
-    even: Bool = cm_b64_pow_is_int(y * 0.5)
+    even: Bool = cm_b64_pow_is_int(y *! 0.5)
     return whole and not even
 
 ### a + b as a double-double, assuming |a| >= |b|.
@@ -192,9 +192,9 @@ secret routine cm_b64_pow_is_odd(y: B64) -> Bool
 ### :param b: The smaller addend.
 ### :returns: The rounded sum and its exact error.
 secret routine cm_b64_pow_fast_two_sum(a: B64, b: B64) -> CmF64PowDd
-    hi: B64 = a + b
-    e: B64 = hi - a
-    return CmF64PowDd(hi: hi, lo: b - e)
+    hi: B64 = a +! b
+    e: B64 = hi -! a
+    return CmF64PowDd(hi: hi, lo: b -! e)
 
 ### a + (bh + bl) as a double-double, assuming |a| >= |bh|.
 ### :param a: The larger addend.
@@ -203,7 +203,7 @@ secret routine cm_b64_pow_fast_two_sum(a: B64, b: B64) -> CmF64PowDd
 ### :returns: The sum as a double-double.
 secret routine cm_b64_pow_fast_sum(a: B64, bh: B64, bl: B64) -> CmF64PowDd
     t: CmF64PowDd = cm_b64_pow_fast_two_sum(a, b: bh)
-    return CmF64PowDd(hi: t.hi, lo: t.lo + bl)
+    return CmF64PowDd(hi: t.hi, lo: t.lo +! bl)
 
 ### (ah + al) (bh + bl), ignoring al bl.
 ### :param ah: The high part of the first factor.
@@ -212,10 +212,10 @@ secret routine cm_b64_pow_fast_sum(a: B64, bh: B64, bl: B64) -> CmF64PowDd
 ### :param bl: The low part of the second factor.
 ### :returns: The product as a double-double.
 secret routine cm_b64_pow_d_mul(ah: B64, al: B64, bh: B64, bl: B64) -> CmF64PowDd
-    hi: B64 = ah * bh
+    hi: B64 = ah *! bh
     s: B64 = b64_mul_error(x: ah, y: bh, p: hi)
-    t: B64 = al.mul_add(a: bh, b: s)
-    return CmF64PowDd(hi: hi, lo: ah.mul_add(a: bl, b: t))
+    t: B64 = al.mul_add_unchecked(a: bh, b: s)
+    return CmF64PowDd(hi: hi, lo: ah.mul_add_unchecked(a: bl, b: t))
 
 ### Entry i of the phase-1 log polynomial (CM_B64_POW_P1).
 ### :param i: The coefficient index, 0..5.
@@ -227,15 +227,15 @@ secret routine cm_b64_pow_p1(i: U64) -> B64
 ### :param z: The reduced argument.
 ### :returns: log(1 + `z`) - `z` as a double-double.
 secret routine cm_b64_pow_p_1(z: B64) -> CmF64PowDd
-    wh: B64 = z * z
+    wh: B64 = z *! z
     wl: B64 = b64_mul_error(x: z, y: z, p: wh)
-    t: B64 = cm_b64_pow_p1(5).mul_add(a: z, b: cm_b64_pow_p1(4))
-    u0: B64 = cm_b64_pow_p1(3).mul_add(a: z, b: cm_b64_pow_p1(2))
-    v0: B64 = cm_b64_pow_p1(1).mul_add(a: z, b: cm_b64_pow_p1(0))
-    u1: B64 = t.mul_add(a: wh, b: u0)
-    v1: B64 = u1.mul_add(a: wh, b: v0)
-    u: B64 = v1 * wh
-    return CmF64PowDd(hi: wh * -0.5, lo: u.mul_add(a: z, b: wl * -0.5))
+    t: B64 = cm_b64_pow_p1(5).mul_add_unchecked(a: z, b: cm_b64_pow_p1(4))
+    u0: B64 = cm_b64_pow_p1(3).mul_add_unchecked(a: z, b: cm_b64_pow_p1(2))
+    v0: B64 = cm_b64_pow_p1(1).mul_add_unchecked(a: z, b: cm_b64_pow_p1(0))
+    u1: B64 = t.mul_add_unchecked(a: wh, b: u0)
+    v1: B64 = u1.mul_add_unchecked(a: wh, b: v0)
+    u: B64 = v1 *! wh
+    return CmF64PowDd(hi: wh *! -0.5, lo: u.mul_add_unchecked(a: z, b: wl *! -0.5))
 
 ### Entry i of the phase-1 exp polynomial.
 ### :param i: The coefficient index, 0..4.
@@ -247,10 +247,10 @@ secret routine cm_b64_pow_q1(i: U64) -> B64
 ### :param z: The reduced argument.
 ### :returns: exp(`z`) as a double-double.
 secret routine cm_b64_pow_q_1(z: B64) -> CmF64PowDd
-    q0: B64 = cm_b64_pow_q1(4).mul_add(a: z, b: cm_b64_pow_q1(3))
-    q: B64 = q0.mul_add(a: z, b: cm_b64_pow_q1(2))
-    h0: B64 = q.mul_add(a: z, b: cm_b64_pow_q1(1))
-    h1: B64 = z * h0
+    q0: B64 = cm_b64_pow_q1(4).mul_add_unchecked(a: z, b: cm_b64_pow_q1(3))
+    q: B64 = q0.mul_add_unchecked(a: z, b: cm_b64_pow_q1(2))
+    h0: B64 = q.mul_add_unchecked(a: z, b: cm_b64_pow_q1(1))
+    h1: B64 = z *! h0
     l1: B64 = b64_mul_error(x: z, y: h0, p: h1)
     return cm_b64_pow_fast_sum(a: cm_b64_pow_q1(0), bh: h1, bl: l1)
 
@@ -283,20 +283,20 @@ secret routine cm_b64_pow_log_1(x: B64) -> CmF64PowLog1
         big => m_norm >> 45
         else => m_norm >> 44
     t: B64 = when
-        big => t0 * 0.5
+        big => t0 *! 0.5
         else => t0
     big_e: B64 = e2.to[B64]()
     j: U64 = (i - 181).to[U64]()
     r: B64 = B64.from_bits(CM_B64_POW_INVERSE.getitem(j))
     l1: B64 = B64.from_bits(CM_B64_POW_LOG_INV.getitem(j * 2))
     l2: B64 = B64.from_bits(CM_B64_POW_LOG_INV.getitem(j * 2 + 1))
-    z: B64 = r.mul_add(a: t, b: -1.0)
-    th: B64 = big_e.mul_add(a: 0x1.62e42fefa38p-1, b: l1)
-    tl: B64 = big_e.mul_add(a: 0x1.ef35793c7673p-45, b: l2)
+    z: B64 = r.mul_add_unchecked(a: t, b: -1.0)
+    th: B64 = big_e.mul_add_unchecked(a: 0x1.62e42fefa38p-1, b: l1)
+    tl: B64 = big_e.mul_add_unchecked(a: 0x1.ef35793c7673p-45, b: l2)
     hl: CmF64PowDd = cm_b64_pow_fast_sum(a: th, bh: z, bl: tl)
     p: CmF64PowDd = cm_b64_pow_p_1(z)
-    s: CmF64PowDd = cm_b64_pow_fast_sum(a: hl.hi, bh: p.hi, bl: hl.lo + p.lo)
-    cancel: Bool = e2 == 0 and s.lo.abs() > s.hi.abs() * 0x1p-24
+    s: CmF64PowDd = cm_b64_pow_fast_sum(a: hl.hi, bh: p.hi, bl: hl.lo +! p.lo)
+    cancel: Bool = e2 == 0 and s.lo.abs() > s.hi.abs() *! 0x1p-24
     plain: CmF64PowLog1 = CmF64PowLog1(h: s.hi, l: s.lo, cancel: false)
     if cancel
         n: CmF64PowDd = cm_b64_pow_fast_two_sum(a: s.hi, b: s.lo)
@@ -314,20 +314,20 @@ secret routine cm_b64_pow_exp_1(rh: B64, rl: B64, s: B64) -> CmF64PowDd
         high =>
             if rh > 0x1.62e4316ea5df9p+9
                 # sure overflow
-                big: B64 = B64.mul(0x1.fffffffffffffp+1023, s)
+                big: B64 = B64.mul_unchecked(0x1.fffffffffffffp+1023, s)
                 return CmF64PowDd(hi: big, lo: big)
             return CmF64PowDd(hi: B64.NAN, lo: B64.NAN)
         rh < -0x1.483b8cca421afp+9 =>
             if rh < -0x1.74910ee4e8a27p+9
                 # sure underflow
-                lo: B64 = B64.from_bits(1) * B64.mul(0.5, s)
-                return CmF64PowDd(hi: B64.mul(0.0, s), lo: lo)
+                lo: B64 = B64.from_bits(1) *! B64.mul_unchecked(0.5, s)
+                return CmF64PowDd(hi: B64.mul_unchecked(0.0, s), lo: lo)
             return CmF64PowDd(hi: B64.NAN, lo: B64.NAN)
         else =>
             # rh = k log(2)/2^12 + z, and 2^(k/2^12) = 2^(k >> 12) T2[k mod 64] T1[(k >> 6) mod 64]
-            k: B64 = (rh * 0x1.71547652b82fep+12).round_ties_even()
-            zh: B64 = B64.mul_add(0x1.62e42fefa39efp-13, a: -k, b: rh)
-            zl: B64 = B64.mul_add(0x1.abc9e3b39803fp-68, a: -k, b: rl)
+            k: B64 = (rh *! 0x1.71547652b82fep+12).round_ties_even()
+            zh: B64 = B64.mul_add_unchecked(0x1.62e42fefa39efp-13, a: -k, b: rh)
+            zl: B64 = B64.mul_add_unchecked(0x1.abc9e3b39803fp-68, a: -k, b: rl)
             big_k: S64 = k.to[S64]()
             big_m: S64 = (big_k >> 12) + 0x3FF
             k_high: U64 = (big_k >> 6).to_wrap[U64]()
@@ -340,10 +340,10 @@ secret routine cm_b64_pow_exp_1(rh: B64, rl: B64, s: B64) -> CmF64PowDd
             t1h: B64 = B64.from_bits(CM_B64_POW_T1.getitem(i2))
             t1l: B64 = B64.from_bits(CM_B64_POW_T1.getitem(i2 + 1))
             e0: CmF64PowDd = cm_b64_pow_d_mul(ah: t2h, al: t2l, bh: t1h, bl: t1l)
-            q: CmF64PowDd = cm_b64_pow_q_1(zh + zl)
+            q: CmF64PowDd = cm_b64_pow_q_1(zh +! zl)
             e: CmF64PowDd = cm_b64_pow_d_mul(ah: e0.hi, al: e0.lo, bh: q.hi, bl: q.lo)
-            d: B64 = B64.from_bits(big_m.to_wrap[U64]() << 52) * s
-            return CmF64PowDd(hi: e.hi * d, lo: e.lo * d)
+            d: B64 = B64.from_bits(big_m.to_wrap[U64]() << 52) *! s
+            return CmF64PowDd(hi: e.hi *! d, lo: e.lo *! d)
 
 ### Phases 2 and 3 of pow, for inputs phase 1 could not round: x0 is the original base, x = |x0| (finite, nonzero),
 ### y finite and nonzero, s the sign of the result (1 or -1).
@@ -365,7 +365,7 @@ secret routine cm_b64_pow_accurate(x0: B64, x: B64, y: B64, s: B64) -> B64
 
     underflow: Bool = br.ex < -1075
     rounds: Bool = when
-        underflow => return B64.mul(0.5, s * B64.from_bits(1))
+        underflow => return B64.mul_unchecked(0.5, s *! B64.from_bits(1))
         br.ex < -1022 =>
             # rounding test: the significand has to be shifted right by 1 <= sh <= 53 bits
             sh: U64 = S64.sub(0, br.ex + 1022).to_wrap[U64]()
@@ -408,8 +408,8 @@ secret routine cm_b64_pow_accurate(x0: B64, x: B64, y: B64, s: B64) -> B64
         # Otherwise not reachable (CORE-MATH reports an unexpected worst case there)
         near_one: Bool = qr.ex < -56
         when
-            near_one and qr.sgn == 0 => return B64.add(1.0, 0x1p-100)
-            near_one => return B64.sub(1.0, 0x1p-100)
+            near_one and qr.sgn == 0 => return B64.add_unchecked(1.0, 0x1p-100)
+            near_one => return B64.sub_unchecked(1.0, 0x1p-100)
             else => return qz.to[B64]()
     else
         return qs.to[B64]()
@@ -453,7 +453,7 @@ secret routine cm_b64_pow_is_exact(x: B64, y: B64) -> Bool
             when
                 trivial => return true
                 power_of_two =>
-                    ye: B64 = y * e.to[B64]()
+                    ye: B64 = y *! e.to[B64]()
                     return ye >= -1074.0 and ye < 1024.0
                 y < 0.0 or y > 33.0 => return false
                 else =>
@@ -500,8 +500,8 @@ secret routine cm_b64_pow_is_exact(x: B64, y: B64) -> Bool
                     if e2 & 1 != 0
                         return false
                     dm: B64 = m2.to[B64]()
-                    sq: B64 = dm.sqrt().round()
-                    if sq * sq == dm
+                    sq: B64 = dm.sqrt_unchecked().round()
+                    if sq *! sq == dm
                         continue with m2: sq.to[U64](), e2: e2 >> 1
                     return false
                 then
@@ -533,12 +533,12 @@ secret routine cm_b64_pow_is_exact(x: B64, y: B64) -> Bool
 secret routine cm_b64_pow_pow2(x: B64, e: S64) -> B64
     odd: Bool = e & 1 != 0
     r: B64 = when
-        odd => x * 2.0
+        odd => x *! 2.0
         else => x
     half_e: U64 = (e >> 1).to_wrap[U64]()
     biased_exponent: U64 = half_e +% 0x3FF & 0x7FF
     e2: B64 = B64.from_bits(biased_exponent << 52)
-    return r * e2 * e2
+    return r *! e2 *! e2
 
 ### x^y exactly when it fits into 54 bits (the exact and midpoint cases, Algorithm detectRoundingBoundaryCase of
 ### Lauter and Lefevre), else NaN. Here z is the phase-2 approximation of |x|^y, with the sign of the result
@@ -558,7 +558,7 @@ secret routine cm_b64_pow_exact_pow(x: B64, y: B64, z: CmF64PowDint, exact: Bool
     when
         m == 1 =>
             # x is a power of 2
-            g: B64 = big_e.to[B64]() * y
+            g: B64 = big_e.to[B64]() *! y
             if not cm_b64_pow_is_int(g)
                 return B64.NAN
             r: B64 = when

@@ -6,15 +6,16 @@
 # is one AVX register on x86-64-v3 and two SSE ones on x86-64-v1, and correct either way. SIMD_BYTES says how wide
 # the target's native vectors are, for code that wants to match it.
 #
-# Operations are lane-wise and named like the scalar ones, with the same rules: integer add, sub, and mul crash if
-# any lane overflows (the _wrap and _clamp forms don't), a shift by the lane width or more shifts every bit out,
-# and float min and max return the other operand when one is NaN. Compares give a mask. The layout is LLVM's:
+# Operations are lane-wise and named like the scalar ones, and unchecked: integer add, sub, and mul wrap, and float
+# lanes give the raw IEEE 754 result (infinity and NaN included), since a check on every lane would cost what SIMD
+# saves. add_clamp and sub_clamp saturate instead. A shift by the lane width or more shifts every bit out, and float
+# min and max return the other operand when one is NaN. Compares give a mask. The layout is LLVM's:
 # lanes packed (a Bool lane is one bit) and aligned for the whole vector, so Vector[B32, 3] takes 16 bytes where
 # Array[B32, 3] takes 12. A Vector can't cross the C ABI yet.
 
 module Standard/Core
 
-### `LANES` lanes of `T` held as one SIMD value, mapped to LLVM `<LANES x T>`. A lane is an integer, a float, or a `Bool` (a `Vector[Bool, LANES]` is a lane mask). Operations are lane-wise and follow the scalar rules, and `LANES` may be any buildtime `U64` of at least 1.
+### `LANES` lanes of `T` held as one SIMD value, mapped to LLVM `<LANES x T>`. A lane is an integer, a float, or a `Bool` (a `Vector[Bool, LANES]` is a lane mask). Operations are lane-wise and unchecked: integer `+ - *` wrap and float lanes give the raw IEEE 754 result. `LANES` may be any buildtime `U64` of at least 1.
 ### :typeparam T: The lane type.
 ### :typeparam LANES: The number of lanes.
 @llvm("<{LANES} x {T}>")
@@ -23,14 +24,13 @@ needs T: typename, LANES: U64
 obeys ViewingIndexable[Vector[T, LANES], T]
 obeys Addable[Vector[T, LANES]], Subtractable[Vector[T, LANES]], Multiplicable[Vector[T, LANES]] when T: typename, LANES: U64, NumberLane[T]
 obeys Divisible[Vector[T, LANES]], Negatable[Vector[T, LANES]] when T: typename, LANES: U64, FloatLane[T]
-obeys WrappingAddable[Vector[T, LANES]], WrappingSubtractable[Vector[T, LANES]], WrappingMultiplicable[Vector[T, LANES]] when T: typename, LANES: U64, IntLane[T], NumberLane[T]
 obeys ClampingAddable[Vector[T, LANES]], ClampingSubtractable[Vector[T, LANES]], Shiftable[Vector[T, LANES]] when T: typename, LANES: U64, IntLane[T]
 obeys Bitwiseable[Vector[T, LANES]], Invertible[Vector[T, LANES]] when T: typename, LANES: U64, BitLane[T]
 obeys LaneComparable[Vector[T, LANES], Vector[Bool, LANES]] when T: typename, LANES: U64, NumberLane[T]
 
 # -- lane kinds ----------------------------------------------------------------------
 
-### T is an integer lane: wrapping, clamping, and bitwise operations.
+### T is an integer lane: clamping, shifts, and bitwise operations.
 protocol IntLane[T]
 needs T: typename
 
@@ -236,114 +236,32 @@ needs T: typename, LANES: U64, NumberLane[T]
 
 # -- arithmetic ------------------------------------------------------------------------
 
-### Lane-wise sum with no overflow check: integer lanes wrap, float lanes add normally.
+### Lane-wise sum, unchecked: integer lanes wrap modulo 2^bits (bits the lane width), float lanes give the raw IEEE 754
+### sum (infinity and NaN included).
 ### :param other: The right-hand operand.
 ### :returns: The lane-wise sum.
 @external("llvm")
 @template("{result} = {by T|fadd|add|add} {Me} {me}, {other}")
-secret routine Vector[T, LANES].add_raw(other: Me) -> Me
+routine Vector[T, LANES].add(other: Me) -> Me
 needs T: typename, LANES: U64, NumberLane[T]
 
-### Lane-wise difference with no overflow check: integer lanes wrap, float lanes subtract normally.
+### Lane-wise difference, unchecked: integer lanes wrap modulo 2^bits (bits the lane width), float lanes give the raw
+### IEEE 754 difference (infinity and NaN included).
 ### :param other: The right-hand operand.
 ### :returns: The lane-wise difference.
 @external("llvm")
 @template("{result} = {by T|fsub|sub|sub} {Me} {me}, {other}")
-secret routine Vector[T, LANES].sub_raw(other: Me) -> Me
+routine Vector[T, LANES].sub(other: Me) -> Me
 needs T: typename, LANES: U64, NumberLane[T]
 
-### Lane-wise product with no overflow check: integer lanes wrap, float lanes multiply normally.
+### Lane-wise product, unchecked: integer lanes wrap modulo 2^bits (bits the lane width), float lanes give the raw
+### IEEE 754 product (infinity and NaN included).
 ### :param other: The right-hand operand.
 ### :returns: The lane-wise product.
 @external("llvm")
 @template("{result} = {by T|fmul|mul|mul} {Me} {me}, {other}")
-secret routine Vector[T, LANES].mul_raw(other: Me) -> Me
-needs T: typename, LANES: U64, NumberLane[T]
-
-# Whether any lane overflows: never for floats.
-### Whether adding `other` overflows in any lane. Always false for float lanes.
-### :param other: The right-hand operand.
-### :returns: `true` when some lane overflows.
-@external("llvm")
-@template("{by T|{result} = or i1 false, false|{t0} = call {{ {Me}, <{LANES} x i1> }} @llvm.sadd.with.overflow.{mangle Me}({Me} {me}, {Me} {other})\n{t1} = extractvalue {{ {Me}, <{LANES} x i1> }} {t0}, 1\n{result} = call i1 @llvm.vector.reduce.or.v{LANES}i1(<{LANES} x i1> {t1})|{t0} = call {{ {Me}, <{LANES} x i1> }} @llvm.uadd.with.overflow.{mangle Me}({Me} {me}, {Me} {other})\n{t1} = extractvalue {{ {Me}, <{LANES} x i1> }} {t0}, 1\n{result} = call i1 @llvm.vector.reduce.or.v{LANES}i1(<{LANES} x i1> {t1})}")
-secret routine Vector[T, LANES].add_overflows(other: Me) -> Bool
-needs T: typename, LANES: U64, NumberLane[T]
-
-### Whether subtracting `other` overflows in any lane. Always false for float lanes.
-### :param other: The right-hand operand.
-### :returns: `true` when some lane overflows.
-@external("llvm")
-@template("{by T|{result} = or i1 false, false|{t0} = call {{ {Me}, <{LANES} x i1> }} @llvm.ssub.with.overflow.{mangle Me}({Me} {me}, {Me} {other})\n{t1} = extractvalue {{ {Me}, <{LANES} x i1> }} {t0}, 1\n{result} = call i1 @llvm.vector.reduce.or.v{LANES}i1(<{LANES} x i1> {t1})|{t0} = call {{ {Me}, <{LANES} x i1> }} @llvm.usub.with.overflow.{mangle Me}({Me} {me}, {Me} {other})\n{t1} = extractvalue {{ {Me}, <{LANES} x i1> }} {t0}, 1\n{result} = call i1 @llvm.vector.reduce.or.v{LANES}i1(<{LANES} x i1> {t1})}")
-secret routine Vector[T, LANES].sub_overflows(other: Me) -> Bool
-needs T: typename, LANES: U64, NumberLane[T]
-
-### Whether multiplying by `other` overflows in any lane. Always false for float lanes.
-### :param other: The right-hand operand.
-### :returns: `true` when some lane overflows.
-@external("llvm")
-@template("{by T|{result} = or i1 false, false|{t0} = call {{ {Me}, <{LANES} x i1> }} @llvm.smul.with.overflow.{mangle Me}({Me} {me}, {Me} {other})\n{t1} = extractvalue {{ {Me}, <{LANES} x i1> }} {t0}, 1\n{result} = call i1 @llvm.vector.reduce.or.v{LANES}i1(<{LANES} x i1> {t1})|{t0} = call {{ {Me}, <{LANES} x i1> }} @llvm.umul.with.overflow.{mangle Me}({Me} {me}, {Me} {other})\n{t1} = extractvalue {{ {Me}, <{LANES} x i1> }} {t0}, 1\n{result} = call i1 @llvm.vector.reduce.or.v{LANES}i1(<{LANES} x i1> {t1})}")
-secret routine Vector[T, LANES].mul_overflows(other: Me) -> Bool
-needs T: typename, LANES: U64, NumberLane[T]
-
-### Lane-wise sum. For integers, crashes if any lane overflows.
-### :param other: The right-hand operand.
-### :returns: The lane-wise sum.
-### :throws: Crashes with `IntegerOverflowError` when an integer lane overflows.
-@track_caller
-routine Vector[T, LANES].add(other: Me) -> Me
-needs T: typename, LANES: U64, NumberLane[T]
-    if me.add_overflows(other)
-        crash_overflow()
-    r: Me = me.add_raw(other)
-    return r
-
-### Lane-wise difference. For integers, crashes if any lane overflows.
-### :param other: The right-hand operand.
-### :returns: The lane-wise difference.
-### :throws: Crashes with `IntegerOverflowError` when an integer lane overflows.
-@track_caller
-routine Vector[T, LANES].sub(other: Me) -> Me
-needs T: typename, LANES: U64, NumberLane[T]
-    if me.sub_overflows(other)
-        crash_overflow()
-    r: Me = me.sub_raw(other)
-    return r
-
-### Lane-wise product. For integers, crashes if any lane overflows.
-### :param other: The right-hand operand.
-### :returns: The lane-wise product.
-### :throws: Crashes with `IntegerOverflowError` when an integer lane overflows.
-@track_caller
 routine Vector[T, LANES].mul(other: Me) -> Me
 needs T: typename, LANES: U64, NumberLane[T]
-    if me.mul_overflows(other)
-        crash_overflow()
-    r: Me = me.mul_raw(other)
-    return r
-
-### Lane-wise sum, each lane wrapping modulo 2^bits, where bits is the lane width.
-### :param other: The right-hand operand.
-### :returns: The wrapped lane-wise sum.
-routine Vector[T, LANES].add_wrap(other: Me) -> Me
-needs T: typename, LANES: U64, IntLane[T], NumberLane[T]
-    r: Me = me.add_raw(other)
-    return r
-
-### Lane-wise difference, each lane wrapping modulo 2^bits, where bits is the lane width.
-### :param other: The right-hand operand.
-### :returns: The wrapped lane-wise difference.
-routine Vector[T, LANES].sub_wrap(other: Me) -> Me
-needs T: typename, LANES: U64, IntLane[T], NumberLane[T]
-    r: Me = me.sub_raw(other)
-    return r
-
-### Lane-wise product, each lane wrapping modulo 2^bits, where bits is the lane width.
-### :param other: The right-hand operand.
-### :returns: The wrapped lane-wise product.
-routine Vector[T, LANES].mul_wrap(other: Me) -> Me
-needs T: typename, LANES: U64, IntLane[T], NumberLane[T]
-    r: Me = me.mul_raw(other)
-    return r
 
 ### Lane-wise sum, each lane saturating at `T`'s `MIN` / `MAX`.
 ### :param other: The right-hand operand.
@@ -361,7 +279,8 @@ needs T: typename, LANES: U64, IntLane[T]
 routine Vector[T, LANES].sub_clamp(other: Me) -> Me
 needs T: typename, LANES: U64, IntLane[T]
 
-### Lane-wise quotient of float lanes.
+### Lane-wise quotient of float lanes, unchecked: the raw IEEE 754 quotient (a signed infinity for a nonzero lane
+### divided by zero, NaN for `0 / 0`).
 ### :param other: The divisor.
 ### :returns: The lane-wise quotient.
 @external("llvm")
@@ -383,7 +302,7 @@ needs T: typename, LANES: U64, FloatLane[T]
 routine Vector[T, LANES].abs() -> Me
 needs T: typename, LANES: U64, FloatLane[T]
 
-### Each lane's square root. NaN for a negative lane (other than -0.0).
+### Each lane's square root, unchecked: NaN for a negative lane (other than -0.0).
 ### :returns: The lane-wise square root.
 @external("llvm")
 @template("{result} = call {Me} @llvm.sqrt.{mangle Me}({Me} {me})")
@@ -575,15 +494,6 @@ needs T: typename, LANES: U64, MaskLane[T], TValue: typename
 secret common routine Vector[T, LANES].lane_add(a: T, b: T) -> T
 needs T: typename, LANES: U64, NumberLane[T]
 
-### Whether adding two scalar lanes overflows. Always false for floats.
-### :param a: The accumulated value.
-### :param b: The lane to add.
-### :returns: `true` when the integer sum overflows.
-@external("llvm")
-@template("{by T|{result} = or i1 false, false|{t0} = call {{ {T}, i1 }} @llvm.sadd.with.overflow.{mangle T}({T} {a}, {T} {b})\n{result} = extractvalue {{ {T}, i1 }} {t0}, 1|{t0} = call {{ {T}, i1 }} @llvm.uadd.with.overflow.{mangle T}({T} {a}, {T} {b})\n{result} = extractvalue {{ {T}, i1 }} {t0}, 1}")
-secret common routine Vector[T, LANES].lane_add_overflows(a: T, b: T) -> Bool
-needs T: typename, LANES: U64, NumberLane[T]
-
 ### The smaller of two scalar lanes for {Vector.reduce_min}. A NaN operand yields the other.
 ### :param a: The accumulated value.
 ### :param b: The lane to compare.
@@ -602,17 +512,13 @@ needs T: typename, LANES: U64, NumberLane[T]
 secret common routine Vector[T, LANES].lane_max(a: T, b: T) -> T
 needs T: typename, LANES: U64, NumberLane[T]
 
-### The lanes added in order, lane 0 first. For integers, crashes on overflow. In order, so a float sum is the same
-### on every target, though a tree of adds would be faster.
+### The lanes added in order, lane 0 first, unchecked like the lane-wise `+`: an integer sum wraps, a float sum gives
+### the raw IEEE 754 value. In order, so a float sum is the same on every target, though a tree of adds would be faster.
 ### :returns: The sum of the lanes.
-### :throws: Crashes with `IntegerOverflowError` when an integer running sum overflows.
-@track_caller
 routine Vector[T, LANES].sum() -> T
 needs T: typename, LANES: U64, NumberLane[T]
     each i in 1 til LANES with acc: T = me[0]
         lane: T = me[i]
-        if Me.lane_add_overflows(a: acc, b: lane)
-            crash_overflow()
         continue with acc: Me.lane_add(a: acc, b: lane)
     then
         return acc

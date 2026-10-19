@@ -26,7 +26,7 @@ secret preset CM_B32_EXPM1_TD: @Array[U64, 32] <- [0x3FF0000000000000, 0x3FF059B
 ### e^`me` - 1, accurate near 0 and correctly rounded (to nearest). Overflow gives +inf, -inf gives -1, +-0 stay
 ### themselves, and NaN comes back quiet.
 ### :returns: e^`me` - 1.
-routine B32.exp_m1() -> Me
+routine B32.exp_m1_unchecked() -> Me
     local ux: U32 = me.bits()
     local z: B64 = me.to[B64]()
     local ax: U32 = ux << 1
@@ -38,18 +38,18 @@ routine B32.exp_m1() -> Me
             zero: Bool = ax == 0
             when
                 zero => return me
-                ax < 0x676A09E8 => return me.abs().mul_add(a: 0x1p-25, b: me)
+                ax < 0x676A09E8 => return me.abs().mul_add_unchecked(a: 0x1p-25, b: me)
                 else =>
                     # rounds like x + |x| 2^-25
-                    z2: B64 = z * z
-                    z4: B64 = z2 * z2
-                    p01: B64 = z * 0x1.55555555555fep-3 + 0x1.fffffffffffc2p-2
-                    p23: B64 = z * 0x1.1111111098dc1p-7 + 0x1.555555559767fp-5
-                    p45: B64 = z * 0x1.a01a07658483fp-13 + 0x1.6c16bca988aa9p-10
-                    p67: B64 = z * 0x1.71de3a960b5e3p-19 + 0x1.a05b04d2c3503p-16
-                    q03: B64 = z2 * p23 + p01
-                    q47: B64 = z4 * (z2 * p67 + p45)
-                    r: B64 = z2 * (q03 + q47) + z
+                    z2: B64 = z *! z
+                    z4: B64 = z2 *! z2
+                    p01: B64 = z *! 0x1.55555555555fep-3 +! 0x1.fffffffffffc2p-2
+                    p23: B64 = z *! 0x1.1111111098dc1p-7 +! 0x1.555555559767fp-5
+                    p45: B64 = z *! 0x1.a01a07658483fp-13 +! 0x1.6c16bca988aa9p-10
+                    p67: B64 = z *! 0x1.71de3a960b5e3p-19 +! 0x1.a05b04d2c3503p-16
+                    q03: B64 = z2 *! p23 +! p01
+                    q47: B64 = z4 *! (z2 *! p67 +! p45)
+                    r: B64 = z2 *! (q03 +! q47) +! z
                     return r.to[Me]()
         ax >= 0x8562E430 =>
             # |x| >= 0x1.62e43p+6, infinities and NaN
@@ -57,41 +57,41 @@ routine B32.exp_m1() -> Me
             negative: Bool = ux >> 31 == 1
             infinite: Bool = ax == 0xFF000000
             when
-                nan => return me + me
+                nan => return me +! me
                 negative =>
                     # x < 0: the result is -1 (the float just above it is too far away)
                     if infinite
                         return -1.0
-                    return Me.add(-1.0, 0x1p-26)
+                    return Me.add_unchecked(-1.0, 0x1p-26)
                 else => return Me.INFINITY
         else =>
-            a: B64 = z * 0x1.71547652b82fep+5  # 32 x / ln(2)
+            a: B64 = z *! 0x1.71547652b82fep+5  # 32 x / ln(2)
             ia: B64 = a.round_ties_even()
-            h: B64 = a - ia
-            h2: B64 = h * h
-            uu: U64 = (ia + 0x1.8p+52).bits()  # the low bits are round(32 x / ln(2))
-            c2: B64 = h * 0x1.c6b19384ecd93p-20 + 0x1.ebfd1b232f475p-13
-            c0: B64 = h * 0x1.62e42fef4c4e7p-6 + 1.0
+            h: B64 = a -! ia
+            h2: B64 = h *! h
+            uu: U64 = (ia +! 0x1.8p+52).bits()  # the low bits are round(32 x / ln(2))
+            c2: B64 = h *! 0x1.c6b19384ecd93p-20 +! 0x1.ebfd1b232f475p-13
+            c0: B64 = h *! 0x1.62e42fef4c4e7p-6 +! 1.0
             tb: U64 = CM_B32_EXPM1_TD.getitem((uu & 0x1F).to[U64]())
             sv: B64 = B64.from_bits(tb +% ((uu >> 5) << 52))  # 2^(round(32 x / ln(2)) / 32)
-            c02: B64 = h2 * c2 + c0
-            r: B64 = c02 * sv - 1.0
+            c02: B64 = h2 *! c2 +! c0
+            r: B64 = c02 *! sv -! 1.0
             ub: Me = r.to[Me]()
-            lb: Me = (r - sv * 0x1.3b3p-33).to[Me]()
+            lb: Me = (r -! sv *! 0x1.3b3p-33).to[Me]()
             if ub == lb
                 return ub
             # The fast path can't decide the rounding.
             # x < -17.32
             if ux > 0xC18AA123
-                return Me.add(-1.0, 0x1p-26)
+                return Me.add_unchecked(-1.0, 0x1p-26)
             # a longer reduction and polynomial
-            h_hi: B64 = z * 0x1.7154765p+5 - ia
-            h3: B64 = h_hi + z * 0x1.5c17f0bbbe88p-26
-            h22: B64 = h3 * h3
-            w: B64 = sv * h3
-            q01: B64 = h3 * 0x1.ebfbdff82c58fp-13 + 0x1.62e42fefa39efp-6
-            q23: B64 = h3 * 0x1.3b2ab6fb92e5ep-27 + 0x1.c6b08d702e0edp-20
-            q45: B64 = h3 * 0x1.430976b8ce6efp-43 + 0x1.5d886e6d54203p-35
-            q: B64 = h22 * (h22 * q45 + q23) + q01
-            r2: B64 = sv - 1.0 + w * q
+            h_hi: B64 = z *! 0x1.7154765p+5 -! ia
+            h3: B64 = h_hi +! z *! 0x1.5c17f0bbbe88p-26
+            h22: B64 = h3 *! h3
+            w: B64 = sv *! h3
+            q01: B64 = h3 *! 0x1.ebfbdff82c58fp-13 +! 0x1.62e42fefa39efp-6
+            q23: B64 = h3 *! 0x1.3b2ab6fb92e5ep-27 +! 0x1.c6b08d702e0edp-20
+            q45: B64 = h3 *! 0x1.430976b8ce6efp-43 +! 0x1.5d886e6d54203p-35
+            q: B64 = h22 *! (h22 *! q45 +! q23) +! q01
+            r2: B64 = sv -! 1.0 +! w *! q
             return r2.to[Me]()
