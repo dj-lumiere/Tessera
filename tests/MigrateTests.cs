@@ -465,4 +465,59 @@ public class MigrateTests
     {
         Assert.Equal(after, Migrate.WithoutAggregate(before));
     }
+
+    [Fact]
+    public void Managers_step_renames_the_default_tables_and_the_process_routines()
+    {
+        const string before = """
+            routine start() -> None
+                local alloc: @MemoryManager <- make_heap_memory()
+                local list: @List[S64] <- .construct(DEFAULT_HEAP)  # from DEFAULT_HEAP
+                local stacks: @MemoryManager <- make_stack_memory()
+                Console.show("DEFAULT_HEAP {make_c_heap_memory().has_pages()}")
+                r: Result[ProcessOutput, ProcessError] = run_process_result(program: "ls", args: [], options, alloc)
+                exit(1)
+            """;
+        const string after = """
+            routine start() -> None
+                local alloc: @MemoryManager <- HEAP.peek()
+                local list: @List[S64] <- .construct(HEAP)  # from HEAP
+                local stacks: @MemoryManager <- PAGES.peek()
+                Console.show("DEFAULT_HEAP {C_HEAP.peek().has_pages()}")
+                r: Result[ProcessOutput, ProcessError] = ProcessManager.create_process_result(program: "ls", args: [], options, alloc)
+                ProcessManager.exit_process(1)
+            """;
+        Assert.Equal(after, ManagerMigration.Rewrite(before));
+    }
+
+    [Fact]
+    public void Managers_step_keeps_a_routine_the_file_declares_itself()
+    {
+        const string source = """
+            @external("c")
+            routine exit(status: CInt) -> None
+
+            routine start() -> None
+                exit(3)
+            """;
+        Assert.Equal(source, ManagerMigration.Rewrite(source));
+    }
+
+    [Fact]
+    public void Float_presets_step_writes_the_literals()
+    {
+        const string before = """
+            routine top() -> B64
+                low: B32 = B32.NEG_INFINITY  # was B32.NEG_INFINITY
+                Console.show("{B16.NAN.is_nan()} B64.INFINITY")
+                return B64.INFINITY - Me.NAN
+            """;
+        const string after = """
+            routine top() -> B64
+                low: B32 = -inf  # was -inf
+                Console.show("{nan.is_nan()} B64.INFINITY")
+                return inf - nan
+            """;
+        Assert.Equal(after, FloatPresetMigration.Rewrite(before));
+    }
 }

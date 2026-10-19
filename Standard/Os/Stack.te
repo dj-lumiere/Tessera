@@ -1,124 +1,133 @@
-# Tessera stdlib: the stack allocator
+# Tessera stdlib: the running flow's stack manager
 #
-# A MemoryManager for stacks, such as a fiber's: whole pages from the operating
-# system, with one page below them that may not be touched. A stack grows
-# down, so a stack that runs out reaches that page and the program stops
-# there, instead of writing over whatever lies below.
-#
-# The pages are reserved, not committed up front, so a stack costs the memory
-# it has touched and a great many can coexist: Linux and macOS commit a page
-# when it is first touched (mmap, MAP_NORESERVE on Linux), and on Windows the
-# top two pages are committed with a guard page below them, which Windows moves
-# down as the stack grows into it, as for a thread's own stack (the fiber
-# switch keeps the thread block's stack fields in step, see switch_stack).
-#
-# The MemoryManager interface frees without a size, so the size of the mapping is
-# written at the start of the bottom page, which is opened again to read it
-# when the stack is freed. It doesn't grow a stack past its size: realloc
-# returns null, as an allocator out of memory does.
+# Every flow of execution runs on a stack that a StackManager (Standard/Alloc) manages. A thread's own stack, the
+# first thread's included, is the operating system's: StackManager.current() asks the system for its bounds the first
+# time a thread asks, and keeps the answer in the thread's THREAD_STACK. A fiber's stack is its manager's
+# (Standard/Fiber), which points RUNNING_STACK at the fiber's StackManager while the fiber runs and back when it stops.
 
 module Standard/Os
 
 import Standard/Alloc
 
-# -- pages, POSIX ------------------------------------------------------------------
+### The StackManager of the running thread's own stack, filled from the operating system on first use.
+@threadlocal
+@target(os: not "none")
+secret global THREAD_STACK: @StackManager
 
-### `length` bytes of pages for a stack, the bottom one closed with the length written in it.
-### :param length: The number of bytes, a whole number of pages.
-### :param page: The page size in bytes.
-### :returns: The start of the mapping, or null when the pages can't be mapped.
+### The StackManager of the flow running on this thread: a fiber's while one runs, else null for the thread's own.
+@threadlocal
+@target(os: not "none")
+global RUNNING_STACK: @@StackManager
+
+### The StackManager of the flow that runs this code: a fiber's stack inside a fiber, else the thread's own stack,
+### whose bounds the operating system gives the first time a thread asks.
+### :returns: The manager, for the flow's whole life.
+@target(os: not "none")
+common routine StackManager.current() -> @StackManager
+    running: @StackManager = RUNNING_STACK.peek()
+    if running.is_not_hollow()
+        return running
+    if THREAD_STACK.top.peek().is_hollow()
+        bottom, top = thread_stack_bounds()
+        THREAD_STACK.poke(StackManager.construct(bottom, top))
+    return THREAD_STACK
+
+# -- Linux --------------------------------------------------------------------------------------------------------
+
+### Binds the C `pthread_self` function, the running thread's id.
+### :returns: The id.
+@external("c")
+@symbol("pthread_self")
 @target(os: ("linux", "macos"))
-secret routine stack_map(length: U64, page: U64) -> Addr
-    # PROT_READ | PROT_WRITE, no file
-    local at: Addr = c_mmap(.hollow(), length.to[CSize](), 3, map_private_anonymous(), -1, 0)
+secret routine c_pthread_self() -> Addr
 
-    if ptrtoint[Addr, S64](at) == -1
-        return .hollow()
-    length.poke_into(at.to[@U64]())
-    pages_protect(at, size: page, access: PageAccess.NONE)
-    return at
+### Binds glibc's `pthread_getattr_np` function, which fills attributes with a running thread's, its stack included.
+### :param thread: The thread's id.
+### :param attr: The attributes to fill, destroyed with pthread_attr_destroy.
+### :returns: 0 on success, or an error number.
+@external("c")
+@symbol("pthread_getattr_np")
+@target(os: "linux")
+secret routine c_pthread_getattr_np(thread: Addr, attr: Addr) -> CInt
 
-# -- pages, Windows ----------------------------------------------------------------
+### Binds the C `pthread_attr_getstack` function, which reads a stack's lowest address and size from attributes.
+### :param attr: The attributes.
+### :param addr: Where the lowest address goes.
+### :param size: Where the size goes.
+### :returns: 0 on success, or an error number.
+@external("c")
+@symbol("pthread_attr_getstack")
+@target(os: "linux")
+secret routine c_pthread_attr_getstack(attr: Addr, addr: @Addr, size: @CSize) -> CInt
 
-### `length` bytes reserved for a stack: the bottom page committed and closed with the length written in it, the top
-### two committed, and below them a guard page Windows moves down as the stack grows into it. A stack of fewer than
-### three pages above the bottom one is committed whole.
-### :param length: The number of bytes, a whole number of pages.
-### :param page: The page size in bytes.
-### :returns: The start of the reservation, or null when the space can't be reserved.
+### Binds the C `pthread_attr_destroy` function, which gives attributes back.
+### :param attr: The attributes.
+### :returns: 0 on success, or an error number.
+@external("c")
+@symbol("pthread_attr_destroy")
+@target(os: "linux")
+secret routine c_pthread_attr_destroy(attr: Addr) -> CInt
+
+### The running thread's stack as the system has it: its lowest address and the address after its top.
+### :returns: The bottom and the top, both null when the system doesn't say.
+@target(os: "linux")
+secret routine thread_stack_bounds() -> (Addr, Addr)
+    local attr: @Array[U64, 16] <- .hollow()
+    local low: @Addr <- .hollow()
+    local size: @CSize <- 0
+
+    if c_pthread_getattr_np(c_pthread_self(), attr) != 0
+        return (.hollow(), .hollow())
+    c_pthread_attr_getstack(attr, low, size)
+    c_pthread_attr_destroy(attr)
+    top: Addr = low.peek().offset(size.peek().to[S64]())
+    return (low.peek(), top)
+
+# -- macOS --------------------------------------------------------------------------------------------------------
+
+### Binds macOS's `pthread_get_stackaddr_np`, the top of a thread's stack.
+### :param thread: The thread's id.
+### :returns: The address the stack starts at.
+@external("c")
+@symbol("pthread_get_stackaddr_np")
+@target(os: "macos")
+secret routine c_pthread_get_stackaddr_np(thread: Addr) -> Addr
+
+### Binds macOS's `pthread_get_stacksize_np`, the size of a thread's stack.
+### :param thread: The thread's id.
+### :returns: The size in bytes.
+@external("c")
+@symbol("pthread_get_stacksize_np")
+@target(os: "macos")
+secret routine c_pthread_get_stacksize_np(thread: Addr) -> CSize
+
+### The running thread's stack as the system has it: its lowest address and the address after its top.
+### :returns: The bottom and the top.
+@target(os: "macos")
+secret routine thread_stack_bounds() -> (Addr, Addr)
+    local thread: Addr = c_pthread_self()
+
+    top: Addr = c_pthread_get_stackaddr_np(thread)
+    size: S64 = c_pthread_get_stacksize_np(thread).to[S64]()
+    return (top.offset(-size), top)
+
+# -- Windows ------------------------------------------------------------------------------------------------------
+
+### Binds the Win32 `GetCurrentThreadStackLimits` function, the running thread's stack bounds.
+### :param low: Where the lowest address goes.
+### :param high: Where the address after the top goes.
+@external("c")
+@symbol("GetCurrentThreadStackLimits")
+@callconv("stdcall")
 @target(os: "windows")
-secret routine stack_map(length: U64, page: U64) -> Addr
-    # MEM_RESERVE, PAGE_NOACCESS
-    local at: Addr = c_virtual_alloc(.hollow(), length.to[CSize](), 0x2000, 1)
+secret routine c_get_current_thread_stack_limits(low: @Addr, high: @Addr) -> None
 
-    if at.is_hollow()
-        return .hollow()
-    # MEM_COMMIT, PAGE_READWRITE
-    c_virtual_alloc(at, page.to[CSize](), 0x1000, 4)
-    length.poke_into(at.to[@U64]())
-    pages_protect(at, size: page, access: PageAccess.NONE)
-    pages: U64 = length // page - 1
-    if pages < 3
-        # Too small to grow: all of it committed.
-        c_virtual_alloc(at.offset(page.to[S64]()), (pages * page).to[CSize](), 0x1000, 4)
-        return at
-    # PAGE_READWRITE | PAGE_GUARD for the page below the top two
-    two: U64 = page * 2
-    c_virtual_alloc(at.offset((length - two).to[S64]()), two.to[CSize](), 0x1000, 4)
-    guard_offset: U64 = length - two - page
-    c_virtual_alloc(at.offset(guard_offset.to[S64]()), page.to[CSize](), 0x1000, 0x104)
-    return at
+### The running thread's stack as the system has it: its lowest address and the address after its top.
+### :returns: The bottom and the top.
+@target(os: "windows")
+secret routine thread_stack_bounds() -> (Addr, Addr)
+    local low: @Addr <- .hollow()
+    local high: @Addr <- .hollow()
 
-# -- the allocator -----------------------------------------------------------------
-
-### The stack allocator's alloc function: rounds `size` up to whole pages and adds the guard page below them.
-### :param state: Unused, the stack allocator has no state.
-### :param size: The stack size wanted, in bytes.
-### :param align: The alignment asked for: a page start is aligned for anything up to a page.
-### :returns: The lowest usable address of the stack (just above the guard page), null when the pages can't be
-### reserved.
-### :throws: Crashes with `IntegerOverflowError` when `size` rounded up to pages, plus the guard page, doesn't fit in
-###     U64.
-@target(os: not "none")
-routine stack_alloc_fn(state: Addr, size: U64, align: U64) -> Addr
-    local page: U64 = page_size().bytes()
-    local padded_size: U64 = size + page - 1
-    local pages: U64 = padded_size // page
-    local length: U64 = (pages + 1) * page
-    local base: Addr = stack_map(length, page)
-
-    if base.is_hollow()
-        return .hollow()
-    stack: Addr = base.offset(page.to[S64]())
-    return stack
-
-### The stack allocator's realloc function: a stack doesn't grow past its size, so this always fails.
-### :param state: Unused.
-### :param old_ptr: The stack.
-### :param size: The size asked for.
-### :param align: The alignment the stack has.
-### :returns: Always null.
-@target(os: not "none")
-routine stack_realloc_fn(state: Addr, old_ptr: Addr, size: U64, align: U64) -> Addr
-    return .hollow()
-
-### The stack allocator's free function: reopens the bottom page to read the length written in it, then releases the
-### whole mapping.
-### :param state: Unused, the stack allocator has no state.
-### :param ptr: A stack from {make_stack_memory}.
-@target(os: not "none")
-routine stack_free_fn(state: Addr, ptr: Addr) -> None
-    page: U64 = page_size().bytes()
-    base: Addr = ptr.offset(-page.to[S64]())
-    pages_protect(at: base, size: page, access: PageAccess.READ_WRITE)
-    length: U64 = base.to[@U64]().peek()
-    pages_release(at: base, size: length)
-    return
-
-### A MemoryManager for stacks: whole pages, with a guard page below that stops the program when a stack overflows. Its
-### page routines are the operating system's. It is {DEFAULT_STACKS}.
-### :returns: The allocator, which holds no state and needs nothing to free.
-@target(os: not "none")
-routine make_stack_memory() -> MemoryManager
-    alloc: MemoryManager = DEFAULT_STACKS.peek()
-    return alloc
+    c_get_current_thread_stack_limits(low, high)
+    return (low.peek(), high.peek())

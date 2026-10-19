@@ -145,6 +145,15 @@ public sealed partial class Compiler
                 $"the builder has no entry for {Target.Arch} without an operating system: bring your own entry instead of start");
         var halt = EntryHelper(BootModule, "halt", start.Pos);
         var steps = new List<Instance> { board ?? EntryHelper(BootModule, "prepare_core", start.Pos), startInst, halt };
+        // The CpuEventManager's table calls tessera_cpu_event, Standard/Boot's routine for the target.
+        string? cpuEvent = Target.Arch switch
+        {
+            "aarch64" => "aarch64_cpu_event",
+            "arm" => "cortex_m_cpu_event",
+            "riscv32" => "riscv_cpu_event",
+            _ => null,
+        };
+        if (cpuEvent is not null) EntryHelper(BootModule, cpuEvent, start.Pos);
         if (ExposeDefinitions) NoteExposed(WhenPowerOnName);
 
         string attrs = EntryAttrs(start.Pos);
@@ -156,18 +165,24 @@ public sealed partial class Compiler
         _entry.AppendLine("  unreachable");
         _entry.AppendLine("}");
         _entry.AppendLine();
-        _entry.AppendLine("@__stack_top = external global i8");
+        // Standard/Boot declares the same symbol for StackManager.current(): whichever comes first declares it once.
+        if (_globalVars.TryAdd("__stack_top", "@__stack_top")) _entry.AppendLine("@__stack_top = external global i8");
         if (armM)
         {
             // The Cortex-M vector table: the stack top (the core loads SP from it), the reset entry, and the system
-            // exceptions, each of which halts. The link script puts .isr_vector at the start of flash.
+            // exceptions, each of which goes to the CpuEventManager. The link script puts .isr_vector at the start of
+            // flash.
             var slots = new List<string> { "ptr @__stack_top", $"ptr @{WhenPowerOnName}" };
             for (int exception = 2; exception < 16; exception++)
-                slots.Add(exception is 7 or 8 or 9 or 10 or 13 ? "ptr null" : $"ptr @{Quote(halt.Symbol)}");
+                slots.Add(exception is 7 or 8 or 9 or 10 or 13 ? "ptr null" : "ptr @tessera_cortex_m_exception");
+            _entry.AppendLine("declare void @tessera_cortex_m_exception()");
             _entry.AppendLine($"@tessera_vectors = constant [16 x ptr] [{string.Join(", ", slots)}], section \".isr_vector\", align 4");
             _entry.AppendLine("@llvm.used = appending global [1 x ptr] [ptr @tessera_vectors], section \"llvm.metadata\"");
+            ModuleAsm(CortexMExceptionAsm);
             return;
         }
+        if (Target.Arch == "aarch64") ModuleAsm(Aarch64VectorAsm(cpu.Has("fp-armv8", start.Pos)));
+        if (Target.Arch == "riscv32") ModuleAsm(RiscvTrapAsm(cpu.Has("d", start.Pos) ? 8 : cpu.Has("f", start.Pos) ? 4 : 0));
         string asm = Target.Arch switch
         {
             "x86_64" => "xor %ebp, %ebp\\0Alea __stack_top(%rip), %rsp\\0Acall tessera_boot\\0Aud2",
@@ -180,5 +195,151 @@ public sealed partial class Compiler
         _entry.AppendLine("  unreachable");
         _entry.AppendLine("}");
         _entry.AppendLine();
+    }
+
+    /// Writes assembly lines into the module (LLVM's `module asm`).
+    private void ModuleAsm(IEnumerable<string> lines)
+    {
+        foreach (string line in lines)
+            _entry.AppendLine($"module asm \"{line.Replace("\\", "\\5C").Replace("\"", "\\22")}\"");
+        _entry.AppendLine();
+    }
+
+    /// The Cortex-M system exceptions' handler: the core has pushed R0 to R3, R12, LR, PC, and xPSR on the stack it was
+    /// using (MSP or PSP, bit 2 of the EXC_RETURN in LR says which), so a routine of the C convention may run. It
+    /// passes the exception number (IPSR), the frame, and the frame's PC to tessera_cpu_event, and returns through the
+    /// EXC_RETURN. ARMv6-M instructions only, so every Cortex-M runs it.
+    private static readonly string[] CortexMExceptionAsm =
+    [
+        ".section .text.tessera_cortex_m_exception,\"ax\",%progbits",
+        ".balign 4",
+        ".globl tessera_cortex_m_exception",
+        ".type tessera_cortex_m_exception,%function",
+        ".thumb_func",
+        "tessera_cortex_m_exception:",
+        "  mov r3, lr",
+        "  movs r1, #4",
+        "  tst r3, r1",
+        "  bne 1f",
+        "  mrs r1, msp",
+        "  b 2f",
+        "1:",
+        "  mrs r1, psp",
+        "2:",
+        "  mrs r0, ipsr",
+        "  ldr r2, [r1, #24]",
+        "  push {r3, lr}",
+        "  bl tessera_cpu_event",
+        "  pop {r3, pc}",
+        ".size tessera_cortex_m_exception, . - tessera_cortex_m_exception",
+        ".text",
+    ];
+
+    /// The AArch64 vector table, `tessera_vectors`: 16 entries of 128 bytes (synchronous, IRQ, FIQ, SError, for each of
+    /// four sources), 2 KiB aligned for VBAR. Each entry saves X0 and X1, puts its number in X0, and goes to the common
+    /// part, which saves the registers a routine may change (with the floating-point and SIMD registers when the build
+    /// has them), and the level's ELR and SPSR, reads the level's ESR, ELR, and FAR, calls tessera_cpu_event, puts
+    /// everything back, and returns with ERET.
+    private static IEnumerable<string> Aarch64VectorAsm(bool fp)
+    {
+        int frame = fp ? 704 : 192;
+        var l = new List<string>
+        {
+            ".section .text.tessera_vectors,\"ax\",%progbits",
+            ".balign 2048",
+            ".globl tessera_vectors",
+            "tessera_vectors:",
+        };
+        for (int k = 0; k < 16; k++)
+        {
+            l.Add(".balign 128");
+            l.Add($"  sub sp, sp, #{frame}");
+            l.Add("  stp x0, x1, [sp, #0]");
+            l.Add($"  mov x0, #{k}");
+            l.Add("  b tessera_vector_common");
+        }
+        l.Add("tessera_vector_common:");
+        for (int r = 2; r < 18; r += 2) l.Add($"  stp x{r}, x{r + 1}, [sp, #{r * 8}]");
+        l.Add("  stp x18, x29, [sp, #144]");
+        l.Add("  str x30, [sp, #160]");
+        l.Add("  mrs x9, CurrentEL");
+        l.Add("  cmp x9, #8");
+        l.Add("  b.eq 2f");
+        l.Add("  cmp x9, #12");
+        l.Add("  b.eq 3f");
+        foreach (var (label, level) in new[] { ("", 1), ("2:", 2), ("3:", 3) })
+        {
+            if (label != "") l.Add(label);
+            l.Add($"  mrs x1, esr_el{level}");
+            l.Add($"  mrs x2, elr_el{level}");
+            l.Add($"  mrs x3, far_el{level}");
+            l.Add($"  mrs x10, spsr_el{level}");
+            l.Add("  b 4f");
+        }
+        l.Add("4:");
+        l.Add("  stp x2, x10, [sp, #168]");
+        if (fp)
+            for (int q = 0; q < 32; q += 2) l.Add($"  stp q{q}, q{q + 1}, [sp, #{192 + q * 16}]");
+        l.Add("  bl tessera_cpu_event");
+        if (fp)
+            for (int q = 0; q < 32; q += 2) l.Add($"  ldp q{q}, q{q + 1}, [sp, #{192 + q * 16}]");
+        l.Add("  ldp x2, x10, [sp, #168]");
+        l.Add("  mrs x9, CurrentEL");
+        l.Add("  cmp x9, #8");
+        l.Add("  b.eq 6f");
+        l.Add("  cmp x9, #12");
+        l.Add("  b.eq 7f");
+        foreach (var (label, level) in new[] { ("", 1), ("6:", 2), ("7:", 3) })
+        {
+            if (label != "") l.Add(label);
+            l.Add($"  msr elr_el{level}, x2");
+            l.Add($"  msr spsr_el{level}, x10");
+            l.Add("  b 8f");
+        }
+        l.Add("8:");
+        l.Add("  ldp x0, x1, [sp, #0]");
+        for (int r = 2; r < 18; r += 2) l.Add($"  ldp x{r}, x{r + 1}, [sp, #{r * 8}]");
+        l.Add("  ldp x18, x29, [sp, #144]");
+        l.Add("  ldr x30, [sp, #160]");
+        l.Add($"  add sp, sp, #{frame}");
+        l.Add("  eret");
+        l.Add(".text");
+        return l;
+    }
+
+    /// The RISC-V trap entry, `tessera_vectors` (mtvec in direct mode, so every trap comes here): it saves the registers
+    /// a routine may change (the floating-point ones too when the build has them, `fpBytes` each), calls
+    /// tessera_cpu_event with mcause, mepc, and mtval, sets mepc to the place it returns, puts everything back, and
+    /// returns with MRET.
+    private static IEnumerable<string> RiscvTrapAsm(int fpBytes)
+    {
+        string[] ints = ["ra", "t0", "t1", "t2", "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "t3", "t4", "t5", "t6"];
+        string[] floats = ["ft0", "ft1", "ft2", "ft3", "ft4", "ft5", "ft6", "ft7", "fa0", "fa1", "fa2", "fa3", "fa4", "fa5", "fa6", "fa7", "ft8", "ft9", "ft10", "ft11"];
+        int intBytes = ints.Length * 4;
+        int frame = (intBytes + (fpBytes == 0 ? 0 : floats.Length * fpBytes) + 15) / 16 * 16;
+        string store = fpBytes == 8 ? "fsd" : "fsw", load = fpBytes == 8 ? "fld" : "flw";
+        var l = new List<string>
+        {
+            ".section .text.tessera_vectors,\"ax\",@progbits",
+            ".balign 4",
+            ".globl tessera_vectors",
+            "tessera_vectors:",
+            $"  addi sp, sp, -{frame}",
+        };
+        for (int i = 0; i < ints.Length; i++) l.Add($"  sw {ints[i]}, {i * 4}(sp)");
+        if (fpBytes != 0)
+            for (int i = 0; i < floats.Length; i++) l.Add($"  {store} {floats[i]}, {intBytes + i * fpBytes}(sp)");
+        l.Add("  csrr a0, mcause");
+        l.Add("  csrr a1, mepc");
+        l.Add("  csrr a2, mtval");
+        l.Add("  call tessera_cpu_event");
+        l.Add("  csrw mepc, a0");
+        if (fpBytes != 0)
+            for (int i = 0; i < floats.Length; i++) l.Add($"  {load} {floats[i]}, {intBytes + i * fpBytes}(sp)");
+        for (int i = 0; i < ints.Length; i++) l.Add($"  lw {ints[i]}, {i * 4}(sp)");
+        l.Add($"  addi sp, sp, {frame}");
+        l.Add("  mret");
+        l.Add(".text");
+        return l;
     }
 }

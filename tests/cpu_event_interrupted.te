@@ -1,0 +1,37 @@
+# An interrupt from the keyboard (SIGINT on Linux and macOS, Ctrl+C on Windows) goes to the CpuEventManager's
+# when_interrupted handler, and the program goes on when it returns. Setting a handler hands back the one before, which
+# puts it back.
+
+import Standard/Format
+import Standard/Os
+
+### How many interrupts came.
+global INTERRUPTS: @U64
+
+### Counts an interrupt.
+### :param event: The event.
+routine count(event: CpuEvent) -> None
+    INTERRUPTS.atomic_fetch_add(1)
+    return
+
+### Says an interrupt came, the other handler.
+### :param event: The event.
+routine announce(event: CpuEvent) -> None
+    Console.show("announce: {event.kind == CpuEventKind.INTERRUPTED}")
+    return
+
+routine start() -> None
+    first: Callable[(CpuEvent,), None] = CpuEventManager.when_interrupted(count.to[Callable]())
+    CpuEventManager.raise(CpuEventKind.INTERRUPTED)
+    CpuEventManager.raise(CpuEventKind.INTERRUPTED)
+    Console.show("interrupts: {INTERRUPTS.peek_atomic()}")
+    counting: Callable[(CpuEvent,), None] = CpuEventManager.when_interrupted(announce.to[Callable]())
+    CpuEventManager.raise(CpuEventKind.INTERRUPTED)
+    holder: Callable[(CpuEvent,), None] = CpuEventManager.holder(CpuEventKind.INTERRUPTED)
+    Console.show("announce holds the slot: {holder.addr() === announce.to[Callable]().addr()}")
+    announcing: Callable[(CpuEvent,), None] = CpuEventManager.when_interrupted(counting)
+    CpuEventManager.raise(CpuEventKind.INTERRUPTED)
+    Console.show("interrupts: {INTERRUPTS.peek_atomic()}")
+    CpuEventManager.when_interrupted(first)
+    Console.show("restored: {CpuEventManager.holder(CpuEventKind.INTERRUPTED).addr().is_hollow()}")
+    return

@@ -1,0 +1,47 @@
+# Every flow runs on a stack its StackManager manages. The first thread's is the operating system's stack, whose bounds
+# the system gives: a local slot is inside it, and what is in use and what remains add up to its size. A fiber's is
+# the pages its FiberManager took from PAGES, the size asked for, and inside the fiber StackManager.current() is the
+# fiber's: deeper calls use more of it.
+
+import Standard/Alloc
+import Standard/Fiber
+import Standard/Format
+import Standard/Os
+
+### How much of the running flow's stack is in use, one frame deeper.
+### :returns: The bytes in use.
+@noinline
+routine used_deeper() -> U64
+    local frame: @Array[U64, 512] <- .hollow()
+
+    frame.getslot(0).poke(1)
+    return StackManager.current().used().bytes()
+
+### Checks the fiber's stack from inside the fiber.
+### :param thread_top: The top of the thread's own stack.
+routine in_fiber(thread_top: Addr) -> None
+    local here: @U64 <- 0
+
+    stack: @StackManager = StackManager.current()
+    Console.show("fiber: size {stack.size()}, holds a local {stack.holds(here.to[Addr]())}")
+    Console.show("fiber: not the thread's stack {stack.top.peek() !== thread_top}")
+    used: U64 = stack.used().bytes()
+    Console.show("fiber: deeper uses more {used_deeper() > used}")
+    return
+
+routine start() -> None
+    local here: @U64 <- 0
+
+    stack: @StackManager = StackManager.current()
+    Console.show("thread: holds a local {stack.holds(here.to[Addr]())}")
+    whole: U64 = stack.size().bytes()
+    sum: U64 = stack.used().bytes() + stack.remaining().bytes()
+    Console.show("thread: used and remaining make the size {sum.abs_diff(whole) < 4096}, at least 64 KiB {whole >= 65536}")
+    local fibers: @FiberManager <- .construct(stack_size: 256kib, stacks: PAGES, alloc: HEAP)
+    f: Fiber[None] = fibers.get_fiber[None]()
+    f.put_work(entry: in_fiber.to[Callable](), args: stack.top.peek())
+    f.wait_finished()
+    f.give_back()
+    Console.show("thread: current again {StackManager.current() === stack}")
+    drop fibers
+    return

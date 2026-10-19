@@ -664,7 +664,7 @@ public sealed partial class Compiler
         return functions;
     }
 
-    /// `@tessera.reset_thread_locals`, what the stdlib's `reset_thread_locals()` calls: it stores each `@threadlocal`
+    /// `@tessera.reset_thread_locals`, what the stdlib's `ThreadLocalStorageManager.reset()` calls: it stores each `@threadlocal`
     /// global's starting value in the running thread's copy. A thread manager's worker calls it before each ticket's
     /// work, so the work starts from the values a new thread would.
     private string ResetThreadLocals()
@@ -1577,7 +1577,7 @@ public sealed partial class Compiler
 
     private readonly Dictionary<string, string> _globalVars = [];
 
-    /// The `@threadlocal` globals this module defines, with their starting values, which `reset_thread_locals()` stores
+    /// The `@threadlocal` globals this module defines, with their starting values, which `ThreadLocalStorageManager.reset()` stores
     /// again.
     private readonly List<(string Name, string Llvm, string Init)> _threadLocals = [];
 
@@ -1777,6 +1777,22 @@ public sealed partial class Compiler
         if (set.Count == 0) throw new CompileError(r.Pos, $"'{r.Name}' isn't a routine; to[Callable]() makes a routine a value");
         if (r.Callable is { } written && ResolveType(written, env) is var named && !named.Equals(want))
             throw new CompileError(r.Pos, $"expected {want}, found {named}");
+        // A generic routine's instance, `f[S64].to[Callable]()`: its type arguments bound in order.
+        if (r.TypeArgs.Count > 0)
+        {
+            var args = r.TypeArgs.Select(t => ResolveType(t, env)).ToList();
+            foreach (var routine in set.Where(o => o.TypeParams.Count == args.Count && o.Fixed.Count == 0))
+            {
+                var routineEnv = new TypeEnv(routine.File);
+                for (int i = 0; i < args.Count; i++) routineEnv.Bind(routine.TypeParams[i], args[i]);
+                var inst = RequireInstance(routine, routineEnv);
+                if (!new CallableType(inst.CallConv, inst.Params, inst.Ret).Equals(want)) continue;
+                if (routine.AnnotationNamed("inline") is not null)
+                    throw new CompileError(r.Pos, $"'{r.Name}' is @inline, so it can't be a Callable value: it's inlined at every call");
+                return $"@{Quote(inst.Symbol)}";
+            }
+            throw new CompileError(r.Pos, $"no overload of '{r.Name}' with {args.Count} type argument(s) is {want}");
+        }
         foreach (var routine in set.Where(o => o.TypeParams.Count == 0))
         {
             Instance sig;

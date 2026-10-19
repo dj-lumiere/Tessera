@@ -1,10 +1,12 @@
-# Tessera stdlib: running another program, the environment, and leaving this one
+# Tessera stdlib: ProcessManager, the environment, and leaving this process
 #
-# run_process starts a program (looked up on PATH as a shell would) with its arguments, waits for it, and hands
-# back how it ended and what it wrote. Its standard input is the null device unless the options say to share this
+# ProcessManager manages processes: it creates them and reaps them, and it ends this one. A process the program creates
+# goes create_process, then its start, then exit_process, and ProcessManager.create_process_result does all of it for
+# the caller: it starts a program (looked up on PATH as a shell would) with its arguments, waits for it to end, reaps
+# it, and hands back how it ended and what it wrote. Its standard input is the null device unless the options say to share this
 # process's. Its output and error are captured (read to the end, both at once, so a child that fills one while the
 # other waits can't deadlock), shared, or discarded. Environment overrides are merged into this process's
-# environment, so PATH and the rest stay. run_shell runs a command line through the platform shell (sh -c, or
+# environment, so PATH and the rest stay. create_shell_process_result runs a command line through the platform shell (sh -c, or
 # cmd.exe /c) for pipes and globs, at the cost of the shell's quoting.
 #
 # The per-OS halves are Process_posix.te (fork and execvp) and Process_windows.te (CreateProcessW).
@@ -15,6 +17,11 @@ import Standard/Alloc
 
 ### The exit status {set_exit_code} stored, which `start` returning ends the process with.
 secret global EXIT_CODE: @S32 <- 0
+
+### Processes: creating one and reaping it when it ends ({ProcessManager.create_process_result},
+### {ProcessManager.create_shell_process_result}), and ending this one ({ProcessManager.exit_process}). Its routines are
+### called on the type.
+record ProcessManager
 
 ### Why a program couldn't start, or its output couldn't be captured.
 choice ProcessError: U8
@@ -55,7 +62,7 @@ record EnvVar
     name: @[Byte]
     value: @[Byte]
 
-### How {run_process_result} starts a program: its working directory, environment overrides, and what its standard
+### How {ProcessManager.create_process_result} starts a program: its working directory, environment overrides, and what its standard
 ### streams are. {ProcessOptions.default} is a good start.
 record ProcessOptions
     directory: Maybe[@[Byte]]  # where it starts: None for this process's working directory
@@ -65,7 +72,7 @@ record ProcessOptions
     stdout: OutputMode
     stderr: OutputMode
 
-### What run_process hands back. A captured stream is in memory from the allocator, and dropping the output releases
+### What {ProcessManager.create_process_result} hands back. A captured stream is in memory from the allocator, and dropping the output releases
 ### both. One not captured is empty and holds nothing.
 entity ProcessOutput
     status: ExitStatus
@@ -138,19 +145,19 @@ routine ExitStatus.is_success() -> Bool
         is Signaled => return false
 
 ### Runs a command line through the platform shell (`/bin/sh -c` on Linux and macOS, `cmd.exe /c` on Windows) with
-### {run_process_result}, for pipes and globs at the cost of the shell's quoting.
+### {ProcessManager.create_process_result}, for pipes and globs at the cost of the shell's quoting.
 ### :param command: The command line.
 ### :param options: The directory, environment overrides, and standard streams.
 ### :param alloc: The allocator for the captured output and the working memory.
 ### :returns: The {ProcessOutput}, or a {ProcessError} when the shell couldn't start.
 @expensive("starts a process")
-routine run_shell_result(command: @[Byte], options: ProcessOptions,
+common routine ProcessManager.create_shell_process_result(command: @[Byte], options: ProcessOptions,
     alloc: @MemoryManager) -> Result[ProcessOutput, ProcessError]
     local args: @Array[@[Byte], 2] <- [shell_flag(), command]
 
-    return run_process_result(program: shell_program(), args: args.getview(), options, alloc)
+    return Me.create_process_result(program: shell_program(), args: args.getview(), options, alloc)
 
-### The platform shell {run_shell_result} starts: `cmd.exe` on Windows, `/bin/sh` elsewhere.
+### The platform shell {ProcessManager.create_shell_process_result} starts: `cmd.exe` on Windows, `/bin/sh` elsewhere.
 ### :returns: The program name.
 @target(os: "windows")
 secret routine shell_program() -> @[Byte]
@@ -162,7 +169,7 @@ secret routine shell_program() -> @[Byte]
 secret routine shell_flag() -> @[Byte]
     return "/c"
 
-### The platform shell {run_shell_result} starts: `cmd.exe` on Windows, `/bin/sh` elsewhere.
+### The platform shell {ProcessManager.create_shell_process_result} starts: `cmd.exe` on Windows, `/bin/sh` elsewhere.
 ### :returns: The program name.
 @target(os: ("linux", "macos"))
 secret routine shell_program() -> @[Byte]
@@ -191,7 +198,7 @@ routine exit_code() -> S32
 ### Ends this process with `status`, without returning. (Nothing is flushed but what the C library flushes.)
 ### :param status: The process's exit status.
 @noreturn
-routine exit(status: S32) -> None
+common routine ProcessManager.exit_process(status: S32) -> None
     c_exit(status.to[CInt]())
 
 # -- what both halves share ------------------------------------------------------------
@@ -268,7 +275,7 @@ secret routine @CaptureBuffer.owned() -> Memory[Byte]
     me.count.poke(0)
     return me.storage.take()
 
-### Whether a NUL is inside any text the child would get, or an override's name holds a '=': what run_process_result
+### Whether a NUL is inside any text the child would get, or an override's name holds a '=': what create_process_result
 ### turns down with InvalidArgument before it allocates anything, so a later failure to allocate is OutOfMemory.
 ### :param program: The program to run.
 ### :param args: The arguments.

@@ -84,8 +84,8 @@ common routine ThreadPoolManager.construct(threads: U64) -> Me
         threads == 0 => cpu_count()
         else => threads
     return Me(lock: .construct(), first: .hollow(), last: .hollow(), idle: .hollow(), epoch: 0,
-        stopping: 0, count, threads: .hollow(), alloc: DEFAULT_HEAP,
-        woken: CircularList[@FiberState].construct(alloc: DEFAULT_HEAP), fibers: .hollow(), spare: .hollow())
+        stopping: 0, count, threads: .hollow(), alloc: HEAP,
+        woken: CircularList[@FiberState].construct(alloc: HEAP), fibers: .hollow(), spare: .hollow())
 
 ### Stops the pool: its threads finish the work they have, then end, and the idle jobs and the fibers go. Give every
 ### job back first.
@@ -116,7 +116,7 @@ routine @ThreadPoolManager.destruct() -> None
         next: @FiberState = fiber.next_all.peek()
         fiber.destruct()
         race_stack_free(fiber.race.peek())
-        deallocate(data: fiber.stack.peek().to[@Byte](), alloc: DEFAULT_STACKS)
+        give_back_stack(stack: fiber.stack.peek(), pages: PAGES)
         deallocate(data: fiber, alloc: me.alloc.peek())
         continue with fiber: next
     me.fibers.poke(.hollow())
@@ -292,14 +292,13 @@ secret routine @ThreadPoolManager.take_fiber() -> @FiberState
         return spare
     me.lock.unlock()
     alloc: @MemoryManager = me.alloc.peek()
-    size: U64 = DEFAULT_FIBER_STACK.bytes()
-    stack: @Byte = allocate[Byte](count: size, alloc: DEFAULT_STACKS)
-    if stack.is_hollow()
+    stack: StackManager = take_stack(size: DEFAULT_FIBER_STACK, pages: PAGES)
+    if stack.top.is_hollow()
         crash_allocation()
     fiber: @FiberState = allocate[FiberState](count: 1, alloc)
     if fiber.is_hollow()
         crash_allocation()
-    sp: Addr = initial_stack(stack, size, entry: fiber_start.addr())
+    sp: Addr = initial_stack(stack: stack.bottom, size: stack.size().bytes(), entry: fiber_start.addr())
     fiber.poke(FiberState(sp, stack, manager: .hollow(), slot: .construct(alloc), work: fiber.slot,
         then: requeue.to[Callable](), wake_state: FIBER_RUNNING, timer: 0, trace_depth: 0, race: race_stack_new(),
         next_idle: .hollow(), next_all: .hollow(), pool: me))

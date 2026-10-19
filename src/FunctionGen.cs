@@ -759,7 +759,7 @@ public sealed class FunctionGen
             if (_memoryReady == false)
                 throw Err(_decl.Pos,
                     "when_power_on is the program's entry, and nothing else readies memory: call prepare_core() "
-                    + "(Standard/Boot) in it, before anything touches a global");
+                    + "(Standard/Boot), or GlobalManager.prepare() for the globals alone, in it, before anything touches a global");
         }
         catch (CompileError e) when (_decl.Source is { } source && !e.FromSource) { throw FromSource(e, source); }
     }
@@ -1685,7 +1685,7 @@ public sealed class FunctionGen
             throw Err(r.Pos, $"the lambda uses '{r.Name}', a value of routine '{outer.Routine}', and a lambda uses only its "
                 + "own parameters, presets, and globals: pass it as a parameter, or write a routine");
         if (!BoundInRoutine(r.Name))
-            throw Err(r.Pos, ScriptBinding(r.Name) ?? OldConsoleName(r.Name) ?? $"'{r.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
+            throw Err(r.Pos, ScriptBinding(r.Name) ?? OldConsoleName(r.Name) ?? ManagerMigration.OldName(r.Name) ?? $"'{r.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
         throw Err(r.Pos, NotVisible(r.Name));
     }
 
@@ -1873,7 +1873,7 @@ public sealed class FunctionGen
         var type = new TypeRef(c.Name, c.TypeArgs.Select(t => (TypeArg)new TypeArgType(t)).ToList(), c.Pos) { Path = c.Path };
         return TryResolveOwner(type) is RecordType record
             ? $"a record literal names its fields: {record.Name}({string.Join(", ", _c.Fields(record).Select(f => $"{f.Name}: ..."))})"
-            : $"unknown routine '{c.Name}'";
+            : ManagerMigration.OldName(c.Name) ?? $"unknown routine '{c.Name}'";
     }
 
     private Val EvalAny(Expr e)
@@ -2241,6 +2241,13 @@ public sealed class FunctionGen
     /// the type's own `construct`, which takes the memory from the manager.
     private Val EvalAt(AtExpr a, DType expected)
     {
+        // A local slot is a block of the running flow's StackManager already: that stack is the only one the flow has, so
+        // `at` names nothing there.
+        bool stackNamed = a.Manager is PresetRef { Owner: null, Name: "STACK" } named && _c.FindPreset("", named.Name, _env.File, named.Pos, null) is null;
+        if (stackNamed || Infer(a.Manager) is RecordType { Decl.Name: "StackManager" } or PtrType { Pointee: RecordType { Decl.Name: "StackManager" } })
+            throw Err(a.Pos, "a local slot is already a block of the running flow's stack, which its StackManager hands out "
+                + "with no call: write the slot without 'at' (local x: @T <- value), and use 'at' for memory from another "
+                + "manager (a Memory[T] or a Box[T] at HEAP)");
         if (expected is RecordType { Decl.Name: "Memory", Args: [_] } memory && memory.Decl.Module == Compiler.CoreModule)
         {
             if (a.Value is not ArrayLit { IsTuple: false } lit)
@@ -3128,7 +3135,7 @@ public sealed class FunctionGen
             if (c is { IsGlobal: true } && _memoryReady == false)
                 throw Err(r.Pos,
                     $"when_power_on touches the global '{c.Name}' before it readies memory: until prepare_core() (Standard/Boot) "
-                    + "zeroes .bss and copies .data, a global holds whatever the reset left. Call prepare_core() first: "
+                    + "runs GlobalManager.prepare(), which zeroes .bss and copies .data, a global holds whatever the reset left. Call prepare_core() first: "
                     + "work that touches no global (a watchdog, a clock register) may come before it");
             return c is null ? null : PresetValue(c, null);
         }
@@ -3144,7 +3151,10 @@ public sealed class FunctionGen
         string ownerName = ownerType?.OwnerName ?? r.Owner.Name;
         if (ownerType is null && r.Owner is { Args.Count: 0, Path: null }) UnknownReceiver(r.Owner);
         var oc = _c.FindPreset(ownerName, r.Name, file, r.Pos)
-                 ?? throw Err(r.Pos, $"unknown preset '{r.Owner}.{r.Name}'");
+                 ?? throw Err(r.Pos, ownerName is "B16" or "BF16" or "B32" or "B64" or "B128" && r.Name is "INFINITY" or "NEG_INFINITY" or "NAN"
+                     ? $"'{r.Owner}.{r.Name}' is gone: write the literal {(r.Name switch { "INFINITY" => "inf", "NEG_INFINITY" => "-inf", _ => "nan" })}, "
+                       + "typed by where it goes (tessera migrate --step float-presets rewrites the presets)"
+                     : $"unknown preset '{r.Owner}.{r.Name}'");
         return PresetValue(oc, ownerType);
     }
 
@@ -4129,8 +4139,15 @@ public sealed class FunctionGen
             var c = (CallExpr)e;
             throw Err(c.Pos, UnknownCall(c));
         }
-        if (_memoryReady == false && plan.Decl is { IsLibrary: true, Module: "Standard/Boot", Name: "prepare_core" or "zero_bss" })
+        if (_memoryReady == false && plan.Decl is { IsLibrary: true, Module: "Standard/Boot" } ready
+            && (ready is { Owner: null, Name: "prepare_core" } || ready is { Owner.Name: "GlobalManager", Name: "prepare" or "zero_bss" }))
             _memoryReady = true;
+        // x86_64 without an operating system has no vector table the CpuEventManager points the CPU at.
+        if (!_decl.IsLibrary && plan.Decl is { IsLibrary: true, Module: "Standard/Boot", Owner.Name: "CpuEventManager" }
+            && _c.Target is { Arch: "x86_64", HasOs: false })
+            throw Err(e.Pos, $"CpuEventManager.{plan.Decl.Name} isn't there yet on x86_64 without an operating system: the standard "
+                + "library sets up no interrupt descriptor table for it, so a program that takes interrupts or faults there "
+                + "sets up its own");
         CheckArgNames(e, plan);
         return EmitCall(plan);
     }

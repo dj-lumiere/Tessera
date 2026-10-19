@@ -1,12 +1,13 @@
 # Tessera stdlib: MemoryManager pattern and memory routines
 #
-# A memory manager is a type that obeys MemoryManageable (and PageManageable when
-# it handles pages). m.to[MemoryManager]() makes the MemoryManager table that
-# callers pass as @MemoryManager to any routine that allocates: routines that
-# forward to m's own, with m's address as the table's state. Nothing here needs
-# an operating system. On a target with one, DefaultMemory.te builds the hosted
-# tables (DEFAULT_HEAP, DEFAULT_STACKS, make_c_heap_memory) from the routines of
-# Standard/Os (Os/Heap.te, Os/Stack.te, Os/Pages.te).
+# Every memory region a program uses has a manager, which hands out blocks of it and takes them back. A heap's manager
+# obeys HeapManageable (blocks come back in any order), and a page manager obeys PageManageable (it also reserves
+# address space and sets what pages allow). Both refine MemoryManageable, the protocol of a manager that hands out
+# blocks. m.to[MemoryManager]() makes the MemoryManager table that callers pass as @MemoryManager to any routine that
+# allocates: routines that forward to m's own, with m's address as the table's state. Nothing here needs an operating
+# system. On a target with one, DefaultMemory.te has the hosted tables (HEAP, C_HEAP, PAGES), whose managers are
+# Standard/Os's (Os/Heap.te, Os/Pages.te). A stack is a StackManager's (StackManager.te): it hands out a routine's
+# local slots by moving the stack pointer, with no call, so it has no table.
 #
 # Heap memory reaches user code as a Memory[T] (Types/Memory.te) or a Box[T]:
 # an address, a count, and this manager, released with drop(). allocate,
@@ -16,7 +17,7 @@
 #
 # With the heap check on (config.toml's [debug] heap-check), reallocate and
 # deallocate note the place they were called from while the allocator runs, so
-# an allocator that finds a mistake (the default heap's check for a block freed
+# an allocator that finds a mistake (the checked heap's check for a block freed
 # twice) can crash at the caller's line: allocator_call_place() reads it.
 
 module Standard/Alloc
@@ -88,6 +89,14 @@ needs T: typename
     ### Takes the block at `at` back.
     ### :param at: The block, from this manager. Null does nothing in the stdlib's managers.
     routine @Me.free(at: Addr) -> None
+
+### A memory manager of a heap: its blocks come back in any order, each one on its own. It asks for nothing more than
+### `MemoryManageable`: obeying it says the manager takes its blocks back in any order. `CHeapManager` and
+### `CheckedHeapManager` (Standard/Os) are two, and `HEAP` is the default one.
+### :typeparam T: The manager type.
+protocol HeapManageable[T]
+obeys MemoryManageable[T]
+needs T: typename
 
 ### A memory manager that also handles pages: it reserves address space, commits pages of it, gives a reservation back,
 ### and sets what pages allow. Its table's `has_pages()` and `has_protect()` are true. A manager whose pages can't
@@ -451,7 +460,7 @@ secret routine note_call_place(place: @SourceLocation) -> None
     return
 
 ### With the heap check on, where the `reallocate` or `deallocate` call that is running this thread's allocator
-### callback was made: the caller's line, for an allocator that crashes on a mistake (the default heap's block freed
+### callback was made: the caller's line, for an allocator that crashes on a mistake (the checked heap's block freed
 ### twice). Null outside such a call, and always null with the heap check off.
 ### :returns: The place, or null.
 @heap_check("on")

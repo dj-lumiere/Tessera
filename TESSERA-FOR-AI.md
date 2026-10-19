@@ -26,7 +26,7 @@ top to bottom with declarations seen everywhere, leading `local` lines are its h
 an imported file has no top-level lines, and a file with them declares no `start`. A file may start with `module A/B` and `import` lines. Name lookup follows
 modules: a file sees its own module, `Standard/Core` (always imported: the built-in types, `Maybe`, `Result`,
 `None`, `@[T]`, `Memory`, `Box`), and what it imports, so printing a number needs `import Standard/Format`, a `List` needs
-`import Standard/Collections`, and `make_heap_memory` / `Out` need `import Standard/Os` (the hosted layer,
+`import Standard/Collections`, and `Console` / `ProcessManager` need `import Standard/Os` (the hosted layer,
 the only one that calls libc; a target with OS `none` has none of it). A routine declared in its type's module comes with the type; one another module adds
 to it (like `S64.represent_into` from `Standard/Format`) needs that module imported. A qualified path
 (`Standard/Format/write_str`) reaches any public name without an import. Two modules may declare the same name:
@@ -45,6 +45,8 @@ target. `tests/SplitModuleTests.cs` shows the pair.
 rewrites the ```tessera blocks of `.md` pages too: `structured` (routine bodies into `if` / `each` / `while` / `when`,
 keeping blocks where it can't), `spellings` (`@` annotations, `needs` / `obeys` / `protocol`, `return x`),
 `none` (`None` for nothing), `hollow` (`null` into `.hollow()`, `is_null()` into `is_hollow()`), `destruct` (`destruct` on `Memory` / `Box`), `drop` (a line `x.destruct()` into `drop x`),
+`managers` (`DEFAULT_HEAP` into `HEAP`, the table makers, the process routines into `ProcessManager`'s),
+`float-presets` (`B64.INFINITY` / `NEG_INFINITY` / `NAN` into `inf` / `-inf` / `nan`),
 and the earlier `iterators`, `variants`, `membership`, `lifecycle`, `memory`, `threads`, `entry`, and `--named-args`.
 An old spelling is a build error that names the migration, and builds only with `TESSERA_ACCEPT_OLD_SYNTAX=1` set.
 
@@ -57,8 +59,7 @@ import Standard/Format
 import Standard/Os
 
 routine start() -> None
-    local alloc: @MemoryManager <- make_heap_memory()
-    local list: @List[S64] <- .construct(alloc)
+    local list: @List[S64] <- .construct(HEAP)
 
     list.add_last(42)
     first: S64 = list[0]
@@ -174,7 +175,7 @@ routine start() -> None
   Memory is never copied, so a second holder of the same block only comes from raw code the build doesn't follow (a
   `steal` out of an element place reads the bits and leaves them). A span or `@T` carries no generation (the check
   runs when the view is made). With `[debug] heap-check = true` in config.toml or `--heap-check` (any build mode, off by default,
-  always on under `tessera test`) `DEFAULT_HEAP` also keeps a header in front of each block and crashes with
+  always on under `tessera test`) `HEAP` is the `CheckedHeapManager`, which keeps a header in front of each block and crashes with
   `DoubleFreeError` at the line of a second free of the same block (a quarantine of the last 256 freed blocks keeps
   that sure, raw layer included). With it off it is plain malloc / free, and so is a single-file build without a
   manifest. Debug and release behave the same. The build catches a second `drop`, a use after it, and a missing
@@ -191,10 +192,12 @@ routine start() -> None
   literal is required: it gives the count). `local xs: @[T] <- [0] * 64` in the body or in the head puts the values in the routine's frame, with a count the build knows (a literal count or a
   preset). An array literal passed as an argument where a span is expected is a frame span too: `total([4, 5, 6])`.
   A frame span must not leave the routine. `preset NAME: @Array[T, N] <- [...]` is still a `Ptr` to an array.
-- **Memory from a manager is written with `at`.** `local words: @Memory[U64] <- [0] * n at DEFAULT_HEAP` (the count
+- **Memory from a manager is written with `at`.** `local words: @Memory[U64] <- [0] * n at HEAP` (the count
   may be a runtime value: it calls `Memory[T].construct(values: @[T], times: U64, manager)`), and
-  `local node: @Box[Node] <- (value: 1, next: .hollow()) at DEFAULT_HEAP` (it calls `Box[T].construct(value, manager)`).
-  An `at` literal is bound with `<-` in a `local` line, into the slot like any entity.
+  `local node: @Box[Node] <- (value: 1, next: .hollow()) at HEAP` (it calls `Box[T].construct(value, manager)`).
+  An `at` literal is bound with `<-` in a `local` line, into the slot like any entity. A `local` slot itself is a
+  block of the running flow's stack, which its `StackManager` hands out by moving the stack pointer, with no call: a
+  flow has one stack, so the slot names no manager, and `at STACK` (or `at` with a `StackManager`) is a build error.
 - **The five rules.** 1. `@T` / `@[T]` only view (peek / poke), never give back. 2. `Box` / `Memory` come from a
   manager: `load` / `store`, given back exactly once or handed over, empty or not. 3. A `@T` / `@[T]` viewing this
   routine's memory (a local slot, a frame span) does not leave the routine. 4. A routine that moves memory says
@@ -255,7 +258,7 @@ routine start() -> None
   global CACHE: @Memory[Byte]
 
   routine refill(count: U64, fill: Byte) -> None
-      CACHE.replace(value: Memory[Byte].construct(values: [fill], times: count, manager: DEFAULT_HEAP))
+      CACHE.replace(value: Memory[Byte].construct(values: [fill], times: count, manager: HEAP))
       return
 
   routine start() -> None
@@ -265,6 +268,21 @@ routine start() -> None
 
   `Box[T].replace` works the same. `Memory[T].give_back()` gives the memory back and keeps the manager, so a later
   `resize` draws from it again (what a collection's `destruct` does with its storage).
+- **Every memory region has a manager** (Standard/Alloc's protocols, Standard/Os's hosted managers, Standard/Boot's
+  without an OS). A manager is named for what it manages. A heap's obeys `HeapManageable` (blocks given back in any
+  order): `CHeapManager` (malloc / realloc / free, nothing in front of the blocks) and `CheckedHeapManager` (the heap
+  check below), and the hosted default table `HEAP` is the checked one under the heap check, else the C library's.
+  `C_HEAP` is `CHeapManager`'s table in every build (memory C frees, or C's malloc hands over). A page manager obeys
+  `PageManageable`: `OsPageManager`, whose table is `PAGES` (whole pages, `alloc` puts one page in front that keeps
+  the size). The tables are ready before `start`, and every allocating routine takes one as `@MemoryManager`:
+  `.construct(HEAP)`, `alloc: PAGES`, `local t: @MemoryManager <- HEAP.peek()` for a copy in a slot. A `StackManager`
+  (`bottom`, `top`: `size()`, `remaining()`, `used()`, `holds(at)`) manages one flow's stack: it hands out `local`
+  slots by moving the stack pointer, so it has no table. `StackManager.current()` is the running flow's: a fiber's
+  inside a fiber, else the thread's own stack, whose bounds the OS gives (without an OS, `__stack_bottom` to
+  `__stack_top` of the link script). `ThreadLocalStorageManager.reset()` puts this thread's `@threadlocal` globals back
+  to their starting values. Without an OS, `GlobalManager.prepare()` (Standard/Boot) puts the globals in place.
+  `tessera migrate --step managers` rewrites `DEFAULT_HEAP` (now `HEAP`), `DEFAULT_STACKS` (`PAGES`), the
+  `make_*_memory()` makers, the process routines, `reset_thread_locals()`, and `zero_bss()` / `copy_data()`.
 - **A memory manager is a type that obeys `MemoryManageable`** (Standard/Alloc): three routines taking `me` by its address (`routine @M.alloc(...)`),
   `alloc(size: U64, align: U64) -> Addr` (`.hollow()` when it can't), `realloc(at: Addr, size: U64, align: U64) ->
   Addr` (`.hollow()`, the block left as it was, when it can't: every manager has one, since only it knows a block's size),
@@ -278,7 +296,7 @@ routine start() -> None
   `release`, and `protect(at, size, PageAccess.NONE | READ | READ_WRITE)`, with `has_pages()` / `has_protect()`
   (both true for a `PageManageable` manager, both false otherwise, and calling an empty one crashes with
   `NotImplementedError`). Its fields and `MemoryManager.construct` are secret to `Standard/Alloc`, which also
-  builds the hosted tables from the C-backed routines of `Standard/Os` (pages from `Standard/Os/Pages.te`). Raw `allocate[T]` asks for
+  writes out the hosted tables (`DefaultMemory.te`) for `Standard/Os`'s managers (`Os/Heap.te`, `Os/Pages.te`). Raw `allocate[T]` asks for
   `alignof[T]()`.
 - **The table views its manager.** In a routine without type parameters, using a table after its manager's slot
   ended is a build error: `'table' is the table of the manager 'arena', which ended at drop arena on line N, so the
@@ -286,12 +304,11 @@ routine start() -> None
   after the table's last use` (the same for `steal arena`), and returning a table of a frame slot's manager is the
   escape check's error. Memory already taken through the table (a `List`, a `Box`) that outlives the manager isn't
   followed: that is the program's to get right.
-- **The default heap comes with a target that has an OS.** `Standard/Alloc` then has `DEFAULT_HEAP`, an
-  `@MemoryManager` ready before `start`, and `DEFAULT_STACKS` (fiber stacks), whose routines are `Standard/Os`'s.
-  `Standard/Os` has `make_heap_memory()` (the same table as `DEFAULT_HEAP`), `make_stack_memory()`, and, like `Out`,
-  a `construct` without the manager for every collection and `Memory` (`List[S64].construct()`,
-  `Memory[U8].construct(n)`). Memory C frees or reallocates, or memory from C's malloc, goes through
-  `Standard/Alloc`'s `make_c_heap_memory()` (plain malloc in every build). A file that doesn't import `Standard/Os`,
+- **The default heap comes with a target that has an OS.** `Standard/Alloc` then has `HEAP`, `C_HEAP`, and `PAGES`,
+  `@MemoryManager` tables ready before `start`, whose managers are `Standard/Os`'s. `Standard/Os` has, like
+  `Console`, a `construct` without the manager for every collection and `Memory` (`List[S64].construct()`,
+  `Memory[U8].construct(n)`), drawing from `HEAP`. Memory C frees or reallocates, or memory from C's malloc, goes
+  through `C_HEAP` (plain malloc in every build). A file that doesn't import `Standard/Os`,
   and every program for a target without an OS, passes a manager.
 - **Memory is declared `@T` (or `@[T]`), and its contents go in with `<-`.** A name that is an address is
   written with its pointer type, and the declared type is the name's type everywhere:
@@ -537,10 +554,12 @@ routine start() -> None
   type would round, overflow, or flush below its smallest subnormal, is a build error that says which. A decimal
   float literal isn't a `B128` yet: write a hex float, or convert a `B64` (`B64.to[B128](1.5)`).
 - `inf` and `nan` are float literals (reserved words) typed by where they go, like `1.5`: `top: B64 = inf`,
-  `low: B32 = -inf` (negative infinity is `-` on `inf`), `return nan`, `x < inf`, `[1.0, inf]` as a float Vector.
-  Every binary float takes them, `B128` included, and a preset folds them. Where nothing gives a type
-  (`inf.is_nan()`, an overloaded call) or the type isn't a float (`n: S64 = inf`) it is a build error. The presets
-  `T.INFINITY`, `T.NEG_INFINITY` and `T.NAN` stay (the same bits).
+  `low: B32 = -inf` (`-inf` is one literal, the negative infinity), `return nan`, `x < inf`, `[1.0, inf]` as a float
+  Vector. Every binary float takes them, `B128` included, and a preset folds them. `nan` is the canonical quiet NaN
+  (B16 `0x7E00`, BF16 `0x7FC0`, B32 `0x7FC00000`, B64 `0x7FF8000000000000`). Where nothing gives a type
+  (`inf.is_nan()`, an overloaded call) or the type isn't a float (`n: S64 = inf`) it is a build error: bind it first
+  (`top: B32 = inf`). There are no `INFINITY` / `NEG_INFINITY` / `NAN` presets (`tessera migrate --step
+  float-presets` rewrites them into the literals).
 - `Byte` is memory with no arithmetic; there are no wider raw-bits types. `x.bits()` and `b.to[U8]()` /
   `b.to[S8]()` move between it and the numbers, and `S64` <-> `U64` is `to_wrap[U64]()` / `to_wrap[S64]()`. It has
   comparison, `hash`, `bitand` / `bitor` / `bitxor` / `bitnot`, and `shift_left` / `arith_shift_right`. Memory and text are `@Byte`;
@@ -726,6 +745,20 @@ routine start() -> None
   `write_failure_trace(seq: n, out: w)` (Standard/Core, writes the `The failure was made at:` part to any Writer,
   nothing for 0), `failure_trace(seq) -> @FailureTrace` (hollow when not remembered), and
   `diagnose_or_name(value: v, out: w)` (writes any value: `diagnose_into` when it is Diagnosable, else `a <Type>`).
+- **Events: `CpuEventManager`** (`Standard/Os/CpuEvents.te` with an OS, `Standard/CpuEvents.te` without one) holds
+  one handler per kind of event, a `Callable[(CpuEvent,), None]` (`CpuEvent` has `kind`, `code`, `place`, `address`),
+  and hands back the one before so it can be put back (`.hollow()` is the system's action):
+  `before = CpuEventManager.when_terminated(h)` (SIGTERM, a console window closed or a shutdown on Windows: when `h`
+  returns, the process ends with `exit_code()`), `when_interrupted(h)` (SIGINT, Ctrl+C: the program goes on after
+  `h`), `when_faulted(h)` (in place of the fault report below, the fault then ends the process), `holder(kind)`, and
+  `CpuEventManager.raise(kind)` sends one to this process (the real signal on Linux and macOS). A handler runs inside
+  the signal handler on Linux and macOS: an atomic or a `Console` line, no lock. Without an OS: `when_power_off`
+  (passed on by `CpuEventManager.power_off()`, which the board's shutdown interrupt handler calls, then the core
+  halts), `when_faulted` (the core halts when it returns), `when_supervisor_called` (`svc #n` / `ecall`, `code` the
+  number on ARM, the program goes on), `when_interrupt_requested`. The builder writes the vector table (AArch64 VBAR at
+  the core's level, RISC-V mtvec, the Cortex-M table), `prepare_core` points the CPU at it, an event nobody holds
+  crashes with `HardwareFault`, and on x86_64 without an OS calling one is a build error (no table yet).
+  `when_power_on` stays a routine the program declares: nothing can set a handler before it runs.
 - Hardware faults: a traced build's entry calls `install_fault_handlers()` before `start` (not under `--race-check`,
   which reports faults itself). Linux/macOS: SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT, each handler on a 64 KiB
   signal stack every thread gets (so a stack overflow is reported too). Windows: the unhandled-exception filter
@@ -938,7 +971,7 @@ Format through `Standard/Format.te`, not printf. printf is for C interop demos o
   `parse`. A type is readable from text when it obeys `Parsable[T]`, which asks for one routine,
   `routine @[Byte].to_result[T]() -> Result[T, ParseError]`, and `to[T]` comes with it. Numbers from
   standard input: `a: S32 = Console.ask[S32]()` reads the next word in place (a word longer than the 8192-byte buffer
-  goes through a temporary on `DEFAULT_HEAP`) and crashes at the end of the input or on a word that isn't a T;
+  goes through a temporary on `HEAP`) and crashes at the end of the input or on a word that isn't a T;
   `Console.ask_checked[T]()` gives `Maybe[T]` (`None` for both), `Console.ask_result[T]()` a `Result[T, ParseError]`
   (`ParseError.EMPTY` at the end).
 - `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, and
@@ -1025,7 +1058,7 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
   own status (82 by default). `main` is an ordinary routine name; a program with `main` and no `start` is a build
   error that says so. `start` with parameters or a result is an error too.
 - `routine when_power_on() -> None` is the entry of a program for a target without an operating system (below): the
-  reset lands there, it readies the core and memory (`prepare_core()`) and the board, then `start` runs. With an
+  reset lands there, it turns the managers on (`prepare_core()`) and readies the board, then `start` runs. With an
   operating system it is a build error.
 - Every routine with a body is its head's `local` lines (if it has any) and then its statements. A routine without
   a body must be `@external`.
@@ -1055,7 +1088,7 @@ code waiting on several tickets at once.
   into a new list, both keep their order), and `give_back_finished()`.
 - **Threads** (`Standard/Os/Thread.te`, what both tickets share in `Work.te`, who waits in `Waiter.te`):
   `get_thread[T]()` takes one from `DEFAULT_THREADS` (the hosted manager, OS threads,
-  blocks from `DEFAULT_HEAP`), `get_thread[T](manager)` from another. A `ThreadManager` is a record of a launch routine,
+  blocks from `HEAP`, stacks the OS's), `get_thread[T](manager)` from another. A `ThreadManager` is a record of a launch routine,
   its state, the idle threads, and an allocator: `ThreadManager.construct(alloc)` is OS threads with another allocator,
   `ThreadManager.construct(launch_fn, state, alloc)` a program's own (`launch_fn` starts a thread running `(entry,
   arg)`, false when none starts), and `drop manager` ends its idle threads (give every ticket back first). A manager that
@@ -1063,9 +1096,11 @@ code waiting on several tickets at once.
   `@T`, `arg` is one and outlives the thread) starts a thread nobody waits for: only for a runtime's own threads that
   live as long as the program. `cpu_count()`.
 - **Fibers** (`Standard/Fiber/FiberManager.te`): `FIBERS.get_fiber[T]()`, the same flow and crashes. `FIBERS` is each thread's own
-  `FiberManager`, made on first use (`64kib` stacks from `DEFAULT_STACKS`), and on a thread ticket it goes when the
-  work is over. `FiberManager.construct(stack_size, stacks, alloc)` (`stack_size` a `ByteSize`) makes another (`make_stack_memory()` for guard
-  pages), `drop manager` frees it. A manager runs its fibers on ONE thread, the one that drives it, and never moves
+  `FiberManager`, made on first use (`64kib` stacks on pages from `PAGES`), and on a thread ticket it goes when the
+  work is over. `FiberManager.construct(stack_size, stacks, alloc)` (`stack_size` a `ByteSize`, `stacks` a page
+  manager such as `PAGES`) makes another, `drop manager` frees it. Each fiber's stack is `take_stack(size, pages)`:
+  whole pages, the one below them closed with `protect` as a guard page, a `StackManager` on the rest, and
+  `give_back_stack(stack, pages)` returns them (a manager keeps a fiber's stack for its next ticket). A manager runs its fibers on ONE thread, the one that drives it, and never moves
   them: cooperative, a fiber runs until it yields, parks, sleeps, waits, or its work finishes, so its fibers share
   values without locks between those points. Driving: `wait_finished()` outside a fiber on the manager's thread runs
   the manager until that work is done, `run()` until no fiber has work, `run_until_idle()` until none is ready.
@@ -1184,13 +1219,15 @@ FileManager.write_all_result(at: notes, data: "first line\n").unwrap()
 drop notes
 ```
 
-**Processes.** `run_process_result(program, args, options, alloc)` (looked up on PATH, `args` a `@[@[Byte]]`) and
-`run_shell_result(command, options, alloc)` return `Result[ProcessOutput, ProcessError]`: an `ExitStatus`
+**Processes.** `ProcessManager` creates processes and reaps them: `ProcessManager.create_process_result(program, args,
+options, alloc)` (looked up on PATH, `args` a `@[@[Byte]]`) and `ProcessManager.create_shell_process_result(command,
+options, alloc)` create one, wait for it to end, reap it, and return `Result[ProcessOutput, ProcessError]`: an `ExitStatus`
 (`variant ExitStatus / Exited / Signaled` over the records `Exited(code: S32)` and `Signaled(signal: S32)`, with
 `.code()`, `.is_success()`) and the captured `stdout` / `stderr` (`Memory[Byte]`). A `ProcessOutput` is an entity:
-`local out: @ProcessOutput <- run_shell_result(...).unwrap()` or `when run_shell_result(...)`, then `drop out`. `ProcessOptions.default()` captures both and gives the child the null device as input; set
+`local out: @ProcessOutput <- ProcessManager.create_shell_process_result(...).unwrap()` or `when ProcessManager.create_shell_process_result(...)`, then `drop out`. `ProcessOptions.default()` captures both and gives the child the null device as input; set
 `directory`, `env` / `env_count` (overrides merged into this process's environment), and each stream's mode.
-`env_var(name, alloc)` reads a variable (`None` when it isn't set), `exit(status)` ends the process at once, and
+`env_var(name, alloc)` reads a variable (`None` when it isn't set), `ProcessManager.exit_process(status)` ends this
+process at once, and
 `set_exit_code(status)` sets the status `start` returning ends it with.
 
 **Targets without an OS.** A triple whose OS is `none` (`arm-none-eabi`, `riscv32-none-elf`, `aarch64-none-elf`,
@@ -1198,16 +1235,19 @@ drop notes
 Collections all check there. `Standard/Os` drops out of the build, so importing it or naming anything in it is one
 build error ("Standard/Os needs an operating system ..."); there's no `Out`, files, threads, `@threadlocal`, fiber `FiberManager` (`Standard/Fiber`'s
 `switch_stack` and `initial_stack` are there, which `tests/freestanding_fiber` switches stacks with),
-`make_heap_memory`, `DEFAULT_HEAP`, or `construct()` without an allocator. The program exports its own crash handler (`@export("tessera_crash_handler")` with `@noreturn`, which
+`HEAP`, `PAGES`, or `construct()` without an allocator. The program exports its own crash handler (`@export("tessera_crash_handler")` with `@noreturn`, which
 may loop forever), passes the table of a manager of its own if it allocates (a type that obeys `MemoryManageable`, such as a bump arena over a
 buffer, and `arena.to[MemoryManager]()`), and brings its link script. A program that defines `start` has
 `when_power_on` as its entry symbol: the reset lands there (on Cortex-M through a vector table in section
-`.isr_vector`, its first word `__stack_top` and its second `when_power_on`, the system exceptions halting; elsewhere the
+`.isr_vector`, its first word `__stack_top` and its second `when_power_on`, the system exceptions going to the
+`CpuEventManager`; elsewhere the
 link script's `ENTRY(when_power_on)`). Its prologue sets the stack pointer from `__stack_top` (the Cortex-M core does
 that from the vector table). Its body is the program's `when_power_on()`: first `prepare_core()` from Standard/Boot
-(`zero_bss()`: .bss zeroed, `__bss_start` to `__bss_end`; `copy_data()` on 32-bit ARM and RISC-V, which run from
-flash: `__data_load` to `__data_start` .. `__data_end`; `enable_fpu()` when the build may use an FPU), then the board's
-own steps (clocks, pins, a serial port). Touching a global before `prepare_core()` (or `zero_bss()`) is a build error,
+(`GlobalManager.prepare()`: `GlobalManager.zero_bss()`, .bss zeroed, `__bss_start` to `__bss_end`, and
+`GlobalManager.copy_data()` on 32-bit ARM and RISC-V, which run from flash: `__data_load` to `__data_start` ..
+`__data_end`; `enable_fpu()` when the build may use an FPU; `CpuEventManager.install()` on AArch64 and RISC-V), then
+the board's own steps (clocks, pins, a serial port). Touching a global before `prepare_core()` (or
+`GlobalManager.prepare()` / `zero_bss()`) is a build error,
 and so is a `when_power_on` that never calls it. Work that touches no global (a watchdog) may come first. Without
 `when_power_on` the program gets one that runs `prepare_core()`. Then `start()` runs, then a loop that halts (`hlt` /
 `wfi`). The link script defines those symbols (`tests/freestanding/<target>.ld` are

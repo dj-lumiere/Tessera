@@ -41,6 +41,13 @@ namespace Tessera;
 /// their checked and wrapping forms (`--step names`).
 ///
 /// 0.5: `inf` and `nan` are float literals, so a value of one of those names is written between backticks (`--step inf`).
+///
+/// 0.5: every memory region has a manager: `DEFAULT_HEAP` is `HEAP`, `DEFAULT_STACKS` is `PAGES`, the table makers are
+/// the tables `HEAP` / `C_HEAP` / `PAGES`, and processes, thread-locals, and the globals' memory have theirs
+/// (`ProcessManager`, `ThreadLocalStorageManager`, `GlobalManager`) (`--step managers`).
+///
+/// 0.5: the float presets `INFINITY`, `NEG_INFINITY` and `NAN` are gone: the literals `inf`, `-inf` and `nan` take their
+/// place (`--step float-presets`).
 public static class Migrate
 {
     /// `F64`, its plural in prose (`F64s`), and a name built on it (`F128Extended`, `F64Core`). `F16C` is the x86 instruction set, not a type.
@@ -73,7 +80,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf";
+        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf" or "managers" or "float-presets";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -357,6 +364,12 @@ public static class Migrate
         ["names"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, RoutineNameMigration.Rewrite)
             : RoutineNameMigration.Rewrite(text),
+        ["managers"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, ManagerMigration.Rewrite)
+            : ManagerMigration.Rewrite(text),
+        ["float-presets"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, FloatPresetMigration.Rewrite)
+            : FloatPresetMigration.Rewrite(text),
     };
 
     private static readonly Regex InfNanWord = new(@"(?<![\w`.])(inf|nan)(?![\w`])", RegexOptions.Compiled);
@@ -713,7 +726,7 @@ public static class Migrate
             lines[i] = inAsmBody ? RewriteTypeArguments(line) : RewriteNames(line);
         }
 
-        return RoutineNameMigration.Rewrite(ThreadMigration.Rewrite(EntryMigration.Rewrite(MembershipNames(VariantMigration.Rewrite(IteratorNames(Renames(CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names))))))))))));
+        return FloatPresetMigration.Rewrite(ManagerMigration.Rewrite(RoutineNameMigration.Rewrite(ThreadMigration.Rewrite(EntryMigration.Rewrite(MembershipNames(VariantMigration.Rewrite(IteratorNames(Renames(CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names))))))))))))));
     }
 
     private static readonly Regex IteratorNext = new(@"\.next(?=\s*\()", RegexOptions.Compiled);

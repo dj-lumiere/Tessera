@@ -12,7 +12,7 @@ namespace Tessera.Tests;
 public class HeapCheckTests
 {
     /// Names only the checked heap has: its callbacks and its quarantine, mangled into the symbols.
-    private static readonly string[] CheckedHeapSymbols = ["checked_heap_alloc_fn", "checked_heap_free_fn", "10QUARANTINE"];
+    private static readonly string[] CheckedHeapSymbols = ["18CheckedHeapManager5alloc", "18CheckedHeapManager4free", "10QUARANTINE"];
 
     [Theory]
     [InlineData(BuildMode.Debug)]
@@ -34,7 +34,7 @@ public class HeapCheckTests
     {
         string ir = CompileSliceProgram(mode, heapCheck: false);
         foreach (string symbol in CheckedHeapSymbols) Assert.DoesNotContain(symbol, ir);
-        Assert.Contains("plain_heap_free_fn", ir);
+        Assert.Contains("12CHeapManager4free", ir);
     }
 
     [Fact]
@@ -58,7 +58,7 @@ public class HeapCheckTests
         }
     }
 
-    /// tests/slice_borrowed.te allocates and frees through DEFAULT_HEAP.
+    /// tests/slice_borrowed.te allocates and frees through HEAP.
     private static string CompileSliceProgram(BuildMode mode, bool heapCheck)
     {
         string root = FindRoot();

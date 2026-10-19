@@ -1,9 +1,8 @@
 # Fibers that run deep on stacks of their own: two fibers of one manager each recurse 40 levels through 8 KiB frames
-# (320 KiB of a 1 MiB stack from the stack allocator) and yield at the bottom, so each runs while the other's stack is
-# deep. A frame larger than a page makes Windows' __chkstk probe the stack page by page, and the stack allocator commits
-# only the top pages there, with a guard page below that Windows moves down as the stack grows: both read the thread
-# block's stack fields, which the fiber switch keeps in step with the stack. Each fiber also checks that its locals are
-# on its own stack and that (on Windows) the thread block's stack base is that stack's top.
+# (320 KiB of a 1 MiB stack on pages from PAGES) and yield at the bottom, so each runs while the other's stack is deep.
+# A frame larger than a page makes Windows' __chkstk probe the stack page by page against the thread block's stack
+# fields, which the fiber switch keeps in step with the stack. Each fiber also checks, through StackManager.current(),
+# that its locals are on its own stack, and that (on Windows) the thread block's stack base is that stack's top.
 
 import Standard/Alloc
 import Standard/Fiber
@@ -91,19 +90,17 @@ routine diver(d: @Diver) -> None
     local here: @U64 <- 0
 
     fiber: @FiberState = d.sched.peek().current()
-    stack: Addr = fiber.stack.peek()
-    at: U64 = ptrtoint[@U64, U64](here)
-    first: U64 = ptrtoint[Addr, U64](stack)
-    own: Bool = first <= at < first + STACK_SIZE.bytes()
-    Console.show("{d.name.peek()} on its own stack: {own}")
-    Console.show("{d.name.peek()} thread block follows: {thread_block_follows(stack)}")
+    stack: @StackManager = StackManager.current()
+    own: Bool = stack.holds(here.to[Addr]()) and stack.top.peek() === fiber.stack.top.peek()
+    Console.show("{d.name.peek()} on its own stack: {own}, {stack.size()}")
+    Console.show("{d.name.peek()} thread block follows: {thread_block_follows(stack.bottom.peek())}")
     total: U64 = dive(d, level: LEVELS)
     Console.show("{d.name.peek()} sum {total}")
     return
 
 routine start() -> None
-    local alloc: @MemoryManager <- make_heap_memory()
-    local stacks: @MemoryManager <- make_stack_memory()
+    local alloc: @MemoryManager <- HEAP.peek()
+    local stacks: @MemoryManager <- PAGES.peek()
     local sched: @FiberManager <- .construct(stack_size: STACK_SIZE, stacks, alloc)
     local a: @Diver <- Diver(sched: sched, name: "a")
     local b: @Diver <- Diver(sched: sched, name: "b")

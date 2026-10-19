@@ -1,9 +1,9 @@
 # Tessera stdlib: pages from the operating system
 #
-# The page routines every hosted MemoryManager shares: reserving address space, committing pages of it, giving the
-# whole reservation back, and setting what pages allow. DEFAULT_HEAP, make_c_heap_memory() and make_stack_memory()
-# fill their reserve_fn, commit_fn, release_fn and protect_fn with these, since the pages come from the operating
-# system whichever manager hands out the blocks.
+# OsPageManager, the hosted page manager (PageManageable, Standard/Alloc): it reserves address space, commits pages of
+# it, gives a whole reservation back, and sets what pages allow. PAGES (built in Standard/Alloc) is its table, ready
+# before start runs. A FiberManager and a ThreadPoolManager take their fibers' stacks from it: they reserve the pages,
+# commit them, close the bottom one with protect as a guard page, and run a StackManager on the rest.
 #
 # A reservation is space no page of which can be touched until it is committed. On Linux the space is mapped with
 # PROT_NONE and MAP_NORESERVE, and commit opens the pages (the memory is counted once touched). On Windows it is
@@ -214,38 +214,91 @@ routine whole_pages(size: U64) -> U64
     pages: U64 = (size + page - 1) // page
     return pages * page
 
-### A manager's reserve routine over the operating system's pages.
-### :param state: Unused.
-### :param size: The number of bytes.
-### :returns: The reservation's start, or null.
+### The operating system's pages, a PageManageable manager: `PAGES` is its table. Its `alloc` hands out whole pages,
+### committed, after one more page that keeps the block's size (a page manager frees without a size), so a block of a
+### few bytes still costs two pages: small blocks belong on a heap.
 @target(os: not "none")
-routine os_reserve_fn(state: Addr, size: U64) -> Addr
+record OsPageManager
+obeys PageManageable[OsPageManager]
+
+### Reserves and commits whole pages for `size` bytes, with one page in front that keeps the length.
+### :param size: The number of bytes.
+### :param align: The alignment asked for: a page start is aligned for anything up to a page.
+### :returns: The block, page aligned, or null when the pages can't be had or `align` is past a page.
+@target(os: not "none")
+@expensive("asks for pages")
+routine @OsPageManager.alloc(size: U64, align: U64) -> Addr
+    local page: U64 = page_size().bytes()
+
+    if align > page
+        return .hollow()
+    length: U64 = whole_pages(size) + page
+    base: Addr = pages_reserve(length)
+    if base.is_hollow()
+        return .hollow()
+    if not pages_commit(at: base, size: length)
+        pages_release(at: base, size: length)
+        return .hollow()
+    length.poke_into(base.to[@U64]())
+    return base.offset(page.to[S64]())
+
+### A new block of `size` bytes with the contents copied over (as many as both sizes allow), the old one given back.
+### :param at: The block, from this manager, or null for a new one.
+### :param size: The new size in bytes.
+### :param align: The block's alignment.
+### :returns: The new block, or null with the old one left as it was.
+@target(os: not "none")
+@expensive("asks for pages")
+routine @OsPageManager.realloc(at: Addr, size: U64, align: U64) -> Addr
+    fresh: Addr = me.alloc(size, align)
+    if fresh.is_hollow() or at.is_hollow()
+        return fresh
+    page: U64 = page_size().bytes()
+    old_length: U64 = at.offset(-page.to[S64]()).to[@U64]().peek() - page
+    fresh.to[@Byte]().copy(src: at.to[@Byte](), count: old_length.min(size))
+    me.free(at)
+    return fresh
+
+### Gives a block back: reads the length kept in the page in front of it, then releases the pages.
+### :param at: The block, from this manager. Null does nothing.
+@target(os: not "none")
+@expensive("gives memory back")
+routine @OsPageManager.free(at: Addr) -> None
+    if at.is_hollow()
+        return
+    base: Addr = at.offset(-page_size().bytes().to[S64]())
+    length: U64 = base.to[@U64]().peek()
+    pages_release(at: base, size: length)
+    return
+
+### Reserves `size` bytes of address space, rounded up to whole pages, no page usable yet.
+### :param size: The number of bytes.
+### :returns: The reservation's start, or null when the space can't be reserved.
+@target(os: not "none")
+routine @OsPageManager.reserve(size: U64) -> Addr
     return pages_reserve(size)
 
-### A manager's commit routine over the operating system's pages.
-### :param state: Unused.
-### :param at: The first page.
-### :param size: The number of bytes.
+### Makes `size` bytes of reserved pages at `at` readable and writable.
+### :param at: The first page, page aligned.
+### :param size: The number of bytes, a whole number of pages.
 ### :returns: False when the pages can't be committed.
 @target(os: not "none")
-routine os_commit_fn(state: Addr, at: Addr, size: U64) -> Bool
+routine @OsPageManager.commit(at: Addr, size: U64) -> Bool
     return pages_commit(at, size)
 
-### A manager's release routine over the operating system's pages.
-### :param state: Unused.
+### Gives a whole reservation back to the operating system.
 ### :param at: The reservation's start.
 ### :param size: The size it was reserved with.
 @target(os: not "none")
-routine os_release_fn(state: Addr, at: Addr, size: U64) -> None
+routine @OsPageManager.release(at: Addr, size: U64) -> None
     pages_release(at, size)
     return
 
-### A manager's protect routine over the operating system's pages.
-### :param state: Unused.
-### :param at: The first page.
-### :param size: The number of bytes.
+### Sets what `size` bytes of pages at `at` allow.
+### :param at: The first page, page aligned.
+### :param size: The number of bytes, a whole number of pages.
 ### :param access: What the pages allow.
 ### :returns: False when the access can't be set.
 @target(os: not "none")
-routine os_protect_fn(state: Addr, at: Addr, size: U64, access: PageAccess) -> Bool
+routine @OsPageManager.protect(at: Addr, size: U64, access: PageAccess) -> Bool
     return pages_protect(at, size, access)

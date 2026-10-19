@@ -1,43 +1,53 @@
 # Tessera stdlib: the hosted memory managers' tables
 #
-# On a target with an operating system the standard library comes with three tables built from Standard/Os routines:
-# DEFAULT_HEAP (the C library's heap, behind the checked heap's checks when the heap check is on), DEFAULT_STACKS
-# (whole pages with a guard page below each stack), and make_c_heap_memory() (plain malloc, realloc, and free). Their
-# routines live in Standard/Os (Os/Heap.te, Os/Stack.te, Os/Pages.te). The tables are built here, where the table's
-# fields are. On a target without one none of this is there.
+# On a target with an operating system the standard library comes with three tables, each ready before start runs:
+# HEAP (the default heap: the checked heap with the heap check on, else the C library's heap), C_HEAP (CHeapManager,
+# plain malloc, realloc, and free in every build), and PAGES (OsPageManager, the operating system's pages). Each is the
+# table `m.to[MemoryManager]()` makes for an instance of its manager, written out here because a global's first value
+# is in the program image. The managers live in Standard/Os (Os/Heap.te, Os/Pages.te). On a target without one none
+# of this is there.
 
 module Standard/Alloc
 
-### The hosted default allocator, ready before `start` runs: the C library's heap, with the checked heap's checks when
-### the heap check is on. The collections' and {@[T]}'s `construct` without an allocator draw from it, and it can
-### be passed wherever an `@MemoryManager` goes. It holds no state, so threads share it. Its page routines are the
-### operating system's.
+### The C library's heap that `C_HEAP`, and `HEAP` with the heap check off, hand out from.
 @target(os: not "none")
+secret global C_HEAP_MANAGER: @Standard/Os/CHeapManager
+
+### The checked heap that `HEAP` hands out from with the heap check on.
+@target(os: not "none")
+secret global CHECKED_HEAP_MANAGER: @Standard/Os/CheckedHeapManager
+
+### The C library's aligned heap that `HEAP` hands out from on Windows with the heap check off.
+@target(os: "windows")
+secret global ALIGNED_HEAP_MANAGER: @Standard/Os/AlignedHeapManager
+
+### The operating system's pages that `PAGES` hands out.
+@target(os: not "none")
+secret global OS_PAGE_MANAGER: @Standard/Os/OsPageManager
+
+### The hosted default heap, ready before `start` runs: the C library's heap with the heap check off. The collections'
+### and {Memory[T]}'s `construct` without an allocator draw from it, and it can be passed wherever an `@MemoryManager`
+### goes. It holds no state, so threads share it.
+@target(os: ("linux", "macos"))
 @heap_check("off")
-global DEFAULT_HEAP: @MemoryManager <- (alloc_fn: Standard/Os/plain_heap_alloc_fn.to[Callable](), realloc_fn: Standard/Os/plain_heap_realloc_fn.to[Callable](), free_fn: Standard/Os/plain_heap_free_fn.to[Callable](), reserve_fn: Standard/Os/os_reserve_fn.to[Callable](), commit_fn: Standard/Os/os_commit_fn.to[Callable](), release_fn: Standard/Os/os_release_fn.to[Callable](), protect_fn: Standard/Os/os_protect_fn.to[Callable](), state: .hollow())
-### The hosted default allocator with the heap check on: the C library's heap behind the checked heap's checks, which
-### crash on a block freed twice.
+global HEAP: @MemoryManager <- (alloc_fn: forward_alloc[Standard/Os/CHeapManager].to[Callable](), realloc_fn: forward_realloc[Standard/Os/CHeapManager].to[Callable](), free_fn: forward_free[Standard/Os/CHeapManager].to[Callable](), reserve_fn: .hollow(), commit_fn: .hollow(), release_fn: .hollow(), protect_fn: .hollow(), state: C_HEAP_MANAGER)
+### The hosted default heap on Windows with the heap check off: the C library's heap through `_aligned_malloc`, so
+### every alignment is there.
+@target(os: "windows")
+@heap_check("off")
+global HEAP: @MemoryManager <- (alloc_fn: forward_alloc[Standard/Os/AlignedHeapManager].to[Callable](), realloc_fn: forward_realloc[Standard/Os/AlignedHeapManager].to[Callable](), free_fn: forward_free[Standard/Os/AlignedHeapManager].to[Callable](), reserve_fn: .hollow(), commit_fn: .hollow(), release_fn: .hollow(), protect_fn: .hollow(), state: ALIGNED_HEAP_MANAGER)
+### The hosted default heap with the heap check on: the checked heap, which crashes on a block freed twice.
 @target(os: not "none")
 @heap_check("on")
-global DEFAULT_HEAP: @MemoryManager <- (alloc_fn: Standard/Os/checked_heap_alloc_fn.to[Callable](), realloc_fn: Standard/Os/checked_heap_realloc_fn.to[Callable](), free_fn: Standard/Os/checked_heap_free_fn.to[Callable](), reserve_fn: Standard/Os/os_reserve_fn.to[Callable](), commit_fn: Standard/Os/os_commit_fn.to[Callable](), release_fn: Standard/Os/os_release_fn.to[Callable](), protect_fn: Standard/Os/os_protect_fn.to[Callable](), state: .hollow())
+global HEAP: @MemoryManager <- (alloc_fn: forward_alloc[Standard/Os/CheckedHeapManager].to[Callable](), realloc_fn: forward_realloc[Standard/Os/CheckedHeapManager].to[Callable](), free_fn: forward_free[Standard/Os/CheckedHeapManager].to[Callable](), reserve_fn: .hollow(), commit_fn: .hollow(), release_fn: .hollow(), protect_fn: .hollow(), state: CHECKED_HEAP_MANAGER)
 
-### The hosted stack allocator, ready before `start` runs: whole pages, with a guard page below each stack. Each
-### thread's FIBERS takes its fibers' stacks from it, and `make_stack_memory()` gives the same one.
+### The C library's malloc, realloc, and free in every build, with nothing in front of the blocks: for memory that C
+### code frees or reallocates, or that comes from C's malloc and is freed here. An alignment past malloc's own comes
+### from posix_memalign (still freed with free), and on Windows, whose free can't take such a block, it crashes.
 @target(os: not "none")
-global DEFAULT_STACKS: @MemoryManager <- (alloc_fn: Standard/Os/stack_alloc_fn.to[Callable](), realloc_fn: Standard/Os/stack_realloc_fn.to[Callable](), free_fn: Standard/Os/stack_free_fn.to[Callable](), reserve_fn: Standard/Os/os_reserve_fn.to[Callable](), commit_fn: Standard/Os/os_commit_fn.to[Callable](), release_fn: Standard/Os/os_release_fn.to[Callable](), protect_fn: Standard/Os/os_protect_fn.to[Callable](), state: .hollow())
+global C_HEAP: @MemoryManager <- (alloc_fn: forward_alloc[Standard/Os/CHeapManager].to[Callable](), realloc_fn: forward_realloc[Standard/Os/CHeapManager].to[Callable](), free_fn: forward_free[Standard/Os/CHeapManager].to[Callable](), reserve_fn: .hollow(), commit_fn: .hollow(), release_fn: .hollow(), protect_fn: .hollow(), state: C_HEAP_MANAGER)
 
-### An {MemoryManager} that is the C library's malloc, realloc, and free in every build, with nothing in front of the
-### blocks: for memory that C code frees or reallocates, or that comes from C's malloc and is freed here. An alignment
-### past malloc's own comes from posix_memalign (still freed with free), and on Windows, whose free can't take such a
-### block, it crashes. Its page routines are the operating system's.
-### :returns: The allocator, which holds no state and needs nothing to free.
+### The operating system's pages, ready before `start` runs: `reserve`, `commit`, `release`, and `protect`, and `alloc`
+### of whole committed pages. Fibers' stacks come from it.
 @target(os: not "none")
-routine make_c_heap_memory() -> MemoryManager
-    alloc: MemoryManager = MemoryManager(alloc_fn: Standard/Os/c_heap_alloc_fn.to[Callable](),
-        realloc_fn: Standard/Os/c_heap_realloc_fn.to[Callable](),
-        free_fn: Standard/Os/c_heap_free_fn.to[Callable](),
-        reserve_fn: Standard/Os/os_reserve_fn.to[Callable](),
-        commit_fn: Standard/Os/os_commit_fn.to[Callable](),
-        release_fn: Standard/Os/os_release_fn.to[Callable](),
-        protect_fn: Standard/Os/os_protect_fn.to[Callable](), state: .hollow())
-    return alloc
+global PAGES: @MemoryManager <- (alloc_fn: forward_alloc[Standard/Os/OsPageManager].to[Callable](), realloc_fn: forward_realloc[Standard/Os/OsPageManager].to[Callable](), free_fn: forward_free[Standard/Os/OsPageManager].to[Callable](), reserve_fn: forward_reserve[Standard/Os/OsPageManager].to[Callable](), commit_fn: forward_commit[Standard/Os/OsPageManager].to[Callable](), release_fn: forward_release[Standard/Os/OsPageManager].to[Callable](), protect_fn: forward_protect[Standard/Os/OsPageManager].to[Callable](), state: OS_PAGE_MANAGER)

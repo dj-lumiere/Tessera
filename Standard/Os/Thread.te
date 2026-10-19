@@ -16,10 +16,10 @@ module Standard/Os
 
 import Standard/Alloc
 
-### The hosted thread manager: the operating system's threads, with the work blocks from DEFAULT_HEAP. Ready before
+### The hosted thread manager: the operating system's threads, with the work blocks from HEAP. Ready before
 ### `start` runs.
 @target(os: not "none")
-global DEFAULT_THREADS: @ThreadManager <- (launch_fn: os_launch_fn.to[Callable](), state: .hollow(), lock: (state: 0), idle: .hollow(), alloc: DEFAULT_HEAP)
+global DEFAULT_THREADS: @ThreadManager <- (launch_fn: os_launch_fn.to[Callable](), state: .hollow(), lock: (state: 0), idle: .hollow(), alloc: HEAP)
 
 ### A ticket for a thread, from {get_thread}: it runs one piece of work at a time, whose result is a `T` (`Void` for
 ### none), until {Thread[T].give_back}.
@@ -193,7 +193,7 @@ secret routine worker_main(raw: Addr) -> None
         state2: U32 = worker.slot.state.peek_atomic()
         if state2 == TICKET_RUNNING
             # Every piece of work starts from the thread-local values a new thread has.
-            reset_thread_locals()
+            ThreadLocalStorageManager.reset()
             RUNNING_WORK.poke(worker.slot)
             runner: Callable[(Addr,), None] = worker.slot.runner.peek()
             runner.call(worker.slot.work.peek())
@@ -215,12 +215,24 @@ secret routine worker_main(raw: Addr) -> None
     deallocate(data: worker, alloc)
     return
 
+### The thread-local storage of the program's threads: the block of `@threadlocal` globals each thread has. The
+### operating system makes a thread's block, every global at its starting value, when the thread starts, and takes it
+### back when the thread ends. Its routines are called on the type.
+@target(os: not "none")
+record ThreadLocalStorageManager
+
 ### Puts every `@threadlocal` global of the program back to its starting value on this thread: a thread worker does it
 ### before each ticket's work.
+@target(os: not "none")
+common routine ThreadLocalStorageManager.reset() -> None
+    reset_all_thread_locals()
+    return
+
+### Stores every `@threadlocal` global's starting value into this thread's block (the builder writes the routine).
 @external("llvm")
 @template("call void @tessera.reset_thread_locals()")
 @target(os: not "none")
-routine reset_thread_locals() -> None
+secret routine reset_all_thread_locals() -> None
 
 ### The slot the ticket's work lives in, for code that waits on several tickets at once.
 ### :returns: The slot.
@@ -502,19 +514,19 @@ secret routine thread_body(raw: Addr) -> None
     start: @ThreadStart = raw.to[@ThreadStart]()
     entry: Callable[(Addr,), None] = start.entry.peek()
     arg: Addr = start.arg.peek()
-    deallocate(data: start, alloc: DEFAULT_HEAP)
+    deallocate(data: start, alloc: HEAP)
     fault_stack: Addr = give_fault_stack()
     entry.call(arg)
     release_fault_stack(fault_stack)
     return
 
-### The start record of a new thread, from DEFAULT_HEAP, or null when there is no memory for it.
+### The start record of a new thread, from HEAP, or null when there is no memory for it.
 ### :param entry: The routine the thread runs.
 ### :param arg: What it is given.
 ### :returns: The record, or null.
 @target(os: not "none")
 secret routine thread_start(entry: Callable[(Addr,), None], arg: Addr) -> @ThreadStart
-    start: @ThreadStart = allocate[ThreadStart](count: 1, alloc: DEFAULT_HEAP)
+    start: @ThreadStart = allocate[ThreadStart](count: 1, alloc: HEAP)
     if start.is_hollow()
         return .hollow()
     start.poke(ThreadStart(entry, arg))
@@ -564,7 +576,7 @@ secret routine os_launch_fn(entry: Callable[(Addr,), None], arg: Addr, state: Ad
     local handle: @Addr <- .hollow()
     result: CInt = c_pthread_create(handle, .hollow(), posix_thread_main.to[Callable](), start)
     if result != 0
-        deallocate(data: start, alloc: DEFAULT_HEAP)
+        deallocate(data: start, alloc: HEAP)
         return false
     c_pthread_detach(handle.peek())
     return true
@@ -639,7 +651,7 @@ secret routine os_launch_fn(entry: Callable[(Addr,), None], arg: Addr, state: Ad
     handle: Addr = c_create_thread(.hollow(), 0, windows_thread_main.to[Callable](), start, 0,
         .hollow())
     if handle.is_hollow()
-        deallocate(data: start, alloc: DEFAULT_HEAP)
+        deallocate(data: start, alloc: HEAP)
         return false
     c_close_handle(handle)
     return true

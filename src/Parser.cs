@@ -2088,7 +2088,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (IsOp("-") || IsOp("~"))
         {
             var op = Next();
-            return new UnaryExpr(op.Text, ParseUnary(), op.Pos);
+            var operand = ParseUnary();
+            // `-inf` is the negative infinity literal, typed by where it goes like `inf`.
+            if (op.Text == "-" && operand is FloatLit { Text: "inf" })
+                return new FloatLit(double.NegativeInfinity, op.Pos) { Text = "-inf" };
+            return new UnaryExpr(op.Text, operand, op.Pos);
         }
         if (IsWordOp("not"))
         {
@@ -2259,9 +2263,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 {
                     case "true": Next(); return new BoolLit(true, t.Pos);
                     case "false": Next(); return new BoolLit(false, t.Pos);
-                    // Infinity and NaN are float literals, typed like `1.5` by where they go; `-inf` is `-` on `inf`.
+                    // Infinity and NaN are float literals, typed like `1.5` by where they go, and `-inf` is `-` on `inf`.
                     case "inf": Next(); return new FloatLit(double.PositiveInfinity, t.Pos) { Text = "inf" };
-                    case "nan": Next(); return new FloatLit(double.NaN, t.Pos) { Text = "nan" };
+                    case "nan": Next(); return new FloatLit(BitConverter.Int64BitsToDouble(0x7FF8000000000000), t.Pos) { Text = "nan" };
                     case "null":
                         // `null` is gone: a pointer that holds nothing is the all-zero value every type has.
                         Next();

@@ -1,12 +1,12 @@
-# Tessera stdlib: the heap allocator
+# Tessera stdlib: the heap managers
 #
-# The routines behind the MemoryManager tables backed by libc malloc / realloc / free. Collections take any
-# MemoryManager, so this is the hosted default, not a requirement. DEFAULT_HEAP (built in Standard/Alloc, with the
-# table's fields) is one, ready before start runs: the construct overloads without an allocator (Os/Defaults.te) draw
-# from it, and make_heap_memory() gives the same allocator. With the heap check on (config.toml's [debug] heap-check,
-# in any build mode) it checks every free and crashes on a block freed twice (the checked heap, below), so its blocks
-# are not malloc's own then. make_c_heap_memory() (Standard/Alloc too) is plain malloc / realloc / free in every
-# build, through the c_heap routines here: for memory that C code frees or reallocates, or that comes from C's malloc.
+# Two managers of the C library's heap, both HeapManageable (Standard/Alloc): CHeapManager is malloc, realloc, and
+# free with nothing in front of the blocks, for memory that C code frees or reallocates, or that comes from C's malloc,
+# and CheckedHeapManager keeps a header in front of each block and crashes on a block freed twice. HEAP (built in
+# Standard/Alloc, with the table's fields) is the default heap, ready before start runs: the checked one with the heap
+# check on (config.toml's [debug] heap-check, in any build mode), else the C library's. The construct overloads
+# without an allocator (Os/Defaults.te) draw from it. C_HEAP is CHeapManager's table in every build. Collections take
+# any MemoryManager, so these are the hosted defaults, not a requirement.
 
 module Standard/Os
 
@@ -35,13 +35,6 @@ secret routine c_realloc(ptr: Addr, size: CSize) -> Addr
 @external("c")
 @symbol("free")
 secret routine c_free(ptr: Addr) -> None
-
-### An {MemoryManager} that is {DEFAULT_HEAP}: the C library's malloc, realloc, and free, with the checked heap's checks
-### when the heap check is on. Collections take any allocator, so this is the hosted default and not a requirement.
-### :returns: The allocator, which holds no state and needs nothing to free.
-routine make_heap_memory() -> MemoryManager
-    alloc: MemoryManager = DEFAULT_HEAP.peek()
-    return alloc
 
 ### Binds the C `posix_memalign` function, which allocates a block aligned past malloc's own alignment.
 ### :param out: Where the block goes.
@@ -95,13 +88,20 @@ secret routine c_aligned_realloc(ptr: Addr, size: CSize, align: CSize) -> Addr
 @target(os: "windows")
 secret routine c_aligned_free(ptr: Addr) -> None
 
-### The C heap's alloc function: malloc of `size` bytes, or posix_memalign for an alignment past malloc's.
-### :param state: Unused, the heap allocator has no state.
+### The C library's heap: malloc, realloc, and free in every build, with nothing in front of the blocks. For memory
+### that C code frees or reallocates, or that comes from C's malloc and is freed here. An alignment past malloc's own
+### comes from posix_memalign (still freed with free), and on Windows, whose free can't take such a block, it crashes.
+### `C_HEAP` is its table.
+@target(os: not "none")
+record CHeapManager
+obeys HeapManageable[CHeapManager]
+
+### Allocates `size` bytes with malloc, or with posix_memalign for an alignment past malloc's.
 ### :param size: The number of bytes.
 ### :param align: The alignment, a power of two.
 ### :returns: The new block, null when the heap has no room.
 @target(os: ("linux", "macos"))
-routine c_heap_alloc_fn(state: Addr, size: U64, align: U64) -> Addr
+routine @CHeapManager.alloc(size: U64, align: U64) -> Addr
     if align <= MALLOC_ALIGN
         return c_malloc(size.to[CSize]())
     local out: @Addr <- .hollow()
@@ -109,109 +109,82 @@ routine c_heap_alloc_fn(state: Addr, size: U64, align: U64) -> Addr
         return .hollow()
     return out.peek()
 
-### The C heap's alloc function: malloc of `size` bytes. Windows' free can't take a block aligned past malloc's own.
-### :param state: Unused, the heap allocator has no state.
+### Allocates `size` bytes with malloc. Windows' free can't take a block aligned past malloc's own.
 ### :param size: The number of bytes.
 ### :param align: The alignment, a power of two.
 ### :returns: The new block, null when malloc fails.
 ### :throws: Crashes with `InvalidValueError` when `align` is past malloc's own.
 @target(os: "windows")
-routine c_heap_alloc_fn(state: Addr, size: U64, align: U64) -> Addr
+routine @CHeapManager.alloc(size: U64, align: U64) -> Addr
     if align <= MALLOC_ALIGN
         return c_malloc(size.to[CSize]())
     crash(name: "InvalidValueError",
-        message: "The C heap can't give a block aligned past malloc's own on Windows: use DEFAULT_HEAP.")
+        message: "The C heap can't give a block aligned past malloc's own on Windows: use HEAP.")
 
-### The C heap's realloc function: resizes a block with realloc, and a block aligned past malloc's own through a new
-### aligned block, the contents copied over.
-### :param state: Unused, the heap allocator has no state.
-### :param old_ptr: The block to resize.
+### Resizes a block with realloc, and a block aligned past malloc's own through a new aligned block, the contents
+### copied over.
+### :param at: The block to resize, or null for a new one.
 ### :param size: The new size in bytes.
 ### :param align: The block's alignment.
 ### :returns: The resized block (possibly moved), null when the heap has no room and the old block is untouched.
 @target(os: ("linux", "macos"))
-routine c_heap_realloc_fn(state: Addr, old_ptr: Addr, size: U64, align: U64) -> Addr
+routine @CHeapManager.realloc(at: Addr, size: U64, align: U64) -> Addr
     if align <= MALLOC_ALIGN
-        return c_realloc(old_ptr, size.to[CSize]())
-    fresh: Addr = c_heap_alloc_fn(state, size, align)
+        return c_realloc(at, size.to[CSize]())
+    fresh: Addr = me.alloc(size, align)
     if fresh.is_hollow()
         return .hollow()
-    if old_ptr.is_hollow()
+    if at.is_hollow()
         return fresh
-    kept: U64 = c_block_size(old_ptr).min(size.to[CSize]()).to[U64]()
-    fresh.to[@Byte]().copy(src: old_ptr.to[@Byte](), count: kept)
-    c_free(old_ptr)
+    kept: U64 = c_block_size(at).min(size.to[CSize]()).to[U64]()
+    fresh.to[@Byte]().copy(src: at.to[@Byte](), count: kept)
+    c_free(at)
     return fresh
 
-### The C heap's realloc function: resizes a block with realloc.
-### :param state: Unused, the heap allocator has no state.
-### :param old_ptr: The block to resize.
+### Resizes a block with realloc.
+### :param at: The block to resize, or null for a new one.
 ### :param size: The new size in bytes.
 ### :param align: The block's alignment, at most malloc's own.
 ### :returns: The resized block (possibly moved), null when realloc fails and the old block is untouched.
 @target(os: "windows")
-routine c_heap_realloc_fn(state: Addr, old_ptr: Addr, size: U64, align: U64) -> Addr
-    return c_realloc(old_ptr, size.to[CSize]())
+routine @CHeapManager.realloc(at: Addr, size: U64, align: U64) -> Addr
+    return c_realloc(at, size.to[CSize]())
 
-### The C heap's free function: free of a block from this allocator.
-### :param state: Unused, the heap allocator has no state.
-### :param ptr: The block to free.
-routine c_heap_free_fn(state: Addr, ptr: Addr) -> None
-    c_free(ptr)
+### Gives a block back with free.
+### :param at: The block to free. Null does nothing.
+@target(os: not "none")
+routine @CHeapManager.free(at: Addr) -> None
+    c_free(at)
     return
 
-### The default heap's alloc function with the heap check off: the C heap's.
-### :param state: Unused.
-### :param size: The number of bytes.
-### :param align: The alignment, a power of two.
-### :returns: The new block, null when the heap has no room.
-@target(os: ("linux", "macos"))
-routine plain_heap_alloc_fn(state: Addr, size: U64, align: U64) -> Addr
-    return c_heap_alloc_fn(state, size, align)
+### The C library's heap through `_aligned_malloc`, so every alignment is there: the default heap on Windows with the
+### heap check off. Its blocks go back through `_aligned_free`, never C's free.
+@target(os: "windows")
+record AlignedHeapManager
+obeys HeapManageable[AlignedHeapManager]
 
-### The default heap's realloc function with the heap check off: the C heap's.
-### :param state: Unused.
-### :param old_ptr: The block to resize.
-### :param size: The new size in bytes.
-### :param align: The block's alignment.
-### :returns: The resized block, null when the heap has no room and the old block is untouched.
-@target(os: ("linux", "macos"))
-routine plain_heap_realloc_fn(state: Addr, old_ptr: Addr, size: U64, align: U64) -> Addr
-    return c_heap_realloc_fn(state, old_ptr, size, align)
-
-### The default heap's free function with the heap check off: free.
-### :param state: Unused.
-### :param ptr: The block to free.
-@target(os: ("linux", "macos"))
-routine plain_heap_free_fn(state: Addr, ptr: Addr) -> None
-    c_free(ptr)
-    return
-
-### The default heap's alloc function on Windows: `_aligned_malloc`, so any alignment is there.
-### :param state: Unused.
+### Allocates `size` bytes with `_aligned_malloc`.
 ### :param size: The number of bytes.
 ### :param align: The alignment, a power of two.
 ### :returns: The new block, null when the heap has no room.
 @target(os: "windows")
-routine plain_heap_alloc_fn(state: Addr, size: U64, align: U64) -> Addr
+routine @AlignedHeapManager.alloc(size: U64, align: U64) -> Addr
     return c_aligned_malloc(size.to[CSize](), align.max(MALLOC_ALIGN).to[CSize]())
 
-### The default heap's realloc function on Windows: `_aligned_realloc`, keeping the alignment.
-### :param state: Unused.
-### :param old_ptr: The block to resize.
+### Resizes a block with `_aligned_realloc`, keeping its alignment.
+### :param at: The block to resize, or null for a new one.
 ### :param size: The new size in bytes.
 ### :param align: The block's alignment.
 ### :returns: The resized block, null when the heap has no room and the old block is untouched.
 @target(os: "windows")
-routine plain_heap_realloc_fn(state: Addr, old_ptr: Addr, size: U64, align: U64) -> Addr
-    return c_aligned_realloc(old_ptr, size.to[CSize](), align.max(MALLOC_ALIGN).to[CSize]())
+routine @AlignedHeapManager.realloc(at: Addr, size: U64, align: U64) -> Addr
+    return c_aligned_realloc(at, size.to[CSize](), align.max(MALLOC_ALIGN).to[CSize]())
 
-### The default heap's free function on Windows: `_aligned_free`.
-### :param state: Unused.
-### :param ptr: The block to free.
+### Gives a block back with `_aligned_free`.
+### :param at: The block to free. Null does nothing.
 @target(os: "windows")
-routine plain_heap_free_fn(state: Addr, ptr: Addr) -> None
-    c_aligned_free(ptr)
+routine @AlignedHeapManager.free(at: Addr) -> None
+    c_aligned_free(at)
     return
 
 # -- the checked heap ---------------------------------------------------------------------------------------------
@@ -232,14 +205,21 @@ routine plain_heap_free_fn(state: Addr, ptr: Addr) -> None
 # have written over the header (the free reads as "not a block": still a crash) or handed the memory out again as
 # another live block (the second free then frees that one, unseen), so the quarantine keeps the window wide. A
 # reallocation copies into a new block and frees the old one the same way, so a stale pointer to the old block is
-# caught like any freed one. With the heap check off none of this is there: DEFAULT_HEAP is the C heap above, plain
-# malloc, realloc, free.
+# caught like any freed one. CheckedHeapManager is there in every build, and HEAP is the checked heap when the heap
+# check is on. With it off HEAP is the C library's heap above.
+
+### The checked heap: the C library's heap with a header in front of each block, which crashes with `DoubleFreeError`
+### on a block freed twice and with `InvalidValueError` on memory that isn't one of its blocks. Every alignment is
+### there. `HEAP` is its table when the heap check is on.
+@target(os: not "none")
+record CheckedHeapManager
+obeys HeapManageable[CheckedHeapManager]
 
 ### The headers of the last QUARANTINE_SIZE freed blocks, held back from malloc.
-@heap_check("on")
+@target(os: not "none")
 secret global QUARANTINE: @Array[Addr, QUARANTINE_SIZE]
 ### The number of blocks that have gone into the quarantine, whose low bits pick the next slot.
-@heap_check("on")
+@target(os: not "none")
 secret global QUARANTINE_NEXT: @U64
 
 ### The room kept in front of a block for its header, a multiple of every alignment malloc gives.
@@ -257,6 +237,7 @@ secret preset QUARANTINE_SIZE: U64 = 256
 secret preset QUARANTINE_MASK: U64 = QUARANTINE_SIZE.sub(1)
 
 ### What the checked heap keeps in front of each block.
+@target(os: not "none")
 secret record BlockHeader
     tag: U64
     size: U64
@@ -267,21 +248,21 @@ secret record BlockHeader
 ### :param size: Its `size`.
 ### :param raw: Its `raw`.
 ### :returns: The new value.
+@target(os: not "none")
 secret common routine BlockHeader.construct(tag: U64, size: U64, raw: Addr) -> Me
     return Me(tag, size, raw)
 
 ### Releases nothing: a `BlockHeader` holds no memory of its own.
+@target(os: not "none")
 secret routine @BlockHeader.destruct() -> None
     return
 
-### The checked heap's alloc function: malloc of the header room, `size` bytes, and room to align, the header tagged
-### LIVE.
-### :param state: Unused, the heap allocator has no state.
+### Allocates with malloc the header room, `size` bytes, and room to align, the header tagged LIVE.
 ### :param size: The number of bytes.
 ### :param align: The alignment, a power of two.
 ### :returns: The block after the header, null when malloc fails or the size can't hold a header too.
-@heap_check("on")
-routine checked_heap_alloc_fn(state: Addr, size: U64, align: U64) -> Addr
+@target(os: not "none")
+routine @CheckedHeapManager.alloc(size: U64, align: U64) -> Addr
     local step: U64 = align.max(MALLOC_ALIGN)
 
     total: Maybe[U64] = size.add_checked(HEADER_ROOM.add(step))
@@ -301,50 +282,48 @@ routine checked_heap_alloc_fn(state: Addr, size: U64, align: U64) -> Addr
             return block_start
         is None => return .hollow()
 
-### The checked heap's realloc function: a new block, the contents copied over (as many bytes as both sizes allow),
-### and the old block freed through the same checks as `checked_heap_free_fn`.
-### :param state: Unused, the heap allocator has no state.
-### :param old_ptr: The block to resize, or null for a new one.
+### Resizes a block: a new block, the contents copied over (as many bytes as both sizes allow), and the old block
+### freed through the same checks as `free`.
+### :param at: The block to resize, or null for a new one.
 ### :param size: The new size in bytes.
 ### :param align: The block's alignment.
 ### :returns: The new block, null when malloc fails and the old block is untouched.
-### :throws: Crashes with `InvalidValueError` when `old_ptr` was freed already or isn't a block of this heap.
-@heap_check("on")
-routine checked_heap_realloc_fn(state: Addr, old_ptr: Addr, size: U64, align: U64) -> Addr
-    if old_ptr.is_hollow()
-        return checked_heap_alloc_fn(state, size, align)
-    header: @BlockHeader = header_of(old_ptr)
+### :throws: Crashes with `InvalidValueError` when `at` was freed already or isn't a block of this heap.
+@target(os: not "none")
+routine @CheckedHeapManager.realloc(at: Addr, size: U64, align: U64) -> Addr
+    if at.is_hollow()
+        return me.alloc(size, align)
+    header: @BlockHeader = header_of(at)
     tag: U64 = header.tag.peek_atomic()
     when
         tag == LIVE =>
-            new_ptr: Addr = checked_heap_alloc_fn(state, size, align)
+            new_ptr: Addr = me.alloc(size, align)
             if new_ptr.is_hollow()
                 return .hollow()
             kept: U64 = header.size.peek().min(size)
-            new_ptr.to[@Byte]().copy(src: old_ptr.to[@Byte](), count: kept)
-            release_block(old_ptr)
+            new_ptr.to[@Byte]().copy(src: at.to[@Byte](), count: kept)
+            release_block(at)
             return new_ptr
         tag == FREED => heap_crash(name: "InvalidValueError",
-            message: "The default heap was asked to resize a block that was already freed.")
+            message: "The checked heap was asked to resize a block that was already freed.")
         else => heap_crash(name: "InvalidValueError",
-            message: "The default heap was asked to resize memory that isn't a block it gave out.")
+            message: "The checked heap was asked to resize memory that isn't a block it gave out.")
 
-### The checked heap's free function: checks the block's tag and puts the block in the quarantine.
-### :param state: Unused, the heap allocator has no state.
-### :param ptr: The block to free. Null does nothing.
-### :throws: Crashes with `DoubleFreeError` when the block was freed already, and with `InvalidValueError` when `ptr`
+### Gives a block back: checks the block's tag and puts the block in the quarantine.
+### :param at: The block to free. Null does nothing.
+### :throws: Crashes with `DoubleFreeError` when the block was freed already, and with `InvalidValueError` when `at`
 ###     isn't a block of this heap.
-@heap_check("on")
-routine checked_heap_free_fn(state: Addr, ptr: Addr) -> None
-    if ptr.is_hollow()
+@target(os: not "none")
+routine @CheckedHeapManager.free(at: Addr) -> None
+    if at.is_hollow()
         return
-    release_block(ptr)
+    release_block(at)
     return
 
 ### The header in front of a block of the checked heap.
 ### :param block_start: The block, as the checked heap gave it out.
 ### :returns: The address `HEADER_ROOM` bytes before `block_start`.
-@heap_check("on")
+@target(os: not "none")
 secret routine header_of(block_start: Addr) -> @BlockHeader
     raw: Addr = block_start.offset(HEADER_BACK)
     header: @BlockHeader = raw.to[@BlockHeader]()
@@ -355,7 +334,7 @@ secret routine header_of(block_start: Addr) -> @BlockHeader
 ### :param block_start: The block to release.
 ### :throws: Crashes with `DoubleFreeError` when the block was freed already, and with `InvalidValueError` when it
 ###     isn't a block of this heap.
-@heap_check("on")
+@target(os: not "none")
 secret routine release_block(block_start: Addr) -> None
     local header: @BlockHeader = header_of(block_start)
 
@@ -372,14 +351,14 @@ secret routine release_block(block_start: Addr) -> None
         was == FREED => heap_crash(name: "DoubleFreeError",
             message: "This block was already freed: it was freed twice.")
         else => heap_crash(name: "InvalidValueError",
-            message: "The default heap was asked to free memory that isn't a block it gave out.")
+            message: "The checked heap was asked to free memory that isn't a block it gave out.")
 
 ### Crashes at the place of the deallocate or reallocate call that reached the heap, when one was noted, else at the
 ### heap itself.
 ### :param name: The crash's error name, such as `DoubleFreeError`.
 ### :param message: The crash message.
 ### :throws: Always crashes with the error `name`.
-@heap_check("on")
+@target(os: not "none")
 @noreturn
 secret routine heap_crash(name: @[Byte], message: @[Byte]) -> None
     place: @SourceLocation = allocator_call_place()

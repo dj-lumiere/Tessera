@@ -37,7 +37,7 @@ import Standard/Alloc
 import Standard/Collections
 import Standard/Os
 
-### This thread's fiber manager, made on first use with DEFAULT_FIBER_STACK stacks from DEFAULT_STACKS.
+### This thread's fiber manager, made on first use with DEFAULT_FIBER_STACK stacks of pages from PAGES.
 @threadlocal
 @target(os: not "none")
 global FIBERS: @FiberManager
@@ -53,13 +53,52 @@ secret preset FIBER_PARKED:   U32 = 3
 ### The stack size of a fiber of FIBERS, the manager each thread makes on first use: 64 KiB.
 preset DEFAULT_FIBER_STACK: ByteSize = 64kib
 
+### A stack of `size` bytes on pages from `pages`: whole pages, committed, with one more page below them that `protect`
+### closes, so a stack that runs out stops the program there instead of writing over what lies below. The
+### StackManager runs on the pages above the closed one. Give it back with {give_back_stack}.
+### :param size: The stack's size, rounded up to whole pages.
+### :param pages: The page manager, such as `PAGES`.
+### :returns: The stack's manager, or a hollow one (its `top` null) when the pages can't be had.
+### :throws: Crashes with `NotImplementedError` when `pages` doesn't handle pages.
+@target(os: not "none")
+@track_caller
+@expensive("asks for pages")
+routine take_stack(size: ByteSize, pages: @MemoryManager) -> StackManager
+    local page: U64 = page_size().bytes()
+    local usable: U64 = whole_pages(size.bytes())
+    local length: U64 = usable + page
+
+    base: Addr = pages.reserve(length)
+    if base.is_hollow()
+        return .hollow()
+    if not pages.commit(at: base, size: length)
+        pages.release(at: base, size: length)
+        return .hollow()
+    if not pages.protect(at: base, size: page, access: PageAccess.NONE)
+        pages.release(at: base, size: length)
+        return .hollow()
+    bottom: Addr = base.offset(page.to[S64]())
+    return StackManager.construct(bottom, top: bottom.offset(usable.to[S64]()))
+
+### Gives a stack from {take_stack} back to its page manager, the closed page below it included.
+### :param stack: The stack's manager, from {take_stack} with the same `pages`.
+### :param pages: The page manager it came from.
+@target(os: not "none")
+@track_caller
+@expensive("gives memory back")
+routine give_back_stack(stack: StackManager, pages: @MemoryManager) -> None
+    page: U64 = page_size().bytes()
+    base: Addr = stack.bottom.offset(-page.to[S64]())
+    pages.release(at: base, size: stack.size().bytes() + page)
+    return
+
 ### One fiber: a stack and the work on it, from the first ticket that takes it until its manager goes. A pointer to it
 ### is the fiber's handle (see current and wake).
 record FiberState
     ### Its stack pointer while it isn't running.
     sp: Addr
-    ### The bottom of its stack, from the manager's stack allocator.
-    stack: Addr
+    ### Its stack, on pages from the manager's page manager.
+    stack: StackManager
     ### The manager running it. Only a ThreadPoolManager's fiber changes manager, while it waits.
     manager: @FiberManager
     slot: WorkSlot
@@ -102,7 +141,7 @@ obeys Comparable[TimerKey]
 entity FiberManager
     ### The fiber records and the queues.
     alloc: @MemoryManager
-    ### The fibers' stacks.
+    ### The page manager the fibers' stacks come from.
     stacks: @MemoryManager
     ### The size of each fiber's stack in bytes.
     stack_size: ByteSize
@@ -151,7 +190,7 @@ entity FiberManager
 ### :param pool: Its `pool`.
 ### :returns: The new value.
 @target(os: not "none")
-common routine FiberState.construct(sp: Addr, stack: Addr, manager: @FiberManager, slot: WorkSlot,
+common routine FiberState.construct(sp: Addr, stack: StackManager, manager: @FiberManager, slot: WorkSlot,
     work: @WorkSlot, then: Callable[(@FiberManager, @Me), None], wake_state: U32, timer: U64,
     trace_depth: U64, race: Addr, next_idle: @Me, next_all: @Me, pool: @ThreadPoolManager) -> Me
     return Me(sp, stack, manager, slot, work, then, wake_state, timer, trace_depth, race, next_idle,
@@ -195,10 +234,11 @@ routine TimerKey.compare(other: Me) -> S32
         return me.seq.compare(other.seq)
     return me.deadline.compare(other.deadline)
 
-### A manager whose fibers have stacks of `stack_size` bytes from `stacks`, driven by the thread that makes it until
-### another drives it.
+### A manager whose fibers have stacks of `stack_size` bytes on pages from `stacks`, driven by the thread that makes it
+### until another drives it. Each stack is whole pages with one more page below it, which `protect` closes: a fiber
+### whose stack runs out stops the program there.
 ### :param stack_size: The size of each fiber's stack.
-### :param stacks: Where the fibers' stacks come from.
+### :param stacks: The page manager the fibers' stacks come from, such as `PAGES`: its table handles pages.
 ### :param alloc: Where the fiber records and the queues come from.
 ### :returns: The manager, with no fibers.
 @target(os: not "none")
@@ -220,7 +260,7 @@ routine @FiberManager.destruct() -> None
         next: @FiberState = fiber.next_all.peek()
         fiber.destruct()
         race_stack_free(fiber.race.peek())
-        deallocate(data: fiber.stack.peek().to[@Byte](), alloc: me.stacks.peek())
+        give_back_stack(stack: fiber.stack.peek(), pages: me.stacks.peek())
         deallocate(data: fiber, alloc: me.alloc.peek())
         continue with fiber: next
     me.ready.destruct()
@@ -234,8 +274,8 @@ routine @FiberManager.destruct() -> None
 secret routine @FiberManager.ensure() -> None
     if me.alloc.peek().is_hollow()
         # A thread worker releases its FIBERS before it takes the next ticket's work.
-        me.poke(FiberManager.construct(stack_size: DEFAULT_FIBER_STACK, stacks: DEFAULT_STACKS,
-            alloc: DEFAULT_HEAP))
+        me.poke(FiberManager.construct(stack_size: DEFAULT_FIBER_STACK, stacks: PAGES,
+            alloc: HEAP))
         if me !== FIBERS
             return
         THREAD_CLEANUP.poke(release_fibers.to[Callable]())
@@ -274,14 +314,13 @@ needs T: typename
 @target(os: not "none")
 @track_caller
 secret routine @FiberManager.make_fiber() -> @FiberState
-    size: U64 = me.stack_size.peek().bytes()
-    stack: @Byte = allocate[Byte](count: size, alloc: me.stacks.peek())
-    if stack.is_hollow()
+    stack: StackManager = take_stack(size: me.stack_size.peek(), pages: me.stacks.peek())
+    if stack.top.is_hollow()
         crash_allocation()
     fiber: @FiberState = allocate[FiberState](count: 1, alloc: me.alloc.peek())
     if fiber.is_hollow()
         crash_allocation()
-    sp: Addr = initial_stack(stack, size, entry: fiber_start.addr())
+    sp: Addr = initial_stack(stack: stack.bottom, size: stack.size().bytes(), entry: fiber_start.addr())
     fiber.poke(FiberState(sp, stack, manager: me, slot: .construct(alloc: me.alloc.peek()),
         work: fiber.slot, then: requeue.to[Callable](), wake_state: FIBER_RUNNING, timer: 0,
         trace_depth: 0, race: race_stack_new(), next_idle: .hollow(), next_all: me.all.peek(), pool: .hollow()))
@@ -809,9 +848,13 @@ secret routine @FiberManager.resume(fiber: @FiberState) -> None
     # The fiber's crash trace depth goes in while it runs and comes back out with it, and the thread's own stays as
     # it was.
     own: U64 = trace_switch(fiber.trace_depth.peek())
+    # The running flow's StackManager is the fiber's while it runs.
+    outer_stack: @StackManager = RUNNING_STACK.peek()
+    RUNNING_STACK.poke(fiber.stack)
     me.home_race.poke(race_stack_current())
     race_stack_switch(fiber.race.peek())
     switch_stack(from: me.home, to: fiber.sp.peek())
+    RUNNING_STACK.poke(outer_stack)
     trace_switch(own).poke_into(fiber.trace_depth)
     RUNNING_FIBER.poke(outer_fiber)
     RUNNING_WORK.poke(outer_work)

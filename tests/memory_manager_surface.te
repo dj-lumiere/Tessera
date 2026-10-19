@@ -1,5 +1,5 @@
-# A MemoryManager hands out blocks at the alignment asked for, and DEFAULT_HEAP handles pages: reserve, commit,
-# protect, release. A manager without pages says so, and calling its reserve crashes with NotImplementedError.
+# A MemoryManager hands out blocks at the alignment asked for, HEAP is a heap without pages, and PAGES handles pages:
+# reserve, commit, protect, release. A manager without pages says so, and calling its reserve crashes with NotImplementedError.
 
 import Standard/Alloc
 import Standard/Format
@@ -37,7 +37,7 @@ routine aligned(at: Addr, align: U64) -> Bool
 ### :param align: The alignment.
 ### :returns: The block, or null.
 routine @Plain.alloc(size: U64, align: U64) -> Addr
-    return DEFAULT_HEAP.alloc(size, align)
+    return HEAP.alloc(size, align)
 
 ### The default heap's reallocation.
 ### :param at: The block.
@@ -46,16 +46,16 @@ routine @Plain.alloc(size: U64, align: U64) -> Addr
 ### :returns: The block, or null.
 @reshaping(at)
 routine @Plain.realloc(at: Addr, size: U64, align: U64) -> Addr
-    return DEFAULT_HEAP.realloc(at, size, align)
+    return HEAP.realloc(at, size, align)
 
 ### The default heap's free.
 ### :param at: The block.
 routine @Plain.free(at: Addr) -> None
-    DEFAULT_HEAP.free(at)
+    HEAP.free(at)
     return
 
 routine start() -> None
-    local heap: @MemoryManager <- DEFAULT_HEAP.peek()
+    local heap: @MemoryManager <- HEAP.peek()
     local blocks_only: @Plain <- .hollow()
     local plain: @MemoryManager <- blocks_only.to[MemoryManager]()
 
@@ -64,15 +64,20 @@ routine start() -> None
     grown: Addr = heap.realloc(at: wide, size: 5000, align: 256)
     Console.show("still aligned: {aligned(at: grown, align: 256)}")
     heap.free(grown)
-    Console.show("pages: {heap.has_pages()} {heap.has_protect()}")
+    Console.show("heap pages: {heap.has_pages()}, pages: {PAGES.has_pages()} {PAGES.has_protect()}")
     page: U64 = page_size().bytes()
-    space: Addr = heap.reserve(page * 4)
-    committed: Bool = heap.commit(at: space, size: page * 2)
+    space: Addr = PAGES.reserve(page * 4)
+    committed: Bool = PAGES.commit(at: space, size: page * 2)
     42.poke_into(space.to[@U64]())
-    closed: Bool = heap.protect(at: space.offset(page.to[S64]()), size: page,
+    closed: Bool = PAGES.protect(at: space.offset(page.to[S64]()), size: page,
         access: PageAccess.READ)
     Console.show("committed {committed}, protected {closed}, read {space.to[@U64]().peek()}")
-    heap.release(at: space, size: page * 4)
+    PAGES.release(at: space, size: page * 4)
+    chunk: Addr = PAGES.alloc(size: 100, align: 64)
+    7.poke_into(chunk.to[@U64]())
+    bigger: Addr = PAGES.realloc(at: chunk, size: page * 3, align: 64)
+    Console.show("page block kept {bigger.to[@U64]().peek()}, page aligned {aligned(at: bigger, align: page)}")
+    PAGES.free(bigger)
     Console.show("plain pages: {plain.has_pages()}")
     nothing: Addr = plain.reserve(page)
     Console.show("not reached {nothing}")

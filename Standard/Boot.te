@@ -2,15 +2,17 @@
 #
 # Such a program's entry is `when_power_on`: the reset sends the core there. The stack pointer is part of its prologue
 # (on Cortex-M the core loads it from the vector table's first word, elsewhere the builder's first instructions load
-# `__stack_top`), then its body readies the core and memory, here: zero_bss, copy_data where the code runs from flash
-# (32-bit ARM and RISC-V), enable_fpu when the target has a floating-point unit the build may use, which prepare_core
-# runs together, and then whatever the board needs. When it returns, start runs, then halt. A program without
-# when_power_on gets one that runs prepare_core. A global's first value is build-time data in the program image, so
-# nothing runs before these steps, and none of them reads a global.
+# `__stack_top`), then its body turns the managers on, here: GlobalManager.prepare() (.bss zeroed, .data copied where
+# the code runs from flash, 32-bit ARM and RISC-V), enable_fpu when the target has a floating-point unit the build may
+# use, and the CpuEventManager's vector table (CpuEvents.te), which prepare_core runs together, and then whatever the
+# board needs. When it returns, start runs, then halt. A program without when_power_on gets one that runs
+# prepare_core. A global's first value is build-time data in the program image, so nothing runs before these steps,
+# and none of them reads a global before GlobalManager.prepare() has run.
 #
 # The link script defines the symbols they use: `__stack_top`, `__bss_start` and `__bss_end` around .bss, and on a
 # target that runs from flash `__data_start` and `__data_end` around .data in RAM with `__data_load`, where its first
-# values are in flash.
+# values are in flash. A program that asks for StackManager.current() needs `__stack_bottom` too, the lowest address
+# the first stack may reach.
 
 module Standard/Boot
 
@@ -46,9 +48,40 @@ global DATA_END: @Byte
 @target(os: "none")
 global DATA_LOAD: @Byte
 
+### The lowest address the stack may reach (the link script's `__stack_bottom`), for StackManager.current().
+@external("c")
+@symbol("__stack_bottom")
+@target(os: "none")
+global STACK_BOTTOM: @Byte
+
+### The address the stack starts at (the link script's `__stack_top`), for StackManager.current().
+@external("c")
+@symbol("__stack_top")
+@target(os: "none")
+global STACK_TOP: @Byte
+
+### The StackManager of the one stack a program without an operating system runs on, filled on first use.
+@target(os: "none")
+secret global BOOT_STACK: @StackManager
+
+### The StackManager of the stack the program runs on: `__stack_bottom` up to `__stack_top`.
+### :returns: The manager, for the program's whole run.
+@target(os: "none")
+common routine StackManager.current() -> @StackManager
+    if BOOT_STACK.top.peek().is_hollow()
+        BOOT_STACK.poke(StackManager.construct(STACK_BOTTOM.to[Addr](), STACK_TOP.to[Addr]()))
+    return BOOT_STACK
+
+### The globals' memory: .bss, the globals whose first value is all zero bytes, and .data, the others. The program
+### image holds their first values, and on a target without an operating system the GlobalManager puts them in place
+### before anything reads a global: `GlobalManager.prepare()`, which `prepare_core` runs. Its routines are called on
+### the type.
+@target(os: "none")
+record GlobalManager
+
 ### Zeroes .bss, the globals whose first value is all zero bytes: `__bss_start` up to `__bss_end`.
 @target(os: "none")
-routine zero_bss() -> None
+common routine GlobalManager.zero_bss() -> None
     first: U64 = ptrtoint[Addr, U64](BSS_START)
     after: U64 = ptrtoint[Addr, U64](BSS_END)
     BSS_START.zeroinit(after - first)
@@ -57,7 +90,7 @@ routine zero_bss() -> None
 ### Copies .data's first values from flash (`__data_load`) into RAM (`__data_start` up to `__data_end`), on a target
 ### whose code runs from flash.
 @target(os: "none")
-routine copy_data() -> None
+common routine GlobalManager.copy_data() -> None
     first: U64 = ptrtoint[Addr, U64](DATA_START)
     after: U64 = ptrtoint[Addr, U64](DATA_END)
     DATA_START.copy(src: DATA_LOAD, count: after - first)
@@ -95,68 +128,85 @@ routine enable_fpu() -> None
     instruction_barrier()
     return
 
-### Readies the core and memory before anything reads a global: zeroes .bss, turns the FPU on.
+### Puts the globals in place: zeroes .bss. The code runs from RAM, where the image put .data.
+@target(arch: ("x86_64", "aarch64"), os: "none")
+common routine GlobalManager.prepare() -> None
+    Me.zero_bss()
+    return
+
+### Puts the globals in place: zeroes .bss and copies .data from flash.
+@target(arch: ("arm", "riscv32"), os: "none")
+common routine GlobalManager.prepare() -> None
+    Me.zero_bss()
+    Me.copy_data()
+    return
+
+### Turns the managers on before anything reads a global: the GlobalManager and the FPU.
 @target(arch: "x86_64", os: "none")
 @feature("sse")
 routine prepare_core() -> None
-    zero_bss()
+    GlobalManager.prepare()
     enable_fpu()
     return
 
-### Readies the core and memory before anything reads a global: zeroes .bss.
+### Turns the managers on before anything reads a global: the GlobalManager.
 @target(arch: "x86_64", os: "none")
 @feature(not "sse")
 routine prepare_core() -> None
-    zero_bss()
+    GlobalManager.prepare()
     return
 
-### Readies the core and memory before anything reads a global: zeroes .bss, turns the FPU on.
+### Turns the managers on before anything reads a global: the GlobalManager, the FPU, and the CpuEventManager's vector
+### table.
 @target(arch: "aarch64", os: "none")
 @feature("fp-armv8")
 routine prepare_core() -> None
-    zero_bss()
+    GlobalManager.prepare()
     enable_fpu()
+    CpuEventManager.install()
     return
 
-### Readies the core and memory before anything reads a global: zeroes .bss.
+### Turns the managers on before anything reads a global: the GlobalManager and the CpuEventManager's vector table.
 @target(arch: "aarch64", os: "none")
 @feature(not "fp-armv8")
 routine prepare_core() -> None
-    zero_bss()
+    GlobalManager.prepare()
+    CpuEventManager.install()
     return
 
-### Readies the core and memory before anything reads a global: zeroes .bss, copies .data from flash, turns the FPU on.
+### Turns the managers on before anything reads a global: the GlobalManager and the FPU. The CpuEventManager's vector
+### table is the one the core reads at reset.
 @target(arch: "arm", os: "none")
 @feature("vfp2sp")
 routine prepare_core() -> None
-    zero_bss()
-    copy_data()
+    GlobalManager.prepare()
     enable_fpu()
     return
 
-### Readies the core and memory before anything reads a global: zeroes .bss, copies .data from flash.
+### Turns the managers on before anything reads a global: the GlobalManager. The CpuEventManager's vector table is the
+### one the core reads at reset.
 @target(arch: "arm", os: "none")
 @feature(not "vfp2sp")
 routine prepare_core() -> None
-    zero_bss()
-    copy_data()
+    GlobalManager.prepare()
     return
 
-### Readies the core and memory before anything reads a global: zeroes .bss, copies .data from flash, turns the FPU on.
+### Turns the managers on before anything reads a global: the GlobalManager, the FPU, and the CpuEventManager's trap
+### entry.
 @target(arch: "riscv32", os: "none")
 @feature("f")
 routine prepare_core() -> None
-    zero_bss()
-    copy_data()
+    GlobalManager.prepare()
     enable_fpu()
+    CpuEventManager.install()
     return
 
-### Readies the core and memory before anything reads a global: zeroes .bss, copies .data from flash.
+### Turns the managers on before anything reads a global: the GlobalManager and the CpuEventManager's trap entry.
 @target(arch: "riscv32", os: "none")
 @feature(not "f")
 routine prepare_core() -> None
-    zero_bss()
-    copy_data()
+    GlobalManager.prepare()
+    CpuEventManager.install()
     return
 
 ### Halts the core for good once `start` has returned: it waits for interrupts, forever. On Cortex-M the vector

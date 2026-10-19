@@ -5,6 +5,8 @@
 # run, an integer division by zero, a stack that ran out. When the build keeps the crash trace, the generated entry
 # installs these handlers before `start`: each writes the fault's name, the crash trace (the program's routines, by
 # their Tessera names and lines), and the platform's own stack, then ends the program the way the fault would have.
+# A fault is one of the CpuEventManager's events (CpuEvents.te): a handler set with CpuEventManager.when_faulted runs
+# in place of the report, and setting one installs these handlers in a build without the crash trace too.
 #
 # On Linux and macOS each thread gets a stack of its own for the handler (sigaltstack), so a stack that ran out can
 # still be reported. On Windows the report comes from the unhandled-exception filter, so a fault that some code handles
@@ -105,6 +107,9 @@ secret routine fault_name(index: U64) -> @[Byte]
 secret routine on_fault(sig: CInt) -> None
     local signals: Array[CInt, 5] = fault_signals()
 
+    if deliver(CpuEvent(kind: CpuEventKind.FAULT, code: sig.to[U64](), place: .hollow(), address: .hollow()))
+        c_raise(sig)
+        return
     until i >= 4 or signals[i] == sig with i: U64 = 0
         continue with i: i + 1
     then
@@ -124,40 +129,50 @@ secret routine write_platform_stack() -> None
     c_backtrace_symbols_fd(frames.to[@Addr](), n, 2)
     return
 
-### Writes `struct sigaction` for the handler: on its own stack, used once. Linux keeps the handler, a 128-byte mask,
-### the flags, then a restorer.
+### Writes `struct sigaction`. Linux keeps the handler, a 128-byte mask, the flags, then a restorer.
 ### :param act: The bytes of the struct, zero.
+### :param handler: The signal's handler.
+### :param flags: The `SA_*` flags.
 @target(os: "linux")
-secret routine fill_action(act: @Byte) -> None
+secret routine fill_action(act: @Byte, handler: Callable[(CInt,), None], flags: U32) -> None
     pointer: S64 = sizeof[Addr]().to[S64]()
-    handler: Callable[(CInt,), None] = on_fault.to[Callable]()
     act.to[Addr]().to[@Callable[(CInt,), None]]().poke(handler)
-    # SA_ONSTACK | SA_RESETHAND
-    flags: U32 = 0x88000000
     flags_field: @U32 = act.to[Addr]().offset(pointer + 128).to[@U32]()
     flags_field.poke(flags)
     return
 
-### Writes `struct sigaction` for the handler: on its own stack, used once. macOS keeps the handler, a 4-byte mask, then
-### the flags.
+### Writes `struct sigaction`. macOS keeps the handler, a 4-byte mask, then the flags.
 ### :param act: The bytes of the struct, zero.
+### :param handler: The signal's handler.
+### :param flags: The `SA_*` flags.
 @target(os: "macos")
-secret routine fill_action(act: @Byte) -> None
-    handler: Callable[(CInt,), None] = on_fault.to[Callable]()
+secret routine fill_action(act: @Byte, handler: Callable[(CInt,), None], flags: U32) -> None
     act.to[Addr]().to[@Callable[(CInt,), None]]().poke(handler)
-    # SA_ONSTACK | SA_RESETHAND
-    flags: U32 = 0x0005
     flags_field: @U32 = act.to[Addr]().offset(12).to[@U32]()
     flags_field.poke(flags)
     return
 
-### Installs the fault report: the generated entry calls it before `start` when the build keeps the crash trace.
+### SA_ONSTACK | SA_RESETHAND: the fault handler runs on the thread's own fault stack, and once.
+@target(os: "linux")
+secret preset FAULT_FLAGS: U32 = 0x88000000
+### SA_ONSTACK | SA_RESETHAND: the fault handler runs on the thread's own fault stack, and once.
+@target(os: "macos")
+secret preset FAULT_FLAGS: U32 = 0x0005
+
+### 1 once the fault handlers are installed.
+@target(os: not "none")
+secret global FAULTS_INSTALLED: @U32
+
+### Installs the fault handlers: the generated entry calls it before `start` when the build keeps the crash trace,
+### and CpuEventManager.when_faulted when a handler takes the slot. A second call does nothing.
 @target(os: ("linux", "macos"))
 routine install_fault_handlers() -> None
     local act: @Array[Byte, 160] <- .hollow()
     local signals: Array[CInt, 5] = fault_signals()
 
-    fill_action(act.to[@Byte]())
+    if FAULTS_INSTALLED.atomic_swap(1) == 1
+        return
+    fill_action(act: act.to[@Byte](), handler: on_fault.to[Callable](), flags: FAULT_FLAGS)
     dropped: Addr = give_fault_stack()
 
     each i: U64 in 0 til 5
@@ -172,7 +187,7 @@ routine install_fault_handlers() -> None
 routine give_fault_stack() -> Addr
     local stack: @Array[Byte, 32] <- .hollow()
 
-    memory: Addr = DEFAULT_HEAP.alloc(size: FAULT_STACK.bytes(), align: 16)
+    memory: Addr = HEAP.alloc(size: FAULT_STACK.bytes(), align: 16)
     if memory.is_hollow()
         return .hollow()
     fill_stack(stack: stack.to[@Byte](), memory, flags: 0)
@@ -189,7 +204,7 @@ routine release_fault_stack(memory: Addr) -> None
         return
     fill_stack(stack: stack.to[@Byte](), memory, flags: SS_DISABLE)
     c_sigaltstack(stack.to[Addr](), .hollow())
-    DEFAULT_HEAP.free(memory)
+    HEAP.free(memory)
     return
 
 ### Writes a `stack_t` for `memory`: Linux keeps the address, the flags, then the size.
@@ -266,6 +281,10 @@ secret routine on_exception(pointers: Addr) -> CLong
 
     info: Addr = pointers.to[@Addr]().peek()
     code: U32 = info.to[@U32]().peek()
+    # EXCEPTION_RECORD: the code, the flags, the next record, then the address it stopped at.
+    place: Addr = info.offset(8 + sizeof[Addr]().to[S64]()).to[@Addr]().peek()
+    if deliver(CpuEvent(kind: CpuEventKind.FAULT, code: code.to[U64](), place, address: .hollow()))
+        return 0
     err.write("tessera: {exception_name(code)} (code 0x")
     code.represent_hex_into(err)
     err.write(")\n")
@@ -282,9 +301,12 @@ secret routine on_exception(pointers: Addr) -> CLong
     then
         return 0
 
-### Installs the fault report: the generated entry calls it before `start` when the build keeps the crash trace.
+### Installs the fault report: the generated entry calls it before `start` when the build keeps the crash trace, and
+### CpuEventManager.when_faulted when a handler takes the slot. A second call does nothing.
 @target(os: "windows")
 routine install_fault_handlers() -> None
+    if FAULTS_INSTALLED.atomic_swap(1) == 1
+        return
     c_set_unhandled_exception_filter(on_exception.to[Callable]())
     return
 
