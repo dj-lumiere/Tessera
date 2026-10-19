@@ -453,11 +453,24 @@ routine start() -> None
 
 **Operations**
 
-- **Operators are routine calls.** `a + b` is `a.add(b)`, `a - b` `sub`, `*` `mul`, `/` `div`, `%` `mod`, `**`
-  `pow` (the exponent a `U32`), `+% -% *%` the `_wrap` forms, `+^ -^ *^` the `_clamp` forms, `== != < <= > >=` `eq`
-  .. `ge`, `<=>` `compare`, `=== !==` `same` / `notsame` (two addresses, `@T` or `Addr`), `& | ^ << >>` `bitand` / `bitor` / `bitxor` / `shl` / `shr`, unary `-x` `neg` and `~x`
-  `bitnot`, `xs[i]` `getitem(i)` and `xs[i] = v` `setitem(index: i, value: v)`. A type takes an operator by
-  declaring the routine, and a literal on the left takes the right side's type (`1 + x` is `T.add(1, x)`). Precedence,
+- **Operators are routine calls.** `a + b` is `a.add(b)`, `a - b` `sub`, `*` `mul`, `/` `truediv`, `//` `div`, `%` `mod`, `**`
+  `pow` (the exponent the base's own type, a negative one a `NumericDomainError` crash, `pow_checked` gives `None`), `+% -% *%` the `_wrap` forms, `+^ -^ *^` the `_clamp` forms, `== != < <= > >=` `eq`
+  .. `ge`, `<=>` `compare`, `=== !==` `same` / `notsame` (no protocol: only `@T`, `Addr` and spans declare them), `& | ^ << >>` `bitand` / `bitor` / `bitxor` / `shl` / `shr`, unary `-x` `neg` and `~x`
+  `bitnot`, `xs[i]` `getitem(i)` and `xs[i] = v` `setitem(index: i, value: v)`. **A type takes an operator only by
+  obeying its protocol** (Standard/Algorithm/Operators.te, the names RazorForge uses): `Addable` `+`, `Subtractable`
+  `-`, `Multiplicable` `*`, `Divisible` `/`, `FloorDivisible` `//` `%`, `Exponentiable` `**`, `Negatable` unary `-`,
+  `Bitwiseable` `& | ^`, `Invertible` `~`, `Shiftable` `<< >>`, `WrappingAddable` .. (`WrappingArithmetic` groups
+  them), `ClampingAddable` .. (`ClampingArithmetic`), `Numeric` (`+ - * // %`), `Equatable` `==` `!=`, `Comparable`
+  `< <= > >= <=>`, `ViewingIndexable[T, TItem]` `xs[i]`, `ModifyingIndexable[T, TItem]` `xs[i] = v`,
+  `KeyFindable[T, TKey, TValue]` `d[k]` / `d[k] = v`, `LaneComparable[T, TMask]` (Vector's mask compares), and the
+  pairings `DurationAddable` / `ClampingDurationAddable` / `DurationSubtractable` (Moment), `OffsetAddable` /
+  `OffsetSubtractable`, `Scalable[T, TFactor]`, `ScalarDivisible[T, TDivisor]`, `ScalarFloorDivisible[T, TDivisor]`,
+  `RatioDivisible[T, TRatio]` (`Duration // Duration` is an `S64`). The routine without the `obeys` is a build error
+  naming the line to write, and in a generic body `needs T: Addable[T]` gives `a + b`. `!=` is `not a.eq(b)` and
+  `<` is `a.compare(b) < 0`, unless the type declares its own `ne` / `lt` / `le` / `gt` / `ge`, which the operator
+  calls (the integers for speed, the floats' `lt` .. `ge` because `compare` says 0 for NaN, and a NaN `!=` is true).
+  `tessera migrate --step operators` adds the `obeys` lines. A literal on the left takes the right side's type
+  (`1 + x` is `T.add(1, x)`). Precedence,
   tightest first: calls and `[i]`, `**`, the unary `- not ~`, `* / %`, `+ -`, the bitwise operators (one level: two
   different ones side by side need parentheses, `(a & b) | c`), ranges `til` / `to` (only walked by `each`),
   comparisons (chained one way: `<`, `<=`, `==` together or `>`, `>=`, `==` together, `1 < b <= 3 < a`, the middle a
@@ -572,7 +585,7 @@ routine start() -> None
   by its `when` plus the type's `needs`. A routine picked by a type argument that is a type parameter
   (`x.to[T]()`) is checked at each instantiation. A record whose fields form another generic type (`DictIter` holds
   a `@Dict[TKey, TValue]`) carries that type's constraints in its own `needs`. Protocols: `Equatable`, `Hashable`,
-  `HashEquatable`, `Comparable`, `Destructible`, `Representable`, `HexRepresentable` (`represent_hex_into`, every
+  `HashEquatable`, `Comparable`, the operator protocols, `Destructible`, `Representable`, `HexRepresentable` (`represent_hex_into`, every
   integer), `FixedRepresentable` (`represent_fixed_into`, every float), `Diagnosable`, `Parsable` (a
   capability is an `-able` adjective), and the roles `Iterator`, `Reader`, `Writer`. Constraints are checked: a type satisfies a
   protocol only through an `obeys` (on its record, or a top-level `obeys C[X]` line), and the builder checks the

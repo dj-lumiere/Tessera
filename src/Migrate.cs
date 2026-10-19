@@ -33,6 +33,9 @@ namespace Tessera;
 ///
 /// 0.5: a routine on a type takes me without writing it: `routine P.f(x: T)` takes it as a value, `routine @P.f(x: T)`
 /// by its address, and `common routine P.f(...)` takes none (`--step receiver`).
+///
+/// 0.5: an operator works on a type only when the type obeys the operator's protocol, so a type that declares operator
+/// routines gets the `obeys` lines they meet (`--step operators`).
 public static class Migrate
 {
     /// `F64`, its plural in prose (`F64s`), and a name built on it (`F128Extended`, `F64Core`). `F16C` is the x86 instruction set, not a type.
@@ -65,7 +68,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver";
+        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -340,6 +343,9 @@ public static class Migrate
         ["receiver"] = (file, text, report) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, t => ReceiverMigration.Rewrite(t, report, file))
             : ReceiverMigration.Rewrite(text, report, file),
+        ["operators"] = (file, text, report) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, t => OperatorMigration.Rewrite(t, report, file))
+            : OperatorMigration.Rewrite(text, report, file),
     };
 
     private static readonly Regex NullWord = new(@"(?<![\w`.])null(?![\w`])", RegexOptions.Compiled);

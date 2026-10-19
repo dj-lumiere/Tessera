@@ -15,6 +15,7 @@ module Standard/Core
 ### CSSize is C's `ssize_t`, the target's pointer-width signed integer, for the signatures of C routines. It is S16, S32, or S64 underneath, but a distinct type that never mixes with a fixed-width integer without a `to[T]()` call.
 record CSSize
 obeys Equatable[CSSize], Comparable[CSSize], Hashable[CSSize]
+obeys Numeric[CSSize], Exponentiable[CSSize], Negatable[CSSize], WrappingArithmetic[CSSize], ClampingArithmetic[CSSize], Bitwiseable[CSSize], Invertible[CSSize], Shiftable[CSSize]
 
 # -- constants -------------------------------------------------------------------
 
@@ -572,9 +573,12 @@ routine CSSize.mod(other: Me) -> Me
 ### Raises `me` to the power `exponent`.
 ### :param exponent: The power to raise to.
 ### :returns: `me` to the power `exponent`.
-### :throws: Crashes with `IntegerOverflowError` when the exact power does not fit in `CSSize`.
+### :throws: Crashes with `IntegerOverflowError` when the exact power does not fit in `CSSize`, and with
+###     `NumericDomainError` when `exponent` is negative: the power is a fraction then.
 @track_caller
-routine CSSize.pow(exponent: U32) -> Me
+routine CSSize.pow(exponent: Me) -> Me
+    if exponent < 0
+        crash_negative_exponent()
     r: Maybe[Me] = me.pow_checked(exponent)
     when r
         is Me as value => return value
@@ -583,11 +587,14 @@ routine CSSize.pow(exponent: U32) -> Me
 ### Raises `me` to the power `exponent` by squaring, wrapping modulo 2^`BITS`.
 ### :param exponent: The power to raise to.
 ### :returns: The low `BITS` bits of the exact power.
-routine CSSize.pow_wrap(exponent: U32) -> Me
+### :throws: Crashes with `NumericDomainError` when `exponent` is negative.
+routine CSSize.pow_wrap(exponent: Me) -> Me
+    if exponent < 0
+        crash_negative_exponent()
     local base: @Me <- me
     local acc: @Me <- 1
 
-    while exponent_left != 0 with exponent_left: U32 = exponent
+    while exponent_left != 0 with exponent_left: Me = exponent
         odd: Bool = exponent_left & 1 != 0
         with_base: Me = mul[Me](acc.peek(), base.peek())
         next_acc: Me = when
@@ -604,13 +611,15 @@ routine CSSize.pow_wrap(exponent: U32) -> Me
 ### Power that reports overflow.
 ### :param exponent: The power to raise to.
 ### :returns: `me` to the power `exponent`.
-### :absent: When the exact power does not fit in `CSSize`.
-routine CSSize.pow_checked(exponent: U32) -> Maybe[Me]
+### :absent: When the exact power does not fit in `CSSize`, or when `exponent` is negative.
+routine CSSize.pow_checked(exponent: Me) -> Maybe[Me]
+    if exponent < 0
+        return None()
     local base: @Me <- me
     local acc: @Me <- 1
     local overflow: @Bool <- false
 
-    while exponent_left != 0 with exponent_left: U32 = exponent
+    while exponent_left != 0 with exponent_left: Me = exponent
         # The accumulator only multiplies on odd bits, and the base only needs
         # squaring while bits remain, so only those overflows count.
         odd: Bool = exponent_left & 1 != 0
@@ -619,7 +628,7 @@ routine CSSize.pow_checked(exponent: U32) -> Maybe[Me]
         next_acc: Me = when
             odd => with_base
             else => acc.peek()
-        rest: U32 = exponent_left >> 1
+        rest: Me = exponent_left >> 1
         more: Bool = rest != 0
         base_overflow: Bool = smul_overflows[Me](base.peek(), base.peek()) and more
         any: Bool = overflow.peek() or acc_overflow or base_overflow
@@ -637,7 +646,10 @@ routine CSSize.pow_checked(exponent: U32) -> Maybe[Me]
 ### Raises `me` to the power `exponent`, saturated at `MIN` or `MAX` by the sign the exact power would have.
 ### :param exponent: The power to raise to.
 ### :returns: The power, or `MIN` / `MAX` when the exact power does not fit.
-routine CSSize.pow_clamp(exponent: U32) -> Me
+### :throws: Crashes with `NumericDomainError` when `exponent` is negative.
+routine CSSize.pow_clamp(exponent: Me) -> Me
+    if exponent < 0
+        crash_negative_exponent()
     odd_exp: Bool = exponent & 1 != 0
     negative_result: Bool = me < 0 and odd_exp
     limit: Me = when

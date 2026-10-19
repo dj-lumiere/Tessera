@@ -13,6 +13,7 @@ module Standard/Core
 @llvm("i64")
 record S64
 obeys Equatable[S64], Comparable[S64], Hashable[S64]
+obeys Numeric[S64], Exponentiable[S64], Negatable[S64], WrappingArithmetic[S64], ClampingArithmetic[S64], Bitwiseable[S64], Invertible[S64], Shiftable[S64]
 
 # -- constants -------------------------------------------------------------------
 
@@ -540,9 +541,12 @@ routine S64.mod(other: Me) -> Me
 ### Raises `me` to the power `exponent`.
 ### :param exponent: The power to raise to.
 ### :returns: `me` to the power `exponent`.
-### :throws: Crashes with `IntegerOverflowError` when the exact power does not fit in `S64`.
+### :throws: Crashes with `IntegerOverflowError` when the exact power does not fit in `S64`, and with
+###     `NumericDomainError` when `exponent` is negative: the power is a fraction then.
 @track_caller
-routine S64.pow(exponent: U32) -> Me
+routine S64.pow(exponent: Me) -> Me
+    if exponent < 0
+        crash_negative_exponent()
     r: Maybe[Me] = me.pow_checked(exponent)
     when r
         is Me as value => return value
@@ -551,11 +555,14 @@ routine S64.pow(exponent: U32) -> Me
 ### Raises `me` to the power `exponent` by squaring, wrapping modulo 2^64.
 ### :param exponent: The power to raise to.
 ### :returns: The low 64 bits of the exact power.
-routine S64.pow_wrap(exponent: U32) -> Me
+### :throws: Crashes with `NumericDomainError` when `exponent` is negative.
+routine S64.pow_wrap(exponent: Me) -> Me
+    if exponent < 0
+        crash_negative_exponent()
     local base: @Me <- me
     local acc: @Me <- 1
 
-    while exponent_left != 0 with exponent_left: U32 = exponent
+    while exponent_left != 0 with exponent_left: Me = exponent
         odd: Bool = exponent_left & 1 != 0
         with_base: Me = mul[Me](acc.peek(), base.peek())
         next_acc: Me = when
@@ -572,13 +579,15 @@ routine S64.pow_wrap(exponent: U32) -> Me
 ### Power that reports overflow.
 ### :param exponent: The power to raise to.
 ### :returns: `me` to the power `exponent`.
-### :absent: When the exact power does not fit in `S64`.
-routine S64.pow_checked(exponent: U32) -> Maybe[Me]
+### :absent: When the exact power does not fit in `S64`, or when `exponent` is negative.
+routine S64.pow_checked(exponent: Me) -> Maybe[Me]
+    if exponent < 0
+        return None()
     local base: @Me <- me
     local acc: @Me <- 1
     local overflow: @Bool <- false
 
-    while exponent_left != 0 with exponent_left: U32 = exponent
+    while exponent_left != 0 with exponent_left: Me = exponent
         # The accumulator only multiplies on odd bits, and the base only needs
         # squaring while bits remain, so only those overflows count.
         odd: Bool = exponent_left & 1 != 0
@@ -587,7 +596,7 @@ routine S64.pow_checked(exponent: U32) -> Maybe[Me]
         next_acc: Me = when
             odd => with_base
             else => acc.peek()
-        rest: U32 = exponent_left >> 1
+        rest: Me = exponent_left >> 1
         more: Bool = rest != 0
         base_overflow: Bool = smul_overflows[Me](base.peek(), base.peek()) and more
         any: Bool = overflow.peek() or acc_overflow or base_overflow
@@ -605,7 +614,10 @@ routine S64.pow_checked(exponent: U32) -> Maybe[Me]
 ### Raises `me` to the power `exponent`, saturated at `MIN` or `MAX` by the sign the exact power would have.
 ### :param exponent: The power to raise to.
 ### :returns: The power, or `MIN` / `MAX` when the exact power does not fit.
-routine S64.pow_clamp(exponent: U32) -> Me
+### :throws: Crashes with `NumericDomainError` when `exponent` is negative.
+routine S64.pow_clamp(exponent: Me) -> Me
+    if exponent < 0
+        crash_negative_exponent()
     odd_exp: Bool = exponent & 1 != 0
     negative_result: Bool = me < 0 and odd_exp
     limit: Me = when

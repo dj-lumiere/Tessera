@@ -211,11 +211,14 @@ public sealed partial class Compiler
             VerifyConformance(concept, args, conf);
             return null;
         }
-        // A conformance to a concept that refines this one (`SlotIterator` refines `Iterator`) gives this one too.
+        // A conformance to a concept that refines this one (`SlotIterator` refines `Iterator`) gives this one too. A
+        // concept that only groups others (`Numeric`) holds through its own: it counts here only where a conformance
+        // to it is declared for these arguments, or it would hold through the very concept being asked.
         foreach (var refining in _conceptDecls.Values.SelectMany(d => d))
         {
             if (refining == concept || RefinedArgs(refining, concept, args) is not { } refiningArgs) continue;
             if (!_conformances.Any(c => c.Concept.Name == refining.Name)) continue;
+            if (refining.Routines.Count == 0 && !DeclaresDirectly(refining, refiningArgs)) continue;
             if (Conforms(refining, refiningArgs, file, at) is not null) continue;
             var through = _conformances.First(c => c.Concept.Name == refining.Name);
             VerifyConformance(concept, args, through);
@@ -234,6 +237,178 @@ public sealed partial class Compiler
             ? $" for {Target.LlvmTriple} (CPU {CpuModel.For(Target, at).Cpu}{(Target.Features.Count > 0 ? $", {string.Join(",", Target.Features)}" : "")})"
             : "";
         return $"no conformance to {Show(concept.Name, args)} is declared{where}";
+    }
+
+    /// Whether a conformance to `concept` is declared whose pattern matches `args` exactly.
+    private bool DeclaresDirectly(ConceptDecl concept, List<DType> args)
+    {
+        foreach (var conf in _conformances.Where(c => c.Concept.Name == concept.Name && Selected(c.Source)))
+        {
+            if (conf.Concept.Args.Count != args.Count) continue;
+            var binding = new TypeEnv(conf.Source.File);
+            var vars = conf.TypeParams.ToHashSet();
+            bool matched = true;
+            for (int i = 0; i < args.Count && matched; i++)
+                matched = conf.Concept.Args[i] is TypeArgType pt ? Match(pt.Type, args[i], vars, binding)
+                          : conf.Concept.Args[i] is TypeArgInt pi && args[i] is ConstArg ca && ca.Value == pi.Value;
+            if (matched) return true;
+        }
+        return false;
+    }
+
+    // ── Operators ──────────────────────────────────────────────────────────
+
+    private readonly Dictionary<string, string?> _operatorChecked = [];
+
+    /// Null when `type` obeys one of the protocols that give it the operator calling `routine` (Operators.ProtocolsFor),
+    /// else the build error, which names the type, the operator, the protocol, and the fix.
+    public string? OperatorProtocolError(string routine, DType type, string file, Pos at)
+    {
+        var names = Operators.ProtocolsFor(routine);
+        if (names.Count == 0) return null;
+        string key = $"{routine}|{type.Key}|{file}";
+        if (_precheck is null && _operatorChecked.TryGetValue(key, out var cached)) return cached;
+        string? result = OperatorProtocolErrorUncached(routine, names, type, file, at);
+        if (_precheck is null) _operatorChecked[key] = result;
+        return result;
+    }
+
+    private string? OperatorProtocolErrorUncached(string routine, IReadOnlyList<string> names, DType type, string file, Pos at)
+    {
+        var decls = names.Select(n => (_conceptDecls.GetValueOrDefault(n) ?? []).FirstOrDefault(c => c.Module == CoreModule))
+            .OfType<ConceptDecl>().ToList();
+        if (decls.Count == 0) return null;
+        string op = Operators.Shown(routine);
+        // In a generic body being checked, a type parameter has the operators of the constraints in force.
+        if (_precheck is { } scope && type is ArchetypeType archetype)
+        {
+            if (scope.Given.Any(g => decls.Contains(g.Concept) && g.Args.Count > 0 && g.Args[0].Equals(type))) return null;
+            string wanted = ShownProtocol(decls[0], type, routine);
+            return $"{op} on a {type.Name} needs {wanted}, and no constraint in force on {type.Name} says so "
+                + $"({InForce(archetype)}); add {wanted} to {scope.Fix}";
+        }
+        (ConceptDecl Decl, List<DType> Args, string Why)? failing = null;
+        foreach (var decl in decls)
+        {
+            if (DeclaredFor(decl, type) is not { } args) continue;
+            if (Conforms(decl, args, file, at) is not { } why) return null;
+            failing ??= (decl, args, why);
+        }
+        if (failing is { } f)
+            return $"{op} on {type.Name} needs {Show(f.Decl.Name, f.Args)}, which doesn't hold: {f.Why}";
+
+        string protocol = ShownProtocol(decls[0], type, routine);
+        string others = decls.Count > 1
+            ? $" ({string.Join(" or ", decls.Skip(1).Select(d => d.Name))} for another operand type)"
+            : "";
+        string where = DeclOf(type) switch
+        {
+            RecordDecl r => $" under '{(r.IsEntity ? "entity" : "record")} {DeclHeader(r.Name, r.TypeParams)}'",
+            VariantDecl v => $" under 'variant {DeclHeader(v.Name, v.TypeParams)}'",
+            _ => "",
+        };
+        // A type without the routine at all is the call's to report (a Memory lends its view's routines).
+        if (!MethodsNamed(type, routine).Any(HasReceiver)) return null;
+        return $"{op} on {type.Name} calls {type.Name}.{routine}, and an operator works on a type only when the type obeys "
+            + $"the operator's protocol: {type.Name} doesn't obey {protocol}{others}; write 'obeys {protocol}'{where}";
+    }
+
+    /// Whether a type obeys LaneComparable: its comparisons give a mask, one routine per operator.
+    public bool ObeysLaneComparable(DType type)
+    {
+        if (_precheck is { } scope && type is ArchetypeType)
+            return scope.Given.Any(g => g.Concept.Name == "LaneComparable" && g.Args.Count > 0 && g.Args[0].Equals(type));
+        if (_laneCompared.TryGetValue(type.Key, out bool known)) return known;
+        var decl = (_conceptDecls.GetValueOrDefault("LaneComparable") ?? []).FirstOrDefault(c => c.Module == CoreModule);
+        return _laneCompared[type.Key] = decl is not null && DeclaredFor(decl, type) is not null;
+    }
+
+    private readonly Dictionary<string, bool> _laneCompared = [];
+
+    private static string DeclHeader(string name, List<string> typeParams) =>
+        typeParams.Count == 0 ? name : $"{name}[{string.Join(", ", typeParams)}]";
+
+    /// A protocol as the fix writes it for `type`: `Addable[Point]`, and for one over more types the others as the
+    /// type's routine has them (`ViewingIndexable[Grid, S64]`), or by the protocol's parameter names.
+    private string ShownProtocol(ConceptDecl decl, DType type, string routine)
+    {
+        string self = DeclOf(type) switch
+        {
+            RecordDecl r when r.TypeParams.Count > 0 && type is RecordType => DeclHeader(r.Name, r.TypeParams),
+            VariantDecl v when v.TypeParams.Count > 0 && type is VariantType => DeclHeader(v.Name, v.TypeParams),
+            _ => type.Name,
+        };
+        if (decl.TypeParams.Count == 1) return $"{decl.Name}[{self}]";
+        var rest = decl.TypeParams.Skip(1).ToList();
+        var method = MethodsNamed(type, routine).FirstOrDefault(HasReceiver);
+        if (method is not null && rest.Count == 1)
+        {
+            TypeRef? other = routine switch
+            {
+                "getitem" => method.ReturnType,
+                "setitem" => method.Params.LastOrDefault()?.Type,
+                _ when method.Params.Count == 2 => method.Params[1].Type,
+                _ => null,
+            };
+            if (other is not null) rest = [other.ToString()];
+        }
+        return $"{decl.Name}[{self}, {string.Join(", ", rest)}]";
+    }
+
+    /// The arguments of `target` that a declared conformance gives `type` as its first argument (directly, or through a
+    /// protocol that refines `target`), or null when none does.
+    private List<DType>? DeclaredFor(ConceptDecl target, DType type)
+    {
+        foreach (var conf in _conformances)
+        {
+            if (!Selected(conf.Source) || conf.Concept.Args.Count == 0 || conf.Concept.Args[0] is not TypeArgType first) continue;
+            ConceptDecl decl;
+            try { decl = FindConcept(conf.Concept, conf.Source.File); }
+            catch (CompileError) { continue; }
+            if (decl != target && !Refines(decl, target, 0)) continue;
+            var binding = new TypeEnv(conf.Source.File);
+            if (!Match(first.Type, type, conf.TypeParams.ToHashSet(), binding)) continue;
+            List<DType> args;
+            try { args = ConceptArgs(conf.Concept, binding); }
+            catch (CompileError) { continue; }
+            if (ImpliedArgs(decl, args, target, 0) is { Count: > 0 } implied && implied[0].Equals(type)) return implied;
+        }
+        return null;
+    }
+
+    private bool Refines(ConceptDecl concept, ConceptDecl target, int depth)
+    {
+        if (depth > 8) return false;
+        foreach (var s in concept.Clauses.Where(c => c.Kind == "conform").SelectMany(c => c.Concepts))
+        {
+            ConceptDecl sd;
+            try { sd = FindConcept(s, concept.File); }
+            catch (CompileError) { continue; }
+            if (sd == target || Refines(sd, target, depth + 1)) return true;
+        }
+        return false;
+    }
+
+    /// The arguments `target` has where `concept[args]` holds: `args` when they're the same concept, or through the
+    /// concepts it refines.
+    private List<DType>? ImpliedArgs(ConceptDecl concept, List<DType> args, ConceptDecl target, int depth)
+    {
+        if (concept == target) return args;
+        if (depth > 8) return null;
+        var cenv = ConceptEnv(concept, args);
+        foreach (var s in concept.Clauses.Where(c => c.Kind == "conform").SelectMany(c => c.Concepts))
+        {
+            ConceptDecl sd;
+            List<DType> sargs;
+            try
+            {
+                sd = FindConcept(s, concept.File);
+                sargs = ConceptArgs(s, cenv);
+            }
+            catch (CompileError) { continue; }
+            if (ImpliedArgs(sd, sargs, target, depth + 1) is { } found) return found;
+        }
+        return null;
     }
 
     /// The arguments of `refining` for which it gives `concept[args]` directly (its `conform` clause names `concept`

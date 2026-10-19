@@ -2968,7 +2968,9 @@ public sealed class FunctionGen
 
     /// An operator as the call it stands for: `a + b` is `a.add(b)`, `-x` is `x.neg()`, `xs[i]` is `xs.getitem(i)`.
     /// A literal on the left takes the right side's type: `1 + x` is `T.add(1, x)`. `and`, `or` and `not` stay: they
-    /// are Bool's own.
+    /// are Bool's own. The operand's type must obey the operator's protocol (Operators.ProtocolsFor). `a != b` is
+    /// `not a.eq(b)`, and `a < b` is `a.compare(b) < 0`, unless the type declares its own `ne` / `lt` (likewise `le`,
+    /// `gt`, `ge`). A type whose comparisons give a mask (LaneComparable) calls its routine for each operator.
     private Expr Desugar(Expr e)
     {
         switch (e)
@@ -2992,20 +2994,66 @@ public sealed class FunctionGen
                     throw Err(b.Pos, $"'{b.Op}' asks whether two names reach the same memory, which an address (@T, Addr) or a span (@[T]) has, "
                         + $"and the left side is {sameType.Name}: values compare with '{b.Op[..2]}'");
 
-                if (b.Left is IntLit or FloatLit && Infer(b.Right) is { } rightType)
-                    return new NsCallExpr(new TypeRef("$operand", [], b.Pos) { Known = rightType }, name, [], [b.Left, b.Right], b.Pos) { FromOperator = true };
-                return new MethodCallExpr(b.Left, name, [], [b.Right], b.Pos) { FromOperator = true };
+                bool literalLeft = b.Left is IntLit or FloatLit;
+                var operand = literalLeft ? Infer(b.Right) : TryInfer(b.Left);
+                Expr Call(string routine) => literalLeft && operand is not null
+                    ? new NsCallExpr(new TypeRef("$operand", [], b.Pos) { Known = operand }, routine, [], [b.Left, b.Right], b.Pos) { FromOperator = true }
+                    : new MethodCallExpr(b.Left, routine, [], [b.Right], b.Pos) { FromOperator = true };
+                if (b.Op is "===" or "!==" || operand is null) return Call(name);
+
+                if (b.Op is "!=" or "<" or "<=" or ">" or ">=" && !LaneCompared(operand))
+                {
+                    // A choice compares as its integer: `!=` is the prelude's `ine`.
+                    if (b.Op == "!=" && operand is ChoiceType) return Call(name);
+                    if (b.Op == "!=")
+                    {
+                        CheckOperator("eq", operand, b.Pos);
+                        return OwnComparison(operand, name) ? Call(name) : new UnaryExpr("not", Call("eq"), b.Pos);
+                    }
+                    CheckOperator("compare", operand, b.Pos);
+                    if (OwnComparison(operand, name)) return Call(name);
+                    return Desugar(new BinaryExpr(b.Op, Call("compare"), new IntLit(0, b.Pos), b.Pos));
+                }
+                if (!(b.Op == "==" && operand is ChoiceType)) CheckOperator(name, operand, b.Pos);
+                return Call(name);
             }
             case UnaryExpr { Op: "not" }:
                 return e;
             case UnaryExpr u:
-                return new MethodCallExpr(u.Operand, u.Op == "-" ? "neg" : "bitnot", [], [], u.Pos) { FromOperator = true };
+            {
+                string name = u.Op == "-" ? "neg" : "bitnot";
+                if (TryInfer(u.Operand) is { } operand) CheckOperator(name, operand, u.Pos);
+                return new MethodCallExpr(u.Operand, name, [], [], u.Pos) { FromOperator = true };
+            }
             case GetItemExpr g:
+                if (TryInfer(g.Base) is { } indexed) CheckOperator("getitem", indexed, g.Pos);
                 return new MethodCallExpr(g.Base, "getitem", [], [g.Index], g.Pos) { FromOperator = true };
+            case MethodCallExpr { FromOperator: true, Name: "setitem" } set:
+                if (TryInfer(set.Receiver) is { } stored) CheckOperator("setitem", stored, set.Pos);
+                return e;
             default:
                 return e;
         }
     }
+
+    /// The type an operator's protocol is on: what a pointer points at (`xs[i]` on a `@List[T]` is the List's), or the
+    /// type itself.
+    private static DType OperatorOwner(DType t) => t is PtrType { Pointee: { } pointee } ? pointee : t;
+
+    /// Reports an operator on a type that doesn't obey the operator's protocol. A pointer's operator is its pointee's.
+    private void CheckOperator(string routine, DType operand, Pos pos)
+    {
+        if (_c.OperatorProtocolError(routine, OperatorOwner(operand), _env.File, pos) is { } error) throw Err(pos, error);
+    }
+
+    /// Whether a type's comparisons give a mask, one routine per operator (LaneComparable).
+    private bool LaneCompared(DType t) => _c.ObeysLaneComparable(OperatorOwner(t));
+
+    /// Whether a type declares its own routine for this comparison (`ne`, `lt`), which the operator then calls in place
+    /// of `eq` / `compare`: the integers, for speed, and the floats' `lt` / `le` / `gt` / `ge`, since their `compare`
+    /// can't say that NaN is unordered.
+    private bool OwnComparison(DType t, string routine) =>
+        _c.MethodsNamed(OperatorOwner(t), routine).Any(m => Compiler.HasReceiver(m) && m.Params.Count == 2);
 
     /// `(a, b)` where a tuple is expected: each item takes the type the tuple has in its place.
     private Val EvalTupleLit(ArrayLit lit, RecordType s)
