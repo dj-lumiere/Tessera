@@ -918,7 +918,7 @@ public static class Formatter
 
     /// Writes `Ptr[X]` as `@X` outside comments and literals. The record's own name stays where it is declared
     /// (`record Ptr[T]`), where a routine is declared on or called through it (`Ptr[X].name`), and when qualified
-    /// (`Standard/Core/Ptr[X]`).
+    /// (`Standard/System/Ptr[X]`).
     // ── Grouping parentheses ─────────────────────────────────────────────────
 
     /// Drops the parentheses around a single value where an expression starts (after `(`, `,`, `=`, `<-`, `?`, or a

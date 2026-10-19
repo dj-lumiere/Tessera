@@ -5,7 +5,8 @@ namespace Tessera;
 /// Recursive-descent parser. Layout is not significant: declarations are found by their keywords, statements are
 /// separated by newlines, and a block ends at its terminator.
 public sealed class Parser(List<Token> tokens, string file, bool isLibrary = false, IEnumerable<string>? values = null,
-    bool acceptLegacy = false, IEnumerable<string>? programModuleRoots = null, string? placeModule = null)
+    bool acceptLegacy = false, IEnumerable<string>? programModuleRoots = null, string? placeModule = null,
+    bool placeIsFixed = false)
 {
     private int _i;
 
@@ -74,12 +75,17 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     {
         var decls = new List<Decl>();
         SkipNewlines();
-        // A file of a solution without a `module` line is the module its place names (Manifest.PlaceModules).
+        // A file of a solution without a `module` line is the module its place names (Manifest.PlaceModules), and a
+        // standard library file is the module its folder names (StandardLibrary.ModuleOf).
         string module = placeModule ?? "";
         if (IsIdent("module"))
         {
             var pos = Next().Pos;
             module = ParseModulePath();
+            // A standard library file's folder is its module (placeIsFixed): the module line may only repeat it.
+            if (placeIsFixed && placeModule is not null && module != placeModule)
+                throw new CompileError(pos, $"this file is in the folder of module {placeModule}, so it is in that module: "
+                    + $"write module {placeModule}, or leave the line out");
             ExpectLineEnd();
             decls.Add(new ModuleDecl(file, module, pos) { IsLibrary = isLibrary, Module = module });
             SkipNewlines();
@@ -185,7 +191,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             { Shared = _scriptHead, IsScript = true };
     }
 
-    /// `define Fmt = Standard/Format`, `define Numbers = Standard/Collections/List[S64]`.
+    /// `define Fmt = Standard/System/Text`, `define Numbers = Standard/Collections/List[S64]`.
     private AliasDecl ParseDefine(List<Annotation> annotations)
     {
         var pos = Next().Pos;
@@ -198,7 +204,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new AliasDecl(file, annotations, target, name.Text, pos);
     }
 
-    /// `Standard/Format`: PascalCase names joined by `/`.
+    /// `Standard/System/Text`: PascalCase names joined by `/`.
     private string ParseModulePath()
     {
         var parts = new List<string>();
@@ -1116,7 +1122,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (items.Count is < MinTupleItems or > MaxTupleItems)
             throw new CompileError(pos, $"a tuple has {MinTupleItems} to {MaxTupleItems} items, not {items.Count}; use a record for more");
         return new TypeRef($"Tuple{items.Count}", items.Select(i => (TypeArg)new TypeArgType(i)).ToList(), pos)
-            { Path = "Standard/Core" };
+            { Path = Compiler.SystemModule };
     }
 
     /// `Name` or `Standard/Collections/Name`: the module path, if any, and the name. A `/` is a path separator
@@ -1812,7 +1818,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             {
                 string message = $"block '{_blockName}' of routine '{_routineDisplay}' is not written yet";
                 var crash = new CallExpr("crash", [], [new StrLit("NotImplementedError", pos), new StrLit(message, pos)], pos)
-                    { ArgNames = ["name", "message"], Path = "Standard/Core" };
+                    { ArgNames = ["name", "message"], Path = Compiler.SystemModule };
                 return new TodoStmt(crash, _blockName, pos);
             }
             case "continue":

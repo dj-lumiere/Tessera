@@ -24,15 +24,36 @@ before it returns. The entry file may instead write its lines at the top level (
 top to bottom with declarations seen everywhere, leading `local` lines are its head, and the end of the file is its
 `return` (memory must be given back by then). A routine can't read a top-level binding (pass it, or use a `global`),
 an imported file has no top-level lines, and a file with them declares no `start`. A file may start with `module A/B` and `import` lines. Name lookup follows
-modules: a file sees its own module, `Standard/Core` (always imported: the built-in types, `Maybe`, `Result`,
-`None`, `@[T]`, `Memory`, `Box`), and what it imports, so printing a number needs `import Standard/Format`, a `List` needs
-`import Standard/Collections`, and `Console` / `ProcessManager` need `import Standard/Os` (the hosted layer,
-the only one that calls libc; a target with OS `none` has none of it). A routine declared in its type's module comes with the type; one another module adds
-to it (like `S64.represent_into` from `Standard/Format`) needs that module imported. A qualified path
-(`Standard/Format/write_str`) reaches any public name without an import. Two modules may declare the same name:
-the file's own module wins over its imports, and two imports offering it need the path. `define Fmt =
-Standard/Format` shortens a path (`Fmt/write_str`) without importing; `define Map = Standard/Collections/Dict` names
-a type.
+modules: a file sees its own module, `Standard/System` and every module under it (always seen: the built-in types,
+`Maybe`, `Result`, `None`, `@[T]`, `Memory`, `Box`, the protocols, formatting, the memory managers, `HEAP`), and what
+it imports, so a `List` needs `import Standard/Collections`, and `Console` / `ProcessManager` need `import Standard/Os`
+(the hosted layer, the only one that calls libc; a target with OS `none` has none of it). Importing a module brings
+that module, not the modules under it. A standard library module is its folder (`Standard/System/Memory/` is
+`Standard/System/Memory`), and a `module` line that names another module is a build error. A `secret` name is seen in
+its module and the modules under it. A routine declared in its type's module comes with the type; one another module
+adds to it needs that module imported (the modules under `Standard/System` are always seen, so `S64.represent_into`
+from `Standard/System/Text` comes with `S64`). A qualified path (`Standard/System/Text/write_str`) reaches any public
+name without an import. Two modules may declare the same name: the file's own module wins over its imports, and two
+imports offering it need the path (a free routine's overloads from `Standard/System` and its modules count as one
+set). `define Fmt = Standard/System/Text` shortens a path (`Fmt/write_str`) without importing; `define Map =
+Standard/Collections/Dict` names a type.
+
+The standard library's modules:
+
+- `Standard/System`: the built-in types (integers, floats, `Bool`, `Ptr`, `Array`, `Vector`, `@[T]`, `Memory`, `Box`,
+  `Maybe`, `Result`, tuples), the protocols, crash and the crash trace, and hashing.
+- `Standard/System/Numerics`: wide division, `BigNat`, the float formats, and one folder per float type with its math
+  (`B16`, `BF16`, `B32`, `B64`, `B128`), plus `SoftFloat` (the compiler runtime without an FPU).
+- `Standard/System/Text`: formatting (`Writer`, `Representable`, `Diagnosable`), reading values from text
+  (`Parsable`), UTF-8, and the byte-text views.
+- `Standard/System/Memory`: the memory managers and their tables (`HEAP`, `C_HEAP`, `PAGES`), `StackManager`,
+  `GlobalManager`, `ThreadLocalStorageManager`, `ByteSize`, and `Atomic`.
+- `Standard/System/Cpu`: the startup steps without an OS (`prepare_core`), the `CpuEventManager`, and the fault
+  report.
+- `Standard/System/Temporal` (`Duration`, `Moment`), `Standard/System/Serialization` (JSON strings),
+  `Standard/System/CSubSystem` (C strings, the C memory routines without an OS).
+- Imported: `Standard/Collections`, `Standard/Os` (console, files, processes, threads, clocks), `Standard/Fiber`,
+  `Standard/Random`.
 
 A builder that uses Tessera as a library (RazorForge's Tessera backend) can split one program over two modules, a base
 built once and a delta built for each edit that links against it: `new Compiler(...) { ExposeDefinitions = true }`
@@ -47,15 +68,15 @@ keeping blocks where it can't), `spellings` (`@` annotations, `needs` / `obeys` 
 `none` (`None` for nothing), `hollow` (`null` into `.hollow()`, `is_null()` into `is_hollow()`), `destruct` (`destruct` on `Memory` / `Box`), `drop` (a line `x.destruct()` into `drop x`),
 `managers` (`DEFAULT_HEAP` into `HEAP`, the table makers, the process routines into `ProcessManager`'s),
 `float-presets` (`B64.INFINITY` / `NEG_INFINITY` / `NAN` into `inf` / `-inf` / `nan`),
+`modules` (drops the imports of `Standard/Core`, `Standard/Format`, `Standard/Alloc`, `Standard/Boot`, and
+`Standard/Json`, and points their paths at the module of `Standard/System` each name is in),
 and the earlier `iterators`, `variants`, `membership`, `lifecycle`, `memory`, `threads`, `entry`, and `--named-args`.
 An old spelling is a build error that names the migration, and builds only with `TESSERA_ACCEPT_OLD_SYNTAX=1` set.
 
 ## Skeleton
 
 ```tessera
-import Standard/Alloc
 import Standard/Collections
-import Standard/Format
 import Standard/Os
 
 routine start() -> None
@@ -268,8 +289,8 @@ routine start() -> None
 
   `Box[T].replace` works the same. `Memory[T].give_back()` gives the memory back and keeps the manager, so a later
   `resize` draws from it again (what a collection's `destruct` does with its storage).
-- **Every memory region has a manager** (Standard/Alloc's protocols, Standard/Os's hosted managers, Standard/Boot's
-  without an OS). A manager is named for what it manages. A heap's obeys `HeapManageable` (blocks given back in any
+- **Every memory region has a manager** (all in Standard/System/Memory: the protocols, the hosted managers, and the
+  ones without an OS). A manager is named for what it manages. A heap's obeys `HeapManageable` (blocks given back in any
   order): `CHeapManager` (malloc / realloc / free, nothing in front of the blocks) and `CheckedHeapManager` (the heap
   check below), and the hosted default table `HEAP` is the checked one under the heap check, else the C library's.
   `C_HEAP` is `CHeapManager`'s table in every build (memory C frees, or C's malloc hands over). A page manager obeys
@@ -280,10 +301,10 @@ routine start() -> None
   slots by moving the stack pointer, so it has no table. `StackManager.current()` is the running flow's: a fiber's
   inside a fiber, else the thread's own stack, whose bounds the OS gives (without an OS, `__stack_bottom` to
   `__stack_top` of the link script). `ThreadLocalStorageManager.reset()` puts this thread's `@threadlocal` globals back
-  to their starting values. Without an OS, `GlobalManager.prepare()` (Standard/Boot) puts the globals in place.
+  to their starting values. Without an OS, `GlobalManager.prepare()` puts the globals in place.
   `tessera migrate --step managers` rewrites `DEFAULT_HEAP` (now `HEAP`), `DEFAULT_STACKS` (`PAGES`), the
   `make_*_memory()` makers, the process routines, `reset_thread_locals()`, and `zero_bss()` / `copy_data()`.
-- **A memory manager is a type that obeys `MemoryManageable`** (Standard/Alloc): three routines taking `me` by its address (`routine @M.alloc(...)`),
+- **A memory manager is a type that obeys `MemoryManageable`** (Standard/System/Memory): three routines taking `me` by its address (`routine @M.alloc(...)`),
   `alloc(size: U64, align: U64) -> Addr` (`.hollow()` when it can't), `realloc(at: Addr, size: U64, align: U64) ->
   Addr` (`.hollow()`, the block left as it was, when it can't: every manager has one, since only it knows a block's size),
   and `free(at: Addr) -> None`. One that handles pages obeys `PageManageable` too (it refines `MemoryManageable`):
@@ -295,8 +316,8 @@ routine start() -> None
   apart (an arena) an `entity`. The table is called through `alloc`, `realloc`, `free`, `reserve` / `commit` /
   `release`, and `protect(at, size, PageAccess.NONE | READ | READ_WRITE)`, with `has_pages()` / `has_protect()`
   (both true for a `PageManageable` manager, both false otherwise, and calling an empty one crashes with
-  `NotImplementedError`). Its fields and `MemoryManager.construct` are secret to `Standard/Alloc`, which also
-  writes out the hosted tables (`DefaultMemory.te`) for `Standard/Os`'s managers (`Os/Heap.te`, `Os/Pages.te`). Raw `allocate[T]` asks for
+  `NotImplementedError`). Its fields and `MemoryManager.construct` are secret to `Standard/System/Memory`, which also
+  writes out the hosted tables (`DefaultMemory.te`) for its hosted managers (`Heap.te`, `Pages.te`). Raw `allocate[T]` asks for
   `alignof[T]()`.
 - **The table views its manager.** In a routine without type parameters, using a table after its manager's slot
   ended is a build error: `'table' is the table of the manager 'arena', which ended at drop arena on line N, so the
@@ -304,8 +325,8 @@ routine start() -> None
   after the table's last use` (the same for `steal arena`), and returning a table of a frame slot's manager is the
   escape check's error. Memory already taken through the table (a `List`, a `Box`) that outlives the manager isn't
   followed: that is the program's to get right.
-- **The default heap comes with a target that has an OS.** `Standard/Alloc` then has `HEAP`, `C_HEAP`, and `PAGES`,
-  `@MemoryManager` tables ready before `start`, whose managers are `Standard/Os`'s. `Standard/Os` has, like
+- **The default heap comes with a target that has an OS.** `Standard/System/Memory` then has `HEAP`, `C_HEAP`, and
+  `PAGES`, `@MemoryManager` tables ready before `start`. `Standard/Os` has, like
   `Console`, a `construct` without the manager for every collection and `Memory` (`List[S64].construct()`,
   `Memory[U8].construct(n)`), drawing from `HEAP`. Memory C frees or reallocates, or memory from C's malloc, goes
   through `C_HEAP` (plain malloc in every build). A file that doesn't import `Standard/Os`,
@@ -492,7 +513,7 @@ routine start() -> None
   `pow` (the exponent the base's own type, a negative one a `NumericDomainError` crash, `pow_checked` gives `None`), `+% -% *%` the `_wrap` forms, `+^ -^ *^` the `_clamp` forms, `+! -! *! /!` the floats' `_unchecked` forms, `== != < <= > >=` `eq`
   .. `ge`, `<=>` `compare`, `=== !==` `same` / `notsame` (no protocol: only `@T`, `Addr` and spans declare them), `& | ^ << >> >>>` `bitand` / `bitor` / `bitxor` / `shift_left` / `arith_shift_right` / `logical_shift_right` (no integer type declares `logical_shift_right` yet, so `>>>` builds nowhere), unary `-x` `neg` and `~x`
   `bitnot`, `xs[i]` `getitem(i)` and `xs[i] = v` `setitem(index: i, value: v)`. **A type takes an operator only by
-  obeying its protocol** (Standard/Algorithm/Operators.te, the names RazorForge uses): `Addable` `+`, `Subtractable`
+  obeying its protocol** (Standard/System/Operators.te, the names RazorForge uses): `Addable` `+`, `Subtractable`
   `-`, `Multiplicable` `*`, `Divisible` `/`, `FloorDivisible` `//` `%`, `Exponentiable` `**`, `Negatable` unary `-`,
   `Bitwiseable` `& | ^`, `Invertible` `~`, `Shiftable` `<< >>`, `WrappingAddable` .. (`WrappingArithmetic` groups
   them), `ClampingAddable` .. (`ClampingArithmetic`), `UncheckedAddable` .. (`UncheckedArithmetic`: `+! -! *! /!`), `Numeric` (`+ - * // %`), `Equatable` `==` `!=`, `Comparable`
@@ -547,7 +568,7 @@ routine start() -> None
 - **Random numbers** are `Xoshiro256` (`import Standard/Random`): `.from_seed(seed)` replays a stream,
   `.from_entropy()` draws one per run from the hash key's source (`entropy_key()`), then `next()`, `next_u32()`,
   `next_f64()` ([0, 1)), and `below(bound)` (unbiased). Not for secrets. JSON string escaping is
-  `text.json_quote_into(out)` in `Standard/Json`.
+  `text.json_quote_into(out)` in `Standard/System/Serialization`.
 - A literal must fit its type: `-1` isn't a `U64`, and `255` isn't an `S8`.
 - A hex float (`0x1p-25`, `0x1.8p3`) spells a power-of-two value exactly, so it goes only into a binary float (`B16`,
   `BF16`, `B32`, `B64`, and `B128` with its 113 significant bits) that holds it exactly: anywhere else, or one the
@@ -742,10 +763,11 @@ routine start() -> None
   pushed out of the ring, prints `  (not remembered here: made on another thread, or later failures took its place)`.
   The default handler then adds the place and `Stack trace:` of the unwrap as for any crash.
 - Builtins for that: `failure_of(result) -> U32` (the failure number in a Result's tag, 0 for none or a value),
-  `write_failure_trace(seq: n, out: w)` (Standard/Core, writes the `The failure was made at:` part to any Writer,
+  `write_failure_trace(seq: n, out: w)` (Standard/System, writes the `The failure was made at:` part to any Writer,
   nothing for 0), `failure_trace(seq) -> @FailureTrace` (hollow when not remembered), and
   `diagnose_or_name(value: v, out: w)` (writes any value: `diagnose_into` when it is Diagnosable, else `a <Type>`).
-- **Events: `CpuEventManager`** (`Standard/Os/CpuEvents.te` with an OS, `Standard/CpuEvents.te` without one) holds
+- **Events: `CpuEventManager`** (Standard/System/Cpu: `CpuEvents_hosted.te` with an OS, `CpuEvents_freestanding.te`
+  without one) holds
   one handler per kind of event, a `Callable[(CpuEvent,), None]` (`CpuEvent` has `kind`, `code`, `place`, `address`),
   and hands back the one before so it can be put back (`.hollow()` is the system's action):
   `before = CpuEventManager.when_terminated(h)` (SIGTERM, a console window closed or a shutdown on Windows: when `h`
@@ -771,9 +793,10 @@ routine start() -> None
 **Records**
 
 - `secret` before a declaration or a record field hides it from other modules (`secret routine helper(...)`,
-  `secret count: U64`). In every file of the declaring module it's used as usual, so two secret declarations of
-  one name in two files of a module clash like any two declarations. The standard library follows the same rule: a
-  secret name of one stdlib module is hidden from the others. The word was `private` before 0.5 (`private` is now a build error naming `secret`, `migrate --step visibility` rewrites it).
+  `secret count: U64`). In every file of the declaring module, and of the modules under it, it's used as usual, so two
+  secret declarations of one name in two files of a module clash like any two declarations. The standard library
+  follows the same rule: a secret name of `Standard/System/Numerics` is seen in `Standard/System/Numerics/B64`, and
+  hidden from `Standard/System/Text`. The word was `private` before 0.5 (`private` is now a build error naming `secret`, `migrate --step visibility` rewrites it).
 
 - A name is unique under its parent, wherever it's declared: you can add `routine U64.double(...)` to a stdlib type,
   but not a second `U64.midpoint` with the same parameter types (one with other parameter types is an overload). Secret names don't count outside their module.
@@ -877,7 +900,7 @@ routine start() -> None
   whole value past 8). Without `else`, observe every branch. An `else` when every branch is already observed is an
   error. There's no field access on a variant.
 - Inline variants: `A | B | C` is a type, a variant with no declaration (the stdlib's `@union` variants
-  `Union2`..`Union8` in `Standard/Types/Union.te`, so at most 8 branches, more is a build error that says to declare a
+  `Union2`..`Union8` in `Standard/System/Union.te`, so at most 8 branches, more is a build error that says to declare a
   variant). Its branches are the types each once, ordered by their full names, so `A | B` and `B | A` are one type
   (messages write `A | B`). `A | A` is just `A`, and an inline branch gives its branches (flattened). `|` binds
   loosest among type forms: `@A | B` is a pointer to an A, or a B. A pointer to one goes through a name: `@(A | B)` is
@@ -949,7 +972,7 @@ routine parse_or_zero(text: @[Byte]) -> B64
 
 ## Output
 
-Format through `Standard/Format.te`, not printf. printf is for C interop demos only: it can't print `S128`, `B16`,
+Format through `Standard/System/Text` (`Format.te`), not printf. printf is for C interop demos only: it can't print `S128`, `B16`,
 `BF16`, or `B128`, and a mismatched format is undefined behavior.
 
 - The console is `Console` (`Standard/Os`): `Console.show("x = {x}")` writes one line to standard output,
@@ -996,7 +1019,7 @@ Format through `Standard/Format.te`, not printf. printf is for C interop demos o
 
 ## Collections
 
-All in `Standard/Collection/`, documented in `../Tessera-Wiki/docs/Collections.md`. They keep their
+All in `Standard/Collections/`, documented in `../Tessera-Wiki/docs/Collections.md`. They keep their
 storage in a `Memory[T]`: a `List` is `storage` (a Memory whose count is the capacity) and `count`. `construct(alloc)` keeps
 the allocator (`construct()` with `Standard/Os` uses the default heap), and `drop list` releases storage and keeps
 the allocator, so the collection can be used again. Element access is
@@ -1231,8 +1254,8 @@ process at once, and
 `set_exit_code(status)` sets the status `start` returning ends it with.
 
 **Targets without an OS.** A triple whose OS is `none` (`arm-none-eabi`, `riscv32-none-elf`, `aarch64-none-elf`,
-`x86_64-none-elf`) gets everything but `Standard/Os`: Core, Format (into a `SliceWriter` or `List[Byte]`), Alloc, and
-Collections all check there. `Standard/Os` drops out of the build, so importing it or naming anything in it is one
+`x86_64-none-elf`) gets everything but `Standard/Os` and the hosted files of `Standard/System`: `Standard/System` (formatting into a
+`SliceWriter` or `List[Byte]`, the memory protocols) and `Standard/Collections` check there. `Standard/Os` drops out of the build, so importing it or naming anything in it is one
 build error ("Standard/Os needs an operating system ..."); there's no `Out`, files, threads, `@threadlocal`, fiber `FiberManager` (`Standard/Fiber`'s
 `switch_stack` and `initial_stack` are there, which `tests/freestanding_fiber` switches stacks with),
 `HEAP`, `PAGES`, or `construct()` without an allocator. The program exports its own crash handler (`@export("tessera_crash_handler")` with `@noreturn`, which
@@ -1242,7 +1265,7 @@ buffer, and `arena.to[MemoryManager]()`), and brings its link script. A program 
 `.isr_vector`, its first word `__stack_top` and its second `when_power_on`, the system exceptions going to the
 `CpuEventManager`; elsewhere the
 link script's `ENTRY(when_power_on)`). Its prologue sets the stack pointer from `__stack_top` (the Cortex-M core does
-that from the vector table). Its body is the program's `when_power_on()`: first `prepare_core()` from Standard/Boot
+that from the vector table). Its body is the program's `when_power_on()`: first `prepare_core()` from Standard/System/Cpu
 (`GlobalManager.prepare()`: `GlobalManager.zero_bss()`, .bss zeroed, `__bss_start` to `__bss_end`, and
 `GlobalManager.copy_data()` on 32-bit ARM and RISC-V, which run from flash: `__data_load` to `__data_start` ..
 `__data_end`; `enable_fpu()` when the build may use an FPU; `CpuEventManager.install()` on AArch64 and RISC-V), then
@@ -1252,14 +1275,14 @@ and so is a `when_power_on` that never calls it. Work that touches no global (a 
 `when_power_on` the program gets one that runs `prepare_core()`. Then `start()` runs, then a loop that halts (`hlt` /
 `wfi`). The link script defines those symbols (`tests/freestanding/<target>.ld` are
 small ones) and, on RISC-V, no `__global_pointer$` (the entry leaves gp alone). On 32-bit ARM the entry is a Cortex-M
-reset vector, so the build names a Cortex-M CPU (`--cpu cortex-m3`). The steps are `Standard/Boot.te`. A program
+reset vector, so the build names a Cortex-M CPU (`--cpu cortex-m3`). The steps are `Standard/System/Cpu/Boot.te`. A program
 without `start` brings its own entry instead. x86_64 code without an OS is built without the red zone. A program
 that hashes (a `Dict`, a `Set`, any `hash()`) also exports the hash key, `@export("tessera_hash_key")` above `routine
 board_key(key: @SipKey) -> None` filling 128 secret random bits (from the board's TRNG, never a fixed value or a cycle
 counter), unless the build enables a random number instruction (`--feature rdrnd` / `rdseed` on x86-64, `rand` on
 AArch64, `zkr` on RISC-V), from which the stdlib exports it. Without either the link fails on `tessera_hash_key`. The
 stdlib supplies `memcpy` / `memmove` / `memset` / `memcmp` (and ARM's `__aeabi_mem*`) there, weak, from
-`Standard/Freestanding.te`, and the whole compiler runtime from `Standard/SoftFloat/`, so nothing needs compiler-rt
+`Standard/System/CSubSystem/Freestanding.te`, and the whole compiler runtime from `Standard/System/Numerics/SoftFloat/`, so nothing needs compiler-rt
 or libgcc: the soft-float routines LLVM calls for B16 / BF16 / B32 / B64 without a floating-point unit (`__addsf3`,
 `__aeabi_dmul`, `__truncsfhf2`, `sqrtf`, ...), integer division (`__udivdi3`, `__aeabi_uldivmod`, ...), and
 `__clzsi2`, written with integer operations only, weak and `@no_builtins`. Each export wraps an ordinary routine
@@ -1322,7 +1345,7 @@ byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`
   is `construct`. One exception: a routine that implements a conversion's C runtime call (LLVM lowers
 `B32.to[B16]()` to `__truncsfhf2` on x86, and every float conversion to a call on a target without an FPU) can't be
 that `to[T]`, which would call itself there. It keeps the shape under its own name, `x.soft_to[B16]()`
-(Standard/SoftFloat), and a shim that only exists to be exported is named for its symbol (`export_truncsfhf2`).
+(Standard/System/Numerics/SoftFloat), and a shim that only exists to be exported is named for its symbol (`export_truncsfhf2`).
 
 **The empty value: `.hollow()`, `.empty()`, or `.zero()`.** A type's ready-made empty value (what a slot that
 `finish` releases starts as, the "nothing yet" of a record) is a typewise routine without arguments. Every type has

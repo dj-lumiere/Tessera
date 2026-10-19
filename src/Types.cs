@@ -10,7 +10,7 @@ public abstract class DType : IEquatable<DType>
     public abstract string Name { get; }
 
     /// The type's identity. It's the name, except that a declared type is named by its module (and by its file, if
-    /// it's private), since two modules may each declare a `Point`: `Standard/Core/Option[S64]`.
+    /// it's private), since two modules may each declare a `Point`: `Standard/System/Option[S64]`.
     public virtual string Key => Name;
 
     /// The LLVM IR spelling.
@@ -239,7 +239,7 @@ public sealed class RecordType(RecordDecl decl, List<DType> args, Func<RecordTyp
     public List<DType> Args { get; } = args;
     public override string Name =>
         IsTuple ? $"({string.Join(", ", Args.Select(a => a.Name))})"
-        : Decl is { Name: "Span", Module: "Standard/Core" } && Args is [var elem] ? $"@[{elem.Name}]"
+        : Decl is { Name: "Span", Module: Compiler.SystemModule } && Args is [var elem] ? $"@[{elem.Name}]"
         : Args.Count == 0 ? Decl.Name : $"{Decl.Name}[{string.Join(", ", Args.Select(a => a.Name))}]";
     public override string Key => DeclKey(Decl, Decl.Name, Args);
 
@@ -247,7 +247,7 @@ public sealed class RecordType(RecordDecl decl, List<DType> args, Func<RecordTyp
     public bool IsTuple => IsTupleDecl(Decl);
 
     public static bool IsTupleDecl(RecordDecl d) =>
-        d.Module == "Standard/Core" && d.Name is "Tuple2" or "Tuple3" or "Tuple4";
+        d.Module == Compiler.SystemModule && d.Name is "Tuple2" or "Tuple3" or "Tuple4";
 
     /// The type a transparent or library `@llvm("iN")` record lowers to, or null for an aggregate.
     public DType? TransparentField => transparentField(this);

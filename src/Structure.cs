@@ -720,7 +720,7 @@ public sealed class Structurer
         var value = new WhenExpr(when, pos);
         if (ps.Count == 1) return [new BindStmt(names[0], ps[0].Type, value, pos)];
         if (ps.Count > Parser.MaxTupleItems) throw new GiveUp($"block '{merge.Name}' takes {ps.Count} values");
-        var tuple = new TypeRef($"Tuple{ps.Count}", ps.Select(p => (TypeArg)new TypeArgType(p.Type)).ToList(), pos) { Path = "Standard/Core" };
+        var tuple = new TypeRef($"Tuple{ps.Count}", ps.Select(p => (TypeArg)new TypeArgType(p.Type)).ToList(), pos) { Path = Compiler.SystemModule };
         string name = ctx.Scope.Contains("values") || _routineNames.Contains("values") ? Fresh("values", ctx.Scope) : "values";
         ctx.Scope.Add(name);
         return

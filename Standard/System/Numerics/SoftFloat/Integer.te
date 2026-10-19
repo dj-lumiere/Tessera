@@ -1,0 +1,319 @@
+# Tessera stdlib: integer helpers in software
+#
+# What LLVM calls a routine for on a core without the instruction: division on 32-bit ARM before ARMv7-M's divide
+# (and on RISC-V without the M extension), 64-bit division on every 32-bit target, 128-bit division where LLVM
+# doesn't expand it inline (riscv32, and the 64-bit targets), multiplication without the M extension, 64-bit shifts
+# and multiplication on Thumb-1, and counting leading zeros before ARMv5. Exports.te and Aeabi.te export them.
+#
+# Each one is written without the operation it stands in for: division by shifting and subtracting, multiplication
+# by shifting and adding, 64-bit shifts from 32-bit ones, and the leading-zero count by halving. So none of them can
+# reach itself, whichever of them LLVM calls from the others.
+#
+# Division by zero is the caller's to rule out (Tessera's div crashes first). Here it gives a quotient of all ones
+# and the dividend as the remainder.
+
+module Standard/System/Numerics/SoftFloat
+
+# -- division ------------------------------------------------------------------
+
+### U32 division and remainder by shifting and subtracting: compiler-rt's `__udivsi3` and `__umodsi3`.
+### :param n: The dividend.
+### :param d: The divisor.
+### :returns: The quotient and the remainder.
+@no_builtins
+routine soft_divmod(n: U32, d: U32) -> (U32, U32)
+    local rem: @U32 <- .hollow()
+    local div: @U32 <- .hollow()
+    local quotient: @U32 <- .hollow()
+
+    when
+        d == 0 => return (U32.MAX, n)
+        n < d => return (0, n)
+        else =>
+            # the divisor's leading bit lines up with the dividend's, then one quotient bit a step
+            shift: U32 = d.leading_zeros() - n.leading_zeros()
+            n.poke_into(rem)
+            (d << shift).poke_into(div)
+            0.poke_into(quotient)
+
+            while left != 0 with left: U32 = shift + 1
+                fits: Bool = rem.peek() >= div.peek()
+                rest: U32 = when
+                    fits => rem.peek() -% div.peek()
+                    else => rem.peek()
+                next: U32 = (quotient.peek() << 1) | fits.to[U32]()
+                next_quotient: U32 = next
+                next_div: U32 = div.peek() >> 1
+                next_rem: U32 = rest
+                next_rem.poke_into(rem)
+                next_div.poke_into(div)
+                next_quotient.poke_into(quotient)
+                continue with left: left - 1
+            then
+                return (quotient.peek(), rem.peek())
+
+### U64 division and remainder by shifting and subtracting: compiler-rt's `__udivdi3` and `__umoddi3`.
+### :param n: The dividend.
+### :param d: The divisor.
+### :returns: The quotient and the remainder.
+@no_builtins
+routine soft_divmod(n: U64, d: U64) -> (U64, U64)
+    local rem: @U64 <- .hollow()
+    local div: @U64 <- .hollow()
+    local quotient: @U64 <- .hollow()
+
+    when
+        d == 0 => return (U64.MAX, n)
+        n < d => return (0, n)
+        else =>
+            shift: U64 = d.leading_zeros() - n.leading_zeros()
+            n.poke_into(rem)
+            (d << shift).poke_into(div)
+            0.poke_into(quotient)
+
+            while left != 0 with left: U64 = shift + 1
+                fits: Bool = rem.peek() >= div.peek()
+                rest: U64 = when
+                    fits => rem.peek() -% div.peek()
+                    else => rem.peek()
+                next: U64 = (quotient.peek() << 1) | fits.to[U64]()
+                next_quotient: U64 = next
+                next_div: U64 = div.peek() >> 1
+                next_rem: U64 = rest
+                next_rem.poke_into(rem)
+                next_div.poke_into(div)
+                next_quotient.poke_into(quotient)
+                continue with left: left - 1
+            then
+                return (quotient.peek(), rem.peek())
+
+### U128 division and remainder by shifting and subtracting: compiler-rt's `__udivti3` and `__umodti3`.
+### :param n: The dividend.
+### :param d: The divisor.
+### :returns: The quotient and the remainder.
+@no_builtins
+routine soft_divmod(n: U128, d: U128) -> (U128, U128)
+    local rem: @U128 <- .hollow()
+    local div: @U128 <- .hollow()
+    local quotient: @U128 <- .hollow()
+
+    when
+        d == 0 => return (U128.MAX, n)
+        n < d => return (0, n)
+        else =>
+            shift: U128 = d.leading_zeros() - n.leading_zeros()
+            n.poke_into(rem)
+            (d << shift).poke_into(div)
+            0.poke_into(quotient)
+
+            while left != 0 with left: U128 = shift + 1
+                fits: Bool = rem.peek() >= div.peek()
+                rest: U128 = when
+                    fits => rem.peek() -% div.peek()
+                    else => rem.peek()
+                next: U128 = (quotient.peek() << 1) | fits.to[U128]()
+                next_quotient: U128 = next
+                next_div: U128 = div.peek() >> 1
+                next_rem: U128 = rest
+                next_rem.poke_into(rem)
+                next_div.poke_into(div)
+                next_quotient.poke_into(quotient)
+                continue with left: left - 1
+            then
+                return (quotient.peek(), rem.peek())
+
+### S32 division and remainder, rounding toward zero: compiler-rt's `__divsi3` and `__modsi3`. The remainder has the
+### dividend's sign, and S32.MIN / -1 wraps to S32.MIN.
+### :param n: The dividend.
+### :param d: The divisor.
+### :returns: The quotient and the remainder.
+@no_builtins
+routine soft_divmod(n: S32, d: S32) -> (S32, S32)
+    q, r = soft_divmod(n: n.abs_diff(0), d: d.abs_diff(0))
+    q_negative: Bool = (n < 0) != (d < 0)
+    q_bits: U32 = when
+        q_negative => U32.sub_wrap(0, q)
+        else => q
+    r_bits: U32 = when
+        n < 0 => U32.sub_wrap(0, r)
+        else => r
+    return (q_bits.to_wrap[S32](), r_bits.to_wrap[S32]())
+
+### S64 division and remainder, rounding toward zero: compiler-rt's `__divdi3` and `__moddi3`.
+### :param n: The dividend.
+### :param d: The divisor.
+### :returns: The quotient and the remainder (with the dividend's sign).
+@no_builtins
+routine soft_divmod(n: S64, d: S64) -> (S64, S64)
+    q, r = soft_divmod(n: n.abs_diff(0), d: d.abs_diff(0))
+    q_negative: Bool = (n < 0) != (d < 0)
+    q_bits: U64 = when
+        q_negative => U64.sub_wrap(0, q)
+        else => q
+    r_bits: U64 = when
+        n < 0 => U64.sub_wrap(0, r)
+        else => r
+    return (q_bits.to_wrap[S64](), r_bits.to_wrap[S64]())
+
+### S128 division and remainder, rounding toward zero: compiler-rt's `__divti3` and `__modti3`.
+### :param n: The dividend.
+### :param d: The divisor.
+### :returns: The quotient and the remainder (with the dividend's sign).
+@no_builtins
+routine soft_divmod(n: S128, d: S128) -> (S128, S128)
+    q, r = soft_divmod(n: n.abs_diff(0), d: d.abs_diff(0))
+    q_negative: Bool = (n < 0) != (d < 0)
+    q_bits: U128 = when
+        q_negative => U128.sub_wrap(0, q)
+        else => q
+    r_bits: U128 = when
+        n < 0 => U128.sub_wrap(0, r)
+        else => r
+    return (q_bits.to_wrap[S128](), r_bits.to_wrap[S128]())
+
+# -- multiplication and shifts ---------------------------------------------------
+
+### The low 32 bits of `a × b` by shifting and adding: compiler-rt's `__mulsi3`, for RISC-V without the M extension.
+### :param a: The first factor.
+### :param b: The second factor.
+### :returns: The product, wrapped to 32 bits.
+@no_builtins
+routine soft_mul(a: U32, b: U32) -> U32
+    local x: @U32 <- a
+    local sum: @U32 <- 0
+
+    while y != 0 with y: U32 = b
+        odd: Bool = y & 1 == 1
+        next: U32 = when
+            odd => sum.peek() +% x.peek()
+            else => sum.peek()
+        next_sum: U32 = next
+        next_x: U32 = x.peek() << 1
+        next_x.poke_into(x)
+        next_sum.poke_into(sum)
+        continue with y: y >> 1
+    then
+        return sum.peek()
+
+### The low 64 bits of `a × b` by shifting and adding: compiler-rt's `__muldi3` (and ARM's `__aeabi_lmul`).
+### :param a: The first factor.
+### :param b: The second factor.
+### :returns: The product, wrapped to 64 bits.
+@no_builtins
+routine soft_mul(a: U64, b: U64) -> U64
+    local x: @U64 <- a
+    local sum: @U64 <- 0
+
+    while y != 0 with y: U64 = b
+        odd: Bool = y & 1 == 1
+        next: U64 = when
+            odd => sum.peek() +% x.peek()
+            else => sum.peek()
+        next_sum: U64 = next
+        next_x: U64 = x.peek() << 1
+        next_x.poke_into(x)
+        next_sum.poke_into(sum)
+        continue with y: y >> 1
+    then
+        return sum.peek()
+
+### `x << n` from 32-bit shifts: ARM's `__aeabi_llsl`. A shift of 64 or more gives 0.
+### :param x: The value.
+### :param n: The shift amount.
+### :returns: The shifted value.
+@no_builtins
+routine soft_shl(x: U64, n: U32) -> U64
+    low: U32 = x.to_wrap[U32]()
+    high: U32 = soft_u64_high(x)
+    when
+        n == 0 => return x
+        n >= 32 => return soft_u64_join(high: low << n - 32, low: 0)
+        else => return soft_u64_join(high: (high << n) | (low >> U32.sub(32, n)), low: low << n)
+
+### `x >> n`, filling with zeros, from 32-bit shifts: ARM's `__aeabi_llsr`. A shift of 64 or more gives 0.
+### :param x: The value.
+### :param n: The shift amount.
+### :returns: The shifted value.
+@no_builtins
+routine soft_shr(x: U64, n: U32) -> U64
+    low: U32 = x.to_wrap[U32]()
+    high: U32 = soft_u64_high(x)
+    when
+        n == 0 => return x
+        n >= 32 => return soft_u64_join(high: 0, low: high >> n - 32)
+        else => return soft_u64_join(high: high >> n, low: (low >> n) | (high << U32.sub(32, n)))
+
+### `x >> n`, filling with the sign, from 32-bit shifts: ARM's `__aeabi_lasr`. A shift of 64 or more gives 0 or -1.
+### :param x: The value.
+### :param n: The shift amount.
+### :returns: The shifted value.
+@no_builtins
+routine soft_shr(x: S64, n: U32) -> S64
+    local bits: U64 = x.to_wrap[U64]()
+    local low: U32 = bits.to_wrap[U32]()
+    local high: S32 = soft_u64_high(bits).to_wrap[S32]()
+    local fill: U32 = (high >> 31).to_wrap[U32]()
+
+    when
+        n == 0 => return x
+        n >= 32 =>
+            shift: S32 = (n - 32).to_wrap[S32]()
+            moved: U32 = (high >> shift).to_wrap[U32]()
+            r: U64 = soft_u64_join(high: fill, low: moved)
+            return r.to_wrap[S64]()
+        else =>
+            top: U32 = (high >> n.to[S32]()).to_wrap[U32]()
+            spill: U32 = high.to_wrap[U32]() << U32.sub(32, n)
+            bottom: U32 = (low >> n) | spill
+            r: U64 = soft_u64_join(high: top, low: bottom)
+            return r.to_wrap[S64]()
+
+# The halves move with LLVM's own shift by a constant 32, which every target does inline: U64.shift_left and U64.arith_shift_right take
+# any amount, and on Thumb-1 an unoptimized build calls __aeabi_llsl / __aeabi_llsr for them, which are these.
+
+### Two 32-bit halves as a U64.
+### :param high: The high 32 bits.
+### :param low: The low 32 bits.
+### :returns: `high` shifted up 32 bits, with `low` below it.
+@inline
+secret routine soft_u64_join(high: U32, low: U32) -> U64
+    top: U64 = shl[U64](val: high.to[U64](), amt: 32)
+    r: U64 = top | low.to[U64]()
+    return r
+
+### The high 32 bits of a U64.
+### :param x: The value.
+### :returns: `x` shifted down 32 bits.
+@inline
+secret routine soft_u64_high(x: U64) -> U32
+    r: U32 = lshr[U64](val: x, amt: 32).to_wrap[U32]()
+    return r
+
+# -- bits ----------------------------------------------------------------------
+
+### The number of leading zero bits by halving, without a count-leading-zeros instruction: compiler-rt's
+### `__clzsi2`, which LLVM calls on ARM cores before ARMv5.
+### :param x: The value.
+### :returns: The count, 32 for 0.
+@no_builtins
+routine soft_u32_leading_zeros(x: U32) -> U32
+    top16: Bool = x <= 0x0000FFFF
+    n16: U32 = top16.to[U32]() << 4
+    x16: U32 = x << n16
+    top8: Bool = x16 <= 0x00FFFFFF
+    n8: U32 = top8.to[U32]() << 3
+    x8: U32 = x16 << n8
+    top4: Bool = x8 <= 0x0FFFFFFF
+    n4: U32 = top4.to[U32]() << 2
+    x4: U32 = x8 << n4
+    top2: Bool = x4 <= 0x3FFFFFFF
+    n2: U32 = top2.to[U32]() << 1
+    x2: U32 = x4 << n2
+    top1: Bool = x2 <= 0x7FFFFFFF
+    n1: U32 = top1.to[U32]()
+    x1: U32 = x2 << n1
+    empty: U32 = (x1 == 0).to[U32]()
+    high: U32 = n16 + n8 + n4
+    low: U32 = n2 + n1 + empty
+    r: U32 = high + low
+    return r

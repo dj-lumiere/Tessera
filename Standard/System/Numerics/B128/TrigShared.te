@@ -1,0 +1,1583 @@
+# Tessera stdlib: correctly rounded B128 sine and cosine, the shared pipeline
+#
+# Ported from CORE-MATH, src/binary128/sin/sinq.c and src/binary128/cos/cosq.c via RazorForge's
+# B128TrigShared.rf (CORE-MATH's code is itself a C port of the binary128 sine and cosine of metallic-rs).
+# Copyright (c) 2026 Chen-Pang He <jdh863@gmail.com>
+# MIT license: see LICENSE-CORE-MATH
+#
+# Only the round-to-nearest path of the original is kept (no rounding-mode probe, errno or exception flags).
+# The sine is odd and the cosine even, so both run one pipeline on |x| in unsigned fixed point:
+# 1. Reduce: x*2/pi is formed as the exact product of the 113-bit significand with a window of 2/pi cut
+#    from 64-bit limbs at the exponent (Payne-Hanek), six limbs on the fast path and ten on the accurate one.
+# 2. Split: n = round(256*x/pi) mod 512 gives the quadrant n>>7 and a breakpoint j = n & 127, leaving a
+#    signed residual g with |g| <= 1/256, normalized into a floating fraction at its own exponent.
+# 3. Evaluate: sin(theta) and 1 - cos(theta) for theta = g*pi/2 by short polynomials (fast path, 128 bits)
+#    or eighteen Taylor terms summed in three tiers of 128, 256 and 384 bits (accurate path).
+# 4. Recombine with tables of sin(j*pi/256) and cos(j*pi/256).
+# 5. Round: the fast path keeps a 15-bit guard and hands anything within 16 units of the rounding midpoint
+#    to the 384-bit path, which rounds outright.
+# Below |x| = 2^-8 there is nothing to reduce, and below 2^-57 sin(x) rounds to x and cos(x) to 1.
+#
+# Limbs are unsigned (U64 / U128). Limb arithmetic that relies on C's wrap-around uses the _wrap forms,
+# and exponents, counts, and shift amounts use the plain (overflow-checked) ones. The 2/pi limbs are
+# TWO_OVER_PI from Math.te, whose first 264 limbs are the ones CORE-MATH uses.
+
+module Standard/System/Numerics/B128
+
+secret preset CM_TRIG_TINY:  U128 = 0x3FC60000000000000000000000000000  # 2^-57
+secret preset CM_TRIG_PI_4:  U128 = 0xC90FDAA22168C234C4C6628B80DC1CD1  # pi/4 × 2^128
+
+### A 384-bit unsigned fixed-point value, least significant limb first. 256-bit ones are U256.
+record CmTrigU384
+    l0: U128
+    l1: U128
+    l2: U128
+
+### Which of the two functions a result is for, and the sign bit the argument contributes to it.
+secret record CmTrigFunction
+    ### True for the cosine, false for the sine.
+    cosine: Bool
+    ### The sign bit the argument contributes (0 for the cosine, which is even).
+    sign: U128
+
+### The fast path's result: the magnitude frac × 2^(exponent - 128) and the sign bit it contributes. When
+### `vouched` is false the reduction lost too much precision and the accurate path must run.
+secret record CmTrigFast
+    vouched: Bool
+    frac: U128
+    exponent: U64
+    sign: U128
+
+### The window of 2/pi for an exponent: its first limb, and how far the units bit of x*2/pi sits below bit
+### 64*W - 2 of the product (negative below |x| = 2^114, where the window is the top of 2/pi).
+secret record CmTrigWindow
+    first: S64
+    offset: S64
+
+### The fast reduction: n = round(256*x/pi) mod 512, whether g < 0, and theta = |g|*pi/2 = t1 × 2^(et - 128).
+### `ok` is false when the residual keeps fewer than 136 of the fraction's 192 bits.
+record CmTrigReduced
+    ok: Bool
+    n: U64
+    negative: Bool
+    t1: U128
+    et: S64
+
+### The accurate reduction: as CmTrigReduced, with theta = t × 2^(et - 384) normalized in 384 bits.
+record CmTrigWideReduced
+    n: U64
+    negative: Bool
+    t: CmTrigU384
+    et: S64
+
+### The accurate path's result before rounding: the magnitude frac × 2^(exponent - 384), normalized, and its sign bit.
+secret record CmTrigWide
+    frac: CmTrigU384
+    exponent: U64
+    sign: U128
+
+### The accurate path's shared series: u = theta^2 as a 2^-384 fraction, and sin(theta) = sine × 2^(es - 384),
+### normalized.
+secret record CmTrigSeries
+    u: CmTrigU384
+    sine: CmTrigU384
+    es: S64
+
+### theta^2 as a 2^-128 fraction (u), theta^4 likewise (v), and the unshifted theta^2 = u1 × 2^(2*et - 128).
+secret record CmTrigSquares
+    u: U128
+    v: U128
+    u1: U128
+
+# -- entry points --------------------------------------------------------------
+
+### The bits of the correctly rounded sine (`cosine` false) or cosine (`cosine` true) of the argument bits.
+### ±infinity gives the default quiet NaN, and a NaN is quieted with its sign and payload.
+### :param bits: The B128 argument's bits.
+### :param cosine: True for the cosine, false for the sine.
+### :returns: The result's B128 bits.
+secret routine cm_trig(bits: U128, cosine: Bool) -> U128
+    local magnitude: U128 = bits & B128_SIGN.bitnot()
+
+    not_finite: Bool = magnitude >= B128_INF
+    when
+        not_finite =>
+            # ±infinity gives the default quiet NaN, and a NaN is quieted, keeping its sign and payload
+            infinite: Bool = magnitude == B128_INF
+            default_nan: U128 = B128_QNAN
+            quieted: U128 = bits | B128_QUIET_BIT
+            if infinite
+                return default_nan
+            return quieted
+        magnitude < CM_TRIG_TINY =>
+            # |x| < 2^-57: sin(x) rounds to x, cos(x) to 1
+            one: U128 = B128_ONE
+            if cosine
+                return one
+            return bits
+        else =>
+            m: U128 = cm_trig_significand(magnitude)
+            e: S64 = cm_trig_exponent(magnitude)
+            sign_bit: U128 = bits & B128_SIGN
+            positive: U128 = 0
+            sign: U128 = when
+                cosine => positive
+                else => sign_bit
+            fast: CmTrigFast = cm_trig_fast(m, e, cosine)
+            r: U128 = cm_trig_finish(fast, m, e,
+                function: CmTrigFunction(cosine: cosine, sign: sign))
+            return r
+
+### Both correctly rounded results, sharing the argument reduction (the expensive part) between them.
+### :param bits: The B128 argument's bits.
+### :returns: The sine and the cosine.
+secret routine cm_trig_both(bits: U128) -> B128SinCos
+    local magnitude: U128 = bits & B128_SIGN.bitnot()
+    local sign: U128 = bits & B128_SIGN
+
+    not_finite: Bool = magnitude >= B128_INF
+    tiny: Bool = magnitude < CM_TRIG_TINY
+    if not_finite or tiny
+        # special and tiny arguments have nothing to share
+        sin_bits: U128 = cm_trig(bits, cosine: false)
+        cos_bits: U128 = cm_trig(bits, cosine: true)
+        r: B128SinCos = cm_trig_pair(sin_bits, cos_bits)
+        return r
+    m: U128 = cm_trig_significand(magnitude)
+    e: S64 = cm_trig_exponent(magnitude)
+    if e < -8
+        # below 2^-8 there is no reduction to share
+        sin_fast: CmTrigFast = cm_trig_fast(m, e, cosine: false)
+        cos_fast: CmTrigFast = cm_trig_fast(m, e, cosine: true)
+        sin_bits: U128 = cm_trig_finish(fast: sin_fast, m, e,
+            function: CmTrigFunction(cosine: false, sign: sign))
+        cos_bits: U128 = cm_trig_finish(fast: cos_fast, m, e,
+            function: CmTrigFunction(cosine: true, sign: 0))
+        r: B128SinCos = cm_trig_pair(sin_bits, cos_bits)
+        return r
+    red: CmTrigReduced = cm_trig_reduce(m, e)
+    if red.ok
+        t1: U128 = red.t1
+        et: S64 = red.et
+        sq: CmTrigSquares = cm_trig_squares(t1, et)
+        sine_theta: U128 = cm_trig_sin_frac(t1, u: sq.u, v: sq.v)
+        sin_fast: CmTrigFast = cm_trig_fast_tail(red, sq, sine_theta, cosine: false)
+        cos_fast: CmTrigFast = cm_trig_fast_tail(red, sq, sine_theta, cosine: true)
+        sin_bits: U128 = cm_trig_finish(fast: sin_fast, m, e,
+            function: CmTrigFunction(cosine: false, sign: sign))
+        cos_bits: U128 = cm_trig_finish(fast: cos_fast, m, e,
+            function: CmTrigFunction(cosine: true, sign: 0))
+        r: B128SinCos = cm_trig_pair(sin_bits, cos_bits)
+        return r
+    sin_bits: U128 = cm_trig_accurate(m, e, cosine: false, sign)
+    cos_bits: U128 = cm_trig_accurate(m, e, cosine: true, sign: 0)
+    r: B128SinCos = cm_trig_pair(sin_bits, cos_bits)
+    return r
+
+### A B128SinCos from the bits of its two results.
+### :param sin_bits: The sine's B128 bits.
+### :param cos_bits: The cosine's B128 bits.
+### :returns: The pair.
+secret routine cm_trig_pair(sin_bits: U128, cos_bits: U128) -> B128SinCos
+    sin: B128 = b128_of(sin_bits)
+    cos: B128 = b128_of(cos_bits)
+    r: B128SinCos = B128SinCos(sin: sin, cos: cos)
+    return r
+
+### The 113-bit significand of a finite normal magnitude.
+### :param magnitude: The B128 bits with the sign cleared.
+### :returns: The fraction with the implicit bit set.
+secret routine cm_trig_significand(magnitude: U128) -> U128
+    r: U128 = (magnitude & B128_FRAC_MASK) | B128_IMPLICIT
+    return r
+
+### The unbiased exponent of a finite normal magnitude: x = m × 2^(e - 112).
+### :param magnitude: The B128 bits with the sign cleared.
+### :returns: The unbiased exponent e.
+secret routine cm_trig_exponent(magnitude: U128) -> S64
+    biased_exponent: U128 = magnitude >> 112
+    r: S64 = biased_exponent.to[S64]() - B128_BIAS
+    return r
+
+### Rounds a fast-path result on its 15-bit guard, or runs the accurate path when the fast one cannot vouch
+### for it or the guard sits within 16 units of the rounding midpoint.
+### :param fast: The fast path's result.
+### :param m: The argument's 113-bit significand.
+### :param e: The argument's unbiased exponent.
+### :param function: The sine or the cosine, and the sign the argument contributes.
+### :returns: The result's B128 bits.
+secret routine cm_trig_finish(fast: CmTrigFast, m: U128, e: S64, function: CmTrigFunction) -> U128
+    local frac: U128 = fast.frac
+    local sign: U128 = function.sign
+    local rest: U64 = frac.to_wrap[U64]() & 0x7FFF
+
+    vouched: Bool = fast.vouched
+    shifted_rest: U64 = rest + 16 -% 0x4000
+    distance: U64 = shifted_rest & 0x7FFF
+    clear: Bool = distance > 32
+    if vouched and clear
+        exponent: U64 = fast.exponent
+        fast_sign: U128 = fast.sign
+        up: U128 = (rest > 0x4000).to[U128]()
+        biased_exponent: U64 = exponent +% 16382
+        biased: U128 = biased_exponent.to[U128]() << 112
+        mantissa: U128 = frac >> 15
+        truncated: U128 = biased +% mantissa -% B128_IMPLICIT
+        magnitude: U128 = truncated +% up
+        r: U128 = (sign ^ fast_sign) | magnitude
+        return r
+    r: U128 = cm_trig_accurate(m, e, cosine: function.cosine, sign)
+    return r
+
+# -- wide integer helpers ------------------------------------------------------
+
+### The low 64 bits of (high:low) >> shift, for 0 <= shift < 64.
+### :param low: The low limb.
+### :param high: The high limb.
+### :param shift: The shift amount.
+### :returns: The shifted limb.
+secret routine cm_trig_funnel(low: U64, high: U64, shift: S64) -> U64
+    low_part: U64 = low >> shift.to[U64]()
+    high_part: U64 = high << 1 << (63 - shift).to[U64]()
+    r: U64 = low_part | high_part
+    return r
+
+### The high 128 bits of (high:low) << shift, for 0 <= shift < 128.
+### :param low: The low half.
+### :param high: The high half.
+### :param shift: The shift amount.
+### :returns: The shifted high half.
+secret routine cm_trig_shl_join(low: U128, high: U128, shift: S64) -> U128
+    s: S128 = shift.to[S128]()
+    high_part: U128 = high << s.to[U128]()
+    low_part: U128 = low >> 1 >> (127 - s).to[U128]()
+    r: U128 = high_part | low_part
+    return r
+
+### The low 128 bits of (high:low) >> shift, for 0 <= shift < 128.
+### :param low: The low half.
+### :param high: The high half.
+### :param shift: The shift amount.
+### :returns: The shifted low half.
+secret routine cm_trig_shr_join(low: U128, high: U128, shift: S64) -> U128
+    s: S128 = shift.to[S128]()
+    low_part: U128 = low >> s.to[U128]()
+    high_part: U128 = high << 1 << (127 - s).to[U128]()
+    r: U128 = low_part | high_part
+    return r
+
+### Leading zeros of a 128-bit value, 128 when it is zero.
+### :param x: The value.
+### :returns: The count of leading zero bits.
+secret routine cm_trig_clz(x: U128) -> S64
+    r: S64 = x.leading_zeros().to[S64]()
+    return r
+
+### A 256-bit value from its 128-bit halves.
+### :param high: The high half.
+### :param low: The low half.
+### :returns: (high:low).
+routine cm_trig_join(high: U128, low: U128) -> U256
+    upper: U256 = high.to[U256]() << 128
+    r: U256 = upper | low.to[U256]()
+    return r
+
+### The high 128 bits of a 256-bit value.
+### :param x: The value.
+### :returns: The high half.
+secret routine cm_trig_high(x: U256) -> U128
+    r: U128 = (x >> 128).to[U128]()
+    return r
+
+### The high half of a 128×128-bit product from three 64-bit products: up to two units short of the exact
+### high half, never over.
+### :param x: The first factor.
+### :param y: The second factor.
+### :returns: The approximate high 128 bits.
+secret routine cm_trig_mhi(x: U128, y: U128) -> U128
+    xh: U128 = x >> 64
+    xl: U128 = x & 0xFFFFFFFFFFFFFFFF
+    yh: U128 = y >> 64
+    yl: U128 = y & 0xFFFFFFFFFFFFFFFF
+    hh: U128 = xh *% yh
+    hl: U128 = xh *% yl >> 64
+    lh: U128 = xl *% yh >> 64
+    r: U128 = hh +% hl +% lh
+    return r
+
+### f << shift in the 256-bit frame, for 0 <= shift < 128. Two 128-bit shifts are cheaper than a U256
+### shift by a variable amount.
+### :param f: The value to place.
+### :param shift: The shift amount.
+### :returns: The shifted 256-bit value.
+routine cm_trig_place256(f: U128, shift: S64) -> U256
+    low: U128 = f << shift.to[U128]()
+    high: U128 = cm_trig_shl_join(low: f, high: 0, shift)
+    r: U256 = cm_trig_join(high, low)
+    return r
+
+### The top 128 bits of s << shift, for 0 <= shift < 128.
+### :param s: The 256-bit value.
+### :param shift: The shift amount.
+### :returns: The high half after the shift.
+routine cm_trig_top256(s: U256, shift: S64) -> U128
+    low: U128 = s.to_wrap[U128]()
+    high: U128 = cm_trig_high(s)
+    r: U128 = cm_trig_shl_join(low, high, shift)
+    return r
+
+### The 384-bit sum a + b, wrapping past 2^384.
+### :param a: The first addend.
+### :param b: The second addend.
+### :returns: The sum modulo 2^384.
+routine cm_trig_add384(a: CmTrigU384, b: CmTrigU384) -> CmTrigU384
+    r0: U128 = a.l0 +% b.l0
+    c0: U128 = (r0 < a.l0).to[U128]()
+    r1: U128 = a.l1 +% b.l1
+    c1: U128 = (r1 < a.l1).to[U128]()
+    r1b: U128 = r1 +% c0
+    c2: U128 = (r1b < r1).to[U128]()
+    l2_partial: U128 = a.l2 +% b.l2 +% c1
+    r2: U128 = l2_partial +% c2
+    r: CmTrigU384 = CmTrigU384(l0: r0, l1: r1b, l2: r2)
+    return r
+
+### The 384-bit difference a - b, wrapping below zero.
+### :param a: The minuend.
+### :param b: The subtrahend.
+### :returns: The difference modulo 2^384.
+routine cm_trig_sub384(a: CmTrigU384, b: CmTrigU384) -> CmTrigU384
+    c0: U128 = (a.l0 < b.l0).to[U128]()
+    r0: U128 = a.l0 -% b.l0
+    r1: U128 = a.l1 -% b.l1
+    c1: U128 = (a.l1 < b.l1).to[U128]()
+    c2: U128 = (r1 < c0).to[U128]()
+    r1b: U128 = r1 -% c0
+    l2_partial: U128 = a.l2 -% b.l2 -% c1
+    r2: U128 = l2_partial -% c2
+    r: CmTrigU384 = CmTrigU384(l0: r0, l1: r1b, l2: r2)
+    return r
+
+### x << shift, discarding whatever leaves the window, for 0 <= shift < 384.
+### :param x: The value.
+### :param shift: The shift amount.
+### :returns: The shifted value.
+secret routine cm_trig_shl384(x: CmTrigU384, shift: S64) -> CmTrigU384
+    local bits: S64 = shift & 127
+
+    word: S64 = shift >> 7
+    when word
+        0 =>
+            l0: U128 = x.l0 << bits.to[U128]()
+            l1: U128 = cm_trig_shl_join(low: x.l0, high: x.l1, shift: bits)
+            l2: U128 = cm_trig_shl_join(low: x.l1, high: x.l2, shift: bits)
+            r: CmTrigU384 = CmTrigU384(l0: l0, l1: l1, l2: l2)
+            return r
+        1 =>
+            l1: U128 = x.l0 << bits.to[U128]()
+            l2: U128 = cm_trig_shl_join(low: x.l0, high: x.l1, shift: bits)
+            r: CmTrigU384 = CmTrigU384(l0: 0, l1: l1, l2: l2)
+            return r
+        else =>
+            l2: U128 = x.l0 << bits.to[U128]()
+            r: CmTrigU384 = CmTrigU384(l0: 0, l1: 0, l2: l2)
+            return r
+
+### x >> shift, saturating to zero past the window, for shift >= 0.
+### :param x: The value.
+### :param shift: The shift amount.
+### :returns: The shifted value.
+secret routine cm_trig_shr384(x: CmTrigU384, shift: S64) -> CmTrigU384
+    local bits: S64 = shift & 127
+
+    gone: Bool = shift >= 384
+    zero: CmTrigU384 = CmTrigU384(l0: 0, l1: 0, l2: 0)
+    word: S64 = shift >> 7
+    if gone
+        return zero
+    when word
+        0 =>
+            l0: U128 = cm_trig_shr_join(low: x.l0, high: x.l1, shift: bits)
+            l1: U128 = cm_trig_shr_join(low: x.l1, high: x.l2, shift: bits)
+            l2: U128 = x.l2 >> bits.to[U128]()
+            r: CmTrigU384 = CmTrigU384(l0: l0, l1: l1, l2: l2)
+            return r
+        1 =>
+            l0: U128 = cm_trig_shr_join(low: x.l1, high: x.l2, shift: bits)
+            l1: U128 = x.l2 >> bits.to[U128]()
+            r: CmTrigU384 = CmTrigU384(l0: l0, l1: l1, l2: 0)
+            return r
+        else =>
+            l0: U128 = x.l2 >> bits.to[U128]()
+            r: CmTrigU384 = CmTrigU384(l0: l0, l1: 0, l2: 0)
+            return r
+
+### Leading zeros of a 384-bit value, 384 when it is zero.
+### :param x: The value.
+### :returns: The count of leading zero bits.
+secret routine cm_trig_lz384(x: CmTrigU384) -> S64
+    top: Bool = x.l2 != 0
+    middle: Bool = x.l1 != 0
+    in_top: S64 = cm_trig_clz(x.l2)
+    in_middle: S64 = cm_trig_clz(x.l1) + 128
+    in_bottom: S64 = cm_trig_clz(x.l0) + 256
+    when
+        top => return in_top
+        middle => return in_middle
+        else => return in_bottom
+
+### The high 384 bits of a 384×384-bit product: the dropped tail leaves it up to four units short of the
+### exact value, never over.
+### :param a: The first factor.
+### :param b: The second factor.
+### :returns: The approximate high 384 bits.
+routine cm_trig_mul384(a: CmTrigU384, b: CmTrigU384) -> CmTrigU384
+    p02: U256 = a.l0.mul_wide(b.l2)
+    p11: U256 = a.l1.mul_wide(b.l1)
+    p20: U256 = a.l2.mul_wide(b.l0)
+    p12: U256 = a.l1.mul_wide(b.l2)
+    p21: U256 = a.l2.mul_wide(b.l1)
+    p22: U256 = a.l2.mul_wide(b.l2)
+    # the diagonal one limb below the window contributes its sum from bit 128 up, in 130 bits
+    sum: U256 = p02 +% p11
+    over1: U128 = (sum < p02).to[U128]()
+    sum2: U256 = sum +% p20
+    over2: U128 = (sum2 < sum).to[U128]()
+    diag: U128 = cm_trig_high(sum2)
+    over: U128 = over1 + over2
+    a12: CmTrigU384 = CmTrigU384(l0: p12.to_wrap[U128](), l1: cm_trig_high(p12), l2: 0)
+    a21: CmTrigU384 = CmTrigU384(l0: p21.to_wrap[U128](), l1: cm_trig_high(p21), l2: 0)
+    a22: CmTrigU384 = CmTrigU384(l0: 0, l1: p22.to_wrap[U128](), l2: cm_trig_high(p22))
+    ad: CmTrigU384 = CmTrigU384(l0: diag, l1: over, l2: 0)
+    t12: CmTrigU384 = cm_trig_add384(a: a12, b: a21)
+    t34: CmTrigU384 = cm_trig_add384(a: a22, b: ad)
+    r: CmTrigU384 = cm_trig_add384(a: t12, b: t34)
+    return r
+
+### The high 256 bits of a 256×256-bit product: the dropped tail leaves it up to one unit short of the exact
+### value, never over.
+### :param a: The first factor.
+### :param b: The second factor.
+### :returns: The approximate high 256 bits.
+routine cm_trig_mul256(a: U256, b: U256) -> U256
+    a_hi: U128 = cm_trig_high(a)
+    a_lo: U128 = a.to_wrap[U128]()
+    b_hi: U128 = cm_trig_high(b)
+    b_lo: U128 = b.to_wrap[U128]()
+    hh: U256 = a_hi.mul_wide(b_hi)
+    cross: U256 = a_hi.mul_wide(b_lo)
+    other: U256 = a_lo.mul_wide(b_hi)
+    ll_hi: U128 = cm_trig_mhi(x: a_lo, y: b_lo)
+    # the two cross terms and the top of a.lo*b.lo sit one limb below the window: only their sum from
+    # bit 128 up survives, in 130 bits
+    middle: U256 = cross +% other
+    over1: U64 = (middle < cross).to[U64]()
+    middle2: U256 = middle +% ll_hi.to[U256]()
+    over2: U64 = (middle2 < middle).to[U64]()
+    over: U64 = over1 + over2
+    carried: U256 = over.to[U256]() << 128
+    shifted: U256 = (middle2 >> 128) + carried
+    r: U256 = hh +% shifted
+    return r
+
+# -- tables --------------------------------------------------------------------
+
+### Limb `limb` (0 = least significant) of sin(j*pi/256) (w = 0) or cos(j*pi/256) (w = 1) × 2^384.
+### :param j: The breakpoint, 0 to 127.
+### :param w: 0 for the sine, 1 for the cosine.
+### :param limb: The 128-bit limb, 0 to 2.
+### :returns: The table limb.
+### :throws: Crashes with `IndexOutOfBoundsError` when the arguments point past the table.
+secret routine cm_trig_sincos(j: U64, w: U64, limb: U64) -> U128
+    word_row: U64 = j * 2 + w
+    index: U64 = word_row * 3 + limb
+    r: U128 = CM_TRIG_SINCOS.getitem(index)
+    return r
+
+### sin(j*pi/256) (w = 0) or cos(j*pi/256) (w = 1) × 2^384 as a 384-bit value.
+### :param j: The breakpoint, 0 to 127.
+### :param w: 0 for the sine, 1 for the cosine.
+### :returns: The three table limbs.
+### :throws: Crashes with `IndexOutOfBoundsError` when the arguments point past the table.
+secret routine cm_trig_sincos384(j: U64, w: U64) -> CmTrigU384
+    l0: U128 = cm_trig_sincos(j, w, limb: 0)
+    l1: U128 = cm_trig_sincos(j, w, limb: 1)
+    l2: U128 = cm_trig_sincos(j, w, limb: 2)
+    r: CmTrigU384 = CmTrigU384(l0: l0, l1: l1, l2: l2)
+    return r
+
+### Limb `limb` of Taylor coefficient k in CM_TRIG_SIN_COEF or CM_TRIG_COS_COEF.
+### :param coef: The coefficient table, three limbs per coefficient.
+### :param k: The coefficient's index.
+### :param limb: The 128-bit limb, 0 = least significant.
+### :returns: The limb.
+secret routine cm_trig_coef(coef: @U128, k: U64, limb: U64) -> U128
+    index: U64 = k * 3 + limb
+    r: U128 = coef.stride(index).peek()
+    return r
+
+# -- argument reduction --------------------------------------------------------
+
+### The window of 2/pi for the exponent `e`. Bits of 2/pi above position e-114 contribute multiples of 4 to
+### x*2/pi (x = m × 2^(e-112)), so the window starts at the limb holding bit e-113.
+### :param e: The argument's unbiased exponent.
+### :returns: The window's first limb and offset.
+secret routine cm_trig_window(e: S64) -> CmTrigWindow
+    big: S64 = e - 114
+    huge: Bool = big >= 0
+    top: CmTrigWindow = CmTrigWindow(first: 0, offset: big)
+    if not huge
+        return top
+    first: S64 = big >> 6
+    offset: S64 = big & 63
+    r: CmTrigWindow = CmTrigWindow(first: first, offset: offset)
+    return r
+
+### Limb k (most significant first) of the window of `count` limbs of 2/pi starting at `first`, or zero outside it.
+### :param first: The window's first limb in TWO_OVER_PI.
+### :param count: The window's length in limbs.
+### :param k: The limb within the window.
+### :returns: The limb, widened to U128.
+### :throws: Crashes with `IndexOutOfBoundsError` when `first + k` is past the end of TWO_OVER_PI.
+secret routine cm_trig_window_limb(first: S64, count: S64, k: S64) -> U128
+    inside: Bool = 0 <= k < count
+    outside: U128 = 0
+    if not inside
+        return outside
+    index: U64 = (first + k).to[U64]()
+    limb: U64 = TWO_OVER_PI.getitem(index)
+    r: U128 = limb.to[U128]()
+    return r
+
+### Writes m × window as count+3 little-endian 64-bit limbs at p, for the window of `count` limbs of 2/pi
+### starting at `first`: the product fills count+2 of them and the spare top limb stays zero.
+### :param m: The argument's 113-bit significand.
+### :param first: The window's first limb in TWO_OVER_PI.
+### :param count: The window's length in limbs.
+### :param p: Room for count+3 limbs.
+secret routine cm_trig_product(m: U128, first: S64, count: U64, p: @U64) -> None
+    local low: U128 = m & 0xFFFFFFFFFFFFFFFF
+    local high: U128 = m >> 64
+    local carry: @U128 <- 0
+
+    each c in 0 til count + 3
+        # column c is (high*prev + carry) + low*cur, with cur and prev the window limbs under the two halves of m
+        last_column: S64 = count.to[S64]() - 1
+        cur: U128 = cm_trig_window_limb(first, count: count.to[S64](), k: last_column - c.to[S64]())
+        prev: U128 = cm_trig_window_limb(first, count: count.to[S64](),
+            k: count.to[S64]() - c.to[S64]())
+        # high < 2^49 keeps the first sum under 2^114, only the second can spill
+        acc: U128 = high *% prev +% carry.peek()
+        t: U128 = acc +% low *% cur
+        wrapped: Bool = t < acc
+        spill: U128 = wrapped.to[U128]() << 64
+        p.stride(c).poke(t.to_wrap[U64]())
+        next_carry: U128 = (t >> 64) | spill
+        next_carry.poke_into(carry)
+    then
+        return
+
+### n = round(256*x/pi) mod 512 from the two quadrant bits and the top 64 bits of the fraction.
+### :param quadrant: The two bits above the units bit of x*2/pi.
+### :param top_limb: The top 64 bits of the fraction.
+### :returns: n, in 0..511.
+secret routine cm_trig_nearest(quadrant: U64, top_limb: U64) -> U64
+    quadrant_high: U128 = quadrant.to[U128]() << 64
+    top: U128 = quadrant_high | top_limb.to[U128]()
+    rounded: U128 = top + 0x100000000000000 >> 57
+    r: U64 = rounded.to[U64]() & 511
+    return r
+
+### The fast argument reduction: Payne-Hanek on six limbs of 2/pi.
+### :param m: The argument's 113-bit significand.
+### :param e: The argument's unbiased exponent, at least -8.
+### :returns: The reduced argument, with `ok` false when the residual lost too many bits.
+routine cm_trig_reduce(m: U128, e: S64) -> CmTrigReduced
+    window: CmTrigWindow = cm_trig_window(e)
+    first: S64 = window.first
+    offset: S64 = window.offset
+    local product: @Array[U64, 13] <- .hollow()
+    p: @U64 = product.to[@U64]()
+    cm_trig_product(m, first, count: 6, p)
+    # the fraction is the 192 bits below the units bit, the quadrant the two above: limbs i ..= i+4
+    base: S64 = 190 - offset
+    word_index: S64 = (base >> 6) & 7
+    i: U64 = word_index.to[U64]()
+    bits: S64 = base & 63
+    a0: U64 = p.stride(i).peek()
+    a1: U64 = p.stride(i + 1).peek()
+    a2: U64 = p.stride(i + 2).peek()
+    a3: U64 = p.stride(i + 3).peek()
+    a4: U64 = p.stride(i + 4).peek()
+    f0: U64 = cm_trig_funnel(low: a0, high: a1, shift: bits)
+    f1: U64 = cm_trig_funnel(low: a1, high: a2, shift: bits)
+    f2: U64 = cm_trig_funnel(low: a2, high: a3, shift: bits)
+    quadrant: U64 = cm_trig_funnel(low: a3, high: a4, shift: bits) & 3
+    # the residual's top limb becomes signed once n is taken out
+    n: U64 = cm_trig_nearest(quadrant, top_limb: f2)
+    g_top: U64 = f2 -% ((n & 127) << 57)
+    negative: Bool = g_top >> 63 == 1
+    # |g|: complement and add one when negative
+    all_ones: U64 = U64.MAX
+    no_bits: U64 = 0
+    mask: U64 = when
+        negative => all_ones
+        else => no_bits
+    add_one: U64 = negative.to[S64]().to[U64]()
+    g0: U64 = (f0 ^ mask) +% add_one
+    wrapped0: Bool = g0 < add_one
+    carry0: U64 = wrapped0.to[S64]().to[U64]()
+    g1: U64 = (f1 ^ mask) +% carry0
+    wrapped1: Bool = g1 < carry0
+    carry1: U64 = wrapped1.to[S64]().to[U64]()
+    g2: U64 = (g_top ^ mask) +% carry1
+    lz: S64 = g2.leading_zeros().to[S64]()
+    lost: Bool = lz > 56
+    failed: CmTrigReduced = CmTrigReduced(ok: false, n: 0, negative: false, t1: 0, et: 0)
+    if lost
+        return failed
+    # |g| <= 1/256 leaves at least seven leading zeros, so every shift below is in range
+    back: S64 = 64 - lz
+    high: U64 = (g2 << lz.to[U64]()) | (g1 >> back.to[U64]())
+    low: U64 = (g1 << lz.to[U64]()) | (g0 >> back.to[U64]())
+    upper: U128 = high.to[U128]() << 64
+    g: U128 = upper | low.to[U128]()
+    product2: U256 = g.mul_wide(CM_TRIG_PI_4)
+    lzt: S64 = cm_trig_clz(cm_trig_high(product2))
+    t1: U128 = cm_trig_top256(s: product2, shift: lzt)
+    et: S64 = 1 - (lz + lzt)
+    r: CmTrigReduced = CmTrigReduced(ok: true, n: n, negative: negative, t1: t1, et: et)
+    return r
+
+### The accurate argument reduction: {cm_trig_reduce} on ten limbs of 2/pi and a 448-bit fraction.
+### :param m: The argument's 113-bit significand.
+### :param e: The argument's unbiased exponent, at least -8.
+### :returns: The reduced argument at 384 bits.
+routine cm_trig_reduce_wide(m: U128, e: S64) -> CmTrigWideReduced
+    window: CmTrigWindow = cm_trig_window(e)
+    first: S64 = window.first
+    offset: S64 = window.offset
+    local product: @Array[U64, 13] <- .hollow()
+    p: @U64 = product.to[@U64]()
+    cm_trig_product(m, first, count: 10, p)
+    # the fraction is the 448 bits below the units bit, the quadrant the two above: limbs i ..= i+8
+    base: S64 = 190 - offset
+    word_index: S64 = (base >> 6) & 7
+    i: U64 = word_index.to[U64]()
+    bits: S64 = base & 63
+    local fraction: @Array[U64, 7] <- .hollow()
+    f: @U64 = fraction.to[@U64]()
+    cm_trig_cut(p, i, bits, f)
+    i7: U64 = i + 7
+    i8: U64 = i + 8
+    a7: U64 = p.stride(i7).peek()
+    a8: U64 = p.stride(i8).peek()
+    quadrant: U64 = cm_trig_funnel(low: a7, high: a8, shift: bits) & 3
+    f6: U64 = f.stride(6).peek()
+    n: U64 = cm_trig_nearest(quadrant, top_limb: f6)
+    g_top: S64 = (f6 -% ((n & 127) << 57)).to_wrap[S64]()
+    f.stride(6).poke(g_top.to_wrap[U64]())
+    negative: Bool = g_top < 0
+    cm_trig_magnitude448(f, negative)
+    # no binary128 comes within 2^-124 of a multiple of pi/2, so the residual keeps over 300 of its bits
+    lz: S64 = cm_trig_lz448(f)
+    g: CmTrigU384 = cm_trig_top448(f, lz)
+    pio2: CmTrigU384 = CmTrigU384(l0: 0x514A08798E3404DDEF9519B3CD3A431B,
+        l1: 0x29024E088A67CC74020BBEA63B139B22, l2: 0xC90FDAA22168C234C4C6628B80DC1CD1)
+    theta: CmTrigU384 = cm_trig_mul384(a: g, b: pio2)
+    lzt: S64 = cm_trig_clz(theta.l2)
+    t: CmTrigU384 = cm_trig_shl384(x: theta, shift: lzt)
+    et: S64 = 1 - (lz + lzt)
+    r: CmTrigWideReduced = CmTrigWideReduced(n: n, negative: negative, t: t, et: et)
+    return r
+
+### Writes f[k] = the 64 bits of the product p starting at bit `bits` of limb i+k, for k = 0..6.
+### :param p: The product limbs, least significant first.
+### :param i: The first limb to cut from.
+### :param bits: The bit offset inside each limb, 0 to 63.
+### :param f: Room for seven limbs.
+secret routine cm_trig_cut(p: @U64, i: U64, bits: S64, f: @U64) -> None
+    each k: U64 in 0 til 7
+        at: U64 = i + k
+        above: U64 = at + 1
+        low: U64 = p.stride(at).peek()
+        high: U64 = p.stride(above).peek()
+        f.stride(k).poke(cm_trig_funnel(low, high, shift: bits))
+    then
+        return
+
+### Replaces the seven-limb two's-complement fraction at f by its magnitude when it is negative.
+### :param f: The fraction, least significant limb first.
+### :param negative: True when the fraction is negative.
+secret routine cm_trig_magnitude448(f: @U64, negative: Bool) -> None
+    local all_ones: U64 = U64.MAX
+    local no_bits: U64 = 0
+    local mask: U64 = when
+
+        negative => all_ones
+        else => no_bits
+    local carry: @U64 <- .hollow()
+
+    negative.to[U64]().poke_into(carry)
+
+    each k: U64 in 0 til 7
+        limb: U64 = f.stride(k).peek()
+        flipped: U64 = (limb ^ mask) +% carry.peek()
+        f.stride(k).poke(flipped)
+        next_carry: U64 = (flipped < carry.peek()).to[U64]()
+        next_carry.poke_into(carry)
+    then
+        return
+
+### Leading zeros of the 448-bit fraction at f (seven limbs, least significant first), 448 when it is zero.
+### :param f: The fraction.
+### :returns: The count of leading zero bits.
+secret routine cm_trig_lz448(f: @U64) -> S64
+    while true with k: S64 = 6
+        exhausted2: Bool = k < 0
+        all2: S64 = 448
+        if exhausted2
+            return all2
+        k2: U64 = k.to[U64]()
+        limb: U64 = f.stride(k2).peek()
+        empty: Bool = limb == 0
+        above_bits: U64 = (6 - k2) * 64
+        above: U64 = above_bits.to[U64]()
+        lz: U64 = above + limb.leading_zeros()
+        if empty
+            continue with k: (k2 - 1).to[S64]()
+        return lz.to[S64]()
+
+### The top 384 bits of the 448-bit fraction at f shifted left by lz (limbs 1..6 of the shifted value).
+### :param f: The fraction, seven limbs, least significant first.
+### :param lz: The shift, from {cm_trig_lz448}.
+### :returns: The normalized top 384 bits.
+secret routine cm_trig_top448(f: @U64, lz: S64) -> CmTrigU384
+    local shifted: @Array[U64, 7] <- .hollow()
+    local s: @U64 = shifted.to[@U64]()
+    local wbits: S64 = lz & 63
+    local below: @U64 <- 0
+
+    s.zeroinit(7)
+    word: U64 = (lz >> 6).to[U64]()
+
+    # s[q] = f[q - word] << wbits with the bits carried up from the limb below it
+    each q in word til 7
+        from: U64 = q - word
+        limb: U64 = f.stride(from).peek()
+        carried: U64 = below.peek() >> 1 >> (63 - wbits).to[U64]()
+        s.stride(q).poke((limb << wbits.to[U64]()) | carried)
+        limb.poke_into(below)
+    s1: U64 = s.stride(1).peek()
+    s2: U64 = s.stride(2).peek()
+    s3: U64 = s.stride(3).peek()
+    s4: U64 = s.stride(4).peek()
+    s5: U64 = s.stride(5).peek()
+    s6: U64 = s.stride(6).peek()
+    s2_high: U128 = s2.to[U128]() << 64
+    l0: U128 = s2_high | s1.to[U128]()
+    s4_high: U128 = s4.to[U128]() << 64
+    l1: U128 = s4_high | s3.to[U128]()
+    s6_high: U128 = s6.to[U128]() << 64
+    l2: U128 = s6_high | s5.to[U128]()
+    r: CmTrigU384 = CmTrigU384(l0: l0, l1: l1, l2: l2)
+    return r
+
+# -- fast path -----------------------------------------------------------------
+
+### theta^2 and theta^4 as 2^-128 fractions, and the unshifted theta^2, for theta = t1 × 2^(et - 128).
+### :param t1: theta's normalized fraction.
+### :param et: theta's exponent, at most 0.
+### :returns: The squares.
+secret routine cm_trig_squares(t1: U128, et: S64) -> CmTrigSquares
+    u1: U128 = cm_trig_mhi(x: t1, y: t1)
+    s: S64 = 0 - (et + et)
+    shifted: U128 = u1 >> s.to[U128]()
+    sticky: U128 = (u1 >> (s - 1).to[U128]()) & 1
+    u: U128 = shifted | sticky
+    v: U128 = cm_trig_mhi(x: u, y: u)
+    r: CmTrigSquares = CmTrigSquares(u: u, v: v, u1: u1)
+    return r
+
+### sin(theta) in theta's own floating form: t1*(1 - u*(A - u*B)) with the even and odd halves of a
+### degree-four minimax for (1 - sin(sqrt(u))/sqrt(u))/u in v.
+### :param t1: theta's normalized fraction.
+### :param u: theta^2 as a 2^-128 fraction.
+### :param v: theta^4 as a 2^-128 fraction.
+### :returns: sin(theta) at theta's exponent.
+secret routine cm_trig_sin_frac(t1: U128, u: U128, v: U128) -> U128
+    s0: U128 = 0x2AAAAAAAAAAAAAAAAAAAAAAAAAAA8B20
+    s1: U128 = 0x02222222222222222222221FA2FD1243
+    s2: U128 = 0x000D00D00D00D00D00C7F4BE42E1A641
+    s3: U128 = 0x00002E3BC74AAD85378E3E9D9C3058A3
+    s4: U128 = 0x0000006B99115EA3FD77EEA5743FF7BE
+    even_tail: U128 = s2 +% cm_trig_mhi(x: v, y: s4)
+    even: U128 = s0 +% cm_trig_mhi(x: v, y: even_tail)
+    odd: U128 = s1 +% cm_trig_mhi(x: v, y: s3)
+    poly: U128 = even -% cm_trig_mhi(x: u, y: odd)
+    t1_u: U128 = cm_trig_mhi(x: t1, y: u)
+    r: U128 = t1 -% cm_trig_mhi(x: t1_u, y: poly)
+    return r
+
+### 1 - cos(theta) as the floating fraction c1 × 2^(2*et - 128): theta^2*(1/2 - u*W) with W the even and odd
+### halves of sum (-1)^k u^k/(2k+4)! in v, six terms.
+### :param u1: The unshifted theta^2.
+### :param u: theta^2 as a 2^-128 fraction.
+### :param v: theta^4 as a 2^-128 fraction.
+### :returns: 1 - cos(theta).
+secret routine cm_trig_cos_corr(u1: U128, u: U128, v: U128) -> U128
+    c0: U128 = CM_TRIG_COS_COEF.getitem(2)
+    c1: U128 = CM_TRIG_COS_COEF.getitem(5)
+    c2: U128 = CM_TRIG_COS_COEF.getitem(8)
+    c3: U128 = CM_TRIG_COS_COEF.getitem(11)
+    c4: U128 = CM_TRIG_COS_COEF.getitem(14)
+    c5: U128 = CM_TRIG_COS_COEF.getitem(17)
+    even_tail: U128 = c3 +% cm_trig_mhi(x: v, y: c5)
+    even: U128 = c1 +% cm_trig_mhi(x: v, y: even_tail)
+    odd: U128 = c2 +% cm_trig_mhi(x: v, y: c4)
+    inner: U128 = even -% cm_trig_mhi(x: u, y: odd)
+    outer: U128 = c0 -% cm_trig_mhi(x: u, y: inner)
+    r: U128 = cm_trig_mhi(x: u1, y: outer)
+    return r
+
+### A fast-path result that hands the work to the accurate path.
+### :returns: A CmTrigFast with `vouched` false.
+secret routine cm_trig_unvouched() -> CmTrigFast
+    r: CmTrigFast = CmTrigFast(vouched: false, frac: 0, exponent: 0, sign: 0)
+    return r
+
+### The fast path: sin or cos of |x| as a 128-bit floating fraction, or unvouched.
+### :param m: The argument's 113-bit significand.
+### :param e: The argument's unbiased exponent.
+### :param cosine: True for the cosine, false for the sine.
+### :returns: The fast result.
+secret routine cm_trig_fast(m: U128, e: S64, cosine: Bool) -> CmTrigFast
+    if e < -8
+        # below 2^-8 the argument is its own reduced angle
+        t1: U128 = m << 15
+        et: S64 = e + 1
+        sq: CmTrigSquares = cm_trig_squares(t1, et)
+        if cosine
+            # cos(theta) = 1 - (1 - cos(theta)), just under 1
+            correction: U128 = cm_trig_cos_corr(u1: sq.u1, u: sq.u, v: sq.v)
+            placed: U256 = cm_trig_place256(f: correction, shift: et * 2 + 128)
+            near_one: U256 = ~placed  # 2^256 - 1 - placed
+            frac: U128 = cm_trig_high(near_one)
+            r: CmTrigFast = CmTrigFast(vouched: true, frac: frac, exponent: 0, sign: 0)
+            return r
+        # sin(theta) < theta drops a leading bit when t1 starts a binade
+        sine: U128 = cm_trig_sin_frac(t1, u: sq.u, v: sq.v)
+        lz: S64 = cm_trig_clz(sine)
+        frac: U128 = sine << lz.to[U128]()
+        r: CmTrigFast = CmTrigFast(vouched: true, frac: frac,
+            exponent: (et - lz).to_wrap[U64](), sign: 0)
+        return r
+    red: CmTrigReduced = cm_trig_reduce(m, e)
+    ok: Bool = red.ok
+    unvouched: CmTrigFast = cm_trig_unvouched()
+    if not ok
+        return unvouched
+    t1: U128 = red.t1
+    sq: CmTrigSquares = cm_trig_squares(t1, et: red.et)
+    sine_theta: U128 = cm_trig_sin_frac(t1, u: sq.u, v: sq.v)
+    r: CmTrigFast = cm_trig_fast_tail(red, sq, sine_theta, cosine)
+    return r
+
+### The fast path after the reduction: sin or cos of A ± theta (A = j*pi/256) from the table and theta's
+### series.
+### :param red: The fast reduction.
+### :param sq: theta's squares.
+### :param sine_theta: sin(theta) from {cm_trig_sin_frac}.
+### :param cosine: True for the cosine, false for the sine.
+### :returns: The fast result.
+secret routine cm_trig_fast_tail(red: CmTrigReduced, sq: CmTrigSquares, sine_theta: U128,
+    cosine: Bool) -> CmTrigFast
+    # the cosine is the sine a quadrant on: the top bit of the quadrant is the sign, the low bit which of
+    # sin A and cos A is wanted
+    local n: S64 = red.n.to[S64]()
+    local quadrant: S64 = (n >> 7) + cosine.to[S64]()
+    local want_cos: S64 = quadrant & 1
+    local j: S64 = n & 127
+    local flipped: Bool = quadrant & 2 != 0
+    local sign_bit: U128 = B128_SIGN
+    local no_sign: U128 = 0
+    local flip: U128 = when
+
+        flipped => sign_bit
+        else => no_sign
+
+    if j == 0 and want_cos == 0
+        # A = 0: the result is ±sin(theta) itself
+        lz: S64 = cm_trig_clz(sine_theta)
+        frac: U128 = sine_theta << lz.to[U128]()
+        exponent: S64 = red.et - lz
+        negative: Bool = red.negative
+        g_sign: U128 = when
+            negative => sign_bit
+            else => no_sign
+        sign: U128 = flip ^ g_sign
+        r: CmTrigFast = CmTrigFast(vouched: true, frac: frac, exponent: exponent.to_wrap[U64](),
+            sign: sign)
+        return r
+    # T1*cos(theta) ± T2*sin(theta), with T1 the wanted one of sin A and cos A and T2 the other
+    et: S64 = red.et
+    correction: U128 = cm_trig_cos_corr(u1: sq.u1, u: sq.u, v: sq.v)
+    first1: U128 = cm_trig_sincos(j: j.to[U64](), w: want_cos.to[U64](), limb: 1)
+    first2: U128 = cm_trig_sincos(j: j.to[U64](), w: want_cos.to[U64](), limb: 2)
+    second2: U128 = cm_trig_sincos(j: j.to[U64](), w: (1 - want_cos).to[U64](), limb: 2)
+    c_frac: U128 = cm_trig_mhi(x: first2, y: correction)
+    s_frac: U128 = cm_trig_mhi(x: second2, y: sine_theta)
+    c: U256 = cm_trig_place256(f: c_frac, shift: et * 2 + 128)
+    s: U256 = cm_trig_place256(f: s_frac, shift: et + 128)
+    first: U256 = cm_trig_join(high: first2, low: first1)
+    base: U256 = first -% c
+    negative: Bool = red.negative
+    subtract: Bool = negative != (want_cos != 0)
+    sum: U256 = base +% s
+    difference: U256 = base -% s
+    f: U256 = when
+        subtract => difference
+        else => sum
+    lz: S64 = cm_trig_clz(cm_trig_high(f))
+    frac: U128 = cm_trig_top256(s: f, shift: lz)
+    r: CmTrigFast = CmTrigFast(vouched: true, frac: frac, exponent: (0 - lz).to_wrap[U64](),
+        sign: flip)
+    return r
+
+# -- accurate path -------------------------------------------------------------
+
+### sum_{k>=0} (-1)^k coef[k]*u^k, eighteen terms by Horner in three tiers: terms 11..17 at 128 bits, 2..10
+### at 256 and 0..1 at 384. Every step stays positive because u*coef[k+1] < coef[k].
+### :param u: theta^2 at 384 bits.
+### :param coef: The eighteen coefficients, three limbs each.
+### :returns: The series sum.
+secret routine cm_trig_alternating(u: CmTrigU384, coef: @U128) -> CmTrigU384
+    until k < 11 with k: U64 = 16, acc: U128 = cm_trig_coef(coef, k: 17, limb: 2)
+        c: U128 = cm_trig_coef(coef, k, limb: 2)
+        continue with k: k - 1, acc: c -% cm_trig_mhi(x: u.l2, y: acc)
+    then
+        until k2 < 2 with k2: U64 = 10, acc2: U256 = cm_trig_join(high: acc, low: 0)
+            c_lo: U128 = cm_trig_coef(coef, k: k2, limb: 1)
+            c_hi: U128 = cm_trig_coef(coef, k: k2, limb: 2)
+            c: U256 = cm_trig_join(high: c_hi, low: c_lo)
+            u_top: U256 = cm_trig_join(high: u.l2, low: u.l1)
+            product: U256 = cm_trig_mul256(a: u_top, b: acc2)
+            continue with k2: k2 - 1, acc2: c -% product
+        then
+            high: U128 = cm_trig_high(acc2)
+
+            until k3 < 0 with k3: S64 = 1, acc3: CmTrigU384 = CmTrigU384(l0: 0,
+                l1: acc2.to_wrap[U128](), l2: high)
+                c0: U128 = cm_trig_coef(coef, k: k3.to[U64](), limb: 0)
+                c1: U128 = cm_trig_coef(coef, k: k3.to[U64](), limb: 1)
+                c2: U128 = cm_trig_coef(coef, k: k3.to[U64](), limb: 2)
+                c: CmTrigU384 = CmTrigU384(l0: c0, l1: c1, l2: c2)
+                continue with k3: k3 - 1, acc3: cm_trig_sub384(a: c,
+                    b: cm_trig_mul384(a: u, b: acc3))
+            then
+                return acc3
+
+### Rounds a normalized 384-bit fraction frac × 2^(e2 - 384) to binary128, to nearest with ties to even. The
+### result is never subnormal here: |x| >= 2^-57 keeps it above 2^-124.
+### :param frac: The normalized fraction.
+### :param e2: The exponent (wrapping, as stored).
+### :param sign: The sign bit to set.
+### :returns: The result's B128 bits.
+secret routine cm_trig_round384(frac: CmTrigU384, e2: U64, sign: U128) -> U128
+    top: U128 = frac.l2
+    mantissa: U128 = top >> 15
+    round_word: U128 = (top >> 14) & 1
+    round_bit: Bool = round_word != 0
+    top_below: U128 = (top & 0x3FFF) | frac.l1
+    below: U128 = top_below | frac.l0
+    sticky: Bool = below != 0
+    odd: Bool = mantissa & 1 != 0
+    up: U128 = (round_bit and (sticky or odd)).to[U128]()
+    biased_exponent: U64 = e2 +% 16382
+    biased: U128 = biased_exponent.to[U128]() << 112
+    magnitude: U128 = biased +% (mantissa -% B128_IMPLICIT) +% up
+    r: U128 = sign | magnitude
+    return r
+
+### The 384-bit path: everything the fast path would not decide.
+### :param m: The argument's 113-bit significand.
+### :param e: The argument's unbiased exponent.
+### :param cosine: True for the cosine, false for the sine.
+### :param sign: The sign bit the argument contributes (0 for the cosine).
+### :returns: The correctly rounded result's B128 bits.
+secret routine cm_trig_accurate(m: U128, e: S64, cosine: Bool, sign: U128) -> U128
+    if e < -8
+        # below 2^-8 the argument is its own reduced angle
+        t: CmTrigU384 = CmTrigU384(l0: 0, l1: 0, l2: m << 15)
+        red: CmTrigWideReduced = CmTrigWideReduced(n: 0, negative: false, t: t, et: e + 1)
+        r: U128 = cm_trig_evaluate(red, cosine, sign)
+        return r
+    red: CmTrigWideReduced = cm_trig_reduce_wide(m, e)
+    r: U128 = cm_trig_evaluate(red, cosine, sign)
+    return r
+
+### sin or cos of A ± theta at 384 bits, rounded.
+### :param red: The accurate reduction.
+### :param cosine: True for the cosine, false for the sine.
+### :param sign: The sign bit the argument contributes (0 for the cosine).
+### :returns: The correctly rounded result's B128 bits.
+secret routine cm_trig_evaluate(red: CmTrigWideReduced, cosine: Bool, sign: U128) -> U128
+    w: CmTrigWide = cm_trig_evaluate_wide(red, cosine, sign)
+    r: U128 = cm_trig_round384(frac: w.frac, e2: w.exponent, sign: w.sign)
+    return r
+
+### sin or cos of A ± theta at 384 bits, before rounding. Tan.te builds both from one {cm_trig_series}.
+### :param red: The accurate reduction.
+### :param cosine: True for the cosine, false for the sine.
+### :param sign: The sign bit the argument contributes (0 for the cosine).
+### :returns: The normalized 384-bit result, its exponent, and its sign bit.
+secret routine cm_trig_evaluate_wide(red: CmTrigWideReduced, cosine: Bool, sign: U128) -> CmTrigWide
+    local series: CmTrigSeries = cm_trig_series(red)
+
+    if cm_trig_is_pure_sine(red, cosine)
+        # the pure sine never reads 1 - cos(theta)
+        unused: CmTrigU384 = CmTrigU384(l0: 0, l1: 0, l2: 0)
+        r: CmTrigWide = cm_trig_compose(red, series, one_minus: unused,
+            function: CmTrigFunction(cosine: cosine, sign: sign))
+        return r
+    one_minus: CmTrigU384 = cm_trig_one_minus(series.u)
+    r: CmTrigWide = cm_trig_compose(red, series, one_minus,
+        function: CmTrigFunction(cosine: cosine, sign: sign))
+    return r
+
+### theta^2 and sin(theta) at 384 bits, shared by the sine and the cosine of one accurate reduction.
+### :param red: The accurate reduction.
+### :returns: u = theta^2 as a 2^-384 fraction, and sin(theta) normalized with its exponent.
+secret routine cm_trig_series(red: CmTrigWideReduced) -> CmTrigSeries
+    t: CmTrigU384 = red.t
+    et: S64 = red.et
+    square: CmTrigU384 = cm_trig_mul384(a: t, b: t)
+    u: CmTrigU384 = cm_trig_shr384(x: square, shift: 0 - (et + et))
+    # sin(theta) = theta*(1 - u*Q) keeps theta's floating form, at most one bit short
+    q: CmTrigU384 = cm_trig_alternating(u, coef: CM_TRIG_SIN_COEF.to[@U128]())
+    uq: CmTrigU384 = cm_trig_mul384(a: u, b: q)
+    t_uq: CmTrigU384 = cm_trig_mul384(a: t, b: uq)
+    sine_raw: CmTrigU384 = cm_trig_sub384(a: t, b: t_uq)
+    lzs: S64 = cm_trig_lz384(sine_raw)
+    sine: CmTrigU384 = cm_trig_shl384(x: sine_raw, shift: lzs)
+    r: CmTrigSeries = CmTrigSeries(u: u, sine: sine, es: et - lzs)
+    return r
+
+### 1 - cos(theta) = u*Q at 384 bits.
+### :param u: theta^2 from {cm_trig_series}.
+### :returns: 1 - cos(theta).
+secret routine cm_trig_one_minus(u: CmTrigU384) -> CmTrigU384
+    q: CmTrigU384 = cm_trig_alternating(u, coef: CM_TRIG_COS_COEF.to[@U128]())
+    r: CmTrigU384 = cm_trig_mul384(a: u, b: q)
+    return r
+
+### Whether the result is ±sin(theta) itself (breakpoint A = 0 and the sine wanted), which needs no 1 - cos(theta).
+### :param red: The accurate reduction.
+### :param cosine: True for the cosine, false for the sine.
+### :returns: True for the pure sine.
+secret routine cm_trig_is_pure_sine(red: CmTrigWideReduced, cosine: Bool) -> Bool
+    n: S64 = red.n.to[S64]()
+    quadrant: S64 = (n >> 7) + cosine.to[S64]()
+    want_cos: S64 = quadrant & 1
+    j: S64 = n & 127
+    return j == 0 and want_cos == 0
+
+### sin or cos of A ± theta from theta's series and the tables, before rounding.
+### :param red: The accurate reduction.
+### :param series: theta^2 and sin(theta) from {cm_trig_series}.
+### :param one_minus: 1 - cos(theta) from {cm_trig_one_minus}, unread for the pure sine.
+### :param function: The sine or the cosine, and the sign the argument contributes.
+### :returns: The normalized 384-bit result, its exponent, and its sign bit.
+secret routine cm_trig_compose(red: CmTrigWideReduced, series: CmTrigSeries, one_minus: CmTrigU384,
+    function: CmTrigFunction) -> CmTrigWide
+    local cosine: Bool = function.cosine
+    local sign: U128 = function.sign
+    local sine: CmTrigU384 = series.sine
+    local es: S64 = series.es
+
+    n: S64 = red.n.to[S64]()
+    quadrant: S64 = (n >> 7) + cosine.to[S64]()
+    want_cos: S64 = quadrant & 1
+    j: S64 = n & 127
+    flipped: Bool = quadrant & 2 != 0
+    flip_sign: U128 = sign ^ B128_SIGN
+    sg: U128 = when
+        flipped => flip_sign
+        else => sign
+    negative: Bool = red.negative
+    if j == 0 and want_cos == 0
+        # A = 0: the result is ±sin(theta) itself
+        flip_sign2: U128 = sg ^ B128_SIGN
+        sign_out: U128 = when
+            negative => flip_sign2
+            else => sg
+        r: CmTrigWide = CmTrigWide(frac: sine, exponent: es.to_wrap[U64](), sign: sign_out)
+        return r
+    # 1 - cos(theta) = u*Q, so T*cos(theta) = T - T*(u*Q) never overflows the frame
+    first: CmTrigU384 = cm_trig_sincos384(j: j.to[U64](), w: want_cos.to[U64]())
+    second: CmTrigU384 = cm_trig_sincos384(j: j.to[U64](), w: (1 - want_cos).to[U64]())
+    first_c: CmTrigU384 = cm_trig_mul384(a: first, b: one_minus)
+    base: CmTrigU384 = cm_trig_sub384(a: first, b: first_c)
+    second_s: CmTrigU384 = cm_trig_mul384(a: second, b: sine)
+    term: CmTrigU384 = cm_trig_shr384(x: second_s, shift: 0 - es)
+    subtract: Bool = negative != (want_cos != 0)
+    sum: CmTrigU384 = cm_trig_add384(a: base, b: term)
+    difference: CmTrigU384 = cm_trig_sub384(a: base, b: term)
+    f: CmTrigU384 = when
+        subtract => difference
+        else => sum
+    lz: S64 = cm_trig_lz384(f)
+    normalized: CmTrigU384 = cm_trig_shl384(x: f, shift: lz)
+    r: CmTrigWide = CmTrigWide(frac: normalized, exponent: (0 - lz).to_wrap[U64](), sign: sg)
+    return r
+
+# -- tables --------------------------------------------------------------------
+
+### [sin(j*pi/256), cos(j*pi/256)] * 2^384, rounded to nearest: entry (j*2 + w)*3 + limb is 128-bit limb `limb`
+### (0 = least significant) of the sine (w = 0) or the cosine (w = 1). cos(0) saturates to 2^384 - 1.
+secret preset CM_TRIG_SINCOS: @Array[U128, 768] <- [0x00000000000000000000000000000000,
+    0x00000000000000000000000000000000, 0x00000000000000000000000000000000,
+    0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF,
+    0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF, 0xE36885F0FD7B869A35B064282559DB48,
+    0xF0257406FA2C2F2506E03A898EBF83DB, 0x03243A3F9BD8F08CC3C75F41B6CE7AA7,
+    0xC7E9F8E9E7F57263FC29714C032279B1, 0xFF8D89566A2181DBAB255BF76857A287,
+    0xFFFB10B4DC96DABBB47903F7A19F8EE1, 0xA8390BC33658B7D64CF0323D7CBF0EB5,
+    0x62652F9E1AA508AC0CF31AC036DE81C6, 0x0648557DE8D99F7E4E29CF6E5FED0679,
+    0xAB5DC1A419785764B707F21199FE9209, 0x568FB69282182F32EF6F30DA8FE307E8,
+    0xFFEC4304266865D95657552366961732, 0x02881E6AB9834899FC79C4BEAB7508D1,
+    0x036D93DFEF35CBD6E4DF8597C03C05D2, 0x096C32BACA2AE68B437B2DD49D5FCA3C,
+    0x831DCF0E30781C87DE3AD81725B27622, 0x30BD6FBE3CDFB5852FB15C7502F6DE78,
+    0xFFD3977FF7BAE4E9664649B4D541B9C5, 0xA8902B24FDD1FB4672E72BF5AF6010C4,
+    0x1216769FCDA0D0EBF36FC97B1FEF1FDE, 0x0C8FB2F886EC09F376A17954B2B7C517,
+    0x1BF58F6A90D520D5A94FF9046C34D4E4, 0xCF53E4BAA403250B5750700A6DF26524,
+    0xFFB10F1BCB6BEF1D421E8EDAAF59453D, 0x9684B763F409EA333D124A454239F979,
+    0xFB3691DAA4FC8F5CEC1CD0D9C7C3B699, 0x0FB2B73CFC106FF68F0A0E36A000C734,
+    0xA7BA18398767930A1018736805F7BF87, 0x3CB04DA7E6B0BBC3369CA2E0608BE070,
+    0xFF84AB2C738D6A03519C314973CCAE6B, 0x83D904A423E340DFFD367461499EA9FE,
+    0x825261EDB7445E115B93892877537A40, 0x12D52092CE19F5CCBEEEAE8129A786B8,
+    0x3B7C57BC5C735193F1419BCC0FF7192E, 0x91CF862E7FAD71EE964AAD96D95AE9FB,
+    0xFF4E6D680C41D0A90F668633F1AB8589, 0x46F9278D36FB08FEDBFF81D194CA39FA,
+    0xA360BEA372E455EF2EAFD08A7F7FC6C4, 0x15F6D00A9AA418C17FBA5F8126CB2985,
+    0x7FA801BEA5D4C3CBBD57CE6223DF6540, 0x5F063781804A271A287F3F198F7CD53C,
+    0xFF0E57E5EAD848D11F1901544271C3F8, 0x01AF208BBD6F4012A801974079E03914,
+    0x21030810A8DDD093D9ABE105FE0FBEA3, 0x1917A6BC29B42BE1D8E72D912977EE71,
+    0xA0E9EE7A85258E45485224A982A7C85A, 0x5A2C976D196A3567B2681B468EFBA361,
+    0xFEC46D1E89292CF041390EFDC726E9EF, 0xD07230F3888617714B3F495DC82A7A68,
+    0x39773C54CB0E9276209ABD55453A49B8, 0x1C3785C79EC2D4F586310766026F8DCC,
+    0x12E11C21CF9985C63AC4ECA2FBD267BB, 0xFF4BD7DE3AAE3A287FAF2EFDD7AE4ACC,
+    0xFE70AFEB6D33D6A22907CF2B3F6FEAC1, 0xDAFC53BDB0F3AD5E98B1EED416377B10,
+    0xE2427477A6ECF31EF0C8A6BF13A12290, 0x1F564E56A9730E344E08E535CADAF146,
+    0x300E707E9A9A66E5F65D64CE2EA940EE, 0xCC9D5D787E81F86792AE1E5D881F153B,
+    0xFE1323870CFE9A3D90CD1D959DB674EE, 0xE0692C1D4D6A90C2DD411DF178EB7D1E,
+    0x04E60CACC98164D7CFE841FD3B113802, 0x2273E19DB5EAED56E5E597261830D391,
+    0xD3BD6558940206CBD94ACCF74DE23B6D, 0x9569C48A4106EDF0C35ED177651DDBB9,
+    0xFDABCB8CAEBA091BFAC7397CC07A646F, 0x8E8799E6913803E037DD74AAAEB56C5A,
+    0x9FE14048BE786E103C6F72706B194B88, 0x259020DD1CC27444C002A2684781F07F,
+    0x673171E6A6554F35B393BE74C8381589, 0xA19702D6D140D72962B817621FF0F760,
+    0xFD3AABF84528B50BEAE6BD951C1DABBD, 0x26ACE06DB55ECFBD063C572324D01A61,
+    0xFCD3974462EE60E3D0DCFA34D1AA337F, 0x28AAED62527CB3B5E976FB98213B8497,
+    0xEAB2D4B6C97209B7CF685093AB467D00, 0x39DBEB5C2D2CBF8E8B70E81EA4598EE8,
+    0xFCBFC926484CD43AA3E22B4D38917E73, 0x712BEB01D32241B11B51A3CDAD65A191,
+    0x23D5A2B8DC1E0341DC32FB8507A753B5, 0x2BC42889167F8CA98FFBBCEED62C7C43,
+    0x184B1D6FCCFC856E9C1991B686A00C7D, 0x246DDC4E63F59390B859505A0B301225,
+    0xFC3B27D38A5D49AB256778FFCB5C1769, 0x767DFAFAB5BA9092655E186472BE5455,
+    0xABCC11744430DB5E8767E77E76440759, 0x2EDBB3BCA17E628EAF776280D975AC74,
+    0xE1D49C2B973C884C1046BCDCF4FCCD05, 0xF68925B421C48B09A1971C56EBC10D90,
+    0xFBACCD1D0903BB09E63AE8632B84473B, 0xA28FBDBE7EB1987E24859793181C3718,
+    0xF394E58D12972F1D39438767895414C1, 0x31F17078D34C156C9732300393F33613,
+    0x947A5373353C45A48D5B15EAA58368EF, 0xC5F40E3FD8F18AE1B1997321B48E8B1B,
+    0xFB14BE7FBAE581562172A361FD2A722E, 0xD0FCF9CF13165FFEF465FF2DCBE8AC4B,
+    0x8C47E96B350B7C3F6E7693D88171A2B4, 0x3505404B6008A13C37D0017BDA992A80,
+    0x8DF64F3218965D3CEE268C7681608EBC, 0x7865A49BDCD7F07445770C9F804EFEEC,
+    0xFA7301D8597966711FE196A53FB5B237, 0x276234F6F3E1E1EBA623A2A80C4CB131,
+    0x2C9B801C691E71BB813B716E71055E67, 0x381704D4FC9EC5F943AF186B79B2A0F3,
+    0xA87CF32CE084AF6A5AF910DED9DEEB17, 0x79B567A67CDE8B6161E63B20928C47AF,
+    0xF9C79D63272C46284504AE08D19B2980, 0x8F7F5E200D41A5808DEE643BBBD353D6,
+    0xC138AD021532194D04EAAAAB0D4998EA, 0x3B269FCA8A8622BADC913B883D64660E,
+    0x09C93255BC853CED705A76D3418F2B4F, 0x2E09716DFF309C6261E131E94AE140BE,
+    0xF91297BBB1D6CDBE68FC6E4D6A920BD2, 0xA9BF1FAE55E972894FFAEB22D748D6D4,
+    0x5580085F9C2247B376CEEE5DEE6D2D54, 0x3E33F2F642BE355E90887712E9DC9663,
+    0x18DA934F3FC637939958F29A37EFD515, 0x95A1ACB343363FB26D1932845F3813DD,
+    0xF853F7DC9186B952C7ADC6B4988891BA, 0xA3808A70A1DA1D660FA8580DC2529179,
+    0xCB01C0A806A3322ECE36BA75AB4FFE02, 0x413EE038DFF6B7FD7DA6491B4F867803,
+    0x600449CD14F8B1EC52BFD4ADA717A31C, 0x4F10D75812D26A6D901915A71344B708,
+    0xF78BC51F239E12C6214CFFCEE9DD33CA, 0x2098BB3F6852D2B1FD197AFA03C1844E,
+    0xF735312B47773C266A6E3A60FDAE388E, 0x4447498AC7D9DD824C20AB7AA99A2182,
+    0xAFDC40732A1B03F60F46E91ACB4EEAB8, 0xB06854A7D3139B87F2F68677A56EFB23,
+    0xF6BA073B424B19E82C791F59CC1FFC22, 0xA75AB2EF3590737E5257CF0B424AAB42,
+    0x2B110165BC3BA0B2E1A97DB3C5D0FC6C, 0x474D10FD336CF746F95F1F657313C4EA,
+    0xD727E908A1CC5001D24303F2F370D960, 0xCB773DB17E36DEB8A64033468F47F60F,
+    0xF5DEC646F85BA1C6C8C615E72768D6B4, 0x96E8A93742139E4776C746094BCA11DE,
+    0xC70534171BF68A811C561EA3E50849C2, 0x4A5018BB567C16A2D725D3B9ED35FBA9,
+    0xD5FD8A1CAFB2CCE52A53096F0C1278A8, 0x5EE4B09989A117288E77EE63670FA090,
+    0xF4FA0AB6316ED2EC163C5C7F03B718C5, 0xDA3EC2EC26E111AA1CE81F6A7938F852,
+    0xE9B81D82D31B398729694EDDB5AFBCC9, 0x4D50430B860546C34FFD0691F9E13630,
+    0x5FD41175E0C39C34B336C99CE723D817, 0xD861A7EF2E855F75E59AAD1CF16CDB2B,
+    0xF40BDD5A6688662F5019794A1F5896E4, 0x16AF5C057A216A8C08371289CB79DCE7,
+    0x7B0A0A42F45C41BD64895285F2B7E950, 0x504D72505D98050C97C4AFA25181E605,
+    0xC3D4240D5D9A890AE285567B61BD57D7, 0x6CC90B7D06C506D8511AACDCD3B8EB99,
+    0xF314476247088F74A5486BDC455D56A2, 0x9DEA4AFC821A9730F90D930343D33002,
+    0xDDF9E1806CDC80EF18E2BC14C8ED3C36, 0x53478909E39DA8920B90C3C942BFA62C,
+    0xD7166CD3D924D607B942B718144C51CB, 0x83EF188365E5681D40E0BA89720E6C81,
+    0xF21352595E0BF350E7112E89103CC0C6, 0x7D9D0AF68FC06E7F3B27DFFBFC02AB2F,
+    0x1A157CED9B54E454E1E5B755B8291558, 0x563E69D6AC7F73F8408FCA9CC277FC1F,
+    0xD2CFECDDD6B7BA8AB39ACCC3025A1B44, 0x89DAB2E0FE03A229894C0E9AAC77BFE4,
+    0xF1090827B43725FD67127DB35B287315, 0x70648748C0E93F2FA093129E5604B25C,
+    0xA162F122C751FFBEE448924574962B91, 0x5931F774FC9F184434AD29990485D84D,
+    0x878499CDABE3CDFDB477FBF5EADCD513, 0xF01BB72D7BCDCEFB3BE1D154823575EA,
+    0xEFF573116DF1555D62AEF7B55319D1D3, 0xE83C1FFDA3EC476F39BF1307DD6481F6,
+    0xEF75477F5DBB812B2B7D0EA00521B3D9, 0x5C2214C3E9167ABB4E61F79B3A36F1DB,
+    0x0E0EA289950ADD57A8ACC772534BBB89, 0xFC4FACDFD3D64E3FB6A4DEC498E3FBC3,
+    0xEED89DB66611E30786F8C20FB664B01A, 0xF46E8417AE1B7AC7023EC85E7E723382,
+    0x4633259B16954DADD07CF3484AACCA02, 0x5F0EA4C477339C0668FC87BCFA363F00,
+    0x6479184FD64FDD03FFF5AC40EEC5DD32, 0x6F340FABAA13780EEE2EA72F6796AAB4,
+    0xEDB29311C504D65211815196B9FBF5DF, 0x6D12D59BBA9C48817B8A103264EDAF26,
+    0xBDF1F5B4AB3DE24C3A3C159062718F71, 0x61F78A9ABAA58B4698916152CF7EEE1B,
+    0xA6340CB65C4B11D5B1EC03E9739998C9, 0xF0A83D3CD0DAE9B5DB897C2384083746,
+    0xEC835E79946A31457E610231AC1D6180, 0x2A51BB803173C21809E7F29DF29795A8,
+    0xCE241F5BDDEC213C823518EA88A51741, 0x64DCA98EF24F5CB4218CF2D6AD86E5C1,
+    0x15A1EF23B6FCBE7C5D2C60A38E3F1513, 0xEF30F42455269F35D67B03C2E02269D4,
+    0xEB4B0B9E4F34561739E39C6C2AB3655C, 0x128CFED9C6A525AC154B74A5668D058D,
+    0x16FEC586E008E2C976C8C1D21CFB8D44, 0x67BDE50EA3B628B6D409485EDD56B172,
+    0x23CB86A3C7B29248E4F7620CFF6DE0C8, 0x3D5705F10A9A7F6F2397EA24D5049427,
+    0xEA09A68A6E49CD6215AD45B4A1B5E823, 0xAD30468299D12A94D31EC3E562D38D68,
+    0x8680B929C2AF992EB6224CAC9D2FDE72, 0x6A9B20ADB4FF262A0EF911A3308E35A5,
+    0x1AC1087622CE65199F45710178447EDE, 0x18801DD8EB6D0389E02CADE99A642003,
+    0xE8BF3BA1F1AEDFBBF8972AFFB3D98E1F, 0x5E7A1201472731CD28A927836F80A344,
+    0x041E72879F2CC28A9B2AFFA69C693D13, 0x6D744027857300AD9B165CBA0C171818,
+    0xC924411252C09E83C0A76C669F14305B, 0x2F1BB3282663E45109DE14EFEA575873,
+    0xE76BD7A1E63B9786125129529D48A92F, 0xFDD30E2B653CF05E5197DC55B37B71A1,
+    0x26D02C91483D2B982F03AB4C7A03BCA6, 0x70492760047B9A7EC5544AEADF9F4275,
+    0x760A98A3A5E7070A2F1F5397D9B3BD20, 0x83DAD966DF1F6A5BAC14CDDA015A2273,
+    0xE60F879FE7E2E1E57613B68F6AB0312F, 0x6F830A878EE71525A4AAEC3E753E8319,
+    0x5A5C9453FA24A5344BF6E0E57669D638, 0x7319BA64C711785A1439670DFE3D68E6,
+    0xB858FEC82022732F4995E362E423E0B2, 0x8743F3FE219A6A8F27902AA36084A51B,
+    0xE4AA5909A08FA7B4122785AE67F5515C, 0xDEB7639B7FDA6317504841DBC1BC33CB,
+    0xD6A30F214C6F566194211E282444D411, 0x75E5DD6E1B8E25550EC87BC0574A889F,
+    0x00C457882D61331AB59D28224CF60B9A, 0xDA3DAC309974FA5BCD6367A773E9C0FC,
+    0xE33C59A4439CD8EC36563E2FFAD83519, 0x1AC961F0B0786C8E974624FBB7DD5944,
+    0xD68AAD829DACA0D0CA819CED385CB98A, 0x78AD74E01BD8EC78362474F1A105878E,
+    0xF775E41EC0015D69C80F46BEAF1A70B6, 0xFDEA3FF0DC05332782C4FE35F8F29CEA,
+    0xE1C5978C05ED8691F4E8A8372F8C580F, 0x7BE9BE180F7AD0197C972F8498CC190A,
+    0x2CC10E25C2A714B5A2B8A0351E3A7882, 0x7B70654BBDE35622F083CC12119FF7A3,
+    0xC22923054710B10BF38130F5B4F7D5A8, 0xC9985AE9491098CAB0D96A3A40821766,
+    0xE046213392AA486C55FF6038A5197366, 0xA8B8AC3A1AAD37323D2D1EF3B7418052,
+    0xB55AE104D717A04BD37A87FA45CE838B, 0x7E2E936FE26AE7ED13E03E4889485C68,
+    0xA01D809BEB9CBEF8ACD64CCE066F8326, 0xD4A257966E11637986A3422B18230D41,
+    0xDEBE05637CA94CFB4B19AA71FEC3AE6C, 0x9D3488DB15BA9684EA356B71F2FA5F76,
+    0xBABCFDF74F528666EDEB672DFDAF228C, 0x80E7E43A61F5B6CB5CA183DC973ABC21,
+    0xB1B75F774B427EF67C175BC3672F2209, 0x7866F911E19BDDC76A0A4B9A9F65B5EC,
+    0xDD2D5339AC8692FD49C6E0EA76CBCAAC, 0x718FB60D736DCE7CC4E8DAC740710C18,
+    0xD6BC7FE57653AEC32D3BFE70D9AB409A, 0x839C3CC917FF6CB4BFD79717F2880ABE,
+    0xA71857FD6A653DB4CBA1E4CA9B20EF6B, 0xB67292CBDF4CB882F8AE9C38D38A7789,
+    0xDB941A28CB71EC872C19B63253DA43FB, 0x68298F5E656CDDCFAEE3FDE7196372B6,
+    0xA4087BB61A5A157143FDC5FB3261BDE9, 0x864B826AEC4C74E585043222C9BDD18C,
+    0x31CD467B273C3B6BCFA21AAFBC4AF64E, 0x768DF376F0EDC304F2ABC04130B0A03C,
+    0xD9F269F7AAB88C2928E81DCB6DAB91AC, 0xDD549BB352A247B8275C1D521F91CA92,
+    0x1DDC902C4A28D8385C00D180C7655A29, 0x88F59AA0DA591421B892CA8361D8C84C,
+    0xF20994C8B2E8F9F42220CF60307904FB, 0xDD2C2B52901FE50017B15CB0A701425B,
+    0xD84852C0A80FFCDB24B9FE00663574A3, 0x7634F0497DEC9F3E3B1787B920908215,
+    0xD10E572017CE89202B0F5E038C54E982, 0x8B9A6B1EF6DA450221A6675F51580BC3,
+    0x23CDEAC1B5FA0870DBC56A93033D7336, 0xFEA24FA6EA109DA025AC706DA7D56CE0,
+    0xD695E4F10EA88570083F082B570611D6, 0x7F9152CBA72AE50CDF93EAC8EC561D41,
+    0x7CA7D749ADFBA33ECA996068C296FD79, 0x8E39D9CD73464364BBA4CFECBFF54867,
+    0x3F46DE4FBAFDC08BC63DF891EFB87D5C, 0xB4691D2F99EC9EAAAC08E58A7CD39544,
+    0xD4DB3148750D1819F630E8B6DAC83E68, 0xCD26E7A833103D930B752332C193A8C6,
+    0x0E3328F9A15A98493074EE8CF7CEF350, 0x90D3CCC99F5AC58B09D1072E09B72292,
+    0x724B33AF23A1ACEA15B92EB32A15E942, 0x725B3942EA886124AD809B6779BB56E3,
+    0xD31848D817D70E16EEEADDB72F00E0DD, 0x4F95EC5747E09033085D722683513DF8,
+    0x44B562FE29A53A667AD1253F5EC14FF0, 0x93682A66E896F544B17821911E71C16E,
+    0x18E858D225187BD45B311EE0C5A1E4F3, 0xE386CBDA4F76D55939D956BCFE9A5D9A,
+    0xD14D3D02313C0EED744FEA20E8ABEF91, 0x783A89BEA38A8E02462B8681663DBE77,
+    0x567FB901BD502162A01118815237A72A, 0x95F6D92FD79F4FBAD9F8E1A446E973B9,
+    0x7A32F1837AC516A6FBF6CC6456873C0B, 0xD6F34524A4C3DA3D8A787C40ACCA14E4,
+    0xCF7A1F794D7CA1B1DFCB60445C1BF972, 0x01ACD947A164787051694C2422E6A3FE,
+    0x6B714DF5A5E72D4F1D9CE3A2743A1804, 0x987FBFE70B81A70819CEC845AC87A5C6,
+    0x6C2162F37C431F7FA9AAC44FB4486325, 0x9D02F0E6CAA17D3DC881A55027476AF7,
+    0xCD9F023F9C3A059E23AF31DB7179A4A9, 0xC3599EF0B50EF59AE1FC7518E80713CA,
+    0x6CED068130B6733276DCD42F6C39E4DB, 0x9B02C58832CF95C0698B94F50326A043,
+    0x8CD967BCCEA9ADDCC609E5033A767A21, 0x9CF6385BE759C7995BD241C2DE422690,
+    0xCBBBF7A63EBA0DD570CBB7F3343451BD, 0xC54B364F1553B6CC81CB56DE48333065,
+    0x87424855DAF5D9F321F5F9A3921B151E, 0x9D7FD1490285C9E3E25E39549638AE67,
+    0xA0FA0954D3D040BB7C863E3C5FB24298, 0x4BFC4D9ABFEB5F9F3E33F4230B848C8A,
+    0xC9D1124C931FDA7A8335241BE1693225, 0xA0CEB403F2C524AFA3EB8E405CA8A3DF,
+    0xE77E3C6814FD92A54562BB5FB2E2154D, 0x9FF6CA9A2AB6A26D22CC118A0C118A9F,
+    0x1DCE62094D77050C5738DBFA159676C9, 0x5CCEA1083F804B74005C4B0E953E4FFF,
+    0xC7DE651F7CA0674902B31BC86877FD2C, 0xA7DE0615A750100615370B1DFF515E33,
+    0xC381700BDF75760004C7B378B215B01D, 0xA267992848EEB0C03B5167EE359A234D,
+    0x810C85A6661D3BAF0E2F6071F0D41621, 0xD47437D3710B81D79BCDAEF02B673F05,
+    0xC5E40358A8BA05A743DA25D99267326A, 0xA9CF80D2CCE37A8D31444CAABC2BC91E,
+    0xBEC67A81B0F50A900B73385AC3B53A36, 0xA4D224DCD849C5B023D251CC8D7975CB,
+    0xECE93FF45353CD2A547E3A0451E4BEF2, 0x9BB528D632279B92173F3B2935CB89E7,
+    0xC3E2007DD175F5A4A87E78136665CDB1, 0xE237EEAA1B32DAC2A8AA22AB31E036A8,
+    0x9AAB00F488EEA6AD3D517247A54A9EA8, 0xA73655DF1F2F489E149F6E75993468A2,
+    0x4203B9BFF4935AFD6C34A47EDDD9D480, 0xD785C0CFC7C2E7A2164C59C4FC989F35,
+    0xC1D8705FFCBB6E90BDF0715CB8B20BD6, 0x36880F67DB05C7052AFF44EACB27BB10,
+    0xA78B957F2AE93736BBBDCCBB12AB1287, 0xA99414951AACAE5ED147625FDA929AF7,
+    0x4A009B490F31716FF0E5064107BB6BF2, 0xA4B71762AA6A622DD3810198147748AD,
+    0xBFC7671AB8BB84C6E4E62D86DD136E77, 0x3C2EA3BE7E7A3226307F343EB7973BB4,
+    0x2FD0F3859ABECFF464742CA428C80C16, 0xABEB49A46764FD151BECDA8089C1A94C,
+    0x6A8E73990FF51F79E9FD235A467A6348, 0x9C677149ABC2CAAFE0BD35686BED05F0,
+    0xBDAEF913557D76F0AC85320F528D6D5C, 0xCA706E5B8E5B2095C1F13D3B7843AA10,
+    0xD900F1364FEE42CA4F62DDB564E462A3, 0xAE3BDDF3280C620D3D53817865422564,
+    0xE8B420EF309AA3978B55149872E53D35, 0x7DDF4124FC561794F7AE3FC5D25B394F,
+    0xBB8F3AF81B93095CFCE8D84068E825B6, 0xFEBC57D474CF8BA5DC1DA8030635A8B3,
+    0xA642438DCE55E433C0570800FB967A6B, 0xB085BAA8E966F6DAE4CAD00D5C94BCD1,
+    0xF052B35906EAC2EEC7B22E5647B309C5, 0x43B1297EFF842A9FD1AB4F851F6104B5,
+    0xB96841BF7FFCB21A9DE1E3B22B8BF4DB, 0xA1306E034B29EC45B909ACBAC4DD556F,
+    0xA29D2DCF89C9BD9C6D245D9BDB619ACA, 0xB2C8C92F83C1EB87AC9F7EBBC469EF58,
+    0x54443EF10E6E2695BA6BE5F86B9C3528, 0xE4069D20FB3C443D084BA203841CBB20,
+    0xB73A22A7554574487F86F63BB23F4969, 0x4AFC83043AB8A2C3A8B1FE6FDC83DB39,
+    0x1D6F60BA893BA84CED17AC8583339915, 0xB504F333F9DE6484597D89B3754ABE9F,
+    0x4AFC83043AB8A2C3A8B1FE6FDC83DB39, 0x1D6F60BA893BA84CED17AC8583339915,
+    0xB504F333F9DE6484597D89B3754ABE9F, 0x54443EF10E6E2695BA6BE5F86B9C3528,
+    0xE4069D20FB3C443D084BA203841CBB20, 0xB73A22A7554574487F86F63BB23F4969,
+    0xA1306E034B29EC45B909ACBAC4DD556F, 0xA29D2DCF89C9BD9C6D245D9BDB619ACA,
+    0xB2C8C92F83C1EB87AC9F7EBBC469EF58, 0xF052B35906EAC2EEC7B22E5647B309C5,
+    0x43B1297EFF842A9FD1AB4F851F6104B5, 0xB96841BF7FFCB21A9DE1E3B22B8BF4DB,
+    0xFEBC57D474CF8BA5DC1DA8030635A8B3, 0xA642438DCE55E433C0570800FB967A6B,
+    0xB085BAA8E966F6DAE4CAD00D5C94BCD1, 0xE8B420EF309AA3978B55149872E53D35,
+    0x7DDF4124FC561794F7AE3FC5D25B394F, 0xBB8F3AF81B93095CFCE8D84068E825B6,
+    0xCA706E5B8E5B2095C1F13D3B7843AA10, 0xD900F1364FEE42CA4F62DDB564E462A3,
+    0xAE3BDDF3280C620D3D53817865422564, 0x6A8E73990FF51F79E9FD235A467A6348,
+    0x9C677149ABC2CAAFE0BD35686BED05F0, 0xBDAEF913557D76F0AC85320F528D6D5C,
+    0x3C2EA3BE7E7A3226307F343EB7973BB4, 0x2FD0F3859ABECFF464742CA428C80C16,
+    0xABEB49A46764FD151BECDA8089C1A94C, 0x4A009B490F31716FF0E5064107BB6BF2,
+    0xA4B71762AA6A622DD3810198147748AD, 0xBFC7671AB8BB84C6E4E62D86DD136E77,
+    0x36880F67DB05C7052AFF44EACB27BB10, 0xA78B957F2AE93736BBBDCCBB12AB1287,
+    0xA99414951AACAE5ED147625FDA929AF7, 0x4203B9BFF4935AFD6C34A47EDDD9D480,
+    0xD785C0CFC7C2E7A2164C59C4FC989F35, 0xC1D8705FFCBB6E90BDF0715CB8B20BD6,
+    0xE237EEAA1B32DAC2A8AA22AB31E036A8, 0x9AAB00F488EEA6AD3D517247A54A9EA8,
+    0xA73655DF1F2F489E149F6E75993468A2, 0xECE93FF45353CD2A547E3A0451E4BEF2,
+    0x9BB528D632279B92173F3B2935CB89E7, 0xC3E2007DD175F5A4A87E78136665CDB1,
+    0xA9CF80D2CCE37A8D31444CAABC2BC91E, 0xBEC67A81B0F50A900B73385AC3B53A36,
+    0xA4D224DCD849C5B023D251CC8D7975CB, 0x810C85A6661D3BAF0E2F6071F0D41621,
+    0xD47437D3710B81D79BCDAEF02B673F05, 0xC5E40358A8BA05A743DA25D99267326A,
+    0xA7DE0615A750100615370B1DFF515E33, 0xC381700BDF75760004C7B378B215B01D,
+    0xA267992848EEB0C03B5167EE359A234D, 0x1DCE62094D77050C5738DBFA159676C9,
+    0x5CCEA1083F804B74005C4B0E953E4FFF, 0xC7DE651F7CA0674902B31BC86877FD2C,
+    0xA0CEB403F2C524AFA3EB8E405CA8A3DF, 0xE77E3C6814FD92A54562BB5FB2E2154D,
+    0x9FF6CA9A2AB6A26D22CC118A0C118A9F, 0xA0FA0954D3D040BB7C863E3C5FB24298,
+    0x4BFC4D9ABFEB5F9F3E33F4230B848C8A, 0xC9D1124C931FDA7A8335241BE1693225,
+    0xC54B364F1553B6CC81CB56DE48333065, 0x87424855DAF5D9F321F5F9A3921B151E,
+    0x9D7FD1490285C9E3E25E39549638AE67, 0x8CD967BCCEA9ADDCC609E5033A767A21,
+    0x9CF6385BE759C7995BD241C2DE422690, 0xCBBBF7A63EBA0DD570CBB7F3343451BD,
+    0xC3599EF0B50EF59AE1FC7518E80713CA, 0x6CED068130B6733276DCD42F6C39E4DB,
+    0x9B02C58832CF95C0698B94F50326A043, 0x6C2162F37C431F7FA9AAC44FB4486325,
+    0x9D02F0E6CAA17D3DC881A55027476AF7, 0xCD9F023F9C3A059E23AF31DB7179A4A9,
+    0x01ACD947A164787051694C2422E6A3FE, 0x6B714DF5A5E72D4F1D9CE3A2743A1804,
+    0x987FBFE70B81A70819CEC845AC87A5C6, 0x7A32F1837AC516A6FBF6CC6456873C0B,
+    0xD6F34524A4C3DA3D8A787C40ACCA14E4, 0xCF7A1F794D7CA1B1DFCB60445C1BF972,
+    0x783A89BEA38A8E02462B8681663DBE77, 0x567FB901BD502162A01118815237A72A,
+    0x95F6D92FD79F4FBAD9F8E1A446E973B9, 0x18E858D225187BD45B311EE0C5A1E4F3,
+    0xE386CBDA4F76D55939D956BCFE9A5D9A, 0xD14D3D02313C0EED744FEA20E8ABEF91,
+    0x4F95EC5747E09033085D722683513DF8, 0x44B562FE29A53A667AD1253F5EC14FF0,
+    0x93682A66E896F544B17821911E71C16E, 0x724B33AF23A1ACEA15B92EB32A15E942,
+    0x725B3942EA886124AD809B6779BB56E3, 0xD31848D817D70E16EEEADDB72F00E0DD,
+    0xCD26E7A833103D930B752332C193A8C6, 0x0E3328F9A15A98493074EE8CF7CEF350,
+    0x90D3CCC99F5AC58B09D1072E09B72292, 0x3F46DE4FBAFDC08BC63DF891EFB87D5C,
+    0xB4691D2F99EC9EAAAC08E58A7CD39544, 0xD4DB3148750D1819F630E8B6DAC83E68,
+    0x7F9152CBA72AE50CDF93EAC8EC561D41, 0x7CA7D749ADFBA33ECA996068C296FD79,
+    0x8E39D9CD73464364BBA4CFECBFF54867, 0x23CDEAC1B5FA0870DBC56A93033D7336,
+    0xFEA24FA6EA109DA025AC706DA7D56CE0, 0xD695E4F10EA88570083F082B570611D6,
+    0x7634F0497DEC9F3E3B1787B920908215, 0xD10E572017CE89202B0F5E038C54E982,
+    0x8B9A6B1EF6DA450221A6675F51580BC3, 0xF20994C8B2E8F9F42220CF60307904FB,
+    0xDD2C2B52901FE50017B15CB0A701425B, 0xD84852C0A80FFCDB24B9FE00663574A3,
+    0xDD549BB352A247B8275C1D521F91CA92, 0x1DDC902C4A28D8385C00D180C7655A29,
+    0x88F59AA0DA591421B892CA8361D8C84C, 0x31CD467B273C3B6BCFA21AAFBC4AF64E,
+    0x768DF376F0EDC304F2ABC04130B0A03C, 0xD9F269F7AAB88C2928E81DCB6DAB91AC,
+    0x68298F5E656CDDCFAEE3FDE7196372B6, 0xA4087BB61A5A157143FDC5FB3261BDE9,
+    0x864B826AEC4C74E585043222C9BDD18C, 0xA71857FD6A653DB4CBA1E4CA9B20EF6B,
+    0xB67292CBDF4CB882F8AE9C38D38A7789, 0xDB941A28CB71EC872C19B63253DA43FB,
+    0x718FB60D736DCE7CC4E8DAC740710C18, 0xD6BC7FE57653AEC32D3BFE70D9AB409A,
+    0x839C3CC917FF6CB4BFD79717F2880ABE, 0xB1B75F774B427EF67C175BC3672F2209,
+    0x7866F911E19BDDC76A0A4B9A9F65B5EC, 0xDD2D5339AC8692FD49C6E0EA76CBCAAC,
+    0x9D3488DB15BA9684EA356B71F2FA5F76, 0xBABCFDF74F528666EDEB672DFDAF228C,
+    0x80E7E43A61F5B6CB5CA183DC973ABC21, 0xA01D809BEB9CBEF8ACD64CCE066F8326,
+    0xD4A257966E11637986A3422B18230D41, 0xDEBE05637CA94CFB4B19AA71FEC3AE6C,
+    0xA8B8AC3A1AAD37323D2D1EF3B7418052, 0xB55AE104D717A04BD37A87FA45CE838B,
+    0x7E2E936FE26AE7ED13E03E4889485C68, 0xC22923054710B10BF38130F5B4F7D5A8,
+    0xC9985AE9491098CAB0D96A3A40821766, 0xE046213392AA486C55FF6038A5197366,
+    0x7BE9BE180F7AD0197C972F8498CC190A, 0x2CC10E25C2A714B5A2B8A0351E3A7882,
+    0x7B70654BBDE35622F083CC12119FF7A3, 0xF775E41EC0015D69C80F46BEAF1A70B6,
+    0xFDEA3FF0DC05332782C4FE35F8F29CEA, 0xE1C5978C05ED8691F4E8A8372F8C580F,
+    0x1AC961F0B0786C8E974624FBB7DD5944, 0xD68AAD829DACA0D0CA819CED385CB98A,
+    0x78AD74E01BD8EC78362474F1A105878E, 0x00C457882D61331AB59D28224CF60B9A,
+    0xDA3DAC309974FA5BCD6367A773E9C0FC, 0xE33C59A4439CD8EC36563E2FFAD83519,
+    0xDEB7639B7FDA6317504841DBC1BC33CB, 0xD6A30F214C6F566194211E282444D411,
+    0x75E5DD6E1B8E25550EC87BC0574A889F, 0xB858FEC82022732F4995E362E423E0B2,
+    0x8743F3FE219A6A8F27902AA36084A51B, 0xE4AA5909A08FA7B4122785AE67F5515C,
+    0x6F830A878EE71525A4AAEC3E753E8319, 0x5A5C9453FA24A5344BF6E0E57669D638,
+    0x7319BA64C711785A1439670DFE3D68E6, 0x760A98A3A5E7070A2F1F5397D9B3BD20,
+    0x83DAD966DF1F6A5BAC14CDDA015A2273, 0xE60F879FE7E2E1E57613B68F6AB0312F,
+    0xFDD30E2B653CF05E5197DC55B37B71A1, 0x26D02C91483D2B982F03AB4C7A03BCA6,
+    0x70492760047B9A7EC5544AEADF9F4275, 0xC924411252C09E83C0A76C669F14305B,
+    0x2F1BB3282663E45109DE14EFEA575873, 0xE76BD7A1E63B9786125129529D48A92F,
+    0x5E7A1201472731CD28A927836F80A344, 0x041E72879F2CC28A9B2AFFA69C693D13,
+    0x6D744027857300AD9B165CBA0C171818, 0x1AC1087622CE65199F45710178447EDE,
+    0x18801DD8EB6D0389E02CADE99A642003, 0xE8BF3BA1F1AEDFBBF8972AFFB3D98E1F,
+    0xAD30468299D12A94D31EC3E562D38D68, 0x8680B929C2AF992EB6224CAC9D2FDE72,
+    0x6A9B20ADB4FF262A0EF911A3308E35A5, 0x23CB86A3C7B29248E4F7620CFF6DE0C8,
+    0x3D5705F10A9A7F6F2397EA24D5049427, 0xEA09A68A6E49CD6215AD45B4A1B5E823,
+    0x128CFED9C6A525AC154B74A5668D058D, 0x16FEC586E008E2C976C8C1D21CFB8D44,
+    0x67BDE50EA3B628B6D409485EDD56B172, 0x15A1EF23B6FCBE7C5D2C60A38E3F1513,
+    0xEF30F42455269F35D67B03C2E02269D4, 0xEB4B0B9E4F34561739E39C6C2AB3655C,
+    0x2A51BB803173C21809E7F29DF29795A8, 0xCE241F5BDDEC213C823518EA88A51741,
+    0x64DCA98EF24F5CB4218CF2D6AD86E5C1, 0xA6340CB65C4B11D5B1EC03E9739998C9,
+    0xF0A83D3CD0DAE9B5DB897C2384083746, 0xEC835E79946A31457E610231AC1D6180,
+    0x6D12D59BBA9C48817B8A103264EDAF26, 0xBDF1F5B4AB3DE24C3A3C159062718F71,
+    0x61F78A9ABAA58B4698916152CF7EEE1B, 0x6479184FD64FDD03FFF5AC40EEC5DD32,
+    0x6F340FABAA13780EEE2EA72F6796AAB4, 0xEDB29311C504D65211815196B9FBF5DF,
+    0xF46E8417AE1B7AC7023EC85E7E723382, 0x4633259B16954DADD07CF3484AACCA02,
+    0x5F0EA4C477339C0668FC87BCFA363F00, 0x0E0EA289950ADD57A8ACC772534BBB89,
+    0xFC4FACDFD3D64E3FB6A4DEC498E3FBC3, 0xEED89DB66611E30786F8C20FB664B01A,
+    0xE83C1FFDA3EC476F39BF1307DD6481F6, 0xEF75477F5DBB812B2B7D0EA00521B3D9,
+    0x5C2214C3E9167ABB4E61F79B3A36F1DB, 0x878499CDABE3CDFDB477FBF5EADCD513,
+    0xF01BB72D7BCDCEFB3BE1D154823575EA, 0xEFF573116DF1555D62AEF7B55319D1D3,
+    0x70648748C0E93F2FA093129E5604B25C, 0xA162F122C751FFBEE448924574962B91,
+    0x5931F774FC9F184434AD29990485D84D, 0xD2CFECDDD6B7BA8AB39ACCC3025A1B44,
+    0x89DAB2E0FE03A229894C0E9AAC77BFE4, 0xF1090827B43725FD67127DB35B287315,
+    0x7D9D0AF68FC06E7F3B27DFFBFC02AB2F, 0x1A157CED9B54E454E1E5B755B8291558,
+    0x563E69D6AC7F73F8408FCA9CC277FC1F, 0xD7166CD3D924D607B942B718144C51CB,
+    0x83EF188365E5681D40E0BA89720E6C81, 0xF21352595E0BF350E7112E89103CC0C6,
+    0x9DEA4AFC821A9730F90D930343D33002, 0xDDF9E1806CDC80EF18E2BC14C8ED3C36,
+    0x53478909E39DA8920B90C3C942BFA62C, 0xC3D4240D5D9A890AE285567B61BD57D7,
+    0x6CC90B7D06C506D8511AACDCD3B8EB99, 0xF314476247088F74A5486BDC455D56A2,
+    0x16AF5C057A216A8C08371289CB79DCE7, 0x7B0A0A42F45C41BD64895285F2B7E950,
+    0x504D72505D98050C97C4AFA25181E605, 0x5FD41175E0C39C34B336C99CE723D817,
+    0xD861A7EF2E855F75E59AAD1CF16CDB2B, 0xF40BDD5A6688662F5019794A1F5896E4,
+    0xDA3EC2EC26E111AA1CE81F6A7938F852, 0xE9B81D82D31B398729694EDDB5AFBCC9,
+    0x4D50430B860546C34FFD0691F9E13630, 0xD5FD8A1CAFB2CCE52A53096F0C1278A8,
+    0x5EE4B09989A117288E77EE63670FA090, 0xF4FA0AB6316ED2EC163C5C7F03B718C5,
+    0x96E8A93742139E4776C746094BCA11DE, 0xC70534171BF68A811C561EA3E50849C2,
+    0x4A5018BB567C16A2D725D3B9ED35FBA9, 0xD727E908A1CC5001D24303F2F370D960,
+    0xCB773DB17E36DEB8A64033468F47F60F, 0xF5DEC646F85BA1C6C8C615E72768D6B4,
+    0xA75AB2EF3590737E5257CF0B424AAB42, 0x2B110165BC3BA0B2E1A97DB3C5D0FC6C,
+    0x474D10FD336CF746F95F1F657313C4EA, 0xAFDC40732A1B03F60F46E91ACB4EEAB8,
+    0xB06854A7D3139B87F2F68677A56EFB23, 0xF6BA073B424B19E82C791F59CC1FFC22,
+    0x2098BB3F6852D2B1FD197AFA03C1844E, 0xF735312B47773C266A6E3A60FDAE388E,
+    0x4447498AC7D9DD824C20AB7AA99A2182, 0x600449CD14F8B1EC52BFD4ADA717A31C,
+    0x4F10D75812D26A6D901915A71344B708, 0xF78BC51F239E12C6214CFFCEE9DD33CA,
+    0xA3808A70A1DA1D660FA8580DC2529179, 0xCB01C0A806A3322ECE36BA75AB4FFE02,
+    0x413EE038DFF6B7FD7DA6491B4F867803, 0x18DA934F3FC637939958F29A37EFD515,
+    0x95A1ACB343363FB26D1932845F3813DD, 0xF853F7DC9186B952C7ADC6B4988891BA,
+    0xA9BF1FAE55E972894FFAEB22D748D6D4, 0x5580085F9C2247B376CEEE5DEE6D2D54,
+    0x3E33F2F642BE355E90887712E9DC9663, 0x09C93255BC853CED705A76D3418F2B4F,
+    0x2E09716DFF309C6261E131E94AE140BE, 0xF91297BBB1D6CDBE68FC6E4D6A920BD2,
+    0x8F7F5E200D41A5808DEE643BBBD353D6, 0xC138AD021532194D04EAAAAB0D4998EA,
+    0x3B269FCA8A8622BADC913B883D64660E, 0xA87CF32CE084AF6A5AF910DED9DEEB17,
+    0x79B567A67CDE8B6161E63B20928C47AF, 0xF9C79D63272C46284504AE08D19B2980,
+    0x276234F6F3E1E1EBA623A2A80C4CB131, 0x2C9B801C691E71BB813B716E71055E67,
+    0x381704D4FC9EC5F943AF186B79B2A0F3, 0x8DF64F3218965D3CEE268C7681608EBC,
+    0x7865A49BDCD7F07445770C9F804EFEEC, 0xFA7301D8597966711FE196A53FB5B237,
+    0xD0FCF9CF13165FFEF465FF2DCBE8AC4B, 0x8C47E96B350B7C3F6E7693D88171A2B4,
+    0x3505404B6008A13C37D0017BDA992A80, 0x947A5373353C45A48D5B15EAA58368EF,
+    0xC5F40E3FD8F18AE1B1997321B48E8B1B, 0xFB14BE7FBAE581562172A361FD2A722E,
+    0xA28FBDBE7EB1987E24859793181C3718, 0xF394E58D12972F1D39438767895414C1,
+    0x31F17078D34C156C9732300393F33613, 0xE1D49C2B973C884C1046BCDCF4FCCD05,
+    0xF68925B421C48B09A1971C56EBC10D90, 0xFBACCD1D0903BB09E63AE8632B84473B,
+    0x767DFAFAB5BA9092655E186472BE5455, 0xABCC11744430DB5E8767E77E76440759,
+    0x2EDBB3BCA17E628EAF776280D975AC74, 0x184B1D6FCCFC856E9C1991B686A00C7D,
+    0x246DDC4E63F59390B859505A0B301225, 0xFC3B27D38A5D49AB256778FFCB5C1769,
+    0x712BEB01D32241B11B51A3CDAD65A191, 0x23D5A2B8DC1E0341DC32FB8507A753B5,
+    0x2BC42889167F8CA98FFBBCEED62C7C43, 0xEAB2D4B6C97209B7CF685093AB467D00,
+    0x39DBEB5C2D2CBF8E8B70E81EA4598EE8, 0xFCBFC926484CD43AA3E22B4D38917E73,
+    0x26ACE06DB55ECFBD063C572324D01A61, 0xFCD3974462EE60E3D0DCFA34D1AA337F,
+    0x28AAED62527CB3B5E976FB98213B8497, 0x673171E6A6554F35B393BE74C8381589,
+    0xA19702D6D140D72962B817621FF0F760, 0xFD3AABF84528B50BEAE6BD951C1DABBD,
+    0x8E8799E6913803E037DD74AAAEB56C5A, 0x9FE14048BE786E103C6F72706B194B88,
+    0x259020DD1CC27444C002A2684781F07F, 0xD3BD6558940206CBD94ACCF74DE23B6D,
+    0x9569C48A4106EDF0C35ED177651DDBB9, 0xFDABCB8CAEBA091BFAC7397CC07A646F,
+    0xE0692C1D4D6A90C2DD411DF178EB7D1E, 0x04E60CACC98164D7CFE841FD3B113802,
+    0x2273E19DB5EAED56E5E597261830D391, 0x300E707E9A9A66E5F65D64CE2EA940EE,
+    0xCC9D5D787E81F86792AE1E5D881F153B, 0xFE1323870CFE9A3D90CD1D959DB674EE,
+    0xDAFC53BDB0F3AD5E98B1EED416377B10, 0xE2427477A6ECF31EF0C8A6BF13A12290,
+    0x1F564E56A9730E344E08E535CADAF146, 0x12E11C21CF9985C63AC4ECA2FBD267BB,
+    0xFF4BD7DE3AAE3A287FAF2EFDD7AE4ACC, 0xFE70AFEB6D33D6A22907CF2B3F6FEAC1,
+    0xD07230F3888617714B3F495DC82A7A68, 0x39773C54CB0E9276209ABD55453A49B8,
+    0x1C3785C79EC2D4F586310766026F8DCC, 0xA0E9EE7A85258E45485224A982A7C85A,
+    0x5A2C976D196A3567B2681B468EFBA361, 0xFEC46D1E89292CF041390EFDC726E9EF,
+    0x01AF208BBD6F4012A801974079E03914, 0x21030810A8DDD093D9ABE105FE0FBEA3,
+    0x1917A6BC29B42BE1D8E72D912977EE71, 0x7FA801BEA5D4C3CBBD57CE6223DF6540,
+    0x5F063781804A271A287F3F198F7CD53C, 0xFF0E57E5EAD848D11F1901544271C3F8,
+    0x46F9278D36FB08FEDBFF81D194CA39FA, 0xA360BEA372E455EF2EAFD08A7F7FC6C4,
+    0x15F6D00A9AA418C17FBA5F8126CB2985, 0x3B7C57BC5C735193F1419BCC0FF7192E,
+    0x91CF862E7FAD71EE964AAD96D95AE9FB, 0xFF4E6D680C41D0A90F668633F1AB8589,
+    0x83D904A423E340DFFD367461499EA9FE, 0x825261EDB7445E115B93892877537A40,
+    0x12D52092CE19F5CCBEEEAE8129A786B8, 0xA7BA18398767930A1018736805F7BF87,
+    0x3CB04DA7E6B0BBC3369CA2E0608BE070, 0xFF84AB2C738D6A03519C314973CCAE6B,
+    0x9684B763F409EA333D124A454239F979, 0xFB3691DAA4FC8F5CEC1CD0D9C7C3B699,
+    0x0FB2B73CFC106FF68F0A0E36A000C734, 0x1BF58F6A90D520D5A94FF9046C34D4E4,
+    0xCF53E4BAA403250B5750700A6DF26524, 0xFFB10F1BCB6BEF1D421E8EDAAF59453D,
+    0xA8902B24FDD1FB4672E72BF5AF6010C4, 0x1216769FCDA0D0EBF36FC97B1FEF1FDE,
+    0x0C8FB2F886EC09F376A17954B2B7C517, 0x831DCF0E30781C87DE3AD81725B27622,
+    0x30BD6FBE3CDFB5852FB15C7502F6DE78, 0xFFD3977FF7BAE4E9664649B4D541B9C5,
+    0x02881E6AB9834899FC79C4BEAB7508D1, 0x036D93DFEF35CBD6E4DF8597C03C05D2,
+    0x096C32BACA2AE68B437B2DD49D5FCA3C, 0xAB5DC1A419785764B707F21199FE9209,
+    0x568FB69282182F32EF6F30DA8FE307E8, 0xFFEC4304266865D95657552366961732,
+    0xA8390BC33658B7D64CF0323D7CBF0EB5, 0x62652F9E1AA508AC0CF31AC036DE81C6,
+    0x0648557DE8D99F7E4E29CF6E5FED0679, 0xC7E9F8E9E7F57263FC29714C032279B1,
+    0xFF8D89566A2181DBAB255BF76857A287, 0xFFFB10B4DC96DABBB47903F7A19F8EE1,
+    0xE36885F0FD7B869A35B064282559DB48, 0xF0257406FA2C2F2506E03A898EBF83DB,
+    0x03243A3F9BD8F08CC3C75F41B6CE7AA7]
+
+### 1/(2k+3)! * 2^384 for k = 0..17: sin(t)/t = 1 - sum_k (-1)^k c_k (t^2)^(k+1). Entry k*3 + limb is 128-bit
+### limb `limb` (0 = least significant).
+secret preset CM_TRIG_SIN_COEF: @Array[U128, 54] <- [0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB,
+    0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, 0x2AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,
+    0x22222222222222222222222222222222, 0x22222222222222222222222222222222,
+    0x02222222222222222222222222222222, 0x00D00D00D00D00D00D00D00D00D00D01,
+    0x0D00D00D00D00D00D00D00D00D00D00D, 0x000D00D00D00D00D00D00D00D00D00D0,
+    0x4AAD8E671F5583911CA002E3BC74AAD9, 0xE3BC74AAD8E671F5583911CA002E3BC7,
+    0x00002E3BC74AAD8E671F5583911CA002, 0x8EA47CA3D8B8A1C7232B58766F185556,
+    0x71C7880ADCBC46DAAAB1643C04A7FBE3, 0x0000006B99159FD5138E3F9D1F92E0DF,
+    0x12F7354FD1CCABB425F8129E4C33071C, 0xD7B4269D9BABDFA238E3994206980D1A,
+    0x00000000B092309D43684BE51C198E91, 0xC5937680614DC64DA868CCE37F24D07E,
+    0x774657F48F5EAF6383ED943C0C38CCDC, 0x0000000000D73F9F399DC0F88EC32B58,
+    0x938CC7061E79B29C855335758AD20488, 0xCBBB8D7FF53BA468D621D08B83CF4484,
+    0x000000000000CA963B81856A53593028, 0x88AA546B0F0F539C2750563CF9AB47DF,
+    0xF61DBDCB3A5ABF5BA0D03143C6BF7BB5, 0x0000000000000097A4DA340A0AB92650,
+    0x7866CE3854C2797E8B10A5FEED16F5CF, 0xBC51BF3B9B91486121E81D5FDB4AD15C,
+    0x00000000000000005C6E3BDB73D5C62F, 0xCB9F1098E6DEFE376575EA11330FBAAB,
+    0xB2F70E09BAFEC4F309ADFE08CA4C8B09, 0x0000000000000000002EC368262C7033,
+    0x4BDBFF99DAD68EEE2C1DA2F33A89D6ED, 0xA8D4E44A419776F10B893FFF294C1301,
+    0x0000000000000000000013F3CCDD165F, 0xF8732F68269A3287449F0A1409EDF676,
+    0x33A8C82A6863C57509DCD281D2798B54, 0x00000000000000000000000746AC70B7,
+    0x93DA4F30FEC9552F750CCE83CED4786C, 0x686B15AF57C61CEECDE2523ACCDEBB20,
+    0x000000000000000000000000024B3F31, 0x6DB749DB7122598DD0811D668AAEBFB7,
+    0x973C1FADE2170F7237D35FE1C89DB179, 0x0000000000000000000000000000A1A6,
+    0x824924AD0E690091D4CDB2B1CB48686D, 0x3024A9BA1AA36A7059BFF52E844FAA1B,
+    0x00000000000000000000000000000027, 0x7ED1981FFBECBA15A29957B4DAF43A9A,
+    0x086E2CE38B6C8F9419E3FAD3F0311D9D, 0x00000000000000000000000000000000,
+    0xF3FCB2A927344305C831B36193C49A91, 0x00019EC8D1C94E85AF4C78B15C3D89D2,
+    0x00000000000000000000000000000000]
+
+### 1/(2k+2)! * 2^384 for k = 0..17: 1 - cos(t) = sum_k (-1)^k c_k (t^2)^(k+1). Same layout as CM_TRIG_SIN_COEF.
+secret preset CM_TRIG_COS_COEF: @Array[U128, 54] <- [0x00000000000000000000000000000000,
+    0x00000000000000000000000000000000, 0x80000000000000000000000000000000,
+    0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB, 0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,
+    0x0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, 0x05B05B05B05B05B05B05B05B05B05B06,
+    0x5B05B05B05B05B05B05B05B05B05B05B, 0x005B05B05B05B05B05B05B05B05B05B0,
+    0xA01A01A01A01A01A01A01A01A01A01A0, 0x01A01A01A01A01A01A01A01A01A01A01,
+    0x0001A01A01A01A01A01A01A01A01A01A, 0x21115B0A4FEEF38E82DCCD16C60BAAAF,
+    0xE392D8777C170B65559F4E943337D2C7, 0x0000049F93EDDE27D71CBBC05B4FA999,
+    0xF68DB50DA764B825ED98F209DE975C72, 0xF425F600E7BA5B3CE38EC85A55B8AA52,
+    0x00000008F76C77FC6C4BDAA26D4C3D67, 0x93A3F185B38E9E8CDE2401547328375D,
+    0xFD1F2754668C46D4BAEBAF84B75400EF, 0x000000000C9CBA54603E4E905D6F8A2E,
+    0xCC5937680614DC64DA868CCE37F24D08, 0x8774657F48F5EAF6383ED943C0C38CCD,
+    0x00000000000D73F9F399DC0F88EC32B5, 0x24A443F21E233496EAF6668687B65596,
+    0x4435161554BC33CCEF73A807C0362E79, 0x0000000000000B413C31DCBECBBDD802,
+    0xE06EEA9EF3F3F761685D9DE972E229FE, 0x72B4AFE3C2EAEFF7C80A68DCFD232C95,
+    0x0000000000000007950AE900808941EA, 0x4B4A7DBCBE08D6FA1D98078B9669C55B,
+    0x143242DFCCE3B1D5DEA1D2CA2CE07DE1, 0x000000000000000004338E5B6DFE14A5,
+    0x687BF6065EF3F5424EE4E9C0B775FD1C, 0x7CCA4B4067CA9D8A20673FEB086DDB20,
+    0x00000000000000000001F2CF01972F57, 0x3425FFFC124354443CC6101D0C18FE6C,
+    0x72CD1C790285D3580A4A33B132D1B1F6, 0x0000000000000000000000C4742FE352,
+    0xBFBAF88CDCCEA660427364EE6E11A43B, 0xD42174DCF171470D52A350A9353B32B0,
+    0x00000000000000000000000042862898, 0x4931F192B328D82C3FA28F6ACB293737,
+    0x5047D60E60CADED4C2989C574B187DB4, 0x0000000000000000000000000013932C,
+    0xCB6DBA4EDB8912CC6E8408EB345575FE, 0x34B9E0FD6F10B87B91BE9AFF0E44ED8B,
+    0x0000000000000000000000000000050D, 0x56A7CC5F715D70F53AF6FDB9EF640312,
+    0x2710231C0FD7A13F8A2B4AF9D6B70C88, 0x00000000000000000000000000000001,
+    0x4385D272AA8DAFD5EF2EED1A5B6A56F6, 0x003BF30652185952560D71A254E4EB7D,
+    0x00000000000000000000000000000000]

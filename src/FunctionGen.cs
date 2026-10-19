@@ -52,7 +52,7 @@ public sealed class FunctionGen
     /// The source of the write-template hole being expanded (`sum` for `{sum}`), so an error about it can quote it.
     private string? _templateHole;
 
-    /// In a program's `when_power_on` without an operating system: whether it has readied memory yet (called Standard/Boot's
+    /// In a program's `when_power_on` without an operating system: whether it has readied memory yet (called Standard/System/Cpu's
     /// prepare_core or zero_bss). Until then .bss holds whatever the reset left and .data isn't copied, so no global is
     /// touched. Null in any other routine.
     private bool? _memoryReady;
@@ -553,13 +553,13 @@ public sealed class FunctionGen
 
     /// Whether a value of `t` points at memory: an address, a Span, or an Addr.
     private static bool PointsAtMemory(DType? t) => t is PtrType || t is RecordType { Decl.Name: "Span" } span
-        && span.Decl.Module == Compiler.CoreModule;
+        && span.Decl.Module == Compiler.SystemModule;
 
     /// The manager a `MemoryManager` table is made from (`arena` in `arena.to[MemoryManager]()`), or null when `e` isn't
     /// such a conversion. The table holds the manager's address, so it is a view of the manager.
     private Expr? TableManager(Expr e) =>
         e is MethodCallExpr { Name: "to", TypeArgs.Count: 1, Args.Count: 0 } m
-        && InferQuiet(m) is RecordType { Decl: { Name: "MemoryManager", Module: "Standard/Alloc" } }
+        && InferQuiet(m) is RecordType { Decl: { Name: "MemoryManager", Module: Compiler.MemoryModule } }
         && InferQuiet(m.Receiver) is PtrType { Pointee: not RecordType { Decl.Name: "MemoryManager" } }
             ? m.Receiver
             : null;
@@ -759,7 +759,7 @@ public sealed class FunctionGen
             if (_memoryReady == false)
                 throw Err(_decl.Pos,
                     "when_power_on is the program's entry, and nothing else readies memory: call prepare_core() "
-                    + "(Standard/Boot), or GlobalManager.prepare() for the globals alone, in it, before anything touches a global");
+                    + "(Standard/System/Cpu), or GlobalManager.prepare() for the globals alone, in it, before anything touches a global");
         }
         catch (CompileError e) when (_decl.Source is { } source && !e.FromSource) { throw FromSource(e, source); }
     }
@@ -1574,7 +1574,7 @@ public sealed class FunctionGen
         typeArgs.Any(t => t is { Args.Count: 0, Path: null } && t.Name != "Me" && _env.Has(t.Name));
 
     /// A derived routine calls its fields' and payloads' methods whatever module declares them: its constraints
-    /// vouch for them, and the type's file needn't import Standard/Format for its represent.
+    /// vouch for them, and the type's file needn't import Standard/System/Text for its represent.
     private bool Derived => _decl.AnnotationNamed("derived") is not null;
 
     /// Emits the address of a place chain and returns it with the type stored there.
@@ -2248,7 +2248,7 @@ public sealed class FunctionGen
             throw Err(a.Pos, "a local slot is already a block of the running flow's stack, which its StackManager hands out "
                 + "with no call: write the slot without 'at' (local x: @T <- value), and use 'at' for memory from another "
                 + "manager (a Memory[T] or a Box[T] at HEAP)");
-        if (expected is RecordType { Decl.Name: "Memory", Args: [_] } memory && memory.Decl.Module == Compiler.CoreModule)
+        if (expected is RecordType { Decl.Name: "Memory", Args: [_] } memory && memory.Decl.Module == Compiler.SystemModule)
         {
             if (a.Value is not ArrayLit { IsTuple: false } lit)
                 throw Err(a.Value.Pos, $"a {expected} at a manager is an array literal: [a, b] at manager, or [0] * n at manager");
@@ -2258,7 +2258,7 @@ public sealed class FunctionGen
                 { ArgNames = ["values", "times", "manager"] };
             return EvalCall(call, expected);
         }
-        if (expected is RecordType { Decl.Name: "Box", Args: [_] } box && box.Decl.Module == Compiler.CoreModule)
+        if (expected is RecordType { Decl.Name: "Box", Args: [_] } box && box.Decl.Module == Compiler.SystemModule)
         {
             if (a.Value is ArrayLit { IsTuple: false })
                 throw Err(a.Value.Pos, $"an array literal at a manager is a Memory[T], and this place takes {expected}");
@@ -2365,7 +2365,7 @@ public sealed class FunctionGen
     /// Whether a value of `leaf` in `vt` is a failure: `vt` is a Result, and `leaf` is its error type or one of the
     /// types the error type is written over.
     private static bool IsFailure(DType leaf, VariantType vt) =>
-        vt is { Decl.Name: "Result", Args: [_, var error] } && vt.Decl.Module == Compiler.CoreModule
+        vt is { Decl.Name: "Result", Args: [_, var error] } && vt.Decl.Module == Compiler.SystemModule
         && (leaf.Equals(error) || error is VariantType { Decl.IsAnonymous: true } union && union.LeafIndex(leaf) >= 0);
 
     /// The tag of a variant made from a value of `leaf`: the leaf's type ID, and for a failure in a traced build the
@@ -2374,7 +2374,7 @@ public sealed class FunctionGen
     {
         if (!_c.Trace || _c.Prechecking || !IsFailure(leaf, vt)) return $"{id}";
         Expr previous = _values.ContainsKey(FailedBefore) ? new ValueRef(FailedBefore, at) : new IntLit(0, at);
-        var seq = EvalCall(new CallExpr("failure_note", [], [previous], at) { Path = Compiler.CoreModule }, IntType.U(32));
+        var seq = EvalCall(new CallExpr("failure_note", [], [previous], at) { Path = Compiler.SystemModule }, IntType.U(32));
         string wide = EmitTmp($"zext i32 {seq.Op} to i64");
         string high = EmitTmp($"shl i64 {wide}, 32");
         return EmitTmp($"or i64 {high}, {id}");
@@ -2670,7 +2670,7 @@ public sealed class FunctionGen
         string defaultLabel = _cur.Label;
         EmitNoReturnCall(new CallExpr("crash", [], [new StrLit("InvalidValueError", w.Pos),
             new StrLit($"This {vt} holds none of its branches: it is hollow (all zero), not a value of one of them.", w.Pos)],
-            w.Pos) { ArgNames = ["name", "message"], Path = "Standard/Core" }, w.Pos);
+            w.Pos) { ArgNames = ["name", "message"], Path = Compiler.SystemModule }, w.Pos);
         _cur = saved;
         Terminate($"switch i32 {id}, label %{defaultLabel} [ {string.Join(" ", cases)} ]");
     }
@@ -2758,7 +2758,7 @@ public sealed class FunctionGen
     }
 
     /// Where a write template finds write_str, whatever the file imports.
-    private const string FormatModule = "Standard/Format";
+    private const string FormatModule = Compiler.TextModule;
 
     /// A call that writes a template, with the writer it goes to and the template: a Writer's `.write("x = {x}\n")`
     /// (TemplateWriter), or `Console.show("x = {x}")` / `Console.alert("...")`, which write to `Console.output()` /
@@ -3134,7 +3134,7 @@ public sealed class FunctionGen
             var c = _c.FindPreset("", r.Name, file, r.Pos, r.Path);
             if (c is { IsGlobal: true } && _memoryReady == false)
                 throw Err(r.Pos,
-                    $"when_power_on touches the global '{c.Name}' before it readies memory: until prepare_core() (Standard/Boot) "
+                    $"when_power_on touches the global '{c.Name}' before it readies memory: until prepare_core() (Standard/System/Cpu) "
                     + "runs GlobalManager.prepare(), which zeroes .bss and copies .data, a global holds whatever the reset left. Call prepare_core() first: "
                     + "work that touches no global (a watchdog, a clock register) may come before it");
             return c is null ? null : PresetValue(c, null);
@@ -3690,9 +3690,9 @@ public sealed class FunctionGen
         }
     }
 
-    /// The type a unit literal makes: Core's `Duration` for a time unit, `ByteSize` for a size unit.
+    /// The type a unit literal makes: `Duration` for a time unit, `ByteSize` for a size unit.
     private DType UnitType(UnitLit u) =>
-        _c.ResolveType(new TypeRef(u.TypeName, [], u.Pos) { Path = Compiler.CoreModule }, _env);
+        _c.ResolveType(new TypeRef(u.TypeName, [], u.Pos) { Path = u.TypeModule }, _env);
 
     /// A unit literal's value: a Duration's seconds and nanoseconds, or a ByteSize's count of bytes.
     private Val UnitConst(UnitLit u)
@@ -3860,7 +3860,7 @@ public sealed class FunctionGen
         // prelude's `ieq` / `ine`.
         if (rt is ChoiceType en && m.Name is "eq" or "ne")
         {
-            var r = _c.FindFree(m.Name == "eq" ? "ieq" : "ine", _env.File, m.Pos, Compiler.CoreModule)
+            var r = _c.FindFree(m.Name == "eq" ? "ieq" : "ine", _env.File, m.Pos, Compiler.SystemModule)
                     ?? throw Err(m.Pos, $"the prelude has no '{(m.Name == "eq" ? "ieq" : "ine")}'");
             var env = new Compiler.TypeEnv(r.File);
             env.Bind(r.TypeParams[0], en);
@@ -4139,11 +4139,12 @@ public sealed class FunctionGen
             var c = (CallExpr)e;
             throw Err(c.Pos, UnknownCall(c));
         }
-        if (_memoryReady == false && plan.Decl is { IsLibrary: true, Module: "Standard/Boot" } ready
-            && (ready is { Owner: null, Name: "prepare_core" } || ready is { Owner.Name: "GlobalManager", Name: "prepare" or "zero_bss" }))
+        if (_memoryReady == false && plan.Decl is { IsLibrary: true } ready
+            && (ready is { Module: Compiler.CpuModule, Owner: null, Name: "prepare_core" }
+                || ready is { Module: Compiler.MemoryModule, Owner.Name: "GlobalManager", Name: "prepare" or "zero_bss" }))
             _memoryReady = true;
         // x86_64 without an operating system has no vector table the CpuEventManager points the CPU at.
-        if (!_decl.IsLibrary && plan.Decl is { IsLibrary: true, Module: "Standard/Boot", Owner.Name: "CpuEventManager" }
+        if (!_decl.IsLibrary && plan.Decl is { IsLibrary: true, Module: Compiler.CpuModule, Owner.Name: "CpuEventManager" }
             && _c.Target is { Arch: "x86_64", HasOs: false })
             throw Err(e.Pos, $"CpuEventManager.{plan.Decl.Name} isn't there yet on x86_64 without an operating system: the standard "
                 + "library sets up no interrupt descriptor table for it, so a program that takes interrupts or faults there "
@@ -4294,13 +4295,13 @@ public sealed class FunctionGen
 
     /// The stdlib's Bytes, the type `type_name[T]()` gives.
     private DType BytesType(Pos pos) =>
-        _c.ResolveType(new TypeRef("Span", [new TypeArgType(TypeRef.Simple("Byte", pos))], pos) { Path = Compiler.CoreModule }, _env);
+        _c.ResolveType(new TypeRef("Span", [new TypeArgType(TypeRef.Simple("Byte", pos))], pos) { Path = Compiler.SystemModule }, _env);
 
     /// The `Memory[T]` or `Box[T]` a value is (or a slot holds), or null: memory from a manager, which lends a view.
     private static RecordType? OwnedMemory(DType? t)
     {
         var owned = t is PtrType { Pointee: RecordType inner } ? inner : t as RecordType;
-        return owned is { Decl.Name: "Memory" or "Box", Args.Count: 1 } && owned.Decl.Module == Compiler.CoreModule ? owned : null;
+        return owned is { Decl.Name: "Memory" or "Box", Args.Count: 1 } && owned.Decl.Module == Compiler.SystemModule ? owned : null;
     }
 
     /// Whether a value of `actual` is lent where `expected` is: a `Memory[T]` (or a slot of one) where a `Span[T]` is
@@ -4308,13 +4309,13 @@ public sealed class FunctionGen
     private static bool Lends(DType? actual, DType expected) =>
         OwnedMemory(actual) is { } owned
         && (owned.Decl.Name == "Memory"
-            ? expected is RecordType { Decl.Name: "Span", Args: [var e] } span && span.Decl.Module == Compiler.CoreModule
+            ? expected is RecordType { Decl.Name: "Span", Args: [var e] } span && span.Decl.Module == Compiler.SystemModule
               && e.Equals(owned.Args[0])
             : expected is PtrType { Pointee: { } p } && p.Equals(owned.Args[0]) && !actual!.Equals(expected));
 
     /// Whether `t` is `Span[Byte]`, the type of text: a string literal is one.
     private static bool IsByteSpan(DType t) =>
-        t is RecordType { Decl.Name: "Span", Args: [IntType { Kind: IntKind.Byte }] } span && span.Decl.Module == Compiler.CoreModule;
+        t is RecordType { Decl.Name: "Span", Args: [IntType { Kind: IntKind.Byte }] } span && span.Decl.Module == Compiler.SystemModule;
 
     /// `caller_location()`: inside a `@track_caller` routine, where it was called from.
     private DType SourceLocationPtr(Pos pos) =>

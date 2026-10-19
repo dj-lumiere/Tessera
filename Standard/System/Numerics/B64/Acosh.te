@@ -1,0 +1,326 @@
+# Tessera stdlib: the correctly rounded inverse hyperbolic cosine of B64
+#
+# Near 1, acosh(1 + z) = sqrt(2z) (1 + z P(z)). Elsewhere acosh x = log(x + sqrt(x^2 - 1)), with the argument
+# as a double-double below 111.75 and as log(2x) plus a short correction series in 1/x^2 above, and the
+# logarithm from the tables of ArchypShared.te, checked with an error bound. The accurate path computes the
+# logarithm to about 150 bits and looks the few hardest arguments up in a table of exact values.
+# Round to nearest only: acosh(1) = +0, +inf maps to +inf, NaN comes back quiet, and x < 1 (-inf included)
+# gives the default NaN (C's 0.0 / 0.0 on x86).
+#
+# Ported from CORE-MATH, src/binary64/acosh/acosh.c via RazorForge's B64Acosh.rf.
+# Copyright (c) 2023 Alexei Sibidanov.
+# MIT license: see LICENSE-CORE-MATH
+
+module Standard/System/Numerics/B64
+
+### Hard-to-round arguments x (sorted), as B64 bits.
+secret preset CM_B64_ACOSH_DB_X: @Array[U64, 7] <- [0x3FF5BFF041B260FE, 0x3FF9EFDCA62B700A,
+    0x3FFA5BF3ACFDE4B2, 0x40645EA160DDC71F, 0x4092A686E4B567CE, 0x40ECB62EEC26BD78,
+    0x40F3BF8009648DC0]
+
+### The high parts of acosh x for those arguments, as B64 bits.
+secret preset CM_B64_ACOSH_DB_H: @Array[U64, 7] <- [0x3FEA6031CD5F93BA, 0x3FF104B648F113A1,
+    0x3FF1585720F35CD9, 0x401725811DCF6782, 0x401F1C928E7F1E65, 0x402759A2AD4C4D56,
+    0x4027FCE95EA5C653]
+
+### The low parts, as B64 bits.
+secret preset CM_B64_ACOSH_DB_L: @Array[U64, 7] <- [0x3C80000000000000, 0x3C90000000000000,
+    0xBC90000000000000, 0x3CB0000000000000, 0x3CB0000000000000, 0x3CC0000000000000,
+    0xBCA0000000000000]
+
+### acosh `me`, correctly rounded.
+### :returns: The inverse hyperbolic cosine of `me`.
+routine B64.acosh_unchecked() -> Me
+    local ix: U64 = me.bits()
+
+    special: Bool = ix >= 0x7FF0000000000000  # x < 0, NaN or +inf
+    upto_one: Bool = ix <= 0x3FF0000000000000  # 0 <= x <= 1
+    near_one: Bool = ix < 0x3FF1E83E425AEE63  # x < 0x1.1e83e425aee63p+0
+    moderate: Bool = ix < 0x405BF00000000000  # x < 111.75
+    below738: Bool = ix < 0x4087100000000000
+    below2e4: Bool = ix < 0x40E0100000000000  # x < 32896
+    # x < 0x1.ap+31
+    values: (U64, S64, Me, Me) = when
+        special =>
+            # +inf or NaN
+            if ix == 0x7FF0000000000000 or ix << 1 > 0xFFE0000000000000
+                return me +! me
+            return Me.from_bits(0xFFF8000000000000)
+        upto_one =>
+            if ix == 0x3FF0000000000000
+                return 0.0
+            return Me.from_bits(0xFFF8000000000000)
+        near_one =>
+            # 1 < x < 0x1.1e83e425aee63p+0: acosh(1 + z) = sqrt(2z) (1 + z P(z)), with sqrt(2z) = sh + sl
+            z: Me = me -! 1.0
+            iz: Me = Me.truediv_unchecked(-0.25, z)
+            zt: Me = Me.mul_unchecked(2.0, z)
+            sh: Me = zt.sqrt_unchecked()
+            sl: Me = sh.mul_add_unchecked(a: sh, b: -zt) *! (sh *! iz)
+            z2: Me = z *! z
+            z4: Me = z2 *! z2
+            c2: Me = z *! -0x1.6db6db6d5534cp-8 +! 0x1.3333333332f95p-6
+            c4: Me = z *! -0x1.6e8b8e3e40d58p-11 +! 0x1.f1c71c1e04356p-10
+            c6: Me = z *! -0x1.c9045534e6d9ep-14 +! 0x1.1c4ba825ac4fep-12
+            c8: Me = z *! -0x1.f1f4f8cc65342p-17 +! 0x1.71fedae26a76bp-15
+            c24: Me = z2 *! c4 +! c2
+            c68: Me = z2 *! c8 +! c6
+            poly: Me = z *! (z4 *! c68 +! c24) +! -0x1.5555555555555p-4
+            ds: Me = (sh *! z).mul_add_unchecked(a: poly, b: sl)
+            eps: Me = ds *! 0x1.00p-50 -! Me.mul_unchecked(0x1p-104, sh)
+            lb: Me = sh +! (ds -! eps)
+            ub: Me = sh +! (ds +! eps)
+            if lb == ub
+                return lb
+            return cm_b64_acosh_one(z, sh, sl)
+        moderate =>
+            # x < 111.75: th + tl = x + sqrt(x^2 - 1), and log(th + tl) = log(th) + tl/th
+            x2h: Me = me *! me
+            wh: Me = x2h -! 1.0
+            wl: Me = b64_mul_error(x: me, y: me, p: x2h)
+            sh: Me = wh.sqrt_unchecked()
+            ish: Me = Me.truediv_unchecked(0.5, wh)
+            sl: Me = (wl -! sh.mul_add_unchecked(a: sh, b: -wh)) *! (sh *! ish)
+            s: CmF64HypDd = cm_b64_hyp_fasttwosum(x: me, y: sh)
+            tl: Me = s.lo +! sl
+            becomes (s.hi.bits(), 0x3FF, tl /! s.hi, 0x1.81p-63)
+        below738 =>
+            # 111.75 <= x < 738: log(x + sqrt(x^2 - 1)) = log(2x) + g with g a series in z = 1/x^2
+            z: Me = Me.truediv_unchecked(1.0, me *! me)
+            c0: Me = z *! -0x1.aab6691f2bae7p-5 +! -0x1.7fffffebf3e6cp-4
+            c1: Me = z *! c0 +! -0x1.000000000005cp-2
+            becomes (me.bits(), 0x3FE, z *! c1 +! 0x1.5c4b6148816e2p-66, 0x1.c3p-63)
+        below2e4 =>
+            # 738 <= x < 32896
+            z: Me = Me.truediv_unchecked(1.0, me *! me)
+            c0: Me = z *! -0x1.8000268641bfep-4 +! -0x1.ffffffffff214p-3
+            becomes (me.bits(), 0x3FE, z *! c0 +! -0x1.7f77c8429c6c6p-67, 0x1.9ap-63)
+        ix < 0x41EA000000000000 =>
+            # 32896 <= x < 0x1.ap+31
+            z: Me = Me.truediv_unchecked(1.0, me *! me)
+            becomes (me.bits(), 0x3FE, z *! -0x1.000000017d048p-2 +! 0x1.7a0ed2effdd1p-67, 0x1.99p-63)
+        else => (ix, 0x3FE, 0.0, 0x1.b2p-63)
+    t, off, g, eps = values
+
+    # log(2^(e - off) m) + g for the bits t of 2^e m, from the tables
+    eb: S64 = (t >> 52).to[S64]()
+    e: S64 = eb - off
+    tm: U64 = t & 0x000FFFFFFFFFFFFF
+    ed: Me = e.to[Me]()
+    j: U64 = cm_b64_archyp_index(tm)
+    m: Me = Me.from_bits(tm | 0x3FF0000000000000)
+    i1: U64 = (j >> 5).to[U64]()
+    i2: U64 = (j & 0x1F).to[U64]()
+    r: Me = Me.from_bits(CM_B64_ARCHYP_R1.getitem(i1)) *! Me.from_bits(CM_B64_ARCHYP_R2.getitem(i2))
+    dx: Me = r.mul_add_unchecked(a: m, b: -1.0)
+    dx2: Me = dx *! dx
+    f: Me = dx2 *! cm_b64_archyp_log_poly(dx, dx2)
+    # log(2) as l2h + l2l with l2h on 42 bits, so l2h ed is exact
+    l1h: Me = Me.from_bits(CM_B64_ARCHYP_L1_HI.getitem(i1))
+    l2h: Me = Me.from_bits(CM_B64_ARCHYP_L2_HI.getitem(i2))
+    l1l: Me = Me.from_bits(CM_B64_ARCHYP_L1_LO.getitem(i1))
+    l2l: Me = Me.from_bits(CM_B64_ARCHYP_L2_LO.getitem(i2))
+    lh: Me = l1h +! l2h +! Me.mul_unchecked(0x1.62e42fefa38p-1, ed)
+    t1: Me = Me.mul_unchecked(0x1.ef35793c7673p-45, ed) +! (l1l +! l2l)
+    t2: Me = f +! t1
+    t3: Me = g +! t2
+    ll: Me = dx +! t3
+    lb: Me = lh +! (ll -! eps)
+    ub: Me = lh +! (ll +! eps)
+    # 0x1.71547652b82fep+0 approximates 1/log(2)
+    if lb == ub
+        return lb
+    return cm_b64_acosh_refine(x: me, a: Me.mul_unchecked(0x1.71547652b82fep+0, lb))
+
+### The double-double sum (xh + xl) + (ch + cl): an exact two-sum of the high parts plus the low parts.
+### :param xh: The high part of the first addend.
+### :param xl: The low part of the first addend.
+### :param ch: The high part of the second addend.
+### :param cl: The low part of the second addend.
+### :returns: The sum as a double-double.
+secret routine cm_b64_acosh_adddd(xh: B64, xl: B64, ch: B64, cl: B64) -> CmF64HypDd
+    s: B64 = xh +! ch
+    ap: B64 = s -! ch
+    bp: B64 = s -! ap
+    da: B64 = xh -! ap
+    db: B64 = ch -! bp
+    return CmF64HypDd(hi: s, lo: da +! db +! (xl +! cl))
+
+### The double-double product (xh + xl) (ch + cl), renormalized.
+### :param xh: The high part of the first factor.
+### :param xl: The low part of the first factor.
+### :param ch: The high part of the second factor.
+### :param cl: The low part of the second factor.
+### :returns: The product as a double-double.
+secret routine cm_b64_acosh_muldd_acc(xh: B64, xl: B64, ch: B64, cl: B64) -> CmF64HypDd
+    ahlh: B64 = ch *! xl
+    alhh: B64 = cl *! xh
+    ahhh: B64 = ch *! xh
+    ahhl: B64 = b64_mul_error(x: ch, y: xh, p: ahhh) +! (alhh +! ahlh)
+    return cm_b64_hyp_fasttwosum(x: ahhh, y: ahhl)
+
+### The double-double times double product (xh + xl) ch, renormalized.
+### :param xh: The high part of the double-double factor.
+### :param xl: The low part of the double-double factor.
+### :param ch: The B64 factor.
+### :returns: The product as a double-double.
+secret routine cm_b64_acosh_mulddd(xh: B64, xl: B64, ch: B64) -> CmF64HypDd
+    ahlh: B64 = ch *! xl
+    ahhh: B64 = ch *! xh
+    ahhl: B64 = b64_mul_error(x: ch, y: xh, p: ahhh) +! ahlh
+    h: B64 = ahhh +! ahhl
+    l: B64 = ahhh -! h +! ahhl
+    return CmF64HypDd(hi: h, lo: l)
+
+### One Horner step of a double-double polynomial: `value` `x` + `c`.
+### :param x: The point, as a double-double.
+### :param value: The polynomial so far, as a double-double.
+### :param c: The next coefficient, as a double-double.
+### :returns: The new value as a double-double.
+secret routine cm_b64_acosh_polydd_step(x: CmF64HypDd, value: CmF64HypDd,
+    c: CmF64HypDd) -> CmF64HypDd
+    p: CmF64HypDd = cm_b64_acosh_muldd_acc(xh: x.hi, xl: x.lo, ch: value.hi, cl: value.lo)
+    s: CmF64HypDd = cm_b64_hyp_fasttwosum(x: c.hi, y: p.hi)
+    l: B64 = p.lo +! (s.lo +! c.lo)
+    return CmF64HypDd(hi: s.hi, lo: l)
+
+### The accurate path of acosh near 1: acosh(1 + z) = sqrt(2z) (1 + z P(z)), with sqrt(2z) = sh + sl.
+### :param z: x - 1.
+### :param sh: The high part of sqrt(2 `z`).
+### :param sl: The low part of sqrt(2 `z`).
+### :returns: acosh(1 + `z`), correctly rounded.
+secret routine cm_b64_acosh_one(z: B64, sh: B64, sl: B64) -> B64
+    zdd: CmF64HypDd = (hi: z, lo: 0.0)
+    c0: B64 = z *! 0x1.613229230e255p-25 +! -0x1.1bf173531ee23p-23
+    c1: B64 = z *! c0 +! 0x1.4edd2ddb3721fp-22
+    c2: B64 = z *! c1 +! -0x1.77ead7b1ca449p-21
+    c3: B64 = z *! c2 +! 0x1.a681d7d2298ebp-20
+    y2: B64 = z *! (z *! c3 +! -0x1.df3b9d1296ea9p-19)
+    p10: CmF64HypDd = cm_b64_hyp_polydd_init(l: y2, c_hi: 0x1.12ef3bf8a0a74p-17,
+        c_lo: 0x1.f9c6b51787043p-80)
+    p9: CmF64HypDd = cm_b64_acosh_polydd_step(x: zdd, value: p10,
+        c: CmF64HypDd(hi: -0x1.3fde50d0cb4b9p-16, lo: 0x1.0335101403d9dp-72))
+    p8: CmF64HypDd = cm_b64_acosh_polydd_step(x: zdd, value: p9,
+        c: CmF64HypDd(hi: 0x1.7a878787648e2p-15, lo: -0x1.1cea281e08012p-69))
+    p7: CmF64HypDd = cm_b64_acosh_polydd_step(x: zdd, value: p8,
+        c: CmF64HypDd(hi: -0x1.c99999999914fp-14, lo: 0x1.ee0d9408a2e2ap-68))
+    p6: CmF64HypDd = cm_b64_acosh_polydd_step(x: zdd, value: p7,
+        c: CmF64HypDd(hi: 0x1.1c4ec4ec4ec43p-12, lo: 0x1.c6791d1cf399ap-66))
+    p5: CmF64HypDd = cm_b64_acosh_polydd_step(x: zdd, value: p6,
+        c: CmF64HypDd(hi: -0x1.6e8ba2e8ba2e9p-11, lo: 0x1.6d50ce7188d3dp-65))
+    p4: CmF64HypDd = cm_b64_acosh_polydd_step(x: zdd, value: p5,
+        c: CmF64HypDd(hi: 0x1.f1c71c71c71c7p-10, lo: 0x1.c56d45e265e2cp-66))
+    p3: CmF64HypDd = cm_b64_acosh_polydd_step(x: zdd, value: p4,
+        c: CmF64HypDd(hi: -0x1.6db6db6db6db7p-8, lo: 0x1.24929b16ec6b7p-63))
+    p2: CmF64HypDd = cm_b64_acosh_polydd_step(x: zdd, value: p3,
+        c: CmF64HypDd(hi: 0x1.3333333333333p-6, lo: 0x1.9999998933f0ep-61))
+    p1: CmF64HypDd = cm_b64_acosh_polydd_step(x: zdd, value: p2,
+        c: CmF64HypDd(hi: -0x1.5555555555555p-4, lo: -0x1.5555555554af1p-58))
+    p: CmF64HypDd = cm_b64_acosh_mulddd(xh: p1.hi, xl: p1.lo, ch: z)
+    s: CmF64HypDd = cm_b64_hyp_fasttwosum(x: 1.0, y: p.hi)
+    q: CmF64HypDd = cm_b64_acosh_muldd_acc(xh: s.hi, xl: s.lo +! p.lo, ch: sh, cl: sl)
+    return q.hi +! q.lo
+
+### The accurate path of acosh: log(x + sqrt(x^2 - 1)) to about 150 bits, where a approximates
+### acosh(x) / log(2).
+### :param x: The argument.
+### :param a: The approximation of acosh(`x`) / log(2).
+### :returns: acosh(`x`), correctly rounded.
+secret routine cm_b64_acosh_refine(x: B64, a: B64) -> B64
+    ix: U64 = x.bits()
+    moderate: Bool = ix < 0x4190000000000000  # x < 2^26
+    big: Bool = ix < 0x4330000000000000  # x < 2^52
+    values2: (B64, B64, S64) = when
+        moderate =>
+            # 2x could overflow: zh = x, and the exponent gets one more
+            # zh + zl = x + sqrt(x^2 - 1)
+            x2h: B64 = x *! x
+            x2l: B64 = b64_mul_error(x, y: x, p: x2h)
+            w: CmF64HypDd = cm_b64_hyp_fasttwosum(x: x2h -! 1.0, y: x2l)
+            sh: B64 = w.hi.sqrt_unchecked()
+            sl: B64 = (w.lo -! sh.mul_add_unchecked(a: sh, b: -w.hi)) /! B64.mul_unchecked(2.0, sh)
+            z0: CmF64HypDd = cm_b64_hyp_fasttwosum(x, y: sh)
+            z: CmF64HypDd = cm_b64_hyp_fasttwosum(x: z0.hi, y: z0.lo +! sl)
+            becomes (z.hi, z.lo, 0)
+        big => (B64.mul_unchecked(2.0, x), B64.truediv_unchecked(-0.5, x), 0)
+        else => (x, 0.0, 1)
+    zh, zl, huge = values2
+
+    # zh + zl approximates x + sqrt(x^2 - 1), or half of it when huge = 1
+    tb: U64 = zh.bits()
+    eb: S64 = (tb >> 52).to[S64]()
+    e: S64 = eb - 0x3FF + huge
+    m: B64 = B64.from_bits((tb & 0x000FFFFFFFFFFFFF) | 0x3FF0000000000000)
+    ed: B64 = e.to[B64]()
+    fr: B64 = a -! ed +! 0x1.00008p+0
+    fm: U64 = fr.bits() -% 0x3FF0000000000000
+    i: U64 = fm >> 36
+    i1u: U64 = (i >> 12) & 0x1F
+    i1: U64 = i1u.to[U64]()
+    i2u: U64 = (i >> 8) & 0xF
+    i2: U64 = i2u.to[U64]()
+    i3u: U64 = (i >> 4) & 0xF
+    i3: U64 = i3u.to[U64]()
+    i4: U64 = (i & 0xF).to[U64]()
+    el2: B64 = B64.mul_unchecked(-0x1.9ff0342542fc3p-91, ed)
+    el1: B64 = B64.mul_unchecked(0x1.ef35793c768p-46, ed)
+    el0: B64 = B64.mul_unchecked(0x1.62e42fefa38p-2, ed)
+    big2: CmF64ArchypTd = cm_b64_archyp_log_table(i1, i2, i3, i4)
+    big0: B64 = big2.hi +! el0
+    rt: CmF64HypDd = cm_b64_archyp_rt(i1, i2, i3, i4)
+    dh: B64 = rt.hi *! m
+    dl: B64 = b64_mul_error(x: rt.hi, y: m, p: dh)
+    sh: B64 = rt.lo *! m
+    sl: B64 = b64_mul_error(x: rt.lo, y: m, p: sh)
+    q: CmF64HypDd = cm_b64_hyp_fasttwosum(x: dh -! 1.0, y: dl)
+    # zl / 2^e, scaled like m = zh / 2^e
+    zs: B64 = B64.from_bits(zl.bits() -% (e.to_wrap[U64]() << 52))
+    zero: Bool = zl == 0.0
+    xl: B64 = when
+        zero => q.lo
+        else => q.lo +! rt.hi *! zs
+    xs: CmF64HypDd = cm_b64_acosh_adddd(xh: q.hi, xl, ch: sh, cl: sl)
+    xh: B64 = xs.hi
+    c: B64 = xh *! -0x1.55555555c3157p-4 +! 0x1.9999999a0754fp-4
+    tail: B64 = xh *! (xh *! c +! -0x1p-3)
+    p3: CmF64HypDd = cm_b64_hyp_polydd_init(l: tail, c_hi: 0x1.5555555555555p-3,
+        c_lo: 0x1.55540c15cf91fp-57)
+    p2: CmF64HypDd = cm_b64_acosh_polydd_step(x: xs, value: p3,
+        c: CmF64HypDd(hi: -0x1p-2, lo: -0x1.932ce43199a8dp-110))
+    p1: CmF64HypDd = cm_b64_acosh_polydd_step(x: xs, value: p2,
+        c: CmF64HypDd(hi: 0x1p-1, lo: 0x1.24b67ee516e3bp-111))
+    p0: CmF64HypDd = cm_b64_acosh_muldd_acc(xh, xl: xs.lo, ch: p1.hi, cl: p1.lo)
+    pe: CmF64HypDd = cm_b64_acosh_adddd(xh: p0.hi, xl: p0.lo, ch: el1, cl: el2)
+    s: CmF64HypDd = cm_b64_acosh_adddd(xh: pe.hi, xl: pe.lo, ch: big2.mid, cl: big2.lo)
+    w0: CmF64HypDd = cm_b64_hyp_fasttwosum(x: big0, y: s.hi)
+    w1: CmF64HypDd = cm_b64_hyp_fasttwosum(x: w0.lo, y: s.lo)
+    v0: B64 = w0.hi *! 2.0
+    v1: B64 = cm_b64_hyp_nudge(y1: w1.hi *! 2.0, y2: w1.lo *! 2.0)
+    tu: U64 = v1.bits()
+    er: U64 = tu +% 7 & 0x000FFFFFFFFFFFFF
+    v0_top: U64 = v0.bits() >> 52
+    de: U64 = (v0_top & 0x7FF) -% ((tu >> 52) & 0x7FF)
+    res: B64 = v0 +! v1
+    if de > 102 or er < 15
+        return cm_b64_acosh_database(x, f: res)
+    return res
+
+### The exact acosh x for the arguments the fast and accurate paths can't round, or f for any other x.
+### :param x: The argument.
+### :param f: The result for an argument that is not in the table.
+### :returns: The tabulated acosh(`x`) for a listed `x`, else `f`.
+secret routine cm_b64_acosh_database(x: B64, f: B64) -> B64
+    while a <= b with a: S64 = 0, b: S64 = 6
+        m: S64 = (a + b).div_trunc(2)
+        mu: U64 = m.to[U64]()
+        key: B64 = B64.from_bits(CM_B64_ACOSH_DB_X.getitem(mu))
+        below: Bool = key < x
+        when
+            below => continue with a: m + 1, b: b
+            key == x =>
+                h: B64 = B64.from_bits(CM_B64_ACOSH_DB_H.getitem(mu))
+                l: B64 = B64.from_bits(CM_B64_ACOSH_DB_L.getitem(mu))
+                return h +! l
+            else => continue with a: a, b: m - 1
+    then
+        return f

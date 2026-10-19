@@ -139,8 +139,8 @@ public sealed partial class Compiler
         return ((v % span) + span) % span;
     }
 
-    /// Core's `Duration`: whole seconds (S64) and the nanoseconds past them (U32).
-    public static bool IsDuration(DType t) => t is RecordType { Decl: { Name: "Duration", Module: CoreModule } };
+    /// Standard/System/Temporal's `Duration`: whole seconds (S64) and the nanoseconds past them (U32).
+    public static bool IsDuration(DType t) => t is RecordType { Decl: { Name: "Duration", Module: TemporalModule } };
 
     /// The `Duration` constant of `ns` nanoseconds: the seconds rounded down and the nanoseconds past them.
     public static string DurationLlvm(BigInteger ns)
@@ -184,7 +184,7 @@ public sealed partial class Compiler
             case TypedIntLit tl:
                 return new ConstVal(tl.Type, tl.Value);
             case UnitLit u:
-                return new ConstVal(ResolveType(new TypeRef(u.TypeName, [], u.Pos) { Path = CoreModule }, env), UnitCount(u));
+                return new ConstVal(ResolveType(new TypeRef(u.TypeName, [], u.Pos) { Path = u.TypeModule }, env), UnitCount(u));
             case BoolLit b:
                 return new ConstVal(BoolType.Instance, b.Value ? 1 : 0);
             case FloatLit f when HexFloat.IsHex(f.Text) && hint is not null:

@@ -222,8 +222,9 @@ public static partial class LanguageServer
                 string sourceText = source.Equals(file, StringComparison.OrdinalIgnoreCase)
                     ? text
                     : OpenText(source) ?? SourceText.Read(source, Shown(source));
-                decls.AddRange(ParseRecovering(Shown(source), sourceText, IsUnder(source, stdlib), parseErrors,
-                    Manifest.PlaceModule(source)));
+                bool inLibrary = IsUnder(source, stdlib);
+                decls.AddRange(ParseRecovering(Shown(source), sourceText, inLibrary, parseErrors,
+                    inLibrary ? StandardLibrary.ModuleOf(Shown(source)) : Manifest.PlaceModule(source)));
             }
             decls.AddRange(StdlibDecls(stdlib).Where(d => !own.Contains(d.File)));
 
@@ -276,7 +277,8 @@ public static partial class LanguageServer
     {
         try
         {
-            return new Parser(new Lexer(shown, text).Lex(), shown, library, placeModule: placeModule).ParseModule().Decls;
+            return new Parser(new Lexer(shown, text).Lex(), shown, library, placeModule: placeModule, placeIsFixed: library)
+                .ParseModule().Decls;
         }
         catch (CompileError) { }
 
@@ -292,7 +294,8 @@ public static partial class LanguageServer
             string chunk = string.Join("\n", lines[from..to]);
             try
             {
-                decls.AddRange(new Parser(new Lexer(shown, chunk, from + 1, 1).Lex(), shown, library, placeModule: placeModule)
+                decls.AddRange(new Parser(new Lexer(shown, chunk, from + 1, 1).Lex(), shown, library, placeModule: placeModule,
+                        placeIsFixed: library)
                     .ParseModule().Decls);
             }
             catch (CompileError e)

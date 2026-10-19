@@ -1,0 +1,632 @@
+# Tessera stdlib: MemoryManager pattern and memory routines
+#
+# Every memory region a program uses has a manager, which hands out blocks of it and takes them back. A heap's manager
+# obeys HeapManageable (blocks come back in any order), and a page manager obeys PageManageable (it also reserves
+# address space and sets what pages allow). Both refine MemoryManageable, the protocol of a manager that hands out
+# blocks. m.to[MemoryManager]() makes the MemoryManager table that callers pass as @MemoryManager to any routine that
+# allocates: routines that forward to m's own, with m's address as the table's state. Nothing here needs an operating
+# system. On a target with one, DefaultMemory.te has the hosted tables (HEAP, C_HEAP, PAGES), whose managers are
+# Heap.te's and Pages.te's. A stack is a StackManager's (StackManager.te): it hands out a routine's
+# local slots by moving the stack pointer, with no call, so it has no table.
+#
+# Heap memory reaches user code as a Memory[T] (Memory.te in Standard/System) or a Box[T]:
+# an address, a count, and this manager, released with drop(). allocate,
+# reallocate, and deallocate below are the raw layer under it, for the stdlib's
+# own node-based structures (B-tree nodes, thread and fiber records) and for
+# memory that C code hands over. Sizes and counts are U64.
+#
+# With the heap check on (config.toml's [debug] heap-check), reallocate and
+# deallocate note the place they were called from while the allocator runs, so
+# an allocator that finds a mistake (the checked heap's check for a block freed
+# twice) can crash at the caller's line: allocator_call_place() reads it.
+
+module Standard/System/Memory
+
+# ============================================================
+# MemoryManager record
+#
+# Callbacks use the C calling convention and U64 sizes, so libc's own
+# functions fit behind them.
+# ============================================================
+
+### What a page allows: `NONE` (touching it stops the program), `READ`, or `READ_WRITE`.
+choice PageAccess: U8
+    NONE
+    READ
+    READ_WRITE
+
+### The table of a memory manager that allocating routines take as `@MemoryManager`, so no allocation is hidden. A
+### manager makes it with `m.to[MemoryManager]()`: routines that call the manager's own, and the manager's address. The
+### page routines (`reserve`, `commit`, `release`, `protect`) are there when the manager obeys `PageManageable`, and
+### calling one that isn't crashes. The table views the manager: the manager outlives it, which the build checks
+### inside a routine.
+record MemoryManager
+    ### Allocates `size` bytes aligned to `align` (a power of two), or returns null: `(state, size, align)`.
+    secret alloc_fn: Callable[(Addr, U64, U64), Addr]
+    ### Resizes a block to `size` bytes, keeping its contents and its alignment `align`, or returns null and leaves it
+    ### as it was: `(state, at, size, align)`.
+    secret realloc_fn: Callable[(Addr, Addr, U64, U64), Addr]
+    ### Gives a block back: `(state, at)`.
+    secret free_fn: Callable[(Addr, Addr), None]
+    ### Reserves `size` bytes of address space, no page usable yet, or returns null: `(state, size)`.
+    secret reserve_fn: Callable[(Addr, U64), Addr]
+    ### Makes reserved pages readable and writable, false when it can't: `(state, at, size)`.
+    secret commit_fn: Callable[(Addr, Addr, U64), Bool]
+    ### Gives a whole reservation back: `(state, at, size)` with `at` and `size` as reserved.
+    secret release_fn: Callable[(Addr, Addr, U64), None]
+    ### Sets what pages allow, false when it can't: `(state, at, size, access)`.
+    secret protect_fn: Callable[(Addr, Addr, U64, PageAccess), Bool]
+    ### What the routines share, passed to each of them: the manager's address.
+    secret state: Addr
+
+### The error of a `_result` operation whose allocator returned null, such as
+### `List.push_result`. The collection is left as it was before the call.
+@derive(Representable, Diagnosable, Equatable, Hashable)
+record AllocFailed
+
+### A type that hands out memory: it allocates blocks, resizes them, and takes them back. A value of it in a slot
+### becomes the table every allocating routine takes with `m.to[MemoryManager]()`.
+### :typeparam T: The manager type.
+protocol MemoryManageable[T]
+needs T: typename
+    ### Allocates `size` bytes aligned to `align` (a power of two), or returns null when it can't.
+    ### :param size: The number of bytes.
+    ### :param align: The alignment, a power of two.
+    ### :returns: The block, or null.
+    routine @Me.alloc(size: U64, align: U64) -> Addr
+
+    ### Resizes the block at `at` to `size` bytes, keeping its contents up to the smaller size and its alignment `align`.
+    ### Only the manager knows how large a block is, so every manager has its own.
+    ### :param at: The block, from this manager, or null for a new one.
+    ### :param size: The new size in bytes.
+    ### :param align: The alignment the block was allocated with, a power of two.
+    ### :returns: The resized block, which may have moved, or null with the block left as it was when it can't.
+    ### :note: A manager whose realloc calls another manager's realloc on `at` marks it `@reshaping(at)`.
+    routine @Me.realloc(at: Addr, size: U64, align: U64) -> Addr
+
+    ### Takes the block at `at` back.
+    ### :param at: The block, from this manager. Null does nothing in the stdlib's managers.
+    routine @Me.free(at: Addr) -> None
+
+### A memory manager of a heap: its blocks come back in any order, each one on its own. It asks for nothing more than
+### `MemoryManageable`: obeying it says the manager takes its blocks back in any order. `CHeapManager` and
+### `CheckedHeapManager` (Heap.te) are two, and `HEAP` is the default one.
+### :typeparam T: The manager type.
+protocol HeapManageable[T]
+obeys MemoryManageable[T]
+needs T: typename
+
+### A memory manager that also handles pages: it reserves address space, commits pages of it, gives a reservation back,
+### and sets what pages allow. Its table's `has_pages()` and `has_protect()` are true. A manager whose pages can't
+### change what they allow returns false from `protect`.
+### :typeparam T: The manager type.
+protocol PageManageable[T]
+obeys MemoryManageable[T]
+needs T: typename
+    ### Reserves `size` bytes of address space, no page of it usable yet.
+    ### :param size: The number of bytes, rounded up to whole pages by the manager.
+    ### :returns: The reservation's start, or null when the space can't be reserved.
+    routine @Me.reserve(size: U64) -> Addr
+
+    ### Makes `size` bytes of reserved pages at `at` readable and writable.
+    ### :param at: The first page, page aligned, inside a reservation of this manager.
+    ### :param size: The number of bytes, a whole number of pages.
+    ### :returns: False when the pages can't be committed.
+    routine @Me.commit(at: Addr, size: U64) -> Bool
+
+    ### Gives a whole reservation back, committed pages and all.
+    ### :param at: The reservation's start, as `reserve` returned it.
+    ### :param size: The size `reserve` was asked for.
+    routine @Me.release(at: Addr, size: U64) -> None
+
+    ### Sets what `size` bytes of pages at `at` allow.
+    ### :param at: The first page, page aligned.
+    ### :param size: The number of bytes, a whole number of pages.
+    ### :param access: What the pages allow.
+    ### :returns: False when the access can't be set.
+    routine @Me.protect(at: Addr, size: U64, access: PageAccess) -> Bool
+
+### Releases nothing: a `MemoryManager` holds no memory of its own.
+routine @MemoryManager.destruct() -> None
+    return
+
+### A table that hands out blocks and doesn't handle pages: its page routines and `protect_fn` are null. For
+### Standard/System/Memory's own tables built from C routines, everything else makes its table with `m.to[MemoryManager]()`.
+### :param alloc_fn: Allocates `(state, size, align)`.
+### :param realloc_fn: Resizes `(state, at, size, align)`.
+### :param free_fn: Gives a block back `(state, at)`.
+### :param state: What the three routines share.
+### :returns: The table.
+secret common routine MemoryManager.construct(alloc_fn: Callable[(Addr, U64, U64), Addr],
+    realloc_fn: Callable[(Addr, Addr, U64, U64), Addr], free_fn: Callable[(Addr, Addr), None],
+    state: Addr) -> Me
+    manager: Me = Me(alloc_fn, realloc_fn, free_fn, reserve_fn: .hollow(), commit_fn: .hollow(),
+        release_fn: .hollow(), protect_fn: .hollow(), state)
+    return manager
+
+### The table of a manager that hands out blocks and doesn't handle pages: routines that call its `alloc`, `realloc`,
+### and `free`, with its address. Its page routines are empty (`has_pages()` and `has_protect()` are false).
+### :typeparam T: The manager type.
+### :returns: The table, which views the manager: the manager outlives every use of it.
+routine @T.to[MemoryManager]() -> MemoryManager
+needs T: typename, MemoryManageable[T]
+    table: MemoryManager = MemoryManager(alloc_fn: forward_alloc[T].to[Callable](),
+        realloc_fn: forward_realloc[T].to[Callable](), free_fn: forward_free[T].to[Callable](),
+        reserve_fn: .hollow(), commit_fn: .hollow(), release_fn: .hollow(), protect_fn: .hollow(),
+        state: me)
+    return table
+
+### The table of a manager that handles pages: routines that call its `alloc`, `realloc`, `free`, `reserve`, `commit`,
+### `release`, and `protect`, with its address (`has_pages()` and `has_protect()` are true).
+### :typeparam T: The manager type.
+### :returns: The table, which views the manager: the manager outlives every use of it.
+routine @T.to[MemoryManager]() -> MemoryManager
+needs T: typename, PageManageable[T]
+    table: MemoryManager = MemoryManager(alloc_fn: forward_alloc[T].to[Callable](),
+        realloc_fn: forward_realloc[T].to[Callable](), free_fn: forward_free[T].to[Callable](),
+        reserve_fn: forward_reserve[T].to[Callable](), commit_fn: forward_commit[T].to[Callable](),
+        release_fn: forward_release[T].to[Callable](),
+        protect_fn: forward_protect[T].to[Callable](), state: me)
+    return table
+
+# The table's routines: each turns the state back into the manager it came from and calls the manager's own. This is
+# the one place a table's state is read as a manager.
+
+### Calls the manager's `alloc`.
+### :typeparam M: The manager type.
+### :param state: The manager's address.
+### :param size: The number of bytes.
+### :param align: The alignment, a power of two.
+### :returns: The block, or null.
+secret routine forward_alloc[M](state: Addr, size: U64, align: U64) -> Addr
+needs M: typename, MemoryManageable[M]
+    manager: @M = state.to[@M]()
+    return manager.alloc(size, align)
+
+### Calls the manager's `realloc`.
+### :typeparam M: The manager type.
+### :param state: The manager's address.
+### :param at: The block, or null.
+### :param size: The new size in bytes.
+### :param align: The block's alignment.
+### :returns: The resized block, or null with the block left as it was.
+@reshaping(at)
+secret routine forward_realloc[M](state: Addr, at: Addr, size: U64, align: U64) -> Addr
+needs M: typename, MemoryManageable[M]
+    manager: @M = state.to[@M]()
+    return manager.realloc(at, size, align)
+
+### Calls the manager's `free`.
+### :typeparam M: The manager type.
+### :param state: The manager's address.
+### :param at: The block.
+secret routine forward_free[M](state: Addr, at: Addr) -> None
+needs M: typename, MemoryManageable[M]
+    manager: @M = state.to[@M]()
+    manager.free(at)
+    return
+
+### Calls the manager's `reserve`.
+### :typeparam M: The manager type.
+### :param state: The manager's address.
+### :param size: The number of bytes.
+### :returns: The reservation's start, or null.
+secret routine forward_reserve[M](state: Addr, size: U64) -> Addr
+needs M: typename, PageManageable[M]
+    manager: @M = state.to[@M]()
+    return manager.reserve(size)
+
+### Calls the manager's `commit`.
+### :typeparam M: The manager type.
+### :param state: The manager's address.
+### :param at: The first page.
+### :param size: The number of bytes.
+### :returns: False when the pages can't be committed.
+secret routine forward_commit[M](state: Addr, at: Addr, size: U64) -> Bool
+needs M: typename, PageManageable[M]
+    manager: @M = state.to[@M]()
+    return manager.commit(at, size)
+
+### Calls the manager's `release`.
+### :typeparam M: The manager type.
+### :param state: The manager's address.
+### :param at: The reservation's start.
+### :param size: The size reserved.
+secret routine forward_release[M](state: Addr, at: Addr, size: U64) -> None
+needs M: typename, PageManageable[M]
+    manager: @M = state.to[@M]()
+    manager.release(at, size)
+    return
+
+### Calls the manager's `protect`.
+### :typeparam M: The manager type.
+### :param state: The manager's address.
+### :param at: The first page.
+### :param size: The number of bytes.
+### :param access: What the pages allow.
+### :returns: False when the access can't be set.
+secret routine forward_protect[M](state: Addr, at: Addr, size: U64, access: PageAccess) -> Bool
+needs M: typename, PageManageable[M]
+    manager: @M = state.to[@M]()
+    return manager.protect(at, size, access)
+
+### Allocates `size` bytes aligned to `align` from this manager.
+### :param size: The number of bytes.
+### :param align: The alignment, a power of two.
+### :returns: The block, or null when the manager has no memory to give.
+### :throws: Crashes with `InvalidValueError` when `align` isn't a power of two.
+@track_caller
+@expensive("allocates memory")
+routine @MemoryManager.alloc(size: U64, align: U64) -> Addr
+    check_align(align)
+    alloc_fn: Callable[(Addr, U64, U64), Addr] = me.alloc_fn.peek()
+    block_start: Addr = alloc_fn.call(me.state.peek(), size, align)
+    return block_start
+
+### Resizes the block at `at`, from this manager, to `size` bytes, keeping its contents up to the smaller size.
+### :param at: The block, or null for a new one.
+### :param size: The new size in bytes.
+### :param align: The alignment the block was allocated with, a power of two.
+### :returns: The resized block, which may have moved, or null when the manager has no memory to give (the block is
+###     left as it was).
+### :throws: Crashes with `InvalidValueError` when `align` isn't a power of two.
+@track_caller
+@expensive("reallocates memory")
+@reshaping(at)
+routine @MemoryManager.realloc(at: Addr, size: U64, align: U64) -> Addr
+    check_align(align)
+    realloc_fn: Callable[(Addr, Addr, U64, U64), Addr] = me.realloc_fn.peek()
+    note_call_place(caller_location())
+    block_start: Addr = realloc_fn.call(me.state.peek(), at, size, align)
+    note_call_place(.hollow())
+    return block_start
+
+### Gives the block at `at` back to this manager, the one it came from.
+### :param at: The block. Null does nothing in the stdlib's managers.
+@track_caller
+@expensive("frees memory")
+routine @MemoryManager.free(at: Addr) -> None
+    free_fn: Callable[(Addr, Addr), None] = me.free_fn.peek()
+    note_call_place(caller_location())
+    free_fn.call(me.state.peek(), at)
+    note_call_place(.hollow())
+    return
+
+### Whether this manager handles pages: `reserve`, `commit`, and `release` are there.
+### :returns: True when its page routines are filled in.
+routine @MemoryManager.has_pages() -> Bool
+    reserve_fn: Callable[(Addr, U64), Addr] = me.reserve_fn.peek()
+    return reserve_fn.addr().is_not_hollow()
+
+### Whether this manager can set what pages allow: `protect` is there.
+### :returns: True when its protect routine is filled in.
+routine @MemoryManager.has_protect() -> Bool
+    protect_fn: Callable[(Addr, Addr, U64, PageAccess), Bool] = me.protect_fn.peek()
+    return protect_fn.addr().is_not_hollow()
+
+### Reserves `size` bytes of address space: whole pages, none of them usable until `commit`.
+### :param size: The number of bytes, rounded up to whole pages by the manager.
+### :returns: The reservation's start, or null when the space can't be reserved.
+### :throws: Crashes with `NotImplementedError` when this manager doesn't handle pages.
+@track_caller
+@expensive("asks for address space")
+routine @MemoryManager.reserve(size: U64) -> Addr
+    reserve_fn: Callable[(Addr, U64), Addr] = me.reserve_fn.peek()
+    if reserve_fn.addr().is_hollow()
+        crash_no_pages()
+    at: Addr = reserve_fn.call(me.state.peek(), size)
+    return at
+
+### Makes `size` bytes of reserved pages at `at` readable and writable.
+### :param at: The first page, page aligned, inside a reservation of this manager.
+### :param size: The number of bytes, a whole number of pages.
+### :returns: False when the pages can't be committed (no memory left).
+### :throws: Crashes with `NotImplementedError` when this manager doesn't handle pages.
+@track_caller
+@expensive("asks for memory")
+routine @MemoryManager.commit(at: Addr, size: U64) -> Bool
+    commit_fn: Callable[(Addr, Addr, U64), Bool] = me.commit_fn.peek()
+    if commit_fn.addr().is_hollow()
+        crash_no_pages()
+    return commit_fn.call(me.state.peek(), at, size)
+
+### Gives a whole reservation back, committed pages and all.
+### :param at: The reservation's start, as `reserve` returned it.
+### :param size: The size `reserve` was asked for.
+### :throws: Crashes with `NotImplementedError` when this manager doesn't handle pages.
+@track_caller
+@expensive("gives memory back")
+routine @MemoryManager.release(at: Addr, size: U64) -> None
+    release_fn: Callable[(Addr, Addr, U64), None] = me.release_fn.peek()
+    if release_fn.addr().is_hollow()
+        crash_no_pages()
+    release_fn.call(me.state.peek(), at, size)
+    return
+
+### Sets what `size` bytes of pages at `at` allow: a page closed with `PageAccess.NONE` stops the program when touched
+### (a guard page).
+### :param at: The first page, page aligned.
+### :param size: The number of bytes, a whole number of pages.
+### :param access: What the pages allow.
+### :returns: False when the access can't be set.
+### :throws: Crashes with `NotImplementedError` when this manager can't set what pages allow.
+@track_caller
+@expensive("asks the operating system")
+routine @MemoryManager.protect(at: Addr, size: U64, access: PageAccess) -> Bool
+    protect_fn: Callable[(Addr, Addr, U64, PageAccess), Bool] = me.protect_fn.peek()
+    if protect_fn.addr().is_hollow()
+        crash(name: "NotImplementedError",
+            message: "This memory manager can't set what pages allow: its protect is empty.")
+    return protect_fn.call(me.state.peek(), at, size, access)
+
+### Crashes with `NotImplementedError`: the manager's page routines are empty.
+@noreturn
+@track_caller
+secret routine crash_no_pages() -> None
+    crash(name: "NotImplementedError",
+        message: "This memory manager doesn't handle pages: its reserve, commit, and release are empty.")
+
+### Crashes with `InvalidValueError` unless `align` is a power of two.
+### :param align: The alignment asked for.
+@track_caller
+secret routine check_align(align: U64) -> None
+    if align.is_power_of_two()
+        return
+    crash(name: "InvalidValueError", message: "An alignment must be a power of two.")
+
+# ============================================================
+# Generic memory routines (prelude surface)
+#
+# Sizes and counts are U64, the same type the allocator callbacks and libc
+# take.
+# ============================================================
+
+### Allocates room for `count` values of `T` through `alloc` and returns a pointer to it, uninitialized.
+### :typeparam T: The element type to allocate room for.
+### :param count: The number of values of `T` to make room for.
+### :param alloc: The allocator to use.
+### :returns: A pointer to the new block, or a null pointer when the allocator fails.
+### :throws: Crashes with `IntegerOverflowError` when the byte size does not fit in U64.
+### :note: The byte size is `sizeof[T]() * count` with checked multiplication. The memory is uninitialized, and a failed allocation returns a null pointer rather than crashing.
+@expensive("allocates heap memory")
+routine allocate[T](count: U64, alloc: @MemoryManager) -> @T
+needs T: typename
+    elem_size: U64 = sizeof[T]()
+    size: U64 = elem_size * count
+    raw: Addr = alloc.alloc(size, align: alignof[T]())
+    typed: @T = raw.to[@T]()
+    return typed
+
+### Resizes the block at `ptr` to hold `new_count` values of `T` through `alloc` and returns the possibly moved pointer.
+### :typeparam T: The element type.
+### :param ptr: The block to resize, from `allocate` or an earlier `reallocate`.
+### :param new_count: The new number of values of `T`.
+### :param alloc: The allocator to use.
+### :returns: A pointer to the resized block, which may have moved, or a null pointer when the allocator fails.
+### :throws: Crashes with `IntegerOverflowError` when the byte size does not fit in U64.
+### :note: A failed reallocation returns a null pointer, and the old block stays valid.
+@track_caller
+@expensive("reallocates heap memory")
+@reshaping(ptr)
+routine reallocate[T](ptr: @T, new_count: U64, alloc: @MemoryManager) -> @T
+needs T: typename
+    elem_size: U64 = sizeof[T]()
+    size: U64 = elem_size * new_count
+    raw: Addr = alloc.realloc(at: ptr, size, align: alignof[T]())
+    typed: @T = raw.to[@T]()
+    return typed
+
+### Hands the block at `data` back to `alloc`, the allocator it came from. Not a destructor: whatever the values own is
+### not released.
+### :typeparam T: The element type.
+### :param data: The block, from `allocate` or `reallocate`.
+### :param alloc: The allocator the block came from.
+### :note: A raw layer beside {Memory[T]} and {Box[T]}, for node-based structures and memory C hands over. Code that holds a Memory never needs it.
+@track_caller
+@expensive("frees heap memory")
+routine deallocate[T](data: @T, alloc: @MemoryManager) -> None
+needs T: typename
+    alloc.free(data)
+    return
+
+# -- the place of the allocator call in progress --------------------------------------------------------------------
+
+### The place of the reallocate or deallocate call the running thread is in, with the heap check on.
+@threadlocal
+@target(os: not "none")
+@heap_check("on")
+secret global CALL_PLACE: @@SourceLocation
+
+### The place of the reallocate or deallocate call in progress, on a target without an operating system.
+@target(os: "none")
+@heap_check("on")
+secret global CALL_PLACE: @@SourceLocation
+
+### Notes `place` as the place of the allocator call in progress (null when it's over).
+### :param place: The call's place, or null.
+@inline
+@heap_check("on")
+secret routine note_call_place(place: @SourceLocation) -> None
+    CALL_PLACE.poke(place)
+    return
+
+### Nothing to note with the heap check off.
+### :param place: The call's place, or null.
+@inline
+@heap_check("off")
+secret routine note_call_place(place: @SourceLocation) -> None
+    return
+
+### With the heap check on, where the `reallocate` or `deallocate` call that is running this thread's allocator
+### callback was made: the caller's line, for an allocator that crashes on a mistake (the checked heap's block freed
+### twice). Null outside such a call, and always null with the heap check off.
+### :returns: The place, or null.
+@heap_check("on")
+routine allocator_call_place() -> @SourceLocation
+    place: @SourceLocation = CALL_PLACE.peek()
+    return place
+
+### Always null with the heap check off: the place isn't noted then.
+### :returns: The place, or null.
+@heap_check("off")
+routine allocator_call_place() -> @SourceLocation
+    return .hollow()
+
+### Copies `count` values of `T` from `src` to the values at this address, as raw bytes (`llvm.memcpy`):
+### `dst.copy(src, count)`.
+### :typeparam T: The element type.
+### :param src: The first value to read.
+### :param count: The number of values of `T` to copy.
+### :throws: Crashes with `IntegerOverflowError` when the byte size does not fit in U64.
+### :note: The ranges must not overlap, and no destructor or copy hook runs.
+routine Ptr[T].copy(src: Me, count: U64) -> None
+needs T: typename
+    elem_size: U64 = sizeof[T]()
+    size: U64 = elem_size * count
+    raw_dst: Addr = me
+    raw_src: Addr = src
+    copy_bytes(dst: raw_dst, src: raw_src, bytes: size)
+    return
+
+### Copies `count` values of `T` from this address to `dst`: `dst.copy(me, count)` read from the source's side,
+### `src.copy_into(dst, count)`.
+### :typeparam T: The element type.
+### :param dst: The first value to write to.
+### :param count: The number of values of `T` to copy.
+### :throws: Crashes with `IntegerOverflowError` when the byte size does not fit in U64.
+### :note: The ranges must not overlap, and no destructor or copy hook runs.
+routine Ptr[T].copy_into(dst: Me, count: U64) -> None
+needs T: typename
+    elem_size: U64 = sizeof[T]()
+    size: U64 = elem_size * count
+    raw_dst: Addr = dst
+    raw_src: Addr = me
+    copy_bytes(dst: raw_dst, src: raw_src, bytes: size)
+    return
+
+# llvm.memcpy, so the alloc layer needs no libc: without an operating system, Freestanding.te supplies memcpy.
+### Copies `bytes` bytes from `src` to `dst` with `llvm.memcpy`.
+### :param dst: The destination address.
+### :param src: The source address.
+### :param bytes: The number of bytes to copy.
+### :note: The ranges must not overlap.
+@external("llvm")
+@template("call void @llvm.memcpy.p0.p0.i64(ptr {dst}, ptr {src}, i64 {bytes}, i1 false)")
+secret routine copy_bytes(dst: Addr, src: Addr, bytes: U64) -> None
+
+# ============================================================
+# C strings (Standard/System/CSubSystem/CStr.te)
+# ============================================================
+
+### A NUL-terminated copy of some text, for C, in memory from an allocator: `text.to[CStr](alloc)`. It lends a
+### `CStrView` with `to[CStrView]()` and gives the memory back when dropped.
+entity CStr
+    storage: Memory[CChar]
+
+### A copy of some text in wide characters ending with a 0, for C, in memory from an allocator:
+### `text.to[CWStr](alloc)`. It lends a `CWStrView` with `to[CWStrView]()` and gives the memory back when dropped.
+entity CWStr
+    storage: Memory[CWChar]
+
+### Makes a `CStr` from its fields.
+### :param storage: Its `storage`.
+### :returns: The new value.
+common routine CStr.construct(storage: Memory[CChar]) -> Me
+    return Me(storage: steal storage)
+
+### Makes a `CWStr` from its fields.
+### :param storage: Its `storage`.
+### :returns: The new value.
+common routine CWStr.construct(storage: Memory[CWChar]) -> Me
+    return Me(storage: steal storage)
+
+### The text, borrowed: valid until it is dropped.
+### :returns: The NUL-terminated text.
+routine @CStr.to[CStrView]() -> CStrView
+    text: CStrView = me.storage.data.peek().to[CStrView]()
+    return text
+
+### Gives the memory back to the allocator it came from.
+@track_caller
+routine @CStr.destruct() -> None
+    drop me.storage
+    return
+
+### The text, borrowed: valid until it is dropped.
+### :returns: The 0-terminated wide text.
+routine @CWStr.to[CWStrView]() -> CWStrView
+    text: CWStrView = me.storage.data.peek().to[CWStrView]()
+    return text
+
+### Gives the memory back to the allocator it came from.
+@track_caller
+routine @CWStr.destruct() -> None
+    drop me.storage
+    return
+
+### Copies me into memory from alloc and ends it with a NUL: an {CStr}, dropped when done.
+### :param alloc: The allocator the copy's memory comes from.
+### :returns: The NUL-terminated copy.
+### :throws: Crashes with `MemoryAllocationError` when the allocator fails.
+@track_caller
+@expensive("allocates a copy")
+routine @[Byte].to[CStr](alloc: @MemoryManager) -> CStr
+    count: U64 = me.count
+    local buffer: @Memory[CChar] <- Memory[CChar].construct(count: count + 1, manager: alloc)
+    buffer.data.peek().to[@Byte]().copy(src: me.data, count)
+    buffer.data.peek().stride(count).poke(0)
+    return CStr(storage: steal buffer)
+
+### Converts me to wide characters in memory from alloc, ending with a 0: UTF-16 on Windows, UTF-32 elsewhere. An
+### {CWStr}, dropped when done. A UTF-8 byte count bounds both unit counts, so one allocation is enough.
+### :param alloc: The allocator the copy's memory comes from.
+### :returns: The 0-terminated wide copy.
+### :throws: Crashes with `MemoryAllocationError` when the allocator fails.
+@track_caller
+@expensive("allocates a copy")
+routine @[Byte].to[CWStr](alloc: @MemoryManager) -> CWStr
+    local storage: @Memory[CWChar] <- Memory[CWChar].construct(count: me.count + 1, manager: alloc)
+    local units: @CWChar = storage.data.peek()
+    local iter: @BytesCharsIter <- me.chars()
+    local n: @U64 <- 0
+
+    while true
+        c: Maybe[Char] = iter.emit_checked()
+        when c
+            is Char as char =>
+                count: U64 = encode_cwchar(char, out: units.stride(n.peek()))
+                (n.peek() + count).poke_into(n)
+                continue
+            is None => break
+    units.stride(n.peek()).poke(0)
+    return CWStr(storage: steal storage)
+
+### Writes `char` at `out` as UTF-16, one unit or a surrogate pair, and returns
+### how many units it wrote.
+### :param char: The character to encode.
+### :param out: Where the units go (room for 2 on Windows, 1 elsewhere).
+### :returns: The number of units written.
+@target(os: "windows")
+secret routine encode_cwchar(char: Char, out: @CWChar) -> U64
+    local cp: U32 = char.to[U32]()
+
+    if cp < 0x10000
+        out.poke(cp.to[U16]())
+        return 1
+    v: U32 = cp - 0x10000
+    high_unit: U32 = (v >> 10) + 0xD800
+    out.poke(high_unit.to[U16]())
+    low_unit: U32 = (v & 0x3FF) + 0xDC00
+    out.stride(1).poke(low_unit.to[U16]())
+    return 2
+
+### Writes `char` at `out` as one UTF-32 unit. CWChar is S32 on some targets and U32 on others (ARM and AArch64 outside
+### Apple). The code point's bits are the same either way.
+### :param char: The character to encode.
+### :param out: Where the units go (room for 2 on Windows, 1 elsewhere).
+### :returns: The number of units written.
+@target(os: not "windows")
+secret routine encode_cwchar(char: Char, out: @CWChar) -> U64
+    unit: @U32 = out.to[@U32]()
+    unit.poke(char.to[U32]())
+    return 1

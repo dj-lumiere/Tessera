@@ -1,0 +1,110 @@
+# Tessera stdlib: CStrView, CWStrView — C strings at the FFI boundary
+#
+# CStrView points at C chars that end with a NUL (C's char*), CChar units the way
+# CWStrView points at CWChar units. CWStrView points at wide characters that end with a
+# 0 (C's wchar_t*): UTF-16 units on Windows, UTF-32 code points elsewhere, as
+# CWChar says. Both are one-field records, so they cost nothing over the
+# pointer, and the type says the terminator is there. CChar is S8 or U8 as the
+# target's char is, so a @[Byte] view of a CStrView reinterprets the same memory.
+#
+# A string literal becomes a CStrView or CWStrView where one is expected, terminator
+# included. Text built at run time becomes one explicitly: @[Byte].to[CStr]
+# and @[Byte].to[CWStr] copy through an allocator into an owner (Memory.te),
+# and a List[Byte] ends itself with a NUL (List[Byte].to[CStrView]). A @[Byte] is a
+# view with no terminator, so it never converts implicitly.
+
+module Standard/System/CSubSystem
+
+### A C string: a pointer to `CChar` units that end with a NUL (C's `char*`). It is a one-field record, so it costs nothing over the pointer, and the type records that the terminator is there.
+record CStrView
+    data: @CChar
+
+### A C wide string: a pointer to `CWChar` units that end with a 0 (C's `wchar_t*`), UTF-16 units on Windows and UTF-32 code points elsewhere. It costs nothing over the pointer.
+record CWStrView
+    data: @CWChar
+
+### Makes a `CStrView` from its fields.
+### :param data: Its `data`.
+### :returns: The new value.
+common routine CStrView.construct(data: @CChar) -> Me
+    return Me(data)
+
+### Releases nothing: a `CStrView` holds no memory of its own.
+routine @CStrView.destruct() -> None
+    return
+
+### Makes a `CWStrView` from its fields.
+### :param data: Its `data`.
+### :returns: The new value.
+common routine CWStrView.construct(data: @CWChar) -> Me
+    return Me(data)
+
+### Releases nothing: a `CWStrView` holds no memory of its own.
+routine @CWStrView.destruct() -> None
+    return
+
+# -- CStrView ------------------------------------------------------------------------
+
+### The C string at this pointer: it must point at C chars ending with a NUL, and nothing checks it. Memory typed as
+### bytes has its own `to[CStrView]()`.
+### :returns: The `CStrView` over the same pointer.
+routine Ptr[CChar].to[CStrView]() -> CStrView
+needs T: typename
+    c: CStrView = CStrView(data: me)
+    return c
+
+### The pointer to the first C char.
+### :returns: The underlying `@CChar`, still NUL-terminated.
+routine CStrView.to[@CChar]() -> @CChar
+    data: @CChar = me.data
+    return data
+
+### The number of C chars before the NUL, like strlen.
+### :returns: The count of C chars before the NUL.
+routine CStrView.count() -> U64
+    local data: @CChar = me.data
+
+    while data.stride(i).peek() != 0 with i: U64 = 0
+        continue with i: i + 1
+    then
+        return i
+
+### A view of the C chars before the NUL, without copying: text a C function returned, for example. It is valid as long
+### as the text is.
+### :returns: The text, the NUL left out.
+routine CStrView.getview() -> @[Byte]
+    data: @Byte = me.data.to[@Byte]()
+    return @[Byte].construct(data, count: me.count())
+
+# -- CWStrView -----------------------------------------------------------------------
+
+### The C string at this memory: it must hold C chars ending with a NUL, and nothing checks it.
+### :returns: The `CStrView` over the same memory.
+routine Ptr[Byte].to[CStrView]() -> CStrView
+needs T: typename
+    c: CStrView = CStrView(data: me.to[@CChar]())
+    return c
+
+### The C wide string at this pointer: it must point at wide characters ending with a 0, and nothing checks it.
+### :returns: The `CWStrView` over the same pointer.
+routine Ptr[CWChar].to[CWStrView]() -> CWStrView
+needs T: typename
+    c: CWStrView = CWStrView(data: me)
+    return c
+
+### The pointer to the first wide character.
+### :returns: The underlying `@CWChar`, still 0-terminated.
+routine CWStrView.to[@CWChar]() -> @CWChar
+    data: @CWChar = me.data
+    return data
+
+### The number of `CWChar` units before the 0, like wcslen: UTF-16 units on Windows, so a character outside the BMP
+### counts twice there.
+### :returns: The count of units before the 0.
+routine CWStrView.count() -> U64
+    local data: @CWChar = me.data
+
+    while data.stride(i).peek() != 0 with i: U64 = 0
+        continue with i: i + 1
+    then
+        return i

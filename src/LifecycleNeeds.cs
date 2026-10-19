@@ -32,7 +32,7 @@ public sealed class LifecycleNeeds(Func<TypeRef, string, Decl?> find, bool unkno
         string? why = null;
         switch (d)
         {
-            case RecordDecl r when r is { Name: "Memory" or "Box" } && r.Module == Compiler.CoreModule:
+            case RecordDecl r when r is { Name: "Memory" or "Box" } && r.Module == Compiler.SystemModule:
                 why = $"it is memory from a manager";
                 break;
             case RecordDecl { IsEntity: true }:

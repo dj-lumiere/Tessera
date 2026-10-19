@@ -1,0 +1,274 @@
+# Tessera stdlib: the correctly rounded Euclidean distance sqrt(x^2 + y^2) of B64
+#
+# Both legs are scaled so that the larger lies in [1, 2) (a subnormal leg is
+# normalized first), x^2 + y^2 is formed as a double-double with FMAs, and
+# its square root gets a one-step correction. When the result lies too close
+# to a rounding boundary, exact integer arithmetic on the mantissas decides.
+# Two subnormal legs go through an exact integer square root. Legs more than
+# 27 binades apart give x + 2^-27 y. Round to nearest only: no intermediate
+# overflow or underflow, overflow of the result gives +inf, an infinite leg
+# gives +inf even when the other is a quiet NaN, and otherwise a NaN leg
+# gives a quiet NaN.
+#
+# Ported from CORE-MATH, src/binary64/hypot/hypot.c via RazorForge's B64Hypot.rf.
+# Copyright (c) 2022-2026 Alexei Sibidanov <sibid@uvic.ca>
+# MIT license: see LICENSE-CORE-MATH
+
+module Standard/System/Numerics/B64
+
+### sqrt(`x`^2 + `y`^2) without intermediate overflow or underflow, correctly rounded (to nearest, ties to even).
+### An infinite leg gives +inf even when the other is NaN, a result of 2^1024 or more gives +inf, and otherwise a NaN
+### leg gives a quiet NaN.
+### :param x: One leg.
+### :param y: The other leg.
+### :returns: The length of the hypotenuse.
+routine hypot_unchecked(x: B64, y: B64) -> B64
+    local xi: U64 = x.bits()
+    local yi: U64 = y.bits()
+
+    ex: U64 = xi & 0x7FF0000000000000
+    ey: U64 = yi & 0x7FF0000000000000
+    if ex == 0x7FF0000000000000 or ey == 0x7FF0000000000000
+        # x or y is NaN or infinite
+        wx: U64 = xi << 1
+        wy: U64 = yi << 1
+        xinf: Bool = wx == 0xFFE0000000000000
+        yinf: Bool = wy == 0xFFE0000000000000
+        xqnan: Bool = wx >> 52 == 0xFFF
+        yqnan: Bool = wy >> 52 == 0xFFF
+        # IEEE 754: hypot(±inf, qNaN) = hypot(qNaN, ±inf) = +inf
+        if (xinf != yinf) and (xqnan != yqnan)
+            return inf
+        return cm_b64_hypot_nan_add(x: x.abs(), y: y.abs())
+    # u = max(|x|, |y|), v = min(|x|, |y|)
+    ax: B64 = x.abs()
+    ay: B64 = y.abs()
+    swap: Bool = ay > ax
+    u: B64 = when
+        swap => ay
+        else => ax
+    v: B64 = when
+        swap => ax
+        else => ay
+    xd: U64 = u.bits()
+    yd: U64 = v.bits()
+    ysub: Bool = yd >> 52 == 0
+    yd2: U64 = when
+        ysub =>
+            yzero: Bool = yd == 0
+            when
+                yzero => return u
+                xd >> 52 == 0 => return cm_b64_hypot_denorm(a: xd, b: yd)
+                else =>
+                    # normalize the subnormal y: its exponent field goes below 0 (modulo 2^64)
+                    nz: U64 = yd.leading_zeros()
+                    mantissa: U64 = (yd << nz - 11) & 0x000FFFFFFFFFFFFF
+                    becomes mantissa -% (nz - 12 << 52)
+        else => yd
+    # scale both legs by the power of two that brings u into [1, 2)
+    de: U64 = xd -% yd2
+    if de > 0x01B0000000000000
+        return B64.mul_add_unchecked(0x1p-27, a: v, b: u)
+    off: U64 = U64.sub_wrap(0x3FF0000000000000, xd & 0x7FF0000000000000)
+    sx: B64 = B64.from_bits(xd +% off)
+    sy: B64 = B64.from_bits(yd2 +% off)
+    x2: B64 = sx *! sx
+    dx2: B64 = b64_mul_error(x: sx, y: sx, p: x2)
+    y2: B64 = sy *! sy
+    dy2: B64 = b64_mul_error(x: sy, y: sy, p: y2)
+    r2: B64 = x2 +! y2
+    ir2: B64 = B64.truediv_unchecked(0.5, r2)
+    r2_err: B64 = x2 -! r2 +! y2
+    dr2: B64 = r2_err +! (dx2 +! dy2)
+    th: B64 = r2.sqrt_unchecked()
+    rsqrt: B64 = th *! ir2
+    dz: B64 = dr2 -! th.mul_add_unchecked(a: th, b: -r2)
+    tl: B64 = rsqrt *! dz
+    s: B64 = th +! tl  # fast two-sum of th and tl
+    z: B64 = s -! th
+    sl: B64 = tl -! z
+    thu: U64 = s.bits()
+    slu: U64 = sl.abs().bits()
+    aidr: U64 = slu +% 0x3FE0000000000000 -% (thu & 0x7FF0000000000000)
+    mid_off: U64 = aidr -% 0x3C90000000000000
+    mid: U64 = mid_off +% 16 >> 5
+    midm_off: U64 = aidr -% 0x3C80000000000000
+    midm: U64 = midm_off +% 16 >> 5
+    near: Bool = mid == 0 or midm == 0
+    odd: Bool = aidr < 0x39B0000000000000 or aidr > 0x3C9FFFFFFFFFFF80
+    hard: Bool = near or odd
+    thu2: U64 = when
+        hard => cm_b64_hypot_hard(x: sx, y: sy).bits()
+        else => thu
+    t: U64 = thu2 -% off
+    # hypot(x, y) >= 2^1024
+    if t >= 0x7FF0000000000000
+        return inf
+    return B64.from_bits(t)
+
+### x + y for non-negative x and y where at least one is NaN or infinite, picking
+### the NaN operand the way x86 SSE addition does (the first NaN, quieted), so
+### the result doesn't depend on how the addition is scheduled.
+### :param x: The first operand.
+### :param y: The second operand.
+### :returns: `x + y`, with the NaN operand chosen as described.
+secret routine cm_b64_hypot_nan_add(x: B64, y: B64) -> B64
+    xnan: Bool = x.is_nan()
+    when
+        xnan => return B64.from_bits(x.bits() | 0x0008000000000000)
+        y.is_nan() => return B64.from_bits(y.bits() | 0x0008000000000000)
+        else => return x +! y
+
+### Both legs subnormal: a and b are their encodings (x = a 2^-1074), with
+### 2^52 > a >= b > 0. The integer square root of a^2 + b^2 is refined exactly
+### and rounded to nearest (a midpoint is impossible here).
+### :param a: The encoding of the larger leg.
+### :param b: The encoding of the smaller leg.
+### :returns: The correctly rounded hypotenuse.
+secret routine cm_b64_hypot_denorm(a: U64, b: U64) -> B64
+    af: B64 = a.to[B64]()
+    bf: B64 = b.to[B64]()
+    a2: U64 = a << 1
+    b2: U64 = b << 1
+    sum_sq: B64 = af *! af +! bf *! bf
+    rm: U64 = sum_sq.sqrt_unchecked().to[U64]()
+    tmu: U64 = rm << 1
+    # D = a^2 + b^2 - tm^2 (all doubled), exact modulo 2^64 and small in magnitude
+    squares: U64 = a2 *% a2 +% b2 *% b2
+
+    # tm too small: (tm + 1)^2 = tm^2 + 2 tm + 1
+    while d > tm * 2 with d: S64 = (squares -% tmu *% tmu).to_wrap[S64](), tm: S64 = tmu.to_wrap[S64]()
+        continue with d: d - (tm * 2 + 1), tm: tm + 1
+    then
+        # tm too large: (tm - 1)^2 = tm^2 - 2 tm + 1
+        while d2 < 0 with d2: S64 = d, tm2: S64 = tm
+            continue with d2: d2 + (tm2 * 2 - 1), tm2: tm2 - 1
+        then
+            # tm = floor(sqrt(a^2 + b^2)) (doubled) and 0 <= D < 2 tm + 1: round with the low bit of tm
+            tmb: U64 = tm2.to_wrap[U64]()
+            if d2 != 0
+                return B64.from_bits((tmb >> 1) + (tmb & 1))
+            return B64.from_bits(tmb >> 1)
+
+### Hard-to-round case: the square root is refined with exact integer
+### arithmetic. x in [1, 2) and y <= x are the scaled legs, and x^2 + y^2 is
+### compared with the square of each candidate modulo 2^64 (the differences
+### are small, so the modular results are exact).
+### :param x: The larger scaled leg, in [1, 2).
+### :param y: The smaller scaled leg.
+### :returns: sqrt(`x`^2 + `y`^2), correctly rounded.
+secret routine cm_b64_hypot_hard(x: B64, y: B64) -> B64
+    local xu: U64 = x.bits()
+    local be: S64 = (xu >> 52).to_wrap[S64]()
+
+    yu: U64 = y.bits()
+    bm: U64 = (xu & 0x000FFFFFFFFFFFFF) | 0x0010000000000000
+    lm: U64 = (yu & 0x000FFFFFFFFFFFFF) | 0x0010000000000000
+    le: S64 = (yu >> 52).to_wrap[S64]()
+    sum_sq: B64 = x *! x +! y *! y
+    ri: U64 = sum_sq.sqrt_unchecked().bits()
+    rm: U64 = (ri & 0x000FFFFFFFFFFFFF) | 0x0010000000000000
+    biased_exponent: S64 = (ri >> 52).to_wrap[S64]()
+
+    # step the candidate three ulps down
+    m2: U64 = cm_b64_hypot_sum_squares(bm, lm, de: be - le)
+    while i != 3 with i: U64 = 0, rm2: U64 = rm, re: S64 = biased_exponent - 0x3FF
+        if rm2 == 0x0010000000000000
+            continue with i: i + 1, rm2: 0x001FFFFFFFFFFFFF, re: re - 1
+        continue with i: i + 1, rm2: rm2 - 1, re: re
+    then
+        # move the candidate up until its square reaches x^2 + y^2
+        k: U64 = S64.add(2, re).to_wrap[U64]()
+        while true with rm0: U64 = rm2
+            wide2: Bool = rm0 >= 0x0020000000000000
+            rm32: U64 = when
+                wide2 => rm0 + 2
+                else => rm0 + 1
+            tm2: U64 = rm32 << k
+            d2: S64 = (m2 -% tm2 *% tm2).to_wrap[S64]()
+            if d2 <= 0
+                if d2 == 0
+                    # compare with the midpoint below the candidate
+                    # round to even
+                    wide3: Bool = rm32 >= 0x0020000000000000
+                    m: U64 = when
+                        wide3 => rm32 >> 1
+                        else => rm32
+                    r: S64 = when
+                        wide3 => re + 1
+                        else => re
+                    e: S64 = be - 1 + r
+                    exponent_bits: U64 = e.to_wrap[U64]() << 52
+                    return B64.from_bits(exponent_bits +% m)
+                narrow: Bool = rm32 <= 0x0020000000000000
+                sh: U64 = when
+                    narrow => k - 1
+                    else => k
+                tm3: U64 = (rm32 << k) -% U64.shift_left(1, sh)
+                dm: S64 = (m2 -% tm3 *% tm3).to_wrap[S64]()
+                tie: Bool = dm == 0
+                below: Bool = dm < 0
+                bit: U64 = when
+                    narrow => 1
+                    else => 2
+                when
+                    tie =>
+                        rm4: U64 = rm32 - (rm32 & bit)
+                        wide3: Bool = rm4 >= 0x0020000000000000
+                        m: U64 = when
+                            wide3 => rm4 >> 1
+                            else => rm4
+                        r: S64 = when
+                            wide3 => re + 1
+                            else => re
+                        e: S64 = be - 1 + r
+                        exponent_bits: U64 = e.to_wrap[U64]() << 52
+                        return B64.from_bits(exponent_bits +% m)
+                    below =>
+                        rm4: U64 = rm32 - 1
+                        wide3: Bool = rm4 >= 0x0020000000000000
+                        m: U64 = when
+                            wide3 => rm4 >> 1
+                            else => rm4
+                        r: S64 = when
+                            wide3 => re + 1
+                            else => re
+                        e: S64 = be - 1 + r
+                        exponent_bits: U64 = e.to_wrap[U64]() << 52
+                        return B64.from_bits(exponent_bits +% m)
+                    else =>
+                        wide3: Bool = rm32 >= 0x0020000000000000
+                        m: U64 = when
+                            wide3 => rm32 >> 1
+                            else => rm32
+                        r: S64 = when
+                            wide3 => re + 1
+                            else => re
+                        e: S64 = be - 1 + r
+                        exponent_bits: U64 = e.to_wrap[U64]() << 52
+                        return B64.from_bits(exponent_bits +% m)
+            else
+                continue with rm0: rm32
+
+### (4 bm)^2 + (lm 2^(2 - de))^2 modulo 2^64, for the hard case of hypot: bm
+### and lm are the full mantissas of the larger and smaller leg, de >= 0 the
+### difference of their exponents. Bits shifted out of lm^2 are kept sticky.
+### :param bm: The full mantissa of the larger leg.
+### :param lm: The full mantissa of the smaller leg.
+### :param de: The difference of the exponents, at least 0.
+### :returns: The sum of squares modulo 2^64, with a sticky low bit.
+secret routine cm_b64_hypot_sum_squares(bm: U64, lm: U64, de: S64) -> U64
+    local b4: U64 = bm << 2
+    local m2: U64 = b4 *% b4
+    local ls: S64 = S64.sub(2, de)
+
+    if ls >= 0
+        l: U64 = lm << ls.to_wrap[U64]()
+        return m2 +% l *% l
+    l: U128 = lm.to[U128]()
+    l2: U128 = l *% l
+    ls2: S64 = ls * 2
+    sum: U64 = m2 +% (l2 >> (-ls2).to_wrap[U128]()).to_wrap[U64]()
+    if l2 << S64.add(128, ls2).to_wrap[U128]() != 0
+        return sum | 1
+    return sum

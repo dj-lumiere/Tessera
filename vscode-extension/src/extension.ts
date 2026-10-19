@@ -92,11 +92,11 @@ function onPath(name: string): string | undefined {
     return undefined;
 }
 
-/** The nearest `Standard/` (one holding Prelude.te) above a folder: where the builder there finds its library. */
+/** The nearest `Standard/` (one holding System/Prelude.te) above a folder: where the builder there finds its library. */
 function stdlibAbove(folder: string): string | undefined {
     for (let dir = folder; ; dir = path.dirname(dir)) {
         const candidate = path.join(dir, "Standard");
-        if (fs.existsSync(path.join(candidate, "Prelude.te"))) return candidate;
+        if (fs.existsSync(path.join(candidate, "System", "Prelude.te"))) return candidate;
         if (path.dirname(dir) === dir) return undefined;
     }
 }

@@ -1,0 +1,73 @@
+# Tessera stdlib: the GlobalManager, the globals' memory on a target without an operating system
+#
+# The link script defines the symbols it uses: `__bss_start` and `__bss_end` around .bss, and on a target that runs
+# from flash `__data_start` and `__data_end` around .data in RAM with `__data_load`, where its first values are in
+# flash. `prepare_core` (Boot.te in Standard/System/Cpu) runs GlobalManager.prepare() before anything reads a global.
+
+module Standard/System/Memory
+
+### The first byte of .bss (the link script's `__bss_start`).
+@external("c")
+@symbol("__bss_start")
+@target(os: "none")
+global BSS_START: @Byte
+
+### The byte after .bss (the link script's `__bss_end`).
+@external("c")
+@symbol("__bss_end")
+@target(os: "none")
+global BSS_END: @Byte
+
+### The first byte of .data in RAM (the link script's `__data_start`).
+@external("c")
+@symbol("__data_start")
+@target(os: "none")
+global DATA_START: @Byte
+
+### The byte after .data in RAM (the link script's `__data_end`).
+@external("c")
+@symbol("__data_end")
+@target(os: "none")
+global DATA_END: @Byte
+
+### Where .data's first values are in flash (the link script's `__data_load`).
+@external("c")
+@symbol("__data_load")
+@target(os: "none")
+global DATA_LOAD: @Byte
+
+### The globals' memory: .bss, the globals whose first value is all zero bytes, and .data, the others. The program
+### image holds their first values, and on a target without an operating system the GlobalManager puts them in place
+### before anything reads a global: `GlobalManager.prepare()`, which `prepare_core` runs. Its routines are called on
+### the type.
+@target(os: "none")
+record GlobalManager
+
+### Zeroes .bss, the globals whose first value is all zero bytes: `__bss_start` up to `__bss_end`.
+@target(os: "none")
+common routine GlobalManager.zero_bss() -> None
+    first: U64 = ptrtoint[Addr, U64](BSS_START)
+    after: U64 = ptrtoint[Addr, U64](BSS_END)
+    BSS_START.zeroinit(after - first)
+    return
+
+### Copies .data's first values from flash (`__data_load`) into RAM (`__data_start` up to `__data_end`), on a target
+### whose code runs from flash.
+@target(os: "none")
+common routine GlobalManager.copy_data() -> None
+    first: U64 = ptrtoint[Addr, U64](DATA_START)
+    after: U64 = ptrtoint[Addr, U64](DATA_END)
+    DATA_START.copy(src: DATA_LOAD, count: after - first)
+    return
+### Puts the globals in place: zeroes .bss. The code runs from RAM, where the image put .data.
+@target(arch: ("x86_64", "aarch64"), os: "none")
+common routine GlobalManager.prepare() -> None
+    Me.zero_bss()
+    return
+
+### Puts the globals in place: zeroes .bss and copies .data from flash.
+@target(arch: ("arm", "riscv32"), os: "none")
+common routine GlobalManager.prepare() -> None
+    Me.zero_bss()
+    Me.copy_data()
+    return

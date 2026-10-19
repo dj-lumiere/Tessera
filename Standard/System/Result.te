@@ -1,0 +1,99 @@
+# Tessera stdlib: Result[T, TError]
+#
+# Result[T, TError] is either a value (T) or the reason there is none (TError): the standard way to report an
+# expected failure (malformed input, I/O error, allocation failure). Contract violations (bugs) still crash. Result is
+# for failures the caller is expected to handle, and every `_result` routine returns one.
+#
+# A variant, so the value and the error share storage: a Result is as big as the larger of the two plus its tag. A T
+# or a TError goes where a Result is expected as it is. T and TError are different types (a Result[S64, S64] couldn't
+# tell its value from its error): wrap one in a record of its own. None has no values and cannot be T. Use
+# Result[None, E] for operations that only succeed or fail.
+#
+# Propagation idiom (caller returns Result[U, E]):
+#
+#     when r
+#         is S64 as value => use(value)
+#         is ParseError as error => return(error)
+
+module Standard/System
+
+### Either a value or the reason there is none: the standard way to report an expected failure such as malformed
+### input, an I/O error, or an allocation failure. Contract violations still crash. A `T` or a `TError` goes where a
+### `Result[T, TError]` is expected as it is, and `when` observes which with `is T as value` / `is TError as error`.
+### :typeparam T: The value type.
+### :typeparam TError: The error type, different from `T`.
+@derive(Representable, Diagnosable, Equatable, Hashable, Comparable)
+variant Result[T, TError]
+needs T: typename, TError: typename
+    T
+    TError
+
+### Releases nothing: a `Result` holds no memory of its own.
+routine @Result[T, TError].destruct() -> None
+needs T: typename, TError: typename
+    return
+
+# -- predicates ----------------------------------------------------------------
+
+### Whether `me` holds a value.
+### :typeparam T: The value type.
+### :typeparam TError: The error type.
+### :returns: `true` for a `T`, `false` for a `TError`.
+routine Result[T, TError].is_success() -> Bool
+needs T: typename, TError: typename
+    when me
+        is T => return true
+        is TError => return false
+
+### Whether `me` holds an error.
+### :typeparam T: The value type.
+### :typeparam TError: The error type.
+### :returns: `true` for a `TError`, `false` for a `T`.
+routine Result[T, TError].is_failure() -> Bool
+needs T: typename, TError: typename
+    when me
+        is T => return false
+        is TError => return true
+
+# -- extraction ----------------------------------------------------------------
+
+### The value. Crashes if the Result holds an error, with the error in the message and, in a build that keeps the crash
+### trace, where the failure was made.
+### :returns: The value.
+### :throws: Crashes with `UnwrapFailureError` when `me` holds a `TError`.
+@track_caller
+routine Result[T, TError].unwrap() -> T
+needs T: typename, TError: typename
+    failure: U32 = failure_of(me)
+    when steal me
+        is T as value => return value
+        is TError as error => crash_unwrap_error(error, failure)
+
+### Crashes with `UnwrapFailureError`: unwrap of a Result that holds `error`, failure number `failure`.
+### :typeparam TError: The error type.
+### :param error: The error, written as a programmer reads it when its type is Diagnosable.
+### :param failure: The failure's number, whose trace goes in the message (Trace.te), 0 for none.
+@noreturn
+@track_caller
+secret routine crash_unwrap_error[TError](error: TError, failure: U32) -> None
+needs TError: typename
+    local buffer: @Array[Byte, 4096] <- .hollow()
+    local message: @SliceWriter <- .construct(data: buffer.to[@Byte](), capacity: 4096)
+
+    message.write("Attempted to unwrap the value of a Failure, which holds ")
+    diagnose_or_name(value: error, out: message)
+    message.write(".")
+    write_failure_trace(seq: failure, out: message)
+    crash(name: "UnwrapFailureError", message: message.getview())
+
+### The error. Crashes if the Result holds a value.
+### :returns: The error.
+### :throws: Crashes with `UnwrapSuccessError` when `me` holds a `T`.
+@track_caller
+routine Result[T, TError].unwrap_failure() -> TError
+needs T: typename, TError: typename
+    when steal me
+        is TError as error => return error
+        is T as value =>
+            drop value
+            crash_unwrap_success()

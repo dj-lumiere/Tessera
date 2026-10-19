@@ -231,7 +231,7 @@ public sealed partial class Compiler
 
     /// The free routines a plain or qualified name means from `file`: its overload set. The set is one module's (the
     /// file's own module first, else the one import that has the name; two imports offering it make it ambiguous, as
-    /// with any name).
+    /// with any name). Standard/System and the modules under it count as one module here.
     /// Empty if nothing has the name.
     public List<RoutineDecl> FreeCandidates(string name, string file, Pos pos, string? path = null)
     {
@@ -244,7 +244,7 @@ public sealed partial class Compiler
             return [];
         }
         var visible = all.Where(c => Visible(c, file, path)).ToList();
-        if (visible.Count == 0) throw new CompileError(pos, Hidden(all[0], $"routine '{name}'", path));
+        if (visible.Count == 0) throw new CompileError(pos, Hidden(all[0], $"routine '{name}'", path, file));
         return OverloadSet(visible, file, pos, $"routine '{name}'");
     }
 
@@ -255,7 +255,8 @@ public sealed partial class Compiler
         var scope = visible.Where(c => c.Module == module).ToList();
         if (scope.Count == 0)
         {
-            var modules = visible.Select(c => c.Module).Distinct().ToList();
+            // Standard/System and the modules under it are one set: every file sees all of them.
+            var modules = visible.Select(c => IsSystemModule(c.Module) ? SystemModule : c.Module).Distinct().ToList();
             if (modules.Count > 1)
                 throw new CompileError(pos, $"{what} is ambiguous: it's in {string.Join(" and ", modules.Select(ShowModule))}; "
                     + $"write the module path ({modules[0]}/...)");
@@ -293,7 +294,7 @@ public sealed partial class Compiler
                 && (fits?.Invoke(m) ?? m.Fixed.Count == 0))
                 .ToList() is { Count: > 0 } methods)
         {
-            string home = ownerDecl?.Module ?? CoreModule;
+            string home = ownerDecl?.Module ?? SystemModule;
             var visible = methods.Where(m =>
                 m.IsPrivate ? PrivateReaches(m, file)
                 : anyModule || m.Module == home || Visible(m, file, null)).ToList();

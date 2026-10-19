@@ -64,7 +64,7 @@ way: each level is made of whole pieces of the level below.
 |---------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **statement** | One step: a binding (`x: S64 = a + b`), a load (`p.peek()`), a store (`p.poke(v)`), a local slot (`local p: @S64 <- 0`), a call, a `return`.                                             |
 | **routine**   | A body of statements with a head of `local` lines: `if` / `else`, `each` / `while` / `until` loops with carried values, and `when` to choose. Every value is bound once, and every path ends in a `return`. |
-| **module**    | A namespace for routines, types, and constants (`Standard/Format`). Its path comes from the file's location, and a `module` line overrides it.                                             |
+| **module**    | A namespace for routines, types, and constants (`Standard/Os`). Its path comes from the file's location, and a `module` line overrides it.                                                 |
 | **solution**  | Modules gathered into one executable. Its `config.toml` describes it.                                                                                                                      |
 | **library**   | A package a solution uses as it is and doesn't change: an object file, a static library, or an archive.                                                                                    |
 
@@ -155,8 +155,9 @@ sources = ["src"]
 
 ## What works today
 
-- **Modules:** namespaces with `import`, qualified paths, `define`, and `secret` (visible only inside its module).
-  `Standard/Core` is always imported. Two modules may declare the same name, and symbols follow the Itanium C++ mangling.
+- **Modules:** namespaces with `import`, qualified paths, `define`, and `secret` (visible inside its module and the
+  modules under it). `Standard/System` and every module under it are always seen. A standard library module is its
+  folder. Two modules may declare the same name, and symbols follow the Itanium C++ mangling.
 - **Solutions:** described by a `config.toml`, or every file on the command line, and the stdlib is built in with it.
   The entry is `routine start()`, or the entry file's top-level lines (script mode). On a target without an operating
   system, `when_power_on()` runs first and readies the core with `prepare_core()`.
@@ -165,8 +166,9 @@ sources = ["src"]
   leaves the slot zeroed.
 - **Threads and fibers:** a `ThreadManager` (or a fiber manager) hands out tickets, each used top to bottom: put
   work on it, wait, retrieve the result, give it back.
-- **Standard library:** written in Tessera and layered so that only `Standard/Os` needs libc, and a target without an
-  operating system builds without it.
+- **Standard library:** written in Tessera and layered so that only `Standard/Os` and the hosted files of
+  `Standard/System` (the heap and page managers, the CPU events) need libc, and a target without an operating system
+  builds without them.
 - **Builder:** emits LLVM IR text and links through `clang`, with a formatter (`fmt`) and a type-checker (`check`).
 - **Tooling:** a TextMate grammar ([`Tessera.tmbundle/`](Tessera.tmbundle/)).
 
@@ -232,5 +234,5 @@ disagree, the stdlib wins. Report bugs at
 
 ## License
 
-MIT, see [`LICENSE`](LICENSE). The float math in `Standard/B16Core/`, `B32Core/`, `B64Core/`, and `B128Core/` is
-based on CORE-MATH, also MIT. Each of those directories carries its `LICENSE-CORE-MATH`.
+MIT, see [`LICENSE`](LICENSE). The float math in `Standard/System/Numerics/B16/`, `BF16/`, `B32/`, `B64/`, and `B128/`
+is based on CORE-MATH, also MIT. Each of those directories carries its `LICENSE-CORE-MATH`.

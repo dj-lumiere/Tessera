@@ -24,7 +24,7 @@ public static class StandardLibrary
     private static readonly ConcurrentDictionary<string, ParsedFile> Parsed = new(StringComparer.OrdinalIgnoreCase);
 
     /// The declarations of every `.te` file under `directory`, in the order of the files' full paths, so they come
-    /// out the same on every run. Each file is named from the directory (`Standard/Collection/List.te`) wherever the
+    /// out the same on every run. Each file is named from the directory (`Standard/Collections/List.te`) wherever the
     /// build runs. The files are parsed in parallel, those parsed before and unchanged since taken as they were. The
     /// first file in that order that fails to parse is the one reported, as if they had been parsed one after another.
     public static List<Decl> Load(string directory)
@@ -59,13 +59,19 @@ public static class StandardLibrary
     internal static string ShownAs(string directory, string path) =>
         Path.Combine("Standard", Path.GetRelativePath(directory, path));
 
+    /// The module a stdlib file is in: its folder, under `Standard` (`Standard/System/Memory/Heap.te` is in
+    /// `Standard/System/Memory`). A module line that names another module is a build error.
+    /// <param name="shownAs">The file's name from the stdlib directory (ShownAs).</param>
+    public static string ModuleOf(string shownAs) =>
+        string.Join('/', (Path.GetDirectoryName(shownAs) ?? "Standard").Split('/', '\\'));
+
     /// One stdlib file's declarations: the ones parsed before when the file is unchanged since, else parsed now.
     internal static List<Decl> Declarations(string path, string shownAs, FileStamp stamp)
     {
         if (Parsed.TryGetValue(path, out var known) && known.Stamp == stamp && known.ShownAs == shownAs)
             return known.Decls;
         var tokens = new Lexer(shownAs, SourceText.Read(path, shownAs)).Lex();
-        var decls = new Parser(tokens, shownAs, true).ParseModule().Decls;
+        var decls = new Parser(tokens, shownAs, true, placeModule: ModuleOf(shownAs), placeIsFixed: true).ParseModule().Decls;
         Parsed[path] = new ParsedFile(stamp, shownAs, decls);
         return decls;
     }

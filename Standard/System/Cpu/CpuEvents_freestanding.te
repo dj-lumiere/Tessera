@@ -1,0 +1,293 @@
+# Tessera stdlib: the CpuEventManager of a program without an operating system
+#
+# The CPU stops what it runs when an event comes: a fault (memory it may not touch, an instruction it can't run), a
+# supervisor call (`svc` / `ecall`), an interrupt, a request to power off. Where it goes is a table the whole program
+# has one of, so the CpuEventManager manages it: it holds one handler per kind of event, records which one holds each
+# slot, and hands back the one before when a new one takes a slot, so the old one can be put back.
+#
+# `when_power_on` is the one event no handler holds: nothing runs before it to set one, so it is a routine the program
+# declares (Boot.te). The rest are set with `CpuEventManager.when_power_off`, `when_faulted`,
+# `when_supervisor_called`, and `when_interrupt_requested`. A slot nobody holds crashes (through the program's crash
+# handler) when its event comes, except POWER_OFF, which halts the core.
+#
+# The builder writes the table the CPU reads, and prepare_core points the CPU at it (CpuEventManager.install()):
+# on AArch64 the vector table of VBAR_EL1 / VBAR_EL2 / VBAR_EL3 (whichever level the core runs at), on RISC-V the
+# trap entry of mtvec, on Cortex-M the vector table the core reads at reset. Each entry saves the registers a routine
+# may change, calls tessera_cpu_event (below) with what the CPU says about the event, and goes back to what the CPU
+# was running. x86_64 without an operating system has no table yet: calling one of these routines there is a build
+# error.
+
+module Standard/System/Cpu
+
+### What kind of event the CPU raised.
+@target(os: "none")
+choice CpuEventKind: U8
+    POWER_OFF  # a request from outside to power off: an ACPI shutdown, a power button
+    FAULT  # an instruction the CPU stopped on: memory it may not touch, an instruction it can't run
+    SUPERVISOR_CALL  # the program asked the CPU for its supervisor: `svc` on ARM, `ecall` on RISC-V
+    INTERRUPT  # a device or a timer asked for the CPU's attention
+
+### One event as the CPU reported it.
+@target(os: "none")
+record CpuEvent
+    kind: CpuEventKind
+    ### What the CPU says about it: the syndrome (ESR) of an AArch64 fault, the number of an AArch64 or a Cortex-M
+    ### supervisor call, the exception number of a Cortex-M event, the cause (mcause) on RISC-V, 0 and 1 for an
+    ### AArch64 IRQ and FIQ.
+    code: U64
+    ### Where the CPU was: the instruction it stopped on or goes back to, null when it didn't say.
+    place: Addr
+    ### The address a fault touched (FAR on AArch64, mtval on RISC-V), null when it didn't say.
+    address: Addr
+
+### Makes a `CpuEvent` from its fields.
+### :param kind: Its `kind`.
+### :param code: Its `code`.
+### :param place: Its `place`.
+### :param address: Its `address`.
+### :returns: The new value.
+@target(os: "none")
+common routine CpuEvent.construct(kind: CpuEventKind, code: U64, place: Addr, address: Addr) -> Me
+    return Me(kind, code, place, address)
+
+### Releases nothing: the addresses are the CPU's report.
+@target(os: "none")
+routine @CpuEvent.destruct() -> None
+    return
+
+### The CPU's events: one handler per kind, held until its event comes. Its routines are called on the type.
+@target(os: "none")
+record CpuEventManager
+
+### The handler that holds each kind's slot, by the kind's number, null for none.
+@target(os: "none")
+secret global HOLDERS: @Array[Addr, 4]
+
+### The first byte of the vector table the builder writes (the symbol `tessera_vectors`).
+@external("c")
+@symbol("tessera_vectors")
+@target(arch: ("aarch64", "riscv32"), os: "none")
+secret global CPU_VECTORS: @Byte
+
+### Puts `holder` in `kind`'s slot.
+### :param kind: The slot.
+### :param holder: The new handler, or `.hollow()` for none.
+### :returns: The handler that held the slot before, `.hollow()` for none.
+@target(os: "none")
+secret common routine CpuEventManager.replace(kind: CpuEventKind,
+    holder: Callable[(CpuEvent,), None]) -> Callable[(CpuEvent,), None]
+    slot: @Addr = HOLDERS.getslot(slot_of(kind))
+    before: Addr = slot.peek()
+    slot.poke(holder.addr())
+    return bitcast(before)
+
+### Sets the handler of a request to power off (an ACPI shutdown, a power button), which the program's handler of the
+### board's interrupt passes on with {CpuEventManager.power_off}. It cleans up, then the core halts.
+### :param holder: The handler, or `.hollow()` to halt at once.
+### :returns: The handler before, `.hollow()` for none: pass it back to put it back.
+@target(os: "none")
+common routine CpuEventManager.when_power_off(holder: Callable[(CpuEvent,), None]) -> Callable[(CpuEvent,), None]
+    return Me.replace(kind: CpuEventKind.POWER_OFF, holder)
+
+### Sets the handler of a fault: an instruction the CPU stopped on. The core halts when the handler returns, since
+### going back would run the same instruction again.
+### :param holder: The handler, or `.hollow()` to crash with `HardwareFault`.
+### :returns: The handler before, `.hollow()` for none: pass it back to put it back.
+@target(os: "none")
+common routine CpuEventManager.when_faulted(holder: Callable[(CpuEvent,), None]) -> Callable[(CpuEvent,), None]
+    return Me.replace(kind: CpuEventKind.FAULT, holder)
+
+### Sets the handler of a supervisor call (`svc #n` on ARM, `ecall` on RISC-V). The program goes on after the call
+### when the handler returns.
+### :param holder: The handler, or `.hollow()` to crash with `HardwareFault`.
+### :returns: The handler before, `.hollow()` for none: pass it back to put it back.
+@target(os: "none")
+common routine CpuEventManager.when_supervisor_called(holder: Callable[(CpuEvent,), None]) -> Callable[(CpuEvent,), None]
+    return Me.replace(kind: CpuEventKind.SUPERVISOR_CALL, holder)
+
+### Sets the handler of an interrupt. The program goes on where it was when the handler returns, so the handler
+### clears what asked (the device's or the timer's register) first.
+### :param holder: The handler, or `.hollow()` to crash with `HardwareFault`.
+### :returns: The handler before, `.hollow()` for none: pass it back to put it back.
+@target(os: "none")
+common routine CpuEventManager.when_interrupt_requested(holder: Callable[(CpuEvent,), None]) -> Callable[(CpuEvent,), None]
+    return Me.replace(kind: CpuEventKind.INTERRUPT, holder)
+
+### The handler that holds `kind`'s slot.
+### :param kind: The slot.
+### :returns: The handler, `.hollow()` for none.
+@target(os: "none")
+common routine CpuEventManager.holder(kind: CpuEventKind) -> Callable[(CpuEvent,), None]
+    return bitcast(HOLDERS.getslot(slot_of(kind)).peek())
+
+### Runs the handler of a request to power off, then halts the core: what the program's handler of the board's
+### shutdown interrupt calls.
+@target(os: "none")
+@noreturn
+common routine CpuEventManager.power_off() -> None
+    deliver(CpuEvent(kind: CpuEventKind.POWER_OFF, code: 0, place: .hollow(), address: .hollow()))
+    halt()
+
+### Points the CPU at the builder's vector table: VBAR_EL1, VBAR_EL2, or VBAR_EL3, the one of the level the core runs
+### at. prepare_core calls it.
+@target(arch: "aarch64", os: "none")
+common routine CpuEventManager.install() -> None
+    level: U64 = (current_level() >> 2) & 3
+    when level
+        3 => set_vector_base_el3(CPU_VECTORS)
+        2 => set_vector_base_el2(CPU_VECTORS)
+        else => set_vector_base_el1(CPU_VECTORS)
+    return
+
+### Points the CPU at the builder's trap entry: mtvec, direct mode. prepare_core calls it.
+@target(arch: "riscv32", os: "none")
+common routine CpuEventManager.install() -> None
+    set_trap_vector(CPU_VECTORS)
+    return
+
+### The slot of a kind in HOLDERS.
+### :param kind: The kind.
+### :returns: Its slot's index.
+@target(os: "none")
+secret routine slot_of(kind: CpuEventKind) -> U64
+    when kind
+        CpuEventKind.POWER_OFF => return 0
+        CpuEventKind.FAULT => return 1
+        CpuEventKind.SUPERVISOR_CALL => return 2
+        CpuEventKind.INTERRUPT => return 3
+
+### Gives `event` to the handler of its kind. A kind nobody holds crashes, a request to power off nobody holds does
+### nothing (the caller halts), and a fault halts the core once its handler returns.
+### :param event: The event.
+@target(os: "none")
+secret routine deliver(event: CpuEvent) -> None
+    holder: Callable[(CpuEvent,), None] = bitcast(HOLDERS.getslot(slot_of(event.kind)).peek())
+    if holder.addr().is_not_hollow()
+        holder.call(event)
+        if event.kind == CpuEventKind.FAULT
+            halt()
+        return
+    when event.kind
+        CpuEventKind.POWER_OFF => return
+        CpuEventKind.FAULT => crash(name: "HardwareFault",
+            message: "The CPU stopped on an instruction, and no CpuEventManager.when_faulted handler takes the fault.")
+        CpuEventKind.SUPERVISOR_CALL => crash(name: "HardwareFault",
+            message: "The program made a supervisor call, and no CpuEventManager.when_supervisor_called handler takes it.")
+        CpuEventKind.INTERRUPT => crash(name: "HardwareFault",
+            message: "An interrupt came, and no CpuEventManager.when_interrupt_requested handler takes it.")
+
+# -- AArch64 -----------------------------------------------------------------------------------------------------
+
+### Where every entry of the AArch64 vector table goes: the entry's number (0 to 15: four groups of synchronous, IRQ,
+### FIQ, and SError), and the level's ESR, ELR, and FAR.
+### :param vector: The entry's number.
+### :param syndrome: ESR_ELx.
+### :param place: ELR_ELx.
+### :param address: FAR_ELx.
+@target(arch: "aarch64", os: "none")
+@export("tessera_cpu_event")
+@untraced
+routine aarch64_cpu_event(vector: U64, syndrome: U64, place: Addr, address: Addr) -> None
+    entry: U64 = vector & 3
+    when entry
+        0 =>
+            # EC 0x15 is an SVC from AArch64: the ISS holds its number.
+            if syndrome >> 26 == 0x15
+                deliver(CpuEvent(kind: CpuEventKind.SUPERVISOR_CALL, code: syndrome & 0xFFFF, place, address: .hollow()))
+                return
+            deliver(CpuEvent(kind: CpuEventKind.FAULT, code: syndrome, place, address))
+        1, 2 => deliver(CpuEvent(kind: CpuEventKind.INTERRUPT, code: entry - 1, place, address: .hollow()))
+        else => deliver(CpuEvent(kind: CpuEventKind.FAULT, code: syndrome, place, address: .hollow()))
+    return
+
+### The level the core runs at: CurrentEL, the level in bits 2 and 3.
+### :returns: CurrentEL.
+@target(arch: "aarch64", os: "none")
+@external("asm")
+secret routine current_level() -> U64
+    block entry()
+        mrs[U64](R0, CurrentEL)  # mrs x0, CurrentEL
+        return R0
+
+### Sets VBAR_EL1.
+### :param at: The vector table.
+@target(arch: "aarch64", os: "none")
+@external("asm")
+secret routine set_vector_base_el1(at: Addr) -> None
+    block entry()
+        msr[U64](VBAR_EL1, at)  # msr vbar_el1, <at>
+        isb()  # isb
+        return
+
+### Sets VBAR_EL2.
+### :param at: The vector table.
+@target(arch: "aarch64", os: "none")
+@external("asm")
+secret routine set_vector_base_el2(at: Addr) -> None
+    block entry()
+        msr[U64](VBAR_EL2, at)  # msr vbar_el2, <at>
+        isb()  # isb
+        return
+
+### Sets VBAR_EL3.
+### :param at: The vector table.
+@target(arch: "aarch64", os: "none")
+@external("asm")
+secret routine set_vector_base_el3(at: Addr) -> None
+    block entry()
+        msr[U64](VBAR_EL3, at)  # msr vbar_el3, <at>
+        isb()  # isb
+        return
+
+# -- Cortex-M -----------------------------------------------------------------------------------------------------
+
+### Where the system exceptions of the Cortex-M vector table go: the exception number (IPSR), the frame the core
+### pushed, and the place it goes back to (the frame's PC).
+### :param number: The exception number, 2 to 15.
+### :param frame: The frame the core pushed: R0 to R3, R12, LR, PC, xPSR.
+### :param place: The PC in the frame.
+@target(arch: "arm", os: "none")
+@export("tessera_cpu_event")
+@untraced
+routine cortex_m_cpu_event(number: U32, frame: Addr, place: Addr) -> None
+    code: U64 = number.to[U64]()
+    when number
+        3, 4, 5, 6 => deliver(CpuEvent(kind: CpuEventKind.FAULT, code, place, address: .hollow()))
+        11 =>
+            # SVC's number is the low byte of the 16-bit instruction before the place it goes back to.
+            call: U8 = place.offset(-2).to[@U8]().peek()
+            deliver(CpuEvent(kind: CpuEventKind.SUPERVISOR_CALL, code: call.to[U64](), place, address: .hollow()))
+        2, 12, 14, 15 => deliver(CpuEvent(kind: CpuEventKind.INTERRUPT, code, place, address: .hollow()))
+        else => deliver(CpuEvent(kind: CpuEventKind.FAULT, code, place, address: .hollow()))
+    return
+
+# -- RISC-V -------------------------------------------------------------------------------------------------------
+
+### Where the RISC-V trap entry goes: mcause, mepc, and mtval. It returns where the trap entry goes back to: after an
+### `ecall`, else the place itself.
+### :param cause: mcause: bit 31 set for an interrupt, the code below it.
+### :param place: mepc.
+### :param address: mtval.
+### :returns: The place to go back to.
+@target(arch: "riscv32", os: "none")
+@export("tessera_cpu_event")
+@untraced
+routine riscv_cpu_event(cause: U32, place: Addr, address: Addr) -> Addr
+    if cause >> 31 == 1
+        deliver(CpuEvent(kind: CpuEventKind.INTERRUPT, code: (cause & 0x7FFFFFFF).to[U64](), place, address: .hollow()))
+        return place
+    # 8, 9, and 11 are an ecall from user, supervisor, and machine mode.
+    if cause == 8 or cause == 9 or cause == 11
+        deliver(CpuEvent(kind: CpuEventKind.SUPERVISOR_CALL, code: cause.to[U64](), place, address: .hollow()))
+        return place.offset(4)
+    deliver(CpuEvent(kind: CpuEventKind.FAULT, code: cause.to[U64](), place, address))
+    return place
+
+### Sets mtvec, direct mode: every trap goes to `at`.
+### :param at: The trap entry, 4-byte aligned.
+@target(arch: "riscv32", os: "none")
+@external("asm")
+secret routine set_trap_vector(at: Addr) -> None
+    block entry()
+        csrrw[U32, U32](ZERO, mtvec, at)  # csrw mtvec, <at>
+        return

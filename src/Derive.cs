@@ -9,7 +9,7 @@ namespace Tessera;
 /// A choice or variant without `@derive` derives all five, except what it declares itself (a routine of the name, or a
 /// `conform`). Those conformances hold only when the payloads have them (`Comparable[Shape] when Comparable[Circle]`), and
 /// their routines are checked only when something uses them, as library routines are. `@derive()` derives nothing.
-/// Generated code names Standard/Format by its path, and finds its fields' and payloads' methods whatever module
+/// Generated code names Standard/System/Text by its path, and finds its fields' and payloads' methods whatever module
 /// declares them, so it needs no import.
 public static class Derive
 {
@@ -85,8 +85,8 @@ public static class Derive
         };
     }
 
-    /// Standard/Format's names, written with their path so generated code needs no import.
-    private const string Fmt = "Standard/Format/";
+    /// Standard/System/Text's names, written with their path so generated code needs no import.
+    private const string Fmt = Compiler.TextModule + "/";
 
     private static string Qualified(string concept) => concept is "Representable" or "Diagnosable" ? Fmt + concept : concept;
 
@@ -224,19 +224,19 @@ public static class Derive
     private static void WriteBody(StringBuilder sb, RecordDecl r)
     {
         sb.Append("    block entry()\n");
-        if (r.Fields.Count == 0) sb.Append($"        Standard/Format/write_str(out, text: \"{r.Name}()\")\n");
+        if (r.Fields.Count == 0) sb.Append($"        Standard/System/Text/write_str(out, text: \"{r.Name}()\")\n");
         for (int i = 0; i < r.Fields.Count; i++)
         {
             var f = r.Fields[i];
             string before = i == 0 ? $"{r.Name}(" : ", ";
             string value = $"f{i}";
-            sb.Append($"        Standard/Format/write_str(out, text: \"{before}{f.Name}: \")\n");
+            sb.Append($"        Standard/System/Text/write_str(out, text: \"{before}{f.Name}: \")\n");
             sb.Append(f.Type.Name == "Ptr"
                 ? $"        {value} : Addr = me.{f.Name}.to[Addr]()\n"
                 : $"        {value}: {f.Type} = me.{f.Name}\n");
             sb.Append($"        {value}.diagnose_into(out)\n");
         }
-        if (r.Fields.Count > 0) sb.Append("        Standard/Format/write_str(out, text: \")\")\n");
+        if (r.Fields.Count > 0) sb.Append("        Standard/System/Text/write_str(out, text: \")\")\n");
         sb.Append("        return\n");
     }
 
@@ -433,7 +433,7 @@ public static class Derive
                 foreach (var (name, _) in c.Members)
                     sb.Append($"            {c.Name}.{name} => jump named(\"{prefix}{name}\")\n");
                 sb.Append("\n    block named(text: @[Byte])\n");
-                sb.Append("        Standard/Format/write_str(out, text)\n");
+                sb.Append("        Standard/System/Text/write_str(out, text)\n");
                 sb.Append("        return\n");
                 break;
             case "eq":

@@ -185,8 +185,8 @@ public sealed partial class Compiler
 
         private List<Step> Core(string name, List<DType> args, DType t)
         {
-            var steps = ModuleSteps(CoreModule);
-            steps.Add(Named(Source(name), CoreModule + "/" + name, args, t));
+            var steps = ModuleSteps(SystemModule);
+            steps.Add(Named(Source(name), SystemModule + "/" + name, args, t));
             return steps;
         }
 
@@ -286,7 +286,7 @@ public sealed partial class Compiler
                 Register(key);
                 return;
             }
-            if (t.Path is null or CoreModule && t.Name == "Callable")
+            if (t.Path is null or SystemModule && t.Name == "Callable")
             {
                 // `PF <ret> <params> E`, each written the way the routine declares it.
                 var parts = t.Args.Where(a => a is not TypeArgAnnotation).ToList();
@@ -319,10 +319,10 @@ public sealed partial class Compiler
             // A generic type applied to arguments that mention the routine's parameters.
             List<Step> steps;
             string qualified;
-            if (t.Path is null or CoreModule && t.Name is "Ptr" or "Array" or "Vector")
+            if (t.Path is null or SystemModule && t.Name is "Ptr" or "Array" or "Vector")
             {
-                steps = ModuleSteps(CoreModule);
-                qualified = CoreModule + "/" + t.Name;
+                steps = ModuleSteps(SystemModule);
+                qualified = SystemModule + "/" + t.Name;
                 steps.Add(new Step(Source(t.Name), "TP:" + qualified, null, null));
             }
             else

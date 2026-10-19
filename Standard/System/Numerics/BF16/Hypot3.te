@@ -1,0 +1,70 @@
+# Tessera stdlib: the correctly rounded three-leg Euclidean norm sqrt(x^2 + y^2 + z^2) of BF16
+#
+# The legs widen exactly to B64, where each square is exact and the sum and square root lie within 2^-52 of the true
+# root relative, so a few B64 ulps. Rounding that to BF16 is correct unless the root lies within 16 B64 ulps of a BF16
+# midpoint, or the result is subnormal in BF16: then the exact path of B128/Hypot3.te decides. Round to nearest
+# only.
+
+module Standard/System/Numerics/BF16
+
+### sqrt(`x`^2 + `y`^2 + `z`^2) without intermediate overflow or underflow, correctly rounded to nearest (ties to
+### even). The signs don't matter and the order of the legs doesn't either. A signaling NaN leg gives a NaN, and
+### otherwise an infinite leg gives +inf, even when another leg is a quiet NaN. A NaN result is the first NaN leg in
+### the order `x`, `y`, `z`, quieted with its sign and payload kept. A result past the largest finite value gives +inf.
+### :param x: The first leg.
+### :param y: The second leg.
+### :param z: The third leg.
+### :returns: The length of the vector (`x`, `y`, `z`).
+routine hypot_unchecked(x: BF16, y: BF16, z: BF16) -> BF16
+    local tx: U16 = x.bits() & 0x7FFF
+    local ty: U16 = y.bits() & 0x7FFF
+    local tz: U16 = z.bits() & 0x7FFF
+
+    if tx >= 0x7F80 or ty >= 0x7F80 or tz >= 0x7F80
+        return cm_bf16_hypot3_special(x, y, z)
+    xd: B64 = x.to[B64]()
+    yd: B64 = y.to[B64]()
+    zd: B64 = z.to[B64]()
+    sum: B64 = xd *! xd +! yd *! yd +! zd *! zd
+    r: B64 = sum.sqrt_unchecked()
+    rb: U64 = r.bits()
+    # The low 45 bits of r are those below BF16's last bit: a midpoint has only the top one of them set.
+    near: Bool = (rb +% 16 -% 0x100000000000) & 0x1FFFFFFFFFFF <= 32
+    tiny: Bool = rb < 0x3810000000000000  # below BF16's smallest normal value
+    if near or tiny
+        return cm_bf16_hypot3_exact(x: tx, y: ty, z: tz)
+    return r.to_unchecked[BF16]()
+
+### hypot of three legs where one of them is infinite or NaN, as the two-leg hypot treats them.
+### :param x: The first leg.
+### :param y: The second leg.
+### :param z: The third leg.
+### :returns: The first NaN leg quieted (its sign kept) for a signaling NaN leg, else +inf for an infinite leg, else the
+###     first NaN leg quieted.
+secret routine cm_bf16_hypot3_special(x: BF16, y: BF16, z: BF16) -> BF16
+    signaling: Bool = cm_bf16_is_signaling(x) or cm_bf16_is_signaling(y) or cm_bf16_is_signaling(z)
+    infinite: Bool = x.is_infinite() or y.is_infinite() or z.is_infinite()
+    if infinite and not signaling
+        return inf
+    first: BF16 = when
+        x.is_nan() => x
+        y.is_nan() => y
+        else => z
+    return BF16.from_bits(first.bits() | 0x0040)
+
+### Whether `x` is a signaling NaN: a NaN with the quiet bit (the top fraction bit) clear.
+### :param x: The value.
+### :returns: True for a signaling NaN.
+secret routine cm_bf16_is_signaling(x: BF16) -> Bool
+    quiet: Bool = x.bits() & 0x0040 != 0
+    return x.is_nan() and not quiet
+
+### The exact path: the three finite legs' bits (sign clear) through the shared three-leg hypot.
+### :param x: The first leg's bits.
+### :param y: The second leg's bits.
+### :param z: The third leg's bits.
+### :returns: The correctly rounded hypot.
+secret routine cm_bf16_hypot3_exact(x: U16, y: U16, z: U16) -> BF16
+    bits: U128 = hypot3_exact_bits(x: x.to[U128](), y: y.to[U128](), z: z.to[U128](),
+        format: Hypot3Format(precision: 8, emin: -126))
+    return BF16.from_bits(bits.to[U16]())

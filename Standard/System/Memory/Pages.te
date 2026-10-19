@@ -1,0 +1,304 @@
+# Tessera stdlib: pages from the operating system
+#
+# OsPageManager, the hosted page manager (PageManageable, MemoryManager.te): it reserves address space, commits pages of
+# it, gives a whole reservation back, and sets what pages allow. PAGES (built in DefaultMemory.te) is its table, ready
+# before start runs. A FiberManager and a ThreadPoolManager take their fibers' stacks from it: they reserve the pages,
+# commit them, close the bottom one with protect as a guard page, and run a StackManager on the rest.
+#
+# A reservation is space no page of which can be touched until it is committed. On Linux the space is mapped with
+# PROT_NONE and MAP_NORESERVE, and commit opens the pages (the memory is counted once touched). On Windows it is
+# MEM_RESERVE, and commit is MEM_COMMIT.
+
+module Standard/System/Memory
+
+import Standard/Os
+
+# -- POSIX -------------------------------------------------------------------------
+
+### Binds the C `mmap` function, which maps pages into the address space.
+### :param addr: Where to put the mapping, or null to let the system choose.
+### :param length: The number of bytes.
+### :param prot: The `PROT_*` access the pages allow.
+### :param flags: The `MAP_*` flags.
+### :param fd: The file to map, or -1 for anonymous memory.
+### :param offset: The offset into the file.
+### :returns: The mapping's start, or MAP_FAILED (-1) with `errno` set.
+@external("c")
+@symbol("mmap")
+@target(os: ("linux", "macos"))
+secret routine c_page_map(addr: Addr, length: CSize, prot: CInt, flags: CInt, fd: CInt,
+    offset: CSSize) -> Addr
+
+### Binds the C `mprotect` function, which changes the access pages allow.
+### :param addr: The start of the pages, page aligned.
+### :param length: The number of bytes.
+### :param prot: The `PROT_*` access the pages allow.
+### :returns: 0 on success, or -1 with `errno` set.
+@external("c")
+@symbol("mprotect")
+@target(os: ("linux", "macos"))
+secret routine c_page_protect(addr: Addr, length: CSize, prot: CInt) -> CInt
+
+### Binds the C `munmap` function, which removes a mapping.
+### :param addr: The start of the pages, page aligned.
+### :param length: The number of bytes.
+### :returns: 0 on success, or -1 with `errno` set.
+@external("c")
+@symbol("munmap")
+@target(os: ("linux", "macos"))
+secret routine c_page_unmap(addr: Addr, length: CSize) -> CInt
+
+### MAP_PRIVATE | MAP_ANONYMOUS, whose second bit differs between Linux and the BSDs.
+### :returns: The flags.
+@target(os: "macos")
+secret routine map_private_anonymous() -> CInt
+    return 0x1002
+
+### MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE: the pages are counted against memory only once touched.
+### :returns: The flags.
+@target(os: "linux")
+secret routine map_private_anonymous() -> CInt
+    return 0x4022
+
+### The `PROT_*` value for an access: PROT_NONE 0, PROT_READ 1, PROT_READ | PROT_WRITE 3.
+### :param access: What the pages allow.
+### :returns: The protection bits.
+@target(os: ("linux", "macos"))
+secret routine posix_protection(access: PageAccess) -> CInt
+    when access
+        PageAccess.NONE => return 0
+        PageAccess.READ => return 1
+        PageAccess.READ_WRITE => return 3
+
+### Reserves `size` bytes of address space, rounded up to whole pages, no page usable yet.
+### :param size: The number of bytes.
+### :returns: The reservation's start, or null when the space can't be reserved.
+### :throws: Crashes with `IntegerOverflowError` when `size` rounded up to pages doesn't fit in U64.
+@target(os: ("linux", "macos"))
+@expensive("asks for address space")
+routine pages_reserve(size: U64) -> Addr
+    local at: Addr = c_page_map(.hollow(), length: whole_pages(size).to[CSize](), prot: 0,
+        flags: map_private_anonymous(), fd: -1, offset: 0)
+
+    if ptrtoint[Addr, S64](at) == -1
+        return .hollow()
+    return at
+
+### Makes `size` bytes of reserved pages at `at` readable and writable.
+### :param at: The first page, page aligned.
+### :param size: The number of bytes, a whole number of pages.
+### :returns: False when the pages can't be committed.
+@target(os: ("linux", "macos"))
+@expensive("asks for memory")
+routine pages_commit(at: Addr, size: U64) -> Bool
+    return c_page_protect(at, size.to[CSize](), 3) == 0
+
+### Gives a whole reservation back to the operating system.
+### :param at: The reservation's start.
+### :param size: The size it was reserved with.
+@target(os: ("linux", "macos"))
+@expensive("gives memory back")
+routine pages_release(at: Addr, size: U64) -> None
+    c_page_unmap(at, whole_pages(size).to[CSize]())
+    return
+
+### Sets what `size` bytes of pages at `at` allow.
+### :param at: The first page, page aligned.
+### :param size: The number of bytes, a whole number of pages.
+### :param access: What the pages allow.
+### :returns: False when the access can't be set.
+@target(os: ("linux", "macos"))
+@expensive("asks the operating system")
+routine pages_protect(at: Addr, size: U64, access: PageAccess) -> Bool
+    return c_page_protect(at, size.to[CSize](), posix_protection(access)) == 0
+
+# -- Windows -----------------------------------------------------------------------
+
+### Binds the Win32 `VirtualAlloc` function, which reserves or commits pages.
+### :param addr: Where to put the pages, or null to let the system choose.
+### :param size: The number of bytes.
+### :param type: The `MEM_*` allocation type, such as `MEM_RESERVE` or `MEM_COMMIT`.
+### :param protect: The `PAGE_*` protection.
+### :returns: The start of the pages, or null with the last error set.
+@external("c")
+@symbol("VirtualAlloc")
+@callconv("stdcall")
+@target(os: "windows")
+secret routine c_virtual_alloc(addr: Addr, size: CSize, type: U32, protect: U32) -> Addr
+
+### Binds the Win32 `VirtualProtect` function, which changes the protection of committed pages.
+### :param addr: The start of the pages.
+### :param size: The number of bytes.
+### :param protect: The new `PAGE_*` protection.
+### :param old: Where the previous protection goes.
+### :returns: Nonzero on success, 0 with the last error set.
+@external("c")
+@symbol("VirtualProtect")
+@callconv("stdcall")
+@target(os: "windows")
+secret routine c_virtual_protect(addr: Addr, size: CSize, protect: U32, old: @U32) -> CInt
+
+### Binds the Win32 `VirtualFree` function, which decommits or releases pages.
+### :param addr: The start of the pages (the reservation's start for `MEM_RELEASE`).
+### :param size: The number of bytes (0 for `MEM_RELEASE`).
+### :param type: The `MEM_*` free type, such as `MEM_RELEASE`.
+### :returns: Nonzero on success, 0 with the last error set.
+@external("c")
+@symbol("VirtualFree")
+@callconv("stdcall")
+@target(os: "windows")
+secret routine c_virtual_free(addr: Addr, size: CSize, type: U32) -> CInt
+
+### The `PAGE_*` value for an access: PAGE_NOACCESS 1, PAGE_READONLY 2, PAGE_READWRITE 4.
+### :param access: What the pages allow.
+### :returns: The protection.
+@target(os: "windows")
+secret routine windows_protection(access: PageAccess) -> U32
+    when access
+        PageAccess.NONE => return 1
+        PageAccess.READ => return 2
+        PageAccess.READ_WRITE => return 4
+
+### Reserves `size` bytes of address space, rounded up to whole pages, no page usable yet.
+### :param size: The number of bytes.
+### :returns: The reservation's start, or null when the space can't be reserved.
+### :throws: Crashes with `IntegerOverflowError` when `size` rounded up to pages doesn't fit in U64.
+@target(os: "windows")
+@expensive("asks for address space")
+routine pages_reserve(size: U64) -> Addr
+    # MEM_RESERVE, PAGE_NOACCESS
+    at: Addr = c_virtual_alloc(.hollow(), whole_pages(size).to[CSize](), 0x2000, 1)
+    return at
+
+### Makes `size` bytes of reserved pages at `at` readable and writable.
+### :param at: The first page, page aligned.
+### :param size: The number of bytes, a whole number of pages.
+### :returns: False when the pages can't be committed.
+@target(os: "windows")
+@expensive("asks for memory")
+routine pages_commit(at: Addr, size: U64) -> Bool
+    # MEM_COMMIT, PAGE_READWRITE
+    return c_virtual_alloc(at, size.to[CSize](), 0x1000, 4).is_not_hollow()
+
+### Gives a whole reservation back to the operating system.
+### :param at: The reservation's start.
+### :param size: The size it was reserved with (Windows releases the whole reservation whatever it says).
+@target(os: "windows")
+@expensive("gives memory back")
+routine pages_release(at: Addr, size: U64) -> None
+    # MEM_RELEASE frees the whole reservation, whatever its size
+    c_virtual_free(at, 0, 0x8000)
+    return
+
+### Sets what `size` bytes of committed pages at `at` allow.
+### :param at: The first page, page aligned.
+### :param size: The number of bytes, a whole number of pages.
+### :param access: What the pages allow.
+### :returns: False when the access can't be set.
+@target(os: "windows")
+@expensive("asks the operating system")
+routine pages_protect(at: Addr, size: U64, access: PageAccess) -> Bool
+    local old: @U32 <- 0
+
+    return c_virtual_protect(at, size.to[CSize](), windows_protection(access), old) != 0
+
+# -- shared ------------------------------------------------------------------------
+
+### `size` rounded up to whole pages.
+### :param size: The number of bytes.
+### :returns: The smallest multiple of the page size that holds `size` bytes.
+### :throws: Crashes with `IntegerOverflowError` when it doesn't fit in U64.
+@target(os: not "none")
+routine whole_pages(size: U64) -> U64
+    page: U64 = page_size().bytes()
+    pages: U64 = (size + page - 1) // page
+    return pages * page
+
+### The operating system's pages, a PageManageable manager: `PAGES` is its table. Its `alloc` hands out whole pages,
+### committed, after one more page that keeps the block's size (a page manager frees without a size), so a block of a
+### few bytes still costs two pages: small blocks belong on a heap.
+@target(os: not "none")
+record OsPageManager
+obeys PageManageable[OsPageManager]
+
+### Reserves and commits whole pages for `size` bytes, with one page in front that keeps the length.
+### :param size: The number of bytes.
+### :param align: The alignment asked for: a page start is aligned for anything up to a page.
+### :returns: The block, page aligned, or null when the pages can't be had or `align` is past a page.
+@target(os: not "none")
+@expensive("asks for pages")
+routine @OsPageManager.alloc(size: U64, align: U64) -> Addr
+    local page: U64 = page_size().bytes()
+
+    if align > page
+        return .hollow()
+    length: U64 = whole_pages(size) + page
+    base: Addr = pages_reserve(length)
+    if base.is_hollow()
+        return .hollow()
+    if not pages_commit(at: base, size: length)
+        pages_release(at: base, size: length)
+        return .hollow()
+    length.poke_into(base.to[@U64]())
+    return base.offset(page.to[S64]())
+
+### A new block of `size` bytes with the contents copied over (as many as both sizes allow), the old one given back.
+### :param at: The block, from this manager, or null for a new one.
+### :param size: The new size in bytes.
+### :param align: The block's alignment.
+### :returns: The new block, or null with the old one left as it was.
+@target(os: not "none")
+@expensive("asks for pages")
+routine @OsPageManager.realloc(at: Addr, size: U64, align: U64) -> Addr
+    fresh: Addr = me.alloc(size, align)
+    if fresh.is_hollow() or at.is_hollow()
+        return fresh
+    page: U64 = page_size().bytes()
+    old_length: U64 = at.offset(-page.to[S64]()).to[@U64]().peek() - page
+    fresh.to[@Byte]().copy(src: at.to[@Byte](), count: old_length.min(size))
+    me.free(at)
+    return fresh
+
+### Gives a block back: reads the length kept in the page in front of it, then releases the pages.
+### :param at: The block, from this manager. Null does nothing.
+@target(os: not "none")
+@expensive("gives memory back")
+routine @OsPageManager.free(at: Addr) -> None
+    if at.is_hollow()
+        return
+    base: Addr = at.offset(-page_size().bytes().to[S64]())
+    length: U64 = base.to[@U64]().peek()
+    pages_release(at: base, size: length)
+    return
+
+### Reserves `size` bytes of address space, rounded up to whole pages, no page usable yet.
+### :param size: The number of bytes.
+### :returns: The reservation's start, or null when the space can't be reserved.
+@target(os: not "none")
+routine @OsPageManager.reserve(size: U64) -> Addr
+    return pages_reserve(size)
+
+### Makes `size` bytes of reserved pages at `at` readable and writable.
+### :param at: The first page, page aligned.
+### :param size: The number of bytes, a whole number of pages.
+### :returns: False when the pages can't be committed.
+@target(os: not "none")
+routine @OsPageManager.commit(at: Addr, size: U64) -> Bool
+    return pages_commit(at, size)
+
+### Gives a whole reservation back to the operating system.
+### :param at: The reservation's start.
+### :param size: The size it was reserved with.
+@target(os: not "none")
+routine @OsPageManager.release(at: Addr, size: U64) -> None
+    pages_release(at, size)
+    return
+
+### Sets what `size` bytes of pages at `at` allow.
+### :param at: The first page, page aligned.
+### :param size: The number of bytes, a whole number of pages.
+### :param access: What the pages allow.
+### :returns: False when the access can't be set.
+@target(os: not "none")
+routine @OsPageManager.protect(at: Addr, size: U64, access: PageAccess) -> Bool
+    return pages_protect(at, size, access)

@@ -1,0 +1,691 @@
+# Tessera stdlib: 256-bit floating-point arithmetic for the third phase of the B64 power x^y
+#
+# A CmF64PowQint is (-1)^sgn (rh 2^128 + rl) 2^(ex - 255) (the C qint64_t). The third phase computes
+# exp(y log(x)) with it to a relative error below about 2^-240, for the hardest cases.
+#
+# Ported from CORE-MATH, src/binary64/pow/pow.c and qint.h via RazorForge's B64Pow.rf. Rounding a subnormal
+# result masks its shift amounts to 6 bits, as the x86 shift instructions of the C original do.
+# Copyright (c) 2022-2025 CERN and Inria
+# Authors: Tom Hubrecht and Paul Zimmermann
+# MIT license: see LICENSE-CORE-MATH
+
+module Standard/System/Numerics/B64
+
+### A 256-bit floating-point value (-1)^sgn (rh 2^128 + rl) 2^(ex - 255).
+record CmF64PowQint
+    rh: U128
+    rl: U128
+    ex: S64
+    sgn: U64
+
+### The zero CmF64PowQint.
+### :returns: Zero.
+secret routine cm_b64_pow_qint_zero() -> CmF64PowQint
+    return CmF64PowQint(rh: 0, rl: 0, ex: 0, sgn: 0)
+
+### log(2) as a CmF64PowQint, with absolute error below 2^-256.14.
+### :returns: log(2).
+secret routine cm_b64_pow_qint_log2() -> CmF64PowQint
+    h: U128 = cm_b64_pow_join(hi: 0xB17217F7D1CF79AB, lo: 0xC9E3B39803F2F6AF)
+    l: U128 = cm_b64_pow_join(hi: 0x40F343267298B62D, lo: 0x8A0D175B8BAAFA2B)
+    return CmF64PowQint(rh: h, rl: l, ex: -1, sgn: 0)
+
+### The carry of the wrapped 128-bit addition sum = a + b: 1 or 0.
+### :param sum: The wrapped sum.
+### :param a: One of the addends.
+### :returns: 1 when the addition wrapped, else 0.
+secret routine cm_b64_pow_carry(sum: U128, a: U128) -> U128
+    if sum < a
+        return 1
+    return 0
+
+### The 256-bit value h:l shifted left by n bits (right by -n when n < 0). Bits shifted out are lost.
+### :param h: The upper 128 bits.
+### :param l: The lower 128 bits.
+### :param n: The shift, negative for a right shift.
+### :returns: The upper and lower halves of the shifted value.
+secret routine cm_b64_pow_shift256(h: U128, l: U128, n: S64) -> (U128, U128)
+    if n >= 0
+        k: U128 = n.to_wrap[U64]().to[U128]()
+        if k >= 128
+            return (l << k - 128, 0)
+        return ((h << k) | (l >> U128.sub(128, k)), l << k)
+    shift: U64 = S64.sub(0, n).to_wrap[U64]()
+    k: U128 = shift.to[U128]()
+    if k >= 128
+        return (0, h >> k - 128)
+    return (h >> k, (h << U128.sub(128, k)) | (l >> k))
+
+### The number of leading zero bits of the 256-bit value ch:cl.
+### :param ch: The upper 128 bits.
+### :param cl: The lower 128 bits.
+### :returns: The count of leading zero bits.
+secret routine cm_b64_pow_clz256(ch: U128, cl: U128) -> U64
+    if ch != 0
+        return ch.leading_zeros().to_wrap[U64]()
+    zeros: U64 = cl.leading_zeros().to_wrap[U64]()
+    return zeros + 128
+
+### Compares |a| and |b|: -1, 0 or 1.
+### :param a: The first value.
+### :param b: The second value.
+### :returns: -1, 0 or 1 as |a| is below, equal to or above |b|.
+secret routine cm_b64_pow_cmp_qint(a: CmF64PowQint, b: CmF64PowQint) -> S64
+    by_ex: S32 = a.ex.compare(b.ex)
+    by_h: S32 = a.rh.compare(b.rh)
+    by_l: S32 = a.rl.compare(b.rl)
+    by_r: S32 = when
+        by_h != 0 => by_h
+        else => by_l
+    c: S32 = when
+        by_ex != 0 => by_ex
+        else => by_r
+    return c.to[S64]()
+
+### Compares |a| and |b| using only their upper two limbs: -1, 0 or 1.
+### :param a: The first value.
+### :param b: The second value.
+### :returns: -1, 0 or 1 as the upper limbs of |a| are below, equal to or above those of |b|.
+secret routine cm_b64_pow_cmp_qint_22(a: CmF64PowQint, b: CmF64PowQint) -> S64
+    by_ex: S32 = a.ex.compare(b.ex)
+    by_h: S32 = a.rh.compare(b.rh)
+    c: S32 = when
+        by_ex != 0 => by_ex
+        else => by_h
+    return c.to[S64]()
+
+### a + b with error below 2 ulps (exact in the Sterbenz case).
+### :param a: The first addend.
+### :param b: The second addend.
+### :returns: The sum.
+secret routine cm_b64_pow_add_qint(a: CmF64PowQint, b: CmF64PowQint) -> CmF64PowQint
+    a_zero: Bool = a.rh == 0 and a.rl == 0
+    when
+        a_zero => return b
+        b.rh == 0 and b.rl == 0 => return a
+        else => pass
+
+    c: S64 = cm_b64_pow_cmp_qint(a, b)
+    if c == 0
+        if a.sgn != b.sgn
+            return cm_b64_pow_qint_zero()
+        return CmF64PowQint(rh: a.rh, rl: a.rl, ex: a.ex + 1, sgn: a.sgn)
+    swap: Bool = c < 0
+    aa: CmF64PowQint = when
+        swap => b
+        else => a
+    bb: CmF64PowQint = when
+        swap => a
+        else => b
+    k: S64 = aa.ex - bb.ex
+    # now |aa| > |bb| and k >= 0: align bb on aa
+    bh, bl = cm_b64_pow_shift256(h: bb.rh, l: bb.rl, n: S64.sub(0, k))
+    if aa.sgn == bb.sgn
+        # same signs: add, and shift right by one on a carry out
+        ch0: U128 = aa.rh +% bh
+        cy0: U128 = cm_b64_pow_carry(sum: ch0, a: aa.rh)
+        cl: U128 = aa.rl +% bl
+        low_cy: Bool = cl < aa.rl
+        ch: U128 = when
+            low_cy => ch0 +% 1
+            else => ch0
+        cy: U128 = when
+            low_cy and ch == 0 => cy0 +% 1
+            else => cy0
+        carried: Bool = cy != 0
+        sh: U128 = U128.shift_left(1, 127) | (ch >> 1)
+        sl: U128 = (ch << 127) | (cl >> 1)
+        if carried
+            return CmF64PowQint(rh: sh, rl: sl, ex: aa.ex + 1, sgn: aa.sgn)
+        return CmF64PowQint(rh: ch, rl: cl, ex: aa.ex, sgn: aa.sgn)
+
+    # opposite signs: subtract
+    ch: U128 = cm_b64_pow_sub_borrow(ah: aa.rh, al: aa.rl, bh, bl)
+    cl: U128 = aa.rl -% bl
+    ex: U64 = cm_b64_pow_clz256(ch, cl)
+    # the difference dh:dl to shift left by shift bits, and its exponent before that shift
+    values: (U128, U128, U64, S64) = when
+        ex > 0 =>
+            # shift aa by ex bits to the left, and bb by ex - k bits to the left, then subtract
+            # again
+            ah, al = cm_b64_pow_shift256(h: aa.rh, l: aa.rl, n: ex.to[S64]())
+            sbh, sbl = cm_b64_pow_shift256(h: bb.rh, l: bb.rl, n: ex.to[S64]() - k)
+            dh: U128 = cm_b64_pow_sub_borrow(ah, al, bh: sbh, bl: sbl)
+            dl: U128 = al -% sbl
+            becomes (dh, dl, cm_b64_pow_clz256(ch: dh, cl: dl), aa.ex - ex.to[S64]())
+        else => (ch, cl, 0, aa.ex)
+    dh, dl, shift, rex = values
+    h, l = cm_b64_pow_shift256(h: dh, l: dl, n: shift.to[S64]())
+    return CmF64PowQint(rh: h, rl: l, ex: rex - shift.to[S64](), sgn: aa.sgn)
+
+### The upper half of the 256-bit difference ah:al - bh:bl.
+### :param ah: The upper half of the minuend.
+### :param al: The lower half of the minuend.
+### :param bh: The upper half of the subtrahend.
+### :param bl: The lower half of the subtrahend.
+### :returns: The upper half of the difference, modulo 2^128.
+secret routine cm_b64_pow_sub_borrow(ah: U128, al: U128, bh: U128, bl: U128) -> U128
+    ch: U128 = ah -% bh
+    if al < bl
+        return ch -% 1
+    return ch
+
+### a + b using only the upper two limbs of a and b, with error below 2 ulps (128-bit ulps).
+### :param a: The first addend.
+### :param b: The second addend.
+### :returns: The sum, its lower limbs zero.
+secret routine cm_b64_pow_add_qint_22(a: CmF64PowQint, b: CmF64PowQint) -> CmF64PowQint
+    a_zero: Bool = a.rh == 0
+    when
+        a_zero => return b
+        b.rh == 0 => return a
+        else =>
+            c: S64 = cm_b64_pow_cmp_qint_22(a, b)
+            if c == 0
+                if a.sgn != b.sgn
+                    return cm_b64_pow_qint_zero()
+                return CmF64PowQint(rh: a.rh, rl: a.rl, ex: a.ex + 1, sgn: a.sgn)
+            swap: Bool = c < 0
+            aa: CmF64PowQint = when
+                swap => b
+                else => a
+            bb: CmF64PowQint = when
+                swap => a
+                else => b
+            k: U64 = (aa.ex - bb.ex).to_wrap[U64]()
+            bh: U128 = bb.rh >> k.to[U128]()
+            if aa.sgn != bb.sgn
+                ch: U128 = aa.rh -% bh
+                ex: U64 = ch.leading_zeros().to_wrap[U64]()
+                renorm: Bool = ex > 0
+                values2: (U128, U64, S64, U64) = when
+                    renorm =>
+                        ah: U128 = aa.rh << ex.to[U128]()
+                        if not (ex >= k)
+                            ch2: U128 = ah -% (bb.rh >> (k - ex).to[U128]())
+                            becomes (ch2, ch2.leading_zeros().to_wrap[U64](), aa.ex - ex.to[S64](), aa.sgn)
+                        else
+                            ch2: U128 = ah -% (bb.rh << (ex - k).to[U128]())
+                            becomes (ch2, ch2.leading_zeros().to_wrap[U64](), aa.ex - ex.to[S64](), aa.sgn)
+                    else => (ch, 0, aa.ex, aa.sgn)
+                ch2, ex2, rex, sgn = values2
+                return CmF64PowQint(rh: ch2 << ex2.to[U128](), rl: 0, ex: rex - ex2.to[S64](),
+                    sgn: sgn)
+            ch: U128 = aa.rh +% bh
+            if ch < aa.rh
+                return CmF64PowQint(rh: U128.shift_left(1, 127) | (ch >> 1), rl: 0, ex: aa.ex + 1,
+                    sgn: aa.sgn)
+            return CmF64PowQint(rh: ch, rl: 0, ex: aa.ex, sgn: aa.sgn)
+
+### Normalizes a 256-bit product t6:t5 whose top bit is at position 254 or 255.
+### :param t6: The upper 128 bits of the product.
+### :param t5: The lower 128 bits of the product.
+### :param ex: The exponent before normalization.
+### :param sgn: The sign bit.
+### :returns: The normalized value.
+secret routine cm_b64_pow_qint_norm(t6: U128, t5: U128, ex: S64, sgn: U64) -> CmF64PowQint
+    if t6 >> 127 == 0
+        return CmF64PowQint(rh: (t6 << 1) | (t5 >> 127), rl: t5 << 1, ex: ex, sgn: sgn)
+    return CmF64PowQint(rh: t6, rl: t5, ex: ex + 1, sgn: sgn)
+
+### The lower 64 bits of v, as a U128.
+### :param v: The 128-bit value.
+### :returns: Its lower 64 bits.
+secret routine cm_b64_pow_low64(v: U128) -> U128
+    return v & 0xFFFFFFFFFFFFFFFF
+
+### a b with error below 14 ulps.
+### :param a: The first factor.
+### :param b: The second factor.
+### :returns: The product.
+secret routine cm_b64_pow_mul_qint(a: CmF64PowQint, b: CmF64PowQint) -> CmF64PowQint
+    ahh: U64 = cm_b64_pow_hi(a.rh)
+    ahl: U64 = cm_b64_pow_lo(a.rh)
+    alh: U64 = cm_b64_pow_hi(a.rl)
+    all: U64 = cm_b64_pow_lo(a.rl)
+    bhh: U64 = cm_b64_pow_hi(b.rh)
+    bhl: U64 = cm_b64_pow_lo(b.rh)
+    blh: U64 = cm_b64_pow_hi(b.rl)
+    bll: U64 = cm_b64_pow_lo(b.rl)
+    r33: U128 = ahh.mul_wide(bhh)
+    r32: U128 = ahh.mul_wide(bhl)
+    r23: U128 = ahl.mul_wide(bhh)
+    r31: U128 = ahh.mul_wide(blh)
+    r13: U128 = alh.mul_wide(bhh)
+    r22: U128 = ahl.mul_wide(bhl)
+    r30: U128 = ahh.mul_wide(bll)
+    r03: U128 = all.mul_wide(bhh)
+    r21: U128 = ahl.mul_wide(blh)
+    r12: U128 = alh.mul_wide(bhl)
+    t3_part: U128 = (r12 >> 64) +% (r21 >> 64)
+    t3: U128 = t3_part +% (r03 >> 64) +% (r30 >> 64)
+    t4: U128 = r22 +% t3
+    c4a: U128 = cm_b64_pow_carry(sum: t4, a: r22)
+    t4b: U128 = r13 +% t4
+    c4b: U128 = c4a +% cm_b64_pow_carry(sum: t4b, a: r13)
+    t4c: U128 = r31 +% t4b
+    c4: U128 = c4b +% cm_b64_pow_carry(sum: t4c, a: r31)
+    t5: U128 = r23 +% (t4c >> 64)
+    c5a: U128 = cm_b64_pow_carry(sum: t5, a: r23)
+    t5b: U128 = r32 +% t5
+    c5: U128 = c5a +% cm_b64_pow_carry(sum: t5b, a: r32)
+    t6: U128 = r33 +% ((c5 << 64) | (t5b >> 64)) +% c4
+    t5f: U128 = (t5b << 64) | cm_b64_pow_low64(t4c)
+    return cm_b64_pow_qint_norm(t6, t5: t5f, ex: a.ex + b.ex, sgn: a.sgn ^ b.sgn)
+
+### a b using only the upper three limbs of a and b, with error below 6 ulps.
+### :param a: The first factor.
+### :param b: The second factor.
+### :returns: The product.
+secret routine cm_b64_pow_mul_qint_33(a: CmF64PowQint, b: CmF64PowQint) -> CmF64PowQint
+    ahh: U64 = cm_b64_pow_hi(a.rh)
+    ahl: U64 = cm_b64_pow_lo(a.rh)
+    alh: U64 = cm_b64_pow_hi(a.rl)
+    bhh: U64 = cm_b64_pow_hi(b.rh)
+    bhl: U64 = cm_b64_pow_lo(b.rh)
+    blh: U64 = cm_b64_pow_hi(b.rl)
+    r33: U128 = ahh.mul_wide(bhh)
+    r32: U128 = ahh.mul_wide(bhl)
+    r23: U128 = ahl.mul_wide(bhh)
+    r31: U128 = ahh.mul_wide(blh)
+    r13: U128 = alh.mul_wide(bhh)
+    r22: U128 = ahl.mul_wide(bhl)
+    r21: U128 = ahl.mul_wide(blh)
+    r12: U128 = alh.mul_wide(bhl)
+    t3: U128 = (r12 >> 64) +% (r21 >> 64)
+    t4: U128 = r22 +% t3
+    c4a: U128 = cm_b64_pow_carry(sum: t4, a: r22)
+    t4b: U128 = r13 +% t4
+    c4b: U128 = c4a +% cm_b64_pow_carry(sum: t4b, a: r13)
+    t4c: U128 = r31 +% t4b
+    c4: U128 = c4b +% cm_b64_pow_carry(sum: t4c, a: r31)
+    t5: U128 = r23 +% (t4c >> 64)
+    c5a: U128 = cm_b64_pow_carry(sum: t5, a: r23)
+    t5b: U128 = r32 +% t5
+    c5: U128 = c5a +% cm_b64_pow_carry(sum: t5b, a: r32)
+    t6: U128 = r33 +% ((c5 << 64) | (t5b >> 64)) +% c4
+    t5f: U128 = (t5b << 64) | cm_b64_pow_low64(t4c)
+    return cm_b64_pow_qint_norm(t6, t5: t5f, ex: a.ex + b.ex, sgn: a.sgn ^ b.sgn)
+
+### a b using only the upper limb of b, with error below 2 ulps.
+### :param a: The first factor.
+### :param b: The second factor.
+### :returns: The product.
+secret routine cm_b64_pow_mul_qint_41(a: CmF64PowQint, b: CmF64PowQint) -> CmF64PowQint
+    bhh: U64 = cm_b64_pow_hi(b.rh)
+    r33: U128 = cm_b64_pow_hi(a.rh).mul_wide(bhh)
+    r23: U128 = cm_b64_pow_lo(a.rh).mul_wide(bhh)
+    r13: U128 = cm_b64_pow_hi(a.rl).mul_wide(bhh)
+    r03: U128 = cm_b64_pow_lo(a.rl).mul_wide(bhh)
+    t3: U128 = r03 >> 64
+    t4: U128 = r13 +% t3
+    c4: U128 = cm_b64_pow_carry(sum: t4, a: r13)
+    t5: U128 = r23 +% (t4 >> 64)
+    c5: U128 = cm_b64_pow_carry(sum: t5, a: r23)
+    t6: U128 = r33 +% ((c5 << 64) | (t5 >> 64)) +% c4
+    t5f: U128 = (t5 << 64) | cm_b64_pow_low64(t4)
+    return cm_b64_pow_qint_norm(t6, t5: t5f, ex: a.ex + b.ex, sgn: a.sgn ^ b.sgn)
+
+### a b using only the upper three limbs of a and the upper limb of b (exact).
+### :param a: The first factor.
+### :param b: The second factor.
+### :returns: The product.
+secret routine cm_b64_pow_mul_qint_31(a: CmF64PowQint, b: CmF64PowQint) -> CmF64PowQint
+    bhh: U64 = cm_b64_pow_hi(b.rh)
+    r33: U128 = cm_b64_pow_hi(a.rh).mul_wide(bhh)
+    r23: U128 = cm_b64_pow_lo(a.rh).mul_wide(bhh)
+    t4: U128 = cm_b64_pow_hi(a.rl).mul_wide(bhh)
+    t5: U128 = r23 +% (t4 >> 64)
+    c5: U128 = cm_b64_pow_carry(sum: t5, a: r23)
+    t6: U128 = r33 +% ((c5 << 64) | (t5 >> 64))
+    t5f: U128 = (t5 << 64) | cm_b64_pow_low64(t4)
+    return cm_b64_pow_qint_norm(t6, t5: t5f, ex: a.ex + b.ex, sgn: a.sgn ^ b.sgn)
+
+### a b using only the upper two limbs of a and b (exact).
+### :param a: The first factor.
+### :param b: The second factor.
+### :returns: The product.
+secret routine cm_b64_pow_mul_qint_22(a: CmF64PowQint, b: CmF64PowQint) -> CmF64PowQint
+    ahh: U64 = cm_b64_pow_hi(a.rh)
+    ahl: U64 = cm_b64_pow_lo(a.rh)
+    bhh: U64 = cm_b64_pow_hi(b.rh)
+    bhl: U64 = cm_b64_pow_lo(b.rh)
+    r33: U128 = ahh.mul_wide(bhh)
+    r32: U128 = ahh.mul_wide(bhl)
+    r23: U128 = ahl.mul_wide(bhh)
+    t4: U128 = ahl.mul_wide(bhl)
+    t5: U128 = r23 +% (t4 >> 64)
+    c5a: U128 = cm_b64_pow_carry(sum: t5, a: r23)
+    t5b: U128 = r32 +% t5
+    c5: U128 = c5a +% cm_b64_pow_carry(sum: t5b, a: r32)
+    t6: U128 = r33 +% ((c5 << 64) | (t5b >> 64))
+    t5f: U128 = (t5b << 64) | cm_b64_pow_low64(t4)
+    return cm_b64_pow_qint_norm(t6, t5: t5f, ex: a.ex + b.ex, sgn: a.sgn ^ b.sgn)
+
+### a b using only the upper two limbs of a and the upper limb of b (exact).
+### :param a: The first factor.
+### :param b: The second factor.
+### :returns: The product.
+secret routine cm_b64_pow_mul_qint_21(a: CmF64PowQint, b: CmF64PowQint) -> CmF64PowQint
+    bhh: U64 = cm_b64_pow_hi(b.rh)
+    r33: U128 = cm_b64_pow_hi(a.rh).mul_wide(bhh)
+    r23: U128 = cm_b64_pow_lo(a.rh).mul_wide(bhh)
+    t6: U128 = r33 +% (r23 >> 64)
+    return cm_b64_pow_qint_norm(t6, t5: r23 << 64, ex: a.ex + b.ex, sgn: a.sgn ^ b.sgn)
+
+### a b using only the upper limbs of a and b (exact).
+### :param a: The first factor.
+### :param b: The second factor.
+### :returns: The product.
+secret routine cm_b64_pow_mul_qint_11(a: CmF64PowQint, b: CmF64PowQint) -> CmF64PowQint
+    t6: U128 = cm_b64_pow_hi(a.rh).mul_wide(cm_b64_pow_hi(b.rh))
+    return cm_b64_pow_qint_norm(t6, t5: 0, ex: a.ex + b.ex, sgn: a.sgn ^ b.sgn)
+
+### b a for an integer b, with error below 2 ulps.
+### :param b: The integer factor.
+### :param a: The value.
+### :returns: The product.
+secret routine cm_b64_pow_mul_qint_2(b: S64, a: CmF64PowQint) -> CmF64PowQint
+    if b == 0
+        return cm_b64_pow_qint_zero()
+    neg: Bool = b < 0
+    c0: U64 = b.to_wrap[U64]()
+    c1: U64 = when
+        neg => U64.sub_wrap(0, c0)
+        else => c0
+    ng: U64 = when
+        neg => 1
+        else => 0
+    sgn: U64 = ng ^ a.sgn
+    if c1 == 1
+        return CmF64PowQint(rh: a.rh, rl: a.rl, ex: a.ex, sgn: sgn)
+    k: U64 = c1.leading_zeros()  # scale c so that 2^63 <= c < 2^64
+    c: U64 = c1 << k
+    rex: S64 = a.ex + 64 - k.to[S64]()
+    t3a: U128 = cm_b64_pow_hi(a.rh).mul_wide(c)
+    t2: U128 = cm_b64_pow_lo(a.rh).mul_wide(c)
+    t1: U128 = cm_b64_pow_hi(a.rl).mul_wide(c)
+    t0: U128 = cm_b64_pow_lo(a.rl).mul_wide(c)
+    ta: U128 = t0 >> 64
+    t1s: U128 = ta +% t1
+    cy1: U128 = cm_b64_pow_carry(sum: t1s, a: ta)
+    tb: U128 = (cy1 << 64) | (t1s >> 64)
+    t2s: U128 = tb +% t2
+    cy2: U128 = cm_b64_pow_carry(sum: t2s, a: tb)
+    t3: U128 = t3a +% ((cy2 << 64) | (t2s >> 64))
+    ex: U64 = cm_b64_pow_hi(t3).leading_zeros()
+    t2f: U128 = (t2s << 64) | cm_b64_pow_low64(t1s)
+    if ex != 0
+        return CmF64PowQint(rh: (t3 << 1) | (t2f >> 127), rl: t2f << 1, ex: rex - 1, sgn: sgn)
+    return CmF64PowQint(rh: t3, rl: t2f, ex: rex, sgn: sgn)
+
+### A nonzero finite B64 as a CmF64PowQint (exact).
+### :returns: `me` as a normalized CmF64PowQint.
+routine B64.to[CmF64PowQint]() -> CmF64PowQint
+    d: CmF64PowDint = me.to[CmF64PowDint]()
+    return CmF64PowQint(rh: cm_b64_pow_join(hi: cm_b64_pow_hi(d.r), lo: 0), rl: 0, ex: d.ex,
+        sgn: d.sgn)
+
+### a as an integer, rounded toward zero.
+### :param a: The value, below 2^63 in magnitude.
+### :returns: The integer part of `a`.
+secret routine cm_b64_pow_qint_toi(a: CmF64PowQint) -> S64
+    if a.ex < 0
+        return 0
+    integer_part: U64 = cm_b64_pow_hi(a.rh) >> S64.sub(63, a.ex).to_wrap[U64]()
+    r: S64 = integer_part.to_wrap[S64]()
+    if a.sgn != 0
+        return S64.sub(0, r)
+    return r
+
+### log(1+z) for |z| <= 2^-13 (only the upper limb of z nonzero), with relative error below 2^-252.66.
+### :param z: The reduced argument.
+### :returns: log(1 + `z`).
+secret routine cm_b64_pow_p_3(z: CmF64PowQint) -> CmF64PowQint
+    local r: @CmF64PowQint <- .hollow()
+
+    r0: CmF64PowQint = cm_b64_pow_mul_qint_11(a: cm_b64_pow_p_3_at(0), b: z)
+    r1: CmF64PowQint = cm_b64_pow_add_qint_22(a: cm_b64_pow_p_3_at(1), b: r0)
+    r1.poke_into(r)
+
+    # the products and sums widen as the terms grow
+    while true with k: U64 = 2
+        done: Bool = k == 18
+        p11: Bool = k < 4
+        p21: Bool = k < 8
+        when
+            done => return cm_b64_pow_mul_qint_41(a: r.peek(), b: z)
+            p11 =>
+                zr: CmF64PowQint = cm_b64_pow_mul_qint_11(a: r.peek(), b: z)
+                next: CmF64PowQint = cm_b64_pow_add_qint_22(a: cm_b64_pow_p_3_at(k), b: zr)
+                next.poke_into(r)
+                continue with k: k + 1
+            p21 =>
+                zr: CmF64PowQint = cm_b64_pow_mul_qint_21(a: r.peek(), b: z)
+                next: CmF64PowQint = cm_b64_pow_add_qint_22(a: cm_b64_pow_p_3_at(k), b: zr)
+                next.poke_into(r)
+                continue with k: k + 1
+            k < 14 =>
+                zr: CmF64PowQint = cm_b64_pow_mul_qint_31(a: r.peek(), b: z)
+                next: CmF64PowQint = cm_b64_pow_add_qint(a: cm_b64_pow_p_3_at(k), b: zr)
+                next.poke_into(r)
+                continue with k: k + 1
+            else =>
+                zr: CmF64PowQint = cm_b64_pow_mul_qint_41(a: r.peek(), b: z)
+                next: CmF64PowQint = cm_b64_pow_add_qint(a: cm_b64_pow_p_3_at(k), b: zr)
+                next.poke_into(r)
+                continue with k: k + 1
+
+### exp(y) for |y| < 0.00016923, with relative error below 2^-241.11.
+### :param y: The reduced argument.
+### :returns: exp(`y`).
+secret routine cm_b64_pow_q_3(y: CmF64PowQint) -> CmF64PowQint
+    local r: @CmF64PowQint <- .hollow()
+
+    r0: CmF64PowQint = cm_b64_pow_mul_qint_11(a: y, b: cm_b64_pow_q_3_at(0))
+    r1: CmF64PowQint = cm_b64_pow_add_qint_22(a: cm_b64_pow_q_3_at(1), b: r0)
+    r1.poke_into(r)
+
+    while true with k: U64 = 2
+        done: Bool = k == 15
+        p22: Bool = k < 7
+        when
+            done => return r.peek()
+            p22 =>
+                yr: CmF64PowQint = cm_b64_pow_mul_qint_22(a: y, b: r.peek())
+                next: CmF64PowQint = cm_b64_pow_add_qint_22(a: cm_b64_pow_q_3_at(k), b: yr)
+                next.poke_into(r)
+                continue with k: k + 1
+            k < 12 =>
+                yr: CmF64PowQint = cm_b64_pow_mul_qint_33(a: y, b: r.peek())
+                next: CmF64PowQint = cm_b64_pow_add_qint(a: cm_b64_pow_q_3_at(k), b: yr)
+                next.poke_into(r)
+                continue with k: k + 1
+            else =>
+                yr: CmF64PowQint = cm_b64_pow_mul_qint(a: y, b: r.peek())
+                next: CmF64PowQint = cm_b64_pow_add_qint(a: cm_b64_pow_q_3_at(k), b: yr)
+                next.poke_into(r)
+                continue with k: k + 1
+
+### log(x) with relative error below 2^-250.74.
+### :param x: The positive argument.
+### :returns: log(`x`).
+secret routine cm_b64_pow_log_3(x: CmF64PowQint) -> CmF64PowQint
+    xh: U64 = cm_b64_pow_hi(x.rh)
+    above: Bool = xh > 0xB504F333F9DE6484
+    big_e: S64 = when
+        above => x.ex + 1
+        else => x.ex
+    i: U64 = when
+        above => xh >> 57
+        else => xh >> 56
+    ii: U64 = (i - 90).to[U64]()
+    xx: CmF64PowQint = CmF64PowQint(rh: x.rh, rl: x.rl, ex: x.ex - big_e, sgn: x.sgn)
+    z1: CmF64PowQint = cm_b64_pow_mul_qint(a: xx, b: cm_b64_pow_inverse_3_1(ii))
+    j: U64 = cm_b64_pow_hi(z1.rh) >> S64.sub(50, z1.ex).to_wrap[U64]()
+    jj: U64 = (j - 8128).to[U64]()
+    z2: CmF64PowQint = cm_b64_pow_mul_qint(a: z1, b: cm_b64_pow_inverse_3_2(jj))
+    m_one: CmF64PowQint = CmF64PowQint(rh: U128.shift_left(1, 127), rl: 0, ex: 0, sgn: 1)
+    z: CmF64PowQint = cm_b64_pow_add_qint(a: m_one, b: z2)
+    r: CmF64PowQint = cm_b64_pow_mul_qint_2(b: big_e, a: cm_b64_pow_qint_log2())
+    p0: CmF64PowQint = cm_b64_pow_p_3(z)
+    p1: CmF64PowQint = cm_b64_pow_add_qint(a: cm_b64_pow_log_inv_3_2(jj), b: p0)
+    p2: CmF64PowQint = cm_b64_pow_add_qint(a: cm_b64_pow_log_inv_3_1(ii), b: p1)
+    return cm_b64_pow_add_qint(a: p2, b: r)
+
+### exp(x) for |x| < 744.45 with relative error below 2^-241.10.
+### :param x: The argument.
+### :returns: exp(`x`).
+secret routine cm_b64_pow_exp_3(x: CmF64PowQint) -> CmF64PowQint
+    log2_inv: CmF64PowQint = CmF64PowQint(rh: cm_b64_pow_join(hi: 0xB8AA3B295C17F0BC, lo: 0), rl: 0,
+        ex: 12, sgn: 0)
+    kk0: CmF64PowQint = cm_b64_pow_mul_qint_11(a: x, b: log2_inv)
+    k: S64 = cm_b64_pow_qint_toi(kk0)
+    kk1: CmF64PowQint = cm_b64_pow_mul_qint_2(b: k, a: cm_b64_pow_qint_log2())
+    kk: CmF64PowQint = CmF64PowQint(rh: kk1.rh, rl: kk1.rl, ex: kk1.ex - 12, sgn: kk1.sgn ^ 1)
+    y: CmF64PowQint = cm_b64_pow_add_qint(a: x, b: kk)
+    big_m: S64 = k >> 12
+    k_high: U64 = (k >> 6).to_wrap[U64]()
+    i2: U64 = (k_high & 0x3F).to[U64]()
+    k_bits: U64 = k.to_wrap[U64]()
+    i1: U64 = (k_bits & 0x3F).to[U64]()
+    r0: CmF64PowQint = cm_b64_pow_q_3(y)
+    r1: CmF64PowQint = cm_b64_pow_mul_qint(a: cm_b64_pow_t1_3(i2), b: r0)
+    r2: CmF64PowQint = cm_b64_pow_mul_qint(a: cm_b64_pow_t2_3(i1), b: r1)
+    return CmF64PowQint(rh: r2.rh, rl: r2.rl, ex: r2.ex + big_m, sgn: r2.sgn)
+
+### a rounded to its precision in the subnormal range (to nearest), unchanged when a.ex > -1023.
+### :param a: The value.
+### :returns: `a` rounded to the precision of the subnormal range.
+secret routine cm_b64_pow_subnormalize_qint(a: CmF64PowQint) -> CmF64PowQint
+    if a.ex > -1023
+        return a
+    ex: U64 = S64.sub(0, a.ex + 1011).to_wrap[U64]()
+    sh: U64 = ex & 63
+    hh: U64 = cm_b64_pow_hi(a.rh)
+    hi0: U64 = hh >> sh
+    md: U64 = (hh >> (ex -% 1 & 63)) & 1
+    low_hh: Bool = hh & U64.arith_shift_right(0xFFFFFFFFFFFFFFFF, sh) != 0
+    lo: Bool = low_hh or cm_b64_pow_lo(a.rh) != 0 or a.rl != 0
+    hi: U64 = when
+        lo => hi0 +% md
+        else => hi0 +% (hi0 & md)
+    hh2: U64 = hi << sh
+    if hh2 == 0
+        return CmF64PowQint(rh: U128.shift_left(1, 127), rl: 0, ex: a.ex + 1, sgn: a.sgn)
+    return CmF64PowQint(rh: cm_b64_pow_join(hi: hh2, lo: 0), rl: 0, ex: a.ex, sgn: a.sgn)
+
+### a rounded to the nearest B64.
+### :returns: The nearest B64, an infinity or a zero of the sign of `me` when it overflows or underflows.
+routine CmF64PowQint.to[B64]() -> B64
+    q: Me = cm_b64_pow_subnormalize_qint(me)
+    hh: U64 = cm_b64_pow_hi(q.rh)
+    r0: B64 = B64.from_bits((hh >> 11) | 0x3FF0000000000000)
+    half: Bool = hh & 0x400 != 0
+    rd0: B64 = when
+        half => B64.add_unchecked(0.0, 0x1p-53)
+        else => 0.0
+    hh_sticky: Bool = hh & 0x3FF != 0
+    sticky: Bool = hh_sticky or cm_b64_pow_lo(q.rh) != 0 or q.rl != 0
+    rd1: B64 = when
+        sticky => rd0 +! 0x1p-54
+        else => rd0
+    neg: Bool = q.sgn != 0
+    rd: B64 = when
+        neg => -rd1
+        else => rd1
+    r1: B64 = B64.from_bits(r0.bits() | (q.sgn << 63))
+    r: B64 = r1 +! rd
+    if q.ex > -1023
+        ex: S64 = q.ex
+        edge: Bool = ex == 1024
+        when
+            edge => return r *! 2.0 *! 0x1p+1023
+            ex > 1023 => return r *! 0x1.fffffffffffffp+1023 *! 0x1.fffffffffffffp+1023
+            else =>
+                biased_exponent: U64 = (ex + 1023).to_wrap[U64]()
+                return r *! B64.from_bits((biased_exponent & 0x7FF) << 52)
+    else
+        ex: S64 = q.ex
+        edge: Bool = ex == -1075
+        when
+            edge => return r *! 0.5 *! B64.from_bits(1)
+            ex < -1074 => return r *! B64.from_bits(1) *! B64.from_bits(1)
+            else => return r *! B64.from_bits(U64.shift_left(1, (ex + 1074).to_wrap[U64]()))
+
+### A CmF64PowQint from a table entry's four limbs (most significant first), exponent and sign.
+### :param limbs: The entry's first (most significant) limb, the other three right after it.
+### :param ex: The exponent.
+### :param sgn: The sign bit.
+### :returns: The value.
+secret routine cm_b64_pow_qint_entry(limbs: @U64, ex: S64, sgn: U64) -> CmF64PowQint
+    m0: U64 = limbs.peek()
+    m1: U64 = limbs.stride(1).peek()
+    m2: U64 = limbs.stride(2).peek()
+    m3: U64 = limbs.stride(3).peek()
+    return CmF64PowQint(rh: cm_b64_pow_join(hi: m0, lo: m1), rl: cm_b64_pow_join(hi: m2, lo: m3),
+        ex: ex, sgn: sgn)
+
+### Entry i of CM_B64_POW_INVERSE_3_1, the 256-bit inverses of the first log reduction.
+### :param i: The index, 0..91.
+### :returns: The inverse.
+secret routine cm_b64_pow_inverse_3_1(i: U64) -> CmF64PowQint
+    limbs: @U64 = CM_B64_POW_INVERSE_3_1_MANT.getslot(i * 4)
+    return cm_b64_pow_qint_entry(limbs, ex: CM_B64_POW_INVERSE_3_1_EX.getitem(i),
+        sgn: CM_B64_POW_INVERSE_3_1_SGN.getitem(i))
+
+### Entry i of CM_B64_POW_INVERSE_3_2, the 256-bit inverses of the second log reduction.
+### :param i: The index, 0..128.
+### :returns: The inverse.
+secret routine cm_b64_pow_inverse_3_2(i: U64) -> CmF64PowQint
+    limbs: @U64 = CM_B64_POW_INVERSE_3_2_MANT.getslot(i * 4)
+    return cm_b64_pow_qint_entry(limbs, ex: CM_B64_POW_INVERSE_3_2_EX.getitem(i),
+        sgn: CM_B64_POW_INVERSE_3_2_SGN.getitem(i))
+
+### Entry i of CM_B64_POW_LOG_INV_3_1, the 256-bit -log of the first-reduction inverse.
+### :param i: The index, 0..91.
+### :returns: The logarithm.
+secret routine cm_b64_pow_log_inv_3_1(i: U64) -> CmF64PowQint
+    limbs: @U64 = CM_B64_POW_LOG_INV_3_1_MANT.getslot(i * 4)
+    return cm_b64_pow_qint_entry(limbs, ex: CM_B64_POW_LOG_INV_3_1_EX.getitem(i),
+        sgn: CM_B64_POW_LOG_INV_3_1_SGN.getitem(i))
+
+### Entry i of CM_B64_POW_LOG_INV_3_2, the 256-bit -log of the second-reduction inverse.
+### :param i: The index, 0..128.
+### :returns: The logarithm.
+secret routine cm_b64_pow_log_inv_3_2(i: U64) -> CmF64PowQint
+    limbs: @U64 = CM_B64_POW_LOG_INV_3_2_MANT.getslot(i * 4)
+    return cm_b64_pow_qint_entry(limbs, ex: CM_B64_POW_LOG_INV_3_2_EX.getitem(i),
+        sgn: CM_B64_POW_LOG_INV_3_2_SGN.getitem(i))
+
+### Entry i of CM_B64_POW_T1_3, the 256-bit 2^(i/64).
+### :param i: The index, 0..63.
+### :returns: 2^(`i`/64).
+secret routine cm_b64_pow_t1_3(i: U64) -> CmF64PowQint
+    limbs: @U64 = CM_B64_POW_T1_3_MANT.getslot(i * 4)
+    return cm_b64_pow_qint_entry(limbs, ex: CM_B64_POW_T1_3_EX.getitem(i),
+        sgn: CM_B64_POW_T1_3_SGN.getitem(i))
+
+### Entry i of CM_B64_POW_T2_3, the 256-bit 2^(i/2^12).
+### :param i: The index, 0..63.
+### :returns: 2^(`i`/2^12).
+secret routine cm_b64_pow_t2_3(i: U64) -> CmF64PowQint
+    limbs: @U64 = CM_B64_POW_T2_3_MANT.getslot(i * 4)
+    return cm_b64_pow_qint_entry(limbs, ex: CM_B64_POW_T2_3_EX.getitem(i),
+        sgn: CM_B64_POW_T2_3_SGN.getitem(i))
+
+### Coefficient i of the third-phase log(1+z) polynomial, highest degree first.
+### :param i: The coefficient index.
+### :returns: The coefficient.
+secret routine cm_b64_pow_p_3_at(i: U64) -> CmF64PowQint
+    limbs: @U64 = CM_B64_POW_P_3_MANT.getslot(i * 4)
+    return cm_b64_pow_qint_entry(limbs, ex: CM_B64_POW_P_3_EX.getitem(i),
+        sgn: CM_B64_POW_P_3_SGN.getitem(i))
+
+### Coefficient i of the third-phase exp(z) polynomial, highest degree first.
+### :param i: The coefficient index.
+### :returns: The coefficient.
+secret routine cm_b64_pow_q_3_at(i: U64) -> CmF64PowQint
+    limbs: @U64 = CM_B64_POW_Q_3_MANT.getslot(i * 4)
+    return cm_b64_pow_qint_entry(limbs, ex: CM_B64_POW_Q_3_EX.getitem(i),
+        sgn: CM_B64_POW_Q_3_SGN.getitem(i))

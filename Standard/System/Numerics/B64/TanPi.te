@@ -1,0 +1,396 @@
+# Tessera stdlib: the correctly rounded tan(pi x) of B64
+#
+# With 64 x = iq + z 2^-63 for an integer iq (folded so that the table index is at most 32): tan(pi iq/64) from a
+# table, tan of the small residual from an odd polynomial, combined by the tangent addition formula in
+# double-double arithmetic, and an error bound says whether the sum rounds safely. When it can't, a longer
+# double-double polynomial redoes it. Small |x| has its own polynomials, |x| >= 2^46 reads the table directly, and
+# the inputs whose result lies too close to a rounding boundary are listed (by tan's periodicity and symmetry, in
+# terms of x mod 1/2). Multiples of 1/4 are exact. Round to nearest only.
+#
+# Ported from CORE-MATH, src/binary64/tanpi/tanpi.c via RazorForge's B64Tanpi.rf.
+# Copyright (c) 2023-2025 Alexei Sibidanov
+# MIT license: see LICENSE-CORE-MATH
+
+module Standard/System/Numerics/B64
+
+### tan(pi i/64) for i in 0..31 as (low, high) pairs of B64 bits.
+secret preset CM_B64_TAN_PI_T: @Array[U64, 64] <- [0x0000000000000000, 0x0000000000000000,
+    0x3BFADA13CEEBAB9D, 0x3FA927278A3B1162, 0x3C587D054F689D7A, 0x3FB936BB8C5B2DA2,
+    0x3C52CFB5A746F62C, 0x3FC2FCAC73A60640, 0x3C2EF5D367441946, 0x3FC975F5E0553158,
+    0x3C65A6D6C3C8B6A7, 0x3FD007FA758626AE, 0xBC6D704D1BFDB6E8, 0x3FD36A08355C63DC,
+    0x3C678E945DC3913C, 0x3FD6E649F7D78649, 0x3C708B2FB1366EA9, 0x3FDA827999FCEF32,
+    0x3C741522F15E53C5, 0x3FDE450E0D273E7A, 0xBC8E564BCD1E635D, 0x3FE11AB7190834EC,
+    0xBC810B4421E6A4F8, 0x3FE32E1889047FFD, 0x3C87A8C52172B675, 0x3FE561B82AB7F990,
+    0xBC8AA7538E44E996, 0x3FE7BB99ED2990CF, 0xBC7A6DB80FE796FE, 0x3FEA43002AE42850,
+    0x3C78DCAD85E60FBE, 0x3FED00CBC7384D2E, 0x0000000000000000, 0x3FF0000000000000,
+    0x3C9946CC0B66979F, 0x3FF1A73D55278C4B, 0xBC787E5AD9735569, 0x3FF37EFD8D87607E,
+    0x3C86A085E3BC3AF6, 0x3FF592D11142FA55, 0x3C9419FA6954928F, 0x3FF7F218E25A7461,
+    0xBC7B6FB77846D763, 0x3FFAB1C35D8A74EA, 0x3C80FB3E75C7098E, 0x3FFDEF13B73C1406,
+    0x3C97CE6CB463C972, 0x4000EA21D716FBF7, 0x3CA21165F626CDD5, 0x4003504F333F9DE6,
+    0x3C7ACA947BFB1DCC, 0x40065BC6CC825147, 0xBC9B7A14D0D691BE, 0x400A5F59E90600DD,
+    0xBC889FCD637FBF3B, 0x400FF01305ECD8DC, 0x3C810706FED37F0E, 0x40141BFEE2424771,
+    0xBCAAE397239C5A0D, 0x401AF73F4CA3310F, 0x3CC351DAEA79411D, 0x40244E6C595AFDCC,
+    0xBC7B6E6B4DE0CD24, 0x40345AFFED201B55]
+### The inputs whose tangent lies too close to a rounding boundary for the accurate phase, sorted by
+### the reduced argument: (reduced argument, correctly rounded result, tiny correction that fixes the rounding
+### direction), as B64 bits.
+secret preset CM_B64_TAN_PI_DB: @Array[U64, 147] <- [0x3C8B44453E2404E7, 0x3CA56A4AA740A5A7,
+    0x3940000000000000, 0x3C945435C15060DC, 0x3CAFEEC101084F24, 0xB940000000000000,
+    0x3C9AC84C88F979A2, 0x3CB508ECB38F52F9, 0x3950000000000000, 0x3C9B44453E2404E7,
+    0x3CB56A4AA740A5A7, 0x3950000000000000, 0x3CB5F095755008F0, 0x3CD13B412EA2182D,
+    0x3970000000000000, 0x3CF736D8818A1EF3, 0x3D123B8007CD2448, 0xB9B0000000000000,
+    0x3CFC7C00D31634A6, 0x3D165F203D6BB18E, 0x39B0000000000000, 0x3D2DF6D9F7748FAE,
+    0x3D4788AC313FC061, 0x39E0000000000000, 0x3D3292B56D105932, 0x3D4D2CADCFE9F85F,
+    0xB9E0000000000000, 0x3D345A65501D94D3, 0x3D4FF878736A1BCD, 0x39E0000000000000,
+    0x3D4E4A84B3095D13, 0x3D67CA626CFCF410, 0xBA00000000000000, 0x3D59EB0B7B0519DA,
+    0x3D745B26EBD51C87, 0x3A10000000000000, 0x3D61D0798B3403EB, 0x3D7BFB93B8757F7C,
+    0xBA10000000000000, 0x3D905D3AA746E163, 0x3DA9B46CFB0F10CA, 0x3A40000000000000,
+    0x3DBD3F710390DB87, 0x3DD6F89F6DF8258D, 0x3A70000000000000, 0x3DD9E2371E233D1B,
+    0x3DF45437A2EBE657, 0x3A90000000000000, 0x3DF386DE1F01225A, 0x3E0EAC33F52580C1,
+    0x3AA0000000000000, 0x3E1520CC578BF7CC, 0x3E30980F68058C7F, 0xBAD0000000000000,
+    0x3E8A5BDF2B61615B, 0x3EA4B3C41E10A1D4, 0x3B40000000000000, 0x3E8ED835E8ECC245,
+    0x3EA839AB56B14FFD, 0x3B40000000000000, 0x3E95B79E364C2D17, 0x3EB10E838704C63D,
+    0x3B50000000000000, 0x3EAA96D0004E5B8B, 0x3EC4E20EDBB1C21B, 0x3B60000000000000,
+    0x3ED7B544CCBAFE6A, 0x3EF29ECAE32F9CA3, 0x3B90000000000000, 0x3EFA2F422A07A3D4,
+    0x3F1490BA1569549F, 0x3BB0000000000000, 0x3F0EE10ECDB9B092, 0x3F28409E333EA2E8,
+    0xBBC0000000000000, 0x3F0EE3F52B4AF0DC, 0x3F2842E540B07AC1, 0x3BC0000000000000,
+    0x3F21C2DC0A9340EF, 0x3F3BE630D1090FE6, 0x3BD0000000000000, 0x3F275FDC341DC7A1,
+    0x3F425BB6997B4387, 0xBBE0000000000000, 0x3F3A572FA6B3D117, 0x3F54B016BD111ED5,
+    0xBBF0000000000000, 0x3F4A537A6DE092A1, 0x3F64AD2F60D5240B, 0x3C00000000000000,
+    0x3F4DB74BA716ABB6, 0x3F6756C5A7EEC959, 0x3C00000000000000, 0x3F55D89DC03193CD,
+    0x3F712874C9307181, 0xBC10000000000000, 0x3F854AE0FA9F24B9, 0x3FA0BAA21DA88501,
+    0xBC40000000000000, 0x3F88582F89424FCE, 0x3FA321061924CA03, 0x3C40000000000000,
+    0x3F914FC0E0C2DACE, 0x3FAB37EF5831A537, 0x3C40000000000000, 0x3FA309CE21202CCA,
+    0x3FBE0AC5527E7F0D, 0x3C50000000000000, 0x3FABB6715A0B1F81, 0x3FC5FA4B5E7CE93F,
+    0x3C60000000000000, 0x3FB1E38EE7C71B98, 0x3FCC8F62BE40C3A1, 0xBC60000000000000,
+    0x3FB983C8C74ADE5D, 0x3FD4B88C3E5B04D0, 0x3C70000000000000, 0x3FBA334561B8192C,
+    0x3FD5513DE069862B, 0x3C70000000000000, 0x3FBA33741ABEA942, 0x3FD55166A4D7D836,
+    0x3C70000000000000, 0x3FBC176D0B4666D3, 0x3FD6FB0D2DF2AE41, 0x3C70000000000000,
+    0x3FCCA50E673EDE6B, 0x3FEB1ED1CC270A2D, 0x3C80000000000000, 0x3FCDF3C63292F1F3,
+    0x3FECEF531BFB44BF, 0xBC80000000000000, 0x3FCF551AFDA4C896, 0x3FEEF7DD0E5C6350,
+    0x3C80000000000000, 0x3FD8B9BE647E02A9, 0x4005717DF9ABCCD3, 0x3CA0000000000000,
+    0x3FDB648E5B0804DA, 0x40116265F83E8121, 0xBCB0000000000000, 0x3FDDD9D1ECFFC9A0,
+    0x4022E342CA2440EE, 0x3CC0000000000000, 0x3FDEE846D3680301, 0x4032A04FA64D35FF,
+    0x3CD0000000000000]
+
+### tan(pi me), correctly rounded (to nearest, ties to even). An integer n gives +0 for a positive even n or a
+### negative odd one and -0 otherwise, n + 1/2 gives +inf for an even n and -inf for an odd one, n +- 1/4 gives
+### +-1, +-inf gives NaN, and NaN comes back quiet.
+### :returns: tan(pi `me`), correctly rounded.
+routine B64.tan_pi_unchecked() -> Me
+    local ixu: U64 = me.bits()
+    local ax: U64 = ixu & 0x7FFFFFFFFFFFFFFF
+    local neg: U64 = ixu >> 63
+    local zero: Me = Me.copysign(0.0, me)
+    local one: Me = Me.copysign(1.0, me)
+
+    moderate: Bool = ax >= 0x3F30000000000000  # |x| >= 2^-12
+    # |x| >= 2^46: x is a multiple of 1/64, so tan(pi x) is a table entry
+    if ax >= 0x42D0000000000000
+        # NaN comes back quiet with its sign and payload, an infinity gives the NaN 0.0 / 0.0 gives
+        # on x86-64
+        if ax >= 0x7FF0000000000000
+            if ax > 0x7FF0000000000000
+                return me +! me
+            return Me.from_bits(0xFFF8000000000000)
+        sb: U64 = (ax >> 52) - 1069  # 2^(46 + sb) <= |x| < 2^(47 + sb)
+        # |x| >= 2^53: an even integer
+        if sb > 6
+            return zero
+        sm: U64 = cm_b64_tan_pi_signed(x: ax, neg)
+        iq: U64 = (sm << sb) & 127  # 64 x mod 128
+        if iq & 31 == 0
+            return cm_b64_tan_pi_exact(jq: iq >> 5, neg)
+        j: U64 = iq & 31
+        # tan(pi (32 + j)/64) = -tan(pi (32 - j)/64)
+        if iq & 32 != 0
+            return -cm_b64_tan_pi_entry(U64.sub(32, j))
+        return cm_b64_tan_pi_entry(j)
+
+    # 2^-12 <= |x| < 2^46, so 1011 <= e <= 1068
+    if moderate
+        e: U64 = ax >> 52
+        s: U64 = U64.sub(1068, e)
+        s1: U64 = e - 1011
+        m: U64 = (ax & 0x000FFFFFFFFFFFFF) | 0x0010000000000000  # 2^52 <= m < 2^53
+        # msb is the bit of weight 1/2 in |x|: past it, tan(pi |x|) is read from the next table entry backward
+        msb: U64 = (m << s1) >> 63
+        past: Bool = msb == 1
+        mm: U64 = when
+            past => ~m
+            else => m
+        iq2: U64 = (mm >> s) & 63
+        iq: U64 = iq2 + 1 >> 1
+        flip: U64 = msb ^ neg  # the table entry is negated
+        sm: U64 = cm_b64_tan_pi_signed(x: m, neg)
+        k: U64 = sm << e - 1005  # the bits of 64 x below 1/2 (signed), scaled by 2^63
+        z: Me = k.to_wrap[S64]().to[Me]()
+        # x mod 2^-7 = 0
+        if k == 0
+            # x = jq/2: jq counts the quarter turns of the angle pi x
+            if iq & 31 == 0
+                jq: S64 = sm.to_wrap[S64]() >> (s + 6).to_wrap[S64]()
+                return cm_b64_tan_pi_exact(jq: jq.to_wrap[U64](), neg)
+            # |x| = 1/4 mod 1, or |x| = 3/4 mod 1
+            kq: U64 = (m << s1) >> 58
+            when kq
+                0x10 => return one
+                0x30 => return -one
+                else => pass
+        # x mod 2^-8 = 0: the residual takes the sign of x
+        aligned: Bool = k << 1 == 0
+        zs: Me = when
+            aligned => one *! z
+            else => z
+        return cm_b64_tan_pi_reduced(x: me, iq, flip, zs)
+
+    # |x| < 2^-12
+    is_zero: Bool = ax == 0
+    when
+        is_zero => return me
+        # |x| < 2^-53
+        ax < 0x3CA0000000000000 =>
+            # |x| < 2^-916: scaled up so that the double-double product stays exact
+            if ax < 0x06B0000000000000
+                e: U64 = ax >> 52
+                sc: Me = Me.from_bits(U64.sub(2045, e) << 52)
+                isc: Me = Me.from_bits(e + 1 << 52)
+                r: CmF64TrigDD = cm_b64_trig_pi_mulddd(xh: 0x1.921fb54442d18p+1,
+                    xl: 0x1.1a62633145c07p-53, c: me *! sc)
+                res: Me = r.hi *! isc
+                # a subnormal result: round at the subnormal's precision by adding and removing
+                # 2^-1022 at the scaled size
+                if res.abs() < 0x1p-1022
+                    o: Me = Me.copysign(0x1p-1022, me)
+                    v0b: Me = (o +! res) *! sc
+                    v0h: Me = res *! sc
+                    tl: Me = r.lo +! (r.hi -! v0h)
+                    v0: Me = v0b +! tl
+                    return v0 *! isc -! o
+                return cm_b64_tan_pi_check(x: me, th: r.hi, tl: r.lo, res)
+            r: CmF64TrigDD = cm_b64_trig_pi_mulddd(xh: 0x1.921fb54442d18p+1,
+                xl: 0x1.1a62633145c07p-53, c: me)
+            return cm_b64_tan_pi_check(x: me, th: r.hi, tl: r.lo, res: r.hi)
+        else => pass
+
+    # 2^-53 <= |x| < 2^-12: pi x + (pi^3/3) x^3 + ...
+    x2: Me = me *! me
+    x3: Me = me *! x2
+    f2: Me = Me.add_unchecked(0x1.466bc6775aa2ap+5, x2 *! 0x1.46000158496c2p+7)
+    f1: Me = Me.add_unchecked(0x1.4abbce625be53p+3, x2 *! f2)
+    f: Me = x3 *! f1
+    px: CmF64TrigDD = cm_b64_trig_pi_mulddd(xh: 0x1.921fb54442d18p+1, xl: 0x1.1a62633145c07p-53,
+        c: me)
+    t: CmF64TrigDD = cm_b64_tan_pi_fastsumddd(xh: px.hi, xl: px.lo, c: f)
+    eps: Me = me *! (x2 *! 0x1.1p-47 +! 0x1p-101)
+    lb: Me = t.hi +! (t.lo -! eps)
+    ub: Me = t.hi +! (t.lo +! eps)
+    if lb == ub
+        return lb
+
+    # the fast path can't decide the rounding: a longer double-double polynomial
+    dx2: Me = b64_mul_error(x: me, y: me, p: x2)
+    x2dd: CmF64TrigDD = (hi: x2, lo: dx2)
+    dx3: Me = b64_mul_error(x: x2, y: me, p: x3) +! dx2 *! me
+    cl1: Me = Me.add_unchecked(0x1.45f472e3aed7dp+9, x2 *! 0x1.45f33be0e9598p+11)
+    cl: Me = x2 *! cl1
+    q0: CmF64TrigDD = cm_b64_trig_pi_poly_start(c0: 0x1.45fff9b48e95ep+7, c1: 0x1.a5047910ae0efp-49,
+        l: cl)
+    q1: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: x2dd, p: q0,
+        c: CmF64TrigDD(hi: 0x1.466bc6775aae2p+5, lo: -0x1.6dc0cbddc0e69p-50))
+    q2: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: x2dd, p: q1,
+        c: CmF64TrigDD(hi: 0x1.4abbce625be53p+3, lo: -0x1.05511c68476a8p-51))
+    q3: CmF64TrigDD = cm_b64_trig_pi_muldd(xh: x3, xl: dx3, ch: q2.hi, cl: q2.lo)
+    sv: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: px.hi, b: q3.hi)
+    tl: Me = q3.lo +! px.lo +! sv.lo
+    q: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: sv.hi, b: tl)
+    return cm_b64_tan_pi_check(x: me, th: q.hi, tl: q.lo, res: q.hi)
+
+### tan(pi x) for 2^-12 <= |x| < 2^46, from the table entry tan(pi iq/64) and the residual
+### angle pi zs 2^-69 by the tangent addition formula: a fast double-double polynomial with a
+### rounding test, else a longer one.
+### :param x: The original input.
+### :param iq: The table index, in 0..32.
+### :param flip: 1 to negate the table entry, 0 to keep it.
+### :param zs: The residual, 2^69 times the part of x the table entry leaves.
+### :returns: tan(pi `x`), correctly rounded.
+secret routine cm_b64_tan_pi_reduced(x: B64, iq: U64, flip: U64, zs: B64) -> B64
+    z2: B64 = zs *! zs
+    z4: B64 = z2 *! z2
+    z3: B64 = zs *! z2
+    c01: B64 = B64.add_unchecked(0x1.4abbce625be51p-207, z2 *! 0x1.466bc6776a9b1p-345)
+    c23: B64 = B64.add_unchecked(0x1.45fff6eb26045p-483, z2 *! 0x1.4627663861052p-621)
+    f: B64 = z3 *! (c01 +! z4 *! c23)
+    eps0: B64 = z3 *! 0x1p-256 +! B64.copysign(0x1p-104, zs)
+    p0: CmF64TrigDD = cm_b64_trig_pi_mulddd(xh: 0x1.921fb54442d18p-69, xl: 0x1.1a62633145c07p-123,
+        c: zs)
+    p1: CmF64TrigDD = cm_b64_tan_pi_fastsumddd(xh: p0.hi, xl: p0.lo, c: f)
+    p: CmF64TrigDD = cm_b64_tan_pi_combine(th: p1.hi, tl: p1.lo, iq, flip)
+    eps: B64 = eps0 +! eps0 *! (p.hi *! p.hi)
+    lb: B64 = p.hi +! (p.lo -! eps)
+    ub: B64 = p.hi +! (p.lo +! eps)
+    if lb == ub
+        return lb
+
+    # the fast path can't decide the rounding: a longer double-double polynomial of tan(pi z 2^-69)
+    z: B64 = zs *! 0x1p-63
+    zz: B64 = z *! z
+    dz2: B64 = b64_mul_error(x: z, y: z, p: zz)
+    z2dd: CmF64TrigDD = (hi: zz, lo: dz2)
+    cl2: B64 = B64.add_unchecked(0x1.45f3030c82af4p-78, zz *! 0x1.464490600a978p-90)
+    cl1: B64 = B64.add_unchecked(0x1.45f32f25dab7fp-66, zz *! cl2)
+    cl: B64 = zz *! cl1
+    q0: CmF64TrigDD = cm_b64_trig_pi_poly_start(c0: 0x1.45f472e3af011p-54,
+        c1: 0x1.90612a0755449p-110, l: cl)
+    q1: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: z2dd, p: q0,
+        c: CmF64TrigDD(hi: 0x1.45fff9b48e95ep-42, lo: 0x1.b226b250d2cc3p-98))
+    q2: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: z2dd, p: q1,
+        c: CmF64TrigDD(hi: 0x1.466bc6775aae2p-30, lo: -0x1.6dc0d93fb2ecep-85))
+    q3: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: z2dd, p: q2,
+        c: CmF64TrigDD(hi: 0x1.4abbce625be53p-18, lo: -0x1.05511c6842515p-72))
+    q4: CmF64TrigDD = cm_b64_trig_pi_poly_step(x: z2dd, p: q3,
+        c: CmF64TrigDD(hi: 0x1.921fb54442d18p-6, lo: 0x1.1a62633145c07p-60))
+    q5: CmF64TrigDD = cm_b64_trig_pi_mulddd(xh: q4.hi, xl: q4.lo, c: z)
+    q6: CmF64TrigDD = cm_b64_tan_pi_combine(th: q5.hi, tl: q5.lo, iq, flip)
+    q: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: q6.hi, b: q6.lo)
+    return cm_b64_tan_pi_check(x, th: q.hi, tl: q.lo, res: q.hi)
+
+### The last step of the accurate paths: th + tl may still round the wrong way when tl sits at
+### a rounding boundary, so such an input is looked up among the hard cases.
+### :param x: The original input.
+### :param th: The high part of tan(pi `x`).
+### :param tl: The low part of tan(pi `x`).
+### :param res: The result to return when `x` needs no lookup (or isn't listed).
+### :returns: tan(pi `x`), correctly rounded.
+secret routine cm_b64_tan_pi_check(x: B64, th: B64, tl: B64, res: B64) -> B64
+    ul: U64 = tl.bits()
+    er: U64 = ul +% 6 & 0x000FFFFFFFFFFFFF
+    diff: U64 = th.bits() -% ul
+    de: U64 = (diff >> 52) & 0x7FF
+    if er <= 12 or de > 102
+        return cm_b64_tan_pi_database(x, f: res)
+    return res
+
+### x with the sign of the input (neg is its sign bit), in two's complement.
+### :param x: The magnitude.
+### :param neg: The input's sign bit, 1 for negative.
+### :returns: `x` when `neg` is 0, else `0 - x` (wrapping).
+secret routine cm_b64_tan_pi_signed(x: U64, neg: U64) -> U64
+    if neg == 1
+        return U64.sub_wrap(0, x)
+    return x
+
+### tan(pi j/64) for j in 0..31, from its double-double table entry.
+### :param j: The table index, in 0..31.
+### :returns: tan(pi `j`/64), the high and low table parts summed to one B64.
+secret routine cm_b64_tan_pi_entry(j: U64) -> B64
+    i: U64 = j.to[U64]() * 2
+    nl: B64 = B64.from_bits(CM_B64_TAN_PI_T.getitem(i))
+    nh: B64 = B64.from_bits(CM_B64_TAN_PI_T.getitem(i + 1))
+    return nh +! nl
+
+### The exact tangent at a multiple of 1/4 (jq counts quarter turns, as a two's-complement bit pattern, only its two
+### low bits matter, neg is the input's sign bit): +-inf at half-integers, a signed zero at integers.
+### :param jq: The number of quarter turns (only its two low bits are read).
+### :param neg: The input's sign bit.
+### :returns: +inf or -inf for an odd `jq`, else +0 or -0.
+secret routine cm_b64_tan_pi_exact(jq: U64, neg: U64) -> B64
+    local down: Bool = jq & 2 != 0
+
+    odd: Bool = jq & 1 == 1
+    when
+        odd =>
+            if down
+                return -inf
+            return inf
+        (jq >> 1) & 1 != neg => return B64.from_bits(0x8000000000000000)
+        else => return 0.0
+
+### (xh + xl) + c as a double-double, for |xh| >= |c|.
+### :param xh: The high part of the double-double.
+### :param xl: The low part of the double-double.
+### :param c: The B64 to add.
+### :returns: The sum as a double-double.
+secret routine cm_b64_tan_pi_fastsumddd(xh: B64, xl: B64, c: B64) -> CmF64TrigDD
+    t: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: xh, b: c)
+    return CmF64TrigDD(hi: t.hi, lo: xl +! t.lo)
+
+### Combines tan(pi z') = th + tl for the small residual angle with the table entry tan(pi iq/64) by the tangent
+### addition formula, in double-double arithmetic (iq in 0..32, where 32 is the pole, handled as -1/t, and flip = 1
+### negates the table entry).
+### :param th: The high part of tan(pi z').
+### :param tl: The low part of tan(pi z').
+### :param iq: The table index, in 0..32.
+### :param flip: 1 to negate the table entry, 0 to keep it.
+### :returns: The tangent of the whole angle as a double-double.
+secret routine cm_b64_tan_pi_combine(th: B64, tl: B64, iq: U64, flip: U64) -> CmF64TrigDD
+    if iq == 32
+        # the denominator 1 - (th + tl) n
+        # the numerator n + (th + tl)
+        # 1 - (mh + ml) imh
+        ith: B64 = B64.truediv_unchecked(-1.0, th)
+        il: B64 = (ith.mul_add_unchecked(a: th, b: 1.0) +! tl *! ith) *! ith
+        return CmF64TrigDD(hi: ith, lo: il)
+    i: U64 = iq.to[U64]() * 2
+    entry_l: B64 = B64.from_bits(CM_B64_TAN_PI_T.getitem(i))
+    entry_h: B64 = B64.from_bits(CM_B64_TAN_PI_T.getitem(i + 1))
+    negate: Bool = flip == 1
+    nh0: B64 = when
+        negate => -entry_h
+        else => entry_h
+    nl0: B64 = when
+        negate => -entry_l
+        else => entry_l
+    mp: CmF64TrigDD = cm_b64_trig_pi_muldd(xh: th, xl: tl, ch: nh0, cl: nl0)
+    mh: B64 = B64.sub_unchecked(1.0, mp.hi)
+    dm: B64 = B64.sub_unchecked(1.0, mh) -! mp.hi
+    ml: B64 = dm -! mp.lo
+    ns: CmF64TrigDD = cm_b64_trig_fast_two_sum(a: nh0, b: th)
+    nh: B64 = ns.hi
+    nl: B64 = nl0 +! (ns.lo +! tl)
+    imh: B64 = B64.truediv_unchecked(1.0, mh)
+    rh: B64 = nh *! imh
+    rem: B64 = (-mh).mul_add_unchecked(a: imh, b: 1.0) -! ml *! imh
+    corr: B64 = (nl +! nh *! rem) *! imh
+    rl: B64 = b64_mul_error(x: nh, y: imh, p: rh) +! corr
+    return CmF64TrigDD(hi: rh, lo: rl)
+
+### Looks up an input whose correctly rounded tangent the fast path can't decide, using tan(pi (x + 1)) = tan(pi x)
+### and tan(pi (1/2 - x)) = 1/tan(pi x) to reduce it to [0, 1/2). Returns f when it isn't listed.
+### :param x: The original input.
+### :param f: The fast path's result, returned when `x` isn't listed.
+### :returns: The listed correctly rounded tangent, or `f`.
+secret routine cm_b64_tan_pi_database(x: B64, f: B64) -> B64
+    local ixu: U64 = x.bits()
+    local aix: U64 = ixu & 0x7FFFFFFFFFFFFFFF
+
+    e: S64 = (aix >> 52).to_wrap[S64]() - 1022
+    periodic: Bool = e >= 0  # |x| >= 1/2
+    values2: (B64, U64) = when
+        periodic =>
+            # drop the integer part of |x|, then fold [1/2, 1) onto (0, 1/2]
+            e2: U64 = e.to_wrap[U64]()
+            whole: U64 = ~U64.arith_shift_right(0xFFFFFFFFFFFFFFFF, e2 + 12)
+            t: B64 = B64.from_bits(aix & whole)
+            ax: B64 = x.abs() -! t
+            p: U64 = ((aix | 0x0010000000000000) >> U64.sub(52, e2)) & 1
+            if p == 1
+                becomes (B64.sub_unchecked(0.5, ax), p)
+            else
+                becomes (ax, p)
+        else => (x.abs(), 0)
+    ax, p = values2
+    minus: Bool = p ^ (ixu >> 63) == 1
+    sgn: B64 = when
+        minus => -1.0
+        else => 1.0
+
+    each i: U64 in 0 til 49
+        key: B64 = B64.from_bits(CM_B64_TAN_PI_DB.getitem(i * 3))
+        if key == ax
+            r: B64 = B64.from_bits(CM_B64_TAN_PI_DB.getitem(i * 3 + 1))
+            dr: B64 = B64.from_bits(CM_B64_TAN_PI_DB.getitem(i * 3 + 2))
+            return sgn *! r +! sgn *! dr
+        continue
+    then
+        return f

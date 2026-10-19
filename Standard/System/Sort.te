@@ -1,0 +1,163 @@
+# Tessera stdlib algorithm: sort
+#
+# Hybrid sort for List[T]. T must satisfy Comparable[T].
+#
+# Strategy:
+#   * count <= 32 — straight insertion sort, no allocation.
+#   * count  > 32 — insertion-sort initial runs of 32 elements, then merge
+#     adjacent runs bottom-up using a scratch buffer the size of the list.
+#     Buffers ping-pong between data and scratch. If the final pass leaves
+#     the result in scratch, it is copied back to data before returning.
+#
+# Stable: equal elements keep their original relative order (the merge step
+# takes from the left run on ties).
+
+module Standard/System
+
+import Standard/Collections
+
+### The length of the runs that `sort` insertion-sorts first, and the length up to which a list is sorted by insertion alone.
+preset SORT_RUN: U64 = 32
+
+### Two adjacent sorted runs of one buffer, the half-open ranges `[lo, mid)` and `[mid, hi)`, that a merge step joins
+### into `[lo, hi)`.
+secret record MergeRuns
+    ### The index of the start of the left run.
+    lo: U64
+    ### The index of the end of the left run and the start of the right run.
+    mid: U64
+    ### The index of the end of the right run.
+    hi: U64
+
+# -- insertion sort over a half-open range [lo, hi) ----------------------------
+
+### Stable insertion sort of the elements `data[lo..hi)` in place by `compare`, with no allocation.
+### :typeparam T: The element type, which must conform to {Comparable}.
+### :param data: The elements to sort.
+### :param lo: The index of the first element of the range.
+### :param hi: The index one past the last element of the range.
+routine sort_insertion[T](data: @T, lo: U64, hi: U64) -> None
+needs T: typename, Comparable[T]
+    while i < hi with i: U64 = lo + 1
+        x: T = data.stride(i).peek()
+
+        until j <= lo with j: U64 = i
+            prev: U64 = j - 1
+            y: T = data.stride(prev).peek()
+            cmp: S32 = y.compare(x)
+            if cmp > 0
+                data.stride(j).poke(y)
+                continue with j: prev
+            break
+        then
+            data.stride(j).poke(x)
+            continue with i: i + 1
+    then
+        return
+
+# -- merge two sorted half-open ranges [lo, mid) and [mid, hi) -----------------
+#
+# Reads from src, writes the merged result into dst[lo..hi). Stable: when
+# elements compare equal, the one from the left run is taken first.
+
+### Merges the sorted runs `src[runs.lo..runs.mid)` and `src[runs.mid..runs.hi)` into `dst[runs.lo..runs.hi)`. Stable: on ties the left element goes first.
+### :typeparam T: The element type, which must conform to {Comparable}.
+### :param src: The elements holding the two sorted runs.
+### :param dst: Where the merged run is written.
+### :param runs: Where the two adjacent runs start and end.
+routine sort_merge[T](src: @T, dst: @T, runs: MergeRuns) -> None
+needs T: typename, Comparable[T]
+    local lo: U64 = runs.lo
+    local mid: U64 = runs.mid
+    local hi: U64 = runs.hi
+    local k: @U64 <- lo
+
+    while i < mid with i: U64 = lo, j: U64 = mid
+        if j >= hi
+            each i2 in i til mid
+                v: T = src.stride(i2).peek()
+                dst.stride(k.peek()).poke(v)
+                (k.peek() + 1).poke_into(k)
+            then
+                return
+        else
+            a: T = src.stride(i).peek()
+            b: T = src.stride(j).peek()
+            cmp: S32 = a.compare(b)
+            if cmp <= 0
+                dst.stride(k.peek()).poke(a)
+                (k.peek() + 1).poke_into(k)
+                continue with i: i + 1, j: j
+            dst.stride(k.peek()).poke(b)
+            (k.peek() + 1).poke_into(k)
+            continue with i: i, j: j + 1
+    then
+        each j2 in j til hi
+            v: T = src.stride(j2).peek()
+            dst.stride(k.peek()).poke(v)
+            (k.peek() + 1).poke_into(k)
+        then
+            return
+
+# -- one bottom-up pass merging every pair of width-sized runs -----------------
+
+### One bottom-up merge pass over the first `n` elements: merges every adjacent pair of sorted runs of `width` elements from `src` into `dst`, the last pair possibly shorter.
+### :typeparam T: The element type, which must conform to {Comparable}.
+### :param src: The elements to read the runs from.
+### :param dst: Where the merged runs are written.
+### :param n: The number of elements.
+### :param width: The length of each sorted run in `src`.
+routine sort_merge_pass[T](src: @T, dst: @T, n: U64, width: U64) -> None
+needs T: typename, Comparable[T]
+    while lo < n with lo: U64 = 0
+        mid_raw: U64 = lo + width
+        hi_raw: U64 = mid_raw + width
+        mid_ok: Bool = mid_raw <= n
+        mid: U64 = when
+            mid_ok => mid_raw
+            else => n
+        hi_ok: Bool = hi_raw <= n
+        hi: U64 = when
+            hi_ok => hi_raw
+            else => n
+        sort_merge[T](src, dst, runs: MergeRuns(lo: lo, mid: mid, hi: hi))
+        continue with lo: hi_raw
+    then
+        return
+
+# -- public entry point --------------------------------------------------------
+
+### Sorts the list in place into ascending `compare` order. Stable, so equal elements keep their order. A list of 32 elements or fewer is insertion-sorted without allocating. A longer one is merge-sorted through a scratch buffer from the list's allocator, and the buffer is freed afterward.
+### :typeparam T: The element type, which must conform to {Comparable}.
+### :throws: Crashes with `MemoryAllocationError` if the scratch buffer cannot be allocated.
+@track_caller
+routine @List[T].sort() -> None
+needs T: typename, Comparable[T]
+    local n: U64 = me.count.peek()
+
+    if n <= SORT_RUN
+        data: @T = me.storage.data.peek()
+        sort_insertion[T](data, lo: 0, hi: n)
+        return
+    data: @T = me.storage.data.peek()
+    alloc: @MemoryManager = me.storage.manager.peek()
+    scratch: @T = allocate[T](count: n, alloc)
+    if scratch.is_hollow()
+        crash_allocation()
+    while lo < n with lo: U64 = 0
+        hi_raw: U64 = lo + SORT_RUN
+        hi_ok: Bool = hi_raw <= n
+        hi: U64 = when
+            hi_ok => hi_raw
+            else => n
+        sort_insertion[T](data, lo, hi)
+        continue with lo: hi_raw
+    then
+        while width < n with width: U64 = SORT_RUN, src: @T = data, dst: @T = scratch
+            sort_merge_pass[T](src, dst, n, width)
+            continue with width: width * 2, src: dst, dst: src
+        then
+            if src !== data
+                src.copy_into(dst: data, count: n)
+            deallocate[T](data: scratch, alloc: me.storage.manager.peek())
+            return

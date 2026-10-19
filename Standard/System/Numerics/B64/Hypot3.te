@@ -1,0 +1,144 @@
+# Tessera stdlib: the correctly rounded three-leg Euclidean norm sqrt(x^2 + y^2 + z^2) of B64
+#
+# The legs are scaled by the power of two that brings the largest into [1, 2) (a subnormal leg is normalized first),
+# and a leg more than 60 binades below the largest is left out of this first try. The squares are split into value
+# and error with FMAs, summed as a double-double, and the square root gets one correction step, all within 2^-96 of
+# the true root relative. When that leaves the root within 2^-90 of a rounding boundary, or every leg is subnormal,
+# the exact path of B128/Hypot3.te decides, with every leg counted. Round to nearest only.
+
+module Standard/System/Numerics/B64
+
+### sqrt(`x`^2 + `y`^2 + `z`^2) without intermediate overflow or underflow, correctly rounded to nearest (ties to
+### even). The signs don't matter and the order of the legs doesn't either. A signaling NaN leg gives a NaN, and
+### otherwise an infinite leg gives +inf, even when another leg is a quiet NaN. A NaN result is the first NaN leg in
+### the order `x`, `y`, `z`, quieted and with its sign cleared, as the two-leg hypot gives it. A result of 2^1024 or
+### more gives +inf.
+### :param x: The first leg.
+### :param y: The second leg.
+### :param z: The third leg.
+### :returns: The length of the vector (`x`, `y`, `z`).
+routine hypot_unchecked(x: B64, y: B64, z: B64) -> B64
+    local xi: U64 = x.bits() & 0x7FFFFFFFFFFFFFFF
+    local yi: U64 = y.bits() & 0x7FFFFFFFFFFFFFFF
+    local zi: U64 = z.bits() & 0x7FFFFFFFFFFFFFFF
+
+    if xi >= 0x7FF0000000000000 or yi >= 0x7FF0000000000000 or zi >= 0x7FF0000000000000
+        return cm_b64_hypot3_special(x, y, z)
+    # A larger magnitude has larger bits, so the largest leg's exponent field is that of the largest bits.
+    top: S64 = (xi.max(yi).max(zi) >> 52).to[S64]()
+    if top == 0
+        return cm_b64_hypot3_exact(x: xi, y: yi, z: zi)
+    sx: B64 = cm_b64_hypot3_scaled(bits: xi, top)
+    sy: B64 = cm_b64_hypot3_scaled(bits: yi, top)
+    sz: B64 = cm_b64_hypot3_scaled(bits: zi, top)
+    x2: B64 = sx *! sx
+    y2: B64 = sy *! sy
+    z2: B64 = sz *! sz
+    dx2: B64 = b64_mul_error(x: sx, y: sx, p: x2)
+    dy2: B64 = b64_mul_error(x: sy, y: sy, p: y2)
+    dz2: B64 = b64_mul_error(x: sz, y: sz, p: z2)
+    # The sum of squares as hi + lo: two exact two-sums, then the small terms added up, under 2^-98 off.
+    s1: B64 = x2 +! y2
+    e1: B64 = cm_b64_hypot3_sum_error(a: x2, b: y2, s: s1)
+    s2: B64 = s1 +! z2
+    e2: B64 = cm_b64_hypot3_sum_error(a: s1, b: z2, s: s2)
+    lo0: B64 = e1 +! e2 +! (dx2 +! dy2 +! dz2)
+    hi: B64 = s2 +! lo0  # s2 is at least 1, far above lo0: a fast two-sum
+    lo: B64 = lo0 -! (hi -! s2)
+    # One correction step: th + tl is within 2^-96 of sqrt(hi + lo) relative.
+    th: B64 = hi.sqrt_unchecked()
+    residual: B64 = th.mul_add_unchecked(a: -th, b: hi)  # exact for a correctly rounded th
+    tl: B64 = B64.truediv_unchecked(residual +! lo, th +! th)
+    s: B64 = th +! tl  # a fast two-sum: s is the candidate, sl what lies beyond it
+    sl: B64 = tl -! (s -! th)
+    if cm_b64_hypot3_near_boundary(s, sl)
+        return cm_b64_hypot3_exact(x: xi, y: yi, z: zi)
+    t: U64 = s.bits() +% ((top - 1023).to_wrap[U64]() << 52)
+    if t >= 0x7FF0000000000000
+        return inf
+    return B64.from_bits(t)
+
+### A leg scaled by the power of two that brings the leg with exponent field `top` into [1, 2), or 0 when it lies more
+### than 60 binades below that leg (its square is then under 2^-120 of the sum, far below what the boundary check
+### allows for). A subnormal leg is normalized first.
+### :param bits: The leg's bits, the sign clear, finite.
+### :param top: The exponent field of the largest leg, at least 1.
+### :returns: The scaled leg.
+secret routine cm_b64_hypot3_scaled(bits: U64, top: S64) -> B64
+    local field: S64 = (bits >> 52).to[S64]()
+
+    if field != 0
+        gap: S64 = top - field
+        if gap > 60
+            return 0.0
+        return B64.from_bits(((1023 - gap).to[U64]() << 52) | (bits & 0x000FFFFFFFFFFFFF))
+    if bits == 0
+        return 0.0
+    # The leading bit moves up to the implicit bit's place, and the exponent field it would have goes below 1.
+    nz: U64 = bits.leading_zeros()
+    gap: S64 = top - (12 - nz.to[S64]())
+    if gap > 60
+        return 0.0
+    frac: U64 = (bits << nz - 11) & 0x000FFFFFFFFFFFFF
+    return B64.from_bits(((1023 - gap).to[U64]() << 52) | frac)
+
+### The rounding error of `s = a + b`, exactly (Knuth's two-sum, for operands in either order).
+### :param a: The first addend.
+### :param b: The second addend.
+### :param s: `a + b` rounded to nearest.
+### :returns: `a + b - s`.
+secret routine cm_b64_hypot3_sum_error(a: B64, b: B64, s: B64) -> B64
+    bb: B64 = s -! a
+    e: B64 = a -! (s -! bb) +! (b -! bb)
+    return e
+
+### Whether the root s + sl (within 2^-96 of the true root relative) lies too close to a rounding boundary of `s` for
+### `s` to be the correctly rounded root: within 2^-90 relative of the midpoint half an ulp away, or of the midpoint a
+### quarter ulp below a power of two.
+### :param s: The candidate, rounded to nearest from the root.
+### :param sl: The part of the root beyond `s`, at most half an ulp of `s`.
+### :returns: True when the exact path has to decide.
+secret routine cm_b64_hypot3_near_boundary(s: B64, sl: B64) -> Bool
+    local e: U64 = s.bits() & 0x7FF0000000000000
+    local half: B64 = B64.from_bits(e - 0x0350000000000000)  # half an ulp of s
+    local eps: B64 = B64.from_bits(e - 0x05A0000000000000)  # 2^-90 times s's binade
+
+    off: B64 = sl.abs() -! half
+    if off.abs() <= eps
+        return true
+    # Below a power of two the grid is twice as fine, so the midpoint under s is a quarter ulp away.
+    power: Bool = s.bits() & 0x000FFFFFFFFFFFFF == 0
+    below: Bool = power and sl < 0.0
+    quarter: B64 = sl.abs() -! half *! 0.5
+    return below and quarter.abs() <= eps
+
+### hypot of three legs where one of them is infinite or NaN.
+### :param x: The first leg.
+### :param y: The second leg.
+### :param z: The third leg.
+### :returns: A quiet NaN for a signaling NaN leg, else +inf for an infinite leg, else the first NaN leg quieted, with
+###     its sign cleared.
+secret routine cm_b64_hypot3_special(x: B64, y: B64, z: B64) -> B64
+    signaling: Bool = cm_b64_is_signaling(x) or cm_b64_is_signaling(y) or cm_b64_is_signaling(z)
+    infinite: Bool = x.is_infinite() or y.is_infinite() or z.is_infinite()
+    if infinite and not signaling
+        return inf
+    rest: B64 = cm_b64_hypot_nan_add(x: y.abs(), y: z.abs())
+    return cm_b64_hypot_nan_add(x: x.abs(), y: rest)
+
+### Whether `x` is a signaling NaN: a NaN with the quiet bit (the top fraction bit) clear.
+### :param x: The value.
+### :returns: True for a signaling NaN.
+secret routine cm_b64_is_signaling(x: B64) -> Bool
+    quiet: Bool = x.bits() & 0x0008000000000000 != 0
+    return x.is_nan() and not quiet
+
+### The exact path: the three finite legs' bits (sign clear) through the shared three-leg hypot.
+### :param x: The first leg's bits.
+### :param y: The second leg's bits.
+### :param z: The third leg's bits.
+### :returns: The correctly rounded hypot.
+secret routine cm_b64_hypot3_exact(x: U64, y: U64, z: U64) -> B64
+    bits: U128 = hypot3_exact_bits(x: x.to[U128](), y: y.to[U128](), z: z.to[U128](),
+        format: Hypot3Format(precision: 53, emin: -1022))
+    return B64.from_bits(bits.to[U64]())

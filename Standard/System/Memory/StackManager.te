@@ -1,0 +1,92 @@
+# Tessera stdlib: the stack manager
+#
+# A flow of execution (a thread's first one, a fiber) runs on a stack, and a StackManager manages it: the stack
+# pointer and the range it may move in, from `top`, where the stack starts, down to `bottom`, below which it must not
+# go. A routine's `local` slots are the stack's blocks. The builder makes them by moving the stack pointer down when
+# the routine starts and back up when it returns, with no call, so they come back in the order opposite to the one they
+# were handed out in, and the code never names the manager: a flow has one stack, so there is nothing to choose.
+#
+# The memory under a stack is another manager's: the operating system's for a thread's first stack, a page manager's
+# for a fiber's (Standard/Fiber takes the pages, closes the bottom one with protect, and puts a StackManager on the
+# rest), the link script's on a target without an operating system. That manager also keeps the page below the
+# stack closed, so a stack that runs out stops the program there. StackManager.current() (StackManager_hosted.te, or
+# StackManager_freestanding.te without an operating system) is the running flow's manager.
+
+module Standard/System/Memory
+
+### The stack of one flow of execution: the stack pointer moves between `top` and `bottom`. A routine's `local` slots
+### are its blocks, made by moving the stack pointer, with no call.
+record StackManager
+    ### The lowest address the stack pointer may reach: the page below it is closed where the memory's manager can
+    ### close it.
+    bottom: Addr
+    ### The address the stack starts at: the stack pointer starts here and moves down.
+    top: Addr
+
+### The manager of a stack that runs from `top` down to `bottom`.
+### :param bottom: The lowest address the stack pointer may reach.
+### :param top: The address the stack starts at.
+### :returns: The manager.
+common routine StackManager.construct(bottom: Addr, top: Addr) -> Me
+    return Me(bottom, top)
+
+### Releases nothing: the stack's memory is the manager's that handed it out.
+routine @StackManager.destruct() -> None
+    return
+
+### The stack's whole size, from `bottom` to `top`.
+### :returns: The size.
+routine StackManager.size() -> ByteSize
+    return ByteSize.construct(bytes: ptrtoint[Addr, U64](me.top) - ptrtoint[Addr, U64](me.bottom))
+
+### The stack's whole size, from `bottom` to `top`.
+### :returns: The size.
+routine @StackManager.size() -> ByteSize
+    return me.peek().size()
+
+### How much of the stack is free below the stack pointer of the routine that asks: what deeper calls may still use.
+### :returns: The bytes from `bottom` up to the stack pointer, 0 when the stack pointer is outside the stack.
+routine StackManager.remaining() -> ByteSize
+    sp: U64 = ptrtoint[Addr, U64](stack_pointer())
+    low: U64 = ptrtoint[Addr, U64](me.bottom)
+    if not (low <= sp <= ptrtoint[Addr, U64](me.top))
+        return ByteSize.construct(bytes: 0)
+    return ByteSize.construct(bytes: sp - low)
+
+### How much of the stack is free below the stack pointer of the routine that asks: what deeper calls may still use.
+### :returns: The bytes from `bottom` up to the stack pointer, 0 when the stack pointer is outside the stack.
+routine @StackManager.remaining() -> ByteSize
+    return me.peek().remaining()
+
+### How much of the stack is in use above the stack pointer of the routine that asks.
+### :returns: The bytes from the stack pointer up to `top`, 0 when the stack pointer is outside the stack.
+routine StackManager.used() -> ByteSize
+    sp: U64 = ptrtoint[Addr, U64](stack_pointer())
+    high: U64 = ptrtoint[Addr, U64](me.top)
+    if not (ptrtoint[Addr, U64](me.bottom) <= sp <= high)
+        return ByteSize.construct(bytes: 0)
+    return ByteSize.construct(bytes: high - sp)
+
+### How much of the stack is in use above the stack pointer of the routine that asks.
+### :returns: The bytes from the stack pointer up to `top`, 0 when the stack pointer is outside the stack.
+routine @StackManager.used() -> ByteSize
+    return me.peek().used()
+
+### Whether `at` is inside the stack: a local slot of a routine running on it, or memory under it not yet used.
+### :param at: The address.
+### :returns: True when `at` is from `bottom` up to below `top`.
+routine StackManager.holds(at: Addr) -> Bool
+    place: U64 = ptrtoint[Addr, U64](at)
+    return ptrtoint[Addr, U64](me.bottom) <= place < ptrtoint[Addr, U64](me.top)
+
+### Whether `at` is inside the stack: a local slot of a routine running on it, or memory under it not yet used.
+### :param at: The address.
+### :returns: True when `at` is from `bottom` up to below `top`.
+routine @StackManager.holds(at: Addr) -> Bool
+    return me.peek().holds(at)
+
+### The stack pointer of the routine that calls it, as LLVM's `stacksave` reads it.
+### :returns: The stack pointer.
+@external("llvm")
+@template("{result} = call ptr @llvm.stacksave.p0()")
+secret routine stack_pointer() -> Addr

@@ -563,7 +563,7 @@ static class Cli
         var inputs = files.Select(Path.GetFullPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var jobs = inputs.Select(f => (Path: f, IsLibrary: false, ShownAs: (string?)null, Stamp: default(StandardLibrary.FileStamp)))
             .ToList();
-        // Stdlib files are named from the stdlib directory (Standard/Collection/List.te) wherever the build runs, so
+        // Stdlib files are named from the stdlib directory (Standard/Collections/List.te) wherever the build runs, so
         // the file tags in private symbols don't depend on the working directory. A stdlib that can't be found is
         // reported after the inputs' own errors, as when the inputs were read first.
         ExceptionDispatchInfo? stdlibError = null;
@@ -653,7 +653,7 @@ static class Cli
 
     private static string? _stdlib;
 
-    /// The standard library: $TESSERA_STDLIB, or the nearest `Standard/` (with a Prelude.te) above the working
+    /// The standard library: $TESSERA_STDLIB, or the nearest `Standard/` (with System/Prelude.te) above the working
     /// directory or the builder binary.
     internal static string StdlibDir()
     {
@@ -662,7 +662,7 @@ static class Cli
             return _stdlib = env;
         foreach (var start in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
             for (var dir = new DirectoryInfo(start); dir is not null; dir = dir.Parent)
-                if (File.Exists(Path.Combine(dir.FullName, "Standard", "Prelude.te")))
+                if (File.Exists(Path.Combine(dir.FullName, "Standard", "System", "Prelude.te")))
                     return _stdlib = Path.Combine(dir.FullName, "Standard");
         throw new ToolError("cannot find the standard library; set TESSERA_STDLIB to the stdlib directory");
     }

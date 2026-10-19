@@ -275,7 +275,7 @@ public sealed partial class Compiler
 
     private string? OperatorProtocolErrorUncached(string routine, IReadOnlyList<string> names, DType type, string file, Pos at)
     {
-        var decls = names.Select(n => (_conceptDecls.GetValueOrDefault(n) ?? []).FirstOrDefault(c => c.Module == CoreModule))
+        var decls = names.Select(n => (_conceptDecls.GetValueOrDefault(n) ?? []).FirstOrDefault(c => c.Module == SystemModule))
             .OfType<ConceptDecl>().ToList();
         if (decls.Count == 0) return null;
         string op = Operators.Shown(routine);
@@ -319,7 +319,7 @@ public sealed partial class Compiler
         if (_precheck is { } scope && type is ArchetypeType)
             return scope.Given.Any(g => g.Concept.Name == "LaneComparable" && g.Args.Count > 0 && g.Args[0].Equals(type));
         if (_laneCompared.TryGetValue(type.Key, out bool known)) return known;
-        var decl = (_conceptDecls.GetValueOrDefault("LaneComparable") ?? []).FirstOrDefault(c => c.Module == CoreModule);
+        var decl = (_conceptDecls.GetValueOrDefault("LaneComparable") ?? []).FirstOrDefault(c => c.Module == SystemModule);
         return _laneCompared[type.Key] = decl is not null && DeclaredFor(decl, type) is not null;
     }
 

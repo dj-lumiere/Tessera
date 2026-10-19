@@ -504,6 +504,57 @@ public class MigrateTests
     }
 
     [Fact]
+    public void Modules_step_drops_the_imports_of_modules_that_are_gone()
+    {
+        const string before = """
+            import Standard/Alloc
+            import Standard/Collections
+            import Standard/Format  # numbers
+            import Standard/Os
+
+            routine start() -> None
+                return
+            """;
+        const string after = """
+            import Standard/Collections
+            import Standard/Os
+
+            routine start() -> None
+                return
+            """;
+        Assert.Equal(after, ModuleMigration.Rewrite(before));
+    }
+
+    [Fact]
+    public void Modules_step_drops_the_blank_line_an_only_import_leaves()
+    {
+        const string before = "import Standard/Format\n\nroutine start() -> None\n    return\n";
+        Assert.Equal("routine start() -> None\n    return\n", ModuleMigration.Rewrite(before));
+    }
+
+    [Fact]
+    public void Modules_step_rewrites_the_paths_of_old_modules_in_code_and_comments()
+    {
+        const string before = """
+            define Fmt = Standard/Format
+            routine sides(alloc: @Standard/Alloc/MemoryManager) -> None  # see Standard/Core
+                local heap: @Standard/Os/CHeapManager <- .hollow()
+                Standard/Format/write_str(out, text: "Standard/Format/write_str")
+                Standard/Os/Console.show("{Standard/Boot/GlobalManager.prepare()}")
+                return
+            """;
+        const string after = """
+            define Fmt = Standard/System/Text
+            routine sides(alloc: @Standard/System/Memory/MemoryManager) -> None  # see Standard/System
+                local heap: @Standard/System/Memory/CHeapManager <- .hollow()
+                Standard/System/Text/write_str(out, text: "Standard/Format/write_str")
+                Standard/Os/Console.show("{Standard/System/Memory/GlobalManager.prepare()}")
+                return
+            """;
+        Assert.Equal(after, ModuleMigration.Rewrite(before));
+    }
+
+    [Fact]
     public void Float_presets_step_writes_the_literals()
     {
         const string before = """

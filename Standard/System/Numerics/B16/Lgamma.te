@@ -1,0 +1,260 @@
+# Tessera stdlib: the correctly rounded log-gamma of B16
+#
+# log|gamma(x)| in B64: a rational approximation (in root-product form) of
+# lgamma(x) + log|x| for |x| < 0x1.52p-1, another with exact zeros at 1 and 2
+# up to 0x1.afc1ap+1, and Stirling's series above. Negative x goes through
+# the reflection formula, with dedicated polynomials around the three zeros
+# of lgamma near -2.46, -2.75 and -3.14. Round to nearest only: the poles
+# (zero and the negative integers) and +-inf give +inf, NaN comes back quiet.
+# The original also sets C's signgam. This routine returns only the value.
+#
+# Ported from CORE-MATH, src/binary16/lgamma/lgammaf16.c via RazorForge's B16Lgamma.rf.
+# Copyright (c) 2023-2025 Alexei Sibidanov <sibid@uvic.ca> and Paul Zimmermann
+# MIT license: see LICENSE-CORE-MATH
+
+module Standard/System/Numerics/B16
+
+### Roots of the rational approximations, as B64 bits, 8 per product: entries
+### 0..7 the numerator and 8..15 the denominator for |x| < 0x1.52p-1, entries
+### 16..23 the denominator for 0x1.52p-1 <= |x| <= 0x1.afc1ap+1.
+secret preset CM_B16_LGAMMA_R8: @Array[U64, 24] <- [0xC03505BDF4B65AC0, 0xC0151C80EB47E068,
+    0x3FF0000000007CB8, 0xC004AC529250A1FC, 0xBFFA8C99DBE1621A, 0xBFF4ABDCC74115EA,
+    0xBFF1B87FE5A5B923, 0xBFF05B8A4D47FF64, 0xC044DB2CFE9A5265, 0xC02062E99D1C4F27,
+    0xC00C81BC2ECF25F6, 0xC00108E55C10091B, 0xBFF7DD25AF0B83D4, 0xBFF36BF1880125FC,
+    0xBFF1379FC8023D9C, 0xBFF03712E41525D2, 0xC05491A899E84C52, 0xC02D202961B9E098,
+    0xC014CED68C631ED6, 0xC002589EEDF40738, 0xBFF1302E33372710, 0xBFDC36B802F26DFF,
+    0xBFC3DED448ACC39D, 0xBF9BFFC491078EAF]
+
+### Roots of the numerator for 0x1.52p-1 <= |x| <= 0x1.afc1ap+1, as B64 bits.
+secret preset CM_B16_LGAMMA_RN: @Array[U64, 7] <- [0xC04667923FF14DF7, 0xC022D35F25AD8F64,
+    0xC00B8C9EAB9D5BD3, 0xBFF7A4A97F494127, 0xBFE3A6C8295B4445, 0xBFCDA44E8B810024,
+    0xBFA9061E81C77E4A]
+
+### log(1/ix[i]) for the logarithm's 16-entry table reduction, as B64 bits.
+secret preset CM_B16_LGAMMA_IL: @Array[U64, 16] <- [0x3C659CAEEC280116, 0x3FAF0A30C01162AA,
+    0x3FBE27076E2AF2EB, 0x3FC5FF3070A793D6, 0x3FCC8FF7C79A9A20, 0x3FD1675CABABA60F,
+    0x3FD4618BC21C5EC2, 0x3FD739D7F6BBD007, 0x3FD9F323ECBF984D, 0x3FDC8FF7C79A9A21,
+    0x3FDF128F5FAF06EC, 0x3FE0BE72E4252A83, 0x3FE1E85F5E7040D1, 0x3FE307D7334F10BE,
+    0x3FE41D8FE84672AF, 0x3FE52A2D265BC5AB]
+
+### Approximations ix[i] of 1/(1 + i/16 + 1/32) for the logarithm's table
+### reduction, as B64 bits.
+secret preset CM_B16_LGAMMA_IX: @Array[U64, 16] <- [0x3FF0000000000000, 0x3FEE1E1E1E1E1E1E,
+    0x3FEC71C71C71C71C, 0x3FEAF286BCA1AF28, 0x3FE999999999999A, 0x3FE8618618618618,
+    0x3FE745D1745D1746, 0x3FE642C8590B2164, 0x3FE5555555555555, 0x3FE47AE147AE147B,
+    0x3FE3B13B13B13B14, 0x3FE2F684BDA12F68, 0x3FE2492492492492, 0x3FE1A7B9611A7B96,
+    0x3FE1111111111111, 0x3FE0842108421084]
+
+### The coefficients of the polynomial in h near the zero of lgamma at -0x1.5fb410a1bd901p+1, for
+### cm_b16_lgamma_zero_poly.
+secret preset CM_B16_LGAMMA_ZERO1: @Array[B64, 8] <- [-0x1.ea12da904b18cp+0, 0x1.3267f3c265a54p+3,
+    -0x1.4185ac30cadb3p+4, 0x1.f504accc3f2e4p+5, -0x1.8588444c679b4p+7, 0x1.43740491dc22p+9,
+    -0x1.12400ea23f9e6p+11, 0x1.dac829f365795p+12]
+
+### The coefficients of the polynomial in h near the zero of lgamma at -0x1.3a7fc9600f86cp+1, for
+### cm_b16_lgamma_zero_poly.
+secret preset CM_B16_LGAMMA_ZERO2: @Array[B64, 8] <- [0x1.83fe966af535fp+0, 0x1.36eebb002f61ap+2,
+    0x1.694a60589a0b3p+0, 0x1.1718d7aedb0b5p+3, 0x1.733a045eca0d3p+2, 0x1.8d4297421205bp+4,
+    0x1.7feea5fb29965p+4, 0.0]
+
+### The coefficients of the polynomial in h near the zero of lgamma at -0x1.9260dbc9e59afp+1, for
+### cm_b16_lgamma_zero_poly.
+secret preset CM_B16_LGAMMA_ZERO3: @Array[B64, 8] <- [0x1.f20a65f2fac55p+2, 0x1.9d4d297715105p+4,
+    0x1.c1137124d5b21p+6, 0x1.267203d24de38p+9, 0x1.99a63399a0b44p+11, 0x1.2941214faaf0cp+14,
+    0x1.bb912c0c9cdd1p+16, 0.0]
+
+### ln |Γ(`me`)|, correctly rounded (to nearest): +inf at 0, the negative integers and +-inf, and NaN comes back quiet.
+### :returns: ln |Γ(`me`)|.
+routine B16.ln_gamma_unchecked() -> Me
+    local xf: B32 = me.to[B32]()
+    local fx: B32 = xf.floor()
+    local ax: B32 = xf.abs()
+    local tu: U32 = ax.bits()
+
+    when
+        tu >= 0x7F800000 =>
+            if tu == 0x7F800000
+                return Me.from_bits(0x7C00)
+            return (xf +! xf).to_unchecked[Me]()
+        fx == xf =>
+            # an integer: a pole at zero and the negative integers, and exact zeros at 1 and 2
+            when
+                xf <= 0.0 => return Me.from_bits(0x7C00)
+                xf == 1.0 or xf == 2.0 => return Me.from_bits(0)
+                else => pass
+        else => pass
+    s: B64 = xf.to[B64]()
+    z: B64 = ax.to[B64]()
+    when
+        ax < 0x1.52p-1 =>
+            # a rational approximation of lgamma(x) + log|x| near zero
+            num: B64 = B64.mul_unchecked(0x1.0fc0fad268c4dp+2, s) *! cm_b16_lgamma_r8(x: s, base: 0)
+            f: B64 = num /! cm_b16_lgamma_r8(x: s, base: 8) -! cm_b16_lgamma_ln(z)
+            return f.to_unchecked[Me]()
+        ax > 0x1.afc1ap+1 =>
+            # lgamma(0x1.ff4p+12) rounds to the largest finite B16, larger inputs overflow
+            when
+                xf > 0x1.ff4p+12 => return Me.from_bits(0x7C00)
+                xf >= 0x1.ff4p+12 => return Me.from_bits(0x7BFF)
+                else => pass
+            # Stirling's series
+            lz: B64 = cm_b16_lgamma_ln(z)
+            stirling_lead: B64 = (z -! 0.5) *! (lz -! 1.0)
+            f: B64 = stirling_lead +! 0x1.acfe390c97d69p-2
+            iz: B64 = B64.truediv_unchecked(1.0, z)
+            iz2: B64 = iz *! iz
+            iz4: B64 = iz2 *! iz2
+            f2: B64 = when
+                ax > 1198.0 => f +! iz *! 0x1.5555555555555p-4
+                ax > 0x1.279a7p+6 =>
+                    p: B64 = iz2 *! -0x1.6c0fd270c465p-9 +! 0x1.555555547fbadp-4
+                    becomes f +! iz *! p
+                ax > 0x1.555556p+3 =>
+                    p0: B64 = iz2 *! -0x1.6c16bdc45944fp-9 +! 0x1.555555554de0bp-4
+                    p2: B64 = iz2 *! -0x1.2e9cfff3b29c2p-11 +! 0x1.a0077f300ecb3p-11
+                    p: B64 = p0 +! iz4 *! p2
+                    becomes f +! iz *! p
+                else =>
+                    iz8: B64 = iz4 *! iz4
+                    p0: B64 = iz2 *! -0x1.6c16c0e7c4cf4p-9 +! 0x1.5555555551286p-4
+                    p2: B64 = iz2 *! -0x1.37e87ec19cb45p-11 +! 0x1.a0193267fe6f2p-11
+                    p4: B64 = iz2 *! -0x1.c16c8946b19b6p-10 +! 0x1.b40011dfff081p-11
+                    p6: B64 = iz2 *! -0x1.4f5843a71a338p-8 +! 0x1.e9f47ace150d8p-9
+                    q0: B64 = p0 +! iz4 *! p2
+                    q4: B64 = p4 +! iz4 *! p6
+                    p: B64 = q0 +! iz8 *! q4
+                    becomes f +! iz *! p
+            # the reflection formula lgamma(x) = log(pi) - lgamma(-x) - log|x sin(pi x)|
+            if not (xf < 0.0)
+                return f2.to_unchecked[Me]()
+            g: B64 = B64.sub_unchecked(0x1.250d048e7a1bdp+0, f2) -! lz
+            lp: B64 = cm_b16_lgamma_ln(cm_b16_lgamma_sinpi((xf -! fx).to[B64]()))
+            return (g -! lp).to_unchecked[Me]()
+        else =>
+            # a rational approximation with exact zeros at 1 and 2
+            zero_factors: B64 = (z -! 1.0) *! (z -! 2.0)
+            num: B64 = zero_factors *! 0x1.3cc0e6a0106b3p+2 *! cm_b16_lgamma_r7(z)
+            f: B64 = num /! cm_b16_lgamma_r8(x: z, base: 16)
+            if not (xf < 0.0)
+                return f.to_unchecked[Me]()
+            zero1: Bool = tu > 0x402F95C2 and tu < 0x40301B93
+            when
+                zero1 =>
+                    # near the zero of lgamma at -0x1.5fb410a1bd901p+1
+                    h: B64 = s +! 0x1.5fb410a1bd901p+1 -! 0x1.a19a96d2e6f85p-54
+                    f2: B64 = cm_b16_lgamma_zero_poly(h, a: CM_B16_LGAMMA_ZERO1)
+                    return f2.to_unchecked[Me]()
+                tu > 0x401CECCB and tu < 0x401D95CA =>
+                    # near the zero of lgamma at -0x1.3a7fc9600f86cp+1
+                    h: B64 = s +! 0x1.3a7fc9600f86cp+1 +! 0x1.55f64f98af8dp-55
+                    f2: B64 = cm_b16_lgamma_zero_poly(h, a: CM_B16_LGAMMA_ZERO2)
+                    return f2.to_unchecked[Me]()
+                tu > 0x40492009 and tu < 0x404940EF =>
+                    # near the zero of lgamma at -0x1.9260dbc9e59afp+1
+                    h: B64 = s +! 0x1.9260dbc9e59afp+1 +! 0x1.f717cd335a7b3p-53
+                    f2: B64 = cm_b16_lgamma_zero_poly(h, a: CM_B16_LGAMMA_ZERO3)
+                    return f2.to_unchecked[Me]()
+                else => pass
+            g: B64 = B64.sub_unchecked(0x1.250d048e7a1bdp+0, f)
+            lp: B64 = cm_b16_lgamma_ln(cm_b16_lgamma_sinpi((xf -! fx).to[B64]()) *! z)
+            return (g -! lp).to_unchecked[Me]()
+
+### h ((a0 + h a1) + h^2 (a2 + h a3) + h^4 ((a4 + h a5) + h^2 (a6 + h a7))) with ak = a[k],
+### grouped as in the original. A degree-6 polynomial passes a[7] = 0: a6 + h 0 is exactly a6.
+### :param h: The polynomial variable.
+### :param a: The coefficients of h to h^8, the last 0 for the shorter polynomial.
+### :returns: The polynomial's value.
+secret routine cm_b16_lgamma_zero_poly(h: B64, a: @Array[B64, 8]) -> B64
+    a0: B64 = a[0]
+    a1: B64 = a[1]
+    a2: B64 = a[2]
+    a3: B64 = a[3]
+    a4: B64 = a[4]
+    a5: B64 = a[5]
+    a6: B64 = a[6]
+    a7: B64 = a[7]
+    h2: B64 = h *! h
+    h4: B64 = h2 *! h2
+    c0: B64 = a0 +! h *! a1
+    c2: B64 = a2 +! h *! a3
+    c4: B64 = a4 +! h *! a5
+    c6: B64 = a6 +! h *! a7
+    lo: B64 = c0 +! h2 *! c2
+    hi: B64 = c4 +! h2 *! c6
+    return h *! (lo +! h4 *! hi)
+
+### The product (x - r0)(x - r1)...(x - r7) over the 8 roots starting at `base` in
+### CM_B16_LGAMMA_R8, grouped as in the original.
+### :param x: The point to evaluate at.
+### :param base: The index of the first of the 8 roots in CM_B16_LGAMMA_R8.
+### :returns: The product.
+secret routine cm_b16_lgamma_r8(x: B64, base: U64) -> B64
+    p01: B64 = cm_b16_lgamma_factor(x, base, k: 0) *! cm_b16_lgamma_factor(x, base, k: 1)
+    p23: B64 = cm_b16_lgamma_factor(x, base, k: 2) *! cm_b16_lgamma_factor(x, base, k: 3)
+    p45: B64 = cm_b16_lgamma_factor(x, base, k: 4) *! cm_b16_lgamma_factor(x, base, k: 5)
+    p67: B64 = cm_b16_lgamma_factor(x, base, k: 6) *! cm_b16_lgamma_factor(x, base, k: 7)
+    return p01 *! p23 *! (p45 *! p67)
+
+### `x` minus root `k` of the 8 starting at `base` in CM_B16_LGAMMA_R8.
+### :param x: The point to evaluate at.
+### :param base: The index of the first of the 8 roots.
+### :param k: Which of the 8 roots, 0 to 7.
+### :returns: `x` minus the root.
+secret routine cm_b16_lgamma_factor(x: B64, base: U64, k: U64) -> B64
+    return x -! B64.from_bits(CM_B16_LGAMMA_R8.getitem(base + k))
+
+### The product (x - r0)(x - r1)...(x - r6) over the numerator roots of the
+### mid-range approximation, grouped as in the original.
+### :param x: The point to evaluate at.
+### :returns: The product.
+secret routine cm_b16_lgamma_r7(x: B64) -> B64
+    p01: B64 = cm_b16_lgamma_rn(x, k: 0) *! cm_b16_lgamma_rn(x, k: 1)
+    p23: B64 = cm_b16_lgamma_rn(x, k: 2) *! cm_b16_lgamma_rn(x, k: 3)
+    p45: B64 = cm_b16_lgamma_rn(x, k: 4) *! cm_b16_lgamma_rn(x, k: 5)
+    return p01 *! p23 *! (p45 *! cm_b16_lgamma_rn(x, k: 6))
+
+### `x` minus root `k` of CM_B16_LGAMMA_RN.
+### :param x: The point to evaluate at.
+### :param k: The index of the root.
+### :returns: `x` minus the root.
+secret routine cm_b16_lgamma_rn(x: B64, k: U64) -> B64
+    return x -! B64.from_bits(CM_B16_LGAMMA_RN.getitem(k))
+
+### An approximation of sin(pi x) for 0 <= x <= 1.
+### :param x: The argument, in [0, 1].
+### :returns: sin(pi `x`).
+secret routine cm_b16_lgamma_sinpi(x: B64) -> B64
+    y: B64 = x -! 0.5
+    x2: B64 = y *! y
+    x4: B64 = x2 *! x2
+    x8: B64 = x4 *! x4
+    c0: B64 = x2 *! -0x1.de9e64df22ea4p+1 +! 0x1p+2
+    c2: B64 = x2 *! -0x1.d4fcd82df91bp-3 +! 0x1.472be122401f8p+0
+    c4: B64 = x2 *! -0x1.f3091c427b611p-10 +! 0x1.9f05c97e0aab2p-6
+    c6: B64 = x2 *! -0x1.15484325ef569p-18 +! 0x1.b22c9bfdca547p-14
+    lo: B64 = c0 +! x4 *! c2
+    hi: B64 = c4 +! x4 *! c6
+    return B64.sub_unchecked(0.25, x2) *! (lo +! x8 *! hi)
+
+### An approximation of the natural logarithm of a positive normal B64.
+### :param x: The argument, positive and normal.
+### :returns: ln(`x`).
+secret routine cm_b16_lgamma_ln(x: B64) -> B64
+    tu: U64 = x.bits()
+    biased_exponent: U64 = tu >> 52
+    e: S64 = biased_exponent.to[S64]() - 0x3FF
+    top_bits: U64 = (tu >> 48) & 0xF
+    i: U64 = top_bits.to[U64]()
+    m: B64 = B64.from_bits((tu & 0x000FFFFFFFFFFFFF) | 0x3FF0000000000000)
+    ix: B64 = B64.from_bits(CM_B16_LGAMMA_IX.getitem(i))
+    z: B64 = ix *! m -! 1.0
+    z2: B64 = z *! z
+    z4: B64 = z2 *! z2
+    c0: B64 = z *! -0x1.ffffffffd1d67p-2 +! 0x1.fffffffffff24p-1
+    c2: B64 = z *! -0x1.ffffeca81b866p-3 +! 0x1.55555537802dep-2
+    c4: B64 = z *! -0x1.54f3e581b61bfp-3 +! 0x1.999611761d772p-3
+    c6: B64 = z *! -0x1.9115a5af1e1edp-4 +! 0x1.1e642b4cb5143p-3
+    p: B64 = c0 +! z2 *! c2 +! z4 *! (c4 +! z2 *! c6)
+    il: B64 = B64.from_bits(CM_B16_LGAMMA_IL.getitem(i))
+    e_ln2: B64 = e.to[B64]() *! 0x1.62e42fefa39efp-1
+    return e_ln2 +! il +! z *! p

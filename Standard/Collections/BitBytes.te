@@ -1,0 +1,190 @@
+# Tessera stdlib collection: the byte-level bit routines BitList and BitArray share
+#
+# Bit i lives in byte i // 8, at bit i % 8 (least significant first). The
+# unused high bits of the last byte are always 0, so counting, searching, and
+# equality work a byte at a time. Every routine here takes the first byte and
+# the number of bits in use, and none checks an index: the callers do.
+
+module Standard/Collections
+
+### The number of bytes that hold `bits` bits.
+### :param bits: The bit count.
+### :returns: `bits` divided by 8, rounded up.
+secret routine bit_byte_count(bits: U64) -> U64
+    return (bits + 7) // 8
+
+### The mask of bit `index` inside its byte.
+### :param index: The bit position.
+### :returns: A byte with only bit `index % 8` set.
+secret routine bit_mask(index: U64) -> Byte
+    shift: U8 = (index % 8).to[U8]()
+    return U8.shift_left(1, shift).bits()
+
+### Reads bit `index`, unchecked.
+### :param data: The first byte.
+### :param index: The bit position, below the bit count.
+### :returns: Whether the bit is set.
+secret routine bit_read(data: @Byte, index: U64) -> Bool
+    byte: Byte = data.stride(index // 8).peek()
+    return (byte & bit_mask(index)) != 0x00
+
+### Sets or clears bit `index`, unchecked.
+### :param data: The first byte.
+### :param index: The bit position, below the bit count.
+### :param value: The bit's new value.
+secret routine bit_write(data: @Byte, index: U64, value: Bool) -> None
+    place: @Byte = data.stride(index // 8)
+    byte: Byte = place.peek()
+    mask: Byte = bit_mask(index)
+    changed: Byte = when
+        value => byte | mask
+        else => byte & ~mask
+    place.poke(changed)
+    return
+
+### Clears the unused high bits of the last byte, which a whole-byte change may have set.
+### :param data: The first byte.
+### :param bits: The number of bits in use.
+secret routine bit_clear_tail(data: @Byte, bits: U64) -> None
+    used: U64 = bits % 8
+    if used == 0
+        return
+    place: @Byte = data.stride(bits // 8)
+    shift: U8 = used.to[U8]()
+    keep: U8 = U8.shift_left(1, shift) - 1
+    (place.peek() & keep.bits()).poke_into(place)
+    return
+
+### Sets every bit in use to `value`.
+### :param data: The first byte.
+### :param bits: The number of bits in use.
+### :param value: The value every bit takes.
+secret routine bit_fill(data: @Byte, bits: U64, value: Bool) -> None
+    byte: Byte = when
+        value => 0xFF
+        else => 0x00
+    each i in 0 til bit_byte_count(bits)
+        data.stride(i).poke(byte)
+    bit_clear_tail(data, bits)
+    return
+
+### Inverts every bit in use.
+### :param data: The first byte.
+### :param bits: The number of bits in use.
+secret routine bit_flip_all(data: @Byte, bits: U64) -> None
+    each i in 0 til bit_byte_count(bits)
+        place: @Byte = data.stride(i)
+        (~place.peek()).poke_into(place)
+    bit_clear_tail(data, bits)
+    return
+
+### Counts the set bits, a byte at a time.
+### :param data: The first byte.
+### :param bits: The number of bits in use.
+### :returns: The number of bits that are set.
+secret routine bit_count_ones(data: @Byte, bits: U64) -> U64
+    each i in 0 til bit_byte_count(bits) with total: U64 = 0
+        byte: Byte = data.stride(i).peek()
+        ones: U8 = byte.to[U8]().count_ones()
+        continue with total: total + ones.to[U64]()
+    then
+        return total
+
+### Whether any bit is set.
+### :param data: The first byte.
+### :param bits: The number of bits in use.
+### :returns: True when at least one bit is set.
+secret routine bit_any(data: @Byte, bits: U64) -> Bool
+    each i in 0 til bit_byte_count(bits)
+        if data.stride(i).peek() != 0x00
+            return true
+    then
+        return false
+
+### The position of the first bit equal to `value` at `from` or after it.
+### :param data: The first byte.
+### :param bits: The number of bits in use.
+### :param from: The first position to look at.
+### :param value: The bit to look for.
+### :returns: The position of the bit.
+### :absent: When no bit at `from` or after it equals `value`.
+secret routine bit_find(data: @Byte, bits: U64, from: U64, value: Bool) -> Maybe[U64]
+    if from >= bits
+        return None()
+    first_byte: U64 = from // 8
+    shift: U8 = (from % 8).to[U8]()
+    low: U8 = U8.shift_left(U8.MAX, shift)
+    each i in first_byte til bit_byte_count(bits)
+        raw: U8 = data.stride(i).peek().to[U8]()
+        # looking for false is looking for a set bit in the complement
+        byte: U8 = when
+            value => raw
+            else => raw.bitnot()
+        masked: U8 = when
+            i == first_byte => byte & low
+            else => byte
+        if masked != 0
+            found: U64 = i * 8 + masked.trailing_zeros().to[U64]()
+            # the complement of the spare high bits of the last byte is 1, and they aren't bits of the run
+            if found >= bits
+                return None()
+            return found
+    then
+        return None()
+
+### Whether two runs of bits are equal, compared a byte at a time.
+### :param data: The first byte of one run.
+### :param other: The first byte of the other run.
+### :param bits: The number of bits in use in both.
+### :returns: True when every bit matches.
+secret routine bit_eq(data: @Byte, other: @Byte, bits: U64) -> Bool
+    each i in 0 til bit_byte_count(bits)
+        if data.stride(i).peek() != other.stride(i).peek()
+            return false
+    then
+        return true
+
+### Keeps a bit set only where it is set in `other` too (and).
+### :param data: The first byte of the bits changed in place.
+### :param other: The first byte of the bits combined in.
+### :param bits: The number of bits in use in both.
+secret routine bit_and_into(data: @Byte, other: @Byte, bits: U64) -> None
+    each i in 0 til bit_byte_count(bits)
+        place: @Byte = data.stride(i)
+        (place.peek() & other.stride(i).peek()).poke_into(place)
+    return
+
+### Sets a bit where it is set in `other` (or).
+### :param data: The first byte of the bits changed in place.
+### :param other: The first byte of the bits combined in.
+### :param bits: The number of bits in use in both.
+secret routine bit_or_into(data: @Byte, other: @Byte, bits: U64) -> None
+    each i in 0 til bit_byte_count(bits)
+        place: @Byte = data.stride(i)
+        (place.peek() | other.stride(i).peek()).poke_into(place)
+    return
+
+### Inverts a bit where it is set in `other` (exclusive or).
+### :param data: The first byte of the bits changed in place.
+### :param other: The first byte of the bits combined in.
+### :param bits: The number of bits in use in both.
+secret routine bit_xor_into(data: @Byte, other: @Byte, bits: U64) -> None
+    each i in 0 til bit_byte_count(bits)
+        place: @Byte = data.stride(i)
+        (place.peek() ^ other.stride(i).peek()).poke_into(place)
+    return
+
+### Writes the bits in order as `[true, false, true]`.
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param data: The first byte.
+### :param bits: The number of bits in use.
+### :param out: The writer to write to.
+secret routine bit_write_text[TWriter](data: @Byte, bits: U64, out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    write_str(out, text: "[")
+    each i in 0 til bits
+        if i != 0
+            write_str(out, text: ", ")
+        bit_read(data, index: i).represent_into(out)
+    write_str(out, text: "]")
+    return

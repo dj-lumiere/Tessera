@@ -178,11 +178,11 @@ private fun locateServer(project: Project): Path {
         )
 }
 
-/** The nearest `Standard/` (one holding Prelude.te) above a folder: where the builder there finds its library. */
+/** The nearest `Standard/` (one holding System/Prelude.te) above a folder: where the builder there finds its library. */
 private fun stdlibAbove(folder: Path): Path? =
     generateSequence(folder) { it.parent }
         .map { it.resolve("Standard") }
-        .firstOrNull { Files.isRegularFile(it.resolve("Prelude.te")) }
+        .firstOrNull { Files.isRegularFile(it.resolve("System").resolve("Prelude.te")) }
 
 /** The newest file time in a server's folder: changes whenever a rebuild writes into it. */
 private fun buildStamp(folder: Path): Long =

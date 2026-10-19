@@ -1,0 +1,131 @@
+# Tessera stdlib: the running flow's stack manager
+#
+# Every flow of execution runs on a stack that a StackManager (StackManager.te) manages. A thread's own stack, the
+# first thread's included, is the operating system's: StackManager.current() asks the system for its bounds the first
+# time a thread asks, and keeps the answer in the thread's THREAD_STACK. A fiber's stack is its manager's
+# (Standard/Fiber), which points RUNNING_STACK at the fiber's StackManager while the fiber runs and back when it stops.
+
+module Standard/System/Memory
+
+### The StackManager of the running thread's own stack, filled from the operating system on first use.
+@threadlocal
+@target(os: not "none")
+secret global THREAD_STACK: @StackManager
+
+### The StackManager of the flow running on this thread: a fiber's while one runs, else null for the thread's own.
+@threadlocal
+@target(os: not "none")
+global RUNNING_STACK: @@StackManager
+
+### The StackManager of the flow that runs this code: a fiber's stack inside a fiber, else the thread's own stack,
+### whose bounds the operating system gives the first time a thread asks.
+### :returns: The manager, for the flow's whole life.
+@target(os: not "none")
+common routine StackManager.current() -> @StackManager
+    running: @StackManager = RUNNING_STACK.peek()
+    if running.is_not_hollow()
+        return running
+    if THREAD_STACK.top.peek().is_hollow()
+        bottom, top = thread_stack_bounds()
+        THREAD_STACK.poke(StackManager.construct(bottom, top))
+    return THREAD_STACK
+
+# -- Linux --------------------------------------------------------------------------------------------------------
+
+### Binds the C `pthread_self` function, the running thread's id.
+### :returns: The id.
+@external("c")
+@symbol("pthread_self")
+@target(os: ("linux", "macos"))
+secret routine c_pthread_self() -> Addr
+
+### Binds glibc's `pthread_getattr_np` function, which fills attributes with a running thread's, its stack included.
+### :param thread: The thread's id.
+### :param attr: The attributes to fill, destroyed with pthread_attr_destroy.
+### :returns: 0 on success, or an error number.
+@external("c")
+@symbol("pthread_getattr_np")
+@target(os: "linux")
+secret routine c_pthread_getattr_np(thread: Addr, attr: Addr) -> CInt
+
+### Binds the C `pthread_attr_getstack` function, which reads a stack's lowest address and size from attributes.
+### :param attr: The attributes.
+### :param addr: Where the lowest address goes.
+### :param size: Where the size goes.
+### :returns: 0 on success, or an error number.
+@external("c")
+@symbol("pthread_attr_getstack")
+@target(os: "linux")
+secret routine c_pthread_attr_getstack(attr: Addr, addr: @Addr, size: @CSize) -> CInt
+
+### Binds the C `pthread_attr_destroy` function, which gives attributes back.
+### :param attr: The attributes.
+### :returns: 0 on success, or an error number.
+@external("c")
+@symbol("pthread_attr_destroy")
+@target(os: "linux")
+secret routine c_pthread_attr_destroy(attr: Addr) -> CInt
+
+### The running thread's stack as the system has it: its lowest address and the address after its top.
+### :returns: The bottom and the top, both null when the system doesn't say.
+@target(os: "linux")
+secret routine thread_stack_bounds() -> (Addr, Addr)
+    local attr: @Array[U64, 16] <- .hollow()
+    local low: @Addr <- .hollow()
+    local size: @CSize <- 0
+
+    if c_pthread_getattr_np(c_pthread_self(), attr) != 0
+        return (.hollow(), .hollow())
+    c_pthread_attr_getstack(attr, low, size)
+    c_pthread_attr_destroy(attr)
+    top: Addr = low.peek().offset(size.peek().to[S64]())
+    return (low.peek(), top)
+
+# -- macOS --------------------------------------------------------------------------------------------------------
+
+### Binds macOS's `pthread_get_stackaddr_np`, the top of a thread's stack.
+### :param thread: The thread's id.
+### :returns: The address the stack starts at.
+@external("c")
+@symbol("pthread_get_stackaddr_np")
+@target(os: "macos")
+secret routine c_pthread_get_stackaddr_np(thread: Addr) -> Addr
+
+### Binds macOS's `pthread_get_stacksize_np`, the size of a thread's stack.
+### :param thread: The thread's id.
+### :returns: The size in bytes.
+@external("c")
+@symbol("pthread_get_stacksize_np")
+@target(os: "macos")
+secret routine c_pthread_get_stacksize_np(thread: Addr) -> CSize
+
+### The running thread's stack as the system has it: its lowest address and the address after its top.
+### :returns: The bottom and the top.
+@target(os: "macos")
+secret routine thread_stack_bounds() -> (Addr, Addr)
+    local thread: Addr = c_pthread_self()
+
+    top: Addr = c_pthread_get_stackaddr_np(thread)
+    size: S64 = c_pthread_get_stacksize_np(thread).to[S64]()
+    return (top.offset(-size), top)
+
+# -- Windows ------------------------------------------------------------------------------------------------------
+
+### Binds the Win32 `GetCurrentThreadStackLimits` function, the running thread's stack bounds.
+### :param low: Where the lowest address goes.
+### :param high: Where the address after the top goes.
+@external("c")
+@symbol("GetCurrentThreadStackLimits")
+@callconv("stdcall")
+@target(os: "windows")
+secret routine c_get_current_thread_stack_limits(low: @Addr, high: @Addr) -> None
+
+### The running thread's stack as the system has it: its lowest address and the address after its top.
+### :returns: The bottom and the top.
+@target(os: "windows")
+secret routine thread_stack_bounds() -> (Addr, Addr)
+    local low: @Addr <- .hollow()
+    local high: @Addr <- .hollow()
+
+    c_get_current_thread_stack_limits(low, high)
+    return (low.peek(), high.peek())

@@ -1,0 +1,68 @@
+# Tessera stdlib: the correctly rounded arc tangent of B32
+#
+# A degree-7/7 rational approximation in B64, evaluated at x for |x| < 1 and at
+# 1/x above, with atan(x) = sign(x) pi/2 - atan(1/x). Tiny and huge |x| are
+# handled apart. Round to nearest only: +-0 stays itself, +-inf gives +-pi/2
+# rounded, NaN comes back quiet.
+#
+# Ported from CORE-MATH, src/binary32/atan/atanf.c via RazorForge's B32Atan.rf.
+# Copyright (c) 2022-2025 Alexei Sibidanov <sibid@uvic.ca>
+# MIT license: see LICENSE-CORE-MATH
+
+module Standard/System/Numerics/B32
+
+### arctan(`me`), correctly rounded.
+### :returns: The arc tangent of `me`, in radians.
+routine B32.atan() -> Me
+    local t: U32 = me.bits()
+    local e: U32 = (t >> 23) & 0xFF
+    local ta: U32 = t & 0x7FFFFFFF
+
+    huge: Bool = ta >= 0x4C700518  # |x| >= 0x1.e00a3p+25
+    # |x| < 2^-13
+    when
+        huge =>
+            # sign(x) pi/2 rounded, or NaN, which comes back quiet with its sign and payload
+            if ta > 0x7F800000
+                return me +! me
+            return B64.copysign(0x1.921fb54442d18p+0, me.to[B64]()).to_unchecked[Me]()
+        e < 114 =>
+            # x - x^3 / 3, and x - x |x| below 2^-25 to round the right way
+            very_tiny: Bool = e < 102  # |x| < 2^-25
+            when
+                t << 1 == 0 => return me
+                very_tiny => return (-me).mul_add_unchecked(a: me.abs(), b: me)
+                else => return Me.mul_unchecked(-0x1.555556p-2, me).mul_add_unchecked(a: me *! me, b: me)
+        else =>
+            # |x| >= 2^-13: for |x| >= 1 the rational approximation is evaluated at 1/x
+            gt: Bool = e >= 127
+            xd: B64 = me.to[B64]()
+            z: B64 = when
+                gt => B64.truediv_unchecked(1.0, xd)
+                else => xd
+            z2: B64 = z *! z
+            z4: B64 = z2 *! z2
+            z8: B64 = z4 *! z4
+            cn0: B64 = z2 *! 0x1.a76bb5637f2f2p-1 +! 0x1.51eccde075d67p-2
+            cn2: B64 = z2 *! 0x1.376c8ca67d11dp-2 +! 0x1.81e0eed20de88p-1
+            cn4: B64 = z2 *! 0x1.9561899acc73ep-9 +! 0x1.aec7b69202ac6p-5
+            cn6: B64 = 0x1.bf9fa5b67e6p-16
+            n0: B64 = z4 *! cn2 +! cn0
+            n4: B64 = z4 *! cn6 +! cn4
+            n07: B64 = z8 *! n4 +! n0
+            n: B64 = n07 *! z
+            cd0: B64 = z2 *! 0x1.dfbdd7b392d28p-1 +! 0x1.51eccde075d66p-2
+            cd2: B64 = z2 *! 0x1.fd22bf0e89b54p-2 +! 0x1p+0
+            cd4: B64 = z2 *! 0x1.653ea99fc9bbp-7 +! 0x1.d91ff8b576282p-4
+            cd6: B64 = 0x1.1e7fcc202340ap-12
+            d0: B64 = z4 *! cd2 +! cd0
+            d4: B64 = z4 *! cd6 +! cd4
+            d: B64 = z8 *! d4 +! d0
+            r: B64 = n /! d
+            if gt  # for |x| < 1, the rounded r is correct
+                # atan(x) = sign(x) pi/2 - atan(1/x), with pi/2 split as 0x1.9p+0 + 0x1.0fdaa22168c23p-7
+                lo: B64 = B64.copysign(0x1.0fdaa22168c23p-7, z)
+                hi: B64 = B64.copysign(0x1.9p+0, z)
+                reflected: B64 = lo -! r +! hi
+                return reflected.to_unchecked[Me]()
+            return r.to_unchecked[Me]()

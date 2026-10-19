@@ -1,0 +1,357 @@
+# Tessera stdlib collection: List[T]
+#
+# Dynamic array: a Memory[T] whose count is the capacity, and the number of
+# elements in use. The manager lives in the Memory, so callers do not pass
+# it to individual operations.
+
+module Standard/Collections
+
+### A growable array of `T` stored contiguously on the heap: `storage` holds the capacity (a {Memory[T]}, which keeps the manager) and `count` the elements in use. The buffer grows by doubling, and the list is released with `destruct`.
+### :typeparam T: The element type.
+entity List[T]
+obeys Destructible[List[T]]
+obeys Equatable[List[T]] when T: typename, Equatable[T]
+obeys Representable[List[T]] when T: typename, Diagnosable[T]
+obeys Diagnosable[List[T]] when T: typename, Diagnosable[T]
+needs T: typename
+obeys ViewingIndexable[List[T], T], ModifyingIndexable[List[T], T]
+    storage: Memory[T]
+    count: U64
+
+### Creates an empty List that draws its storage from `alloc`. Nothing is allocated until the first insertion.
+### :param alloc: The allocator the list stores and later frees its memory with.
+### :returns: A new empty List.
+common routine List[T].construct(alloc: @MemoryManager) -> Me
+needs T: typename
+    return Me(storage: Memory[T].construct(count: 0, manager: alloc), count: 0)
+
+### The number of elements currently stored.
+### :returns: The count of elements, `0` when the list is empty.
+routine @List[T].count() -> U64
+needs T: typename
+    count: U64 = me.count.peek()
+    return count
+
+### Whether the list holds no elements.
+### :returns: `true` when the count is `0`.
+routine @List[T].is_empty() -> Bool
+needs T: typename
+    return me.count.peek() == 0
+
+### Grows the buffer to hold at least `capacity` elements without further allocation. A smaller request leaves the buffer unchanged.
+### :param capacity: The number of elements to make room for.
+### :throws: Crashes with `MemoryAllocationError` when the allocator fails. See {List[T].reserve_result} for a recoverable form.
+@track_caller
+@expensive("reallocates to exactly the capacity asked for")
+@reshaping
+routine @List[T].reserve(capacity: U64) -> None
+needs T: typename
+    if me.make_capacity(capacity)
+        return
+    crash_allocation()
+
+### `reserve`, returning an error instead of crashing when the allocator fails.
+### :param capacity: The number of elements to make room for.
+### :returns: A value once the buffer holds at least `capacity` elements.
+### :throws: Returns `AllocFailed` when the allocator fails.
+@expensive("reallocates to exactly the capacity asked for")
+@reshaping
+routine @List[T].reserve_result(capacity: U64) -> Result[None, AllocFailed]
+needs T: typename
+    if me.make_capacity(capacity)
+        return None()
+    return AllocFailed()
+
+### Grows the buffer to at least `capacity` elements.
+### :param capacity: The number of elements to make room for.
+### :returns: True when the buffer is big enough, false when the allocator failed (the list is left as it was).
+@reshaping
+secret routine @List[T].make_capacity(capacity: U64) -> Bool
+needs T: typename
+    old_capacity: U64 = me.storage.count.peek()
+    if old_capacity >= capacity
+        return true
+    resized: Result[None, AllocFailed] = me.storage.resize_result(capacity)
+    when resized
+        is None => return true
+        is AllocFailed => return false
+
+### Makes room for `wanted` elements, starting at 4 slots and doubling until the request fits.
+### :param wanted: The element count the buffer must hold.
+### :throws: Crashes with `MemoryAllocationError` when the allocator fails.
+@track_caller
+@reshaping
+routine @List[T].ensure_capacity(wanted: U64) -> None
+needs T: typename
+    if me.make_room(wanted)
+        return
+    crash_allocation()
+
+### Makes room for `wanted` elements: an empty buffer starts at 4 slots (or `wanted`, when larger), and a full one
+### doubles until the request fits.
+### :param wanted: The element count the buffer must hold.
+### :returns: True when the buffer is big enough, false when the allocator failed (the list is left as it was).
+@reshaping
+secret routine @List[T].make_room(wanted: U64) -> Bool
+needs T: typename
+    local capacity: U64 = me.storage.count.peek()
+
+    if capacity >= wanted
+        return true
+    if capacity == 0
+        base: U64 = 4
+        use_wanted: Bool = wanted > base
+        new_capacity: U64 = when
+            use_wanted => wanted
+            else => base
+        return me.make_capacity(new_capacity)
+    while true with grown: U64 = capacity
+        next2: U64 = grown * 2
+        if next2 >= wanted
+            return me.make_capacity(next2)
+        continue with grown: next2
+
+### Appends `value` after the last element, growing the buffer when it is full.
+### :param value: The element to append.
+### :throws: Crashes with `MemoryAllocationError` when the allocator fails. See {List[T].add_last_result} for a recoverable form.
+@track_caller
+@reshaping
+routine @List[T].add_last(value: T) -> None
+needs T: typename
+    when me.add_last_result(steal value)
+        is None => return
+        is AllocFailed => crash_allocation()
+
+### `add_last`, returning an error instead of crashing when the allocator fails.
+### :param value: The element to append.
+### :returns: A value once the element is appended.
+### :throws: Returns `AllocFailed` when the buffer must grow and the allocator fails.
+@reshaping
+routine @List[T].add_last_result(value: T) -> Result[None, AllocFailed]
+needs T: typename
+    count: U64 = me.count.peek()
+    wanted: U64 = count + 1
+    if not me.make_room(wanted)
+        return AllocFailed()
+    data: @T = me.storage.data.peek()
+    data.stride(count).poke(steal value)
+    me.count.poke(wanted)
+    return None()
+
+### Removes the last element and returns it.
+### :returns: The removed element.
+### :throws: Crashes with `AbsentValueError` when the list is empty. See {List[T].remove_last_checked}.
+@track_caller
+routine @List[T].remove_last() -> T
+needs T: typename
+    when me.remove_last_checked()
+        is T as value => return value
+        is None => crash_absent_value()
+
+### `remove_last`, returning None instead of crashing on an empty list.
+### :returns: The removed element.
+### :absent: When the list is empty.
+routine @List[T].remove_last_checked() -> Maybe[T]
+needs T: typename
+    local count: U64 = me.count.peek()
+
+    if count == 0
+        return None()
+    index: U64 = count - 1
+    data: @T = me.storage.data.peek()
+    me.count.poke(index)
+    return steal data.stride(index)
+
+# -- element access ------------------------------------------------------------
+
+### Reads the element at `index`.
+### :param index: The zero-based position to read.
+### :returns: A copy of the element.
+### :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`. See {List[T].getitem_checked}.
+@track_caller
+routine @List[T].getitem(index: U64) -> T
+needs T: typename
+    value: T = me.getview()[index]
+    return value
+
+### `getitem`, returning None instead of crashing on an index past the end.
+### :param index: The zero-based position to read.
+### :returns: A copy of the element.
+### :absent: When `index >= count`.
+routine @List[T].getitem_checked(index: U64) -> Maybe[T]
+needs T: typename
+    value: Maybe[T] = me.getview().getitem_checked(index)
+    return value
+
+### The address of element `index`, checked like getitem: a place to read or write in place. It stays valid until
+### the list grows, shrinks, or is destructed.
+### :param index: The zero-based position.
+### :returns: The element's address.
+### :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
+@track_caller
+routine @List[T].getslot(index: U64) -> @T
+needs T: typename
+    element: @T = me.getview().getslot(index)
+    return element
+
+### `at`, returning None instead of crashing on an index past the end.
+### :param index: The zero-based position.
+### :returns: The element's address.
+### :absent: When `index >= count`.
+routine @List[T].getslot_checked(index: U64) -> Maybe[@T]
+needs T: typename
+    if index < me.count.peek()
+        data: @T = me.storage.data.peek()
+        return data.stride(index)
+    return None()
+
+### Overwrites the element at `index` with `value`: the element there is ended first (drop), then `value` takes
+### its place.
+### :param index: The zero-based position to write.
+### :param value: The value to store, taken over.
+### :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
+@track_caller
+routine @List[T].setitem(index: U64, value: T) -> None
+needs T: typename
+    drop me.getslot(index)
+    me.getslot(index).poke(steal value)
+    return
+
+### Exchanges the elements at `first` and `second` in place. Each element is moved, never copied, so entity elements
+### swap too, and neither place is left hollow. The same index twice changes nothing.
+### :param first: The zero-based position of one element.
+### :param second: The zero-based position of the other element.
+### :throws: Crashes with `IndexOutOfBoundsError` when `first >= count` or `second >= count`.
+@track_caller
+routine @List[T].swap(first: U64, second: U64) -> None
+needs T: typename
+    me.getview().swap(first, second)
+    return
+
+### The elements, borrowed: valid until the list grows, shrinks, or is destructed.
+### :returns: A span of the `count` elements.
+routine @List[T].getview() -> @[T]
+needs T: typename
+    return @[T].construct(data: me.storage.data.peek(), count: me.count.peek())
+
+### The `count` elements from `start`, borrowed, checked against the list's count.
+### :param start: The index of the first element.
+### :param count: The number of elements.
+### :returns: A borrowed slice of those elements.
+### :throws: Crashes with `IndexOutOfBoundsError` when the range runs past the end.
+@track_caller
+routine @List[T].getslice(start: U64, count: U64) -> @[T]
+needs T: typename
+    part: @[T] = me.getview().getslice(start, count)
+    return part
+
+### Removes every element (each is ended, drop) by resetting the count to `0`. The buffer and its capacity are kept
+### for reuse.
+routine @List[T].clear() -> None
+needs T: typename
+    first: @T = me.storage.data.peek()
+    each i in 0 til me.count.peek()
+        drop first.stride(i)
+    me.count.poke(0)
+    return
+
+### Whether two lists hold equal elements in the same order.
+### :param other: The list to compare with.
+### :returns: `true` when the counts match and every element pair is equal.
+routine @List[T].eq(other: @Me) -> Bool
+needs T: typename, Equatable[T]
+    local la: U64 = me.count.peek()
+    local pa: @T = me.storage.data.peek()
+    local pb: @T = other.storage.data.peek()
+
+    lb: U64 = other.count.peek()
+    if la == lb
+        each i in 0 til la
+            if pa.stride(i).eq(pb.stride(i))
+                continue
+            return false
+        then
+            return true
+    else
+        return false
+
+### Ends every element (drop: an element with something to give back gives it back, a plain value or a borrowed
+### pointer gives nothing), then gives the list's memory back to its allocator and resets it to the empty state, so it
+### can be reused or destructed again.
+### :note: Does nothing on a hollow list (`.hollow()`, no allocator), and only resets the fields of a never-filled one.
+@track_caller
+routine @List[T].destruct() -> None
+needs T: typename
+    if me.storage.manager.peek().is_hollow()
+        return
+    first: @T = me.storage.data.peek()
+    count: U64 = me.count.peek()
+    each i in 0 til count
+        drop first.stride(i)
+    me.storage.give_back()
+    me.count.poke(0)
+    return
+
+# -- text ----------------------------------------------------------------------
+#
+# A List[Byte] is the growable text buffer: it's a Writer, so buf.write("...")
+# appends to it, and getview() views what it holds. The list's allocator is
+# the only place memory comes from.
+
+obeys Writer[List[Byte]]
+
+### Appends `count` bytes, growing through the list's allocator.
+### :param data: The first byte to append.
+### :param count: The number of bytes.
+### :throws: Crashes with `MemoryAllocationError` when the buffer must grow and the allocator fails.
+@reshaping
+routine @List[Byte].write_bytes(data: @Byte, count: U64) -> None
+    if count == 0
+        return
+    old: U64 = me.count.peek()
+    new: U64 = old + count
+    me.ensure_capacity(new)
+    base: @Byte = me.storage.data.peek()
+    base.stride(old).copy(src: data, count)
+    me.count.poke(new)
+    return
+
+### Ends the bytes with a NUL (not counted in `count`) and points at them,
+### for C. Valid until the list next changes or is destructed.
+### :returns: The NUL-terminated text.
+### :throws: Crashes with `MemoryAllocationError` when the buffer must grow and the allocator fails.
+@reshaping
+routine @List[Byte].to[CStrView]() -> CStrView
+    count: U64 = me.count.peek()
+    me.ensure_capacity(count + 1)
+    data: @Byte = me.storage.data.peek()
+    data.stride(count).poke(0x00)
+    return data.to[CStrView]()
+
+# -- text -----------------------------------------------------------------------
+
+### The elements in order, each diagnosed (strings quoted): [1, 2, 3].
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param out: The writer to write to.
+routine @List[T].represent_into[TWriter](out: @TWriter) -> None
+needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
+    write_str(out, text: "[")
+    each i in 0 til me.count()
+        if i != 0
+            write_str(out, text: ", ")
+        me.getslot(i).diagnose_into(out)
+    write_str(out, text: "]")
+    return
+
+### The elements in order, each diagnosed: [1, 2, 3].
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param out: The writer to write to.
+routine @List[T].diagnose_into[TWriter](out: @TWriter) -> None
+needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
+    write_str(out, text: "[")
+    each i in 0 til me.count()
+        if i != 0
+            write_str(out, text: ", ")
+        me.getslot(i).diagnose_into(out)
+    write_str(out, text: "]")
+    return

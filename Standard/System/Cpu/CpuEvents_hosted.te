@@ -1,0 +1,267 @@
+# Tessera stdlib: the CpuEventManager of a program on an operating system
+#
+# The operating system tells a process about events from outside it and faults inside it: a request to end
+# (SIGTERM, or a console window closing on Windows), an interrupt from the keyboard (SIGINT, Ctrl+C), and a fault the
+# processor raised (Faults.te). What the process does about each is a setting the whole process has one of, so the
+# CpuEventManager manages it: it holds one handler per kind of event, records which one holds each slot, and hands
+# back the one before when a new one takes a slot, so the old one can be put back.
+#
+# - when_terminated: a request to end, SIGTERM on Linux and macOS, a console window closed, a logoff, or a shutdown
+#   on Windows. When the handler returns, the process ends with ProcessManager.exit_process and the status
+#   set_exit_code stored last. Without a handler the system ends the process.
+# - when_interrupted: SIGINT, Ctrl+C or Ctrl+Break on Windows. When the handler returns, the program goes on. Without
+#   a handler the system ends the process.
+# - when_faulted: a fault. The handler takes the place of the fault report, and the fault ends the process when it
+#   returns, as it would have.
+#
+# A handler runs where the system delivers the event: on Linux and macOS inside a signal handler, on whichever thread
+# the signal comes to, cutting into what that thread was doing (so it writes with Console and sets atomics, and takes
+# no lock that thread may hold), on Windows on a thread of its own the system starts for it.
+
+module Standard/System/Cpu
+
+import Standard/Os
+
+### What kind of event came.
+@target(os: not "none")
+choice CpuEventKind: U8
+    TERMINATED  # a request to end: SIGTERM, a console window closed, a logoff, or a shutdown
+    INTERRUPTED  # an interrupt from the keyboard: SIGINT, Ctrl+C
+    FAULT  # a fault the processor raised: memory the program may not touch, an instruction it can't run
+
+### One event as the system reported it.
+@target(os: not "none")
+record CpuEvent
+    kind: CpuEventKind
+    ### The signal's number on Linux and macOS, the console event (`CTRL_*_EVENT`) or the exception code on Windows.
+    code: U64
+    ### The instruction a fault stopped on where the system says (Windows), else null.
+    place: Addr
+    ### The address a fault touched where the system says, else null.
+    address: Addr
+
+### Makes a `CpuEvent` from its fields.
+### :param kind: Its `kind`.
+### :param code: Its `code`.
+### :param place: Its `place`.
+### :param address: Its `address`.
+### :returns: The new value.
+@target(os: not "none")
+common routine CpuEvent.construct(kind: CpuEventKind, code: U64, place: Addr, address: Addr) -> Me
+    return Me(kind, code, place, address)
+
+### Releases nothing: the addresses are the system's report.
+@target(os: not "none")
+routine @CpuEvent.destruct() -> None
+    return
+
+### The process's events: one handler per kind, held until its event comes. Its routines are called on the type.
+@target(os: not "none")
+record CpuEventManager
+
+### The handler that holds each kind's slot, by the kind's number, null for none.
+@target(os: not "none")
+secret global HOLDERS: @Array[Addr, 3]
+
+### The slot of a kind in HOLDERS.
+### :param kind: The kind.
+### :returns: Its slot's index.
+@target(os: not "none")
+secret routine slot_of(kind: CpuEventKind) -> U64
+    when kind
+        CpuEventKind.TERMINATED => return 0
+        CpuEventKind.INTERRUPTED => return 1
+        CpuEventKind.FAULT => return 2
+
+### Puts `holder` in `kind`'s slot.
+### :param kind: The slot.
+### :param holder: The new handler, or `.hollow()` for none.
+### :returns: The handler that held the slot before, `.hollow()` for none.
+@target(os: not "none")
+secret common routine CpuEventManager.replace(kind: CpuEventKind,
+    holder: Callable[(CpuEvent,), None]) -> Callable[(CpuEvent,), None]
+    slot: @Addr = HOLDERS.getslot(slot_of(kind))
+    before: Addr = slot.atomic_swap(holder.addr())
+    return bitcast(before)
+
+### The handler that holds `kind`'s slot.
+### :param kind: The slot.
+### :returns: The handler, `.hollow()` for none.
+@target(os: not "none")
+common routine CpuEventManager.holder(kind: CpuEventKind) -> Callable[(CpuEvent,), None]
+    return bitcast(HOLDERS.getslot(slot_of(kind)).peek_atomic())
+
+### Sets the handler of a request to end the process: SIGTERM on Linux and macOS, a console window closed, a logoff,
+### or a shutdown on Windows. When it returns, the process ends with the status {set_exit_code} stored last.
+### :param holder: The handler, or `.hollow()` to let the system end the process.
+### :returns: The handler before, `.hollow()` for none: pass it back to put it back.
+@target(os: not "none")
+common routine CpuEventManager.when_terminated(holder: Callable[(CpuEvent,), None]) -> Callable[(CpuEvent,), None]
+    before: Callable[(CpuEvent,), None] = Me.replace(kind: CpuEventKind.TERMINATED, holder)
+    listen(kind: CpuEventKind.TERMINATED, on: holder.addr().is_not_hollow())
+    return before
+
+### Sets the handler of an interrupt from the keyboard: SIGINT, Ctrl+C or Ctrl+Break on Windows. When it returns, the
+### program goes on.
+### :param holder: The handler, or `.hollow()` to let the system end the process.
+### :returns: The handler before, `.hollow()` for none: pass it back to put it back.
+@target(os: not "none")
+common routine CpuEventManager.when_interrupted(holder: Callable[(CpuEvent,), None]) -> Callable[(CpuEvent,), None]
+    before: Callable[(CpuEvent,), None] = Me.replace(kind: CpuEventKind.INTERRUPTED, holder)
+    listen(kind: CpuEventKind.INTERRUPTED, on: holder.addr().is_not_hollow())
+    return before
+
+### Sets the handler of a fault, in place of the fault report. The fault ends the process when it returns, as it would
+### have.
+### :param holder: The handler, or `.hollow()` for the fault report.
+### :returns: The handler before, `.hollow()` for none: pass it back to put it back.
+@target(os: not "none")
+common routine CpuEventManager.when_faulted(holder: Callable[(CpuEvent,), None]) -> Callable[(CpuEvent,), None]
+    before: Callable[(CpuEvent,), None] = Me.replace(kind: CpuEventKind.FAULT, holder)
+    if holder.addr().is_not_hollow()
+        install_fault_handlers()
+    return before
+
+### Gives `event` to its handler: what the system's delivery calls. A request to end then ends the process.
+### :param event: The event.
+### :returns: False when no handler holds the slot, so the system's own action is due.
+@target(os: not "none")
+secret routine deliver(event: CpuEvent) -> Bool
+    holder: Callable[(CpuEvent,), None] = CpuEventManager.holder(event.kind)
+    if holder.addr().is_hollow()
+        return false
+    holder.call(event)
+    if event.kind == CpuEventKind.TERMINATED
+        ProcessManager.exit_process(exit_code())
+    return true
+
+# -- Linux and macOS ----------------------------------------------------------------------------------------------
+
+### SA_RESTART: a system call the signal cut into goes on.
+@target(os: "linux")
+secret preset SA_RESTART: U32 = 0x10000000
+### SA_RESTART: a system call the signal cut into goes on.
+@target(os: "macos")
+secret preset SA_RESTART: U32 = 0x0002
+
+### The signal of a kind: SIGTERM 15, SIGINT 2, SIGSEGV 11 (the same on Linux and macOS).
+### :param kind: The kind.
+### :returns: The signal's number.
+@target(os: ("linux", "macos"))
+secret routine signal_of(kind: CpuEventKind) -> CInt
+    when kind
+        CpuEventKind.TERMINATED => return 15
+        CpuEventKind.INTERRUPTED => return 2
+        CpuEventKind.FAULT => return 11
+
+### Sends the event to this process as the system would: the kind's signal to the running thread (SIGSEGV for a fault).
+### What follows is what the event does: its handler, or the system's action.
+### :param kind: The kind.
+@target(os: ("linux", "macos"))
+common routine CpuEventManager.raise(kind: CpuEventKind) -> None
+    c_raise(signal_of(kind))
+    return
+
+### Points the kind's signal at on_signal, or back at the system's action.
+### :param kind: TERMINATED or INTERRUPTED.
+### :param on: True for on_signal, false for the system's action.
+@target(os: ("linux", "macos"))
+secret routine listen(kind: CpuEventKind, on: Bool) -> None
+    local act: @Array[Byte, 160] <- .hollow()
+
+    if on
+        fill_action(act: act.to[@Byte](), handler: on_signal.to[Callable](), flags: SA_RESTART)
+    c_sigaction(signal_of(kind), act.to[Addr](), .hollow())
+    return
+
+### The handler of SIGTERM and SIGINT: gives the event to its handler, or, when none holds it now, lets the signal do
+### what the system does.
+### :param sig: The signal.
+@target(os: ("linux", "macos"))
+@untraced
+secret routine on_signal(sig: CInt) -> None
+    local act: @Array[Byte, 160] <- .hollow()
+
+    kind: CpuEventKind = when
+        sig == 15 => CpuEventKind.TERMINATED
+        else => CpuEventKind.INTERRUPTED
+    if deliver(CpuEvent(kind, code: sig.to[U64](), place: .hollow(), address: .hollow()))
+        return
+    c_sigaction(sig, act.to[Addr](), .hollow())
+    c_raise(sig)
+    return
+
+# -- Windows ------------------------------------------------------------------------------------------------------
+
+### Binds the Win32 `SetConsoleCtrlHandler` function, which adds or removes a handler of the console's events.
+### :param handler: The handler.
+### :param add: 1 to add it, 0 to remove it.
+### :returns: Nonzero on success.
+@external("c")
+@symbol("SetConsoleCtrlHandler")
+@callconv("stdcall")
+@target(os: "windows")
+secret routine c_set_console_ctrl_handler(handler: Callable[@callconv("stdcall"), (U32,), CInt], add: CInt) -> CInt
+
+### Binds the Win32 `RaiseException` function, which raises an exception on the running thread.
+### :param code: The exception code.
+### :param flags: 0, or 1 for an exception the program can't go on after.
+### :param count: The number of arguments.
+### :param args: The arguments, or null.
+@external("c")
+@symbol("RaiseException")
+@callconv("stdcall")
+@target(os: "windows")
+secret routine c_raise_exception(code: U32, flags: U32, count: U32, args: Addr) -> None
+
+### Whether on_console_event is installed: 1 once it is.
+@target(os: "windows")
+secret global CONSOLE_HANDLER_ON: @U32
+
+### The status a process ends with after Ctrl+C when nothing handles it: STATUS_CONTROL_C_EXIT, 0xC000013A.
+@target(os: "windows")
+secret preset CONTROL_C_EXIT: S32 = -1073741510
+
+### Installs on_console_event the first time a handler takes a slot. It stays: with no handler in a slot it lets the
+### event go on to the system.
+### :param kind: TERMINATED or INTERRUPTED.
+### :param on: True when a handler took the slot.
+@target(os: "windows")
+secret routine listen(kind: CpuEventKind, on: Bool) -> None
+    if on and CONSOLE_HANDLER_ON.atomic_swap(1) == 0
+        c_set_console_ctrl_handler(on_console_event.to[Callable](), 1)
+    return
+
+### The console's events: Ctrl+C (0) and Ctrl+Break (1) are INTERRUPTED, a window closed (2), a logoff (5), and a
+### shutdown (6) are TERMINATED.
+### :param ctrl: The `CTRL_*_EVENT`.
+### :returns: 1 when a handler took the event, 0 to let the system act.
+@target(os: "windows")
+@callconv("stdcall")
+@untraced
+secret routine on_console_event(ctrl: U32) -> CInt
+    if ctrl > 6 or ctrl == 3 or ctrl == 4
+        return 0
+    kind: CpuEventKind = when
+        ctrl <= 1 => CpuEventKind.INTERRUPTED
+        else => CpuEventKind.TERMINATED
+    if deliver(CpuEvent(kind, code: ctrl.to[U64](), place: .hollow(), address: .hollow()))
+        return 1
+    return 0
+
+### Sends the event to this process as the system would: Ctrl+C for INTERRUPTED and a closed console window for
+### TERMINATED go to this process's handler (the system would start a thread for it, this calls it on the running
+### one), and a fault is an access violation raised on the running thread. Without a handler the process ends as the
+### system would end it.
+### :param kind: The kind.
+@target(os: "windows")
+common routine CpuEventManager.raise(kind: CpuEventKind) -> None
+    when kind
+        CpuEventKind.INTERRUPTED =>
+            if on_console_event(0) == 0
+                ProcessManager.exit_process(CONTROL_C_EXIT)
+        CpuEventKind.TERMINATED =>
+            if on_console_event(2) == 0
+                ProcessManager.exit_process(CONTROL_C_EXIT)
+        CpuEventKind.FAULT => c_raise_exception(code: 0xC0000005, flags: 1, count: 0, args: .hollow())
+    return

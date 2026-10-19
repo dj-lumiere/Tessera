@@ -95,7 +95,7 @@ public sealed partial class Compiler
             switch (d)
             {
                 case ModuleDecl m:
-                    // `Standard/Core` also declares `Standard`.
+                    // `Standard/System` also declares `Standard`.
                     for (int i = m.Path.IndexOf("/", StringComparison.Ordinal); i >= 0; i = m.Path.IndexOf("/", i + 1, StringComparison.Ordinal))
                         _modules.Add(m.Path[..i]);
                     _modules.Add(m.Path);
@@ -122,7 +122,7 @@ public sealed partial class Compiler
         foreach (var imp in _imports)
         {
             if (!_modules.Contains(imp.Path))
-                throw new CompileError(imp.Pos, $"unknown module '{imp.Path}'");
+                throw new CompileError(imp.Pos, ModuleMigration.OldModule(imp.Path) ?? $"unknown module '{imp.Path}'");
             // Only the program's entry file runs top-level lines: in a file another one imports, they would be a second
             // start nobody asked for.
             if (_userRoutines.FirstOrDefault(r => r.IsScript && r.Module == imp.Path && r.Module != "" && r.File != imp.File)
@@ -219,7 +219,9 @@ public sealed partial class Compiler
             // A variant written inline is checked where it is used.
             if (a.Target is { Name: TypeRef.UnionName, Path: null }) continue;
             if (TypeDeclQuiet(a.Target.Name, a.File, a.Target.Path) is null)
-                throw new CompileError(a.Target.Pos, $"define {a.Name} = {a.Target}: that's neither a module nor a type");
+                throw new CompileError(a.Target.Pos, ModuleMigration.OldModule(FullPath(a.Target))
+                    ?? (a.Target.Path is { } gone && ModuleMigration.OldModule(gone) is { } moved ? moved : null)
+                    ?? $"define {a.Name} = {a.Target}: that's neither a module nor a type");
             var clash = (_records.GetValueOrDefault(a.Name) ?? []).Cast<Decl>()
                 .Concat(_variants.GetValueOrDefault(a.Name) ?? []).Concat(_choices.GetValueOrDefault(a.Name) ?? [])
                 .FirstOrDefault(d => d.Module == a.Module);
@@ -232,8 +234,8 @@ public sealed partial class Compiler
 
     private bool IsModuleAlias(AliasDecl a) => a.Target.Args.Count == 0 && _modules.Contains(FullPath(a.Target));
 
-    /// A module path with a leading defined module name replaced: `Fmt/write_str` is `Standard/Format/write_str`
-    /// after `define Fmt = Standard/Format`.
+    /// A module path with a leading defined module name replaced: `Fmt/write_str` is `Standard/System/Text/write_str`
+    /// after `define Fmt = Standard/System/Text`.
     private string? ExpandPath(string? path, string file)
     {
         if (path is null) return null;
@@ -695,7 +697,29 @@ public sealed partial class Compiler
 
     /// The first name of every standard library module's path.
     public const string StandardRoot = "Standard";
-    public const string CoreModule = "Standard/Core";
+
+    /// The language's base module: the built-in types, the protocols, crash, and the conversions. It and every module
+    /// under it are seen from every file without an import.
+    public const string SystemModule = "Standard/System";
+
+    /// The memory managers, `Memory[T]`'s regions, and atomics.
+    public const string MemoryModule = SystemModule + "/Memory";
+
+    /// The startup steps and the CpuEventManager.
+    public const string CpuModule = SystemModule + "/Cpu";
+
+    /// Formatting, reading values from text, and UTF-8.
+    public const string TextModule = SystemModule + "/Text";
+
+    /// Duration and Moment.
+    public const string TemporalModule = SystemModule + "/Temporal";
+
+    /// Whether a module is `Standard/System` or one under it, which every file sees without an import.
+    public static bool IsSystemModule(string module) => IsUnder(module, SystemModule);
+
+    /// Whether `module` is `parent` or a module under it (`Standard/System/Memory` is under `Standard/System`).
+    public static bool IsUnder(string module, string parent) =>
+        module == parent || (parent.Length > 0 && module.StartsWith(parent + "/", StringComparison.Ordinal));
 
     /// How private symbols name each input file (Program.FileTagPaths): its path from its package root. A stdlib file
     /// is already named from the stdlib directory.
@@ -717,30 +741,34 @@ public sealed partial class Compiler
     /// The module a file declares, or "" for the solution's root.
     public string ModuleOf(string file) => _fileModule.GetValueOrDefault(file, "");
 
-    /// Whether `file` reaches a `private` declaration: a file of the declaration's module.
-    public bool PrivateReaches(Decl d, string file) => d.Module == ModuleOf(file);
+    /// Whether `file` reaches a `secret` declaration: a file of the declaration's module or of a module under it.
+    public bool PrivateReaches(Decl d, string file) => IsUnder(ModuleOf(file), d.Module);
 
     public static string ShowModule(string module) => module == "" ? "the root module" : module;
 
     /// Whether `file` sees `d`: by its plain name when `path` is null, or through `path/name`. A plain name reaches
-    /// the file's own module, Standard/Core (always imported), and the modules the file imports. `private` limits a
-    /// declaration to its module, qualified or not.
+    /// the file's own module, Standard/System and the modules under it (always seen), and the modules the file imports
+    /// (an import brings the module, not the modules under it). `secret` limits a declaration to its module and the
+    /// modules under it, qualified or not.
     public bool Visible(Decl d, string file, string? path)
     {
         if (path is not null && d.Module != path) return false;
-        if (d.IsPrivate) return PrivateReaches(d, file);
+        if (d.IsPrivate && !PrivateReaches(d, file)) return false;
         string from = ModuleOf(file);
-        return path is not null || d.Module == from || d.Module == CoreModule
+        return path is not null || d.Module == from || IsSystemModule(d.Module)
                || (_fileImports.TryGetValue(file, out var imports) && imports.Contains(d.Module));
     }
 
-    private string Hidden(Decl d, string what, string? path) =>
-        path is not null && d.Module != path ? $"{what} isn't in {path}; it's in {ShowModule(d.Module)}"
-        : d.IsPrivate ? $"{what} is secret to {ShowModule(d.Module)}"
+    /// Why `file` doesn't see `d`: a path to another module, a secret it doesn't reach, or a module it doesn't import.
+    private string Hidden(Decl d, string what, string? path, string? file = null) =>
+        path is not null && d.Module != path
+            ? $"{what} isn't in {path}; it's in {ShowModule(d.Module)}"
+              + (ModuleMigration.OldModule(path) is not null ? " (tessera migrate --step modules rewrites the old module paths)" : "")
+        : d.IsPrivate && (file is null || !PrivateReaches(d, file)) ? $"{what} is secret to {ShowModule(d.Module)}"
         : $"{what} is in {ShowModule(d.Module)}; import {d.Module} or write {d.Module}/...";
 
     /// Of the declarations a file sees under one name, the ones that win: its module's (a `private` one shares its
-    /// name with declarations in other modules), else all of them, from Standard/Core and the imports alike.
+    /// name with declarations in other modules), else all of them, from Standard/System and the imports alike.
     private List<T> Nearest<T>(List<T> visible, string file) where T : Decl
     {
         if (visible.Count <= 1) return visible;
@@ -762,7 +790,7 @@ public sealed partial class Compiler
             return null;
         }
         var visible = candidates.Where(c => Visible(c, file, path)).ToList();
-        if (visible.Count == 0) throw new CompileError(pos, Hidden(candidates[0], what, path));
+        if (visible.Count == 0) throw new CompileError(pos, Hidden(candidates[0], what, path, file));
         var nearest = Nearest(visible, file);
         if (nearest.Count == 1) return nearest[0];
         var modules = nearest.Select(c => c.Module).Distinct().ToList();
@@ -796,14 +824,14 @@ public sealed partial class Compiler
 
     private Decl? OwnerDecl(TypeRef owner, string file) => TypeDeclQuiet(owner.Name, file, owner.Path);
 
-    /// The declaration behind a type. A built-in type (`S64`, `Ptr[T]`) has one too, a record in Standard/Core that
+    /// The declaration behind a type. A built-in type (`S64`, `Ptr[T]`) has one too, a record in Standard/System that
     /// carries its conformances; null if there's none.
     private Decl? DeclOf(DType t) => t switch
     {
         RecordType r => r.Decl,
         VariantType v => v.Decl,
         ChoiceType c => c.Decl,
-        _ => _records.GetValueOrDefault(t.OwnerName)?.FirstOrDefault(r => r.Module == CoreModule),
+        _ => _records.GetValueOrDefault(t.OwnerName)?.FirstOrDefault(r => r.Module == SystemModule),
     };
 
     /// Whether a type pattern's name (`List` in `conform Equatable[List[T]]`) means this declaration from `file`.
@@ -997,8 +1025,8 @@ public sealed partial class Compiler
         if (t.Path is null && t.Name == TypeRef.UnionName) return ResolveUnion(t, env);
         if (t.Path is not null) t = t with { Path = ExpandPath(t.Path, env.File) };
 
-        // The built-in types live in Standard/Core.
-        if (t.Path is not (null or CoreModule))
+        // The built-in types live in Standard/System.
+        if (t.Path is not (null or SystemModule))
             return ResolveDeclaredType(t, env);
 
         if (IntType.FromName(t.Name) is { } intType)
@@ -1144,7 +1172,7 @@ public sealed partial class Compiler
             throw new CompileError(t.Pos, "Callable is written Callable[(Params...), Ret]");
         // `Callable[(S,), T]` with `T` the None record (a generic argument) returns nothing, like `-> None` written out.
         var returned = ResolveType(ret.Type, env, allowVoid: true);
-        if (returned is RecordType { Decl.Name: "None" } none && none.Decl.Module == CoreModule) returned = VoidType.Instance;
+        if (returned is RecordType { Decl.Name: "None" } none && none.Decl.Module == SystemModule) returned = VoidType.Instance;
         return new CallableType(cc, ps.Types.Select(p => ResolveType(p, env)).ToList(), returned);
     }
 
@@ -1355,7 +1383,7 @@ public sealed partial class Compiler
             {
                 var t = b.Type.Known ?? ResolveType(b.Type, env, allowVoid: true);
                 // A branch of `None` (a generic argument read as the return of nothing) holds the one value.
-                if (t is VoidType) t = ResolveType(new TypeRef("None", [], b.Pos) { Path = CoreModule }, env);
+                if (t is VoidType) t = ResolveType(new TypeRef("None", [], b.Pos) { Path = SystemModule }, env);
                 return t;
             }).ToList();
         }
@@ -1415,7 +1443,7 @@ public sealed partial class Compiler
         if (branches.Count > MaxUnionBranches)
             throw new CompileError(t.Pos,
                 $"a variant written inline has at most {MaxUnionBranches} branches, and '{t}' has {branches.Count}: declare a variant");
-        var decl = FindVariant($"Union{branches.Count}", env.File, t.Pos, CoreModule)
+        var decl = FindVariant($"Union{branches.Count}", env.File, t.Pos, SystemModule)
             ?? throw new CompileError(t.Pos, $"the standard library's Union{branches.Count} is missing");
         return CheckedAt(new VariantType(decl, branches, VariantBranches), t.Pos);
     }
@@ -1440,7 +1468,7 @@ public sealed partial class Compiler
     public VariantType UnionOf(List<DType> leaves, string file, Pos pos)
     {
         var sorted = leaves.Distinct().OrderBy(l => l.Key, StringComparer.Ordinal).ToList();
-        var decl = FindVariant($"Union{sorted.Count}", file, pos, CoreModule)
+        var decl = FindVariant($"Union{sorted.Count}", file, pos, SystemModule)
             ?? throw new CompileError(pos, $"the standard library's Union{sorted.Count} is missing");
         return new VariantType(decl, sorted, VariantBranches);
     }
@@ -1647,7 +1675,7 @@ public sealed partial class Compiler
     /// Whether `t` is the core `Span[T]`, and its element type.
     public static bool IsCoreSpan(DType t, out DType elem)
     {
-        if (t is RecordType { Decl.Name: "Span", Args: [var e] } span && span.Decl.Module == CoreModule)
+        if (t is RecordType { Decl.Name: "Span", Args: [var e] } span && span.Decl.Module == SystemModule)
         {
             elem = e;
             return true;

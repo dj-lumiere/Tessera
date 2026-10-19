@@ -6,7 +6,7 @@ namespace Tessera;
 /// builder writes the platform's C `main`, which calls `start` and returns the exit status `set_exit_code`
 /// (Standard/Os) stored, 0 when nothing did. On a target without one, the entry symbol is `when_power_on`: the reset sends
 /// the core there, its prologue sets the stack pointer from `__stack_top` (on Cortex-M the vector table's first word
-/// does that), and its body is the program's `when_power_on()`, which readies the core and memory (Standard/Boot's
+/// does that), and its body is the program's `when_power_on()`, which readies the core and memory (Standard/System/Cpu's
 /// prepare_core: .bss zeroed, .data copied where the code runs from flash, the FPU on) and the board, or prepare_core
 /// alone when the program has none. Then `start()` runs, then a loop that halts the core. Without `start` such a
 /// program brings its own entry.
@@ -19,7 +19,7 @@ public sealed partial class Compiler
     public const string WhenPowerOnName = "when_power_on";
 
     /// The module of the startup steps the generated entry calls on a target without an operating system.
-    private const string BootModule = "Standard/Boot";
+    private const string BootModule = CpuModule;
 
     /// The generated entry, appended to the module by Output.
     private readonly StringBuilder _entry = new();
@@ -119,7 +119,7 @@ public sealed partial class Compiler
         _entry.AppendLine("entry:");
         // A traced build reports a hardware fault the way it reports a crash (Standard/Os/Faults.te). The race check
         // reports faults itself.
-        if (Trace && !RaceCheck) _entry.AppendLine($"  {EntryCall(EntryHelper(OsModule, "install_fault_handlers", start.Pos))}");
+        if (Trace && !RaceCheck) _entry.AppendLine($"  {EntryCall(EntryHelper(CpuModule, "install_fault_handlers", start.Pos))}");
         _entry.AppendLine($"  {EntryCall(startInst)}");
         _entry.AppendLine($"  %status = {EntryCall(exitCode)}");
         _entry.AppendLine("  ret i32 %status");
@@ -129,7 +129,7 @@ public sealed partial class Compiler
 
     /// The entry of a program without an operating system, the symbol `when_power_on`: the reset sends the core there
     /// (the Cortex-M vector table's reset word on 32-bit ARM, the link script's ENTRY elsewhere). Its body is the
-    /// program's `when_power_on`, or else Standard/Boot's prepare_core, then `start`, then halt. Setting the stack pointer
+    /// program's `when_power_on`, or else Standard/System/Cpu's prepare_core, then `start`, then halt. Setting the stack pointer
     /// is its prologue: the Cortex-M core loads it from the vector table, and elsewhere the symbol is a naked stub that
     /// loads `__stack_top` (the one step no routine can do, since a routine already uses the stack) and calls the body.
     private void PlanBoot(RoutineDecl start, Instance startInst, Instance? board)
@@ -145,7 +145,7 @@ public sealed partial class Compiler
                 $"the builder has no entry for {Target.Arch} without an operating system: bring your own entry instead of start");
         var halt = EntryHelper(BootModule, "halt", start.Pos);
         var steps = new List<Instance> { board ?? EntryHelper(BootModule, "prepare_core", start.Pos), startInst, halt };
-        // The CpuEventManager's table calls tessera_cpu_event, Standard/Boot's routine for the target.
+        // The CpuEventManager's table calls tessera_cpu_event, Standard/System/Cpu's routine for the target.
         string? cpuEvent = Target.Arch switch
         {
             "aarch64" => "aarch64_cpu_event",
@@ -165,7 +165,7 @@ public sealed partial class Compiler
         _entry.AppendLine("  unreachable");
         _entry.AppendLine("}");
         _entry.AppendLine();
-        // Standard/Boot declares the same symbol for StackManager.current(): whichever comes first declares it once.
+        // Standard/System/Memory declares the same symbol for StackManager.current(): whichever comes first declares it once.
         if (_globalVars.TryAdd("__stack_top", "@__stack_top")) _entry.AppendLine("@__stack_top = external global i8");
         if (armM)
         {

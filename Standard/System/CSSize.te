@@ -1,0 +1,1942 @@
+# Tessera stdlib: CSSize — C's ssize_t, the target's pointer-width signed integer
+#
+# For the C boundary: the signatures of C routines (@external("c")) that take or give an ssize_t. Counts, indices and
+# offsets are S64 / U64 everywhere else. It is S16, S32, or S64 underneath, by the target's
+# pointer width, but a type of its own on every target: it never mixes with
+# a fixed-width integer without a to[T]() call, so a program type-checks
+# the same way everywhere. Every method has the same signature on every
+# target. A conversion that can lose the value on some target has its
+# _checked / _wrap / _clamp forms on all of them.
+#
+# The method set mirrors S32.te and S64.te.
+
+module Standard/System
+
+### CSSize is C's `ssize_t`, the target's pointer-width signed integer, for the signatures of C routines. It is S16, S32, or S64 underneath, but a distinct type that never mixes with a fixed-width integer without a `to[T]()` call.
+record CSSize
+obeys Equatable[CSSize], Comparable[CSSize], Hashable[CSSize]
+obeys Numeric[CSSize], Exponentiable[CSSize], Negatable[CSSize], WrappingArithmetic[CSSize], ClampingArithmetic[CSSize], Bitwiseable[CSSize], Invertible[CSSize], Shiftable[CSSize]
+
+# -- constants -------------------------------------------------------------------
+
+### The smallest value a CSSize can hold.
+@target(size: 64)
+preset CSSize.MIN: CSSize = -9223372036854775808
+
+### The smallest value a CSSize can hold.
+@target(size: 32)
+preset CSSize.MIN: CSSize = -2147483648
+
+### The largest value a CSSize can hold.
+@target(size: 64)
+preset CSSize.MAX: CSSize = 9223372036854775807
+
+### The largest value a CSSize can hold.
+@target(size: 32)
+preset CSSize.MAX: CSSize = 2147483647
+
+### The width of CSSize in bits.
+@target(size: 64)
+preset CSSize.BITS: CSSize = 64
+
+### The width of CSSize in bits.
+@target(size: 32)
+preset CSSize.BITS: CSSize = 32
+
+# -- bits ------------------------------------------------------------------------
+
+### Counts the bits of `me` that are 1.
+### :returns: The population count, between 0 and `BITS`.
+routine CSSize.count_ones() -> Me
+    r: Me = popcount[Me](me)
+    return r
+
+### Counts the consecutive 0 bits starting at the most significant bit.
+### :returns: The count, which is `BITS` when `me` is 0.
+routine CSSize.leading_zeros() -> Me
+    r: Me = clz[Me](val: me, is_zero_undef: false)
+    return r
+
+### Counts the consecutive 0 bits starting at the least significant bit.
+### :returns: The count, which is `BITS` when `me` is 0.
+routine CSSize.trailing_zeros() -> Me
+    r: Me = ctz[Me](val: me, is_zero_undef: false)
+    return r
+
+### Reverses the order of all bits, so the most significant bit becomes the least significant.
+### :returns: The bit-reversed value.
+routine CSSize.reverse_bits() -> Me
+    r: Me = bitreverse[Me](me)
+    return r
+
+### Counts the bits of `me` that are 0.
+### :returns: `BITS` minus the population count.
+routine CSSize.count_zeros() -> Me
+    inverted: Me = ~me
+    r: Me = popcount[Me](inverted)
+    return r
+
+### Counts the consecutive 1 bits starting at the most significant bit.
+### :returns: The count, which is `BITS` when `me` is -1.
+routine CSSize.leading_ones() -> Me
+    inverted: Me = ~me
+    r: Me = clz[Me](val: inverted, is_zero_undef: false)
+    return r
+
+### Counts the consecutive 1 bits starting at the least significant bit.
+### :returns: The count, which is `BITS` when `me` is -1.
+routine CSSize.trailing_ones() -> Me
+    inverted: Me = ~me
+    r: Me = ctz[Me](val: inverted, is_zero_undef: false)
+    return r
+
+### Reverses the order of the bytes of `me`.
+### :returns: The byte-swapped value.
+routine CSSize.swap_bytes() -> Me
+    r: Me = bswap[Me](me)
+    return r
+
+### Converts from this target's byte order to big-endian, which swaps the bytes.
+### :returns: The value in big-endian byte order.
+routine CSSize.to_be() -> Me
+    r: Me = me.swap_bytes()
+    return r
+
+### Converts from big-endian to this target's byte order, which swaps the bytes.
+### :returns: The value in native byte order.
+routine CSSize.from_be() -> Me
+    r: Me = me.swap_bytes()
+    return r
+
+### Converts from this target's byte order to little-endian. The target is little-endian, so this returns `me` unchanged.
+### :returns: The value in little-endian byte order.
+routine CSSize.to_le() -> Me
+    return me
+
+### Converts from little-endian to this target's byte order. The target is little-endian, so this returns `me` unchanged.
+### :returns: The value in native byte order.
+routine CSSize.from_le() -> Me
+    return me
+
+### Bitwise AND of `me` and `other`.
+### :param other: The right-hand operand.
+### :returns: A value with each bit set only when it is set in both operands.
+routine CSSize.bitand(other: Me) -> Me
+    r: Me = band[Me](me, other)
+    return r
+
+### Bitwise OR of `me` and `other`.
+### :param other: The right-hand operand.
+### :returns: A value with each bit set when it is set in either operand.
+routine CSSize.bitor(other: Me) -> Me
+    r: Me = bor[Me](me, other)
+    return r
+
+### Bitwise XOR of `me` and `other`.
+### :param other: The right-hand operand.
+### :returns: A value with each bit set when it is set in exactly one operand.
+routine CSSize.bitxor(other: Me) -> Me
+    r: Me = bxor[Me](me, other)
+    return r
+
+### Bitwise NOT: flips every bit of `me`.
+### :returns: The complement, which equals `-me - 1`.
+routine CSSize.bitnot() -> Me
+    r: Me = bnot[Me](me)
+    return r
+
+# -- shifts ----------------------------------------------------------------------
+
+### Shifts the bits left by `n`, filling with 0 bits. A shift by `BITS` or more shifts every bit out and gives 0, and a negative amount counts as out of range too.
+### :param n: The shift amount in bits.
+### :returns: `me` shifted left by `n`, or 0 when `n` is outside `0 ..< BITS`.
+### :note: The raw shift is poison for an out-of-range amount, and the select never picks it.
+routine CSSize.shift_left(n: Me) -> Me
+    in_range: Bool = 0 <= n < Me.BITS
+    shifted: Me = shl[Me](val: me, amt: n)
+    r: Me = when
+        in_range => shifted
+        else => 0
+    return r
+
+### Shift right, arithmetic: the sign bit fills in. A shift by `BITS` or more, or by a negative amount, gives the sign fill (0 or -1).
+### :param n: The shift amount in bits.
+### :returns: `me` shifted right by `n`, or the sign fill when `n` is outside `0 ..< BITS`.
+routine CSSize.arith_shift_right(n: Me) -> Me
+    in_range: Bool = 0 <= n < Me.BITS
+    shifted: Me = ashr[Me](val: me, amt: n)
+    out: Me = ashr[Me](val: me, amt: Me.BITS - 1)
+    r: Me = when
+        in_range => shifted
+        else => out
+    return r
+
+### Rotates the bits left by `n` modulo the bit width, so bits shifted out at the top re-enter at the bottom.
+### :param n: The rotate amount in bits.
+### :returns: The rotated value.
+routine CSSize.rotl(n: Me) -> Me
+    r: Me = fshl[Me](hi: me, lo: me, amt: n)
+    return r
+
+### Rotates the bits right by `n` modulo the bit width, so bits shifted out at the bottom re-enter at the top.
+### :param n: The rotate amount in bits.
+### :returns: The rotated value.
+routine CSSize.rotr(n: Me) -> Me
+    r: Me = fshr[Me](hi: me, lo: me, amt: n)
+    return r
+
+### Shift left that reports an out-of-range amount.
+### :param n: The shift amount in bits.
+### :returns: `me` shifted left by `n`, with 0 bits filling in.
+### :absent: When `n` is outside `0 ..< BITS`.
+routine CSSize.shift_left_checked(n: Me) -> Maybe[Me]
+    if not (0 <= n < Me.BITS)
+        return None()
+    r: Me = shl[Me](val: me, amt: n)
+    return r
+
+### Arithmetic shift right that reports an out-of-range amount.
+### :param n: The shift amount in bits.
+### :returns: `me` shifted right by `n`, with the sign bit filling in.
+### :absent: When `n` is outside `0 ..< BITS`.
+routine CSSize.arith_shift_right_checked(n: Me) -> Maybe[Me]
+    if not (0 <= n < Me.BITS)
+        return None()
+    r: Me = ashr[Me](val: me, amt: n)
+    return r
+
+### Shifts left by `n` modulo the bit width, so an amount of `BITS` or more wraps instead of shifting every bit out.
+### :param n: The shift amount in bits, taken modulo `BITS`.
+### :returns: `me` shifted left, with 0 bits filling in.
+@target(size: 64)
+routine CSSize.shift_left_wrap(n: Me) -> Me
+    amount: Me = band[Me](n, 63)
+    r: Me = shl[Me](val: me, amt: amount)
+    return r
+
+### Shifts left by `n` modulo the bit width, so an amount of `BITS` or more wraps instead of shifting every bit out.
+### :param n: The shift amount in bits, taken modulo `BITS`.
+### :returns: `me` shifted left, with 0 bits filling in.
+@target(size: 32)
+routine CSSize.shift_left_wrap(n: Me) -> Me
+    amount: Me = band[Me](n, 31)
+    r: Me = shl[Me](val: me, amt: amount)
+    return r
+
+### Arithmetic shift right by `n` modulo the bit width, so an amount of `BITS` or more wraps instead of saturating.
+### :param n: The shift amount in bits, taken modulo `BITS`.
+### :returns: `me` shifted right with the sign bit filling in.
+@target(size: 64)
+routine CSSize.arith_shift_right_wrap(n: Me) -> Me
+    amount: Me = band[Me](n, 63)
+    r: Me = ashr[Me](val: me, amt: amount)
+    return r
+
+### Arithmetic shift right by `n` modulo the bit width, so an amount of `BITS` or more wraps instead of saturating.
+### :param n: The shift amount in bits, taken modulo `BITS`.
+### :returns: `me` shifted right with the sign bit filling in.
+@target(size: 32)
+routine CSSize.arith_shift_right_wrap(n: Me) -> Me
+    amount: Me = band[Me](n, 31)
+    r: Me = ashr[Me](val: me, amt: amount)
+    return r
+
+# -- arithmetic ------------------------------------------------------------------
+
+### The sum of `me` and `other`.
+### :param other: The value to add.
+### :returns: The sum.
+### :throws: Crashes with `IntegerOverflowError` when the sum does not fit in `CSSize`.
+@track_caller
+routine CSSize.add(other: Me) -> Me
+    if sadd_overflows[Me](me, other)
+        crash_overflow()
+    r: Me = add[Me](a: me, b: other)
+    return r
+
+### Addition that reports overflow.
+### :param other: The value to add.
+### :returns: The sum.
+### :absent: When the exact sum does not fit in `CSSize`.
+routine CSSize.add_checked(other: Me) -> Maybe[Me]
+    overflow: Bool = sadd_overflows[Me](me, other)
+    fits: Bool = not overflow
+    result: Me = add[Me](a: me, b: other)
+    r: Maybe[Me] = fits.then_present(result)
+    return r
+
+### The sum of `me` and `other`, wrapped modulo 2^`BITS`.
+### :param other: The value to add.
+### :returns: The low `BITS` bits of the exact sum.
+routine CSSize.add_wrap(other: Me) -> Me
+    r: Me = add[Me](a: me, b: other)
+    return r
+
+### The sum of `me` and `other`, saturated at `MIN` / `MAX`.
+### :param other: The value to add.
+### :returns: The sum, or `MIN` / `MAX` when the exact sum is below / above the range.
+routine CSSize.add_clamp(other: Me) -> Me
+    r: Me = sadd_sat[Me](me, other)
+    return r
+
+### The difference of `me` and `other`.
+### :param other: The value to subtract.
+### :returns: The difference.
+### :throws: Crashes with `IntegerOverflowError` when the difference does not fit in `CSSize`.
+@track_caller
+routine CSSize.sub(other: Me) -> Me
+    if ssub_overflows[Me](me, other)
+        crash_overflow()
+    r: Me = sub[Me](me, other)
+    return r
+
+### Subtraction that reports overflow.
+### :param other: The value to subtract.
+### :returns: The difference.
+### :absent: When the exact difference does not fit in `CSSize`.
+routine CSSize.sub_checked(other: Me) -> Maybe[Me]
+    overflow: Bool = ssub_overflows[Me](me, other)
+    fits: Bool = not overflow
+    result: Me = sub[Me](me, other)
+    r: Maybe[Me] = fits.then_present(result)
+    return r
+
+### The difference of `me` and `other`, wrapped modulo 2^`BITS`.
+### :param other: The value to subtract.
+### :returns: The low `BITS` bits of the exact difference.
+routine CSSize.sub_wrap(other: Me) -> Me
+    r: Me = sub[Me](me, other)
+    return r
+
+### The difference of `me` and `other`, saturated at `MIN` / `MAX`.
+### :param other: The value to subtract.
+### :returns: The difference, or `MIN` / `MAX` when the exact difference is below / above the range.
+routine CSSize.sub_clamp(other: Me) -> Me
+    r: Me = ssub_sat[Me](me, other)
+    return r
+
+### The product of `me` and `other`.
+### :param other: The factor to multiply by.
+### :returns: The product.
+### :throws: Crashes with `IntegerOverflowError` when the product does not fit in `CSSize`.
+@track_caller
+routine CSSize.mul(other: Me) -> Me
+    if smul_overflows[Me](me, other)
+        crash_overflow()
+    r: Me = mul[Me](me, other)
+    return r
+
+### Multiplication that reports overflow.
+### :param other: The factor to multiply by.
+### :returns: The product.
+### :absent: When the exact product does not fit in `CSSize`.
+routine CSSize.mul_checked(other: Me) -> Maybe[Me]
+    overflow: Bool = smul_overflows[Me](me, other)
+    fits: Bool = not overflow
+    result: Me = mul[Me](me, other)
+    r: Maybe[Me] = fits.then_present(result)
+    return r
+
+### The product of `me` and `other`, wrapped modulo 2^`BITS`.
+### :param other: The factor to multiply by.
+### :returns: The low `BITS` bits of the exact product.
+routine CSSize.mul_wrap(other: Me) -> Me
+    r: Me = mul[Me](me, other)
+    return r
+
+### The product of `me` and `other`, saturated at `MIN` / `MAX` by the sign of the exact product.
+### :param other: The factor to multiply by.
+### :returns: The product, or `MIN` / `MAX` when the exact product does not fit.
+routine CSSize.mul_clamp(other: Me) -> Me
+    overflow: Bool = me.mul_overflows(other)
+    negative_result: Bool = me ^ other < 0
+    limit: Me = when
+        negative_result => Me.MIN
+        else => Me.MAX
+    product: Me = mul[Me](me, other)
+    r: Me = when
+        overflow => limit
+        else => product
+    return r
+
+### Tests whether the exact product of `me` and `other` is outside `MIN ..= MAX`.
+### :param other: The factor to multiply by.
+### :returns: True when the product does not fit in `CSSize`.
+routine CSSize.mul_overflows(other: Me) -> Bool
+    return smul_overflows[Me](me, other)
+
+# -- sign ------------------------------------------------------------------------
+
+### The negation of `me`.
+### :returns: `-me`.
+### :throws: Crashes with `IntegerOverflowError` when `me` is `MIN`, whose negation does not fit.
+@track_caller
+routine CSSize.neg() -> Me
+    if me == Me.MIN
+        crash_overflow()
+    r: Me = sub[Me](0, me)
+    return r
+
+### Negation that reports overflow.
+### :returns: `-me`.
+### :absent: When `me` is `MIN`, whose negation does not fit.
+routine CSSize.neg_checked() -> Maybe[Me]
+    fits: Bool = me != Me.MIN
+    negated: Me = sub[Me](0, me)
+    r: Maybe[Me] = fits.then_present(negated)
+    return r
+
+### The negation of `me`, wrapped modulo 2^`BITS`, so `MIN.neg_wrap()` is `MIN`.
+### :returns: `-me`, or `MIN` when `me` is `MIN`.
+routine CSSize.neg_wrap() -> Me
+    r: Me = sub[Me](0, me)
+    return r
+
+### The negation of `me`, saturated at `MAX`, so `MIN.neg_clamp()` is `MAX`.
+### :returns: `-me`, or `MAX` when `me` is `MIN`.
+routine CSSize.neg_clamp() -> Me
+    r: Me = ssub_sat[Me](0, me)
+    return r
+
+### The absolute value of `me`.
+### :returns: The magnitude of `me`.
+### :throws: Crashes with `IntegerOverflowError` when `me` is `MIN`, whose magnitude does not fit.
+@track_caller
+routine CSSize.abs() -> Me
+    if not (me < 0)
+        return me
+    r: Me = -me
+    return r
+
+### Absolute value that reports overflow.
+### :returns: The magnitude of `me`.
+### :absent: When `me` is `MIN`, whose magnitude does not fit.
+routine CSSize.abs_checked() -> Maybe[Me]
+    fits: Bool = me != Me.MIN
+    magnitude: Me = me.abs_wrap()
+    r: Maybe[Me] = fits.then_present(magnitude)
+    return r
+
+### The absolute value of `me`, wrapped modulo 2^`BITS`, so `MIN.abs_wrap()` is `MIN`.
+### :returns: The magnitude of `me`, or `MIN` when `me` is `MIN`.
+routine CSSize.abs_wrap() -> Me
+    negative: Bool = me < 0
+    negated: Me = sub[Me](0, me)
+    r: Me = when
+        negative => negated
+        else => me
+    return r
+
+### The absolute value of `me`, saturated at `MAX`, so `MIN.abs_clamp()` is `MAX`.
+### :returns: The magnitude of `me`, or `MAX` when `me` is `MIN`.
+routine CSSize.abs_clamp() -> Me
+    is_min: Bool = me == Me.MIN
+    magnitude: Me = me.abs_wrap()
+    r: Me = when
+        is_min => Me.MAX
+        else => magnitude
+    return r
+
+### The sign of `me`.
+### :returns: -1 when `me` is negative, 0 when it is 0, and 1 when it is positive.
+routine CSSize.signum() -> Me
+    negative: Bool = me < 0
+    positive: Bool = me > 0
+    non_negative: Me = when
+        positive => 1
+        else => 0
+    r: Me = when
+        negative => -1
+        else => non_negative
+    return r
+
+### Tests whether `me` is below zero.
+### :returns: True when `me < 0`.
+routine CSSize.is_negative() -> Bool
+    return me < 0
+
+### Tests whether `me` is above zero.
+### :returns: True when `me > 0`.
+routine CSSize.is_positive() -> Bool
+    return me > 0
+
+# -- division --------------------------------------------------------------------
+
+### The quotient of `me` divided by `other`, truncated toward zero.
+### :param other: The divisor.
+### :returns: The quotient.
+### :throws: Crashes with `DivisionByZeroError` when `other` is 0, and with `IntegerOverflowError` on `MIN.div_trunc(-1)`.
+@track_caller
+routine CSSize.div_trunc(other: Me) -> Me
+    if other == 0
+        crash_division_by_zero()
+    if me == Me.MIN and other == -1
+        crash_overflow()
+    r: Me = sdiv[Me](me, other)
+    return r
+
+### The remainder of `me` divided by `other`. It has the dividend's sign.
+### :param other: The divisor.
+### :returns: The remainder, with the sign of `me`.
+### :throws: Crashes with `DivisionByZeroError` when `other` is 0, and with `IntegerOverflowError` on `MIN.mod_trunc(-1)`.
+@track_caller
+routine CSSize.mod_trunc(other: Me) -> Me
+    if other == 0
+        crash_division_by_zero()
+    if me == Me.MIN and other == -1
+        crash_overflow()
+    r: Me = srem[Me](me, other)
+    return r
+
+### Euclidean division that reports failure instead of crashing (the remainder is never negative).
+### :param other: The divisor.
+### :returns: The quotient of `me` divided by `other`.
+### :absent: On a zero divisor and on `MIN.floordiv_checked(-1)`.
+routine CSSize.floordiv_checked(other: Me) -> Maybe[Me]
+    by_zero: Bool = other == 0
+    overflow: Bool = me == Me.MIN and other == -1
+    if by_zero or overflow
+        return None()
+    r: Me = me.floordiv(other)
+    return r
+
+### The Euclidean remainder (never negative), reporting failure instead of crashing.
+### :param other: The divisor.
+### :returns: The remainder of `me` divided by `other`.
+### :absent: On a zero divisor and on `MIN.mod_checked(-1)`.
+routine CSSize.mod_checked(other: Me) -> Maybe[Me]
+    by_zero: Bool = other == 0
+    overflow: Bool = me == Me.MIN and other == -1
+    if by_zero or overflow
+        return None()
+    r: Me = me.mod(other)
+    return r
+
+### The Euclidean quotient of `me` divided by `other`. `MIN.floordiv_wrap(-1)` wraps to `MIN`.
+### :param other: The divisor.
+### :returns: The quotient, or `MIN` for `MIN.floordiv_wrap(-1)`.
+### :throws: Crashes with `DivisionByZeroError` when `other` is 0.
+@track_caller
+routine CSSize.floordiv_wrap(other: Me) -> Me
+    if other == 0
+        crash_division_by_zero()
+    if me == Me.MIN and other == -1
+        return Me.MIN
+    r: Me = me.floordiv(other)
+    return r
+
+### The Euclidean remainder of `me` divided by `other` (never negative). `MIN.mod_wrap(-1)` is 0.
+### :param other: The divisor.
+### :returns: The remainder, or 0 for `MIN.mod_wrap(-1)`.
+### :throws: Crashes with `DivisionByZeroError` when `other` is 0.
+@track_caller
+routine CSSize.mod_wrap(other: Me) -> Me
+    if other == 0
+        crash_division_by_zero()
+    if me == Me.MIN and other == -1
+        return 0
+    r: Me = me.mod(other)
+    return r
+
+### The quotient of Euclidean division, chosen so the remainder is never negative.
+### :param other: The divisor.
+### :returns: The quotient `q` for which `me - q * other` is in `0 ..< |other|`.
+### :throws: Crashes with `DivisionByZeroError` when `other` is 0, and with `IntegerOverflowError` on `MIN.floordiv(-1)`.
+@track_caller
+routine CSSize.floordiv(other: Me) -> Me
+    local q: Me = me.div_trunc(other)
+
+    rem: Me = me.mod_trunc(other)
+    if not (rem < 0)
+        return q
+    if other > 0
+        r: Me = q - 1
+        return r
+    r: Me = q + 1
+    return r
+
+### The remainder of Euclidean division, always in `0 ..< |other|`.
+### :param other: The divisor.
+### :returns: The remainder, never negative.
+### :throws: Crashes with `DivisionByZeroError` when `other` is 0, and with `IntegerOverflowError` on `MIN.mod(-1)`.
+@track_caller
+routine CSSize.mod(other: Me) -> Me
+    rem: Me = me.mod_trunc(other)
+    if not (rem < 0)
+        return rem
+    magnitude: Me = other.abs_wrap()
+    r: Me = add[Me](a: rem, b: magnitude)
+    return r
+
+# -- powers ----------------------------------------------------------------------
+
+### Raises `me` to the power `exponent`.
+### :param exponent: The power to raise to.
+### :returns: `me` to the power `exponent`.
+### :throws: Crashes with `IntegerOverflowError` when the exact power does not fit in `CSSize`, and with
+###     `NumericDomainError` when `exponent` is negative: the power is a fraction then.
+@track_caller
+routine CSSize.pow(exponent: Me) -> Me
+    if exponent < 0
+        crash_negative_exponent()
+    r: Maybe[Me] = me.pow_checked(exponent)
+    when r
+        is Me as value => return value
+        is None => crash_overflow()
+
+### Raises `me` to the power `exponent` by squaring, wrapping modulo 2^`BITS`.
+### :param exponent: The power to raise to.
+### :returns: The low `BITS` bits of the exact power.
+### :throws: Crashes with `NumericDomainError` when `exponent` is negative.
+routine CSSize.pow_wrap(exponent: Me) -> Me
+    if exponent < 0
+        crash_negative_exponent()
+    local base: @Me <- me
+    local acc: @Me <- 1
+
+    while exponent_left != 0 with exponent_left: Me = exponent
+        odd: Bool = exponent_left & 1 != 0
+        with_base: Me = mul[Me](acc.peek(), base.peek())
+        next_acc: Me = when
+            odd => with_base
+            else => acc.peek()
+        next_acc2: Me = next_acc
+        next_base: Me = mul[Me](base.peek(), base.peek())
+        next_base.poke_into(base)
+        next_acc2.poke_into(acc)
+        continue with exponent_left: exponent_left >> 1
+    then
+        return acc.peek()
+
+### Power that reports overflow.
+### :param exponent: The power to raise to.
+### :returns: `me` to the power `exponent`.
+### :absent: When the exact power does not fit in `CSSize`, or when `exponent` is negative.
+routine CSSize.pow_checked(exponent: Me) -> Maybe[Me]
+    if exponent < 0
+        return None()
+    local base: @Me <- me
+    local acc: @Me <- 1
+    local overflow: @Bool <- false
+
+    while exponent_left != 0 with exponent_left: Me = exponent
+        # The accumulator only multiplies on odd bits, and the base only needs
+        # squaring while bits remain, so only those overflows count.
+        odd: Bool = exponent_left & 1 != 0
+        acc_overflow: Bool = smul_overflows[Me](acc.peek(), base.peek()) and odd
+        with_base: Me = mul[Me](acc.peek(), base.peek())
+        next_acc: Me = when
+            odd => with_base
+            else => acc.peek()
+        rest: Me = exponent_left >> 1
+        more: Bool = rest != 0
+        base_overflow: Bool = smul_overflows[Me](base.peek(), base.peek()) and more
+        any: Bool = overflow.peek() or acc_overflow or base_overflow
+        next_overflow: Bool = any
+        next_acc2: Me = next_acc
+        next_base: Me = mul[Me](base.peek(), base.peek())
+        next_base.poke_into(base)
+        next_acc2.poke_into(acc)
+        next_overflow.poke_into(overflow)
+        continue with exponent_left: rest
+    fits: Bool = not overflow.peek()
+    r: Maybe[Me] = fits.then_present(acc.peek())
+    return r
+
+### Raises `me` to the power `exponent`, saturated at `MIN` or `MAX` by the sign the exact power would have.
+### :param exponent: The power to raise to.
+### :returns: The power, or `MIN` / `MAX` when the exact power does not fit.
+### :throws: Crashes with `NumericDomainError` when `exponent` is negative.
+routine CSSize.pow_clamp(exponent: Me) -> Me
+    if exponent < 0
+        crash_negative_exponent()
+    odd_exp: Bool = exponent & 1 != 0
+    negative_result: Bool = me < 0 and odd_exp
+    limit: Me = when
+        negative_result => Me.MIN
+        else => Me.MAX
+    checked: Maybe[Me] = me.pow_checked(exponent)
+    r: Me = checked.unwrap_or(limit)
+    return r
+
+# -- equality and ordering -------------------------------------------------------
+
+### Tests whether `me` and `other` are equal.
+### :param other: The value to compare with.
+### :returns: True when the values are equal.
+routine CSSize.eq(other: Me) -> Bool
+    return ieq[Me](me, other)
+
+### Tests whether `me` and `other` differ.
+### :param other: The value to compare with.
+### :returns: True when the values are not equal.
+routine CSSize.ne(other: Me) -> Bool
+    return ine[Me](me, other)
+
+### Signed less-than comparison.
+### :param other: The value to compare with.
+### :returns: True when `me < other`.
+@target(size: 64)
+@external("llvm")
+@template("{result} = icmp slt i64 {me}, {other}")
+routine CSSize.lt(other: Me) -> Bool
+
+### Signed less-than comparison.
+### :param other: The value to compare with.
+### :returns: True when `me < other`.
+@target(size: 32)
+@external("llvm")
+@template("{result} = icmp slt i32 {me}, {other}")
+routine CSSize.lt(other: Me) -> Bool
+
+### Signed less-than-or-equal comparison.
+### :param other: The value to compare with.
+### :returns: True when `me <= other`.
+@target(size: 64)
+@external("llvm")
+@template("{result} = icmp sle i64 {me}, {other}")
+routine CSSize.le(other: Me) -> Bool
+
+### Signed less-than-or-equal comparison.
+### :param other: The value to compare with.
+### :returns: True when `me <= other`.
+@target(size: 32)
+@external("llvm")
+@template("{result} = icmp sle i32 {me}, {other}")
+routine CSSize.le(other: Me) -> Bool
+
+### Signed greater-than comparison.
+### :param other: The value to compare with.
+### :returns: True when `me > other`.
+@target(size: 64)
+@external("llvm")
+@template("{result} = icmp sgt i64 {me}, {other}")
+routine CSSize.gt(other: Me) -> Bool
+
+### Signed greater-than comparison.
+### :param other: The value to compare with.
+### :returns: True when `me > other`.
+@target(size: 32)
+@external("llvm")
+@template("{result} = icmp sgt i32 {me}, {other}")
+routine CSSize.gt(other: Me) -> Bool
+
+### Signed greater-than-or-equal comparison.
+### :param other: The value to compare with.
+### :returns: True when `me >= other`.
+@target(size: 64)
+@external("llvm")
+@template("{result} = icmp sge i64 {me}, {other}")
+routine CSSize.ge(other: Me) -> Bool
+
+### Signed greater-than-or-equal comparison.
+### :param other: The value to compare with.
+### :returns: True when `me >= other`.
+@target(size: 32)
+@external("llvm")
+@template("{result} = icmp sge i32 {me}, {other}")
+routine CSSize.ge(other: Me) -> Bool
+
+### Compares `me` with `other` by signed order.
+### :param other: The value to compare with.
+### :returns: -1 when `me < other`, 0 when they are equal, and 1 when `me > other`.
+routine CSSize.compare(other: Me) -> S32
+    if me < other
+        return -1
+    if me > other
+        return 1
+    return 0
+
+### Returns the smaller of two values by signed comparison.
+### :param other: The value to compare with.
+### :returns: `me` or `other`, whichever is smaller.
+routine CSSize.min(other: Me) -> Me
+    r: Me = smin[Me](me, other)
+    return r
+
+### Returns the larger of two values by signed comparison.
+### :param other: The value to compare with.
+### :returns: `me` or `other`, whichever is larger.
+routine CSSize.max(other: Me) -> Me
+    r: Me = smax[Me](me, other)
+    return r
+
+### Limits `me` to the range from `lo` to `hi`, both ends included.
+### :param lo: The lower bound.
+### :param hi: The upper bound.
+### :returns: `lo` when `me < lo`, `hi` when `me > hi`, otherwise `me`.
+### :throws: Crashes with `InvalidValueError` when `lo > hi`.
+@track_caller
+routine CSSize.clamp(lo: Me, hi: Me) -> Me
+    if lo <= hi
+        at_least_lo: Me = smax[Me](me, lo)
+        r: Me = smin[Me](at_least_lo, hi)
+        return r
+    crash_invalid_value()
+
+# -- hash ------------------------------------------------------------------------
+
+### SipHash-2-4 of the bits widened to 64, under the process key, the same hash for `CSSize` and `CSize`.
+### :returns: The 64-bit hash of `me`.
+routine CSSize.hash() -> U64
+    wide: U64 = bitcast[Me, CSize](me).to[U64]()
+    h: U64 = siphash24(value: wide, key: hash_key())
+    return h
+
+# -- differences, midpoints, logarithms, roots -----------------------------------
+
+### The distance between `me` and `other`, `|me - other|`, which always fits in `CSize`.
+### :param other: The value to measure from.
+### :returns: `|me - other|` as a `CSize`.
+routine CSSize.abs_diff(other: Me) -> CSize
+    hi: Me = smax[Me](me, other)
+    lo: Me = smin[Me](me, other)
+    diff: Me = sub[Me](hi, lo)
+    r: CSize = bitcast[Me, CSize](diff)
+    return r
+
+### The average of `me` and `other`, rounded toward zero, computed without overflow.
+### :param other: The other value.
+### :returns: `(me + other) / 2`, rounded toward zero.
+routine CSSize.midpoint(other: Me) -> Me
+    common: Me = me & other
+    half_diff: Me = (me ^ other) >> 1
+    rounded_down: Me = add[Me](a: common, b: half_diff)
+    parity: Me = (me ^ other) & 1
+    odd_sum: Bool = parity != 0
+    round_up: Bool = odd_sum and rounded_down < 0
+    up: Me = add[Me](a: rounded_down, b: 1)
+    r: Me = when
+        round_up => up
+        else => rounded_down
+    return r
+
+### The base-2 logarithm of `me`, rounded down.
+### :returns: `floor(log2(me))`.
+### :throws: Crashes with `NumericDomainError` when `me <= 0`.
+@target(size: 64)
+@track_caller
+routine CSSize.ilog2() -> Me
+    if not (me > 0)
+        crash_numeric_domain()
+    r: Me = bitcast[U64, Me](bitcast[Me, U64](me).ilog2())
+    return r
+
+### The base-2 logarithm of `me`, rounded down.
+### :returns: `floor(log2(me))`.
+### :throws: Crashes with `NumericDomainError` when `me <= 0`.
+@target(size: 32)
+@track_caller
+routine CSSize.ilog2() -> Me
+    if not (me > 0)
+        crash_numeric_domain()
+    r: Me = bitcast[U32, Me](bitcast[Me, U32](me).ilog2())
+    return r
+
+### The base-10 logarithm of `me`, rounded down.
+### :returns: `floor(log10(me))`.
+### :throws: Crashes with `NumericDomainError` when `me <= 0`.
+@target(size: 64)
+@track_caller
+routine CSSize.ilog10() -> Me
+    if not (me > 0)
+        crash_numeric_domain()
+    r: Me = bitcast[U64, Me](bitcast[Me, U64](me).ilog10())
+    return r
+
+### The base-10 logarithm of `me`, rounded down.
+### :returns: `floor(log10(me))`.
+### :throws: Crashes with `NumericDomainError` when `me <= 0`.
+@target(size: 32)
+@track_caller
+routine CSSize.ilog10() -> Me
+    if not (me > 0)
+        crash_numeric_domain()
+    r: Me = bitcast[U32, Me](bitcast[Me, U32](me).ilog10())
+    return r
+
+### The integer square root of `me`, rounded down.
+### :returns: `floor(sqrt(me))`.
+### :throws: Crashes with `NumericDomainError` when `me` is negative.
+@target(size: 64)
+@track_caller
+routine CSSize.isqrt() -> Me
+    if me < 0
+        crash_numeric_domain()
+    r: Me = bitcast[U64, Me](bitcast[Me, U64](me).isqrt())
+    return r
+
+### The integer square root of `me`, rounded down.
+### :returns: `floor(sqrt(me))`.
+### :throws: Crashes with `NumericDomainError` when `me` is negative.
+@target(size: 32)
+@track_caller
+routine CSSize.isqrt() -> Me
+    if me < 0
+        crash_numeric_domain()
+    r: Me = bitcast[U32, Me](bitcast[Me, U32](me).isqrt())
+    return r
+
+# -- conversions -----------------------------------------------------------------
+
+### The identity conversion: returns `me` unchanged.
+### :returns: `me` as `CSSize`.
+routine CSSize.to[Me]() -> Me
+    return me
+
+### to[T] returns the same value in another integer type. A conversion that
+### can't lose the value returns it directly. One that can crashes when the value
+### doesn't fit, and has to_checked[T] (Maybe), to_wrap[T] (keep the low bits),
+### and to_clamp[T] (saturate) forms.
+### Converts `me` to `S8`.
+### :returns: The same numeric value as an `S8`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `S8`.
+@track_caller
+routine CSSize.to[S8]() -> S8
+    if not (-128 <= me <= 127)
+        crash_overflow()
+    r: S8 = trunc[Me, S8](me)
+    return r
+
+### Converts `me` to `S8` when the value fits.
+### :returns: The value as an `S8`.
+### :absent: When `me` is outside the range of `S8`.
+routine CSSize.to_checked[S8]() -> Maybe[S8]
+    fits: Bool = -128 <= me <= 127
+    value: S8 = trunc[Me, S8](me)
+    r: Maybe[S8] = fits.then_present(value)
+    return r
+
+### Converts `me` to `S8`, keeping the low 8 bits (modulo 2^8).
+### :returns: `me` modulo 2^8, as an `S8`.
+routine CSSize.to_wrap[S8]() -> S8
+    r: S8 = trunc[Me, S8](me)
+    return r
+
+### Converts `me` to `S8`, saturating at the ends of `S8`'s range.
+### :returns: `me` clamped to `S8.MIN ..= S8.MAX`.
+routine CSSize.to_clamp[S8]() -> S8
+    at_least: Me = smax[Me](me, -128)
+    at_most: Me = smin[Me](at_least, 127)
+    r: S8 = trunc[Me, S8](at_most)
+    return r
+
+### Converts `me` to `S16`.
+### :returns: The same numeric value as an `S16`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `S16`.
+@track_caller
+routine CSSize.to[S16]() -> S16
+    if not (-32768 <= me <= 32767)
+        crash_overflow()
+    r: S16 = trunc[Me, S16](me)
+    return r
+
+### Converts `me` to `S16` when the value fits.
+### :returns: The value as an `S16`.
+### :absent: When `me` is outside the range of `S16`.
+routine CSSize.to_checked[S16]() -> Maybe[S16]
+    fits: Bool = -32768 <= me <= 32767
+    value: S16 = trunc[Me, S16](me)
+    r: Maybe[S16] = fits.then_present(value)
+    return r
+
+### Converts `me` to `S16`, keeping the low 16 bits (modulo 2^16).
+### :returns: `me` modulo 2^16, as an `S16`.
+routine CSSize.to_wrap[S16]() -> S16
+    r: S16 = trunc[Me, S16](me)
+    return r
+
+### Converts `me` to `S16`, saturating at the ends of `S16`'s range.
+### :returns: `me` clamped to `S16.MIN ..= S16.MAX`.
+routine CSSize.to_clamp[S16]() -> S16
+    at_least: Me = smax[Me](me, -32768)
+    at_most: Me = smin[Me](at_least, 32767)
+    r: S16 = trunc[Me, S16](at_most)
+    return r
+
+### Converts `me` to `S32`.
+### :returns: The same numeric value as an `S32`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `S32`.
+@target(size: 64)
+@track_caller
+routine CSSize.to[S32]() -> S32
+    if not (-2147483648 <= me <= 2147483647)
+        crash_overflow()
+    r: S32 = trunc[Me, S32](me)
+    return r
+
+### Reinterprets `me` as `S32`. On this target the two types have the same width, so every value fits and the bits are unchanged.
+### :returns: The same numeric value as an `S32`.
+@target(size: 32)
+routine CSSize.to[S32]() -> S32
+    r: S32 = bitcast[Me, S32](me)
+    return r
+
+### Converts `me` to `S32` when the value fits.
+### :returns: The value as an `S32`.
+### :absent: When `me` is outside the range of `S32`.
+@target(size: 64)
+routine CSSize.to_checked[S32]() -> Maybe[S32]
+    fits: Bool = -2147483648 <= me <= 2147483647
+    value: S32 = trunc[Me, S32](me)
+    r: Maybe[S32] = fits.then_present(value)
+    return r
+
+### Converts `me` to `S32`, always present on this target because every `CSSize` value fits.
+### :returns: The value as an `S32`, wrapped in `Option`.
+@target(size: 32)
+routine CSSize.to_checked[S32]() -> Maybe[S32]
+    r: S32 = me.to[S32]()
+    return r
+
+### Converts `me` to `S32`, keeping the low 32 bits (modulo 2^32).
+### :returns: `me` modulo 2^32, as an `S32`.
+@target(size: 64)
+routine CSSize.to_wrap[S32]() -> S32
+    r: S32 = trunc[Me, S32](me)
+    return r
+
+### Wrapping conversion to `S32`. On this target every `CSSize` value fits, so this equals `to[S32]` and nothing is wrapped or clamped.
+### :returns: The same numeric value as an `S32`.
+@target(size: 32)
+routine CSSize.to_wrap[S32]() -> S32
+    r: S32 = me.to[S32]()
+    return r
+
+### Converts `me` to `S32`, saturating at the ends of `S32`'s range.
+### :returns: `me` clamped to `S32.MIN ..= S32.MAX`.
+@target(size: 64)
+routine CSSize.to_clamp[S32]() -> S32
+    at_least: Me = smax[Me](me, -2147483648)
+    at_most: Me = smin[Me](at_least, 2147483647)
+    r: S32 = trunc[Me, S32](at_most)
+    return r
+
+### Saturating conversion to `S32`. On this target every `CSSize` value fits, so this equals `to[S32]` and nothing is wrapped or clamped.
+### :returns: The same numeric value as an `S32`.
+@target(size: 32)
+routine CSSize.to_clamp[S32]() -> S32
+    r: S32 = me.to[S32]()
+    return r
+
+### Reinterprets `me` as `S64`. On this target the two types have the same width, so every value fits and the bits are unchanged.
+### :returns: The same numeric value as an `S64`.
+@target(size: 64)
+routine CSSize.to[S64]() -> S64
+    r: S64 = bitcast[Me, S64](me)
+    return r
+
+### Sign-extends `me` to `S64`. Every `CSSize` value fits, so this never fails.
+### :returns: The same numeric value as an `S64`.
+@target(size: 32)
+routine CSSize.to[S64]() -> S64
+    r: S64 = sext[Me, S64](me)
+    return r
+
+### Sign-extends `me` to `S128`. Every `CSSize` value fits, so this never fails.
+### :returns: The same numeric value as an `S128`.
+routine CSSize.to[S128]() -> S128
+    r: S128 = sext[Me, S128](me)
+    return r
+
+### Sign-extends `me` to `S256`. Every `CSSize` value fits, so this never fails.
+### :returns: The same numeric value as an `S256`.
+routine CSSize.to[S256]() -> S256
+    r: S256 = sext[Me, S256](me)
+    return r
+
+### Converts `me` to `U8`.
+### :returns: The same numeric value as a `U8`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `U8`.
+@track_caller
+routine CSSize.to[U8]() -> U8
+    if not (0 <= me <= 255)
+        crash_overflow()
+    r: U8 = trunc[Me, U8](me)
+    return r
+
+### Converts `me` to `U8` when the value fits.
+### :returns: The value as a `U8`.
+### :absent: When `me` is negative or above the largest `U8`.
+routine CSSize.to_checked[U8]() -> Maybe[U8]
+    fits: Bool = 0 <= me <= 255
+    value: U8 = trunc[Me, U8](me)
+    r: Maybe[U8] = fits.then_present(value)
+    return r
+
+### Converts `me` to `U8`, keeping the low 8 bits (modulo 2^8).
+### :returns: `me` modulo 2^8, as a `U8`.
+routine CSSize.to_wrap[U8]() -> U8
+    r: U8 = trunc[Me, U8](me)
+    return r
+
+### Converts `me` to `U8`, saturating at the ends of `U8`'s range.
+### :returns: `me` clamped to `U8.MIN ..= U8.MAX`.
+routine CSSize.to_clamp[U8]() -> U8
+    at_least: Me = smax[Me](me, 0)
+    at_most: Me = smin[Me](at_least, 255)
+    r: U8 = trunc[Me, U8](at_most)
+    return r
+
+### Converts `me` to `U16`.
+### :returns: The same numeric value as a `U16`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `U16`.
+@track_caller
+routine CSSize.to[U16]() -> U16
+    if not (0 <= me <= 65535)
+        crash_overflow()
+    r: U16 = trunc[Me, U16](me)
+    return r
+
+### Converts `me` to `U16` when the value fits.
+### :returns: The value as a `U16`.
+### :absent: When `me` is negative or above the largest `U16`.
+routine CSSize.to_checked[U16]() -> Maybe[U16]
+    fits: Bool = 0 <= me <= 65535
+    value: U16 = trunc[Me, U16](me)
+    r: Maybe[U16] = fits.then_present(value)
+    return r
+
+### Converts `me` to `U16`, keeping the low 16 bits (modulo 2^16).
+### :returns: `me` modulo 2^16, as a `U16`.
+routine CSSize.to_wrap[U16]() -> U16
+    r: U16 = trunc[Me, U16](me)
+    return r
+
+### Converts `me` to `U16`, saturating at the ends of `U16`'s range.
+### :returns: `me` clamped to `U16.MIN ..= U16.MAX`.
+routine CSSize.to_clamp[U16]() -> U16
+    at_least: Me = smax[Me](me, 0)
+    at_most: Me = smin[Me](at_least, 65535)
+    r: U16 = trunc[Me, U16](at_most)
+    return r
+
+### Converts `me` to `U32`.
+### :returns: The same numeric value as a `U32`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `U32`.
+@target(size: 64)
+@track_caller
+routine CSSize.to[U32]() -> U32
+    if not (0 <= me <= 4294967295)
+        crash_overflow()
+    r: U32 = trunc[Me, U32](me)
+    return r
+
+### Converts `me` to `U32`.
+### :returns: The same numeric value as a `U32`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `U32`.
+@target(size: 32)
+@track_caller
+routine CSSize.to[U32]() -> U32
+    if not (me >= 0)
+        crash_overflow()
+    r: U32 = bitcast[Me, U32](me)
+    return r
+
+### Converts `me` to `U32` when the value fits.
+### :returns: The value as a `U32`.
+### :absent: When `me` is negative or above the largest `U32`.
+@target(size: 64)
+routine CSSize.to_checked[U32]() -> Maybe[U32]
+    fits: Bool = 0 <= me <= 4294967295
+    value: U32 = trunc[Me, U32](me)
+    r: Maybe[U32] = fits.then_present(value)
+    return r
+
+### Converts `me` to `U32` when the value fits.
+### :returns: The value as a `U32`.
+### :absent: When `me` is negative.
+@target(size: 32)
+routine CSSize.to_checked[U32]() -> Maybe[U32]
+    fits: Bool = me >= 0
+    value: U32 = bitcast[Me, U32](me)
+    r: Maybe[U32] = fits.then_present(value)
+    return r
+
+### Converts `me` to `U32`, keeping the low 32 bits (modulo 2^32).
+### :returns: `me` modulo 2^32, as a `U32`.
+@target(size: 64)
+routine CSSize.to_wrap[U32]() -> U32
+    r: U32 = trunc[Me, U32](me)
+    return r
+
+### Converts `me` to `U32`, keeping the low 32 bits (modulo 2^32).
+### :returns: `me` modulo 2^32, as a `U32`.
+@target(size: 32)
+routine CSSize.to_wrap[U32]() -> U32
+    r: U32 = bitcast[Me, U32](me)
+    return r
+
+### Converts `me` to `U32`, saturating at the ends of `U32`'s range.
+### :returns: `me` clamped to `U32.MIN ..= U32.MAX`.
+@target(size: 64)
+routine CSSize.to_clamp[U32]() -> U32
+    at_least: Me = smax[Me](me, 0)
+    at_most: Me = smin[Me](at_least, 4294967295)
+    r: U32 = trunc[Me, U32](at_most)
+    return r
+
+### Converts `me` to `U32`, saturating at the ends of `U32`'s range.
+### :returns: `me` clamped to `U32.MIN ..= U32.MAX`.
+@target(size: 32)
+routine CSSize.to_clamp[U32]() -> U32
+    at_least: Me = smax[Me](me, 0)
+    r: U32 = bitcast[Me, U32](at_least)
+    return r
+
+### Converts `me` to `U64`.
+### :returns: The same numeric value as a `U64`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `U64`.
+@target(size: 64)
+@track_caller
+routine CSSize.to[U64]() -> U64
+    if not (me >= 0)
+        crash_overflow()
+    r: U64 = bitcast[Me, U64](me)
+    return r
+
+### Converts `me` to `U64`.
+### :returns: The same numeric value as a `U64`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `U64`.
+@target(size: 32)
+@track_caller
+routine CSSize.to[U64]() -> U64
+    if not (me >= 0)
+        crash_overflow()
+    r: U64 = sext[Me, U64](me)
+    return r
+
+### Converts `me` to `U64` when the value fits.
+### :returns: The value as a `U64`.
+### :absent: When `me` is negative.
+@target(size: 64)
+routine CSSize.to_checked[U64]() -> Maybe[U64]
+    fits: Bool = me >= 0
+    value: U64 = bitcast[Me, U64](me)
+    r: Maybe[U64] = fits.then_present(value)
+    return r
+
+### Converts `me` to `U64` when the value fits.
+### :returns: The value as a `U64`.
+### :absent: When `me` is negative.
+@target(size: 32)
+routine CSSize.to_checked[U64]() -> Maybe[U64]
+    fits: Bool = me >= 0
+    value: U64 = sext[Me, U64](me)
+    r: Maybe[U64] = fits.then_present(value)
+    return r
+
+### Converts `me` to `U64`, keeping the low 64 bits (modulo 2^64).
+### :returns: `me` modulo 2^64, as a `U64`.
+@target(size: 64)
+routine CSSize.to_wrap[U64]() -> U64
+    r: U64 = bitcast[Me, U64](me)
+    return r
+
+### Converts `me` to `U64`, keeping the low 64 bits (modulo 2^64).
+### :returns: `me` modulo 2^64, as a `U64`.
+@target(size: 32)
+routine CSSize.to_wrap[U64]() -> U64
+    r: U64 = sext[Me, U64](me)
+    return r
+
+### Converts `me` to `U64`, saturating at the ends of `U64`'s range.
+### :returns: `me` clamped to `U64.MIN ..= U64.MAX`.
+@target(size: 64)
+routine CSSize.to_clamp[U64]() -> U64
+    at_least: Me = smax[Me](me, 0)
+    r: U64 = bitcast[Me, U64](at_least)
+    return r
+
+### Converts `me` to `U64`, saturating at the ends of `U64`'s range.
+### :returns: `me` clamped to `U64.MIN ..= U64.MAX`.
+@target(size: 32)
+routine CSSize.to_clamp[U64]() -> U64
+    at_least: Me = smax[Me](me, 0)
+    r: U64 = sext[Me, U64](at_least)
+    return r
+
+### Converts `me` to `U128`.
+### :returns: The same numeric value as a `U128`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `U128`.
+@track_caller
+routine CSSize.to[U128]() -> U128
+    if not (me >= 0)
+        crash_overflow()
+    r: U128 = sext[Me, U128](me)
+    return r
+
+### Converts `me` to `U128` when the value fits.
+### :returns: The value as a `U128`.
+### :absent: When `me` is negative.
+routine CSSize.to_checked[U128]() -> Maybe[U128]
+    fits: Bool = me >= 0
+    value: U128 = sext[Me, U128](me)
+    r: Maybe[U128] = fits.then_present(value)
+    return r
+
+### Converts `me` to `U128`, keeping the low 128 bits (modulo 2^128).
+### :returns: `me` modulo 2^128, as a `U128`.
+routine CSSize.to_wrap[U128]() -> U128
+    r: U128 = sext[Me, U128](me)
+    return r
+
+### Converts `me` to `U128`, saturating at the ends of `U128`'s range.
+### :returns: `me` clamped to `U128.MIN ..= U128.MAX`.
+routine CSSize.to_clamp[U128]() -> U128
+    at_least: Me = smax[Me](me, 0)
+    r: U128 = sext[Me, U128](at_least)
+    return r
+
+### Converts `me` to `U256`.
+### :returns: The same numeric value as a `U256`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `U256`.
+@track_caller
+routine CSSize.to[U256]() -> U256
+    if not (me >= 0)
+        crash_overflow()
+    r: U256 = sext[Me, U256](me)
+    return r
+
+### Converts `me` to `U256` when the value fits.
+### :returns: The value as a `U256`.
+### :absent: When `me` is negative.
+routine CSSize.to_checked[U256]() -> Maybe[U256]
+    fits: Bool = me >= 0
+    value: U256 = sext[Me, U256](me)
+    r: Maybe[U256] = fits.then_present(value)
+    return r
+
+### Converts `me` to `U256`, keeping the low 256 bits (modulo 2^256).
+### :returns: `me` modulo 2^256, as a `U256`.
+routine CSSize.to_wrap[U256]() -> U256
+    r: U256 = sext[Me, U256](me)
+    return r
+
+### Converts `me` to `U256`, saturating at the ends of `U256`'s range.
+### :returns: `me` clamped to `U256.MIN ..= U256.MAX`.
+routine CSSize.to_clamp[U256]() -> U256
+    at_least: Me = smax[Me](me, 0)
+    r: U256 = sext[Me, U256](at_least)
+    return r
+
+### Converts `me` to `CSize`.
+### :returns: The same numeric value as a `CSize`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `CSize`.
+@track_caller
+routine CSSize.to[CSize]() -> CSize
+    if not (me >= 0)
+        crash_overflow()
+    r: CSize = bitcast[Me, CSize](me)
+    return r
+
+### Converts `me` to `CSize` when the value fits.
+### :returns: The value as a `CSize`.
+### :absent: When `me` is negative.
+routine CSSize.to_checked[CSize]() -> Maybe[CSize]
+    fits: Bool = me >= 0
+    value: CSize = bitcast[Me, CSize](me)
+    r: Maybe[CSize] = fits.then_present(value)
+    return r
+
+### Converts `me` to `CSize`, keeping the low 64 bits (modulo 2^64).
+### :returns: `me` modulo 2^64, as a `CSize`.
+@target(size: 64)
+routine CSSize.to_wrap[CSize]() -> CSize
+    r: CSize = bitcast[Me, CSize](me)
+    return r
+
+### Converts `me` to `CSize`, keeping the low 32 bits (modulo 2^32).
+### :returns: `me` modulo 2^32, as a `CSize`.
+@target(size: 32)
+routine CSSize.to_wrap[CSize]() -> CSize
+    r: CSize = bitcast[Me, CSize](me)
+    return r
+
+### Converts `me` to `CSize`, saturating at the ends of `CSize`'s range.
+### :returns: `me` clamped to `CSize.MIN ..= CSize.MAX`.
+routine CSSize.to_clamp[CSize]() -> CSize
+    at_least: Me = smax[Me](me, 0)
+    r: CSize = bitcast[Me, CSize](at_least)
+    return r
+
+### Converts `me` to `B32`, rounding to nearest, ties to even.
+### :returns: The `B32` nearest to `me`.
+routine CSSize.to[B32]() -> B32
+    r: B32 = sitofp[Me, B32](me)
+    return r
+
+### Converts `me` to `B64`, rounding to nearest, ties to even.
+### :returns: The `B64` nearest to `me`.
+routine CSSize.to[B64]() -> B64
+    r: B64 = sitofp[Me, B64](me)
+    return r
+
+# -- conversions into CSSize ------------------------------------------------------
+
+### Sign-extends `me` to `CSSize`. Every `S8` value fits, so this never fails.
+### :returns: The same numeric value as an `CSSize`.
+routine S8.to[CSSize]() -> CSSize
+    r: CSSize = sext[Me, CSSize](me)
+    return r
+
+### Sign-extends `me` to `CSSize`. Every `S16` value fits, so this never fails.
+### :returns: The same numeric value as an `CSSize`.
+routine S16.to[CSSize]() -> CSSize
+    r: CSSize = sext[Me, CSSize](me)
+    return r
+
+### Sign-extends `me` to `CSSize`. Every `S32` value fits, so this never fails.
+### :returns: The same numeric value as an `CSSize`.
+@target(size: 64)
+routine S32.to[CSSize]() -> CSSize
+    r: CSSize = sext[Me, CSSize](me)
+    return r
+
+### Reinterprets `me` as `CSSize`. On this target the two types have the same width, so every value fits and the bits are unchanged.
+### :returns: The same numeric value as an `CSSize`.
+@target(size: 32)
+routine S32.to[CSSize]() -> CSSize
+    r: CSSize = bitcast[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize`, always present on this target because every `S32` value fits.
+### :returns: The value as an `CSSize`, wrapped in `Option`.
+routine S32.to_checked[CSSize]() -> Maybe[CSSize]
+    r: CSSize = me.to[CSSize]()
+    return r
+
+### Wrapping conversion to `CSSize`. On this target every `S32` value fits, so this equals `to[CSSize]` and nothing is wrapped or clamped.
+### :returns: The same numeric value as an `CSSize`.
+routine S32.to_wrap[CSSize]() -> CSSize
+    r: CSSize = me.to[CSSize]()
+    return r
+
+### Saturating conversion to `CSSize`. On this target every `S32` value fits, so this equals `to[CSSize]` and nothing is wrapped or clamped.
+### :returns: The same numeric value as an `CSSize`.
+routine S32.to_clamp[CSSize]() -> CSSize
+    r: CSSize = me.to[CSSize]()
+    return r
+
+### Reinterprets `me` as `CSSize`. On this target the two types have the same width, so every value fits and the bits are unchanged.
+### :returns: The same numeric value as an `CSSize`.
+@target(size: 64)
+routine S64.to[CSSize]() -> CSSize
+    r: CSSize = bitcast[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize`.
+### :returns: The same numeric value as an `CSSize`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `CSSize`.
+@target(size: 32)
+@track_caller
+routine S64.to[CSSize]() -> CSSize
+    if not (-2147483648 <= me <= 2147483647)
+        crash_overflow()
+    r: CSSize = trunc[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize`, always present on this target because every `S64` value fits.
+### :returns: The value as an `CSSize`, wrapped in `Option`.
+@target(size: 64)
+routine S64.to_checked[CSSize]() -> Maybe[CSSize]
+    r: CSSize = me.to[CSSize]()
+    return r
+
+### Converts `me` to `CSSize` when the value fits.
+### :returns: The value as an `CSSize`.
+### :absent: When `me` is outside the range of `CSSize`.
+@target(size: 32)
+routine S64.to_checked[CSSize]() -> Maybe[CSSize]
+    fits: Bool = -2147483648 <= me <= 2147483647
+    value: CSSize = trunc[Me, CSSize](me)
+    r: Maybe[CSSize] = fits.then_present(value)
+    return r
+
+### Wrapping conversion to `CSSize`. On this target every `S64` value fits, so this equals `to[CSSize]` and nothing is wrapped or clamped.
+### :returns: The same numeric value as an `CSSize`.
+@target(size: 64)
+routine S64.to_wrap[CSSize]() -> CSSize
+    r: CSSize = me.to[CSSize]()
+    return r
+
+### Converts `me` to `CSSize`, keeping the low 32 bits (modulo 2^32).
+### :returns: `me` modulo 2^32, as an `CSSize`.
+@target(size: 32)
+routine S64.to_wrap[CSSize]() -> CSSize
+    r: CSSize = trunc[Me, CSSize](me)
+    return r
+
+### Saturating conversion to `CSSize`. On this target every `S64` value fits, so this equals `to[CSSize]` and nothing is wrapped or clamped.
+### :returns: The same numeric value as an `CSSize`.
+@target(size: 64)
+routine S64.to_clamp[CSSize]() -> CSSize
+    r: CSSize = me.to[CSSize]()
+    return r
+
+### Converts `me` to `CSSize`, saturating at the ends of `CSSize`'s range.
+### :returns: `me` clamped to `CSSize.MIN ..= CSSize.MAX`.
+@target(size: 32)
+routine S64.to_clamp[CSSize]() -> CSSize
+    at_least: Me = smax[Me](me, -2147483648)
+    at_most: Me = smin[Me](at_least, 2147483647)
+    r: CSSize = trunc[Me, CSSize](at_most)
+    return r
+
+### Converts `me` to `CSSize`.
+### :returns: The same numeric value as an `CSSize`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `CSSize`.
+@target(size: 64)
+@track_caller
+routine S128.to[CSSize]() -> CSSize
+    if not (-9223372036854775808 <= me <= 9223372036854775807)
+        crash_overflow()
+    r: CSSize = trunc[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize`.
+### :returns: The same numeric value as an `CSSize`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `CSSize`.
+@target(size: 32)
+@track_caller
+routine S128.to[CSSize]() -> CSSize
+    if not (-2147483648 <= me <= 2147483647)
+        crash_overflow()
+    r: CSSize = trunc[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize` when the value fits.
+### :returns: The value as an `CSSize`.
+### :absent: When `me` is outside the range of `CSSize`.
+@target(size: 64)
+routine S128.to_checked[CSSize]() -> Maybe[CSSize]
+    fits: Bool = -9223372036854775808 <= me <= 9223372036854775807
+    value: CSSize = trunc[Me, CSSize](me)
+    r: Maybe[CSSize] = fits.then_present(value)
+    return r
+
+### Converts `me` to `CSSize` when the value fits.
+### :returns: The value as an `CSSize`.
+### :absent: When `me` is outside the range of `CSSize`.
+@target(size: 32)
+routine S128.to_checked[CSSize]() -> Maybe[CSSize]
+    fits: Bool = -2147483648 <= me <= 2147483647
+    value: CSSize = trunc[Me, CSSize](me)
+    r: Maybe[CSSize] = fits.then_present(value)
+    return r
+
+### Converts `me` to `CSSize`, keeping the low 64 bits (modulo 2^64).
+### :returns: `me` modulo 2^64, as an `CSSize`.
+@target(size: 64)
+routine S128.to_wrap[CSSize]() -> CSSize
+    r: CSSize = trunc[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize`, keeping the low 32 bits (modulo 2^32).
+### :returns: `me` modulo 2^32, as an `CSSize`.
+@target(size: 32)
+routine S128.to_wrap[CSSize]() -> CSSize
+    r: CSSize = trunc[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize`, saturating at the ends of `CSSize`'s range.
+### :returns: `me` clamped to `CSSize.MIN ..= CSSize.MAX`.
+@target(size: 64)
+routine S128.to_clamp[CSSize]() -> CSSize
+    at_least: Me = smax[Me](me, -9223372036854775808)
+    at_most: Me = smin[Me](at_least, 9223372036854775807)
+    r: CSSize = trunc[Me, CSSize](at_most)
+    return r
+
+### Converts `me` to `CSSize`, saturating at the ends of `CSSize`'s range.
+### :returns: `me` clamped to `CSSize.MIN ..= CSSize.MAX`.
+@target(size: 32)
+routine S128.to_clamp[CSSize]() -> CSSize
+    at_least: Me = smax[Me](me, -2147483648)
+    at_most: Me = smin[Me](at_least, 2147483647)
+    r: CSSize = trunc[Me, CSSize](at_most)
+    return r
+
+### Converts `me` to `CSSize`.
+### :returns: The same numeric value as an `CSSize`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `CSSize`.
+@target(size: 64)
+@track_caller
+routine S256.to[CSSize]() -> CSSize
+    if not (-9223372036854775808 <= me <= 9223372036854775807)
+        crash_overflow()
+    r: CSSize = trunc[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize`.
+### :returns: The same numeric value as an `CSSize`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `CSSize`.
+@target(size: 32)
+@track_caller
+routine S256.to[CSSize]() -> CSSize
+    if not (-2147483648 <= me <= 2147483647)
+        crash_overflow()
+    r: CSSize = trunc[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize` when the value fits.
+### :returns: The value as an `CSSize`.
+### :absent: When `me` is outside the range of `CSSize`.
+@target(size: 64)
+routine S256.to_checked[CSSize]() -> Maybe[CSSize]
+    fits: Bool = -9223372036854775808 <= me <= 9223372036854775807
+    value: CSSize = trunc[Me, CSSize](me)
+    r: Maybe[CSSize] = fits.then_present(value)
+    return r
+
+### Converts `me` to `CSSize` when the value fits.
+### :returns: The value as an `CSSize`.
+### :absent: When `me` is outside the range of `CSSize`.
+@target(size: 32)
+routine S256.to_checked[CSSize]() -> Maybe[CSSize]
+    fits: Bool = -2147483648 <= me <= 2147483647
+    value: CSSize = trunc[Me, CSSize](me)
+    r: Maybe[CSSize] = fits.then_present(value)
+    return r
+
+### Converts `me` to `CSSize`, keeping the low 64 bits (modulo 2^64).
+### :returns: `me` modulo 2^64, as an `CSSize`.
+@target(size: 64)
+routine S256.to_wrap[CSSize]() -> CSSize
+    r: CSSize = trunc[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize`, keeping the low 32 bits (modulo 2^32).
+### :returns: `me` modulo 2^32, as an `CSSize`.
+@target(size: 32)
+routine S256.to_wrap[CSSize]() -> CSSize
+    r: CSSize = trunc[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize`, saturating at the ends of `CSSize`'s range.
+### :returns: `me` clamped to `CSSize.MIN ..= CSSize.MAX`.
+@target(size: 64)
+routine S256.to_clamp[CSSize]() -> CSSize
+    at_least: Me = smax[Me](me, -9223372036854775808)
+    at_most: Me = smin[Me](at_least, 9223372036854775807)
+    r: CSSize = trunc[Me, CSSize](at_most)
+    return r
+
+### Converts `me` to `CSSize`, saturating at the ends of `CSSize`'s range.
+### :returns: `me` clamped to `CSSize.MIN ..= CSSize.MAX`.
+@target(size: 32)
+routine S256.to_clamp[CSSize]() -> CSSize
+    at_least: Me = smax[Me](me, -2147483648)
+    at_most: Me = smin[Me](at_least, 2147483647)
+    r: CSSize = trunc[Me, CSSize](at_most)
+    return r
+
+### Zero-extends `me` to `CSSize`. Every `U8` value fits, so this never fails.
+### :returns: The same numeric value as an `CSSize`.
+routine U8.to[CSSize]() -> CSSize
+    r: CSSize = zext[Me, CSSize](me)
+    return r
+
+### Zero-extends `me` to `CSSize`. Every `U16` value fits, so this never fails.
+### :returns: The same numeric value as an `CSSize`.
+routine U16.to[CSSize]() -> CSSize
+    r: CSSize = zext[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize`, always present on this target because every `U16` value fits.
+### :returns: The value as an `CSSize`, wrapped in `Option`.
+routine U16.to_checked[CSSize]() -> Maybe[CSSize]
+    r: CSSize = me.to[CSSize]()
+    return r
+
+### Wrapping conversion to `CSSize`. On this target every `U16` value fits, so this equals `to[CSSize]` and nothing is wrapped or clamped.
+### :returns: The same numeric value as an `CSSize`.
+routine U16.to_wrap[CSSize]() -> CSSize
+    r: CSSize = me.to[CSSize]()
+    return r
+
+### Saturating conversion to `CSSize`. On this target every `U16` value fits, so this equals `to[CSSize]` and nothing is wrapped or clamped.
+### :returns: The same numeric value as an `CSSize`.
+routine U16.to_clamp[CSSize]() -> CSSize
+    r: CSSize = me.to[CSSize]()
+    return r
+
+### Zero-extends `me` to `CSSize`. Every `U32` value fits, so this never fails.
+### :returns: The same numeric value as an `CSSize`.
+@target(size: 64)
+routine U32.to[CSSize]() -> CSSize
+    r: CSSize = zext[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize`.
+### :returns: The same numeric value as an `CSSize`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `CSSize`.
+@target(size: 32)
+@track_caller
+routine U32.to[CSSize]() -> CSSize
+    if not (me <= 2147483647)
+        crash_overflow()
+    r: CSSize = bitcast[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize`, always present on this target because every `U32` value fits.
+### :returns: The value as an `CSSize`, wrapped in `Option`.
+@target(size: 64)
+routine U32.to_checked[CSSize]() -> Maybe[CSSize]
+    r: CSSize = me.to[CSSize]()
+    return r
+
+### Converts `me` to `CSSize` when the value fits.
+### :returns: The value as an `CSSize`.
+### :absent: When `me` is above the largest `CSSize`.
+@target(size: 32)
+routine U32.to_checked[CSSize]() -> Maybe[CSSize]
+    fits: Bool = me <= 2147483647
+    value: CSSize = bitcast[Me, CSSize](me)
+    r: Maybe[CSSize] = fits.then_present(value)
+    return r
+
+### Wrapping conversion to `CSSize`. On this target every `U32` value fits, so this equals `to[CSSize]` and nothing is wrapped or clamped.
+### :returns: The same numeric value as an `CSSize`.
+@target(size: 64)
+routine U32.to_wrap[CSSize]() -> CSSize
+    r: CSSize = me.to[CSSize]()
+    return r
+
+### Converts `me` to `CSSize`, keeping the low 32 bits (modulo 2^32).
+### :returns: `me` modulo 2^32, as an `CSSize`.
+@target(size: 32)
+routine U32.to_wrap[CSSize]() -> CSSize
+    r: CSSize = bitcast[Me, CSSize](me)
+    return r
+
+### Saturating conversion to `CSSize`. On this target every `U32` value fits, so this equals `to[CSSize]` and nothing is wrapped or clamped.
+### :returns: The same numeric value as an `CSSize`.
+@target(size: 64)
+routine U32.to_clamp[CSSize]() -> CSSize
+    r: CSSize = me.to[CSSize]()
+    return r
+
+### Converts `me` to `CSSize`, saturating at the ends of `CSSize`'s range.
+### :returns: `me` clamped to `CSSize.MIN ..= CSSize.MAX`.
+@target(size: 32)
+routine U32.to_clamp[CSSize]() -> CSSize
+    at_most: Me = umin[Me](me, 2147483647)
+    r: CSSize = bitcast[Me, CSSize](at_most)
+    return r
+
+### Converts `me` to `CSSize`.
+### :returns: The same numeric value as an `CSSize`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `CSSize`.
+@target(size: 64)
+@track_caller
+routine U64.to[CSSize]() -> CSSize
+    if not (me <= 9223372036854775807)
+        crash_overflow()
+    r: CSSize = bitcast[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize`.
+### :returns: The same numeric value as an `CSSize`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `CSSize`.
+@target(size: 32)
+@track_caller
+routine U64.to[CSSize]() -> CSSize
+    if not (me <= 2147483647)
+        crash_overflow()
+    r: CSSize = trunc[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize` when the value fits.
+### :returns: The value as an `CSSize`.
+### :absent: When `me` is above the largest `CSSize`.
+@target(size: 64)
+routine U64.to_checked[CSSize]() -> Maybe[CSSize]
+    fits: Bool = me <= 9223372036854775807
+    value: CSSize = bitcast[Me, CSSize](me)
+    r: Maybe[CSSize] = fits.then_present(value)
+    return r
+
+### Converts `me` to `CSSize` when the value fits.
+### :returns: The value as an `CSSize`.
+### :absent: When `me` is above the largest `CSSize`.
+@target(size: 32)
+routine U64.to_checked[CSSize]() -> Maybe[CSSize]
+    fits: Bool = me <= 2147483647
+    value: CSSize = trunc[Me, CSSize](me)
+    r: Maybe[CSSize] = fits.then_present(value)
+    return r
+
+### Converts `me` to `CSSize`, keeping the low 64 bits (modulo 2^64).
+### :returns: `me` modulo 2^64, as an `CSSize`.
+@target(size: 64)
+routine U64.to_wrap[CSSize]() -> CSSize
+    r: CSSize = bitcast[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize`, keeping the low 32 bits (modulo 2^32).
+### :returns: `me` modulo 2^32, as an `CSSize`.
+@target(size: 32)
+routine U64.to_wrap[CSSize]() -> CSSize
+    r: CSSize = trunc[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize`, saturating at the ends of `CSSize`'s range.
+### :returns: `me` clamped to `CSSize.MIN ..= CSSize.MAX`.
+@target(size: 64)
+routine U64.to_clamp[CSSize]() -> CSSize
+    at_most: Me = umin[Me](me, 9223372036854775807)
+    r: CSSize = bitcast[Me, CSSize](at_most)
+    return r
+
+### Converts `me` to `CSSize`, saturating at the ends of `CSSize`'s range.
+### :returns: `me` clamped to `CSSize.MIN ..= CSSize.MAX`.
+@target(size: 32)
+routine U64.to_clamp[CSSize]() -> CSSize
+    at_most: Me = umin[Me](me, 2147483647)
+    r: CSSize = trunc[Me, CSSize](at_most)
+    return r
+
+### Converts `me` to `CSSize`.
+### :returns: The same numeric value as an `CSSize`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `CSSize`.
+@target(size: 64)
+@track_caller
+routine U128.to[CSSize]() -> CSSize
+    if not (me <= 9223372036854775807)
+        crash_overflow()
+    r: CSSize = trunc[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize`.
+### :returns: The same numeric value as an `CSSize`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `CSSize`.
+@target(size: 32)
+@track_caller
+routine U128.to[CSSize]() -> CSSize
+    if not (me <= 2147483647)
+        crash_overflow()
+    r: CSSize = trunc[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize` when the value fits.
+### :returns: The value as an `CSSize`.
+### :absent: When `me` is above the largest `CSSize`.
+@target(size: 64)
+routine U128.to_checked[CSSize]() -> Maybe[CSSize]
+    fits: Bool = me <= 9223372036854775807
+    value: CSSize = trunc[Me, CSSize](me)
+    r: Maybe[CSSize] = fits.then_present(value)
+    return r
+
+### Converts `me` to `CSSize` when the value fits.
+### :returns: The value as an `CSSize`.
+### :absent: When `me` is above the largest `CSSize`.
+@target(size: 32)
+routine U128.to_checked[CSSize]() -> Maybe[CSSize]
+    fits: Bool = me <= 2147483647
+    value: CSSize = trunc[Me, CSSize](me)
+    r: Maybe[CSSize] = fits.then_present(value)
+    return r
+
+### Converts `me` to `CSSize`, keeping the low 64 bits (modulo 2^64).
+### :returns: `me` modulo 2^64, as an `CSSize`.
+@target(size: 64)
+routine U128.to_wrap[CSSize]() -> CSSize
+    r: CSSize = trunc[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize`, keeping the low 32 bits (modulo 2^32).
+### :returns: `me` modulo 2^32, as an `CSSize`.
+@target(size: 32)
+routine U128.to_wrap[CSSize]() -> CSSize
+    r: CSSize = trunc[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize`, saturating at the ends of `CSSize`'s range.
+### :returns: `me` clamped to `CSSize.MIN ..= CSSize.MAX`.
+@target(size: 64)
+routine U128.to_clamp[CSSize]() -> CSSize
+    at_most: Me = umin[Me](me, 9223372036854775807)
+    r: CSSize = trunc[Me, CSSize](at_most)
+    return r
+
+### Converts `me` to `CSSize`, saturating at the ends of `CSSize`'s range.
+### :returns: `me` clamped to `CSSize.MIN ..= CSSize.MAX`.
+@target(size: 32)
+routine U128.to_clamp[CSSize]() -> CSSize
+    at_most: Me = umin[Me](me, 2147483647)
+    r: CSSize = trunc[Me, CSSize](at_most)
+    return r
+
+### Converts `me` to `CSSize`.
+### :returns: The same numeric value as an `CSSize`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `CSSize`.
+@target(size: 64)
+@track_caller
+routine U256.to[CSSize]() -> CSSize
+    if not (me <= 9223372036854775807)
+        crash_overflow()
+    r: CSSize = trunc[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize`.
+### :returns: The same numeric value as an `CSSize`.
+### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `CSSize`.
+@target(size: 32)
+@track_caller
+routine U256.to[CSSize]() -> CSSize
+    if not (me <= 2147483647)
+        crash_overflow()
+    r: CSSize = trunc[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize` when the value fits.
+### :returns: The value as an `CSSize`.
+### :absent: When `me` is above the largest `CSSize`.
+@target(size: 64)
+routine U256.to_checked[CSSize]() -> Maybe[CSSize]
+    fits: Bool = me <= 9223372036854775807
+    value: CSSize = trunc[Me, CSSize](me)
+    r: Maybe[CSSize] = fits.then_present(value)
+    return r
+
+### Converts `me` to `CSSize` when the value fits.
+### :returns: The value as an `CSSize`.
+### :absent: When `me` is above the largest `CSSize`.
+@target(size: 32)
+routine U256.to_checked[CSSize]() -> Maybe[CSSize]
+    fits: Bool = me <= 2147483647
+    value: CSSize = trunc[Me, CSSize](me)
+    r: Maybe[CSSize] = fits.then_present(value)
+    return r
+
+### Converts `me` to `CSSize`, keeping the low 64 bits (modulo 2^64).
+### :returns: `me` modulo 2^64, as an `CSSize`.
+@target(size: 64)
+routine U256.to_wrap[CSSize]() -> CSSize
+    r: CSSize = trunc[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize`, keeping the low 32 bits (modulo 2^32).
+### :returns: `me` modulo 2^32, as an `CSSize`.
+@target(size: 32)
+routine U256.to_wrap[CSSize]() -> CSSize
+    r: CSSize = trunc[Me, CSSize](me)
+    return r
+
+### Converts `me` to `CSSize`, saturating at the ends of `CSSize`'s range.
+### :returns: `me` clamped to `CSSize.MIN ..= CSSize.MAX`.
+@target(size: 64)
+routine U256.to_clamp[CSSize]() -> CSSize
+    at_most: Me = umin[Me](me, 9223372036854775807)
+    r: CSSize = trunc[Me, CSSize](at_most)
+    return r
+
+### Converts `me` to `CSSize`, saturating at the ends of `CSSize`'s range.
+### :returns: `me` clamped to `CSSize.MIN ..= CSSize.MAX`.
+@target(size: 32)
+routine U256.to_clamp[CSSize]() -> CSSize
+    at_most: Me = umin[Me](me, 2147483647)
+    r: CSSize = trunc[Me, CSSize](at_most)
+    return r

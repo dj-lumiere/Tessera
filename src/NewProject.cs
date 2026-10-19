@@ -26,7 +26,6 @@ static class NewProject
 
                 """),
             ("main.te", """
-                import Standard/Format
                 import Standard/Os
 
                 ### Writes a greeting.

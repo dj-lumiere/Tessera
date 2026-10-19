@@ -1,0 +1,417 @@
+# Tessera stdlib collection: Set[T]
+#
+# Insertion-ordered open-addressed hash set. Two layers:
+#   - Entries arrays (keys/hashes/entry_states) hold live and dead entries in
+#     the order they were first inserted. Iteration walks these.
+#   - Slots is an index table: each cell is SET_SLOT_EMPTY, SET_SLOT_TOMBSTONE, or an
+#     entry index >= 0. Linear probing on the hash mod capacity.
+#
+# Every array is a Memory of the same count, the capacity, and each keeps
+# the allocator. Removal marks the entry dead and the slot a tombstone. The
+# entry's position in the entries array is retained so the insertion order of
+# surviving entries is preserved. Rehash compacts dead entries away.
+#
+# entry_state values: 0 = dead, 1 = live.
+
+module Standard/Collections
+
+secret preset SET_SLOT_EMPTY: U64 = U64.MAX
+secret preset SET_SLOT_TOMBSTONE: U64 = SET_SLOT_EMPTY.sub(1)
+
+### An insertion-ordered hash set. Keys live in parallel arrays (each a {Memory[T]} holding the capacity and the manager) in the order they were first added, and an open-addressed slot table with linear probing maps a hash to its entry. Removal marks the entry dead, so surviving elements keep their order until the next rehash.
+### :typeparam T: The element type, which must provide hashing and equality.
+entity Set[T]
+obeys Destructible[Set[T]]
+obeys Representable[Set[T]] when T: typename, Diagnosable[T]
+obeys Diagnosable[Set[T]] when T: typename, Diagnosable[T]
+obeys Equatable[Set[T]] when T: typename
+needs T: typename, HashEquatable[T]
+    keys: Memory[T]
+    hashes: Memory[U64]
+    entry_states: Memory[U8]
+    slots: Memory[U64]
+    count: U64
+    entries_count: U64
+
+### Creates an empty Set that draws its storage from `alloc`. Nothing is allocated until the first insertion.
+### :param alloc: The allocator the set stores and later frees its memory with.
+### :returns: A new empty Set.
+common routine Set[T].construct(alloc: @MemoryManager) -> Me
+needs T: typename
+    return Me(keys: Memory[T].construct(count: 0, manager: alloc),
+        hashes: Memory[U64].construct(count: 0, manager: alloc),
+        entry_states: Memory[U8].construct(count: 0, manager: alloc),
+        slots: Memory[U64].construct(count: 0, manager: alloc), count: 0, entries_count: 0)
+
+### The number of elements currently stored.
+### :returns: The count of elements, `0` when the set is empty.
+routine @Set[T].count() -> U64
+needs T: typename
+    count: U64 = me.count.peek()
+    return count
+
+### Whether the set holds no elements.
+### :returns: `true` when the count is `0`.
+routine @Set[T].is_empty() -> Bool
+needs T: typename
+    count: U64 = me.count.peek()
+    return count == 0
+
+### Probes the slot table for `key`, linearly from `hash` modulo capacity.
+### :param key: The key being looked for.
+### :param hash: The hash of `key`.
+### :returns: The slot holding `key` if found, otherwise the slot where it should be installed: the first tombstone seen, else the first empty slot.
+routine @Set[T].slot(key: @T, hash: U64) -> U64
+needs T: typename
+    local first_tombstone: @U64 <- SET_SLOT_EMPTY
+
+    capacity: U64 = me.slots.count.peek()
+    mask: U64 = capacity - 1
+
+    while true with index: U64 = hash & mask
+        slots: @U64 = me.slots.data.peek()
+        entry_idx: U64 = slots.stride(index).peek()
+        is_empty: Bool = entry_idx == SET_SLOT_EMPTY
+        when
+            is_empty =>
+                has_tombstone: Bool = first_tombstone.peek() != SET_SLOT_EMPTY
+                slot: U64 = when
+                    has_tombstone => first_tombstone.peek()
+                    else => index
+                return slot
+            entry_idx == SET_SLOT_TOMBSTONE =>
+                seen: Bool = first_tombstone.peek() != SET_SLOT_EMPTY
+                next_tombstone: U64 = when
+                    seen => first_tombstone.peek()
+                    else => index
+                capacity2: U64 = me.slots.count.peek()
+                next: U64 = index + 1 & capacity2 - 1
+                next_tombstone.poke_into(first_tombstone)
+                continue with index: next
+            else =>
+                hashes: @U64 = me.hashes.data.peek()
+                entry_hash: U64 = hashes.stride(entry_idx).peek()
+                if entry_hash == hash
+                    keys: @T = me.keys.data.peek()
+                    entry_key: @T = keys.stride(entry_idx)
+                    if entry_key.eq(key)
+                        return index
+                capacity2: U64 = me.slots.count.peek()
+                continue with index: index + 1 & capacity2 - 1
+
+### The entry index of `key`.
+### :param key: The element to look for.
+### :returns: The index of the element's entry, or `SET_SLOT_EMPTY` when it is absent.
+routine @Set[T].find(key: @T) -> U64
+needs T: typename
+    capacity: U64 = me.slots.count.peek()
+    if capacity == 0
+        return SET_SLOT_EMPTY
+    hash: U64 = key.hash()
+    slot: U64 = me.slot(key, hash)
+    slots: @U64 = me.slots.data.peek()
+    entry_idx: U64 = slots.stride(slot).peek()
+    if entry_idx < SET_SLOT_TOMBSTONE
+        return entry_idx
+    return SET_SLOT_EMPTY
+
+### Whether the element at `key` is in the set: read through its place, so an entity key is only lent.
+### :param key: The element to look for.
+### :returns: `true` when an equal element is live.
+routine @Set[T].has(key: @T) -> Bool
+needs T: typename
+    return me.find(key) != SET_SLOT_EMPTY
+
+### Whether `key` is in the set.
+### :param key: The element to look for.
+### :returns: `true` when an equal element is live.
+routine @Set[T].has(key: T) -> Bool
+needs T: typename
+    local probe: @T <- steal key
+
+    there: Bool = me.has(probe)
+
+    drop probe
+    return there
+
+### Whether the element at `key` is not there: the opposite of `has`.
+### :param key: The value to look for.
+### :returns: `true` when `has` would be `false`.
+routine @Set[T].lacks(key: @T) -> Bool
+needs T: typename
+    there: Bool = me.has(key)
+    return not there
+
+### Whether `key` is not there: the opposite of `has`.
+### :param key: The value to look for.
+### :returns: `true` when `has` would be `false`.
+routine @Set[T].lacks(key: T) -> Bool
+needs T: typename
+    local probe: @T <- steal key
+
+    there: Bool = me.has(probe)
+
+    drop probe
+    return not there
+
+### Two sets are equal when they hold the same elements, regardless of insertion order or slot layout. With
+### matching counts, every element of `me` being in `other` is enough.
+### :param other: The set to compare with.
+### :returns: True when the two hold the same elements.
+routine @Set[T].eq(other: @Me) -> Bool
+needs T: typename
+    return me.eq_at(other)
+
+### `eq`, through pointers to the two sets.
+### :param other: The set to compare with.
+### :returns: True when the two hold the same elements.
+secret routine @Set[T].eq_at(other: @Me) -> Bool
+needs T: typename
+    la: U64 = me.count.peek()
+    lb: U64 = other.count.peek()
+    if la == lb
+        n: U64 = me.entries_count.peek()
+
+        each i in 0 til n
+            entry_states: @U8 = me.entry_states.data.peek()
+            s: U8 = entry_states.stride(i).peek()
+            if s == 1
+                keys: @T = me.keys.data.peek()
+                if other.has(keys.stride(i))
+                    continue
+                return false
+            continue
+        then
+            return true
+    else
+        return false
+
+### Moves the live entries into fresh arrays of `new_capacity`, in insertion order, dropping dead ones. The new
+### arrays are made in the order keys, hashes, entry states, slots, and a failure releases the ones already made.
+### :param new_capacity: The new capacity, a power of two above the live count.
+### :returns: True when it rehashed, false when the allocator failed (the set is left as it was).
+@reshaping
+secret routine @Set[T].rehash(new_capacity: U64) -> Bool
+needs T: typename
+    local alloc: @MemoryManager = me.keys.manager.peek()
+    local keys: @Memory[T] <- .construct(count: 0, manager: alloc)
+    local hashes: @Memory[U64] <- .construct(count: 0, manager: alloc)
+    local entry_states: @Memory[U8] <- .construct(count: 0, manager: alloc)
+    local slots: @Memory[U64] <- .construct(count: 0, manager: alloc)
+
+    if make_array[T](into: keys, count: new_capacity)
+        if make_array[U64](into: hashes, count: new_capacity)
+            if make_array[U8](into: entry_states, count: new_capacity)
+                if make_array[U64](into: slots, count: new_capacity)
+                    each i in 0 til new_capacity
+                        slot_cells: @U64 = slots.data.peek()
+                        state_cells: @U8 = entry_states.data.peek()
+                        slot_cells.stride(i).poke(SET_SLOT_EMPTY)
+                        state_cells.stride(i).poke(0)
+                    # Swaps the new arrays into the set, so the claimed slices hold the old ones from here on.
+                    old_count: U64 = me.entries_count.peek()
+                    swap_slices[T](a: me.keys, b: keys)
+                    swap_slices[U64](a: me.hashes, b: hashes)
+                    swap_slices[U8](a: me.entry_states, b: entry_states)
+                    swap_slices[U64](a: me.slots, b: slots)
+                    me.count.poke(0)
+                    me.entries_count.poke(0)
+
+                    each i in 0 til old_count
+                        states: @U8 = entry_states.data.peek()
+                        s: U8 = states.stride(i).peek()
+                        if s == 1
+                            old_keys: @T = keys.data.peek()
+                            old_hashes: @U64 = hashes.data.peek()
+                            hash: U64 = old_hashes.stride(i).peek()
+                            me.add_direct(key: steal old_keys.stride(i), hash)
+                    destruct_set_arrays[T](keys, hashes, entry_states, slots)
+                    return true
+    destruct_set_arrays[T](keys, hashes, entry_states, slots)
+    return false
+
+### Makes room for one more entry: the first insertion rehashes into 8 slots, and the tables double once one more
+### entry would fill three quarters of them.
+### :returns: True when there is room, false when the allocator failed (the set is left as it was).
+@reshaping
+secret routine @Set[T].ensure() -> Bool
+needs T: typename
+    local capacity: U64 = me.slots.count.peek()
+
+    if capacity == 0
+        return me.rehash(8)
+    count: U64 = me.entries_count.peek()
+    limit: U64 = capacity * 3 // 4
+    if count + 1 >= limit
+        return me.rehash(capacity * 2)
+    return true
+
+### Inserts without growing, for rehash once the new arrays are in place and for `add_result` after `ensure`.
+### :param key: The element to add.
+### :param hash: The element's hash, so rehash can pass the stored one instead of hashing every element again.
+### :returns: True when a new entry was appended, false when an equal element was already live.
+routine @Set[T].add_direct(key: T, hash: U64) -> Bool
+needs T: typename
+    local probe: @T <- steal key
+    local slot: U64 = me.slot(key: probe, hash)
+
+    slots: @U64 = me.slots.data.peek()
+    entry_idx: U64 = slots.stride(slot).peek()
+    if entry_idx < SET_SLOT_TOMBSTONE
+        # an equal element is already there: the new one ends here
+        drop probe
+        return false
+    new_idx: U64 = me.entries_count.peek()
+    keys: @T = me.keys.data.peek()
+    hashes: @U64 = me.hashes.data.peek()
+    entry_states: @U8 = me.entry_states.data.peek()
+    slots2: @U64 = me.slots.data.peek()
+    keys.stride(new_idx).poke(steal probe)
+    hashes.stride(new_idx).poke(hash)
+    entry_states.stride(new_idx).poke(1)
+    slots2.stride(slot).poke(new_idx)
+    next_count: U64 = me.count.peek() + 1
+    next_count.poke_into(me.count)
+    me.entries_count.poke(new_idx + 1)
+    return true
+
+### Adds `key` to the set unless an equal element is already present.
+### :param key: The element to add.
+### :returns: `true` when `key` was new, `false` when it was already present.
+### :throws: Crashes with `MemoryAllocationError` when the tables must grow and the allocator fails. See {Set[T].add_result} for a recoverable form.
+@track_caller
+@reshaping
+routine @Set[T].add(key: T) -> Bool
+needs T: typename
+    added: Result[Bool, AllocFailed] = me.add_result(steal key)
+    when added
+        is Bool as is_new => return is_new
+        is AllocFailed => crash_allocation()
+
+### `add`, returning an error instead of crashing when the allocator fails.
+### :param key: The element to add.
+### :returns: A value holding whether `key` was new.
+### :throws: Returns `AllocFailed` when the tables must grow and the allocator fails.
+@reshaping
+routine @Set[T].add_result(key: T) -> Result[Bool, AllocFailed]
+needs T: typename
+    hash: U64 = key.hash()
+
+    if not me.ensure()
+        # nothing took the element: it ends here
+        drop key
+        return AllocFailed()
+    return me.add_direct(key: steal key, hash)
+
+### Removes the element equal to the one at `key`, which is only lent, and ends it. Its position in the entries array
+### stays until the next rehash.
+### :param key: The element to remove.
+### :returns: `true` when an element was removed, `false` when it was not present.
+routine @Set[T].remove(key: @T) -> Bool
+needs T: typename
+    capacity: U64 = me.slots.count.peek()
+    if capacity == 0
+        return false
+    hash: U64 = key.hash()
+    slot: U64 = me.slot(key, hash)
+    slots: @U64 = me.slots.data.peek()
+    entry_idx: U64 = slots.stride(slot).peek()
+    if entry_idx < SET_SLOT_TOMBSTONE
+        slots2: @U64 = me.slots.data.peek()
+        entry_states: @U8 = me.entry_states.data.peek()
+        keys: @T = me.keys.data.peek()
+        drop keys.stride(entry_idx)
+        slots2.stride(slot).poke(SET_SLOT_TOMBSTONE)
+        entry_states.stride(entry_idx).poke(0)
+        remaining_count: U64 = me.count.peek() - 1
+        remaining_count.poke_into(me.count)
+        return true
+    return false
+
+### Removes `key` from the set. Its position in the entries array stays until the next rehash.
+### :param key: The element to remove.
+### :returns: `true` when an element was removed, `false` when it was not present.
+routine @Set[T].remove(key: T) -> Bool
+needs T: typename
+    local probe: @T <- steal key
+
+    removed: Bool = me.remove(probe)
+
+    drop probe
+    return removed
+
+### Ends every element (drop: an element with something to give back gives it back, a plain value gives nothing),
+### then gives the set's memory back to its allocator and resets it to the empty state, so it can be reused or
+### destructed again.
+### :note: Does nothing on a hollow instance (`.hollow()`, no allocator), and only resets the fields of a never-filled one.
+@track_caller
+routine @Set[T].destruct() -> None
+needs T: typename
+    keys: @T = me.keys.data.peek()
+    states: @U8 = me.entry_states.data.peek()
+    each i in 0 til me.entries_count.peek()
+        if states.stride(i).peek() == 1
+            drop keys.stride(i)
+    destruct_set_arrays[T](keys: me.keys, hashes: me.hashes, entry_states: me.entry_states,
+        slots: me.slots)
+    me.count.poke(0)
+    me.entries_count.poke(0)
+    return
+
+# -- text -----------------------------------------------------------------------
+
+### The elements in insertion order, each diagnosed (strings quoted): {1, 2, 3}.
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param out: The writer to write to.
+routine @Set[T].represent_into[TWriter](out: @TWriter) -> None
+needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
+    me.write_elements(out)
+    return
+
+### The elements in insertion order, each diagnosed: {1, 2, 3}.
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param out: The writer to write to.
+routine @Set[T].diagnose_into[TWriter](out: @TWriter) -> None
+needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
+    me.write_elements(out)
+    return
+
+### Writes {a, b, c}: each live element diagnosed through its place, in insertion order.
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param out: The writer to write to.
+secret routine @Set[T].write_elements[TWriter](out: @TWriter) -> None
+needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
+    keys: @T = me.keys.data.peek()
+    states: @U8 = me.entry_states.data.peek()
+
+    write_str(out, text: "{")
+    each i in 0 til me.entries_count.peek() with first: Bool = true
+        if states.stride(i).peek() == 1
+            if not first
+                write_str(out, text: ", ")
+            keys.stride(i).diagnose_into(out)
+            continue with first: false
+        continue with first: first
+    then
+        write_str(out, text: "}")
+        return
+
+# -- the arrays -----------------------------------------------------------------
+
+### Gives the four arrays of a set back to their allocator, leaving each empty.
+### :typeparam T: The element type.
+### :param keys: The keys array.
+### :param hashes: The hashes array.
+### :param entry_states: The entry states array.
+### :param slots: The slot table.
+@track_caller
+secret routine destruct_set_arrays[T](keys: @Memory[T], hashes: @Memory[U64],
+    entry_states: @Memory[U8], slots: @Memory[U64]) -> None
+needs T: typename
+    if keys.manager.peek().is_hollow()
+        return
+    keys.give_back()
+    hashes.give_back()
+    entry_states.give_back()
+    slots.give_back()
+    return

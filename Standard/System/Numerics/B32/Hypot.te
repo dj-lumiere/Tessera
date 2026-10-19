@@ -1,0 +1,93 @@
+# Tessera stdlib: the correctly rounded Euclidean distance sqrt(x^2 + y^2) of B32
+#
+# x^2 + y^2 is exact in B64 up to one rounding, and its square root lands
+# within a hair of the true value: only square roots within a few B64 ulps of
+# a B32 rounding boundary need a correction term. Round to nearest only:
+# overflow gives +inf, an infinite leg gives +inf even when the other is NaN
+# (unless it is a signaling NaN), NaN comes back quiet.
+#
+# Ported from CORE-MATH, src/binary32/hypot/hypotf.c via RazorForge's B32Hypot.rf.
+# Copyright (c) 2022-2025 Alexei Sibidanov <sibid@uvic.ca>
+# MIT license: see LICENSE-CORE-MATH
+
+module Standard/System/Numerics/B32
+
+### sqrt(`x`^2 + `y`^2) without intermediate overflow, correctly rounded (to nearest). An infinite leg gives
+### +inf even when the other is a quiet NaN.
+### :param x: One leg.
+### :param y: The other leg.
+### :returns: The Euclidean distance, +inf on overflow.
+routine hypot_unchecked(x: B32, y: B32) -> B32
+    local ax: B32 = x.abs()
+    local ay: B32 = y.abs()
+    local tx: U32 = ax.bits()
+    local ty: U32 = ay.bits()
+
+    if tx >= 0x7F800000 or ty >= 0x7F800000
+        # x or y is infinite or NaN
+        quiet_x: U32 = (tx >> 22) & 1
+        snan_x: Bool = tx > 0x7F800000 and quiet_x == 0
+        quiet_y: U32 = (ty >> 22) & 1
+        snan_y: Bool = ty > 0x7F800000 and quiet_y == 0
+        snan: Bool = snan_x or snan_y
+        inf_x: Bool = tx == 0x7F800000
+        when
+            snan => return cm_b32_hypot_quiet_nan(x: x, y: y)
+            inf_x => return ax
+            ty == 0x7F800000 => return ay
+            else => return cm_b32_hypot_quiet_nan(x: ax, y: ay)
+    else
+        # Both legs are finite and non-negative here, so a plain comparison is max / min.
+        swap: Bool = ay > ax
+        big: B32 = when
+            swap => ay
+            else => ax
+        small: B32 = when
+            swap => ax
+            else => ay
+        xd: B64 = big.to[B64]()
+        yd: B64 = small.to[B64]()
+        x2: B64 = xd *! xd
+        y2: B64 = yd *! yd
+        r2: B64 = x2 +! y2
+        if yd < xd *! 0x1.fffffep-13
+            return B32.mul_add_unchecked(0x1p-13, a: small, b: big)
+        r: B64 = r2.sqrt_unchecked()
+        tu: U64 = r.bits()
+        c: B32 = r.to_unchecked[B32]()
+        huge: Bool = tu > 0x47EFFFFFE0000000  # r > 0x1.fffffep+127: overflows or rounds down to the max
+        tail: U64 = tu +% 1 & 0xFFFFFFF
+        # r is far from a rounding boundary
+        when
+            huge => return c
+            tail > 2 => return c
+            else =>
+                # r is close to a rounding boundary: c is exact, or the correction term decides.
+                cd: B64 = c.to[B64]()
+                residual: B64 = cd *! cd -! x2
+                if residual -! y2 == 0.0
+                    return c
+                ir2: B64 = B64.truediv_unchecked(0.5, r2)
+                dr2: B64 = x2 -! r2 +! y2
+                rs: B64 = r *! ir2
+                dz: B64 = dr2 -! r.mul_add_unchecked(a: r, b: -r2)
+                dr: B64 = rs *! dz
+                rh: B64 = r +! dr
+                rl: B64 = dr +! (r -! rh)
+                hu: U64 = rh.bits()
+                mid: Bool = hu & 0xFFFFFFF == 0
+                up: Bool = mid and rl > 0.0
+                when
+                    up => return B64.from_bits(hu +% 1).to_unchecked[B32]()
+                    mid and rl < 0.0 => return B64.from_bits(hu -% 1).to_unchecked[B32]()
+                    else => return rh.to_unchecked[B32]()
+
+### x as a quiet NaN if it is a NaN, else y as a quiet NaN, the way the x86 x + y picks between NaN operands.
+### :param x: The first operand.
+### :param y: The second operand, used when `x` is not a NaN.
+### :returns: The quiet NaN.
+secret routine cm_b32_hypot_quiet_nan(x: B32, y: B32) -> B32
+    pick: B32 = when
+        x.is_nan() => x
+        else => y
+    return B32.from_bits(pick.bits() | 0x00400000)

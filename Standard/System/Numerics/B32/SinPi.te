@@ -1,0 +1,114 @@
+# Tessera stdlib: the correctly rounded sin(pi x) of B32
+#
+# With 64 x = iq + z/2^32 for an integer iq: sin(iq pi/64) and cos(iq pi/64) from a table, sin(z pi/2^38) and
+# cos(z pi/2^38) - 1 from short polynomials, all in B64, where one evaluation rounds correctly to B32. Integers
+# give +-0 with the sign of x, |x| >= 2^23 is an even integer. Round to nearest only.
+#
+# Also home to the sin(i pi/64) table that cos_pi shares.
+#
+# Ported from CORE-MATH, src/binary32/sinpi/sinpif.c via RazorForge's B32Sinpi.rf.
+# Copyright (c) 2022-2025 Alexei Sibidanov
+# MIT license: see LICENSE-CORE-MATH
+
+module Standard/System/Numerics/B32
+
+### sin(i pi/64) for i in 0..127, as B64 bits. Cos_pi uses it too.
+secret preset CM_B32_SIN_PI_S: @Array[U64, 128] <- [0x0000000000000000, 0x3FA91F65F10DD814,
+    0x3FB917A6BC29B42C, 0x3FC2C8106E8E613A, 0x3FC8F8B83C69A60B, 0x3FCF19F97B215F1B,
+    0x3FD294062ED59F06, 0x3FD58F9A75AB1FDD, 0x3FD87DE2A6AEA963, 0x3FDB5D1009E15CC0,
+    0x3FDE2B5D3806F63B, 0x3FE073879922FFEE, 0x3FE1C73B39AE68C8, 0x3FE30FF7FCE17035,
+    0x3FE44CF325091DD6, 0x3FE57D69348CECA0, 0x3FE6A09E667F3BCD, 0x3FE7B5DF226AAFAF,
+    0x3FE8BC806B151741, 0x3FE9B3E047F38741, 0x3FEA9B66290EA1A3, 0x3FEB728345196E3E,
+    0x3FEC38B2F180BDB1, 0x3FECED7AF43CC773, 0x3FED906BCF328D46, 0x3FEE212104F686E5,
+    0x3FEE9F4156C62DDA, 0x3FEF0A7EFB9230D7, 0x3FEF6297CFF75CB0, 0x3FEFA7557F08A517,
+    0x3FEFD88DA3D12526, 0x3FEFF621E3796D7E, 0x3FF0000000000000, 0x3FEFF621E3796D7E,
+    0x3FEFD88DA3D12526, 0x3FEFA7557F08A517, 0x3FEF6297CFF75CB0, 0x3FEF0A7EFB9230D7,
+    0x3FEE9F4156C62DDA, 0x3FEE212104F686E5, 0x3FED906BCF328D46, 0x3FECED7AF43CC773,
+    0x3FEC38B2F180BDB1, 0x3FEB728345196E3E, 0x3FEA9B66290EA1A3, 0x3FE9B3E047F38741,
+    0x3FE8BC806B151741, 0x3FE7B5DF226AAFAF, 0x3FE6A09E667F3BCD, 0x3FE57D69348CECA0,
+    0x3FE44CF325091DD6, 0x3FE30FF7FCE17035, 0x3FE1C73B39AE68C8, 0x3FE073879922FFEE,
+    0x3FDE2B5D3806F63B, 0x3FDB5D1009E15CC0, 0x3FD87DE2A6AEA963, 0x3FD58F9A75AB1FDD,
+    0x3FD294062ED59F06, 0x3FCF19F97B215F1B, 0x3FC8F8B83C69A60B, 0x3FC2C8106E8E613A,
+    0x3FB917A6BC29B42C, 0x3FA91F65F10DD814, 0x0000000000000000, 0xBFA91F65F10DD814,
+    0xBFB917A6BC29B42C, 0xBFC2C8106E8E613A, 0xBFC8F8B83C69A60B, 0xBFCF19F97B215F1B,
+    0xBFD294062ED59F06, 0xBFD58F9A75AB1FDD, 0xBFD87DE2A6AEA963, 0xBFDB5D1009E15CC0,
+    0xBFDE2B5D3806F63B, 0xBFE073879922FFEE, 0xBFE1C73B39AE68C8, 0xBFE30FF7FCE17035,
+    0xBFE44CF325091DD6, 0xBFE57D69348CECA0, 0xBFE6A09E667F3BCD, 0xBFE7B5DF226AAFAF,
+    0xBFE8BC806B151741, 0xBFE9B3E047F38741, 0xBFEA9B66290EA1A3, 0xBFEB728345196E3E,
+    0xBFEC38B2F180BDB1, 0xBFECED7AF43CC773, 0xBFED906BCF328D46, 0xBFEE212104F686E5,
+    0xBFEE9F4156C62DDA, 0xBFEF0A7EFB9230D7, 0xBFEF6297CFF75CB0, 0xBFEFA7557F08A517,
+    0xBFEFD88DA3D12526, 0xBFEFF621E3796D7E, 0xBFF0000000000000, 0xBFEFF621E3796D7E,
+    0xBFEFD88DA3D12526, 0xBFEFA7557F08A517, 0xBFEF6297CFF75CB0, 0xBFEF0A7EFB9230D7,
+    0xBFEE9F4156C62DDA, 0xBFEE212104F686E5, 0xBFED906BCF328D46, 0xBFECED7AF43CC773,
+    0xBFEC38B2F180BDB1, 0xBFEB728345196E3E, 0xBFEA9B66290EA1A3, 0xBFE9B3E047F38741,
+    0xBFE8BC806B151741, 0xBFE7B5DF226AAFAF, 0xBFE6A09E667F3BCD, 0xBFE57D69348CECA0,
+    0xBFE44CF325091DD6, 0xBFE30FF7FCE17035, 0xBFE1C73B39AE68C8, 0xBFE073879922FFEE,
+    0xBFDE2B5D3806F63B, 0xBFDB5D1009E15CC0, 0xBFD87DE2A6AEA963, 0xBFD58F9A75AB1FDD,
+    0xBFD294062ED59F06, 0xBFCF19F97B215F1B, 0xBFC8F8B83C69A60B, 0xBFC2C8106E8E613A,
+    0xBFB917A6BC29B42C, 0xBFA91F65F10DD814]
+
+### sin(pi me), correctly rounded (to nearest, ties to even). An integer gives +-0 with the sign of me, a
+### half-integer +-1, +-inf gives NaN, and NaN comes back quiet.
+### :returns: sin(pi `me`).
+routine B32.sin_pi() -> Me
+    local ix: U32 = me.bits()
+    local e: S32 = ((ix >> 23) & 0xFF).to_wrap[S32]()
+    local negative: Bool = ix >> 31 == 1
+    local zero: Me = Me.copysign(0.0, me)
+    local magnitude: U32 = (ix & 0x7FFFFF) | 0x800000
+    local sgn: U32 = when
+
+        negative => 0xFFFFFFFF
+        else => 0
+    # the significand with the sign of x, in two's complement
+    local m: U32 = (magnitude ^ sgn) -% sgn
+
+    if e == 0xFF
+        # infinities give NaN, NaN comes back quiet with its sign and payload
+        if ix << 9 == 0
+            return Me.from_bits(0x7FC00000)
+        return me +! me
+    s: S32 = S32.sub(143, e)
+    big: Bool = s < 0
+    when
+        big =>
+            # |x| >= 2^17: x is a multiple of 1/64
+            # |x| >= 2^23: x is an even integer
+            if s < -6
+                return zero
+            shift: U32 = (-s - 1).to[U32]()
+            iq: U32 = (m << shift) & 127
+            if iq == 0 or iq == 64
+                return zero
+            r: B64 = B64.from_bits(CM_B32_SIN_PI_S.getitem(iq.to[U64]()))
+            return r.to_unchecked[Me]()
+        s > 30 =>
+            # |x| < 2^-14: sin(pi x) ~ pi x - (pi x)^3 / 6
+            z: B64 = me.to[B64]()
+            z2: B64 = z *! z
+            p: B64 = B64.add_unchecked(0x1.921fb54442d18p+1, z2 *! -0x1.4abbce625be53p+2)
+            r: B64 = z *! p
+            return r.to_unchecked[Me]()
+        else =>
+            si: S32 = S32.sub(25, s)
+            if si >= 0
+                # 2^-1 <= |x| < 2^17: x is an integer when its bits below the binary point are all 0
+                si2: U32 = si.to[U32]()
+                if m << si2 == 0
+                    return zero
+            shift: U32 = S32.sub(31, s).to[U32]()
+            k: S32 = (m << shift).to_wrap[S32]()  # 64 x - round(64 x), scaled by 2^32
+            z: B64 = k.to[B64]()
+            z2: B64 = z *! z
+            fs2: B64 = B64.add_unchecked(-0x1.4abbce6102b94p-112, z2 *! 0x1.4669fa3c58463p-189)
+            fs: B64 = B64.add_unchecked(0x1.921fb54442d0fp-37, z2 *! fs2)
+            fc2: B64 = B64.add_unchecked(0x1.03c1f08088742p-150, z2 *! -0x1.55d1e5eff55a5p-228)
+            fc: B64 = B64.add_unchecked(-0x1.3bd3cc9be45cfp-74, z2 *! fc2)
+            shifted: U32 = (m.to_wrap[S32]() >> s).to_wrap[U32]()
+            iq: U32 = shifted +% 1 >> 1  # round(64 x)
+            ts: B64 = B64.from_bits(CM_B32_SIN_PI_S.getitem((iq & 127).to[U64]()))
+            tc_i: U32 = iq +% 32 & 127
+            tc: B64 = B64.from_bits(CM_B32_SIN_PI_S.getitem(tc_i.to[U64]()))
+            head: B64 = ts +! ts *! z2 *! fc
+            r: B64 = head +! tc *! z *! fs
+            return r.to_unchecked[Me]()

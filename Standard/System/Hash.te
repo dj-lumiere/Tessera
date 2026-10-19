@@ -1,0 +1,222 @@
+# Tessera stdlib: hash (xxHash64)
+#
+# Reference implementation of xxh64 (Yann Collet, 2014). Bit-for-bit
+# compatible with the upstream spec: little-endian byte reads, the same
+# five primes, and the same finalization mixer.
+#
+# xxh64 is the unkeyed fast hash: the same input gives the same value in
+# every run and on every machine, which is what a checksum, a content
+# address, or a table whose keys you trust wants. It is not what `hash()`
+# is: anyone can compute xxh64 collisions offline and flood a hash table
+# with them, so every stdlib `hash()` is SipHash-2-4 under a secret
+# per-process key instead (SipHash.te, HashKey.te).
+#
+# Public surface:
+#   xxh64(data, len, seed) -> U64    — one-shot byte hash
+#   xxh64(v, seed) -> U64    — fast path for an 8-byte integer
+#
+# All arithmetic is modulo 2^64, as the reference specifies: add_wrap and
+# mul_wrap, never the crashing add and mul.
+
+module Standard/System
+
+# -- primes --------------------------------------------------------------------
+
+### The xxHash64 prime 1 (`0x9E3779B185EBCA87`), as the reference specifies.
+preset XXH64_P1: U64 = 0x9E3779B185EBCA87
+### The xxHash64 prime 2 (`0xC2B2AE3D27D4EB4F`), as the reference specifies.
+preset XXH64_P2: U64 = 0xC2B2AE3D27D4EB4F
+### The xxHash64 prime 3 (`0x165667B19E3779F9`), as the reference specifies.
+preset XXH64_P3: U64 = 0x165667B19E3779F9
+### The xxHash64 prime 4 (`0x85EBCA77C2B2AE63`), as the reference specifies.
+preset XXH64_P4: U64 = 0x85EBCA77C2B2AE63
+### The xxHash64 prime 5 (`0x27D4EB2F165667C5`), as the reference specifies.
+preset XXH64_P5: U64 = 0x27D4EB2F165667C5
+
+# -- little-endian byte readers ------------------------------------------------
+
+### Reads 8 bytes starting at `me.stride(off)` as a little-endian U64, byte by byte so it does not depend on host endianness or alignment.
+### :param off: The offset of the first byte to read.
+### :returns: The little-endian value of the 8 bytes.
+routine Ptr[Byte].read_le[U64](off: U64) -> U64
+    local acc: @U64 <- 0
+    local shift: @U64 <- 0
+
+    each i: U64 in 0 til 8
+        idx: U64 = off + i
+        b: Byte = me.stride(idx).peek()
+        byte_value: U64 = b.to[U8]().to[U64]()
+        next: U64 = acc.peek() | (byte_value << shift.peek())
+        next_shift: U64 = shift.peek() + 8
+        next_acc: U64 = next
+        next_acc.poke_into(acc)
+        next_shift.poke_into(shift)
+    then
+        return acc.peek()
+
+### Reads 4 bytes starting at `me.stride(off)` as a little-endian U32, byte by byte so it does not depend on host endianness or alignment.
+### :param off: The offset of the first byte to read.
+### :returns: The little-endian value of the 4 bytes.
+routine Ptr[Byte].read_le[U32](off: U64) -> U32
+    local acc: @U32 <- 0
+    local shift: @U32 <- 0
+
+    each i: U64 in 0 til 4
+        idx: U64 = off + i
+        b: Byte = me.stride(idx).peek()
+        byte_value: U32 = b.to[U8]().to[U32]()
+        next: U32 = acc.peek() | (byte_value << shift.peek())
+        next_shift: U32 = shift.peek() + 8
+        next_acc: U32 = next
+        next_acc.poke_into(acc)
+        next_shift.poke_into(shift)
+    then
+        return acc.peek()
+
+# -- xxh64 internal mixers -----------------------------------------------------
+
+### One xxh64 round: adds `input * P2` to `acc`, rotates left by 31, and multiplies by `P1`, all modulo 2^64.
+### :param acc: The lane accumulator.
+### :param input: The 8 input bytes read as a U64.
+### :returns: The updated accumulator.
+routine xxh64_round(acc: U64, input: U64) -> U64
+    mixed: U64 = (acc +% input *% XXH64_P2).rotl(31)
+    result: U64 = mixed *% XXH64_P1
+    return result
+
+### Folds one lane `val` into the accumulator when a long input's four lanes are combined: `(acc ^ round(0, val)) * P1 + P4`.
+### :param acc: The accumulator.
+### :param val: The lane value to fold in.
+### :returns: The merged accumulator.
+routine xxh64_merge(acc: U64, val: U64) -> U64
+    folded: U64 = (acc ^ xxh64_round(acc: 0, input: val)) *% XXH64_P1
+    result: U64 = folded +% XXH64_P4
+    return result
+
+### The xxh64 avalanche step: xor-shifts by 33, 29 and 32 with multiplications by `P2` and `P3` in between, so every input bit affects every output bit.
+### :param h: The accumulated hash.
+### :returns: The mixed 64-bit hash.
+routine xxh64_finalize(h: U64) -> U64
+    s1: U64 = h >> 33
+    x1: U64 = h ^ s1
+    m1: U64 = x1 *% XXH64_P2
+    s2: U64 = m1 >> 29
+    x2: U64 = m1 ^ s2
+    m2: U64 = x2 *% XXH64_P3
+    s3: U64 = m2 >> 32
+    result: U64 = m2 ^ s3
+    return result
+
+# -- one-shot byte hash --------------------------------------------------------
+#
+# Layout follows the spec exactly:
+#   1. If len >= 32, run the 32-byte stripe loop with four 64-bit lanes.
+#   2. Add len.
+#   3. Drain remaining 8-byte chunks, then a 4-byte chunk, then trailing bytes.
+#   4. Apply the finalization mixer.
+
+### Hashes `len` bytes starting at `data` with the xxHash64 algorithm and the given `seed`, matching the reference output. Unkeyed and the same in every run: for checksums and trusted keys, not for a table that takes keys from outside (`hash()` is keyed SipHash-2-4).
+### :param data: The first byte of the input.
+### :param len: The number of bytes to hash.
+### :param seed: The seed of the hash.
+### :returns: The 64-bit hash.
+### :note: Reads only the `len` bytes. An empty input (`len` of 0) is valid.
+@expensive("hashes the whole buffer")
+routine xxh64(data: @Byte, len: U64, seed: U64) -> U64
+    stripes: (U64, U64) = when
+        len >= 32 => xxh64_stripes(data, len, seed)
+        else => (seed +% XXH64_P5, 0)
+
+    # After the stripes, whole 8-byte chunks go first, then one 4-byte chunk when 4 or more bytes are left, then
+    # single bytes.
+    while off < len with h: U64 = stripes.item0 +% len.to[U64](), off: U64 = stripes.item1
+        rem: U64 = len - off
+        when
+            rem >= 8 =>
+                k: U64 = data.read_le[U64](off)
+                mixed8: U64 = (h ^ xxh64_round(acc: 0, input: k)).rotl(27)
+                continue with h: mixed8 *% XXH64_P1 +% XXH64_P4, off: off + 8
+            rem >= 4 =>
+                k32: U32 = data.read_le[U32](off)
+                ku: U64 = k32.to[U64]()
+                mixed4: U64 = (h ^ ku *% XXH64_P1).rotl(23)
+                continue with h: mixed4 *% XXH64_P2 +% XXH64_P3, off: off + 4
+            else =>
+                b: Byte = data.stride(off).peek()
+                bu: U64 = b.to[U8]().to[U64]()
+                mixed1: U64 = (h ^ bu *% XXH64_P5).rotl(11)
+                continue with h: mixed1 *% XXH64_P1, off: off + 1
+    then
+        result: U64 = xxh64_finalize(h)
+        return result
+
+### Runs xxh64's stripe loop over the whole 32-byte stripes of an input of at least 32 bytes, one 64-bit lane per
+### 8 bytes of a stripe, then merges the four lanes into one hash.
+### :param data: The first byte of the input.
+### :param len: The number of bytes of the input, 32 or more.
+### :param seed: The seed of the hash.
+### :returns: The merged hash and the offset of the first byte after the last whole stripe.
+secret routine xxh64_stripes(data: @Byte, len: U64, seed: U64) -> (U64, U64)
+    v1_0: U64 = seed +% XXH64_P1 +% XXH64_P2
+    v2_0: U64 = seed +% XXH64_P2
+    while len - off >= 32 with v1: U64 = v1_0, v2: U64 = v2_0, v3: U64 = seed, v4: U64 = seed -% XXH64_P1, off: U64 = 0
+        k1: U64 = data.read_le[U64](off)
+        k2: U64 = data.read_le[U64](off + 8)
+        k3: U64 = data.read_le[U64](off + 16)
+        k4: U64 = data.read_le[U64](off + 24)
+        v1n: U64 = xxh64_round(acc: v1, input: k1)
+        v2n: U64 = xxh64_round(acc: v2, input: k2)
+        v3n: U64 = xxh64_round(acc: v3, input: k3)
+        continue with v1: v1n, v2: v2n, v3: v3n, v4: xxh64_round(acc: v4, input: k4), off: off + 32
+    then
+        r1: U64 = v1.rotl(1)
+        r2: U64 = v2.rotl(7)
+        r3: U64 = v3.rotl(12)
+        r4: U64 = v4.rotl(18)
+        hsum: U64 = r1 +% r2 +% (r3 +% r4)
+        h1: U64 = xxh64_merge(acc: hsum, val: v1)
+        h2: U64 = xxh64_merge(acc: h1, val: v2)
+        h3: U64 = xxh64_merge(acc: h2, val: v3)
+        return (xxh64_merge(acc: h3, val: v4), off)
+
+# -- 8-byte fast path ------------------------------------------------------------
+#
+# Equivalent to xxh64 with len=8: skip the big-block path, add 8, run one
+# iteration of the 8-byte tail loop, finalize.
+
+### Hashes one U64 as if it were an 8-byte input of `xxh64` with the given `seed`, without a buffer. Unkeyed, like every xxh64.
+### :param v: The integer to hash.
+### :param seed: The seed of the hash.
+### :returns: The 64-bit hash.
+routine xxh64(v: U64, seed: U64) -> U64
+    h_len: U64 = seed +% XXH64_P5 +% 8
+    k: U64 = xxh64_round(acc: 0, input: v)
+    x: U64 = h_len ^ k
+    rotated: U64 = x.rotl(27)
+    h2: U64 = rotated *% XXH64_P1 +% XXH64_P4
+    result: U64 = xxh64_finalize(h2)
+    return result
+
+# -- 16-byte combiner -------------------------------------------------------------
+#
+# Folds two precomputed sub-hashes into one. Equivalent to running xxh64
+# with len=16 over the concatenation h1 || h2 — two iterations of the
+# 8-byte tail path, then finalize.
+
+### Combines two sub-hashes into one, the same as `xxh64` over their 16 bytes `h1 || h2`, for an unkeyed hash of a composite value.
+### :param h1: The first sub-hash.
+### :param h2: The second sub-hash.
+### :param seed: The seed of the hash.
+### :returns: The 64-bit combined hash.
+routine xxh64_combine2(h1: U64, h2: U64, seed: U64) -> U64
+    h_len: U64 = seed +% XXH64_P5 +% 16
+    r1: U64 = xxh64_round(acc: 0, input: h1)
+    x1: U64 = h_len ^ r1
+    rotated1: U64 = x1.rotl(27)
+    a1: U64 = rotated1 *% XXH64_P1 +% XXH64_P4
+    r2: U64 = xxh64_round(acc: 0, input: h2)
+    x2: U64 = a1 ^ r2
+    rotated2: U64 = x2.rotl(27)
+    a2: U64 = rotated2 *% XXH64_P1 +% XXH64_P4
+    result: U64 = xxh64_finalize(a2)
+    return result

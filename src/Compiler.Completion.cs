@@ -27,10 +27,10 @@ public sealed partial class Compiler
     public IEnumerable<RoutineDecl> RoutinesOn(TypeRef owner, string file)
     {
         var decl = TypeDeclQuiet(owner.Name, file, owner.Path);
-        string home = decl?.Module ?? CoreModule;
+        string home = decl?.Module ?? SystemModule;
         var own = _methods.Where(kv => kv.Key.Owner == owner.Name).SelectMany(kv => kv.Value)
             .Where(m => OwnerDecl(m) == decl && Reachable(m, file, home));
-        var everywhere = _blanket.Values.SelectMany(g => g).Where(b => Reachable(b, file, CoreModule));
+        var everywhere = _blanket.Values.SelectMany(g => g).Where(b => Reachable(b, file, SystemModule));
         return own.Concat(everywhere);
     }
 
@@ -38,7 +38,7 @@ public sealed partial class Compiler
     public IEnumerable<PresetDecl> PresetsOn(TypeRef owner, string file)
     {
         var decl = TypeDeclQuiet(owner.Name, file, owner.Path);
-        string home = decl?.Module ?? CoreModule;
+        string home = decl?.Module ?? SystemModule;
         return _presets.Where(kv => kv.Key.Owner == owner.Name).SelectMany(kv => kv.Value)
             .Where(p => Reachable(p, file, home));
     }

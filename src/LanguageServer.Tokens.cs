@@ -484,7 +484,7 @@ public static partial class LanguageServer
                 : ReceiverType(m.Receiver) is { Name: "Ptr", Path: null, Args: [TypeArgType inner] } ? inner.Type.ToString()
                 : null;
             if (pointee is null) return null;
-            string ptr = Path.Combine("Standard", "Types", "Ptr.te");
+            string ptr = Path.Combine("Standard", "System", "Ptr.te");
             var lines = LinesOf(analysis, ptr);
             int at = Array.FindIndex(lines, l => l.Contains("`p.stride(n)`", StringComparison.Ordinal));
             Pos? where = at < 0 ? null : new Pos(ptr, at + 1, lines[at].IndexOf("stride", StringComparison.Ordinal) + 1);
@@ -572,7 +572,7 @@ public static partial class LanguageServer
             RoutineDecl? writeStr;
             try
             {
-                writeStr = analysis.Compiler.FindFree("write_str", analysis.Shown, new Pos(analysis.Shown, 1, 1), "Standard/Format");
+                writeStr = analysis.Compiler.FindFree("write_str", analysis.Shown, new Pos(analysis.Shown, 1, 1), Compiler.TextModule);
             }
             catch (CompileError)
             {

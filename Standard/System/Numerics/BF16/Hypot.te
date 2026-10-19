@@ -1,0 +1,34 @@
+# Tessera stdlib: the correctly rounded Euclidean distance sqrt(x^2 + y^2) of BF16
+#
+# The legs widen exactly to B64, where both squares and their sum are exact and the square root keeps enough bits
+# that the single rounding to BF16 is correct. B32 would not be enough: its square of a tiny leg can underflow.
+# Round to nearest only: overflow gives +inf, an infinite leg gives +inf even when the other is a quiet NaN, and a
+# NaN otherwise comes back quiet.
+#
+# Ported from CORE-MATH, src/binaryb16/hypot/hypot_bf16.c.
+# Copyright (c) 2025-2026 Maxence Ponsardin and Paul Zimmermann
+# MIT license: see LICENSE-CORE-MATH
+
+module Standard/System/Numerics/BF16
+
+### sqrt(`x`^2 + `y`^2), correctly rounded (to nearest, ties to even). The squares and the sum are taken in
+### B64, so nothing overflows or underflows before the final rounding. An infinite leg gives +inf even when the other
+### one is a quiet NaN, a NaN otherwise (a signaling one included) comes back quiet, and a result past the BF16 range
+### gives +inf.
+### :param x: One leg.
+### :param y: The other leg.
+### :returns: The Euclidean distance.
+routine hypot_unchecked(x: BF16, y: BF16) -> BF16
+    local sx: U16 = x.bits()
+    local sy: U16 = y.bits()
+    local tx: B64 = x.to[B64]()
+    local ty: B64 = y.to[B64]()
+    local z: B64 = (tx *! tx +! ty *! ty).sqrt_unchecked()
+
+    # hypot(+-inf, quiet NaN) = +inf: +inf is 0x7F80, -inf 0xFF80, and a quiet NaN has 0x7FC0 or more in its low 15
+    # bits. A signaling NaN gives a NaN.
+    if (sx == 0x7F80 or sx == 0xFF80) and sy & 0x7FFF >= 0x7FC0
+        return (tx *! tx).to_unchecked[BF16]()
+    if (sy == 0x7F80 or sy == 0xFF80) and sx & 0x7FFF >= 0x7FC0
+        return (ty *! ty).to_unchecked[BF16]()
+    return z.to_unchecked[BF16]()

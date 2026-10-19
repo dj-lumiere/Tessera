@@ -56,7 +56,7 @@ public sealed partial class Compiler
     {
         if (!_traceRoutines.TryGetValue(name, out var inst))
         {
-            var r = _free.GetValueOrDefault(name)?.FirstOrDefault(d => d.IsLibrary && d.Module == CoreModule)
+            var r = _free.GetValueOrDefault(name)?.FirstOrDefault(d => d.IsLibrary && d.Module == SystemModule)
                     ?? throw new InvalidOperationException($"the standard library has no {name} for a traced build");
             _traceRoutines[name] = inst = RequireInstance(r, new TypeEnv(r.File));
         }

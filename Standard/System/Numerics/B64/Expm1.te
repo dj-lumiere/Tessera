@@ -1,0 +1,332 @@
+# Tessera stdlib: the correctly rounded e^x - 1 of B64
+#
+# For |x| < 1/4, e^x - 1 = (e^(i/128) - 1) + e^(i/128) (e^(z/128) - 1) with a
+# table of e^(i/128) - 1 as double-doubles. Otherwise e^x as in exp, minus 1
+# folded into the double-double sum. When that can't decide the rounding, a
+# double-double Taylor expansion (|x| < 1/4) or the accurate exp polynomial
+# redoes it, and a few arguments too close to a rounding boundary even for
+# that are looked up. Round to nearest only: overflow gives +inf, a very
+# negative x -1, NaN comes back quiet.
+#
+# Ported from CORE-MATH, src/binary64/expm1/expm1.c via RazorForge's B64Expm1.rf.
+# Copyright (c) 2024 Alexei Sibidanov <sibid@uvic.ca>
+# MIT license: see LICENSE-CORE-MATH
+
+module Standard/System/Numerics/B64
+
+### Double-double coefficients (high, low) of the degree-10 polynomial (in x,
+### times x^3) of the accurate path for |x| < 1/4, as B64 bits.
+secret preset CM_B64_EXPM1_ACC_SMALL_CH: @Array[U64, 22] <- [0x3FC5555555555555, 0x3C65555555555554,
+    0x3FA5555555555555, 0x3C45555555555123, 0x3F81111111111111, 0x3C01111111118167,
+    0x3F56C16C16C16C17, 0xBBEF49F49E220CEA, 0x3F2A01A01A01A01A, 0x3B6A019EFF6F919C,
+    0x3EFA01A01A01A01A, 0x3B39FCFF48A75B41, 0x3EC71DE3A556C734, 0xBB6C14F73758CD7F,
+    0x3E927E4FB7789F5C, 0x3B3DFCE97931018F, 0x3E5AE64567F544E3, 0x3AFC513DA9E4C9C5,
+    0x3E21EED8EFF8D831, 0x3ACCA00AF84F2B60, 0x3DE6124613A86E8F, 0x3A8F27AC6000898F]
+
+### Double coefficients of the highest-order terms of that polynomial, as B64 bits.
+secret preset CM_B64_EXPM1_ACC_SMALL_CL: @Array[U64, 6] <- [0x3DA93974A8CA5354, 0x3D6AE7F3E71E4908,
+    0x3D2AE7F357341648, 0x3CE952C7F96664CB, 0x3CA686F8CE633AAE, 0x3C62F49B2FBFB5B6]
+
+### Double-double values (low, high) of e^(i/128) - 1, -32 <= i <= 32 (entry
+### i + 32), as B64 bits.
+secret preset CM_B64_EXPM1_TZ: @Array[U64, 130] <- [0xBC6797D4686C5393, 0xBFCC5041854DF7D4,
+    0xBC8EA1CB9D163339, 0xBFCB881A23AEBB48, 0x3C8F483A3E8CD60F, 0xBFCABE60E1F21838,
+    0x3C7DFFD920F493DB, 0xBFC9F3129931FAB0, 0xBC851BFDBB129094, 0xBFC9262C1C3430A0,
+    0x3C8CD3E5225E2206, 0xBFC857AA375DB4E4, 0x3C5E3A6BDAECE8F9, 0xBFC78789B0A5E0C0,
+    0xBC8DAF2AE0C2D3D4, 0xBFC6B5C7478983D8, 0xBC7FD36226FADD44, 0xBFC5E25FB4FDE210,
+    0x3C7D887CD0341AB0, 0xBFC50D4FAB639758, 0xBC8676A52A1A618B, 0xBFC43693D679612C,
+    0x3C79776B420AD283, 0xBFC35E28DB4ECD9C, 0x3C73D5FD7D70A5ED, 0xBFC2840B5836CF68,
+    0x3C5A94AD2C8FA0BF, 0xBFC1A837E4BA3760, 0x3C26AD4C353465B0, 0xBFC0CAAB118A1278,
+    0xBC78BBA170E59B65, 0xBFBFD6C2D0E3D910, 0xBC8E1E0A76CB0685, 0xBFBE14AED893EEF0,
+    0x3C8FE131F55E75F8, 0xBFBC4F1331D22D40, 0xBC8B5BEEE8BCEE31, 0xBFBA85E8C62D9C10,
+    0xBC77FE9B02C25E9B, 0xBFB8B92870FA2B58, 0xBC832AE7BDAF1116, 0xBFB6E8CAFF341FE8,
+    0x3C7A6CFE58CBD73B, 0xBFB514C92F634788, 0x3C68798DE3138A56, 0xBFB33D1BB17DF2E8,
+    0xBC3589321A7EF10B, 0xBFB161BB26CBB590, 0xBC78D0E700FCFB65, 0xBFAF0540438FD5C0,
+    0x3C8473EF07D5DD3B, 0xBFAB3F864C080000, 0xBC838E62149C16E2, 0xBFA7723950130400,
+    0xBC508BB6309BD394, 0xBFA39D4A1A77E050, 0xBC8BAD3FD501A227, 0xBF9F8152AEE94500,
+    0x3C63D27AC39ED253, 0xBF97B88F290230E0, 0xBC8B60BBD08AAC55, 0xBF8FC055004416C0,
+    0xBC4A00D03B3359DE, 0xBF7FE0154AAEED80, 0x0000000000000000, 0x0000000000000000,
+    0x3C8861931C15E39B, 0x3F80100AB00222C0, 0x3C77AB864B3E9045, 0x3F90202AD5778E40,
+    0x3C74E5659D75E95B, 0x3F984890D9043740, 0x3C78E0BD083ABA81, 0x3FA040AC0224FD90,
+    0x3C345CC1CF959B1B, 0x3FA465509D383EB0, 0xBC8EB6980CE14DA7, 0x3FA89246D053D180,
+    0x3C77324137D6C342, 0x3FACC79F4F5613A0, 0xBC45272FF30EED1B, 0x3FB082B577D34ED8,
+    0xBC81280F19DACE1C, 0x3FB2A5DD543CCC50, 0xBC8D550AF31C8EC3, 0x3FB4CD4FC989CD68,
+    0x3C87923B72AA582D, 0x3FB6F91575870690, 0xBC776C2E732457F1, 0x3FB92937074E0CD8,
+    0x3C881F5C92A5200F, 0x3FBB5DBD3F681220, 0x3C8E8AC7A4D3206C, 0x3FBD96B0EFF0E790,
+    0xBC712DB6F4BBE33B, 0x3FBFD41AFCBA45E8, 0xBC58C4A5DF1EC7E5, 0x3FC10B022DB7AE68,
+    0xBC6BD4B1C37EA8A2, 0x3FC22E3B09DC54D8, 0x3C85AEB9860044D0, 0x3FC353BC9FB00B20,
+    0xBC64C26602C63FDA, 0x3FC47B8B853AAFEC, 0xBC87F644C1F9D314, 0x3FC5A5AC59B963CC,
+    0x3C8F5AA8EC61FC2D, 0x3FC6D223C5B10638, 0x3C27AB912C69FFEB, 0x3FC800F67B00D7B8,
+    0xBC5B3564BC0EC9CD, 0x3FC9322934F54148, 0x3C86A7062465BE33, 0x3FCA65C0B85AC1A8,
+    0xBC885718D2FF1BF4, 0x3FCB9BC1D3910094, 0xBC8045CB0C685E08, 0x3FCCD4315E9E0834,
+    0xBC16E7FB859D5055, 0x3FCE0F143B41A554, 0x3C851BBDEE020603, 0x3FCF4C6F5508EE5C,
+    0x3C6E17611AFC42C5, 0x3FD04623D0B0F8C8, 0xBC71C5B2E8735A43, 0x3FD0E7510FD7C564,
+    0xBC825FE139C4CFFD, 0x3FD189C1ECAEB084, 0xBC789843C4964554, 0x3FD22D78F0FA061A]
+
+### The arguments (sorted bits) whose e^x - 1 is too close to a rounding
+### boundary for the accurate path.
+secret preset CM_B64_EXPM1_DB: @Array[U64, 38] <- [0x3FBE923C188EA79B, 0x3FD1A0408712E00A,
+    0x3FD1C38132777B26, 0x3FD27F4980D511FF, 0x3FD8172A0E02F90E, 0x3FD8BBE2FB45C151,
+    0x3FDBCAB27D05ABDE, 0x3FE005AE04256BAB, 0x3FEACCFBE46B4EF0, 0x3FED086543694C5A,
+    0x401273C188AA7B14, 0x40183D4BCDEBB3F4, 0x40308F51434652C3, 0x4031D5C2DAEBE367,
+    0x403C44CE0D716A1A, 0x4042EE70220FB1C5, 0x40489D56A0C38E6F, 0x4057A60EE15E3E9D,
+    0x4061F0DA93354198, 0x40654CD1FEA7663A, 0x406556C678D5E976, 0x4072DA9E5E6AF0B0,
+    0x4079E7B643238A14, 0x407D6479EBA7C971, 0x4080BC04AF1B09F5, 0xBFBAB86CB1743B75,
+    0xBFD119AAE6072D39, 0xBFD175693A03B590, 0xBFD474D4DE7C14BB, 0xBFD789D025948EFA,
+    0xBFD82B5DFAF59B4C, 0xBFD9D871E078EBCE, 0xBFE1397ADD4538AC, 0xBFE22E24FA3D5CF9,
+    0xBFEDC2B5DF1F7D3D, 0xBFF0A54D87783D6F, 0xBFF2A9CAD9998262, 0xBFFE42A2ABB1BF0F]
+
+### e^me - 1, correctly rounded (to nearest, ties to even) and accurate near 0. +inf gives +inf, -inf gives -1,
+### overflow gives +inf, and NaN comes back quiet.
+### :returns: e^`me` - 1, correctly rounded.
+routine B64.exp_m1_unchecked() -> Me
+    local ux: U64 = me.bits()
+    local aix: U64 = ux & 0x7FFFFFFFFFFFFFFF
+
+    # |x| < 0.25
+    if aix < 0x3FD0000000000000
+        tiny: Bool = aix < 0x3CA0000000000000  # |x| < 2^-53
+        when
+            aix == 0 => return me
+            tiny => return Me.mul_add_unchecked(0x1p-54, a: me.abs(), b: me)
+            else =>
+                # e^x - 1 = (e^(i/128) - 1) + e^(i/128) (e^(z/128) - 1), with |i| <= 32 and |z| <= 1/2
+                sx: Me = Me.mul_unchecked(0x1p7, me)
+                fx: Me = sx.round_ties_even()
+                z: Me = sx -! fx
+                z2: Me = z *! z
+                slot: S64 = fx.to[S64]() + 32
+                i: U64 = slot.to[U64]()
+                th: Me = Me.from_bits(CM_B64_EXPM1_TZ.getitem(i * 2 + 1))
+                tl: Me = Me.from_bits(CM_B64_EXPM1_TZ.getitem(i * 2))
+                fh: Me = z *! 0x1p-7
+                q4: Me = Me.add_unchecked(0x1.11111ad1ad69dp-42, z *! 0x1.6c16c168b1fb5p-52)
+                q3: Me = Me.add_unchecked(0x1.555555555599cp-33, z *! q4)
+                q1: Me = Me.add_unchecked(0x1p-15, z *! 0x1.55555555551adp-24)
+                fl: Me = z2 *! (q1 +! z2 *! q3)
+                eps: Me = z2 *! 0x1.ap-65 +! 0x1p-104
+                r: CmF64ExpDd = cm_b64_exp_fasttwosum(x: th, y: fh)
+                rl: Me = r.lo +! (tl +! fl)
+                p: CmF64ExpDd = cm_b64_exp_muldd(xh: th, xl: tl, ch: fh, cl: fl)
+                f: CmF64ExpDd = cm_b64_exp_fastsum(xh: r.hi, xl: rl, yh: p.hi, yl: p.lo)
+                ub: Me = f.hi +! (f.lo +! eps)
+                lb: Me = f.hi +! (f.lo -! eps)
+                if ub == lb
+                    return lb
+                return cm_b64_expm1_accurate(me)
+    else
+        # |x| >= 0.25, infinite or NaN
+        # |x| >= 0x1.62e42fefa39fp+9
+        if aix >= 0x40862E42FEFA39F0
+            is_nan: Bool = aix > 0x7FF0000000000000
+            is_inf: Bool = aix == 0x7FF0000000000000
+            positive: Bool = ux >> 63 == 0
+            when
+                is_nan => return me +! me
+                is_inf =>
+                    if positive
+                        return me
+                    return -1.0
+                positive => return inf
+                else => pass
+        # x <= -0x1.25e4f7b2737fap+5
+        if ux >= 0xC0425E4F7B2737FA
+            # the result is within an ulp of -1
+            if ux >= 0xC042B708872320E2
+                return Me.add_unchecked(-1.0, 0x1p-55)
+            d: Me = Me.add_unchecked(0x1.25e4f7b2737fap+5, me) +! 0x1.8486612173c69p-51
+            return d *! 0x1.71547652b82fep-54 -! 0x1.fffffffffffffp-1
+        t: Me = (me *! 0x1.71547652b82fep+12).round_ties_even()
+        jt: S64 = t.to[S64]()
+        ie: S64 = jt >> 12
+        tt: CmF64ExpDd = cm_b64_exp_table_2pow(jt.to_wrap[U64]())
+        dx: Me = me -! t *! 0x1.62e42ffp-13 +! t *! 0x1.718432a1b0e26p-47
+        dx2: Me = dx *! dx
+        p01: Me = Me.add_unchecked(1.0, dx *! 0x1p-1)
+        p23: Me = Me.add_unchecked(0x1.55555557e54ffp-3, dx *! 0x1.55555553a12f4p-5)
+        p: Me = p01 +! dx2 *! p23
+        tx: Me = tt.hi *! dx
+        fl: Me = tt.lo +! tx *! p
+        eps: Me = Me.mul_unchecked(1.64e-19, tt.hi)
+        # off = -2^-ie, so that 2^ie (fh + fl + off) = e^x - 1
+        off_bits: U64 = S64.sub(3071, ie).to_wrap[U64]()
+        off: Me = Me.from_bits(off_bits << 52)
+        lt53: Bool = ie < 53
+        lt75: Bool = ie < 75
+        values2: (Me, Me) = when
+            lt53 =>
+                s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: off, y: tt.hi)
+                becomes (s.hi, s.lo)
+            lt75 =>
+                s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: tt.hi, y: off)
+                becomes (s.hi, s.lo)
+            else => (tt.hi, 0.0)
+        fh, e = values2
+        fe: Me = fl +! e
+        ub: Me = fh +! (fe +! eps)
+        lb: Me = fh +! (fe -! eps)
+        if ub == lb
+            return cm_b64_exp_ldexp(x: lb, e: ie)
+        return cm_b64_expm1_accurate(me)
+
+### The slow accurate path of expm1, for finite x with 2^-53 <= |x| and e^x - 1
+### neither overflowing nor within an ulp of -1.
+### :param x: The argument.
+### :returns: e^`x` - 1, correctly rounded.
+secret routine cm_b64_expm1_accurate(x: B64) -> B64
+    if x.abs() < 0.25
+        # odd-and-even Taylor expansion x + x^2/2 + x^3 (1/6 + ...), with the high-order terms in double
+        p: CmF64ExpDd = cm_b64_expm1_poly_small(x)
+        f1: CmF64ExpDd = cm_b64_expm1_mulddd(xh: p.hi, xl: p.lo, c: x)
+        f2: CmF64ExpDd = cm_b64_expm1_mulddd(xh: f1.hi, xl: f1.lo, c: x)
+        f3: CmF64ExpDd = cm_b64_expm1_mulddd(xh: f2.hi, xl: f2.lo, c: x)
+        hx: B64 = B64.mul_unchecked(0.5, x)
+        x2h: B64 = x *! hx
+        x2l: B64 = b64_mul_error(x, y: hx, p: x2h)
+        f: CmF64ExpDd = cm_b64_exp_fastsum(xh: x2h, xl: x2l, yh: f3.hi, yl: f3.lo)
+        a1: CmF64ExpDd = cm_b64_exp_fasttwosum(x, y: f.hi)
+        a2: CmF64ExpDd = cm_b64_exp_fasttwosum(x: a1.lo, y: f.lo)
+        a3: CmF64ExpDd = cm_b64_exp_fasttwosum(x: a1.hi, y: a2.hi)
+        a4: CmF64ExpDd = cm_b64_exp_fasttwosum(x: a3.lo, y: a2.lo)
+        u1: U64 = a4.hi.bits()
+        if u1 & 0x000FFFFFFFFFFFFF == 0
+            # v1 is zero or a power of 2
+            v0: B64 = a3.hi
+            if u1 << 1 == 0
+                return cm_b64_expm1_database(x, f: v0)
+            # v1 is a power of 2: nudge it one ulp toward the sign of the tail
+            same: Bool = u1 >> 63 == a4.lo.bits() >> 63
+            u: U64 = when
+                same => u1 +% 1
+                else => u1 -% 1
+            return v0 +! B64.from_bits(u)
+        return a3.hi +! a4.hi
+    t: B64 = (x *! 0x1.71547652b82fep+12).round_ties_even()
+    jt: S64 = t.to[S64]()
+    ie: S64 = jt >> 12
+    tt: CmF64ExpDd = cm_b64_exp_table_2pow(jt.to_wrap[U64]())
+    # Cody-Waite reduction with a triple-double log(2)/2^12
+    dx: B64 = x -! t *! 0x1.62e42ffp-13
+    dxl: B64 = B64.mul_unchecked(0x1.718432a1b0e26p-47, t)
+    dxl3: B64 = B64.mul_unchecked(0x1.9ff0342542fc3p-102, t)
+    dxle: B64 = B64.mul_add_unchecked(0x1.718432a1b0e26p-47, a: t, b: -dxl)
+    # the rounding error of dxl
+    dxll: B64 = dxl3 +! dxle
+    dxh: B64 = dx +! dxl
+    dxe: B64 = dx -! dxh +! dxl
+    dxlo: B64 = dxe +! dxll
+    p: CmF64ExpDd = cm_b64_expm1_poly_exp(xh: dxh, xl: dxlo)
+    f1: CmF64ExpDd = cm_b64_exp_muldd(xh: dxh, xl: dxlo, ch: p.hi, cl: p.lo)
+    f2: CmF64ExpDd = cm_b64_exp_muldd(xh: f1.hi, xl: f1.lo, ch: tt.hi, cl: tt.lo)
+    f: CmF64ExpDd = cm_b64_exp_fastsum(xh: tt.hi, xl: tt.lo, yh: f2.hi, yl: f2.lo)
+    off_bits: U64 = S64.sub(3071, ie).to_wrap[U64]()
+    off: B64 = B64.from_bits(off_bits << 52)  # -2^-ie
+    lt53: Bool = ie < 53
+    lt104: Bool = ie < 104
+    values2: (B64, B64, B64) = when
+        lt53 =>
+            s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: off, y: f.hi)
+            becomes (s.hi, f.lo, s.lo)
+        lt104 =>
+            s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: f.hi, y: off)
+            becomes (s.hi, f.lo, s.lo)
+        else => (f.hi, f.lo, 0.0)
+    fh, fl, e = values2
+    s: CmF64ExpDd = cm_b64_exp_fasttwosum(x: fh, y: fl +! e)
+    lo_bits: U64 = s.lo.bits()
+    d: U64 = lo_bits +% 8 & 0x000FFFFFFFFFFFFF
+    if d <= 8
+        return cm_b64_exp_ldexp(x: cm_b64_expm1_database(x, f: s.hi), e: ie)
+    return cm_b64_exp_ldexp(x: s.hi, e: ie)
+
+### The degree-10 double-double polynomial (in x, with double high-order terms)
+### of the accurate path for |x| < 1/4, by Horner's rule.
+### :param x: The argument, |x| < 1/4.
+### :returns: The polynomial value as a double-double.
+secret routine cm_b64_expm1_poly_small(x: B64) -> CmF64ExpDd
+    c5: B64 = B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CL.getitem(5))
+    c4: B64 = B64.add_unchecked(B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CL.getitem(4)), x *! c5)
+    c3: B64 = B64.add_unchecked(B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CL.getitem(3)), x *! c4)
+    c2: B64 = B64.add_unchecked(B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CL.getitem(2)), x *! c3)
+    c1: B64 = B64.add_unchecked(B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CL.getitem(1)), x *! c2)
+    c0: B64 = B64.add_unchecked(B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CL.getitem(0)), x *! c1)
+    fl: B64 = x *! c0
+    h0: CmF64ExpDd = cm_b64_exp_fasttwosum(x: B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CH.getitem(20)),
+        y: fl)
+
+    while i != 0 with i: U64 = 10, ch: B64 = h0.hi, cl: B64 = B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CH.getitem(21)) +! h0.lo
+        i2: U64 = i - 1
+        m: CmF64ExpDd = cm_b64_expm1_mulddd(xh: ch, xl: cl, c: x)
+        c02: B64 = B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CH.getitem(i2 * 2))
+        c12: B64 = B64.from_bits(CM_B64_EXPM1_ACC_SMALL_CH.getitem(i2 * 2 + 1))
+        s: CmF64ExpDd = cm_b64_exp_fastsum(xh: c02, xl: c12, yh: m.hi, yl: m.lo)
+        continue with i: i2, ch: s.hi, cl: s.lo
+    then
+        return CmF64ExpDd(hi: ch, lo: cl)
+
+### The degree-6 double-double polynomial of e^x at xh + xl (the exp accurate
+### polynomial), by Horner's rule with double-double products and sums.
+### :param xh: The high part of the reduced argument.
+### :param xl: The low part of the reduced argument.
+### :returns: The polynomial value as a double-double.
+secret routine cm_b64_expm1_poly_exp(xh: B64, xl: B64) -> CmF64ExpDd
+    local ch: @B64 <- .hollow()
+    local cl: @B64 <- .hollow()
+
+    B64.from_bits(CM_B64_EXP_ACC_CH.getitem(12)).poke_into(ch)
+    B64.from_bits(CM_B64_EXP_ACC_CH.getitem(13)).poke_into(cl)
+
+    while i != 0 with i: U64 = 6
+        i2: U64 = i - 1
+        m: CmF64ExpDd = cm_b64_exp_muldd(xh, xl, ch: ch.peek(), cl: cl.peek())
+        c0: B64 = B64.from_bits(CM_B64_EXP_ACC_CH.getitem(i2 * 2))
+        c1: B64 = B64.from_bits(CM_B64_EXP_ACC_CH.getitem(i2 * 2 + 1))
+        s: CmF64ExpDd = cm_b64_exp_fastsum(xh: c0, xl: c1, yh: m.hi, yl: m.lo)
+        next_cl: B64 = s.lo
+        next_ch: B64 = s.hi
+        next_ch.poke_into(ch)
+        next_cl.poke_into(cl)
+        continue with i: i2
+    then
+        return CmF64ExpDd(hi: ch.peek(), lo: cl.peek())
+
+### Double-double times double (xh + xl) c.
+### :param xh: The high part of the double-double factor.
+### :param xl: The low part of the double-double factor.
+### :param c: The double factor.
+### :returns: The product as a double-double, not renormalized.
+secret routine cm_b64_expm1_mulddd(xh: B64, xl: B64, c: B64) -> CmF64ExpDd
+    h: B64 = c *! xh
+    lo: B64 = c *! xl +! b64_mul_error(x: c, y: xh, p: h)
+    return CmF64ExpDd(hi: h, lo: lo)
+
+### Looks x up among the arguments whose e^x - 1 lies too close to a rounding
+### boundary for the accurate path, and returns the correctly rounded result
+### (unscaled when |x| >= 1/4) for them, or f unchanged otherwise.
+### :param x: The argument.
+### :param f: The result of the accurate path, returned when `x` is not in the table.
+### :returns: The correctly rounded result for a listed `x`, else `f`.
+secret routine cm_b64_expm1_database(x: B64, f: B64) -> B64
+    while a <= b with a: S64 = 0, b: S64 = 37
+        m: S64 = a + b >> 1
+        cm: U64 = CM_B64_EXPM1_DB.getitem(m.to[U64]())
+        ux: U64 = x.bits()
+        below: Bool = cm < ux
+        when
+            below => continue with a: m + 1, b: b
+            cm == ux =>
+                um: U64 = m.to_wrap[U64]()
+                jf: U64 = f.bits()
+                sign: U64 = U64.arith_shift_right(0x300E81651C, um) << 63
+                binade: U64 = (jf >> 52) & 0x7FF
+                scale: U64 = binade -% 54 << 52  # 2^-54 times the binade of f
+                dr: B64 = B64.from_bits(sign | scale)
+                upper: Bool = um >> 5 == 1
+                s2: U64 = when
+                    upper => 0xC06
+                    else => 0x76F58B0D65BD5553
+                t: U64 = (s2 >> ((um << 1) & 63)) & 3
+                return cm_b64_exp_pick(f, t, dr)
+            else => continue with a: a, b: m - 1
+    then
+        return f

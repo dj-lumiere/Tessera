@@ -48,6 +48,10 @@ namespace Tessera;
 ///
 /// 0.5: the float presets `INFINITY`, `NEG_INFINITY` and `NAN` are gone: the literals `inf`, `-inf` and `nan` take their
 /// place (`--step float-presets`).
+///
+/// 0.5: a standard library module is its folder, and the language's base is `Standard/System` with the modules under it,
+/// which every file sees without an import: `Standard/Core`, `Standard/Format`, `Standard/Alloc`, `Standard/Boot`, and
+/// `Standard/Json` are gone into it (`--step modules`).
 public static class Migrate
 {
     /// `F64`, its plural in prose (`F64s`), and a name built on it (`F128Extended`, `F64Core`). `F16C` is the x86 instruction set, not a type.
@@ -80,7 +84,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf" or "managers" or "float-presets";
+        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf" or "managers" or "float-presets" or "modules";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -370,6 +374,9 @@ public static class Migrate
         ["float-presets"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, FloatPresetMigration.Rewrite)
             : FloatPresetMigration.Rewrite(text),
+        ["modules"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, ModuleMigration.Rewrite)
+            : ModuleMigration.Rewrite(text),
     };
 
     private static readonly Regex InfNanWord = new(@"(?<![\w`.])(inf|nan)(?![\w`])", RegexOptions.Compiled);

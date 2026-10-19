@@ -1,0 +1,145 @@
+# Tessera stdlib: the correctly rounded inverse hyperbolic tangent of B32
+#
+# Small |x| goes through an odd polynomial in B64. Otherwise
+# atanh(x) = (log(1 + x) - log(1 - x)) / 2, both logarithms reduced through a
+# 64-entry reciprocal table and a short polynomial. Longer polynomials settle
+# the cases the first can't round. Round to nearest only: ±0 maps to itself,
+# ±1 gives ±inf, |x| > 1 gives NaN, and a NaN comes back quiet.
+#
+# Ported from CORE-MATH, src/binary32/atanh/atanhf.c via RazorForge's B32Atanh.rf.
+# Copyright (c) 2023-2025 Alexei Sibidanov <sibid@uvic.ca>
+# MIT license: see LICENSE-CORE-MATH
+
+module Standard/System/Numerics/B32
+
+### Approximate reciprocals of 1 + j/64 for j in 0..63, as B64 bits.
+secret preset CM_B32_ATANH_TR: @Array[U64, 64] <- [0x3FEFC07F02000000, 0x3FEF44659E000000,
+    0x3FEECC07B3000000, 0x3FEE573AC9000000, 0x3FEDE5D6E4000000, 0x3FED77B655000000,
+    0x3FED0CB58F000000, 0x3FECA4B305000000, 0x3FEC3F8F02000000, 0x3FEBDD2B8A000000,
+    0x3FEB7D6C3E000000, 0x3FEB203640000000, 0x3FEAC5701B000000, 0x3FEA6D01A7000000,
+    0x3FEA16D3F9000000, 0x3FE9C2D14F000000, 0x3FE970E4F8000000, 0x3FE920FB4A000000,
+    0x3FE8D3018D000000, 0x3FE886E5F1000000, 0x3FE83C977B000000, 0x3FE7F405FD000000,
+    0x3FE7AD2209000000, 0x3FE767DCE4000000, 0x3FE724287F000000, 0x3FE6E1F76B000000,
+    0x3FE6A13CD1000000, 0x3FE661EC6A000000, 0x3FE623FA77000000, 0x3FE5E75BB9000000,
+    0x3FE5AC056B000000, 0x3FE571ED3C000000, 0x3FE5390949000000, 0x3FE5015015000000,
+    0x3FE4CAB887000000, 0x3FE49539E4000000, 0x3FE460CBC8000000, 0x3FE42D6626000000,
+    0x3FE3FB0140000000, 0x3FE3C995A4000000, 0x3FE3991C2C000000, 0x3FE3698DF4000000,
+    0x3FE33AE45B000000, 0x3FE30D1901000000, 0x3FE2E025C0000000, 0x3FE2B404AD000000,
+    0x3FE288B013000000, 0x3FE25E2271000000, 0x3FE2345679000000, 0x3FE20B470C000000,
+    0x3FE1E2EF3B000000, 0x3FE1BB4A40000000, 0x3FE1945381000000, 0x3FE16E0689000000,
+    0x3FE1485F0E000000, 0x3FE12358E7000000, 0x3FE0FEF011000000, 0x3FE0DB20A9000000,
+    0x3FE0B7E6EC000000, 0x3FE0953F39000000, 0x3FE073260A000000, 0x3FE05197F8000000,
+    0x3FE03091B5000000, 0x3FE0101010000000]
+
+### -log of the entries of the reciprocal table, halved, as B64 bits.
+secret preset CM_B32_ATANH_TL: @Array[U64, 64] <- [0x3F6FE02A69106789, 0x3F87B91B1155B11B,
+    0x3F939E87BA1EBD60, 0x3F9B42DD713971BF, 0x3FA16536EE637AE1, 0x3FA51B073C96183F,
+    0x3FA8C345DA019B21, 0x3FAC5E5492ABC743, 0x3FAFEC912FBBEABB, 0x3FB1B72AD33F67A0,
+    0x3FB371FC1F6E8F74, 0x3FB526E5E5A1B438, 0x3FB6D60FE601D21D, 0x3FB87FA06438C911,
+    0x3FBA23BC223AB563, 0x3FBBC28673A58CD6, 0x3FBD5C216B8FBB91, 0x3FBEF0ADCAEC5936,
+    0x3FC040259530D041, 0x3FC1058BF8D24AD5, 0x3FC1C898C09D99FB, 0x3FC2895A13E286A3,
+    0x3FC347DD9A447D55, 0x3FC404308716A7E4, 0x3FC4BE5F963B78A1, 0x3FC5767718015A6C,
+    0x3FC62C82F3A5C795, 0x3FC6E08EAB13A1E4, 0x3FC792A55FE147A2, 0x3FC842D1D9928B17,
+    0x3FC8F11E873A62C7, 0x3FC99D958207E08B, 0x3FCA484090C1BB0A, 0x3FCAF129324B786B,
+    0x3FCB9858970710FB, 0x3FCC3DD7A6DDAD4D, 0x3FCCE1AF0B65F3EB, 0x3FCD83E725022F3E,
+    0x3FCE2488197C6C26, 0x3FCEC399D3D68CC0, 0x3FCF6123FAC028AC, 0x3FCFFD2E07E7F498,
+    0x3FD04BDF9E3B26D2, 0x3FD0986F4FA93521, 0x3FD0E4498651CC8C, 0x3FD12F719595EFBC,
+    0x3FD179EABB0A99A1, 0x3FD1C3B81E933C25, 0x3FD20CDCD0E0AB6E, 0x3FD2555BCF50F7CB,
+    0x3FD29D37FF34B08B, 0x3FD2E47437640268, 0x3FD32B1338401D71, 0x3FD37117B5C147B6,
+    0x3FD3B6844A13FC23, 0x3FD3FB5B857F6F42, 0x3FD43F9FE2F7CE67, 0x3FD48353D11488DF,
+    0x3FD4C679B014EE3A, 0x3FD50913CC03686B, 0x3FD54B2468259498, 0x3FD58CADB57D7989,
+    0x3FD5CDB1DCAA1765, 0x3FD60E32F46788D9]
+
+### n log(2) / 2 for n in 1..24 (rounded so that the fast path's error bound holds), as B64 bits.
+secret preset CM_B32_ATANH_LN2N: @Array[U64, 24] <- [0x3FD62E42FEDB2A44, 0x3FE62E42FEEAB21A,
+    0x3FF0A2B23F33E789, 0x3FF62E42FEF27604, 0x3FFBB9D3BEB10480, 0x4000A2B23F37C97E,
+    0x4003687A9F1710BC, 0x40062E42FEF657FA, 0x4008F40B5ED59F38, 0x400BB9D3BEB4E676,
+    0x400E7F9C1E942DB4, 0x4010A2B23F39BA79, 0x401205966F295E18, 0x4013687A9F1901B7,
+    0x4014CB5ECF08A556, 0x40162E42FEF848F5, 0x401791272EE7EC93, 0x4018F40B5ED79032,
+    0x401A56EF8EC733D1, 0x401BB9D3BEB6D770, 0x401D1CB7EEA67B0F, 0x401E7F9C1E961EAE,
+    0x401FE2804E85C24D, 0x4020A2B23F3AB2F6]
+
+### atanh(`me`), correctly rounded.
+### :returns: The inverse hyperbolic tangent of `me`.
+routine B32.atanh_unchecked() -> Me
+    local ux: U32 = me.bits()
+    local ax: U32 = ux << 1
+
+    when
+        ax == 0 => return me
+        ax < 0x73713744 => return me.mul_add_unchecked(a: 0x1p-25, b: me)
+        ax < 0x7A300000 =>
+            # |x| < 0x1.713744p-12
+            # |x| < 0x1.3p-5
+            # ±1
+            # NaN
+            # |x| > 1
+            z: B64 = me.to[B64]()
+            z2: B64 = z *! z
+            z4: B64 = z2 *! z2
+            p0: B64 = z2 *! 0x1.9999999ba4ee8p-3 +! 0x1.5555555555527p-2
+            p1: B64 = z2 *! 0x1.c8236aae809c6p-4 +! 0x1.24922c280990ap-3
+            r: B64 = z4 *! p1 +! p0
+            return (z +! z *! z2 *! r).to_unchecked[Me]()
+        ax == 0x7F000000 => return me /! 0.0
+        ax > 0xFF000000 => return me +! me
+        ax > 0x7F000000 => return Me.from_bits(0xFFC00000)
+        else =>
+            # md / 2^32 is |x|: td = 1 + |x| and tn = (1 - |x|) 2^nz, both in [1, 2)
+            negative: Bool = ux >> 31 == 1
+            sgn: B64 = when
+                negative => -1.0
+                else => 1.0
+            e: U32 = ax >> 24
+            full_mantissa: U32 = (ux << 8) | 0x80000000
+            md: U32 = full_mantissa >> U32.sub(126, e)
+            mn0: U32 = U32.sub_wrap(0, md)
+            nz: U32 = mn0.leading_zeros() + 1
+            mn: U32 = mn0 << nz
+            jn: U64 = (mn >> 26).to[U64]()
+            jd: U64 = (md >> 26).to[U64]()
+            mn_wide: U64 = mn.to[U64]() << 20
+            tn: B64 = B64.from_bits(mn_wide | 0x3FF0000000000000)
+            md_wide: U64 = md.to[U64]() << 20
+            td: B64 = B64.from_bits(md_wide | 0x3FF0000000000000)
+            zn: B64 = tn *! B64.from_bits(CM_B32_ATANH_TR.getitem(jn)) -! 1.0
+            zd: B64 = td *! B64.from_bits(CM_B32_ATANH_TR.getitem(jd)) -! 1.0
+            zn2: B64 = zn *! zn
+            zd2: B64 = zd *! zd
+            tln: B64 = B64.from_bits(CM_B32_ATANH_TL.getitem(jn))
+            tld: B64 = B64.from_bits(CM_B32_ATANH_TL.getitem(jd))
+            ln2n: B64 = B64.from_bits(CM_B32_ATANH_LN2N.getitem((nz - 1).to[U64]()))
+            rn_head: B64 = tln -! ln2n +! zn *! 0x1.fffffffce5a6ap-2
+            rn: B64 = rn_head +! zn2 *! (zn *! 0x1.555a0f53d79a5p-3 +! -0x1.0001f81ec0ab8p-2)
+            rd_head: B64 = tld +! zd *! 0x1.fffffffce5a6ap-2
+            rd: B64 = rd_head +! zd2 *! (zd *! 0x1.555a0f53d79a5p-3 +! -0x1.0001f81ec0ab8p-2)
+            r: B64 = sgn *! (rd -! rn)
+            ub: Me = r.to_unchecked[Me]()
+            lb: Me = (r +! sgn *! 0x1.f0fab08151146p-33).to_unchecked[Me]()
+            if ub == lb
+                return ub
+            # too close to a rounding boundary: evaluate both logarithms with longer polynomials
+            zn4: B64 = zn2 *! zn2
+            zd4: B64 = zd2 *! zd2
+            nzf: B64 = nz.to[B64]()
+            fn: B64 = cm_b32_atanh_log1p(z: zn, z2: zn2, z4: zn4)
+            fn1: B64 = fn +! B64.mul_unchecked(0x1.0ca86c3898dp-50, nzf)
+            fn2: B64 = fn1 +! tln
+            en: B64 = nzf *! 0x1.62e42fefa3ap-2
+            fd: B64 = cm_b32_atanh_log1p(z: zd, z2: zd2, z4: zd4)
+            fd1: B64 = fd +! tld
+            r2: B64 = fd1 -! fn2 +! en
+            return (sgn *! r2).to_unchecked[Me]()
+
+### The longer polynomial of atanh's slow path: about log(1 + z) / 2, given z, z^2 and z^4.
+### :param z: The reduced argument.
+### :param z2: `z`^2.
+### :param z4: `z`^4.
+### :returns: The polynomial's value.
+secret routine cm_b32_atanh_log1p(z: B64, z2: B64, z4: B64) -> B64
+    p01: B64 = z *! -0x1.000000000001bp-2 +! 0x1p-1
+    p23: B64 = z *! -0x1.fffffff26d72ep-4 +! 0x1.55555555555bap-3
+    p45: B64 = z *! -0x1.555c39cb9ee8p-4 +! 0x1.99999989035p-4
+    p03: B64 = z2 *! p23 +! p01
+    p46: B64 = z2 *! 0x1.24992d8b014a1p-4 +! p45
+    return z *! (z4 *! p46 +! p03)
