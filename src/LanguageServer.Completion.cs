@@ -98,7 +98,7 @@ public static partial class LanguageServer
 
     private static void AddKeywords(Action<string, int, string?, Decl?, Pos?, int> add)
     {
-        foreach (var k in Keywords.Concat(ControlKeywords)) add(k, KindKeyword, null, null, null, 6);
+        foreach (var k in Keywords.Concat(ControlKeywords).Concat(NumberWords)) add(k, KindKeyword, null, null, null, 6);
     }
 
     private static string Signature(RoutineDecl r) =>

@@ -216,10 +216,10 @@ routine B32.copysign(sign: Me) -> Me
 ### 1.0 for +0.0 and positive values, -1.0 for -0.0 and negative values, NaN for NaN.
 ### :returns: 1.0, -1.0, or NaN, by the sign of `me`.
 routine B32.signum() -> Me
-    nan: Bool = me.is_nan()
+    is_nan: Bool = me.is_nan()
     unit: Me = copysign[Me](mag: 1.0, sign: me)
     r: Me = when
-        nan => me
+        is_nan => me
         else => unit
     return r
 
@@ -244,7 +244,7 @@ routine B32.is_sign_negative() -> Bool
 ###     itself when `other` is infinite or `me` is a zero.
 routine B32.mod_trunc_unchecked(other: Me) -> Me
     remainder: B64 = me.to[B64]().mod_trunc_unchecked(other.to[B64]())
-    r: Me = remainder.to[Me]()
+    r: Me = remainder.to_unchecked[Me]()
     return r
 
 ### The reciprocal `1 / me`, rounded once.
@@ -301,7 +301,7 @@ routine B32.mul_add_unchecked(a: Me, b: Me) -> Me
 secret routine B32.mul_add_soft(a: Me, b: Me) -> Me
     product: B64 = me.to[B64]() *! a.to[B64]()
     sum: B64 = b64_add_round_to_odd(a: product, b: b.to[B64]())
-    r: Me = sum.to[B32]()
+    r: Me = sum.to_unchecked[B32]()
     return r
 
 ### The quotient `q` of Euclidean division, so that `me = q * other + r` with `0 <= r < |other|`.
@@ -535,8 +535,8 @@ routine B32.powi_unchecked(n: S32) -> Me
         r: B64 = me.to[B64]().powf_unchecked(n.to[B64]())
         if b32_is_on_midpoint_b64(r)
             r2: B128 = me.to[B128]().powf_unchecked(n.to[B128]())
-            return r2.to[Me]()
-        return r.to[Me]()
+            return r2.to_unchecked[Me]()
+        return r.to_unchecked[Me]()
     r: Me = me.powf_unchecked(n.to[Me]())
     return r
 
@@ -573,18 +573,18 @@ routine B32.log_unchecked(base: Me) -> Me
     if x_ok and base_ok and not one
         q: B64 = me.to[B64]().ln_unchecked() /! base.to[B64]().ln_unchecked()
         width: B64 = q.abs() *! 0x1p-50
-        left: Me = (q -! width).to[Me]()
-        right: Me = (q +! width).to[Me]()
+        left: Me = (q -! width).to_unchecked[Me]()
+        right: Me = (q +! width).to_unchecked[Me]()
         if left == right
             return left
         q2: B128 = me.to[B128]().ln_unchecked() /! base.to[B128]().ln_unchecked()
         width2: B128 = q2.abs().scalbn_unchecked(-109)
-        left2: Me = (q2 -! width2).to[Me]()
-        right2: Me = (q2 +! width2).to[Me]()
+        left2: Me = (q2 -! width2).to_unchecked[Me]()
+        right2: Me = (q2 +! width2).to_unchecked[Me]()
         if left2 == right2
             return left2
         r: B128 = big_log_ratio(x: me.to[B128](), base: base.to[B128](), fraction_bits: 23)
-        return r.to[Me]()
+        return r.to_unchecked[Me]()
     return me.ln_unchecked() /! base.ln_unchecked()
 
 # -- special functions ---------------------------------------------------------
@@ -652,10 +652,21 @@ common routine B32.from_bits(bits: U32) -> Me
 
 # -- float conversions -----------------------------------------------------------
 
+### Narrows to B16, rounding once to nearest (ties to even). {B32.to_unchecked[B16]} gives an infinity instead of crashing.
+### :returns: The nearest B16. An infinity stays infinite, and NaN stays NaN.
+### :throws: Crashes with `NumericOverflowError` when `me` is finite and rounds past B16's range. The crash reports the caller's location.
+@track_caller
+routine B32.to[B16]() -> B16
+    r: B16 = me.to_unchecked[B16]()
+    if r.is_infinite() and me.is_finite()
+        crash_float_overflow()
+    return r
+
 ### Rounds to nearest, ties to even. Written with integer operations instead of
 ### fptrunc, which would call compiler-rt's `__truncsfhf2`.
+### A finite value past B16's range gives an infinity here, where {B32.to[B16]} crashes.
 ### :returns: The nearest B16. Values past the B16 range give a signed infinity, and NaN stays NaN (made quiet).
-routine B32.to[B16]() -> B16
+routine B32.to_unchecked[B16]() -> B16
     local bits: U32 = me.bits()
     local high_half: U16 = (bits >> 16).to[U16]()
     local sign: U16 = high_half & 0x8000
@@ -693,10 +704,21 @@ routine B32.to[B16]() -> B16
             r: B16 = .from_bits(sign | rebiased.to[U16]())
             return r
 
+### Narrows to BF16, rounding once to nearest (ties to even). {B32.to_unchecked[BF16]} gives an infinity instead of crashing.
+### :returns: The nearest BF16. An infinity stays infinite, and NaN stays NaN.
+### :throws: Crashes with `NumericOverflowError` when `me` is finite and rounds past BF16's range. The crash reports the caller's location.
+@track_caller
+routine B32.to[BF16]() -> BF16
+    r: BF16 = me.to_unchecked[BF16]()
+    if r.is_infinite() and me.is_finite()
+        crash_float_overflow()
+    return r
+
 ### Rounds to nearest, ties to even, by adding a bias below the kept 16 bits.
 ### Written out because the Windows compiler-rt has no __truncsfbf2.
+### A finite value past BF16's range gives an infinity here, where {B32.to[BF16]} crashes.
 ### :returns: The nearest BF16. NaN stays NaN (made quiet).
-routine B32.to[BF16]() -> BF16
+routine B32.to_unchecked[BF16]() -> BF16
     local bits: U32 = me.bits()
 
     if me.is_nan()

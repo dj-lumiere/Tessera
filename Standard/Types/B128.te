@@ -498,11 +498,11 @@ secret routine b128_div_bits(a: U128, b: U128) -> U128
 ### :param a: The radicand's bits.
 ### :returns: The bits of sqrt(a): -0 for -0, +inf for +inf, a quieted NaN for NaN, and NaN for any other negative value.
 secret routine b128_sqrt_bits(a: U128) -> U128
-    nan: Bool = b128_is_nan_bits(a)
+    is_nan: Bool = b128_is_nan_bits(a)
     zero: Bool = b128_is_zero_bits(a)
     negative: Bool = b128_is_negative_bits(a)
     when
-        nan => return b128_quiet(a)
+        is_nan => return b128_quiet(a)
         zero => return a
         negative => return B128_QNAN
         b128_exponent(a) == B128_EXP_MAX => return a
@@ -732,10 +732,10 @@ secret routine b128_narrow(value: B128, format: FloatFormat) -> U64
         else => 0
     local infinity: U64 = exponent_max << mantissa_bits
 
-    nan: Bool = b128_is_nan_bits(bits)
-    inf: Bool = b128_exponent(bits) == B128_EXP_MAX
+    is_nan: Bool = b128_is_nan_bits(bits)
+    is_inf: Bool = b128_exponent(bits) == B128_EXP_MAX
     when
-        nan =>
+        is_nan =>
             # keep the top payload bits and force the quiet bit
             top_fraction: U128 = b128_fraction(bits) >> (112 - mantissa_bits).to[U128]()
             payload: U64 = top_fraction.to[U64]()
@@ -743,7 +743,7 @@ secret routine b128_narrow(value: B128, format: FloatFormat) -> U64
             signed_inf: U64 = sign | infinity
             r: U64 = signed_inf | payload | quiet
             return r
-        inf => return sign | infinity
+        is_inf => return sign | infinity
         b128_is_zero_bits(bits) => return sign
         else =>
             # q = round(sig / 2^shift): the quantum is 2^(e - mantissa_bits), or the
@@ -802,27 +802,71 @@ routine BF16.to[B128]() -> B128
     r: B128 = b128_widen(bits: me.bits().to[U64](), format: Me.FORMAT.peek())
     return r
 
-### Narrows to B64, rounding once to nearest (ties to even).
-### :returns: The nearest B64: infinity beyond B64's range, a subnormal or zero for tiny values, NaN for NaN.
+### Narrows to B64, rounding once to nearest (ties to even). {B128.to_unchecked[B64]} gives an infinity instead of crashing.
+### :returns: The nearest B64. An infinity stays infinite, and NaN stays NaN.
+### :throws: Crashes with `NumericOverflowError` when `me` is finite and rounds past B64's range. The crash reports the caller's location.
+@track_caller
 routine B128.to[B64]() -> B64
+    r: B64 = me.to_unchecked[B64]()
+    if r.is_infinite() and me.is_finite()
+        crash_float_overflow()
+    return r
+
+### Narrows to B64, rounding once to nearest (ties to even).
+### A finite value past B64's range gives an infinity here, where {B128.to[B64]} crashes.
+### :returns: The nearest B64: infinity beyond B64's range, a subnormal or zero for tiny values, NaN for NaN.
+routine B128.to_unchecked[B64]() -> B64
     r: B64 = .from_bits(b128_narrow(value: me, format: B64.FORMAT.peek()))
     return r
 
-### Narrows to B32, rounding once to nearest (ties to even), so it can differ from going through B64.
-### :returns: The nearest B32: infinity beyond B32's range, a subnormal or zero for tiny values, NaN for NaN.
+### Narrows to B32, rounding once to nearest (ties to even). {B128.to_unchecked[B32]} gives an infinity instead of crashing.
+### :returns: The nearest B32. An infinity stays infinite, and NaN stays NaN.
+### :throws: Crashes with `NumericOverflowError` when `me` is finite and rounds past B32's range. The crash reports the caller's location.
+@track_caller
 routine B128.to[B32]() -> B32
+    r: B32 = me.to_unchecked[B32]()
+    if r.is_infinite() and me.is_finite()
+        crash_float_overflow()
+    return r
+
+### Narrows to B32, rounding once to nearest (ties to even), so it can differ from going through B64.
+### A finite value past B32's range gives an infinity here, where {B128.to[B32]} crashes.
+### :returns: The nearest B32: infinity beyond B32's range, a subnormal or zero for tiny values, NaN for NaN.
+routine B128.to_unchecked[B32]() -> B32
     r: B32 = .from_bits(b128_narrow(value: me, format: B32.FORMAT.peek()).to[U32]())
     return r
 
-### Narrows to B16, rounding once to nearest (ties to even).
-### :returns: The nearest B16: infinity above 65504, a subnormal or zero for tiny values, NaN for NaN.
+### Narrows to B16, rounding once to nearest (ties to even). {B128.to_unchecked[B16]} gives an infinity instead of crashing.
+### :returns: The nearest B16. An infinity stays infinite, and NaN stays NaN.
+### :throws: Crashes with `NumericOverflowError` when `me` is finite and rounds past B16's range. The crash reports the caller's location.
+@track_caller
 routine B128.to[B16]() -> B16
+    r: B16 = me.to_unchecked[B16]()
+    if r.is_infinite() and me.is_finite()
+        crash_float_overflow()
+    return r
+
+### Narrows to B16, rounding once to nearest (ties to even).
+### A finite value past B16's range gives an infinity here, where {B128.to[B16]} crashes.
+### :returns: The nearest B16: infinity above 65504, a subnormal or zero for tiny values, NaN for NaN.
+routine B128.to_unchecked[B16]() -> B16
     r: B16 = .from_bits(b128_narrow(value: me, format: B16.FORMAT.peek()).to[U16]())
     return r
 
-### Narrows to BF16, rounding once to nearest (ties to even).
-### :returns: The nearest BF16: infinity beyond BF16's range, a subnormal or zero for tiny values, NaN for NaN.
+### Narrows to BF16, rounding once to nearest (ties to even). {B128.to_unchecked[BF16]} gives an infinity instead of crashing.
+### :returns: The nearest BF16. An infinity stays infinite, and NaN stays NaN.
+### :throws: Crashes with `NumericOverflowError` when `me` is finite and rounds past BF16's range. The crash reports the caller's location.
+@track_caller
 routine B128.to[BF16]() -> BF16
+    r: BF16 = me.to_unchecked[BF16]()
+    if r.is_infinite() and me.is_finite()
+        crash_float_overflow()
+    return r
+
+### Narrows to BF16, rounding once to nearest (ties to even).
+### A finite value past BF16's range gives an infinity here, where {B128.to[BF16]} crashes.
+### :returns: The nearest BF16: infinity beyond BF16's range, a subnormal or zero for tiny values, NaN for NaN.
+routine B128.to_unchecked[BF16]() -> BF16
     r: BF16 = .from_bits(b128_narrow(value: me, format: BF16.FORMAT.peek()).to[U16]())
     return r
 
@@ -875,9 +919,9 @@ routine S32.to[B128]() -> B128
 ### :param bits: The binary128 encoding.
 ### :returns: The integer part of the magnitude, U128.MAX from 2^128 up and for infinities.
 secret routine b128_whole_magnitude(bits: U128) -> U128
-    nan: Bool = b128_is_nan_bits(bits)
+    is_nan: Bool = b128_is_nan_bits(bits)
     when
-        nan => return 0
+        is_nan => return 0
         b128_is_zero_bits(bits) => return 0
         else =>
             p: B128Parts = b128_unpack(bits)
@@ -1095,10 +1139,10 @@ secret routine b128_fma_bits(x: U128, y: U128, c: U128) -> U128
             # inf × 0 and inf - inf are NaN
             clash: Bool = c_inf and c & B128_SIGN != sign
             invalid: Bool = p_zero or clash
-            inf: U128 = sign | B128_INF
+            inf_bits: U128 = sign | B128_INF
             if invalid
                 return B128_QNAN
-            return inf
+            return inf_bits
         c_inf => return c
         p_zero =>
             # ±0 + c is c, except ±0 + ±0: -0 only when both are -0
@@ -1223,10 +1267,10 @@ routine B128.recip_unchecked() -> Me
 ### The sign of `me` as a number.
 ### :returns: 1.0 for +0.0 and positive values, -1.0 for -0.0 and negative values, NaN for NaN.
 routine B128.signum() -> Me
-    nan: Bool = me.is_nan()
+    is_nan: Bool = me.is_nan()
     unit: Me = b128_of(B128_ONE).copysign(me)
     r: Me = when
-        nan => me
+        is_nan => me
         else => unit
     return r
 
@@ -1490,13 +1534,13 @@ record B128Frexp
 ###     back quieted.
 routine B128.next_up_unchecked() -> Me
     bits: U128 = me.bits()
-    nan: Bool = b128_is_nan_bits(bits)
+    is_nan: Bool = b128_is_nan_bits(bits)
     top: Bool = bits == B128_INF
     zero: Bool = b128_is_zero_bits(bits)
     positive: Bool = not b128_is_negative_bits(bits)
     tiny: Me = b128_of(1)
     when
-        nan => return b128_of(b128_quiet(bits))
+        is_nan => return b128_of(b128_quiet(bits))
         top => return me
         zero => return tiny
         positive => return b128_of(bits + 1)
@@ -1516,9 +1560,9 @@ routine B128.next_down_unchecked() -> Me
 routine B128.scalbn_unchecked(n: S64) -> Me
     local bits: U128 = me.bits()
 
-    nan: Bool = b128_is_nan_bits(bits)
+    is_nan: Bool = b128_is_nan_bits(bits)
     when
-        nan => return b128_of(b128_quiet(bits))
+        is_nan => return b128_of(b128_quiet(bits))
         b128_is_zero_bits(bits) or me.is_infinite() => return me
         else =>
             # past ±40000 every finite value over- or underflows, and the sum can't wrap
@@ -1534,10 +1578,10 @@ routine B128.scalbn_unchecked(n: S64) -> Me
 ### :returns: The unbiased exponent: -inf for ±0, +inf for ±inf, and a NaN comes back quieted.
 routine B128.logb_unchecked() -> Me
     bits: U128 = me.bits()
-    nan: Bool = b128_is_nan_bits(bits)
+    is_nan: Bool = b128_is_nan_bits(bits)
     zero: Bool = b128_is_zero_bits(bits)
     when
-        nan => return b128_of(b128_quiet(bits))
+        is_nan => return b128_of(b128_quiet(bits))
         zero => return Me.NEG_INFINITY
         me.is_infinite() => return Me.INFINITY
         else =>
@@ -1550,12 +1594,12 @@ routine B128.logb_unchecked() -> Me
 ###     exponent 0, a NaN quieted with exponent 0.
 routine B128.frexp() -> B128Frexp
     bits: U128 = me.bits()
-    nan: Bool = b128_is_nan_bits(bits)
+    is_nan: Bool = b128_is_nan_bits(bits)
     keep: Bool = b128_is_zero_bits(bits) or me.is_infinite()
     quiet: B128Frexp = B128Frexp(fraction: b128_of(b128_quiet(bits)), exponent: 0)
     whole: B128Frexp = B128Frexp(fraction: me, exponent: 0)
     when
-        nan => return quiet
+        is_nan => return quiet
         keep => return whole
         else =>
             p: B128Parts = b128_unpack(me.bits())

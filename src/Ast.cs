@@ -347,6 +347,13 @@ public sealed record FloatLit(double Value, Pos Pos) : Expr(Pos)
 {
     /// The literal as written (`-0x1p-25`, `1e-300`), which a re-printed line keeps: a hex float stays exact.
     public string? Text { get; init; }
+
+    /// `inf` or `nan`: a float literal written as a word, which a B128 takes too.
+    public bool IsWord => Text is "inf" or "nan";
+
+    /// The B128 bits of `inf` or `nan` (the canonical quiet NaN), the literal words a B128 takes.
+    public BigInteger WordB128Bits => Text == "inf" ? BigInteger.Parse("7FFF0000000000000000000000000000", System.Globalization.NumberStyles.HexNumber)
+        : BigInteger.Parse("7FFF8000000000000000000000000000", System.Globalization.NumberStyles.HexNumber);
 }
 public sealed record StrLit(string Value, Pos Pos) : Expr(Pos);
 /// `20ms`, `4kib`: a whole number with a time unit (a `Duration`) or a size unit (a `ByteSize`), as written.

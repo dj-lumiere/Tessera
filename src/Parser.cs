@@ -56,7 +56,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         "jump", "branch", "when", "return", "unreachable", "continue", "else", "elseif", "block", "claim", "local",
         "true", "false", "null", "routine", "record", "choice", "variant", "preset", "global", "concept", "conform",
         "protocol", "obeys", "needs", "define", "secret", "module", "import", "and", "or", "not", "is", "as",
-        "todo", "if", "each", "while", "until", "becomes", "break", "pass", "drop", "entity", "steal",
+        "todo", "if", "each", "while", "until", "becomes", "break", "pass", "drop", "entity", "steal", "inf", "nan",
     ];
     /// Inside an `@external("asm")` routine: a statement may carry `@asm_prefix`, and an `if` may test a bare
     /// comparison name (`eq`, `lt[U64]`).
@@ -2259,6 +2259,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 {
                     case "true": Next(); return new BoolLit(true, t.Pos);
                     case "false": Next(); return new BoolLit(false, t.Pos);
+                    // Infinity and NaN are float literals, typed like `1.5` by where they go; `-inf` is `-` on `inf`.
+                    case "inf": Next(); return new FloatLit(double.PositiveInfinity, t.Pos) { Text = "inf" };
+                    case "nan": Next(); return new FloatLit(double.NaN, t.Pos) { Text = "nan" };
                     case "null":
                         // `null` is gone: a pointer that holds nothing is the all-zero value every type has.
                         Next();

@@ -90,7 +90,8 @@ routine start() -> None
   nearest visible value (the routine's parameters, its head `local` lines, earlier bindings in the body it is in),
   else a preset, global, or type;
   a call `f(...)` always names a routine. A routine as a value is `f.to[Callable]()` (never a bare `f`), a generic one's instance `f[S64].to[Callable]()`, and a value
-  named like a keyword (`each`, `return`, ...) is written between backticks: `` `each` ``. The type says
+  named like a keyword (`each`, `return`, `inf`, `nan`, ...) is written between backticks: `` `each` ``
+  (`tessera migrate --step inf` adds them for a value named `inf` or `nan`). The type says
   whether a value is a pointer (`@T`, or `Addr` for an address with no pointee type, C's `void*`). `@T`
   passes where an `Addr` is expected; the other way takes `a.to[@T]()`. `@T` is how the record `Ptr[T]` is
   written (`@@Byte`, `@Array[@S32, 3]`); it keeps its name only where routines are declared on it or called through
@@ -338,11 +339,13 @@ routine start() -> None
   (Roadmap open question #66), so `lint` prints these and counts them apart without failing. Don't mark what costs
   only on some targets (64-bit division on 32-bit, 128-bit division, `popcount`) or only now and then (`List.push`),
   nor blocking waits (`SignalCaster.wait`, `wait_on`, `wait_finished`), which belong in loops.
-- A `preset` value is folded by the builder, and only from literals, other presets, integer and `Bool` arithmetic and
-  conversions (`add`, `shift_left`, `bitor`, `to[U128]()`, `to_wrap[U8]()`, …), B32/B64 `add`/`sub`/`mul`/`truediv` (and
-  their `_unchecked` forms, `+! -! *! /!`)/`neg`, `max`/`min`/`sizeof`/`alignof`, and `T.from_bits(0x…)` for floats and
-  B128. A routine call is an error; nothing runs at build time. Overflow, an out-of-range conversion, or a checked
-  float operation giving inf or NaN in a preset is a build error.
+- A `preset` value is folded by the builder, and only from literals (`inf` and `nan` too), other presets, integer and
+  `Bool` arithmetic and conversions (`add`, `shift_left`, `bitor`, `to[U128]()`, `to_wrap[U8]()`, …), B32/B64
+  `add`/`sub`/`mul`/`truediv` (and their `_unchecked` forms, `+! -! *! /!`), `neg` of every float, `to[T]()` and
+  `to_unchecked[T]()` between `B16`, `BF16`, `B32` and `B64` (`B64.to[B16](0.5)`), `max`/`min`/`sizeof`/`alignof`, and
+  `T.from_bits(0x…)` for floats and B128. A routine call is an error; nothing runs at build time. Overflow, an
+  out-of-range conversion, a checked float operation giving inf or NaN, or a `to[T]()` turning a finite float into an
+  infinity in a preset is a build error. A literal `inf` is fine (`preset TOP: B64 = inf`): it is written on purpose.
 - `p.to[@U]()` reinterprets memory: any sizes, no strict aliasing, but you own bounds, alignment, and value validity
   (`Bool`, `Char`, choices). Pointers may alias.
 
@@ -533,6 +536,11 @@ routine start() -> None
   `BF16`, `B32`, `B64`, and `B128` with its 113 significant bits) that holds it exactly: anywhere else, or one the
   type would round, overflow, or flush below its smallest subnormal, is a build error that says which. A decimal
   float literal isn't a `B128` yet: write a hex float, or convert a `B64` (`B64.to[B128](1.5)`).
+- `inf` and `nan` are float literals (reserved words) typed by where they go, like `1.5`: `top: B64 = inf`,
+  `low: B32 = -inf` (negative infinity is `-` on `inf`), `return nan`, `x < inf`, `[1.0, inf]` as a float Vector.
+  Every binary float takes them, `B128` included, and a preset folds them. Where nothing gives a type
+  (`inf.is_nan()`, an overloaded call) or the type isn't a float (`n: S64 = inf`) it is a build error. The presets
+  `T.INFINITY`, `T.NEG_INFINITY` and `T.NAN` stay (the same bits).
 - `Byte` is memory with no arithmetic; there are no wider raw-bits types. `x.bits()` and `b.to[U8]()` /
   `b.to[S8]()` move between it and the numbers, and `S64` <-> `U64` is `to_wrap[U64]()` / `to_wrap[S64]()`. It has
   comparison, `hash`, `bitand` / `bitor` / `bitxor` / `bitnot`, and `shift_left` / `arith_shift_right`. Memory and text are `@Byte`;
@@ -542,6 +550,12 @@ routine start() -> None
 - Conversions are methods: `n.to[S64]()`, `b.to[U64]()` (Bool to 0/1), `x.to[B64]()`. Float to integer is
   `to[S64]()` (crashes on NaN or out of range), `to_checked[S64]()`, or `to_clamp[S64]()`. A conversion names the type
   it goes to as a type argument, so `x.to[T]()` works in generic code.
+- **A conversion to a narrower float crashes when a finite value rounds to an infinity**: `B64.to[B32]()`,
+  `to[B16]()`, `to[BF16]()`, `B32.to[B16]()` / `to[BF16]()`, `BF16.to[B16]()`, `B128.to[B64]()` .. `to[BF16]()`, and
+  `U128.to[B32]()` (from 2^128 - 2^103 up) are `@track_caller` and crash with `NumericOverflowError`. An infinity stays
+  infinite and NaN stays NaN; only finite to infinite is the bug. Each has `to_unchecked[T]()`, the raw rounded value
+  (an infinity past the range); a value in range is the same bits in both. A widening conversion has only `to[T]()`.
+  Stdlib float implementations and Ingrid's exports use `to_unchecked`, so a C caller never crashes.
 - Floats are `B16`, `BF16`, `B32`, `B64`, and software `B128` (an `i128`; stdlib code reads it with `f128_bits`):
   `add`, `mul`, `truediv`, `floordiv`, `mod`, and so on. `x.bits()` gives the bits as the same-width `U`, `B64.from_bits(u)` goes back.
 

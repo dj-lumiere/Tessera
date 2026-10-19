@@ -39,6 +39,8 @@ namespace Tessera;
 ///
 /// 0.5: `//` is `floordiv`, `<<` is `shift_left`, `>>` is `arith_shift_right` and `>>>` is `logical_shift_right`, with
 /// their checked and wrapping forms (`--step names`).
+///
+/// 0.5: `inf` and `nan` are float literals, so a value of one of those names is written between backticks (`--step inf`).
 public static class Migrate
 {
     /// `F64`, its plural in prose (`F64s`), and a name built on it (`F128Extended`, `F64Core`). `F16C` is the x86 instruction set, not a type.
@@ -71,7 +73,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names";
+        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -349,10 +351,45 @@ public static class Migrate
         ["operators"] = (file, text, report) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, t => OperatorMigration.Rewrite(t, report, file))
             : OperatorMigration.Rewrite(text, report, file),
+        ["inf"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, InfNanNames)
+            : InfNanNames(text),
         ["names"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, RoutineNameMigration.Rewrite)
             : RoutineNameMigration.Rewrite(text),
     };
+
+    private static readonly Regex InfNanWord = new(@"(?<![\w`.])(inf|nan)(?![\w`])", RegexOptions.Compiled);
+    private static readonly Regex InfNanDeclared = new(@"(?<![\w`.])(inf|nan)\s*:(?!:)", RegexOptions.Compiled);
+
+    /// `inf` and `nan` are float literals now, so a value named one of them is written between backticks. In a file
+    /// that names a value, parameter, field, or argument `inf` or `nan` (`nan: Bool = x.is_nan()`), every use of that
+    /// name in code and in write-template holes (not in comments or other text) becomes `` `nan` ``. A file that never names
+    /// one keeps its words, which are the literals.
+    public static string InfNanNames(string text)
+    {
+        var lines = text.Split('\n');
+        var codes = lines.Select(line => CommentStart(line) is var c and >= 0 ? line[..c] : line).ToList();
+        var named = codes.SelectMany(code => CodeAndLiterals(code).Where(part => !part.Literal))
+            .SelectMany(part => InfNanDeclared.Matches(part.Text).Select(m => m.Groups[1].Value))
+            .ToHashSet();
+        if (named.Count == 0) return text;
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string code = codes[i];
+            string rest = lines[i][code.Length..];
+            code = string.Concat(CodeAndLiterals(code).Select(part => part.Literal
+                ? part.Text.StartsWith('"') ? TemplateHole.Replace(part.Text, hole => Rename(hole.Value)) : part.Text
+                : Rename(part.Text)));
+            lines[i] = code + rest;
+        }
+        return string.Join('\n', lines);
+
+        string Rename(string code) => InfNanWord.Replace(code, m => named.Contains(m.Value) ? $"`{m.Value}`" : m.Value);
+    }
+
+    /// A `{...}` hole of a write template, whose inside is code.
+    private static readonly Regex TemplateHole = new(@"\{[^{}]*\}", RegexOptions.Compiled);
 
     private static readonly Regex NullWord = new(@"(?<![\w`.])null(?![\w`])", RegexOptions.Compiled);
     private static readonly Regex NullTest = new(@"\bis_(not_)?null\b", RegexOptions.Compiled);

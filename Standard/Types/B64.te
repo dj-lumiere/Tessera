@@ -172,9 +172,20 @@ needs T: typename
 
 # -- named narrowing conversion ------------------------------------------------
 
-### Narrows to B32, rounding to nearest (ties to even).
-### :returns: The nearest B32: infinity beyond B32's range, a subnormal or zero for tiny values, NaN for NaN.
+### Narrows to B32, rounding once to nearest (ties to even). {B64.to_unchecked[B32]} gives an infinity instead of crashing.
+### :returns: The nearest B32. An infinity stays infinite, and NaN stays NaN.
+### :throws: Crashes with `NumericOverflowError` when `me` is finite and rounds past B32's range. The crash reports the caller's location.
+@track_caller
 routine B64.to[B32]() -> B32
+    r: B32 = me.to_unchecked[B32]()
+    if r.is_infinite() and me.is_finite()
+        crash_float_overflow()
+    return r
+
+### Narrows to B32, rounding to nearest (ties to even).
+### A finite value past B32's range gives an infinity here, where {B64.to[B32]} crashes.
+### :returns: The nearest B32: infinity beyond B32's range, a subnormal or zero for tiny values, NaN for NaN.
+routine B64.to_unchecked[B32]() -> B32
     result: B32 = fptrunc[Me, B32](me)
     return result
 
@@ -239,10 +250,10 @@ routine B64.copysign(sign: Me) -> Me
 ### 1.0 for +0.0 and positive values, -1.0 for -0.0 and negative values, NaN for NaN.
 ### :returns: 1.0, -1.0, or NaN, by the sign of `me`.
 routine B64.signum() -> Me
-    nan: Bool = me.is_nan()
+    is_nan: Bool = me.is_nan()
     unit: Me = copysign[Me](mag: 1.0, sign: me)
     r: Me = when
-        nan => me
+        is_nan => me
         else => unit
     return r
 
@@ -268,10 +279,10 @@ routine B64.is_sign_negative() -> Bool
 ### :returns: The remainder. NaN when either operand is NaN, `me` is infinite, or `other` is 0. Otherwise `me`
 ###     itself when `other` is infinite or `me` is a zero.
 routine B64.mod_trunc_unchecked(other: Me) -> Me
-    nan: Bool = me.is_nan() or other.is_nan()
+    is_nan: Bool = me.is_nan() or other.is_nan()
     invalid: Bool = me.is_infinite() or other == 0.0
     when
-        nan => return me +! other
+        is_nan => return me +! other
         invalid => return Me.NAN
         other.is_infinite() or me == 0.0 => return me
         else =>
@@ -744,13 +755,13 @@ routine B64.log_unchecked(base: Me) -> Me
             is None =>
                 q: B128 = me.to[B128]().ln_unchecked() /! base.to[B128]().ln_unchecked()
                 width: B128 = q.abs().scalbn_unchecked(-109)
-                left: Me = (q -! width).to[Me]()
-                right: Me = (q +! width).to[Me]()
+                left: Me = (q -! width).to_unchecked[Me]()
+                right: Me = (q +! width).to_unchecked[Me]()
                 if left == right
                     return left
                 r2: B128 = big_log_ratio(x: me.to[B128](), base: base.to[B128](),
                     fraction_bits: 52)
-                return r2.to[Me]()
+                return r2.to_unchecked[Me]()
     else
         return me.ln_unchecked() /! base.ln_unchecked()
 
@@ -1008,10 +1019,21 @@ secret routine b64_dekker_error(x: B64, y: B64, p: B64) -> B64
     e: B64 = xl *! yl -! t3
     return e
 
+### Narrows to B16, rounding once to nearest (ties to even). {B64.to_unchecked[B16]} gives an infinity instead of crashing.
+### :returns: The nearest B16. An infinity stays infinite, and NaN stays NaN.
+### :throws: Crashes with `NumericOverflowError` when `me` is finite and rounds past B16's range. The crash reports the caller's location.
+@track_caller
+routine B64.to[B16]() -> B16
+    r: B16 = me.to_unchecked[B16]()
+    if r.is_infinite() and me.is_finite()
+        crash_float_overflow()
+    return r
+
 ### Narrows to B32 with round-to-odd, then rounds that to B16. B32's 24 bits are
 ### enough (2 * 11 + 2) for the second rounding to be exact.
+### A finite value past B16's range gives an infinity here, where {B64.to[B16]} crashes.
 ### :returns: The nearest B16, rounded once. Values past the B16 range give a signed infinity.
-routine B64.to[B16]() -> B16
+routine B64.to_unchecked[B16]() -> B16
     narrow: B32 = fptrunc[Me, B32](me)
     back: Me = narrow.to[Me]()
     inexact: Bool = back != me
@@ -1022,14 +1044,25 @@ routine B64.to[B16]() -> B16
     trunc: U32 = narrow.bits() - away.to[U32]()
     bits: U32 = trunc | sticky.to[U32]()
     odd: B32 = .from_bits(bits)
-    r: B16 = odd.to[B16]()
+    r: B16 = odd.to_unchecked[B16]()
+    return r
+
+### Narrows to BF16, rounding once to nearest (ties to even). {B64.to_unchecked[BF16]} gives an infinity instead of crashing.
+### :returns: The nearest BF16. An infinity stays infinite, and NaN stays NaN.
+### :throws: Crashes with `NumericOverflowError` when `me` is finite and rounds past BF16's range. The crash reports the caller's location.
+@track_caller
+routine B64.to[BF16]() -> BF16
+    r: BF16 = me.to_unchecked[BF16]()
+    if r.is_infinite() and me.is_finite()
+        crash_float_overflow()
     return r
 
 ### Narrows to B32 with round-to-odd (an inexact result gets its lowest bit set),
 ### then rounds that to BF16. Round-to-odd keeps the second rounding from
 ### double-rounding, because B32 has more than twice BF16's precision.
+### A finite value past BF16's range gives an infinity here, where {B64.to[BF16]} crashes.
 ### :returns: The nearest BF16, rounded once.
-routine B64.to[BF16]() -> BF16
+routine B64.to_unchecked[BF16]() -> BF16
     narrow: B32 = fptrunc[Me, B32](me)
     back: Me = narrow.to[Me]()
     inexact: Bool = back != me
@@ -1040,7 +1073,7 @@ routine B64.to[BF16]() -> BF16
     trunc: U32 = narrow.bits() - away.to[U32]()
     bits: U32 = trunc | sticky.to[U32]()
     odd: B32 = .from_bits(bits)
-    r: BF16 = odd.to[BF16]()
+    r: BF16 = odd.to_unchecked[BF16]()
     return r
 
 ### The identity conversion, so generic code can call `to[T]()` when `T` is B64.

@@ -24,6 +24,9 @@ public static partial class LanguageServer
     private static readonly HashSet<string> PlannedKeywords = ["and", "or", "is", "as", "til", "to", "by"];
 
 
+    /// The float literals spelled as words, colored as numbers.
+    private static readonly HashSet<string> NumberWords = ["inf", "nan"];
+
     private static readonly HashSet<string> Keywords =
     [
         "routine", "record", "entity", "choice", "variant", "preset", "global", "protocol", "obeys", "define", "block", "local", "steal",
@@ -193,6 +196,7 @@ public static partial class LanguageServer
             TokenKind.Ident when !t.Escaped && ControlKeywords.Contains(t.Text) => "controlKeyword",
             TokenKind.Ident when !t.Escaped && Keywords.Contains(t.Text) => "keyword",
             TokenKind.Ident when !t.Escaped && PlannedKeywords.Contains(t.Text) => "keyword",
+            TokenKind.Ident when !t.Escaped && NumberWords.Contains(t.Text) => "number",
             TokenKind.Ident when i > 0 && tokens[i - 1].Kind == TokenKind.Hash => "decorator",
             TokenKind.Hash => "decorator",
             TokenKind.Int or TokenKind.Unit or TokenKind.Float or TokenKind.Byte or TokenKind.Char => "number",

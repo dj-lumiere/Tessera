@@ -1971,6 +1971,8 @@ public sealed class FunctionGen
         if (!HexFloat.IsHex(f.Text))
         {
             if (expected is FloatType decimalTarget) return new Val(decimalTarget.Constant(f.Value), decimalTarget);
+            if (f.IsWord && HexFloat.IsB128(expected)) return new Val(Compiler.ConstLlvm(new ConstVal(expected, f.WordB128Bits)), expected);
+            if (f.IsWord) throw Mismatch(f.Pos, expected, $"{f.Text}, a float literal");
             if (HexFloat.IsB128(expected))
                 throw Err(f.Pos, $"a decimal float literal can't be a B128 yet: write it as a hex float (0x1.8p0), or convert a B64, "
                     + $"B64.to[B128]({new Printer().Expr(f)})");
@@ -3472,8 +3474,8 @@ public sealed class FunctionGen
         string hint = args.Any(a => a is IntLit)
             ? "an untyped integer literal prefers S64, and that doesn't settle it here; "
               + "give the literal its type by binding it first (n: U8 = 1)"
-            : args.Any(a => a is FloatLit)
-                ? "a float literal can be any float type; give it its type by binding it first (x: B64 = 1.5)"
+            : args.FirstOrDefault(a => a is FloatLit) is FloatLit floatArg
+                ? $"a float literal can be any float type; give it its type by binding it first (x: B64 = {(floatArg.IsWord ? floatArg.Text : "1.5")})"
             : tier.All(f => f.Generic)
                 ? "more than one generic overload fits; pass the type arguments, or add an overload for these types"
                 : "give the arguments the types of the overload you mean";
@@ -3643,7 +3645,8 @@ public sealed class FunctionGen
                 return null;
             }
             case FloatLit fl:
-                return pt is FloatType || HexFloat.IsHex(fl.Text) && HexFloat.IsB128(pt) ? null : $"a float literal can't be a {pt}";
+                return pt is FloatType || (HexFloat.IsHex(fl.Text) || fl.IsWord) && HexFloat.IsB128(pt) ? null
+                    : fl.IsWord ? $"{fl.Text} is a float literal, and it can't be a {pt}" : $"a float literal can't be a {pt}";
             case StrLit:
                 return pt is PtrType { Pointee: null or IntType { Kind: IntKind.Byte } } or RecordType { Name: "CStrView" or "CWStrView" } || IsByteSpan(pt)
                     ? null
@@ -3740,7 +3743,7 @@ public sealed class FunctionGen
     private static bool LiteralCanBe(Expr literal, DType? t) => literal switch
     {
         IntLit => t is IntType { IsNumber: true },
-        FloatLit f => t is FloatType || HexFloat.IsHex(f.Text) && HexFloat.IsB128(t),
+        FloatLit f => t is FloatType || (HexFloat.IsHex(f.Text) || f.IsWord) && HexFloat.IsB128(t),
         ArrayLit { IsTuple: true } => t is RecordType { IsTuple: true },
         ArrayLit => t is ArrayType or VectorType,
         RecordLit => t is RecordType,

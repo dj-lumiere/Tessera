@@ -11,15 +11,17 @@ public sealed partial class Compiler
 {
     // Presets fold to constants here, and only these forms fold: literals; other presets; add, sub, mul, div, mod,
     // min, max, the bitwise operations and shifts, neg, and the integer conversions to<T>() and to_wrap<T>(); the
-    // bitwise operations of Bool; add, sub, mul, truediv, their _unchecked forms, and neg of B32 and B64; max, min,
+    // bitwise operations of Bool; add, sub, mul, truediv and their _unchecked forms of B32 and B64; neg of every float;
+    // to[T]() and to_unchecked[T]() between B16, BF16, B32 and B64; max, min,
     // sizeof, and alignof; and T.from_bits(...) for a float or a bit-pattern record. Each follows the stdlib routine's
     // meaning, and what would crash at run time (overflow, a zero divisor, a value out of range, a float result that
     // is infinite or NaN) is a build error. Nothing else runs at build time: a routine call in a preset is an error,
     // not code at each use.
 
     private const string PresetForms =
-        "literals, other presets, integer and Bool arithmetic and conversions, B32/B64 add/sub/mul/truediv (and their " +
-        "_unchecked forms)/neg, max/min, sizeof/alignof, and T.from_bits(...)";
+        "literals (inf and nan too), other presets, integer and Bool arithmetic and conversions, B32/B64 " +
+        "add/sub/mul/truediv (and their _unchecked forms), float neg, conversions between B16/BF16/B32/B64 (to and " +
+        "to_unchecked), max/min, sizeof/alignof, and T.from_bits(...)";
 
     private readonly Dictionary<string, ConstVal> _presetValues = [];
     private readonly HashSet<string> _foldingPresets = [];
@@ -189,6 +191,7 @@ public sealed partial class Compiler
                 return HexFloatConst(f, hint, f.Pos);
             case FloatLit f:
                 if (hint is FloatType ft) return new ConstVal(ft, FloatBits(ft, f.Value));
+                if (f.IsWord && HexFloat.IsB128(hint)) return new ConstVal(hint, f.WordB128Bits);
                 throw new CompileError(f.Pos, hint is null
                     ? "nothing says this float literal's type; name it: B64.add(1.5, 2.0)"
                     : $"a float literal can't be a {hint.Name}");
@@ -283,6 +286,12 @@ public sealed partial class Compiler
         if (n.Args.Count == 0)
             throw new CompileError(n.Pos, $"'{owner.Name}.{n.Name}' can't run at build time; a preset is made of {PresetForms}");
         var receiver = Typed(Fold(n.Args[0], owner, env), owner, n.Args[0].Pos, 1);
+        // `B64.to[B16](1.5)`: the typewise form of a conversion.
+        if (IsConversion(n.Name, n.TypeArgs) && n.Args.Count == 1)
+        {
+            if (receiver.Type is IntType { IsNumber: true } fromInt) return Convert(receiver.Value, fromInt, n.Name, n.TypeArgs[0], env, n.Pos);
+            if (receiver.Type is FloatType fromFloat) return ConvertFloat(receiver.Value, fromFloat, n.Name, n.TypeArgs[0], env, n.Pos);
+        }
         return Apply(receiver, n.Name, n.Args.Skip(1).ToList(), 2, env, n.Pos);
     }
 
@@ -302,12 +311,14 @@ public sealed partial class Compiler
             throw new CompileError(receiverExpr.Pos, $"nothing says this literal's type; name it: U64.{name}(...)");
         if (conversion && receiver.Type is IntType { IsNumber: true } from && args.Count == 0)
             return Convert(receiver.Value, from, name, typeArgs[0], env, pos);
+        if (conversion && receiver.Type is FloatType fromFloat && args.Count == 0)
+            return ConvertFloat(receiver.Value, fromFloat, name, typeArgs[0], env, pos);
         return Apply(receiver, name, args, 1, env, pos);
     }
 
-    /// `to[T]()` and `to_wrap[T]()`, the conversions a preset can fold.
+    /// `to[T]()`, `to_wrap[T]()` and `to_unchecked[T]()`, the conversions a preset can fold.
     private static bool IsConversion(string name, List<TypeRef> typeArgs) =>
-        name is "to" or "to_wrap" && typeArgs.Count == 1;
+        name is "to" or "to_wrap" or "to_unchecked" && typeArgs.Count == 1;
 
     /// Arithmetic on two untyped literals, which has no range until a type is known.
     private static BigInteger Untyped(BigInteger a, string name, BigInteger b, Pos pos) => name switch
@@ -330,8 +341,12 @@ public sealed partial class Compiler
                 return ApplyInt(r.Value, it, name, args, firstArgument, env, pos);
             case BoolType:
                 return ApplyBool(r.Value, name, args, firstArgument, env, pos);
+            case FloatType ft when name == "neg" && args.Count == 0:
+                return new ConstVal(ft, r.Value ^ (BigInteger.One << (ft.Bits - 1)));
             case FloatType ft when ft == FloatType.B32 || ft == FloatType.B64:
                 return ApplyFloat(r.Value, ft, name, args, firstArgument, env, pos);
+            case { } b128 when HexFloat.IsB128(b128) && name == "neg" && args.Count == 0:
+                return new ConstVal(b128, r.Value ^ (BigInteger.One << 127));
             default:
                 throw new CompileError(pos, $"{r.Type!.Name}.{name} can't run at build time; a preset is made of {PresetForms}");
         }
@@ -400,7 +415,7 @@ public sealed partial class Compiler
     /// `to[T]()` (checked, like the routine that crashes) and `to_wrap[T]()` from one integer type to another.
     private ConstVal Convert(BigInteger a, IntType from, string name, TypeRef target, TypeEnv env, Pos pos)
     {
-        if (TryResolveType(target, env) is not IntType { IsNumber: true } to)
+        if (name == "to_unchecked" || TryResolveType(target, env) is not IntType { IsNumber: true } to)
             throw new CompileError(pos, $"{from.Name}.{name}[{target}] can't run at build time; a preset is made of {PresetForms}");
         if (name == "to_wrap") return new ConstVal(to, Wrap(a, to));
         var (min, max) = Range(to);
@@ -458,6 +473,45 @@ public sealed partial class Compiler
             return new ConstVal(ft, resultBits);
         }
         throw new CompileError(pos, $"{ft.Name}.{name} can't run at build time; a preset is made of {PresetForms}");
+    }
+
+    /// A float conversion in a preset, between B16, BF16, B32 and B64, rounded to nearest (ties to even) as the stdlib
+    /// routines round. `to[T]()` crashes at run time when a finite value rounds to an infinity, so that is a build error
+    /// here, and `to_unchecked[T]()` gives the infinity. An infinity stays infinite and NaN stays NaN in both.
+    private ConstVal ConvertFloat(BigInteger bits, FloatType from, string name, TypeRef target, TypeEnv env, Pos pos)
+    {
+        if (name == "to_wrap" || TryResolveType(target, env) is not FloatType to)
+            throw new CompileError(pos, $"{from.Name}.{name}[{target}] can't run at build time; a preset is made of {PresetForms}");
+        double value = FloatValue(from, bits);
+        BigInteger result = to == FloatType.BF16 ? ToBFloat16Once(value) : FloatBits(to, value);
+        if (name == "to" && double.IsFinite(value) && !double.IsFinite(FloatValue(to, result)))
+            throw new CompileError(pos, $"{from.Name}.to[{to.Name}] gives {(value > 0 ? "+inf" : "-inf")} in this preset: the value "
+                + $"is past {to.Name}'s range, and a conversion that turns a finite value into an infinity crashes; write "
+                + $"to_unchecked[{to.Name}]() for the infinity");
+        if (name == "to_unchecked" && to.Bits >= from.Bits && !(from == FloatType.BF16 && to == FloatType.B16))
+            throw new CompileError(pos, $"{from.Name}.to_unchecked[{to.Name}] doesn't exist: every {from.Name} fits {to.Name}, so to[{to.Name}]() never crashes");
+        return new ConstVal(to, result);
+    }
+
+    /// The value of a float's bits, exactly: every B16, BF16 and B32 is a double too.
+    private static double FloatValue(FloatType ft, BigInteger bits) =>
+        ft == FloatType.B16 ? (double)BitConverter.UInt16BitsToHalf((ushort)bits)
+        : ft == FloatType.BF16 ? BitConverter.UInt32BitsToSingle((uint)bits << 16)
+        : ft == FloatType.B32 ? BitConverter.UInt32BitsToSingle((uint)bits)
+        : BitConverter.UInt64BitsToDouble((ulong)bits);
+
+    /// A double rounded once to BF16: to B32 with round-to-odd (an inexact result gets its lowest bit set), then to
+    /// BF16, which B32's precision (more than twice BF16's) keeps from rounding twice.
+    private static BigInteger ToBFloat16Once(double value)
+    {
+        float narrow = (float)value;
+        if (float.IsFinite(narrow) && narrow != value)
+        {
+            uint b = BitConverter.SingleToUInt32Bits(narrow);
+            if (Math.Abs((double)narrow) > Math.Abs(value)) b--;
+            narrow = BitConverter.UInt32BitsToSingle(b | 1);
+        }
+        return FloatType.ToBFloat16Bits(narrow);
     }
 
     /// The bits of a float literal rounded to ft, as FloatType.Constant rounds it.
