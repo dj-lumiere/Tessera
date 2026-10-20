@@ -61,6 +61,9 @@ namespace Tessera;
 /// 0.5: the OS's file manager is `OsFileManager` (`FileManager` is the role), `subdir` is `go_to`, a `Mapping` is a
 /// `FileStorage[Byte]`, `move_result(from:, to:)` is `rename_result` or `move_result(at:, into:)`, and the working,
 /// temporary and home directories and the environment variables are `OsEnvironment`'s (`--step files`).
+///
+/// 0.5: an address moves by a ByteSize with `+%` and `-%` (`a.offset(8)` is `a +% 8b`), and `b -% a` is the distance
+/// from `a` to `b` (`--step addr`).
 public static class Migrate
 {
     /// `F64`, its plural in prose (`F64s`), and a name built on it (`F128Extended`, `F64Core`). `F16C` is the x86 instruction set, not a type.
@@ -170,6 +173,30 @@ public static class Migrate
             foreach (string line in divisionReport) Console.WriteLine(line);
             if (!check) Console.WriteLine($"migrated {changedDivision} of {files.Count} file(s), {divisionReport.Count} place(s) to look at by hand");
             return check && changedDivision > 0 ? 1 : 0;
+        }
+
+        if (step == "addr")
+        {
+            // An address moves with `+%` / `-%`: which `offset` calls are on an Addr is read from the types the source
+            // tells, so the declarations of the library and of every file given are taken in first.
+            var addresses = new NamedArgsMigration();
+            foreach (var (path, text) in StdlibFiles()) addresses.Index(path, text, true);
+            foreach (var (path, text) in texts)
+                if (!path.EndsWith(".md", StringComparison.Ordinal)) addresses.Index(path, text, false);
+            int changedAddr = 0;
+            var addrReport = new List<string>();
+            foreach (var (file, text) in texts)
+            {
+                if (file.EndsWith(".md", StringComparison.Ordinal)) continue;
+                string rewritten = addresses.RewriteAddr(file, text, addrReport);
+                if (rewritten == text) continue;
+                changedAddr++;
+                if (check) Console.WriteLine(file);
+                else File.WriteAllText(file, rewritten, new UTF8Encoding(false));
+            }
+            foreach (string line in addrReport) Console.WriteLine(line);
+            if (!check) Console.WriteLine($"migrated {changedAddr} of {files.Count} file(s), {addrReport.Count} place(s) to look at by hand");
+            return check && changedAddr > 0 ? 1 : 0;
         }
 
         if (step is not null)
@@ -332,6 +359,7 @@ public static class Migrate
             : NoneSpelling.Rewrite(text),
         ["destruct"] = (_, text, _) => DestructSpelling(text),
         ["division"] = (_, text, _) => text,
+        ["addr"] = (_, text, _) => text,
         ["comments"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, HashComments)
             : HashComments(text),

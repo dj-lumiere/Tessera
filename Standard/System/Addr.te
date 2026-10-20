@@ -2,13 +2,17 @@
 #
 # Maps to LLVM IR ptr, like Ptr[T]. Addr is C's `void*`: what an allocator hands out, a callback's state, an
 # opaque C handle. It says where, not what, so it has no load or store: memory is read through a @T, and
-# to[@T]() names what is there. Any @T converts to Addr where one is expected.
+# to[@T]() names what is there. Any @T converts to Addr where one is expected. It moves by a ByteSize with +% and -%,
+# and b -% a is the distance from a to b. Two addresses compare with === and !==.
 
 module Standard/System
 
-### An address with no pointee type, mapped to LLVM `ptr` (C's `void*`). It says where, not what: it has no load or store, and `to[@T]()` names what is there.
+### An address with no pointee type, mapped to LLVM `ptr` (C's `void*`). It says where, not what: it has no load or
+### store, and `to[@T]()` names what is there. It moves by a `ByteSize` with `+%` / `-%` (wrapping, unchecked), and
+### `b -% a` is the distance from `a` to `b`. Two addresses compare with `===` / `!==`.
 @llvm("ptr")
 record Addr
+obeys WrappingOffsetAddable[Addr], WrappingOffsetSubtractable[Addr]
 
 # -- identity ------------------------------------------------------------------
 
@@ -44,15 +48,33 @@ routine Addr.is_not_hollow() -> Bool
 
 # -- arithmetic and typing -----------------------------------------------------
 
-### The address `bytes` bytes further on (back when `bytes` is negative). No bounds checking: staying in bounds is the
-### caller's job.
-### :param bytes: The signed byte distance to move.
+### The address `offset` bytes further on: `me +% offset`. It wraps around the end of the address space, and nothing
+### checks bounds: staying inside the block is the caller's job.
+### :param offset: How far to move.
 ### :returns: The moved address.
-routine Addr.offset(bytes: S64) -> Me
-    r: Me = addr_offset(base: me, bytes)
+routine Addr.add_wrap(offset: ByteSize) -> Me
+    r: Me = addr_offset(base: me, bytes: bitcast[ByteSize, S64](offset))
     return r
 
-### The raw byte-offset arithmetic behind {Addr.offset}: a `getelementptr i8` with no bounds checking.
+### The address `offset` bytes back: `me -% offset`. It wraps around the start of the address space, and nothing
+### checks bounds.
+### :param offset: How far to move back.
+### :returns: The moved address.
+routine Addr.sub_wrap(offset: ByteSize) -> Me
+    back: U64 = 0 -% offset.bytes()
+    r: Me = addr_offset(base: me, bytes: bitcast[U64, S64](back))
+    return r
+
+### The distance in bytes from `other` to `me`: `me -% other`. With `other` past `me` it wraps around, so write the
+### earlier address on the right.
+### :param other: The address to measure from.
+### :returns: The distance.
+routine Addr.sub_wrap(other: Me) -> ByteSize
+    a: U64 = ptrtoint[Me, U64](me)
+    b: U64 = ptrtoint[Me, U64](other)
+    return ByteSize.construct(bytes: a -% b)
+
+### The raw byte-offset arithmetic behind `+%` and `-%`: a `getelementptr i8` with no bounds checking.
 ### :param base: The starting address.
 ### :param bytes: The signed byte distance to move.
 ### :returns: The moved address.

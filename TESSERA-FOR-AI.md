@@ -121,7 +121,10 @@ routine start() -> None
   named like a keyword (`each`, `return`, `inf`, `nan`, ...) is written between backticks: `` `each` ``
   (`tessera migrate --step inf` adds them for a value named `inf` or `nan`). The type says
   whether a value is a pointer (`@T`, or `Addr` for an address with no pointee type, C's `void*`). `@T`
-  passes where an `Addr` is expected; the other way takes `a.to[@T]()`. `@T` is how the record `Ptr[T]` is
+  passes where an `Addr` is expected; the other way takes `a.to[@T]()`. An `Addr` moves by a `ByteSize` with `+%` /
+  `-%` (`buf +% 16b`, `at -% header`), and `b -% a` is the distance from `a` to `b` as a `ByteSize`: both wrap and
+  check no bounds. Plain `+` / `-` on an `Addr` are build errors that point to them (`tessera migrate --step addr`
+  rewrites the old `a.offset(n)`). Two addresses compare with `===` / `!==`. `@T` is how the record `Ptr[T]` is
   written (`@@Byte`, `@Array[@S32, 3]`); it keeps its name only where routines are declared on it or called through
   it (`routine Ptr[T].peek`). An annotation is a `@name` line of its own
   above the declaration, one per line: `@target(os: "windows")`, then `@external("c")`, then `@noreturn`. `@T` is
@@ -525,8 +528,8 @@ routine start() -> None
   them), `ClampingAddable` .. (`ClampingArithmetic`), `UncheckedAddable` .. (`UncheckedArithmetic`: `+! -! *! /!`), `Numeric` (`+ - * // %`), `Equatable` `==` `!=`, `Comparable`
   `< <= > >= <=>`, `ViewingIndexable[T, TItem]` `xs[i]`, `ModifyingIndexable[T, TItem]` `xs[i] = v`,
   `KeyFindable[T, TKey, TValue]` `d[k]` / `d[k] = v`, `LaneComparable[T, TMask]` (Vector's mask compares), and the
-  pairings `DurationAddable` / `ClampingDurationAddable` / `DurationSubtractable` (Moment), `OffsetAddable` /
-  `OffsetSubtractable`, `Scalable[T, TFactor]`, `ScalarDivisible[T, TDivisor]`, `ScalarFloorDivisible[T, TDivisor]`,
+  pairings `DurationAddable` / `ClampingDurationAddable` / `DurationSubtractable` (Moment), `WrappingOffsetAddable` /
+  `WrappingOffsetSubtractable` (Addr: `a +% n` / `a -% n` with a `ByteSize`, `b -% a` the distance), `Scalable[T, TFactor]`, `ScalarDivisible[T, TDivisor]`, `ScalarFloorDivisible[T, TDivisor]`,
   `RatioDivisible[T, TRatio]` (`Duration // Duration` is an `S64`). The routine without the `obeys` is a build error
   naming the line to write, and in a generic body `needs T: Addable[T]` gives `a + b`. `!=` is `not a.eq(b)` and
   `<` is `a.compare(b) < 0`, unless the type declares its own `ne` / `lt` / `le` / `gt` / `ge`, which the operator

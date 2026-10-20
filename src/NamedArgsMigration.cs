@@ -80,7 +80,11 @@ internal sealed class NamedArgsMigration
     /// changes (a signed integer, a float's `%`) or whose type the source does not tell are listed for a hand rewrite.
     public string RewriteDivision(string file, string text, List<string> report) => Rewrite(file, text, report, division: true);
 
-    public string Rewrite(string file, string text, List<string> report, bool division = false)
+    /// The addr step: an address moves by a ByteSize with `+%` / `-%`, so `a.offset(n)` on an Addr is `a +% n` when n
+    /// is a ByteSize or a whole-number literal (`-16` is `a -% 16b`), and the others are listed for a hand rewrite.
+    public string RewriteAddr(string file, string text, List<string> report) => Rewrite(file, text, report, addr: true);
+
+    public string Rewrite(string file, string text, List<string> report, bool division = false, bool addr = false)
     {
         Module module;
         try
@@ -97,7 +101,7 @@ internal sealed class NamedArgsMigration
             if (text[i] == '\n') lineStarts.Add(i + 1);
         var inserts = new SortedDictionary<int, string>();
         var replacements = new List<(int Start, int Length, string Text)>();
-        var walker = new Walker(this, file, text, lineStarts, inserts, report, division, replacements);
+        var walker = new Walker(this, file, text, lineStarts, inserts, report, division, replacements, addr);
         foreach (var decl in module.Decls)
         {
             switch (decl)
@@ -199,7 +203,7 @@ internal sealed class NamedArgsMigration
 
     private sealed class Walker(NamedArgsMigration index, string file, string text, List<int> lineStarts,
         SortedDictionary<int, string> inserts, List<string> report, bool division = false,
-        List<(int Start, int Length, string Text)>? replacements = null)
+        List<(int Start, int Length, string Text)>? replacements = null, bool addr = false)
     {
         private string? _routineName;
         private List<Token>? _tokens;
@@ -380,6 +384,61 @@ internal sealed class NamedArgsMigration
             report.Add($"{b.Pos}: '%' on {kind} is the Euclidean remainder now (never negative): check what it divides");
         }
 
+        /// `a.offset(n)` on an Addr as `a +% n`: a whole-number literal becomes a ByteSize literal (`8` is `8b`, `-8` is
+        /// `a -% 8b`), and a ByteSize stays as it is. The call is put between parentheses when a member or an index
+        /// follows it. Any other distance (a signed count) is listed, since its sign decides between `+%` and `-%`.
+        private void AddrOffset(MethodCallExpr m)
+        {
+            if (m.Args.Count != 1 || TypeOf(m.Receiver) is not { Name: "Addr" }) return;
+            var t = Tokens;
+            int dot = TokenIndexAt(Offset(m.Pos));
+            if (dot < 0 || dot + 2 >= t.Count || t[dot].Kind != TokenKind.Dot || t[dot + 2].Kind != TokenKind.LParen) return;
+            int close = Balanced(dot + 2);
+            if (close < 0) return;
+            var arg = m.Args[0];
+            string? amount = null;
+            bool back = false;
+            switch (arg)
+            {
+                case IntLit lit:
+                    amount = $"{System.Numerics.BigInteger.Abs(lit.Value)}b";
+                    back = lit.Value < 0;
+                    break;
+                case UnaryExpr { Op: "-", Operand: IntLit neg }:
+                    amount = $"{neg.Value}b";
+                    back = true;
+                    break;
+                default:
+                    if (TypeOf(arg) is { Name: "ByteSize" })
+                    {
+                        int from = Offset(Start(arg));
+                        int to = TokenEnd(close - 1);
+                        if (from >= 0 && to > from) amount = text[from..to];
+                        // A label written in front of the distance is not part of it.
+                        if (amount is not null && amount.StartsWith("bytes:", StringComparison.Ordinal)) amount = amount[6..].TrimStart();
+                        if (amount is not null && arg is BinaryExpr) amount = $"({amount})";
+                    }
+                    break;
+            }
+            if (amount is null)
+            {
+                report.Add($"{m.Pos}: an Addr moves by a ByteSize with '+%' / '-%' now, and this distance is not a ByteSize or a "
+                    + "whole-number literal: write 'a +% size' or 'a -% size' by hand (left as it is)");
+                return;
+            }
+            string op = back ? "-%" : "+%";
+            int start = TokenEnd(dot - 1);
+            int end = TokenEnd(close);
+            replacements?.Add((start, end - start, $" {op} {amount}"));
+            bool followed = close + 1 < t.Count && t[close + 1].Kind is TokenKind.Dot or TokenKind.LBracket && Adjacent(close, close + 1);
+            if (followed)
+            {
+                int receiverStart = Offset(Start(m.Receiver));
+                if (receiverStart >= 0) inserts[receiverStart] = inserts.GetValueOrDefault(receiverStart, "") + "(";
+                replacements?.Add((end, 0, ")"));
+            }
+        }
+
         private HashSet<string> _blocks = [];
         private Dictionary<string, TypeRef> _types = [];
         private string? _owner;
@@ -443,6 +502,7 @@ internal sealed class NamedArgsMigration
                     // An operator written as one (`xs[i] = v` is `xs.setitem(i, v)`, `a + b` is `a.add(b)`) has no
                     // argument list to name.
                     if (!m.FromOperator) Name(MethodCall(m), m.Args, m.ArgNames, m.Name, m.Pos);
+                    if (addr && !m.FromOperator && m.Name == "offset") AddrOffset(m);
                     break;
                 case NsCallExpr n:
                     foreach (var a in n.Args) Expr(a);
@@ -690,7 +750,7 @@ internal sealed class NamedArgsMigration
         /// A call the routines it can mean disagree on is reported and left as it is.
         private void Name(Candidates c, List<Expr> args, List<string?>? written, string what, Pos pos)
         {
-            if (division) return;
+            if (division || addr) return;
             if (c.Routines.Count == 0) return;
             // Every argument named already: nothing to add, whichever routine it is.
             if (written is not null && written.All(n => n is not null)) return;

@@ -287,6 +287,7 @@ public sealed partial class Compiler
             return $"{op} on a {type.Name} needs {wanted}, and no constraint in force on {type.Name} says so "
                 + $"({InForce(archetype)}); add {wanted} to {scope.Fix}";
         }
+        if (WrappingOnlyError(routine, decls, type, op) is { } wrappingOnly) return wrappingOnly;
         (ConceptDecl Decl, List<DType> Args, string Why)? failing = null;
         foreach (var decl in decls)
         {
@@ -311,6 +312,20 @@ public sealed partial class Compiler
         if (!MethodsNamed(type, routine).Any(HasReceiver)) return null;
         return $"{op} on {type.Name} calls {type.Name}.{routine}, and an operator works on a type only when the type obeys "
             + $"the operator's protocol: {type.Name} doesn't obey {protocol}{others}; write 'obeys {protocol}'{where}";
+    }
+
+    /// The error for `+` / `-` on a type that moves by a ByteSize only with the wrapping operators (an Addr): it obeys
+    /// WrappingOffsetAddable / WrappingOffsetSubtractable and not the plain operator's protocols, so the message points
+    /// to `+%` / `-%`. Null for any other operator or type.
+    private string? WrappingOnlyError(string routine, List<ConceptDecl> plain, DType type, string op)
+    {
+        if (routine is not ("add" or "sub") || plain.Any(d => DeclaredFor(d, type) is not null)) return null;
+        string wrapping = routine == "add" ? "WrappingOffsetAddable" : "WrappingOffsetSubtractable";
+        var decl = (_conceptDecls.GetValueOrDefault(wrapping) ?? []).FirstOrDefault(c => c.Module == SystemModule);
+        if (decl is null || DeclaredFor(decl, type) is null) return null;
+        string written = routine == "add" ? "+%" : "-%";
+        return $"{op} isn't defined on {type.Name}: {type.Name} moves by a ByteSize only with '+%' and '-%', which wrap "
+            + $"around and check no bounds, and 'b -% a' is the distance from a to b. Write '{written}' here.";
     }
 
     /// Whether a type obeys LaneComparable: its comparisons give a mask, one routine per operator.

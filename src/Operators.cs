@@ -30,14 +30,14 @@ public static class Operators
     /// own, the others pair it with another operand type (`Moment + Duration` is DurationAddable).
     private static readonly Dictionary<string, string[]> Protocols = new()
     {
-        ["add"] = ["Addable", "DurationAddable", "OffsetAddable"],
-        ["sub"] = ["Subtractable", "DurationSubtractable", "OffsetSubtractable"],
+        ["add"] = ["Addable", "DurationAddable"],
+        ["sub"] = ["Subtractable", "DurationSubtractable"],
         ["mul"] = ["Multiplicable", "Scalable"],
         ["truediv"] = ["Divisible", "ScalarDivisible"],
         ["floordiv"] = ["FloorDivisible", "ScalarFloorDivisible", "RatioDivisible"],
         ["mod"] = ["FloorDivisible", "RatioDivisible"],
         ["pow"] = ["Exponentiable"],
-        ["add_wrap"] = ["WrappingAddable"], ["sub_wrap"] = ["WrappingSubtractable"], ["mul_wrap"] = ["WrappingMultiplicable"],
+        ["add_wrap"] = ["WrappingAddable", "WrappingOffsetAddable"], ["sub_wrap"] = ["WrappingSubtractable", "WrappingOffsetSubtractable"], ["mul_wrap"] = ["WrappingMultiplicable"],
         ["add_clamp"] = ["ClampingAddable", "ClampingDurationAddable"], ["sub_clamp"] = ["ClampingSubtractable"],
         ["mul_clamp"] = ["ClampingMultiplicable"],
         ["add_unchecked"] = ["UncheckedAddable"], ["sub_unchecked"] = ["UncheckedSubtractable"],

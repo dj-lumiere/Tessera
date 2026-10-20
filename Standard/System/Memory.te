@@ -29,8 +29,6 @@ secret global LAST_GENERATION: @U64
 
 ### The bytes the stamp takes in front of the values.
 secret preset STAMP_SIZE: U64 = 16
-### The offset from the values back to the stamp.
-secret preset STAMP_BACK: S64 = -16
 
 ### The stamp in front of a block's values: its generation, 0 once dropped.
 secret record BlockStamp
@@ -58,6 +56,15 @@ secret routine stamp_room[T]() -> U64
 needs T: typename
     return alignof[T]().max(STAMP_SIZE)
 
+### The alignment a block of `T` values with a stamp in front asks its manager for. The room is a multiple of the
+### values' alignment, so a block aligned for the values and for the stamp keeps both aligned. It asks for no more
+### than that: a 32-bit C heap gives 8-byte alignment, less than the room.
+### :typeparam T: The value type.
+### :returns: The alignment in bytes.
+secret routine block_align[T]() -> U64
+needs T: typename
+    return alignof[T]().max(alignof[BlockStamp]())
+
 ### The stamp of the block whose values start at `data`.
 ### :typeparam T: The value type.
 ### :param data: The first value.
@@ -65,7 +72,7 @@ needs T: typename
 secret routine stamp_of[T](data: @T) -> @BlockStamp
 needs T: typename
     raw: Addr = data
-    return raw.offset(STAMP_BACK).to[@BlockStamp]()
+    return (raw -% ByteSize.construct(bytes: STAMP_SIZE)).to[@BlockStamp]()
 
 ### Crashes unless the block at `data` still has `generation`: a dropped block, or one that moved, doesn't.
 ### :typeparam T: The value type.
@@ -96,10 +103,10 @@ secret routine take_block[T](count: U64, manager: @MemoryManager) -> (@T, U64)
 needs T: typename
     room: U64 = stamp_room[T]()
     size: U64 = sizeof[T]() * count + room
-    taken: Addr = manager.alloc(size, align: room)
+    taken: Addr = manager.alloc(size, align: block_align[T]())
     if taken.is_hollow()
         return (.hollow(), 0)
-    data: @T = taken.offset(room.to[S64]()).to[@T]()
+    data: @T = (taken +% ByteSize.construct(bytes: room)).to[@T]()
     generation: U64 = next_generation()
     generation.poke_into(stamp_of[T](data).generation)
     return (data, generation)
@@ -114,7 +121,7 @@ secret routine give_block[T](data: @T, manager: @MemoryManager) -> None
 needs T: typename
     stamp_of[T](data).generation.poke(0)
     raw: Addr = data
-    manager.free(raw.offset(-stamp_room[T]().to[S64]()))
+    manager.free(raw -% ByteSize.construct(bytes: stamp_room[T]()))
     return
 
 # == Memory[T] ====================================================================================================
@@ -332,11 +339,11 @@ needs T: typename
         check_generation[T](data, generation: me.generation.peek())
         room: U64 = stamp_room[T]()
         raw: Addr = data
-        grown: Addr = manager.realloc(at: raw.offset(-room.to[S64]()),
-            size: sizeof[T]() * count + room, align: room)
+        grown: Addr = manager.realloc(at: raw -% ByteSize.construct(bytes: room),
+            size: sizeof[T]() * count + room, align: block_align[T]())
         if grown.is_hollow()
             return AllocFailed()
-        moved: @T = grown.offset(room.to[S64]()).to[@T]()
+        moved: @T = (grown +% ByteSize.construct(bytes: room)).to[@T]()
         generation: U64 = next_generation()
         generation.poke_into(stamp_of[T](moved).generation)
         me.poke(Me(data: moved, count, manager, generation))

@@ -196,8 +196,8 @@ public static partial class OperatorMigration
         Add("DurationAddable", null, With("add", "Duration"));
         Add("ClampingDurationAddable", null, With("add_clamp", "Duration"));
         Add("DurationSubtractable", null, With("sub", "Duration"), Same("sub", "Duration"));
-        Add("OffsetAddable", null, With("add", "ByteSize"));
-        Add("OffsetSubtractable", null, With("sub", "ByteSize"), Same("sub", "ByteSize"));
+        Add("WrappingOffsetAddable", null, With("add_wrap", "ByteSize"));
+        Add("WrappingOffsetSubtractable", null, With("sub_wrap", "ByteSize"), Same("sub_wrap", "ByteSize"));
 
         // The pairings with a type of their own: each other operand type its routines take.
         bool Other(string t) => !IsMe(t) && Norm(t) != "@Me" && t is not ("Duration" or "ByteSize");
