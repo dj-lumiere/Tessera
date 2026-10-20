@@ -9,7 +9,7 @@ import Standard/Os
 ### :param f: The file.
 ### :returns: Its size in bytes.
 routine size_of(f: @File) -> U64
-    m: Result[Metadata, FsError] = OsFileManager.metadata_result(at: f)
+    m: Check[Metadata] = check OsFileManager.metadata(at: f)
     when m
         is Metadata as info => return info.size
         is FsError => return U64.MAX
@@ -26,11 +26,9 @@ routine copy_of(root: @Directory, count: U64, alloc: @MemoryManager) -> None
         text.add_last(letter.bits())
     local source: @File <- root.file(name: "source.txt", alloc)
     local target: @File <- root.file(name: "target.txt", alloc)
-    discard_made: Result[None, FsError] = OsFileManager.make_file_result(at: source,
-        replacing: true)
-    discard_written: Result[None, FsError] = OsFileManager.write_all_result(at: source,
-        data: text.getview())
-    r: Result[U64, FsError] = OsFileManager.copy_result(from: source, to: target, replacing: true)
+    discard_made: Check[None] = check OsFileManager.make_file(at: source, replacing: true)
+    discard_written: Check[None] = check OsFileManager.write_all(at: source, data: text.getview())
+    r: Check[U64] = check OsFileManager.copy(from: source, to: target, replacing: true)
     when r
         is U64 as n =>
             same: Bool = size_of(target) == n
@@ -43,24 +41,22 @@ routine copy_of(root: @Directory, count: U64, alloc: @MemoryManager) -> None
 
 routine start() -> None
     local alloc: @MemoryManager <- HEAP.peek()
-    local tmp: @Directory <- OsEnvironment.temp_directory_result(alloc).unwrap()
+    local tmp: @Directory <- OsEnvironment.temp_directory(alloc)
     local root: @Directory <- tmp.go_to(name: "tessera_fs_copy", alloc)
 
-    discard_old: Result[None, FsError] = OsFileManager.delete_all_result(at: root, alloc)
-    discard_made: Result[None, FsError] = OsFileManager.make_directory_result(at: root,
-        parents: true)
+    discard_old: Check[None] = check OsFileManager.delete_all(at: root, alloc)
+    discard_made: Check[None] = check OsFileManager.make_directory(at: root, parents: true)
     copy_of(root, count: 0, alloc)
     copy_of(root, count: 5, alloc)
     copy_of(root, count: 100000, alloc)
     local inner: @Directory <- root.go_to(name: "inner", alloc)
     local target: @File <- root.file(name: "from_directory.txt", alloc)
-    discard_inner: Result[None, FsError] = OsFileManager.make_directory_result(at: inner,
-        parents: false)
-    r: Result[U64, FsError] = OsFileManager.copy_result(from: File.at(inner.path.peek()),
-        to: target, replacing: false)
+    discard_inner: Check[None] = check OsFileManager.make_directory(at: inner, parents: false)
+    r: Maybe[U64] = try OsFileManager.copy(from: File.at(inner.path.peek()), to: target,
+        replacing: false)
     left: Bool = OsFileManager.is_present(at: target)
-    Console.show("copying a directory fails: {r.is_failure()}, leaves a file behind: {left}")
-    discard_gone: Result[None, FsError] = OsFileManager.delete_all_result(at: root, alloc)
+    Console.show("copying a directory fails: {r.is_absent()}, leaves a file behind: {left}")
+    discard_gone: Check[None] = check OsFileManager.delete_all(at: root, alloc)
     drop target
     drop inner
     drop root

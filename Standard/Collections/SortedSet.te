@@ -298,7 +298,7 @@ needs T: typename
                 return true
 
 ### Inserts `key` below a node that isn't full, splitting full children on the way down. An equal element must not
-### already be in the subtree (`add_result` checks first).
+### already be in the subtree (`add` checks first).
 ### :param key: The element to insert.
 ### :param alloc: The allocator for nodes made by splits.
 ### :returns: True when it inserted, false when a split failed to allocate (the key ends then). The tree then holds the
@@ -342,22 +342,10 @@ needs T: typename
 ### Adds `key` to the set in sorted position unless an equal element is already present.
 ### :param key: The element to add.
 ### :returns: `true` when `key` was new, `false` when it was already present.
-### :throws: Crashes with `MemoryAllocationError` when a node cannot be allocated. See {SortedSet[T].add_result} for a recoverable form.
+### :throws: Throws `MemoryAllocationError` when a node cannot be allocated.
 @track_caller
 @reshaping
-routine @SortedSet[T].add(key: T) -> Bool
-needs T: typename
-    added: Result[Bool, AllocFailed] = me.add_result(steal key)
-    when added
-        is Bool as is_new => return is_new
-        is AllocFailed => crash_allocation()
-
-### `add`, returning an error instead of crashing when the allocator fails. A key that doesn't go in ends.
-### :param key: The element to add.
-### :returns: A value holding whether `key` was new.
-### :throws: Returns `AllocFailed` when a node cannot be allocated.
-@reshaping
-routine @SortedSet[T].add_result(key: T) -> Result[Bool, AllocFailed]
+failable routine @SortedSet[T].add(key: T) -> Bool
 needs T: typename
     local probe: @T <- steal key
 
@@ -370,7 +358,7 @@ needs T: typename
         root2: @SortedSetNode[T] = SortedSetNode[T].construct(leaf: true, alloc)
         if root2.is_hollow()
             drop probe
-            return AllocFailed()
+            throw MemoryAllocationError()
         root2.keys.getslot(0).poke(steal probe)
         root2.count.poke(1)
         root2.subtree_count.poke(1)
@@ -384,7 +372,7 @@ needs T: typename
             new_root: @SortedSetNode[T] = SortedSetNode[T].construct(leaf: false, alloc)
             if new_root.is_hollow()
                 drop probe
-                return AllocFailed()
+                throw MemoryAllocationError()
             new_root.children[0] = root
             if new_root.split_child(index: 0, alloc)
                 me.root.poke(new_root)
@@ -392,10 +380,10 @@ needs T: typename
             else
                 deallocate[SortedSetNode[T]](data: new_root, alloc)
                 drop probe
-                return AllocFailed()
+                throw MemoryAllocationError()
         else => root
     if not root2.insert_nonfull(key: steal probe, alloc)
-        return AllocFailed()
+        throw MemoryAllocationError()
     next_count: U64 = me.count.peek() + 1
     next_count.poke_into(me.count)
     return true

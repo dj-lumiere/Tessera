@@ -571,6 +571,11 @@ public sealed partial class Compiler
             throw new CompileError(at, HasReceiver(req)
                 ? $"{claim}: {where} doesn't take me; the concept calls it as a method, x.{req.Name}(...)"
                 : $"{claim}: {where} takes me; the concept calls it by its type, {owner.Name}.{req.Name}(...)");
+        // A call through the concept takes the failure the way the requirement says: the routine fails as it does.
+        if (req.IsFailable != method.IsFailable)
+            throw new CompileError(at, req.IsFailable
+                ? $"{claim}: {where} isn't failable, and the concept's {req.Name} is: declare it failable routine"
+                : $"{claim}: {where} is failable, and the concept's {req.Name} isn't: receive the failure inside, with check");
         bool ownTypeParams = req.TypeParams.Count > 0 || method.TypeParams.Count > 0;
         if (req.TypeParams.Count != method.TypeParams.Count)
             throw new CompileError(at, $"{claim}: {where} takes {method.TypeParams.Count} type parameter(s); the concept wants {req.TypeParams.Count}");

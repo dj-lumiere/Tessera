@@ -5,23 +5,22 @@
 # memory the threads and fibers that use them share (`@Channel[T]`):
 #
 #     claim jobs: @Channel[U64] <- .construct(capacity: 16)
-#     sent: Result[None, ChannelClosed | CancelRequested] = jobs.send_result(42)   # waits while the room is full
-#     got: Result[U64, ChannelClosed | CancelRequested] = jobs.receive_result()     # waits while it is empty
+#     jobs.send(42)   # waits while the room is full
+#     got: Check[U64] = check jobs.receive()   # waits while it is empty
 #
 # A sender that waits for room, or a receiver that waits for a value, sleeps if it is a thread and parks if it is a
 # fiber: the other fibers of its thread go on, and the other side wakes it. `send_if_room` doesn't wait. A channel
 # starts with one sender and one receiver: `add_sender` (and `add_receiver` on a SharedChannel) counts another, and each
 # says it is done with `close_sending` or `close_receiving`. Once every sender has closed, receivers take what is left
-# and then get `ChannelClosed`. Once every receiver has closed, the values left are dropped and senders get
-# `ChannelClosed`. Values that own memory are taken out and released by a receiver before it closes. A wait also ends
+# and then get `ChannelClosedError`. Once every receiver has closed, the values left are dropped and senders get
+# `ChannelClosedError`. Values that own memory are taken out and released by a receiver before it closes. A wait also ends
 # with `CancelRequested` when the work that waits is asked to stop with `cancel()`.
 
 module Standard/Os
 
-### What a send or a receive gets when the other side has closed for good: every receiver, or every sender with no
+### What a send or a receive throws when the other side has closed for good: every receiver, or every sender with no
 ### value left.
-@derive(Representable, Diagnosable, Equatable, Hashable)
-record ChannelClosed
+crashable ChannelClosedError
 
 ### One sender or receiver waiting on a channel, on the frame of the routine that waits.
 secret record ChannelWait
@@ -59,6 +58,14 @@ needs T: typename
 entity SharedChannel[T]
 needs T: typename
     core: ChannelCore[T]
+
+### Writes `The channel is closed.`
+### :typeparam TWriter: The type of the Writer.
+### :param out: The Writer the message goes to.
+routine ChannelClosedError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    out.write("The channel is closed: no one is left on the other side.")
+    return
 
 ### Makes a `ChannelWait` from its fields.
 ### :param waiter: Its `waiter`.
@@ -154,12 +161,12 @@ needs T: typename
 
 ### Sends `value`, waiting while the room is full.
 ### :param value: The value.
-### :returns: `Unit` once it is in, `ChannelClosed` when every receiver has closed, `CancelRequested` when the work that
 ###     waits is asked to stop first.
 @target(os: not "none")
-routine @Channel[T].send_result(value: T) -> Result[None, ChannelClosed | CancelRequested]
+failable routine @Channel[T].send(value: T) -> None
 needs T: typename
-    return me.core.send_result(value)
+    when check me.core.send(value)
+        is None => return
 
 ### Sends `value` if there is room, without waiting.
 ### :param value: The value.
@@ -170,12 +177,13 @@ needs T: typename
     return me.core.send_if_room(value)
 
 ### Takes the oldest value, waiting while there is none.
-### :returns: The value, `ChannelClosed` when every sender has closed and no value is left, or `CancelRequested` when
+### :returns: The value, `ChannelClosedError` when every sender has closed and no value is left, or `CancelRequested` when
 ###     the work that waits is asked to stop first.
 @target(os: not "none")
-routine @Channel[T].receive_result() -> Result[T, ChannelClosed | CancelRequested]
+failable routine @Channel[T].receive() -> T
 needs T: typename
-    return me.core.receive_result()
+    when check me.core.receive()
+        is T as returned => return returned
 
 ### Counts one more sender, which closes on its own.
 @target(os: not "none")
@@ -184,14 +192,14 @@ needs T: typename
     me.core.add_sender()
     return
 
-### One sender is done. Once every sender is, the receiver takes what is left and then gets `ChannelClosed`.
+### One sender is done. Once every sender is, the receiver takes what is left and then gets `ChannelClosedError`.
 @target(os: not "none")
 routine @Channel[T].close_sending() -> None
 needs T: typename
     me.core.close_sending()
     return
 
-### The receiver is done: the values left are dropped, and senders get `ChannelClosed`.
+### The receiver is done: the values left are dropped, and senders get `ChannelClosedError`.
 @target(os: not "none")
 routine @Channel[T].close_receiving() -> None
 needs T: typename
@@ -200,12 +208,12 @@ needs T: typename
 
 ### Sends `value`, waiting while the room is full.
 ### :param value: The value.
-### :returns: `Unit` once it is in, `ChannelClosed` when every receiver has closed, `CancelRequested` when the work that
 ###     waits is asked to stop first.
 @target(os: not "none")
-routine @SharedChannel[T].send_result(value: T) -> Result[None, ChannelClosed | CancelRequested]
+failable routine @SharedChannel[T].send(value: T) -> None
 needs T: typename
-    return me.core.send_result(value)
+    when check me.core.send(value)
+        is None => return
 
 ### Sends `value` if there is room, without waiting.
 ### :param value: The value.
@@ -216,12 +224,13 @@ needs T: typename
     return me.core.send_if_room(value)
 
 ### Takes the oldest value, waiting while there is none. Each value goes to one receiver.
-### :returns: The value, `ChannelClosed` when every sender has closed and no value is left, or `CancelRequested` when
+### :returns: The value, `ChannelClosedError` when every sender has closed and no value is left, or `CancelRequested` when
 ###     the work that waits is asked to stop first.
 @target(os: not "none")
-routine @SharedChannel[T].receive_result() -> Result[T, ChannelClosed | CancelRequested]
+failable routine @SharedChannel[T].receive() -> T
 needs T: typename
-    return me.core.receive_result()
+    when check me.core.receive()
+        is T as returned => return returned
 
 ### Counts one more sender, which closes on its own.
 @target(os: not "none")
@@ -237,14 +246,14 @@ needs T: typename
     me.core.add_receiver()
     return
 
-### One sender is done. Once every sender is, receivers take what is left and then get `ChannelClosed`.
+### One sender is done. Once every sender is, receivers take what is left and then get `ChannelClosedError`.
 @target(os: not "none")
 routine @SharedChannel[T].close_sending() -> None
 needs T: typename
     me.core.close_sending()
     return
 
-### One receiver is done. Once every receiver is, the values left are dropped, and senders get `ChannelClosed`.
+### One receiver is done. Once every receiver is, the values left are dropped, and senders get `ChannelClosedError`.
 @target(os: not "none")
 routine @SharedChannel[T].close_receiving() -> None
 needs T: typename
@@ -255,9 +264,8 @@ needs T: typename
 
 ### Sends `value`, waiting while the room is full.
 ### :param value: The value.
-### :returns: `Unit`, `ChannelClosed`, or `CancelRequested`.
 @target(os: not "none")
-routine @ChannelCore[T].send_result(value: T) -> Result[None, ChannelClosed | CancelRequested]
+failable routine @ChannelCore[T].send(value: T) -> None
 needs T: typename
     local waiter: Waiter = current_waiter()
     local node: @ChannelWait <- ChannelWait(waiter, next: .hollow())
@@ -266,11 +274,11 @@ needs T: typename
         me.lock.lock()
         if me.receivers.peek() == 0
             me.lock.unlock()
-            return ChannelClosed()
+            throw ChannelClosedError()
         if me.count.peek() < me.items.count()
             me.push(value)
             me.lock.unlock()
-            return None()
+            return
         node.next.poke(me.putters.peek())
         me.putters.poke(node)
         me.lock.unlock()
@@ -278,7 +286,7 @@ needs T: typename
             me.lock.lock()
             unlink(list: me.putters, node)
             me.lock.unlock()
-            return CancelRequested()
+            throw CancelRequested()
         waiter.park()
         me.lock.lock()
         unlink(list: me.putters, node)
@@ -299,9 +307,9 @@ needs T: typename
     return true
 
 ### Takes the oldest value, waiting while there is none.
-### :returns: The value, `ChannelClosed`, or `CancelRequested`.
+### :returns: The value, `ChannelClosedError`, or `CancelRequested`.
 @target(os: not "none")
-routine @ChannelCore[T].receive_result() -> Result[T, ChannelClosed | CancelRequested]
+failable routine @ChannelCore[T].receive() -> T
 needs T: typename
     local waiter: Waiter = current_waiter()
     local node: @ChannelWait <- ChannelWait(waiter, next: .hollow())
@@ -314,7 +322,7 @@ needs T: typename
             return value
         if me.senders.peek() == 0
             me.lock.unlock()
-            return ChannelClosed()
+            throw ChannelClosedError()
         node.next.poke(me.getters.peek())
         me.getters.poke(node)
         me.lock.unlock()
@@ -322,7 +330,7 @@ needs T: typename
             me.lock.lock()
             unlink(list: me.getters, node)
             me.lock.unlock()
-            return CancelRequested()
+            throw CancelRequested()
         waiter.park()
         me.lock.lock()
         unlink(list: me.getters, node)

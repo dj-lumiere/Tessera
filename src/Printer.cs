@@ -149,6 +149,9 @@ public sealed class Printer
                 Line(s, indent, $"return when{(w.When.Value is null ? "" : " " + Expr(w.When.Value))}");
                 Arms(w.When, indent + 1, asValue: true);
                 break;
+            case ReturnStmt { IsThrow: true } t:
+                Line(s, indent, $"throw {Expr(t.Value!)}");
+                break;
             case ReturnStmt r:
                 Line(s, indent, r.Value is null ? "return" : $"return {Expr(r.Value)}");
                 break;
@@ -377,6 +380,12 @@ public sealed class Printer
 
     private string Unary(string op, Expr operand, int parentPrec)
     {
+        // `try` and `check` take the whole expression after them.
+        if (op is "try" or "check")
+        {
+            string taken = $"{op} {Expr(operand)}";
+            return parentPrec > 0 ? $"({taken})" : taken;
+        }
         string inner = Expr(operand, Operators.UnaryPrecedence);
         string text = op == "not" ? $"not {inner}" : $"{op}{inner}";
         return Operators.UnaryPrecedence < parentPrec ? $"({text})" : text;

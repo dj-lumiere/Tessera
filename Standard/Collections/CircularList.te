@@ -55,7 +55,7 @@ needs T: typename
     local new_start: U64 = slack // 2
 
     alloc: @MemoryManager = me.storage.manager.peek()
-    when Memory[T].construct_result(count: new_capacity, manager: alloc)
+    when check Memory[T].construct(count: new_capacity, manager: alloc)
         is Memory[T] as fresh =>
             old_data: @T = me.storage.data.peek()
             if not old_data.is_hollow()
@@ -66,7 +66,7 @@ needs T: typename
             me.storage.replace(value: steal fresh)
             me.start.poke(new_start)
             return true
-        is AllocFailed => return false
+        is MemoryAllocationError => return false
 
 ### The capacity to recenter into when one end runs out: double it only when the circular_list is more than half full.
 ### Otherwise the live range just moves back to the middle, so a queue (push_back / pop_front) keeps a bounded buffer
@@ -114,52 +114,30 @@ needs T: typename
 
 ### Appends `value` after the last element.
 ### :param value: The element to add.
-### :throws: Crashes with `MemoryAllocationError` when the buffer must grow and the allocator fails. See {CircularList[T].add_last_result} for a recoverable form.
+### :throws: Throws `MemoryAllocationError` when the buffer must grow and the allocator fails.
 @track_caller
 @reshaping
-routine @CircularList[T].add_last(value: T) -> None
-needs T: typename
-    when me.add_last_result(steal value)
-        is None => return
-        is AllocFailed => crash_allocation()
-
-### `add_last`, returning an error instead of crashing when the allocator fails.
-### :param value: The element to add.
-### :returns: A value once the element is added.
-### :throws: Returns `AllocFailed` when the buffer must grow and the allocator fails.
-@reshaping
-routine @CircularList[T].add_last_result(value: T) -> Result[None, AllocFailed]
+failable routine @CircularList[T].add_last(value: T) -> None
 needs T: typename
     if not me.ensure_back()
-        return AllocFailed()
+        throw MemoryAllocationError()
     data: @T = me.storage.data.peek()
     start: U64 = me.start.peek()
     count: U64 = me.count.peek()
     index: U64 = start + count
     data.stride(index).poke(steal value)
     me.count.poke(count + 1)
-    return None()
+    return
 
 ### Prepends `value` before the first element, so it becomes index `0`.
 ### :param value: The element to add.
-### :throws: Crashes with `MemoryAllocationError` when the buffer must grow and the allocator fails. See {CircularList[T].add_first_result} for a recoverable form.
+### :throws: Throws `MemoryAllocationError` when the buffer must grow and the allocator fails.
 @track_caller
 @reshaping
-routine @CircularList[T].add_first(value: T) -> None
-needs T: typename
-    when me.add_first_result(steal value)
-        is None => return
-        is AllocFailed => crash_allocation()
-
-### `add_first`, returning an error instead of crashing when the allocator fails.
-### :param value: The element to add.
-### :returns: A value once the element is added.
-### :throws: Returns `AllocFailed` when the buffer must grow and the allocator fails.
-@reshaping
-routine @CircularList[T].add_first_result(value: T) -> Result[None, AllocFailed]
+failable routine @CircularList[T].add_first(value: T) -> None
 needs T: typename
     if not me.ensure_front()
-        return AllocFailed()
+        throw MemoryAllocationError()
     data: @T = me.storage.data.peek()
     start: U64 = me.start.peek()
     new_start: U64 = start - 1
@@ -167,7 +145,7 @@ needs T: typename
     me.start.poke(new_start)
     next_count: U64 = me.count.peek() + 1
     next_count.poke_into(me.count)
-    return None()
+    return
 
 ### Removes the last element and returns it.
 ### :returns: The removed element.

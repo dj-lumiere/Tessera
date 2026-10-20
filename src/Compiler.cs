@@ -10,7 +10,7 @@ public sealed partial class Compiler
 {
     public BuildTarget Target { get; }
 
-    /// Whether the standard library's exported routines (the crash handler, the half and bfloat conversions LLVM calls)
+    /// Whether the standard library's exported routines (the default crash report, the half and bfloat conversions LLVM calls)
     /// are emitted even when nothing here calls them. A program needs them; a library linked into another language's
     /// program doesn't, since that program brings its own runtime.
     public bool EmitLibraryExports { get; init; } = true;
@@ -61,7 +61,6 @@ public sealed partial class Compiler
     private readonly StringBuilder _globals = new();
     private readonly List<(string Symbol, string Line)> _declares = [];
     private readonly HashSet<string> _exported = [];
-    private readonly StringBuilder _functions = new();
     private readonly HashSet<string> _definedTypes = [];
     private readonly HashSet<string> _declaredSymbols = [];
     private readonly Dictionary<string, Instance> _instances = [];
@@ -181,7 +180,17 @@ public sealed partial class Compiler
         {
             if (!Selected(d) || d.AnnotationNamed("llvm") is not null || d is VariantDecl { IsAnonymous: true }
                 || d is RecordDecl { Name: "CSize" or "CSSize" }) continue;
-            var (kind, name) = d is RecordDecl r ? (r.IsEntity ? "entity" : "record", r.Name) : ("variant", ((VariantDecl)d).Name);
+            var (kind, name) = d is RecordDecl r ? (r.IsEntity ? "entity" : r.IsCrashable ? "crashable" : "record", r.Name) : ("variant", ((VariantDecl)d).Name);
+            // A failure travels as a value: a throw copies it, and nothing gives it back, so it holds no memory of
+            // its own (views of memory someone else holds, such as text, are fine) and says nothing of its lifecycle.
+            if (d is RecordDecl { IsCrashable: true } crashable)
+            {
+                foreach (var f in crashable.Fields)
+                    if (OwnsMemory(f.Type, crashable.File, []) is { } owned)
+                        throw new CompileError(f.Pos, $"crashable '{name}' holds {owned} in '{f.Name}', memory of its own, and a failure is "
+                            + "a plain value a throw copies and nothing gives back: hold numbers, choices, and views (@[Byte], @T)");
+                continue;
+            }
             // A record holding an entity says so before anything about its lifecycle: the fix is to make it one.
             if (d is RecordDecl { IsEntity: false } plain)
                 foreach (var f in plain.Fields)
@@ -200,6 +209,27 @@ public sealed partial class Compiler
             throw new CompileError(d.Pos, $"{kind} '{name}' holds something to release ({why}), so it says how it is "
                 + $"released: routine @{name}.destruct() -> None");
         }
+    }
+
+    /// What memory of its own a value of `t` holds: a Memory, a Box, an entity, or a value of a type with one in it, or
+    /// null for none. A view (an address, a span) holds none.
+    private string? OwnsMemory(TypeRef t, string file, HashSet<string> seen)
+    {
+        if (t.Name is "Ptr" or "Addr" or "Span" or "Callable" || t.Known is not null) return null;
+        if (t.Name is "Memory" or "Box" && (t.Path is null or SystemModule)) return t.ToString();
+        foreach (var a in t.Args.OfType<TypeArgType>())
+            if (OwnsMemory(a.Type, file, seen) is { } inArg) return inArg;
+        Decl? d;
+        try { d = TypeDeclQuiet(t.Name, file, t.Path); }
+        catch (CompileError) { return null; }
+        if (d is null || !seen.Add($"{d.File}|{d.Pos}")) return null;
+        return d switch
+        {
+            RecordDecl { IsEntity: true } => t.ToString(),
+            RecordDecl r => r.Fields.Select(f => OwnsMemory(f.Type, r.File, seen) is null ? null : t.ToString()).FirstOrDefault(w => w is not null),
+            VariantDecl v => v.Branches.Select(b => OwnsMemory(b.Type, v.File, seen) is null ? null : t.ToString()).FirstOrDefault(w => w is not null),
+            _ => null,
+        };
     }
 
     /// Which of the program's types hold something to release (LifecycleNeeds.cs), by the declarations this build has.
@@ -428,8 +458,7 @@ public sealed partial class Compiler
         if (PrecheckGenerics(d => !d.IsLibrary) is [var unmet, ..]) throw unmet;
         foreach (var r in _userRoutines) CheckRoot(r);
         // Exported library routines are always emitted: something outside Tessera (C code, or LLVM's own lowering)
-        // may call them by their C name. A program's export of the same name replaces the library's, the way a
-        // program supplies its own crash handler.
+        // may call them by their C name. A program's export of the same name replaces the library's.
         var programExports = _userRoutines.Select(r => r.AnnotationNamed("export")?.First).Where(n => n is not null).ToHashSet();
         if (EmitLibraryExports)
             foreach (var r in _allRoutines.Where(r => r.IsLibrary && r.AnnotationNamed("export") is { } e && !programExports.Contains(e.First)))
@@ -438,8 +467,11 @@ public sealed partial class Compiler
         // The entry comes after the program's own routines, so an error in one of them is reported first.
         PlanEntry();
         while (_pending.Count > 0) EmitInstance(_pending.Dequeue());
+        FinishThrows();
         if (InlineRecursion() is [var recursive, ..]) throw recursive;
         if (VerifyFixedConformances() is [var first, ..]) throw first;
+        if (VerifyThrows() is [var unlisted, ..]) throw unlisted;
+        if (VerifyCrashPathsTakeNoMemory() is [var allocating, ..]) throw allocating;
         return Output();
     }
 
@@ -511,7 +543,7 @@ public sealed partial class Compiler
         errors.AddRange(prechecked);
         int checkedUpTo = errors.Count;
         // A routine derived without being asked for holds only when its payloads allow it, so it's checked when used.
-        // A library export the program replaces (its own crash handler) isn't part of the program.
+        // A library export the program replaces (a C name the program defines itself) isn't part of the program.
         var programExports = _userRoutines.Select(r => r.AnnotationNamed("export")?.First).Where(n => n is not null).ToHashSet();
         foreach (var r in _allRoutines.Where(r => !Tessera.Derive.IsImplicit(r)
                      && !(r.IsLibrary && r.AnnotationNamed("export") is { } e && programExports.Contains(e.First))
@@ -527,8 +559,12 @@ public sealed partial class Compiler
                 errors.Add(e);
             }
         }
+        try { FinishThrows(); }
+        catch (CompileError e) { errors.Add(e); }
         errors.AddRange(InlineRecursion());
         errors.AddRange(VerifyFixedConformances());
+        errors.AddRange(VerifyThrows());
+        errors.AddRange(VerifyCrashPathsTakeNoMemory());
         return [.. errors.Take(checkedUpTo), .. errors.Skip(checkedUpTo).Where(e => !templateErrors.Contains(e.Pos))];
     }
 
@@ -623,14 +659,17 @@ public sealed partial class Compiler
         var o = new StringBuilder();
         o.AppendLine($"target triple = \"{Target.LlvmTriple}\"");
         o.AppendLine();
-        // An external routine that an `@export` in this solution defines (the crash handler) is that definition,
+        // An external routine that an `@export` in this solution defines (such as the default crash report) is that definition,
         // not a declaration.
         var declares = new StringBuilder();
         foreach (var (symbol, line) in _declares)
             if (!_exported.Contains(symbol)) declares.AppendLine(line);
-        foreach (var sb in new[] { _typeDefs, _globals, declares })
+        // The carriers' bodies come first: defining them may define the types of the crashables they hold.
+        var failureTypes = new StringBuilder(FailureTypeDefs());
+        foreach (var sb in new[] { _typeDefs, failureTypes, _globals, declares })
             if (sb.Length > 0) o.Append(sb).AppendLine();
-        o.Append(MovesWaitingJobs ? TraceOutOfLine(_functions.ToString()) : _functions);
+        string functions = FunctionTexts();
+        o.Append(MovesWaitingJobs ? TraceOutOfLine(functions) : functions);
         o.Append(ResetThreadLocals());
         o.Append(RaceCheckOptions());
         o.Append(_entry);
@@ -943,6 +982,15 @@ public sealed partial class Compiler
         Set("FAILURE_TRACES", failures);
     }
 
+    /// Sets the size of the Crash service's message buffer the manifest gives (`[crash] message-size`): the standard
+    /// library's CRASH_MESSAGE_SIZE (Crash.te). Null keeps the library's.
+    public void SetCrashMessageSize(int? bytes)
+    {
+        if (bytes is not { } n || !_presets.TryGetValue(("", "CRASH_MESSAGE_SIZE"), out var list)) return;
+        for (int i = 0; i < list.Count; i++)
+            if (list[i] is { IsLibrary: true, Value: { } old }) list[i] = list[i] with { Value = new IntLit(n, old.Pos) };
+    }
+
     /// Sets the AccessManager's checks the manifest or the mode gives: the standard library's DEADLOCK_CHECK
     /// (`[debug] deadlock-check`) and ACCESS_ORDER (`[debug] access-order`) presets (AccessManager.te).
     public void SetAccessChecks(bool deadlockCheck, bool accessOrder)
@@ -1088,6 +1136,13 @@ public sealed partial class Compiler
             }
             case "Callable":
                 return ResolveCallable(t, env);
+            // `Check[T]` as a binding's type: the check that fills it gives its list of crashables.
+            case "Check" when FindVariant(t.Name, env.File, t.Pos, t.Path) is null:
+                if (t.Args is not [TypeArgType value])
+                    throw new CompileError(t.Pos, "Check takes the value's type: Check[T]");
+                return Crashing.Check(ResolveType(value.Type, env), []);
+            case "Crashables" when FindVariant(t.Name, env.File, t.Pos, t.Path) is null && FindRecord(t.Name, env.File, t.Pos, t.Path) is null:
+                throw new CompileError(t.Pos, "Crashables is what a check caught, named in a when arm: is Crashables as e");
         }
 
         if (Target.ResolveTargetType(t.Name) is { } alias)
@@ -1173,6 +1228,11 @@ public sealed partial class Compiler
 
         if (t.Args.Count == 0 && AccessMigration.OldTypeName(t.Name) is { } renamed)
             throw new CompileError(t.Pos, $"unknown type '{t}': {renamed}");
+
+        if (t.Name == "Result")
+            throw new CompileError(t.Pos, "Result is gone: a routine that can fail is a failable routine that throws a crashable, "
+                + "and its caller receives the failure with check (a Check[T]) or try (a Maybe[T]) "
+                + "(tessera migrate --step failable rewrites the standard library's _result calls)");
 
         if (t.Args.Count == 0 && t.Name == "Mapping")
             throw new CompileError(t.Pos, "unknown type 'Mapping': a mapped file is a FileStorage[Byte] from " +

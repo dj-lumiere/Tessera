@@ -232,7 +232,7 @@ secret routine unescaped(text: @[Byte], alloc: @MemoryManager) -> Memory[Byte]
 @target(os: "linux")
 @track_caller
 secret routine text_of(path: @[Byte], alloc: @MemoryManager) -> Memory[Byte]
-    when read_file(path, alloc)
+    when check read_file(path, alloc)
         is Memory[Byte] as text => return text
         is FsError => return copied(text: "", alloc)
 
@@ -267,7 +267,7 @@ secret routine linux_partition(sys: @[Byte], name: @[Byte], mounts: @[Byte],
 
     # A partition's device is the directory above it in /sys/devices. Something that isn't a partition (a whole disk
     # with a file system on it, a device-mapper volume) is its own device.
-    when canonical_path(path: sys, alloc)
+    when check canonical_path(path: sys, alloc)
         is Memory[Byte] as resolved =>
             if is_present(marker.getview())
                 device.replace(value: copied(text: file_name(parent_path(resolved.getview())),
@@ -307,8 +307,8 @@ secret routine storage_devices(alloc: @MemoryManager) -> List[StorageManager]
     local list: @List[StorageManager] <- .construct(alloc)
     local iter: @DirIter <- .hollow()
 
-    opened: Result[None, FsError] = iter.open_path("/sys/block")
-    if not opened.is_success()
+    opened: Bool = try iter.open_path("/sys/block")
+    if not opened
         iter.close()
         return list
     while true
@@ -339,8 +339,8 @@ secret routine partitions(alloc: @MemoryManager) -> List[PartitionManager]
     local iter: @DirIter <- .hollow()
     local mounts: @Memory[Byte] <- text_of(path: "/proc/self/mountinfo", alloc)
 
-    opened: Result[None, FsError] = iter.open_path("/sys/class/block")
-    if not opened.is_success()
+    opened: Bool = try iter.open_path("/sys/class/block")
+    if not opened
         iter.close()
         drop mounts
         return list
@@ -378,7 +378,7 @@ secret routine linux_partition_at(sys: @[Byte], key: @[Byte], mounts: @[Byte],
     alloc: @MemoryManager) -> PartitionManager
     local name: @Memory[Byte] <- copied(text: key, alloc)
 
-    when canonical_path(path: sys, alloc)
+    when check canonical_path(path: sys, alloc)
         is Memory[Byte] as resolved =>
             name.replace(value: copied(text: file_name(resolved.getview()), alloc))
             drop resolved
@@ -391,13 +391,11 @@ secret routine linux_partition_at(sys: @[Byte], key: @[Byte], mounts: @[Byte],
 ### /proc/self/mountinfo. A file system with no device (tmpfs, overlay) is named by its type.
 ### :param path: The path.
 ### :param alloc: The allocator for the names.
-### :returns: The partition, or the {FsError} for a path that can't be looked at.
+### :returns: The partition for a path that can't be looked at.
 @target(os: "linux")
-secret routine partition_of(path: @[Byte],
-    alloc: @MemoryManager) -> Result[PartitionManager, FsError]
-    id: U64 = when device_id(path)
+secret failable routine partition_of(path: @[Byte], alloc: @MemoryManager) -> PartitionManager
+    id: U64 = when check device_id(path)
         is U64 as found => found
-        is FsError as error => return error
     local key: @List[Byte] <- .construct(alloc)
     local sys: @List[Byte] <- .construct(alloc)
 
@@ -586,17 +584,16 @@ secret routine storage_devices(alloc: @MemoryManager) -> List[StorageManager]
 ### The partition the existing path is on, from statfs.
 ### :param path: The path.
 ### :param alloc: The allocator for the names.
-### :returns: The partition, or the {FsError} for a path that can't be looked at.
+### :returns: The partition for a path that can't be looked at.
 @target(os: "macos")
-secret routine partition_of(path: @[Byte],
-    alloc: @MemoryManager) -> Result[PartitionManager, FsError]
+secret failable routine partition_of(path: @[Byte], alloc: @MemoryManager) -> PartitionManager
     local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
     local st: @StatFs <- .hollow()
 
     if not c_path(path, out: cpath.to[@Byte]())
-        return path_error(path)
+        throw path_error(path)
     if c_statfs(cpath.to[@Byte](), st) != 0
-        return failed[PartitionManager]()
+        throw last_error()
     return mac_partition(st, alloc)
 
 # -- Windows -----------------------------------------------------------------------------
@@ -664,13 +661,13 @@ secret routine windows_partition(root: @U16, alloc: @MemoryManager) -> Partition
     local total: @U64 <- 0
 
     n: U64 = wide_length(root)
-    local at: @Memory[Byte] <- owned_wide(units: root, count: n, alloc).unwrap()
+    local at: @Memory[Byte] <- owned_wide(units: root, count: n, alloc)
     local fs_name: @Memory[Byte] <- copied(text: "", alloc)
 
     if c_get_volume_information(root, .hollow(), 0, .hollow(), .hollow(), .hollow(), fs.to[@U16](),
         64) != 0
         fs_name.replace(value: owned_wide(units: fs.to[@U16](), count: wide_length(fs.to[@U16]()),
-            alloc).unwrap())
+            alloc))
         c_get_disk_free_space(root, .hollow(), total, .hollow())
     path: @[Byte] = at.getview()
     # The drive "C:" is the root without its separator.
@@ -720,15 +717,14 @@ secret routine storage_devices(alloc: @MemoryManager) -> List[StorageManager]
 ### The partition the existing path is on: the volume GetVolumePathNameW finds for it.
 ### :param path: The path.
 ### :param alloc: The allocator for the names.
-### :returns: The partition, or the {FsError} for a path that can't be looked at.
+### :returns: The partition for a path that can't be looked at.
 @target(os: "windows")
-secret routine partition_of(path: @[Byte],
-    alloc: @MemoryManager) -> Result[PartitionManager, FsError]
+secret failable routine partition_of(path: @[Byte], alloc: @MemoryManager) -> PartitionManager
     local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
     local root: @Array[U16, PATH_CAPACITY] <- .hollow()
 
     if not wide_path(path, out: wpath.to[@U16]())
-        return path_error(path)
+        throw path_error(path)
     if c_get_volume_path_name(wpath.to[@U16](), root.to[@U16](), PATH_CAPACITY.to[U32]()) == 0
-        return failed[PartitionManager]()
+        throw last_error()
     return windows_partition(root: root.to[@U16](), alloc)

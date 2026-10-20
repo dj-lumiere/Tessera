@@ -47,7 +47,8 @@ public sealed record TypeArgExpr(Expr Expr) : TypeArg { public override string T
 /// `max(alignof[A](), alignof[B]())` (then Expr is set and Value is empty), or a key's list of values, `os: ("linux",
 /// "macos")` (then Values holds them and Value is the first), which @target matches when the target's value is any of
 /// them (with `not`, none of them).
-public sealed record AnnotationArg(string? Key, string Value, bool Negated, Expr? Expr = null, List<string>? Values = null);
+public sealed record AnnotationArg(string? Key, string Value, bool Negated, Expr? Expr = null, List<string>? Values = null,
+    List<TypeRef>? Types = null);
 
 public sealed record Annotation(string Name, List<AnnotationArg> Args, Pos Pos)
 {
@@ -120,6 +121,11 @@ public sealed record RoutineDecl(
     /// other lines its entry block, in the order written, and the end of the file is its `return`.
     public bool IsScript { get; init; }
 
+    /// `failable routine`: the routine may end with `throw`, giving a crashable instead of its value. A bare call of one
+    /// that fails stops the program on the call's line (through `Crash`), and `try` / `check` in front of the call
+    /// take the failure as a value instead.
+    public bool IsFailable { get; init; }
+
     public string DisplayName => (Owner is null ? Name : $"{Owner}.{Name}")
         + (Fixed.Count == 0 ? "" : $"[{string.Join(", ", Fixed)}]");
 
@@ -131,7 +137,7 @@ public sealed record RoutineDecl(
 
     /// The header up to the parameters, as written: `routine Point.scaled`, `routine @Point.move`,
     /// `common routine Point.origin`, `routine gcd`.
-    public string Header => (IsCommon ? "common routine " : "routine ") + (TakesAddress ? "@" : "")
+    public string Header => (IsFailable ? "failable " : "") + (IsCommon ? "common routine " : "routine ") + (TakesAddress ? "@" : "")
         + (Owner is null ? Name : $"{OwnerAsWritten}.{Name}");
 
     /// The owner as a header writes it: `Ptr[Cell]` for a routine on the pointer type, since `@Cell.read` would take a
@@ -151,6 +157,11 @@ public sealed record RecordDecl(
     /// `entity Name`: one of a kind, never copied. It lives in one place (a slot, a global, a field of another entity),
     /// is lent as `@Name`, moves with `steal`, and ends with `drop`.
     public bool IsEntity { get; init; }
+
+    /// `crashable Name`: a record a failable routine throws. Its fields are plain values, it has a name (the type's,
+    /// written by the builder) and a `message_into` routine that writes its message into a Writer, and the builder
+    /// makes it obey `Crashable`.
+    public bool IsCrashable { get; init; }
 }
 
 public sealed record ChoiceDecl(
@@ -291,6 +302,10 @@ public sealed record ReturnStmt(Expr? Value, Pos Pos) : Stmt(Pos)
 {
     /// The `return` the end of a file's top-level lines stands for: skipped when every path already left before it.
     public bool AtFileEnd { get; init; }
+
+    /// `throw e`: the routine (a failable one) ends with the crashable `e` instead of its value, and the failure goes
+    /// back to the caller. Everything that treats a return as the end of a path treats a throw the same way.
+    public bool IsThrow { get; init; }
 }
 
 /// `jump name(args)`: on to a block of the routine (a generator's escape hatch).

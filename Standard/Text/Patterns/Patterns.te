@@ -148,9 +148,9 @@ routine append_words(tree: @List[U32], from: @[U32]) -> None
 ### :returns: The program.
 @track_caller
 secret routine compile_or_crash(tree: @[U32], mode: U32, alloc: @MemoryManager) -> Memory[U32]
-    when compile_pattern(code: tree, mode, alloc)
+    when check compile_pattern(code: tree, mode, alloc)
         is Memory[U32] as program => return program
-        is PatternError as error =>
+        is InvalidPatternError as error =>
             local message: @List[Byte] <- .construct(alloc)
 
             write_pattern_error(error, code: tree, out: message)
@@ -208,92 +208,82 @@ common routine BytesPattern.of(pieces: @[BytesPiece], ignore_case: Bool,
 ### :param mode: MODE_TEXT or MODE_BYTES.
 ### :param alloc: Where the program takes memory.
 ### :returns: The program, or why the expression isn't one.
-secret routine regex_program(regex: @[Byte], mode: U32,
-    alloc: @MemoryManager) -> Result[Memory[U32], RegexError]
+secret failable routine regex_program(regex: @[Byte], mode: U32,
+    alloc: @MemoryManager) -> Memory[U32]
     input: PatternInput = PatternInput.of_utf8(regex)
-    when read_regex(input, bytes: mode == MODE_BYTES, alloc)
+    when check read_regex(input, bytes: mode == MODE_BYTES, alloc)
         is List[U32] as tree =>
-            when compile_pattern(code: tree.getview(), mode, alloc)
+            when check compile_pattern(code: tree.getview(), mode, alloc)
                 is Memory[U32] as program =>
                     drop tree
                     return program
-                is PatternError as error =>
+                is InvalidPatternError as error =>
                     drop tree
-                    return regex_error_of(error)
-        is RegexError as error => return error
+                    throw regex_error_of(error)
 
 ### The regular expression error a compile error of a read expression stands for.
 ### :param error: The compile error.
 ### :returns: The regex error (a capture name used twice, or a pattern too large, at position 0).
-secret routine regex_error_of(error: PatternError) -> RegexError
+secret routine regex_error_of(error: InvalidPatternError) -> PatternSyntaxError
     kind: RegexErrorKind = when
         error.kind == PatternErrorKind.DUPLICATE_NAME => RegexErrorKind.DUPLICATE_NAME
         else => RegexErrorKind.TOO_LARGE
-    return RegexError(kind, at: 0)
-
-### A text pattern from the usual regular expression syntax (`(?<year>\d{4})-(?<month>\d{2})`).
-### :param regex: The expression.
-### :param alloc: Where the pattern keeps its program.
-### :returns: The pattern, or why the expression isn't one the patterns can match (a backreference, lookaround, a
-### shortest repetition, a syntax error), with its position.
-common routine TextPattern.from_regex_result(regex: @[Byte],
-    alloc: @MemoryManager) -> Result[Me, RegexError]
-    when regex_program(regex, mode: MODE_TEXT, alloc)
-        is Memory[U32] as program => return Me(program: steal program)
-        is RegexError as error => return error
+    return PatternSyntaxError(kind, at: 0)
 
 ### A text pattern from the usual regular expression syntax.
 ### :param regex: The expression.
 ### :param alloc: Where the pattern keeps its program.
 ### :returns: The pattern.
-### :throws: Crashes with `PatternSyntaxError`, saying what and where, when the expression isn't one the patterns can
-### match. See {TextPattern.from_regex_result}.
+### :throws: Throws `PatternSyntaxError`, saying what and where, when the expression isn't one the patterns can
+### match.
 @track_caller
-common routine TextPattern.from_regex(regex: @[Byte], alloc: @MemoryManager) -> Me
-    when regex_program(regex, mode: MODE_TEXT, alloc)
+failable common routine TextPattern.from_regex(regex: @[Byte], alloc: @MemoryManager) -> Me
+    when check regex_program(regex, mode: MODE_TEXT, alloc)
         is Memory[U32] as program => return Me(program: steal program)
-        is RegexError as error => crash_regex(error, alloc)
-
-### A bytes pattern from the usual regular expression syntax (`\x89PNG`).
-### :param regex: The expression.
-### :param alloc: Where the pattern keeps its program.
-### :returns: The pattern, or why the expression isn't one the patterns can match, with its position.
-common routine BytesPattern.from_regex_result(regex: @[Byte],
-    alloc: @MemoryManager) -> Result[Me, RegexError]
-    when regex_program(regex, mode: MODE_BYTES, alloc)
-        is Memory[U32] as program => return Me(program: steal program)
-        is RegexError as error => return error
 
 ### A bytes pattern from the usual regular expression syntax.
 ### :param regex: The expression.
 ### :param alloc: Where the pattern keeps its program.
 ### :returns: The pattern.
-### :throws: Crashes with `PatternSyntaxError` when the expression isn't one the patterns can match.
+### :throws: Throws `PatternSyntaxError` when the expression isn't one the patterns can match.
 @track_caller
-common routine BytesPattern.from_regex(regex: @[Byte], alloc: @MemoryManager) -> Me
-    when regex_program(regex, mode: MODE_BYTES, alloc)
+failable common routine BytesPattern.from_regex(regex: @[Byte], alloc: @MemoryManager) -> Me
+    when check regex_program(regex, mode: MODE_BYTES, alloc)
         is Memory[U32] as program => return Me(program: steal program)
-        is RegexError as error => crash_regex(error, alloc)
-
-### Crashes with `PatternSyntaxError` and the message of a regex error.
-### :param error: The error.
-### :param alloc: Where the message takes memory.
-@noreturn
-@track_caller
-secret routine crash_regex(error: RegexError, alloc: @MemoryManager) -> None
-    local message: @List[Byte] <- .construct(alloc)
-
-    write_regex_error(error, out: message)
-    crash("PatternSyntaxError", message.getview())
 
 # -- the messages ------------------------------------------------------------------------------------------------
+
+### Writes what went wrong and where: `Backreferences aren't supported (at position 3).`
+### :typeparam TWriter: The writer's type.
+### :param out: Where the message goes.
+routine PatternSyntaxError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    write_regex_error(error: me, out)
+    return
+
+### Writes what went wrong: a capture name used twice, a repetition with its counts the wrong way, a unit the pattern
+### can't hold, a pattern too large, or an either with no alternatives.
+### :typeparam TWriter: The writer's type.
+### :param out: Where the message goes.
+routine InvalidPatternError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    when me.kind
+        PatternErrorKind.DUPLICATE_NAME => out.write("Two captures have the same name: each capture needs a name of its own.")
+        PatternErrorKind.BAD_REPEAT => out.write("A repetition asks for more rounds at least than at most.")
+        PatternErrorKind.BAD_UNIT =>
+            out.write("A piece names a unit the pattern can't hold: a byte past 0xFF, or a code point past 0x10FFFF.")
+        PatternErrorKind.TOO_LARGE => out.write("The pattern is too large: it would take more than a million steps.")
+        PatternErrorKind.EMPTY_EITHER => out.write("An either needs at least one alternative.")
+        else => out.write("The pieces don't make a pattern.")
+    return
 
 ### Writes what a compile error means, naming the capture for a name used twice.
 ### :typeparam TWriter: The writer's type.
 ### :param error: The error.
 ### :param code: The piece tree that didn't compile.
 ### :param out: Where the message goes.
-routine write_pattern_error[TWriter](error: PatternError, code: @[U32], out: @TWriter) -> None
+routine write_pattern_error[TWriter](error: InvalidPatternError, code: @[U32],
+    out: @TWriter) -> None
 needs TWriter: typename, Writer[TWriter]
     when error.kind
         PatternErrorKind.DUPLICATE_NAME =>
@@ -334,7 +324,7 @@ needs TWriter: typename, Writer[TWriter]
 ### :typeparam TWriter: The writer's type.
 ### :param error: The error.
 ### :param out: Where the message goes.
-routine write_regex_error[TWriter](error: RegexError, out: @TWriter) -> None
+routine write_regex_error[TWriter](error: PatternSyntaxError, out: @TWriter) -> None
 needs TWriter: typename, Writer[TWriter]
     when error.kind
         RegexErrorKind.BACKREFERENCE =>

@@ -32,6 +32,9 @@ public static class Derive
             .Select(c => (c.Name, ((TypeArgType)c.Args[0]).Type.Name))
             .ToHashSet();
         var derived = new List<Decl>();
+        // A crashable obeys Crashable, and its name is its type's, written by the builder unless it writes its own.
+        foreach (var crashable in decls.OfType<RecordDecl>().Where(r => r.IsCrashable))
+            derived.AddRange(Parse(crashable, CrashableSource(crashable, declared, conformed), implicitly: false));
         foreach (var type in decls.Where(d => d is RecordDecl or ChoiceDecl or VariantDecl))
         {
             var annotations = type.Annotations.Where(a => a.Name == "derive").ToList();
@@ -138,6 +141,26 @@ public static class Derive
                 Annotations = [.. g.Annotations, .. selection, .. (g is RoutineDecl ? new[] { mark } : [])],
                 Module = type.Module, IsLibrary = type.IsLibrary, IsPrivate = type.IsPrivate,
             };
+    }
+
+    /// A crashable's conformance to Crashable and its `name`, when it doesn't declare them.
+    private static string CrashableSource(RecordDecl r, HashSet<(string, string)> declared, HashSet<(string, string)> conformed)
+    {
+        var sb = new StringBuilder();
+        if (!conformed.Contains(("Crashable", r.Name)) && !r.Clauses.Any(c => c.Kind == "conform" && c.Concepts.Any(x => x.Name == "Crashable")))
+            sb.Append($"obeys {Compiler.SystemModule}/Crashable[{r.Name}]\n\n");
+        if (!declared.Contains((r.Name, "name")))
+            sb.Append($"### The kind of failure: `{r.Name}`.\n### :returns: The crashable's name.\nroutine {r.Name}.name() -> @[Byte]\n"
+                + $"    return \"{r.Name}\"\n\n");
+        // `{e}` writes the message, and `{e.diagnose()}` the crashable as source.
+        bool derives(string concept) => r.Annotations.Any(a => a.Name == "derive" && a.Args.Any(x => x.Value == concept));
+        if (!declared.Contains((r.Name, "represent_into")) && !conformed.Contains(("Representable", r.Name)) && !derives("Representable"))
+            sb.Append($"obeys {Fmt}Representable[{r.Name}]\n\n### Writes the message.\n### :typeparam TWriter: The Writer's type.\n"
+                + $"### :param out: Where it goes.\nroutine {r.Name}.represent_into[TWriter](out: @TWriter) -> None\n"
+                + $"needs TWriter: typename, {Fmt}Writer[TWriter]\n    me.message_into(out)\n    return\n\n");
+        if (!declared.Contains((r.Name, "diagnose_into")) && !conformed.Contains(("Diagnosable", r.Name)) && !derives("Diagnosable"))
+            sb.Append(RecordSource(r, "Diagnosable", "diagnose_into"));
+        return sb.ToString();
     }
 
     /// Whether a routine was derived without the type asking (a choice or variant with no `@derive`).

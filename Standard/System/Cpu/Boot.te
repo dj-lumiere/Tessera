@@ -156,6 +156,45 @@ secret routine allow_fp_access() -> None
         csrrs[U32, U32](ZERO, mstatus, R5)  # csrs mstatus, t0
         return
 
+### Stops at a breakpoint: a debugger attached to the core takes over here.
+@target(arch: "arm", os: "none")
+@feature("thumb-mode")
+@external("asm")
+secret routine breakpoint() -> None
+    block entry()
+        bkpt(0)  # bkpt #0
+        return
+
+### Stops a Cortex-M core after a crash: at a breakpoint when a debugger is attached (DHCSR's C_DEBUGEN, at
+### 0xE000EDF0), then a system reset (AIRCR's SYSRESETREQ, at 0xE000ED0C), then waits for the reset to come.
+@target(arch: "arm", os: "none")
+@feature("thumb-mode")
+@noreturn
+common routine Crash.stop() -> None
+    local dhcsr: @U32 = inttoptr[U64, @U32](0xE000EDF0)
+    local aircr: @U32 = inttoptr[U64, @U32](0xE000ED0C)
+
+    if (dhcsr.peek_volatile() & 1) == 1
+        breakpoint()
+    data_barrier()
+    aircr.poke_volatile(0x05FA0004)
+    data_barrier()
+    halt()
+
+### Stops the core after a crash. The architecture gives no way to tell whether a debugger is attached or to reset
+### the core, so it waits for interrupts, forever: a board resets it with its own watchdog or button.
+@target(arch: not "arm", os: "none")
+@noreturn
+common routine Crash.stop() -> None
+    halt()
+
+### Stops an ARM-mode core after a crash: it waits, forever.
+@target(arch: "arm", os: "none")
+@feature(not "thumb-mode")
+@noreturn
+common routine Crash.stop() -> None
+    halt()
+
 ### Waits for an interrupt.
 @target(arch: "x86_64", os: "none")
 @external("asm")

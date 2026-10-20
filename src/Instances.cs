@@ -97,7 +97,7 @@ public sealed partial class Compiler
     private static readonly HashSet<string> KnownAnnotations =
         ["external", "symbol", "callconv", "noreturn", "variadic", "template", "target", "feature", "llvm",
          "export", "derived", "inline", "noinline", "clobbers", "readonly", "pure", "naked", "source", "track_caller",
-         "no_builtins", "untraced", "trace", "heap_check", "race_check", "reshaping", "positional", ExpensiveCallLint.Annotation, BlockRule.Generated];
+         "no_builtins", "untraced", "trace", "heap_check", "race_check", "reshaping", "positional", "throws", ExpensiveCallLint.Annotation, BlockRule.Generated];
 
     /// Annotations that describe an assembly routine and mean nothing on another.
     private static readonly string[] AsmAnnotations = ["clobbers", "readonly", "pure", "naked"];
@@ -118,6 +118,7 @@ public sealed partial class Compiler
                 throw new CompileError(placed.Pos,
                     $"'= {placed.Text}' places a parameter of an assembly routine in a register, and '{r.DisplayName}' is not @external(\"asm\")");
         BlockRule.Check(r);
+        CheckFailableBoundary(r);
         CheckInlining(r);
         CheckUntraced(r);
         ExpensiveCallLint.CheckAnnotation(r);
@@ -132,7 +133,8 @@ public sealed partial class Compiler
         var ps = new List<DType>();
         foreach (var p in r.Params)
         {
-            var t = ResolveType(p.Type, env);
+            // A plain Callable parameter given a failable Callable is that Callable in this instance.
+            var t = env.Get(FailingParamKey(p.Name)) ?? ResolveType(p.Type, env);
             ps.Add(t);
         }
         CheckReceiver(r, env, ps);
@@ -229,6 +231,13 @@ public sealed partial class Compiler
 
         if (sig.IsExternalC || (ProvidedSymbols.Contains(sig.Symbol) && !sig.IsTemplate && (!sig.IsAsm || sig.IsNaked)))
         {
+            // A failable routine the base defines is built here too, only to learn what it throws: its callers need
+            // the list, and the base built the same lines.
+            if (!sig.IsExternalC && sig.Decl.IsFailable && sig.Decl.Blocks is not null)
+            {
+                _throwsOnly.Add(sig.Symbol);
+                _pending.Enqueue(sig);
+            }
             // A routine the base of a split program defines (ProvidedSymbols) is declared like a C routine: every
             // routine has the same lowered signature at its definition and its calls.
             if (_declaredSymbols.Add(sig.Symbol))
@@ -262,7 +271,9 @@ public sealed partial class Compiler
 
     private void EmitInstance(Instance inst)
     {
-        new FunctionGen(this, inst, _functions).Emit();
+        // A failable routine a caller needed first is built already.
+        if (_emittedSymbols.Contains(inst.Symbol) || _emittingSymbols.Contains(inst.Symbol)) return;
+        BuildInstance(inst);
         // An exported routine is defined under its C name (its Symbol), so a declaration of that name elsewhere in the
         // program is this definition, not a second one.
         if (inst.Decl.AnnotationNamed("export") is not null) _exported.Add(inst.Symbol);

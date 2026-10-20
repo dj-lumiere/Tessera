@@ -1,12 +1,11 @@
 # Tessera stdlib: reading integers from text
 #
-# text.to_result[T]() reads a decimal integer for every built-in integer type: an optional '+' or '-', then one or
-# more digits, and nothing else (no spaces, no '_', no "0x"). The digits are gathered into a U256, so any text that
-# fits a U256 is read before the range is checked, and a type's most negative value reads too ("-128" as S8).
-# text.to[T]() (Parsable.te) is the same conversion, and it crashes on bad text.
+# text.to[T]() reads a decimal integer for every built-in integer type: an optional '+' or '-', then one or more
+# digits, and nothing else (no spaces, no '_', no "0x"). The digits are gathered into a U256, so any text that fits a
+# U256 is read before the range is checked, and a type's most negative value reads too ("-128" as S8).
 #
-# For the text "-42", text.to_result[S32]() holds -42. "200" as an S8 and "-1" as a U32 are
-# ParseError.OUT_OF_RANGE, "" is ParseError.EMPTY, and "12a" is ParseError.INVALID.
+# For the text "-42", text.to[S32]() is -42. "200" as an S8 and "-1" as a U32 throw OutOfRangeError, "" throws
+# EmptyTextError, and "12a" throws InvalidValueError (Parsable.te).
 
 module Standard/System/Text
 
@@ -17,11 +16,13 @@ secret record IntParts
 
 ### Reads an optional `+` or `-` and then one or more decimal digits into a sign and a U256 magnitude.
 ### :param text: The text to read.
-### :returns: The sign and magnitude, or the reason.
-### :throws: Fails with `Empty` for no digits, `Invalid` for any other character, and `OutOfRange` when the digits overflow a U256.
-secret routine parse_int_parts(text: @[Byte]) -> Result[IntParts, ParseError]
+### :param target: The name of the type being read, for the failure.
+### :returns: The sign and magnitude.
+### :throws: Throws `EmptyTextError` for no digits, `InvalidValueError` for any other character, and `OutOfRangeError`
+###     when the digits overflow a U256.
+secret failable routine parse_int_parts(text: @[Byte], target: @[Byte]) -> IntParts
     if text.is_empty()
-        return ParseError.EMPTY
+        throw EmptyTextError(text, target)
     first: U8 = text.byte_at(0)
     # '-' and '+'
     values2: (Bool, U64) = when
@@ -30,11 +31,11 @@ secret routine parse_int_parts(text: @[Byte]) -> Result[IntParts, ParseError]
         else => (false, 0)
     negative, start = values2
     if start == text.count()
-        return ParseError.EMPTY
+        throw EmptyTextError(text, target)
     each i in start til text.count() with value: U256 = 0
         c: U8 = text.byte_at(i)
         if not (48 <= c <= 57)
-            return ParseError.INVALID
+            throw InvalidValueError(text, target)
         times: Maybe[U256] = value.mul_checked(10)
         when times
             is U256 as t =>
@@ -42,195 +43,207 @@ secret routine parse_int_parts(text: @[Byte]) -> Result[IntParts, ParseError]
                 sum: Maybe[U256] = t.add_checked(digit)
                 when sum
                     is U256 as s => continue with value: s
-                    is None => return ParseError.OUT_OF_RANGE
-            is None => return ParseError.OUT_OF_RANGE
+                    is None => throw OutOfRangeError(text, target)
+            is None => throw OutOfRangeError(text, target)
     then
         return IntParts(negative: negative, magnitude: value)
 
-### `value`, or OUT_OF_RANGE when it is None.
-### :typeparam T: The integer type.
-### :param value: The converted value, None when it did not fit.
-### :returns: The value, or `ParseError.OUT_OF_RANGE`.
-secret routine in_range[T](value: Maybe[T]) -> Result[T, ParseError]
-needs T: typename
-    when value
-        is T as v => return v
-        is None => return ParseError.OUT_OF_RANGE
-
 ### The text as a decimal S8, with an optional sign.
-### :returns: The value, or the error `Empty`, `Invalid`, or `OutOfRange`.
-routine @[Byte].to_result[S8]() -> Result[S8, ParseError]
-    parts: Result[IntParts, ParseError] = parse_int_parts(me)
-    p: IntParts = when parts
-        is IntParts as p => p
-        is ParseError as error => return error
+### :returns: The value.
+### :throws: Throws `EmptyTextError` for no digits, `InvalidValueError` for anything but digits after the sign, and
+###     `OutOfRangeError` for a value a S8 can't hold.
+failable routine @[Byte].to[S8]() -> S8
+    p: IntParts = when check parse_int_parts(text: me, target: "S8")
+        is IntParts as parts => parts
     if p.negative and (p.magnitude > 0)
         # -(m - 1) - 1: the most negative value's magnitude is one past the most positive value.
         less: Maybe[S8] = (p.magnitude - 1).to_checked[S8]()
         when less
             is S8 as v => return -v - 1
-            is None => return ParseError.OUT_OF_RANGE
-    else
-        return in_range[S8](p.magnitude.to_checked[S8]())
+            is None => throw OutOfRangeError(text: me, target: "S8")
+    when p.magnitude.to_checked[S8]()
+        is S8 as v => return v
+        is None => throw OutOfRangeError(text: me, target: "S8")
 
 ### The text as a decimal S16, with an optional sign.
-### :returns: The value, or the error `Empty`, `Invalid`, or `OutOfRange`.
-routine @[Byte].to_result[S16]() -> Result[S16, ParseError]
-    parts: Result[IntParts, ParseError] = parse_int_parts(me)
-    p: IntParts = when parts
-        is IntParts as p => p
-        is ParseError as error => return error
+### :returns: The value.
+### :throws: Throws `EmptyTextError` for no digits, `InvalidValueError` for anything but digits after the sign, and
+###     `OutOfRangeError` for a value a S16 can't hold.
+failable routine @[Byte].to[S16]() -> S16
+    p: IntParts = when check parse_int_parts(text: me, target: "S16")
+        is IntParts as parts => parts
     if p.negative and (p.magnitude > 0)
         # -(m - 1) - 1: the most negative value's magnitude is one past the most positive value.
         less: Maybe[S16] = (p.magnitude - 1).to_checked[S16]()
         when less
             is S16 as v => return -v - 1
-            is None => return ParseError.OUT_OF_RANGE
-    else
-        return in_range[S16](p.magnitude.to_checked[S16]())
+            is None => throw OutOfRangeError(text: me, target: "S16")
+    when p.magnitude.to_checked[S16]()
+        is S16 as v => return v
+        is None => throw OutOfRangeError(text: me, target: "S16")
 
 ### The text as a decimal S32, with an optional sign.
-### :returns: The value, or the error `Empty`, `Invalid`, or `OutOfRange`.
-routine @[Byte].to_result[S32]() -> Result[S32, ParseError]
-    parts: Result[IntParts, ParseError] = parse_int_parts(me)
-    p: IntParts = when parts
-        is IntParts as p => p
-        is ParseError as error => return error
+### :returns: The value.
+### :throws: Throws `EmptyTextError` for no digits, `InvalidValueError` for anything but digits after the sign, and
+###     `OutOfRangeError` for a value a S32 can't hold.
+failable routine @[Byte].to[S32]() -> S32
+    p: IntParts = when check parse_int_parts(text: me, target: "S32")
+        is IntParts as parts => parts
     if p.negative and (p.magnitude > 0)
         # -(m - 1) - 1: the most negative value's magnitude is one past the most positive value.
         less: Maybe[S32] = (p.magnitude - 1).to_checked[S32]()
         when less
             is S32 as v => return -v - 1
-            is None => return ParseError.OUT_OF_RANGE
-    else
-        return in_range[S32](p.magnitude.to_checked[S32]())
+            is None => throw OutOfRangeError(text: me, target: "S32")
+    when p.magnitude.to_checked[S32]()
+        is S32 as v => return v
+        is None => throw OutOfRangeError(text: me, target: "S32")
 
 ### The text as a decimal S64, with an optional sign.
-### :returns: The value, or the error `Empty`, `Invalid`, or `OutOfRange`.
-routine @[Byte].to_result[S64]() -> Result[S64, ParseError]
-    parts: Result[IntParts, ParseError] = parse_int_parts(me)
-    p: IntParts = when parts
-        is IntParts as p => p
-        is ParseError as error => return error
+### :returns: The value.
+### :throws: Throws `EmptyTextError` for no digits, `InvalidValueError` for anything but digits after the sign, and
+###     `OutOfRangeError` for a value a S64 can't hold.
+failable routine @[Byte].to[S64]() -> S64
+    p: IntParts = when check parse_int_parts(text: me, target: "S64")
+        is IntParts as parts => parts
     if p.negative and (p.magnitude > 0)
         # -(m - 1) - 1: the most negative value's magnitude is one past the most positive value.
         less: Maybe[S64] = (p.magnitude - 1).to_checked[S64]()
         when less
             is S64 as v => return -v - 1
-            is None => return ParseError.OUT_OF_RANGE
-    else
-        return in_range[S64](p.magnitude.to_checked[S64]())
+            is None => throw OutOfRangeError(text: me, target: "S64")
+    when p.magnitude.to_checked[S64]()
+        is S64 as v => return v
+        is None => throw OutOfRangeError(text: me, target: "S64")
 
 ### The text as a decimal S128, with an optional sign.
-### :returns: The value, or the error `Empty`, `Invalid`, or `OutOfRange`.
-routine @[Byte].to_result[S128]() -> Result[S128, ParseError]
-    parts: Result[IntParts, ParseError] = parse_int_parts(me)
-    p: IntParts = when parts
-        is IntParts as p => p
-        is ParseError as error => return error
+### :returns: The value.
+### :throws: Throws `EmptyTextError` for no digits, `InvalidValueError` for anything but digits after the sign, and
+###     `OutOfRangeError` for a value a S128 can't hold.
+failable routine @[Byte].to[S128]() -> S128
+    p: IntParts = when check parse_int_parts(text: me, target: "S128")
+        is IntParts as parts => parts
     if p.negative and (p.magnitude > 0)
         # -(m - 1) - 1: the most negative value's magnitude is one past the most positive value.
         less: Maybe[S128] = (p.magnitude - 1).to_checked[S128]()
         when less
             is S128 as v => return -v - 1
-            is None => return ParseError.OUT_OF_RANGE
-    else
-        return in_range[S128](p.magnitude.to_checked[S128]())
+            is None => throw OutOfRangeError(text: me, target: "S128")
+    when p.magnitude.to_checked[S128]()
+        is S128 as v => return v
+        is None => throw OutOfRangeError(text: me, target: "S128")
 
 ### The text as a decimal S256, with an optional sign.
-### :returns: The value, or the error `Empty`, `Invalid`, or `OutOfRange`.
-routine @[Byte].to_result[S256]() -> Result[S256, ParseError]
-    parts: Result[IntParts, ParseError] = parse_int_parts(me)
-    p: IntParts = when parts
-        is IntParts as p => p
-        is ParseError as error => return error
+### :returns: The value.
+### :throws: Throws `EmptyTextError` for no digits, `InvalidValueError` for anything but digits after the sign, and
+###     `OutOfRangeError` for a value a S256 can't hold.
+failable routine @[Byte].to[S256]() -> S256
+    p: IntParts = when check parse_int_parts(text: me, target: "S256")
+        is IntParts as parts => parts
     if p.negative and (p.magnitude > 0)
         # -(m - 1) - 1: the most negative value's magnitude is one past the most positive value.
         less: Maybe[S256] = (p.magnitude - 1).to_checked[S256]()
         when less
             is S256 as v => return -v - 1
-            is None => return ParseError.OUT_OF_RANGE
-    else
-        return in_range[S256](p.magnitude.to_checked[S256]())
+            is None => throw OutOfRangeError(text: me, target: "S256")
+    when p.magnitude.to_checked[S256]()
+        is S256 as v => return v
+        is None => throw OutOfRangeError(text: me, target: "S256")
 
 ### The text as a decimal U8, with an optional '+' ("-0" reads as 0).
-### :returns: The value, or the error `Empty`, `Invalid`, or `OutOfRange`.
-routine @[Byte].to_result[U8]() -> Result[U8, ParseError]
-    parts: Result[IntParts, ParseError] = parse_int_parts(me)
-    p: IntParts = when parts
-        is IntParts as p => p
-        is ParseError as error => return error
+### :returns: The value.
+### :throws: Throws `EmptyTextError` for no digits, `InvalidValueError` for anything but digits after the sign, and
+###     `OutOfRangeError` for a value a U8 can't hold.
+failable routine @[Byte].to[U8]() -> U8
+    p: IntParts = when check parse_int_parts(text: me, target: "U8")
+        is IntParts as parts => parts
     if p.negative and (p.magnitude > 0)
-        return ParseError.OUT_OF_RANGE
-    return in_range[U8](p.magnitude.to_checked[U8]())
+        throw OutOfRangeError(text: me, target: "U8")
+    when p.magnitude.to_checked[U8]()
+        is U8 as v => return v
+        is None => throw OutOfRangeError(text: me, target: "U8")
 
 ### The text as a decimal U16, with an optional '+' ("-0" reads as 0).
-### :returns: The value, or the error `Empty`, `Invalid`, or `OutOfRange`.
-routine @[Byte].to_result[U16]() -> Result[U16, ParseError]
-    parts: Result[IntParts, ParseError] = parse_int_parts(me)
-    p: IntParts = when parts
-        is IntParts as p => p
-        is ParseError as error => return error
+### :returns: The value.
+### :throws: Throws `EmptyTextError` for no digits, `InvalidValueError` for anything but digits after the sign, and
+###     `OutOfRangeError` for a value a U16 can't hold.
+failable routine @[Byte].to[U16]() -> U16
+    p: IntParts = when check parse_int_parts(text: me, target: "U16")
+        is IntParts as parts => parts
     if p.negative and (p.magnitude > 0)
-        return ParseError.OUT_OF_RANGE
-    return in_range[U16](p.magnitude.to_checked[U16]())
+        throw OutOfRangeError(text: me, target: "U16")
+    when p.magnitude.to_checked[U16]()
+        is U16 as v => return v
+        is None => throw OutOfRangeError(text: me, target: "U16")
 
 ### The text as a decimal U32, with an optional '+' ("-0" reads as 0).
-### :returns: The value, or the error `Empty`, `Invalid`, or `OutOfRange`.
-routine @[Byte].to_result[U32]() -> Result[U32, ParseError]
-    parts: Result[IntParts, ParseError] = parse_int_parts(me)
-    p: IntParts = when parts
-        is IntParts as p => p
-        is ParseError as error => return error
+### :returns: The value.
+### :throws: Throws `EmptyTextError` for no digits, `InvalidValueError` for anything but digits after the sign, and
+###     `OutOfRangeError` for a value a U32 can't hold.
+failable routine @[Byte].to[U32]() -> U32
+    p: IntParts = when check parse_int_parts(text: me, target: "U32")
+        is IntParts as parts => parts
     if p.negative and (p.magnitude > 0)
-        return ParseError.OUT_OF_RANGE
-    return in_range[U32](p.magnitude.to_checked[U32]())
+        throw OutOfRangeError(text: me, target: "U32")
+    when p.magnitude.to_checked[U32]()
+        is U32 as v => return v
+        is None => throw OutOfRangeError(text: me, target: "U32")
 
 ### The text as a decimal U64, with an optional '+' ("-0" reads as 0).
-### :returns: The value, or the error `Empty`, `Invalid`, or `OutOfRange`.
-routine @[Byte].to_result[U64]() -> Result[U64, ParseError]
-    parts: Result[IntParts, ParseError] = parse_int_parts(me)
-    p: IntParts = when parts
-        is IntParts as p => p
-        is ParseError as error => return error
+### :returns: The value.
+### :throws: Throws `EmptyTextError` for no digits, `InvalidValueError` for anything but digits after the sign, and
+###     `OutOfRangeError` for a value a U64 can't hold.
+failable routine @[Byte].to[U64]() -> U64
+    p: IntParts = when check parse_int_parts(text: me, target: "U64")
+        is IntParts as parts => parts
     if p.negative and (p.magnitude > 0)
-        return ParseError.OUT_OF_RANGE
-    return in_range[U64](p.magnitude.to_checked[U64]())
+        throw OutOfRangeError(text: me, target: "U64")
+    when p.magnitude.to_checked[U64]()
+        is U64 as v => return v
+        is None => throw OutOfRangeError(text: me, target: "U64")
 
 ### The text as a decimal U128, with an optional '+' ("-0" reads as 0).
-### :returns: The value, or the error `Empty`, `Invalid`, or `OutOfRange`.
-routine @[Byte].to_result[U128]() -> Result[U128, ParseError]
-    parts: Result[IntParts, ParseError] = parse_int_parts(me)
-    p: IntParts = when parts
-        is IntParts as p => p
-        is ParseError as error => return error
+### :returns: The value.
+### :throws: Throws `EmptyTextError` for no digits, `InvalidValueError` for anything but digits after the sign, and
+###     `OutOfRangeError` for a value a U128 can't hold.
+failable routine @[Byte].to[U128]() -> U128
+    p: IntParts = when check parse_int_parts(text: me, target: "U128")
+        is IntParts as parts => parts
     if p.negative and (p.magnitude > 0)
-        return ParseError.OUT_OF_RANGE
-    return in_range[U128](p.magnitude.to_checked[U128]())
+        throw OutOfRangeError(text: me, target: "U128")
+    when p.magnitude.to_checked[U128]()
+        is U128 as v => return v
+        is None => throw OutOfRangeError(text: me, target: "U128")
 
 ### The text as a decimal U256, with an optional '+' ("-0" reads as 0).
-### :returns: The value, or the error `Empty`, `Invalid`, or `OutOfRange`.
-routine @[Byte].to_result[U256]() -> Result[U256, ParseError]
-    parts: Result[IntParts, ParseError] = parse_int_parts(me)
-    p: IntParts = when parts
-        is IntParts as p => p
-        is ParseError as error => return error
+### :returns: The value.
+### :throws: Throws `EmptyTextError` for no digits, `InvalidValueError` for anything but digits after the sign, and
+###     `OutOfRangeError` for a value a U256 can't hold.
+failable routine @[Byte].to[U256]() -> U256
+    p: IntParts = when check parse_int_parts(text: me, target: "U256")
+        is IntParts as parts => parts
     if p.negative and (p.magnitude > 0)
-        return ParseError.OUT_OF_RANGE
+        throw OutOfRangeError(text: me, target: "U256")
     return p.magnitude
 
-### The text as a decimal S64, with an optional sign: read as an S64, then narrowed.
-### :returns: The value, or the error `Empty`, `Invalid`, or `OutOfRange`.
-routine @[Byte].to_result[CSSize]() -> Result[CSSize, ParseError]
-    wide: Result[S64, ParseError] = me.to_result[S64]()
-    when wide
-        is S64 as v => return in_range[CSSize](v.to_checked[CSSize]())
-        is ParseError as error => return error
+### The text as a decimal CSSize, with an optional sign: read as an S64, then narrowed.
+### :returns: The value.
+### :throws: Throws `EmptyTextError` for no digits, `InvalidValueError` for anything but digits after the sign, and
+###     `OutOfRangeError` for a value a CSSize can't hold.
+failable routine @[Byte].to[CSSize]() -> CSSize
+    wide: S64 = when check me.to[S64]()
+        is S64 as v => v
+    when wide.to_checked[CSSize]()
+        is CSSize as v => return v
+        is None => throw OutOfRangeError(text: me, target: "CSSize")
 
-### The text as a decimal CSize, with an optional '+': read as an U64, then narrowed.
-### :returns: The value, or the error `Empty`, `Invalid`, or `OutOfRange`.
-routine @[Byte].to_result[CSize]() -> Result[CSize, ParseError]
-    wide: Result[U64, ParseError] = me.to_result[U64]()
-    when wide
-        is U64 as v => return in_range[CSize](v.to_checked[CSize]())
-        is ParseError as error => return error
+### The text as a decimal CSize, with an optional '+': read as a U64, then narrowed.
+### :returns: The value.
+### :throws: Throws `EmptyTextError` for no digits, `InvalidValueError` for anything but digits after the sign, and
+###     `OutOfRangeError` for a value a CSize can't hold.
+failable routine @[Byte].to[CSize]() -> CSize
+    wide: U64 = when check me.to[U64]()
+        is U64 as v => v
+    when wide.to_checked[CSize]()
+        is CSize as v => return v
+        is None => throw OutOfRangeError(text: me, target: "CSize")

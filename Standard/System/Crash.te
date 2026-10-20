@@ -1,33 +1,101 @@
-# Tessera stdlib: crash
+# Tessera stdlib: crash, failures, and the Crash service
 #
-# crash ends the program when a contract is broken: an index out of bounds,
-# unwrap of None, a failed allocation. It names its own kind, with the names
-# RazorForge's crashables use (IntegerOverflowError, IndexOutOfBoundsError,
-# ...), so a failure reads the same whichever language it happens in. It hands
-# the name, a message, and the place to tessera_crash_handler, a routine the
-# program links against and that never returns. Standard/Os exports the
-# default on hosted targets: the report on stderr, then exit status 82
-# (Os/Crash.te). A program replaces it by exporting its own routine under
-# that name, which is how a target without an operating system gets one.
+# A crash ends the program when a contract is broken: an index out of bounds, unwrap of None, a failed allocation. It
+# names its own kind, with the names RazorForge's crashables use (IntegerOverflowError, IndexOutOfBoundsError, ...),
+# so a failure reads the same whichever language it happens in.
 #
-# The crash_[kind] routines below are the stdlib's own kinds with RazorForge's
-# default crash messages, so a check stays one short call (crash_overflow()).
-# A failure with a message of its own calls crash(name, message) directly.
+# An expected failure is a crashable a failable routine throws. `throw` only gives the failure back to the caller: a
+# call written with `try` or `check` in front receives it as a value, and a bare call that fails stops the program on
+# its own line, the way an overflowing `+` does. A crashable is a record of a few plain values with a name and a
+# message routine that writes into a Writer, and the builder collects, for every call, the crashables that can come
+# out of it, so a `Check[T]` is a variant of fixed size with no heap and nothing looked up at run time.
 #
-# crash and the stdlib routines that crash on a caller's mistake (an index out
-# of bounds, an overflowing add) are @track_caller: the handler gets the place
-# of the call in the caller's code, not a line inside the stdlib.
+# Both stop through the Crash service, one per program: it reports what happened (the name, the message, the place,
+# and the crash trace through trace_frame) with the routine in its slot, then stops. With an operating system the
+# default report goes to standard error (Os/Crash.te) and stopping exits with status 82. Without one the default is
+# to stop at once, and a program puts a routine that writes to a UART or blinks an LED in the slot with
+# Crash.report_with. The first thread that crashes reports, a crash while it reports skips the report and stops, and
+# another thread that crashes meanwhile waits for the stop.
 #
-# There is no unwinding and no recovery. Failures a caller is expected to
-# handle return Result or Maybe instead.
+# The message is written only when it is reported: a failure carries its crashable value, and the report asks the
+# crashable to write into a sink, Crash's fixed buffer by default (CRASH_MESSAGE_SIZE bytes, from config.toml's
+# [crash] message-size, the rest cut and marked with an ellipsis). A reporting routine and a message routine never
+# take memory from a general memory manager such as HEAP (a build error): a crash may come from running out of it.
+#
+# crash and the stdlib routines that crash on a caller's mistake (an index out of bounds, an overflowing add) are
+# @track_caller: the report names the place of the call in the caller's code, not a line inside the stdlib.
 
 module Standard/System
+
+### The buffer a crash's message is written into, CRASH_MESSAGE_SIZE bytes.
+secret global CRASH_MESSAGE: @[Byte] <- [0x00] * CRASH_MESSAGE_SIZE
+### How many bytes of CRASH_MESSAGE hold the message.
+secret global CRASH_MESSAGE_USED: @U64
+### 1 when the message didn't fit.
+secret global CRASH_MESSAGE_CUT: @U8
+### The slot the reporting routine goes in.
+secret global CRASH_SLOT: @CrashSlot
+### 1 once a thread started reporting a crash.
+@target(os: not "none")
+secret global CRASH_STATE: @Atomic[U32]
+### 1 once a crash started being reported.
+@target(os: "none")
+secret global CRASH_STATE: @U32
+### 1 on the thread that reports a crash.
+@threadlocal
+@target(os: not "none")
+secret global CRASH_HERE: @U8
+
+### The bytes of Crash's message buffer: the message of the crash being reported is cut to this many bytes.
+preset CRASH_MESSAGE_SIZE: U64 = 512
+
+### The value that says the slot was set: the slot's memory holds anything before the globals are in place on a target
+### without an operating system.
+secret preset CRASH_SLOT_SET: U32 = 0x43524153
 
 ### A place in the source: the file as the build named it, the line, and the column (0 when a @source gave none).
 record SourceLocation
     file: @[Byte]
     line: U32
     column: U32
+
+### Where a crash's message is written: a Writer that hands each piece to a routine, with a state of its own. Crash's
+### default one fills its fixed buffer, and a program without an operating system can make one that writes each piece
+### straight to a UART.
+record CrashSink
+obeys Writer[CrashSink]
+    state: Addr
+    writer: Callable[(Addr, @Byte, U64), None]
+
+### The message of a crash, written where the report wants it: the text a crash gave, or what a failure's crashable
+### writes. A failure's number says where it was made, in a traced build (write_failure_trace writes it).
+record CrashMessage
+    text: @[Byte]
+    error: Addr
+    writer: Callable[(Addr, @CrashSink), None]
+    failure: U32
+
+### The slot of the reporting routine: its address, and CRASH_SLOT_SET when a routine was put there.
+secret record CrashSlot
+    set: U32
+    report: Addr
+
+### The program's crash service: one per program. A crash and a failure nothing receives come here, and it reports
+### them with the routine in its slot, then stops the program. Its routines are called on the type.
+record Crash
+
+### A failure a failable routine throws: a record declared `crashable`, of a few plain values, with a name and a
+### message. The builder makes every crashable obey it, and writes its `name` unless it writes its own.
+### :typeparam T: The crashable.
+protocol Crashable[T]
+needs T: typename
+    ### The kind of failure: the crashable's type name, such as `NotFoundError`.
+    ### :returns: The name.
+    routine Me.name() -> @[Byte]
+    ### Writes what went wrong, in a sentence, to `out`.
+    ### :typeparam TWriter: The type of the Writer.
+    ### :param out: The Writer the message goes to.
+    routine Me.message_into[TWriter](out: @TWriter) -> None
 
 ### Makes a `SourceLocation` from its fields.
 ### :param file: Its `file`.
@@ -42,35 +110,268 @@ routine @SourceLocation.destruct() -> None
     me.file.destruct()
     return
 
-### The program's crash handler. Export a routine with this signature as "tessera_crash_handler" to replace the
-### default: name is the kind of failure (`IntegerOverflowError`), message says what happened, and place is the call
-### that crashed.
+### Makes a `CrashSink` from its fields.
+### :param state: What the routine gets with each piece, such as the address of a UART.
+### :param writer: The routine that writes one piece: the state, the first byte, and the count.
+### :returns: The new value.
+common routine CrashSink.construct(state: Addr, writer: Callable[(Addr, @Byte, U64), None]) -> Me
+    return Me(state, writer)
+
+### Releases nothing: the state is the program's.
+routine @CrashSink.destruct() -> None
+    return
+
+### Writes `count` bytes starting at `data`: hands them to the sink's routine.
+### :param data: The first byte.
+### :param count: The number of bytes.
+routine @CrashSink.write_bytes(data: @Byte, count: U64) -> None
+    writer: Callable[(Addr, @Byte, U64), None] = me.writer.peek()
+    writer.call(me.state.peek(), data, count)
+    return
+
+### Makes a `CrashMessage` from its fields.
+### :param text: The message of a crash, empty for a failure.
+### :param error: The address of the failure's crashable, or `.hollow()` for a crash.
+### :param writer: The routine that writes the crashable's message.
+### :param failure: The failure's number, whose trace follows the message, 0 for none.
+### :returns: The new value.
+common routine CrashMessage.construct(text: @[Byte], error: Addr,
+    writer: Callable[(Addr, @CrashSink), None], failure: U32) -> Me
+    return Me(text, error, writer, failure)
+
+### The message of a crash that gave its text.
+### :param text: The message.
+### :returns: The new value.
+common routine CrashMessage.of_text(text: @[Byte]) -> Me
+    return Me(text, error: .hollow(), writer: .hollow(), failure: 0)
+
+### Releases nothing: the text and the crashable are the caller's.
+routine @CrashMessage.destruct() -> None
+    return
+
+### Writes the message to `out`: the text, or the crashable's message.
+### :param out: The sink the message goes to.
+@untraced
+routine @CrashMessage.write_into(out: @CrashSink) -> None
+    error: Addr = me.error.peek()
+    if error.is_hollow()
+        text: @[Byte] = me.text.peek()
+        out.write("{text}")
+        return
+    writer: Callable[(Addr, @CrashSink), None] = me.writer.peek()
+    writer.call(error, out)
+    return
+
+### Writes the message into Crash's fixed buffer and gives a view of it: the first CRASH_MESSAGE_SIZE bytes, ending in
+### an ellipsis when the message was longer. The view holds until the next message is written.
+### :returns: The message.
+@untraced
+routine @CrashMessage.text() -> @[Byte]
+    local sink: @CrashSink <- CrashSink.construct(state: .hollow(),
+        writer: fill_crash_message.to[Callable]())
+
+    CRASH_MESSAGE_USED.poke(0)
+    CRASH_MESSAGE_CUT.poke(0)
+    me.write_into(sink)
+    used: U64 = CRASH_MESSAGE_USED.peek()
+    if CRASH_MESSAGE_CUT.peek() == 1
+        mark_cut(used)
+    return CRASH_MESSAGE.getslice(start: 0, count: used)
+
+### Appends a piece of a message to CRASH_MESSAGE, as much of it as fits.
+### :param state: Unused.
+### :param data: The first byte.
+### :param count: The number of bytes.
+@untraced
+secret routine fill_crash_message(state: Addr, data: @Byte, count: U64) -> None
+    used: U64 = CRASH_MESSAGE_USED.peek()
+    room: U64 = CRASH_MESSAGE_SIZE - used
+    taken: U64 = count.min(room)
+    if taken < count
+        CRASH_MESSAGE_CUT.poke(1)
+    each i in 0 til taken
+        CRASH_MESSAGE.setitem(used + i, data.stride(i).peek())
+    then
+        CRASH_MESSAGE_USED.poke(used + taken)
+        return
+
+### Ends a message that didn't fit with an ellipsis (`…`, three bytes in UTF-8), in the last whole characters that
+### leave room for it.
+### :param used: How many bytes of the buffer hold the message.
+@untraced
+secret routine mark_cut(used: U64) -> None
+    if used < 3
+        return
+    # back to the start of a character, so no character is cut in two
+    while end > 0 and (CRASH_MESSAGE.getitem(end) & 0xC0) == 0x80 with end: U64 = used - 3
+        continue with end: end - 1
+    then
+        CRASH_MESSAGE.setitem(end, 0xE2)
+        CRASH_MESSAGE.setitem(end + 1, 0x80)
+        CRASH_MESSAGE.setitem(end + 2, 0xA6)
+        CRASH_MESSAGE_USED.poke(end + 3)
+        return
+
+### Makes a `CrashSlot` from its fields.
+### :param set: Its `set`.
+### :param report: Its `report`.
+### :returns: The new value.
+secret common routine CrashSlot.construct(set: U32, report: Addr) -> Me
+    return Me(set, report)
+
+### Releases nothing: the routine is the program's.
+secret routine @CrashSlot.destruct() -> None
+    return
+
+### Puts `report` in the slot of the reporting routine, for the crashes from here on: it gets the crash's name, its
+### message (written where the routine asks, `message.text()` for Crash's buffer), and its place, and reads the crash
+### trace with trace_depth and trace_frame (mark it @untraced so its own frame isn't on it). It runs once, and stopping
+### follows when it returns. It takes no memory from a general memory manager (a build error otherwise).
+### :param report: The reporting routine, or `.hollow()` for the default one.
+### :returns: The routine that was in the slot, `.hollow()` for the default: pass it back to put it back.
+common routine Crash.report_with(report: Callable[(@[Byte], @CrashMessage, @SourceLocation), None]) -> Callable[(@[Byte], @CrashMessage, @SourceLocation), None]
+    before: Callable[(@[Byte], @CrashMessage, @SourceLocation), None] = Me.reporter()
+    CRASH_SLOT.report.poke(report.addr())
+    CRASH_SLOT.set.poke(CRASH_SLOT_SET)
+    return before
+
+### The routine in the slot of the reporting routine.
+### :returns: The routine, `.hollow()` for the default one.
+common routine Crash.reporter() -> Callable[(@[Byte], @CrashMessage, @SourceLocation), None]
+    if not (CRASH_SLOT.set.peek() == CRASH_SLOT_SET)
+        return .hollow()
+    return bitcast(CRASH_SLOT.report.peek())
+
+### Reports a crash with the routine in the slot (or the default one), then stops the program. The first crash
+### reports, a crash while it reports skips the report, and a crash on another thread meanwhile waits for the stop.
+### :param name: The kind of failure, named like a RazorForge crashable: `IntegerOverflowError`, or a program's own.
+### :param message: What happened.
+### :param place: Where it happened.
+@noreturn
+@untraced
+common routine Crash.raise(name: @[Byte], message: @CrashMessage, place: @SourceLocation) -> None
+    if not crash_enter()
+        Me.stop()
+    report: Callable[(@[Byte], @CrashMessage, @SourceLocation), None] = Me.reporter()
+    if report.addr().is_hollow()
+        default_crash_report(name, message, place)
+    else
+        report.call(name, message, place)
+    Me.stop()
+
+### Stops the program after a crash: exits with status 82. Without an operating system it is Standard/System/Cpu's: a
+### breakpoint when a debugger is attached and a reset (on Cortex-M), then waiting.
+@noreturn
+@target(os: not "none")
+common routine Crash.stop() -> None
+    crash_exit()
+
+### Whether this crash reports: the first one does. A crash on the thread that reports (one in the report itself) gives
+### false, and a crash on another thread while one reports waits for the stop.
+### :returns: True to report.
+@untraced
+@target(os: not "none")
+secret routine crash_enter() -> Bool
+    if CRASH_HERE.peek() == 1
+        return false
+    CRASH_HERE.poke(1)
+    if CRASH_STATE.swap(1) == 0
+        return true
+    crash_wait()
+
+### Whether this crash reports: the first one does, and one while it reports doesn't.
+### :returns: True to report.
+@untraced
+@target(os: "none")
+secret routine crash_enter() -> Bool
+    if CRASH_STATE.peek() == 1
+        return false
+    CRASH_STATE.poke(1)
+    return true
+
+### The hosted default report (Standard/Os): the name, the message, the place, and the trace, on standard error.
 ### :param name: The kind of failure.
 ### :param message: What happened.
-### :param place: The source location of the call that crashed.
+### :param place: Where it happened.
 @external("c")
-@symbol("tessera_crash_handler")
-@noreturn
-secret routine crash_handler(name: @[Byte], message: @[Byte], place: @SourceLocation) -> None
+@symbol("tessera_crash_default_report")
+@target(os: not "none")
+secret routine default_crash_report(name: @[Byte], message: @CrashMessage,
+    place: @SourceLocation) -> None
 
-### Ends the program by calling the crash handler, which never returns.
+### No default report without an operating system: there is nowhere to write it until the program says where.
+### :param name: Unused.
+### :param message: Unused.
+### :param place: Unused.
+@target(os: "none")
+@untraced
+secret routine default_crash_report(name: @[Byte], message: @CrashMessage,
+    place: @SourceLocation) -> None
+    return
+
+### Exits with status 82 (Standard/Os).
+@external("c")
+@symbol("tessera_crash_exit")
+@noreturn
+@target(os: not "none")
+secret routine crash_exit() -> None
+
+### Waits for the thread that reports a crash to stop the program (Standard/Os).
+@external("c")
+@symbol("tessera_crash_wait")
+@noreturn
+@target(os: not "none")
+secret routine crash_wait() -> None
+
+### Writes the message of a failure: the crashable at `error` writes it.
+### :typeparam E: The crashable.
+### :param error: The crashable's address.
+### :param out: The sink.
+@untraced
+secret routine write_crash_message[E](error: Addr, out: @CrashSink) -> None
+needs E: typename, Crashable[E]
+    value: E = error.to[@E]().peek()
+    value.message_into(out)
+    return
+
+### Stops the program for a failure nothing received: the builder calls it on the line of a bare call of a failable
+### routine that failed.
+### :typeparam E: The crashable.
+### :param error: The failure.
+### :param failure: The failure's number (its trace in a traced build), 0 for none.
+@noreturn
+@track_caller
+@untraced
+routine fail_with[E](error: E, failure: U32) -> None
+needs E: typename, Crashable[E]
+    local held: @E <- error
+    local message: @CrashMessage <- CrashMessage.construct(text: "", error: held.to[Addr](),
+        writer: write_crash_message[E].to[Callable](), failure)
+
+    Crash.raise(name: error.name(), message, place: caller_location())
+
+### Ends the program through the Crash service.
 ### :param name: The kind of failure, named like a RazorForge crashable: `IntegerOverflowError`, or a program's own.
 ### :param message: What happened, in a sentence.
-### :note: The handler receives the call site in the caller's code.
+### :note: The report names the call site in the caller's code.
 @noreturn
 @track_caller
 routine crash(name: @[Byte], message: @[Byte]) -> None
-    crash_handler(name, message, caller_location())
+    local text: @CrashMessage <- CrashMessage.of_text(message)
+
+    Crash.raise(name, message: text, place: caller_location())
 
 ### Ends the program like {crash}, reporting `place` instead of the caller's: for code that knows a better place than
 ### its own caller, such as an allocator callback reporting the line that freed a block twice
 ### ({allocator_call_place}).
 ### :param name: The kind of failure.
 ### :param message: What happened, in a sentence.
-### :param place: The place the handler reports.
+### :param place: The place the report names.
 @noreturn
 routine crash_at(name: @[Byte], message: @[Byte], place: @SourceLocation) -> None
-    crash_handler(name, message, place)
+    local text: @CrashMessage <- CrashMessage.of_text(message)
+
+    Crash.raise(name, message: text, place)
 
 ### Crashes with `IntegerOverflowError`: an arithmetic result or a conversion doesn't fit its type.
 @noreturn
@@ -136,18 +437,6 @@ routine crash_absent_value() -> None
 @track_caller
 routine crash_key_not_found() -> None
     crash(name: "KeyNotFoundError", message: "Key not found.")
-
-### Crashes with `UnwrapFailureError`: unwrap of a Result that holds an error.
-@noreturn
-@track_caller
-routine crash_unwrap_failure() -> None
-    crash(name: "UnwrapFailureError", message: "Attempted to unwrap the value of a Failure.")
-
-### Crashes with `UnwrapSuccessError`: unwrap_failure of a Result that holds a Success.
-@noreturn
-@track_caller
-routine crash_unwrap_success() -> None
-    crash(name: "UnwrapSuccessError", message: "Attempted to unwrap the failure of a Success.")
 
 ### Crashes with `TaskSpawnError`: the operating system didn't start a thread.
 @noreturn

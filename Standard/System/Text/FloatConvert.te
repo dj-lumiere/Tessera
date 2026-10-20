@@ -1,14 +1,14 @@
 # Tessera stdlib: reading floats from text
 #
-# text.to_result[B64]() (and B32, B16, BF16, B128) reads decimal text and
+# text.to[B64]() (and B32, B16, BF16, B128) reads decimal text and
 # rounds it correctly (to nearest, ties to even), however many digits it has.
-# text.to[B64]() is the same conversion, and it crashes on bad text.
+# It is failable: bad text throws, and a bare call stops the program on it.
 #
 #     [+-] digits [. digits] [(e|E) [+-] digits]      at least one mantissa digit
 #     [+-] inf | infinity | nan                        any letter case
 #
-# "5." and ".5" are accepted, whitespace is not. Errors are ParseError:
-# Empty for "", Invalid for anything else that doesn't match.
+# "5." and ".5" are accepted, whitespace is not. It throws EmptyTextError for
+# "" and InvalidValueError for anything else that doesn't match (Parsable.te).
 #
 # The method is exact, not fast: the value becomes a fraction N / D of big
 # naturals, and a bit-by-bit division gives the significand plus a remainder
@@ -69,15 +69,16 @@ routine matches_word(text: @Byte, count: U64, word: @[Byte]) -> Bool
 ### :param text: The text to read.
 ### :param digits: Where the kept digits accumulate (set to 0 first).
 ### :param max_kept: The most significant digits to keep. Later ones only raise the exponent and the sticky flag.
-### :returns: The parsed parts, or the reason the text did not match.
-### :throws: Returns `ParseError.EMPTY` for empty text and `ParseError.INVALID` for text that does not match.
-routine parse_decimal[LIMBS](text: @[Byte], digits: @BigNat[LIMBS],
-    max_kept: S64) -> Result[DecimalParts, ParseError]
+### :param target: The name of the float type being read, for the failure.
+### :returns: The parsed parts.
+### :throws: Throws `EmptyTextError` for empty text and `InvalidValueError` for text that does not match.
+failable routine parse_decimal[LIMBS](text: @[Byte], digits: @BigNat[LIMBS], max_kept: S64,
+    target: @[Byte]) -> DecimalParts
 needs LIMBS: U64
     digits.set(U64.MIN)
     count: U64 = text.count
     if count == 0
-        return ParseError.EMPTY
+        throw EmptyTextError(text, target)
 
     data: @Byte = text.data
     sign_char: Byte = data.stride(0).peek()
@@ -109,7 +110,8 @@ needs LIMBS: U64
             # After the mantissa only an exponent may follow: e or E, a sign, digits.
             mantissa: DecimalParts = DecimalParts(kind: DecimalKind.FINITE, negative, kept,
                 exponent, sticky)
-            return parse_decimal_exponent(text, at: i, mantissa, seen)
+            return when check parse_decimal_exponent(text, at: i, mantissa, seen, target)
+                is DecimalParts as whole => whole
 
         code: U8 = c.to[U8]()
         d: U64 = (code - b'0'.to[U8]()).to[U64]()
@@ -132,7 +134,7 @@ needs LIMBS: U64
         continue with i: i + 1, kept: kept + 1, exponent: kept_exponent, sticky: sticky, seen: true, fraction: fraction
     then
         if not seen
-            return ParseError.INVALID
+            throw InvalidValueError(text, target)
         parts: DecimalParts = DecimalParts(kind: DecimalKind.FINITE, negative, kept, exponent,
             sticky)
         return parts
@@ -143,31 +145,32 @@ needs LIMBS: U64
 ### :param at: The index of the first byte after the mantissa.
 ### :param mantissa: What the mantissa gave: its sign, its kept digits, its exponent, and its sticky flag.
 ### :param seen: True when the mantissa had at least one digit.
-### :returns: The parsed parts with the exponent added in, or the reason the text did not match.
-### :throws: Returns `ParseError.INVALID` when anything but a complete exponent follows the mantissa.
-secret routine parse_decimal_exponent(text: @[Byte], at: U64, mantissa: DecimalParts,
-    seen: Bool) -> Result[DecimalParts, ParseError]
+### :param target: The name of the float type being read, for the failure.
+### :returns: The parsed parts with the exponent added in.
+### :throws: Throws `InvalidValueError` when anything but a complete exponent follows the mantissa.
+secret failable routine parse_decimal_exponent(text: @[Byte], at: U64, mantissa: DecimalParts,
+    seen: Bool, target: @[Byte]) -> DecimalParts
     data: @Byte = text.data
     c: Byte = data.stride(at).peek()
     mark: Bool = c | 0x20 == b'e'
     if not (mark and seen)
-        return ParseError.INVALID
+        throw InvalidValueError(text, target)
 
     sign_at: U64 = at + 1
     if sign_at >= text.count
-        return ParseError.INVALID
+        throw InvalidValueError(text, target)
     sign_char: Byte = data.stride(sign_at).peek()
     minus: Bool = sign_char == b'-'
     plus: Bool = sign_char == b'+'
     skip: U64 = (minus or plus).to[U64]()
     first: U64 = sign_at + skip
     if first >= text.count
-        return ParseError.INVALID
+        throw InvalidValueError(text, target)
 
     while i < text.count with i: U64 = first, value: S64 = 0
         digit_char: Byte = data.stride(i).peek()
         if not is_ascii_digit(digit_char)
-            return ParseError.INVALID
+            throw InvalidValueError(text, target)
         code: U8 = digit_char.to[U8]()
         d: S64 = (code - b'0'.to[U8]()).to[S64]()
         appended: S64 = value * 10 + d
@@ -284,124 +287,95 @@ needs LIMBS: U64
                             return infinity
                         return bits
 
-# -- to_result -----------------------------------------------------------------
+# -- to ------------------------------------------------------------------------
 
 ### Converts decimal text to a B64, rounded correctly (to nearest, ties to even) however many digits it has. Accepts an optional sign, digits with an optional point and exponent, `inf`, `infinity` or `nan` in any letter case, and no whitespace.
-### :returns: The nearest float, or the reason the text did not match.
-### :throws: Returns `ParseError.EMPTY` for an empty string and `ParseError.INVALID` for anything else that does not match.
+### :returns: The nearest float.
+### :throws: Throws `EmptyTextError` for an empty string and `InvalidValueError` for anything else that does not match.
 ### :note: Overflow gives an infinity and underflow gives zero.
-routine @[Byte].to_result[B64]() -> Result[B64, ParseError]
+failable routine @[Byte].to[B64]() -> B64
     local digits: @BigNat[72] <- .hollow()
 
-    parsed: Result[DecimalParts, ParseError] = parse_decimal(text: me, digits, max_kept: 800)
-    when parsed
-        is DecimalParts as parts =>
-            magnitude: U64 = decimal_to_bits(digits, parts, format: B64.FORMAT.peek()).to[U64]()
-            negative: Bool = parts.negative
-            sign: U64 = when
-                negative => 0x8000000000000000
-                else => 0
-            value: B64 = .from_bits(magnitude | sign)
-            r: Result[B64, ParseError] = value
-            return r
-        is ParseError as error =>
-            failed: Result[B64, ParseError] = error
-            return failed
+    parts: DecimalParts = when check parse_decimal(text: me, digits, max_kept: 800, target: "B64")
+        is DecimalParts as parsed => parsed
+    magnitude: U64 = decimal_to_bits(digits, parts, format: B64.FORMAT.peek()).to[U64]()
+    negative: Bool = parts.negative
+    sign: U64 = when
+        negative => 0x8000000000000000
+        else => 0
+    return .from_bits(magnitude | sign)
 
 ### Converts decimal text to a B32, rounded correctly (to nearest, ties to even) however many digits it has. Accepts an optional sign, digits with an optional point and exponent, `inf`, `infinity` or `nan` in any letter case, and no whitespace.
-### :returns: The nearest float, or the reason the text did not match.
-### :throws: Returns `ParseError.EMPTY` for an empty string and `ParseError.INVALID` for anything else that does not match.
+### :returns: The nearest float.
+### :throws: Throws `EmptyTextError` for an empty string and `InvalidValueError` for anything else that does not match.
 ### :note: Overflow gives an infinity and underflow gives zero.
-routine @[Byte].to_result[B32]() -> Result[B32, ParseError]
+failable routine @[Byte].to[B32]() -> B32
     local digits: @BigNat[72] <- .hollow()
 
-    parsed: Result[DecimalParts, ParseError] = parse_decimal(text: me, digits, max_kept: 800)
-    when parsed
-        is DecimalParts as parts =>
-            magnitude: U32 = decimal_to_bits(digits, parts, format: B32.FORMAT.peek()).to[U32]()
-            negative: Bool = parts.negative
-            sign: U32 = when
-                negative => 0x80000000
-                else => 0
-            value: B32 = .from_bits(magnitude | sign)
-            r: Result[B32, ParseError] = value
-            return r
-        is ParseError as error =>
-            failed: Result[B32, ParseError] = error
-            return failed
+    parts: DecimalParts = when check parse_decimal(text: me, digits, max_kept: 800, target: "B32")
+        is DecimalParts as parsed => parsed
+    magnitude: U32 = decimal_to_bits(digits, parts, format: B32.FORMAT.peek()).to[U32]()
+    negative: Bool = parts.negative
+    sign: U32 = when
+        negative => 0x80000000
+        else => 0
+    return .from_bits(magnitude | sign)
 
 ### Converts decimal text to a B16, rounded correctly (to nearest, ties to even) however many digits it has. Accepts an optional sign, digits with an optional point and exponent, `inf`, `infinity` or `nan` in any letter case, and no whitespace.
-### :returns: The nearest float, or the reason the text did not match.
-### :throws: Returns `ParseError.EMPTY` for an empty string and `ParseError.INVALID` for anything else that does not match.
+### :returns: The nearest float.
+### :throws: Throws `EmptyTextError` for an empty string and `InvalidValueError` for anything else that does not match.
 ### :note: Overflow gives an infinity and underflow gives zero.
-routine @[Byte].to_result[B16]() -> Result[B16, ParseError]
+failable routine @[Byte].to[B16]() -> B16
     local digits: @BigNat[72] <- .hollow()
 
-    parsed: Result[DecimalParts, ParseError] = parse_decimal(text: me, digits, max_kept: 800)
-    when parsed
-        is DecimalParts as parts =>
-            magnitude: U16 = decimal_to_bits(digits, parts, format: B16.FORMAT.peek()).to[U16]()
-            negative: Bool = parts.negative
-            sign: U16 = when
-                negative => 0x8000
-                else => 0
-            value: B16 = .from_bits(magnitude | sign)
-            r: Result[B16, ParseError] = value
-            return r
-        is ParseError as error =>
-            failed: Result[B16, ParseError] = error
-            return failed
+    parts: DecimalParts = when check parse_decimal(text: me, digits, max_kept: 800, target: "B16")
+        is DecimalParts as parsed => parsed
+    magnitude: U16 = decimal_to_bits(digits, parts, format: B16.FORMAT.peek()).to[U16]()
+    negative: Bool = parts.negative
+    sign: U16 = when
+        negative => 0x8000
+        else => 0
+    return .from_bits(magnitude | sign)
 
 ### Converts decimal text to a BF16, rounded correctly (to nearest, ties to even) however many digits it has. Accepts an optional sign, digits with an optional point and exponent, `inf`, `infinity` or `nan` in any letter case, and no whitespace.
-### :returns: The nearest float, or the reason the text did not match.
-### :throws: Returns `ParseError.EMPTY` for an empty string and `ParseError.INVALID` for anything else that does not match.
+### :returns: The nearest float.
+### :throws: Throws `EmptyTextError` for an empty string and `InvalidValueError` for anything else that does not match.
 ### :note: Overflow gives an infinity and underflow gives zero.
-routine @[Byte].to_result[BF16]() -> Result[BF16, ParseError]
+failable routine @[Byte].to[BF16]() -> BF16
     local digits: @BigNat[72] <- .hollow()
 
-    parsed: Result[DecimalParts, ParseError] = parse_decimal(text: me, digits, max_kept: 800)
-    when parsed
-        is DecimalParts as parts =>
-            magnitude: U16 = decimal_to_bits(digits, parts, format: BF16.FORMAT.peek()).to[U16]()
-            negative: Bool = parts.negative
-            sign: U16 = when
-                negative => 0x8000
-                else => 0
-            value: BF16 = .from_bits(magnitude | sign)
-            r: Result[BF16, ParseError] = value
-            return r
-        is ParseError as error =>
-            failed: Result[BF16, ParseError] = error
-            return failed
+    parts: DecimalParts = when check parse_decimal(text: me, digits, max_kept: 800, target: "BF16")
+        is DecimalParts as parsed => parsed
+    magnitude: U16 = decimal_to_bits(digits, parts, format: BF16.FORMAT.peek()).to[U16]()
+    negative: Bool = parts.negative
+    sign: U16 = when
+        negative => 0x8000
+        else => 0
+    return .from_bits(magnitude | sign)
 
 ### Converts decimal text to a B128, rounded correctly (to nearest, ties to even) however many digits it has. Accepts an optional sign, digits with an optional point and exponent, `inf`, `infinity` or `nan` in any letter case, and no whitespace.
-### :returns: The nearest float, or the reason the text did not match.
-### :throws: Returns `ParseError.EMPTY` for an empty string and `ParseError.INVALID` for anything else that does not match.
+### :returns: The nearest float.
+### :throws: Throws `EmptyTextError` for an empty string and `InvalidValueError` for anything else that does not match.
 ### :note: Overflow gives an infinity and underflow gives zero.
-routine @[Byte].to_result[B128]() -> Result[B128, ParseError]
+failable routine @[Byte].to[B128]() -> B128
     local digits: @BigNat[864] <- .hollow()
 
-    parsed: Result[DecimalParts, ParseError] = parse_decimal(text: me, digits, max_kept: 11600)
-    when parsed
-        is DecimalParts as parts =>
-            # B128's largest value is about 1.19e4932 and its smallest subnormal 6.5e-4966.
-            magnitude: U128 = decimal_to_bits(digits, parts, format: B128.FORMAT.peek())
-            negative: Bool = parts.negative
-            sign: U128 = when
-                negative => B128_SIGN
-                else => 0
-            value: B128 = b128_of(magnitude | sign)
-            r: Result[B128, ParseError] = value
-            return r
-        is ParseError as error =>
-            failed: Result[B128, ParseError] = error
-            return failed
+    parts: DecimalParts = when check parse_decimal(text: me, digits, max_kept: 11600,
+        target: "B128")
+        is DecimalParts as parsed => parsed
+    # B128's largest value is about 1.19e4932 and its smallest subnormal 6.5e-4966.
+    magnitude: U128 = decimal_to_bits(digits, parts, format: B128.FORMAT.peek())
+    negative: Bool = parts.negative
+    sign: U128 = when
+        negative => B128_SIGN
+        else => 0
+    return b128_of(magnitude | sign)
 
 # -- B128, faithful ------------------------------------------------------------
 #
-# text.to_faithful_result[B128]() trades correct rounding for speed and a small stack: the
+# text.to_faithful[B128]() trades correct rounding for speed and a small stack: the
 # result is one of the two B128 values around the decimal (error below 1 ulp),
-# and differs from to_result[B128] only when the decimal is within about 2^-7 ulp of
+# and differs from to[B128] only when the decimal is within about 2^-7 ulp of
 # a halfway point. No BigNat: the first 38 significant digits go into a U128,
 # and the power of ten is a product of 10^(±2^i) taken from a table of 128-bit
 # mantissas (each rounded to nearest), keeping the high 128 bits of every
@@ -470,14 +444,14 @@ secret routine b128_wide_mul(a: B128Wide, m: U128, e: S64) -> B128Wide
     r: B128Wide = B128Wide(mant: mant, exponent: exponent)
     return r
 
-### Converts decimal text to a B128 quickly and with little stack, accepting the same text as `to_result[B128]`. The result is one of the two B128 values around the decimal (error under 1 ulp), and differs from `to_result[B128]` only when the text lies within about 2^-7 ulp of a halfway point. Only the first 38 significant digits are used.
-### :returns: A float within 1 ulp of the decimal, or the reason the text did not match.
+### Converts decimal text to a B128 quickly and with little stack, accepting the same text as `to[B128]`. The result is one of the two B128 values around the decimal (error under 1 ulp), and differs from `to[B128]` only when the text lies within about 2^-7 ulp of a halfway point. Only the first 38 significant digits are used.
+### :returns: A float within 1 ulp of the decimal.
+### :throws: Throws `EmptyTextError` for an empty string and `InvalidValueError` for anything else that does not match.
 ### :note: Overflow gives an infinity and underflow gives zero.
-routine @[Byte].to_faithful_result[B128]() -> Result[B128, ParseError]
+failable routine @[Byte].to_faithful[B128]() -> B128
     local digits: @BigNat[3] <- .hollow()
 
-    parsed: Result[DecimalParts, ParseError] = parse_decimal(text: me, digits, max_kept: 38)
-    when parsed
+    when check parse_decimal(text: me, digits, max_kept: 38, target: "B128")
         is DecimalParts as parts =>
             negative: Bool = parts.negative
             sign: U128 = when
@@ -488,13 +462,9 @@ routine @[Byte].to_faithful_result[B128]() -> Result[B128, ParseError]
                 DecimalKind.INFINITY =>
                     # d × 10^exponent: normalize d, then multiply in 10^(2^i) for every set bit of |exponent|.
                     # value = mant × 2^exponent = sig × 2^(biased - 16383 - 115)
-                    value: B128 = b128_of(sign | B128_INF)
-                    r: Result[B128, ParseError] = value
-                    return r
+                    return b128_of(sign | B128_INF)
                 DecimalKind.NAN =>
-                    value: B128 = b128_of(sign | B128_QNAN)
-                    r: Result[B128, ParseError] = value
-                    return r
+                    return b128_of(sign | B128_QNAN)
                 DecimalKind.FINITE =>
                     count: U64 = digits.count.peek()
                     low: U64 = digits.limbs[0]
@@ -512,13 +482,9 @@ routine @[Byte].to_faithful_result[B128]() -> Result[B128, ParseError]
                     zero: Bool = d == 0 or magnitude < -4966
                     when
                         zero =>
-                            value: B128 = b128_of(sign)
-                            r: Result[B128, ParseError] = value
-                            return r
+                            return b128_of(sign)
                         magnitude > 4933 =>
-                            value: B128 = b128_of(sign | B128_INF)
-                            r: Result[B128, ParseError] = value
-                            return r
+                            return b128_of(sign | B128_INF)
                         else =>
                             shift: U128 = d.leading_zeros()
                             start: B128Wide = B128Wide(mant: d << shift,
@@ -547,9 +513,4 @@ routine @[Byte].to_faithful_result[B128]() -> Result[B128, ParseError]
 
                                 bits: U128 = b128_round_pack(negative,
                                     exponent: w.exponent + 16383 + 115, sig)
-                                value: B128 = b128_of(bits)
-                                r: Result[B128, ParseError] = value
-                                return r
-        is ParseError as error =>
-            failed: Result[B128, ParseError] = error
-            return failed
+                                return b128_of(bits)

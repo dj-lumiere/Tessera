@@ -40,27 +40,15 @@ needs T: typename
 
 ### Grows the buffer to hold at least `capacity` elements without further allocation. A smaller request leaves the buffer unchanged.
 ### :param capacity: The number of elements to make room for.
-### :throws: Crashes with `MemoryAllocationError` when the allocator fails. See {List[T].reserve_result} for a recoverable form.
+### :throws: Throws `MemoryAllocationError` when the allocator fails.
 @track_caller
 @expensive("reallocates to exactly the capacity asked for")
 @reshaping
-routine @List[T].reserve(capacity: U64) -> None
+failable routine @List[T].reserve(capacity: U64) -> None
 needs T: typename
     if me.make_capacity(capacity)
         return
-    crash_allocation()
-
-### `reserve`, returning an error instead of crashing when the allocator fails.
-### :param capacity: The number of elements to make room for.
-### :returns: A value once the buffer holds at least `capacity` elements.
-### :throws: Returns `AllocFailed` when the allocator fails.
-@expensive("reallocates to exactly the capacity asked for")
-@reshaping
-routine @List[T].reserve_result(capacity: U64) -> Result[None, AllocFailed]
-needs T: typename
-    if me.make_capacity(capacity)
-        return None()
-    return AllocFailed()
+    throw MemoryAllocationError()
 
 ### Grows the buffer to at least `capacity` elements.
 ### :param capacity: The number of elements to make room for.
@@ -71,10 +59,9 @@ needs T: typename
     old_capacity: U64 = me.storage.count.peek()
     if old_capacity >= capacity
         return true
-    resized: Result[None, AllocFailed] = me.storage.resize_result(capacity)
-    when resized
+    when check me.storage.resize(capacity)
         is None => return true
-        is AllocFailed => return false
+        is MemoryAllocationError => return false
 
 ### Makes room for `wanted` elements, starting at 4 slots and doubling until the request fits.
 ### :param wanted: The element count the buffer must hold.
@@ -113,30 +100,19 @@ needs T: typename
 
 ### Appends `value` after the last element, growing the buffer when it is full.
 ### :param value: The element to append.
-### :throws: Crashes with `MemoryAllocationError` when the allocator fails. See {List[T].add_last_result} for a recoverable form.
+### :throws: Throws `MemoryAllocationError` when the buffer must grow and the allocator fails.
 @track_caller
 @reshaping
-routine @List[T].add_last(value: T) -> None
-needs T: typename
-    when me.add_last_result(steal value)
-        is None => return
-        is AllocFailed => crash_allocation()
-
-### `add_last`, returning an error instead of crashing when the allocator fails.
-### :param value: The element to append.
-### :returns: A value once the element is appended.
-### :throws: Returns `AllocFailed` when the buffer must grow and the allocator fails.
-@reshaping
-routine @List[T].add_last_result(value: T) -> Result[None, AllocFailed]
+failable routine @List[T].add_last(value: T) -> None
 needs T: typename
     count: U64 = me.count.peek()
     wanted: U64 = count + 1
     if not me.make_room(wanted)
-        return AllocFailed()
+        throw MemoryAllocationError()
     data: @T = me.storage.data.peek()
     data.stride(count).poke(steal value)
     me.count.poke(wanted)
-    return None()
+    return
 
 ### Removes the last element and returns it.
 ### :returns: The removed element.

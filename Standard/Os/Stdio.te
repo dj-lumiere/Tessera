@@ -3,10 +3,10 @@
 # Console is what a program uses: Console.show and Console.alert write a line to standard output and standard error
 # (the builder expands their template, as for a Writer's write), and the ask routines read standard input. Behind it
 # are three types, one per stream, so a stream is only read or only written: ConsoleOutput and ConsoleErrors are
-# Writers (write_all_result writes bytes, and nothing is buffered, a BufWriter[ConsoleOutput] is the caller's choice),
+# Writers (write_all writes bytes, and nothing is buffered, a BufWriter[ConsoleOutput] is the caller's choice),
 # and ConsoleInput is a Reader. Standard input is read through one buffer the whole process shares, behind a lock:
 # standard input is one stream, and two buffers over it would each take bytes the other should have had, so
-# read_into_result, ask_bytes, ask_word, ask_line, and ask_all all draw on that one. Console.ask[T]() reads a number
+# read_into, ask_bytes, ask_word, ask_line, and ask_all all draw on that one. Console.ask[T]() reads a number
 # (any Parsable type) from the next word in place, without allocating unless the word is longer than the buffer.
 # ask[T], ask_word, and ask_line crash at the end of the input, and their _checked forms return None there. Code that
 # reads a file or standard input alike takes a @R and gets Console.input().
@@ -27,11 +27,9 @@ record Console
 ### Standard input, read through {Console}. {Console.input} is the pointer a Reader parameter takes.
 record ConsoleInput
 obeys Reader[ConsoleInput]
-
 ### Standard output, a Writer. {Console.output} is the pointer a Writer parameter takes.
 record ConsoleOutput
 obeys Writer[ConsoleOutput]
-
 ### Standard error, a Writer. {Console.errors} is the pointer a Writer parameter takes.
 record ConsoleErrors
 obeys Writer[ConsoleErrors]
@@ -48,7 +46,7 @@ needs T: typename
     ### :param buffer: Where the bytes go.
     ### :param count: The most bytes to read.
     ### :returns: How many bytes were read, 0 at the end, or a {FsError}.
-    routine @Me.read_bytes_result(buffer: @Byte, count: U64) -> Result[U64, FsError]
+    failable routine @Me.read_bytes(buffer: @Byte, count: U64) -> U64
 
 # -- Standard input --------------------------------------------------------------------------------
 
@@ -65,10 +63,14 @@ secret record InputBuffer
     start: U64
     end: U64
 
+### The input ended before a read found anything to read.
+crashable EndOfInputError
+    reader: @[Byte]
+
 ### Fills the empty buffer from the OS with one read.
 ### :returns: True when bytes came, false at the end of the input (or on a failure, which reads as the end).
 secret routine @InputBuffer.fill() -> Bool
-    got: Result[U64, FsError] = stdin_read(buffer: me.bytes.to[@Byte](), count: IN_BUFFER)
+    got: Check[U64] = check stdin_read(buffer: me.bytes.to[@Byte](), count: IN_BUFFER)
     n: U64 = when got
         is U64 as n => n
         is FsError => 0
@@ -100,7 +102,7 @@ secret routine @InputBuffer.fill_more() -> Bool
     local end: U64 = me.end.peek()
 
     free: @Byte = me.bytes.to[@Byte]().stride(end)
-    got: Result[U64, FsError] = stdin_read(buffer: free, count: IN_BUFFER.sub(end))
+    got: Check[U64] = check stdin_read(buffer: free, count: IN_BUFFER.sub(end))
     when got
         is U64 as n =>
             me.end.poke(end + n)
@@ -211,16 +213,17 @@ common routine Console.input() -> @ConsoleInput
 ### :param buffer: Where the bytes go.
 ### :param count: The most bytes to read.
 ### :returns: How many bytes were read, 0 at the end, or a {FsError} when the OS read fails.
-routine @ConsoleInput.read_into_result(buffer: @Byte, count: U64) -> Result[U64, FsError]
+failable routine @ConsoleInput.read_into(buffer: @Byte, count: U64) -> U64
     local b: @InputBuffer = STDIN_BUFFER
 
     b.lock.lock()
     if not (b.start.peek() < b.end.peek())
         # Nothing held: a read that wants a bufferful or more goes straight to the caller's buffer.
         if count >= IN_BUFFER
-            read: Result[U64, FsError] = stdin_read(buffer, count)
+            read: Check[U64] = check stdin_read(buffer, count)
             b.lock.unlock()
-            return read
+            return when read
+                is U64 as n => n
         elseif not b.fill()
             b.lock.unlock()
             return 0
@@ -232,15 +235,22 @@ routine @ConsoleInput.read_into_result(buffer: @Byte, count: U64) -> Result[U64,
     b.lock.unlock()
     return n
 
+### Skips white space and reads the next word as a T, like {Console.ask[T]}, with None instead of a failure at the end
+### of the input and on a word that isn't a T. The word is gone from the input either way.
+### :typeparam T: The type to read, a Parsable one.
+### :returns: The value, or None at the end of the input or when the word isn't a T.
+common routine Console.ask_checked[T]() -> Maybe[T]
+needs T: typename, Parsable[T]
+    return try Me.ask[T]()
+
 ### Skips white space and reads the next word (spaces, tabs, and line ends separate words) as a T, straight from the
 ### input buffer: nothing is allocated unless the word is longer than the buffer. The space after the word stays in
 ### the input.
 ### :typeparam T: The type to read, a Parsable one (every integer and float type).
 ### :returns: The value.
-### :throws: Crashes with `AbsentValueError` at the end of the input, and with `InvalidValueError`, naming the word and
-### the type, when the word isn't a T. See {Console.ask_checked} and {Console.ask_result}.
-@track_caller
-common routine Console.ask[T]() -> T
+### :throws: Throws `EndOfInputError` at the end of the input, and the failure of `text.to[T]()` (`InvalidValueError`,
+###     naming the word and the type, `OutOfRangeError`) when the word isn't a T.
+failable common routine Console.ask[T]() -> T
 needs T: typename, Parsable[T]
     local b: @InputBuffer = STDIN_BUFFER
     local spill: @Memory[Byte] <- .hollow()
@@ -250,52 +260,35 @@ needs T: typename, Parsable[T]
     when word
         is @[Byte] as text =>
             # The word may be a view of the buffer, so it's converted before the lock goes.
-            value: T = text.to[T]()
-            drop spill
+            converted: Check[T] = check text.to[T]()
             b.lock.unlock()
-            return value
+            when converted
+                is T as value =>
+                    drop spill
+                    return value
+                is Crashables as error =>
+                    drop spill
+                    throw error
         is None =>
             b.lock.unlock()
-            crash(name: "AbsentValueError",
-                message: "The input ended before Console.ask[T]() found a word to read.")
-
-### Skips white space and reads the next word as a T, like {Console.ask[T]}, with None instead of a crash at the end of
-### the input and on a word that isn't a T. The word is gone from the input either way.
-### :typeparam T: The type to read, a Parsable one.
-### :returns: The value, or None at the end of the input or when the word isn't a T.
-common routine Console.ask_checked[T]() -> Maybe[T]
-needs T: typename, Parsable[T]
-    converted: Result[T, ParseError] = Me.ask_result[T]()
-    when converted
-        is T as value => return value
-        is ParseError => return None()
-
-### Skips white space and reads the next word as a T, like {Console.ask[T]}, with an error instead of a crash: `Empty` at
-### the end of the input, else why the word isn't a T. The word is gone from the input either way.
-### :typeparam T: The type to read, a Parsable one.
-### :returns: The value, or a {ParseError}.
-common routine Console.ask_result[T]() -> Result[T, ParseError]
-needs T: typename, Parsable[T]
-    local b: @InputBuffer = STDIN_BUFFER
-    local spill: @Memory[Byte] <- .hollow()
-
-    b.lock.lock()
-    word: Maybe[@[Byte]] = b.word(spill)
-    value: Result[T, ParseError] = when word
-        is @[Byte] as text =>
-            converted: Result[T, ParseError] = text.to_result[T]()
             drop spill
-            becomes converted
-        is None => ParseError.EMPTY
-    b.lock.unlock()
-    return value
+            throw EndOfInputError(reader: "Console.ask[T]")
 
-### The Reader side: {ConsoleInput.read_into_result}.
+### Writes `The input ended before Console.ask[T]() found anything to read.`
+### :typeparam TWriter: The type of the Writer.
+### :param out: The Writer the message goes to.
+routine EndOfInputError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    out.write("The input ended before {me.reader}() found anything to read.")
+    return
+
+### The Reader side: {ConsoleInput.read_into}.
 ### :param buffer: Where the bytes go.
 ### :param count: The most bytes to read.
 ### :returns: How many bytes were read, 0 at the end, or a {FsError}.
-routine @ConsoleInput.read_bytes_result(buffer: @Byte, count: U64) -> Result[U64, FsError]
-    return me.read_into_result(buffer, count)
+failable routine @ConsoleInput.read_bytes(buffer: @Byte, count: U64) -> U64
+    when check me.read_into(buffer, count)
+        is U64 as returned => return returned
 
 ### Up to `count` bytes, in memory from `alloc`: fewer only at the end of the input or on a read failure. Drop them.
 ### :param count: How many bytes to read.
@@ -305,13 +298,13 @@ routine @ConsoleInput.read_bytes_result(buffer: @Byte, count: U64) -> Result[U64
 common routine Console.ask_bytes(count: U64, alloc: @MemoryManager) -> Memory[Byte]
     local buffer: @Memory[Byte] <- Memory[Byte].construct(count: 0, manager: alloc)
 
-    when Memory[Byte].construct_result(count: count.max(1), manager: alloc)
+    when check Memory[Byte].construct(count: count.max(1), manager: alloc)
         is Memory[Byte] as made => buffer.replace(value: steal made)
-        is AllocFailed => return buffer
+        is MemoryAllocationError => return buffer
 
     while n != count with n: U64 = 0
-        got: Result[U64, FsError] = Me.input().read_into_result(
-            buffer: buffer.data.peek().stride(n), count: count - n)
+        got: Check[U64] = check Me.input().read_into(buffer: buffer.data.peek().stride(n),
+            count: count - n)
         k: U64 = when got
             is U64 as k => k
             is FsError => 0
@@ -333,7 +326,7 @@ common routine Console.ask_all(alloc: @MemoryManager) -> Memory[Byte]
     local chunk: @Byte = chunk_buffer.to[@Byte]()
 
     while true
-        got2: Result[U64, FsError] = Me.input().read_into_result(buffer: chunk, count: 4096)
+        got2: Check[U64] = check Me.input().read_into(buffer: chunk, count: 4096)
         n2: U64 = when got2
             is U64 as n2 => n2
             is FsError => 0
@@ -493,14 +486,13 @@ common routine Console.output() -> @ConsoleOutput
 ### Writes all `count` bytes to standard output.
 ### :param data: The bytes to write.
 ### :param count: How many bytes there are.
-### :returns: Success, or the error Other if the OS refused (or the process has no standard output).
 @expensive("makes a system call")
-routine @ConsoleOutput.write_all_result(data: @Byte, count: U64) -> Result[None, FsError]
+failable routine @ConsoleOutput.write_all(data: @Byte, count: U64) -> None
     if stream_write(stream: StdStream.OUTPUT, data, count)
-        return None()
-    return FsError.OTHER
+        return
+    throw IoError(code: 0)
 
-### The Writer side of standard output: a failed write is dropped ({ConsoleOutput.write_all_result} reports it).
+### The Writer side of standard output: a failed write is dropped ({ConsoleOutput.write_all} reports it).
 ### :param data: The bytes to write.
 ### :param count: How many bytes there are.
 @expensive("makes a system call")
@@ -529,14 +521,13 @@ common routine Console.errors() -> @ConsoleErrors
 ### Writes all `count` bytes to standard error.
 ### :param data: The bytes to write.
 ### :param count: How many bytes there are.
-### :returns: Success, or the error Other if the OS refused (or the process has no standard error).
 @expensive("makes a system call")
-routine @ConsoleErrors.write_all_result(data: @Byte, count: U64) -> Result[None, FsError]
+failable routine @ConsoleErrors.write_all(data: @Byte, count: U64) -> None
     if stream_write(stream: StdStream.ERROR, data, count)
-        return None()
-    return FsError.OTHER
+        return
+    throw IoError(code: 0)
 
-### The Writer side of standard error: a failed write is dropped ({ConsoleErrors.write_all_result} reports it).
+### The Writer side of standard error: a failed write is dropped ({ConsoleErrors.write_all} reports it).
 ### :param data: The bytes to write.
 ### :param count: How many bytes there are.
 @expensive("makes a system call")
@@ -622,14 +613,15 @@ secret routine stream_write(stream: StdStream, data: @Byte, count: U64) -> Bool
 ### :param count: The most bytes to read.
 ### :returns: How many bytes were read, 0 at its end, or the error Other when the read fails.
 @target(os: ("linux", "macos"))
-secret routine stdin_read(buffer: @Byte, count: U64) -> Result[U64, FsError]
+secret failable routine stdin_read(buffer: @Byte, count: U64) -> U64
     got: S64 = c_read(0, buffer, count.min(1073741824).to[CSize]()).to[S64]()
     if got >= 0
         return got.to[U64]()
     errno: CInt = c_errno_place().peek()
     if errno == 4
-        return stdin_read(buffer, count)
-    return FsError.OTHER
+        when check stdin_read(buffer, count)
+            is U64 as returned => return returned
+    throw IoError(code: 0)
 
 ### Whether ANSI color sequences work on the stream: a terminal takes them as it is.
 ### :param stream: The stream.
@@ -971,19 +963,20 @@ secret routine write_units(h: Addr, units: @U16, n: U64, written: @U32) -> Bool
 ### :returns: How many bytes were read, 0 at its end (Ctrl+Z at the start of a console read, a closed pipe, or no
 ###     standard input), or the error Other when the read fails.
 @target(os: "windows")
-secret routine stdin_read(buffer: @Byte, count: U64) -> Result[U64, FsError]
+secret failable routine stdin_read(buffer: @Byte, count: U64) -> U64
     h: Addr = handle_of(StdStream.INPUT)
     if not is_usable(h)
         return 0
     if is_console(h)
-        return console_read(h, buffer, count)
+        when check console_read(h, buffer, count)
+            is U64 as returned => return returned
     local got: @U32 <- 0
     if c_read_file(h, buffer, count.min(1073741824).to[U32](), got, .hollow()) != 0
         return got.peek().to[U64]()
     # ERROR_BROKEN_PIPE: the writing end closed, which is the end
     if c_get_last_error() == 109
         return 0
-    return FsError.OTHER
+    throw IoError(code: 0)
 
 ### Hands out UTF-8 from CONSOLE_INPUT, reading the console (as UTF-16) when it is empty.
 ### :param h: The console handle.
@@ -992,7 +985,7 @@ secret routine stdin_read(buffer: @Byte, count: U64) -> Result[U64, FsError]
 ### :returns: How many bytes were handed out, 0 at the end of the input (Ctrl+Z first), or the error Other when
 ###     ReadConsoleW fails.
 @target(os: "windows")
-secret routine console_read(h: Addr, buffer: @Byte, count: U64) -> Result[U64, FsError]
+secret failable routine console_read(h: Addr, buffer: @Byte, count: U64) -> U64
     local input: @ConsoleReadBuffer = CONSOLE_INPUT
 
     if input.start.peek() < input.end.peek()
@@ -1007,7 +1000,7 @@ secret routine console_read(h: Addr, buffer: @Byte, count: U64) -> Result[U64, F
     local units: @Array[U16, 4096] <- .hollow()
     local got: @U32 <- 0
     if not (c_read_console(h, units.to[@U16](), 4096, got, .hollow()) != 0)
-        return FsError.OTHER
+        throw IoError(code: 0)
     n: U64 = got.peek().to[U64]()
     if n == 0
         return 0
@@ -1033,7 +1026,8 @@ secret routine console_read(h: Addr, buffer: @Byte, count: U64) -> Result[U64, F
     input.start.poke(0)
     input.end.poke(made)
     if made == 0
-        return console_read(h, buffer, count)
+        when check console_read(h, buffer, count)
+            is U64 as returned => return returned
     start: U64 = input.start.peek()
     available: U64 = input.end.peek() - start
     n2: U64 = available.min(count)

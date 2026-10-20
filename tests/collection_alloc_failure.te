@@ -1,4 +1,4 @@
-# The `_result` forms against an allocator that fails after a budget of calls, and the `_checked` forms on empty
+# The failable forms, received with check, against an allocator that fails after a budget of calls, and the `_checked` forms on empty
 # collections and missing keys. Each case inserts 0, 1, 2, ... until the allocator fails, checks that the collection
 # still holds exactly what went in, then grants more budget and inserts once more. The budgets reach every failure
 # point: a partial Dict / Set rehash, a B-tree leaf split during descent, and a root split whose sibling fails.
@@ -57,10 +57,10 @@ routine list_case(budget: @U64, grant: U64, alloc: @MemoryManager) -> None
     list.poke(List[S64].construct(alloc))
 
     while true with i: S64 = 0
-        pushed: Result[None, AllocFailed] = list.add_last_result(i)
+        pushed: Check[None] = check list.add_last(i)
         when pushed
             is None => continue with i: i + 1
-            is AllocFailed => break
+            is MemoryAllocationError => break
     Console.show("List, budget {grant}: {list}")
     budget.poke(1)
     list.add_last(99)
@@ -74,15 +74,15 @@ routine circular_case(budget: @U64, grant: U64, alloc: @MemoryManager) -> None
     budget.poke(grant)
     deque.poke(CircularList[S64].construct(alloc))
 
-    # Alternates ends, so both push_front_result and push_back_result reach the allocator.
+    # Alternates ends, so both add_first and add_last reach the allocator.
     while true with i: S64 = 0
         front: Bool = i.mod_trunc(2) == 1
-        pushed: Result[None, AllocFailed] = when
-            front => deque.add_first_result(i)
-            else => deque.add_last_result(i)
-        when pushed
-            is None => continue with i: i + 1
-            is AllocFailed => break
+        pushed: Bool = when
+            front => try deque.add_first(i)
+            else => try deque.add_last(i)
+        if pushed
+            continue with i: i + 1
+        break
     Console.show("CircularList, budget {grant}: {deque}")
     budget.poke(1)
     deque.add_first(99)
@@ -100,10 +100,10 @@ routine queue_case(budget: @U64, grant: U64, alloc: @MemoryManager) -> None
     # Pushes 100, 99, 98, ..., so each push sifts to the top.
     while true with i: S64 = 0
         value: S64 = S64.sub(100, i)
-        pushed: Result[None, AllocFailed] = queue.add_result(priority: value, element: value)
+        pushed: Check[None] = check queue.add(priority: value, element: value)
         when pushed
             is None => continue with i: i + 1
-            is AllocFailed => break
+            is MemoryAllocationError => break
     Console.show("PriorityQueue, budget {grant}: {queue.count()} elements, top {queue.first_checked()}")
     budget.poke(2)
     queue.add(priority: 0, element: 0)
@@ -136,10 +136,10 @@ routine dict_case(budget: @U64, grant: U64, alloc: @MemoryManager) -> None
     map.poke(Dict[S64, S64].construct(alloc))
 
     while true with i: S64 = 0
-        put: Result[None, AllocFailed] = map.setitem_result(key: i, value: i * 10)
+        put: Check[None] = check map.setitem(key: i, value: i * 10)
         when put
             is None => continue with i: i + 1
-            is AllocFailed =>
+            is MemoryAllocationError =>
                 count: S64 = i
                 Console.show(
                     "Dict, budget {grant}: {count} entries, intact {is_dict_intact(map, count)}",
@@ -171,17 +171,17 @@ routine set_case(budget: @U64, grant: U64, alloc: @MemoryManager) -> None
     set.poke(Set[S64].construct(alloc))
 
     while true with i: S64 = 0
-        added: Result[Bool, AllocFailed] = set.add_result(i)
+        added: Check[Bool] = check set.add(i)
         when added
             is Bool => continue with i: i + 1
-            is AllocFailed =>
+            is MemoryAllocationError =>
                 count: S64 = i
                 Console.show(
                     "Set, budget {grant}: {count} keys, intact {is_set_intact(set, count)}",
                     end: "")
                 budget.poke(4)
                 added2: Bool = set.add(count)
-                again: Result[Bool, AllocFailed] = set.add_result(count)
+                again: Bool = set.add(count)
                 Console.show(", then add: {added2}, again {again}, intact {is_set_intact(set, count: count.add(1))}")
                 drop set
                 return
@@ -216,10 +216,10 @@ routine sorted_dict_case(budget: @U64, grant: U64, alloc: @MemoryManager) -> Non
     map.poke(SortedDict[S64, S64].construct(alloc))
 
     while true with i: S64 = 0
-        put: Result[None, AllocFailed] = map.setitem_result(key: i, value: i * 10)
+        put: Check[None] = check map.setitem(key: i, value: i * 10)
         when put
             is None => continue with i: i + 1
-            is AllocFailed =>
+            is MemoryAllocationError =>
                 count: S64 = i
                 Console.show(
                     "SortedDict, budget {grant}: {count} entries, intact {is_sorted_dict_intact(map, count)}",
@@ -252,10 +252,10 @@ routine sorted_set_case(budget: @U64, grant: U64, alloc: @MemoryManager) -> None
     set.poke(SortedSet[S64].construct(alloc))
 
     while true with i: S64 = 0
-        added: Result[Bool, AllocFailed] = set.add_result(i)
+        added: Check[Bool] = check set.add(i)
         when added
             is Bool => continue with i: i + 1
-            is AllocFailed =>
+            is MemoryAllocationError =>
                 count: S64 = i
                 Console.show(
                     "SortedSet, budget {grant}: {count} keys, intact {is_sorted_set_intact(set, count)}",
@@ -290,10 +290,10 @@ routine sorted_list_case(budget: @U64, grant: U64, alloc: @MemoryManager) -> Non
     list.poke(SortedList[S64].construct(alloc))
 
     while true with i: S64 = 0
-        pushed: Result[None, AllocFailed] = list.add_result(i)
+        pushed: Check[None] = check list.add(i)
         when pushed
             is None => continue with i: i + 1
-            is AllocFailed =>
+            is MemoryAllocationError =>
                 count: S64 = i
                 Console.show(
                     "SortedList, budget {grant}: {count} elements, intact {is_sorted_list_intact(list, count)}",

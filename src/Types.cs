@@ -217,16 +217,28 @@ public sealed class VectorType(DType elem, long count) : DType
     public override string OwnerName => "Vector";
 }
 
-/// `Callable[(params), ret]`, or `Callable[@callconv("fast"), (params), ret]`: a function pointer.
-public sealed class CallableType(string callConv, List<DType> parameters, DType ret) : DType
+/// `Callable[(params), ret]`, or `Callable[@callconv("fast"), (params), ret]`: a function pointer. A failable routine's
+/// value is a failable Callable: it carries the crashables the routine can throw as a hidden part of its type, so a
+/// call through it fails the way a call of the routine does, and two values from routines with different lists are
+/// different types (where they meet, the list is the union).
+public sealed class CallableType(string callConv, List<DType> parameters, DType ret, bool failable = false, List<DType>? throws = null) : DType
 {
     public string CallConv { get; } = callConv;
     public List<DType> Params { get; } = parameters;
     public DType Ret { get; } = ret;
+    public bool Failable { get; } = failable;
+
+    /// The crashables a call through it can give, in the order of their keys (empty unless Failable).
+    public List<DType> Throws { get; } = failable ? Crashing.Ordered(throws ?? []) : [];
+
+    /// The same Callable without the failure: what a declared `Callable[...]` type says before a value fills it in.
+    public CallableType Plain => Failable ? new CallableType(CallConv, Params, Ret) : this;
+
     public override string Name =>
-        $"Callable[{(CallConv == "default" ? "" : $"#callconv(\"{CallConv}\"), ")}({string.Join(", ", Params.Select(p => p.Name))}), {Ret.Name}]";
+        $"{(Failable ? "failable " : "")}Callable[{(CallConv == "default" ? "" : $"#callconv(\"{CallConv}\"), ")}({string.Join(", ", Params.Select(p => p.Name))}), {Ret.Name}]";
     public override string Key =>
-        $"Callable[{(CallConv == "default" ? "" : $"#callconv(\"{CallConv}\"), ")}({string.Join(", ", Params.Select(p => p.Key))}), {Ret.Key}]";
+        $"Callable[{(CallConv == "default" ? "" : $"#callconv(\"{CallConv}\"), ")}({string.Join(", ", Params.Select(p => p.Key))}), {Ret.Key}]"
+        + (Failable ? $" throws({string.Join(" | ", Throws.Select(t => t.Key))})" : "");
     public override string Llvm => "ptr";
     public override string OwnerName => "Callable";
 }
@@ -268,7 +280,8 @@ public sealed class VariantType(VariantDecl decl, List<DType> args, Func<Variant
 
     public VariantDecl Decl { get; } = decl;
     public List<DType> Args { get; } = args;
-    public override string Name => Decl.IsAnonymous
+    public override string Name => Crashing.IsCheck(this) ? $"Check[{Args[0].Name}]"
+        : Decl.IsAnonymous
         ? string.Join(" | ", Args.Select(b => b.Name))
         : Args.Count == 0 ? Decl.Name : $"{Decl.Name}[{string.Join(", ", Args.Select(a => a.Name))}]";
     public override string Key => DeclKey(Decl, Decl.Name, Args);
@@ -304,6 +317,46 @@ public sealed class VariantType(VariantDecl decl, List<DType> args, Func<Variant
         }
         return h == 0 ? 1 : h;
     }
+}
+
+/// Failures: a `Check[T]` is the variant of a failable call's value `T` and the crashables the call can give, and
+/// `Crashables` the variant of just those crashables. Both are made by the builder from the list it collects for the
+/// call (the crashables the routine throws, and those of the calls whose failures it passes on), so a `Check` is as
+/// big as its largest branch, its tag is the branch's type ID, and nothing about it is decided at run time.
+public static class Crashing
+{
+    /// The builder's own declarations of `Check[T]` and `Crashables`: variants with no source.
+    public static readonly VariantDecl CheckDecl = new("<builder>", [], "Check", ["T"], [], [], default)
+        { Module = Compiler.SystemModule };
+    public static readonly VariantDecl CrashablesDecl = new("<builder>", [new Annotation("union", [], default)], "Crashables", [], [], [], default)
+        { Module = Compiler.SystemModule };
+
+    /// A crashable record: one a `throw` gives.
+    public static bool IsCrashable(DType? t) => t is RecordType { Decl.IsCrashable: true };
+
+    /// A list of crashables in one order (by key), without repeats: the order of a `Check`'s and a `Crashables`' branches.
+    public static List<DType> Ordered(IEnumerable<DType> crashables) =>
+        crashables.DistinctBy(t => t.Key).OrderBy(t => t.Key, StringComparer.Ordinal).ToList();
+
+    /// `Crashables` over `crashables` (at least one), a variant written inline: its branches are its parents' too.
+    public static VariantType Union(List<DType> crashables) =>
+        new(CrashablesDecl, Ordered(crashables), v => v.Args);
+
+    /// `Check[T]` over `crashables`: `T` and, when there are any, their `Crashables`.
+    public static VariantType Check(DType value, List<DType> crashables)
+    {
+        var ordered = Ordered(crashables);
+        return new VariantType(CheckDecl, [value, .. ordered], v => v.Args.Count == 1 ? [v.Args[0]] : [v.Args[0], Union(v.Args.Skip(1).ToList())]);
+    }
+
+    public static bool IsCheck(DType? t) => t is VariantType { Decl: var d } && ReferenceEquals(d, CheckDecl);
+    public static bool IsUnion(DType? t) => t is VariantType { Decl: var d } && ReferenceEquals(d, CrashablesDecl);
+
+    /// The value type of a `Check[T]`.
+    public static DType ValueOf(VariantType check) => check.Args[0];
+
+    /// The crashables a `Check[T]` or a `Crashables` holds.
+    public static List<DType> FailuresOf(VariantType v) => IsCheck(v) ? v.Args.Skip(1).ToList() : IsUnion(v) ? v.Args : [];
 }
 
 /// A choice: named constants of an underlying integer type.

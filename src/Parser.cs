@@ -58,6 +58,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         "true", "false", "null", "routine", "record", "choice", "variant", "preset", "global", "concept", "conform",
         "protocol", "obeys", "needs", "define", "secret", "module", "import", "and", "or", "not", "is", "as",
         "todo", "if", "each", "while", "until", "becomes", "break", "pass", "drop", "entity", "steal", "inf", "nan",
+        "throw",
     ];
     /// Inside an `@external("asm")` routine: a statement may carry `@asm_prefix`, and an `if` may test a bare
     /// comparison name (`eq`, `lt[U64]`).
@@ -65,11 +66,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     /// The words a statement starts with, besides a binding or a call.
     private static readonly HashSet<string> StatementKeywords =
-        ["jump", "branch", "when", "return", "unreachable", "todo", "if", "each", "while", "until", "continue", "break", "pass",
+        ["jump", "branch", "when", "return", "throw", "unreachable", "todo", "if", "each", "while", "until", "continue", "break", "pass",
          "becomes", "local", "claim", "else", "elseif", "then", "drop", "steal"];
 
     private static readonly HashSet<string> DeclKeywords =
-        ["routine", "record", "entity", "choice", "variant", "preset", "global", "concept", "conform", "protocol", "obeys", "define"];
+        ["routine", "record", "entity", "crashable", "choice", "variant", "preset", "global", "concept", "conform", "protocol", "obeys", "define"];
 
     public Module ParseModule()
     {
@@ -108,9 +109,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (IsIdent("private") && Cur.Pos.Col == 1) throw Error(PrivateRenamed);
             bool isPrivate = IsIdent("secret");
             if (isPrivate) Next();
+            bool isFailable = FailableNext();
+            if (isFailable) Next();
             bool isCommon = IsIdent("common") && PeekTok(1) is { Kind: TokenKind.Ident, Text: "routine" };
             if (isCommon) Next();
-            if (annotations.Count == 0 && !isPrivate && !isCommon && Cur.Pos.Col == 1
+            if (isFailable && !IsIdent("routine"))
+                throw Error("failable marks a routine: failable routine name(...) -> T, or failable common routine Owner.name(...)");
+            if (annotations.Count == 0 && !isPrivate && !isCommon && !isFailable && Cur.Pos.Col == 1
                 && (!IsKeyword(Cur) || !DeclKeywords.Contains(Cur.Text)) && !isLibrary)
             {
                 ParseScriptLines();
@@ -118,11 +123,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 continue;
             }
             if (!IsKeyword(Cur) || !DeclKeywords.Contains(Cur.Text))
-                throw Error($"expected a declaration (routine, record, entity, choice, variant, preset, global, protocol, obeys, define), found {Describe(Cur)}");
+                throw Error($"expected a declaration (routine, record, entity, crashable, choice, variant, preset, global, protocol, obeys, define), found {Describe(Cur)}");
             Decl d = Cur.Text switch
             {
-                "routine" => ParseRoutine(annotations, inConcept: false, isCommon: isCommon),
-                "record" or "entity" => ParseRecord(annotations),
+                "routine" => ParseRoutine(annotations, inConcept: false, isCommon: isCommon) with { IsFailable = isFailable },
+                "record" or "entity" or "crashable" => ParseRecord(annotations),
                 "choice" => ParseChoice(annotations),
                 "variant" => ParseVariant(annotations),
                 "preset" => ParsePreset(annotations),
@@ -294,7 +299,17 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private bool AtDeclStart() =>
         Is(TokenKind.Eof) || (AtAnnotation() && Cur.Pos.Col == 1)
         || (IsKeyword(Cur) && (DeclKeywords.Contains(Cur.Text) || Cur.Text is "secret") && Cur.Pos.Col == 1)
-        || (IsIdent("common") && PeekTok(1) is { Kind: TokenKind.Ident, Text: "routine" } && Cur.Pos.Col == 1);
+        || (IsIdent("common") && PeekTok(1) is { Kind: TokenKind.Ident, Text: "routine" } && Cur.Pos.Col == 1)
+        || (FailableNext() && Cur.Pos.Col == 1);
+
+    /// Whether a variant's branch lines or a choice's member lines end here: they are indented, so a line at column 1
+    /// starts the next declaration or, in a script, the next top-level line.
+    private bool AtMemberListEnd() => AtDeclStart() || Cur.Pos.Col == 1;
+
+    /// Whether `failable` at the cursor starts a routine's header: `failable routine` or `failable common routine`.
+    private bool FailableNext() => IsIdent("failable")
+        && (PeekTok(1) is { Kind: TokenKind.Ident, Escaped: false, Text: "routine" }
+            || (PeekTok(1) is { Kind: TokenKind.Ident, Escaped: false, Text: "common" } && PeekTok(2) is { Kind: TokenKind.Ident, Text: "routine" }));
 
     // ── Annotations and clauses ──────────────────────────────────────────────
 
@@ -357,6 +372,17 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     if (Is(TokenKind.LParen))
                     {
                         args.Add(ParseAnnotationValueList(key, negated));
+                        continue;
+                    }
+                    // `@throws([NotFoundError, ParseError])`: a list of types.
+                    if (Is(TokenKind.LBracket) && !negated)
+                    {
+                        Next();
+                        var types = new List<TypeRef>();
+                        if (!Is(TokenKind.RBracket))
+                            do types.Add(ParseType()); while (Accept(TokenKind.Comma));
+                        Expect(TokenKind.RBracket, "']' closing the list of types");
+                        args.Add(new AnnotationArg(key, "", false, Types: types));
                         continue;
                     }
                     if (Is(TokenKind.Ident) && PeekTok(1).Kind is TokenKind.LParen or TokenKind.LBracket)
@@ -764,9 +790,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     {
         var pos = Cur.Pos;
         bool isEntity = IsIdent("entity");
-        if (isEntity) Next();
+        bool isCrashable = IsIdent("crashable");
+        if (isEntity || isCrashable) Next();
         else ExpectIdent("record");
-        var name = TypeName(Expect(TokenKind.Ident, isEntity ? "an entity name" : "a record name"));
+        var name = TypeName(Expect(TokenKind.Ident, isEntity ? "an entity name" : isCrashable ? "a crashable name" : "a record name"));
         var typeParams = ParseTypeParamNames();
         ExpectLineEnd();
         var clauses = ParseClauses();
@@ -795,7 +822,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             fields.Add(new FieldDecl(f.Text, ParseType(), fieldAnnotations, f.Pos, isPrivate));
             ExpectLineEnd();
         }
-        return new RecordDecl(file, annotations, name.Text, typeParams, clauses, fields, pos) { IsEntity = isEntity };
+        if (isCrashable && typeParams.Count != 0)
+            throw new CompileError(pos, $"crashable '{name.Text}' takes no type parameters: a failure is one fixed kind of value");
+        return new RecordDecl(file, annotations, name.Text, typeParams, clauses, fields, pos) { IsEntity = isEntity, IsCrashable = isCrashable };
     }
 
     /// `variant Name[T]`, its clauses, then one branch type per line: `S64`, `Chest`, `@Node`.
@@ -809,7 +838,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var clauses = ParseClauses();
 
         var branches = new List<VariantBranch>();
-        while (!AtDeclStart())
+        while (!AtMemberListEnd())
         {
             var at = Cur.Pos;
             var type = ParseType();
@@ -834,7 +863,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         ExpectLineEnd();
 
         var members = new List<(string, Expr)>();
-        while (!AtDeclStart())
+        while (!AtMemberListEnd())
         {
             var m = Expect(TokenKind.Ident, "a choice member");
             if (!IsScreamingSnake(m.Text))
@@ -949,20 +978,24 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         // parameters (a multi-type concept), or, indented under the concept, on a fixed type with the concept's
         // parameters as its type arguments (`routine Bytes.to_result[T](...)`). They have no body.
         var routines = new List<RoutineDecl>();
-        while (ConceptRoutineNext(typeParams) is var (isRoutine, common) && isRoutine)
+        while (ConceptRoutineNext(typeParams) is var (isRoutine, common, failable) && isRoutine)
         {
+            if (failable) Next();
             if (common) Next();
-            routines.Add(ParseRoutine([], inConcept: true, conceptParams: typeParams, isCommon: common));
+            routines.Add(ParseRoutine([], inConcept: true, conceptParams: typeParams, isCommon: common) with { IsFailable = failable });
         }
         return new ConceptDecl(file, annotations, name.Text, typeParams, clauses, routines, pos);
     }
 
     /// Whether a required routine of a concept comes next, and whether it is `common`.
-    private (bool IsRoutine, bool Common) ConceptRoutineNext(List<string> typeParams)
+    private (bool IsRoutine, bool Common, bool Failable) ConceptRoutineNext(List<string> typeParams)
     {
-        bool common = IsIdent("common") && PeekTok(1) is { Kind: TokenKind.Ident, Text: "routine" };
-        int k = common ? 1 : 0;
-        if (!(PeekTok(k) is { Kind: TokenKind.Ident, Text: "routine" })) return (false, false);
+        bool failable = FailableNext();
+        int f = failable ? 1 : 0;
+        bool common = PeekTok(f) is { Kind: TokenKind.Ident, Escaped: false, Text: "common" }
+                      && PeekTok(f + 1) is { Kind: TokenKind.Ident, Text: "routine" };
+        int k = f + (common ? 1 : 0);
+        if (!(PeekTok(k) is { Kind: TokenKind.Ident, Text: "routine" })) return (false, false, false);
         // `@Me.name`: me by its address.
         int o = PeekTok(k + 1).Kind == TokenKind.At && PeekTok(k + 2).Kind == TokenKind.Ident ? k + 2 : k + 1;
         bool named = PeekTok(o) is { Kind: TokenKind.Ident } owner
@@ -970,7 +1003,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                      && PeekTok(AfterTypeArgs(o + 1)).Kind == TokenKind.Dot;
         // a span owner, `routine @[Byte].to_result[T](...)`
         bool span = PeekTok(k + 1).Kind == TokenKind.At && PeekTok(k + 2).Kind == TokenKind.LBracket && Cur.Pos.Col > 1;
-        return (named || span, common);
+        return (named || span, common, failable);
     }
 
     /// The token offset past the type arguments that may start at `k` (`[Byte]` in `List[Byte].to_result`), or `k`.
@@ -1509,6 +1542,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             return new DestructureStmt(names, value, pos);
         }
 
+        // `try f(x)` as a line runs the call and lets a failure go: the Maybe it gives is left unread.
+        if (RecoveryNext() && Cur.Text == "try")
+        {
+            var tried = ParseUnary();
+            ExpectLineEnd();
+            return new ExprStmt(tried, pos);
+        }
         var lhs = ParsePostfix();
         // `xs[i] = v` stores through setitem.
         if (Is(TokenKind.Eq) && lhs is GetItemExpr item)
@@ -1717,7 +1757,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             else
             {
                 oneLine = true;
-                if (asValue && IsKeyword(Cur) && Cur.Text is "return" or "jump" or "continue" or "break" or "unreachable" or "todo" && !StartsValue())
+                if (asValue && IsKeyword(Cur) && Cur.Text is "return" or "throw" or "jump" or "continue" or "break" or "unreachable" or "todo" && !StartsValue())
                     body = [ParseLeave()];
                 else if (asValue)
                 {
@@ -1777,6 +1817,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 throw Error($"'{Cur.Text}' opens a body of its own: write it under the arm, on the lines after =>");
             return ParseLeave();
         }
+        if (RecoveryNext() && Cur.Text == "try") return new ExprStmt(ParseUnary(), pos);
         var call = ParsePostfix();
         if (call is not (CallExpr or NsCallExpr or MethodCallExpr or ImplicitCallExpr))
             throw new CompileError(pos, "the line of an arm is a call, a return, a jump, a break, or a continue");
@@ -1805,6 +1846,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 if (IsIdent("if") && !StartsValue()) return new ReturnStmt(ParseIfValue(), pos);
                 if (IsIdent("when") && !StartsValue()) return new ReturnStmt(ParseWhenValue(pos.Col), pos);
                 return new ReturnStmt(ParseExpr(), pos);
+            }
+            case "throw":
+            {
+                if (Is(TokenKind.Newline) || Is(TokenKind.Eof))
+                    throw new CompileError(pos, "throw names the failure: throw NotFoundError(path: p), or throw e for a failure a check caught");
+                return new ReturnStmt(ParseExpr(), pos) { IsThrow = true };
             }
             case "jump":
             {
@@ -1973,6 +2020,18 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     private bool IsWordOp(string text) => IsKeyword(Cur) && Cur.Text == text;
 
+    /// Whether `try` or `check` at the cursor takes the expression after it: a space and an expression follow on the
+    /// same line. `check(x)` and `check.addr()` are a routine named check.
+    private bool RecoveryNext()
+    {
+        if (!(IsWordOp("try") || IsWordOp("check"))) return false;
+        var next = PeekTok(1);
+        if (next.Pos.Line != Cur.Pos.Line || next.Pos.Col <= Cur.Pos.Col + Cur.Text.Length) return false;
+        return next.Kind is TokenKind.Ident or TokenKind.Int or TokenKind.Float or TokenKind.Unit or TokenKind.Byte
+                   or TokenKind.Char or TokenKind.Str or TokenKind.LParen or TokenKind.At or TokenKind.LBracket or TokenKind.Dot
+               || (next.Kind == TokenKind.Op && next.Text is "-" or "~");
+    }
+
     private Expr ParseLogic()
     {
         var left = ParseComparison();
@@ -2109,6 +2168,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         {
             var op = Next();
             return new StealExpr(ParsePostfix(), op.Pos);
+        }
+        if (RecoveryNext())
+        {
+            // `try f(x)` / `check f(x)`: the failure of the calls in the expression after it becomes a value (a Maybe or
+            // a Check) instead of stopping the program. It takes the rest of the expression.
+            var op = Next();
+            return new UnaryExpr(op.Text, ParseExpr(), op.Pos);
         }
         return ParsePower();
     }

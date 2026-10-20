@@ -142,15 +142,16 @@ needs T: typename
 ### :param count: The number of values.
 ### :param manager: Where the memory comes from and goes back to.
 ### :returns: The memory.
-### :throws: Crashes with `MemoryAllocationError` when the manager has no memory to give. See
-###     {Memory[T].construct_result}.
-@track_caller
+### :throws: Throws `MemoryAllocationError` when the manager has no memory to give.
 @expensive("allocates memory")
-common routine Memory[T].construct(count: U64, manager: @MemoryManager) -> Me
+failable common routine Memory[T].construct(count: U64, manager: @MemoryManager) -> Me
 needs T: typename
-    when Me.construct_result(count, manager)
-        is Me as memory => return memory
-        is AllocFailed => crash_allocation()
+    if count == 0
+        return Me(data: .hollow(), count: 0, manager, generation: 0)
+    data, generation = take_block[T](count, manager)
+    if data.is_hollow()
+        throw MemoryAllocationError()
+    return Me(data, count, manager, generation)
 
 ### `values` written `times` over, one run after another, in memory from `manager`: what `[a, b] * n at manager`
 ### makes.
@@ -158,14 +159,17 @@ needs T: typename
 ### :param times: How many times they are written.
 ### :param manager: Where the memory comes from and goes back to.
 ### :returns: The memory, `times` runs of `values`.
-### :throws: Crashes with `IntegerOverflowError` when the count doesn't fit in a U64, and with
-###     `MemoryAllocationError` when the manager has no memory to give.
+### :throws: Crashes with `IntegerOverflowError` when the count doesn't fit in a U64. Throws `MemoryAllocationError`
+###     when the manager has no memory to give.
 @track_caller
 @expensive("allocates memory")
-common routine Memory[T].construct(values: @[T], times: U64, manager: @MemoryManager) -> Me
+failable common routine Memory[T].construct(values: @[T], times: U64, manager: @MemoryManager) -> Me
 needs T: typename
-    local made: @Me <- Me.construct(count: values.count * times, manager)
-    local view: @[T] = made.getview()
+    local made: @Me <- .hollow()
+
+    when check Me.construct(count: values.count * times, manager)
+        is Me as memory => made.poke(steal memory)
+    view: @[T] = made.getview()
 
     if values.count == 0
         return made
@@ -173,22 +177,6 @@ needs T: typename
         view.getslot(i * values.count).copy(src: values.data, count: values.count)
     then
         return made
-
-### `construct`, returning an error instead of crashing when the manager has no memory to give.
-### :param count: The number of values.
-### :param manager: Where the memory comes from and goes back to.
-### :returns: The memory.
-### :throws: Returns `AllocFailed` when the manager has no memory to give.
-@expensive("allocates memory")
-common routine Memory[T].construct_result(count: U64,
-    manager: @MemoryManager) -> Result[Me, AllocFailed]
-needs T: typename
-    if count == 0
-        return Me(data: .hollow(), count: 0, manager, generation: 0)
-    data, generation = take_block[T](count, manager)
-    if data.is_hollow()
-        return AllocFailed()
-    return Me(data, count, manager, generation)
 
 ### The number of values.
 ### :returns: The count.
@@ -296,28 +284,13 @@ needs T: typename
 ### it gets a new generation: views, addresses, and copies taken before no longer pass the check. A count of 0 gives
 ### the memory back and keeps the manager.
 ### :param count: The new number of values.
-### :throws: Crashes with `MemoryAllocationError` when the manager has no memory to give. See
-###     {Memory[T].resize_result}.
-@track_caller
-@expensive("reallocates memory")
-@reshaping
-routine @Memory[T].resize(count: U64) -> None
-needs T: typename
-    resized: Result[None, AllocFailed] = me.resize_result(count)
-    when resized
-        is None => return
-        is AllocFailed => crash_allocation()
-
-### `resize`, returning an error instead of crashing when the manager has no memory to give. The memory is unchanged
-### then.
-### :param count: The new number of values.
-### :returns: None once the memory holds `count` values.
 ### :throws: Crashes with `DestructedMemoryError` when the memory was given back already, and with `InvalidValueError` on a
-###     hollow memory (no manager). Returns `AllocFailed` when the manager has no memory to give.
+###     hollow memory (no manager). Throws `MemoryAllocationError` when the manager has no memory to give, and the
+###     memory is unchanged then.
 @track_caller
 @expensive("reallocates memory")
 @reshaping
-routine @Memory[T].resize_result(count: U64) -> Result[None, AllocFailed]
+failable routine @Memory[T].resize(count: U64) -> None
 needs T: typename
     local manager: @MemoryManager = me.manager.peek()
     local data: @T = me.data.peek()
@@ -328,13 +301,12 @@ needs T: typename
     if count == 0
         drop me
         me.manager.poke(manager)
-        return None()
+        return
     elseif data.is_hollow()
-        when Me.construct_result(count, manager)
+        when check Me.construct(count, manager)
             is Me as memory =>
                 me.poke(steal memory)
-                return None()
-            is AllocFailed => return AllocFailed()
+                return
     else
         check_generation[T](data, generation: me.generation.peek())
         room: U64 = stamp_room[T]()
@@ -342,12 +314,12 @@ needs T: typename
         grown: Addr = manager.realloc(at: raw -% ByteSize.construct(bytes: room),
             size: sizeof[T]() * count + room, align: block_align[T]())
         if grown.is_hollow()
-            return AllocFailed()
+            throw MemoryAllocationError()
         moved: @T = (grown +% ByteSize.construct(bytes: room)).to[@T]()
         generation: U64 = next_generation()
         generation.poke_into(stamp_of[T](moved).generation)
         me.poke(Me(data: moved, count, manager, generation))
-        return None()
+        return
 
 ### Gives the memory back to its manager and leaves the value hollow. Does nothing on a hollow or empty value. The
 ### values themselves are not destructed: see `destruct_all`.

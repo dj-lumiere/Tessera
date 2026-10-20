@@ -1,20 +1,17 @@
 namespace Tessera;
 
-/// The crash trace: a traced build keeps, per thread, the program's routines it is in, so a crash handler can say how
+/// The crash trace: a traced build keeps, per thread, the program's routines it is in, so a crash report can say how
 /// the program got where it crashed (Standard/Trace.te holds the storage and the routines the builder calls). Each
 /// traced routine calls trace_push on entry with its name, file, and declaration's place, trace_at before each call it
 /// makes with the call's line and column, and trace_pop just before it returns, after its return value is computed, so
 /// a callee in `return(f(x))` runs with the caller's frame still there. The standard library isn't traced: a crash in
 /// it shows through the line of the program that called it. Neither is an `@untraced` routine, an `@inline` one (it is
-/// part of each caller, like the stdlib), a routine the builder derived, an assembly routine, or the crash handler.
+/// part of each caller, like the stdlib), a routine the builder derived, or an assembly routine.
 public sealed partial class Compiler
 {
     /// Whether the program's routines keep the crash trace. An untraced build never calls the trace routines, and the
     /// stdlib's `@trace("on")` declarations drop out of it, so it has no trace storage or code at all.
     public bool Trace { get; }
-
-    /// The link-time name of the crash handler, which reads the trace and so isn't traced itself.
-    public const string CrashHandlerSymbol = "tessera_crash_handler";
 
     /// `@trace("on")` / `@trace("off")` keeps a standard library declaration only in a traced or an untraced build: the
     /// trace's storage and the routines the builder calls are there only when something calls them, and the trace
@@ -45,8 +42,7 @@ public sealed partial class Compiler
     /// Whether this instance keeps a frame on the crash trace.
     public bool IsTraced(Instance inst) =>
         Trace && !inst.Decl.IsLibrary && !inst.IsAsm && inst.Decl.Blocks is not null
-        && inst.Decl.AnnotationNamed("untraced") is null && inst.Decl.AnnotationNamed("inline") is null && inst.Decl.AnnotationNamed("derived") is null
-        && inst.Decl.AnnotationNamed("export")?.First != CrashHandlerSymbol;
+        && inst.Decl.AnnotationNamed("untraced") is null && inst.Decl.AnnotationNamed("inline") is null && inst.Decl.AnnotationNamed("derived") is null;
 
     private readonly Dictionary<string, Instance> _traceRoutines = [];
 

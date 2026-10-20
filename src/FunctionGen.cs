@@ -8,7 +8,7 @@ namespace Tessera;
 public sealed record Val(string Op, DType Type);
 
 /// Lowers one routine instance to an LLVM function.
-public sealed class FunctionGen
+public sealed partial class FunctionGen
 {
     private sealed class LBlock(string label)
     {
@@ -1242,7 +1242,7 @@ public sealed class FunctionGen
         try
         {
             // A returned value read through a temporary slot is bound first, so the slot ends before the return.
-            if (s is ReturnStmt { Value: { } returned } r && !Entities.Holds(_inst.Ret) && _inst.Ret is not VoidType
+            if (s is ReturnStmt { Value: { } returned, IsThrow: false } r && !Entities.Holds(_inst.Ret) && _inst.Ret is not VoidType
                 && MakesTemp(returned))
             {
                 string name = $"$returned{_tmp++}";
@@ -1271,7 +1271,14 @@ public sealed class FunctionGen
                 if (Entities.Holds(t))
                     throw Err(b.Pos, $"a {t.Name} {(Entities.IsEntity(t) ? "is an entity" : "holds an entity")}, which lives in a place: "
                         + $"local {b.Name}: @{t.Name} <- ...");
+                // A Callable written as the type takes the failure of the routine value that fills it: what it can
+                // throw goes along with the value.
+                if (t is CallableType { Failable: false } plain && InferQuiet(b.Value) is CallableType { Failable: true } failing
+                    && failing.Plain.Equals(plain))
+                    t = failing;
                 var v = Eval(b.Value, t);
+                // A `Check[T]` written as the type takes the list of crashables of the check that fills it.
+                if (Crashing.IsCheck(t) && Crashing.IsCheck(v.Type)) t = v.Type;
                 // A value every arm of which left (a when whose arms all return) is never bound: nothing runs here.
                 if (_cur.Terminated) break;
                 string op = LocalOp(b.Name);
@@ -1800,6 +1807,7 @@ public sealed class FunctionGen
             case IfExpr ie: return Infer(ie.Then) ?? Infer(ie.Else);
             case RangeExpr r: throw Err(r.Pos, "a range is walked by each: each i in a til b");
             case BinaryExpr { Op: "and" or "or" } or UnaryExpr { Op: "not" }: return BoolType.Instance;
+            case UnaryExpr { Op: "try" or "check" } rc: return InferRecover(rc);
             case IntLit or FloatLit or StrLit: return null;
             case ArrayLit: return null;
             case AtExpr: return null;
@@ -1845,6 +1853,8 @@ public sealed class FunctionGen
 
     private DType? InferCall(Expr e, DType? expected)
     {
+        if (e is MethodCallExpr onUnion && CrashableGroup(onUnion) is { } union)
+            return InferUnionCall(onUnion, union);
         if (e is CallExpr { Name: "sizeof" or "alignof", TypeArgs.Count: 1, Args.Count: 0 } c
             && _c.FindFree(c.Name, _env.File, c.Pos) is null)
             return _c.Count;
@@ -1861,6 +1871,7 @@ public sealed class FunctionGen
             return VoidType.Instance;
         if (AddrOfCallable(e) is not null) return new PtrType(null);
         if (IndirectCall(e) is { } ind) return ind.Callable.Ret;
+
         if (e is MethodCallExpr deferred && DeferredType(deferred, expected) is { } deferredType) return deferredType;
         var plan = PlanCall(e, expected);
         return plan is null ? null : _c.Signature(plan.Decl, plan.Env).Ret;
@@ -1896,6 +1907,9 @@ public sealed class FunctionGen
 
     private static bool Compatible(DType actual, DType expected) =>
         actual.Equals(expected)
+        // A `Check[T]` written as a binding's type takes its list of crashables from the check that fills it.
+        || (Crashing.IsCheck(actual) && expected is VariantType { Args.Count: 1 } open && Crashing.IsCheck(open)
+            && Crashing.ValueOf((VariantType)actual).Equals(open.Args[0]))
         // Ptr<T> converts to Addr (the C `void*` of FFI signatures); the other way takes a cast.
         || (actual is PtrType && expected is PtrType { Pointee: null });
 
@@ -1941,6 +1955,7 @@ public sealed class FunctionGen
             WhenExpr w => EvalWhenValue(w, expected),
             BinaryExpr { Op: "and" or "or" } l => EvalLogic(l),
             UnaryExpr { Op: "not" } n => EvalNot(n),
+            UnaryExpr { Op: "try" or "check" } rc => EvalRecover(rc, expected),
             RangeExpr r => throw Err(r.Pos, "a range is walked by each: each i in a til b"),
             RecordLit s => EvalRecordLit(s, expected),
             ArrayLit a when argument > 0 && Compiler.IsCoreSpan(expected, out _) => FrameSpan(a, expected),
@@ -2092,6 +2107,8 @@ public sealed class FunctionGen
             new ClaimExpr(slot.Pos) { Contents = slot.Value }, slot.Pos));
         _lineSource = line;
         _statementTemps.Add((name, slot.Pos));
+        // It ends with the statement, after the value whens it was made in have joined: they see it past their join.
+        foreach (var frame in _valueWhens) frame.OuterNames.Add(name);
         return _values[name];
     }
 
@@ -2138,6 +2155,7 @@ public sealed class FunctionGen
             case GetItemExpr g: return MakesTemp(g.Base) || MakesTemp(g.Index);
             case ArrayLit a: return a.Elements.Any(MakesTemp);
             case RecordLit r: return r.Fields.Any(f => MakesTemp(f.Value));
+            case WhenExpr { When.Value: { } subject }: return MakesTemp(subject);
             default: return false;
         }
     }
@@ -2365,8 +2383,9 @@ public sealed class FunctionGen
     /// Whether a value of `leaf` in `vt` is a failure: `vt` is a Result, and `leaf` is its error type or one of the
     /// types the error type is written over.
     private static bool IsFailure(DType leaf, VariantType vt) =>
-        vt is { Decl.Name: "Result", Args: [_, var error] } && vt.Decl.Module == Compiler.SystemModule
-        && (leaf.Equals(error) || error is VariantType { Decl.IsAnonymous: true } union && union.LeafIndex(leaf) >= 0);
+        (vt is { Decl.Name: "Result", Args: [_, var error] } && vt.Decl.Module == Compiler.SystemModule
+         && (leaf.Equals(error) || error is VariantType { Decl.IsAnonymous: true } union && union.LeafIndex(leaf) >= 0))
+        || ((Crashing.IsCheck(vt) || Crashing.IsUnion(vt)) && Crashing.IsCrashable(leaf));
 
     /// The tag of a variant made from a value of `leaf`: the leaf's type ID, and for a failure in a traced build the
     /// failure's number in the high half (Trace.te's failure_note), wrapping the failure the arm it is made in observed.
@@ -2428,12 +2447,24 @@ public sealed class FunctionGen
     {
         if (e is not IsPattern p)
             throw Err(e.Pos, $"a when on {v} observes its value as one of its branches: is {v.Branches[0]} as value");
-        var type = Resolve(p.Type);
+        var type = NamesCrashables(p.Type) && (Crashing.IsCheck(v) || Crashing.IsUnion(v)) ? CrashablesOf(v, p.Pos) : Resolve(p.Type);
         _c.CaseUses.Add(p.Pos);
         int index = v.LeafIndex(type);
         if (index >= 0) return ([index], p.Binding, type);
+        // A crashable the call can't give (or can't give yet, while what it throws is still being found) has an arm
+        // that never runs.
+        if ((Crashing.IsCheck(v) || Crashing.IsUnion(v)) && (Crashing.IsCrashable(type)
+            || type is VariantType crashGroup && crashGroup.Leaves.All(Crashing.IsCrashable)
+               && !crashGroup.Leaves.Any(l => v.LeafIndex(l) >= 0)))
+            return ([], p.Binding, type);
         if (type is VariantType { Decl.IsAnonymous: true } inner && inner.Leaves.All(l => v.LeafIndex(l) >= 0))
             return (inner.Leaves.Select(v.LeafIndex).ToList(), p.Binding, type);
+        // A variant of crashables (`is FsError as e` on a Check) observes those of its crashables the value can hold.
+        if ((Crashing.IsCheck(v) || Crashing.IsUnion(v)) && type is VariantType grouped && grouped.Leaves.All(Crashing.IsCrashable))
+        {
+            var held = grouped.Leaves.Where(l => v.LeafIndex(l) >= 0).ToList();
+            return (held.Select(v.LeafIndex).ToList(), p.Binding, type);
+        }
         throw Err(p.Type.Pos, $"{type} isn't a branch of {v}; its branches are {string.Join(", ", v.Leaves)}");
     }
 
@@ -2600,7 +2631,9 @@ public sealed class FunctionGen
         string id = EmitTmp($"trunc {VariantType.Tag.Llvm} {tag} to i32");
         var arms = w.Arms.Select(a => (Patterns: a.Cases?.Select(c => VariantPattern(c, vt)).ToList(), Arm: a)).ToList();
         string? slot = null;
-        if (arms.Any(a => a.Patterns?.Any(p => p.Binding is not null) == true) || w.ElseBinding is not null)
+        bool failures = Crashing.IsCheck(vt) || Crashing.IsUnion(vt);
+        if (failures) arms = CrashablesTakeTheRest(arms, vt);
+        if (arms.Any(a => a.Patterns?.Any(p => p.Binding is not null) == true) || w.ElseBinding is not null || failures)
         {
             slot = NewSlot(vt);
             Line($"store {vt.Llvm} {v.Op}, ptr {slot}");
@@ -2640,6 +2673,9 @@ public sealed class FunctionGen
             }
         }
         var missing = vt.Leaves.Where((_, i) => !seen.Contains(i)).ToList();
+        // A `when` on a `Check` observes the value with an arm of its own.
+        if (Crashing.IsCheck(vt) && missing.FirstOrDefault(m => !Crashing.IsCrashable(m)) is { } unobserved)
+            throw Err(w.Pos, $"a when on {vt} observes its value: is {unobserved} as value");
         if (elseArm is not null)
         {
             if (missing.Count == 0) throw Err(elseArm.Pos, $"every branch of {vt} has its arm, so else never runs");
@@ -2651,6 +2687,11 @@ public sealed class FunctionGen
             if (w.ElseBinding is { } rest)
             {
                 if (missing.Count == 1) label = armBlock(elseArm, () => BindPayload(vt, slot!, missing[0], rest));
+                else if (failures && missing.All(Crashing.IsCrashable))
+                {
+                    var crashables = Crashing.Union(missing);
+                    label = armBlock(elseArm, () => BindPayload(vt, slot!, crashables, rest));
+                }
                 else if (missing.Count <= Compiler.MaxUnionBranches)
                 {
                     var union = _c.UnionOf(missing, _env.File, rest.Pos);
@@ -2662,6 +2703,12 @@ public sealed class FunctionGen
             else label = armBlock(elseArm, null);
             // The leaves else takes are listed, so a value holding none of them still crashes below.
             foreach (var m in missing) cases.Add($"i32 {VariantType.TypeId(m)}, label %{label}");
+        }
+        else if (missing.Count > 0 && failures)
+        {
+            // The failures no arm observes go on to the caller, or stop the program here.
+            string passOn = PassOnFailures(w, vt, missing, slot!);
+            foreach (var m in missing) cases.Add($"i32 {VariantType.TypeId(m)}, label %{passOn}");
         }
         else if (missing.Count > 0)
             throw Err(w.Pos, $"when on {vt} doesn't observe {string.Join(", ", missing)}; add an arm for each, or an else arm");
@@ -2678,7 +2725,7 @@ public sealed class FunctionGen
     /// An arm without a name that observes a failure: a failure made in it wraps that one (Trace.te).
     private Action? FailureObserved(VariantType vt, DType observed, string tag)
     {
-        if (!_c.Trace || _c.Prechecking || !IsFailure(observed, vt)) return null;
+        if (!_c.Trace || _c.Prechecking || !(IsFailure(observed, vt) || Crashing.IsUnion(observed))) return null;
         return () =>
         {
             string high = EmitTmp($"lshr i64 {tag}, 32");
@@ -2703,7 +2750,7 @@ public sealed class FunctionGen
             return;
         }
         string value;
-        if (branch is VariantType { Decl.IsAnonymous: true } union && vt.LeafIndex(union) < 0)
+        if (branch is VariantType union && vt.LeafIndex(union) < 0 && (union.Decl.IsAnonymous || union.Leaves.All(Crashing.IsCrashable)))
             value = CopyVariant(vt, slot, union);
         else if (_c.VariantStorage(vt).Aligner is null || _c.SizeAlign(branch, default).Size == 0)
         {
@@ -2718,7 +2765,7 @@ public sealed class FunctionGen
         Define(binding.Name, new Val(value, branch), binding.Pos);
         DescribeValue(binding.Name, value, branch, binding.Pos);
         // A failure made in an arm that observed one wraps it (Trace.te).
-        if (_c.Trace && !_c.Prechecking && IsFailure(branch, vt))
+        if (_c.Trace && !_c.Prechecking && (IsFailure(branch, vt) || Crashing.IsUnion(branch)))
         {
             string tagAt = EmitTmp($"getelementptr inbounds {vt.Llvm}, ptr {slot}, i32 0, i32 0");
             string tag = EmitTmp($"load i64, ptr {tagAt}");
@@ -2736,6 +2783,9 @@ public sealed class FunctionGen
     /// `x: T = when ...`: the arms each give a T, met at one block.
     private Val EvalWhenValue(WhenExpr w, DType expected)
     {
+        if (expected is VariantType { Args.Count: 1 } open && Crashing.IsCheck(open))
+            throw Err(w.Pos, "a Check takes what can fail from the check that makes it, and a when's arms would each make "
+                + "their own: observe each check in its own when instead");
         var join = NewLBlock("whenvalue");
         var frame = new ValueFrame(join, NewRegion("whenvalue"), expected, _values.Keys.ToHashSet());
         _valueWhens.Push(frame);
@@ -3026,7 +3076,7 @@ public sealed class FunctionGen
                 if (!(b.Op == "==" && operand is ChoiceType)) CheckOperator(name, operand, b.Pos);
                 return Call(name);
             }
-            case UnaryExpr { Op: "not" }:
+            case UnaryExpr { Op: "not" or "try" or "check" }:
                 return e;
             case UnaryExpr u:
             {
@@ -3231,8 +3281,9 @@ public sealed class FunctionGen
         if (routine.TypeParams.Count != 0)
             throw Err(r.Pos, $"'{r.Name}' is generic, so it has no one address to take; wrap an instance in a routine");
         var inst = _c.RequireInstance(routine, new Compiler.TypeEnv(routine.File));
-        var own = new CallableType(inst.CallConv, inst.Params, inst.Ret);
-        if (r.Callable is { } written && Resolve(written) is var ct && !ct.Equals(own))
+        if (_reportingArgument) _c.NoteReportingRoutine(inst, r.Pos);
+        var own = OwnCallable(inst);
+        if (r.Callable is { } written && Resolve(written) is var ct && !ct.Equals(own) && !ct.Equals(own.Plain))
             throw Err(r.Pos, $"routine '{r.Name}' is {own}, not {ct}");
         // A call through a Callable passes BF16 (and on 32-bit x86 a returned B32 or B64) as its integer bits, as
         // Tessera routines do. An external C routine takes the real float, so it can't sit behind one.
@@ -3257,7 +3308,7 @@ public sealed class FunctionGen
             var env = new Compiler.TypeEnv(o.File);
             BindExplicit(o, env, r.TypeArgs, r.Pos);
             var inst = _c.RequireInstance(o, env);
-            if (fitting.Count > 1 && want is not null && !new CallableType(inst.CallConv, inst.Params, inst.Ret).Equals(want))
+            if (fitting.Count > 1 && want is CallableType wanted && !new CallableType(inst.CallConv, inst.Params, inst.Ret).Equals(wanted.Plain))
                 continue;
             if (chosen is not null)
                 throw Err(r.Pos, $"'{r.Name}' has more than one overload with {r.TypeArgs.Count} type argument(s); name the one "
@@ -3268,8 +3319,8 @@ public sealed class FunctionGen
         if (Recorded) _c.CallUses.TryAdd((r.Pos, r.Name), new Compiler.CallUse(c.Decl, []));
         if (c.Decl.AnnotationNamed("inline") is not null)
             throw Err(r.Pos, $"'{r.Name}' is @inline, so it can't be a Callable value: it's inlined at every call");
-        var own = new CallableType(c.Inst.CallConv, c.Inst.Params, c.Inst.Ret);
-        if (r.Callable is { } shown && Resolve(shown) is var ct && !ct.Equals(own))
+        var own = OwnCallable(c.Inst);
+        if (r.Callable is { } shown && Resolve(shown) is var ct && !ct.Equals(own) && !ct.Equals(own.Plain))
             throw Err(r.Pos, $"routine '{r.Name}' is {own}, not {ct}");
         return new Val($"@{Compiler.Quote(c.Inst.Symbol)}", own);
     }
@@ -3323,18 +3374,26 @@ public sealed class FunctionGen
         {
             NotOverloadedForAddr(owner.Name, null, owner.Pos);
             NotThroughAddress(named, owner.Pos);
+            NoFailableAddress(named, owner.Pos);
             var namedInst = _c.RequireInstance(named, new Compiler.TypeEnv(named.File));
             return (new RoutineRef(owner.Name, null, owner.Pos),
                 new CallableType(namedInst.CallConv, namedInst.Params, namedInst.Ret));
         }
 
         if (e is not MethodCallExpr { Name: "addr", Args.Count: 0 } m) return null;
-        if (Infer(m.Receiver) is CallableType ct) return (m.Receiver, ct);
+        if (Infer(m.Receiver) is CallableType ct)
+        {
+            if (ct.Failable)
+                throw Err(m.Pos, "addr() gives the routine's address to C, and this Callable can fail, which C has no way to receive: "
+                    + "hand C a routine that receives the failure itself (with check or try)");
+            return (m.Receiver, ct);
+        }
         if (m.Receiver is PresetRef { Owner: null } r && ResolvePreset(r) is null
             && _c.FindFree(r.Name, _env.File, r.Pos) is { } routine)
         {
             NotOverloadedForAddr(r.Name, r.Path, r.Pos);
             NotThroughAddress(routine, r.Pos);
+            NoFailableAddress(routine, r.Pos);
             var inst = _c.RequireInstance(routine, new Compiler.TypeEnv(routine.File));
             return (new RoutineRef(r.Name, null, r.Pos) { Path = r.Path },
                 new CallableType(inst.CallConv, inst.Params, inst.Ret));
@@ -3370,6 +3429,8 @@ public sealed class FunctionGen
     /// Works out which routine a call refers to and binds its type parameters.
     private CallPlan? PlanCall(Expr e, DType? expected)
     {
+        // A routine called on a Crashables is each crashable's own, chosen by the tag (EvalUnionCall).
+        if (e is MethodCallExpr onUnion && CrashableGroup(onUnion) is not null) return null;
         if (e is NsCallExpr { Owner: { Args.Count: 0, Path: null } receiver }) UnknownReceiver(receiver);
         switch (e)
         {
@@ -3526,6 +3587,8 @@ public sealed class FunctionGen
                     // A value of a branch type goes into its variant, and memory lends its view: fits an exact
                     // overload beats.
                     if (Widens(at, pt) || Lends(at, pt) || SlotsTemp(at, pt)) preferred = false;
+                    else if (FailingCallable(r, i + first, at, pt) is { } failing)
+                        env.Bind(Compiler.FailingParamKey(r.Params[i + first].Name), failing);
                     else if (!at.Equals(pt)) return No(ArgumentMismatch(i + 1, at.ToString(), pt));
                     continue;
                 }
@@ -3584,7 +3647,10 @@ public sealed class FunctionGen
     /// (`text.to_result[T]()` under `Parsable[T]`), which the constraints in force must give.
     private DType? DeferredType(MethodCallExpr m, DType? expected)
     {
-        if (!_c.Prechecking || _c.ConceptProvides(m.Name)) return null;
+        if (!_c.Prechecking) return null;
+        // Parsable's `to` is text's: a `to` on anything else is the conversions each type defines.
+        if (_c.ConceptProvides(m.Name) && !(m.Name == "to" && InferQuiet(m.Receiver) is not (RecordType { Decl.Name: "Span" } or PtrType { Pointee: RecordType { Decl.Name: "Span" } })))
+            return null;
         var typeArgs = m.TypeArgs;
         if (typeArgs.Count == 0 && m is { Name: "to" or "to_wrap" or "to_clamp", Args.Count: 0 } && expected is not null)
             typeArgs = [new TypeRef(expected.Name, [], m.Pos) { Known = expected }];
@@ -3942,6 +4008,9 @@ public sealed class FunctionGen
             throw Err(m.Pos, m.Name == "between"
                 ? "a range check is a chained comparison: `lo <= x <= hi` (bind x to a name first when it is a call)"
                 : "a range check is a chained comparison: `lo <= x < end` (bind x to a name first when it is a call)");
+        if (m.Name.EndsWith("_result", StringComparison.Ordinal))
+            throw Err(m.Pos, $"{rt} has no method '{m.Name}': the _result forms are gone, and '{m.Name[..^"_result".Length]}' is "
+                + "failable: receive its failure with check or try in front of the call (tessera migrate --step failable)");
         throw Err(m.Pos, $"{rt} has no method '{m.Name}'");
     }
 
@@ -4076,6 +4145,10 @@ public sealed class FunctionGen
                 for (int i = 0; i < s.Args.Count; i++)
                     if (t.Args[i] is TypeArgType ta) Unify(ta.Type, s.Args[i], env, unbound);
                 break;
+            // `Check[T]` binds T from the value a check holds, whatever it can fail with.
+            case VariantType check when Crashing.IsCheck(check) && t.Name == "Check" && t.Args is [TypeArgType value]:
+                Unify(value.Type, Crashing.ValueOf(check), env, unbound);
+                break;
             case VariantType v when v.Decl.Name == t.Name && v.Args.Count == t.Args.Count:
                 for (int i = 0; i < v.Args.Count; i++)
                     if (t.Args[i] is TypeArgType ta) Unify(ta.Type, v.Args[i], env, unbound);
@@ -4103,6 +4176,8 @@ public sealed class FunctionGen
 
     private Val EvalCall(Expr e, DType? expected)
     {
+        if (e is MethodCallExpr onUnion && CrashableGroup(onUnion) is { } union)
+            return EvalUnionCall(onUnion, union, expected);
         if (e is CallExpr { Name: "sizeof" or "alignof", TypeArgs.Count: 1, Args.Count: 0 } sz
             && _c.FindFree(sz.Name, _env.File, sz.Pos) is null)
             return SizeOrAlign(sz);
@@ -4143,6 +4218,7 @@ public sealed class FunctionGen
 
         if (AddrOfCallable(e) is { } addr) return new Val(Eval(addr.Callee, addr.Callable).Op, new PtrType(null));
         if (IndirectCall(e) is { } ind) return EmitIndirect(ind.Callee, ind.Callable, ind.Args, e.Pos);
+
         if (e is MethodCallExpr deferred && DeferredType(deferred, expected) is { } deferredType)
         {
             EvalAny(deferred.Receiver);
@@ -4223,8 +4299,18 @@ public sealed class FunctionGen
         return new Val(op, _c.Count);
     }
 
+    /// Set while the arguments of `Crash.report_with` are evaluated: the routine value there is a reporting routine.
+    private bool _reportingArgument;
+
     private Val EmitCall(CallPlan plan)
     {
+        if (plan.Decl is { IsLibrary: true, Module: Compiler.SystemModule, Owner.Name: "Crash", Name: "report_with" } && !_reportingArgument)
+        {
+            _reportingArgument = true;
+            try { return EmitCall(plan); }
+            finally { _reportingArgument = false; }
+        }
+        BindFailingCallables(plan);
         if (Recorded)
             _c.CallUses.TryAdd((plan.Pos, plan.Decl.Name), new Compiler.CallUse(plan.Decl, [.. plan.Env.All.Select(kv => (kv.Key, kv.Value))]));
         var sig = _c.Signature(plan.Decl, plan.Env);
@@ -4292,12 +4378,25 @@ public sealed class FunctionGen
 
         var inst = _c.RequireInstance(plan.Decl, plan.Env);
         _c.RecordCall(_inst, inst);
+        if (inst.Decl.IsFailable)
+        {
+            // A generic body being checked only types the call: a try or check around it counts it all the same.
+            if (!Emitting) return CheckedOnly(inst.Ret);
+            _c.EnsureThrowsKnown(inst);
+        }
         var abi = _c.LowerSignature(inst);
         // An external C routine's call names its function type, so the variadic part is typed.
         string fnType = inst.IsExternalC
             ? $"{_c.AbiRet(inst, withAttrs: false)} ({string.Join(", ", _c.AbiParams(inst, withAttrs: false))}) "
             : $"{_c.AbiRet(inst, withAttrs: false)} ";
         TraceAt(plan.Pos);
+        if (inst.Decl.IsFailable)
+        {
+            string carrier = Compiler.CarrierName(inst);
+            var returned = EmitAbiCall($"{inst.CcPrefix(_c.Target)}{fnType}@{Compiler.Quote(inst.Symbol)}", abi,
+                args, inst.Params, new CarrierRef(carrier), inst.PassesBf16AsBits, i => inst.ParamExt(_c.Target, i));
+            return ReceiveFailable(returned, carrier, inst.Ret, _c.ThrowsOf(inst, _inst), plan.Pos);
+        }
         return EmitAbiCall($"{inst.CcPrefix(_c.Target)}{RetExtOf(abi, inst.RetExt(_c.Target))}{fnType}@{Compiler.Quote(inst.Symbol)}", abi,
             args, inst.Params, inst.Ret, inst.PassesBf16AsBits, i => inst.ParamExt(_c.Target, i));
     }
@@ -4443,6 +4542,20 @@ public sealed class FunctionGen
         string cc = Compiler.CcPrefix(ct.CallConv, _c.Target);
         const bool bits = true;
         bool c = ct.CallConv != "fast";
+        if (ct.Failable)
+        {
+            // A failable routine's carrier comes back as the LLVM value it is, the same struct its definition returns.
+            string carrier = _c.CarrierFor(Crashing.Check(_c.ValueTypeOf(ct.Ret, pos), ct.Throws));
+            var plainSig = _c.LowerSignature(ct.Params, VoidType.Instance, ct.CallConv, pos);
+            var failingSig = new AbiSig(AbiValue.Direct(new CarrierRef(carrier)), plainSig.Params);
+            TraceAt(pos);
+            var returned = EmitAbiCall($"{cc}{carrier} {fp.Op}", failingSig, args, ct.Params, new CarrierRef(carrier), bits,
+                i => c ? CAbi.Ext(_c.Target, ct.Params[i], isReturn: false) : "");
+            return ReceiveFailable(returned, carrier, ct.Ret, ct.Throws, pos);
+        }
+        // A routine built for a plain Callable is built again for each failable one it is given, so a try or check
+        // around a call through one counts it.
+        if (_recover.Count > 0) _recover.Peek().Calls++;
         var sig = _c.LowerSignature(ct.Params, ct.Ret, ct.CallConv, pos);
         string ret = Compiler.AbiRetType(sig, Instance.BitsCarrier(ct.Ret, isReturn: true, _c.Target) ?? ct.Ret.Llvm);
         string retExt = c ? CAbi.Ext(_c.Target, ct.Ret, isReturn: true).TrimStart() : "";
@@ -4736,6 +4849,16 @@ public sealed class FunctionGen
     {
         if (_decl.AnnotationNamed("noreturn") is not null)
             throw Err(r.Pos, $"'{_decl.DisplayName}' is @noreturn, so no line in it can return: end it with a call that never returns, or drop the annotation");
+        if (r.IsThrow)
+        {
+            EmitThrow(r);
+            return;
+        }
+        if (_decl.IsFailable)
+        {
+            EmitFailableReturn(r);
+            return;
+        }
         MemReturn(r);
         if (_inst.Ret is VoidType)
         {

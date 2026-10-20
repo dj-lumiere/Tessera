@@ -25,7 +25,7 @@ static class Cli
           tessera help                  print this text
           tessera version               print the builder's version
 
-        --no-stdlib-exports: leave out the standard library's @export routines (the default crash handler, the B16 and
+        --no-stdlib-exports: leave out the standard library's @export routines (the default crash report, the B16 and
                 BF16 conversion helpers), for a library that is linked into a program which has them already.
         <mode>: debug (-O0, the default), release (-O2), release-time (-O3), or release-space (-Os), as a
                 manifest's mode. Every mode has debug information: DWARF, or CodeView and a .pdb on Windows, so a
@@ -501,7 +501,7 @@ static class Cli
     public static string Compile(IEnumerable<string> files, BuildTarget target, bool executable = true,
         IReadOnlyList<string>? roots = null, BuildMode mode = BuildMode.Debug, bool stdlibExports = true, bool lint = true,
         bool? trace = null, bool heapCheck = false, bool raceCheck = false, int? traceFrames = null, int? failureTraces = null,
-        bool uninitFill = false, bool? deadlockCheck = null, bool accessOrder = false)
+        bool uninitFill = false, bool? deadlockCheck = null, bool accessOrder = false, int? crashMessageSize = null)
     {
         var inputs = files.ToList();
         var decls = LoadDecls(inputs, target);
@@ -515,6 +515,7 @@ static class Cli
             UninitFill = uninitFill,
         };
         compiler.SetTraceSizes(traceFrames, failureTraces);
+        compiler.SetCrashMessageSize(crashMessageSize);
         compiler.SetAccessChecks(deadlockCheck ?? mode.DeadlockCheckedByDefault(), accessOrder);
         string ir = compiler.Generate();
         if (lint) Lint(decls, inputs, [compiler]);
@@ -687,7 +688,8 @@ static class Cli
         if (m.RaceCheck) RequireRaceCheckable(m.Target);
         string ir = Compile(m.Sources, m.Target, roots: m.Roots, mode: m.Mode, trace: m.Traced,
             heapCheck: m.HeapCheck, raceCheck: m.RaceCheck, traceFrames: m.TraceFrames, failureTraces: m.FailureTraces,
-            uninitFill: m.UninitFill, deadlockCheck: m.DeadlockCheck, accessOrder: m.AccessOrder);
+            uninitFill: m.UninitFill, deadlockCheck: m.DeadlockCheck, accessOrder: m.AccessOrder,
+            crashMessageSize: m.CrashMessageSize);
         Directory.CreateDirectory(m.OutputDirectory);
         if (m.EmitLlvm) File.WriteAllText(Path.ChangeExtension(m.ExecutablePath, ".ll"), ir);
         Link(ir, m.ExecutablePath, m.Target, m.Mode, m.LinkArguments().Concat(RaceLink(m.RaceCheck)));
@@ -1091,7 +1093,8 @@ static class Cli
                 trace: manifest is null ? _testTrace : manifest.Traced, heapCheck: true,
                 raceCheck: manifest?.RaceCheck ?? false, traceFrames: manifest?.TraceFrames,
                 failureTraces: manifest?.FailureTraces, uninitFill: manifest?.UninitFill ?? false,
-                deadlockCheck: manifest?.DeadlockCheck, accessOrder: manifest?.AccessOrder ?? false);
+                deadlockCheck: manifest?.DeadlockCheck, accessOrder: manifest?.AccessOrder ?? false,
+                crashMessageSize: manifest?.CrashMessageSize);
         }
         catch (ManifestError e)
         {

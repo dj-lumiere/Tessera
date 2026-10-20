@@ -79,27 +79,15 @@ needs TPriority: typename, TElement: typename
 
 ### Grows the heap arrays to hold at least `capacity` entries without further allocation.
 ### :param capacity: The number of entries to make room for.
-### :throws: Crashes with `MemoryAllocationError` when the allocator fails. See {PriorityQueue[TPriority, TElement].reserve_result}.
+### :throws: Throws `MemoryAllocationError` when the allocator fails.
 @track_caller
 @expensive("reallocates to exactly the capacity asked for")
 @reshaping
-routine @PriorityQueue[TPriority, TElement].reserve(capacity: U64) -> None
+failable routine @PriorityQueue[TPriority, TElement].reserve(capacity: U64) -> None
 needs TPriority: typename, TElement: typename
     if me.make_capacity(capacity)
         return
-    crash_allocation()
-
-### `reserve`, returning an error instead of crashing when the allocator fails.
-### :param capacity: The number of entries to make room for.
-### :returns: A value once the heap arrays hold at least `capacity` entries.
-### :throws: Returns `AllocFailed` when the allocator fails.
-@expensive("reallocates to exactly the capacity asked for")
-@reshaping
-routine @PriorityQueue[TPriority, TElement].reserve_result(capacity: U64) -> Result[None, AllocFailed]
-needs TPriority: typename, TElement: typename
-    if me.make_capacity(capacity)
-        return None()
-    return AllocFailed()
+    throw MemoryAllocationError()
 
 ### Grows both heap arrays to at least `capacity` entries. When the second one fails the first keeps its new size,
 ### and the queue goes on using the room both have.
@@ -111,13 +99,13 @@ needs TPriority: typename, TElement: typename
     if me.capacity() >= capacity
         return true
     if me.priorities.count.peek() < capacity
-        when me.priorities.resize_result(capacity)
+        when check me.priorities.resize(capacity)
             is None => pass
-            is AllocFailed => return false
+            is MemoryAllocationError => return false
     if me.elements.count.peek() < capacity
-        when me.elements.resize_result(capacity)
+        when check me.elements.resize(capacity)
             is None => pass
-            is AllocFailed => return false
+            is MemoryAllocationError => return false
     return true
 
 ### Makes room for `wanted` entries: empty arrays start at 8 slots (or `wanted`, when larger), and full ones double
@@ -165,25 +153,11 @@ needs TPriority: typename, TElement: typename
 ### Adds `element` with `priority` and sifts the entry up to its place in the heap. Both move in.
 ### :param priority: The priority the element is ordered by, the smallest first.
 ### :param element: The element to add.
-### :throws: Crashes with `MemoryAllocationError` when the allocator fails. See {PriorityQueue[TPriority, TElement].add_result}.
+### :throws: Throws `MemoryAllocationError` when the heap arrays must grow and the allocator fails.
 @track_caller
 @reshaping
-routine @PriorityQueue[TPriority, TElement].add(priority: TPriority, element: TElement) -> None
-needs TPriority: typename, TElement: typename
-    pushed: Result[None, AllocFailed] = me.add_result(priority: steal priority,
-        element: steal element)
-    when pushed
-        is None => return
-        is AllocFailed => crash_allocation()
-
-### `add`, returning an error instead of crashing when the allocator fails.
-### :param priority: The priority the element is ordered by, the smallest first.
-### :param element: The element to add.
-### :returns: A value once the entry is in the heap.
-### :throws: Returns `AllocFailed` when the heap arrays must grow and the allocator fails.
-@reshaping
-routine @PriorityQueue[TPriority, TElement].add_result(priority: TPriority,
-    element: TElement) -> Result[None, AllocFailed]
+failable routine @PriorityQueue[TPriority, TElement].add(priority: TPriority,
+    element: TElement) -> None
 needs TPriority: typename, TElement: typename
     count: U64 = me.count.peek()
     wanted: U64 = count + 1
@@ -191,7 +165,7 @@ needs TPriority: typename, TElement: typename
         # nothing took the entry: it ends here
         drop priority
         drop element
-        return AllocFailed()
+        throw MemoryAllocationError()
     priorities: @TPriority = me.priorities.data.peek()
     elements: @TElement = me.elements.data.peek()
     priorities.stride(count).poke(steal priority)
@@ -203,9 +177,9 @@ needs TPriority: typename, TElement: typename
         if me.before(a: index, b: parent)
             me.swap(a: index, b: parent)
             continue with index: parent
-        return None()
+        return
     then
-        return None()
+        return
 
 ### Reads the element with the smallest priority, the top, without removing it.
 ### :returns: A copy of the top element.

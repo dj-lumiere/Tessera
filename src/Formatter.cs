@@ -96,7 +96,7 @@ public static class Formatter
             if (indent == 0 && trimmed.Length > 0)
             {
                 string decl = trimmed.StartsWith("secret ") ? trimmed[7..] : trimmed;
-                if (decl.StartsWith("record ") || decl.StartsWith("entity ")) context = "record";
+                if (decl.StartsWith("record ") || decl.StartsWith("entity ") || decl.StartsWith("crashable ")) context = "record";
                 else if (decl.StartsWith("choice ")) context = "choice";
                 else if (decl.StartsWith("variant ")) context = "variant";
                 else if (!(trimmed.StartsWith("obeys ") || trimmed.StartsWith("needs ") || IsAnnotation(trimmed)))
@@ -517,12 +517,14 @@ public static class Formatter
     private static int RoutineWord(string line)
     {
         int i = line.StartsWith("secret ", StringComparison.Ordinal) ? "secret ".Length : 0;
+        if (string.CompareOrdinal(line, i, "failable ", 0, "failable ".Length) == 0) i += "failable ".Length;
         if (string.CompareOrdinal(line, i, "common ", 0, "common ".Length) == 0) i += "common ".Length;
         return string.CompareOrdinal(line, i, "routine ", 0, "routine ".Length) == 0 ? i : -1;
     }
 
     private static bool StartsDeclaration(string line) =>
-        line.StartsWith("routine ") || line.StartsWith("common routine ") || line.StartsWith("record ") || line.StartsWith("choice ") ||
+        line.StartsWith("routine ") || line.StartsWith("common routine ") || line.StartsWith("failable ") || line.StartsWith("record ")
+        || line.StartsWith("crashable ") || line.StartsWith("choice ") ||
         line.StartsWith("variant ") || line.StartsWith("protocol ") || line.StartsWith("#") || IsAnnotation(line);
 
     /// The nearest line before `i` that isn't a comment, annotation, continuation, or blank.
@@ -769,6 +771,7 @@ public static class Formatter
     {
         if (line.Length == 0 || line[0] == ' ') return null;
         string s = line.StartsWith("secret ") ? line[7..] : line;
+        if (s.StartsWith("failable ", StringComparison.Ordinal)) s = s["failable ".Length..];
         if (s.StartsWith("common routine ", StringComparison.Ordinal)) s = s["common ".Length..];
         int space = s.IndexOf(' ');
         string word = space < 0 ? s : s[..space];
@@ -779,7 +782,7 @@ public static class Formatter
             "define" => DeclKind.Define,
             "global" => DeclKind.Global,
             "preset" => DeclKind.Preset,
-            "record" or "entity" or "choice" or "variant" => DeclKind.Type,
+            "record" or "entity" or "crashable" or "choice" or "variant" => DeclKind.Type,
             "protocol" => DeclKind.Concept,
             "obeys" => DeclKind.Conform,
             "routine" => IsEntryHeader(s, "start") || IsEntryHeader(s, "when_power_on") ? DeclKind.Entry : DeclKind.Routine,
@@ -1074,8 +1077,8 @@ public static class Formatter
         for (int i = 0; i < result.Count; i++)
         {
             // `routine ` or `common routine `, and `@` when me is taken by its address.
-            int word = result[i].StartsWith("common routine ", StringComparison.Ordinal) ? "common ".Length
-                : result[i].StartsWith("routine ", StringComparison.Ordinal) ? 0 : -1;
+            // `failable` in front, but not `secret`: the rewrite has always left a secret routine as written.
+            int word = result[i].StartsWith("secret ", StringComparison.Ordinal) ? -1 : RoutineWord(result[i]);
             if (word < 0) continue;
             int ownerStart = word + "routine ".Length;
             if (ownerStart < result[i].Length && result[i][ownerStart] == '@' && ownerStart + 1 < result[i].Length

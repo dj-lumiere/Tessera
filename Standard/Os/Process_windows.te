@@ -236,11 +236,11 @@ secret routine c_get_environment_variable(name: @U16, buffer: @U16, size: U32) -
 @target(os: "windows")
 secret routine spawn_error(e: U32) -> ProcessError
     when e
-        2, 3, 267 => return ProcessError.NOT_FOUND
-        5 => return ProcessError.PERMISSION_DENIED
-        8, 14 => return ProcessError.OUT_OF_MEMORY
-        123, 87 => return ProcessError.INVALID_ARGUMENT
-        else => return ProcessError.OTHER
+        2, 3, 267 => return NotFoundError()
+        5 => return NotEnoughPermissionError()
+        8, 14 => return MemoryAllocationError()
+        123, 87 => return InvalidArgumentError()
+        else => return IoError(code: 0)
 
 ### Whether `h` is null or INVALID_HANDLE_VALUE.
 ### :param h: The handle to test.
@@ -749,7 +749,7 @@ secret routine inherited(which: U32) -> Addr
 ### :returns: True when all were made. What was made before a failure is kept for closing.
 @target(os: "windows")
 secret routine @Handles.make(options: ProcessOptions, sa: @SecurityAttributes) -> Bool
-    me.poke(Handles.empty())
+    me.poke(Me.empty())
     null_in: Bool = options.stdin == InputMode.NULL
     if null_in or (options.stdout == OutputMode.NULL or options.stderr == OutputMode.NULL)
         local name: @Array[U16, 4] <- [78, 85, 76, 0]
@@ -813,8 +813,8 @@ secret routine output_handle(mode: OutputMode, pipe: Addr, device: Addr, which: 
 ### captured output can't be allocated).
 @target(os: "windows")
 @expensive("starts a process")
-common routine ProcessManager.create_process_result(program: @[Byte], args: @[@[Byte]],
-    options: ProcessOptions, alloc: @MemoryManager) -> Result[ProcessOutput, ProcessError]
+failable common routine ProcessManager.create_process(program: @[Byte], args: @[@[Byte]],
+    options: ProcessOptions, alloc: @MemoryManager) -> ProcessOutput
     local h: @Handles <- Handles.empty()
     local pi: @ProcessInformation <- ProcessInformation(process: .hollow(), thread: .hollow(),
         process_id: 0, thread_id: 0)
@@ -822,17 +822,17 @@ common routine ProcessManager.create_process_result(program: @[Byte], args: @[@[
 
     # Until the handles are made, a failure has only the command line (once there is one) to free.
     if has_nul(program, args, options)
-        return ProcessError.INVALID_ARGUMENT
+        throw InvalidArgumentError()
     line: @U16 = command_line(program, args, alloc)
     if line.is_hollow()
-        return ProcessError.OUT_OF_MEMORY
+        throw MemoryAllocationError()
     directory_units: @U16 = when options.directory
         is @[Byte] as d =>
             units: @U16 = directory.to[@U16]()
             n: Maybe[U64] = encode_utf16(text: d, out: units, capacity: PATH_CAPACITY)
             if not n.is_present()
                 free_texts(line, env: .hollow(), alloc)
-                return ProcessError.INVALID_ARGUMENT
+                throw InvalidArgumentError()
             becomes units
         is None => .hollow()
     env: @U16 = when
@@ -841,22 +841,35 @@ common routine ProcessManager.create_process_result(program: @[Byte], args: @[@[
             block_units: @U16 = env_block(options, alloc)
             if block_units.is_hollow()
                 free_texts(line, env: .hollow(), alloc)
-                return ProcessError.OUT_OF_MEMORY
+                throw MemoryAllocationError()
             becomes block_units
 
     local sa: @SecurityAttributes <- SecurityAttributes(
         length: sizeof[SecurityAttributes]().to[U32](), descriptor: .hollow(), inherit_handle: 1)
-    local result: @Result[ProcessOutput, ProcessError] <- start_and_collect(options,
-        launch: Launch(h, pi, sa, line, env, directory: directory_units), alloc)
+    launch: Launch = Launch(h, pi, sa, line, env, directory: directory_units)
+    when check start_and_collect(options, launch, alloc)
+        is ProcessOutput as made =>
+            release_launch(launch, alloc)
+            return made
+        is ProcessError as error =>
+            release_launch(launch, alloc)
+            throw error
 
-    # The parent's ends of the pipes, the process and thread handles, the command line, and the environment block:
-    # each one this run got.
+### Releases what a run left: the parent's ends of the pipes, the process and thread handles, the command line, and
+### the environment block, each one this run got.
+### :param launch: The pipe handles, the process and thread handles, the command line, and the environment block (or
+###     hollow).
+### :param alloc: The allocator the texts came from.
+@target(os: "windows")
+secret routine release_launch(launch: Launch, alloc: @MemoryManager) -> None
+    h: @Handles = launch.h
+    pi: @ProcessInformation = launch.pi
     close_if_open(h.out_r.peek())
     close_if_open(h.err_r.peek())
     close_if_open(pi.thread.peek())
     close_if_open(pi.process.peek())
-    free_texts(line, env, alloc)
-    return result
+    free_texts(line: launch.line, env: launch.env, alloc)
+    return
 
 ### Makes a `Launch` from its fields.
 ### :param h: Its `h`.
@@ -883,15 +896,15 @@ secret routine @Launch.destruct() -> None
 ### :param alloc: The allocator for the captured output.
 ### :returns: The {ProcessOutput}, or the {ProcessError}.
 @target(os: "windows")
-secret routine start_and_collect(options: ProcessOptions, launch: Launch,
-    alloc: @MemoryManager) -> Result[ProcessOutput, ProcessError]
+secret failable routine start_and_collect(options: ProcessOptions, launch: Launch,
+    alloc: @MemoryManager) -> ProcessOutput
     h: @Handles = launch.h
     pi: @ProcessInformation = launch.pi
     if not h.make(options, sa: launch.sa)
         # The handles were partly made: the child's side of what there is closes here, the parent's side in the caller.
         e: U32 = c_get_last_error()
         h.close_child_side()
-        return spawn_error(e)
+        throw spawn_error(e)
     # STARTF_USESTDHANDLES
     local si: @StartupInfo <- StartupInfo(cb: sizeof[StartupInfo]().to[U32](), reserved: .hollow(),
         desktop: .hollow(), title: .hollow(), x: 0, y: 0, x_size: 0, y_size: 0, x_count_chars: 0,
@@ -904,18 +917,19 @@ secret routine start_and_collect(options: ProcessOptions, launch: Launch,
     e2: U32 = c_get_last_error()
     h.close_child_side()
     if made
-        return collect_output(h, pi, alloc)
-    return spawn_error(e2)
+        when check collect_output(h, pi, alloc)
+            is ProcessOutput as returned => return returned
+    throw spawn_error(e2)
 
 ### Reads what the started child writes to the captured pipes, waits for it to end, and gives its output.
 ### :param h: The handles of the run, the parent's ends of the pipes among them.
 ### :param pi: The started process.
 ### :param alloc: The allocator for the captured output.
 ### :returns: The {ProcessOutput}, which owns the captured bytes.
-### :throws: Returns `OutOfMemory` when a capture couldn't grow and lost bytes (what was captured is given back then).
+### :throws: Throws `MemoryAllocationError` when a capture couldn't grow and lost bytes (what was captured is given back then).
 @target(os: "windows")
-secret routine collect_output(h: @Handles, pi: @ProcessInformation,
-    alloc: @MemoryManager) -> Result[ProcessOutput, ProcessError]
+secret failable routine collect_output(h: @Handles, pi: @ProcessInformation,
+    alloc: @MemoryManager) -> ProcessOutput
     local out: @CaptureBuffer <- CaptureBuffer.empty()
     local err: @PipeReader <- PipeReader(pipe: h.err_r.peek(), buffer: CaptureBuffer.empty())
     local code: @U32 <- 0
@@ -935,7 +949,7 @@ secret routine collect_output(h: @Handles, pi: @ProcessInformation,
     if lost
         # A capture couldn't grow and lost bytes: what was captured goes back, and the run fails.
         drop output
-        return ProcessError.OUT_OF_MEMORY
+        throw MemoryAllocationError()
     return output
 
 ### Frees the command line and the environment block, each when there is one.
@@ -1058,6 +1072,6 @@ secret routine env_value(key: @U16, units: @@U16, alloc: @MemoryManager) -> Mayb
     got: U32 = c_get_environment_variable(key, made, need)
     if got == 0 or got >= need
         return None()
-    when owned_wide(units: made, count: got.to[U64](), alloc)
+    when check owned_wide(units: made, count: got.to[U64](), alloc)
         is Memory[Byte] as t => return t
         is FsError => return None()

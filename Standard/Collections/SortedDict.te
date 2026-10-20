@@ -512,25 +512,10 @@ needs TKey: typename, TValue: typename
 ### Stores `value` under `key`, inserting a new entry in sorted position or replacing the value of an equal existing key.
 ### :param key: The key to store under.
 ### :param value: The value to store.
-### :throws: Crashes with `MemoryAllocationError` when a node cannot be allocated. See {SortedDict[TKey, TValue].setitem_result} for a recoverable form.
+### :throws: Throws `MemoryAllocationError` when a node cannot be allocated.
 @track_caller
 @reshaping
-routine @SortedDict[TKey, TValue].setitem(key: TKey, value: TValue) -> None
-needs TKey: typename, TValue: typename
-    put: Result[None, AllocFailed] = me.setitem_result(key: steal key, value: steal value)
-    when put
-        is None => return
-        is AllocFailed => crash_allocation()
-
-### `setitem`, returning an error instead of crashing when the allocator fails. A key already there keeps its place
-### and the new key ends, the old value ends and the new one takes its place.
-### :param key: The key to store under.
-### :param value: The value to store.
-### :returns: A value once the value is stored.
-### :throws: Returns `AllocFailed` when a node cannot be allocated.
-@reshaping
-routine @SortedDict[TKey, TValue].setitem_result(key: TKey,
-    value: TValue) -> Result[None, AllocFailed]
+failable routine @SortedDict[TKey, TValue].setitem(key: TKey, value: TValue) -> None
 needs TKey: typename, TValue: typename
     local probe: @TKey <- steal key
     local root: @SortedDictNode[TKey, TValue] = me.root.peek()
@@ -540,7 +525,7 @@ needs TKey: typename, TValue: typename
             drop probe
             drop old
             old.poke(steal value)
-            return None()
+            return
         is None => pass
     if root.is_hollow()
         alloc: @MemoryManager = me.alloc.peek()
@@ -549,14 +534,14 @@ needs TKey: typename, TValue: typename
         if first_node.is_hollow()
             drop probe
             drop value
-            return AllocFailed()
+            throw MemoryAllocationError()
         first_node.keys.getslot(0).poke(steal probe)
         first_node.values.getslot(0).poke(steal value)
         first_node.count.poke(1)
         first_node.subtree_count.poke(1)
         me.root.poke(first_node)
         me.count.poke(1)
-        return None()
+        return
     alloc: @MemoryManager = me.alloc.peek()
     root_count: U64 = root.count.peek()
     full: Bool = root_count == SORTED_DICT_NODE_KEYS
@@ -567,7 +552,7 @@ needs TKey: typename, TValue: typename
             if new_root.is_hollow()
                 drop probe
                 drop value
-                return AllocFailed()
+                throw MemoryAllocationError()
             new_root.children[0] = root
             if new_root.split_child(index: 0, alloc)
                 me.root.poke(new_root)
@@ -576,13 +561,13 @@ needs TKey: typename, TValue: typename
                 deallocate[SortedDictNode[TKey, TValue]](data: new_root, alloc)
                 drop probe
                 drop value
-                return AllocFailed()
+                throw MemoryAllocationError()
         else => root
     if not root_node.insert_nonfull(key: steal probe, value: steal value, alloc)
-        return AllocFailed()
+        throw MemoryAllocationError()
     next_count: U64 = me.count.peek() + 1
     next_count.poke_into(me.count)
-    return None()
+    return
 
 ### Removes the key and value at `index` from a leaf by shifting the later entries left. The key must already be
 ### taken out (or ended).

@@ -44,25 +44,14 @@ routine @BitList.capacity() -> U64
 ### Grows the buffer to hold at least `capacity` bits without further allocation. A smaller request leaves the buffer
 ### unchanged.
 ### :param capacity: The number of bits to make room for.
-### :throws: Crashes with `MemoryAllocationError` when the allocator fails. See {BitList.reserve_result} for a recoverable form.
+### :throws: Throws `MemoryAllocationError` when the allocator fails.
 @track_caller
 @expensive("reallocates to exactly the capacity asked for")
 @reshaping
-routine @BitList.reserve(capacity: U64) -> None
+failable routine @BitList.reserve(capacity: U64) -> None
     if me.make_capacity(capacity)
         return
-    crash_allocation()
-
-### `reserve`, returning an error instead of crashing when the allocator fails.
-### :param capacity: The number of bits to make room for.
-### :returns: A value once the buffer holds at least `capacity` bits.
-### :throws: Returns `AllocFailed` when the allocator fails.
-@expensive("reallocates to exactly the capacity asked for")
-@reshaping
-routine @BitList.reserve_result(capacity: U64) -> Result[None, AllocFailed]
-    if me.make_capacity(capacity)
-        return None()
-    return AllocFailed()
+    throw MemoryAllocationError()
 
 ### Grows the buffer to the bytes that hold at least `capacity` bits.
 ### :param capacity: The number of bits to make room for.
@@ -72,10 +61,9 @@ secret routine @BitList.make_capacity(capacity: U64) -> Bool
     wanted: U64 = bit_byte_count(capacity)
     if me.storage.count.peek() >= wanted
         return true
-    resized: Result[None, AllocFailed] = me.storage.resize_result(wanted)
-    when resized
+    when check me.storage.resize(wanted)
         is None => return true
-        is AllocFailed => return false
+        is MemoryAllocationError => return false
 
 ### Makes room for `wanted` bits: an empty buffer starts at 8 bytes (or the bytes `wanted` needs, when more), and a
 ### full one doubles until the request fits.
@@ -103,30 +91,20 @@ secret routine @BitList.make_room(wanted: U64) -> Bool
 
 ### Appends `value` after the last bit, growing the buffer when it is full.
 ### :param value: The bit to append.
-### :throws: Crashes with `MemoryAllocationError` when the allocator fails. See {BitList.add_last_result} for a recoverable form.
+### :throws: Throws `MemoryAllocationError` when the buffer must grow and the allocator fails.
 @track_caller
 @reshaping
-routine @BitList.add_last(value: Bool) -> None
-    when me.add_last_result(value)
-        is None => return
-        is AllocFailed => crash_allocation()
-
-### `add_last`, returning an error instead of crashing when the allocator fails.
-### :param value: The bit to append.
-### :returns: A value once the bit is appended.
-### :throws: Returns `AllocFailed` when the buffer must grow and the allocator fails.
-@reshaping
-routine @BitList.add_last_result(value: Bool) -> Result[None, AllocFailed]
+failable routine @BitList.add_last(value: Bool) -> None
     count: U64 = me.count.peek()
     wanted: U64 = count + 1
     if not me.make_room(wanted)
-        return AllocFailed()
+        throw MemoryAllocationError()
     data: @Byte = me.storage.data.peek()
     if count % 8 == 0
         data.stride(count // 8).poke(0x00)
     bit_write(data, index: count, value)
     me.count.poke(wanted)
-    return None()
+    return
 
 ### Removes the last bit and returns it. The buffer is kept.
 ### :returns: The removed bit.
@@ -320,7 +298,7 @@ routine @BitList.xor_with(other: @Me) -> None
 ### :returns: The count of bits.
 ### :throws: Crashes with `InvalidValueError` when the counts differ.
 @track_caller
-secret routine @BitList.same_count(other: @BitList) -> U64
+secret routine @BitList.same_count(other: @Me) -> U64
     count: U64 = me.count.peek()
     if count == other.count.peek()
         return count

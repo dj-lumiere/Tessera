@@ -1,7 +1,7 @@
 # Channels: a thread sends 1 to 1000 through room for 4 to a receiver that adds them up, then closes, and the receiver
-# gets ChannelClosed after the last value. Three threads share the receiving end of a SharedChannel and each value
+# gets ChannelClosedError after the last value. Three threads share the receiving end of a SharedChannel and each value
 # reaches one of them. Fibers of one thread pass values to each other, parking instead of holding up the thread.
-# send_if_room fails when the room is full, a receiver that closes makes the senders get ChannelClosed, and a
+# send_if_room fails when the room is full, a receiver that closes makes the senders get ChannelClosedError, and a
 # receiver waiting on an empty channel gets CancelRequested when its ticket is cancelled.
 
 import Standard/Fiber
@@ -9,44 +9,44 @@ import Standard/Os
 
 routine produce(ch: @Channel[U64]) -> None
     while i <= 1000 with i: U64 = 1
-        sent: Result[None, ChannelClosed | CancelRequested] = ch.send_result(i)
+        try ch.send(i)
         continue with i: i + 1
     ch.close_sending()
     return
 
 routine sum_all(ch: @Channel[U64]) -> U64
     while true with total: U64 = 0
-        when ch.receive_result()
+        when check ch.receive()
             is U64 as v => continue with total: total + v
-            is ChannelClosed => return total
+            is ChannelClosedError => return total
             is CancelRequested => return 0
 
 routine shared_produce(ch: @SharedChannel[U64]) -> None
     while i <= 3000 with i: U64 = 1
-        sent: Result[None, ChannelClosed | CancelRequested] = ch.send_result(i)
+        try ch.send(i)
         continue with i: i + 1
     ch.close_sending()
     return
 
 routine shared_sum(ch: @SharedChannel[U64]) -> U64
     while true with total: U64 = 0
-        when ch.receive_result()
+        when check ch.receive()
             is U64 as v => continue with total: total + v
-            is ChannelClosed => return total
+            is ChannelClosedError => return total
             is CancelRequested => return 0
 
 routine fiber_produce(ch: @Channel[U64]) -> U64
     while i <= 100 with i: U64 = 1
-        sent: Result[None, ChannelClosed | CancelRequested] = ch.send_result(i)
+        try ch.send(i)
         continue with i: i + 1
     ch.close_sending()
     return 100
 
 ### Waits for a value that never comes, and says in `got` how the wait ended: 1 closed, 2 cancelled.
 routine wait_forever(ch: @Channel[U64], got: @U64) -> None
-    code: U64 = when ch.receive_result()
+    code: U64 = when check ch.receive()
         is U64 as v => v
-        is ChannelClosed => 1
+        is ChannelClosedError => 1
         is CancelRequested => 2
     got.poke(code)
     return
@@ -98,7 +98,7 @@ routine start() -> None
     second: Bool = small.send_if_room(2)
     third: Bool = small.send_if_room(3)
     small.close_receiving()
-    after: Bool = small.send_result(4).is_success()
+    after: Bool = try small.send(4)
     out.write("send_if_room: {first} {second} {third}, after the receiver closed: {after}\n")
     drop small
 

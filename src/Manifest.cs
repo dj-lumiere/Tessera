@@ -40,6 +40,10 @@ namespace Tessera;
 ///                                     # with a crash naming them (default: on in debug, off in the release modes)
 /// access-order = true                 # two accesses taken in opposite orders stop the program before they wait
 ///                                     # on each other (default: off, it costs time on every access taken)
+///
+/// [crash]
+/// message-size = 256                  # the bytes a crash's message is written into before it is reported (the rest
+///                                     # is cut and marked with an ellipsis, default: 512)
 /// ```
 ///
 /// The build is the entry file and what it imports, found as RazorForge finds modules: the files under the
@@ -107,6 +111,10 @@ public sealed record Manifest(
     /// `[debug] failure-traces`: the failures each thread remembers the traces of, or null for 32.
     public int? FailureTraces { get; init; }
 
+    /// `[crash] message-size`: the bytes of the Crash service's message buffer (a longer message is cut and ends in an
+    /// ellipsis), or null for 512.
+    public int? CrashMessageSize { get; init; }
+
     /// Where the build writes its output: `build/` next to the manifest.
     public string OutputDirectory => System.IO.Path.Combine(Directory, "build");
 
@@ -130,6 +138,7 @@ public sealed record Manifest(
         ["target"] = ["executable", "triple", "cpu", "features", "mode", "module-paths", "sources", "c-libraries", "library-paths", "link-script"],
         ["debug"] = ["emit-llvm", "trace", "heap-check", "race-check", "uninit-fill", "trace-frames", "failure-traces",
             "deadlock-check", "access-order"],
+        ["crash"] = ["message-size"],
     };
 
     /// <paramref name="defaultTarget"/> is the triple used when [target] names none (the host if null).
@@ -229,6 +238,7 @@ public sealed record Manifest(
             AccessOrder = Bool(debug, "access-order", path) ?? false,
             TraceFrames = TraceSize(debug, "trace-frames", path, powerOfTwo: true),
             FailureTraces = TraceSize(debug, "failure-traces", path, powerOfTwo: false),
+            CrashMessageSize = MessageSize(Section(root, "crash", path), path),
         };
     }
 
@@ -355,6 +365,15 @@ public sealed record Manifest(
             throw new ManifestError(path, powerOfTwo
                 ? $"'{key}' is a power of two from 1 to 4096, the frames a trace keeps"
                 : $"'{key}' is a count from 1 to 4096");
+        return (int)n;
+    }
+
+    /// `[crash] message-size`, from 16 to 65536 bytes.
+    private static int? MessageSize(TomlTable? t, string path)
+    {
+        if (t is null || !t.TryGetValue("message-size", out var v)) return null;
+        if (v is not long n || n < 16 || n > 65536)
+            throw new ManifestError(path, "'message-size' is a byte count from 16 to 65536, the room a crash's message has");
         return (int)n;
     }
 

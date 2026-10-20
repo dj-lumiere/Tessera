@@ -278,7 +278,7 @@ routine @FiberManager.destruct() -> None
 secret routine @FiberManager.ensure() -> None
     if me.alloc.peek().is_hollow()
         # A thread worker releases its FIBERS before it takes the next ticket's work.
-        me.poke(FiberManager.construct(stack_size: DEFAULT_FIBER_STACK, stacks: PAGES, alloc: HEAP))
+        me.poke(Me.construct(stack_size: DEFAULT_FIBER_STACK, stacks: PAGES, alloc: HEAP))
         if me !== FIBERS
             return
         THREAD_CLEANUP.poke(release_fibers.to[Callable]())
@@ -709,10 +709,10 @@ needs T: typename
 ### Waits until the work has finished, the way {Fiber[T].wait_finished} waits, or until the work that waits is asked to
 ### stop with `cancel()`. On the thread that drives the manager, outside a fiber, the manager runs until the work is
 ### done.
-### :returns: `Unit` when the work has finished, `CancelRequested` when the waiting work was cancelled first.
+### :throws: Throws `CancelRequested` when the waiting work was cancelled first.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].wait_finished_result() -> Result[None, CancelRequested]
+failable routine Fiber[T].wait_finished_cancellable() -> None
 needs T: typename
     local slot: @WorkSlot = me.work_slot()
     local fiber: @FiberState = me.fiber
@@ -720,50 +720,35 @@ needs T: typename
 
     if manager.drives_here()
         manager.drive(awaited: slot, deadline: Duration.MAX, idle_only: false)
-        return None()
+        return
     if slot.wait_until(deadline: Duration.MAX, cancellable: true)
-        return None()
-    return CancelRequested()
-
-### The finished work's result.
-### :returns: The result.
-### :throws: Crashes with `TicketBusyError` while the work runs, with `NoWorkError` when there was none, and with
-###     `CancelledWorkError` when it was cancelled (`retrieve_result` tells that apart).
-@target(os: not "none")
-@track_caller
-routine Fiber[T].retrieve() -> T
-needs T: typename
-    slot: @WorkSlot = me.work_slot()
-    place: @T = slot.result_place[T]()
-    if slot.is_cancelled()
-        crash(name: "CancelledWorkError",
-            message: "This ticket's work was cancelled, so its result may be cut short: retrieve_result() tells a cancelled one apart.")
-    return place.peek()
+        return
+    throw CancelRequested()
 
 ### Gives nothing: work with no result. It checks that the work has finished and wasn't cancelled.
-### :throws: Crashes with `TicketBusyError` while the work runs, with `NoWorkError` when there was none, and with
-###     `CancelledWorkError` when it was cancelled.
+### :throws: Crashes with `TicketBusyError` while the work runs, and with `NoWorkError` when there was none. Throws
+###     `CancelRequested` when `cancel()` asked it to stop before it finished.
 @target(os: not "none")
 @track_caller
-routine Fiber[None].retrieve() -> None
+failable routine Fiber[None].retrieve() -> None
     slot: @WorkSlot = me.work_slot()
     slot.result_place[Byte]()
     if slot.is_cancelled()
-        crash(name: "CancelledWorkError",
-            message: "This ticket's work was cancelled, so it may have stopped short: retrieve_result() tells a cancelled one apart.")
+        throw CancelRequested()
     return
 
-### The finished work's result, or `CancelRequested` when `cancel()` asked it to stop before it finished.
-### :returns: The result or `CancelRequested`.
-### :throws: Crashes with `TicketBusyError` while the work runs, and with `NoWorkError` when there was none.
+### The finished work's result.
+### :returns: The result.
+### :throws: Crashes with `TicketBusyError` while the work runs, and with `NoWorkError` when there was none. Throws
+###     `CancelRequested` when `cancel()` asked it to stop before it finished.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].retrieve_result() -> Result[T, CancelRequested]
+failable routine Fiber[T].retrieve() -> T
 needs T: typename
     slot: @WorkSlot = me.work_slot()
     place: @T = slot.result_place[T]()
     if slot.is_cancelled()
-        return CancelRequested()
+        throw CancelRequested()
     return place.peek()
 
 ### Asks the work to stop: `cancel_requested()` turns true inside it, and the work stops where it looks.
@@ -864,7 +849,7 @@ secret routine @FiberManager.resume(fiber: @FiberState) -> None
     RUNNING_FIBER.poke(outer_fiber)
     RUNNING_WORK.poke(outer_work)
     me.current.poke(.hollow())
-    then: Callable[(@FiberManager, @FiberState), None] = fiber.then.peek()
+    then: Callable[(@Me, @FiberState), None] = fiber.then.peek()
     fiber.then.poke(requeue.to[Callable]())
     then.call(me, fiber)
     return

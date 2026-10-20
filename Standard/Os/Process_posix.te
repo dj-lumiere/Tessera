@@ -168,10 +168,10 @@ secret routine read_write_cloexec() -> CInt
 @target(os: ("linux", "macos"))
 secret routine spawn_error(e: CInt) -> ProcessError
     when
-        e == 2 or e == 20 => return ProcessError.NOT_FOUND
-        e == 1 or e == 13 => return ProcessError.PERMISSION_DENIED
-        e == 12 => return ProcessError.OUT_OF_MEMORY
-        else => return ProcessError.OTHER
+        e == 2 or e == 20 => return NotFoundError()
+        e == 1 or e == 13 => return NotEnoughPermissionError()
+        e == 12 => return MemoryAllocationError()
+        else => return IoError(code: 0)
 
 # -- what the child is given -----------------------------------------------------------
 
@@ -281,7 +281,7 @@ secret routine @Prepared.make(program: @[Byte], args: @[@[Byte]], options: Proce
     local arg_count: U64 = args.count()
     local first: @U64 <- .hollow()
 
-    me.poke(Prepared.empty())
+    me.poke(Me.empty())
     argv: @@Byte = allocate[@Byte](count: arg_count + 2, alloc)
     if argv.is_hollow()
         return false
@@ -518,7 +518,7 @@ secret routine @Plumbing.close_all() -> None
 ### :returns: True when all were made. What was made before a failure is kept for {Plumbing.close_all}.
 @target(os: ("linux", "macos"))
 secret routine @Plumbing.make(options: ProcessOptions) -> Bool
-    me.poke(Plumbing.empty())
+    me.poke(Me.empty())
     local fds: @Array[CInt, 2] <- [-1, -1]
     if not cloexec_pipe(fds.to[@CInt]())
         return false
@@ -569,21 +569,27 @@ secret routine output_fd(mode: OutputMode, pipe: CInt, null_fd: CInt) -> CInt
 ### allocated).
 @target(os: ("linux", "macos"))
 @expensive("starts a process")
-common routine ProcessManager.create_process_result(program: @[Byte], args: @[@[Byte]],
-    options: ProcessOptions, alloc: @MemoryManager) -> Result[ProcessOutput, ProcessError]
+failable common routine ProcessManager.create_process(program: @[Byte], args: @[@[Byte]],
+    options: ProcessOptions, alloc: @MemoryManager) -> ProcessOutput
     local p: @Prepared <- Prepared.empty()
     local pipes: @Plumbing <- Plumbing.empty()
     local out: @CaptureBuffer <- CaptureBuffer.empty()
     local err: @CaptureBuffer <- CaptureBuffer.empty()
-    local result: @Result[ProcessOutput, ProcessError] <- run_child(program, args, options,
-        run: ChildRun(p, pipes, out, err, alloc))
 
-    # Every descriptor still open, the prepared strings, and the captured bytes nothing took.
-    pipes.close_all()
-    p.release(alloc)
-    drop out
-    drop err
-    return result
+    when check run_child(program, args, options, run: ChildRun(p, pipes, out, err, alloc))
+        is ProcessOutput as made =>
+            # Every descriptor still open, the prepared strings, and the captured bytes nothing took.
+            pipes.close_all()
+            p.release(alloc)
+            drop out
+            drop err
+            return made
+        is ProcessError as error =>
+            pipes.close_all()
+            p.release(alloc)
+            drop out
+            drop err
+            throw error
 
 ### Makes a `ChildRun` from its fields.
 ### :param p: Its `p`.
@@ -610,8 +616,8 @@ secret routine @ChildRun.destruct() -> None
 ### :param run: The prepared strings, pipes, captures, and allocator.
 ### :returns: The {ProcessOutput}, or the {ProcessError}.
 @target(os: ("linux", "macos"))
-secret routine run_child(program: @[Byte], args: @[@[Byte]], options: ProcessOptions,
-    run: ChildRun) -> Result[ProcessOutput, ProcessError]
+secret failable routine run_child(program: @[Byte], args: @[@[Byte]], options: ProcessOptions,
+    run: ChildRun) -> ProcessOutput
     local report: @CInt <- 0
 
     p: @Prepared = run.p
@@ -621,14 +627,14 @@ secret routine run_child(program: @[Byte], args: @[@[Byte]], options: ProcessOpt
     alloc: @MemoryManager = run.alloc
 
     if has_nul(program, args, options)
-        return ProcessError.INVALID_ARGUMENT
+        throw InvalidArgumentError()
     if not p.make(program, args, options, alloc)
-        return ProcessError.OUT_OF_MEMORY
+        throw MemoryAllocationError()
     if not pipes.make(options)
-        return spawn_error(errno())
+        throw spawn_error(errno())
     pid: CInt = fork_child(p, pipes, options)
     if pid < 0
-        return spawn_error(errno())
+        throw spawn_error(errno())
     # 4 bytes on the report pipe are the errno of a failed exec. Its end without them is a started program.
     got: S64 = read_report(fd: pipes.exec_r.peek(), report)
     c_close(pipes.exec_r.peek())
@@ -640,8 +646,9 @@ secret routine run_child(program: @[Byte], args: @[@[Byte]], options: ProcessOpt
     pipes.err_r.poke(-1)
     status: Maybe[ExitStatus] = reap(pid)
     if got == 4
-        return spawn_error(report.peek())
-    return take_output(status, out, err)
+        throw spawn_error(report.peek())
+    when check take_output(status, out, err)
+        is ProcessOutput as returned => return returned
 
 ### Forks the child with what `p` and `pipes` prepared. In the parent, closes the child's ends of the pipes and the
 ### null device and marks them -1 in `pipes`, so each pipe ends when the child is done with it.
@@ -682,16 +689,16 @@ secret routine fork_child(p: @Prepared, pipes: @Plumbing, options: ProcessOption
 ### :param out: The captured standard output.
 ### :param err: The captured standard error.
 ### :returns: The {ProcessOutput}.
-### :throws: Returns `OutOfMemory` when a capture couldn't grow, `Other` when the child couldn't be waited for.
+### :throws: Throws `MemoryAllocationError` when a capture couldn't grow, `IoError` when the child couldn't be waited for.
 @target(os: ("linux", "macos"))
-secret routine take_output(status: Maybe[ExitStatus], out: @CaptureBuffer,
-    err: @CaptureBuffer) -> Result[ProcessOutput, ProcessError]
+secret failable routine take_output(status: Maybe[ExitStatus], out: @CaptureBuffer,
+    err: @CaptureBuffer) -> ProcessOutput
     when status
         is ExitStatus as s =>
             if out.failed.peek() or err.failed.peek()
-                return ProcessError.OUT_OF_MEMORY
+                throw MemoryAllocationError()
             return ProcessOutput(status: s, stdout: out.owned(), stderr: err.owned())
-        is None => return ProcessError.OTHER
+        is None => throw IoError(code: 0)
 
 ### Reads the exec report from the report pipe into `report`, retrying when a signal interrupts the read.
 ### :param fd: The report pipe's read end.
@@ -795,9 +802,9 @@ secret routine env_var(name: @[Byte], alloc: @MemoryManager) -> Maybe[Memory[Byt
     if value.is_hollow()
         return None()
     n: U64 = value.to[CStrView]().count()
-    when Memory[Byte].construct_result(count: n.max(1), manager: alloc)
+    when check Memory[Byte].construct(count: n.max(1), manager: alloc)
         is Memory[Byte] as owned =>
             owned.data.peek().copy(src: value, count: n)
             owned.keep_first(n)
             return owned
-        is AllocFailed => return None()
+        is MemoryAllocationError => return None()

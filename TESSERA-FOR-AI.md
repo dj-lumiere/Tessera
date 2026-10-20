@@ -25,7 +25,7 @@ top to bottom with declarations seen everywhere, leading `local` lines are its h
 `return` (memory must be given back by then). A routine can't read a top-level binding (pass it, or use a `global`),
 an imported file has no top-level lines, and a file with them declares no `start`. A file may start with `module A/B` and `import` lines. Name lookup follows
 modules: a file sees its own module, `Standard/System` and every module under it (always seen: the built-in types,
-`Maybe`, `Result`, `None`, `@[T]`, `Memory`, `Box`, the protocols, formatting, the memory managers, `HEAP`), and what
+`Maybe`, `Check`, `None`, `@[T]`, `Memory`, `Box`, the protocols, formatting, the memory managers, `HEAP`), and what
 it imports, so a `List` needs `import Standard/Collections`, and `Console` / `ProcessManager` need `import Standard/Os`
 (the hosted layer, the only one that calls libc; a target with OS `none` has none of it). Importing a module brings
 that module, not the modules under it. A standard library module is its folder (`Standard/System/Memory/` is
@@ -41,7 +41,7 @@ Standard/Collections/Dict` names a type.
 The standard library's modules:
 
 - `Standard/System`: the built-in types (integers, floats, `Bool`, `Ptr`, `Array`, `Vector`, `@[T]`, `Memory`, `Box`,
-  `Maybe`, `Result`, tuples), the protocols, crash and the crash trace, and hashing.
+  `Maybe`, `Check`, tuples), the protocols, the `Crash` service and the crash trace, and hashing.
 - `Standard/System/Numerics`: wide division, `BigNat`, the float formats, and one folder per float type with its math
   (`B16`, `BF16`, `B32`, `B64`, `B128`), plus `SoftFloat` (the compiler runtime without an FPU).
 - `Standard/System/Text`: formatting (`Writer`, `Representable`, `Diagnosable`), reading values from text
@@ -75,7 +75,13 @@ keeping blocks where it can't), `spellings` (`@` annotations, `needs` / `obeys` 
 `files` (`FileManager.x` into `OsFileManager.x`, `subdir` into `go_to`, `Mapping` / `map_result(offset:)` into
 `FileStorage[Byte]` / `storage_result[Byte](start:)`, the directories and `env_var` into `OsEnvironment`'s, a
 `move_result(from:, to:)` into `rename_result` or `move_result(at:, into:)` where the file shows both paths, and the
-rest of the moves and every `set_current_directory_result` listed),
+rest of the moves and every `set_current_directory_result` listed, the `_result` names it writes then go through
+`failable`),
+`crash` (an exported `tessera_crash_handler` into a reporting routine that takes `message: @CrashMessage`, put in the
+Crash service's slot first in `start` with `Crash.report_with`),
+`failable` (a call of a standard library `_result` routine into `when check x(...)`, a `Check[T]` binding of
+`check x(...)`, or `try x(...)` where its result was left unread, `AllocFailed` / `ChannelClosed` / `RegexError` /
+`FsError.MEMBER` into their crashables, and a routine of the program that returns a `Result` listed for a hand fix),
 and the earlier `iterators`, `variants`, `membership`, `lifecycle`, `memory`, `threads`, `entry`, and `--named-args`.
 An old spelling is a build error that names the migration, and builds only with `TESSERA_ACCEPT_OLD_SYNTAX=1` set.
 
@@ -186,10 +192,10 @@ routine start() -> None
   calls the type's `destruct`: a program never writes `x.destruct()` itself (a build error: "a value is given back
   with drop: drop x"), only a type's own `destruct` body gives its members back. `drop` leaves the slot hollow:
   `.hollow()` holds nothing, `drop` on it does nothing, a read crashes with `InvalidValueError`. `Memory[T]` also has
-  `construct(count, manager)` (uninitialized), `construct_result` (a `Result[Memory[T], AllocFailed]`, observed with
-  `when Memory[T].construct_result(...)`), `count()`, `getslot(i)`, `swap(first, second)`, `getview()`, `keep_first(n)` (only the first n in
+  `construct(count, manager)` (uninitialized, failable: it throws `MemoryAllocationError`, which `check
+  Memory[T].construct(...)` receives), `count()`, `getslot(i)`, `swap(first, second)`, `getview()`, `keep_first(n)` (only the first n in
   use, no copy), `duplicate()` (memory of its own), `replace(value: new)`, `take()` (moves the memory out, leaving
-  this one empty with the same manager), `give_back()`, `resize(n)` / `resize_result(n)`, and `destruct_all()`
+  this one empty with the same manager), `give_back()`, `resize(n)` (failable like `construct`), and `destruct_all()`
   (destructs every value, then gives the memory back). `Array[T, COUNT]` is the run of values
   whose count is in the type, a value. `getview()` gives a `@[T]` of anything holding contiguous elements (a `Memory`,
   a `List`, an `Array` through a pointer, a `SliceWriter`, a `CStrView`). `@[T].construct(data, count)` wraps memory
@@ -255,9 +261,9 @@ routine start() -> None
   write there. A view handed to a thread or fiber ticket isn't checked (the work is waited for).
 - **`@reshaping` (rule 4), written by hand.** `@reshaping` alone means the routine may move the memory of `me`.
   `@reshaping(items, keys)` names parameters. The base: `MemoryManager.realloc` (`@reshaping(at)`), `reallocate[T]`
-  (`@reshaping(ptr)`), `Memory[T].resize` / `resize_result`, and every growing collection mutator: `List.add_last` /
+  (`@reshaping(ptr)`), `Memory[T].resize`, and every growing collection mutator: `List.add_last` /
   `reserve` / `ensure_capacity`, `Dict.setitem`, `Set.add`, `CircularList.add_last` / `add_first`,
-  `PriorityQueue.add` / `reserve`, their `_result` forms, and the `FiberManager` routines (`run`, `waitfor`, `wake`,
+  `PriorityQueue.add` / `reserve`, and the `FiberManager` routines (`run`, `waitfor`, `wake`,
   ...). Freeing (`free`, `destruct`) isn't moving.
   - A routine that calls a `@reshaping` routine on memory reached from its own parameter must say so:
     `'grow' may move the memory of 'items' here ('List[T].add_last' is @reshaping): mark it @reshaping(items)`.
@@ -718,8 +724,8 @@ routine start() -> None
   `compare`, `hash`, ...). A literal is a `@[Byte]` of the program image, `@[Byte].construct(data, count)`
   wraps bytes from C, and text made from other text (`slice`, `getslice`, the iterators, `buf.getview()` of a
   `List[Byte]`) views the same memory. Text a routine takes memory for (`@[Byte].concat`, `Console.ask_line`,
-  `OsFileManager.read_all_result`, `OsEnvironment.variable`, ...) comes back as a `Memory[Byte]`: keep it in a slot and give it
-  back once (`local line: @Memory[Byte] <- Console.ask_line()`, then `drop line`), and observe a `Result` / `Maybe` of one
+  `OsFileManager.read_all`, `OsEnvironment.variable`, ...) comes back as a `Memory[Byte]`: keep it in a slot and give it
+  back once (`local line: @Memory[Byte] <- Console.ask_line()`, then `drop line`), and observe a `Maybe` or `Check` of one
   with `when` (`when Console.ask_line_checked(alloc)` then `is Memory[Byte] as line => ...`). A Memory lends itself to a text routine at
   a receiver or an argument (`line.find("=")`, `out.write("{line.getview()}")` in a template). Escapes: `\xXX` is one byte (strings, `b'..'`), `\uXXXXXX` one
   character by exactly six hex digits (strings, `'..'`), so `"\u01F600"` equals `"\xF0\x9F\x98\x80"`.
@@ -738,43 +744,88 @@ routine start() -> None
   The names are RazorForge's crashables, so a failure reads the same in both languages. The stdlib's own kinds have
   one short routine each with RazorForge's default message: `crash_overflow()` (IntegerOverflowError),
   `crash_division_by_zero()`, `crash_out_of_bounds()`, `crash_allocation()` (MemoryAllocationError),
-  `crash_invalid_value()`, `crash_numeric_domain()` (`ilog2(0)`, `isqrt` of a negative), `crash_absent_value()`
-  (unwrap of an empty Maybe, pop on empty), `crash_key_not_found()`, `crash_unwrap_failure()` / `crash_unwrap_success()`
-  (UnwrapFailureError / UnwrapSuccessError), `crash_task_spawn()`, and `crash_logic_breached()` for a state the code
-  rules out. A failure with its own message calls `crash(name, message)`. There's no `trap()`: every stop is a crash.
-  A crash calls the crash handler; the default (Standard/Os) prints `tessera: Name: message` and the caller's place
-  and exits with status 82, and a program replaces it (a program on a target without an OS must) with
-  `@export("tessera_crash_handler")` and `@noreturn` above `routine my_handler(name: @[Byte], message: @[Byte],
-  place: @SourceLocation) -> None`. A stdlib routine that crashes on its caller's mistake is `@track_caller`, so the place is
-  the caller's line; mark a routine of your own the same way when its crashes are its caller's fault.
+  `crash_invalid_value()`, `crash_numeric_domain()` (`ilog2(0)`, `isqrt` of a negative), `crash_negative_exponent()`,
+  `crash_float_overflow()`, `crash_absent_value()`
+  (unwrap of an empty Maybe, pop on empty), `crash_key_not_found()`, `crash_task_spawn()`, and
+  `crash_logic_breached()` for a state the code rules out. A failure with its own message calls `crash(name,
+  message)`. There's no `trap()`: every stop is a crash. A stdlib routine that crashes on its caller's mistake is
+  `@track_caller`, so the place is the caller's line. Mark a routine of your own the same way when its crashes are its
+  caller's fault.
+- **Expected failures are thrown.** `crashable NotFoundError` declares a failure: a record of a few plain values
+  (numbers, choices, views such as `@[Byte]`: no Memory, Box or entity, a build error) that writes `routine
+  NotFoundError.message_into[TWriter](out: @TWriter) -> None` (`needs TWriter: typename, Writer[TWriter]`). The builder
+  writes its `name()` (the type's name) and makes it obey `Crashable`. A routine that can fail is declared `failable
+  routine` (`secret failable common routine`, and `failable routine` in a protocol), and `throw NotFoundError(code: 2)`
+  ends it with the failure instead of its value. `throw` in a routine not declared failable is a build error.
+- **A call written bare that fails stops the program on its own line,** the way an overflowing `+` does: the `Crash`
+  service reports the failure's name and message, the call's place, the crash trace, and where the failure was made,
+  and stops (status 82 with an OS). `throw` itself only gives the failure back to the caller. This holds inside a
+  failable routine too: a bare call never passes a failure on. The language server shows `may stop` after such a call.
+- **`try` and `check` take the failure as a value.** `try f(x)` gives `Maybe[T]` (`None` on failure), `check f(x)`
+  gives `Check[T]`, the value or the failure. The word takes the rest of the expression: `check a(x) + b(y)` runs the
+  calls left to right and the first failure ends it. A `when` on a `Check` observes the value (`is S64 as v`, required)
+  and the failures: `is NotFoundError as e` one crashable, `is FsError as e` a variant of crashables (the ones the
+  `Check` can hold), `is Crashables as e` every crashable the other arms don't name, `else as e` the rest. Failures no
+  arm observes go on to the caller in a failable routine (as if `is Crashables as e => throw e` were written) and stop
+  the program elsewhere. So a failure is passed on with `v: T = when check f(x)` and only the value arm, and a tail call
+  is `return when check f(x)` + `is T as v => v`. `throw e` of a caught crashable, a `Crashables`, or a variant of
+  crashables gives it to the caller as it is. A binding may be written `r: Check[S64] = check f(x)`: the check gives
+  the list.
+- **The builder collects what each call can throw.** A failable routine's list is its own `throw`s and the failures it
+  passes on (from its callees' lists, a fixed point over recursion), and a `Check[T]` is the variant of `T` and that
+  list: as big as its largest branch, tagged by each branch's type ID, no heap, nothing looked up while the program
+  runs (so it works without an OS). `e.name()` and `e.message_into(out)` on a `Crashables` (or a variant of
+  crashables) call the crashable's own by its tag. Generic routines get their list per instance, and a protocol's
+  failable routine is called through the instance's own routine (an implementation is failable exactly when the
+  requirement is).
+- **Routine values carry their list.** `f.to[Callable]()` of a failable routine is a failable Callable whose list is a
+  hidden part of its type. A call through it fails like a call of `f`. A binding with a written `Callable[...]` type
+  takes the value's list, and a routine whose parameter is a plain `Callable` given a failable one is built again for
+  that Callable (a symbol of its own), so `check fn.call(x)` there receives the failure.
+- **`@throws([NotFoundError, InvalidValueError])`** above a failable routine fixes its list (an exported routine, whose
+  callers shouldn't see it change when its body does): what the routine can throw must be in it (a build error that
+  names the missing ones), and the routine's `Check` holds exactly those.
+- **C never sees a failure.** An `@export` or `@external("c")` routine can't be failable, `addr()` of a failable routine
+  or Callable is a build error, and a failable Callable can't be handed to a C routine. A Tessera routine C calls
+  receives its failures inside (`check`, `try`), or a bare call stops the whole program there (it never returns to
+  C).
+- **The `Crash` service** (Standard/System, one per program) reports a crash and a failure nothing received, then
+  stops. `Crash.report_with(routine.to[Callable]())` puts a reporting routine in its slot and returns the one before
+  (`.hollow()` for the default), so it can be put back: `routine report(name: @[Byte], message: @CrashMessage, place:
+  @SourceLocation) -> None`, mark it `@untraced` so its own frame isn't on the trace it reads with `trace_depth()` /
+  `trace_frame(back)`. `message.text()` writes the message into Crash's fixed buffer (`CRASH_MESSAGE_SIZE` bytes,
+  `[crash] message-size` in config.toml, default 512, a longer message cut and ended with `…`) and gives a view of it,
+  `message.write_into(sink)` writes it into a `CrashSink` of your own (a Writer over a routine, for a UART), and
+  `message.failure` is the failure's number for `write_failure_trace`. A reporting routine and a message routine never
+  take memory from a general memory manager (HEAP and the like: a build error), since a crash may come from running out
+  of it. The first crash reports, a crash while it reports skips the report and stops, and a crash on another thread
+  meanwhile waits for the stop. When the routine returns, stopping follows. The default (an empty slot, or before the
+  globals are in place without an OS): with an OS the report on standard error (`tessera: Name: message`, `  at
+  file:line:col`, `Stack trace:`, and for a failure `The failure was made at:` and its frames), without one nothing.
+  `Crash.stop()`: with an OS exit status 82, without one on Cortex-M a breakpoint when a debugger is attached
+  (DHCSR's C_DEBUGEN), then a system reset (AIRCR), then waiting for interrupts, and elsewhere waiting.
 - The crash trace: the builder keeps a shadow stack of the program's routines (not the stdlib's, not `@inline` or
-  `@untraced` ones, not the handler), and the default handler prints it after the place, innermost first:
-  `Stack trace:` then `  0: at fill (grid.te:12:9)`, and `  ... (40 frames total)` past the 32 it keeps. A handler
-  of your own reads it with `trace_depth()` (`U64`, 0 in an untraced build) and `trace_frame(back)` (a
-  `TraceFrame`: `name` / `file` as `CStrView`, `line` / `column`; 0 is the innermost, `back` below `trace_depth()` and
-  `TRACE_CAPACITY`). It's on in debug and release, off in release-time and release-space; `--no-trace` / `--trace`
-  or `[debug] trace = false|true` in config.toml override that. Thread-local with an OS, a plain global without.
-  A handler's own helper routines should be `@untraced` (they'd push onto the trace it's reading).
+  `@untraced` ones), and the default report prints it after the place, innermost first: `Stack trace:` then `  0: at
+  fill (grid.te:12:9)`, and `  ... (40 frames total)` past the 32 it keeps. A reporting routine of your own reads it
+  with `trace_depth()` (`U64`, 0 in an untraced build) and `trace_frame(back)` (a `TraceFrame`: `name` / `file` as
+  `CStrView`, `line` / `column`, 0 is the innermost). It's on in debug and release, off in release-time and
+  release-space, and `--no-trace` / `--trace` or `[debug] trace = false|true` in config.toml override that.
+  Thread-local with an OS, a plain global without.
 - `[debug] trace-frames = N` (a power of two, 1 to 4096, default 32) sets the frames the crash trace and each
   failure's trace keep (`TRACE_CAPACITY`, `FAILURE_FRAMES`), `[debug] failure-traces = N` (1 to 4096, default 32) the
-  failures each thread remembers (`FAILURE_TRACES`). Anything else is a manifest error.
-- Expected failures return `Result[T, TError]`. There's no `?`: `when r` with `is T as v` / `is TError as e` arms
-  (`is S64 as v`, `is ParseError as e => return e`).
-- A failure keeps where it was made (traced builds only). Making a Result hold its error (a value of `TError`, or of
-  a branch of an inline `TError` union) calls `failure_note`, which copies the thread's crash trace into a per-thread
-  ring of recent failures (no heap) under a number (never 0, unique across threads) and stores the number in the high
-  32 bits of the Result's tag: same size. An error made inside a `when` arm that observed a failure (`is E as e` or
-  `is E`) records that failure as the one it wraps. Untraced builds note nothing (number 0).
-- `unwrap` of a failure crashes with `UnwrapFailureError`: `Attempted to unwrap the value of a Failure, which holds
-  Problem.BAD_INPUT.` (the error as `diagnose` writes it if its type is Diagnosable, else `a ParseFailed`), then
-  `The failure was made at:` with its frames (`  0: at load (f.te:44:34)`, innermost first), then `It wraps the
-  failure made at:` plus frames for each wrapped failure, innermost wrap first. A failure made on another thread, or
-  pushed out of the ring, prints `  (not remembered here: made on another thread, or later failures took its place)`.
-  The default handler then adds the place and `Stack trace:` of the unwrap as for any crash.
-- Builtins for that: `failure_of(result) -> U32` (the failure number in a Result's tag, 0 for none or a value),
-  `write_failure_trace(seq: n, out: w)` (Standard/System, writes the `The failure was made at:` part to any Writer,
-  nothing for 0), `failure_trace(seq) -> @FailureTrace` (hollow when not remembered), and
-  `diagnose_or_name(value: v, out: w)` (writes any value: `diagnose_into` when it is Diagnosable, else `a <Type>`).
+  failures each thread remembers (`FAILURE_TRACES`).
+- A failure keeps where it was made (traced builds only): a `throw` of a crashable calls `failure_note`, which copies
+  the thread's crash trace into a per-thread ring of recent failures (no heap) under a number (never 0, unique across
+  threads) and stores the number in the high 32 bits of the carrier's tag. A failure thrown in a `when` arm that
+  observed one records that one as the failure it wraps. `write_failure_trace(seq: n, out: w)` writes `The failure was
+  made at:` and the frames (`  0: at load (f.te:44:34)`, innermost first), then `It wraps the failure made at:` and its
+  frames for each wrapped failure. A failure made on another thread, or pushed out of the ring, prints `  (not
+  remembered here: made on another thread, or later failures took its place)`. Untraced builds note nothing (number
+  0). `failure_trace(seq)` gives the `@FailureTrace` (hollow when not remembered), and
+  `diagnose_or_name(value: v, out: w)` writes any value.
+- **Standard library guideline:** a crashable holds a few values only (a code, a count, a view of text the caller
+  keeps). A `Check` is as big as its largest branch, so one large crashable makes every `Check` that can hold it large.
+  Write the message from those values when it is asked for (`message_into`), never ahead of time.
 - **Events: `CpuEventManager`** (Standard/System/Cpu: `CpuEvents_hosted.te` with an OS, `CpuEvents_freestanding.te`
   without one) holds
   one handler per kind of event, a `Callable[(CpuEvent,), None]` (`CpuEvent` has `kind`, `code`, `place`, `address`),
@@ -869,8 +920,8 @@ routine start() -> None
   own: `Counter.at(n).get()`, `OsFileManager.is_file(at: File.at(p))`. The builder puts it in an unnamed slot that ends when
   the statement does (a condition's and a `when` subject's as soon as they are read, when what they give borrows
   nothing from it; a returned value's before the return).
-- A variant may have an entity branch: `Result[File, FsError]`, `Maybe[Counter]`. Such a variant value holds an entity,
-  so it follows the same rules: it lives in a slot (`local r: @Result[Counter, E] <- open()`, a value binding is a build
+- A variant may have an entity branch: `Maybe[Counter]`, `variant Opened / Counter / Closed`. Such a variant value holds an entity,
+  so it follows the same rules: it lives in a slot (`local r: @Maybe[Counter] <- open()`, a value binding is a build
   error), a parameter of that type is a slot, and it is handed over with `steal` or `return r`. A `when` observes it as a call's
   result (`when open()`) or out of its slot (`when steal r`), and `is Counter as c` hands the entity over to the arm's own
   slot `c`, which ends there (drop, return, or hand on). The arm that observes an entity branch must name it, and `else`
@@ -895,12 +946,12 @@ routine start() -> None
 - A variant lists TYPES, one per line (its branches), not named cases: `variant Expr / S64 / BinaryExpr / Empty`,
   each a type (`record BinaryExpr / left: S64 / right: S64`, `record Empty`). A value of the variant is a value of one
   of its branch types. Several values go in a record of their own. `Maybe[T]` has branches `T` and `None`,
-  `Result[T, TError]` has `T` and `TError`.
-- Two branches of the same type are a build error (`Result[S64, S64]`, `Maybe[None]`), and so is a branch that is a
+  `Check[T]` has `T` and the crashables its check can give.
+- Two branches of the same type are a build error (a `variant` listing `S64` twice, `Maybe[None]`), and so is a branch that is a
   variant holding another branch's type (`Maybe[Maybe[S64]]`): wrap one in a record of its own. A branch that is `None` is the
   value `None()`. A variant holds itself only through a pointer (`@Tree`).
 - Build: a value of a branch type goes where the variant is expected as it is, one level deep: `e: Expr = 5`,
-  `e: Expr = Empty()`, `m: Maybe[S64] = 5`, `return value`, `return None()`, `return ParseError.EMPTY`, a carried
+  `e: Expr = Empty()`, `m: Maybe[S64] = 5`, `return value`, `return None()`, a carried
   value, a routine argument. An untyped literal goes in through the one branch that takes it (an integer literal
   never picks a choice branch). Two levels of NAMED variants don't widen by themselves (`Exited` -> `ExitStatus` ->
   `Maybe[ExitStatus]`): bind the middle type first (`status: ExitStatus = Exited(code)`, then `return status`). A
@@ -917,10 +968,10 @@ routine start() -> None
   (messages write `A | B`). `A | A` is just `A`, and an inline branch gives its branches (flattened). `|` binds
   loosest among type forms: `@A | B` is a pointer to an A, or a B. A pointer to one goes through a name: `@(A | B)` is
   an error, write `define Choice = A | B`, then `@Choice`. Parentheses around a lone union are an error too.
-  `define ConfigError = IoError | ParseError` names one.
-- An inline variant is NOT a layer: as a branch of another variant (`Result[S64, IoError | ParseError]`) its branches
-  are that variant's own. So `return ParseError.INVALID` goes into that Result directly, `is IoError as e` observes
-  it on the Result directly, and `is IoError | ParseError as e` observes several and names the value as the union. A
+  `define Shape = Circle | Square` names one.
+- An inline variant is NOT a layer: as a branch of another variant (`Maybe[Circle | Square]`) its branches
+  are that variant's own. So `return Square(side: 2.0)` goes into that Maybe directly, `is Circle as c` observes
+  it on the Maybe directly, and `is Circle | Square as shape` observes several and names the value as the union. A
   value of `A | B` goes into `A | B | C` (or any variant whose branches include A and B) by copying tag and storage.
   Overlap rules apply to the flattened branches (`S64 | Maybe[S64]` is an error, `S64` on both levels), reported
   where the type is written. They derive the five protocols like any variant, each when every branch has it.
@@ -972,14 +1023,17 @@ routine sum_list(list: @List[S64]) -> S64
             is None => return total
 ```
 
-Propagating a `Result`:
+Receiving a failure, and passing one on:
 
 ```tessera
 routine parse_or_zero(text: @[Byte]) -> B64
-    r: Result[B64, ParseError] = text.to_result[B64]()
-    when r
-        is B64 as value => return value
-        is ParseError as error => return 0.0
+    return when check text.to[B64]()
+        is B64 as value => value
+        is Crashables => 0.0
+
+failable routine parse_count(text: @[Byte]) -> U32
+    return when check text.to[U32]()
+        is U32 as count => count
 ```
 
 **Text patterns** (`import Standard/Text/Patterns`, the engine RazorForge and Suflae reach through Ingrid). A pattern
@@ -1002,8 +1056,8 @@ the pieces over (a span literal written in place):
   `group(name)` (crashes `CaptureNameError` / `AbsentValueError`), `group_checked(name) -> Maybe[@[Byte]]`.
 - `BytesPattern` with `byte(v, alloc)`, `bytes(b, alloc)`, `any_byte`, `byte_range(from:, to:, alloc)`,
   `start_of_bytes`, `end_of_bytes`; `BytesMatch.bytes()`.
-- `TextPattern.from_regex(text, alloc)` crashes with `PatternSyntaxError`, `from_regex_result` returns
-  `Result[TextPattern, RegexError]` (`write_regex_error(error, out)` writes the message with the position).
+- `TextPattern.from_regex(text, alloc)` is failable: it throws `PatternSyntaxError`, which `check` receives
+  (`write_regex_error(error, out)` writes the message with the position). A bare call stops on a bad expression.
   Backreferences, lookaround and `*?` are refused.
 - The engine (`Engine.te`): a Thompson simulation finds the leftmost start, then a memoized walk (each instruction
   and position tried once) picks the preferred match, so a search is linear in the text times the pattern size.
@@ -1022,19 +1076,18 @@ Format through `Standard/System/Text` (`Format.te`), not printf. printf is for C
   those. Text comes back as a `Memory[Byte]` from the manager: `drop line` gives it back. There are no `In` / `Out` /
   `Err` types and no `print`.
 - Writers: `Console.output()` / `Console.errors()` (`@ConsoleOutput` / `@ConsoleErrors`, standard output and error,
-  unbuffered, also `is_terminal()`, `enable_colors()`, `write_all_result(data, count)`), a `FileHandle`,
+  unbuffered, also `is_terminal()`, `enable_colors()`, `write_all(data, count)`, failable), a `FileHandle`,
   `BufWriter[T]` (`out.construct(inner)`, then `flush()`), `SliceWriter` (into a caller buffer), `List[Byte]`
   (growing text: `buf.write("...")`, then `buf.getview()`: it is the string builder). `Console.input()` is standard
-  input as a Reader (`@ConsoleInput`, with `read_into_result(buffer, n)` and `is_terminal()`).
-- Reading numbers: text is converted like any value, `text.to[S32]()` (crashes with `InvalidValueError`, naming
-  the text and the type, on bad text) or `text.to_result[S32]()` (`Result[T, ParseError]`: `Empty`, `Invalid`,
-  `OutOfRange`), for every integer type (an optional sign and decimal digits) and every float type. There is no
-  `parse`. A type is readable from text when it obeys `Parsable[T]`, which asks for one routine,
-  `routine @[Byte].to_result[T]() -> Result[T, ParseError]`, and `to[T]` comes with it. Numbers from
-  standard input: `a: S32 = Console.ask[S32]()` reads the next word in place (a word longer than the 8192-byte buffer
-  goes through a temporary on `HEAP`) and crashes at the end of the input or on a word that isn't a T;
-  `Console.ask_checked[T]()` gives `Maybe[T]` (`None` for both), `Console.ask_result[T]()` a `Result[T, ParseError]`
-  (`ParseError.EMPTY` at the end).
+  input as a Reader (`@ConsoleInput`, with the failable `read_into(buffer, n)` and `is_terminal()`).
+- Reading numbers: text is converted like any value, with the failable `text.to[S32]()`. Bad text throws
+  `EmptyTextError`, `InvalidValueError`, or `OutOfRangeError` (each names the text and the type), so a bare call stops
+  the program there and `check text.to[S32]()` (or `try`) receives the failure. It works for every integer type (an
+  optional sign and decimal digits) and every float type. There is no `parse`. A type is readable from text when it
+  obeys `Parsable[T]`, which asks for one routine, `failable routine @[Byte].to[T]() -> T`. Numbers from standard
+  input: `a: S32 = Console.ask[S32]()` reads the next word in place (a word longer than the 8192-byte buffer goes
+  through a temporary on `HEAP`). It is failable: `EndOfInputError` at the end of the input, and the failure of
+  `to[T]` on a word that isn't a T. `Console.ask_checked[T]()` gives `Maybe[T]` (`None` for both).
 - `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, and
   `@[Byte]` (a `Memory[Byte]` writes through its view: `{line.getview()}`). A pointer is neither Representable nor Diagnosable, so `{sum}` on a `local sum: @S64` slot is a build
   error, not its address: write the value with `{sum.peek()}`, or the address with `{sum.to[Addr]()}`
@@ -1068,12 +1121,11 @@ and an index past the end crashes like `getitem`: on `List`, `CircularList`, `Ar
 `getslice(start, count)` a `@[T]` of the elements (a List is not lent on its own: pass `list.getview()` where a
 span is expected). Out-of-range access, `remove_last`
 on empty, and `getitem` of a missing key crash. The `_checked` forms (`getitem_checked`, `remove_last_checked`,
-`peek_checked`) return `Maybe[T]` instead. Allocation failure crashes too, and each
-insertion and `reserve` has a `_result` form (`add_last_result`, `setitem_result`, `add_result`) that returns
-`Result[T, AllocFailed]` and leaves the collection unchanged on an `AllocFailed`. `_checked` always means `Maybe`, `_result`
-always `Result`.
+`peek_checked`) return `Maybe[T]` instead. Each insertion and `reserve` is failable: it throws
+`MemoryAllocationError` when the memory can't grow and leaves the collection unchanged, so a bare call stops there and
+`check xs.add_last(v)` receives it. `_checked` always means `Maybe`.
 The mutators that grow storage are `@reshaping` (`List.add_last` / `reserve` / `ensure_capacity`, `Dict.setitem`,
-`Set.add`, `CircularList.add_last` / `add_first`, `PriorityQueue.add` / `reserve`, and their `_result` forms): a
+`Set.add`, `CircularList.add_last` / `add_first`, `PriorityQueue.add` / `reserve`): a
 `getslot` / `getview` taken before one is not used after it, and a routine that calls one on a collection parameter
 says `@reshaping(name)`.
 
@@ -1127,24 +1179,24 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 **Threads, fibers, and ThreadPoolManager jobs are tickets.** A manager hands one out, and it is used in one flow, top to bottom:
 `t: Thread[S64] = get_thread[S64]()`, `t.put_work(entry: f.to[Callable](), args: x)` (it runs from here on),
 `t.check_finished()` to look without waiting or `t.wait_finished()` / `t.wait_finished_for(timeout) -> Bool` (`timeout` a `Duration`) to wait,
-`r: S64 = t.retrieve()`, then more work on the same ticket or `t.give_back()`. `T` is the result type, `Thread[None]`
+`r: S64 = t.retrieve()` (failable), then more work on the same ticket or `t.give_back()`. `T` is the result type, `Thread[None]`
 for none. `args` is nothing, one value, or a tuple of two to four (`args: (a, b)`), copied into a block from the
 manager's allocator. A pointer argument must outlive the work, so wait before releasing what it points to. One piece
 of work at a time: `put_work` or `give_back` while it runs crashes with `TicketBusyError`, a ticket used after
 `give_back` with `TicketGivenBackError`, a ticket destructed before `give_back` with `TicketNotGivenBackError`, and
 `retrieve` with no work with `NoWorkError`. `cancel()` asks the work to stop: the work asks `cancel_requested()` where
-stopping is safe and returns. `retrieve()` of cancelled work crashes with `CancelledWorkError` (a `Thread[None]` /
-`Fiber[None]` / `Job[None]` one too), and `retrieve_result() -> Result[T, CancelRequested]` tells them apart. Before
+stopping is safe and returns. `retrieve()` of cancelled work throws `CancelRequested` (a `Thread[None]` /
+`Fiber[None]` / `Job[None]` one too), so a bare call stops there and `check t.retrieve()` tells them apart. Before
 each piece of work a thread puts every `@threadlocal` global back to its starting value. The same flow on all three
 ticket kinds: `Thread[T]`, `Fiber[T]`, `Job[T]` (a ThreadPoolManager's). `work_slot()` gives the ticket's `@WorkSlot`, for
 code waiting on several tickets at once.
-- **Cancellable waits**: `wait_finished_result() -> Result[None, CancelRequested]` (on all three tickets) and a
-  channel's `send_result` / `receive_result` end with `CancelRequested` as soon as the WAITING work's own ticket is
+- **Cancellable waits**: the failable `wait_finished_cancellable()` (on all three tickets) and a channel's `send` /
+  `receive` throw `CancelRequested` as soon as the WAITING work's own ticket is
   cancelled. Then clean up and return. Plain `wait_finished` / `wait_finished_for` are not cancellable. Outside a
   ticket's work nothing cancels them.
 - **Lists of tickets**: `List[Thread[T]]` (Standard/Os), `List[Fiber[T]]` and `List[Job[T]]` (Standard/Fiber) have
-  `wait_all_finished()`, `retrieve_all()` / `retrieve_all(alloc)` (results in list order, crashes as `retrieve`
-  does), `give_back_all()` (and empties the list), `wait_any_finished() -> U64` (the position of a finished one,
+  `wait_all_finished()`, `retrieve_all()` / `retrieve_all(alloc)` (results in list order, stops on a failure as a bare
+  `retrieve` does), `give_back_all()` (and empties the list), `wait_any_finished() -> U64` (the position of a finished one,
   crashes on an empty list), `cancel_all()`, `take_finished()` / `take_finished(alloc)` (moves finished tickets out
   into a new list, both keep their order), and `give_back_finished()`.
 - **Threads** (`Standard/Os/Thread.te`, what both tickets share in `Work.te`, who waits in `Waiter.te`):
@@ -1176,7 +1228,7 @@ code waiting on several tickets at once.
   `idle_wait() -> Duration` is how long it may sleep before a fiber with a deadline is due (`Duration.MAX` for none).
 - **ThreadPoolManager** (`Standard/Fiber/ThreadPoolManager.te`, M:N): `local pool: @ThreadPoolManager <- .construct(threads: 0)` (0 = one
   thread per processor), `j: Job[T] = pool.get_job[T]()`, then the ticket flow (`put_work`, `check_finished`,
-  `wait_finished(_for, _result)`, `retrieve(_result)`, `cancel`, `give_back`). Work waits in the pool's queue until a
+  `wait_finished` / `wait_finished_for` / `wait_finished_cancellable`, `retrieve`, `cancel`, `give_back`). Work waits in the pool's queue until a
   pool thread is free, then runs as a fiber the POOL keeps (not a thread's `FIBERS`). It runs until it waits, like any
   fiber. A wake of a waiting job puts it in the pool's queue of woken fibers, and whichever pool thread is free first
   goes on with it, so a job may wake on another thread than the one it waited on (work stealing at wait points only,
@@ -1192,7 +1244,7 @@ code waiting on several tickets at once.
 **Atomics.** `Atomic[T]` (Core, `Atomic.te`) is a record aligned to T's size whose every access is atomic: the
 form for state a program shares between threads (`hits: Atomic[U64]` in a shared record, `Atomic[U64].construct(value:
 0)` or `.construct(value: 0)`). Threads share its place, `@Atomic[T]`, never copies. Routines: `peek` / `poke`,
-`swap`, `compare_exchange` / `compare_exchange_weak` (`Result[None, T]`: `None` when it wrote, the value found when
+`swap`, `compare_exchange` / `compare_exchange_weak` (`Maybe[T]`: `None` when it wrote, the value found when
 not), `fetch_add` / `fetch_sub` (integers, wrapping), `fetch_and` / `fetch_or` / `fetch_xor`, `fetch_fadd` /
 `fetch_fsub` (B32, B64), each with the order suffixes LLVM allows: `_relaxed` / `_acquire` / `_release` / `_acq_rel`
 (`peek_acquire`, `poke_release`, `fetch_add_relaxed`), none = sequentially consistent. `@T`'s `atomic_*` routines
@@ -1229,12 +1281,13 @@ own), with `park()` / `park_until(deadline)` / `wake()`. All in Standard/Os.
 
 **Channels** (Standard/Os/Channel.te): `Channel[T]` (one receiver) and `SharedChannel[T]` (many, each value to
 one), shared as `@Channel[T]`: `local ch: @Channel[U64] <- .construct(capacity: 8)` (or `construct(capacity, alloc)`),
-`send_result(value) -> Result[None, ChannelClosed | CancelRequested]` (waits while full), `send_if_room(value) ->
-Bool` (never waits), `receive_result() -> Result[T, ChannelClosed | CancelRequested]` (waits while empty, match it
-with `when ... is T as v => ... is ChannelClosed => ... is CancelRequested => ...`), `drop ch`. A channel starts
+the failable `send(value)` (waits while full), `send_if_room(value) -> Bool` (never waits), the failable
+`receive() -> T` (waits while empty, receive it with `when check ch.receive()`, `is T as v => ...`,
+`is ChannelClosedError => ...`, `is CancelRequested => ...`), `drop ch`. Both throw `ChannelClosedError` or
+`CancelRequested`. A channel starts
 with one sender and one receiver: `add_sender()` / `add_receiver()` (SharedChannel only) count more, each calls
 `close_sending()` / `close_receiving()` once. All senders closed: receivers drain what is left, then get
-`ChannelClosed`. All receivers closed: the values left are discarded (never given back) and senders get `ChannelClosed`,
+`ChannelClosedError`. All receivers closed: the values left are discarded (never given back) and senders get `ChannelClosedError`,
 so a receiver takes out values owning memory before it closes.
 
 **The data race check.** `tessera run|build --race-check`, or `[debug] race-check = true` in config.toml: every
@@ -1253,58 +1306,60 @@ On any other target a program that switches fibers fails to link (`tessera_fiber
 **Files.** `File.at(path)` and `Directory.at(path)` say where (`@[Byte]`, UTF-8, the W calls on Windows) and nothing
 else: their only routines read the path's text (`name`, `stem`, `extension`, `parent`, and a Directory's
 `file(name, alloc)` / `go_to(name, alloc)`). A file manager manages the files of one partition, and `FileManager[T]` is
-that role (a protocol: `make_file_result`, `read_all_result`, `write_all_result`, `rename_result`, `delete_result`,
-`list_result`). `OsFileManager` is the OS's: everything done at a path is an `OsFileManager` routine, called on the type
-(there is no OsFileManager value), taking `at:` (and `from:` / `to:` for a copy) as `@File` / `@Directory`, and one that
-can fail returns `Result[T, FsError]` (a `_result` form). There is one way to do each thing:
+that role (a protocol: `make_file`, `read_all`, `write_all`, `rename`, `delete`, `list`). `OsFileManager` is the OS's:
+everything done at a path is an `OsFileManager` routine, called on the type (there is no OsFileManager value), taking
+`at:` (and `from:` / `to:` for a copy) as `@File` / `@Directory`, and one that can fail for a reason the caller handles
+is failable and throws one of `FsError`'s crashables: a bare call that fails stops the program on its line, and
+`check` (or `try`) receives the failure. There is one way to do each thing:
 
-- making: `make_file_result(at, replacing)` (an empty file; one already there is `ALREADY_EXISTS` unless `replacing`,
-  which empties it), `make_directory_result(at, parents)` (`parents` is mkdir -p, a directory already there is fine).
-  Nothing else makes a file: `open_write_result`, `open_append_result`, `write_all_result`, `set_size_result`, and
-  `storage_result` on a missing file fail with `NOT_FOUND`.
-- reading and writing: `read_all_result(at, alloc)` (a `Memory[Byte]`, drop it), `write_all_result(at, data)` (the
-  whole content, the file emptied first).
-- opening: `open_read_result` / `open_write_result` (emptied) / `open_append_result` / `open_read_write_result` give a
-  `FileHandle` (keep it in a local slot: `read_bytes_result`, `write_all_result`, `h.write("...")`, `seek_result`,
-  `size_result`, `set_size_result`, `sync_result`, `close`, which leaves it empty, and `FileHandle.empty()` a handle to
-  nothing whose `close` does nothing).
-- file storage: `storage_result[T](at, write, start, count)` maps the file as cells of `T` (`StorageCell[T]`: `Byte`, or
+- making: `make_file(at, replacing)` (an empty file, one already there is `AlreadyExistsError` unless `replacing`,
+  which empties it), `make_directory(at, parents)` (`parents` is mkdir -p, a directory already there is fine).
+  Nothing else makes a file: `open_write`, `open_append`, `write_all`, `set_size`, and `storage` on a missing file
+  throw `NotFoundError`.
+- reading and writing: `read_all(at, alloc)` (a `Memory[Byte]`, drop it), `write_all(at, data)` (the whole content,
+  the file emptied first).
+- opening: `open_read` / `open_write` (emptied) / `open_append` / `open_read_write` give a `FileHandle` (keep it in a
+  local slot: `read_bytes`, `write_all`, `h.write("...")`, `seek`, `size`, `set_size`, `sync`, all failable, `close`,
+  which leaves it empty, and `FileHandle.empty()` a handle to nothing whose `close` does nothing).
+- file storage: `storage[T](at, write, start, count)` maps the file as cells of `T` (`StorageCell[T]`: `Byte`, or
   `Char`, four bytes each, UTF-32LE), `count` cells from cell `start` (`U64.MAX` to the end), clamped to the whole
   cells the file has. It gives a `FileStorage[T]` (a record: `count()`, `s[i]` / `getitem_checked(i)`, `s[i] = v` on a
-  slot, `data()`, `flush_result()`, `unmap()`). A cell past `count()` crashes with `IndexOutOfBoundsError`, a write to
-  one mapped without `write` and a `Char` cell that isn't a Unicode scalar with `InvalidValueError`. It never grows the
-  file: `set_size_result` first.
-- deleting, renaming, moving, copying: `delete_result(at)` (a file, or an empty directory), `delete_all_result(at,
-  alloc)`, `rename_result(at, to: name, replacing)` (the name only, a file or a directory: an empty name, ".", "..", or
-  a separator is `INVALID_PATH`), `move_result(at, into: directory, replacing, alloc)` (keeps the name, gives
-  `Result[None, MoveError]`), `copy_result(from, to, replacing)` (the bytes copied). With `replacing` false, something
-  already there fails with `ALREADY_EXISTS`. A move is a copy then a delete: on one partition the OS renames instead,
-  between two the file (a directory with everything in it) is copied, then the original deleted. A failed copy deletes
-  nothing and removes the partial copy, a failed delete keeps both and says so (`MoveError.copied` true), and nothing
-  promises that a move happens all at once.
-- asking: `is_present(at)` (anything there), `is_file(at)`, `is_directory(at)`, `metadata_result(at)` (`kind`, `size`,
-  times in ns, `readonly`), `link_metadata_result(at)`, `is_accessible(at, access)`, `partition_result(at, alloc)`
-  (the `PartitionManager` the path is on).
-- setting: `set_readonly_result(at, readonly)`, `set_size_result(at, size)`.
-- listing: `list_result(at, iter)` starts a `DirIter` (a local slot, `local iter: @DirIter <- .hollow()`), then
+  slot, `data()`, the failable `flush()`, `unmap()`). A cell past `count()` crashes with `IndexOutOfBoundsError`, a
+  write to one mapped without `write` and a `Char` cell that isn't a Unicode scalar with `InvalidValueError`. It never
+  grows the file: `set_size` first.
+- deleting, renaming, moving, copying: `delete(at)` (a file, or an empty directory), `delete_all(at, alloc)`,
+  `rename(at, to: name, replacing)` (the name only, a file or a directory: an empty name, ".", "..", or a separator is
+  `InvalidPathError`), `move(at, into: directory, replacing, alloc)` (keeps the name), `copy(from, to, replacing)`
+  (the bytes copied). With `replacing` false, something already there throws `AlreadyExistsError`. A move is a copy
+  then a delete: on one partition the OS renames instead, between two the file (a directory with everything in it)
+  is copied, then the original deleted. A failed copy deletes nothing and removes the partial copy, a failed delete
+  keeps both and throws `OriginalKeptError`, and nothing promises that a move happens all at once.
+- asking: `is_present(at)` (anything there), `is_file(at)`, `is_directory(at)`, `metadata(at)` (`kind`, `size`, times
+  in ns, `readonly`), `link_metadata(at)`, `is_accessible(at, access)`, `partition(at, alloc)` (the `PartitionManager`
+  the path is on).
+- setting: `set_readonly(at, readonly)`, `set_size(at, size)`.
+- listing: `list(at, iter)` starts a `DirIter` (a local slot, `local iter: @DirIter <- .hollow()`), then
   `iter.emit_checked()` until `None`, then `iter.close()`.
-- paths: `absolute_result(at, alloc)`, `canonical_result(at, alloc)`.
+- paths: `absolute(at, alloc)`, `canonical(at, alloc)`.
 
-`FsError` is `NOT_FOUND`, `PERMISSION_DENIED`, `ALREADY_EXISTS`, `NOT_A_DIRECTORY`, `IS_A_DIRECTORY`,
-`DIRECTORY_NOT_EMPTY`, `CROSS_DEVICE`, `NAME_TOO_LONG`, `INVALID_PATH`, `NO_SPACE`, `READ_ONLY`, `BUSY`,
-`STORAGE_FAULT` (the device couldn't read or write: a bad sector, a failing disk), `OUT_OF_MEMORY`, and `OTHER`.
+`FsError` is a `variant` of the crashables a file system routine throws: `NotFoundError`, `NotEnoughPermissionError`,
+`AlreadyExistsError`, `NotADirectoryError`, `IsADirectoryError`, `DirectoryNotEmptyError`, `CrossDeviceError`,
+`NameTooLongError`, `InvalidPathError`, `NotEnoughSpaceError`, `ReadOnlyError`, `BusyError`, `StorageFaultError` (the
+device couldn't read or write: a bad sector, a failing disk), `MemoryAllocationError`, and `IoError` (`code`, the
+OS's own). `is FsError as e` on a `Check` takes any of them. With an arm for one of them, take the others with
+`else as e` (two arms can't observe one crashable).
 
 Each routine that takes `alloc` has an overload without it that uses the default heap. A routine that hands text back
-takes an allocator and returns a `Memory[Byte]` from it (`read_all_result`, `OsEnvironment.variable`): give it back with
-`drop`. A `File` and a `Directory` are entities: one that makes a path (`file`, `go_to`, `absolute_result`,
-`canonical_result`, OsEnvironment's directories) returns a `File` / `Directory` whose path is held in a `Memory[Byte]`,
+takes an allocator and returns a `Memory[Byte]` from it (`read_all`, `OsEnvironment.variable`): give it back with
+`drop`. A `File` and a `Directory` are entities: one that makes a path (`file`, `go_to`, `absolute`, `canonical`,
+OsEnvironment's directories) returns a `File` / `Directory` whose path is held in a `Memory[Byte]`,
 kept in a slot and given back with `drop file` / `drop dir` (which gives nothing back for a path it only views, such
 as a literal's):
 
 ```tessera
 local notes: @File <- dir.file(name: "notes.txt", alloc)
-OsFileManager.make_file_result(at: notes, replacing: false).unwrap()
-OsFileManager.write_all_result(at: notes, data: "first line\n").unwrap()
+OsFileManager.make_file(at: notes, replacing: false)
+OsFileManager.write_all(at: notes, data: "first line\n")
 drop notes
 ```
 
@@ -1315,25 +1370,27 @@ OS's one file system per volume). With an OS they are what the OS reports, read 
 names (drop them, or the list): `StorageManager.list(alloc)` (`name`, `size`; on Linux /sys/block, on macOS the disks
 of the mounted file systems, empty on Windows, which names them only to an administrator), `PartitionManager.list(alloc)`
 (`name`, `device`, `mounted_at`, `file_system`, `size`, and `directory()`; Linux /sys/class/block, macOS getfsstat,
-Windows the drive letters), and `OsFileManager.partition_result(at, alloc)`. Making a partition or a file system isn't
+Windows the drive letters), and `OsFileManager.partition(at, alloc)`. Making a partition or a file system isn't
 there yet.
 
 **The environment.** `OsEnvironment` (Standard/Os) reads what the OS gave the process and changes none of it:
 `argument_count()` and `argument(index)` (the program's own name left out, a borrowed `@[Byte]`, UTF-8 on Windows; the
 builder's `main` hands them over through `tessera_set_arguments(argc, argv)`), `variable(name, alloc)` (a
 `Maybe[Memory[Byte]]` asked of the OS, so on Windows a name's case doesn't matter), `variables(alloc)` (a snapshot,
-a `List[EnvironmentEntry]` of `name` / `value` memory), and `working_directory_result(alloc)`,
-`temp_directory_result(alloc)`, `home_directory_result(alloc)`. There is no setting a variable or the working
+a `List[EnvironmentEntry]` of `name` / `value` memory), and the failable `working_directory(alloc)`,
+`temp_directory(alloc)`, `home_directory(alloc)`. There is no setting a variable or the working
 directory: a child process gets its own through `ProcessOptions` (`directory`, `env`), and code that works elsewhere
 carries that `Directory`. `OsEntropy.fill(buffer, count)` / `OsEntropy.next_u64()` are the OS's random bits (getrandom,
 arc4random_buf, ProcessPrng), the source of the hash key and `Xoshiro256.from_entropy()`.
 
-**Processes.** `ProcessManager` creates processes and reaps them: `ProcessManager.create_process_result(program, args,
-options, alloc)` (looked up on PATH, `args` a `@[@[Byte]]`) and `ProcessManager.create_shell_process_result(command,
-options, alloc)` create one, wait for it to end, reap it, and return `Result[ProcessOutput, ProcessError]`: an `ExitStatus`
+**Processes.** `ProcessManager` creates processes and reaps them: `ProcessManager.create_process(program, args,
+options, alloc)` (looked up on PATH, `args` a `@[@[Byte]]`) and `ProcessManager.create_shell_process(command,
+options, alloc)` create one, wait for it to end, reap it, and return a `ProcessOutput`. Both are failable and throw
+one of `ProcessError`'s crashables (`NotFoundError`, `NotEnoughPermissionError`, `InvalidArgumentError`,
+`MemoryAllocationError`, `IoError`) when the program can't start or its output can't be captured. The output is an `ExitStatus`
 (`variant ExitStatus / Exited / Signaled` over the records `Exited(code: S32)` and `Signaled(signal: S32)`, with
 `.code()`, `.is_success()`) and the captured `stdout` / `stderr` (`Memory[Byte]`). A `ProcessOutput` is an entity:
-`local out: @ProcessOutput <- ProcessManager.create_shell_process_result(...).unwrap()` or `when ProcessManager.create_shell_process_result(...)`, then `drop out`. `ProcessOptions.default()` captures both and gives the child the null device as input; set
+`local out: @ProcessOutput <- ProcessManager.create_shell_process(...)` or `when check ProcessManager.create_shell_process(...)`, then `drop out`. `ProcessOptions.default()` captures both and gives the child the null device as input. Set
 `directory`, `env` / `env_count` (overrides merged into this process's environment), and each stream's mode.
 `OsEnvironment.variable(name, alloc)` reads a variable (`None` when it isn't set), `ProcessManager.exit_process(status)`
 ends this process at once, and
@@ -1344,8 +1401,8 @@ ends this process at once, and
 `SliceWriter` or `List[Byte]`, the memory protocols) and `Standard/Collections` check there. `Standard/Os` drops out of the build, so importing it or naming anything in it is one
 build error ("Standard/Os needs an operating system ..."); there's no `Out`, files, threads, `@threadlocal`, fiber `FiberManager` (`Standard/Fiber`'s
 `switch_stack` and `initial_stack` are there, which `tests/freestanding_fiber` switches stacks with),
-`HEAP`, `PAGES`, or `construct()` without an allocator. The program exports its own crash handler (`@export("tessera_crash_handler")` with `@noreturn`, which
-may loop forever), passes the table of a manager of its own if it allocates (a type that obeys `MemoryManageable`, such as a bump arena over a
+`HEAP`, `PAGES`, or `construct()` without an allocator. The program puts a reporting routine in the Crash service's slot (`Crash.report_with`, first in `start`), since
+the default reports nothing there, passes the table of a manager of its own if it allocates (a type that obeys `MemoryManageable`, such as a bump arena over a
 buffer, and `arena.to[MemoryManager]()`), and brings its link script. A program that defines `start` has
 `when_power_on` as its entry symbol: the reset lands there (on Cortex-M through a vector table in section
 `.isr_vector`, its first word `__stack_top` and its second `when_power_on`, the system exceptions going to the
@@ -1402,23 +1459,23 @@ parameters), `buf.to[CStrView]()` on a `List[Byte]`, `m.to[@T]()` on a `Memory` 
 (`to_wrap`, `to_clamp`, `to_checked`, `to_nearest[S64]()` on a `B128Extended`). There is no `to_s64`, `as_[type]`,
 `y_from_x`, or `x_to_y`, and a routine that differs from another only in the type it produces takes the type as a
 type argument (`p.read_le[U64](off)` on a `@Byte`). Text to a value is a conversion too: `text.to[S32]()`, and a
-conversion that can fail on its input is `to_result[T]()`, returning `Result` (there is no `parse`). Not conversions:
+conversion that can fail on its input is a failable `to[T]()` (there is no `parse`). Not conversions:
 values built from raw parts (`@[Byte].construct(data: p, count: n)`), a view of what a value holds (`getview()`), bits seen as another type (`B64.from_bits(u)`, `x.bits()`),
 byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`).
 
-**Naming rules for `to`, `_into`, `from_`, `_checked`, and `_result`.**
+**Naming rules for `to`, `_into`, `from_`, and `_checked`.**
 
-- A plain routine name crashes on failure, `name_checked` returns `Maybe[T]` (`None` on failure), and `name_result`
-  returns `Result[T, TError]` (the failure as a value): `getitem` / `getitem_checked`, `construct` / `construct_result`,
-  `to[T]` / `to_result[T]`, `Console.ask[T]` / `ask_checked[T]` / `ask_result[T]`. File and process routines fail for
-  reasons the caller handles, so they are `_result` forms (`OsFileManager.open_read_result`). A `_checked` never returns a
-  `Result` or a `Bool`, a `_result` never a `Maybe`, and a plain name never returns a `Maybe` or a `Result` just to
-  say it failed. A `Maybe` that is a normal outcome keeps a plain name: `@[Byte].find` (not found), `OsEnvironment.variable` (not
-  set), `Bool.then_present`; so does `atomic_compare_exchange`, whose `Result[None, T]` is the answer (`None` when it
-  wrote, the value found when not). An iterator has the plain/`_checked` pair: `emit` crashes past the end, `emit_checked` returns `None`.
+- A routine that can fail has one name. A routine whose failure is a caller's mistake crashes (`getitem`, `unwrap`),
+  and one whose failure the caller may handle is failable and throws a crashable (`OsFileManager.open_read`,
+  `to[T]`, `Console.ask[T]`, `Memory[T].construct`): a bare call stops on it, `check` and `try` receive it. There are
+  no `_result` names. `name_checked` returns `Maybe[T]` (`None` on failure): `getitem` / `getitem_checked`,
+  `Console.ask[T]` / `ask_checked[T]`. A `_checked` never returns a `Bool` or throws, and a plain name never returns a
+  `Maybe` just to say it failed. A `Maybe` that is a normal outcome keeps a plain name: `@[Byte].find` (not found),
+  `OsEnvironment.variable` (not set), `Bool.then_present`, and `compare_exchange` (`None` when it wrote, the value
+  found when not). An iterator has the plain/`_checked` pair: `emit` crashes past the end, `emit_checked` returns `None`.
 
 - `to[T]()` is a type conversion: one value of type A becomes a value of type B, on A (`p.to[CStrView]()`, not
-  `CStrView.from_ptr(p)`). A conversion that can fail is `to_result[T]()`.
+  `CStrView.from_ptr(p)`). A conversion that can fail is a failable `to[T]()`.
 - `_into` is the argument-swapped form of a routine that acts on a place: `p.poke(v)` is `v.poke_into(p)`. The
   plain form's receiver is the place acted on, and the `_into` form's receiver is the thing being put there, with the
   place as the argument. So a chain reads left to right and ends at the place: `x.peek().add(1).poke_into(x)`,
@@ -1487,9 +1544,9 @@ symbol keeps its own name (`rf_fs_can_read`). A vector mask asks
 (`mul_overflows`), and a routine that does something and says whether it worked (`Set.add`, `remove`, `try_lock`,
 `wait_for`). A `Bool` value in a body reads as a predicate too, but needs no prefix (`done`, `found`).
 
-**Name case.** Types, protocols, and modules are `PascalCase` (`Maybe`, `ParseError`), with acronyms written as
+**Name case.** Types, protocols, and modules are `PascalCase` (`Maybe`, `NotFoundError`), with acronyms written as
 words (`Utf8Decoded`). Routines, fields, and values are `snake_case`. Choice members, presets, globals, and
-value generic parameters are `UPPER_SNAKE_CASE` (`FsError.NOT_FOUND`, `U64.MAX`, `NODE_KEYS`); the build rejects a
+value generic parameters are `UPPER_SNAKE_CASE` (`FileKind.DIRECTORY`, `U64.MAX`, `NODE_KEYS`), and the build rejects a
 choice member written otherwise. Case is a convention, never grammar: the parser doesn't read a name's spelling to
 decide what `[...]` after it is. Before `(` it is a routine's or type's arguments, alone it is an index, and before
 `.member` (`Array[T, 4].count()`, `TABLE[i].field`) the checker decides by what the name is.
@@ -1497,8 +1554,7 @@ decide what `[...]` after it is. Before `(` it is a routine's or type's argument
 **Generic parameter names.** Count only the type parameters in scope. One is `T` (`List[T]`, `Maybe[T]`,
 `Writer[T]`, `BufWriter[T]`, `Thread[T]`, `S64.represent_into[T]`). Two or more are each `T` + its role in
 PascalCase: `Dict[TKey, TValue]`, `Iterator[TItem, TIter]`,
-`Tuple2[TItem0, TItem1]`, `bitcast[TFrom, TTo]`; `Result[T, TError]` keeps plain `T` for its value and `TError`
-for the error. A routine's own type parameters count together with its owner
+`Tuple2[TItem0, TItem1]`, `bitcast[TFrom, TTo]`. A routine's own type parameters count together with its owner
 type's, and the owner's keep the names the type declares: `List[T].represent_into[TWriter]`,
 `Dict[TKey, TValue].represent_into[TWriter]`, `Ptr[T].to[@TPointee]`. A value (const) parameter is named like a
 preset, UPPER_SNAKE for what it counts: `Array[T, COUNT]`, `Vector[T, LANES]`, `BigNat[LIMBS]`. Why: a type

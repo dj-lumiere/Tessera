@@ -1,0 +1,57 @@
+# A failure nothing receives stops the program and its report says where it was made: load's failure wraps the one
+# parse made (a throw in an arm that observed a failure), and the report has both traces, the wrapping one first. This
+# reporting routine prints the name, the message, and the failure's traces, and exits with status 3.
+
+import Standard/Os
+
+crashable ParseFailed
+    at: U64
+
+crashable BadInputError
+
+### Writes the message.
+### :typeparam TWriter: The Writer.
+### :param out: Where it goes.
+routine ParseFailed.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    out.write("no number at {me.at}")
+    return
+
+### Writes the message.
+### :typeparam TWriter: The Writer.
+### :param out: Where it goes.
+routine BadInputError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    out.write("the input isn't a number")
+    return
+
+@external("c")
+@symbol("exit")
+@noreturn
+routine exit(status: CInt) -> None
+
+### Prints the crash's name, message, and the failure's traces, where the golden test sees them, and exits with status 3.
+### :param name: The crash kind.
+### :param message: The crash message.
+### :param place: Where the crash was raised.
+@untraced
+routine on_crash(name: @[Byte], message: @CrashMessage, place: @SourceLocation) -> None
+    Console.show("{name}: {message.text()}", end: "")
+    write_failure_trace(seq: message.failure.peek(), out: Console.output())
+    Console.show("")
+    exit(3)
+
+failable routine parse(n: S64) -> S64
+    if n < 0
+        throw ParseFailed(at: 3)
+    return n
+
+failable routine load(n: S64) -> S64
+    when check parse(n)
+        is S64 as v => return v
+        is ParseFailed => throw BadInputError()
+
+routine start() -> None
+    Crash.report_with(on_crash.to[Callable]())
+    v: S64 = load(-1)
+    return

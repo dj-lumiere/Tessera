@@ -38,6 +38,9 @@ public sealed class LifecycleNeeds(Func<TypeRef, string, Decl?> find, bool unkno
             case RecordDecl { IsEntity: true }:
                 why = "it is an entity, whose life ends with drop";
                 break;
+            // A failure is a plain value nothing gives back: what it views is someone else's.
+            case RecordDecl { IsCrashable: true }:
+                break;
             case RecordDecl r:
                 foreach (var f in r.Fields)
                     if (Holds(f.Type, args, d.File))

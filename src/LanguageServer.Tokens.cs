@@ -17,7 +17,8 @@ public static partial class LanguageServer
     ];
 
     private static readonly HashSet<string> ControlKeywords =
-        ["jump", "when", "return", "unreachable", "continue", "else", "elseif", "todo", "if", "each", "while", "until", "then", "with",
+        ["jump", "when", "return", "throw", "try", "check", "unreachable", "continue", "else", "elseif", "todo", "if", "each",
+         "while", "until", "then", "with",
          "break", "becomes", "in", "pass", "drop"];
 
     /// Words colored as keywords but left out of completion: the operators spelled as words, and the patterns.
@@ -30,7 +31,7 @@ public static partial class LanguageServer
     private static readonly HashSet<string> Keywords =
     [
         "routine", "record", "entity", "choice", "variant", "preset", "global", "protocol", "obeys", "define", "block", "local", "steal",
-        "import", "module", "secret", "common", "needs", "not", "true", "false", "typename",
+        "failable", "crashable", "import", "module", "secret", "common", "needs", "not", "true", "false", "typename",
     ];
 
     /// A document's last successful check: its text, the declarations parsed from it, and the builder that checked them

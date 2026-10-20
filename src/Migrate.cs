@@ -420,6 +420,12 @@ public static class Migrate
         ["threadlocal"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, ManagerMigration.RewriteThreadLocal)
             : ManagerMigration.RewriteThreadLocal(text),
+        ["crash"] = (file, text, report) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, t => FailableMigration.RewriteCrashHandler(t, report, file))
+            : FailableMigration.RewriteCrashHandler(text, report, file),
+        ["failable"] = (file, text, report) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, t => FailableMigration.Rewrite(t, report, file))
+            : FailableMigration.Rewrite(text, report, file),
         ["files"] = (file, text, report) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, t => FileMigration.Rewrite(t, report, file))
             : FileMigration.Rewrite(text, report, file),

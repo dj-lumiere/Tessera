@@ -94,11 +94,19 @@ public sealed partial class Compiler
         return list;
     }
 
-    public AbiSig LowerSignature(Instance inst) => LowerSignature(inst.Params, inst.Ret, inst.CallConv, inst.Decl.Pos);
+    /// A failable routine never meets C (an @export or C routine can't be failable), so its carrier comes back as the
+    /// LLVM value it is, the named struct the builder defines at the end.
+    public AbiSig LowerSignature(Instance inst)
+    {
+        if (!inst.Decl.IsFailable) return LowerSignature(inst.Params, inst.Ret, inst.CallConv, inst.Decl.Pos);
+        var plain = LowerSignature(inst.Params, VoidType.Instance, inst.CallConv, inst.Decl.Pos);
+        return new AbiSig(AbiValue.Direct(new CarrierRef(CarrierName(inst))), plain.Params);
+    }
 
     /// A routine's lowered return type; with attributes, a Direct one carries its extension.
     public string AbiRet(Instance inst, bool withAttrs) =>
-        AbiRetType(LowerSignature(inst), (withAttrs ? inst.RetExt(Target) : "") + inst.LlvmRet(Target));
+        inst.Decl.IsFailable ? CarrierName(inst)
+        : AbiRetType(LowerSignature(inst), (withAttrs ? inst.RetExt(Target) : "") + inst.LlvmRet(Target));
 
     public List<string> AbiParams(Instance inst, bool withAttrs) =>
         AbiParams(LowerSignature(inst), (i, attrs) => inst.AbiLlvm(inst.Params[i], Target) + (attrs ? inst.ParamExt(Target, i) : ""),

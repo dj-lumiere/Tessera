@@ -1,66 +1,83 @@
 # Tessera stdlib: values from text
 #
 # Text becomes a value the way any value becomes another type, with to[T]: text.to[S32]() is the number the text
-# writes, and it crashes when the text isn't one. text.to_result[S32]() is the same conversion with the failure in a
-# Result, for text that may be wrong (input, a file). A type that can be read from text conforms to Parsable[T] by
-# defining that conversion for itself, routine @[Byte].to_result[T], and text.to[T]() comes with it. Every integer
-# type (IntConvert.te) and every float type (FloatConvert.te) is Parsable.
+# writes. It is failable: text that isn't one throws EmptyTextError, InvalidValueError, or OutOfRangeError, so a bare
+# call stops the program on bad text, and `check text.to[S32]()` (or `try`) receives the failure, for text that may be
+# wrong (input, a file). A type that can be read from text conforms to Parsable[T] by defining that conversion for
+# itself, failable routine @[Byte].to[T]. Every integer type (IntConvert.te) and every float type (FloatConvert.te) is
+# Parsable.
 
 module Standard/System/Text
 
-### Why text didn't convert to a value: `Empty` when there is nothing to read, `Invalid` when the text isn't written the way the type's values are, and `OutOfRange` when it names a value the type can't hold. Floats use only `Empty` and `Invalid`: a float too large for its type reads as an infinity.
-choice ParseError: U8
-    EMPTY  # no text, or a sign with no digits after it
-    INVALID  # something the type's grammar doesn't allow
-    OUT_OF_RANGE  # a value the type can't hold
+### No value in the text: it is empty, or a sign with no digits after it.
+crashable EmptyTextError
+    text: @[Byte]
+    target: @[Byte]
 
-### Types that can be read from text: `text.to[T]()` crashes on bad text, and `text.to_result[T]()` returns why. A type conforms by defining the conversion from @[Byte] for itself, `routine @[Byte].to_result[T](me: @[Byte]) -> Result[T, ParseError]`.
+### Text that isn't written the way the type's values are, such as a letter among digits.
+crashable InvalidValueError
+    text: @[Byte]
+    target: @[Byte]
+
+### Text that names a value the type can't hold, such as "300" for a U8.
+crashable OutOfRangeError
+    text: @[Byte]
+    target: @[Byte]
+
+### Types that can be read from text: `text.to[T]()` gives the value, and throws when the text isn't one. A type
+### conforms by defining the conversion from @[Byte] for itself, `failable routine @[Byte].to[T]() -> T`.
 ### :typeparam T: The type read from text.
 protocol Parsable[T]
 needs T: typename
-    ### The text as a T, or why it isn't one.
-    ### :returns: The value, or a {ParseError}.
-    routine @[Byte].to_result[T]() -> Result[T, ParseError]
+    ### The text as a T.
+    ### :returns: The value.
+    ### :throws: The crashable that says why the text isn't a T.
+    failable routine @[Byte].to[T]() -> T
 
 obeys Parsable[S8], Parsable[S16], Parsable[S32], Parsable[S64], Parsable[S128], Parsable[S256]
 obeys Parsable[U8], Parsable[U16], Parsable[U32], Parsable[U64], Parsable[U128], Parsable[U256]
 obeys Parsable[CSSize], Parsable[CSize]
 obeys Parsable[B16], Parsable[BF16], Parsable[B32], Parsable[B64], Parsable[B128]
 
-### The text as a T. A type's own rules say which text is one: decimal digits with an optional sign for an integer,
-### decimal or `inf` / `nan` for a float.
-### :typeparam T: The type to read, a Parsable one.
-### :returns: The value the text writes.
-### :throws: Crashes with `InvalidValueError`, naming the text and the type, when the text isn't a T. Use
-### `to_result[T]()` for text that may be wrong.
-@track_caller
-routine @[Byte].to[T]() -> T
-needs T: typename, Parsable[T]
-    converted: Result[T, ParseError] = me.to_result[T]()
-    when converted
-        is T as value => return value
-        is ParseError as error => crash_conversion(text: me, target: type_name[T](), error)
+### Writes `Can't convert "" to S32: the text is empty.`
+### :typeparam TWriter: The type of the Writer.
+### :param out: The Writer the message goes to.
+routine EmptyTextError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    write_conversion(out, text: me.text, target: me.target)
+    out.write("the text is empty.")
+    return
 
-### Crashes with `InvalidValueError` for text that isn't a value of a type: `Can't convert "12a" to S32: the text
-### isn't a valid S32.` Text past 64 bytes is cut short, with "..." after it.
+### Writes `Can't convert "12a" to S32: the text isn't a valid S32.`
+### :typeparam TWriter: The type of the Writer.
+### :param out: The Writer the message goes to.
+routine InvalidValueError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    write_conversion(out, text: me.text, target: me.target)
+    out.write("the text isn't a valid {me.target}.")
+    return
+
+### Writes `Can't convert "300" to U8: the value is out of U8's range.`
+### :typeparam TWriter: The type of the Writer.
+### :param out: The Writer the message goes to.
+routine OutOfRangeError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    write_conversion(out, text: me.text, target: me.target)
+    out.write("the value is out of {me.target}'s range.")
+    return
+
+### Writes `Can't convert "12a" to S32: `, the text as source (past 64 bytes cut short, with "..." after it).
+### :typeparam TWriter: The type of the Writer.
+### :param out: The Writer the text goes to.
 ### :param text: The text that didn't convert.
 ### :param target: The name of the type it was converted to.
-### :param error: Why it didn't.
-@noreturn
-@track_caller
-secret routine crash_conversion(text: @[Byte], target: @[Byte], error: ParseError) -> None
-    local buffer: @Array[Byte, 400] <- .hollow()
-    local message: @SliceWriter <- .construct(data: buffer.to[@Byte](), capacity: 400)
-
-    message.write("Can't convert ")
+secret routine write_conversion[TWriter](out: @TWriter, text: @[Byte], target: @[Byte]) -> None
+needs TWriter: typename, Writer[TWriter]
+    out.write("Can't convert ")
     if text.count() > 64
         shown: @[Byte] = text.slice(start: 0, end: 64)
-        message.write("{shown.diagnose()}...")
+        out.write("{shown.diagnose()}...")
     else
-        message.write("{text.diagnose()}")
-    message.write(" to {target}: ")
-    when error
-        ParseError.EMPTY => message.write("the text is empty.")
-        ParseError.INVALID => message.write("the text isn't a valid {target}.")
-        ParseError.OUT_OF_RANGE => message.write("the value is out of {target}'s range.")
-    crash(name: "InvalidValueError", message: message.getview())
+        out.write("{text.diagnose()}")
+    out.write(" to {target}: ")
+    return

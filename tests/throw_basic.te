@@ -1,0 +1,119 @@
+# Failable routines: a throw gives a crashable back to the caller, `check` receives it as a Check[T] a `when` observes
+# (one crashable, `is Crashables` for the rest), `try` as a Maybe[T] (or a Bool for a routine that gives nothing), a
+# when without the failures' arms passes them on in a failable routine, routines that call each other collect what
+# they throw together, a generic routine, a failable routine's value through a parameter declared as a plain Callable,
+# a @throws list, and a crashable's name and message.
+
+import Standard/Collections
+import Standard/Os
+
+crashable NegativeError
+    value: S64
+
+crashable TooLargeError
+    value: S64
+    limit: S64
+
+### Writes the message.
+### :typeparam TWriter: The Writer.
+### :param out: Where it goes.
+routine NegativeError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    out.write("{me.value} is negative")
+    return
+
+### Writes the message.
+### :typeparam TWriter: The Writer.
+### :param out: Where it goes.
+routine TooLargeError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    out.write("{me.value} is past {me.limit}")
+    return
+
+@throws([NegativeError, TooLargeError])
+failable routine checked_half(n: S64) -> S64
+    if n < 0
+        throw NegativeError(value: n)
+    if n > 100
+        throw TooLargeError(value: n, limit: 100)
+    return n // 2
+
+### Passes checked_half's failures on: the when names only the value.
+failable routine quarter(n: S64) -> S64
+    half: S64 = when check checked_half(n)
+        is S64 as h => h
+    return when check checked_half(half)
+        is S64 as q => q
+
+### Counts down through odd_step, each failing below zero.
+failable routine even_step(n: S64) -> S64
+    if n == 0
+        return 0
+    return when check odd_step(n - 1)
+        is S64 as v => v + 1
+
+### The other half of even_step.
+failable routine odd_step(n: S64) -> S64
+    if n < 0
+        throw NegativeError(value: n)
+    return when check even_step(n - 1)
+        is S64 as v => v + 1
+
+### The value, or a failure for the hollow one.
+failable routine present[T](value: Maybe[T]) -> T
+needs T: typename
+    when value
+        is T as v => return v
+        is None => throw NegativeError(value: 0)
+
+### Calls f on x and passes its failure on.
+failable routine twice(f: Callable[(S64,), S64], x: S64) -> S64
+    once: S64 = when check f.call(x)
+        is S64 as v => v
+    return when check f.call(once)
+        is S64 as v => v
+
+### Fails for a negative n, and gives nothing.
+failable routine require(n: S64) -> None
+    if n < 0
+        throw NegativeError(value: n)
+    return
+
+### A name for what quarter gave.
+routine describe(n: S64) -> None
+    when check quarter(n)
+        is S64 as q => Console.show("quarter {n} = {q}")
+        is NegativeError as e => Console.show("quarter {n}: negative {e.value}")
+        is Crashables as e => Console.show("quarter {n}: {e.name()}: {e}")
+    return
+
+routine start() -> None
+    describe(80)
+    describe(-4)
+    describe(400)
+    a: Maybe[S64] = try checked_half(7)
+    b: Maybe[S64] = try checked_half(-7)
+    Console.show("try: {a.is_present()} {b.is_present()}")
+    ok: Bool = try require(1)
+    failed: Bool = try require(-1)
+    Console.show("try of nothing: {ok} {failed}")
+    when check even_step(6)
+        is S64 as v => Console.show("even_step 6 = {v}")
+        is Crashables as e => Console.show("even_step 6: {e.name()}")
+    found: Check[S64] = check present[S64](None())
+    when found
+        is S64 as v => Console.show("present {v}")
+        is NegativeError => Console.show("present: nothing")
+    when check twice(f: checked_half.to[Callable](), x: 300)
+        is S64 as v => Console.show("twice {v}")
+        is TooLargeError as e => Console.show("twice: {e.value} past {e.limit}")
+        is Crashables => Console.show("twice: other")
+    when check checked_half(-3) + checked_half(500)
+        is S64 as v => Console.show("sum {v}")
+        is Crashables as e =>
+            local text: @List[Byte] <- .construct()
+            e.message_into(text)
+            Console.show("first failure: {text.getview()}")
+            drop text
+    Console.show("bare: {checked_half(40)}")
+    return

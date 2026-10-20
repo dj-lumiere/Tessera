@@ -68,6 +68,7 @@ public static partial class LanguageServer
                             ["referencesProvider"] = true,
                             ["renameProvider"] = new JsonObject { ["prepareProvider"] = true },
                             ["documentSymbolProvider"] = true,
+                            ["inlayHintProvider"] = true,
                         },
                         ["serverInfo"] = new JsonObject { ["name"] = "tessera-lsp", ["version"] = "0.1" },
                     });
@@ -127,6 +128,9 @@ public static partial class LanguageServer
                     break;
                 case "textDocument/documentSymbol":
                     Reply(id, DocumentSymbols(p!["textDocument"]!["uri"]!.GetValue<string>()));
+                    break;
+                case "textDocument/inlayHint":
+                    Reply(id, InlayHints(p!["textDocument"]!["uri"]!.GetValue<string>()));
                     break;
                 case "textDocument/semanticTokens/full":
                     Reply(id, SemanticTokens(p!["textDocument"]!["uri"]!.GetValue<string>()));
