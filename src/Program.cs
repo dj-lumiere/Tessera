@@ -855,6 +855,9 @@ static class Cli
             StandardOutputEncoding = captureOutput ? System.Text.Encoding.UTF8 : null,
             StandardErrorEncoding = captureOutput ? System.Text.Encoding.UTF8 : null,
         };
+        // A test doesn't reach the network: with DEBUGINFOD_URLS set, the race check's symbolizer asks a debuginfod
+        // server about every library without local debug information, and its report waits on the answer.
+        if (captureOutput) psi.Environment.Remove("DEBUGINFOD_URLS");
         using var p = Process.Start(psi)!;
         string stdout = "", stderr = "";
         Task? feed = null;
@@ -871,21 +874,31 @@ static class Cli
                 catch (IOException) { }
                 catch (ObjectDisposedException) { }
             });
-            var errTask = p.StandardError.ReadToEndAsync();
-            stdout = p.StandardOutput.ReadToEnd();
-            stderr = errTask.Result;
         }
         // A test (its output captured) gets 10 s. `tessera run` waits as long as the program runs: a long check, such
-        // as the soft-float exhaustive one, takes minutes.
-        if (!captureOutput) p.WaitForExit();
-        else if (!p.WaitForExit(10_000))
+        // as the soft-float exhaustive one, takes minutes. Both streams are read in the background, so a program that
+        // hangs with its pipes open still runs into the limit instead of blocking the read forever.
+        if (!captureOutput)
         {
-            p.Kill();
-            feed?.Wait();
+            p.WaitForExit();
+            return (p.ExitCode, stdout, stderr);
+        }
+        var outTask = p.StandardOutput.ReadToEndAsync();
+        var errTask = p.StandardError.ReadToEndAsync();
+        if (!p.WaitForExit(10_000))
+        {
+            try { p.Kill(entireProcessTree: true); }
+            catch (InvalidOperationException) { }
+            // The killed program's pipes close, so the reads end. The bound covers a process that kept a copy of them.
+            Task.WaitAll([outTask, errTask, feed!], TimeSpan.FromSeconds(5));
+            stdout = outTask.IsCompletedSuccessfully ? outTask.Result : "";
             return (-1, stdout, "timed out after 10 s");
         }
-        // The feed is done before the process is disposed, which closes the same pipe.
-        feed?.Wait();
+        // The program has ended, so the reads finish once its pipes are drained. The feed is done before the process
+        // is disposed, which closes the same pipe.
+        stdout = outTask.Result;
+        stderr = errTask.Result;
+        feed!.Wait();
         return (p.ExitCode, stdout, stderr);
     }
 
@@ -1057,6 +1070,10 @@ static class Cli
     internal static string? RunOne(string[] sources, string stem, BuildTarget target)
     {
         string? expectedError = File.Exists(stem + ".error") ? File.ReadAllText(stem + ".error").Trim() : null;
+        // A message names files the way the host spells paths (tests\x.te on Windows), and an .error file spells them
+        // with '/', so both are compared with '/'.
+        bool HasExpectedError(string message) =>
+            message.Replace('\\', '/').Contains(expectedError!.Replace('\\', '/'), StringComparison.Ordinal);
 
         Manifest? manifest = null;
         string ir;
@@ -1079,12 +1096,12 @@ static class Cli
         catch (ManifestError e)
         {
             if (expectedError is null) return $"manifest error: {e.Message}";
-            return e.Message.Contains(expectedError) ? null : $"expected an error containing \"{expectedError}\", got: {e.Message}";
+            return HasExpectedError(e.Message) ? null : $"expected an error containing \"{expectedError}\", got: {e.Message}";
         }
         catch (CompileError e)
         {
             if (expectedError is null) return $"build error: {e.Message}";
-            return e.Message.Contains(expectedError) ? null : $"expected an error containing \"{expectedError}\", got: {e.Message}";
+            return HasExpectedError(e.Message) ? null : $"expected an error containing \"{expectedError}\", got: {e.Message}";
         }
         if (expectedError is not null) return $"expected a build error containing \"{expectedError}\", but it compiled";
 

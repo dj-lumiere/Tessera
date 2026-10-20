@@ -16,6 +16,9 @@ jobs:
   test:
     name: test (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    # A hung test fails the job here instead of holding the runner for GitHub's six hours. Each test program has its
+    # own 10 s limit in the test runner, and each golden step its own limit below.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -83,12 +86,17 @@ jobs:
         run: |
           Add-Content $env:GITHUB_PATH 'C:\llvm21\bin'
 
-      # Keg-only; GITHUB_PATH entries are prepended, so this shadows Apple clang.
+      # Keg-only; GITHUB_PATH entries are prepended, so this shadows Apple clang. Homebrew's clang links against the
+      # Command Line Tools' SDK, so the linker comes from the Command Line Tools too: the selected Xcode's ld can be
+      # older than that SDK and reject its libSystem.tbd ("unknown architecture").
       - name: Install LLVM 21 (macOS)
         if: runner.os == 'macOS'
         run: |
           brew install llvm@21
           echo "$(brew --prefix llvm@21)/bin" >> "$GITHUB_PATH"
+          echo "DEVELOPER_DIR=/Library/Developer/CommandLineTools" >> "$GITHUB_ENV"
+          DEVELOPER_DIR=/Library/Developer/CommandLineTools xcrun --find ld
+          DEVELOPER_DIR=/Library/Developer/CommandLineTools ld -v
 
       - name: Verify toolchain
         run: clang --version
@@ -130,18 +138,22 @@ jobs:
       # mode runs even when another fails, so one run shows which modes break.
       - name: Golden tests (debug)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 20
         run: dotnet bin/Release/net10.0/tessera.dll test --target ${{ matrix.target }} --mode debug tests examples
 
       - name: Golden tests (release)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 20
         run: dotnet bin/Release/net10.0/tessera.dll test --target ${{ matrix.target }} --mode release tests examples
 
       - name: Golden tests (release-time)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 20
         run: dotnet bin/Release/net10.0/tessera.dll test --target ${{ matrix.target }} --mode release-time tests examples
 
       - name: Golden tests (release-space)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 20
         run: dotnet bin/Release/net10.0/tessera.dll test --target ${{ matrix.target }} --mode release-space tests examples
 
   # Targets no hosted runner runs: type-check the stdlib and have LLVM compile it for each (no link, so no sysroot or
@@ -149,6 +161,7 @@ jobs:
   cross-check:
     name: cross-check (${{ matrix.target }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -201,6 +214,7 @@ jobs:
   freestanding:
     name: freestanding (${{ matrix.target }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -299,6 +313,7 @@ jobs:
   hosted-32-bit-int128:
     name: hosted 32-bit 128-bit helpers (${{ matrix.target }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -360,6 +375,7 @@ jobs:
   # in release mode and fails on any mismatch.
   soft-float-exhaustive:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -392,6 +408,7 @@ jobs:
   # Secrets don't reach pull requests from forks, so it runs only for this repository's own branches.
   sonarqube:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
 
     steps:
