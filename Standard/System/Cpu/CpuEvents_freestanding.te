@@ -19,6 +19,15 @@
 
 module Standard/System/Cpu
 
+### The handler that holds each kind's slot, by the kind's number, null for none.
+@target(os: "none")
+secret global HOLDERS: @Array[Addr, 4]
+### The first byte of the vector table the builder writes (the symbol `tessera_vectors`).
+@external("c")
+@symbol("tessera_vectors")
+@target(arch: ("aarch64", "riscv32"), os: "none")
+secret global CPU_VECTORS: @Byte
+
 ### What kind of event the CPU raised.
 @target(os: "none")
 choice CpuEventKind: U8
@@ -40,6 +49,10 @@ record CpuEvent
     ### The address a fault touched (FAR on AArch64, mtval on RISC-V), null when it didn't say.
     address: Addr
 
+### The CPU's events: one handler per kind, held until its event comes. Its routines are called on the type.
+@target(os: "none")
+record CpuEventManager
+
 ### Makes a `CpuEvent` from its fields.
 ### :param kind: Its `kind`.
 ### :param code: Its `code`.
@@ -54,20 +67,6 @@ common routine CpuEvent.construct(kind: CpuEventKind, code: U64, place: Addr, ad
 @target(os: "none")
 routine @CpuEvent.destruct() -> None
     return
-
-### The CPU's events: one handler per kind, held until its event comes. Its routines are called on the type.
-@target(os: "none")
-record CpuEventManager
-
-### The handler that holds each kind's slot, by the kind's number, null for none.
-@target(os: "none")
-secret global HOLDERS: @Array[Addr, 4]
-
-### The first byte of the vector table the builder writes (the symbol `tessera_vectors`).
-@external("c")
-@symbol("tessera_vectors")
-@target(arch: ("aarch64", "riscv32"), os: "none")
-secret global CPU_VECTORS: @Byte
 
 ### Puts `holder` in `kind`'s slot.
 ### :param kind: The slot.
@@ -193,11 +192,14 @@ routine aarch64_cpu_event(vector: U64, syndrome: U64, place: Addr, address: Addr
         0 =>
             # EC 0x15 is an SVC from AArch64: the ISS holds its number.
             if syndrome >> 26 == 0x15
-                deliver(CpuEvent(kind: CpuEventKind.SUPERVISOR_CALL, code: syndrome & 0xFFFF, place, address: .hollow()))
+                deliver(CpuEvent(kind: CpuEventKind.SUPERVISOR_CALL, code: syndrome & 0xFFFF, place,
+                    address: .hollow()))
                 return
             deliver(CpuEvent(kind: CpuEventKind.FAULT, code: syndrome, place, address))
-        1, 2 => deliver(CpuEvent(kind: CpuEventKind.INTERRUPT, code: entry - 1, place, address: .hollow()))
-        else => deliver(CpuEvent(kind: CpuEventKind.FAULT, code: syndrome, place, address: .hollow()))
+        1, 2 => deliver(CpuEvent(kind: CpuEventKind.INTERRUPT, code: entry - 1, place,
+            address: .hollow()))
+        else => deliver(CpuEvent(kind: CpuEventKind.FAULT, code: syndrome, place,
+            address: .hollow()))
     return
 
 ### The level the core runs at: CurrentEL, the level in bits 2 and 3.
@@ -256,8 +258,10 @@ routine cortex_m_cpu_event(number: U32, frame: Addr, place: Addr) -> None
         11 =>
             # SVC's number is the low byte of the 16-bit instruction before the place it goes back to.
             call: U8 = place.offset(-2).to[@U8]().peek()
-            deliver(CpuEvent(kind: CpuEventKind.SUPERVISOR_CALL, code: call.to[U64](), place, address: .hollow()))
-        2, 12, 14, 15 => deliver(CpuEvent(kind: CpuEventKind.INTERRUPT, code, place, address: .hollow()))
+            deliver(CpuEvent(kind: CpuEventKind.SUPERVISOR_CALL, code: call.to[U64](), place,
+                address: .hollow()))
+        2, 12, 14, 15 => deliver(CpuEvent(kind: CpuEventKind.INTERRUPT, code, place,
+            address: .hollow()))
         else => deliver(CpuEvent(kind: CpuEventKind.FAULT, code, place, address: .hollow()))
     return
 
@@ -274,11 +278,13 @@ routine cortex_m_cpu_event(number: U32, frame: Addr, place: Addr) -> None
 @untraced
 routine riscv_cpu_event(cause: U32, place: Addr, address: Addr) -> Addr
     if cause >> 31 == 1
-        deliver(CpuEvent(kind: CpuEventKind.INTERRUPT, code: (cause & 0x7FFFFFFF).to[U64](), place, address: .hollow()))
+        deliver(CpuEvent(kind: CpuEventKind.INTERRUPT, code: (cause & 0x7FFFFFFF).to[U64](), place,
+            address: .hollow()))
         return place
     # 8, 9, and 11 are an ecall from user, supervisor, and machine mode.
     if cause == 8 or cause == 9 or cause == 11
-        deliver(CpuEvent(kind: CpuEventKind.SUPERVISOR_CALL, code: cause.to[U64](), place, address: .hollow()))
+        deliver(CpuEvent(kind: CpuEventKind.SUPERVISOR_CALL, code: cause.to[U64](), place,
+            address: .hollow()))
         return place.offset(4)
     deliver(CpuEvent(kind: CpuEventKind.FAULT, code: cause.to[U64](), place, address))
     return place

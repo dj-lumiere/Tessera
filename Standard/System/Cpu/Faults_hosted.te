@@ -25,12 +25,22 @@ secret preset FAULT_FRAMES: U64 = 64
 
 # -- POSIX -------------------------------------------------------------------------------------------------------
 
+### 1 once the fault handlers are installed.
+@target(os: not "none")
+secret global FAULTS_INSTALLED: @U32
+
 ### SS_DISABLE, which takes a thread's signal stack away.
 @target(os: "linux")
 secret preset SS_DISABLE: CInt = 2
 ### SS_DISABLE, which takes a thread's signal stack away.
 @target(os: "macos")
 secret preset SS_DISABLE: CInt = 4
+### SA_ONSTACK | SA_RESETHAND: the fault handler runs on the thread's own fault stack, and once.
+@target(os: "linux")
+secret preset FAULT_FLAGS: U32 = 0x88000000
+### SA_ONSTACK | SA_RESETHAND: the fault handler runs on the thread's own fault stack, and once.
+@target(os: "macos")
+secret preset FAULT_FLAGS: U32 = 0x0005
 
 ### Binds the C `sigaction` function, which sets what a signal does.
 ### :param sig: The signal.
@@ -108,7 +118,8 @@ secret routine fault_name(index: U64) -> @[Byte]
 secret routine on_fault(sig: CInt) -> None
     local signals: Array[CInt, 5] = fault_signals()
 
-    if deliver(CpuEvent(kind: CpuEventKind.FAULT, code: sig.to[U64](), place: .hollow(), address: .hollow()))
+    if deliver(CpuEvent(kind: CpuEventKind.FAULT, code: sig.to[U64](), place: .hollow(),
+        address: .hollow()))
         c_raise(sig)
         return
     until i >= 4 or signals[i] == sig with i: U64 = 0
@@ -152,17 +163,6 @@ secret routine fill_action(act: @Byte, handler: Callable[(CInt,), None], flags: 
     flags_field: @U32 = act.to[Addr]().offset(12).to[@U32]()
     flags_field.poke(flags)
     return
-
-### SA_ONSTACK | SA_RESETHAND: the fault handler runs on the thread's own fault stack, and once.
-@target(os: "linux")
-secret preset FAULT_FLAGS: U32 = 0x88000000
-### SA_ONSTACK | SA_RESETHAND: the fault handler runs on the thread's own fault stack, and once.
-@target(os: "macos")
-secret preset FAULT_FLAGS: U32 = 0x0005
-
-### 1 once the fault handlers are installed.
-@target(os: not "none")
-secret global FAULTS_INSTALLED: @U32
 
 ### Installs the fault handlers: the generated entry calls it before `start` when the build keeps the crash trace,
 ### and CpuEventManager.when_faulted when a handler takes the slot. A second call does nothing.

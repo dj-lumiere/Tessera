@@ -12,6 +12,13 @@ module Standard/Os
 
 import Standard/Collections
 
+### The program's arguments, set once before `start` runs: each one's bytes (UTF-8 on Windows, as the OS gave them
+### elsewhere), the program's own name first.
+secret global ARGUMENT_TEXT: @@@[Byte]
+
+### How many there are in `ARGUMENT_TEXT`, the program's name counted.
+secret global ARGUMENT_COUNT: @U64
+
 ### The environment the operating system gave this process: its arguments, its environment variables (read only), and
 ### the working, home, and temporary directories. Its routines are called on the type.
 record OsEnvironment
@@ -35,12 +42,6 @@ routine @EnvironmentEntry.destruct() -> None
     drop me.name
     drop me.value
     return
-
-### The program's arguments, set once before `start` runs: each one's bytes (UTF-8 on Windows, as the OS gave them
-### elsewhere), the program's own name first.
-secret global ARGUMENT_TEXT: @@@[Byte]
-### How many there are in `ARGUMENT_TEXT`, the program's name counted.
-secret global ARGUMENT_COUNT: @U64
 
 ### Keeps the arguments the C `main` got, for {OsEnvironment.argument}. The builder's entry calls it before `start`,
 ### and so does any other entry that runs Tessera's standard library (RazorForge's and Suflae's).
@@ -86,8 +87,8 @@ secret routine argument_text(raw: @Byte, alloc: @MemoryManager) -> @[Byte]
 @symbol("MultiByteToWideChar")
 @callconv("stdcall")
 @target(os: "windows")
-secret routine c_multi_byte_to_wide_char(code_page: U32, flags: U32, text: @Byte, count: CInt, out: @U16,
-    room: CInt) -> CInt
+secret routine c_multi_byte_to_wide_char(code_page: U32, flags: U32, text: @Byte, count: CInt,
+    out: @U16, room: CInt) -> CInt
 
 ### One argument as the program sees it: the C string, in the ANSI code page, converted to UTF-8 in memory from alloc,
 ### kept for the whole run.
@@ -168,7 +169,8 @@ common routine OsEnvironment.variables(alloc: @MemoryManager) -> List[Environmen
 ### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
 @track_caller
 secret routine copied(text: @[Byte], alloc: @MemoryManager) -> Memory[Byte]
-    local memory: @Memory[Byte] <- Memory[Byte].construct(count: text.count().max(1), manager: alloc)
+    local memory: @Memory[Byte] <- Memory[Byte].construct(count: text.count().max(1),
+        manager: alloc)
 
     memory.data.peek().copy(src: text.data, count: text.count())
     memory.keep_first(text.count())
@@ -193,7 +195,8 @@ secret routine environment_entries(alloc: @MemoryManager) -> List[EnvironmentEnt
         text: @[Byte] = @[Byte].construct(data: raw, count: raw.to[CStrView]().count())
         when text.find("=")
             is U64 as at =>
-                list.add_last(EnvironmentEntry(name: copied(text: text.slice(start: 0, end: at), alloc),
+                list.add_last(EnvironmentEntry(
+                    name: copied(text: text.slice(start: 0, end: at), alloc),
                     value: copied(text: text.slice(start: at + 1, end: text.count()), alloc)))
             is None => pass
         continue with i: i + 1
@@ -222,8 +225,8 @@ secret routine environment_entries(alloc: @MemoryManager) -> List[EnvironmentEnt
             while k < n with k: U64 = 1
                 if entry.stride(k).peek() == 0x3D
                     local name: @Memory[Byte] <- owned_wide(units: entry, count: k, alloc).unwrap()
-                    local value: @Memory[Byte] <- owned_wide(units: entry.stride(k + 1), count: n - k - 1,
-                        alloc).unwrap()
+                    local value: @Memory[Byte] <- owned_wide(units: entry.stride(k + 1),
+                        count: n - k - 1, alloc).unwrap()
                     list.add_last(EnvironmentEntry(name: steal name, value: steal value))
                     break
                 continue with k: k + 1

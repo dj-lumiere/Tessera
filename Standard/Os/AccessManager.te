@@ -53,6 +53,10 @@ global ORDER_COUNT: @U64
 ### 1 while a flow reads or changes ORDERS. A plain flag: the check's own bookkeeping takes no access.
 global ORDER_FLAG: @U32
 
+### 1 once a flow reports a deadlock or an access-order error: the other flows of the cycle, which may see it at the
+### same moment, wait for that report to end the program instead of writing their own over it.
+global REPORTING: @U32
+
 ### Whether a flow about to wait follows the chain of holders and stops the program on a deadlock. The builder sets it
 ### from `[debug] deadlock-check`: on in a debug build, off in the release modes.
 preset DEADLOCK_CHECK: Bool = true
@@ -88,10 +92,6 @@ preset WORDS_TESSERA: U8 = 0
 preset WORDS_RAZORFORGE: U8 = 1
 ### The crash reports name agents and the entities they share (Suflae).
 preset WORDS_SUFLAE: U8 = 2
-
-### 1 once a flow reports a deadlock or an access-order error: the other flows of the cycle, which may see it at the
-### same moment, wait for that report to end the program instead of writing their own over it.
-global REPORTING: @U32
 
 ### How long a flow that saw a deadlock waits before it looks again, so a holder that was letting go isn't reported.
 preset DEADLOCK_RECHECK: Duration = 2ms
@@ -207,7 +207,8 @@ routine @AccessOrder.destruct() -> None
 ### :param expected: Its `expected`.
 ### :param hooked: Its `hooked`.
 ### :returns: The new value.
-common routine AccessWait.construct(access: Addr, holder: @U64, word: @U32, expected: U32, hooked: Bool) -> Me
+common routine AccessWait.construct(access: Addr, holder: @U64, word: @U32, expected: U32,
+    hooked: Bool) -> Me
     return Me(access, holder, word, expected, hooked)
 
 ### Releases nothing: an `AccessWait` holds no memory of its own.
@@ -354,7 +355,8 @@ common routine AccessManager.take(access: Addr, kind: U8, mode: U8, place: @Sour
 ### :returns: True when it took the access.
 ### :throws: Crashes with `ReenterDuringAccessError` when the calling flow already holds it.
 @target(os: not "none")
-common routine AccessManager.try_take(access: Addr, kind: U8, mode: U8, place: @SourceLocation) -> Bool
+common routine AccessManager.try_take(access: Addr, kind: U8, mode: U8,
+    place: @SourceLocation) -> Bool
     if kind == ACCESS_EXCLUSIVE
         return access.to[@ExclusiveAccess]().try_lock_at(place)
     if kind != ACCESS_MULTI_READ
@@ -394,7 +396,8 @@ common routine AccessManager.enlist(access: Addr, kind: U8, mode: U8) -> None
     flow: @AccessFlow = current_flow()
     count: U64 = flow.pending_count.peek()
     if count >= HELD_SLOTS
-        crash(name: "InvalidValueError", message: "A block opens more accesses at once than the AccessManager keeps.")
+        crash(name: "InvalidValueError",
+            message: "A block opens more accesses at once than the AccessManager keeps.")
     flow.pending.getslot(count).poke(HeldAccess(access, kind, mode, place: .hollow()))
     flow.pending_count.poke(count + 1)
     return
@@ -440,7 +443,7 @@ common routine AccessManager.open_enlisted(place: @SourceLocation) -> None
     flow.pending_count.poke(0)
     each i in 0 til count
         entry: HeldAccess = flow.pending.getslot(i).peek()
-        AccessManager.take(access: entry.access, kind: entry.kind, mode: entry.mode, place)
+        Me.take(access: entry.access, kind: entry.kind, mode: entry.mode, place)
     then
         return
 
@@ -458,12 +461,12 @@ common routine AccessManager.try_open_enlisted(place: @SourceLocation) -> Bool
     flow.pending_count.poke(0)
     each i in 0 til count
         entry: HeldAccess = flow.pending.getslot(i).peek()
-        if AccessManager.try_take(access: entry.access, kind: entry.kind, mode: entry.mode, place)
+        if Me.try_take(access: entry.access, kind: entry.kind, mode: entry.mode, place)
             continue
         # Gives up the ones before it, the last opened first.
         each back in 0 til i
             opened: HeldAccess = flow.pending.getslot(i - 1 - back).peek()
-            AccessManager.give_up(access: opened.access, kind: opened.kind, mode: opened.mode)
+            Me.give_up(access: opened.access, kind: opened.kind, mode: opened.mode)
         return false
     then
         return true
@@ -646,8 +649,8 @@ secret routine wait_once(flow: @AccessFlow, wait: AccessWait, deadline: Duration
 ### :param place: Where the flow asked for it.
 @target(os: not "none")
 common routine AccessManager.begin_wait(access: Addr, holder: @U64, place: @SourceLocation) -> None
-    begin_wait(flow: current_flow(), wait: AccessWait(access, holder, word: .hollow(), expected: 0, hooked: true),
-        place)
+    begin_wait(flow: current_flow(),
+        wait: AccessWait(access, holder, word: .hollow(), expected: 0, hooked: true), place)
     return
 
 ### Notes that the running flow no longer waits (see begin_wait).

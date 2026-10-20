@@ -71,6 +71,25 @@ record DirEntry
     name: @[Byte]  # the entry's name, valid until the iterator's next call
     kind: FileKind
 
+### A file seen as cells of `T`, mapped into memory (mmap, or CreateFileMapping and MapViewOfFile): random access
+### by index, `storage[i]` and `storage[i] = v`, each read and write going to the file through the OS's page cache.
+### It comes from {OsFileManager.storage_result}, and `unmap` gives it back (writing changed pages first).
+### `FileStorage[Byte]` is the file's bytes, `FileStorage[Char]` its Unicode scalars, four bytes each (UTF-32LE). A
+### UTF-8 text file isn't a `FileStorage[Char]`: read it as bytes.
+### :typeparam T: The cell type, `Byte` or `Char`.
+record FileStorage[T]
+needs T: typename, StorageCell[T]
+obeys ViewingIndexable[FileStorage[T], T], ModifyingIndexable[FileStorage[T], T]
+    base: Addr  # what the OS mapped, from an aligned offset (null for an empty storage)
+    delta: U64  # bytes from base to the first cell asked for
+    count: U64  # the cells mapped from there
+    writable: Bool  # whether stores reach the file (mapped with write: true)
+
+### Why a move failed, and whether the copy at the destination was finished.
+record MoveError
+    reason: FsError  # what the OS reported
+    copied: Bool  # true when the copy at the destination is whole and the source is still there, as deleting it failed
+
 ### A type a {FileStorage} keeps one value of in each cell: `Byte` (one byte) and `Char` (four bytes, a Unicode
 ### scalar as UTF-32LE). A cell's bytes are read and written through these two routines.
 ### :typeparam T: The cell type.
@@ -86,20 +105,6 @@ needs T: typename
     routine Me.into_cell(at: @Byte) -> None
 
 obeys StorageCell[Byte], StorageCell[Char]
-
-### A file seen as cells of `T`, mapped into memory (mmap, or CreateFileMapping and MapViewOfFile): random access
-### by index, `storage[i]` and `storage[i] = v`, each read and write going to the file through the OS's page cache.
-### It comes from {OsFileManager.storage_result}, and `unmap` gives it back (writing changed pages first).
-### `FileStorage[Byte]` is the file's bytes, `FileStorage[Char]` its Unicode scalars, four bytes each (UTF-32LE). A
-### UTF-8 text file isn't a `FileStorage[Char]`: read it as bytes.
-### :typeparam T: The cell type, `Byte` or `Char`.
-record FileStorage[T]
-needs T: typename, StorageCell[T]
-obeys ViewingIndexable[FileStorage[T], T], ModifyingIndexable[FileStorage[T], T]
-    base: Addr  # what the OS mapped, from an aligned offset (null for an empty storage)
-    delta: U64  # bytes from base to the first cell asked for
-    count: U64  # the cells mapped from there
-    writable: Bool  # whether stores reach the file (mapped with write: true)
 
 ### Makes a `FileStorage` from its fields.
 ### :param base: Its `base`.
@@ -125,11 +130,6 @@ needs T: typename, StorageCell[T]
 routine @FileStorage[T].destruct() -> None
 needs T: typename, StorageCell[T]
     return
-
-### Why a move failed, and whether the copy at the destination was finished.
-record MoveError
-    reason: FsError  # what the OS reported
-    copied: Bool  # true when the copy at the destination is whole and the source is still there, as deleting it failed
 
 ### Makes a `MoveError` from its fields.
 ### :param reason: Its `reason`.
@@ -538,13 +538,13 @@ secret routine is_plain_name(name: @[Byte]) -> Bool
 ### The byte in the cell at `at`.
 ### :param at: The cell.
 ### :returns: The byte, always present.
-common routine Byte.from_cell(at: @Byte) -> Maybe[Byte]
-    b: Byte = at.peek()
+common routine Byte.from_cell(at: @Me) -> Maybe[Me]
+    b: Me = at.peek()
     return b
 
 ### Writes `me` into the cell at `at`.
 ### :param at: The cell.
-routine Byte.into_cell(at: @Byte) -> None
+routine Byte.into_cell(at: @Me) -> None
     at.poke(me)
     return
 
@@ -552,8 +552,8 @@ routine Byte.into_cell(at: @Byte) -> None
 ### :param at: The cell's first byte.
 ### :returns: The character.
 ### :absent: When the four bytes are above 0x10FFFF or a surrogate, so not a Unicode scalar.
-common routine Char.from_cell(at: @Byte) -> Maybe[Char]
-    return at.read_le[U32](0).to_checked[Char]()
+common routine Char.from_cell(at: @Byte) -> Maybe[Me]
+    return at.read_le[U32](0).to_checked[Me]()
 
 ### Writes `me` into the four-byte cell at `at`, little-endian (UTF-32LE).
 ### :param at: The cell's first byte.
@@ -638,7 +638,7 @@ needs T: typename, StorageCell[T]
     if not me.writable.peek()
         crash(name: "InvalidValueError",
             message: "This storage was mapped for reading only: map it with write: true to change its cells.")
-    storage: FileStorage[T] = me.peek()
+    storage: Me = me.peek()
     value.into_cell(at: storage.data().stride(index * sizeof[T]()))
     return
 
@@ -683,7 +683,8 @@ secret routine copy_tree(from: @[Byte], to: @[Byte], alloc: @MemoryManager) -> R
             is DirEntry as e =>
                 local src: @Memory[Byte] <- join_path(a: from, b: e.name, alloc)
                 local dst: @Memory[Byte] <- join_path(a: to, b: e.name, alloc)
-                done: Result[None, FsError] = copy_entry(from: src.getview(), to: dst.getview(), alloc)
+                done: Result[None, FsError] = copy_entry(from: src.getview(), to: dst.getview(),
+                    alloc)
                 drop dst
                 drop src
                 when done
@@ -701,7 +702,8 @@ secret routine copy_tree(from: @[Byte], to: @[Byte], alloc: @MemoryManager) -> R
 ### :param alloc: The allocator for the child paths.
 ### :returns: `Unit` once it is copied.
 ### :throws: Returns the first error.
-secret routine copy_entry(from: @[Byte], to: @[Byte], alloc: @MemoryManager) -> Result[None, FsError]
+secret routine copy_entry(from: @[Byte], to: @[Byte],
+    alloc: @MemoryManager) -> Result[None, FsError]
     if is_kind(path: from, kind: FileKind.DIRECTORY)
         return copy_tree(from, to, alloc)
     copied: Result[U64, FsError] = copy_file(from, to, replacing: false)
@@ -806,7 +808,7 @@ needs T: typename, StorageCell[T]
 @track_caller
 routine @FileStorage[T].getitem(index: U64) -> T
 needs T: typename, StorageCell[T]
-    storage: FileStorage[T] = me.peek()
+    storage: Me = me.peek()
     return storage.getitem(index)
 
 ### The value in cell `index`.
@@ -815,7 +817,7 @@ needs T: typename, StorageCell[T]
 ### :absent: When `index` is not below `count()`, or the cell's bytes aren't a `T`.
 routine @FileStorage[T].getitem_checked(index: U64) -> Maybe[T]
 needs T: typename, StorageCell[T]
-    storage: FileStorage[T] = me.peek()
+    storage: Me = me.peek()
     return storage.getitem_checked(index)
 
 ### Writes changed pages back to the file.
@@ -823,13 +825,13 @@ needs T: typename, StorageCell[T]
 ### :throws: Returns the reason when the OS can't write them.
 routine @FileStorage[T].flush_result() -> Result[None, FsError]
 needs T: typename, StorageCell[T]
-    storage: FileStorage[T] = me.peek()
+    storage: Me = me.peek()
     return storage.flush_result()
 
 ### Writes changed pages back, unmaps, and leaves the slot an empty storage.
 routine @FileStorage[T].unmap() -> None
 needs T: typename, StorageCell[T]
-    storage: FileStorage[T] = me.peek()
+    storage: Me = me.peek()
     storage.unmap()
-    me.poke(FileStorage[T].empty())
+    me.poke(Me.empty())
     return

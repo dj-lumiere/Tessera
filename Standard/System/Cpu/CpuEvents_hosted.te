@@ -26,6 +26,13 @@ module Standard/System/Cpu
 
 import Standard/Os
 
+### The handler that holds each kind's slot, by the kind's number, null for none.
+@target(os: not "none")
+secret global HOLDERS: @Array[Addr, 3]
+### 1 while the when_interrupted handler runs.
+@target(os: not "none")
+secret global INTERRUPT_RUNNING: @U32
+
 ### What kind of event came.
 @target(os: not "none")
 choice CpuEventKind: U8
@@ -44,6 +51,10 @@ record CpuEvent
     ### The address a fault touched where the system says, else null.
     address: Addr
 
+### The process's events: one handler per kind, held until its event comes. Its routines are called on the type.
+@target(os: not "none")
+record CpuEventManager
+
 ### Makes a `CpuEvent` from its fields.
 ### :param kind: Its `kind`.
 ### :param code: Its `code`.
@@ -58,14 +69,6 @@ common routine CpuEvent.construct(kind: CpuEventKind, code: U64, place: Addr, ad
 @target(os: not "none")
 routine @CpuEvent.destruct() -> None
     return
-
-### The process's events: one handler per kind, held until its event comes. Its routines are called on the type.
-@target(os: not "none")
-record CpuEventManager
-
-### The handler that holds each kind's slot, by the kind's number, null for none.
-@target(os: not "none")
-secret global HOLDERS: @Array[Addr, 3]
 
 ### The slot of a kind in HOLDERS.
 ### :param kind: The kind.
@@ -128,10 +131,6 @@ common routine CpuEventManager.when_faulted(holder: Callable[(CpuEvent,), None])
         install_fault_handlers()
     return before
 
-### 1 while the when_interrupted handler runs.
-@target(os: not "none")
-secret global INTERRUPT_RUNNING: @U32
-
 ### Gives `event` to its handler: what the system's delivery calls. An interrupt that comes while the interrupt
 ### handler is still running is taken and ignored.
 ### :param event: The event.
@@ -158,10 +157,12 @@ secret preset SA_RESTART: U32 = 0x10000000
 ### SA_RESTART: a system call the signal cut into goes on.
 @target(os: "macos")
 secret preset SA_RESTART: U32 = 0x0002
+
 ### SA_RESTART and SA_NODEFER: a second SIGINT comes while the handler runs, so deliver can ignore it, instead of
 ### waiting to run the handler again when it returns.
 @target(os: "linux")
 secret preset INTERRUPT_FLAGS: U32 = 0x50000000
+
 ### SA_RESTART and SA_NODEFER: a second SIGINT comes while the handler runs, so deliver can ignore it, instead of
 ### waiting to run the handler again when it returns.
 @target(os: "macos")
@@ -219,27 +220,6 @@ secret routine on_signal(sig: CInt) -> None
 
 # -- Windows ------------------------------------------------------------------------------------------------------
 
-### Binds the Win32 `SetConsoleCtrlHandler` function, which adds or removes a handler of the console's events.
-### :param handler: The handler.
-### :param add: 1 to add it, 0 to remove it.
-### :returns: Nonzero on success.
-@external("c")
-@symbol("SetConsoleCtrlHandler")
-@callconv("stdcall")
-@target(os: "windows")
-secret routine c_set_console_ctrl_handler(handler: Callable[@callconv("stdcall"), (U32,), CInt], add: CInt) -> CInt
-
-### Binds the Win32 `RaiseException` function, which raises an exception on the running thread.
-### :param code: The exception code.
-### :param flags: 0, or 1 for an exception the program can't go on after.
-### :param count: The number of arguments.
-### :param args: The arguments, or null.
-@external("c")
-@symbol("RaiseException")
-@callconv("stdcall")
-@target(os: "windows")
-secret routine c_raise_exception(code: U32, flags: U32, count: U32, args: Addr) -> None
-
 ### Whether on_console_event is installed: 1 once it is.
 @target(os: "windows")
 secret global CONSOLE_HANDLER_ON: @U32
@@ -252,6 +232,28 @@ secret global INTERRUPT_PENDING: @U32
 @target(os: "windows")
 secret preset CONTROL_C_EXIT: S32 = -1073741510
 
+### Binds the Win32 `SetConsoleCtrlHandler` function, which adds or removes a handler of the console's events.
+### :param handler: The handler.
+### :param add: 1 to add it, 0 to remove it.
+### :returns: Nonzero on success.
+@external("c")
+@symbol("SetConsoleCtrlHandler")
+@callconv("stdcall")
+@target(os: "windows")
+secret routine c_set_console_ctrl_handler(handler: Callable[@callconv("stdcall"), (U32,), CInt],
+    add: CInt) -> CInt
+
+### Binds the Win32 `RaiseException` function, which raises an exception on the running thread.
+### :param code: The exception code.
+### :param flags: 0, or 1 for an exception the program can't go on after.
+### :param count: The number of arguments.
+### :param args: The arguments, or null.
+@external("c")
+@symbol("RaiseException")
+@callconv("stdcall")
+@target(os: "windows")
+secret routine c_raise_exception(code: U32, flags: U32, count: U32, args: Addr) -> None
+
 ### Starts the interrupt dispatch thread and installs on_console_event the first time a handler takes a slot. They
 ### stay: with no handler in a slot the event goes on to the system.
 ### :param kind: TERMINATED or INTERRUPTED.
@@ -260,7 +262,8 @@ secret preset CONTROL_C_EXIT: S32 = -1073741510
 @target(os: "windows")
 secret routine listen(kind: CpuEventKind, on: Bool) -> None
     if on and CONSOLE_HANDLER_ON.atomic_swap(1) == 0
-        DEFAULT_THREADS.launch_unwatched(entry: interrupt_dispatch.to[Callable](), arg: INTERRUPT_PENDING)
+        DEFAULT_THREADS.launch_unwatched(entry: interrupt_dispatch.to[Callable](),
+            arg: INTERRUPT_PENDING)
         c_set_console_ctrl_handler(on_console_event.to[Callable](), 1)
     return
 
@@ -278,8 +281,8 @@ secret routine interrupt_dispatch(pending: @U32) -> None
         holder: Callable[(CpuEvent,), None] = CpuEventManager.holder(CpuEventKind.INTERRUPTED)
         if holder.addr().is_hollow()
             ProcessManager.exit_process(CONTROL_C_EXIT)
-        holder.call(CpuEvent(kind: CpuEventKind.INTERRUPTED, code: (ctrl - 1).to[U64](), place: .hollow(),
-            address: .hollow()))
+        holder.call(CpuEvent(kind: CpuEventKind.INTERRUPTED, code: (ctrl - 1).to[U64](),
+            place: .hollow(), address: .hollow()))
         INTERRUPT_RUNNING.poke_atomic(0)
         continue
 
@@ -295,8 +298,8 @@ secret routine on_console_event(ctrl: U32) -> CInt
     if ctrl > 6 or ctrl == 3 or ctrl == 4
         return 0
     if ctrl > 1
-        event: CpuEvent = CpuEvent(kind: CpuEventKind.TERMINATED, code: ctrl.to[U64](), place: .hollow(),
-            address: .hollow())
+        event: CpuEvent = CpuEvent(kind: CpuEventKind.TERMINATED, code: ctrl.to[U64](),
+            place: .hollow(), address: .hollow())
         if deliver(event)
             return 1
         return 0
@@ -322,5 +325,6 @@ common routine CpuEventManager.raise(kind: CpuEventKind) -> None
         CpuEventKind.TERMINATED =>
             if on_console_event(2) == 0
                 ProcessManager.exit_process(CONTROL_C_EXIT)
-        CpuEventKind.FAULT => c_raise_exception(code: 0xC0000005, flags: 1, count: 0, args: .hollow())
+        CpuEventKind.FAULT => c_raise_exception(code: 0xC0000005, flags: 1, count: 0,
+            args: .hollow())
     return
