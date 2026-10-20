@@ -47,7 +47,7 @@ The standard library's modules:
 - `Standard/System/Text`: formatting (`Writer`, `Representable`, `Diagnosable`), reading values from text
   (`Parsable`), UTF-8, and the byte-text views.
 - `Standard/System/Memory`: the memory managers and their tables (`HEAP`, `C_HEAP`, `PAGES`), `StackManager`,
-  `GlobalManager`, `ThreadLocalStorageManager`, `ByteSize`, and `Atomic`.
+  `GlobalManager`, `ThreadLocalManager`, `ByteSize`, and `Atomic`.
 - `Standard/System/Cpu`: the startup steps without an OS (`prepare_core`), the `CpuEventManager`, and the fault
   report.
 - `Standard/System/Temporal` (`Duration`, `Moment`), `Standard/System/Serialization` (JSON strings),
@@ -302,7 +302,7 @@ routine start() -> None
   (`bottom`, `top`: `size()`, `remaining()`, `used()`, `holds(at)`) manages one flow's stack: it hands out `local`
   slots by moving the stack pointer, so it has no table. `StackManager.current()` is the running flow's: a fiber's
   inside a fiber, else the thread's own stack, whose bounds the OS gives (without an OS, `__stack_bottom` to
-  `__stack_top` of the link script). `ThreadLocalStorageManager.reset()` puts this thread's `@threadlocal` globals back
+  `__stack_top` of the link script). `ThreadLocalManager.reset()` puts this thread's `@threadlocal` globals back
   to their starting values. Without an OS, `GlobalManager.prepare()` puts the globals in place.
   `tessera migrate --step managers` rewrites `DEFAULT_HEAP` (now `HEAP`), `DEFAULT_STACKS` (`PAGES`), the
   `make_*_memory()` makers, the process routines, `reset_thread_locals()`, and `zero_bss()` / `copy_data()`.

@@ -504,6 +504,24 @@ public class MigrateTests
     }
 
     [Fact]
+    public void Threadlocal_step_renames_the_thread_locals_manager_in_code_and_comments()
+    {
+        const string before = """
+            # ThreadLocalStorageManager puts the thread-locals back
+            routine work() -> None
+                ThreadLocalStorageManager.reset()
+                Console.show("ThreadLocalStorageManager")
+            """;
+        const string after = """
+            # ThreadLocalManager puts the thread-locals back
+            routine work() -> None
+                ThreadLocalManager.reset()
+                Console.show("ThreadLocalStorageManager")
+            """;
+        Assert.Equal(after, ManagerMigration.RewriteThreadLocal(before));
+    }
+
+    [Fact]
     public void Modules_step_drops_the_imports_of_modules_that_are_gone()
     {
         const string before = """

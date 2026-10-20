@@ -44,7 +44,7 @@ namespace Tessera;
 ///
 /// 0.5: every memory region has a manager: `DEFAULT_HEAP` is `HEAP`, `DEFAULT_STACKS` is `PAGES`, the table makers are
 /// the tables `HEAP` / `C_HEAP` / `PAGES`, and processes, thread-locals, and the globals' memory have theirs
-/// (`ProcessManager`, `ThreadLocalStorageManager`, `GlobalManager`) (`--step managers`).
+/// (`ProcessManager`, `ThreadLocalManager`, `GlobalManager`) (`--step managers`).
 ///
 /// 0.5: the float presets `INFINITY`, `NEG_INFINITY` and `NAN` are gone: the literals `inf`, `-inf` and `nan` take their
 /// place (`--step float-presets`).
@@ -55,6 +55,8 @@ namespace Tessera;
 ///
 /// 0.5: a lock gives access, so `ExclusiveLock` is `ExclusiveAccess`, `MultiReadLock` is `MultiReadAccess`, and a
 /// `SignalCaster` wait names the access it gives up (`access:`, not `mutex:`) (`--step access`).
+///
+/// 0.5: the thread-locals' manager `ThreadLocalStorageManager` is `ThreadLocalManager` (`--step threadlocal`).
 public static class Migrate
 {
     /// `F64`, its plural in prose (`F64s`), and a name built on it (`F128Extended`, `F64Core`). `F16C` is the x86 instruction set, not a type.
@@ -87,7 +89,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf" or "managers" or "float-presets" or "modules" or "access";
+        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf" or "managers" or "float-presets" or "modules" or "access" or "threadlocal";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -383,6 +385,9 @@ public static class Migrate
         ["access"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, AccessMigration.Rewrite)
             : AccessMigration.Rewrite(text),
+        ["threadlocal"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, ManagerMigration.RewriteThreadLocal)
+            : ManagerMigration.RewriteThreadLocal(text),
     };
 
     private static readonly Regex InfNanWord = new(@"(?<![\w`.])(inf|nan)(?![\w`])", RegexOptions.Compiled);

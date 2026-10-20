@@ -666,7 +666,7 @@ public sealed partial class Compiler
         return functions;
     }
 
-    /// `@tessera.reset_thread_locals`, what the stdlib's `ThreadLocalStorageManager.reset()` calls: it stores each `@threadlocal`
+    /// `@tessera.reset_thread_locals`, what the stdlib's `ThreadLocalManager.reset()` calls: it stores each `@threadlocal`
     /// global's starting value in the running thread's copy. A thread manager's worker calls it before each ticket's
     /// work, so the work starts from the values a new thread would.
     private string ResetThreadLocals()
@@ -1622,7 +1622,7 @@ public sealed partial class Compiler
 
     private readonly Dictionary<string, string> _globalVars = [];
 
-    /// The `@threadlocal` globals this module defines, with their starting values, which `ThreadLocalStorageManager.reset()` stores
+    /// The `@threadlocal` globals this module defines, with their starting values, which `ThreadLocalManager.reset()` stores
     /// again.
     private readonly List<(string Name, string Llvm, string Init)> _threadLocals = [];
 

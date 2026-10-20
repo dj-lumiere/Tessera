@@ -8,7 +8,7 @@ namespace Tessera;
 /// `make_heap_memory()` / `make_c_heap_memory()` / `make_stack_memory()` become `HEAP.peek()` / `C_HEAP.peek()` /
 /// `PAGES.peek()`, `run_process_result(` / `run_shell_result(` / `exit(` become `ProcessManager.create_process_result(`
 /// / `ProcessManager.create_shell_process_result(` / `ProcessManager.exit_process(`, `reset_thread_locals()` becomes
-/// `ThreadLocalStorageManager.reset()`, and `zero_bss()` / `copy_data()` become `GlobalManager.zero_bss()` /
+/// `ThreadLocalManager.reset()`, and `zero_bss()` / `copy_data()` become `GlobalManager.zero_bss()` /
 /// `GlobalManager.copy_data()`. Code and comments change, strings don't. A free routine the file declares itself under
 /// one of the old names (a test's own `exit`) keeps its calls.
 public static partial class ManagerMigration
@@ -25,7 +25,7 @@ public static partial class ManagerMigration
         ("run_process_result", new(@"(?<![\w`.])run_process_result(?=\()"), "ProcessManager.create_process_result"),
         ("run_shell_result", new(@"(?<![\w`.])run_shell_result(?=\()"), "ProcessManager.create_shell_process_result"),
         ("exit", new(@"(?<![\w`./])exit(?=\()"), "ProcessManager.exit_process"),
-        ("reset_thread_locals", new(@"(?<![\w`.])reset_thread_locals\(\)"), "ThreadLocalStorageManager.reset()"),
+        ("reset_thread_locals", new(@"(?<![\w`.])reset_thread_locals\(\)"), "ThreadLocalManager.reset()"),
         ("zero_bss", new(@"(?<![\w`./])zero_bss\(\)"), "GlobalManager.zero_bss()"),
         ("copy_data", new(@"(?<![\w`./])copy_data\(\)"), "GlobalManager.copy_data()"),
     ];
@@ -33,11 +33,24 @@ public static partial class ManagerMigration
     [GeneratedRegex(@"^\s*(?:secret\s+)?routine\s+(\w+)\s*[\[(]", RegexOptions.Multiline)]
     private static partial Regex FreeRoutineHead();
 
+    /// `--step threadlocal`: the thread-locals' manager `ThreadLocalStorageManager` is `ThreadLocalManager`.
+    private static readonly (string OldName, Regex From, string To)[] ThreadLocalRenames =
+    [
+        ("ThreadLocalStorageManager", new(@"(?<![\w`])ThreadLocalStorageManager(?![\w`])"), "ThreadLocalManager"),
+    ];
+
     /// The source with the managers' names.
     public static string Rewrite(string text)
     {
         var own = FreeRoutineHead().Matches(text).Select(m => m.Groups[1].Value).ToHashSet();
-        var renames = Renames.Where(r => !own.Contains(r.OldName)).ToList();
+        return RewriteLines(text, Renames.Where(r => !own.Contains(r.OldName)).ToList());
+    }
+
+    /// The source with the thread-locals' manager's name, `ThreadLocalManager`, in code and comments.
+    public static string RewriteThreadLocal(string text) => RewriteLines(text, [.. ThreadLocalRenames]);
+
+    private static string RewriteLines(string text, List<(string OldName, Regex From, string To)> renames)
+    {
         var lines = text.Split('\n');
         for (int i = 0; i < lines.Length; i++)
             lines[i] = RewriteLine(lines[i], renames);
@@ -101,7 +114,10 @@ public static partial class ManagerMigration
         "make_stack_memory" => Message(name, "stacks come from the page manager PAGES"),
         "run_process_result" => Message(name, "a process is created with ProcessManager.create_process_result"),
         "run_shell_result" => Message(name, "a shell command runs with ProcessManager.create_shell_process_result"),
-        "reset_thread_locals" => Message(name, "ThreadLocalStorageManager.reset() puts the thread-locals back"),
+        "reset_thread_locals" => Message(name, "ThreadLocalManager.reset() puts the thread-locals back"),
+        "ThreadLocalStorageManager" =>
+            $"'{name}' is not defined: the thread-locals' manager is ThreadLocalManager (tessera migrate --step " +
+            "threadlocal rewrites the old name)",
         "zero_bss" or "copy_data" => Message(name, $"GlobalManager.{name}() readies the globals' memory"),
         _ => null,
     };
