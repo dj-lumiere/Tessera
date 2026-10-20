@@ -88,12 +88,14 @@ jobs:
 
       # Keg-only; GITHUB_PATH entries are prepended, so this shadows Apple clang. Homebrew's clang links against the
       # Command Line Tools' SDK, so the linker comes from the Command Line Tools too: the selected Xcode's ld can be
-      # older than that SDK and reject its libSystem.tbd ("unknown architecture").
-      - name: Install LLVM 21 (macOS)
+      # older than that SDK and reject its libSystem.tbd ("unknown architecture"). macOS takes Homebrew's current LLVM,
+      # not LLVM 21: LLVM 21's ThreadSanitizer runtime crashes at startup on macOS 26 (in __tsan::SlotLock, an empty C
+      # program built with -fsanitize=thread included), so tests/race_check could only crash there.
+      - name: Install LLVM (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install llvm@21
-          echo "$(brew --prefix llvm@21)/bin" >> "$GITHUB_PATH"
+          brew install llvm
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
           echo "DEVELOPER_DIR=/Library/Developer/CommandLineTools" >> "$GITHUB_ENV"
           DEVELOPER_DIR=/Library/Developer/CommandLineTools xcrun --find ld
           DEVELOPER_DIR=/Library/Developer/CommandLineTools ld -v
@@ -155,27 +157,6 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 20
         run: dotnet bin/Release/net10.0/tessera.dll test --target ${{ matrix.target }} --mode release-space tests examples
-
-      # When a golden step fails on macOS, a plain C program built with ThreadSanitizer is run with each clang the
-      # runner has (LLVM 21's, the newest Homebrew LLVM's, Apple's), and the race check's program under lldb, so the log
-      # shows whether ThreadSanitizer runs at all and where the program stops.
-      - name: Race check diagnostics (macOS)
-        if: ${{ failure() && runner.os == 'macOS' && steps.build.outcome == 'success' }}
-        continue-on-error: true
-        timeout-minutes: 15
-        run: |
-          set +e
-          sw_vers
-          printf 'int main(void) { return 0; }\n' > tsan_probe.c
-          brew install llvm
-          for cc in "$(brew --prefix llvm@21)/bin/clang" "$(brew --prefix llvm)/bin/clang" /usr/bin/clang; do
-            "$cc" --version | head -1
-            "$cc" -fsanitize=thread -g tsan_probe.c -o tsan_probe && ./tsan_probe
-            echo "plain C with ThreadSanitizer from $cc: exit $?"
-          done
-          cd tests/race_check
-          dotnet ../../bin/Release/net10.0/tessera.dll build
-          lldb --batch -o run -o "thread backtrace all" -- ./build/main
 
   # Targets no hosted runner runs: type-check the stdlib and have LLVM compile it for each (no link, so no sysroot or
   # emulator). Catches backend crashes and lowering gaps, such as llvm.minimum on 32-bit ARM.
