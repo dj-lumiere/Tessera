@@ -156,18 +156,25 @@ jobs:
         timeout-minutes: 20
         run: dotnet bin/Release/net10.0/tessera.dll test --target ${{ matrix.target }} --mode release-space tests examples
 
-      # When a golden step fails on macOS, the race check's program is run alone under lldb, with a plain C program
-      # built with ThreadSanitizer beside it, so the log shows where it stops and whether ThreadSanitizer runs at all.
+      # When a golden step fails on macOS, a plain C program built with ThreadSanitizer is run with each clang the
+      # runner has (LLVM 21's, the newest Homebrew LLVM's, Apple's), and the race check's program under lldb, so the log
+      # shows whether ThreadSanitizer runs at all and where the program stops.
       - name: Race check diagnostics (macOS)
         if: ${{ failure() && runner.os == 'macOS' && steps.build.outcome == 'success' }}
         continue-on-error: true
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: |
+          set +e
+          sw_vers
           printf 'int main(void) { return 0; }\n' > tsan_probe.c
-          clang -fsanitize=thread -g tsan_probe.c -o tsan_probe && ./tsan_probe; echo "plain C with ThreadSanitizer: exit $?"
+          brew install llvm
+          for cc in "$(brew --prefix llvm@21)/bin/clang" "$(brew --prefix llvm)/bin/clang" /usr/bin/clang; do
+            "$cc" --version | head -1
+            "$cc" -fsanitize=thread -g tsan_probe.c -o tsan_probe && ./tsan_probe
+            echo "plain C with ThreadSanitizer from $cc: exit $?"
+          done
           cd tests/race_check
           dotnet ../../bin/Release/net10.0/tessera.dll build
-          ./build/main; echo "race_check: exit $?"
           lldb --batch -o run -o "thread backtrace all" -- ./build/main
 
   # Targets no hosted runner runs: type-check the stdlib and have LLVM compile it for each (no link, so no sysroot or
