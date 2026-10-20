@@ -324,21 +324,29 @@ secret routine c_virtual_query(addr: Addr, info: @PageRange, length: CSize) -> C
 
 ### Windows checks a stack against the thread block's fields, which switch_stack restores from the frame: the
 ### reservation's bottom (word 21), the limit (word 22), and the base (word 23). The limit is the bottom of the pages
-### committed at the top, which VirtualQuery gives: below it a stack allocator's guard page lets Windows grow the
-### stack, and memory committed all at once (another allocator) reads as one range. Elsewhere nothing follows the
-### stack.
+### committed at the top, and Windows' stack probe (__chkstk) writes a zero byte into every page between the limit and
+### a large frame, so a limit above the real one zeroes bytes of live frames. VirtualQuery gives the run of pages
+### with the same state from the address asked about upward, so the walk starts at the stack's bottom and goes up run
+### by run to the one that holds the top: its start is the limit. Memory committed all at once is one run from the
+### bottom, and a stack allocator's guard page leaves the run of committed pages above it.
 ### :param sp: The new stack's frame.
-### :param limit: The bottom of the stack (unused here, VirtualQuery gives the limit).
+### :param limit: The bottom of the stack.
 ### :param base: The top of the stack.
 @target(arch: "x86_64", os: "windows")
 secret routine store_bounds(sp: @U64, limit: U64, base: U64) -> None
     local info: @PageRange <- .hollow()
 
-    c_virtual_query(inttoptr[U64, Addr](base - 1), info, 48)
-    ptrtoint[Addr, U64](info.allocation_base.peek()).poke_into(sp.stride(21))
-    ptrtoint[Addr, U64](info.base.peek()).poke_into(sp.stride(22))
-    base.poke_into(sp.stride(23))
-    return
+    while true with at: U64 = limit
+        c_virtual_query(inttoptr[U64, Addr](at), info, 48)
+        run_end: U64 = ptrtoint[Addr, U64](info.base.peek()) + info.size.peek()
+        if run_end >= base or info.size.peek() == 0
+            break
+        continue with at: run_end
+    then
+        ptrtoint[Addr, U64](info.allocation_base.peek()).poke_into(sp.stride(21))
+        ptrtoint[Addr, U64](info.base.peek()).poke_into(sp.stride(22))
+        base.poke_into(sp.stride(23))
+        return
 
 ### Stores the stack bounds Windows checks into the starting frame (it does nothing on other targets, where nothing
 ### follows the stack).
