@@ -1850,8 +1850,8 @@ public sealed partial class Compiler
             if (!new CallableType(sig.CallConv, sig.Params, sig.Ret).Equals(want)) continue;
             if (routine.AnnotationNamed("inline") is not null)
                 throw new CompileError(r.Pos, $"'{r.Name}' is @inline, so it can't be a Callable value: it's inlined at every call");
-            if (!sig.PassesBf16AsBits && (Instance.IsBf16(sig.Ret) || sig.Params.Any(Instance.IsBf16)))
-                throw new CompileError(r.Pos, $"routine '{r.Name}' passes BF16 the C way, so it can't be a Callable; wrap it in a Tessera routine");
+            if (!sig.PassesBf16AsBits && Instance.HasBitsCarrier(sig.Params, sig.Ret, Target))
+                throw new CompileError(r.Pos, $"routine '{r.Name}' passes a float the C way, so it can't be a Callable; wrap it in a Tessera routine");
             var inst = RequireInstance(routine, new TypeEnv(routine.File));
             return $"@{Quote(inst.Symbol)}";
         }

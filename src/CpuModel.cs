@@ -95,7 +95,10 @@ public sealed class CpuModel
     private static Task<ClangRun?> Run(BuildTarget target, IEnumerable<string> features)
     {
         var args = new List<string> { "--target=" + target.LlvmTriple };
-        if (target.Cpu is { } cpu)
+        // clang's own default for 32-bit x86 Linux is i686, whose floats live on the x87 stack only: loading a
+        // signaling NaN there quiets it, so B32 and B64 couldn't keep their NaN payloads. pentium4 has SSE2, as
+        // clang already picks for 32-bit Windows.
+        if ((target.Cpu ?? (target.Arch == "x86" ? "pentium4" : null)) is { } cpu)
             args.Add((target.Arch is "x86_64" or "x86" ? "-march=" : "-mcpu=") + cpu);
         foreach (var f in features)
             args.AddRange(["-Xclang", "-target-feature", "-Xclang", f]);

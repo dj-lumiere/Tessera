@@ -875,10 +875,10 @@ public sealed class FunctionGen
                 ps.Add($"{info.Parts[0].Llvm} {name}.p");
                 unpack.Add($"{name} = load {_inst.Params[i].Llvm}, ptr {name}.p");
             }
-            else if (_inst.PassesBf16AsBits && Instance.IsBf16(_inst.Params[i]))
+            else if (_inst.PassesBf16AsBits && Instance.BitsCarrier(_inst.Params[i], isReturn: false, _c.Target) is { } carrier)
             {
-                ps.Add($"i16 {name}.bits");
-                unpack.Add($"{name} = bitcast i16 {name}.bits to bfloat");
+                ps.Add($"{carrier} {name}.bits");
+                unpack.Add($"{name} = bitcast {carrier} {name}.bits to {_inst.Params[i].Llvm}");
             }
             else ps.Add($"{_inst.Params[i].Llvm}{_inst.ParamExt(_c.Target, i)} {name}");
         }
@@ -3234,10 +3234,10 @@ public sealed class FunctionGen
         var own = new CallableType(inst.CallConv, inst.Params, inst.Ret);
         if (r.Callable is { } written && Resolve(written) is var ct && !ct.Equals(own))
             throw Err(r.Pos, $"routine '{r.Name}' is {own}, not {ct}");
-        // A call through a Callable passes BF16 as its i16 bits, as Tessera routines do; an external C routine
-        // takes a real bfloat, so it can't sit behind one.
-        if (!inst.PassesBf16AsBits && (Instance.IsBf16(inst.Ret) || inst.Params.Any(Instance.IsBf16)))
-            throw Err(r.Pos, $"routine '{r.Name}' passes BF16 the C way, so it can't be a Callable; wrap it in a Tessera routine");
+        // A call through a Callable passes BF16 (and on 32-bit x86 a returned B32 or B64) as its integer bits, as
+        // Tessera routines do. An external C routine takes the real float, so it can't sit behind one.
+        if (!inst.PassesBf16AsBits && Instance.HasBitsCarrier(inst.Params, inst.Ret, _c.Target))
+            throw Err(r.Pos, $"routine '{r.Name}' passes a float the C way, so it can't be a Callable; wrap it in a Tessera routine");
         return new Val($"@{Compiler.Quote(inst.Symbol)}", own);
     }
 
@@ -4444,7 +4444,7 @@ public sealed class FunctionGen
         const bool bits = true;
         bool c = ct.CallConv != "fast";
         var sig = _c.LowerSignature(ct.Params, ct.Ret, ct.CallConv, pos);
-        string ret = Compiler.AbiRetType(sig, bits && Instance.IsBf16(ct.Ret) ? "i16" : ct.Ret.Llvm);
+        string ret = Compiler.AbiRetType(sig, Instance.BitsCarrier(ct.Ret, isReturn: true, _c.Target) ?? ct.Ret.Llvm);
         string retExt = c ? CAbi.Ext(_c.Target, ct.Ret, isReturn: true).TrimStart() : "";
         string head = $"{cc}{RetExtOf(sig, retExt.Length > 0 ? retExt + " " : "")}{ret} {fp.Op}";
         TraceAt(pos);
@@ -4453,10 +4453,15 @@ public sealed class FunctionGen
 
     /// A call argument as the callee's ABI wants it: a BF16 goes to a Tessera routine as its i16 bits.
     private string AbiArg(Val a, bool bf16AsBits, string ext = "") =>
-        bf16AsBits && Instance.IsBf16(a.Type) ? $"i16 {EmitTmp($"bitcast bfloat {a.Op} to i16")}" : $"{a.Type.Llvm}{ext} {a.Op}";
+        bf16AsBits && Instance.BitsCarrier(a.Type, isReturn: false, _c.Target) is { } carrier
+            ? $"{carrier} {EmitTmp($"bitcast {a.Type.Llvm} {a.Op} to {carrier}")}"
+            : $"{a.Type.Llvm}{ext} {a.Op}";
 
+    /// A call's result as the caller uses it: a float a Tessera routine returned as its integer bits is bitcast back.
     private Val AbiResult(string op, DType t, bool bf16AsBits) =>
-        bf16AsBits && Instance.IsBf16(t) ? new Val(EmitTmp($"bitcast i16 {op} to bfloat"), t) : new Val(op, t);
+        bf16AsBits && Instance.BitsCarrier(t, isReturn: true, _c.Target) is { } carrier
+            ? new Val(EmitTmp($"bitcast {carrier} {op} to {t.Llvm}"), t)
+            : new Val(op, t);
 
     /// A routine every solution may emit from the same source (a generic routine's instance, or a stdlib routine
     /// compiled into each solution until the stdlib is prebuilt) is linkonce_odr: the linker keeps one copy. COFF and
@@ -4763,9 +4768,9 @@ public sealed class FunctionGen
             Return($"ret {part} {EmitTmp($"load {part}, ptr {buffer}")}");
             return;
         }
-        if (_inst.PassesBf16AsBits && Instance.IsBf16(_inst.Ret))
-            v = new Val(EmitTmp($"bitcast bfloat {v.Op} to i16"), IntType.U(16));
-        Return($"ret {_inst.LlvmRet} {v.Op}");
+        if (_inst.PassesBf16AsBits && Instance.BitsCarrier(_inst.Ret, isReturn: true, _c.Target) is { } carrier)
+            v = new Val(EmitTmp($"bitcast {_inst.Ret.Llvm} {v.Op} to {carrier}"), _inst.Ret);
+        Return($"ret {_inst.LlvmRet(_c.Target)} {v.Op}");
     }
 
     /// `jump name(args)`: to a block of the routine, its arguments evaluated here. While they are, `_arm` says where

@@ -14,6 +14,28 @@ module Standard/System/Memory
 @target(os: not "none")
 secret preset MALLOC_ALIGN: U64 = sizeof[Addr]().mul(2)
 
+### The C library's heap: malloc, realloc, and free in every build, with nothing in front of the blocks. For memory
+### that C code frees or reallocates, or that comes from C's malloc and is freed here. An alignment past malloc's own
+### comes from posix_memalign (still freed with free), and on Windows, whose free can't take such a block, it crashes.
+### `C_HEAP` is its table.
+@target(os: not "none")
+record CHeapManager
+obeys HeapManageable[CHeapManager]
+
+### The C library's heap through `_aligned_malloc`, so every alignment is there: the default heap on Windows with the
+### heap check off. Its blocks go back through `_aligned_free`, never C's free.
+@target(os: "windows")
+record AlignedHeapManager
+obeys HeapManageable[AlignedHeapManager]
+
+### Whether C's heap can be asked for `size` bytes at all. On a 32-bit target a size of 4 GiB or more doesn't fit
+### C's size_t, and a heap turns it down as having no room instead of crashing on the conversion.
+### :param size: The number of bytes.
+### :returns: True when `size` fits C's size_t.
+@target(os: not "none")
+secret routine fits_c_size(size: U64) -> Bool
+    return size <= CSize.MAX.to[U64]()
+
 ### Binds the C `malloc` function, which allocates a block of memory.
 ### :param size: The number of bytes.
 ### :returns: The new block, or null when the allocation fails.
@@ -90,20 +112,14 @@ secret routine c_aligned_realloc(ptr: Addr, size: CSize, align: CSize) -> Addr
 @target(os: "windows")
 secret routine c_aligned_free(ptr: Addr) -> None
 
-### The C library's heap: malloc, realloc, and free in every build, with nothing in front of the blocks. For memory
-### that C code frees or reallocates, or that comes from C's malloc and is freed here. An alignment past malloc's own
-### comes from posix_memalign (still freed with free), and on Windows, whose free can't take such a block, it crashes.
-### `C_HEAP` is its table.
-@target(os: not "none")
-record CHeapManager
-obeys HeapManageable[CHeapManager]
-
 ### Allocates `size` bytes with malloc, or with posix_memalign for an alignment past malloc's.
 ### :param size: The number of bytes.
 ### :param align: The alignment, a power of two.
 ### :returns: The new block, null when the heap has no room.
 @target(os: ("linux", "macos"))
 routine @CHeapManager.alloc(size: U64, align: U64) -> Addr
+    if not fits_c_size(size)
+        return .hollow()
     if align <= MALLOC_ALIGN
         return c_malloc(size.to[CSize]())
     local out: @Addr <- .hollow()
@@ -118,6 +134,8 @@ routine @CHeapManager.alloc(size: U64, align: U64) -> Addr
 ### :throws: Crashes with `InvalidValueError` when `align` is past malloc's own.
 @target(os: "windows")
 routine @CHeapManager.alloc(size: U64, align: U64) -> Addr
+    if not fits_c_size(size)
+        return .hollow()
     if align <= MALLOC_ALIGN
         return c_malloc(size.to[CSize]())
     crash(name: "InvalidValueError",
@@ -131,6 +149,8 @@ routine @CHeapManager.alloc(size: U64, align: U64) -> Addr
 ### :returns: The resized block (possibly moved), null when the heap has no room and the old block is untouched.
 @target(os: ("linux", "macos"))
 routine @CHeapManager.realloc(at: Addr, size: U64, align: U64) -> Addr
+    if not fits_c_size(size)
+        return .hollow()
     if align <= MALLOC_ALIGN
         return c_realloc(at, size.to[CSize]())
     fresh: Addr = me.alloc(size, align)
@@ -150,6 +170,8 @@ routine @CHeapManager.realloc(at: Addr, size: U64, align: U64) -> Addr
 ### :returns: The resized block (possibly moved), null when realloc fails and the old block is untouched.
 @target(os: "windows")
 routine @CHeapManager.realloc(at: Addr, size: U64, align: U64) -> Addr
+    if not fits_c_size(size)
+        return .hollow()
     return c_realloc(at, size.to[CSize]())
 
 ### Gives a block back with free.
@@ -159,18 +181,14 @@ routine @CHeapManager.free(at: Addr) -> None
     c_free(at)
     return
 
-### The C library's heap through `_aligned_malloc`, so every alignment is there: the default heap on Windows with the
-### heap check off. Its blocks go back through `_aligned_free`, never C's free.
-@target(os: "windows")
-record AlignedHeapManager
-obeys HeapManageable[AlignedHeapManager]
-
 ### Allocates `size` bytes with `_aligned_malloc`.
 ### :param size: The number of bytes.
 ### :param align: The alignment, a power of two.
 ### :returns: The new block, null when the heap has no room.
 @target(os: "windows")
 routine @AlignedHeapManager.alloc(size: U64, align: U64) -> Addr
+    if not fits_c_size(size)
+        return .hollow()
     return c_aligned_malloc(size.to[CSize](), align.max(MALLOC_ALIGN).to[CSize]())
 
 ### Resizes a block with `_aligned_realloc`, keeping its alignment.
@@ -180,6 +198,8 @@ routine @AlignedHeapManager.alloc(size: U64, align: U64) -> Addr
 ### :returns: The resized block, null when the heap has no room and the old block is untouched.
 @target(os: "windows")
 routine @AlignedHeapManager.realloc(at: Addr, size: U64, align: U64) -> Addr
+    if not fits_c_size(size)
+        return .hollow()
     return c_aligned_realloc(at, size.to[CSize](), align.max(MALLOC_ALIGN).to[CSize]())
 
 ### Gives a block back with `_aligned_free`.
@@ -210,13 +230,6 @@ routine @AlignedHeapManager.free(at: Addr) -> None
 # caught like any freed one. CheckedHeapManager is there in every build, and HEAP is the checked heap when the heap
 # check is on. With it off HEAP is the C library's heap above.
 
-### The checked heap: the C library's heap with a header in front of each block, which crashes with `DoubleFreeError`
-### on a block freed twice and with `InvalidValueError` on memory that isn't one of its blocks. Every alignment is
-### there. `HEAP` is its table when the heap check is on.
-@target(os: not "none")
-record CheckedHeapManager
-obeys HeapManageable[CheckedHeapManager]
-
 ### The headers of the last QUARANTINE_SIZE freed blocks, held back from malloc.
 @target(os: not "none")
 secret global QUARANTINE: @Array[Addr, QUARANTINE_SIZE]
@@ -227,7 +240,6 @@ secret global QUARANTINE_NEXT: @U64
 ### The room kept in front of a block for its header, a multiple of every alignment malloc gives.
 @target(os: not "none")
 secret preset HEADER_ROOM: U64 = 32
-
 ### The offset from a block back to its header.
 @target(os: not "none")
 secret preset HEADER_BACK: S64 = -32
@@ -243,6 +255,13 @@ secret preset QUARANTINE_SIZE: U64 = 256
 ### The mask that turns the running count of frees into a quarantine slot.
 @target(os: not "none")
 secret preset QUARANTINE_MASK: U64 = QUARANTINE_SIZE.sub(1)
+
+### The checked heap: the C library's heap with a header in front of each block, which crashes with `DoubleFreeError`
+### on a block freed twice and with `InvalidValueError` on memory that isn't one of its blocks. Every alignment is
+### there. `HEAP` is its table when the heap check is on.
+@target(os: not "none")
+record CheckedHeapManager
+obeys HeapManageable[CheckedHeapManager]
 
 ### What the checked heap keeps in front of each block.
 @target(os: not "none")
@@ -276,6 +295,8 @@ routine @CheckedHeapManager.alloc(size: U64, align: U64) -> Addr
     total: Maybe[U64] = size.add_checked(HEADER_ROOM.add(step))
     when total
         is U64 as bytes =>
+            if not fits_c_size(bytes)
+                return .hollow()
             raw: Addr = c_malloc(bytes.to[CSize]())
             if raw.is_hollow()
                 return .hollow()

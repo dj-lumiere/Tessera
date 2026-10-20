@@ -51,12 +51,28 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
     /// __truncsfbf2.
     public bool PassesBf16AsBits => Decl.AnnotationNamed("external") is null && Decl.AnnotationNamed("export") is null;
 
-    public static bool IsBf16(DType t) => t.Repr is FloatType ft && ft == FloatType.BF16;
+    /// The integer type a Tessera routine passes a float as instead of the float itself, or null when it passes the
+    /// float: BF16 always (as i16), and on 32-bit x86 a returned B32 or B64 (as i32 or i64). The C ABI there returns
+    /// a float on the x87 stack, and loading a signaling NaN there quiets it (B32.from_bits(0x7F800003) came back as
+    /// 0x7FC00003).
+    public static string? BitsCarrier(DType t, bool isReturn, BuildTarget target) => t.Repr switch
+    {
+        FloatType ft when ft == FloatType.BF16 => "i16",
+        FloatType ft when isReturn && target.Arch == "x86" && ft == FloatType.B32 => "i32",
+        FloatType ft when isReturn && target.Arch == "x86" && ft == FloatType.B64 => "i64",
+        _ => null,
+    };
+
+    /// Whether a C routine with these types can't stand behind a Callable, since a call through one passes some of
+    /// them as integer bits (see <see cref="BitsCarrier"/>).
+    public static bool HasBitsCarrier(IReadOnlyList<DType> ps, DType ret, BuildTarget target) =>
+        BitsCarrier(ret, isReturn: true, target) is not null || ps.Any(p => BitsCarrier(p, isReturn: false, target) is not null);
 
     /// The LLVM type of a parameter or return value at the call boundary.
-    public string AbiLlvm(DType t) => PassesBf16AsBits && IsBf16(t) ? "i16" : t.Llvm;
+    public string AbiLlvm(DType t, BuildTarget target, bool isReturn = false) =>
+        PassesBf16AsBits && BitsCarrier(t, isReturn, target) is { } bits ? bits : t.Llvm;
 
-    public string LlvmRet => AbiLlvm(Ret);
+    public string LlvmRet(BuildTarget target) => AbiLlvm(Ret, target, isReturn: true);
 
     /// The C ABI's extension attribute on parameter i (" signext" / " zeroext" / ""); fastcc routines take none.
     public string ParamExt(BuildTarget target, int i) =>
@@ -68,10 +84,7 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
 
     /// The parameter types with their extension attributes, as a declaration lists them.
     public string LlvmParamDecls(BuildTarget target) =>
-        string.Join(", ", Params.Select((p, i) => AbiLlvm(p) + ParamExt(target, i)).Concat(Variadic ? ["..."] : []));
-
-    public string LlvmParamTypes =>
-        string.Join(", ", Params.Select(AbiLlvm).Concat(Variadic ? ["..."] : []));
+        string.Join(", ", Params.Select((p, i) => AbiLlvm(p, target) + ParamExt(target, i)).Concat(Variadic ? ["..."] : []));
 }
 
 public sealed partial class Compiler

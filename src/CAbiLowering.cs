@@ -98,10 +98,10 @@ public sealed partial class Compiler
 
     /// A routine's lowered return type; with attributes, a Direct one carries its extension.
     public string AbiRet(Instance inst, bool withAttrs) =>
-        AbiRetType(LowerSignature(inst), (withAttrs ? inst.RetExt(Target) : "") + inst.LlvmRet);
+        AbiRetType(LowerSignature(inst), (withAttrs ? inst.RetExt(Target) : "") + inst.LlvmRet(Target));
 
     public List<string> AbiParams(Instance inst, bool withAttrs) =>
-        AbiParams(LowerSignature(inst), (i, attrs) => inst.AbiLlvm(inst.Params[i]) + (attrs ? inst.ParamExt(Target, i) : ""),
+        AbiParams(LowerSignature(inst), (i, attrs) => inst.AbiLlvm(inst.Params[i], Target) + (attrs ? inst.ParamExt(Target, i) : ""),
             inst.Variadic, withAttrs);
 
     // ── leaves ──────────────────────────────────────────────────────────────
