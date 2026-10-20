@@ -30,6 +30,7 @@ choice FsError: U8
     NO_SPACE
     READ_ONLY  # a read-only filesystem
     BUSY  # in use by another process (a Windows sharing violation)
+    STORAGE_FAULT  # the storage device couldn't read or write (a bad sector, a failing disk, a pulled card)
     OUT_OF_MEMORY
     OTHER
 
@@ -70,11 +71,76 @@ record DirEntry
     name: @[Byte]  # the entry's name, valid until the iterator's next call
     kind: FileKind
 
-### Part of a file mapped into memory by Mapping.map. unmap it when done.
-record Mapping
-    base: Addr  # what the OS mapped, from an aligned offset (null for an empty mapping)
-    delta: U64  # from base to the first byte asked for
-    count: U64  # the bytes mapped from there
+### A type a {FileStorage} keeps one value of in each cell: `Byte` (one byte) and `Char` (four bytes, a Unicode
+### scalar as UTF-32LE). A cell's bytes are read and written through these two routines.
+### :typeparam T: The cell type.
+protocol StorageCell[T]
+needs T: typename
+    ### The value the cell at `at` holds.
+    ### :param at: The cell's first byte.
+    ### :returns: The value, or `None` when the cell's bytes aren't a value of the type.
+    common routine Me.from_cell(at: @Byte) -> Maybe[Me]
+
+    ### Writes `me` into the cell at `at`.
+    ### :param at: The cell's first byte.
+    routine Me.into_cell(at: @Byte) -> None
+
+obeys StorageCell[Byte], StorageCell[Char]
+
+### A file seen as cells of `T`, mapped into memory (mmap, or CreateFileMapping and MapViewOfFile): random access
+### by index, `storage[i]` and `storage[i] = v`, each read and write going to the file through the OS's page cache.
+### It comes from {OsFileManager.storage_result}, and `unmap` gives it back (writing changed pages first).
+### `FileStorage[Byte]` is the file's bytes, `FileStorage[Char]` its Unicode scalars, four bytes each (UTF-32LE). A
+### UTF-8 text file isn't a `FileStorage[Char]`: read it as bytes.
+### :typeparam T: The cell type, `Byte` or `Char`.
+record FileStorage[T]
+needs T: typename, StorageCell[T]
+obeys ViewingIndexable[FileStorage[T], T], ModifyingIndexable[FileStorage[T], T]
+    base: Addr  # what the OS mapped, from an aligned offset (null for an empty storage)
+    delta: U64  # bytes from base to the first cell asked for
+    count: U64  # the cells mapped from there
+    writable: Bool  # whether stores reach the file (mapped with write: true)
+
+### Makes a `FileStorage` from its fields.
+### :param base: Its `base`.
+### :param delta: Its `delta`.
+### :param count: Its `count`.
+### :param writable: Its `writable`.
+### :returns: The new value.
+common routine FileStorage[T].construct(base: Addr, delta: U64, count: U64, writable: Bool) -> Me
+needs T: typename, StorageCell[T]
+    return Me(base, delta, count, writable)
+
+### A `FileStorage` over a mapping made elsewhere, from its base, delta, and cell count, to flush or unmap it. Its cells
+### count as writable.
+### :param base: The mapping's base.
+### :param delta: Bytes from the base to the first cell.
+### :param count: The number of cells.
+### :returns: The new value.
+common routine FileStorage[T].construct(base: Addr, delta: U64, count: U64) -> Me
+needs T: typename, StorageCell[T]
+    return Me(base, delta, count, writable: true)
+
+### Releases nothing: a `FileStorage` is given back with `unmap`.
+routine @FileStorage[T].destruct() -> None
+needs T: typename, StorageCell[T]
+    return
+
+### Why a move failed, and whether the copy at the destination was finished.
+record MoveError
+    reason: FsError  # what the OS reported
+    copied: Bool  # true when the copy at the destination is whole and the source is still there, as deleting it failed
+
+### Makes a `MoveError` from its fields.
+### :param reason: Its `reason`.
+### :param copied: Its `copied`.
+### :returns: The new value.
+common routine MoveError.construct(reason: FsError, copied: Bool) -> Me
+    return Me(reason, copied)
+
+### Releases nothing: a `MoveError` holds no memory of its own.
+routine @MoveError.destruct() -> None
+    return
 
 ### Makes a `DirEntry` from its fields.
 ### :param name: Its `name`.
@@ -86,18 +152,6 @@ common routine DirEntry.construct(name: @[Byte], kind: FileKind) -> Me
 ### Releases the memory its `name` holds.
 routine @DirEntry.destruct() -> None
     me.name.destruct()
-    return
-
-### Makes a `Mapping` from its fields.
-### :param base: Its `base`.
-### :param delta: Its `delta`.
-### :param count: Its `count`.
-### :returns: The new value.
-common routine Mapping.construct(base: Addr, delta: U64, count: U64) -> Me
-    return Me(base, delta, count)
-
-### Releases nothing: a `Mapping` holds no memory of its own.
-routine @Mapping.destruct() -> None
     return
 
 ### The success value of a filesystem call that has nothing to return.
@@ -329,7 +383,7 @@ routine @FileHandle.has_failed() -> Bool
 # -- paths (no OS calls) -----------------------------------------------------------------
 #
 # A separator is '/' everywhere, and '\' too on Windows. These look at the text only: nothing is resolved. The
-# public form of the secret ones is a File or Directory member: name, stem, extension, parent, file, and subdir.
+# public form of the secret ones is a File or Directory member: name, stem, extension, parent, file, and go_to.
 
 ### Whether b is a path separator: '/' or '\' on Windows.
 ### :param b: The byte to test.
@@ -468,21 +522,314 @@ secret routine file_extension(path: @[Byte]) -> @[Byte]
         return name.slice(start: 0, end: 0)
     return name.slice(start: dot + 1, end: name.count())
 
-# -- memory-mapped files -----------------------------------------------------------------
+### Whether name is one name in a directory: not empty, not "." or "..", and no separator in it.
+### :param name: The name to look at.
+### :returns: True for a plain name.
+secret routine is_plain_name(name: @[Byte]) -> Bool
+    if name.is_empty() or name == "." or name == ".."
+        return false
+    each i in 0 til name.count()
+        if is_separator(name.byte_at(i).bits())
+            return false
+    return true
 
-### A mapping of nothing: what an empty file, or a range past the end, maps to.
-### :returns: A mapping with a null base and a count of 0.
-common routine Mapping.empty() -> Me
-    return Me(base: .hollow(), delta: 0, count: 0)
+# -- the cells of a FileStorage ---------------------------------------------------------
 
-### The first byte asked for (null for an empty mapping).
+### The byte in the cell at `at`.
+### :param at: The cell.
+### :returns: The byte, always present.
+common routine Byte.from_cell(at: @Byte) -> Maybe[Byte]
+    b: Byte = at.peek()
+    return b
+
+### Writes `me` into the cell at `at`.
+### :param at: The cell.
+routine Byte.into_cell(at: @Byte) -> None
+    at.poke(me)
+    return
+
+### The Unicode scalar in the four-byte cell at `at`, little-endian (UTF-32LE).
+### :param at: The cell's first byte.
+### :returns: The character.
+### :absent: When the four bytes are above 0x10FFFF or a surrogate, so not a Unicode scalar.
+common routine Char.from_cell(at: @Byte) -> Maybe[Char]
+    return at.read_le[U32](0).to_checked[Char]()
+
+### Writes `me` into the four-byte cell at `at`, little-endian (UTF-32LE).
+### :param at: The cell's first byte.
+routine Char.into_cell(at: @Byte) -> None
+    bits: U32 = me.to[U32]()
+    each i in 0 til 4
+        shifted: U32 = bits >> (i * 8).to_wrap[U32]()
+        at.stride(i).poke(shifted.to_wrap[U8]().bits())
+    return
+
+# -- FileStorage -------------------------------------------------------------------------
+
+### A storage of nothing: what an empty file, or a range past the end, maps to.
+### :returns: A storage with a null base and no cells.
+common routine FileStorage[T].empty() -> Me
+needs T: typename, StorageCell[T]
+    return Me(base: .hollow(), delta: 0, count: 0, writable: false)
+
+### The bytes one cell takes: 1 for a Byte, 4 for a Char.
+### :returns: The size of `T`.
+common routine FileStorage[T].cell_size() -> U64
+needs T: typename, StorageCell[T]
+    return sizeof[T]()
+
+### The first byte of the first cell (null for an empty storage).
 ### :returns: `base` plus `delta`, or null.
-routine Mapping.data() -> @Byte
+routine FileStorage[T].data() -> @Byte
+needs T: typename, StorageCell[T]
     if me.base.is_hollow()
         return .hollow()
     return me.base.to[@Byte]().stride(me.delta)
 
-### The number of bytes mapped, from `data()` on.
-### :returns: The byte count, 0 for an empty mapping.
-routine Mapping.count() -> U64
+### The number of cells.
+### :returns: The cell count, 0 for an empty storage.
+routine FileStorage[T].count() -> U64
+needs T: typename, StorageCell[T]
     return me.count
+
+### The bytes the OS mapped, from `base`: the delta and every cell.
+### :returns: The mapped length in bytes.
+routine FileStorage[T].mapped_bytes() -> U64
+needs T: typename, StorageCell[T]
+    return me.delta + me.count * sizeof[T]()
+
+### The value in cell `index`, `storage[index]`.
+### :param index: The cell, from 0.
+### :returns: The value.
+### :throws: Crashes with `IndexOutOfBoundsError` when `index` is not below `count()`, and with `InvalidValueError`
+###     when the cell's bytes aren't a `T` (four bytes that aren't a Unicode scalar, in a `FileStorage[Char]`).
+@track_caller
+routine FileStorage[T].getitem(index: U64) -> T
+needs T: typename, StorageCell[T]
+    if index >= me.count
+        crash_out_of_bounds()
+    when T.from_cell(at: me.data().stride(index * sizeof[T]()))
+        is T as value => return value
+        is None =>
+            crash(name: "InvalidValueError",
+                message: "This cell isn't a value of the storage's type (a Char cell holds a Unicode scalar).")
+
+### The value in cell `index`.
+### :param index: The cell, from 0.
+### :returns: The value.
+### :absent: When `index` is not below `count()`, or the cell's bytes aren't a `T`.
+routine FileStorage[T].getitem_checked(index: U64) -> Maybe[T]
+needs T: typename, StorageCell[T]
+    if index >= me.count
+        return None()
+    return T.from_cell(at: me.data().stride(index * sizeof[T]()))
+
+### Writes `value` into cell `index`, `storage[index] = value`. It reaches the file when the OS writes the page back,
+### at `flush_result`, or at `unmap`.
+### :param index: The cell, from 0.
+### :param value: The value to write.
+### :throws: Crashes with `IndexOutOfBoundsError` when `index` is not below `count()` (a storage never grows its file),
+###     and with `InvalidValueError` when the storage was mapped without `write`.
+@track_caller
+routine @FileStorage[T].setitem(index: U64, value: T) -> None
+needs T: typename, StorageCell[T]
+    if index >= me.count.peek()
+        crash_out_of_bounds()
+    if not me.writable.peek()
+        crash(name: "InvalidValueError",
+            message: "This storage was mapped for reading only: map it with write: true to change its cells.")
+    storage: FileStorage[T] = me.peek()
+    value.into_cell(at: storage.data().stride(index * sizeof[T]()))
+    return
+
+### Where `count` cells from cell `start` begin in a file of `size` bytes, and how many of them it has: `start` and
+### `count` clamped to the whole cells the file holds.
+### :param size: The file's size in bytes.
+### :param start: The first cell asked for.
+### :param count: The most cells asked for, or `U64.MAX` for the rest.
+### :param cell: The bytes of one cell.
+### :returns: The byte offset of the first cell and the number of cells, 0 cells past the end.
+secret routine cell_window(size: U64, start: U64, count: U64, cell: U64) -> (U64, U64)
+    cells: U64 = size // cell
+    if start >= cells
+        return (0, 0)
+    return (start * cell, count.min(cells - start))
+
+# -- moving and copying trees ------------------------------------------------------------
+
+### Copies the directory tree at from to to, which must not be there: each directory made, each file copied (a link
+### copied as what it points at).
+### :param from: The directory to copy.
+### :param to: Where the copy goes.
+### :param alloc: The allocator for the child paths.
+### :returns: `Unit` once everything is copied.
+### :throws: Returns the first error, which stops the copy partway.
+secret routine copy_tree(from: @[Byte], to: @[Byte], alloc: @MemoryManager) -> Result[None, FsError]
+    local iter: @DirIter <- .hollow()
+
+    made: Result[None, FsError] = create_dir(to)
+    when made
+        is None => pass
+        is FsError as error => return error
+    opened: Result[None, FsError] = iter.open_path(from)
+    when opened
+        is None => pass
+        is FsError as error =>
+            iter.close()
+            return error
+    while true
+        entry: Maybe[DirEntry] = iter.emit_checked()
+        when entry
+            is DirEntry as e =>
+                local src: @Memory[Byte] <- join_path(a: from, b: e.name, alloc)
+                local dst: @Memory[Byte] <- join_path(a: to, b: e.name, alloc)
+                done: Result[None, FsError] = copy_entry(from: src.getview(), to: dst.getview(), alloc)
+                drop dst
+                drop src
+                when done
+                    is None => continue
+                    is FsError as error =>
+                        iter.close()
+                        return error
+            is None => break
+    iter.close()
+    return fs_done()
+
+### Copies one entry of a tree: a directory with everything in it, or a file (a link copied as what it points at).
+### :param from: The entry to copy.
+### :param to: Where the copy goes, which must not be there.
+### :param alloc: The allocator for the child paths.
+### :returns: `Unit` once it is copied.
+### :throws: Returns the first error.
+secret routine copy_entry(from: @[Byte], to: @[Byte], alloc: @MemoryManager) -> Result[None, FsError]
+    if is_kind(path: from, kind: FileKind.DIRECTORY)
+        return copy_tree(from, to, alloc)
+    copied: Result[U64, FsError] = copy_file(from, to, replacing: false)
+    when copied
+        is U64 => return fs_done()
+        is FsError as error => return error
+
+### Whether path is a link itself.
+### :param path: The path to look at.
+### :returns: True when a link is at `path`.
+secret routine is_link(path: @[Byte]) -> Bool
+    when symlink_metadata(path)
+        is Metadata as info => return info.kind == FileKind.SYMLINK
+        is FsError => return false
+
+### Whether two existing paths are on the same partition: the same device as the OS counts them.
+### :param a: One path.
+### :param b: The other path.
+### :returns: True when both are on one partition, false when they are on two or one can't be looked at.
+secret routine same_partition(a: @[Byte], b: @[Byte]) -> Bool
+    first: Result[U64, FsError] = device_id(a)
+    second: Result[U64, FsError] = device_id(b)
+    when first
+        is U64 as x =>
+            when second
+                is U64 as y => return x == y
+                is FsError => return false
+        is FsError => return false
+
+### Moves the file or directory at from to the path to: renamed in place when both are on one partition, else copied
+### there and then deleted. A directory already at `to` is replaced only when `replacing` is true and it is empty, a
+### file at `to` only when `replacing` is true.
+### :param from: What to move.
+### :param to: The new path, in another directory.
+### :param replacing: Whether something already at `to` is replaced.
+### :param alloc: The allocator for the child paths of a copied tree.
+### :returns: `Unit` once it is moved.
+### :throws: Returns a {MoveError}: the reason, and `copied` true when the copy is whole and deleting the source
+###     failed (both are there then). When the copy fails nothing is deleted, and the partial copy is removed.
+secret routine move_path(from: @[Byte], to: @[Byte], replacing: Bool,
+    alloc: @MemoryManager) -> Result[None, MoveError]
+    # A directory goes with everything in it, and a link (to a directory too) is moved as the link.
+    is_directory: Bool = is_kind(path: from, kind: FileKind.DIRECTORY) and not is_link(from)
+    dir: @[Byte] = parent_path(to)
+    there: @[Byte] = when
+        dir.is_empty() => "."
+        else => dir
+    if same_partition(a: from, b: there)
+        renamed: Result[None, FsError] = when
+            replacing => rename(from, to)
+            else => rename_no_replace(from, to)
+        when renamed
+            is None => return None()
+            is FsError as error =>
+                # Two mounts of one device still need a copy: the OS says CrossDevice for them.
+                if not (error == FsError.CROSS_DEVICE)
+                    return MoveError(reason: error, copied: false)
+    if is_present(to)
+        if not replacing
+            return MoveError(reason: FsError.ALREADY_EXISTS, copied: false)
+        if is_directory
+            cleared: Result[None, FsError] = remove_dir(to)
+            when cleared
+                is None => pass
+                is FsError as error => return MoveError(reason: error, copied: false)
+    copied: Result[None, FsError] = when
+        is_directory => copy_tree(from, to, alloc)
+        else =>
+            bytes: Result[U64, FsError] = copy_file(from, to, replacing)
+            becomes when bytes
+                is U64 => fs_done()
+                is FsError as error => error
+    when copied
+        is None => pass
+        is FsError as error =>
+            # A partial tree goes, so no half copy is left (copy_file removes its own).
+            if is_directory
+                remove_dir_all(path: to, alloc)
+            return MoveError(reason: error, copied: false)
+    removed: Result[None, FsError] = when
+        is_directory => remove_dir_all(path: from, alloc)
+        else => remove_file(from)
+    when removed
+        is None => return None()
+        is FsError as error => return MoveError(reason: error, copied: true)
+
+# -- a FileStorage in a slot -------------------------------------------------------------
+#
+# A storage written by index (`s[i] = v`) lives in a slot, so its reading routines take the slot too.
+
+### The number of cells.
+### :returns: The cell count, 0 for an empty storage.
+routine @FileStorage[T].count() -> U64
+needs T: typename, StorageCell[T]
+    return me.count.peek()
+
+### The value in cell `index`, `storage[index]`.
+### :param index: The cell, from 0.
+### :returns: The value.
+### :throws: Crashes with `IndexOutOfBoundsError` when `index` is not below `count()`, and with `InvalidValueError`
+###     when the cell's bytes aren't a `T`.
+@track_caller
+routine @FileStorage[T].getitem(index: U64) -> T
+needs T: typename, StorageCell[T]
+    storage: FileStorage[T] = me.peek()
+    return storage.getitem(index)
+
+### The value in cell `index`.
+### :param index: The cell, from 0.
+### :returns: The value.
+### :absent: When `index` is not below `count()`, or the cell's bytes aren't a `T`.
+routine @FileStorage[T].getitem_checked(index: U64) -> Maybe[T]
+needs T: typename, StorageCell[T]
+    storage: FileStorage[T] = me.peek()
+    return storage.getitem_checked(index)
+
+### Writes changed pages back to the file.
+### :returns: `Unit` once they are written.
+### :throws: Returns the reason when the OS can't write them.
+routine @FileStorage[T].flush_result() -> Result[None, FsError]
+needs T: typename, StorageCell[T]
+    storage: FileStorage[T] = me.peek()
+    return storage.flush_result()
+
+### Writes changed pages back, unmaps, and leaves the slot an empty storage.
+routine @FileStorage[T].unmap() -> None
+needs T: typename, StorageCell[T]
+    storage: FileStorage[T] = me.peek()
+    storage.unmap()
+    me.poke(FileStorage[T].empty())
+    return

@@ -57,6 +57,10 @@ namespace Tessera;
 /// `SignalCaster` wait names the access it gives up (`access:`, not `mutex:`) (`--step access`).
 ///
 /// 0.5: the thread-locals' manager `ThreadLocalStorageManager` is `ThreadLocalManager` (`--step threadlocal`).
+///
+/// 0.5: the OS's file manager is `OsFileManager` (`FileManager` is the role), `subdir` is `go_to`, a `Mapping` is a
+/// `FileStorage[Byte]`, `move_result(from:, to:)` is `rename_result` or `move_result(at:, into:)`, and the working,
+/// temporary and home directories and the environment variables are `OsEnvironment`'s (`--step files`).
 public static class Migrate
 {
     /// `F64`, its plural in prose (`F64s`), and a name built on it (`F128Extended`, `F64Core`). `F16C` is the x86 instruction set, not a type.
@@ -89,7 +93,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf" or "managers" or "float-presets" or "modules" or "access" or "threadlocal";
+        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf" or "managers" or "float-presets" or "modules" or "access" or "threadlocal" or "files";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -388,6 +392,9 @@ public static class Migrate
         ["threadlocal"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, ManagerMigration.RewriteThreadLocal)
             : ManagerMigration.RewriteThreadLocal(text),
+        ["files"] = (file, text, report) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, t => FileMigration.Rewrite(t, report, file))
+            : FileMigration.Rewrite(text, report, file),
     };
 
     private static readonly Regex InfNanWord = new(@"(?<![\w`.])(inf|nan)(?![\w`])", RegexOptions.Compiled);

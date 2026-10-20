@@ -52,7 +52,7 @@ The standard library's modules:
   report.
 - `Standard/System/Temporal` (`Duration`, `Moment`), `Standard/System/Serialization` (JSON strings),
   `Standard/System/CSubSystem` (C strings, the C memory routines without an OS).
-- Imported: `Standard/Collections`, `Standard/Os` (console, files, processes, threads, clocks), `Standard/Fiber`,
+- Imported: `Standard/Collections`, `Standard/Os` (console, files, storage, the environment, processes, threads, clocks), `Standard/Fiber`,
   `Standard/Random`, `Standard/Text/Patterns` (text patterns, below).
 
 A builder that uses Tessera as a library (RazorForge's Tessera backend) can split one program over two modules, a base
@@ -72,6 +72,10 @@ keeping blocks where it can't), `spellings` (`@` annotations, `needs` / `obeys` 
 `Standard/Json`, and points their paths at the module of `Standard/System` each name is in),
 `access` (`ExclusiveLock` / `MultiReadLock` into `ExclusiveAccess` / `MultiReadAccess`, a `SignalCaster` wait's
 `mutex:` into `access:`),
+`files` (`FileManager.x` into `OsFileManager.x`, `subdir` into `go_to`, `Mapping` / `map_result(offset:)` into
+`FileStorage[Byte]` / `storage_result[Byte](start:)`, the directories and `env_var` into `OsEnvironment`'s, a
+`move_result(from:, to:)` into `rename_result` or `move_result(at:, into:)` where the file shows both paths, and the
+rest of the moves and every `set_current_directory_result` listed),
 and the earlier `iterators`, `variants`, `membership`, `lifecycle`, `memory`, `threads`, `entry`, and `--named-args`.
 An old spelling is a build error that names the migration, and builds only with `TESSERA_ACCEPT_OLD_SYNTAX=1` set.
 
@@ -568,7 +572,7 @@ routine start() -> None
   `siphash24(v, key)` / `siphash24(low, high, key)` take a `SipKey { k0, k1 }` of your own. `xxh64` stays as the
   unkeyed fast hash, the same in every run: for checksums and keys you trust, not for a table filled from outside.
 - **Random numbers** are `Xoshiro256` (`import Standard/Random`): `.from_seed(seed)` replays a stream,
-  `.from_entropy()` draws one per run from the hash key's source (`entropy_key()`), then `next()`, `next_u32()`,
+  `.from_entropy()` draws one per run from the hash key's source (`entropy_key()`, which is `OsEntropy` with an OS), then `next()`, `next_u32()`,
   `next_f64()` ([0, 1)), and `below(bound)` (unbiased). Not for secrets. JSON string escaping is
   `text.json_quote_into(out)` in `Standard/System/Serialization`.
 - A literal must fit its type: `-1` isn't a `U64`, and `255` isn't an `S8`.
@@ -711,7 +715,7 @@ routine start() -> None
   `compare`, `hash`, ...). A literal is a `@[Byte]` of the program image, `@[Byte].construct(data, count)`
   wraps bytes from C, and text made from other text (`slice`, `getslice`, the iterators, `buf.getview()` of a
   `List[Byte]`) views the same memory. Text a routine takes memory for (`@[Byte].concat`, `Console.ask_line`,
-  `FileManager.read_all_result`, `env_var`, ...) comes back as a `Memory[Byte]`: keep it in a slot and give it
+  `OsFileManager.read_all_result`, `OsEnvironment.variable`, ...) comes back as a `Memory[Byte]`: keep it in a slot and give it
   back once (`local line: @Memory[Byte] <- Console.ask_line()`, then `drop line`), and observe a `Result` / `Maybe` of one
   with `when` (`when Console.ask_line_checked(alloc)` then `is Memory[Byte] as line => ...`). A Memory lends itself to a text routine at
   a receiver or an argument (`line.find("=")`, `out.write("{line.getview()}")` in a template). Escapes: `\xXX` is one byte (strings, `b'..'`), `\uXXXXXX` one
@@ -859,7 +863,7 @@ routine start() -> None
   `CStr` / `CWStr`, `ProcessOutput`, and `File` / `Directory` (each holds the memory of a path it made). A
   `MemoryManager`, a `@[T]`, a `@T`, and an iterator stay records.
 - An entity value a `routine @E.f` is called on, or that goes where an `@E` is taken, needs no slot of its
-  own: `Counter.at(n).get()`, `FileManager.is_file(at: File.at(p))`. The builder puts it in an unnamed slot that ends when
+  own: `Counter.at(n).get()`, `OsFileManager.is_file(at: File.at(p))`. The builder puts it in an unnamed slot that ends when
   the statement does (a condition's and a `when` subject's as soon as they are read, when what they give borrows
   nothing from it; a returned value's before the return).
 - A variant may have an entity branch: `Result[File, FsError]`, `Maybe[Counter]`. Such a variant value holds an entity,
@@ -1245,43 +1249,81 @@ On any other target a program that switches fibers fails to link (`tessera_fiber
 
 **Files.** `File.at(path)` and `Directory.at(path)` say where (`@[Byte]`, UTF-8, the W calls on Windows) and nothing
 else: their only routines read the path's text (`name`, `stem`, `extension`, `parent`, and a Directory's
-`file(name, alloc)` / `subdir(name, alloc)`). Everything done at a path is a `FileManager` routine, called on the type
-(there is no FileManager value), taking `at:` / `from:` / `to:` as `@File` / `@Directory`, and one that can fail
-returns `Result[T, FsError]` (a `_result` form). There is one way to do each thing:
+`file(name, alloc)` / `go_to(name, alloc)`). A file manager manages the files of one partition, and `FileManager[T]` is
+that role (a protocol: `make_file_result`, `read_all_result`, `write_all_result`, `rename_result`, `delete_result`,
+`list_result`). `OsFileManager` is the OS's: everything done at a path is an `OsFileManager` routine, called on the type
+(there is no OsFileManager value), taking `at:` (and `from:` / `to:` for a copy) as `@File` / `@Directory`, and one that
+can fail returns `Result[T, FsError]` (a `_result` form). There is one way to do each thing:
 
 - making: `make_file_result(at, replacing)` (an empty file; one already there is `ALREADY_EXISTS` unless `replacing`,
   which empties it), `make_directory_result(at, parents)` (`parents` is mkdir -p, a directory already there is fine).
   Nothing else makes a file: `open_write_result`, `open_append_result`, `write_all_result`, `set_size_result`, and
-  `map_result` on a missing file fail with `NOT_FOUND`.
+  `storage_result` on a missing file fail with `NOT_FOUND`.
 - reading and writing: `read_all_result(at, alloc)` (a `Memory[Byte]`, drop it), `write_all_result(at, data)` (the
   whole content, the file emptied first).
 - opening: `open_read_result` / `open_write_result` (emptied) / `open_append_result` / `open_read_write_result` give a
   `FileHandle` (keep it in a local slot: `read_bytes_result`, `write_all_result`, `h.write("...")`, `seek_result`,
   `size_result`, `set_size_result`, `sync_result`, `close`, which leaves it empty, and `FileHandle.empty()` a handle to
-  nothing whose `close` does nothing), `map_result(at, write, offset, count)` a `Mapping`.
-- deleting, moving, copying: `delete_result(at)` (a file, or an empty directory), `delete_all_result(at, alloc)`,
-  `move_result(from, to, replacing)` (files or directories), `copy_result(from, to, replacing)` (the bytes copied). With
-  `replacing` false, something at `to` fails with `ALREADY_EXISTS`.
+  nothing whose `close` does nothing).
+- file storage: `storage_result[T](at, write, start, count)` maps the file as cells of `T` (`StorageCell[T]`: `Byte`, or
+  `Char`, four bytes each, UTF-32LE), `count` cells from cell `start` (`U64.MAX` to the end), clamped to the whole
+  cells the file has. It gives a `FileStorage[T]` (a record: `count()`, `s[i]` / `getitem_checked(i)`, `s[i] = v` on a
+  slot, `data()`, `flush_result()`, `unmap()`). A cell past `count()` crashes with `IndexOutOfBoundsError`, a write to
+  one mapped without `write` and a `Char` cell that isn't a Unicode scalar with `InvalidValueError`. It never grows the
+  file: `set_size_result` first.
+- deleting, renaming, moving, copying: `delete_result(at)` (a file, or an empty directory), `delete_all_result(at,
+  alloc)`, `rename_result(at, to: name, replacing)` (the name only, a file or a directory: an empty name, ".", "..", or
+  a separator is `INVALID_PATH`), `move_result(at, into: directory, replacing, alloc)` (keeps the name, gives
+  `Result[None, MoveError]`), `copy_result(from, to, replacing)` (the bytes copied). With `replacing` false, something
+  already there fails with `ALREADY_EXISTS`. A move is a copy then a delete: on one partition the OS renames instead,
+  between two the file (a directory with everything in it) is copied, then the original deleted. A failed copy deletes
+  nothing and removes the partial copy, a failed delete keeps both and says so (`MoveError.copied` true), and nothing
+  promises that a move happens all at once.
 - asking: `is_present(at)` (anything there), `is_file(at)`, `is_directory(at)`, `metadata_result(at)` (`kind`, `size`,
-  times in ns, `readonly`), `link_metadata_result(at)`, `is_accessible(at, access)`.
+  times in ns, `readonly`), `link_metadata_result(at)`, `is_accessible(at, access)`, `partition_result(at, alloc)`
+  (the `PartitionManager` the path is on).
 - setting: `set_readonly_result(at, readonly)`, `set_size_result(at, size)`.
 - listing: `list_result(at, iter)` starts a `DirIter` (a local slot, `local iter: @DirIter <- .hollow()`), then
   `iter.emit_checked()` until `None`, then `iter.close()`.
-- paths: `absolute_result(at, alloc)`, `canonical_result(at, alloc)`, `current_directory_result(alloc)`,
-  `set_current_directory_result(at)`, `temp_directory_result(alloc)`, `home_directory_result(alloc)`.
+- paths: `absolute_result(at, alloc)`, `canonical_result(at, alloc)`.
+
+`FsError` is `NOT_FOUND`, `PERMISSION_DENIED`, `ALREADY_EXISTS`, `NOT_A_DIRECTORY`, `IS_A_DIRECTORY`,
+`DIRECTORY_NOT_EMPTY`, `CROSS_DEVICE`, `NAME_TOO_LONG`, `INVALID_PATH`, `NO_SPACE`, `READ_ONLY`, `BUSY`,
+`STORAGE_FAULT` (the device couldn't read or write: a bad sector, a failing disk), `OUT_OF_MEMORY`, and `OTHER`.
 
 Each routine that takes `alloc` has an overload without it that uses the default heap. A routine that hands text back
-takes an allocator and returns a `Memory[Byte]` from it (`read_all_result`, `env_var`): give it back with `drop`. A
-`File` and a `Directory` are entities: one that makes a path (`file`, `subdir`, `absolute_result`, `canonical_result`,
-the well-known directories) returns a `File` / `Directory` whose path is held in a `Memory[Byte]`, kept in a slot and
-given back with `drop file` / `drop dir` (which gives nothing back for a path it only views, such as a literal's):
+takes an allocator and returns a `Memory[Byte]` from it (`read_all_result`, `OsEnvironment.variable`): give it back with
+`drop`. A `File` and a `Directory` are entities: one that makes a path (`file`, `go_to`, `absolute_result`,
+`canonical_result`, OsEnvironment's directories) returns a `File` / `Directory` whose path is held in a `Memory[Byte]`,
+kept in a slot and given back with `drop file` / `drop dir` (which gives nothing back for a path it only views, such
+as a literal's):
 
 ```tessera
 local notes: @File <- dir.file(name: "notes.txt", alloc)
-FileManager.make_file_result(at: notes, replacing: false).unwrap()
-FileManager.write_all_result(at: notes, data: "first line\n").unwrap()
+OsFileManager.make_file_result(at: notes, replacing: false).unwrap()
+OsFileManager.write_all_result(at: notes, data: "first line\n").unwrap()
 drop notes
 ```
+
+**Storage.** Memory is main memory, storage what keeps files (a disk, an SSD, an SD card). A `StorageManager` manages
+one storage device, a `PartitionManager` one partition on it, and a file manager the file system on one partition: a
+partition has exactly one file manager, and a second one over a partition that has one fails loudly (on an OS, the
+OS's one file system per volume). With an OS they are what the OS reports, read only, entities holding `Memory[Byte]`
+names (drop them, or the list): `StorageManager.list(alloc)` (`name`, `size`; on Linux /sys/block, on macOS the disks
+of the mounted file systems, empty on Windows, which names them only to an administrator), `PartitionManager.list(alloc)`
+(`name`, `device`, `mounted_at`, `file_system`, `size`, and `directory()`; Linux /sys/class/block, macOS getfsstat,
+Windows the drive letters), and `OsFileManager.partition_result(at, alloc)`. Making a partition or a file system isn't
+there yet.
+
+**The environment.** `OsEnvironment` (Standard/Os) reads what the OS gave the process and changes none of it:
+`argument_count()` and `argument(index)` (the program's own name left out, a borrowed `@[Byte]`, UTF-8 on Windows; the
+builder's `main` hands them over through `tessera_set_arguments(argc, argv)`), `variable(name, alloc)` (a
+`Maybe[Memory[Byte]]` asked of the OS, so on Windows a name's case doesn't matter), `variables(alloc)` (a snapshot,
+a `List[EnvironmentEntry]` of `name` / `value` memory), and `working_directory_result(alloc)`,
+`temp_directory_result(alloc)`, `home_directory_result(alloc)`. There is no setting a variable or the working
+directory: a child process gets its own through `ProcessOptions` (`directory`, `env`), and code that works elsewhere
+carries that `Directory`. `OsEntropy.fill(buffer, count)` / `OsEntropy.next_u64()` are the OS's random bits (getrandom,
+arc4random_buf, ProcessPrng), the source of the hash key and `Xoshiro256.from_entropy()`.
 
 **Processes.** `ProcessManager` creates processes and reaps them: `ProcessManager.create_process_result(program, args,
 options, alloc)` (looked up on PATH, `args` a `@[@[Byte]]`) and `ProcessManager.create_shell_process_result(command,
@@ -1290,8 +1332,8 @@ options, alloc)` create one, wait for it to end, reap it, and return `Result[Pro
 `.code()`, `.is_success()`) and the captured `stdout` / `stderr` (`Memory[Byte]`). A `ProcessOutput` is an entity:
 `local out: @ProcessOutput <- ProcessManager.create_shell_process_result(...).unwrap()` or `when ProcessManager.create_shell_process_result(...)`, then `drop out`. `ProcessOptions.default()` captures both and gives the child the null device as input; set
 `directory`, `env` / `env_count` (overrides merged into this process's environment), and each stream's mode.
-`env_var(name, alloc)` reads a variable (`None` when it isn't set), `ProcessManager.exit_process(status)` ends this
-process at once, and
+`OsEnvironment.variable(name, alloc)` reads a variable (`None` when it isn't set), `ProcessManager.exit_process(status)`
+ends this process at once, and
 `set_exit_code(status)` sets the status `start` returning ends it with.
 
 **Targets without an OS.** A triple whose OS is `none` (`arm-none-eabi`, `riscv32-none-elf`, `aarch64-none-elf`,
@@ -1366,9 +1408,9 @@ byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`
 - A plain routine name crashes on failure, `name_checked` returns `Maybe[T]` (`None` on failure), and `name_result`
   returns `Result[T, TError]` (the failure as a value): `getitem` / `getitem_checked`, `construct` / `construct_result`,
   `to[T]` / `to_result[T]`, `Console.ask[T]` / `ask_checked[T]` / `ask_result[T]`. File and process routines fail for
-  reasons the caller handles, so they are `_result` forms (`FileManager.open_read_result`). A `_checked` never returns a
+  reasons the caller handles, so they are `_result` forms (`OsFileManager.open_read_result`). A `_checked` never returns a
   `Result` or a `Bool`, a `_result` never a `Maybe`, and a plain name never returns a `Maybe` or a `Result` just to
-  say it failed. A `Maybe` that is a normal outcome keeps a plain name: `@[Byte].find` (not found), `env_var` (not
+  say it failed. A `Maybe` that is a normal outcome keeps a plain name: `@[Byte].find` (not found), `OsEnvironment.variable` (not
   set), `Bool.then_present`; so does `atomic_compare_exchange`, whose `Result[None, T]` is the answer (`None` when it
   wrote, the value found when not). An iterator has the plain/`_checked` pair: `emit` crashes past the end, `emit_checked` returns `None`.
 
@@ -1392,7 +1434,7 @@ that `to[T]`, which would call itself there. It keeps the shape under its own na
 `finish` releases starts as, the "nothing yet" of a record) is a typewise routine without arguments. Every type has
 `.hollow()`, all bytes zero, which every `destruct` and `drop` leaves alone: the empty value of a `Memory`, a `Box`, a
 `@[T]`, and a record holding them. A type whose empty value isn't all zero, or means something of its own, names it
-`.empty()` (`FileHandle.empty()`, an OS handle, `Mapping.empty()`). A type with no pointer inside (numbers, records and vectors of
+`.empty()` (`FileHandle.empty()`, an OS handle, `FileStorage[T].empty()`). A type with no pointer inside (numbers, records and vectors of
 numbers) has `.zero()`: `Vector[T, LANES].zero()`. `Maybe[T]` is empty as `None()`, and a pointer to nothing is
 `.hollow()` too (tested with `is_hollow()` / `is_not_hollow()`), so there is no `none()` or `nothing()` routine, and
 no `null`: writing it is a build error that asks for `.hollow()` (`tessera migrate --step hollow` rewrites `null` and
@@ -1429,7 +1471,7 @@ emitter writes), and `Callable` types. `tessera lint` warns on the rest (`check`
 program's own files).
 
 **`Bool` routines: `is_`, `has_`, or membership.** A routine that answers a question names which kind: `is_` asks about
-a state of the value (`is_empty`, `is_hollow`, `is_finite`, `is_utf8`, `FileManager.is_present(at: file)`, `FileManager.is_accessible(at: file, access)`),
+a state of the value (`is_empty`, `is_hollow`, `is_finite`, `is_utf8`, `OsFileManager.is_present(at: file)`, `OsFileManager.is_accessible(at: file, access)`),
 `has_` about a part it has (`text.has_prefix(p)` / `has_suffix(s)`, `n.has_bit(i)`, `SliceWriter.has_overflowed()`),
 and membership is `has` / `lacks` (`set.has(x)`, `text.has(needle)`, `set.lacks(x)`) and `has_key` / `lacks_key` for
 a dict's key (`dict.has_key(k)`). There are no other bare

@@ -1173,6 +1173,10 @@ public sealed partial class Compiler
         if (t.Args.Count == 0 && AccessMigration.OldTypeName(t.Name) is { } renamed)
             throw new CompileError(t.Pos, $"unknown type '{t}': {renamed}");
 
+        if (t.Args.Count == 0 && t.Name == "Mapping")
+            throw new CompileError(t.Pos, "unknown type 'Mapping': a mapped file is a FileStorage[Byte] from " +
+                "OsFileManager.storage_result[Byte] (tessera migrate --step files rewrites the old spelling)");
+
         throw new CompileError(t.Pos, $"unknown type '{t}'");
     }
 

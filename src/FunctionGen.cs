@@ -1987,7 +1987,7 @@ public sealed class FunctionGen
     /// When the parameter wants what is stored there, the error says to peek it. `argument` is the argument's position
     /// (1 for the first), or 0 for a receiver or the contents of a claim.
     /// Whether an entity value `actual` goes where a pointer to it (`expected`, `@E`) is taken: it is put in a slot of
-    /// its own for the statement (TempSlotExpr), `FileManager.is_file(at: File.at(p))`.
+    /// its own for the statement (TempSlotExpr), `OsFileManager.is_file(at: File.at(p))`.
     private static bool SlotsTemp(DType actual, DType expected) =>
         actual is not PtrType && expected is PtrType { Pointee: { } pointee } && pointee.Equals(actual) && Entities.Holds(actual);
 
@@ -2122,7 +2122,7 @@ public sealed class FunctionGen
     };
 
     /// Whether evaluating `e` puts an entity value in a temporary slot: a routine taking `me: @Me` is called on it, or
-    /// it is an argument where the routine takes `@E` (`FileManager.is_present(at: File.at(p))`).
+    /// it is an argument where the routine takes `@E` (`OsFileManager.is_present(at: File.at(p))`).
     private bool MakesTemp(Expr e)
     {
         switch (e)

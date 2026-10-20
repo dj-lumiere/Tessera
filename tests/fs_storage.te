@@ -1,0 +1,62 @@
+# OsFileManager.storage_result over a file of its own under the temporary directory: a FileStorage[Byte] read and
+# written by index (the write reaching the file), a cell past the end, a window of cells, and a FileStorage[Char] of
+# UTF-32LE cells read and written, its trailing partial cell left out, and a cell that isn't a Unicode scalar.
+
+import Standard/Os
+
+### The file's text.
+routine text_of(f: @File) -> Memory[Byte]
+    return OsFileManager.read_all_result(at: f).unwrap()
+
+routine start() -> None
+    local tmp: @Directory <- OsEnvironment.temp_directory_result().unwrap()
+    local root: @Directory <- tmp.go_to(name: "tessera_fs_storage")
+
+    OsFileManager.delete_all_result(at: root)
+    OsFileManager.make_directory_result(at: root, parents: true).unwrap()
+    local bytes: @File <- root.file(name: "bytes.bin")
+    OsFileManager.make_file_result(at: bytes, replacing: false).unwrap()
+    OsFileManager.write_all_result(at: bytes, data: "hello").unwrap()
+
+    local s: @FileStorage[Byte] <- OsFileManager.storage_result[Byte](at: bytes, write: true, start: 0,
+        count: U64.MAX).unwrap()
+    Console.show("bytes: {s.count()}, first {s[0].to[U8]()}, last {s[4].to[U8]()}")
+    s[0] = b'J'
+    past: Maybe[Byte] = s.getitem_checked(5)
+    Console.show("cell 5 there: {past.is_present()}")
+    s.unmap()
+    local after: @Memory[Byte] <- text_of(f: bytes)
+    Console.show("after a cell write: {after}")
+    drop after
+    window: FileStorage[Byte] = OsFileManager.storage_result[Byte](at: bytes, write: false, start: 1,
+        count: 3).unwrap()
+    Console.show("cells 1 to 3: {window.count()}, first {window[0].to[U8]()}")
+    window.unmap()
+
+    # "가A" as UTF-32LE, then one byte more, which is no whole cell.
+    local chars: @File <- root.file(name: "chars.utf32")
+    OsFileManager.make_file_result(at: chars, replacing: false).unwrap()
+    OsFileManager.write_all_result(at: chars, data: "\x00\xAC\x00\x00\x41\x00\x00\x00\x7F").unwrap()
+    local c: @FileStorage[Char] <- OsFileManager.storage_result[Char](at: chars, write: true, start: 0,
+        count: U64.MAX).unwrap()
+    Console.show("chars: {c.count()}, first {c[0] == '가'}, second {c[1] == 'A'}")
+    c[1] = '줄'
+    c.unmap()
+    local again: @FileStorage[Char] <- OsFileManager.storage_result[Char](at: chars, write: false, start: 1,
+        count: 1).unwrap()
+    Console.show("second after a write: {again[0] == '줄'}")
+    again.unmap()
+
+    OsFileManager.write_all_result(at: chars, data: "\xFF\xFF\xFF\xFF").unwrap()
+    bad: FileStorage[Char] = OsFileManager.storage_result[Char](at: chars, write: false, start: 0,
+        count: U64.MAX).unwrap()
+    cell: Maybe[Char] = bad.getitem_checked(0)
+    Console.show("a cell that isn't a Unicode scalar: {cell.is_present()}")
+    bad.unmap()
+
+    OsFileManager.delete_all_result(at: root)
+    drop chars
+    drop bytes
+    drop root
+    drop tmp
+    return

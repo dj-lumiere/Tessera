@@ -485,6 +485,7 @@ secret routine error_of(e: CInt) -> FsError
         e == 30 => return FsError.READ_ONLY
         e == 16 or e == 26 => return FsError.BUSY
         e == 12 => return FsError.OUT_OF_MEMORY
+        e == 5 => return FsError.STORAGE_FAULT
         else => return FsError.OTHER
 
 ### The FsError for the calling thread's `errno`.
@@ -1485,18 +1486,6 @@ secret routine current_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsErro
                 return error_of(e)
             is AllocFailed => return FsError.OUT_OF_MEMORY
 
-### Makes path the working directory.
-### :param path: The new working directory.
-### :returns: `Unit` once it is changed.
-### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
-@target(os: ("linux", "macos"))
-secret routine set_current_dir(path: @[Byte]) -> Result[None, FsError]
-    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
-
-    if c_path(path, out: cpath.to[@Byte]())
-        return checked(c_chdir(cpath.to[@Byte]()))
-    return path_error(path)
-
 ### TMPDIR, or /tmp when it is not set or empty, in memory from alloc.
 ### :param alloc: The allocator for the text.
 ### :returns: The path.
@@ -1566,17 +1555,19 @@ secret routine is_map_failed(p: Addr) -> Bool
     # MAP_FAILED, (void*)-1
     return ptrtoint[Addr, U64](p) == U64.MAX
 
-### Maps count bytes of path from offset (U64.MAX: to the end), clamped to the file. Past the end, or an empty
-### file, gives an empty mapping. write maps it shared, so stores reach the file. Otherwise it's read-only.
+### Maps count cells of path from cell start (U64.MAX: to the end), clamped to the whole cells the file holds. Past the
+### end, or an empty file, gives an empty storage. write maps it shared, so stores reach the file. Otherwise it's
+### read-only.
 ### :param path: The file to map.
 ### :param write: True for a shared, writable mapping.
-### :param offset: Where in the file the mapping starts.
-### :param count: The most bytes to map.
-### :returns: The mapping.
+### :param start: The first cell to map.
+### :param count: The most cells to map.
+### :returns: The storage.
 ### :throws: Returns the reason when the file can't be opened, measured, or mapped.
 @target(os: ("linux", "macos"))
-secret common routine Mapping.map(path: @[Byte], write: Bool, offset: U64,
+secret common routine FileStorage[T].map(path: @[Byte], write: Bool, start: U64,
     count: U64) -> Result[Me, FsError]
+needs T: typename, StorageCell[T]
     local file: @FileHandle <- .empty()
     local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
 
@@ -1594,15 +1585,14 @@ secret common routine Mapping.map(path: @[Byte], write: Bool, offset: U64,
                 m: Result[Metadata, FsError] = fd_metadata(fd)
                 when m
                     is Metadata as info =>
-                        size: U64 = info.size
-                        if offset >= size
+                        offset, cells = cell_window(size: info.size, start, count, cell: sizeof[T]())
+                        if cells == 0
                             becomes Me.empty()
                         else
-                            want_bytes: U64 = count.to[U64]().min(size - offset)
-                            want: U64 = want_bytes.to[U64]()
+                            want: U64 = cells * sizeof[T]()
                             page: U64 = map_granularity().bytes()
                             aligned: U64 = offset - offset % page
-                            delta: U64 = (offset - aligned).to[U64]()
+                            delta: U64 = offset - aligned
                             # PROT_READ | PROT_WRITE and MAP_SHARED, or PROT_READ and MAP_PRIVATE
                             prot: CInt = when
                                 write => 3
@@ -1612,48 +1602,86 @@ secret common routine Mapping.map(path: @[Byte], write: Bool, offset: U64,
                                 else => 2
                             p: Addr = c_mmap(.hollow(), (want + delta).to[CSize](), prot, share, fd,
                                 aligned.to[S64]())
-                            # the mapping keeps the file open on its own, and errno is read before finish closes the descriptor
+                            # the mapping keeps the file open on its own, and errno is read before the descriptor
+                            # is closed
                             if is_map_failed(p)
                                 becomes failed[Me]()
                             else
-                                becomes Me(base: p, delta: delta, count: want)
+                                becomes Me(base: p, delta: delta, count: cells, writable: write)
                     is FsError as error =>
                         becomes error
     file.close()
     return result
 
 ### Writes changed pages back to the file.
-### :returns: `Unit` once they are written, at once for an empty mapping.
+### :returns: `Unit` once they are written, at once for an empty storage.
 ### :throws: Returns the reason when msync fails.
 @target(os: ("linux", "macos"))
-routine Mapping.flush_result() -> Result[None, FsError]
+routine FileStorage[T].flush_result() -> Result[None, FsError]
+needs T: typename, StorageCell[T]
     if me.base.is_hollow()
         return fs_done()
-    return checked(c_msync(me.base, (me.delta + me.count).to[CSize](), ms_sync()))
+    return checked(c_msync(me.base, me.mapped_bytes().to[CSize](), ms_sync()))
 
 ### Writes changed pages back and unmaps.
 @target(os: ("linux", "macos"))
-routine Mapping.unmap() -> None
+routine FileStorage[T].unmap() -> None
+needs T: typename, StorageCell[T]
     if me.base.is_hollow()
         return
-    c_msync(me.base, (me.delta + me.count).to[CSize](), ms_sync())
-    c_munmap(me.base, (me.delta + me.count).to[CSize]())
+    c_msync(me.base, me.mapped_bytes().to[CSize](), ms_sync())
+    c_munmap(me.base, me.mapped_bytes().to[CSize]())
     return
 
-### Asks the OS to read the whole mapping in now.
+### Asks the OS to read the whole storage in now.
 @target(os: ("linux", "macos"))
-routine Mapping.prefetch() -> None
+routine FileStorage[T].prefetch() -> None
+needs T: typename, StorageCell[T]
     if me.base.is_hollow()
         return
     # MADV_WILLNEED
-    c_madvise(me.base, (me.delta + me.count).to[CSize](), 3)
+    c_madvise(me.base, me.mapped_bytes().to[CSize](), 3)
     return
 
-### Tells the OS the mapping will be read front to back.
+### Tells the OS the storage will be read front to back.
 @target(os: ("linux", "macos"))
-routine Mapping.advise_sequential() -> None
+routine FileStorage[T].advise_sequential() -> None
+needs T: typename, StorageCell[T]
     if me.base.is_hollow()
         return
     # MADV_SEQUENTIAL
-    c_madvise(me.base, (me.delta + me.count).to[CSize](), 2)
+    c_madvise(me.base, me.mapped_bytes().to[CSize](), 2)
     return
+
+# -- partitions --------------------------------------------------------------------------
+
+### The device the file system at path is on, as the OS numbers it: Linux's major and minor in one word.
+### :param path: An existing path (a link counts as what it points at).
+### :returns: The device number.
+### :throws: Returns the reason when the path can't be looked at.
+@target(os: "linux")
+secret routine device_id(path: @[Byte]) -> Result[U64, FsError]
+    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+    local st: @Statx <- .hollow()
+
+    if not c_path(path, out: cpath.to[@Byte]())
+        return path_error(path)
+    if not stat_raw(dir: AT_FDCWD, cpath: cpath.to[@Byte](), flags: 0, out: st)
+        return failed[U64]()
+    # struct statx's stx_dev_major and stx_dev_minor follow the four timestamps, in the second word of `spare`.
+    return st.spare.peek()[1]
+
+### The device the file system at path is on, as the OS numbers it (`st_dev`).
+### :param path: An existing path (a link counts as what it points at).
+### :returns: The device number.
+### :throws: Returns the reason when the path can't be looked at.
+@target(os: "macos")
+secret routine device_id(path: @[Byte]) -> Result[U64, FsError]
+    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+    local st: @DarwinStat <- .hollow()
+
+    if not c_path(path, out: cpath.to[@Byte]())
+        return path_error(path)
+    if c_stat(cpath.to[@Byte](), st) != 0
+        return failed[U64]()
+    return st.dev.peek().to_wrap[U64]()

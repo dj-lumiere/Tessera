@@ -1,0 +1,255 @@
+# Tessera stdlib: OsEnvironment, what the operating system gave this process
+#
+# A process starts with what the OS hands it: the arguments it was run with, its environment variables, and the
+# directories it works in (the working directory, the user's home, the temporary directory). OsEnvironment reads them
+# and changes none of them: a process doesn't set its environment variables or its working directory, since every
+# thread shares them. A child process gets its own through ProcessOptions (`directory`, `env`), and a program that
+# works in another directory carries that Directory and builds its paths from it.
+#
+# A target without an operating system has no Standard/Os, so no arguments, variables, or directories either.
+
+module Standard/Os
+
+import Standard/Collections
+
+### The environment the operating system gave this process: its arguments, its environment variables (read only), and
+### the working, home, and temporary directories. Its routines are called on the type.
+record OsEnvironment
+
+### One environment variable of a snapshot ({OsEnvironment.variables}): its name and value, in memory it gives back
+### when dropped.
+entity EnvironmentEntry
+    name: Memory[Byte]
+    value: Memory[Byte]
+
+### Makes an `EnvironmentEntry` that takes over the memory of its name and value.
+### :param name: The variable's name.
+### :param value: Its value.
+### :returns: The new value.
+common routine EnvironmentEntry.construct(name: Memory[Byte], value: Memory[Byte]) -> Me
+    return Me(name: steal name, value: steal value)
+
+### Gives the name's and the value's memory back.
+@track_caller
+routine @EnvironmentEntry.destruct() -> None
+    drop me.name
+    drop me.value
+    return
+
+### The program's arguments, set once before `start` runs: each one's bytes (UTF-8 on Windows, as the OS gave them
+### elsewhere), the program's own name first.
+secret global ARGUMENT_TEXT: @@@[Byte]
+### How many there are in `ARGUMENT_TEXT`, the program's name counted.
+secret global ARGUMENT_COUNT: @U64
+
+### Keeps the arguments the C `main` got, for {OsEnvironment.argument}. The builder's entry calls it before `start`,
+### and so does any other entry that runs Tessera's standard library (RazorForge's and Suflae's).
+### :param argc: The number of arguments, the program's name counted.
+### :param argv: The arguments, NUL-terminated.
+### :throws: Crashes with `MemoryAllocationError` when the table of arguments can't be allocated.
+@export("tessera_set_arguments")
+routine set_arguments(argc: CInt, argv: @@Byte) -> None
+    local alloc: @MemoryManager <- C_HEAP.peek()
+
+    n: U64 = argc.max(0).to[U64]()
+    if n == 0 or argv.is_hollow()
+        ARGUMENT_COUNT.poke(0)
+        return
+    table: @@[Byte] = allocate[@[Byte]](count: n, alloc)
+    if table.is_hollow()
+        crash_allocation()
+    each i in 0 til n
+        table.stride(i).poke(argument_text(raw: argv.stride(i).peek(), alloc))
+    ARGUMENT_TEXT.poke(table)
+    ARGUMENT_COUNT.poke(n)
+    return
+
+### One argument as the program sees it: the C string's bytes as they are.
+### :param raw: The NUL-terminated argument.
+### :param alloc: Unused here.
+### :returns: A view of the argument's bytes.
+@target(os: ("linux", "macos"))
+secret routine argument_text(raw: @Byte, alloc: @MemoryManager) -> @[Byte]
+    if raw.is_hollow()
+        return ""
+    return @[Byte].construct(data: raw, count: raw.to[CStrView]().count())
+
+### Binds the Win32 `MultiByteToWideChar` function, which converts text in a code page to UTF-16.
+### :param code_page: The code page (0 is the ANSI code page, `CP_ACP`).
+### :param flags: The `MB_*` flags.
+### :param text: The text.
+### :param count: Its length in bytes, or -1 for a NUL-terminated text (its NUL converted too).
+### :param out: Where the UTF-16 goes, or null to ask for the size.
+### :param room: The units `out` has room for.
+### :returns: The units written (or needed), 0 with the last error set on failure.
+@external("c")
+@symbol("MultiByteToWideChar")
+@callconv("stdcall")
+@target(os: "windows")
+secret routine c_multi_byte_to_wide_char(code_page: U32, flags: U32, text: @Byte, count: CInt, out: @U16,
+    room: CInt) -> CInt
+
+### One argument as the program sees it: the C string, in the ANSI code page, converted to UTF-8 in memory from alloc,
+### kept for the whole run.
+### :param raw: The NUL-terminated argument.
+### :param alloc: The allocator for the UTF-16 and UTF-8 copies.
+### :returns: The argument's UTF-8 bytes, empty when it can't be converted.
+### :throws: Crashes with `MemoryAllocationError` when a copy can't be allocated.
+@target(os: "windows")
+secret routine argument_text(raw: @Byte, alloc: @MemoryManager) -> @[Byte]
+    if raw.is_hollow()
+        return ""
+    need: CInt = c_multi_byte_to_wide_char(0, 0, raw, -1, .hollow(), 0)
+    if need <= 0
+        return ""
+    units: @U16 = allocate[U16](count: need.to[U64](), alloc)
+    if units.is_hollow()
+        crash_allocation()
+    got: CInt = c_multi_byte_to_wide_char(0, 0, raw, -1, units, need)
+    if got <= 0
+        deallocate(data: units, alloc)
+        return ""
+    # The count includes the NUL, which isn't part of the argument.
+    count: U64 = got.to[U64]() - 1
+    bytes: @Byte = allocate[Byte](count: (count * 3).max(1), alloc)
+    if bytes.is_hollow()
+        crash_allocation()
+    n: U64 = narrow(units, count, out: bytes)
+    deallocate(data: units, alloc)
+    return @[Byte].construct(data: bytes, count: n)
+
+# -- the arguments -----------------------------------------------------------------------
+
+### The number of arguments the program was run with, its own name not counted.
+### :returns: The count, 0 when it got none.
+common routine OsEnvironment.argument_count() -> U64
+    n: U64 = ARGUMENT_COUNT.peek()
+    if n == 0
+        return 0
+    return n - 1
+
+### The argument at index, its own name not counted (index 0 is the first argument after it). The bytes are viewed
+### from memory kept for the whole run.
+### :param index: The argument, from 0.
+### :returns: Its bytes, UTF-8 on Windows and as the OS gave them elsewhere.
+### :throws: Crashes with `IndexOutOfBoundsError` when `index` is not below `argument_count()`.
+@track_caller
+common routine OsEnvironment.argument(index: U64) -> @[Byte]
+    if index >= Me.argument_count()
+        crash_out_of_bounds()
+    return ARGUMENT_TEXT.peek().stride(index + 1).peek()
+
+# -- the variables -----------------------------------------------------------------------
+
+### The value of the environment variable `name`, asked of the OS (so on Windows the name's case doesn't matter), in
+### memory from alloc. Drop it.
+### :param name: The variable's name.
+### :param alloc: The allocator for the value.
+### :returns: The value's bytes (UTF-8 on Windows).
+### :absent: When the variable isn't set, `name` is too long or holds a NUL, or the value can't be read or allocated.
+@expensive("allocates a copy of the variable")
+common routine OsEnvironment.variable(name: @[Byte], alloc: @MemoryManager) -> Maybe[Memory[Byte]]
+    return env_var(name, alloc)
+
+### Every environment variable as the process has it now, copied into memory from alloc: a snapshot that later changes
+### don't reach. Drop the list.
+### :param alloc: The allocator for the list and the copies.
+### :returns: The variables, in the OS's order.
+### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+@track_caller
+@expensive("allocates a copy of every variable")
+common routine OsEnvironment.variables(alloc: @MemoryManager) -> List[EnvironmentEntry]
+    return environment_entries(alloc)
+
+### `text` copied into memory from alloc.
+### :param text: The bytes.
+### :param alloc: The allocator.
+### :returns: The copy.
+### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+@track_caller
+secret routine copied(text: @[Byte], alloc: @MemoryManager) -> Memory[Byte]
+    local memory: @Memory[Byte] <- Memory[Byte].construct(count: text.count().max(1), manager: alloc)
+
+    memory.data.peek().copy(src: text.data, count: text.count())
+    memory.keep_first(text.count())
+    return memory
+
+### The variables of C's environ, `NAME=VALUE` each, as a list from alloc.
+### :param alloc: The allocator for the list and the copies.
+### :returns: The variables.
+### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+@target(os: ("linux", "macos"))
+@track_caller
+secret routine environment_entries(alloc: @MemoryManager) -> List[EnvironmentEntry]
+    local list: @List[EnvironmentEntry] <- .construct(alloc)
+
+    env: @@Byte = environ_place().peek()
+    if env.is_hollow()
+        return list
+    while true with i: U64 = 0
+        raw: @Byte = env.stride(i).peek()
+        if raw.is_hollow()
+            break
+        text: @[Byte] = @[Byte].construct(data: raw, count: raw.to[CStrView]().count())
+        when text.find("=")
+            is U64 as at =>
+                list.add_last(EnvironmentEntry(name: copied(text: text.slice(start: 0, end: at), alloc),
+                    value: copied(text: text.slice(start: at + 1, end: text.count()), alloc)))
+            is None => pass
+        continue with i: i + 1
+    return list
+
+### The variables of the process's environment block (GetEnvironmentStringsW), as a list from alloc. The entries
+### Windows keeps for each drive's working directory (`=C:=C:\...`) are left out.
+### :param alloc: The allocator for the list and the copies.
+### :returns: The variables.
+### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+@target(os: "windows")
+@track_caller
+secret routine environment_entries(alloc: @MemoryManager) -> List[EnvironmentEntry]
+    local list: @List[EnvironmentEntry] <- .construct(alloc)
+
+    strings: @U16 = c_get_environment_strings()
+    if strings.is_hollow()
+        return list
+    while true with at: U64 = 0
+        entry: @U16 = strings.stride(at)
+        n: U64 = wide_length(entry)
+        if n == 0
+            break
+        # A name starts at the first unit, so a leading '=' (a drive's entry) is part of no name.
+        if entry.peek() != 0x3D
+            while k < n with k: U64 = 1
+                if entry.stride(k).peek() == 0x3D
+                    local name: @Memory[Byte] <- owned_wide(units: entry, count: k, alloc).unwrap()
+                    local value: @Memory[Byte] <- owned_wide(units: entry.stride(k + 1), count: n - k - 1,
+                        alloc).unwrap()
+                    list.add_last(EnvironmentEntry(name: steal name, value: steal value))
+                    break
+                continue with k: k + 1
+        continue with at: at + n + 1
+    c_free_environment_strings(strings)
+    return list
+
+# -- the directories ---------------------------------------------------------------------
+
+### The working directory, its path in memory from alloc (drop it). Relative paths start there.
+### :param alloc: The allocator for the new path.
+### :returns: The working {Directory}, or the {FsError} the OS reported.
+@expensive("asks the operating system")
+common routine OsEnvironment.working_directory_result(alloc: @MemoryManager) -> Result[Directory, FsError]
+    return directory_of(current_dir(alloc))
+
+### The temporary directory (TMPDIR or /tmp, on Windows GetTempPathW's), its path in memory from alloc (drop it).
+### :param alloc: The allocator for the new path.
+### :returns: The temporary {Directory}, or the {FsError} the OS reported.
+@expensive("asks the operating system")
+common routine OsEnvironment.temp_directory_result(alloc: @MemoryManager) -> Result[Directory, FsError]
+    return directory_of(temp_dir(alloc))
+
+### The user's home directory (HOME, on Windows USERPROFILE), its path in memory from alloc (drop it).
+### :param alloc: The allocator for the new path.
+### :returns: The home {Directory}, or the {FsError} the OS reported (NotFound when it can't be told).
+@expensive("asks the operating system")
+common routine OsEnvironment.home_directory_result(alloc: @MemoryManager) -> Result[Directory, FsError]
+    return directory_of(home_dir(alloc))

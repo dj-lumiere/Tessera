@@ -1,0 +1,105 @@
+# OsFileManager.rename_result and move_result, in a directory of its own under the temporary directory: a file renamed
+# in its directory, a name that isn't one name (a separator, "..", empty), a rename onto a file with and without
+# replacing, a file moved into another directory (its name kept), a move onto a file of the same name with and without
+# replacing, and a directory renamed and moved with what is in it. A Directory's go_to names the directories.
+
+import Standard/Os
+
+routine error_name(e: FsError) -> @[Byte]
+    when e
+        FsError.NOT_FOUND => return "NotFound"
+        FsError.ALREADY_EXISTS => return "AlreadyExists"
+        FsError.INVALID_PATH => return "InvalidPath"
+        FsError.DIRECTORY_NOT_EMPTY => return "DirectoryNotEmpty"
+        else => return "another error"
+
+routine report(what: @[Byte], r: Result[None, FsError]) -> None
+    when r
+        is None => Console.show("{what}: ok")
+        is FsError as error => Console.show("{what}: {error_name(error)}")
+    return
+
+routine report_move(what: @[Byte], r: Result[None, MoveError]) -> None
+    when r
+        is None => Console.show("{what}: ok")
+        is MoveError as error => Console.show("{what}: {error_name(error.reason)}, copied {error.copied}")
+    return
+
+### Makes the file with the text.
+routine make(f: @File, text: @[Byte]) -> None
+    OsFileManager.make_file_result(at: f, replacing: true).unwrap()
+    OsFileManager.write_all_result(at: f, data: text).unwrap()
+    return
+
+### The file's text.
+routine text_of(f: @File) -> Memory[Byte]
+    return OsFileManager.read_all_result(at: f).unwrap()
+
+routine start() -> None
+    local tmp: @Directory <- OsEnvironment.temp_directory_result().unwrap()
+    local root: @Directory <- tmp.go_to(name: "tessera_fs_rename_move")
+
+    OsFileManager.delete_all_result(at: root)
+    local a: @Directory <- root.go_to(name: "a")
+    local b: @Directory <- root.go_to(name: "b")
+    OsFileManager.make_directory_result(at: a, parents: true).unwrap()
+    OsFileManager.make_directory_result(at: b, parents: true).unwrap()
+    local x: @File <- a.file(name: "x.txt")
+    local y: @File <- a.file(name: "y.txt")
+    local z: @File <- a.file(name: "z.txt")
+    make(f: x, text: "first")
+    make(f: z, text: "other")
+
+    report(what: "rename x.txt to y.txt", r: OsFileManager.rename_result(at: x, to: "y.txt", replacing: false))
+    Console.show("x there: {OsFileManager.is_present(at: x)}, y there: {OsFileManager.is_present(at: y)}")
+    report(what: "rename to a name with a separator",
+        r: OsFileManager.rename_result(at: y, to: "c/w.txt", replacing: false))
+    report(what: "rename to ..", r: OsFileManager.rename_result(at: y, to: "..", replacing: false))
+    report(what: "rename to an empty name", r: OsFileManager.rename_result(at: y, to: "", replacing: false))
+    report(what: "rename onto z.txt", r: OsFileManager.rename_result(at: y, to: "z.txt", replacing: false))
+    report(what: "rename onto z.txt replacing", r: OsFileManager.rename_result(at: y, to: "z.txt", replacing: true))
+    local moved: @Memory[Byte] <- text_of(f: z)
+    Console.show("z.txt now holds: {moved}")
+    drop moved
+
+    local bz: @File <- b.file(name: "z.txt")
+    report_move(what: "move z.txt into b", r: OsFileManager.move_result(at: z, into: b, replacing: false))
+    Console.show("a/z.txt there: {OsFileManager.is_present(at: z)}, b/z.txt there: {OsFileManager.is_present(at: bz)}")
+    make(f: z, text: "second")
+    report_move(what: "move another z.txt into b", r: OsFileManager.move_result(at: z, into: b, replacing: false))
+    report_move(what: "move it replacing",
+        r: OsFileManager.move_result(at: z, into: b, replacing: true))
+    local second: @Memory[Byte] <- text_of(f: bz)
+    Console.show("b/z.txt now holds: {second}")
+    drop second
+
+    local inner: @Directory <- a.go_to(name: "inner")
+    local kept: @File <- inner.file(name: "kept.txt")
+    OsFileManager.make_directory_result(at: inner, parents: false).unwrap()
+    make(f: kept, text: "inside")
+    local renamed: @Directory <- a.go_to(name: "renamed")
+    report(what: "rename the directory inner to renamed",
+        r: OsFileManager.rename_result(at: inner, to: "renamed", replacing: false))
+    report_move(what: "move the directory renamed into b",
+        r: OsFileManager.move_result(at: renamed, into: b, replacing: false))
+    local there: @Directory <- b.go_to(name: "renamed")
+    local inside: @File <- there.file(name: "kept.txt")
+    local kept_text: @Memory[Byte] <- text_of(f: inside)
+    Console.show("b/renamed/kept.txt holds: {kept_text}, a/renamed there: {OsFileManager.is_present(at: renamed)}")
+    drop kept_text
+
+    report(what: "delete_all", r: OsFileManager.delete_all_result(at: root))
+    drop inside
+    drop there
+    drop renamed
+    drop kept
+    drop inner
+    drop bz
+    drop z
+    drop y
+    drop x
+    drop b
+    drop a
+    drop root
+    drop tmp
+    return

@@ -14,7 +14,7 @@ static class Cli
           tessera build                 build the solution its config.toml describes (here or above)
           tessera build <file.te>... [-o <out>] [--emit-llvm] [--no-stdlib-exports] [<target>] [--mode <mode>] [<trace>] [--race-check]
           tessera run                   build it and run it
-          tessera run   <file.te>... [<target>] [--mode <mode>] [<trace>] [--race-check]
+          tessera run   <file.te>... [<target>] [--mode <mode>] [<trace>] [--race-check] [-- <argument>...]
           tessera test  [<target>] [--mode <mode>] [<trace>] <dir-or-file.te>...
           tessera fmt   [--check] <file-or-dir>...   format .te files in place (--check: list files that would change)
           tessera fmt   -               format the source on standard input to standard output (for an editor)
@@ -720,11 +720,15 @@ static class Cli
 
     private static int Run(string[] args)
     {
+        // What follows `--` goes to the program as its arguments (OsEnvironment.argument).
+        int split = Array.IndexOf(args, "--");
+        string[] programArgs = split < 0 ? [] : args[(split + 1)..];
+        if (split >= 0) args = args[..split];
         if (ManifestFor(args) is { } manifest)
         {
             if (manifest.Target.LlvmTriple != BuildTarget.Host().LlvmTriple)
                 throw new ToolError($"{manifest.Path} builds for {manifest.Target.LlvmTriple}, which this machine can't run; use tessera build");
-            return Exec(BuildManifest(manifest), captureOutput: false).Code;
+            return Exec(BuildManifest(manifest), captureOutput: false, programArgs: programArgs).Code;
         }
         var o = ParseOptions(args);
         string exe = TempExe();
@@ -733,7 +737,7 @@ static class Cli
             Link(Compile(o.Inputs, o.Target, mode: o.Mode, trace: o.Trace, raceCheck: o.RaceCheck, uninitFill: o.UninitFill, heapCheck: o.HeapCheck), exe,
                 o.Target, o.Mode,
                 RaceLink(o.RaceCheck));
-            var (code, _, _) = Exec(exe, captureOutput: false);
+            var (code, _, _) = Exec(exe, captureOutput: false, programArgs: programArgs);
             return code;
         }
         finally
@@ -838,9 +842,10 @@ static class Cli
 
     /// Runs exe. With captureOutput (a test), its standard input is input's bytes, or empty: a test never waits on
     /// the terminal.
-    private static (int Code, string Stdout, string Stderr) Exec(string exe, bool captureOutput, byte[]? input = null)
+    private static (int Code, string Stdout, string Stderr) Exec(string exe, bool captureOutput, byte[]? input = null,
+        string[]? programArgs = null)
     {
-        var psi = new ProcessStartInfo(exe)
+        var psi = new ProcessStartInfo(exe, programArgs ?? [])
         {
             UseShellExecute = false,
             RedirectStandardInput = captureOutput,

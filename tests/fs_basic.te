@@ -1,7 +1,7 @@
-# Standard/Os files and directories through FileManager, in a directory of its own under the temporary directory:
+# Standard/Os files and directories through OsFileManager, in a directory of its own under the temporary directory:
 # directories made and deleted, files made (and not made on the side), written (bytes and formatted text through a
-# FileHandle), read, appended, sized, copied, and moved, listings (a non-ASCII name too), the working directory, path
-# text, and memory mappings.
+# FileHandle), read, appended, sized, copied, and renamed, listings (a non-ASCII name too), the working directory,
+# path text, and file storage.
 
 import Standard/Os
 
@@ -19,6 +19,7 @@ routine error_name(e: FsError) -> @[Byte]
         FsError.NO_SPACE => return "NoSpace"
         FsError.READ_ONLY => return "ReadOnly"
         FsError.BUSY => return "Busy"
+        FsError.STORAGE_FAULT => return "StorageFault"
         FsError.OUT_OF_MEMORY => return "OutOfMemory"
         FsError.OTHER => return "Other"
 
@@ -33,7 +34,7 @@ routine report(what: @[Byte], r: Result[None, FsError]) -> None
 
 ### The file's text, or the error's name.
 routine contents(f: @File, alloc: @MemoryManager) -> Memory[Byte]
-    when FileManager.read_all_result(at: f, alloc)
+    when OsFileManager.read_all_result(at: f, alloc)
         is Memory[Byte] as text => return text
         is FsError as error => return @[Byte].concat(a: error_name(error), b: "", alloc)
 
@@ -46,56 +47,56 @@ routine show_contents(what: @[Byte], f: @File, alloc: @MemoryManager) -> None
     return
 
 routine size_of(f: @File) -> U64
-    m: Result[Metadata, FsError] = FileManager.metadata_result(at: f)
+    m: Result[Metadata, FsError] = OsFileManager.metadata_result(at: f)
     when m
         is Metadata as info => return info.size
         is FsError => return U64.MAX
 
 routine start() -> None
     local alloc: @MemoryManager <- HEAP.peek()
-    local tmp: @Directory <- FileManager.temp_directory_result(alloc).unwrap()
-    local root: @Directory <- tmp.subdir(name: "tessera_fs_basic", alloc)
+    local tmp: @Directory <- OsEnvironment.temp_directory_result(alloc).unwrap()
+    local root: @Directory <- tmp.go_to(name: "tessera_fs_basic", alloc)
     local iter: @DirIter <- .hollow()
     local count: @U64 <- .hollow()
     local dirs: @U64 <- .hollow()
     local korean: @Bool <- .hollow()
 
-    FileManager.delete_all_result(at: root, alloc)
-    local deep: @Directory <- root.subdir(name: "a/b/c", alloc)
+    OsFileManager.delete_all_result(at: root, alloc)
+    local deep: @Directory <- root.go_to(name: "a/b/c", alloc)
     report(what: "make_directory without parents",
-        r: FileManager.make_directory_result(at: deep, parents: false))
+        r: OsFileManager.make_directory_result(at: deep, parents: false))
     report(what: "make_directory with parents",
-        r: FileManager.make_directory_result(at: deep, parents: true))
+        r: OsFileManager.make_directory_result(at: deep, parents: true))
     report(what: "make_directory with parents again",
-        r: FileManager.make_directory_result(at: deep, parents: true))
+        r: OsFileManager.make_directory_result(at: deep, parents: true))
     report(what: "make_directory again",
-        r: FileManager.make_directory_result(at: deep, parents: false))
-    as_file: Bool = FileManager.is_file(at: File.at(deep.path.peek()))
-    Console.show("directory exists: {FileManager.is_directory(at: deep)}, is a file: {as_file}")
-    local a: @Directory <- root.subdir(name: "a", alloc)
+        r: OsFileManager.make_directory_result(at: deep, parents: false))
+    as_file: Bool = OsFileManager.is_file(at: File.at(deep.path.peek()))
+    Console.show("directory exists: {OsFileManager.is_directory(at: deep)}, is a file: {as_file}")
+    local a: @Directory <- root.go_to(name: "a", alloc)
     local hello: @File <- a.file(name: "hello.txt", alloc)
     report(what: "write_all before make_file",
-        r: FileManager.write_all_result(at: hello, data: "x"))
-    early: Result[FileHandle, FsError] = FileManager.open_write_result(at: hello)
+        r: OsFileManager.write_all_result(at: hello, data: "x"))
+    early: Result[FileHandle, FsError] = OsFileManager.open_write_result(at: hello)
     Console.show("open_write before make_file: {error_name(early.unwrap_failure())}")
-    early_append: Result[FileHandle, FsError] = FileManager.open_append_result(at: hello)
+    early_append: Result[FileHandle, FsError] = OsFileManager.open_append_result(at: hello)
     Console.show("open_append before make_file: {error_name(early_append.unwrap_failure())}")
-    early_map: Result[Mapping, FsError] = FileManager.map_result(at: hello, write: true, offset: 0,
-        count: U64.MAX)
+    early_map: Result[FileStorage[Byte], FsError] = OsFileManager.storage_result[Byte](at: hello, write: true,
+        start: 0, count: U64.MAX)
     Console.show("map before make_file: {error_name(early_map.unwrap_failure())}")
-    report(what: "set_size before make_file", r: FileManager.set_size_result(at: hello, size: 4))
-    Console.show("still missing: {not FileManager.is_present(at: hello)}")
-    report(what: "make_file", r: FileManager.make_file_result(at: hello, replacing: false))
-    report(what: "write_all", r: FileManager.write_all_result(at: hello, data: "hello, 세계\n"))
+    report(what: "set_size before make_file", r: OsFileManager.set_size_result(at: hello, size: 4))
+    Console.show("still missing: {not OsFileManager.is_present(at: hello)}")
+    report(what: "make_file", r: OsFileManager.make_file_result(at: hello, replacing: false))
+    report(what: "write_all", r: OsFileManager.write_all_result(at: hello, data: "hello, 세계\n"))
     show_contents(what: "read_all: ", f: hello, alloc)
-    report(what: "make_file again", r: FileManager.make_file_result(at: hello, replacing: false))
+    report(what: "make_file again", r: OsFileManager.make_file_result(at: hello, replacing: false))
     Console.show("size: {size_of(hello)}")
-    local appended: @FileHandle <- FileManager.open_append_result(at: hello).unwrap()
+    local appended: @FileHandle <- OsFileManager.open_append_result(at: hello).unwrap()
     appended.write("more")
     Console.show("formatted write failed: {appended.has_failed()}")
     appended.close()
     Console.show("size after append: {size_of(hello)}")
-    local both: @FileHandle <- FileManager.open_read_write_result(at: hello).unwrap()
+    local both: @FileHandle <- OsFileManager.open_read_write_result(at: hello).unwrap()
     at: U64 = both.seek_result(offset: -4, from: SeekFrom.END).unwrap()
     Console.show("seek to end - 4: {at}")
     local tail: @Array[Byte, 8] <- .hollow()
@@ -108,37 +109,38 @@ routine start() -> None
     both.close()
     local copied: @File <- a.file(name: "copy.txt", alloc)
     local renamed: @File <- a.file(name: "renamed.txt", alloc)
-    bytes: U64 = FileManager.copy_result(from: hello, to: copied, replacing: false).unwrap()
+    bytes: U64 = OsFileManager.copy_result(from: hello, to: copied, replacing: false).unwrap()
     Console.show("copy: {bytes} bytes, ", end: "")
     show_contents(what: "", f: copied, alloc)
     Console.show("")
-    again: Result[U64, FsError] = FileManager.copy_result(from: hello, to: copied, replacing: false)
+    again: Result[U64, FsError] = OsFileManager.copy_result(from: hello, to: copied, replacing: false)
     Console.show("copy onto a file: {error_name(again.unwrap_failure())}")
-    replaced: U64 = FileManager.copy_result(from: hello, to: copied, replacing: true).unwrap()
+    replaced: U64 = OsFileManager.copy_result(from: hello, to: copied, replacing: true).unwrap()
     Console.show("copy replacing a file: {replaced} bytes")
-    report(what: "move", r: FileManager.move_result(from: copied, to: renamed, replacing: false))
-    Console.show("old there: {FileManager.is_present(at: copied)}, new there: {FileManager.is_present(at: renamed)}")
-    report(what: "move onto a file",
-        r: FileManager.move_result(from: renamed, to: hello, replacing: false))
-    missing: Result[FileHandle, FsError] = FileManager.open_read_result(at: a.file(
+    report(what: "rename", r: OsFileManager.rename_result(at: copied, to: "renamed.txt", replacing: false))
+    old_there: Bool = OsFileManager.is_present(at: copied)
+    Console.show("old there: {old_there}, new there: {OsFileManager.is_present(at: renamed)}")
+    report(what: "rename onto a file",
+        r: OsFileManager.rename_result(at: renamed, to: "hello.txt", replacing: false))
+    missing: Result[FileHandle, FsError] = OsFileManager.open_read_result(at: a.file(
         name: "missing.txt", alloc))
     Console.show("open missing: {error_name(missing.unwrap_failure())}")
-    report(what: "set_readonly", r: FileManager.set_readonly_result(at: renamed, readonly: true))
-    ro: Bool = FileManager.metadata_result(at: renamed).unwrap().readonly
+    report(what: "set_readonly", r: OsFileManager.set_readonly_result(at: renamed, readonly: true))
+    ro: Bool = OsFileManager.metadata_result(at: renamed).unwrap().readonly
     Console.show("readonly: {ro}")
     report(what: "set_readonly off",
-        r: FileManager.set_readonly_result(at: renamed, readonly: false))
-    rw: Bool = FileManager.metadata_result(at: renamed).unwrap().readonly
+        r: OsFileManager.set_readonly_result(at: renamed, readonly: false))
+    rw: Bool = OsFileManager.metadata_result(at: renamed).unwrap().readonly
     Console.show("readonly: {rw}")
     report(what: "make_file replacing",
-        r: FileManager.make_file_result(at: renamed, replacing: true))
+        r: OsFileManager.make_file_result(at: renamed, replacing: true))
     Console.show("emptied: size {size_of(renamed)}")
     local made: @File <- a.file(name: "파일.txt", alloc)
-    report(what: "make_file 파일.txt", r: FileManager.make_file_result(at: made, replacing: false))
-    Console.show("made: {FileManager.is_file(at: made)}, size {size_of(made)}")
-    report(what: "set_size 3", r: FileManager.set_size_result(at: made, size: 3))
+    report(what: "make_file 파일.txt", r: OsFileManager.make_file_result(at: made, replacing: false))
+    Console.show("made: {OsFileManager.is_file(at: made)}, size {size_of(made)}")
+    report(what: "set_size 3", r: OsFileManager.set_size_result(at: made, size: 3))
     Console.show("size: {size_of(made)}")
-    report(what: "open listing", r: FileManager.list_result(at: a, iter))
+    report(what: "open listing", r: OsFileManager.list_result(at: a, iter))
     0.poke_into(count)
     0.poke_into(dirs)
     false.poke_into(korean)
@@ -168,35 +170,35 @@ routine start() -> None
     local hidden: @File <- File.at(".hidden")
     local plain: @File <- File.at("file")
     Console.show("hidden: stem [{hidden.stem()}], extension [{hidden.extension()}], no extension: [{plain.extension()}]")
-    report(what: "set_current", r: FileManager.set_current_directory_result(at: root))
-    local cwd: @Directory <- FileManager.current_directory_result(alloc).unwrap()
-    local canonical: @Directory <- FileManager.canonical_result(at: root, alloc).unwrap()
-    local absolute: @File <- FileManager.absolute_result(at: File.at("x.txt"), alloc).unwrap()
-    cwd_ok: Bool = cwd.name() == "tessera_fs_basic"
+    local cwd: @Directory <- OsEnvironment.working_directory_result(alloc).unwrap()
+    local canonical: @Directory <- OsFileManager.canonical_result(at: root, alloc).unwrap()
+    local absolute: @File <- OsFileManager.absolute_result(at: File.at("x.txt"), alloc).unwrap()
+    cwd_ok: Bool = not cwd.path.peek().is_empty()
     canonical_ok: Bool = canonical.name() == "tessera_fs_basic"
     absolute_ok: Bool = absolute.name() == "x.txt"
-    Console.show("names right: current {cwd_ok}, canonical {canonical_ok}, absolute {absolute_ok}")
-    report(what: "set_current back", r: FileManager.set_current_directory_result(at: tmp))
-    whole: Mapping = FileManager.map_result(at: hello, write: false, offset: 0,
+    Console.show("names right: working {cwd_ok}, canonical {canonical_ok}, absolute {absolute_ok}")
+    whole: FileStorage[Byte] = OsFileManager.storage_result[Byte](at: hello, write: false, start: 0,
         count: U64.MAX).unwrap()
     w: @[Byte] = @[Byte].construct(data: whole.data(), count: whole.count())
     Console.show("map: {w}")
     whole.unmap()
-    part: Mapping = FileManager.map_result(at: hello, write: false, offset: 1, count: 3).unwrap()
+    part: FileStorage[Byte] = OsFileManager.storage_result[Byte](at: hello, write: false, start: 1,
+        count: 3).unwrap()
     p: @[Byte] = @[Byte].construct(data: part.data(), count: part.count())
     Console.show("map 1..4: {p}")
     part.unmap()
-    past: Mapping = FileManager.map_result(at: hello, write: false, offset: 100, count: 3).unwrap()
+    past: FileStorage[Byte] = OsFileManager.storage_result[Byte](at: hello, write: false, start: 100,
+        count: 3).unwrap()
     Console.show("map past the end: {past.count()}")
-    rw2: Mapping = FileManager.map_result(at: hello, write: true, offset: 0,
+    rw2: FileStorage[Byte] = OsFileManager.storage_result[Byte](at: hello, write: true, start: 0,
         count: U64.MAX).unwrap()
     rw2.data().poke(b'J')
     rw2.unmap()
     show_contents(what: "after a mapped store: ", f: hello, alloc)
     Console.show("")
-    report(what: "delete a non-empty directory", r: FileManager.delete_result(at: a))
-    report(what: "delete_all", r: FileManager.delete_all_result(at: root, alloc))
-    Console.show("root there: {FileManager.is_present(at: root)}")
+    report(what: "delete a non-empty directory", r: OsFileManager.delete_result(at: a))
+    report(what: "delete_all", r: OsFileManager.delete_all_result(at: root, alloc))
+    Console.show("root there: {OsFileManager.is_present(at: root)}")
     drop cwd
     drop canonical
     drop absolute

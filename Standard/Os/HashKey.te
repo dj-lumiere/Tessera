@@ -1,10 +1,11 @@
-# Tessera stdlib: the hash key from the operating system
+# Tessera stdlib: OsEntropy, the operating system's random source, and the hash key drawn from it
 #
-# Every stdlib `hash()` is SipHash-2-4 under one per-process key (HashKey.te in Standard/System), which asks the
-# program's `tessera_hash_key` for it the first time something hashes. With an operating system this is that routine:
-# 128 bits from the OS's random source, getrandom on Linux, arc4random_buf on macOS, and ProcessPrng (what
-# BCryptGenRandom draws from, Windows 10 and later) on Windows. A program replaces it by exporting its own routine
-# under the same name, as it replaces the crash handler.
+# OsEntropy fills memory with secret random bits from the OS: getrandom on Linux, arc4random_buf on macOS, and
+# ProcessPrng (what BCryptGenRandom draws from, Windows 10 and later) on Windows. Every stdlib `hash()` is SipHash-2-4
+# under one per-process key (HashKey.te in Standard/System), which asks the program's `tessera_hash_key` for it the
+# first time something hashes. With an operating system this is that routine: 128 bits from OsEntropy. A program
+# replaces it by exporting its own routine under the same name, as it replaces the crash handler.
+# `Xoshiro256.from_entropy()` draws from the same source through `entropy_key()`.
 
 module Standard/Os
 
@@ -56,43 +57,66 @@ secret routine c_load_library(name: CStrView) -> Addr
 @target(os: "windows")
 secret routine c_get_proc_address(library: Addr, name: CStrView) -> Addr
 
-### The hosted hash key: 16 bytes from getrandom, which waits only until the kernel's random pool is first filled.
-### :param key: Where the key goes.
-### :throws: Crashes with `InvalidValueError` when getrandom fails (a kernel older than 3.17, or a seccomp filter).
-@target(os: "linux")
-@export("tessera_hash_key")
-routine os_hash_key(key: @SipKey) -> None
-    # A signal that interrupts the wait (EINTR) asks for the call again.
-    while true
-        got: S64 = c_getrandom(key, 16, 0).to[S64]()
-        if got == 16
-            return
-        if c_random_errno_place().peek() == EINTR
-            continue
-        crash(name: "InvalidValueError",
-            message: "getrandom gave no random bytes for the hash key.")
+### The operating system's random source: secret random bits, for keys and seeds. Its routines are called on the type.
+record OsEntropy
 
-### The hosted hash key: 16 bytes from arc4random_buf.
-### :param key: Where the key goes.
+### Fills count bytes at buffer with random bits from getrandom, which waits only until the kernel's random pool is
+### first filled.
+### :param buffer: Where the bytes go.
+### :param count: How many bytes to fill.
+### :throws: Crashes with `InvalidValueError` when getrandom fails (a kernel older than 3.17, or a seccomp filter),
+###     instead of handing back bytes that aren't random.
+@target(os: "linux")
+common routine OsEntropy.fill(buffer: Addr, count: U64) -> None
+    # A signal that interrupts the wait (EINTR) asks for the rest again, and a large request may come in parts.
+    while filled < count with filled: U64 = 0
+        got: S64 = c_getrandom(buffer.to[@Byte]().stride(filled), (count - filled).to[CSize](), 0).to[S64]()
+        if got > 0
+            continue with filled: filled + got.to[U64]()
+        if c_random_errno_place().peek() == EINTR
+            continue with filled: filled
+        crash(name: "InvalidValueError", message: "getrandom gave no random bytes.")
+    then
+        return
+
+### Fills count bytes at buffer with random bits from arc4random_buf, which can't fail.
+### :param buffer: Where the bytes go.
+### :param count: How many bytes to fill.
 @target(os: "macos")
-@export("tessera_hash_key")
-routine os_hash_key(key: @SipKey) -> None
-    c_arc4random_buf(key, 16)
+common routine OsEntropy.fill(buffer: Addr, count: U64) -> None
+    c_arc4random_buf(buffer, count.to[CSize]())
     return
 
-### The hosted hash key: 16 bytes from ProcessPrng in bcryptprimitives.dll, looked up at run time so that no import
-### library is needed (it has none before the Windows 11 SDK).
-### :param key: Where the key goes.
+### Fills count bytes at buffer with random bits from ProcessPrng in bcryptprimitives.dll, looked up at run time so
+### that no import library is needed (it has none before the Windows 11 SDK).
+### :param buffer: Where the bytes go.
+### :param count: How many bytes to fill.
 ### :throws: Crashes with `InvalidValueError` when bcryptprimitives.dll has no ProcessPrng (Windows before 10).
 @target(os: "windows")
-@export("tessera_hash_key")
-routine os_hash_key(key: @SipKey) -> None
+common routine OsEntropy.fill(buffer: Addr, count: U64) -> None
     library: Addr = c_load_library("bcryptprimitives.dll")
     found: Addr = c_get_proc_address(library, "ProcessPrng")
     if found.is_hollow()
         crash(name: "InvalidValueError",
-            message: "bcryptprimitives.dll has no ProcessPrng for the hash key (Windows 10 or later).")
+            message: "bcryptprimitives.dll has no ProcessPrng for random bytes (Windows 10 or later).")
     local place: @Addr <- found
     prng: Callable[@callconv("stdcall"), (Addr, U64), CInt] = place.to[@Callable[@callconv("stdcall"), (Addr, U64), CInt]]().peek()
-    prng.call(key, 16)
+    prng.call(buffer, count)
+    return
+
+### 64 fresh random bits from the OS, drawn anew on every call.
+### :returns: The random word.
+### :throws: Crashes with `InvalidValueError` when the OS gives no random bytes.
+common routine OsEntropy.next_u64() -> U64
+    local word: @U64 <- 0
+
+    Me.fill(buffer: word, count: 8)
+    return word.peek()
+
+### The hosted hash key: 16 bytes from {OsEntropy.fill}.
+### :param key: Where the key goes.
+### :throws: Crashes with `InvalidValueError` when the OS gives no random bytes.
+@export("tessera_hash_key")
+routine os_hash_key(key: @SipKey) -> None
+    OsEntropy.fill(buffer: key, count: 16)
     return

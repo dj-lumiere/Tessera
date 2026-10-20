@@ -303,15 +303,6 @@ secret routine c_find_close(find: Addr) -> CInt
 @target(os: "windows")
 secret routine c_get_current_directory(size: U32, buffer: @U16) -> U32
 
-### Binds the Win32 `SetCurrentDirectoryW` function: changes the working directory.
-### :param path: The 0-terminated UTF-16 path of the new working directory.
-### :returns: Nonzero, or 0 with the last error set.
-@external("c")
-@symbol("SetCurrentDirectoryW")
-@callconv("stdcall")
-@target(os: "windows")
-secret routine c_set_current_directory(path: @U16) -> CInt
-
 ### Binds the Win32 `GetTempPathW` function: copies the temporary directory, with a trailing backslash and a 0,
 ### into a buffer.
 ### :param size: The buffer's size in UTF-16 units.
@@ -440,6 +431,9 @@ secret routine error_of(e: U32) -> FsError
         19 => return FsError.READ_ONLY
         32, 33 => return FsError.BUSY
         8, 14 => return FsError.OUT_OF_MEMORY
+        # ERROR_CRC, ERROR_SECTOR_NOT_FOUND, ERROR_WRITE_FAULT, ERROR_READ_FAULT, ERROR_DEVICE_HARDWARE_ERROR,
+        # ERROR_IO_DEVICE, ERROR_DISK_OPERATION_FAILED
+        23, 27, 29, 30, 483, 1117, 1127 => return FsError.STORAGE_FAULT
         else => return FsError.OTHER
 
 ### The FsError for the calling thread's last Win32 error.
@@ -1234,18 +1228,6 @@ secret routine current_dir(alloc: @MemoryManager) -> Result[Memory[Byte], FsErro
             return text
         is AllocFailed => return FsError.OUT_OF_MEMORY
 
-### Makes path the working directory.
-### :param path: The new working directory.
-### :returns: `Unit` once it is changed.
-### :throws: Returns the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
-@target(os: "windows")
-secret routine set_current_dir(path: @[Byte]) -> Result[None, FsError]
-    local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
-
-    if wide_path(path, out: wpath.to[@U16]())
-        return checked(c_set_current_directory(wpath.to[@U16]()))
-    return path_error(path)
-
 ### The temporary directory without its trailing separator (C:\Windows\Temp when it can't be told), in memory from
 ### alloc.
 ### :param alloc: The allocator for the text.
@@ -1382,18 +1364,19 @@ secret routine canonical_path(path: @[Byte], alloc: @MemoryManager) -> Result[Me
 
 # -- memory-mapped files -----------------------------------------------------------------
 
-### Maps count bytes of path from offset (U64.MAX: to the end), clamped to the file. Past the end, or an empty
-### file, gives an empty mapping. write maps it so stores reach the file. Otherwise it's read-only (opened for a
-### front-to-back read).
+### Maps count cells of path from cell start (U64.MAX: to the end), clamped to the whole cells the file holds. Past the
+### end, or an empty file, gives an empty storage. write maps it so stores reach the file. Otherwise it's read-only
+### (opened for a front-to-back read).
 ### :param path: The file to map.
 ### :param write: True for a writable mapping whose stores reach the file.
-### :param offset: Where in the file the mapping starts.
-### :param count: The most bytes to map.
-### :returns: The mapping.
+### :param start: The first cell to map.
+### :param count: The most cells to map.
+### :returns: The storage.
 ### :throws: Returns the reason when the file can't be opened, measured, or mapped.
 @target(os: "windows")
-secret common routine Mapping.map(path: @[Byte], write: Bool, offset: U64,
+secret common routine FileStorage[T].map(path: @[Byte], write: Bool, start: U64,
     count: U64) -> Result[Me, FsError]
+needs T: typename, StorageCell[T]
     local file: @FileHandle <- .empty()
     local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
 
@@ -1421,16 +1404,15 @@ secret common routine Mapping.map(path: @[Byte], write: Bool, offset: U64,
         result: Result[Me, FsError] = failed[Me]()
         file.close()
         return result
-    size2: U64 = size.peek().to[U64]()
-    if offset >= size2
+    offset, cells = cell_window(size: size.peek().to[U64](), start, count, cell: sizeof[T]())
+    if cells == 0
         result: Result[Me, FsError] = Me.empty()
         file.close()
         return result
-    want_bytes: U64 = count.to[U64]().min(size2 - offset)
-    want: U64 = want_bytes.to[U64]()
+    want: U64 = cells * sizeof[T]()
     grain: U64 = map_granularity().bytes()
     aligned: U64 = offset - offset % grain
-    delta: U64 = (offset - aligned).to[U64]()
+    delta: U64 = offset - aligned
     protect: U32 = when
         write => 4
         else => 2
@@ -1451,39 +1433,66 @@ secret common routine Mapping.map(path: @[Byte], write: Bool, offset: U64,
         result: Result[Me, FsError] = error_of(e)
         file.close()
         return result
-    result: Result[Me, FsError] = Me(base: view, delta: delta, count: want)
+    result: Result[Me, FsError] = Me(base: view, delta: delta, count: cells, writable: write)
     file.close()
     return result
 
 
 ### Writes changed pages back to the file.
-### :returns: `Unit` once they are written, at once for an empty mapping.
+### :returns: `Unit` once they are written, at once for an empty storage.
 ### :throws: Returns the reason when FlushViewOfFile fails.
 @target(os: "windows")
-routine Mapping.flush_result() -> Result[None, FsError]
+routine FileStorage[T].flush_result() -> Result[None, FsError]
+needs T: typename, StorageCell[T]
     if me.base.is_hollow()
         return fs_done()
     return checked(c_flush_view_of_file(me.base, 0))
 
 ### Writes changed pages back and unmaps.
 @target(os: "windows")
-routine Mapping.unmap() -> None
+routine FileStorage[T].unmap() -> None
+needs T: typename, StorageCell[T]
     if me.base.is_hollow()
         return
     c_flush_view_of_file(me.base, 0)
     c_unmap_view_of_file(me.base)
     return
 
-### Asks the OS to read the whole mapping in now.
+### Asks the OS to read the whole storage in now.
 @target(os: "windows")
-routine Mapping.prefetch() -> None
+routine FileStorage[T].prefetch() -> None
+needs T: typename, StorageCell[T]
     if me.base.is_hollow()
         return
-    local range: @MemoryRange <- MemoryRange(address: me.base, size: me.delta + me.count)
+    local range: @MemoryRange <- MemoryRange(address: me.base, size: me.mapped_bytes())
     c_prefetch_virtual_memory(c_get_current_process(), 1, range, 0)
     return
 
-### Tells the OS the mapping will be read front to back: a read-only mapping's file was already opened that way.
+### Tells the OS the storage will be read front to back: a read-only mapping's file was already opened that way.
 @target(os: "windows")
-routine Mapping.advise_sequential() -> None
+routine FileStorage[T].advise_sequential() -> None
+needs T: typename, StorageCell[T]
     return
+
+# -- partitions --------------------------------------------------------------------------
+
+### The volume the file system at path is on, as the OS numbers it (its serial number).
+### :param path: An existing path (a link counts as what it points at).
+### :returns: The volume serial number.
+### :throws: Returns the reason when the path can't be looked at.
+@target(os: "windows")
+secret routine device_id(path: @[Byte]) -> Result[U64, FsError]
+    local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
+    local info: @HandleInfo <- .hollow()
+
+    if not wide_path(path, out: wpath.to[@U16]())
+        return path_error(path)
+    h: Addr = query_handle(wpath: wpath.to[@U16](), link_itself: false)
+    if is_invalid_handle(h)
+        return failed[U64]()
+    ok: CInt = c_get_file_information_by_handle(h, info)
+    error: FsError = last_error()
+    c_close_handle(h)
+    if ok == 0
+        return error
+    return info.volume_serial.peek().to[U64]()

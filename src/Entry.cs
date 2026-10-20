@@ -108,15 +108,18 @@ public sealed partial class Compiler
     /// The attributes of a function the builder writes itself.
     private string EntryAttrs(Pos pos) => $"nounwind{UnwindTable} {CpuModel.For(Target, pos).FnAttrs}";
 
-    /// The platform's C `main`: `start`, then the exit status from Standard/Os's exit_code (what set_exit_code stored
-    /// last, 0 when nothing did). A crash ends the process before that with its own status.
+    /// The platform's C `main`: the arguments handed to Standard/Os (`OsEnvironment.argument`), `start`, then the exit
+    /// status from Standard/Os's exit_code (what set_exit_code stored last, 0 when nothing did). A crash ends the
+    /// process before that with its own status.
     private void PlanHostedMain(RoutineDecl start, Instance startInst)
     {
         var exitCode = EntryHelper(OsModule, "exit_code", start.Pos);
+        var setArguments = EntryHelper(OsModule, "set_arguments", start.Pos);
         if (ExposeDefinitions) NoteExposed("main");
-        _entry.AppendLine("; The program's entry: start, then the exit status set_exit_code stored.");
-        _entry.AppendLine($"define i32 @main() {EntryAttrs(start.Pos)} {{");
+        _entry.AppendLine("; The program's entry: the arguments kept, start, then the exit status set_exit_code stored.");
+        _entry.AppendLine($"define i32 @main(i32 %argc, ptr %argv) {EntryAttrs(start.Pos)} {{");
         _entry.AppendLine("entry:");
+        _entry.AppendLine($"  call {setArguments.CcPrefix(Target)}void @{Quote(setArguments.Symbol)}(i32 %argc, ptr %argv)");
         // A traced build reports a hardware fault the way it reports a crash (Standard/Os/Faults.te). The race check
         // reports faults itself.
         if (Trace && !RaceCheck) _entry.AppendLine($"  {EntryCall(EntryHelper(CpuModule, "install_fault_handlers", start.Pos))}");

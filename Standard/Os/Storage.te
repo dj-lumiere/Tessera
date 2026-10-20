@@ -1,0 +1,727 @@
+# Tessera stdlib: StorageManager and PartitionManager, the storage devices and the partitions on them
+#
+# Memory is main memory. Storage is what keeps files when the power is off: a disk, an SSD, an SD card. Three managers
+# stack up over it. A StorageManager manages one storage device: its blocks and its partition table. A
+# PartitionManager manages one partition, a slice of a device. A FileManager (FileManager.te) manages the file system
+# on one partition, and a partition has exactly one: making a second one over a partition that has one fails loudly.
+#
+# On an operating system the OS plays the device and partition managers, so here they are what the OS reports about
+# them, read only: their names, sizes, and where a partition's files are. Making a partition or a file system on one
+# is not here yet. Each list is what the OS gives without special rights: on Linux /sys and /proc/self/mountinfo, on
+# macOS the mounted file systems (getfsstat), on Windows the drive letters (where listing the devices needs
+# administrator rights, so the device list is empty).
+
+module Standard/Os
+
+import Standard/Collections
+
+### One storage device, as the OS reports it.
+entity StorageManager
+    name: Memory[Byte]  # the OS's name: "sda", "nvme0n1" on Linux, "disk0" on macOS
+    size: U64  # its size in bytes, 0 when the OS doesn't say
+
+### One partition, as the OS reports it.
+entity PartitionManager
+    name: Memory[Byte]  # the OS's name: "sda1" on Linux, "disk3s1" on macOS, "C:" on Windows
+    device: Memory[Byte]  # the name of the StorageManager it is on, empty when the OS doesn't say
+    mounted_at: Memory[Byte]  # the directory its file system is reached at, empty when it isn't mounted
+    file_system: Memory[Byte]  # "ext4", "apfs", "NTFS", empty when it has none mounted
+    size: U64  # its size in bytes, 0 when the OS doesn't say
+
+### Makes a `StorageManager` that takes over the memory of its name.
+### :param name: The device's name.
+### :param size: Its size in bytes.
+### :returns: The new value.
+common routine StorageManager.construct(name: Memory[Byte], size: U64) -> Me
+    return Me(name: steal name, size)
+
+### Gives the name's memory back.
+@track_caller
+routine @StorageManager.destruct() -> None
+    drop me.name
+    return
+
+### Makes a `PartitionManager` that takes over the memory of its names.
+### :param name: The partition's name.
+### :param device: Its device's name.
+### :param mounted_at: Where its files are reached.
+### :param file_system: Its file system's name.
+### :param size: Its size in bytes.
+### :returns: The new value.
+common routine PartitionManager.construct(name: Memory[Byte], device: Memory[Byte], mounted_at: Memory[Byte],
+    file_system: Memory[Byte], size: U64) -> Me
+    return Me(name: steal name, device: steal device, mounted_at: steal mounted_at,
+        file_system: steal file_system, size)
+
+### Gives the names' memory back.
+@track_caller
+routine @PartitionManager.destruct() -> None
+    drop me.name
+    drop me.device
+    drop me.mounted_at
+    drop me.file_system
+    return
+
+### The directory the partition's files are reached at, a view of `mounted_at` (empty when it isn't mounted).
+### :returns: The {Directory}, valid while the partition is.
+routine @PartitionManager.directory() -> Directory
+    return Directory.at(me.mounted_at.getview())
+
+### The storage devices the OS reports, their names in memory from alloc (drop the list).
+### :param alloc: The allocator for the list and the names.
+### :returns: The devices, empty when the OS gives none.
+### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+@track_caller
+@expensive("asks the operating system")
+common routine StorageManager.list(alloc: @MemoryManager) -> List[StorageManager]
+    return storage_devices(alloc)
+
+### The partitions the OS reports, their names in memory from alloc (drop the list).
+### :param alloc: The allocator for the list and the names.
+### :returns: The partitions, empty when the OS gives none.
+### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+@track_caller
+@expensive("asks the operating system")
+common routine PartitionManager.list(alloc: @MemoryManager) -> List[PartitionManager]
+    return partitions(alloc)
+
+# -- shared helpers ----------------------------------------------------------------------
+
+### What the OS says about a partition: views of its names, and its size.
+secret record PartitionFacts
+    name: @[Byte]
+    device: @[Byte]
+    mounted_at: @[Byte]
+    file_system: @[Byte]
+    size: U64
+
+### Makes a `PartitionFacts` from its fields.
+### :param name: The partition's name.
+### :param device: Its device's name.
+### :param mounted_at: Where its files are reached.
+### :param file_system: Its file system's name.
+### :param size: Its size in bytes.
+### :returns: The new value.
+secret common routine PartitionFacts.construct(name: @[Byte], device: @[Byte], mounted_at: @[Byte],
+    file_system: @[Byte], size: U64) -> Me
+    return Me(name, device, mounted_at, file_system, size)
+
+### Releases nothing: a `PartitionFacts` views names it doesn't own.
+secret routine @PartitionFacts.destruct() -> None
+    return
+
+### A partition from what the OS says about it, its names copied into memory from alloc.
+### :param facts: The names and the size.
+### :param alloc: The allocator for the copies.
+### :returns: The partition.
+### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+@track_caller
+secret routine partition_from(facts: PartitionFacts, alloc: @MemoryManager) -> PartitionManager
+    return PartitionManager(name: copied(text: facts.name, alloc), device: copied(text: facts.device, alloc),
+        mounted_at: copied(text: facts.mounted_at, alloc), file_system: copied(text: facts.file_system, alloc),
+        size: facts.size)
+
+### The decimal number text starts with (digits up to the first byte that isn't one).
+### :param text: The text.
+### :returns: The number, 0 when text doesn't start with a digit.
+secret routine leading_number(text: @[Byte]) -> U64
+    while i < text.count() with i: U64 = 0, n: U64 = 0
+        b: U8 = text.byte_at(i)
+        if b < 48 or b > 57
+            return n
+        digit: U64 = b.to[U64]() - 48
+        continue with i: i + 1, n: n *% 10 +% digit
+    then
+        return n
+
+### The n-th field of a line whose fields are separated by single spaces.
+### :param line: The line.
+### :param n: The field, from 0.
+### :returns: A view of the field, empty when the line has fewer.
+secret routine nth_field(line: @[Byte], n: U64) -> @[Byte]
+    while start <= line.count() with start: U64 = 0, index: U64 = 0
+        rest: @[Byte] = line.slice(start, end: line.count())
+        len: U64 = when rest.find(" ")
+            is U64 as k => k
+            is None => rest.count()
+        if index == n
+            return rest.slice(start: 0, end: len)
+        continue with start: start + len + 1, index: index + 1
+    then
+        return ""
+
+# -- Linux -------------------------------------------------------------------------------
+
+### A mounted file system, from a line of /proc/self/mountinfo: views into that line.
+@target(os: "linux")
+secret record MountLine
+    mount_point: @[Byte]
+    file_system: @[Byte]
+
+### Makes a `MountLine` from its fields.
+### :param mount_point: Its `mount_point`.
+### :param file_system: Its `file_system`.
+### :returns: The new value.
+@target(os: "linux")
+secret common routine MountLine.construct(mount_point: @[Byte], file_system: @[Byte]) -> Me
+    return Me(mount_point, file_system)
+
+### Releases nothing: a `MountLine` views a line it doesn't own.
+@target(os: "linux")
+secret routine @MountLine.destruct() -> None
+    return
+
+### The first file system mounted from the device `key` ("major:minor") in the text of /proc/self/mountinfo.
+### :param mounts: The text of /proc/self/mountinfo.
+### :param key: The device's "major:minor".
+### :returns: The mount point and the file system's type, views into `mounts`.
+### :absent: When nothing from that device is mounted.
+@target(os: "linux")
+secret routine mount_of(mounts: @[Byte], key: @[Byte]) -> Maybe[MountLine]
+    while start < mounts.count() with start: U64 = 0
+        rest: @[Byte] = mounts.slice(start, end: mounts.count())
+        len: U64 = when rest.find("\n")
+            is U64 as k => k
+            is None => rest.count()
+        line: @[Byte] = rest.slice(start: 0, end: len)
+        if nth_field(line, n: 2) == key
+            # The fields after " - " are the file system's type and its source.
+            when line.find(" - ")
+                is U64 as dash =>
+                    tail: @[Byte] = line.slice(start: dash + 3, end: line.count())
+                    return MountLine(mount_point: nth_field(line, n: 4), file_system: nth_field(line: tail, n: 0))
+                is None => pass
+        continue with start: start + len + 1
+    then
+        return None()
+
+### The mount point of mountinfo as the path it names: `\040` and the other octal escapes turned back into their
+### bytes, in memory from alloc.
+### :param text: The escaped mount point.
+### :param alloc: The allocator for the path.
+### :returns: The path.
+### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+@target(os: "linux")
+@track_caller
+secret routine unescaped(text: @[Byte], alloc: @MemoryManager) -> Memory[Byte]
+    local out: @List[Byte] <- .construct(alloc)
+
+    while i < text.count() with i: U64 = 0
+        b: U8 = text.byte_at(i)
+        if b == 92 and i + 3 < text.count()
+            high: U64 = text.byte_at(i + 1).to[U64]() - 48
+            middle: U64 = text.byte_at(i + 2).to[U64]() - 48
+            low: U64 = text.byte_at(i + 3).to[U64]() - 48
+            value: U64 = high * 64 + middle * 8 + low
+            out.add_last(value.to_wrap[U8]().bits())
+            continue with i: i + 4
+        out.add_last(b.bits())
+        continue with i: i + 1
+    then
+        local text_copy: @Memory[Byte] <- copied(text: out.getview(), alloc)
+        drop out
+        return text_copy
+
+### The whole file at path, empty when it can't be read, in memory from alloc.
+### :param path: The file.
+### :param alloc: The allocator for the text.
+### :returns: Its bytes.
+### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+@target(os: "linux")
+@track_caller
+secret routine text_of(path: @[Byte], alloc: @MemoryManager) -> Memory[Byte]
+    when read_file(path, alloc)
+        is Memory[Byte] as text => return text
+        is FsError => return copied(text: "", alloc)
+
+### The number a /sys file holds, 0 when it can't be read.
+### :param path: The file.
+### :param alloc: The allocator for its text, given back before returning.
+### :returns: The number.
+@target(os: "linux")
+secret routine sys_number(path: @[Byte], alloc: @MemoryManager) -> U64
+    local text: @Memory[Byte] <- text_of(path, alloc)
+
+    n: U64 = leading_number(text.getview())
+    drop text
+    return n
+
+### The partition whose /sys/class/block directory (or /sys/dev/block link) is `sys`, its name `name`.
+### :param sys: The partition's directory under /sys.
+### :param name: The partition's name.
+### :param mounts: The text of /proc/self/mountinfo.
+### :param alloc: The allocator for the names.
+### :returns: The partition.
+### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+@target(os: "linux")
+@track_caller
+secret routine linux_partition(sys: @[Byte], name: @[Byte], mounts: @[Byte],
+    alloc: @MemoryManager) -> PartitionManager
+    local dev_path: @Memory[Byte] <- join_path(a: sys, b: "dev", alloc)
+    local size_path: @Memory[Byte] <- join_path(a: sys, b: "size", alloc)
+    local dev_text: @Memory[Byte] <- text_of(path: dev_path.getview(), alloc)
+    local device: @Memory[Byte] <- copied(text: "", alloc)
+
+    local marker: @Memory[Byte] <- join_path(a: sys, b: "partition", alloc)
+
+    # A partition's device is the directory above it in /sys/devices. Something that isn't a partition (a whole disk
+    # with a file system on it, a device-mapper volume) is its own device.
+    when canonical_path(path: sys, alloc)
+        is Memory[Byte] as resolved =>
+            if is_present(marker.getview())
+                device.replace(value: copied(text: file_name(parent_path(resolved.getview())), alloc))
+            else
+                device.replace(value: copied(text: name, alloc))
+            drop resolved
+        is FsError => pass
+    drop marker
+    view: @[Byte] = dev_text.getview()
+    key_end: U64 = when view.find("\n")
+        is U64 as k => k
+        is None => view.count()
+    key: @[Byte] = view.slice(start: 0, end: key_end)
+    size: U64 = sys_number(path: size_path.getview(), alloc) *% 512
+    m: MountLine = when mount_of(mounts, key)
+        is MountLine as line => line
+        is None => MountLine(mount_point: "", file_system: "")
+    local at: @Memory[Byte] <- unescaped(text: m.mount_point, alloc)
+    facts: PartitionFacts = PartitionFacts(name, device: device.getview(), mounted_at: at.getview(),
+        file_system: m.file_system, size)
+    local made: @PartitionManager <- partition_from(facts, alloc)
+    drop at
+    drop device
+    drop dev_text
+    drop size_path
+    drop dev_path
+    return made
+
+### The devices in /sys/block that hold a medium, with their sizes.
+### :param alloc: The allocator for the list and the names.
+### :returns: The devices.
+### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+@target(os: "linux")
+@track_caller
+secret routine storage_devices(alloc: @MemoryManager) -> List[StorageManager]
+    local list: @List[StorageManager] <- .construct(alloc)
+    local iter: @DirIter <- .hollow()
+
+    opened: Result[None, FsError] = iter.open_path("/sys/block")
+    if not opened.is_success()
+        iter.close()
+        return list
+    while true
+        entry: Maybe[DirEntry] = iter.emit_checked()
+        when entry
+            is DirEntry as e =>
+                local sys: @Memory[Byte] <- join_path(a: "/sys/block", b: e.name, alloc)
+                local size_path: @Memory[Byte] <- join_path(a: sys.getview(), b: "size", alloc)
+                size: U64 = sys_number(path: size_path.getview(), alloc) *% 512
+                # A device with no medium (an unused loop device, an empty card reader) has size 0.
+                if size != 0
+                    list.add_last(StorageManager(name: copied(text: e.name, alloc), size))
+                drop size_path
+                drop sys
+            is None => break
+    iter.close()
+    return list
+
+### The partitions in /sys/class/block (the entries with a `partition` file, and the block devices that carry a
+### mounted file system without one, such as a device-mapper volume), each with where it is mounted.
+### :param alloc: The allocator for the list and the names.
+### :returns: The partitions.
+### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+@target(os: "linux")
+@track_caller
+secret routine partitions(alloc: @MemoryManager) -> List[PartitionManager]
+    local list: @List[PartitionManager] <- .construct(alloc)
+    local iter: @DirIter <- .hollow()
+    local mounts: @Memory[Byte] <- text_of(path: "/proc/self/mountinfo", alloc)
+
+    opened: Result[None, FsError] = iter.open_path("/sys/class/block")
+    if not opened.is_success()
+        iter.close()
+        drop mounts
+        return list
+    while true
+        entry: Maybe[DirEntry] = iter.emit_checked()
+        when entry
+            is DirEntry as e =>
+                local sys: @Memory[Byte] <- join_path(a: "/sys/class/block", b: e.name, alloc)
+                local marker: @Memory[Byte] <- join_path(a: sys.getview(), b: "partition", alloc)
+                local found: @PartitionManager <- linux_partition(sys: sys.getview(), name: e.name,
+                    mounts: mounts.getview(), alloc)
+                # A partition, or a block device that carries a mounted file system of its own (a device-mapper
+                # volume, a whole disk without a partition table): the same thing partition_of names.
+                if is_present(marker.getview()) or not found.mounted_at.getview().is_empty()
+                    list.add_last(steal found)
+                else
+                    drop found
+                drop marker
+                drop sys
+            is None => break
+    iter.close()
+    drop mounts
+    return list
+
+### The partition whose /sys/dev/block link is `sys`, named by the directory the link resolves to ("sda1").
+### :param sys: The link.
+### :param key: The device's "major:minor", the name when the link can't be resolved.
+### :param mounts: The text of /proc/self/mountinfo.
+### :param alloc: The allocator for the names.
+### :returns: The partition.
+### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+@target(os: "linux")
+@track_caller
+secret routine linux_partition_at(sys: @[Byte], key: @[Byte], mounts: @[Byte],
+    alloc: @MemoryManager) -> PartitionManager
+    local name: @Memory[Byte] <- copied(text: key, alloc)
+
+    when canonical_path(path: sys, alloc)
+        is Memory[Byte] as resolved =>
+            name.replace(value: copied(text: file_name(resolved.getview()), alloc))
+            drop resolved
+        is FsError => pass
+    local made: @PartitionManager <- linux_partition(sys, name: name.getview(), mounts, alloc)
+    drop name
+    return made
+
+### The partition the existing path is on: its device found through /sys/dev/block, and its mount in
+### /proc/self/mountinfo. A file system with no device (tmpfs, overlay) is named by its type.
+### :param path: The path.
+### :param alloc: The allocator for the names.
+### :returns: The partition, or the {FsError} for a path that can't be looked at.
+@target(os: "linux")
+secret routine partition_of(path: @[Byte], alloc: @MemoryManager) -> Result[PartitionManager, FsError]
+    id: U64 = when device_id(path)
+        is U64 as found => found
+        is FsError as error => return error
+    local key: @List[Byte] <- .construct(alloc)
+    local sys: @List[Byte] <- .construct(alloc)
+
+    major: U64 = id & 0xFFFFFFFF
+    minor: U64 = id >> 32
+    key.write("{major}:{minor}")
+    sys.write("/sys/dev/block/{major}:{minor}")
+    local mounts: @Memory[Byte] <- text_of(path: "/proc/self/mountinfo", alloc)
+
+    if is_present(sys.getview())
+        local made: @PartitionManager <- linux_partition_at(sys: sys.getview(), key: key.getview(),
+            mounts: mounts.getview(), alloc)
+        drop mounts
+        drop sys
+        drop key
+        return made
+    m: MountLine = when mount_of(mounts: mounts.getview(), key: key.getview())
+        is MountLine as line => line
+        is None => MountLine(mount_point: "", file_system: "")
+    name: @[Byte] = when
+        m.file_system.is_empty() => key.getview()
+        else => m.file_system
+    local at: @Memory[Byte] <- unescaped(text: m.mount_point, alloc)
+    facts: PartitionFacts = PartitionFacts(name, device: "", mounted_at: at.getview(), file_system: m.file_system,
+        size: 0)
+    local unmounted: @PartitionManager <- partition_from(facts, alloc)
+    drop at
+    drop mounts
+    drop sys
+    drop key
+    return unmounted
+
+# -- macOS -------------------------------------------------------------------------------
+
+### struct statfs (64-bit inodes).
+@target(os: "macos")
+secret record StatFs
+    block_size: U32
+    io_size: S32
+    blocks: U64
+    blocks_free: U64
+    blocks_available: U64
+    files: U64
+    files_free: U64
+    fsid: Array[S32, 2]
+    owner: U32
+    fs_type: U32
+    flags: U32
+    fs_subtype: U32
+    type_name: Array[Byte, 16]
+    mounted_on: Array[Byte, 1024]
+    mounted_from: Array[Byte, 1024]
+    flags_ext: U32
+    reserved: Array[U32, 7]
+
+### Binds the C `statfs` function with 64-bit inodes, which describes the file system a path is on.
+### :param path: The NUL-terminated path.
+### :param out: Where the description goes.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("statfs$INODE64")
+@target(os: "macos", arch: "x86_64")
+secret routine c_statfs(path: @Byte, out: @StatFs) -> CInt
+
+### Binds the C `statfs` function, which describes the file system a path is on.
+### :param path: The NUL-terminated path.
+### :param out: Where the description goes.
+### :returns: 0, or -1 with `errno` set.
+@external("c")
+@symbol("statfs")
+@target(os: "macos", arch: not "x86_64")
+secret routine c_statfs(path: @Byte, out: @StatFs) -> CInt
+
+### Binds the C `getfsstat` function with 64-bit inodes, which describes every mounted file system.
+### :param out: Where the descriptions go, or null to count them.
+### :param size: The bytes `out` has room for.
+### :param flags: `MNT_NOWAIT` (2) or `MNT_WAIT` (1).
+### :returns: The number of file systems, or -1 with `errno` set.
+@external("c")
+@symbol("getfsstat$INODE64")
+@target(os: "macos", arch: "x86_64")
+secret routine c_getfsstat(out: @StatFs, size: CInt, flags: CInt) -> CInt
+
+### Binds the C `getfsstat` function, which describes every mounted file system.
+### :param out: Where the descriptions go, or null to count them.
+### :param size: The bytes `out` has room for.
+### :param flags: `MNT_NOWAIT` (2) or `MNT_WAIT` (1).
+### :returns: The number of file systems, or -1 with `errno` set.
+@external("c")
+@symbol("getfsstat")
+@target(os: "macos", arch: not "x86_64")
+secret routine c_getfsstat(out: @StatFs, size: CInt, flags: CInt) -> CInt
+
+### The text of a NUL-terminated field.
+### :param field: The field's first byte.
+### :returns: A view up to the NUL.
+@target(os: "macos")
+secret routine c_text(field: @Byte) -> @[Byte]
+    return @[Byte].construct(data: field, count: field.to[CStrView]().count())
+
+### The disk a partition such as "disk3s1" is on: "disk" and the digits after it.
+### :param name: The partition's name.
+### :returns: The disk's name, a view into `name`, or empty when it isn't a disk's.
+@target(os: "macos")
+secret routine disk_of(name: @[Byte]) -> @[Byte]
+    if not name.has_prefix("disk")
+        return ""
+    while i < name.count() with i: U64 = 4
+        b: U8 = name.byte_at(i)
+        if b < 48 or b > 57
+            return name.slice(start: 0, end: i)
+        continue with i: i + 1
+    then
+        return name
+
+### The partition a statfs describes.
+### :param st: The description.
+### :param alloc: The allocator for the names.
+### :returns: The partition.
+### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+@target(os: "macos")
+@track_caller
+secret routine mac_partition(st: @StatFs, alloc: @MemoryManager) -> PartitionManager
+    from: @[Byte] = c_text(field: st.mounted_from.to[@Byte]())
+    name: @[Byte] = when
+        from.has_prefix("/dev/") => from.slice(start: 5, end: from.count())
+        else => from
+    size: U64 = st.blocks.peek() *% st.block_size.peek().to[U64]()
+    facts: PartitionFacts = PartitionFacts(name, device: disk_of(name),
+        mounted_at: c_text(field: st.mounted_on.to[@Byte]()), file_system: c_text(field: st.type_name.to[@Byte]()),
+        size)
+    return partition_from(facts, alloc)
+
+### Every mounted file system, as getfsstat reports them.
+### :param alloc: The allocator for the list and the names.
+### :returns: The partitions.
+### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+@target(os: "macos")
+@track_caller
+secret routine partitions(alloc: @MemoryManager) -> List[PartitionManager]
+    local list: @List[PartitionManager] <- .construct(alloc)
+
+    n: CInt = c_getfsstat(.hollow(), 0, 2)
+    if n <= 0
+        return list
+    count: U64 = n.to[U64]()
+    all: @StatFs = allocate[StatFs](count, alloc)
+    if all.is_hollow()
+        crash_allocation()
+    got: CInt = c_getfsstat(all, (count * sizeof[StatFs]()).to_wrap[CInt](), 2)
+    each i in 0 til got.max(0).to[U64]().min(count)
+        list.add_last(mac_partition(st: all.stride(i), alloc))
+    deallocate(data: all, alloc)
+    return list
+
+### Whether the list has a device of that name.
+### :param list: The devices so far.
+### :param name: The name to look for.
+### :returns: True when one has it.
+@target(os: "macos")
+secret routine has_storage(list: @List[StorageManager], name: @[Byte]) -> Bool
+    each j in 0 til list.count()
+        if list.getslot(j).name.getview() == name
+            return true
+    return false
+
+### The disks the mounted file systems are on, by name (macOS gives their sizes only with special rights).
+### :param alloc: The allocator for the list and the names.
+### :returns: The devices.
+### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+@target(os: "macos")
+@track_caller
+secret routine storage_devices(alloc: @MemoryManager) -> List[StorageManager]
+    local list: @List[StorageManager] <- .construct(alloc)
+    local parts: @List[PartitionManager] <- partitions(alloc)
+
+    each i in 0 til parts.count()
+        disk: @[Byte] = parts.getslot(i).device.getview()
+        if disk.is_empty()
+            continue
+        if not has_storage(list, name: disk)
+            list.add_last(StorageManager(name: copied(text: disk, alloc), size: 0))
+    drop parts
+    return list
+
+### The partition the existing path is on, from statfs.
+### :param path: The path.
+### :param alloc: The allocator for the names.
+### :returns: The partition, or the {FsError} for a path that can't be looked at.
+@target(os: "macos")
+secret routine partition_of(path: @[Byte], alloc: @MemoryManager) -> Result[PartitionManager, FsError]
+    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+    local st: @StatFs <- .hollow()
+
+    if not c_path(path, out: cpath.to[@Byte]())
+        return path_error(path)
+    if c_statfs(cpath.to[@Byte](), st) != 0
+        return failed[PartitionManager]()
+    return mac_partition(st, alloc)
+
+# -- Windows -----------------------------------------------------------------------------
+
+### Binds the Win32 `GetLogicalDriveStringsW` function, which lists the drive roots ("C:\", each 0-terminated, then
+### an empty one).
+### :param size: The units `buffer` has room for.
+### :param buffer: Where the list goes.
+### :returns: The units written without the last 0, the units needed when it doesn't fit, or 0 on failure.
+@external("c")
+@symbol("GetLogicalDriveStringsW")
+@callconv("stdcall")
+@target(os: "windows")
+secret routine c_get_logical_drive_strings(size: U32, buffer: @U16) -> U32
+
+### Binds the Win32 `GetVolumeInformationW` function, which describes the file system of a volume root.
+### :param root: The root, "C:\", 0-terminated.
+### :param name: Where the volume's label goes, or null.
+### :param name_size: Its room in units.
+### :param serial: Where the serial number goes, or null.
+### :param longest: Where the longest name length goes, or null.
+### :param flags: Where the file system's flags go, or null.
+### :param fs_name: Where the file system's name goes.
+### :param fs_name_size: Its room in units.
+### :returns: Nonzero, or 0 with the last error set (no disk in the drive, for one).
+@external("c")
+@symbol("GetVolumeInformationW")
+@callconv("stdcall")
+@target(os: "windows")
+secret routine c_get_volume_information(root: @U16, name: @U16, name_size: U32, serial: @U32, longest: @U32,
+    flags: @U32, fs_name: @U16, fs_name_size: U32) -> CInt
+
+### Binds the Win32 `GetDiskFreeSpaceExW` function, which tells a volume's size and free space.
+### :param root: A directory on the volume, 0-terminated.
+### :param available: Where the bytes the caller may use go, or null.
+### :param total: Where the volume's size goes, or null.
+### :param free: Where the free bytes go, or null.
+### :returns: Nonzero, or 0 with the last error set.
+@external("c")
+@symbol("GetDiskFreeSpaceExW")
+@callconv("stdcall")
+@target(os: "windows")
+secret routine c_get_disk_free_space(root: @U16, available: @U64, total: @U64, free: @U64) -> CInt
+
+### Binds the Win32 `GetVolumePathNameW` function, which finds the root of the volume a path is on.
+### :param path: The path, 0-terminated.
+### :param out: Where the root goes ("C:\").
+### :param size: The units `out` has room for.
+### :returns: Nonzero, or 0 with the last error set.
+@external("c")
+@symbol("GetVolumePathNameW")
+@callconv("stdcall")
+@target(os: "windows")
+secret routine c_get_volume_path_name(path: @U16, out: @U16, size: U32) -> CInt
+
+### The partition whose root is the 0-terminated UTF-16 `root` ("C:\"), named by its drive ("C:").
+### :param root: The volume's root.
+### :param alloc: The allocator for the names.
+### :returns: The partition, with no file system when the drive has no disk in it.
+### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+@target(os: "windows")
+@track_caller
+secret routine windows_partition(root: @U16, alloc: @MemoryManager) -> PartitionManager
+    local fs: @Array[U16, 64] <- .hollow()
+    local total: @U64 <- 0
+
+    n: U64 = wide_length(root)
+    local at: @Memory[Byte] <- owned_wide(units: root, count: n, alloc).unwrap()
+    local fs_name: @Memory[Byte] <- copied(text: "", alloc)
+
+    if c_get_volume_information(root, .hollow(), 0, .hollow(), .hollow(), .hollow(), fs.to[@U16](), 64) != 0
+        fs_name.replace(value: owned_wide(units: fs.to[@U16](), count: wide_length(fs.to[@U16]()), alloc).unwrap())
+        c_get_disk_free_space(root, .hollow(), total, .hollow())
+    path: @[Byte] = at.getview()
+    # The drive "C:" is the root without its separator.
+    name: @[Byte] = when
+        path.count() > 1 and is_separator(path.byte_at(path.count() - 1).bits()) => path.slice(start: 0,
+            end: path.count() - 1)
+        else => path
+    facts: PartitionFacts = PartitionFacts(name, device: "", mounted_at: path, file_system: fs_name.getview(),
+        size: total.peek())
+    local made: @PartitionManager <- partition_from(facts, alloc)
+    drop fs_name
+    drop at
+    return made
+
+### Every drive letter's partition.
+### :param alloc: The allocator for the list and the names.
+### :returns: The partitions.
+### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+@target(os: "windows")
+@track_caller
+secret routine partitions(alloc: @MemoryManager) -> List[PartitionManager]
+    local list: @List[PartitionManager] <- .construct(alloc)
+    local roots: @Array[U16, 512] <- .hollow()
+
+    got: U32 = c_get_logical_drive_strings(512, roots.to[@U16]())
+    if got == 0 or got >= 512
+        return list
+    while true with at: U64 = 0
+        root: @U16 = roots.to[@U16]().stride(at)
+        n: U64 = wide_length(root)
+        if n == 0
+            break
+        list.add_last(windows_partition(root, alloc))
+        continue with at: at + n + 1
+    return list
+
+### The storage devices: Windows names them only to a program with administrator rights, so none.
+### :param alloc: The allocator for the list.
+### :returns: An empty list.
+@target(os: "windows")
+@track_caller
+secret routine storage_devices(alloc: @MemoryManager) -> List[StorageManager]
+    local list: @List[StorageManager] <- .construct(alloc)
+
+    return list
+
+### The partition the existing path is on: the volume GetVolumePathNameW finds for it.
+### :param path: The path.
+### :param alloc: The allocator for the names.
+### :returns: The partition, or the {FsError} for a path that can't be looked at.
+@target(os: "windows")
+secret routine partition_of(path: @[Byte], alloc: @MemoryManager) -> Result[PartitionManager, FsError]
+    local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
+    local root: @Array[U16, PATH_CAPACITY] <- .hollow()
+
+    if not wide_path(path, out: wpath.to[@U16]())
+        return path_error(path)
+    if c_get_volume_path_name(wpath.to[@U16](), root.to[@U16](), PATH_CAPACITY.to[U32]()) == 0
+        return failed[PartitionManager]()
+    return windows_partition(root: root.to[@U16](), alloc)
