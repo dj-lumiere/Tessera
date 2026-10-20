@@ -18,7 +18,9 @@
 #
 # A handler runs where the system delivers the event: on Linux and macOS inside a signal handler, on whichever thread
 # the signal comes to, cutting into what that thread was doing (so it writes with Console and sets atomics, and takes
-# no lock that thread may hold), on Windows on a thread of its own the system starts for it.
+# no lock that thread may hold). On Windows a request to end runs on a thread the system starts for it, and an
+# interrupt on a thread of the CpuEventManager's own (the system hands its handlers one event at a time, so an
+# interrupt handler on its thread would hold back the next interrupt until it returned).
 
 module Standard/System/Cpu
 
@@ -242,22 +244,48 @@ secret routine c_raise_exception(code: U32, flags: U32, count: U32, args: Addr) 
 @target(os: "windows")
 secret global CONSOLE_HANDLER_ON: @U32
 
+### The interrupt on_console_event hands to the dispatch thread: its `CTRL_*_EVENT` plus 1, 0 for none.
+@target(os: "windows")
+secret global INTERRUPT_PENDING: @U32
+
 ### The status a process ends with after Ctrl+C when nothing handles it: STATUS_CONTROL_C_EXIT, 0xC000013A.
 @target(os: "windows")
 secret preset CONTROL_C_EXIT: S32 = -1073741510
 
-### Installs on_console_event the first time a handler takes a slot. It stays: with no handler in a slot it lets the
-### event go on to the system.
+### Starts the interrupt dispatch thread and installs on_console_event the first time a handler takes a slot. They
+### stay: with no handler in a slot the event goes on to the system.
 ### :param kind: TERMINATED or INTERRUPTED.
 ### :param on: True when a handler took the slot.
+### :throws: Crashes with `TaskSpawnError` when the dispatch thread can't be started.
 @target(os: "windows")
 secret routine listen(kind: CpuEventKind, on: Bool) -> None
     if on and CONSOLE_HANDLER_ON.atomic_swap(1) == 0
+        DEFAULT_THREADS.launch_unwatched(entry: interrupt_dispatch.to[Callable](), arg: INTERRUPT_PENDING)
         c_set_console_ctrl_handler(on_console_event.to[Callable](), 1)
     return
 
+### The interrupt dispatch thread: gives each interrupt on_console_event hands it to the interrupt handler. When no
+### handler holds the slot any more, the process ends as the system would end it.
+### :param pending: INTERRUPT_PENDING.
+@target(os: "windows")
+@untraced
+secret routine interrupt_dispatch(pending: @U32) -> None
+    while true
+        ctrl: U32 = pending.atomic_swap(0)
+        if ctrl == 0
+            wait_on(at: pending, expected: 0)
+            continue
+        holder: Callable[(CpuEvent,), None] = CpuEventManager.holder(CpuEventKind.INTERRUPTED)
+        if holder.addr().is_hollow()
+            ProcessManager.exit_process(CONTROL_C_EXIT)
+        holder.call(CpuEvent(kind: CpuEventKind.INTERRUPTED, code: (ctrl - 1).to[U64](), place: .hollow(),
+            address: .hollow()))
+        INTERRUPT_RUNNING.poke_atomic(0)
+        continue
+
 ### The console's events: Ctrl+C (0) and Ctrl+Break (1) are INTERRUPTED, a window closed (2), a logoff (5), and a
-### shutdown (6) are TERMINATED.
+### shutdown (6) are TERMINATED. An interrupt goes to the dispatch thread and this returns at once, so an interrupt that
+### comes while the handler runs is taken and ignored here.
 ### :param ctrl: The `CTRL_*_EVENT`.
 ### :returns: 1 when a handler took the event, 0 to let the system act.
 @target(os: "windows")
@@ -266,15 +294,22 @@ secret routine listen(kind: CpuEventKind, on: Bool) -> None
 secret routine on_console_event(ctrl: U32) -> CInt
     if ctrl > 6 or ctrl == 3 or ctrl == 4
         return 0
-    kind: CpuEventKind = when
-        ctrl <= 1 => CpuEventKind.INTERRUPTED
-        else => CpuEventKind.TERMINATED
-    if deliver(CpuEvent(kind, code: ctrl.to[U64](), place: .hollow(), address: .hollow()))
+    if ctrl > 1
+        event: CpuEvent = CpuEvent(kind: CpuEventKind.TERMINATED, code: ctrl.to[U64](), place: .hollow(),
+            address: .hollow())
+        if deliver(event)
+            return 1
+        return 0
+    if CpuEventManager.holder(CpuEventKind.INTERRUPTED).addr().is_hollow()
+        return 0
+    if INTERRUPT_RUNNING.atomic_swap(1) == 1
         return 1
-    return 0
+    INTERRUPT_PENDING.poke_atomic(ctrl + 1)
+    wake_one(INTERRUPT_PENDING)
+    return 1
 
 ### Sends the event to this process as the system would: Ctrl+C for INTERRUPTED and a closed console window for
-### TERMINATED go to this process's handler (the system would start a thread for it, this calls it on the running
+### TERMINATED go to this process's handler (the system would run it on another thread, this calls it on the running
 ### one), and a fault is an access violation raised on the running thread. Without a handler the process ends as the
 ### system would end it.
 ### :param kind: The kind.
@@ -282,7 +317,7 @@ secret routine on_console_event(ctrl: U32) -> CInt
 common routine CpuEventManager.raise(kind: CpuEventKind) -> None
     when kind
         CpuEventKind.INTERRUPTED =>
-            if on_console_event(0) == 0
+            if not deliver(CpuEvent(kind, code: 0, place: .hollow(), address: .hollow()))
                 ProcessManager.exit_process(CONTROL_C_EXIT)
         CpuEventKind.TERMINATED =>
             if on_console_event(2) == 0

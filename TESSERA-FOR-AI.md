@@ -778,7 +778,8 @@ routine start() -> None
   `when_interrupted(h)` (SIGINT, Ctrl+C: the program goes on after `h`, and an interrupt that comes while `h` is still
   running is ignored), `when_faulted(h)` (in place of the fault report below, the fault then ends the process), `holder(kind)`, and
   `CpuEventManager.raise(kind)` sends one to this process (the real signal on Linux and macOS). A handler runs inside
-  the signal handler on Linux and macOS: an atomic or a `Console` line, no lock. Without an OS: `when_power_off`
+  the signal handler on Linux and macOS: an atomic or a `Console` line, no lock. On Windows an interrupt handler runs
+  on a thread the CpuEventManager starts (the console hands its handlers one event at a time). Without an OS: `when_power_off`
   (passed on by `CpuEventManager.power_off()`, which the board's shutdown interrupt handler calls, then the core
   halts), `when_faulted` (the core halts when it returns), `when_supervisor_called` (`svc #n` / `ecall`, `code` the
   number on ARM, the program goes on), `when_interrupt_requested`. The builder writes the vector table (AArch64 VBAR at
