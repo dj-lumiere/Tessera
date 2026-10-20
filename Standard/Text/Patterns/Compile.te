@@ -1,0 +1,681 @@
+# The pattern compiler: a piece tree (Codes.te) becomes a program the engine runs.
+#
+# The tree is read once to number the captures (in the order they are written, a name used twice is an error) and
+# once more to write the instructions. A repetition writes its piece once per round it requires, then a loop (no
+# limit) or one optional round per extra round allowed, each preferring to take the round. An either writes an
+# EITHER instruction, then each alternative followed by END_ALT, and every END_ALT goes on where the either ends.
+# A capture is two SAVE instructions around its piece. A class becomes one sorted list of ranges (an ignored case
+# adds the other cases of each letter, a negated class keeps what lies outside), or a single UNIT when it holds one
+# unit.
+
+module Standard/Text/Patterns
+
+import Standard/Collections
+
+### The deepest a piece tree may nest.
+secret preset MAX_DEPTH: U64 = 2000
+
+### Why a piece tree didn't compile.
+choice PatternErrorKind: U8
+    NONE  # it compiled
+    MALFORMED  # the words aren't a piece tree
+    DUPLICATE_NAME  # two captures have the same name
+    BAD_REPEAT  # a repetition asks for more rounds at least than at most
+    BAD_UNIT  # a unit the pattern's kind doesn't have (a code point past 0x10FFFF, a byte past 0xFF)
+    TOO_LARGE  # the program would have more than MAX_INSTRUCTIONS instructions
+    EMPTY_EITHER  # an either with no alternatives
+
+### Why a piece tree didn't compile, and the word of the tree where it was found.
+record PatternError
+    ### What went wrong.
+    kind: PatternErrorKind
+    ### The index of the word of the piece tree where it was found (for a duplicate name, the second capture).
+    at: U64
+
+### One range of units, both ends included.
+@derive(Equatable, Comparable)
+record UnitRange
+    ### The first unit.
+    lo: U32
+    ### The last unit.
+    hi: U32
+
+### The compiler's state while it writes one program.
+secret entity PatternCompiler
+    ### The piece tree being compiled.
+    code: @[U32]
+    ### Where the compiler's lists and the program take memory.
+    alloc: @MemoryManager
+    ### MODE_TEXT or MODE_BYTES.
+    mode: U32
+    ### The instructions written so far, three words each.
+    instructions: List[U32]
+    ### The class ranges written so far, pairs of words.
+    ranges: List[U32]
+    ### The either table written so far.
+    eithers: List[U32]
+    ### The capture names, each its length and then its code points.
+    names: List[U32]
+    ### The word index of each capture node, in group order.
+    captures: List[U64]
+    ### The class being built.
+    class: List[UnitRange]
+    ### The first error found, NONE while there is none.
+    error: PatternErrorKind
+    ### Where the first error was found.
+    error_at: U64
+
+### Starts a compiler for a piece tree.
+### :param code: The piece tree.
+### :param mode: MODE_TEXT or MODE_BYTES.
+### :param alloc: Where the compiler's lists take memory.
+### :returns: The compiler.
+secret common routine PatternCompiler.construct(code: @[U32], mode: U32,
+    alloc: @MemoryManager) -> Me
+    return Me(code, alloc, mode, instructions: .construct(alloc), ranges: .construct(alloc),
+        eithers: .construct(alloc), names: .construct(alloc), captures: .construct(alloc),
+        class: .construct(alloc), error: PatternErrorKind.NONE, error_at: 0)
+
+### Gives back the compiler's lists.
+secret routine @PatternCompiler.destruct() -> None
+    drop me.instructions
+    drop me.ranges
+    drop me.eithers
+    drop me.names
+    drop me.captures
+    drop me.class
+    return
+
+### Keeps the first error found.
+### :param kind: What went wrong.
+### :param at: The word index where it was found.
+secret routine @PatternCompiler.fail(kind: PatternErrorKind, at: U64) -> None
+    if me.error.peek() == PatternErrorKind.NONE
+        me.error.poke(kind)
+        me.error_at.poke(at)
+    return
+
+### Whether an error was found.
+### :returns: `true` once one was.
+secret routine @PatternCompiler.failed() -> Bool
+    return me.error.peek() != PatternErrorKind.NONE
+
+### The word at an index of the piece tree. Past the end it is 0, and the tree is malformed.
+### :param at: The index.
+### :returns: The word.
+secret routine @PatternCompiler.word(at: U64) -> U32
+    code: @[U32] = me.code.peek()
+    if at < code.count()
+        return code.getitem(at)
+    me.fail(kind: PatternErrorKind.MALFORMED, at)
+    return 0
+
+### The index just past the node that starts at `at`.
+### :param at: Where the node starts.
+### :param depth: How deep the node is nested.
+### :returns: The index after its last word (the end of the tree once an error is found).
+secret routine @PatternCompiler.skip(at: U64, depth: U64) -> U64
+    local end: U64 = me.code.peek().count()
+
+    if me.failed()
+        return end
+    if depth > MAX_DEPTH
+        me.fail(kind: PatternErrorKind.MALFORMED, at)
+        return end
+    kind: U32 = me.word(at)
+    when
+        kind == NODE_LITERAL => return at + 2 + me.word(at + 1).to[U64]()
+        kind == NODE_RANGES => return at + 3 + me.word(at + 2).to[U64]() * 2
+        kind == NODE_SEQUENCE or kind == NODE_EITHER_LONGER or kind == NODE_EITHER_SHORTER =>
+            n: U64 = me.word(at + 1).to[U64]()
+            each i: U64 in 0 til n with next: U64 = at + 2
+                if me.failed()
+                    return end
+                continue with next: me.skip(at: next, depth: depth + 1)
+            then
+                return next
+        kind == NODE_REPEAT => return me.skip(at: at + 3, depth: depth + 1)
+        kind == NODE_CAPTURE => return me.skip(at: at + 2 + me.word(at + 1).to[U64](),
+            depth: depth + 1)
+        kind == NODE_ANCHOR => return at + 2
+        kind == NODE_IGNORE_CASE => return me.skip(at: at + 1, depth: depth + 1)
+        kind == NODE_CLASS => return at + 3
+        else =>
+            me.fail(kind: PatternErrorKind.MALFORMED, at)
+            return end
+
+### Whether the capture names at two capture nodes are the same.
+### :param first: Where the first capture node starts.
+### :param second: Where the second capture node starts.
+### :returns: `true` when the names are equal.
+secret routine @PatternCompiler.same_name(first: U64, second: U64) -> Bool
+    length: U32 = me.word(first + 1)
+    if length != me.word(second + 1)
+        return false
+    each i: U64 in 0 til length.to[U64]()
+        if me.word(first + 2 + i) != me.word(second + 2 + i)
+            return false
+    then
+        return true
+
+### Numbers the captures under the node at `at` in the order they are written, and keeps their names.
+### :param at: Where the node starts.
+### :param depth: How deep the node is nested.
+@reshaping
+secret routine @PatternCompiler.number_captures(at: U64, depth: U64) -> None
+    if me.failed() or depth > MAX_DEPTH
+        me.fail(kind: PatternErrorKind.MALFORMED, at)
+        return
+    kind: U32 = me.word(at)
+    when
+        kind == NODE_SEQUENCE or kind == NODE_EITHER_LONGER or kind == NODE_EITHER_SHORTER =>
+            n: U64 = me.word(at + 1).to[U64]()
+            each i: U64 in 0 til n with next: U64 = at + 2
+                me.number_captures(at: next, depth: depth + 1)
+                continue with next: me.skip(at: next, depth: depth + 1)
+            then
+                return
+        kind == NODE_REPEAT => me.number_captures(at: at + 3, depth: depth + 1)
+        kind == NODE_IGNORE_CASE => me.number_captures(at: at + 1, depth: depth + 1)
+        kind == NODE_CAPTURE =>
+            each g: U64 in 0 til me.captures.count()
+                if me.same_name(first: me.captures.getitem(g), second: at)
+                    me.fail(kind: PatternErrorKind.DUPLICATE_NAME, at)
+                    return
+            me.captures.add_last(at)
+            length: U32 = me.word(at + 1)
+            me.names.add_last(length)
+            each i: U64 in 0 til length.to[U64]()
+                me.names.add_last(me.word(at + 2 + i))
+            me.number_captures(at: at + 2 + length.to[U64](), depth: depth + 1)
+        else => pass
+    return
+
+### Writes one instruction.
+### :param op: The operation.
+### :param a: Its first operand.
+### :param b: Its second operand.
+### :returns: The instruction's index.
+@reshaping
+secret routine @PatternCompiler.emit(op: U32, a: U32, b: U32) -> U32
+    pc: U64 = me.instructions.count() // 3
+    if pc >= MAX_INSTRUCTIONS
+        me.fail(kind: PatternErrorKind.TOO_LARGE, at: 0)
+        return 0
+    me.instructions.add_last(op)
+    me.instructions.add_last(a)
+    me.instructions.add_last(b)
+    return pc.to[U32]()
+
+### Changes an operand of an instruction already written.
+### :param pc: The instruction.
+### :param operand: 1 for a, 2 for b.
+### :param value: The new operand.
+secret routine @PatternCompiler.patch(pc: U32, operand: U64, value: U32) -> None
+    if me.failed()
+        return
+    me.instructions.setitem(index: pc.to[U64]() * 3 + operand, value)
+    return
+
+### The index the next instruction will have.
+### :returns: The index.
+secret routine @PatternCompiler.next_pc() -> U32
+    return (me.instructions.count() // 3).to[U32]()
+
+### The largest unit of the pattern's kind.
+### :returns: 0x10FFFF for text, 0xFF for bytes.
+secret routine @PatternCompiler.max_unit() -> U32
+    if me.mode.peek() == MODE_BYTES
+        return 0xFF
+    return 0x10FFFF
+
+### Adds a range to the class being built.
+### :param lo: The first unit.
+### :param hi: The last unit.
+@reshaping
+secret routine @PatternCompiler.add_range(lo: U32, hi: U32) -> None
+    me.class.add_last(UnitRange(lo, hi))
+    return
+
+### Adds the ranges of a table (pairs of first and last) to the class being built.
+### :param table: The pairs.
+@reshaping
+secret routine @PatternCompiler.add_table(table: @[U32]) -> None
+    each i: U64 in 0 til table.count() // 2
+        me.add_range(lo: table.getitem(i * 2), hi: table.getitem(i * 2 + 1))
+    then
+        return
+
+### Adds a named class to the class being built.
+### :param id: The class (CLASS_DIGIT ..).
+### :param at: Where its node starts, for an error.
+@reshaping
+secret routine @PatternCompiler.add_named(id: U32, at: U64) -> None
+    when
+        id == CLASS_DIGIT => me.add_range(lo: 0x30, hi: 0x39)
+        id == CLASS_LETTER =>
+            me.add_range(lo: 0x41, hi: 0x5A)
+            me.add_range(lo: 0x61, hi: 0x7A)
+        id == CLASS_SPACE => me.add_range(lo: 0x09, hi: 0x0D)
+        id == CLASS_WORD_CHAR =>
+            me.add_range(lo: 0x30, hi: 0x39)
+            me.add_range(lo: 0x41, hi: 0x5A)
+            me.add_range(lo: 0x5F, hi: 0x5F)
+            me.add_range(lo: 0x61, hi: 0x7A)
+        id == CLASS_ANY => me.add_range(lo: 0, hi: me.max_unit())
+        me.mode.peek() == MODE_BYTES => me.fail(kind: PatternErrorKind.MALFORMED, at)
+        id == CLASS_UNICODE_DIGIT => me.add_table(UNICODE_DIGIT_RANGES)
+        id == CLASS_UNICODE_LETTER => me.add_table(UNICODE_LETTER_RANGES)
+        id == CLASS_UNICODE_SPACE =>
+            me.add_range(lo: 0x09, hi: 0x0D)
+            me.add_range(lo: 0x20, hi: 0x20)
+            me.add_range(lo: 0x85, hi: 0x85)
+            me.add_range(lo: 0xA0, hi: 0xA0)
+            me.add_range(lo: 0x1680, hi: 0x1680)
+            me.add_range(lo: 0x2000, hi: 0x200A)
+            me.add_range(lo: 0x2028, hi: 0x2029)
+            me.add_range(lo: 0x202F, hi: 0x202F)
+            me.add_range(lo: 0x205F, hi: 0x205F)
+            me.add_range(lo: 0x3000, hi: 0x3000)
+        id == CLASS_UNICODE_WORD_CHAR => me.add_table(UNICODE_WORD_RANGES)
+        else => me.fail(kind: PatternErrorKind.MALFORMED, at)
+    if id == CLASS_SPACE
+        me.add_range(lo: 0x20, hi: 0x20)
+    return
+
+### The index of the first case orbit pair whose code point is `cp` or after it.
+### :param cp: The code point.
+### :returns: The pair index (the pair count when every code point is before it).
+secret routine first_orbit_at(cp: U32) -> U64
+    local pairs: U64 = CASE_ORBITS.count() // 2
+
+    while low < high with low: U64 = 0, high: U64 = pairs
+        mid: U64 = (low + high) // 2
+        if CASE_ORBITS.getitem(mid * 2) < cp
+            continue with low: mid + 1, high: high
+        continue with low: low, high: mid
+    then
+        return low
+
+### Adds to the class being built the other cases of every unit in it: the whole case orbit of each code point that
+### has one (text), or the other case of each ASCII letter (bytes).
+@reshaping
+secret routine @PatternCompiler.fold_class() -> None
+    local count: U64 = me.class.count()
+
+    each i: U64 in 0 til count
+        range: UnitRange = me.class.getitem(i)
+        if me.mode.peek() == MODE_BYTES
+            me.fold_ascii(range)
+        else
+            me.fold_unicode(range)
+    then
+        return
+
+### Adds the other case of the ASCII letters in a range.
+### :param range: The range.
+@reshaping
+secret routine @PatternCompiler.fold_ascii(range: UnitRange) -> None
+    upper_lo: U32 = U32.max(range.lo, 0x41)
+    upper_hi: U32 = U32.min(range.hi, 0x5A)
+    if upper_lo <= upper_hi
+        me.add_range(lo: upper_lo + 0x20, hi: upper_hi + 0x20)
+    lower_lo: U32 = U32.max(range.lo, 0x61)
+    lower_hi: U32 = U32.min(range.hi, 0x7A)
+    if lower_lo <= lower_hi
+        me.add_range(lo: lower_lo - 0x20, hi: lower_hi - 0x20)
+    return
+
+### Adds the case orbit of every code point of a range that has one.
+### :param range: The range.
+@reshaping
+secret routine @PatternCompiler.fold_unicode(range: UnitRange) -> None
+    local pairs: U64 = CASE_ORBITS.count() // 2
+
+    while at < pairs with at: U64 = first_orbit_at(range.lo)
+        cp: U32 = CASE_ORBITS.getitem(at * 2)
+        if cp > range.hi
+            return
+        me.add_orbit(cp)
+        continue with at: at + 1
+    then
+        return
+
+### Adds every code point of the case orbit `cp` is in.
+### :param cp: A code point that has another case.
+@reshaping
+secret routine @PatternCompiler.add_orbit(cp: U32) -> None
+    local pairs: U64 = CASE_ORBITS.count() // 2
+
+    while true with current: U32 = cp, steps: U64 = 0
+        at: U64 = first_orbit_at(current)
+        if at >= pairs or steps > 16
+            return
+        next: U32 = CASE_ORBITS.getitem(at * 2 + 1)
+        if next == cp
+            return
+        me.add_range(lo: next, hi: next)
+        continue with current: next, steps: steps + 1
+
+### Sorts the class being built and joins ranges that overlap or touch.
+@reshaping
+secret routine @PatternCompiler.normalize_class() -> None
+    me.class.sort()
+    count: U64 = me.class.count()
+    if count == 0
+        return
+    each i: U64 in 1 til count with kept: U64 = 1
+        last: UnitRange = me.class.getitem(kept - 1)
+        range: UnitRange = me.class.getitem(i)
+        touches: Bool = last.hi == U32.MAX or range.lo <= last.hi + 1
+        if touches
+            if range.hi > last.hi
+                me.class.setitem(index: kept - 1, value: UnitRange(lo: last.lo, hi: range.hi))
+            continue with kept: kept
+        me.class.setitem(index: kept, value: range)
+        continue with kept: kept + 1
+    then
+        me.class.count.poke(kept)
+        return
+
+### Replaces the class being built (normalized) with the units outside it.
+@reshaping
+secret routine @PatternCompiler.negate_class() -> None
+    local count: U64 = me.class.count()
+    local top: U32 = me.max_unit()
+    local outside: @List[UnitRange] <- .construct(me.alloc.peek())
+
+    each i: U64 in 0 til count with from: U64 = 0
+        range: UnitRange = me.class.getitem(i)
+        if range.lo.to[U64]() > from
+            outside.add_last(UnitRange(lo: from.to[U32](), hi: range.lo - 1))
+        continue with from: range.hi.to[U64]() + 1
+    then
+        if from <= top.to[U64]()
+            outside.add_last(UnitRange(lo: from.to[U32](), hi: top))
+        me.class.clear()
+        each j: U64 in 0 til outside.count()
+            me.class.add_last(outside.getitem(j))
+        drop outside
+        return
+
+### Writes the class being built as one instruction: UNIT for a single unit, else CLASS over its ranges. A class with
+### no units writes a CLASS that never matches.
+### :param negated: Whether the units outside the class are meant.
+### :param fold: Whether letters match in either case.
+@reshaping
+secret routine @PatternCompiler.emit_class(negated: Bool, fold: Bool) -> None
+    if fold
+        me.fold_class()
+    me.normalize_class()
+    if negated
+        me.negate_class()
+    count: U64 = me.class.count()
+    if count == 1
+        only: UnitRange = me.class.getitem(0)
+        if only.lo == only.hi
+            me.emit(op: OP_UNIT, a: only.lo, b: 0)
+            return
+    start: U64 = me.ranges.count()
+    each i: U64 in 0 til count
+        range: UnitRange = me.class.getitem(i)
+        me.ranges.add_last(range.lo)
+        me.ranges.add_last(range.hi)
+    then
+        me.emit(op: OP_CLASS, a: start.to[U32](), b: count.to[U32]())
+        return
+
+### Writes one unit: UNIT, or a class of its cases when they are ignored.
+### :param unit: The unit.
+### :param fold: Whether letters match in either case.
+### :param at: Where its node starts, for an error.
+@reshaping
+secret routine @PatternCompiler.emit_unit(unit: U32, fold: Bool, at: U64) -> None
+    if unit > me.max_unit()
+        me.fail(kind: PatternErrorKind.BAD_UNIT, at)
+        return
+    if not fold
+        me.emit(op: OP_UNIT, a: unit, b: 0)
+        return
+    me.class.clear()
+    me.add_range(lo: unit, hi: unit)
+    me.emit_class(negated: false, fold: true)
+    return
+
+### Writes the instructions of the node at `at`.
+### :param at: Where the node starts.
+### :param fold: Whether letters match in either case.
+### :param depth: How deep the node is nested.
+### :returns: The index just past the node.
+@reshaping
+secret routine @PatternCompiler.compile(at: U64, fold: Bool, depth: U64) -> U64
+    local end: U64 = me.code.peek().count()
+
+    if me.failed()
+        return end
+    if depth > MAX_DEPTH
+        me.fail(kind: PatternErrorKind.MALFORMED, at)
+        return end
+    kind: U32 = me.word(at)
+    when
+        kind == NODE_LITERAL =>
+            n: U64 = me.word(at + 1).to[U64]()
+            each i: U64 in 0 til n
+                if me.failed()
+                    return end
+                me.emit_unit(unit: me.word(at + 2 + i), fold, at)
+            then
+                return at + 2 + n
+        kind == NODE_RANGES =>
+            negated: Bool = me.word(at + 1) != 0
+            n: U64 = me.word(at + 2).to[U64]()
+            me.class.clear()
+            each i: U64 in 0 til n
+                lo: U32 = me.word(at + 3 + i * 2)
+                hi: U32 = me.word(at + 4 + i * 2)
+                if lo > hi or hi > me.max_unit()
+                    me.fail(kind: PatternErrorKind.BAD_UNIT, at)
+                    return end
+                me.add_range(lo, hi)
+            then
+                me.emit_class(negated, fold)
+                return at + 3 + n * 2
+        kind == NODE_CLASS =>
+            me.class.clear()
+            me.add_named(id: me.word(at + 1), at)
+            me.emit_class(negated: me.word(at + 2) != 0, fold)
+            return at + 3
+        kind == NODE_SEQUENCE =>
+            n: U64 = me.word(at + 1).to[U64]()
+            each i: U64 in 0 til n with next: U64 = at + 2
+                continue with next: me.compile(at: next, fold, depth: depth + 1)
+            then
+                return next
+        kind == NODE_EITHER_LONGER => return me.compile_either(at, fold, depth, shorter: false)
+        kind == NODE_EITHER_SHORTER => return me.compile_either(at, fold, depth, shorter: true)
+        kind == NODE_REPEAT => return me.compile_repeat(at, fold, depth)
+        kind == NODE_CAPTURE =>
+            group: U64 = me.group_of(at)
+            length: U64 = me.word(at + 1).to[U64]()
+            me.emit(op: OP_SAVE, a: (group * 2).to[U32](), b: 0)
+            after: U64 = me.compile(at: at + 2 + length, fold, depth: depth + 1)
+            me.emit(op: OP_SAVE, a: (group * 2 + 1).to[U32](), b: 0)
+            return after
+        kind == NODE_ANCHOR =>
+            anchor: U32 = me.word(at + 1)
+            if anchor > ANCHOR_NOT_WORD_BOUNDARY
+                me.fail(kind: PatternErrorKind.MALFORMED, at)
+                return end
+            me.emit(op: OP_ASSERT, a: anchor, b: 0)
+            return at + 2
+        kind == NODE_IGNORE_CASE => return me.compile(at: at + 1, fold: true, depth: depth + 1)
+        else =>
+            me.fail(kind: PatternErrorKind.MALFORMED, at)
+            return end
+
+### The group number of the capture node at `at` (1 for the first capture written).
+### :param at: Where the capture node starts.
+### :returns: The group number.
+secret routine @PatternCompiler.group_of(at: U64) -> U64
+    each g: U64 in 0 til me.captures.count()
+        if me.captures.getitem(g) == at
+            return g + 1
+    then
+        me.fail(kind: PatternErrorKind.MALFORMED, at)
+        return 0
+
+### Writes an either: EITHER, each alternative followed by END_ALT, and the table entry (alternative count, the
+### index where the either ends, each alternative's first instruction).
+### :param at: Where the either node starts.
+### :param fold: Whether letters match in either case.
+### :param depth: How deep the node is nested.
+### :param shorter: Whether the shortest alternative is chosen (else the longest).
+### :returns: The index just past the node.
+@reshaping
+secret routine @PatternCompiler.compile_either(at: U64, fold: Bool, depth: U64,
+    shorter: Bool) -> U64
+    local n: U64 = me.word(at + 1).to[U64]()
+    local starts: @List[U32] <- .construct(me.alloc.peek())
+    local ends: @List[U32] <- .construct(me.alloc.peek())
+
+    if n == 0
+        drop starts
+        drop ends
+        me.fail(kind: PatternErrorKind.EMPTY_EITHER, at)
+        return me.code.peek().count()
+    if n == 1
+        drop starts
+        drop ends
+        return me.compile(at: at + 2, fold, depth: depth + 1)
+    entry: U64 = me.eithers.count()
+    me.emit(op: OP_EITHER, a: entry.to[U32](), b: shorter.to[U32]())
+    each i: U64 in 0 til n with next: U64 = at + 2
+        starts.add_last(me.next_pc())
+        after: U64 = me.compile(at: next, fold, depth: depth + 1)
+        ends.add_last(me.emit(op: OP_END_ALT, a: 0, b: 0))
+        continue with next: after
+    then
+        join: U32 = me.next_pc()
+        each j: U64 in 0 til n
+            me.patch(pc: ends.getitem(j), operand: 1, value: join)
+        me.eithers.add_last(n.to[U32]())
+        me.eithers.add_last(join)
+        each k: U64 in 0 til n
+            me.eithers.add_last(starts.getitem(k))
+        drop starts
+        drop ends
+        return next
+
+### Writes a repetition: the piece once per required round, then a loop that prefers another round (no limit) or one
+### optional round per extra round allowed, each preferring to take it.
+### :param at: Where the repeat node starts.
+### :param fold: Whether letters match in either case.
+### :param depth: How deep the node is nested.
+### :returns: The index just past the node.
+@reshaping
+secret routine @PatternCompiler.compile_repeat(at: U64, fold: Bool, depth: U64) -> U64
+    local min: U32 = me.word(at + 1)
+    local max: U32 = me.word(at + 2)
+    local child: U64 = at + 3
+    local after: U64 = me.skip(at: child, depth: depth + 1)
+
+    if min > max
+        me.fail(kind: PatternErrorKind.BAD_REPEAT, at)
+        return after
+    each i: U64 in 0 til min.to[U64]()
+        if me.failed()
+            return after
+        me.compile(at: child, fold, depth: depth + 1)
+    if max == REPEAT_UNBOUNDED
+        loop_pc: U32 = me.emit(op: OP_SPLIT, a: 0, b: 0)
+        me.patch(pc: loop_pc, operand: 1, value: loop_pc + 1)
+        me.compile(at: child, fold, depth: depth + 1)
+        me.emit(op: OP_JUMP, a: loop_pc, b: 0)
+        me.patch(pc: loop_pc, operand: 2, value: me.next_pc())
+        return after
+    me.compile_optional_rounds(child, rounds: (max - min).to[U64](), fold, depth)
+    return after
+
+### Writes `rounds` optional rounds of the piece at `child`, each one taken only after the one before it, and each
+### preferring to be taken.
+### :param child: Where the piece starts.
+### :param rounds: How many optional rounds.
+### :param fold: Whether letters match in either case.
+### :param depth: How deep the repetition is nested.
+@reshaping
+secret routine @PatternCompiler.compile_optional_rounds(child: U64, rounds: U64, fold: Bool,
+    depth: U64) -> None
+    local splits: @List[U32] <- .construct(me.alloc.peek())
+
+    each i: U64 in 0 til rounds
+        if me.failed()
+            break
+        split: U32 = me.emit(op: OP_SPLIT, a: 0, b: 0)
+        me.patch(pc: split, operand: 1, value: split + 1)
+        splits.add_last(split)
+        me.compile(at: child, fold, depth: depth + 1)
+    then
+        out: U32 = me.next_pc()
+        each j: U64 in 0 til splits.count()
+            me.patch(pc: splits.getitem(j), operand: 2, value: out)
+        drop splits
+        return
+
+### Compiles a piece tree into a program.
+### :param code: The piece tree (Codes.te).
+### :param mode: MODE_TEXT or MODE_BYTES.
+### :param alloc: Where the program and the compiler's lists take memory.
+### :returns: The program, or why the tree didn't compile.
+routine compile_pattern(code: @[U32], mode: U32,
+    alloc: @MemoryManager) -> Result[Memory[U32], PatternError]
+    local compiler: @PatternCompiler <- .construct(code, mode, alloc)
+
+    compiler.number_captures(at: 0, depth: 0)
+    after: U64 = compiler.compile(at: 0, fold: false, depth: 0)
+    if after != code.count()
+        compiler.fail(kind: PatternErrorKind.MALFORMED, at: after)
+    compiler.emit(op: OP_MATCH, a: 0, b: 0)
+    if compiler.failed()
+        error: PatternError = PatternError(kind: compiler.error.peek(),
+            at: compiler.error_at.peek())
+        drop compiler
+        return error
+    local program: @Memory[U32] <- compiler.assemble(mode, alloc)
+    drop compiler
+    return program
+
+### Puts the header, the instructions, the ranges, the either table and the names together in one block.
+### :param mode: MODE_TEXT or MODE_BYTES.
+### :param alloc: Where the program takes memory.
+### :returns: The program.
+secret routine @PatternCompiler.assemble(mode: U32, alloc: @MemoryManager) -> Memory[U32]
+    local instruction_words: U64 = me.instructions.count()
+    local ranges_at: U64 = HEADER_WORDS + instruction_words
+    local eithers_at: U64 = ranges_at + me.ranges.count()
+    local names_at: U64 = eithers_at + me.eithers.count()
+    local length: U64 = names_at + me.names.count()
+    local program: @Memory[U32] <- [0] * length at alloc
+
+    program.store(index: 0, value: PROGRAM_MAGIC)
+    program.store(index: HEADER_MODE, value: mode)
+    program.store(index: HEADER_INSTRUCTIONS, value: (instruction_words // 3).to[U32]())
+    program.store(index: HEADER_GROUPS, value: me.captures.count().to[U32]())
+    program.store(index: HEADER_RANGES, value: ranges_at.to[U32]())
+    program.store(index: HEADER_EITHERS, value: eithers_at.to[U32]())
+    program.store(index: HEADER_NAMES, value: names_at.to[U32]())
+    program.store(index: HEADER_LENGTH, value: length.to[U32]())
+    copy_words(into: program, at: HEADER_WORDS, from: me.instructions.getview())
+    copy_words(into: program, at: ranges_at, from: me.ranges.getview())
+    copy_words(into: program, at: eithers_at, from: me.eithers.getview())
+    copy_words(into: program, at: names_at, from: me.names.getview())
+    return program
+
+### Copies words into a program block.
+### :param into: The program block.
+### :param at: Where the first word goes.
+### :param from: The words.
+secret routine copy_words(into: @Memory[U32], at: U64, from: @[U32]) -> None
+    each i: U64 in 0 til from.count()
+        into.store(index: at + i, value: from.getitem(i))
+    then
+        return

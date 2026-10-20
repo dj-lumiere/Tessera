@@ -1,0 +1,127 @@
+# The two encodings the text patterns are written in, as 32-bit words.
+#
+# A piece is a tree written in prefix order: a node's kind, its operands, then its children. The pieces a program
+# builds (`digit`, `capture(...)`, `TextPattern.of([...])`) are this tree, in every language: RazorForge and Suflae
+# build the same words and hand them to the same compiler through Ingrid.
+#
+#   NODE_LITERAL n u1 .. un             the units in a row (code points of a text, or bytes)
+#   NODE_RANGES negated n lo1 hi1 ..    one unit in one of the ranges (or in none of them when negated is 1)
+#   NODE_SEQUENCE n child1 .. childn    the children one after another
+#   NODE_EITHER_LONGER n child1 ..      one of the children: the one that matches the longest text there
+#   NODE_EITHER_SHORTER n child1 ..     one of the children: the one that matches the shortest text there
+#   NODE_REPEAT min max child           the child min to max times (max REPEAT_UNBOUNDED for no limit), greedy
+#   NODE_CAPTURE n c1 .. cn child       the child, its text kept under the name c1 .. cn (code points)
+#   NODE_ANCHOR kind                    a place, matching no text (ANCHOR_START_OF_TEXT ..)
+#   NODE_IGNORE_CASE child              the child, with each letter matching in either case
+#   NODE_CLASS id negated               a named class (CLASS_DIGIT ..), or every unit outside it
+#
+# A program is what the compiler makes of a pattern's tree: a header of HEADER_WORDS words, the instructions (three
+# words each: operation, a, b), the class ranges, the either table and the capture names. The engine (Engine.te)
+# runs it over text or bytes.
+
+module Standard/Text/Patterns
+
+### A piece node: units in a row.
+preset NODE_LITERAL: U32 = 1
+### A piece node: one unit in (or outside) a list of ranges.
+preset NODE_RANGES: U32 = 2
+### A piece node: children one after another.
+preset NODE_SEQUENCE: U32 = 3
+### A piece node: the child that matches the longest text.
+preset NODE_EITHER_LONGER: U32 = 4
+### A piece node: the child that matches the shortest text.
+preset NODE_EITHER_SHORTER: U32 = 5
+### A piece node: the child repeated.
+preset NODE_REPEAT: U32 = 6
+### A piece node: the child's text kept under a name.
+preset NODE_CAPTURE: U32 = 7
+### A piece node: a place that matches no text.
+preset NODE_ANCHOR: U32 = 8
+### A piece node: the child matched without regard to case.
+preset NODE_IGNORE_CASE: U32 = 9
+### A piece node: one unit of a named class.
+preset NODE_CLASS: U32 = 10
+
+### The largest count a repetition takes, written for "no limit".
+preset REPEAT_UNBOUNDED: U32 = 4294967295
+
+### The beginning of the text.
+preset ANCHOR_START_OF_TEXT: U32 = 0
+### The end of the text.
+preset ANCHOR_END_OF_TEXT: U32 = 1
+### The beginning of the text or the place after a line feed.
+preset ANCHOR_START_OF_LINE: U32 = 2
+### The end of the text or the place before a line feed.
+preset ANCHOR_END_OF_LINE: U32 = 3
+### A place between a word character and a character that isn't one (the ends of the text count as the second).
+preset ANCHOR_WORD_BOUNDARY: U32 = 4
+### A place that isn't a word boundary.
+preset ANCHOR_NOT_WORD_BOUNDARY: U32 = 5
+
+### The ASCII digits 0 to 9.
+preset CLASS_DIGIT: U32 = 0
+### The ASCII letters a to z and A to Z.
+preset CLASS_LETTER: U32 = 1
+### The ASCII whitespace: space, tab, line feed, vertical tab, form feed, carriage return.
+preset CLASS_SPACE: U32 = 2
+### The ASCII word characters: letters, digits and the underscore.
+preset CLASS_WORD_CHAR: U32 = 3
+### Any character, or any byte in a bytes pattern.
+preset CLASS_ANY: U32 = 4
+### The Unicode decimal digits (Nd).
+preset CLASS_UNICODE_DIGIT: U32 = 5
+### The Unicode letters (L).
+preset CLASS_UNICODE_LETTER: U32 = 6
+### The Unicode whitespace (White_Space).
+preset CLASS_UNICODE_SPACE: U32 = 7
+### The Unicode word characters: letters, marks, decimal digits and connector punctuation.
+preset CLASS_UNICODE_WORD_CHAR: U32 = 8
+
+### A program over text: its units are code points.
+preset MODE_TEXT: U32 = 0
+### A program over bytes: its units are bytes.
+preset MODE_BYTES: U32 = 1
+
+### The first word of every program.
+preset PROGRAM_MAGIC: U32 = 0x50544E31
+### The number of header words before the first instruction.
+preset HEADER_WORDS: U64 = 16
+### The header word that holds the mode.
+preset HEADER_MODE: U64 = 1
+### The header word that holds the number of instructions.
+preset HEADER_INSTRUCTIONS: U64 = 2
+### The header word that holds the number of named captures.
+preset HEADER_GROUPS: U64 = 3
+### The header word that holds where the class ranges start.
+preset HEADER_RANGES: U64 = 4
+### The header word that holds where the either table starts.
+preset HEADER_EITHERS: U64 = 5
+### The header word that holds where the capture names start.
+preset HEADER_NAMES: U64 = 6
+### The header word that holds the program's length in words.
+preset HEADER_LENGTH: U64 = 7
+
+### An instruction: match one unit equal to a.
+preset OP_UNIT: U32 = 1
+### An instruction: match one unit in the b ranges that start at word a.
+preset OP_CLASS: U32 = 2
+### An instruction: go on at a, and at b when that fails.
+preset OP_SPLIT: U32 = 3
+### An instruction: go on at a.
+preset OP_JUMP: U32 = 4
+### An instruction: keep the position in capture slot a.
+preset OP_SAVE: U32 = 5
+### An instruction: go on only where the anchor a holds.
+preset OP_ASSERT: U32 = 6
+### An instruction: one of the alternatives in the either entry at word a, chosen by length (b 0 longer, 1 shorter).
+preset OP_EITHER: U32 = 7
+### An instruction: the end of an alternative, going on at a.
+preset OP_END_ALT: U32 = 8
+### An instruction: a match ends here.
+preset OP_MATCH: U32 = 9
+
+### The most instructions a program may have.
+preset MAX_INSTRUCTIONS: U64 = 1000000
+
+### The position written for a capture that took no part in a match.
+preset NO_POSITION: U64 = 18446744073709551615

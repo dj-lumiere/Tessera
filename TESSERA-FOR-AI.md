@@ -53,7 +53,7 @@ The standard library's modules:
 - `Standard/System/Temporal` (`Duration`, `Moment`), `Standard/System/Serialization` (JSON strings),
   `Standard/System/CSubSystem` (C strings, the C memory routines without an OS).
 - Imported: `Standard/Collections`, `Standard/Os` (console, files, processes, threads, clocks), `Standard/Fiber`,
-  `Standard/Random`.
+  `Standard/Random`, `Standard/Text/Patterns` (text patterns, below).
 
 A builder that uses Tessera as a library (RazorForge's Tessera backend) can split one program over two modules, a base
 built once and a delta built for each edit that links against it: `new Compiler(...) { ExposeDefinitions = true }`
@@ -974,6 +974,32 @@ routine parse_or_zero(text: @[Byte]) -> B64
         is B64 as value => return value
         is ParseError as error => return 0.0
 ```
+
+**Text patterns** (`import Standard/Text/Patterns`, the engine RazorForge and Suflae reach through Ingrid). A pattern
+is built from pieces, which are entities holding their part of the pattern in memory: a piece that starts a pattern
+takes the manager, one built from pieces takes the manager of the piece it is built from, and `TextPattern.of` takes
+the pieces over (a span literal written in place):
+`local date: @TextPattern <- TextPattern.of([capture("year", digit(HEAP).repeat(4)), text("-", HEAP)], HEAP)`, then
+`drop date`. Tessera presets fold only literals, so a pattern is compiled at run time: make it once.
+- Pieces: `text(t, alloc)`, `digit(alloc)`/`letter`/`space`/`word_char` (ASCII), `unicode_digit(alloc)`/... (every
+  script), `any_char(alloc)`, `one_of(chars, alloc)`, `none_of(chars, alloc)`, `char_range(from:, to:, alloc)`,
+  `start_of_text(alloc)`, `end_of_text`, `start_of_line`, `end_of_line`, `word_boundary`.
+- Repetition: `p.repeat(4)`, `p.repeat(min: 2, max: 4)`, `p.repeat_at_least(1)`, `optional(p)`, `any_number_of(p)`,
+  `one_or_more(p)`, all greedy (no shortest form). To take text up to a delimiter repeat a piece that can't be it
+  (`any_number_of(none_of("<", alloc))`).
+- `either_longer([...])` / `either_shorter([...])` (the rule is in the name, the first written wins a tie),
+  `capture("name", p)`, `ignoring_case(p)`, `TextPattern.of(pieces, ignore_case: true, alloc)`.
+- Searches on `@TextPattern` (UTF-8 `@[Byte]`, byte positions): `matches(text)`, `find(text, alloc) -> Maybe[TextMatch]`,
+  `find_all(text, alloc) -> List[TextMatch]`, `replace(text, with:, alloc) -> Memory[Byte]`, `split(text, alloc) ->
+  List[@[Byte]]`. A `TextMatch` (an entity, drop it) views the text and the pattern: `start()`, `end()`, `text()`,
+  `group(name)` (crashes `CaptureNameError` / `AbsentValueError`), `group_checked(name) -> Maybe[@[Byte]]`.
+- `BytesPattern` with `byte(v, alloc)`, `bytes(b, alloc)`, `any_byte`, `byte_range(from:, to:, alloc)`,
+  `start_of_bytes`, `end_of_bytes`; `BytesMatch.bytes()`.
+- `TextPattern.from_regex(text, alloc)` crashes with `PatternSyntaxError`, `from_regex_result` returns
+  `Result[TextPattern, RegexError]` (`write_regex_error(error, out)` writes the message with the position).
+  Backreferences, lookaround and `*?` are refused.
+- The engine (`Engine.te`): a Thompson simulation finds the leftmost start, then a memoized walk (each instruction
+  and position tried once) picks the preferred match, so a search is linear in the text times the pattern size.
 
 ## Output
 

@@ -1,0 +1,1025 @@
+# The pattern engine: runs a program (Compile.te) over text or bytes, in time that grows with the length of the
+# input, never by going back over it.
+#
+# Finding a match takes two passes. The first runs every way through the program at once, one input position after
+# the other (a Thompson simulation), each way remembering where its match would start, and two ways that meet keep
+# the earlier start. It finds where the leftmost match starts, and how far any way from there could read. The second
+# pass walks the ways from that start one at a time, in the order the pattern prefers them (a repetition takes
+# another round first), and marks every instruction and position it has tried: a place tried once is never tried
+# again, so the walk takes at most instructions times positions steps. An either is chosen at once: a small
+# simulation of its alternatives finds every length each one can match there, and the walk tries those lengths
+# from the longest (either_longer) or the shortest (either_shorter), the alternative written first winning a tie.
+# Once the match is found, each either it went through is walked again over exactly the text it took, which fills
+# in the captures inside it.
+#
+# The input is code points (RazorForge's and Suflae's text), UTF-8 (Tessera's text, a malformed byte reading as
+# U+FFFD) or bytes. Positions are indexes into it: code points, or bytes for UTF-8 and bytes.
+
+module Standard/Text/Patterns
+
+import Standard/Collections
+
+### Input given as code points, one U32 each.
+preset INPUT_UTF32: U32 = 0
+### Input given as UTF-8 bytes, read as code points.
+preset INPUT_UTF8: U32 = 1
+### Input given as bytes.
+preset INPUT_BYTES: U32 = 2
+### The value `before` gives at the start of the input.
+secret preset NO_UNIT: U32 = 4294967295
+### The join of an either that no walk stops at: the walk of a whole match.
+secret preset NO_JOIN: U32 = 4294967295
+### How many positions ahead a step can reach (a UTF-8 code point is at most 4 bytes), plus one.
+secret preset BUCKETS: U64 = 5
+
+### The text or bytes a program runs over.
+record PatternInput
+    ### INPUT_UTF32, INPUT_UTF8 or INPUT_BYTES.
+    mode: U32
+    ### The code points, for INPUT_UTF32.
+    words: @[U32]
+    ### The bytes, for INPUT_UTF8 and INPUT_BYTES.
+    bytes: @[Byte]
+
+### One unit of input: its value and how many positions it takes (0 at the end).
+record InputUnit
+    ### The code point or byte.
+    value: U32
+    ### How many positions it takes.
+    size: U64
+
+### A program, read through its header.
+record Program
+    ### The program's words.
+    words: @[U32]
+    ### The first word, for reading without a bounds check after the program was checked.
+    base: @U32
+    ### MODE_TEXT or MODE_BYTES.
+    mode: U32
+    ### The number of instructions.
+    instructions: U64
+    ### The number of named captures.
+    groups: U64
+    ### Where the class ranges start.
+    ranges: U64
+    ### Where the either table starts.
+    eithers: U64
+    ### Where the capture names start.
+    names: U64
+
+### Makes an input from its fields.
+### :param mode: INPUT_UTF32, INPUT_UTF8 or INPUT_BYTES.
+### :param words: The code points (empty unless `mode` is INPUT_UTF32).
+### :param bytes: The bytes (empty when `mode` is INPUT_UTF32).
+### :returns: The input.
+common routine PatternInput.construct(mode: U32, words: @[U32], bytes: @[Byte]) -> Me
+    return Me(mode, words, bytes)
+
+### Releases nothing: an input only views its text.
+routine @PatternInput.destruct() -> None
+    return
+
+### Text given as code points.
+### :param words: The code points.
+### :returns: The input.
+common routine PatternInput.of_utf32(words: @[U32]) -> Me
+    return Me(mode: INPUT_UTF32, words, bytes: .hollow())
+
+### Text given as UTF-8.
+### :param text: The UTF-8 bytes.
+### :returns: The input.
+common routine PatternInput.of_utf8(text: @[Byte]) -> Me
+    return Me(mode: INPUT_UTF8, words: .hollow(), bytes: text)
+
+### Bytes.
+### :param bytes: The bytes.
+### :returns: The input.
+common routine PatternInput.of_bytes(bytes: @[Byte]) -> Me
+    return Me(mode: INPUT_BYTES, words: .hollow(), bytes)
+
+### The number of positions in the input.
+### :returns: The count of code points, or of bytes.
+routine PatternInput.count() -> U64
+    if me.mode == INPUT_UTF32
+        return me.words.count()
+    return me.bytes.count()
+
+### The code point at a position of UTF-32 input, already known to be in it.
+### :param pos: The position.
+### :returns: The code point.
+@inline
+routine PatternInput.word_at(pos: U64) -> U32
+    first: @U32 = me.words.to[@U32]()
+    return first.stride(pos).peek()
+
+### The byte at a position of UTF-8 or bytes input, already known to be in it.
+### :param pos: The position.
+### :returns: The byte's value.
+@inline
+routine PatternInput.byte_at(pos: U64) -> U32
+    first: @Byte = me.bytes.to[@Byte]()
+    raw: Byte = first.stride(pos).peek()
+    return raw.to[U8]().to[U32]()
+
+### The unit that starts at a position.
+### :param pos: The position.
+### :returns: The unit, with size 0 at or past the end. A malformed UTF-8 byte reads as U+FFFD of size 1.
+routine PatternInput.unit_at(pos: U64) -> InputUnit
+    if pos >= me.count()
+        return InputUnit(value: 0, size: 0)
+    if me.mode == INPUT_UTF32
+        return InputUnit(value: me.word_at(pos), size: 1)
+    byte: U32 = me.byte_at(pos)
+    if me.mode == INPUT_BYTES or byte < 0x80
+        return InputUnit(value: byte, size: 1)
+    decoded: Utf8Decoded = utf8_decode(bytes: me.bytes.to[@Byte](), pos, len: me.count())
+    if decoded.ok
+        return InputUnit(value: decoded.char.to[U32](), size: decoded.next_pos - pos)
+    return InputUnit(value: 0xFFFD, size: 1)
+
+### The unit just before a position, for the anchors: the code point, or the byte (the last byte of a UTF-8 code
+### point, which tells a line feed and an ASCII word character apart from everything else).
+### :param pos: The position.
+### :returns: The value, or NO_UNIT at the start.
+routine PatternInput.before(pos: U64) -> U32
+    if pos == 0
+        return NO_UNIT
+    if me.mode == INPUT_UTF32
+        return me.word_at(pos - 1)
+    return me.byte_at(pos - 1)
+
+### Whether a match may start at a position: anywhere in code points and bytes, at the first byte of a code point in
+### UTF-8.
+### :param pos: The position.
+### :returns: `true` when a unit starts there or it is the end.
+routine PatternInput.is_boundary(pos: U64) -> Bool
+    if me.mode != INPUT_UTF8 or pos >= me.count()
+        return true
+    return me.byte_at(pos) & 0xC0 != 0x80
+
+### The position after the unit at `pos`, at least one further.
+### :param pos: The position.
+### :returns: The next position.
+routine PatternInput.after(pos: U64) -> U64
+    unit: InputUnit = me.unit_at(pos)
+    if unit.size == 0
+        return pos + 1
+    return pos + unit.size
+
+### Whether a unit is an ASCII word character: a letter, a digit or the underscore.
+### :param value: The unit.
+### :returns: `true` when it is one.
+routine is_word_unit(value: U32) -> Bool
+    return when
+        0x30 <= value <= 0x39 => true
+        0x41 <= value <= 0x5A => true
+        0x61 <= value <= 0x7A => true
+        else => value == 0x5F
+
+### Makes a program view from its fields.
+### :param words: The program's words.
+### :param base: The first word.
+### :param mode: MODE_TEXT or MODE_BYTES.
+### :param instructions: The number of instructions.
+### :param groups: The number of named captures.
+### :param ranges: Where the class ranges start.
+### :param eithers: Where the either table starts.
+### :param names: Where the capture names start.
+### :returns: The program view.
+common routine Program.construct(words: @[U32], base: @U32, mode: U32, instructions: U64,
+    groups: U64, ranges: U64, eithers: U64, names: U64) -> Me
+    return Me(words, base, mode, instructions, groups, ranges, eithers, names)
+
+### Releases nothing: a program view only views the program.
+routine @Program.destruct() -> None
+    return
+
+### The word of the program at an index, already known to be in it.
+### :param index: The index.
+### :returns: The word.
+@inline
+routine Program.word(index: U64) -> U32
+    return me.base.stride(index).peek()
+
+### An instruction's operation.
+### :param pc: The instruction.
+### :returns: The operation.
+@inline
+routine Program.op(pc: U64) -> U32
+    return me.word(HEADER_WORDS + pc * 3)
+
+### An instruction's first operand.
+### :param pc: The instruction.
+### :returns: The operand.
+@inline
+routine Program.a(pc: U64) -> U32
+    return me.word(HEADER_WORDS + pc * 3 + 1)
+
+### An instruction's second operand.
+### :param pc: The instruction.
+### :returns: The operand.
+@inline
+routine Program.b(pc: U64) -> U32
+    return me.word(HEADER_WORDS + pc * 3 + 2)
+
+### The number of capture slots a match fills: a start and an end for the whole match and for each named capture.
+### :returns: The slot count.
+routine Program.slot_count() -> U64
+    return (me.groups + 1) * 2
+
+### Whether a unit is in the ranges of a CLASS instruction.
+### :param pc: The CLASS instruction.
+### :param value: The unit.
+### :returns: `true` when a range holds it.
+routine Program.class_has(pc: U64, value: U32) -> Bool
+    local first: U64 = me.ranges + me.a(pc).to[U64]()
+    local count: U64 = me.b(pc).to[U64]()
+
+    while low < high with low: U64 = 0, high: U64 = count
+        mid: U64 = (low + high) // 2
+        lo: U32 = me.word(first + mid * 2)
+        hi: U32 = me.word(first + mid * 2 + 1)
+        if value < lo
+            continue with low: low, high: mid
+        if value > hi
+            continue with low: mid + 1, high: high
+        return true
+    then
+        return false
+
+### Whether a consuming instruction takes the unit at a position.
+### :param pc: The UNIT or CLASS instruction.
+### :param unit: The unit there (size 0 at the end).
+### :returns: `true` when it takes it.
+routine Program.takes(pc: U64, unit: InputUnit) -> Bool
+    if unit.size == 0
+        return false
+    if me.op(pc) == OP_UNIT
+        return unit.value == me.a(pc)
+    return me.class_has(pc, value: unit.value)
+
+### Whether an anchor holds at a position.
+### :param kind: The anchor (ANCHOR_START_OF_TEXT ..).
+### :param input: The input.
+### :param pos: The position.
+### :returns: `true` when it holds.
+routine anchor_holds(kind: U32, input: PatternInput, pos: U64) -> Bool
+    local count: U64 = input.count()
+
+    when
+        kind == ANCHOR_START_OF_TEXT => return pos == 0
+        kind == ANCHOR_END_OF_TEXT => return pos == count
+        kind == ANCHOR_START_OF_LINE => return pos == 0 or input.before(pos) == 0x0A
+        kind == ANCHOR_END_OF_LINE => return pos == count or input.unit_at(pos).value == 0x0A
+        else =>
+            left: Bool = pos > 0 and is_word_unit(input.before(pos))
+            right: Bool = pos < count and is_word_unit(input.unit_at(pos).value)
+            boundary: Bool = left != right
+            if kind == ANCHOR_WORD_BOUNDARY
+                return boundary
+            return not boundary
+
+### Whether a program's words hold together: the header, and every instruction's operands pointing inside it.
+### :param words: The words.
+### :param mode: MODE_TEXT or MODE_BYTES, the kind the caller expects.
+### :returns: The program view, or None when the words aren't such a program.
+routine read_program(words: @[U32], mode: U32) -> Maybe[Program]
+    local count: U64 = words.count()
+
+    if count < HEADER_WORDS or words.getitem(0) != PROGRAM_MAGIC
+        return None()
+    if words.getitem(HEADER_MODE) != mode or words.getitem(HEADER_LENGTH).to[U64]() != count
+        return None()
+    instructions: U64 = words.getitem(HEADER_INSTRUCTIONS).to[U64]()
+    ranges: U64 = words.getitem(HEADER_RANGES).to[U64]()
+    eithers: U64 = words.getitem(HEADER_EITHERS).to[U64]()
+    names: U64 = words.getitem(HEADER_NAMES).to[U64]()
+    if instructions == 0 or HEADER_WORDS + instructions * 3 != ranges
+        return None()
+    if not (ranges <= eithers <= names <= count)
+        return None()
+    program: Program = Program.construct(words, base: words.to[@U32](), mode, instructions,
+        groups: words.getitem(HEADER_GROUPS).to[U64](), ranges, eithers, names)
+    if not program.is_sound()
+        return None()
+    return program
+
+### Whether every instruction's operands point inside the program, and the names are where the header says.
+### :returns: `true` when they do.
+routine Program.is_sound() -> Bool
+    local slots: U64 = me.slot_count()
+
+    each pc: U64 in 0 til me.instructions
+        op: U32 = me.op(pc)
+        a: U64 = me.a(pc).to[U64]()
+        b: U64 = me.b(pc).to[U64]()
+        ok: Bool = when
+            op == OP_UNIT => true
+            op == OP_CLASS => me.ranges + a + b * 2 <= me.eithers
+            op == OP_SPLIT => a < me.instructions and b < me.instructions
+            op == OP_JUMP => a < me.instructions
+            op == OP_SAVE => a < slots
+            op == OP_ASSERT => a <= ANCHOR_NOT_WORD_BOUNDARY.to[U64]()
+            op == OP_EITHER => me.either_is_sound(entry: a)
+            op == OP_END_ALT => a < me.instructions
+            op == OP_MATCH => true
+            else => false
+        if not ok
+            return false
+    then
+        return me.names_are_sound()
+
+### Whether an either table entry lies inside the table and names instructions of the program.
+### :param entry: Where the entry starts, from the start of the table.
+### :returns: `true` when it does.
+routine Program.either_is_sound(entry: U64) -> Bool
+    local at: U64 = me.eithers + entry
+
+    if at + 2 > me.names
+        return false
+    n: U64 = me.word(at).to[U64]()
+    if at + 2 + n > me.names or me.word(at + 1).to[U64]() >= me.instructions
+        return false
+    each i: U64 in 0 til n
+        if me.word(at + 2 + i).to[U64]() >= me.instructions
+            return false
+    then
+        return true
+
+### Whether the names fill the end of the program exactly, one per capture.
+### :returns: `true` when they do.
+routine Program.names_are_sound() -> Bool
+    local count: U64 = me.words.count()
+
+    each g: U64 in 0 til me.groups with at: U64 = me.names
+        if at >= count
+            return false
+        continue with at: at + 1 + me.word(at).to[U64]()
+    then
+        return at == count
+
+### The capture number whose name is the code points `name`, or 0 when no capture has it.
+### :param name: The name's code points.
+### :returns: The capture number, from 1.
+routine Program.group_named(name: @[U32]) -> U64
+    each g: U64 in 0 til me.groups with at: U64 = me.names
+        length: U64 = me.word(at).to[U64]()
+        if length == name.count()
+            same: Bool = each_equal(program: me, at: at + 1, name)
+            if same
+                return g + 1
+        continue with at: at + 1 + length
+    then
+        return 0
+
+### Whether the program's words from `at` are the code points of `name`.
+### :param program: The program.
+### :param at: The first word.
+### :param name: The code points.
+### :returns: `true` when they are.
+secret routine each_equal(program: Program, at: U64, name: @[U32]) -> Bool
+    each i: U64 in 0 til name.count()
+        if program.word(at + i) != name.getitem(i)
+            return false
+    then
+        return true
+
+### The capture number whose name is the UTF-8 text `name`, or 0 when no capture has it.
+### :param name: The name.
+### :returns: The capture number, from 1.
+routine Program.group_named_utf8(name: @[Byte]) -> U64
+    local input: PatternInput = PatternInput.of_utf8(name)
+
+    each g: U64 in 0 til me.groups with at: U64 = me.names
+        length: U64 = me.word(at).to[U64]()
+        if me.utf8_name_is(at: at + 1, length, input)
+            return g + 1
+        continue with at: at + 1 + length
+    then
+        return 0
+
+### Whether the `length` code points from `at` spell the UTF-8 text of `input`.
+### :param at: The first code point of the name.
+### :param length: The name's length.
+### :param input: The text.
+### :returns: `true` when they do.
+secret routine Program.utf8_name_is(at: U64, length: U64, input: PatternInput) -> Bool
+    while i < length with i: U64 = 0, pos: U64 = 0
+        unit: InputUnit = input.unit_at(pos)
+        if unit.size == 0 or unit.value != me.word(at + i)
+            return false
+        continue with i: i + 1, pos: pos + unit.size
+    then
+        return pos == input.count()
+
+# -- the simulation ----------------------------------------------------------------------------------------------
+
+### A program and the input it runs over.
+record Search
+    ### The program.
+    program: Program
+    ### The input.
+    input: PatternInput
+
+### The goal of a simulation: the leftmost match, or the lengths an either's alternative can match.
+record SimulationGoal
+    ### Whether it looks for the ends of one alternative (else for the leftmost match).
+    alternative: Bool
+    ### The END_ALT target that ends the alternative.
+    join: U32
+    ### Whether a match must start at `from` and end at the end of the input (the whole input matches).
+    whole: Bool
+    ### The first position.
+    from: U64
+    ### The last position the simulation reads up to.
+    limit: U64
+    ### The instruction every thread starts at.
+    first_pc: U32
+
+### One thread of a simulation: the instruction it is at, the position, and where its match starts.
+record Thread
+    ### The instruction.
+    pc: U32
+    ### The position.
+    pos: U64
+    ### Where its match starts.
+    start: U64
+
+### Where the leftmost match starts and how far a way from there could read.
+record Leftmost
+    ### Whether there is a match.
+    found: Bool
+    ### Where it starts.
+    start: U64
+    ### The furthest position a way that started there (or before) was alive at.
+    reach: U64
+
+### The threads of a simulation: for each of BUCKETS positions ahead, the instructions waiting there with the start of
+### their match, and the instructions already reached at the position being stepped.
+entity Threads
+    ### For each bucket and instruction, the start of the waiting thread, NO_POSITION when none waits.
+    starts: Memory[U64]
+    ### For each bucket, the instructions waiting there.
+    waiting: Memory[U32]
+    ### For each bucket, how many instructions wait there.
+    counts: Memory[U64]
+    ### For each instruction, 1 when it was reached at the position being stepped.
+    seen: Memory[U8]
+    ### The instructions reached at the position being stepped.
+    seen_list: List[U32]
+    ### The instructions still to follow at the position being stepped.
+    stack: List[U32]
+    ### The positions where the alternative being simulated can end, each once.
+    ends: List[U64]
+    ### The earliest start of a match found so far, NO_POSITION while there is none.
+    found: U64
+    ### How many instructions the buffers are sized for.
+    instructions: U64
+
+### Makes a search of a program over an input.
+### :param program: The program.
+### :param input: The input.
+### :returns: The search.
+common routine Search.construct(program: Program, input: PatternInput) -> Me
+    return Me(program, input)
+
+### Releases nothing: a search only views its program and input.
+routine @Search.destruct() -> None
+    return
+
+### Makes the threads for a program.
+### :param instructions: The program's instruction count.
+### :param alloc: Where the buffers take memory.
+### :returns: The threads, every bucket empty.
+common routine Threads.construct(instructions: U64, alloc: @MemoryManager) -> Me
+    return Me(
+        starts: .construct(values: [NO_POSITION], times: instructions * BUCKETS, manager: alloc),
+        waiting: .construct(values: [0], times: instructions * BUCKETS, manager: alloc),
+        counts: .construct(values: [0], times: BUCKETS, manager: alloc),
+        seen: .construct(values: [0], times: instructions, manager: alloc),
+        seen_list: .construct(alloc), stack: .construct(alloc), ends: .construct(alloc),
+        found: NO_POSITION, instructions)
+
+### Gives back the buffers.
+routine @Threads.destruct() -> None
+    drop me.starts
+    drop me.waiting
+    drop me.counts
+    drop me.seen
+    drop me.seen_list
+    drop me.stack
+    drop me.ends
+    return
+
+### Puts a thread in the bucket of its position, keeping the earlier start when one is already at its instruction.
+### :param thread: The thread.
+routine @Threads.wait(thread: Thread) -> None
+    local bucket: U64 = thread.pos % BUCKETS
+    local slot: U64 = bucket * me.instructions.peek() + thread.pc.to[U64]()
+    local before: U64 = me.starts.load(slot)
+
+    if before == NO_POSITION
+        count: U64 = me.counts.load(bucket)
+        me.waiting.store(index: bucket * me.instructions.peek() + count, value: thread.pc)
+        me.counts.store(index: bucket, value: count + 1)
+        me.starts.store(index: slot, value: thread.start)
+        return
+    if thread.start < before
+        me.starts.store(index: slot, value: thread.start)
+    return
+
+### How many threads wait in all buckets.
+### :returns: The count.
+routine @Threads.waiting_count() -> U64
+    each b: U64 in 0 til BUCKETS with total: U64 = 0
+        continue with total: total + me.counts.load(b)
+    then
+        return total
+
+### Orders the threads waiting in a bucket by the start of their match, earliest first, so the first thread to reach
+### an instruction carries the earliest start.
+### :param bucket: The bucket.
+routine @Threads.sort_bucket(bucket: U64) -> None
+    local count: U64 = me.counts.load(bucket)
+    local base: U64 = bucket * me.instructions.peek()
+
+    each i: U64 in 1 til count
+        pc: U32 = me.waiting.load(base + i)
+        start: U64 = me.starts.load(base + pc.to[U64]())
+        until j == 0 with j: U64 = i
+            other: U32 = me.waiting.load(base + j - 1)
+            if me.starts.load(base + other.to[U64]()) <= start
+                break
+            me.waiting.store(index: base + j, value: other)
+            continue with j: j - 1
+        then
+            me.waiting.store(index: base + j, value: pc)
+    then
+        return
+
+### Empties a bucket.
+### :param bucket: The bucket.
+routine @Threads.clear_bucket(bucket: U64) -> None
+    local count: U64 = me.counts.load(bucket)
+    local base: U64 = bucket * me.instructions.peek()
+
+    each i: U64 in 0 til count
+        pc: U32 = me.waiting.load(base + i)
+        me.starts.store(index: base + pc.to[U64](), value: NO_POSITION)
+    then
+        me.counts.store(index: bucket, value: 0)
+        return
+
+### Forgets which instructions were reached at the position stepped last.
+routine @Threads.clear_seen() -> None
+    each i: U64 in 0 til me.seen_list.count()
+        index: U64 = me.seen_list.getitem(i).to[U64]()
+        me.seen.store(index, value: 0)
+    then
+        me.seen_list.clear()
+        return
+
+### Follows a thread through every instruction that reads nothing, putting each consuming instruction that takes the
+### unit at its position into the bucket after it, and noting the matches and alternative ends it reaches.
+### :param search: The program and input.
+### :param goal: What the simulation looks for.
+### :param thread: The thread.
+@reshaping
+routine @Threads.follow(search: Search, goal: SimulationGoal, thread: Thread) -> None
+    local program: Program = search.program
+    local input: PatternInput = search.input
+    local pos: U64 = thread.pos
+    local unit: InputUnit = input.unit_at(pos)
+
+    me.stack.add_last(thread.pc)
+    while not me.stack.is_empty()
+        at: U32 = me.stack.remove_last()
+        at_index: U64 = at.to[U64]()
+        if me.seen.load(at_index) != 0
+            continue
+        me.seen.store(index: at_index, value: 1)
+        me.seen_list.add_last(at)
+        op: U32 = program.op(at_index)
+        when
+            op == OP_UNIT or op == OP_CLASS =>
+                if program.takes(pc: at_index, unit) and pos + unit.size <= goal.limit
+                    me.wait(Thread(pc: at + 1, pos: pos + unit.size, start: thread.start))
+            op == OP_SPLIT =>
+                me.stack.add_last(program.b(at_index))
+                me.stack.add_last(program.a(at_index))
+            op == OP_JUMP => me.stack.add_last(program.a(at_index))
+            op == OP_SAVE => me.stack.add_last(at + 1)
+            op == OP_ASSERT =>
+                if anchor_holds(kind: program.a(at_index), input, pos)
+                    me.stack.add_last(at + 1)
+            op == OP_EITHER => me.push_alternatives(program, entry: program.a(at_index).to[U64]())
+            op == OP_END_ALT =>
+                target: U32 = program.a(at_index)
+                if goal.alternative and target == goal.join
+                    me.ends.add_last(pos)
+                else
+                    me.stack.add_last(target)
+            else =>
+                if not goal.alternative and (not goal.whole or pos == input.count())
+                    if thread.start < me.found.peek()
+                        me.found.poke(thread.start)
+    then
+        return
+
+### Pushes the first instruction of every alternative of an either.
+### :param program: The program.
+### :param entry: Where the either's entry starts, from the start of the table.
+@reshaping
+routine @Threads.push_alternatives(program: Program, entry: U64) -> None
+    local at: U64 = program.eithers + entry
+    local n: U64 = program.word(at).to[U64]()
+
+    each i: U64 in 0 til n
+        me.stack.add_last(program.word(at + 2 + n - 1 - i))
+    then
+        return
+
+### Runs the simulation for a goal: the leftmost match (noted in `found`), or the ends of one alternative (in
+### `ends`).
+### :param search: The program and input.
+### :param goal: What it looks for.
+### :returns: For a match, where the leftmost one starts and how far its threads reached.
+@reshaping
+routine @Threads.run(search: Search, goal: SimulationGoal) -> Leftmost
+    local input: PatternInput = search.input
+    local reach: @U64 <- goal.from
+    local anchored: Bool = goal.whole or goal.alternative
+
+    me.found.poke(NO_POSITION)
+    me.ends.clear()
+    while pos <= goal.limit with pos: U64 = goal.from
+        bucket: U64 = pos % BUCKETS
+        none_found: Bool = me.found.peek() == NO_POSITION
+        may_start: Bool = pos == goal.from or not anchored
+        if none_found and may_start and input.is_boundary(pos)
+            me.wait(Thread(pc: goal.first_pc, pos, start: pos))
+        if me.waiting_count() == 0
+            if not none_found or anchored
+                break
+            continue with pos: pos + 1
+        me.sort_bucket(bucket)
+        count: U64 = me.counts.load(bucket)
+        base: U64 = bucket * me.instructions.peek()
+        each i: U64 in 0 til count
+            pc: U32 = me.waiting.load(base + i)
+            start: U64 = me.starts.load(base + pc.to[U64]())
+            if start <= me.found.peek()
+                pos.poke_into(reach)
+                me.follow(search, goal, thread: Thread(pc, pos, start))
+        then
+            me.clear_bucket(bucket)
+            me.clear_seen()
+            continue with pos: pos + 1
+    then
+        each b: U64 in 0 til BUCKETS
+            me.clear_bucket(b)
+        then
+            found: U64 = me.found.peek()
+            return Leftmost(found: found != NO_POSITION, start: found, reach: reach.peek())
+
+### Where the leftmost match at or after a position starts, and how far its threads reached.
+### :param search: The program and input.
+### :param from: The first position a match may start at.
+### :param whole: Whether the match must start at `from` and end at the end of the input.
+### :returns: The leftmost match's start and reach.
+@reshaping
+routine @Threads.leftmost(search: Search, from: U64, whole: Bool) -> Leftmost
+    goal: SimulationGoal = SimulationGoal(alternative: false, join: NO_JOIN, whole, from,
+        limit: search.input.count(), first_pc: 0)
+    return me.run(search, goal)
+
+# -- the walk -----------------------------------------------------------------------------------------------------
+
+### A frame: try the program from an instruction at a position.
+secret preset FRAME_TRY: U32 = 0
+### A frame: put back the old position of a capture slot.
+secret preset FRAME_RESTORE: U32 = 1
+### A frame: shorten the either log back to a length.
+secret preset FRAME_TRUNCATE: U32 = 2
+### A frame: try the next length of an either.
+secret preset FRAME_EITHER: U32 = 3
+
+### A frame of the walk's stack.
+record Frame
+    ### FRAME_TRY, FRAME_RESTORE, FRAME_TRUNCATE or FRAME_EITHER.
+    kind: U32
+    ### The instruction (FRAME_TRY, FRAME_EITHER).
+    pc: U32
+    ### The position (FRAME_TRY, FRAME_EITHER).
+    pos: U64
+    ### The slot (FRAME_RESTORE), the log length (FRAME_TRUNCATE), or the first candidate (FRAME_EITHER).
+    a: U64
+    ### The old position (FRAME_RESTORE), or the number of candidates (FRAME_EITHER).
+    b: U64
+    ### The next candidate to try (FRAME_EITHER).
+    c: U64
+
+### A length an either may take at a position: where it ends, and the alternative that ends there first.
+record Candidate
+    ### Where it ends.
+    end: U64
+    ### The alternative's index.
+    alternative: U64
+
+### The order an either tries its lengths in: by `key` (the end for either_shorter, the end counted down from the
+### largest U64 for either_longer), then by the alternative written first.
+@derive(Equatable, Comparable)
+record CandidateOrder
+    ### The end, or the end counted down.
+    key: U64
+    ### The alternative's index.
+    alternative: U64
+    ### Where it ends.
+    end: U64
+
+### An either the walk went through: where it started, the alternative it took, and where that ended.
+record Decision
+    ### The EITHER instruction.
+    pc: U32
+    ### Where it started.
+    pos: U64
+    ### The alternative's index.
+    alternative: U64
+    ### Where it ended.
+    end: U64
+
+### One walk: from an instruction and a position, up to a limit, to a MATCH (a whole match) or to the END_ALT of
+### an either at a given end (the walk again of an alternative).
+record Walk
+    ### The first instruction.
+    first_pc: U32
+    ### The first position.
+    start: U64
+    ### The last position the walk may read up to.
+    limit: U64
+    ### The END_ALT target that ends the walk, NO_JOIN for a whole match.
+    join: U32
+    ### Where an alternative's walk must end.
+    target: U64
+
+### The walk's state: the instructions and positions tried, its stack, the either lengths it found, the eithers it
+### went through, the capture slots it fills and the simulation it uses for eithers.
+entity Walker
+    ### One bit per instruction and position: tried already.
+    tried: Memory[U64]
+    ### The stack.
+    frames: List[Frame]
+    ### The lengths of every either reached.
+    candidates: List[Candidate]
+    ### The eithers on the path being walked.
+    log: List[Decision]
+    ### The capture slots.
+    slots: @[U64]
+    ### The simulation used for eithers.
+    threads: @Threads
+    ### Where the walk takes memory.
+    alloc: @MemoryManager
+
+### Makes a walker.
+### :param slots: The capture slots it fills.
+### :param threads: The simulation it uses for eithers.
+### :param alloc: Where it takes memory.
+### :returns: The walker.
+common routine Walker.construct(slots: @[U64], threads: @Threads, alloc: @MemoryManager) -> Me
+    return Me(tried: .construct(values: [0], times: 0, manager: alloc), frames: .construct(alloc),
+        candidates: .construct(alloc), log: .construct(alloc), slots, threads, alloc)
+
+### Gives back its memory.
+routine @Walker.destruct() -> None
+    drop me.tried
+    drop me.frames
+    drop me.candidates
+    drop me.log
+    return
+
+### Marks an instruction at a position as tried.
+### :param index: The bit's index.
+### :returns: `true` when it was tried already.
+routine @Walker.mark(index: U64) -> Bool
+    word: U64 = index // 64
+    bit: U64 = U64.shift_left(1, index % 64)
+    old: U64 = me.tried.load(word)
+    if old & bit != 0
+        return true
+    me.tried.store(index: word, value: old | bit)
+    return false
+
+### Follows one thread of the walk from an instruction at a position, pushing the ways it leaves for later, until
+### it fails or ends.
+### :param search: The program and input.
+### :param walk: The walk.
+### :param pc: The instruction.
+### :param pos: The position.
+### :returns: Where the walk ended, or NO_POSITION when this thread failed.
+@reshaping
+routine @Walker.follow(search: Search, walk: Walk, pc: U32, pos: U64) -> U64
+    local program: Program = search.program
+    local input: PatternInput = search.input
+    local width: U64 = walk.limit - walk.start + 1
+    local slots: @[U64] = me.slots.peek()
+
+    while true with at: U32 = pc, here: U64 = pos
+        if here > walk.limit
+            return NO_POSITION
+        at_index: U64 = at.to[U64]()
+        if me.mark(index: at_index * width + here - walk.start)
+            return NO_POSITION
+        op: U32 = program.op(at_index)
+        when
+            op == OP_UNIT or op == OP_CLASS =>
+                unit: InputUnit = input.unit_at(here)
+                if not program.takes(pc: at_index, unit)
+                    return NO_POSITION
+                continue with at: at + 1, here: here + unit.size
+            op == OP_SPLIT =>
+                me.frames.add_last(Frame(kind: FRAME_TRY, pc: program.b(at_index), pos: here, a: 0,
+                    b: 0, c: 0))
+                continue with at: program.a(at_index), here: here
+            op == OP_JUMP => continue with at: program.a(at_index), here: here
+            op == OP_SAVE =>
+                slot: U64 = program.a(at_index).to[U64]()
+                me.frames.add_last(Frame(kind: FRAME_RESTORE, pc: 0, pos: 0, a: slot,
+                    b: slots.getitem(slot), c: 0))
+                slots.setitem(index: slot, value: here)
+                continue with at: at + 1, here: here
+            op == OP_ASSERT =>
+                if not anchor_holds(kind: program.a(at_index), input, pos: here)
+                    return NO_POSITION
+                continue with at: at + 1, here: here
+            op == OP_EITHER =>
+                me.push_either(search, walk, pc: at, pos: here)
+                return NO_POSITION
+            op == OP_END_ALT =>
+                if program.a(at_index) == walk.join and here == walk.target
+                    return here
+                return NO_POSITION
+            else =>
+                if walk.join == NO_JOIN
+                    return here
+                return NO_POSITION
+
+### Finds every length the either at `pc` can take at `pos` and pushes a frame that tries them, longest first for
+### either_longer and shortest first for either_shorter, the alternative written first winning a tie.
+### :param search: The program and input.
+### :param walk: The walk.
+### :param pc: The EITHER instruction.
+### :param pos: The position.
+@reshaping
+routine @Walker.push_either(search: Search, walk: Walk, pc: U32, pos: U64) -> None
+    local program: Program = search.program
+    local entry: U64 = program.eithers + program.a(pc.to[U64]()).to[U64]()
+    local n: U64 = program.word(entry).to[U64]()
+    local join: U32 = program.word(entry + 1)
+    local shorter: Bool = program.b(pc.to[U64]()) != 0
+    local first: U64 = me.candidates.count()
+    local threads: @Threads = me.threads.peek()
+    local ordered: @List[CandidateOrder] <- .construct(me.alloc.peek())
+
+    each i: U64 in 0 til n
+        goal: SimulationGoal = SimulationGoal(alternative: true, join, whole: false, from: pos,
+            limit: walk.limit, first_pc: program.word(entry + 2 + i))
+        threads.run(search, goal)
+        each k: U64 in 0 til threads.ends.count()
+            end: U64 = threads.ends.getitem(k)
+            key: U64 = when
+                shorter => end
+                else => U64.MAX - end
+            ordered.add_last(CandidateOrder(key, alternative: i, end))
+    then
+        ordered.sort()
+        each j: U64 in 0 til ordered.count() with last: U64 = NO_POSITION
+            order: CandidateOrder = ordered.getitem(j)
+            if order.end == last
+                continue with last: last
+            me.candidates.add_last(Candidate(end: order.end, alternative: order.alternative))
+            continue with last: order.end
+        then
+            drop ordered
+            found: U64 = me.candidates.count() - first
+            me.frames.add_last(Frame(kind: FRAME_EITHER, pc, pos, a: first, b: found, c: 0))
+            return
+
+### Runs a walk: the first way, in the pattern's order of preference, that reaches its end. The capture slots are
+### filled along the way and put back where a way fails.
+### :param search: The program and input.
+### :param walk: The walk.
+### :returns: Where the walk ended, or NO_POSITION when no way reaches its end.
+@reshaping
+routine @Walker.run(search: Search, walk: Walk) -> U64
+    local width: U64 = walk.limit - walk.start + 1
+    local bits: U64 = search.program.instructions * width
+    local slots: @[U64] = me.slots.peek()
+
+    me.tried.replace(value: Memory[U64].construct(values: [0], times: (bits + 63) // 64,
+        manager: me.alloc.peek()))
+    me.frames.clear()
+    me.candidates.clear()
+    me.log.clear()
+    me.frames.add_last(Frame(kind: FRAME_TRY, pc: walk.first_pc, pos: walk.start, a: 0, b: 0, c: 0))
+    while not me.frames.is_empty()
+        frame: Frame = me.frames.remove_last()
+        when
+            frame.kind == FRAME_TRY =>
+                end: U64 = me.follow(search, walk, pc: frame.pc, pos: frame.pos)
+                if end != NO_POSITION
+                    return end
+            frame.kind == FRAME_RESTORE => slots.setitem(index: frame.a, value: frame.b)
+            frame.kind == FRAME_TRUNCATE => me.log.count.poke(frame.a)
+            else =>
+                if frame.c < frame.b
+                    end: U64 = me.try_candidate(search, walk, frame)
+                    if end != NO_POSITION
+                        return end
+    then
+        return NO_POSITION
+
+### Tries the next length of an either: notes the decision, then goes on after the either from where it ends.
+### :param search: The program and input.
+### :param walk: The walk.
+### :param frame: The either's frame.
+### :returns: Where the walk ended, or NO_POSITION when this length failed.
+@reshaping
+routine @Walker.try_candidate(search: Search, walk: Walk, frame: Frame) -> U64
+    local program: Program = search.program
+    local candidate: Candidate = me.candidates.getitem(frame.a + frame.c)
+    local entry: U64 = program.eithers + program.a(frame.pc.to[U64]()).to[U64]()
+    local join: U32 = program.word(entry + 1)
+
+    me.frames.add_last(Frame(kind: FRAME_EITHER, pc: frame.pc, pos: frame.pos, a: frame.a,
+        b: frame.b, c: frame.c + 1))
+    me.frames.add_last(Frame(kind: FRAME_TRUNCATE, pc: 0, pos: 0, a: me.log.count(), b: 0, c: 0))
+    me.log.add_last(Decision(pc: frame.pc, pos: frame.pos, alternative: candidate.alternative,
+        end: candidate.end))
+    return me.follow(search, walk, pc: join, pos: candidate.end)
+
+### Walks again each either a match went through, over exactly the text it took, which fills the captures inside
+### it (and the eithers inside those, in turn).
+### :param search: The program and input.
+@reshaping
+routine @Walker.replay(search: Search) -> None
+    local program: Program = search.program
+    local decisions: @List[Decision] <- .construct(me.alloc.peek())
+
+    each i: U64 in 0 til me.log.count()
+        decisions.add_last(me.log.getitem(i))
+    each j: U64 in 0 til decisions.count()
+        decision: Decision = decisions.getitem(j)
+        entry: U64 = program.eithers + program.a(decision.pc.to[U64]()).to[U64]()
+        walk: Walk = Walk(first_pc: program.word(entry + 2 + decision.alternative),
+            start: decision.pos, limit: decision.end, join: program.word(entry + 1),
+            target: decision.end)
+        me.run(search, walk)
+        me.replay(search)
+    then
+        drop decisions
+        return
+
+# -- searching ---------------------------------------------------------------------------------------------------
+
+### Finds the leftmost match at or after a position and fills its capture slots: slots 0 and 1 the match's start and
+### end, slots 2g and 2g + 1 those of capture g (NO_POSITION for a capture that took no part).
+### :param search: The program (read with `read_program`) and the input.
+### :param from: The first position a match may start at.
+### :param slots: The capture slots, `program.slot_count()` of them.
+### :param alloc: Where the search takes its working memory, all given back before it returns.
+### :returns: `true` when there is a match.
+@expensive("allocates the search's working memory")
+routine find_match(search: Search, from: U64, slots: @[U64], alloc: @MemoryManager) -> Bool
+    local threads: @Threads <- .construct(instructions: search.program.instructions, alloc)
+
+    each s: U64 in 0 til slots.count()
+        slots.setitem(index: s, value: NO_POSITION)
+    if from > search.input.count()
+        drop threads
+        return false
+    leftmost: Leftmost = threads.leftmost(search, from, whole: false)
+    if not leftmost.found
+        drop threads
+        return false
+    local walker: @Walker <- .construct(slots, threads, alloc)
+    walk: Walk = Walk(first_pc: 0, start: leftmost.start, limit: leftmost.reach, join: NO_JOIN,
+        target: 0)
+    end: U64 = walker.run(search, walk)
+    slots.setitem(index: 0, value: leftmost.start)
+    slots.setitem(index: 1, value: end)
+    walker.replay(search)
+    drop walker
+    drop threads
+    return true
+
+### Whether the whole input matches the program.
+### :param search: The program (read with `read_program`) and the input.
+### :param alloc: Where the search takes its working memory, all given back before it returns.
+### :returns: `true` when it does.
+@expensive("allocates the search's working memory")
+routine matches_whole(search: Search, alloc: @MemoryManager) -> Bool
+    local threads: @Threads <- .construct(instructions: search.program.instructions, alloc)
+
+    leftmost: Leftmost = threads.leftmost(search, from: 0, whole: true)
+    drop threads
+    return leftmost.found

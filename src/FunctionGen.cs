@@ -3634,6 +3634,23 @@ public sealed class FunctionGen
 
     /// Why an argument without a type of its own can't be a `pt`, or null if it can. An integer literal not landing on a
     /// S64 clears `preferred`.
+    /// Why the elements of an array literal can't be values of `elem`: an element whose type is known and isn't `elem`
+    /// (`[text("cat"), text("dog")]` is no span of BytesPiece), or an untyped one that can't be one. Null when they can.
+    private string? ElementsMisfit(ArrayLit a, DType elem)
+    {
+        foreach (var element in a.Elements)
+        {
+            if (InferQuiet(element) is { } known)
+            {
+                if (!known.Equals(elem) && !Widens(known, elem)) return $"an element is a {known}, not a {elem}";
+                continue;
+            }
+            bool ignored = true;
+            if (UntypedMisfit(element, elem, ref ignored) is { } why) return why;
+        }
+        return null;
+    }
+
     private string? UntypedMisfit(Expr arg, DType pt, ref bool preferred)
     {
         // A literal goes into a variant through the one branch that takes it.
@@ -3664,11 +3681,11 @@ public sealed class FunctionGen
             case ArrayLit a:
                 return pt switch
                 {
-                    ArrayType at when !a.IsTuple && at.Count == a.Elements.Count => null,
+                    ArrayType at when !a.IsTuple && at.Count == a.Elements.Count => ElementsMisfit(a, at.Elem),
                     VectorType vt when !a.IsTuple && vt.Count == a.Elements.Count => null,
                     RecordType { IsTuple: true } tu when a.IsTuple && tu.Args.Count == a.Elements.Count => null,
                     // An argument borrows a literal in the frame where a Span is expected.
-                    _ when !a.IsTuple && Compiler.IsCoreSpan(pt, out _) => null,
+                    _ when !a.IsTuple && Compiler.IsCoreSpan(pt, out var elem) => ElementsMisfit(a, elem),
                     _ => a.IsTuple
                         ? $"a tuple of {a.Elements.Count} items can't be a {pt}"
                         : $"[...] with {a.Elements.Count} element(s) can't be a {pt}",

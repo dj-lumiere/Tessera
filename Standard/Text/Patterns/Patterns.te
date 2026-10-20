@@ -1,0 +1,699 @@
+# TextPattern and BytesPattern: a compiled program, and the routines that look for it in text or bytes.
+#
+# A pattern is made once from its pieces (`TextPattern.of([...], alloc)`) or from the usual regular expression syntax
+# (`TextPattern.from_regex(text, alloc)`), and keeps its program in memory from that manager. The searches take their
+# working memory from the same manager and give it back before they return. What a search hands back that holds
+# memory (a match, a list, a new text) takes the manager passed to it.
+#
+# A match views the text it was found in and the pattern's capture names: use it while both are there.
+
+module Standard/Text/Patterns
+
+import Standard/Collections
+
+### A pattern over text: what `TextPattern.of` or `TextPattern.from_regex` made.
+entity TextPattern
+    ### The compiled program.
+    program: Memory[U32]
+
+### A pattern over bytes: what `BytesPattern.of` or `BytesPattern.from_regex` made.
+entity BytesPattern
+    ### The compiled program.
+    program: Memory[U32]
+
+### Where a text pattern matched: its place in the text, and the captures.
+entity TextMatch
+    ### The text searched.
+    source: @[Byte]
+    ### The capture slots: the match's start and end, then each capture's.
+    slots: Memory[U64]
+    ### The pattern's program, for the capture names.
+    program: @[U32]
+
+### Where a bytes pattern matched: its place in the bytes, and the captures.
+entity BytesMatch
+    ### The bytes searched.
+    source: @[Byte]
+    ### The capture slots: the match's start and end, then each capture's.
+    slots: Memory[U64]
+    ### The pattern's program, for the capture names.
+    program: @[U32]
+
+### Makes a text pattern of a compiled program.
+### :param program: The program, taken over.
+### :returns: The pattern.
+common routine TextPattern.construct(program: Memory[U32]) -> Me
+    return Me(program: steal program)
+
+### Gives back the program.
+routine @TextPattern.destruct() -> None
+    drop me.program
+    return
+
+### Makes a bytes pattern of a compiled program.
+### :param program: The program, taken over.
+### :returns: The pattern.
+common routine BytesPattern.construct(program: Memory[U32]) -> Me
+    return Me(program: steal program)
+
+### Gives back the program.
+routine @BytesPattern.destruct() -> None
+    drop me.program
+    return
+
+### Makes a match.
+### :param source: The text searched.
+### :param slots: The capture slots, taken over.
+### :param program: The pattern's program.
+### :returns: The match.
+common routine TextMatch.construct(source: @[Byte], slots: Memory[U64], program: @[U32]) -> Me
+    return Me(source, slots: steal slots, program)
+
+### Gives back the slots.
+routine @TextMatch.destruct() -> None
+    drop me.slots
+    return
+
+### Makes a match.
+### :param source: The bytes searched.
+### :param slots: The capture slots, taken over.
+### :param program: The pattern's program.
+### :returns: The match.
+common routine BytesMatch.construct(source: @[Byte], slots: Memory[U64], program: @[U32]) -> Me
+    return Me(source, slots: steal slots, program)
+
+### Gives back the slots.
+routine @BytesMatch.destruct() -> None
+    drop me.slots
+    return
+
+# -- making patterns -----------------------------------------------------------------------------------------------
+
+### The tree of a list of text pieces: one sequence node over their trees, inside an ignore-case node when asked.
+### The pieces are given back.
+### :param pieces: The pieces, taken over.
+### :param ignore_case: Whether letters match in either case.
+### :param alloc: Where the tree takes memory.
+### :returns: The tree.
+secret routine text_sequence_tree(pieces: @[TextPiece], ignore_case: Bool,
+    alloc: @MemoryManager) -> List[U32]
+    local tree: @List[U32] <- .construct(alloc)
+
+    if ignore_case
+        tree.add_last(NODE_IGNORE_CASE)
+    tree.add_last(NODE_SEQUENCE)
+    tree.add_last(pieces.count().to[U32]())
+    each i: U64 in 0 til pieces.count()
+        piece: @TextPiece = pieces.getslot(i)
+        append_words(tree, from: piece.code.getview())
+        drop pieces.getslot(i)
+    then
+        return tree
+
+### The tree of a list of bytes pieces: one sequence node over their trees, inside an ignore-case node when asked.
+### The pieces are given back.
+### :param pieces: The pieces, taken over.
+### :param ignore_case: Whether ASCII letters match in either case.
+### :param alloc: Where the tree takes memory.
+### :returns: The tree.
+secret routine bytes_sequence_tree(pieces: @[BytesPiece], ignore_case: Bool,
+    alloc: @MemoryManager) -> List[U32]
+    local tree: @List[U32] <- .construct(alloc)
+
+    if ignore_case
+        tree.add_last(NODE_IGNORE_CASE)
+    tree.add_last(NODE_SEQUENCE)
+    tree.add_last(pieces.count().to[U32]())
+    each i: U64 in 0 til pieces.count()
+        piece: @BytesPiece = pieces.getslot(i)
+        append_words(tree, from: piece.code.getview())
+        drop pieces.getslot(i)
+    then
+        return tree
+
+### Adds words to the end of a tree.
+### :param tree: The tree.
+### :param from: The words.
+@reshaping(tree)
+routine append_words(tree: @List[U32], from: @[U32]) -> None
+    each i: U64 in 0 til from.count()
+        tree.add_last(from.getitem(i))
+    then
+        return
+
+### Compiles a tree, crashing with `InvalidPatternError` and the reason when it doesn't compile.
+### :param tree: The piece tree.
+### :param mode: MODE_TEXT or MODE_BYTES.
+### :param alloc: Where the program takes memory.
+### :returns: The program.
+@track_caller
+secret routine compile_or_crash(tree: @[U32], mode: U32, alloc: @MemoryManager) -> Memory[U32]
+    when compile_pattern(code: tree, mode, alloc)
+        is Memory[U32] as program => return program
+        is PatternError as error =>
+            local message: @List[Byte] <- .construct(alloc)
+
+            write_pattern_error(error, code: tree, out: message)
+            crash("InvalidPatternError", message.getview())
+
+### A text pattern of pieces matched one after another.
+### :param pieces: The pieces, a span literal, taken over: `TextPattern.of([digit(HEAP), text("-", HEAP)], HEAP)`.
+### :param alloc: Where the pattern keeps its program.
+### :returns: The pattern.
+### :throws: Crashes with `InvalidPatternError` when the pieces don't make a pattern (two captures with one name).
+@track_caller
+common routine TextPattern.of(pieces: @[TextPiece], alloc: @MemoryManager) -> Me
+    return Me.of(pieces, ignore_case: false, alloc)
+
+### A text pattern of pieces matched one after another, each letter in either case when `ignore_case` is true.
+### :param pieces: The pieces, a span literal, taken over.
+### :param ignore_case: Whether letters match in either case.
+### :param alloc: Where the pattern keeps its program.
+### :returns: The pattern.
+### :throws: Crashes with `InvalidPatternError` when the pieces don't make a pattern.
+@track_caller
+common routine TextPattern.of(pieces: @[TextPiece], ignore_case: Bool, alloc: @MemoryManager) -> Me
+    local tree: @List[U32] <- text_sequence_tree(pieces, ignore_case, alloc)
+    local program: @Memory[U32] <- compile_or_crash(tree: tree.getview(), mode: MODE_TEXT, alloc)
+
+    drop tree
+    return Me(program: steal program)
+
+### A bytes pattern of pieces matched one after another.
+### :param pieces: The pieces, a span literal, taken over: `BytesPattern.of([byte(0x89, HEAP), bytes("PNG", HEAP)], HEAP)`.
+### :param alloc: Where the pattern keeps its program.
+### :returns: The pattern.
+### :throws: Crashes with `InvalidPatternError` when the pieces don't make a pattern.
+@track_caller
+common routine BytesPattern.of(pieces: @[BytesPiece], alloc: @MemoryManager) -> Me
+    return Me.of(pieces, ignore_case: false, alloc)
+
+### A bytes pattern of pieces matched one after another, each ASCII letter in either case when `ignore_case` is true.
+### :param pieces: The pieces, a span literal, taken over.
+### :param ignore_case: Whether ASCII letters match in either case.
+### :param alloc: Where the pattern keeps its program.
+### :returns: The pattern.
+### :throws: Crashes with `InvalidPatternError` when the pieces don't make a pattern.
+@track_caller
+common routine BytesPattern.of(pieces: @[BytesPiece], ignore_case: Bool,
+    alloc: @MemoryManager) -> Me
+    local tree: @List[U32] <- bytes_sequence_tree(pieces, ignore_case, alloc)
+    local program: @Memory[U32] <- compile_or_crash(tree: tree.getview(), mode: MODE_BYTES, alloc)
+
+    drop tree
+    return Me(program: steal program)
+
+### Reads a regular expression and compiles it.
+### :param regex: The expression, UTF-8.
+### :param mode: MODE_TEXT or MODE_BYTES.
+### :param alloc: Where the program takes memory.
+### :returns: The program, or why the expression isn't one.
+secret routine regex_program(regex: @[Byte], mode: U32,
+    alloc: @MemoryManager) -> Result[Memory[U32], RegexError]
+    input: PatternInput = PatternInput.of_utf8(regex)
+    when read_regex(input, bytes: mode == MODE_BYTES, alloc)
+        is List[U32] as tree =>
+            when compile_pattern(code: tree.getview(), mode, alloc)
+                is Memory[U32] as program =>
+                    drop tree
+                    return program
+                is PatternError as error =>
+                    drop tree
+                    return regex_error_of(error)
+        is RegexError as error => return error
+
+### The regular expression error a compile error of a read expression stands for.
+### :param error: The compile error.
+### :returns: The regex error (a capture name used twice, or a pattern too large, at position 0).
+secret routine regex_error_of(error: PatternError) -> RegexError
+    kind: RegexErrorKind = when
+        error.kind == PatternErrorKind.DUPLICATE_NAME => RegexErrorKind.DUPLICATE_NAME
+        else => RegexErrorKind.TOO_LARGE
+    return RegexError(kind, at: 0)
+
+### A text pattern from the usual regular expression syntax (`(?<year>\d{4})-(?<month>\d{2})`).
+### :param regex: The expression.
+### :param alloc: Where the pattern keeps its program.
+### :returns: The pattern, or why the expression isn't one the patterns can match (a backreference, lookaround, a
+### shortest repetition, a syntax error), with its position.
+common routine TextPattern.from_regex_result(regex: @[Byte],
+    alloc: @MemoryManager) -> Result[Me, RegexError]
+    when regex_program(regex, mode: MODE_TEXT, alloc)
+        is Memory[U32] as program => return Me(program: steal program)
+        is RegexError as error => return error
+
+### A text pattern from the usual regular expression syntax.
+### :param regex: The expression.
+### :param alloc: Where the pattern keeps its program.
+### :returns: The pattern.
+### :throws: Crashes with `PatternSyntaxError`, saying what and where, when the expression isn't one the patterns can
+### match. See {TextPattern.from_regex_result}.
+@track_caller
+common routine TextPattern.from_regex(regex: @[Byte], alloc: @MemoryManager) -> Me
+    when regex_program(regex, mode: MODE_TEXT, alloc)
+        is Memory[U32] as program => return Me(program: steal program)
+        is RegexError as error => crash_regex(error, alloc)
+
+### A bytes pattern from the usual regular expression syntax (`\x89PNG`).
+### :param regex: The expression.
+### :param alloc: Where the pattern keeps its program.
+### :returns: The pattern, or why the expression isn't one the patterns can match, with its position.
+common routine BytesPattern.from_regex_result(regex: @[Byte],
+    alloc: @MemoryManager) -> Result[Me, RegexError]
+    when regex_program(regex, mode: MODE_BYTES, alloc)
+        is Memory[U32] as program => return Me(program: steal program)
+        is RegexError as error => return error
+
+### A bytes pattern from the usual regular expression syntax.
+### :param regex: The expression.
+### :param alloc: Where the pattern keeps its program.
+### :returns: The pattern.
+### :throws: Crashes with `PatternSyntaxError` when the expression isn't one the patterns can match.
+@track_caller
+common routine BytesPattern.from_regex(regex: @[Byte], alloc: @MemoryManager) -> Me
+    when regex_program(regex, mode: MODE_BYTES, alloc)
+        is Memory[U32] as program => return Me(program: steal program)
+        is RegexError as error => crash_regex(error, alloc)
+
+### Crashes with `PatternSyntaxError` and the message of a regex error.
+### :param error: The error.
+### :param alloc: Where the message takes memory.
+@noreturn
+@track_caller
+secret routine crash_regex(error: RegexError, alloc: @MemoryManager) -> None
+    local message: @List[Byte] <- .construct(alloc)
+
+    write_regex_error(error, out: message)
+    crash("PatternSyntaxError", message.getview())
+
+# -- the messages ------------------------------------------------------------------------------------------------
+
+### Writes what a compile error means, naming the capture for a name used twice.
+### :typeparam TWriter: The writer's type.
+### :param error: The error.
+### :param code: The piece tree that didn't compile.
+### :param out: Where the message goes.
+routine write_pattern_error[TWriter](error: PatternError, code: @[U32], out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    when error.kind
+        PatternErrorKind.DUPLICATE_NAME =>
+            out.write("Two captures are named '")
+            write_code_points(code, from: error.at + 2, count: code.getitem(error.at + 1).to[U64](),
+                out)
+            out.write("': each capture needs a name of its own.")
+        PatternErrorKind.BAD_REPEAT => out.write("A repetition asks for more rounds at least than at most.")
+        PatternErrorKind.BAD_UNIT =>
+            out.write("A piece names a unit the pattern can't hold: a byte past 0xFF, or a code point past 0x10FFFF.")
+        PatternErrorKind.TOO_LARGE => out.write("The pattern is too large: it would take more than a million steps.")
+        PatternErrorKind.EMPTY_EITHER => out.write("An either needs at least one alternative.")
+        else => out.write("The pieces don't make a pattern.")
+    return
+
+### Writes code points of a piece tree as UTF-8.
+### :typeparam TWriter: The writer's type.
+### :param code: The piece tree.
+### :param from: The first code point.
+### :param count: How many.
+### :param out: Where they go.
+secret routine write_code_points[TWriter](code: @[U32], from: U64, count: U64,
+    out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    local buffer: @Array[Byte, 4] <- [b'\x00'] * 4
+
+    each i: U64 in 0 til count
+        if from + i >= code.count()
+            return
+        value: U32 = code.getitem(from + i)
+        if value <= 0x10FFFF and not (0xD800 <= value <= 0xDFFF)
+            written: U64 = utf8_encode_into(char: value.to[Char](), out: buffer.to[@Byte]())
+            write_str(out, text: buffer.getslice(start: 0, count: written))
+    then
+        return
+
+### Writes what a regex error means and where it is: `Backreferences aren't supported (at position 3).`
+### :typeparam TWriter: The writer's type.
+### :param error: The error.
+### :param out: Where the message goes.
+routine write_regex_error[TWriter](error: RegexError, out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    when error.kind
+        RegexErrorKind.BACKREFERENCE =>
+            out.write("Backreferences aren't supported: match the text with a capture and compare it in code")
+        RegexErrorKind.LOOKAROUND => out.write("Lookahead and lookbehind aren't supported")
+        RegexErrorKind.SHORTEST_REPETITION =>
+            out.write("A shortest repetition (*? +? ??) isn't supported: every repetition takes as many rounds as it can")
+        RegexErrorKind.POSSESSIVE_REPETITION => out.write("A possessive repetition (*+ ++ ?+) isn't supported")
+        RegexErrorKind.UNCLOSED_GROUP => out.write("This group is never closed with ')'")
+        RegexErrorKind.UNOPENED_GROUP => out.write("This ')' closes no group")
+        RegexErrorKind.NOTHING_TO_REPEAT => out.write("There is nothing here to repeat")
+        RegexErrorKind.BAD_COUNT =>
+            out.write("This count isn't one the syntax has: {{n}}, {{n,}} or {{n,m}}, with n at most m and at most 65535")
+        RegexErrorKind.UNCLOSED_CLASS => out.write("This character class is never closed with ']'")
+        RegexErrorKind.BAD_RANGE => out.write("This range runs from a later character to an earlier one")
+        RegexErrorKind.BAD_ESCAPE => out.write("This escape isn't one the syntax has")
+        RegexErrorKind.BAD_GROUP => out.write("This group isn't one the syntax has: (...), (?:...), (?<name>...) or (?i:...)")
+        RegexErrorKind.BAD_NAME => out.write("This capture name is empty or isn't closed with '>'")
+        RegexErrorKind.BAD_UNIT => out.write("A byte pattern holds bytes up to 0xFF only")
+        RegexErrorKind.BAD_FLAG => out.write("Only the flags i, m and s are read, and only at the very start: (?i)")
+        RegexErrorKind.DUPLICATE_NAME => out.write("Two captures have the same name")
+        RegexErrorKind.TOO_LARGE => out.write("The pattern is too large")
+        else => out.write("This regular expression can't be read")
+    out.write(" (at position {error.at}).")
+    return
+
+# -- searching -------------------------------------------------------------------------------------------------------
+
+### The program of a pattern, read (it was compiled here, so it holds together).
+### :param program: The program's memory.
+### :param mode: MODE_TEXT or MODE_BYTES.
+### :returns: The program view.
+@track_caller
+secret routine program_of(program: @Memory[U32], mode: U32) -> Program
+    when read_program(words: program.getview(), mode)
+        is Program as read => return read
+        is None => crash("InvalidValueError", "This pattern's program doesn't hold together.")
+
+### Finds the leftmost match at or after `from` and keeps its slots in new memory.
+### :param program: The program.
+### :param input: The input.
+### :param from: The first position.
+### :param alloc: Where the slots take memory.
+### :returns: The slots, or None when there is no match.
+secret routine find_slots(program: Program, input: PatternInput, from: U64,
+    alloc: @MemoryManager) -> Maybe[Memory[U64]]
+    local slots: @Memory[U64] <- [NO_POSITION] * program.slot_count() at alloc
+
+    if find_match(search: Search.construct(program, input), from, slots: slots.getview(), alloc)
+        return slots
+    drop slots
+    return None()
+
+### Whether the whole text matches the pattern.
+### :param text: The text, UTF-8.
+### :returns: `true` when all of it does.
+routine @TextPattern.matches(text: @[Byte]) -> Bool
+    program: Program = program_of(program: me.program, mode: MODE_TEXT)
+    return matches_whole(search: Search.construct(program, input: PatternInput.of_utf8(text)),
+        alloc: me.program.manager.peek())
+
+### Whether all the bytes match the pattern.
+### :param bytes: The bytes.
+### :returns: `true` when all of them do.
+routine @BytesPattern.matches(bytes: @[Byte]) -> Bool
+    program: Program = program_of(program: me.program, mode: MODE_BYTES)
+    return matches_whole(search: Search.construct(program, input: PatternInput.of_bytes(bytes)),
+        alloc: me.program.manager.peek())
+
+### The leftmost place the pattern matches in the text: the earliest start, and from there the match the pattern
+### prefers (every repetition taking as many rounds as it can, each either by its rule).
+### :param text: The text, UTF-8.
+### :param alloc: Where the match keeps its slots.
+### :returns: The match, or None when the pattern matches nowhere.
+routine @TextPattern.find(text: @[Byte], alloc: @MemoryManager) -> Maybe[TextMatch]
+    program: Program = program_of(program: me.program, mode: MODE_TEXT)
+    when find_slots(program, input: PatternInput.of_utf8(text), from: 0, alloc)
+        is Memory[U64] as slots => return TextMatch.construct(source: text, slots: steal slots,
+            program: me.program.getview())
+        is None => return None()
+
+### The leftmost place the pattern matches in the bytes.
+### :param bytes: The bytes.
+### :param alloc: Where the match keeps its slots.
+### :returns: The match, or None when the pattern matches nowhere.
+routine @BytesPattern.find(bytes: @[Byte], alloc: @MemoryManager) -> Maybe[BytesMatch]
+    program: Program = program_of(program: me.program, mode: MODE_BYTES)
+    when find_slots(program, input: PatternInput.of_bytes(bytes), from: 0, alloc)
+        is Memory[U64] as slots => return BytesMatch.construct(source: bytes, slots: steal slots,
+            program: me.program.getview())
+        is None => return None()
+
+### Where the search after a match goes on: its end, or one character further when it matched nothing.
+### :param input: The input.
+### :param start: The match's start.
+### :param end: The match's end.
+### :returns: The next position to search from.
+secret routine next_search(input: PatternInput, start: U64, end: U64) -> U64
+    if end > start
+        return end
+    return input.after(end)
+
+### Every place the pattern matches, from the start of the text, none overlapping: after a match the search goes on
+### where it ended (one character further after a match of no characters).
+### :param text: The text, UTF-8.
+### :param alloc: Where the list and the matches take memory.
+### :returns: The matches, in order.
+@reshaping
+routine @TextPattern.find_all(text: @[Byte], alloc: @MemoryManager) -> List[TextMatch]
+    local program: Program = program_of(program: me.program, mode: MODE_TEXT)
+    local input: PatternInput = PatternInput.of_utf8(text)
+    local found: @List[TextMatch] <- .construct(alloc)
+
+    while from <= input.count() with from: U64 = 0
+        when find_slots(program, input, from, alloc)
+            is Memory[U64] as slots =>
+                start: U64 = slots.load(0)
+                end: U64 = slots.load(1)
+                found.add_last(TextMatch.construct(source: text, slots: steal slots,
+                    program: me.program.getview()))
+                continue with from: next_search(input, start, end)
+            is None => break
+    then
+        return found
+
+### Every place the pattern matches in the bytes, none overlapping.
+### :param bytes: The bytes.
+### :param alloc: Where the list and the matches take memory.
+### :returns: The matches, in order.
+@reshaping
+routine @BytesPattern.find_all(bytes: @[Byte], alloc: @MemoryManager) -> List[BytesMatch]
+    local program: Program = program_of(program: me.program, mode: MODE_BYTES)
+    local input: PatternInput = PatternInput.of_bytes(bytes)
+    local found: @List[BytesMatch] <- .construct(alloc)
+
+    while from <= input.count() with from: U64 = 0
+        when find_slots(program, input, from, alloc)
+            is Memory[U64] as slots =>
+                start: U64 = slots.load(0)
+                end: U64 = slots.load(1)
+                found.add_last(BytesMatch.construct(source: bytes, slots: steal slots,
+                    program: me.program.getview()))
+                continue with from: next_search(input, start, end)
+            is None => break
+    then
+        return found
+
+### The text with every match (as `find_all` finds them) replaced by `with`.
+### :param text: The text, UTF-8.
+### :param with: What each match becomes.
+### :param alloc: Where the new text takes memory.
+### :returns: The new text.
+routine @TextPattern.replace(text: @[Byte], with: @[Byte], alloc: @MemoryManager) -> Memory[Byte]
+    program: Program = program_of(program: me.program, mode: MODE_TEXT)
+    return replace_all(program, input: PatternInput.of_utf8(text), with, alloc)
+
+### The bytes with every match replaced by `with`.
+### :param bytes: The bytes.
+### :param with: What each match becomes.
+### :param alloc: Where the new bytes take memory.
+### :returns: The new bytes.
+routine @BytesPattern.replace(bytes: @[Byte], with: @[Byte], alloc: @MemoryManager) -> Memory[Byte]
+    program: Program = program_of(program: me.program, mode: MODE_BYTES)
+    return replace_all(program, input: PatternInput.of_bytes(bytes), with, alloc)
+
+### The input's bytes with every match replaced.
+### :param program: The program.
+### :param input: The input (UTF-8 or bytes).
+### :param with: What each match becomes.
+### :param alloc: Where the result takes memory.
+### :returns: The new bytes.
+secret routine replace_all(program: Program, input: PatternInput, with: @[Byte],
+    alloc: @MemoryManager) -> Memory[Byte]
+    local out: @List[Byte] <- .construct(alloc)
+    local source: @[Byte] = input.bytes
+
+    while from <= input.count() with from: U64 = 0, copied: U64 = 0
+        when find_slots(program, input, from, alloc)
+            is Memory[U64] as slots =>
+                start: U64 = slots.load(0)
+                end: U64 = slots.load(1)
+                drop slots
+                out.write_bytes(
+                    data: source.getslice(start: copied, count: start - copied).to[@Byte](),
+                    count: start - copied)
+                out.write_bytes(data: with.to[@Byte](), count: with.count())
+                continue with from: next_search(input, start, end), copied: end
+            is None => break
+    then
+        out.write_bytes(
+            data: source.getslice(start: copied, count: source.count() - copied).to[@Byte](),
+            count: source.count() - copied)
+        local result: @Memory[Byte] <- [b'\x00'] * out.count() at alloc
+
+        each i: U64 in 0 til out.count()
+            result.store(index: i, value: out.getitem(i))
+        drop out
+        return result
+
+### The parts of the text between the matches (as `find_all` finds them), the part before the first and the part
+### after the last included. A text with no match is one part.
+### :param text: The text, UTF-8.
+### :param alloc: Where the list takes memory.
+### :returns: The parts, views of the text.
+@reshaping
+routine @TextPattern.split(text: @[Byte], alloc: @MemoryManager) -> List[@[Byte]]
+    program: Program = program_of(program: me.program, mode: MODE_TEXT)
+    return split_all(program, input: PatternInput.of_utf8(text), alloc)
+
+### The parts of the bytes between the matches.
+### :param bytes: The bytes.
+### :param alloc: Where the list takes memory.
+### :returns: The parts, views of the bytes.
+@reshaping
+routine @BytesPattern.split(bytes: @[Byte], alloc: @MemoryManager) -> List[@[Byte]]
+    program: Program = program_of(program: me.program, mode: MODE_BYTES)
+    return split_all(program, input: PatternInput.of_bytes(bytes), alloc)
+
+### The parts of the input between the matches.
+### :param program: The program.
+### :param input: The input (UTF-8 or bytes).
+### :param alloc: Where the list takes memory.
+### :returns: The parts.
+secret routine split_all(program: Program, input: PatternInput,
+    alloc: @MemoryManager) -> List[@[Byte]]
+    local parts: @List[@[Byte]] <- .construct(alloc)
+    local source: @[Byte] = input.bytes
+
+    while from <= input.count() with from: U64 = 0, part: U64 = 0
+        when find_slots(program, input, from, alloc)
+            is Memory[U64] as slots =>
+                start: U64 = slots.load(0)
+                end: U64 = slots.load(1)
+                drop slots
+                parts.add_last(source.getslice(start: part, count: start - part))
+                continue with from: next_search(input, start, end), part: end
+            is None => break
+    then
+        parts.add_last(source.getslice(start: part, count: source.count() - part))
+        return parts
+
+# -- matches -----------------------------------------------------------------------------------------------------
+
+### What a match keeps: the text searched, its slots and the pattern's program.
+record MatchParts
+    ### The text or bytes searched.
+    source: @[Byte]
+    ### The match's slots.
+    slots: @[U64]
+    ### The pattern's program.
+    program: @[U32]
+    ### MODE_TEXT or MODE_BYTES.
+    mode: U32
+
+### Where the match starts.
+### :returns: The byte index of its first byte in the text.
+routine @TextMatch.start() -> U64
+    return me.slots.load(0)
+
+### Where the match ends.
+### :returns: The byte index just past its last byte.
+routine @TextMatch.end() -> U64
+    return me.slots.load(1)
+
+### The text the match took.
+### :returns: A view of it in the text searched.
+routine @TextMatch.text() -> @[Byte]
+    return me.source.peek().getslice(start: me.start(), count: me.end() - me.start())
+
+### The text a capture took, or None when the pattern has no capture of that name or the capture took no part in
+### the match.
+### :param name: The capture's name.
+### :returns: A view of the text, or None.
+routine @TextMatch.group_checked(name: @[Byte]) -> Maybe[@[Byte]]
+    parts: MatchParts = MatchParts.construct(source: me.source.peek(), slots: me.slots.getview(),
+        program: me.program.peek(), mode: MODE_TEXT)
+    return parts.group_checked(name)
+
+### The text a capture took.
+### :param name: The capture's name.
+### :returns: A view of the text.
+### :throws: Crashes with `CaptureNameError` when the pattern has no capture of that name, and with
+### `AbsentValueError` when the capture took no part in the match. See {TextMatch.group_checked}.
+@track_caller
+routine @TextMatch.group(name: @[Byte]) -> @[Byte]
+    parts: MatchParts = MatchParts.construct(source: me.source.peek(), slots: me.slots.getview(),
+        program: me.program.peek(), mode: MODE_TEXT)
+    return parts.group(name)
+
+### Where the match starts.
+### :returns: The index of its first byte.
+routine @BytesMatch.start() -> U64
+    return me.slots.load(0)
+
+### Where the match ends.
+### :returns: The index just past its last byte.
+routine @BytesMatch.end() -> U64
+    return me.slots.load(1)
+
+### The bytes the match took.
+### :returns: A view of them in the bytes searched.
+routine @BytesMatch.bytes() -> @[Byte]
+    return me.source.peek().getslice(start: me.start(), count: me.end() - me.start())
+
+### The bytes a capture took, or None when the pattern has no capture of that name or it took no part.
+### :param name: The capture's name.
+### :returns: A view of the bytes, or None.
+routine @BytesMatch.group_checked(name: @[Byte]) -> Maybe[@[Byte]]
+    parts: MatchParts = MatchParts.construct(source: me.source.peek(), slots: me.slots.getview(),
+        program: me.program.peek(), mode: MODE_BYTES)
+    return parts.group_checked(name)
+
+### The bytes a capture took.
+### :param name: The capture's name.
+### :returns: A view of the bytes.
+### :throws: Crashes with `CaptureNameError` when the pattern has no capture of that name, and with
+### `AbsentValueError` when the capture took no part in the match.
+@track_caller
+routine @BytesMatch.group(name: @[Byte]) -> @[Byte]
+    parts: MatchParts = MatchParts.construct(source: me.source.peek(), slots: me.slots.getview(),
+        program: me.program.peek(), mode: MODE_BYTES)
+    return parts.group(name)
+
+### Makes the parts of a match.
+### :param source: The text or bytes searched.
+### :param slots: The match's slots.
+### :param program: The pattern's program.
+### :param mode: MODE_TEXT or MODE_BYTES.
+### :returns: The parts.
+common routine MatchParts.construct(source: @[Byte], slots: @[U64], program: @[U32],
+    mode: U32) -> Me
+    return Me(source, slots, program, mode)
+
+### Releases nothing: the parts only view the match.
+routine @MatchParts.destruct() -> None
+    return
+
+### The text of a named capture.
+### :param name: The capture's name.
+### :returns: A view of the text, or None for no such capture or one that took no part.
+secret routine MatchParts.group_checked(name: @[Byte]) -> Maybe[@[Byte]]
+    view: Program = read_program(words: me.program, mode: me.mode).unwrap()
+    group: U64 = view.group_named_utf8(name)
+    if group == 0
+        return None()
+    start: U64 = me.slots.getitem(group * 2)
+    end: U64 = me.slots.getitem(group * 2 + 1)
+    if start == NO_POSITION or end == NO_POSITION
+        return None()
+    return me.source.getslice(start, count: end - start)
+
+### The text of a named capture, crashing when there is none.
+### :param name: The capture's name.
+### :returns: A view of the text.
+@track_caller
+secret routine MatchParts.group(name: @[Byte]) -> @[Byte]
+    view: Program = read_program(words: me.program, mode: me.mode).unwrap()
+    if view.group_named_utf8(name) == 0
+        crash("CaptureNameError", "The pattern has no capture of that name.")
+    when me.group_checked(name)
+        is @[Byte] as found => return found
+        is None => crash("AbsentValueError", "The capture took no part in the match.")

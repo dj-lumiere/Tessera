@@ -1,0 +1,677 @@
+# Reading the usual regular expression syntax into a piece tree (Codes.te), for patterns that come from outside the
+# program: a configuration file, a user's input.
+#
+# What it reads: literal characters and `\` escapes (`\n`, `\t`, `\r`, `\f`, `\v`, `\0`, `\xHH`, `\x{H..}`,
+# `\uHHHH`, and `\` before any other punctuation), `.` (any character but a line feed), `[...]` and `[^...]` with
+# ranges and the class escapes, `\d \D \w \W \s \S` (ASCII), `^ $ \A \z \Z \b \B`, groups `(...)` (captured under
+# the name "1", "2", ...), `(?:...)`, `(?<name>...)`, `(?P<name>...)` and `(?i:...)`, the flags `(?i)`, `(?m)`,
+# `(?s)` (and together, `(?ims)`) at the very start, `|`, and the repetitions `* + ? {n} {n,} {n,m}`, each taking as
+# many rounds as it can.
+#
+# What it refuses, with the position: backreferences (`\1`, `\k<name>`), lookaround (`(?=`, `(?!`, `(?<=`, `(?<!`),
+# shortest repetitions (`*?`), possessive ones (`*+`), and anything else malformed. `|` picks the alternative that
+# matches the longest text, as either_longer does.
+
+module Standard/Text/Patterns
+
+import Standard/Collections
+
+### The largest count a `{n}` repetition may give.
+preset MAX_REGEX_COUNT: U64 = 65535
+
+### Why a regular expression couldn't be read.
+choice RegexErrorKind: U8
+    NONE  # it was read
+    BACKREFERENCE  # \1 or \k<name>
+    LOOKAROUND  # (?= (?! (?<= (?<!
+    SHORTEST_REPETITION  # *? +? ?? {n,m}?
+    POSSESSIVE_REPETITION  # *+ ++ ?+
+    UNCLOSED_GROUP  # ( without )
+    UNOPENED_GROUP  # ) without (
+    NOTHING_TO_REPEAT  # a repetition with nothing before it
+    BAD_COUNT  # {m,n} with m above n, or a count past MAX_REGEX_COUNT
+    UNCLOSED_CLASS  # [ without ]
+    BAD_RANGE  # [z-a]
+    BAD_ESCAPE  # an escape the syntax doesn't have
+    BAD_GROUP  # (? followed by something the syntax doesn't have
+    BAD_NAME  # (?<> or a name not closed with >
+    BAD_UNIT  # a character past 0xFF in a byte pattern's class
+    BAD_FLAG  # (?x) with a flag other than i, m, s, or flags past the start
+    DUPLICATE_NAME  # two groups with one name
+    TOO_LARGE  # more than MAX_INSTRUCTIONS instructions
+
+### Why a regular expression couldn't be read, and where.
+record RegexError
+    ### What went wrong.
+    kind: RegexErrorKind
+    ### The position in the expression (a code point index, or a byte index for UTF-8 text).
+    at: U64
+
+### The reader's state.
+secret entity RegexReader
+    ### The expression.
+    input: PatternInput
+    ### The position being read.
+    pos: U64
+    ### The piece tree written so far.
+    out: List[U32]
+    ### Whether the pattern is over bytes.
+    bytes: Bool
+    ### Whether `.` takes a line feed too (flag s).
+    dot_all: Bool
+    ### Whether ^ and $ are line anchors (flag m).
+    multiline: Bool
+    ### Whether the whole pattern ignores case (flag i).
+    ignore_case: Bool
+    ### How many capturing groups were opened.
+    groups: U64
+    ### The first error.
+    error: RegexErrorKind
+    ### Where it was found.
+    error_at: U64
+
+### Starts a reader.
+### :param input: The expression.
+### :param bytes: Whether the pattern is over bytes.
+### :param alloc: Where the tree takes memory.
+### :returns: The reader.
+secret common routine RegexReader.construct(input: PatternInput, bytes: Bool,
+    alloc: @MemoryManager) -> Me
+    return Me(input, pos: 0, out: .construct(alloc), bytes, dot_all: false, multiline: false,
+        ignore_case: false, groups: 0, error: RegexErrorKind.NONE, error_at: 0)
+
+### Gives back the tree.
+secret routine @RegexReader.destruct() -> None
+    drop me.out
+    return
+
+### Keeps the first error.
+### :param kind: What went wrong.
+### :param at: Where.
+secret routine @RegexReader.fail(kind: RegexErrorKind, at: U64) -> None
+    if me.error.peek() == RegexErrorKind.NONE
+        me.error.poke(kind)
+        me.error_at.poke(at)
+    return
+
+### Whether an error was found.
+### :returns: `true` once one was.
+secret routine @RegexReader.failed() -> Bool
+    return me.error.peek() != RegexErrorKind.NONE
+
+### The character at the reading position.
+### :returns: The character, size 0 at the end.
+secret routine @RegexReader.peek() -> InputUnit
+    return me.input.peek().unit_at(me.pos.peek())
+
+### The character after the one at the reading position.
+### :returns: The character, size 0 at the end.
+secret routine @RegexReader.peek_next() -> InputUnit
+    here: InputUnit = me.peek()
+    return me.input.peek().unit_at(me.pos.peek() + here.size)
+
+### Whether the character at the reading position is `value`.
+### :param value: The character.
+### :returns: `true` when it is.
+secret routine @RegexReader.at(value: U32) -> Bool
+    here: InputUnit = me.peek()
+    return here.size != 0 and here.value == value
+
+### Moves past the character at the reading position.
+### :returns: The character.
+secret routine @RegexReader.advance() -> InputUnit
+    here: InputUnit = me.peek()
+    (me.pos.peek() + here.size).poke_into(me.pos)
+    return here
+
+### Writes words to the tree.
+### :param words: The words.
+@reshaping
+secret routine @RegexReader.write(words: @[U32]) -> None
+    each i: U64 in 0 til words.count()
+        me.out.add_last(words.getitem(i))
+    then
+        return
+
+### Puts words in front of the tree's words from `at` on.
+### :param at: Where they go.
+### :param words: The words.
+@reshaping
+secret routine @RegexReader.insert(at: U64, words: @[U32]) -> None
+    local count: U64 = me.out.count()
+    local added: U64 = words.count()
+
+    each k: U64 in 0 til added
+        me.out.add_last(0)
+    each step: U64 in 0 til count - at
+        i: U64 = count - 1 - step
+        me.out.setitem(index: i + added, value: me.out.getitem(i))
+    each j: U64 in 0 til added
+        me.out.setitem(index: at + j, value: words.getitem(j))
+    then
+        return
+
+### Writes one literal character: its code point, or in a byte pattern its UTF-8 bytes.
+### :param value: The code point.
+@reshaping
+secret routine @RegexReader.write_literal(value: U32) -> None
+    if not me.bytes.peek() or value < 0x80
+        me.write([NODE_LITERAL, 1, value])
+        return
+    local buffer: @Array[Byte, 4] <- [b'\x00'] * 4
+    char: Char = value.to[Char]()
+
+    count: U64 = utf8_encode_into(char, out: buffer.to[@Byte]())
+    me.out.add_last(NODE_LITERAL)
+    me.out.add_last(count.to[U32]())
+    each i: U64 in 0 til count
+        me.out.add_last(buffer.getitem(i).to[U8]().to[U32]())
+    then
+        return
+
+### Reads alternatives separated by `|`.
+### :param depth: How deep the groups are nested.
+@reshaping
+secret routine @RegexReader.read_alternation(depth: U64) -> None
+    local start: U64 = me.out.count()
+
+    me.read_sequence(depth)
+    while me.at(0x7C) and not me.failed() with count: U32 = 1
+        me.advance()
+        me.read_sequence(depth)
+        continue with count: count + 1
+    then
+        if count > 1
+            me.insert(at: start, words: [NODE_EITHER_LONGER, count])
+        return
+
+### Reads pieces up to `|`, `)` or the end, each with its repetitions.
+### :param depth: How deep the groups are nested.
+@reshaping
+secret routine @RegexReader.read_sequence(depth: U64) -> None
+    local start: U64 = me.out.count()
+
+    me.write([NODE_SEQUENCE, 0])
+    while not me.failed() with count: U32 = 0
+        here: InputUnit = me.peek()
+        if here.size == 0 or here.value == 0x7C or here.value == 0x29
+            break
+        if here.value == 0x2A or here.value == 0x2B or here.value == 0x3F
+            me.fail(kind: RegexErrorKind.NOTHING_TO_REPEAT, at: me.pos.peek())
+            break
+        atom: U64 = me.out.count()
+        me.read_atom(depth)
+        if me.out.count() == atom
+            continue with count: count
+        me.read_repetitions(atom)
+        continue with count: count + 1
+    then
+        me.out.setitem(index: start + 1, value: count)
+        return
+
+### Reads the repetitions after a piece, each wrapping the piece that starts at `atom`.
+### :param atom: Where the piece starts in the tree.
+@reshaping
+secret routine @RegexReader.read_repetitions(atom: U64) -> None
+    while not me.failed()
+        here: InputUnit = me.peek()
+        at: U64 = me.pos.peek()
+        if here.size == 0
+            return
+        if here.value == 0x2A
+            me.advance()
+            me.repeat(atom, min: 0, max: REPEAT_UNBOUNDED, at)
+        elseif here.value == 0x2B
+            me.advance()
+            me.repeat(atom, min: 1, max: REPEAT_UNBOUNDED, at)
+        elseif here.value == 0x3F
+            me.advance()
+            me.repeat(atom, min: 0, max: 1, at)
+        elseif here.value == 0x7B and me.count_follows()
+            me.advance()
+            me.read_count(atom, at)
+        else
+            return
+    then
+        return
+
+### Wraps the piece at `atom` in a repetition, refusing a shortest (`?` after it) or possessive (`+` after it) one.
+### :param atom: Where the piece starts.
+### :param min: The fewest rounds.
+### :param max: The most rounds.
+### :param at: Where the repetition was written.
+@reshaping
+secret routine @RegexReader.repeat(atom: U64, min: U32, max: U32, at: U64) -> None
+    if me.at(0x3F)
+        me.fail(kind: RegexErrorKind.SHORTEST_REPETITION, at)
+        return
+    if me.at(0x2B)
+        me.fail(kind: RegexErrorKind.POSSESSIVE_REPETITION, at)
+        return
+    me.insert(at: atom, words: [NODE_REPEAT, min, max])
+    next: InputUnit = me.peek()
+    if next.value == 0x2A or next.value == 0x2B or (next.value == 0x7B and me.count_follows())
+        me.fail(kind: RegexErrorKind.NOTHING_TO_REPEAT, at: me.pos.peek())
+    return
+
+### Whether a `{` at the reading position starts a count: digits, then `}`, or `,` and maybe digits, then `}`.
+### :returns: `true` when it does (else the `{` is a literal).
+secret routine @RegexReader.count_follows() -> Bool
+    local input: PatternInput = me.input.peek()
+
+    while true with pos: U64 = me.pos.peek() + 1, digits: U64 = 0, comma: Bool = false
+        unit: InputUnit = input.unit_at(pos)
+        if unit.size == 0
+            return false
+        if 0x30 <= unit.value <= 0x39
+            continue with pos: pos + 1, digits: digits + 1, comma: comma
+        if unit.value == 0x2C and not comma and digits > 0
+            continue with pos: pos + 1, digits: digits, comma: true
+        return unit.value == 0x7D and digits > 0
+
+### Reads a number of decimal digits, stopping past MAX_REGEX_COUNT.
+### :returns: The number, or more than MAX_REGEX_COUNT when it is too large.
+secret routine @RegexReader.read_number() -> U64
+    while me.peek().size != 0 with value: U64 = 0
+        unit: InputUnit = me.peek()
+        if not (0x30 <= unit.value <= 0x39)
+            return value
+        me.advance()
+        digit: U64 = (unit.value - 0x30).to[U64]()
+        if value > MAX_REGEX_COUNT
+            continue with value: value
+        continue with value: value * 10 + digit
+    then
+        return value
+
+### Reads a count `{n}`, `{n,}` or `{n,m}` (after its `{`) and wraps the piece at `atom`.
+### :param atom: Where the piece starts.
+### :param at: Where the count was written.
+@reshaping
+secret routine @RegexReader.read_count(atom: U64, at: U64) -> None
+    min: U64 = me.read_number()
+    max: U64 = when
+        me.at(0x2C) =>
+            me.advance()
+            becomes when
+                me.at(0x7D) => REPEAT_UNBOUNDED.to[U64]()
+                else => me.read_number()
+        else => min
+    me.advance()
+    if min > MAX_REGEX_COUNT or (max != REPEAT_UNBOUNDED.to[U64]() and (max > MAX_REGEX_COUNT or min > max))
+        me.fail(kind: RegexErrorKind.BAD_COUNT, at)
+        return
+    me.repeat(atom, min: min.to[U32](), max: max.to[U32](), at)
+    return
+
+### Reads one piece: a character, `.`, a class, a group, an anchor or an escape.
+### :param depth: How deep the groups are nested.
+@reshaping
+secret routine @RegexReader.read_atom(depth: U64) -> None
+    local at: U64 = me.pos.peek()
+    local here: InputUnit = me.advance()
+    local value: U32 = here.value
+
+    when
+        value == 0x28 => me.read_group(at, depth)
+        value == 0x2E =>
+            if me.dot_all.peek()
+                me.write([NODE_CLASS, CLASS_ANY, 0])
+            else
+                me.write([NODE_RANGES, 1, 1, 0x0A, 0x0A])
+        value == 0x5B => me.read_class(at)
+        value == 0x5E =>
+            if me.multiline.peek()
+                me.write([NODE_ANCHOR, ANCHOR_START_OF_LINE])
+            else
+                me.write([NODE_ANCHOR, ANCHOR_START_OF_TEXT])
+        value == 0x24 =>
+            if me.multiline.peek()
+                me.write([NODE_ANCHOR, ANCHOR_END_OF_LINE])
+            else
+                me.write([NODE_ANCHOR, ANCHOR_END_OF_TEXT])
+        value == 0x5C => me.read_escape(at)
+        else => me.write_literal(value)
+    return
+
+### Reads a group after its `(`.
+### :param at: Where the `(` is.
+### :param depth: How deep the groups are nested.
+@reshaping
+secret routine @RegexReader.read_group(at: U64, depth: U64) -> None
+    if depth > 500
+        me.fail(kind: RegexErrorKind.BAD_GROUP, at)
+        return
+    if not me.at(0x3F)
+        me.write_numbered_capture()
+        me.read_group_body(at, depth)
+        return
+    me.advance()
+    here: InputUnit = me.peek()
+    when
+        here.value == 0x3A =>
+            me.advance()
+            me.read_group_body(at, depth)
+        here.value == 0x3D or here.value == 0x21 => me.fail(kind: RegexErrorKind.LOOKAROUND, at)
+        here.value == 0x3C =>
+            next: InputUnit = me.peek_next()
+            if next.value == 0x3D or next.value == 0x21
+                me.fail(kind: RegexErrorKind.LOOKAROUND, at)
+                return
+            me.advance()
+            me.read_named_group(at, depth)
+        here.value == 0x50 =>
+            me.advance()
+            if not me.at(0x3C)
+                me.fail(kind: RegexErrorKind.BAD_GROUP, at)
+                return
+            me.advance()
+            me.read_named_group(at, depth)
+        else => me.read_flags(at, depth)
+    return
+
+### Reads flags after `(?`: `i:` starts a group whose letters match in either case, and `(?ims)` with any of the
+### three letters, at the very start of the expression only, sets them for the whole pattern.
+### :param at: Where the `(` is.
+### :param depth: How deep the groups are nested.
+@reshaping
+secret routine @RegexReader.read_flags(at: U64, depth: U64) -> None
+    if me.at(0x69) and me.peek_next().value == 0x3A
+        me.advance()
+        me.advance()
+        me.write([NODE_IGNORE_CASE])
+        me.read_group_body(at, depth)
+        return
+    if at != 0
+        me.fail(kind: RegexErrorKind.BAD_FLAG, at)
+        return
+    while true
+        here: InputUnit = me.advance()
+        when
+            here.value == 0x29 => return
+            here.value == 0x69 => me.ignore_case.poke(true)
+            here.value == 0x6D => me.multiline.poke(true)
+            here.value == 0x73 => me.dot_all.poke(true)
+            else =>
+                me.fail(kind: RegexErrorKind.BAD_FLAG, at)
+                return
+
+### Writes the capture of a group with no name: the next group number, as its name.
+@reshaping
+secret routine @RegexReader.write_numbered_capture() -> None
+    local number: U64 = me.groups.peek() + 1
+    local digits: @Array[U32, 20] <- [0] * 20
+
+    me.groups.poke(number)
+    while value > 0 with value: U64 = number, count: U64 = 0
+        digits.setitem(index: count, value: (value % 10).to[U32]() + 0x30)
+        continue with value: value // 10, count: count + 1
+    then
+        me.out.add_last(NODE_CAPTURE)
+        me.out.add_last(count.to[U32]())
+        each i: U64 in 0 til count
+            me.out.add_last(digits.getitem(count - 1 - i))
+        then
+            return
+
+### Reads a named group after its `<`: the name, `>`, the body.
+### :param at: Where the `(` is.
+### :param depth: How deep the groups are nested.
+@reshaping
+secret routine @RegexReader.read_named_group(at: U64, depth: U64) -> None
+    local start: U64 = me.out.count()
+
+    me.groups.poke(me.groups.peek() + 1)
+    me.write([NODE_CAPTURE, 0])
+    while true with length: U32 = 0
+        here: InputUnit = me.advance()
+        if here.size == 0
+            me.fail(kind: RegexErrorKind.BAD_NAME, at)
+            return
+        if here.value == 0x3E
+            if length == 0
+                me.fail(kind: RegexErrorKind.BAD_NAME, at)
+                return
+            me.out.setitem(index: start + 1, value: length)
+            me.read_group_body(at, depth)
+            return
+        me.out.add_last(here.value)
+        continue with length: length + 1
+
+### Reads a group's alternatives and its `)`.
+### :param at: Where the `(` is.
+### :param depth: How deep the groups are nested.
+@reshaping
+secret routine @RegexReader.read_group_body(at: U64, depth: U64) -> None
+    me.read_alternation(depth: depth + 1)
+    if me.failed()
+        return
+    if not me.at(0x29)
+        me.fail(kind: RegexErrorKind.UNCLOSED_GROUP, at)
+        return
+    me.advance()
+    return
+
+### Reads an escape after its `\`, outside a class.
+### :param at: Where the `\` is.
+@reshaping
+secret routine @RegexReader.read_escape(at: U64) -> None
+    here: InputUnit = me.advance()
+    value: U32 = here.value
+    if here.size == 0
+        me.fail(kind: RegexErrorKind.BAD_ESCAPE, at)
+        return
+    when
+        value == 0x64 => me.write([NODE_CLASS, CLASS_DIGIT, 0])
+        value == 0x44 => me.write([NODE_CLASS, CLASS_DIGIT, 1])
+        value == 0x77 => me.write([NODE_CLASS, CLASS_WORD_CHAR, 0])
+        value == 0x57 => me.write([NODE_CLASS, CLASS_WORD_CHAR, 1])
+        value == 0x73 => me.write([NODE_CLASS, CLASS_SPACE, 0])
+        value == 0x53 => me.write([NODE_CLASS, CLASS_SPACE, 1])
+        value == 0x62 => me.write([NODE_ANCHOR, ANCHOR_WORD_BOUNDARY])
+        value == 0x42 => me.write([NODE_ANCHOR, ANCHOR_NOT_WORD_BOUNDARY])
+        value == 0x41 => me.write([NODE_ANCHOR, ANCHOR_START_OF_TEXT])
+        value == 0x7A or value == 0x5A => me.write([NODE_ANCHOR, ANCHOR_END_OF_TEXT])
+        0x31 <= value <= 0x39 or value == 0x6B => me.fail(kind: RegexErrorKind.BACKREFERENCE, at)
+        else =>
+            unit: U32 = me.escaped_unit(value, at)
+            if not me.failed()
+                me.write_literal(unit)
+    return
+
+### The character an escape that stands for one character gives, after its letter was read.
+### :param value: The letter after `\`.
+### :param at: Where the `\` is.
+### :returns: The character (an error is noted when the escape isn't one).
+secret routine @RegexReader.escaped_unit(value: U32, at: U64) -> U32
+    when
+        value == 0x6E => return 0x0A
+        value == 0x74 => return 0x09
+        value == 0x72 => return 0x0D
+        value == 0x66 => return 0x0C
+        value == 0x76 => return 0x0B
+        value == 0x30 => return 0
+        value == 0x78 => return me.read_hex(at, digits: 2)
+        value == 0x75 => return me.read_hex(at, digits: 4)
+        0x30 <= value <= 0x39 => me.fail(kind: RegexErrorKind.BAD_ESCAPE, at)
+        0x41 <= value <= 0x5A => me.fail(kind: RegexErrorKind.BAD_ESCAPE, at)
+        0x61 <= value <= 0x7A => me.fail(kind: RegexErrorKind.BAD_ESCAPE, at)
+        else => return value
+    return 0
+
+### Reads the hexadecimal digits of `\x` or `\u`: exactly `digits` of them, or any number between `{` and `}`.
+### :param at: Where the `\` is.
+### :param digits: How many digits the short form has.
+### :returns: The character (an error is noted when the digits aren't there or the value is past 0x10FFFF).
+secret routine @RegexReader.read_hex(at: U64, digits: U64) -> U32
+    local braced: Bool = me.at(0x7B)
+
+    if braced
+        me.advance()
+    while true with value: U32 = 0, count: U64 = 0
+        here: InputUnit = me.peek()
+        if braced and here.value == 0x7D and count > 0
+            me.advance()
+            return value
+        if not braced and count == digits
+            return value
+        nibble: U32 = hex_value(here)
+        if nibble > 15 or count >= 6
+            me.fail(kind: RegexErrorKind.BAD_ESCAPE, at)
+            return 0
+        me.advance()
+        next: U32 = value * 16 + nibble
+        if next > 0x10FFFF
+            me.fail(kind: RegexErrorKind.BAD_ESCAPE, at)
+            return 0
+        continue with value: next, count: count + 1
+
+### The value of a hexadecimal digit.
+### :param unit: The character.
+### :returns: 0 to 15, or 16 when it isn't one.
+secret routine hex_value(unit: InputUnit) -> U32
+    value: U32 = unit.value
+    return when
+        unit.size == 0 => 16
+        0x30 <= value <= 0x39 => value - 0x30
+        0x41 <= value <= 0x46 => value - 0x37
+        0x61 <= value <= 0x66 => value - 0x57
+        else => 16
+
+### Reads a class after its `[`: `^` for the units outside it, then characters, ranges and class escapes up to `]`.
+### :param at: Where the `[` is.
+@reshaping
+secret routine @RegexReader.read_class(at: U64) -> None
+    local start: U64 = me.out.count()
+    local negated: Bool = me.at(0x5E)
+
+    if negated
+        me.advance()
+    me.write([NODE_RANGES, negated.to[U32](), 0])
+    while true with count: U32 = 0, first: Bool = true
+        here: InputUnit = me.peek()
+        if here.size == 0
+            me.fail(kind: RegexErrorKind.UNCLOSED_CLASS, at)
+            return
+        if here.value == 0x5D and not first
+            me.advance()
+            me.out.setitem(index: start + 2, value: count)
+            return
+        added: U32 = me.read_class_item(at)
+        if me.failed()
+            return
+        continue with count: count + added, first: false
+
+### Reads one item of a class: a character, a range `a-z`, or a class escape, and writes its ranges.
+### :param at: Where the `[` is.
+### :returns: How many ranges it wrote.
+@reshaping
+secret routine @RegexReader.read_class_item(at: U64) -> U32
+    local item_at: U64 = me.pos.peek()
+    local here: InputUnit = me.advance()
+
+    if here.value == 0x5C
+        letter: InputUnit = me.peek()
+        written: U32 = me.class_escape(letter.value)
+        if written > 0
+            me.advance()
+            return written
+    lo: U32 = me.class_unit(here, at: item_at)
+    dash: Bool = me.at(0x2D)
+    next: InputUnit = me.peek_next()
+    if dash and next.size != 0 and next.value != 0x5D
+        me.advance()
+        high_at: U64 = me.pos.peek()
+        high: InputUnit = me.advance()
+        hi: U32 = me.class_unit(high, at: high_at)
+        if lo > hi
+            me.fail(kind: RegexErrorKind.BAD_RANGE, at: item_at)
+            return 0
+        return me.write_range(lo, hi, at: item_at)
+    return me.write_range(lo, hi: lo, at: item_at)
+
+### The character a class item stands for: itself, or the one its escape stands for.
+### :param here: The item's first character (already read).
+### :param at: Where it is.
+### :returns: The character.
+@reshaping
+secret routine @RegexReader.class_unit(here: InputUnit, at: U64) -> U32
+    if here.value != 0x5C
+        return here.value
+    letter: InputUnit = me.advance()
+    if letter.size == 0
+        me.fail(kind: RegexErrorKind.UNCLOSED_CLASS, at)
+        return 0
+    if letter.value == 0x62
+        return 0x08
+    return me.escaped_unit(value: letter.value, at)
+
+### Writes one range of a class, refusing a unit past 0xFF in a byte pattern.
+### :param lo: The first unit.
+### :param hi: The last unit.
+### :param at: Where it was written.
+### :returns: 1, the ranges written.
+@reshaping
+secret routine @RegexReader.write_range(lo: U32, hi: U32, at: U64) -> U32
+    if me.bytes.peek() and hi > 0xFF
+        me.fail(kind: RegexErrorKind.BAD_UNIT, at)
+        return 0
+    me.out.add_last(lo)
+    me.out.add_last(hi)
+    return 1
+
+### Writes the ranges of a class escape inside a class (`\d \D \w \W \s \S`).
+### :param letter: The letter after `\`.
+### :returns: How many ranges it wrote, 0 when the letter isn't a class escape.
+@reshaping
+secret routine @RegexReader.class_escape(letter: U32) -> U32
+    local top: U32 = when
+
+        me.bytes.peek() => 0xFF
+        else => 0x10FFFF
+
+    when
+        letter == 0x64 =>
+            me.write([0x30, 0x39])
+            return 1
+        letter == 0x44 =>
+            me.write([0, 0x2F, 0x3A, top])
+            return 2
+        letter == 0x77 =>
+            me.write([0x30, 0x39, 0x41, 0x5A, 0x5F, 0x5F, 0x61, 0x7A])
+            return 4
+        letter == 0x57 =>
+            me.write([0, 0x2F, 0x3A, 0x40, 0x5B, 0x5E, 0x60, 0x60, 0x7B, top])
+            return 5
+        letter == 0x73 =>
+            me.write([0x09, 0x0D, 0x20, 0x20])
+            return 2
+        letter == 0x53 =>
+            me.write([0, 0x08, 0x0E, 0x1F, 0x21, top])
+            return 3
+        else => return 0
+
+### Reads a regular expression into a piece tree.
+### :param input: The expression (code points or UTF-8).
+### :param bytes: Whether the pattern is over bytes.
+### :param alloc: Where the tree takes memory.
+### :returns: The piece tree, or why the expression couldn't be read.
+routine read_regex(input: PatternInput, bytes: Bool,
+    alloc: @MemoryManager) -> Result[List[U32], RegexError]
+    local reader: @RegexReader <- .construct(input, bytes, alloc)
+
+    reader.read_alternation(depth: 0)
+    if not reader.failed() and reader.peek().size != 0
+        reader.fail(kind: RegexErrorKind.UNOPENED_GROUP, at: reader.pos.peek())
+    if reader.failed()
+        error: RegexError = RegexError(kind: reader.error.peek(), at: reader.error_at.peek())
+        drop reader
+        return error
+    local tree: @List[U32] <- .construct(alloc)
+
+    if reader.ignore_case.peek()
+        tree.add_last(NODE_IGNORE_CASE)
+    each i: U64 in 0 til reader.out.count()
+        tree.add_last(reader.out.getitem(i))
+    drop reader
+    return tree

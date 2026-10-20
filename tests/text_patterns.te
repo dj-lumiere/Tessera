@@ -1,0 +1,206 @@
+# Text patterns (Standard/Text/Patterns): pieces, captures, the two eithers, ASCII and Unicode classes, ignored
+# case, find_all, replace, split, from_regex and its errors, a bytes pattern on a PNG header, and a pattern whose
+# backtracking search would take exponential time finishing at once on 10 000 characters.
+
+import Standard/Collections
+import Standard/Os
+import Standard/Text/Patterns
+
+### Shows the first match of a pattern in a text, or that there is none.
+### :param label: What the line is about.
+### :param pattern: The pattern.
+### :param text: The text.
+routine show_find(label: @[Byte], pattern: @TextPattern, text: @[Byte]) -> None
+    when pattern.find(text, HEAP)
+        is TextMatch as m =>
+            found: @[Byte] = m.text()
+            Console.show("{label}: \"{found}\" at {m.start()}..{m.end()}")
+            drop m
+        is None => Console.show("{label}: none")
+    return
+
+### The date example: three captures.
+routine dates() -> None
+    local date: @TextPattern <- TextPattern.of(
+        [capture("year", digit(HEAP).repeat(4)), text("-", HEAP), capture("month", digit(HEAP).repeat(2)), text("-", HEAP), capture("day", digit(HEAP).repeat(2))],
+        HEAP)
+
+    when date.find("Due 2026-10-20, paid.", HEAP)
+        is TextMatch as m =>
+            year: @[Byte] = m.group("year")
+            month: @[Byte] = m.group("month")
+            day: @[Byte] = m.group("day")
+            Console.show("year {year}, month {month}, day {day}")
+            missing: Maybe[@[Byte]] = m.group_checked("hour")
+            Console.show("hour: {missing.diagnose()}")
+            drop m
+        is None => Console.show("no date")
+    whole: Bool = date.matches("2026-10-20")
+    short: Bool = date.matches("2026-10-2")
+    Console.show("matches: {whole} {short}")
+    drop date
+    return
+
+### either_longer and either_shorter on "category".
+routine eithers() -> None
+    local longer: @TextPattern <- TextPattern.of(
+        [either_longer([text("cat", HEAP), text("category", HEAP)])], HEAP)
+    local shorter: @TextPattern <- TextPattern.of(
+        [either_shorter([text("category", HEAP), text("cat", HEAP)])], HEAP)
+
+    show_find(label: "either_longer", pattern: longer, text: "category")
+    show_find(label: "either_shorter", pattern: shorter, text: "category")
+    drop longer
+    drop shorter
+    return
+
+### digit is ASCII, unicode_digit takes every decimal digit.
+routine digits() -> None
+    local ascii: @TextPattern <- TextPattern.of([one_or_more(digit(HEAP))], HEAP)
+    local unicode: @TextPattern <- TextPattern.of([one_or_more(unicode_digit(HEAP))], HEAP)
+
+    show_find(label: "digit", pattern: ascii, text: "x٤٢42")
+    show_find(label: "unicode_digit", pattern: unicode, text: "x٤٢42")
+    drop ascii
+    drop unicode
+    return
+
+### Ignored case, on one piece and on the whole pattern.
+routine cases() -> None
+    local piece: @TextPattern <- TextPattern.of(
+        [ignoring_case(text("hello", HEAP)), text(" World", HEAP)], HEAP)
+    local whole: @TextPattern <- TextPattern.of(pieces: [text("straße", HEAP)], ignore_case: true,
+        alloc: HEAP)
+
+    show_find(label: "ignoring_case", pattern: piece, text: "Say HeLLo World")
+    show_find(label: "ignoring_case keeps the rest", pattern: piece, text: "Say HeLLo world")
+    show_find(label: "ignore_case", pattern: whole, text: "STRASSE STRAßE")
+    drop piece
+    drop whole
+    return
+
+### find_all, replace and split.
+routine many() -> None
+    local number: @TextPattern <- TextPattern.of([one_or_more(digit(HEAP))], HEAP)
+    local comma: @TextPattern <- TextPattern.of([text(",", HEAP), any_number_of(space(HEAP))], HEAP)
+    local bold: @TextPattern <- TextPattern.of(
+        [text("<b>", HEAP), capture("inner", any_number_of(none_of("<", HEAP))), text("</b>", HEAP)],
+        HEAP)
+    local found: @List[TextMatch] <- number.find_all("a1 b22 c333", HEAP)
+
+    each i: U64 in 0 til found.count()
+        m: @TextMatch = found.getslot(i)
+        Console.show("number {m.text()} at {m.start()}")
+    drop found
+    local replaced: @Memory[Byte] <- number.replace(text: "a1 b22 c333", with: "#", alloc: HEAP)
+    Console.show("replace: {replaced.getview()}")
+    drop replaced
+    local parts: @List[@[Byte]] <- comma.split("red, green,blue,  ", HEAP)
+    each j: U64 in 0 til parts.count()
+        Console.show("part {j}: \"{parts.getitem(j)}\"")
+    drop parts
+    local tags: @List[TextMatch] <- bold.find_all("<b>가</b><b>나</b>", HEAP)
+    each k: U64 in 0 til tags.count()
+        inner: @[Byte] = tags.getslot(k).group("inner")
+        Console.show("inner {inner}")
+    drop tags
+    drop number
+    drop comma
+    drop bold
+    return
+
+### from_regex reads the usual syntax, and refuses what the engine doesn't do.
+routine regexes() -> None
+    local date: @TextPattern <- TextPattern.from_regex(
+        "(?<year>\\d{4})-(?<month>\\d{2})-(?<day>\\d{2})", HEAP)
+
+    when date.find("on 2026-10-20", HEAP)
+        is TextMatch as m =>
+            month: @[Byte] = m.group("month")
+            Console.show("regex month {month}")
+            drop m
+        is None => Console.show("regex: none")
+    drop date
+    local numbered: @TextPattern <- TextPattern.from_regex("(\\w+)@(\\w+)\\.com", HEAP)
+    when numbered.find("mail lumi@example.com now", HEAP)
+        is TextMatch as m =>
+            user: @[Byte] = m.group("1")
+            host: @[Byte] = m.group("2")
+            Console.show("regex groups {user} {host}")
+            drop m
+        is None => Console.show("regex: none")
+    drop numbered
+    show_regex_error("(a)\\1")
+    show_regex_error("(?<=a)b")
+    show_regex_error("a+?")
+    show_regex_error("(ab")
+    show_regex_error("[z-a]")
+    return
+
+### Shows why a regular expression is refused.
+### :param regex: The expression.
+routine show_regex_error(regex: @[Byte]) -> None
+    when TextPattern.from_regex_result(regex, HEAP)
+        is TextPattern as pattern =>
+            Console.show("{regex}: read")
+            drop pattern
+        is RegexError as error =>
+            local message: @List[Byte] <- .construct(HEAP)
+            write_regex_error(error, out: message)
+            Console.show("{regex}: {message.getview()}")
+            drop message
+    return
+
+### A bytes pattern on the PNG signature.
+routine png() -> None
+    local signature: @BytesPattern <- BytesPattern.of(
+        [byte(0x89, HEAP), bytes("PNG", HEAP), capture("ending", bytes("\r\n\x1A\n", HEAP))], HEAP)
+    local header: @[Byte] <- [b'\x89', b'P', b'N', b'G', b'\r', b'\n', b'\x1A', b'\n', b'\x00',
+        b'\x00']
+
+    when signature.find(header, HEAP)
+        is BytesMatch as m =>
+            ending: @[Byte] = m.group("ending")
+            Console.show("png at {m.start()}..{m.end()}, ending of {ending.count()} bytes")
+            drop m
+        is None => Console.show("not a png")
+    drop signature
+    return
+
+### (a|aa)*b on 10 000 a's, with no b and then with one: a backtracking search takes exponential time here.
+routine pathological() -> None
+    local pattern: @TextPattern <- TextPattern.of(
+        [any_number_of(either_longer([text("a", HEAP), text("aa", HEAP)])), text("b", HEAP)], HEAP)
+    local text: @List[Byte] <- .construct(HEAP)
+
+    each i: U64 in 0 til 10000
+        text.add_last(b'a')
+    started: Duration = Clock.monotonic()
+    when pattern.find(text.getview(), HEAP)
+        is TextMatch as m =>
+            Console.show("pathological: found")
+            drop m
+        is None => Console.show("pathological without b: none")
+    text.add_last(b'b')
+    when pattern.find(text.getview(), HEAP)
+        is TextMatch as m =>
+            Console.show("pathological with b: {m.start()}..{m.end()}")
+            drop m
+        is None => Console.show("pathological with b: none")
+    took: Duration = Clock.monotonic() - started
+    fast: Bool = took < 2s
+    Console.show("finished within 2s: {fast}")
+    drop text
+    drop pattern
+    return
+
+routine start() -> None
+    dates()
+    eithers()
+    digits()
+    cases()
+    many()
+    regexes()
+    png()
+    pathological()
+    return
