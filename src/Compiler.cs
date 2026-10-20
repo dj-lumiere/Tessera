@@ -404,12 +404,13 @@ public sealed partial class Compiler
     }
 
     /// With the race check, its runtime's options, which it reads before the program starts: stop at the first race,
-    /// with the exit status a crash has. Not instrumented (it runs before the runtime is ready), and a strong definition,
-    /// so it replaces the runtime's own.
+    /// with the exit status a crash has. The runtime aborts instead of exiting on macOS unless told not to
+    /// (abort_on_error defaults to on there). Not instrumented (it runs before the runtime is ready), and a strong
+    /// definition, so it replaces the runtime's own.
     private string RaceCheckOptions()
     {
         if (!RaceCheck) return "";
-        const string options = "halt_on_error=1 exitcode=82";
+        const string options = "halt_on_error=1 abort_on_error=0 exitcode=82";
         return $"@tessera.race_options = private unnamed_addr constant [{options.Length + 1} x i8] c\"{options}\\00\"\n"
                + "define ptr @__tsan_default_options() nounwind {\n  ret ptr @tessera.race_options\n}\n\n";
     }
