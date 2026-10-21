@@ -342,3 +342,106 @@ routine @[Byte].chars() -> BytesCharsIter
 routine @@[Byte].chars() -> BytesCharsIter
     iter: BytesCharsIter = me.peek().chars()
     return iter
+
+# -- splitting -----------------------------------------------------------------
+
+### The pieces of the text between the places `separator` occurs, in order. Each piece is a view of the same bytes
+### (nothing is copied). Two separators next to each other give an empty piece between them, and a text without
+### `separator` is one piece. An empty `separator` gives each character (one UTF-8 sequence) as its own piece. The list
+### of pieces is new memory from `manager`, which the caller drops.
+### :param separator: The bytes between the pieces.
+### :param manager: The manager the list of pieces comes from.
+### :returns: The pieces.
+### :throws: Crashes with `MemoryAllocationError` when the manager has no memory to give.
+@track_caller
+@expensive("allocates the list of pieces")
+routine @[Byte].split(separator: Me, manager: @MemoryManager) -> Memory[@[Byte]]
+    local pieces: @Memory[@[Byte]] <- Memory[@[Byte]].construct(count: me.piece_count(separator), manager: manager)
+
+    if separator.count == 0
+        until at == me.count with at: U64 = 0, piece: U64 = 0
+            end: U64 = me.char_end(at)
+            pieces.store(index: piece, value: me.slice(at, end))
+            continue with at: end, piece: piece + 1
+        return pieces
+
+    until at + separator.count > me.count with at: U64 = 0, start: U64 = 0, piece: U64 = 0
+        if me.slice(at, at + separator.count).eq(separator)
+            pieces.store(index: piece, value: me.slice(start, at))
+            continue with at: at + separator.count, start: at + separator.count, piece: piece + 1
+        continue with at: at + 1, start: start, piece: piece
+    then
+        pieces.store(index: piece, value: me.slice(start, me.count))
+    return pieces
+
+### The words of the text: the runs of bytes between white space (space, tab, line feed, carriage return, vertical tab,
+### form feed), in order. Each word is a view of the same bytes (nothing is copied), and white space at the ends or
+### several white space bytes in a row give no empty word. The list of words is new memory from `manager`, which the
+### caller drops.
+### :param manager: The manager the list of words comes from.
+### :returns: The words.
+### :throws: Crashes with `MemoryAllocationError` when the manager has no memory to give.
+@track_caller
+@expensive("allocates the list of words")
+routine @[Byte].words(manager: @MemoryManager) -> Memory[@[Byte]]
+    local words: @Memory[@[Byte]] <- Memory[@[Byte]].construct(count: me.word_count(), manager: manager)
+
+    until at == me.count with at: U64 = 0, start: U64 = 0, inside: Bool = false, word: U64 = 0
+        if is_white_space(me.byte_at(at))
+            if inside
+                words.store(index: word, value: me.slice(start, at))
+                continue with at: at + 1, start: start, inside: false, word: word + 1
+            continue with at: at + 1, start: start, inside: false, word: word
+        if inside
+            continue with at: at + 1, start: start, inside: true, word: word
+        continue with at: at + 1, start: at, inside: true, word: word
+    then
+        if inside
+            words.store(index: word, value: me.slice(start, at))
+    return words
+
+### How many pieces {@[Byte].split} gives for `separator`.
+### :param separator: The bytes between the pieces.
+### :returns: The number of pieces.
+secret routine @[Byte].piece_count(separator: Me) -> U64
+    if separator.count == 0
+        until at == me.count with at: U64 = 0, pieces: U64 = 0
+            continue with at: me.char_end(at), pieces: pieces + 1
+        then
+            return pieces
+
+    until at + separator.count > me.count with at: U64 = 0, pieces: U64 = 1
+        if me.slice(at, at + separator.count).eq(separator)
+            continue with at: at + separator.count, pieces: pieces + 1
+        continue with at: at + 1, pieces: pieces
+    then
+        return pieces
+
+### How many words {@[Byte].words} gives.
+### :returns: The number of words.
+secret routine @[Byte].word_count() -> U64
+    until at == me.count with at: U64 = 0, inside: Bool = false, words: U64 = 0
+        if is_white_space(me.byte_at(at))
+            continue with at: at + 1, inside: false, words: words
+        if inside
+            continue with at: at + 1, inside: true, words: words
+        continue with at: at + 1, inside: true, words: words + 1
+    then
+        return words
+
+### The index after the character that starts at `at`: past its lead byte and the continuation bytes that follow.
+### :param at: The index of a character's first byte.
+### :returns: The index of the next character's first byte, or the count.
+secret routine @[Byte].char_end(at: U64) -> U64
+    until next == me.count with next: U64 = at + 1
+        if me.byte_at(next) & 0xC0 != 0x80
+            break
+        continue with next: next + 1
+    then
+        return next
+
+### Whether `b` is white space between words: space, tab, line feed, carriage return, vertical tab or form feed.
+### :param b: The byte as a number.
+### :returns: `true` for white space.
+secret routine is_white_space(b: U8) -> Bool
+    return b == 0x20 or 0x09 <= b <= 0x0D

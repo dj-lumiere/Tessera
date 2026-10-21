@@ -3883,8 +3883,12 @@ public sealed partial class FunctionGen
             // (`0.sub(x)`). Failing both, it takes its type from context.
             // The result's type says the receiver's only for a routine that returns Me (`x: U64 = 1.shift_left(3)`), so it
             // is borrowed only when it's a type the literal could have.
-            rt = BlanketReceiverType(m) ?? m.Args.Select(Infer).FirstOrDefault(t => t is not null)
-                 ?? (LiteralCanBe(m.Receiver, expected) ? expected : null);
+            // A string literal receiver is the text it spells, a `@[Byte]` (`"a,b".split(separator: ",", manager: HEAP)`),
+            // whatever the arguments or the result are.
+            rt = m.Receiver is StrLit
+                ? BytesType(m.Receiver.Pos)
+                : BlanketReceiverType(m) ?? m.Args.Select(Infer).FirstOrDefault(t => t is not null)
+                  ?? (LiteralCanBe(m.Receiver, expected) ? expected : null);
             if (rt is null)
             {
                 string call = m.Name + (m.TypeArgs.Count == 0 ? "" : $"[{string.Join(", ", m.TypeArgs)}]");

@@ -115,7 +115,8 @@ routine start() -> None
 
 - `#` for comments, `###` for Markdown doc comments directly above a declaration, field, or choice member.
   `;` is not a comment (it was until 2026-09-28) and is rejected.
-- **Every routine has a doc comment**, secret ones, externals, and a protocol's required routines included. It sits
+- **You should give every routine a doc comment**, secret ones, externals, and a protocol's required routines included
+  (a convention: the builder only warns). It sits
   above the annotation lines and reads, in this order: what the routine does in one or two plain sentences (from its
   real behavior), `:typeparam T:` for its own type parameters, `:param name:` for every parameter but `me` in
   order, `:returns:` unless it returns `None`, then `:throws:` ("Crashes with `IndexOutOfBoundsError` when ...", or the
@@ -499,7 +500,8 @@ routine start() -> None
   both).
 - **`when` as a value.** `x: T = when ...` (and `return when ...`, `becomes when ...`) gives one value from the arm
   taken: a one-line arm's expression (`is S64 as n => n`, `n < 10 => Size.SMALL`), the `becomes v` that ends a
-  multi-line arm, or the arm leaves with `return`, `break`, or `continue`. A name an arm gives (`is T as name`) is
+  multi-line arm, or the arm leaves with `return`, `break`, `continue`, or `throw` (in a failable routine only: a
+  `throw` elsewhere is a build error whose quick fix writes `failable` on the routine). A name an arm gives (`is T as name`) is
   seen in that arm only, so the value that outlives the `when` is the chosen one. That is how a guard on a variant
   is written: the arms that fail leave, the one that succeeds gives its value:
 
@@ -753,7 +755,9 @@ routine start() -> None
   routines) and `sizeof` stay `U64` byte counts, and a count of elements is a count.
 - Text is a `@[Byte]` (UTF-8 by convention, unchecked: `is_utf8` checks, and `chars()` reads a bad sequence as
   U+FFFD), and owned text is a `Memory[Byte]`. The text routines are on `@[Byte]` (`Types/ByteSpan.te`:
-  `find`, `has`, `has_prefix`, `slice(start, end)`, `byte_at`, `bytes()`, `chars()`, `concat(a, b, manager)`, `eq`,
+  `find`, `has`, `has_prefix`, `slice(start, end)`, `byte_at`, `bytes()`, `chars()`, `concat(a, b, manager)`,
+  `split(separator:, manager:)` and `words(manager:)` (a `Memory[@[Byte]]` of views into the text, RazorForge's and
+  Suflae's meaning: empty pieces kept, an empty separator gives characters, words skip white space runs), `eq`,
   `compare`, `hash`, ...). A literal is a `@[Byte]` of the program image, `@[Byte].construct(data, count)`
   wraps bytes from C, and text made from other text (`slice`, `getslice`, the iterators, `buf.getview()` of a
   `List[Byte]`) views the same memory. Text a routine takes memory for (`@[Byte].concat`, `Console.ask_line`,
