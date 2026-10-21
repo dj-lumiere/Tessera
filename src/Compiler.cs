@@ -1182,6 +1182,7 @@ public sealed partial class Compiler
             if (RecordType.IsTupleDecl(s) && Entities.EntityArgument(args) is { } inTuple)
                 throw new CompileError(t.Pos, $"a tuple holds {inTuple.Name}, an entity, which is never copied: hold it through a pointer, @{inTuple.Name}");
             CheckRecordRequirements(s, args, t.Pos);
+            CheckResultCode(s, args, t.Pos);
             return new RecordType(s, args, TransparentField);
         }
 
@@ -1229,16 +1230,21 @@ public sealed partial class Compiler
         if (t.Args.Count == 0 && AccessMigration.OldTypeName(t.Name) is { } renamed)
             throw new CompileError(t.Pos, $"unknown type '{t}': {renamed}");
 
-        if (t.Name == "Result")
-            throw new CompileError(t.Pos, "Result is gone: a routine that can fail is a failable routine that throws a crashable, "
-                + "and its caller receives the failure with check (a Check[T]) or try (a Maybe[T]) "
-                + "(tessera migrate --step failable rewrites the standard library's _result calls)");
-
         if (t.Args.Count == 0 && t.Name == "Mapping")
             throw new CompileError(t.Pos, "unknown type 'Mapping': a mapped file is a FileStorage[Byte] from " +
                 "OsFileManager.storage_result[Byte] (tessera migrate --step files rewrites the old spelling)");
 
         throw new CompileError(t.Pos, $"unknown type '{t}'");
+    }
+
+    /// `Result[T, TErrorCode]` is for the C boundary, where its code is an integer C reads: TErrorCode is a choice (a
+    /// type parameter in a generic body, checked again at each instance).
+    private static void CheckResultCode(RecordDecl s, List<DType> args, Pos pos)
+    {
+        if (s is not { Name: "Result", IsLibrary: true, Module: SystemModule } || args is not [_, var code]) return;
+        if (code is ChoiceType or ArchetypeType) return;
+        throw new CompileError(pos, $"Result's error code is what C reads as an integer, so it is a choice (choice OpenError: S32, "
+            + $"its first member the success code), not {code.Name}");
     }
 
     private DType ResolveCallable(TypeRef t, TypeEnv env)

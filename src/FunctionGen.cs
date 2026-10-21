@@ -463,7 +463,7 @@ public sealed partial class FunctionGen
         IndexExpr ix => RootName(ix.Base),
         MethodCallExpr { Name: "peek", Args.Count: 0, Receiver: FieldExpr field } m
             when PointsAtMemory(InferQuiet(m)) && OwnedMemory(InferQuiet(field.Base)) is null => null,
-        MethodCallExpr { Name: "getslot" or "getslot_checked" or "stride" or "offset" or "getview" or "to" or "getslice" or "peek" } m
+        MethodCallExpr { Name: "getslot" or "stride" or "offset" or "getview" or "to" or "getslice" or "peek" } m
             => RootName(m.Receiver),
         _ => null,
     };
@@ -585,11 +585,11 @@ public sealed partial class FunctionGen
             // A manager's table holds the manager's address.
             case MethodCallExpr when TableManager(e) is { } manager:
                 return FrameView(manager);
-            case MethodCallExpr { Name: "getview" or "to" or "getslot" or "getslot_checked" } m when MemName(m.Receiver) is { } owned:
+            case MethodCallExpr { Name: "getview" or "to" or "getslot" } m when MemName(m.Receiver) is { } owned:
                 return $"the memory '{owned}' holds";
             // A view made from a view (a slot of it, a part of it) sees the same memory. What other routines give
             // back (memory they allocate, an address they read) is theirs to say.
-            case MethodCallExpr { Name: "getslot" or "getslot_checked" or "getslice" or "stride" or "offset" or "to" } m
+            case MethodCallExpr { Name: "getslot" or "getslice" or "stride" or "offset" or "to" } m
                 when PointsAtMemory(InferQuiet(m)):
                 return FrameView(m.Receiver);
             case MethodCallExpr { Name: "getview" } m when Compiler.IsCoreSpan(InferQuiet(m.Receiver) ?? VoidType.Instance, out _):
@@ -2380,18 +2380,15 @@ public sealed partial class FunctionGen
     /// The name a `when` arm that observed a failure gives the failure's number, for a failure made in the arm to wrap.
     private const string FailedBefore = "failure observed";
 
-    /// Whether a value of `leaf` in `vt` is a failure: `vt` is a Result, and `leaf` is its error type or one of the
-    /// types the error type is written over.
+    /// Whether a value of `leaf` in `vt` is a failure: a crashable going into a `Check` or a `Crashables`.
     private static bool IsFailure(DType leaf, VariantType vt) =>
-        (vt is { Decl.Name: "Result", Args: [_, var error] } && vt.Decl.Module == Compiler.SystemModule
-         && (leaf.Equals(error) || error is VariantType { Decl.IsAnonymous: true } union && union.LeafIndex(leaf) >= 0))
-        || ((Crashing.IsCheck(vt) || Crashing.IsUnion(vt)) && Crashing.IsCrashable(leaf));
+        (Crashing.IsCheck(vt) || Crashing.IsUnion(vt)) && Crashing.IsCrashable(leaf);
 
     /// The tag of a variant made from a value of `leaf`: the leaf's type ID, and for a failure in a traced build the
     /// failure's number in the high half (Trace.te's failure_note), wrapping the failure the arm it is made in observed.
     private string FailureTag(DType leaf, VariantType vt, uint id, Pos at)
     {
-        if (!_c.Trace || _c.Prechecking || !IsFailure(leaf, vt)) return $"{id}";
+        if (!_c.Trace || _c.Prechecking || !_traced || !IsFailure(leaf, vt)) return $"{id}";
         Expr previous = _values.ContainsKey(FailedBefore) ? new ValueRef(FailedBefore, at) : new IntLit(0, at);
         var seq = EvalCall(new CallExpr("failure_note", [], [previous], at) { Path = Compiler.SystemModule }, IntType.U(32));
         string wide = EmitTmp($"zext i32 {seq.Op} to i64");
@@ -4011,6 +4008,9 @@ public sealed partial class FunctionGen
         if (m.Name.EndsWith("_result", StringComparison.Ordinal))
             throw Err(m.Pos, $"{rt} has no method '{m.Name}': the _result forms are gone, and '{m.Name[..^"_result".Length]}' is "
                 + "failable: receive its failure with check or try in front of the call (tessera migrate --step failable)");
+        if (m.Name.EndsWith("_checked", StringComparison.Ordinal) && m.Name != "to_checked")
+            throw Err(m.Pos, $"{rt} has no method '{m.Name}': the _checked forms are gone, and '{m.Name[..^"_checked".Length]}' is "
+                + $"failable: write try in front of the call for a Maybe, try x.{m.Name[..^"_checked".Length]}(...) (tessera migrate --step checked)");
         throw Err(m.Pos, $"{rt} has no method '{m.Name}'");
     }
 
@@ -5014,11 +5014,24 @@ public sealed partial class FunctionGen
             else
             {
                 iterator = EvalAny(l.Source!);
-                var emit = Infer(new MethodCallExpr(l.Source!, "emit_checked", [], [], l.Source!.Pos));
-                if (emit is not VariantType vt || vt.Leaves.Count != 2 || !vt.Leaves.Any(leaf => leaf is RecordType { Decl.Name: "None" }))
-                    throw Err(l.Source!.Pos, $"each walks a range (a til b) or an iterator in memory (one whose emit_checked gives Maybe[T]); this is {iterator.Type}");
-                iteratorMaybe = vt;
-                itemType = vt.Leaves.First(leaf => leaf is not RecordType { Decl.Name: "None" });
+                var emit = new MethodCallExpr(new ValueRef("$iterator", l.Pos), "emit", [], [], l.Source!.Pos);
+                CallPlan? emitPlan;
+                DType? emitted;
+                _values["$iterator"] = iterator;
+                try
+                {
+                    try { emitPlan = PlanCall(emit, null); }
+                    catch (CompileError) { emitPlan = null; }
+                    emitted = InferQuiet(emit);
+                }
+                finally
+                {
+                    _values.Remove("$iterator");
+                }
+                if (emitPlan is not { Decl.IsFailable: true } || emitted is null || emitted is VoidType)
+                    throw Err(l.Source!.Pos, "each walks a range (a til b) or an iterator in memory (one whose failable emit gives "
+                        + $"the next item and throws AbsentValueError past the end); this is {iterator.Type}");
+                itemType = emitted!;
                 if (l.VarType is { } written && Resolve(written) is var declared && !declared.Equals(itemType))
                     throw Err(l.VarPos, $"'{l.Var}' is written as {declared}, and this iterator hands out {itemType}");
             }
@@ -5048,6 +5061,7 @@ public sealed partial class FunctionGen
         // The condition: on to the body, or out through then.
         string cond;
         string? itemSlot = null;
+        string? itemId = null;
         switch (l.Kind)
         {
             case LoopKind.While:
@@ -5076,17 +5090,38 @@ public sealed partial class FunctionGen
             default:
             {
                 var item = ItemCall(iterator!, l);
-                itemSlot = NewSlot(iteratorMaybe!);
-                Line($"store {iteratorMaybe!.Llvm} {item.Op}, ptr {itemSlot}");
+                iteratorMaybe = (VariantType)item.Type;
+                itemSlot = NewSlot(iteratorMaybe);
+                Line($"store {iteratorMaybe.Llvm} {item.Op}, ptr {itemSlot}");
                 string tag = EmitTmp($"extractvalue {iteratorMaybe.Llvm} {item.Op}, 0");
-                string id = EmitTmp($"trunc {VariantType.Tag.Llvm} {tag} to i32");
-                cond = EmitTmp($"icmp eq i32 {id}, {VariantType.TypeId(itemType!)}");
+                itemId = EmitTmp($"trunc {VariantType.Tag.Llvm} {tag} to i32");
+                cond = EmitTmp($"icmp eq i32 {itemId}, {VariantType.TypeId(itemType!)}");
                 break;
             }
         }
         MemEdge(bodyRegion, pos: l.Pos);
         MemEdge(thenRegion, pos: l.Pos);
-        Terminate($"br i1 {cond}, label %{body.Label}, label %{thenB.Label}");
+        // An iterator's end is its AbsentValueError: the loop leaves through then. Any other failure of emit stops the
+        // program on the each line, as a bare call of emit would.
+        var otherFailures = iteratorMaybe is null ? [] : Crashing.FailuresOf(iteratorMaybe).Where(f => !IsEndOfIteration(f)).ToList();
+        if (otherFailures.Count == 0)
+            Terminate($"br i1 {cond}, label %{body.Label}, label %{thenB.Label}");
+        else
+        {
+            var noItem = NewLBlock("noitem");
+            var stop = NewLBlock("eachfail");
+            Terminate($"br i1 {cond}, label %{body.Label}, label %{noItem.Label}");
+            _cur = noItem;
+            string? ended = null;
+            foreach (var end in Crashing.FailuresOf(iteratorMaybe!).Where(IsEndOfIteration))
+            {
+                string eq = EmitTmp($"icmp eq i32 {itemId}, {VariantType.TypeId(end)}");
+                ended = ended is null ? eq : EmitTmp($"or i1 {ended}, {eq}");
+            }
+            Terminate(ended is null ? $"br label %{stop.Label}" : $"br i1 {ended}, label %{thenB.Label}, label %{stop.Label}");
+            _cur = stop;
+            StopOnFailure(itemSlot!, iteratorMaybe!.Llvm, otherFailures, l.Source!.Pos);
+        }
 
         // The body.
         _cur = body;
@@ -5157,14 +5192,19 @@ public sealed partial class FunctionGen
         if (!afterReached) Terminate("unreachable");
     }
 
-    /// `iterator.emit_checked()` for a `for` over an iterator in memory, the iterator evaluated once.
+    /// Whether a crashable is the end of an iteration: `AbsentValueError`, which an iterator's emit throws past its last
+    /// item.
+    private static bool IsEndOfIteration(DType t) =>
+        t is RecordType { Decl: { Name: "AbsentValueError", IsLibrary: true } };
+
+    /// `check iterator.emit()` for an `each` over an iterator in memory, the iterator evaluated once.
     private Val ItemCall(Val iterator, LoopStmt l)
     {
         string name = "$iterator";
         _values[name] = iterator;
         try
         {
-            return EvalAny(new MethodCallExpr(new ValueRef(name, l.Pos), "emit_checked", [], [], l.Source!.Pos));
+            return EvalAny(new UnaryExpr("check", new MethodCallExpr(new ValueRef(name, l.Pos), "emit", [], [], l.Source!.Pos), l.Source!.Pos));
         }
         finally
         {

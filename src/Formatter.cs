@@ -967,12 +967,13 @@ public static class Formatter
         return sb.ToString();
     }
 
-    /// Whether an expression's text has an operator at its top level: `a + b`, `x and y`, `not z`, `-n`.
+    /// Whether an expression's text has an operator at its top level: `a + b`, `x and y`, `not z`, `-n`, and `try x` /
+    /// `check x`, which take the rest of the expression, so `(try x.f()).g()` keeps its parentheses.
     private static bool HoldsOperator(string inner)
     {
         int depth = 0;
         string t = inner.Trim();
-        if (t.StartsWith("not ") || t.StartsWith("-") || t.StartsWith("~")) return true;
+        if (t.StartsWith("not ") || t.StartsWith("try ") || t.StartsWith("check ") || t.StartsWith("-") || t.StartsWith("~")) return true;
         for (int i = 0; i < t.Length; i++)
         {
             char c = t[i];

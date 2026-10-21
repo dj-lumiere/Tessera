@@ -2,10 +2,11 @@
 #
 # Maps to LLVM IR i64. Every S / U width shares the same method set.
 #
-# add / sub / mul / div / mod / neg / abs / pow and lossy to[T]
-# conversions crash when the result doesn't fit. Each has a _checked form
-# that returns Maybe instead, and add / sub / mul / pow / neg / abs and the
-# conversions have _wrap (modular) and _clamp (saturating) forms.
+# add / sub / mul / floordiv / mod / neg / abs / pow are failable: they throw
+# IntegerOverflowError (or DivisionByZeroError) when the result doesn't fit,
+# so a bare call stops there and `try a + b` gives None. A lossy to[T] crashes,
+# and to_checked[T] gives None instead. add / sub / mul / pow / neg / abs and
+# the conversions have _wrap (modular) and _clamp (saturating) forms.
 
 module Standard/System
 
@@ -15,7 +16,7 @@ secret preset U64_POW10: @Array[U64, 20] <- [1, 10, 100, 1000, 10000, 100000, 10
     100000000000000, 1000000000000000, 10000000000000000, 100000000000000000, 1000000000000000000,
     10000000000000000000]
 
-### 64-bit unsigned integer, mapped to LLVM `i64`. Arithmetic, shifts, and lossy conversions crash when the result does not fit. The `_checked` forms return an `Option`, the `_wrap` forms are modular, and the `_clamp` forms saturate.
+### 64-bit unsigned integer, mapped to LLVM `i64`. Arithmetic throws `IntegerOverflowError` when the result does not fit (`try a + b` gives None), a lossy conversion crashes (`to_checked` gives None), the `_wrap` forms are modular, and the `_clamp` forms saturate.
 @llvm("i64")
 record U64
 obeys Equatable[U64], Comparable[U64], Hashable[U64]
@@ -178,26 +179,6 @@ routine U64.rotr(n: Me) -> Me
     r: Me = fshr[Me](hi: me, lo: me, amt: n)
     return r
 
-### Shift left that reports an out-of-range amount.
-### :param n: The shift amount in bits.
-### :returns: `me` shifted left by `n`, with 0 bits filling in.
-### :absent: When `n` is outside `0 ..< BITS`.
-routine U64.shift_left_checked(n: Me) -> Maybe[Me]
-    if not (n < Me.BITS)
-        return None()
-    r: Me = shl[Me](val: me, amt: n)
-    return r
-
-### Logical shift right that reports an out-of-range amount.
-### :param n: The shift amount in bits.
-### :returns: `me` shifted right by `n`, with 0 bits filling in.
-### :absent: When `n` is outside `0 ..< BITS`.
-routine U64.arith_shift_right_checked(n: Me) -> Maybe[Me]
-    if not (n < Me.BITS)
-        return None()
-    r: Me = lshr[Me](val: me, amt: n)
-    return r
-
 ### Shifts left by `n` modulo the bit width, so an amount of `BITS` or more wraps instead of shifting every bit out.
 ### :param n: The shift amount in bits, taken modulo `BITS`.
 ### :returns: `me` shifted left, with 0 bits filling in.
@@ -219,23 +200,11 @@ routine U64.arith_shift_right_wrap(n: Me) -> Me
 ### The sum of `me` and `other`.
 ### :param other: The value to add.
 ### :returns: The sum.
-### :throws: Crashes with `IntegerOverflowError` when the sum does not fit in `U64`.
-@track_caller
-routine U64.add(other: Me) -> Me
+### :throws: Throws `IntegerOverflowError` when the sum does not fit in `U64`.
+failable routine U64.add(other: Me) -> Me
     if uadd_overflows[Me](me, other)
-        crash_overflow()
+        throw IntegerOverflowError()
     r: Me = add[Me](a: me, b: other)
-    return r
-
-### Addition that reports overflow.
-### :param other: The value to add.
-### :returns: The sum.
-### :absent: When the exact sum does not fit in `U64`.
-routine U64.add_checked(other: Me) -> Maybe[Me]
-    overflow: Bool = uadd_overflows[Me](me, other)
-    fits: Bool = not overflow
-    result: Me = add[Me](a: me, b: other)
-    r: Maybe[Me] = fits.then_present(result)
     return r
 
 ### The sum of `me` and `other`, wrapped modulo 2^64.
@@ -255,23 +224,11 @@ routine U64.add_clamp(other: Me) -> Me
 ### The difference of `me` and `other`.
 ### :param other: The value to subtract.
 ### :returns: The difference.
-### :throws: Crashes with `IntegerOverflowError` when the difference does not fit in `U64`.
-@track_caller
-routine U64.sub(other: Me) -> Me
+### :throws: Throws `IntegerOverflowError` when the difference does not fit in `U64`.
+failable routine U64.sub(other: Me) -> Me
     if usub_overflows[Me](me, other)
-        crash_overflow()
+        throw IntegerOverflowError()
     r: Me = sub[Me](me, other)
-    return r
-
-### Subtraction that reports overflow.
-### :param other: The value to subtract.
-### :returns: The difference.
-### :absent: When the exact difference does not fit in `U64`.
-routine U64.sub_checked(other: Me) -> Maybe[Me]
-    overflow: Bool = usub_overflows[Me](me, other)
-    fits: Bool = not overflow
-    result: Me = sub[Me](me, other)
-    r: Maybe[Me] = fits.then_present(result)
     return r
 
 ### The difference of `me` and `other`, wrapped modulo 2^64.
@@ -291,23 +248,11 @@ routine U64.sub_clamp(other: Me) -> Me
 ### The product of `me` and `other`.
 ### :param other: The factor to multiply by.
 ### :returns: The product.
-### :throws: Crashes with `IntegerOverflowError` when the product does not fit in `U64`.
-@track_caller
-routine U64.mul(other: Me) -> Me
+### :throws: Throws `IntegerOverflowError` when the product does not fit in `U64`.
+failable routine U64.mul(other: Me) -> Me
     if umul_overflows[Me](me, other)
-        crash_overflow()
+        throw IntegerOverflowError()
     r: Me = mul[Me](me, other)
-    return r
-
-### Multiplication that reports overflow.
-### :param other: The factor to multiply by.
-### :returns: The product.
-### :absent: When the exact product does not fit in `U64`.
-routine U64.mul_checked(other: Me) -> Maybe[Me]
-    overflow: Bool = umul_overflows[Me](me, other)
-    fits: Bool = not overflow
-    result: Me = mul[Me](me, other)
-    r: Maybe[Me] = fits.then_present(result)
     return r
 
 ### The product of `me` and `other`, wrapped modulo 2^64.
@@ -368,38 +313,20 @@ routine U64.mod_trunc(other: Me) -> Me
 ### The quotient of Euclidean division: for an unsigned integer, the plain quotient (the remainder is never negative).
 ### :param other: The divisor.
 ### :returns: The quotient.
-### :throws: Crashes with `DivisionByZeroError` when `other` is 0.
-@track_caller
-routine U64.floordiv(other: Me) -> Me
+### :throws: Throws `DivisionByZeroError` when `other` is 0.
+failable routine U64.floordiv(other: Me) -> Me
+    if other == 0
+        throw DivisionByZeroError()
     return me.div_trunc(other)
 
 ### The remainder of Euclidean division: for an unsigned integer, the plain remainder.
 ### :param other: The divisor.
 ### :returns: The remainder, between 0 and `other - 1`.
-### :throws: Crashes with `DivisionByZeroError` when `other` is 0.
-@track_caller
-routine U64.mod(other: Me) -> Me
+### :throws: Throws `DivisionByZeroError` when `other` is 0.
+failable routine U64.mod(other: Me) -> Me
+    if other == 0
+        throw DivisionByZeroError()
     return me.mod_trunc(other)
-
-### Division that reports failure instead of crashing. The quotient is truncated toward zero.
-### :param other: The divisor.
-### :returns: The quotient of `me` divided by `other`.
-### :absent: On a zero divisor.
-routine U64.floordiv_checked(other: Me) -> Maybe[Me]
-    if other == 0
-        return None()
-    r: Me = udiv[Me](me, other)
-    return r
-
-### Remainder that reports failure instead of crashing.
-### :param other: The divisor.
-### :returns: The remainder of `me` divided by `other`.
-### :absent: On a zero divisor.
-routine U64.mod_checked(other: Me) -> Maybe[Me]
-    if other == 0
-        return None()
-    r: Me = urem[Me](me, other)
-    return r
 
 ### The quotient of `me` divided by `other`, rounded up.
 ### :param other: The divisor.
@@ -429,18 +356,8 @@ routine U64.next_multiple_of(other: Me) -> Me
 
 ### The smallest power of two that is at least `me`. Both 0 and 1 give 1.
 ### :returns: The power of two.
-### :throws: Crashes with `IntegerOverflowError` when the power of two does not fit in `U64`.
-@track_caller
-routine U64.next_power_of_two() -> Me
-    r: Maybe[Me] = me.next_power_of_two_checked()
-    when r
-        is Me as value => return value
-        is None => crash_overflow()
-
-### The smallest power of two that is at least `me`, reporting when it does not fit. Both 0 and 1 give 1.
-### :returns: The power of two.
-### :absent: When the power of two does not fit in `U64`.
-routine U64.next_power_of_two_checked() -> Maybe[Me]
+### :throws: Throws `IntegerOverflowError` when the power of two does not fit in `U64`.
+failable routine U64.next_power_of_two() -> Me
     if me <= 1
         return 1
     # A shift by the full width would be poison, so check the amount first.
@@ -448,7 +365,7 @@ routine U64.next_power_of_two_checked() -> Maybe[Me]
     lz: Me = clz[Me](val: below, is_zero_undef: true)
     shift: Me = sub[Me](Me.BITS, lz)
     if not (shift < Me.BITS)
-        return None()
+        throw IntegerOverflowError()
     power: Me = shl[Me](val: 1, amt: shift)
     return power
 
@@ -457,40 +374,8 @@ routine U64.next_power_of_two_checked() -> Maybe[Me]
 ### Raises `me` to the power `exponent`.
 ### :param exponent: The power to raise to.
 ### :returns: `me` to the power `exponent`.
-### :throws: Crashes with `IntegerOverflowError` when the exact power does not fit in `U64`.
-@track_caller
-routine U64.pow(exponent: Me) -> Me
-    r: Maybe[Me] = me.pow_checked(exponent)
-    when r
-        is Me as value => return value
-        is None => crash_overflow()
-
-### Raises `me` to the power `exponent` by squaring, wrapping modulo 2^64.
-### :param exponent: The power to raise to.
-### :returns: The low 64 bits of the exact power.
-routine U64.pow_wrap(exponent: Me) -> Me
-    local base: @Me <- me
-    local acc: @Me <- 1
-
-    while exponent_left != 0 with exponent_left: Me = exponent
-        odd: Bool = exponent_left & 1 != 0
-        with_base: Me = mul[Me](acc.peek(), base.peek())
-        next_acc: Me = when
-            odd => with_base
-            else => acc.peek()
-        next_acc2: Me = next_acc
-        next_base: Me = mul[Me](base.peek(), base.peek())
-        next_base.poke_into(base)
-        next_acc2.poke_into(acc)
-        continue with exponent_left: exponent_left >> 1
-    then
-        return acc.peek()
-
-### Power that reports overflow.
-### :param exponent: The power to raise to.
-### :returns: `me` to the power `exponent`.
-### :absent: When the exact power does not fit in `U64`.
-routine U64.pow_checked(exponent: Me) -> Maybe[Me]
+### :throws: Throws `IntegerOverflowError` when the exact power does not fit in `U64`.
+failable routine U64.pow(exponent: Me) -> Me
     local base: @Me <- me
     local acc: @Me <- 1
     local overflow: @Bool <- false
@@ -516,14 +401,36 @@ routine U64.pow_checked(exponent: Me) -> Maybe[Me]
         next_overflow.poke_into(overflow)
         continue with exponent_left: rest
     fits: Bool = not overflow.peek()
-    r: Maybe[Me] = fits.then_present(acc.peek())
-    return r
+    if not fits
+        throw IntegerOverflowError()
+    return acc.peek()
+
+### Raises `me` to the power `exponent` by squaring, wrapping modulo 2^64.
+### :param exponent: The power to raise to.
+### :returns: The low 64 bits of the exact power.
+routine U64.pow_wrap(exponent: Me) -> Me
+    local base: @Me <- me
+    local acc: @Me <- 1
+
+    while exponent_left != 0 with exponent_left: Me = exponent
+        odd: Bool = exponent_left & 1 != 0
+        with_base: Me = mul[Me](acc.peek(), base.peek())
+        next_acc: Me = when
+            odd => with_base
+            else => acc.peek()
+        next_acc2: Me = next_acc
+        next_base: Me = mul[Me](base.peek(), base.peek())
+        next_base.poke_into(base)
+        next_acc2.poke_into(acc)
+        continue with exponent_left: exponent_left >> 1
+    then
+        return acc.peek()
 
 ### Raises `me` to the power `exponent`, saturated at `MAX`.
 ### :param exponent: The power to raise to.
 ### :returns: The power, or `MAX` when the exact power does not fit.
 routine U64.pow_clamp(exponent: Me) -> Me
-    checked: Maybe[Me] = me.pow_checked(exponent)
+    checked: Maybe[Me] = try me.pow(exponent)
     r: Me = checked.unwrap_or(Me.MAX)
     return r
 

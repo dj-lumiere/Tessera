@@ -154,12 +154,37 @@ public sealed partial class FunctionGen
             var frame = _recover.Peek();
             frame.Calls++;
             frame.Failures.AddRange(failures);
-            if (frame.IsCheck) CopyTagged(slot, carrierLlvm, frame.Slot!, frame.SlotType!);
+            if (frame.IsCheck)
+            {
+                NoteLibraryFailure(slot, carrierLlvm, pos);
+                CopyTagged(slot, carrierLlvm, frame.Slot!, frame.SlotType!);
+            }
             Terminate($"br label %{frame.Fail.Label}");
         }
         else StopOnFailure(slot, carrierLlvm, failures, pos);
         _cur = ok;
         return LoadValue(slot, carrierLlvm, declared, valueType);
+    }
+
+    /// A failure a `check` of a traced routine keeps, made in the standard library (or another untraced routine), which
+    /// noted nothing: it is noted here, with the trace as it was when it was thrown (an untraced routine has no frame of
+    /// its own, so the frames are this routine's and its callers'). A failure `try` drops is never noted, so `try a + b`
+    /// is the addition and its overflow test, and a bare call that stops reports the same frames as its own trace.
+    private void NoteLibraryFailure(string slot, string carrierLlvm, Pos pos)
+    {
+        if (!_traced || !Emitting) return;
+        string field = CarrierField(slot, carrierLlvm, 0);
+        string tag = EmitTmp($"load i64, ptr {field}");
+        string none = EmitTmp($"icmp ult i64 {tag}, 4294967296");
+        var note = NewLBlock("note");
+        var noted = NewLBlock("noted");
+        Terminate($"br i1 {none}, label %{note.Label}, label %{noted.Label}");
+        _cur = note;
+        var seq = EvalCall(new CallExpr("failure_note", [], [new IntLit(0, pos)], pos) { Path = Compiler.SystemModule }, IntType.U(32));
+        string high = EmitTmp($"shl i64 {EmitTmp($"zext i32 {seq.Op} to i64")}, 32");
+        Line($"store i64 {EmitTmp($"or i64 {high}, {tag}")}, ptr {field}");
+        Terminate($"br label %{noted.Label}");
+        _cur = noted;
     }
 
     /// A failure nothing receives: the program stops on `pos`'s line through `Crash`, with the crashable's name and
@@ -290,19 +315,24 @@ public sealed partial class FunctionGen
             {
                 case UnaryExpr { Op: "try" or "check" }:
                     return;
-                case UnaryExpr un:
+                case UnaryExpr { Op: "not" } un:
                     Walk(un.Operand);
                     return;
-                case BinaryExpr bin:
+                case BinaryExpr { Op: "and" or "or" } bin:
                     Walk(bin.Left);
                     Walk(bin.Right);
                     return;
+                // An operator is the call it stands for (`a + b` is `a.add(b)`, which an integer throws from).
+                case UnaryExpr or BinaryExpr or GetItemExpr:
+                {
+                    Expr call;
+                    try { call = Desugar(x); }
+                    catch (CompileError) { return; }
+                    if (!ReferenceEquals(call, x)) Walk(call);
+                    return;
+                }
                 case FieldExpr f:
                     Walk(f.Base);
-                    return;
-                case GetItemExpr g:
-                    Walk(g.Base);
-                    Walk(g.Index);
                     return;
                 case StealExpr st:
                     Walk(st.Value);
@@ -371,7 +401,9 @@ public sealed partial class FunctionGen
         {
             _recover.Pop();
         }
-        if (frame.Calls == 0)
+        // In an instance of a generic routine a call through a protocol may reach a routine that never fails (the body
+        // was checked against the failable requirement): the try or check is then always the value.
+        if (frame.Calls == 0 && !(Emitting && Compiler.IsGenericRoutine(_decl)))
             throw Err(u.Pos, $"nothing after {u.Op} can fail: {u.Op} takes an expression with a call of a failable routine");
         var valueType = _c.ValueTypeOf(v.Type, u.Pos);
         var value = v.Type is VoidType ? new Val("zeroinitializer", valueType) : v;
@@ -501,12 +533,14 @@ public sealed partial class FunctionGen
         throw Err(r.Value!.Pos, $"throw takes a crashable (declared crashable {v.Type.Name}), or the Crashables a check caught, not {v.Type}");
     }
 
-    /// The tag of a new failure of `leaf`: its type ID, and in a traced build the failure's number in the high half
+    /// The tag of a new failure of `leaf`: its type ID, and in a traced routine the failure's number in the high half
     /// (Trace.te's failure_note), wrapping the failure the arm it is made in observed.
     private string FailureTagOp(DType leaf, Pos at)
     {
         uint id = VariantType.TypeId(leaf);
-        if (!_c.Trace || _c.Prechecking) return $"{id}";
+        // An untraced routine (the standard library's) notes nothing: its caller notes the failure when a check of a
+        // traced routine keeps it (NoteLibraryFailure).
+        if (!_c.Trace || _c.Prechecking || !_traced) return $"{id}";
         Expr previous = _values.ContainsKey(FailedBefore) ? new ValueRef(FailedBefore, at) : new IntLit(0, at);
         var seq = EvalCall(new CallExpr("failure_note", [], [previous], at) { Path = Compiler.SystemModule }, IntType.U(32));
         string wide = EmitTmp($"zext i32 {seq.Op} to i64");

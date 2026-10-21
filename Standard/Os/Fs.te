@@ -50,6 +50,12 @@ crashable IoError
 ### A move that copied everything to the new place and then couldn't delete the original: both are there.
 crashable OriginalKeptError
 
+### A cell of a file storage whose bytes aren't a value of its type: four bytes that aren't a Unicode scalar, in a
+### `FileStorage[Char]`.
+crashable InvalidCellError
+    ### The cell, from 0.
+    index: U64
+
 ### Why a file system call failed: one of the crashables a file system routine throws. `is FsError as e` on a `Check`
 ### takes any of them.
 variant FsError
@@ -256,6 +262,14 @@ needs TWriter: typename, Writer[TWriter]
     out.write("The copy is whole, and the original couldn't be deleted: both are there.")
     return
 
+### Writes which cell isn't a value of the storage's type.
+### :typeparam TWriter: The type of the Writer.
+### :param out: The Writer the message goes to.
+routine InvalidCellError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    out.write("Cell {me.index} isn't a value of the storage's type (a Char cell holds a Unicode scalar).")
+    return
+
 ### Makes a `FileStorage` from its fields.
 ### :param base: Its `base`.
 ### :param delta: Its `delta`.
@@ -368,7 +382,7 @@ secret failable routine remove_entries(path: @[Byte], alloc: @MemoryManager) -> 
             iter.close()
             throw error
     while true
-        entry: Maybe[DirEntry] = iter.emit_checked()
+        entry: Maybe[DirEntry] = try iter.emit()
         when entry
             is DirEntry as e =>
                 local full: @Memory[Byte] <- join_path(a: path, b: e.name, alloc)
@@ -414,7 +428,7 @@ secret failable routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Memo
 
     capacity: U64 = when check f.size()
         is U64 as n =>
-            room: Maybe[U64] = n.add_checked(1)
+            room: Maybe[U64] = try n.add(1)
             when room
                 is U64 as with_one => becomes with_one.max(64)
                 is None =>
@@ -429,7 +443,7 @@ secret failable routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Memo
     while true with count: U64 = 0
         capacity2: U64 = buffer.count()
         if count == capacity2
-            doubled: Maybe[U64] = count.mul_checked(2)
+            doubled: Maybe[U64] = try count.mul(2)
             when doubled
                 is U64 as capacity3 =>
                     when check buffer.resize(capacity3)
@@ -722,28 +736,15 @@ needs T: typename, StorageCell[T]
 ### The value in cell `index`, `storage[index]`.
 ### :param index: The cell, from 0.
 ### :returns: The value.
-### :throws: Crashes with `IndexOutOfBoundsError` when `index` is not below `count()`, and with `InvalidValueError`
-###     when the cell's bytes aren't a `T` (four bytes that aren't a Unicode scalar, in a `FileStorage[Char]`).
-@track_caller
-routine FileStorage[T].getitem(index: U64) -> T
+### :throws: Throws `IndexOutOfBoundsError` when `index` is not below `count()`, and `InvalidCellError` when the cell's
+###     bytes aren't a `T` (four bytes that aren't a Unicode scalar, in a `FileStorage[Char]`).
+failable routine FileStorage[T].getitem(index: U64) -> T
 needs T: typename, StorageCell[T]
     if index >= me.count
-        crash_out_of_bounds()
+        throw IndexOutOfBoundsError(index, count: me.count)
     when T.from_cell(at: me.data().stride(index * sizeof[T]()))
         is T as value => return value
-        is None =>
-            crash(name: "InvalidValueError",
-                message: "This cell isn't a value of the storage's type (a Char cell holds a Unicode scalar).")
-
-### The value in cell `index`.
-### :param index: The cell, from 0.
-### :returns: The value.
-### :absent: When `index` is not below `count()`, or the cell's bytes aren't a `T`.
-routine FileStorage[T].getitem_checked(index: U64) -> Maybe[T]
-needs T: typename, StorageCell[T]
-    if index >= me.count
-        return None()
-    return T.from_cell(at: me.data().stride(index * sizeof[T]()))
+        is None => throw InvalidCellError(index)
 
 ### Writes `value` into cell `index`, `storage[index] = value`. It reaches the file when the OS writes the page back,
 ### at `flush`, or at `unmap`.
@@ -795,7 +796,7 @@ secret failable routine copy_tree(from: @[Byte], to: @[Byte], alloc: @MemoryMana
             iter.close()
             throw error
     while true
-        entry: Maybe[DirEntry] = iter.emit_checked()
+        entry: Maybe[DirEntry] = try iter.emit()
         when entry
             is DirEntry as e =>
                 local src: @Memory[Byte] <- join_path(a: from, b: e.name, alloc)
@@ -904,22 +905,13 @@ needs T: typename, StorageCell[T]
 ### The value in cell `index`, `storage[index]`.
 ### :param index: The cell, from 0.
 ### :returns: The value.
-### :throws: Crashes with `IndexOutOfBoundsError` when `index` is not below `count()`, and with `InvalidValueError`
-###     when the cell's bytes aren't a `T`.
-@track_caller
-routine @FileStorage[T].getitem(index: U64) -> T
+### :throws: Throws `IndexOutOfBoundsError` when `index` is not below `count()`, and `InvalidCellError` when the cell's
+###     bytes aren't a `T`.
+failable routine @FileStorage[T].getitem(index: U64) -> T
 needs T: typename, StorageCell[T]
     storage: Me = me.peek()
-    return storage.getitem(index)
-
-### The value in cell `index`.
-### :param index: The cell, from 0.
-### :returns: The value.
-### :absent: When `index` is not below `count()`, or the cell's bytes aren't a `T`.
-routine @FileStorage[T].getitem_checked(index: U64) -> Maybe[T]
-needs T: typename, StorageCell[T]
-    storage: Me = me.peek()
-    return storage.getitem_checked(index)
+    return when check storage.getitem(index)
+        is T as value => value
 
 ### Writes changed pages back to the file.
 ### :throws: Throws the reason when the OS can't write them.

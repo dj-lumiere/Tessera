@@ -62,6 +62,9 @@ namespace Tessera;
 /// `FileStorage[Byte]`, `move_result(from:, to:)` is `rename_result` or `move_result(at:, into:)`, and the working,
 /// temporary and home directories and the environment variables are `OsEnvironment`'s (`--step files`).
 ///
+/// 0.5: the `_checked` twins are gone: the plain routine is failable, and `x.add_checked(y)` is `try x.add(y)`
+/// (`--step checked`).
+///
 /// 0.5: an address moves by a ByteSize with `+%` and `-%` (`a.offset(8)` is `a +% 8b`), and `b -% a` is the distance
 /// from `a` to `b` (`--step addr`).
 public static class Migrate
@@ -96,7 +99,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf" or "managers" or "float-presets" or "modules" or "access" or "threadlocal" or "files";
+        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf" or "managers" or "float-presets" or "modules" or "access" or "threadlocal" or "files" or "checked";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -426,6 +429,9 @@ public static class Migrate
         ["failable"] = (file, text, report) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, t => FailableMigration.Rewrite(t, report, file))
             : FailableMigration.Rewrite(text, report, file),
+        ["checked"] = (file, text, report) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, t => CheckedMigration.Rewrite(t, report, file))
+            : CheckedMigration.Rewrite(text, report, file),
         ["files"] = (file, text, report) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, t => FileMigration.Rewrite(t, report, file))
             : FileMigration.Rewrite(text, report, file),

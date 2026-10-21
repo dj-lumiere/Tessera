@@ -856,10 +856,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var pos = Cur.Pos;
         ExpectIdent("choice");
         var name = TypeName(Expect(TokenKind.Ident, "a choice name"));
-        // The underlying type is always written: `choice Dir: U8`.
-        if (!Accept(TokenKind.Colon))
-            throw new CompileError(name.Pos, $"choice '{name.Text}' needs its underlying type: choice {name.Text}: U8");
-        var underlying = ParseType();
+        // The underlying type, `choice Dir: U8`, is S32 when it isn't written (C's int).
+        bool written = Accept(TokenKind.Colon);
+        var underlying = written ? ParseType() : new TypeRef("S32", [], name.Pos);
         ExpectLineEnd();
 
         var members = new List<(string, Expr)>();
@@ -877,7 +876,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             members.Add((m.Text, value));
             ExpectLineEnd();
         }
-        return new ChoiceDecl(file, annotations, name.Text, underlying, members, pos);
+        return new ChoiceDecl(file, annotations, name.Text, underlying, members, pos) { UnderlyingWritten = written };
     }
 
     private static bool IsScreamingSnake(string name) =>

@@ -130,4 +130,16 @@ public class FormatterTests
         Assert.Contains("@target(arch: (\"x86_64\", \"x86\", \"aarch64\", \"arm\", \"riscv64\", \"riscv32\", \"powerpc64le\", \"mipsel\",\n"
             + "    \"wasm32\", \"wasm64\"))\n", formatted);
     }
+
+    [Fact]
+    public void TryInParenthesesBeforeACallKeepsThem()
+    {
+        string source = """
+            routine f(m: @List[S64]) -> S64
+                first: S64 = (try m.remove_last()).unwrap()
+                return first
+
+            """;
+        Assert.Contains("first: S64 = (try m.remove_last()).unwrap()", Formatter.Format(source));
+    }
 }

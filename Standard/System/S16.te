@@ -2,14 +2,15 @@
 #
 # Maps to LLVM IR i16. Every S / U width shares the same method set.
 #
-# add / sub / mul / div / mod / neg / abs / pow and lossy to[T]
-# conversions crash when the result doesn't fit. Each has a _checked form
-# that returns Maybe instead, and add / sub / mul / pow / neg / abs and the
-# conversions have _wrap (modular) and _clamp (saturating) forms.
+# add / sub / mul / floordiv / mod / neg / abs / pow are failable: they throw
+# IntegerOverflowError (or DivisionByZeroError) when the result doesn't fit,
+# so a bare call stops there and `try a + b` gives None. A lossy to[T] crashes,
+# and to_checked[T] gives None instead. add / sub / mul / pow / neg / abs and
+# the conversions have _wrap (modular) and _clamp (saturating) forms.
 
 module Standard/System
 
-### S16 is a 16-bit signed two's-complement integer. Arithmetic crashes on overflow, with `_checked`, `_wrap`, and `_clamp` forms for the other behaviors.
+### S16 is a 16-bit signed two's-complement integer. Arithmetic throws `IntegerOverflowError` on overflow (`try a + b` gives None), with `_wrap` and `_clamp` forms for the other behaviors.
 @llvm("i16")
 record S16
 obeys Equatable[S16], Comparable[S16], Hashable[S16]
@@ -166,26 +167,6 @@ routine S16.rotr(n: Me) -> Me
     r: Me = fshr[Me](hi: me, lo: me, amt: n)
     return r
 
-### Shift left that reports an out-of-range amount.
-### :param n: The shift amount in bits.
-### :returns: `me` shifted left by `n`, with 0 bits filling in.
-### :absent: When `n` is outside `0 ..< BITS`.
-routine S16.shift_left_checked(n: Me) -> Maybe[Me]
-    if not (0 <= n < Me.BITS)
-        return None()
-    r: Me = shl[Me](val: me, amt: n)
-    return r
-
-### Arithmetic shift right that reports an out-of-range amount.
-### :param n: The shift amount in bits.
-### :returns: `me` shifted right by `n`, with the sign bit filling in.
-### :absent: When `n` is outside `0 ..< BITS`.
-routine S16.arith_shift_right_checked(n: Me) -> Maybe[Me]
-    if not (0 <= n < Me.BITS)
-        return None()
-    r: Me = ashr[Me](val: me, amt: n)
-    return r
-
 ### Shifts left by `n` modulo the bit width, so an amount of `BITS` or more wraps instead of shifting every bit out.
 ### :param n: The shift amount in bits, taken modulo `BITS`.
 ### :returns: `me` shifted left, with 0 bits filling in.
@@ -207,23 +188,11 @@ routine S16.arith_shift_right_wrap(n: Me) -> Me
 ### The sum of `me` and `other`.
 ### :param other: The value to add.
 ### :returns: The sum.
-### :throws: Crashes with `IntegerOverflowError` when the sum does not fit in `S16`.
-@track_caller
-routine S16.add(other: Me) -> Me
+### :throws: Throws `IntegerOverflowError` when the sum does not fit in `S16`.
+failable routine S16.add(other: Me) -> Me
     if sadd_overflows[Me](me, other)
-        crash_overflow()
+        throw IntegerOverflowError()
     r: Me = add[Me](a: me, b: other)
-    return r
-
-### Addition that reports overflow.
-### :param other: The value to add.
-### :returns: The sum.
-### :absent: When the exact sum does not fit in `S16`.
-routine S16.add_checked(other: Me) -> Maybe[Me]
-    overflow: Bool = sadd_overflows[Me](me, other)
-    fits: Bool = not overflow
-    result: Me = add[Me](a: me, b: other)
-    r: Maybe[Me] = fits.then_present(result)
     return r
 
 ### The sum of `me` and `other`, wrapped modulo 2^16.
@@ -243,23 +212,11 @@ routine S16.add_clamp(other: Me) -> Me
 ### The difference of `me` and `other`.
 ### :param other: The value to subtract.
 ### :returns: The difference.
-### :throws: Crashes with `IntegerOverflowError` when the difference does not fit in `S16`.
-@track_caller
-routine S16.sub(other: Me) -> Me
+### :throws: Throws `IntegerOverflowError` when the difference does not fit in `S16`.
+failable routine S16.sub(other: Me) -> Me
     if ssub_overflows[Me](me, other)
-        crash_overflow()
+        throw IntegerOverflowError()
     r: Me = sub[Me](me, other)
-    return r
-
-### Subtraction that reports overflow.
-### :param other: The value to subtract.
-### :returns: The difference.
-### :absent: When the exact difference does not fit in `S16`.
-routine S16.sub_checked(other: Me) -> Maybe[Me]
-    overflow: Bool = ssub_overflows[Me](me, other)
-    fits: Bool = not overflow
-    result: Me = sub[Me](me, other)
-    r: Maybe[Me] = fits.then_present(result)
     return r
 
 ### The difference of `me` and `other`, wrapped modulo 2^16.
@@ -279,23 +236,11 @@ routine S16.sub_clamp(other: Me) -> Me
 ### The product of `me` and `other`.
 ### :param other: The factor to multiply by.
 ### :returns: The product.
-### :throws: Crashes with `IntegerOverflowError` when the product does not fit in `S16`.
-@track_caller
-routine S16.mul(other: Me) -> Me
+### :throws: Throws `IntegerOverflowError` when the product does not fit in `S16`.
+failable routine S16.mul(other: Me) -> Me
     if smul_overflows[Me](me, other)
-        crash_overflow()
+        throw IntegerOverflowError()
     r: Me = mul[Me](me, other)
-    return r
-
-### Multiplication that reports overflow.
-### :param other: The factor to multiply by.
-### :returns: The product.
-### :absent: When the exact product does not fit in `S16`.
-routine S16.mul_checked(other: Me) -> Maybe[Me]
-    overflow: Bool = smul_overflows[Me](me, other)
-    fits: Bool = not overflow
-    result: Me = mul[Me](me, other)
-    r: Maybe[Me] = fits.then_present(result)
     return r
 
 ### The product of `me` and `other`, wrapped modulo 2^16.
@@ -337,21 +282,11 @@ routine S16.mul_wide(other: Me) -> S32
 
 ### The negation of `me`.
 ### :returns: `-me`.
-### :throws: Crashes with `IntegerOverflowError` when `me` is `MIN`, whose negation does not fit.
-@track_caller
-routine S16.neg() -> Me
+### :throws: Throws `IntegerOverflowError` when `me` is `MIN`, whose negation does not fit.
+failable routine S16.neg() -> Me
     if me == Me.MIN
-        crash_overflow()
+        throw IntegerOverflowError()
     r: Me = sub[Me](0, me)
-    return r
-
-### Negation that reports overflow.
-### :returns: `-me`.
-### :absent: When `me` is `MIN`, whose negation does not fit.
-routine S16.neg_checked() -> Maybe[Me]
-    fits: Bool = me != Me.MIN
-    negated: Me = sub[Me](0, me)
-    r: Maybe[Me] = fits.then_present(negated)
     return r
 
 ### The negation of `me`, wrapped modulo 2^16, so `MIN.neg_wrap()` is `MIN`.
@@ -368,22 +303,11 @@ routine S16.neg_clamp() -> Me
 
 ### The absolute value of `me`.
 ### :returns: The magnitude of `me`.
-### :throws: Crashes with `IntegerOverflowError` when `me` is `MIN`, whose magnitude does not fit.
-@track_caller
-routine S16.abs() -> Me
-    if not (me < 0)
-        return me
-    r: Me = -me
-    return r
-
-### Absolute value that reports overflow.
-### :returns: The magnitude of `me`.
-### :absent: When `me` is `MIN`, whose magnitude does not fit.
-routine S16.abs_checked() -> Maybe[Me]
-    fits: Bool = me != Me.MIN
-    magnitude: Me = me.abs_wrap()
-    r: Maybe[Me] = fits.then_present(magnitude)
-    return r
+### :throws: Throws `IntegerOverflowError` when `me` is `MIN`, whose magnitude does not fit.
+failable routine S16.abs() -> Me
+    if me == Me.MIN
+        throw IntegerOverflowError()
+    return me.abs_wrap()
 
 ### The absolute value of `me`, wrapped modulo 2^16, so `MIN.abs_wrap()` is `MIN`.
 ### :returns: The magnitude of `me`, or `MIN` when `me` is `MIN`.
@@ -456,30 +380,6 @@ routine S16.mod_trunc(other: Me) -> Me
     r: Me = srem[Me](me, other)
     return r
 
-### Euclidean division that reports failure instead of crashing (the remainder is never negative).
-### :param other: The divisor.
-### :returns: The quotient of `me` divided by `other`.
-### :absent: On a zero divisor and on `MIN.floordiv_checked(-1)`.
-routine S16.floordiv_checked(other: Me) -> Maybe[Me]
-    by_zero: Bool = other == 0
-    overflow: Bool = me == Me.MIN and other == -1
-    if by_zero or overflow
-        return None()
-    r: Me = me.floordiv(other)
-    return r
-
-### The Euclidean remainder (never negative), reporting failure instead of crashing.
-### :param other: The divisor.
-### :returns: The remainder of `me` divided by `other`.
-### :absent: On a zero divisor and on `MIN.mod_checked(-1)`.
-routine S16.mod_checked(other: Me) -> Maybe[Me]
-    by_zero: Bool = other == 0
-    overflow: Bool = me == Me.MIN and other == -1
-    if by_zero or overflow
-        return None()
-    r: Me = me.mod(other)
-    return r
-
 ### The Euclidean quotient of `me` divided by `other`. `MIN.floordiv_wrap(-1)` wraps to `MIN`.
 ### :param other: The divisor.
 ### :returns: The quotient, or `MIN` for `MIN.floordiv_wrap(-1)`.
@@ -509,11 +409,13 @@ routine S16.mod_wrap(other: Me) -> Me
 ### The quotient of Euclidean division, chosen so the remainder is never negative.
 ### :param other: The divisor.
 ### :returns: The quotient `q` for which `me - q * other` is in `0 ..< |other|`.
-### :throws: Crashes with `DivisionByZeroError` when `other` is 0, and with `IntegerOverflowError` on `MIN.floordiv(-1)`.
-@track_caller
-routine S16.floordiv(other: Me) -> Me
-    local q: Me = me.div_trunc(other)
-
+### :throws: Throws `DivisionByZeroError` when `other` is 0, and `IntegerOverflowError` on `MIN.floordiv(-1)`.
+failable routine S16.floordiv(other: Me) -> Me
+    if other == 0
+        throw DivisionByZeroError()
+    if me == Me.MIN and other == -1
+        throw IntegerOverflowError()
+    q: Me = me.div_trunc(other)
     rem: Me = me.mod_trunc(other)
     if not (rem < 0)
         return q
@@ -526,9 +428,12 @@ routine S16.floordiv(other: Me) -> Me
 ### The remainder of Euclidean division, always in `0 ..< |other|`.
 ### :param other: The divisor.
 ### :returns: The remainder, never negative.
-### :throws: Crashes with `DivisionByZeroError` when `other` is 0, and with `IntegerOverflowError` on `MIN.mod(-1)`.
-@track_caller
-routine S16.mod(other: Me) -> Me
+### :throws: Throws `DivisionByZeroError` when `other` is 0, and `IntegerOverflowError` on `MIN.mod(-1)`.
+failable routine S16.mod(other: Me) -> Me
+    if other == 0
+        throw DivisionByZeroError()
+    if me == Me.MIN and other == -1
+        throw IntegerOverflowError()
     rem: Me = me.mod_trunc(other)
     if not (rem < 0)
         return rem
@@ -541,48 +446,11 @@ routine S16.mod(other: Me) -> Me
 ### Raises `me` to the power `exponent`.
 ### :param exponent: The power to raise to.
 ### :returns: `me` to the power `exponent`.
-### :throws: Crashes with `IntegerOverflowError` when the exact power does not fit in `S16`, and with
-###     `NumericDomainError` when `exponent` is negative: the power is a fraction then.
-@track_caller
-routine S16.pow(exponent: Me) -> Me
+### :throws: Throws `IntegerOverflowError` when the exact power does not fit in `S16`, and
+###     `NegativeExponentError` when `exponent` is negative: the power is a fraction then.
+failable routine S16.pow(exponent: Me) -> Me
     if exponent < 0
-        crash_negative_exponent()
-    r: Maybe[Me] = me.pow_checked(exponent)
-    when r
-        is Me as value => return value
-        is None => crash_overflow()
-
-### Raises `me` to the power `exponent` by squaring, wrapping modulo 2^16.
-### :param exponent: The power to raise to.
-### :returns: The low 16 bits of the exact power.
-### :throws: Crashes with `NumericDomainError` when `exponent` is negative.
-routine S16.pow_wrap(exponent: Me) -> Me
-    if exponent < 0
-        crash_negative_exponent()
-    local base: @Me <- me
-    local acc: @Me <- 1
-
-    while exponent_left != 0 with exponent_left: Me = exponent
-        odd: Bool = exponent_left & 1 != 0
-        with_base: Me = mul[Me](acc.peek(), base.peek())
-        next_acc: Me = when
-            odd => with_base
-            else => acc.peek()
-        next_acc2: Me = next_acc
-        next_base: Me = mul[Me](base.peek(), base.peek())
-        next_base.poke_into(base)
-        next_acc2.poke_into(acc)
-        continue with exponent_left: exponent_left >> 1
-    then
-        return acc.peek()
-
-### Power that reports overflow.
-### :param exponent: The power to raise to.
-### :returns: `me` to the power `exponent`.
-### :absent: When the exact power does not fit in `S16`, or when `exponent` is negative.
-routine S16.pow_checked(exponent: Me) -> Maybe[Me]
-    if exponent < 0
-        return None()
+        throw NegativeExponentError()
     local base: @Me <- me
     local acc: @Me <- 1
     local overflow: @Bool <- false
@@ -608,8 +476,33 @@ routine S16.pow_checked(exponent: Me) -> Maybe[Me]
         next_overflow.poke_into(overflow)
         continue with exponent_left: rest
     fits: Bool = not overflow.peek()
-    r: Maybe[Me] = fits.then_present(acc.peek())
-    return r
+    if not fits
+        throw IntegerOverflowError()
+    return acc.peek()
+
+### Raises `me` to the power `exponent` by squaring, wrapping modulo 2^16.
+### :param exponent: The power to raise to.
+### :returns: The low 16 bits of the exact power.
+### :throws: Crashes with `NumericDomainError` when `exponent` is negative.
+routine S16.pow_wrap(exponent: Me) -> Me
+    if exponent < 0
+        crash_negative_exponent()
+    local base: @Me <- me
+    local acc: @Me <- 1
+
+    while exponent_left != 0 with exponent_left: Me = exponent
+        odd: Bool = exponent_left & 1 != 0
+        with_base: Me = mul[Me](acc.peek(), base.peek())
+        next_acc: Me = when
+            odd => with_base
+            else => acc.peek()
+        next_acc2: Me = next_acc
+        next_base: Me = mul[Me](base.peek(), base.peek())
+        next_base.poke_into(base)
+        next_acc2.poke_into(acc)
+        continue with exponent_left: exponent_left >> 1
+    then
+        return acc.peek()
 
 ### Raises `me` to the power `exponent`, saturated at `MIN` or `MAX` by the sign the exact power would have.
 ### :param exponent: The power to raise to.
@@ -623,7 +516,7 @@ routine S16.pow_clamp(exponent: Me) -> Me
     limit: Me = when
         negative_result => Me.MIN
         else => Me.MAX
-    checked: Maybe[Me] = me.pow_checked(exponent)
+    checked: Maybe[Me] = try me.pow(exponent)
     r: Me = checked.unwrap_or(limit)
     return r
 

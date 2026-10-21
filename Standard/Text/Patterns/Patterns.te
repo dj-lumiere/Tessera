@@ -253,6 +253,19 @@ failable common routine BytesPattern.from_regex(regex: @[Byte], alloc: @MemoryMa
 
 # -- the messages ------------------------------------------------------------------------------------------------
 
+### A capture asked for by a name the pattern has no capture of.
+crashable CaptureNameError
+    ### The name asked for.
+    name: @[Byte]
+
+### Writes `The pattern has no capture named "year".`
+### :typeparam TWriter: The writer's type.
+### :param out: Where the message goes.
+routine CaptureNameError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    out.write("The pattern has no capture named {me.name.diagnose()}.")
+    return
+
 ### Writes what went wrong and where: `Backreferences aren't supported (at position 3).`
 ### :typeparam TWriter: The writer's type.
 ### :param out: Where the message goes.
@@ -594,25 +607,16 @@ routine @TextMatch.end() -> U64
 routine @TextMatch.text() -> @[Byte]
     return me.source.peek().getslice(start: me.start(), count: me.end() - me.start())
 
-### The text a capture took, or None when the pattern has no capture of that name or the capture took no part in
-### the match.
-### :param name: The capture's name.
-### :returns: A view of the text, or None.
-routine @TextMatch.group_checked(name: @[Byte]) -> Maybe[@[Byte]]
-    parts: MatchParts = MatchParts.construct(source: me.source.peek(), slots: me.slots.getview(),
-        program: me.program.peek(), mode: MODE_TEXT)
-    return parts.group_checked(name)
-
 ### The text a capture took.
 ### :param name: The capture's name.
 ### :returns: A view of the text.
-### :throws: Crashes with `CaptureNameError` when the pattern has no capture of that name, and with
-### `AbsentValueError` when the capture took no part in the match. See {TextMatch.group_checked}.
-@track_caller
-routine @TextMatch.group(name: @[Byte]) -> @[Byte]
+### :throws: Throws `CaptureNameError` when the pattern has no capture of that name, and `AbsentValueError` when the
+###     capture took no part in the match.
+failable routine @TextMatch.group(name: @[Byte]) -> @[Byte]
     parts: MatchParts = MatchParts.construct(source: me.source.peek(), slots: me.slots.getview(),
         program: me.program.peek(), mode: MODE_TEXT)
-    return parts.group(name)
+    return when check parts.group(name)
+        is @[Byte] as text => text
 
 ### Where the match starts.
 ### :returns: The index of its first byte.
@@ -629,24 +633,16 @@ routine @BytesMatch.end() -> U64
 routine @BytesMatch.bytes() -> @[Byte]
     return me.source.peek().getslice(start: me.start(), count: me.end() - me.start())
 
-### The bytes a capture took, or None when the pattern has no capture of that name or it took no part.
-### :param name: The capture's name.
-### :returns: A view of the bytes, or None.
-routine @BytesMatch.group_checked(name: @[Byte]) -> Maybe[@[Byte]]
-    parts: MatchParts = MatchParts.construct(source: me.source.peek(), slots: me.slots.getview(),
-        program: me.program.peek(), mode: MODE_BYTES)
-    return parts.group_checked(name)
-
 ### The bytes a capture took.
 ### :param name: The capture's name.
 ### :returns: A view of the bytes.
-### :throws: Crashes with `CaptureNameError` when the pattern has no capture of that name, and with
-### `AbsentValueError` when the capture took no part in the match.
-@track_caller
-routine @BytesMatch.group(name: @[Byte]) -> @[Byte]
+### :throws: Throws `CaptureNameError` when the pattern has no capture of that name, and `AbsentValueError` when the
+###     capture took no part in the match.
+failable routine @BytesMatch.group(name: @[Byte]) -> @[Byte]
     parts: MatchParts = MatchParts.construct(source: me.source.peek(), slots: me.slots.getview(),
         program: me.program.peek(), mode: MODE_BYTES)
-    return parts.group(name)
+    return when check parts.group(name)
+        is @[Byte] as bytes => bytes
 
 ### Makes the parts of a match.
 ### :param source: The text or bytes searched.
@@ -664,26 +660,15 @@ routine @MatchParts.destruct() -> None
 
 ### The text of a named capture.
 ### :param name: The capture's name.
-### :returns: A view of the text, or None for no such capture or one that took no part.
-secret routine MatchParts.group_checked(name: @[Byte]) -> Maybe[@[Byte]]
+### :returns: A view of the text.
+### :throws: Throws `CaptureNameError` for no such capture, and `AbsentValueError` for one that took no part.
+secret failable routine MatchParts.group(name: @[Byte]) -> @[Byte]
     view: Program = read_program(words: me.program, mode: me.mode).unwrap()
     group: U64 = view.group_named_utf8(name)
     if group == 0
-        return None()
+        throw CaptureNameError(name)
     start: U64 = me.slots.getitem(group * 2)
     end: U64 = me.slots.getitem(group * 2 + 1)
     if start == NO_POSITION or end == NO_POSITION
-        return None()
+        throw AbsentValueError()
     return me.source.getslice(start, count: end - start)
-
-### The text of a named capture, crashing when there is none.
-### :param name: The capture's name.
-### :returns: A view of the text.
-@track_caller
-secret routine MatchParts.group(name: @[Byte]) -> @[Byte]
-    view: Program = read_program(words: me.program, mode: me.mode).unwrap()
-    if view.group_named_utf8(name) == 0
-        crash("CaptureNameError", "The pattern has no capture of that name.")
-    when me.group_checked(name)
-        is @[Byte] as found => return found
-        is None => crash("AbsentValueError", "The capture took no part in the match.")

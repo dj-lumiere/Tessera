@@ -3,7 +3,8 @@ using System.Text.Json.Nodes;
 namespace Tessera;
 
 /// Inlay hints: after a call of a failable routine that no `try` or `check` takes, `may stop`, since a failure there
-/// stops the program on that line.
+/// stops the program on that line. An operator (`a + b`, `-x`, `xs[i]`) gets none: that an overflowing `+` or an index
+/// past the end stops the program is known without a mark on every line.
 public static partial class LanguageServer
 {
     private static JsonArray InlayHints(string uri)
@@ -29,15 +30,16 @@ public static partial class LanguageServer
 
         // The calls a `try` / `check` takes the failure of.
         var recovered = new HashSet<Pos>();
+        var operators = new HashSet<Pos>();
         foreach (var r in analysis.Decls.OfType<RoutineDecl>())
             foreach (var stmt in Bodies.All((r.Blocks ?? []).SelectMany(b => b.Stmts).Concat(r.Shared)))
                 foreach (var e in Bodies.Exprs(stmt))
-                    CollectRecovered(e, under: false, recovered);
+                    CollectRecovered(e, under: false, recovered, operators);
 
         var shown = new HashSet<Pos>();
         foreach (var ((pos, _), use) in analysis.Compiler.CallUses)
         {
-            if (!use.Decl.IsFailable || recovered.Contains(pos) || pos.File != analysis.Shown || !shown.Add(pos)) continue;
+            if (!use.Decl.IsFailable || recovered.Contains(pos) || operators.Contains(pos) || pos.File != analysis.Shown || !shown.Add(pos)) continue;
             if (CallClose(tokens, pos) is not { } close) continue;
             hints.Add(new JsonObject
             {
@@ -51,65 +53,69 @@ public static partial class LanguageServer
         return hints;
     }
 
-    /// Marks the positions of the calls under a `try` or `check`.
-    private static void CollectRecovered(Expr e, bool under, HashSet<Pos> into)
+    /// Marks the positions of the calls under a `try` or `check`, and of the operators.
+    private static void CollectRecovered(Expr e, bool under, HashSet<Pos> into, HashSet<Pos> operators)
     {
         switch (e)
         {
             case UnaryExpr { Op: "try" or "check" } u:
-                CollectRecovered(u.Operand, true, into);
+                CollectRecovered(u.Operand, true, into, operators);
                 return;
             case UnaryExpr u:
-                CollectRecovered(u.Operand, under, into);
+                operators.Add(u.Pos);
+                CollectRecovered(u.Operand, under, into, operators);
                 return;
             case CallExpr c:
                 if (under) into.Add(c.Pos);
-                foreach (var a in c.Args) CollectRecovered(a, under, into);
+                foreach (var a in c.Args) CollectRecovered(a, under, into, operators);
                 return;
             case NsCallExpr n:
                 if (under) into.Add(n.Pos);
-                foreach (var a in n.Args) CollectRecovered(a, under, into);
+                foreach (var a in n.Args) CollectRecovered(a, under, into, operators);
                 return;
             case ImplicitCallExpr ic:
                 if (under) into.Add(ic.Pos);
-                foreach (var a in ic.Args) CollectRecovered(a, under, into);
+                foreach (var a in ic.Args) CollectRecovered(a, under, into, operators);
                 return;
             case MethodCallExpr m:
                 if (under) into.Add(m.Pos);
-                CollectRecovered(m.Receiver, under, into);
-                foreach (var a in m.Args) CollectRecovered(a, under, into);
+                if (m.FromOperator) operators.Add(m.Pos);
+                CollectRecovered(m.Receiver, under, into, operators);
+                foreach (var a in m.Args) CollectRecovered(a, under, into, operators);
                 return;
             case BinaryExpr b:
-                CollectRecovered(b.Left, under, into);
-                CollectRecovered(b.Right, under, into);
+                operators.Add(b.Pos);
+                CollectRecovered(b.Left, under, into, operators);
+                CollectRecovered(b.Right, under, into, operators);
                 return;
             case FieldExpr f:
-                CollectRecovered(f.Base, under, into);
+                CollectRecovered(f.Base, under, into, operators);
                 return;
             case GetItemExpr g:
-                CollectRecovered(g.Base, under, into);
-                CollectRecovered(g.Index, under, into);
+                operators.Add(g.Pos);
+                CollectRecovered(g.Base, under, into, operators);
+                CollectRecovered(g.Index, under, into, operators);
                 return;
             case StealExpr s:
-                CollectRecovered(s.Value, under, into);
+                CollectRecovered(s.Value, under, into, operators);
                 return;
             case IfExpr i:
-                CollectRecovered(i.Cond, under, into);
-                CollectRecovered(i.Then, under, into);
-                CollectRecovered(i.Else, under, into);
+                CollectRecovered(i.Cond, under, into, operators);
+                CollectRecovered(i.Then, under, into, operators);
+                CollectRecovered(i.Else, under, into, operators);
                 return;
             case WhenExpr w:
-                if (w.When.Value is { } subject) CollectRecovered(subject, under, into);
+                if (w.When.Value is { } subject) CollectRecovered(subject, under, into, operators);
                 foreach (var arm in w.When.Arms)
                     foreach (var stmt in Bodies.All(arm.Body))
                         foreach (var inner in Bodies.Exprs(stmt))
-                            CollectRecovered(inner, under, into);
+                            CollectRecovered(inner, under, into, operators);
                 return;
             case RecordLit r:
-                foreach (var (_, value, _) in r.Fields) CollectRecovered(value, under, into);
+                foreach (var (_, value, _) in r.Fields) CollectRecovered(value, under, into, operators);
                 return;
             case ArrayLit a:
-                foreach (var x in a.Elements) CollectRecovered(x, under, into);
+                foreach (var x in a.Elements) CollectRecovered(x, under, into, operators);
                 return;
         }
     }

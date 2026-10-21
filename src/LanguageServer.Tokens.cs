@@ -702,7 +702,7 @@ public static partial class LanguageServer
                 case ChoiceDecl choice:
                     _typeParams = [];
                     Mark(choice.Pos, choice.Name, "recordType", DeclHover(choice));
-                    Type(choice.Underlying);
+                    if (choice.UnderlyingWritten) Type(choice.Underlying);
                     foreach (var (name, value) in choice.Members)
                     {
                         Mark(value.Pos.Line > 0 ? value.Pos with { Col = 1 } : choice.Pos, name, "constant",

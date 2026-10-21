@@ -166,7 +166,11 @@ public sealed record RecordDecl(
 
 public sealed record ChoiceDecl(
     string File, List<Annotation> Annotations, string Name, TypeRef Underlying, List<(string Name, Expr Value)> Members,
-    Pos Pos) : Decl(File, Annotations, Pos);
+    Pos Pos) : Decl(File, Annotations, Pos)
+{
+    /// Whether the source writes the underlying type (`choice Dir: U8`). A choice that doesn't is an `S32`.
+    public bool UnderlyingWritten { get; init; } = true;
+}
 
 /// `variant Cell` and its branches, one type per line: a value of the variant is a value of one of them, which `when`
 /// observes with `is T as t`. A variant written inline, `A | B`, is one of the stdlib's `@union` variants

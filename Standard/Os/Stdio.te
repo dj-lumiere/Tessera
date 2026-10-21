@@ -8,8 +8,9 @@
 # standard input is one stream, and two buffers over it would each take bytes the other should have had, so
 # read_into, ask_bytes, ask_word, ask_line, and ask_all all draw on that one. Console.ask[T]() reads a number
 # (any Parsable type) from the next word in place, without allocating unless the word is longer than the buffer.
-# ask[T], ask_word, and ask_line crash at the end of the input, and their _checked forms return None there. Code that
-# reads a file or standard input alike takes a @R and gets Console.input().
+# ask[T], ask_word, and ask_line are failable: they throw EndOfInputError at the end of the input, so a bare call stops
+# there and `try Console.ask_line()` gives None. Code that reads a file or standard input alike takes a @R and gets
+# Console.input().
 #
 # On Linux and macOS these are file descriptors 0, 1, and 2. On Windows a console is a different thing from a pipe:
 # text for a console goes in as UTF-16 (WriteConsoleW, ReadConsoleW), so UTF-8 shows right whatever the console's code
@@ -80,16 +81,16 @@ secret routine @InputBuffer.fill() -> Bool
 
 ### The next byte, filling the buffer when it is empty. The lock is held.
 ### :returns: The byte.
-### :absent: At the end of the input.
-secret routine @InputBuffer.emit_checked() -> Maybe[Byte]
+### :throws: Throws `AbsentValueError` at the end of the input.
+secret failable routine @InputBuffer.emit() -> Byte
     if me.start.peek() < me.end.peek() or me.fill()
         at: U64 = me.start.peek()
         me.start.poke(at + 1)
         buffered: @Byte = me.bytes.to[@Byte]()
         return buffered.stride(at).peek()
-    return None()
+    throw AbsentValueError()
 
-### Puts back the byte emit_checked just handed out. The lock is held.
+### Puts back the byte emit just handed out. The lock is held.
 secret routine @InputBuffer.unread() -> None
     previous_start: U64 = me.start.peek() - 1
     previous_start.poke_into(me.start)
@@ -137,7 +138,7 @@ secret routine @InputBuffer.compact() -> None
 secret routine @InputBuffer.word(spill: @Memory[Byte]) -> Maybe[@[Byte]]
     # White space up to the word's first byte, which is put back.
     while true
-        c: Maybe[Byte] = me.emit_checked()
+        c: Maybe[Byte] = try me.emit()
         when c
             is Byte as byte =>
                 if is_space(byte)
@@ -186,7 +187,7 @@ secret routine @InputBuffer.spill_word(length: U64, spill: @Memory[Byte]) -> @[B
     text.append(chunk: me.bytes.to[@Byte](), n: length, alloc: HEAP)
     me.start.poke(length)
     while true
-        c: Maybe[Byte] = me.emit_checked()
+        c: Maybe[Byte] = try me.emit()
         when c
             is Byte as byte =>
                 if is_space(byte)
@@ -234,14 +235,6 @@ failable routine @ConsoleInput.read_into(buffer: @Byte, count: U64) -> U64
     next_start.poke_into(b.start)
     b.lock.unlock()
     return n
-
-### Skips white space and reads the next word as a T, like {Console.ask[T]}, with None instead of a failure at the end
-### of the input and on a word that isn't a T. The word is gone from the input either way.
-### :typeparam T: The type to read, a Parsable one.
-### :returns: The value, or None at the end of the input or when the word isn't a T.
-common routine Console.ask_checked[T]() -> Maybe[T]
-needs T: typename, Parsable[T]
-    return try Me.ask[T]()
 
 ### Skips white space and reads the next word (spaces, tabs, and line ends separate words) as a T, straight from the
 ### input buffer: nothing is allocated unless the word is longer than the buffer. The space after the word stays in
@@ -340,28 +333,17 @@ common routine Console.ask_all(alloc: @MemoryManager) -> Memory[Byte]
 ### blank line is "". Drop it.
 ### :param alloc: The allocator for the line.
 ### :returns: The line.
-### :throws: Crashes with `AbsentValueError` at the end of the input. See {Console.ask_line_checked}.
-@track_caller
+### :throws: Throws `EndOfInputError` at the end of the input.
 @expensive("allocates what it reads")
-common routine Console.ask_line(alloc: @MemoryManager) -> Memory[Byte]
-    when Me.ask_line_checked(alloc)
-        is Memory[Byte] as text => return text
-        is None => crash(name: "AbsentValueError",
-            message: "The input ended before Console.ask_line() found a line to read.")
-
-### The next line, without its "\n" (or "\r\n"), in memory from alloc, or None at the end of the input. A last line
-### with no "\n" still counts, and a blank line is "". Drop it.
-### :param alloc: The allocator for the line.
-### :returns: The line.
-### :absent: At the end of the input.
-@expensive("allocates what it reads")
-common routine Console.ask_line_checked(alloc: @MemoryManager) -> Maybe[Memory[Byte]]
+failable common routine Console.ask_line(alloc: @MemoryManager) -> Memory[Byte]
     local b: @InputBuffer = STDIN_BUFFER
 
     b.lock.lock()
     local line: @Maybe[Memory[Byte]] <- b.line(alloc)
     b.lock.unlock()
-    return line
+    when steal line
+        is Memory[Byte] as text => return text
+        is None => throw EndOfInputError(reader: "Console.ask_line")
 
 ### The next line, without its "\n" (or "\r\n"), in memory from alloc. The lock is held.
 ### :param alloc: The allocator for the line.
@@ -371,7 +353,7 @@ secret routine @InputBuffer.line(alloc: @MemoryManager) -> Maybe[Memory[Byte]]
     local text: @CaptureBuffer <- CaptureBuffer.empty()
 
     while true with any: Bool = false
-        c: Maybe[Byte] = me.emit_checked()
+        c: Maybe[Byte] = try me.emit()
         when c
             is Byte as byte =>
                 if byte == b'\n'
@@ -409,28 +391,17 @@ secret routine is_space(c: Byte) -> Bool
 ### in the input. Drop it.
 ### :param alloc: The allocator for the word.
 ### :returns: The word.
-### :throws: Crashes with `AbsentValueError` at the end of the input. See {Console.ask_word_checked}.
-@track_caller
+### :throws: Throws `EndOfInputError` at the end of the input.
 @expensive("allocates what it reads")
-common routine Console.ask_word(alloc: @MemoryManager) -> Memory[Byte]
-    when Me.ask_word_checked(alloc)
-        is Memory[Byte] as text => return text
-        is None => crash(name: "AbsentValueError",
-            message: "The input ended before Console.ask_word() found a word to read.")
-
-### The next word (spaces, tabs, and line ends separate words), in memory from alloc, or None at the end of the
-### input. The space after the word stays in the input. Drop it.
-### :param alloc: The allocator for the word.
-### :returns: The word.
-### :absent: At the end of the input.
-@expensive("allocates what it reads")
-common routine Console.ask_word_checked(alloc: @MemoryManager) -> Maybe[Memory[Byte]]
+failable common routine Console.ask_word(alloc: @MemoryManager) -> Memory[Byte]
     local b: @InputBuffer = STDIN_BUFFER
 
     b.lock.lock()
     local word: @Maybe[Memory[Byte]] <- b.owned_word(alloc)
     b.lock.unlock()
-    return word
+    when steal word
+        is Memory[Byte] as text => return text
+        is None => throw EndOfInputError(reader: "Console.ask_word")
 
 ### The next word, in memory from alloc. The space after the word stays in the input. The lock is held.
 ### :param alloc: The allocator for the word.
@@ -442,7 +413,7 @@ secret routine @InputBuffer.owned_word(alloc: @MemoryManager) -> Maybe[Memory[By
 
     # White space up to the word's first byte.
     while true
-        c: Maybe[Byte] = me.emit_checked()
+        c: Maybe[Byte] = try me.emit()
         when c
             is Byte as byte =>
                 if is_space(byte)
@@ -456,7 +427,7 @@ secret routine @InputBuffer.owned_word(alloc: @MemoryManager) -> Maybe[Memory[By
 
     # The rest of the word, up to the next white space (put back) or the end of the input.
     while true
-        c2: Maybe[Byte] = me.emit_checked()
+        c2: Maybe[Byte] = try me.emit()
         when c2
             is Byte as byte2 =>
                 if is_space(byte2)
@@ -926,7 +897,7 @@ secret routine console_text(h: Addr, data: @Byte, count: U64) -> Bool
             if write_units(h, units, n, written)
                 continue with n: 0
             return false
-        c: Maybe[Char] = iter.emit_checked()
+        c: Maybe[Char] = try iter.emit()
         when c
             is Char as char =>
                 cp: U32 = char.to[U32]()

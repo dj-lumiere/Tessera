@@ -9,7 +9,7 @@ Run one with `dotnet run -- run examples/<name>.te`. Every program has a `<name>
 | [hello](hello.te) | `start` (the entry point), `block entry()`, printing a line with `Out.write`, and standard output as a Writer pointer: `out: @Out = Out.writer()` |
 | [fizzbuzz](fizzbuzz.te) | A counted loop as a block that jumps to itself, `when`, and what a block can see |
 | [gcd](gcd.te) | Helper routines, loop state in block parameters, dividing before multiplying to avoid overflow |
-| [fibonacci](fibonacci.te) | Overflow: `add` crashes, `add_checked` returns an `Option` |
+| [fibonacci](fibonacci.te) | Overflow: a bare `add` stops the program, `try a + b` gives a `Maybe` |
 | [collatz](collatz.te) | A nested loop split into two routines, best-so-far carried in block parameters |
 | [sieve](sieve.te) | A `claim`ed slot, heap memory in a `Slice[T]` released with `destruct()`, a borrowed view of it (`getview()`) lent to a routine, `getitem` / `setitem`, `zeroinit`, `stride` with `peek` / `poke` |
 | [binary_search](binary_search.te) | A preset Span (`preset SORTED: Span[S64] <- [...]`), returning `Maybe[USize]`, a three-way `when` |

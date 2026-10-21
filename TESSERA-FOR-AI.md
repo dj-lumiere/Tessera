@@ -41,7 +41,8 @@ Standard/Collections/Dict` names a type.
 The standard library's modules:
 
 - `Standard/System`: the built-in types (integers, floats, `Bool`, `Ptr`, `Array`, `Vector`, `@[T]`, `Memory`, `Box`,
-  `Maybe`, `Check`, tuples), the protocols, the `Crash` service and the crash trace, and hashing.
+  `Maybe`, `Check`, `Result` for the C boundary, tuples), the protocols, the crashables, the `Crash` service and the
+  crash trace, and hashing.
 - `Standard/System/Numerics`: wide division, `BigNat`, the float formats, and one folder per float type with its math
   (`B16`, `BF16`, `B32`, `B64`, `B128`), plus `SoftFloat` (the compiler runtime without an FPU).
 - `Standard/System/Text`: formatting (`Writer`, `Representable`, `Diagnosable`), reading values from text
@@ -82,7 +83,10 @@ Crash service's slot first in `start` with `Crash.report_with`),
 `failable` (a call of a standard library `_result` routine into `when check x(...)`, a `Check[T]` binding of
 `check x(...)`, or `try x(...)` where its result was left unread, `AllocFailed` / `ChannelClosed` / `RegexError` /
 `FsError.MEMBER` into their crashables, and a routine of the program that returns a `Result` listed for a hand fix),
-and the earlier `iterators`, `variants`, `membership`, `lifecycle`, `memory`, `threads`, `entry`, and `--named-args`.
+`checked` (a call of a `_checked` twin into `try` in front of the plain, failable routine: `x.add_checked(y)` into `try
+x.add(y)`, in parentheses where the call is part of a larger expression, `(try it.emit()).unwrap()`, a shift's
+`_checked` and a declaration of a `_checked` routine listed for a hand fix), and the earlier `iterators`, `variants`,
+`membership`, `lifecycle`, `memory`, `threads`, `entry`, and `--named-args`.
 An old spelling is a build error that names the migration, and builds only with `TESSERA_ACCEPT_OLD_SYNTAX=1` set.
 
 ## Skeleton
@@ -181,7 +185,7 @@ routine start() -> None
   memory from C). `@[T]` (Core, `Types/Span.te`) is `{data, count}`, a run of values it views. Both only VIEW
   memory and release nothing: `peek` / `poke` on a `@T`, and on a span `getslot(i)` (the checked `@T`, so everything
   through it is `@T`'s own: `peek_volatile`, `atomic_fetch_add`, ...), `getitem(i)` / `setitem(i, v)`,
-  `getitem_checked(i)` (a `Maybe`), `swap(first, second)` (the two values trade places, moved), `getslice(start, count)`,
+  `try view.getitem(i)` (a `Maybe`), `swap(first, second)` (the two values trade places, moved), `getslice(start, count)`,
   `getview()`, `to[@T]()`. `Box[T]` (`{at, manager,
   generation}`) and `Memory[T]` (`{data, count, manager, generation}`, `Types/Memory.te`) are memory TAKEN from a
   `MemoryManager`, and both are ENTITIES (Entities, below): never copied, kept in a slot
@@ -442,8 +446,9 @@ routine start() -> None
 
 - **Loops.** `each i in 0 til n` walks the half-open range, `each i in 1 to n` the inclusive one, `each i in n to 1
   by -1` steps. A range walks the type of its bounds, `S64` when both are bare numbers; `each k: U64 in 0 til 27`
-  names the type (for an index, say), and `each x in iter` reads an iterator in memory (one whose `emit_checked` gives `Maybe[T]`) until
-  it gives `None`. `while c` runs while `c` holds and `until c` until it does, both tested before each pass. `break`
+  names the type (for an index, say), and `each x in iter` reads an iterator in memory (one whose failable `emit` gives the next
+  item) until emit throws `AbsentValueError`, its end. Any other failure of emit stops the program on the `each` line, as
+  a bare call of emit would. `while c` runs while `c` holds and `until c` until it does, both tested before each pass. `break`
   leaves the loop (it takes no value: a result a `break` decides goes in a head slot), `continue` starts the next
   pass.
 - **Carried values.** `while n > 1 with n: U64 = start, steps: U64 = 0` names what each pass changes, each with its
@@ -525,7 +530,7 @@ routine start() -> None
   float lanes give the raw IEEE result (a per-lane check costs the SIMD gain), so Vector has no `+% -% *%`
   (`+^ -^` still clamp).
 - **Operators are routine calls.** `a + b` is `a.add(b)`, `a - b` `sub`, `*` `mul`, `/` `truediv`, `//` `floordiv` (`tessera migrate --step names` rewrites `div`, `shl`, `shr` and their forms), `%` `mod`, `**`
-  `pow` (the exponent the base's own type, a negative one a `NumericDomainError` crash, `pow_checked` gives `None`), `+% -% *%` the `_wrap` forms, `+^ -^ *^` the `_clamp` forms, `+! -! *! /!` the floats' `_unchecked` forms, `== != < <= > >=` `eq`
+  `pow` (the exponent the base's own type, a negative one `NegativeExponentError`, `try a ** n` gives `None`), `+% -% *%` the `_wrap` forms, `+^ -^ *^` the `_clamp` forms, `+! -! *! /!` the floats' `_unchecked` forms, `== != < <= > >=` `eq`
   .. `ge`, `<=>` `compare`, `=== !==` `same` / `notsame` (no protocol: only `@T`, `Addr` and spans declare them), `& | ^ << >> >>>` `bitand` / `bitor` / `bitxor` / `shift_left` / `arith_shift_right` / `logical_shift_right` (no integer type declares `logical_shift_right` yet, so `>>>` builds nowhere), unary `-x` `neg` and `~x`
   `bitnot`, `xs[i]` `getitem(i)` and `xs[i] = v` `setitem(index: i, value: v)`. **A type takes an operator only by
   obeying its protocol** (Standard/System/Operators.te, the names RazorForge uses): `Addable` `+`, `Subtractable`
@@ -560,9 +565,16 @@ routine start() -> None
 - Signedness lives on the type. `S8` .. `S256` are signed and `U8` .. `U256` unsigned; the methods are plain
   `add`, `floordiv`, `mod`, `lt`, `ge`, `arith_shift_right` (`>>`: arithmetic on S, logical on U), and so on. A shift by the width or more
   shifts every bit out (0, or -1 for a negative S value shifted right).
-- Arithmetic crashes on overflow: `add`, `sub`, `mul`, `floordiv`, `neg`, `abs`, `pow`, and a lossy `to[T]()`. Each has
-  `_checked` (returns `Maybe`), `_wrap` (modular), and `_clamp` (saturating) forms: `h.mul_wrap(PRIME)`,
-  `n.to_clamp[U8]()`. Hashes, PRNGs, and bit tricks want `_wrap`.
+- Integer arithmetic is failable: `add`, `sub`, `mul`, `floordiv`, `mod`, `neg`, `abs`, `pow`, and `next_power_of_two`
+  throw `IntegerOverflowError` (`floordiv` / `mod` by zero `DivisionByZeroError`, a negative exponent
+  `NegativeExponentError`), so a bare `a + b` that overflows stops the program on its line and `try a + b` gives
+  `Maybe` (`None` on overflow). `try a + b` builds to the overflow intrinsic and a select, with no heap and no call:
+  a failure the standard library throws is noted for the crash report only when a `check` of a traced routine keeps
+  it. A lossy `to[T]()` crashes, and `to_checked[T]()` gives `None`. `_wrap` (modular) and `_clamp` (saturating)
+  forms: `h.mul_wrap(PRIME)`, `n.to_clamp[U8]()`. Hashes, PRNGs, and bit tricks want `_wrap`. A shift never fails (by
+  the width or more it shifts every bit out). The operator protocols' requirements (`Addable.add`, ...,
+  `ViewingIndexable.getitem`) are failable, and a type whose routine never fails meets them all the same (a float's
+  `add`): in a generic instance, `try` over a call that can't fail is just the value.
 - Subtraction that can underflow crashes even if the result is unused later, so don't compute `len - 1` before the
   `if` that knows it's safe: compute it under that `if`, or in the `continue with` of the pass that uses it (those
   values are evaluated only on that path). A value `when` runs only the arm taken, and tests its conditions in
@@ -644,7 +656,7 @@ routine start() -> None
   by address, `a === b`, so values compare as `a.peek() == b.peek()`), `represent_into` / `diagnose_into` (a pointer isn't
   Representable, so `{list}` on a slot is a build error that asks for `{list.peek()}`), and a generic `to[T]` (it
   would hide `Ptr`'s `to<@U>`). You can't call a pointer method on a temporary:
-  `DictIter[TKey, TValue].construct(m).emit_checked()` fails with "has no method 'emit_checked'"; put the iterator in a local
+  `DictIter[TKey, TValue].construct(m).emit()` fails with "has no method 'emit'"; put the iterator in a local
   slot first.
 - **A constraint is said once, where it belongs.** A record's (or variant's) `needs` constraints hold in every
   routine on it, wherever the routine is declared (an extension routine in another module, such as
@@ -726,7 +738,7 @@ routine start() -> None
   `List[Byte]`) views the same memory. Text a routine takes memory for (`@[Byte].concat`, `Console.ask_line`,
   `OsFileManager.read_all`, `OsEnvironment.variable`, ...) comes back as a `Memory[Byte]`: keep it in a slot and give it
   back once (`local line: @Memory[Byte] <- Console.ask_line()`, then `drop line`), and observe a `Maybe` or `Check` of one
-  with `when` (`when Console.ask_line_checked(alloc)` then `is Memory[Byte] as line => ...`). A Memory lends itself to a text routine at
+  with `when` (`when try Console.ask_line(alloc)` then `is Memory[Byte] as line => ...`). A Memory lends itself to a text routine at
   a receiver or an argument (`line.find("=")`, `out.write("{line.getview()}")` in a template). Escapes: `\xXX` is one byte (strings, `b'..'`), `\uXXXXXX` one
   character by exactly six hex digits (strings, `'..'`), so `"\u01F600"` equals `"\xF0\x9F\x98\x80"`.
   Source files must be UTF-8.
@@ -757,6 +769,12 @@ routine start() -> None
   writes its `name()` (the type's name) and makes it obey `Crashable`. A routine that can fail is declared `failable
   routine` (`secret failable common routine`, and `failable routine` in a protocol), and `throw NotFoundError(code: 2)`
   ends it with the failure instead of its value. `throw` in a routine not declared failable is a build error.
+- **The standard library's failures** are crashables of a few numbers at most: `IntegerOverflowError`,
+  `DivisionByZeroError`, `NegativeExponentError`, `IndexOutOfBoundsError` (`index`, `count`), `AbsentValueError` (an
+  iterator past its end, an empty list's last element), `KeyNotFoundError` (Standard/System/Crashables.te), plus
+  `MemoryAllocationError`, the text conversions' (`EmptyTextError`, `InvalidValueError`, `OutOfRangeError`),
+  `EndOfInputError`, the file system's (`FsError`), `CaptureNameError`, `InvalidCellError`, and the others named with
+  their routines.
 - **A call written bare that fails stops the program on its own line,** the way an overflowing `+` does: the `Crash`
   service reports the failure's name and message, the call's place, the crash trace, and where the failure was made,
   and stops (status 82 with an OS). `throw` itself only gives the failure back to the caller. This holds inside a
@@ -788,7 +806,12 @@ routine start() -> None
 - **C never sees a failure.** An `@export` or `@external("c")` routine can't be failable, `addr()` of a failable routine
   or Callable is a build error, and a failable Callable can't be handed to a C routine. A Tessera routine C calls
   receives its failures inside (`check`, `try`), or a bare call stops the whole program there (it never returns to
-  C).
+  C). An `@export` routine returns a `T` or a `Result[T, TErrorCode]` (Standard/System/Result.te), never a variant (a
+  build error): a C record of `value` then `code`, both always there (`struct { int64_t value; int32_t code; }` for a
+  `Result[S64, RatioError]` over a choice without a written type). `TErrorCode` is a choice (a build error otherwise),
+  so C reads an integer. `Result.ok(v)` stores the code whose number is 0, `Result.error(code)` a `.hollow()` value,
+  `r.is_ok()` tests the code, and the routine turns its failures into codes with `when check`. Make 0 the success
+  code, the choice's first member (the build doesn't check it). Inside, code uses failable routines, not `Result`.
 - **The `Crash` service** (Standard/System, one per program) reports a crash and a failure nothing received, then
   stops. `Crash.report_with(routine.to[Callable]())` puts a reporting routine in its slot and returns the one before
   (`.hollow()` for the default), so it can be put back: `routine report(name: @[Byte], message: @CrashMessage, place:
@@ -868,6 +891,9 @@ routine start() -> None
   library `@llvm("iN")` record with no fields is an integer underneath (`B128` is an `i128`). `@layout(align: N)` sets
   a record's alignment, `@aligned` a field's.
 - A record can't contain itself by value; go through a `Ptr`.
+- `choice Name: U8` names integer values, one member per line (`RED`, or `RED: 4`): a member without a value is the one
+  before it plus 1, the first 0. The underlying type is any integer type (`S8` .. `S256`, `U8` .. `U256`), and `S32`,
+  C's `int`, when it isn't written (`choice Light`).
 - **A type that holds something to release declares a `common routine T.construct(...)` (returning `Me`) and a `routine @T.destruct() -> None`**
   (a variant only the `destruct`), a build error otherwise that names what it holds. It holds something when a field
   (a branch, for a variant) is an address (`@T`, `Addr`), a `Box` or `Memory`, a value of a type parameter, or a value
@@ -1006,18 +1032,17 @@ routine sum_to(n: U64) -> U64
         return total
 ```
 
-Iterating a collection (`emit_checked` returns `Maybe[T]`, `None` past the end, `emit` crashes there; an iterator
-over elements in memory, `ListIter`, `ArrayIter`, `CircularListIter`, `SortedListIter`, `SortedSetIter`, `DictValues`
-(a dict's values, never its keys),
-also hands out each element's slot with
-`next` / `next_checked`):
+Iterating a collection (`emit` is failable and throws `AbsentValueError` past the end, so `try iter.emit()` gives `None`
+there and `each x in iter` stops there; an iterator over elements in memory, `ListIter`, `ArrayIter`, `CircularListIter`,
+`SortedListIter`, `SortedSetIter`, `DictValues` (a dict's values, never its keys), also hands out each element's slot
+with the failable `next`):
 
 ```tessera
 routine sum_list(list: @List[S64]) -> S64
     local iter: @ListIter[S64] <- .construct(list)
 
     while true with total: S64 = 0
-        item: Maybe[S64] = iter.emit_checked()
+        item: Maybe[S64] = try iter.emit()
         when item
             is S64 as value => continue with total: total + value
             is None => return total
@@ -1053,7 +1078,8 @@ the pieces over (a span literal written in place):
 - Searches on `@TextPattern` (UTF-8 `@[Byte]`, byte positions): `matches(text)`, `find(text, alloc) -> Maybe[TextMatch]`,
   `find_all(text, alloc) -> List[TextMatch]`, `replace(text, with:, alloc) -> Memory[Byte]`, `split(text, alloc) ->
   List[@[Byte]]`. A `TextMatch` (an entity, drop it) views the text and the pattern: `start()`, `end()`, `text()`,
-  `group(name)` (crashes `CaptureNameError` / `AbsentValueError`), `group_checked(name) -> Maybe[@[Byte]]`.
+  `group(name)` (failable: `CaptureNameError` for no capture of that name, `AbsentValueError` for one that took no part,
+  so `try m.group(name)` gives `None` for both).
 - `BytesPattern` with `byte(v, alloc)`, `bytes(b, alloc)`, `any_byte`, `byte_range(from:, to:, alloc)`,
   `start_of_bytes`, `end_of_bytes`; `BytesMatch.bytes()`.
 - `TextPattern.from_regex(text, alloc)` is failable: it throws `PatternSyntaxError`, which `check` receives
@@ -1071,9 +1097,9 @@ Format through `Standard/System/Text` (`Format.te`), not printf. printf is for C
   `Console.alert("...")` one line to standard error, and `end:` changes the line end (`Console.show("loading",
   end: "")`, a string literal). Both expand their template like a Writer's `write` (below). Standard input:
   `Console.ask[T]()`, `Console.ask_line()` / `ask_line(alloc)`, `ask_word`, `ask_bytes(n)`, `ask_all`, all through one
-  buffer the process shares. `ask_line` and `ask_word` crash at the end of the input, and `ask_line_checked` /
-  `ask_word_checked` return `Maybe[Memory[Byte]]`, `None` there (a blank line is empty), so a loop to the end uses
-  those. Text comes back as a `Memory[Byte]` from the manager: `drop line` gives it back. There are no `In` / `Out` /
+  buffer the process shares. `ask_line` and `ask_word` are failable and throw `EndOfInputError` at the end of the
+  input, so `try Console.ask_line()` gives `Maybe[Memory[Byte]]`, `None` there (a blank line is empty): a loop to the end
+  uses that. Text comes back as a `Memory[Byte]` from the manager: `drop line` gives it back. There are no `In` / `Out` /
   `Err` types and no `print`.
 - Writers: `Console.output()` / `Console.errors()` (`@ConsoleOutput` / `@ConsoleErrors`, standard output and error,
   unbuffered, also `is_terminal()`, `enable_colors()`, `write_all(data, count)`, failable), a `FileHandle`,
@@ -1087,7 +1113,7 @@ Format through `Standard/System/Text` (`Format.te`), not printf. printf is for C
   obeys `Parsable[T]`, which asks for one routine, `failable routine @[Byte].to[T]() -> T`. Numbers from standard
   input: `a: S32 = Console.ask[S32]()` reads the next word in place (a word longer than the 8192-byte buffer goes
   through a temporary on `HEAP`). It is failable: `EndOfInputError` at the end of the input, and the failure of
-  `to[T]` on a word that isn't a T. `Console.ask_checked[T]()` gives `Maybe[T]` (`None` for both).
+  `to[T]` on a word that isn't a T. `try Console.ask[T]()` gives `Maybe[T]` (`None` for both).
 - `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, and
   `@[Byte]` (a `Memory[Byte]` writes through its view: `{line.getview()}`). A pointer is neither Representable nor Diagnosable, so `{sum}` on a `local sum: @S64` slot is a build
   error, not its address: write the value with `{sum.peek()}`, or the address with `{sum.to[Addr]()}`
@@ -1120,10 +1146,12 @@ and an index past the end crashes like `getitem`: on `List`, `CircularList`, `Ar
 `Memory`), and `getview()` /
 `getslice(start, count)` a `@[T]` of the elements (a List is not lent on its own: pass `list.getview()` where a
 span is expected). Out-of-range access, `remove_last`
-on empty, and `getitem` of a missing key crash. The `_checked` forms (`getitem_checked`, `remove_last_checked`,
-`peek_checked`) return `Maybe[T]` instead. Each insertion and `reserve` is failable: it throws
+on empty, and `getitem` of a missing key throw (`IndexOutOfBoundsError` with the index and the count, `AbsentValueError`,
+`KeyNotFoundError`): the collections' `getitem`, `getslot`, `remove_last`, `remove_first`, `first`, `first_entry`,
+`remove`, and `remove_entry` are failable, so a bare call stops on its line and `try xs.getitem(i)` (or `try xs[i]`)
+gives `Maybe[T]`. `setitem` and `swap` still crash. Each insertion and `reserve` is failable: it throws
 `MemoryAllocationError` when the memory can't grow and leaves the collection unchanged, so a bare call stops there and
-`check xs.add_last(v)` receives it. `_checked` always means `Maybe`.
+`check xs.add_last(v)` receives it. There are no `_checked` twins: `try` in front of the call is the `Maybe`.
 The mutators that grow storage are `@reshaping` (`List.add_last` / `reserve` / `ensure_capacity`, `Dict.setitem`,
 `Set.add`, `CircularList.add_last` / `add_first`, `PriorityQueue.add` / `reserve`): a
 `getslot` / `getview` taken before one is not used after it, and a routine that calls one on a collection parameter
@@ -1146,7 +1174,7 @@ Keys and elements may be entities in every collection: `Set[File]`, `Dict[Counte
 nor a record key is copied for a lookup. They are handed over with `steal` (a key that doesn't go in, because an equal one is
 already there, ends at once), and `remove`, a replaced value, `clear`, and destruct end them. Every lookup takes a key's
 place (`set.has(probe)`, lent) or a key value (`set.has(Counter.construct(3))`, which ends after the lookup). An entity
-element is read through `getslot` and the slot iterators (`next` / `next_checked` on `SortedListIter`,
+element is read through `getslot` and the slot iterators (the failable `next` on `SortedListIter`,
 `SortedSetIter`), never copied: `getitem`, `get_by_rank`, `first`, and a `PriorityEntry` are for record elements.
 Changing a key in place through its slot breaks the collection's order.
 
@@ -1323,7 +1351,7 @@ is failable and throws one of `FsError`'s crashables: a bare call that fails sto
   which leaves it empty, and `FileHandle.empty()` a handle to nothing whose `close` does nothing).
 - file storage: `storage[T](at, write, start, count)` maps the file as cells of `T` (`StorageCell[T]`: `Byte`, or
   `Char`, four bytes each, UTF-32LE), `count` cells from cell `start` (`U64.MAX` to the end), clamped to the whole
-  cells the file has. It gives a `FileStorage[T]` (a record: `count()`, `s[i]` / `getitem_checked(i)`, `s[i] = v` on a
+  cells the file has. It gives a `FileStorage[T]` (a record: `count()`, `s[i]` (failable: `IndexOutOfBoundsError`, `InvalidCellError`), `s[i] = v` on a
   slot, `data()`, the failable `flush()`, `unmap()`). A cell past `count()` crashes with `IndexOutOfBoundsError`, a
   write to one mapped without `write` and a `Char` cell that isn't a Unicode scalar with `InvalidValueError`. It never
   grows the file: `set_size` first.
@@ -1339,7 +1367,7 @@ is failable and throws one of `FsError`'s crashables: a bare call that fails sto
   the path is on).
 - setting: `set_readonly(at, readonly)`, `set_size(at, size)`.
 - listing: `list(at, iter)` starts a `DirIter` (a local slot, `local iter: @DirIter <- .hollow()`), then
-  `iter.emit_checked()` until `None`, then `iter.close()`.
+  `each entry in iter` (or `try iter.emit()` until `None`), then `iter.close()`.
 - paths: `absolute(at, alloc)`, `canonical(at, alloc)`.
 
 `FsError` is a `variant` of the crashables a file system routine throws: `NotFoundError`, `NotEnoughPermissionError`,
@@ -1463,16 +1491,16 @@ conversion that can fail on its input is a failable `to[T]()` (there is no `pars
 values built from raw parts (`@[Byte].construct(data: p, count: n)`), a view of what a value holds (`getview()`), bits seen as another type (`B64.from_bits(u)`, `x.bits()`),
 byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`).
 
-**Naming rules for `to`, `_into`, `from_`, and `_checked`.**
+**Naming rules for `to`, `_into`, and `from_`.**
 
 - A routine that can fail has one name. A routine whose failure is a caller's mistake crashes (`getitem`, `unwrap`),
   and one whose failure the caller may handle is failable and throws a crashable (`OsFileManager.open_read`,
   `to[T]`, `Console.ask[T]`, `Memory[T].construct`): a bare call stops on it, `check` and `try` receive it. There are
-  no `_result` names. `name_checked` returns `Maybe[T]` (`None` on failure): `getitem` / `getitem_checked`,
-  `Console.ask[T]` / `ask_checked[T]`. A `_checked` never returns a `Bool` or throws, and a plain name never returns a
+  no `_result` names and no `_checked` twins (`to_checked[T]` is the conversions' `Maybe` form): `try` in front of a
+  failable call gives the `Maybe`, `try xs.getitem(i)`, `try Console.ask[T]()`. A plain name never returns a
   `Maybe` just to say it failed. A `Maybe` that is a normal outcome keeps a plain name: `@[Byte].find` (not found),
   `OsEnvironment.variable` (not set), `Bool.then_present`, and `compare_exchange` (`None` when it wrote, the value
-  found when not). An iterator has the plain/`_checked` pair: `emit` crashes past the end, `emit_checked` returns `None`.
+  found when not). An iterator's `emit` is failable and throws `AbsentValueError` past the end.
 
 - `to[T]()` is a type conversion: one value of type A becomes a value of type B, on A (`p.to[CStrView]()`, not
   `CStrView.from_ptr(p)`). A conversion that can fail is a failable `to[T]()`.
