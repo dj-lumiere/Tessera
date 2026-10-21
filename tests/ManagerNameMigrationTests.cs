@@ -49,7 +49,7 @@ public class ManagerNameMigrationTests
                 return
 
             routine start() -> None
-                local alloc: @MemoryManager <- HEAP.peek()
+                alloc: @MemoryManager = HEAP
                 local xs: @List[S64] <- .construct(alloc: alloc)
                 drop xs
                 return
@@ -63,7 +63,7 @@ public class ManagerNameMigrationTests
                 return
 
             routine start() -> None
-                local manager: @MemoryManager <- HEAP.peek()
+                manager: @MemoryManager = HEAP
                 local xs: @List[S64] <- .construct(manager: manager)
                 drop xs
                 return

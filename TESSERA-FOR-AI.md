@@ -318,7 +318,7 @@ routine start() -> None
   `C_HEAP` is `CHeapManager`'s table in every build (memory C frees, or C's malloc hands over). A page manager obeys
   `PageManageable`: `OsPageManager`, whose table is `PAGES` (whole pages, `alloc` puts one page in front that keeps
   the size). The tables are ready before `start`, and every allocating routine takes one as `@MemoryManager`:
-  `.construct(HEAP)`, `manager: PAGES`, `local t: @MemoryManager <- HEAP.peek()` for a copy in a slot. A `StackManager`
+  `.construct(HEAP)`, `manager: PAGES`, `t: @MemoryManager = HEAP` for a copy in a slot. A `StackManager`
   (`bottom`, `top`: `size()`, `remaining()`, `used()`, `holds(at)`) manages one flow's stack: it hands out `local`
   slots by moving the stack pointer, so it has no table. `StackManager.current()` is the running flow's: a fiber's
   inside a fiber, else the thread's own stack, whose bounds the OS gives (without an OS, `__stack_bottom` to
@@ -947,6 +947,11 @@ routine start() -> None
   `me` by its address, `routine @Counter.f(...)` (`routine Counter.f(...)` is a build error). A parameter that takes one over (`c: Counter`) is a slot of the routine
   inside it. Every entity declares `construct` and `destruct`, and its life ends with `drop`, on every path, like
   memory from a manager.
+- Every manager is an `entity` (`MemoryManager`, `StackManager`, `CHeapManager`, `ThreadManager`, `AccessManager`, ...):
+  a copy would keep its own record and diverge, so a table is reached through its place (`manager: @MemoryManager =
+  HEAP`, never `HEAP.peek()`). Every service (`Console`, `Clock`, `CpuClock`, `OsEnvironment`, `OsEntropy`, `Crash`)
+  is a `record` with no member variables (body `nothing`): its state is a `secret` global or the OS's, and its
+  routines are `common`, called on the type. The builder does not check this by name: the stdlib follows it.
 - Handing over is written with `steal`. `steal a as b` hands what the slot `a` holds over to a new slot `b`, and an
   argument is handed over with `f(c: steal a)`: `a` ends there, and using it afterwards is a build error. `steal p.left as old` takes
   what a field holds into a new slot `old` and leaves the field hollow: reading it before a value is put back

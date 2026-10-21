@@ -267,6 +267,12 @@ public sealed partial class FunctionGen
         return null;
     }
 
+    /// Whether `name` is written with a bare type parameter (`value: T`) that this instance binds to a pointer (`T` is
+    /// `@Node`): its value is that pointer, not a slot of what it points to, so steal hands the pointer on.
+    private bool PointerOfTypeParam(string name) =>
+        !_claimedSlots.Contains(name) && WrittenType(name) is { Path: null, Args.Count: 0 } written
+        && SourceTypeParams.Contains(written.Name) && Resolve(written) is PtrType;
+
     /// `steal x`: what the name `x` holds (or its slot holds), and x ends here. On a value that holds no entity or
     /// memory, steal is just the value: generic code moves a `T` with steal whether T is an entity or a record. The builder's own `Place` form loads
     /// out of a place for `steal place as old inject fresh`, which ends nothing: the place gets `fresh` right after.
@@ -314,7 +320,9 @@ public sealed partial class FunctionGen
         _moving = true;
         // The slot of something followed (an entity, memory), or a slot claimed with `local x: @T <- ...` whatever it
         // holds, gives what it holds. A plain value, or a pointer that is a value of its own, is itself.
-        var v = t is PtrType && (Tracked(t) || _claimedSlots.Contains(r.Name)) ? Eval(new MethodCallExpr(r, "peek", [], [], r.Pos), expected) : Eval(r, expected);
+        var v = t is PtrType && (Tracked(t) && !PointerOfTypeParam(r.Name) || _claimedSlots.Contains(r.Name))
+            ? Eval(new MethodCallExpr(r, "peek", [], [], r.Pos), expected)
+            : Eval(r, expected);
         if (MemOn && _memTracked.Contains(r.Name)) Mem(new MemoryRules.End(r.Name, $"steal {r.Name}", s.Pos));
         return v;
     }
@@ -1818,7 +1826,8 @@ public sealed partial class FunctionGen
             case UnitLit u: return UnitType(u);
             case ValueRef r: return Lookup(r).Type;
             case StealExpr steal:
-                return Infer(steal.Value) is var stolen && (steal.Place || stolen is PtrType && Tracked(stolen)
+                return Infer(steal.Value) is var stolen && (steal.Place
+                    || stolen is PtrType && Tracked(stolen) && !(steal.Value is ValueRef { Name: var pointer } && PointerOfTypeParam(pointer))
                     || stolen is PtrType && steal.Value is ValueRef { Name: var claimed } && _claimedSlots.Contains(claimed)
                     || steal.Value is MethodCallExpr or IndexExpr && stolen is PtrType)
                     ? (stolen as PtrType)?.Pointee

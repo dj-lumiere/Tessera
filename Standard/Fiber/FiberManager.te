@@ -54,7 +54,7 @@ preset DEFAULT_FIBER_STACK: ByteSize = 64kib
 
 ### One fiber: a stack and the work on it, from the first ticket that takes it until its manager goes. A pointer to it
 ### is the fiber's handle (see current and wake).
-record FiberState
+entity FiberState
     ### Its stack pointer while it isn't running.
     sp: Addr
     ### Its stack, on pages from the manager's page manager.
@@ -169,9 +169,9 @@ routine take_stack(size: ByteSize, pages: @MemoryManager) -> StackManager
 @target(os: not "none")
 @track_caller
 @expensive("gives memory back")
-routine give_back_stack(stack: StackManager, pages: @MemoryManager) -> None
+routine give_back_stack(stack: @StackManager, pages: @MemoryManager) -> None
     page: U64 = page_size().bytes()
-    base: Addr = stack.bottom -% ByteSize.construct(bytes: page)
+    base: Addr = stack.bottom.peek() -% ByteSize.construct(bytes: page)
     pages.release(at: base, size: stack.size().bytes() + page)
     return
 
@@ -196,8 +196,8 @@ common routine FiberState.construct(sp: Addr, stack: StackManager, manager: @Fib
     slot: WorkSlot, work: @WorkSlot, then: Callable[(@FiberManager, @Me), None], wake_state: U32,
     timer: U64, trace_depth: U64, access: @AccessFlow, race: Addr, next_idle: @Me, next_all: @Me,
     pool: @ThreadPoolManager) -> Me
-    return Me(sp, stack, manager, slot, work, then, wake_state, timer, trace_depth, access, race,
-        next_idle, next_all, pool)
+    return Me(sp, stack: steal stack, manager, slot, work, then, wake_state, timer, trace_depth,
+        access, race, next_idle, next_all, pool)
 
 ### Releases the block of its last work. Its stack is its manager's to give back.
 @target(os: not "none")
@@ -265,7 +265,7 @@ routine @FiberManager.destruct() -> None
         fiber.destruct()
         AccessManager.end_flow(fiber.access)
         race_stack_free(fiber.race.peek())
-        give_back_stack(stack: fiber.stack.peek(), pages: me.stack_manager.peek())
+        give_back_stack(stack: fiber.stack, pages: me.stack_manager.peek())
         deallocate(data: fiber, manager: me.manager.peek())
         continue with fiber: next
     me.ready.destruct()
@@ -318,18 +318,21 @@ needs T: typename
 @target(os: not "none")
 @track_caller
 secret routine @FiberManager.make_fiber() -> @FiberState
-    stack: StackManager = take_stack(size: me.stack_size.peek(), pages: me.stack_manager.peek())
-    if stack.top.is_hollow()
+    local stack: @StackManager <- take_stack(size: me.stack_size.peek(),
+        pages: me.stack_manager.peek())
+
+    if stack.top.peek().is_hollow()
         crash_allocation()
     fiber: @FiberState = allocate[FiberState](count: 1, manager: me.manager.peek())
     if fiber.is_hollow()
         crash_allocation()
-    sp: Addr = initial_stack(stack: stack.bottom, size: stack.size().bytes(),
+    sp: Addr = initial_stack(stack: stack.bottom.peek(), size: stack.size().bytes(),
         entry: fiber_start.addr())
-    fiber.poke(FiberState(sp, stack, manager: me, slot: .construct(manager: me.manager.peek()),
-        work: fiber.slot, then: requeue.to[Callable](), wake_state: FIBER_RUNNING, timer: 0,
-        trace_depth: 0, access: .hollow(), race: race_stack_new(), next_idle: .hollow(),
-        next_all: me.all.peek(), pool: .hollow()))
+    fiber.poke(FiberState(sp, stack: steal stack, manager: me,
+        slot: .construct(manager: me.manager.peek()), work: fiber.slot,
+        then: requeue.to[Callable](), wake_state: FIBER_RUNNING, timer: 0, trace_depth: 0,
+        access: .hollow(), race: race_stack_new(), next_idle: .hollow(), next_all: me.all.peek(),
+        pool: .hollow()))
     me.all.poke(fiber)
     return fiber
 
