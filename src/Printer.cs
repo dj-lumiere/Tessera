@@ -130,6 +130,7 @@ public sealed class Printer
                     LoopKind.For => l.VarType is { } written
                         ? $"each {Name(l.Var!)}: {Type(written)} in {Expr(l.Source!)}"
                         : $"each {Name(l.Var!)} in {Expr(l.Source!)}",
+                    LoopKind.While when l.Endless => "loop",
                     LoopKind.While => $"while {Expr(l.Cond!)}",
                     _ => $"until {Expr(l.Cond!)}",
                 };

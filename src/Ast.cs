@@ -290,6 +290,8 @@ public enum LoopKind { For, While, Until }
 public sealed record LoopStmt(LoopKind Kind, Expr? Cond, List<Carried> With, List<Stmt> Body, List<Stmt>? Then, Pos Pos)
     : Stmt(Pos)
 {
+    /// `loop`: a `while true` written as the loop that doesn't end by itself, kept so the printer writes it back.
+    public bool Endless { get; init; }
     /// `each x in source`: the name each element is bound to, and what is walked (a range, or an iterator in memory).
     public string? Var { get; init; }
     /// `each k: U64 in 0 til n`: the type written for the element, or null. A range walks that integer type.

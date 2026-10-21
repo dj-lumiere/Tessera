@@ -57,7 +57,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         "jump", "branch", "when", "return", "unreachable", "continue", "else", "elseif", "block", "claim", "local",
         "true", "false", "null", "routine", "record", "choice", "variant", "preset", "global", "concept", "conform",
         "protocol", "obeys", "needs", "define", "secret", "module", "import", "and", "or", "not", "is", "as",
-        "todo", "if", "each", "while", "until", "becomes", "break", "pass", "drop", "entity", "steal", "inf", "nan",
+        "todo", "if", "each", "while", "until", "loop", "becomes", "break", "pass", "drop", "entity", "steal", "inf", "nan",
         "throw",
     ];
     /// Inside an `@external("asm")` routine: a statement may carry `@asm_prefix`, and an `if` may test a bare
@@ -66,7 +66,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     /// The words a statement starts with, besides a binding or a call.
     private static readonly HashSet<string> StatementKeywords =
-        ["jump", "branch", "when", "return", "throw", "unreachable", "todo", "if", "each", "while", "until", "continue", "break", "pass",
+        ["jump", "branch", "when", "return", "throw", "unreachable", "todo", "if", "each", "while", "until", "loop", "continue", "break", "pass",
          "becomes", "local", "claim", "else", "elseif", "then", "drop", "steal"];
 
     private static readonly HashSet<string> DeclKeywords =
@@ -1455,7 +1455,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             switch (Cur.Text)
             {
                 case "if": return ParseIf(col);
-                case "each" or "while" or "until": return ParseLoop(col);
+                case "each" or "while" or "until" or "loop": return ParseLoop(col);
                 case "steal":
                 {
                     Next();
@@ -1618,7 +1618,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private LoopStmt ParseLoop(int col)
     {
         var word = Next();
-        var kind = word.Text switch { "each" => LoopKind.For, "while" => LoopKind.While, _ => LoopKind.Until };
+        var kind = word.Text switch { "each" => LoopKind.For, "while" or "loop" => LoopKind.While, _ => LoopKind.Until };
         string? variable = null;
         Pos varPos = default;
         TypeRef? varType = null;
@@ -1637,6 +1637,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             Next();
             source = ParseExpr();
         }
+        else if (word.Text == "loop") cond = new BoolLit(true, word.Pos);
         else cond = ParseCondition();
         var with = new List<Carried>();
         if (IsIdent("with"))
@@ -1669,7 +1670,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (then.Count == 0) throw new CompileError(word.Pos, "then needs lines of its own under it");
         }
         if (_values is not null && outer is not null) _values = outer;
-        return new LoopStmt(kind, cond, with, body, then, word.Pos) { Var = variable, VarPos = varPos, VarType = varType, Source = source };
+        return new LoopStmt(kind, cond, with, body, then, word.Pos)
+        {
+            Var = variable, VarPos = varPos, VarType = varType, Source = source, Endless = word.Text == "loop",
+        };
     }
 
     /// The names after `with` on the current line: `a` and `b` in `while c with a: T = x, b: U = y`.
@@ -1812,7 +1816,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
         if (IsKeyword(Cur) && StatementKeywords.Contains(Cur.Text) && !StartsValue())
         {
-            if (Cur.Text is "if" or "each" or "while" or "until" or "when" or "local" or "claim" or "branch")
+            if (Cur.Text is "if" or "each" or "while" or "until" or "loop" or "when" or "local" or "claim" or "branch")
                 throw Error($"'{Cur.Text}' opens a body of its own: write it under the arm, on the lines after =>");
             return ParseLeave();
         }

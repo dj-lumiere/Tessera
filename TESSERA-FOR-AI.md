@@ -450,7 +450,7 @@ routine start() -> None
   by -1` steps. A range walks the type of its bounds, `S64` when both are bare numbers; `each k: U64 in 0 til 27`
   names the type (for an index, say), and `each x in iter` reads an iterator in memory (one whose failable `emit` gives the next
   item) until emit throws `AbsentValueError`, its end. Any other failure of emit stops the program on the `each` line, as
-  a bare call of emit would. `while c` runs while `c` holds and `until c` until it does, both tested before each pass. `break`
+  a bare call of emit would. `while c` runs while `c` holds and `until c` until it does, both tested before each pass. `loop` is the loop that doesn't end by itself (`while true`, which the formatter keeps as `loop`), left with `break`, `return` or `throw`, and it takes `with` and `then` like the others. `break`
   leaves the loop (it takes no value: a result a `break` decides goes in a head slot), `continue` starts the next
   pass.
 - **Carried values.** `while n > 1 with n: U64 = start, steps: U64 = 0` names what each pass changes, each with its
