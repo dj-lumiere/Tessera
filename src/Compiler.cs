@@ -559,6 +559,8 @@ public sealed partial class Compiler
                 errors.Add(e);
             }
         }
+        try { CheckEntryPair(); }
+        catch (CompileError e) { errors.Add(e); }
         try { FinishThrows(); }
         catch (CompileError e) { errors.Add(e); }
         errors.AddRange(InlineRecursion());

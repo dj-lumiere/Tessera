@@ -13,6 +13,14 @@ public class AsmArmTests
 {
     private static BuildTarget ArmLinux => BuildTarget.Parse("arm-linux-gnueabihf");
 
+    /// The entry a program without an operating system writes.
+    private const string PowerOn = """
+        routine when_power_on() -> None
+            prepare_core()
+            return
+
+        """;
+
     private static BuildTarget CortexM33 => BuildTarget.Parse("arm-none-eabi") with { Cpu = "cortex-m33" };
 
     private const string Conditional = """
@@ -68,7 +76,7 @@ public class AsmArmTests
     [Fact]
     public void ThumbCodeOpensAnItBlockBeforeEachRunOfConditionalInstructions()
     {
-        string asm = Build(Conditional, CortexM33);
+        string asm = Build(Conditional + PowerOn, CortexM33);
         // moveq, movne and addseq share one block (eq, its opposite, eq again), movlo needs one of its own.
         Assert.Contains("cmp r2, r3\nitet eq\nmoveq r0, #1\nmovne r0, #0\naddseq r0, r0, r2\nit lo\nmovlo r1, r3\nmov r0, r0", asm);
         Assert.Contains("beq .Ltess${:uid}_done", asm);
@@ -104,6 +112,10 @@ public class AsmArmTests
                     wfe()
                     sev()
                     return
+
+            routine when_power_on() -> None
+                prepare_core()
+                return
 
             routine start() -> None
                 was: U32 = mask()

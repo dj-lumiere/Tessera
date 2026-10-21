@@ -75,9 +75,10 @@ public sealed partial class Compiler
             throw new CompileError(r.Pos, $"{what}: an ordinary '{shape}' with a body, which the builder calls (no @external, @export, or @inline)");
     }
 
-    /// Writes the program's entry when it defines `start`: the platform's C `main` with an operating system, the boot
-    /// sequence without one. Called after the program's routines are checked, before the queued instances are emitted.
-    private void PlanEntry()
+    /// Checks that the program's entry routines go together: `when_power_on` only with `start`, and without an
+    /// operating system a `start` only with the program's own `when_power_on`, since nothing else turns the managers
+    /// on. `check` runs it too.
+    private void CheckEntryPair()
     {
         var start = EntryRoutine(StartName);
         var board = EntryRoutine(WhenPowerOnName);
@@ -88,16 +89,28 @@ public sealed partial class Compiler
             return;
         }
         if (ProvidedSymbols.Contains("main") || ProvidedSymbols.Contains(WhenPowerOnName)) return;
-        // Nothing turns the managers on for a program without an operating system but its own when_power_on.
         if (!Target.HasOs && board is null)
             throw new CompileError(start.Pos,
                 $"{Target.Arch}-{Target.Os}-{Target.Abi} has no operating system, so the reset lands in the program's own "
                 + "'routine when_power_on() -> None', and this program has none: write one that calls prepare_core() "
                 + "(Standard/System/Cpu) first, which puts the globals in place, then puts a reporting routine in the Crash "
                 + "service's slot (Crash.report_with(report.to[Callable]())), then readies the board. start runs after it");
+    }
+
+    /// Writes the program's entry when it defines `start`: the platform's C `main` with an operating system, the boot
+    /// sequence without one. Called after the program's routines are checked, before the queued instances are emitted.
+    private void PlanEntry()
+    {
+        CheckEntryPair();
+        var start = EntryRoutine(StartName);
+        if (start is null || ProvidedSymbols.Contains("main") || ProvidedSymbols.Contains(WhenPowerOnName)) return;
         var startInst = RequireInstance(start, new TypeEnv(start.File));
         if (Target.HasOs) PlanHostedMain(start, startInst);
-        else PlanBoot(start, startInst, RequireInstance(board!, new TypeEnv(board!.File)));
+        else
+        {
+            var board = EntryRoutine(WhenPowerOnName)!;
+            PlanBoot(start, startInst, RequireInstance(board, new TypeEnv(board.File)));
+        }
     }
 
     /// A routine of the standard library the generated entry calls, by module and name.
