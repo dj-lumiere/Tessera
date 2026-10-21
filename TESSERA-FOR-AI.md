@@ -222,9 +222,11 @@ routine start() -> None
   always on under `tessera test`) `HEAP` is the `CheckedHeapManager`, which keeps a header in front of each block and crashes with
   `DoubleFreeError` at the line of a second free of the same block (a quarantine of the last 256 freed blocks keeps
   that sure, raw layer included). With it off it is plain malloc / free, and so is a single-file build without a
-  manifest. Debug and release behave the same. The build catches a second `drop`, a use after it, and a missing
-  one inside one routine (the group check below). The generation check is what catches a copy that crosses a
-  routine boundary: memory given back by a routine that only borrowed a slot, a copy kept in a field.
+  manifest. Debug and release behave the same. The build catches a second `drop`, a use after it, a missing one, a
+  view used after its memory is given back, and a routine that gives back memory its caller holds (the group check
+  below). The generation check runs on `load`, `store`, `getslot` and `getview` of the `Memory` / `Box` itself: a
+  `@T` or `@[T]` made earlier carries no generation, so reading through it after the memory is given back is caught
+  by the build or not at all (raw code the build doesn't follow).
 - **Lending.** Passing a `Memory[T]` where a `@[T]` parameter is expected lends it (the argument becomes
   `getview()`), and a `Box[T]` where a `@T` is expected lends its address. Only at argument positions and
   receivers: anywhere else write `m.getview()` (`view: @[U32] = m.getview()`). The view is valid until the memory
@@ -258,15 +260,37 @@ routine start() -> None
     put in it (`poke`).
   - `'s' holds a Memory[Byte] (from line N) that hasn't ended, and this overwrites it`: a `poke` into a slot that
     holds live memory. Drop it first, or use `replace(value: new)`.
-  The check
-  follows one routine's own flow: what a callee does with a slot it was lent is the callee's, so that case is the
-  generation check's.
+  - `'v' is a view of 'm', whose memory was given back (drop m on line N)`: a `@T` / `@[T]` made from memory
+    (`m.getview()`, `getslot`, `getslice`, `stride`, `offset`, `to[...]`, and views made from those) is read, written,
+    passed, returned, stored or used to make another view after `drop m`. Use it before the drop.
+  - `'q' holds a view of 'm', whose memory was given back`: a value that holds such a view (a view poked into a
+    field of `q`, a record built with one, a pointer a routine gave back from `m` passed to it, `first(m: m)`) is used
+    after `drop m`, its own `drop` included (its `destruct` would read the view). Finish with `q` first.
+  - `'kill' gives back what 'm' points at (drop m on line N), and its caller holds that`: a routine drops (or steals) what a
+    `@Box[T]` / `@Memory[T]` / `@E` parameter points at and returns without putting a value back. The caller still
+    holds it. Take it by value (the caller hands it over with `steal`), or poke a value back before returning.
+    `destruct` and `destruct_all` are the routines that end `me`.
+  The check follows one routine's flow, and a routine it calls only through what that routine says about its
+  parameters (by value: taken over, `@T`: the caller keeps it).
 - **The escape check (rule 3).** A routine doesn't return a view of its frame (a local slot, a frame span, and
   every view made from them with `getslot` / `getslice` / `stride` / `offset` / `to` / a span's `getview`) or of a
   Box / Memory it holds (`m.getview()`, `m.getslot(i)`), and doesn't store one through a parameter (`out.poke(x)`)
   or into a global. Errors: `this returns a view of the frame slot 'x' ...` and `this keeps a view of ... where it
   outlives 'r'`. Fix: return the values, or let the caller pass the memory in (a `@[T]` or a `@T` parameter) and
-  write there. A view handed to a thread or fiber ticket isn't checked (the work is waited for).
+  write there. The check follows values out of the routine:
+  - A value that holds such a view (a slot or entity the view was poked into, a record built with one, `R(held: l)`
+    as well as `(held: l)`) carries it: returning it, storing it, or handing it to a routine that keeps it is an
+    error. `drop q` hands `q` to its `destruct`, so a `destruct` that moves what `q` holds into a global is one.
+  - Each routine has effects the build works out from its body and the routines it calls: the parameters it may
+    return (the result of `same(p: l)` is `l`'s address), and the parameters it stores where they outlive the call
+    (into a global, or into memory another parameter reaches). Handing a view of the frame to such a parameter is
+    `stash(l) hands 'stash' a value that reaches the frame slot 'l' ..., and 'stash' keeps what its 'p' reaches
+    where it outlives the call (line N: KEPT.poke(p))`. A routine that only reads its parameter may be handed one.
+  - A global put back as it was before the routine returns (`outer: W = G.peek()`, `G.poke(x)`, ..., `G.poke(outer)`)
+    holds the value only while the routine runs, and isn't counted. An `Addr` is an address as a number, which the
+    check doesn't follow, so a view handed to a thread or fiber ticket isn't checked (the work is waited for).
+  - Only routines without type parameters report errors. An instance of a generic routine still gives its effects to
+    its callers.
 - **`@reshaping` (rule 4), written by hand.** `@reshaping` alone means the routine may move the memory of `me`.
   `@reshaping(items, keys)` names parameters. The base: `MemoryManager.realloc` (`@reshaping(at)`), `reallocate[T]`
   (`@reshaping(ptr)`), `Memory[T].resize`, and every growing collection mutator: `List.add_last` /

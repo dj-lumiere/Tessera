@@ -62,10 +62,24 @@ public static class MemoryRules
     /// A `#reshaping` routine may move the memory `Root` names: the views of it no longer see it.
     public sealed record Reshape(string Root, string How, Pos Pos) : Event(Pos);
 
+    /// `Name` holds a view of the memory `Root` names in it (a field, a part, or a pointer a call gave back from it):
+    /// using `Name` after that memory is given back reads memory that is gone.
+    public sealed record HoldsViewOf(string Name, string Root, Pos Pos) : Event(Pos);
+
+    /// The routine gives back what its parameter `Name` points at, memory or an entity its caller holds.
+    public sealed record CallerHeldEnd(string Name, string How, Pos Pos) : Event(Pos);
+
+    /// The routine puts a value back where its parameter `Name` points.
+    public sealed record CallerHeldRefill(string Name, Pos Pos) : Event(Pos);
+
     /// The view `Name` is used.
     public sealed record UseView(string Name, Pos Pos) : Event(Pos);
 
     public sealed record ArmEnd(Pos Pos) : Event(Pos);
+
+    /// Whether a group ended by being given back (drop, destruct_all), not handed over to a holder that keeps it.
+    private static bool GaveBack(Group g) => g.How is { } how && (how.StartsWith("drop ", StringComparison.Ordinal)
+        || how.EndsWith(".destruct_all()", StringComparison.Ordinal));
 
     /// A group: where it came from, and whether and where it ended.
     private sealed record Group(string Origin, Pos Born, Pos? Ended, string? How, string? Entity = null);
@@ -82,7 +96,19 @@ public static class MemoryRules
         /// The views that hold their root's slot (ViewOf.Holds).
         public HashSet<string> Holding = [];
 
-        public State Copy() => new() { Names = new(Names), Groups = new(Groups), Views = new(Views), Stale = new(Stale), Holding = new(Holding) };
+        /// The group each view saw when it was made, and the groups a name holds views of (HoldsViewOf).
+        public Dictionary<string, string> ViewGroups = [];
+        public Dictionary<string, HashSet<string>> HeldViews = [];
+
+        /// The parameters pointing at what the caller holds that the routine gave back, and how, until it puts a value back.
+        public Dictionary<string, (Pos Pos, string How)> CallerHeldEnded = [];
+
+        public State Copy() => new()
+        {
+            Names = new(Names), Groups = new(Groups), Views = new(Views), Stale = new(Stale), Holding = new(Holding),
+            ViewGroups = new(ViewGroups), HeldViews = HeldViews.ToDictionary(h => h.Key, h => new HashSet<string>(h.Value)),
+            CallerHeldEnded = new(CallerHeldEnded),
+        };
 
         /// The same state with its groups named by the first handle that names each, so states that differ only in
         /// how a group got its id are one.
@@ -91,6 +117,12 @@ public static class MemoryRules
             var rename = new Dictionary<string, string>();
             foreach (var (name, id) in Names.OrderBy(n => n.Key, StringComparer.Ordinal))
                 rename.TryAdd(id, $"@{name}#{Groups[id].Born}");
+            // A group only a view still sees keeps a name of its own, so a use of the view finds it ended.
+            foreach (var (view, id) in ViewGroups.OrderBy(v => v.Key, StringComparer.Ordinal))
+                if (Groups.TryGetValue(id, out var seen)) rename.TryAdd(id, $"@view:{view}#{seen.Born}");
+            foreach (var (holder, ids) in HeldViews.OrderBy(h => h.Key, StringComparer.Ordinal))
+                foreach (var id in ids.Order(StringComparer.Ordinal))
+                    if (Groups.TryGetValue(id, out var held)) rename.TryAdd(id, $"@held:{holder}#{held.Born}");
             return new State
             {
                 Names = Names.ToDictionary(n => n.Key, n => rename[n.Value]),
@@ -98,6 +130,10 @@ public static class MemoryRules
                 Views = new(Views),
                 Stale = new(Stale),
                 Holding = new(Holding),
+                ViewGroups = ViewGroups.Where(v => rename.ContainsKey(v.Value)).ToDictionary(v => v.Key, v => rename[v.Value]),
+                HeldViews = HeldViews.ToDictionary(h => h.Key,
+                    h => h.Value.Where(rename.ContainsKey).Select(id => rename[id]).ToHashSet()),
+                CallerHeldEnded = new(CallerHeldEnded),
             };
         }
 
@@ -108,7 +144,11 @@ public static class MemoryRules
                 .Select(g => $"{g.Key}:{(g.Value.Ended is null ? "live" : "ended")}"))
             + "|" + string.Join(";", Views.OrderBy(v => v.Key, StringComparer.Ordinal).Select(v => $"{v.Key}>{v.Value}"))
             + "|" + string.Join(";", Stale.Keys.Order(StringComparer.Ordinal))
-            + "|" + string.Join(";", Holding.Order(StringComparer.Ordinal));
+            + "|" + string.Join(";", Holding.Order(StringComparer.Ordinal))
+            + "|" + string.Join(";", ViewGroups.OrderBy(v => v.Key, StringComparer.Ordinal).Select(v => $"{v.Key}>{v.Value}"))
+            + "|" + string.Join(";", HeldViews.OrderBy(h => h.Key, StringComparer.Ordinal)
+                .Select(h => $"{h.Key}>{string.Join(",", h.Value.Order(StringComparer.Ordinal))}"))
+            + "|" + string.Join(";", CallerHeldEnded.Keys.Order(StringComparer.Ordinal));
     }
 
     /// The errors of one routine: each a message at its place, first one first. `routineWide` names the handles every
@@ -201,6 +241,8 @@ public static class MemoryRules
                     case ViewOf v:
                         state.Views[v.Name] = v.Root;
                         state.Stale.Remove(v.Name);
+                        if (state.Names.TryGetValue(v.Root, out var rootGroup)) state.ViewGroups[v.Name] = rootGroup;
+                        else state.ViewGroups.Remove(v.Name);
                         if (v.Holds) state.Holding.Add(v.Name);
                         else state.Holding.Remove(v.Name);
                         break;
@@ -208,7 +250,33 @@ public static class MemoryRules
                         foreach (var (view, root) in state.Views)
                             if (root == rs.Root) state.Stale[view] = (rs.Pos, rs.How);
                         break;
+                    case HoldsViewOf hv:
+                        if (state.Names.TryGetValue(hv.Root, out var heldGroup))
+                            (state.HeldViews.TryGetValue(hv.Name, out var groups) ? groups : state.HeldViews[hv.Name] = []).Add(heldGroup);
+                        break;
+                    case CallerHeldEnd le:
+                        state.CallerHeldEnded.TryAdd(le.Name, (le.Pos, le.How));
+                        break;
+                    case CallerHeldRefill lr:
+                        state.CallerHeldEnded.Remove(lr.Name);
+                        break;
                     case UseView uv:
+                        // A view of memory given back since it was made (or a value holding one) reads memory that is gone.
+                        if (!state.Holding.Contains(uv.Name)
+                            && state.ViewGroups.TryGetValue(uv.Name, out var sawGroup) && state.Groups.TryGetValue(sawGroup, out var saw)
+                            && saw.Ended is { } sawEnd && GaveBack(saw))
+                            Report(uv.Pos, $"'{uv.Name}' is a view of '{saw.Origin}', whose memory was given back ({saw.How} on line "
+                                + $"{sawEnd.Line}), so it reads memory that is gone: use '{uv.Name}' before line {sawEnd.Line}, or "
+                                + $"take the view again from memory that is still there");
+                        foreach (var heldId in state.HeldViews.GetValueOrDefault(uv.Name) ?? [])
+                            if (state.Groups.TryGetValue(heldId, out var heldMemory) && heldMemory.Ended is { } heldEnd && GaveBack(heldMemory))
+                            {
+                                Report(uv.Pos, $"'{uv.Name}' holds a view of '{heldMemory.Origin}', whose memory was given back "
+                                    + $"({heldMemory.How} on line {heldEnd.Line}), so what '{uv.Name}' holds there points at memory "
+                                    + $"that is gone: finish with '{uv.Name}' before line {heldEnd.Line}, or give '{heldMemory.Origin}' "
+                                    + $"back after '{uv.Name}'s last use");
+                                break;
+                            }
                         // A table used after the manager it was made from ended points at a slot that holds nothing.
                         if (state.Holding.Contains(uv.Name) && state.Views.TryGetValue(uv.Name, out var manager)
                             && state.Names.TryGetValue(manager, out var managerId) && state.Groups.TryGetValue(managerId, out var mg)
@@ -227,6 +295,10 @@ public static class MemoryRules
                         if (arms.Count > 0) state = arms.Pop();
                         break;
                     case Exit { Returns: true } ex:
+                        foreach (var (param, (endedAt, how)) in state.CallerHeldEnded)
+                            Report(ex.Pos, $"'{routine}' gives back what '{param}' points at ({how} on line {endedAt.Line}), and its "
+                                + $"caller holds that and gives it back itself. Take '{param}' by value and have the caller hand it "
+                                + $"over with steal, or put a value back before returning, {param}.poke(...)");
                         // A place the caller reaches too (through a parameter, `me`, or a global) that steal left hollow:
                         // the caller would read the hole after the routine returns.
                         foreach (var (name, id) in state.Names)
@@ -262,9 +334,20 @@ public static class MemoryRules
                                 if (state.Stale.TryGetValue(view, out var stale)) next.Stale[view] = stale;
                                 if (state.Holding.Contains(view)) next.Holding.Add(view);
                             }
+                        foreach (var (view, id) in state.ViewGroups)
+                            if (Sees(view)) next.ViewGroups[view] = id;
+                        foreach (var (holder, ids) in state.HeldViews)
+                            if (Sees(holder)) next.HeldViews[holder] = [.. ids];
+                        foreach (var (param, ended) in state.CallerHeldEnded) next.CallerHeldEnded[param] = ended;
                         // A group no name of the next block reaches is lost there, unless it has ended.
+                        var seenByViews = next.ViewGroups.Values.Concat(next.HeldViews.Values.SelectMany(v => v)).ToHashSet();
                         foreach (var (id, g) in state.Groups)
                         {
+                            if (!next.Names.ContainsValue(id) && seenByViews.Contains(id) && g.Ended is not null)
+                            {
+                                next.Groups[id] = g;
+                                continue;
+                            }
                             bool reached = next.Names.ContainsValue(id);
                             if (reached) next.Groups[id] = g;
                             else if (g.Ended is null)

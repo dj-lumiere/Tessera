@@ -65,6 +65,9 @@ public sealed partial class Compiler
     private readonly HashSet<string> _declaredSymbols = [];
     private readonly Dictionary<string, Instance> _instances = [];
     private readonly Queue<Instance> _pending = new();
+
+    /// What every built routine does with values that reach memory, for the escape check across routines.
+    public EscapeCheck Escapes { get; } = new();
     private readonly Dictionary<string, List<(string Name, DType Type)>> _fieldCache = [];
     private readonly Dictionary<string, string> _strings = [];
     private readonly Dictionary<string, string> _wideStrings = [];
@@ -491,6 +494,7 @@ public sealed partial class Compiler
         if (VerifyFixedConformances() is [var first, ..]) throw first;
         if (VerifyThrows() is [var unlisted, ..]) throw unlisted;
         if (VerifyCrashPathsTakeNoMemory() is [var allocating, ..]) throw allocating;
+        if (Escapes.Verify() is [var escape, ..]) throw escape;
         return Output();
     }
 
@@ -586,6 +590,9 @@ public sealed partial class Compiler
         errors.AddRange(VerifyFixedConformances());
         errors.AddRange(VerifyThrows());
         errors.AddRange(VerifyCrashPathsTakeNoMemory());
+        // A routine that stopped at an error says it once: the same place found again across routines isn't repeated.
+        var reportedAt = errors.Select(e => e.Pos).ToHashSet();
+        errors.AddRange(Escapes.Verify().Where(e => !reportedAt.Contains(e.Pos) && (scope is null || scope(e.Pos.File))));
         return [.. errors.Take(checkedUpTo), .. errors.Skip(checkedUpTo).Where(e => !templateErrors.Contains(e.Pos))];
     }
 

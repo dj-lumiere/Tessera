@@ -326,6 +326,7 @@ public sealed partial class FunctionGen
             ? Eval(new MethodCallExpr(r, "peek", [], [], r.Pos), expected)
             : Eval(r, expected);
         if (MemOn && _memTracked.Contains(r.Name)) Mem(new MemoryRules.End(r.Name, $"steal {r.Name}", s.Pos));
+        NoteCallerHeldEnd(r, $"steal {r.Name}", s.Pos);
         return v;
     }
 
@@ -825,6 +826,7 @@ public sealed partial class FunctionGen
             _incoming[b.Name] = [];
         }
 
+        BeginEscape();
         CheckReshapingAnnotation();
         // An entity is lent, never copied: its routines take me by its address, `routine @E.name(...)`.
         if (_decl.Params is [{ Name: "me" } me, ..] && me.Type.Name == "Me" && _inst.Params.Count > 0 && Entities.IsEntity(_inst.Params[0]))
@@ -1323,6 +1325,12 @@ public sealed partial class FunctionGen
                             : $"the frame slot '{b.Name}' (claimed at line {b.Pos.Line})";
                     else if (PointsAtMemory(t) && FrameView(b.Value) is { } sees) _frameViews[b.Name] = sees;
                 }
+                if (b.Value is ClaimExpr)
+                    BindClaim(b.Name, Compiler.IsCoreSpan(t, out _)
+                        ? $"the frame span '{b.Name}' (claimed at line {b.Pos.Line})"
+                        : $"the frame slot '{b.Name}' (claimed at line {b.Pos.Line})");
+                else BindAtoms(b.Name, b.Value, t);
+                NoteBoundViews(b, t);
                 if (MemOn && Tracked(t))
                 {
                     if (b.Value is ClaimExpr { Contents: { } held }) MemBind(b.Name, held, b.Pos, warn: false, type: t);
@@ -1383,6 +1391,7 @@ public sealed partial class FunctionGen
                     Line($"{op} = extractvalue {tuple.Llvm} {v.Op}, {shape.ValuePath(i)}");
                     Define(name, new Val(op, tuple.Args[i]), pos);
                     DescribeValue(name, op, tuple.Args[i], d.Source ?? pos);
+                    BindAtoms(name, d.Value, tuple.Args[i]);
                 }
                 break;
             }
@@ -1441,6 +1450,7 @@ public sealed partial class FunctionGen
                     EmitStmt(new DropStmt(new ValueRef(spill, d.Pos), d.Pos));
                     break;
                 }
+                NoteCallerHeldEnd(d.Value, $"drop {new Printer().Expr(d.Value, 0)}", d.Pos);
                 _dropping = d.Value;
                 try { EvalAny(call); }
                 finally { _dropping = null; }
@@ -4384,6 +4394,9 @@ public sealed partial class FunctionGen
         if (sig.IsTrackCaller) args.Add(CallerPlace(plan.Pos));
         MemCall(plan, sig, offset);
         CheckStoreEscape(plan, sig);
+        RecordStore(plan, sig);
+        NoteStoredViews(plan, sig);
+        NoteCallerHeldRefill(plan, sig);
         if (sig.Decl.Name is "poke" && plan.Receiver is ValueRef slot && plan.Args is [var stored] && TableManager(stored) is { } held)
             NoteTable(slot.Name, held, plan.Pos);
         if (!sig.IsTemplate || plan.Decl.AnnotationNamed("reshaping") is not null) CheckReshapingCall(plan);
@@ -4416,6 +4429,7 @@ public sealed partial class FunctionGen
 
         var inst = _c.RequireInstance(plan.Decl, plan.Env);
         _c.RecordCall(_inst, inst);
+        RecordCall(plan, inst);
         if (inst.Decl.IsFailable)
         {
             // A generic body being checked only types the call: a try or check around it counts it all the same.
@@ -4915,6 +4929,7 @@ public sealed partial class FunctionGen
         }
         var v = Eval(returned, _inst.Ret);
         if (_cur.Terminated) return;
+        RecordReturn(returned, r.Pos);
         if (_sig.Sret)
         {
             Line($"store {_inst.Ret.Llvm} {v.Op}, ptr %ret.slot");
@@ -4957,6 +4972,7 @@ public sealed partial class FunctionGen
             {
                 for (int i = 0; i < j.Args.Count; i++)
                     if (FrameView(j.Args[i]) is { } sees) _frameViews[target.Params[i].Name] = sees;
+                for (int i = 0; i < j.Args.Count; i++) BindAtoms(target.Params[i].Name, j.Args[i], types[i]);
                 var passed = new List<(string, string)>();
                 for (int i = 0; i < j.Args.Count; i++)
                 {

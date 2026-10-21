@@ -51,6 +51,13 @@ spelling has no step, the build error names the new one.
 - A routine that takes a memory manager names the parameter `manager: @MemoryManager` (`--step manager`).
 - Every manager is an entity.
 - An address moves by a `ByteSize` with `+%` / `-%`: `a.offset(8)` is `a +% 8b` (`--step addr`).
+- The escape check follows values out of a routine: a value holding a view of the frame (or of memory the routine
+  holds) can't be returned, stored, or handed to a routine that keeps it, `drop` included (the type's `destruct`
+  receives it), and a routine's result that may be one of its parameters is that argument. `R(held: l)` is checked
+  like `(held: l)`.
+- A view of memory used after the memory is given back is a build error, and so is a value holding one (a field, a
+  record, a pointer a routine gave back from it). A routine that gives back what a `@Box[T]` / `@Memory[T]` / `@E`
+  parameter points at must put a value back before returning.
 
 **Failure**
 - `Result[T, E]` and the `_result` routines are gone: a routine that can fail is `failable` and throws, and the

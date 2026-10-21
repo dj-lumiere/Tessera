@@ -477,6 +477,7 @@ public sealed partial class FunctionGen
             }
             v = Eval(returned, _inst.Ret);
             if (_cur.Terminated) return;
+            RecordReturn(returned, r.Pos);
         }
         string carrier = Compiler.CarrierName(_inst);
         if (!Emitting)
