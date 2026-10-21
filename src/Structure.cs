@@ -419,7 +419,7 @@ public sealed class Structurer
         IfStmt i => 1 + Lines(i.Then) + (i.Else is null ? 0 : Lines(i.Else)),
         WhenStmt w => 1 + w.Arms.Sum(a => Lines(a.Body)),
         LoopStmt => 100,
-        BindStmt or ExprStmt or ReturnStmt or UnreachableStmt or TodoStmt or PassStmt => 1,
+        BindStmt or ExprStmt or ReturnStmt or UnreachableStmt or TodoStmt or NothingStmt => 1,
         _ => 100,
     });
 
@@ -682,7 +682,7 @@ public sealed class Structurer
                 result.Add(new BindStmt(bound, pattern.Type, new WhenExpr(when with { Arms = valueArms }, w.Pos), w.Pos));
                 return result;
             }
-            result.Add(when with { Arms = arms.Select(a => a.Body.Count == 0 ? a with { Body = [new PassStmt(a.Pos)] } : a).ToList() });
+            result.Add(when with { Arms = arms.Select(a => a.Body.Count == 0 ? a with { Body = [new NothingStmt(a.Pos)] } : a).ToList() });
             return result;
         }
         _absorbed.Add(merge);
@@ -691,7 +691,7 @@ public sealed class Structurer
         if (valueArgs.Count == 0)
         {
             if (arms.Any(a => a.Body.Count > 0))
-                result.Add(when with { Arms = arms.Select(a => a.Body.Count == 0 ? a with { Body = [new PassStmt(a.Pos)] } : a).ToList() });
+                result.Add(when with { Arms = arms.Select(a => a.Body.Count == 0 ? a with { Body = [new NothingStmt(a.Pos)] } : a).ToList() });
         }
         else result.AddRange(ValueOf(mergeBlock, valueArgs, when, ctx, w.Pos, out names));
         result.AddRange(Continue(mergeBlock, MergeArgs(mergeBlock, valueArgs, names, rw, w.Pos), ctx));
@@ -955,11 +955,11 @@ public sealed class Structurer
             cond = negated.Operand;
             kind = LoopKind.Until;
         }
-        if (body.Count == 0) body = [new PassStmt(header.Pos)];
+        if (body.Count == 0) body = [new NothingStmt(header.Pos)];
         body = HoistContinue(body);
         // The last line of a loop without carried values needn't say continue.
         if (carried.Count == 0 && body.Count > 1 && body[^1] is ContinueStmt { With: null }) body.RemoveAt(body.Count - 1);
-        if (body is [ContinueStmt { With: null }]) body = [new PassStmt(header.Pos)];
+        if (body is [ContinueStmt { With: null }]) body = [new NothingStmt(header.Pos)];
         // `then` runs after a `break` too, so the header's exit arm can only be the loop's `then` when the body has no
         // `break` of its own.
         if (then is not null && Bodies.BreaksOut(body))
@@ -1061,7 +1061,7 @@ public sealed class Structurer
             var result = body.Take(body.Count - 1).ToList();
             var arms = w.Arms.Select(arm => arm with { Body = arm.Body.Take(arm.Body.Count - 1).ToList() }).ToList();
             if (arms.Any(arm => arm.Body.Count > 0))
-                result.Add(w with { Arms = arms.Select(arm => arm.Body.Count == 0 ? arm with { Body = [new PassStmt(arm.Pos)] } : arm).ToList() });
+                result.Add(w with { Arms = arms.Select(arm => arm.Body.Count == 0 ? arm with { Body = [new NothingStmt(arm.Pos)] } : arm).ToList() });
             result.Add(w.Arms[0].Body[^1]);
             return result;
         }
@@ -1239,7 +1239,7 @@ public sealed class Structurer
         w with { Arms = w.Arms.Select(a => a with { Body = Map(a.Body, f) }).ToList() };
 
     /// The old `is T as p => continue` read in place: the when becomes the value p, which that arm gives, and an
-    /// arm with nothing to do says `pass`.
+    /// arm with nothing to do says `nothing`.
     private static Stmt LegacyWhen(Stmt s)
     {
         if (s is not WhenStmt w) return s;
@@ -1253,7 +1253,7 @@ public sealed class Structurer
             return new BindStmt(carried.Name, pattern.Type, new WhenExpr(w with { Arms = arms }, w.Pos), w.Pos);
         }
         if (empty.Count == 0) return s;
-        return w with { Arms = w.Arms.Select(a => a.Body.Count == 0 ? a with { Body = [new PassStmt(a.Pos)] } : a).ToList() };
+        return w with { Arms = w.Arms.Select(a => a.Body.Count == 0 ? a with { Body = [new NothingStmt(a.Pos)] } : a).ToList() };
     }
 
     /// Every counting loop written as `each`.

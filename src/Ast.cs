@@ -354,8 +354,8 @@ public sealed record StealStmt(Expr From, string Name, Pos Pos) : Stmt(Pos)
 /// `becomes v`: the value of the `when` arm this ends.
 public sealed record BecomesStmt(Expr Value, Pos Pos) : Stmt(Pos);
 
-/// `pass`: a line that does nothing, for an arm or a body that has nothing to do.
-public sealed record PassStmt(Pos Pos) : Stmt(Pos);
+/// `nothing`: a line with no work, for an arm or a body that has nothing to do.
+public sealed record NothingStmt(Pos Pos) : Stmt(Pos);
 
 // ── Expressions ─────────────────────────────────────────────────────────────
 

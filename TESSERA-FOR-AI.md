@@ -489,10 +489,14 @@ routine start() -> None
 - **`when` as a statement.** `when` alone takes condition arms (`n < 10 => ...`), tested in order, the first that
   holds taken. `when v` takes value arms: constants (`1, 2 =>`, `b'+', b'-' =>`, `Shape.CIRCLE =>`), observations of
   a variant (`is S64 as n =>`, `is None =>`, `is A, is B =>`), `else =>`, and `else as rest =>`. The one line after
-  `=>` is a call, `return`, `break`, `continue`, or `pass` (go on after the `when`), or the arm takes its lines under
-  it. Only the taken arm runs. An integer `when v` needs `else`, a choice `when v` without `else` lists every member,
+  `=>` is a call, `return`, `break`, `continue`, or `nothing` (go on after the `when`), or the arm takes its lines
+  under it. Only the taken arm runs. An integer `when v` needs `else`, a choice `when v` without `else` lists every member,
   a variant `when` without `else` observes every branch. There are no range patterns: test ranges with a chained
   comparison (`b'0' <= c <= b'9' =>`) in a condition `when`.
+- **`nothing` is the line with no work:** an arm with nothing to do (`Light.YELLOW => nothing`), and the body of a
+  record, entity or crashable with no member variables (`record Console`, then `    nothing` on the next line). A type
+  written as a header alone is a build error, and so is a line written `pass` (`tessera migrate --step nothing` rewrites
+  both).
 - **`when` as a value.** `x: T = when ...` (and `return when ...`, `becomes when ...`) gives one value from the arm
   taken: a one-line arm's expression (`is S64 as n => n`, `n < 10 => Size.SMALL`), the `becomes v` that ends a
   multi-line arm, or the arm leaves with `return`, `break`, or `continue`. A name an arm gives (`is T as name`) is

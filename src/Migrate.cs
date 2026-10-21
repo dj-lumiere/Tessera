@@ -73,6 +73,9 @@ namespace Tessera;
 /// 0.5: a loop is `until` with the condition that ends it, or `loop`, and `while` is gone: `while true` is `loop`,
 /// `while not c` is `until c`, and an integer comparison is turned around (`while i < n` is `until i >= n`). Anything
 /// else gets a `not` and is listed (`--step until`).
+///
+/// 0.5: a line with no work is `nothing`, not `pass`, and a type with no member variables has the body `nothing`
+/// (`--step nothing`).
 public static class Migrate
 {
     /// `F64`, its plural in prose (`F64s`), and a name built on it (`F128Extended`, `F64Core`). `F16C` is the x86 instruction set, not a type.
@@ -107,7 +110,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf" or "managers" or "float-presets" or "modules" or "access" or "threadlocal" or "files" or "checked" or "manager" or "until" or "channels";
+        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf" or "managers" or "float-presets" or "modules" or "access" or "threadlocal" or "files" or "checked" or "manager" or "until" or "channels" or "nothing";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -429,6 +432,9 @@ public static class Migrate
         ["hollow"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, HollowSpelling)
             : HollowSpelling(text),
+        ["nothing"] = (file, text, report) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, t => NothingMigration.Rewrite(t, report, file))
+            : NothingMigration.Rewrite(text, report, file),
         ["channels"] = (file, text, report) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, t => ChannelMigration.Rewrite(t, report, file))
             : ChannelMigration.Rewrite(text, report, file),

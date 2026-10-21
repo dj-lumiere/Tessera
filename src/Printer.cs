@@ -187,8 +187,8 @@ public sealed class Printer
             case BecomesStmt b:
                 Line(s, indent, $"becomes {Expr(b.Value)}");
                 break;
-            case PassStmt:
-                Line(s, indent, "pass");
+            case NothingStmt:
+                Line(s, indent, "nothing");
                 break;
             default:
                 throw new InvalidOperationException(s.GetType().Name);
@@ -239,7 +239,7 @@ public sealed class Printer
 
     /// Whether a statement arm fits after `=>`: a leave, or a call.
     private static bool OneLineArm(Stmt s) => s is ReturnStmt { Value: not WhenExpr } or JumpStmt or UnreachableStmt or TodoStmt
-        or ContinueStmt or BreakStmt or PassStmt or ExprStmt { Annotations.Count: 0 };
+        or ContinueStmt or BreakStmt or NothingStmt or ExprStmt { Annotations.Count: 0 };
 
     // ── Expressions ─────────────────────────────────────────────────────────
 

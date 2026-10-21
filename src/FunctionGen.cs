@@ -1475,7 +1475,7 @@ public sealed partial class FunctionGen
                 Terminate($"br label %{loop.Then.Label}");
                 break;
             }
-            case PassStmt:
+            case NothingStmt:
                 break;
             case BecomesStmt bc:
             {

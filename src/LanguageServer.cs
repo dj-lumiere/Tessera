@@ -155,7 +155,14 @@ public static partial class LanguageServer
     // `until false` at the start of a line, which LoopLint warns about.
     private static readonly Regex UntilFalse = new(@"^(?<indent>[ ]*)until[ ]+false\b");
 
-    /// The quick fixes for lines `first` to `last` (0-based): `until false` is written `loop`.
+    // The old `pass` line, alone or after a `when` arm's `=>`, which the parser reports.
+    private static readonly Regex PassLine = new(@"^(?<before>[ ]*(?:.*=>[ ]*)?)pass[ ]*(?:#.*)?$");
+
+    // A type's header at the start of a line: `record Name`, `entity Name[T]`, `secret crashable Name`.
+    private static readonly Regex TypeHeader = new(@"^(?:secret )?(?:record|entity|crashable) [A-Za-z_]");
+
+    /// The quick fixes for lines `first` to `last` (0-based): `until false` is written `loop`, `pass` is written
+    /// `nothing`, and a type with no member variables gets the body `nothing`.
     private static JsonArray CodeActions(string uri, int first, int last)
     {
         var actions = new JsonArray();
@@ -165,25 +172,58 @@ public static partial class LanguageServer
         string[] lines = text.Split('\n');
         for (int line = Math.Max(0, first); line <= last && line < lines.Length; line++)
         {
-            if (UntilFalse.Match(lines[line]) is not { Success: true } m) continue;
-            int start = m.Groups["indent"].Length;
-            var edit = new JsonObject
+            string l = lines[line].TrimEnd('\r');
+            if (UntilFalse.Match(l) is { Success: true } m)
             {
-                ["range"] = new JsonObject
-                {
-                    ["start"] = new JsonObject { ["line"] = line, ["character"] = start },
-                    ["end"] = new JsonObject { ["line"] = line, ["character"] = m.Length },
-                },
-                ["newText"] = "loop",
-            };
-            actions.Add(new JsonObject
+                int start = m.Groups["indent"].Length;
+                actions.Add(QuickFix(uri, "Write 'loop'", line, start, line, m.Length, "loop"));
+            }
+            else if (PassLine.Match(l) is { Success: true } p)
             {
-                ["title"] = "Write 'loop'",
-                ["kind"] = "quickfix",
-                ["edit"] = new JsonObject { ["changes"] = new JsonObject { [uri] = new JsonArray(edit) } },
-            });
+                int start = p.Groups["before"].Length;
+                actions.Add(QuickFix(uri, "Write 'nothing'", line, start, line, start + "pass".Length, "nothing"));
+            }
+            else if (TypeHeader.IsMatch(l) && EmptyTypeBodyLine(lines, line) is { } at)
+            {
+                actions.Add(QuickFix(uri, "Write 'nothing'", at, 0, at, 0, "    nothing\n"));
+            }
         }
         return actions;
+    }
+
+    /// The line a type declared at line `header` takes its body `nothing` at, when it has no member variables and no
+    /// body: the line after its header and its `obeys` / `needs` lines, when the next line with text isn't indented.
+    private static int? EmptyTypeBodyLine(string[] lines, int header)
+    {
+        int at = header + 1;
+        while (at < lines.Length && (lines[at].StartsWith("obeys ", StringComparison.Ordinal)
+                                     || lines[at].StartsWith("needs ", StringComparison.Ordinal)))
+            at++;
+        int next = at;
+        while (next < lines.Length && lines[next].Trim().Length == 0) next++;
+        if (next < lines.Length && lines[next].Length > 0 && lines[next][0] == ' ') return null;
+        return at;
+    }
+
+    /// One quick fix: the text from (`startLine`, `startChar`) to (`endLine`, `endChar`) becomes `newText`.
+    private static JsonObject QuickFix(string uri, string title, int startLine, int startChar, int endLine, int endChar,
+        string newText)
+    {
+        var edit = new JsonObject
+        {
+            ["range"] = new JsonObject
+            {
+                ["start"] = new JsonObject { ["line"] = startLine, ["character"] = startChar },
+                ["end"] = new JsonObject { ["line"] = endLine, ["character"] = endChar },
+            },
+            ["newText"] = newText,
+        };
+        return new JsonObject
+        {
+            ["title"] = title,
+            ["kind"] = "quickfix",
+            ["edit"] = new JsonObject { ["changes"] = new JsonObject { [uri] = new JsonArray(edit) } },
+        };
     }
 
     private static void Store(string uri, string text)

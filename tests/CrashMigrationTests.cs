@@ -13,7 +13,7 @@ public class CrashMigrationTests
         @noreturn
         routine halt(name: @[Byte], message: @[Byte], place: @SourceLocation) -> None
             loop
-                pass
+                nothing
 
         """;
 

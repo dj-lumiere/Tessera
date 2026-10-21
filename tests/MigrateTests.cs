@@ -410,8 +410,37 @@ public class MigrateTests
         Assert.Equal(after, Migrate.SpanSpelling(before));
     }
 
+    [Fact]
+    public void Pass_becomes_nothing_and_an_empty_type_gets_the_body_nothing()
+    {
+        const string before = """
+            record Console
+
+            record ConsoleOutput
+            obeys Writer[ConsoleOutput]
+            record Point
+                x: S64
+
+            routine f(x: S64) -> None
+                when x
+                    0 => pass
+                    else
+                        pass
+                return
+            """;
+        var report = new List<string>();
+        string after = NothingMigration.Rewrite(before, report, "t.te");
+        Assert.Contains("record Console\n    nothing\n\n", after);
+        Assert.Contains("obeys Writer[ConsoleOutput]\n    nothing\nrecord Point\n    x: S64\n", after);
+        Assert.Contains("0 => nothing\n", after);
+        Assert.Contains("else\n            nothing\n", after);
+        Assert.DoesNotContain("pass", after);
+        Assert.Equal(after, NothingMigration.Rewrite(after, report, "t.te"));
+        Assert.Empty(report);
+    }
+
     [Theory]
-    [InlineData("    if a\n        pass\n    else if b\n        pass\n", "    if a\n        pass\n    elseif b\n        pass\n")]
+    [InlineData("    if a\n        nothing\n    else if b\n        nothing\n", "    if a\n        nothing\n    elseif b\n        nothing\n")]
     [InlineData("x: S64 = if c then 1 else 2\n", "x: S64 = if c then 1 else 2\n")]
     public void Else_if_becomes_one_word(string before, string after)
     {
@@ -446,7 +475,7 @@ public class MigrateTests
 
             routine span_count(n: USize) -> USize
                 each k in 0 til 4
-                    pass
+                    nothing
                 return n
             """;
         string after = Migrate.SizeTypes(before);

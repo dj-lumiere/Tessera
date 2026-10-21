@@ -57,7 +57,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         "jump", "branch", "when", "return", "unreachable", "continue", "else", "elseif", "block", "claim", "local",
         "true", "false", "null", "routine", "record", "choice", "variant", "preset", "global", "concept", "conform",
         "protocol", "obeys", "needs", "define", "secret", "module", "import", "and", "or", "not", "is", "as",
-        "todo", "if", "each", "until", "loop", "becomes", "break", "pass", "drop", "entity", "steal", "inf", "nan",
+        "todo", "if", "each", "until", "loop", "becomes", "break", "nothing", "drop", "entity", "steal", "inf", "nan",
         "throw",
     ];
     /// Inside an `@external("asm")` routine: a statement may carry `@asm_prefix`, and an `if` may test a bare
@@ -66,7 +66,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     /// The words a statement starts with, besides a binding or a call.
     private static readonly HashSet<string> StatementKeywords =
-        ["jump", "branch", "when", "return", "throw", "unreachable", "todo", "if", "each", "until", "loop", "continue", "break", "pass",
+        ["jump", "branch", "when", "return", "throw", "unreachable", "todo", "if", "each", "until", "loop", "continue", "break", "nothing",
          "becomes", "local", "claim", "else", "elseif", "then", "drop", "steal"];
 
     private static readonly HashSet<string> DeclKeywords =
@@ -144,7 +144,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
         if (_scriptLines is not null) decls.Add(ScriptStart(decls) with { Module = module });
         if (Legacy.Count > 0 && !acceptLegacy && !AcceptLegacyEverywhere)
-            throw new CompileError(Legacy[0].Pos, $"{Legacy[0].Message} (tessera migrate rewrites it)");
+            throw new CompileError(Legacy[0].Pos, Legacy[0].Message.Contains("tessera migrate") ? Legacy[0].Message : $"{Legacy[0].Message} (tessera migrate rewrites it)");
         return new Module(decls);
     }
 
@@ -798,8 +798,19 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         ExpectLineEnd();
         var clauses = ParseClauses();
 
+        // A type with no member variables has the body `nothing`, on the line under its header (and clauses).
+        bool nothing = false;
+        if (Cur is { Kind: TokenKind.Ident, Escaped: false, Text: "nothing" or "pass" } && Cur.Pos.Col > 1
+            && PeekTok(1).Kind is TokenKind.Newline or TokenKind.Eof)
+        {
+            if (Cur.Text == "pass") Old(Cur.Pos, "a type with no member variables has the body 'nothing': 'pass' is not a keyword ('tessera migrate --step nothing' rewrites it)");
+            Next();
+            ExpectLineEnd();
+            nothing = true;
+        }
+
         var fields = new List<FieldDecl>();
-        while (true)
+        while (!nothing)
         {
             // Annotations and `private` belong to the next field when a field follows them, and to the next
             // declaration otherwise.
@@ -824,6 +835,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
         if (isCrashable && typeParams.Count != 0)
             throw new CompileError(pos, $"crashable '{name.Text}' takes no type parameters: a failure is one fixed kind of value");
+        if (fields.Count == 0 && !nothing)
+            Old(pos, $"{(isEntity ? "entity" : isCrashable ? "crashable" : "record")} '{name.Text}' has no member variables and no " +
+                     "body: a type with no member variables writes 'nothing' as its body, on the line under its header " +
+                     "('tessera migrate --step nothing' writes it)");
         return new RecordDecl(file, annotations, name.Text, typeParams, clauses, fields, pos) { IsEntity = isEntity, IsCrashable = isCrashable };
     }
 
@@ -1458,6 +1473,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                             "rewrites these loops");
             return ParseLoop(col);
         }
+        if (PassLineAhead())
+        {
+            // `pass` is read as `nothing`, and reported once the file is read.
+            Old(Cur.Pos, "a line with no work is written 'nothing': 'pass' is not a keyword ('tessera migrate --step nothing' rewrites it)");
+            Next();
+            return new NothingStmt(pos);
+        }
         if (IsKeyword(Cur) && StatementKeywords.Contains(Cur.Text) && !StartsValue())
         {
             switch (Cur.Text)
@@ -1636,6 +1658,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return next.Kind is TokenKind.Ident or TokenKind.Int or TokenKind.Float or TokenKind.Char or TokenKind.Str or TokenKind.Byte
                || next.Kind == TokenKind.LParen && next.Pos.Col > Cur.Pos.Col + Cur.Text.Length;
     }
+
+    /// Whether the line is the old `pass`: the name `pass` alone up to the end of its line.
+    private bool PassLineAhead() =>
+        Cur is { Kind: TokenKind.Ident, Escaped: false, Text: "pass" } && PeekTok(1).Kind is TokenKind.Newline or TokenKind.Eof;
 
     /// `each x in source`, `until c`, `loop`, each with `with a: T = init, ...`, a body, and `then` with a body.
     private LoopStmt ParseLoop(int col)
@@ -1833,9 +1859,15 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var pos = Cur.Pos;
         if (IsIdent("continue") && _loopDepth == 0 && PeekTok(1).Kind is TokenKind.Newline or TokenKind.Eof)
         {
-            Old(pos, "an arm that only goes on after the when is written with nothing after =>");
+            Old(pos, "an arm that only goes on after the when is written '=> nothing'");
             Next();
             return null;
+        }
+        if (PassLineAhead())
+        {
+            Old(pos, "a line with no work is written 'nothing': 'pass' is not a keyword ('tessera migrate --step nothing' rewrites it)");
+            Next();
+            return new NothingStmt(pos);
         }
         if (IsKeyword(Cur) && StatementKeywords.Contains(Cur.Text) && !StartsValue())
         {
@@ -1917,8 +1949,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 if (!Is(TokenKind.Newline) && !Is(TokenKind.Eof))
                     throw Error("break takes no value: a loop sends a value out through return or a local slot");
                 return new BreakStmt(pos);
-            case "pass":
-                return new PassStmt(pos);
+            case "nothing":
+                return new NothingStmt(pos);
             case "becomes":
                 if (_valueWhenDepth == 0)
                     throw new CompileError(pos, "becomes gives the value of a when arm, and this line isn't in an arm of a when that is a value");

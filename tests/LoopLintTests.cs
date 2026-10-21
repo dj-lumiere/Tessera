@@ -14,7 +14,7 @@ public class LoopLintTests
         string warning = Assert.Single(Lint("""
             routine f() -> None
                 until true
-                    pass
+                    nothing
                 return
             """));
         Assert.Contains("t.te:2:5: warning: this loop's body never runs", warning);
