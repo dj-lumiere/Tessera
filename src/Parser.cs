@@ -51,15 +51,6 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private readonly HashSet<string> _scriptNames = [];
     private Pos _scriptPos;
 
-    /// Names a value can only have between backticks: the words a statement, a target, or an expression starts with.
-    public static readonly IReadOnlySet<string> ReservedValueNames = new HashSet<string>
-    {
-        "jump", "branch", "when", "return", "unreachable", "continue", "else", "elseif", "block", "claim", "local",
-        "true", "false", "null", "routine", "record", "choice", "variant", "preset", "global", "concept", "conform",
-        "protocol", "obeys", "needs", "define", "secret", "module", "import", "and", "or", "not", "is", "as",
-        "todo", "if", "each", "until", "loop", "becomes", "break", "nothing", "drop", "entity", "steal", "inf", "nan",
-        "throw",
-    };
     /// Inside an `@external("asm")` routine: a statement may carry `@asm_prefix`, and an `if` may test a bare
     /// comparison name (`eq`, `lt[U64]`).
     private bool _inAsm;
@@ -1430,7 +1421,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// here, before the keyword is read as the next block or declaration.
     private void KeywordBinding()
     {
-        if (IsKeyword(Cur) && Cur.Text != "when" && ReservedValueNames.Contains(Cur.Text) && PeekTok(1).Kind == TokenKind.Colon)
+        if (IsKeyword(Cur) && Cur.Text != "when" && ReservedNames.Values.Contains(Cur.Text) && PeekTok(1).Kind == TokenKind.Colon)
             ValueName("a value name");
     }
 
@@ -1595,7 +1586,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     /// A keyword at the head of a line that is a value's name after all: `then: U64 = 1`, `until.poke(0)`. A word no
     /// value can be named (`return`) stays the keyword, so `return .hollow()` gives back the owner-less call.
-    private bool StartsValue() => !ReservedValueNames.Contains(Cur.Text)
+    private bool StartsValue() => !ReservedNames.Values.Contains(Cur.Text)
                                   && PeekTok(1).Kind is TokenKind.Colon or TokenKind.Dot or TokenKind.Comma or TokenKind.Eq;
 
     /// The value a binding takes: an expression on the line, or a `when` whose arms follow on the lines below.
@@ -2620,7 +2611,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     /// A bare name that names a visible value, and isn't a call (a call always names a routine), a path, or a record.
     private bool IsValue(Token t) =>
-        _values is not null && _values.Contains(t.Text) && (t.Escaped || !ReservedValueNames.Contains(t.Text))
+        _values is not null && _values.Contains(t.Text) && (t.Escaped || !ReservedNames.Values.Contains(t.Text))
         && PeekTok(1).Kind is not TokenKind.LParen;
 
     /// A name a declaration gives a type or a type parameter. `Me` is the type a routine is on, so it names nothing else.
@@ -2637,7 +2628,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var n = Expect(TokenKind.Ident, what);
         if (!n.Escaped && n.Text == "me" && !receiver)
             throw new CompileError(n.Pos, "'me' is the receiver, a routine's first parameter, so no other value takes that name");
-        if (!n.Escaped && ReservedValueNames.Contains(n.Text))
+        if (!n.Escaped && ReservedNames.Values.Contains(n.Text))
             throw new CompileError(n.Pos, $"'{n.Text}' is a keyword; a value of that name is written `{n.Text}`");
         return n;
     }

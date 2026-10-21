@@ -437,7 +437,7 @@ public sealed class Printer
 
     /// A name as written: between backticks when it is a keyword or holds characters a name can't.
     public static string Name(string name) =>
-        name.Length > 0 && (Parser.ReservedValueNames.Contains(name) || !name.All(c => char.IsAsciiLetterOrDigit(c) || c == '_')
+        name.Length > 0 && (ReservedNames.Values.Contains(name) || !name.All(c => char.IsAsciiLetterOrDigit(c) || c == '_')
                             || char.IsAsciiDigit(name[0]))
             ? $"`{name}`"
             : name;
