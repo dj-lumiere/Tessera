@@ -320,7 +320,10 @@ routine start() -> None
   `PageManageable`: `OsPageManager`, whose table is `PAGES` (whole pages, `alloc` puts one page in front that keeps
   the size). The tables are ready before `start`, and every allocating routine takes one as `@MemoryManager`:
   `.construct(HEAP)`, `manager: PAGES`, `t: @MemoryManager = HEAP` for a copy in a slot. A `StackManager`
-  (`bottom`, `top`: `size()`, `remaining()`, `used()`, `holds(at)`) manages one flow's stack: it hands out `local`
+  (`bottom`, `top`, `sp`: `size()`, `remaining()`, `used()`, `holds(at)`) manages one flow's stack: `sp` is the flow's
+  stack pointer while it is stopped (a fiber switched away writes it there, the switch back reads it), `.hollow()` while
+  it runs and always for a thread's first stack, and `used()` / `remaining()` count from `sp` when it is set, else from
+  the caller's stack pointer. It hands out `local`
   slots by moving the stack pointer, so it has no table. `StackManager.current()` is the running flow's: a fiber's
   inside a fiber, else the thread's own stack, whose bounds the OS gives (without an OS, `__stack_bottom` to
   `__stack_top`: the end of the globals to the end of the board's RAM). `ThreadLocalManager.reset()` puts this thread's `@threadlocal` globals back

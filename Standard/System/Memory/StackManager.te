@@ -2,7 +2,8 @@
 #
 # A flow of execution (a thread's first one, a fiber) runs on a stack, and a StackManager manages it: the stack
 # pointer and the range it may move in, from `top`, where the stack starts, down to `bottom`, below which it must not
-# go. A routine's `local` slots are the stack's blocks. The builder makes them by moving the stack pointer down when
+# go. While the flow runs, its stack pointer is in the CPU's register. When it stops (a fiber switching away), the
+# switch writes it to `sp`, and the switch back reads it from there. A routine's `local` slots are the stack's blocks. The builder makes them by moving the stack pointer down when
 # the routine starts and back up when it returns, with no call, so they come back in the order opposite to the one they
 # were handed out in, and the code never names the manager: a flow has one stack, so there is nothing to choose.
 #
@@ -22,13 +23,16 @@ entity StackManager
     bottom: Addr
     ### The address the stack starts at: the stack pointer starts here and moves down.
     top: Addr
+    ### The stack pointer of the flow while it isn't running, written when it stops. `.hollow()` while it runs (its
+    ### stack pointer is the CPU's then), and always for a thread's first stack, which never stops this way.
+    sp: Addr
 
 ### The manager of a stack that runs from `top` down to `bottom`.
 ### :param bottom: The lowest address the stack pointer may reach.
 ### :param top: The address the stack starts at.
 ### :returns: The manager.
 common routine StackManager.construct(bottom: Addr, top: Addr) -> Me
-    return Me(bottom, top)
+    return Me(bottom, top, sp: .hollow())
 
 ### Releases nothing: the stack's memory is the manager's that handed it out.
 routine @StackManager.destruct() -> None
@@ -39,19 +43,21 @@ routine @StackManager.destruct() -> None
 routine @StackManager.size() -> ByteSize
     return ByteSize.construct(bytes: ptrtoint[Addr, U64](me.top.peek()) - ptrtoint[Addr, U64](me.bottom.peek()))
 
-### How much of the stack is free below the stack pointer of the routine that asks: what deeper calls may still use.
+### How much of the stack is free below its stack pointer: what deeper calls may still use. The stack pointer is `sp`
+### for a flow that isn't running, else that of the routine that asks.
 ### :returns: The bytes from `bottom` up to the stack pointer, 0 when the stack pointer is outside the stack.
 routine @StackManager.remaining() -> ByteSize
-    sp: U64 = ptrtoint[Addr, U64](stack_pointer())
+    sp: U64 = me.pointer()
     low: U64 = ptrtoint[Addr, U64](me.bottom.peek())
     if not (low <= sp <= ptrtoint[Addr, U64](me.top.peek()))
         return ByteSize.construct(bytes: 0)
     return ByteSize.construct(bytes: sp - low)
 
-### How much of the stack is in use above the stack pointer of the routine that asks.
+### How much of the stack is in use above its stack pointer. The stack pointer is `sp` for a flow that isn't running,
+### else that of the routine that asks.
 ### :returns: The bytes from the stack pointer up to `top`, 0 when the stack pointer is outside the stack.
 routine @StackManager.used() -> ByteSize
-    sp: U64 = ptrtoint[Addr, U64](stack_pointer())
+    sp: U64 = me.pointer()
     high: U64 = ptrtoint[Addr, U64](me.top.peek())
     if not (ptrtoint[Addr, U64](me.bottom.peek()) <= sp <= high)
         return ByteSize.construct(bytes: 0)
@@ -63,6 +69,13 @@ routine @StackManager.used() -> ByteSize
 routine @StackManager.holds(at: Addr) -> Bool
     place: U64 = ptrtoint[Addr, U64](at)
     return ptrtoint[Addr, U64](me.bottom.peek()) <= place < ptrtoint[Addr, U64](me.top.peek())
+
+### The stack pointer `remaining` and `used` count from: `sp` while the flow is stopped, else the caller's.
+### :returns: The stack pointer as a number.
+secret routine @StackManager.pointer() -> U64
+    if me.sp.peek().is_not_hollow()
+        return ptrtoint[Addr, U64](me.sp.peek())
+    return ptrtoint[Addr, U64](stack_pointer())
 
 ### The stack pointer of the routine that calls it, as LLVM's `stacksave` reads it.
 ### :returns: The stack pointer.

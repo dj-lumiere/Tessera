@@ -55,9 +55,8 @@ preset DEFAULT_FIBER_STACK: ByteSize = 64kib
 ### One fiber: a stack and the work on it, from the first ticket that takes it until its manager goes. A pointer to it
 ### is the fiber's handle (see current and wake).
 entity FiberState
-    ### Its stack pointer while it isn't running.
-    sp: Addr
-    ### Its stack, on pages from the manager's page manager.
+    ### Its stack, on pages from the manager's page manager. Its `sp` is the fiber's stack pointer while it isn't
+    ### running.
     stack: StackManager
     ### The manager running it. Only a ThreadPoolManager's fiber changes manager, while it waits.
     manager: @FiberManager
@@ -176,7 +175,6 @@ routine give_back_stack(stack: @StackManager, pages: @MemoryManager) -> None
     return
 
 ### Makes a `FiberState` from its fields.
-### :param sp: Its `sp`.
 ### :param stack: Its `stack`.
 ### :param manager: Its `manager`.
 ### :param slot: Its `slot`.
@@ -192,11 +190,11 @@ routine give_back_stack(stack: @StackManager, pages: @MemoryManager) -> None
 ### :param pool: Its `pool`.
 ### :returns: The new value.
 @target(os: not "none")
-common routine FiberState.construct(sp: Addr, stack: StackManager, manager: @FiberManager,
+common routine FiberState.construct(stack: StackManager, manager: @FiberManager,
     slot: WorkSlot, work: @WorkSlot, then: Callable[(@FiberManager, @Me), None], wake_state: U32,
     timer: U64, trace_depth: U64, access: @AccessFlow, race: Addr, next_idle: @Me, next_all: @Me,
     pool: @ThreadPoolManager) -> Me
-    return Me(sp, stack: steal stack, manager, slot, work, then, wake_state, timer, trace_depth,
+    return Me(stack: steal stack, manager, slot, work, then, wake_state, timer, trace_depth,
         access, race, next_idle, next_all, pool)
 
 ### Releases the block of its last work. Its stack is its manager's to give back.
@@ -317,9 +315,9 @@ secret routine @FiberManager.make_fiber() -> @FiberState
     fiber: @FiberState = allocate[FiberState](count: 1, manager: me.manager.peek())
     if fiber.is_hollow()
         crash_allocation()
-    sp: Addr = initial_stack(stack: stack.bottom.peek(), size: stack.size().bytes(),
-        entry: fiber_start.addr())
-    fiber.poke(FiberState(sp, stack: steal stack, manager: me,
+    stack.sp.poke(initial_stack(stack: stack.bottom.peek(), size: stack.size().bytes(),
+        entry: fiber_start.addr()))
+    fiber.poke(FiberState(stack: steal stack, manager: me,
         slot: .construct(manager: me.manager.peek()), work: fiber.slot,
         then: requeue.to[Callable](), wake_state: FIBER_RUNNING, timer: 0, trace_depth: 0,
         access: .hollow(), race: race_stack_new(), next_idle: .hollow(), next_all: me.all.peek(),
@@ -345,7 +343,7 @@ routine @FiberManager.yield() -> None
         return
     # The manager queues the fiber once it is back on its own stack (see resume).
     race_stack_switch(me.home_race.peek())
-    switch_stack(from: fiber.sp, to: me.home.peek())
+    switch_stack(from: fiber.stack.sp, to: me.home.peek())
     return
 
 ### Inside a fiber: waits until wake is called with its handle, or returns at once for a wake that came since the
@@ -361,7 +359,7 @@ routine @FiberManager.park() -> None
         # The manager decides, once the fiber is off its stack, whether a wake came meanwhile (see commit_park).
         fiber.then.poke(commit_park.to[Callable]())
         race_stack_switch(me.home_race.peek())
-        switch_stack(from: fiber.sp, to: me.home.peek())
+        switch_stack(from: fiber.stack.sp, to: me.home.peek())
         return
     fiber.wake_state.poke_atomic(FIBER_RUNNING)
     return
@@ -837,7 +835,10 @@ secret routine @FiberManager.resume(fiber: @FiberState) -> None
     RUNNING_STACK.poke(fiber.stack)
     me.home_race.poke(race_stack_current())
     race_stack_switch(fiber.race.peek())
-    switch_stack(from: me.home, to: fiber.sp.peek())
+    # The fiber's stack pointer is the CPU's while it runs, and its switch away writes it back.
+    resume_at: Addr = fiber.stack.sp.peek()
+    fiber.stack.sp.poke(.hollow())
+    switch_stack(from: me.home, to: resume_at)
     RUNNING_STACK.poke(outer_stack)
     trace_switch(own).poke_into(fiber.trace_depth)
     AccessManager.switch_flow(outer_flow)
@@ -871,7 +872,7 @@ secret routine fiber_start() -> None
         manager.busy.atomic_fetch_sub(1)
         fiber.then.poke(commit_idle.to[Callable]())
         race_stack_switch(manager.home_race.peek())
-        switch_stack(from: fiber.sp, to: manager.home.peek())
+        switch_stack(from: fiber.stack.sp, to: manager.home.peek())
 
 ### fiber is ready: in the ready queue on the manager's thread, else in its inbox, waking the thread. A pool's fiber
 ### goes to its pool instead, for whichever of the pool's threads is free first.

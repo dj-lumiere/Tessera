@@ -2,7 +2,10 @@
 # (320 KiB of a 1 MiB stack on pages from PAGES) and yield at the bottom, so each runs while the other's stack is deep.
 # A frame larger than a page makes Windows' __chkstk probe the stack page by page against the thread block's stack
 # fields, which the fiber switch keeps in step with the stack. Each fiber also checks, through StackManager.current(),
-# that its locals are on its own stack, and that (on Windows) the thread block's stack base is that stack's top.
+# that its locals are on its own stack, and that (on Windows) the thread block's stack base is that stack's top. Back
+# from the bottom, the first fiber reads the other's stack while it is stopped deep in its own dive: its StackManager
+# keeps the stopped stack pointer in sp, so used() and remaining() count from there, and the running fiber's sp is
+# hollow.
 
 import Standard/Fiber
 import Standard/Os
@@ -14,6 +17,9 @@ preset STACK_SIZE: ByteSize = 1mib
 record Diver
     sched: @FiberManager
     name: @[Byte]
+    fiber: @FiberState
+    peer: @Diver
+    reads_peer: Bool
 
 ### Windows x64's thread block: the stack base, GS:[8].
 @target(arch: "x86_64", os: "windows")
@@ -66,16 +72,29 @@ routine dive(d: @Diver, level: U64) -> U64
     if level == 0
         Console.show("{d.name.peek()} at the bottom")
         d.sched.peek().yield()
+        if d.reads_peer.peek()
+            read_peer(d)
         return frame_sum(frame)
     else
         below: U64 = dive(d, level: level - 1)
         return below + frame_sum(frame)
+
+### Reads the stack of the other fiber, stopped at the bottom of its dive.
+routine read_peer(d: @Diver) -> None
+    own: @StackManager = d.fiber.peek().stack
+    peer: @StackManager = d.peer.peek().fiber.peek().stack
+    used: U64 = peer.used().bytes()
+    whole: Bool = used + peer.remaining().bytes() == peer.size().bytes()
+    Console.show("{d.name.peek()} running sp hollow: {own.sp.peek().is_hollow()}")
+    Console.show("stopped peer sp set: {peer.sp.peek().is_not_hollow()}, deep: {used > LEVELS * 8192}, used + remaining = size: {whole}")
+    return
 
 ### A fiber: checks where its stack is, dives, and prints the sum of every level's frame.
 routine diver(d: @Diver) -> None
     local here: @U64 <- 0
 
     fiber: @FiberState = d.sched.peek().current()
+    d.fiber.poke(fiber)
     stack: @StackManager = StackManager.current()
     own: Bool = stack.holds(here.to[Addr]()) and stack.top.peek() === fiber.stack.top.peek()
     Console.show("{d.name.peek()} on its own stack: {own}, {stack.size()}")
@@ -88,8 +107,9 @@ routine start() -> None
     local manager: @MemoryManager = HEAP
     local stack_manager: @MemoryManager = PAGES
     local sched: @FiberManager <- .construct(stack_size: STACK_SIZE, stack_manager, manager)
-    local a: @Diver <- Diver(sched: sched, name: "a")
-    local b: @Diver <- Diver(sched: sched, name: "b")
+    local a: @Diver <- Diver(sched: sched, name: "a", fiber: .hollow(), peer: .hollow(), reads_peer: true)
+    local b: @Diver <- Diver(sched: sched, name: "b", fiber: .hollow(), peer: a, reads_peer: false)
+    a.peer.poke(b)
 
     fa: Fiber[None] = sched.get_fiber[None]()
     fa.put_work(entry: diver.to[Callable](), args: a)
