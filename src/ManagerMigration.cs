@@ -5,8 +5,8 @@ namespace Tessera;
 
 /// `tessera migrate`'s step for the managers (`--step managers`): every memory region has a manager, and the program's
 /// events and processes have theirs. `DEFAULT_HEAP` becomes `HEAP`, `DEFAULT_STACKS` becomes `PAGES`, the table makers
-/// `make_heap_memory()` / `make_c_heap_memory()` / `make_stack_memory()` become `HEAP.peek()` / `C_HEAP.peek()` /
-/// `PAGES.peek()`, `run_process_result(` / `run_shell_result(` / `exit(` become `ProcessManager.create_process_result(`
+/// `make_heap_memory()` / `make_c_heap_memory()` / `make_stack_memory()` become the tables' places `HEAP` / `C_HEAP` /
+/// `PAGES` (a slot that held one is a name for it, `local m: @MemoryManager = HEAP`), `run_process_result(` / `run_shell_result(` / `exit(` become `ProcessManager.create_process_result(`
 /// / `ProcessManager.create_shell_process_result(` / `ProcessManager.exit_process(`, `reset_thread_locals()` becomes
 /// `ThreadLocalManager.reset()`, and `zero_bss()` / `copy_data()` become `GlobalManager.zero_bss()` /
 /// `GlobalManager.copy_data()`. Code and comments change, strings don't. A free routine the file declares itself under
@@ -19,9 +19,13 @@ public static partial class ManagerMigration
     [
         ("DEFAULT_HEAP", new(@"(?<![\w`])DEFAULT_HEAP(?![\w`])"), "HEAP"),
         ("DEFAULT_STACKS", new(@"(?<![\w`])DEFAULT_STACKS(?![\w`])"), "PAGES"),
-        ("make_heap_memory", new(@"(?<![\w`.])make_heap_memory\(\)"), "HEAP.peek()"),
-        ("make_c_heap_memory", new(@"(?<![\w`.])make_c_heap_memory\(\)"), "C_HEAP.peek()"),
-        ("make_stack_memory", new(@"(?<![\w`.])make_stack_memory\(\)"), "PAGES.peek()"),
+        // A table is an entity reached through its place: a slot that held a copy is a name for the global.
+        ("make_heap_memory", new(@"local (\w+): @MemoryManager <- make_heap_memory\(\)"), "local $1: @MemoryManager = HEAP"),
+        ("make_c_heap_memory", new(@"local (\w+): @MemoryManager <- make_c_heap_memory\(\)"), "local $1: @MemoryManager = C_HEAP"),
+        ("make_stack_memory", new(@"local (\w+): @MemoryManager <- make_stack_memory\(\)"), "local $1: @MemoryManager = PAGES"),
+        ("make_heap_memory", new(@"(?<![\w`.])make_heap_memory\(\)"), "HEAP"),
+        ("make_c_heap_memory", new(@"(?<![\w`.])make_c_heap_memory\(\)"), "C_HEAP"),
+        ("make_stack_memory", new(@"(?<![\w`.])make_stack_memory\(\)"), "PAGES"),
         ("run_process_result", new(@"(?<![\w`.])run_process_result(?=\()"), "ProcessManager.create_process_result"),
         ("run_shell_result", new(@"(?<![\w`.])run_shell_result(?=\()"), "ProcessManager.create_shell_process_result"),
         ("exit", new(@"(?<![\w`./])exit(?=\()"), "ProcessManager.exit_process"),

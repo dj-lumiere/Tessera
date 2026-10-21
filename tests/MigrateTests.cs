@@ -509,10 +509,10 @@ public class MigrateTests
             """;
         const string after = """
             routine start() -> None
-                alloc: @MemoryManager = HEAP
+                local alloc: @MemoryManager = HEAP
                 local list: @List[S64] <- .construct(HEAP)  # from HEAP
-                stacks: @MemoryManager = PAGES
-                Console.show("DEFAULT_HEAP {C_HEAP.peek().has_pages()}")
+                local stacks: @MemoryManager = PAGES
+                Console.show("DEFAULT_HEAP {C_HEAP.has_pages()}")
                 r: Result[ProcessOutput, ProcessError] = ProcessManager.create_process_result(program: "ls", args: [], options, alloc)
                 ProcessManager.exit_process(1)
             """;
