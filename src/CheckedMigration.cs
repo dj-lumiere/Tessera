@@ -8,7 +8,7 @@ namespace Tessera;
 /// `x.add_checked(y)` is `try x.add(y)`, `list.getitem_checked(i)` is `try list.getitem(i)`, `iter.emit_checked()` is
 /// `try iter.emit()`, `Console.ask_checked[S32]()` is `try Console.ask[S32]()`. Where the call isn't a whole expression
 /// (an operand, a receiver of another call), the `try` goes in parentheses with it: `(try x.add(y)).is_present()`.
-/// The conversions keep their `to_checked[T]()`. A shift's `_checked` form has no failable twin (a shift by the width
+/// A number's conversion is the same: `x.to_checked[U8]()` is `try x.to[U8]()`. A shift's `_checked` form has no failable twin (a shift by the width
 /// or more shifts every bit out), and a use of a `_checked` name that isn't a call is left as it is: both are reported.
 public static partial class CheckedMigration
 {
@@ -17,7 +17,7 @@ public static partial class CheckedMigration
     [
         "add", "sub", "mul", "floordiv", "mod", "pow", "neg", "abs", "next_power_of_two", "getitem", "getslot",
         "remove_last", "remove_first", "remove", "remove_entry", "first", "first_entry", "emit", "next", "group",
-        "ask", "ask_line", "ask_word",
+        "ask", "ask_line", "ask_word", "to",
     ];
 
     /// The `_checked` forms with no failable twin.
@@ -94,7 +94,6 @@ public static partial class CheckedMigration
             {
                 if (!mask[m.Index]) continue;
                 string name = m.Groups[1].Value;
-                if (name == "to") continue;
                 if (NoTwin.Contains(name))
                 {
                     report.Add($"{where}: {name}_checked is gone and {name} doesn't fail (a shift by the width or more "

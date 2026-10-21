@@ -84,10 +84,12 @@ public sealed partial class Compiler
         Trace = trace;
         HeapCheck = heapCheck;
         RaceCheck = raceCheck;
+        var targetForms = new Dictionary<string, RoutineDecl>();
         foreach (var d in Derive.Routines(decls.ToList()))
         {
             // A type's construct and destruct count on every target, even where only another target keeps them.
             if (d is RoutineDecl { Owner: not null, Name: "construct" or "destruct" } life) _lifeRoutines.Add(life);
+            if (d is RoutineDecl formed && formed.AnnotationNamed("target") is not null) CheckTargetForms(targetForms, formed);
             if (!Selected(d)) continue;
             _fileModule.TryAdd(d.File, d.Module);
             RegisterConcepts(d);
@@ -351,6 +353,23 @@ public sealed partial class Compiler
                     && c.Tokens[i + 2].Text == "typename")
                     names.Add(c.Tokens[i].Text);
         return names;
+    }
+
+    /// The `@target` forms of one routine agree on whether it is failable: a call of it is written once for every
+    /// target, so `try` in front of it, or a bare call, reads the same wherever it is built. A form that never fails on
+    /// its target is still failable when another target's form can fail (`S64.to[CSSize]` on 64 and 32 bits).
+    private static void CheckTargetForms(Dictionary<string, RoutineDecl> forms, RoutineDecl r)
+    {
+        string key = $"{r.Module}|{r.DisplayName}|{string.Join(", ", r.Params.Select(p => p.Type.ToString()))}";
+        if (!forms.TryGetValue(key, out var first))
+        {
+            forms[key] = r;
+            return;
+        }
+        if (first.IsFailable == r.IsFailable) return;
+        var (failable, plain) = r.IsFailable ? (r, first) : (first, r);
+        throw new CompileError(plain.Pos, $"'{r.DisplayName}' is failable on the target of line {failable.Pos.Line} and not on this "
+            + "one: a call of it is written once for every target, so declare this form failable routine too");
     }
 
     // ── Build-time selection ────────────────────────────────────────────────

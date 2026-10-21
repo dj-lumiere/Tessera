@@ -3674,6 +3674,16 @@ public sealed partial class FunctionGen
         return null;
     }
 
+    /// Whether a call DeferredType put off to each instantiation may reach a failable routine: one of the routines of
+    /// its name on the receiver's type is failable.
+    private bool DeferredMayFail(MethodCallExpr m)
+    {
+        if (InferQuiet(m.Receiver) is not { } rt) return false;
+        foreach (var owner in rt is PtrType { Pointee: { } pointee } ? new[] { pointee, rt } : [rt])
+            if (_c.MethodsNamed(owner, m.Name).Any(d => d.IsFailable)) return true;
+        return false;
+    }
+
     /// A type with each of a routine's fixed type arguments replaced by the type given for it. A fixed argument that
     /// names no type parameter (`Fiber[None].put_work`) is a type as written, not a hole: a return type spelled the
     /// same (`-> None`) stays what it says.
@@ -4008,9 +4018,13 @@ public sealed partial class FunctionGen
         if (m.Name.EndsWith("_result", StringComparison.Ordinal))
             throw Err(m.Pos, $"{rt} has no method '{m.Name}': the _result forms are gone, and '{m.Name[..^"_result".Length]}' is "
                 + "failable: receive its failure with check or try in front of the call (tessera migrate --step failable)");
-        if (m.Name.EndsWith("_checked", StringComparison.Ordinal) && m.Name != "to_checked")
-            throw Err(m.Pos, $"{rt} has no method '{m.Name}': the _checked forms are gone, and '{m.Name[..^"_checked".Length]}' is "
-                + $"failable: write try in front of the call for a Maybe, try x.{m.Name[..^"_checked".Length]}(...) (tessera migrate --step checked)");
+        if (m.Name.EndsWith("_checked", StringComparison.Ordinal))
+        {
+            string plain = m.Name[..^"_checked".Length];
+            string example = plain == "to" ? "try x.to[T]()" : $"try x.{plain}(...)";
+            throw Err(m.Pos, $"{rt} has no method '{m.Name}': the _checked forms are gone, and '{plain}' is "
+                + $"failable: write try in front of the call for a Maybe, {example} (tessera migrate --step checked)");
+        }
         throw Err(m.Pos, $"{rt} has no method '{m.Name}'");
     }
 
@@ -4223,6 +4237,9 @@ public sealed partial class FunctionGen
         {
             EvalAny(deferred.Receiver);
             foreach (var a in deferred.Args) if (Infer(a) is not null) EvalAny(a);
+            // One of the routines it may reach can fail (`S64.to[U8]`): a try or check around it counts it, and each
+            // instantiation finds out whether its own one does.
+            if (_recover.Count > 0 && DeferredMayFail(deferred)) _recover.Peek().Calls++;
             return new Val("poison", deferredType);
         }
 

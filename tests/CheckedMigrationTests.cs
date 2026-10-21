@@ -19,7 +19,9 @@ public class CheckedMigrationTests
     [InlineData("    first: S64 = iter.emit_checked().unwrap()", "    first: S64 = (try iter.emit()).unwrap()")]
     [InlineData("    same: Bool = a.mul_checked(b) == c", "    same: Bool = (try a.mul(b)) == c")]
     [InlineData("    Console.show(\"{xs.getitem_checked(9)}\")", "    Console.show(\"{try xs.getitem(9)}\")")]
-    [InlineData("    v: Maybe[U8] = x.to_checked[U8]()", "    v: Maybe[U8] = x.to_checked[U8]()")]
+    [InlineData("    v: Maybe[U8] = x.to_checked[U8]()", "    v: Maybe[U8] = try x.to[U8]()")]
+    [InlineData("    when (n - 1).to_checked[S8]()", "    when try (n - 1).to[S8]()")]
+    [InlineData("    ok: Bool = n.to_checked[CSize]().is_present()", "    ok: Bool = (try n.to[CSize]()).is_present()")]
     [InlineData("    Console.show(\"add_checked stays in text\")", "    Console.show(\"add_checked stays in text\")")]
     [InlineData("    # add_checked in a comment stays", "    # add_checked in a comment stays")]
     public void Rewrites_the_calls(string before, string after)

@@ -471,7 +471,7 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse)
             : $"`{inner}`";
     });
 
-    /// Where a `{...}` reference points: a type (`{List[T]}`), a routine or preset on one (`{B16.to_checked[S8]}`,
+    /// Where a `{...}` reference points: a type (`{List[T]}`), a routine or preset on one (`{B16.to_clamp[S8]}`,
     /// `{Duration.MAX}`), or a free routine or preset (`{wait_on}`). Null for anything else (a parameter, an expression).
     private (string Page, string Anchor)? Target(string inner)
     {

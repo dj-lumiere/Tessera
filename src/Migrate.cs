@@ -62,8 +62,8 @@ namespace Tessera;
 /// `FileStorage[Byte]`, `move_result(from:, to:)` is `rename_result` or `move_result(at:, into:)`, and the working,
 /// temporary and home directories and the environment variables are `OsEnvironment`'s (`--step files`).
 ///
-/// 0.5: the `_checked` twins are gone: the plain routine is failable, and `x.add_checked(y)` is `try x.add(y)`
-/// (`--step checked`).
+/// 0.5: the `_checked` twins are gone: the plain routine is failable, and `x.add_checked(y)` is `try x.add(y)`,
+/// `x.to_checked[U8]()` is `try x.to[U8]()` (`--step checked`).
 ///
 /// 0.5: an address moves by a ByteSize with `+%` and `-%` (`a.offset(8)` is `a +% 8b`), and `b -% a` is the distance
 /// from `a` to `b` (`--step addr`).

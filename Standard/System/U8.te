@@ -4,8 +4,8 @@
 #
 # add / sub / mul / floordiv / mod / neg / abs / pow are failable: they throw
 # IntegerOverflowError (or DivisionByZeroError) when the result doesn't fit,
-# so a bare call stops there and `try a + b` gives None. A lossy to[T] crashes,
-# and to_checked[T] gives None instead. add / sub / mul / pow / neg / abs and
+# so a bare call stops there and `try a + b` gives None. A lossy to[T] throws
+# IntegerOverflowError the same way (`try x.to[U8]()`). add / sub / mul / pow / neg / abs and
 # the conversions have _wrap (modular) and _clamp (saturating) forms.
 
 module Standard/System
@@ -13,7 +13,7 @@ module Standard/System
 ### The powers of ten that fit in `U8`, 10^0 through 10^2, for {U8.ilog10}.
 secret preset U8_POW10: @Array[U8, 3] <- [1, 10, 100]
 
-### 8-bit unsigned integer, mapped to LLVM `i8`. Arithmetic throws `IntegerOverflowError` when the result does not fit (`try a + b` gives None), a lossy conversion crashes (`to_checked` gives None), the `_wrap` forms are modular, and the `_clamp` forms saturate.
+### 8-bit unsigned integer, mapped to LLVM `i8`. Arithmetic throws `IntegerOverflowError` when the result does not fit (`try a + b` gives None), a lossy conversion throws it too (`try x.to[U8]()` gives None), the `_wrap` forms are modular, and the `_clamp` forms saturate.
 @llvm("i8")
 record U8
 obeys Equatable[U8], Comparable[U8], Hashable[U8]
@@ -565,26 +565,16 @@ routine U8.isqrt() -> Me
 # -- conversions -----------------------------------------------------------------
 
 ### to[T] returns the same value in another integer type. A conversion that
-### can't lose the value returns it directly. One that can crashes when the value
-### doesn't fit, and has to_checked[T] (Maybe), to_wrap[T] (keep the low bits),
-### and to_clamp[T] (saturate) forms.
+### can't lose the value returns it directly. One that can is failable: it throws
+### IntegerOverflowError when the value doesn't fit (try gives None), and has
+### to_wrap[T] (keep the low bits) and to_clamp[T] (saturate) forms.
 ### Converts `me` to `S8`.
 ### :returns: The same numeric value as an `S8`.
-### :throws: Crashes with `IntegerOverflowError` when the value does not fit in `S8`.
-@track_caller
-routine U8.to[S8]() -> S8
+### :throws: Throws `IntegerOverflowError` when the value does not fit in `S8`.
+failable routine U8.to[S8]() -> S8
     if not (me <= 127)
-        crash_overflow()
+        throw IntegerOverflowError()
     r: S8 = bitcast[Me, S8](me)
-    return r
-
-### Converts `me` to `S8` when the value fits.
-### :returns: The value as an `S8`.
-### :absent: When `me` is outside the range of `S8`.
-routine U8.to_checked[S8]() -> Maybe[S8]
-    fits: Bool = me <= 127
-    value: S8 = bitcast[Me, S8](me)
-    r: Maybe[S8] = fits.then_present(value)
     return r
 
 ### Converts `me` to `S8`, keeping the low 8 bits (modulo 2^8).

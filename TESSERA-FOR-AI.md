@@ -572,7 +572,10 @@ routine start() -> None
   `NegativeExponentError`), so a bare `a + b` that overflows stops the program on its line and `try a + b` gives
   `Maybe` (`None` on overflow). `try a + b` builds to the overflow intrinsic and a select, with no heap and no call:
   a failure the standard library throws is noted for the crash report only when a `check` of a traced routine keeps
-  it. A lossy `to[T]()` crashes, and `to_checked[T]()` gives `None`. `_wrap` (modular) and `_clamp` (saturating)
+  it. A numeric `to[T]()` that can lose the value is failable the same way: it throws `IntegerOverflowError` when the
+  value doesn't fit (a bare call stops, `try x.to[U8]()` gives `None`), builds to the range test and no heap, and a
+  widening one (`U16.to[U64]`) is a plain routine, just the extension. There is no `to_checked` (`tessera migrate
+  --step checked` rewrites `x.to_checked[T]()` to `try x.to[T]()`). `_wrap` (modular) and `_clamp` (saturating)
   forms: `h.mul_wrap(PRIME)`, `n.to_clamp[U8]()`. Hashes, PRNGs, and bit tricks want `_wrap`. A shift never fails (by
   the width or more it shifts every bit out). The operator protocols' requirements (`Addable.add`, ...,
   `ViewingIndexable.getitem`) are failable, and a type whose routine never fails meets them all the same (a float's
@@ -587,7 +590,9 @@ routine start() -> None
 - Lengths, indices, counts, sizes, and `sizeof` / `alignof` are `U64` on every target; value generic parameters are
   `U64` (`COUNT: U64`). `CSize` / `CSSize` are C's `size_t` / `ssize_t` (the pointer width), used only at the C
   boundary (`@external("c")` signatures): types of their own that never mix with `U64` / `S64`, so a C call converts
-  with `n.to[CSize]()` (crashes if it doesn't fit) and a C result with `r.to[S64]()`.
+  with `n.to[CSize]()` (throws `IntegerOverflowError` if it doesn't fit) and a C result with `r.to[S64]()`. A
+  conversion that can fail on one pointer width is failable on both (`S64.to[CSSize]` never throws on 64 bits): the
+  `@target` forms of one routine must agree on `failable`, or it is a build error.
 - `compare` returns `S32` (-1 / 0 / 1), `hash` returns `U64`, `abs_diff` returns the unsigned type.
 - **`hash()` is keyed.** Every stdlib `hash()` (and every `@derive(Hashable)`) is SipHash-2-4 under a secret 128-bit
   key drawn once per process (`hash_key()`), so a hash value differs from run to run: never print one, store one, or
@@ -615,13 +620,14 @@ routine start() -> None
   comparison, `hash`, `bitand` / `bitor` / `bitxor` / `bitnot`, and `shift_left` / `arith_shift_right`. Memory and text are `@Byte`;
   a byte literal `b'A'` is a `Byte`, and a `Byte` hex literal has exactly two digits (`0x0A`).
 - `Char` is a Unicode scalar value (`'A'`), compared and hashed but not added; `c.to[U32]()` and `n.to[Char]()`
-  convert.
+  convert (the second is failable and throws `NotAScalarError` for a surrogate or a value above 0x10FFFF).
 - Conversions are methods: `n.to[S64]()`, `b.to[U64]()` (Bool to 0/1), `x.to[B64]()`. Float to integer is
-  `to[S64]()` (crashes on NaN or out of range), `to_checked[S64]()`, or `to_clamp[S64]()`. A conversion names the type
+  `to[S64]()` (throws `IntegerOverflowError` on NaN or out of range, `try` gives `None`), or `to_clamp[S64]()`. A
+  conversion names the type
   it goes to as a type argument, so `x.to[T]()` works in generic code.
-- **A conversion to a narrower float crashes when a finite value rounds to an infinity**: `B64.to[B32]()`,
+- **A conversion to a narrower float fails when a finite value rounds to an infinity**: `B64.to[B32]()`,
   `to[B16]()`, `to[BF16]()`, `B32.to[B16]()` / `to[BF16]()`, `BF16.to[B16]()`, `B128.to[B64]()` .. `to[BF16]()`, and
-  `U128.to[B32]()` (from 2^128 - 2^103 up) are `@track_caller` and crash with `NumericOverflowError`. An infinity stays
+  `U128.to[B32]()` (from 2^128 - 2^103 up) are failable and throw `NumericOverflowError`. An infinity stays
   infinite and NaN stays NaN; only finite to infinite is the bug. Each has `to_unchecked[T]()`, the raw rounded value
   (an infinity past the range); a value in range is the same bits in both. A widening conversion has only `to[T]()`.
   Stdlib float implementations and Ingrid's exports use `to_unchecked`, so a C caller never crashes.
@@ -1530,7 +1536,7 @@ value into another type is the method `x.to[T]()` on the type it converts from, 
 `p.to[@U]()`, `b.to[U8]()` on a `Byte`, `s.to[CStr](alloc)` / `s.to[CWStr](alloc)` on a `@[Byte]` (a conversion may take
 parameters), `buf.to[CStrView]()` on a `List[Byte]`, `m.to[@T]()` on a `Memory` or a `@[T]`,
 `a.to[Vector[B32, 4]]()` on an `Array`, `n.to[B128Big]()`, `f.to[B128Extended]()`. Its variants keep the family
-(`to_wrap`, `to_clamp`, `to_checked`, `to_nearest[S64]()` on a `B128Extended`). There is no `to_s64`, `as_[type]`,
+(`to_wrap`, `to_clamp`, `to_unchecked`, `to_nearest[S64]()` on a `B128Extended`). There is no `to_s64`, `as_[type]`,
 `y_from_x`, or `x_to_y`, and a routine that differs from another only in the type it produces takes the type as a
 type argument (`p.read_le[U64](off)` on a `@Byte`). Text to a value is a conversion too: `text.to[S32]()`, and a
 conversion that can fail on its input is a failable `to[T]()` (there is no `parse`). Not conversions:
@@ -1542,7 +1548,7 @@ byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`
 - A routine that can fail has one name. A routine whose failure is a caller's mistake crashes (`getitem`, `unwrap`),
   and one whose failure the caller may handle is failable and throws a crashable (`OsFileManager.open_read`,
   `to[T]`, `Console.ask[T]`, `Memory[T].construct`): a bare call stops on it, `check` and `try` receive it. There are
-  no `_result` names and no `_checked` twins (`to_checked[T]` is the conversions' `Maybe` form): `try` in front of a
+  no `_result` names and no `_checked` twins (no `to_checked[T]` either): `try` in front of a
   failable call gives the `Maybe`, `try xs.getitem(i)`, `try Console.ask[T]()`. A plain name never returns a
   `Maybe` just to say it failed. A `Maybe` that is a normal outcome keeps a plain name: `@[Byte].find` (not found),
   `OsEnvironment.variable` (not set), `Bool.then_present`, and `compare_exchange` (`None` when it wrote, the value

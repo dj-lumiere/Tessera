@@ -154,7 +154,7 @@ needs T: typename
 ### Converts to a signed integer type with LLVM `fptosi`, rounding toward zero.
 ### :typeparam T: The signed integer type.
 ### :returns: The integer part of `me`.
-### :note: NaN or a value out of the range of `T` gives poison. The checked `to[S..]`, `to_checked[S..]` and `to_clamp[S..]` conversions avoid it.
+### :note: NaN or a value out of the range of `T` gives poison. The failable `to[S..]` and the saturating `to_clamp[S..]` conversions avoid it.
 routine B64.fptosi[T]() -> T
 needs T: typename
     r: T = fptosi[Me, T](me)
@@ -162,18 +162,17 @@ needs T: typename
 
 # -- named narrowing conversion ------------------------------------------------
 
-### Narrows to B32, rounding once to nearest (ties to even). {B64.to_unchecked[B32]} gives an infinity instead of crashing.
+### Narrows to B32, rounding once to nearest (ties to even). {B64.to_unchecked[B32]} gives an infinity instead of failing.
 ### :returns: The nearest B32. An infinity stays infinite, and NaN stays NaN.
-### :throws: Crashes with `NumericOverflowError` when `me` is finite and rounds past B32's range. The crash reports the caller's location.
-@track_caller
-routine B64.to[B32]() -> B32
+### :throws: Throws `NumericOverflowError` when `me` is finite and rounds past B32's range.
+failable routine B64.to[B32]() -> B32
     r: B32 = me.to_unchecked[B32]()
     if r.is_infinite() and me.is_finite()
-        crash_float_overflow()
+        throw NumericOverflowError()
     return r
 
 ### Narrows to B32, rounding to nearest (ties to even).
-### A finite value past B32's range gives an infinity here, where {B64.to[B32]} crashes.
+### A finite value past B32's range gives an infinity here, where {B64.to[B32]} fails.
 ### :returns: The nearest B32: infinity beyond B32's range, a subnormal or zero for tiny values, NaN for NaN.
 routine B64.to_unchecked[B32]() -> B32
     result: B32 = fptrunc[Me, B32](me)
@@ -1008,19 +1007,18 @@ secret routine b64_dekker_error(x: B64, y: B64, p: B64) -> B64
     e: B64 = xl *! yl -! t3
     return e
 
-### Narrows to B16, rounding once to nearest (ties to even). {B64.to_unchecked[B16]} gives an infinity instead of crashing.
+### Narrows to B16, rounding once to nearest (ties to even). {B64.to_unchecked[B16]} gives an infinity instead of failing.
 ### :returns: The nearest B16. An infinity stays infinite, and NaN stays NaN.
-### :throws: Crashes with `NumericOverflowError` when `me` is finite and rounds past B16's range. The crash reports the caller's location.
-@track_caller
-routine B64.to[B16]() -> B16
+### :throws: Throws `NumericOverflowError` when `me` is finite and rounds past B16's range.
+failable routine B64.to[B16]() -> B16
     r: B16 = me.to_unchecked[B16]()
     if r.is_infinite() and me.is_finite()
-        crash_float_overflow()
+        throw NumericOverflowError()
     return r
 
 ### Narrows to B32 with round-to-odd, then rounds that to B16. B32's 24 bits are
 ### enough (2 * 11 + 2) for the second rounding to be exact.
-### A finite value past B16's range gives an infinity here, where {B64.to[B16]} crashes.
+### A finite value past B16's range gives an infinity here, where {B64.to[B16]} fails.
 ### :returns: The nearest B16, rounded once. Values past the B16 range give a signed infinity.
 routine B64.to_unchecked[B16]() -> B16
     narrow: B32 = fptrunc[Me, B32](me)
@@ -1036,20 +1034,19 @@ routine B64.to_unchecked[B16]() -> B16
     r: B16 = odd.to_unchecked[B16]()
     return r
 
-### Narrows to BF16, rounding once to nearest (ties to even). {B64.to_unchecked[BF16]} gives an infinity instead of crashing.
+### Narrows to BF16, rounding once to nearest (ties to even). {B64.to_unchecked[BF16]} gives an infinity instead of failing.
 ### :returns: The nearest BF16. An infinity stays infinite, and NaN stays NaN.
-### :throws: Crashes with `NumericOverflowError` when `me` is finite and rounds past BF16's range. The crash reports the caller's location.
-@track_caller
-routine B64.to[BF16]() -> BF16
+### :throws: Throws `NumericOverflowError` when `me` is finite and rounds past BF16's range.
+failable routine B64.to[BF16]() -> BF16
     r: BF16 = me.to_unchecked[BF16]()
     if r.is_infinite() and me.is_finite()
-        crash_float_overflow()
+        throw NumericOverflowError()
     return r
 
 ### Narrows to B32 with round-to-odd (an inexact result gets its lowest bit set),
 ### then rounds that to BF16. Round-to-odd keeps the second rounding from
 ### double-rounding, because B32 has more than twice BF16's precision.
-### A finite value past BF16's range gives an infinity here, where {B64.to[BF16]} crashes.
+### A finite value past BF16's range gives an infinity here, where {B64.to[BF16]} fails.
 ### :returns: The nearest BF16, rounded once.
 routine B64.to_unchecked[BF16]() -> BF16
     narrow: B32 = fptrunc[Me, B32](me)
@@ -1072,288 +1069,177 @@ routine B64.to[Me]() -> Me
 
 # -- integer conversions ---------------------------------------------------------
 #
-# to_[int] rounds toward zero and crashes on NaN or a value out of the integer's
-# range, while to_[int]_checked returns None instead and to_[int]_clamp saturates
-# (NaN gives 0).
+# to[int] rounds toward zero and throws IntegerOverflowError on NaN or a value out
+# of the integer's range (try gives None), and to_clamp[int] saturates (NaN gives
+# 0).
 
 ### Converts to S8, rounding toward zero.
 ### :returns: The integer part of `me`.
-### :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-128, 127]. The crash reports the caller's location.
-### :see: {B64.to_checked[S8]} to get an absent value instead, {B64.to_clamp[S8]} to saturate.
-@track_caller
-routine B64.to[S8]() -> S8
+### :throws: Throws `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-128, 127].
+### :see: {B64.to_clamp[S8]} to saturate.
+failable routine B64.to[S8]() -> S8
     if not me.is_trunc_in_range(lo: -128.0, hi: 128.0)
-        crash_overflow()
+        throw IntegerOverflowError()
     r: S8 = fptosi_sat[Me, S8](me)
-    return r
-
-### Converts to S8, rounding toward zero, without crashing.
-### :returns: The integer part of `me` when it fits.
-### :absent: When `me` is NaN or its integer part lies outside [-128, 127].
-### :see: {B64.to[S8]} to crash instead, {B64.to_clamp[S8]} to saturate.
-routine B64.to_checked[S8]() -> Maybe[S8]
-    fits: Bool = me.is_trunc_in_range(lo: -128.0, hi: 128.0)
-    value: S8 = fptosi_sat[Me, S8](me)
-    r: Maybe[S8] = fits.then_present(value)
     return r
 
 ### Converts to S8, rounding toward zero and saturating at the ends of its range.
 ### :returns: The integer part of `me`, clamped to [-128, 127]. Infinities give the nearer end and NaN gives 0.
-### :see: {B64.to_checked[S8]} to detect values that do not fit.
+### :see: {B64.to[S8]} with try in front to detect values that do not fit.
 routine B64.to_clamp[S8]() -> S8
     r: S8 = fptosi_sat[Me, S8](me)
     return r
 
 ### Converts to S16, rounding toward zero.
 ### :returns: The integer part of `me`.
-### :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-32768, 32767]. The crash reports the caller's location.
-### :see: {B64.to_checked[S16]} to get an absent value instead, {B64.to_clamp[S16]} to saturate.
-@track_caller
-routine B64.to[S16]() -> S16
+### :throws: Throws `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-32768, 32767].
+### :see: {B64.to_clamp[S16]} to saturate.
+failable routine B64.to[S16]() -> S16
     if not me.is_trunc_in_range(lo: -32768.0, hi: 32768.0)
-        crash_overflow()
+        throw IntegerOverflowError()
     r: S16 = fptosi_sat[Me, S16](me)
-    return r
-
-### Converts to S16, rounding toward zero, without crashing.
-### :returns: The integer part of `me` when it fits.
-### :absent: When `me` is NaN or its integer part lies outside [-32768, 32767].
-### :see: {B64.to[S16]} to crash instead, {B64.to_clamp[S16]} to saturate.
-routine B64.to_checked[S16]() -> Maybe[S16]
-    fits: Bool = me.is_trunc_in_range(lo: -32768.0, hi: 32768.0)
-    value: S16 = fptosi_sat[Me, S16](me)
-    r: Maybe[S16] = fits.then_present(value)
     return r
 
 ### Converts to S16, rounding toward zero and saturating at the ends of its range.
 ### :returns: The integer part of `me`, clamped to [-32768, 32767]. Infinities give the nearer end and NaN gives 0.
-### :see: {B64.to_checked[S16]} to detect values that do not fit.
+### :see: {B64.to[S16]} with try in front to detect values that do not fit.
 routine B64.to_clamp[S16]() -> S16
     r: S16 = fptosi_sat[Me, S16](me)
     return r
 
 ### Converts to S32, rounding toward zero.
 ### :returns: The integer part of `me`.
-### :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-2^31, 2^31 - 1]. The crash reports the caller's location.
-### :see: {B64.to_checked[S32]} to get an absent value instead, {B64.to_clamp[S32]} to saturate.
-@track_caller
-routine B64.to[S32]() -> S32
+### :throws: Throws `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-2^31, 2^31 - 1].
+### :see: {B64.to_clamp[S32]} to saturate.
+failable routine B64.to[S32]() -> S32
     if not me.is_trunc_in_range(lo: -2147483648.0, hi: 2147483648.0)
-        crash_overflow()
+        throw IntegerOverflowError()
     r: S32 = fptosi_sat[Me, S32](me)
-    return r
-
-### Converts to S32, rounding toward zero, without crashing.
-### :returns: The integer part of `me` when it fits.
-### :absent: When `me` is NaN or its integer part lies outside [-2^31, 2^31 - 1].
-### :see: {B64.to[S32]} to crash instead, {B64.to_clamp[S32]} to saturate.
-routine B64.to_checked[S32]() -> Maybe[S32]
-    fits: Bool = me.is_trunc_in_range(lo: -2147483648.0, hi: 2147483648.0)
-    value: S32 = fptosi_sat[Me, S32](me)
-    r: Maybe[S32] = fits.then_present(value)
     return r
 
 ### Converts to S32, rounding toward zero and saturating at the ends of its range.
 ### :returns: The integer part of `me`, clamped to [-2^31, 2^31 - 1]. Infinities give the nearer end and NaN gives 0.
-### :see: {B64.to_checked[S32]} to detect values that do not fit.
+### :see: {B64.to[S32]} with try in front to detect values that do not fit.
 routine B64.to_clamp[S32]() -> S32
     r: S32 = fptosi_sat[Me, S32](me)
     return r
 
 ### Converts to S64, rounding toward zero.
 ### :returns: The integer part of `me`.
-### :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-2^63, 2^63 - 1]. The crash reports the caller's location.
-### :see: {B64.to_checked[S64]} to get an absent value instead, {B64.to_clamp[S64]} to saturate.
-@track_caller
-routine B64.to[S64]() -> S64
+### :throws: Throws `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-2^63, 2^63 - 1].
+### :see: {B64.to_clamp[S64]} to saturate.
+failable routine B64.to[S64]() -> S64
     if not me.is_trunc_in_range(lo: -9223372036854775808.0, hi: 9223372036854775808.0)
-        crash_overflow()
+        throw IntegerOverflowError()
     r: S64 = fptosi_sat[Me, S64](me)
-    return r
-
-### Converts to S64, rounding toward zero, without crashing.
-### :returns: The integer part of `me` when it fits.
-### :absent: When `me` is NaN or its integer part lies outside [-2^63, 2^63 - 1].
-### :see: {B64.to[S64]} to crash instead, {B64.to_clamp[S64]} to saturate.
-routine B64.to_checked[S64]() -> Maybe[S64]
-    fits: Bool = me.is_trunc_in_range(lo: -9223372036854775808.0, hi: 9223372036854775808.0)
-    value: S64 = fptosi_sat[Me, S64](me)
-    r: Maybe[S64] = fits.then_present(value)
     return r
 
 ### Converts to S64, rounding toward zero and saturating at the ends of its range.
 ### :returns: The integer part of `me`, clamped to [-2^63, 2^63 - 1]. Infinities give the nearer end and NaN gives 0.
-### :see: {B64.to_checked[S64]} to detect values that do not fit.
+### :see: {B64.to[S64]} with try in front to detect values that do not fit.
 routine B64.to_clamp[S64]() -> S64
     r: S64 = fptosi_sat[Me, S64](me)
     return r
 
 ### Converts to S128, rounding toward zero.
 ### :returns: The integer part of `me`.
-### :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-2^127, 2^127 - 1]. The crash reports the caller's location.
-### :see: {B64.to_checked[S128]} to get an absent value instead, {B64.to_clamp[S128]} to saturate.
-@track_caller
-routine B64.to[S128]() -> S128
+### :throws: Throws `IntegerOverflowError` when `me` is NaN or its integer part lies outside [-2^127, 2^127 - 1].
+### :see: {B64.to_clamp[S128]} to saturate.
+failable routine B64.to[S128]() -> S128
     if not me.is_trunc_in_range(lo: -170141183460469231731687303715884105728.0,
         hi: 170141183460469231731687303715884105728.0)
-        crash_overflow()
+        throw IntegerOverflowError()
     r: S128 = fptosi_sat[Me, S128](me)
-    return r
-
-### Converts to S128, rounding toward zero, without crashing.
-### :returns: The integer part of `me` when it fits.
-### :absent: When `me` is NaN or its integer part lies outside [-2^127, 2^127 - 1].
-### :see: {B64.to[S128]} to crash instead, {B64.to_clamp[S128]} to saturate.
-routine B64.to_checked[S128]() -> Maybe[S128]
-    fits: Bool = me.is_trunc_in_range(lo: -170141183460469231731687303715884105728.0,
-        hi: 170141183460469231731687303715884105728.0)
-    value: S128 = fptosi_sat[Me, S128](me)
-    r: Maybe[S128] = fits.then_present(value)
     return r
 
 ### Converts to S128, rounding toward zero and saturating at the ends of its range.
 ### :returns: The integer part of `me`, clamped to [-2^127, 2^127 - 1]. Infinities give the nearer end and NaN gives 0.
-### :see: {B64.to_checked[S128]} to detect values that do not fit.
+### :see: {B64.to[S128]} with try in front to detect values that do not fit.
 routine B64.to_clamp[S128]() -> S128
     r: S128 = fptosi_sat[Me, S128](me)
     return r
 
 ### Converts to U8, rounding toward zero.
 ### :returns: The integer part of `me`.
-### :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 255]. The crash reports the caller's location.
-### :see: {B64.to_checked[U8]} to get an absent value instead, {B64.to_clamp[U8]} to saturate.
-@track_caller
-routine B64.to[U8]() -> U8
+### :throws: Throws `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 255].
+### :see: {B64.to_clamp[U8]} to saturate.
+failable routine B64.to[U8]() -> U8
     if not me.is_trunc_in_range(lo: 0.0, hi: 256.0)
-        crash_overflow()
+        throw IntegerOverflowError()
     r: U8 = fptoui_sat[Me, U8](me)
-    return r
-
-### Converts to U8, rounding toward zero, without crashing.
-### :returns: The integer part of `me` when it fits.
-### :absent: When `me` is NaN or its integer part lies outside [0, 255].
-### :see: {B64.to[U8]} to crash instead, {B64.to_clamp[U8]} to saturate.
-routine B64.to_checked[U8]() -> Maybe[U8]
-    fits: Bool = me.is_trunc_in_range(lo: 0.0, hi: 256.0)
-    value: U8 = fptoui_sat[Me, U8](me)
-    r: Maybe[U8] = fits.then_present(value)
     return r
 
 ### Converts to U8, rounding toward zero and saturating at the ends of its range.
 ### :returns: The integer part of `me`, clamped to [0, 255]. Infinities give the nearer end and NaN gives 0.
-### :see: {B64.to_checked[U8]} to detect values that do not fit.
+### :see: {B64.to[U8]} with try in front to detect values that do not fit.
 routine B64.to_clamp[U8]() -> U8
     r: U8 = fptoui_sat[Me, U8](me)
     return r
 
 ### Converts to U16, rounding toward zero.
 ### :returns: The integer part of `me`.
-### :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 65535]. The crash reports the caller's location.
-### :see: {B64.to_checked[U16]} to get an absent value instead, {B64.to_clamp[U16]} to saturate.
-@track_caller
-routine B64.to[U16]() -> U16
+### :throws: Throws `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 65535].
+### :see: {B64.to_clamp[U16]} to saturate.
+failable routine B64.to[U16]() -> U16
     if not me.is_trunc_in_range(lo: 0.0, hi: 65536.0)
-        crash_overflow()
+        throw IntegerOverflowError()
     r: U16 = fptoui_sat[Me, U16](me)
-    return r
-
-### Converts to U16, rounding toward zero, without crashing.
-### :returns: The integer part of `me` when it fits.
-### :absent: When `me` is NaN or its integer part lies outside [0, 65535].
-### :see: {B64.to[U16]} to crash instead, {B64.to_clamp[U16]} to saturate.
-routine B64.to_checked[U16]() -> Maybe[U16]
-    fits: Bool = me.is_trunc_in_range(lo: 0.0, hi: 65536.0)
-    value: U16 = fptoui_sat[Me, U16](me)
-    r: Maybe[U16] = fits.then_present(value)
     return r
 
 ### Converts to U16, rounding toward zero and saturating at the ends of its range.
 ### :returns: The integer part of `me`, clamped to [0, 65535]. Infinities give the nearer end and NaN gives 0.
-### :see: {B64.to_checked[U16]} to detect values that do not fit.
+### :see: {B64.to[U16]} with try in front to detect values that do not fit.
 routine B64.to_clamp[U16]() -> U16
     r: U16 = fptoui_sat[Me, U16](me)
     return r
 
 ### Converts to U32, rounding toward zero.
 ### :returns: The integer part of `me`.
-### :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 2^32 - 1]. The crash reports the caller's location.
-### :see: {B64.to_checked[U32]} to get an absent value instead, {B64.to_clamp[U32]} to saturate.
-@track_caller
-routine B64.to[U32]() -> U32
+### :throws: Throws `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 2^32 - 1].
+### :see: {B64.to_clamp[U32]} to saturate.
+failable routine B64.to[U32]() -> U32
     if not me.is_trunc_in_range(lo: 0.0, hi: 4294967296.0)
-        crash_overflow()
+        throw IntegerOverflowError()
     r: U32 = fptoui_sat[Me, U32](me)
-    return r
-
-### Converts to U32, rounding toward zero, without crashing.
-### :returns: The integer part of `me` when it fits.
-### :absent: When `me` is NaN or its integer part lies outside [0, 2^32 - 1].
-### :see: {B64.to[U32]} to crash instead, {B64.to_clamp[U32]} to saturate.
-routine B64.to_checked[U32]() -> Maybe[U32]
-    fits: Bool = me.is_trunc_in_range(lo: 0.0, hi: 4294967296.0)
-    value: U32 = fptoui_sat[Me, U32](me)
-    r: Maybe[U32] = fits.then_present(value)
     return r
 
 ### Converts to U32, rounding toward zero and saturating at the ends of its range.
 ### :returns: The integer part of `me`, clamped to [0, 2^32 - 1]. Infinities give the nearer end and NaN gives 0.
-### :see: {B64.to_checked[U32]} to detect values that do not fit.
+### :see: {B64.to[U32]} with try in front to detect values that do not fit.
 routine B64.to_clamp[U32]() -> U32
     r: U32 = fptoui_sat[Me, U32](me)
     return r
 
 ### Converts to U64, rounding toward zero.
 ### :returns: The integer part of `me`.
-### :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 2^64 - 1]. The crash reports the caller's location.
-### :see: {B64.to_checked[U64]} to get an absent value instead, {B64.to_clamp[U64]} to saturate.
-@track_caller
-routine B64.to[U64]() -> U64
+### :throws: Throws `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 2^64 - 1].
+### :see: {B64.to_clamp[U64]} to saturate.
+failable routine B64.to[U64]() -> U64
     if not me.is_trunc_in_range(lo: 0.0, hi: 18446744073709551616.0)
-        crash_overflow()
+        throw IntegerOverflowError()
     r: U64 = fptoui_sat[Me, U64](me)
-    return r
-
-### Converts to U64, rounding toward zero, without crashing.
-### :returns: The integer part of `me` when it fits.
-### :absent: When `me` is NaN or its integer part lies outside [0, 2^64 - 1].
-### :see: {B64.to[U64]} to crash instead, {B64.to_clamp[U64]} to saturate.
-routine B64.to_checked[U64]() -> Maybe[U64]
-    fits: Bool = me.is_trunc_in_range(lo: 0.0, hi: 18446744073709551616.0)
-    value: U64 = fptoui_sat[Me, U64](me)
-    r: Maybe[U64] = fits.then_present(value)
     return r
 
 ### Converts to U64, rounding toward zero and saturating at the ends of its range.
 ### :returns: The integer part of `me`, clamped to [0, 2^64 - 1]. Infinities give the nearer end and NaN gives 0.
-### :see: {B64.to_checked[U64]} to detect values that do not fit.
+### :see: {B64.to[U64]} with try in front to detect values that do not fit.
 routine B64.to_clamp[U64]() -> U64
     r: U64 = fptoui_sat[Me, U64](me)
     return r
 
 ### Converts to U128, rounding toward zero.
 ### :returns: The integer part of `me`.
-### :throws: Crashes with `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 2^128 - 1]. The crash reports the caller's location.
-### :see: {B64.to_checked[U128]} to get an absent value instead, {B64.to_clamp[U128]} to saturate.
-@track_caller
-routine B64.to[U128]() -> U128
+### :throws: Throws `IntegerOverflowError` when `me` is NaN or its integer part lies outside [0, 2^128 - 1].
+### :see: {B64.to_clamp[U128]} to saturate.
+failable routine B64.to[U128]() -> U128
     if not me.is_trunc_in_range(lo: 0.0, hi: 340282366920938463463374607431768211456.0)
-        crash_overflow()
+        throw IntegerOverflowError()
     r: U128 = fptoui_sat[Me, U128](me)
-    return r
-
-### Converts to U128, rounding toward zero, without crashing.
-### :returns: The integer part of `me` when it fits.
-### :absent: When `me` is NaN or its integer part lies outside [0, 2^128 - 1].
-### :see: {B64.to[U128]} to crash instead, {B64.to_clamp[U128]} to saturate.
-routine B64.to_checked[U128]() -> Maybe[U128]
-    fits: Bool = me.is_trunc_in_range(lo: 0.0, hi: 340282366920938463463374607431768211456.0)
-    value: U128 = fptoui_sat[Me, U128](me)
-    r: Maybe[U128] = fits.then_present(value)
     return r
 
 ### Converts to U128, rounding toward zero and saturating at the ends of its range.
 ### :returns: The integer part of `me`, clamped to [0, 2^128 - 1]. Infinities give the nearer end and NaN gives 0.
-### :see: {B64.to_checked[U128]} to detect values that do not fit.
+### :see: {B64.to[U128]} with try in front to detect values that do not fit.
 routine B64.to_clamp[U128]() -> U128
     r: U128 = fptoui_sat[Me, U128](me)
     return r
