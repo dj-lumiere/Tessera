@@ -7,7 +7,8 @@ namespace Tessera;
 /// `crash`: the crash handler is no longer a routine exported as `tessera_crash_handler` but the reporting routine in
 /// the Crash service's slot. The exported routine loses its `@export` and `@noreturn` (it is `@untraced` instead), its
 /// `message: @[Byte]` becomes `message: @CrashMessage` (a use of it reads `message.text()`), and `start` puts it in the
-/// slot first: `Crash.report_with(name.to[Callable]())`.
+/// slot first: `Crash.report_with(name.to[Callable]())`, or `when_power_on` right after `prepare_core()` in a program
+/// that has one (a target without an operating system).
 ///
 /// `failable`: `Result` is gone. The standard library's `x_result(...)` routines are failable `x(...)`: a `when` on one
 /// becomes `when check x(...)`, a `Result[T, E]` binding of one a `Check[T]` binding of `check x(...)`, and a call whose
@@ -61,6 +62,22 @@ public static partial class FailableMigration
             i = h;
         }
         if (handler is null) return text;
+        string slot = $"    Crash.report_with({handler}.to[Callable]())";
+        // Without an operating system the slot goes in when_power_on, right after the step that puts the globals in
+        // place (the slot is a global).
+        int power = lines.FindIndex(l => Regex.IsMatch(l, @"^routine\s+when_power_on\(\)"));
+        if (power >= 0)
+        {
+            for (int k = power + 1; k < lines.Count && (lines[k].Length == 0 || lines[k].StartsWith(' ')); k++)
+                if (Regex.IsMatch(lines[k], @"^    (prepare_core|GlobalManager\.prepare)\(\)\s*(#.*)?$"))
+                {
+                    lines.Insert(k + 1, slot);
+                    return string.Join('\n', lines);
+                }
+            report.Add($"{file}: '{handler}' is the crash handler: put Crash.report_with({handler}.to[Callable]()) in "
+                + "when_power_on right after prepare_core() (no prepare_core() call found there)");
+            return string.Join('\n', lines);
+        }
         int start = lines.FindIndex(l => Regex.IsMatch(l, @"^routine\s+start\(\)"));
         if (start < 0)
         {
@@ -75,7 +92,7 @@ public static partial class FailableMigration
                && !lines[at].StartsWith("        "))
             at++;
         if (at < lines.Count && lines[at].Trim().Length == 0 && at > start + 1) at++;
-        lines.Insert(at, $"    Crash.report_with({handler}.to[Callable]())");
+        lines.Insert(at, slot);
         return string.Join('\n', lines);
     }
 

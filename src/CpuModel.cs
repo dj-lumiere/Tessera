@@ -91,17 +91,29 @@ public sealed class CpuModel
     /// and whoever needs its result waits for it.
     private static readonly ConcurrentDictionary<string, Lazy<Task<ClangRun?>>> Runs = new();
 
-    /// The clang run for the target and features, null when clang can't be started.
-    private static Task<ClangRun?> Run(BuildTarget target, IEnumerable<string> features)
+    /// The clang arguments that name the target's CPU and `features`. The link step passes them too, so module-level
+    /// assembly (the Cortex-M exception entry, the vector tables) is assembled for the build's CPU.
+    public static IEnumerable<string> ClangCpuArguments(BuildTarget target, IEnumerable<string> features)
     {
-        var args = new List<string> { "--target=" + target.LlvmTriple };
         // clang's own default for 32-bit x86 Linux is i686, whose floats live on the x87 stack only: loading a
         // signaling NaN there quiets it, so B32 and B64 couldn't keep their NaN payloads. pentium4 has SSE2, as
         // clang already picks for 32-bit Windows.
         if ((target.Cpu ?? (target.Arch == "x86" ? "pentium4" : null)) is { } cpu)
-            args.Add((target.Arch is "x86_64" or "x86" ? "-march=" : "-mcpu=") + cpu);
+            yield return (target.Arch is "x86_64" or "x86" ? "-march=" : "-mcpu=") + cpu;
         foreach (var f in features)
-            args.AddRange(["-Xclang", "-target-feature", "-Xclang", f]);
+        {
+            yield return "-Xclang";
+            yield return "-target-feature";
+            yield return "-Xclang";
+            yield return f;
+        }
+    }
+
+    /// The clang run for the target and features, null when clang can't be started.
+    private static Task<ClangRun?> Run(BuildTarget target, IEnumerable<string> features)
+    {
+        var args = new List<string> { "--target=" + target.LlvmTriple };
+        args.AddRange(ClangCpuArguments(target, features));
         args.AddRange(["-x", "c", "-S", "-emit-llvm", "-o", "-", "-"]);
         return Runs.GetOrAdd(string.Join("\n", args), _ => new Lazy<Task<ClangRun?>>(() =>
             Task.Factory.StartNew(() => Execute(args), CancellationToken.None, TaskCreationOptions.LongRunning,

@@ -21,7 +21,9 @@ namespace Tessera;
 /// triple = "arm-none-eabi"            # default: the host
 /// c-libraries = ["m"]                 # -l names
 /// library-paths = ["vendor/lib"]      # -L directories
-/// link-script = "board/stm32f4/memory.ld"
+/// board = "raspi4b"                   # a target without an operating system: the board it runs on, which gives
+///                                     # the triple and the memory map the builder writes the link script from
+///                                     # (Board.cs): a board of Tessera's by name, or "boards/my-board.toml"
 ///
 /// [debug]
 /// emit-llvm = true                    # keep the IR next to the output
@@ -64,7 +66,7 @@ public sealed record Manifest(
     List<string> Sources,
     List<string> CLibraries,
     List<string> LibraryPaths,
-    string? LinkScript,
+    Board? Board,
     bool EmitLlvm)
 {
     public const string FileName = "config.toml";
@@ -135,7 +137,7 @@ public sealed record Manifest(
     private static readonly Dictionary<string, HashSet<string>> Keys = new()
     {
         ["package"] = ["name", "version", "description", "authors", "license", "repository", "tessera-version"],
-        ["target"] = ["executable", "triple", "cpu", "features", "mode", "module-paths", "sources", "c-libraries", "library-paths", "link-script"],
+        ["target"] = ["executable", "triple", "cpu", "features", "mode", "module-paths", "sources", "c-libraries", "library-paths", "board"],
         ["debug"] = ["emit-llvm", "trace", "heap-check", "race-check", "uninit-fill", "trace-frames", "failure-traces",
             "deadlock-check", "access-order"],
         ["crash"] = ["message-size"],
@@ -157,7 +159,8 @@ public sealed record Manifest(
                 throw new ManifestError(path, $"unknown section [{key}] (sections: {string.Join(", ", Keys.Keys.Select(k => $"[{k}]"))})");
             if (value is not TomlTable table) throw new ManifestError(path, $"'{key}' must be a section: [{key}]");
             foreach (var field in table.Keys)
-                if (!allowed.Contains(field))
+                // An old link-script gets its own message below.
+                if (!allowed.Contains(field) && !(key == "target" && field == "link-script"))
                     throw new ManifestError(path, $"unknown key '{field}' in [{key}] (keys: {string.Join(", ", allowed)})");
         }
 
@@ -168,13 +171,30 @@ public sealed record Manifest(
 
         string name = Str(package, "name", path) ?? throw new ManifestError(path, "[package] needs a name");
 
+        if (target.ContainsKey("link-script"))
+            throw new ManifestError(path, "[target] takes no link-script: the builder writes the link script from the board's " +
+                "memory map, so name the board, board = \"raspi4b\" (one of Tessera's) or board = \"boards/my-board.toml\"");
+        // board = "raspi4b": the board's triple, CPU, and features, which triple, cpu, and features below may refine.
+        var board = Str(target, "board", path) is { } boardName ? Board.Load(boardName, dir) : null;
         BuildTarget triple;
-        try { triple = Str(target, "triple", path) is { } t ? BuildTarget.Parse(t) : defaultTarget ?? BuildTarget.Host(); }
+        try
+        {
+            triple = Str(target, "triple", path) is { } t ? BuildTarget.Parse(t)
+                : board?.Target ?? defaultTarget ?? BuildTarget.Host();
+        }
         catch (ArgumentException e) { throw new ManifestError(path, $"[target] triple: {e.Message}"); }
+        if (board is not null && triple.LlvmTriple != board.Target.LlvmTriple)
+            throw new ManifestError(path, $"[target] triple is {triple.Arch}-{triple.Os}-{triple.Abi}, and the board {board.Name} " +
+                $"is {board.Target.Arch}-{board.Target.Os}-{board.Target.Abi}: leave triple out, the board gives it");
+        if (board is not null) triple = triple with { Cpu = board.Target.Cpu, Features = board.Target.Features };
+        if (board is null && !triple.HasOs)
+            throw new ManifestError(path, $"[target] {triple.Arch}-{triple.Os}-{triple.Abi} has no operating system, so the " +
+                "build needs the board it runs on, whose memory map it links with: board = \"raspi4b\" (one of Tessera's) " +
+                "or board = \"boards/my-board.toml\" (a board file of the project)");
         // cpu = "x86-64-v3", features = ["fma", "-avx512f"]: the same as --cpu and --feature.
         if (Str(target, "cpu", path) is { } cpu) triple = triple with { Cpu = cpu };
         if (Strs(target, "features", path) is { } features)
-            triple = triple with { Features = features.Select(f => f.Length > 0 && f[0] is '+' or '-' ? f : "+" + f).ToList() };
+            triple = triple with { Features = [.. triple.Features, .. features.Select(f => f.Length > 0 && f[0] is '+' or '-' ? f : "+" + f)] };
 
         string modeName = Str(target, "mode", path) ?? "debug";
         var mode = BuildModes.Parse(modeName)
@@ -217,15 +237,11 @@ public sealed record Manifest(
         foreach (var file in rootFiles)
             if (!sources.Contains(file, StringComparer.OrdinalIgnoreCase)) sources.Add(file);
 
-        string? linkScript = Str(target, "link-script", path) is { } ls ? Resolve(ls) : null;
-        if (linkScript is not null && !File.Exists(linkScript))
-            throw new ManifestError(path, $"no such link script: {linkScript}");
-
         return new Manifest(path, dir, name, Str(package, "version", path), entry,
             System.IO.Path.GetFileNameWithoutExtension(entry), triple, mode, sources,
             Strs(target, "c-libraries", path) ?? [],
             (Strs(target, "library-paths", path) ?? []).Select(Resolve).ToList(),
-            linkScript,
+            board,
             Bool(debug, "emit-llvm", path) ?? false)
         {
             Roots = roots,
@@ -389,24 +405,31 @@ public sealed record Manifest(
         throw new ManifestError(path, $"'{key}' is a list of strings: {key} = [\"...\"]");
     }
 
-    /// The flags the manifest adds to clang's link step.
+    /// Where the build writes the link script of its board: next to the executable, as `<name>.ld`.
+    public string LinkScriptPath => System.IO.Path.Combine(OutputDirectory, Executable + ".ld");
+
+    /// The flags the manifest adds to clang's link step. With a board, the link script must have been written to
+    /// LinkScriptPath first (WriteLinkScript).
     public IEnumerable<string> LinkArguments()
     {
         foreach (var p in LibraryPaths) yield return "-L" + p;
         foreach (var l in CLibraries) yield return "-l" + l;
-        if (LinkScript is not null)
-        {
-            yield return "-T";
-            yield return LinkScript;
-        }
-        // A target without an operating system has no C runtime to link: the program and its link script bring the
-        // startup code.
-        if (!Target.HasOs)
-        {
-            yield return "-nostdlib";
-            yield return "-fuse-ld=lld";  // the host's linker may not know the target; lld comes with clang
-        }
+        if (Board is not null)
+            foreach (var a in BoardLinkArguments(LinkScriptPath)) yield return a;
     }
+
+    /// Writes the link script of the board, when there is one.
+    public void WriteLinkScript()
+    {
+        if (Board is null) return;
+        System.IO.Directory.CreateDirectory(OutputDirectory);
+        File.WriteAllText(LinkScriptPath, Board.LinkScript());
+    }
+
+    /// The flags of a link for a target without an operating system with the board's link script at `script`: no C
+    /// runtime (the builder writes the entry and the stdlib supplies the rest), and lld, since the host's linker may not
+    /// know the target and lld comes with clang.
+    public static IEnumerable<string> BoardLinkArguments(string script) => ["-T", script, "-nostdlib", "-fuse-ld=lld", "-static"];
 }
 
 public sealed class ManifestError(string path, string message) : Exception($"{path}: {message}");

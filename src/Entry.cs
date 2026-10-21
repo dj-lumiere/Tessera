@@ -6,9 +6,10 @@ namespace Tessera;
 /// builder writes the platform's C `main`, which calls `start` and returns the exit status `set_exit_code`
 /// (Standard/Os) stored, 0 when nothing did. On a target without one, the entry symbol is `when_power_on`: the reset sends
 /// the core there, its prologue sets the stack pointer from `__stack_top` (on Cortex-M the vector table's first word
-/// does that), and its body is the program's `when_power_on()`, which readies the core and memory (Standard/System/Cpu's
-/// prepare_core: .bss zeroed, .data copied where the code runs from flash, the FPU on) and the board, or prepare_core
-/// alone when the program has none. Then `start()` runs, then a loop that halts the core. Without `start` such a
+/// does that), and its body is the program's `when_power_on()`, which turns the managers on itself (Standard/System/Cpu's
+/// prepare_core: .bss zeroed, .data copied from flash, the FPU on), puts its reporting routine in the Crash service's
+/// slot, and readies the board. The builder adds no step of its own there, so a program with `start` and without
+/// `when_power_on` is a build error. Then `start()` runs, then a loop that halts the core. Without `start` such a
 /// program brings its own entry.
 public sealed partial class Compiler
 {
@@ -87,9 +88,16 @@ public sealed partial class Compiler
             return;
         }
         if (ProvidedSymbols.Contains("main") || ProvidedSymbols.Contains(WhenPowerOnName)) return;
+        // Nothing turns the managers on for a program without an operating system but its own when_power_on.
+        if (!Target.HasOs && board is null)
+            throw new CompileError(start.Pos,
+                $"{Target.Arch}-{Target.Os}-{Target.Abi} has no operating system, so the reset lands in the program's own "
+                + "'routine when_power_on() -> None', and this program has none: write one that calls prepare_core() "
+                + "(Standard/System/Cpu) first, which puts the globals in place, then puts a reporting routine in the Crash "
+                + "service's slot (Crash.report_with(report.to[Callable]())), then readies the board. start runs after it");
         var startInst = RequireInstance(start, new TypeEnv(start.File));
         if (Target.HasOs) PlanHostedMain(start, startInst);
-        else PlanBoot(start, startInst, board is null ? null : RequireInstance(board, new TypeEnv(board.File)));
+        else PlanBoot(start, startInst, RequireInstance(board!, new TypeEnv(board!.File)));
     }
 
     /// A routine of the standard library the generated entry calls, by module and name.
@@ -132,10 +140,10 @@ public sealed partial class Compiler
 
     /// The entry of a program without an operating system, the symbol `when_power_on`: the reset sends the core there
     /// (the Cortex-M vector table's reset word on 32-bit ARM, the link script's ENTRY elsewhere). Its body is the
-    /// program's `when_power_on`, or else Standard/System/Cpu's prepare_core, then `start`, then halt. Setting the stack pointer
+    /// program's `when_power_on`, then `start`, then halt. Setting the stack pointer
     /// is its prologue: the Cortex-M core loads it from the vector table, and elsewhere the symbol is a naked stub that
     /// loads `__stack_top` (the one step no routine can do, since a routine already uses the stack) and calls the body.
-    private void PlanBoot(RoutineDecl start, Instance startInst, Instance? board)
+    private void PlanBoot(RoutineDecl start, Instance startInst, Instance board)
     {
         var cpu = CpuModel.For(Target, start.Pos);
         bool armM = Target.Arch == "arm";
@@ -147,7 +155,7 @@ public sealed partial class Compiler
             throw new CompileError(start.Pos,
                 $"the builder has no entry for {Target.Arch} without an operating system: bring your own entry instead of start");
         var halt = EntryHelper(BootModule, "halt", start.Pos);
-        var steps = new List<Instance> { board ?? EntryHelper(BootModule, "prepare_core", start.Pos), startInst, halt };
+        var steps = new List<Instance> { board, startInst, halt };
         // The CpuEventManager's table calls tessera_cpu_event, Standard/System/Cpu's routine for the target.
         string? cpuEvent = Target.Arch switch
         {
@@ -192,7 +200,9 @@ public sealed partial class Compiler
             "aarch64" => "adrp x0, __stack_top\\0Aadd x0, x0, :lo12:__stack_top\\0Amov sp, x0\\0Amov x29, xzr\\0Abl tessera_boot\\0Abrk #0",
             _ => "la sp, __stack_top\\0Amv s0, zero\\0Acall tessera_boot\\0Aunimp",
         };
-        _entry.AppendLine($"define void @{WhenPowerOnName}() naked noreturn nounwind {cpu.FnAttrs} {{");
+        // Its own section, which the board's link script puts first: a loader that jumps to the start of the image
+        // lands here.
+        _entry.AppendLine($"define void @{WhenPowerOnName}() naked noreturn nounwind {cpu.FnAttrs} section \".text.{WhenPowerOnName}\" {{");
         _entry.AppendLine("entry:");
         _entry.AppendLine($"  call void asm sideeffect \"{asm}\", \"\"()");
         _entry.AppendLine("  unreachable");

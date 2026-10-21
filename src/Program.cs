@@ -45,6 +45,9 @@ static class Cli
                  is off otherwise, except that test always turns it on. check checks both sides.
         <target>: --target <arch-os-abi> (default: this machine), --cpu <name> (default: the triple's baseline, such
                   as x86-64 v1), --feature <name>[,<name>...] (a leading - removes one). @feature reads the result.
+                  --board <name or file.toml> is a board without an operating system: its triple, CPU, and features,
+                  and its memory map, which build links with (a link script the builder writes). A name is a board
+                  that comes with Tessera (boards/<name>.toml), a path a board file of your own.
 
         All input files form one compilation unit. Without files, build and run read config.toml, which sets
         everything the flags would; its output goes to build/ next to it.
@@ -321,12 +324,17 @@ static class Cli
 
     internal sealed class ToolError(string message) : Exception(message);
 
-    /// `--target`, `--cpu`, and `--feature`, in any order; Build applies the CPU and features to the triple.
+    /// `--target`, `--cpu`, `--feature`, and `--board`, in any order. Build applies the CPU and features to the triple
+    /// (the board's, then the ones given).
     private sealed class TargetArgs
     {
         private BuildTarget _target = BuildTarget.Host();
         private string? _cpu;
         private readonly List<string> _features = [];
+        private bool _targetGiven;
+
+        /// `--board`: the board the program runs on, or null.
+        public Board? Board { get; private set; }
 
         public bool TryTake(string[] args, ref int i)
         {
@@ -336,6 +344,10 @@ static class Cli
                 case "--target":
                     try { _target = BuildTarget.Parse(args[++i]); }
                     catch (ArgumentException e) { throw new ToolError(e.Message); }
+                    _targetGiven = true;
+                    return true;
+                case "--board":
+                    Board = Board.Load(args[++i], Directory.GetCurrentDirectory());
                     return true;
                 case "--cpu":
                     _cpu = args[++i];
@@ -349,11 +361,18 @@ static class Cli
             }
         }
 
-        public BuildTarget Build() => _target with { Cpu = _cpu, Features = _features };
+        public BuildTarget Build()
+        {
+            if (Board is null) return _target with { Cpu = _cpu, Features = _features };
+            if (_targetGiven && _target.LlvmTriple != Board.Target.LlvmTriple)
+                throw new ToolError($"--target is {_target.Arch}-{_target.Os}-{_target.Abi}, and the board {Board.Name} is " +
+                    $"{Board.Target.Arch}-{Board.Target.Os}-{Board.Target.Abi}: leave --target out, the board gives it");
+            return Board.Target with { Cpu = _cpu ?? Board.Target.Cpu, Features = [.. Board.Target.Features, .. _features] };
+        }
     }
 
     private sealed record Options(List<string> Inputs, string? Output, bool EmitLlvm, BuildTarget Target, BuildMode Mode,
-        bool StdlibExports, bool? Trace, bool RaceCheck, bool UninitFill, bool HeapCheck = false);
+        bool StdlibExports, bool? Trace, bool RaceCheck, bool UninitFill, bool HeapCheck = false, Board? Board = null);
 
     /// Whether the data race check runs on the target: hosted Linux and macOS on x86-64 and AArch64, where clang has
     /// its runtime.
@@ -415,7 +434,7 @@ static class Cli
         if (inputs.Count == 0) throw new ToolError("no input files");
         var target = targetArgs.Build();
         if (race) RequireRaceCheckable(target);
-        return new Options(inputs, output, emit, target, mode, stdlibExports, trace, race, uninitFill, heapCheck);
+        return new Options(inputs, output, emit, target, mode, stdlibExports, trace, race, uninitFill, heapCheck, targetArgs.Board);
     }
 
     /// Parses every input, plus the whole standard library, into one compilation and lowers it to LLVM IR.
@@ -692,6 +711,7 @@ static class Cli
             crashMessageSize: m.CrashMessageSize);
         Directory.CreateDirectory(m.OutputDirectory);
         if (m.EmitLlvm) File.WriteAllText(Path.ChangeExtension(m.ExecutablePath, ".ll"), ir);
+        m.WriteLinkScript();
         Link(ir, m.ExecutablePath, m.Target, m.Mode, m.LinkArguments().Concat(RaceLink(m.RaceCheck)));
         return m.ExecutablePath;
     }
@@ -715,8 +735,22 @@ static class Cli
             return 0;
         }
 
-        string exe = o.Output ?? stem + (OperatingSystem.IsWindows() ? ".exe" : "");
-        Link(ir, exe, o.Target, o.Mode, RaceLink(o.RaceCheck));
+        string exe = o.Output ?? stem + (o.Target.HasOs && OperatingSystem.IsWindows() ? ".exe" : "");
+        if (o.Target.HasOs)
+        {
+            Link(ir, exe, o.Target, o.Mode, RaceLink(o.RaceCheck));
+            return 0;
+        }
+        // Without an operating system the link places the program in the board's memory: the link script is the
+        // board's, written next to a temporary copy of the IR and removed after.
+        if (o.Board is null)
+            throw new ToolError($"{o.Target.Arch}-{o.Target.Os}-{o.Target.Abi} has no operating system, so the link needs the " +
+                "board the program runs on: --board raspi4b (one of Tessera's boards) or --board my-board.toml, or " +
+                "--emit-llvm for the IR alone");
+        string script = Path.ChangeExtension(TempExe(), ".ld");
+        File.WriteAllText(script, o.Board.LinkScript());
+        try { Link(ir, exe, o.Target, o.Mode, Manifest.BoardLinkArguments(script)); }
+        finally { TryDelete(script); }
         return 0;
     }
 
@@ -781,6 +815,9 @@ static class Cli
             };
             foreach (var a in new[] { "-Wno-override-module", mode.OptLevel(), "--target=" + target.LlvmTriple, ll, "-o", exe })
                 psi.ArgumentList.Add(a);
+            // The routines carry the CPU and features in their attributes, module-level assembly takes them from here.
+            if (target.Cpu is not null || target.Features.Count > 0)
+                foreach (var a in CpuModel.ClangCpuArguments(target, target.Features)) psi.ArgumentList.Add(a);
             // U128 / S128 division, B16 / BF16 arithmetic and similar operations lower to compiler-rt routines. GNU
             // toolchains get them from libgcc; the MSVC toolchain has no equivalent, so link clang's builtins.
             if (target.Os == "windows" && BuiltinsLibrary(target) is { } builtins) psi.ArgumentList.Add(builtins);

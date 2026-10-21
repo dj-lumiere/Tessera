@@ -16,6 +16,7 @@ dotnet run -- check file.te        # type-check only
 dotnet run -- test tests examples             # golden tests
 dotnet run -- fmt <files or dirs>        # format in place (--check to only list)
 dotnet run -- build                      # build config.toml's entry (executable = "main.te") and its imports into build/
+dotnet run -- build --board raspi4b f.te -o f.elf   # a program without an OS, linked with the board's memory map
 dotnet run -- version                    # the builder's version; help prints every command
 ```
 
@@ -49,8 +50,8 @@ The standard library's modules:
   (`Parsable`), UTF-8, and the byte-text views.
 - `Standard/System/Memory`: the memory managers and their tables (`HEAP`, `C_HEAP`, `PAGES`), `StackManager`,
   `GlobalManager`, `ThreadLocalManager`, `ByteSize`, and `Atomic`.
-- `Standard/System/Cpu`: the startup steps without an OS (`prepare_core`), the `CpuEventManager`, and the fault
-  report.
+- `Standard/System/Cpu`: the startup steps without an OS (`prepare_core`, which the program's `when_power_on` calls), the
+  `CpuEventManager`, and the fault report.
 - `Standard/System/Temporal` (`Duration`, `Moment`), `Standard/System/Serialization` (JSON strings),
   `Standard/System/CSubSystem` (C strings, the C memory routines without an OS).
 - Imported: `Standard/Collections`, `Standard/Os` (console, files, storage, the environment, processes, threads, clocks), `Standard/Fiber`,
@@ -79,7 +80,7 @@ keeping blocks where it can't), `spellings` (`@` annotations, `needs` / `obeys` 
 rest of the moves and every `set_current_directory_result` listed, the `_result` names it writes then go through
 `failable`),
 `crash` (an exported `tessera_crash_handler` into a reporting routine that takes `message: @CrashMessage`, put in the
-Crash service's slot first in `start` with `Crash.report_with`),
+Crash service's slot first in `start` with `Crash.report_with`, or right after `prepare_core()` in `when_power_on`),
 `failable` (a call of a standard library `_result` routine into `when check x(...)`, a `Check[T]` binding of
 `check x(...)`, or `try x(...)` where its result was left unread, `AllocFailed` / `ChannelClosed` / `RegexError` /
 `FsError.MEMBER` into their crashables, and a routine of the program that returns a `Result` listed for a hand fix),
@@ -319,8 +320,9 @@ routine start() -> None
   (`bottom`, `top`: `size()`, `remaining()`, `used()`, `holds(at)`) manages one flow's stack: it hands out `local`
   slots by moving the stack pointer, so it has no table. `StackManager.current()` is the running flow's: a fiber's
   inside a fiber, else the thread's own stack, whose bounds the OS gives (without an OS, `__stack_bottom` to
-  `__stack_top` of the link script). `ThreadLocalManager.reset()` puts this thread's `@threadlocal` globals back
-  to their starting values. Without an OS, `GlobalManager.prepare()` puts the globals in place.
+  `__stack_top`: the end of the globals to the end of the board's RAM). `ThreadLocalManager.reset()` puts this thread's `@threadlocal` globals back
+  to their starting values. Without an OS, `GlobalManager.prepare()` puts the globals in place (`prepare_core()` in the
+  program's `when_power_on` calls it).
   `tessera migrate --step managers` rewrites `DEFAULT_HEAP` (now `HEAP`), `DEFAULT_STACKS` (`PAGES`), the
   `make_*_memory()` makers, the process routines, `reset_thread_locals()`, and `zero_bss()` / `copy_data()`.
 - **A memory manager is a type that obeys `MemoryManageable`** (Standard/System/Memory): three routines taking `me` by its address (`routine @M.alloc(...)`),
@@ -822,8 +824,9 @@ routine start() -> None
   `message.failure` is the failure's number for `write_failure_trace`. A reporting routine and a message routine never
   take memory from a general memory manager (HEAP and the like: a build error), since a crash may come from running out
   of it. The first crash reports, a crash while it reports skips the report and stops, and a crash on another thread
-  meanwhile waits for the stop. When the routine returns, stopping follows. The default (an empty slot, or before the
-  globals are in place without an OS): with an OS the report on standard error (`tessera: Name: message`, `  at
+  meanwhile waits for the stop. When the routine returns, stopping follows. Without an OS the program puts its routine
+  in the slot in `when_power_on`, right after `prepare_core()` (the slot is a global). The default (an empty slot, or
+  before the globals are in place without an OS): with an OS the report on standard error (`tessera: Name: message`, `  at
   file:line:col`, `Stack trace:`, and for a failure `The failure was made at:` and its frames), without one nothing.
   `Crash.stop()`: with an OS exit status 82, without one on Cortex-M a breakpoint when a debugger is attached
   (DHCSR's C_DEBUGEN), then a system reset (AIRCR), then waiting for interrupts, and elsewhere waiting.
@@ -864,7 +867,7 @@ routine start() -> None
   (passed on by `CpuEventManager.power_off()`, which the board's shutdown interrupt handler calls, then the core
   halts), `when_faulted` (the core halts when it returns), `when_supervisor_called` (`svc #n` / `ecall`, `code` the
   number on ARM, the program goes on), `when_interrupt_requested`. The builder writes the vector table (AArch64 VBAR at
-  the core's level, RISC-V mtvec, the Cortex-M table), `prepare_core` points the CPU at it, an event nobody holds
+  the core's level, RISC-V mtvec, the Cortex-M table), `prepare_core` (called in the program's `when_power_on`) points the CPU at it, an event nobody holds
   crashes with `HardwareFault`, and on x86_64 without an OS calling one is a build error (no table yet).
   `when_power_on` stays a routine the program declares: nothing can set a handler before it runs.
 - Hardware faults: a traced build's entry calls `install_fault_handlers()` before `start` (not under `--race-check`,
@@ -1199,8 +1202,10 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
   own status (82 by default). `main` is an ordinary routine name; a program with `main` and no `start` is a build
   error that says so. `start` with parameters or a result is an error too.
 - `routine when_power_on() -> None` is the entry of a program for a target without an operating system (below): the
-  reset lands there, it turns the managers on (`prepare_core()`) and readies the board, then `start` runs. With an
-  operating system it is a build error.
+  reset lands there, it turns the managers on (`prepare_core()`), puts the reporting routine in the Crash service's
+  slot (`Crash.report_with`), and readies the board, then `start` runs. The program writes it: without an operating
+  system a program with `start` and no `when_power_on` is a build error, and with one `when_power_on` is a build
+  error.
 - Every routine with a body is its head's `local` lines (if it has any) and then its statements. A routine without
   a body must be `@external`.
 
@@ -1429,25 +1434,66 @@ ends this process at once, and
 `SliceWriter` or `List[Byte]`, the memory protocols) and `Standard/Collections` check there. `Standard/Os` drops out of the build, so importing it or naming anything in it is one
 build error ("Standard/Os needs an operating system ..."); there's no `Out`, files, threads, `@threadlocal`, fiber `FiberManager` (`Standard/Fiber`'s
 `switch_stack` and `initial_stack` are there, which `tests/freestanding_fiber` switches stacks with),
-`HEAP`, `PAGES`, or `construct()` without an allocator. The program puts a reporting routine in the Crash service's slot (`Crash.report_with`, first in `start`), since
-the default reports nothing there, passes the table of a manager of its own if it allocates (a type that obeys `MemoryManageable`, such as a bump arena over a
-buffer, and `arena.to[MemoryManager]()`), and brings its link script. A program that defines `start` has
-`when_power_on` as its entry symbol: the reset lands there (on Cortex-M through a vector table in section
-`.isr_vector`, its first word `__stack_top` and its second `when_power_on`, the system exceptions going to the
-`CpuEventManager`; elsewhere the
-link script's `ENTRY(when_power_on)`). Its prologue sets the stack pointer from `__stack_top` (the Cortex-M core does
-that from the vector table). Its body is the program's `when_power_on()`: first `prepare_core()` from Standard/System/Cpu
-(`GlobalManager.prepare()`: `GlobalManager.zero_bss()`, .bss zeroed, `__bss_start` to `__bss_end`, and
-`GlobalManager.copy_data()` on 32-bit ARM and RISC-V, which run from flash: `__data_load` to `__data_start` ..
-`__data_end`; `enable_fpu()` when the build may use an FPU; `CpuEventManager.install()` on AArch64 and RISC-V), then
-the board's own steps (clocks, pins, a serial port). Touching a global before `prepare_core()` (or
-`GlobalManager.prepare()` / `zero_bss()`) is a build error,
-and so is a `when_power_on` that never calls it. Work that touches no global (a watchdog) may come first. Without
-`when_power_on` the program gets one that runs `prepare_core()`. Then `start()` runs, then a loop that halts (`hlt` /
-`wfi`). The link script defines those symbols (`tests/freestanding/<target>.ld` are
-small ones) and, on RISC-V, no `__global_pointer$` (the entry leaves gp alone). On 32-bit ARM the entry is a Cortex-M
-reset vector, so the build names a Cortex-M CPU (`--cpu cortex-m3`). The steps are `Standard/System/Cpu/Boot.te`. A program
-without `start` brings its own entry instead. x86_64 code without an OS is built without the red zone. A program
+`HEAP`, `PAGES`, or `construct()` without an allocator. The program passes the table of a manager of its own if it
+allocates (a type that obeys `MemoryManageable`, such as a bump arena over a buffer, and `arena.to[MemoryManager]()`).
+
+The build names the board: `[target] board = "raspi4b"` in config.toml (or `--board raspi4b` on the command line) is
+`boards/raspi4b.toml`, which comes with Tessera, and `board = "boards/my-board.toml"` (a path: a `/` or `.toml`) is a
+file of the project, relative to config.toml. A board file:
+
+```toml
+[board]
+name = "Raspberry Pi 4 Model B"     # for messages
+triple = "aarch64-none-elf"         # the target, its OS none
+cpu = "cortex-a72"                  # optional, as --cpu
+features = ["strict-align"]         # optional, as --feature
+
+[memory]
+image = 0x80000                     # a board without flash: where the loader puts the image, inside ram
+ram = { start = 0x0, size = "948mib" }
+```
+
+A board with flash writes `flash = { start = 0x08000000, size = "1mib" }` in place of `image` (one of the two). Sizes
+are integers or strings with a unit (`b`, `kib`, `mib`, `gib`, `kb`, `mb`, `gb`). The board gives the triple, CPU, and
+features: config.toml's `triple` may only repeat it, its `cpu` replaces the board's, its `features` come after the
+board's. A config.toml for a target without an OS and without `board` is a build error, and so is `link-script`: the
+builder writes the link script from the map (`build/<name>.ld`, kept next to the executable): `.isr_vector` (the
+Cortex-M vector table) then `.text.when_power_on` (the entry) first, then the code and constants in flash (or the
+image), .data in RAM with its first values in flash (`__data_load`, the same as `__data_start` on an image board, so
+nothing is copied), .bss after it, `__stack_bottom` at the end of the globals, and `__stack_top` at the end of RAM (16
+aligned, the stack grows down). On an image board the program's RAM starts at the image. A heap is a manager over a
+global buffer, so it sits among the globals. Shipped boards: `raspi4b`, `qemu-virt-aarch64`, `qemu-mps2-an385`
+(Cortex-M3), `qemu-virt-riscv32` (boots from flash), `pc-x86_64` (a loader starts it in 64-bit mode at 2 MiB). The
+board's CPU and features also go to clang's link step, so module-level assembly is assembled for that CPU.
+`tessera build` writes an ELF file, `llvm-objcopy -O binary` makes a raw image of it for a loader that wants one.
+
+A program that defines `start` has `when_power_on` as its entry symbol: the reset lands there (on Cortex-M through a
+vector table in section `.isr_vector`, its first word `__stack_top` and its second `when_power_on`, the system
+exceptions going to the `CpuEventManager`; elsewhere `ENTRY(when_power_on)`). Its prologue sets the stack pointer from
+`__stack_top` (the Cortex-M core does that from the vector table). Its body is the program's own `when_power_on()`,
+which the program must write (a program with `start` and without it is a build error that says what to write), and
+the builder adds no step to it:
+
+```tessera
+### The entry: the managers first, then the reporting routine, then the board.
+routine when_power_on() -> None
+    prepare_core()
+    Crash.report_with(report.to[Callable]())
+    uart_on()
+    return
+```
+
+`prepare_core()` from Standard/System/Cpu runs `GlobalManager.prepare()` (`zero_bss()`, .bss zeroed, `__bss_start`
+to `__bss_end`, and `copy_data()`, `__data_load` to `__data_start` .. `__data_end`, skipped when both are the same
+place), `enable_fpu()` when the build may use an FPU, and `CpuEventManager.install()` on AArch64 and RISC-V. Then the
+reporting routine goes in the Crash service's slot, first after `prepare_core()` (the slot is a global): a crash
+before that stops the default way, `Crash.stop()`, with no report. Then the board's own steps (clocks, pins, a
+serial port). Touching a global before `prepare_core()` (or `GlobalManager.prepare()` / `zero_bss()`) is a build
+error, and so is a `when_power_on` that never calls one of them. Work that touches no global (a watchdog) may come
+first. Then `start()` runs, then a loop that halts (`hlt` / `wfi`). On RISC-V the link script defines no
+`__global_pointer$` (the entry leaves gp alone). On 32-bit ARM the entry is a Cortex-M reset vector, so the board
+names a Cortex-M CPU. The steps are `Standard/System/Cpu/Boot.te`, the link script `src/Board.cs`. A program without
+`start` brings its own entry instead. x86_64 code without an OS is built without the red zone. A program
 that hashes (a `Dict`, a `Set`, any `hash()`) also exports the hash key, `@export("tessera_hash_key")` above `routine
 board_key(key: @SipKey) -> None` filling 128 secret random bits (from the board's TRNG, never a fixed value or a cycle
 counter), unless the build enables a random number instruction (`--feature rdrnd` / `rdseed` on x86-64, `rand` on
@@ -1458,8 +1504,8 @@ or libgcc: the soft-float routines LLVM calls for B16 / BF16 / B32 / B64 without
 `__aeabi_dmul`, `__truncsfhf2`, `sqrtf`, ...), integer division (`__udivdi3`, `__aeabi_uldivmod`, ...), and
 `__clzsi2`, written with integer operations only, weak and `@no_builtins`. Each export wraps an ordinary routine
 (`soft_f32_add(a, b)` on the bits, `x.soft_to[B16]()` for a conversion) that any target can call, which is how
-`tests/soft_float` checks them against the host's hardware. `tests/freestanding` and `tests/freestanding_float` are such programs (CI builds them, links them with their link
-scripts, and requires that nothing is left undefined; the golden run skips them).
+`tests/soft_float` checks them against the host's hardware. `tests/freestanding` and `tests/freestanding_float` are such programs (CI builds them with `--board` for each
+target without an OS, so lld fails on anything left undefined, and the golden run skips them).
 
 **Assembly.** An `@external("asm")` routine with `@target(arch: ...)` is assembly in Tessera's syntax, put in place at
 each call (`../Tessera-Wiki/docs/20b-assembly.md`): one instruction per line written like a call, operands in the
