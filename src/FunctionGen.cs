@@ -164,14 +164,14 @@ public sealed partial class FunctionGen
     };
 
     /// Whether a value of `t` is a Box or a Memory itself (not a slot of one).
-    private static bool OwnedValue(DType t) => t is not PtrType && Tracked(t);
+    private static bool ManagedValue(DType t) => t is not PtrType && Tracked(t);
 
     /// Whether the memory rules follow a value of `t` (or a slot of one): a Box, a Memory, or an entity. Each must end
     /// once on every path (drop, return, handed over), and nothing uses it after.
     /// The names bound by a claim (`local x: @T <- value`): each is a slot of the frame, so `steal x` takes what it holds.
     private readonly HashSet<string> _claimedSlots = [];
 
-    private static bool Tracked(DType? t) => OwnedMemory(t) is not null || Entities.HeldIn(t) is not null;
+    private static bool Tracked(DType? t) => ManagedMemory(t) is not null || Entities.HeldIn(t) is not null;
 
     /// The operand of the `drop` being emitted: it ends there, so reading it isn't a copy.
     private Expr? _dropping;
@@ -293,7 +293,7 @@ public sealed partial class FunctionGen
             if (!HasReleaseDuty(element) && SourceTypeParams.Count == 0 && !_c.Prechecking)
                 throw Err(s.Pos, $"the place holds {element.Name}, which has nothing to give back, so reading it copies it: "
                     + "read it with peek() instead of steal");
-            if (!HasReleaseDuty(element) || !Entities.Holds(element) && OwnedMemory(element) is null)
+            if (!HasReleaseDuty(element) || !Entities.Holds(element) && ManagedMemory(element) is null)
             {
                 _moving = true;
                 return Eval(new MethodCallExpr(s.Value, "peek", [], [], s.Pos), expected);
@@ -472,7 +472,7 @@ public sealed partial class FunctionGen
         FieldExpr f => RootName(f.Base),
         IndexExpr ix => RootName(ix.Base),
         MethodCallExpr { Name: "peek", Args.Count: 0, Receiver: FieldExpr field } m
-            when PointsAtMemory(InferQuiet(m)) && OwnedMemory(InferQuiet(field.Base)) is null => null,
+            when PointsAtMemory(InferQuiet(m)) && ManagedMemory(InferQuiet(field.Base)) is null => null,
         MethodCallExpr { Name: "getslot" or "stride" or "offset" or "getview" or "to" or "getslice" or "peek" } m
             => RootName(m.Receiver),
         _ => null,
@@ -541,7 +541,7 @@ public sealed partial class FunctionGen
     {
         if (plan.Receiver is not PresetRef { Owner: null } r
             || _c.FindPreset("", r.Name, _env.File, r.Pos, r.Path) is not { IsGlobal: true, IsLibrary: false, IsSpan: false } g
-            || ResolvePreset(r) is not { Type: PtrType { Pointee: var held } } || OwnedMemory(held) is null)
+            || ResolvePreset(r) is not { Type: PtrType { Pointee: var held } } || ManagedMemory(held) is null)
             return;
         switch (plan.Decl.Name)
         {
@@ -715,14 +715,14 @@ public sealed partial class FunctionGen
                 ? new MemoryRules.End(receiver, sig.Decl.Name is "destruct" ? $"drop {receiver}" : $"{receiver}.destruct_all()", plan.Pos)
                 : new MemoryRules.Use(receiver, plan.Pos));
             // with_count and the like give the same memory back: a binding of the call is a copy of the handle.
-            if (OwnedValue(sig.Ret) && OwnedMemory(sig.Params[0]) is not null && sig.Decl.Name != "duplicate"
+            if (ManagedValue(sig.Ret) && ManagedMemory(sig.Params[0]) is not null && sig.Decl.Name != "duplicate"
                 && sig.Decl.Owner is { Name: "Memory" or "Box" })
                 _memSame = (plan.Pos, receiver);
         }
         for (int i = 0; i < plan.Args.Count && i + offset < sig.Params.Count; i++)
         {
             if (MemName(plan.Args[i]) is not { } arg) continue;
-            Mem(OwnedValue(sig.Params[i + offset])
+            Mem(ManagedValue(sig.Params[i + offset])
                 ? new MemoryRules.End(arg, $"handed to '{sig.Decl.DisplayName}'", plan.Args[i].Pos)
                 : new MemoryRules.Use(arg, plan.Args[i].Pos));
         }
@@ -835,7 +835,7 @@ public sealed partial class FunctionGen
             string first = _decl.Shared.Count > 0 ? "" : blocks[0].Name;
             var handed = _memEvents[first] = [];
             for (int i = 0; i < _decl.Params.Count; i++)
-                if (OwnedValue(_inst.Params[i]))
+                if (ManagedValue(_inst.Params[i]))
                 {
                     _memTracked.Add(_decl.Params[i].Name);
                     handed.Add(new MemoryRules.Acquire(_decl.Params[i].Name, "handed in", _decl.Params[i].Pos) { Entity = Entities.HeldIn(_inst.Params[i])?.Name });
@@ -1148,7 +1148,7 @@ public sealed partial class FunctionGen
                     + $"{RoutineValueKind(b.Params[i].Name)}, which every block already sees: use '{b.Params[i].Name}' itself, "
                     + "or give a value that changes its own name");
             _values[b.Params[i].Name] = new Val(ParamOp(b.Name, b.Params[i].Name), types[i]);
-            if (MemOn && OwnedValue(types[i])) _memTracked.Add(b.Params[i].Name);
+            if (MemOn && ManagedValue(types[i])) _memTracked.Add(b.Params[i].Name);
             RecordValue(b.Params[i].Pos, types[i]);
             if (Debug && types[i] is not VoidType)
                 (_blockRecords.TryGetValue(b.Name, out var records) ? records : _blockRecords[b.Name] = [])
@@ -2781,7 +2781,7 @@ public sealed partial class FunctionGen
             _values[FailedBefore] = new Val(EmitTmp($"trunc i64 {high} to i32"), IntType.U(32));
         }
         // Memory a variant held is the arm's to give back: the arm owns what the value it observes owned.
-        if (MemOn && OwnedValue(branch))
+        if (MemOn && ManagedValue(branch))
         {
             _memTracked.Add(binding.Name);
             Mem(new MemoryRules.Acquire(binding.Name, "taken out of a variant", binding.Pos));
@@ -3959,7 +3959,7 @@ public sealed partial class FunctionGen
 
         // A Memory or a Box lends its view to the routines it has none of its own for: `line.trim()` on a
         // `Memory[Byte]` is `line.getview().trim()`, checked once.
-        if (OwnedMemory(rt) is not null && m.Name != "getview")
+        if (ManagedMemory(rt) is not null && m.Name != "getview")
             return PlanMethod(m with { Receiver = new MethodCallExpr(m.Receiver, "getview", [], [], m.Receiver.Pos) }, expected);
 
         // An entity value (a call's result) has no place for a routine taking `me: @Me`: it goes into a slot of its
@@ -4452,20 +4452,20 @@ public sealed partial class FunctionGen
         _c.ResolveType(new TypeRef("Span", [new TypeArgType(TypeRef.Simple("Byte", pos))], pos) { Path = Compiler.SystemModule }, _env);
 
     /// The `Memory[T]` or `Box[T]` a value is (or a slot holds), or null: memory from a manager, which lends a view.
-    private static RecordType? OwnedMemory(DType? t)
+    private static RecordType? ManagedMemory(DType? t)
     {
-        var owned = t is PtrType { Pointee: RecordType inner } ? inner : t as RecordType;
-        return owned is { Decl.Name: "Memory" or "Box", Args.Count: 1 } && owned.Decl.Module == Compiler.SystemModule ? owned : null;
+        var managed = t is PtrType { Pointee: RecordType inner } ? inner : t as RecordType;
+        return managed is { Decl.Name: "Memory" or "Box", Args.Count: 1 } && managed.Decl.Module == Compiler.SystemModule ? managed : null;
     }
 
     /// Whether a value of `actual` is lent where `expected` is: a `Memory[T]` (or a slot of one) where a `Span[T]` is
     /// expected, a `Box[T]` where a `@T` is.
     private static bool Lends(DType? actual, DType expected) =>
-        OwnedMemory(actual) is { } owned
-        && (owned.Decl.Name == "Memory"
+        ManagedMemory(actual) is { } managed
+        && (managed.Decl.Name == "Memory"
             ? expected is RecordType { Decl.Name: "Span", Args: [var e] } span && span.Decl.Module == Compiler.SystemModule
-              && e.Equals(owned.Args[0])
-            : expected is PtrType { Pointee: { } p } && p.Equals(owned.Args[0]) && !actual!.Equals(expected));
+              && e.Equals(managed.Args[0])
+            : expected is PtrType { Pointee: { } p } && p.Equals(managed.Args[0]) && !actual!.Equals(expected));
 
     /// Whether `t` is `Span[Byte]`, the type of text: a string literal is one.
     private static bool IsByteSpan(DType t) =>
@@ -4962,7 +4962,7 @@ public sealed partial class FunctionGen
                 {
                     if (MemName(j.Args[i]) is not { } handle) continue;
                     // Passed to a parameter of another type (a Result that holds it): the memory goes into that value.
-                    if (OwnedValue(types[i])) passed.Add((target.Params[i].Name, handle));
+                    if (ManagedValue(types[i])) passed.Add((target.Params[i].Name, handle));
                     else Mem(new MemoryRules.End(handle, $"kept in a {types[i].Name}", j.Args[i].Pos));
                 }
                 Mem(new MemoryRules.Exit(j.Block, false, passed, j.Pos));
@@ -5092,7 +5092,7 @@ public sealed partial class FunctionGen
             phiOps.Add(op);
             Line("");   // the phi, written once every round's values are known
             Define(name, new Val(op, type), l.Pos);
-            if (MemOn && OwnedValue(type)) _memTracked.Add(name);
+            if (MemOn && ManagedValue(type)) _memTracked.Add(name);
         }
         frame.HeaderNames.UnionWith(_values.Keys);
         var headerValues = _values;
@@ -5185,7 +5185,7 @@ public sealed partial class FunctionGen
                 throw Err(l.VarPos, $"'{l.Var}' is already bound here: the loop's element takes a name of its own (a name is bound once)");
             Define(l.Var!, new Val(value, itemType!), l.VarPos);
             DescribeValue(l.Var!, value, itemType!, l.VarPos);
-            if (MemOn && OwnedValue(itemType!)) _memTracked.Add(l.Var!);
+            if (MemOn && ManagedValue(itemType!)) _memTracked.Add(l.Var!);
         }
         _loops.Push(frame);
         try

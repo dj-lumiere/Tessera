@@ -26,7 +26,7 @@ public static partial class ConstructDestructMigration
     /// The field types whose values hold memory and have a `destruct` of their own.
     private static readonly HashSet<string> Owning =
         ["List", "Dict", "Set", "SortedDict", "SortedSet", "SortedList", "CircularList", "PriorityQueue", "Slice", "Bytes",
-         "OwnedCStr", "OwnedCWStr"];
+         "CStr", "CWStr"];
 
     /// The declarations of each text parsed so far, by file and text: one run reads the standard library for every
     /// program it migrates.

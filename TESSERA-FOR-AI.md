@@ -716,8 +716,8 @@ routine start() -> None
   their parameter types (`me` included); a call picks the one whose parameter types are its arguments' types
   exactly. No implicit conversion counts there (a `@T` isn't an `Addr` overload's argument), and an untyped integer
   literal prefers `S64` when several take it. An exact concrete overload beats a generic
-  one, and a routine on an owner with its type arguments named (`routine Thread[None].put_work`) beats the generic
-  owner's (`Thread[T].put_work`) for that receiver. An owner argument may nest the routine's type parameter:
+  one, and a routine on a receiver type with its type arguments named (`routine Thread[None].put_work`) beats the
+  generic receiver type's (`Thread[T].put_work`) for that receiver. A receiver type argument may nest the routine's type parameter:
   `routine @List[Thread[T]].wait_all_finished()` with `needs T: typename` exists only for a `List` of
   `Thread[...]`, binds `T` from the receiver, and doesn't clash with `List[Fiber[T]].wait_all_finished`. Two generic
   routines may have the same parameter types when their `needs` differ, and a call takes the one whose constraints
@@ -754,7 +754,7 @@ routine start() -> None
   plus a `Duration`), page and stack sizes are `ByteSize`. The memory manager routines (`alloc(size, align)`, the page
   routines) and `sizeof` stay `U64` byte counts, and a count of elements is a count.
 - Text is a `@[Byte]` (UTF-8 by convention, unchecked: `is_utf8` checks, and `chars()` reads a bad sequence as
-  U+FFFD), and owned text is a `Memory[Byte]`. The text routines are on `@[Byte]` (`Types/ByteSpan.te`:
+  U+FFFD), and text in memory from a manager is a `Memory[Byte]`. The text routines are on `@[Byte]` (`Types/ByteSpan.te`:
   `find`, `has`, `has_prefix`, `slice(start, end)`, `byte_at`, `bytes()`, `chars()`, `concat(a, b, manager)`,
   `split(separator:, manager:)` and `words(manager:)` (a `Memory[@[Byte]]` of views into the text, RazorForge's and
   Suflae's meaning: empty pieces kept, an empty separator gives characters, words skip white space runs), `eq`,
@@ -1352,7 +1352,7 @@ the failable `transmit(value)` (waits while full), `transmit_if_room(value) -> B
 with one transmitter and one receiver: `add_transmitter()` / `add_receiver()` (SharedChannel only) count more, each calls
 `close_transmitting()` / `close_receiving()` once. All transmitters closed: receivers drain what is left, then get
 `ChannelClosedError`. All receivers closed: the values left are discarded (never given back) and transmitters get `ChannelClosedError`,
-so a receiver takes out values owning memory before it closes. A channel moves one message at a time, so its verbs are
+so a receiver takes out values holding memory before it closes. A channel moves one message at a time, so its verbs are
 `transmit` / `receive` (`load` / `store` belong to places: `Memory`, `Box`, `Atomic`). `tessera migrate --step channels`
 renames the old `send`, `send_if_room`, `add_sender` and `close_sending` (a `.send(` on a name not typed as a channel is
 listed).
@@ -1664,8 +1664,8 @@ decide what `[...]` after it is. Before `(` it is a routine's or type's argument
 **Generic parameter names.** Count only the type parameters in scope. One is `T` (`List[T]`, `Maybe[T]`,
 `Writer[T]`, `BufWriter[T]`, `Thread[T]`, `S64.represent_into[T]`). Two or more are each `T` + its role in
 PascalCase: `Dict[TKey, TValue]`, `Iterator[TItem, TIter]`,
-`Tuple2[TItem0, TItem1]`, `bitcast[TFrom, TTo]`. A routine's own type parameters count together with its owner
-type's, and the owner's keep the names the type declares: `List[T].represent_into[TWriter]`,
+`Tuple2[TItem0, TItem1]`, `bitcast[TFrom, TTo]`. A routine's own type parameters count together with its receiver
+type's, and the receiver type's keep the names the type declares: `List[T].represent_into[TWriter]`,
 `Dict[TKey, TValue].represent_into[TWriter]`, `Ptr[T].to[@TPointee]`. A value (const) parameter is named like a
 preset, UPPER_SNAKE for what it counts: `Array[T, COUNT]`, `Vector[T, LANES]`, `BigNat[LIMBS]`. Why: a type
 parameter can't be told from a real type by its case (both PascalCase), so the leading `T` marks "a type slot", and
@@ -1700,11 +1700,13 @@ array presets (`K.getitem(i)`, with `preset K: @Array[T, COUNT] <- [...]`), and 
 ## Style
 
 Run `tessera fmt` on what you write: it writes `name: T = value` (nothing aligned with the line above), spaces routines, joins broken
-lists and wraps lines over 100 characters at commas (continuation lines 4 spaces further in), and writes a routine's owner type as `Me` after it's declared
+lists and wraps lines over 100 characters at commas (continuation lines 4 spaces further in), and writes a routine's receiver type as `Me` after it's declared
 (not in `needs` lines). It also orders the top-level declarations: module, sorted imports, defines, globals,
 presets, types, protocols, standalone conformances, routines (in your order), and `when_power_on` then `start` last. Follow `../Tessera-Wiki/docs/Style-Guide.md`. In short: one purpose per routine, routines named for what they do (`grow`,
 `scan`, `sift_up`), values named for what they mean (`in_bounds`, not `t1`), boolean names that read as
-predicates, a guard that returns instead of a nested `if`, and helper routines instead of one huge body. Don't add
+predicates, a guard that returns instead of a nested `if`, and helper routines instead of one huge body. You should
+start the name of a type that keeps memory from a manager and gives it back with `Managed` (`ManagedTables`, with
+`Memory[T]` fields), and leave the prefix off the type that only views it (`Tables`, with `@[T]` fields). Don't add
 syntax sugar to shorten code; readability comes from decomposition and naming.
 
 ## Tests
