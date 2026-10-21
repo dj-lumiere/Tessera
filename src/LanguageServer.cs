@@ -161,8 +161,15 @@ public static partial class LanguageServer
     // A type's header at the start of a line: `record Name`, `entity Name[T]`, `secret crashable Name`.
     private static readonly Regex TypeHeader = new(@"^(?:secret )?(?:record|entity|crashable) [A-Za-z_]");
 
+    // A `throw` line (a statement, or a `when` arm's `=> throw ...`).
+    private static readonly Regex ThrowLine = new(@"^[ ]+(?:.*=>[ ]*)?throw\b");
+
+    // A routine's header at the start of a line, `secret ` kept apart: `failable` goes after it.
+    private static readonly Regex RoutineHeader = new(@"^(?<secret>secret )?(?<rest>(?:failable )?(?:common )?(?:dangerous )?routine )");
+
     /// The quick fixes for lines `first` to `last` (0-based): `until false` is written `loop`, `pass` is written
-    /// `nothing`, and a type with no member variables gets the body `nothing`.
+    /// `nothing`, a type with no member variables gets the body `nothing`, and a `throw` in a routine not declared
+    /// failable puts `failable` on its header.
     private static JsonArray CodeActions(string uri, int first, int last)
     {
         var actions = new JsonArray();
@@ -187,8 +194,27 @@ public static partial class LanguageServer
             {
                 actions.Add(QuickFix(uri, "Write 'nothing'", at, 0, at, 0, "    nothing\n"));
             }
+            else if (ThrowLine.IsMatch(l) && NotFailableHeader(lines, line) is { } header)
+            {
+                actions.Add(QuickFix(uri, "Write 'failable routine'", header.Line, header.Column, header.Line,
+                    header.Column, "failable "));
+            }
         }
         return actions;
+    }
+
+    /// The place `failable` goes in the header of the routine line `line` is in, when that header has no `failable`.
+    private static (int Line, int Column)? NotFailableHeader(string[] lines, int line)
+    {
+        for (int at = line - 1; at >= 0; at--)
+        {
+            string l = lines[at].TrimEnd('\r');
+            if (l.Length == 0 || l[0] == ' ' || l[0] == '#' || l.StartsWith("needs ", StringComparison.Ordinal)) continue;
+            if (RoutineHeader.Match(l) is not { Success: true } m) return null;
+            if (m.Groups["rest"].Value.StartsWith("failable ", StringComparison.Ordinal)) return null;
+            return (at, m.Groups["secret"].Length);
+        }
+        return null;
     }
 
     /// The line a type declared at line `header` takes its body `nothing` at, when it has no member variables and no

@@ -93,6 +93,8 @@ public sealed partial class FunctionGen
         public List<(string Pred, List<string> Ops)> Incoming { get; } = [];
         /// A `for` over a range: the index, its type, the bound, the step, and whether the bound is included.
         public (string Name, IntType Type, Val To, Val Step, bool Inclusive, bool Descending)? Range { get; set; }
+        /// The hidden flag of an inclusive range, named per loop so a loop inside another has its own.
+        public string LiveFlag { get; set; } = FunctionGen.LiveFlag;
         /// The names visible in the header: the loop's outer scope and its carried values.
         public HashSet<string> HeaderNames { get; } = [];
         public HashSet<string> OuterNames { get; } = [];
@@ -5038,7 +5040,8 @@ public sealed partial class FunctionGen
                 {
                     // The index stays inside the range: a hidden flag says when the last round is done, so the
                     // index never steps past the bound (which could wrap).
-                    frame.Carried.Add((LiveFlag, BoolType.Instance));
+                    frame.LiveFlag = $"{LiveFlag}{_loops.Count}";
+                    frame.Carried.Add((frame.LiveFlag, BoolType.Instance));
                     firstOps.Add("true");
                 }
                 frame.Range = (l.Var!, it, to, step, range.Inclusive, descending);
@@ -5116,7 +5119,7 @@ public sealed partial class FunctionGen
                 string pred = r.Descending ? (r.Inclusive ? "ge" : "gt") : (r.Inclusive ? "le" : "lt");
                 string sign = r.Type.IsUnsigned ? "u" : "s";
                 cond = EmitTmp($"icmp {sign}{pred} {r.Type.Llvm} {index}, {r.To.Op}");
-                if (r.Inclusive) cond = EmitTmp($"and i1 {cond}, {_values[LiveFlag].Op}");
+                if (r.Inclusive) cond = EmitTmp($"and i1 {cond}, {_values[frame.LiveFlag].Op}");
                 break;
             }
             default:
@@ -5202,7 +5205,7 @@ public sealed partial class FunctionGen
         EnterRegion(thenRegion);
         _values = new Dictionary<string, Val>(headerValues);
         if (frame.Range is { } range2) _values.Remove(range2.Name);
-        _values.Remove(LiveFlag);
+        _values.Remove(frame.LiveFlag);
         if (l.Then is not null) EmitBody(l.Then);
         bool afterReached = false;
         if (!_cur.Terminated)
@@ -5247,14 +5250,14 @@ public sealed partial class FunctionGen
     }
 
     /// The hidden carried value of a `for` over an inclusive range: false once the index has reached the bound.
-    private const string LiveFlag = "$live";
+    internal const string LiveFlag = "$live";
 
     /// `continue` / `continue with a: a2, ...`: the next round's values go back to the header.
     private void EmitContinue(ContinueStmt c)
     {
         if (_loops.Count == 0) throw Err(c.Pos, "continue goes on with the next round of a loop, and there is no loop here");
         var loop = _loops.Peek();
-        var with = loop.Carried.Where(v => (loop.Range is not { } r || v.Name != r.Name) && v.Name != LiveFlag).ToList();
+        var with = loop.Carried.Where(v => (loop.Range is not { } r || v.Name != r.Name) && v.Name != loop.LiveFlag).ToList();
         var given = c.With ?? [];
         if (with.Count > 0 && c.With is null)
             throw Err(c.Pos, $"the loop carries values, so each round says what the next one gets: continue with {string.Join(", ", with.Select(v => $"{v.Name}: ..."))}");
