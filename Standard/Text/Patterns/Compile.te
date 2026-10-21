@@ -45,7 +45,7 @@ secret entity PatternCompiler
     ### The piece tree being compiled.
     code: @[U32]
     ### Where the compiler's lists and the program take memory.
-    alloc: @MemoryManager
+    manager: @MemoryManager
     ### MODE_TEXT or MODE_BYTES.
     mode: U32
     ### The instructions written so far, three words each.
@@ -68,13 +68,13 @@ secret entity PatternCompiler
 ### Starts a compiler for a piece tree.
 ### :param code: The piece tree.
 ### :param mode: MODE_TEXT or MODE_BYTES.
-### :param alloc: Where the compiler's lists take memory.
+### :param manager: Where the compiler's lists take memory.
 ### :returns: The compiler.
 secret common routine PatternCompiler.construct(code: @[U32], mode: U32,
-    alloc: @MemoryManager) -> Me
-    return Me(code, alloc, mode, instructions: .construct(alloc), ranges: .construct(alloc),
-        eithers: .construct(alloc), names: .construct(alloc), captures: .construct(alloc),
-        class: .construct(alloc), error: PatternErrorKind.NONE, error_at: 0)
+    manager: @MemoryManager) -> Me
+    return Me(code, manager, mode, instructions: .construct(manager), ranges: .construct(manager),
+        eithers: .construct(manager), names: .construct(manager), captures: .construct(manager),
+        class: .construct(manager), error: PatternErrorKind.NONE, error_at: 0)
 
 ### Gives back the compiler's lists.
 secret routine @PatternCompiler.destruct() -> None
@@ -383,7 +383,7 @@ secret routine @PatternCompiler.normalize_class() -> None
 secret routine @PatternCompiler.negate_class() -> None
     local count: U64 = me.class.count()
     local top: U32 = me.max_unit()
-    local outside: @List[UnitRange] <- .construct(me.alloc.peek())
+    local outside: @List[UnitRange] <- .construct(me.manager.peek())
 
     each i: U64 in 0 til count with from: U64 = 0
         range: UnitRange = me.class.getitem(i)
@@ -535,8 +535,8 @@ secret routine @PatternCompiler.group_of(at: U64) -> U64
 secret routine @PatternCompiler.compile_either(at: U64, fold: Bool, depth: U64,
     shorter: Bool) -> U64
     local n: U64 = me.word(at + 1).to[U64]()
-    local starts: @List[U32] <- .construct(me.alloc.peek())
-    local ends: @List[U32] <- .construct(me.alloc.peek())
+    local starts: @List[U32] <- .construct(me.manager.peek())
+    local ends: @List[U32] <- .construct(me.manager.peek())
 
     if n == 0
         drop starts
@@ -605,7 +605,7 @@ secret routine @PatternCompiler.compile_repeat(at: U64, fold: Bool, depth: U64) 
 @reshaping
 secret routine @PatternCompiler.compile_optional_rounds(child: U64, rounds: U64, fold: Bool,
     depth: U64) -> None
-    local splits: @List[U32] <- .construct(me.alloc.peek())
+    local splits: @List[U32] <- .construct(me.manager.peek())
 
     each i: U64 in 0 til rounds
         if me.failed()
@@ -624,10 +624,10 @@ secret routine @PatternCompiler.compile_optional_rounds(child: U64, rounds: U64,
 ### Compiles a piece tree into a program.
 ### :param code: The piece tree (Codes.te).
 ### :param mode: MODE_TEXT or MODE_BYTES.
-### :param alloc: Where the program and the compiler's lists take memory.
+### :param manager: Where the program and the compiler's lists take memory.
 ### :returns: The program, or why the tree didn't compile.
-failable routine compile_pattern(code: @[U32], mode: U32, alloc: @MemoryManager) -> Memory[U32]
-    local compiler: @PatternCompiler <- .construct(code, mode, alloc)
+failable routine compile_pattern(code: @[U32], mode: U32, manager: @MemoryManager) -> Memory[U32]
+    local compiler: @PatternCompiler <- .construct(code, mode, manager)
 
     compiler.number_captures(at: 0, depth: 0)
     after: U64 = compiler.compile(at: 0, fold: false, depth: 0)
@@ -639,21 +639,21 @@ failable routine compile_pattern(code: @[U32], mode: U32, alloc: @MemoryManager)
             at: compiler.error_at.peek())
         drop compiler
         throw error
-    local program: @Memory[U32] <- compiler.assemble(mode, alloc)
+    local program: @Memory[U32] <- compiler.assemble(mode, manager)
     drop compiler
     return program
 
 ### Puts the header, the instructions, the ranges, the either table and the names together in one block.
 ### :param mode: MODE_TEXT or MODE_BYTES.
-### :param alloc: Where the program takes memory.
+### :param manager: Where the program takes memory.
 ### :returns: The program.
-secret routine @PatternCompiler.assemble(mode: U32, alloc: @MemoryManager) -> Memory[U32]
+secret routine @PatternCompiler.assemble(mode: U32, manager: @MemoryManager) -> Memory[U32]
     local instruction_words: U64 = me.instructions.count()
     local ranges_at: U64 = HEADER_WORDS + instruction_words
     local eithers_at: U64 = ranges_at + me.ranges.count()
     local names_at: U64 = eithers_at + me.eithers.count()
     local length: U64 = names_at + me.names.count()
-    local program: @Memory[U32] <- [0] * length at alloc
+    local program: @Memory[U32] <- [0] * length at manager
 
     program.store(index: 0, value: PROGRAM_MAGIC)
     program.store(index: HEADER_MODE, value: mode)

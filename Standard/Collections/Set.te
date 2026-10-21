@@ -7,7 +7,7 @@
 #     entry index >= 0. Linear probing on the hash mod capacity.
 #
 # Every array is a Memory of the same count, the capacity, and each keeps
-# the allocator. Removal marks the entry dead and the slot a tombstone. The
+# the memory manager. Removal marks the entry dead and the slot a tombstone. The
 # entry's position in the entries array is retained so the insertion order of
 # surviving entries is preserved. Rehash compacts dead entries away.
 #
@@ -33,15 +33,15 @@ needs T: typename, HashEquatable[T]
     count: U64
     entries_count: U64
 
-### Creates an empty Set that draws its storage from `alloc`. Nothing is allocated until the first insertion.
-### :param alloc: The allocator the set stores and later frees its memory with.
+### Creates an empty Set that draws its storage from `manager`. Nothing is allocated until the first insertion.
+### :param manager: The memory manager the set stores and later frees its memory with.
 ### :returns: A new empty Set.
-common routine Set[T].construct(alloc: @MemoryManager) -> Me
+common routine Set[T].construct(manager: @MemoryManager) -> Me
 needs T: typename
-    return Me(keys: Memory[T].construct(count: 0, manager: alloc),
-        hashes: Memory[U64].construct(count: 0, manager: alloc),
-        entry_states: Memory[U8].construct(count: 0, manager: alloc),
-        slots: Memory[U64].construct(count: 0, manager: alloc), count: 0, entries_count: 0)
+    return Me(keys: Memory[T].construct(count: 0, manager: manager),
+        hashes: Memory[U64].construct(count: 0, manager: manager),
+        entry_states: Memory[U8].construct(count: 0, manager: manager),
+        slots: Memory[U64].construct(count: 0, manager: manager), count: 0, entries_count: 0)
 
 ### The number of elements currently stored.
 ### :returns: The count of elements, `0` when the set is empty.
@@ -189,15 +189,15 @@ needs T: typename
 ### Moves the live entries into fresh arrays of `new_capacity`, in insertion order, dropping dead ones. The new
 ### arrays are made in the order keys, hashes, entry states, slots, and a failure releases the ones already made.
 ### :param new_capacity: The new capacity, a power of two above the live count.
-### :returns: True when it rehashed, false when the allocator failed (the set is left as it was).
+### :returns: True when it rehashed, false when the memory manager failed (the set is left as it was).
 @reshaping
 secret routine @Set[T].rehash(new_capacity: U64) -> Bool
 needs T: typename
-    local alloc: @MemoryManager = me.keys.manager.peek()
-    local keys: @Memory[T] <- .construct(count: 0, manager: alloc)
-    local hashes: @Memory[U64] <- .construct(count: 0, manager: alloc)
-    local entry_states: @Memory[U8] <- .construct(count: 0, manager: alloc)
-    local slots: @Memory[U64] <- .construct(count: 0, manager: alloc)
+    local manager: @MemoryManager = me.keys.manager.peek()
+    local keys: @Memory[T] <- .construct(count: 0, manager: manager)
+    local hashes: @Memory[U64] <- .construct(count: 0, manager: manager)
+    local entry_states: @Memory[U8] <- .construct(count: 0, manager: manager)
+    local slots: @Memory[U64] <- .construct(count: 0, manager: manager)
 
     if make_array[T](into: keys, count: new_capacity)
         if make_array[U64](into: hashes, count: new_capacity)
@@ -232,7 +232,7 @@ needs T: typename
 
 ### Makes room for one more entry: the first insertion rehashes into 8 slots, and the tables double once one more
 ### entry would fill three quarters of them.
-### :returns: True when there is room, false when the allocator failed (the set is left as it was).
+### :returns: True when there is room, false when the memory manager failed (the set is left as it was).
 @reshaping
 secret routine @Set[T].ensure() -> Bool
 needs T: typename
@@ -278,7 +278,7 @@ needs T: typename
 ### Adds `key` to the set unless an equal element is already present.
 ### :param key: The element to add.
 ### :returns: `true` when `key` was new, `false` when it was already present.
-### :throws: Throws `MemoryAllocationError` when the tables must grow and the allocator fails.
+### :throws: Throws `MemoryAllocationError` when the tables must grow and the memory manager fails.
 @track_caller
 @reshaping
 failable routine @Set[T].add(key: T) -> Bool
@@ -329,9 +329,9 @@ needs T: typename
     return removed
 
 ### Ends every element (drop: an element with something to give back gives it back, a plain value gives nothing),
-### then gives the set's memory back to its allocator and resets it to the empty state, so it can be reused or
+### then gives the set's memory back to its memory manager and resets it to the empty state, so it can be reused or
 ### destructed again.
-### :note: Does nothing on a hollow instance (`.hollow()`, no allocator), and only resets the fields of a never-filled one.
+### :note: Does nothing on a hollow instance (`.hollow()`, no memory manager), and only resets the fields of a never-filled one.
 @track_caller
 routine @Set[T].destruct() -> None
 needs T: typename
@@ -386,7 +386,7 @@ needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
 
 # -- the arrays -----------------------------------------------------------------
 
-### Gives the four arrays of a set back to their allocator, leaving each empty.
+### Gives the four arrays of a set back to their memory manager, leaving each empty.
 ### :typeparam T: The element type.
 ### :param keys: The keys array.
 ### :param hashes: The hashes array.

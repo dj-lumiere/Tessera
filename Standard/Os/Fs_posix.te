@@ -1426,15 +1426,15 @@ routine @DirIter.close() -> None
 
 # -- the working directory and well-known directories -------------------------------------
 
-### A copy of the n bytes at p, in memory from alloc.
+### A copy of the n bytes at p, in memory from manager.
 ### :param p: The first byte to copy.
 ### :param n: How many bytes to copy.
-### :param alloc: The allocator for the copy.
+### :param manager: The memory manager for the copy.
 ### :returns: The copy.
-### :throws: Throws `MemoryAllocationError` when `alloc` fails.
+### :throws: Throws `MemoryAllocationError` when `manager` fails.
 @target(os: ("linux", "macos"))
-secret failable routine owned(p: @Byte, n: U64, alloc: @MemoryManager) -> Memory[Byte]
-    when check Memory[Byte].construct(count: n.max(1), manager: alloc)
+secret failable routine owned(p: @Byte, n: U64, manager: @MemoryManager) -> Memory[Byte]
+    when check Memory[Byte].construct(count: n.max(1), manager: manager)
         is Memory[Byte] as buffer =>
             buffer.data.peek().copy(src: p, count: n)
             buffer.keep_first(n)
@@ -1454,14 +1454,14 @@ secret routine nonempty_env(name: CStrView) -> Maybe[@Byte]
         return None()
     return value
 
-### The working directory, in memory from alloc.
-### :param alloc: The allocator for the text.
+### The working directory, in memory from manager.
+### :param manager: The memory manager for the text.
 ### :returns: The path.
-### :throws: Throws the reason when the OS can't report it, `MemoryAllocationError` when `alloc` fails.
+### :throws: Throws the reason when the OS can't report it, `MemoryAllocationError` when `manager` fails.
 @target(os: ("linux", "macos"))
-secret failable routine current_dir(alloc: @MemoryManager) -> Memory[Byte]
+secret failable routine current_dir(manager: @MemoryManager) -> Memory[Byte]
     while true with capacity: U64 = 256
-        when check Memory[Byte].construct(count: capacity, manager: alloc)
+        when check Memory[Byte].construct(count: capacity, manager: manager)
             is Memory[Byte] as buffer2 =>
                 data: @Byte = buffer2.data.peek()
                 if c_getcwd(data, capacity.to[CSize]()).is_not_hollow()
@@ -1476,58 +1476,58 @@ secret failable routine current_dir(alloc: @MemoryManager) -> Memory[Byte]
                 throw error_of(e)
             is MemoryAllocationError as error => throw error
 
-### TMPDIR, or /tmp when it is not set or empty, in memory from alloc.
-### :param alloc: The allocator for the text.
+### TMPDIR, or /tmp when it is not set or empty, in memory from manager.
+### :param manager: The memory manager for the text.
 ### :returns: The path.
-### :throws: Throws `MemoryAllocationError` when `alloc` fails.
+### :throws: Throws `MemoryAllocationError` when `manager` fails.
 @target(os: ("linux", "macos"))
-secret failable routine temp_dir(alloc: @MemoryManager) -> Memory[Byte]
+secret failable routine temp_dir(manager: @MemoryManager) -> Memory[Byte]
     t: Maybe[@Byte] = nonempty_env("TMPDIR")
     dir: @Byte = when t
         is @Byte as set => set
         is None => "/tmp"
-    when check owned(p: dir, n: dir.to[CStrView]().count(), alloc)
+    when check owned(p: dir, n: dir.to[CStrView]().count(), manager)
         is Memory[Byte] as text => return text
 
-### HOME, in memory from alloc. NotFound when it isn't set or is empty.
-### :param alloc: The allocator for the text.
+### HOME, in memory from manager. NotFound when it isn't set or is empty.
+### :param manager: The memory manager for the text.
 ### :returns: The path.
-### :throws: Throws `NotFoundError` when HOME is not set or empty, `MemoryAllocationError` when `alloc` fails.
+### :throws: Throws `NotFoundError` when HOME is not set or empty, `MemoryAllocationError` when `manager` fails.
 @target(os: ("linux", "macos"))
-secret failable routine home_dir(alloc: @MemoryManager) -> Memory[Byte]
+secret failable routine home_dir(manager: @MemoryManager) -> Memory[Byte]
     h: Maybe[@Byte] = nonempty_env("HOME")
     dir: @Byte = when h
         is @Byte as set => set
         is None => throw NotFoundError()
-    when check owned(p: dir, n: dir.to[CStrView]().count(), alloc)
+    when check owned(p: dir, n: dir.to[CStrView]().count(), manager)
         is Memory[Byte] as text => return text
 
 ### path made absolute by the text alone: the working directory in front of a relative path, nothing resolved.
 ### :param path: The path to make absolute.
-### :param alloc: The allocator for the result.
+### :param manager: The memory manager for the result.
 ### :returns: The absolute path.
-### :throws: Throws the reason when the working directory can't be read, `MemoryAllocationError` when `alloc`
-###     fails for it. Crashes with `MemoryAllocationError` when `alloc` fails for the joined path.
+### :throws: Throws the reason when the working directory can't be read, `MemoryAllocationError` when `manager`
+###     fails for it. Crashes with `MemoryAllocationError` when `manager` fails for the joined path.
 @target(os: ("linux", "macos"))
-secret failable routine absolute_path(path: @[Byte], alloc: @MemoryManager) -> Memory[Byte]
+secret failable routine absolute_path(path: @[Byte], manager: @MemoryManager) -> Memory[Byte]
     if path.has_prefix("/")
-        when check owned(p: path.data, n: path.count(), alloc)
+        when check owned(p: path.data, n: path.count(), manager)
             is Memory[Byte] as returned => return returned
-    when check current_dir(alloc)
+    when check current_dir(manager)
         is Memory[Byte] as dir =>
-            local full: @Memory[Byte] <- join_path(a: dir.getview(), b: path, alloc)
+            local full: @Memory[Byte] <- join_path(a: dir.getview(), b: path, manager)
             drop dir
             return full
         is FsError as error => throw error
 
 ### The absolute path with every link, ".", and ".." resolved, and path must exist.
 ### :param path: The path to resolve.
-### :param alloc: The allocator for the result.
+### :param manager: The memory manager for the result.
 ### :returns: The resolved path.
-### :throws: Throws the reason, such as `NotFoundError`, `MemoryAllocationError` when `alloc` fails, `InvalidPathError`
+### :throws: Throws the reason, such as `NotFoundError`, `MemoryAllocationError` when `manager` fails, `InvalidPathError`
 ###     or `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
-secret failable routine canonical_path(path: @[Byte], alloc: @MemoryManager) -> Memory[Byte]
+secret failable routine canonical_path(path: @[Byte], manager: @MemoryManager) -> Memory[Byte]
     local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if not c_path(path, out: cpath.to[@Byte]())
@@ -1535,7 +1535,7 @@ secret failable routine canonical_path(path: @[Byte], alloc: @MemoryManager) -> 
     resolved: @Byte = c_realpath(cpath.to[@Byte](), .hollow())
     if resolved.is_hollow()
         throw last_error()
-    when check owned(p: resolved, n: resolved.to[CStrView]().count(), alloc)
+    when check owned(p: resolved, n: resolved.to[CStrView]().count(), manager)
         is Memory[Byte] as text =>
             c_free(resolved)
             return text

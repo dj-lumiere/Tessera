@@ -65,6 +65,8 @@ namespace Tessera;
 /// 0.5: the `_checked` twins are gone: the plain routine is failable, and `x.add_checked(y)` is `try x.add(y)`,
 /// `x.to_checked[U8]()` is `try x.to[U8]()` (`--step checked`).
 ///
+/// 0.5: a memory manager handed to a routine is `manager: @MemoryManager`, not `alloc` (`--step manager`).
+///
 /// 0.5: an address moves by a ByteSize with `+%` and `-%` (`a.offset(8)` is `a +% 8b`), and `b -% a` is the distance
 /// from `a` to `b` (`--step addr`).
 public static class Migrate
@@ -99,7 +101,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf" or "managers" or "float-presets" or "modules" or "access" or "threadlocal" or "files" or "checked";
+        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf" or "managers" or "float-presets" or "modules" or "access" or "threadlocal" or "files" or "checked" or "manager";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -200,6 +202,32 @@ public static class Migrate
             foreach (string line in addrReport) Console.WriteLine(line);
             if (!check) Console.WriteLine($"migrated {changedAddr} of {files.Count} file(s), {addrReport.Count} place(s) to look at by hand");
             return check && changedAddr > 0 ? 1 : 0;
+        }
+
+        if (step == "manager")
+        {
+            // A memory manager is `manager`, not `alloc`: whether an `alloc` parameter or field anywhere isn't a manager
+            // is read from the library's declarations and every file's given, so they are taken in first.
+            var managers = new ManagerNameMigration();
+            foreach (var (path, text) in StdlibFiles()) managers.Index(path, text, true);
+            foreach (var (path, text) in texts)
+                if (path.EndsWith(".md", StringComparison.Ordinal)) managers.IndexMarkdown(path, text);
+                else managers.Index(path, text, false);
+            int changedManagers = 0;
+            var managerReport = new List<string>();
+            foreach (var (file, text) in texts)
+            {
+                string rewritten = file.EndsWith(".md", StringComparison.Ordinal)
+                    ? managers.RewriteMarkdown(file, text, managerReport)
+                    : managers.Rewrite(text, managerReport, file);
+                if (rewritten == text) continue;
+                changedManagers++;
+                if (check) Console.WriteLine(file);
+                else File.WriteAllText(file, rewritten, new UTF8Encoding(false));
+            }
+            foreach (string line in managerReport) Console.WriteLine(line);
+            if (!check) Console.WriteLine($"migrated {changedManagers} of {files.Count} file(s), {managerReport.Count} place(s) to look at by hand");
+            return check && changedManagers > 0 ? 1 : 0;
         }
 
         if (step is not null)
@@ -363,6 +391,7 @@ public static class Migrate
         ["destruct"] = (_, text, _) => DestructSpelling(text),
         ["division"] = (_, text, _) => text,
         ["addr"] = (_, text, _) => text,
+        ["manager"] = (_, text, _) => text,
         ["comments"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, HashComments)
             : HashComments(text),

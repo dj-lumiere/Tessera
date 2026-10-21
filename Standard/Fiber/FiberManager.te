@@ -102,9 +102,9 @@ obeys Comparable[TimerKey]
 ### Runs fibers on one thread, the one that drives it, and hands them out as tickets.
 entity FiberManager
     ### The fiber records and the queues.
-    alloc: @MemoryManager
+    manager: @MemoryManager
     ### The page manager the fibers' stacks come from.
-    stacks: @MemoryManager
+    stack_manager: @MemoryManager
     ### The size of each fiber's stack in bytes.
     stack_size: ByteSize
     ### The `thread_mark()` of the thread that drives it.
@@ -237,35 +237,36 @@ routine TimerKey.compare(other: Me) -> S32
         return me.seq.compare(other.seq)
     return me.deadline.compare(other.deadline)
 
-### A manager whose fibers have stacks of `stack_size` bytes on pages from `stacks`, driven by the thread that makes it
+### A manager whose fibers have stacks of `stack_size` bytes on pages from `stack_manager`, driven by the thread that makes it
 ### until another drives it. Each stack is whole pages with one more page below it, which `protect` closes: a fiber
 ### whose stack runs out stops the program there.
 ### :param stack_size: The size of each fiber's stack.
-### :param stacks: The page manager the fibers' stacks come from, such as `PAGES`: its table handles pages.
-### :param alloc: Where the fiber records and the queues come from.
+### :param stack_manager: The page manager the fibers' stacks come from, such as `PAGES`: its table handles pages.
+### :param manager: Where the fiber records and the queues come from.
 ### :returns: The manager, with no fibers.
 @target(os: not "none")
-common routine FiberManager.construct(stack_size: ByteSize, stacks: @MemoryManager,
-    alloc: @MemoryManager) -> Me
-    return Me(alloc, stacks, stack_size, owner: thread_mark(), home: .hollow(),
-        home_race: .hollow(), current: .hollow(), ready: CircularList[@FiberState].construct(alloc),
-        inbox_lock: .construct(), inbox: CircularList[@FiberState].construct(alloc), epoch: 0,
-        alert: .hollow(), busy: 0, idle: .hollow(), all: .hollow(),
-        timers: PriorityQueue[TimerKey, @FiberState].construct(alloc), timer_seq: 0)
+common routine FiberManager.construct(stack_size: ByteSize, stack_manager: @MemoryManager,
+    manager: @MemoryManager) -> Me
+    return Me(manager, stack_manager, stack_size, owner: thread_mark(), home: .hollow(),
+        home_race: .hollow(), current: .hollow(),
+        ready: CircularList[@FiberState].construct(manager), inbox_lock: .construct(),
+        inbox: CircularList[@FiberState].construct(manager), epoch: 0, alert: .hollow(), busy: 0,
+        idle: .hollow(), all: .hollow(),
+        timers: PriorityQueue[TimerKey, @FiberState].construct(manager), timer_seq: 0)
 
 ### Frees every fiber with its stack, and the queues. The fibers whose work never finished are dropped where they
 ### stand.
 @target(os: not "none")
 routine @FiberManager.destruct() -> None
-    if me.alloc.peek().is_hollow()
+    if me.manager.peek().is_hollow()
         return
     until fiber.is_hollow() with fiber: @FiberState = me.all.peek()
         next: @FiberState = fiber.next_all.peek()
         fiber.destruct()
         AccessManager.end_flow(fiber.access)
         race_stack_free(fiber.race.peek())
-        give_back_stack(stack: fiber.stack.peek(), pages: me.stacks.peek())
-        deallocate(data: fiber, alloc: me.alloc.peek())
+        give_back_stack(stack: fiber.stack.peek(), pages: me.stack_manager.peek())
+        deallocate(data: fiber, manager: me.manager.peek())
         continue with fiber: next
     me.ready.destruct()
     me.inbox.destruct()
@@ -276,9 +277,9 @@ routine @FiberManager.destruct() -> None
 ### Makes the manager on first use, if it is a hollow one (FIBERS starts hollow).
 @target(os: not "none")
 secret routine @FiberManager.ensure() -> None
-    if me.alloc.peek().is_hollow()
+    if me.manager.peek().is_hollow()
         # A thread worker releases its FIBERS before it takes the next ticket's work.
-        me.poke(Me.construct(stack_size: DEFAULT_FIBER_STACK, stacks: PAGES, alloc: HEAP))
+        me.poke(Me.construct(stack_size: DEFAULT_FIBER_STACK, stack_manager: PAGES, manager: HEAP))
         if me !== FIBERS
             return
         THREAD_CLEANUP.poke(release_fibers.to[Callable]())
@@ -317,15 +318,15 @@ needs T: typename
 @target(os: not "none")
 @track_caller
 secret routine @FiberManager.make_fiber() -> @FiberState
-    stack: StackManager = take_stack(size: me.stack_size.peek(), pages: me.stacks.peek())
+    stack: StackManager = take_stack(size: me.stack_size.peek(), pages: me.stack_manager.peek())
     if stack.top.is_hollow()
         crash_allocation()
-    fiber: @FiberState = allocate[FiberState](count: 1, alloc: me.alloc.peek())
+    fiber: @FiberState = allocate[FiberState](count: 1, manager: me.manager.peek())
     if fiber.is_hollow()
         crash_allocation()
     sp: Addr = initial_stack(stack: stack.bottom, size: stack.size().bytes(),
         entry: fiber_start.addr())
-    fiber.poke(FiberState(sp, stack, manager: me, slot: .construct(alloc: me.alloc.peek()),
+    fiber.poke(FiberState(sp, stack, manager: me, slot: .construct(manager: me.manager.peek()),
         work: fiber.slot, then: requeue.to[Callable](), wake_state: FIBER_RUNNING, timer: 0,
         trace_depth: 0, access: .hollow(), race: race_stack_new(), next_idle: .hollow(),
         next_all: me.all.peek(), pool: .hollow()))
@@ -526,7 +527,7 @@ routine Fiber[T].put_work(entry: Callable[(), T]) -> None
 needs T: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_work0[T](entry, alloc: slot.alloc.peek())
+    runner, work = make_work0[T](entry, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -541,7 +542,7 @@ routine Fiber[T].put_work[A](entry: Callable[(A,), T], args: A) -> None
 needs T: typename, A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_work1[T, A](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_work1[T, A](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -556,7 +557,7 @@ routine Fiber[T].put_work[A, B](entry: Callable[(A, B), T], args: (A, B)) -> Non
 needs T: typename, A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_work2[T, A, B](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_work2[T, A, B](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -571,7 +572,7 @@ routine Fiber[T].put_work[A, B, C](entry: Callable[(A, B, C), T], args: (A, B, C
 needs T: typename, A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_work3[T, A, B, C](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_work3[T, A, B, C](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -586,7 +587,7 @@ routine Fiber[T].put_work[A, B, C, D](entry: Callable[(A, B, C, D), T], args: (A
 needs T: typename, A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_work4[T, A, B, C, D](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_work4[T, A, B, C, D](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -599,7 +600,7 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
 routine Fiber[None].put_work(entry: Callable[(), None]) -> None
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_voidwork0(entry, alloc: slot.alloc.peek())
+    runner, work = make_voidwork0(entry, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -614,7 +615,7 @@ routine Fiber[None].put_work[A](entry: Callable[(A,), None], args: A) -> None
 needs A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_voidwork1[A](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_voidwork1[A](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -629,7 +630,7 @@ routine Fiber[None].put_work[A, B](entry: Callable[(A, B), None], args: (A, B)) 
 needs A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_voidwork2[A, B](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_voidwork2[A, B](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -644,7 +645,7 @@ routine Fiber[None].put_work[A, B, C](entry: Callable[(A, B, C), None], args: (A
 needs A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_voidwork3[A, B, C](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_voidwork3[A, B, C](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -660,7 +661,7 @@ routine Fiber[None].put_work[A, B, C, D](entry: Callable[(A, B, C, D), None],
 needs A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_voidwork4[A, B, C, D](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_voidwork4[A, B, C, D](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 

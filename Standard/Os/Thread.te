@@ -17,7 +17,7 @@ module Standard/Os
 ### The hosted thread manager: the operating system's threads, with the work blocks from HEAP. Ready before
 ### `start` runs.
 @target(os: not "none")
-global DEFAULT_THREADS: @ThreadManager <- (launch_fn: os_launch_fn.to[Callable](), state: .hollow(), lock: (state: 0, holder: 0, waits: 0, waited: 0), idle: .hollow(), alloc: HEAP)
+global DEFAULT_THREADS: @ThreadManager <- (launch_fn: os_launch_fn.to[Callable](), state: .hollow(), lock: (state: 0, holder: 0, waits: 0, waited: 0), idle: .hollow(), manager: HEAP)
 
 ### A ticket for a thread, from {get_thread}: it runs one piece of work at a time, whose result is a `T` (`Void` for
 ### none), until {Thread[T].give_back}.
@@ -47,7 +47,7 @@ record ThreadManager
     ### The threads given back, asleep until a ticket takes one.
     idle: @ThreadWorker
     ### Where the workers and the work blocks come from.
-    alloc: @MemoryManager
+    manager: @MemoryManager
 
 ### Makes a `Thread` from its fields.
 ### :param worker: Its `worker`.
@@ -87,20 +87,20 @@ routine @ThreadWorker.destruct() -> None
 ### :param launch_fn: Starts a thread that runs `(entry, arg)` and ends when it returns, given `state`: false when none
 ###     starts.
 ### :param state: What `launch_fn` is given.
-### :param alloc: Where the workers and the work blocks come from.
+### :param manager: Where the workers and the work blocks come from.
 ### :returns: The manager, with no threads yet.
 common routine ThreadManager.construct(
     launch_fn: Callable[(Callable[(Addr,), None], Addr, Addr), Bool], state: Addr,
-    alloc: @MemoryManager) -> Me
-    return Me(launch_fn, state, lock: .construct(), idle: .hollow(), alloc)
+    manager: @MemoryManager) -> Me
+    return Me(launch_fn, state, lock: .construct(), idle: .hollow(), manager)
 
-### A manager of the operating system's threads, with the workers and the work blocks from `alloc`.
-### :param alloc: Where the workers and the work blocks come from.
+### A manager of the operating system's threads, with the workers and the work blocks from `manager`.
+### :param manager: Where the workers and the work blocks come from.
 ### :returns: The manager, with no threads yet.
 @target(os: not "none")
-common routine ThreadManager.construct(alloc: @MemoryManager) -> Me
+common routine ThreadManager.construct(manager: @MemoryManager) -> Me
     return Me(launch_fn: os_launch_fn.to[Callable](), state: .hollow(), lock: .construct(),
-        idle: .hollow(), alloc)
+        idle: .hollow(), manager)
 
 ### Ends the idle threads. Every ticket goes back first: a ticket given back to a manager that is gone reaches memory
 ### that is gone, and its thread never ends.
@@ -165,15 +165,15 @@ secret routine @ThreadManager.take_worker() -> @ThreadWorker
     idle: @ThreadWorker = me.idle.peek()
     if idle.is_hollow()
         me.lock.unlock()
-        alloc: @MemoryManager = me.alloc.peek()
-        worker: @ThreadWorker = allocate[ThreadWorker](count: 1, alloc)
+        manager: @MemoryManager = me.manager.peek()
+        worker: @ThreadWorker = allocate[ThreadWorker](count: 1, manager)
         if worker.is_hollow()
             crash_allocation()
-        worker.poke(ThreadWorker(slot: .construct(alloc), next: .hollow(), manager: me))
+        worker.poke(ThreadWorker(slot: .construct(manager), next: .hollow(), manager: me))
         place: Addr = worker
         if me.launch_fn.peek().call(worker_main.to[Callable](), place, me.state.peek())
             return worker
-        deallocate(data: worker, alloc)
+        deallocate(data: worker, manager)
         crash_task_spawn()
     me.idle.poke(idle.next.peek())
     me.lock.unlock()
@@ -209,9 +209,9 @@ secret routine worker_main(raw: Addr) -> None
             break
         wait_on(at: worker.slot.state, expected: state2)
         continue
-    alloc: @MemoryManager = worker.slot.alloc.peek()
+    manager: @MemoryManager = worker.slot.manager.peek()
     drop worker.slot
-    deallocate(data: worker, alloc)
+    deallocate(data: worker, manager)
     return
 
 ### The slot the ticket's work lives in, for code that waits on several tickets at once.
@@ -242,7 +242,7 @@ routine Thread[T].put_work(entry: Callable[(), T]) -> None
 needs T: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_work0[T](entry, alloc: slot.alloc.peek())
+    runner, work = make_work0[T](entry, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -256,7 +256,7 @@ routine Thread[T].put_work[A](entry: Callable[(A,), T], args: A) -> None
 needs T: typename, A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_work1[T, A](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_work1[T, A](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -270,7 +270,7 @@ routine Thread[T].put_work[A, B](entry: Callable[(A, B), T], args: (A, B)) -> No
 needs T: typename, A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_work2[T, A, B](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_work2[T, A, B](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -284,7 +284,7 @@ routine Thread[T].put_work[A, B, C](entry: Callable[(A, B, C), T], args: (A, B, 
 needs T: typename, A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_work3[T, A, B, C](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_work3[T, A, B, C](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -298,7 +298,7 @@ routine Thread[T].put_work[A, B, C, D](entry: Callable[(A, B, C, D), T], args: (
 needs T: typename, A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_work4[T, A, B, C, D](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_work4[T, A, B, C, D](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -310,7 +310,7 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
 routine Thread[None].put_work(entry: Callable[(), None]) -> None
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_voidwork0(entry, alloc: slot.alloc.peek())
+    runner, work = make_voidwork0(entry, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -324,7 +324,7 @@ routine Thread[None].put_work[A](entry: Callable[(A,), None], args: A) -> None
 needs A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_voidwork1[A](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_voidwork1[A](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -338,7 +338,7 @@ routine Thread[None].put_work[A, B](entry: Callable[(A, B), None], args: (A, B))
 needs A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_voidwork2[A, B](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_voidwork2[A, B](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -352,7 +352,7 @@ routine Thread[None].put_work[A, B, C](entry: Callable[(A, B, C), None], args: (
 needs A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_voidwork3[A, B, C](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_voidwork3[A, B, C](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -367,7 +367,7 @@ routine Thread[None].put_work[A, B, C, D](entry: Callable[(A, B, C, D), None],
 needs A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_voidwork4[A, B, C, D](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_voidwork4[A, B, C, D](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -478,7 +478,7 @@ secret routine thread_body(raw: Addr) -> None
     start: @ThreadStart = raw.to[@ThreadStart]()
     entry: Callable[(Addr,), None] = start.entry.peek()
     arg: Addr = start.arg.peek()
-    deallocate(data: start, alloc: HEAP)
+    deallocate(data: start, manager: HEAP)
     fault_stack: Addr = give_fault_stack()
     entry.call(arg)
     release_fault_stack(fault_stack)
@@ -490,7 +490,7 @@ secret routine thread_body(raw: Addr) -> None
 ### :returns: The record, or null.
 @target(os: not "none")
 secret routine thread_start(entry: Callable[(Addr,), None], arg: Addr) -> @ThreadStart
-    start: @ThreadStart = allocate[ThreadStart](count: 1, alloc: HEAP)
+    start: @ThreadStart = allocate[ThreadStart](count: 1, manager: HEAP)
     if start.is_hollow()
         return .hollow()
     start.poke(ThreadStart(entry, arg))
@@ -540,7 +540,7 @@ secret routine os_launch_fn(entry: Callable[(Addr,), None], arg: Addr, state: Ad
     local handle: @Addr <- .hollow()
     result: CInt = c_pthread_create(handle, .hollow(), posix_thread_main.to[Callable](), start)
     if result != 0
-        deallocate(data: start, alloc: HEAP)
+        deallocate(data: start, manager: HEAP)
         return false
     c_pthread_detach(handle.peek())
     return true
@@ -615,7 +615,7 @@ secret routine os_launch_fn(entry: Callable[(Addr,), None], arg: Addr, state: Ad
     handle: Addr = c_create_thread(.hollow(), 0, windows_thread_main.to[Callable](), start, 0,
         .hollow())
     if handle.is_hollow()
-        deallocate(data: start, alloc: HEAP)
+        deallocate(data: start, manager: HEAP)
         return false
     c_close_handle(handle)
     return true

@@ -559,16 +559,16 @@ secret routine wide_length(units: @U16) -> U64
     then
         return i
 
-### count UTF-16 units as UTF-8, in memory from alloc.
+### count UTF-16 units as UTF-8, in memory from manager.
 ### :param units: The first unit.
 ### :param count: How many units.
-### :param alloc: The allocator for the text.
+### :param manager: The memory manager for the text.
 ### :returns: The UTF-8 text.
-### :throws: Throws `MemoryAllocationError` when `alloc` fails.
+### :throws: Throws `MemoryAllocationError` when `manager` fails.
 @target(os: "windows")
-secret failable routine owned_wide(units: @U16, count: U64, alloc: @MemoryManager) -> Memory[Byte]
+secret failable routine owned_wide(units: @U16, count: U64, manager: @MemoryManager) -> Memory[Byte]
     room: U64 = (count * 3).max(1)
-    when check Memory[Byte].construct(count: room, manager: alloc)
+    when check Memory[Byte].construct(count: room, manager: manager)
         is Memory[Byte] as buffer =>
             n: U64 = narrow(units, count, out: buffer.data.peek())
             buffer.keep_first(n)
@@ -1199,16 +1199,16 @@ routine @DirIter.close() -> None
 
 # -- the working directory and well-known directories -------------------------------------
 
-### The working directory, in memory from alloc.
-### :param alloc: The allocator for the text.
+### The working directory, in memory from manager.
+### :param manager: The memory manager for the text.
 ### :returns: The path.
-### :throws: Throws the reason when the OS can't report it, `MemoryAllocationError` when `alloc` fails.
+### :throws: Throws the reason when the OS can't report it, `MemoryAllocationError` when `manager` fails.
 @target(os: "windows")
-secret failable routine current_dir(alloc: @MemoryManager) -> Memory[Byte]
+secret failable routine current_dir(manager: @MemoryManager) -> Memory[Byte]
     need: U32 = c_get_current_directory(0, .hollow())
     if need == 0
         throw last_error()
-    when check Memory[U16].construct(count: need.to[U64](), manager: alloc)
+    when check Memory[U16].construct(count: need.to[U64](), manager: manager)
         is Memory[U16] as units =>
             need2: U32 = units.count().to[U32]()
             data: @U16 = units.data.peek()
@@ -1217,7 +1217,7 @@ secret failable routine current_dir(alloc: @MemoryManager) -> Memory[Byte]
                 error: FsError = last_error()
                 drop units
                 throw error
-            when check owned_wide(units: data, count: got.to[U64](), alloc)
+            when check owned_wide(units: data, count: got.to[U64](), manager)
                 is Memory[Byte] as text =>
                     drop units
                     return text
@@ -1227,17 +1227,17 @@ secret failable routine current_dir(alloc: @MemoryManager) -> Memory[Byte]
         is MemoryAllocationError as error => throw error
 
 ### The temporary directory without its trailing separator (C:\Windows\Temp when it can't be told), in memory from
-### alloc.
-### :param alloc: The allocator for the text.
+### manager.
+### :param manager: The memory manager for the text.
 ### :returns: The path.
-### :throws: Throws `MemoryAllocationError` when `alloc` fails.
+### :throws: Throws `MemoryAllocationError` when `manager` fails.
 @target(os: "windows")
-secret failable routine temp_dir(alloc: @MemoryManager) -> Memory[Byte]
+secret failable routine temp_dir(manager: @MemoryManager) -> Memory[Byte]
     local units: @Array[U16, PATH_CAPACITY] <- .hollow()
 
     got: U32 = c_get_temp_path(PATH_CAPACITY.to[U32](), units.to[@U16]())
     if got == 0 or got.to[U64]() >= PATH_CAPACITY
-        when check Memory[Byte].construct(count: 15, manager: alloc)
+        when check Memory[Byte].construct(count: 15, manager: manager)
             is Memory[Byte] as buffer =>
                 buffer.data.peek().copy(src: "C:\\Windows\\Temp", count: 15)
                 return buffer
@@ -1246,44 +1246,44 @@ secret failable routine temp_dir(alloc: @MemoryManager) -> Memory[Byte]
     trimmed: U64 = (got - 1).to[U64]()
     last: U16 = path_units.stride(trimmed).peek()
     if last == 0x5C or last == 0x2F
-        when check owned_wide(units: units.to[@U16](), count: trimmed, alloc)
+        when check owned_wide(units: units.to[@U16](), count: trimmed, manager)
             is Memory[Byte] as returned => return returned
-    when check owned_wide(units: units.to[@U16](), count: got.to[U64](), alloc)
+    when check owned_wide(units: units.to[@U16](), count: got.to[U64](), manager)
         is Memory[Byte] as returned => return returned
 
-### The environment variable name, as UTF-8 in memory from alloc, when it is set and not empty.
+### The environment variable name, as UTF-8 in memory from manager, when it is set and not empty.
 ### :param name: The variable's 0-terminated UTF-16 name.
-### :param alloc: The allocator for the text.
+### :param manager: The memory manager for the text.
 ### :returns: The value.
-### :absent: When the variable is not set, is empty, takes `PATH_CAPACITY` units or more, or `alloc` fails.
+### :absent: When the variable is not set, is empty, takes `PATH_CAPACITY` units or more, or `manager` fails.
 @target(os: "windows")
-secret routine env_dir(name: CWStrView, alloc: @MemoryManager) -> Maybe[Memory[Byte]]
+secret routine env_dir(name: CWStrView, manager: @MemoryManager) -> Maybe[Memory[Byte]]
     local units: @Array[U16, PATH_CAPACITY] <- .hollow()
 
     got: U32 = c_get_environment_variable(name.to[@CWChar](), units.to[@U16](),
         PATH_CAPACITY.to[U32]())
     if got == 0 or got.to[U64]() >= PATH_CAPACITY
         return None()
-    when check owned_wide(units: units.to[@U16](), count: got.to[U64](), alloc)
+    when check owned_wide(units: units.to[@U16](), count: got.to[U64](), manager)
         is Memory[Byte] as t => return t
         is FsError => return None()
 
-### USERPROFILE, or HOMEDRIVE and HOMEPATH, in memory from alloc. NotFound when neither is set.
-### :param alloc: The allocator for the text.
+### USERPROFILE, or HOMEDRIVE and HOMEPATH, in memory from manager. NotFound when neither is set.
+### :param manager: The memory manager for the text.
 ### :returns: The path.
-### :throws: Throws `NotFoundError` when neither is set, or when `alloc` fails for a variable's value. Crashes
-###     with `MemoryAllocationError` when `alloc` fails joining HOMEDRIVE and HOMEPATH.
+### :throws: Throws `NotFoundError` when neither is set, or when `manager` fails for a variable's value. Crashes
+###     with `MemoryAllocationError` when `manager` fails joining HOMEDRIVE and HOMEPATH.
 @target(os: "windows")
-secret failable routine home_dir(alloc: @MemoryManager) -> Memory[Byte]
-    when env_dir(name: "USERPROFILE", alloc)
+secret failable routine home_dir(manager: @MemoryManager) -> Memory[Byte]
+    when env_dir(name: "USERPROFILE", manager)
         is Memory[Byte] as dir => return dir
         is None => pass
-    when env_dir(name: "HOMEDRIVE", alloc)
+    when env_dir(name: "HOMEDRIVE", manager)
         is Memory[Byte] as drive =>
-            when env_dir(name: "HOMEPATH", alloc)
+            when env_dir(name: "HOMEPATH", manager)
                 is Memory[Byte] as path =>
                     local joined: @Memory[Byte] <- @[Byte].concat(a: drive.getview(),
-                        b: path.getview(), alloc)
+                        b: path.getview(), manager)
                     drop drive
                     drop path
                     return joined
@@ -1295,12 +1295,12 @@ secret failable routine home_dir(alloc: @MemoryManager) -> Memory[Byte]
 ### path made absolute by the text: the working directory in front of a relative path, and "." and ".." taken out
 ### (GetFullPathNameW), nothing looked up.
 ### :param path: The path to make absolute.
-### :param alloc: The allocator for the result.
+### :param manager: The memory manager for the result.
 ### :returns: The absolute path.
 ### :throws: Throws the reason, `NameTooLongError` when the result doesn't fit, `MemoryAllocationError` when
-###     `alloc` fails, `InvalidPathError` or `NameTooLongError` when `path` doesn't fit a C path.
+###     `manager` fails, `InvalidPathError` or `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: "windows")
-secret failable routine absolute_path(path: @[Byte], alloc: @MemoryManager) -> Memory[Byte]
+secret failable routine absolute_path(path: @[Byte], manager: @MemoryManager) -> Memory[Byte]
     local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
 
     if not wide_path(path, out: wpath.to[@U16]())
@@ -1312,18 +1312,18 @@ secret failable routine absolute_path(path: @[Byte], alloc: @MemoryManager) -> M
         throw last_error()
     if got.to[U64]() >= PATH_CAPACITY
         throw NameTooLongError()
-    when check owned_wide(units: full.to[@U16](), count: got.to[U64](), alloc)
+    when check owned_wide(units: full.to[@U16](), count: got.to[U64](), manager)
         is Memory[Byte] as returned => return returned
 
 ### The absolute path with every link, ".", and ".." resolved, and path must exist. The "\\?\" prefix the OS gives is
 ### taken off ("\\?\UNC\server\share" becomes "\\server\share").
 ### :param path: The path to resolve.
-### :param alloc: The allocator for the result.
+### :param manager: The memory manager for the result.
 ### :returns: The resolved path.
-### :throws: Throws the reason, such as `NotFoundError`, `MemoryAllocationError` when `alloc` fails, `InvalidPathError`
+### :throws: Throws the reason, such as `NotFoundError`, `MemoryAllocationError` when `manager` fails, `InvalidPathError`
 ###     or `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: "windows")
-secret failable routine canonical_path(path: @[Byte], alloc: @MemoryManager) -> Memory[Byte]
+secret failable routine canonical_path(path: @[Byte], manager: @MemoryManager) -> Memory[Byte]
     local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
 
     if not wide_path(path, out: wpath.to[@U16]())
@@ -1340,7 +1340,7 @@ secret failable routine canonical_path(path: @[Byte], alloc: @MemoryManager) -> 
         throw error_of(e)
     if got.to[U64]() >= PATH_CAPACITY
         throw NameTooLongError()
-    when check owned_wide(units: full.to[@U16](), count: got.to[U64](), alloc)
+    when check owned_wide(units: full.to[@U16](), count: got.to[U64](), manager)
         is Memory[Byte] as t =>
             unc: Bool = t.getview().has_prefix("\\\\?\\UNC\\")
             if not unc and not t.getview().has_prefix("\\\\?\\")

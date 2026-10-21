@@ -2,7 +2,7 @@
 #
 # Order-statistic B-tree map with a fixed node key capacity of SORTED_DICT_NODE_KEYS.
 # Nodes store keys/values/children inline with fixed arrays.
-# The allocator is stored in SortedDict. Node helpers still receive it as a parameter.
+# The memory manager is stored in SortedDict. Node helpers still receive it as a parameter.
 
 module Standard/Collections
 
@@ -34,7 +34,7 @@ needs TKey: typename, TValue: typename, Comparable[TKey]
 obeys KeyFindable[SortedDict[TKey, TValue], TKey, TValue]
     root: @SortedDictNode[TKey, TValue]
     count: U64
-    alloc: @MemoryManager
+    manager: @MemoryManager
 
 ### Where an entry lives: its node and its index there.
 secret record SortedDictSpot[TKey, TValue]
@@ -61,12 +61,12 @@ secret routine @SortedDictSpot[TKey, TValue].destruct() -> None
 needs TKey: typename, TValue: typename, Comparable[TKey]
     return
 
-### Creates an empty SortedDict that draws its storage from `alloc`. Nothing is allocated until the first insertion.
-### :param alloc: The allocator the dict stores and later frees its memory with.
+### Creates an empty SortedDict that draws its storage from `manager`. Nothing is allocated until the first insertion.
+### :param manager: The memory manager the dict stores and later frees its memory with.
 ### :returns: A new empty SortedDict.
-common routine SortedDict[TKey, TValue].construct(alloc: @MemoryManager) -> Me
+common routine SortedDict[TKey, TValue].construct(manager: @MemoryManager) -> Me
 needs TKey: typename, TValue: typename
-    return Me(root: .hollow(), count: 0, alloc: alloc)
+    return Me(root: .hollow(), count: 0, manager: manager)
 
 ### The number of entries currently stored.
 ### :returns: The count of entries, `0` when the dict is empty.
@@ -82,13 +82,13 @@ needs TKey: typename, TValue: typename
     count: U64 = me.count.peek()
     return count == 0
 
-### A new empty node from `alloc`.
+### A new empty node from `manager`.
 ### :param leaf: Whether the node is a leaf.
-### :param alloc: The allocator to take the node from.
-### :returns: The node, or null when the allocator fails.
-common routine SortedDictNode[TKey, TValue].construct(leaf: Bool, alloc: @MemoryManager) -> @Me
+### :param manager: The memory manager to take the node from.
+### :returns: The node, or null when the memory manager fails.
+common routine SortedDictNode[TKey, TValue].construct(leaf: Bool, manager: @MemoryManager) -> @Me
 needs TKey: typename, TValue: typename
-    local node: @Me = allocate[Me](count: 1, alloc)
+    local node: @Me = allocate[Me](count: 1, manager)
 
     if node.is_hollow()
         return node
@@ -355,14 +355,14 @@ needs TKey: typename, TValue: typename
 ### Splits the full child at `index` around its middle: the middle entry moves up into this node and the upper half
 ### into a new right sibling.
 ### :param index: The index of the full child.
-### :param alloc: The allocator for the new node.
-### :returns: True when it split, false when the allocator failed (before anything moved).
+### :param manager: The memory manager for the new node.
+### :returns: True when it split, false when the memory manager failed (before anything moved).
 @reshaping
-routine @SortedDictNode[TKey, TValue].split_child(index: U64, alloc: @MemoryManager) -> Bool
+routine @SortedDictNode[TKey, TValue].split_child(index: U64, manager: @MemoryManager) -> Bool
 needs TKey: typename, TValue: typename
     local left: @Me = me.children[index]
     local leaf: Bool = left.leaf.peek()
-    local right: @Me = Me.construct(leaf, alloc)
+    local right: @Me = Me.construct(leaf, manager)
 
     if right.is_hollow()
         return false
@@ -422,12 +422,12 @@ needs TKey: typename, TValue: typename
 ### must not already be in the subtree (the caller replaces those first).
 ### :param key: The key to insert.
 ### :param value: The value to insert.
-### :param alloc: The allocator for nodes made by splits.
+### :param manager: The memory manager for nodes made by splits.
 ### :returns: True when it inserted, false when a split failed to allocate (the key and value end then). The tree then
 ###     holds the same entries, some nodes already split.
 @reshaping
 routine @SortedDictNode[TKey, TValue].insert_nonfull(key: TKey, value: TValue,
-    alloc: @MemoryManager) -> Bool
+    manager: @MemoryManager) -> Bool
 needs TKey: typename, TValue: typename
     local probe: @TKey <- steal key
 
@@ -448,7 +448,7 @@ needs TKey: typename, TValue: typename
     full: Bool = child_count == SORTED_DICT_NODE_KEYS
     values2: (U64, @Me) = when
         full =>
-            if not me.split_child(index: slot, alloc)
+            if not me.split_child(index: slot, manager)
                 drop probe
                 drop value
                 return false
@@ -460,7 +460,7 @@ needs TKey: typename, TValue: typename
             becomes (next_slot, me.children[next_slot])
         else => (slot, child)
     slot2, child2 = values2
-    if not child2.insert_nonfull(key: steal probe, value: steal value, alloc)
+    if not child2.insert_nonfull(key: steal probe, value: steal value, manager)
         return false
     me.recount()
     return true
@@ -484,9 +484,9 @@ needs TKey: typename, TValue: typename
             return
         is None => pass
     if root.is_hollow()
-        alloc: @MemoryManager = me.alloc.peek()
+        manager: @MemoryManager = me.manager.peek()
         first_node: @SortedDictNode[TKey, TValue] = SortedDictNode[TKey, TValue].construct(
-            leaf: true, alloc)
+            leaf: true, manager)
         if first_node.is_hollow()
             drop probe
             drop value
@@ -498,28 +498,28 @@ needs TKey: typename, TValue: typename
         me.root.poke(first_node)
         me.count.poke(1)
         return
-    alloc: @MemoryManager = me.alloc.peek()
+    manager: @MemoryManager = me.manager.peek()
     root_count: U64 = root.count.peek()
     full: Bool = root_count == SORTED_DICT_NODE_KEYS
     root_node: @SortedDictNode[TKey, TValue] = when
         full =>
             new_root: @SortedDictNode[TKey, TValue] = SortedDictNode[TKey, TValue].construct(
-                leaf: false, alloc)
+                leaf: false, manager)
             if new_root.is_hollow()
                 drop probe
                 drop value
                 throw MemoryAllocationError()
             new_root.children[0] = root
-            if new_root.split_child(index: 0, alloc)
+            if new_root.split_child(index: 0, manager)
                 me.root.poke(new_root)
                 becomes new_root
             else
-                deallocate[SortedDictNode[TKey, TValue]](data: new_root, alloc)
+                deallocate[SortedDictNode[TKey, TValue]](data: new_root, manager)
                 drop probe
                 drop value
                 throw MemoryAllocationError()
         else => root
-    if not root_node.insert_nonfull(key: steal probe, value: steal value, alloc)
+    if not root_node.insert_nonfull(key: steal probe, value: steal value, manager)
         throw MemoryAllocationError()
     next_count: U64 = me.count.peek() + 1
     next_count.poke_into(me.count)
@@ -602,8 +602,8 @@ needs TKey: typename, TValue: typename
 
 ### Merges child `i + 1` and the separating entry into child `i` and frees the emptied node, shrinking this node by one key.
 ### :param i: The index of the left child of the pair.
-### :param alloc: The allocator that frees the merged node.
-routine @SortedDictNode[TKey, TValue].merge_children(i: U64, alloc: @MemoryManager) -> None
+### :param manager: The memory manager that frees the merged node.
+routine @SortedDictNode[TKey, TValue].merge_children(i: U64, manager: @MemoryManager) -> None
 needs TKey: typename, TValue: typename
     local left: @Me = me.children[i]
     local right: @Me = me.children[i + 1]
@@ -624,17 +624,17 @@ needs TKey: typename, TValue: typename
     me.values.shift_left(start: i, end: parent_count)
     me.children.shift_left(start: i + 1, end: parent_count + 1)
     me.count.poke(parent_count - 1)
-    deallocate[Me](data: right, alloc)
+    deallocate[Me](data: right, manager)
     left.recount()
     me.recount()
     return
 
 ### Makes sure child `i` has at least `SORTED_DICT_NODE_MIN_KEYS` keys before a deletion descends into it, by borrowing from a sibling or merging with one.
 ### :param i: The index of the child about to be descended into.
-### :param alloc: The allocator that frees a merged node.
+### :param manager: The memory manager that frees a merged node.
 ### :returns: The index of the child to descend into, which differs from `i` when a merge with the left sibling happened.
 @track_caller
-routine @SortedDictNode[TKey, TValue].ensure_min(i: U64, alloc: @MemoryManager) -> U64
+routine @SortedDictNode[TKey, TValue].ensure_min(i: U64, manager: @MemoryManager) -> U64
 needs TKey: typename, TValue: typename
     child: @Me = me.children[i]
     child_count: U64 = child.count.peek()
@@ -658,20 +658,20 @@ needs TKey: typename, TValue: typename
             me.borrow_from_right(i)
             return i
         elseif not has_left2
-            me.merge_children(i, alloc)
+            me.merge_children(i, manager)
             return i
     elseif not has_left2
         crash_logic_breached()
     merged_at: U64 = i - 1
-    me.merge_children(i: merged_at, alloc)
+    me.merge_children(i: merged_at, manager)
     return merged_at
 
 ### Removes the entry with the largest key in this subtree, rebalancing children on the way down.
 ### :param out_value: Receives the removed entry's value.
-### :param alloc: The allocator used when nodes merge.
+### :param manager: The memory manager used when nodes merge.
 ### :returns: The removed largest key.
 routine @SortedDictNode[TKey, TValue].take_max_key(out_value: @TValue,
-    alloc: @MemoryManager) -> TKey
+    manager: @MemoryManager) -> TKey
 needs TKey: typename, TValue: typename
     if me.leaf.peek()
         count: U64 = me.count.peek()
@@ -680,35 +680,35 @@ needs TKey: typename, TValue: typename
         out_value.poke(me.remove_leaf_at(index))
         return steal key
     count: U64 = me.count.peek()
-    actual: U64 = me.ensure_min(i: count, alloc)
+    actual: U64 = me.ensure_min(i: count, manager)
     child: @Me = me.children[actual]
-    local key: @TKey <- child.take_max_key(out_value, alloc)
+    local key: @TKey <- child.take_max_key(out_value, manager)
     me.recount()
     return steal key
 
 ### Removes the entry with the smallest key in this subtree, rebalancing children on the way down.
 ### :param out_value: Receives the removed entry's value.
-### :param alloc: The allocator used when nodes merge.
+### :param manager: The memory manager used when nodes merge.
 ### :returns: The removed smallest key.
 routine @SortedDictNode[TKey, TValue].take_min_key(out_value: @TValue,
-    alloc: @MemoryManager) -> TKey
+    manager: @MemoryManager) -> TKey
 needs TKey: typename, TValue: typename
     if me.leaf.peek()
         local key: @TKey <- steal me.keys.getslot(0)
         out_value.poke(me.remove_leaf_at(0))
         return steal key
-    actual: U64 = me.ensure_min(i: 0, alloc)
+    actual: U64 = me.ensure_min(i: 0, manager)
     child: @Me = me.children[actual]
-    local key: @TKey <- child.take_min_key(out_value, alloc)
+    local key: @TKey <- child.take_min_key(out_value, manager)
     me.recount()
     return steal key
 
 ### Removes the entry for the key at `key` from this subtree and ends its key and value, rebalancing children on the
 ### way down so no node underflows.
 ### :param key: The key to remove, read through its place.
-### :param alloc: The allocator used when nodes merge.
+### :param manager: The memory manager used when nodes merge.
 ### :returns: `true` when the key was found and removed, `false` otherwise.
-routine @SortedDictNode[TKey, TValue].remove(key: @TKey, alloc: @MemoryManager) -> Bool
+routine @SortedDictNode[TKey, TValue].remove(key: @TKey, manager: @MemoryManager) -> Bool
 needs TKey: typename, TValue: typename
     local slot: U64 = me.find_index(key)
 
@@ -725,7 +725,7 @@ needs TKey: typename, TValue: typename
             if left_count >= SORTED_DICT_NODE_MIN_KEYS
                 local out: @TValue <- .hollow()
                 left2: @Me = me.children[slot]
-                local replacement: @TKey <- left2.take_max_key(out_value: out, alloc)
+                local replacement: @TKey <- left2.take_max_key(out_value: out, manager)
                 drop me.keys.getslot(slot)
                 drop me.values.getslot(slot)
                 me.keys.getslot(slot).poke(steal replacement)
@@ -737,23 +737,23 @@ needs TKey: typename, TValue: typename
             if right_count >= SORTED_DICT_NODE_MIN_KEYS
                 local out: @TValue <- .hollow()
                 right2: @Me = me.children[slot + 1]
-                local replacement: @TKey <- right2.take_min_key(out_value: out, alloc)
+                local replacement: @TKey <- right2.take_min_key(out_value: out, manager)
                 drop me.keys.getslot(slot)
                 drop me.values.getslot(slot)
                 me.keys.getslot(slot).poke(steal replacement)
                 me.values.getslot(slot).poke(steal out)
                 me.recount()
                 return true
-            me.merge_children(i: slot, alloc)
+            me.merge_children(i: slot, manager)
             merged: @Me = me.children[slot]
-            removed: Bool = merged.remove(key, alloc)
+            removed: Bool = merged.remove(key, manager)
             me.recount()
             return removed
     if me.leaf.peek()
         return false
-    actual: U64 = me.ensure_min(i: slot, alloc)
+    actual: U64 = me.ensure_min(i: slot, manager)
     child: @Me = me.children[actual]
-    removed: Bool = child.remove(key, alloc)
+    removed: Bool = child.remove(key, manager)
     me.recount()
     return removed
 
@@ -767,20 +767,18 @@ needs TKey: typename, TValue: typename
 
     if root.is_hollow()
         return false
-    alloc: @MemoryManager = me.alloc.peek()
-    if root.remove(key, alloc)
+    manager: @MemoryManager = me.manager.peek()
+    if root.remove(key, manager)
         remaining_count: U64 = me.count.peek() - 1
         remaining_count.poke_into(me.count)
         root_count: U64 = root.count.peek()
         if root_count == 0
             if root.leaf.peek()
-                alloc2: @MemoryManager = me.alloc.peek()
-                deallocate[SortedDictNode[TKey, TValue]](data: root, alloc: alloc2)
+                deallocate[SortedDictNode[TKey, TValue]](data: root, manager)
                 me.root.poke(.hollow())
                 return true
-            alloc2: @MemoryManager = me.alloc.peek()
             new_root: @SortedDictNode[TKey, TValue] = root.children[0]
-            deallocate[SortedDictNode[TKey, TValue]](data: root, alloc: alloc2)
+            deallocate[SortedDictNode[TKey, TValue]](data: root, manager)
             me.root.poke(new_root)
             return true
         return true
@@ -799,16 +797,16 @@ needs TKey: typename, TValue: typename
     drop probe
     return removed
 
-### Ends the keys and values of this node and every node below it (drop) and frees the nodes through `alloc`. An
+### Ends the keys and values of this node and every node below it (drop) and frees the nodes through `manager`. An
 ### internal node has `count` keys and `count + 1` children.
-### :param alloc: The allocator the nodes came from.
-routine @SortedDictNode[TKey, TValue].free_recursive(alloc: @MemoryManager) -> None
+### :param manager: The memory manager the nodes came from.
+routine @SortedDictNode[TKey, TValue].free_recursive(manager: @MemoryManager) -> None
 needs TKey: typename, TValue: typename
     each i in 0 til me.count.peek()
         drop me.keys.getslot(i)
         drop me.values.getslot(i)
     if me.leaf.peek()
-        deallocate[Me](data: me, alloc)
+        deallocate[Me](data: me, manager)
         return
     count: U64 = me.count.peek()
 
@@ -816,12 +814,12 @@ needs TKey: typename, TValue: typename
 
     each i in 0 til child_count
         child: @Me = me.children[i]
-        child.free_recursive(alloc)
+        child.free_recursive(manager)
     then
-        deallocate[Me](data: me, alloc)
+        deallocate[Me](data: me, manager)
         return
 
-### Ends every key and value (drop), frees the dict's memory through its allocator, and resets it to the empty state, so it can be reused or destructed again.
+### Ends every key and value (drop), frees the dict's memory through its memory manager, and resets it to the empty state, so it can be reused or destructed again.
 ### :note: Safe to call on a never-filled instance, where it only resets the fields.
 @track_caller
 routine @SortedDict[TKey, TValue].destruct() -> None
@@ -829,8 +827,8 @@ needs TKey: typename, TValue: typename
     local root: @SortedDictNode[TKey, TValue] = me.root.peek()
 
     if not root.is_hollow()
-        alloc: @MemoryManager = me.alloc.peek()
-        root.free_recursive(alloc)
+        manager: @MemoryManager = me.manager.peek()
+        root.free_recursive(manager)
     me.root.poke(.hollow())
     me.count.poke(0)
     return

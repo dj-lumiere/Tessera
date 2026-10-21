@@ -45,10 +45,10 @@ record WorkSlot
     state: U32
     ### Runs the work in `work`: calls its routine with its arguments and stores the result in front.
     runner: Callable[(Addr,), None]
-    ### The block of the work, from `alloc`, or null.
+    ### The block of the work, from `manager`, or null.
     work: Addr
-    ### Where the work's blocks come from: the manager's allocator.
-    alloc: @MemoryManager
+    ### The memory manager the work's blocks come from: the thread or fiber manager's.
+    manager: @MemoryManager
     ### 1 once `cancel()` asked the work to stop.
     cancel: U32
     ### Guards `waiter`.
@@ -75,7 +75,7 @@ needs TWriter: typename, Writer[TWriter]
 ### :param state: Its `state`.
 ### :param runner: Its `runner`.
 ### :param work: Its `work`.
-### :param alloc: Its `alloc`.
+### :param manager: Its `manager`.
 ### :param cancel: Its `cancel`.
 ### :param lock: Its `lock`.
 ### :param waiter: Its `waiter`.
@@ -83,15 +83,15 @@ needs TWriter: typename, Writer[TWriter]
 ### :param issued: Its `issued`.
 ### :returns: The new value.
 common routine WorkSlot.construct(state: U32, runner: Callable[(Addr,), None], work: Addr,
-    alloc: @MemoryManager, cancel: U32, lock: ExclusiveAccess, waiter: Waiter, blocked: Waiter,
+    manager: @MemoryManager, cancel: U32, lock: ExclusiveAccess, waiter: Waiter, blocked: Waiter,
     issued: U64) -> Me
-    return Me(state, runner, work, alloc, cancel, lock, waiter, blocked, issued)
+    return Me(state, runner, work, manager, cancel, lock, waiter, blocked, issued)
 
-### An empty slot whose work blocks come from `alloc`.
-### :param alloc: Where the work's blocks come from.
+### An empty slot whose work blocks come from `manager`.
+### :param manager: Where the work's blocks come from.
 ### :returns: The slot.
-common routine WorkSlot.construct(alloc: @MemoryManager) -> Me
-    return Me(state: TICKET_EMPTY, runner: no_work.to[Callable](), work: .hollow(), alloc,
+common routine WorkSlot.construct(manager: @MemoryManager) -> Me
+    return Me(state: TICKET_EMPTY, runner: no_work.to[Callable](), work: .hollow(), manager,
         cancel: 0, lock: .construct(), waiter: .hollow(), blocked: .hollow(), issued: 0)
 
 ### Gives back the block of the last work.
@@ -135,7 +135,7 @@ routine @WorkSlot.check_free() -> None
 
 ### Starts the work in `work`, run by `runner`, in place of the last one, whose block goes back.
 ### :param runner: Runs the work.
-### :param work: Its block, from the slot's allocator.
+### :param work: Its block, from the slot's memory manager.
 ### :throws: Crashes with `TicketBusyError` while the last work runs.
 @track_caller
 routine @WorkSlot.put(runner: Callable[(Addr,), None], work: Addr) -> None
@@ -154,7 +154,7 @@ routine @WorkSlot.free_work() -> None
     work: Addr = me.work.peek()
     if work.is_hollow()
         return
-    deallocate(data: work.to[@Byte](), alloc: me.alloc.peek())
+    deallocate(data: work.to[@Byte](), manager: me.manager.peek())
     me.work.poke(.hollow())
     return
 
@@ -392,16 +392,16 @@ needs T: typename
     work.result.poke(value)
     return
 
-### The block for `entry` and its arguments, from `alloc`, and its runner: what a ticket's `put_work` hands over.
+### The block for `entry` and its arguments, from `manager`, and its runner: what a ticket's `put_work` hands over.
 ### :param entry: The routine.
-### :param alloc: Where the block comes from.
+### :param manager: Where the block comes from.
 ### :returns: The runner and the block.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the block.
+### :throws: Crashes with `MemoryAllocationError` when `manager` can't give the block.
 @track_caller
 routine make_work0[T](entry: Callable[(), T],
-    alloc: @MemoryManager) -> (Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr,), None], Addr)
 needs T: typename
-    work: @Work0[T] = allocate[Work0[T]](count: 1, alloc)
+    work: @Work0[T] = allocate[Work0[T]](count: 1, manager)
     if work.is_hollow()
         crash_allocation()
     work.entry.poke(entry)
@@ -433,17 +433,17 @@ needs T: typename, A: typename
     work.result.poke(value)
     return
 
-### The block for `entry` and its arguments, from `alloc`, and its runner: what a ticket's `put_work` hands over.
+### The block for `entry` and its arguments, from `manager`, and its runner: what a ticket's `put_work` hands over.
 ### :param entry: The routine.
 ### :param args: Its arguments.
-### :param alloc: Where the block comes from.
+### :param manager: Where the block comes from.
 ### :returns: The runner and the block.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the block.
+### :throws: Crashes with `MemoryAllocationError` when `manager` can't give the block.
 @track_caller
 routine make_work1[T, A](entry: Callable[(A,), T], args: A,
-    alloc: @MemoryManager) -> (Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr,), None], Addr)
 needs T: typename, A: typename
-    work: @Work1[T, A] = allocate[Work1[T, A]](count: 1, alloc)
+    work: @Work1[T, A] = allocate[Work1[T, A]](count: 1, manager)
     if work.is_hollow()
         crash_allocation()
     work.entry.poke(entry)
@@ -478,17 +478,17 @@ needs T: typename, A: typename, B: typename
     work.result.poke(value)
     return
 
-### The block for `entry` and its arguments, from `alloc`, and its runner: what a ticket's `put_work` hands over.
+### The block for `entry` and its arguments, from `manager`, and its runner: what a ticket's `put_work` hands over.
 ### :param entry: The routine.
 ### :param args: Its arguments.
-### :param alloc: Where the block comes from.
+### :param manager: Where the block comes from.
 ### :returns: The runner and the block.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the block.
+### :throws: Crashes with `MemoryAllocationError` when `manager` can't give the block.
 @track_caller
 routine make_work2[T, A, B](entry: Callable[(A, B), T], args: (A, B),
-    alloc: @MemoryManager) -> (Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr,), None], Addr)
 needs T: typename, A: typename, B: typename
-    work: @Work2[T, A, B] = allocate[Work2[T, A, B]](count: 1, alloc)
+    work: @Work2[T, A, B] = allocate[Work2[T, A, B]](count: 1, manager)
     if work.is_hollow()
         crash_allocation()
     work.entry.poke(entry)
@@ -525,17 +525,17 @@ needs T: typename, A: typename, B: typename, C: typename
     work.result.poke(value)
     return
 
-### The block for `entry` and its arguments, from `alloc`, and its runner: what a ticket's `put_work` hands over.
+### The block for `entry` and its arguments, from `manager`, and its runner: what a ticket's `put_work` hands over.
 ### :param entry: The routine.
 ### :param args: Its arguments.
-### :param alloc: Where the block comes from.
+### :param manager: Where the block comes from.
 ### :returns: The runner and the block.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the block.
+### :throws: Crashes with `MemoryAllocationError` when `manager` can't give the block.
 @track_caller
 routine make_work3[T, A, B, C](entry: Callable[(A, B, C), T], args: (A, B, C),
-    alloc: @MemoryManager) -> (Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr,), None], Addr)
 needs T: typename, A: typename, B: typename, C: typename
-    work: @Work3[T, A, B, C] = allocate[Work3[T, A, B, C]](count: 1, alloc)
+    work: @Work3[T, A, B, C] = allocate[Work3[T, A, B, C]](count: 1, manager)
     if work.is_hollow()
         crash_allocation()
     work.entry.poke(entry)
@@ -575,17 +575,17 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
     work.result.poke(value)
     return
 
-### The block for `entry` and its arguments, from `alloc`, and its runner: what a ticket's `put_work` hands over.
+### The block for `entry` and its arguments, from `manager`, and its runner: what a ticket's `put_work` hands over.
 ### :param entry: The routine.
 ### :param args: Its arguments.
-### :param alloc: Where the block comes from.
+### :param manager: Where the block comes from.
 ### :returns: The runner and the block.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the block.
+### :throws: Crashes with `MemoryAllocationError` when `manager` can't give the block.
 @track_caller
 routine make_work4[T, A, B, C, D](entry: Callable[(A, B, C, D), T], args: (A, B, C, D),
-    alloc: @MemoryManager) -> (Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr,), None], Addr)
 needs T: typename, A: typename, B: typename, C: typename, D: typename
-    work: @Work4[T, A, B, C, D] = allocate[Work4[T, A, B, C, D]](count: 1, alloc)
+    work: @Work4[T, A, B, C, D] = allocate[Work4[T, A, B, C, D]](count: 1, manager)
     if work.is_hollow()
         crash_allocation()
     work.entry.poke(entry)
@@ -605,15 +605,15 @@ secret routine run_voidwork0(raw: Addr) -> None
     entry.call()
     return
 
-### The block for `entry` and its arguments, from `alloc`, and its runner: what a ticket's `put_work` hands over.
+### The block for `entry` and its arguments, from `manager`, and its runner: what a ticket's `put_work` hands over.
 ### :param entry: The routine.
-### :param alloc: Where the block comes from.
+### :param manager: Where the block comes from.
 ### :returns: The runner and the block.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the block.
+### :throws: Crashes with `MemoryAllocationError` when `manager` can't give the block.
 @track_caller
 routine make_voidwork0(entry: Callable[(), None],
-    alloc: @MemoryManager) -> (Callable[(Addr,), None], Addr)
-    work: @VoidWork0 = allocate[VoidWork0](count: 1, alloc)
+    manager: @MemoryManager) -> (Callable[(Addr,), None], Addr)
+    work: @VoidWork0 = allocate[VoidWork0](count: 1, manager)
     if work.is_hollow()
         crash_allocation()
     work.entry.poke(entry)
@@ -643,17 +643,17 @@ needs A: typename
     entry.call(work.first.peek())
     return
 
-### The block for `entry` and its arguments, from `alloc`, and its runner: what a ticket's `put_work` hands over.
+### The block for `entry` and its arguments, from `manager`, and its runner: what a ticket's `put_work` hands over.
 ### :param entry: The routine.
 ### :param args: Its arguments.
-### :param alloc: Where the block comes from.
+### :param manager: Where the block comes from.
 ### :returns: The runner and the block.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the block.
+### :throws: Crashes with `MemoryAllocationError` when `manager` can't give the block.
 @track_caller
 routine make_voidwork1[A](entry: Callable[(A,), None], args: A,
-    alloc: @MemoryManager) -> (Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr,), None], Addr)
 needs A: typename
-    work: @VoidWork1[A] = allocate[VoidWork1[A]](count: 1, alloc)
+    work: @VoidWork1[A] = allocate[VoidWork1[A]](count: 1, manager)
     if work.is_hollow()
         crash_allocation()
     work.entry.poke(entry)
@@ -685,17 +685,17 @@ needs A: typename, B: typename
     entry.call(work.first.peek(), work.second.peek())
     return
 
-### The block for `entry` and its arguments, from `alloc`, and its runner: what a ticket's `put_work` hands over.
+### The block for `entry` and its arguments, from `manager`, and its runner: what a ticket's `put_work` hands over.
 ### :param entry: The routine.
 ### :param args: Its arguments.
-### :param alloc: Where the block comes from.
+### :param manager: Where the block comes from.
 ### :returns: The runner and the block.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the block.
+### :throws: Crashes with `MemoryAllocationError` when `manager` can't give the block.
 @track_caller
 routine make_voidwork2[A, B](entry: Callable[(A, B), None], args: (A, B),
-    alloc: @MemoryManager) -> (Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr,), None], Addr)
 needs A: typename, B: typename
-    work: @VoidWork2[A, B] = allocate[VoidWork2[A, B]](count: 1, alloc)
+    work: @VoidWork2[A, B] = allocate[VoidWork2[A, B]](count: 1, manager)
     if work.is_hollow()
         crash_allocation()
     work.entry.poke(entry)
@@ -730,17 +730,17 @@ needs A: typename, B: typename, C: typename
     entry.call(work.first.peek(), work.second.peek(), work.third.peek())
     return
 
-### The block for `entry` and its arguments, from `alloc`, and its runner: what a ticket's `put_work` hands over.
+### The block for `entry` and its arguments, from `manager`, and its runner: what a ticket's `put_work` hands over.
 ### :param entry: The routine.
 ### :param args: Its arguments.
-### :param alloc: Where the block comes from.
+### :param manager: Where the block comes from.
 ### :returns: The runner and the block.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the block.
+### :throws: Crashes with `MemoryAllocationError` when `manager` can't give the block.
 @track_caller
 routine make_voidwork3[A, B, C](entry: Callable[(A, B, C), None], args: (A, B, C),
-    alloc: @MemoryManager) -> (Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr,), None], Addr)
 needs A: typename, B: typename, C: typename
-    work: @VoidWork3[A, B, C] = allocate[VoidWork3[A, B, C]](count: 1, alloc)
+    work: @VoidWork3[A, B, C] = allocate[VoidWork3[A, B, C]](count: 1, manager)
     if work.is_hollow()
         crash_allocation()
     work.entry.poke(entry)
@@ -777,17 +777,17 @@ needs A: typename, B: typename, C: typename, D: typename
     entry.call(work.first.peek(), work.second.peek(), work.third.peek(), work.fourth.peek())
     return
 
-### The block for `entry` and its arguments, from `alloc`, and its runner: what a ticket's `put_work` hands over.
+### The block for `entry` and its arguments, from `manager`, and its runner: what a ticket's `put_work` hands over.
 ### :param entry: The routine.
 ### :param args: Its arguments.
-### :param alloc: Where the block comes from.
+### :param manager: Where the block comes from.
 ### :returns: The runner and the block.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the block.
+### :throws: Crashes with `MemoryAllocationError` when `manager` can't give the block.
 @track_caller
 routine make_voidwork4[A, B, C, D](entry: Callable[(A, B, C, D), None], args: (A, B, C, D),
-    alloc: @MemoryManager) -> (Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr,), None], Addr)
 needs A: typename, B: typename, C: typename, D: typename
-    work: @VoidWork4[A, B, C, D] = allocate[VoidWork4[A, B, C, D]](count: 1, alloc)
+    work: @VoidWork4[A, B, C, D] = allocate[VoidWork4[A, B, C, D]](count: 1, manager)
     if work.is_hollow()
         crash_allocation()
     work.entry.poke(entry)

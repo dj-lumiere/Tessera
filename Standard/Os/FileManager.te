@@ -19,7 +19,7 @@
 # Nothing makes a file on the side. Opening for writing or appending, writing, and mapping need a file that is there
 # (NotFoundError when it isn't), and make_file is the one way to make one:
 #
-#     local log: @File <- dir.file(name: "log.txt", alloc)
+#     local log: @File <- dir.file(name: "log.txt", manager)
 #     OsFileManager.make_file(at: log, replacing: false)
 #     local h: @FileHandle <- OsFileManager.open_write(at: log)
 #     h.write("total = {total}\n")
@@ -33,7 +33,7 @@ module Standard/Os
 
 ### The operating system's file manager: making, opening, reading, writing, mapping, deleting, renaming, moving,
 ### copying, asking about, setting, and listing files and directories, on every partition the OS has mounted. Its
-### routines are called on the type (`OsFileManager.read_all(at: notes, alloc)`).
+### routines are called on the type (`OsFileManager.read_all(at: notes, manager)`).
 record OsFileManager
 obeys FileManager[OsFileManager]
 
@@ -47,11 +47,11 @@ needs T: typename
     ### :param replacing: Whether a file already there is emptied (else it is `AlreadyExistsError`).
     failable common routine Me.make_file(at: @File, replacing: Bool) -> None
 
-    ### The whole file, in memory from alloc.
+    ### The whole file, in memory from manager.
     ### :param at: The file to read.
-    ### :param alloc: The allocator for the bytes.
+    ### :param manager: The memory manager for the bytes.
     ### :returns: The bytes.
-    failable common routine Me.read_all(at: @File, alloc: @MemoryManager) -> Memory[Byte]
+    failable common routine Me.read_all(at: @File, manager: @MemoryManager) -> Memory[Byte]
 
     ### Writes data as the whole content of the file, which must exist.
     ### :param at: The file to write.
@@ -105,14 +105,14 @@ failable common routine OsFileManager.make_directory(at: @Directory, parents: Bo
 
 # -- reading and writing -----------------------------------------------------------------
 
-### The whole file, in memory from alloc (drop it).
+### The whole file, in memory from manager (drop it).
 ### :param at: The file to read.
-### :param alloc: The allocator for the bytes.
-### :returns: The file's bytes, or throws the {FsError} the OS reported, `MemoryAllocationError` when `alloc` fails or the file is too
+### :param manager: The memory manager for the bytes.
+### :returns: The file's bytes, or throws the {FsError} the OS reported, `MemoryAllocationError` when `manager` fails or the file is too
 ###     large for the address space (4 GiB or more on a 32-bit target).
 @expensive("asks the operating system")
-failable common routine OsFileManager.read_all(at: @File, alloc: @MemoryManager) -> Memory[Byte]
-    when check read_file(path: at.path.peek(), alloc)
+failable common routine OsFileManager.read_all(at: @File, manager: @MemoryManager) -> Memory[Byte]
+    when check read_file(path: at.path.peek(), manager)
         is Memory[Byte] as returned => return returned
 
 ### Writes data as the whole content of the file, which must exist. What it held before is gone.
@@ -190,10 +190,10 @@ failable common routine OsFileManager.delete(at: @Directory) -> None
 
 ### Deletes the directory and everything in it. A link inside is deleted, not followed.
 ### :param at: The directory to delete.
-### :param alloc: The allocator for the child paths.
+### :param manager: The memory manager for the child paths.
 @expensive("asks the operating system")
-failable common routine OsFileManager.delete_all(at: @Directory, alloc: @MemoryManager) -> None
-    when check remove_dir_all(path: at.path.peek(), alloc)
+failable common routine OsFileManager.delete_all(at: @Directory, manager: @MemoryManager) -> None
+    when check remove_dir_all(path: at.path.peek(), manager)
         is None => return
 
 ### Changes the file's name, keeping it in its directory: the one routine that renames. A name with a separator in
@@ -224,12 +224,12 @@ failable common routine OsFileManager.rename(at: @Directory, to: @[Byte], replac
 ### :param at: The file to move.
 ### :param into: The directory it goes into.
 ### :param replacing: Whether a file of the same name in `into` is replaced. When false, one there fails the move.
-### :param alloc: The allocator for the new path.
+### :param manager: The memory manager for the new path.
 ###     whole but deleting the original failed, so both are there. A copy that fails deletes nothing.
 @expensive("asks the operating system")
 failable common routine OsFileManager.move(at: @File, into: @Directory, replacing: Bool,
-    alloc: @MemoryManager) -> None
-    when check move_into(path: at.path.peek(), into: into.path.peek(), replacing, alloc)
+    manager: @MemoryManager) -> None
+    when check move_into(path: at.path.peek(), into: into.path.peek(), replacing, manager)
         is None => return
 
 ### Puts the directory, with everything in it, into another directory, keeping its name, as for a file. On two
@@ -238,11 +238,11 @@ failable common routine OsFileManager.move(at: @File, into: @Directory, replacin
 ### :param into: The directory it goes into.
 ### :param replacing: Whether an empty directory of the same name in `into` is replaced. When false, anything there
 ###     fails the move.
-### :param alloc: The allocator for the new paths.
+### :param manager: The memory manager for the new paths.
 @expensive("asks the operating system")
 failable common routine OsFileManager.move(at: @Directory, into: @Directory, replacing: Bool,
-    alloc: @MemoryManager) -> None
-    when check move_into(path: at.path.peek(), into: into.path.peek(), replacing, alloc)
+    manager: @MemoryManager) -> None
+    when check move_into(path: at.path.peek(), into: into.path.peek(), replacing, manager)
         is None => return
 
 ### Copies the bytes (and on Linux and macOS the permissions) of the file. On Linux and macOS a copy that fails once
@@ -374,67 +374,68 @@ failable common routine OsFileManager.list(at: @Directory, iter: @DirIter) -> No
 # -- paths -------------------------------------------------------------------------------
 
 ### The file's path made absolute by its text: the working directory in front of a relative one (on Windows "." and
-### ".." taken out too), nothing else looked up. The new path is in memory from alloc: drop the File.
+### ".." taken out too), nothing else looked up. The new path is in memory from manager: drop the File.
 ### :param at: The file whose path is used.
-### :param alloc: The allocator for the new path.
+### :param manager: The memory manager for the new path.
 ### :returns: The absolute {File}, or throws the {FsError} the OS reported.
 @expensive("asks the operating system")
-failable common routine OsFileManager.absolute(at: @File, alloc: @MemoryManager) -> File
-    when check absolute_path(path: at.path.peek(), alloc)
+failable common routine OsFileManager.absolute(at: @File, manager: @MemoryManager) -> File
+    when check absolute_path(path: at.path.peek(), manager)
         is Memory[Byte] as p => return File.construct(path: steal p)
         is FsError as error => throw error
 
-### The directory's path made absolute by its text, as for a file. The new path is in memory from alloc: drop the
+### The directory's path made absolute by its text, as for a file. The new path is in memory from manager: drop the
 ### Directory.
 ### :param at: The directory whose path is used.
-### :param alloc: The allocator for the new path.
+### :param manager: The memory manager for the new path.
 ### :returns: The absolute {Directory}, or throws the {FsError} the OS reported.
 @expensive("asks the operating system")
-failable common routine OsFileManager.absolute(at: @Directory, alloc: @MemoryManager) -> Directory
-    when check absolute_path(path: at.path.peek(), alloc)
+failable common routine OsFileManager.absolute(at: @Directory, manager: @MemoryManager) -> Directory
+    when check absolute_path(path: at.path.peek(), manager)
         is Memory[Byte] as found => return Directory.construct(path: steal found)
 
 ### The file's absolute path with every link, ".", and ".." resolved. The file must exist. The new path is in memory
-### from alloc: drop the File.
+### from manager: drop the File.
 ### :param at: The file whose path is used.
-### :param alloc: The allocator for the new path.
+### :param manager: The memory manager for the new path.
 ### :returns: The canonical {File}, or throws the {FsError} the OS reported (NotFoundError when it is missing).
 @expensive("asks the operating system")
-failable common routine OsFileManager.canonical(at: @File, alloc: @MemoryManager) -> File
-    when check canonical_path(path: at.path.peek(), alloc)
+failable common routine OsFileManager.canonical(at: @File, manager: @MemoryManager) -> File
+    when check canonical_path(path: at.path.peek(), manager)
         is Memory[Byte] as p => return File.construct(path: steal p)
         is FsError as error => throw error
 
 ### The directory's absolute path with every link, ".", and ".." resolved. The directory must exist. The new path is
-### in memory from alloc: drop the Directory.
+### in memory from manager: drop the Directory.
 ### :param at: The directory whose path is used.
-### :param alloc: The allocator for the new path.
+### :param manager: The memory manager for the new path.
 ### :returns: The canonical {Directory}, or throws the {FsError} the OS reported (NotFoundError when it is missing).
 @expensive("asks the operating system")
-failable common routine OsFileManager.canonical(at: @Directory, alloc: @MemoryManager) -> Directory
-    when check canonical_path(path: at.path.peek(), alloc)
+failable common routine OsFileManager.canonical(at: @Directory,
+    manager: @MemoryManager) -> Directory
+    when check canonical_path(path: at.path.peek(), manager)
         is Memory[Byte] as found => return Directory.construct(path: steal found)
 
 # -- partitions --------------------------------------------------------------------------
 
-### The partition the file is on, its names in memory from alloc (drop it).
+### The partition the file is on, its names in memory from manager (drop it).
 ### :param at: An existing file.
-### :param alloc: The allocator for the names.
+### :param manager: The memory manager for the names.
 ### :returns: The {PartitionManager}, or throws the {FsError} the OS reported.
 @expensive("asks the operating system")
 failable common routine OsFileManager.partition(at: @File,
-    alloc: @MemoryManager) -> PartitionManager
-    when check partition_of(path: at.path.peek(), alloc)
+    manager: @MemoryManager) -> PartitionManager
+    when check partition_of(path: at.path.peek(), manager)
         is PartitionManager as returned => return returned
 
-### The partition the directory is on, its names in memory from alloc (drop it).
+### The partition the directory is on, its names in memory from manager (drop it).
 ### :param at: An existing directory.
-### :param alloc: The allocator for the names.
+### :param manager: The memory manager for the names.
 ### :returns: The {PartitionManager}, or throws the {FsError} the OS reported.
 @expensive("asks the operating system")
 failable common routine OsFileManager.partition(at: @Directory,
-    alloc: @MemoryManager) -> PartitionManager
-    when check partition_of(path: at.path.peek(), alloc)
+    manager: @MemoryManager) -> PartitionManager
+    when check partition_of(path: at.path.peek(), manager)
         is PartitionManager as returned => return returned
 
 # -- helpers -----------------------------------------------------------------------------
@@ -444,11 +445,11 @@ failable common routine OsFileManager.partition(at: @Directory,
 ### :param name: The new name.
 ### :param replacing: Whether something already named `name` is replaced.
 secret failable routine rename_in_place(path: @[Byte], name: @[Byte], replacing: Bool) -> None
-    local alloc: @MemoryManager <- C_HEAP.peek()
+    local manager: @MemoryManager <- C_HEAP.peek()
 
     if not is_plain_name(name)
         throw InvalidPathError()
-    local to: @Memory[Byte] <- join_path(a: parent_path(path), b: name, alloc)
+    local to: @Memory[Byte] <- join_path(a: parent_path(path), b: name, manager)
     renamed: Check[None] = check rename_with(from: path, to: to.getview(), replacing)
     drop to
     when renamed
@@ -469,12 +470,12 @@ secret failable routine rename_with(from: @[Byte], to: @[Byte], replacing: Bool)
 ### :param path: What to move.
 ### :param into: The directory it goes into.
 ### :param replacing: Whether something of the same name in `into` is replaced.
-### :param alloc: The allocator for the new path.
+### :param manager: The memory manager for the new path.
 secret failable routine move_into(path: @[Byte], into: @[Byte], replacing: Bool,
-    alloc: @MemoryManager) -> None
-    local to: @Memory[Byte] <- join_path(a: into, b: file_name(path), alloc)
+    manager: @MemoryManager) -> None
+    local to: @Memory[Byte] <- join_path(a: into, b: file_name(path), manager)
 
-    moved: Check[None] = check move_path(from: path, to: to.getview(), replacing, alloc)
+    moved: Check[None] = check move_path(from: path, to: to.getview(), replacing, manager)
     drop to
     when moved
         is None => return

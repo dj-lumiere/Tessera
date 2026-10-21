@@ -1,5 +1,5 @@
-# The failable forms, received with check, against an allocator that fails after a budget of calls, and `try` on empty
-# collections and missing keys. Each case inserts 0, 1, 2, ... until the allocator fails, checks that the collection
+# The failable forms, received with check, against a memory manager that fails after a budget of calls, and `try` on empty
+# collections and missing keys. Each case inserts 0, 1, 2, ... until the memory manager fails, checks that the collection
 # still holds exactly what went in, then grants more budget and inserts once more. The budgets reach every failure
 # point: a partial Dict / Set rehash, a B-tree leaf split during descent, and a root split whose sibling fails.
 
@@ -18,7 +18,7 @@ routine c_realloc(ptr: Addr, size: CSize) -> Addr
 @symbol("free")
 routine c_free(ptr: Addr) -> None
 
-# -- the budgeted allocator: a manager that allows `left` more calls, then fails -----------------------------------
+# -- the budgeted memory manager: a manager that allows `left` more calls, then fails -----------------------------------
 
 record Budget
     left: U64
@@ -50,11 +50,11 @@ routine @Budget.free(at: Addr) -> None
 
 # -- sequences ------------------------------------------------------------------------------------------------------
 
-routine list_case(budget: @U64, grant: U64, alloc: @MemoryManager) -> None
+routine list_case(budget: @U64, grant: U64, manager: @MemoryManager) -> None
     local list: @List[S64] <- .hollow()
 
     budget.poke(grant)
-    list.poke(List[S64].construct(alloc))
+    list.poke(List[S64].construct(manager))
 
     while true with i: S64 = 0
         pushed: Check[None] = check list.add_last(i)
@@ -68,13 +68,13 @@ routine list_case(budget: @U64, grant: U64, alloc: @MemoryManager) -> None
     drop list
     return
 
-routine circular_case(budget: @U64, grant: U64, alloc: @MemoryManager) -> None
+routine circular_case(budget: @U64, grant: U64, manager: @MemoryManager) -> None
     local deque: @CircularList[S64] <- .hollow()
 
     budget.poke(grant)
-    deque.poke(CircularList[S64].construct(alloc))
+    deque.poke(CircularList[S64].construct(manager))
 
-    # Alternates ends, so both add_first and add_last reach the allocator.
+    # Alternates ends, so both add_first and add_last reach the memory manager.
     while true with i: S64 = 0
         front: Bool = i.mod_trunc(2) == 1
         pushed: Bool = when
@@ -90,12 +90,12 @@ routine circular_case(budget: @U64, grant: U64, alloc: @MemoryManager) -> None
     drop deque
     return
 
-routine queue_case(budget: @U64, grant: U64, alloc: @MemoryManager) -> None
+routine queue_case(budget: @U64, grant: U64, manager: @MemoryManager) -> None
     local queue: @PriorityQueue[S64, S64] <- .hollow()
 
     # A queue keeps its priorities and its elements in two arrays, so each growth takes two allocations.
     budget.poke(grant * 2)
-    queue.poke(PriorityQueue[S64, S64].construct(alloc))
+    queue.poke(PriorityQueue[S64, S64].construct(manager))
 
     # Pushes 100, 99, 98, ..., so each push sifts to the top.
     while true with i: S64 = 0
@@ -129,11 +129,11 @@ routine is_dict_intact(map: @Dict[S64, S64], count: S64) -> Bool
     else
         return false
 
-routine dict_case(budget: @U64, grant: U64, alloc: @MemoryManager) -> None
+routine dict_case(budget: @U64, grant: U64, manager: @MemoryManager) -> None
     local map: @Dict[S64, S64] <- .hollow()
 
     budget.poke(grant)
-    map.poke(Dict[S64, S64].construct(alloc))
+    map.poke(Dict[S64, S64].construct(manager))
 
     while true with i: S64 = 0
         put: Check[None] = check map.setitem(key: i, value: i * 10)
@@ -164,11 +164,11 @@ routine is_set_intact(set: @Set[S64], count: S64) -> Bool
     else
         return false
 
-routine set_case(budget: @U64, grant: U64, alloc: @MemoryManager) -> None
+routine set_case(budget: @U64, grant: U64, manager: @MemoryManager) -> None
     local set: @Set[S64] <- .hollow()
 
     budget.poke(grant)
-    set.poke(Set[S64].construct(alloc))
+    set.poke(Set[S64].construct(manager))
 
     while true with i: S64 = 0
         added: Check[Bool] = check set.add(i)
@@ -209,11 +209,11 @@ routine is_sorted_dict_intact(map: @SortedDict[S64, S64], count: S64) -> Bool
     else
         return false
 
-routine sorted_dict_case(budget: @U64, grant: U64, alloc: @MemoryManager) -> None
+routine sorted_dict_case(budget: @U64, grant: U64, manager: @MemoryManager) -> None
     local map: @SortedDict[S64, S64] <- .hollow()
 
     budget.poke(grant)
-    map.poke(SortedDict[S64, S64].construct(alloc))
+    map.poke(SortedDict[S64, S64].construct(manager))
 
     while true with i: S64 = 0
         put: Check[None] = check map.setitem(key: i, value: i * 10)
@@ -245,11 +245,11 @@ routine is_sorted_set_intact(set: @SortedSet[S64], count: S64) -> Bool
     else
         return false
 
-routine sorted_set_case(budget: @U64, grant: U64, alloc: @MemoryManager) -> None
+routine sorted_set_case(budget: @U64, grant: U64, manager: @MemoryManager) -> None
     local set: @SortedSet[S64] <- .hollow()
 
     budget.poke(grant)
-    set.poke(SortedSet[S64].construct(alloc))
+    set.poke(SortedSet[S64].construct(manager))
 
     while true with i: S64 = 0
         added: Check[Bool] = check set.add(i)
@@ -283,11 +283,11 @@ routine is_sorted_list_intact(list: @SortedList[S64], count: S64) -> Bool
     else
         return false
 
-routine sorted_list_case(budget: @U64, grant: U64, alloc: @MemoryManager) -> None
+routine sorted_list_case(budget: @U64, grant: U64, manager: @MemoryManager) -> None
     local list: @SortedList[S64] <- .hollow()
 
     budget.poke(grant)
-    list.poke(SortedList[S64].construct(alloc))
+    list.poke(SortedList[S64].construct(manager))
 
     while true with i: S64 = 0
         pushed: Check[None] = check list.add(i)
@@ -306,9 +306,9 @@ routine sorted_list_case(budget: @U64, grant: U64, alloc: @MemoryManager) -> Non
 
 # -- try on empty collections --------------------------------------------------------------------------------------
 
-routine checked_forms(budget: @U64, alloc: @MemoryManager) -> None
+routine checked_forms(budget: @U64, manager: @MemoryManager) -> None
     budget.poke(100)
-    local list: @List[S64] <- .construct(alloc)
+    local list: @List[S64] <- .construct(manager)
     Console.show("List: pop_checked {try list.remove_last()}", end: "")
     list.add_last(7)
     Console.show(", get_checked(0) {try list.getitem(0)}, get_checked(1) {try list.getitem(1)}",
@@ -316,7 +316,7 @@ routine checked_forms(budget: @U64, alloc: @MemoryManager) -> None
     Console.show(", pop_checked {try list.remove_last()}")
     drop list
 
-    local deque: @CircularList[S64] <- .construct(alloc)
+    local deque: @CircularList[S64] <- .construct(manager)
     Console.show("CircularList: pop_front_checked {try deque.remove_first()}", end: "")
     Console.show(", pop_back_checked {try deque.remove_last()}", end: "")
     deque.add_last(1)
@@ -326,7 +326,7 @@ routine checked_forms(budget: @U64, alloc: @MemoryManager) -> None
     Console.show(", pop_front_checked {try deque.remove_first()}, pop_checked {try deque.remove_last()}")
     drop deque
 
-    local queue: @PriorityQueue[S64, S64] <- .construct(alloc)
+    local queue: @PriorityQueue[S64, S64] <- .construct(manager)
     Console.show(
         "PriorityQueue: peek_checked {try queue.first()}, pop_checked {try queue.remove()}",
         end: "")
@@ -335,19 +335,19 @@ routine checked_forms(budget: @U64, alloc: @MemoryManager) -> None
     Console.show(", peek_checked {try queue.first()}, pop_checked {try queue.remove()}")
     drop queue
 
-    local map: @Dict[S64, S64] <- .construct(alloc)
+    local map: @Dict[S64, S64] <- .construct(manager)
     Console.show("Dict: get_checked(1) {try map.getitem(1)}", end: "")
     map[1] = 10
     Console.show(", after put {try map.getitem(1)}, get_checked(2) {try map.getitem(2)}")
     drop map
 
-    local sorted: @SortedDict[S64, S64] <- .construct(alloc)
+    local sorted: @SortedDict[S64, S64] <- .construct(manager)
     Console.show("SortedDict: get_checked(1) {try sorted.getitem(1)}", end: "")
     sorted[1] = 10
     Console.show(", after put {try sorted.getitem(1)}, get_checked(2) {try sorted.getitem(2)}")
     drop sorted
 
-    local ordered: @SortedList[S64] <- .construct(alloc)
+    local ordered: @SortedList[S64] <- .construct(manager)
     Console.show("SortedList: get_checked(0) {try ordered.getitem(0)}", end: "")
     ordered.add(4)
     Console.show(", after push {try ordered.getitem(0)}")
@@ -355,26 +355,26 @@ routine checked_forms(budget: @U64, alloc: @MemoryManager) -> None
     return
 
 routine start() -> None
-    local manager: @Budget <- (left: 0)
-    local alloc: @MemoryManager <- manager.to[MemoryManager]()
+    local limiter: @Budget <- (left: 0)
+    local manager: @MemoryManager <- limiter.to[MemoryManager]()
 
-    budget: @U64 = manager.left
+    budget: @U64 = limiter.left
 
     each grant: U64 in 0 to 2
-        list_case(budget, grant, alloc)
-        circular_case(budget, grant, alloc)
-        queue_case(budget, grant, alloc)
+        list_case(budget, grant, manager)
+        circular_case(budget, grant, manager)
+        queue_case(budget, grant, manager)
 
     # Dict rehashes into 5 arrays and Set into 4, so the budgets stop partway through a rehash too.
     each grant: U64 in 0 to 12
-        dict_case(budget, grant, alloc)
-        set_case(budget, grant, alloc)
+        dict_case(budget, grant, manager)
+        set_case(budget, grant, manager)
 
     # Ascending keys fill a root leaf (1 node), split it (2 more), add leaves until the root is full (6 more), then
     # split the root again (2) above one more leaf split: budgets up to 12 fail at each of those steps.
     each grant: U64 in 0 to 12
-        sorted_dict_case(budget, grant, alloc)
-        sorted_set_case(budget, grant, alloc)
-        sorted_list_case(budget, grant, alloc)
-    checked_forms(budget, alloc)
+        sorted_dict_case(budget, grant, manager)
+        sorted_set_case(budget, grant, manager)
+        sorted_list_case(budget, grant, manager)
+    checked_forms(budget, manager)
     return

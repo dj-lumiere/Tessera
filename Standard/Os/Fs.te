@@ -3,8 +3,8 @@
 # Paths are @[Byte], UTF-8 by convention, as every Tessera text is. Each call copies its path into a stack buffer with
 # the terminator the OS wants (UTF-16 on Windows), so nothing allocates for a path. A path too long for that buffer
 # (4095 bytes, or 4095 UTF-16 units on Windows) throws NameTooLongError. Only routines that hand text back
-# (read_file, current_dir, ...) or build paths of their own (remove_dir_all) take an allocator. Text comes back as
-# @[Byte] that carry that allocator, and the caller gives them back with destruct(), a path inside a File or Directory
+# (read_file, current_dir, ...) or build paths of their own (remove_dir_all) take a memory manager. Text comes back as
+# @[Byte] that carry that memory manager, and the caller gives them back with destruct(), a path inside a File or Directory
 # through the File's or the Directory's own destruct().
 #
 # Expected failures throw one of FsError's crashables. The per-OS halves are Fs_posix.te (Linux and macOS) and
@@ -351,18 +351,18 @@ secret failable routine create_dir_all(path: @[Byte]) -> None
                 return
             throw error
 
-### Removes path and everything in it. A link is removed, not followed. Child paths are built in memory from alloc.
+### Removes path and everything in it. A link is removed, not followed. Child paths are built in memory from manager.
 ### :param path: The file or directory to remove.
-### :param alloc: The allocator for the child paths, each given back before the next.
+### :param manager: The memory manager for the child paths, each given back before the next.
 ### :throws: Throws the first failure, which stops the removal partway. Crashes with `MemoryAllocationError` when
-###     `alloc` fails for a child path.
-secret failable routine remove_dir_all(path: @[Byte], alloc: @MemoryManager) -> None
+###     `manager` fails for a child path.
+secret failable routine remove_dir_all(path: @[Byte], manager: @MemoryManager) -> None
     info: Metadata = when check symlink_metadata(path)
         is Metadata as found => found
     if not (info.kind == FileKind.DIRECTORY)
         when check remove_file(path)
             is None => return
-    when check remove_entries(path, alloc)
+    when check remove_entries(path, manager)
         is None => pass
     when check remove_dir(path)
         is None => return
@@ -370,9 +370,9 @@ secret failable routine remove_dir_all(path: @[Byte], alloc: @MemoryManager) -> 
 ### Removes everything in the directory at path, which is left empty. Its listing is closed before remove_dir_all
 ### removes the directory itself, since Windows can't remove a directory that is still being listed.
 ### :param path: The directory to empty.
-### :param alloc: The allocator for the child paths.
-### :throws: Throws the first failure. Crashes with `MemoryAllocationError` when `alloc` fails for a child path.
-secret failable routine remove_entries(path: @[Byte], alloc: @MemoryManager) -> None
+### :param manager: The memory manager for the child paths.
+### :throws: Throws the first failure. Crashes with `MemoryAllocationError` when `manager` fails for a child path.
+secret failable routine remove_entries(path: @[Byte], manager: @MemoryManager) -> None
     # open_path sets the handle before anything in it can fail, so finish closes a real or a null one
     local iter: @DirIter <- .hollow()
 
@@ -385,8 +385,8 @@ secret failable routine remove_entries(path: @[Byte], alloc: @MemoryManager) -> 
         entry: Maybe[DirEntry] = try iter.emit()
         when entry
             is DirEntry as e =>
-                local full: @Memory[Byte] <- join_path(a: path, b: e.name, alloc)
-                gone: Check[None] = check remove_dir_all(path: full, alloc)
+                local full: @Memory[Byte] <- join_path(a: path, b: e.name, manager)
+                gone: Check[None] = check remove_dir_all(path: full, manager)
                 drop full
                 when gone
                     is None => continue
@@ -397,18 +397,18 @@ secret failable routine remove_entries(path: @[Byte], alloc: @MemoryManager) -> 
                 iter.close()
                 return
 
-### Reads the whole file at path into memory from alloc (drop it).
+### Reads the whole file at path into memory from manager (drop it).
 ### :param path: The file to read.
-### :param alloc: The allocator for the text.
+### :param manager: The memory manager for the text.
 ### :returns: The file's bytes.
-### :throws: Throws the reason when the file can't be opened or read, `MemoryAllocationError` when `alloc` fails or
+### :throws: Throws the reason when the file can't be opened or read, `MemoryAllocationError` when `manager` fails or
 ###     the file is too large for the address space (4 GiB or more on a 32-bit target).
-secret failable routine read_file(path: @[Byte], alloc: @MemoryManager) -> Memory[Byte]
+secret failable routine read_file(path: @[Byte], manager: @MemoryManager) -> Memory[Byte]
     local f: @FileHandle <- .hollow()
 
     when check FileHandle.open(path, mode: OpenMode.READ)
         is FileHandle as opened => f.poke(opened)
-    when check read_rest(f, alloc)
+    when check read_rest(f, manager)
         is Memory[Byte] as text =>
             f.close()
             return text
@@ -416,14 +416,14 @@ secret failable routine read_file(path: @[Byte], alloc: @MemoryManager) -> Memor
             f.close()
             throw error
 
-### Reads the rest of the open file f into memory from alloc. The size is a first guess: a file that grows while it's
+### Reads the rest of the open file f into memory from manager. The size is a first guess: a file that grows while it's
 ### read, or reports 0 (Linux's /proc), still reads whole.
 ### :param f: The open file, read from its position to the end.
-### :param alloc: The allocator for the text.
+### :param manager: The memory manager for the text.
 ### :returns: The bytes read.
-### :throws: Throws the reason when a read fails, `MemoryAllocationError` when `alloc` fails or the file is too large
+### :throws: Throws the reason when a read fails, `MemoryAllocationError` when `manager` fails or the file is too large
 ###     for the address space (it reports a size, or grows to one, that a U64 can't hold).
-secret failable routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Memory[Byte]
+secret failable routine read_rest(f: @FileHandle, manager: @MemoryManager) -> Memory[Byte]
     local buffer: @Memory[Byte] <- .hollow()
 
     capacity: U64 = when check f.size()
@@ -435,7 +435,7 @@ secret failable routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Memo
                     drop buffer
                     throw MemoryAllocationError()
         is FsError => 64
-    when check Memory[Byte].construct(count: capacity, manager: alloc)
+    when check Memory[Byte].construct(count: capacity, manager: manager)
         is Memory[Byte] as slice => buffer.replace(value: steal slice)
         is MemoryAllocationError as error =>
             drop buffer
@@ -547,15 +547,15 @@ routine path_separator() -> Byte
     return b'/'
 
 ### a and b with a separator between them (none added when a is empty or already ends with one), in memory from
-### alloc. Drop it.
+### manager. Drop it.
 ### :param a: The leading part.
 ### :param b: The part to append.
-### :param alloc: The allocator for the result.
+### :param manager: The memory manager for the result.
 ### :returns: The joined path.
-### :throws: Crashes with `MemoryAllocationError` when the allocator fails.
+### :throws: Crashes with `MemoryAllocationError` when the memory manager fails.
 @track_caller
 @expensive("allocates the joined path")
-secret routine join_path(a: @[Byte], b: @[Byte], alloc: @MemoryManager) -> Memory[Byte]
+secret routine join_path(a: @[Byte], b: @[Byte], manager: @MemoryManager) -> Memory[Byte]
     ends: Bool = when
         a.is_empty() => true
         else => is_separator(a.byte_at(a.count() - 1).bits())
@@ -564,7 +564,7 @@ secret routine join_path(a: @[Byte], b: @[Byte], alloc: @MemoryManager) -> Memor
         else => 1
     prefix_count: U64 = a.count() + sep
     count: U64 = prefix_count + b.count()
-    local memory: @Memory[Byte] <- Memory[Byte].construct(count: count.max(1), manager: alloc)
+    local memory: @Memory[Byte] <- Memory[Byte].construct(count: count.max(1), manager: manager)
     buffer: @Byte = memory.data.peek()
     buffer.copy(src: a.data, count: a.count())
     if not ends
@@ -783,9 +783,9 @@ secret routine cell_window(size: U64, start: U64, count: U64, cell: U64) -> (U64
 ### copied as what it points at).
 ### :param from: The directory to copy.
 ### :param to: Where the copy goes.
-### :param alloc: The allocator for the child paths.
+### :param manager: The memory manager for the child paths.
 ### :throws: Throws the first failure, which stops the copy partway.
-secret failable routine copy_tree(from: @[Byte], to: @[Byte], alloc: @MemoryManager) -> None
+secret failable routine copy_tree(from: @[Byte], to: @[Byte], manager: @MemoryManager) -> None
     local iter: @DirIter <- .hollow()
 
     when check create_dir(to)
@@ -799,9 +799,10 @@ secret failable routine copy_tree(from: @[Byte], to: @[Byte], alloc: @MemoryMana
         entry: Maybe[DirEntry] = try iter.emit()
         when entry
             is DirEntry as e =>
-                local src: @Memory[Byte] <- join_path(a: from, b: e.name, alloc)
-                local dst: @Memory[Byte] <- join_path(a: to, b: e.name, alloc)
-                done: Check[None] = check copy_entry(from: src.getview(), to: dst.getview(), alloc)
+                local src: @Memory[Byte] <- join_path(a: from, b: e.name, manager)
+                local dst: @Memory[Byte] <- join_path(a: to, b: e.name, manager)
+                done: Check[None] = check copy_entry(from: src.getview(), to: dst.getview(),
+                    manager)
                 drop dst
                 drop src
                 when done
@@ -816,11 +817,11 @@ secret failable routine copy_tree(from: @[Byte], to: @[Byte], alloc: @MemoryMana
 ### Copies one entry of a tree: a directory with everything in it, or a file (a link copied as what it points at).
 ### :param from: The entry to copy.
 ### :param to: Where the copy goes, which must not be there.
-### :param alloc: The allocator for the child paths.
+### :param manager: The memory manager for the child paths.
 ### :throws: Throws the first failure.
-secret failable routine copy_entry(from: @[Byte], to: @[Byte], alloc: @MemoryManager) -> None
+secret failable routine copy_entry(from: @[Byte], to: @[Byte], manager: @MemoryManager) -> None
     if is_kind(path: from, kind: FileKind.DIRECTORY)
-        when check copy_tree(from, to, alloc)
+        when check copy_tree(from, to, manager)
             is None => return
     when check copy_file(from, to, replacing: false)
         is U64 => return
@@ -853,11 +854,11 @@ secret routine same_partition(a: @[Byte], b: @[Byte]) -> Bool
 ### :param from: What to move.
 ### :param to: The new path, in another directory.
 ### :param replacing: Whether something already at `to` is replaced.
-### :param alloc: The allocator for the child paths of a copied tree.
+### :param manager: The memory manager for the child paths of a copied tree.
 ### :throws: Throws the reason the move failed. When the copy fails nothing is deleted and the partial copy is
 ###     removed. Throws `OriginalKeptError` when the copy is whole and deleting the source failed (both are there then).
 secret failable routine move_path(from: @[Byte], to: @[Byte], replacing: Bool,
-    alloc: @MemoryManager) -> None
+    manager: @MemoryManager) -> None
     # A directory goes with everything in it, and a link (to a directory too) is moved as the link.
     is_directory: Bool = is_kind(path: from, kind: FileKind.DIRECTORY) and not is_link(from)
     dir: @[Byte] = parent_path(to)
@@ -876,13 +877,13 @@ secret failable routine move_path(from: @[Byte], to: @[Byte], replacing: Bool,
             when check remove_dir(to)
                 is None => pass
     if is_directory
-        when check copy_tree(from, to, alloc)
+        when check copy_tree(from, to, manager)
             is None => pass
             is FsError as error =>
                 # A partial tree goes, so no half copy is left.
-                try remove_dir_all(path: to, alloc)
+                try remove_dir_all(path: to, manager)
                 throw error
-        when check remove_dir_all(path: from, alloc)
+        when check remove_dir_all(path: from, manager)
             is None => return
             is FsError => throw OriginalKeptError()
     # A failed copy_file removes its own partial copy.

@@ -51,7 +51,7 @@ entity ThreadPoolManager
     ### The threads' tickets.
     threads: Memory[Thread[None]]
     ### Where the jobs, the fibers, and the threads' tickets come from.
-    alloc: @MemoryManager
+    manager: @MemoryManager
     ### The fibers running jobs that were woken, for the first free thread to go on with.
     woken: CircularList[@FiberState]
     ### Every fiber the pool made, through `next_all`.
@@ -83,8 +83,8 @@ common routine ThreadPoolManager.construct(threads: U64) -> Me
         threads == 0 => cpu_count()
         else => threads
     return Me(lock: .construct(), first: .hollow(), last: .hollow(), idle: .hollow(), epoch: 0,
-        stopping: 0, count, threads: .hollow(), alloc: HEAP,
-        woken: CircularList[@FiberState].construct(alloc: HEAP), fibers: .hollow(),
+        stopping: 0, count, threads: .hollow(), manager: HEAP,
+        woken: CircularList[@FiberState].construct(manager: HEAP), fibers: .hollow(),
         spare: .hollow())
 
 ### Stops the pool: its threads finish the work they have, then end, and the idle jobs and the fibers go. Give every
@@ -107,7 +107,7 @@ routine @ThreadPoolManager.destruct() -> None
     until job.is_hollow() with job: @PoolJob = me.idle.peek()
         next: @PoolJob = job.next.peek()
         job.slot.destruct()
-        deallocate(data: job, alloc: me.alloc.peek())
+        deallocate(data: job, manager: me.manager.peek())
         continue with job: next
     drop me.threads
     me.idle.poke(.hollow())
@@ -118,7 +118,7 @@ routine @ThreadPoolManager.destruct() -> None
         AccessManager.end_flow(fiber.access)
         race_stack_free(fiber.race.peek())
         give_back_stack(stack: fiber.stack.peek(), pages: PAGES)
-        deallocate(data: fiber, alloc: me.alloc.peek())
+        deallocate(data: fiber, manager: me.manager.peek())
         continue with fiber: next
     me.fibers.poke(.hollow())
     me.spare.poke(.hollow())
@@ -177,11 +177,11 @@ needs T: typename
     idle: @PoolJob = me.idle.peek()
     if idle.is_hollow()
         me.lock.unlock()
-        alloc: @MemoryManager = me.alloc.peek()
-        job: @PoolJob = allocate[PoolJob](count: 1, alloc)
+        manager: @MemoryManager = me.manager.peek()
+        job: @PoolJob = allocate[PoolJob](count: 1, manager)
         if job.is_hollow()
             crash_allocation()
-        job.poke(PoolJob(slot: .construct(alloc), next: .hollow(), pool: me))
+        job.poke(PoolJob(slot: .construct(manager), next: .hollow(), pool: me))
         return Job[T](job, issued: 0)
     me.idle.poke(idle.next.peek())
     me.lock.unlock()
@@ -199,7 +199,7 @@ secret routine @ThreadPoolManager.start_threads() -> None
 
     if not (threads.count() == 0)
         return
-    threads.replace(value: Memory[Thread[None]].construct(count, manager: me.alloc.peek()))
+    threads.replace(value: Memory[Thread[None]].construct(count, manager: me.manager.peek()))
 
     each i in 0 til count
         t: Thread[None] = get_thread[None]()
@@ -292,19 +292,19 @@ secret routine @ThreadPoolManager.take_fiber() -> @FiberState
         spare.manager.poke_atomic(.hollow())
         return spare
     me.lock.unlock()
-    alloc: @MemoryManager = me.alloc.peek()
+    manager: @MemoryManager = me.manager.peek()
     stack: StackManager = take_stack(size: DEFAULT_FIBER_STACK, pages: PAGES)
     if stack.top.is_hollow()
         crash_allocation()
-    fiber: @FiberState = allocate[FiberState](count: 1, alloc)
+    fiber: @FiberState = allocate[FiberState](count: 1, manager)
     if fiber.is_hollow()
         crash_allocation()
     sp: Addr = initial_stack(stack: stack.bottom, size: stack.size().bytes(),
         entry: fiber_start.addr())
-    fiber.poke(FiberState(sp, stack, manager: .hollow(), slot: .construct(alloc), work: fiber.slot,
-        then: requeue.to[Callable](), wake_state: FIBER_RUNNING, timer: 0, trace_depth: 0,
-        access: .hollow(), race: race_stack_new(), next_idle: .hollow(), next_all: .hollow(),
-        pool: me))
+    fiber.poke(FiberState(sp, stack, manager: .hollow(), slot: .construct(manager),
+        work: fiber.slot, then: requeue.to[Callable](), wake_state: FIBER_RUNNING, timer: 0,
+        trace_depth: 0, access: .hollow(), race: race_stack_new(), next_idle: .hollow(),
+        next_all: .hollow(), pool: me))
     me.lock.lock()
     fiber.next_all.poke(me.fibers.peek())
     me.fibers.poke(fiber)
@@ -393,7 +393,7 @@ routine Job[T].put_work(entry: Callable[(), T]) -> None
 needs T: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_work0[T](entry, alloc: slot.alloc.peek())
+    runner, work = make_work0[T](entry, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -408,7 +408,7 @@ routine Job[T].put_work[A](entry: Callable[(A,), T], args: A) -> None
 needs T: typename, A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_work1[T, A](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_work1[T, A](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -423,7 +423,7 @@ routine Job[T].put_work[A, B](entry: Callable[(A, B), T], args: (A, B)) -> None
 needs T: typename, A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_work2[T, A, B](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_work2[T, A, B](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -438,7 +438,7 @@ routine Job[T].put_work[A, B, C](entry: Callable[(A, B, C), T], args: (A, B, C))
 needs T: typename, A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_work3[T, A, B, C](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_work3[T, A, B, C](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -453,7 +453,7 @@ routine Job[T].put_work[A, B, C, D](entry: Callable[(A, B, C, D), T], args: (A, 
 needs T: typename, A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_work4[T, A, B, C, D](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_work4[T, A, B, C, D](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -466,7 +466,7 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
 routine Job[None].put_work(entry: Callable[(), None]) -> None
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_voidwork0(entry, alloc: slot.alloc.peek())
+    runner, work = make_voidwork0(entry, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -481,7 +481,7 @@ routine Job[None].put_work[A](entry: Callable[(A,), None], args: A) -> None
 needs A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_voidwork1[A](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_voidwork1[A](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -496,7 +496,7 @@ routine Job[None].put_work[A, B](entry: Callable[(A, B), None], args: (A, B)) ->
 needs A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_voidwork2[A, B](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_voidwork2[A, B](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -511,7 +511,7 @@ routine Job[None].put_work[A, B, C](entry: Callable[(A, B, C), None], args: (A, 
 needs A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_voidwork3[A, B, C](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_voidwork3[A, B, C](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 
@@ -527,7 +527,7 @@ routine Job[None].put_work[A, B, C, D](entry: Callable[(A, B, C, D), None],
 needs A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    runner, work = make_voidwork4[A, B, C, D](entry, args, alloc: slot.alloc.peek())
+    runner, work = make_voidwork4[A, B, C, D](entry, args, manager: slot.manager.peek())
     me.start(runner, work)
     return
 

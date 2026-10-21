@@ -16,8 +16,8 @@
 # memory that C code hands over. Sizes and counts are U64.
 #
 # With the heap check on (config.toml's [debug] heap-check), reallocate and
-# deallocate note the place they were called from while the allocator runs, so
-# an allocator that finds a mistake (the checked heap's check for a block freed
+# deallocate note the place they were called from while the memory manager runs, so
+# a memory manager that finds a mistake (the checked heap's check for a block freed
 # twice) can crash at the caller's line: allocator_call_place() reads it.
 
 module Standard/System/Memory
@@ -383,59 +383,59 @@ secret routine check_align(align: U64) -> None
 # ============================================================
 # Generic memory routines (prelude surface)
 #
-# Sizes and counts are U64, the same type the allocator callbacks and libc
+# Sizes and counts are U64, the same type the memory manager callbacks and libc
 # take.
 # ============================================================
 
-### Allocates room for `count` values of `T` through `alloc` and returns a pointer to it, uninitialized.
+### Allocates room for `count` values of `T` through `manager` and returns a pointer to it, uninitialized.
 ### :typeparam T: The element type to allocate room for.
 ### :param count: The number of values of `T` to make room for.
-### :param alloc: The allocator to use.
-### :returns: A pointer to the new block, or a null pointer when the allocator fails.
+### :param manager: The memory manager to use.
+### :returns: A pointer to the new block, or a null pointer when the memory manager fails.
 ### :throws: Crashes with `IntegerOverflowError` when the byte size does not fit in U64.
 ### :note: The byte size is `sizeof[T]() * count` with checked multiplication. The memory is uninitialized, and a failed allocation returns a null pointer rather than crashing.
 @expensive("allocates heap memory")
-routine allocate[T](count: U64, alloc: @MemoryManager) -> @T
+routine allocate[T](count: U64, manager: @MemoryManager) -> @T
 needs T: typename
     elem_size: U64 = sizeof[T]()
     size: U64 = elem_size * count
-    raw: Addr = alloc.alloc(size, align: alignof[T]())
+    raw: Addr = manager.alloc(size, align: alignof[T]())
     typed: @T = raw.to[@T]()
     return typed
 
-### Resizes the block at `ptr` to hold `new_count` values of `T` through `alloc` and returns the possibly moved pointer.
+### Resizes the block at `ptr` to hold `new_count` values of `T` through `manager` and returns the possibly moved pointer.
 ### :typeparam T: The element type.
 ### :param ptr: The block to resize, from `allocate` or an earlier `reallocate`.
 ### :param new_count: The new number of values of `T`.
-### :param alloc: The allocator to use.
-### :returns: A pointer to the resized block, which may have moved, or a null pointer when the allocator fails.
+### :param manager: The memory manager to use.
+### :returns: A pointer to the resized block, which may have moved, or a null pointer when the memory manager fails.
 ### :throws: Crashes with `IntegerOverflowError` when the byte size does not fit in U64.
 ### :note: A failed reallocation returns a null pointer, and the old block stays valid.
 @track_caller
 @expensive("reallocates heap memory")
 @reshaping(ptr)
-routine reallocate[T](ptr: @T, new_count: U64, alloc: @MemoryManager) -> @T
+routine reallocate[T](ptr: @T, new_count: U64, manager: @MemoryManager) -> @T
 needs T: typename
     elem_size: U64 = sizeof[T]()
     size: U64 = elem_size * new_count
-    raw: Addr = alloc.realloc(at: ptr, size, align: alignof[T]())
+    raw: Addr = manager.realloc(at: ptr, size, align: alignof[T]())
     typed: @T = raw.to[@T]()
     return typed
 
-### Hands the block at `data` back to `alloc`, the allocator it came from. Not a destructor: whatever the values own is
+### Hands the block at `data` back to `manager`, the memory manager it came from. Not a destructor: whatever the values own is
 ### not released.
 ### :typeparam T: The element type.
 ### :param data: The block, from `allocate` or `reallocate`.
-### :param alloc: The allocator the block came from.
+### :param manager: The memory manager the block came from.
 ### :note: A raw layer beside {Memory[T]} and {Box[T]}, for node-based structures and memory C hands over. Code that holds a Memory never needs it.
 @track_caller
 @expensive("frees heap memory")
-routine deallocate[T](data: @T, alloc: @MemoryManager) -> None
+routine deallocate[T](data: @T, manager: @MemoryManager) -> None
 needs T: typename
-    alloc.free(data)
+    manager.free(data)
     return
 
-# -- the place of the allocator call in progress --------------------------------------------------------------------
+# -- the place of the memory manager call in progress --------------------------------------------------------------------
 
 ### The place of the reallocate or deallocate call the running thread is in, with the heap check on.
 @threadlocal
@@ -448,7 +448,7 @@ secret global CALL_PLACE: @@SourceLocation
 @heap_check("on")
 secret global CALL_PLACE: @@SourceLocation
 
-### Notes `place` as the place of the allocator call in progress (null when it's over).
+### Notes `place` as the place of the memory manager call in progress (null when it's over).
 ### :param place: The call's place, or null.
 @inline
 @heap_check("on")
@@ -463,8 +463,8 @@ secret routine note_call_place(place: @SourceLocation) -> None
 secret routine note_call_place(place: @SourceLocation) -> None
     return
 
-### With the heap check on, where the `reallocate` or `deallocate` call that is running this thread's allocator
-### callback was made: the caller's line, for an allocator that crashes on a mistake (the checked heap's block freed
+### With the heap check on, where the `reallocate` or `deallocate` call that is running this thread's memory manager
+### callback was made: the caller's line, for a memory manager that crashes on a mistake (the checked heap's block freed
 ### twice). Null outside such a call, and always null with the heap check off.
 ### :returns: The place, or null.
 @heap_check("on")
@@ -510,7 +510,7 @@ needs T: typename
     copy_bytes(dst: raw_dst, src: raw_src, bytes: size)
     return
 
-# llvm.memcpy, so the alloc layer needs no libc: without an operating system, Freestanding.te supplies memcpy.
+# llvm.memcpy, so the memory layer needs no libc: without an operating system, Freestanding.te supplies memcpy.
 ### Copies `bytes` bytes from `src` to `dst` with `llvm.memcpy`.
 ### :param dst: The destination address.
 ### :param src: The source address.
@@ -524,13 +524,13 @@ secret routine copy_bytes(dst: Addr, src: Addr, bytes: U64) -> None
 # C strings (Standard/System/CSubSystem/CStr.te)
 # ============================================================
 
-### A NUL-terminated copy of some text, for C, in memory from an allocator: `text.to[CStr](alloc)`. It lends a
+### A NUL-terminated copy of some text, for C, in memory from a memory manager: `text.to[CStr](manager)`. It lends a
 ### `CStrView` with `to[CStrView]()` and gives the memory back when dropped.
 entity CStr
     storage: Memory[CChar]
 
-### A copy of some text in wide characters ending with a 0, for C, in memory from an allocator:
-### `text.to[CWStr](alloc)`. It lends a `CWStrView` with `to[CWStrView]()` and gives the memory back when dropped.
+### A copy of some text in wide characters ending with a 0, for C, in memory from a memory manager:
+### `text.to[CWStr](manager)`. It lends a `CWStrView` with `to[CWStrView]()` and gives the memory back when dropped.
 entity CWStr
     storage: Memory[CWChar]
 
@@ -552,7 +552,7 @@ routine @CStr.to[CStrView]() -> CStrView
     text: CStrView = me.storage.data.peek().to[CStrView]()
     return text
 
-### Gives the memory back to the allocator it came from.
+### Gives the memory back to the memory manager it came from.
 @track_caller
 routine @CStr.destruct() -> None
     drop me.storage
@@ -564,34 +564,35 @@ routine @CWStr.to[CWStrView]() -> CWStrView
     text: CWStrView = me.storage.data.peek().to[CWStrView]()
     return text
 
-### Gives the memory back to the allocator it came from.
+### Gives the memory back to the memory manager it came from.
 @track_caller
 routine @CWStr.destruct() -> None
     drop me.storage
     return
 
-### Copies me into memory from alloc and ends it with a NUL: an {CStr}, dropped when done.
-### :param alloc: The allocator the copy's memory comes from.
+### Copies me into memory from manager and ends it with a NUL: an {CStr}, dropped when done.
+### :param manager: The memory manager the copy's memory comes from.
 ### :returns: The NUL-terminated copy.
-### :throws: Crashes with `MemoryAllocationError` when the allocator fails.
+### :throws: Crashes with `MemoryAllocationError` when the memory manager fails.
 @track_caller
 @expensive("allocates a copy")
-routine @[Byte].to[CStr](alloc: @MemoryManager) -> CStr
+routine @[Byte].to[CStr](manager: @MemoryManager) -> CStr
     count: U64 = me.count
-    local buffer: @Memory[CChar] <- Memory[CChar].construct(count: count + 1, manager: alloc)
+    local buffer: @Memory[CChar] <- Memory[CChar].construct(count: count + 1, manager: manager)
     buffer.data.peek().to[@Byte]().copy(src: me.data, count)
     buffer.data.peek().stride(count).poke(0)
     return CStr(storage: steal buffer)
 
-### Converts me to wide characters in memory from alloc, ending with a 0: UTF-16 on Windows, UTF-32 elsewhere. An
+### Converts me to wide characters in memory from manager, ending with a 0: UTF-16 on Windows, UTF-32 elsewhere. An
 ### {CWStr}, dropped when done. A UTF-8 byte count bounds both unit counts, so one allocation is enough.
-### :param alloc: The allocator the copy's memory comes from.
+### :param manager: The memory manager the copy's memory comes from.
 ### :returns: The 0-terminated wide copy.
-### :throws: Crashes with `MemoryAllocationError` when the allocator fails.
+### :throws: Crashes with `MemoryAllocationError` when the memory manager fails.
 @track_caller
 @expensive("allocates a copy")
-routine @[Byte].to[CWStr](alloc: @MemoryManager) -> CWStr
-    local storage: @Memory[CWChar] <- Memory[CWChar].construct(count: me.count + 1, manager: alloc)
+routine @[Byte].to[CWStr](manager: @MemoryManager) -> CWStr
+    local storage: @Memory[CWChar] <- Memory[CWChar].construct(count: me.count + 1,
+        manager: manager)
     local units: @CWChar = storage.data.peek()
     local iter: @BytesCharsIter <- me.chars()
     local n: @U64 <- 0

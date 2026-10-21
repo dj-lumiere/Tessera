@@ -164,7 +164,7 @@ routine start() -> None
 - `local p: @T <- v` makes a slot for the routine call (a stack slot in practice) and stores `v` in it where the
   line stands. Its type comes from the binding, which is one of three: `@T` (a slot), `@[T]` (values in the
   frame, below), or `@Memory[T]` / `@Box[T]` with `at manager` (below). Anything else is a build error. The
-  contents are required: `local list: @List[S64] <- .construct(alloc)`, no `list_val` and no separate store. A
+  contents are required: `local list: @List[S64] <- .construct(manager)`, no `list_val` and no separate store. A
   slot that a routine fills later (an out parameter, `out.construct(...)`, an iterator's slot) starts as
   `local p: @T <- .hollow()`: `T.hollow()`, which every type has, is the all-zero value (`0`, `false`, a pointer to nothing, a
   collection with no memory, a choice's first member), and every `destruct` leaves it alone (`<- .hollow()` is a
@@ -190,7 +190,7 @@ routine start() -> None
   `getview()`, `to[@T]()`. `Box[T]` (`{at, manager,
   generation}`) and `Memory[T]` (`{data, count, manager, generation}`, `Types/Memory.te`) are memory TAKEN from a
   `MemoryManager`, and both are ENTITIES (Entities, below): never copied, kept in a slot
-  (`local m: @Memory[Byte] <- Memory[Byte].construct(count: 4, manager: alloc)`), every routine takes `me` by its address (`routine @Memory[T].load(...)`).
+  (`local m: @Memory[Byte] <- Memory[Byte].construct(count: 4, manager: manager)`), every routine takes `me` by its address (`routine @Memory[T].load(...)`).
   Read and written with `load` / `store` (`m.load(i)`, `m.store(index: i, value: v)`, `b.load()`, `b.store(v)`, the
   stored value taken over), and given back exactly once, with the statement `drop m`, by `return m`, or by handing it
   on with `steal m` to a routine that takes a `Memory` / `Box` by value (that routine gives it back then). `drop x`
@@ -204,8 +204,8 @@ routine start() -> None
   (destructs every value, then gives the memory back). `Array[T, COUNT]` is the run of values
   whose count is in the type, a value. `getview()` gives a `@[T]` of anything holding contiguous elements (a `Memory`,
   a `List`, an `Array` through a pointer, a `SliceWriter`, a `CStrView`). `@[T].construct(data, count)` wraps memory
-  from C (the count is yours to get right). The raw layer, `allocate[T](count, alloc)` /
-  `reallocate[T](p, count, alloc)` / `deallocate(p, alloc)`, is for node-based structures and C interop, with no
+  from C (the count is yours to get right). The raw layer, `allocate[T](count, manager)` /
+  `reallocate[T](p, count, manager)` / `deallocate(p, manager)`, is for node-based structures and C interop, with no
   stamp and no check. `@T` has no `free`. `dst.copy(src, count)` copies `count` values of `T` (memcpy, no overlap),
   and `src.copy_into(dst, count)` is the same copy from the source's side. On a `@Array[T, COUNT]` (or any type with
   its own `copy`) the type's routine wins, so generic code over `@T` uses `src.copy_into(dst, count)`.
@@ -316,7 +316,7 @@ routine start() -> None
   `C_HEAP` is `CHeapManager`'s table in every build (memory C frees, or C's malloc hands over). A page manager obeys
   `PageManageable`: `OsPageManager`, whose table is `PAGES` (whole pages, `alloc` puts one page in front that keeps
   the size). The tables are ready before `start`, and every allocating routine takes one as `@MemoryManager`:
-  `.construct(HEAP)`, `alloc: PAGES`, `local t: @MemoryManager <- HEAP.peek()` for a copy in a slot. A `StackManager`
+  `.construct(HEAP)`, `manager: PAGES`, `local t: @MemoryManager <- HEAP.peek()` for a copy in a slot. A `StackManager`
   (`bottom`, `top`: `size()`, `remaining()`, `used()`, `holds(at)`) manages one flow's stack: it hands out `local`
   slots by moving the stack pointer, so it has no table. `StackManager.current()` is the running flow's: a fiber's
   inside a fiber, else the thread's own stack, whose bounds the OS gives (without an OS, `__stack_bottom` to
@@ -638,13 +638,13 @@ routine start() -> None
 
 - `routine name(a: T, p: @U) -> R`. A routine on a type takes `me` without writing it, and the header says how:
   `routine Type.name(...)` takes a copy (`me` is a `Me`), `routine @Type.name(...)` the address (`me` is a `@Me`),
-  and `common routine Type.name(...)` takes none and is typewise: `List[S64].construct(alloc)`, `Job.compare(a, b)`.
+  and `common routine Type.name(...)` takes none and is typewise: `List[S64].construct(manager)`, `Job.compare(a, b)`.
   Writing `me` among the parameters is a build error (`tessera migrate --step receiver` rewrites the old spelling),
   `common` on a routine on no type too. Modifier order: `secret common routine`. `@[T]` is the span type, so
   `routine @[Byte].trim()` is on a span and `routine @@[Byte].clear()` takes a span's address. `me` and `Me` are
   reserved: no parameter, binding, or slot is named `me`, and no type is named `Me`. A routine meeting a protocol (`eq`, `compare`, `hash`) takes `me` as the protocol does. Where the
   type is expected (a binding, an argument, a carried value, a return), a leading `.` leaves it out:
-  `list: List[S64] = .construct(alloc)`, `return .hollow()`. Not at the head of a chain or as a statement.
+  `list: List[S64] = .construct(manager)`, `return .hollow()`. Not at the head of a chain or as a statement.
 - **`@T` or `T`** (for `me` and any parameter): take `@T` when the routine changes the value in place, or
   when copying it is unwanted (a large value); take `T` when a copy is fine and the value isn't changed. There are no
   compound assignments (`+=`, `add_assign`): change a value in memory by load, act, store —
@@ -740,13 +740,13 @@ routine start() -> None
   routines) and `sizeof` stay `U64` byte counts, and a count of elements is a count.
 - Text is a `@[Byte]` (UTF-8 by convention, unchecked: `is_utf8` checks, and `chars()` reads a bad sequence as
   U+FFFD), and owned text is a `Memory[Byte]`. The text routines are on `@[Byte]` (`Types/ByteSpan.te`:
-  `find`, `has`, `has_prefix`, `slice(start, end)`, `byte_at`, `bytes()`, `chars()`, `concat(a, b, alloc)`, `eq`,
+  `find`, `has`, `has_prefix`, `slice(start, end)`, `byte_at`, `bytes()`, `chars()`, `concat(a, b, manager)`, `eq`,
   `compare`, `hash`, ...). A literal is a `@[Byte]` of the program image, `@[Byte].construct(data, count)`
   wraps bytes from C, and text made from other text (`slice`, `getslice`, the iterators, `buf.getview()` of a
   `List[Byte]`) views the same memory. Text a routine takes memory for (`@[Byte].concat`, `Console.ask_line`,
   `OsFileManager.read_all`, `OsEnvironment.variable`, ...) comes back as a `Memory[Byte]`: keep it in a slot and give it
   back once (`local line: @Memory[Byte] <- Console.ask_line()`, then `drop line`), and observe a `Maybe` or `Check` of one
-  with `when` (`when try Console.ask_line(alloc)` then `is Memory[Byte] as line => ...`). A Memory lends itself to a text routine at
+  with `when` (`when try Console.ask_line(manager)` then `is Memory[Byte] as line => ...`). A Memory lends itself to a text routine at
   a receiver or an argument (`line.find("=")`, `out.write("{line.getview()}")` in a template). Escapes: `\xXX` is one byte (strings, `b'..'`), `\uXXXXXX` one
   character by exactly six hex digits (strings, `'..'`), so `"\u01F600"` equals `"\xF0\x9F\x98\x80"`.
   Source files must be UTF-8.
@@ -754,8 +754,8 @@ routine start() -> None
   is, and a NUL-terminated `@Byte` where a pointer is. Declare C string parameters as `s: CStrView`. A `CStrView` is
   `(data: @CChar)` (C's `char`, `S8` or `U8` as the target has it), symmetric with `CWStrView` over `@CWChar`, so
   a pointer becomes one with `p.to[CStrView]()` (on a `@CChar` or a `@Byte`). A `CStrView` stays one pointer (C's ABI), so
-  it carries no allocator, and `c.getview()` is its text as a `@[Byte]`. A `@[Byte]` has no terminator: bind
-  `s.to[CStr](alloc)` in a local slot (a copy that lends `to[CStrView]()` and is given back with `drop`) or use
+  it carries no memory manager, and `c.getview()` is its text as a `@[Byte]`. A `@[Byte]` has no terminator: bind
+  `s.to[CStr](manager)` in a local slot (a copy that lends `to[CStrView]()` and is given back with `drop`) or use
   `buf.to[CStrView]()` on a `List[Byte]`.
 
 **Errors**
@@ -1076,22 +1076,22 @@ takes the manager, one built from pieces takes the manager of the piece it is bu
 the pieces over (a span literal written in place):
 `local date: @TextPattern <- TextPattern.of([capture("year", digit(HEAP).repeat(4)), text("-", HEAP)], HEAP)`, then
 `drop date`. Tessera presets fold only literals, so a pattern is compiled at run time: make it once.
-- Pieces: `text(t, alloc)`, `digit(alloc)`/`letter`/`space`/`word_char` (ASCII), `unicode_digit(alloc)`/... (every
-  script), `any_char(alloc)`, `one_of(chars, alloc)`, `none_of(chars, alloc)`, `char_range(from:, to:, alloc)`,
-  `start_of_text(alloc)`, `end_of_text`, `start_of_line`, `end_of_line`, `word_boundary`.
+- Pieces: `text(t, manager)`, `digit(manager)`/`letter`/`space`/`word_char` (ASCII), `unicode_digit(manager)`/... (every
+  script), `any_char(manager)`, `one_of(chars, manager)`, `none_of(chars, manager)`, `char_range(from:, to:, manager)`,
+  `start_of_text(manager)`, `end_of_text`, `start_of_line`, `end_of_line`, `word_boundary`.
 - Repetition: `p.repeat(4)`, `p.repeat(min: 2, max: 4)`, `p.repeat_at_least(1)`, `optional(p)`, `any_number_of(p)`,
   `one_or_more(p)`, all greedy (no shortest form). To take text up to a delimiter repeat a piece that can't be it
-  (`any_number_of(none_of("<", alloc))`).
+  (`any_number_of(none_of("<", manager))`).
 - `either_longer([...])` / `either_shorter([...])` (the rule is in the name, the first written wins a tie),
-  `capture("name", p)`, `ignoring_case(p)`, `TextPattern.of(pieces, ignore_case: true, alloc)`.
-- Searches on `@TextPattern` (UTF-8 `@[Byte]`, byte positions): `matches(text)`, `find(text, alloc) -> Maybe[TextMatch]`,
-  `find_all(text, alloc) -> List[TextMatch]`, `replace(text, with:, alloc) -> Memory[Byte]`, `split(text, alloc) ->
+  `capture("name", p)`, `ignoring_case(p)`, `TextPattern.of(pieces, ignore_case: true, manager)`.
+- Searches on `@TextPattern` (UTF-8 `@[Byte]`, byte positions): `matches(text)`, `find(text, manager) -> Maybe[TextMatch]`,
+  `find_all(text, manager) -> List[TextMatch]`, `replace(text, with:, manager) -> Memory[Byte]`, `split(text, manager) ->
   List[@[Byte]]`. A `TextMatch` (an entity, drop it) views the text and the pattern: `start()`, `end()`, `text()`,
   `group(name)` (failable: `CaptureNameError` for no capture of that name, `AbsentValueError` for one that took no part,
   so `try m.group(name)` gives `None` for both).
-- `BytesPattern` with `byte(v, alloc)`, `bytes(b, alloc)`, `any_byte`, `byte_range(from:, to:, alloc)`,
+- `BytesPattern` with `byte(v, manager)`, `bytes(b, manager)`, `any_byte`, `byte_range(from:, to:, manager)`,
   `start_of_bytes`, `end_of_bytes`; `BytesMatch.bytes()`.
-- `TextPattern.from_regex(text, alloc)` is failable: it throws `PatternSyntaxError`, which `check` receives
+- `TextPattern.from_regex(text, manager)` is failable: it throws `PatternSyntaxError`, which `check` receives
   (`write_regex_error(error, out)` writes the message with the position). A bare call stops on a bad expression.
   Backreferences, lookaround and `*?` are refused.
 - The engine (`Engine.te`): a Thompson simulation finds the leftmost start, then a memoized walk (each instruction
@@ -1105,7 +1105,7 @@ Format through `Standard/System/Text` (`Format.te`), not printf. printf is for C
 - The console is `Console` (`Standard/Os`): `Console.show("x = {x}")` writes one line to standard output,
   `Console.alert("...")` one line to standard error, and `end:` changes the line end (`Console.show("loading",
   end: "")`, a string literal). Both expand their template like a Writer's `write` (below). Standard input:
-  `Console.ask[T]()`, `Console.ask_line()` / `ask_line(alloc)`, `ask_word`, `ask_bytes(n)`, `ask_all`, all through one
+  `Console.ask[T]()`, `Console.ask_line()` / `ask_line(manager)`, `ask_word`, `ask_bytes(n)`, `ask_all`, all through one
   buffer the process shares. `ask_line` and `ask_word` are failable and throw `EndOfInputError` at the end of the
   input, so `try Console.ask_line()` gives `Maybe[Memory[Byte]]`, `None` there (a blank line is empty): a loop to the end
   uses that. Text comes back as a `Memory[Byte]` from the manager: `drop line` gives it back. There are no `In` / `Out` /
@@ -1146,9 +1146,9 @@ Format through `Standard/System/Text` (`Format.te`), not printf. printf is for C
 ## Collections
 
 All in `Standard/Collections/`, documented in `../Tessera-Wiki/docs/Collections.md`. They keep their
-storage in a `Memory[T]`: a `List` is `storage` (a Memory whose count is the capacity) and `count`. `construct(alloc)` keeps
-the allocator (`construct()` with `Standard/Os` uses the default heap), and `drop list` releases storage and keeps
-the allocator, so the collection can be used again. Element access is
+storage in a `Memory[T]`: a `List` is `storage` (a Memory whose count is the capacity) and `count`. `construct(manager)` keeps
+the memory manager (`construct()` with `Standard/Os` uses the default heap), and `drop list` releases storage and keeps
+the memory manager, so the collection can be used again. Element access is
 `getitem(i)` / `setitem(i, v)` (the name says what is fetched), `getslot(i)` the checked address, `swap(first, second)`
 (the two elements trade places in place, moved, never copied, so entity elements swap too, a no-op for the same index,
 and an index past the end crashes like `getitem`: on `List`, `CircularList`, `Array` through its pointer, `@[T]`, and
@@ -1220,7 +1220,7 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 `t.check_finished()` to look without waiting or `t.wait_finished()` / `t.wait_finished_for(timeout) -> Bool` (`timeout` a `Duration`) to wait,
 `r: S64 = t.retrieve()` (failable), then more work on the same ticket or `t.give_back()`. `T` is the result type, `Thread[None]`
 for none. `args` is nothing, one value, or a tuple of two to four (`args: (a, b)`), copied into a block from the
-manager's allocator. A pointer argument must outlive the work, so wait before releasing what it points to. One piece
+memory manager the thread manager holds. A pointer argument must outlive the work, so wait before releasing what it points to. One piece
 of work at a time: `put_work` or `give_back` while it runs crashes with `TicketBusyError`, a ticket used after
 `give_back` with `TicketGivenBackError`, a ticket destructed before `give_back` with `TicketNotGivenBackError`, and
 `retrieve` with no work with `NoWorkError`. `cancel()` asks the work to stop: the work asks `cancel_requested()` where
@@ -1234,23 +1234,23 @@ code waiting on several tickets at once.
   cancelled. Then clean up and return. Plain `wait_finished` / `wait_finished_for` are not cancellable. Outside a
   ticket's work nothing cancels them.
 - **Lists of tickets**: `List[Thread[T]]` (Standard/Os), `List[Fiber[T]]` and `List[Job[T]]` (Standard/Fiber) have
-  `wait_all_finished()`, `retrieve_all()` / `retrieve_all(alloc)` (results in list order, stops on a failure as a bare
+  `wait_all_finished()`, `retrieve_all()` / `retrieve_all(manager)` (results in list order, stops on a failure as a bare
   `retrieve` does), `give_back_all()` (and empties the list), `wait_any_finished() -> U64` (the position of a finished one,
-  crashes on an empty list), `cancel_all()`, `take_finished()` / `take_finished(alloc)` (moves finished tickets out
+  crashes on an empty list), `cancel_all()`, `take_finished()` / `take_finished(manager)` (moves finished tickets out
   into a new list, both keep their order), and `give_back_finished()`.
 - **Threads** (`Standard/Os/Thread.te`, what both tickets share in `Work.te`, who waits in `Waiter.te`):
   `get_thread[T]()` takes one from `DEFAULT_THREADS` (the hosted manager, OS threads,
   blocks from `HEAP`, stacks the OS's), `get_thread[T](manager)` from another. A `ThreadManager` is a record of a launch routine,
-  its state, the idle threads, and an allocator: `ThreadManager.construct(alloc)` is OS threads with another allocator,
-  `ThreadManager.construct(launch_fn, state, alloc)` a program's own (`launch_fn` starts a thread running `(entry,
+  its state, the idle threads, and a memory manager: `ThreadManager.construct(manager)` is OS threads with another memory manager,
+  `ThreadManager.construct(launch_fn, state, manager)` a program's own (`launch_fn` starts a thread running `(entry,
   arg)`, false when none starts), and `drop manager` ends its idle threads (give every ticket back first). A manager that
   starts no thread crashes `get_thread` with `TaskSpawnError`. `manager.launch_unwatched(entry, arg)` (entry takes an
   `@T`, `arg` is one and outlives the thread) starts a thread nobody waits for: only for a runtime's own threads that
   live as long as the program. `cpu_count()`.
 - **Fibers** (`Standard/Fiber/FiberManager.te`): `FIBERS.get_fiber[T]()`, the same flow and crashes. `FIBERS` is each thread's own
   `FiberManager`, made on first use (`64kib` stacks on pages from `PAGES`), and on a thread ticket it goes when the
-  work is over. `FiberManager.construct(stack_size, stacks, alloc)` (`stack_size` a `ByteSize`, `stacks` a page
-  manager such as `PAGES`) makes another, `drop manager` frees it. Each fiber's stack is `take_stack(size, pages)`:
+  work is over. `FiberManager.construct(stack_size, stack_manager, manager)` (`stack_size` a `ByteSize`, `stack_manager` a
+  page manager such as `PAGES`) makes another, `drop manager` frees it. Each fiber's stack is `take_stack(size, pages)`:
   whole pages, the one below them closed with `protect` as a guard page, a `StackManager` on the rest, and
   `give_back_stack(stack, pages)` returns them (a manager keeps a fiber's stack for its next ticket). A manager runs its fibers on ONE thread, the one that drives it, and never moves
   them: cooperative, a fiber runs until it yields, parks, sleeps, waits, or its work finishes, so its fibers share
@@ -1319,7 +1319,7 @@ waited-for thing knows is a `Waiter` (`current_waiter()`: a fiber parks through 
 own), with `park()` / `park_until(deadline)` / `wake()`. All in Standard/Os.
 
 **Channels** (Standard/Os/Channel.te): `Channel[T]` (one receiver) and `SharedChannel[T]` (many, each value to
-one), shared as `@Channel[T]`: `local ch: @Channel[U64] <- .construct(capacity: 8)` (or `construct(capacity, alloc)`),
+one), shared as `@Channel[T]`: `local ch: @Channel[U64] <- .construct(capacity: 8)` (or `construct(capacity, manager)`),
 the failable `send(value)` (waits while full), `send_if_room(value) -> Bool` (never waits), the failable
 `receive() -> T` (waits while empty, receive it with `when check ch.receive()`, `is T as v => ...`,
 `is ChannelClosedError => ...`, `is CancelRequested => ...`), `drop ch`. Both throw `ChannelClosedError` or
@@ -1344,7 +1344,7 @@ On any other target a program that switches fibers fails to link (`tessera_fiber
 
 **Files.** `File.at(path)` and `Directory.at(path)` say where (`@[Byte]`, UTF-8, the W calls on Windows) and nothing
 else: their only routines read the path's text (`name`, `stem`, `extension`, `parent`, and a Directory's
-`file(name, alloc)` / `go_to(name, alloc)`). A file manager manages the files of one partition, and `FileManager[T]` is
+`file(name, manager)` / `go_to(name, manager)`). A file manager manages the files of one partition, and `FileManager[T]` is
 that role (a protocol: `make_file`, `read_all`, `write_all`, `rename`, `delete`, `list`). `OsFileManager` is the OS's:
 everything done at a path is an `OsFileManager` routine, called on the type (there is no OsFileManager value), taking
 `at:` (and `from:` / `to:` for a copy) as `@File` / `@Directory`, and one that can fail for a reason the caller handles
@@ -1355,7 +1355,7 @@ is failable and throws one of `FsError`'s crashables: a bare call that fails sto
   which empties it), `make_directory(at, parents)` (`parents` is mkdir -p, a directory already there is fine).
   Nothing else makes a file: `open_write`, `open_append`, `write_all`, `set_size`, and `storage` on a missing file
   throw `NotFoundError`.
-- reading and writing: `read_all(at, alloc)` (a `Memory[Byte]`, drop it), `write_all(at, data)` (the whole content,
+- reading and writing: `read_all(at, manager)` (a `Memory[Byte]`, drop it), `write_all(at, data)` (the whole content,
   the file emptied first).
 - opening: `open_read` / `open_write` (emptied) / `open_append` / `open_read_write` give a `FileHandle` (keep it in a
   local slot: `read_bytes`, `write_all`, `h.write("...")`, `seek`, `size`, `set_size`, `sync`, all failable, `close`,
@@ -1366,20 +1366,20 @@ is failable and throws one of `FsError`'s crashables: a bare call that fails sto
   slot, `data()`, the failable `flush()`, `unmap()`). A cell past `count()` crashes with `IndexOutOfBoundsError`, a
   write to one mapped without `write` and a `Char` cell that isn't a Unicode scalar with `InvalidValueError`. It never
   grows the file: `set_size` first.
-- deleting, renaming, moving, copying: `delete(at)` (a file, or an empty directory), `delete_all(at, alloc)`,
+- deleting, renaming, moving, copying: `delete(at)` (a file, or an empty directory), `delete_all(at, manager)`,
   `rename(at, to: name, replacing)` (the name only, a file or a directory: an empty name, ".", "..", or a separator is
-  `InvalidPathError`), `move(at, into: directory, replacing, alloc)` (keeps the name), `copy(from, to, replacing)`
+  `InvalidPathError`), `move(at, into: directory, replacing, manager)` (keeps the name), `copy(from, to, replacing)`
   (the bytes copied). With `replacing` false, something already there throws `AlreadyExistsError`. A move is a copy
   then a delete: on one partition the OS renames instead, between two the file (a directory with everything in it)
   is copied, then the original deleted. A failed copy deletes nothing and removes the partial copy, a failed delete
   keeps both and throws `OriginalKeptError`, and nothing promises that a move happens all at once.
 - asking: `is_present(at)` (anything there), `is_file(at)`, `is_directory(at)`, `metadata(at)` (`kind`, `size`, times
-  in ns, `readonly`), `link_metadata(at)`, `is_accessible(at, access)`, `partition(at, alloc)` (the `PartitionManager`
+  in ns, `readonly`), `link_metadata(at)`, `is_accessible(at, access)`, `partition(at, manager)` (the `PartitionManager`
   the path is on).
 - setting: `set_readonly(at, readonly)`, `set_size(at, size)`.
 - listing: `list(at, iter)` starts a `DirIter` (a local slot, `local iter: @DirIter <- .hollow()`), then
   `each entry in iter` (or `try iter.emit()` until `None`), then `iter.close()`.
-- paths: `absolute(at, alloc)`, `canonical(at, alloc)`.
+- paths: `absolute(at, manager)`, `canonical(at, manager)`.
 
 `FsError` is a `variant` of the crashables a file system routine throws: `NotFoundError`, `NotEnoughPermissionError`,
 `AlreadyExistsError`, `NotADirectoryError`, `IsADirectoryError`, `DirectoryNotEmptyError`, `CrossDeviceError`,
@@ -1388,15 +1388,15 @@ device couldn't read or write: a bad sector, a failing disk), `MemoryAllocationE
 OS's own). `is FsError as e` on a `Check` takes any of them. With an arm for one of them, take the others with
 `else as e` (two arms can't observe one crashable).
 
-Each routine that takes `alloc` has an overload without it that uses the default heap. A routine that hands text back
-takes an allocator and returns a `Memory[Byte]` from it (`read_all`, `OsEnvironment.variable`): give it back with
+Each routine that takes `manager` has an overload without it that uses the default heap. A routine that hands text back
+takes a memory manager and returns a `Memory[Byte]` from it (`read_all`, `OsEnvironment.variable`): give it back with
 `drop`. A `File` and a `Directory` are entities: one that makes a path (`file`, `go_to`, `absolute`, `canonical`,
 OsEnvironment's directories) returns a `File` / `Directory` whose path is held in a `Memory[Byte]`,
 kept in a slot and given back with `drop file` / `drop dir` (which gives nothing back for a path it only views, such
 as a literal's):
 
 ```tessera
-local notes: @File <- dir.file(name: "notes.txt", alloc)
+local notes: @File <- dir.file(name: "notes.txt", manager)
 OsFileManager.make_file(at: notes, replacing: false)
 OsFileManager.write_all(at: notes, data: "first line\n")
 drop notes
@@ -1406,32 +1406,32 @@ drop notes
 one storage device, a `PartitionManager` one partition on it, and a file manager the file system on one partition: a
 partition has exactly one file manager, and a second one over a partition that has one fails loudly (on an OS, the
 OS's one file system per volume). With an OS they are what the OS reports, read only, entities holding `Memory[Byte]`
-names (drop them, or the list): `StorageManager.list(alloc)` (`name`, `size`; on Linux /sys/block, on macOS the disks
-of the mounted file systems, empty on Windows, which names them only to an administrator), `PartitionManager.list(alloc)`
+names (drop them, or the list): `StorageManager.list(manager)` (`name`, `size`; on Linux /sys/block, on macOS the disks
+of the mounted file systems, empty on Windows, which names them only to an administrator), `PartitionManager.list(manager)`
 (`name`, `device`, `mounted_at`, `file_system`, `size`, and `directory()`; Linux /sys/class/block, macOS getfsstat,
-Windows the drive letters), and `OsFileManager.partition(at, alloc)`. Making a partition or a file system isn't
+Windows the drive letters), and `OsFileManager.partition(at, manager)`. Making a partition or a file system isn't
 there yet.
 
 **The environment.** `OsEnvironment` (Standard/Os) reads what the OS gave the process and changes none of it:
 `argument_count()` and `argument(index)` (the program's own name left out, a borrowed `@[Byte]`, UTF-8 on Windows; the
-builder's `main` hands them over through `tessera_set_arguments(argc, argv)`), `variable(name, alloc)` (a
-`Maybe[Memory[Byte]]` asked of the OS, so on Windows a name's case doesn't matter), `variables(alloc)` (a snapshot,
-a `List[EnvironmentEntry]` of `name` / `value` memory), and the failable `working_directory(alloc)`,
-`temp_directory(alloc)`, `home_directory(alloc)`. There is no setting a variable or the working
+builder's `main` hands them over through `tessera_set_arguments(argc, argv)`), `variable(name, manager)` (a
+`Maybe[Memory[Byte]]` asked of the OS, so on Windows a name's case doesn't matter), `variables(manager)` (a snapshot,
+a `List[EnvironmentEntry]` of `name` / `value` memory), and the failable `working_directory(manager)`,
+`temp_directory(manager)`, `home_directory(manager)`. There is no setting a variable or the working
 directory: a child process gets its own through `ProcessOptions` (`directory`, `env`), and code that works elsewhere
 carries that `Directory`. `OsEntropy.fill(buffer, count)` / `OsEntropy.next_u64()` are the OS's random bits (getrandom,
 arc4random_buf, ProcessPrng), the source of the hash key and `Xoshiro256.from_entropy()`.
 
 **Processes.** `ProcessManager` creates processes and reaps them: `ProcessManager.create_process(program, args,
-options, alloc)` (looked up on PATH, `args` a `@[@[Byte]]`) and `ProcessManager.create_shell_process(command,
-options, alloc)` create one, wait for it to end, reap it, and return a `ProcessOutput`. Both are failable and throw
+options, manager)` (looked up on PATH, `args` a `@[@[Byte]]`) and `ProcessManager.create_shell_process(command,
+options, manager)` create one, wait for it to end, reap it, and return a `ProcessOutput`. Both are failable and throw
 one of `ProcessError`'s crashables (`NotFoundError`, `NotEnoughPermissionError`, `InvalidArgumentError`,
 `MemoryAllocationError`, `IoError`) when the program can't start or its output can't be captured. The output is an `ExitStatus`
 (`variant ExitStatus / Exited / Signaled` over the records `Exited(code: S32)` and `Signaled(signal: S32)`, with
 `.code()`, `.is_success()`) and the captured `stdout` / `stderr` (`Memory[Byte]`). A `ProcessOutput` is an entity:
 `local out: @ProcessOutput <- ProcessManager.create_shell_process(...)` or `when check ProcessManager.create_shell_process(...)`, then `drop out`. `ProcessOptions.default()` captures both and gives the child the null device as input. Set
 `directory`, `env` / `env_count` (overrides merged into this process's environment), and each stream's mode.
-`OsEnvironment.variable(name, alloc)` reads a variable (`None` when it isn't set), `ProcessManager.exit_process(status)`
+`OsEnvironment.variable(name, manager)` reads a variable (`None` when it isn't set), `ProcessManager.exit_process(status)`
 ends this process at once, and
 `set_exit_code(status)` sets the status `start` returning ends it with.
 
@@ -1440,7 +1440,7 @@ ends this process at once, and
 `SliceWriter` or `List[Byte]`, the memory protocols) and `Standard/Collections` check there. `Standard/Os` drops out of the build, so importing it or naming anything in it is one
 build error ("Standard/Os needs an operating system ..."); there's no `Out`, files, threads, `@threadlocal`, fiber `FiberManager` (`Standard/Fiber`'s
 `switch_stack` and `initial_stack` are there, which `tests/freestanding_fiber` switches stacks with),
-`HEAP`, `PAGES`, or `construct()` without an allocator. The program passes the table of a manager of its own if it
+`HEAP`, `PAGES`, or `construct()` without a memory manager. The program passes the table of a manager of its own if it
 allocates (a type that obeys `MemoryManageable`, such as a bump arena over a buffer, and `arena.to[MemoryManager]()`).
 
 The build names the board: `[target] board = "raspi4b"` in config.toml (or `--board raspi4b` on the command line) is
@@ -1533,7 +1533,7 @@ routine, block, or statement it wrote: debug information and build errors then p
 **Naming conversions.** `to[T]` is the standard spelling of a type conversion: a routine whose job is turning a
 value into another type is the method `x.to[T]()` on the type it converts from, the target a fixed type argument
 (each pair of types is its own routine, `routine S32.to[S64]`): `n.to[S64]()`, `x.to_wrap[U8]()`, `arr.to[@T]()`,
-`p.to[@U]()`, `b.to[U8]()` on a `Byte`, `s.to[CStr](alloc)` / `s.to[CWStr](alloc)` on a `@[Byte]` (a conversion may take
+`p.to[@U]()`, `b.to[U8]()` on a `Byte`, `s.to[CStr](manager)` / `s.to[CWStr](manager)` on a `@[Byte]` (a conversion may take
 parameters), `buf.to[CStrView]()` on a `List[Byte]`, `m.to[@T]()` on a `Memory` or a `@[T]`,
 `a.to[Vector[B32, 4]]()` on an `Array`, `n.to[B128Big]()`, `f.to[B128Extended]()`. Its variants keep the family
 (`to_wrap`, `to_clamp`, `to_unchecked`, `to_nearest[S64]()` on a `B128Extended`). There is no `to_s64`, `as_[type]`,
@@ -1582,10 +1582,12 @@ no `null`: writing it is a build error that asks for `.hollow()` (`tessera migra
 an argument to a generic routine), name it, `Ptr[Node].hollow()`, `Addr.hollow()`, `T.hollow()`. A default that
 isn't empty is named for what it is: `ProcessOptions.default()` captures both streams.
 
-**The allocator comes last.** A routine that takes an `@MemoryManager` takes it as its last parameter:
-`List[T].construct(alloc)`, `Memory[T].construct(count, manager)`, `allocate[T](count, alloc)`,
-`deallocate(p, alloc)`, `Console.ask_line(alloc)`, `ThreadManager.construct(alloc)`. A second allocator for another
-job goes just before it. So the form without the allocator
+**The memory manager comes last.** A routine that takes an `@MemoryManager` takes it as its last parameter:
+`List[T].construct(manager)`, `Memory[T].construct(count, manager)`, `allocate[T](count, manager)`,
+`deallocate(p, manager)`, `Console.ask_line(manager)`, `ThreadManager.construct(manager)`. The parameter is
+`manager: @MemoryManager` (not `alloc`: `tessera migrate --step manager` renames it, its uses and the `alloc:` labels).
+A second memory manager for another job goes just before it, and each is named for what it manages
+(`FiberManager.construct(stack_size, stack_manager, manager)`, a `scratch_manager`). So the form without the memory manager
 (`construct()` with `Standard/Os`) is the same call with the last argument left off.
 
 **Named arguments.** A call to a routine taking three or more arguments besides `me` names each one, in the order
@@ -1603,8 +1605,8 @@ parameters, `me` not counted, takes a record instead: one record parameter, or a
 clearly don't belong to the group, so the count drops below five. The record is named for what the group is, its
 fields in reading order and documented, and one record serves every routine that passes the same group. Its literal
 names each field at the call (`fill_rect(canvas, area: Rect(left: 10, top: 20, width: 300, height: 200), color: orange)`), and a
-value that already is the group passes whole. A pointer and a count that go together are a `@[T]`. The allocator
-counts too: a routine that reaches five only through it still takes a record for the rest, the allocator staying the
+value that already is the group passes whole. A pointer and a count that go together are a `@[T]`. The memory manager
+counts too: a routine that reaches five only through it still takes a record for the rest, the memory manager staying the
 separate last parameter. Exempt: `@external` declarations, `@export` routines and `@callconv` callbacks (a C ABI sets
 their signature), generated code (files under a `generated` directory, routines with `@source`, what Anvila's Tessera
 emitter writes), and `Callable` types. `tessera lint` warns on the rest (`check`, `build`, `run` too, for the
@@ -1654,7 +1656,7 @@ array presets (`K.getitem(i)`, with `preset K: @Array[T, COUNT] <- [...]`), and 
 **Construction and destruction.** A type that acquires something (memory, a handle) pairs `construct` with
 `destruct`:
 
-- `Type.construct(...) -> Me` is the constructor, a typewise routine: `List[S64].construct(alloc)`,
+- `Type.construct(...) -> Me` is the constructor, a typewise routine: `List[S64].construct(manager)`,
   `ListIter[T].construct(list)`, `CountWriter.construct()`. A type too large to return by value constructs in
   place instead, through a pointer: `out.construct(inner)` for `BufWriter[T]`.
 - `routine @T.destruct()` is the destructor: it releases what `construct` acquired (and what the value acquired since)
@@ -1664,7 +1666,7 @@ array presets (`K.getitem(i)`, with `preset K: @Array[T, COUNT] <- [...]`), and 
   yours to release. `Array[T, COUNT]` acquires nothing, so it has no `destruct()`.
 - Other ways to make a value are named for what they make: `Console.output()`, `Xoshiro256.from_seed(seed)`,
   `FormatSpec.zero_padded(6)`.
-- `deallocate(p, alloc)` (the raw layer) is not a destructor: it hands a block of memory back to its allocator.
+- `deallocate(p, manager)` (the raw layer) is not a destructor: it hands a block of memory back to its memory manager.
   `drop m` on a `Memory[T]` / `Box[T]` is the way to do it for memory taken from a manager.
 
 ## Style

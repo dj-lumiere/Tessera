@@ -175,7 +175,7 @@ secret routine spawn_error(e: CInt) -> ProcessError
 
 # -- what the child is given -----------------------------------------------------------
 
-### The argument vector, the environment (null to inherit), and the directory (null to stay), in memory from alloc.
+### The argument vector, the environment (null to inherit), and the directory (null to stay), in memory from manager.
 @target(os: ("linux", "macos"))
 secret record Prepared
     argv: @@Byte  # the program and the arguments, then null
@@ -210,29 +210,29 @@ secret common routine Prepared.empty() -> Me
     return Me(argv: .hollow(), argc: 0, envp: .hollow(), own_first: 0, own_count: 0,
         directory: .hollow())
 
-### `text` with a NUL after it, in memory from `alloc`.
+### `text` with a NUL after it, in memory from `manager`.
 ### :param text: The bytes to copy.
-### :param alloc: The allocator for the copy.
+### :param manager: The memory manager for the copy.
 ### :returns: The NUL-terminated copy, or null when the allocation fails.
 @target(os: ("linux", "macos"))
-secret routine c_string(text: @[Byte], alloc: @MemoryManager) -> @Byte
+secret routine c_string(text: @[Byte], manager: @MemoryManager) -> @Byte
     n: U64 = text.count()
-    p: @Byte = allocate[Byte](count: n + 1, alloc)
+    p: @Byte = allocate[Byte](count: n + 1, manager)
     if p.is_hollow()
         return .hollow()
     p.copy(src: text.data, count: n)
     p.stride(n).poke(0x00)
     return p
 
-### "name=value" with a NUL after it, in memory from `alloc`.
+### "name=value" with a NUL after it, in memory from `manager`.
 ### :param v: The variable.
-### :param alloc: The allocator for the entry.
+### :param manager: The memory manager for the entry.
 ### :returns: The NUL-terminated entry, or null when the allocation fails.
 @target(os: ("linux", "macos"))
-secret routine env_entry(v: EnvVar, alloc: @MemoryManager) -> @Byte
+secret routine env_entry(v: EnvVar, manager: @MemoryManager) -> @Byte
     n: U64 = v.name.count()
     m: U64 = v.value.count()
-    p: @Byte = allocate[Byte](count: n + m + 2, alloc)
+    p: @Byte = allocate[Byte](count: n + m + 2, manager)
     if p.is_hollow()
         return .hollow()
     p.copy(src: v.name.data, count: n)
@@ -242,30 +242,30 @@ secret routine env_entry(v: EnvVar, alloc: @MemoryManager) -> @Byte
     return p
 
 ### Frees every string and array a prepared start owns, whether it was made completely or not.
-### :param alloc: The allocator they came from.
+### :param manager: The memory manager they came from.
 @target(os: ("linux", "macos"))
-secret routine @Prepared.release(alloc: @MemoryManager) -> None
+secret routine @Prepared.release(manager: @MemoryManager) -> None
     each i in 0 til me.argc.peek()
         arg_slot: @@Byte = me.argv.peek().stride(i)
-        deallocate(data: arg_slot.peek(), alloc)
+        deallocate(data: arg_slot.peek(), manager)
 
     while true with i: U64 = 0
         envp2: @@Byte = me.envp.peek()
         if envp2.is_hollow() or i == me.own_count.peek()
             break
         entry_slot: @@Byte = envp2.stride(me.own_first.peek() + i)
-        deallocate(data: entry_slot.peek(), alloc)
+        deallocate(data: entry_slot.peek(), manager)
         continue with i: i + 1
     argv: @@Byte = me.argv.peek()
     if not argv.is_hollow()
-        deallocate(data: argv, alloc)
+        deallocate(data: argv, manager)
     envp: @@Byte = me.envp.peek()
     if not envp.is_hollow()
-        deallocate(data: envp, alloc)
+        deallocate(data: envp, manager)
     dir: @Byte = me.directory.peek()
     if dir.is_hollow()
         return
-    deallocate(data: dir, alloc)
+    deallocate(data: dir, manager)
     return
 
 ### Builds everything the child needs before fork, so the child allocates nothing: the argument vector, the merged
@@ -273,23 +273,23 @@ secret routine @Prepared.release(alloc: @MemoryManager) -> None
 ### :param program: The program to run.
 ### :param args: The arguments, not including the program.
 ### :param options: The directory and environment overrides.
-### :param alloc: The allocator for the strings and arrays.
+### :param manager: The memory manager for the strings and arrays.
 ### :returns: `true` on success, `false` when an allocation failed.
 @target(os: ("linux", "macos"))
 secret routine @Prepared.make(program: @[Byte], args: @[@[Byte]], options: ProcessOptions,
-    alloc: @MemoryManager) -> Bool
+    manager: @MemoryManager) -> Bool
     local arg_count: U64 = args.count()
     local first: @U64 <- .hollow()
 
     me.poke(Me.empty())
-    argv: @@Byte = allocate[@Byte](count: arg_count + 2, alloc)
+    argv: @@Byte = allocate[@Byte](count: arg_count + 2, manager)
     if argv.is_hollow()
         return false
     me.argv.poke(argv)
     each i in 0 to arg_count
         s: @Byte = when
-            i == 0 => c_string(text: program, alloc)
-            else => c_string(text: args[i - 1], alloc)
+            i == 0 => c_string(text: program, manager)
+            else => c_string(text: args[i - 1], manager)
         if s.is_hollow()
             return false
         argv.stride(i).poke(s)
@@ -297,7 +297,7 @@ secret routine @Prepared.make(program: @[Byte], args: @[@[Byte]], options: Proce
     argv.stride(arg_count + 1).poke(.hollow())
     when options.directory
         is @[Byte] as d =>
-            directory: @Byte = c_string(text: d, alloc)
+            directory: @Byte = c_string(text: d, manager)
             if directory.is_hollow()
                 return false
             me.directory.poke(directory)
@@ -309,7 +309,7 @@ secret routine @Prepared.make(program: @[Byte], args: @[@[Byte]], options: Proce
 
     # The parent's entries the overrides don't name, pointed at as they are (the child gets the same memory), then
     # the overrides, made here.
-    envp: @@Byte = allocate[@Byte](count: n + options.env_count + 1, alloc)
+    envp: @@Byte = allocate[@Byte](count: n + options.env_count + 1, manager)
     if envp.is_hollow()
         return false
     me.envp.poke(envp)
@@ -320,7 +320,7 @@ secret routine @Prepared.make(program: @[Byte], args: @[@[Byte]], options: Proce
             envp.stride(first.peek()).poke(entry)
             (first.peek() + 1).poke_into(first)
     each j in 0 til options.env_count
-        e: @Byte = env_entry(v: options.env.stride(j).peek(), alloc)
+        e: @Byte = env_entry(v: options.env.stride(j).peek(), manager)
         if e.is_hollow()
             me.own_first.poke(first.peek())
             me.own_count.poke(j)
@@ -432,14 +432,14 @@ secret record PipeCapture
     buffer: @CaptureBuffer
 
 ### What a run works in: the prepared strings, the pipes, and the two captures, all released by the caller of
-### run_child, and the allocator they come from.
+### run_child, and the memory manager they come from.
 @target(os: ("linux", "macos"))
 secret record ChildRun
     p: @Prepared
     pipes: @Plumbing
     out: @CaptureBuffer
     err: @CaptureBuffer
-    alloc: @MemoryManager
+    manager: @MemoryManager
 
 ### Makes a `Plumbing` from its fields.
 ### :param out_r: Its `out_r`.
@@ -563,30 +563,30 @@ secret routine output_fd(mode: OutputMode, pipe: CInt, null_fd: CInt) -> CInt
 ### :param program: The program to run.
 ### :param args: The arguments, not including the program name.
 ### :param options: The directory, environment overrides, and standard streams.
-### :param alloc: The allocator for the captured output and the working memory.
+### :param manager: The memory manager for the captured output and the working memory.
 ### :returns: The {ProcessOutput}, or a {ProcessError} (InvalidArgument for a NUL in the program, an
 ### argument, the directory, or a variable, OutOfMemory when the working memory or the captured output can't be
 ### allocated).
 @target(os: ("linux", "macos"))
 @expensive("starts a process")
 failable common routine ProcessManager.create_process(program: @[Byte], args: @[@[Byte]],
-    options: ProcessOptions, alloc: @MemoryManager) -> ProcessOutput
+    options: ProcessOptions, manager: @MemoryManager) -> ProcessOutput
     local p: @Prepared <- Prepared.empty()
     local pipes: @Plumbing <- Plumbing.empty()
     local out: @CaptureBuffer <- CaptureBuffer.empty()
     local err: @CaptureBuffer <- CaptureBuffer.empty()
 
-    when check run_child(program, args, options, run: ChildRun(p, pipes, out, err, alloc))
+    when check run_child(program, args, options, run: ChildRun(p, pipes, out, err, manager))
         is ProcessOutput as made =>
             # Every descriptor still open, the prepared strings, and the captured bytes nothing took.
             pipes.close_all()
-            p.release(alloc)
+            p.release(manager)
             drop out
             drop err
             return made
         is ProcessError as error =>
             pipes.close_all()
-            p.release(alloc)
+            p.release(manager)
             drop out
             drop err
             throw error
@@ -596,12 +596,12 @@ failable common routine ProcessManager.create_process(program: @[Byte], args: @[
 ### :param pipes: Its `pipes`.
 ### :param out: Its `out`.
 ### :param err: Its `err`.
-### :param alloc: Its `alloc`.
+### :param manager: Its `manager`.
 ### :returns: The new value.
 @target(os: ("linux", "macos"))
 secret common routine ChildRun.construct(p: @Prepared, pipes: @Plumbing, out: @CaptureBuffer,
-    err: @CaptureBuffer, alloc: @MemoryManager) -> Me
-    return Me(p, pipes, out, err, alloc)
+    err: @CaptureBuffer, manager: @MemoryManager) -> Me
+    return Me(p, pipes, out, err, manager)
 
 ### Releases nothing: a `ChildRun` only points at what its caller holds.
 @target(os: ("linux", "macos"))
@@ -613,7 +613,7 @@ secret routine @ChildRun.destruct() -> None
 ### :param program: The program to run.
 ### :param args: The arguments.
 ### :param options: The directory, environment, and standard streams.
-### :param run: The prepared strings, pipes, captures, and allocator.
+### :param run: The prepared strings, pipes, captures, and memory manager.
 ### :returns: The {ProcessOutput}, or the {ProcessError}.
 @target(os: ("linux", "macos"))
 secret failable routine run_child(program: @[Byte], args: @[@[Byte]], options: ProcessOptions,
@@ -624,11 +624,11 @@ secret failable routine run_child(program: @[Byte], args: @[@[Byte]], options: P
     pipes: @Plumbing = run.pipes
     out: @CaptureBuffer = run.out
     err: @CaptureBuffer = run.err
-    alloc: @MemoryManager = run.alloc
+    manager: @MemoryManager = run.manager
 
     if has_nul(program, args, options)
         throw InvalidArgumentError()
-    if not p.make(program, args, options, alloc)
+    if not p.make(program, args, options, manager)
         throw MemoryAllocationError()
     if not pipes.make(options)
         throw spawn_error(errno())
@@ -641,7 +641,7 @@ secret failable routine run_child(program: @[Byte], args: @[@[Byte]], options: P
     pipes.exec_r.poke(-1)
     # drain closes both pipes as each ends.
     drain(out: PipeCapture(fd: pipes.out_r.peek(), buffer: out),
-        err: PipeCapture(fd: pipes.err_r.peek(), buffer: err), alloc)
+        err: PipeCapture(fd: pipes.err_r.peek(), buffer: err), manager)
     pipes.out_r.poke(-1)
     pipes.err_r.poke(-1)
     status: Maybe[ExitStatus] = reap(pid)
@@ -716,9 +716,9 @@ secret routine read_report(fd: CInt, report: @CInt) -> S64
 ### with anything but EINTR, it closes both and stops.
 ### :param out: Standard output's pipe (its fd -1 when not captured) and the buffer it goes into.
 ### :param err: Standard error's pipe (its fd -1 when not captured) and the buffer it goes into.
-### :param alloc: The allocator the buffers grow from.
+### :param manager: The memory manager the buffers grow from.
 @target(os: ("linux", "macos"))
-secret routine drain(out: PipeCapture, err: PipeCapture, alloc: @MemoryManager) -> None
+secret routine drain(out: PipeCapture, err: PipeCapture, manager: @MemoryManager) -> None
     local out_fd: CInt = out.fd
     local err_fd: CInt = err.fd
     # POLLIN, and poll skips a negative fd
@@ -747,7 +747,7 @@ secret routine drain(out: PipeCapture, err: PipeCapture, alloc: @MemoryManager) 
                 buffer: @CaptureBuffer = when
                     i == 0 => out.buffer
                     else => err.buffer
-                buffer.append(chunk, n: count, alloc)
+                buffer.append(chunk, n: count, manager)
                 continue with left: left
             if n < 0 and errno() == 4
                 continue with left: left
@@ -783,14 +783,14 @@ secret routine reap(pid: CInt) -> Maybe[ExitStatus]
 
 # -- the environment ---------------------------------------------------------------------
 
-### The value of the environment variable `name`, in memory from `alloc`. Drop it.
+### The value of the environment variable `name`, in memory from `manager`. Drop it.
 ### :param name: The variable's name.
-### :param alloc: The allocator for the value.
+### :param manager: The memory manager for the value.
 ### :returns: The value's bytes.
 ### :absent: When the variable isn't set, `name` is 256 bytes or longer or holds a NUL, or the allocation fails.
 @target(os: ("linux", "macos"))
 @expensive("allocates a copy of the variable")
-secret routine env_var(name: @[Byte], alloc: @MemoryManager) -> Maybe[Memory[Byte]]
+secret routine env_var(name: @[Byte], manager: @MemoryManager) -> Maybe[Memory[Byte]]
     local key: @Array[Byte, 256] <- .hollow()
 
     if (name.count() >= 256) or name.has("\0")
@@ -802,7 +802,7 @@ secret routine env_var(name: @[Byte], alloc: @MemoryManager) -> Maybe[Memory[Byt
     if value.is_hollow()
         return None()
     n: U64 = value.to[CStrView]().count()
-    when check Memory[Byte].construct(count: n.max(1), manager: alloc)
+    when check Memory[Byte].construct(count: n.max(1), manager: manager)
         is Memory[Byte] as owned =>
             owned.data.peek().copy(src: value, count: n)
             owned.keep_first(n)

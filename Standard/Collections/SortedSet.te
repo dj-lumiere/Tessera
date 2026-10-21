@@ -1,7 +1,7 @@
 # Tessera stdlib collection: SortedSet[T]
 #
 # Ordered set with its own order-statistic B-tree node and fixed node key
-# capacity of SORTED_SET_NODE_KEYS. The allocator is stored in SortedSet. Node helpers
+# capacity of SORTED_SET_NODE_KEYS. The memory manager is stored in SortedSet. Node helpers
 # still receive it as a parameter.
 
 module Standard/Collections
@@ -30,19 +30,19 @@ obeys Equatable[SortedSet[T]] when T: typename
 needs T: typename, Comparable[T]
     root: @SortedSetNode[T]
     count: U64
-    alloc: @MemoryManager
+    manager: @MemoryManager
 
 ### Releases nothing: the set ends a node's keys and frees the node itself (`free_recursive`).
 routine @SortedSetNode[T].destruct() -> None
 needs T: typename
     return
 
-### Creates an empty SortedSet that draws its storage from `alloc`. Nothing is allocated until the first insertion.
-### :param alloc: The allocator the set stores and later frees its memory with.
+### Creates an empty SortedSet that draws its storage from `manager`. Nothing is allocated until the first insertion.
+### :param manager: The memory manager the set stores and later frees its memory with.
 ### :returns: A new empty SortedSet.
-common routine SortedSet[T].construct(alloc: @MemoryManager) -> Me
+common routine SortedSet[T].construct(manager: @MemoryManager) -> Me
 needs T: typename
-    return Me(root: .hollow(), count: 0, alloc: alloc)
+    return Me(root: .hollow(), count: 0, manager: manager)
 
 ### The number of elements currently stored.
 ### :returns: The count of elements, `0` when the set is empty.
@@ -58,13 +58,13 @@ needs T: typename
     count: U64 = me.count.peek()
     return count == 0
 
-### A new empty node from `alloc`.
+### A new empty node from `manager`.
 ### :param leaf: Whether the node is a leaf.
-### :param alloc: The allocator to take the node from.
-### :returns: The node, or null when the allocator fails.
-common routine SortedSetNode[T].construct(leaf: Bool, alloc: @MemoryManager) -> @Me
+### :param manager: The memory manager to take the node from.
+### :returns: The node, or null when the memory manager fails.
+common routine SortedSetNode[T].construct(leaf: Bool, manager: @MemoryManager) -> @Me
 needs T: typename
-    local node: @Me = allocate[Me](count: 1, alloc)
+    local node: @Me = allocate[Me](count: 1, manager)
 
     if node.is_hollow()
         return node
@@ -239,14 +239,14 @@ needs T: typename
 ### Splits the full child at `index` around its middle: the middle element moves up into this node and the upper
 ### half into a new right sibling.
 ### :param index: The index of the full child.
-### :param alloc: The allocator for the new node.
-### :returns: True when it split, false when the allocator failed (before anything moved).
+### :param manager: The memory manager for the new node.
+### :returns: True when it split, false when the memory manager failed (before anything moved).
 @reshaping
-routine @SortedSetNode[T].split_child(index: U64, alloc: @MemoryManager) -> Bool
+routine @SortedSetNode[T].split_child(index: U64, manager: @MemoryManager) -> Bool
 needs T: typename
     local left: @Me = me.children[index]
     local leaf: Bool = left.leaf.peek()
-    local right: @Me = Me.construct(leaf, alloc)
+    local right: @Me = Me.construct(leaf, manager)
 
     if right.is_hollow()
         return false
@@ -300,11 +300,11 @@ needs T: typename
 ### Inserts `key` below a node that isn't full, splitting full children on the way down. An equal element must not
 ### already be in the subtree (`add` checks first).
 ### :param key: The element to insert.
-### :param alloc: The allocator for nodes made by splits.
+### :param manager: The memory manager for nodes made by splits.
 ### :returns: True when it inserted, false when a split failed to allocate (the key ends then). The tree then holds the
 ###     same elements, some nodes already split.
 @reshaping
-routine @SortedSetNode[T].insert_nonfull(key: T, alloc: @MemoryManager) -> Bool
+routine @SortedSetNode[T].insert_nonfull(key: T, manager: @MemoryManager) -> Bool
 needs T: typename
     local probe: @T <- steal key
 
@@ -323,7 +323,7 @@ needs T: typename
     full: Bool = child_count == SORTED_SET_NODE_KEYS
     values2: (U64, @Me) = when
         full =>
-            if not me.split_child(index: slot, alloc)
+            if not me.split_child(index: slot, manager)
                 drop probe
                 return false
             cmp: S32 = probe.compare(me.keys.getslot(slot))
@@ -334,7 +334,7 @@ needs T: typename
             becomes (next_slot, me.children[next_slot])
         else => (slot, child)
     slot2, child2 = values2
-    if not child2.insert_nonfull(key: steal probe, alloc)
+    if not child2.insert_nonfull(key: steal probe, manager)
         return false
     me.recount()
     return true
@@ -352,10 +352,10 @@ needs T: typename
     if me.has(probe)
         drop probe
         return false
-    alloc: @MemoryManager = me.alloc.peek()
+    manager: @MemoryManager = me.manager.peek()
     root: @SortedSetNode[T] = me.root.peek()
     if root.is_hollow()
-        root2: @SortedSetNode[T] = SortedSetNode[T].construct(leaf: true, alloc)
+        root2: @SortedSetNode[T] = SortedSetNode[T].construct(leaf: true, manager)
         if root2.is_hollow()
             drop probe
             throw MemoryAllocationError()
@@ -369,20 +369,20 @@ needs T: typename
     full: Bool = root_count == SORTED_SET_NODE_KEYS
     root2: @SortedSetNode[T] = when
         full =>
-            new_root: @SortedSetNode[T] = SortedSetNode[T].construct(leaf: false, alloc)
+            new_root: @SortedSetNode[T] = SortedSetNode[T].construct(leaf: false, manager)
             if new_root.is_hollow()
                 drop probe
                 throw MemoryAllocationError()
             new_root.children[0] = root
-            if new_root.split_child(index: 0, alloc)
+            if new_root.split_child(index: 0, manager)
                 me.root.poke(new_root)
                 becomes new_root
             else
-                deallocate[SortedSetNode[T]](data: new_root, alloc)
+                deallocate[SortedSetNode[T]](data: new_root, manager)
                 drop probe
                 throw MemoryAllocationError()
         else => root
-    if not root2.insert_nonfull(key: steal probe, alloc)
+    if not root2.insert_nonfull(key: steal probe, manager)
         throw MemoryAllocationError()
     next_count: U64 = me.count.peek() + 1
     next_count.poke_into(me.count)
@@ -457,8 +457,8 @@ needs T: typename
 
 ### Merges child `i + 1` and the separating key into child `i` and frees the emptied node, shrinking this node by one key.
 ### :param i: The index of the left child of the pair.
-### :param alloc: The allocator that frees the merged node.
-routine @SortedSetNode[T].merge_children(i: U64, alloc: @MemoryManager) -> None
+### :param manager: The memory manager that frees the merged node.
+routine @SortedSetNode[T].merge_children(i: U64, manager: @MemoryManager) -> None
 needs T: typename
     local left: @Me = me.children[i]
     local right: @Me = me.children[i + 1]
@@ -476,17 +476,17 @@ needs T: typename
     me.keys.shift_left(start: i, end: parent_count)
     me.children.shift_left(start: i + 1, end: parent_count + 1)
     me.count.poke(parent_count - 1)
-    deallocate[Me](data: right, alloc)
+    deallocate[Me](data: right, manager)
     left.recount()
     me.recount()
     return
 
 ### Makes sure child `i` has at least `SORTED_SET_NODE_MIN_KEYS` keys before a deletion descends into it, by borrowing from a sibling or merging with one.
 ### :param i: The index of the child about to be descended into.
-### :param alloc: The allocator that frees a merged node.
+### :param manager: The memory manager that frees a merged node.
 ### :returns: The index of the child to descend into, which differs from `i` when a merge with the left sibling happened.
 @track_caller
-routine @SortedSetNode[T].ensure_min(i: U64, alloc: @MemoryManager) -> U64
+routine @SortedSetNode[T].ensure_min(i: U64, manager: @MemoryManager) -> U64
 needs T: typename
     child: @Me = me.children[i]
     child_count: U64 = child.count.peek()
@@ -510,18 +510,18 @@ needs T: typename
             me.borrow_from_right(i)
             return i
         elseif not has_left2
-            me.merge_children(i, alloc)
+            me.merge_children(i, manager)
             return i
     elseif not has_left2
         crash_logic_breached()
     merged_at: U64 = i - 1
-    me.merge_children(i: merged_at, alloc)
+    me.merge_children(i: merged_at, manager)
     return merged_at
 
 ### Removes and returns the largest key in this subtree, rebalancing children on the way down.
-### :param alloc: The allocator used when nodes merge.
+### :param manager: The memory manager used when nodes merge.
 ### :returns: The removed largest key.
-routine @SortedSetNode[T].take_max(alloc: @MemoryManager) -> T
+routine @SortedSetNode[T].take_max(manager: @MemoryManager) -> T
 needs T: typename
     if me.leaf.peek()
         count: U64 = me.count.peek()
@@ -529,32 +529,32 @@ needs T: typename
         local key: @T <- me.remove_leaf_at(index)
         return steal key
     count: U64 = me.count.peek()
-    actual: U64 = me.ensure_min(i: count, alloc)
+    actual: U64 = me.ensure_min(i: count, manager)
     child: @Me = me.children[actual]
-    local key: @T <- child.take_max(alloc)
+    local key: @T <- child.take_max(manager)
     me.recount()
     return steal key
 
 ### Removes and returns the smallest key in this subtree, rebalancing children on the way down.
-### :param alloc: The allocator used when nodes merge.
+### :param manager: The memory manager used when nodes merge.
 ### :returns: The removed smallest key.
-routine @SortedSetNode[T].take_min(alloc: @MemoryManager) -> T
+routine @SortedSetNode[T].take_min(manager: @MemoryManager) -> T
 needs T: typename
     if me.leaf.peek()
         local key: @T <- me.remove_leaf_at(0)
         return steal key
-    actual: U64 = me.ensure_min(i: 0, alloc)
+    actual: U64 = me.ensure_min(i: 0, manager)
     child: @Me = me.children[actual]
-    local key: @T <- child.take_min(alloc)
+    local key: @T <- child.take_min(manager)
     me.recount()
     return steal key
 
 ### Removes the key equal to the one at `key` from this subtree and ends it, rebalancing children on the way down so
 ### no node underflows.
 ### :param key: The key to remove, read through its place.
-### :param alloc: The allocator used when nodes merge.
+### :param manager: The memory manager used when nodes merge.
 ### :returns: `true` when the key was found and removed, `false` otherwise.
-routine @SortedSetNode[T].remove(key: @T, alloc: @MemoryManager) -> Bool
+routine @SortedSetNode[T].remove(key: @T, manager: @MemoryManager) -> Bool
 needs T: typename
     local slot: U64 = me.find_index(key)
 
@@ -569,7 +569,7 @@ needs T: typename
             left_count: U64 = left.count.peek()
             if left_count >= SORTED_SET_NODE_MIN_KEYS
                 left2: @Me = me.children[slot]
-                local replacement: @T <- left2.take_max(alloc)
+                local replacement: @T <- left2.take_max(manager)
                 drop me.keys.getslot(slot)
                 me.keys.getslot(slot).poke(steal replacement)
                 me.recount()
@@ -578,21 +578,21 @@ needs T: typename
             right_count: U64 = right.count.peek()
             if right_count >= SORTED_SET_NODE_MIN_KEYS
                 right2: @Me = me.children[slot + 1]
-                local replacement: @T <- right2.take_min(alloc)
+                local replacement: @T <- right2.take_min(manager)
                 drop me.keys.getslot(slot)
                 me.keys.getslot(slot).poke(steal replacement)
                 me.recount()
                 return true
-            me.merge_children(i: slot, alloc)
+            me.merge_children(i: slot, manager)
             merged: @Me = me.children[slot]
-            removed: Bool = merged.remove(key, alloc)
+            removed: Bool = merged.remove(key, manager)
             me.recount()
             return removed
     if me.leaf.peek()
         return false
-    actual: U64 = me.ensure_min(i: slot, alloc)
+    actual: U64 = me.ensure_min(i: slot, manager)
     child: @Me = me.children[actual]
-    removed: Bool = child.remove(key, alloc)
+    removed: Bool = child.remove(key, manager)
     me.recount()
     return removed
 
@@ -605,20 +605,18 @@ needs T: typename
 
     if root.is_hollow()
         return false
-    alloc: @MemoryManager = me.alloc.peek()
-    if root.remove(key, alloc)
+    manager: @MemoryManager = me.manager.peek()
+    if root.remove(key, manager)
         remaining_count: U64 = me.count.peek() - 1
         remaining_count.poke_into(me.count)
         root_count: U64 = root.count.peek()
         if root_count == 0
             if root.leaf.peek()
-                alloc2: @MemoryManager = me.alloc.peek()
-                deallocate[SortedSetNode[T]](data: root, alloc: alloc2)
+                deallocate[SortedSetNode[T]](data: root, manager)
                 me.root.poke(.hollow())
                 return true
-            alloc2: @MemoryManager = me.alloc.peek()
             new_root: @SortedSetNode[T] = root.children[0]
-            deallocate[SortedSetNode[T]](data: root, alloc: alloc2)
+            deallocate[SortedSetNode[T]](data: root, manager)
             me.root.poke(new_root)
             return true
         return true
@@ -636,15 +634,15 @@ needs T: typename
     drop probe
     return removed
 
-### Ends the keys of this node and every node below it (drop) and frees the nodes through `alloc`. An internal node has
+### Ends the keys of this node and every node below it (drop) and frees the nodes through `manager`. An internal node has
 ### `count` keys and `count + 1` children.
-### :param alloc: The allocator the nodes came from.
-routine @SortedSetNode[T].free_recursive(alloc: @MemoryManager) -> None
+### :param manager: The memory manager the nodes came from.
+routine @SortedSetNode[T].free_recursive(manager: @MemoryManager) -> None
 needs T: typename
     each i in 0 til me.count.peek()
         drop me.keys.getslot(i)
     if me.leaf.peek()
-        deallocate[Me](data: me, alloc)
+        deallocate[Me](data: me, manager)
         return
     count: U64 = me.count.peek()
 
@@ -652,12 +650,12 @@ needs T: typename
 
     each i in 0 til child_count
         child: @Me = me.children[i]
-        child.free_recursive(alloc)
+        child.free_recursive(manager)
     then
-        deallocate[Me](data: me, alloc)
+        deallocate[Me](data: me, manager)
         return
 
-### Ends every element (drop), frees the set's memory through its allocator, and resets it to the empty state, so it can be reused or destructed again.
+### Ends every element (drop), frees the set's memory through its memory manager, and resets it to the empty state, so it can be reused or destructed again.
 ### :note: Safe to call on a never-filled instance, where it only resets the fields.
 @track_caller
 routine @SortedSet[T].destruct() -> None
@@ -665,8 +663,8 @@ needs T: typename
     local root: @SortedSetNode[T] = me.root.peek()
 
     if not root.is_hollow()
-        alloc: @MemoryManager = me.alloc.peek()
-        root.free_recursive(alloc)
+        manager: @MemoryManager = me.manager.peek()
+        root.free_recursive(manager)
     me.root.poke(.hollow())
     me.count.poke(0)
     return

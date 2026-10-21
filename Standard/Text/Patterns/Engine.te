@@ -489,15 +489,15 @@ routine @Search.destruct() -> None
 
 ### Makes the threads for a program.
 ### :param instructions: The program's instruction count.
-### :param alloc: Where the buffers take memory.
+### :param manager: Where the buffers take memory.
 ### :returns: The threads, every bucket empty.
-common routine Threads.construct(instructions: U64, alloc: @MemoryManager) -> Me
+common routine Threads.construct(instructions: U64, manager: @MemoryManager) -> Me
     return Me(
-        starts: .construct(values: [NO_POSITION], times: instructions * BUCKETS, manager: alloc),
-        waiting: .construct(values: [0], times: instructions * BUCKETS, manager: alloc),
-        counts: .construct(values: [0], times: BUCKETS, manager: alloc),
-        seen: .construct(values: [0], times: instructions, manager: alloc),
-        seen_list: .construct(alloc), stack: .construct(alloc), ends: .construct(alloc),
+        starts: .construct(values: [NO_POSITION], times: instructions * BUCKETS, manager: manager),
+        waiting: .construct(values: [0], times: instructions * BUCKETS, manager: manager),
+        counts: .construct(values: [0], times: BUCKETS, manager: manager),
+        seen: .construct(values: [0], times: instructions, manager: manager),
+        seen_list: .construct(manager), stack: .construct(manager), ends: .construct(manager),
         found: NO_POSITION, instructions)
 
 ### Gives back the buffers.
@@ -778,16 +778,17 @@ entity Walker
     ### The simulation used for eithers.
     threads: @Threads
     ### Where the walk takes memory.
-    alloc: @MemoryManager
+    manager: @MemoryManager
 
 ### Makes a walker.
 ### :param slots: The capture slots it fills.
 ### :param threads: The simulation it uses for eithers.
-### :param alloc: Where it takes memory.
+### :param manager: Where it takes memory.
 ### :returns: The walker.
-common routine Walker.construct(slots: @[U64], threads: @Threads, alloc: @MemoryManager) -> Me
-    return Me(tried: .construct(values: [0], times: 0, manager: alloc), frames: .construct(alloc),
-        candidates: .construct(alloc), log: .construct(alloc), slots, threads, alloc)
+common routine Walker.construct(slots: @[U64], threads: @Threads, manager: @MemoryManager) -> Me
+    return Me(tried: .construct(values: [0], times: 0, manager: manager),
+        frames: .construct(manager), candidates: .construct(manager), log: .construct(manager),
+        slots, threads, manager)
 
 ### Gives back its memory.
 routine @Walker.destruct() -> None
@@ -878,7 +879,7 @@ routine @Walker.push_either(search: Search, walk: Walk, pc: U32, pos: U64) -> No
     local shorter: Bool = program.b(pc.to[U64]()) != 0
     local first: U64 = me.candidates.count()
     local threads: @Threads = me.threads.peek()
-    local ordered: @List[CandidateOrder] <- .construct(me.alloc.peek())
+    local ordered: @List[CandidateOrder] <- .construct(me.manager.peek())
 
     each i: U64 in 0 til n
         goal: SimulationGoal = SimulationGoal(alternative: true, join, whole: false, from: pos,
@@ -916,7 +917,7 @@ routine @Walker.run(search: Search, walk: Walk) -> U64
     local slots: @[U64] = me.slots.peek()
 
     me.tried.replace(value: Memory[U64].construct(values: [0], times: (bits + 63) // 64,
-        manager: me.alloc.peek()))
+        manager: me.manager.peek()))
     me.frames.clear()
     me.candidates.clear()
     me.log.clear()
@@ -963,7 +964,7 @@ routine @Walker.try_candidate(search: Search, walk: Walk, frame: Frame) -> U64
 @reshaping
 routine @Walker.replay(search: Search) -> None
     local program: Program = search.program
-    local decisions: @List[Decision] <- .construct(me.alloc.peek())
+    local decisions: @List[Decision] <- .construct(me.manager.peek())
 
     each i: U64 in 0 til me.log.count()
         decisions.add_last(me.log.getitem(i))
@@ -986,11 +987,11 @@ routine @Walker.replay(search: Search) -> None
 ### :param search: The program (read with `read_program`) and the input.
 ### :param from: The first position a match may start at.
 ### :param slots: The capture slots, `program.slot_count()` of them.
-### :param alloc: Where the search takes its working memory, all given back before it returns.
+### :param manager: Where the search takes its working memory, all given back before it returns.
 ### :returns: `true` when there is a match.
 @expensive("allocates the search's working memory")
-routine find_match(search: Search, from: U64, slots: @[U64], alloc: @MemoryManager) -> Bool
-    local threads: @Threads <- .construct(instructions: search.program.instructions, alloc)
+routine find_match(search: Search, from: U64, slots: @[U64], manager: @MemoryManager) -> Bool
+    local threads: @Threads <- .construct(instructions: search.program.instructions, manager)
 
     each s: U64 in 0 til slots.count()
         slots.setitem(index: s, value: NO_POSITION)
@@ -1001,7 +1002,7 @@ routine find_match(search: Search, from: U64, slots: @[U64], alloc: @MemoryManag
     if not leftmost.found
         drop threads
         return false
-    local walker: @Walker <- .construct(slots, threads, alloc)
+    local walker: @Walker <- .construct(slots, threads, manager)
     walk: Walk = Walk(first_pc: 0, start: leftmost.start, limit: leftmost.reach, join: NO_JOIN,
         target: 0)
     end: U64 = walker.run(search, walk)
@@ -1014,11 +1015,11 @@ routine find_match(search: Search, from: U64, slots: @[U64], alloc: @MemoryManag
 
 ### Whether the whole input matches the program.
 ### :param search: The program (read with `read_program`) and the input.
-### :param alloc: Where the search takes its working memory, all given back before it returns.
+### :param manager: Where the search takes its working memory, all given back before it returns.
 ### :returns: `true` when it does.
 @expensive("allocates the search's working memory")
-routine matches_whole(search: Search, alloc: @MemoryManager) -> Bool
-    local threads: @Threads <- .construct(instructions: search.program.instructions, alloc)
+routine matches_whole(search: Search, manager: @MemoryManager) -> Bool
+    local threads: @Threads <- .construct(instructions: search.program.instructions, manager)
 
     leftmost: Leftmost = threads.leftmost(search, from: 0, whole: true)
     drop threads

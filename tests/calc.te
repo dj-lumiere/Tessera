@@ -99,8 +99,8 @@ common routine Expr.construct(kind: ExprKind, value: S64, lhs: @Me, rhs: @Me, po
 routine @Expr.destruct() -> None
     return
 
-routine new_expr(node: Expr, alloc: @MemoryManager) -> @Expr
-    local p: @Expr = allocate[Expr](count: 1, alloc)
+routine new_expr(node: Expr, manager: @MemoryManager) -> @Expr
+    local p: @Expr = allocate[Expr](count: 1, manager)
 
     if p.is_hollow()
         crash_allocation()
@@ -109,19 +109,19 @@ routine new_expr(node: Expr, alloc: @MemoryManager) -> @Expr
         return p
 
 ### Frees e and its whole subtree.
-routine free_expr(e: @Expr, alloc: @MemoryManager) -> None
+routine free_expr(e: @Expr, manager: @MemoryManager) -> None
     kind: ExprKind = e.kind.peek()
     when kind
         ExprKind.NUM => pass
         ExprKind.NEG =>
             operand: @Expr = e.lhs.peek()
-            free_expr(e: operand, alloc)
+            free_expr(e: operand, manager)
         ExprKind.ADD, ExprKind.SUB, ExprKind.MUL, ExprKind.DIV, ExprKind.REM =>
             lhs: @Expr = e.lhs.peek()
             rhs: @Expr = e.rhs.peek()
-            free_expr(e: lhs, alloc)
-            free_expr(e: rhs, alloc)
-    deallocate(data: e, alloc)
+            free_expr(e: lhs, manager)
+            free_expr(e: rhs, manager)
+    deallocate(data: e, manager)
     return
 
 # ── Lexer ─────────────────────────────────────────────────────────────────────
@@ -130,16 +130,16 @@ record Parser
     src: @Byte
     len: U64
     pos: U64
-    alloc: @MemoryManager
+    manager: @MemoryManager
 
 ### Makes a `Parser` from its fields.
 ### :param src: Its `src`.
 ### :param len: Its `len`.
 ### :param pos: Its `pos`.
-### :param alloc: Its `alloc`.
+### :param manager: Its `manager`.
 ### :returns: The new value.
-common routine Parser.construct(src: @Byte, len: U64, pos: U64, alloc: @MemoryManager) -> Me
-    return Me(src, len, pos, alloc)
+common routine Parser.construct(src: @Byte, len: U64, pos: U64, manager: @MemoryManager) -> Me
+    return Me(src, len, pos, manager)
 
 ### Releases nothing: a `Parser` holds no memory of its own.
 routine @Parser.destruct() -> None
@@ -285,7 +285,7 @@ failable routine @Parser.parse_binary(level: S64) -> @Expr
         tok: Token = when peeked
             is Token as next => next
             is CalcError as error =>
-                free_expr(e: lhs2, alloc: me.alloc.peek())
+                free_expr(e: lhs2, manager: me.manager.peek())
                 throw error
         op: Maybe[ExprKind] = operator_at(kind: tok.kind, level)
         kind: ExprKind = when op
@@ -296,10 +296,10 @@ failable routine @Parser.parse_binary(level: S64) -> @Expr
         when rhs
             is @Expr as right =>
                 node: Expr = Expr(kind: kind, value: 0, lhs: lhs2, rhs: right, pos: tok.pos)
-                continue with lhs2: new_expr(node, alloc: me.alloc.peek())
+                continue with lhs2: new_expr(node, manager: me.manager.peek())
             is CalcError as error =>
                 # The left side parsed but what follows didn't: free it before failing.
-                free_expr(e: lhs2, alloc: me.alloc.peek())
+                free_expr(e: lhs2, manager: me.manager.peek())
                 throw error
 
 ### A number, a parenthesized expression, or a negated primary.
@@ -312,7 +312,7 @@ failable routine @Parser.parse_primary() -> @Expr
             me.advance(tok)
             node: Expr = Expr(kind: ExprKind.NUM, value: tok.value, lhs: .hollow(), rhs: .hollow(),
                 pos: pos)
-            return new_expr(node, alloc: me.alloc.peek())
+            return new_expr(node, manager: me.manager.peek())
         TokenKind.L_PAREN =>
             # "(" expr ")"
             me.advance(tok)
@@ -326,21 +326,21 @@ failable routine @Parser.parse_primary() -> @Expr
                         return tree
                     becomes CalcError(message: "expected ')'", pos: next.pos)
                 is CalcError as error => error
-            free_expr(e: tree, alloc: me.alloc.peek())
+            free_expr(e: tree, manager: me.manager.peek())
             throw error
         TokenKind.MINUS =>
             me.advance(tok)
             operand: @Expr = when check me.parse_primary()
                 is @Expr as inner => inner
             node: Expr = Expr(kind: ExprKind.NEG, value: 0, lhs: operand, rhs: .hollow(), pos: pos)
-            return new_expr(node, alloc: me.alloc.peek())
+            return new_expr(node, manager: me.manager.peek())
         TokenKind.END => throw CalcError(message: "unexpected end of input", pos)
         TokenKind.INVALID => throw CalcError(message: "unexpected character", pos)
         else => throw CalcError(message: "expected a number or '('", pos)
 
 ### Parses all of source. Anything left after the expression is an error.
-failable routine parse(source: @[Byte], alloc: @MemoryManager) -> @Expr
-    local parser: @Parser <- Parser(src: source.data, len: source.count, pos: 0, alloc: alloc)
+failable routine parse(source: @[Byte], manager: @MemoryManager) -> @Expr
+    local parser: @Parser <- Parser(src: source.data, len: source.count, pos: 0, manager: manager)
 
     tree: @Expr = when check parser.parse_binary(0)
         is @Expr as parsed => parsed
@@ -352,7 +352,7 @@ failable routine parse(source: @[Byte], alloc: @MemoryManager) -> @Expr
                 return tree
             becomes tok.pos
         is CalcError as error => error.pos
-    free_expr(e: tree, alloc)
+    free_expr(e: tree, manager)
     throw CalcError(message: "unexpected input after expression", pos)
 
 # ── Evaluator ─────────────────────────────────────────────────────────────────
@@ -419,14 +419,14 @@ failable routine eval(e: @Expr) -> S64
 
 # ── Driver ────────────────────────────────────────────────────────────────────
 
-routine calculate(source: @[Byte], alloc: @MemoryManager) -> None
+routine calculate(source: @[Byte], manager: @MemoryManager) -> None
     src: @Byte = source.data
     c_printf("%-34s ", src)
-    parsed: Check[@Expr] = check parse(source, alloc)
+    parsed: Check[@Expr] = check parse(source, manager)
     error: CalcError = when parsed
         is @Expr as tree =>
             result: Check[S64] = check eval(tree)
-            free_expr(e: tree, alloc)
+            free_expr(e: tree, manager)
             when result
                 is S64 as value =>
                     c_printf("= %lld\n", value)
@@ -440,23 +440,23 @@ routine calculate(source: @[Byte], alloc: @MemoryManager) -> None
     return
 
 routine start() -> None
-    local alloc: @MemoryManager <- HEAP.peek()
+    local manager: @MemoryManager <- HEAP.peek()
 
-    calculate(source: "1 + 2 * 3", alloc)
-    calculate(source: "(1 + 2) * 3", alloc)
-    calculate(source: "-(4 - 10) % 4", alloc)
-    calculate(source: "2 * (3 + 4) * 5 - 100 / 7", alloc)
-    calculate(source: "--7", alloc)
-    calculate(source: "((((42))))", alloc)
-    calculate(source: "9223372036854775807", alloc)
+    calculate(source: "1 + 2 * 3", manager)
+    calculate(source: "(1 + 2) * 3", manager)
+    calculate(source: "-(4 - 10) % 4", manager)
+    calculate(source: "2 * (3 + 4) * 5 - 100 / 7", manager)
+    calculate(source: "--7", manager)
+    calculate(source: "((((42))))", manager)
+    calculate(source: "9223372036854775807", manager)
 
-    calculate(source: "7 / (3 - 3)", alloc)
-    calculate(source: "9223372036854775807 + 1", alloc)
-    calculate(source: "-9223372036854775807 - 1 - 1", alloc)
-    calculate(source: "99999999999999999999", alloc)
-    calculate(source: "1 + * 2", alloc)
-    calculate(source: "(1 + 2", alloc)
-    calculate(source: "1 + 2)", alloc)
-    calculate(source: "3 $ 4", alloc)
-    calculate(source: "", alloc)
+    calculate(source: "7 / (3 - 3)", manager)
+    calculate(source: "9223372036854775807 + 1", manager)
+    calculate(source: "-9223372036854775807 - 1 - 1", manager)
+    calculate(source: "99999999999999999999", manager)
+    calculate(source: "1 + * 2", manager)
+    calculate(source: "(1 + 2", manager)
+    calculate(source: "1 + 2)", manager)
+    calculate(source: "3 $ 4", manager)
+    calculate(source: "", manager)
     return

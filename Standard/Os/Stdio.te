@@ -184,7 +184,7 @@ secret routine @InputBuffer.take_word(length: U64) -> @[Byte]
 secret routine @InputBuffer.spill_word(length: U64, spill: @Memory[Byte]) -> @[Byte]
     local text: @CaptureBuffer <- CaptureBuffer.empty()
 
-    text.append(chunk: me.bytes.to[@Byte](), n: length, alloc: HEAP)
+    text.append(chunk: me.bytes.to[@Byte](), n: length, manager: HEAP)
     me.start.poke(length)
     while true
         c: Maybe[Byte] = try me.emit()
@@ -194,7 +194,7 @@ secret routine @InputBuffer.spill_word(length: U64, spill: @Memory[Byte]) -> @[B
                     me.unread()
                     break
                 local single: @Byte <- byte
-                text.append(chunk: single, n: 1, alloc: HEAP)
+                text.append(chunk: single, n: 1, manager: HEAP)
             is None => break
     if text.failed.peek()
         crash_allocation()
@@ -283,15 +283,15 @@ failable routine @ConsoleInput.read_bytes(buffer: @Byte, count: U64) -> U64
     when check me.read_into(buffer, count)
         is U64 as returned => return returned
 
-### Up to `count` bytes, in memory from `alloc`: fewer only at the end of the input or on a read failure. Drop them.
+### Up to `count` bytes, in memory from `manager`: fewer only at the end of the input or on a read failure. Drop them.
 ### :param count: How many bytes to read.
-### :param alloc: The manager for the bytes.
+### :param manager: The manager for the bytes.
 ### :returns: The bytes read (empty when the allocation fails).
 @expensive("allocates what it reads")
-common routine Console.ask_bytes(count: U64, alloc: @MemoryManager) -> Memory[Byte]
-    local buffer: @Memory[Byte] <- Memory[Byte].construct(count: 0, manager: alloc)
+common routine Console.ask_bytes(count: U64, manager: @MemoryManager) -> Memory[Byte]
+    local buffer: @Memory[Byte] <- Memory[Byte].construct(count: 0, manager: manager)
 
-    when check Memory[Byte].construct(count: count.max(1), manager: alloc)
+    when check Memory[Byte].construct(count: count.max(1), manager: manager)
         is Memory[Byte] as made => buffer.replace(value: steal made)
         is MemoryAllocationError => return buffer
 
@@ -309,11 +309,11 @@ common routine Console.ask_bytes(count: U64, alloc: @MemoryManager) -> Memory[By
         buffer.keep_first(n)
         return buffer
 
-### What the rest of the input is, in memory from `alloc`. Drop it.
-### :param alloc: The allocator for the bytes.
+### What the rest of the input is, in memory from `manager`. Drop it.
+### :param manager: The memory manager for the bytes.
 ### :returns: The bytes up to the end of the input (or up to a read failure).
 @expensive("allocates what it reads")
-common routine Console.ask_all(alloc: @MemoryManager) -> Memory[Byte]
+common routine Console.ask_all(manager: @MemoryManager) -> Memory[Byte]
     local text: @CaptureBuffer <- CaptureBuffer.empty()
     local chunk_buffer: @Array[Byte, 4096] <- .hollow()
     local chunk: @Byte = chunk_buffer.to[@Byte]()
@@ -327,29 +327,29 @@ common routine Console.ask_all(alloc: @MemoryManager) -> Memory[Byte]
             local all: @Memory[Byte] <- text.owned()
             drop text
             return all
-        text.append(chunk, n: n2, alloc)
+        text.append(chunk, n: n2, manager)
 
-### The next line, without its "\n" (or "\r\n"), in memory from alloc. A last line with no "\n" still counts, and a
+### The next line, without its "\n" (or "\r\n"), in memory from manager. A last line with no "\n" still counts, and a
 ### blank line is "". Drop it.
-### :param alloc: The allocator for the line.
+### :param manager: The memory manager for the line.
 ### :returns: The line.
 ### :throws: Throws `EndOfInputError` at the end of the input.
 @expensive("allocates what it reads")
-failable common routine Console.ask_line(alloc: @MemoryManager) -> Memory[Byte]
+failable common routine Console.ask_line(manager: @MemoryManager) -> Memory[Byte]
     local b: @InputBuffer = STDIN_BUFFER
 
     b.lock.lock()
-    local line: @Maybe[Memory[Byte]] <- b.line(alloc)
+    local line: @Maybe[Memory[Byte]] <- b.line(manager)
     b.lock.unlock()
     when steal line
         is Memory[Byte] as text => return text
         is None => throw EndOfInputError(reader: "Console.ask_line")
 
-### The next line, without its "\n" (or "\r\n"), in memory from alloc. The lock is held.
-### :param alloc: The allocator for the line.
+### The next line, without its "\n" (or "\r\n"), in memory from manager. The lock is held.
+### :param manager: The memory manager for the line.
 ### :returns: The line.
 ### :absent: At the end of the input.
-secret routine @InputBuffer.line(alloc: @MemoryManager) -> Maybe[Memory[Byte]]
+secret routine @InputBuffer.line(manager: @MemoryManager) -> Maybe[Memory[Byte]]
     local text: @CaptureBuffer <- CaptureBuffer.empty()
 
     while true with any: Bool = false
@@ -361,7 +361,7 @@ secret routine @InputBuffer.line(alloc: @MemoryManager) -> Maybe[Memory[Byte]]
                     drop text
                     return trim_cr(steal line)
                 local single: @Byte <- byte
-                text.append(chunk: single, n: 1, alloc)
+                text.append(chunk: single, n: 1, manager)
                 continue with any: true
             is None =>
                 local rest: @Memory[Byte] <- text.owned()
@@ -371,7 +371,7 @@ secret routine @InputBuffer.line(alloc: @MemoryManager) -> Maybe[Memory[Byte]]
                 drop rest
                 return None()
 
-### `line` without a "\r" at its end. The memory and its allocator stay the same, only the count drops.
+### `line` without a "\r" at its end. The memory and its memory manager stay the same, only the count drops.
 ### :param line: The line.
 ### :returns: The line, one byte shorter when it ended in "\r".
 secret routine trim_cr(line: Memory[Byte]) -> Memory[Byte]
@@ -387,27 +387,27 @@ secret routine is_space(c: Byte) -> Bool
     line_end: Bool = c == b'\n' or c == b'\r'
     return blank or line_end
 
-### The next word (spaces, tabs, and line ends separate words), in memory from alloc. The space after the word stays
+### The next word (spaces, tabs, and line ends separate words), in memory from manager. The space after the word stays
 ### in the input. Drop it.
-### :param alloc: The allocator for the word.
+### :param manager: The memory manager for the word.
 ### :returns: The word.
 ### :throws: Throws `EndOfInputError` at the end of the input.
 @expensive("allocates what it reads")
-failable common routine Console.ask_word(alloc: @MemoryManager) -> Memory[Byte]
+failable common routine Console.ask_word(manager: @MemoryManager) -> Memory[Byte]
     local b: @InputBuffer = STDIN_BUFFER
 
     b.lock.lock()
-    local word: @Maybe[Memory[Byte]] <- b.owned_word(alloc)
+    local word: @Maybe[Memory[Byte]] <- b.owned_word(manager)
     b.lock.unlock()
     when steal word
         is Memory[Byte] as text => return text
         is None => throw EndOfInputError(reader: "Console.ask_word")
 
-### The next word, in memory from alloc. The space after the word stays in the input. The lock is held.
-### :param alloc: The allocator for the word.
+### The next word, in memory from manager. The space after the word stays in the input. The lock is held.
+### :param manager: The memory manager for the word.
 ### :returns: The word.
 ### :absent: At the end of the input.
-secret routine @InputBuffer.owned_word(alloc: @MemoryManager) -> Maybe[Memory[Byte]]
+secret routine @InputBuffer.owned_word(manager: @MemoryManager) -> Maybe[Memory[Byte]]
     local text: @CaptureBuffer <- CaptureBuffer.empty()
     local single: @Byte <- .hollow()
 
@@ -419,7 +419,7 @@ secret routine @InputBuffer.owned_word(alloc: @MemoryManager) -> Maybe[Memory[By
                 if is_space(byte)
                     continue
                 single.poke(byte)
-                text.append(chunk: single, n: 1, alloc)
+                text.append(chunk: single, n: 1, manager)
                 break
             is None =>
                 drop text
@@ -434,7 +434,7 @@ secret routine @InputBuffer.owned_word(alloc: @MemoryManager) -> Maybe[Memory[By
                     me.unread()
                     break
                 single.poke(byte2)
-                text.append(chunk: single, n: 1, alloc)
+                text.append(chunk: single, n: 1, manager)
             is None => break
     local word: @Memory[Byte] <- text.owned()
     drop text

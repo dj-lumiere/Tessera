@@ -50,27 +50,27 @@ routine @EnvironmentEntry.destruct() -> None
 ### :throws: Crashes with `MemoryAllocationError` when the table of arguments can't be allocated.
 @export("tessera_set_arguments")
 routine set_arguments(argc: CInt, argv: @@Byte) -> None
-    local alloc: @MemoryManager <- C_HEAP.peek()
+    local manager: @MemoryManager <- C_HEAP.peek()
 
     n: U64 = argc.max(0).to[U64]()
     if n == 0 or argv.is_hollow()
         ARGUMENT_COUNT.poke(0)
         return
-    table: @@[Byte] = allocate[@[Byte]](count: n, alloc)
+    table: @@[Byte] = allocate[@[Byte]](count: n, manager)
     if table.is_hollow()
         crash_allocation()
     each i in 0 til n
-        table.stride(i).poke(argument_text(raw: argv.stride(i).peek(), alloc))
+        table.stride(i).poke(argument_text(raw: argv.stride(i).peek(), manager))
     ARGUMENT_TEXT.poke(table)
     ARGUMENT_COUNT.poke(n)
     return
 
 ### One argument as the program sees it: the C string's bytes as they are.
 ### :param raw: The NUL-terminated argument.
-### :param alloc: Unused here.
+### :param manager: Unused here.
 ### :returns: A view of the argument's bytes.
 @target(os: ("linux", "macos"))
-secret routine argument_text(raw: @Byte, alloc: @MemoryManager) -> @[Byte]
+secret routine argument_text(raw: @Byte, manager: @MemoryManager) -> @[Byte]
     if raw.is_hollow()
         return ""
     return @[Byte].construct(data: raw, count: raw.to[CStrView]().count())
@@ -90,33 +90,33 @@ secret routine argument_text(raw: @Byte, alloc: @MemoryManager) -> @[Byte]
 secret routine c_multi_byte_to_wide_char(code_page: U32, flags: U32, text: @Byte, count: CInt,
     out: @U16, room: CInt) -> CInt
 
-### One argument as the program sees it: the C string, in the ANSI code page, converted to UTF-8 in memory from alloc,
+### One argument as the program sees it: the C string, in the ANSI code page, converted to UTF-8 in memory from manager,
 ### kept for the whole run.
 ### :param raw: The NUL-terminated argument.
-### :param alloc: The allocator for the UTF-16 and UTF-8 copies.
+### :param manager: The memory manager for the UTF-16 and UTF-8 copies.
 ### :returns: The argument's UTF-8 bytes, empty when it can't be converted.
 ### :throws: Crashes with `MemoryAllocationError` when a copy can't be allocated.
 @target(os: "windows")
-secret routine argument_text(raw: @Byte, alloc: @MemoryManager) -> @[Byte]
+secret routine argument_text(raw: @Byte, manager: @MemoryManager) -> @[Byte]
     if raw.is_hollow()
         return ""
     need: CInt = c_multi_byte_to_wide_char(0, 0, raw, -1, .hollow(), 0)
     if need <= 0
         return ""
-    units: @U16 = allocate[U16](count: need.to[U64](), alloc)
+    units: @U16 = allocate[U16](count: need.to[U64](), manager)
     if units.is_hollow()
         crash_allocation()
     got: CInt = c_multi_byte_to_wide_char(0, 0, raw, -1, units, need)
     if got <= 0
-        deallocate(data: units, alloc)
+        deallocate(data: units, manager)
         return ""
     # The count includes the NUL, which isn't part of the argument.
     count: U64 = got.to[U64]() - 1
-    bytes: @Byte = allocate[Byte](count: (count * 3).max(1), alloc)
+    bytes: @Byte = allocate[Byte](count: (count * 3).max(1), manager)
     if bytes.is_hollow()
         crash_allocation()
     n: U64 = narrow(units, count, out: bytes)
-    deallocate(data: units, alloc)
+    deallocate(data: units, manager)
     return @[Byte].construct(data: bytes, count: n)
 
 # -- the arguments -----------------------------------------------------------------------
@@ -143,47 +143,47 @@ common routine OsEnvironment.argument(index: U64) -> @[Byte]
 # -- the variables -----------------------------------------------------------------------
 
 ### The value of the environment variable `name`, asked of the OS (so on Windows the name's case doesn't matter), in
-### memory from alloc. Drop it.
+### memory from manager. Drop it.
 ### :param name: The variable's name.
-### :param alloc: The allocator for the value.
+### :param manager: The memory manager for the value.
 ### :returns: The value's bytes (UTF-8 on Windows).
 ### :absent: When the variable isn't set, `name` is too long or holds a NUL, or the value can't be read or allocated.
 @expensive("allocates a copy of the variable")
-common routine OsEnvironment.variable(name: @[Byte], alloc: @MemoryManager) -> Maybe[Memory[Byte]]
-    return env_var(name, alloc)
+common routine OsEnvironment.variable(name: @[Byte], manager: @MemoryManager) -> Maybe[Memory[Byte]]
+    return env_var(name, manager)
 
-### Every environment variable as the process has it now, copied into memory from alloc: a snapshot that later changes
+### Every environment variable as the process has it now, copied into memory from manager: a snapshot that later changes
 ### don't reach. Drop the list.
-### :param alloc: The allocator for the list and the copies.
+### :param manager: The memory manager for the list and the copies.
 ### :returns: The variables, in the OS's order.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+### :throws: Crashes with `MemoryAllocationError` when `manager` fails.
 @track_caller
 @expensive("allocates a copy of every variable")
-common routine OsEnvironment.variables(alloc: @MemoryManager) -> List[EnvironmentEntry]
-    return environment_entries(alloc)
+common routine OsEnvironment.variables(manager: @MemoryManager) -> List[EnvironmentEntry]
+    return environment_entries(manager)
 
-### `text` copied into memory from alloc.
+### `text` copied into memory from manager.
 ### :param text: The bytes.
-### :param alloc: The allocator.
+### :param manager: The memory manager.
 ### :returns: The copy.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+### :throws: Crashes with `MemoryAllocationError` when `manager` fails.
 @track_caller
-secret routine copied(text: @[Byte], alloc: @MemoryManager) -> Memory[Byte]
+secret routine copied(text: @[Byte], manager: @MemoryManager) -> Memory[Byte]
     local memory: @Memory[Byte] <- Memory[Byte].construct(count: text.count().max(1),
-        manager: alloc)
+        manager: manager)
 
     memory.data.peek().copy(src: text.data, count: text.count())
     memory.keep_first(text.count())
     return memory
 
-### The variables of C's environ, `NAME=VALUE` each, as a list from alloc.
-### :param alloc: The allocator for the list and the copies.
+### The variables of C's environ, `NAME=VALUE` each, as a list from manager.
+### :param manager: The memory manager for the list and the copies.
 ### :returns: The variables.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+### :throws: Crashes with `MemoryAllocationError` when `manager` fails.
 @target(os: ("linux", "macos"))
 @track_caller
-secret routine environment_entries(alloc: @MemoryManager) -> List[EnvironmentEntry]
-    local list: @List[EnvironmentEntry] <- .construct(alloc)
+secret routine environment_entries(manager: @MemoryManager) -> List[EnvironmentEntry]
+    local list: @List[EnvironmentEntry] <- .construct(manager)
 
     env: @@Byte = environ_place().peek()
     if env.is_hollow()
@@ -196,21 +196,21 @@ secret routine environment_entries(alloc: @MemoryManager) -> List[EnvironmentEnt
         when text.find("=")
             is U64 as at =>
                 list.add_last(EnvironmentEntry(
-                    name: copied(text: text.slice(start: 0, end: at), alloc),
-                    value: copied(text: text.slice(start: at + 1, end: text.count()), alloc)))
+                    name: copied(text: text.slice(start: 0, end: at), manager),
+                    value: copied(text: text.slice(start: at + 1, end: text.count()), manager)))
             is None => pass
         continue with i: i + 1
     return list
 
-### The variables of the process's environment block (GetEnvironmentStringsW), as a list from alloc. The entries
+### The variables of the process's environment block (GetEnvironmentStringsW), as a list from manager. The entries
 ### Windows keeps for each drive's working directory (`=C:=C:\...`) are left out.
-### :param alloc: The allocator for the list and the copies.
+### :param manager: The memory manager for the list and the copies.
 ### :returns: The variables.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+### :throws: Crashes with `MemoryAllocationError` when `manager` fails.
 @target(os: "windows")
 @track_caller
-secret routine environment_entries(alloc: @MemoryManager) -> List[EnvironmentEntry]
-    local list: @List[EnvironmentEntry] <- .construct(alloc)
+secret routine environment_entries(manager: @MemoryManager) -> List[EnvironmentEntry]
+    local list: @List[EnvironmentEntry] <- .construct(manager)
 
     strings: @U16 = c_get_environment_strings()
     if strings.is_hollow()
@@ -224,9 +224,9 @@ secret routine environment_entries(alloc: @MemoryManager) -> List[EnvironmentEnt
         if entry.peek() != 0x3D
             while k < n with k: U64 = 1
                 if entry.stride(k).peek() == 0x3D
-                    local name: @Memory[Byte] <- owned_wide(units: entry, count: k, alloc)
+                    local name: @Memory[Byte] <- owned_wide(units: entry, count: k, manager)
                     local value: @Memory[Byte] <- owned_wide(units: entry.stride(k + 1),
-                        count: n - k - 1, alloc)
+                        count: n - k - 1, manager)
                     list.add_last(EnvironmentEntry(name: steal name, value: steal value))
                     break
                 continue with k: k + 1
@@ -236,26 +236,26 @@ secret routine environment_entries(alloc: @MemoryManager) -> List[EnvironmentEnt
 
 # -- the directories ---------------------------------------------------------------------
 
-### The working directory, its path in memory from alloc (drop it). Relative paths start there.
-### :param alloc: The allocator for the new path.
+### The working directory, its path in memory from manager (drop it). Relative paths start there.
+### :param manager: The memory manager for the new path.
 ### :returns: The working {Directory}, or throws the {FsError} the OS reported.
 @expensive("asks the operating system")
-failable common routine OsEnvironment.working_directory(alloc: @MemoryManager) -> Directory
-    when check current_dir(alloc)
+failable common routine OsEnvironment.working_directory(manager: @MemoryManager) -> Directory
+    when check current_dir(manager)
         is Memory[Byte] as found => return Directory.construct(path: steal found)
 
-### The temporary directory (TMPDIR or /tmp, on Windows GetTempPathW's), its path in memory from alloc (drop it).
-### :param alloc: The allocator for the new path.
+### The temporary directory (TMPDIR or /tmp, on Windows GetTempPathW's), its path in memory from manager (drop it).
+### :param manager: The memory manager for the new path.
 ### :returns: The temporary {Directory}, or throws the {FsError} the OS reported.
 @expensive("asks the operating system")
-failable common routine OsEnvironment.temp_directory(alloc: @MemoryManager) -> Directory
-    when check temp_dir(alloc)
+failable common routine OsEnvironment.temp_directory(manager: @MemoryManager) -> Directory
+    when check temp_dir(manager)
         is Memory[Byte] as found => return Directory.construct(path: steal found)
 
-### The user's home directory (HOME, on Windows USERPROFILE), its path in memory from alloc (drop it).
-### :param alloc: The allocator for the new path.
+### The user's home directory (HOME, on Windows USERPROFILE), its path in memory from manager (drop it).
+### :param manager: The memory manager for the new path.
 ### :returns: The home {Directory}, or throws the {FsError} the OS reported (NotFoundError when it can't be told).
 @expensive("asks the operating system")
-failable common routine OsEnvironment.home_directory(alloc: @MemoryManager) -> Directory
-    when check home_dir(alloc)
+failable common routine OsEnvironment.home_directory(manager: @MemoryManager) -> Directory
+    when check home_dir(manager)
         is Memory[Byte] as found => return Directory.construct(path: steal found)

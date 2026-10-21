@@ -7,7 +7,7 @@
 #     entry index >= 0. Linear probing on the hash mod capacity.
 #
 # Every array is a Memory of the same count, the capacity, and each keeps
-# the allocator. Removal marks the entry dead and the slot a tombstone. The
+# the memory manager. Removal marks the entry dead and the slot a tombstone. The
 # entry's position in the entries array is retained so the insertion order of
 # surviving entries is preserved. Rehash compacts dead entries away.
 #
@@ -36,16 +36,16 @@ obeys KeyFindable[Dict[TKey, TValue], TKey, TValue]
     count: U64
     entries_count: U64
 
-### Creates an empty Dict that draws its storage from `alloc`. Nothing is allocated until the first insertion.
-### :param alloc: The allocator the dict stores and later frees its memory with.
+### Creates an empty Dict that draws its storage from `manager`. Nothing is allocated until the first insertion.
+### :param manager: The memory manager the dict stores and later frees its memory with.
 ### :returns: A new empty Dict.
-common routine Dict[TKey, TValue].construct(alloc: @MemoryManager) -> Me
+common routine Dict[TKey, TValue].construct(manager: @MemoryManager) -> Me
 needs TKey: typename, TValue: typename
-    return Me(keys: Memory[TKey].construct(count: 0, manager: alloc),
-        values: Memory[TValue].construct(count: 0, manager: alloc),
-        hashes: Memory[U64].construct(count: 0, manager: alloc),
-        entry_states: Memory[U8].construct(count: 0, manager: alloc),
-        slots: Memory[U64].construct(count: 0, manager: alloc), count: 0, entries_count: 0)
+    return Me(keys: Memory[TKey].construct(count: 0, manager: manager),
+        values: Memory[TValue].construct(count: 0, manager: manager),
+        hashes: Memory[U64].construct(count: 0, manager: manager),
+        entry_states: Memory[U8].construct(count: 0, manager: manager),
+        slots: Memory[U64].construct(count: 0, manager: manager), count: 0, entries_count: 0)
 
 ### The number of entries currently stored.
 ### :returns: The count of entries, `0` when the dict is empty.
@@ -203,12 +203,12 @@ needs TKey: typename, TValue: typename, Equatable[TValue]
 ### entry. Dead entries are dropped, so the entries array is compacted. The new arrays are made in the order keys,
 ### values, hashes, entry states, slots, and a failure releases the ones already made.
 ### :param new_capacity: The new capacity, a power of two above the live count.
-### :returns: True when it rehashed, false when the allocator failed (the map is left as it was).
+### :returns: True when it rehashed, false when the memory manager failed (the map is left as it was).
 @reshaping
 secret routine @Dict[TKey, TValue].rehash(new_capacity: U64) -> Bool
 needs TKey: typename, TValue: typename
-    local alloc: @MemoryManager = me.keys.manager.peek()
-    local fresh: @Me <- .construct(alloc)
+    local manager: @MemoryManager = me.keys.manager.peek()
+    local fresh: @Me <- .construct(manager)
     local keys: @Memory[TKey] = fresh.keys
     local values: @Memory[TValue] = fresh.values
     local hashes: @Memory[U64] = fresh.hashes
@@ -252,7 +252,7 @@ needs TKey: typename, TValue: typename
 
 ### Makes room for one more entry: the first insertion rehashes into 8 slots, and the tables double once one more
 ### entry would fill three quarters of them.
-### :returns: True when there is room, false when the allocator failed (the map is left as it was).
+### :returns: True when there is room, false when the memory manager failed (the map is left as it was).
 @reshaping
 secret routine @Dict[TKey, TValue].ensure() -> Bool
 needs TKey: typename, TValue: typename
@@ -303,7 +303,7 @@ needs TKey: typename, TValue: typename
 ### Stores `value` under `key`, inserting a new entry or replacing the value of an equal existing key.
 ### :param key: The key to store under.
 ### :param value: The value to store.
-### :throws: Throws `MemoryAllocationError` when the tables must grow and the allocator fails.
+### :throws: Throws `MemoryAllocationError` when the tables must grow and the memory manager fails.
 @track_caller
 @reshaping
 failable routine @Dict[TKey, TValue].setitem(key: TKey, value: TValue) -> None
@@ -416,9 +416,9 @@ needs TKey: typename, TValue: typename
     return removed
 
 ### Ends every key and value (drop: one with something to give back gives it back, a plain value or a borrowed
-### pointer gives nothing), then gives the dict's memory back to its allocator and resets it to the empty state, so
+### pointer gives nothing), then gives the dict's memory back to its memory manager and resets it to the empty state, so
 ### it can be reused or destructed again.
-### :note: Does nothing on a hollow instance (`.hollow()`, no allocator), and only resets the fields of a never-filled one.
+### :note: Does nothing on a hollow instance (`.hollow()`, no memory manager), and only resets the fields of a never-filled one.
 @track_caller
 routine @Dict[TKey, TValue].destruct() -> None
 needs TKey: typename, TValue: typename
@@ -483,16 +483,16 @@ needs TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue], 
 
 # -- the arrays -----------------------------------------------------------------
 
-### Fills `into` (an empty slice holding the allocator) with `count` new values from that allocator. Set's rehash
+### Fills `into` (an empty slice holding the memory manager) with `count` new values from that memory manager. Set's rehash
 ### makes its arrays the same way.
 ### :typeparam T: The element type.
-### :param into: The empty slice to fill, which carries the allocator.
+### :param into: The empty slice to fill, which carries the memory manager.
 ### :param count: The number of elements to allocate.
-### :returns: True when it allocated, false when the allocator failed (leaving `into` empty).
+### :returns: True when it allocated, false when the memory manager failed (leaving `into` empty).
 secret routine make_array[T](into: @Memory[T], count: U64) -> Bool
 needs T: typename
-    alloc: @MemoryManager = into.manager.peek()
-    when check Memory[T].construct(count, manager: alloc)
+    manager: @MemoryManager = into.manager.peek()
+    when check Memory[T].construct(count, manager: manager)
         is Memory[T] as slice =>
             into.replace(value: steal slice)
             return true

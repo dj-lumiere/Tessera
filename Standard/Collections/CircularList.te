@@ -2,7 +2,7 @@
 #
 # Dynamic array with a centered start index — front and back both grow without
 # shifting. The buffer is a Memory[T] whose count is the capacity, and it
-# keeps the allocator.
+# keeps the memory manager.
 #
 # Logical element i lives at storage.data[start + i]. Front growth consumes spare slots
 # before start. When either side runs out the live range is moved back to the
@@ -23,12 +23,12 @@ obeys ViewingIndexable[CircularList[T], T], ModifyingIndexable[CircularList[T], 
     start: U64
     count: U64
 
-### Creates an empty CircularList that draws its storage from `alloc`. Nothing is allocated until the first insertion.
-### :param alloc: The allocator the list stores and later frees its memory with.
+### Creates an empty CircularList that draws its storage from `manager`. Nothing is allocated until the first insertion.
+### :param manager: The memory manager the list stores and later frees its memory with.
 ### :returns: A new empty CircularList.
-common routine CircularList[T].construct(alloc: @MemoryManager) -> Me
+common routine CircularList[T].construct(manager: @MemoryManager) -> Me
 needs T: typename
-    return Me(storage: Memory[T].construct(count: 0, manager: alloc), start: 0, count: 0)
+    return Me(storage: Memory[T].construct(count: 0, manager: manager), start: 0, count: 0)
 
 ### The number of elements currently stored.
 ### :returns: The count of elements, `0` when the list is empty.
@@ -46,7 +46,7 @@ needs T: typename
 
 ### Moves the elements into a new buffer of `new_capacity`, centered in it.
 ### :param new_capacity: The new buffer's capacity, at least the count.
-### :returns: True when it moved them, false when the allocator failed (the list is left as it was).
+### :returns: True when it moved them, false when the memory manager failed (the list is left as it was).
 @reshaping
 secret routine @CircularList[T].recenter(new_capacity: U64) -> Bool
 needs T: typename
@@ -54,8 +54,8 @@ needs T: typename
     local slack: U64 = new_capacity - count
     local new_start: U64 = slack // 2
 
-    alloc: @MemoryManager = me.storage.manager.peek()
-    when check Memory[T].construct(count: new_capacity, manager: alloc)
+    manager: @MemoryManager = me.storage.manager.peek()
+    when check Memory[T].construct(count: new_capacity, manager: manager)
         is Memory[T] as fresh =>
             old_data: @T = me.storage.data.peek()
             if not old_data.is_hollow()
@@ -84,7 +84,7 @@ needs T: typename
 
 ### Makes room for one element before the first: when the start is at 0, recenters into a buffer of 4 (none yet) or
 ### of {CircularList[T].grown_capacity}.
-### :returns: True when there is room, false when the allocator failed.
+### :returns: True when there is room, false when the memory manager failed.
 @reshaping
 secret routine @CircularList[T].ensure_front() -> Bool
 needs T: typename
@@ -98,7 +98,7 @@ needs T: typename
 
 ### Makes room for one element after the last: when the buffer's end is reached, recenters into a buffer of 4 (none
 ### yet) or of {CircularList[T].grown_capacity}.
-### :returns: True when there is room, false when the allocator failed.
+### :returns: True when there is room, false when the memory manager failed.
 @reshaping
 secret routine @CircularList[T].ensure_back() -> Bool
 needs T: typename
@@ -114,7 +114,7 @@ needs T: typename
 
 ### Appends `value` after the last element.
 ### :param value: The element to add.
-### :throws: Throws `MemoryAllocationError` when the buffer must grow and the allocator fails.
+### :throws: Throws `MemoryAllocationError` when the buffer must grow and the memory manager fails.
 @track_caller
 @reshaping
 failable routine @CircularList[T].add_last(value: T) -> None
@@ -131,7 +131,7 @@ needs T: typename
 
 ### Prepends `value` before the first element, so it becomes index `0`.
 ### :param value: The element to add.
-### :throws: Throws `MemoryAllocationError` when the buffer must grow and the allocator fails.
+### :throws: Throws `MemoryAllocationError` when the buffer must grow and the memory manager fails.
 @track_caller
 @reshaping
 failable routine @CircularList[T].add_first(value: T) -> None
@@ -289,9 +289,9 @@ needs T: typename
         drop data.stride(start + i)
     return
 
-### Ends every element, then gives the list's memory back to its allocator and resets it to the empty state, so it
+### Ends every element, then gives the list's memory back to its memory manager and resets it to the empty state, so it
 ### can be reused or destructed again.
-### :note: Does nothing on a hollow instance (`.hollow()`, no allocator), and only resets the fields of a never-filled one.
+### :note: Does nothing on a hollow instance (`.hollow()`, no memory manager), and only resets the fields of a never-filled one.
 @track_caller
 routine @CircularList[T].destruct() -> None
 needs T: typename

@@ -67,23 +67,23 @@ routine @PartitionManager.destruct() -> None
 routine @PartitionManager.directory() -> Directory
     return Directory.at(me.mounted_at.getview())
 
-### The storage devices the OS reports, their names in memory from alloc (drop the list).
-### :param alloc: The allocator for the list and the names.
+### The storage devices the OS reports, their names in memory from manager (drop the list).
+### :param manager: The memory manager for the list and the names.
 ### :returns: The devices, empty when the OS gives none.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+### :throws: Crashes with `MemoryAllocationError` when `manager` fails.
 @track_caller
 @expensive("asks the operating system")
-common routine StorageManager.list(alloc: @MemoryManager) -> List[Me]
-    return storage_devices(alloc)
+common routine StorageManager.list(manager: @MemoryManager) -> List[Me]
+    return storage_devices(manager)
 
-### The partitions the OS reports, their names in memory from alloc (drop the list).
-### :param alloc: The allocator for the list and the names.
+### The partitions the OS reports, their names in memory from manager (drop the list).
+### :param manager: The memory manager for the list and the names.
 ### :returns: The partitions, empty when the OS gives none.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+### :throws: Crashes with `MemoryAllocationError` when `manager` fails.
 @track_caller
 @expensive("asks the operating system")
-common routine PartitionManager.list(alloc: @MemoryManager) -> List[Me]
-    return partitions(alloc)
+common routine PartitionManager.list(manager: @MemoryManager) -> List[Me]
+    return partitions(manager)
 
 # -- shared helpers ----------------------------------------------------------------------
 
@@ -110,17 +110,17 @@ secret common routine PartitionFacts.construct(name: @[Byte], device: @[Byte], m
 secret routine @PartitionFacts.destruct() -> None
     return
 
-### A partition from what the OS says about it, its names copied into memory from alloc.
+### A partition from what the OS says about it, its names copied into memory from manager.
 ### :param facts: The names and the size.
-### :param alloc: The allocator for the copies.
+### :param manager: The memory manager for the copies.
 ### :returns: The partition.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+### :throws: Crashes with `MemoryAllocationError` when `manager` fails.
 @track_caller
-secret routine partition_from(facts: PartitionFacts, alloc: @MemoryManager) -> PartitionManager
-    return PartitionManager(name: copied(text: facts.name, alloc),
-        device: copied(text: facts.device, alloc),
-        mounted_at: copied(text: facts.mounted_at, alloc),
-        file_system: copied(text: facts.file_system, alloc), size: facts.size)
+secret routine partition_from(facts: PartitionFacts, manager: @MemoryManager) -> PartitionManager
+    return PartitionManager(name: copied(text: facts.name, manager),
+        device: copied(text: facts.device, manager),
+        mounted_at: copied(text: facts.mounted_at, manager),
+        file_system: copied(text: facts.file_system, manager), size: facts.size)
 
 ### The decimal number text starts with (digits up to the first byte that isn't one).
 ### :param text: The text.
@@ -198,15 +198,15 @@ secret routine mount_of(mounts: @[Byte], key: @[Byte]) -> Maybe[MountLine]
         return None()
 
 ### The mount point of mountinfo as the path it names: `\040` and the other octal escapes turned back into their
-### bytes, in memory from alloc.
+### bytes, in memory from manager.
 ### :param text: The escaped mount point.
-### :param alloc: The allocator for the path.
+### :param manager: The memory manager for the path.
 ### :returns: The path.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+### :throws: Crashes with `MemoryAllocationError` when `manager` fails.
 @target(os: "linux")
 @track_caller
-secret routine unescaped(text: @[Byte], alloc: @MemoryManager) -> Memory[Byte]
-    local out: @List[Byte] <- .construct(alloc)
+secret routine unescaped(text: @[Byte], manager: @MemoryManager) -> Memory[Byte]
+    local out: @List[Byte] <- .construct(manager)
 
     while i < text.count() with i: U64 = 0
         b: U8 = text.byte_at(i)
@@ -220,29 +220,29 @@ secret routine unescaped(text: @[Byte], alloc: @MemoryManager) -> Memory[Byte]
         out.add_last(b.bits())
         continue with i: i + 1
     then
-        local text_copy: @Memory[Byte] <- copied(text: out.getview(), alloc)
+        local text_copy: @Memory[Byte] <- copied(text: out.getview(), manager)
         drop out
         return text_copy
 
-### The whole file at path, empty when it can't be read, in memory from alloc.
+### The whole file at path, empty when it can't be read, in memory from manager.
 ### :param path: The file.
-### :param alloc: The allocator for the text.
+### :param manager: The memory manager for the text.
 ### :returns: Its bytes.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+### :throws: Crashes with `MemoryAllocationError` when `manager` fails.
 @target(os: "linux")
 @track_caller
-secret routine text_of(path: @[Byte], alloc: @MemoryManager) -> Memory[Byte]
-    when check read_file(path, alloc)
+secret routine text_of(path: @[Byte], manager: @MemoryManager) -> Memory[Byte]
+    when check read_file(path, manager)
         is Memory[Byte] as text => return text
-        is FsError => return copied(text: "", alloc)
+        is FsError => return copied(text: "", manager)
 
 ### The number a /sys file holds, 0 when it can't be read.
 ### :param path: The file.
-### :param alloc: The allocator for its text, given back before returning.
+### :param manager: The memory manager for its text, given back before returning.
 ### :returns: The number.
 @target(os: "linux")
-secret routine sys_number(path: @[Byte], alloc: @MemoryManager) -> U64
-    local text: @Memory[Byte] <- text_of(path, alloc)
+secret routine sys_number(path: @[Byte], manager: @MemoryManager) -> U64
+    local text: @Memory[Byte] <- text_of(path, manager)
 
     n: U64 = leading_number(text.getview())
     drop text
@@ -252,28 +252,28 @@ secret routine sys_number(path: @[Byte], alloc: @MemoryManager) -> U64
 ### :param sys: The partition's directory under /sys.
 ### :param name: The partition's name.
 ### :param mounts: The text of /proc/self/mountinfo.
-### :param alloc: The allocator for the names.
+### :param manager: The memory manager for the names.
 ### :returns: The partition.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+### :throws: Crashes with `MemoryAllocationError` when `manager` fails.
 @target(os: "linux")
 @track_caller
 secret routine linux_partition(sys: @[Byte], name: @[Byte], mounts: @[Byte],
-    alloc: @MemoryManager) -> PartitionManager
-    local dev_path: @Memory[Byte] <- join_path(a: sys, b: "dev", alloc)
-    local size_path: @Memory[Byte] <- join_path(a: sys, b: "size", alloc)
-    local dev_text: @Memory[Byte] <- text_of(path: dev_path.getview(), alloc)
-    local device: @Memory[Byte] <- copied(text: "", alloc)
-    local marker: @Memory[Byte] <- join_path(a: sys, b: "partition", alloc)
+    manager: @MemoryManager) -> PartitionManager
+    local dev_path: @Memory[Byte] <- join_path(a: sys, b: "dev", manager)
+    local size_path: @Memory[Byte] <- join_path(a: sys, b: "size", manager)
+    local dev_text: @Memory[Byte] <- text_of(path: dev_path.getview(), manager)
+    local device: @Memory[Byte] <- copied(text: "", manager)
+    local marker: @Memory[Byte] <- join_path(a: sys, b: "partition", manager)
 
     # A partition's device is the directory above it in /sys/devices. Something that isn't a partition (a whole disk
     # with a file system on it, a device-mapper volume) is its own device.
-    when check canonical_path(path: sys, alloc)
+    when check canonical_path(path: sys, manager)
         is Memory[Byte] as resolved =>
             if is_present(marker.getview())
                 device.replace(value: copied(text: file_name(parent_path(resolved.getview())),
-                    alloc))
+                    manager))
             else
-                device.replace(value: copied(text: name, alloc))
+                device.replace(value: copied(text: name, manager))
             drop resolved
         is FsError => pass
     drop marker
@@ -282,14 +282,14 @@ secret routine linux_partition(sys: @[Byte], name: @[Byte], mounts: @[Byte],
         is U64 as k => k
         is None => view.count()
     key: @[Byte] = view.slice(start: 0, end: key_end)
-    size: U64 = sys_number(path: size_path.getview(), alloc) *% 512
+    size: U64 = sys_number(path: size_path.getview(), manager) *% 512
     m: MountLine = when mount_of(mounts, key)
         is MountLine as line => line
         is None => MountLine(mount_point: "", file_system: "")
-    local at: @Memory[Byte] <- unescaped(text: m.mount_point, alloc)
+    local at: @Memory[Byte] <- unescaped(text: m.mount_point, manager)
     facts: PartitionFacts = PartitionFacts(name, device: device.getview(), mounted_at: at.getview(),
         file_system: m.file_system, size)
-    local made: @PartitionManager <- partition_from(facts, alloc)
+    local made: @PartitionManager <- partition_from(facts, manager)
     drop at
     drop device
     drop dev_text
@@ -298,13 +298,13 @@ secret routine linux_partition(sys: @[Byte], name: @[Byte], mounts: @[Byte],
     return made
 
 ### The devices in /sys/block that hold a medium, with their sizes.
-### :param alloc: The allocator for the list and the names.
+### :param manager: The memory manager for the list and the names.
 ### :returns: The devices.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+### :throws: Crashes with `MemoryAllocationError` when `manager` fails.
 @target(os: "linux")
 @track_caller
-secret routine storage_devices(alloc: @MemoryManager) -> List[StorageManager]
-    local list: @List[StorageManager] <- .construct(alloc)
+secret routine storage_devices(manager: @MemoryManager) -> List[StorageManager]
+    local list: @List[StorageManager] <- .construct(manager)
     local iter: @DirIter <- .hollow()
 
     opened: Bool = try iter.open_path("/sys/block")
@@ -315,12 +315,12 @@ secret routine storage_devices(alloc: @MemoryManager) -> List[StorageManager]
         entry: Maybe[DirEntry] = try iter.emit()
         when entry
             is DirEntry as e =>
-                local sys: @Memory[Byte] <- join_path(a: "/sys/block", b: e.name, alloc)
-                local size_path: @Memory[Byte] <- join_path(a: sys.getview(), b: "size", alloc)
-                size: U64 = sys_number(path: size_path.getview(), alloc) *% 512
+                local sys: @Memory[Byte] <- join_path(a: "/sys/block", b: e.name, manager)
+                local size_path: @Memory[Byte] <- join_path(a: sys.getview(), b: "size", manager)
+                size: U64 = sys_number(path: size_path.getview(), manager) *% 512
                 # A device with no medium (an unused loop device, an empty card reader) has size 0.
                 if size != 0
-                    list.add_last(StorageManager(name: copied(text: e.name, alloc), size))
+                    list.add_last(StorageManager(name: copied(text: e.name, manager), size))
                 drop size_path
                 drop sys
             is None => break
@@ -329,15 +329,15 @@ secret routine storage_devices(alloc: @MemoryManager) -> List[StorageManager]
 
 ### The partitions in /sys/class/block (the entries with a `partition` file, and the block devices that carry a
 ### mounted file system without one, such as a device-mapper volume), each with where it is mounted.
-### :param alloc: The allocator for the list and the names.
+### :param manager: The memory manager for the list and the names.
 ### :returns: The partitions.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+### :throws: Crashes with `MemoryAllocationError` when `manager` fails.
 @target(os: "linux")
 @track_caller
-secret routine partitions(alloc: @MemoryManager) -> List[PartitionManager]
-    local list: @List[PartitionManager] <- .construct(alloc)
+secret routine partitions(manager: @MemoryManager) -> List[PartitionManager]
+    local list: @List[PartitionManager] <- .construct(manager)
     local iter: @DirIter <- .hollow()
-    local mounts: @Memory[Byte] <- text_of(path: "/proc/self/mountinfo", alloc)
+    local mounts: @Memory[Byte] <- text_of(path: "/proc/self/mountinfo", manager)
 
     opened: Bool = try iter.open_path("/sys/class/block")
     if not opened
@@ -348,10 +348,10 @@ secret routine partitions(alloc: @MemoryManager) -> List[PartitionManager]
         entry: Maybe[DirEntry] = try iter.emit()
         when entry
             is DirEntry as e =>
-                local sys: @Memory[Byte] <- join_path(a: "/sys/class/block", b: e.name, alloc)
-                local marker: @Memory[Byte] <- join_path(a: sys.getview(), b: "partition", alloc)
+                local sys: @Memory[Byte] <- join_path(a: "/sys/class/block", b: e.name, manager)
+                local marker: @Memory[Byte] <- join_path(a: sys.getview(), b: "partition", manager)
                 local found: @PartitionManager <- linux_partition(sys: sys.getview(), name: e.name,
-                    mounts: mounts.getview(), alloc)
+                    mounts: mounts.getview(), manager)
                 # A partition, or a block device that carries a mounted file system of its own (a device-mapper
                 # volume, a whole disk without a partition table): the same thing partition_of names.
                 if is_present(marker.getview()) or not found.mounted_at.getview().is_empty()
@@ -369,45 +369,45 @@ secret routine partitions(alloc: @MemoryManager) -> List[PartitionManager]
 ### :param sys: The link.
 ### :param key: The device's "major:minor", the name when the link can't be resolved.
 ### :param mounts: The text of /proc/self/mountinfo.
-### :param alloc: The allocator for the names.
+### :param manager: The memory manager for the names.
 ### :returns: The partition.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+### :throws: Crashes with `MemoryAllocationError` when `manager` fails.
 @target(os: "linux")
 @track_caller
 secret routine linux_partition_at(sys: @[Byte], key: @[Byte], mounts: @[Byte],
-    alloc: @MemoryManager) -> PartitionManager
-    local name: @Memory[Byte] <- copied(text: key, alloc)
+    manager: @MemoryManager) -> PartitionManager
+    local name: @Memory[Byte] <- copied(text: key, manager)
 
-    when check canonical_path(path: sys, alloc)
+    when check canonical_path(path: sys, manager)
         is Memory[Byte] as resolved =>
-            name.replace(value: copied(text: file_name(resolved.getview()), alloc))
+            name.replace(value: copied(text: file_name(resolved.getview()), manager))
             drop resolved
         is FsError => pass
-    local made: @PartitionManager <- linux_partition(sys, name: name.getview(), mounts, alloc)
+    local made: @PartitionManager <- linux_partition(sys, name: name.getview(), mounts, manager)
     drop name
     return made
 
 ### The partition the existing path is on: its device found through /sys/dev/block, and its mount in
 ### /proc/self/mountinfo. A file system with no device (tmpfs, overlay) is named by its type.
 ### :param path: The path.
-### :param alloc: The allocator for the names.
+### :param manager: The memory manager for the names.
 ### :returns: The partition for a path that can't be looked at.
 @target(os: "linux")
-secret failable routine partition_of(path: @[Byte], alloc: @MemoryManager) -> PartitionManager
+secret failable routine partition_of(path: @[Byte], manager: @MemoryManager) -> PartitionManager
     id: U64 = when check device_id(path)
         is U64 as found => found
-    local key: @List[Byte] <- .construct(alloc)
-    local sys: @List[Byte] <- .construct(alloc)
+    local key: @List[Byte] <- .construct(manager)
+    local sys: @List[Byte] <- .construct(manager)
 
     major: U64 = id & 0xFFFFFFFF
     minor: U64 = id >> 32
     key.write("{major}:{minor}")
     sys.write("/sys/dev/block/{major}:{minor}")
-    local mounts: @Memory[Byte] <- text_of(path: "/proc/self/mountinfo", alloc)
+    local mounts: @Memory[Byte] <- text_of(path: "/proc/self/mountinfo", manager)
 
     if is_present(sys.getview())
         local made: @PartitionManager <- linux_partition_at(sys: sys.getview(), key: key.getview(),
-            mounts: mounts.getview(), alloc)
+            mounts: mounts.getview(), manager)
         drop mounts
         drop sys
         drop key
@@ -418,10 +418,10 @@ secret failable routine partition_of(path: @[Byte], alloc: @MemoryManager) -> Pa
     name: @[Byte] = when
         m.file_system.is_empty() => key.getview()
         else => m.file_system
-    local at: @Memory[Byte] <- unescaped(text: m.mount_point, alloc)
+    local at: @Memory[Byte] <- unescaped(text: m.mount_point, manager)
     facts: PartitionFacts = PartitionFacts(name, device: "", mounted_at: at.getview(),
         file_system: m.file_system, size: 0)
-    local unmounted: @PartitionManager <- partition_from(facts, alloc)
+    local unmounted: @PartitionManager <- partition_from(facts, manager)
     drop at
     drop mounts
     drop sys
@@ -513,12 +513,12 @@ secret routine disk_of(name: @[Byte]) -> @[Byte]
 
 ### The partition a statfs describes.
 ### :param st: The description.
-### :param alloc: The allocator for the names.
+### :param manager: The memory manager for the names.
 ### :returns: The partition.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+### :throws: Crashes with `MemoryAllocationError` when `manager` fails.
 @target(os: "macos")
 @track_caller
-secret routine mac_partition(st: @StatFs, alloc: @MemoryManager) -> PartitionManager
+secret routine mac_partition(st: @StatFs, manager: @MemoryManager) -> PartitionManager
     from: @[Byte] = c_text(field: st.mounted_from.to[@Byte]())
     name: @[Byte] = when
         from.has_prefix("/dev/") => from.slice(start: 5, end: from.count())
@@ -527,28 +527,28 @@ secret routine mac_partition(st: @StatFs, alloc: @MemoryManager) -> PartitionMan
     facts: PartitionFacts = PartitionFacts(name, device: disk_of(name),
         mounted_at: c_text(field: st.mounted_on.to[@Byte]()),
         file_system: c_text(field: st.type_name.to[@Byte]()), size)
-    return partition_from(facts, alloc)
+    return partition_from(facts, manager)
 
 ### Every mounted file system, as getfsstat reports them.
-### :param alloc: The allocator for the list and the names.
+### :param manager: The memory manager for the list and the names.
 ### :returns: The partitions.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+### :throws: Crashes with `MemoryAllocationError` when `manager` fails.
 @target(os: "macos")
 @track_caller
-secret routine partitions(alloc: @MemoryManager) -> List[PartitionManager]
-    local list: @List[PartitionManager] <- .construct(alloc)
+secret routine partitions(manager: @MemoryManager) -> List[PartitionManager]
+    local list: @List[PartitionManager] <- .construct(manager)
 
     n: CInt = c_getfsstat(.hollow(), 0, 2)
     if n <= 0
         return list
     count: U64 = n.to[U64]()
-    all: @StatFs = allocate[StatFs](count, alloc)
+    all: @StatFs = allocate[StatFs](count, manager)
     if all.is_hollow()
         crash_allocation()
     got: CInt = c_getfsstat(all, (count * sizeof[StatFs]()).to_wrap[CInt](), 2)
     each i in 0 til got.max(0).to[U64]().min(count)
-        list.add_last(mac_partition(st: all.stride(i), alloc))
-    deallocate(data: all, alloc)
+        list.add_last(mac_partition(st: all.stride(i), manager))
+    deallocate(data: all, manager)
     return list
 
 ### Whether the list has a device of that name.
@@ -563,30 +563,30 @@ secret routine has_storage(list: @List[StorageManager], name: @[Byte]) -> Bool
     return false
 
 ### The disks the mounted file systems are on, by name (macOS gives their sizes only with special rights).
-### :param alloc: The allocator for the list and the names.
+### :param manager: The memory manager for the list and the names.
 ### :returns: The devices.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+### :throws: Crashes with `MemoryAllocationError` when `manager` fails.
 @target(os: "macos")
 @track_caller
-secret routine storage_devices(alloc: @MemoryManager) -> List[StorageManager]
-    local list: @List[StorageManager] <- .construct(alloc)
-    local parts: @List[PartitionManager] <- partitions(alloc)
+secret routine storage_devices(manager: @MemoryManager) -> List[StorageManager]
+    local list: @List[StorageManager] <- .construct(manager)
+    local parts: @List[PartitionManager] <- partitions(manager)
 
     each i in 0 til parts.count()
         disk: @[Byte] = parts.getslot(i).device.getview()
         if disk.is_empty()
             continue
         if not has_storage(list, name: disk)
-            list.add_last(StorageManager(name: copied(text: disk, alloc), size: 0))
+            list.add_last(StorageManager(name: copied(text: disk, manager), size: 0))
     drop parts
     return list
 
 ### The partition the existing path is on, from statfs.
 ### :param path: The path.
-### :param alloc: The allocator for the names.
+### :param manager: The memory manager for the names.
 ### :returns: The partition for a path that can't be looked at.
 @target(os: "macos")
-secret failable routine partition_of(path: @[Byte], alloc: @MemoryManager) -> PartitionManager
+secret failable routine partition_of(path: @[Byte], manager: @MemoryManager) -> PartitionManager
     local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
     local st: @StatFs <- .hollow()
 
@@ -594,7 +594,7 @@ secret failable routine partition_of(path: @[Byte], alloc: @MemoryManager) -> Pa
         throw path_error(path)
     if c_statfs(cpath.to[@Byte](), st) != 0
         throw last_error()
-    return mac_partition(st, alloc)
+    return mac_partition(st, manager)
 
 # -- Windows -----------------------------------------------------------------------------
 
@@ -651,23 +651,23 @@ secret routine c_get_volume_path_name(path: @U16, out: @U16, size: U32) -> CInt
 
 ### The partition whose root is the 0-terminated UTF-16 `root` ("C:\"), named by its drive ("C:").
 ### :param root: The volume's root.
-### :param alloc: The allocator for the names.
+### :param manager: The memory manager for the names.
 ### :returns: The partition, with no file system when the drive has no disk in it.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+### :throws: Crashes with `MemoryAllocationError` when `manager` fails.
 @target(os: "windows")
 @track_caller
-secret routine windows_partition(root: @U16, alloc: @MemoryManager) -> PartitionManager
+secret routine windows_partition(root: @U16, manager: @MemoryManager) -> PartitionManager
     local fs: @Array[U16, 64] <- .hollow()
     local total: @U64 <- 0
 
     n: U64 = wide_length(root)
-    local at: @Memory[Byte] <- owned_wide(units: root, count: n, alloc)
-    local fs_name: @Memory[Byte] <- copied(text: "", alloc)
+    local at: @Memory[Byte] <- owned_wide(units: root, count: n, manager)
+    local fs_name: @Memory[Byte] <- copied(text: "", manager)
 
     if c_get_volume_information(root, .hollow(), 0, .hollow(), .hollow(), .hollow(), fs.to[@U16](),
         64) != 0
         fs_name.replace(value: owned_wide(units: fs.to[@U16](), count: wide_length(fs.to[@U16]()),
-            alloc))
+            manager))
         c_get_disk_free_space(root, .hollow(), total, .hollow())
     path: @[Byte] = at.getview()
     # The drive "C:" is the root without its separator.
@@ -677,19 +677,19 @@ secret routine windows_partition(root: @U16, alloc: @MemoryManager) -> Partition
         else => path
     facts: PartitionFacts = PartitionFacts(name, device: "", mounted_at: path,
         file_system: fs_name.getview(), size: total.peek())
-    local made: @PartitionManager <- partition_from(facts, alloc)
+    local made: @PartitionManager <- partition_from(facts, manager)
     drop fs_name
     drop at
     return made
 
 ### Every drive letter's partition.
-### :param alloc: The allocator for the list and the names.
+### :param manager: The memory manager for the list and the names.
 ### :returns: The partitions.
-### :throws: Crashes with `MemoryAllocationError` when `alloc` fails.
+### :throws: Crashes with `MemoryAllocationError` when `manager` fails.
 @target(os: "windows")
 @track_caller
-secret routine partitions(alloc: @MemoryManager) -> List[PartitionManager]
-    local list: @List[PartitionManager] <- .construct(alloc)
+secret routine partitions(manager: @MemoryManager) -> List[PartitionManager]
+    local list: @List[PartitionManager] <- .construct(manager)
     local roots: @Array[U16, 512] <- .hollow()
 
     got: U32 = c_get_logical_drive_strings(512, roots.to[@U16]())
@@ -700,26 +700,26 @@ secret routine partitions(alloc: @MemoryManager) -> List[PartitionManager]
         n: U64 = wide_length(root)
         if n == 0
             break
-        list.add_last(windows_partition(root, alloc))
+        list.add_last(windows_partition(root, manager))
         continue with at: at + n + 1
     return list
 
 ### The storage devices: Windows names them only to a program with administrator rights, so none.
-### :param alloc: The allocator for the list.
+### :param manager: The memory manager for the list.
 ### :returns: An empty list.
 @target(os: "windows")
 @track_caller
-secret routine storage_devices(alloc: @MemoryManager) -> List[StorageManager]
-    local list: @List[StorageManager] <- .construct(alloc)
+secret routine storage_devices(manager: @MemoryManager) -> List[StorageManager]
+    local list: @List[StorageManager] <- .construct(manager)
 
     return list
 
 ### The partition the existing path is on: the volume GetVolumePathNameW finds for it.
 ### :param path: The path.
-### :param alloc: The allocator for the names.
+### :param manager: The memory manager for the names.
 ### :returns: The partition for a path that can't be looked at.
 @target(os: "windows")
-secret failable routine partition_of(path: @[Byte], alloc: @MemoryManager) -> PartitionManager
+secret failable routine partition_of(path: @[Byte], manager: @MemoryManager) -> PartitionManager
     local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
     local root: @Array[U16, PATH_CAPACITY] <- .hollow()
 
@@ -727,4 +727,4 @@ secret failable routine partition_of(path: @[Byte], alloc: @MemoryManager) -> Pa
         throw path_error(path)
     if c_get_volume_path_name(wpath.to[@U16](), root.to[@U16](), PATH_CAPACITY.to[U32]()) == 0
         throw last_error()
-    return windows_partition(root: root.to[@U16](), alloc)
+    return windows_partition(root: root.to[@U16](), manager)
