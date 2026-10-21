@@ -338,6 +338,37 @@ public class MigrateTests
     }
 
     [Fact]
+    public void Takes_away_the_routines_of_a_type_that_holds_only_addresses()
+    {
+        const string before = """
+            record View
+                first: @S64
+                rest: @[Byte]
+                at: Addr
+
+            common routine View.construct(first: @S64, rest: @[Byte], at: Addr) -> Me
+                return Me(first, rest, at)
+
+            routine @View.destruct() -> None
+                me.rest.destruct()
+                return
+
+            routine f(p: @S64, b: @[Byte]) -> None
+                v: View = View.construct(first: p, rest: b, at: p.to[Addr]())
+                w: View = .construct(first: p, rest: b, at: p.to[Addr]())
+                return
+            """;
+        var holds = ConstructDestructMigration.Holding([("view.te", before)], unknownHolds: true);
+        var removed = new HashSet<string>();
+        string after = ConstructDestructMigration.CallersOfRemoved(
+            ConstructDestructMigration.Trim(before, holds, [], removed: removed), removed);
+        Assert.DoesNotContain("routine View.construct", after);
+        Assert.DoesNotContain("routine @View.destruct", after);
+        Assert.Contains("v: View = View(first: p, rest: b, at: p.to[Addr]())", after);
+        Assert.Contains("w: View = View(first: p, rest: b, at: p.to[Addr]())", after);
+    }
+
+    [Fact]
     public void Memory_types_replace_slices_and_bytes()
     {
         const string before = """

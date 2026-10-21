@@ -20,13 +20,17 @@ public static partial class ConstructDestructMigration
     [GeneratedRegex(@"^(?:(?:private|internal|secret)\s+)?(?:common\s+)?routine\s+@?(`[^`]+`|[A-Z]\w*)(?:\[[^\]]*\])?\.(construct|destruct)\b")]
     private static partial Regex LifeRoutine();
 
-    [GeneratedRegex(@"^    (?:(?:private|internal|secret)\s+)?(`?[A-Za-z_]\w*`?)\s*:\s*([^/]+?)\s*(//.*)?$")]
+    [GeneratedRegex(@"^    (?:(?:private|internal|secret)\s+)?(`?[A-Za-z_]\w*`?)\s*:\s*((?:(?!//)[^#])+?)\s*(//.*|#.*)?$")]
     private static partial Regex Field();
 
     /// The field types whose values hold memory and have a `destruct` of their own.
     private static readonly HashSet<string> Owning =
         ["List", "Dict", "Set", "SortedDict", "SortedSet", "SortedList", "CircularList", "PriorityQueue", "Slice", "Bytes",
          "OwnedCStr", "OwnedCWStr"];
+
+    /// The declarations of each text parsed so far, by file and text: one run reads the standard library for every
+    /// program it migrates.
+    private static readonly Dictionary<(string File, string Text), List<Decl>> Parsed = [];
 
     /// The `(type, routine)` pairs the texts declare: `("Point", "construct")`.
     public static HashSet<(string Type, string Routine)> Declared(IEnumerable<string> texts)
@@ -49,7 +53,9 @@ public static partial class ConstructDestructMigration
 
     /// Which of the types the texts declare hold something to release, by name: a type the texts don't declare counts as
     /// holding something when `unknownHolds` is set. A text that doesn't parse holds everything it declares.
-    public static Func<string, bool> Holding(IEnumerable<(string File, string Text)> texts, bool unknownHolds)
+    /// The names declared in a text that doesn't parse go into `unparsedNames` when it is given.
+    public static Func<string, bool> Holding(IEnumerable<(string File, string Text)> texts, bool unknownHolds,
+        ISet<string>? unparsedNames = null)
     {
         var byName = new Dictionary<string, List<Decl>>();
         var unparsed = new HashSet<string>();
@@ -58,7 +64,8 @@ public static partial class ConstructDestructMigration
             List<Decl> decls;
             try
             {
-                decls = new Parser(new Lexer(file, text).Lex(), file, acceptLegacy: true).ParseModule().Decls;
+                decls = Parsed.TryGetValue((file, text), out var known) ? known
+                    : Parsed[(file, text)] = new Parser(new Lexer(file, text).Lex(), file, acceptLegacy: true).ParseModule().Decls;
             }
             catch (CompileError)
             {
@@ -73,8 +80,11 @@ public static partial class ConstructDestructMigration
                 (byName.TryGetValue(name, out var list) ? list : byName[name] = []).Add(d);
             }
         }
+        // A name means the declaration in the module its path names, else the one in its own file, else the first.
+        unparsedNames?.UnionWith(unparsed);
         var needs = new LifecycleNeeds((t, file) => byName.GetValueOrDefault(t.Name) is { } found
-            ? found.FirstOrDefault(d => d.File == file) ?? found[0]
+            ? (t.Path is { } path ? found.FirstOrDefault(d => d.Module == path || d.Module.EndsWith("/" + path, StringComparison.Ordinal)) : null)
+              ?? found.FirstOrDefault(d => d.File == file) ?? found[0]
             : null, unknownHolds);
         return name => unparsed.Contains(name)
                        || (byName.GetValueOrDefault(name) is { } found
@@ -163,9 +173,13 @@ public static partial class ConstructDestructMigration
 
     /// The text without the `construct` and `destruct` of the types that hold nothing to release (`holds` false for the
     /// type's name) when they do nothing of their own: a `construct` whose body is `return(Me(...))` and a `destruct`
-    /// whose body is `return()`, with their doc comments and annotations. `kept` names the types the program still calls
-    /// one of them on through a concept (`conform Destructible[Point]`), which keep theirs.
-    public static string Trim(string text, Func<string, bool> holds, HashSet<string> kept)
+    /// whose body only gives back fields (`drop me.f`) and returns, with their doc comments and annotations. `kept` names
+    /// the types the program still calls one of them on through a concept (`conform Destructible[Point]`), which keep
+    /// theirs. A `destruct` that does more is kept and, when `report` is given, listed there (`file:line: ...`) to look
+    /// at by hand.
+    /// `removed` collects the types whose `construct` went, so that `CallersOfRemoved` can write their callers out.
+    public static string Trim(string text, Func<string, bool> holds, HashSet<string> kept, string file = "", List<string>? report = null,
+        HashSet<string>? removed = null)
     {
         var lines = text.Split('\n').ToList();
         for (int i = 0; i < lines.Count; i++)
@@ -183,12 +197,21 @@ public static partial class ConstructDestructMigration
                                           lines[body].StartsWith("needs ", StringComparison.Ordinal))) body++;
             int after = body;
             while (after < lines.Count && lines[after].StartsWith("    ", StringComparison.Ordinal)) after++;
-            if (after - body != 1) continue;
-            string only = lines[body];
+            string only = after - body == 1 ? lines[body] : "";
+            // A destruct of a type that holds nothing may still give back its fields (`me.text.destruct()`, `drop
+            // me.items`): they hold nothing either, so it goes too.
             bool trivial = m.Groups[2].Value == "construct"
                 ? Regex.IsMatch(only, @"^    return(\(Me\((`?\w+`?(, `?\w+`?)*)?\)\)| Me\((`?\w+`?(, `?\w+`?)*)?\))\s*$")
-                : Regex.IsMatch(only, @"^    return(\(\))?\s*$");
+                : after > body && Regex.IsMatch(lines[after - 1], @"^    return(\(\))?\s*$")
+                  && lines.Skip(body).Take(after - 1 - body).All(l => Regex.IsMatch(l, @"^    (me\.`?\w+`?\.destruct\(\)|drop me\.`?\w+`?)\s*$"));
+            if (!trivial && m.Groups[2].Value == "destruct")
+            {
+                report?.Add($"{file}:{i + 1}: {owner} holds nothing to release, and its destruct does more than give back its "
+                            + "fields: kept, look at it by hand");
+                continue;
+            }
             if (!trivial) continue;
+            if (m.Groups[2].Value == "construct") removed?.Add(owner);
             int start = i;
             while (start > 0 && (lines[start - 1].StartsWith("///", StringComparison.Ordinal) || lines[start - 1].StartsWith('#') ||
                                  lines[start - 1].StartsWith('@'))) start--;
@@ -198,6 +221,19 @@ public static partial class ConstructDestructMigration
             i = start - 1;
         }
         return string.Join('\n', lines);
+    }
+
+    /// The text with each call of a `construct` that `Trim` took away (`CrashSink.construct(state: s)`) written as the
+    /// type's own making (`CrashSink(state: s)`), which takes the same arguments.
+    /// A binding that names the type (`a: Animal = .construct(...)`, `local a: @Animal <- .construct(...)`) is rewritten
+    /// the same way.
+    public static string CallersOfRemoved(string text, HashSet<string> removed)
+    {
+        if (removed.Count == 0) return text;
+        text = Regex.Replace(text, @"\b([A-Z]\w*)(\[[^\]\n]*\])?\.construct\(",
+            m => removed.Contains(m.Groups[1].Value) ? $"{m.Groups[1].Value}{m.Groups[2].Value}(" : m.Value);
+        return Regex.Replace(text, @"(:\s*@?([A-Z]\w*)(\[[^\]\n]*\])?\s*(?:=|<-)\s*)\.construct\(",
+            m => removed.Contains(m.Groups[2].Value) ? $"{m.Groups[1].Value}{m.Groups[2].Value}{m.Groups[3].Value}(" : m.Value);
     }
 
     /// The types a `conform Destructible[...]` or `conform Constructible[...]` in the texts names: their routines are

@@ -917,14 +917,17 @@ routine start() -> None
   before it plus 1, the first 0. The underlying type is any integer type (`S8` .. `S256`, `U8` .. `U256`), and `S32`,
   C's `int`, when it isn't written (`choice Light`).
 - **A type that holds something to release declares a `common routine T.construct(...)` (returning `Me`) and a `routine @T.destruct() -> None`**
-  (a variant only the `destruct`), a build error otherwise that names what it holds. It holds something when a field
-  (a branch, for a variant) is an address (`@T`, `Addr`), a `Box` or `Memory`, a value of a type parameter, or a value
-  of a type that itself holds something (a `List`, a `CStr`, a record with such a field). Its `destruct`
-  gives those fields back (`drop me.storage`). A type of plain data (numbers, `Bool`, choices, records and variants of those) declares
-  neither: `Point(x: 1, y: 2)` makes it and nothing releases it. It may still declare them, and a plain type used where
-  generic code asks for `Destructible[T]` (`destruct_all`) declares a `destruct` that does nothing. `tessera migrate
-  --step lifecycle` writes both for a holding type that lacks them, and removes the one-line ones (`return Me(x, y)`,
-  `return`) from a plain-data type.
+  (a variant only the `destruct`), a build error otherwise that names what it holds. A `Box`, a `Memory` and an entity
+  hold something, and so does a type with a field (a branch, for a variant) that is a value of a type parameter or a
+  value of a type that itself holds something (a `List`, a `CStr`, a record with such a field). Its `destruct` gives
+  those fields back (`drop me.storage`). An address (`@T`, `@[T]`, `Addr`) holds nothing: it points at memory that a
+  `Box`, a `Memory` or an entity gives back. A type of plain data (numbers, `Bool`, choices, addresses, records and
+  variants of those) declares neither: `Point(x: 1, y: 2)` makes it and nothing releases it. It may still declare them,
+  and a plain type used where generic code asks for `Destructible[T]` (`destruct_all`) declares a `destruct` that does
+  nothing. `tessera migrate --step lifecycle` writes both for a holding type that lacks them, removes the ones a
+  plain-data type doesn't need (`return Me(x, y)`, a `destruct` that only gives back its fields), rewrites the calls of a
+  removed `construct` (`Point.construct(x: 1, y: 2)` to `Point(x: 1, y: 2)`), and lists a plain-data `destruct` that does
+  more.
 
 **Tuples**
 

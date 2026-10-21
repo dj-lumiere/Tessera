@@ -137,8 +137,10 @@ public static class Migrate
             // together, a test or an example on its own.
             // Which types hold something to release is read from the program's files and the standard library's.
             int moved = 0;
+            var lifecycleReport = new List<string>();
             var stdlib = StdlibFiles().ToList();
-            var groups = new Dictionary<string, (Func<string, bool> Holds, HashSet<string> Kept)>();
+            var groups = new Dictionary<string, (Func<string, bool> Holds, HashSet<string> Kept, HashSet<string> Unparsed)>();
+            var trimmed = new Dictionary<string, string>();
             foreach (var (file, text) in texts)
             {
                 var group = texts.Where(kv => SameProgram(kv.Key, file)).ToList();
@@ -149,17 +151,58 @@ public static class Migrate
                     var all = group.Select(kv => (kv.Key, kv.Value))
                         .Concat(stdlib.Where(s => group.All(g => Path.GetFullPath(g.Key) != Path.GetFullPath(s.Path))))
                         .ToList();
-                    analysis = groups[root] = (ConstructDestructMigration.Holding(all, unknownHolds: true),
-                        ConstructDestructMigration.KeptByConcepts(all.Select(a => a.Item2)));
+                    var unparsed = new HashSet<string>();
+                    analysis = groups[root] = (ConstructDestructMigration.Holding(all, unknownHolds: true, unparsedNames: unparsed),
+                        ConstructDestructMigration.KeptByConcepts(all.Select(a => a.Item2)), unparsed);
                 }
-                string rewritten = ConstructDestructMigration.Trim(
-                    ConstructDestructMigration.Rewrite(text, declared, analysis.Holds), analysis.Holds, analysis.Kept);
+                // A type of a file this step can't read is left as it is: whether it holds anything is unknown.
+                var holds = analysis.Holds;
+                var unread = analysis.Unparsed;
+                if (unread.Count > 0 && texts.Count > 0 && unread.Any(n => Regex.IsMatch(text, $@"^(?:secret\s+)?(?:record|variant)\s+{Regex.Escape(n)}\b", RegexOptions.Multiline)))
+                    lifecycleReport.Add($"{file}: this step can't read the file, so its types keep their construct and destruct: look at them by hand");
+                trimmed[file] = ConstructDestructMigration.Trim(
+                    ConstructDestructMigration.Rewrite(text, declared, name => holds(name) && !unread.Contains(name)),
+                    holds, analysis.Kept, file, lifecycleReport);
+            }
+            // A construct that went may still be called by name, in its own file or another, and so may one taken away
+            // before: every call of `T.construct(` for a plain record that declares none is written as `T(`.
+            var trimmedStdlib = stdlib.Select(s => (s.Path, Text: trimmed.FirstOrDefault(t => Path.GetFullPath(t.Key) == Path.GetFullPath(s.Path)).Value ?? s.Text)).ToList();
+            var recordHeader = new Regex(@"^(?:secret\s+)?record\s+(\w+)", RegexOptions.Multiline);
+            HashSet<string> PlainWithoutConstruct(List<(string, string)> all, IEnumerable<string> candidates)
+            {
+                var declared = ConstructDestructMigration.Declared(all.Select(a => a.Item2));
+                var lacking = candidates.Where(n => !declared.Contains((n, "construct"))).ToHashSet();
+                if (lacking.Count == 0) return [];
+                var holds = ConstructDestructMigration.Holding(all, unknownHolds: true);
+                return lacking.Where(n => !holds(n)).ToHashSet();
+            }
+            var stdlibGone = PlainWithoutConstruct(trimmedStdlib,
+                trimmedStdlib.SelectMany(s => recordHeader.Matches(s.Text).Select(m => m.Groups[1].Value)));
+            var goneByRoot = new Dictionary<string, HashSet<string>>();
+            foreach (var (file, text) in texts)
+            {
+                string root = ProgramRoot(file) + (IsStandalone(file) ? "|" + file : "");
+                if (!goneByRoot.TryGetValue(root, out var gone))
+                {
+                    var group = trimmed.Where(kv => SameProgram(kv.Key, file)).Select(kv => (kv.Key, kv.Value)).ToList();
+                    var local = group.SelectMany(g => recordHeader.Matches(g.Value).Select(m => m.Groups[1].Value)).ToHashSet();
+                    var localDeclared = ConstructDestructMigration.Declared(group.Select(g => g.Value));
+                    gone = goneByRoot[root] = stdlibGone.Where(n => !local.Contains(n) && !localDeclared.Contains((n, "construct"))).ToHashSet();
+                    if (local.Count > 0)
+                    {
+                        var all = group.Concat(trimmedStdlib.Where(s => group.All(g => Path.GetFullPath(g.Key) != Path.GetFullPath(s.Path))))
+                            .ToList();
+                        gone.UnionWith(PlainWithoutConstruct(all, local));
+                    }
+                }
+                string rewritten = ConstructDestructMigration.CallersOfRemoved(trimmed[file], gone);
                 if (rewritten == text) continue;
                 moved++;
                 if (check) Console.WriteLine(file);
                 else File.WriteAllText(file, rewritten, new UTF8Encoding(false));
             }
-            if (!check) Console.WriteLine($"migrated {moved} of {files.Count} file(s)");
+            foreach (string line in lifecycleReport) Console.WriteLine(line);
+            if (!check) Console.WriteLine($"migrated {moved} of {files.Count} file(s), {lifecycleReport.Count} place(s) to look at by hand");
             return check && moved > 0 ? 1 : 0;
         }
 

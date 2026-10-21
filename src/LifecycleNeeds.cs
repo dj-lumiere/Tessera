@@ -1,9 +1,10 @@
 namespace Tessera;
 
-/// Which types hold something to release, and so declare `construct` and `destruct`: a type with a field (a branch, for
-/// a variant) that is an address (`@T`, `Addr`), memory from a manager (`Box`, `Memory`), a value of a type parameter
-/// (an instance may hold anything), or a value of a type that itself holds something to release. A type of plain data
-/// (numbers, Bool, choices, records of those) holds nothing: it may declare them, and needs neither.
+/// Which types hold something to release, and so declare `construct` and `destruct`: memory from a manager (`Box`,
+/// `Memory`), an entity, or a type with a field (a branch, for a variant) that is a value of a type parameter (an
+/// instance may hold anything) or a value of a type that itself holds something to release. An address (`@T`, `@[T]`,
+/// `Addr`) only points at memory someone else gives back, so it holds nothing. A type of plain data (numbers, Bool,
+/// choices, addresses, records of those) holds nothing: it may declare them, and needs neither.
 ///
 /// It reads the declarations as written, so the build (Compiler.CheckLifecycle) and `migrate --step lifecycle` answer
 /// alike. `find` names the declaration a type means, or null. A type no declaration names counts as holding something
@@ -27,7 +28,7 @@ public sealed class LifecycleNeeds(Func<TypeRef, string, Decl?> find, bool unkno
         if (d.AnnotationNamed("llvm") is not null) return null;
         string key = $"{d.File}|{d.Pos}|{string.Join(",", args.OrderBy(a => a.Key, StringComparer.Ordinal).Select(a => a.Value))}";
         if (_memo.TryGetValue(key, out var known)) return known;
-        // A type that contains itself (through an address, which already holds) counts as holding nothing here.
+        // A type that contains itself (through a type that holds it) counts as holding nothing here.
         if (!_visiting.Add(key)) return null;
         string? why = null;
         switch (d)
@@ -70,8 +71,9 @@ public sealed class LifecycleNeeds(Func<TypeRef, string, Decl?> find, bool unkno
         if (t.Path is null && t.Args.Count == 0 && args.TryGetValue(t.Name, out bool param)) return param;
         switch (t.Name)
         {
-            case "Ptr" or "Addr":
-                return true;
+            // An address points at memory someone else gives back.
+            case "Ptr" or "Addr" or "Span" when t.Path is null:
+                return false;
             case "Callable":
                 return false;
             case "Array" or "Vector":
