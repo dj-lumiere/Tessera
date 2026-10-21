@@ -78,6 +78,10 @@ spelling has no step, the build error names the new one.
 - Channels `transmit` and `transmit_if_room`, with `add_transmitter` and `close_transmitting` (`--step channels`).
 - A program without an OS writes `when_power_on`. The `link-script` key is gone: the builder writes the link
   script from the board file.
+- A stopped flow's stack pointer is its `StackManager`'s `sp` (`.hollow()` while the flow runs), and `FiberState.sp`
+  is gone. `used()` and `remaining()` count from `sp` when it is set, so they are right for a stopped fiber too.
+- The routines that copied text into memory from a manager are named for what they give (`copied_text`,
+  `take_all`), not `owned`. `WorkSlot` is an entity.
 
 ### Added
 - Records, choices, variants (`A | B`, `Maybe`), tuples, one-line lambdas, `define` aliases, concept checks, and
@@ -105,6 +109,10 @@ spelling has no step, the build error names the new one.
   the program's own routines, and exit code 82 on a crash.
 - Tools: `tessera fmt`, `lint`, `lsp`, `test`, `new`, `docs` and `migrate`, a Rider plugin, a VS Code extension,
   `config.toml` builds and golden tests for other targets.
+- An arm of a value `when` can leave with `throw` in a failable routine. The language server's quick fix writes
+  `failable` on a routine whose `throw` line it isn't declared for.
+- `@[Byte]` text has `split(separator:, manager:)` and `words(manager:)`: views into the text, in a
+  `Memory[@[Byte]]` from the manager.
 
 ### Fixed
 - 32-bit x86: SSE2 by default, B32 and B64 results returned as integer bits, sizes past `size_t` have no room, and
@@ -114,6 +122,8 @@ spelling has no step, the build error names the new one.
 - macOS arm64 passes `open`'s mode and `fcntl`'s argument as variadic arguments.
 - `wide_divrem` by zero, `MIN / -1` and `BigNat.sub` below zero crash.
 - `steal` of a `T` bound to a pointer type hands the pointer on (it copied the entity into a temporary).
+- Two `each` loops over inclusive ranges, one inside the other, no longer stop the build.
+- A method call on a string literal (`"a,b".split(...)`) takes the literal as a `@[Byte]`.
 
 ### Removed
 - `Result[T, E]` (only `Result[T, TErrorCode]` for `@export` stays), the `_result` and `_checked` routines.
