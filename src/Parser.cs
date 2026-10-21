@@ -52,14 +52,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private Pos _scriptPos;
 
     /// Names a value can only have between backticks: the words a statement, a target, or an expression starts with.
-    internal static readonly HashSet<string> ReservedValueNames =
-    [
+    public static readonly IReadOnlySet<string> ReservedValueNames = new HashSet<string>
+    {
         "jump", "branch", "when", "return", "unreachable", "continue", "else", "elseif", "block", "claim", "local",
         "true", "false", "null", "routine", "record", "choice", "variant", "preset", "global", "concept", "conform",
         "protocol", "obeys", "needs", "define", "secret", "module", "import", "and", "or", "not", "is", "as",
         "todo", "if", "each", "until", "loop", "becomes", "break", "nothing", "drop", "entity", "steal", "inf", "nan",
         "throw",
-    ];
+    };
     /// Inside an `@external("asm")` routine: a statement may carry `@asm_prefix`, and an `if` may test a bare
     /// comparison name (`eq`, `lt[U64]`).
     private bool _inAsm;
