@@ -57,7 +57,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         "jump", "branch", "when", "return", "unreachable", "continue", "else", "elseif", "block", "claim", "local",
         "true", "false", "null", "routine", "record", "choice", "variant", "preset", "global", "concept", "conform",
         "protocol", "obeys", "needs", "define", "secret", "module", "import", "and", "or", "not", "is", "as",
-        "todo", "if", "each", "while", "until", "loop", "becomes", "break", "pass", "drop", "entity", "steal", "inf", "nan",
+        "todo", "if", "each", "until", "loop", "becomes", "break", "pass", "drop", "entity", "steal", "inf", "nan",
         "throw",
     ];
     /// Inside an `@external("asm")` routine: a statement may carry `@asm_prefix`, and an `if` may test a bare
@@ -66,7 +66,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     /// The words a statement starts with, besides a binding or a call.
     private static readonly HashSet<string> StatementKeywords =
-        ["jump", "branch", "when", "return", "throw", "unreachable", "todo", "if", "each", "while", "until", "loop", "continue", "break", "pass",
+        ["jump", "branch", "when", "return", "throw", "unreachable", "todo", "if", "each", "until", "loop", "continue", "break", "pass",
          "becomes", "local", "claim", "else", "elseif", "then", "drop", "steal"];
 
     private static readonly HashSet<string> DeclKeywords =
@@ -1450,6 +1450,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private Stmt ParseStmt(int col)
     {
         var pos = Cur.Pos;
+        if (WhileLoopAhead())
+        {
+            if (!ReadsWhileLoops)
+                throw Error("a loop is written 'until' with the condition that ends it (until i >= count), or 'loop' for a loop " +
+                            "that ends only at a break, return or throw: 'while' is not a keyword. 'tessera migrate --step until' " +
+                            "rewrites these loops");
+            return ParseLoop(col);
+        }
         if (IsKeyword(Cur) && StatementKeywords.Contains(Cur.Text) && !StartsValue())
         {
             switch (Cur.Text)
@@ -1614,7 +1622,22 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return _inAsm && AsmCondition() is { } named ? named : ParseExpr();
     }
 
-    /// `each x in source`, `while c`, `until c`, each with `with a: T = init, ...`, a body, and `then` with a body.
+    /// Set only by `tessera migrate --step until` while it asks the build about the loops it rewrites: a loop written
+    /// with `while` is then read without an error.
+    public static bool ReadsWhileLoops { get; set; }
+
+    /// Whether the line starts `while c`: the name `while` followed on its line by the start of a value, which no line
+    /// that uses `while` as a name does (`while: T = v`, `while.f()`, `while(x)`).
+    private bool WhileLoopAhead()
+    {
+        if (Cur is not { Kind: TokenKind.Ident, Escaped: false, Text: "while" }) return false;
+        var next = PeekTok(1);
+        if (next.Pos.Line != Cur.Pos.Line) return false;
+        return next.Kind is TokenKind.Ident or TokenKind.Int or TokenKind.Float or TokenKind.Char or TokenKind.Str or TokenKind.Byte
+               || next.Kind == TokenKind.LParen && next.Pos.Col > Cur.Pos.Col + Cur.Text.Length;
+    }
+
+    /// `each x in source`, `until c`, `loop`, each with `with a: T = init, ...`, a body, and `then` with a body.
     private LoopStmt ParseLoop(int col)
     {
         var word = Next();
@@ -1816,7 +1839,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
         if (IsKeyword(Cur) && StatementKeywords.Contains(Cur.Text) && !StartsValue())
         {
-            if (Cur.Text is "if" or "each" or "while" or "until" or "loop" or "when" or "local" or "claim" or "branch")
+            if (Cur.Text is "if" or "each" or "until" or "loop" or "when" or "local" or "claim" or "branch")
                 throw Error($"'{Cur.Text}' opens a body of its own: write it under the arm, on the lines after =>");
             return ParseLeave();
         }

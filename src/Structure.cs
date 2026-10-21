@@ -1077,35 +1077,41 @@ public sealed class Structurer
         return pa.ToString() == pb.ToString();
     }
 
-    /// `while i < n with i: T = a, ...` (or `until i >= n`) whose rounds all pass `i: i + 1` is `each i in a til n
-    /// with ...`.
-    private static LoopStmt AsEach(LoopStmt loop)
+    /// A loop on `i < n with i: T = a, ...` (or `until i >= n`) whose rounds all pass `i: i + 1` is `each i in a til n
+    /// with ...`. Any other loop comes back as it was.
+    private static LoopStmt AsEach(LoopStmt written)
+    {
+        var each = AsEachOrNull(written);
+        return each ?? written;
+    }
+
+    private static LoopStmt? AsEachOrNull(LoopStmt loop)
     {
         if (loop.Kind == LoopKind.Until && loop.Cond is BinaryExpr { Op: ">=" or ">" or "==" } flipped)
             loop = loop with { Kind = LoopKind.While, Cond = flipped with { Op = flipped.Op switch { ">=" => "<", ">" => "<=", _ => "!=" } } };
         if (loop.Kind != LoopKind.While || loop.With.Count == 0 || loop.Cond is not BinaryExpr { Op: "<" or "<=" or "!=" } cmp
             || cmp.Left is not ValueRef index || loop.With.All(c => c.Name != index.Name)
             || Rewriter.Uses(cmp.Right).Contains(index.Name) || loop.With.Any(c => Rewriter.Uses(cmp.Right).Contains(c.Name)))
-            return loop;
+            return null;
         var continues = Bodies.All(loop.Body).OfType<ContinueStmt>().ToList();
-        if (continues.Count == 0) return loop;
+        if (continues.Count == 0) return null;
         foreach (var c in continues)
         {
             var step = c.With?.FirstOrDefault(w => w.Name == index.Name).Value;
             if (step is not BinaryExpr { Op: "+", Left: ValueRef l, Right: IntLit { Value: var one } } || l.Name != index.Name || one != 1)
-                return loop;
+                return null;
         }
         // The index of `each` takes the type of a bound, or `S64` when both are bare numbers: a counter of another
-        // type between bare numbers stays a `while`, which names the type.
+        // type between bare numbers stays an `until`, which names the type.
         var counter = loop.With.First(c => c.Name == index.Name);
         if (counter.Init is IntLit && cmp.Right is IntLit && counter.Type is not { Name: "S64", Path: null, Args.Count: 0 })
-            return loop;
+            return null;
         var with = loop.With.Where(c => c.Name != index.Name).ToList();
         var rewritten = StripIndex(loop.Body, index.Name);
         if (with.Count == 0 && rewritten.Count > 1 && rewritten[^1] is ContinueStmt { With: null }) rewritten.RemoveAt(rewritten.Count - 1);
         var range = new RangeExpr(loop.With.First(c => c.Name == index.Name).Init, cmp.Right, cmp.Op == "<=", null, cmp.Pos);
         var then = loop.Then is null ? null : StripIndexUses(loop.Then, index.Name) ? loop.Then : null;
-        if (loop.Then is not null && then is null) return loop;
+        if (loop.Then is not null && then is null) return null;
         return loop with { Kind = LoopKind.For, Var = index.Name, VarPos = index.Pos, Source = range, Cond = null, With = with, Body = rewritten };
     }
 

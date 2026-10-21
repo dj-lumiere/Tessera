@@ -578,7 +578,7 @@ static class Cli
         return tags;
     }
 
-    private static List<Decl> LoadDecls(IEnumerable<string> files, BuildTarget target)
+    internal static List<Decl> LoadDecls(IEnumerable<string> files, BuildTarget target)
     {
         // The clang runs that resolve the target's CPU and data layout don't depend on the sources, so they go on
         // while the sources are parsed.

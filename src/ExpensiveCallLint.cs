@@ -27,7 +27,7 @@ public static class ExpensiveCallLint
     /// `@noreturn` call), null when it is on one of the block's own lines or conditions.
     public sealed record Call(string Block, string? Arm, Pos Pos, RoutineDecl Callee)
     {
-        /// Written in the body of an `each`, `while` or `until`.
+        /// Written in the body of an `each`, `until` or `loop`.
         public bool InLoop { get; init; }
     }
 

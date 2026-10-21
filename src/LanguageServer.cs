@@ -69,6 +69,7 @@ public static partial class LanguageServer
                             ["renameProvider"] = new JsonObject { ["prepareProvider"] = true },
                             ["documentSymbolProvider"] = true,
                             ["inlayHintProvider"] = true,
+                            ["codeActionProvider"] = true,
                         },
                         ["serverInfo"] = new JsonObject { ["name"] = "tessera-lsp", ["version"] = "0.1" },
                     });
@@ -132,6 +133,10 @@ public static partial class LanguageServer
                 case "textDocument/inlayHint":
                     Reply(id, InlayHints(p!["textDocument"]!["uri"]!.GetValue<string>()));
                     break;
+                case "textDocument/codeAction":
+                    Reply(id, CodeActions(p!["textDocument"]!["uri"]!.GetValue<string>(), p["range"]!["start"]!["line"]!.GetValue<int>(),
+                        p["range"]!["end"]!["line"]!.GetValue<int>()));
+                    break;
                 case "textDocument/semanticTokens/full":
                     Reply(id, SemanticTokens(p!["textDocument"]!["uri"]!.GetValue<string>()));
                     break;
@@ -145,6 +150,40 @@ public static partial class LanguageServer
             }
         }
         return 0;
+    }
+
+    // `until false` at the start of a line, which LoopLint warns about.
+    private static readonly Regex UntilFalse = new(@"^(?<indent>[ ]*)until[ ]+false\b");
+
+    /// The quick fixes for lines `first` to `last` (0-based): `until false` is written `loop`.
+    private static JsonArray CodeActions(string uri, int first, int last)
+    {
+        var actions = new JsonArray();
+        string? text;
+        lock (Documents) text = Documents.TryGetValue(uri, out var doc) ? doc.Text : null;
+        if (text is null) return actions;
+        string[] lines = text.Split('\n');
+        for (int line = Math.Max(0, first); line <= last && line < lines.Length; line++)
+        {
+            if (UntilFalse.Match(lines[line]) is not { Success: true } m) continue;
+            int start = m.Groups["indent"].Length;
+            var edit = new JsonObject
+            {
+                ["range"] = new JsonObject
+                {
+                    ["start"] = new JsonObject { ["line"] = line, ["character"] = start },
+                    ["end"] = new JsonObject { ["line"] = line, ["character"] = m.Length },
+                },
+                ["newText"] = "loop",
+            };
+            actions.Add(new JsonObject
+            {
+                ["title"] = "Write 'loop'",
+                ["kind"] = "quickfix",
+                ["edit"] = new JsonObject { ["changes"] = new JsonObject { [uri] = new JsonArray(edit) } },
+            });
+        }
+        return actions;
     }
 
     private static void Store(string uri, string text)
@@ -312,7 +351,7 @@ public static partial class LanguageServer
 
     /// The target and the files a document builds with: its `config.toml` solution's import closure from the document,
     /// or the document alone.
-    private static (BuildTarget Target, List<string> Sources, string? ManifestProblem) Solution(string file)
+    internal static (BuildTarget Target, List<string> Sources, string? ManifestProblem) Solution(string file)
     {
         if (Manifest.Find(Path.GetDirectoryName(file)!) is not { } path) return (BuildTarget.Host(), [file], null);
         Manifest manifest;

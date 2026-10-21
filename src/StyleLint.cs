@@ -1,6 +1,7 @@
 namespace Tessera;
 
-/// Every style warning: the chain lint's, the finish lint's, the record-parameter lint's, (given the source lines) the
+/// Every style warning: the chain lint's, the finish lint's, the record-parameter lint's, the loop lint's, (given the
+/// source lines) the
 /// doc lint's, and (given the builds) the expensive-call lint's, for what `check`, `build`, `run`, `lint`, and the
 /// language server print.
 public static class StyleLint
@@ -16,7 +17,7 @@ public static class StyleLint
         var docs = linesOf is null ? [] : DocLint.Check(list, linesOf);
         var files = list.Select(d => d.File).ToHashSet();
         var expensive = (built ?? []).SelectMany(c => c.ExpensiveCallWarnings(files.Contains)).Distinct();
-        return [.. ChainLint.Check(list), .. FinishLint.Check(list), .. TodoLint.Check(list), .. RecordParamLint.Check(list), .. docs, .. expensive];
+        return [.. ChainLint.Check(list), .. FinishLint.Check(list), .. TodoLint.Check(list), .. RecordParamLint.Check(list), .. LoopLint.Check(list), .. docs, .. expensive];
     }
 
     /// Source lines read from the files themselves, by the name the parser gave them (a path from the working

@@ -290,8 +290,13 @@ public enum LoopKind { For, While, Until }
 public sealed record LoopStmt(LoopKind Kind, Expr? Cond, List<Carried> With, List<Stmt> Body, List<Stmt>? Then, Pos Pos)
     : Stmt(Pos)
 {
-    /// `loop`: a `while true` written as the loop that doesn't end by itself, kept so the printer writes it back.
+    /// `loop`: the loop that doesn't end by itself, kept as a loop on `true` so the printer writes it back.
     public bool Endless { get; init; }
+
+    /// Whether the loop never ends by itself: `loop` (a loop on `true`) or `until false`. Only a `break`, `return`
+    /// or `throw` leaves it.
+    public bool NeverEndsByItself => Kind == LoopKind.While && Cond is BoolLit { Value: true }
+                                     || Kind == LoopKind.Until && Cond is BoolLit { Value: false };
     /// `each x in source`: the name each element is bound to, and what is walked (a range, or an iterator in memory).
     public string? Var { get; init; }
     /// `each k: U64 in 0 til n`: the type written for the element, or null. A range walks that integer type.
@@ -631,10 +636,24 @@ public static class Bodies
             WhenStmt w => w.Arms.All(a => Leaves(a.Body)),
             // Every way out of a loop but a return runs its `then`, so a `then` that leaves makes the loop leave.
             LoopStmt { Then: { } then } when Leaves(then) => true,
-            LoopStmt { Kind: LoopKind.While, Cond: BoolLit { Value: true } } l => !BreaksOut(l.Body),
+            LoopStmt { NeverEndsByItself: true } l => !BreaksOut(l.Body),
             _ => false,
         };
     }
+
+    /// The condition that holds exactly when `cond` doesn't: a `not` taken off, `==` / `!=` and `===` / `!==` turned
+    /// around, `true` / `false` swapped, and anything else under a `not`. An ordering comparison keeps its `not`: it
+    /// can't be turned around without knowing its operands aren't floats (a NaN makes both sides false).
+    public static Expr Negated(Expr cond) => cond switch
+    {
+        UnaryExpr { Op: "not" } n => n.Operand,
+        BoolLit b => b with { Value = !b.Value },
+        BinaryExpr { Op: "==" } b => b with { Op = "!=" },
+        BinaryExpr { Op: "!=" } b => b with { Op = "==" },
+        BinaryExpr { Op: "===" } b => b with { Op = "!==" },
+        BinaryExpr { Op: "!==" } b => b with { Op = "===" },
+        _ => new UnaryExpr("not", cond, cond.Pos),
+    };
 
     /// Whether a loop's body breaks out of it somewhere: a `break` in it, outside the loops nested in it (a `break` in
     /// a nested loop's `then` is this loop's, since `then` runs after the nested loop, as the body's own line).

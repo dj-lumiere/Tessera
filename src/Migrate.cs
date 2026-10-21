@@ -69,6 +69,10 @@ namespace Tessera;
 ///
 /// 0.5: an address moves by a ByteSize with `+%` and `-%` (`a.offset(8)` is `a +% 8b`), and `b -% a` is the distance
 /// from `a` to `b` (`--step addr`).
+///
+/// 0.5: a loop is `until` with the condition that ends it, or `loop`, and `while` is gone: `while true` is `loop`,
+/// `while not c` is `until c`, and an integer comparison is turned around (`while i < n` is `until i >= n`). Anything
+/// else gets a `not` and is listed (`--step until`).
 public static class Migrate
 {
     /// `F64`, its plural in prose (`F64s`), and a name built on it (`F128Extended`, `F64Core`). `F16C` is the x86 instruction set, not a type.
@@ -93,7 +97,9 @@ public static class Migrate
             Console.Error.WriteLine($"error: migrate: --step takes one of {string.Join(", ", Steps.Keys)}");
             return 1;
         }
-        var paths = args.Where((a, i) => a is not ("--check" or "--named-args" or "--step") && (stepAt < 0 || i != stepAt + 1)).ToList();
+        // `--together`: the `until` step checks the files given as one program (a library built from a folder of files).
+        bool together = args.Contains("--together");
+        var paths = args.Where((a, i) => a is not ("--check" or "--named-args" or "--step" or "--together") && (stepAt < 0 || i != stepAt + 1)).ToList();
         if (paths.Count == 0)
         {
             Console.Error.WriteLine("error: migrate: give files or directories to rewrite");
@@ -101,7 +107,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf" or "managers" or "float-presets" or "modules" or "access" or "threadlocal" or "files" or "checked" or "manager";
+        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf" or "managers" or "float-presets" or "modules" or "access" or "threadlocal" or "files" or "checked" or "manager" or "until";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -178,6 +184,12 @@ public static class Migrate
             foreach (string line in divisionReport) Console.WriteLine(line);
             if (!check) Console.WriteLine($"migrated {changedDivision} of {files.Count} file(s), {divisionReport.Count} place(s) to look at by hand");
             return check && changedDivision > 0 ? 1 : 0;
+        }
+
+        if (step == "until")
+        {
+            // A comparison is turned around only when the build typed it as one of integers.
+            return UntilMigration.Run(texts, check, together);
         }
 
         if (step == "addr")
@@ -391,6 +403,7 @@ public static class Migrate
         ["destruct"] = (_, text, _) => DestructSpelling(text),
         ["division"] = (_, text, _) => text,
         ["addr"] = (_, text, _) => text,
+        ["until"] = (_, text, _) => text,
         ["manager"] = (_, text, _) => text,
         ["comments"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, HashComments)

@@ -65,7 +65,7 @@ declares a routine instance or global of those symbols instead of defining it. B
 target. `tests/SplitModuleTests.cs` shows the pair.
 
 `tessera migrate` rewrites sources to this release's spellings. Each step also runs alone with `--step`, and each
-rewrites the ```tessera blocks of `.md` pages too: `structured` (routine bodies into `if` / `each` / `while` / `when`,
+rewrites the ```tessera blocks of `.md` pages too: `structured` (routine bodies into `if` / `each` / `until` / `loop` / `when`,
 keeping blocks where it can't), `spellings` (`@` annotations, `needs` / `obeys` / `protocol`, `return x`),
 `none` (`None` for nothing), `hollow` (`null` into `.hollow()`, `is_null()` into `is_hollow()`), `destruct` (`destruct` on `Memory` / `Box`), `drop` (a line `x.destruct()` into `drop x`),
 `managers` (`DEFAULT_HEAP` into `HEAP`, the table makers, the process routines into `ProcessManager`'s),
@@ -86,7 +86,9 @@ Crash service's slot first in `start` with `Crash.report_with`, or right after `
 `FsError.MEMBER` into their crashables, and a routine of the program that returns a `Result` listed for a hand fix),
 `checked` (a call of a `_checked` twin into `try` in front of the plain, failable routine: `x.add_checked(y)` into `try
 x.add(y)`, in parentheses where the call is part of a larger expression, `(try it.emit()).unwrap()`, a shift's
-`_checked` and a declaration of a `_checked` routine listed for a hand fix), and the earlier `iterators`, `variants`,
+`_checked` and a declaration of a `_checked` routine listed for a hand fix),
+`until` (a `while` loop into `until` / `loop`, a comparison turned around where the build typed it as one of integers,
+`--together` checks the files given as one program, a library folder), and the earlier `iterators`, `variants`,
 `membership`, `lifecycle`, `memory`, `threads`, `entry`, and `--named-args`.
 An old spelling is a build error that names the migration, and builds only with `TESSERA_ACCEPT_OLD_SYNTAX=1` set.
 
@@ -391,7 +393,7 @@ routine start() -> None
   allocating `Console.ask` reads, file and directory operations, `FileHandle` I/O, processes, `launch_unwatched`), `U256` / `S256`
   division and `BigNat` division, and whole-buffer hashes. It changes nothing in the output and goes on routines
   only. `tessera lint` (and `check` / `build` / `run` for the program's own files, and the language server) warns on a
-  direct call to one inside a loop (`each`, `while`, `until`), since it runs on every round. Not reported: a call
+  direct call to one inside a loop (`each`, `until`, `loop`), since it runs on every round. Not reported: a call
   on a path that leaves the loop, a call inside an `@expensive`
   routine, and a call to a routine that only calls an expensive one. Hoist the call, reuse one buffer across the
   passes, or keep it when each pass needs its own: there is no way to mark a call as meant yet
@@ -429,7 +431,7 @@ routine start() -> None
   `` `local` ``, `` `drop` ``).
 - **A routine's parameters and head values are seen everywhere, so no binding, carried value, or `when` name takes
   one's name.** A value that starts from one and changes (a loop counter, a shrinking count) gets its own name as a
-  carried value (`while at < count with at: U64 = start`) or a local slot.
+  carried value (`until at >= count with at: U64 = start`) or a local slot.
 - **`if c` / `elseif d` / `else`.** The lines under `if c` run when `c` holds, `elseif d` (one word, `else if` is a
   build error) tests the next condition, the lines under `else` (optional) run when none held, and `if not c`
   negates. An `if` is a statement, not a value: `x: T = if ...` is a build error ("if c then a else b
@@ -450,10 +452,17 @@ routine start() -> None
   by -1` steps. A range walks the type of its bounds, `S64` when both are bare numbers; `each k: U64 in 0 til 27`
   names the type (for an index, say), and `each x in iter` reads an iterator in memory (one whose failable `emit` gives the next
   item) until emit throws `AbsentValueError`, its end. Any other failure of emit stops the program on the `each` line, as
-  a bare call of emit would. `while c` runs while `c` holds and `until c` until it does, both tested before each pass. `loop` is the loop that doesn't end by itself (`while true`, which the formatter keeps as `loop`), left with `break`, `return` or `throw`, and it takes `with` and `then` like the others. `break`
+  a bare call of emit would. The other loops are `until c` and `loop`. `until c` stops when `c` becomes true, tested
+  before each pass: write the condition that ends the loop. `loop` doesn't end by itself: only `break`, `return` or
+  `throw` leaves it, so the lines after a `loop` without a `break` never run, and a routine that ends with such a loop
+  needs nothing after it. It takes `with` and `then` like the others. `while` is not a keyword: a loop written with it
+  is a build error pointing to `until` / `loop`, and `tessera migrate --step until` rewrites it (`while true` →
+  `loop`, `while not c` → `until c`, an integer comparison turned around, `while i < n` → `until i >= n`, a float
+  comparison and anything else → `until not (c)`, listed). `until true` (the body never runs) and `until false` (write
+  `loop`, the language server offers the fix) are warnings. `break`
   leaves the loop (it takes no value: a result a `break` decides goes in a head slot), `continue` starts the next
   pass.
-- **Carried values.** `while n > 1 with n: U64 = start, steps: U64 = 0` names what each pass changes, each with its
+- **Carried values.** `until n <= 1 with n: U64 = start, steps: U64 = 0` names what each pass changes, each with its
   type and first value, seen in the condition and the body. Every path through such a body passes the next values
   with `continue with n: next, steps: steps + 1`, or leaves with `break` or `return`: a body that reaches its end
   without them is a build error ("the body of a loop that carries values ends here without passing them on"). The
@@ -468,7 +477,7 @@ routine start() -> None
 
   ```tessera
   routine collatz_steps(start: U64) -> U64
-      while n > 1 with n: U64 = start, steps: U64 = 0
+      until n <= 1 with n: U64 = start, steps: U64 = 0
           after: U64 = when
               n % 2 == 0 => n / 2
               else => 3 * n + 1
@@ -1050,7 +1059,7 @@ with the failable `next`):
 routine sum_list(list: @List[S64]) -> S64
     local iter: @ListIter[S64] <- .construct(list)
 
-    while true with total: S64 = 0
+    loop with total: S64 = 0
         item: Maybe[S64] = try iter.emit()
         when item
             is S64 as value => continue with total: total + value

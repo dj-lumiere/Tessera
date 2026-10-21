@@ -130,8 +130,9 @@ public sealed class Printer
                     LoopKind.For => l.VarType is { } written
                         ? $"each {Name(l.Var!)}: {Type(written)} in {Expr(l.Source!)}"
                         : $"each {Name(l.Var!)} in {Expr(l.Source!)}",
-                    LoopKind.While when l.Endless => "loop",
-                    LoopKind.While => $"while {Expr(l.Cond!)}",
+                    LoopKind.While when l.Cond is BoolLit { Value: true } => "loop",
+                    // A loop on a condition that holds is written as the loop that ends when it doesn't.
+                    LoopKind.While => $"until {Expr(Bodies.Negated(l.Cond!))}",
                     _ => $"until {Expr(l.Cond!)}",
                 };
                 if (l.With.Count > 0)

@@ -360,7 +360,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         bool operand = t.Kind is TokenKind.Ident or TokenKind.Int or TokenKind.Unit or TokenKind.Float or TokenKind.Byte or TokenKind.Char
             or TokenKind.Str or TokenKind.RParen or TokenKind.RBracket;
         bool word = t.Kind == TokenKind.Ident && !t.Escaped && t.Text is "return" or "becomes" or "and" or "or" or "not"
-            or "if" or "while" or "until" or "loop" or "then" or "else" or "elseif" or "in" or "to" or "til" or "by" or "with" or "when" or "jump";
+            or "if" or "until" or "loop" or "then" or "else" or "elseif" or "in" or "to" or "til" or "by" or "with" or "when" or "jump";
         return operand && !word;
     }
 

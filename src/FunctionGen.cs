@@ -3027,6 +3027,11 @@ public sealed partial class FunctionGen
     /// are Bool's own. The operand's type must obey the operator's protocol (Operators.ProtocolsFor). `a != b` is
     /// `not a.eq(b)`, and `a < b` is `a.compare(b) < 0`, unless the type declares its own `ne` / `lt` (likewise `le`,
     /// `gt`, `ge`). A type whose comparisons give a mask (LaneComparable) calls its routine for each operator.
+    /// Told the operand type of every operator the build turns into a call (null when it can't tell), when set. Only
+    /// `tessera migrate --step until` sets it: it reads which comparisons compare integers, the ones it can turn
+    /// around.
+    public static Action<BinaryExpr, DType?>? ComparisonTyped { get; set; }
+
     private Expr Desugar(Expr e)
     {
         switch (e)
@@ -3052,6 +3057,7 @@ public sealed partial class FunctionGen
 
                 bool literalLeft = b.Left is IntLit or FloatLit;
                 var operand = literalLeft ? Infer(b.Right) : TryInfer(b.Left);
+                ComparisonTyped?.Invoke(b, operand);
                 Expr Call(string routine) => literalLeft && operand is not null
                     ? new NsCallExpr(new TypeRef("$operand", [], b.Pos) { Known = operand }, routine, [], [b.Left, b.Right], b.Pos) { FromOperator = true }
                     : new MethodCallExpr(b.Left, routine, [], [b.Right], b.Pos) { FromOperator = true };
@@ -5117,7 +5123,9 @@ public sealed partial class FunctionGen
             }
         }
         MemEdge(bodyRegion, pos: l.Pos);
-        MemEdge(thenRegion, pos: l.Pos);
+        // A loop that never ends by itself reaches its then only through a `break`, which takes its own edge there: the
+        // header's way out is never taken, so what the rounds dropped before the break counts.
+        if (!l.NeverEndsByItself) MemEdge(thenRegion, pos: l.Pos);
         // An iterator's end is its AbsentValueError: the loop leaves through then. Any other failure of emit stops the
         // program on the each line, as a bare call of emit would.
         var otherFailures = iteratorMaybe is null ? [] : Crashing.FailuresOf(iteratorMaybe).Where(f => !IsEndOfIteration(f)).ToList();
@@ -5192,9 +5200,9 @@ public sealed partial class FunctionGen
         {
             MemEdge(afterRegion, outerNames, pos: l.Pos);
             Terminate($"br label %{after.Label}");
-            // A loop on `true` without a `break` is never left but by a return: its then, and what follows it,
-            // never run.
-            afterReached = frame.Breaks || l.Cond is not BoolLit { Value: true };
+            // A loop that never ends by itself (`loop`, `until false`) without a `break` is never left but by a return:
+            // its then, and what follows it, never run.
+            afterReached = frame.Breaks || !l.NeverEndsByItself;
         }
 
         // The phis, now that every round's values are known.

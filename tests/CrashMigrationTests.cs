@@ -12,7 +12,7 @@ public class CrashMigrationTests
         @export("tessera_crash_handler")
         @noreturn
         routine halt(name: @[Byte], message: @[Byte], place: @SourceLocation) -> None
-            while true
+            loop
                 pass
 
         """;
