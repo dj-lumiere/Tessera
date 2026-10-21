@@ -107,7 +107,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf" or "managers" or "float-presets" or "modules" or "access" or "threadlocal" or "files" or "checked" or "manager" or "until";
+        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf" or "managers" or "float-presets" or "modules" or "access" or "threadlocal" or "files" or "checked" or "manager" or "until" or "channels";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -429,6 +429,9 @@ public static class Migrate
         ["hollow"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, HollowSpelling)
             : HollowSpelling(text),
+        ["channels"] = (file, text, report) => file.EndsWith(".md", StringComparison.Ordinal)
+            ? StructuredMigration.MarkdownBlocks(text, t => ChannelMigration.Rewrite(t, report, file))
+            : ChannelMigration.Rewrite(text, report, file),
         ["console"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, ConsoleMigration.Rewrite)
             : ConsoleMigration.Rewrite(text),
@@ -538,7 +541,7 @@ public static class Migrate
     }
 
     /// Where a line's comment starts (a `#` outside a string or a character literal), or -1.
-    private static int CommentStart(string line)
+    internal static int CommentStart(string line)
     {
         int at = 0;
         foreach (var (literal, part) in CodeAndLiterals(line))
@@ -550,7 +553,7 @@ public static class Migrate
     }
 
     /// A line cut into code and string or character literals (`"..."`, `'.'`, `b'.'`), each literal with its quotes.
-    private static IEnumerable<(bool Literal, string Text)> CodeAndLiterals(string line)
+    internal static IEnumerable<(bool Literal, string Text)> CodeAndLiterals(string line)
     {
         int start = 0;
         int i = 0;
@@ -833,7 +836,7 @@ public static class Migrate
             lines[i] = inAsmBody ? RewriteTypeArguments(line) : RewriteNames(line);
         }
 
-        return AccessMigration.Rewrite(FloatPresetMigration.Rewrite(ManagerMigration.Rewrite(RoutineNameMigration.Rewrite(ThreadMigration.Rewrite(EntryMigration.Rewrite(MembershipNames(VariantMigration.Rewrite(IteratorNames(Renames(CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names)))))))))))))));
+        return ChannelMigration.Rewrite(AccessMigration.Rewrite(FloatPresetMigration.Rewrite(ManagerMigration.Rewrite(RoutineNameMigration.Rewrite(ThreadMigration.Rewrite(EntryMigration.Rewrite(MembershipNames(VariantMigration.Rewrite(IteratorNames(Renames(CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names))))))))))))))), [], "");
     }
 
     private static readonly Regex IteratorNext = new(@"\.next(?=\s*\()", RegexOptions.Compiled);

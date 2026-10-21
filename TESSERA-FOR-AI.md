@@ -1238,7 +1238,7 @@ stopping is safe and returns. `retrieve()` of cancelled work throws `CancelReque
 each piece of work a thread puts every `@threadlocal` global back to its starting value. The same flow on all three
 ticket kinds: `Thread[T]`, `Fiber[T]`, `Job[T]` (a ThreadPoolManager's). `work_slot()` gives the ticket's `@WorkSlot`, for
 code waiting on several tickets at once.
-- **Cancellable waits**: the failable `wait_finished_cancellable()` (on all three tickets) and a channel's `send` /
+- **Cancellable waits**: the failable `wait_finished_cancellable()` (on all three tickets) and a channel's `transmit` /
   `receive` throw `CancelRequested` as soon as the WAITING work's own ticket is
   cancelled. Then clean up and return. Plain `wait_finished` / `wait_finished_for` are not cancellable. Outside a
   ticket's work nothing cancels them.
@@ -1329,14 +1329,17 @@ own), with `park()` / `park_until(deadline)` / `wake()`. All in Standard/Os.
 
 **Channels** (Standard/Os/Channel.te): `Channel[T]` (one receiver) and `SharedChannel[T]` (many, each value to
 one), shared as `@Channel[T]`: `local ch: @Channel[U64] <- .construct(capacity: 8)` (or `construct(capacity, manager)`),
-the failable `send(value)` (waits while full), `send_if_room(value) -> Bool` (never waits), the failable
+the failable `transmit(value)` (waits while full), `transmit_if_room(value) -> Bool` (never waits), the failable
 `receive() -> T` (waits while empty, receive it with `when check ch.receive()`, `is T as v => ...`,
 `is ChannelClosedError => ...`, `is CancelRequested => ...`), `drop ch`. Both throw `ChannelClosedError` or
 `CancelRequested`. A channel starts
-with one sender and one receiver: `add_sender()` / `add_receiver()` (SharedChannel only) count more, each calls
-`close_sending()` / `close_receiving()` once. All senders closed: receivers drain what is left, then get
-`ChannelClosedError`. All receivers closed: the values left are discarded (never given back) and senders get `ChannelClosedError`,
-so a receiver takes out values owning memory before it closes.
+with one transmitter and one receiver: `add_transmitter()` / `add_receiver()` (SharedChannel only) count more, each calls
+`close_transmitting()` / `close_receiving()` once. All transmitters closed: receivers drain what is left, then get
+`ChannelClosedError`. All receivers closed: the values left are discarded (never given back) and transmitters get `ChannelClosedError`,
+so a receiver takes out values owning memory before it closes. A channel moves one message at a time, so its verbs are
+`transmit` / `receive` (`load` / `store` belong to places: `Memory`, `Box`, `Atomic`). `tessera migrate --step channels`
+renames the old `send`, `send_if_room`, `add_sender` and `close_sending` (a `.send(` on a name not typed as a channel is
+listed).
 
 **The data race check.** `tessera run|build --race-check`, or `[debug] race-check = true` in config.toml: every
 routine (stdlib too) is instrumented with ThreadSanitizer, and the program stops at the first data race (two threads

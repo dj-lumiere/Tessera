@@ -1,33 +1,34 @@
 # Tessera stdlib: channels
 #
-# A channel carries values from senders to receivers in the order they were sent, through room for a fixed number of
-# them. `Channel[T]` has one receiver and `SharedChannel[T]` any number, each value going to one of them. Both live in
-# memory the threads and fibers that use them share (`@Channel[T]`):
+# A channel carries values from transmitters to receivers in the order they were transmitted, through room for a fixed
+# number of them. `Channel[T]` has one receiver and `SharedChannel[T]` any number, each value going to one of them.
+# Both live in memory the threads and fibers that use them share (`@Channel[T]`):
 #
 #     claim jobs: @Channel[U64] <- .construct(capacity: 16)
-#     jobs.send(42)   # waits while the room is full
+#     jobs.transmit(42)   # waits while the room is full
 #     got: Check[U64] = check jobs.receive()   # waits while it is empty
 #
-# A sender that waits for room, or a receiver that waits for a value, sleeps if it is a thread and parks if it is a
-# fiber: the other fibers of its thread go on, and the other side wakes it. `send_if_room` doesn't wait. A channel
-# starts with one sender and one receiver: `add_sender` (and `add_receiver` on a SharedChannel) counts another, and each
-# says it is done with `close_sending` or `close_receiving`. Once every sender has closed, receivers take what is left
-# and then get `ChannelClosedError`. Once every receiver has closed, the values left are dropped and senders get
-# `ChannelClosedError`. Values that own memory are taken out and released by a receiver before it closes. A wait also ends
+# A transmitter that waits for room, or a receiver that waits for a value, sleeps if it is a thread and parks if it is
+# a fiber: the other fibers of its thread go on, and the other side wakes it. `transmit_if_room` doesn't wait. A
+# channel starts with one transmitter and one receiver: `add_transmitter` (and `add_receiver` on a SharedChannel)
+# counts another, and each says it is done with `close_transmitting` or `close_receiving`. Once every transmitter has
+# closed, receivers take what is left and then get `ChannelClosedError`. Once every receiver has closed, the values
+# left are dropped and transmitters get `ChannelClosedError`. Values that own memory are taken out and released by a
+# receiver before it closes. A wait also ends
 # with `CancelRequested` when the work that waits is asked to stop with `cancel()`.
 
 module Standard/Os
 
-### What a send or a receive throws when the other side has closed for good: every receiver, or every sender with no
-### value left.
+### What a transmit or a receive throws when the other side has closed for good: every receiver, or every
+### transmitter with no value left.
 crashable ChannelClosedError
 
-### One sender or receiver waiting on a channel, on the frame of the routine that waits.
+### One transmitter or receiver waiting on a channel, on the frame of the routine that waits.
 secret record ChannelWait
     waiter: Waiter
     next: @ChannelWait
 
-### What both kinds of channel are: a ring of values under a lock, the open senders and receivers, and who waits.
+### What both kinds of channel are: a ring of values under a lock, the open transmitters and receivers, and who waits.
 ### :typeparam T: The type of the values.
 secret entity ChannelCore[T]
 needs T: typename
@@ -38,16 +39,16 @@ needs T: typename
     head: U64
     ### How many values there are.
     count: U64
-    ### The senders that haven't closed.
-    senders: U32
+    ### The transmitters that haven't closed.
+    transmitters: U32
     ### The receivers that haven't closed.
     receivers: U32
     ### Receivers waiting for a value.
     getters: @ChannelWait
-    ### Senders waiting for room.
+    ### Transmitters waiting for room.
     putters: @ChannelWait
 
-### A channel with one receiver: values from any number of senders, in order, through room for a fixed number.
+### A channel with one receiver: values from any number of transmitters, in order, through room for a fixed number.
 ### :typeparam T: The type of the values.
 entity Channel[T]
 needs T: typename
@@ -78,7 +79,7 @@ common routine ChannelWait.construct(waiter: Waiter, next: @Me) -> Me
 routine @ChannelWait.destruct() -> None
     return
 
-### An empty channel core with room for `capacity` values from `manager`, one sender and one receiver.
+### An empty channel core with room for `capacity` values from `manager`, one transmitter and one receiver.
 ### :param capacity: How many values it holds at most, at least 1.
 ### :param manager: Where the room comes from.
 ### :returns: The core.
@@ -90,7 +91,7 @@ needs T: typename
     if capacity == 0
         crash(name: "InvalidValueError", message: "A channel needs room for at least one value.")
     return Me(lock: .construct(), items: .construct(count: capacity, manager: manager), head: 0,
-        count: 0, senders: 1, receivers: 1, getters: .hollow(), putters: .hollow())
+        count: 0, transmitters: 1, receivers: 1, getters: .hollow(), putters: .hollow())
 
 ### Gives the room back. The values left in it are dropped.
 @track_caller
@@ -99,7 +100,7 @@ needs T: typename
     drop me.items
     return
 
-### An empty channel with room for `capacity` values from `manager`, one sender and one receiver.
+### An empty channel with room for `capacity` values from `manager`, one transmitter and one receiver.
 ### :param capacity: How many values it holds at most, at least 1.
 ### :param manager: Where the room comes from.
 ### :returns: The channel.
@@ -110,7 +111,7 @@ common routine Channel[T].construct(capacity: U64, manager: @MemoryManager) -> M
 needs T: typename
     return Me(core: .construct(capacity, manager))
 
-### An empty channel with room for `capacity` values from HEAP, one sender and one receiver.
+### An empty channel with room for `capacity` values from HEAP, one transmitter and one receiver.
 ### :param capacity: How many values it holds at most, at least 1.
 ### :returns: The channel.
 ### :throws: Crashes with `InvalidValueError` for a capacity of 0, and with `MemoryAllocationError` when there is no
@@ -128,7 +129,7 @@ needs T: typename
     drop me.core
     return
 
-### An empty shared channel with room for `capacity` values from `manager`, one sender and one receiver.
+### An empty shared channel with room for `capacity` values from `manager`, one transmitter and one receiver.
 ### :param capacity: How many values it holds at most, at least 1.
 ### :param manager: Where the room comes from.
 ### :returns: The channel.
@@ -139,7 +140,7 @@ common routine SharedChannel[T].construct(capacity: U64, manager: @MemoryManager
 needs T: typename
     return Me(core: .construct(capacity, manager))
 
-### An empty shared channel with room for `capacity` values from HEAP, one sender and one receiver.
+### An empty shared channel with room for `capacity` values from HEAP, one transmitter and one receiver.
 ### :param capacity: How many values it holds at most, at least 1.
 ### :returns: The channel.
 ### :throws: Crashes with `InvalidValueError` for a capacity of 0, and with `MemoryAllocationError` when there is no
@@ -159,84 +160,85 @@ needs T: typename
 
 # -- the two kinds, through the core ------------------------------------------------------------------------------
 
-### Sends `value`, waiting while the room is full.
+### Transmits `value`, waiting while the room is full.
 ### :param value: The value.
 ###     waits is asked to stop first.
 @target(os: not "none")
-failable routine @Channel[T].send(value: T) -> None
+failable routine @Channel[T].transmit(value: T) -> None
 needs T: typename
-    when check me.core.send(value)
+    when check me.core.transmit(value)
         is None => return
 
-### Sends `value` if there is room, without waiting.
+### Transmits `value` if there is room, without waiting.
 ### :param value: The value.
 ### :returns: True when it went in, false when the room is full or every receiver has closed.
 @target(os: not "none")
-routine @Channel[T].send_if_room(value: T) -> Bool
+routine @Channel[T].transmit_if_room(value: T) -> Bool
 needs T: typename
-    return me.core.send_if_room(value)
+    return me.core.transmit_if_room(value)
 
 ### Takes the oldest value, waiting while there is none.
-### :returns: The value, `ChannelClosedError` when every sender has closed and no value is left, or `CancelRequested` when
-###     the work that waits is asked to stop first.
+### :returns: The value, `ChannelClosedError` when every transmitter has closed and no value is left, or
+###     `CancelRequested` when the work that waits is asked to stop first.
 @target(os: not "none")
 failable routine @Channel[T].receive() -> T
 needs T: typename
     when check me.core.receive()
         is T as returned => return returned
 
-### Counts one more sender, which closes on its own.
+### Counts one more transmitter, which closes on its own.
 @target(os: not "none")
-routine @Channel[T].add_sender() -> None
+routine @Channel[T].add_transmitter() -> None
 needs T: typename
-    me.core.add_sender()
+    me.core.add_transmitter()
     return
 
-### One sender is done. Once every sender is, the receiver takes what is left and then gets `ChannelClosedError`.
+### One transmitter is done. Once every transmitter is, the receiver takes what is left and then gets
+### `ChannelClosedError`.
 @target(os: not "none")
-routine @Channel[T].close_sending() -> None
+routine @Channel[T].close_transmitting() -> None
 needs T: typename
-    me.core.close_sending()
+    me.core.close_transmitting()
     return
 
-### The receiver is done: the values left are dropped, and senders get `ChannelClosedError`.
+### The receiver is done: the values left are dropped, and transmitters get `ChannelClosedError`.
 @target(os: not "none")
 routine @Channel[T].close_receiving() -> None
 needs T: typename
     me.core.close_receiving()
     return
 
-### Sends `value`, waiting while the room is full.
+### Transmits `value`, waiting while the room is full.
 ### :param value: The value.
 ###     waits is asked to stop first.
 @target(os: not "none")
-failable routine @SharedChannel[T].send(value: T) -> None
+failable routine @SharedChannel[T].transmit(value: T) -> None
 needs T: typename
-    when check me.core.send(value)
+    when check me.core.transmit(value)
         is None => return
 
-### Sends `value` if there is room, without waiting.
+### Transmits `value` if there is room, without waiting.
 ### :param value: The value.
 ### :returns: True when it went in, false when the room is full or every receiver has closed.
 @target(os: not "none")
-routine @SharedChannel[T].send_if_room(value: T) -> Bool
+routine @SharedChannel[T].transmit_if_room(value: T) -> Bool
 needs T: typename
-    return me.core.send_if_room(value)
+    return me.core.transmit_if_room(value)
 
 ### Takes the oldest value, waiting while there is none. Each value goes to one receiver.
-### :returns: The value, `ChannelClosedError` when every sender has closed and no value is left, or `CancelRequested` when
-###     the work that waits is asked to stop first.
+### :returns: The value, `ChannelClosedError` when every transmitter has closed and no value is left, or
+###     `CancelRequested` when the work that waits is asked to stop first.
 @target(os: not "none")
 failable routine @SharedChannel[T].receive() -> T
 needs T: typename
     when check me.core.receive()
         is T as returned => return returned
 
-### Counts one more sender, which closes on its own.
+### Counts one more transmitter, which closes on its own.
 @target(os: not "none")
-routine @SharedChannel[T].add_sender() -> None
+routine @SharedChannel[T].add_transmitter() -> None
 needs T: typename
-    me.core.add_sender()
+    me.core.add_transmitter()
     return
 
 ### Counts one more receiver, which closes on its own.
@@ -246,14 +248,14 @@ needs T: typename
     me.core.add_receiver()
     return
 
-### One sender is done. Once every sender is, receivers take what is left and then get `ChannelClosedError`.
+### One transmitter is done. Once every transmitter is, receivers take what is left and then get `ChannelClosedError`.
 @target(os: not "none")
-routine @SharedChannel[T].close_sending() -> None
+routine @SharedChannel[T].close_transmitting() -> None
 needs T: typename
-    me.core.close_sending()
+    me.core.close_transmitting()
     return
 
-### One receiver is done. Once every receiver is, the values left are dropped, and senders get `ChannelClosedError`.
+### One receiver is done. Once every receiver is, the values left are dropped, and transmitters get `ChannelClosedError`.
 @target(os: not "none")
 routine @SharedChannel[T].close_receiving() -> None
 needs T: typename
@@ -262,10 +264,10 @@ needs T: typename
 
 # -- the core -----------------------------------------------------------------------------------------------------
 
-### Sends `value`, waiting while the room is full.
+### Transmits `value`, waiting while the room is full.
 ### :param value: The value.
 @target(os: not "none")
-failable routine @ChannelCore[T].send(value: T) -> None
+failable routine @ChannelCore[T].transmit(value: T) -> None
 needs T: typename
     local waiter: Waiter = current_waiter()
     local node: @ChannelWait <- ChannelWait(waiter, next: .hollow())
@@ -292,11 +294,11 @@ needs T: typename
         unlink(list: me.putters, node)
         me.lock.unlock()
 
-### Sends `value` if there is room, without waiting.
+### Transmits `value` if there is room, without waiting.
 ### :param value: The value.
 ### :returns: True when it went in.
 @target(os: not "none")
-routine @ChannelCore[T].send_if_room(value: T) -> Bool
+routine @ChannelCore[T].transmit_if_room(value: T) -> Bool
 needs T: typename
     me.lock.lock()
     if not (me.receivers.peek() != 0 and me.count.peek() < me.items.count())
@@ -320,7 +322,7 @@ needs T: typename
             value: T = me.pop()
             me.lock.unlock()
             return value
-        if me.senders.peek() == 0
+        if me.transmitters.peek() == 0
             me.lock.unlock()
             throw ChannelClosedError()
         node.next.poke(me.getters.peek())
@@ -336,12 +338,12 @@ needs T: typename
         unlink(list: me.getters, node)
         me.lock.unlock()
 
-### Counts one more sender.
+### Counts one more transmitter.
 @target(os: not "none")
-routine @ChannelCore[T].add_sender() -> None
+routine @ChannelCore[T].add_transmitter() -> None
 needs T: typename
     me.lock.lock()
-    me.senders.poke(me.senders.peek() + 1)
+    me.transmitters.poke(me.transmitters.peek() + 1)
     me.lock.unlock()
     return
 
@@ -354,22 +356,22 @@ needs T: typename
     me.lock.unlock()
     return
 
-### One sender is done: once every sender is, the waiting receivers wake to take what is left.
-### :throws: Crashes with `InvalidValueError` when every sender has closed already.
+### One transmitter is done: once every transmitter is, the waiting receivers wake to take what is left.
+### :throws: Crashes with `InvalidValueError` when every transmitter has closed already.
 @target(os: not "none")
 @track_caller
-routine @ChannelCore[T].close_sending() -> None
+routine @ChannelCore[T].close_transmitting() -> None
 needs T: typename
     me.lock.lock()
-    if me.senders.peek() == 0
+    if me.transmitters.peek() == 0
         crash(name: "InvalidValueError",
-            message: "Every sender of this channel has closed already.")
-    me.senders.poke(me.senders.peek() - 1)
+            message: "Every transmitter of this channel has closed already.")
+    me.transmitters.poke(me.transmitters.peek() - 1)
     wake_list(me.getters.peek())
     me.lock.unlock()
     return
 
-### One receiver is done: once every receiver is, the values left are dropped and the waiting senders wake.
+### One receiver is done: once every receiver is, the values left are dropped and the waiting transmitters wake.
 ### :throws: Crashes with `InvalidValueError` when every receiver has closed already.
 @target(os: not "none")
 @track_caller
@@ -398,7 +400,7 @@ needs T: typename
     wake_list(me.getters.peek())
     return
 
-### Takes the oldest value and wakes the waiting senders. The lock is held and there is a value.
+### Takes the oldest value and wakes the waiting transmitters. The lock is held and there is a value.
 ### :returns: The value.
 @target(os: not "none")
 secret routine @ChannelCore[T].pop() -> T
