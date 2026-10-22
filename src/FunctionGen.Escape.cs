@@ -431,6 +431,9 @@ public sealed partial class FunctionGen
         Expr? into = sig.Decl.Name == "poke_into" ? plan.Args.FirstOrDefault() : plan.Receiver;
         if (value is null || into is null || InferQuiet(value) is { } stored && !CarriesAddress(stored)) return;
         if (RootName(into) is { } root && !_routineParams.ContainsKey(root)) NoteHeldViews(ResolveRoot(root), ViewRoots(value), plan.Pos);
+        // A ticket stored in memory (a table of tickets that a later loop waits for), see MemoryRules.WorkStored.
+        if (value is ValueRef ticket && InferQuiet(value) is RecordType { Decl.Name: "Thread" or "Fiber" or "Job" })
+            Mem(new MemoryRules.WorkStored(ResolveRoot(ticket.Name), plan.Pos));
     }
 
     /// A call that hands a view of memory this routine holds to one parameter and a value of this routine (a list, a slot)
@@ -508,8 +511,9 @@ public sealed partial class FunctionGen
                     if (part is ValueRef view && _accessViews.Contains(view.Name)) Mem(new MemoryRules.WorkHolds(ticket, view.Name, part.Pos));
                     else if (AccessKey(part) is { } key && _accessGroups.TryGetValue(key, out var group))
                         Mem(new MemoryRules.WorkHolds(ticket, group, part.Pos));
+                // FrameView names a frame slot or span itself "the frame ...", and memory a slot holds "the memory ...".
                 if (parts.Select(FrameView).FirstOrDefault(v => v is not null) is { } sees)
-                    Mem(new MemoryRules.WorkStarted(ticket, sees, plan.Pos));
+                    Mem(new MemoryRules.WorkStarted(ticket, sees, sees.StartsWith("the frame ", StringComparison.Ordinal), plan.Pos));
                 var roots = parts.SelectMany(ViewRoots).ToHashSet();
                 NoteHeldViews(ticket, roots, plan.Pos);
             }

@@ -160,6 +160,8 @@ spelling has no step, the build error names the new one.
 - `steal` of a `T` bound to a pointer type hands the pointer on (it copied the entity into a temporary).
 - Two `each` loops over inclusive ranges, one inside the other, no longer stop the build.
 - A method call on a string literal (`"a,b".split(...)`) takes the literal as a `@[Byte]`.
+- A ticket stored in a table of tickets that a later loop waits for no longer reads as work left unwaited when its
+  work sees memory a frame slot holds.
 
 ### Removed
 - `Result[T, E]` (only `Result[T, TErrorCode]` for `@export` stays), the `_result` and `_checked` routines.

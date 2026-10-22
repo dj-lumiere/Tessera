@@ -108,8 +108,15 @@ public static class MemoryRules
     public sealed record GlobalStore(string Global, bool Restoring, Pos Pos) : Event(Pos);
 
     /// Work put on the ticket `Ticket` was handed a view of this routine's frame (`Sees`): the routine waits for it
-    /// before it returns.
-    public sealed record WorkStarted(string Ticket, string Sees, Pos Pos) : Event(Pos);
+    /// before it returns. `OnFrame` is true when what it sees is a frame slot or span itself, false when it is memory
+    /// a frame slot holds.
+    public sealed record WorkStarted(string Ticket, string Sees, bool OnFrame, Pos Pos) : Event(Pos);
+
+    /// The ticket `Ticket` was stored in memory (a table of tickets a later loop waits for). Work that sees memory a
+    /// frame slot holds is followed no further from here, as a ticket handed to another routine is: the place it is
+    /// stored in holds the views its work was handed. Work that sees a frame slot itself still has to be waited for
+    /// before the routine returns, since the slot is gone then wherever the ticket is kept.
+    public sealed record WorkStored(string Ticket, Pos Pos) : Event(Pos);
 
     /// Work put on the ticket `Ticket` was handed `Name`, the view of an access this routine holds: the routine neither
     /// uses nor gives it back until the work is waited for.
@@ -175,7 +182,7 @@ public static class MemoryRules
         public HashSet<string> Changed = [];
 
         /// The tickets whose work was handed a view of the frame and isn't waited for yet: what it sees, and where.
-        public Dictionary<string, (string Sees, Pos Pos)> Working = [];
+        public Dictionary<string, (string Sees, bool OnFrame, Pos Pos)> Working = [];
 
         /// The groups that are managers a held view names (HoldsViewOf.Manager).
         public HashSet<string> Managers = [];
@@ -417,7 +424,11 @@ public static class MemoryRules
                         else state.Changed.Add(gs.Global);
                         break;
                     case WorkStarted ws:
-                        state.Working.TryAdd(ws.Ticket, (ws.Sees, ws.Pos));
+                        state.Working.TryAdd(ws.Ticket, (ws.Sees, ws.OnFrame, ws.Pos));
+                        break;
+                    case WorkStored stored:
+                        if (state.Working.TryGetValue(stored.Ticket, out var storedWork) && !storedWork.OnFrame)
+                            state.Working.Remove(stored.Ticket);
                         break;
                     case WorkHolds wh:
                         if (state.Names.TryGetValue(wh.Name, out var lentId))
@@ -507,7 +518,7 @@ public static class MemoryRules
                         break;
                     case Exit { Returns: true } ex:
                         leftChanged?.UnionWith(state.Changed);
-                        foreach (var (ticket, (sees, at)) in state.Working)
+                        foreach (var (ticket, (sees, _, at)) in state.Working)
                             Report(ex.Pos, $"the work put on '{ticket}' on line {at.Line} was handed {sees}, and '{routine}' returns "
                                 + $"here without waiting for it, so the work would read memory that is gone: wait for it first, "
                                 + $"{ticket}.wait_finished()");

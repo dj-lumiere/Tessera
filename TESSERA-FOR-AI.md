@@ -365,8 +365,10 @@ routine start() -> None
     returning `x`. Work handed a view of the frame is waited for (`wait_finished`, `wait_finished_cancellable`,
     `retrieve`, or `give_back`) before the routine returns: `the work put on 't' on line N was handed the frame slot
     'l' ..., and 'fill' returns here without waiting for it`. A ticket handed to another routine (a list of tickets) is
-    followed no further. Work handed a view of memory makes the ticket hold that view until the work is over, so the
-    memory isn't given back before.
+    followed no further, and so is a ticket stored in memory (a table of tickets a later loop waits for) whose work
+    sees memory a frame slot holds: the table holds the views the work was handed. Work handed a frame slot itself is
+    waited for wherever its ticket is stored. Work handed a view of memory makes the ticket hold that view until the
+    work is over, so the memory isn't given back before.
   - A number made from an address (`ptrtoint`) is a number, and the check doesn't follow it, the same as an `Addr`
     passed on to another routine. The build doesn't check an address made from a number with `inttoptr`: what it
     points at and how long that memory lives are the code's to keep right.
