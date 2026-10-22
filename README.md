@@ -62,8 +62,8 @@ way: each level is made of whole pieces of the level below.
 
 | Level         | What it is                                                                                                                                                                                 |
 |---------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **statement** | One step: a binding (`x: S64 = a + b`), a load (`p.peek()`), a store (`p.poke(v)`), a local slot (`local p: @S64 <- 0`), a call, a `return`.                                             |
-| **routine**   | A body of statements with a head of `local` lines: `if` / `else`, `each` / `while` / `until` loops with carried values, and `when` to choose. Every value is bound once, and every path ends in a `return`. |
+| **statement** | One step: a binding (`x: S64 = a + b`), a load (`p.peek()`), a store (`p.poke(v)`), a place borrowed with `<-` (`count: &S64 <- 0`), a call, a `return`.                              |
+| **routine**   | A body of statements: `if` / `else`, `each` / `until` / `loop` loops with carried values, and `when` to choose. Every value is bound once, and every path ends in a `return`. |
 | **module**    | A namespace for routines, types, and constants (`Standard/Os`). Its path comes from the file's location, and a `module` line overrides it.                                                 |
 | **solution**  | Modules gathered into one executable. Its `config.toml` describes it.                                                                                                                      |
 | **library**   | A package a solution uses as it is and doesn't change: an object file, a static library, or an archive.                                                                                    |
@@ -72,16 +72,17 @@ way: each level is made of whole pieces of the level below.
 (arithmetic on a signed value, logical on an unsigned one): a type takes an operator by declaring the routine, and an
 overflow crashes unless the wrapping (`+%`) or clamping (`+^`) form was written.
 
-**Loops carry their values by name.** `while n > 1 with n: U64 = start, steps: U64 = 0` names what each pass
+**Loops carry their values by name.** `until n <= 1 with n: U64 = start, steps: U64 = 0` names what each pass
 changes, `continue with n: n / 2, steps: steps + 1` passes the next values, and `then` sees the last ones.
 
-**`=` only binds.** Memory is read and written by `peek` and `poke` calls, `<-` fills a new slot, and every binding
-states its type. A slot may start `<- .hollow()` (all zero) or, when it holds no pointer, `<- .uninit()` (nothing
-written until a routine fills it).
+**`=` only binds, `<-` borrows.** `x: S64 = a + b` binds a value. `count: &S64 <- 0` borrows a place from a manager
+(the running flow's STACK when no `from` names one) and puts the value in it. A view (`@T`) reads and writes with
+`peek` and `poke`, a place (`&T`) with `load` and `store`. A place may start `<- .hollow()` (all zero) or, when it
+holds no pointer, `<- .uninit()` (nothing written until a routine fills it).
 
-**Copy or share.** Handing a value on copies it. To share something instead, you make a place to keep it (a `local`
-slot, a `Box` or `Memory` from a memory manager) and hand out that place's address. Giving the memory back comes
-with the place, and the build checks it.
+**Copy or share.** Handing a value on copies it. To share something instead, you borrow a place to keep it (`&T` or
+`&[T]`, from STACK or from a memory manager) and hand out its view. A place from STACK is given back by the builder at
+every exit of its body; one from another manager is given back with `drop`, and the build checks that it is.
 
 **Sum types are variants.** `Maybe` and `Result` are variants, read with a `when` whose arms bind the value, and
 `A | B` is a variant written inline, with no declaration. Choices print, compare, and hash without being asked, and a
@@ -89,7 +90,8 @@ variant prints, tests equality, and hashes when every branch does. Tuples of two
 (`-> (U64, U64)`, `q, r = div_rem(a, b)`) cover results that are just several values, and a record names the parts
 when they mean something.
 
-**Nothing implicit.** There are no implicit conversions, destructors, exceptions, vtables, or allocations.
+**Little implicit.** There are no implicit conversions, exceptions, vtables, or allocations. The builder gives back
+the places a routine borrowed from STACK at each exit, and borrows and gives back each routine's frame.
 
 ## Quick start
 
@@ -161,10 +163,11 @@ sources = ["src"]
   The entry is `routine start()`, or the entry file's top-level lines (script mode). On a target without an operating
   system, `when_power_on()` runs first and readies the core with `prepare_core()`.
 - **Memory managers:** any type that obeys `MemoryManageable` (and `PageManageable` for pages) is one, and
-  `m.to[MemoryManager]()` makes the table every allocating routine takes. `steal` hands a `Box` or `Memory` on and
-  leaves the slot zeroed.
-- **Threads and fibers:** a `ThreadManager` (or a fiber manager) hands out tickets, each used top to bottom: put
-  work on it, wait, retrieve the result, give it back.
+  `m.to[MemoryManager]()` makes the table every routine that borrows memory takes. `steal` hands a `Box` or `Memory`
+  on and leaves the place zeroed.
+- **Threads and fibers:** a piece of work is `f.to[Work](param: value)`. `work.start_from(manager)` runs it on a
+  worker a `ThreadManager`, `FiberManager` or `ThreadPoolManager` lends, and a ticket held (`get_thread`) takes it with
+  `put_work`: wait, retrieve the result, `drop` the ticket.
 - **Standard library:** written in Tessera and layered so that only `Standard/Os` and the hosted files of
   `Standard/System` (the heap and page managers, the CPU events) need libc, and a target without an operating system
   builds without them.

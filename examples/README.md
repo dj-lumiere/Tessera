@@ -11,10 +11,10 @@ Run one with `dotnet run -- run examples/<name>.te`. Every program has a `<name>
 | [gcd](gcd.te) | Helper routines, loop state in block parameters, dividing before multiplying to avoid overflow |
 | [fibonacci](fibonacci.te) | Overflow: a bare `add` stops the program, `try a + b` gives a `Maybe` |
 | [collatz](collatz.te) | A nested loop split into two routines, best-so-far carried in block parameters |
-| [sieve](sieve.te) | A `claim`ed slot, heap memory in a `Slice[T]` released with `destruct()`, a borrowed view of it (`getview()`) lent to a routine, `getitem` / `setitem`, `zeroinit`, `stride` with `peek` / `poke` |
-| [binary_search](binary_search.te) | A preset Span (`preset SORTED: Span[S64] <- [...]`), returning `Maybe[USize]`, a three-way `when` |
-| [caesar](caesar.te) | `Byte` text, a stack buffer claimed `<- uninit`, `Bytes.from_ptr` |
-| [insertion_sort](insertion_sort.te) | `Array[T, COUNT]` copied from a preset into a slot, `getitem` / `setitem`, and `List[S64].sort` from the stdlib |
+| [sieve](sieve.te) | A place borrowed with `<-`, memory from a manager in a `&[Bool]` given back with `drop`, its values lent to a routine, `getitem` / `getslot`, `zeroinit`, `stride` with `peek` / `poke` |
+| [binary_search](binary_search.te) | A preset in memory (`preset SORTED: &[S64] <- [...]`), returning `Maybe[U64]`, a three-way `when` |
+| [caesar](caesar.te) | `Byte` text, a stack buffer borrowed with `<-`, `@[Byte].construct` |
+| [insertion_sort](insertion_sort.te) | `Array[T, COUNT]` copied from a preset into a place, `getitem` / `setitem`, and `List[S64].sort` from the stdlib |
 | [brackets](brackets.te) | `List[T]` as a stack, a `choice` result, a `when` over every member, one `finish` block for every exit |
 | [word_count](word_count.te) | `Bytes` views, `Dict[Bytes, USize]` in insertion order, `DictIter` |
 | [temperature](temperature.te) | `B64` arithmetic, integer ↔ float conversion, `represent` and `represent_fixed_into` |
