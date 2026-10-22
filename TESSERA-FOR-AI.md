@@ -300,19 +300,36 @@ routine start() -> None
     `ReadAuthorized[T]`, or handing it to a `@reshaping` routine, is a build error.
   - A routine that returns an access hands it to its caller, and a routine that gives back an access it is handed
     (`close(held)`) ends the caller's at the call. The build works both out from the bodies.
-- **What thread work changes.** Work put on a `Thread` or a `Job` ticket runs on another thread, next to the routine
-  that put it there and other work. The memory it changes (in its own body or in the program's routines it calls) is
-  one of three, else it is a build error: memory it was handed with `steal` (its own from then on), an `Authorized[T]`
-  handed to it, or an `Atomic[T]` (changed with its routines), so the work routine's parameters show what it changes
-  (`routine collect_dues(book: Authorized[Ledger], rate: U64)`). The routine that puts the work takes the exclusive
-  access before `put_work`, hands it to the work, waits for it, and then gives it back:
+- **What thread work changes.** Work on a thread or a job (`t.put_work(work)` on a `Thread` or a `Job` ticket, or
+  `work.start_from(manager)` on a `ThreadManager` or a `ThreadPoolManager`) runs on another thread, next to the
+  routine that started it and other work. The memory it changes (in its own body or in the program's routines it
+  calls) is one of three, else it is a build error: memory it was handed with `steal` (its own from then on), an
+  `Authorized[T]` handed to it, or an `Atomic[T]` (changed with its routines), so the work routine's parameters show
+  what it changes (`routine collect_dues(book: Authorized[Ledger], rate: U64)`). The rules are the same for both ways
+  of starting work. With `start_from`, the access is borrowed right in the work's arguments, and the work's
+  `retrieve()` gives it back:
+
+  ```tessera
+  dues: Work[None] <- collect_dues.to[Work](book: ledger.get_exclusive_access(), rate: 3)
+  dues.start_from(DEFAULT_THREADS)
+  dues.retrieve()
+  drop dues
+  ```
+
+  A ticket's `retrieve()` gives back nothing the work was handed, so `t.put_work(work)` of such a work is a build
+  error ("'work' was handed an access borrowed in its arguments, which the work's own retrieve gives back: start it
+  with work.start_from(manager), or borrow the access in a name of its own, hand the work that name, and drop it
+  after the ticket's wait"). For a ticket, the routine borrows the access in a name first, hands it to the work, waits,
+  and then gives it back:
 
   ```tessera
   held: Authorized[Ledger] <- ledger.get_exclusive_access()
-  t: Thread[None] = get_thread[None]()
-  t.put_work(entry: collect_dues.to[Callable](), args: (held, 3))
+  t: Thread[None] <- get_thread[None]()
+  dues: Work[None] <- collect_dues.to[Work](book: held, rate: 3)
+  t.put_work(dues)
   t.wait_finished()
-  t.give_back()
+  drop t
+  drop dues
   drop held
   ```
 
@@ -324,9 +341,12 @@ routine start() -> None
   access too. Memory handed to the work without `steal`, and every global, counts as shared, even when the routine
   that hands it waits for the work and doesn't touch it meanwhile: `steal` is for handing memory over for good. A
   `@threadlocal` global is each thread's own, and an address made from an `Addr` isn't followed. A standard library
-  routine counts as changing a parameter only where it is `@reshaping` on it. Errors: `t.put_work(...) runs 'f' on
-  another thread, and it changes the global 'G' (line N: ...) without an exclusive access` and `t.put_work(...) hands
-  'xs' to 'f', which changes it on another thread without an exclusive access, and it isn't handed over with steal`.
+  routine counts as changing a parameter only where it is `@reshaping` on it. Errors (each starts with the call that
+  starts the work, `t.put_work(work)` or `work.start_from(DEFAULT_THREADS)`): `t.put_work(work) runs 'f' on another
+  thread, and it changes the global 'G' (line N: ...) without an exclusive access, while other threads reach it too:
+  ...` and `work.start_from(DEFAULT_THREADS) hands 'xs' to 'f', which changes it on another thread without an
+  exclusive access, and it isn't handed over with steal, so other threads may reach it too: hand it over with steal,
+  or ...`, both ending with the fix "hand the work an exclusive access to it (its parameter an Authorized[T]): borrowed in the work's arguments, f.to[Work](p: p.get_exclusive_access()), for start_from, whose retrieve gives it back, or borrowed in a name first, held: Authorized[T] <- p.get_exclusive_access(), and dropped after the ticket's wait; or make it an Atomic[T] and change it with its routines".
   The build doesn't know whether two threads get the same memory and follows no `Addr` or address made with
   `inttoptr`: the debug race check (`[debug] race-check`, on in a debug build where it is supported) catches what it
   misses while the program runs.
@@ -350,10 +370,11 @@ routine start() -> None
   - A call through a routine value is a call to the routine it names: `apply(f: keep.to[Callable](), p: l)` hands `l`
     to `keep` when `apply` calls `f` on its `p`, and a lambda is the routine it makes. A routine value read out of
     memory (a global, a field) names no routine to the build, and what it is called on there isn't followed.
-  - Work put on a ticket (`t.put_work(entry: f.to[Callable](), args: x)`, on a `Thread`, a `Fiber`, or a `Job`) is a
-    call of `f` on `x`, and the ticket holds `x` until the work is over: storing or returning the ticket is storing or
-    returning `x`. Work handed a view of the frame is waited for (`wait_finished`, `wait_finished_cancellable`,
-    `retrieve`, or `give_back`) before the routine returns: `the work put on 't' on line N was handed the frame slot
+  - Work put on a ticket (`t.put_work(work)` with `work: Work[T] <- f.to[Work](p: x)`, on a `Thread`, a `Fiber`, or
+    a `Job`) is a call of `f` on `x`, and the ticket holds `x` until the work is over: storing or returning the ticket
+    is storing or returning `x`. Work started with `start_from` is followed the same way through the `Work` itself.
+    Work handed a view of the frame is waited for (`wait_finished`, `wait_finished_cancellable`, `retrieve`, or `drop`
+    of the ticket) before the routine returns: `the work put on 't' on line N was handed the frame slot
     'l' ..., and 'fill' returns here without waiting for it`. A ticket handed to another routine (a list of tickets) is
     followed no further, and so is a ticket stored in memory (a table of tickets a later loop waits for) whose work
     sees memory a frame slot holds: the table holds the views the work was handed. Work handed a frame slot itself is
@@ -814,8 +835,8 @@ routine start() -> None
   their parameter types (`me` included); a call picks the one whose parameter types are its arguments' types
   exactly. No implicit conversion counts there (a `@T` isn't an `Addr` overload's argument), and an untyped integer
   literal prefers `S64` when several take it. An exact concrete overload beats a generic
-  one, and a routine on a receiver type with its type arguments named (`routine Thread[None].put_work`) beats the
-  generic receiver type's (`Thread[T].put_work`) for that receiver. A receiver type argument may nest the routine's type parameter:
+  one, and a routine on a receiver type with its type arguments named (`routine Thread[None].put_callable`) beats the
+  generic receiver type's (`Thread[T].put_callable`) for that receiver. A receiver type argument may nest the routine's type parameter:
   `routine @List[Thread[T]].wait_all_finished()` with `needs T: typename` exists only for a `List` of
   `Thread[...]`, binds `T` from the receiver, and doesn't clash with `List[Fiber[T]].wait_all_finished`. Two generic
   routines may have the same parameter types when their `needs` differ, and a call takes the one whose constraints
@@ -1337,53 +1358,86 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
   error.
 - Every routine with a body is its statements, top to bottom. A routine without a body must be `@external`.
 
-**Threads, fibers, and ThreadPoolManager jobs are tickets.** A manager hands one out, and it is used in one flow, top to bottom:
-`t: Thread[S64] = get_thread[S64]()`, `t.put_work(entry: f.to[Callable](), args: x)` (it runs from here on),
-`t.check_finished()` to look without waiting or `t.wait_finished()` / `t.wait_finished_for(timeout) -> Bool` (`timeout` a `Duration`) to wait,
-`r: S64 = t.retrieve()` (failable), then more work on the same ticket or `t.give_back()`. `T` is the result type, `Thread[None]`
-for none. `args` is nothing, one value, or a tuple of two to four (`args: (a, b)`), copied into a block from the
-memory manager the thread manager holds. A pointer argument must outlive the work, so wait before releasing what it points to (the build
-checks it: the escape check's ticket rules). One piece
-of work at a time: `put_work` or `give_back` while it runs crashes with `TicketBusyError`, a ticket used after
-`give_back` with `TicketGivenBackError`, a ticket destructed before `give_back` with `TicketNotGivenBackError`, and
-`retrieve` with no work with `NoWorkError`. `cancel()` asks the work to stop: the work asks `cancel_requested()` where
-stopping is safe and returns. `retrieve()` of cancelled work throws `CancelRequested` (a `Thread[None]` /
-`Fiber[None]` / `Job[None]` one too), so a bare call stops there and `check t.retrieve()` tells them apart. Before
-each piece of work a thread puts every `@threadlocal` global back to its starting value. The same flow on all three
-ticket kinds: `Thread[T]`, `Fiber[T]`, `Job[T]` (a ThreadPoolManager's). `work_slot()` gives the ticket's `@WorkSlot`, for
-code waiting on several tickets at once.
-- **What work changes.** The build doesn't check what work on a `Thread` or a `Job` changes: it can't know which
-  access guards which memory, or whether two pieces of work reach the same memory (under another name, through an
-  address). The data race check (below) finds such races at run time, and a debug build on Linux and macOS on x86_64
-  and aarch64 runs it. Work handed a view of the frame is still waited for before the routine returns (rule 1).
+**Pieces of work: `Work[T]`** (`Standard/Os/Work.te`). A piece of work is a routine and its arguments, made with
+`f.to[Work](param: value, ...)` (`x.f.to[Work](...)` for a member routine): the arguments are named by the routine's
+parameters, every parameter once, at most four (build errors: "to[Work] takes the arguments by the names of the
+parameters of 'f': f.to[Work](n: ...)", "'f' has no parameter named 'm': its parameters are n", "to[Work] gives every
+parameter of 'f' its value, and 'b' has none", "'n' is given twice", "a piece of work takes at most four arguments, and
+'f' has 5: hand it a record of them"; a generic routine names its instance, `f[T].to[Work](...)`). `T` is the routine's
+result type, `None` for none. The arguments are computed on that line, and the work doesn't run yet. A `Work[T]` is
+bound with `<-` (`primes: Work[U64] <- count_primes.to[Work](table: table, limit: 1000)`), and `=` is a build error
+("a Work[U64] is borrowed and given back with drop, so it is bound with '<-' from the call that borrows it: ..."). It
+starts in one of two ways:
+
+- **On a lent worker: `work.start_from(manager)`.** The manager lends a worker (a thread, a fiber, a pool's job), the
+  work runs on it from here on, and the work's own routines follow it: `check_finished()`, `cancel()`, and
+  `retrieve()` (failable like a ticket's: `CancelRequested`), which waits the way the lender waits (a thread sleeps, a
+  fiber manager runs its fibers, a waiting fiber parks), gives the result, and gives back the worker AND every access
+  borrowed right in the work's arguments: `job: Work[U64] <- write_entries.to[Work](book:
+  book.get_exclusive_access(), count: 4)`, `job.start_from(DEFAULT_THREADS)`, `written: U64 = job.retrieve()`,
+  `drop job`. `drop job` gives the work back, waiting first for work started and not retrieved. A work starts once
+  (`WorkStartedError`), and `retrieve()` / `check_finished()` / `cancel()` on work not started with `start_from`
+  crash with `NoWorkError`. There is no default manager: the manager is always named (`DEFAULT_THREADS`, `FIBERS`, a
+  `ThreadManager`, a `FiberManager`, a `&ThreadPoolManager`). A manager that lends workers obeys `protocol
+  WorkManager[T]` (`ThreadManager`, `FiberManager`, `ThreadPoolManager` do): `lend_worker() -> Addr`,
+  `lent_slot(worker) -> @WorkSlot`, `start_lent(worker, runner, work)`, `wait_lent(worker)`, `take_back(worker)`.
+- **On a ticket: `t.put_work(work)`.** Below.
+
+**Threads, fibers, and ThreadPoolManager jobs are tickets.** A manager lends one, and it is used in one flow, top to
+bottom: `t: Thread[S64] <- get_thread[S64]()` (a ticket is bound with `<-` from the call that borrows it, `=` is a build
+error: "a Thread[S64] is borrowed and given back with drop, so it is bound with '<-' from the call that borrows it: t:
+Thread[S64] <- ..."), `t.put_work(work)` (a `@Work[T]`, it runs from here on), `t.check_finished()` to look without
+waiting or `t.wait_finished()` / `t.wait_finished_for(timeout) -> Bool` (`timeout` a `Duration`) to wait,
+`r: S64 = t.retrieve()` (failable), then more work on the same ticket or `drop t`, which gives the ticket back. `T`
+is the result type, `Thread[None]` for none. The work runs a copy of its block (the routine, its arguments, room for
+the result), copied into memory from the memory manager the thread manager holds, so one `Work` may go on several
+tickets and may be dropped once `put_work` returns. A ticket's `retrieve()` gives back nothing the work was handed, so
+work whose arguments borrow an access doesn't go on a ticket (build error, What thread work changes, above): borrow
+the access in a name first and `drop` it after the ticket's wait. A `Callable` value (no parameter names) goes on a
+ticket with `t.put_callable(entry: f, args: (a, b))` (`args` nothing, one value, or a tuple of two to four). A pointer
+argument must outlive the work, so wait before releasing what it points to (the build checks it: the escape check's
+ticket rules). One piece of work at a time: `put_work` / `put_callable` or `drop t` while the work runs crashes with
+`TicketBusyError`, a copy of a ticket used after the ticket was given back with `TicketGivenBackError`, and
+`retrieve` with no work with `NoWorkError`. `drop` of a ticket given back already, or of a copy of one, gives nothing
+back. `cancel()` asks the work to stop: the work asks `cancel_requested()` where stopping is safe and returns.
+`retrieve()` of cancelled work throws `CancelRequested` (a `Thread[None]` / `Fiber[None]` / `Job[None]` one too, and
+a `Work`'s), so a bare call stops there and `check t.retrieve()` tells them apart. Before each piece of work a thread
+puts every `@threadlocal` global back to its starting value. The same flow on all three ticket kinds: `Thread[T]`,
+`Fiber[T]` (`FIBERS.get_fiber[T]()`), `Job[T]` (`pool.get_job[T]()`). `work_slot()` gives the ticket's `@WorkSlot`,
+for code waiting on several tickets at once.
+- **What work changes.** The build checks what thread work changes (What thread work changes, above). It doesn't
+  know whether two pieces of work reach the same memory (under another name, through an `Addr`): the data race check
+  (below) finds such races at run time, and a debug build on Linux and macOS on x86_64 and aarch64 runs it. Work
+  handed a view of the frame is still waited for before the routine returns (rule 1).
 - **Cancellable waits**: the failable `wait_finished_cancellable()` (on all three tickets) and a channel's `transmit` /
-  `receive` throw `CancelRequested` as soon as the WAITING work's own ticket is
-  cancelled. Then clean up and return. Plain `wait_finished` / `wait_finished_for` are not cancellable. Outside a
-  ticket's work nothing cancels them.
+  `receive` throw `CancelRequested` as soon as the WAITING work itself is
+  cancelled (its ticket's or its `Work`'s `cancel()`). Then clean up and return. Plain `wait_finished` / `wait_finished_for` are not cancellable. Outside a
+  piece of work nothing cancels them.
 - **Lists of tickets**: `List[Thread[T]]` (Standard/Os), `List[Fiber[T]]` and `List[Job[T]]` (Standard/Fiber) have
   `wait_all_finished()`, `retrieve_all()` / `retrieve_all(manager)` (results in list order, stops on a failure as a bare
-  `retrieve` does), `give_back_all()` (and empties the list), `wait_any_finished() -> U64` (the position of a finished one,
+  `retrieve` does), `give_back_all()` (drops every ticket and empties the list), `wait_any_finished() -> U64` (the position of a finished one,
   crashes on an empty list), `cancel_all()`, `take_finished()` / `take_finished(manager)` (moves finished tickets out
   into a new list, both keep their order), and `give_back_finished()`.
 - **Threads** (`Standard/Os/Thread.te`, what both tickets share in `Work.te`, who waits in `Waiter.te`):
-  `get_thread[T]()` takes one from `DEFAULT_THREADS` (the hosted manager, OS threads,
-  blocks from `HEAP`, stacks the OS's), `get_thread[T](manager)` from another. A `ThreadManager` is a record of a launch routine,
+  `get_thread[T]()` borrows one from `DEFAULT_THREADS` (the hosted manager, OS threads,
+  blocks from `HEAP`, stacks the OS's), `get_thread[T](manager)` from another, and `work.start_from(manager)` runs work on a thread it lends. A `ThreadManager` is a record of a launch routine,
   its state, the idle threads, and a memory manager: `ThreadManager.construct(manager)` is OS threads with another memory manager,
   `ThreadManager.construct(launch_fn, state, manager)` a program's own (`launch_fn` starts a thread running `(entry,
-  arg)`, false when none starts), and `drop manager` ends its idle threads (give every ticket back first). A manager that
-  starts no thread crashes `get_thread` with `TaskSpawnError`. `manager.launch_unwatched(entry, arg)` (entry takes an
+  arg)`, false when none starts), and `drop manager` ends its idle threads (give every ticket back and retrieve every piece of work first). A manager
+  that starts no thread crashes `get_thread` and `start_from` with `TaskSpawnError`. `manager.launch_unwatched(entry, arg)` (entry takes an
   `@T`, `arg` is one and outlives the thread) starts a thread nobody waits for: only for a runtime's own threads that
   live as long as the program. `cpu_count()`.
-- **Fibers** (`Standard/Fiber/FiberManager.te`): `FIBERS.get_fiber[T]()`, the same flow and crashes. `FIBERS` is each thread's own
+- **Fibers** (`Standard/Fiber/FiberManager.te`): `FIBERS.get_fiber[T]()`, the same flow and crashes, or
+  `work.start_from(FIBERS)` (any `FiberManager`). `FIBERS` is each thread's own
   `FiberManager`, made on first use (`64kib` stacks on pages from `PAGES`), and on a thread ticket it goes when the
   work is over. `FiberManager.construct(stack_size, stack_manager, manager)` (`stack_size` a `ByteSize`, `stack_manager` a
   page manager such as `PAGES`) makes another, `drop manager` gives it back. Each fiber's stack is `take_stack(size, pages)`:
   whole pages, the one below them closed with `protect` as a guard page, a `StackManager` on the rest, and
   `give_back_stack(stack, pages)` returns them (a manager keeps a fiber's stack for its next ticket). A manager runs its fibers on ONE thread, the one that drives it, and never moves
   them: cooperative, a fiber runs until it yields, parks, sleeps, waits, or its work finishes, so its fibers share
-  values without exclusive accesses between those points. Driving: `wait_finished()` outside a fiber on the manager's thread runs
+  values without exclusive accesses between those points. Driving: `wait_finished()` (or a started work's `retrieve()`) outside a fiber on the manager's thread runs
   the manager until that work is done, `run()` until no fiber has work, `run_until_idle()` until none is ready.
-  Inside a fiber, waiting parks only that fiber: `wait_finished` of a fiber or THREAD ticket, `park()` (until
+  Inside a fiber, waiting parks only that fiber: `wait_finished` of a fiber or THREAD ticket, a `Work`'s `retrieve()`, `park()` (until
   `wake(handle)` from any thread, the handle from `current()`, may return early so loop on the condition),
   `park_until(deadline)`, `waitfor(duration)`, and `run_blocking(work, arg)` (a blocking call on a thread ticket), which
   `read` / `write` (`Standard/Fiber/Io.te`) use. A blocking call made directly stops every fiber of its thread.
@@ -1393,16 +1447,17 @@ code waiting on several tickets at once.
   of its own: `wake_through(word)` makes a wake from another thread change that word (and `wake_all` it),
   `idle_wait() -> Duration` is how long it may sleep before a fiber with a deadline is due (`Duration.MAX` for none).
 - **ThreadPoolManager** (`Standard/Fiber/ThreadPoolManager.te`, M:N): `pool: &ThreadPoolManager <- .construct(threads: 0)` (0 = one
-  thread per processor), `j: Job[T] = pool.get_job[T]()`, then the ticket flow (`put_work`, `check_finished`,
-  `wait_finished` / `wait_finished_for` / `wait_finished_cancellable`, `retrieve`, `cancel`, `give_back`). Work waits in the pool's queue until a
+  thread per processor), `j: Job[T] <- pool.get_job[T]()`, then the ticket flow (`put_work`, `check_finished`,
+  `wait_finished` / `wait_finished_for` / `wait_finished_cancellable`, `retrieve`, `cancel`, `drop j`), or
+  `work.start_from(pool)` and the work's `retrieve()`. Work waits in the pool's queue until a
   pool thread is free, then runs as a fiber the POOL keeps (not a thread's `FIBERS`). It runs until it waits, like any
   fiber. A wake of a waiting job puts it in the pool's queue of woken fibers, and whichever pool thread is free first
   goes on with it, so a job may wake on another thread than the one it waited on (work stealing at wait points only,
   `tests/thread_pool_manager_moves.te`): don't rely on a `@threadlocal` global across a wait in a job. Fibers a job
-  makes with `FIBERS` stay on their thread. A job may put work on more jobs and wait: the waiting job parks, its
+  makes with `FIBERS` stay on their thread. A job may start more work on the pool (`start_from(pool)` or a job ticket) and wait: the waiting job parks, its
   thread runs other jobs (recursive splitting: `tests/thread_pool_manager.te`). Jobs don't choose their thread, so they
-  share values like threads do (atomics, exclusive accesses, channels). Threads start with the first `get_job` and end at
-  `drop pool`: give every job back first. In a program that runs pool jobs, the builder calls the crash trace's
+  share values like threads do (atomics, exclusive accesses, channels). Threads start with the first job and end at
+  `drop pool`: give every job back and retrieve every piece of work first. In a program that runs pool jobs, the builder calls the crash trace's
   `trace_push` / `trace_at` / `trace_pop` out of line, so each finds the trace of the thread it runs on.
 
 **Atomics.** `Atomic[T]` (Core, `Atomic.te`) is a record aligned to T's size whose every access is atomic: the
