@@ -217,9 +217,10 @@ public sealed partial class FunctionGen
                 return $"this copies the {t.Name} in '{f.Name}', and an entity is never copied: pass the place as a pointer, "
                     + "or take it out with steal place as b";
             // getitem gives a copy of the element, which an entity element can't be: its place is getslot's.
-            case MethodCallExpr { Name: "getitem" } item when InferQuiet(item) is { } t && Entities.Holds(t) && !IsElementBox(item):
+            case MethodCallExpr { Name: "getitem" } item when InferQuiet(item) is { } t && Entities.Holds(t):
                 return $"getitem copies the element, and {t.Name} {(Entities.IsEntity(t) ? "is an entity" : "holds one")}, "
-                    + "which is never copied: take its place with getslot (a @" + t.Name + "), or hand it over with steal place as b";
+                    + "which is never copied: look at it through its place, getslot(i) (a @" + t.Name + "), or take it out with "
+                    + "steal xs.getslot(i)";
             case MethodCallExpr { Name: "peek" or "peek_atomic" or "peek_volatile" or "load" } m
                 when InferQuiet(m) is { } t && Entities.Holds(t):
                 return $"'{m.Name}' reads a {t.Name} out of memory, which copies it, and {(Entities.IsEntity(t) ? "an entity" : "a value holding an entity")} "
@@ -307,7 +308,6 @@ public sealed partial class FunctionGen
     /// out of a place for `steal place as old inject fresh`, which ends nothing: the place gets `fresh` right after.
     private Val EvalSteal(StealExpr s, DType expected)
     {
-        if (StealsElementBox(s.Value) is { } elementBox) throw Err(s.Pos, elementBox);
         if (s.Place)
         {
             _moving = true;
@@ -363,7 +363,6 @@ public sealed partial class FunctionGen
     /// error, so a hollow entity is never used by mistake.
     private void EmitSteal(StealStmt st)
     {
-        if (StealsElementBox(st.From) is { } elementBox) throw Err(st.Pos, elementBox);
         if (st.From is ValueRef)
         {
             var stolen = new StealExpr(st.From, st.Pos);
@@ -422,20 +421,6 @@ public sealed partial class FunctionGen
     private void MemBind(string name, Expr value, Pos pos, bool warn = true, DType? type = null)
     {
         string? entity = Entities.HeldIn(type)?.Name;
-        // An element of a Memory as a Box (`m[i]`) is a view of that memory, never ended on its own.
-        if (IsElementBox(value))
-        {
-            _elementBoxes.Add(name);
-            var at = value is GetItemExpr gi ? gi.Base : ((MethodCallExpr)value).Receiver;
-            // The builder's own slot for the statement is used right where it is made: the memory's own use reports.
-            if (!name.StartsWith('$') && RootName(at) is { } root)
-            {
-                _rootOf[name] = root;
-                _viewNames.Add(name);
-                Mem(new MemoryRules.ViewOf(name, ResolveRoot(root), pos));
-            }
-            return;
-        }
         if (value is ImplicitCallExpr { Name: "hollow" } or NsCallExpr { Name: "hollow" })
         {
             _memTracked.Add(name);
@@ -669,8 +654,7 @@ public sealed partial class FunctionGen
             // A manager's table holds the manager's address.
             case MethodCallExpr when TableManager(e) is { } manager:
                 return FrameView(manager);
-            case MethodCallExpr { Name: "getview" or "to" or "getslot" or "getslice" or "getitem" } m when MemName(m.Receiver) is { } owned
-                && (m.Name != "getitem" || ManagedMemory(InferQuiet(m.Receiver)) is { Decl.Name: "Memory" }):
+            case MethodCallExpr { Name: "getview" or "to" or "getslot" or "getslice" } m when MemName(m.Receiver) is { } owned:
                 return $"the memory '{owned}' holds";
             // A view made from a view (a slot of it, a part of it) sees the same memory. What other routines give
             // back (memory they allocate, an address they read) is theirs to say.
@@ -1560,7 +1544,6 @@ public sealed partial class FunctionGen
                     throw Err(d.Pos, $"{new Printer().Expr(d.Value, 0)} has nothing to give back ({InferQuiet(d.Value)?.Name ?? "its type"} "
                         + "writes no destruct): leave the drop out");
                 }
-                if (EndsElementBox(d.Value, "drop") is { } elementBox) throw Err(d.Pos, elementBox);
                 NoteAccessDrop(d.Value, d.Pos);
                 // The access a drop gives back isn't read by it: a second drop says so itself.
                 _givingBack = d.Value is ValueRef givenBack && _accessViews.Contains(givenBack.Name) ? d.Value : null;
@@ -2161,7 +2144,6 @@ public sealed partial class FunctionGen
 
     private Val EvalArg(Expr e, DType expected, int argument)
     {
-        if (argument > 0 && ManagedValue(expected) && EndsElementBox(e, "handing it over") is { } elementBox) throw Err(e.Pos, elementBox);
         if (e is not TempSlotExpr && InferQuiet(e) is { } given && SlotsTemp(given, expected))
             return Eval(new TempSlotExpr(e, e.Pos), expected, argument);
         if (AsStride(e) is FieldExpr or IndexExpr && IsPlaceChain(e) && PlaceType(e) is { } t && Compatible(t, expected)
@@ -2260,8 +2242,6 @@ public sealed partial class FunctionGen
         EmitStmtCore(new BindStmt(name, new TypeRef("$temp", [], slot.Pos) { Known = new PtrType(held) },
             new ClaimExpr(slot.Pos) { Contents = slot.Value }, slot.Pos));
         _lineSource = line;
-        // An element of a Memory as a Box is kept in that memory: nothing ends it with the statement.
-        if (IsElementBox(slot.Value)) return _values[name];
         _statementTemps.Add((name, slot.Pos));
         // It ends with the statement, after the value whens it was made in have joined: they see it past their join.
         foreach (var frame in _valueWhens) frame.OuterNames.Add(name);
@@ -4633,51 +4613,15 @@ public sealed partial class FunctionGen
     /// The routine that lends a Memory's or a Box's view: `getslice()` (every value) of a Memory, `getview()` of a Box.
     private static string LendName(DType? t) => ManagedMemory(t) is { Decl.Name: "Memory" } ? "getslice" : "getview";
 
-    /// Whether `e` is an element of a Memory as a `Box[T]` (`m[i]`, or a routine named getitem whose written result is a
-    /// `Box[...]`): the element itself, kept in that memory. It is no memory of its own, so nothing ends it.
-    private bool IsElementBox(Expr e)
-    {
-        if (e is GetItemExpr g) e = new MethodCallExpr(g.Base, "getitem", [], [g.Index], g.Pos);
-        if (e is not MethodCallExpr { Name: "getitem", Args.Count: 1 } m) return false;
-        if (ManagedMemory(InferQuiet(m.Receiver)) is { Decl.Name: "Memory" }) return true;
-        try { return PlanCall(m, null) is { Decl.ReturnType.Name: "Box" }; }
-        catch (CompileError) { return false; }
-    }
-
-    /// The names bound to an element of a Memory as a `Box[T]` (`local e: @Box[S64] <- m[i]`): never dropped or handed
-    /// over, since the memory they are in gives them back.
-    private readonly HashSet<string> _elementBoxes = [];
-
-    /// The build error for `steal` of a Memory's element as a Box (its place, `m.getslot(i)`, or a name bound to `m[i]`),
-    /// or null: the element is no memory of its own, and its value comes out with `take`.
-    private string? StealsElementBox(Expr e)
-    {
-        bool slot = e is MethodCallExpr { Name: "getslot", Args.Count: 1 } m && ManagedMemory(InferQuiet(m.Receiver)) is { Decl.Name: "Memory" };
-        return slot ? $"{new Printer().Expr(e, 0)} is the place of an element of a Memory, a slot the memory keeps: take the value out "
-            + "with m[i].take(), which leaves the place hollow"
-            : EndsElementBox(e, "steal");
-    }
-
-    /// The build error for ending an element of a Memory as if it were memory of its own, or null.
-    private string? EndsElementBox(Expr e, string how)
-    {
-        string? name = e is ValueRef r && _elementBoxes.Contains(r.Name) ? r.Name : null;
-        bool slot = e is MethodCallExpr { Name: "getslot", Args.Count: 1 } gs && ManagedMemory(InferQuiet(gs.Receiver)) is { Decl.Name: "Memory" };
-        if (name is null && !slot && !IsElementBox(e)) return null;
-        string what = name is null ? new Printer().Expr(e, 0) : $"'{name}'";
-        return $"{what} is an element of a Memory, kept in that memory, and no memory of its own: {how} would give back part of "
-            + "the memory's block. Take the value out with .take(), or give the whole memory back";
-    }
-
     /// The build error for a call of a routine a `Memory[T]` no longer has (it reads and writes nothing itself), naming the
     /// form that took its place, or null.
     private static string? OldMemoryElementCall(MethodCallExpr m) => m switch
     {
-        { Name: "load", Args.Count: 1 } => "a Memory reads nothing itself: read an element with m[i].load(), or m.getview(i).peek()",
-        { Name: "store", Args.Count: 2 } => "a Memory writes nothing itself: write an element with m[i].store(v), or m.getview(i).poke(v)",
-        { Name: "setitem", Args.Count: 2 } => "a Memory writes nothing itself: m[i] = v is m[i].store(v), or m.getview(i).poke(v)",
-        { Name: "getview", Args.Count: 0 } => "getview takes an index on a Memory, m.getview(i) is one element as a @T: every value as a"
-            + " @[T] is m.getslice()",
+        { Name: "load", Args.Count: 1 } => "a Memory reads nothing itself: an element's value is m[i], or m.getslot(i).peek()",
+        { Name: "store", Args.Count: 2 } => "a Memory writes nothing itself: write an element through its place, m.getslot(i).poke(v)",
+        { Name: "setitem", Args.Count: 2 } => "a Memory writes nothing itself: write an element through its place, m.getslot(i).poke(v)",
+        { Name: "getview", Args.Count: 0 } => "a Memory's values as a @[T] are m.getslice(), and one element's place is m.getslot(i)",
+        { Name: "getview", Args.Count: 1 } => "one element's place is m.getslot(i), a @T",
         _ => null,
     };
 
@@ -5109,9 +5053,6 @@ public sealed partial class FunctionGen
 
     private void EmitReturn(ReturnStmt r)
     {
-        // An element of a Memory as a Box goes back only from a getitem: anywhere else, the caller would end it.
-        if (r.Value is { } returnedBox && _decl.Name != "getitem" && EndsElementBox(returnedBox, "returning it") is { } elementBox)
-            throw Err(r.Pos, elementBox);
         if (_decl.AnnotationNamed("noreturn") is not null)
             throw Err(r.Pos, $"'{_decl.DisplayName}' is @noreturn, so no line in it can return: end it with a call that never returns, or drop the annotation");
         if (r.IsThrow)

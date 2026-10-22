@@ -5,15 +5,14 @@
 # gives it back then). The block holds the values and nothing else: plain `T` values in a row.
 #
 # Only a `Box[T]` reads and writes its value (`load`, `store`), and only a `@T` its place (`peek`, `poke`). A
-# `Memory[T]` turns an element into one of those: `m[i]` (getitem) is the element itself as a `Box[T]`, kept in the
-# memory (it is no memory of its own, so it is never dropped: take the value out with `take`), `m.getslot(i)` is the
-# element's place as a `@Box[T]` (the address of its `T`), `m.getview(i)` is the element as a `@T`, and
-# `m.getslice(start, count)` is a run of them as a `@[T]`. Lending is passing a Memory where a `@[T]` is expected (it
-# passes `getslice()`, every value) or a Box where a `@T` is (it passes `getview()`).
+# `Memory[T]` and a `@[T]` reach their elements the same way: `m[i]` (getitem) is the value, a copy, `m.getslot(i)` is
+# its place as a `@T`, and `m.getslice(start, count)` is a run of them as a `@[T]`. An entity element doesn't come out
+# as a copy: look at it through `getslot(i)`, or take it out with `steal m.getslot(i)`, which leaves the place hollow.
+# Lending is passing a Memory where a `@[T]` is expected (it passes `getslice()`, every value) or a Box where a `@T`
+# is (it passes `getview()`).
 #
-# A literal names the manager with `at`: `local xs: @Memory[U64] <- [0] * n at HEAP` is a Memory of n zeros (the count
-# may be known only while running), and `local node: @Box[Node] <- (value: 1, next: .hollow()) at HEAP` a Box of one
-# value.
+# A literal names the manager with `from`: `xs: &[U64] <- [0] * n from HEAP` is a Memory of n zeros (the count may be
+# known only while running), and `node: &Node <- (value: 1, next: .hollow()) from HEAP` a Box of one value.
 #
 # The build checks that memory is given back once, and not used after. A second give-back that code the build doesn't
 # follow makes crashes with `DoubleFreeError` under the heap check (`[debug] heap-check`).
@@ -79,12 +78,11 @@ needs T: typename
 # == Memory[T] ====================================================================================================
 
 ### `count` values of `T` from a manager, given back exactly once with `drop`. An entity: never copied, lent as a
-### `@Memory[T]`. Its elements are reached as a `Box[T]` (`m[i]`), a `@Box[T]` (`getslot`), a `@T` (`getview`), or a
-### `@[T]` (`getslice`).
+### `@Memory[T]`. Its elements are reached as a value (`m[i]`), a `@T` (`getslot`), or a `@[T]` (`getslice`).
 ### :typeparam T: The element type.
 entity Memory[T]
 needs T: typename
-obeys ViewingIndexable[Memory[T], Box[T]]
+obeys ViewingIndexable[Memory[T], T]
     data: @T
     count: U64
     manager: @MemoryManager
@@ -162,36 +160,27 @@ routine @Memory[T].getslice(start: U64, count: U64) -> @[T]
 needs T: typename
     return me.getslice().getslice(start, count)
 
-### The value at `index` as a view: its address.
+### The value at `index`, a copy. An entity value doesn't come out as a copy: look at it with `getslot(index)`, or
+### take it out with `steal m.getslot(index)`.
 ### :param index: The zero-based position.
-### :returns: The value's address, valid until the memory is given back or resized.
-### :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
-@track_caller
-routine @Memory[T].getview(index: U64) -> @T
-needs T: typename
-    return me.getslice().getslot(index)
-
-### The element at `index` itself, as a `Box[T]` kept in this memory: read it with `load`, write it with `store`, take
-### the value out with `take`. It is no memory of its own, so it is never dropped.
-### :param index: The zero-based position.
-### :returns: The element.
+### :returns: The value.
 ### :throws: Throws `IndexOutOfBoundsError` when `index >= count`.
-failable routine @Memory[T].getitem(index: U64) -> Box[T]
+failable routine @Memory[T].getitem(index: U64) -> T
 needs T: typename
     count: U64 = me.count.peek()
     if index >= count
         throw IndexOutOfBoundsError(index, count)
-    return Box[T](at: me.getview(index), manager: me.manager.peek())
+    value: T = me.getslice().getslot(index).peek()
+    return value
 
-### The place of the element at `index`, a slot the memory keeps: the address of its `T`.
+### The place of the value at `index`: its address, `data + index * T.data_size()`.
 ### :param index: The zero-based position.
 ### :returns: The place, valid until the memory is given back or resized.
 ### :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
 @track_caller
-routine @Memory[T].getslot(index: U64) -> @Box[T]
+routine @Memory[T].getslot(index: U64) -> @T
 needs T: typename
-    at: Addr = me.getview(index)
-    return at.to[@Box[T]]()
+    return me.getslice().getslot(index)
 
 ### The address of the first value: for C code that takes the values' address.
 ### :returns: `data`, hollow for an empty memory.
@@ -203,7 +192,7 @@ needs T: typename
 
 ### Exchanges the values at `first` and `second` in place. Each value is moved, never copied, so entity values swap
 ### too, and neither place is left hollow. The same index twice changes nothing. Work on another thread that swaps
-### elements another flow can reach holds an exclusive access to both first (`m.getview(i).get_exclusive_access()`),
+### elements another flow can reach holds an exclusive access to both first (`m.getslot(i).get_exclusive_access()`),
 ### taken in address order.
 ### :param first: The zero-based position of one value.
 ### :param second: The zero-based position of the other value.
@@ -334,8 +323,7 @@ needs T: typename, Destructible[T]
 # == Box[T] =======================================================================================================
 
 ### One value of `T` from a manager, given back exactly once with `drop`. An entity: never copied, lent as a `@Box[T]`.
-### Read with `load`, written with `store`. Lend `getview()` where a `@T` is expected. An element of a `Memory[T]`
-### (`m[i]`) is a `Box[T]` too, kept in that memory and never dropped.
+### Read with `load`, written with `store`. Lend `getview()` where a `@T` is expected.
 ### :typeparam T: The value type.
 entity Box[T]
 needs T: typename

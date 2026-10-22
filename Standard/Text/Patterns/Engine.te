@@ -475,23 +475,23 @@ routine @Threads.destruct() -> None
 routine @Threads.wait(thread: Thread) -> None
     local bucket: U64 = thread.pos % BUCKETS
     local slot: U64 = bucket * me.instructions.peek() + thread.pc.to[U64]()
-    local before: U64 = me.starts[slot].load()
+    local before: U64 = me.starts[slot]
 
     if before == NO_POSITION
-        count: U64 = me.counts[bucket].load()
-        me.waiting[bucket * me.instructions.peek() + count].store(thread.pc)
-        me.counts[bucket].store(count + 1)
-        me.starts[slot].store(thread.start)
+        count: U64 = me.counts[bucket]
+        me.waiting.getslot(bucket * me.instructions.peek() + count).poke(thread.pc)
+        me.counts.getslot(bucket).poke(count + 1)
+        me.starts.getslot(slot).poke(thread.start)
         return
     if thread.start < before
-        me.starts[slot].store(thread.start)
+        me.starts.getslot(slot).poke(thread.start)
     return
 
 ### How many threads wait in all buckets.
 ### :returns: The count.
 routine @Threads.waiting_count() -> U64
     each b: U64 in 0 til BUCKETS with total: U64 = 0
-        continue with total: total + me.counts[b].load()
+        continue with total: total + me.counts[b]
     then
         return total
 
@@ -499,41 +499,41 @@ routine @Threads.waiting_count() -> U64
 ### an instruction carries the earliest start.
 ### :param bucket: The bucket.
 routine @Threads.sort_bucket(bucket: U64) -> None
-    local count: U64 = me.counts[bucket].load()
+    local count: U64 = me.counts[bucket]
     local base: U64 = bucket * me.instructions.peek()
 
     each i: U64 in 1 til count
-        pc: U32 = me.waiting[base + i].load()
-        start: U64 = me.starts[base + pc.to[U64]()].load()
+        pc: U32 = me.waiting[base + i]
+        start: U64 = me.starts[base + pc.to[U64]()]
         until j == 0 with j: U64 = i
-            other: U32 = me.waiting[base + j - 1].load()
-            if me.starts[base + other.to[U64]()].load() <= start
+            other: U32 = me.waiting[base + j - 1]
+            if me.starts[base + other.to[U64]()] <= start
                 break
-            me.waiting[base + j].store(other)
+            me.waiting.getslot(base + j).poke(other)
             continue with j: j - 1
         then
-            me.waiting[base + j].store(pc)
+            me.waiting.getslot(base + j).poke(pc)
     then
         return
 
 ### Empties a bucket.
 ### :param bucket: The bucket.
 routine @Threads.clear_bucket(bucket: U64) -> None
-    local count: U64 = me.counts[bucket].load()
+    local count: U64 = me.counts[bucket]
     local base: U64 = bucket * me.instructions.peek()
 
     each i: U64 in 0 til count
-        pc: U32 = me.waiting[base + i].load()
-        me.starts[base + pc.to[U64]()].store(NO_POSITION)
+        pc: U32 = me.waiting[base + i]
+        me.starts.getslot(base + pc.to[U64]()).poke(NO_POSITION)
     then
-        me.counts[bucket].store(0)
+        me.counts.getslot(bucket).poke(0)
         return
 
 ### Forgets which instructions were reached at the position stepped last.
 routine @Threads.clear_seen() -> None
     each i: U64 in 0 til me.seen_list.count()
         index: U64 = me.seen_list.getitem(i).to[U64]()
-        me.seen[index].store(0)
+        me.seen.getslot(index).poke(0)
     then
         me.seen_list.clear()
         return
@@ -554,9 +554,9 @@ routine @Threads.follow(search: Search, goal: SimulationGoal, thread: Thread) ->
     until me.stack.is_empty()
         at: U32 = me.stack.remove_last()
         at_index: U64 = at.to[U64]()
-        if me.seen[at_index].load() != 0
+        if me.seen[at_index] != 0
             continue
-        me.seen[at_index].store(1)
+        me.seen.getslot(at_index).poke(1)
         me.seen_list.add_last(at)
         op: U32 = program.op(at_index)
         when
@@ -622,11 +622,11 @@ routine @Threads.run(search: Search, goal: SimulationGoal) -> Leftmost
                 break
             continue with pos: pos + 1
         me.sort_bucket(bucket)
-        count: U64 = me.counts[bucket].load()
+        count: U64 = me.counts[bucket]
         base: U64 = bucket * me.instructions.peek()
         each i: U64 in 0 til count
-            pc: U32 = me.waiting[base + i].load()
-            start: U64 = me.starts[base + pc.to[U64]()].load()
+            pc: U32 = me.waiting[base + i]
+            start: U64 = me.starts[base + pc.to[U64]()]
             if start <= me.found.peek()
                 pos.poke_into(reach)
                 me.follow(search, goal, thread: Thread(pc, pos, start))
@@ -763,10 +763,10 @@ routine @Walker.destruct() -> None
 routine @Walker.mark(index: U64) -> Bool
     word: U64 = index // 64
     bit: U64 = U64.shift_left(1, index % 64)
-    old: U64 = me.tried[word].load()
+    old: U64 = me.tried[word]
     if old & bit != 0
         return true
-    me.tried[word].store(old | bit)
+    me.tried.getslot(word).poke(old | bit)
     return false
 
 ### Follows one thread of the walk from an instruction at a position, pushing the ways it leaves for later, until

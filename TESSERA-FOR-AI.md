@@ -172,16 +172,13 @@ routine start() -> None
   the type's `destruct`: a program never writes `x.destruct()` itself (a build error: "a value is given back with drop:
   drop x"), only a type's own `destruct` body gives its members back. `drop` leaves the slot hollow: `.hollow()` holds
   nothing, `drop` on it does nothing, a read crashes with `InvalidValueError`.
-- **The elements of a Memory.** A `Memory[T]` reads and writes nothing itself: it turns an element into a `Box[T]` or
-  a `@T`. With E the element type, getitem gives E and getslot gives `@E`, and a Memory's element is a `Box[T]`:
-  `m[i]` (getitem, failable: `IndexOutOfBoundsError`) is the element itself as a `Box[T]` kept in the memory, so
-  `m[i].load()`, `m[i].store(v)`, `m[i].getview()`, `m[i].get_exclusive_access()` (an `Authorized[T]`), and `m[i].take()` (the value moved
-  out, the place left hollow: how an entity element comes out). It is no memory of its own: `drop m[i]`, `steal m[i]`,
-  returning it (outside a `getitem`), or handing it to a parameter that takes a `Box[T]` by value are build errors.
-  `m.getslot(i)` is the element's place as a `@Box[T]`, the address of its `T` (a slot the memory keeps: `steal` out of
-  it is a build error, use `m[i].take()`). `m.getview(i)` is the element as a `@T` (getview takes an index on a
-  Memory), `m.getslice(start, count)` a run of them as a `@[T]`, and `m.getslice()` every value. `m.load(i)`,
-  `m.store(i, v)`, `m[i] = v`, and `m.getview()` are build errors that name these forms. A Memory also has
+- **The elements of a Memory.** A `Memory[T]` reads and writes nothing itself, and reaches its elements the way a
+  `@[T]` does: `m[i]` (getitem, failable: `IndexOutOfBoundsError`) is the value, a copy, `m.getslot(i)` its place as a
+  `@T` (the address `data + i * T.data_size()`, checked against the count), `m.getslice(start, count)` a run of them as
+  a `@[T]`, and `m.getslice()` every value. An entity element is never copied, so `m[i]` on one is a build error: look
+  at it through `m.getslot(i)`, or take it out with `steal m.getslot(i)`, which leaves the place hollow. Write an
+  element through its place: `m.getslot(i).poke(v)`. `m.load(i)`, `m.store(i, v)`, `m[i] = v`, `m.getview()`, and
+  `m.getview(i)` are build errors that name these forms. A Memory also has
   `construct(count, manager)` (uninitialized, failable: it throws `MemoryAllocationError`, which `check
   Memory[T].construct(...)` receives), `count()`, `swap(first, second)`, `keep_first(n)` (only the first n in use, no
   copy), `duplicate()` (memory of its own), `replace(value: new)`, `take()` (moves the memory out, leaving this one
@@ -250,7 +247,7 @@ routine start() -> None
     some path. A path that returns early (the field is hollow there) is allowed. Giving one back twice on a path is
     `'me.m' ended already` or `'me.m' is used after drop me.m`.
   - `'v' is a view of 'm', whose memory was given back (drop m on line N)`: a `@T` / `@[T]` made from memory
-    (`m.getslice()`, `m.getview(i)`, `getslot`, `getslice`, `stride`, `offset`, `to[...]`, and views made from those) is read, written,
+    (`m.getslice()`, `m.getslot(i)`, `getslice`, `getslice`, `stride`, `offset`, `to[...]`, and views made from those) is read, written,
     passed, returned, stored or used to make another view after `drop m`, on any path (memory given back in both arms
     of an `if` counts). Use it before the drop. The same holds after `steal m` or after `m` is handed to a routine that
     takes it by value: `'v' is a view of 'm', whose memory was handed over (steal m on line N), and whoever took it may
@@ -315,7 +312,7 @@ routine start() -> None
   misses while the program runs.
 - **The escape check (rule 3).** A routine doesn't return a view of its frame (a local slot, a frame span, and
   every view made from them with `getslot` / `getslice` / `stride` / `offset` / `to` / a span's `getview`) or of a
-  Box / Memory it holds (`m.getslice()`, `m.getview(i)`, `m[i].getview()`), and doesn't store one through a parameter (`out.poke(x)`)
+  Box / Memory it holds (`m.getslice()`, `m.getslot(i)`), and doesn't store one through a parameter (`out.poke(x)`)
   or into a global. Errors: `this returns a view of the frame slot 'x' ...` and `this keeps a view of ... where it
   outlives 'r'`. Fix: return the values, or let the caller pass the memory in (a `@[T]` or a `@T` parameter) and
   write there. The check follows values out of the routine:
@@ -1391,7 +1388,7 @@ ReadAuthorized[T] = p.get_shared_read_access()` (several flows read it, none wri
 (`b.get_exclusive_access()` is the value's). The value is read and written through the access's `getview()`, a `@T`
 (`held.getview().poke(v)`, `reading.getview().peek()`), and the view of a `ReadAuthorized[T]` reads only. `drop held`
 gives the access back. An access covers the value's bytes, `[p, p + sizeof[T]())`: there is no way to take a `@[T]` at once, the elements
-of a run are taken one at a time (`m.getview(i).get_exclusive_access()`, `list.getslot(i).get_exclusive_access()`), and
+of a run are taken one at a time (`m.getslot(i).get_exclusive_access()`, `list.getslot(i).get_exclusive_access()`), and
 `list.data.get_exclusive_access()` is the first element alone. A record (a List's count, capacity and data pointer)
 and its element buffer are separate memory, taken separately: growing or moving a buffer changes the record, so it
 needs the record's access, and giving back or moving a Memory or a Box waits while another flow holds an access inside

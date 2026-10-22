@@ -85,8 +85,7 @@ public sealed partial class FunctionGen
                 return [new EscapeCheck.RoutineAtom(routine, 0)];
             case MethodCallExpr when TableManager(e) is { } manager:
                 return AtomsOf(manager);
-            case MethodCallExpr { Name: "getview" or "to" or "getslot" or "getslice" or "getitem" } m when MemName(m.Receiver) is { } owned
-                && (m.Name != "getitem" || ManagedMemory(InferQuiet(m.Receiver)) is { Decl.Name: "Memory" }):
+            case MethodCallExpr { Name: "getview" or "to" or "getslot" or "getslice" } m when MemName(m.Receiver) is { } owned:
                 return [new FrameAtom($"the memory '{owned}' holds", HeldOwner(owned), 0)];
             case MethodCallExpr { Name: "getslot" or "getslice" or "stride" or "offset" or "to" or "getview", Args.Count: <= 2 } m
                 when InferQuiet(m) is { } viewed && PointsAtMemory(viewed):
