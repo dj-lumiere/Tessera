@@ -4414,7 +4414,7 @@ public sealed partial class FunctionGen
     }
 
     /// An array literal, whose type comes from where it goes, still says how many values it has: `[3, 1, 2]` passed to
-    /// `values: Array[T, COUNT]` binds COUNT to 3, so `List[S64].of(values: [3, 1, 2])` needn't name it.
+    /// `values: Array[T, COUNT]` binds COUNT to 3, so `List[S64].of(values: [3, 1, 2], manager: HEAP)` needn't name it.
     private void UnifyArrayCount(TypeRef t, Expr arg, Compiler.TypeEnv env, HashSet<string> unbound)
     {
         if (arg is not ArrayLit { IsTuple: false } lit || t is not { Name: "Array", Args: [_, TypeArgType { Type: { Args.Count: 0 } n }] }
@@ -4568,6 +4568,20 @@ public sealed partial class FunctionGen
         bool inOrder = r.AnnotationNamed("positional") is not null || r.AnnotationNamed("external") is { First: "c" };
         bool needsNames = named.Count >= 3 && !inOrder;
         string Shape() => $"{r.DisplayName}({string.Join(", ", named.Select(p => $"{p.Name}: ..."))})";
+        // Fewer arguments than parameters besides `me`: name the ones the call leaves out, by the names it gives or else
+        // from the end.
+        if (r.Params.Take(offset).Any(p => p.Name != "me"))
+        {
+            var all = r.Params.Where(p => p.Name != "me").ToList();
+            var given = names?.Where(n => n is not null).ToHashSet() ?? [];
+            var left = given.Count == plan.Args.Count
+                ? all.Where(p => !given.Contains(p.Name)).ToList()
+                : all.Skip(plan.Args.Count).ToList();
+            string list = string.Join(", ", left.Select(p => $"'{p.Name}'"));
+            string shape = $"{r.DisplayName}({string.Join(", ", all.Select(p => $"{p.Name}: ..."))})";
+            throw Err(e.Pos, $"missing argument{(left.Count == 1 ? "" : "s")} {list} in the call of '{r.DisplayName}', "
+                + $"which takes {all.Count}: {shape}" + _c.HiddenOverloadHint(r, plan.Args.Count, _env.File));
+        }
         for (int i = 0; i < plan.Args.Count; i++)
         {
             var p = r.Params[i + offset];

@@ -132,9 +132,9 @@ These change code written for the pre-release builders. Where a spelling changed
   `take_all`), not `owned`. `WorkSlot` is an entity.
 
 ### Added
-- Collections from an array value: `List[T].of(values: [3, 1, 2], manager: HEAP)` and the default-heap
-  `List[T].of(values: ...)`, for `List`, `RotatableList`, `SortedList`, `Set`, `SortedSet`, `PriorityQueue`, `BitList`,
-  `Dict` and `SortedDict`.
+- Collections from an array value: `List[T].of(values: [3, 1, 2], manager: HEAP)`, for `List`, `RotatableList`,
+  `SortedList`, `Set`, `SortedSet`, `PriorityQueue`, `BitList`, `Dict` and `SortedDict`. The memory manager is always
+  named, there is no default-heap `of`: `of(values: ...)` alone is a build error that names the missing `manager`.
 - Every routine borrows its frame from the running flow's `StackManager` (`borrow_frame`, `give_back_frame`, which the
   builder calls). Without an operating system the borrow stops the program with `StackOverflowError` when the stack
   pointer comes within 4 KiB of the stack's bottom, and on Linux and macOS the fault report names a fault in the pages

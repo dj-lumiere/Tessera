@@ -1297,11 +1297,11 @@ All in `Standard/Collections/`, documented in `../Tessera-Wiki/docs/Collections.
 storage in a `BorrowedSlice[T]`: a `List` is `storage` (a BorrowedSlice whose count is the capacity) and `count`. `construct(manager)` keeps
 the memory manager (`construct()` with `Standard/Os` uses the default heap), and `drop list` gives the storage back and
 keeps the memory manager, so the collection can be used again. Every collection is also made from an array value with
-`of(values: Array[T, N], manager: @MemoryManager)`, or `of(values: ...)` from the default heap (Standard/Os): `xs:
+`of(values: Array[T, N], manager: @MemoryManager)`, the manager always named (there is no default-heap `of`): `xs:
 &List[S64] <- List[S64].of(values: [3, 1, 2], manager: HEAP)`. List, RotatableList, SortedList, Set, SortedSet,
 PriorityQueue (`Array[(TPriority, TElement), N]`), BitList (`Array[Bool, N]`), Dict and SortedDict (`Array[(TKey,
 TValue), N]`) have it. The array is taken over, so entity values go in themselves, not copies
-(`List[List[S64]].of(values: [List[S64].of(values: [7]), List[S64].construct()])`). Element access is
+(`List[List[S64]].of(values: [List[S64].of(values: [7], manager: HEAP), List[S64].construct()], manager: HEAP)`). Element access is
 `getitem(i)` / `setitem(i, v)` (the name says what is fetched), `getslot(i)` the checked address, `swap(first, second)`
 (the two elements trade places in place, moved, never copied, so entity elements swap too, a no-op for the same index,
 and an index past the end crashes like `getitem`: on `List`, `RotatableList`, `Array` through its pointer, `@[T]`, and
