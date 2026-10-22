@@ -9,57 +9,59 @@ The first Tessera release.
 
 ### Breaking changes
 
-These change code written for the pre-release builders. `tessera migrate <folder>` moves such code: with no
-`--step` it applies every rewrite below, and `tessera migrate --step <name> <folder>` runs one of them. Where a
-spelling has no step, the build error names the new one.
+These change code written for the pre-release builders. Where a spelling changed, the build error names the new one.
 
 **Syntax**
-- Type arguments are written in square brackets: `List[S64]` (default `migrate`).
+- Type arguments are written in square brackets: `List[S64]`.
 - `struct` is `record` and `enum` is `choice`. Choice members are SCREAMING_SNAKE_CASE (the build error writes the
-  new name). A `when` arm leads with `=>`. A module path is written with `/` (default `migrate`).
+  new name). A `when` arm leads with `=>`. A module path is written with `/`.
 - Literals are `Point(x: 1)`, `(a, b)` for a tuple and `[a, b]` for an array, and a repeated array is `[0] * n`
-  (default `migrate`, `--step repeat`).
-- Comments start with `#`, doc comments with `###` (`--step comments`).
+ .
+- Comments start with `#`, doc comments with `###`.
 - Control flow is structured: `if`, `elseif`, `when` and loops. Blocks and jumps are for assembly routines only
-  (`--step structured`, `--step blocks`). `else if` is `elseif` (`--step elseif`), and an `else` after a guard
-  that always leaves goes away (`--step guards`).
+ . `else if` is `elseif`, and an `else` after a guard
+  that always leaves goes away.
 - A loop is `until c` (it stops when `c` becomes true) or `loop`. `while` is not a keyword, and the build error
-  names `until` and `loop` (`--step until`, `--together` checks a folder as one program).
-- A line with no work is `nothing`, and a type with no member variables has the body `nothing` (`--step nothing`).
-- `/` is true division, `//` and `%` are Euclidean, and `div_trunc` / `mod_trunc` truncate (`--step division`).
-- `between` and `in_range` are chained comparisons (`--step ranges`).
-- `Void` and `Unit` are `None` (`--step none`). `null` is `.hollow()`, tested with `is_hollow()` (`--step
-  hollow`).
-- `private` and `internal` are `secret` (`--step visibility`).
-- A pointer is `@T` and a span is `@[T]`. Annotations start with `@` (`--step span`).
+  names `until` and `loop`.
+- A line with no work is `nothing`, and a type with no member variables has the body `nothing`.
+- `/` is true division, `//` and `%` are Euclidean, and `div_trunc` / `mod_trunc` truncate.
+- `between` and `in_range` are chained comparisons.
+- `Void` and `Unit` are `None`. `null` is `.hollow()`, tested with `is_hollow()`.
+- `private` and `internal` are `secret`.
+- A pointer is `@T` and a span is `@[T]`. Annotations start with `@`.
 - A routine names its receiver in its head: `routine T.f(...)`, `routine @T.f(...)`, `common routine T.f(...)`.
-  `me` is never written as a parameter (`--step receiver`). `self` and `Self` are `me` and `Me`.
-- An operator works on a type only when the type obeys the operator's protocol (`--step operators`).
+  `me` is never written as a parameter. `self` and `Self` are `me` and `Me`.
+- An operator works on a type only when the type obeys the operator's protocol.
 - Routine names: `floordiv`, `shift_left`,
-  `arith_shift_right`, `logical_shift_right`, and the math names such as `ln` and `exp_m1` (`--step names`).
+  `arith_shift_right`, `logical_shift_right`, and the math names such as `ln` and `exp_m1`.
 - `Bool` takes `and`, `or`, `not` and `!=` only.
-- A call to a routine with three or more parameters names its arguments (`--named-args`).
-- Sizes, counts and indexes are `U64` on every target. C's `size_t` is `CSize` / `CSSize` (`--step size`).
+- A call to a routine with three or more parameters names its arguments.
+- Sizes, counts and indexes are `U64` on every target. C's `size_t` is `CSize` / `CSSize`.
 
 **Memory and managers**
-- `Slice[T]` is `Span[T]` and `Bytes` is `Span[Byte]` (`--step memory`). Managers hand out `Memory[T]` and
-  `Box[T]`, which go back with `destruct`, and a value goes back with `drop x` (`--step destruct`, `--step drop`).
-- Only `Box[T]` reads and writes with `load` / `store`, and only `@T` with `peek` / `poke`. A `Memory[T]` turns an
-  element into one: `m[i]` is the element as a `Box[T]` (`m[i].load()`, `m[i].store(v)`, `m[i].take()`),
-  `m.getslot(i)` its place as a `@Box[T]`, `m.getview(i)` the element as a `@T`, and `m.getslice(start, count)` /
-  `m.getslice()` a `@[T]`. `m.load(i)`, `m.store(i, v)`, `m[i] = v`, `m.getview()`, and `xs[i] = v` on a span are
-  build errors that name the new forms.
-- Memory from a manager is written with `from`: `[0] * n from HEAP`, `10 from HEAP` (a scalar too), and
-  `from STACK` is a slot of the frame.
+- `Slice[T]` is `Span[T]` and `Bytes` is `Span[Byte]`. Managers hand out `Memory[T]` and
+  `Box[T]`, which go back with `destruct`, and a value goes back with `drop x`.
+- A place is borrowed from a manager with `<-`: `count: &S64 <- 0` (from STACK when no manager is named),
+  `node: &Node <- (value: 1) from HEAP`, `words: &[U64] <- [0] * n from HEAP`. `&T` is short for `Box[T]` and
+  `&[T]` for `Memory[T]`. `@T` and `@[T]` only view. `=` binds a value or a view, never a place, and `local` is gone.
+  A `<-` name is given back with `drop`, and the builder gives STACK places back at every exit of their body, the last
+  one first. Accesses and tickets are bound with `<-` from the call that borrows them. Presets and globals in memory
+  are written `&T` / `&[T]`.
+- Only `Box[T]` reads and writes with `load` / `store`, and only `@T` with `peek` / `poke`. `Memory[T]` and `@[T]`
+  reach their elements the same way: `m[i]` is the value, `m.getslot(i)` its place as a `@T`, and
+  `m.getslice(start, count)` / `m.getslice()` a `@[T]`. An entity element comes out with `steal m.getslot(i)`.
+  `m.load(i)`, `m.store(i, v)`, `m[i] = v`, `m.getview()`, `m.getview(i)`, and `xs[i] = v` on a span are build
+  errors that name the new forms.
+- A memory manager lends memory: `MemoryManager.borrow`, `reborrow` and `give_back` (the `MemoryManageable`
+  protocol's three routines).
 - `Box[T]` is `{at, manager}` and `Memory[T]` is `{data, count, manager}`: the block holds only the values, and the
   generation check is gone. A second give-back the build doesn't see is caught by the heap check (`DoubleFreeError`).
-- A record declares `construct` / `destruct` only when it holds something to release (`--step lifecycle`).
+- A record declares `construct` / `destruct` only when it holds something to release.
 - Every memory region has a manager: `DEFAULT_HEAP` is `HEAP`, `DEFAULT_STACKS` is `PAGES`, and processes,
-  thread-locals and globals have `ProcessManager`, `ThreadLocalManager` and `GlobalManager` (`--step managers`,
-  `--step threadlocal`). A manager table is reached through its place (`HEAP`).
-- A routine that takes a memory manager names the parameter `manager: @MemoryManager` (`--step manager`).
+  thread-locals and globals have `ProcessManager`, `ThreadLocalManager` and `GlobalManager`. A manager table is reached through its place (`HEAP`).
+- A routine that takes a memory manager names the parameter `manager: @MemoryManager`.
 - Every manager is an entity.
-- An address moves by a `ByteSize` with `+%` / `-%`: `a.offset(8)` is `a +% 8b` (`--step addr`).
+- An address moves by a `ByteSize` with `+%` / `-%`: `a.offset(8)` is `a +% 8b`.
 - The escape check follows values out of a routine: a value holding a view of the frame (or of memory the routine
   holds) can't be returned, stored, or handed to a routine that keeps it, `drop` included (the type's `destruct`
   receives it), and a routine's result that may be one of its parameters is that argument. `R(held: l)` is checked
@@ -81,32 +83,35 @@ spelling has no step, the build error names the new one.
 
 **Failure**
 - `Result[T, E]` and the `_result` routines are gone: a routine that can fail is `failable` and throws, and the
-  caller recovers with `try` or `check` (`--step failable`). `Result[T, TErrorCode]` stays for `@export` routines.
+  caller recovers with `try` or `check`. `Result[T, TErrorCode]` stays for `@export` routines.
 - The `_checked` twins are gone: the plain routine is failable, and `x.add_checked(y)` is `try x.add(y)`,
-  `x.to_checked[U8]()` is `try x.to[U8]()` (`--step checked`).
-- A crash handler goes in the `Crash` service's slot (`--step crash`).
+  `x.to_checked[U8]()` is `try x.to[U8]()`.
+- A crash handler goes in the `Crash` service's slot.
 - Float operations and math routines crash on an inf or NaN result. The raw result is `+! -! *! /!` and the
   `_unchecked` routines. The presets `INFINITY`, `NEG_INFINITY` and `NAN` are the literals `inf`, `-inf` and `nan`
-  (`--step float-presets`, `--step inf`).
+ .
 
 **Standard library**
 - A standard library module is its folder, and the base is `Standard/System` (`Standard/Core`, `Format`, `Alloc`,
-  `Boot` and `Json` moved into it, `--step modules`).
+  `Boot` and `Json` moved into it).
 - Iterators hand out values with `emit` and places with `next`. Collections use `add_last`, `remove_last`, `has`
-  and `lacks` (`--step iterators`, `--step membership`).
-- A variant arm is matched with `is T as v`, and `Option` is `Maybe` (`--step variants`).
+  and `lacks`.
+- A variant arm is matched with `is T as v`, and `Option` is `Maybe`.
 - The lock records are gone: the `AccessManager` hands out access to memory, `held: Authorized[T] =
   p.get_exclusive_access()` or a `ReadAuthorized[T]` from `p.get_shared_read_access()`, read and written through
   `held.getview()` and given back with `drop held`. An access covers one value, so the elements of a run are taken
   one at a time, and a record and its element buffer separately. `SignalCaster` waits take the `Authorized[T]` the
   caller holds. Naming `ExclusiveAccess` or `MultiReadAccess` is a build error that
   names the new form.
-- Threads and fibers are tickets: `get_thread`, `put_work`, `wait_finished` (`--step threads`). The fiber pool is
+- Threads and fibers are tickets: `get_thread`, `put_work`, `wait_finished`, given back with `drop t`. A piece of work
+  is `Work[T]`, made with `f.to[Work](param: value, ...)`, put on a ticket with `t.put_work(work)` or started with
+  `work.start_from(manager)` on a `WorkManager` (`ThreadManager`, `FiberManager`, `ThreadPoolManager`), whose
+  `retrieve()` gives back the worker and the accesses borrowed in the work's arguments. The fiber pool is
   `ThreadPoolManager`.
-- The console is `Console.ask`, `Console.show` and `Console.alert` (`--step console`).
+- The console is `Console.ask`, `Console.show` and `Console.alert`.
 - Files: the OS file manager is `OsFileManager`, `subdir` is `go_to`, a `Mapping` is a `FileStorage[Byte]`, and
-  the directories and environment variables are `OsEnvironment`'s (`--step files`).
-- Channels `transmit` and `transmit_if_room`, with `add_transmitter` and `close_transmitting` (`--step channels`).
+  the directories and environment variables are `OsEnvironment`'s.
+- Channels `transmit` and `transmit_if_room`, with `add_transmitter` and `close_transmitting`.
 - A program without an OS writes `when_power_on`. The `link-script` key is gone: the builder writes the link
   script from the board file.
 - A stopped flow's stack pointer is its `StackManager`'s `sp` (`.hollow()` while the flow runs), and `FiberState.sp`
@@ -115,6 +120,13 @@ spelling has no step, the build error names the new one.
   `take_all`), not `owned`. `WorkSlot` is an entity.
 
 ### Added
+- Collections from an array value: `List[T].of(values: [3, 1, 2], manager: HEAP)` and the default-heap
+  `List[T].of(values: ...)`, for `List`, `CircularList`, `SortedList`, `Set`, `SortedSet`, `PriorityQueue`, `BitList`,
+  `Dict` and `SortedDict`.
+- Every routine borrows its frame from the running flow's `StackManager` (`borrow_frame`, `give_back_frame`, which the
+  builder calls). Without an operating system the borrow stops the program with `StackOverflowError` when the stack
+  pointer comes within 4 KiB of the stack's bottom, and on Linux and macOS the fault report names a fault in the pages
+  below the running stack `StackOverflowError`.
 - Records, choices, variants (`A | B`, `Maybe`), tuples, one-line lambdas, `define` aliases, concept checks, and
   `Duration` / `ByteSize` unit literals (`20ms`, `4kib`).
 - Entities and `steal` (`steal a as b`, `steal place as old inject new`), entities in variant arms, type arguments
@@ -143,7 +155,7 @@ spelling has no step, the build error names the new one.
   `Clock`, `CpuClock`, `Moment`, `TextPattern` and `BytesPattern`.
 - Debugging: DWARF, or CodeView with a PDB on Windows, in every build, `@source`, `@track_caller`, crash traces of
   the program's own routines, and exit code 82 on a crash.
-- Tools: `tessera fmt`, `lint`, `lsp`, `test`, `new`, `docs` and `migrate`, a Rider plugin, a VS Code extension,
+- Tools: `tessera fmt`, `lint`, `lsp`, `test`, `new`, and `docs`, a Rider plugin, a VS Code extension,
   `config.toml` builds and golden tests for other targets.
 - An arm of a value `when` can leave with `throw` in a failable routine. The language server's quick fix writes
   `failable` on a routine whose `throw` line it isn't declared for.
