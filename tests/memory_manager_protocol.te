@@ -1,6 +1,6 @@
 # A memory manager of your own obeys MemoryManageable, and m.to[MemoryManager]() makes the table a List or a Box
 # takes. A bump arena over a buffer in the frame: each block starts where the last one ended, with its size in front
-# of it so realloc knows it, and nothing is given back one block at a time. A list that outgrows the buffer gets
+# of it so reborrow knows it, and nothing is given back one block at a time. A list that outgrows the buffer gets
 # AllocFailed from add_last_result.
 
 import Standard/Collections
@@ -34,7 +34,7 @@ routine @Bump.destruct() -> None
 ### :param size: The number of bytes.
 ### :param align: The alignment, a power of two.
 ### :returns: The block, or null when the buffer has no room left.
-routine @Bump.alloc(size: U64, align: U64) -> Addr
+routine @Bump.borrow(size: U64, align: U64) -> Addr
     step: U64 = align.max(HEADER)
     first: U64 = me.base.peek() + me.used.peek() + HEADER
     at: U64 = first + step - 1 & ~(step - 1)
@@ -51,9 +51,9 @@ routine @Bump.alloc(size: U64, align: U64) -> Addr
 ### :param size: The new size in bytes.
 ### :param align: The block's alignment.
 ### :returns: The block, or null with the block left as it was.
-routine @Bump.realloc(at: Addr, size: U64, align: U64) -> Addr
+routine @Bump.reborrow(at: Addr, size: U64, align: U64) -> Addr
     if at.is_hollow()
-        return me.alloc(size, align)
+        return me.borrow(size, align)
     old: U64 = size_of(at).peek()
     start: U64 = ptrtoint[Addr, U64](at)
     last: Bool = start + old == me.base.peek() + me.used.peek()
@@ -61,7 +61,7 @@ routine @Bump.realloc(at: Addr, size: U64, align: U64) -> Addr
         (start + size - me.base.peek()).poke_into(me.used)
         size_of(at).poke(size)
         return at
-    moved: Addr = me.alloc(size, align)
+    moved: Addr = me.borrow(size, align)
     if moved.is_hollow()
         return .hollow()
     moved.to[@Byte]().copy(src: at.to[@Byte](), count: old.min(size))
@@ -69,7 +69,7 @@ routine @Bump.realloc(at: Addr, size: U64, align: U64) -> Addr
 
 ### Gives nothing back: the arena's blocks go together with the arena.
 ### :param at: The block.
-routine @Bump.free(at: Addr) -> None
+routine @Bump.give_back(at: Addr) -> None
     return
 
 ### Where the size of the block at `at` is kept.

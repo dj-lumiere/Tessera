@@ -3560,7 +3560,7 @@ public sealed partial class FunctionGen
     }
 
     /// A call through a Callable value: `fn.call(args)`. A Callable stored in memory is loaded first
-    /// (`fn: Callable[…] = alloc.alloc_fn.peek()`); calling the field directly would hide that load.
+    /// (`fn: Callable[…] = table.borrow_fn.peek()`); calling the field directly would hide that load.
     private (Expr Callee, CallableType Callable, List<Expr> Args)? IndirectCall(Expr e)
     {
         if (e is not MethodCallExpr m) return null;

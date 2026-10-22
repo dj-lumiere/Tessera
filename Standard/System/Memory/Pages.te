@@ -204,7 +204,7 @@ routine pages_protect(at: Addr, size: U64, access: PageAccess) -> Bool
 
 # -- shared ------------------------------------------------------------------------
 
-### The operating system's pages, a PageManageable manager: `PAGES` is its table. Its `alloc` hands out whole pages,
+### The operating system's pages, a PageManageable manager: `PAGES` is its table. Its `borrow` lends whole pages,
 ### committed, after one more page that keeps the block's size (a page manager frees without a size), so a block of a
 ### few bytes still costs two pages: small blocks belong on a heap.
 @target(os: not "none")
@@ -239,7 +239,7 @@ routine whole_pages(size: U64) -> U64
 ### :returns: The block, page aligned, or null when the pages can't be had or `align` is past a page.
 @target(os: not "none")
 @expensive("asks for pages")
-routine @OsPageManager.alloc(size: U64, align: U64) -> Addr
+routine @OsPageManager.borrow(size: U64, align: U64) -> Addr
     local page: U64 = page_size().bytes()
 
     if align > page
@@ -261,21 +261,21 @@ routine @OsPageManager.alloc(size: U64, align: U64) -> Addr
 ### :returns: The new block, or null with the old one left as it was.
 @target(os: not "none")
 @expensive("asks for pages")
-routine @OsPageManager.realloc(at: Addr, size: U64, align: U64) -> Addr
-    fresh: Addr = me.alloc(size, align)
+routine @OsPageManager.reborrow(at: Addr, size: U64, align: U64) -> Addr
+    fresh: Addr = me.borrow(size, align)
     if fresh.is_hollow() or at.is_hollow()
         return fresh
     page: U64 = page_size().bytes()
     old_length: U64 = (at -% ByteSize.construct(bytes: page)).to[@U64]().peek() - page
     fresh.to[@Byte]().copy(src: at.to[@Byte](), count: old_length.min(size))
-    me.free(at)
+    me.give_back(at)
     return fresh
 
 ### Gives a block back: reads the length kept in the page in front of it, then releases the pages.
 ### :param at: The block, from this manager. Null does nothing.
 @target(os: not "none")
 @expensive("gives memory back")
-routine @OsPageManager.free(at: Addr) -> None
+routine @OsPageManager.give_back(at: Addr) -> None
     if at.is_hollow()
         return
     base: Addr = at -% page_size()

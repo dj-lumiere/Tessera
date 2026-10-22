@@ -297,7 +297,7 @@ public sealed partial class Compiler
 
     /// Whether a routine hands out memory through a memory manager's table.
     private static bool TakesGeneralMemory(RoutineDecl r) =>
-        r is { IsLibrary: true, Module: MemoryModule, Owner.Name: "MemoryManager", Name: "alloc" or "realloc" or "reserve" or "commit" };
+        r is { IsLibrary: true, Module: MemoryModule, Owner.Name: "MemoryManager", Name: "borrow" or "reborrow" or "reserve" or "commit" };
 
     /// Declares LLVM's memcpy, which copying a failure from one carrier into another uses.
     public void DeclareMemcpy()

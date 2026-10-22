@@ -141,7 +141,7 @@ secret routine c_aligned_free(ptr: Addr) -> None
 ### :param align: The alignment, a power of two.
 ### :returns: The new block, null when the heap has no room.
 @target(os: ("linux", "macos"))
-routine @CHeapManager.alloc(size: U64, align: U64) -> Addr
+routine @CHeapManager.borrow(size: U64, align: U64) -> Addr
     if not fits_c_size(size)
         return .hollow()
     if align <= MALLOC_ALIGN
@@ -157,7 +157,7 @@ routine @CHeapManager.alloc(size: U64, align: U64) -> Addr
 ### :returns: The new block, null when malloc fails.
 ### :throws: Crashes with `InvalidValueError` when `align` is past malloc's own.
 @target(os: "windows")
-routine @CHeapManager.alloc(size: U64, align: U64) -> Addr
+routine @CHeapManager.borrow(size: U64, align: U64) -> Addr
     if not fits_c_size(size)
         return .hollow()
     if align <= MALLOC_ALIGN
@@ -172,12 +172,12 @@ routine @CHeapManager.alloc(size: U64, align: U64) -> Addr
 ### :param align: The block's alignment.
 ### :returns: The resized block (possibly moved), null when the heap has no room and the old block is untouched.
 @target(os: ("linux", "macos"))
-routine @CHeapManager.realloc(at: Addr, size: U64, align: U64) -> Addr
+routine @CHeapManager.reborrow(at: Addr, size: U64, align: U64) -> Addr
     if not fits_c_size(size)
         return .hollow()
     if align <= MALLOC_ALIGN
         return c_realloc(at, size.to[CSize]())
-    fresh: Addr = me.alloc(size, align)
+    fresh: Addr = me.borrow(size, align)
     if fresh.is_hollow()
         return .hollow()
     if at.is_hollow()
@@ -193,7 +193,7 @@ routine @CHeapManager.realloc(at: Addr, size: U64, align: U64) -> Addr
 ### :param align: The block's alignment, at most malloc's own.
 ### :returns: The resized block (possibly moved), null when realloc fails and the old block is untouched.
 @target(os: "windows")
-routine @CHeapManager.realloc(at: Addr, size: U64, align: U64) -> Addr
+routine @CHeapManager.reborrow(at: Addr, size: U64, align: U64) -> Addr
     if not fits_c_size(size)
         return .hollow()
     return c_realloc(at, size.to[CSize]())
@@ -201,7 +201,7 @@ routine @CHeapManager.realloc(at: Addr, size: U64, align: U64) -> Addr
 ### Gives a block back with free.
 ### :param at: The block to free. Null does nothing.
 @target(os: not "none")
-routine @CHeapManager.free(at: Addr) -> None
+routine @CHeapManager.give_back(at: Addr) -> None
     c_free(at)
     return
 
@@ -210,7 +210,7 @@ routine @CHeapManager.free(at: Addr) -> None
 ### :param align: The alignment, a power of two.
 ### :returns: The new block, null when the heap has no room.
 @target(os: "windows")
-routine @AlignedHeapManager.alloc(size: U64, align: U64) -> Addr
+routine @AlignedHeapManager.borrow(size: U64, align: U64) -> Addr
     if not fits_c_size(size)
         return .hollow()
     return c_aligned_malloc(size.to[CSize](), align.max(MALLOC_ALIGN).to[CSize]())
@@ -221,7 +221,7 @@ routine @AlignedHeapManager.alloc(size: U64, align: U64) -> Addr
 ### :param align: The block's alignment.
 ### :returns: The resized block, null when the heap has no room and the old block is untouched.
 @target(os: "windows")
-routine @AlignedHeapManager.realloc(at: Addr, size: U64, align: U64) -> Addr
+routine @AlignedHeapManager.reborrow(at: Addr, size: U64, align: U64) -> Addr
     if not fits_c_size(size)
         return .hollow()
     return c_aligned_realloc(at, size.to[CSize](), align.max(MALLOC_ALIGN).to[CSize]())
@@ -229,7 +229,7 @@ routine @AlignedHeapManager.realloc(at: Addr, size: U64, align: U64) -> Addr
 ### Gives a block back with `_aligned_free`.
 ### :param at: The block to free. Null does nothing.
 @target(os: "windows")
-routine @AlignedHeapManager.free(at: Addr) -> None
+routine @AlignedHeapManager.give_back(at: Addr) -> None
     c_aligned_free(at)
     return
 
@@ -308,7 +308,7 @@ routine @CheckedHeapManager.destruct() -> None
 ### :param align: The alignment, a power of two.
 ### :returns: The block after the header, null when malloc fails or the size can't hold a header too.
 @target(os: not "none")
-routine @CheckedHeapManager.alloc(size: U64, align: U64) -> Addr
+routine @CheckedHeapManager.borrow(size: U64, align: U64) -> Addr
     local step: U64 = align.max(MALLOC_ALIGN)
 
     total: Maybe[U64] = try size.add(HEADER_ROOM.add(step))
@@ -338,14 +338,14 @@ routine @CheckedHeapManager.alloc(size: U64, align: U64) -> Addr
 ### :returns: The new block, null when malloc fails and the old block is untouched.
 ### :throws: Crashes with `InvalidValueError` when `at` was freed already or isn't a block of this heap.
 @target(os: not "none")
-routine @CheckedHeapManager.realloc(at: Addr, size: U64, align: U64) -> Addr
+routine @CheckedHeapManager.reborrow(at: Addr, size: U64, align: U64) -> Addr
     if at.is_hollow()
-        return me.alloc(size, align)
+        return me.borrow(size, align)
     header: @BlockHeader = header_of(at)
     tag: U64 = header.tag.peek_atomic()
     when
         tag == LIVE =>
-            new_ptr: Addr = me.alloc(size, align)
+            new_ptr: Addr = me.borrow(size, align)
             if new_ptr.is_hollow()
                 return .hollow()
             kept: U64 = header.size.peek().min(size)
@@ -353,7 +353,7 @@ routine @CheckedHeapManager.realloc(at: Addr, size: U64, align: U64) -> Addr
             release_block(at)
             return new_ptr
         tag == FREED => heap_crash(name: "InvalidValueError",
-            message: "The checked heap was asked to resize a block that was already freed.")
+            message: "The checked heap was asked to resize a block that was given back already.")
         else => heap_crash(name: "InvalidValueError",
             message: "The checked heap was asked to resize memory that isn't a block it gave out.")
 
@@ -362,7 +362,7 @@ routine @CheckedHeapManager.realloc(at: Addr, size: U64, align: U64) -> Addr
 ### :throws: Crashes with `DoubleFreeError` when the block was freed already, and with `InvalidValueError` when `at`
 ###     isn't a block of this heap.
 @target(os: not "none")
-routine @CheckedHeapManager.free(at: Addr) -> None
+routine @CheckedHeapManager.give_back(at: Addr) -> None
     if at.is_hollow()
         return
     release_block(at)
@@ -397,9 +397,9 @@ secret routine release_block(block_start: Addr) -> None
             c_free(evicted.to[@BlockHeader]().raw.peek())
             return
         was == FREED => heap_crash(name: "DoubleFreeError",
-            message: "This block was already freed: it was freed twice.")
+            message: "This block was given back already: it was given back twice.")
         else => heap_crash(name: "InvalidValueError",
-            message: "The checked heap was asked to free memory that isn't a block it gave out.")
+            message: "The checked heap was asked to take back memory that isn't a block it lent.")
 
 ### Crashes at the place of the deallocate or reallocate call that reached the heap, when one was noted, else at the
 ### heap itself.

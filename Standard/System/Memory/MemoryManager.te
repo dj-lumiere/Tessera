@@ -1,9 +1,9 @@
 # Tessera stdlib: MemoryManager pattern and memory routines
 #
-# Every memory region a program uses has a manager, which hands out blocks of it and takes them back. A heap's manager
+# Every memory region a program uses has a manager, which lends blocks of it and takes them back. A heap's manager
 # obeys HeapManageable (blocks come back in any order), and a page manager obeys PageManageable (it also reserves
-# address space and sets what pages allow). Both refine MemoryManageable, the protocol of a manager that hands out
-# blocks. m.to[MemoryManager]() makes the MemoryManager table that callers pass as @MemoryManager to any routine that
+# address space and sets what pages allow). Both refine MemoryManageable, the protocol of a manager that lends
+# blocks (borrow, reborrow, give_back). m.to[MemoryManager]() makes the MemoryManager table that callers pass as @MemoryManager to any routine that
 # allocates: routines that forward to m's own, with m's address as the table's state. Nothing here needs an operating
 # system. On a target with one, DefaultMemory.te has the hosted tables (HEAP, C_HEAP, PAGES), whose managers are
 # Heap.te's and Pages.te's. A stack is a StackManager's (StackManager.te): it hands out a routine's
@@ -17,8 +17,8 @@
 #
 # With the heap check on (config.toml's [debug] heap-check), reallocate and
 # deallocate note the place they were called from while the memory manager runs, so
-# a memory manager that finds a mistake (the checked heap's check for a block freed
-# twice) can crash at the caller's line: allocator_call_place() reads it.
+# a memory manager that finds a mistake (the checked heap's check for a block given
+# back twice) can crash at the caller's line: allocator_call_place() reads it.
 
 module Standard/System/Memory
 
@@ -41,13 +41,13 @@ choice PageAccess: U8
 ### calling one that isn't crashes. The table views the manager: the manager outlives it, which the build checks
 ### inside a routine.
 entity MemoryManager
-    ### Allocates `size` bytes aligned to `align` (a power of two), or returns null: `(state, size, align)`.
-    secret alloc_fn: Callable[(Addr, U64, U64), Addr]
+    ### Lends `size` bytes aligned to `align` (a power of two), or returns null: `(state, size, align)`.
+    secret borrow_fn: Callable[(Addr, U64, U64), Addr]
     ### Resizes a block to `size` bytes, keeping its contents and its alignment `align`, or returns null and leaves it
     ### as it was: `(state, at, size, align)`.
-    secret realloc_fn: Callable[(Addr, Addr, U64, U64), Addr]
-    ### Gives a block back: `(state, at)`.
-    secret free_fn: Callable[(Addr, Addr), None]
+    secret reborrow_fn: Callable[(Addr, Addr, U64, U64), Addr]
+    ### Takes a block back: `(state, at)`.
+    secret give_back_fn: Callable[(Addr, Addr), None]
     ### Reserves `size` bytes of address space, no page usable yet, or returns null: `(state, size)`.
     secret reserve_fn: Callable[(Addr, U64), Addr]
     ### Makes reserved pages readable and writable, false when it can't: `(state, at, size)`.
@@ -63,29 +63,29 @@ entity MemoryManager
 crashable MemoryAllocationError
     nothing
 
-### A type that hands out memory: it allocates blocks, resizes them, and takes them back. A value of it in a slot
+### A type that lends memory: it lends blocks (`borrow`), resizes them (`reborrow`), and takes them back (`give_back`). A value of it in a slot
 ### becomes the table every allocating routine takes with `m.to[MemoryManager]()`.
 ### :typeparam T: The manager type.
 protocol MemoryManageable[T]
 needs T: typename
-    ### Allocates `size` bytes aligned to `align` (a power of two), or returns null when it can't.
+    ### Lends `size` bytes aligned to `align` (a power of two), or returns null when it can't.
     ### :param size: The number of bytes.
     ### :param align: The alignment, a power of two.
     ### :returns: The block, or null.
-    routine @Me.alloc(size: U64, align: U64) -> Addr
+    routine @Me.borrow(size: U64, align: U64) -> Addr
 
     ### Resizes the block at `at` to `size` bytes, keeping its contents up to the smaller size and its alignment `align`.
     ### Only the manager knows how large a block is, so every manager has its own.
     ### :param at: The block, from this manager, or null for a new one.
     ### :param size: The new size in bytes.
-    ### :param align: The alignment the block was allocated with, a power of two.
+    ### :param align: The alignment the block was borrowed with, a power of two.
     ### :returns: The resized block, which may have moved, or null with the block left as it was when it can't.
-    ### :note: A manager whose realloc calls another manager's realloc on `at` marks it `@reshaping(at)`.
-    routine @Me.realloc(at: Addr, size: U64, align: U64) -> Addr
+    ### :note: A manager whose reborrow calls another manager's reborrow on `at` marks it `@reshaping(at)`.
+    routine @Me.reborrow(at: Addr, size: U64, align: U64) -> Addr
 
     ### Takes the block at `at` back.
     ### :param at: The block, from this manager. Null does nothing in the stdlib's managers.
-    routine @Me.free(at: Addr) -> None
+    routine @Me.give_back(at: Addr) -> None
 
 ### A memory manager of a heap: its blocks come back in any order, each one on its own. It asks for nothing more than
 ### `MemoryManageable`: obeying it says the manager takes its blocks back in any order. `CHeapManager` and
@@ -139,36 +139,36 @@ routine @MemoryManager.destruct() -> None
 
 ### A table that hands out blocks and doesn't handle pages: its page routines and `protect_fn` are null. For
 ### Standard/System/Memory's own tables built from C routines, everything else makes its table with `m.to[MemoryManager]()`.
-### :param alloc_fn: Allocates `(state, size, align)`.
-### :param realloc_fn: Resizes `(state, at, size, align)`.
-### :param free_fn: Gives a block back `(state, at)`.
+### :param borrow_fn: Allocates `(state, size, align)`.
+### :param reborrow_fn: Resizes `(state, at, size, align)`.
+### :param give_back_fn: Gives a block back `(state, at)`.
 ### :param state: What the three routines share.
 ### :returns: The table.
-secret common routine MemoryManager.construct(alloc_fn: Callable[(Addr, U64, U64), Addr],
-    realloc_fn: Callable[(Addr, Addr, U64, U64), Addr], free_fn: Callable[(Addr, Addr), None],
+secret common routine MemoryManager.construct(borrow_fn: Callable[(Addr, U64, U64), Addr],
+    reborrow_fn: Callable[(Addr, Addr, U64, U64), Addr], give_back_fn: Callable[(Addr, Addr), None],
     state: Addr) -> Me
-    return Me(alloc_fn, realloc_fn, free_fn, reserve_fn: .hollow(), commit_fn: .hollow(),
+    return Me(borrow_fn, reborrow_fn, give_back_fn, reserve_fn: .hollow(), commit_fn: .hollow(),
         release_fn: .hollow(), protect_fn: .hollow(), state)
 
-### The table of a manager that hands out blocks and doesn't handle pages: routines that call its `alloc`, `realloc`,
-### and `free`, with its address. Its page routines are empty (`has_pages()` and `has_protect()` are false).
+### The table of a manager that hands out blocks and doesn't handle pages: routines that call its `borrow`, `reborrow`,
+### and `give_back`, with its address. Its page routines are empty (`has_pages()` and `has_protect()` are false).
 ### :typeparam T: The manager type.
 ### :returns: The table, which views the manager: the manager outlives every use of it.
 routine @T.to[MemoryManager]() -> MemoryManager
 needs T: typename, MemoryManageable[T]
-    return MemoryManager(alloc_fn: forward_alloc[T].to[Callable](),
-        realloc_fn: forward_realloc[T].to[Callable](), free_fn: forward_free[T].to[Callable](),
+    return MemoryManager(borrow_fn: forward_borrow[T].to[Callable](),
+        reborrow_fn: forward_reborrow[T].to[Callable](), give_back_fn: forward_give_back[T].to[Callable](),
         reserve_fn: .hollow(), commit_fn: .hollow(), release_fn: .hollow(), protect_fn: .hollow(),
         state: me)
 
-### The table of a manager that handles pages: routines that call its `alloc`, `realloc`, `free`, `reserve`, `commit`,
+### The table of a manager that handles pages: routines that call its `borrow`, `reborrow`, `give_back`, `reserve`, `commit`,
 ### `release`, and `protect`, with its address (`has_pages()` and `has_protect()` are true).
 ### :typeparam T: The manager type.
 ### :returns: The table, which views the manager: the manager outlives every use of it.
 routine @T.to[MemoryManager]() -> MemoryManager
 needs T: typename, PageManageable[T]
-    return MemoryManager(alloc_fn: forward_alloc[T].to[Callable](),
-        realloc_fn: forward_realloc[T].to[Callable](), free_fn: forward_free[T].to[Callable](),
+    return MemoryManager(borrow_fn: forward_borrow[T].to[Callable](),
+        reborrow_fn: forward_reborrow[T].to[Callable](), give_back_fn: forward_give_back[T].to[Callable](),
         reserve_fn: forward_reserve[T].to[Callable](), commit_fn: forward_commit[T].to[Callable](),
         release_fn: forward_release[T].to[Callable](),
         protect_fn: forward_protect[T].to[Callable](), state: me)
@@ -176,18 +176,18 @@ needs T: typename, PageManageable[T]
 # The table's routines: each turns the state back into the manager it came from and calls the manager's own. This is
 # the one place a table's state is read as a manager.
 
-### Calls the manager's `alloc`.
+### Calls the manager's `borrow`.
 ### :typeparam M: The manager type.
 ### :param state: The manager's address.
 ### :param size: The number of bytes.
 ### :param align: The alignment, a power of two.
 ### :returns: The block, or null.
-secret routine forward_alloc[M](state: Addr, size: U64, align: U64) -> Addr
+secret routine forward_borrow[M](state: Addr, size: U64, align: U64) -> Addr
 needs M: typename, MemoryManageable[M]
     manager: @M = state.to[@M]()
-    return manager.alloc(size, align)
+    return manager.borrow(size, align)
 
-### Calls the manager's `realloc`.
+### Calls the manager's `reborrow`.
 ### :typeparam M: The manager type.
 ### :param state: The manager's address.
 ### :param at: The block, or null.
@@ -195,19 +195,19 @@ needs M: typename, MemoryManageable[M]
 ### :param align: The block's alignment.
 ### :returns: The resized block, or null with the block left as it was.
 @reshaping(at)
-secret routine forward_realloc[M](state: Addr, at: Addr, size: U64, align: U64) -> Addr
+secret routine forward_reborrow[M](state: Addr, at: Addr, size: U64, align: U64) -> Addr
 needs M: typename, MemoryManageable[M]
     manager: @M = state.to[@M]()
-    return manager.realloc(at, size, align)
+    return manager.reborrow(at, size, align)
 
-### Calls the manager's `free`.
+### Calls the manager's `give_back`.
 ### :typeparam M: The manager type.
 ### :param state: The manager's address.
 ### :param at: The block.
-secret routine forward_free[M](state: Addr, at: Addr) -> None
+secret routine forward_give_back[M](state: Addr, at: Addr) -> None
 needs M: typename, MemoryManageable[M]
     manager: @M = state.to[@M]()
-    manager.free(at)
+    manager.give_back(at)
     return
 
 ### Calls the manager's `reserve`.
@@ -254,45 +254,45 @@ needs M: typename, PageManageable[M]
     manager: @M = state.to[@M]()
     return manager.protect(at, size, access)
 
-### Allocates `size` bytes aligned to `align` from this manager.
+### Borrows `size` bytes aligned to `align` from this manager, to give back with `give_back`.
 ### :param size: The number of bytes.
 ### :param align: The alignment, a power of two.
 ### :returns: The block, or null when the manager has no memory to give.
 ### :throws: Crashes with `InvalidValueError` when `align` isn't a power of two.
 @track_caller
-@expensive("allocates memory")
-routine @MemoryManager.alloc(size: U64, align: U64) -> Addr
+@expensive("borrows memory")
+routine @MemoryManager.borrow(size: U64, align: U64) -> Addr
     check_align(align)
-    alloc_fn: Callable[(Addr, U64, U64), Addr] = me.alloc_fn.peek()
-    block_start: Addr = alloc_fn.call(me.state.peek(), size, align)
+    borrow_fn: Callable[(Addr, U64, U64), Addr] = me.borrow_fn.peek()
+    block_start: Addr = borrow_fn.call(me.state.peek(), size, align)
     return block_start
 
 ### Resizes the block at `at`, from this manager, to `size` bytes, keeping its contents up to the smaller size.
 ### :param at: The block, or null for a new one.
 ### :param size: The new size in bytes.
-### :param align: The alignment the block was allocated with, a power of two.
+### :param align: The alignment the block was borrowed with, a power of two.
 ### :returns: The resized block, which may have moved, or null when the manager has no memory to give (the block is
 ###     left as it was).
 ### :throws: Crashes with `InvalidValueError` when `align` isn't a power of two.
 @track_caller
-@expensive("reallocates memory")
+@expensive("borrows memory again")
 @reshaping(at)
-routine @MemoryManager.realloc(at: Addr, size: U64, align: U64) -> Addr
+routine @MemoryManager.reborrow(at: Addr, size: U64, align: U64) -> Addr
     check_align(align)
-    realloc_fn: Callable[(Addr, Addr, U64, U64), Addr] = me.realloc_fn.peek()
+    reborrow_fn: Callable[(Addr, Addr, U64, U64), Addr] = me.reborrow_fn.peek()
     note_call_place(caller_location())
-    block_start: Addr = realloc_fn.call(me.state.peek(), at, size, align)
+    block_start: Addr = reborrow_fn.call(me.state.peek(), at, size, align)
     note_call_place(.hollow())
     return block_start
 
-### Gives the block at `at` back to this manager, the one it came from.
+### Gives the block at `at` back to this manager, the one it was borrowed from. The manager takes it back.
 ### :param at: The block. Null does nothing in the stdlib's managers.
 @track_caller
-@expensive("frees memory")
-routine @MemoryManager.free(at: Addr) -> None
-    free_fn: Callable[(Addr, Addr), None] = me.free_fn.peek()
+@expensive("gives memory back")
+routine @MemoryManager.give_back(at: Addr) -> None
+    give_back_fn: Callable[(Addr, Addr), None] = me.give_back_fn.peek()
     note_call_place(caller_location())
-    free_fn.call(me.state.peek(), at)
+    give_back_fn.call(me.state.peek(), at)
     note_call_place(.hollow())
     return
 
@@ -397,7 +397,7 @@ routine allocate[T](count: U64, manager: @MemoryManager) -> @T
 needs T: typename
     elem_size: U64 = sizeof[T]()
     size: U64 = elem_size * count
-    raw: Addr = manager.alloc(size, align: alignof[T]())
+    raw: Addr = manager.borrow(size, align: alignof[T]())
     typed: @T = raw.to[@T]()
     return typed
 
@@ -416,7 +416,7 @@ routine reallocate[T](ptr: @T, new_count: U64, manager: @MemoryManager) -> @T
 needs T: typename
     elem_size: U64 = sizeof[T]()
     size: U64 = elem_size * new_count
-    raw: Addr = manager.realloc(at: ptr, size, align: alignof[T]())
+    raw: Addr = manager.reborrow(at: ptr, size, align: alignof[T]())
     typed: @T = raw.to[@T]()
     return typed
 
@@ -430,7 +430,7 @@ needs T: typename
 @expensive("frees heap memory")
 routine deallocate[T](data: @T, manager: @MemoryManager) -> None
 needs T: typename
-    manager.free(data)
+    manager.give_back(data)
     return
 
 # -- the place of the memory manager call in progress --------------------------------------------------------------------

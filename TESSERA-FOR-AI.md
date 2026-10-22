@@ -191,7 +191,7 @@ routine start() -> None
   values whose count is in the type, a value. `getview()` gives a `@[T]` of anything else holding contiguous elements
   (a `List`, an `Array` through a pointer, a `SliceWriter`, a `CStrView`). `@[T].construct(data, count)` wraps memory
   from C (the count is yours to get right). The raw layer, `allocate[T](count, manager)` / `reallocate[T](p, count,
-  manager)` / `deallocate(p, manager)`, is for node-based structures and C interop, with no check. `@T` has no `free`.
+  manager)` / `deallocate(p, manager)`, is for node-based structures and C interop, with no check. `@T` has no `give_back`.
   `dst.copy(src, count)` copies `count` values of `T` (memcpy, no overlap), and `src.copy_into(dst, count)` is the same
   copy from the source's side. On a `@Array[T, COUNT]` (or any type with its own `copy`) the type's routine wins, so
   generic code over `@T` uses `src.copy_into(dst, count)`.
@@ -347,11 +347,11 @@ routine start() -> None
     points at and how long that memory lives are the code's to keep right.
   - Every routine reports errors, an instance of a generic routine included.
 - **`@reshaping` (rule 4), written by hand.** `@reshaping` alone means the routine may move the memory of `me`.
-  `@reshaping(items, keys)` names parameters. The base: `MemoryManager.realloc` (`@reshaping(at)`), `reallocate[T]`
+  `@reshaping(items, keys)` names parameters. The base: `MemoryManager.reborrow` (`@reshaping(at)`), `reallocate[T]`
   (`@reshaping(ptr)`), `Memory[T].resize`, and every growing collection mutator: `List.add_last` /
   `reserve` / `ensure_capacity`, `Dict.setitem`, `Set.add`, `CircularList.add_last` / `add_first`,
   `PriorityQueue.add` / `reserve`, and the `FiberManager` routines (`run`, `waitfor`, `wake`,
-  ...). Freeing (`free`, `destruct`) isn't moving.
+  ...). Giving back (`give_back`, `destruct`) isn't moving.
   - A routine that calls a `@reshaping` routine on memory reached from its own parameter must say so:
     `'grow' may move the memory of 'items' here ('List[T].add_last' is @reshaping): mark it @reshaping(items)`.
     A user routine that grows a list it was handed (`items: @List[T]`) carries `@reshaping(items)`, one on `me`
@@ -396,7 +396,7 @@ routine start() -> None
   order): `CHeapManager` (malloc / realloc / free, nothing in front of the blocks) and `CheckedHeapManager` (the heap
   check below), and the hosted default table `HEAP` is the checked one under the heap check, else the C library's.
   `C_HEAP` is `CHeapManager`'s table in every build (memory C frees, or C's malloc hands over). A page manager obeys
-  `PageManageable`: `OsPageManager`, whose table is `PAGES` (whole pages, `alloc` puts one page in front that keeps
+  `PageManageable`: `OsPageManager`, whose table is `PAGES` (whole pages, `borrow` puts one page in front that keeps
   the size). The tables are ready before `start`, and every allocating routine takes one as `@MemoryManager`:
   `.construct(HEAP)`, `manager: PAGES`, `t: @MemoryManager = HEAP` for a copy in a slot. A `StackManager`
   (`bottom`, `top`, `sp`: `size()`, `remaining()`, `used()`, `holds(at)`) manages one flow's stack: `sp` is the flow's
@@ -408,16 +408,17 @@ routine start() -> None
   `__stack_top`: the end of the globals to the end of the board's RAM). `ThreadLocalManager.reset()` puts this thread's `@threadlocal` globals back
   to their starting values. Without an OS, `GlobalManager.prepare()` puts the globals in place (`prepare_core()` in the
   program's `when_power_on` calls it).
-- **A memory manager is a type that obeys `MemoryManageable`** (Standard/System/Memory): three routines taking `me` by its address (`routine @M.alloc(...)`),
-  `alloc(size: U64, align: U64) -> Addr` (`.hollow()` when it can't), `realloc(at: Addr, size: U64, align: U64) ->
+- **A memory manager is a type that obeys `MemoryManageable`** (Standard/System/Memory): three routines taking `me` by its address (`routine @M.borrow(...)`),
+  `borrow(size: U64, align: U64) -> Addr` (`.hollow()` when it can't), `reborrow(at: Addr, size: U64, align: U64) ->
   Addr` (`.hollow()`, the block left as it was, when it can't: every manager has one, since only it knows a block's size),
-  and `free(at: Addr) -> None`. One that handles pages obeys `PageManageable` too (it refines `MemoryManageable`):
+  and `give_back(at: Addr) -> None`. Memory from a manager is borrowed: the program gives it back, and the manager
+  takes it back. One that handles pages obeys `PageManageable` too (it refines `MemoryManageable`):
   `reserve(size)`, `commit(at, size) -> Bool`, `release(at, size)`, and `protect(at, size, access: PageAccess) ->
   Bool` (false where its pages can't change what they allow). `m.to[MemoryManager]()` on the manager's slot makes the
   table every allocating routine takes as `@MemoryManager`: routines that call m's own, and m's address. Keep it in a
   slot: `local arena: @Bump <- .construct(buffer)`, `local table: @MemoryManager <- arena.to[MemoryManager]()`,
   `local xs: @List[S64] <- .construct(table)`. A manager of plain data is a `record`, one with a state worth keeping
-  apart (an arena) an `entity`. The table is called through `alloc`, `realloc`, `free`, `reserve` / `commit` /
+  apart (an arena) an `entity`. The table is called through `borrow`, `reborrow`, `give_back`, `reserve` / `commit` /
   `release`, and `protect(at, size, PageAccess.NONE | READ | READ_WRITE)`, with `has_pages()` / `has_protect()`
   (both true for a `PageManageable` manager, both false otherwise, and calling an empty one crashes with
   `NotImplementedError`). Its fields and `MemoryManager.construct` are secret to `Standard/System/Memory`, which also
@@ -822,7 +823,7 @@ routine start() -> None
   comparisons, `{m}` = `2026-01-01 00:00:00`. `ByteSize` has the same arithmetic, `ByteSize.construct(bytes: n)` and
   `size.bytes()`. `{d}` writes `1s 500ms` / `4KiB`, `{d.diagnose()}` the literal (`1500ms`, `4kib`). A time is a
   `Duration` wherever the stdlib takes one: waits, timeouts, deadlines (a deadline is a reading of `Clock.monotonic()`
-  plus a `Duration`), page and stack sizes are `ByteSize`. The memory manager routines (`alloc(size, align)`, the page
+  plus a `Duration`), page and stack sizes are `ByteSize`. The memory manager routines (`borrow(size, align)`, the page
   routines) and `sizeof` stay `U64` byte counts, and a count of elements is a count.
 - Text is a `@[Byte]` (UTF-8 by convention, unchecked: `is_utf8` checks, and `chars()` reads a bad sequence as
   U+FFFD), and text in memory from a manager is a `Memory[Byte]`. The text routines are on `@[Byte]` (`Types/ByteSpan.te`:
@@ -1343,7 +1344,7 @@ code waiting on several tickets at once.
 - **Fibers** (`Standard/Fiber/FiberManager.te`): `FIBERS.get_fiber[T]()`, the same flow and crashes. `FIBERS` is each thread's own
   `FiberManager`, made on first use (`64kib` stacks on pages from `PAGES`), and on a thread ticket it goes when the
   work is over. `FiberManager.construct(stack_size, stack_manager, manager)` (`stack_size` a `ByteSize`, `stack_manager` a
-  page manager such as `PAGES`) makes another, `drop manager` frees it. Each fiber's stack is `take_stack(size, pages)`:
+  page manager such as `PAGES`) makes another, `drop manager` gives it back. Each fiber's stack is `take_stack(size, pages)`:
   whole pages, the one below them closed with `protect` as a guard page, a `StackManager` on the rest, and
   `give_back_stack(stack, pages)` returns them (a manager keeps a fiber's stack for its next ticket). A manager runs its fibers on ONE thread, the one that drives it, and never moves
   them: cooperative, a fiber runs until it yields, parks, sleeps, waits, or its work finishes, so its fibers share
