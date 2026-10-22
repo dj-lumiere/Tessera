@@ -452,7 +452,8 @@ public sealed partial class FunctionGen
         {
             _memTracked.Add(name);
             Mem(new MemoryRules.Alias(name, of, pos));
-            if (warn)
+            // A view of the place (`m: @Memory[T] = me.m`) is no second handle.
+            if (warn && type is not PtrType)
                 _c.NoteExpensiveCalls([(pos, $"{pos}: warning: '{name}' and '{of}' are the same memory, released once whichever one "
                 + $"gives it back: keep memory of its own with {of}.duplicate(), or lend it with {of}.getview()")]);
             return;
@@ -1572,6 +1573,11 @@ public sealed partial class FunctionGen
                         + "writes no destruct): leave the drop out");
                 }
                 NoteAccessDrop(d.Value, d.Pos);
+                // Giving a ticket back ends its work (a ticket whose work runs crashes instead): it counts as waited for.
+                if (MemOn && d.Value is ValueRef givenTicket
+                    && InferQuiet(d.Value) is RecordType { Decl.IsLibrary: true, Decl.Name: "Thread" or "Fiber" or "Job" or "Work" }
+                        or PtrType { Pointee: RecordType { Decl.IsLibrary: true, Decl.Name: "Work" } })
+                    Mem(new MemoryRules.WorkWaited(givenTicket.Name, d.Pos));
                 // The access a drop gives back isn't read by it: a second drop says so itself.
                 _givingBack = d.Value is ValueRef givenBack && _accessViews.Contains(givenBack.Name) ? d.Value : null;
                 var call = new MethodCallExpr(d.Value, "destruct", [], [], d.Pos);
@@ -1996,6 +2002,8 @@ public sealed partial class FunctionGen
                 return Infer(f.Base) is RecordType s ? FieldOf(s, f.Name, f.Pos).Type : null;
             case PresetRef r:
                 return InferPresetRef(r);
+            case WorkExpr work:
+                return WorkType(work);
             case RoutineRef rr:
                 // An overloaded routine's value is the overload the Callable it goes to names.
                 return rr.Callable is null && _c.FreeCandidates(rr.Name, _env.File, rr.Pos, rr.Path)
@@ -2135,6 +2143,7 @@ public sealed partial class FunctionGen
                 ExpandTemplate(writer, template),
             PresetRef r => EvalPresetRef(r, expected),
             RoutineRef rr => RoutineValue(rr, expected),
+            WorkExpr work => EvalWork(work, expected),
             LambdaExpr l => EvalLambda(l, expected),
             StealExpr s => EvalSteal(s, expected),
             CallExpr or NsCallExpr or MethodCallExpr => EvalCall(e, expected),

@@ -33,31 +33,34 @@ routine watch(pool: @ThreadPoolManager) -> Bool
     started: &U32 <- 0
     release: &U32 <- 0
 
-    c: Job[None] = pool.get_job[None]()
-    c.put_work(entry: child.to[Callable](), args: started)
+    c: Job[None] <- pool.get_job[None]()
+    work_c: Work[None] <- child.to[Work](started: started)
+    c.put_work(work_c)
     # The child runs on the other thread: this one is busy here until this job waits.
     until started.peek_atomic() != 0
         continue
-    h: Job[None] = pool.get_job[None]()
-    h.put_work(entry: hold.to[Callable](), args: release)
+    h: Job[None] <- pool.get_job[None]()
+    work_h: Work[None] <- hold.to[Work](release: release)
+    h.put_work(work_h)
     before: Addr = running_manager()
     # The wait frees this thread, which takes `hold`, the only job left in the queue.
     c.wait_finished()
     after: Addr = running_manager()
     release.poke_atomic(1)
     h.wait_finished()
-    c.give_back()
-    h.give_back()
+    drop c
+    drop h
     return before.notsame(after)
 
 ### Runs `watch` on a pool of two threads.
 routine start() -> None
     pool: &ThreadPoolManager <- .construct(threads: 2)
 
-    j: Job[Bool] = pool.get_job[Bool]()
-    j.put_work(entry: watch.to[Callable](), args: pool)
+    j: Job[Bool] <- pool.get_job[Bool]()
+    work_j: Work[Bool] <- watch.to[Work](pool: pool)
+    j.put_work(work_j)
     j.wait_finished()
     Console.show("went on on another thread: {j.retrieve()}")
-    j.give_back()
+    drop j
     drop pool
     return

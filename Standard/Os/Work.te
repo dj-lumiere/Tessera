@@ -1,15 +1,21 @@
 # Tessera stdlib: the work a ticket runs
 #
-# A ticket is one flow of execution that a manager hands out: a thread from a ThreadManager (`Thread[T]`) or a fiber
-# from a FiberManager (`Fiber[T]`). It runs one piece of work at a time, and the flow is the same for both, written
-# out from top to bottom:
+# A piece of work is a routine and its arguments, `Work[T]`, made with `f.to[Work](name: value, ...)`. A ticket is one
+# flow of execution that a manager hands out: a thread from a ThreadManager (`Thread[T]`), a fiber from a FiberManager
+# (`Fiber[T]`), or a job from a ThreadPoolManager (`Job[T]`). A ticket runs one piece of work at a time:
 #
-#     t: Thread[S64] = get_thread[S64]()
-#     t.put_work(entry: count_primes.to[Callable](), args: (table, 1000))   # runs from here on
+#     t: Thread[S64] <- get_thread[S64]()
+#     primes: Work[S64] <- count_primes.to[Work](table: table, limit: 1000)
+#     t.put_work(primes)   # runs from here on
 #     # ... other work, then check_finished() to look, or wait_finished() to wait
 #     t.wait_finished()
-#     primes: S64 = t.retrieve()
-#     t.give_back()
+#     count: S64 = t.retrieve()
+#     drop t
+#     drop primes
+#
+# A manager that lends workers (a WorkManager) starts a piece of work without a ticket in sight: `primes.start_from(
+# DEFAULT_THREADS)`, then `primes.retrieve()` waits, gives the result, and gives the thread and the accesses the work
+# was handed back.
 #
 # This file holds what the two share: the WorkSlot a ticket's work lives in (its state, the block that holds the
 # routine, its arguments and the room for its result, a cancel request, and a fiber waiting for it), the blocks for
@@ -281,20 +287,20 @@ routine @WorkSlot.give_back() -> None
 # -- the blocks of work, by number of arguments -----------------------------------------------------------------
 
 ### The work a ticket runs: a routine of 0 argument(s), its result first.
-secret record Work0[T]
+record Work0[T]
 needs T: typename
     result: T
     entry: Callable[(), T]
 
 ### The work a ticket runs: a routine of 1 argument(s), its result first.
-secret record Work1[T, A]
+record Work1[T, A]
 needs T: typename, A: typename
     result: T
     entry: Callable[(A,), T]
     first: A
 
 ### The work a ticket runs: a routine of 2 argument(s), its result first.
-secret record Work2[T, A, B]
+record Work2[T, A, B]
 needs T: typename, A: typename, B: typename
     result: T
     entry: Callable[(A, B), T]
@@ -302,7 +308,7 @@ needs T: typename, A: typename, B: typename
     second: B
 
 ### The work a ticket runs: a routine of 3 argument(s), its result first.
-secret record Work3[T, A, B, C]
+record Work3[T, A, B, C]
 needs T: typename, A: typename, B: typename, C: typename
     result: T
     entry: Callable[(A, B, C), T]
@@ -311,7 +317,7 @@ needs T: typename, A: typename, B: typename, C: typename
     third: C
 
 ### The work a ticket runs: a routine of 4 argument(s), its result first.
-secret record Work4[T, A, B, C, D]
+record Work4[T, A, B, C, D]
 needs T: typename, A: typename, B: typename, C: typename, D: typename
     result: T
     entry: Callable[(A, B, C, D), T]
@@ -321,24 +327,24 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
     fourth: D
 
 ### The work a ticket runs: a routine of 0 argument(s), no result.
-secret record VoidWork0
+record VoidWork0
     entry: Callable[(), None]
 
 ### The work a ticket runs: a routine of 1 argument(s), no result.
-secret record VoidWork1[A]
+record VoidWork1[A]
 needs A: typename
     entry: Callable[(A,), None]
     first: A
 
 ### The work a ticket runs: a routine of 2 argument(s), no result.
-secret record VoidWork2[A, B]
+record VoidWork2[A, B]
 needs A: typename, B: typename
     entry: Callable[(A, B), None]
     first: A
     second: B
 
 ### The work a ticket runs: a routine of 3 argument(s), no result.
-secret record VoidWork3[A, B, C]
+record VoidWork3[A, B, C]
 needs A: typename, B: typename, C: typename
     entry: Callable[(A, B, C), None]
     first: A
@@ -346,7 +352,7 @@ needs A: typename, B: typename, C: typename
     third: C
 
 ### The work a ticket runs: a routine of 4 argument(s), no result.
-secret record VoidWork4[A, B, C, D]
+record VoidWork4[A, B, C, D]
 needs A: typename, B: typename, C: typename, D: typename
     entry: Callable[(A, B, C, D), None]
     first: A
@@ -369,7 +375,7 @@ needs T: typename
 
 ### Runs the work in the block at `raw`, a `Work0`, and stores its result there.
 ### :param raw: The block.
-secret routine run_work0[T](raw: Addr) -> None
+routine run_work0[T](raw: Addr) -> None
 needs T: typename
     work: @Work0[T] = raw.to[@Work0[T]]()
     entry: Callable[(), T] = work.entry.peek()
@@ -410,7 +416,7 @@ needs T: typename, A: typename
 
 ### Runs the work in the block at `raw`, a `Work1`, and stores its result there.
 ### :param raw: The block.
-secret routine run_work1[T, A](raw: Addr) -> None
+routine run_work1[T, A](raw: Addr) -> None
 needs T: typename, A: typename
     work: @Work1[T, A] = raw.to[@Work1[T, A]]()
     entry: Callable[(A,), T] = work.entry.peek()
@@ -455,7 +461,7 @@ needs T: typename, A: typename, B: typename
 
 ### Runs the work in the block at `raw`, a `Work2`, and stores its result there.
 ### :param raw: The block.
-secret routine run_work2[T, A, B](raw: Addr) -> None
+routine run_work2[T, A, B](raw: Addr) -> None
 needs T: typename, A: typename, B: typename
     work: @Work2[T, A, B] = raw.to[@Work2[T, A, B]]()
     entry: Callable[(A, B), T] = work.entry.peek()
@@ -502,7 +508,7 @@ needs T: typename, A: typename, B: typename, C: typename
 
 ### Runs the work in the block at `raw`, a `Work3`, and stores its result there.
 ### :param raw: The block.
-secret routine run_work3[T, A, B, C](raw: Addr) -> None
+routine run_work3[T, A, B, C](raw: Addr) -> None
 needs T: typename, A: typename, B: typename, C: typename
     work: @Work3[T, A, B, C] = raw.to[@Work3[T, A, B, C]]()
     entry: Callable[(A, B, C), T] = work.entry.peek()
@@ -551,7 +557,7 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
 
 ### Runs the work in the block at `raw`, a `Work4`, and stores its result there.
 ### :param raw: The block.
-secret routine run_work4[T, A, B, C, D](raw: Addr) -> None
+routine run_work4[T, A, B, C, D](raw: Addr) -> None
 needs T: typename, A: typename, B: typename, C: typename, D: typename
     work: @Work4[T, A, B, C, D] = raw.to[@Work4[T, A, B, C, D]]()
     entry: Callable[(A, B, C, D), T] = work.entry.peek()
@@ -584,7 +590,7 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
 
 ### Runs the work in the block at `raw`, a `VoidWork0`.
 ### :param raw: The block.
-secret routine run_voidwork0(raw: Addr) -> None
+routine run_voidwork0(raw: Addr) -> None
     work: @VoidWork0 = raw.to[@VoidWork0]()
     entry: Callable[(), None] = work.entry.peek()
     entry.call()
@@ -621,7 +627,7 @@ needs A: typename
 
 ### Runs the work in the block at `raw`, a `VoidWork1`.
 ### :param raw: The block.
-secret routine run_voidwork1[A](raw: Addr) -> None
+routine run_voidwork1[A](raw: Addr) -> None
 needs A: typename
     work: @VoidWork1[A] = raw.to[@VoidWork1[A]]()
     entry: Callable[(A,), None] = work.entry.peek()
@@ -663,7 +669,7 @@ needs A: typename, B: typename
 
 ### Runs the work in the block at `raw`, a `VoidWork2`.
 ### :param raw: The block.
-secret routine run_voidwork2[A, B](raw: Addr) -> None
+routine run_voidwork2[A, B](raw: Addr) -> None
 needs A: typename, B: typename
     work: @VoidWork2[A, B] = raw.to[@VoidWork2[A, B]]()
     entry: Callable[(A, B), None] = work.entry.peek()
@@ -708,7 +714,7 @@ needs A: typename, B: typename, C: typename
 
 ### Runs the work in the block at `raw`, a `VoidWork3`.
 ### :param raw: The block.
-secret routine run_voidwork3[A, B, C](raw: Addr) -> None
+routine run_voidwork3[A, B, C](raw: Addr) -> None
 needs A: typename, B: typename, C: typename
     work: @VoidWork3[A, B, C] = raw.to[@VoidWork3[A, B, C]]()
     entry: Callable[(A, B, C), None] = work.entry.peek()
@@ -755,7 +761,7 @@ needs A: typename, B: typename, C: typename, D: typename
 
 ### Runs the work in the block at `raw`, a `VoidWork4`.
 ### :param raw: The block.
-secret routine run_voidwork4[A, B, C, D](raw: Addr) -> None
+routine run_voidwork4[A, B, C, D](raw: Addr) -> None
 needs A: typename, B: typename, C: typename, D: typename
     work: @VoidWork4[A, B, C, D] = raw.to[@VoidWork4[A, B, C, D]]()
     entry: Callable[(A, B, C, D), None] = work.entry.peek()
@@ -783,3 +789,367 @@ needs A: typename, B: typename, C: typename, D: typename
     runner: Callable[(Addr,), None] = run_voidwork4[A, B, C, D].to[Callable]()
     place: Addr = work
     return (runner, place)
+
+# -- releasing the accesses a block was handed ----------------------------------------------------------------
+
+### Gives back the accesses a `Work0` block was handed, the arguments `kept` marks (bit 0 the first): what
+### `retrieve()` of a work started with `start_from` does once the work is over.
+### :param raw: The block.
+### :param kept: One bit for each argument that is an access.
+routine release_work0[T](raw: Addr, kept: U8) -> None
+needs T: typename
+    return
+
+### Gives back the accesses a `Work1` block was handed, the arguments `kept` marks (bit 0 the first): what
+### `retrieve()` of a work started with `start_from` does once the work is over.
+### :param raw: The block.
+### :param kept: One bit for each argument that is an access.
+routine release_work1[T, A](raw: Addr, kept: U8) -> None
+needs T: typename, A: typename
+    work: @Work1[T, A] = raw.to[@Work1[T, A]]()
+    if kept & 1 != 0
+        drop work.first
+    return
+
+### Gives back the accesses a `Work2` block was handed, the arguments `kept` marks (bit 0 the first): what
+### `retrieve()` of a work started with `start_from` does once the work is over.
+### :param raw: The block.
+### :param kept: One bit for each argument that is an access.
+routine release_work2[T, A, B](raw: Addr, kept: U8) -> None
+needs T: typename, A: typename, B: typename
+    work: @Work2[T, A, B] = raw.to[@Work2[T, A, B]]()
+    if kept & 1 != 0
+        drop work.first
+    if kept & 2 != 0
+        drop work.second
+    return
+
+### Gives back the accesses a `Work3` block was handed, the arguments `kept` marks (bit 0 the first): what
+### `retrieve()` of a work started with `start_from` does once the work is over.
+### :param raw: The block.
+### :param kept: One bit for each argument that is an access.
+routine release_work3[T, A, B, C](raw: Addr, kept: U8) -> None
+needs T: typename, A: typename, B: typename, C: typename
+    work: @Work3[T, A, B, C] = raw.to[@Work3[T, A, B, C]]()
+    if kept & 1 != 0
+        drop work.first
+    if kept & 2 != 0
+        drop work.second
+    if kept & 4 != 0
+        drop work.third
+    return
+
+### Gives back the accesses a `Work4` block was handed, the arguments `kept` marks (bit 0 the first): what
+### `retrieve()` of a work started with `start_from` does once the work is over.
+### :param raw: The block.
+### :param kept: One bit for each argument that is an access.
+routine release_work4[T, A, B, C, D](raw: Addr, kept: U8) -> None
+needs T: typename, A: typename, B: typename, C: typename, D: typename
+    work: @Work4[T, A, B, C, D] = raw.to[@Work4[T, A, B, C, D]]()
+    if kept & 1 != 0
+        drop work.first
+    if kept & 2 != 0
+        drop work.second
+    if kept & 4 != 0
+        drop work.third
+    if kept & 8 != 0
+        drop work.fourth
+    return
+
+### Gives back the accesses a `VoidWork0` block was handed, the arguments `kept` marks (bit 0 the first): what
+### `retrieve()` of a work started with `start_from` does once the work is over.
+### :param raw: The block.
+### :param kept: One bit for each argument that is an access.
+routine release_voidwork0(raw: Addr, kept: U8) -> None
+    return
+
+### Gives back the accesses a `VoidWork1` block was handed, the arguments `kept` marks (bit 0 the first): what
+### `retrieve()` of a work started with `start_from` does once the work is over.
+### :param raw: The block.
+### :param kept: One bit for each argument that is an access.
+routine release_voidwork1[A](raw: Addr, kept: U8) -> None
+needs A: typename
+    work: @VoidWork1[A] = raw.to[@VoidWork1[A]]()
+    if kept & 1 != 0
+        drop work.first
+    return
+
+### Gives back the accesses a `VoidWork2` block was handed, the arguments `kept` marks (bit 0 the first): what
+### `retrieve()` of a work started with `start_from` does once the work is over.
+### :param raw: The block.
+### :param kept: One bit for each argument that is an access.
+routine release_voidwork2[A, B](raw: Addr, kept: U8) -> None
+needs A: typename, B: typename
+    work: @VoidWork2[A, B] = raw.to[@VoidWork2[A, B]]()
+    if kept & 1 != 0
+        drop work.first
+    if kept & 2 != 0
+        drop work.second
+    return
+
+### Gives back the accesses a `VoidWork3` block was handed, the arguments `kept` marks (bit 0 the first): what
+### `retrieve()` of a work started with `start_from` does once the work is over.
+### :param raw: The block.
+### :param kept: One bit for each argument that is an access.
+routine release_voidwork3[A, B, C](raw: Addr, kept: U8) -> None
+needs A: typename, B: typename, C: typename
+    work: @VoidWork3[A, B, C] = raw.to[@VoidWork3[A, B, C]]()
+    if kept & 1 != 0
+        drop work.first
+    if kept & 2 != 0
+        drop work.second
+    if kept & 4 != 0
+        drop work.third
+    return
+
+### Gives back the accesses a `VoidWork4` block was handed, the arguments `kept` marks (bit 0 the first): what
+### `retrieve()` of a work started with `start_from` does once the work is over.
+### :param raw: The block.
+### :param kept: One bit for each argument that is an access.
+routine release_voidwork4[A, B, C, D](raw: Addr, kept: U8) -> None
+needs A: typename, B: typename, C: typename, D: typename
+    work: @VoidWork4[A, B, C, D] = raw.to[@VoidWork4[A, B, C, D]]()
+    if kept & 1 != 0
+        drop work.first
+    if kept & 2 != 0
+        drop work.second
+    if kept & 4 != 0
+        drop work.third
+    if kept & 8 != 0
+        drop work.fourth
+    return
+
+# -- Work[T]: a piece of work made before it runs ----------------------------------------------------------------
+
+### A piece of work: a routine and its arguments, made with `f.to[Work](name: value, ...)`, the arguments named by the
+### routine's parameters. `t.put_work(work)` starts it at once on a ticket you hold, whose `retrieve()` gives the
+### result. `work.start_from(manager)` starts it on a worker a `WorkManager` lends, and the work's own `retrieve()`
+### waits for it, gives the result, and gives the worker and the accesses the work was handed back. Bound with `<-`
+### and given back with `drop`, which first waits for work started with `start_from` and not retrieved.
+### :typeparam T: The type of the work's result, `None` for none.
+record Work[T]
+needs T: typename
+    ### Runs a block: calls the routine with the arguments and stores the result in front.
+    runner: Callable[(Addr,), None]
+    ### Gives back the accesses kept in a block, the arguments `kept` marks.
+    release: Callable[(Addr, U8), None]
+    ### The block the work was made in: the routine, its arguments and room for its result.
+    block: @Byte
+    ### The block's size in bytes, for the copy a worker runs.
+    size: U64
+    ### The block's alignment.
+    align: U64
+    ### Which arguments are accesses (`Authorized`, `ReadAuthorized`), one bit each: `retrieve()` gives them back.
+    kept: U8
+    ### The manager that lent the worker (start_from), or hollow.
+    lender: Addr
+    ### The worker the manager lent, or hollow.
+    worker: Addr
+    ### The lender's routine that gives the slot of a worker it lent.
+    slot_fn: Callable[(Addr, Addr), @WorkSlot]
+    ### The lender's routine that takes a worker back.
+    take_back_fn: Callable[(Addr, Addr), None]
+    ### The lender's routine that waits for a lent worker's work.
+    wait_fn: Callable[(Addr, Addr), None]
+
+### A manager that lends workers for work (`work.start_from(manager)`): a thread, a fiber, or a pool's job. It lends a
+### worker with a `WorkSlot`, starts work on it, and takes it back once the work is over. `ThreadManager`,
+### `FiberManager`, and `ThreadPoolManager` obey it.
+### :typeparam T: The manager type.
+protocol WorkManager[T]
+needs T: typename
+    ### Lends a worker for one piece of work.
+    ### :returns: The worker, for the routines below.
+    routine @Me.lend_worker() -> Addr
+
+    ### The slot a lent worker runs its work in.
+    ### :param worker: The worker `lend_worker` gave.
+    ### :returns: Its slot.
+    routine @Me.lent_slot(worker: Addr) -> @WorkSlot
+
+    ### Starts work on a lent worker.
+    ### :param worker: The worker.
+    ### :param runner: Runs the block.
+    ### :param work: The block, from the slot's memory manager.
+    routine @Me.start_lent(worker: Addr, runner: Callable[(Addr,), None], work: Addr) -> None
+
+    ### Waits until a lent worker's work has finished (a fiber manager runs its fibers meanwhile).
+    ### :param worker: The worker.
+    routine @Me.wait_lent(worker: Addr) -> None
+
+    ### Takes a lent worker back, its work over.
+    ### :param worker: The worker.
+    routine @Me.take_back(worker: Addr) -> None
+
+### The work made in `block`: what `f.to[Work](...)` stands for. The builder makes the block in the routine's frame
+### and calls this.
+### :typeparam T: The work's result type.
+### :typeparam B: The block's type.
+### :param made: The block: the routine, its arguments, room for the result.
+### :param runner: Runs a block of this type.
+### :param release: Gives back the accesses kept in a block of this type.
+### :param kept: Which arguments are accesses.
+### :returns: The work, not started.
+routine work_from[T, B](made: @B, runner: Callable[(Addr,), None],
+    release: Callable[(Addr, U8), None], kept: U8) -> Work[T]
+needs T: typename, B: typename
+    return Work[T](runner, release, block: made.to[@Byte](), size: sizeof[B](), align: alignof[B](),
+        kept, lender: .hollow(), worker: .hollow(), slot_fn: .hollow(), take_back_fn: .hollow(),
+        wait_fn: .hollow())
+
+### A copy of the work's block in memory from the slot's manager, which the slot gives back with its next work.
+### :param slot: The slot the work runs in.
+### :returns: The copy.
+### :throws: Crashes with `MemoryAllocationError` when the slot's manager has no memory for it.
+@track_caller
+routine @Work[T].copy_for(slot: @WorkSlot) -> Addr
+needs T: typename
+    copy: Addr = slot.manager.peek().borrow(size: me.size.peek(), align: me.align.peek())
+    if copy.is_hollow()
+        crash_allocation()
+    copy.to[@Byte]().copy(src: me.block.peek(), count: me.size.peek())
+    return copy
+
+### Starts the work on a worker `manager` lends. It runs from here on, and `retrieve()` waits for it.
+### :typeparam M: The manager type.
+### :param manager: The manager that lends the worker.
+### :throws: Crashes with `WorkStartedError` for work started already, and with `MemoryAllocationError` when the
+###     manager has no memory for the work.
+@track_caller
+routine @Work[T].start_from[M](manager: @M) -> None
+needs T: typename, M: typename, WorkManager[M]
+    if me.worker.peek().is_not_hollow()
+        crash(name: "WorkStartedError",
+            message: "This work has started already: a piece of work starts once.")
+    worker: Addr = manager.lend_worker()
+    slot: @WorkSlot = manager.lent_slot(worker)
+    copy: Addr = me.copy_for(slot)
+    manager.start_lent(worker, runner: me.runner.peek(), work: copy)
+    me.lender.poke(manager.to[Addr]())
+    me.worker.poke(worker)
+    me.slot_fn.poke(lent_slot_of[M].to[Callable]())
+    me.take_back_fn.poke(take_back_of[M].to[Callable]())
+    me.wait_fn.poke(wait_lent_of[M].to[Callable]())
+    return
+
+### Waits for a worker `M` lent.
+### :typeparam M: The manager type.
+### :param manager: The manager's address.
+### :param worker: The worker.
+routine wait_lent_of[M](manager: Addr, worker: Addr) -> None
+needs M: typename, WorkManager[M]
+    lender: @M = manager.to[@M]()
+    lender.wait_lent(worker)
+    return
+
+### The slot of a worker `M` lent.
+### :typeparam M: The manager type.
+### :param manager: The manager's address.
+### :param worker: The worker.
+### :returns: The slot.
+routine lent_slot_of[M](manager: Addr, worker: Addr) -> @WorkSlot
+needs M: typename, WorkManager[M]
+    lender: @M = manager.to[@M]()
+    return lender.lent_slot(worker)
+
+### Takes back a worker `M` lent.
+### :typeparam M: The manager type.
+### :param manager: The manager's address.
+### :param worker: The worker.
+routine take_back_of[M](manager: Addr, worker: Addr) -> None
+needs M: typename, WorkManager[M]
+    lender: @M = manager.to[@M]()
+    lender.take_back(worker)
+    return
+
+### The slot of the worker the work started on.
+### :returns: The slot.
+### :throws: Crashes with `NoWorkError` for work not started with `start_from`.
+@track_caller
+routine @Work[T].lent_slot() -> @WorkSlot
+needs T: typename
+    worker: Addr = me.worker.peek()
+    if worker.is_hollow()
+        crash(name: "NoWorkError",
+            message: "This work wasn't started with start_from(manager): retrieve() comes after it.")
+    slot_fn: Callable[(Addr, Addr), @WorkSlot] = me.slot_fn.peek()
+    return slot_fn.call(me.lender.peek(), worker)
+
+### Waits for the work started with `start_from`, the way its lender waits.
+@track_caller
+routine @Work[T].wait() -> None
+needs T: typename
+    me.lent_slot()
+    wait_fn: Callable[(Addr, Addr), None] = me.wait_fn.peek()
+    wait_fn.call(me.lender.peek(), me.worker.peek())
+    return
+
+### Gives back the accesses the work was handed and the worker it ran on.
+routine @Work[T].finish() -> None
+needs T: typename
+    slot: @WorkSlot = me.lent_slot()
+    release: Callable[(Addr, U8), None] = me.release.peek()
+    release.call(slot.work.peek(), me.kept.peek())
+    take_back: Callable[(Addr, Addr), None] = me.take_back_fn.peek()
+    take_back.call(me.lender.peek(), me.worker.peek())
+    me.worker.poke(.hollow())
+    return
+
+### Whether the work started with `start_from` has finished.
+### :returns: True once it has.
+@track_caller
+routine @Work[T].check_finished() -> Bool
+needs T: typename
+    return me.lent_slot().is_finished()
+
+### Waits for the work started with `start_from`, gives its result, and gives back the worker and the accesses the work
+### was handed.
+### :returns: The result.
+### :throws: Crashes with `NoWorkError` for work not started with `start_from`. Throws `CancelRequested` when
+###     `cancel()` asked it to stop before it finished.
+@target(os: not "none")
+@track_caller
+failable routine @Work[T].retrieve() -> T
+needs T: typename
+    me.wait()
+    slot: @WorkSlot = me.lent_slot()
+    cancelled: Bool = slot.is_cancelled()
+    value: T = slot.result_place[T]().peek()
+    me.finish()
+    if cancelled
+        throw CancelRequested()
+    return value
+
+### Waits for the work started with `start_from`, and gives back the worker and the accesses the work was handed: work
+### with no result.
+### :throws: Crashes with `NoWorkError` for work not started with `start_from`. Throws `CancelRequested` when
+###     `cancel()` asked it to stop before it finished.
+@target(os: not "none")
+@track_caller
+failable routine @Work[None].retrieve() -> None
+    me.wait()
+    slot: @WorkSlot = me.lent_slot()
+    cancelled: Bool = slot.is_cancelled()
+    me.finish()
+    if cancelled
+        throw CancelRequested()
+    return
+
+### Asks the work started with `start_from` to stop: `cancel_requested()` turns true inside it.
+@target(os: not "none")
+@track_caller
+routine @Work[T].cancel() -> None
+needs T: typename
+    me.lent_slot().request_cancel()
+    return
+
+### Gives the work back: work started with `start_from` and not retrieved is waited for first, and its worker and the
+### accesses it was handed go back.
+@target(os: not "none")
+routine @Work[T].destruct() -> None
+needs T: typename
+    if me.worker.peek().is_hollow()
+        return
+    me.wait()
+    me.finish()
+    return

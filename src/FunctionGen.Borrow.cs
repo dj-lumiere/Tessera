@@ -42,7 +42,7 @@ public sealed partial class FunctionGen
     /// that borrows them: the accesses, the thread and fiber tickets, a mapped file's storage, a piece of work.
     private static bool IsBorrowedType(DType? t) =>
         t is RecordType { Decl.IsLibrary: true } r
-        && r.Decl.Name is "Authorized" or "ReadAuthorized";
+        && r.Decl.Name is "Authorized" or "ReadAuthorized" or "Thread" or "Fiber" or "Job" or "Work";
 
     /// Whether `t` is the standard library's `Box[T]` (`&T`) or `Memory[T]` (`&[T]`), not a type of the program that
     /// is named so.
@@ -104,16 +104,24 @@ public sealed partial class FunctionGen
         if (!IsBorrowedType(type))
             throw Err(b.Pos, $"'<-' borrows: {b.Name}: &{written} <- value borrows a place and puts the value in it, and "
                 + $"{b.Name}: {written} = value binds a value");
-        if (value is not (CallExpr or NsCallExpr or MethodCallExpr or ImplicitCallExpr or StealExpr))
+        if (value is not (CallExpr or NsCallExpr or MethodCallExpr or ImplicitCallExpr or StealExpr or WorkExpr))
             throw Err(value.Pos, $"a {type.Name} is borrowed by a call (or handed over with steal), and this is "
                 + $"{new Printer().Expr(value, 0)}: a second name for one borrowed {type.Name} would give it back twice");
+        // A piece of work changes as it starts and ends (start_from, retrieve): its name is a place that holds it.
+        if (type is RecordType { Decl.Name: "Work" })
+        {
+            if (value is WorkExpr made) _madeWork[b.Name] = (made.Routine, WorkArgs(made, WorkRoutine(made)));
+            return (new BindStmt(b.Name, new TypeRef("Ptr", [new TypeArgType(written)], written.Pos), new ClaimExpr(b.Pos) { Contents = value }, b.Pos)
+                { Source = b.Source }, false);
+        }
         return (new BindStmt(b.Name, written, value, b.Pos) { Source = b.Source, Lowered = true }, false);
     }
 
     /// The error for a `=` binding of something borrowed, which `<-` binds, or null.
     private string? BorrowedWithEquals(BindStmt b, DType t)
     {
-        if (b.Value is ClaimExpr || b.Lowered || b.Name.StartsWith('$')) return null;
+        // A binding whose type is a type parameter takes whatever the instance holds: only a written type says borrowed.
+        if (b.Value is ClaimExpr || b.Lowered || b.Name.StartsWith('$') || SourceTypeParams.Contains(b.Type.Name)) return null;
         if (IsPlaceType(b.Type) && b.Type.Known is null)
             return $"a {b.Type} is a place borrowed from a manager, and '=' only binds a value or a view: {b.Name}: "
                 + $"{b.Type} <- value";

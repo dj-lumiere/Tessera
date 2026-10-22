@@ -44,11 +44,12 @@ routine try_access(pair: @Pair, mode: U8) -> Bool
     return taken
 
 routine elsewhere(pair: @Pair, mode: U8) -> Bool
-    t: Thread[Bool] = get_thread[Bool]()
-    t.put_work(entry: try_access.to[Callable](), args: (pair, mode))
+    t: Thread[Bool] <- get_thread[Bool]()
+    work_t: Work[Bool] <- try_access.to[Work](pair: pair, mode: mode)
+    t.put_work(work_t)
     t.wait_finished()
     taken: Bool = t.retrieve()
-    t.give_back()
+    drop t
     return taken
 
 routine start() -> None
@@ -57,18 +58,20 @@ routine start() -> None
     threads: &Array[Thread[None], 6] <- .hollow()
 
     each i: U64 in 0 til 6
-        t: Thread[None] = get_thread[None]()
+        t: Thread[None] <- get_thread[None]()
         if i < 4
-            t.put_work(entry: read_many.to[Callable](), args: (pair, counts))
+            work_t: Work[None] <- read_many.to[Work](pair: pair, counts: counts)
+            t.put_work(work_t)
             threads[i] = t
         else
-            t.put_work(entry: write_many.to[Callable](), args: (pair, counts))
+            work_t_2: Work[None] <- write_many.to[Work](pair: pair, counts: counts)
+            t.put_work(work_t_2)
             threads[i] = t
 
     each i: U64 in 0 til 6
-        t: Thread[None] = threads[i]
+        t: Thread[None] <- steal threads.getslot(i)
         t.wait_finished()
-        t.give_back()
+        drop t
     Console.show("a {pair.a.peek()}, b {pair.b.peek()}, torn reads {counts.torn.peek()}")
     reading: ReadAuthorized[Pair] <- pair.get_shared_read_access()
     write_while_read: Bool = elsewhere(pair, mode: ACCESS_WRITE)

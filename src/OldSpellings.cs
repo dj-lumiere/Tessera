@@ -25,7 +25,7 @@ public static class OldSpellings
     public static string? OldTypeName(string name) => name switch
     {
         "ExclusiveAccess" or "ExclusiveLock" => $"'{name}' is gone: the AccessManager hands out access to the memory itself. "
-            + "Take exclusive access to the value with held: Authorized[T] = p.get_exclusive_access(), work through "
+            + "Take exclusive access to the value with held: Authorized[T] <- p.get_exclusive_access(), work through "
             + "held.getview(), and give it back with drop held",
         "MultiReadAccess" or "MultiReadLock" => $"'{name}' is gone: the AccessManager hands out access to the memory itself. "
             + "Readers take a ReadAuthorized[T] with p.get_shared_read_access(), a writer an Authorized[T] with "

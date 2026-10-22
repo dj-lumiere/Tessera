@@ -15,12 +15,10 @@
 # every core without a thread per part:
 #
 #     pool: &ThreadPoolManager <- .construct(threads: 0)   # 0: one thread per processor
-#     j: Job[U64] = pool.get_job[U64]()
-#     j.put_work(entry: sum_range.to[Callable](), args: (pool, 0, 1000000))
-#     j.wait_finished()
-#     total: U64 = j.retrieve()
-#     j.give_back()
-#     pool.destruct()
+#     summing: Work[U64] <- sum_range.to[Work](pool: pool, from: 0, til: 1000000)
+#     summing.start_from(pool)
+#     total: U64 = summing.retrieve()
+#     drop summing
 #
 # A thread of the pool sleeps when it has nothing to run, until work or a woken job is queued, a wake comes for one of
 # its own fibers, or one of them is due. The pool's threads start with the first job and end when the pool is
@@ -66,7 +64,7 @@ secret entity PoolJob
     pool: @ThreadPoolManager
 
 ### A ticket for a job of a ThreadPoolManager, from {ThreadPoolManager.get_job}: it runs one piece of work at a time, whose result is a
-### `T` (`Void` for none), until {Job[T].give_back}.
+### `T` (`Void` for none), until it is given back with `drop`.
 ### :typeparam T: The type of the work's result.
 record Job[T]
 needs T: typename
@@ -115,9 +113,9 @@ routine @ThreadPoolManager.destruct() -> None
     wake_all(me.epoch)
 
     each i in 0 til started
-        t: Thread[None] = threads[i]
+        t: Thread[None] <- steal threads.getslot(i)
         t.wait_finished()
-        t.give_back()
+        drop t
 
     until job.is_hollow() with job: @PoolJob = me.idle.peek()
         next: @PoolJob = job.next.peek()
@@ -140,8 +138,9 @@ routine @ThreadPoolManager.destruct() -> None
     me.woken.destruct()
     return
 
-### Crashes when the ticket wasn't given back: its job would be lost, and its work might still run.
-### :throws: Crashes with `TicketNotGivenBackError` for a ticket that still holds its job.
+### Gives the ticket back: hands the job back to its manager, which keeps it for the next ticket. A ticket given
+### back already, or a copy of one, gives nothing back. Written `drop t`.
+### :throws: Crashes with `TicketBusyError` while the work runs.
 @target(os: not "none")
 @track_caller
 routine @Job[T].destruct() -> None
@@ -149,9 +148,14 @@ needs T: typename
     job: @PoolJob = me.job.peek()
     if job.is_hollow()
         return
-    if job.slot.issued.peek() == me.issued.peek()
-        crash(name: "TicketNotGivenBackError",
-            message: "This job ticket was never given back: wait_finished() and give_back() before it goes.")
+    if job.slot.issued.peek() != me.issued.peek()
+        return
+    job.slot.give_back()
+    pool: @ThreadPoolManager = job.pool.peek()
+    held: Authorized[U8] <- pool.guard.get_exclusive_access()
+    job.next.poke(pool.idle.peek())
+    pool.idle.poke(job)
+    drop held
     return
 
 ### A ticket for a job of the pool: one given back, or a new one. The pool's threads start with the first.
@@ -193,9 +197,9 @@ secret routine @ThreadPoolManager.start_threads() -> None
     threads.replace(value: Memory[Thread[None]].construct(count, manager: me.manager.peek()))
 
     each i in 0 til count
-        t: Thread[None] = get_thread[None]()
-        t.put_work(entry: pool_thread.to[Callable](), args: me)
-        threads.getslot(i).poke(t)
+        t: Thread[None] <- get_thread[None]()
+        t.put_callable(entry: pool_thread.to[Callable](), args: me)
+        threads.getslot(i).poke(steal t)
     then
         return
 
@@ -374,13 +378,27 @@ needs T: typename
     job.pool.peek().queue(job)
     return
 
+### Starts `work` on the ticket at once: it runs from here on, and the ticket's `retrieve()` gives its result. The work
+### runs a copy of its block, so it may be put on more tickets.
+### :param work: The work, made with `f.to[Work](...)`.
+### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket given
+###     back, and with `MemoryAllocationError` when the manager has no memory for the work.
+@target(os: not "none")
+@track_caller
+routine Job[T].put_work(work: @Work[T]) -> None
+needs T: typename
+    slot: @WorkSlot = me.work_slot()
+    slot.check_free()
+    me.start(runner: work.runner.peek(), work: work.copy_for(slot))
+    return
+
 ### Starts `entry` on the ticket. It runs from here on.
 ### :param entry: The routine.
 ### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[T].put_work(entry: Callable[(), T]) -> None
+routine Job[T].put_callable(entry: Callable[(), T]) -> None
 needs T: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -395,7 +413,7 @@ needs T: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[T].put_work[A](entry: Callable[(A,), T], args: A) -> None
+routine Job[T].put_callable[A](entry: Callable[(A,), T], args: A) -> None
 needs T: typename, A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -410,7 +428,7 @@ needs T: typename, A: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[T].put_work[A, B](entry: Callable[(A, B), T], args: (A, B)) -> None
+routine Job[T].put_callable[A, B](entry: Callable[(A, B), T], args: (A, B)) -> None
 needs T: typename, A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -425,7 +443,7 @@ needs T: typename, A: typename, B: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[T].put_work[A, B, C](entry: Callable[(A, B, C), T], args: (A, B, C)) -> None
+routine Job[T].put_callable[A, B, C](entry: Callable[(A, B, C), T], args: (A, B, C)) -> None
 needs T: typename, A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -440,7 +458,8 @@ needs T: typename, A: typename, B: typename, C: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[T].put_work[A, B, C, D](entry: Callable[(A, B, C, D), T], args: (A, B, C, D)) -> None
+routine Job[T].put_callable[A, B, C, D](entry: Callable[(A, B, C, D), T],
+    args: (A, B, C, D)) -> None
 needs T: typename, A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -454,7 +473,7 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[None].put_work(entry: Callable[(), None]) -> None
+routine Job[None].put_callable(entry: Callable[(), None]) -> None
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_voidwork0(entry, manager: slot.manager.peek())
@@ -468,7 +487,7 @@ routine Job[None].put_work(entry: Callable[(), None]) -> None
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[None].put_work[A](entry: Callable[(A,), None], args: A) -> None
+routine Job[None].put_callable[A](entry: Callable[(A,), None], args: A) -> None
 needs A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -483,7 +502,7 @@ needs A: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[None].put_work[A, B](entry: Callable[(A, B), None], args: (A, B)) -> None
+routine Job[None].put_callable[A, B](entry: Callable[(A, B), None], args: (A, B)) -> None
 needs A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -498,7 +517,7 @@ needs A: typename, B: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[None].put_work[A, B, C](entry: Callable[(A, B, C), None], args: (A, B, C)) -> None
+routine Job[None].put_callable[A, B, C](entry: Callable[(A, B, C), None], args: (A, B, C)) -> None
 needs A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -513,7 +532,7 @@ needs A: typename, B: typename, C: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[None].put_work[A, B, C, D](entry: Callable[(A, B, C, D), None],
+routine Job[None].put_callable[A, B, C, D](entry: Callable[(A, B, C, D), None],
     args: (A, B, C, D)) -> None
 needs A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
@@ -591,18 +610,57 @@ needs T: typename
     me.work_slot().request_cancel()
     return
 
-### Hands the job back to its pool for the next ticket. The ticket is over.
-### :throws: Crashes with `TicketBusyError` while the work runs, and with `TicketGivenBackError` for a ticket given
-###     back already.
+# -- lending jobs for work (ThreadPoolManager obeys WorkManager) -------------------------------------------------------
+
+### A ThreadPoolManager lends its workers for work (`work.start_from(manager)`).
+@target(os: not "none")
+obeys WorkManager[ThreadPoolManager]
+
+### Lends a job for one piece of work: `work.start_from(manager)` calls it.
+### :returns: The job.
 @target(os: not "none")
 @track_caller
-routine Job[T].give_back() -> None
-needs T: typename
-    me.work_slot().give_back()
-    job: @PoolJob = me.job
-    pool: @ThreadPoolManager = job.pool.peek()
-    held: Authorized[U8] <- pool.guard.get_exclusive_access()
-    job.next.poke(pool.idle.peek())
-    pool.idle.poke(job)
-    drop held
+routine @ThreadPoolManager.lend_worker() -> Addr
+    job: @PoolJob = me.get_job[Byte]().job
+    return job.to[Addr]()
+
+### The slot a lent job runs its work in.
+### :param worker: The job.
+### :returns: Its slot.
+@target(os: not "none")
+routine @ThreadPoolManager.lent_slot(worker: Addr) -> @WorkSlot
+    job: @PoolJob = worker.to[@PoolJob]()
+    return job.slot
+
+### Starts work on a lent job.
+### :param worker: The job.
+### :param runner: Runs the block.
+### :param work: The block, from the slot's memory manager.
+@target(os: not "none")
+@track_caller
+routine @ThreadPoolManager.start_lent(worker: Addr, runner: Callable[(Addr,), None],
+    work: Addr) -> None
+    job: @PoolJob = worker.to[@PoolJob]()
+    ticket: Job[Byte] <- Job[Byte](job, issued: job.slot.issued.peek())
+    ticket.start(runner, work)
+    return
+
+### Takes a lent job back, its work over.
+### :param worker: The job.
+@target(os: not "none")
+@track_caller
+routine @ThreadPoolManager.take_back(worker: Addr) -> None
+    job: @PoolJob = worker.to[@PoolJob]()
+    ticket: Job[Byte] <- Job[Byte](job, issued: job.slot.issued.peek())
+    drop ticket
+    return
+
+### Waits until a lent job's work has finished, the way its ticket's `wait_finished` waits.
+### :param worker: The job.
+@target(os: not "none")
+@track_caller
+routine @ThreadPoolManager.wait_lent(worker: Addr) -> None
+    job: @PoolJob = worker.to[@PoolJob]()
+    ticket: Job[Byte] <- Job[Byte](job: job, issued: job.slot.issued.peek())
+    ticket.wait_finished()
     return

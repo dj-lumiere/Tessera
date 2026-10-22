@@ -415,9 +415,10 @@ public sealed class EscapeCheck
             {
                 if (Of(routine) is not { } e) continue;
                 string name = all.GetValueOrDefault(routine)?.Inst.Decl.DisplayName ?? routine;
-                const string fix = "take exclusive access to it before put_work (held: Authorized[T] = p.get_exclusive_access()), "
-                    + "hand the work held (its parameter an Authorized[T]), and drop held after the wait, or make it an Atomic[T] "
-                    + "and change it with its routines";
+                const string fix = "hand the work an exclusive access to it (its parameter an Authorized[T]): borrowed in the "
+                    + "work's arguments, f.to[Work](p: p.get_exclusive_access()), for start_from, whose retrieve gives it back, or "
+                    + "borrowed in a name first, held: Authorized[T] <- p.get_exclusive_access(), and dropped after the ticket's wait; "
+                    + "or make it an Atomic[T] and change it with its routines";
                 foreach (var (global, why) in e.WritesGlobals.OrderBy(c => c.Key, StringComparer.Ordinal))
                 {
                     var at = why.Store;

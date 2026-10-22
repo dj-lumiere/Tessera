@@ -547,6 +547,10 @@ public sealed record ArrayLit(List<Expr> Elements, Pos Pos) : Expr(Pos)
     public Expr? Repeat { get; init; }
 }
 
+/// `f.to[Work](param: value, ...)`: the routine `f` with its arguments, named by its parameters, as a piece of work
+/// (`Work[T]`, T the routine's result) not started yet.
+public sealed record WorkExpr(RoutineRef Routine, List<Expr> Args, List<string?>? ArgNames, Pos Pos) : Expr(Pos);
+
 /// `[0] * n from manager` (a `Memory[T]`) or `(value: 1, next: .hollow()) from manager` (a `Box[T]`): the literal in memory
 /// taken from the manager, which `drop` gives back. A repeat count here may be known only while running.
 public sealed record AtExpr(Expr Value, Expr Manager, Pos Pos) : Expr(Pos);

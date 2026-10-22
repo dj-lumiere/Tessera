@@ -276,8 +276,8 @@ needs T: typename
     end: U64 = slots.first + slots.count
 
     each i in slots.first til end
-        t: Thread[None] = get_thread[None]()
-        t.put_work(entry: body, args: state)
+        t: Thread[None] <- get_thread[None]()
+        t.put_callable(entry: body, args: state)
         threads[i] = t
     then
         return
@@ -285,9 +285,9 @@ needs T: typename
 ### Joins the threads in `threads` below `count`.
 routine join_many(threads: @Array[Thread[None], 8], count: U64) -> None
     each i in 0 til count
-        t: Thread[None] = threads[i]
+        t: Thread[None] <- steal threads.getslot(i)
         t.wait_finished()
-        t.give_back()
+        drop t
     then
         return
 
@@ -295,11 +295,12 @@ routine start() -> None
     threads: &Array[Thread[None], 8] <- .hollow()
     box: &Mailbox <- Mailbox(not_full: .construct(), not_empty: .construct(), full: false, value: 0)
 
-    producer: Thread[None] = get_thread[None]()
-    producer.put_work(entry: produce.to[Callable](), args: box)
+    producer: Thread[None] <- get_thread[None]()
+    work_producer: Work[None] <- produce.to[Work](box: box)
+    producer.put_work(work_producer)
     sum, in_order = consume(box)
     producer.wait_finished()
-    producer.give_back()
+    drop producer
     Console.show("handoff: {ROUNDS} values, sum {sum}, in order {in_order}")
     tokens: &Gate <- Gate(cond: .construct(), progress: .construct(), waiting: 0, tokens: 0,
         passed: 0, open: false)
@@ -317,8 +318,9 @@ routine start() -> None
     Console.show("wake_all: {gate.passed.peek()} of {GATE_THREADS} through after one wake")
     timed: &Timed <- Timed(cond: .construct(), progress: .construct(), waiting: 0, ready: false,
         stop: false, timed_out: 0, in_time: 0, wrong: 0)
-    waker: Thread[None] = get_thread[None]()
-    waker.put_work(entry: wake_everyone.to[Callable](), args: timed)
+    waker: Thread[None] <- get_thread[None]()
+    work_waker: Work[None] <- wake_everyone.to[Work](timed: timed)
+    waker.put_work(work_waker)
     spawn_many(body: wait_never.to[Callable](), state: timed,
         slots: ThreadSlots(threads: threads, first: 0, count: TIMED_THREADS))
     spawn_many(body: wait_ready.to[Callable](), state: timed,
@@ -329,7 +331,7 @@ routine start() -> None
     timed.stop.poke(true)
     drop held
     waker.wait_finished()
-    waker.give_back()
+    drop waker
     Console.show("deadlines under contention: {timed.timed_out.peek()} gave up at the deadline, ",
         end: "")
     Console.show("{timed.in_time.peek()} woken in time, {timed.wrong.peek()} wrong")

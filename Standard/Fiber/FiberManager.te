@@ -1,8 +1,9 @@
 # Tessera stdlib: fibers
 #
 # A fiber is a ticket a FiberManager hands out, in the same flow as a thread's (Work.te): `get_fiber[T]()` takes
-# one, `put_work` starts its work, `check_finished` looks, `wait_finished` waits, `retrieve` takes the result, and
-# `give_back` hands the fiber back to its manager, which keeps it, stack and all, for the next ticket.
+# one, `put_work` starts a piece of work on it, `check_finished` looks, `wait_finished` waits, `retrieve` takes the
+# result, and `drop` gives the fiber back to its manager, which keeps it, stack and all, for the next ticket. A
+# FiberManager is also a WorkManager: `work.start_from(FIBERS)` lends a fiber for one piece of work.
 #
 # A manager runs its fibers on one thread, the one that drives it, and never moves them: they take turns, and one runs
 # until it yields, parks, sleeps, or its work finishes. (A ThreadPoolManager's jobs are fibers the pool keeps, which a
@@ -10,11 +11,13 @@
 # values without an exclusive access between those points. Each thread has a manager of its own, FIBERS, made on first use. A
 # program that wants more cores takes thread tickets and drives a manager on each.
 #
-#     f: Fiber[S64] = FIBERS.get_fiber[S64]()
-#     f.put_work(entry: count.to[Callable](), args: 100)
+#     f: Fiber[S64] <- FIBERS.get_fiber[S64]()
+#     counting: Work[S64] <- count.to[Work](limit: 100)
+#     f.put_work(counting)
 #     f.wait_finished()   # outside a fiber, on the manager's thread: runs the manager's fibers until f's work is done
 #     n: S64 = f.retrieve()
-#     f.give_back()
+#     drop f
+#     drop counting
 #
 # The manager runs its fibers whenever its thread waits for one (`wait_finished` outside a fiber), or in `run()`
 # (until no fiber has work left) and `run_until_idle()` (until none is ready to go on, then back). Inside a fiber,
@@ -83,7 +86,7 @@ entity FiberState
     pool: @ThreadPoolManager
 
 ### A ticket for a fiber, from {FiberManager.get_fiber}: it runs one piece of work at a time, whose result is a `T`
-### (`Void` for none), until {Fiber[T].give_back}.
+### (`Void` for none), until it is given back with `drop`.
 ### :typeparam T: The type of the work's result.
 record Fiber[T]
 needs T: typename
@@ -205,8 +208,9 @@ routine @FiberState.destruct() -> None
     drop me.stack
     return
 
-### Crashes when the ticket wasn't given back: its fiber would be lost, and its work might still run.
-### :throws: Crashes with `TicketNotGivenBackError` for a ticket that still holds its fiber.
+### Gives the ticket back: hands the fiber back to its manager, which keeps it for the next ticket. A ticket given
+### back already, or a copy of one, gives nothing back. Written `drop t`.
+### :throws: Crashes with `TicketBusyError` while the work runs.
 @target(os: not "none")
 @track_caller
 routine @Fiber[T].destruct() -> None
@@ -214,9 +218,14 @@ needs T: typename
     fiber: @FiberState = me.fiber.peek()
     if fiber.is_hollow()
         return
-    if fiber.slot.issued.peek() == me.issued.peek()
-        crash(name: "TicketNotGivenBackError",
-            message: "This fiber ticket was never given back: wait_finished() and give_back() before it goes.")
+    if fiber.slot.issued.peek() != me.issued.peek()
+        return
+    fiber.slot.give_back()
+    manager: @FiberManager = fiber.manager.peek()
+    held: Authorized[U8] <- manager.inbox_guard.get_exclusive_access()
+    fiber.next_idle.poke(manager.idle.peek())
+    manager.idle.poke(fiber)
+    drop held
     return
 
 ### Orders two timer keys by when they are due: the earlier deadline first, and the earlier wait first for the same
@@ -477,10 +486,10 @@ needs T: typename
     if me.current().is_hollow()
         work.call(arg)
         return
-    t: Thread[None] = get_thread[None]()
-    t.put_work(entry: work, args: arg)
+    t: Thread[None] <- get_thread[None]()
+    t.put_callable(entry: work, args: arg)
     t.wait_finished()
-    t.give_back()
+    drop t
     return
 
 # -- the tickets -------------------------------------------------------------------------------------------------
@@ -510,13 +519,27 @@ needs T: typename
     manager.place_ready(fiber)
     return
 
+### Starts `work` on the ticket at once: it runs from here on, and the ticket's `retrieve()` gives its result. The work
+### runs a copy of its block, so it may be put on more tickets.
+### :param work: The work, made with `f.to[Work](...)`.
+### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket given
+###     back, and with `MemoryAllocationError` when the manager has no memory for the work.
+@target(os: not "none")
+@track_caller
+routine Fiber[T].put_work(work: @Work[T]) -> None
+needs T: typename
+    slot: @WorkSlot = me.work_slot()
+    slot.check_free()
+    me.start(runner: work.runner.peek(), work: work.copy_for(slot))
+    return
+
 ### Starts `entry` on the ticket. It runs from here on.
 ### :param entry: The routine.
 ### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].put_work(entry: Callable[(), T]) -> None
+routine Fiber[T].put_callable(entry: Callable[(), T]) -> None
 needs T: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -531,7 +554,7 @@ needs T: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].put_work[A](entry: Callable[(A,), T], args: A) -> None
+routine Fiber[T].put_callable[A](entry: Callable[(A,), T], args: A) -> None
 needs T: typename, A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -546,7 +569,7 @@ needs T: typename, A: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].put_work[A, B](entry: Callable[(A, B), T], args: (A, B)) -> None
+routine Fiber[T].put_callable[A, B](entry: Callable[(A, B), T], args: (A, B)) -> None
 needs T: typename, A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -561,7 +584,7 @@ needs T: typename, A: typename, B: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].put_work[A, B, C](entry: Callable[(A, B, C), T], args: (A, B, C)) -> None
+routine Fiber[T].put_callable[A, B, C](entry: Callable[(A, B, C), T], args: (A, B, C)) -> None
 needs T: typename, A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -576,7 +599,8 @@ needs T: typename, A: typename, B: typename, C: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[T].put_work[A, B, C, D](entry: Callable[(A, B, C, D), T], args: (A, B, C, D)) -> None
+routine Fiber[T].put_callable[A, B, C, D](entry: Callable[(A, B, C, D), T],
+    args: (A, B, C, D)) -> None
 needs T: typename, A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -590,7 +614,7 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[None].put_work(entry: Callable[(), None]) -> None
+routine Fiber[None].put_callable(entry: Callable[(), None]) -> None
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_voidwork0(entry, manager: slot.manager.peek())
@@ -604,7 +628,7 @@ routine Fiber[None].put_work(entry: Callable[(), None]) -> None
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[None].put_work[A](entry: Callable[(A,), None], args: A) -> None
+routine Fiber[None].put_callable[A](entry: Callable[(A,), None], args: A) -> None
 needs A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -619,7 +643,7 @@ needs A: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[None].put_work[A, B](entry: Callable[(A, B), None], args: (A, B)) -> None
+routine Fiber[None].put_callable[A, B](entry: Callable[(A, B), None], args: (A, B)) -> None
 needs A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -634,7 +658,7 @@ needs A: typename, B: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[None].put_work[A, B, C](entry: Callable[(A, B, C), None], args: (A, B, C)) -> None
+routine Fiber[None].put_callable[A, B, C](entry: Callable[(A, B, C), None], args: (A, B, C)) -> None
 needs A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -649,7 +673,7 @@ needs A: typename, B: typename, C: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Fiber[None].put_work[A, B, C, D](entry: Callable[(A, B, C, D), None],
+routine Fiber[None].put_callable[A, B, C, D](entry: Callable[(A, B, C, D), None],
     args: (A, B, C, D)) -> None
 needs A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
@@ -751,22 +775,6 @@ needs T: typename
 routine Fiber[T].cancel() -> None
 needs T: typename
     me.work_slot().request_cancel()
-    return
-
-### Hands the fiber back to its manager, which keeps it and its stack for the next ticket. The ticket is over.
-### :throws: Crashes with `TicketBusyError` while the work runs, and with `TicketGivenBackError` for a ticket given
-###     back already.
-@target(os: not "none")
-@track_caller
-routine Fiber[T].give_back() -> None
-needs T: typename
-    me.work_slot().give_back()
-    fiber: @FiberState = me.fiber
-    manager: @FiberManager = fiber.manager.peek()
-    held: Authorized[U8] <- manager.inbox_guard.get_exclusive_access()
-    fiber.next_idle.poke(manager.idle.peek())
-    manager.idle.poke(fiber)
-    drop held
     return
 
 # -- driving ----------------------------------------------------------------------------------------------------
@@ -1019,3 +1027,57 @@ secret routine compare_exchange(at: @U32, expected: U32, new: U32) -> Bool
     previous: &U32 <- 0
 
     return at.atomic_compare_exchange_raw(expected, new, previous)
+
+# -- lending fibers for work (FiberManager obeys WorkManager) -------------------------------------------------------
+
+### A FiberManager lends its workers for work (`work.start_from(manager)`).
+@target(os: not "none")
+obeys WorkManager[FiberManager]
+
+### Lends a fiber for one piece of work: `work.start_from(manager)` calls it.
+### :returns: The fiber.
+@target(os: not "none")
+@track_caller
+routine @FiberManager.lend_worker() -> Addr
+    fiber: @FiberState = me.get_fiber[Byte]().fiber
+    return fiber.to[Addr]()
+
+### The slot a lent fiber runs its work in.
+### :param worker: The fiber.
+### :returns: Its slot.
+@target(os: not "none")
+routine @FiberManager.lent_slot(worker: Addr) -> @WorkSlot
+    fiber: @FiberState = worker.to[@FiberState]()
+    return fiber.slot
+
+### Starts work on a lent fiber.
+### :param worker: The fiber.
+### :param runner: Runs the block.
+### :param work: The block, from the slot's memory manager.
+@target(os: not "none")
+@track_caller
+routine @FiberManager.start_lent(worker: Addr, runner: Callable[(Addr,), None], work: Addr) -> None
+    fiber: @FiberState = worker.to[@FiberState]()
+    ticket: Fiber[Byte] <- Fiber[Byte](fiber, issued: fiber.slot.issued.peek())
+    ticket.start(runner, work)
+    return
+
+### Takes a lent fiber back, its work over.
+### :param worker: The fiber.
+@target(os: not "none")
+@track_caller
+routine @FiberManager.take_back(worker: Addr) -> None
+    fiber: @FiberState = worker.to[@FiberState]()
+    ticket: Fiber[Byte] <- Fiber[Byte](fiber, issued: fiber.slot.issued.peek())
+    drop ticket
+    return
+
+### Waits until a lent fiber's work has finished, the way its ticket's `wait_finished` waits.
+### :param worker: The fiber.
+@target(os: not "none")
+@track_caller
+routine @FiberManager.wait_lent(worker: Addr) -> None
+    fiber: @FiberState = worker.to[@FiberState]()
+    ticket: Fiber[Byte] <- Fiber[Byte](fiber: fiber, issued: fiber.slot.issued.peek())
+    ticket.wait_finished()
+    return

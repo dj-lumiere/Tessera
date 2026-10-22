@@ -1,7 +1,7 @@
 # Tessera stdlib: AccessManager
 #
 # The AccessManager hands out exclusive access and shared read access to memory. A flow (a thread, a fiber, or another
-# language's agent) asks for access to the value at a pointer, `p.get_exclusive_access()` (an `Authorized[T]`: it
+# language's work) asks for access to the value at a pointer, `p.get_exclusive_access()` (an `Authorized[T]`: it
 # alone reads and writes it) or `p.get_shared_read_access()` (a `ReadAuthorized[T]`: several flows read it, none
 # writes), and reads and writes through the access's `getview()`. The access covers the bytes of that one value,
 # `[p, p + size of T)`: the elements of a run are taken one at a time. When another flow holds an access that overlaps
@@ -27,12 +27,12 @@
 
 module Standard/Os
 
-### The slot of the fiber or agent running on this thread, where its AccessFlow is (made when first needed), or
+### The slot of the fiber or work running on this thread, where its AccessFlow is (made when first needed), or
 ### hollow while the thread runs its own code.
 @threadlocal
 global RUNNING_FLOW: &@@AccessFlow
 
-### This thread's own flow, for the code it runs outside every fiber and agent.
+### This thread's own flow, for the code it runs outside every fiber and piece of work.
 @threadlocal
 global THREAD_FLOW: &AccessFlow
 ### The number the next flow takes.
@@ -105,9 +105,9 @@ preset FLOW_THREAD: U8 = 0
 preset FLOW_FIBER: U8 = 1
 ### The crash reports name threads and fibers (Tessera).
 preset WORDS_TESSERA: U8 = 0
-### The crash reports name agents and `start()` (RazorForge).
+### The crash reports name pieces of work and `start()` (RazorForge).
 preset WORDS_RAZORFORGE: U8 = 1
-### The crash reports name agents and the entities they share (Suflae).
+### The crash reports name pieces of work and the entities they share (Suflae).
 preset WORDS_SUFLAE: U8 = 2
 
 ### How long a flow that saw a deadlock waits before it looks again, so a holder that was letting go isn't reported.
@@ -412,7 +412,7 @@ common routine AccessManager.give_back(at: Addr) -> None
 
 # -- flows -------------------------------------------------------------------------------------------------------
 
-### The flow running here: the running fiber's or agent's (made the first time it is needed), else this thread's own.
+### The flow running here: the running fiber's or work's (made the first time it is needed), else this thread's own.
 ### Never inlined, like the other readers of RUNNING_FLOW on the way to a wait: a pool fiber may go on on another
 ### thread after a park.
 ### :returns: The flow.
@@ -426,8 +426,8 @@ routine current_flow() -> @AccessFlow
         flow.number.poke(NEXT_FLOW.atomic_fetch_add(1))
     return flow
 
-### The flow kept in a fiber's or an agent's slot, made there the first time it is needed.
-### :param slot: The fiber's or agent's slot.
+### The flow kept in a fiber's or an work's slot, made there the first time it is needed.
+### :param slot: The fiber's or work's slot.
 ### :returns: The flow.
 ### :throws: Crashes with `MemoryAllocationError` when the flow's memory can't be had.
 secret routine fiber_flow(slot: @@AccessFlow) -> @AccessFlow
@@ -454,16 +454,16 @@ secret routine flow_id(flow: @AccessFlow) -> U64
 secret routine flow_of(id: U64) -> @AccessFlow
     return inttoptr[U64, Addr](id).to[@AccessFlow]()
 
-### Makes the fiber or agent whose slot is `slot` the one running on this thread, and gives back the slot of the one
-### before. A fiber manager or an agent scheduler calls it around each switch, `.hollow()` for the thread's own code.
-### :param slot: Where the fiber or agent keeps its flow, hollow until its first access.
+### Makes the fiber or work whose slot is `slot` the one running on this thread, and gives back the slot of the one
+### before. A fiber manager or a piece of work scheduler calls it around each switch, `.hollow()` for the thread's own code.
+### :param slot: Where the fiber or work keeps its flow, hollow until its first access.
 ### :returns: The slot that ran before, to pass back after the switch.
 common routine AccessManager.switch_flow(slot: @@AccessFlow) -> @@AccessFlow
     before: @@AccessFlow = RUNNING_FLOW.peek()
     RUNNING_FLOW.poke(slot)
     return before
 
-### Gives back the flow a fiber or an agent kept in `slot`, when the fiber or agent itself goes, and leaves the slot
+### Gives back the flow a fiber or a piece of work kept in `slot`, when the fiber or work itself goes, and leaves the slot
 ### hollow.
 ### :param slot: The slot.
 common routine AccessManager.end_flow(slot: @@AccessFlow) -> None
@@ -501,7 +501,7 @@ common routine AccessManager.configure(deadlock_check: Bool, access_order: Bool,
     MAIN_FLOW.poke(current_flow())
     return
 
-### Sets how a waiting flow parks, for a runtime whose agents the stdlib's waits don't know: the routine is given the
+### Sets how a waiting flow parks, for a runtime whose work the stdlib's waits don't know: the routine is given the
 ### word the flow waits on (hollow when there is none), the value it holds while the wait goes on, and the deadline
 ### (`Duration.MAX` for none), and may return early.
 ### :param park: The routine, or `.hollow()` for the stdlib's own wait.
@@ -1178,7 +1178,7 @@ common routine AccessManager.alert_held() -> None
     then
         return
 
-### The place a crash report gives: `place`, or hollow when it names no file (another language's agent that moved to
+### The place a crash report gives: `place`, or hollow when it names no file (another language's work that moved to
 ### another thread since its runtime last knew where it was), so the report leaves the place out.
 ### :param place: The place.
 ### :returns: `place`, or hollow.
@@ -1194,7 +1194,7 @@ secret routine crash_reenter(place: @SourceLocation) -> None
     words: U8 = WORDS.peek()
     message: @[Byte] = when
         words == WORDS_TESSERA => "This thread or fiber already holds the access it takes here. Waiting for it would never end, and going in would see its own work half done. Don't take it again inside: the code that holds it does the work."
-        else => "This agent opens access to a Guarded it already has open. Waiting for it would never end, and going in would see the work of its own block half done. Pass the token you already have instead of opening it again."
+        else => "This work opens access to a Guarded it already has open. Waiting for it would never end, and going in would see the work of its own block half done. Pass the token you already have instead of opening it again."
     crash_at(name: "ReenterDuringAccessError", message, place: known_place(place))
 
 # -- parking ------------------------------------------------------------------------------------------------------
@@ -1383,7 +1383,7 @@ secret routine write_flow(out: @SliceWriter, flow: @AccessFlow) -> None
         out.write("start()")
         return
     if words != WORDS_TESSERA
-        out.write("agent {number}")
+        out.write("work {number}")
         return
     if flow.kind.peek() == FLOW_FIBER
         out.write("fiber {number}")
@@ -1418,8 +1418,8 @@ secret routine report_deadlock(flow: @AccessFlow, path: @DeadlockPath) -> None
 
     when
         words == WORDS_TESSERA => out.write("These threads and fibers wait on each other, so none of them can go on:")
-        words == WORDS_SUFLAE => out.write("These agents wait on each other for the entities they share, so none of them can go on:")
-        else => out.write("These agents wait on each other for access, so none of them can go on:")
+        words == WORDS_SUFLAE => out.write("These pieces of work wait on each other for the entities they share, so none of them can go on:")
+        else => out.write("These pieces of work wait on each other for access, so none of them can go on:")
     each step in 0 til length
         current: @AccessFlow = path.flows.getslot(step).peek()
         holder: @AccessFlow = path.flows.getslot((step + 1) % length).peek()
@@ -1439,9 +1439,9 @@ secret routine report_deadlock(flow: @AccessFlow, path: @DeadlockPath) -> None
     then
         when
             words == WORDS_TESSERA => out.write("\nTake the accesses in the same order everywhere.")
-            words == WORDS_SUFLAE => out.write("\nUse the shared entities in the same order in every agent.")
+            words == WORDS_SUFLAE => out.write("\nUse the shared entities in the same order in every piece of work.")
             else => out.write("\nOpen them together in one block, which takes them in address order, or open them in the same order everywhere.")
-        # Suflae's agents wait inside the statements the builder brackets, so no place of the program's would help.
+        # Suflae's work waits inside the statements the builder brackets, so no place of the program's would help.
         place: @SourceLocation = when
             words == WORDS_SUFLAE => .hollow()
             else => known_place(flow.waiting_place)
@@ -1529,5 +1529,5 @@ secret routine report_order(place: @SourceLocation, before: SourceLocation) -> N
         out.write(")")
     when
         words == WORDS_TESSERA => out.write(". Two threads or fibers doing both could wait on each other. Take the accesses in the same order everywhere.")
-        else => out.write(". Two agents doing both could wait on each other. Open them together in one block, or open them in the same order everywhere.")
+        else => out.write(". Two pieces of work doing both could wait on each other. Open them together in one block, or open them in the same order everywhere.")
     crash_at(name: "AccessOrderError", message: out.getview(), place: known_place(place))

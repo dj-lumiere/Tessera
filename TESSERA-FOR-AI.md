@@ -22,8 +22,8 @@ dotnet run -- version                    # the builder's version; help prints ev
 
 A program's entry point is `routine start() -> None`, and a nonzero exit status is `set_exit_code(n)` (Standard/Os)
 before it returns. The entry file may instead write its lines at the top level (script mode): they are `start`, run
-top to bottom with declarations seen everywhere, leading `local` lines are its head, and the end of the file is its
-`return` (memory must be given back by then). A routine can't read a top-level binding (pass it, or use a `global`),
+top to bottom with declarations seen everywhere, and the end of the file is its `return` (the builder gives the
+STACK places back there, and every other place must be given back by then). A routine can't read a top-level binding (pass it, or use a `global`),
 an imported file has no top-level lines, and a file with them declares no `start`. A file may start with `module A/B` and `import` lines. Name lookup follows
 modules: a file sees its own module, `Standard/System` and every module under it (always seen: the built-in types,
 `Maybe`, `Check`, `None`, `@[T]`, `Memory`, `Box`, the protocols, formatting, the memory managers, `HEAP`), and what
@@ -71,13 +71,11 @@ import Standard/Collections
 import Standard/Os
 
 routine start() -> None
-    local list: @List[S64] <- .construct(HEAP)
+    list: &List[S64] <- .construct(HEAP)
 
     list.add_last(42)
     first: S64 = list[0]
     Console.show("first: {first}, as source: {first.diagnose()}")
-
-    drop list
     return
 ```
 
@@ -100,8 +98,8 @@ routine start() -> None
 
 **Values and pointers**
 
-- A value is written by its bare name, pointers included: `x: S64 = ...`, `local p: @S64 <- 0`. A bare name is the
-  nearest visible value (the routine's parameters, its head `local` lines, earlier bindings in the body it is in),
+- A value is written by its bare name, pointers and places included: `x: S64 = ...`, `p: &S64 <- 0`. A bare name is the
+  nearest visible value (the routine's parameters, earlier bindings in the body it is in),
   else a preset, global, or type;
   a call `f(...)` always names a routine. A routine as a value is `f.to[Callable]()` (never a bare `f`), a generic one's instance `f[S64].to[Callable]()`, and a value
   named like a keyword (`each`, `return`, `inf`, `nan`, ...) is written between backticks: `` `each` ``
@@ -135,42 +133,64 @@ routine start() -> None
 - A `Callable` value is called with `.call(args)`. One stored in a field is loaded first:
   `handler: Callable[…] = me.handler.peek()`, then `handler.call(x)`. `me.handler(...)` is an error.
 - A field of a record value is read with plain `=`: `key: K = pair.key`.
-- `local p: @T <- v` makes a slot for the routine call (a stack slot in practice) and stores `v` in it where the
-  line stands. Its type comes from the binding, which is one of three: `@T` (a slot), `@[T]` (values in the
-  frame, below), or `@Memory[T]` / `@Box[T]` with `from manager` (below). Anything else is a build error. The
-  contents are required: `local list: @List[S64] <- .construct(manager)`, no `list_val` and no separate store. A
-  slot that a routine fills later (an out parameter, `out.construct(...)`, an iterator's slot) starts as
-  `local p: @T <- .hollow()`: `T.hollow()`, which every type has, is the all-zero value (`0`, `false`, a pointer to nothing, a
+- **Places: `<-` borrows.** `x: &T <- v` borrows a place for a `T` from a memory manager and puts `v` in it: three
+  steps in one line (the manager's borrow, the `Box[T]` made over the place, the store). With no `from` (or `from
+  STACK`, or `from StackManager.current()`) the manager is the running flow's stack, and the place is one frame slot
+  with no fields. `x: &[T] <- [v] * n from HEAP` borrows a run (a `Memory[T]`), `node: &Node <- (value: 1, next:
+  .hollow()) from HEAP` one value (a `Box[T]`). `&T` is short for `Box[T]` and `&[T]` for `Memory[T]` (the long names
+  stay valid), the way `@T` is `Ptr[T]`. `@T` / `@[T]` only view: they come from `getview`, `getslot`, `getslice`, and
+  are never places. `=` binds a value or a view (`x: S64 = 3`, `cell: @Cell = m.getslot(i)`), never a `&T` / `&[T]`
+  (build error: "a &List[S64] is a place borrowed from a manager, and '=' only binds a value or a view: xs:
+  &List[S64] <- value"), and `x: S64 <- 3` is a build error ("'<-' borrows: n: &S64 <- value borrows a place and puts
+  the value in it, and n: S64 = value binds a value"), as is `x: @S64 <- 3` ("@S64 only views memory, and '<-' borrows
+  a place: n: &S64 <- value"). A call that returns the Box / Memory itself is bound with `<-` too: `m: &[U8] <-
+  Memory[U8].construct(count: 4, manager: HEAP)` (the name holds what the manager lent). `local` is not a statement (a
+  line starting with it is a build error that shows both forms), and stays a reserved word.
+- **Giving a place back.** A `<-` name owes a give back (`drop`). STACK places: the builder gives them back at every
+  exit of the body they are in (its end, `return`, `break` / `continue` out of a loop, a value `when`'s `becomes`),
+  the last one borrowed first, running the value's `destruct`: `xs: &List[S64] <- .construct(HEAP)` gives its heap
+  storage back at that exit too. The program doesn't write their `drop`. It may `drop xs` early, and the builder
+  then doesn't drop it again. A place from another manager (`from HEAP`, a call returning a Box / Memory) and an access:
+  the program writes `drop`, and a missing one is a build error ("'cell' holds a Box[S64] (from line 6)
+  that hasn't ended when 'start' returns here: drop cell, return it, or hand it over with steal cell"). A STACK place
+  of a variant, or of a type whose `destruct` takes a manager argument, is ended by the program too (the same error
+  when it isn't). A STACK `&[T]` takes an array literal with a count the build knows (a literal count or a preset)
+  and holds values with nothing to give back ("a &[List[S64]] from STACK holds values with nothing to give back").
+  A place borrowed in a loop body is borrowed again and given back on every pass, so it can't carry a value from
+  one pass to the next: borrow it before the loop, or carry the value with `with`.
+- **Reading and writing a `&T`.** `load()` / `store(v)` read and write the value, `getview()` gives its `@T`, `take()`
+  takes the value out. A routine of `@T` called on a `&T` works on its view (the builder inserts `getview`, an
+  effect-free step: `count.peek()`, `bump(count)` for a `@S64` parameter), while effectful steps (`store`, `poke`,
+  `drop`) are always written. A routine the held type itself declares under one of those names wins: a STACK
+  `&List[S64]`'s `getview()` is the List's span. Passing a `&T` where a `@T` is expected lends its view. Returning a
+  STACK place's name hands its value out (`return list` in a routine that returns `List[S64]`).
+- A place that a routine fills later (an out parameter, `out.construct(...)`, an iterator's place) starts as
+  `p: &T <- .hollow()`: `T.hollow()`, which every type has, is the all-zero value (`0`, `false`, a pointer to nothing, a
   collection with no memory, a choice's first member), and every `destruct` leaves it alone (`<- .hollow()` is a
-  memset in place). A slot whose type holds no pointer (no `Ptr`, `Addr`, `Callable`, `@[T]`, `Box`, `Memory`) may
+  memset in place). A place whose type holds no pointer (no `Ptr`, `Addr`, `Callable`, `@[T]`, `Box`, `Memory`) may
   start `<- .uninit()`: nothing is written, for a buffer a routine fills right away. Read it only after the fill
-  (`--uninit-fill` / `[debug] uninit-fill = true` fills such slots with 0xAA bytes to make an early read stand out).
-  `.uninit()` elsewhere, or on a type holding a pointer, is a build error. A slot without `<-` is
-  an error. `<-` fills memory and `=` only binds a name to a value, so `local p: @T = v` is a
-  value, not a slot. An array value comes from `[1, 2, x]` or a load (COUNT values at `first: @T` are
-  `first.to[@Array[T, COUNT]]().peek()`);
+  (`--uninit-fill` / `[debug] uninit-fill = true` fills such places with 0xAA bytes to make an early read stand out).
+  `.uninit()` elsewhere, or on a type holding a pointer, is a build error. An array value comes from `[1, 2, x]` or a
+  load (COUNT values at `first: @T` are `first.to[@Array[T, COUNT]]().peek()`);
   a bare `[1, 2]` isn't a value. `[a, b] * 3` repeats the elements (`a, b, a, b, a, b`). A bracket literal followed by `*` is always that repeat, so a Vector literal is bound to a name before it is multiplied. Where the type is known from where the value goes (a typed binding, a `preset` or
   `global`, an argument, an element of an outer literal, the pointer of `poke_into`), the type can be left off:
-  `preset SORTED: @Array[S64, 3] <- [-8, 0, 7]`, `p: Point = (x: 1, y: 2)`, like `.absent()`. Write the type
-  where it isn't on the same line: `sum2([7, 8])` compiles, but prefer `sum2([7, 8])`. A receiver
-  gives it no type: `[1, 2].eq(...)` is an error. Slots are hoisted to the routine's entry, so a `local` inside a loop
-  body reuses one slot, but its `<-` runs on every pass: it can't carry a value from one pass to the next. A slot
-  that does is declared in the routine's head (below), or the value is carried with `with`.
-- **Where values are: four types.** `@T` (a `Ptr`) is the address of one value (a local slot, a field, an element,
+  `preset SORTED: &Array[S64, 3] <- [-8, 0, 7]`, `p: Point = (x: 1, y: 2)`, like `.absent()`. Write the type
+  where it isn't on the same line. A receiver gives it no type: `[1, 2].eq(...)` is an error.
+- **Where values are: four types.** `@T` (a `Ptr`) is the address of one value (a place's value, a field, an element,
   memory from C). `@[T]` (Core, `Types/Span.te`) is `{data, count}`, a run of values it views. Both only VIEW
   memory and release nothing. Only a `@T` reads and writes its value (`peek` / `poke`, and everything `@T` has:
   `peek_volatile`, `atomic_fetch_add`, ...), and only a `Box[T]` reads and writes its own (`load` / `store`). A span
   turns an element into one of those: `getitem(i)` is the value (a copy, `xs[i]`), `getslot(i)` its place (the checked
   `@T`), `try view.getitem(i)` a `Maybe`, `getslice(start, count)` a part, `getview()` itself, `to[@T]()` the first
   address, and `swap(first, second)` trades two values in place (moved). A span has no `setitem`: `xs[i] = v` on a span
-  is a build error, write `xs.getslot(i).poke(v)`. `Box[T]` (`{at, manager}`) and `Memory[T]` (`{data, count,
-  manager}`, `Memory.te`) are memory TAKEN from a `MemoryManager`, and both are ENTITIES (Entities, below): never
-  copied, kept in a slot (`local m: @Memory[Byte] <- Memory[Byte].construct(count: 4, manager: manager)`), every
-  routine takes `me` by its address (`routine @Memory[T].load(...)`). The block holds the values and nothing else,
+  is a build error, write `xs.getslot(i).poke(v)`. `Box[T]` (`&T`, `{at, manager}`) and `Memory[T]` (`&[T]`, `{data, count,
+  manager}`, `Memory.te`) are places BORROWED from a `MemoryManager`, and both are ENTITIES (Entities, below): never
+  copied, bound with `<-` (`m: &[Byte] <- Memory[Byte].construct(count: 4, manager: manager)`), every
+  routine takes `me` by its address (`routine @Memory[T].getslot(...)`). The block holds the values and nothing else,
   plain `T` values in a row. Given back exactly once, with the statement `drop m`, by `return m`, or by handing it on
   with `steal m` to a routine that takes a `Memory` / `Box` by value (that routine gives it back then). `drop x` calls
   the type's `destruct`: a program never writes `x.destruct()` itself (a build error: "a value is given back with drop:
-  drop x"), only a type's own `destruct` body gives its members back. `drop` leaves the slot hollow: `.hollow()` holds
+  drop x"), only a type's own `destruct` body gives its members back. `drop` leaves the place hollow: `.hollow()` holds
   nothing, `drop` on it does nothing, a read crashes with `InvalidValueError`.
 - **The elements of a Memory.** A `Memory[T]` reads and writes nothing itself, and reaches its elements the way a
   `@[T]` does: `m[i]` (getitem, failable: `IndexOutOfBoundsError`) is the value, a copy, `m.getslot(i)` its place as a
@@ -197,50 +217,50 @@ routine start() -> None
   build doesn't follow (a `steal` out of an element place that reads the bits and leaves them, an address made with
   `inttoptr`) can still give a block back twice: with `[debug] heap-check = true` in config.toml or `--heap-check`
   (any build mode, off by default, always on under `tessera test`) `HEAP` is the `CheckedHeapManager`, which keeps a
-  header in front of each block and crashes with `DoubleFreeError` at the line of a second free of the same block (a
-  quarantine of the last 256 freed blocks keeps that sure, raw layer included). With it off it is plain malloc / free,
+  header in front of each block and crashes with `DoubleFreeError` at the line that gives the same block back a second time (a
+  quarantine of the last 256 blocks given back keeps that sure, raw layer included). With it off it is plain malloc / free,
   and so is a single-file build without a manifest.
 - **Lending.** Passing a `Memory[T]` where a `@[T]` parameter is expected lends it (the argument becomes
   `getslice()`), and a `Box[T]` where a `@T` is expected lends its address (`getview()`). A routine a Memory has none
   of its own for is called on its `getslice()` (`line.trim()` on a `Memory[Byte]`). Only at argument positions and
   receivers: anywhere else write `m.getslice()` (`view: @[U32] = m.getslice()`). The view is valid until the memory
   is given back or resized.
-- **Static and frame memory as a span.** `preset NAME: @[T] <- [a, b]` is read-only static data (a write faults
-  on a hosted target, the build doesn't catch it). `preset GREETING: @[Byte] <- "hello"` is a string literal's
-  bytes, and a span preset of text spans may name it: `preset WORDS: @[@[Byte]] <- [GREETING, "world"]` (a
-  `global` can't take a string literal: it is read-only). `global NAME: @[T] <- [0] * 26` is mutable static memory (the
-  literal is required: it gives the count). `local xs: @[T] <- [0] * 64` in the body or in the head puts the values in the routine's frame, with a count the build knows (a literal count or a
-  preset). An array literal passed as an argument where a span is expected is a frame span too: `total([4, 5, 6])`.
-  A frame span must not leave the routine. `preset NAME: @Array[T, N] <- [...]` is still a `Ptr` to an array.
-- **Memory from a manager is written with `from`.** `local words: @Memory[U64] <- [0] * n from HEAP` (the count
+- **Static and frame memory as a span.** `preset NAME: &[T] <- [a, b]` is read-only static data (a write faults
+  on a hosted target, the build doesn't catch it). `preset GREETING: &[Byte] <- "hello"` is a string literal's
+  bytes, and a span preset of text spans may name it: `preset WORDS: &[@[Byte]] <- [GREETING, "world"]` (a
+  `global` can't take a string literal: it is read-only). `global NAME: &[T] <- [0] * 26` is mutable static memory (the
+  literal gives the count). `xs: &[T] <- [0] * 64` puts the values in the routine's frame (STACK), with a count the
+  build knows (a literal count or a preset). An array literal passed as an argument where a span is expected is a
+  frame span too: `total([4, 5, 6])`. A view of the frame must not leave the routine. `preset NAME: &Array[T, N] <-
+  [...]` is an array in memory.
+- **Memory from a manager is written with `from`.** `words: &[U64] <- [0] * n from HEAP` (the count
   may be a runtime value: it calls `Memory[T].construct(values: @[T], times: U64, manager)`),
-  `local node: @Box[Node] <- (value: 1, next: .hollow()) from HEAP`, and `local x: @Box[S64] <- 10 from HEAP` (they
-  call `Box[T].construct(value, manager)`). A `from` literal is bound with `<-` in a `local` line, into the slot like
-  any entity. A `local` slot itself is a block of the running flow's stack, which its `StackManager` hands out by
-  moving the stack pointer, with no call: `local x: @S64 <- 5 from STACK` is the same slot as `local x: @S64 <- 5`,
-  follows rule 3 (it stays in its routine), and is not given back. A `Memory[T]` or a `Box[T]` from a `StackManager`
-  is a build error.
+  `node: &Node <- (value: 1, next: .hollow()) from HEAP`, and `x: &S64 <- 10 from HEAP` (they
+  call `Box[T].construct(value, manager)`). The program gives these back with `drop`. Without `from` the place is a
+  slot of the routine's frame, which the routine borrowed from its flow's `StackManager` (below): `x: &S64 <- 5 from
+  STACK` is the same place as `x: &S64 <- 5`, follows rule 3 (no view of it leaves the routine), and the builder
+  gives it back.
 - **The five rules.** 1. `@T` / `@[T]` only view (peek / poke), never give back. 2. `Box` / `Memory` and accesses
   come from a manager: given back exactly once or handed over, empty or not. 3. A `@T` / `@[T]` viewing this
-  routine's memory (a local slot, a frame span) does not leave the routine. 4. A routine that moves memory says
-  `@reshaping`, and isn't called while that memory is viewed. 5. A global `Box` / `Memory` is changed with `replace`,
-  and the program's end gives the last one back. The build checks all five, as below, in every routine: an instance of
+  routine's memory (a STACK place, a frame span) does not leave the routine. 4. A routine that moves memory says
+  `@reshaping`, and isn't called while that memory is viewed. 5. A global `&T` / `&[T]` holding memory is changed with
+  `replace`, and the last one is given back when the program ends. The build checks all five, as below, in every routine: an instance of
   a generic routine is checked with its type parameters bound (`keep[Memory[S64]]` is followed like a routine that takes
   a `Memory[S64]`), and an error in one says which instance (`(in keep with T = Memory[S64])`). Build errors unless marked.
 - **The group check (rule 2).** A Box / Memory is an entity, so the entity
-  rules apply: it lives in a slot, and it ends exactly once on every path (`drop m`, `return m`, handed over with
-  `steal m`, or handed over to an entity's field). The errors and their fixes:
+  rules apply: it lives in a place, and it ends exactly once on every path (`drop m`, `return m`, handed over with
+  `steal m`, handed over to an entity's field, or the builder's give back of a STACK place). The errors and their fixes:
   - `'m' holds a Memory[Byte] (from line N) that hasn't ended when 'r' returns here`: drop it, return it, or hand it
     on. Also what a path that skips the release gets (dropped in one arm of an `if`, not the other).
   - `'m' ended already (drop m on line N), and a Memory[Byte] ends once` (a second `drop`, or a drop after
-    `steal m`), and `'m' is used after drop m on line N ended it`: a slot dropped or handed over is gone. A `drop`
-    leaves the slot empty at run time, but the build counts the drop: the slot holds nothing again until a value is
+    `steal m`), and `'m' is used after drop m on line N ended it`: a place dropped or handed over is gone. A `drop`
+    leaves the place empty at run time, but the build counts the drop: the place holds nothing again until a value is
     put in it (`poke`).
-  - `'s' holds a Memory[Byte] (from line N) that hasn't ended, and this overwrites it`: a `poke` into a slot that
+  - `'s' holds a Memory[Byte] (from line N) that hasn't ended, and this overwrites it`: a `poke` into a place that
     holds live memory. Drop it first, or use `replace(value: new)`.
   - `'q.m' holds a Memory[S64], and this poke overwrites it without giving it back`: a field that holds a Memory, a Box,
     or an entity is changed with `q.m.replace(value: new)` (it gives the old one back first). A `poke` into it is allowed
-    only while it holds nothing: after `steal q.m as old`, or when its slot was filled with `.hollow()` and the field
+    only while it holds nothing: after `steal q.m as old`, or when its place was filled with `.hollow()` and the field
     wasn't poked since.
   - `'Q.destruct' never gives back 'me.m'`: a `destruct` gives back every field of `me` that holds a Memory, a Box, or an
     entity (`drop me.m`, `me.m.give_back()`, `me.m.destruct_all()`, `me.m.take()`, or `steal me.m as old` handed on) on
@@ -288,7 +308,7 @@ routine start() -> None
   access before `put_work`, hands it to the work, waits for it, and then gives it back:
 
   ```tessera
-  held: Authorized[Ledger] = ledger.get_exclusive_access()
+  held: Authorized[Ledger] <- ledger.get_exclusive_access()
   t: Thread[None] = get_thread[None]()
   t.put_work(entry: collect_dues.to[Callable](), args: (held, 3))
   t.wait_finished()
@@ -299,7 +319,7 @@ routine start() -> None
   Between `put_work` and the wait the handing routine neither uses nor gives back the access (`'held' is handed to
   the work put on 't' on line N, which changes it until it is waited for`), and it hands one access to one piece of
   work at a time. In the AccessManager's records the handing routine's flow holds it, and the work works through it.
-  Work that takes an exclusive access itself (`counter: Authorized[U64] = COUNTER.get_exclusive_access()`, the change
+  Work that takes an exclusive access itself (`counter: Authorized[U64] <- COUNTER.get_exclusive_access()`, the change
   through `counter.getview()`, `drop counter`, for many threads changing one value in turn) changes through that
   access too. Memory handed to the work without `steal`, and every global, counts as shared, even when the routine
   that hands it waits for the work and doesn't touch it meanwhile: `steal` is for handing memory over for good. A
@@ -310,13 +330,13 @@ routine start() -> None
   The build doesn't know whether two threads get the same memory and follows no `Addr` or address made with
   `inttoptr`: the debug race check (`[debug] race-check`, on in a debug build where it is supported) catches what it
   misses while the program runs.
-- **The escape check (rule 3).** A routine doesn't return a view of its frame (a local slot, a frame span, and
+- **The escape check (rule 3).** A routine doesn't return a view of its frame (a STACK place, a frame span, and
   every view made from them with `getslot` / `getslice` / `stride` / `offset` / `to` / a span's `getview`) or of a
   Box / Memory it holds (`m.getslice()`, `m.getslot(i)`), and doesn't store one through a parameter (`out.poke(x)`)
   or into a global. Errors: `this returns a view of the frame slot 'x' ...` and `this keeps a view of ... where it
   outlives 'r'`. Fix: return the values, or let the caller pass the memory in (a `@[T]` or a `@T` parameter) and
   write there. The check follows values out of the routine:
-  - A value that holds such a view (a slot or entity the view was poked into, a record built with one, `R(held: l)`
+  - A value that holds such a view (a place or entity the view was poked into, a record built with one, `R(held: l)`
     as well as `(held: l)`) carries it: returning it, storing it, or handing it to a routine that keeps it is an
     error. `drop q` hands `q` to its `destruct`, so a `destruct` that moves what `q` holds into a global is one.
   - Each routine has effects the build works out from its body and the routines it calls: the parameters it may
@@ -369,13 +389,14 @@ routine start() -> None
     grow(xs)
     again: @S64 = xs.getslot(0)  # take it again after
     ```
-- **A global holding a Box / Memory (rule 5).** `global CACHE: @Memory[Byte]` starts hollow. Only
-  `CACHE.replace(value: new)` changes it (it gives the old memory back, then stores the new one: `poke` is an error), and
-  no other routine than `start` drops it. Nothing has to: a global lives as long as the program, and the program's
-  end gives its memory back (the process's memory goes with it, and a device without an OS runs until reset).
+- **A global holding a Box / Memory (rule 5).** `global CACHE: &[Byte]` (no literal) is a global holding a `Memory`,
+  hollow until `CACHE.replace(value: ...)`. Only `replace` changes it (it gives the old memory back, then stores the
+  new one: `poke` is an error), and no other routine than `start` drops it. Nothing has to: a global lives as long as
+  the program, and its memory is given back when the program ends (the process's memory goes with it, and a device
+  without an OS runs until reset).
 
   ```tessera
-  global CACHE: @Memory[Byte]
+  global CACHE: &[Byte]
 
   routine refill(count: U64, fill: Byte) -> None
       CACHE.replace(value: Memory[Byte].construct(values: [fill], times: count, manager: HEAP))
@@ -390,17 +411,24 @@ routine start() -> None
   `resize` draws from it again (what a collection's `destruct` does with its storage).
 - **Every memory region has a manager** (all in Standard/System/Memory: the protocols, the hosted managers, and the
   ones without an OS). A manager is named for what it manages. A heap's obeys `HeapManageable` (blocks given back in any
-  order): `CHeapManager` (malloc / realloc / free, nothing in front of the blocks) and `CheckedHeapManager` (the heap
+  order): `CHeapManager` (C's malloc / realloc / free, nothing in front of the blocks) and `CheckedHeapManager` (the heap
   check below), and the hosted default table `HEAP` is the checked one under the heap check, else the C library's.
   `C_HEAP` is `CHeapManager`'s table in every build (memory C frees, or C's malloc hands over). A page manager obeys
   `PageManageable`: `OsPageManager`, whose table is `PAGES` (whole pages, `borrow` puts one page in front that keeps
-  the size). The tables are ready before `start`, and every allocating routine takes one as `@MemoryManager`:
-  `.construct(HEAP)`, `manager: PAGES`, `t: @MemoryManager = HEAP` for a copy in a slot. A `StackManager`
+  the size). The tables are ready before `start`, and every routine that borrows memory takes one as `@MemoryManager`:
+  `.construct(HEAP)`, `manager: PAGES`, `t: @MemoryManager = HEAP` to name it. A `StackManager`
   (`bottom`, `top`, `sp`: `size()`, `remaining()`, `used()`, `holds(at)`) manages one flow's stack: `sp` is the flow's
   stack pointer while it is stopped (a fiber switched away writes it there, the switch back reads it), `.hollow()` while
   it runs and always for a thread's first stack, and `used()` / `remaining()` count from `sp` when it is set, else from
-  the caller's stack pointer. It hands out `local`
-  slots by moving the stack pointer, so it has no table. `StackManager.current()` is the running flow's: a fiber's
+  the caller's stack pointer. It has no table: every routine borrows its frame from the running flow's StackManager,
+  the builder calling `StackManager.borrow_frame(size)` right after the prologue and `StackManager.give_back_frame()`
+  right before each return (after the STACK places go back). Programs never write these two (an `@inline` routine,
+  an assembly routine, and the two themselves don't get them). Without an OS, `borrow_frame` reads the stack pointer and
+  stops the program with `StackOverflowError` when it is less than 4 KiB above the stack's bottom (a frame whose slots
+  exceed the margin is checked from where the stack pointer was before it; a stack the program switched to itself, a
+  fiber stack in a global, isn't checked). With an OS the closed page below each stack stops it, and the fault report
+  names it `StackOverflowError (SIGSEGV)` (Linux / macOS: a fault at most 1 MiB below the running flow's StackManager
+  bottom or 4 KiB above it), on Windows the OS's stack overflow exception. `StackManager.current()` is the running flow's: a fiber's
   inside a fiber, else the thread's own stack, whose bounds the OS gives (without an OS, `__stack_bottom` to
   `__stack_top`: the end of the globals to the end of the board's RAM). `ThreadLocalManager.reset()` puts this thread's `@threadlocal` globals back
   to their starting values. Without an OS, `GlobalManager.prepare()` puts the globals in place (`prepare_core()` in the
@@ -411,21 +439,22 @@ routine start() -> None
   and `give_back(at: Addr) -> None`. Memory from a manager is borrowed: the program gives it back, and the manager
   takes it back. One that handles pages obeys `PageManageable` too (it refines `MemoryManageable`):
   `reserve(size)`, `commit(at, size) -> Bool`, `release(at, size)`, and `protect(at, size, access: PageAccess) ->
-  Bool` (false where its pages can't change what they allow). `m.to[MemoryManager]()` on the manager's slot makes the
-  table every allocating routine takes as `@MemoryManager`: routines that call m's own, and m's address. Keep it in a
-  slot: `local arena: @Bump <- .construct(buffer)`, `local table: @MemoryManager <- arena.to[MemoryManager]()`,
-  `local xs: @List[S64] <- .construct(table)`. A manager of plain data is a `record`, one with a state worth keeping
+  Bool` (false where its pages can't change what they allow). `m.to[MemoryManager]()` on the manager's place makes the
+  table every routine that borrows memory takes as `@MemoryManager`: routines that call m's own, and m's address. Keep
+  it in a place: `arena: &Bump <- .construct(buffer)`, `table: &MemoryManager <- arena.to[MemoryManager]()`,
+  `xs: &List[S64] <- .construct(table)` (STACK places go back last borrowed first, so the list goes before the table
+  and the table before the arena). A manager of plain data is a `record`, one with a state worth keeping
   apart (an arena) an `entity`. The table is called through `borrow`, `reborrow`, `give_back`, `reserve` / `commit` /
   `release`, and `protect(at, size, PageAccess.NONE | READ | READ_WRITE)`, with `has_pages()` / `has_protect()`
   (both true for a `PageManageable` manager, both false otherwise, and calling an empty one crashes with
   `NotImplementedError`). Its fields and `MemoryManager.construct` are secret to `Standard/System/Memory`, which also
   writes out the hosted tables (`DefaultMemory.te`) for its hosted managers (`Heap.te`, `Pages.te`). Raw `allocate[T]` asks for
   `alignof[T]()`.
-- **The table views its manager.** Using a table after its manager's slot
+- **The table views its manager.** Using a table after its manager's place
   ended is a build error: `'table' is the table of the manager 'arena', which ended at drop arena on line N, so the
   table points at a manager that isn't there: a manager outlives its table. Use 'table' before line N, or end 'arena'
-  after the table's last use` (the same for `steal arena`), and returning a table of a frame slot's manager is the
-  escape check's error. Memory taken through the table in the same routine (a `Memory`, a `Box`, a `List`) is given
+  after the table's last use` (the same for `steal arena`), and returning a table of a STACK place's manager is the
+  escape check's error. Memory borrowed through the table in the same routine (a `Memory`, a `Box`, a `List`) is given
   back before the manager and the table end (the group check above). Memory handed to another routine and given back
   there after the manager ended isn't followed.
 - **The default heap comes with a target that has an OS.** `Standard/System/Memory` then has `HEAP`, `C_HEAP`, and
@@ -434,20 +463,23 @@ routine start() -> None
   `Memory[U8].construct(n)`), drawing from `HEAP`. Memory C frees or reallocates, or memory from C's malloc, goes
   through `C_HEAP` (plain malloc in every build). A file that doesn't import `Standard/Os`,
   and every program for a target without an OS, passes a manager.
-- **Memory is declared `@T` (or `@[T]`), and its contents go in with `<-`.** A name that is an address is
-  written with its pointer type, and the declared type is the name's type everywhere:
-  `local p: @T <- v` (a stack slot, `<- .hollow()` if a routine fills it), `global NAME: @T [<- value]` (mutable,
-  all-zero without a value), `preset NAME: @T <- value` (read-only), and the span forms above. `preset NAME: T = value` is a value, not memory: folded at build time, with
+- **Presets and globals in memory are places too, filled with `<-`.** `p: &T <- v` (a STACK place, `<- .hollow()`
+  if a routine fills it), `global NAME: &T [<- value]` (mutable, all-zero without a value), `preset NAME: &T <- value`
+  (read-only), and the span forms above: `preset TABLE: &Array[U32, 4] <- [...]`, `preset NAMES: &[@[Byte]] <- [...]`,
+  `global COUNT: &U64 <- 0`. `global COUNT: &U64 = 5` is a build error ("a global is a place, filled with '<-':
+  global COUNT: &U64 <- value"), so are `global COUNT: @U64 <- 5` ("a global is a place, written &T or &[T] (@T and
+  @[T] only view)") and `preset BOUND: &U64 = 20`. `preset NAME: T = value` is a value, not memory: folded at build time, with
   no address. Its value may use operators like a body (`(SIZE + 7) // 8` is `SIZE.add(7).floordiv(8)`), and so may a type
   argument where a count goes: `Array[Byte, (BITS + 7) // 8]` with `needs BITS: U64`. A global or a preset in memory is part of the program image, there before `start` runs (nothing runs
   before it to compute one, on any target), so its contents are known at build time: literals, presets, `.hollow()`, `[...]` (an array), `T(field: value)` (a record field by field), a routine for
   a `Callable` (`f.to[Callable]()`), or the name of another global or preset in memory (its
-  address, and a global holding a pointer is `@@T`: `global HEAD: @@Node <- .hollow()`). Use them as `TICKS.peek()`,
-  `STATS.calls.poke(n)`, `K.getitem(i)`. Writing a `@T` preset's memory is a build error. Neither kind is a buildtime
+  address, and a global holding a pointer is `&@T`: `global HEAD: &@Node <- .hollow()`). A global or preset place's
+  name is used as its view: `TICKS.peek()`, `TICKS.poke(n)`, `STATS.calls.poke(n)`, `K.getitem(i)`, `TABLE[2]`.
+  Writing a `&T` preset's memory is a build error. Neither kind is a buildtime
   constant: a preset value is (`Array[S64, N]` with `preset N: U64 = 4`). An array preset is always in memory.
-- `@external("c")` and `@symbol("environ")` above `global ENVIRON: @@@Byte` declare a C variable (C's `extern`): no `<-`, read and
+- `@external("c")` and `@symbol("environ")` above `global ENVIRON: &@@Byte` declare a C variable (C's `extern`): no `<-`, read and
   written like any global; dllimport on Windows.
-- `@threadlocal` above `global NAME: @T [<- value]` gives each thread its own copy, starting from the value; the name is the
+- `@threadlocal` above `global NAME: &T [<- value]` gives each thread its own copy, starting from the value; the name is the
   running thread's copy, so don't hand it to another thread expecting that thread's copy. A preset can't be
   thread-local (read-only, so one copy serves every thread), a thread-local's address can't initialize another
   global, and a target without an OS has no thread-locals. `@threadlocal` takes no arguments yet. A thread ticket's
@@ -492,26 +524,20 @@ routine start() -> None
 
 **Statements and control flow**
 
-- A routine body is its head (optional `local` lines) and then its statements, top to bottom, 4 spaces in under the
-  header. Every path through the body ends in a `return` (bare for `None`, `return x` otherwise) or in a call to a
-  `@noreturn` routine (`crash(...)`, `crash_overflow()`), which ends the body it is in: no `return` after it. A body
-  that can run off its end is a build error. A routine without a body must be `@external`.
-- **Where a name is seen.** The routine's parameters and the values and slots its head declares are seen in the whole
-  body. Any other binding is seen from the line after it to the end of the body it is bound in: the routine's own
-  lines, an `if` arm, a loop body, a `when` arm. No name is bound twice: there is no reassignment, and a binding
-  made inside an arm or a loop isn't there after it. What must outlive its arm is a value chosen with `when`
-  (below), a head slot, or a loop's carried value. This is the most common error.
-- **The head: `local` lines.** Between the routine's header (and its `needs` lines) and the first statement, a
-  routine may declare values and slots the whole body sees: `local n: U64 = values.count()` (a value) and
-  `local sum: @U64 <- 0` or `<- .hollow()` (a slot). The head holds only local lines, top to bottom, each seeing the
-  routine's parameters, presets, globals, and the local lines above it, and its expressions may call routines. It runs
-  once when the routine starts. `fmt` puts the head 4 spaces in right under the header, with one blank line after
-  it. `local p: @T <- v` on any later line is the same slot, seen from the line after it to the end of the body it
-  is in. `local` in an assembly routine is a build error, and `local` and `drop` are keywords (a value of either name is written
-  `` `local` ``, `` `drop` ``).
-- **A routine's parameters and head values are seen everywhere, so no binding, carried value, or `when` name takes
-  one's name.** A value that starts from one and changes (a loop counter, a shrinking count) gets its own name as a
-  carried value (`until at >= count with at: U64 = start`) or a local slot.
+- A routine body is its statements, top to bottom, 4 spaces in under the header (its leading binding lines are simply
+  its first lines). Every path through the body ends in a `return` (bare for `None`, `return x` otherwise) or in a
+  call to a `@noreturn` routine (`crash(...)`, `crash_overflow()`), which ends the body it is in: no `return` after
+  it. A body that can run off its end is a build error. A routine without a body must be `@external`.
+- **Where a name is seen.** The routine's parameters are seen in the whole body. Any other binding (a value, a
+  place) is seen from the line after it to the end of the body it is bound in: the routine's own lines, an `if` arm,
+  a loop body, a `when` arm. No name is bound twice: there is no reassignment, and a binding made inside an arm or a
+  loop isn't there after it. What must outlive its arm is a value chosen with `when` (below), a place borrowed
+  before the arm, or a loop's carried value. This is the most common error. `local`, `drop` and `steal` are
+  keywords (a value of such a name is written `` `local` ``, `` `drop` ``).
+- **A routine's parameters are seen everywhere, so no binding, carried value, or `when` name takes one's name**
+  ("'n' is a parameter of routine 'double', which every block already sees: use the parameter itself, or share a
+  value under a name of its own"). A value that starts from one and changes (a loop counter, a shrinking count) gets
+  its own name as a carried value (`until at >= count with at: U64 = start`) or a place.
 - **`if c` / `elseif d` / `else`.** The lines under `if c` run when `c` holds, `elseif d` (one word, `else if` is a
   build error) tests the next condition, the lines under `else` (optional) run when none held, and `if not c`
   negates. An `if` is a statement, not a value: `x: T = if ...` is a build error ("if c then a else b
@@ -537,7 +563,7 @@ routine start() -> None
   needs nothing after it. It takes `with` and `then` like the others. `while` is not a keyword: a loop written with it
   is a build error pointing to `until` / `loop`. `until true` (the body never runs) and `until false` (write
   `loop`, the language server offers the fix) are warnings. `break`
-  leaves the loop (it takes no value: a result a `break` decides goes in a head slot), `continue` starts the next
+  leaves the loop (it takes no value: a result a `break` decides goes in a place borrowed before the loop), `continue` starts the next
   pass.
 - **Carried values.** `until n <= 1 with n: U64 = start, steps: U64 = 0` names what each pass changes, each with its
   type and first value, seen in the condition and the body. Every path through such a body passes the next values
@@ -597,8 +623,10 @@ routine start() -> None
   to two kinds of routine: an assembly routine (`@external("asm")`) and generated code, a routine marked
   `@generated` (RazorForge's Tessera backend and Mini write it on every routine), the routines the builder derives
   for a type included. Any other routine with a block or a jump is a build error that asks for `if`, `when`, and
-  loops. A routine written that way is a head and then blocks: the lines after the head are the entry block, `block entry()`
-  is written only when it is jumped back to and in an assembly routine, a block's parameters are the values it
+  loops. A routine written that way is blocks: the lines before the first `block` are the entry block, and
+  `block entry()` is written only when it is jumped back to and in an assembly routine. With an explicit `block
+  entry()`, the binding lines before it are the head that every block sees (without one they belong to the entry
+  block), a block's parameters are the values it
   takes, and each block ends in `jump`, `return`, `unreachable`, `todo`, a `@noreturn` call, or a statement whose
   every path leaves. Hand-written code doesn't need them.
 
@@ -726,9 +754,9 @@ routine start() -> None
   Writing `me` among the parameters is a build error,
   `common` on a routine on no type too. Modifier order: `secret common routine`. `@[T]` is the span type, so
   `routine @[Byte].trim()` is on a span and `routine @@[Byte].clear()` takes a span's address. `me` and `Me` are
-  reserved: no parameter, binding, or slot is named `me`, and no type is named `Me`. A routine meeting a protocol (`eq`, `compare`, `hash`) takes `me` as the protocol does. Where the
+  reserved: no parameter, binding, or place is named `me`, and no type is named `Me`. A routine meeting a protocol (`eq`, `compare`, `hash`) takes `me` as the protocol does. Where the
   type is expected (a binding, an argument, a carried value, a return), a leading `.` leaves it out:
-  `list: List[S64] = .construct(manager)`, `return .hollow()`. Not at the head of a chain or as a statement.
+  `xs: &List[S64] <- .construct(manager)`, `p: Point = .hollow()`, `return .hollow()`. Not at the head of a chain or as a statement.
 - **`@T` or `T`** (for `me` and any parameter): take `@T` when the routine changes the value in place, or
   when copying it is unwanted (a large value); take `T` when a copy is fine and the value isn't changed. There are no
   compound assignments (`+=`, `add_assign`): change a value in memory by load, act, store —
@@ -739,17 +767,18 @@ routine start() -> None
   collection's `eq`) aren't reachable through a pointer, because that would hide a load: load first
   (`a.peek().eq(b.peek())`).
 - **Collection methods that change the collection take `me` by its address (`routine @List[T].push(...)`)**, so it
-  must live in memory (a `local` slot) before you call them. **Read-only ones come in both receiver forms**: next to
-  the `routine List[T].m` one, a `routine @List[T].m` that forwards to it (`return me.peek().m(...)`, or reads the fields), so a slot or a field
-  reads directly (`list.count()`, `primes.getview()`, `line.find("=")` on a `@@[Byte]` slot, `w.getview()` on a
+  must live in memory (a place: `xs: &List[S64] <- ...`) before you call them. **Read-only ones come in both receiver forms**: next to
+  the `routine List[T].m` one, a `routine @List[T].m` that forwards to it (`return me.peek().m(...)`, or reads the fields), so a place or a field
+  reads directly (`list.count()`, `primes.getview()`, `line.find("=")` on a `&@[Byte]` place, `w.getview()` on a
   `SliceWriter`) and a value too. This holds for the collections and `@[T]`, and a type of your own
-  that people keep in slots does the same for the reads they call there. It's never automatic, and three kinds stay
+  that people keep in places does the same for the reads they call there. It's never automatic, and three kinds stay
   value-only because on a pointer they'd be about the pointer: `eq` / `compare` / `hash` (a pointer compares only
   by address, `a === b`, so values compare as `a.peek() == b.peek()`), `represent_into` / `diagnose_into` (a pointer isn't
-  Representable, so `{list}` on a slot is a build error that asks for `{list.peek()}`), and a generic `to[T]` (it
+  Representable, so `{p}` on a `&Point` or `&S64` place is a build error that asks for `{p.peek()}`, also written
+  `{p.load()}`, while an entity's place writes directly: `{list}`), and a generic `to[T]` (it
   would hide `Ptr`'s `to<@U>`). You can't call a pointer method on a temporary:
-  `DictIter[TKey, TValue].construct(m).emit()` fails with "has no method 'emit'"; put the iterator in a local
-  slot first.
+  `DictIter[TKey, TValue].construct(m).emit()` fails with "has no method 'emit'"; put the iterator in a place
+  first (`iter: &DictIter[TKey, TValue] <- .construct(m)`).
 - **A constraint is said once, where it belongs.** A record's (or variant's) `needs` constraints hold in every
   routine on it, wherever the routine is declared (an extension routine in another module, such as
   `Standard/Os/Defaults.te`, included): a constraint is a fact about the type, said where the type is declared. So a
@@ -830,8 +859,8 @@ routine start() -> None
   `compare`, `hash`, ...). A literal is a `@[Byte]` of the program image, `@[Byte].construct(data, count)`
   wraps bytes from C, and text made from other text (`slice`, `getslice`, the iterators, `buf.getview()` of a
   `List[Byte]`) views the same memory. Text a routine takes memory for (`@[Byte].concat`, `Console.ask_line`,
-  `OsFileManager.read_all`, `OsEnvironment.variable`, ...) comes back as a `Memory[Byte]`: keep it in a slot and give it
-  back once (`local line: @Memory[Byte] <- Console.ask_line()`, then `drop line`), and observe a `Maybe` or `Check` of one
+  `OsFileManager.read_all`, `OsEnvironment.variable`, ...) comes back as a `Memory[Byte]`: bind it with `<-` and give it
+  back once (`line: &[Byte] <- Console.ask_line()`, then `drop line`), and observe a `Maybe` or `Check` of one
   with `when` (`when try Console.ask_line(manager)` then `is Memory[Byte] as line => ...`). A Memory lends itself to a text routine at
   a receiver or an argument (`line.find("=")`, `out.write("{line.getslice()}")` in a template). Escapes: `\xXX` is one byte (strings, `b'..'`), `\uXXXXXX` one
   character by exactly six hex digits (strings, `'..'`), so `"\u01F600"` equals `"\xF0\x9F\x98\x80"`.
@@ -841,7 +870,7 @@ routine start() -> None
   `(data: @CChar)` (C's `char`, `S8` or `U8` as the target has it), symmetric with `CWStrView` over `@CWChar`, so
   a pointer becomes one with `p.to[CStrView]()` (on a `@CChar` or a `@Byte`). A `CStrView` stays one pointer (C's ABI), so
   it carries no memory manager, and `c.getview()` is its text as a `@[Byte]`. A `@[Byte]` has no terminator: bind
-  `s.to[CStr](manager)` in a local slot (a copy that lends `to[CStrView]()` and is given back with `drop`) or use
+  `s.to[CStr](manager)` in a place (a copy that lends `to[CStrView]()` and is given back with `drop`) or use
   `buf.to[CStrView]()` on a `List[Byte]`.
 
 **Errors**
@@ -1015,43 +1044,46 @@ routine start() -> None
 **Entities**
 
 - `entity Name` is declared like a record (fields, `construct`, `destruct`), and is one of a kind: it is never copied.
-  It lives in a place, a `local` slot (`local c: @Counter <- .construct()`), a global, or a field of another entity,
-  and every name for one is that place, `@Counter`: `x: Counter = ...` is a build error. Its routines take
-  `me` by its address, `routine @Counter.f(...)` (`routine Counter.f(...)` is a build error). A parameter that takes one over (`c: Counter`) is a slot of the routine
-  inside it. Every entity declares `construct` and `destruct`, and its life ends with `drop`, on every path, like
-  memory from a manager.
+  It lives in a place, a `&Counter` (`c: &Counter <- .construct()`, given back by the builder at the body's exit
+  when it comes from STACK), a global, or a field of another entity, and every name for one is that place or its
+  address, `@Counter`: `x: Counter = ...` is a build error ("a Counter is an entity, which lives in a place: x:
+  &Counter <- ..."). Its routines take
+  `me` by its address, `routine @Counter.f(...)` (`routine Counter.f(...)` is a build error). A parameter that takes one over (`c: Counter`) is a place of the routine
+  inside it, which the routine ends (`drop`, `return`, or hand on). Every entity declares `construct` and `destruct`, and its life ends
+  exactly once on every path, like memory from a manager: the builder's give back of a STACK place, or `drop`.
 - Every manager is an `entity` (`MemoryManager`, `StackManager`, `CHeapManager`, `ThreadManager`, `AccessManager`, ...):
   a copy would keep its own record and diverge, so a table is reached through its place (`manager: @MemoryManager =
   HEAP`, never `HEAP.peek()`). Every service (`Console`, `Clock`, `CpuClock`, `OsEnvironment`, `OsEntropy`, `Crash`)
   is a `record` with no member variables (body `nothing`): its state is a `secret` global or the OS's, and its
   routines are `common`, called on the type. The builder does not check this by name: the stdlib follows it.
-- Handing over is written with `steal`. `steal a as b` hands what the slot `a` holds over to a new slot `b`, and an
+- Handing over is written with `steal`. `steal a as b` hands what the place `a` holds over to a new place `b`, and an
   argument is handed over with `f(c: steal a)`: `a` ends there, and using it afterwards is a build error. `steal p.left as old` takes
-  what a field holds into a new slot `old` and leaves the field hollow: reading it before a value is put back
+  what a field holds into a new place `old` and leaves the field hollow: reading it before a value is put back
   (`p.left.poke(Counter.construct())`) is a build error, and so is returning while a place reached through a
   parameter, `me`, or a global is still hollow (the caller would find the hole). The place is zeroed in place, so a
-  `destruct` that reaches it anyway does nothing. `return c` hands what the slot `c` holds to the caller,
+  `destruct` that reaches it anyway does nothing. `return c` hands what the place `c` holds to the caller,
   and `c` ends.
-- What copies an entity is a build error that says what to do instead: a load out of memory (`slot.peek()`), or a
+- What copies an entity is a build error that says what to do instead: a load out of memory (`p.peek()`, `m[i]`), or a
   field read out of a record value.
 - A record can't hold an entity by value (it would copy it), a generic one included (`nodes: Memory[T]`): declare the
   holder `entity` too, or hold a pointer. A tuple item can't be an entity either. A record or tuple item that is a
-  pointer to an entity (`(pool, 0, 10)` for a `(@ThreadPoolManager, U64, U64)`) lends the entity's place: the slot it came
-  from still owns it.
+  pointer to an entity (`(pool, 0, 10)` for a `(@ThreadPoolManager, U64, U64)`) lends the entity's place: the place it came
+  from still holds it.
 - In the standard library, these are entities: `Memory[T]`, `Box[T]`, every collection (`List`, `Set`, `Dict`, the
   sorted ones, `CircularList`, `PriorityQueue`), `Channel[T]` / `SharedChannel[T]`, `ThreadPoolManager`, `FiberManager`,
   `CStr` / `CWStr`, `ProcessOutput`, and `File` / `Directory` (each holds the memory of a path it made). A
   `MemoryManager`, a `@[T]`, a `@T`, and an iterator stay records.
-- An entity value a `routine @E.f` is called on, or that goes where an `@E` is taken, needs no slot of its
-  own: `Counter.at(n).get()`, `OsFileManager.is_file(at: File.at(p))`. The builder puts it in an unnamed slot that ends when
+- An entity value a `routine @E.f` is called on, or that goes where an `@E` is taken, needs no place of its
+  own: `Counter.at(n).get()`, `OsFileManager.is_file(at: File.at(p))`. The builder puts it in an unnamed place that ends when
   the statement does (a condition's and a `when` subject's as soon as they are read, when what they give borrows
   nothing from it; a returned value's before the return).
 - A variant may have an entity branch: `Maybe[Counter]`, `variant Opened / Counter / Closed`. Such a variant value holds an entity,
-  so it follows the same rules: it lives in a slot (`local r: @Maybe[Counter] <- open()`, a value binding is a build
-  error), a parameter of that type is a slot, and it is handed over with `steal` or `return r`. A `when` observes it as a call's
-  result (`when open()`) or out of its slot (`when steal r`), and `is Counter as c` hands the entity over to the arm's own
-  slot `c`, which ends there (drop, return, or hand on). The arm that observes an entity branch must name it, and `else`
-  never takes one. `return c` from a Counter's slot returns it where the routine returns a variant with a Counter branch.
+  so it follows the same rules: it lives in a place (`r: &Maybe[Counter] <- open()`, which the program ends: a STACK
+  place of a variant isn't given back by the builder, and a value binding is a build error), a parameter of that type
+  is a place, and it is handed over with `steal` or `return r`. A `when` observes it as a call's
+  result (`when open()`) or out of its place (`when steal r`), and `is Counter as c` hands the entity over to the arm's own
+  place `c`, which ends there (drop, return, or hand on). The arm that observes an entity branch must name it, and `else`
+  never takes one. `return c` from a Counter's place returns it where the routine returns a variant with a Counter branch.
 - A container that owns its elements may take an entity as its type argument: `List[List[S64]]`, `Memory[Counter]`, a
   `Shelf[Counter]` of your own that keeps them in a `Memory[T]`. Elements go in with `steal` and are reached through
   `getslot` (an `@T`), two of them trade places with `swap(first, second)` (both moved, neither place left hollow:
@@ -1063,8 +1095,8 @@ routine start() -> None
   (the value is copied, the drop does nothing): leave the marker out. Where x's written type is a type parameter
   (`T`, `@T`, `List[T]`, `Me` of a generic type), both are always allowed and written once for any T: for an entity T
   they hand it over and end it, for a record T steal is the value and drop does nothing. `drop` on a value that isn't a place
-  (a call's result, an arm's value) puts it in a slot of its own first, so its destruct gets an address.
-- A call that hands back an entity (or a value holding one) can't be a bare line: keep it in a slot, drop it, or hand
+  (a call's result, an arm's value) puts it in a place of its own first, so its destruct gets an address.
+- A call that hands back an entity (or a value holding one) can't be a bare line: keep it in a place (`x: &T <- ...`), drop it, or hand
   it on.
 
 **Variants**
@@ -1104,7 +1136,7 @@ routine start() -> None
 - Layout `{ i64 tag, [0 x A], [N x iW] }`: the tag's low 32 bits are the branch type's ID (FNV-1a of the type's
   identity, never 0), the same in every variant with that type, so moving a value into a wider variant is a copy; the
   high 32 bits are reserved for what travels with the value. Storage is the largest branch, and zero-size branches
-  (`None`, empty records) need none. Building with storage and an arm that names the value go through a stack slot
+  (`None`, empty records) need none. Building with storage and an arm that names the value go through a frame slot
   (gone at `-O`). An all-zero (`.hollow()`) variant holds no branch, and a `when` on it crashes with
   `InvalidValueError`.
 - A choice or variant without `@derive` derives Representable, Diagnosable, Equatable, Hashable, and Comparable (a
@@ -1129,12 +1161,12 @@ routine sum_to(n: U64) -> U64
 
 Iterating a collection (`emit` is failable and throws `AbsentValueError` past the end, so `try iter.emit()` gives `None`
 there and `each x in iter` stops there; an iterator over elements in memory, `ListIter`, `ArrayIter`, `CircularListIter`,
-`SortedListIter`, `SortedSetIter`, `DictValues` (a dict's values, never its keys), also hands out each element's slot
+`SortedListIter`, `SortedSetIter`, `DictValues` (a dict's values, never its keys), also hands out each element's place
 with the failable `next`):
 
 ```tessera
 routine sum_list(list: @List[S64]) -> S64
-    local iter: @ListIter[S64] <- .construct(list)
+    iter: &ListIter[S64] <- .construct(list)
 
     loop with total: S64 = 0
         item: Maybe[S64] = try iter.emit()
@@ -1160,8 +1192,8 @@ failable routine parse_count(text: @[Byte]) -> U32
 is built from pieces, which are entities holding their part of the pattern in memory: a piece that starts a pattern
 takes the manager, one built from pieces takes the manager of the piece it is built from, and `TextPattern.of` takes
 the pieces over (a span literal written in place):
-`local date: @TextPattern <- TextPattern.of([capture("year", digit(HEAP).repeat(4)), text("-", HEAP)], HEAP)`, then
-`drop date`. Tessera presets fold only literals, so a pattern is compiled at run time: make it once.
+`date: &TextPattern <- TextPattern.of([capture("year", digit(HEAP).repeat(4)), text("-", HEAP)], HEAP)`, then
+the builder gives it back at the end of the body (from STACK). Tessera presets fold only literals, so a pattern is compiled at run time: make it once.
 - Pieces: `text(t, manager)`, `digit(manager)`/`letter`/`space`/`word_char` (ASCII), `unicode_digit(manager)`/... (every
   script), `any_char(manager)`, `one_of(chars, manager)`, `none_of(chars, manager)`, `char_range(from:, to:, manager)`,
   `start_of_text(manager)`, `end_of_text`, `start_of_line`, `end_of_line`, `word_boundary`.
@@ -1210,8 +1242,8 @@ Format through `Standard/System/Text` (`Format.te`), not printf. printf is for C
   through a temporary on `HEAP`). It is failable: `EndOfInputError` at the end of the input, and the failure of
   `to[T]` on a word that isn't a T. `try Console.ask[T]()` gives `Maybe[T]` (`None` for both).
 - `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, and
-  `@[Byte]` (a `Memory[Byte]` writes through its view: `{line.getslice()}`). A pointer is neither Representable nor Diagnosable, so `{sum}` on a `local sum: @S64` slot is a build
-  error, not its address: write the value with `{sum.peek()}`, or the address with `{sum.to[Addr]()}`
+  `@[Byte]` (a `Memory[Byte]` writes through its view: `{line.getslice()}`). A pointer is neither Representable nor Diagnosable, so `{sum}` on a `sum: &S64` place is a build
+  error, not its address: write the value with `{sum.load()}` or `{sum.peek()}`, or the address with `{sum.to[Addr]()}`
   (`0x7ffd5e8c1a40`, an `Addr` writes itself). A derived routine writes a pointer field's address.
   `v.represent_hex_into(out)` for an integer's bits in hex; `represent_into(out, min_digits)` (`U64`, `U128`, `U256`) and `represent_hex_into(out,
   min_digits)` (`U64`) zero-pad; `represent_fixed_into(out, digits)`; `represent_with_into(out, v, spec)` with a `FormatSpec`.
@@ -1233,8 +1265,13 @@ Format through `Standard/System/Text` (`Format.te`), not printf. printf is for C
 
 All in `Standard/Collections/`, documented in `../Tessera-Wiki/docs/Collections.md`. They keep their
 storage in a `Memory[T]`: a `List` is `storage` (a Memory whose count is the capacity) and `count`. `construct(manager)` keeps
-the memory manager (`construct()` with `Standard/Os` uses the default heap), and `drop list` releases storage and keeps
-the memory manager, so the collection can be used again. Element access is
+the memory manager (`construct()` with `Standard/Os` uses the default heap), and `drop list` gives the storage back and
+keeps the memory manager, so the collection can be used again. Every collection is also made from an array value with
+`of(values: Array[T, N], manager: @MemoryManager)`, or `of(values: ...)` from the default heap (Standard/Os): `xs:
+&List[S64] <- List[S64].of(values: [3, 1, 2], manager: HEAP)`. List, CircularList, SortedList, Set, SortedSet,
+PriorityQueue (`Array[(TPriority, TElement), N]`), BitList (`Array[Bool, N]`), Dict and SortedDict (`Array[(TKey,
+TValue), N]`) have it. The array is taken over, so entity values go in themselves, not copies
+(`List[List[S64]].of(values: [List[S64].of(values: [7]), List[S64].construct()])`). Element access is
 `getitem(i)` / `setitem(i, v)` (the name says what is fetched), `getslot(i)` the checked address, `swap(first, second)`
 (the two elements trade places in place, moved, never copied, so entity elements swap too, a no-op for the same index,
 and an index past the end crashes like `getitem`: on `List`, `CircularList`, `Array` through its pointer, `@[T]`, and
@@ -1298,8 +1335,7 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
   slot (`Crash.report_with`), and readies the board, then `start` runs. The program writes it: without an operating
   system a program with `start` and no `when_power_on` is a build error, and with one `when_power_on` is a build
   error.
-- Every routine with a body is its head's `local` lines (if it has any) and then its statements. A routine without
-  a body must be `@external`.
+- Every routine with a body is its statements, top to bottom. A routine without a body must be `@external`.
 
 **Threads, fibers, and ThreadPoolManager jobs are tickets.** A manager hands one out, and it is used in one flow, top to bottom:
 `t: Thread[S64] = get_thread[S64]()`, `t.put_work(entry: f.to[Callable](), args: x)` (it runs from here on),
@@ -1356,7 +1392,7 @@ code waiting on several tickets at once.
   or a ThreadPoolManager. A thread that drives a manager between other work loops on `run_until_idle()` and sleeps on a word
   of its own: `wake_through(word)` makes a wake from another thread change that word (and `wake_all` it),
   `idle_wait() -> Duration` is how long it may sleep before a fiber with a deadline is due (`Duration.MAX` for none).
-- **ThreadPoolManager** (`Standard/Fiber/ThreadPoolManager.te`, M:N): `local pool: @ThreadPoolManager <- .construct(threads: 0)` (0 = one
+- **ThreadPoolManager** (`Standard/Fiber/ThreadPoolManager.te`, M:N): `pool: &ThreadPoolManager <- .construct(threads: 0)` (0 = one
   thread per processor), `j: Job[T] = pool.get_job[T]()`, then the ticket flow (`put_work`, `check_finished`,
   `wait_finished` / `wait_finished_for` / `wait_finished_cancellable`, `retrieve`, `cancel`, `give_back`). Work waits in the pool's queue until a
   pool thread is free, then runs as a fiber the POOL keeps (not a thread's `FIBERS`). It runs until it waits, like any
@@ -1383,11 +1419,15 @@ error). `Bool` has none: use a `U8`.
 
 **Accesses and waits.** A thread waiting sleeps, a fiber waiting parks (its thread goes on with the other fibers): every
 stdlib wait does what fits the code running it. The `AccessManager` (Standard/Os/AccessManager.te) hands out access to
-memory: `held: Authorized[T] = p.get_exclusive_access()` (this flow alone reads and writes the value) and `reading:
-ReadAuthorized[T] = p.get_shared_read_access()` (several flows read it, none writes), on a `@T` and on a `Box[T]`
+memory: `held: Authorized[T] <- p.get_exclusive_access()` (this flow alone reads and writes the value) and `reading:
+ReadAuthorized[T] <- p.get_shared_read_access()` (several flows read it, none writes), on a `@T` and on a `Box[T]`
 (`b.get_exclusive_access()` is the value's). The value is read and written through the access's `getview()`, a `@T`
 (`held.getview().poke(v)`, `reading.getview().peek()`), and the view of a `ReadAuthorized[T]` reads only. `drop held`
-gives the access back. An access covers the value's bytes, `[p, p + sizeof[T]())`: there is no way to take a `@[T]` at once, the elements
+gives the access back, and the program writes it. An access is bound with `<-` from the call that borrows it: `=` is a
+build error ("a Authorized[S64] is borrowed and given back with drop, so it is bound with '<-' from the call that
+borrows it: held: Authorized[S64] <- ..."), so is a second name (`again: Authorized[T] <- held`: "a second name for
+one borrowed Authorized[S64] would give it back twice"), and so is a STACK place of one (`held: &Authorized[S64] <-
+...`). An access covers the value's bytes, `[p, p + sizeof[T]())`: there is no way to take a `@[T]` at once, the elements
 of a run are taken one at a time (`m.getslot(i).get_exclusive_access()`, `list.getslot(i).get_exclusive_access()`), and
 `list.data.get_exclusive_access()` is the first element alone. A record (a List's count, capacity and data pointer)
 and its element buffer are separate memory, taken separately: growing or moving a buffer changes the record, so it
@@ -1420,7 +1460,7 @@ waited-for thing knows is a `Waiter` (`current_waiter()`: a fiber parks through 
 own), with `park()` / `park_until(deadline)` / `wake()`. All in Standard/Os.
 
 **Channels** (Standard/Os/Channel.te): `Channel[T]` (one receiver) and `SharedChannel[T]` (many, each value to
-one), shared as `@Channel[T]`: `local ch: @Channel[U64] <- .construct(capacity: 8)` (or `construct(capacity, manager)`),
+one), shared as `@Channel[T]`: `ch: &Channel[U64] <- .construct(capacity: 8)` (or `construct(capacity, manager)`),
 the failable `transmit(value)` (waits while full), `transmit_if_room(value) -> Bool` (never waits), the failable
 `receive() -> T` (waits while empty, receive it with `when check ch.receive()`, `is T as v => ...`,
 `is ChannelClosedError => ...`, `is CancelRequested => ...`), `drop ch`. Both throw `ChannelClosedError` or
@@ -1464,12 +1504,12 @@ is failable and throws one of `FsError`'s crashables: a bare call that fails sto
 - reading and writing: `read_all(at, manager)` (a `Memory[Byte]`, drop it), `write_all(at, data)` (the whole content,
   the file emptied first).
 - opening: `open_read` / `open_write` (emptied) / `open_append` / `open_read_write` give a `FileHandle` (keep it in a
-  local slot: `read_bytes`, `write_all`, `h.write("...")`, `seek`, `size`, `set_size`, `sync`, all failable, `close`,
+  place: `read_bytes`, `write_all`, `h.write("...")`, `seek`, `size`, `set_size`, `sync`, all failable, `close`,
   which leaves it empty, and `FileHandle.empty()` a handle to nothing whose `close` does nothing).
 - file storage: `storage[T](at, write, start, count)` maps the file as cells of `T` (`StorageCell[T]`: `Byte`, or
   `Char`, four bytes each, UTF-32LE), `count` cells from cell `start` (`U64.MAX` to the end), clamped to the whole
   cells the file has. It gives a `FileStorage[T]` (a record: `count()`, `s[i]` (failable: `IndexOutOfBoundsError`, `InvalidCellError`), `s[i] = v` on a
-  slot, `data()`, the failable `flush()`, `unmap()`). A cell past `count()` crashes with `IndexOutOfBoundsError`, a
+  place (`s: &FileStorage[Byte] <- OsFileManager.storage[Byte](...)`), `data()`, the failable `flush()`, `unmap()`). A cell past `count()` crashes with `IndexOutOfBoundsError`, a
   write to one mapped without `write` and a `Char` cell that isn't a Unicode scalar with `InvalidValueError`. It never
   grows the file: `set_size` first.
 - deleting, renaming, moving, copying: `delete(at)` (a file, or an empty directory), `delete_all(at, manager)`,
@@ -1483,7 +1523,7 @@ is failable and throws one of `FsError`'s crashables: a bare call that fails sto
   in ns, `readonly`), `link_metadata(at)`, `is_accessible(at, access)`, `partition(at, manager)` (the `PartitionManager`
   the path is on).
 - setting: `set_readonly(at, readonly)`, `set_size(at, size)`.
-- listing: `list(at, iter)` starts a `DirIter` (a local slot, `local iter: @DirIter <- .hollow()`), then
+- listing: `list(at, iter)` starts a `DirIter` (a place, `iter: &DirIter <- .hollow()`), then
   `each entry in iter` (or `try iter.emit()` until `None`), then `iter.close()`.
 - paths: `absolute(at, manager)`, `canonical(at, manager)`.
 
@@ -1498,14 +1538,13 @@ Each routine that takes `manager` has an overload without it that uses the defau
 takes a memory manager and returns a `Memory[Byte]` from it (`read_all`, `OsEnvironment.variable`): give it back with
 `drop`. A `File` and a `Directory` are entities: one that makes a path (`file`, `go_to`, `absolute`, `canonical`,
 OsEnvironment's directories) returns a `File` / `Directory` whose path is held in a `Memory[Byte]`,
-kept in a slot and given back with `drop file` / `drop dir` (which gives nothing back for a path it only views, such
+kept in a place and given back with `drop file` / `drop dir`, or by the builder for a STACK place (which gives nothing back for a path it only views, such
 as a literal's):
 
 ```tessera
-local notes: @File <- dir.file(name: "notes.txt", manager)
+notes: &File <- dir.file(name: "notes.txt", manager)
 OsFileManager.make_file(at: notes, replacing: false)
 OsFileManager.write_all(at: notes, data: "first line\n")
-drop notes
 ```
 
 **Storage.** Memory is main memory, storage what keeps files (a disk, an SSD, an SD card). A `StorageManager` manages
@@ -1535,7 +1574,7 @@ one of `ProcessError`'s crashables (`NotFoundError`, `NotEnoughPermissionError`,
 `MemoryAllocationError`, `IoError`) when the program can't start or its output can't be captured. The output is an `ExitStatus`
 (`variant ExitStatus / Exited / Signaled` over the records `Exited(code: S32)` and `Signaled(signal: S32)`, with
 `.code()`, `.is_success()`) and the captured `stdout` / `stderr` (`Memory[Byte]`). A `ProcessOutput` is an entity:
-`local out: @ProcessOutput <- ProcessManager.create_shell_process(...)` or `when check ProcessManager.create_shell_process(...)`, then `drop out`. `ProcessOptions.default()` captures both and gives the child the null device as input. Set
+`out: &ProcessOutput <- ProcessManager.create_shell_process(...)` or `when check ProcessManager.create_shell_process(...)`, then `drop out`. `ProcessOptions.default()` captures both and gives the child the null device as input. Set
 `directory`, `env` / `env_count` (overrides merged into this process's environment), and each stream's mode.
 `OsEnvironment.variable(name, manager)` reads a variable (`None` when it isn't set), `ProcessManager.exit_process(status)`
 ends this process at once, and
@@ -1676,7 +1715,7 @@ byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`
 that `to[T]`, which would call itself there. It keeps the shape under its own name, `x.soft_to[B16]()`
 (Standard/System/Numerics/SoftFloat), and a shim that only exists to be exported is named for its symbol (`export_truncsfhf2`).
 
-**The empty value: `.hollow()`, `.empty()`, or `.zero()`.** A type's ready-made empty value (what a slot that
+**The empty value: `.hollow()`, `.empty()`, or `.zero()`.** A type's ready-made empty value (what a place that
 `finish` releases starts as, the "nothing yet" of a record) is a typewise routine without arguments. Every type has
 `.hollow()`, all bytes zero, which every `destruct` and `drop` leaves alone: the empty value of a `Memory`, a `Box`, a
 `@[T]`, and a record holding them. A type whose empty value isn't all zero, or means something of its own, names it

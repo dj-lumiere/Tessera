@@ -2457,7 +2457,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         int k = AfterTypeArgs(0);
         return PeekTok(k).Kind == TokenKind.LParen
                || PeekTok(k).Kind == TokenKind.Dot && PeekTok(k + 1) is { Kind: TokenKind.Ident, Text: "to" }
-                  && PeekTok(k + 2).Kind == TokenKind.LBracket && PeekTok(k + 3) is { Kind: TokenKind.Ident, Text: "Callable" };
+                  && PeekTok(k + 2).Kind == TokenKind.LBracket && PeekTok(k + 3) is { Kind: TokenKind.Ident, Text: "Callable" or "Work" };
     }
 
     /// `f(args)`, `f[T](args)`, `Type.f(args)`, `Type[T].f[U](args)`, `Type.CONST`, `CONST`, `Type(field: value)`,
@@ -2509,6 +2509,19 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             Expect(TokenKind.RParen, "')': a routine becomes a Callable with name.to[Callable]()");
             return new RoutineRef(name.Text, written.Args.Count == 0 ? null : written, pos)
                 { Path = path, TypeArgs = typeArgs.Select(a => ((TypeArgType)a).Type).ToList() };
+        }
+
+        if (typeArgs.All(a => a is TypeArgType) && Is(TokenKind.Dot) && PeekTok(1) is { Kind: TokenKind.Ident, Text: "to" }
+            && PeekTok(2).Kind == TokenKind.LBracket && PeekTok(3) is { Kind: TokenKind.Ident, Text: "Work" }
+            && PeekTok(4).Kind == TokenKind.RBracket && PeekTok(5).Kind == TokenKind.LParen)
+        {
+            // `name.to[Work](param: value, ...)`: the routine `name` and its arguments, a piece of work not started.
+            Next();
+            Next();
+            ParseTypeArgsOpt();
+            var (workArgs, workNames) = ParseNamedArgs();
+            return new WorkExpr(new RoutineRef(name.Text, null, pos) { Path = path, TypeArgs = typeArgs.Select(a => ((TypeArgType)a).Type).ToList() },
+                workArgs, workNames, pos);
         }
 
         if (Is(TokenKind.Dot) && PeekTok(1).Kind == TokenKind.Ident)
