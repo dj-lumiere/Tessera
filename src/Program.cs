@@ -879,10 +879,17 @@ static class Cli
         return Builtins[target.LlvmTriple] = builtins;
     }
 
+    /// How long a test program may run before it is stopped, in seconds.
+    private const int TestSeconds = 10;
+
+    /// How many times longer a test built with the race check may run. ThreadSanitizer watches every memory access
+    /// and every lock, which makes a program several times slower.
+    private const int RaceCheckSlowdown = 3;
+
     /// Runs exe. With captureOutput (a test), its standard input is input's bytes, or empty: a test never waits on
-    /// the terminal.
+    /// the terminal, and it is stopped after limitSeconds.
     private static (int Code, string Stdout, string Stderr) Exec(string exe, bool captureOutput, byte[]? input = null,
-        string[]? programArgs = null)
+        string[]? programArgs = null, int limitSeconds = TestSeconds)
     {
         var psi = new ProcessStartInfo(exe, programArgs ?? [])
         {
@@ -914,8 +921,8 @@ static class Cli
                 catch (ObjectDisposedException) { }
             });
         }
-        // A test (its output captured) gets 10 s. `tessera run` waits as long as the program runs: a long check, such
-        // as the soft-float exhaustive one, takes minutes. Both streams are read in the background, so a program that
+        // A test (its output captured) gets limitSeconds. `tessera run` waits as long as the program runs: a long
+        // check, such as the soft-float exhaustive one, takes minutes. Both streams are read in the background, so a program that
         // hangs with its pipes open still runs into the limit instead of blocking the read forever.
         if (!captureOutput)
         {
@@ -924,14 +931,14 @@ static class Cli
         }
         var outTask = p.StandardOutput.ReadToEndAsync();
         var errTask = p.StandardError.ReadToEndAsync();
-        if (!p.WaitForExit(10_000))
+        if (!p.WaitForExit(limitSeconds * 1000))
         {
             try { p.Kill(entireProcessTree: true); }
             catch (InvalidOperationException) { }
             // The killed program's pipes close, so the reads end. The bound covers a process that kept a copy of them.
             Task.WaitAll([outTask, errTask, feed!], TimeSpan.FromSeconds(5));
             stdout = outTask.IsCompletedSuccessfully ? outTask.Result : "";
-            return (-1, stdout, "timed out after 10 s");
+            return (-1, stdout, $"timed out after {limitSeconds} s");
         }
         // The program has ended, so the reads finish once its pipes are drained. The feed is done before the process
         // is disposed, which closes the same pipe.
@@ -1159,7 +1166,8 @@ static class Cli
             catch (ToolError e) { return e.Message; }
 
             byte[]? input = File.Exists(stem + ".input") ? File.ReadAllBytes(stem + ".input") : null;
-            var (code, stdout, stderr) = Exec(exe, captureOutput: true, input);
+            var (code, stdout, stderr) = Exec(exe, captureOutput: true, input,
+                limitSeconds: race ? TestSeconds * RaceCheckSlowdown : TestSeconds);
             int expectedCode = File.Exists(stem + ".exit") ? int.Parse(File.ReadAllText(stem + ".exit").Trim()) : 0;
             if (code != expectedCode) return $"exit code {code}, expected {expectedCode}{(stderr.Length > 0 ? $"; stderr: {stderr}" : "")}";
 
