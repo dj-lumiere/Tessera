@@ -5,9 +5,8 @@ using System.Text;
 namespace Tessera;
 
 /// Writes statements and expressions back as Tessera source, in the current spelling: operators for the routines
-/// they stand for, `if` / `each` / `while` bodies by indentation, `return x`, `local` slots. `tessera migrate` rewrites
-/// routine bodies with it, keeping the comments of the lines it rewrites (Comments), each before the first line that
-/// followed it.
+/// they stand for, `if` / `each` / `while` bodies by indentation, `return x`, `local` slots. The
+/// comments of the lines it writes (Comments) go before the first line that followed them.
 public sealed class Printer
 {
     private readonly StringBuilder _sb = new();

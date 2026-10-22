@@ -131,7 +131,6 @@ tessera run   <file.te>... [<target>] [--mode <mode>]  Build and run these files
 tessera test  [<target>] [--mode <mode>] <dir-or-file>...  Run golden tests
 tessera check [<target>] [<file.te>...]       Type-check every non-generic routine, the stdlib included
 tessera fmt   [--check] <file-or-dir>...      Format .te files in place
-tessera migrate [--check] <file-or-dir>...    Rewrite .te files to this release's spellings
 tessera help | version
 ```
 

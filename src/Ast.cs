@@ -113,7 +113,7 @@ public sealed record RoutineDecl(
     public Pos? Source { get; init; }
 
     /// The line the header (with its needs and obeys lines) ends on, and the last line of the body: the lines
-    /// `tessera migrate` rewrites. 0 for a routine without a body.
+    /// the language server and the doc lint read. 0 for a routine without a body.
     public int HeaderEndLine { get; init; }
     public int EndLine { get; init; }
 

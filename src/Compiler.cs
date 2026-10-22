@@ -143,7 +143,7 @@ public sealed partial class Compiler
         foreach (var imp in _imports)
         {
             if (!_modules.Contains(imp.Path))
-                throw new CompileError(imp.Pos, ModuleMigration.OldModule(imp.Path) ?? $"unknown module '{imp.Path}'");
+                throw new CompileError(imp.Pos, OldSpellings.OldModule(imp.Path) ?? $"unknown module '{imp.Path}'");
             // Only the program's entry file runs top-level lines: in a file another one imports, they would be a second
             // start nobody asked for.
             if (_userRoutines.FirstOrDefault(r => r.IsScript && r.Module == imp.Path && r.Module != "" && r.File != imp.File)
@@ -271,8 +271,8 @@ public sealed partial class Compiler
             // A variant written inline is checked where it is used.
             if (a.Target is { Name: TypeRef.UnionName, Path: null }) continue;
             if (TypeDeclQuiet(a.Target.Name, a.File, a.Target.Path) is null)
-                throw new CompileError(a.Target.Pos, ModuleMigration.OldModule(FullPath(a.Target))
-                    ?? (a.Target.Path is { } gone && ModuleMigration.OldModule(gone) is { } moved ? moved : null)
+                throw new CompileError(a.Target.Pos, OldSpellings.OldModule(FullPath(a.Target))
+                    ?? (a.Target.Path is { } gone && OldSpellings.OldModule(gone) is { } moved ? moved : null)
                     ?? $"define {a.Name} = {a.Target}: that's neither a module nor a type");
             var clash = (_records.GetValueOrDefault(a.Name) ?? []).Cast<Decl>()
                 .Concat(_variants.GetValueOrDefault(a.Name) ?? []).Concat(_choices.GetValueOrDefault(a.Name) ?? [])
@@ -852,7 +852,6 @@ public sealed partial class Compiler
     private string Hidden(Decl d, string what, string? path, string? file = null) =>
         path is not null && d.Module != path
             ? $"{what} isn't in {path}; it's in {ShowModule(d.Module)}"
-              + (ModuleMigration.OldModule(path) is not null ? " (tessera migrate --step modules rewrites the old module paths)" : "")
         : d.IsPrivate && (file is null || !PrivateReaches(d, file)) ? $"{what} is secret to {ShowModule(d.Module)}"
         : $"{what} is in {ShowModule(d.Module)}; import {d.Module} or write {d.Module}/...";
 
@@ -1157,8 +1156,8 @@ public sealed partial class Compiler
             // `None` is the one type for nothing: as a return type (and a Callable's), nothing comes back, elsewhere it
             // is the record with the one value `None()`.
             case "None" when allowVoid: NoArgs(); return VoidType.Instance;
-            case "Void": throw new CompileError(t.Pos, "nothing is written None, not Void (tessera migrate rewrites it)");
-            case "Unit": throw new CompileError(t.Pos, "the type with one value is written None, not Unit (tessera migrate rewrites it)");
+            case "Void": throw new CompileError(t.Pos, "nothing is written None, not Void");
+            case "Unit": throw new CompileError(t.Pos, "the type with one value is written None, not Unit");
             case "Addr": NoArgs(); return new PtrType(null);
             case "Ptr":
                 return t.Args switch
@@ -1273,15 +1272,14 @@ public sealed partial class Compiler
         // ConsoleOutput, ConsoleErrors and ConsoleInput.
         if (t.Args.Count == 0 && t.Name is "Out" or "Err" or "In")
             throw new CompileError(t.Pos, $"unknown type '{t}': the console is Console (Console.show, Console.alert, " +
-                "Console.ask_line, Console.output()), and its streams are ConsoleOutput, ConsoleErrors and ConsoleInput " +
-                "(tessera migrate --step console rewrites the old spelling)");
+                "Console.ask_line, Console.output()), and its streams are ConsoleOutput, ConsoleErrors and ConsoleInput");
 
-        if (t.Args.Count == 0 && AccessMigration.OldTypeName(t.Name) is { } renamed)
+        if (t.Args.Count == 0 && OldSpellings.OldTypeName(t.Name) is { } renamed)
             throw new CompileError(t.Pos, $"unknown type '{t}': {renamed}");
 
         if (t.Args.Count == 0 && t.Name == "Mapping")
             throw new CompileError(t.Pos, "unknown type 'Mapping': a mapped file is a FileStorage[Byte] from " +
-                "OsFileManager.storage_result[Byte] (tessera migrate --step files rewrites the old spelling)");
+                "OsFileManager.storage_result[Byte]");
 
         throw new CompileError(t.Pos, $"unknown type '{t}'");
     }

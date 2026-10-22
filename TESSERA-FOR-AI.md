@@ -64,32 +64,6 @@ builds the base (every routine but an `@inline` one, and every global, defined e
 declares a routine instance or global of those symbols instead of defining it. Both come from the same library and
 target. `tests/SplitModuleTests.cs` shows the pair.
 
-`tessera migrate` rewrites sources to this release's spellings. Each step also runs alone with `--step`, and each
-rewrites the ```tessera blocks of `.md` pages too: `structured` (routine bodies into `if` / `each` / `until` / `loop` / `when`,
-keeping blocks where it can't), `spellings` (`@` annotations, `needs` / `obeys` / `protocol`, `return x`),
-`none` (`None` for nothing), `hollow` (`null` into `.hollow()`, `is_null()` into `is_hollow()`), `destruct` (`destruct` on `Memory` / `Box`), `drop` (a line `x.destruct()` into `drop x`),
-`managers` (`DEFAULT_HEAP` into `HEAP`, the table makers, the process routines into `ProcessManager`'s),
-`float-presets` (`B64.INFINITY` / `NEG_INFINITY` / `NAN` into `inf` / `-inf` / `nan`),
-`modules` (drops the imports of `Standard/Core`, `Standard/Format`, `Standard/Alloc`, `Standard/Boot`, and
-`Standard/Json`, and points their paths at the module of `Standard/System` each name is in),
-`files` (`FileManager.x` into `OsFileManager.x`, `subdir` into `go_to`, `Mapping` / `map_result(offset:)` into
-`FileStorage[Byte]` / `storage_result[Byte](start:)`, the directories and `env_var` into `OsEnvironment`'s, a
-`move_result(from:, to:)` into `rename_result` or `move_result(at:, into:)` where the file shows both paths, and the
-rest of the moves and every `set_current_directory_result` listed, the `_result` names it writes then go through
-`failable`),
-`crash` (an exported `tessera_crash_handler` into a reporting routine that takes `message: @CrashMessage`, put in the
-Crash service's slot first in `start` with `Crash.report_with`, or right after `prepare_core()` in `when_power_on`),
-`failable` (a call of a standard library `_result` routine into `when check x(...)`, a `Check[T]` binding of
-`check x(...)`, or `try x(...)` where its result was left unread, `AllocFailed` / `ChannelClosed` / `RegexError` /
-`FsError.MEMBER` into their crashables, and a routine of the program that returns a `Result` listed for a hand fix),
-`checked` (a call of a `_checked` twin into `try` in front of the plain, failable routine: `x.add_checked(y)` into `try
-x.add(y)`, in parentheses where the call is part of a larger expression, `(try it.emit()).unwrap()`, a shift's
-`_checked` and a declaration of a `_checked` routine listed for a hand fix),
-`until` (a `while` loop into `until` / `loop`, a comparison turned around where the build typed it as one of integers,
-`--together` checks the files given as one program, a library folder), and the earlier `iterators`, `variants`,
-`membership`, `lifecycle`, `memory`, `threads`, `entry`, and `--named-args`.
-An old spelling is a build error that names the migration, and builds only with `TESSERA_ACCEPT_OLD_SYNTAX=1` set.
-
 ## Skeleton
 
 ```tessera
@@ -131,12 +105,11 @@ routine start() -> None
   else a preset, global, or type;
   a call `f(...)` always names a routine. A routine as a value is `f.to[Callable]()` (never a bare `f`), a generic one's instance `f[S64].to[Callable]()`, and a value
   named like a keyword (`each`, `return`, `inf`, `nan`, ...) is written between backticks: `` `each` ``
-  (`tessera migrate --step inf` adds them for a value named `inf` or `nan`). The type says
+  The type says
   whether a value is a pointer (`@T`, or `Addr` for an address with no pointee type, C's `void*`). `@T`
   passes where an `Addr` is expected; the other way takes `a.to[@T]()`. An `Addr` moves by a `ByteSize` with `+%` /
   `-%` (`buf +% 16b`, `at -% header`), and `b -% a` is the distance from `a` to `b` as a `ByteSize`: both wrap and
-  check no bounds. Plain `+` / `-` on an `Addr` are build errors that point to them (`tessera migrate --step addr`
-  rewrites the old `a.offset(n)`). Two addresses compare with `===` / `!==`. `@T` is how the record `Ptr[T]` is
+  check no bounds. Plain `+` / `-` on an `Addr` are build errors that point to them. Two addresses compare with `===` / `!==`. `@T` is how the record `Ptr[T]` is
   written (`@@Byte`, `@Array[@S32, 3]`); it keeps its name only where routines are declared on it or called through
   it (`routine Ptr[T].peek`). An annotation is a `@name` line of its own
   above the declaration, one per line: `@target(os: "windows")`, then `@external("c")`, then `@noreturn`. `@T` is
@@ -435,8 +408,6 @@ routine start() -> None
   `__stack_top`: the end of the globals to the end of the board's RAM). `ThreadLocalManager.reset()` puts this thread's `@threadlocal` globals back
   to their starting values. Without an OS, `GlobalManager.prepare()` puts the globals in place (`prepare_core()` in the
   program's `when_power_on` calls it).
-  `tessera migrate --step managers` rewrites `DEFAULT_HEAP` (now `HEAP`), `DEFAULT_STACKS` (`PAGES`), the
-  `make_*_memory()` makers, the process routines, `reset_thread_locals()`, and `zero_bss()` / `copy_data()`.
 - **A memory manager is a type that obeys `MemoryManageable`** (Standard/System/Memory): three routines taking `me` by its address (`routine @M.alloc(...)`),
   `alloc(size: U64, align: U64) -> Addr` (`.hollow()` when it can't), `realloc(at: Addr, size: U64, align: U64) ->
   Addr` (`.hollow()`, the block left as it was, when it can't: every manager has one, since only it knows a block's size),
@@ -547,8 +518,7 @@ routine start() -> None
   build error) tests the next condition, the lines under `else` (optional) run when none held, and `if not c`
   negates. An `if` is a statement, not a value: `x: T = if ...` is a build error ("if c then a else b
   is a value only after return; elsewhere choose with when"). A guard is an `if` whose arm leaves (`return`,
-  `break`, `continue`, a `@noreturn` call), and the lines after it are the other case (no `else` after a guard:
-  `tessera migrate --step guards` removes it when every arm of an `if` / `elseif` chain leaves):
+  `break`, `continue`, a `@noreturn` call), and the lines after it are the other case (no `else` after a guard):
 
   ```tessera
   routine classify(n: S64) -> S64
@@ -567,9 +537,7 @@ routine start() -> None
   before each pass: write the condition that ends the loop. `loop` doesn't end by itself: only `break`, `return` or
   `throw` leaves it, so the lines after a `loop` without a `break` never run, and a routine that ends with such a loop
   needs nothing after it. It takes `with` and `then` like the others. `while` is not a keyword: a loop written with it
-  is a build error pointing to `until` / `loop`, and `tessera migrate --step until` rewrites it (`while true` →
-  `loop`, `while not c` → `until c`, an integer comparison turned around, `while i < n` → `until i >= n`, a float
-  comparison and anything else → `until not (c)`, listed). `until true` (the body never runs) and `until false` (write
+  is a build error pointing to `until` / `loop`. `until true` (the body never runs) and `until false` (write
   `loop`, the language server offers the fix) are warnings. `break`
   leaves the loop (it takes no value: a result a `break` decides goes in a head slot), `continue` starts the next
   pass.
@@ -606,8 +574,7 @@ routine start() -> None
   comparison (`b'0' <= c <= b'9' =>`) in a condition `when`.
 - **`nothing` is the line with no work:** an arm with nothing to do (`Light.YELLOW => nothing`), and the body of a
   record, entity or crashable with no member variables (`record Console`, then `    nothing` on the next line). A type
-  written as a header alone is a build error, and so is a line written `pass` (`tessera migrate --step nothing` rewrites
-  both).
+  written as a header alone is a build error, and so is a line written `pass`.
 - **`when` as a value.** `x: T = when ...` (and `return when ...`, `becomes when ...`) gives one value from the arm
   taken: a one-line arm's expression (`is S64 as n => n`, `n < 10 => Size.SMALL`), the `becomes v` that ends a
   multi-line arm, or the arm leaves with `return`, `break`, `continue`, or `throw` (in a failable routine only: a
@@ -635,10 +602,7 @@ routine start() -> None
   loops. A routine written that way is a head and then blocks: the lines after the head are the entry block, `block entry()`
   is written only when it is jumped back to and in an assembly routine, a block's parameters are the values it
   takes, and each block ends in `jump`, `return`, `unreachable`, `todo`, a `@noreturn` call, or a statement whose
-  every path leaves. Hand-written code doesn't need them: `tessera migrate --step blocks` rewrites the routines
-  written with blocks into the statements above wherever it can and leaves the rest of the file as it is (a shared
-  tail some arms reach while the others return follows the `when` as its value, a short one is written at each
-  place, a loop that only returns is written inside the loop that enters it), and names the routines it could not.
+  every path leaves. Hand-written code doesn't need them.
 
 **Operations**
 
@@ -656,7 +620,7 @@ routine start() -> None
   forms, so a C caller never crashes. **Vector operations are unchecked**: integer lanes' `+ - *` and `sum` wrap,
   float lanes give the raw IEEE result (a per-lane check costs the SIMD gain), so Vector has no `+% -% *%`
   (`+^ -^` still clamp).
-- **Operators are routine calls.** `a + b` is `a.add(b)`, `a - b` `sub`, `*` `mul`, `/` `truediv`, `//` `floordiv` (`tessera migrate --step names` rewrites `div`, `shl`, `shr` and their forms), `%` `mod`, `**`
+- **Operators are routine calls.** `a + b` is `a.add(b)`, `a - b` `sub`, `*` `mul`, `/` `truediv`, `//` `floordiv`, `%` `mod`, `**`
   `pow` (the exponent the base's own type, a negative one `NegativeExponentError`, `try a ** n` gives `None`), `+% -% *%` the `_wrap` forms, `+^ -^ *^` the `_clamp` forms, `+! -! *! /!` the floats' `_unchecked` forms, `== != < <= > >=` `eq`
   .. `ge`, `<=>` `compare`, `=== !==` `same` / `notsame` (no protocol: only `@T`, `Addr` and spans declare them), `& | ^ << >> >>>` `bitand` / `bitor` / `bitxor` / `shift_left` / `arith_shift_right` / `logical_shift_right` (no integer type declares `logical_shift_right` yet, so `>>>` builds nowhere), unary `-x` `neg` and `~x`
   `bitnot`, `xs[i]` `getitem(i)` and `xs[i] = v` `setitem(index: i, value: v)`. **A type takes an operator only by
@@ -672,7 +636,7 @@ routine start() -> None
   naming the line to write, and in a generic body `needs T: Addable[T]` gives `a + b`. `!=` is `not a.eq(b)` and
   `<` is `a.compare(b) < 0`, unless the type declares its own `ne` / `lt` / `le` / `gt` / `ge`, which the operator
   calls (the integers for speed, the floats' `lt` .. `ge` because `compare` says 0 for NaN, and a NaN `!=` is true).
-  `tessera migrate --step operators` adds the `obeys` lines. A literal on the left takes the right side's type
+  A literal on the left takes the right side's type
   (`1 + x` is `T.add(1, x)`). Precedence,
   tightest first: calls and `[i]`, `**`, the unary `- not ~`, `* / %` (and their `%` `^` `!` forms), `+ -`, the bitwise operators (one level: two
   different ones side by side need parentheses, `(a & b) | c`), ranges `til` / `to` (only walked by `each`),
@@ -699,8 +663,7 @@ routine start() -> None
   a failure the standard library throws is noted for the crash report only when a `check` of a traced routine keeps
   it. A numeric `to[T]()` that can lose the value is failable the same way: it throws `IntegerOverflowError` when the
   value doesn't fit (a bare call stops, `try x.to[U8]()` gives `None`), builds to the range test and no heap, and a
-  widening one (`U16.to[U64]`) is a plain routine, just the extension. There is no `to_checked` (`tessera migrate
-  --step checked` rewrites `x.to_checked[T]()` to `try x.to[T]()`). `_wrap` (modular) and `_clamp` (saturating)
+  widening one (`U16.to[U64]`) is a plain routine, just the extension. There is no `to_checked`: write `try x.to[T]()`. `_wrap` (modular) and `_clamp` (saturating)
   forms: `h.mul_wrap(PRIME)`, `n.to_clamp[U8]()`. Hashes, PRNGs, and bit tricks want `_wrap`. A shift never fails (by
   the width or more it shifts every bit out). The operator protocols' requirements (`Addable.add`, ...,
   `ViewingIndexable.getitem`) are failable, and a type whose routine never fails meets them all the same (a float's
@@ -710,8 +673,7 @@ routine start() -> None
   values are evaluated only on that path). A value `when` runs only the arm taken, and tests its conditions in
   order, stopping at the first that holds.
 - Range checks are chained comparisons: `b'0' <= c <= b'9'` is the closed `[lo, hi]`, `0 <= i < len` the half-open
-  `[lo, end)`. There is no `between` / `in_range` (calling one is a build error naming the chain, and
-  `tessera migrate --step ranges` rewrites them, reporting a call whose middle isn't a name, field or literal).
+  `[lo, end)`. There is no `between` / `in_range` (calling one is a build error naming the chain).
 - Lengths, indices, counts, sizes, and `sizeof` / `alignof` are `U64` on every target; value generic parameters are
   `U64` (`COUNT: U64`). `CSize` / `CSSize` are C's `size_t` / `ssize_t` (the pointer width), used only at the C
   boundary (`@external("c")` signatures): types of their own that never mix with `U64` / `S64`, so a C call converts
@@ -738,8 +700,7 @@ routine start() -> None
   Vector. Every binary float takes them, `B128` included, and a preset folds them. `nan` is the canonical quiet NaN
   (B16 `0x7E00`, BF16 `0x7FC0`, B32 `0x7FC00000`, B64 `0x7FF8000000000000`). Where nothing gives a type
   (`inf.is_nan()`, an overloaded call) or the type isn't a float (`n: S64 = inf`) it is a build error: bind it first
-  (`top: B32 = inf`). There are no `INFINITY` / `NEG_INFINITY` / `NAN` presets (`tessera migrate --step
-  float-presets` rewrites them into the literals).
+  (`top: B32 = inf`). There are no `INFINITY` / `NEG_INFINITY` / `NAN` presets.
 - `Byte` is memory with no arithmetic; there are no wider raw-bits types. `x.bits()` and `b.to[U8]()` /
   `b.to[S8]()` move between it and the numbers, and `S64` <-> `U64` is `to_wrap[U64]()` / `to_wrap[S64]()`. It has
   comparison, `hash`, `bitand` / `bitor` / `bitxor` / `bitnot`, and `shift_left` / `arith_shift_right`. Memory and text are `@Byte`;
@@ -764,7 +725,7 @@ routine start() -> None
 - `routine name(a: T, p: @U) -> R`. A routine on a type takes `me` without writing it, and the header says how:
   `routine Type.name(...)` takes a copy (`me` is a `Me`), `routine @Type.name(...)` the address (`me` is a `@Me`),
   and `common routine Type.name(...)` takes none and is typewise: `List[S64].construct(manager)`, `Job.compare(a, b)`.
-  Writing `me` among the parameters is a build error (`tessera migrate --step receiver` rewrites the old spelling),
+  Writing `me` among the parameters is a build error,
   `common` on a routine on no type too. Modifier order: `secret common routine`. `@[T]` is the span type, so
   `routine @[Byte].trim()` is on a span and `routine @@[Byte].clear()` takes a span's address. `me` and `Me` are
   reserved: no parameter, binding, or slot is named `me`, and no type is named `Me`. A routine meeting a protocol (`eq`, `compare`, `hash`) takes `me` as the protocol does. Where the
@@ -1018,7 +979,7 @@ routine start() -> None
   `secret count: U64`). In every file of the declaring module, and of the modules under it, it's used as usual, so two
   secret declarations of one name in two files of a module clash like any two declarations. The standard library
   follows the same rule: a secret name of `Standard/System/Numerics` is seen in `Standard/System/Numerics/B64`, and
-  hidden from `Standard/System/Text`. The word was `private` before 0.5 (`private` is now a build error naming `secret`, `migrate --step visibility` rewrites it).
+  hidden from `Standard/System/Text`.
 
 - A name is unique under its parent, wherever it's declared: you can add `routine U64.double(...)` to a stdlib type,
   but not a second `U64.midpoint` with the same parameter types (one with other parameter types is an overload). Secret names don't count outside their module.
@@ -1038,10 +999,7 @@ routine start() -> None
   `Box`, a `Memory` or an entity gives back. A type of plain data (numbers, `Bool`, choices, addresses, records and
   variants of those) declares neither: `Point(x: 1, y: 2)` makes it and nothing releases it. It may still declare them,
   and a plain type used where generic code asks for `Destructible[T]` (`destruct_all`) declares a `destruct` that does
-  nothing. `tessera migrate --step lifecycle` writes both for a holding type that lacks them, removes the ones a
-  plain-data type doesn't need (`return Me(x, y)`, a `destruct` that only gives back its fields), rewrites the calls of a
-  removed `construct` (`Point.construct(x: 1, y: 2)` to `Point(x: 1, y: 2)`), and lists a plain-data `destruct` that does
-  more.
+  nothing.
 
 **Tuples**
 
@@ -1145,11 +1103,6 @@ routine start() -> None
   value of `A | B` goes into `A | B | C` (or any variant whose branches include A and B) by copying tag and storage.
   Overlap rules apply to the flattened branches (`S64 | Maybe[S64]` is an error, `S64` on both levels), reported
   where the type is written. They derive the five protocols like any variant, each when every branch has it.
-- `tessera migrate` (sources before 0.5) and `tessera migrate --step variants` rewrite `.Present(v) =>` /
-  `.Absent =>` / `.Success(v) =>` / `.Failure(e) =>` arms into `is T as v` using the type written where the when's
-  value is declared, `.Present(x)` / `.Success(x)` / `.Failure(x)` values into `x`, `.Absent` and `Unit.value()` into
-  `None()`, and `Option` into `Maybe`. A `when` whose value's type isn't written in the routine, and a program's own
-  variants with named cases, are rewritten by hand (it reports the places).
 - Layout `{ i64 tag, [0 x A], [N x iW] }`: the tag's low 32 bits are the branch type's ID (FNV-1a of the type's
   identity, never 0), the same in every variant with that type, so moving a value into a wider variant is a copy; the
   high 32 bits are reserved for what travels with the value. Storage is the largest branch, and zero-size branches
@@ -1417,8 +1370,6 @@ code waiting on several tickets at once.
   share values like threads do (atomics, exclusive accesses, channels). Threads start with the first `get_job` and end at
   `drop pool`: give every job back first. In a program that runs pool jobs, the builder calls the crash trace's
   `trace_push` / `trace_at` / `trace_pop` out of line, so each finds the trace of the thread it runs on.
-- `migrate --step threads` rewrites `x: Thread = Thread.spawn(entry: f, arg: s)` / `x.join()` /
-  `Thread.spawn(...).detach()` into tickets and `launch_unwatched`.
 
 **Atomics.** `Atomic[T]` (Core, `Atomic.te`) is a record aligned to T's size whose every access is atomic: the
 form for state a program shares between threads (thread work changes shared memory only through an exclusive access
@@ -1480,9 +1431,7 @@ with one transmitter and one receiver: `add_transmitter()` / `add_receiver()` (S
 `close_transmitting()` / `close_receiving()` once. All transmitters closed: receivers drain what is left, then get
 `ChannelClosedError`. All receivers closed: the values left are discarded (never given back) and transmitters get `ChannelClosedError`,
 so a receiver takes out values holding memory before it closes. A channel moves one message at a time, so its verbs are
-`transmit` / `receive` (`load` / `store` belong to places: `Memory`, `Box`, `Atomic`). `tessera migrate --step channels`
-renames the old `send`, `send_if_room`, `add_sender` and `close_sending` (a `.send(` on a name not typed as a channel is
-listed).
+`transmit` / `receive` (`load` / `store` belong to places: `Memory`, `Box`, `Atomic`).
 
 **The data race check.** On by default in a debug build on Linux and macOS on x86_64 and aarch64, off in the release
 modes and on other targets. `[debug] race-check = false` in config.toml (or `--no-race-check`) turns it off, and
@@ -1736,15 +1685,14 @@ that `to[T]`, which would call itself there. It keeps the shape under its own na
 `.empty()` (`FileHandle.empty()`, an OS handle, `FileStorage[T].empty()`). A type with no pointer inside (numbers, records and vectors of
 numbers) has `.zero()`: `Vector[T, LANES].zero()`. `Maybe[T]` is empty as `None()`, and a pointer to nothing is
 `.hollow()` too (tested with `is_hollow()` / `is_not_hollow()`), so there is no `none()` or `nothing()` routine, and
-no `null`: writing it is a build error that asks for `.hollow()` (`tessera migrate --step hollow` rewrites `null` and
-`is_null()`). `.hollow()` is typed by where it goes: where nothing gives the type (a variant with a pointer branch,
+no `null`: writing it is a build error that asks for `.hollow()`. `.hollow()` is typed by where it goes: where nothing gives the type (a variant with a pointer branch,
 an argument to a generic routine), name it, `Ptr[Node].hollow()`, `Addr.hollow()`, `T.hollow()`. A default that
 isn't empty is named for what it is: `ProcessOptions.default()` captures both streams.
 
 **The memory manager comes last.** A routine that takes an `@MemoryManager` takes it as its last parameter:
 `List[T].construct(manager)`, `Memory[T].construct(count, manager)`, `allocate[T](count, manager)`,
 `deallocate(p, manager)`, `Console.ask_line(manager)`, `ThreadManager.construct(manager)`. The parameter is
-`manager: @MemoryManager` (not `alloc`: `tessera migrate --step manager` renames it, its uses and the `alloc:` labels).
+`manager: @MemoryManager`.
 A second memory manager for another job goes just before it, and each is named for what it manages
 (`FiberManager.construct(stack_size, stack_manager, manager)`, a `scratch_manager`). So the form without the memory manager
 (`construct()` with `Standard/Os`) is the same call with the last argument left off.
@@ -1757,7 +1705,6 @@ may go without names (`len.add(1)`, `area(3, 4)`), a name written there still ha
 never named (`S64.max(a, b)`). `@positional` routines (the raw operations: `add[T](a,
 b)`, `ieq`, `band`, `fadd`, ...) and C externals take their arguments in order. An operator's right side is its
 one argument.
-`tessera migrate --named-args` names the arguments of existing calls.
 
 **Five or more parameters take a record.** A routine with five or more
 parameters, `me` not counted, takes a record instead: one record parameter, or a record plus the few parameters that

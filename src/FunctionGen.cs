@@ -1844,7 +1844,7 @@ public sealed partial class FunctionGen
             throw Err(r.Pos, $"the lambda uses '{r.Name}', a value of routine '{outer.Routine}', and a lambda uses only its "
                 + "own parameters, presets, and globals: pass it as a parameter, or write a routine");
         if (!BoundInRoutine(r.Name))
-            throw Err(r.Pos, ScriptBinding(r.Name) ?? OldConsoleName(r.Name) ?? ManagerMigration.OldName(r.Name) ?? $"'{r.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
+            throw Err(r.Pos, ScriptBinding(r.Name) ?? OldConsoleName(r.Name) ?? OldSpellings.OldName(r.Name) ?? $"'{r.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
         throw Err(r.Pos, NotVisible(r.Name));
     }
 
@@ -1874,7 +1874,7 @@ public sealed partial class FunctionGen
     /// The console's old names (`Out.write`, `In.read_line`) point at Console, else null.
     private static string? OldConsoleName(string name) => name is "Out" or "Err" or "In"
         ? $"'{name}' is not defined: the console is Console (Console.show, Console.alert, Console.ask_line, " +
-          "Console.output()) (tessera migrate --step console rewrites the old spelling)"
+          "Console.output())"
         : null;
 
     /// `b.poke(20)` where `b` names no type, preset, global, or routine: a value that isn't there.
@@ -2037,7 +2037,7 @@ public sealed partial class FunctionGen
         var type = new TypeRef(c.Name, c.TypeArgs.Select(t => (TypeArg)new TypeArgType(t)).ToList(), c.Pos) { Path = c.Path };
         return TryResolveOwner(type) is RecordType record
             ? $"a record literal names its fields: {record.Name}({string.Join(", ", _c.Fields(record).Select(f => $"{f.Name}: ..."))})"
-            : ManagerMigration.OldName(c.Name) ?? $"unknown routine '{c.Name}'";
+            : OldSpellings.OldName(c.Name) ?? $"unknown routine '{c.Name}'";
     }
 
     private Val EvalAny(Expr e)
@@ -2633,7 +2633,7 @@ public sealed partial class FunctionGen
         var armNames = new List<(ValueRef Binding, string Arm, int Line)>();
         int reached = 0;
         // The old form `is T as p => continue`: the one arm that goes on after the when carries its payload to the
-        // lines after it. It builds until `tessera migrate` makes the when a value.
+        // lines after it.
         (string Name, Val Value, Pos Pos)? continued = null;
 
         // The arm's block: its payload bound, its body run, and the join reached when the body doesn't leave.
@@ -3183,10 +3183,6 @@ public sealed partial class FunctionGen
     /// are Bool's own. The operand's type must obey the operator's protocol (Operators.ProtocolsFor). `a != b` is
     /// `not a.eq(b)`, and `a < b` is `a.compare(b) < 0`, unless the type declares its own `ne` / `lt` (likewise `le`,
     /// `gt`, `ge`). A type whose comparisons give a mask (LaneComparable) calls its routine for each operator.
-    /// Told the operand type of every operator the build turns into a call (null when it can't tell), when set. Only
-    /// `tessera migrate --step until` sets it: it reads which comparisons compare integers, the ones it can turn
-    /// around.
-    public static Action<BinaryExpr, DType?>? ComparisonTyped { get; set; }
 
     private Expr Desugar(Expr e)
     {
@@ -3213,7 +3209,6 @@ public sealed partial class FunctionGen
 
                 bool literalLeft = b.Left is IntLit or FloatLit;
                 var operand = literalLeft ? Infer(b.Right) : TryInfer(b.Left);
-                ComparisonTyped?.Invoke(b, operand);
                 Expr Call(string routine) => literalLeft && operand is not null
                     ? new NsCallExpr(new TypeRef("$operand", [], b.Pos) { Known = operand }, routine, [], [b.Left, b.Right], b.Pos) { FromOperator = true }
                     : new MethodCallExpr(b.Left, routine, [], [b.Right], b.Pos) { FromOperator = true };
@@ -3362,7 +3357,7 @@ public sealed partial class FunctionGen
         var oc = _c.FindPreset(ownerName, r.Name, file, r.Pos)
                  ?? throw Err(r.Pos, ownerName is "B16" or "BF16" or "B32" or "B64" or "B128" && r.Name is "INFINITY" or "NEG_INFINITY" or "NAN"
                      ? $"'{r.Owner}.{r.Name}' is gone: write the literal {(r.Name switch { "INFINITY" => "inf", "NEG_INFINITY" => "-inf", _ => "nan" })}, "
-                       + "typed by where it goes (tessera migrate --step float-presets rewrites the presets)"
+                       + "typed by where it goes"
                      : $"unknown preset '{r.Owner}.{r.Name}'");
         return PresetValue(oc, ownerType);
     }
@@ -4201,13 +4196,13 @@ public sealed partial class FunctionGen
                 : "a range check is a chained comparison: `lo <= x < end` (bind x to a name first when it is a call)");
         if (m.Name.EndsWith("_result", StringComparison.Ordinal))
             throw Err(m.Pos, $"{rt} has no method '{m.Name}': the _result forms are gone, and '{m.Name[..^"_result".Length]}' is "
-                + "failable: receive its failure with check or try in front of the call (tessera migrate --step failable)");
+                + "failable: receive its failure with check or try in front of the call");
         if (m.Name.EndsWith("_checked", StringComparison.Ordinal))
         {
             string plain = m.Name[..^"_checked".Length];
             string example = plain == "to" ? "try x.to[T]()" : $"try x.{plain}(...)";
             throw Err(m.Pos, $"{rt} has no method '{m.Name}': the _checked forms are gone, and '{plain}' is "
-                + $"failable: write try in front of the call for a Maybe, {example} (tessera migrate --step checked)");
+                + $"failable: write try in front of the call for a Maybe, {example}");
         }
         if (m.Name == "setitem" && Compiler.IsCoreSpan(rt is PtrType { Pointee: { } spanned } ? spanned : rt, out _))
             throw Err(m.Pos, "a span writes nothing itself: xs[i] = v is xs.getslot(i).poke(v)");

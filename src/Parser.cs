@@ -11,7 +11,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private int _i;
 
     /// The old spellings the file still uses (`#annotation`, `branch`, `claim`, `return(x)`, `require`), each with the
-    /// new one. The parser reads them so `tessera migrate` can rewrite them, and reports the first one otherwise.
+    /// new one. The parser reads them and reports the first one.
     public List<(Pos Pos, string Message)> Legacy { get; } = [];
 
     /// `Span[T]`, the old spelling of a span.
@@ -21,11 +21,6 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     {
         Legacy.Add((pos, message));
     }
-
-    /// An old spelling is a build error that names the migration. TESSERA_ACCEPT_OLD_SYNTAX lets sources build as they
-    /// are while they are being migrated.
-    public static bool AcceptLegacyEverywhere { get; set; } =
-        Environment.GetEnvironmentVariable("TESSERA_ACCEPT_OLD_SYNTAX") is { Length: > 0 };
 
     /// How deep in loops the parser is: `continue` and `break` belong to the innermost one.
     private int _loopDepth;
@@ -134,8 +129,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             SkipNewlines();
         }
         if (_scriptLines is not null) decls.Add(ScriptStart(decls) with { Module = module });
-        if (Legacy.Count > 0 && !acceptLegacy && !AcceptLegacyEverywhere)
-            throw new CompileError(Legacy[0].Pos, Legacy[0].Message.Contains("tessera migrate") ? Legacy[0].Message : $"{Legacy[0].Message} (tessera migrate rewrites it)");
+        if (Legacy.Count > 0 && !acceptLegacy)
+            throw new CompileError(Legacy[0].Pos, Legacy[0].Message);
         return new Module(decls);
     }
 
@@ -231,7 +226,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     /// A name that can be a keyword: an identifier not written between backticks.
     private const string PrivateRenamed =
-        "'private' is now 'secret': `secret routine helper(...)`, `secret count: U64` (tessera migrate --step visibility rewrites it)";
+        "'private' is now 'secret': `secret routine helper(...)`, `secret count: U64`";
 
     private static bool IsKeyword(Token t) => t is { Kind: TokenKind.Ident, Escaped: false };
 
@@ -794,7 +789,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (Cur is { Kind: TokenKind.Ident, Escaped: false, Text: "nothing" or "pass" } && Cur.Pos.Col > 1
             && PeekTok(1).Kind is TokenKind.Newline or TokenKind.Eof)
         {
-            if (Cur.Text == "pass") Old(Cur.Pos, "a type with no member variables has the body 'nothing': 'pass' is not a keyword ('tessera migrate --step nothing' rewrites it)");
+            if (Cur.Text == "pass") Old(Cur.Pos, "a type with no member variables has the body 'nothing': 'pass' is not a keyword");
             Next();
             ExpectLineEnd();
             nothing = true;
@@ -828,8 +823,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             throw new CompileError(pos, $"crashable '{name.Text}' takes no type parameters: a failure is one fixed kind of value");
         if (fields.Count == 0 && !nothing)
             Old(pos, $"{(isEntity ? "entity" : isCrashable ? "crashable" : "record")} '{name.Text}' has no member variables and no " +
-                     "body: a type with no member variables writes 'nothing' as its body, on the line under its header " +
-                     "('tessera migrate --step nothing' writes it)");
+                     "body: a type with no member variables writes 'nothing' as its body, on the line under its header");
         return new RecordDecl(file, annotations, name.Text, typeParams, clauses, fields, pos) { IsEntity = isEntity, IsCrashable = isCrashable };
     }
 
@@ -872,7 +866,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         {
             var m = Expect(TokenKind.Ident, "a choice member");
             if (!IsScreamingSnake(m.Text))
-                throw new CompileError(m.Pos, $"choice members are SCREAMING_SNAKE_CASE: '{m.Text}' is written {Migrate.Screaming(m.Text)}");
+                throw new CompileError(m.Pos, $"choice members are SCREAMING_SNAKE_CASE: '{m.Text}' is written {OldSpellings.Screaming(m.Text)}");
             Expr value;
             if (Accept(TokenKind.Colon)) value = ParseExpr();
             else if (members.Count == 0) value = new IntLit(0, m.Pos);
@@ -1038,7 +1032,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 if (!n.Escaped && n.Text == "me")
                     throw new CompileError(n.Pos, "me isn't written among the parameters: `routine Owner.name(...)` takes me "
                         + "as a value, `routine @Owner.name(...)` by its address, and `common routine Owner.name(...)` takes "
-                        + "none (tessera migrate --step receiver rewrites the old spelling)");
+                        + "none");
                 Expect(TokenKind.Colon, "':'");
                 var type = ParseType();
                 // `hi: U64 = R2`: the register an assembly routine's parameter arrives in.
@@ -1458,16 +1452,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var pos = Cur.Pos;
         if (WhileLoopAhead())
         {
-            if (!ReadsWhileLoops)
-                throw Error("a loop is written 'until' with the condition that ends it (until i >= count), or 'loop' for a loop " +
-                            "that ends only at a break, return or throw: 'while' is not a keyword. 'tessera migrate --step until' " +
-                            "rewrites these loops");
-            return ParseLoop(col);
+            throw Error("a loop is written 'until' with the condition that ends it (until i >= count), or 'loop' for a loop " +
+                        "that ends only at a break, return or throw: 'while' is not a keyword");
         }
         if (PassLineAhead())
         {
             // `pass` is read as `nothing`, and reported once the file is read.
-            Old(Cur.Pos, "a line with no work is written 'nothing': 'pass' is not a keyword ('tessera migrate --step nothing' rewrites it)");
+            Old(Cur.Pos, "a line with no work is written 'nothing': 'pass' is not a keyword");
             Next();
             return new NothingStmt(pos);
         }
@@ -1609,7 +1600,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         {
             Next();
             if (IsIdent("if") && !StartsValue())
-                throw Error("'else if' is one word: elseif c (tessera migrate --step elseif rewrites it)");
+                throw Error("'else if' is one word: elseif c");
             else
             {
                 ExpectLineEnd();
@@ -1634,10 +1625,6 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
         return _inAsm && AsmCondition() is { } named ? named : ParseExpr();
     }
-
-    /// Set only by `tessera migrate --step until` while it asks the build about the loops it rewrites: a loop written
-    /// with `while` is then read without an error.
-    public static bool ReadsWhileLoops { get; set; }
 
     /// Whether the line starts `while c`: the name `while` followed on its line by the start of a value, which no line
     /// that uses `while` as a name does (`while: T = v`, `while.f()`, `while(x)`).
@@ -1856,7 +1843,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
         if (PassLineAhead())
         {
-            Old(pos, "a line with no work is written 'nothing': 'pass' is not a keyword ('tessera migrate --step nothing' rewrites it)");
+            Old(pos, "a line with no work is written 'nothing': 'pass' is not a keyword");
             Next();
             return new NothingStmt(pos);
         }
@@ -2374,7 +2361,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     return AtManager(new ArrayLit(elems, t.Pos) { Repeat = ParsePostfix() });
                 }
                 if (Cur is { Kind: TokenKind.Ident, Text: "x", Escaped: false } && !_inAsm)
-                    throw Error("the elements repeat with '*': [0] * n (tessera migrate --step repeat rewrites the old '[0] x n')");
+                    throw Error("the elements repeat with '*': [0] * n");
                 return AtManager(new ArrayLit(elems, t.Pos));
             }
             case TokenKind.Ident when _inAsm && AsmCondition() is { } condition:

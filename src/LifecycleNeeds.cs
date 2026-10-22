@@ -6,7 +6,7 @@ namespace Tessera;
 /// `Addr`) only points at memory someone else gives back, so it holds nothing. A type of plain data (numbers, Bool,
 /// choices, addresses, records of those) holds nothing: it may declare them, and needs neither.
 ///
-/// It reads the declarations as written, so the build (Compiler.CheckLifecycle) and `migrate --step lifecycle` answer
+/// It reads the declarations as written, so the build (Compiler.CheckLifecycle) answers
 /// alike. `find` names the declaration a type means, or null. A type no declaration names counts as holding something
 /// when `unknownHolds` is set: what a migration of one file alone can't see might.
 public sealed class LifecycleNeeds(Func<TypeRef, string, Decl?> find, bool unknownHolds = false)
