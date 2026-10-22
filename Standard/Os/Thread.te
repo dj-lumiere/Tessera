@@ -17,7 +17,7 @@ module Standard/Os
 ### The hosted thread manager: the operating system's threads, with the work blocks from HEAP. Ready before
 ### `start` runs.
 @target(os: not "none")
-global DEFAULT_THREADS: @ThreadManager <- (launch_fn: os_launch_fn.to[Callable](), state: .hollow(), guard: 0, idle: .hollow(), manager: HEAP)
+global DEFAULT_THREADS: &ThreadManager <- (launch_fn: os_launch_fn.to[Callable](), state: .hollow(), guard: 0, idle: .hollow(), manager: HEAP)
 
 ### A ticket for a thread, from {get_thread}: it runs one piece of work at a time, whose result is a `T` (`Void` for
 ### none), until {Thread[T].give_back}.
@@ -98,7 +98,7 @@ common routine ThreadManager.construct(manager: @MemoryManager) -> Me
 ### Ends the idle threads. Every ticket goes back first: a ticket given back to a manager that is gone reaches memory
 ### that is gone, and its thread never ends.
 routine @ThreadManager.destruct() -> None
-    held: Authorized[U8] = me.guard.get_exclusive_access()
+    held: Authorized[U8] <- me.guard.get_exclusive_access()
 
     loop
         worker2: @ThreadWorker = me.idle.peek()
@@ -154,7 +154,7 @@ needs T: typename
 ### :returns: The worker, with an empty slot.
 @track_caller
 secret routine @ThreadManager.take_worker() -> @ThreadWorker
-    held: Authorized[U8] = me.guard.get_exclusive_access()
+    held: Authorized[U8] <- me.guard.get_exclusive_access()
     idle: @ThreadWorker = me.idle.peek()
     if idle.is_hollow()
         drop held
@@ -179,7 +179,7 @@ secret routine @ThreadManager.take_worker() -> @ThreadWorker
 ### :param raw: The {ThreadWorker}.
 @target(os: not "none")
 secret routine worker_main(raw: Addr) -> None
-    local worker: @ThreadWorker = raw.to[@ThreadWorker]()
+    worker: @ThreadWorker = raw.to[@ThreadWorker]()
 
     loop
         state2: U32 = worker.slot.state.peek_atomic()
@@ -439,7 +439,7 @@ needs T: typename
     me.work_slot().give_back()
     worker: @ThreadWorker = me.worker
     manager: @ThreadManager = worker.manager.peek()
-    held: Authorized[U8] = manager.guard.get_exclusive_access()
+    held: Authorized[U8] <- manager.guard.get_exclusive_access()
     worker.next.poke(manager.idle.peek())
     manager.idle.poke(worker)
     drop held
@@ -519,12 +519,12 @@ secret routine os_launch_fn(entry: Callable[(Addr,), None], arg: Addr, state: Ad
     start: @ThreadStart = thread_start(entry, arg)
     if start.is_hollow()
         return false
-    local handle: @Addr <- .hollow()
+    handle: &Addr <- .hollow()
     result: CInt = c_pthread_create(handle, .hollow(), posix_thread_main.to[Callable](), start)
     if result != 0
         deallocate(data: start, manager: HEAP)
         return false
-    c_pthread_detach(handle.peek())
+    c_pthread_detach(handle.load())
     return true
 
 ### _SC_NPROCESSORS_ONLN, whose number differs between Linux and macOS.

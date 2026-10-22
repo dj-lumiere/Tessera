@@ -59,9 +59,8 @@ needs TKey: typename, TValue: typename
 common routine Dict[TKey, TValue].of[COUNT](values: Array[(TKey, TValue), COUNT],
     manager: @MemoryManager) -> Me
 needs TKey: typename, TValue: typename, COUNT: U64
-    local made: @Me <- Me.construct(manager)
-    local items: @List[(TKey, TValue)] <- List[(TKey, TValue)].of(values: steal values,
-        manager: manager)
+    made: &Me <- Me.construct(manager)
+    items: &List[(TKey, TValue)] <- List[(TKey, TValue)].of(values: steal values, manager: manager)
 
     view: @[(TKey, TValue)] = items.getview()
     each i: U64 in 0 til COUNT
@@ -93,7 +92,7 @@ needs TKey: typename, TValue: typename
 ###     first empty slot.
 routine @Dict[TKey, TValue].slot(key: @TKey, hash: U64) -> U64
 needs TKey: typename, TValue: typename
-    local first_tombstone: @U64 <- DICT_SLOT_EMPTY
+    first_tombstone: &U64 <- DICT_SLOT_EMPTY
 
     capacity: U64 = me.slots.count.peek()
     mask: U64 = capacity - 1
@@ -104,15 +103,15 @@ needs TKey: typename, TValue: typename
         is_empty: Bool = entry_idx == DICT_SLOT_EMPTY
         when
             is_empty =>
-                has_tombstone: Bool = first_tombstone.peek() != DICT_SLOT_EMPTY
+                has_tombstone: Bool = first_tombstone.load() != DICT_SLOT_EMPTY
                 slot: U64 = when
-                    has_tombstone => first_tombstone.peek()
+                    has_tombstone => first_tombstone.load()
                     else => index
                 return slot
             entry_idx == DICT_SLOT_TOMBSTONE =>
-                seen: Bool = first_tombstone.peek() != DICT_SLOT_EMPTY
+                seen: Bool = first_tombstone.load() != DICT_SLOT_EMPTY
                 next_tombstone: U64 = when
-                    seen => first_tombstone.peek()
+                    seen => first_tombstone.load()
                     else => index
                 capacity2: U64 = me.slots.count.peek()
                 next: U64 = index + 1 & capacity2 - 1
@@ -150,7 +149,7 @@ needs TKey: typename, TValue: typename
 ### :returns: The index of the key's entry, or `DICT_SLOT_EMPTY` when the key is absent.
 secret routine @Dict[TKey, TValue].find_value(key: TKey) -> U64
 needs TKey: typename, TValue: typename
-    local probe: @TKey <- steal key
+    probe: &TKey <- steal key
 
     found: U64 = me.find(probe)
 
@@ -232,13 +231,13 @@ needs TKey: typename, TValue: typename, Equatable[TValue]
 @reshaping
 secret routine @Dict[TKey, TValue].rehash(new_capacity: U64) -> Bool
 needs TKey: typename, TValue: typename
-    local manager: @MemoryManager = me.keys.manager.peek()
-    local fresh: @Me <- .construct(manager)
-    local keys: @Memory[TKey] = fresh.keys
-    local values: @Memory[TValue] = fresh.values
-    local hashes: @Memory[U64] = fresh.hashes
-    local entry_states: @Memory[U8] = fresh.entry_states
-    local slots: @Memory[U64] = fresh.slots
+    manager: @MemoryManager = me.keys.manager.peek()
+    fresh: &Me <- .construct(manager)
+    keys: @Memory[TKey] = fresh.keys
+    values: @Memory[TValue] = fresh.values
+    hashes: @Memory[U64] = fresh.hashes
+    entry_states: @Memory[U8] = fresh.entry_states
+    slots: @Memory[U64] = fresh.slots
 
     if make_array[TKey](into: keys, count: new_capacity)
         if make_array[TValue](into: values, count: new_capacity)
@@ -281,7 +280,7 @@ needs TKey: typename, TValue: typename
 @reshaping
 secret routine @Dict[TKey, TValue].ensure() -> Bool
 needs TKey: typename, TValue: typename
-    local capacity: U64 = me.slots.count.peek()
+    capacity: U64 = me.slots.count.peek()
 
     if capacity == 0
         return me.rehash(8)
@@ -299,10 +298,10 @@ needs TKey: typename, TValue: typename
 ### :param hash: The key's hash, so rehash can pass the stored one instead of hashing every key again.
 routine @Dict[TKey, TValue].setitem_direct(key: TKey, value: TValue, hash: U64) -> None
 needs TKey: typename, TValue: typename
-    local probe: @TKey <- steal key
-    local slot: U64 = me.slot(key: probe, hash)
-    local slots: @U64 = me.slots.data.peek()
-    local entry_idx: U64 = slots.stride(slot).peek()
+    probe: &TKey <- steal key
+    slot: U64 = me.slot(key: probe, hash)
+    slots: @U64 = me.slots.data.peek()
+    entry_idx: U64 = slots.stride(slot).peek()
 
     if entry_idx < DICT_SLOT_TOMBSTONE
         drop probe
@@ -349,7 +348,7 @@ needs TKey: typename, TValue: typename
 ### :throws: Throws `KeyNotFoundError` when the key is absent.
 failable routine @Dict[TKey, TValue].getitem(key: @TKey) -> TValue
 needs TKey: typename, TValue: typename
-    local entry_idx: U64 = me.find(key)
+    entry_idx: U64 = me.find(key)
 
     if entry_idx < DICT_SLOT_TOMBSTONE
         values: @TValue = me.values.data.peek()
@@ -363,7 +362,7 @@ needs TKey: typename, TValue: typename
 ### :throws: Throws `KeyNotFoundError` when the key is absent.
 failable routine @Dict[TKey, TValue].getitem(key: TKey) -> TValue
 needs TKey: typename, TValue: typename
-    local entry_idx: U64 = me.find_value(steal key)
+    entry_idx: U64 = me.find_value(steal key)
 
     if entry_idx < DICT_SLOT_TOMBSTONE
         values: @TValue = me.values.data.peek()
@@ -378,7 +377,7 @@ needs TKey: typename, TValue: typename
 ### :throws: Throws `KeyNotFoundError` when the key is absent.
 failable routine @Dict[TKey, TValue].getslot(key: @TKey) -> @TValue
 needs TKey: typename, TValue: typename
-    local entry_idx: U64 = me.find(key)
+    entry_idx: U64 = me.find(key)
 
     if entry_idx < DICT_SLOT_TOMBSTONE
         values: @TValue = me.values.data.peek()
@@ -393,7 +392,7 @@ needs TKey: typename, TValue: typename
 ### :throws: Throws `KeyNotFoundError` when the key is absent.
 failable routine @Dict[TKey, TValue].getslot(key: TKey) -> @TValue
 needs TKey: typename, TValue: typename
-    local entry_idx: U64 = me.find_value(steal key)
+    entry_idx: U64 = me.find_value(steal key)
 
     if entry_idx < DICT_SLOT_TOMBSTONE
         values: @TValue = me.values.data.peek()
@@ -433,7 +432,7 @@ needs TKey: typename, TValue: typename
 ### :returns: `true` when an entry was removed, `false` when the key was not present.
 routine @Dict[TKey, TValue].remove(key: TKey) -> Bool
 needs TKey: typename, TValue: typename
-    local probe: @TKey <- steal key
+    probe: &TKey <- steal key
 
     removed: Bool = me.remove(probe)
 
@@ -529,7 +528,7 @@ needs T: typename
 ### :param b: The second slice.
 secret routine swap_slices[T](a: @Memory[T], b: @Memory[T]) -> None
 needs T: typename
-    local first: @Memory[T] <- steal a.stride(0)
+    first: &[T] <- steal a.stride(0)
 
     a.poke(steal b.stride(0))
     b.poke(steal first)

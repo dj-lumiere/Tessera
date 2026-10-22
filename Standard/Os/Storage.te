@@ -178,7 +178,7 @@ secret routine mount_of(mounts: @[Byte], key: @[Byte]) -> Maybe[MountLine]
 @target(os: "linux")
 @track_caller
 secret routine unescaped(text: @[Byte], manager: @MemoryManager) -> Memory[Byte]
-    local out: @List[Byte] <- .construct(manager)
+    out: &List[Byte] <- .construct(manager)
 
     until i >= text.count() with i: U64 = 0
         b: U8 = text.byte_at(i)
@@ -192,7 +192,7 @@ secret routine unescaped(text: @[Byte], manager: @MemoryManager) -> Memory[Byte]
         out.add_last(b.bits())
         continue with i: i + 1
     then
-        local text_copy: @Memory[Byte] <- copied(text: out.getview(), manager)
+        text_copy: &[Byte] <- copied(text: out.getview(), manager)
         drop out
         return text_copy
 
@@ -214,7 +214,7 @@ secret routine text_of(path: @[Byte], manager: @MemoryManager) -> Memory[Byte]
 ### :returns: The number.
 @target(os: "linux")
 secret routine sys_number(path: @[Byte], manager: @MemoryManager) -> U64
-    local text: @Memory[Byte] <- text_of(path, manager)
+    text: &[Byte] <- text_of(path, manager)
 
     n: U64 = leading_number(text.getslice())
     drop text
@@ -231,11 +231,11 @@ secret routine sys_number(path: @[Byte], manager: @MemoryManager) -> U64
 @track_caller
 secret routine linux_partition(sys: @[Byte], name: @[Byte], mounts: @[Byte],
     manager: @MemoryManager) -> PartitionManager
-    local dev_path: @Memory[Byte] <- join_path(a: sys, b: "dev", manager)
-    local size_path: @Memory[Byte] <- join_path(a: sys, b: "size", manager)
-    local dev_text: @Memory[Byte] <- text_of(path: dev_path.getslice(), manager)
-    local device: @Memory[Byte] <- copied(text: "", manager)
-    local marker: @Memory[Byte] <- join_path(a: sys, b: "partition", manager)
+    dev_path: &[Byte] <- join_path(a: sys, b: "dev", manager)
+    size_path: &[Byte] <- join_path(a: sys, b: "size", manager)
+    dev_text: &[Byte] <- text_of(path: dev_path.getslice(), manager)
+    device: &[Byte] <- copied(text: "", manager)
+    marker: &[Byte] <- join_path(a: sys, b: "partition", manager)
 
     # A partition's device is the directory above it in /sys/devices. Something that isn't a partition (a whole disk
     # with a file system on it, a device-mapper volume) is its own device.
@@ -258,10 +258,10 @@ secret routine linux_partition(sys: @[Byte], name: @[Byte], mounts: @[Byte],
     m: MountLine = when mount_of(mounts, key)
         is MountLine as line => line
         is None => MountLine(mount_point: "", file_system: "")
-    local at: @Memory[Byte] <- unescaped(text: m.mount_point, manager)
+    at: &[Byte] <- unescaped(text: m.mount_point, manager)
     facts: PartitionFacts = PartitionFacts(name, device: device.getslice(),
         mounted_at: at.getslice(), file_system: m.file_system, size)
-    local made: @PartitionManager <- partition_from(facts, manager)
+    made: &PartitionManager <- partition_from(facts, manager)
     drop at
     drop device
     drop dev_text
@@ -276,8 +276,8 @@ secret routine linux_partition(sys: @[Byte], name: @[Byte], mounts: @[Byte],
 @target(os: "linux")
 @track_caller
 secret routine storage_devices(manager: @MemoryManager) -> List[StorageManager]
-    local list: @List[StorageManager] <- .construct(manager)
-    local iter: @DirIter <- .hollow()
+    list: &List[StorageManager] <- .construct(manager)
+    iter: &DirIter <- .hollow()
 
     opened: Bool = try iter.open_path("/sys/block")
     if not opened
@@ -287,8 +287,8 @@ secret routine storage_devices(manager: @MemoryManager) -> List[StorageManager]
         entry: Maybe[DirEntry] = try iter.emit()
         when entry
             is DirEntry as e =>
-                local sys: @Memory[Byte] <- join_path(a: "/sys/block", b: e.name, manager)
-                local size_path: @Memory[Byte] <- join_path(a: sys.getslice(), b: "size", manager)
+                sys: &[Byte] <- join_path(a: "/sys/block", b: e.name, manager)
+                size_path: &[Byte] <- join_path(a: sys.getslice(), b: "size", manager)
                 size: U64 = sys_number(path: size_path.getslice(), manager) *% 512
                 # A device with no medium (an unused loop device, an empty card reader) has size 0.
                 if size != 0
@@ -307,9 +307,9 @@ secret routine storage_devices(manager: @MemoryManager) -> List[StorageManager]
 @target(os: "linux")
 @track_caller
 secret routine partitions(manager: @MemoryManager) -> List[PartitionManager]
-    local list: @List[PartitionManager] <- .construct(manager)
-    local iter: @DirIter <- .hollow()
-    local mounts: @Memory[Byte] <- text_of(path: "/proc/self/mountinfo", manager)
+    list: &List[PartitionManager] <- .construct(manager)
+    iter: &DirIter <- .hollow()
+    mounts: &[Byte] <- text_of(path: "/proc/self/mountinfo", manager)
 
     opened: Bool = try iter.open_path("/sys/class/block")
     if not opened
@@ -320,9 +320,9 @@ secret routine partitions(manager: @MemoryManager) -> List[PartitionManager]
         entry: Maybe[DirEntry] = try iter.emit()
         when entry
             is DirEntry as e =>
-                local sys: @Memory[Byte] <- join_path(a: "/sys/class/block", b: e.name, manager)
-                local marker: @Memory[Byte] <- join_path(a: sys.getslice(), b: "partition", manager)
-                local found: @PartitionManager <- linux_partition(sys: sys.getslice(), name: e.name,
+                sys: &[Byte] <- join_path(a: "/sys/class/block", b: e.name, manager)
+                marker: &[Byte] <- join_path(a: sys.getslice(), b: "partition", manager)
+                found: &PartitionManager <- linux_partition(sys: sys.getslice(), name: e.name,
                     mounts: mounts.getslice(), manager)
                 # A partition, or a block device that carries a mounted file system of its own (a device-mapper
                 # volume, a whole disk without a partition table): the same thing partition_of names.
@@ -348,14 +348,14 @@ secret routine partitions(manager: @MemoryManager) -> List[PartitionManager]
 @track_caller
 secret routine linux_partition_at(sys: @[Byte], key: @[Byte], mounts: @[Byte],
     manager: @MemoryManager) -> PartitionManager
-    local name: @Memory[Byte] <- copied(text: key, manager)
+    name: &[Byte] <- copied(text: key, manager)
 
     when check canonical_path(path: sys, manager)
         is Memory[Byte] as resolved =>
             name.replace(value: copied(text: file_name(resolved.getslice()), manager))
             drop resolved
         is FsError => nothing
-    local made: @PartitionManager <- linux_partition(sys, name: name.getslice(), mounts, manager)
+    made: &PartitionManager <- linux_partition(sys, name: name.getslice(), mounts, manager)
     drop name
     return made
 
@@ -368,17 +368,17 @@ secret routine linux_partition_at(sys: @[Byte], key: @[Byte], mounts: @[Byte],
 secret failable routine partition_of(path: @[Byte], manager: @MemoryManager) -> PartitionManager
     id: U64 = when check device_id(path)
         is U64 as found => found
-    local key: @List[Byte] <- .construct(manager)
-    local sys: @List[Byte] <- .construct(manager)
+    key: &List[Byte] <- .construct(manager)
+    sys: &List[Byte] <- .construct(manager)
 
     major: U64 = id & 0xFFFFFFFF
     minor: U64 = id >> 32
     key.write("{major}:{minor}")
     sys.write("/sys/dev/block/{major}:{minor}")
-    local mounts: @Memory[Byte] <- text_of(path: "/proc/self/mountinfo", manager)
+    mounts: &[Byte] <- text_of(path: "/proc/self/mountinfo", manager)
 
     if is_present(sys.getview())
-        local made: @PartitionManager <- linux_partition_at(sys: sys.getview(), key: key.getview(),
+        made: &PartitionManager <- linux_partition_at(sys: sys.getview(), key: key.getview(),
             mounts: mounts.getslice(), manager)
         drop mounts
         drop sys
@@ -390,10 +390,10 @@ secret failable routine partition_of(path: @[Byte], manager: @MemoryManager) -> 
     name: @[Byte] = when
         m.file_system.is_empty() => key.getview()
         else => m.file_system
-    local at: @Memory[Byte] <- unescaped(text: m.mount_point, manager)
+    at: &[Byte] <- unescaped(text: m.mount_point, manager)
     facts: PartitionFacts = PartitionFacts(name, device: "", mounted_at: at.getslice(),
         file_system: m.file_system, size: 0)
-    local unmounted: @PartitionManager <- partition_from(facts, manager)
+    unmounted: &PartitionManager <- partition_from(facts, manager)
     drop at
     drop mounts
     drop sys
@@ -508,7 +508,7 @@ secret routine mac_partition(st: @StatFs, manager: @MemoryManager) -> PartitionM
 @target(os: "macos")
 @track_caller
 secret routine partitions(manager: @MemoryManager) -> List[PartitionManager]
-    local list: @List[PartitionManager] <- .construct(manager)
+    list: &List[PartitionManager] <- .construct(manager)
 
     n: CInt = c_getfsstat(.hollow(), 0, 2)
     if n <= 0
@@ -541,8 +541,8 @@ secret routine has_storage(list: @List[StorageManager], name: @[Byte]) -> Bool
 @target(os: "macos")
 @track_caller
 secret routine storage_devices(manager: @MemoryManager) -> List[StorageManager]
-    local list: @List[StorageManager] <- .construct(manager)
-    local parts: @List[PartitionManager] <- partitions(manager)
+    list: &List[StorageManager] <- .construct(manager)
+    parts: &List[PartitionManager] <- partitions(manager)
 
     each i in 0 til parts.count()
         disk: @[Byte] = parts.getslot(i).device.getslice()
@@ -559,8 +559,8 @@ secret routine storage_devices(manager: @MemoryManager) -> List[StorageManager]
 ### :returns: The partition for a path that can't be looked at.
 @target(os: "macos")
 secret failable routine partition_of(path: @[Byte], manager: @MemoryManager) -> PartitionManager
-    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
-    local st: @StatFs <- .hollow()
+    cpath: &Array[Byte, PATH_CAPACITY] <- .hollow()
+    st: &StatFs <- .hollow()
 
     if not c_path(path, out: cpath.to[@Byte]())
         throw path_error(path)
@@ -629,12 +629,12 @@ secret routine c_get_volume_path_name(path: @U16, out: @U16, size: U32) -> CInt
 @target(os: "windows")
 @track_caller
 secret routine windows_partition(root: @U16, manager: @MemoryManager) -> PartitionManager
-    local fs: @Array[U16, 64] <- .hollow()
-    local total: @U64 <- 0
+    fs: &Array[U16, 64] <- .hollow()
+    total: &U64 <- 0
 
     n: U64 = wide_length(root)
-    local at: @Memory[Byte] <- copied_wide(units: root, count: n, manager)
-    local fs_name: @Memory[Byte] <- copied(text: "", manager)
+    at: &[Byte] <- copied_wide(units: root, count: n, manager)
+    fs_name: &[Byte] <- copied(text: "", manager)
 
     if c_get_volume_information(root, .hollow(), 0, .hollow(), .hollow(), .hollow(), fs.to[@U16](),
         64) != 0
@@ -648,8 +648,8 @@ secret routine windows_partition(root: @U16, manager: @MemoryManager) -> Partiti
             start: 0, end: path.count() - 1)
         else => path
     facts: PartitionFacts = PartitionFacts(name, device: "", mounted_at: path,
-        file_system: fs_name.getslice(), size: total.peek())
-    local made: @PartitionManager <- partition_from(facts, manager)
+        file_system: fs_name.getslice(), size: total.load())
+    made: &PartitionManager <- partition_from(facts, manager)
     drop fs_name
     drop at
     return made
@@ -661,8 +661,8 @@ secret routine windows_partition(root: @U16, manager: @MemoryManager) -> Partiti
 @target(os: "windows")
 @track_caller
 secret routine partitions(manager: @MemoryManager) -> List[PartitionManager]
-    local list: @List[PartitionManager] <- .construct(manager)
-    local roots: @Array[U16, 512] <- .hollow()
+    list: &List[PartitionManager] <- .construct(manager)
+    roots: &Array[U16, 512] <- .hollow()
 
     got: U32 = c_get_logical_drive_strings(512, roots.to[@U16]())
     if got == 0 or got >= 512
@@ -682,7 +682,7 @@ secret routine partitions(manager: @MemoryManager) -> List[PartitionManager]
 @target(os: "windows")
 @track_caller
 secret routine storage_devices(manager: @MemoryManager) -> List[StorageManager]
-    local list: @List[StorageManager] <- .construct(manager)
+    list: &List[StorageManager] <- .construct(manager)
 
     return list
 
@@ -692,8 +692,8 @@ secret routine storage_devices(manager: @MemoryManager) -> List[StorageManager]
 ### :returns: The partition for a path that can't be looked at.
 @target(os: "windows")
 secret failable routine partition_of(path: @[Byte], manager: @MemoryManager) -> PartitionManager
-    local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
-    local root: @Array[U16, PATH_CAPACITY] <- .hollow()
+    wpath: &Array[U16, PATH_CAPACITY] <- .hollow()
+    root: &Array[U16, PATH_CAPACITY] <- .hollow()
 
     if not wide_path(path, out: wpath.to[@U16]())
         throw path_error(path)

@@ -10,12 +10,12 @@ module Standard/System/Memory
 ### The StackManager of the running thread's own stack, filled from the operating system on first use.
 @threadlocal
 @target(os: not "none")
-secret global THREAD_STACK: @StackManager
+secret global THREAD_STACK: &StackManager
 
 ### The StackManager of the flow running on this thread: a fiber's while one runs, else null for the thread's own.
 @threadlocal
 @target(os: not "none")
-global RUNNING_STACK: @@StackManager
+global RUNNING_STACK: &@StackManager
 
 ### The StackManager of the flow that runs this code: a fiber's stack inside a fiber, else the thread's own stack,
 ### whose bounds the operating system gives the first time a thread asks.
@@ -70,16 +70,16 @@ secret routine c_pthread_attr_destroy(attr: Addr) -> CInt
 ### :returns: The bottom and the top, both null when the system doesn't say.
 @target(os: "linux")
 secret routine thread_stack_bounds() -> (Addr, Addr)
-    local attr: @Array[U64, 16] <- .hollow()
-    local low: @Addr <- .hollow()
-    local size: @CSize <- 0
+    attr: &Array[U64, 16] <- .hollow()
+    low: &Addr <- .hollow()
+    size: &CSize <- 0
 
     if c_pthread_getattr_np(c_pthread_self(), attr) != 0
         return (.hollow(), .hollow())
     c_pthread_attr_getstack(attr, low, size)
     c_pthread_attr_destroy(attr)
-    top: Addr = low.peek() +% ByteSize.construct(bytes: size.peek().to[U64]())
-    return (low.peek(), top)
+    top: Addr = low.load() +% ByteSize.construct(bytes: size.load().to[U64]())
+    return (low.load(), top)
 
 # -- macOS --------------------------------------------------------------------------------------------------------
 
@@ -103,7 +103,7 @@ secret routine c_pthread_get_stacksize_np(thread: Addr) -> CSize
 ### :returns: The bottom and the top.
 @target(os: "macos")
 secret routine thread_stack_bounds() -> (Addr, Addr)
-    local thread: Addr = c_pthread_self()
+    thread: Addr = c_pthread_self()
 
     top: Addr = c_pthread_get_stackaddr_np(thread)
     size: ByteSize = ByteSize.construct(bytes: c_pthread_get_stacksize_np(thread).to[U64]())
@@ -124,8 +124,18 @@ secret routine c_get_current_thread_stack_limits(low: @Addr, high: @Addr) -> Non
 ### :returns: The bottom and the top.
 @target(os: "windows")
 secret routine thread_stack_bounds() -> (Addr, Addr)
-    local low: @Addr <- .hollow()
-    local high: @Addr <- .hollow()
+    low: &Addr <- .hollow()
+    high: &Addr <- .hollow()
 
     c_get_current_thread_stack_limits(low, high)
-    return (low.peek(), high.peek())
+    return (low.load(), high.load())
+
+### Borrows the running routine's frame from the flow's stack, once the routine's prologue has made it. The builder
+### calls it at the start of every routine. With an operating system the page below each stack is closed, so a stack
+### that runs out stops the program with a fault that the fault report names `StackOverflowError`: nothing is checked
+### here.
+### :param size: The bytes of the frame's slots the builder knows of.
+@inline
+@target(os: not "none")
+common routine StackManager.borrow_frame(size: U64) -> None
+    return

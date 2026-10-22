@@ -27,7 +27,7 @@ secret preset FAULT_FRAMES: U64 = 64
 
 ### 1 once the fault handlers are installed.
 @target(os: not "none")
-secret global FAULTS_INSTALLED: @U32
+secret global FAULTS_INSTALLED: &U32
 
 ### SS_DISABLE, which takes a thread's signal stack away.
 @target(os: "linux")
@@ -35,12 +35,18 @@ secret preset SS_DISABLE: CInt = 2
 ### SS_DISABLE, which takes a thread's signal stack away.
 @target(os: "macos")
 secret preset SS_DISABLE: CInt = 4
-### SA_ONSTACK | SA_RESETHAND: the fault handler runs on the thread's own fault stack, and once.
+### SA_ONSTACK | SA_RESETHAND | SA_SIGINFO: the fault handler runs on the thread's own fault stack, once, and is told
+### the address the fault was at.
 @target(os: "linux")
-secret preset FAULT_FLAGS: U32 = 0x88000000
-### SA_ONSTACK | SA_RESETHAND: the fault handler runs on the thread's own fault stack, and once.
+secret preset FAULT_FLAGS: U32 = 0x88000004
+### SA_ONSTACK | SA_RESETHAND | SA_SIGINFO: the fault handler runs on the thread's own fault stack, once, and is told
+### the address the fault was at.
 @target(os: "macos")
-secret preset FAULT_FLAGS: U32 = 0x0005
+secret preset FAULT_FLAGS: U32 = 0x0045
+
+### How far below a stack's bottom a fault still counts as the stack running out: the closed pages under it.
+@target(os: ("linux", "macos"))
+secret preset GUARD_REACH: U64 = 1048576
 
 ### Binds the C `sigaction` function, which sets what a signal does.
 ### :param sig: The signal.
@@ -99,6 +105,13 @@ secret routine fault_signals() -> Array[CInt, 5]
 secret routine fault_signals() -> Array[CInt, 5]
     return [11, 10, 8, 4, 6]
 
+### The signal of a memory fault, by its place in fault_signals.
+### :param index: 0 or 1.
+### :returns: Its name.
+@target(os: ("linux", "macos"))
+secret routine signal_name(index: U64) -> @[Byte]
+    return if index == 0 then "SIGSEGV" else "SIGBUS"
+
 ### The fault's name and what it means.
 ### :param index: Its place in fault_signals.
 ### :returns: The text.
@@ -111,12 +124,40 @@ secret routine fault_name(index: U64) -> @[Byte]
         3 => return "IllegalInstruction (SIGILL): an instruction this processor can't run"
         else => return "Aborted (SIGABRT): the program, or a library it uses, aborted"
 
-### The handler of every covered signal: writes the report, then sends the signal again, which now does what it would
-### have done (the handler was installed for one use).
-### :param sig: The signal.
+### Where `siginfo_t` keeps the fault's address: after three ints on Linux (aligned to a pointer).
+### :param info: The signal's `siginfo_t`.
+### :returns: The address the fault was at.
+@target(os: "linux")
+secret routine fault_address(info: Addr) -> Addr
+    return (info +% ByteSize.construct(bytes: 2 * sizeof[Addr]())).to[@Addr]().peek()
+
+### Where `siginfo_t` keeps the fault's address: after six ints on macOS.
+### :param info: The signal's `siginfo_t`.
+### :returns: The address the fault was at.
+@target(os: "macos")
+secret routine fault_address(info: Addr) -> Addr
+    return (info +% 24b).to[@Addr]().peek()
+
+### Whether a memory fault at `at` is the running flow's stack running out: the address is in the closed pages below
+### its StackManager's bottom (or just at it).
+### :param at: The address the fault was at.
+### :returns: True when the stack ran out.
 @target(os: ("linux", "macos"))
-secret routine on_fault(sig: CInt) -> None
-    local signals: Array[CInt, 5] = fault_signals()
+secret routine stack_ran_out(at: Addr) -> Bool
+    stack: @StackManager = StackManager.current()
+    place: U64 = ptrtoint[Addr, U64](at)
+    bottom: U64 = ptrtoint[Addr, U64](stack.bottom.peek())
+    return place +% GUARD_REACH >= bottom and place < bottom +% 4096
+
+### The handler of every covered signal: writes the report, then sends the signal again, which now does what it would
+### have done (the handler was installed for one use). A memory fault in the closed pages below the running flow's
+### stack is reported as `StackOverflowError`.
+### :param sig: The signal.
+### :param info: The signal's `siginfo_t`, which holds the fault's address.
+### :param context: The interrupted context, unread.
+@target(os: ("linux", "macos"))
+secret routine on_fault(sig: CInt, info: Addr, context: Addr) -> None
+    signals: Array[CInt, 5] = fault_signals()
 
     if deliver(CpuEvent(kind: CpuEventKind.FAULT, code: sig.to[U64](), place: .hollow(),
         address: .hollow()))
@@ -125,7 +166,10 @@ secret routine on_fault(sig: CInt) -> None
     until i >= 4 or signals[i] == sig with i: U64 = 0
         continue with i: i + 1
     then
-        Console.alert("tessera: {fault_name(i)}")
+        if i <= 1 and info.is_not_hollow() and stack_ran_out(fault_address(info))
+            Console.alert("tessera: StackOverflowError ({signal_name(i)}): the stack ran out, the routines called each other deeper than it holds")
+        else
+            Console.alert("tessera: {fault_name(i)}")
         write_trace()
         write_platform_stack()
         c_raise(sig)
@@ -134,7 +178,7 @@ secret routine on_fault(sig: CInt) -> None
 ### Writes the platform's stack: the return addresses with the symbols the system knows.
 @target(os: ("linux", "macos"))
 secret routine write_platform_stack() -> None
-    local frames: @Array[Addr, FAULT_FRAMES] <- .hollow()
+    frames: &Array[Addr, FAULT_FRAMES] <- .hollow()
 
     Console.alert("Platform stack:")
     n: CInt = c_backtrace(frames.to[@Addr](), FAULT_FRAMES.to[CInt]())
@@ -146,9 +190,10 @@ secret routine write_platform_stack() -> None
 ### :param handler: The signal's handler.
 ### :param flags: The `SA_*` flags.
 @target(os: "linux")
-secret routine fill_action(act: @Byte, handler: Callable[(CInt,), None], flags: U32) -> None
+secret routine fill_action(act: @Byte, handler: Callable[(CInt, Addr, Addr), None],
+    flags: U32) -> None
     pointer: ByteSize = ByteSize.construct(bytes: sizeof[Addr]())
-    act.to[Addr]().to[@Callable[(CInt,), None]]().poke(handler)
+    act.to[Addr]().to[@Callable[(CInt, Addr, Addr), None]]().poke(handler)
     flags_field: @U32 = (act.to[Addr]() +% pointer +% 128b).to[@U32]()
     flags_field.poke(flags)
     return
@@ -158,8 +203,9 @@ secret routine fill_action(act: @Byte, handler: Callable[(CInt,), None], flags: 
 ### :param handler: The signal's handler.
 ### :param flags: The `SA_*` flags.
 @target(os: "macos")
-secret routine fill_action(act: @Byte, handler: Callable[(CInt,), None], flags: U32) -> None
-    act.to[Addr]().to[@Callable[(CInt,), None]]().poke(handler)
+secret routine fill_action(act: @Byte, handler: Callable[(CInt, Addr, Addr), None],
+    flags: U32) -> None
+    act.to[Addr]().to[@Callable[(CInt, Addr, Addr), None]]().poke(handler)
     flags_field: @U32 = (act.to[Addr]() +% 12b).to[@U32]()
     flags_field.poke(flags)
     return
@@ -168,8 +214,8 @@ secret routine fill_action(act: @Byte, handler: Callable[(CInt,), None], flags: 
 ### and CpuEventManager.when_faulted when a handler takes the slot. A second call does nothing.
 @target(os: ("linux", "macos"))
 routine install_fault_handlers() -> None
-    local act: @Array[Byte, 160] <- .hollow()
-    local signals: Array[CInt, 5] = fault_signals()
+    act: &Array[Byte, 160] <- .hollow()
+    signals: Array[CInt, 5] = fault_signals()
 
     if FAULTS_INSTALLED.atomic_swap(1) == 1
         return
@@ -186,7 +232,7 @@ routine install_fault_handlers() -> None
 ### :returns: The stack's memory, for release_fault_stack when the thread ends, or null.
 @target(os: ("linux", "macos"))
 routine give_fault_stack() -> Addr
-    local stack: @Array[Byte, 32] <- .hollow()
+    stack: &Array[Byte, 32] <- .hollow()
 
     memory: Addr = HEAP.borrow(size: FAULT_STACK.bytes(), align: 16)
     if memory.is_hollow()
@@ -199,7 +245,7 @@ routine give_fault_stack() -> Addr
 ### :param memory: The stack's memory, from give_fault_stack, or null (then it does nothing).
 @target(os: ("linux", "macos"))
 routine release_fault_stack(memory: Addr) -> None
-    local stack: @Array[Byte, 32] <- .hollow()
+    stack: &Array[Byte, 32] <- .hollow()
 
     if memory.is_hollow()
         return
@@ -265,7 +311,7 @@ secret routine c_capture_stack(skip: U32, count: U32, frames: @Addr, hash: Addr)
 secret routine exception_name(code: U32) -> @[Byte]
     when code
         0xC0000005 => return "AccessViolation: the program touched memory it may not, such as through a null or stale address"
-        0xC00000FD => return "StackOverflow: a stack ran out"
+        0xC00000FD => return "StackOverflowError: the stack ran out, the routines called each other deeper than it holds"
         0xC000001D => return "IllegalInstruction: an instruction this processor can't run"
         0xC0000094 => return "IntegerDivideByZero: an integer division by zero"
         0xC0000095 => return "IntegerOverflow: an overflow the processor stops on"
@@ -277,8 +323,8 @@ secret routine exception_name(code: U32) -> @[Byte]
 @target(os: "windows")
 @callconv("stdcall")
 secret routine on_exception(pointers: Addr) -> CLong
-    local frames: @Array[Addr, FAULT_FRAMES] <- .hollow()
-    local err: @ConsoleErrors = Console.errors()
+    frames: &Array[Addr, FAULT_FRAMES] <- .hollow()
+    err: @ConsoleErrors = Console.errors()
 
     info: Addr = pointers.to[@Addr]().peek()
     code: U32 = info.to[@U32]().peek()

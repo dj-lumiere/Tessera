@@ -39,7 +39,7 @@ import Standard/Os
 ### This thread's fiber manager, made on first use with DEFAULT_FIBER_STACK stacks of pages from PAGES.
 @threadlocal
 @target(os: not "none")
-global FIBERS: @FiberManager
+global FIBERS: &FiberManager
 
 # A fiber's wake_state. A wake turns RUNNING or PARKING into NOTIFIED, and PARKED back into RUNNING (and queues the
 # fiber). park turns RUNNING into PARKING (or takes a NOTIFIED back to RUNNING and returns), and its manager, once the
@@ -146,9 +146,9 @@ entity FiberManager
 @track_caller
 @expensive("asks for pages")
 routine take_stack(size: ByteSize, pages: @MemoryManager) -> StackManager
-    local page: U64 = page_size().bytes()
-    local usable: U64 = whole_pages(size.bytes())
-    local length: U64 = usable + page
+    page: U64 = page_size().bytes()
+    usable: U64 = whole_pages(size.bytes())
+    length: U64 = usable + page
 
     base: Addr = pages.reserve(length)
     if base.is_hollow()
@@ -292,7 +292,7 @@ secret routine release_fibers() -> None
 routine @FiberManager.get_fiber[T]() -> Fiber[T]
 needs T: typename
     me.ensure()
-    held: Authorized[U8] = me.inbox_guard.get_exclusive_access()
+    held: Authorized[U8] <- me.inbox_guard.get_exclusive_access()
     idle: @FiberState = me.idle.peek()
     if idle.is_hollow()
         drop held
@@ -309,8 +309,7 @@ needs T: typename
 @target(os: not "none")
 @track_caller
 secret routine @FiberManager.make_fiber() -> @FiberState
-    local stack: @StackManager <- take_stack(size: me.stack_size.peek(),
-        pages: me.stack_manager.peek())
+    stack: &StackManager <- take_stack(size: me.stack_size.peek(), pages: me.stack_manager.peek())
 
     if stack.top.peek().is_hollow()
         crash_allocation()
@@ -339,7 +338,7 @@ routine @FiberManager.current() -> @FiberState
 ### Inside a fiber: lets the other ready fibers run first, then goes on. Outside one it does nothing.
 @target(os: not "none")
 routine @FiberManager.yield() -> None
-    local fiber: @FiberState = me.current()
+    fiber: @FiberState = me.current()
 
     if fiber.is_hollow()
         return
@@ -352,7 +351,7 @@ routine @FiberManager.yield() -> None
 ### last park. It may also return without one, so a fiber checks what it waits for again. Outside a fiber it returns.
 @target(os: not "none")
 routine @FiberManager.park() -> None
-    local fiber: @FiberState = me.current()
+    fiber: @FiberState = me.current()
 
     if fiber.is_hollow()
         return
@@ -372,7 +371,7 @@ routine @FiberManager.park() -> None
 @target(os: not "none")
 @reshaping
 routine @FiberManager.park_until(deadline: Duration) -> None
-    local fiber: @FiberState = me.current()
+    fiber: @FiberState = me.current()
 
     if fiber.is_hollow()
         return
@@ -411,8 +410,8 @@ routine @FiberManager.wake(fiber: @FiberState) -> None
 @target(os: not "none")
 @reshaping
 routine @FiberManager.waitfor(duration: Duration) -> None
-    local deadline: Duration = Clock.monotonic() +^ duration
-    local fiber: @FiberState = me.current()
+    deadline: Duration = Clock.monotonic() +^ duration
+    fiber: @FiberState = me.current()
 
     if fiber.is_hollow()
         sleep_thread(deadline)
@@ -673,9 +672,9 @@ needs T: typename
 @track_caller
 routine Fiber[T].wait_finished() -> None
 needs T: typename
-    local slot: @WorkSlot = me.work_slot()
-    local fiber: @FiberState = me.fiber
-    local manager: @FiberManager = fiber.manager.peek()
+    slot: @WorkSlot = me.work_slot()
+    fiber: @FiberState = me.fiber
+    manager: @FiberManager = fiber.manager.peek()
 
     if manager.drives_here()
         manager.drive(awaited: slot, deadline: Duration.MAX, idle_only: false)
@@ -691,10 +690,10 @@ needs T: typename
 @track_caller
 routine Fiber[T].wait_finished_for(timeout: Duration) -> Bool
 needs T: typename
-    local slot: @WorkSlot = me.work_slot()
-    local fiber: @FiberState = me.fiber
-    local manager: @FiberManager = fiber.manager.peek()
-    local deadline: Duration = Clock.monotonic() +^ timeout
+    slot: @WorkSlot = me.work_slot()
+    fiber: @FiberState = me.fiber
+    manager: @FiberManager = fiber.manager.peek()
+    deadline: Duration = Clock.monotonic() +^ timeout
 
     if manager.drives_here()
         manager.drive(awaited: slot, deadline, idle_only: false)
@@ -709,9 +708,9 @@ needs T: typename
 @track_caller
 failable routine Fiber[T].wait_finished_cancellable() -> None
 needs T: typename
-    local slot: @WorkSlot = me.work_slot()
-    local fiber: @FiberState = me.fiber
-    local manager: @FiberManager = fiber.manager.peek()
+    slot: @WorkSlot = me.work_slot()
+    fiber: @FiberState = me.fiber
+    manager: @FiberManager = fiber.manager.peek()
 
     if manager.drives_here()
         manager.drive(awaited: slot, deadline: Duration.MAX, idle_only: false)
@@ -764,7 +763,7 @@ needs T: typename
     me.work_slot().give_back()
     fiber: @FiberState = me.fiber
     manager: @FiberManager = fiber.manager.peek()
-    held: Authorized[U8] = manager.inbox_guard.get_exclusive_access()
+    held: Authorized[U8] <- manager.inbox_guard.get_exclusive_access()
     fiber.next_idle.poke(manager.idle.peek())
     manager.idle.poke(fiber)
     drop held
@@ -889,7 +888,7 @@ secret routine @FiberManager.place_ready(fiber: @FiberState) -> None
     if thread_mark() === me.owner.peek_atomic()
         me.ready.add_last(fiber)
         return
-    held: Authorized[U8] = me.inbox_guard.get_exclusive_access()
+    held: Authorized[U8] <- me.inbox_guard.get_exclusive_access()
     me.inbox.add_last(fiber)
     drop held
     word: @U32 = me.wake_word()
@@ -901,7 +900,7 @@ secret routine @FiberManager.place_ready(fiber: @FiberState) -> None
 @target(os: not "none")
 @reshaping
 secret routine @FiberManager.take_inbox() -> None
-    held: Authorized[U8] = me.inbox_guard.get_exclusive_access()
+    held: Authorized[U8] <- me.inbox_guard.get_exclusive_access()
 
     until me.inbox.is_empty()
         me.ready.add_last(me.inbox.remove_first())
@@ -913,7 +912,7 @@ secret routine @FiberManager.take_inbox() -> None
 @target(os: not "none")
 @reshaping
 secret routine @FiberManager.fire_timers() -> None
-    local now: Duration = Clock.monotonic()
+    now: Duration = Clock.monotonic()
 
     until me.timers.is_empty()
         key: TimerKey = me.timers.first_entry().priority
@@ -978,7 +977,7 @@ secret routine commit_idle(manager: @FiberManager, fiber: @FiberState) -> None
 @target(os: not "none")
 @reshaping(manager)
 secret routine park_hook(manager: Addr, deadline: Duration) -> None
-    local fibers: @FiberManager = RUNNING_FIBER.peek().manager.to[@FiberManager]()
+    fibers: @FiberManager = RUNNING_FIBER.peek().manager.to[@FiberManager]()
 
     if deadline == Duration.MAX
         fibers.park()
@@ -1002,7 +1001,7 @@ secret routine wake_hook(manager: Addr, fiber: Addr) -> None
 ### :param deadline: When to stop waiting, in `Clock.monotonic()` time.
 @target(os: not "none")
 secret routine sleep_thread(deadline: Duration) -> None
-    local never: @U32 <- 0
+    never: &U32 <- 0
 
     loop
         now2: Duration = Clock.monotonic()
@@ -1017,6 +1016,6 @@ secret routine sleep_thread(deadline: Duration) -> None
 ### :returns: True when it wrote `new`.
 @target(os: not "none")
 secret routine compare_exchange(at: @U32, expected: U32, new: U32) -> Bool
-    local previous: @U32 <- 0
+    previous: &U32 <- 0
 
     return at.atomic_compare_exchange_raw(expected, new, previous)

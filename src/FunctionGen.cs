@@ -98,6 +98,9 @@ public sealed partial class FunctionGen
         /// The names visible in the header: the loop's outer scope and its carried values.
         public HashSet<string> HeaderNames { get; } = [];
         public HashSet<string> OuterNames { get; } = [];
+        /// How many scopes of STACK places were open when the loop began: a break or continue gives back the ones
+        /// opened inside it.
+        public int BoxDepth { get; set; }
     }
 
     private sealed class ValueFrame(LBlock join, string joinRegion, DType type, HashSet<string> outerNames)
@@ -107,6 +110,8 @@ public sealed partial class FunctionGen
         public DType Type { get; } = type;
         public HashSet<string> OuterNames { get; } = outerNames;
         public List<(string Pred, string Op)> Incoming { get; } = [];
+        /// How many scopes of STACK places were open when the when began: `becomes` gives back the ones opened in its arm.
+        public int BoxDepth { get; set; }
     }
 
     // Debug information (Compiler.DebugInfo): the routine's DISubprogram, the current block's DILexicalBlock, the
@@ -157,7 +162,7 @@ public sealed partial class FunctionGen
 
     private void Mem(MemoryRules.Event e)
     {
-        if (!MemOn) return;
+        if (!MemOn || _memMuted) return;
         (_memEvents.TryGetValue(_region, out var list) ? list : _memEvents[_region] = []).Add(e);
     }
 
@@ -348,13 +353,14 @@ public sealed partial class FunctionGen
             throw Err(s.Pos, $"'{r.Name}' holds {t?.Name ?? "a value"}, which has nothing to give back, so passing it on copies it: "
                 + $"write {r.Name} without steal");
         _moving = true;
-        // The slot of something followed (an entity, memory), or a slot claimed with `local x: @T <- ...` whatever it
+        // The slot of something followed (an entity, memory), or a place borrowed with `x: &T <- ...` whatever it
         // holds, gives what it holds. A plain value, or a pointer that is a value of its own, is itself.
         var v = t is PtrType && (Tracked(t) && !PointerOfTypeParam(r.Name) || _claimedSlots.Contains(r.Name))
             ? Eval(new MethodCallExpr(r, "peek", [], [], r.Pos), expected)
             : Eval(r, expected);
         if (MemOn && _memTracked.Contains(r.Name)) Mem(new MemoryRules.End(r.Name, $"steal {r.Name}", s.Pos));
         NoteCallerHeldEnd(r, $"steal {r.Name}", s.Pos);
+        StackPlaceEnded(r);
         return v;
     }
 
@@ -369,6 +375,7 @@ public sealed partial class FunctionGen
             var t = Infer(stolen) ?? throw Err(st.From.Pos, "cannot infer what steal takes here");
             EmitStmt(new BindStmt(st.Name, new TypeRef("$stolen", [], st.NamePos) { Known = new PtrType(t) },
                 new ClaimExpr(st.Pos) { Contents = stolen }, st.Pos));
+            if (!_cur.Terminated) RegisterStackPlace(st.Name, st.Pos);
             return;
         }
         if (Infer(st.From) is not PtrType { Pointee: { } held } || !Entities.Holds(held))
@@ -678,7 +685,7 @@ public sealed partial class FunctionGen
     /// with one) that is the routine's return type, or a branch of the variant it returns (`return c` into a
     /// `Result[Counter, E]`).
     private bool ReturnsSlotValue(ValueRef named) =>
-        InferQuiet(named) is PtrType { Pointee: { } held } && Entities.Holds(held)
+        InferQuiet(named) is PtrType { Pointee: { } held } && (Entities.Holds(held) || _stackPlaces.ContainsKey(named.Name))
         && (held.Equals(_inst.Ret) || _inst.Ret is VariantType rv && rv.LeafIndex(held) >= 0);
 
     /// A return that takes a view of this routine's memory out of it.
@@ -1004,10 +1011,15 @@ public sealed partial class FunctionGen
         _out.AppendLine($"define {linkage}{_inst.CcPrefix(_c.Target)}{_c.AbiRet(_inst, withAttrs: true)} @{Compiler.Quote(_inst.Symbol)}({string.Join(", ", ps)}){_inst.FnAttrs}{_c.RaceAttr}{_c.UnwindTable} {CpuModel.For(_c.Target, _inst.Decl.Pos).FnAttrs}{comdat}{dbg} {{");
         _out.AppendLine("start:");
         foreach (var a in _allocas) _out.AppendLine($"  {a}");
+        foreach (var f in _flagInits) _out.AppendLine($"  {f}");
         foreach (var u in unpack) _out.AppendLine($"  {u}");
         foreach (var spill in _paramSpills) _out.AppendLine($"  {spill}");
         foreach (var r in paramRecords) _out.AppendLine($"  {r}");
         if (push is not null) _out.AppendLine($"  {push}");
+        // The frame is borrowed from the running flow's StackManager once the prologue has made it: without an
+        // operating system its borrow checks the stack pointer against the stack's bottom.
+        if (FrameCalls && _c.FrameCall("borrow_frame", SlotBytes) is { } borrowFrame)
+            _out.AppendLine($"  {borrowFrame}{(Debug ? $", !dbg !{Location(FramePlace)}" : "")}");
         // The head's lines go on in the start block, after the parameters are unpacked and the frame is pushed.
         if (_head is null) _out.AppendLine("  br label %b.entry");
         foreach (var lb in _lblocks)
@@ -1184,7 +1196,10 @@ public sealed partial class FunctionGen
     {
         if (_memReturnValue is { } returned) MemTakeAlong(returned, "returned");
         _memReturnValue = null;
+        // Every STACK place still borrowed goes back, the last one first, then the frame itself.
+        GiveBackStackPlaces(0, _memReturnPos ?? _decl.Pos);
         Mem(new MemoryRules.Exit(null, true, [], _memReturnPos ?? _decl.Pos));
+        if (FrameCalls && _c.FrameCall("give_back_frame") is { } giveBack) Line(giveBack);
         if (_traced) Line(_c.TraceCall("trace_pop"));
         Terminate(ret);
     }
@@ -1270,6 +1285,7 @@ public sealed partial class FunctionGen
     /// The lines of a body, one after another. A line after one that left the body can't run, and says so.
     private void EmitLines(List<Stmt> body)
     {
+        _boxScopes.Add([]);
         foreach (var s in body)
         {
             if (_cur.Terminated)
@@ -1279,6 +1295,9 @@ public sealed partial class FunctionGen
             }
             EmitStmt(s);
         }
+        // The body ends: the STACK places it borrowed go back, the last one first.
+        if (!_cur.Terminated) GiveBackStackPlaces(_boxScopes.Count - 1, body.Count > 0 ? body[^1].Pos : _decl.Pos);
+        _boxScopes.RemoveAt(_boxScopes.Count - 1);
     }
 
     /// A body as a region of its own: what it binds isn't visible after it.
@@ -1332,7 +1351,7 @@ public sealed partial class FunctionGen
     private string RoutineValueKind(string name) =>
         _routineParams.ContainsKey(name)
             ? "the routine's parameter"
-            : $"the local value in the head of routine '{_decl.DisplayName}'"
+            : $"the value in the head of routine '{_decl.DisplayName}'"
               + (_decl.Shared.FirstOrDefault(s => s.Name == name) is { } shared ? $" (line {shared.Pos.Line})" : "");
 
     private string LocalOp(string name)
@@ -1381,12 +1400,20 @@ public sealed partial class FunctionGen
         At(s.Source ?? s.Pos);
         switch (s)
         {
+            case BindStmt { Borrows: true } borrow:
+            {
+                var (lowered, stack) = LowerBorrow(borrow);
+                EmitStmtCore(lowered);
+                if (stack && !_cur.Terminated) RegisterStackPlace(lowered.Name, lowered.Pos);
+                break;
+            }
             case BindStmt b:
             {
                 var t = Resolve(b.Type);
+                if (BorrowedWithEquals(b, t) is { } borrowedWithEquals) throw Err(b.Pos, borrowedWithEquals);
                 if (Entities.Holds(t))
                     throw Err(b.Pos, $"a {t.Name} {(Entities.IsEntity(t) ? "is an entity" : "holds an entity")}, which lives in a place: "
-                        + $"local {b.Name}: @{t.Name} <- ...");
+                        + $"{b.Name}: &{b.Type} <- ...");
                 // A Callable written as the type takes the failure of the routine value that fills it: what it can
                 // throw goes along with the value.
                 if (t is CallableType { Failable: false } plain && InferQuiet(b.Value) is CallableType { Failable: true } failing
@@ -1524,7 +1551,7 @@ public sealed partial class FunctionGen
                 // the floor would leak what it holds.
                 if (e.Value is CallExpr or NsCallExpr or MethodCallExpr && InferQuiet(e.Value) is { } made && Entities.Holds(made))
                     throw Err(e.Pos, $"this call hands you a {made.Name}, {HoldsWhat(made)}, and the line leaves it on the floor: "
-                        + "keep it in a slot (local x: @" + made.Name + " <- ...), drop it, or hand it over");
+                        + "keep it in a place (x: &" + made.Name + " <- ...), drop it, or hand it over");
                 EvalAny(e.Value);
                 break;
             }
@@ -1569,6 +1596,7 @@ public sealed partial class FunctionGen
                     _dropping = null;
                     _givingBack = null;
                 }
+                StackPlaceEnded(d.Value);
                 break;
             }
             case StealStmt st:
@@ -1606,6 +1634,7 @@ public sealed partial class FunctionGen
                 if (_loops.Count == 0) throw Err(br.Pos, "break leaves a loop, and there is no loop here");
                 var loop = _loops.Peek();
                 loop.Breaks = true;
+                GiveBackStackPlaces(loop.BoxDepth, br.Pos);
                 MemEdge(loop.ThenRegion, loop.HeaderNames, pos: br.Pos);
                 Terminate($"br label %{loop.Then.Label}");
                 break;
@@ -1621,6 +1650,7 @@ public sealed partial class FunctionGen
                 MemTakeAlong(bc.Value, "the when's value");
                 // The arm ends here: the temporary slots its value was read through end before it leaves.
                 FlushTemps(_statementMark);
+                GiveBackStackPlaces(frame.BoxDepth, bc.Pos);
                 frame.Incoming.Add((_cur.Label, v.Op));
                 MemEdge(frame.JoinRegion, frame.OuterNames, pos: bc.Pos);
                 Terminate($"br label %{frame.Join.Label}");
@@ -1848,8 +1878,8 @@ public sealed partial class FunctionGen
     /// A name bound in the routine, used where it isn't visible.
     private string NotVisible(string name, bool fromNextLine = false) =>
         InHead
-            ? $"'{name}' is not visible in the head of routine '{_decl.DisplayName}': a local line sees the routine's "
-              + "parameters, presets and globals, and the local lines above it"
+            ? $"'{name}' is not visible in the head of routine '{_decl.DisplayName}': a line of the head sees the "
+              + "routine's parameters, presets and globals, and the lines above it"
             : $"'{name}' is not visible here: a name is visible from the line after its binding to the end of the body "
               + "(an if, a loop, a when arm) it is bound in, and a block's values only in that block"
               + (fromNextLine ? "" : "");
@@ -2025,6 +2055,7 @@ public sealed partial class FunctionGen
 
     private Val EvalAny(Expr e)
     {
+        if (e is MethodCallExpr onPlace && StackPlaceCall(onPlace) is { } placeCall) e = placeCall;
         if (e is ImplicitCallExpr ic)
             throw Err(ic.Pos, $"'.{ic.Name}(...)' needs a known type here; write the type: Type.{ic.Name}(...)");
         if (e is ImplicitMemberExpr im)
@@ -2354,6 +2385,7 @@ public sealed partial class FunctionGen
         // The alignment is written out: the IR names no data layout, so LLVM would give a U128 slot 8 where an atomic
         // access (cmpxchg16b) needs its 16.
         _allocas.Add($"{slot} = alloca {t.Llvm}, align {_c.SizeAlign(t, a.Pos).Align}");
+        _slotBytes += _c.SizeAlign(t, a.Pos).Size;
         return new Val(slot, new PtrType(t));
     }
 
@@ -2370,13 +2402,14 @@ public sealed partial class FunctionGen
         catch (CompileError) when (lit.Repeat is not null)
         {
             throw Err(lit.Repeat.Pos,
-                "a span (@[T]) in the frame has a count the build knows; for a count known only while running, "
-                + "take the memory from a manager: local xs: @Memory[T] <- [0] * n from manager");
+                "a &[T] from STACK has a count the build knows; for a count known only while running, "
+                + "borrow the memory from a manager: xs: &[T] <- [0] * n from manager");
         }
         var array = new ArrayType(elem, count);
         _c.EnsureTypeDefined(array);
         string slot = $"%s{_allocas.Count}";
         _allocas.Add($"{slot} = alloca {array.Llvm}, align {_c.SizeAlign(array, lit.Pos).Align}");
+        _slotBytes += _c.SizeAlign(array, lit.Pos).Size;
         var contents = EvalElementsLit(lit, array);
         Line($"store {array.Llvm} {contents.Op}, ptr {slot}");
         return SpanOver(slot, count, span);
@@ -2395,13 +2428,11 @@ public sealed partial class FunctionGen
     /// the type's own `construct`, which takes the memory from the manager.
     private Val EvalAt(AtExpr a, DType expected)
     {
-        // A local slot is a block of the running flow's StackManager already: that stack is the only one the flow has, so
-        // `at` names nothing there.
-        bool stackNamed = a.Manager is PresetRef { Owner: null, Name: "STACK" } named && _c.FindPreset("", named.Name, _env.File, named.Pos, null) is null;
-        if (stackNamed || Infer(a.Manager) is RecordType { Decl.Name: "StackManager" } or PtrType { Pointee: RecordType { Decl.Name: "StackManager" } })
-            throw Err(a.Pos, "a local slot is a block of the running flow's stack, given back when the routine returns: "
-                + "a Memory[T] or a Box[T] comes from a manager that gives memory back by hand (from HEAP), and a slot from "
-                + "the stack is local x: @T <- value (from STACK)");
+        // A place from the running flow's stack is a frame slot, which a `<-` line makes (LowerBorrow): `from STACK`
+        // reaches here only where no line borrows (an argument, a field).
+        if (IsStackNamed(a.Manager))
+            throw Err(a.Pos, "a place from STACK is borrowed on a line of its own, x: &T <- value (from STACK), and it stays "
+                + "in its routine: memory that goes elsewhere comes from a manager the program gives it back to (from HEAP)");
         if (expected is RecordType { Decl.Name: "Memory", Args: [_] } memory && memory.Decl.Module == Compiler.SystemModule)
         {
             if (a.Value is not ArrayLit { IsTuple: false } lit)
@@ -2432,6 +2463,7 @@ public sealed partial class FunctionGen
         var (size, align) = _c.SizeAlign(t, _decl.Pos);
         string slot = $"%s{_allocas.Count}";
         _allocas.Add($"{slot} = alloca [{Math.Max(size, 16)} x i8], align {Math.Max(align, 16)}");
+        _slotBytes += Math.Max(size, 16);
         return slot;
     }
 
@@ -2921,6 +2953,7 @@ public sealed partial class FunctionGen
                 + "their own: observe each check in its own when instead");
         var join = NewLBlock("whenvalue");
         var frame = new ValueFrame(join, NewRegion("whenvalue"), expected, _values.Keys.ToHashSet());
+        frame.BoxDepth = _boxScopes.Count;
         _valueWhens.Push(frame);
         try
         {
@@ -3166,6 +3199,7 @@ public sealed partial class FunctionGen
 
     private Expr Desugar(Expr e)
     {
+        if (e is MethodCallExpr onPlace && StackPlaceCall(onPlace) is { } placeCall) return placeCall;
         switch (e)
         {
             case BinaryExpr { Op: "and" or "or" }:
@@ -3992,6 +4026,7 @@ public sealed partial class FunctionGen
 
     private CallPlan? PlanMethod(MethodCallExpr m, DType? expected)
     {
+        if (StackPlaceCall(m) is MethodCallExpr onPlace) m = onPlace;
         if (ManagedMemory(TryInfer(m.Receiver)) is { Decl.Name: "Memory" } && OldMemoryElementCall(m) is { } older)
             throw Err(m.Pos, older);
         if (IndirectCall(m) is not null || AddrOfCallable(m) is not null) return null;
@@ -4365,6 +4400,8 @@ public sealed partial class FunctionGen
 
     private Val EvalCall(Expr e, DType? expected)
     {
+        if (e is MethodCallExpr onPlace && StackPlaceCall(onPlace) is { } placeCall)
+            return placeCall is MethodCallExpr ? EvalCall(placeCall, expected) : Eval(placeCall, expected ?? Infer(placeCall)!);
         if (e is MethodCallExpr onUnion && CrashableGroup(onUnion) is { } union)
             return EvalUnionCall(onUnion, union, expected);
         if (e is CallExpr { Name: "sizeof" or "alignof", TypeArgs.Count: 1, Args.Count: 0 } sz
@@ -5097,6 +5134,8 @@ public sealed partial class FunctionGen
         }
         var v = Eval(returned, _inst.Ret);
         if (_cur.Terminated) return;
+        // The value a STACK place held goes to the caller: the place has nothing left to give back.
+        if (r.Value is ValueRef handedOut) StackPlaceEnded(handedOut);
         RecordReturn(returned, r.Pos);
         if (_sig.Sret)
         {
@@ -5136,6 +5175,8 @@ public sealed partial class FunctionGen
         try
         {
             var ops = j.Args.Select((a, i) => Eval(a, types[i]).Op).ToList();
+            // A block's lines are a scope of their own: its STACK places go back before the jump.
+            GiveBackStackPlaces(1, j.Pos);
             if (MemOn)
             {
                 for (int i = 0; i < j.Args.Count; i++)
@@ -5371,6 +5412,7 @@ public sealed partial class FunctionGen
             DescribeValue(l.Var!, value, itemType!, l.VarPos);
             if (MemOn && ManagedValue(itemType!)) _memTracked.Add(l.Var!);
         }
+        frame.BoxDepth = _boxScopes.Count;
         _loops.Push(frame);
         try
         {
@@ -5475,6 +5517,7 @@ public sealed partial class FunctionGen
             ops.Add(next);
             if (range.Inclusive) ops.Add(EmitTmp($"icmp ne {range.Type.Llvm} {index}, {range.To.Op}"));
         }
+        GiveBackStackPlaces(loop.BoxDepth, c.Pos);
         MemEdge(loop.HeaderRegion, loop.HeaderNames, passed, c.Pos);
         loop.Incoming.Add((_cur.Label, ops));
         Terminate($"br label %{loop.Header.Label}");

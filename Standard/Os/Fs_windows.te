@@ -454,7 +454,7 @@ secret routine is_invalid_handle(h: Addr) -> Bool
 ### :absent: When `text` has a NUL or doesn't fit with its 0.
 @target(os: "windows")
 secret routine encode_utf16(text: @[Byte], out: @U16, capacity: U64) -> Maybe[U64]
-    local iter: @BytesCharsIter <- text.chars()
+    iter: &BytesCharsIter <- text.chars()
 
     loop with n: U64 = 0
         c: Maybe[Char] = try iter.emit()
@@ -507,7 +507,7 @@ secret routine wide_path(path: @[Byte], out: @U16) -> Bool
 ### :returns: The bytes written.
 @target(os: "windows")
 secret routine narrow(units: @U16, count: U64, out: @Byte) -> U64
-    local n: @U64 <- 0
+    n: &U64 <- 0
 
     until i >= count with i: U64 = 0
         unit: U16 = units.stride(i).peek()
@@ -531,10 +531,10 @@ secret routine narrow(units: @U16, count: U64, out: @Byte) -> U64
                 else
                     becomes (i + 1, u)
         i2, cp = values2
-        (n.peek() + utf8_encode_into(char: cp.to[Char](), out: out.stride(n.peek()))).poke_into(n)
+        (n.load() + utf8_encode_into(char: cp.to[Char](), out: out.stride(n.load()))).poke_into(n)
         continue with i: i2
     then
-        return n.peek()
+        return n.load()
 
 ### The units before the first 0 at units.
 ### :param units: A 0-terminated UTF-16 string.
@@ -633,10 +633,10 @@ secret routine HandleInfo.to[Metadata]() -> Metadata
 ### :throws: Throws the FsError for the last error when the call fails.
 @target(os: "windows")
 secret failable routine handle_metadata(h: Addr) -> Metadata
-    local info: @HandleInfo <- .hollow()
+    info: &HandleInfo <- .hollow()
 
     if c_get_file_information_by_handle(h, info) != 0
-        return info.peek().to[Metadata]()
+        return info.load().to[Metadata]()
     throw last_error()
 
 ### The metadata of wpath from GetFileAttributesExW, for what can't be opened (a file another process holds
@@ -646,12 +646,12 @@ secret failable routine handle_metadata(h: Addr) -> Metadata
 ### :throws: Throws the FsError for the last error when the call fails.
 @target(os: "windows")
 secret failable routine attribute_metadata(wpath: @U16) -> Metadata
-    local data: @AttributeData <- .hollow()
+    data: &AttributeData <- .hollow()
 
     # GetFileExInfoStandard
     if c_get_file_attributes_ex(wpath, 0, data) == 0
         throw last_error()
-    d: AttributeData = data.peek()
+    d: AttributeData = data.load()
     return make_metadata(data: d, tag: 0)
 
 ### A handle for asking about path (no read or write access): a directory too, and with link_itself, a link rather
@@ -672,7 +672,7 @@ secret routine query_handle(wpath: @U16, link_itself: Bool) -> Addr
 ### :throws: Throws the reason, `InvalidPathError` or `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: "windows")
 secret failable routine metadata(path: @[Byte]) -> Metadata
-    local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
+    wpath: &Array[U16, PATH_CAPACITY] <- .hollow()
 
     if not wide_path(path, out: wpath.to[@U16]())
         throw path_error(path)
@@ -698,11 +698,11 @@ secret failable routine metadata(path: @[Byte]) -> Metadata
 ### :throws: Throws the reason, `InvalidPathError` or `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: "windows")
 secret failable routine symlink_metadata(path: @[Byte]) -> Metadata
-    local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
+    wpath: &Array[U16, PATH_CAPACITY] <- .hollow()
 
     if not wide_path(path, out: wpath.to[@U16]())
         throw path_error(path)
-    local data: @Array[U32, FIND_DATA_WORDS] <- .hollow()
+    data: &Array[U32, FIND_DATA_WORDS] <- .hollow()
     find: Addr = c_find_first_file(wpath.to[@U16](), data.to[@Byte]())
     # A root ("C:\") has no directory entry: its attributes describe it
     if is_invalid_handle(find)
@@ -747,7 +747,7 @@ common routine FileHandle.empty() -> Me
 ### :throws: Throws the reason, `InvalidPathError` or `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: "windows")
 secret failable common routine FileHandle.open(path: @[Byte], mode: OpenMode) -> Me
-    local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
+    wpath: &Array[U16, PATH_CAPACITY] <- .hollow()
 
     if not wide_path(path, out: wpath.to[@U16]())
         throw path_error(path)
@@ -774,12 +774,12 @@ secret failable common routine FileHandle.open(path: @[Byte], mode: OpenMode) ->
 @target(os: "windows")
 @expensive("asks the operating system")
 failable routine @FileHandle.read_bytes(buffer: @Byte, count: U64) -> U64
-    local got: @U32 <- 0
+    got: &U32 <- 0
 
     ok: CInt = c_read_file(me.handle.peek(), buffer, count.min(1073741824).to[U32](), got,
         .hollow())
     if ok != 0
-        return got.peek().to[U64]()
+        return got.load().to[U64]()
     # ERROR_BROKEN_PIPE: the writing end closed, which is the end
     e: U32 = c_get_last_error()
     if e == 109
@@ -793,12 +793,12 @@ failable routine @FileHandle.read_bytes(buffer: @Byte, count: U64) -> U64
 ### :throws: Throws the reason when the write fails.
 @target(os: "windows")
 secret failable routine @FileHandle.write_some(data: @Byte, count: U64) -> U64
-    local wrote: @U32 <- 0
+    wrote: &U32 <- 0
 
     ok: CInt = c_write_file(me.handle.peek(), data, count.min(1073741824).to[U32](), wrote,
         .hollow())
     if ok != 0
-        return wrote.peek().to[U64]()
+        return wrote.load().to[U64]()
     throw last_error()
 
 ### Moves the position: the new one, from the start.
@@ -809,7 +809,7 @@ secret failable routine @FileHandle.write_some(data: @Byte, count: U64) -> U64
 @target(os: "windows")
 @expensive("asks the operating system")
 failable routine @FileHandle.seek(offset: S64, from: SeekFrom) -> U64
-    local at: @S64 <- 0
+    at: &S64 <- 0
 
     # FILE_BEGIN, FILE_CURRENT, FILE_END
     ok: CInt = when from
@@ -817,7 +817,7 @@ failable routine @FileHandle.seek(offset: S64, from: SeekFrom) -> U64
         SeekFrom.CURRENT => c_set_file_pointer_ex(me.handle.peek(), offset, at, 1)
         SeekFrom.END => c_set_file_pointer_ex(me.handle.peek(), offset, at, 2)
     if ok != 0
-        return at.peek().to[U64]()
+        return at.load().to[U64]()
     throw last_error()
 
 ### The metadata of the open file.
@@ -835,10 +835,10 @@ failable routine @FileHandle.metadata() -> Metadata
 @target(os: "windows")
 @expensive("asks the operating system")
 failable routine @FileHandle.size() -> U64
-    local size: @S64 <- 0
+    size: &S64 <- 0
 
     if c_get_file_size_ex(me.handle.peek(), size) != 0
-        return size.peek().to[U64]()
+        return size.load().to[U64]()
     throw last_error()
 
 ### Truncates or extends (with zeros) the file to size bytes. The position stays.
@@ -848,7 +848,7 @@ failable routine @FileHandle.size() -> U64
 @target(os: "windows")
 @expensive("asks the operating system")
 failable routine @FileHandle.set_size(size: U64) -> None
-    local end: @S64 <- size.to[S64]()
+    end: &S64 <- size.to[S64]()
 
     # FileEndOfFileInfo
     when check checked(c_set_file_information_by_handle(me.handle.peek(), 6, end, 8))
@@ -881,7 +881,7 @@ routine @FileHandle.close() -> None
 ###     `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: "windows")
 secret failable routine create_dir(path: @[Byte]) -> None
-    local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
+    wpath: &Array[U16, PATH_CAPACITY] <- .hollow()
 
     if wide_path(path, out: wpath.to[@U16]())
         when check checked(c_create_directory(wpath.to[@U16](), .hollow()))
@@ -893,7 +893,7 @@ secret failable routine create_dir(path: @[Byte]) -> None
 ### :throws: Throws the reason, `InvalidPathError` or `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: "windows")
 secret failable routine remove_file(path: @[Byte]) -> None
-    local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
+    wpath: &Array[U16, PATH_CAPACITY] <- .hollow()
 
     if not wide_path(path, out: wpath.to[@U16]())
         throw path_error(path)
@@ -915,7 +915,7 @@ secret failable routine remove_file(path: @[Byte]) -> None
 ###     `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: "windows")
 secret failable routine remove_dir(path: @[Byte]) -> None
-    local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
+    wpath: &Array[U16, PATH_CAPACITY] <- .hollow()
 
     if wide_path(path, out: wpath.to[@U16]())
         when check checked(c_remove_directory(wpath.to[@U16]()))
@@ -929,8 +929,8 @@ secret failable routine remove_dir(path: @[Byte]) -> None
 ### :throws: Throws the reason, `InvalidPathError` or `NameTooLongError` when a path doesn't fit a C path.
 @target(os: "windows")
 secret failable routine move_file(from: @[Byte], to: @[Byte], flags: U32) -> None
-    local a: @Array[U16, PATH_CAPACITY] <- .hollow()
-    local b: @Array[U16, PATH_CAPACITY] <- .hollow()
+    a: &Array[U16, PATH_CAPACITY] <- .hollow()
+    b: &Array[U16, PATH_CAPACITY] <- .hollow()
 
     if not wide_path(path: from, out: a.to[@U16]())
         throw path_error(from)
@@ -989,9 +989,9 @@ secret routine copy_progress(total_size: S64, transferred: S64, stream_size: S64
 ###     false, `InvalidPathError` or `NameTooLongError` when a path doesn't fit a C path.
 @target(os: "windows")
 secret failable routine copy_file(from: @[Byte], to: @[Byte], replacing: Bool) -> U64
-    local a: @Array[U16, PATH_CAPACITY] <- .hollow()
-    local b: @Array[U16, PATH_CAPACITY] <- .hollow()
-    local copied: @U64 <- 0
+    a: &Array[U16, PATH_CAPACITY] <- .hollow()
+    b: &Array[U16, PATH_CAPACITY] <- .hollow()
+    copied: &U64 <- 0
 
     if not wide_path(path: from, out: a.to[@U16]())
         throw path_error(from)
@@ -1003,7 +1003,7 @@ secret failable routine copy_file(from: @[Byte], to: @[Byte], replacing: Bool) -
         else => 1
     if c_copy_file_ex(a.to[@U16](), b.to[@U16](), copy_progress.to[Callable](), copied, .hollow(),
         flags) != 0
-        return copied.peek()
+        return copied.load()
     throw last_error()
 
 ### Sets or clears the read-only attribute.
@@ -1012,7 +1012,7 @@ secret failable routine copy_file(from: @[Byte], to: @[Byte], replacing: Bool) -
 ### :throws: Throws the reason, `InvalidPathError` or `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: "windows")
 secret failable routine set_readonly(path: @[Byte], readonly: Bool) -> None
-    local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
+    wpath: &Array[U16, PATH_CAPACITY] <- .hollow()
 
     if not wide_path(path, out: wpath.to[@U16]())
         throw path_error(path)
@@ -1055,7 +1055,7 @@ secret routine is_program_extension(e: @[Byte]) -> Bool
 ### :returns: True when allowed. False when not, when nothing is there, or when `path` doesn't fit a C path.
 @target(os: "windows")
 secret routine is_accessible(path: @[Byte], access: Access) -> Bool
-    local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
+    wpath: &Array[U16, PATH_CAPACITY] <- .hollow()
 
     if not wide_path(path, out: wpath.to[@U16]())
         return false
@@ -1087,8 +1087,8 @@ record DirIter
 ### :throws: Throws the reason, `InvalidPathError` or `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: "windows")
 secret failable routine @DirIter.open_path(path: @[Byte]) -> None
-    local pattern_buffer: @Array[U16, PATH_CAPACITY] <- .hollow()
-    local pattern: @U16 = pattern_buffer.to[@U16]()
+    pattern_buffer: &Array[U16, PATH_CAPACITY] <- .hollow()
+    pattern: @U16 = pattern_buffer.to[@U16]()
 
     me.find.poke(inttoptr[U64, Addr](U64.MAX))
     me.pending.poke(false)
@@ -1205,7 +1205,7 @@ secret failable routine current_dir(manager: @MemoryManager) -> Memory[Byte]
 ### :throws: Throws `MemoryAllocationError` when `manager` fails.
 @target(os: "windows")
 secret failable routine temp_dir(manager: @MemoryManager) -> Memory[Byte]
-    local units: @Array[U16, PATH_CAPACITY] <- .hollow()
+    units: &Array[U16, PATH_CAPACITY] <- .hollow()
 
     got: U32 = c_get_temp_path(PATH_CAPACITY.to[U32](), units.to[@U16]())
     if got == 0 or got.to[U64]() >= PATH_CAPACITY
@@ -1230,7 +1230,7 @@ secret failable routine temp_dir(manager: @MemoryManager) -> Memory[Byte]
 ### :absent: When the variable is not set, is empty, takes `PATH_CAPACITY` units or more, or `manager` fails.
 @target(os: "windows")
 secret routine env_dir(name: CWStrView, manager: @MemoryManager) -> Maybe[Memory[Byte]]
-    local units: @Array[U16, PATH_CAPACITY] <- .hollow()
+    units: &Array[U16, PATH_CAPACITY] <- .hollow()
 
     got: U32 = c_get_environment_variable(name.to[@CWChar](), units.to[@U16](),
         PATH_CAPACITY.to[U32]())
@@ -1254,8 +1254,8 @@ secret failable routine home_dir(manager: @MemoryManager) -> Memory[Byte]
         is Memory[Byte] as drive =>
             when env_dir(name: "HOMEPATH", manager)
                 is Memory[Byte] as path =>
-                    local joined: @Memory[Byte] <- @[Byte].concat(a: drive.getslice(),
-                        b: path.getslice(), manager)
+                    joined: &[Byte] <- @[Byte].concat(a: drive.getslice(), b: path.getslice(),
+                        manager)
                     drop drive
                     drop path
                     return joined
@@ -1273,11 +1273,11 @@ secret failable routine home_dir(manager: @MemoryManager) -> Memory[Byte]
 ###     `manager` fails, `InvalidPathError` or `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: "windows")
 secret failable routine absolute_path(path: @[Byte], manager: @MemoryManager) -> Memory[Byte]
-    local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
+    wpath: &Array[U16, PATH_CAPACITY] <- .hollow()
 
     if not wide_path(path, out: wpath.to[@U16]())
         throw path_error(path)
-    local full: @Array[U16, PATH_CAPACITY] <- .hollow()
+    full: &Array[U16, PATH_CAPACITY] <- .hollow()
     got: U32 = c_get_full_path_name(wpath.to[@U16](), PATH_CAPACITY.to[U32](), full.to[@U16](),
         .hollow())
     if got == 0
@@ -1296,14 +1296,14 @@ secret failable routine absolute_path(path: @[Byte], manager: @MemoryManager) ->
 ###     or `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: "windows")
 secret failable routine canonical_path(path: @[Byte], manager: @MemoryManager) -> Memory[Byte]
-    local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
+    wpath: &Array[U16, PATH_CAPACITY] <- .hollow()
 
     if not wide_path(path, out: wpath.to[@U16]())
         throw path_error(path)
     h: Addr = query_handle(wpath: wpath.to[@U16](), link_itself: false)
     if is_invalid_handle(h)
         throw last_error()
-    local full: @Array[U16, PATH_CAPACITY] <- .hollow()
+    full: &Array[U16, PATH_CAPACITY] <- .hollow()
     # FILE_NAME_NORMALIZED | VOLUME_NAME_DOS
     got: U32 = c_get_final_path_name_by_handle(h, full.to[@U16](), PATH_CAPACITY.to[U32](), 0)
     e: U32 = c_get_last_error()
@@ -1351,7 +1351,7 @@ secret failable routine canonical_path(path: @[Byte], manager: @MemoryManager) -
 secret failable common routine FileStorage[T].map(path: @[Byte], write: Bool, start: U64,
     count: U64) -> Me
 needs T: typename, StorageCell[T]
-    local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
+    wpath: &Array[U16, PATH_CAPACITY] <- .hollow()
 
     if not wide_path(path, out: wpath.to[@U16]())
         throw path_error(path)
@@ -1362,12 +1362,12 @@ needs T: typename, StorageCell[T]
             OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, .hollow())
     if is_invalid_handle(h)
         throw last_error()
-    local size: @S64 <- 0
+    size: &S64 <- 0
     if c_get_file_size_ex(h, size) == 0
         error: FsError = last_error()
         c_close_handle(h)
         throw error
-    offset, cells = cell_window(size: size.peek().to[U64](), start, count, cell: sizeof[T]())
+    offset, cells = cell_window(size: size.load().to[U64](), start, count, cell: sizeof[T]())
     if cells == 0
         c_close_handle(h)
         return Me.empty()
@@ -1424,7 +1424,7 @@ routine FileStorage[T].prefetch() -> None
 needs T: typename, StorageCell[T]
     if me.base.is_hollow()
         return
-    local range: @MemoryRange <- MemoryRange(address: me.base, size: me.mapped_bytes())
+    range: &MemoryRange <- MemoryRange(address: me.base, size: me.mapped_bytes())
     c_prefetch_virtual_memory(c_get_current_process(), 1, range, 0)
     return
 
@@ -1442,8 +1442,8 @@ needs T: typename, StorageCell[T]
 ### :throws: Throws the reason when the path can't be looked at.
 @target(os: "windows")
 secret failable routine device_id(path: @[Byte]) -> U64
-    local wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
-    local info: @HandleInfo <- .hollow()
+    wpath: &Array[U16, PATH_CAPACITY] <- .hollow()
+    info: &HandleInfo <- .hollow()
 
     if not wide_path(path, out: wpath.to[@U16]())
         throw path_error(path)

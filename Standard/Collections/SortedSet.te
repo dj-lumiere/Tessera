@@ -55,8 +55,8 @@ needs T: typename
 @expensive("borrows memory")
 common routine SortedSet[T].of[COUNT](values: Array[T, COUNT], manager: @MemoryManager) -> Me
 needs T: typename, COUNT: U64
-    local made: @Me <- Me.construct(manager)
-    local items: @List[T] <- List[T].of(values: steal values, manager: manager)
+    made: &Me <- Me.construct(manager)
+    items: &List[T] <- List[T].of(values: steal values, manager: manager)
 
     view: @[T] = items.getview()
     each i: U64 in 0 til COUNT
@@ -86,7 +86,7 @@ needs T: typename
 ### :returns: The node, or null when the memory manager fails.
 common routine SortedSetNode[T].construct(leaf: Bool, manager: @MemoryManager) -> @Me
 needs T: typename
-    local node: @Me = allocate[Me](count: 1, manager)
+    node: @Me = allocate[Me](count: 1, manager)
 
     if node.is_hollow()
         return node
@@ -107,9 +107,9 @@ needs T: typename
 ### Recomputes this node's subtree count from its own keys and its children's counts. Call it after the node's contents change.
 routine @SortedSetNode[T].recount() -> None
 needs T: typename
-    local leaf: Bool = me.leaf.peek()
-    local count: U64 = me.count.peek()
-    local sum: @U64 <- .hollow()
+    leaf: Bool = me.leaf.peek()
+    count: U64 = me.count.peek()
+    sum: &U64 <- .hollow()
 
     if leaf
         me.subtree_count.poke(count)
@@ -119,13 +119,13 @@ needs T: typename
     each i in 0 to count
         child: @Me = me.children[i]
         child_count: U64 = child.subtree_count()
-        with_child: U64 = sum.peek() + child_count
+        with_child: U64 = sum.load() + child_count
         has_key: Bool = i < count
         next_sum: U64 = when
             has_key => with_child + 1
             else => with_child
         next_sum.poke_into(sum)
-    me.subtree_count.poke(sum.peek())
+    me.subtree_count.poke(sum.load())
     return
 
 ### Finds where the key at `key` sits among this node's keys, compared through their places.
@@ -154,8 +154,8 @@ needs T: typename
 ### :returns: True when the counts match and every element pair is equal.
 secret routine @SortedSet[T].eq_at(other: @Me) -> Bool
 needs T: typename
-    local a: @SortedSetIter[T] <- .hollow()
-    local b: @SortedSetIter[T] <- .hollow()
+    a: &SortedSetIter[T] <- .hollow()
+    b: &SortedSetIter[T] <- .hollow()
 
     la: U64 = me.count.peek()
     lb: U64 = other.count.peek()
@@ -163,8 +163,8 @@ needs T: typename
         return false
     a_val: SortedSetIter[T] = .construct(me)
     b_val: SortedSetIter[T] = .construct(other)
-    a.poke(a_val)
-    b.poke(b_val)
+    a.store(a_val)
+    b.store(b_val)
 
     # both have the same count, so both run out together
     loop
@@ -202,7 +202,7 @@ needs T: typename
 ### :returns: `true` when an equal element is present.
 routine @SortedSet[T].has(key: T) -> Bool
 needs T: typename
-    local probe: @T <- steal key
+    probe: &T <- steal key
 
     there: Bool = me.has(probe)
 
@@ -266,9 +266,9 @@ needs T: typename
 @reshaping
 routine @SortedSetNode[T].split_child(index: U64, manager: @MemoryManager) -> Bool
 needs T: typename
-    local left: @Me = me.children[index]
-    local leaf: Bool = left.leaf.peek()
-    local right: @Me = Me.construct(leaf, manager)
+    left: @Me = me.children[index]
+    leaf: Bool = left.leaf.peek()
+    right: @Me = Me.construct(leaf, manager)
 
     if right.is_hollow()
         return false
@@ -328,7 +328,7 @@ needs T: typename
 @reshaping
 routine @SortedSetNode[T].insert_nonfull(key: T, manager: @MemoryManager) -> Bool
 needs T: typename
-    local probe: @T <- steal key
+    probe: &T <- steal key
 
     if me.leaf.peek()
         slot: U64 = me.find_index(key: probe)
@@ -369,7 +369,7 @@ needs T: typename
 @reshaping
 failable routine @SortedSet[T].add(key: T) -> Bool
 needs T: typename
-    local probe: @T <- steal key
+    probe: &T <- steal key
 
     if me.has(probe)
         drop probe
@@ -415,7 +415,7 @@ needs T: typename
 ### :returns: The removed key.
 routine @SortedSetNode[T].remove_leaf_at(index: U64) -> T
 needs T: typename
-    local old: @T <- steal me.keys.getslot(index)
+    old: &T <- steal me.keys.getslot(index)
 
     count: U64 = me.count.peek()
     me.keys.shift_left(start: index, end: count)
@@ -433,11 +433,11 @@ needs T: typename
 ### :param i: The index of the child that is short of keys.
 routine @SortedSetNode[T].borrow_from_left(i: U64) -> None
 needs T: typename
-    local separator: U64 = i - 1
-    local left: @Me = me.children[separator]
-    local child: @Me = me.children[i]
-    local left_count: U64 = left.count.peek()
-    local child_count: U64 = child.count.peek()
+    separator: U64 = i - 1
+    left: @Me = me.children[separator]
+    child: @Me = me.children[i]
+    left_count: U64 = left.count.peek()
+    child_count: U64 = child.count.peek()
 
     child.keys.shift_right(start: 0, end: child_count)
     child.keys.getslot(0).poke(steal me.keys.getslot(separator))
@@ -458,10 +458,10 @@ needs T: typename
 ### :param i: The index of the child that is short of keys.
 routine @SortedSetNode[T].borrow_from_right(i: U64) -> None
 needs T: typename
-    local child: @Me = me.children[i]
-    local right: @Me = me.children[i + 1]
-    local child_count: U64 = child.count.peek()
-    local right_count: U64 = right.count.peek()
+    child: @Me = me.children[i]
+    right: @Me = me.children[i + 1]
+    child_count: U64 = child.count.peek()
+    right_count: U64 = right.count.peek()
 
     child.keys.getslot(child_count).poke(steal me.keys.getslot(i))
     me.keys.getslot(i).poke(steal right.keys.getslot(0))
@@ -482,10 +482,10 @@ needs T: typename
 ### :param manager: The memory manager that frees the merged node.
 routine @SortedSetNode[T].merge_children(i: U64, manager: @MemoryManager) -> None
 needs T: typename
-    local left: @Me = me.children[i]
-    local right: @Me = me.children[i + 1]
-    local left_count: U64 = left.count.peek()
-    local right_count: U64 = right.count.peek()
+    left: @Me = me.children[i]
+    right: @Me = me.children[i + 1]
+    left_count: U64 = left.count.peek()
+    right_count: U64 = right.count.peek()
 
     left.keys.getslot(left_count).poke(steal me.keys.getslot(i))
     dst_start: U64 = left_count + 1
@@ -548,12 +548,12 @@ needs T: typename
     if me.leaf.peek()
         count: U64 = me.count.peek()
         index: U64 = count - 1
-        local key: @T <- me.remove_leaf_at(index)
+        key: &T <- me.remove_leaf_at(index)
         return steal key
     count: U64 = me.count.peek()
     actual: U64 = me.ensure_min(i: count, manager)
     child: @Me = me.children[actual]
-    local key: @T <- child.take_max(manager)
+    key: &T <- child.take_max(manager)
     me.recount()
     return steal key
 
@@ -563,11 +563,11 @@ needs T: typename
 routine @SortedSetNode[T].take_min(manager: @MemoryManager) -> T
 needs T: typename
     if me.leaf.peek()
-        local key: @T <- me.remove_leaf_at(0)
+        key: &T <- me.remove_leaf_at(0)
         return steal key
     actual: U64 = me.ensure_min(i: 0, manager)
     child: @Me = me.children[actual]
-    local key: @T <- child.take_min(manager)
+    key: &T <- child.take_min(manager)
     me.recount()
     return steal key
 
@@ -578,7 +578,7 @@ needs T: typename
 ### :returns: `true` when the key was found and removed, `false` otherwise.
 routine @SortedSetNode[T].remove(key: @T, manager: @MemoryManager) -> Bool
 needs T: typename
-    local slot: U64 = me.find_index(key)
+    slot: U64 = me.find_index(key)
 
     count: U64 = me.count.peek()
     if slot < count
@@ -591,7 +591,7 @@ needs T: typename
             left_count: U64 = left.count.peek()
             if left_count >= SORTED_SET_NODE_MIN_KEYS
                 left2: @Me = me.children[slot]
-                local replacement: @T <- left2.take_max(manager)
+                replacement: &T <- left2.take_max(manager)
                 drop me.keys.getslot(slot)
                 me.keys.getslot(slot).poke(steal replacement)
                 me.recount()
@@ -600,7 +600,7 @@ needs T: typename
             right_count: U64 = right.count.peek()
             if right_count >= SORTED_SET_NODE_MIN_KEYS
                 right2: @Me = me.children[slot + 1]
-                local replacement: @T <- right2.take_min(manager)
+                replacement: &T <- right2.take_min(manager)
                 drop me.keys.getslot(slot)
                 me.keys.getslot(slot).poke(steal replacement)
                 me.recount()
@@ -623,7 +623,7 @@ needs T: typename
 ### :returns: `true` when an element was removed, `false` when it was not present.
 routine @SortedSet[T].remove(key: @T) -> Bool
 needs T: typename
-    local root: @SortedSetNode[T] = me.root.peek()
+    root: @SortedSetNode[T] = me.root.peek()
 
     if root.is_hollow()
         return false
@@ -649,7 +649,7 @@ needs T: typename
 ### :returns: `true` when an element was removed, `false` when it was not present.
 routine @SortedSet[T].remove(key: T) -> Bool
 needs T: typename
-    local probe: @T <- steal key
+    probe: &T <- steal key
 
     removed: Bool = me.remove(probe)
 
@@ -682,7 +682,7 @@ needs T: typename
 @track_caller
 routine @SortedSet[T].destruct() -> None
 needs T: typename
-    local root: @SortedSetNode[T] = me.root.peek()
+    root: @SortedSetNode[T] = me.root.peek()
 
     if not root.is_hollow()
         manager: @MemoryManager = me.manager.peek()
@@ -699,7 +699,7 @@ needs T: typename
 routine @SortedSet[T].represent_into[TWriter](out: @TWriter) -> None
 needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
     iter_val: SortedSetIter[T] = .construct(me)
-    local iter: @SortedSetIter[T] <- iter_val
+    iter: &SortedSetIter[T] <- iter_val
     diagnose_slots[T, SortedSetIter[T], TWriter](out, iter, open: "{", close: "}")
     return
 
@@ -709,6 +709,6 @@ needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
 routine @SortedSet[T].diagnose_into[TWriter](out: @TWriter) -> None
 needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
     iter_val: SortedSetIter[T] = .construct(me)
-    local iter: @SortedSetIter[T] <- iter_val
+    iter: &SortedSetIter[T] <- iter_val
     diagnose_slots[T, SortedSetIter[T], TWriter](out, iter, open: "{", close: "}")
     return

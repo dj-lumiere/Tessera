@@ -58,7 +58,7 @@ needs T: typename
 # -- Standard input --------------------------------------------------------------------------------
 
 ### The one buffer over standard input that the whole process shares.
-global STDIN_BUFFER: @InputBuffer
+global STDIN_BUFFER: &InputBuffer
 
 ### The size in bytes of standard input's buffer, and the read size at or above which a read skips the buffer.
 preset IN_BUFFER: U64 = 8192
@@ -107,7 +107,7 @@ secret routine @InputBuffer.unread() -> None
 ### The lock is held.
 ### :returns: True when bytes came, false at the end of the input (or on a failure, which reads as the end).
 secret routine @InputBuffer.fill_more() -> Bool
-    local end: U64 = me.end.peek()
+    end: U64 = me.end.peek()
 
     free: @Byte = me.bytes.to[@Byte]().stride(end)
     got: Check[U64] = check stdin_read(buffer: free, count: IN_BUFFER.sub(end))
@@ -120,9 +120,9 @@ secret routine @InputBuffer.fill_more() -> Bool
 ### Moves the bytes the buffer holds to its front, so the free space after them is as large as it can be. The lock is
 ### held.
 secret routine @InputBuffer.compact() -> None
-    local from: U64 = me.start.peek()
-    local held: U64 = me.end.peek() - from
-    local buffered: @Byte = me.bytes.to[@Byte]()
+    from: U64 = me.start.peek()
+    held: U64 = me.end.peek() - from
+    buffered: @Byte = me.bytes.to[@Byte]()
 
     me.start.poke(0)
     me.end.poke(held)
@@ -189,7 +189,7 @@ secret routine @InputBuffer.take_word(length: U64) -> @[Byte]
 ### :returns: The word, a view of `spill`.
 ### :throws: Crashes with `MemoryAllocationError` when the word can't be copied.
 secret routine @InputBuffer.spill_word(length: U64, spill: @Memory[Byte]) -> @[Byte]
-    local text: @CaptureBuffer <- CaptureBuffer.empty()
+    text: &CaptureBuffer <- CaptureBuffer.empty()
 
     text.append(chunk: me.bytes.to[@Byte](), n: length, manager: HEAP)
     me.start.poke(length)
@@ -200,7 +200,7 @@ secret routine @InputBuffer.spill_word(length: U64, spill: @Memory[Byte]) -> @[B
                 if is_space(byte)
                     me.unread()
                     break
-                local single: @Byte <- byte
+                single: &Byte <- byte
                 text.append(chunk: single, n: 1, manager: HEAP)
             is None => break
     if text.failed.peek()
@@ -222,9 +222,9 @@ common routine Console.input() -> @ConsoleInput
 ### :param count: The most bytes to read.
 ### :returns: How many bytes were read, 0 at the end, or a {FsError} when the OS read fails.
 failable routine @ConsoleInput.read_into(buffer: @Byte, count: U64) -> U64
-    local b: @InputBuffer = STDIN_BUFFER
+    b: @InputBuffer = STDIN_BUFFER
 
-    held: Authorized[U8] = b.guard.get_exclusive_access()
+    held: Authorized[U8] <- b.guard.get_exclusive_access()
     if not (b.start.peek() < b.end.peek())
         # Nothing held: a read that wants a bufferful or more goes straight to the caller's buffer.
         if count >= IN_BUFFER
@@ -252,10 +252,10 @@ failable routine @ConsoleInput.read_into(buffer: @Byte, count: U64) -> U64
 ###     naming the word and the type, `OutOfRangeError`) when the word isn't a T.
 failable common routine Console.ask[T]() -> T
 needs T: typename, Parsable[T]
-    local b: @InputBuffer = STDIN_BUFFER
-    local spill: @Memory[Byte] <- .hollow()
+    b: @InputBuffer = STDIN_BUFFER
+    spill: &[Byte] <- .hollow()
 
-    held: Authorized[U8] = b.guard.get_exclusive_access()
+    held: Authorized[U8] <- b.guard.get_exclusive_access()
     word: Maybe[@[Byte]] = b.word(spill)
     when word
         is @[Byte] as text =>
@@ -296,7 +296,7 @@ failable routine @ConsoleInput.read_bytes(buffer: @Byte, count: U64) -> U64
 ### :returns: The bytes read (empty when the allocation fails).
 @expensive("allocates what it reads")
 common routine Console.ask_bytes(count: U64, manager: @MemoryManager) -> Memory[Byte]
-    local buffer: @Memory[Byte] <- Memory[Byte].construct(count: 0, manager: manager)
+    buffer: &[Byte] <- Memory[Byte].construct(count: 0, manager: manager)
 
     when check Memory[Byte].construct(count: count.max(1), manager: manager)
         is Memory[Byte] as made => buffer.replace(value: steal made)
@@ -321,9 +321,9 @@ common routine Console.ask_bytes(count: U64, manager: @MemoryManager) -> Memory[
 ### :returns: The bytes up to the end of the input (or up to a read failure).
 @expensive("allocates what it reads")
 common routine Console.ask_all(manager: @MemoryManager) -> Memory[Byte]
-    local text: @CaptureBuffer <- CaptureBuffer.empty()
-    local chunk_buffer: @Array[Byte, 4096] <- .hollow()
-    local chunk: @Byte = chunk_buffer.to[@Byte]()
+    text: &CaptureBuffer <- CaptureBuffer.empty()
+    chunk_buffer: &Array[Byte, 4096] <- .hollow()
+    chunk: @Byte = chunk_buffer.to[@Byte]()
 
     loop
         got2: Check[U64] = check Me.input().read_into(buffer: chunk, count: 4096)
@@ -331,7 +331,7 @@ common routine Console.ask_all(manager: @MemoryManager) -> Memory[Byte]
             is U64 as n2 => n2
             is FsError => 0
         if n2 == 0
-            local all: @Memory[Byte] <- text.take_all()
+            all: &[Byte] <- text.take_all()
             drop text
             return all
         text.append(chunk, n: n2, manager)
@@ -343,10 +343,10 @@ common routine Console.ask_all(manager: @MemoryManager) -> Memory[Byte]
 ### :throws: Throws `EndOfInputError` at the end of the input.
 @expensive("allocates what it reads")
 failable common routine Console.ask_line(manager: @MemoryManager) -> Memory[Byte]
-    local b: @InputBuffer = STDIN_BUFFER
+    b: @InputBuffer = STDIN_BUFFER
 
-    held: Authorized[U8] = b.guard.get_exclusive_access()
-    local line: @Maybe[Memory[Byte]] <- b.line(manager)
+    held: Authorized[U8] <- b.guard.get_exclusive_access()
+    line: &Maybe[Memory[Byte]] <- b.line(manager)
     drop held
     when steal line
         is Memory[Byte] as text => return text
@@ -357,21 +357,21 @@ failable common routine Console.ask_line(manager: @MemoryManager) -> Memory[Byte
 ### :returns: The line.
 ### :absent: At the end of the input.
 secret routine @InputBuffer.line(manager: @MemoryManager) -> Maybe[Memory[Byte]]
-    local text: @CaptureBuffer <- CaptureBuffer.empty()
+    text: &CaptureBuffer <- CaptureBuffer.empty()
 
     loop with any: Bool = false
         c: Maybe[Byte] = try me.emit()
         when c
             is Byte as byte =>
                 if byte == b'\n'
-                    local line: @Memory[Byte] <- text.take_all()
+                    line: &[Byte] <- text.take_all()
                     drop text
                     return trim_cr(steal line)
-                local single: @Byte <- byte
+                single: &Byte <- byte
                 text.append(chunk: single, n: 1, manager)
                 continue with any: true
             is None =>
-                local rest: @Memory[Byte] <- text.take_all()
+                rest: &[Byte] <- text.take_all()
                 drop text
                 if any
                     return trim_cr(steal rest)
@@ -401,10 +401,10 @@ secret routine is_space(c: Byte) -> Bool
 ### :throws: Throws `EndOfInputError` at the end of the input.
 @expensive("allocates what it reads")
 failable common routine Console.ask_word(manager: @MemoryManager) -> Memory[Byte]
-    local b: @InputBuffer = STDIN_BUFFER
+    b: @InputBuffer = STDIN_BUFFER
 
-    held: Authorized[U8] = b.guard.get_exclusive_access()
-    local word: @Maybe[Memory[Byte]] <- b.take_word(manager)
+    held: Authorized[U8] <- b.guard.get_exclusive_access()
+    word: &Maybe[Memory[Byte]] <- b.take_word(manager)
     drop held
     when steal word
         is Memory[Byte] as text => return text
@@ -415,8 +415,8 @@ failable common routine Console.ask_word(manager: @MemoryManager) -> Memory[Byte
 ### :returns: The word.
 ### :absent: At the end of the input.
 secret routine @InputBuffer.take_word(manager: @MemoryManager) -> Maybe[Memory[Byte]]
-    local text: @CaptureBuffer <- CaptureBuffer.empty()
-    local single: @Byte <- .hollow()
+    text: &CaptureBuffer <- CaptureBuffer.empty()
+    single: &Byte <- .hollow()
 
     # White space up to the word's first byte.
     loop
@@ -425,7 +425,7 @@ secret routine @InputBuffer.take_word(manager: @MemoryManager) -> Maybe[Memory[B
             is Byte as byte =>
                 if is_space(byte)
                     continue
-                single.poke(byte)
+                single.store(byte)
                 text.append(chunk: single, n: 1, manager)
                 break
             is None =>
@@ -440,10 +440,10 @@ secret routine @InputBuffer.take_word(manager: @MemoryManager) -> Maybe[Memory[B
                 if is_space(byte2)
                     me.unread()
                     break
-                single.poke(byte2)
+                single.store(byte2)
                 text.append(chunk: single, n: 1, manager)
             is None => break
-    local word: @Memory[Byte] <- text.take_all()
+    word: &[Byte] <- text.take_all()
     drop text
     return word
 
@@ -612,13 +612,13 @@ secret routine stream_enable_colors(stream: StdStream) -> Bool
 
 ### The unfinished UTF-8 sequence of standard output's last console write.
 @target(os: "windows")
-global PENDING_OUTPUT: @PendingUtf8
+global PENDING_OUTPUT: &PendingUtf8
 ### The unfinished UTF-8 sequence of standard error's last console write.
 @target(os: "windows")
-global PENDING_ERROR: @PendingUtf8
+global PENDING_ERROR: &PendingUtf8
 ### The text read from the console and not handed out yet.
 @target(os: "windows")
-global CONSOLE_INPUT: @ConsoleReadBuffer
+global CONSOLE_INPUT: &ConsoleReadBuffer
 
 ### The start of a UTF-8 sequence a write to the console ended in the middle of, for standard output and error.
 @target(os: "windows")
@@ -750,7 +750,7 @@ secret routine is_usable(h: Addr) -> Bool
 ### :returns: `true` for a console.
 @target(os: "windows")
 secret routine is_console(h: Addr) -> Bool
-    local mode: @U32 <- 0
+    mode: &U32 <- 0
 
     return c_get_console_mode(h, mode) != 0
 
@@ -773,11 +773,11 @@ secret routine stream_enable_colors(stream: StdStream) -> Bool
     h: Addr = handle_of(stream)
     if not is_usable(h)
         return false
-    local mode: @U32 <- 0
+    mode: &U32 <- 0
     if not (c_get_console_mode(h, mode) != 0)
         return false
     # ENABLE_VIRTUAL_TERMINAL_PROCESSING
-    return c_set_console_mode(h, mode.peek() | 4) != 0
+    return c_set_console_mode(h, mode.load() | 4) != 0
 
 ### Writes all `count` bytes to standard output or error: as UTF-16 to a console, as they are to a pipe or a file.
 ### :param stream: Standard output or error.
@@ -801,11 +801,11 @@ secret routine stream_write(stream: StdStream, data: @Byte, count: U64) -> Bool
 ### :returns: `true` when every byte was written, `false` on the first failure.
 @target(os: "windows")
 secret routine file_write(h: Addr, data: @Byte, count: U64) -> Bool
-    local wrote: @U32 <- 0
+    wrote: &U32 <- 0
 
     until remaining == 0 with at: @Byte = data, remaining: U64 = count
         ok: CInt = c_write_file(h, at, remaining.min(1073741824).to[U32](), wrote, .hollow())
-        n: U64 = wrote.peek().to[U64]()
+        n: U64 = wrote.load().to[U64]()
         if ok != 0 and n > 0
             continue with at: at.stride(n), remaining: remaining - n
         return false
@@ -862,8 +862,8 @@ secret routine pending_of(stream: StdStream) -> @PendingUtf8
 ### :returns: `true` when the text was written (or held), `false` if the console refused.
 @target(os: "windows")
 secret routine console_write(stream: StdStream, h: Addr, data: @Byte, count: U64) -> Bool
-    local pending: @PendingUtf8 = pending_of(stream)
-    local held: U64 = pending.count.peek()
+    pending: @PendingUtf8 = pending_of(stream)
+    held: U64 = pending.count.peek()
 
     values2: (@Byte, U64) = when
         held == 0 => (data, count)
@@ -894,10 +894,10 @@ secret routine console_write(stream: StdStream, h: Addr, data: @Byte, count: U64
 ### :returns: `true` when all of it was written, `false` if the console refused.
 @target(os: "windows")
 secret routine console_text(h: Addr, data: @Byte, count: U64) -> Bool
-    local written: @U32 <- 0
-    local iter: @BytesCharsIter <- @[Byte].construct(data, count).chars()
-    local unit_buffer: @Array[U16, 2048] <- .hollow()
-    local units: @U16 = unit_buffer.to[@U16]()
+    written: &U32 <- 0
+    iter: &BytesCharsIter <- @[Byte].construct(data, count).chars()
+    unit_buffer: &Array[U16, 2048] <- .hollow()
+    units: @U16 = unit_buffer.to[@U16]()
 
     loop with n: U64 = 0
         if n >= 2046
@@ -948,9 +948,9 @@ secret failable routine stdin_read(buffer: @Byte, count: U64) -> U64
     if is_console(h)
         when check console_read(h, buffer, count)
             is U64 as returned => return returned
-    local got: @U32 <- 0
+    got: &U32 <- 0
     if c_read_file(h, buffer, count.min(1073741824).to[U32](), got, .hollow()) != 0
-        return got.peek().to[U64]()
+        return got.load().to[U64]()
     # ERROR_BROKEN_PIPE: the writing end closed, which is the end
     if c_get_last_error() == 109
         return 0
@@ -964,7 +964,7 @@ secret failable routine stdin_read(buffer: @Byte, count: U64) -> U64
 ###     ReadConsoleW fails.
 @target(os: "windows")
 secret failable routine console_read(h: Addr, buffer: @Byte, count: U64) -> U64
-    local input: @ConsoleReadBuffer = CONSOLE_INPUT
+    input: @ConsoleReadBuffer = CONSOLE_INPUT
 
     if input.start.peek() < input.end.peek()
         # Ctrl+Z first: the end of the input
@@ -975,17 +975,17 @@ secret failable routine console_read(h: Addr, buffer: @Byte, count: U64) -> U64
         buffer.copy(src: input.bytes.to[@Byte]().stride(start), count: n)
         input.start.poke(start + n)
         return n
-    local units: @Array[U16, 4096] <- .hollow()
-    local got: @U32 <- 0
+    units: &Array[U16, 4096] <- .hollow()
+    got: &U32 <- 0
     if not (c_read_console(h, units.to[@U16](), 4096, got, .hollow()) != 0)
         throw IoError(code: 0)
-    n: U64 = got.peek().to[U64]()
+    n: U64 = got.load().to[U64]()
     if n == 0
         return 0
     if units[0] == 0x1A
         return 0
     units2: @U16 = units.to[@U16]()
-    local joined: @Array[U16, 4097] <- .hollow()
+    joined: &Array[U16, 4097] <- .hollow()
     high: U16 = input.high.peek()
     lead: U64 = when
         high == 0 => 0

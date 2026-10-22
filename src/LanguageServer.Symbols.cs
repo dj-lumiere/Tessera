@@ -151,7 +151,7 @@ public static partial class LanguageServer
                 detail = $"({string.Join(", ", r.Params.Where(p => !p.Implicit).Select(p => $"{p.Name}: {p.Type}"))}) -> {r.ReturnType}";
                 // LSP symbol kind 13: Variable.
                 foreach (var shared in r.Shared)
-                    children.Add(Node(lines, shared.Name, 13, shared.Pos, shared.Name, shared.Pos.Line, $"local {shared.Type}"));
+                    children.Add(Node(lines, shared.Name, 13, shared.Pos, shared.Name, shared.Pos.Line, $"{shared.Type}"));
                 var blocks = r.Blocks ?? [];
                 for (int i = 0; i < blocks.Count; i++)
                 {

@@ -153,10 +153,10 @@ needs T: typename
 ### Writes out the buffered bytes.
 routine @BufWriter[T].flush() -> None
 needs T: typename, Writer[T]
-    local count: U64 = me.count.peek()
-    local inner: @T = me.inner.peek()
-    local buffer: @Array[Byte, 4096] = me.data
-    local data: @Byte = buffer.to[@Byte]()
+    count: U64 = me.count.peek()
+    inner: @T = me.inner.peek()
+    buffer: @Array[Byte, 4096] = me.data
+    data: @Byte = buffer.to[@Byte]()
 
     me.count.poke(0)
     if count == 0
@@ -206,7 +206,7 @@ common routine CountWriter.construct() -> Me
 ### :param data: The bytes to count.
 ### :param count: The number of bytes.
 routine @CountWriter.write_bytes(data: @Byte, count: U64) -> None
-    local total: @U64 <- .hollow()
+    total: &U64 <- .hollow()
 
     initial: U64 = me.count.peek()
     initial.poke_into(total)
@@ -215,8 +215,8 @@ routine @CountWriter.write_bytes(data: @Byte, count: U64) -> None
         # continuation bytes are 10xxxxxx
         byte: U8 = Byte.to[U8](data.stride(i).peek())
         starts: Bool = byte & 0xC0 != 0x80
-        (total.peek() + starts.to[U64]()).poke_into(total)
-    me.count.poke(total.peek())
+        (total.load() + starts.to[U64]()).poke_into(total)
+    me.count.poke(total.load())
     return
 
 # -- text ----------------------------------------------------------------------
@@ -421,8 +421,8 @@ needs T: typename, Writer[T]
 ### :param min_digits: The fewest digits to write. Shorter values get leading zeros.
 routine U64.represent_into[T](out: @T, min_digits: Me) -> None
 needs T: typename, Writer[T]
-    local buf: @Array[Byte, 20] <- .hollow()
-    local digits: @Byte = buf.to[@Byte]()
+    buf: &Array[Byte, 20] <- .hollow()
+    digits: @Byte = buf.to[@Byte]()
 
     # Fills digits from the right: at least one digit, then until the value is
     # used up and min_digits are written.
@@ -455,8 +455,8 @@ needs T: typename, Writer[T]
 ### :param min_digits: The fewest digits to write. Shorter values get leading zeros.
 routine U64.represent_hex_into[T](out: @T, min_digits: Me) -> None
 needs T: typename, Writer[T]
-    local buf: @Array[Byte, 16] <- .hollow()
-    local digits: @Byte = buf.to[@Byte]()
+    buf: &Array[Byte, 16] <- .hollow()
+    digits: @Byte = buf.to[@Byte]()
 
     loop with end: Me = 16, rest: Me = me
         at2: Me = end - 1
@@ -506,8 +506,8 @@ needs T: typename, Writer[T]
 ### :param out: The Writer the text is written to.
 routine U128.represent_hex_into[T](out: @T) -> None
 needs T: typename, Writer[T]
-    local high: U64 = (me >> 64).to[U64]()
-    local low: U64 = me.to_wrap[U64]()
+    high: U64 = (me >> 64).to[U64]()
+    low: U64 = me.to_wrap[U64]()
 
     if high != 0
         high.represent_hex_into(out)
@@ -546,8 +546,8 @@ needs T: typename, Writer[T]
 ### :param out: The Writer the text is written to.
 routine U256.represent_hex_into[T](out: @T) -> None
 needs T: typename, Writer[T]
-    local high: U128 = (me >> 128).to[U128]()
-    local low: U128 = me.to_wrap[U128]()
+    high: U128 = (me >> 128).to[U128]()
+    low: U128 = me.to_wrap[U128]()
 
     if high != 0
         middle: U64 = (low >> 64).to[U64]()
@@ -595,7 +595,7 @@ needs T: typename, Writer[T]
 ### :param out: The Writer the text is written to.
 routine Char.represent_into[T](out: @T) -> None
 needs T: typename, Writer[T]
-    local buf: @Array[Byte, 4] <- .hollow()
+    buf: &Array[Byte, 4] <- .hollow()
 
     bytes: @Byte = buf.to[@Byte]()
     count: U64 = utf8_encode_into(char: me, out: bytes)
@@ -761,7 +761,7 @@ needs T: typename, Writer[T]
 ### :param out: The Writer the text is written to.
 routine Array[T, COUNT].represent_into[TWriter](out: @TWriter) -> None
 needs T: typename, COUNT: U64, Diagnosable[T], TWriter: typename, Writer[TWriter]
-    local slot: @Me <- me
+    slot: &Me <- me
 
     write_str(out, text: "[")
 
@@ -810,12 +810,12 @@ needs T: typename, Writer[T]
 ### :param d: The digits and the decimal exponent.
 routine write_float_decimal[T](out: @T, d: FloatDecimal) -> None
 needs T: typename, Writer[T]
-    local buf: @Array[U8, 20] <- .hollow()
-    local digits: @U8 = buf.to[@U8]()
-    local end: @U64 <- 20
+    buf: &Array[U8, 20] <- .hollow()
+    digits: @U8 = buf.to[@U8]()
+    end: &U64 <- 20
 
     loop with rest: U64 = d.digits
-        at2: U64 = end.peek() - 1
+        at2: U64 = end.load() - 1
         low_digit2: U8 = (rest % 10).to[U8]()
         digits.stride(at2).poke(low_digit2 + 48)
         next2: U64 = rest // 10
@@ -835,8 +835,8 @@ needs T: typename, Writer[T]
 ### :param exponent: The power of ten the digits are scaled by.
 routine write_decimal_digits[T](out: @T, first: @U8, n: U64, exponent: S64) -> None
 needs T: typename, Writer[T]
-    local top_place: S64 = n.to[S64]() - 1
-    local x: S64 = top_place + exponent
+    top_place: S64 = n.to[S64]() - 1
+    x: S64 = top_place + exponent
 
     low_ok: Bool = x >= -4
     high_ok: Bool = x < 16
@@ -888,14 +888,14 @@ needs T: typename, Writer[T]
 ### :param format: The float's format (B16, BF16, B32, or B64).
 routine write_binary_float[T](out: @T, bits: U64, format: FloatFormat) -> None
 needs T: typename, Writer[T]
-    local mantissa_bits: S64 = format.fraction_bits.to[S64]()
-    local bias: S64 = format.bias.to[S64]()
-    local exponent_max: U64 = format.exponent_max.to[U64]()
-    local fraction_mask: U64 = U64.shift_left(1, mantissa_bits.to[U64]()) - 1
-    local mantissa: U64 = bits & fraction_mask
-    local exponent: U64 = (bits >> mantissa_bits.to[U64]()) & exponent_max
-    local sign_at: U64 = (format.width - 1).to[U64]()
-    local negative: Bool = bits >> sign_at == 1
+    mantissa_bits: S64 = format.fraction_bits.to[S64]()
+    bias: S64 = format.bias.to[S64]()
+    exponent_max: U64 = format.exponent_max.to[U64]()
+    fraction_mask: U64 = U64.shift_left(1, mantissa_bits.to[U64]()) - 1
+    mantissa: U64 = bits & fraction_mask
+    exponent: U64 = (bits >> mantissa_bits.to[U64]()) & exponent_max
+    sign_at: U64 = (format.width - 1).to[U64]()
+    negative: Bool = bits >> sign_at == 1
 
     if exponent == exponent_max
         if mantissa != 0
@@ -982,12 +982,12 @@ routine floor_log10_pow2(x: S64) -> S64
 ### :param boundary: True when the gap below is half the gap above.
 routine write_float_exact[T](out: @T, f: U128, e: S64, boundary: Bool) -> None
 needs T: typename, Writer[T]
-    local even: Bool = f & 1 == 0
-    local r: @BigNat[320] <- .hollow()
-    local s: @BigNat[320] <- .hollow()
-    local plus: @BigNat[320] <- .hollow()
-    local minus: @BigNat[320] <- .hollow()
-    local t: @BigNat[320] <- .hollow()
+    even: Bool = f & 1 == 0
+    r: &BigNat[320] <- .hollow()
+    s: &BigNat[320] <- .hollow()
+    plus: &BigNat[320] <- .hollow()
+    minus: &BigNat[320] <- .hollow()
+    t: &BigNat[320] <- .hollow()
 
     one: U64 = 1
     r.set(f)
@@ -1028,7 +1028,7 @@ needs T: typename, Writer[T]
         s.mul_add(m: 10, addend: 0)
         continue with k: k + 1
     then
-        local buf: @Array[U8, 48] <- .hollow()
+        buf: &Array[U8, 48] <- .hollow()
         digits: @U8 = buf.to[@U8]()
         # d = floor(10r / s), r = 10r mod s, and the margins scale by 10 too.
         loop with n: U64 = 0
@@ -1072,7 +1072,7 @@ needs T: typename, Writer[T]
 ### :returns: True when r + m+ reaches s.
 secret routine exact_top_reaches(r: @BigNat[320], plus: @BigNat[320], s: @BigNat[320],
     even: Bool) -> Bool
-    local top: @BigNat[320] <- .hollow()
+    top: &BigNat[320] <- .hollow()
 
     top.copy_from(r)
     top.add(plus)
@@ -1095,10 +1095,10 @@ secret routine take_exact_digit(r: @BigNat[320], s: @BigNat[320]) -> U8
 ### :param out: The Writer the text is written to.
 routine B128.represent_into[T](out: @T) -> None
 needs T: typename, Writer[T]
-    local bits: U128 = me.bits()
-    local negative: Bool = b128_is_negative_bits(bits)
-    local biased: S64 = b128_exponent(bits)
-    local fraction: U128 = b128_fraction(bits)
+    bits: U128 = me.bits()
+    negative: Bool = b128_is_negative_bits(bits)
+    biased: S64 = b128_exponent(bits)
+    fraction: U128 = b128_fraction(bits)
 
     if biased == B128_EXP_MAX
         when
@@ -1151,11 +1151,11 @@ needs T: typename, Writer[T]
 ### :param digits: The number of digits after the point.
 routine write_float_fixed[T](out: @T, f: U128, e: S64, digits: U64) -> None
 needs T: typename, Writer[T]
-    local n: @BigNat[864] <- .hollow()
-    local below_zero: U64 = e.min(0).abs_diff(0)
-    local own: U64 = below_zero.to[U64]()
+    n: &BigNat[864] <- .hollow()
+    below_zero: U64 = e.min(0).abs_diff(0)
+    own: U64 = below_zero.to[U64]()
     # max(0, -e)
-    local places: U64 = digits.min(own)
+    places: U64 = digits.min(own)
 
     n.set(f)
     if e >= 0
@@ -1165,7 +1165,7 @@ needs T: typename, Writer[T]
         n.mul_pow10(places)
         n.shr_round_even(e.abs_diff(0).to[U64]())
 
-    local buf: @Array[U8, 16640] <- .hollow()
+    buf: &Array[U8, 16640] <- .hollow()
     chars: @U8 = buf.to[@U8]()
     first: U64 = fill_fixed_digits(n, chars)
 
@@ -1222,15 +1222,15 @@ secret routine fill_fixed_digits(n: @BigNat[864], chars: @U8) -> U64
 ### :param digits: The number of digits after the point.
 routine write_binary_fixed[T](out: @T, bits: U128, format: FloatFormat, digits: U64) -> None
 needs T: typename, Writer[T]
-    local mantissa_bits: U128 = format.fraction_bits.to[U128]()
-    local shift: S64 = (format.bias + format.fraction_bits.to[S32]()).to[S64]()
-    local exponent_max: S64 = format.exponent_max.to[S64]()
-    local fraction_mask: U128 = U128.shift_left(1, mantissa_bits) - 1
-    local fraction: U128 = bits & fraction_mask
-    local field: U128 = (bits >> mantissa_bits) & exponent_max.to[U128]()
-    local biased: S64 = field.to[S64]()
-    local sign_at: U128 = (format.width - 1).to[U128]()
-    local negative: Bool = bits >> sign_at == 1
+    mantissa_bits: U128 = format.fraction_bits.to[U128]()
+    shift: S64 = (format.bias + format.fraction_bits.to[S32]()).to[S64]()
+    exponent_max: S64 = format.exponent_max.to[S64]()
+    fraction_mask: U128 = U128.shift_left(1, mantissa_bits) - 1
+    fraction: U128 = bits & fraction_mask
+    field: U128 = (bits >> mantissa_bits) & exponent_max.to[U128]()
+    biased: S64 = field.to[S64]()
+    sign_at: U128 = (format.width - 1).to[U128]()
+    negative: Bool = bits >> sign_at == 1
 
     special: Bool = biased == exponent_max
     when
@@ -1465,8 +1465,8 @@ needs T: typename, Writer[T]
 ### :param spec: The width, fill and alignment to apply.
 routine represent_with_into[TValue, TWriter](out: @TWriter, value: TValue, spec: FormatSpec) -> None
 needs TValue: typename, TWriter: typename, Writer[TWriter], Representable[TValue]
-    local fill: @[Byte] = spec.fill
-    local counter: @CountWriter <- .construct()
+    fill: @[Byte] = spec.fill
+    counter: &CountWriter <- .construct()
 
     value.represent_into(counter)
     count: U64 = counter.count.peek()
@@ -1490,7 +1490,7 @@ needs TValue: typename, TWriter: typename, Writer[TWriter], Representable[TValue
             write_repeated(out, text: fill, count: pad - half)
             return
         Align.AFTER_SIGN =>
-            local inner: @SignPadWriter[TWriter] <- SignPadWriter[TWriter](inner: out, fill: fill,
+            inner: &SignPadWriter[TWriter] <- SignPadWriter[TWriter](inner: out, fill: fill,
                 pad: pad)
             value.represent_into(inner)
             return
@@ -1501,8 +1501,8 @@ needs TValue: typename, TWriter: typename, Writer[TWriter], Representable[TValue
 ### :param count: The number of bytes.
 routine @SignPadWriter[T].write_bytes(data: @Byte, count: U64) -> None
 needs T: typename, Writer[T]
-    local inner: @T = me.inner.peek()
-    local pad: U64 = me.pad.peek()
+    inner: @T = me.inner.peek()
+    pad: U64 = me.pad.peek()
 
     if pad > 0 and count > 0
         fill: @[Byte] = me.fill.peek()

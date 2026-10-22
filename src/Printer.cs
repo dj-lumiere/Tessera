@@ -92,7 +92,7 @@ public sealed class Printer
         switch (s)
         {
             case BindStmt { Value: ClaimExpr claim } b:
-                Line(s, indent, $"local {Name(b.Name)}: {Type(b.Type)}{(claim.Contents is null ? "" : " <- " + Expr(claim.Contents))}");
+                Line(s, indent, $"{Name(b.Name)}: {Type(b.Type)}{(claim.Contents is null ? "" : " <- " + Expr(claim.Contents))}");
                 break;
             case BindStmt { Value: WhenExpr w } b:
                 Line(s, indent, $"{Name(b.Name)}: {Type(b.Type)} = when{(w.When.Value is null ? "" : " " + Expr(w.When.Value))}");

@@ -1095,9 +1095,10 @@ static class Cli
             .OrderBy(t => t.Item1, StringComparer.Ordinal).ToList();
 
     /// A <name>.arch file lists the architectures a test runs on, one per line (a test of an architecture-specific
-    /// routine); on any other target it is skipped.
+    /// routine), each alone (`x86_64`) or with an operating system (`x86_64-linux`); on any other target it is skipped.
     internal static bool RunsOn(string stem, BuildTarget target) =>
-        !File.Exists(stem + ".arch") || File.ReadAllLines(stem + ".arch").Select(l => l.Trim()).Contains(target.Arch);
+        !File.Exists(stem + ".arch") || File.ReadAllLines(stem + ".arch").Select(l => l.Trim())
+            .Any(l => l == target.Arch || l == $"{target.Arch}-{target.Os}");
 
     private static string Normalize(string s) => s.Replace("\r\n", "\n").TrimEnd('\n');
 
@@ -1175,6 +1176,10 @@ static class Cli
                 string got = Normalize(stdout);
                 if (want != got) return FirstDifference(want.Split('\n'), got.Split('\n'));
             }
+            // `<name>.stderr`: text the program's error output contains (a crash report's first line, say).
+            if (File.Exists(stem + ".stderr") && Normalize(File.ReadAllText(stem + ".stderr")).Trim() is { Length: > 0 } wanted
+                && !Normalize(stderr).Contains(wanted, StringComparison.Ordinal))
+                return $"error output doesn't contain \"{wanted}\": {stderr}";
             return null;
         }
         finally

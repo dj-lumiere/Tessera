@@ -12,7 +12,7 @@ module Standard/Os
 @external("c")
 @symbol("environ")
 @target(os: "linux")
-global ENVIRON: @@@Byte
+global ENVIRON: &@@Byte
 
 ### struct pollfd
 @target(os: ("linux", "macos"))
@@ -260,8 +260,8 @@ secret routine @Prepared.release(manager: @MemoryManager) -> None
 @target(os: ("linux", "macos"))
 secret routine @Prepared.make(program: @[Byte], args: @[@[Byte]], options: ProcessOptions,
     manager: @MemoryManager) -> Bool
-    local arg_count: U64 = args.count()
-    local first: @U64 <- .hollow()
+    arg_count: U64 = args.count()
+    first: &U64 <- .hollow()
 
     me.poke(Me.empty())
     argv: @@Byte = allocate[@Byte](count: arg_count + 2, manager)
@@ -299,17 +299,17 @@ secret routine @Prepared.make(program: @[Byte], args: @[@[Byte]], options: Proce
     each i in 0 til n
         entry: @Byte = parent.stride(i).peek()
         if not is_overridden(entry: entry.to[CStrView]().getview(), options)
-            envp.stride(first.peek()).poke(entry)
-            (first.peek() + 1).poke_into(first)
+            envp.stride(first.load()).poke(entry)
+            (first.load() + 1).poke_into(first)
     each j in 0 til options.env_count
         e: @Byte = env_entry(v: options.env.stride(j).peek(), manager)
         if e.is_hollow()
-            me.own_first.poke(first.peek())
+            me.own_first.poke(first.load())
             me.own_count.poke(j)
             return false
-        envp.stride(first.peek() + j).poke(e)
-    envp.stride(first.peek() + options.env_count).poke(.hollow())
-    me.own_first.poke(first.peek())
+        envp.stride(first.load() + j).poke(e)
+    envp.stride(first.load() + options.env_count).poke(.hollow())
+    me.own_first.poke(first.load())
     me.own_count.poke(options.env_count)
     return true
 
@@ -385,10 +385,10 @@ secret routine child(p: @Prepared, s: ChildStreams) -> None
             environ_place().poke(envp)
         argv: @@Byte = p.argv.peek()
         c_execvp(argv.peek(), argv)
-        local e: @CInt <- errno()
+        e: &CInt <- errno()
         c_write(s.report, e.to[@Byte](), 4)
         c_exit_now(127)
-    local e: @CInt <- errno()
+    e: &CInt <- errno()
     c_write(s.report, e.to[@Byte](), 4)
     c_exit_now(127)
 
@@ -501,7 +501,7 @@ secret routine @Plumbing.close_all() -> None
 @target(os: ("linux", "macos"))
 secret routine @Plumbing.make(options: ProcessOptions) -> Bool
     me.poke(Me.empty())
-    local fds: @Array[CInt, 2] <- [-1, -1]
+    fds: &Array[CInt, 2] <- [-1, -1]
     if not cloexec_pipe(fds.to[@CInt]())
         return false
     me.exec_r.poke(fds[0])
@@ -553,10 +553,10 @@ secret routine output_fd(mode: OutputMode, pipe: CInt, null_fd: CInt) -> CInt
 @expensive("starts a process")
 failable common routine ProcessManager.create_process(program: @[Byte], args: @[@[Byte]],
     options: ProcessOptions, manager: @MemoryManager) -> ProcessOutput
-    local p: @Prepared <- Prepared.empty()
-    local pipes: @Plumbing <- Plumbing.empty()
-    local out: @CaptureBuffer <- CaptureBuffer.empty()
-    local err: @CaptureBuffer <- CaptureBuffer.empty()
+    p: &Prepared <- Prepared.empty()
+    pipes: &Plumbing <- Plumbing.empty()
+    out: &CaptureBuffer <- CaptureBuffer.empty()
+    err: &CaptureBuffer <- CaptureBuffer.empty()
 
     when check run_child(program, args, options, run: ChildRun(p, pipes, out, err, manager))
         is ProcessOutput as made =>
@@ -583,7 +583,7 @@ failable common routine ProcessManager.create_process(program: @[Byte], args: @[
 @target(os: ("linux", "macos"))
 secret failable routine run_child(program: @[Byte], args: @[@[Byte]], options: ProcessOptions,
     run: ChildRun) -> ProcessOutput
-    local report: @CInt <- 0
+    report: &CInt <- 0
 
     p: @Prepared = run.p
     pipes: @Plumbing = run.pipes
@@ -611,7 +611,7 @@ secret failable routine run_child(program: @[Byte], args: @[@[Byte]], options: P
     pipes.err_r.poke(-1)
     status: Maybe[ExitStatus] = reap(pid)
     if got == 4
-        throw spawn_error(report.peek())
+        throw spawn_error(report.load())
     when check take_output(status, out, err)
         is ProcessOutput as returned => return returned
 
@@ -684,14 +684,14 @@ secret routine read_report(fd: CInt, report: @CInt) -> S64
 ### :param manager: The memory manager the buffers grow from.
 @target(os: ("linux", "macos"))
 secret routine drain(out: PipeCapture, err: PipeCapture, manager: @MemoryManager) -> None
-    local out_fd: CInt = out.fd
-    local err_fd: CInt = err.fd
+    out_fd: CInt = out.fd
+    err_fd: CInt = err.fd
     # POLLIN, and poll skips a negative fd
-    local poll_fds: @Array[PollFd, 2] <- [PollFd(fd: out_fd, events: 1, revents: 0),
+    poll_fds: &Array[PollFd, 2] <- [PollFd(fd: out_fd, events: 1, revents: 0),
         PollFd(fd: err_fd, events: 1, revents: 0)]
-    local chunk_buffer: @Array[Byte, 4096] <- .hollow()
-    local fds: @PollFd = poll_fds.to[@PollFd]()
-    local chunk: @Byte = chunk_buffer.to[@Byte]()
+    chunk_buffer: &Array[Byte, 4096] <- .hollow()
+    fds: @PollFd = poll_fds.to[@PollFd]()
+    chunk: @Byte = chunk_buffer.to[@Byte]()
 
     out_open: U32 = (out_fd >= 0).to[U32]()
     until open == 0 with open: U32 = out_open + (err_fd >= 0).to[U32]()
@@ -729,7 +729,7 @@ secret routine drain(out: PipeCapture, err: PipeCapture, manager: @MemoryManager
 ### :absent: When waitpid fails.
 @target(os: ("linux", "macos"))
 secret routine reap(pid: CInt) -> Maybe[ExitStatus]
-    local status: @CInt <- 0
+    status: &CInt <- 0
 
     loop
         rc2: CInt = c_waitpid(pid, status, 0)
@@ -737,7 +737,7 @@ secret routine reap(pid: CInt) -> Maybe[ExitStatus]
             continue
         if rc2 < 0
             return None()
-        s: CInt = status.peek()
+        s: CInt = status.load()
         low: CInt = s & 0x7F
         # WIFEXITED, else WIFSIGNALED (0x7F is a stop, which waitpid without WUNTRACED doesn't report)
         if low == 0
@@ -756,7 +756,7 @@ secret routine reap(pid: CInt) -> Maybe[ExitStatus]
 @target(os: ("linux", "macos"))
 @expensive("allocates a copy of the variable")
 secret routine env_var(name: @[Byte], manager: @MemoryManager) -> Maybe[Memory[Byte]]
-    local key: @Array[Byte, 256] <- .hollow()
+    key: &Array[Byte, 256] <- .hollow()
 
     if (name.count() >= 256) or name.has("\0")
         return None()

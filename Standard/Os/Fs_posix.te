@@ -717,13 +717,13 @@ secret routine stat_raw(dir: CInt, cpath: @Byte, flags: CInt, out: @Statx) -> Bo
 ### :throws: Throws the FsError for `errno` when statx fails.
 @target(os: "linux")
 secret failable routine metadata_of(cpath: @Byte, follow: Bool) -> Metadata
-    local st: @Statx <- .hollow()
+    st: &Statx <- .hollow()
 
     flags: CInt = when
         follow => 0
         else => AT_SYMLINK_NOFOLLOW
     if stat_raw(dir: AT_FDCWD, cpath, flags, out: st)
-        return st.peek().to[Metadata]()
+        return st.load().to[Metadata]()
     throw last_error()
 
 ### The metadata of the open file fd.
@@ -732,10 +732,10 @@ secret failable routine metadata_of(cpath: @Byte, follow: Bool) -> Metadata
 ### :throws: Throws the FsError for `errno` when statx fails.
 @target(os: "linux")
 secret failable routine fd_metadata(fd: CInt) -> Metadata
-    local st: @Statx <- .hollow()
+    st: &Statx <- .hollow()
 
     if stat_raw(dir: fd, cpath: "", flags: AT_EMPTY_PATH, out: st)
-        return st.peek().to[Metadata]()
+        return st.load().to[Metadata]()
     throw last_error()
 
 ### The permission bits of the open file fd, or 0o666 when they can't be read.
@@ -743,7 +743,7 @@ secret failable routine fd_metadata(fd: CInt) -> Metadata
 ### :returns: The permission bits, `S_IFMT` left out.
 @target(os: "linux")
 secret routine fd_mode(fd: CInt) -> U32
-    local st: @Statx <- .hollow()
+    st: &Statx <- .hollow()
 
     if stat_raw(dir: fd, cpath: "", flags: AT_EMPTY_PATH, out: st)
         mode: U32 = st.mode.peek().to[U32]()
@@ -756,7 +756,7 @@ secret routine fd_mode(fd: CInt) -> U32
 ### :absent: When statx fails.
 @target(os: "linux")
 secret routine path_mode(cpath: @Byte) -> Maybe[U32]
-    local st: @Statx <- .hollow()
+    st: &Statx <- .hollow()
 
     if stat_raw(dir: AT_FDCWD, cpath, flags: 0, out: st)
         return st.mode.peek().to[U32]()
@@ -834,13 +834,13 @@ secret routine DarwinStat.to[Metadata]() -> Metadata
 ### :throws: Throws the FsError for `errno` when the call fails.
 @target(os: "macos")
 secret failable routine metadata_of(cpath: @Byte, follow: Bool) -> Metadata
-    local st: @DarwinStat <- .hollow()
+    st: &DarwinStat <- .hollow()
 
     rc: CInt = when
         follow => c_stat(cpath, st)
         else => c_lstat(cpath, st)
     if rc == 0
-        return st.peek().to[Metadata]()
+        return st.load().to[Metadata]()
     throw last_error()
 
 ### The metadata of the open file fd.
@@ -849,10 +849,10 @@ secret failable routine metadata_of(cpath: @Byte, follow: Bool) -> Metadata
 ### :throws: Throws the FsError for `errno` when fstat fails.
 @target(os: "macos")
 secret failable routine fd_metadata(fd: CInt) -> Metadata
-    local st: @DarwinStat <- .hollow()
+    st: &DarwinStat <- .hollow()
 
     if c_fstat(fd, st) == 0
-        return st.peek().to[Metadata]()
+        return st.load().to[Metadata]()
     throw last_error()
 
 ### The permission bits of the open file fd, or 0o666 when they can't be read.
@@ -860,7 +860,7 @@ secret failable routine fd_metadata(fd: CInt) -> Metadata
 ### :returns: The permission bits, `S_IFMT` left out.
 @target(os: "macos")
 secret routine fd_mode(fd: CInt) -> U32
-    local st: @DarwinStat <- .hollow()
+    st: &DarwinStat <- .hollow()
 
     if c_fstat(fd, st) == 0
         mode: U32 = st.mode.peek().to[U32]()
@@ -873,7 +873,7 @@ secret routine fd_mode(fd: CInt) -> U32
 ### :absent: When stat fails.
 @target(os: "macos")
 secret routine path_mode(cpath: @Byte) -> Maybe[U32]
-    local st: @DarwinStat <- .hollow()
+    st: &DarwinStat <- .hollow()
 
     if c_stat(cpath, st) == 0
         return st.mode.peek().to[U32]()
@@ -885,7 +885,7 @@ secret routine path_mode(cpath: @Byte) -> Maybe[U32]
 ### :throws: Throws the reason, `InvalidPathError` or `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
 secret failable routine metadata(path: @[Byte]) -> Metadata
-    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+    cpath: &Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if c_path(path, out: cpath.to[@Byte]())
         when check metadata_of(cpath: cpath.to[@Byte](), follow: true)
@@ -898,7 +898,7 @@ secret failable routine metadata(path: @[Byte]) -> Metadata
 ### :throws: Throws the reason, `InvalidPathError` or `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
 secret failable routine symlink_metadata(path: @[Byte]) -> Metadata
-    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+    cpath: &Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if c_path(path, out: cpath.to[@Byte]())
         when check metadata_of(cpath: cpath.to[@Byte](), follow: false)
@@ -940,8 +940,8 @@ common routine FileHandle.empty() -> Me
 ### :throws: Throws the reason, `InvalidPathError` or `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
 secret failable common routine FileHandle.open(path: @[Byte], mode: OpenMode) -> Me
-    local cpath_buffer: @Array[Byte, PATH_CAPACITY] <- .hollow()
-    local cpath: @Byte = cpath_buffer.to[@Byte]()
+    cpath_buffer: &Array[Byte, PATH_CAPACITY] <- .hollow()
+    cpath: @Byte = cpath_buffer.to[@Byte]()
 
     if not c_path(path, out: cpath)
         throw path_error(path)
@@ -1082,7 +1082,7 @@ secret routine make_dir(cpath: @Byte) -> CInt
 ###     `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
 secret failable routine create_dir(path: @[Byte]) -> None
-    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+    cpath: &Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if c_path(path, out: cpath.to[@Byte]())
         when check checked(make_dir(cpath.to[@Byte]()))
@@ -1094,7 +1094,7 @@ secret failable routine create_dir(path: @[Byte]) -> None
 ### :throws: Throws the reason, `InvalidPathError` or `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
 secret failable routine remove_file(path: @[Byte]) -> None
-    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+    cpath: &Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if c_path(path, out: cpath.to[@Byte]())
         when check checked(c_unlink(cpath.to[@Byte]()))
@@ -1107,7 +1107,7 @@ secret failable routine remove_file(path: @[Byte]) -> None
 ###     `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
 secret failable routine remove_dir(path: @[Byte]) -> None
-    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+    cpath: &Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if c_path(path, out: cpath.to[@Byte]())
         when check checked(c_rmdir(cpath.to[@Byte]()))
@@ -1120,8 +1120,8 @@ secret failable routine remove_dir(path: @[Byte]) -> None
 ### :throws: Throws the reason, `InvalidPathError` or `NameTooLongError` when a path doesn't fit a C path.
 @target(os: ("linux", "macos"))
 secret failable routine rename(from: @[Byte], to: @[Byte]) -> None
-    local a: @Array[Byte, PATH_CAPACITY] <- .hollow()
-    local b: @Array[Byte, PATH_CAPACITY] <- .hollow()
+    a: &Array[Byte, PATH_CAPACITY] <- .hollow()
+    b: &Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if not c_path(path: from, out: a.to[@Byte]())
         throw path_error(from)
@@ -1156,8 +1156,8 @@ secret routine rename_exclusive(a: @Byte, b: @Byte) -> CInt
 ###     `NameTooLongError` when a path doesn't fit a C path.
 @target(os: ("linux", "macos"))
 secret failable routine rename_no_replace(from: @[Byte], to: @[Byte]) -> None
-    local a: @Array[Byte, PATH_CAPACITY] <- .hollow()
-    local b: @Array[Byte, PATH_CAPACITY] <- .hollow()
+    a: &Array[Byte, PATH_CAPACITY] <- .hollow()
+    b: &Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if not c_path(path: from, out: a.to[@Byte]())
         throw path_error(from)
@@ -1187,16 +1187,16 @@ secret failable routine rename_no_replace(from: @[Byte], to: @[Byte]) -> None
 ###     removes it, so no partial copy is left.
 @target(os: ("linux", "macos"))
 secret failable routine copy_file(from: @[Byte], to: @[Byte], replacing: Bool) -> U64
-    local src: @FileHandle <- .empty()
-    local dst: @FileHandle <- .empty()
+    src: &FileHandle <- .empty()
+    dst: &FileHandle <- .empty()
 
     when check FileHandle.open(path: from, mode: OpenMode.READ)
-        is FileHandle as f => src.poke(f)
+        is FileHandle as f => src.store(f)
     making: OpenMode = when
         replacing => OpenMode.CREATE_REPLACING
         else => OpenMode.CREATE_NEW
     when check FileHandle.open(path: to, mode: making)
-        is FileHandle as f2 => dst.poke(f2)
+        is FileHandle as f2 => dst.store(f2)
         is FsError as error =>
             src.close()
             throw error
@@ -1218,7 +1218,7 @@ secret failable routine copy_file(from: @[Byte], to: @[Byte], replacing: Bool) -
 ### :throws: Throws the reason when the permissions can't be set or a read or a write fails.
 @target(os: ("linux", "macos"))
 secret failable routine copy_contents(src: @FileHandle, dst: @FileHandle) -> U64
-    local buffer: @Array[Byte, 16384] <- .hollow()
+    buffer: &Array[Byte, 16384] <- .hollow()
 
     if not (set_mode(fd: dst.fd.peek(), mode: fd_mode(src.fd.peek())) == 0)
         throw error_of(errno())
@@ -1269,7 +1269,7 @@ secret routine change_mode(cpath: @Byte, mode: U32) -> CInt
 ### :throws: Throws the reason, `InvalidPathError` or `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
 secret failable routine set_readonly(path: @[Byte], readonly: Bool) -> None
-    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+    cpath: &Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if not c_path(path, out: cpath.to[@Byte]())
         throw path_error(path)
@@ -1293,7 +1293,7 @@ secret failable routine set_readonly(path: @[Byte], readonly: Bool) -> None
 ### :returns: True when allowed. False when not, when nothing is there, or when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
 secret routine is_accessible(path: @[Byte], access: Access) -> Bool
-    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+    cpath: &Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if not c_path(path, out: cpath.to[@Byte]())
         return false
@@ -1390,7 +1390,7 @@ failable routine @DirIter.entry_metadata() -> Metadata
 ### :throws: Throws the reason, `NameTooLongError` when the entry's full path doesn't fit a C path.
 @target(os: ("linux", "macos"))
 secret failable routine @DirIter.entry_metadata_of(follow: Bool) -> Metadata
-    local full: @Array[Byte, PATH_CAPACITY] <- .hollow()
+    full: &Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if c_child_path(dir: me.path.to[@Byte](), dir_count: me.count.peek(), name: me.name.peek(),
         out: full.to[@Byte]())
@@ -1499,7 +1499,7 @@ secret failable routine absolute_path(path: @[Byte], manager: @MemoryManager) ->
             is Memory[Byte] as returned => return returned
     when check current_dir(manager)
         is Memory[Byte] as dir =>
-            local full: @Memory[Byte] <- join_path(a: dir.getslice(), b: path, manager)
+            full: &[Byte] <- join_path(a: dir.getslice(), b: path, manager)
             drop dir
             return full
         is FsError as error => throw error
@@ -1512,7 +1512,7 @@ secret failable routine absolute_path(path: @[Byte], manager: @MemoryManager) ->
 ###     or `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
 secret failable routine canonical_path(path: @[Byte], manager: @MemoryManager) -> Memory[Byte]
-    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+    cpath: &Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if not c_path(path, out: cpath.to[@Byte]())
         throw path_error(path)
@@ -1550,8 +1550,8 @@ secret routine is_map_failed(p: Addr) -> Bool
 secret failable common routine FileStorage[T].map(path: @[Byte], write: Bool, start: U64,
     count: U64) -> Me
 needs T: typename, StorageCell[T]
-    local file: @FileHandle <- .empty()
-    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
+    file: &FileHandle <- .empty()
+    cpath: &Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if not c_path(path, out: cpath.to[@Byte]())
         throw path_error(path)
@@ -1640,8 +1640,8 @@ needs T: typename, StorageCell[T]
 ### :throws: Throws the reason when the path can't be looked at.
 @target(os: "linux")
 secret failable routine device_id(path: @[Byte]) -> U64
-    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
-    local st: @Statx <- .hollow()
+    cpath: &Array[Byte, PATH_CAPACITY] <- .hollow()
+    st: &Statx <- .hollow()
 
     if not c_path(path, out: cpath.to[@Byte]())
         throw path_error(path)
@@ -1656,8 +1656,8 @@ secret failable routine device_id(path: @[Byte]) -> U64
 ### :throws: Throws the reason when the path can't be looked at.
 @target(os: "macos")
 secret failable routine device_id(path: @[Byte]) -> U64
-    local cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
-    local st: @DarwinStat <- .hollow()
+    cpath: &Array[Byte, PATH_CAPACITY] <- .hollow()
+    st: &DarwinStat <- .hollow()
 
     if not c_path(path, out: cpath.to[@Byte]())
         throw path_error(path)

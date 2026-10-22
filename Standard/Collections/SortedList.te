@@ -63,8 +63,8 @@ needs T: typename
 @expensive("borrows memory")
 common routine SortedList[T].of[COUNT](values: Array[T, COUNT], manager: @MemoryManager) -> Me
 needs T: typename, COUNT: U64
-    local made: @Me <- Me.construct(manager)
-    local items: @List[T] <- List[T].of(values: steal values, manager: manager)
+    made: &Me <- Me.construct(manager)
+    items: &List[T] <- List[T].of(values: steal values, manager: manager)
 
     view: @[T] = items.getview()
     each i: U64 in 0 til COUNT
@@ -94,7 +94,7 @@ needs T: typename
 ### :returns: The node, or null when the memory manager fails.
 common routine SortedListNode[T].construct(leaf: Bool, manager: @MemoryManager) -> @Me
 needs T: typename
-    local node: @Me = allocate[Me](count: 1, manager)
+    node: @Me = allocate[Me](count: 1, manager)
 
     if node.is_hollow()
         return node
@@ -115,9 +115,9 @@ needs T: typename
 ### Recomputes this node's subtree count from its own values or from its children's counts. Call it after the node's contents change.
 routine @SortedListNode[T].recount() -> None
 needs T: typename
-    local leaf: Bool = me.leaf.peek()
-    local count: U64 = me.count.peek()
-    local sum: @U64 <- .hollow()
+    leaf: Bool = me.leaf.peek()
+    count: U64 = me.count.peek()
+    sum: &U64 <- .hollow()
 
     if leaf
         me.subtree_count.poke(count)
@@ -127,8 +127,8 @@ needs T: typename
     each i in 0 til count
         child: @Me = me.children[i]
         child_count: U64 = child.subtree_count()
-        (sum.peek() + child_count).poke_into(sum)
-    me.subtree_count.poke(sum.peek())
+        (sum.load() + child_count).poke_into(sum)
+    me.subtree_count.poke(sum.load())
     return
 
 ### Whether two sorted lists hold equal elements in the same sorted order.
@@ -143,8 +143,8 @@ needs T: typename, Equatable[T]
 ### :returns: True when the counts match and every element pair is equal.
 secret routine @SortedList[T].eq_at(other: @Me) -> Bool
 needs T: typename, Equatable[T]
-    local a: @SortedListIter[T] <- .hollow()
-    local b: @SortedListIter[T] <- .hollow()
+    a: &SortedListIter[T] <- .hollow()
+    b: &SortedListIter[T] <- .hollow()
 
     la: U64 = me.count.peek()
     lb: U64 = other.count.peek()
@@ -152,8 +152,8 @@ needs T: typename, Equatable[T]
         return false
     a_val: SortedListIter[T] = .construct(me)
     b_val: SortedListIter[T] = .construct(other)
-    a.poke(a_val)
-    b.poke(b_val)
+    a.store(a_val)
+    b.store(b_val)
 
     # both have the same count, so both run out together
     loop
@@ -183,7 +183,7 @@ needs T: typename
 ### :throws: Throws `IndexOutOfBoundsError` when `order >= count`.
 failable routine @SortedList[T].getslot(order: U64) -> @T
 needs T: typename
-    local child_order: @U64 <- .hollow()
+    child_order: &U64 <- .hollow()
 
     count: U64 = me.count.peek()
     if order >= count
@@ -194,7 +194,7 @@ needs T: typename
             at: @T = node.values.getslot(remaining)
             return at
         slot: U64 = node.find_child_strict(order: remaining, out_local: child_order)
-        continue with node: node.children[slot], remaining: child_order.peek()
+        continue with node: node.children[slot], remaining: child_order.load()
 
 ### The element at `rank`, the same as getitem: a SortedList's rank is its position in sorted order.
 ### :param rank: The zero-based rank.
@@ -211,7 +211,7 @@ needs T: typename
 @reshaping
 failable routine @SortedList[T].add(value: T) -> None
 needs T: typename
-    local probe: @T <- steal value
+    probe: &T <- steal value
 
     order: U64 = me.bound(value: probe, or_equal: true)
 
@@ -234,7 +234,7 @@ needs T: typename
 ### :returns: The count of smaller elements.
 routine @SortedList[T].rank(value: T) -> U64
 needs T: typename
-    local probe: @T <- steal value
+    probe: &T <- steal value
 
     rank: U64 = me.bound(value: probe, or_equal: false)
 
@@ -246,7 +246,7 @@ needs T: typename
 ### :returns: `true` when an equal element is present.
 routine @SortedList[T].has(value: @T) -> Bool
 needs T: typename
-    local rank: U64 = me.rank(value)
+    rank: U64 = me.rank(value)
 
     count: U64 = me.count.peek()
     if rank < count
@@ -258,7 +258,7 @@ needs T: typename
 ### :returns: `true` when an equal element is present.
 routine @SortedList[T].has(value: T) -> Bool
 needs T: typename
-    local probe: @T <- steal value
+    probe: &T <- steal value
 
     there: Bool = me.has(probe)
 
@@ -307,9 +307,9 @@ needs T: typename
 @reshaping
 routine @SortedListNode[T].split_child(index: U64, manager: @MemoryManager) -> Bool
 needs T: typename
-    local left: @Me = me.children[index]
-    local leaf: Bool = left.leaf.peek()
-    local right: @Me = Me.construct(leaf, manager)
+    left: @Me = me.children[index]
+    leaf: Bool = left.leaf.peek()
+    right: @Me = Me.construct(leaf, manager)
 
     if right.is_hollow()
         return false
@@ -401,9 +401,9 @@ needs T: typename
         me.count.poke(new_count)
         me.subtree_count.poke(new_count)
         return true
-    local local_order: @U64 <- .hollow()
+    local_order: &U64 <- .hollow()
     slot: U64 = me.find_child(order, out_local: local_order)
-    local_order_val: U64 = local_order.peek()
+    local_order_val: U64 = local_order.load()
     child: @Me = me.children[slot]
     child_count: U64 = child.count.peek()
     full: Bool = child_count == SORTED_LIST_NODE_VALUES
@@ -486,10 +486,10 @@ needs T: typename
 ### :param i: The index of the child that is short.
 routine @SortedListNode[T].borrow_from_left(i: U64) -> None
 needs T: typename
-    local left: @Me = me.children[i - 1]
-    local child: @Me = me.children[i]
-    local left_count: U64 = left.count.peek()
-    local child_count: U64 = child.count.peek()
+    left: @Me = me.children[i - 1]
+    child: @Me = me.children[i]
+    left_count: U64 = left.count.peek()
+    child_count: U64 = child.count.peek()
 
     if child.leaf.peek()
         child.values.shift_right(start: 0, end: child_count)
@@ -509,10 +509,10 @@ needs T: typename
 ### :param i: The index of the child that is short.
 routine @SortedListNode[T].borrow_from_right(i: U64) -> None
 needs T: typename
-    local child: @Me = me.children[i]
-    local right: @Me = me.children[i + 1]
-    local child_count: U64 = child.count.peek()
-    local right_count: U64 = right.count.peek()
+    child: @Me = me.children[i]
+    right: @Me = me.children[i + 1]
+    child_count: U64 = child.count.peek()
+    right_count: U64 = right.count.peek()
 
     if child.leaf.peek()
         child.values.getslot(child_count).poke(steal right.values.getslot(0))
@@ -533,10 +533,10 @@ needs T: typename
 ### :param manager: The memory manager that frees the merged node.
 routine @SortedListNode[T].merge_children(i: U64, manager: @MemoryManager) -> None
 needs T: typename
-    local left: @Me = me.children[i]
-    local right: @Me = me.children[i + 1]
-    local left_count: U64 = left.count.peek()
-    local right_count: U64 = right.count.peek()
+    left: @Me = me.children[i]
+    right: @Me = me.children[i + 1]
+    left_count: U64 = left.count.peek()
+    right_count: U64 = right.count.peek()
 
     if left.leaf.peek()
         left.values.copy(dst_start: left_count, src: right.values, src_start: 0, count: right_count)
@@ -561,7 +561,7 @@ needs T: typename
 routine @SortedListNode[T].remove(order: U64, manager: @MemoryManager) -> T
 needs T: typename
     if me.leaf.peek()
-        local value: @T <- steal me.values.getslot(order)
+        value: &T <- steal me.values.getslot(order)
         count: U64 = me.count.peek()
         me.values.shift_left(start: order, end: count)
         new_count: U64 = count - 1
@@ -569,11 +569,11 @@ needs T: typename
         me.subtree_count.poke(new_count)
         return steal value
 
-    local local_order: @U64 <- .hollow()
+    local_order: &U64 <- .hollow()
     slot: U64 = me.find_child_strict(order, out_local: local_order)
-    child_slot, child_order = me.fill_child(slot, local_order: local_order.peek(), manager)
+    child_slot, child_order = me.fill_child(slot, local_order: local_order.load(), manager)
     child: @Me = me.children[child_slot]
-    local value: @T <- child.remove(order: child_order, manager)
+    value: &T <- child.remove(order: child_order, manager)
     me.recount()
     return steal value
 
@@ -642,7 +642,7 @@ needs T: typename
     if order < count
         manager: @MemoryManager = me.manager.peek()
         root: @SortedListNode[T] = me.root.peek()
-        local value: @T <- root.remove(order, manager)
+        value: &T <- root.remove(order, manager)
         remaining_count: U64 = me.count.peek() - 1
         remaining_count.poke_into(me.count)
         if root.leaf.peek()
@@ -684,7 +684,7 @@ needs T: typename
 @track_caller
 routine @SortedList[T].destruct() -> None
 needs T: typename
-    local root: @SortedListNode[T] = me.root.peek()
+    root: @SortedListNode[T] = me.root.peek()
 
     if not root.is_hollow()
         manager: @MemoryManager = me.manager.peek()
@@ -701,7 +701,7 @@ needs T: typename
 routine @SortedList[T].represent_into[TWriter](out: @TWriter) -> None
 needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
     iter_val: SortedListIter[T] = .construct(me)
-    local iter: @SortedListIter[T] <- iter_val
+    iter: &SortedListIter[T] <- iter_val
     diagnose_slots[T, SortedListIter[T], TWriter](out, iter, open: "[", close: "]")
     return
 
@@ -711,6 +711,6 @@ needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
 routine @SortedList[T].diagnose_into[TWriter](out: @TWriter) -> None
 needs T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
     iter_val: SortedListIter[T] = .construct(me)
-    local iter: @SortedListIter[T] <- iter_val
+    iter: &SortedListIter[T] <- iter_val
     diagnose_slots[T, SortedListIter[T], TWriter](out, iter, open: "[", close: "]")
     return

@@ -68,7 +68,7 @@ routine B128.ln_unchecked() -> Me
 ### :param u: The bits of x.
 ### :returns: ln(x), correctly rounded, or -inf for +0.
 secret routine cm_log_general(u: U128) -> B128
-    local hi: U64 = cm_wide_hi(u)
+    hi: U64 = cm_wide_hi(u)
 
     lo: U64 = cm_wide_lo(u)
     e: U64 = hi & 0xFFFF000000000000
@@ -105,7 +105,7 @@ secret routine cm_log_general(u: U128) -> B128
 ### :param e_field: The biased exponent shifted up by 48 (two's complement below 1 for a subnormal x).
 ### :returns: ln(x) in 3-word two's-complement fixed point, its last bit 2^-148.
 secret routine cm_log_fast(mh: U64, ml: U64, e_field: U64) -> CmWide3
-    local e: U64 = e_field +% 0x0070000000000000
+    e: U64 = e_field +% 0x0070000000000000
 
     # + 112 << 48
 
@@ -189,20 +189,20 @@ secret routine cm_log_table_sum(e: U64, j: CmLogIndices) -> CmWide3
 ### :param x: The input with its significand normalized.
 ### :returns: The rounded logarithm.
 secret routine cm_log_round(f: CmWide3, x: U128) -> B128
-    local mask: U64 = cm_sign_mask64(f.w2)
-    local f0: U64 = f.w0 ^ mask
-    local f1: U64 = f.w1 ^ mask
-    local f2: U64 = f.w2 ^ mask
-    local magnitude: CmWide3 = (w0: f0, w1: f1, w2: f2)
-    local top_zero: Bool = f2 == 0
-    local nz: U64 = when
+    mask: U64 = cm_sign_mask64(f.w2)
+    f0: U64 = f.w0 ^ mask
+    f1: U64 = f.w1 ^ mask
+    f2: U64 = f.w2 ^ mask
+    magnitude: CmWide3 = (w0: f0, w1: f1, w2: f2)
+    top_zero: Bool = f2 == 0
+    nz: U64 = when
 
         top_zero => f1.leading_zeros() + 64
         else => f2.leading_zeros()
-    local ns: U64 = nz -% 15
-    local half: U64 = 63 -% ns & 63
-    local rnd: U64 = (f0 >> half) & 1
-    local el: U64 = 0x4029 -% nz | (mask << 15)
+    ns: U64 = nz -% 15
+    half: U64 = 63 -% ns & 63
+    rnd: U64 = (f0 >> half) & 1
+    el: U64 = 0x4029 -% nz | (mask << 15)
 
     tail: U64 = U64.MAX >> (ns & 63)
     nudged: U64 = f0 +% (1 << half) +% 12
@@ -271,7 +271,7 @@ secret routine cm_log_log2(x: U64) -> U64
 ### :param s: The shift.
 ### :returns: `t` >> `s`.
 secret routine cm_log_shift_right3(t: CmWide3, s: U64) -> CmWide3
-    local shifted: @CmWide3 <- .hollow()
+    shifted: &CmWide3 <- .hollow()
 
     rs: U64 = s & 63
     ls: U64 = 64 -% rs & 63
@@ -287,9 +287,9 @@ secret routine cm_log_shift_right3(t: CmWide3, s: U64) -> CmWide3
 
     loop with k: U64 = s
         done: Bool = k < 64
-        moved: CmWide3 = CmWide3(w0: shifted.peek().w1, w1: shifted.peek().w2, w2: 0)
+        moved: CmWide3 = CmWide3(w0: shifted.load().w1, w1: shifted.load().w2, w2: 0)
         if done
-            return shifted.peek()
+            return shifted.load()
         moved.poke_into(shifted)
         continue with k: k - 64
 
@@ -397,10 +397,10 @@ secret routine cm_log_below_one(x: U128) -> CmLogNear
 ### :param last: The largest `e` for which the tail is shifted.
 ### :returns: The top two words of `z`, `e`, and whether the rounding is too close to call.
 secret routine cm_log_near_test(z: CmWide3, e: S64, point: S64, last: S64) -> CmLogNear
-    local tl: U128 = cm_wide_u128(hi: z.w1, lo: z.w0)
-    local zs: S64 = (z.w2 >> 63).to[S64]()
-    local msk: U128 = U128.MAX >> (50 - zs).to[U128]()
-    local nrnd: U128 = 1 << (13 + zs).to[U128]()
+    tl: U128 = cm_wide_u128(hi: z.w1, lo: z.w0)
+    zs: S64 = (z.w2 >> 63).to[S64]()
+    msk: U128 = U128.MAX >> (50 - zs).to[U128]()
+    nrnd: U128 = 1 << (13 + zs).to[U128]()
 
     inside: Bool = e <= last
     values2: (U128, U128, U128, U64) = when
@@ -447,10 +447,10 @@ secret routine cm_log_ncn(i: U64) -> U128
 ### :param x: The input with its significand normalized.
 ### :returns: The round bit and the significand.
 secret routine cm_log_refine(el: U64, m: U128, x: U128) -> CmLogRounding
-    local t_buf: @Array[U64, 7] <- .hollow()
+    t_buf: &Array[U64, 7] <- .hollow()
 
     t: @U64 = t_buf.to[@U64]()
-    local ft_buf: @Array[U64, 6] <- .hollow()
+    ft_buf: &Array[U64, 6] <- .hollow()
     ft: @U64 = ft_buf.to[@U64]()
     sm: U64 = 0 -% ((el >> 15) & 1)
     cm_wide_mulhi_7x2(a: CM_WIDE_ILN2.to[@U64](), b: m, out: t)
@@ -481,7 +481,7 @@ secret routine cm_log_refine(el: U64, m: U128, x: U128) -> CmLogRounding
 # -- tables --------------------------------------------------------------------
 
 ### log2 approximation: 4 coefficients per 1/32 interval of the significand
-secret preset CM_LOG_L2C: @Array[U64, 128] <- [0x00000000B8AA3AF4, 0x00000000B8A9CF24,
+secret preset CM_LOG_L2C: &Array[U64, 128] <- [0x00000000B8AA3AF4, 0x00000000B8A9CF24,
     0x00000000F5EC11E6, 0x00000000056CDE26, 0x00000000B311AD8D, 0x00000000ADA42C83,
     0x00000000E04081E5, 0x0000000004CE4AA7, 0x00000000ADCD64B4, 0x00000000A393D29C,
     0x00000000CD0DF3B5, 0x000000000445B73B, 0x00000000A8D62754, 0x000000009A5D2082,
@@ -516,7 +516,7 @@ secret preset CM_LOG_L2C: @Array[U64, 128] <- [0x00000000B8AA3AF4, 0x00000000B8A
     0x00000000204190E7, 0x00000000005F4832]
 
 ### log2 approximation: the value at the start of each interval
-secret preset CM_LOG_L2C0: @Array[U64, 32] <- [0x00000000111843D8, 0x0B5D69BAD62FA11A,
+secret preset CM_LOG_L2C0: &Array[U64, 32] <- [0x00000000111843D8, 0x0B5D69BAD62FA11A,
     0x1663F6FAD5C18924, 0x2118B119BFF1FA3B, 0x2B803474013E4469, 0x359EBC5B7234BAED,
     0x3F782D720C23D39B, 0x49101EAC3E8EE930, 0x5269E12F3A1E46C3, 0x5B888736793C6255,
     0x646EEA2480D45E3C, 0x6D1FAFDCE6051F08, 0x759D4F80CF356A9B, 0x7DEA15A32F48CB06,
@@ -527,26 +527,26 @@ secret preset CM_LOG_L2C0: @Array[U64, 32] <- [0x00000000111843D8, 0x0B5D69BAD62
     0xF446359B13F9EDEF, 0xFA2F045E78CC51CC]
 
 ### ln(1 + t) polynomial for x just above 1, as (lo, hi) word pairs
-secret preset CM_LOG_NCP: @Array[U64, 12] <- [0xFFFFFFFFFFFFFFFF, 0x7FFFFFFFFFFFFFFF,
+secret preset CM_LOG_NCP: &Array[U64, 12] <- [0xFFFFFFFFFFFFFFFF, 0x7FFFFFFFFFFFFFFF,
     0x5555555555555555, 0x0000055555555555, 0xFFFFFFFFFFFFFFFD, 0x00000000003FFFFF,
     0x3333333333333326, 0x0000000000000003, 0x00002AAAAAAAAA84, 0x0000000000000000,
     0x000000000249245A, 0x0000000000000000]
 
 ### ln(1 - t) polynomial for x just below 1, as (lo, hi) word pairs
-secret preset CM_LOG_NCN: @Array[U64, 12] <- [0x0000000000000000, 0x8000000000000000,
+secret preset CM_LOG_NCN: &Array[U64, 12] <- [0x0000000000000000, 0x8000000000000000,
     0xAAAAAAAAAAAAAAAA, 0x000002AAAAAAAAAA, 0xFFFFFFFFFFFFFFFF, 0x00000000000FFFFF,
     0x6666666666666668, 0x0000000000000000, 0x000002AAAAAAAAA8, 0x0000000000000000,
     0x0000000000124926, 0x0000000000000000]
 
 ### ln(2) in 3 words, scaled to the exponent field
-secret preset CM_LOG_LN2A: @Array[U64, 3] <- [0x3F2F6AF40F343267, 0x1CF79ABC9E3B3980,
+secret preset CM_LOG_LN2A: &Array[U64, 3] <- [0x3F2F6AF40F343267, 0x1CF79ABC9E3B3980,
     0x0000000B17217F7D]
 ### offset that removes the exponent bias, in 3 words
-secret preset CM_LOG_OFFA: @Array[U64, 3] <- [0x0198BFB39C605BC5, 0x718289F4C0A895F2,
+secret preset CM_LOG_OFFA: &Array[U64, 3] <- [0x0198BFB39C605BC5, 0x718289F4C0A895F2,
     0xFFFFFFFD3568989A]
 
 ### reciprocal tables: 32-bit reciprocals for the four 5-bit index levels
-secret preset CM_LOG_RT0: @Array[U64, 32] <- [0x0000000080000000, 0x000000007D41D96E,
+secret preset CM_LOG_RT0: &Array[U64, 32] <- [0x0000000080000000, 0x000000007D41D96E,
     0x000000007A92BE8B, 0x0000000077F25CCE, 0x0000000075606374, 0x0000000072DC8374,
     0x0000000070666F77, 0x000000006DFDDBCC, 0x000000006BA27E66, 0x0000000069540EC9,
     0x000000006712460B, 0x0000000064DCDEC4, 0x0000000062B39509, 0x0000000060962666,
@@ -556,7 +556,7 @@ secret preset CM_LOG_RT0: @Array[U64, 32] <- [0x0000000080000000, 0x000000007D41
     0x0000000048E1E9BA, 0x0000000047521CC6, 0x0000000045CAE0F2, 0x00000000444C0741,
     0x0000000042D561B4, 0x000000004166C34D]
 
-secret preset CM_LOG_RT1: @Array[U64, 32] <- [0x0000000080000000, 0x000000007FE9D3A9,
+secret preset CM_LOG_RT1: &Array[U64, 32] <- [0x0000000080000000, 0x000000007FE9D3A9,
     0x000000007FD3AB2A, 0x000000007FBD8680, 0x000000007FA765AD, 0x000000007F9148AF,
     0x000000007F7B2F86, 0x000000007F651A31, 0x000000007F4F08AF, 0x000000007F38FAFF,
     0x000000007F22F122, 0x000000007F0CEB16, 0x000000007EF6E8DB, 0x000000007EE0EA6F,
@@ -566,7 +566,7 @@ secret preset CM_LOG_RT1: @Array[U64, 32] <- [0x0000000080000000, 0x000000007FE9
     0x000000007DC458C1, 0x000000007DAE8F71, 0x000000007D98C9E7, 0x000000007D830822,
     0x000000007D6D4A22, 0x000000007D578FE6]
 
-secret preset CM_LOG_RT2: @Array[U64, 32] <- [0x0000000080000000, 0x000000007FFF4E8F,
+secret preset CM_LOG_RT2: &Array[U64, 32] <- [0x0000000080000000, 0x000000007FFF4E8F,
     0x000000007FFE9D1E, 0x000000007FFDEBAF, 0x000000007FFD3A40, 0x000000007FFC88D2,
     0x000000007FFBD765, 0x000000007FFB25F9, 0x000000007FFA748E, 0x000000007FF9C325,
     0x000000007FF911BC, 0x000000007FF86054, 0x000000007FF7AEED, 0x000000007FF6FD86,
@@ -576,7 +576,7 @@ secret preset CM_LOG_RT2: @Array[U64, 32] <- [0x0000000080000000, 0x000000007FFF
     0x000000007FEDFBAF, 0x000000007FED4A56, 0x000000007FEC98FE, 0x000000007FEBE7A8,
     0x000000007FEB3652, 0x000000007FEA84FD]
 
-secret preset CM_LOG_RT3: @Array[U64, 32] <- [0x0000000080000000, 0x000000007FFFFA75,
+secret preset CM_LOG_RT3: &Array[U64, 32] <- [0x0000000080000000, 0x000000007FFFFA75,
     0x000000007FFFF4E9, 0x000000007FFFEF5E, 0x000000007FFFE9D2, 0x000000007FFFE447,
     0x000000007FFFDEBB, 0x000000007FFFD930, 0x000000007FFFD3A4, 0x000000007FFFCE18,
     0x000000007FFFC88D, 0x000000007FFFC301, 0x000000007FFFBD76, 0x000000007FFFB7EA,
@@ -587,7 +587,7 @@ secret preset CM_LOG_RT3: @Array[U64, 32] <- [0x0000000080000000, 0x000000007FFF
     0x000000007FFF59A6, 0x000000007FFF541A]
 
 ### logarithms matching the RT0 entries, 3 words per entry
-secret preset CM_LOG_LT0: @Array[U64, 96] <- [0x0000000000000000, 0x0000000000000000,
+secret preset CM_LOG_LT0: &Array[U64, 96] <- [0x0000000000000000, 0x0000000000000000,
     0x0000000000000000, 0xA89586EFCF459616, 0x0BF2D9D6938E7957, 0x00000000000058B9,
     0x1C4217AC03D7F347, 0x17E97EC3BBBE7FA5, 0x000000000000B172, 0xEFB93FF266057747,
     0x23F162A58989F516, 0x0000000000010A2B, 0xE785FEE03979770C, 0x2FED4367CAB6F34C,
@@ -613,7 +613,7 @@ secret preset CM_LOG_LT0: @Array[U64, 96] <- [0x0000000000000000, 0x000000000000
     0x1A7B7C5AEF8482A9, 0x677F1A61810B457C, 0x00000000000A65AF, 0xA5E22A09ADE4180E,
     0x7357A288FC7E3DE4, 0x00000000000ABE68]
 
-secret preset CM_LOG_LT1: @Array[U64, 96] <- [0x0000000000000000, 0x0000000000000000,
+secret preset CM_LOG_LT1: &Array[U64, 96] <- [0x0000000000000000, 0x0000000000000000,
     0x0000000000000000, 0xFCD4886923DAE6B6, 0xC85BEE167CAB86CE, 0x00000000000002C5,
     0x635E6B704ED2F5FA, 0x90A17CEECC3FE577, 0x000000000000058B, 0x0DF932DA91371DD2,
     0x591B7D0A4D0016A7, 0x0000000000000851, 0x73159A852516C020, 0x2174877366AB0CEC,
@@ -639,7 +639,7 @@ secret preset CM_LOG_LT1: @Array[U64, 96] <- [0x0000000000000000, 0x000000000000
     0xB1F969DAE7EDC113, 0x7B2D79D3AFECBFBE, 0x000000000000532D, 0x1B3B44759B966886,
     0x4397C0ABDEA76DC5, 0x00000000000055F3]
 
-secret preset CM_LOG_LT2: @Array[U64, 96] <- [0x0000000000000000, 0x0000000000000000,
+secret preset CM_LOG_LT2: &Array[U64, 96] <- [0x0000000000000000, 0x0000000000000000,
     0x0000000000000000, 0x9CF3BC3D208C9185, 0x2E2F5FBCB16FF027, 0x0000000000000016,
     0xDA087301FF6274D4, 0x5C7D7F2B9B75AFE0, 0x000000000000002C, 0x134A54F71A0236C3,
     0x8AAA5D97D2591B8F, 0x0000000000000042, 0xD9C68A61183CE86A, 0xB8F5FBAF4FB0944A,
@@ -665,7 +665,7 @@ secret preset CM_LOG_LT2: @Array[U64, 96] <- [0x0000000000000000, 0x000000000000
     0x88AD9AB83FC30A52, 0x6BCA1C3BB9EB9390, 0x0000000000000299, 0x4D28B6B2476EE8F8,
     0x9A13A7F1BC8C0D71, 0x00000000000002AF]
 
-secret preset CM_LOG_LT3: @Array[U64, 96] <- [0x0000000000000000, 0x0000000000000000,
+secret preset CM_LOG_LT3: &Array[U64, 96] <- [0x0000000000000000, 0x0000000000000000,
     0x0000000000000000, 0x347FB733D023CC27, 0xB16003D72F3C6259, 0x0000000000000000,
     0x8679CA1F8E0297B8, 0x62E00F5F83035049, 0x0000000000000001, 0x5490AB9896A762F9,
     0x14402294D37EE9E5, 0x0000000000000002, 0x5E57AE0F99D9A1E6, 0xC5C03D7E0F9A82C2,
@@ -692,7 +692,7 @@ secret preset CM_LOG_LT3: @Array[U64, 96] <- [0x0000000000000000, 0x000000000000
     0x7CCE6DAF3F7A4090, 0x0000000000000015]
 
 ### ln(1 + r) polynomial for the reduced argument, as (lo, hi) word pairs
-secret preset CM_LOG_C: @Array[U64, 12] <- [0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF,
+secret preset CM_LOG_C: &Array[U64, 12] <- [0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF,
     0xFFFFFFFFFFFFFFFF, 0x000007FFFFFFFFFF, 0x5555555555555551, 0x0000000000555555,
     0xFFFFFFFFFFFFFFEA, 0x0000000000000003, 0x00003333333332F7, 0x0000000000000000,
     0x0000000002AAAA5E, 0x0000000000000000]

@@ -54,7 +54,7 @@ preset B128_ERFC_TWO: B128 = B128.from_bits(0x400216348A5859398F7A86034CB5B0B4)
 preset B128_ERFC_ZERO: B128 = B128.from_bits(0x4005AB9C8393DDD2517E5404D6DD3C9D)
 
 ### 2/√π = hi × 2^-447, 448 bits, least significant limb first (mpmath at 3000 bits, rounded)
-preset BIG_TWO_OVER_SQRT_PI: @Array[U64, 7] <- [0xBD1F4EEE48E1CA78, 0x40C036096CC79AEB,
+preset BIG_TWO_OVER_SQRT_PI: &Array[U64, 7] <- [0xBD1F4EEE48E1CA78, 0x40C036096CC79AEB,
     0xC0759CF859270F11, 0x39A15830CCE620B0, 0x1409A0EBAC3E7517, 0x71D48A7F6BFEC344,
     0x906EBA8214DB688D]
 
@@ -65,8 +65,8 @@ preset BIG_TWO_OVER_SQRT_PI: @Array[U64, 7] <- [0xBD1F4EEE48E1CA78, 0x40C036096C
 ### :param x: The exponent, |x| < 2^14.
 ### :returns: e^x at 192 bits.
 secret routine wide_erf_exp(x: B128Extended) -> B128Extended
-    local q: S64 = (x * wide_const(1)).to_nearest[S64]()
-    local s: @B128Extended <- .hollow()
+    q: S64 = (x * wide_const(1)).to_nearest[S64]()
+    s: &B128Extended <- .hollow()
 
     d: B128Extended = x - q.to[B128Extended]() * wide_const(0)
     last: B128Extended = wide_table(hi: WIDE_EXP_COEF_HI.to[@U128](),
@@ -78,14 +78,14 @@ secret routine wide_erf_exp(x: B128Extended) -> B128Extended
     until i < 0 with i: S64 = 21
         c: B128Extended = wide_table(hi: WIDE_EXP_COEF_HI.to[@U128](),
             lo: WIDE_EXP_COEF_LO.to[@U64](), exponent: WIDE_EXP_COEF_EXP.to[@S64](), i: i.to[U64]())
-        s.poke(s.peek() * t + c)
+        s.store(s.load() * t + c)
         continue with i: i - 1
 
     until k >= 4 with k: S64 = 0
-        (s.peek() * s.peek()).poke_into(s)
+        (s.load() * s.load()).poke_into(s)
         continue with k: k + 1
     then
-        return s.peek().ldexp(q)
+        return s.load().ldexp(q)
 
 ### erf z = 2/sqrt(pi) × z e^(-z²) × d/n, from the continued fraction evaluated backward over `levels` levels,
 ### two per step.
@@ -93,9 +93,9 @@ secret routine wide_erf_exp(x: B128Extended) -> B128Extended
 ### :param levels: The level count, even.
 ### :returns: erf z at 192 bits.
 secret routine wide_erf_cf(z: B128Extended, levels: S64) -> B128Extended
-    local zz: B128Extended = z * z
-    local n: @B128Extended <- .hollow()
-    local d: @B128Extended <- .hollow()
+    zz: B128Extended = z * z
+    n: &B128Extended <- .hollow()
+    d: &B128Extended <- .hollow()
 
     n0: B128Extended = S64.to[B128Extended](levels * 2 + 1)
     n0.poke_into(n)
@@ -103,15 +103,15 @@ secret routine wide_erf_cf(z: B128Extended, levels: S64) -> B128Extended
 
     until i <= 0 with i: S64 = levels
         i2: S64 = i * 2
-        n1: B128Extended = n.peek() * S64.to[B128Extended](i2 - 1) + zz * i2.to[B128Extended]() * d.peek()
-        n2: B128Extended = n1 * S64.to[B128Extended](i2 - 3) - zz * S64.to[B128Extended](i2 - 2) * n.peek()
+        n1: B128Extended = n.load() * S64.to[B128Extended](i2 - 1) + zz * i2.to[B128Extended]() * d.load()
+        n2: B128Extended = n1 * S64.to[B128Extended](i2 - 3) - zz * S64.to[B128Extended](i2 - 2) * n.load()
         next_d: B128Extended = n1
         next_n: B128Extended = n2
         next_n.poke_into(n)
         next_d.poke_into(d)
         continue with i: i - 2
     scale: B128Extended = z * wide_special(0) * wide_erf_exp(-zz)
-    r: B128Extended = scale * (d.peek().ldexp(1) / n.peek())
+    r: B128Extended = scale * (d.load().ldexp(1) / n.load())
     return r
 
 ### erfc z = 1/sqrt(pi) × z e^(-z²) × d/n from Laplace's continued fraction, for the tail z >= 3.
@@ -119,25 +119,25 @@ secret routine wide_erf_cf(z: B128Extended, levels: S64) -> B128Extended
 ### :param levels: The level count, even (from {erfc_cf_levels}).
 ### :returns: erfc z at 192 bits.
 secret routine wide_erfc_cf(z: B128Extended, levels: S64) -> B128Extended
-    local zz: B128Extended = z * z
-    local n: @B128Extended <- .hollow()
-    local d: @B128Extended <- .hollow()
+    zz: B128Extended = z * z
+    n: &B128Extended <- .hollow()
+    d: &B128Extended <- .hollow()
 
     wide_one().poke_into(n)
     wide_one().poke_into(d)
 
     until i <= 0 with i: S64 = levels
         half_i: B128Extended = i.to[B128Extended]().ldexp(-1)
-        n1: B128Extended = n.peek() + half_i * d.peek()
+        n1: B128Extended = n.load() + half_i * d.load()
         half_prev: B128Extended = S64.to[B128Extended](i - 1).ldexp(-1)
-        n2: B128Extended = zz * n1 + half_prev * n.peek()
+        n2: B128Extended = zz * n1 + half_prev * n.load()
         next_d: B128Extended = n1
         next_n: B128Extended = n2
         next_n.poke_into(n)
         next_d.poke_into(d)
         continue with i: i - 2
     scale: B128Extended = z * wide_special(0) * wide_erf_exp(-zz)
-    r: B128Extended = scale * (d.peek() / n.peek())
+    r: B128Extended = scale * (d.load() / n.load())
     return r
 
 ### Levels of the erfc continued fraction for a in [3, 107): base + linear / k + square / k² (+ 2, rounded up to
@@ -161,7 +161,7 @@ routine erfc_cf_levels(a: B128, base: S64, linear: S64, square: S64) -> S64
 ### :param a: The argument.
 ### :returns: erf a at 192 bits.
 routine wide_erf(a: B128) -> B128Extended
-    local z: B128Extended = a.to[B128Extended]()
+    z: B128Extended = a.to[B128Extended]()
 
     if a >= B128_ERF_FAST_SPLIT
         c: B128Extended = wide_erfc_cf(z,
@@ -174,8 +174,8 @@ routine wide_erf(a: B128) -> B128Extended
 ### :param x: The argument.
 ### :returns: erfc x at 192 bits.
 routine wide_erfc(x: B128) -> B128Extended
-    local a: B128 = x.abs()
-    local negative: Bool = b128_is_negative_bits(x.bits())
+    a: B128 = x.abs()
+    negative: Bool = b128_is_negative_bits(x.bits())
 
     if a >= B128_ERF_FAST_SPLIT
         # erfc(-a) = 2 - erfc a
@@ -202,7 +202,7 @@ secret routine big_two_over_sqrt_pi() -> B128Big
 ### :param a: The argument.
 ### :returns: erf a at 448 bits.
 secret routine big_erf(a: B128Big) -> B128Big
-    local aa: B128Big = a * a
+    aa: B128Big = a * a
 
     y: B128Big = aa.ldexp(1)
 
@@ -219,25 +219,25 @@ secret routine big_erf(a: B128Big) -> B128Big
 ### :param levels: The level count, even (from {erfc_cf_levels}).
 ### :returns: erfc z at 448 bits.
 secret routine big_erfc_cf(z: B128Big, levels: S64) -> B128Big
-    local zz: B128Big = z * z
+    zz: B128Big = z * z
     # exact: z has 113 bits
-    local n: @B128Big <- .hollow()
-    local d: @B128Big <- .hollow()
+    n: &B128Big <- .hollow()
+    d: &B128Big <- .hollow()
 
     one: B128Big = big_one()
     one.poke_into(n)
     one.poke_into(d)
 
     until i <= 0 with i: S64 = levels
-        n1: B128Big = n.peek() + (d.peek() * i).ldexp(-1)
-        n2: B128Big = zz * n1 + (n.peek() * (i - 1)).ldexp(-1)
+        n1: B128Big = n.load() + (d.load() * i).ldexp(-1)
+        n2: B128Big = zz * n1 + (n.load() * (i - 1)).ldexp(-1)
         next_d: B128Big = n1
         next_n: B128Big = n2
         next_n.poke_into(n)
         next_d.poke_into(d)
         continue with i: i - 2
     scale: B128Big = z * big_two_over_sqrt_pi().ldexp(-1) * big_exp(-zz)
-    r: B128Big = scale * (d.peek() / n.peek())
+    r: B128Big = scale * (d.load() / n.load())
     return r
 
 ### erfc x for a nonzero x in (-B128_ERFC_TWO, B128_ERFC_ZERO), the exact tier: 1 + erf |x| for negative x,
@@ -274,10 +274,10 @@ routine B128.erfc() -> Me
 ### :param exact: True skips the fast tier (the tests use it to check the exact tier on its own).
 ### :returns: erf x.
 routine b128_erf(x: B128, exact: Bool) -> B128
-    local bits: U128 = x.bits()
-    local is_nan: Bool = b128_is_nan_bits(bits)
-    local zero: Bool = b128_is_zero_bits(bits)
-    local a: B128 = x.abs()
+    bits: U128 = x.bits()
+    is_nan: Bool = b128_is_nan_bits(bits)
+    zero: Bool = b128_is_zero_bits(bits)
+    a: B128 = x.abs()
 
     # the infinities too
     when

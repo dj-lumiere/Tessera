@@ -11,7 +11,7 @@ namespace Tessera.Tests;
 public class SplitModuleTests
 {
     private const string Source = """
-        global COUNTER: @S64
+        global COUNTER: &S64
 
         routine bump(by: S64) -> None
             next: S64 = COUNTER.peek() + by

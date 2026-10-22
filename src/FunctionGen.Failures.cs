@@ -477,6 +477,7 @@ public sealed partial class FunctionGen
             }
             v = Eval(returned, _inst.Ret);
             if (_cur.Terminated) return;
+            if (r.Value is ValueRef handedOut) StackPlaceEnded(handedOut);
             RecordReturn(returned, r.Pos);
         }
         string carrier = Compiler.CarrierName(_inst);

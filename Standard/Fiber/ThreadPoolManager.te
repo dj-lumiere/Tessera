@@ -14,7 +14,7 @@
 # other work, and a free thread goes on with it once a child wakes it. That is how work splits itself in parts on
 # every core without a thread per part:
 #
-#     local pool: @ThreadPoolManager <- .construct(threads: 0)   # 0: one thread per processor
+#     pool: &ThreadPoolManager <- .construct(threads: 0)   # 0: one thread per processor
 #     j: Job[U64] = pool.get_job[U64]()
 #     j.put_work(entry: sum_range.to[Callable](), args: (pool, 0, 1000000))
 #     j.wait_finished()
@@ -163,7 +163,7 @@ needs T: typename
 @track_caller
 routine @ThreadPoolManager.get_job[T]() -> Job[T]
 needs T: typename
-    held: Authorized[U8] = me.guard.get_exclusive_access()
+    held: Authorized[U8] <- me.guard.get_exclusive_access()
     me.start_threads()
     idle: @PoolJob = me.idle.peek()
     if idle.is_hollow()
@@ -184,7 +184,7 @@ needs T: typename
 @target(os: not "none")
 @track_caller
 secret routine @ThreadPoolManager.start_threads() -> None
-    local count: U64 = me.count.peek()
+    count: U64 = me.count.peek()
 
     threads: @Memory[Thread[None]] = me.threads
 
@@ -203,7 +203,7 @@ secret routine @ThreadPoolManager.start_threads() -> None
 ### :param job: The job, with its work put on.
 @target(os: not "none")
 secret routine @ThreadPoolManager.queue(job: @PoolJob) -> None
-    held: Authorized[U8] = me.guard.get_exclusive_access()
+    held: Authorized[U8] <- me.guard.get_exclusive_access()
     last: @PoolJob = me.last.peek()
     if last.is_hollow()
         me.first.poke(job)
@@ -219,7 +219,7 @@ secret routine @ThreadPoolManager.queue(job: @PoolJob) -> None
 ### :returns: The job, or null.
 @target(os: not "none")
 secret routine @ThreadPoolManager.take() -> @PoolJob
-    held: Authorized[U8] = me.guard.get_exclusive_access()
+    held: Authorized[U8] <- me.guard.get_exclusive_access()
     job: @PoolJob = me.first.peek()
     if job.is_hollow()
         drop held
@@ -237,7 +237,7 @@ secret routine @ThreadPoolManager.take() -> @PoolJob
 @target(os: not "none")
 @reshaping
 secret routine @ThreadPoolManager.queue_woken(fiber: @FiberState) -> None
-    held: Authorized[U8] = me.guard.get_exclusive_access()
+    held: Authorized[U8] <- me.guard.get_exclusive_access()
     me.woken.add_last(fiber)
     drop held
     me.epoch.atomic_fetch_add(1)
@@ -249,7 +249,7 @@ secret routine @ThreadPoolManager.queue_woken(fiber: @FiberState) -> None
 @target(os: not "none")
 @reshaping
 secret routine @ThreadPoolManager.take_woken() -> @FiberState
-    held: Authorized[U8] = me.guard.get_exclusive_access()
+    held: Authorized[U8] <- me.guard.get_exclusive_access()
     if me.woken.is_empty()
         drop held
         return .hollow()
@@ -261,7 +261,7 @@ secret routine @ThreadPoolManager.take_woken() -> @FiberState
 ### :param fiber: The fiber.
 @target(os: not "none")
 secret routine @ThreadPoolManager.keep_fiber(fiber: @FiberState) -> None
-    held: Authorized[U8] = me.guard.get_exclusive_access()
+    held: Authorized[U8] <- me.guard.get_exclusive_access()
     fiber.next_idle.poke(me.spare.peek())
     me.spare.poke(fiber)
     drop held
@@ -273,7 +273,7 @@ secret routine @ThreadPoolManager.keep_fiber(fiber: @FiberState) -> None
 @target(os: not "none")
 @track_caller
 secret routine @ThreadPoolManager.take_fiber() -> @FiberState
-    held: Authorized[U8] = me.guard.get_exclusive_access()
+    held: Authorized[U8] <- me.guard.get_exclusive_access()
     spare: @FiberState = me.spare.peek()
     if spare.is_not_hollow()
         me.spare.poke(spare.next_idle.peek())
@@ -284,7 +284,7 @@ secret routine @ThreadPoolManager.take_fiber() -> @FiberState
         return spare
     drop held
     manager: @MemoryManager = me.manager.peek()
-    local stack: @StackManager <- take_stack(size: DEFAULT_FIBER_STACK, pages: PAGES)
+    stack: &StackManager <- take_stack(size: DEFAULT_FIBER_STACK, pages: PAGES)
     if stack.top.peek().is_hollow()
         crash_allocation()
     fiber: @FiberState = allocate[FiberState](count: 1, manager)
@@ -296,7 +296,7 @@ secret routine @ThreadPoolManager.take_fiber() -> @FiberState
         work: fiber.slot, then: requeue.to[Callable](), wake_state: FIBER_RUNNING, timer: 0,
         trace_depth: 0, access: .hollow(), race: race_stack_new(), next_idle: .hollow(),
         next_all: .hollow(), pool: me))
-    held2: Authorized[U8] = me.guard.get_exclusive_access()
+    held2: Authorized[U8] <- me.guard.get_exclusive_access()
     fiber.next_all.poke(me.fibers.peek())
     me.fibers.poke(fiber)
     drop held2
@@ -601,7 +601,7 @@ needs T: typename
     me.work_slot().give_back()
     job: @PoolJob = me.job
     pool: @ThreadPoolManager = job.pool.peek()
-    held: Authorized[U8] = pool.guard.get_exclusive_access()
+    held: Authorized[U8] <- pool.guard.get_exclusive_access()
     job.next.poke(pool.idle.peek())
     pool.idle.poke(job)
     drop held

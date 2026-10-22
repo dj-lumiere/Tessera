@@ -61,4 +61,27 @@ public sealed partial class Compiler
                                               + (p is RecordType && args[i].StartsWith('@') ? $"{{ ptr {args[i]} }}" : args[i]));
         return $"call {inst.CcPrefix(Target)}void @{Quote(inst.Symbol)}({string.Join(", ", ps)})";
     }
+
+    private readonly Dictionary<string, Instance?> _frameRoutines = [];
+
+    /// The call of the StackManager's `borrow_frame` or `give_back_frame` with these arguments, or null when the
+    /// standard library has none (a build of a file without it).
+    public string? FrameCall(string name, params string[] args)
+    {
+        if (!_frameRoutines.TryGetValue(name, out var inst))
+        {
+            var r = _methods.GetValueOrDefault(("StackManager", name))?.FirstOrDefault(d => d.IsLibrary && d.Module == MemoryModule);
+            if (r is null) inst = null;
+            else
+            {
+                var env = new TypeEnv(r.File);
+                env.Bind("Me", ResolveType(r.Owner!, env));
+                inst = RequireInstance(r, env);
+            }
+            _frameRoutines[name] = inst;
+        }
+        if (inst is null) return null;
+        var ps = inst.Params.Select((p, i) => $"{p.Llvm}{inst.ParamExt(Target, i)} {args[i]}");
+        return $"call {inst.CcPrefix(Target)}void @{Quote(inst.Symbol)}({string.Join(", ", ps)})";
+    }
 }

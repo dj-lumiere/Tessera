@@ -20,20 +20,12 @@ public class FormatterTests
     }
 
     [Fact]
-    public void OneBlankLineBetweenTheHeadAndTheEntryLines()
-    {
-        const string source = "routine f(n: S64) -> S64\n    local m: @S64 <- n + 1\n    return m.peek()\n";
-        const string expected = "routine f(n: S64) -> S64\n    local m: @S64 <- n + 1\n\n    return m.peek()\n";
-        Assert.Equal(expected, Formatter.Format(source));
-    }
-
-    [Fact]
     public void AScriptKeepsItsOrderAndItsBodiesTight()
     {
         // Top-level lines run in the order written, so no declaration moves past them, and a line after an `if` body
         // among them follows it directly, as in a routine.
-        const string source = "import Standard/Os\n\nlocal n: @S64 <- 1\n\nroutine twice(x: S64) -> S64\n    return x * 2\n\n"
-                              + "if n.peek() > 0\n    n.poke(twice(x: n.peek()))\nelse\n    n.poke(0)\nset_exit_code(code: 0)\n";
+        const string source = "import Standard/Os\n\nn: &S64 <- 1\n\nroutine twice(x: S64) -> S64\n    return x * 2\n\n"
+                              + "if n.load() > 0\n    n.store(twice(x: n.load()))\nelse\n    n.store(0)\nset_exit_code(code: 0)\n";
         Assert.Equal(source, Formatter.Format(source));
     }
 

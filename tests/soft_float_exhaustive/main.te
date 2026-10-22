@@ -97,8 +97,8 @@ routine agree32(soft: U32, hard: U32, nan_bits: U32) -> Bool
 
 ### One B32 binary operation: 0 add, 1 sub, 2 mul, 3 div, 4 mod, 5 the comparisons, 6 powi.
 routine check32(op: U64, a: U32, b: U32) -> Bool
-    local x: B32 = .from_bits(a)
-    local y: B32 = .from_bits(b)
+    x: B32 = .from_bits(a)
+    y: B32 = .from_bits(b)
 
     when op
         0 => return agree32(soft: soft_b32_add(a, b), hard: (x +! y).bits(),
@@ -161,8 +161,8 @@ routine widen_ok(a: U32) -> Bool
 
 ### compiler-rt's float-to-integer result as `width` bits (see tests/soft_float).
 routine fix_model(x: B64, width: U32, signed: Bool) -> U128
-    local mask: U128 = U128.MAX >> U32.sub(128, width).to[U128]()
-    local negative: Bool = x.is_sign_negative()
+    mask: U128 = U128.MAX >> U32.sub(128, width).to[U128]()
+    negative: Bool = x.is_sign_negative()
 
     field: U64 = (width + 1023).to[U64]()
     limit: B64 = B64.from_bits(field << 52)
@@ -302,8 +302,8 @@ routine agree64(soft: U64, hard: U64, nan_bits: U64) -> Bool
         return soft == hard
 
 routine check64(op: U64, a: U64, b: U64) -> Bool
-    local x: B64 = .from_bits(a)
-    local y: B64 = .from_bits(b)
+    x: B64 = .from_bits(a)
+    y: B64 = .from_bits(b)
 
     when op
         0 => return agree64(soft: soft_b64_add(a, b), hard: (x +! y).bits(),
@@ -494,7 +494,7 @@ routine tally(worker: @Worker, check: U64, ok: Bool, input: U64) -> None
 ### One job: a chunk of B32 bit patterns, every B16, random pairs for one operation and mix, random B64 values, or
 ### random integers.
 routine run_job(worker: @Worker, job: U64) -> None
-    local start: U64 = job << 24
+    start: U64 = job << 24
 
     seed: U64 = job *% 0x9E3779B97F4A7C15
     seed.poke_into(worker.seed)
@@ -527,16 +527,16 @@ routine run_job(worker: @Worker, job: U64) -> None
                     return
             else
                 until at == 0x200000 with at: U64 = 0
-                    local second: @U64 <- 0
+                    second: &U64 <- 0
                     a: U64 = operands64(state: worker.seed, mix, second)
-                    ok: Bool = check64(op, a, b: second.peek())
+                    ok: Bool = check64(op, a, b: second.load())
                     tally(worker, check: (op + 14).to[U64](), ok, input: a)
                     continue with at: at + 1
                 then
                     return
         job < 457 =>
             until at == 0x200000 with at: U64 = 0
-                local second: @U64 <- 0
+                second: &U64 <- 0
                 a: U64 = operands64(state: worker.seed, mix: at % 3, second)
                 tally(worker, check: 21, ok: unary64(a), input: a)
                 continue with at: at + 1
@@ -557,7 +557,7 @@ routine run_job(worker: @Worker, job: U64) -> None
 ### A thread's body: its jobs, index, index + threads, and so on. Each thread changes its own worker, through the
 ### exclusive access it takes for the run.
 routine work(slot: @Worker) -> None
-    held: Authorized[Worker] = slot.get_exclusive_access()
+    held: Authorized[Worker] <- slot.get_exclusive_access()
     worker: @Worker = held.getview()
     until job >= JOBS with job: U64 = worker.index.peek()
         run_job(worker, job)
@@ -606,13 +606,12 @@ routine sum_fails(workers: @Worker, threads: U64, check: U64, first: @U64) -> U6
         return total
 
 routine start() -> None
-    local manager: @MemoryManager = HEAP
-    local threads: U64 = cpu_count().to[U64]()
-    local worker_memory: @Memory[Worker] <- .construct(count: threads.to[U64](), manager: manager)
-    local handle_memory: @Memory[Thread[None]] <- .construct(count: threads.to[U64](),
-        manager: manager)
-    local workers: @Worker = worker_memory.to[@Worker]()
-    local handles: @Thread[None] = handle_memory.to[@Thread[None]]()
+    manager: @MemoryManager = HEAP
+    threads: U64 = cpu_count().to[U64]()
+    worker_memory: &[Worker] <- .construct(count: threads.to[U64](), manager: manager)
+    handle_memory: &[Thread[None]] <- .construct(count: threads.to[U64](), manager: manager)
+    workers: @Worker = worker_memory.to[@Worker]()
+    handles: @Thread[None] = handle_memory.to[@Thread[None]]()
 
     Console.show("{threads} threads")
 
@@ -631,14 +630,14 @@ routine start() -> None
         handle.give_back()
 
     each check in 0 til CHECKS with total: U64 = 0
-        local first: @U64 <- 0
+        first: &U64 <- 0
         fails: U64 = sum_fails(workers, threads, check, first)
         name: @[Byte] = check_name(check)
         Console.show("{name}: {fails} mismatches", end: "")
         total2: U64 = when
             fails == 0 => total
             else =>
-                input: U64 = first.peek()
+                input: U64 = first.load()
                 Console.show(", first at input 0x", end: "")
                 input.represent_hex_into(Console.output())
                 becomes total + fails

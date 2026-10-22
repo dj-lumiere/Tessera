@@ -165,7 +165,7 @@ public class AsmArmTests
             routine start() -> None
                 t: U32 = thread_id()
                 f: B64 = join(lo: 1, hi: 2)
-                local v: @U32 <- 3
+                v: &U32 <- 3
                 w: U32 = walk(v)
                 return
 

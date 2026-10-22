@@ -174,12 +174,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             throw new CompileError(written.Pos,
                 $"this file's top-level lines are its start (from line {_scriptPos.Line}), and it also declares routine "
                 + "start: keep one, the lines or the routine");
-        var lines = _scriptLines!;
+        // The first binding lines are the start of the one body.
+        List<Stmt> lines = [.. _scriptHead ?? [], .. _scriptLines!];
         if (lines.Count == 0 || lines[^1] is not ReturnStmt) lines.Add(new ReturnStmt(null, tokens[^1].Pos) { AtFileEnd = true });
         var entry = new BlockDecl("entry", [], lines, _scriptPos);
         ResolveBlockCalls([entry]);
         return new RoutineDecl(file, [], null, Compiler.StartName, [], [], new TypeRef("None", [], _scriptPos), [], [entry], _scriptPos)
-            { Shared = _scriptHead, IsScript = true };
+            { IsScript = true };
     }
 
     /// `define Fmt = Standard/System/Text`, `define Numbers = Standard/Collections/List[S64]`.
@@ -642,6 +643,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         int afterHead = _i;
         bool blockNext = NextBlockSource().IsBlock;
         _i = afterHead;
+        // Before `block entry()` the binding lines are the head, which every block sees; otherwise they are the start
+        // of the entry block, and its own.
+        _routineShared = blockNext ? shared : [];
+        var headNames = shared.Select(s => s.Name).ToList();
+        if (blockNext) _routineValues.AddRange(headNames);
         if (!blockNext)
         {
             if (AtDeclStart())
@@ -655,7 +661,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             }
             // The lines before the first block are the entry block.
             _blockName = "entry";
-            _values = [.. _routineValues];
+            _values = [.. _routineValues, .. headNames];
             var entryPos = Cur.Pos;
             // A routine's lines sit further in than its header, which starts its line (after `private` if any).
             var stmts = ParseBody(1, routineLevel: true);
@@ -676,6 +682,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (blocks[0].Params.Count != 0)
             throw new CompileError(blocks[0].Pos, "the entry block takes no parameters");
         ResolveBlockCalls(blocks);
+        // The first binding lines are the start of the entry block, unless `block entry()` follows them: then they are
+        // the routine's head, which every block sees.
+        if (!blockNext && shared.Count > 0)
+        {
+            blocks[0] = blocks[0] with { Stmts = [.. shared, .. blocks[0].Stmts], Pos = shared[0].Pos };
+            shared = [];
+        }
         int endLine = _i > 0 ? tokens[_i - 1].Pos.Line : pos.Line;
         return new RoutineDecl(file, annotations, owner, name, typeParams, parameters, ret, clauses, blocks, pos)
             { Fixed = fixedArgs, Source = source, Shared = shared, HeaderEndLine = headerEnd, EndLine = endLine };
@@ -699,78 +712,53 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
     }
 
-    /// The routine's head: its `local` lines, between the header (and its `require` lines) and the first block.
-    /// Each sees the routine's parameters and the local lines above it, and every block sees them all.
+    /// The routine's head: the binding lines (`x: T = value`, `x: &T <- value`) between the header (and its `needs`
+    /// lines) and the first line that isn't one. Each sees the routine's parameters and the lines above it. In a routine
+    /// written with blocks every block sees them all; in one without, they are the first lines of its body.
     private List<BindStmt> ParseHead(string display)
     {
         var shared = new List<BindStmt>();
         _values = [.. _routineValues];
-        while (true)
+        while (!_inAsm)
         {
             int start = _i;
             Pos? lineSource = null;
             if (AtAnnotation())
             {
                 var lineAnnotations = ParseAnnotations();
-                if (!IsIdent("local"))
+                if (!BindingLineAhead())
                 {
-                    _i = start;   // the annotations of the first block, or of the next declaration
+                    _i = start;   // the annotations of the first block or line, or of the next declaration
                     break;
                 }
                 foreach (var a in lineAnnotations)
                     lineSource = a.Name == "source"
                         ? SourceOf(a)
-                        : throw new CompileError(a.Pos, $"a local line takes @source, not @{a.Name}");
+                        : throw new CompileError(a.Pos, $"a binding line takes @source, not @{a.Name}");
             }
-            if (!IsIdent("local") || PeekTok(1).Kind == TokenKind.Colon) break;
-            if (_inAsm)
-                throw Error($"assembly routine '{display}' has no local values: its blocks pass registers, so each block "
-                            + "takes its values as parameters");
-            var line = ParseLocal() with { Source = lineSource };
-            if (line.Value is not WhenExpr) ExpectLineEnd();
+            if (IsIdent("local") && PeekTok(1).Kind == TokenKind.Ident) throw LocalGone();
+            if (!BindingLineAhead()) break;
+            var line = (BindStmt)ParseStmt(Cur.Pos.Col) with { Source = lineSource };
             if (_routineValues.Contains(line.Name))
                 throw new CompileError(line.Pos,
                     $"'{line.Name}' is a parameter of routine '{display}', which every block already sees: use the "
                     + "parameter itself, or share a value under a name of its own");
             if (shared.FirstOrDefault(s => s.Name == line.Name) is { } earlier)
                 throw new CompileError(line.Pos,
-                    $"'{line.Name}' is local twice in routine '{display}' (first on line {earlier.Pos.Line}): a name is bound once");
+                    $"'{line.Name}' is bound twice in routine '{display}' (first on line {earlier.Pos.Line}): a name is bound once");
             shared.Add(line);
-            _values.Add(line.Name);
         }
-        _routineShared = shared;
-        _routineValues.AddRange(shared.Select(s => s.Name));
         return shared;
     }
 
-    /// `local NAME: T = value` (a value, in the head only) or `local NAME: @T <- value` (a slot in the frame). Both
-    /// parse as a BindStmt, the slot over a ClaimExpr.
-    private BindStmt ParseLocal(bool inHead = true)
-    {
-        var pos = Next().Pos;
-        string name = ValueName("the name of a local value: local x: T = value").Text;
-        Expect(TokenKind.Colon, "':'");
-        var type = ParseType();
-        if (Is(TokenKind.LeftArrow))
-        {
-            if (type is not { Name: "Ptr", Args.Count: 1 } && !IsSpanType(type) && !IsManagedType(type))
-                throw new CompileError(type.Pos,
-                    $"a local slot is memory, so its type is a pointer: local {name}: @{type} <- value, or local {name}: {type} = value for a value");
-            Next();
-            return MemoryBinding(name, type, pos);
-        }
-        if (!Is(TokenKind.Eq))
-            throw Error(inHead
-                ? $"a local line gives a value with '=' or a slot's contents with '<-': local {name}: {type} = value"
-                : $"local makes memory: local {name}: @{type} <- value; a value is bound without it, {name}: {type} = value");
-        if (!inHead)
-            throw Error($"local makes memory: local {name}: @{type} <- value; a value is bound without it, {name}: {type} = value");
-        Next();
-        var value = ParseValue(pos.Col);
-        if (value is AtExpr at)
-            throw new CompileError(at.Pos, $"memory from a manager takes its contents with '<-': local {name}: {type} <- ... from manager");
-        return new BindStmt(name, type, value, pos);
-    }
+    /// Whether the line at the cursor binds a name: `x: T = value` or `x: &T <- value`, not a block's header.
+    private bool BindingLineAhead() =>
+        Cur.Kind == TokenKind.Ident && PeekTok(1).Kind == TokenKind.Colon && !IsBlockHeader() && Cur.Pos.Col > 1;
+
+    /// The error for a line that starts with `local`, which Tessera doesn't have.
+    private CompileError LocalGone() =>
+        Error("a line doesn't start with 'local': a value is bound with x: T = value, and a place is borrowed from a "
+              + "manager with x: &T <- value (from STACK when no manager is named)");
 
     private RecordDecl ParseRecord(List<Annotation> annotations)
     {
@@ -898,29 +886,31 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
         Expect(TokenKind.Colon, "':' and the preset's type");
         var type = ParseType();
-        // `preset NAME: Span[T] <- [a, b]` is read-only memory of the literal's elements, and the name is a Span of them.
-        if (IsSpanType(type))
+        // `preset NAME: &[T] <- [a, b]` is read-only memory of the literal's elements, and the name is a span of them.
+        if (StorageSpanOf(type) is { } spanType)
         {
             if (Is(TokenKind.Eq))
-                throw Error($"a span (@[T]) preset takes its elements with '<-': preset {name}: {type} <- [a, b]");
+                throw Error($"a preset in memory is a place, filled with '<-': preset {name}: {type} <- [a, b]");
             Expect(TokenKind.LeftArrow, $"'<-' and the elements: preset {name}: {type} <- [a, b]");
             var elements = ParseExpr();
             ExpectLineEnd();
-            return new PresetDecl(file, annotations, owner, name, type, elements, pos) { IsStorage = true, IsSpan = true };
+            return new PresetDecl(file, annotations, owner, name, spanType, elements, pos) { IsStorage = true, IsSpan = true };
         }
-        // `preset NAME: @T <- value` is read-only memory, whose name is its address; `preset NAME: T = value` is a value.
-        if (PointeeOf(type) is { } pointee)
+        // `preset NAME: &T <- value` is read-only memory, whose name is its address; `preset NAME: T = value` is a value.
+        if (StoragePointeeOf(type) is { } pointee)
         {
             if (Is(TokenKind.Eq))
-                throw Error($"a preset in memory takes its contents with '<-': preset {name}: {type} <- value");
+                throw Error($"a preset in memory is a place, filled with '<-': preset {name}: {type} <- value");
             Expect(TokenKind.LeftArrow, $"'<-' and the contents: preset {name}: {type} <- value");
             var contents = ParseExpr();
             ExpectLineEnd();
             return new PresetDecl(file, annotations, owner, name, pointee, contents, pos) { IsStorage = true };
         }
         if (Is(TokenKind.LeftArrow))
-            throw Error($"'<-' fills memory, and a preset of type {type} is a value: preset {name}: {type} = value, "
-                        + $"or preset {name}: @{type} <- value to put it in memory");
+            throw Error(PointeeOf(type) is not null || IsSpanType(type)
+                ? $"a preset in memory is a place, written &T or &[T] (@T and @[T] only view): preset {name}: &{(PointeeOf(type) ?? ElemOf(type))} <- value"
+                : $"'<-' fills a place, and a preset of type {type} is a value: preset {name}: {type} = value, "
+                  + $"or preset {name}: &{type} <- value to put it in memory");
         Expect(TokenKind.Eq, "'='");
         var value = ParseExpr();
         ExpectLineEnd();
@@ -937,24 +927,37 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         Expect(TokenKind.Colon, "':' and the global's type");
         var type = ParseType();
         if (Is(TokenKind.Eq))
-            throw Error($"a global takes its contents with '<-': global {name.Text}: {type} <- value");
-        // `global NAME: Span[T] <- [0] * 26`: the literal gives the elements and how many there are.
-        if (IsSpanType(type))
+            throw Error($"a global is a place, filled with '<-': global {name.Text}: {type} <- value");
+        // `global NAME: &[T] <- [0] * 26`: the literal gives the elements and how many there are. Without a literal the
+        // global holds the Memory itself (hollow until the program puts one in, with replace).
+        if (StorageSpanOf(type) is { } spanType)
         {
-            Expect(TokenKind.LeftArrow,
-                $"'<-' and the elements, which give the count: global {name.Text}: {type} <- [0] * 26");
-            var elements = ParseExpr();
+            Expr? contents = Accept(TokenKind.LeftArrow) ? ParseExpr() : null;
             ExpectLineEnd();
-            return new PresetDecl(file, annotations, null, name.Text, type, elements, pos)
-                { IsGlobal = true, IsStorage = true, IsSpan = true };
+            if (contents is ArrayLit { IsTuple: false } or StrLit)
+                return new PresetDecl(file, annotations, null, name.Text, spanType, contents, pos)
+                    { IsGlobal = true, IsStorage = true, IsSpan = true };
+            return new PresetDecl(file, annotations, null, name.Text, type with { Amp = false }, contents, pos) { IsGlobal = true, IsStorage = true };
         }
-        var pointee = PointeeOf(type)
-                      ?? throw new CompileError(type.Pos,
-                          $"a global's name is the address of its memory: global {name.Text}: @{type}, or global {name.Text}: @[{type}] <- [...] for a run of them");
+        var pointee = StoragePointeeOf(type)
+                      ?? throw new CompileError(type.Pos, PointeeOf(type) is not null || IsSpanType(type)
+                          ? $"a global is a place, written &T or &[T] (@T and @[T] only view): global {name.Text}: &{(PointeeOf(type) ?? ElemOf(type))}"
+                          : $"a global is a place: global {name.Text}: &{type}, or global {name.Text}: &[{type}] <- [...] for a run of them");
         Expr? value = Accept(TokenKind.LeftArrow) ? ParseExpr() : null;
         ExpectLineEnd();
         return new PresetDecl(file, annotations, null, name.Text, pointee, value, pos) { IsGlobal = true, IsStorage = true };
     }
+
+    /// `T` in `&T` (`Box[T]`), the type of a preset or global in memory, or null.
+    private static TypeRef? StoragePointeeOf(TypeRef type) =>
+        type is { Name: "Box", Path: null or Compiler.SystemModule, Args: [TypeArgType inner] } ? inner.Type : null;
+
+    /// The span `@[T]` a preset or global `&[T]` (`Memory[T]`) is seen as, or null.
+    private static TypeRef? StorageSpanOf(TypeRef type) =>
+        type is { Name: "Memory", Path: null or Compiler.SystemModule, Args: [TypeArgType elem] } ? new TypeRef("Span", [elem], type.Pos) : null;
+
+    /// `T` in `@[T]`.
+    private static TypeRef? ElemOf(TypeRef type) => type.Args is [TypeArgType elem] ? elem.Type : null;
 
     /// `Span[T]`, the type of a run of values in static memory or in a routine's frame.
     private static bool IsSpanType(TypeRef type) => type is { Name: "Span", Path: null, Args.Count: 1 };
@@ -1071,6 +1074,18 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 throw new CompileError(Cur.Pos,
                     "a pointer to a variant written inline goes through a name: define Choice = A | B, then @Choice");
             return new TypeRef("Ptr", [new TypeArgType(ParseTypeAtom())], at);
+        }
+        // `&T` is `Box[T]`, and `&[T]` is `Memory[T]`: borrowed from a manager, given back with drop.
+        if (Cur is { Kind: TokenKind.Op, Text: "&" })
+        {
+            var amp = Next().Pos;
+            if (Accept(TokenKind.LBracket))
+            {
+                var elem = ParseType();
+                Expect(TokenKind.RBracket, "']' closing &[T]");
+                return new TypeRef("Memory", [new TypeArgType(elem)], amp) { Path = Compiler.SystemModule, Amp = true };
+            }
+            return new TypeRef("Box", [new TypeArgType(ParseTypeAtom())], amp) { Path = Compiler.SystemModule, Amp = true };
         }
         if (Is(TokenKind.LParen))
         {
@@ -1332,11 +1347,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         // parameter along is passing what the block has already, and a value that changes is a different value.
         foreach (var p in parameters.Where(p => _routineValues.Contains(p.Name)))
             throw new CompileError(p.Pos, _routineShared.FirstOrDefault(s => s.Name == p.Name) is { } shared
-                ? $"block '{name.Text}' has a parameter named '{p.Name}', like the local value in the head of routine "
+                ? $"block '{name.Text}' has a parameter named '{p.Name}', like the value in the head of routine "
                   + $"'{_routineDisplay}' (line {shared.Pos.Line}), which every block already sees: use '{p.Name}' itself, "
                   + "or give a value that changes its own name"
                 : $"block '{name.Text}' has a parameter named '{p.Name}', like the routine's parameter, which every block "
-                  + $"already sees: use '{p.Name}' itself, or give a value that changes its own name (or keep it in a local slot)");
+                  + $"already sees: use '{p.Name}' itself, or give a value that changes its own name (or keep it in a place, x: &T <- value)");
         ExpectLineEnd();
         _values = [.. _routineValues, .. parameters.Select(p => p.Name)];
         var stmts = ParseBody(pos.Col, routineLevel: true);
@@ -1496,20 +1511,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 case "elseif": throw Error("'elseif' follows the body of an if, at the same column as the if");
                 case "then": throw Error("'then' follows the body of a loop, at the same column as the loop");
                 case "local":
-                {
-                    var line = ParseLocal(inHead: false);
-                    ExpectLineEnd();
-                    _values!.Add(line.Name);
-                    return line;
-                }
+                    throw LocalGone();
                 case "claim":
-                {
-                    Old(pos, "a slot is claimed with local, not claim");
-                    var line = (BindStmt)ParseClaim();
-                    ExpectLineEnd();
-                    _values!.Add(line.Name);
-                    return line;
-                }
+                    throw Error("a place is borrowed with x: &T <- value, not claim");
                 case "branch":
                     return ParseBranch(col);
                 default:
@@ -1528,10 +1532,19 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             var type = ParseType();
             if (Is(TokenKind.Comma))
                 throw Error("a tuple's items take their types from the tuple: write a, b = ... without types");
-            Expect(TokenKind.Eq, "'='");
+            if (Accept(TokenKind.LeftArrow))
+            {
+                // `x: &T <- value [from manager]`: a place borrowed from the manager (STACK when none is named), with
+                // the value put in it, or a thing to give back that a call borrows (`held: Authorized[T] <- ...`).
+                var borrowed = AtManager(ParseExpr());
+                ExpectLineEnd();
+                _values!.Add(name);
+                return new BindStmt(name, type, borrowed, pos) { Borrows = true };
+            }
+            Expect(TokenKind.Eq, "'=' (or '<-' to borrow a place)");
             var value = ParseValue(col);
             if (value is AtExpr at)
-                throw new CompileError(at.Pos, $"memory from a manager goes in a slot: local {name}: {type} <- ... from manager");
+                throw new CompileError(at.Pos, $"a place from a manager is borrowed with '<-': {name}: {(type is { Name: "Box" or "Memory" } ? $"{type}" : $"&{type}")} <- ... from manager");
             if (value is not WhenExpr) ExpectLineEnd();
             _values!.Add(name);
             return new BindStmt(name, type, value, pos);
@@ -1925,7 +1938,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             case "break":
                 if (_loopDepth == 0) throw new CompileError(pos, "break leaves a loop, and there is no loop here");
                 if (!Is(TokenKind.Newline) && !Is(TokenKind.Eof))
-                    throw Error("break takes no value: a loop sends a value out through return or a local slot");
+                    throw Error("break takes no value: a loop sends a value out through return or a place (x: &T <- value)");
                 return new BreakStmt(pos);
             case "nothing":
                 return new NothingStmt(pos);
@@ -2544,50 +2557,6 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
         Expect(TokenKind.RParen, "')'");
         return AtManager(new RecordLit(null, fields, pos));
-    }
-
-    /// The old `claim p: @T <- value`: a slot in the routine's frame bound to a pointer name, now `local`.
-    private Stmt ParseClaim()
-    {
-        var pos = Next().Pos;
-        string name = ValueName("the name of the value claim binds: claim p: @T").Text;
-        Expect(TokenKind.Colon, "':'");
-        var type = ParseType();
-        if (Is(TokenKind.Eq))
-            throw new CompileError(pos, $"a slot takes its contents with '<-': local {name}: {type} <- value");
-        if (type is not { Name: "Ptr", Args.Count: 1 } && !IsSpanType(type) && !IsManagedType(type))
-            throw new CompileError(type.Pos,
-                $"local makes memory: local p: @T <- value, local xs: @[T] <- [...], or local m: Memory[T] <- [...] from manager; found {type}");
-        if (!Is(TokenKind.LeftArrow))
-            throw new CompileError(pos,
-                $"a slot says what it starts with: local {name}: {type} <- value, or <- .hollow() when a routine it's passed to fills it");
-        Next();
-        return MemoryBinding(name, type, pos);
-    }
-
-    /// `Memory[T]` or `Box[T]`: memory taken from a manager.
-    private static bool IsManagedType(TypeRef type) => type is { Name: "Memory" or "Box", Path: null, Args.Count: 1 };
-
-    /// The binding after `<-` in a local slot: a pointer's or a span's contents go into the frame, and memory
-    /// from a manager is the `... from manager` value itself.
-    private BindStmt MemoryBinding(string name, TypeRef type, Pos pos)
-    {
-        var contents = AtManager(ParseExpr());
-        // `from STACK` names the frame, where a slot is anyway: the slot itself.
-        if (!IsManagedType(type) && contents is AtExpr { Manager: PresetRef { Owner: null, Name: "STACK", Path: null } } framed)
-            contents = framed.Value;
-        if (IsManagedType(type))
-            return contents is AtExpr
-                ? new BindStmt(name, type, contents, pos)
-                : throw new CompileError(contents.Pos,
-                    $"a {type.Name} is memory from a manager, which the contents name: {name}: {type} <- [...] from manager");
-        if (IsSpanType(type) && contents is AtExpr)
-            throw new CompileError(contents.Pos,
-                $"memory from a manager is a Memory[T]: {name}: Memory[{(type.Args is [TypeArgType elem] ? elem.ToString() : "T")}] <- ... from manager, or the literal alone for a span (@[T]) in the frame");
-        if (IsSpanType(type) && contents is not ArrayLit { IsTuple: false })
-            throw new CompileError(contents.Pos,
-                $"a span (@[T]) in the frame takes an array literal, which gives its count: {name}: {type} <- [0] * 64");
-        return new BindStmt(name, type, new ClaimExpr(pos) { Contents = contents }, pos);
     }
 
     private List<TypeRef> ParseTypeArgsOpt()

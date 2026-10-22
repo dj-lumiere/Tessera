@@ -30,48 +30,48 @@ module Standard/Os
 ### The slot of the fiber or agent running on this thread, where its AccessFlow is (made when first needed), or
 ### hollow while the thread runs its own code.
 @threadlocal
-global RUNNING_FLOW: @@@AccessFlow
+global RUNNING_FLOW: &@@AccessFlow
 
 ### This thread's own flow, for the code it runs outside every fiber and agent.
 @threadlocal
-global THREAD_FLOW: @AccessFlow
+global THREAD_FLOW: &AccessFlow
 ### The number the next flow takes.
-global NEXT_FLOW: @U64 <- 1
+global NEXT_FLOW: &U64 <- 1
 ### Whether the deadlock check is on: DEADLOCK_CHECK, or what AccessManager.configure set.
-global DEADLOCK_ON: @Bool <- DEADLOCK_CHECK
+global DEADLOCK_ON: &Bool <- DEADLOCK_CHECK
 ### Whether the access-order check is on: ACCESS_ORDER, or what AccessManager.configure set.
-global ORDER_ON: @Bool <- ACCESS_ORDER
+global ORDER_ON: &Bool <- ACCESS_ORDER
 ### How the crash reports name the flows: WORDS_TESSERA, WORDS_RAZORFORGE, or WORDS_SUFLAE.
-global WORDS: @U8
+global WORDS: &U8
 ### The flow the reports call `start()` in RazorForge's and Suflae's words, hollow in Tessera's.
-global MAIN_FLOW: @@AccessFlow
+global MAIN_FLOW: &@AccessFlow
 
 ### The code of a `Callable[(@U32, U32, Duration), None]` that parks a waiting flow, or hollow for the stdlib's own.
-global PARK: @Addr
+global PARK: &Addr
 
 ### The code of a `Callable[(@SourceLocation,), None]` that writes the place of the code taking an access, or hollow.
-global PLACE: @Addr
+global PLACE: &Addr
 
 ### The pairs the access-order check recorded.
-global ORDERS: @Array[AccessOrder, ORDER_SLOTS]
+global ORDERS: &Array[AccessOrder, ORDER_SLOTS]
 ### How many of ORDERS are in use.
-global ORDER_COUNT: @U64
+global ORDER_COUNT: &U64
 
 ### 1 while a flow reads or changes ORDERS. A plain flag: the check's own bookkeeping takes no access.
-global ORDER_FLAG: @U32
+global ORDER_FLAG: &U32
 
 ### 1 once a flow reports a deadlock or an access-order error: the other flows of the cycle, which may see it at the
 ### same moment, wait for that report to end the program instead of writing their own over it.
-global REPORTING: @U32
+global REPORTING: &U32
 
 ### The root of the table of accesses held, hollow while none is.
-global TABLE_ROOT: @@AccessNode
+global TABLE_ROOT: &@AccessNode
 ### The word that guards the table: 0 free, 1 taken, 2 taken with a flow that may be waiting for it.
-global TABLE_WORD: @U32
+global TABLE_WORD: &U32
 ### The nodes not in use, linked through `left`.
-global FREE_NODES: @@AccessNode
+global FREE_NODES: &@AccessNode
 ### How many accesses the table holds: memory given back while it is 0 isn't looked at.
-global HELD_TOTAL: @U64
+global HELD_TOTAL: &U64
 
 ### Whether a flow about to wait follows the chain of holders and stops the program on a deadlock. The builder sets it
 ### from `[debug] deadlock-check`: on in a debug build, off in the release modes.
@@ -396,7 +396,7 @@ common routine AccessManager.try_take(at: Addr, size: U64, mode: U8, place: @Sou
 ###     with `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
 @target(os: not "none")
 common routine AccessManager.take_exclusive(at: Addr, size: U64) -> None
-    local place: @SourceLocation <- Me.place_here()
+    place: &SourceLocation <- Me.place_here()
 
     taken: Bool = take_range(at, size, mode: ACCESS_WRITE, place, deadline: Duration.MAX,
         hooked: false)
@@ -513,16 +513,16 @@ common routine AccessManager.set_park(park: Callable[(@U32, U32, Duration), None
 ### place when no routine was set, or when neither check is on (nothing would report it).
 ### :returns: The place.
 common routine AccessManager.place_here() -> SourceLocation
-    local place: @SourceLocation <- .hollow()
+    place: &SourceLocation <- .hollow()
 
     hook: Addr = PLACE.peek_atomic()
     if hook.is_hollow()
-        return place.peek()
+        return place.load()
     if not (DEADLOCK_ON.peek() or ORDER_ON.peek())
-        return place.peek()
+        return place.load()
     writer: Callable[(@SourceLocation,), None] = bitcast(hook)
     writer.call(place)
-    return place.peek()
+    return place.load()
 
 # -- the table -----------------------------------------------------------------------------------------------------
 
@@ -531,7 +531,7 @@ common routine AccessManager.place_here() -> SourceLocation
 ### (no flow parks while it holds it).
 @target(os: not "none")
 secret routine lock_table() -> None
-    local found: @U32 <- 0
+    found: &U32 <- 0
 
     if TABLE_WORD.atomic_compare_exchange_acquire_raw(expected: 0, new: 1, previous: found)
         return
@@ -784,9 +784,9 @@ secret routine find_held(node: @AccessNode, start: U64, flow: @AccessFlow) -> @A
 @target(os: not "none")
 secret routine take_range(at: Addr, size: U64, mode: U8, place: @SourceLocation, deadline: Duration,
     hooked: Bool) -> Bool
-    local flow: @AccessFlow = current_flow()
-    local start: U64 = ptrtoint[Addr, U64](at)
-    local end: U64 = start +% size.max(1)
+    flow: @AccessFlow = current_flow()
+    start: U64 = ptrtoint[Addr, U64](at)
+    end: U64 = start +% size.max(1)
 
     if ACCESS_RANGE_CHECK.peek_atomic().is_hollow()
         ACCESS_RANGE_CHECK.poke_atomic(check_range.to[Callable]().addr())
@@ -840,9 +840,9 @@ secret routine take_range(at: Addr, size: U64, mode: U8, place: @SourceLocation,
 @target(os: not "none")
 secret routine wait_for_node(flow: @AccessFlow, blocker: @AccessNode, at: Addr, end: U64, mode: U8,
     place: @SourceLocation, deadline: Duration, hooked: Bool) -> None
-    local word: @U32 = blocker.word
-    local seen: U32 = word.peek()
-    local wait: AccessWait = AccessWait(access: at, holder: .hollow(), word, expected: seen, hooked)
+    word: @U32 = blocker.word
+    seen: U32 = word.peek()
+    wait: AccessWait = AccessWait(access: at, holder: .hollow(), word, expected: seen, hooked)
 
     blocker.waiters.poke(blocker.waiters.peek() + 1)
     if mode == ACCESS_WRITE
@@ -864,8 +864,8 @@ secret routine wait_for_node(flow: @AccessFlow, blocker: @AccessNode, at: Addr, 
 ### :throws: Crashes with `AccessNotHeldError` when this flow holds no access that starts there.
 @target(os: not "none")
 secret routine give_back_range(at: Addr) -> None
-    local flow: @AccessFlow = current_flow()
-    local start: U64 = ptrtoint[Addr, U64](at)
+    flow: @AccessFlow = current_flow()
+    start: U64 = ptrtoint[Addr, U64](at)
 
     lock_table()
     node: @AccessNode = find_held(node: TABLE_ROOT.peek(), start, flow)
@@ -895,10 +895,10 @@ secret routine give_back_range(at: Addr) -> None
 ### :throws: Crashes with `DeadlockError` when this flow holds an access inside it: it would wait for itself.
 @target(os: not "none")
 secret routine check_range(at: Addr, size: U64) -> None
-    local flow: @AccessFlow = current_flow()
-    local start: U64 = ptrtoint[Addr, U64](at)
-    local end: U64 = start +% size.max(1)
-    local place: @SourceLocation <- .hollow()
+    flow: @AccessFlow = current_flow()
+    start: U64 = ptrtoint[Addr, U64](at)
+    end: U64 = start +% size.max(1)
+    place: &SourceLocation <- .hollow()
 
     if HELD_TOTAL.peek_atomic() == 0
         return
@@ -924,8 +924,8 @@ secret routine check_range(at: Addr, size: U64) -> None
 ### :param taken: Where the flow took that access.
 @noreturn
 secret routine crash_give_back_held(taken: SourceLocation) -> None
-    local buffer: @Array[Byte, 512] <- .uninit()
-    local out: @SliceWriter <- SliceWriter.construct(data: buffer.to[@Byte](), capacity: 512)
+    buffer: &Array[Byte, 512] <- .uninit()
+    out: &SliceWriter <- SliceWriter.construct(data: buffer.to[@Byte](), capacity: 512)
 
     out.write("This gives back or moves memory while this thread or fiber holds an access inside it")
     if write_place_after(out, before: " (taken at ", place: taken)
@@ -1028,7 +1028,7 @@ common routine AccessManager.enlist(access: Addr, kind: U8, mode: U8) -> None
 ### :returns: How many there are.
 ### :throws: Crashes with `AliasedTokensError` when two names of the block are the same value.
 secret routine sort_enlisted(flow: @AccessFlow, place: @SourceLocation) -> U64
-    local count: U64 = flow.pending_count.peek()
+    count: U64 = flow.pending_count.peek()
 
     each i in 1 til count
         each back in 0 til i
@@ -1057,8 +1057,8 @@ secret routine sort_enlisted(flow: @AccessFlow, place: @SourceLocation) -> U64
 ### the flow holds one already, and with `DeadlockError` (with the deadlock check on) on a cycle.
 @target(os: not "none")
 common routine AccessManager.open_enlisted(place: @SourceLocation) -> None
-    local flow: @AccessFlow = current_flow()
-    local count: U64 = sort_enlisted(flow, place)
+    flow: @AccessFlow = current_flow()
+    count: U64 = sort_enlisted(flow, place)
 
     flow.pending_count.poke(0)
     each i in 0 til count
@@ -1075,8 +1075,8 @@ common routine AccessManager.open_enlisted(place: @SourceLocation) -> None
 ### when the flow holds one already.
 @target(os: not "none")
 common routine AccessManager.try_open_enlisted(place: @SourceLocation) -> Bool
-    local flow: @AccessFlow = current_flow()
-    local count: U64 = sort_enlisted(flow, place)
+    flow: @AccessFlow = current_flow()
+    count: U64 = sort_enlisted(flow, place)
 
     flow.pending_count.poke(0)
     each i in 0 til count
@@ -1098,7 +1098,7 @@ common routine AccessManager.try_open_enlisted(place: @SourceLocation) -> Bool
 ### :param access: The access.
 ### :returns: The mode, or 0.
 secret routine held_mode(flow: @AccessFlow, access: Addr) -> U8
-    local kept: U64 = flow.count.peek().min(HELD_SLOTS)
+    kept: U64 = flow.count.peek().min(HELD_SLOTS)
 
     each i in 0 til kept
         entry: @HeldAccess = flow.held.getslot(i)
@@ -1112,7 +1112,7 @@ secret routine held_mode(flow: @AccessFlow, access: Addr) -> U8
 ### :param flow: The flow.
 ### :param taken: The access, how it is held, and where it was taken.
 secret routine note_taken(flow: @AccessFlow, taken: HeldAccess) -> None
-    local count: U64 = flow.count.peek()
+    count: U64 = flow.count.peek()
 
     if ORDER_ON.peek()
         check_order(flow, taken)
@@ -1125,19 +1125,19 @@ secret routine note_taken(flow: @AccessFlow, taken: HeldAccess) -> None
 ### :param flow: The flow.
 ### :param access: The access.
 secret routine note_released(flow: @AccessFlow, access: Addr) -> None
-    local count: U64 = flow.count.peek()
-    local kept: U64 = count.min(HELD_SLOTS)
-    local at: @U64 <- HELD_SLOTS
+    count: U64 = flow.count.peek()
+    kept: U64 = count.min(HELD_SLOTS)
+    at: &U64 <- HELD_SLOTS
 
     if count == 0
         return
     each back in 0 til kept
         i: U64 = kept - 1 - back
         if flow.held.getslot(i).access.peek() === access
-            at.poke(i)
+            at.store(i)
             break
         continue
-    found: U64 = at.peek()
+    found: U64 = at.load()
     if found < HELD_SLOTS
         each j in found til kept - 1
             flow.held.getslot(j).poke(flow.held.getslot(j + 1).peek())
@@ -1207,9 +1207,9 @@ secret routine crash_reenter(place: @SourceLocation) -> None
 ### :param deadline: When to stop, in `Clock.monotonic()` time.
 @target(os: not "none")
 secret routine park(wait: AccessWait, deadline: Duration) -> None
-    local word: @U32 = wait.word
-    local expected: U32 = wait.expected
-    local hook: Addr = PARK.peek_atomic()
+    word: @U32 = wait.word
+    expected: U32 = wait.expected
+    hook: Addr = PARK.peek_atomic()
 
     if wait.hooked and hook.is_not_hollow()
         parker: Callable[(@U32, U32, Duration), None] = bitcast(hook)
@@ -1241,7 +1241,7 @@ secret routine end_wait(flow: @AccessFlow) -> None
 ### :param place: Where the flow asked for it.
 @target(os: not "none")
 common routine AccessManager.begin_wait(access: Addr, holder: @U64, place: @SourceLocation) -> None
-    local flow: @AccessFlow = current_flow()
+    flow: @AccessFlow = current_flow()
 
     lock_table()
     flow.waiting_place.poke(place.peek())
@@ -1268,7 +1268,7 @@ common routine AccessManager.end_wait() -> None
 ### :param path: The flows so far.
 ### :returns: True when it found a cycle, which `path` then holds.
 secret routine search_flow(flow: @AccessFlow, target: @AccessFlow, path: @DeadlockPath) -> Bool
-    local depth: U64 = path.count.peek()
+    depth: U64 = path.count.peek()
 
     if depth >= DEADLOCK_DEPTH
         return false
@@ -1346,10 +1346,10 @@ secret routine finds_cycle(flow: @AccessFlow, path: @DeadlockPath) -> Bool
 ### :param wait: What it waits for.
 @target(os: not "none")
 secret routine check_deadlock(flow: @AccessFlow, wait: AccessWait) -> None
-    local recheck_at: Duration = Clock.monotonic() +^ DEADLOCK_RECHECK
-    local word: @U32 = wait.word
-    local expected: U32 = wait.expected
-    local path: @DeadlockPath <- .hollow()
+    recheck_at: Duration = Clock.monotonic() +^ DEADLOCK_RECHECK
+    word: @U32 = wait.word
+    expected: U32 = wait.expected
+    path: &DeadlockPath <- .hollow()
 
     if not finds_cycle(flow, path)
         return
@@ -1408,10 +1408,10 @@ secret routine write_place(out: @SliceWriter, place: SourceLocation) -> Bool
 ### :param path: The cycle.
 @noreturn
 secret routine report_deadlock(flow: @AccessFlow, path: @DeadlockPath) -> None
-    local buffer: @Array[Byte, 2048] <- .uninit()
-    local out: @SliceWriter <- SliceWriter.construct(data: buffer.to[@Byte](), capacity: 2048)
-    local words: U8 = WORDS.peek()
-    local length: U64 = path.count.peek()
+    buffer: &Array[Byte, 2048] <- .uninit()
+    out: &SliceWriter <- SliceWriter.construct(data: buffer.to[@Byte](), capacity: 2048)
+    words: U8 = WORDS.peek()
+    length: U64 = path.count.peek()
 
     if REPORTING.atomic_swap(1) != 0
         wait_for_report()
@@ -1469,7 +1469,7 @@ secret routine unlock_orders() -> None
 ### :param second: The access taken while it was.
 ### :returns: The index, or ORDER_SLOTS.
 secret routine find_order(first: Addr, second: Addr) -> U64
-    local count: U64 = ORDER_COUNT.peek()
+    count: U64 = ORDER_COUNT.peek()
 
     each i in 0 til count
         entry: @AccessOrder = ORDERS.getslot(i)
@@ -1485,9 +1485,9 @@ secret routine find_order(first: Addr, second: Addr) -> U64
 ### :param taken: The access it takes and where.
 @target(os: not "none")
 secret routine check_order(flow: @AccessFlow, taken: HeldAccess) -> None
-    local kept: U64 = flow.count.peek().min(HELD_SLOTS)
-    local access: Addr = taken.access
-    local place: @SourceLocation <- taken.place
+    kept: U64 = flow.count.peek().min(HELD_SLOTS)
+    access: Addr = taken.access
+    place: &SourceLocation <- taken.place
 
     lock_orders()
     each i in 0 til kept
@@ -1501,7 +1501,7 @@ secret routine check_order(flow: @AccessFlow, taken: HeldAccess) -> None
         count: U64 = ORDER_COUNT.peek()
         if count < ORDER_SLOTS and find_order(first: earlier, second: access) == ORDER_SLOTS
             ORDERS.getslot(count).poke(AccessOrder(first: earlier, second: access,
-                place: place.peek()))
+                place: place.load()))
             ORDER_COUNT.poke(count + 1)
         continue
     then
@@ -1513,9 +1513,9 @@ secret routine check_order(flow: @AccessFlow, taken: HeldAccess) -> None
 ### :param before: Where the first order took its second access.
 @noreturn
 secret routine report_order(place: @SourceLocation, before: SourceLocation) -> None
-    local buffer: @Array[Byte, 1024] <- .uninit()
-    local out: @SliceWriter <- SliceWriter.construct(data: buffer.to[@Byte](), capacity: 1024)
-    local words: U8 = WORDS.peek()
+    buffer: &Array[Byte, 1024] <- .uninit()
+    out: &SliceWriter <- SliceWriter.construct(data: buffer.to[@Byte](), capacity: 1024)
+    words: U8 = WORDS.peek()
 
     if REPORTING.atomic_swap(1) != 0
         wait_for_report()

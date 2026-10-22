@@ -10,17 +10,26 @@ module Standard/System/Memory
 @external("c")
 @symbol("__stack_bottom")
 @target(os: "none")
-global STACK_BOTTOM: @Byte
+global STACK_BOTTOM: &Byte
 
 ### The address the stack starts at (the link script's `__stack_top`), for StackManager.current().
 @external("c")
 @symbol("__stack_top")
 @target(os: "none")
-global STACK_TOP: @Byte
+global STACK_TOP: &Byte
 
 ### The StackManager of the one stack a program without an operating system runs on, filled on first use.
 @target(os: "none")
-secret global BOOT_STACK: @StackManager
+secret global BOOT_STACK: &StackManager
+
+### Whether a stack that ran out has been reported: the report's own routines run inside the margin.
+@target(os: "none")
+secret global STACK_OVERFLOWED: &Bool
+
+### How far above the stack's bottom the stack pointer must stay when a routine starts: the room a routine's spills
+### and the crash report of a stack that ran out still use.
+@target(os: "none")
+secret preset STACK_MARGIN: U64 = 4096
 
 ### The StackManager of the stack the program runs on: `__stack_bottom` up to `__stack_top`.
 ### :returns: The manager, for the program's whole run.
@@ -29,3 +38,30 @@ common routine StackManager.current() -> @Me
     if BOOT_STACK.top.peek().is_hollow()
         BOOT_STACK.poke(Me.construct(STACK_BOTTOM.to[Addr](), STACK_TOP.to[Addr]()))
     return BOOT_STACK
+
+### Borrows the running routine's frame from the stack, once the routine's prologue has made it: the builder calls it
+### at the start of every routine. Without an operating system nothing closes the memory below the stack (the globals
+### are there), so it reads the stack pointer and stops the program with `StackOverflowError` when it is less than the
+### margin above the stack's bottom. A frame whose slots are larger than the margin is checked from where the stack
+### pointer was before the frame. A stack pointer outside the program's stack (a fiber's stack in a global) is a stack
+### the program switched to itself, which this doesn't check.
+### :param size: The bytes of the frame's slots the builder knows of.
+@inline
+@target(os: "none")
+common routine StackManager.borrow_frame(size: U64) -> None
+    sp: U64 = ptrtoint[Addr, U64](stack_pointer())
+    low: U64 = ptrtoint[Addr, U64](STACK_BOTTOM.to[Addr]())
+    if sp +% size >= low and sp < low +% STACK_MARGIN
+        Me.report_overflow()
+    return
+
+### Stops the program with `StackOverflowError`, once: the report runs on what is left of the stack, inside the
+### margin, and its routines' own frame checks find the stack reported already.
+@noinline
+@target(os: "none")
+common routine StackManager.report_overflow() -> None
+    if STACK_OVERFLOWED.peek()
+        return
+    STACK_OVERFLOWED.poke(true)
+    crash(name: "StackOverflowError",
+        message: "The stack ran out: the routines called each other deeper than it holds.")

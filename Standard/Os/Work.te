@@ -20,13 +20,13 @@ module Standard/Os
 ### The slot of the work running on this thread (a thread worker's, or the fiber's that runs), or null.
 @threadlocal
 @target(os: not "none")
-global RUNNING_WORK: @@WorkSlot
+global RUNNING_WORK: &@WorkSlot
 
 ### Released before a thread worker takes the next ticket's work: what that work left in this thread's `@threadlocal`
 ### globals and still owns (the thread's FiberManager), or null. Whatever makes such a value sets it.
 @threadlocal
 @target(os: not "none")
-global THREAD_CLEANUP: @Callable[(), None]
+global THREAD_CLEANUP: &Callable[(), None]
 
 ### A ticket with no work yet: the next may go on.
 preset TICKET_EMPTY: U32 = 0
@@ -162,13 +162,13 @@ routine @WorkSlot.wait() -> None
 ### :returns: True when the work has finished.
 @target(os: not "none")
 routine @WorkSlot.wait_until(deadline: Duration, cancellable: Bool) -> Bool
-    local waiter: Waiter = current_waiter()
+    waiter: Waiter = current_waiter()
 
     # The waiter goes in under the exclusive access, which `complete` takes after it marks the work done: either this
     # sees it done, or `complete` sees the waiter. One left behind when the wait ends otherwise only wakes it once more later,
     # which a park allows.
     loop
-        held: Authorized[U8] = me.guard.get_exclusive_access()
+        held: Authorized[U8] <- me.guard.get_exclusive_access()
         if me.is_finished()
             drop held
             break
@@ -192,7 +192,7 @@ routine blocked_until_cancelled(waiter: Waiter) -> Bool
     slot: @WorkSlot = RUNNING_WORK.peek()
     if slot.is_hollow()
         return false
-    held: Authorized[U8] = slot.guard.get_exclusive_access()
+    held: Authorized[U8] <- slot.guard.get_exclusive_access()
     slot.blocked.poke(waiter)
     drop held
     return slot.is_cancelled()
@@ -202,7 +202,7 @@ routine blocked_until_cancelled(waiter: Waiter) -> Bool
 ### :returns: True when the work has finished already (`waiter` isn't kept).
 @target(os: not "none")
 routine @WorkSlot.register(waiter: Waiter) -> Bool
-    held: Authorized[U8] = me.guard.get_exclusive_access()
+    held: Authorized[U8] <- me.guard.get_exclusive_access()
     if me.is_finished()
         drop held
         return true
@@ -214,7 +214,7 @@ routine @WorkSlot.register(waiter: Waiter) -> Bool
 ### :param waiter: The waiter.
 @target(os: not "none")
 routine @WorkSlot.unregister(waiter: Waiter) -> None
-    held: Authorized[U8] = me.guard.get_exclusive_access()
+    held: Authorized[U8] <- me.guard.get_exclusive_access()
     if me.waiter.peek() == waiter
         me.waiter.poke(.hollow())
     drop held
@@ -226,7 +226,7 @@ routine @WorkSlot.unregister(waiter: Waiter) -> None
 routine @WorkSlot.complete() -> None
     me.state.poke_atomic(TICKET_DONE)
     wake_all(me.state)
-    held: Authorized[U8] = me.guard.get_exclusive_access()
+    held: Authorized[U8] <- me.guard.get_exclusive_access()
     waiter: Waiter = me.waiter.peek()
     me.waiter.poke(.hollow())
     drop held
@@ -260,7 +260,7 @@ routine @WorkSlot.is_cancelled() -> Bool
 @target(os: not "none")
 routine @WorkSlot.request_cancel() -> None
     me.cancel.poke_atomic(1)
-    held: Authorized[U8] = me.guard.get_exclusive_access()
+    held: Authorized[U8] <- me.guard.get_exclusive_access()
     blocked: Waiter = me.blocked.peek()
     drop held
     blocked.wake()

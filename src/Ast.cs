@@ -17,8 +17,13 @@ public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
     /// alike: the parser keeps the index reading here, and the checker takes it when NAME isn't a type.
     public Expr? AsIndex { get; init; }
 
+    /// `&T` or `&[T]`, the short form of the standard library's `Box[T]` / `Memory[T]`, as written.
+    public bool Amp { get; init; }
+
     public override string ToString() =>
-        Path is null && Name == UnionName ? string.Join(" | ", Args)
+        Amp && Name == "Box" && Args is [TypeArgType boxed] ? $"&{boxed}"
+        : Amp && Name == "Memory" && Args is [TypeArgType elems] ? $"&[{elems}]"
+        : Path is null && Name == UnionName ? string.Join(" | ", Args)
         : Path is null && Name == "Ptr" && Args is [TypeArgType inner] ? $"@{inner}"
         : Path is null && Name == "Span" && Args is [TypeArgType elem] ? $"@[{elem}]"
         : (Path is null ? "" : Path + "/") + (Args.Count == 0 ? Name : $"{Name}[{string.Join(", ", Args)}]");
@@ -245,7 +250,15 @@ public abstract record Stmt(Pos Pos)
 
 /// `x: T = expr` — a binding. The expression is evaluated; memory is not read. `local x: @T <- v` is a binding of a
 /// ClaimExpr: a slot in the frame.
-public sealed record BindStmt(string Name, TypeRef Type, Expr Value, Pos Pos) : Stmt(Pos);
+public sealed record BindStmt(string Name, TypeRef Type, Expr Value, Pos Pos) : Stmt(Pos)
+{
+    /// `x: &T <- value [from manager]`: the line borrows, a place from the manager (STACK when none is named) with the
+    /// value put in it, or the thing to give back that the call on the right borrows. The name owes a drop.
+    public bool Borrows { get; init; }
+
+    /// The binding a `<-` line of a borrowed thing (an access, a ticket) stands for, after the builder read it.
+    public bool Lowered { get; init; }
+}
 
 /// `call(...)` evaluated for its side effect. A call to a `@noreturn` routine (`crash(...)`) ends the body it is in.
 public sealed record ExprStmt(Expr Value, Pos Pos) : Stmt(Pos)

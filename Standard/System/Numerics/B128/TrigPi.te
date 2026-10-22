@@ -24,7 +24,7 @@ module Standard/System/Numerics/B128
 preset B128_PI_BAND: S64 = 145
 
 ### floor(π × 2^384), least significant limb first (386 bits)
-preset PI_FIXED_384: @Array[U64, 7] <- [0xBE5466CF34E90C6C, 4983270260364809079, 589684135938649225,
+preset PI_FIXED_384: &Array[U64, 7] <- [0xBE5466CF34E90C6C, 4983270260364809079, 589684135938649225,
     0xA4093822299F31D0, 1376283091369227076, 2611923443488327891, 3]
 
 preset PI_FIXED_BITS: S64 = 384
@@ -114,7 +114,7 @@ routine wide_round_within(u: B128Extended, k: S64) -> WideRounding
 ### :param pick: Which function of θ, and its sign.
 ### :returns: sin, cos, or tan of πx at 192 bits.
 secret routine wide_pi_trig(d: B128, pick: PiPick) -> B128Extended
-    local theta: B128Extended = d.to[B128Extended]() * wide_half_pi()
+    theta: B128Extended = d.to[B128Extended]() * wide_half_pi()
 
     tan: Bool = pick.divide
     over_sin: Bool = pick.over_sin
@@ -146,10 +146,10 @@ secret routine wide_pi_trig(d: B128, pick: PiPick) -> B128Extended
 @track_caller
 routine @BigNat[LIMBS].set_product(a: @Me, b: @Me) -> None
 needs LIMBS: U64
-    local a_count: U64 = a.count.peek()
-    local b_count: U64 = b.count.peek()
-    local count: U64 = a_count + b_count
-    local carry: @U128 <- .hollow()
+    a_count: U64 = a.count.peek()
+    b_count: U64 = b.count.peek()
+    count: U64 = a_count + b_count
+    carry: &U128 <- .hollow()
 
     if count <= LIMBS
         each i in 0 til count
@@ -165,11 +165,11 @@ needs LIMBS: U64
                 b_limb: U64 = b.limbs[j]
                 limb: U64 = me.limbs[at]
                 product: U128 = a_limb.mul_wide(b_limb)
-                sum: U128 = product + limb.to[U128]() + carry.peek()
+                sum: U128 = product + limb.to[U128]() + carry.load()
                 me.limbs[at] = sum.to_wrap[U64]()
                 (sum >> 64).poke_into(carry)
             then
-                me.limbs[i + b_count] = carry.peek().to[U64]()
+                me.limbs[i + b_count] = carry.load().to[U64]()
                 continue
         me.count.poke(count)
         me.trim()
@@ -230,15 +230,15 @@ secret routine big_to_b128(n: @BigNat[24], e: S64, negative: Bool) -> B128
 ### :returns: The rounded B128.
 secret routine big_quotient_to_b128(num: @BigNat[24], den: @BigNat[24], scale: S64,
     negative: Bool) -> B128
-    local den_bits: S64 = den.bit_length().to[S64]()
-    local num_bits: S64 = num.bit_length().to[S64]()
-    local shift: S64 = 126 + den_bits - num_bits
+    den_bits: S64 = den.bit_length().to[S64]()
+    num_bits: S64 = num.bit_length().to[S64]()
+    shift: S64 = 126 + den_bits - num_bits
 
     if shift >= 0
         num.shift_left(shift.to[U64]())
     else
         den.shift_left(shift.abs_diff(0).to[U64]())
-    local scratch: @BigNat[24] <- .hollow()
+    scratch: &BigNat[24] <- .hollow()
     q: U128 = num.div_small(divisor: den, scratch, bits: 127)
     sticky: Bool = not num.is_zero()
     sig: U128 = q | sticky.to[U128]()
@@ -255,10 +255,10 @@ secret routine big_quotient_to_b128(num: @BigNat[24], den: @BigNat[24], scale: S
 ### :param u: θ² in fixed point.
 ### :param j0: 2 for the sine series, 1 for the cosine.
 secret routine big_trig_series(out: @BigNat[24], u: @BigNat[24], j0: U64) -> None
-    local term: @BigNat[24] <- .hollow()
-    local product: @BigNat[24] <- .hollow()
-    local minus: @BigNat[24] <- .hollow()
-    local j: @U64 <- j0
+    term: &BigNat[24] <- .hollow()
+    product: &BigNat[24] <- .hollow()
+    minus: &BigNat[24] <- .hollow()
+    j: &U64 <- j0
 
     one: U64 = 1
     term.set(one)
@@ -271,16 +271,16 @@ secret routine big_trig_series(out: @BigNat[24], u: @BigNat[24], j0: U64) -> Non
         product.set_product(a: term, b: u)
         product.shr_round_even(PI_FIXED_BITS.to[U64]())
         term.copy_from(product)
-        divisor: U64 = j.peek() * (j.peek() + 1)
+        divisor: U64 = j.load() * (j.load() + 1)
         dropped: U64 = term.div_limb(divisor)
         if term.is_zero()
             break
         if subtract
             minus.add(term)
-            (j.peek() + 2).poke_into(j)
+            (j.load() + 2).poke_into(j)
             continue with subtract: false
         out.add(term)
-        (j.peek() + 2).poke_into(j)
+        (j.load() + 2).poke_into(j)
         continue with subtract: true
     out.sub(minus)
     return
@@ -292,21 +292,21 @@ secret routine big_trig_series(out: @BigNat[24], u: @BigNat[24], j0: U64) -> Non
 ### :param pick: Which function of θ, and its sign.
 ### :returns: The result, rounded once.
 secret routine b128_pi_trig_exact(d: B128, pick: PiPick) -> B128
-    local p: B128Parts = b128_unpack(d.bits())
-    local pi: @BigNat[24] <- .hollow()
-    local c: @BigNat[24] <- .hollow()
-    local sin: @BigNat[24] <- .hollow()
+    p: B128Parts = b128_unpack(d.bits())
+    pi: &BigNat[24] <- .hollow()
+    c: &BigNat[24] <- .hollow()
+    sin: &BigNat[24] <- .hollow()
 
     pi.set(U64.MIN)
 
     each i: U64 in 0 til 7
         limb: U64 = PI_FIXED_384.getitem(i)
         pi.push_limb(limb)
-    local m: @BigNat[24] <- .hollow()
-    local t: @BigNat[24] <- .hollow()
-    local theta: @BigNat[24] <- .hollow()
-    local u: @BigNat[24] <- .hollow()
-    local s: @BigNat[24] <- .hollow()
+    m: &BigNat[24] <- .hollow()
+    t: &BigNat[24] <- .hollow()
+    theta: &BigNat[24] <- .hollow()
+    u: &BigNat[24] <- .hollow()
+    s: &BigNat[24] <- .hollow()
     m.set(p.sig)
     t.set_product(a: pi, b: m)
     # θ in fixed point (for u only, where its relative accuracy doesn't matter)
@@ -345,7 +345,7 @@ secret routine b128_pi_trig_exact(d: B128, pick: PiPick) -> B128
 ### :param exact: True skips the fast tier (the tests use it to check the exact tier on its own).
 ### :returns: The correctly rounded result.
 secret routine b128_pi_trig_general(red: PiReduced, kind: TrigKind, exact: Bool) -> B128
-    local pick: PiPick = b128_pi_pick(quadrant: red.quadrant, kind)
+    pick: PiPick = b128_pi_pick(quadrant: red.quadrant, kind)
 
     if not exact
         w: B128Extended = wide_pi_trig(d: red.d, pick)

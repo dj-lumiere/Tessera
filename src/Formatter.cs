@@ -9,11 +9,9 @@ namespace Tessera;
 /// - a doc comment sits directly on its declaration, above any annotation lines;
 /// - a top-level section comment (a group of `//` lines with a `// --`, `// ==`, or `// ──` divider) has a blank line
 ///   before and after it;
-/// - a binding, a local line, a record field, a choice member and a variant case write their `:` right after
+/// - a binding, a record field, a choice member and a variant case write their `:` right after
 ///   the name with one space after it (`count: U64 = 0`), `=`, `->`, `=>` and `<-` have one space on each side, and
 ///   nothing is aligned with the line above.
-/// - a routine's head, its `local` lines, sits 4 spaces in right under the header (and its `needs` lines), with no
-///   blank line inside it, and exactly one blank line between it and the first block.
 /// - an inline comment sits exactly two spaces after its code; comments are never aligned with each other.
 /// - a line longer than 100 characters breaks after commas inside its first bracketed list, continuing 4 spaces
 ///   further in (every continuation line sits 4 further in, whatever made the line long); a line with nowhere to break
@@ -42,7 +40,6 @@ public static class Formatter
         lines = OrderDeclarations(lines);
         lines = lines.SelectMany((l, i) => InVariantBody(lines, i) ? [l] : SplitAnnotationList(l)).ToList();
         lines = lines.Select(DropGroupingParens).ToList();
-        lines = HeadLayout(lines);
         lines = Align(lines);
         lines = Space(lines);
         lines = DocBeforeAnnotations(lines);
@@ -76,7 +73,7 @@ public static class Formatter
 
     // ── Alignment ───────────────────────────────────────────────────────────
 
-    private enum Kind { Binding, Claim, Shared, Field, Arm, Conform }
+    private enum Kind { Binding, Field, Arm, Conform }
 
     /// One alignable line split into its columns: `name: type = rest`, `claim name: type <- rest`, `name: rest`,
     /// `left -> rest`, or `conform C[X] when rest`.
@@ -110,12 +107,8 @@ public static class Formatter
                 row = null;
             else if (whenIndent >= 0 && indent == whenIndent + 4 && SplitArm(trimmed) is { } arm)
                 row = new Row(i, Kind.Arm, indent, arm.Left, null, arm.Right);
-            else if (SplitShared(trimmed) is { } sh)
-                row = new Row(i, Kind.Shared, indent, sh.Name, sh.Type, sh.Tail);
             else if (SplitBinding(trimmed) is { } b)
                 row = new Row(i, Kind.Binding, indent, b.Name, b.Type, b.Tail);
-            else if (SplitClaim(trimmed) is { } c)
-                row = new Row(i, Kind.Claim, indent, c.Name, c.Type, c.Contents);
             else if (context is not null && indent == 4 && SplitField(trimmed) is { } f)
                 row = new Row(i, Kind.Field, indent, f.Name, null, f.Tail);
             else if (indent == 0 && SplitConformWhen(trimmed) is { } cw)
@@ -151,10 +144,6 @@ public static class Formatter
                 result[r.Index] = r.Kind switch
                 {
                     Kind.Binding => $"{pad}{r.Name}: {r.Type} = {r.Rest}",
-                    Kind.Claim => r.Rest.Length == 0
-                        ? $"{pad}claim {r.Name}: {r.Type}"
-                        : $"{pad}claim {r.Name}: {r.Type} <- {r.Rest}",
-                    Kind.Shared => $"{pad}local {r.Name}: {r.Type} {r.Rest}",
                     Kind.Field => $"{pad}{r.Name}: {r.Rest}",
                     Kind.Conform => $"{pad}{r.Name} when {r.Rest}",
                     _ => $"{pad}{r.Name} => {r.Rest}",
@@ -196,53 +185,8 @@ public static class Formatter
         return (name, type, rest);
     }
 
-    /// `local name: Type = value` or `local name: @Type <- contents`: the name, the type, and the rest with its `=`
-    /// or `<-` (value and slot lines align as one group).
-    private static (string Name, string Type, string Tail)? SplitShared(string s)
-    {
-        if (!s.StartsWith("local ")) return null;
-        string body = s["local ".Length..].TrimStart();
-        if (body.Length == 0 || !IsNameStart(body[0])) return null;
-        int i = 1;
-        while (i < body.Length && (char.IsLetterOrDigit(body[i]) || body[i] == '_')) i++;
-        int colon = SkipSpaces(body, i);
-        if (colon >= body.Length || body[colon] != ':' || (colon + 1 < body.Length && body[colon + 1] is ':' or '='))
-            return null;
-        int arrow = TopLevelIndex(body, colon + 1, "<-");
-        int eq = TopLevelIndex(body, colon + 1, "=");
-        bool slot = arrow >= 0 && (eq < 0 || arrow < eq);
-        int at = slot ? arrow : eq;
-        if (at < 0) return null;
-        string type = body[(colon + 1)..at].Trim();
-        string rest = body[(at + (slot ? 2 : 1))..].Trim();
-        if (type.Length == 0 || rest.Length == 0) return null;
-        return (body[..i], type, (slot ? "<- " : "= ") + rest);
-    }
-
     /// A value's name starts with a letter or `_`; `%` may start one too.
     private static bool IsNameStart(char c) => char.IsLetter(c) || c is '_' or '%';
-
-    /// `claim name: Type <- contents`, or `claim name: Type` (an error the builder reports, kept as written); a line
-    /// with `=` after the type (also an error) isn't one.
-    private static (string Name, string Type, string Contents)? SplitClaim(string s)
-    {
-        if (!s.StartsWith("claim ")) return null;
-        string body = s[6..].TrimStart();
-        if (body.Length == 0 || !IsNameStart(body[0])) return null;
-        int i = 1;
-        while (i < body.Length && (char.IsLetterOrDigit(body[i]) || body[i] == '_')) i++;
-        int colon = SkipSpaces(body, i);
-        if (colon >= body.Length || body[colon] != ':' || (colon + 1 < body.Length && body[colon + 1] is ':' or '='))
-            return null;
-        string type = body[(colon + 1)..].Trim();
-        if (type.Length == 0 || TopLevelIndex(type, 0, "=") >= 0) return null;
-        int arrow = TopLevelIndex(type, 0, "<-");
-        if (arrow < 0) return (body[..i], type, "");
-        string contents = type[(arrow + 2)..].Trim();
-        type = type[..arrow].Trim();
-        if (type.Length == 0 || contents.Length == 0) return null;
-        return (body[..i], type, contents);
-    }
 
     /// `name: rest` inside a record, choice, or variant (a field and its type, a member and its value, or a case and its
     /// payload).
@@ -408,52 +352,6 @@ public static class Formatter
             resultContinued.Add(continued[i]);
         }
         return result;
-    }
-
-    /// A routine's head: its local lines sit 4 spaces in, with no blank line between the header and them or among
-    /// them, and one blank line between them and what follows: the first block (Space puts that one), or the lines of
-    /// the entry block written without its `block entry()`.
-    private static List<string> HeadLayout(List<string> lines)
-    {
-        var continued = Continuations(lines);
-        var drop = new HashSet<int>();
-        var blankBefore = new HashSet<int>();
-        var result = new List<string>(lines);
-        for (int i = 0; i < lines.Count; i++)
-        {
-            if (!IsRoutineHeader(lines[i])) continue;
-            int lastShared = -1;
-            int j = i + 1;
-            for (; j < lines.Count; j++)
-            {
-                string t = lines[j].TrimStart();
-                if (continued[j] || t.Length == 0 || t.StartsWith("needs ") || t.StartsWith("obeys ") || t.StartsWith("#") || IsAnnotation(t) && !InVariantBody(lines, j))
-                    continue;
-                // A `local` line at the left edge belongs to the file's top-level lines, not to this routine.
-                if (!t.StartsWith("local ") || lines[j][0] != ' ') break;
-                lastShared = j;
-                result[j] = "    " + t;
-            }
-            for (int k = i + 1; k < lastShared; k++)
-                if (IsBlank(lines[k])) drop.Add(k);
-            if (lastShared >= 0)
-            {
-                int next = lastShared + 1;
-                while (next < lines.Count && continued[next]) next++;
-                if (next < lines.Count && lines[next].StartsWith("    ", StringComparison.Ordinal) && !IsBlank(lines[next])
-                    && !lines[next].StartsWith("    block ", StringComparison.Ordinal))
-                    blankBefore.Add(next);
-            }
-            i = j - 1;
-        }
-        var laidOut = new List<string>();
-        for (int k = 0; k < result.Count; k++)
-        {
-            if (drop.Contains(k)) continue;
-            if (blankBefore.Contains(k)) laidOut.Add("");
-            laidOut.Add(result[k]);
-        }
-        return laidOut;
     }
 
     /// For each line, whether it starts inside a bracket opened on an earlier line (a wrapped continuation).
@@ -1109,20 +1007,17 @@ public static class Formatter
             {
                 if (result[j].StartsWith("needs ") || (typeParameter && result[j].StartsWith(' ') && j < FirstBodyLine(result, i, end)))
                     continue;
-                // `local p: @T` spells its pointer type out, so a routine on Ptr[T] keeps it there.
-                if (atOwner is not null && result[j].TrimStart().StartsWith("local ", StringComparison.Ordinal))
-                    continue;
                 result[j] = Replace(result[j]);
             }
         }
         return result;
     }
 
-    /// The routine's first `block` or `local` line: everything before it is the header (and its `require` lines).
+    /// The routine's first `block` line: everything before it is the header (and its `needs` lines).
     private static int FirstBodyLine(List<string> lines, int header, int end)
     {
         for (int j = header + 1; j < end; j++)
-            if (lines[j].StartsWith("    block ") || lines[j].TrimStart().StartsWith("local ")) return j;
+            if (lines[j].StartsWith("    block ")) return j;
         return end;
     }
 

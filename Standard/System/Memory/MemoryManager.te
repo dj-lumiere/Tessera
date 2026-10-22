@@ -157,9 +157,9 @@ secret common routine MemoryManager.construct(borrow_fn: Callable[(Addr, U64, U6
 routine @T.to[MemoryManager]() -> MemoryManager
 needs T: typename, MemoryManageable[T]
     return MemoryManager(borrow_fn: forward_borrow[T].to[Callable](),
-        reborrow_fn: forward_reborrow[T].to[Callable](), give_back_fn: forward_give_back[T].to[Callable](),
-        reserve_fn: .hollow(), commit_fn: .hollow(), release_fn: .hollow(), protect_fn: .hollow(),
-        state: me)
+        reborrow_fn: forward_reborrow[T].to[Callable](),
+        give_back_fn: forward_give_back[T].to[Callable](), reserve_fn: .hollow(),
+        commit_fn: .hollow(), release_fn: .hollow(), protect_fn: .hollow(), state: me)
 
 ### The table of a manager that handles pages: routines that call its `borrow`, `reborrow`, `give_back`, `reserve`, `commit`,
 ### `release`, and `protect`, with its address (`has_pages()` and `has_protect()` are true).
@@ -168,7 +168,8 @@ needs T: typename, MemoryManageable[T]
 routine @T.to[MemoryManager]() -> MemoryManager
 needs T: typename, PageManageable[T]
     return MemoryManager(borrow_fn: forward_borrow[T].to[Callable](),
-        reborrow_fn: forward_reborrow[T].to[Callable](), give_back_fn: forward_give_back[T].to[Callable](),
+        reborrow_fn: forward_reborrow[T].to[Callable](),
+        give_back_fn: forward_give_back[T].to[Callable](),
         reserve_fn: forward_reserve[T].to[Callable](), commit_fn: forward_commit[T].to[Callable](),
         release_fn: forward_release[T].to[Callable](),
         protect_fn: forward_protect[T].to[Callable](), state: me)
@@ -439,12 +440,12 @@ needs T: typename
 @threadlocal
 @target(os: not "none")
 @heap_check("on")
-secret global CALL_PLACE: @@SourceLocation
+secret global CALL_PLACE: &@SourceLocation
 
 ### The place of the reallocate or deallocate call in progress, on a target without an operating system.
 @target(os: "none")
 @heap_check("on")
-secret global CALL_PLACE: @@SourceLocation
+secret global CALL_PLACE: &@SourceLocation
 
 ### Notes `place` as the place of the memory manager call in progress (null when it's over).
 ### :param place: The call's place, or null.
@@ -576,7 +577,7 @@ routine @CWStr.destruct() -> None
 @expensive("allocates a copy")
 routine @[Byte].to[CStr](manager: @MemoryManager) -> CStr
     count: U64 = me.count
-    local buffer: @Memory[CChar] <- Memory[CChar].construct(count: count + 1, manager: manager)
+    buffer: &[CChar] <- Memory[CChar].construct(count: count + 1, manager: manager)
     buffer.data.peek().to[@Byte]().copy(src: me.data, count)
     buffer.data.peek().stride(count).poke(0)
     return CStr(storage: steal buffer)
@@ -589,21 +590,20 @@ routine @[Byte].to[CStr](manager: @MemoryManager) -> CStr
 @track_caller
 @expensive("allocates a copy")
 routine @[Byte].to[CWStr](manager: @MemoryManager) -> CWStr
-    local storage: @Memory[CWChar] <- Memory[CWChar].construct(count: me.count + 1,
-        manager: manager)
-    local units: @CWChar = storage.data.peek()
-    local iter: @BytesCharsIter <- me.chars()
-    local n: @U64 <- 0
+    storage: &[CWChar] <- Memory[CWChar].construct(count: me.count + 1, manager: manager)
+    units: @CWChar = storage.data.peek()
+    iter: &BytesCharsIter <- me.chars()
+    n: &U64 <- 0
 
     loop
         c: Maybe[Char] = try iter.emit()
         when c
             is Char as char =>
-                count: U64 = encode_cwchar(char, out: units.stride(n.peek()))
-                (n.peek() + count).poke_into(n)
+                count: U64 = encode_cwchar(char, out: units.stride(n.load()))
+                (n.load() + count).poke_into(n)
                 continue
             is None => break
-    units.stride(n.peek()).poke(0)
+    units.stride(n.load()).poke(0)
     return CWStr(storage: steal storage)
 
 ### Writes `char` at `out` as UTF-16, one unit or a surrogate pair, and returns
@@ -613,7 +613,7 @@ routine @[Byte].to[CWStr](manager: @MemoryManager) -> CWStr
 ### :returns: The number of units written.
 @target(os: "windows")
 secret routine encode_cwchar(char: Char, out: @CWChar) -> U64
-    local cp: U32 = char.to[U32]()
+    cp: U32 = char.to[U32]()
 
     if cp < 0x10000
         out.poke(cp.to[U16]())

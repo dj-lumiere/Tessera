@@ -54,7 +54,7 @@ record Timed
 ### The producer: hands over 1 to ROUNDS, waiting for room before each.
 routine produce(box: @Mailbox) -> None
     each n in 1 to ROUNDS
-        held: Authorized[Mailbox] = box.get_exclusive_access()
+        held: Authorized[Mailbox] <- box.get_exclusive_access()
 
         until not box.full.peek()
             box.not_full.wait(held)
@@ -70,11 +70,11 @@ routine produce(box: @Mailbox) -> None
 ### The main thread's side: takes ROUNDS values.
 ### :returns: Their sum, and whether they came in order.
 routine consume(box: @Mailbox) -> (U64, Bool)
-    local sum: @U64 <- 0
-    local in_order: @Bool <- true
+    sum: &U64 <- 0
+    in_order: &Bool <- true
 
     each expected in 1 to ROUNDS
-        held: Authorized[Mailbox] = box.get_exclusive_access()
+        held: Authorized[Mailbox] <- box.get_exclusive_access()
 
         until box.full.peek()
             box.not_empty.wait(held)
@@ -83,11 +83,11 @@ routine consume(box: @Mailbox) -> (U64, Bool)
             box.full.poke(false)
             box.not_full.cast_one()
             drop held
-            (sum.peek() + value).poke_into(sum)
-            (in_order.peek() and (value == expected)).poke_into(in_order)
+            (sum.load() + value).poke_into(sum)
+            (in_order.load() and (value == expected)).poke_into(in_order)
             continue
     then
-        return (sum.peek(), in_order.peek())
+        return (sum.load(), in_order.load())
 
 # -- the gate ------------------------------------------------------------------------
 
@@ -100,7 +100,7 @@ routine arrive(gate: @Gate) -> None
 
 ### A gate thread that waits for a token and takes it.
 routine take_token(gate: @Gate) -> None
-    held: Authorized[Gate] = gate.get_exclusive_access()
+    held: Authorized[Gate] <- gate.get_exclusive_access()
     arrive(gate)
 
     loop
@@ -118,7 +118,7 @@ routine take_token(gate: @Gate) -> None
 
 ### A gate thread that waits for the gate to open and goes through.
 routine pass_open(gate: @Gate) -> None
-    held: Authorized[Gate] = gate.get_exclusive_access()
+    held: Authorized[Gate] <- gate.get_exclusive_access()
     arrive(gate)
 
     until gate.open.peek()
@@ -146,9 +146,9 @@ routine await_passed(gate: @Gate, held: Authorized[Gate], count: U64) -> None
 ### Gives the waiting gate threads one token at a time, each with one wake_one, and waits for one to go through.
 ### :returns: Whether each token let exactly one through.
 routine hand_tokens(gate: @Gate) -> Bool
-    local exact: @Bool <- true
+    exact: &Bool <- true
 
-    held: Authorized[Gate] = gate.get_exclusive_access()
+    held: Authorized[Gate] <- gate.get_exclusive_access()
     await_waiting(gate, held, count: GATE_THREADS)
 
     each round in 1 to GATE_THREADS
@@ -157,13 +157,13 @@ routine hand_tokens(gate: @Gate) -> Bool
         await_passed(gate, held, count: round)
         through: U64 = gate.passed.peek()
         one: Bool = through == round and gate.tokens.peek() == 0
-        (exact.peek() and one).poke_into(exact)
+        (exact.load() and one).poke_into(exact)
     drop held
-    return exact.peek()
+    return exact.load()
 
 ### Opens the gate once every gate thread waits at it, with one wake_all.
 routine open_gate(gate: @Gate) -> None
-    held: Authorized[Gate] = gate.get_exclusive_access()
+    held: Authorized[Gate] <- gate.get_exclusive_access()
     await_waiting(gate, held, count: GATE_THREADS)
     gate.open.poke(true)
     gate.cond.cast_all()
@@ -187,7 +187,7 @@ routine count_in(counter: @U64) -> None
 
 ### Waits SHORT for something that never comes true, again after every wake, until the deadline passes.
 routine wait_never(timed: @Timed) -> None
-    held: Authorized[Timed] = timed.get_exclusive_access()
+    held: Authorized[Timed] <- timed.get_exclusive_access()
     arrive_timed(timed)
 
     deadline: Duration = Clock.monotonic() + SHORT
@@ -207,10 +207,11 @@ routine wait_never(timed: @Timed) -> None
 ### Waits for ready, with a deadline it should never reach.
 @generated
 routine wait_ready(timed: @Timed) -> None
-    local held: Authorized[Timed] = timed.get_exclusive_access()
+    held: Authorized[Timed] <- timed.get_exclusive_access()
 
-    arrive_timed(timed)
-    jump look(Clock.monotonic() + LONG)
+    block entry()
+        arrive_timed(timed)
+        jump look(Clock.monotonic() + LONG)
 
     block look(deadline: Duration)
         if timed.ready.peek()
@@ -237,7 +238,7 @@ routine wait_ready(timed: @Timed) -> None
 ### Takes the access and wakes every waiter, over and over, until stop.
 routine wake_everyone(timed: @Timed) -> None
     loop
-        held: Authorized[Timed] = timed.get_exclusive_access()
+        held: Authorized[Timed] <- timed.get_exclusive_access()
         stop2: Bool = timed.stop.peek()
         timed.cond.cast_all()
         drop held
@@ -248,7 +249,7 @@ routine wake_everyone(timed: @Timed) -> None
 
 ### Sets ready once every waiter waits, and wakes them all.
 routine make_ready(timed: @Timed) -> None
-    held: Authorized[Timed] = timed.get_exclusive_access()
+    held: Authorized[Timed] <- timed.get_exclusive_access()
 
     until timed.waiting.peek() >= TIMED_THREADS.mul(2)
         timed.progress.wait(held)
@@ -271,8 +272,8 @@ record ThreadSlots
 ### Starts a thread in each of `slots`, each running `body` on `state`.
 routine spawn_many[T](body: Callable[(@T,), None], state: @T, slots: ThreadSlots) -> None
 needs T: typename
-    local threads: @Array[Thread[None], 8] = slots.threads
-    local end: U64 = slots.first + slots.count
+    threads: @Array[Thread[None], 8] = slots.threads
+    end: U64 = slots.first + slots.count
 
     each i in slots.first til end
         t: Thread[None] = get_thread[None]()
@@ -291,9 +292,8 @@ routine join_many(threads: @Array[Thread[None], 8], count: U64) -> None
         return
 
 routine start() -> None
-    local threads: @Array[Thread[None], 8] <- .hollow()
-    local box: @Mailbox <- Mailbox(not_full: .construct(), not_empty: .construct(), full: false,
-        value: 0)
+    threads: &Array[Thread[None], 8] <- .hollow()
+    box: &Mailbox <- Mailbox(not_full: .construct(), not_empty: .construct(), full: false, value: 0)
 
     producer: Thread[None] = get_thread[None]()
     producer.put_work(entry: produce.to[Callable](), args: box)
@@ -301,22 +301,22 @@ routine start() -> None
     producer.wait_finished()
     producer.give_back()
     Console.show("handoff: {ROUNDS} values, sum {sum}, in order {in_order}")
-    local tokens: @Gate <- Gate(cond: .construct(), progress: .construct(), waiting: 0, tokens: 0,
+    tokens: &Gate <- Gate(cond: .construct(), progress: .construct(), waiting: 0, tokens: 0,
         passed: 0, open: false)
     spawn_many(body: take_token.to[Callable](), state: tokens,
         slots: ThreadSlots(threads: threads, first: 0, count: GATE_THREADS))
     exact: Bool = hand_tokens(tokens)
     join_many(threads, count: GATE_THREADS)
     Console.show("wake_one: {GATE_THREADS} tokens, one thread through for each: {exact}")
-    local gate: @Gate <- Gate(cond: .construct(), progress: .construct(), waiting: 0, tokens: 0,
+    gate: &Gate <- Gate(cond: .construct(), progress: .construct(), waiting: 0, tokens: 0,
         passed: 0, open: false)
     spawn_many(body: pass_open.to[Callable](), state: gate,
         slots: ThreadSlots(threads: threads, first: 0, count: GATE_THREADS))
     open_gate(gate)
     join_many(threads, count: GATE_THREADS)
     Console.show("wake_all: {gate.passed.peek()} of {GATE_THREADS} through after one wake")
-    local timed: @Timed <- Timed(cond: .construct(), progress: .construct(), waiting: 0,
-        ready: false, stop: false, timed_out: 0, in_time: 0, wrong: 0)
+    timed: &Timed <- Timed(cond: .construct(), progress: .construct(), waiting: 0, ready: false,
+        stop: false, timed_out: 0, in_time: 0, wrong: 0)
     waker: Thread[None] = get_thread[None]()
     waker.put_work(entry: wake_everyone.to[Callable](), args: timed)
     spawn_many(body: wait_never.to[Callable](), state: timed,
@@ -325,7 +325,7 @@ routine start() -> None
         slots: ThreadSlots(threads: threads, first: TIMED_THREADS, count: TIMED_THREADS))
     make_ready(timed)
     join_many(threads, count: TIMED_THREADS.mul(2))
-    held: Authorized[Timed] = timed.get_exclusive_access()
+    held: Authorized[Timed] <- timed.get_exclusive_access()
     timed.stop.poke(true)
     drop held
     waker.wait_finished()

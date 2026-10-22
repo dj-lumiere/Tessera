@@ -243,7 +243,7 @@ secret routine close_if_open(h: Addr) -> None
 ### :returns: The units and their count without the 0, or null and 0 when `text` has a NUL or the allocation fails.
 @target(os: "windows")
 secret routine utf16(text: @[Byte], manager: @MemoryManager) -> (@U16, U64)
-    local units: @U16 = allocate[U16](count: text.count() + 1, manager)
+    units: @U16 = allocate[U16](count: text.count() + 1, manager)
 
     if units.is_hollow()
         return (.hollow(), 0)
@@ -264,7 +264,7 @@ secret routine utf16(text: @[Byte], manager: @MemoryManager) -> (@U16, U64)
 ### :returns: True when one of them is there.
 @target(os: "windows")
 secret routine has_any(s: @[U16], a: U16, b: U16, c: U16) -> Bool
-    local n: U64 = s.count()
+    n: U64 = s.count()
 
     each i in 0 til n
         u: U16 = s[i]
@@ -282,8 +282,8 @@ secret routine has_any(s: @[U16], a: U16, b: U16, c: U16) -> Bool
 ### :returns: The unit just after what was written.
 @target(os: "windows")
 secret routine quote_arg(source: @U16, n: U64, target: @U16) -> @U16
-    local start: @U16 = target.stride(1)
-    local units: @[U16] = @[U16].construct(data: source, count: n)
+    start: @U16 = target.stride(1)
+    units: @[U16] = @[U16].construct(data: source, count: n)
 
     if n == 0
         # ' ', '\t', '"'
@@ -331,8 +331,8 @@ secret routine quote_arg(source: @U16, n: U64, target: @U16) -> @U16
 ### :returns: The command line, or null when an allocation fails (the texts were checked for a NUL before).
 @target(os: "windows")
 secret routine command_line(program: @[Byte], args: @[@[Byte]], manager: @MemoryManager) -> @U16
-    local arg_count: U64 = args.count()
-    local at: @@U16 <- .hollow()
+    arg_count: U64 = args.count()
+    at: &@U16 <- .hollow()
 
     program_bound: U64 = program.count() * 2
 
@@ -355,14 +355,14 @@ secret routine command_line(program: @[Byte], args: @[@[Byte]], manager: @Memory
                 deallocate(data: line, manager)
                 return .hollow()
             if not (i2 == 0)
-                at.peek().poke(32)
-                at.peek().stride(1).poke_into(at)
-            end: @U16 = quote_arg(source: units, n, target: at.peek())
+                at.load().poke(32)
+                at.load().stride(1).poke_into(at)
+            end: @U16 = quote_arg(source: units, n, target: at.load())
             deallocate(data: units, manager)
             end.poke_into(at)
             continue
         then
-            at.peek().poke(0)
+            at.load().poke(0)
             return line
 
 # -- the environment block ---------------------------------------------------------------
@@ -434,8 +434,8 @@ secret routine units_of(s: @U16) -> U64
 ### :returns: The string, or null when the allocation fails.
 @target(os: "windows")
 secret routine env_entry_utf16(v: EnvVar, manager: @MemoryManager) -> @U16
-    local room: U64 = v.name.count() + v.value.count() + 2
-    local units: @U16 = allocate[U16](count: room, manager)
+    room: U64 = v.name.count() + v.value.count() + 2
+    units: @U16 = allocate[U16](count: room, manager)
 
     if units.is_hollow()
         return .hollow()
@@ -484,7 +484,7 @@ secret routine wide_overrides(options: ProcessOptions, out: @@U16, manager: @Mem
 ###     before).
 @target(os: "windows")
 secret routine env_block(options: ProcessOptions, manager: @MemoryManager) -> @U16
-    local own: @@U16 = allocate[@U16](count: options.env_count.max(1), manager)
+    own: @@U16 = allocate[@U16](count: options.env_count.max(1), manager)
 
     if own.is_hollow()
         return .hollow()
@@ -657,12 +657,12 @@ secret common routine Handles.empty() -> Me
 @target(os: "windows")
 @reshaping(r)
 secret routine read_pipe(r: @PipeReader) -> None
-    local n: @U32 <- 0
-    local chunk_buffer: @Array[Byte, 4096] <- .hollow()
-    local chunk: @Byte = chunk_buffer.to[@Byte]()
+    n: &U32 <- 0
+    chunk_buffer: &Array[Byte, 4096] <- .hollow()
+    chunk: @Byte = chunk_buffer.to[@Byte]()
 
-    until c_read_file(r.pipe.peek(), chunk, 4096, n, .hollow()) == 0 or n.peek() == 0
-        r.buffer.append(chunk, n: n.peek().to[U64](), manager: HEAP)
+    until c_read_file(r.pipe.peek(), chunk, 4096, n, .hollow()) == 0 or n.load() == 0
+        r.buffer.append(chunk, n: n.load().to[U64](), manager: HEAP)
     then
         return
 
@@ -694,11 +694,11 @@ secret routine inherited(which: U32) -> Addr
     h: Addr = c_get_std_handle(which)
     if is_invalid(h)
         return .hollow()
-    local copy: @Addr <- .hollow()
+    copy: &Addr <- .hollow()
     this_process: Addr = c_get_current_process()
     # DUPLICATE_SAME_ACCESS
     if c_duplicate_handle(this_process, h, this_process, copy, 0, 1, 2) != 0
-        return copy.peek()
+        return copy.load()
     return .hollow()
 
 ### Makes the handles `options` call for: the null device when a stream is the null device, a pipe for each captured
@@ -711,7 +711,7 @@ secret routine @Handles.make(options: ProcessOptions, sa: @SecurityAttributes) -
     me.poke(Me.empty())
     null_in: Bool = options.stdin == InputMode.NULL
     if null_in or (options.stdout == OutputMode.NULL or options.stderr == OutputMode.NULL)
-        local name: @Array[U16, 4] <- [78, 85, 76, 0]
+        name: &Array[U16, 4] <- [78, 85, 76, 0]
         # GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING
         device: Addr = c_create_file(name.to[@U16](), 0xC0000000, 3, sa.to[Addr](), 3, 0, .hollow())
         if is_invalid(device)
@@ -774,10 +774,10 @@ secret routine output_handle(mode: OutputMode, pipe: Addr, device: Addr, which: 
 @expensive("starts a process")
 failable common routine ProcessManager.create_process(program: @[Byte], args: @[@[Byte]],
     options: ProcessOptions, manager: @MemoryManager) -> ProcessOutput
-    local h: @Handles <- Handles.empty()
-    local pi: @ProcessInformation <- ProcessInformation(process: .hollow(), thread: .hollow(),
+    h: &Handles <- Handles.empty()
+    pi: &ProcessInformation <- ProcessInformation(process: .hollow(), thread: .hollow(),
         process_id: 0, thread_id: 0)
-    local directory: @Array[U16, PATH_CAPACITY] <- .hollow()
+    directory: &Array[U16, PATH_CAPACITY] <- .hollow()
 
     # Until the handles are made, a failure has only the command line (once there is one) to free.
     if has_nul(program, args, options)
@@ -803,8 +803,8 @@ failable common routine ProcessManager.create_process(program: @[Byte], args: @[
                 throw MemoryAllocationError()
             becomes block_units
 
-    local sa: @SecurityAttributes <- SecurityAttributes(
-        length: sizeof[SecurityAttributes]().to[U32](), descriptor: .hollow(), inherit_handle: 1)
+    sa: &SecurityAttributes <- SecurityAttributes(length: sizeof[SecurityAttributes]().to[U32](),
+        descriptor: .hollow(), inherit_handle: 1)
     launch: Launch = Launch(h, pi, sa, line, env, directory: directory_units)
     when check start_and_collect(options, launch, manager)
         is ProcessOutput as made =>
@@ -847,7 +847,7 @@ secret failable routine start_and_collect(options: ProcessOptions, launch: Launc
         h.close_child_side()
         throw spawn_error(e)
     # STARTF_USESTDHANDLES
-    local si: @StartupInfo <- StartupInfo(cb: sizeof[StartupInfo]().to[U32](), reserved: .hollow(),
+    si: &StartupInfo <- StartupInfo(cb: sizeof[StartupInfo]().to[U32](), reserved: .hollow(),
         desktop: .hollow(), title: .hollow(), x: 0, y: 0, x_size: 0, y_size: 0, x_count_chars: 0,
         y_count_chars: 0, fill_attribute: 0, flags: 0x100, show_window: 0, cb_reserved2: 0,
         reserved2: .hollow(), std_input: h.input.peek(), std_output: h.output.peek(),
@@ -871,19 +871,19 @@ secret failable routine start_and_collect(options: ProcessOptions, launch: Launc
 @target(os: "windows")
 secret failable routine collect_output(h: @Handles, pi: @ProcessInformation,
     manager: @MemoryManager) -> ProcessOutput
-    local out: @CaptureBuffer <- CaptureBuffer.empty()
-    local err: @PipeReader <- PipeReader(pipe: h.err_r.peek(), buffer: CaptureBuffer.empty())
-    local code: @U32 <- 0
+    out: &CaptureBuffer <- CaptureBuffer.empty()
+    err: &PipeReader <- PipeReader(pipe: h.err_r.peek(), buffer: CaptureBuffer.empty())
+    code: &U32 <- 0
 
     read_both(out_pipe: h.out_r.peek(), out, err, manager)
     # INFINITE
     c_wait_for_single_object(pi.process.peek(), U32.MAX)
     c_get_exit_code_process(pi.process.peek(), code)
-    local errors: @CaptureBuffer <- moved(b: err.buffer, manager)
+    errors: &CaptureBuffer <- moved(b: err.buffer, manager)
     drop err
-    status: ExitStatus = Exited(code: code.peek().to_wrap[S32]())
+    status: ExitStatus = Exited(code: code.load().to_wrap[S32]())
     lost: Bool = out.failed.peek() or errors.failed.peek()
-    local output: @ProcessOutput <- ProcessOutput(status: status, stdout: out.take_all(),
+    output: &ProcessOutput <- ProcessOutput(status: status, stdout: out.take_all(),
         stderr: errors.take_all())
     drop out
     drop errors
@@ -939,12 +939,12 @@ secret routine read_both(out_pipe: Addr, out: @CaptureBuffer, err: @PipeReader,
 @target(os: "windows")
 @reshaping(buffer)
 secret routine read_into(pipe: Addr, buffer: @CaptureBuffer, manager: @MemoryManager) -> None
-    local n: @U32 <- 0
-    local chunk_buffer: @Array[Byte, 4096] <- .hollow()
-    local chunk: @Byte = chunk_buffer.to[@Byte]()
+    n: &U32 <- 0
+    chunk_buffer: &Array[Byte, 4096] <- .hollow()
+    chunk: @Byte = chunk_buffer.to[@Byte]()
 
-    until c_read_file(pipe, chunk, 4096, n, .hollow()) == 0 or n.peek() == 0
-        buffer.append(chunk, n: n.peek().to[U64](), manager)
+    until c_read_file(pipe, chunk, 4096, n, .hollow()) == 0 or n.load() == 0
+        buffer.append(chunk, n: n.load().to[U64](), manager)
     then
         return
 
@@ -955,7 +955,7 @@ secret routine read_into(pipe: Addr, buffer: @CaptureBuffer, manager: @MemoryMan
 ###     allocated.
 @target(os: "windows")
 secret routine moved(b: @CaptureBuffer, manager: @MemoryManager) -> CaptureBuffer
-    local copied: @CaptureBuffer <- CaptureBuffer.empty()
+    copied: &CaptureBuffer <- CaptureBuffer.empty()
 
     data: @Byte = b.storage.data.peek()
     if data.is_not_hollow()
@@ -975,16 +975,16 @@ secret routine moved(b: @CaptureBuffer, manager: @MemoryManager) -> CaptureBuffe
 @target(os: "windows")
 @expensive("allocates a copy of the variable")
 secret routine env_var(name: @[Byte], manager: @MemoryManager) -> Maybe[Memory[Byte]]
-    local units: @@U16 <- .hollow()
-    local key: @Array[U16, 256] <- .hollow()
+    units: &@U16 <- .hollow()
+    key: &Array[U16, 256] <- .hollow()
 
     n: Maybe[U64] = encode_utf16(text: name, out: key.to[@U16](), capacity: 256)
     if not n.is_present()
         return None()
-    local value: @Maybe[Memory[Byte]] <- env_value(key: key.to[@U16](), units, manager)
+    value: &Maybe[Memory[Byte]] <- env_value(key: key.to[@U16](), units, manager)
 
     # The UTF-16 value, when there is one: the UTF-8 copy is what goes back.
-    held: @U16 = units.peek()
+    held: @U16 = units.load()
     if held.is_hollow()
         return value
     deallocate(data: held, manager)

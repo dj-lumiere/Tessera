@@ -17,6 +17,10 @@ public static class MemoryRules
 {
     public abstract record Event(Pos Pos);
 
+    /// The builder gives back the STACK place `Name` at an exit of its body: its group ends there unless the program
+    /// ended it first, and nothing is reported either way.
+    public sealed record AutoEnd(string Name, Pos Pos) : Event(Pos);
+
     /// A new group, named by `Name`: memory a call or an `at` literal gave, or a parameter handed in.
     public sealed record Acquire(string Name, string What, Pos Pos) : Event(Pos)
     {
@@ -325,6 +329,11 @@ public static class MemoryRules
                         else state.Groups[id] = g with { Ended = me.Pos, How = me.How };
                         break;
                     }
+                    case AutoEnd ae:
+                        if (state.Names.TryGetValue(ae.Name, out var autoId) && state.Groups.TryGetValue(autoId, out var autoGroup)
+                            && autoGroup.Ended is null)
+                            state.Groups[autoId] = autoGroup with { Ended = ae.Pos, How = $"the end of the body of '{ae.Name}'" };
+                        break;
                     case Alias al:
                         if (state.Names.TryGetValue(al.Of, out var of)) state.Names[al.Name] = of;
                         break;
@@ -597,10 +606,10 @@ public static class MemoryRules
                                       + $"drop it, return it, or hand it over with steal {g.Origin}"
                                     : ex.Region
                                     ? $"'{g.Origin}' holds memory (from line {g.Born.Line}) and goes out of sight here, at the end of the body "
-                                      + "it is bound in: give the memory back first (drop it), return it, or keep it in a slot bound outside the body"
+                                      + "it is bound in: give the memory back first (drop it), return it, or keep it in a place bound outside the body"
                                     : $"the memory of '{g.Origin}' (from line {g.Born.Line}) is lost here: block '{ex.Block}' doesn't get "
-                                      + $"it. Pass it to the block as an argument, keep it in a slot of the routine's head (local m: "
-                                      + "@Memory[T] <- ...), or destruct it first");
+                                      + $"it. Pass it to the block as an argument, keep it in the routine's head (m: &[T] <- ... before "
+                                      + "block entry()), or give it back first");
                         }
                         work.Enqueue((ex.Block!, next.Canonical()));
                         break;
