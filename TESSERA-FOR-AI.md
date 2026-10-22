@@ -72,8 +72,6 @@ keeping blocks where it can't), `spellings` (`@` annotations, `needs` / `obeys` 
 `float-presets` (`B64.INFINITY` / `NEG_INFINITY` / `NAN` into `inf` / `-inf` / `nan`),
 `modules` (drops the imports of `Standard/Core`, `Standard/Format`, `Standard/Alloc`, `Standard/Boot`, and
 `Standard/Json`, and points their paths at the module of `Standard/System` each name is in),
-`access` (`ExclusiveLock` / `MultiReadLock` into `ExclusiveAccess` / `MultiReadAccess`, a `SignalCaster` wait's
-`mutex:` into `access:`),
 `files` (`FileManager.x` into `OsFileManager.x`, `subdir` into `go_to`, `Mapping` / `map_result(offset:)` into
 `FileStorage[Byte]` / `storage_result[Byte](start:)`, the directories and `env_var` into `OsEnvironment`'s, a
 `move_result(from:, to:)` into `rename_result` or `move_result(at:, into:)` where the file shows both paths, and the
@@ -166,7 +164,7 @@ routine start() -> None
 - A field of a record value is read with plain `=`: `key: K = pair.key`.
 - `local p: @T <- v` makes a slot for the routine call (a stack slot in practice) and stores `v` in it where the
   line stands. Its type comes from the binding, which is one of three: `@T` (a slot), `@[T]` (values in the
-  frame, below), or `@Memory[T]` / `@Box[T]` with `at manager` (below). Anything else is a build error. The
+  frame, below), or `@Memory[T]` / `@Box[T]` with `from manager` (below). Anything else is a build error. The
   contents are required: `local list: @List[S64] <- .construct(manager)`, no `list_val` and no separate store. A
   slot that a routine fills later (an out parameter, `out.construct(...)`, an iterator's slot) starts as
   `local p: @T <- .hollow()`: `T.hollow()`, which every type has, is the all-zero value (`0`, `false`, a pointer to nothing, a
@@ -187,49 +185,55 @@ routine start() -> None
   that does is declared in the routine's head (below), or the value is carried with `with`.
 - **Where values are: four types.** `@T` (a `Ptr`) is the address of one value (a local slot, a field, an element,
   memory from C). `@[T]` (Core, `Types/Span.te`) is `{data, count}`, a run of values it views. Both only VIEW
-  memory and release nothing: `peek` / `poke` on a `@T`, and on a span `getslot(i)` (the checked `@T`, so everything
-  through it is `@T`'s own: `peek_volatile`, `atomic_fetch_add`, ...), `getitem(i)` / `setitem(i, v)`,
-  `try view.getitem(i)` (a `Maybe`), `swap(first, second)` (the two values trade places, moved), `getslice(start, count)`,
-  `getview()`, `to[@T]()`. `Box[T]` (`{at, manager,
-  generation}`) and `Memory[T]` (`{data, count, manager, generation}`, `Types/Memory.te`) are memory TAKEN from a
-  `MemoryManager`, and both are ENTITIES (Entities, below): never copied, kept in a slot
-  (`local m: @Memory[Byte] <- Memory[Byte].construct(count: 4, manager: manager)`), every routine takes `me` by its address (`routine @Memory[T].load(...)`).
-  Read and written with `load` / `store` (`m.load(i)`, `m.store(index: i, value: v)`, `b.load()`, `b.store(v)`, the
-  stored value taken over), and given back exactly once, with the statement `drop m`, by `return m`, or by handing it
-  on with `steal m` to a routine that takes a `Memory` / `Box` by value (that routine gives it back then). `drop x`
-  calls the type's `destruct`: a program never writes `x.destruct()` itself (a build error: "a value is given back
-  with drop: drop x"), only a type's own `destruct` body gives its members back. `drop` leaves the slot hollow:
-  `.hollow()` holds nothing, `drop` on it does nothing, a read crashes with `InvalidValueError`. `Memory[T]` also has
+  memory and release nothing. Only a `@T` reads and writes its value (`peek` / `poke`, and everything `@T` has:
+  `peek_volatile`, `atomic_fetch_add`, ...), and only a `Box[T]` reads and writes its own (`load` / `store`). A span
+  turns an element into one of those: `getitem(i)` is the value (a copy, `xs[i]`), `getslot(i)` its place (the checked
+  `@T`), `try view.getitem(i)` a `Maybe`, `getslice(start, count)` a part, `getview()` itself, `to[@T]()` the first
+  address, and `swap(first, second)` trades two values in place (moved). A span has no `setitem`: `xs[i] = v` on a span
+  is a build error, write `xs.getslot(i).poke(v)`. `Box[T]` (`{at, manager}`) and `Memory[T]` (`{data, count,
+  manager}`, `Memory.te`) are memory TAKEN from a `MemoryManager`, and both are ENTITIES (Entities, below): never
+  copied, kept in a slot (`local m: @Memory[Byte] <- Memory[Byte].construct(count: 4, manager: manager)`), every
+  routine takes `me` by its address (`routine @Memory[T].load(...)`). The block holds the values and nothing else,
+  plain `T` values in a row. Given back exactly once, with the statement `drop m`, by `return m`, or by handing it on
+  with `steal m` to a routine that takes a `Memory` / `Box` by value (that routine gives it back then). `drop x` calls
+  the type's `destruct`: a program never writes `x.destruct()` itself (a build error: "a value is given back with drop:
+  drop x"), only a type's own `destruct` body gives its members back. `drop` leaves the slot hollow: `.hollow()` holds
+  nothing, `drop` on it does nothing, a read crashes with `InvalidValueError`.
+- **The elements of a Memory.** A `Memory[T]` reads and writes nothing itself: it turns an element into a `Box[T]` or
+  a `@T`. With E the element type, getitem gives E and getslot gives `@E`, and a Memory's element is a `Box[T]`:
+  `m[i]` (getitem, failable: `IndexOutOfBoundsError`) is the element itself as a `Box[T]` kept in the memory, so
+  `m[i].load()`, `m[i].store(v)`, `m[i].getview()`, `m[i].get_exclusive_access()` (an `Authorized[T]`), and `m[i].take()` (the value moved
+  out, the place left hollow: how an entity element comes out). It is no memory of its own: `drop m[i]`, `steal m[i]`,
+  returning it (outside a `getitem`), or handing it to a parameter that takes a `Box[T]` by value are build errors.
+  `m.getslot(i)` is the element's place as a `@Box[T]`, the address of its `T` (a slot the memory keeps: `steal` out of
+  it is a build error, use `m[i].take()`). `m.getview(i)` is the element as a `@T` (getview takes an index on a
+  Memory), `m.getslice(start, count)` a run of them as a `@[T]`, and `m.getslice()` every value. `m.load(i)`,
+  `m.store(i, v)`, `m[i] = v`, and `m.getview()` are build errors that name these forms. A Memory also has
   `construct(count, manager)` (uninitialized, failable: it throws `MemoryAllocationError`, which `check
-  Memory[T].construct(...)` receives), `count()`, `getslot(i)`, `swap(first, second)`, `getview()`, `keep_first(n)` (only the first n in
-  use, no copy), `duplicate()` (memory of its own), `replace(value: new)`, `take()` (moves the memory out, leaving
-  this one empty with the same manager), `give_back()`, `resize(n)` (failable like `construct`), and `destruct_all()`
-  (destructs every value, then gives the memory back). `Array[T, COUNT]` is the run of values
-  whose count is in the type, a value. `getview()` gives a `@[T]` of anything holding contiguous elements (a `Memory`,
-  a `List`, an `Array` through a pointer, a `SliceWriter`, a `CStrView`). `@[T].construct(data, count)` wraps memory
-  from C (the count is yours to get right). The raw layer, `allocate[T](count, manager)` /
-  `reallocate[T](p, count, manager)` / `deallocate(p, manager)`, is for node-based structures and C interop, with no
-  stamp and no check. `@T` has no `free`. `dst.copy(src, count)` copies `count` values of `T` (memcpy, no overlap),
-  and `src.copy_into(dst, count)` is the same copy from the source's side. On a `@Array[T, COUNT]` (or any type with
-  its own `copy`) the type's routine wins, so generic code over `@T` uses `src.copy_into(dst, count)`.
-- **The generation check.** Every block a Memory or a Box takes starts with a 16-byte stamp holding a generation (a
-  number no other block of the program had), and the value keeps its copy. `drop` clears the stamp, and `load`,
-  `store`, `getslot`, and `getview` compare the two first: a block given back crashes with `DestructedMemoryError`
-  instead of reading freed memory. `resize` gives the moved block a new generation, so an older holder fails too. A
-  Memory is never copied, so a second holder of the same block only comes from raw code the build doesn't follow (a
-  `steal` out of an element place reads the bits and leaves them). A span or `@T` carries no generation (the check
-  runs when the view is made). With `[debug] heap-check = true` in config.toml or `--heap-check` (any build mode, off by default,
-  always on under `tessera test`) `HEAP` is the `CheckedHeapManager`, which keeps a header in front of each block and crashes with
-  `DoubleFreeError` at the line of a second free of the same block (a quarantine of the last 256 freed blocks keeps
-  that sure, raw layer included). With it off it is plain malloc / free, and so is a single-file build without a
-  manifest. Debug and release behave the same. The build catches a second `drop`, a use after it, a missing one, a
-  view used after its memory is given back, and a routine that gives back memory its caller holds (the group check
-  below). The generation check runs on `load`, `store`, `getslot` and `getview` of the `Memory` / `Box` itself: a
-  `@T` or `@[T]` made earlier carries no generation, so reading through it after the memory is given back is caught
-  by the build or not at all (raw code the build doesn't follow).
+  Memory[T].construct(...)` receives), `count()`, `swap(first, second)`, `keep_first(n)` (only the first n in use, no
+  copy), `duplicate()` (memory of its own), `replace(value: new)`, `take()` (moves the memory out, leaving this one
+  empty with the same manager), `give_back()`, `resize(n)` (failable like `construct`), `to[@T]()` (the first value's
+  address, for C), and `destruct_all()` (destructs every value, then gives the memory back). A `Box[T]` has `load()`,
+  `store(v)`, `getview()` (its `@T`), `take()`, `duplicate()`, `replace(value: new)`. `Array[T, COUNT]` is the run of
+  values whose count is in the type, a value. `getview()` gives a `@[T]` of anything else holding contiguous elements
+  (a `List`, an `Array` through a pointer, a `SliceWriter`, a `CStrView`). `@[T].construct(data, count)` wraps memory
+  from C (the count is yours to get right). The raw layer, `allocate[T](count, manager)` / `reallocate[T](p, count,
+  manager)` / `deallocate(p, manager)`, is for node-based structures and C interop, with no check. `@T` has no `free`.
+  `dst.copy(src, count)` copies `count` values of `T` (memcpy, no overlap), and `src.copy_into(dst, count)` is the same
+  copy from the source's side. On a `@Array[T, COUNT]` (or any type with its own `copy`) the type's routine wins, so
+  generic code over `@T` uses `src.copy_into(dst, count)`.
+- **Giving back twice.** The build catches a second `drop`, a use after it, a missing one, a view used after its
+  memory is given back, and a routine that gives back memory its caller holds (the group check below). Raw code the
+  build doesn't follow (a `steal` out of an element place that reads the bits and leaves them, an address made with
+  `inttoptr`) can still give a block back twice: with `[debug] heap-check = true` in config.toml or `--heap-check`
+  (any build mode, off by default, always on under `tessera test`) `HEAP` is the `CheckedHeapManager`, which keeps a
+  header in front of each block and crashes with `DoubleFreeError` at the line of a second free of the same block (a
+  quarantine of the last 256 freed blocks keeps that sure, raw layer included). With it off it is plain malloc / free,
+  and so is a single-file build without a manifest.
 - **Lending.** Passing a `Memory[T]` where a `@[T]` parameter is expected lends it (the argument becomes
-  `getview()`), and a `Box[T]` where a `@T` is expected lends its address. Only at argument positions and
-  receivers: anywhere else write `m.getview()` (`view: @[U32] = m.getview()`). The view is valid until the memory
+  `getslice()`), and a `Box[T]` where a `@T` is expected lends its address (`getview()`). A routine a Memory has none
+  of its own for is called on its `getslice()` (`line.trim()` on a `Memory[Byte]`). Only at argument positions and
+  receivers: anywhere else write `m.getslice()` (`view: @[U32] = m.getslice()`). The view is valid until the memory
   is given back or resized.
 - **Static and frame memory as a span.** `preset NAME: @[T] <- [a, b]` is read-only static data (a write faults
   on a hosted target, the build doesn't catch it). `preset GREETING: @[Byte] <- "hello"` is a string literal's
@@ -238,14 +242,16 @@ routine start() -> None
   literal is required: it gives the count). `local xs: @[T] <- [0] * 64` in the body or in the head puts the values in the routine's frame, with a count the build knows (a literal count or a
   preset). An array literal passed as an argument where a span is expected is a frame span too: `total([4, 5, 6])`.
   A frame span must not leave the routine. `preset NAME: @Array[T, N] <- [...]` is still a `Ptr` to an array.
-- **Memory from a manager is written with `at`.** `local words: @Memory[U64] <- [0] * n at HEAP` (the count
-  may be a runtime value: it calls `Memory[T].construct(values: @[T], times: U64, manager)`), and
-  `local node: @Box[Node] <- (value: 1, next: .hollow()) at HEAP` (it calls `Box[T].construct(value, manager)`).
-  An `at` literal is bound with `<-` in a `local` line, into the slot like any entity. A `local` slot itself is a
-  block of the running flow's stack, which its `StackManager` hands out by moving the stack pointer, with no call: a
-  flow has one stack, so the slot names no manager, and `at STACK` (or `at` with a `StackManager`) is a build error.
-- **The five rules.** 1. `@T` / `@[T]` only view (peek / poke), never give back. 2. `Box` / `Memory` come from a
-  manager: `load` / `store`, given back exactly once or handed over, empty or not. 3. A `@T` / `@[T]` viewing this
+- **Memory from a manager is written with `from`.** `local words: @Memory[U64] <- [0] * n from HEAP` (the count
+  may be a runtime value: it calls `Memory[T].construct(values: @[T], times: U64, manager)`),
+  `local node: @Box[Node] <- (value: 1, next: .hollow()) from HEAP`, and `local x: @Box[S64] <- 10 from HEAP` (they
+  call `Box[T].construct(value, manager)`). A `from` literal is bound with `<-` in a `local` line, into the slot like
+  any entity. A `local` slot itself is a block of the running flow's stack, which its `StackManager` hands out by
+  moving the stack pointer, with no call: `local x: @S64 <- 5 from STACK` is the same slot as `local x: @S64 <- 5`,
+  follows rule 3 (it stays in its routine), and is not given back. A `Memory[T]` or a `Box[T]` from a `StackManager`
+  is a build error.
+- **The five rules.** 1. `@T` / `@[T]` only view (peek / poke), never give back. 2. `Box` / `Memory` and accesses
+  come from a manager: given back exactly once or handed over, empty or not. 3. A `@T` / `@[T]` viewing this
   routine's memory (a local slot, a frame span) does not leave the routine. 4. A routine that moves memory says
   `@reshaping`, and isn't called while that memory is viewed. 5. A global `Box` / `Memory` is changed with `replace`,
   and the program's end gives the last one back. The build checks all five, as below, in every routine: an instance of
@@ -271,19 +277,19 @@ routine start() -> None
     some path. A path that returns early (the field is hollow there) is allowed. Giving one back twice on a path is
     `'me.m' ended already` or `'me.m' is used after drop me.m`.
   - `'v' is a view of 'm', whose memory was given back (drop m on line N)`: a `@T` / `@[T]` made from memory
-    (`m.getview()`, `getslot`, `getslice`, `stride`, `offset`, `to[...]`, and views made from those) is read, written,
+    (`m.getslice()`, `m.getview(i)`, `getslot`, `getslice`, `stride`, `offset`, `to[...]`, and views made from those) is read, written,
     passed, returned, stored or used to make another view after `drop m`, on any path (memory given back in both arms
     of an `if` counts). Use it before the drop. The same holds after `steal m` or after `m` is handed to a routine that
     takes it by value: `'v' is a view of 'm', whose memory was handed over (steal m on line N), and whoever took it may
     give it back`.
   - `'q' holds a view of 'm', whose memory was given back`: a value that holds such a view (a view poked into a
     field of `q`, a record built with one, a pointer a routine gave back from `m` passed to it, `first(m: m)`, a view a
-    routine keeps in `q`: `xs.add_last(m.getview())`, `keep(out: q, v: m.getview())`, and a view read back out of `q`:
+    routine keeps in `q`: `xs.add_last(m.getslice())`, `keep(out: q, v: m.getslice())`, and a view read back out of `q`:
     `xs[0]`) is used after `drop m`, its own `drop` included (its `destruct` would read the view). Finish with `q`
     first. A routine keeps a view when its body stores it in what another parameter reaches, which the build works out
     from the bodies (a routine that copies the values a view shows keeps nothing).
   - `'m' came from the manager 'arena', which ended at drop arena on line N`: memory (or a collection) taken through a
-    manager's table (`[0] * n at table`, `.construct(table)`) goes back to that manager, so the manager and its table
+    manager's table (`[0] * n from table`, `.construct(table)`) goes back to that manager, so the manager and its table
     outlive it. Give `m` back first.
   - `'kill' gives back what 'm' points at (drop m on line N), and its caller holds that`: a routine drops (or steals) what a
     `@Box[T]` / `@Memory[T]` / `@E` parameter points at and returns without putting a value back. The caller still
@@ -291,9 +297,52 @@ routine start() -> None
     `destruct` and `destruct_all` are the routines that end `me`.
   The check follows one routine's flow, and a routine it calls through what that routine says about its parameters
   (by value: taken over, `@T`: the caller keeps it) and what its body does with them (what it keeps where).
+- **Accesses (rule 2 too).** An access (`Authorized[T]` or `ReadAuthorized[T]`, Accesses and waits, below) is taken
+  from the `AccessManager`, so the group check follows it like memory from a manager, across routines too:
+  - `'counter' holds an exclusive access (taken on line N) that isn't given back before 'r' returns here`: give it back
+    on every path (`drop held`), or return it (the caller then holds it and gives it back).
+  - `'held' gives back an exclusive access to 'counter' that was given back already`: an access is given back once.
+  - `'held' is the view of an exclusive access to 'counter', given back (...), so another thread or fiber may be
+    changing what it sees`: the access and every view made from it (`held.getview()`) are used only while it is held.
+  - `this takes a shared read access to 'counter', and an exclusive access to it is held already`: taking a second
+    access to a place the path holds one to would wait for itself.
+  - `view is the view of a shared read access, which reads only`: a `poke` (or any write) through the view of a
+    `ReadAuthorized[T]`, or handing it to a `@reshaping` routine, is a build error.
+  - A routine that returns an access hands it to its caller, and a routine that gives back an access it is handed
+    (`close(held)`) ends the caller's at the call. The build works both out from the bodies.
+- **What thread work changes.** Work put on a `Thread` or a `Job` ticket runs on another thread, next to the routine
+  that put it there and other work. The memory it changes (in its own body or in the program's routines it calls) is
+  one of three, else it is a build error: memory it was handed with `steal` (its own from then on), an `Authorized[T]`
+  handed to it, or an `Atomic[T]` (changed with its routines), so the work routine's parameters show what it changes
+  (`routine collect_dues(book: Authorized[Ledger], rate: U64)`). The routine that puts the work takes the exclusive
+  access before `put_work`, hands it to the work, waits for it, and then gives it back:
+
+  ```tessera
+  held: Authorized[Ledger] = ledger.get_exclusive_access()
+  t: Thread[None] = get_thread[None]()
+  t.put_work(entry: collect_dues.to[Callable](), args: (held, 3))
+  t.wait_finished()
+  t.give_back()
+  drop held
+  ```
+
+  Between `put_work` and the wait the handing routine neither uses nor gives back the access (`'held' is handed to
+  the work put on 't' on line N, which changes it until it is waited for`), and it hands one access to one piece of
+  work at a time. In the AccessManager's records the handing routine's flow holds it, and the work works through it.
+  Work that takes an exclusive access itself (`counter: Authorized[U64] = COUNTER.get_exclusive_access()`, the change
+  through `counter.getview()`, `drop counter`, for many threads changing one value in turn) changes through that
+  access too. Memory handed to the work without `steal`, and every global, counts as shared, even when the routine
+  that hands it waits for the work and doesn't touch it meanwhile: `steal` is for handing memory over for good. A
+  `@threadlocal` global is each thread's own, and an address made from an `Addr` isn't followed. A standard library
+  routine counts as changing a parameter only where it is `@reshaping` on it. Errors: `t.put_work(...) runs 'f' on
+  another thread, and it changes the global 'G' (line N: ...) without an exclusive access` and `t.put_work(...) hands
+  'xs' to 'f', which changes it on another thread without an exclusive access, and it isn't handed over with steal`.
+  The build doesn't know whether two threads get the same memory and follows no `Addr` or address made with
+  `inttoptr`: the debug race check (`[debug] race-check`, on in a debug build where it is supported) catches what it
+  misses while the program runs.
 - **The escape check (rule 3).** A routine doesn't return a view of its frame (a local slot, a frame span, and
   every view made from them with `getslot` / `getslice` / `stride` / `offset` / `to` / a span's `getview`) or of a
-  Box / Memory it holds (`m.getview()`, `m.getslot(i)`), and doesn't store one through a parameter (`out.poke(x)`)
+  Box / Memory it holds (`m.getslice()`, `m.getview(i)`, `m[i].getview()`), and doesn't store one through a parameter (`out.poke(x)`)
   or into a global. Errors: `this returns a view of the frame slot 'x' ...` and `this keeps a view of ... where it
   outlives 'r'`. Fix: return the values, or let the caller pass the memory in (a `@[T]` or a `@T` parameter) and
   write there. The check follows values out of the routine:
@@ -732,7 +781,7 @@ routine start() -> None
   must live in memory (a `local` slot) before you call them. **Read-only ones come in both receiver forms**: next to
   the `routine List[T].m` one, a `routine @List[T].m` that forwards to it (`return me.peek().m(...)`, or reads the fields), so a slot or a field
   reads directly (`list.count()`, `primes.getview()`, `line.find("=")` on a `@@[Byte]` slot, `w.getview()` on a
-  `SliceWriter`) and a value too. This holds for the collections, `@[T]`, and `Memory`, and a type of your own
+  `SliceWriter`) and a value too. This holds for the collections and `@[T]`, and a type of your own
   that people keep in slots does the same for the reads they call there. It's never automatic, and three kinds stay
   value-only because on a pointer they'd be about the pointer: `eq` / `compare` / `hash` (a pointer compares only
   by address, `a === b`, so values compare as `a.peek() == b.peek()`), `represent_into` / `diagnose_into` (a pointer isn't
@@ -823,7 +872,7 @@ routine start() -> None
   `OsFileManager.read_all`, `OsEnvironment.variable`, ...) comes back as a `Memory[Byte]`: keep it in a slot and give it
   back once (`local line: @Memory[Byte] <- Console.ask_line()`, then `drop line`), and observe a `Maybe` or `Check` of one
   with `when` (`when try Console.ask_line(manager)` then `is Memory[Byte] as line => ...`). A Memory lends itself to a text routine at
-  a receiver or an argument (`line.find("=")`, `out.write("{line.getview()}")` in a template). Escapes: `\xXX` is one byte (strings, `b'..'`), `\uXXXXXX` one
+  a receiver or an argument (`line.find("=")`, `out.write("{line.getslice()}")` in a template). Escapes: `\xXX` is one byte (strings, `b'..'`), `\uXXXXXX` one
   character by exactly six hex digits (strings, `'..'`), so `"\u01F600"` equals `"\xF0\x9F\x98\x80"`.
   Source files must be UTF-8.
 - String literals are a `@[Byte]` where one is expected, `CStrView` / `CWStrView` (terminated C text) where one of those
@@ -944,7 +993,7 @@ routine start() -> None
   `when_interrupted(h)` (SIGINT, Ctrl+C: the program goes on after `h`, and an interrupt that comes while `h` is still
   running is ignored), `when_faulted(h)` (in place of the fault report below, the fault then ends the process), `holder(kind)`, and
   `CpuEventManager.raise(kind)` sends one to this process (the real signal on Linux and macOS). A handler runs inside
-  the signal handler on Linux and macOS: an atomic or a `Console` line, no lock. On Windows an interrupt handler runs
+  the signal handler on Linux and macOS: an atomic or a `Console` line, no exclusive access. On Windows an interrupt handler runs
   on a thread the CpuEventManager starts (the console hands its handlers one event at a time). Without an OS: `when_power_off`
   (passed on by `CpuEventManager.power_off()`, which the board's shutdown interrupt handler calls, then the core
   halts), `when_faulted` (the core halts when it returns), `when_supervisor_called` (`svc #n` / `ecall`, `code` the
@@ -1208,7 +1257,7 @@ Format through `Standard/System/Text` (`Format.te`), not printf. printf is for C
   through a temporary on `HEAP`). It is failable: `EndOfInputError` at the end of the input, and the failure of
   `to[T]` on a word that isn't a T. `try Console.ask[T]()` gives `Maybe[T]` (`None` for both).
 - `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, and
-  `@[Byte]` (a `Memory[Byte]` writes through its view: `{line.getview()}`). A pointer is neither Representable nor Diagnosable, so `{sum}` on a `local sum: @S64` slot is a build
+  `@[Byte]` (a `Memory[Byte]` writes through its view: `{line.getslice()}`). A pointer is neither Representable nor Diagnosable, so `{sum}` on a `local sum: @S64` slot is a build
   error, not its address: write the value with `{sum.peek()}`, or the address with `{sum.to[Addr]()}`
   (`0x7ffd5e8c1a40`, an `Addr` writes itself). A derived routine writes a pointer field's address.
   `v.represent_hex_into(out)` for an integer's bits in hex; `represent_into(out, min_digits)` (`U64`, `U128`, `U256`) and `represent_hex_into(out,
@@ -1237,7 +1286,7 @@ the memory manager, so the collection can be used again. Element access is
 (the two elements trade places in place, moved, never copied, so entity elements swap too, a no-op for the same index,
 and an index past the end crashes like `getitem`: on `List`, `CircularList`, `Array` through its pointer, `@[T]`, and
 `Memory`), and `getview()` /
-`getslice(start, count)` a `@[T]` of the elements (a List is not lent on its own: pass `list.getview()` where a
+`getslice(start, count)` a `@[T]` of the elements (a `Memory` has its own element routines, above, and no `setitem`) (a List is not lent on its own: pass `list.getview()` where a
 span is expected). Out-of-range access, `remove_last`
 on empty, and `getitem` of a missing key throw (`IndexOutOfBoundsError` with the index and the count, `AbsentValueError`,
 `KeyNotFoundError`): the collections' `getitem`, `getslot`, `remove_last`, `remove_first`, `first`, `first_entry`,
@@ -1343,7 +1392,7 @@ code waiting on several tickets at once.
   whole pages, the one below them closed with `protect` as a guard page, a `StackManager` on the rest, and
   `give_back_stack(stack, pages)` returns them (a manager keeps a fiber's stack for its next ticket). A manager runs its fibers on ONE thread, the one that drives it, and never moves
   them: cooperative, a fiber runs until it yields, parks, sleeps, waits, or its work finishes, so its fibers share
-  values without locks between those points. Driving: `wait_finished()` outside a fiber on the manager's thread runs
+  values without exclusive accesses between those points. Driving: `wait_finished()` outside a fiber on the manager's thread runs
   the manager until that work is done, `run()` until no fiber has work, `run_until_idle()` until none is ready.
   Inside a fiber, waiting parks only that fiber: `wait_finished` of a fiber or THREAD ticket, `park()` (until
   `wake(handle)` from any thread, the handle from `current()`, may return early so loop on the condition),
@@ -1363,14 +1412,15 @@ code waiting on several tickets at once.
   `tests/thread_pool_manager_moves.te`): don't rely on a `@threadlocal` global across a wait in a job. Fibers a job
   makes with `FIBERS` stay on their thread. A job may put work on more jobs and wait: the waiting job parks, its
   thread runs other jobs (recursive splitting: `tests/thread_pool_manager.te`). Jobs don't choose their thread, so they
-  share values like threads do (atomics, locks, channels). Threads start with the first `get_job` and end at
+  share values like threads do (atomics, exclusive accesses, channels). Threads start with the first `get_job` and end at
   `drop pool`: give every job back first. In a program that runs pool jobs, the builder calls the crash trace's
   `trace_push` / `trace_at` / `trace_pop` out of line, so each finds the trace of the thread it runs on.
 - `migrate --step threads` rewrites `x: Thread = Thread.spawn(entry: f, arg: s)` / `x.join()` /
   `Thread.spawn(...).detach()` into tickets and `launch_unwatched`.
 
 **Atomics.** `Atomic[T]` (Core, `Atomic.te`) is a record aligned to T's size whose every access is atomic: the
-form for state a program shares between threads (a plain global that thread work changes is a build error, above) (`hits: Atomic[U64]` in a shared record, `Atomic[U64].construct(value:
+form for state a program shares between threads (thread work changes shared memory only through an exclusive access
+or an Atomic, above) (`hits: Atomic[U64]` in a shared record, `Atomic[U64].construct(value:
 0)` or `.construct(value: 0)`). Threads share its place, `@Atomic[T]`, never copies. Routines: `peek` / `poke`,
 `swap`, `compare_exchange` / `compare_exchange_weak` (`Maybe[T]`: `None` when it wrote, the value found when
 not), `fetch_add` / `fetch_sub` (integers, wrapping), `fetch_and` / `fetch_or` / `fetch_xor`, `fetch_fadd` /
@@ -1381,23 +1431,34 @@ another process, a futex word). What T allows depends on the target (capability 
 error). `Bool` has none: use a `U8`.
 
 **Accesses and waits.** A thread waiting sleeps, a fiber waiting parks (its thread goes on with the other fibers): every
-stdlib wait does what fits the code running it. `ExclusiveAccess` (`lock` / `unlock` / `try_lock` / `lock_within(timeout)
--> Bool`, starts free with `.construct()`) and `MultiReadAccess` (`lock_read` / `unlock_read` / `try_lock_read` /
-`lock_read_within`, `lock_write` / `unlock_write` / `try_lock_write` / `lock_write_within`, many readers or one writer,
-writer-preferring: a waiting writer holds off later readers) park a waiting fiber a short while at a time. Each keeps
-the id of the flow (thread or fiber) holding it and `wait_count()` / `waited()` statistics. Taking one again from the
-flow that holds it (reading or writing, `try_lock` too) crashes with `ReenterDuringAccessError`: don't take it again
-inside, the code that holds it does the work. A flow that has to wait goes through the `AccessManager`
-(Standard/Os/AccessManager.te): it records which flow holds which access (`AccessManager.held()` /
-`held_count()` / `alert_held()` for the running flow) and what each waits for, and with `[debug] deadlock-check` (on
-in a `debug` build, off in the release modes, `= false` / `= true` overrides) a flow about to wait follows the chain of
-holders and crashes with `DeadlockError`, naming the threads and fibers and where each took its access, instead of
-waiting forever. `[debug] access-order = true` (off by default, time on every access) crashes with `AccessOrderError`
-on two accesses taken in opposite orders. The builder sets them as the presets `DEADLOCK_CHECK` / `ACCESS_ORDER`.
-`SignalCaster` (a condition variable for an ExclusiveAccess: `wait(access)`, `wait_for(access, timeout)` /
-`wait_until(access, deadline)` returning whether it returned in time, `cast_one()` / `cast_all()`, and a wait may
-return without a wake, so the waiter checks its condition again in a loop). No guards: unlock explicitly on
-every path. `tessera migrate --step access` rewrites `ExclusiveLock` / `MultiReadLock` and `mutex:`. `wait_on` / `wait_on_for` / `wake_one` / `wake_all` on a `@U32` make a THREAD sleep. `wait_while(at,
+stdlib wait does what fits the code running it. The `AccessManager` (Standard/Os/AccessManager.te) hands out access to
+memory: `held: Authorized[T] = p.get_exclusive_access()` (this flow alone reads and writes the value) and `reading:
+ReadAuthorized[T] = p.get_shared_read_access()` (several flows read it, none writes), on a `@T` and on a `Box[T]`
+(`b.get_exclusive_access()` is the value's). The value is read and written through the access's `getview()`, a `@T`
+(`held.getview().poke(v)`, `reading.getview().peek()`), and the view of a `ReadAuthorized[T]` reads only. `drop held`
+gives the access back. An access covers the value's bytes, `[p, p + sizeof[T]())`: there is no way to take a `@[T]` at once, the elements
+of a run are taken one at a time (`m.getview(i).get_exclusive_access()`, `list.getslot(i).get_exclusive_access()`), and
+`list.data.get_exclusive_access()` is the first element alone. A record (a List's count, capacity and data pointer)
+and its element buffer are separate memory, taken separately: growing or moving a buffer changes the record, so it
+needs the record's access, and giving back or moving a Memory or a Box waits while another flow holds an access inside
+it (the flow giving it back holding one there is a `DeadlockError`). Shared reads overlap each other, an exclusive
+access overlaps nothing, and once a flow asking to write waits, later readers wait too. A flow that asks while another
+holds an access in the way waits. Taking an access that overlaps one the same flow holds crashes with
+`ReenterDuringAccessError` (the build reports it where it sees the same place taken twice), and giving back one the flow
+doesn't hold with `AccessNotHeldError`. The held accesses are one table of the AccessManager (an interval tree ordered
+by start address, its nodes kept and used again), and it records what each flow waits for: with `[debug]
+deadlock-check` (on in a `debug` build, off in the release modes, `= false` / `= true` overrides) a flow about to wait
+searches the holders its request overlaps, what they wait for, and so on, and crashes with `DeadlockError`, naming the
+threads and fibers and where each took its access, instead of waiting forever. `[debug] access-order = true` (off by
+default, time on every access) crashes with `AccessOrderError` on two accesses taken in opposite orders. The builder
+sets them as the presets `DEADLOCK_CHECK` / `ACCESS_ORDER`. `AccessManager.held()` / `held_count()` / `alert_held()`
+list what the running flow holds. `AccessManager.take(at, size, mode, deadline, place) -> Bool` (a timeout: `false`
+when the deadline passed first), `try_take(at, size, mode, place)`, and `give_back(at)` take and give back a range by
+its `Addr`: the build doesn't follow them (code that keeps its own addresses, another language's runtime).
+`SignalCaster` (a condition variable for an exclusive access: `wait(held)`, `wait_for(held, timeout)` /
+`wait_until(held, deadline)` with the `Authorized[T]` the caller holds, returning whether it returned in time, each
+giving the access back while it sleeps and taking it again before it returns, `cast_one()` / `cast_all()`, and a wait may return without a wake, so the
+waiter checks its condition again in a loop). No guards: give back explicitly on every path (the build checks it). `wait_on` / `wait_on_for` / `wake_one` / `wake_all` on a `@U32` make a THREAD sleep. `wait_while(at,
 expected)` / `wait_while_for(at, expected, timeout)` are that wait for whoever runs (a fiber parks `50us` at a time
 and looks again), may return early, so loop. `waitfor(duration)` waits at least that long the same way (`waitfor(20ms)`).
 `Clock.monotonic()` reads the clock that only goes forward, as a `Duration` since a start the system picks: subtract
@@ -1425,7 +1486,7 @@ listed).
 modes and on other targets. `[debug] race-check = false` in config.toml (or `--no-race-check`) turns it off, and
 `race-check = true` (or `--race-check`) turns it on in a release mode (on a target without it, that is an error). Every
 routine (stdlib too) is instrumented with ThreadSanitizer, and the program stops at the first data race (two threads
-touching the same memory, one writing, neither an atomic access nor a lock between them) with exit status 82 and a
+touching the same memory, one writing, neither an atomic access nor an exclusive access between them) with exit status 82 and a
 report of both places on stderr. The program runs slower. It sees the races a run has, not every possible one. An
 allocation the check's runtime can't make returns null, so the program's own `OutOfMemoryError` reports it. Fibers tell the check which stack runs
 (`Standard/Os/RaceCheck.te`). `tessera check` checks the stdlib's `@race_check("on")` / `@race_check("off")` sides
@@ -1719,7 +1780,7 @@ symbol keeps its own name (`rf_fs_can_read`). A vector mask asks
 `is_all_true()`, `is_any_true()`, `is_none_true()`. A free routine with a family prefix keeps the prefix first
 (`f128_is_integer`, `ryu_is_multiple_of_pow5`). Not questions in this sense, so they keep their names: comparisons and
 (`eq`, `lt`, `compare`), an overflow test that goes with its operation
-(`mul_overflows`), and a routine that does something and says whether it worked (`Set.add`, `remove`, `try_lock`,
+(`mul_overflows`), and a routine that does something and says whether it worked (`Set.add`, `remove`, `AccessManager.try_take`,
 `wait_for`). A `Bool` value in a body reads as a predicate too, but needs no prefix (`done`, `found`).
 
 **Name case.** Types, protocols, and modules are `PascalCase` (`Maybe`, `NotFoundError`), with acronyms written as

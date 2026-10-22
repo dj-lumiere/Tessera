@@ -1,0 +1,46 @@
+# Shared read accesses to one value overlap: while the main thread reads it, another thread takes shared read access
+# too without waiting, and an exclusive access can't be had.
+
+import Standard/Os
+
+### Reads the value under shared read access, which the main thread holds as well.
+### :param at: The value.
+### :returns: What it read, and whether it took the access at once.
+routine read_too(at: @U64) -> (U64, Bool)
+    started: Duration = Clock.monotonic()
+    view: ReadAuthorized[U64] = at.get_shared_read_access()
+    quick: Bool = Clock.monotonic() - started < 1s
+    value: U64 = view.getview().peek()
+    drop view
+    return (value, quick)
+
+### Asks for exclusive access without waiting.
+### :param at: The value.
+### :returns: Whether it got it.
+routine write_now(at: @U64) -> Bool
+    local place: @SourceLocation <- .hollow()
+
+    taken: Bool = AccessManager.try_take(at, size: 8, mode: ACCESS_WRITE, place)
+    if taken
+        AccessManager.give_back(at)
+    return taken
+
+routine start() -> None
+    local value: @U64 <- 42
+
+    view: ReadAuthorized[U64] = value.get_shared_read_access()
+    t: Thread[(U64, Bool)] = get_thread[(U64, Bool)]()
+    t.put_work(entry: read_too.to[Callable](), args: value)
+    t.wait_finished()
+    seen, quick = t.retrieve()
+    t.give_back()
+    w: Thread[Bool] = get_thread[Bool]()
+    w.put_work(entry: write_now.to[Callable](), args: value)
+    w.wait_finished()
+    written: Bool = w.retrieve()
+    w.give_back()
+    mine: U64 = view.getview().peek()
+    drop view
+    Console.show("both read {mine} and {seen}, the second at once: {quick}")
+    Console.show("exclusive access while they read: {written}")
+    return

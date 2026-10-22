@@ -1,0 +1,50 @@
+# Thread work changes shared memory through an exclusive access it is handed: the routine that puts the work takes the
+# access before put_work, hands the Authorized[T] to the work, waits for it, and gives the access back. Work
+# that takes an exclusive access itself (each round, to one counter) builds too, and four threads lose nothing.
+
+import Standard/Collections
+import Standard/Os
+
+global COUNTER: @U64
+
+### Adds `rounds` values to the list it is handed exclusive access to.
+### :param list: The exclusive access to the list.
+### :param rounds: How many.
+@reshaping(list)
+routine fill(list: Authorized[List[U64]], rounds: U64) -> None
+    each i in 0 til rounds
+        list.getview().add_last(i)
+    then
+        return
+
+### Adds `rounds` to the counter, each under exclusive access to it.
+### :param rounds: How many.
+routine bump(rounds: U64) -> None
+    each i in 0 til rounds
+        counter: Authorized[U64] = COUNTER.get_exclusive_access()
+        counter.getview().poke(counter.getview().peek() + 1)
+        drop counter
+    then
+        return
+
+routine start() -> None
+    local xs: @List[U64] <- .construct(HEAP)
+    local threads: @Array[Thread[None], 4] <- .hollow()
+
+    list: Authorized[List[U64]] = xs.get_exclusive_access()
+    t: Thread[None] = get_thread[None]()
+    t.put_work(entry: fill.to[Callable](), args: (list, 1000))
+    t.wait_finished()
+    t.give_back()
+    drop list
+    each i: U64 in 0 til 4
+        u: Thread[None] = get_thread[None]()
+        u.put_work(entry: bump.to[Callable](), args: 1000)
+        threads[i] = u
+    each i: U64 in 0 til 4
+        u: Thread[None] = threads[i]
+        u.wait_finished()
+        u.give_back()
+    Console.show("{COUNTER.peek()} {xs.count()}")
+    drop xs
+    return

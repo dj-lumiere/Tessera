@@ -1,42 +1,49 @@
+# The same two threads with the deadlock check off: each takes one element and gives up on the other after a while
+# (AccessManager.take with a deadline), so the program ends, and neither got its second access.
+
 import Standard/Os
 
 record Pair
-    first: ExclusiveAccess
-    second: ExclusiveAccess
+    first: U64
+    second: U64
     ready: Atomic[U64]
     done: Atomic[U64]
 
-routine forward(pair: @Pair) -> Bool
-    pair.first.lock()
-    pair.ready.fetch_add(1)
-    until pair.ready.peek() >= 2
-        waitfor(1ms)
-    got: Bool = pair.second.lock_within(100ms)
+routine take_second(at: @U64) -> Bool
+    local place: @SourceLocation <- .hollow()
+
+    deadline: Duration = Clock.monotonic() +^ 100ms
+    got: Bool = AccessManager.take(at, size: 8, mode: ACCESS_WRITE, deadline, place)
     if got
-        pair.second.unlock()
-    pair.done.fetch_add(1)
-    until pair.done.peek() >= 2
+        AccessManager.give_back(at)
+    return got
+
+routine meet(pair: @Pair, count: @Atomic[U64]) -> None
+    count.fetch_add(1)
+    until count.peek() >= 2
         waitfor(1ms)
-    pair.first.unlock()
+    then
+        return
+
+routine forward(pair: @Pair) -> Bool
+    first: Authorized[U64] = pair.first.get_exclusive_access()
+    meet(pair, count: pair.ready)
+    got: Bool = take_second(pair.second)
+    meet(pair, count: pair.done)
+    drop first
     return got
 
 routine backward(pair: @Pair) -> Bool
-    pair.second.lock()
-    pair.ready.fetch_add(1)
-    until pair.ready.peek() >= 2
-        waitfor(1ms)
-    got: Bool = pair.first.lock_within(100ms)
-    if got
-        pair.first.unlock()
-    pair.done.fetch_add(1)
-    until pair.done.peek() >= 2
-        waitfor(1ms)
-    pair.second.unlock()
+    second: Authorized[U64] = pair.second.get_exclusive_access()
+    meet(pair, count: pair.ready)
+    got: Bool = take_second(pair.first)
+    meet(pair, count: pair.done)
+    drop second
     return got
 
 routine start() -> None
-    local pair: @Pair <- Pair(first: .construct(), second: .construct(),
-        ready: .construct(value: 0), done: .construct(value: 0))
+    local pair: @Pair <- Pair(first: 0, second: 0, ready: .construct(value: 0),
+        done: .construct(value: 0))
 
     a: Thread[Bool] = get_thread[Bool]()
     b: Thread[Bool] = get_thread[Bool]()

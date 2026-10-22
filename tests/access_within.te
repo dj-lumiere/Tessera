@@ -1,47 +1,46 @@
-# lock_within waits for an access at most a given time: another thread gives up while the access is held, and gets it
-# once the holder lets go. The access counts the waits, and the AccessManager lists what a thread holds.
+# AccessManager.take waits for an access at most until a deadline: another thread gives up while the access is held,
+# and gets it once the holder gives it back. The AccessManager lists what a thread holds.
 
 import Standard/Os
 
 record Shared
-    access: ExclusiveAccess
-    readers: MultiReadAccess
+    value: U64
+    readers: U64
 
-routine try_briefly(shared: @Shared) -> Bool
-    taken: Bool = shared.access.lock_within(20ms)
+routine try_briefly(at: @U64, mode: U8) -> Bool
+    local place: @SourceLocation <- .hollow()
+
+    deadline: Duration = Clock.monotonic() +^ 20ms
+    taken: Bool = AccessManager.take(at, size: 8, mode, deadline, place)
     if taken
-        shared.access.unlock()
+        AccessManager.give_back(at)
     return taken
 
-routine write_briefly(shared: @Shared) -> Bool
-    taken: Bool = shared.readers.lock_write_within(20ms)
-    if taken
-        shared.readers.unlock_write()
-    return taken
-
-routine elsewhere(entry: Callable[(@Shared,), Bool], shared: @Shared) -> Bool
+routine elsewhere(at: @U64, mode: U8) -> Bool
     t: Thread[Bool] = get_thread[Bool]()
-    t.put_work(entry, args: shared)
+    t.put_work(entry: try_briefly.to[Callable](), args: (at, mode))
     t.wait_finished()
     taken: Bool = t.retrieve()
     t.give_back()
     return taken
 
 routine start() -> None
-    local shared: @Shared <- Shared(access: .construct(), readers: .construct())
+    local shared: @Shared <- Shared(value: 0, readers: 0)
 
-    shared.access.lock()
-    shared.readers.lock_read()
+    value: Authorized[U64] = shared.value.get_exclusive_access()
+    readers: ReadAuthorized[U64] = shared.readers.get_shared_read_access()
     Console.show("held: {AccessManager.held_count()}")
-    late: Bool = elsewhere(entry: try_briefly.to[Callable](), shared)
-    blocked: Bool = elsewhere(entry: write_briefly.to[Callable](), shared)
+    late: Bool = elsewhere(at: shared.value, mode: ACCESS_WRITE)
+    blocked: Bool = elsewhere(at: shared.readers, mode: ACCESS_WRITE)
     Console.show("while held: {late} {blocked}")
-    shared.access.unlock()
-    shared.readers.unlock_read()
+    started: Duration = Clock.monotonic()
+    again: Bool = elsewhere(at: shared.value, mode: ACCESS_READ)
+    waited: Bool = Clock.monotonic() - started >= 20ms
+    drop value
+    drop readers
     Console.show("held: {AccessManager.held_count()}")
-    free: Bool = elsewhere(entry: try_briefly.to[Callable](), shared)
-    open: Bool = elsewhere(entry: write_briefly.to[Callable](), shared)
+    free: Bool = elsewhere(at: shared.value, mode: ACCESS_WRITE)
+    open: Bool = elsewhere(at: shared.readers, mode: ACCESS_WRITE)
     Console.show("once free: {free} {open}")
-    Console.show("waits: {shared.access.wait_count()} {shared.readers.wait_count()}")
-    Console.show("waited at least 20ms: {shared.access.waited() >= 20ms}")
+    Console.show("gave up after 20ms: {again} {waited}")
     return

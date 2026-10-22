@@ -44,6 +44,15 @@ spelling has no step, the build error names the new one.
 **Memory and managers**
 - `Slice[T]` is `Span[T]` and `Bytes` is `Span[Byte]` (`--step memory`). Managers hand out `Memory[T]` and
   `Box[T]`, which go back with `destruct`, and a value goes back with `drop x` (`--step destruct`, `--step drop`).
+- Only `Box[T]` reads and writes with `load` / `store`, and only `@T` with `peek` / `poke`. A `Memory[T]` turns an
+  element into one: `m[i]` is the element as a `Box[T]` (`m[i].load()`, `m[i].store(v)`, `m[i].take()`),
+  `m.getslot(i)` its place as a `@Box[T]`, `m.getview(i)` the element as a `@T`, and `m.getslice(start, count)` /
+  `m.getslice()` a `@[T]`. `m.load(i)`, `m.store(i, v)`, `m[i] = v`, `m.getview()`, and `xs[i] = v` on a span are
+  build errors that name the new forms.
+- Memory from a manager is written with `from`: `[0] * n from HEAP`, `10 from HEAP` (a scalar too), and
+  `from STACK` is a slot of the frame.
+- `Box[T]` is `{at, manager}` and `Memory[T]` is `{data, count, manager}`: the block holds only the values, and the
+  generation check is gone. A second give-back the build doesn't see is caught by the heap check (`DoubleFreeError`).
 - A record declares `construct` / `destruct` only when it holds something to release (`--step lifecycle`).
 - Every memory region has a manager: `DEFAULT_HEAP` is `HEAP`, `DEFAULT_STACKS` is `PAGES`, and processes,
   thread-locals and globals have `ProcessManager`, `ThreadLocalManager` and `GlobalManager` (`--step managers`,
@@ -86,8 +95,12 @@ spelling has no step, the build error names the new one.
 - Iterators hand out values with `emit` and places with `next`. Collections use `add_last`, `remove_last`, `has`
   and `lacks` (`--step iterators`, `--step membership`).
 - A variant arm is matched with `is T as v`, and `Option` is `Maybe` (`--step variants`).
-- `ExclusiveLock` is `ExclusiveAccess`, `MultiReadLock` is `MultiReadAccess`, and a wait names `access:`
-  (`--step access`).
+- The lock records are gone: the `AccessManager` hands out access to memory, `held: Authorized[T] =
+  p.get_exclusive_access()` or a `ReadAuthorized[T]` from `p.get_shared_read_access()`, read and written through
+  `held.getview()` and given back with `drop held`. An access covers one value, so the elements of a run are taken
+  one at a time, and a record and its element buffer separately. `SignalCaster` waits take the `Authorized[T]` the
+  caller holds. Naming `ExclusiveAccess` or `MultiReadAccess` is a build error that
+  names the new form.
 - Threads and fibers are tickets: `get_thread`, `put_work`, `wait_finished` (`--step threads`). The fiber pool is
   `ThreadPoolManager`.
 - The console is `Console.ask`, `Console.show` and `Console.alert` (`--step console`).
@@ -109,10 +122,15 @@ spelling has no step, the build error names the new one.
 - Script mode: the loose lines of the entry file are its `start`. `set_exit_code`.
 - Memory regions with managers (`HEAP`, `C_HEAP`, `PAGES`, `StackManager`, `GlobalManager`, `ThreadLocalManager`,
   `ProcessManager`), the `MemoryManageable` and `PageManageable` protocols with `m.to[MemoryManager]()`, a buildtime
-  check that every path gives memory back once, generation checks, `--heap-check` and `--uninit-fill`.
+  check that every path gives memory back once, `--heap-check` and `--uninit-fill`.
 - Concurrency: fibers over a thread pool with work stealing (blocking calls run on I/O threads),
-  `ThreadPoolManager`, `Atomic[T]`, `ExclusiveAccess` / `MultiReadAccess` with `lock_within`, `AccessManager` with
-  deadlock detection and `access-order`, channels, `CpuEventManager`, and race checks on macOS and Linux.
+  `ThreadPoolManager`, `Atomic[T]`, the `AccessManager` (exclusive and shared read access to memory, one interval
+  table of the held accesses, deadlock detection that follows every holder a request overlaps, `access-order`, memory
+  given back waits for the accesses inside it), channels, `CpuEventManager`, and race checks on macOS and Linux.
+- Build checks for accesses: an access is given back on every path and once, its view isn't used after, the view of
+  a `ReadAuthorized[T]` isn't written, and the check follows accesses across routines. Thread work changes only memory
+  handed to it with `steal`, an `Authorized[T]` handed to it (the handing routine doesn't touch it until the wait), or
+  an `Atomic`: a global or memory handed without `steal` changed any other way is a build error.
 - Failure: `failable`, `throw`, crashables, `try` and `check`, with the thrown set of each call collected at
   buildtime (no heap and no runtime type information). `@throws`.
 - Targets without an OS: `when_power_on`, a reporting routine in the `Crash` slot, board files

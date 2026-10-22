@@ -7,7 +7,7 @@
 # A manager runs its fibers on one thread, the one that drives it, and never moves them: they take turns, and one runs
 # until it yields, parks, sleeps, or its work finishes. (A ThreadPoolManager's jobs are fibers the pool keeps, which a
 # wake hands to whichever of its threads is free, see ThreadPoolManager.te.) Nothing cuts in between, so fibers of one manager share
-# values without a lock between those points. Each thread has a manager of its own, FIBERS, made on first use. A
+# values without an exclusive access between those points. Each thread has a manager of its own, FIBERS, made on first use. A
 # program that wants more cores takes thread tickets and drives a manager on each.
 #
 #     f: Fiber[S64] = FIBERS.get_fiber[S64]()
@@ -116,8 +116,8 @@ entity FiberManager
     current: @FiberState
     ### The fibers ready to go on, in order. Only the manager's thread touches it.
     ready: CircularList[@FiberState]
-    ### Guards `inbox` and `idle`.
-    inbox_lock: ExclusiveAccess
+    ### The byte whose exclusive access guards `inbox` and `idle`.
+    inbox_guard: U8
     ### Fibers woken or started from other threads, for the manager's thread to take in.
     inbox: CircularList[@FiberState]
     ### Changes when the inbox gets a fiber. The manager's thread waits on it.
@@ -190,12 +190,12 @@ routine give_back_stack(stack: @StackManager, pages: @MemoryManager) -> None
 ### :param pool: Its `pool`.
 ### :returns: The new value.
 @target(os: not "none")
-common routine FiberState.construct(stack: StackManager, manager: @FiberManager,
-    slot: WorkSlot, work: @WorkSlot, then: Callable[(@FiberManager, @Me), None], wake_state: U32,
-    timer: U64, trace_depth: U64, access: @AccessFlow, race: Addr, next_idle: @Me, next_all: @Me,
+common routine FiberState.construct(stack: StackManager, manager: @FiberManager, slot: WorkSlot,
+    work: @WorkSlot, then: Callable[(@FiberManager, @Me), None], wake_state: U32, timer: U64,
+    trace_depth: U64, access: @AccessFlow, race: Addr, next_idle: @Me, next_all: @Me,
     pool: @ThreadPoolManager) -> Me
-    return Me(stack: steal stack, manager, slot: steal slot, work, then, wake_state, timer, trace_depth,
-        access, race, next_idle, next_all, pool)
+    return Me(stack: steal stack, manager, slot: steal slot, work, then, wake_state, timer,
+        trace_depth, access, race, next_idle, next_all, pool)
 
 ### Releases the block of its last work. Its stack's pages are its manager's to give back (`give_back_stack`), and
 ### dropping the stack's `StackManager` releases nothing.
@@ -240,7 +240,7 @@ common routine FiberManager.construct(stack_size: ByteSize, stack_manager: @Memo
     manager: @MemoryManager) -> Me
     return Me(manager, stack_manager, stack_size, owner: thread_mark(), home: .hollow(),
         home_race: .hollow(), current: .hollow(),
-        ready: CircularList[@FiberState].construct(manager), inbox_lock: .construct(),
+        ready: CircularList[@FiberState].construct(manager), inbox_guard: 0,
         inbox: CircularList[@FiberState].construct(manager), epoch: 0, alert: .hollow(), busy: 0,
         idle: .hollow(), all: .hollow(),
         timers: PriorityQueue[TimerKey, @FiberState].construct(manager), timer_seq: 0)
@@ -292,14 +292,14 @@ secret routine release_fibers() -> None
 routine @FiberManager.get_fiber[T]() -> Fiber[T]
 needs T: typename
     me.ensure()
-    me.inbox_lock.lock()
+    held: Authorized[U8] = me.inbox_guard.get_exclusive_access()
     idle: @FiberState = me.idle.peek()
     if idle.is_hollow()
-        me.inbox_lock.unlock()
+        drop held
         fiber: @FiberState = me.make_fiber()
         return Fiber[T](fiber, issued: 0)
     me.idle.poke(idle.next_idle.peek())
-    me.inbox_lock.unlock()
+    drop held
     idle.next_idle.poke(.hollow())
     idle.slot.state.poke_atomic(TICKET_EMPTY)
     return Fiber[T](fiber: idle, issued: idle.slot.issued.peek())
@@ -764,10 +764,10 @@ needs T: typename
     me.work_slot().give_back()
     fiber: @FiberState = me.fiber
     manager: @FiberManager = fiber.manager.peek()
-    manager.inbox_lock.lock()
+    held: Authorized[U8] = manager.inbox_guard.get_exclusive_access()
     fiber.next_idle.poke(manager.idle.peek())
     manager.idle.poke(fiber)
-    manager.inbox_lock.unlock()
+    drop held
     return
 
 # -- driving ----------------------------------------------------------------------------------------------------
@@ -889,9 +889,9 @@ secret routine @FiberManager.place_ready(fiber: @FiberState) -> None
     if thread_mark() === me.owner.peek_atomic()
         me.ready.add_last(fiber)
         return
-    me.inbox_lock.lock()
+    held: Authorized[U8] = me.inbox_guard.get_exclusive_access()
     me.inbox.add_last(fiber)
-    me.inbox_lock.unlock()
+    drop held
     word: @U32 = me.wake_word()
     word.atomic_fetch_add(1)
     wake_all(word)
@@ -901,11 +901,11 @@ secret routine @FiberManager.place_ready(fiber: @FiberState) -> None
 @target(os: not "none")
 @reshaping
 secret routine @FiberManager.take_inbox() -> None
-    me.inbox_lock.lock()
+    held: Authorized[U8] = me.inbox_guard.get_exclusive_access()
 
     until me.inbox.is_empty()
         me.ready.add_last(me.inbox.remove_first())
-    me.inbox_lock.unlock()
+    drop held
     return
 
 ### Wakes the fibers whose deadline has come. A timer whose fiber went on before it (its number is no longer the

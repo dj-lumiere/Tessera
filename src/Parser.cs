@@ -773,7 +773,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         Next();
         var value = ParseValue(pos.Col);
         if (value is AtExpr at)
-            throw new CompileError(at.Pos, $"memory from a manager takes its contents with '<-': local {name}: {type} <- ... at manager");
+            throw new CompileError(at.Pos, $"memory from a manager takes its contents with '<-': local {name}: {type} <- ... from manager");
         return new BindStmt(name, type, value, pos);
     }
 
@@ -1540,7 +1540,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             Expect(TokenKind.Eq, "'='");
             var value = ParseValue(col);
             if (value is AtExpr at)
-                throw new CompileError(at.Pos, $"memory from a manager goes in a slot: local {name}: {type} <- ... at manager");
+                throw new CompileError(at.Pos, $"memory from a manager goes in a slot: local {name}: {type} <- ... from manager");
             if (value is not WhenExpr) ExpectLineEnd();
             _values!.Add(name);
             return new BindStmt(name, type, value, pos);
@@ -2401,11 +2401,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
     }
 
-    /// `literal at manager`: an array literal or a record literal in memory from a manager, a `Memory[T]` or a
-    /// `Box[T]`. Without `at` the literal itself.
+    /// `literal from manager`: a literal in memory from a manager, a `Memory[T]` or a `Box[T]`. Without `from` the
+    /// literal itself.
     private Expr AtManager(Expr literal)
     {
-        if (_inAsm || Cur is not { Kind: TokenKind.Ident, Text: "at", Escaped: false }) return literal;
+        if (_inAsm || Cur is not { Kind: TokenKind.Ident, Text: "from", Escaped: false }) return literal;
         var pos = Next().Pos;
         return new AtExpr(literal, ParsePostfix(), pos);
     }
@@ -2570,7 +2570,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             throw new CompileError(pos, $"a slot takes its contents with '<-': local {name}: {type} <- value");
         if (type is not { Name: "Ptr", Args.Count: 1 } && !IsSpanType(type) && !IsManagedType(type))
             throw new CompileError(type.Pos,
-                $"local makes memory: local p: @T <- value, local xs: @[T] <- [...], or local m: Memory[T] <- [...] at manager; found {type}");
+                $"local makes memory: local p: @T <- value, local xs: @[T] <- [...], or local m: Memory[T] <- [...] from manager; found {type}");
         if (!Is(TokenKind.LeftArrow))
             throw new CompileError(pos,
                 $"a slot says what it starts with: local {name}: {type} <- value, or <- .hollow() when a routine it's passed to fills it");
@@ -2582,18 +2582,21 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private static bool IsManagedType(TypeRef type) => type is { Name: "Memory" or "Box", Path: null, Args.Count: 1 };
 
     /// The binding after `<-` in a local slot: a pointer's or a span's contents go into the frame, and memory
-    /// from a manager is the `... at manager` value itself.
+    /// from a manager is the `... from manager` value itself.
     private BindStmt MemoryBinding(string name, TypeRef type, Pos pos)
     {
-        var contents = ParseExpr();
+        var contents = AtManager(ParseExpr());
+        // `from STACK` names the frame, where a slot is anyway: the slot itself.
+        if (!IsManagedType(type) && contents is AtExpr { Manager: PresetRef { Owner: null, Name: "STACK", Path: null } } framed)
+            contents = framed.Value;
         if (IsManagedType(type))
             return contents is AtExpr
                 ? new BindStmt(name, type, contents, pos)
                 : throw new CompileError(contents.Pos,
-                    $"a {type.Name} is memory from a manager, which the contents name: {name}: {type} <- [...] at manager");
+                    $"a {type.Name} is memory from a manager, which the contents name: {name}: {type} <- [...] from manager");
         if (IsSpanType(type) && contents is AtExpr)
             throw new CompileError(contents.Pos,
-                $"memory from a manager is a Memory[T]: {name}: Memory[{(type.Args is [TypeArgType elem] ? elem.ToString() : "T")}] <- ... at manager, or the literal alone for a span (@[T]) in the frame");
+                $"memory from a manager is a Memory[T]: {name}: Memory[{(type.Args is [TypeArgType elem] ? elem.ToString() : "T")}] <- ... from manager, or the literal alone for a span (@[T]) in the frame");
         if (IsSpanType(type) && contents is not ArrayLit { IsTuple: false })
             throw new CompileError(contents.Pos,
                 $"a span (@[T]) in the frame takes an array literal, which gives its count: {name}: {type} <- [0] * 64");

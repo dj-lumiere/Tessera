@@ -105,7 +105,7 @@ secret routine text_sequence_tree(pieces: @[TextPiece], ignore_case: Bool,
     tree.add_last(pieces.count().to[U32]())
     each i: U64 in 0 til pieces.count()
         piece: @TextPiece = pieces.getslot(i)
-        append_words(tree, from: piece.code.getview())
+        append_words(tree, from: piece.code.getslice())
         drop pieces.getslot(i)
     then
         return tree
@@ -126,7 +126,7 @@ secret routine bytes_sequence_tree(pieces: @[BytesPiece], ignore_case: Bool,
     tree.add_last(pieces.count().to[U32]())
     each i: U64 in 0 til pieces.count()
         piece: @BytesPiece = pieces.getslot(i)
-        append_words(tree, from: piece.code.getview())
+        append_words(tree, from: piece.code.getslice())
         drop pieces.getslot(i)
     then
         return tree
@@ -373,7 +373,7 @@ needs TWriter: typename, Writer[TWriter]
 ### :returns: The program view.
 @track_caller
 secret routine program_of(program: @Memory[U32], mode: U32) -> Program
-    when read_program(words: program.getview(), mode)
+    when read_program(words: program.getslice(), mode)
         is Program as read => return read
         is None => crash("InvalidValueError", "This pattern's program doesn't hold together.")
 
@@ -385,9 +385,9 @@ secret routine program_of(program: @Memory[U32], mode: U32) -> Program
 ### :returns: The slots, or None when there is no match.
 secret routine find_slots(program: Program, input: PatternInput, from: U64,
     manager: @MemoryManager) -> Maybe[Memory[U64]]
-    local slots: @Memory[U64] <- [NO_POSITION] * program.slot_count() at manager
+    local slots: @Memory[U64] <- [NO_POSITION] * program.slot_count() from manager
 
-    if find_match(search: Search(program, input), from, slots: slots.getview(), manager)
+    if find_match(search: Search(program, input), from, slots: slots.getslice(), manager)
         return slots
     drop slots
     return None()
@@ -417,7 +417,7 @@ routine @TextPattern.find(text: @[Byte], manager: @MemoryManager) -> Maybe[TextM
     program: Program = program_of(program: me.program, mode: MODE_TEXT)
     when find_slots(program, input: PatternInput.of_utf8(text), from: 0, manager)
         is Memory[U64] as slots => return TextMatch.construct(source: text, slots: steal slots,
-            program: me.program.getview())
+            program: me.program.getslice())
         is None => return None()
 
 ### The leftmost place the pattern matches in the bytes.
@@ -428,7 +428,7 @@ routine @BytesPattern.find(bytes: @[Byte], manager: @MemoryManager) -> Maybe[Byt
     program: Program = program_of(program: me.program, mode: MODE_BYTES)
     when find_slots(program, input: PatternInput.of_bytes(bytes), from: 0, manager)
         is Memory[U64] as slots => return BytesMatch.construct(source: bytes, slots: steal slots,
-            program: me.program.getview())
+            program: me.program.getslice())
         is None => return None()
 
 ### Where the search after a match goes on: its end, or one character further when it matched nothing.
@@ -455,10 +455,10 @@ routine @TextPattern.find_all(text: @[Byte], manager: @MemoryManager) -> List[Te
     until from > input.count() with from: U64 = 0
         when find_slots(program, input, from, manager)
             is Memory[U64] as slots =>
-                start: U64 = slots.load(0)
-                end: U64 = slots.load(1)
+                start: U64 = slots[0].load()
+                end: U64 = slots[1].load()
                 found.add_last(TextMatch.construct(source: text, slots: steal slots,
-                    program: me.program.getview()))
+                    program: me.program.getslice()))
                 continue with from: next_search(input, start, end)
             is None => break
     then
@@ -477,10 +477,10 @@ routine @BytesPattern.find_all(bytes: @[Byte], manager: @MemoryManager) -> List[
     until from > input.count() with from: U64 = 0
         when find_slots(program, input, from, manager)
             is Memory[U64] as slots =>
-                start: U64 = slots.load(0)
-                end: U64 = slots.load(1)
+                start: U64 = slots[0].load()
+                end: U64 = slots[1].load()
                 found.add_last(BytesMatch.construct(source: bytes, slots: steal slots,
-                    program: me.program.getview()))
+                    program: me.program.getslice()))
                 continue with from: next_search(input, start, end)
             is None => break
     then
@@ -519,8 +519,8 @@ secret routine replace_all(program: Program, input: PatternInput, with: @[Byte],
     until from > input.count() with from: U64 = 0, copied: U64 = 0
         when find_slots(program, input, from, manager)
             is Memory[U64] as slots =>
-                start: U64 = slots.load(0)
-                end: U64 = slots.load(1)
+                start: U64 = slots[0].load()
+                end: U64 = slots[1].load()
                 drop slots
                 out.write_bytes(
                     data: source.getslice(start: copied, count: start - copied).to[@Byte](),
@@ -532,10 +532,10 @@ secret routine replace_all(program: Program, input: PatternInput, with: @[Byte],
         out.write_bytes(
             data: source.getslice(start: copied, count: source.count() - copied).to[@Byte](),
             count: source.count() - copied)
-        local result: @Memory[Byte] <- [b'\x00'] * out.count() at manager
+        local result: @Memory[Byte] <- [b'\x00'] * out.count() from manager
 
         each i: U64 in 0 til out.count()
-            result.store(index: i, value: out.getitem(i))
+            result[i].store(out.getitem(i))
         drop out
         return result
 
@@ -571,8 +571,8 @@ secret routine split_all(program: Program, input: PatternInput,
     until from > input.count() with from: U64 = 0, part: U64 = 0
         when find_slots(program, input, from, manager)
             is Memory[U64] as slots =>
-                start: U64 = slots.load(0)
-                end: U64 = slots.load(1)
+                start: U64 = slots[0].load()
+                end: U64 = slots[1].load()
                 drop slots
                 parts.add_last(source.getslice(start: part, count: start - part))
                 continue with from: next_search(input, start, end), part: end
@@ -597,12 +597,12 @@ record MatchParts
 ### Where the match starts.
 ### :returns: The byte index of its first byte in the text.
 routine @TextMatch.start() -> U64
-    return me.slots.load(0)
+    return me.slots[0].load()
 
 ### Where the match ends.
 ### :returns: The byte index just past its last byte.
 routine @TextMatch.end() -> U64
-    return me.slots.load(1)
+    return me.slots[1].load()
 
 ### The text the match took.
 ### :returns: A view of it in the text searched.
@@ -615,7 +615,7 @@ routine @TextMatch.text() -> @[Byte]
 ### :throws: Throws `CaptureNameError` when the pattern has no capture of that name, and `AbsentValueError` when the
 ###     capture took no part in the match.
 failable routine @TextMatch.group(name: @[Byte]) -> @[Byte]
-    parts: MatchParts = MatchParts(source: me.source.peek(), slots: me.slots.getview(),
+    parts: MatchParts = MatchParts(source: me.source.peek(), slots: me.slots.getslice(),
         program: me.program.peek(), mode: MODE_TEXT)
     return when check parts.group(name)
         is @[Byte] as text => text
@@ -623,12 +623,12 @@ failable routine @TextMatch.group(name: @[Byte]) -> @[Byte]
 ### Where the match starts.
 ### :returns: The index of its first byte.
 routine @BytesMatch.start() -> U64
-    return me.slots.load(0)
+    return me.slots[0].load()
 
 ### Where the match ends.
 ### :returns: The index just past its last byte.
 routine @BytesMatch.end() -> U64
-    return me.slots.load(1)
+    return me.slots[1].load()
 
 ### The bytes the match took.
 ### :returns: A view of them in the bytes searched.
@@ -641,7 +641,7 @@ routine @BytesMatch.bytes() -> @[Byte]
 ### :throws: Throws `CaptureNameError` when the pattern has no capture of that name, and `AbsentValueError` when the
 ###     capture took no part in the match.
 failable routine @BytesMatch.group(name: @[Byte]) -> @[Byte]
-    parts: MatchParts = MatchParts(source: me.source.peek(), slots: me.slots.getview(),
+    parts: MatchParts = MatchParts(source: me.source.peek(), slots: me.slots.getslice(),
         program: me.program.peek(), mode: MODE_BYTES)
     return when check parts.group(name)
         is @[Byte] as bytes => bytes

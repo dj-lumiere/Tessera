@@ -51,8 +51,8 @@ entity WorkSlot
     manager: @MemoryManager
     ### 1 once `cancel()` asked the work to stop.
     cancel: U32
-    ### Guards `waiter`.
-    lock: ExclusiveAccess
+    ### The byte whose exclusive access guards `waiter`.
+    guard: U8
     ### Whoever waits for the work to finish, or a hollow Waiter.
     waiter: Waiter
     ### The work's own waiter while it is in a cancellable wait, which `cancel()` wakes, or a hollow Waiter.
@@ -77,7 +77,7 @@ needs TWriter: typename, Writer[TWriter]
 ### :returns: The slot.
 common routine WorkSlot.construct(manager: @MemoryManager) -> Me
     return Me(state: TICKET_EMPTY, runner: no_work.to[Callable](), work: .hollow(), manager,
-        cancel: 0, lock: .construct(), waiter: .hollow(), blocked: .hollow(), issued: 0)
+        cancel: 0, guard: 0, waiter: .hollow(), blocked: .hollow(), issued: 0)
 
 ### Gives back the block of the last work.
 routine @WorkSlot.destruct() -> None
@@ -164,15 +164,16 @@ routine @WorkSlot.wait() -> None
 routine @WorkSlot.wait_until(deadline: Duration, cancellable: Bool) -> Bool
     local waiter: Waiter = current_waiter()
 
-    # The waiter goes in under the lock, which `complete` takes after it marks the work done: either this sees it
-    # done, or `complete` sees the waiter. One left behind when the wait ends otherwise only wakes it once more later,
+    # The waiter goes in under the exclusive access, which `complete` takes after it marks the work done: either this
+    # sees it done, or `complete` sees the waiter. One left behind when the wait ends otherwise only wakes it once more later,
     # which a park allows.
     loop
-        me.lock.lock()
+        held: Authorized[U8] = me.guard.get_exclusive_access()
         if me.is_finished()
+            drop held
             break
         me.waiter.poke(waiter)
-        me.lock.unlock()
+        drop held
         if Clock.monotonic() >= deadline
             return false
         if cancellable
@@ -180,7 +181,6 @@ routine @WorkSlot.wait_until(deadline: Duration, cancellable: Bool) -> Bool
                 return false
         waiter.park_until(deadline)
         continue
-    me.lock.unlock()
     return true
 
 ### Whether the running work was asked to stop, after making `waiter` the one `cancel()` wakes while it waits.
@@ -192,9 +192,9 @@ routine blocked_until_cancelled(waiter: Waiter) -> Bool
     slot: @WorkSlot = RUNNING_WORK.peek()
     if slot.is_hollow()
         return false
-    slot.lock.lock()
+    held: Authorized[U8] = slot.guard.get_exclusive_access()
     slot.blocked.poke(waiter)
-    slot.lock.unlock()
+    drop held
     return slot.is_cancelled()
 
 ### Makes `waiter` the one woken when the work finishes, unless it has: for a wait on several tickets at once.
@@ -202,22 +202,22 @@ routine blocked_until_cancelled(waiter: Waiter) -> Bool
 ### :returns: True when the work has finished already (`waiter` isn't kept).
 @target(os: not "none")
 routine @WorkSlot.register(waiter: Waiter) -> Bool
-    me.lock.lock()
+    held: Authorized[U8] = me.guard.get_exclusive_access()
     if me.is_finished()
-        me.lock.unlock()
+        drop held
         return true
     me.waiter.poke(waiter)
-    me.lock.unlock()
+    drop held
     return false
 
 ### Forgets `waiter` if it is the one woken when the work finishes: a wait on several tickets that is over.
 ### :param waiter: The waiter.
 @target(os: not "none")
 routine @WorkSlot.unregister(waiter: Waiter) -> None
-    me.lock.lock()
+    held: Authorized[U8] = me.guard.get_exclusive_access()
     if me.waiter.peek() == waiter
         me.waiter.poke(.hollow())
-    me.lock.unlock()
+    drop held
     return
 
 ### Marks the work finished and wakes whoever waits for it: the thread that runs it calls this once the routine
@@ -226,10 +226,10 @@ routine @WorkSlot.unregister(waiter: Waiter) -> None
 routine @WorkSlot.complete() -> None
     me.state.poke_atomic(TICKET_DONE)
     wake_all(me.state)
-    me.lock.lock()
+    held: Authorized[U8] = me.guard.get_exclusive_access()
     waiter: Waiter = me.waiter.peek()
     me.waiter.poke(.hollow())
-    me.lock.unlock()
+    drop held
     waiter.wake()
     return
 
@@ -260,9 +260,9 @@ routine @WorkSlot.is_cancelled() -> Bool
 @target(os: not "none")
 routine @WorkSlot.request_cancel() -> None
     me.cancel.poke_atomic(1)
-    me.lock.lock()
+    held: Authorized[U8] = me.guard.get_exclusive_access()
     blocked: Waiter = me.blocked.peek()
-    me.lock.unlock()
+    drop held
     blocked.wake()
     return
 

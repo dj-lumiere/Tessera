@@ -71,16 +71,19 @@ public sealed partial class Compiler
 
     /// The memory checks of routines that wait for what their callees keep (FunctionGen: a view handed to a call next to
     /// a value of the routine), run once the escape check knows that.
-    private readonly List<Func<Func<string, int, int, bool>, List<CompileError>>> _keptViewChecks = [];
+    private readonly List<Func<MemoryRules.Effects, List<CompileError>>> _keptViewChecks = [];
 
-    public void DeferMemoryCheck(Func<Func<string, int, int, bool>, List<CompileError>> check)
+    /// What every built routine does with the accesses it takes, for the memory check across routines.
+    public AccessFacts Access { get; } = new();
+
+    public void DeferMemoryCheck(Func<MemoryRules.Effects, List<CompileError>> check)
     {
         lock (_keptViewChecks) _keptViewChecks.Add(check);
     }
 
     /// The deferred memory checks, run after Escapes.Verify.
     private List<CompileError> CheckKeptViews() =>
-        _keptViewChecks.SelectMany(check => check(Escapes.KeepsInto)).GroupBy(e => e.Pos).Select(g => g.First())
+        _keptViewChecks.SelectMany(check => check(new MemoryRules.Effects(Escapes.KeepsInto, Access.ReturnsAccess, Access.GivesBack))).GroupBy(e => e.Pos).Select(g => g.First())
             .OrderBy(e => e.Pos.File, StringComparer.Ordinal).ThenBy(e => e.Pos.Line).ThenBy(e => e.Pos.Col).ToList();
     private readonly Dictionary<string, List<(string Name, DType Type)>> _fieldCache = [];
     private readonly Dictionary<string, string> _strings = [];

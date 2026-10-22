@@ -43,12 +43,12 @@ routine fiber_produce(ch: @Channel[U64]) -> U64
     return 100
 
 ### Waits for a value that never comes, and says in `got` how the wait ended: 1 closed, 2 cancelled.
-routine wait_forever(ch: @Channel[U64], got: @U64) -> None
+routine wait_forever(ch: @Channel[U64], got: Authorized[U64]) -> None
     code: U64 = when check ch.receive()
         is U64 as v => v
         is ChannelClosedError => 1
         is CancelRequested => 2
-    got.poke(code)
+    got.getview().poke(code)
     return
 
 routine start() -> None
@@ -104,11 +104,13 @@ routine start() -> None
 
     local empty: @Channel[U64] <- .construct(capacity: 1)
     local got: @U64 <- 0
+    result: Authorized[U64] = got.get_exclusive_access()
     w: Thread[None] = get_thread[None]()
-    w.put_work(entry: wait_forever.to[Callable](), args: (empty, got))
+    w.put_work(entry: wait_forever.to[Callable](), args: (empty, result))
     early: Bool = w.wait_finished_for(2ms)
     w.cancel()
     w.wait_finished()
+    drop result
     out.write("finished before the cancel: {early}, the wait ended with {got.peek()}\n")
     w.give_back()
     drop empty

@@ -65,7 +65,7 @@ routine @PartitionManager.destruct() -> None
 ### The directory the partition's files are reached at, a view of `mounted_at` (empty when it isn't mounted).
 ### :returns: The {Directory}, valid while the partition is.
 routine @PartitionManager.directory() -> Directory
-    return Directory.at(me.mounted_at.getview())
+    return Directory.at(me.mounted_at.getslice())
 
 ### The storage devices the OS reports, their names in memory from manager (drop the list).
 ### :param manager: The memory manager for the list and the names.
@@ -216,7 +216,7 @@ secret routine text_of(path: @[Byte], manager: @MemoryManager) -> Memory[Byte]
 secret routine sys_number(path: @[Byte], manager: @MemoryManager) -> U64
     local text: @Memory[Byte] <- text_of(path, manager)
 
-    n: U64 = leading_number(text.getview())
+    n: U64 = leading_number(text.getslice())
     drop text
     return n
 
@@ -233,7 +233,7 @@ secret routine linux_partition(sys: @[Byte], name: @[Byte], mounts: @[Byte],
     manager: @MemoryManager) -> PartitionManager
     local dev_path: @Memory[Byte] <- join_path(a: sys, b: "dev", manager)
     local size_path: @Memory[Byte] <- join_path(a: sys, b: "size", manager)
-    local dev_text: @Memory[Byte] <- text_of(path: dev_path.getview(), manager)
+    local dev_text: @Memory[Byte] <- text_of(path: dev_path.getslice(), manager)
     local device: @Memory[Byte] <- copied(text: "", manager)
     local marker: @Memory[Byte] <- join_path(a: sys, b: "partition", manager)
 
@@ -241,26 +241,26 @@ secret routine linux_partition(sys: @[Byte], name: @[Byte], mounts: @[Byte],
     # with a file system on it, a device-mapper volume) is its own device.
     when check canonical_path(path: sys, manager)
         is Memory[Byte] as resolved =>
-            if is_present(marker.getview())
-                device.replace(value: copied(text: file_name(parent_path(resolved.getview())),
+            if is_present(marker.getslice())
+                device.replace(value: copied(text: file_name(parent_path(resolved.getslice())),
                     manager))
             else
                 device.replace(value: copied(text: name, manager))
             drop resolved
         is FsError => nothing
     drop marker
-    view: @[Byte] = dev_text.getview()
+    view: @[Byte] = dev_text.getslice()
     key_end: U64 = when view.find("\n")
         is U64 as k => k
         is None => view.count()
     key: @[Byte] = view.slice(start: 0, end: key_end)
-    size: U64 = sys_number(path: size_path.getview(), manager) *% 512
+    size: U64 = sys_number(path: size_path.getslice(), manager) *% 512
     m: MountLine = when mount_of(mounts, key)
         is MountLine as line => line
         is None => MountLine(mount_point: "", file_system: "")
     local at: @Memory[Byte] <- unescaped(text: m.mount_point, manager)
-    facts: PartitionFacts = PartitionFacts(name, device: device.getview(), mounted_at: at.getview(),
-        file_system: m.file_system, size)
+    facts: PartitionFacts = PartitionFacts(name, device: device.getslice(),
+        mounted_at: at.getslice(), file_system: m.file_system, size)
     local made: @PartitionManager <- partition_from(facts, manager)
     drop at
     drop device
@@ -288,8 +288,8 @@ secret routine storage_devices(manager: @MemoryManager) -> List[StorageManager]
         when entry
             is DirEntry as e =>
                 local sys: @Memory[Byte] <- join_path(a: "/sys/block", b: e.name, manager)
-                local size_path: @Memory[Byte] <- join_path(a: sys.getview(), b: "size", manager)
-                size: U64 = sys_number(path: size_path.getview(), manager) *% 512
+                local size_path: @Memory[Byte] <- join_path(a: sys.getslice(), b: "size", manager)
+                size: U64 = sys_number(path: size_path.getslice(), manager) *% 512
                 # A device with no medium (an unused loop device, an empty card reader) has size 0.
                 if size != 0
                     list.add_last(StorageManager(name: copied(text: e.name, manager), size))
@@ -321,12 +321,12 @@ secret routine partitions(manager: @MemoryManager) -> List[PartitionManager]
         when entry
             is DirEntry as e =>
                 local sys: @Memory[Byte] <- join_path(a: "/sys/class/block", b: e.name, manager)
-                local marker: @Memory[Byte] <- join_path(a: sys.getview(), b: "partition", manager)
-                local found: @PartitionManager <- linux_partition(sys: sys.getview(), name: e.name,
-                    mounts: mounts.getview(), manager)
+                local marker: @Memory[Byte] <- join_path(a: sys.getslice(), b: "partition", manager)
+                local found: @PartitionManager <- linux_partition(sys: sys.getslice(), name: e.name,
+                    mounts: mounts.getslice(), manager)
                 # A partition, or a block device that carries a mounted file system of its own (a device-mapper
                 # volume, a whole disk without a partition table): the same thing partition_of names.
-                if is_present(marker.getview()) or not found.mounted_at.getview().is_empty()
+                if is_present(marker.getslice()) or not found.mounted_at.getslice().is_empty()
                     list.add_last(steal found)
                 else
                     drop found
@@ -352,10 +352,10 @@ secret routine linux_partition_at(sys: @[Byte], key: @[Byte], mounts: @[Byte],
 
     when check canonical_path(path: sys, manager)
         is Memory[Byte] as resolved =>
-            name.replace(value: copied(text: file_name(resolved.getview()), manager))
+            name.replace(value: copied(text: file_name(resolved.getslice()), manager))
             drop resolved
         is FsError => nothing
-    local made: @PartitionManager <- linux_partition(sys, name: name.getview(), mounts, manager)
+    local made: @PartitionManager <- linux_partition(sys, name: name.getslice(), mounts, manager)
     drop name
     return made
 
@@ -379,19 +379,19 @@ secret failable routine partition_of(path: @[Byte], manager: @MemoryManager) -> 
 
     if is_present(sys.getview())
         local made: @PartitionManager <- linux_partition_at(sys: sys.getview(), key: key.getview(),
-            mounts: mounts.getview(), manager)
+            mounts: mounts.getslice(), manager)
         drop mounts
         drop sys
         drop key
         return made
-    m: MountLine = when mount_of(mounts: mounts.getview(), key: key.getview())
+    m: MountLine = when mount_of(mounts: mounts.getslice(), key: key.getview())
         is MountLine as line => line
         is None => MountLine(mount_point: "", file_system: "")
     name: @[Byte] = when
         m.file_system.is_empty() => key.getview()
         else => m.file_system
     local at: @Memory[Byte] <- unescaped(text: m.mount_point, manager)
-    facts: PartitionFacts = PartitionFacts(name, device: "", mounted_at: at.getview(),
+    facts: PartitionFacts = PartitionFacts(name, device: "", mounted_at: at.getslice(),
         file_system: m.file_system, size: 0)
     local unmounted: @PartitionManager <- partition_from(facts, manager)
     drop at

@@ -42,7 +42,7 @@ public sealed class EscapeCheck
     }
 
     /// A global: what is stored into memory it reaches outlives every routine.
-    public sealed record GlobalAtom(string Name, int Level) : Atom(Level)
+    public sealed record GlobalAtom(string Name, int Level, bool ThreadLocal = false) : Atom(Level)
     {
         public override Atom Shift(int by) => this with { Level = Clamp(Level + by) };
     }
@@ -65,10 +65,26 @@ public sealed class EscapeCheck
     public sealed record CallFact(string Callee, List<HashSet<Atom>> Args, Pos Pos, string Text)
     {
         public HashSet<Atom>? Through { get; init; }
+
+        /// Work put on a Thread or a Job ticket: it runs on another thread, next to this routine and other work.
+        public bool Work { get; init; }
+
+        /// For work, each argument as written, whether it is handed over with `steal` (the work then has it to
+        /// itself), and whether it is the view of an exclusive access the handing routine holds while the work runs.
+        public List<(string Text, bool Stolen, bool Exclusive)>? Handed { get; init; }
+
+        /// The arguments that are views of an exclusive access this routine holds: what the callee changes through
+        /// them, it changes under that access.
+        public HashSet<int>? Exclusive { get; init; }
     }
 
     /// A store: the place written (an address) and the value written there.
-    public sealed record StoreFact(HashSet<Atom> Place, HashSet<Atom> Value, Pos Pos, string Text);
+    public sealed record StoreFact(HashSet<Atom> Place, HashSet<Atom> Value, Pos Pos, string Text)
+    {
+        /// An atomic store, one into this thread's own copy of a global, or one through the view of an exclusive access:
+        /// safe from other threads.
+        public bool Unshared { get; init; }
+    }
 
     /// A returned value.
     public sealed record ReturnFact(HashSet<Atom> Value, Pos Pos);
@@ -87,6 +103,9 @@ public sealed class EscapeCheck
 
         /// The globals some path of the routine changes and returns without putting back (MemoryRules.GlobalStore).
         public HashSet<string> LeftChanged { get; set; } = [];
+
+        /// The parameters a library routine may move the memory of (`@reshaping`): what it changes through them.
+        public HashSet<int> Reshapes { get; } = [];
     }
 
     /// Why an effect holds: the place in the routine that has it, and what it does there.
@@ -108,7 +127,12 @@ public sealed class EscapeCheck
         /// argument is made of in terms of its own parameters: a caller that passes a routine calls that routine so.
         public Dictionary<string, (int Param, int Level, List<HashSet<(int Param, int Level)>> Args, Why Why)> Invokes { get; } = [];
 
-        public int Size => Returns.Count + StoresOut.Count + StoresInto.Count + Invokes.Count;
+        /// The parameters it changes memory through without an atomic access or a lock (a library routine: the ones it
+        /// is `@reshaping` on), and the globals it changes so.
+        public HashSet<int> Writes { get; } = [];
+        public Dictionary<string, Why> WritesGlobals { get; } = [];
+
+        public int Size => Returns.Count + StoresOut.Count + StoresInto.Count + Invokes.Count + Writes.Count + WritesGlobals.Count;
     }
 
     private readonly Dictionary<string, RoutineFacts> _facts = [];
@@ -184,6 +208,10 @@ public sealed class EscapeCheck
         foreach (var (k, v) in b.StoresInto) merged.StoresInto.TryAdd(k, v);
         foreach (var (k, v) in a.Invokes) merged.Invokes[k] = v;
         foreach (var (k, v) in b.Invokes) merged.Invokes.TryAdd(k, v);
+        merged.Writes.UnionWith(a.Writes);
+        merged.Writes.UnionWith(b.Writes);
+        foreach (var (k, v) in a.WritesGlobals) merged.WritesGlobals[k] = v;
+        foreach (var (k, v) in b.WritesGlobals) merged.WritesGlobals.TryAdd(k, v);
         return merged;
     }
 
@@ -344,10 +372,23 @@ public sealed class EscapeCheck
                         + $"'{Routine}' returns: return the values themselves, or let the caller pass the memory in (a span "
                         + "or a slot) and write there" + Note));
             }
+            bool library = facts.Inst.Decl.IsLibrary;
+            if (library) found.Writes.UnionWith(facts.Reshapes);
             foreach (var s in facts.Stores)
             {
                 var place = Lands(s.Place);
                 var value = Resolve(s.Value);
+                if (!library && !s.Unshared)
+                    foreach (var target in place)
+                        switch (target)
+                        {
+                            case ParamAtom p:
+                                found.Writes.Add(p.Index);
+                                break;
+                            case GlobalAtom { ThreadLocal: false } g:
+                                found.WritesGlobals.TryAdd(g.Name, new Why(s.Pos, Routine, s.Text));
+                                break;
+                        }
                 Store(found, place, value, new Why(s.Pos, Routine, s.Text));
                 if (errors is not null && Outside(place) && Reaches(value) is { } sees)
                     errors.Add(new CompileError(s.Pos, $"this keeps a value that reaches {sees.What} where it outlives "
@@ -357,8 +398,45 @@ public sealed class EscapeCheck
             foreach (var call in facts.Calls)
             {
                 var args = call.Args.Select(Resolve).ToList();
+                // Work runs on another thread: what it changes, it changes next to this routine.
+                // The library shares what it shares under its own exclusive accesses.
+                if (call.Work && errors is not null && !facts.Inst.Decl.IsLibrary) CheckWork(call, Resolve(call.Through ?? []), args, errors);
                 if (call.Through is { } through) Through(call, Resolve(through), args, call.Args, found, errors, 0);
                 else Apply(call, call.Callee, args, call.Args, found, errors, 0);
+            }
+        }
+
+        /// The work of a Thread or a Job ticket changes only memory no other thread reaches, or reaches safely: memory
+        /// handed to it with `steal`, memory it changes through the view of an exclusive access, or an Atomic. A global,
+        /// and memory handed to it without `steal`, is shared.
+        private void CheckWork(CallFact call, HashSet<Atom> through, List<HashSet<Atom>> args, List<CompileError> errors)
+        {
+            foreach (var routine in through.OfType<RoutineAtom>().Select(r => r.Symbol).Distinct())
+            {
+                if (Of(routine) is not { } e) continue;
+                string name = all.GetValueOrDefault(routine)?.Inst.Decl.DisplayName ?? routine;
+                const string fix = "take exclusive access to it before put_work (held: Authorized[T] = p.get_exclusive_access()), "
+                    + "hand the work held (its parameter an Authorized[T]), and drop held after the wait, or make it an Atomic[T] "
+                    + "and change it with its routines";
+                foreach (var (global, why) in e.WritesGlobals.OrderBy(c => c.Key, StringComparer.Ordinal))
+                {
+                    var at = why.Store;
+                    errors.Add(new CompileError(call.Pos, $"{call.Text} runs '{name}' on another thread, and it changes the global "
+                        + $"'{global}' ({(at.Routine == name ? "" : $"'{at.Routine}', ")}line {at.Pos.Line}: {at.Text}) without an "
+                        + $"exclusive access, while other threads reach it too: {fix}" + Note));
+                    break;
+                }
+                foreach (var param in e.Writes.Order())
+                {
+                    if (call.Handed is { } handed && param < handed.Count && (handed[param].Stolen || handed[param].Exclusive)) continue;
+                    var global = param < args.Count ? args[param].OfType<GlobalAtom>().FirstOrDefault(g => g.Level == 0 && !g.ThreadLocal) : null;
+                    string what = global is not null ? $"the global '{global.Name}'"
+                        : call.Handed is { } h && param < h.Count ? $"'{h[param].Text}'" : "memory";
+                    errors.Add(new CompileError(call.Pos, $"{call.Text} hands {what} to '{name}', which changes it on another thread "
+                        + "without an exclusive access, and it isn't handed over with steal, so other threads may reach it too: "
+                        + $"hand it over with steal, or {fix}" + Note));
+                    break;
+                }
             }
         }
 
@@ -367,6 +445,22 @@ public sealed class EscapeCheck
             List<CompileError>? errors, int depth)
         {
             if (Of(callee) is not { } e) return;
+            if (!facts.Inst.Decl.IsLibrary)
+            {
+                foreach (var param in e.Writes)
+                    if (param < args.Count && call.Exclusive?.Contains(param) != true)
+                        foreach (var a in Lands(places[param]))
+                            switch (a)
+                            {
+                                case ParamAtom p:
+                                    found.Writes.Add(p.Index);
+                                    break;
+                                case GlobalAtom { ThreadLocal: false } g:
+                                    found.WritesGlobals.TryAdd(g.Name, new Why(call.Pos, Routine, call.Text));
+                                    break;
+                            }
+                foreach (var (g, why) in e.WritesGlobals) found.WritesGlobals.TryAdd(g, new Why(call.Pos, Routine, call.Text, why));
+            }
             foreach (var ((param, level), why) in e.StoresOut)
             {
                 if (param >= args.Count) continue;

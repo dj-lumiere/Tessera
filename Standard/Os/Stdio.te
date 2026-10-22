@@ -4,7 +4,7 @@
 # (the builder expands their template, as for a Writer's write), and the ask routines read standard input. Behind it
 # are three types, one per stream, so a stream is only read or only written: ConsoleOutput and ConsoleErrors are
 # Writers (write_all writes bytes, and nothing is buffered, a BufWriter[ConsoleOutput] is the caller's choice),
-# and ConsoleInput is a Reader. Standard input is read through one buffer the whole process shares, behind a lock:
+# and ConsoleInput is a Reader. Standard input is read through one buffer the whole process shares, behind one exclusive access:
 # standard input is one stream, and two buffers over it would each take bytes the other should have had, so
 # read_into, ask_bytes, ask_word, ask_line, and ask_all all draw on that one. Console.ask[T]() reads a number
 # (any Parsable type) from the next word in place, without allocating unless the word is longer than the buffer.
@@ -65,7 +65,8 @@ preset IN_BUFFER: U64 = 8192
 
 ### Standard input's one buffer: bytes read from the OS and not handed out yet, in bytes[start, end).
 secret record InputBuffer
-    lock: ExclusiveAccess
+    ### The byte whose exclusive access guards the buffer.
+    guard: U8
     bytes: Array[Byte, IN_BUFFER]
     start: U64
     end: U64
@@ -206,7 +207,7 @@ secret routine @InputBuffer.spill_word(length: U64, spill: @Memory[Byte]) -> @[B
         crash_allocation()
     spill.replace(value: text.take_all())
     drop text
-    return spill.getview()
+    return spill.getslice()
 
 ### A pointer to standard input, for passing where a Reader is taken (`@R`). Every value of {ConsoleInput} is the same stream,
 ### so the pointer holds no state and is null.
@@ -223,23 +224,23 @@ common routine Console.input() -> @ConsoleInput
 failable routine @ConsoleInput.read_into(buffer: @Byte, count: U64) -> U64
     local b: @InputBuffer = STDIN_BUFFER
 
-    b.lock.lock()
+    held: Authorized[U8] = b.guard.get_exclusive_access()
     if not (b.start.peek() < b.end.peek())
         # Nothing held: a read that wants a bufferful or more goes straight to the caller's buffer.
         if count >= IN_BUFFER
             read: Check[U64] = check stdin_read(buffer, count)
-            b.lock.unlock()
+            drop held
             return when read
                 is U64 as n => n
         elseif not b.fill()
-            b.lock.unlock()
+            drop held
             return 0
     available: U64 = b.end.peek() - b.start.peek()
     n: U64 = available.min(count)
     buffer.copy(src: b.bytes.to[@Byte]().stride(b.start.peek()), count: n)
     next_start: U64 = b.start.peek() + n
     next_start.poke_into(b.start)
-    b.lock.unlock()
+    drop held
     return n
 
 ### Skips white space and reads the next word (spaces, tabs, and line ends separate words) as a T, straight from the
@@ -254,13 +255,13 @@ needs T: typename, Parsable[T]
     local b: @InputBuffer = STDIN_BUFFER
     local spill: @Memory[Byte] <- .hollow()
 
-    b.lock.lock()
+    held: Authorized[U8] = b.guard.get_exclusive_access()
     word: Maybe[@[Byte]] = b.word(spill)
     when word
         is @[Byte] as text =>
-            # The word may be a view of the buffer, so it's converted before the lock goes.
+            # The word may be a view of the buffer, so it's converted before the access is given back.
             converted: Check[T] = check text.to[T]()
-            b.lock.unlock()
+            drop held
             when converted
                 is T as value =>
                     drop spill
@@ -269,7 +270,7 @@ needs T: typename, Parsable[T]
                     drop spill
                     throw error
         is None =>
-            b.lock.unlock()
+            drop held
             drop spill
             throw EndOfInputError(reader: "Console.ask[T]")
 
@@ -344,9 +345,9 @@ common routine Console.ask_all(manager: @MemoryManager) -> Memory[Byte]
 failable common routine Console.ask_line(manager: @MemoryManager) -> Memory[Byte]
     local b: @InputBuffer = STDIN_BUFFER
 
-    b.lock.lock()
+    held: Authorized[U8] = b.guard.get_exclusive_access()
     local line: @Maybe[Memory[Byte]] <- b.line(manager)
-    b.lock.unlock()
+    drop held
     when steal line
         is Memory[Byte] as text => return text
         is None => throw EndOfInputError(reader: "Console.ask_line")
@@ -381,7 +382,7 @@ secret routine @InputBuffer.line(manager: @MemoryManager) -> Maybe[Memory[Byte]]
 ### :param line: The line.
 ### :returns: The line, one byte shorter when it ended in "\r".
 secret routine trim_cr(line: Memory[Byte]) -> Memory[Byte]
-    if line.getview().has_suffix("\r")
+    if line.getslice().has_suffix("\r")
         line.keep_first(line.count() - 1)
     return line
 
@@ -402,9 +403,9 @@ secret routine is_space(c: Byte) -> Bool
 failable common routine Console.ask_word(manager: @MemoryManager) -> Memory[Byte]
     local b: @InputBuffer = STDIN_BUFFER
 
-    b.lock.lock()
+    held: Authorized[U8] = b.guard.get_exclusive_access()
     local word: @Maybe[Memory[Byte]] <- b.take_word(manager)
-    b.lock.unlock()
+    drop held
     when steal word
         is Memory[Byte] as text => return text
         is None => throw EndOfInputError(reader: "Console.ask_word")

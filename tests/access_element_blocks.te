@@ -1,0 +1,49 @@
+# Exclusive access to one element of a Memory keeps another thread's access to that element waiting until it is given
+# back, and leaves the element next to it free: an access covers the bytes of one value.
+
+import Standard/Os
+
+### Takes exclusive access to the first element, which the main thread holds: waits, then reads what it wrote.
+### :param m: The memory.
+### :returns: The value it read, and whether it had to wait.
+routine read_first(m: @Memory[U64]) -> (U64, Bool)
+    started: Duration = Clock.monotonic()
+    first: Authorized[U64] = m.getview(0).get_exclusive_access()
+    waited: Bool = Clock.monotonic() - started >= 20ms
+    value: U64 = first.getview().peek()
+    drop first
+    return (value, waited)
+
+### Takes exclusive access to the second element without waiting.
+### :param m: The memory.
+### :returns: Whether it got it.
+routine take_second(m: @Memory[U64]) -> Bool
+    local place: @SourceLocation <- .hollow()
+
+    second: @U64 = m.getview(1)
+    taken: Bool = AccessManager.try_take(at: second, size: 8, mode: ACCESS_WRITE, place)
+    if taken
+        AccessManager.give_back(at: second)
+    return taken
+
+routine start() -> None
+    local m: @Memory[U64] <- [0] * 2 from HEAP
+
+    first: Authorized[U64] = m.getview(0).get_exclusive_access()
+    t: Thread[(U64, Bool)] = get_thread[(U64, Bool)]()
+    t.put_work(entry: read_first.to[Callable](), args: m)
+    u: Thread[Bool] = get_thread[Bool]()
+    u.put_work(entry: take_second.to[Callable](), args: m)
+    u.wait_finished()
+    next_one: Bool = u.retrieve()
+    u.give_back()
+    waitfor(40ms)
+    first.getview().poke(5)
+    drop first
+    t.wait_finished()
+    value, waited = t.retrieve()
+    t.give_back()
+    Console.show("the next element was free: {next_one}")
+    Console.show("the other thread waited: {waited}, then read {value}")
+    drop m
+    return

@@ -10,9 +10,9 @@ preset TIMEOUT: Duration = 2ms
 ### Waits until `deadline`, again after every return before it (nothing changes the condition here, so any return
 ### before the deadline is one without a wake).
 ### :returns: Whether the last wait returned in time: false once the deadline has passed.
-routine wait_out(cond: @SignalCaster, lock: @ExclusiveAccess, deadline: Duration) -> Bool
+routine wait_out(cond: @SignalCaster, held: Authorized[U8], deadline: Duration) -> Bool
     loop
-        in_time2: Bool = cond.wait_until(access: lock, deadline)
+        in_time2: Bool = cond.wait_until(access: held, deadline)
         if in_time2
             continue
         else
@@ -20,10 +20,10 @@ routine wait_out(cond: @SignalCaster, lock: @ExclusiveAccess, deadline: Duration
 
 ### Waits with wait_for for TIMEOUT from `start`, and on until then after every return before it.
 ### :returns: Whether the last wait returned in time: false once the time is up.
-routine wait_for_out(cond: @SignalCaster, lock: @ExclusiveAccess, start: Duration) -> Bool
-    in_time: Bool = cond.wait_for(access: lock, timeout: TIMEOUT)
+routine wait_for_out(cond: @SignalCaster, held: Authorized[U8], start: Duration) -> Bool
+    in_time: Bool = cond.wait_for(access: held, timeout: TIMEOUT)
     if in_time
-        return wait_out(cond, lock, deadline: start + TIMEOUT)
+        return wait_out(cond, held, deadline: start + TIMEOUT)
     else
         return in_time
 
@@ -34,26 +34,26 @@ routine report_held() -> None
     return
 
 routine start() -> None
-    local lock: @ExclusiveAccess <- .construct()
+    local guard: @U8 <- 0
     local cond: @SignalCaster <- .construct()
 
-    lock.lock()
+    held: Authorized[U8] = guard.get_exclusive_access()
     start: Duration = Clock.monotonic()
     deadline: Duration = start + TIMEOUT
-    in_time: Bool = wait_out(cond, lock, deadline)
+    in_time: Bool = wait_out(cond, held, deadline)
     elapsed: Duration = Clock.monotonic() - start
     Console.show("wait until 2 ms: in time {in_time}, waited the timeout {elapsed >= TIMEOUT}")
     report_held()
-    late: Bool = cond.wait_until(access: lock, deadline: start)
+    late: Bool = cond.wait_until(access: held, deadline: start)
     Console.show("wait until a passed deadline: in time {late}")
     report_held()
     cond.cast_one()
     cond.cast_all()
     before: Duration = Clock.monotonic()
-    timed: Bool = wait_for_out(cond, lock, start: before)
+    timed: Bool = wait_for_out(cond, held, start: before)
     waited: Duration = Clock.monotonic() - before
     enough: Bool = waited >= TIMEOUT
     Console.show("wait for 2 ms after an earlier wake: in time {timed}, waited the timeout {enough}")
     report_held()
-    lock.unlock()
+    drop held
     return

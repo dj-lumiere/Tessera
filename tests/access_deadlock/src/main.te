@@ -1,40 +1,37 @@
-# Two threads take two accesses in opposite orders and end up waiting on each other. With the deadlock check on (a
-# debug build, or this test's manifest in every mode), the one that closes the cycle stops the program with
-# DeadlockError instead of waiting forever.
+# Two threads take exclusive access to two elements of one Memory in opposite orders and end up waiting on each
+# other. With the deadlock check on (a debug build, or this test's manifest in every mode), the one that closes the
+# cycle stops the program with DeadlockError instead of waiting forever.
 
 import Standard/Os
 
-record Pair
-    first: ExclusiveAccess
-    second: ExclusiveAccess
-
-routine forward(pair: @Pair) -> None
-    pair.first.lock()
+routine forward(m: @Memory[U64]) -> None
+    first: Authorized[U64] = m.getview(0).get_exclusive_access()
     waitfor(50ms)
-    pair.second.lock()
-    pair.second.unlock()
-    pair.first.unlock()
+    second: Authorized[U64] = m.getview(1).get_exclusive_access()
+    drop second
+    drop first
     return
 
-routine backward(pair: @Pair) -> None
-    pair.second.lock()
+routine backward(m: @Memory[U64]) -> None
+    second: Authorized[U64] = m.getview(1).get_exclusive_access()
     waitfor(50ms)
-    pair.first.lock()
-    pair.first.unlock()
-    pair.second.unlock()
+    first: Authorized[U64] = m.getview(0).get_exclusive_access()
+    drop first
+    drop second
     return
 
 routine start() -> None
-    local pair: @Pair <- Pair(first: .construct(), second: .construct())
+    local m: @Memory[U64] <- [0] * 2 from HEAP
 
     Console.show("starting")
     a: Thread[None] = get_thread[None]()
     b: Thread[None] = get_thread[None]()
-    a.put_work(entry: forward.to[Callable](), args: pair)
-    b.put_work(entry: backward.to[Callable](), args: pair)
+    a.put_work(entry: forward.to[Callable](), args: m)
+    b.put_work(entry: backward.to[Callable](), args: m)
     a.wait_finished()
     b.wait_finished()
     a.give_back()
     b.give_back()
     Console.show("not reached")
+    drop m
     return

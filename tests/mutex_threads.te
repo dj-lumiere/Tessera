@@ -1,30 +1,33 @@
-# Four threads add to one counter under an ExclusiveAccess, so no increment is lost: the ExclusiveAccess is atomics plus
-# wait_on / wake_one, the same on every operating system. try_lock from another thread fails while it is held.
+# Four threads add to one counter, each under exclusive access to it, so no increment is lost. From another thread,
+# taking the access without waiting fails while it is held.
 
 import Standard/Os
 
 record Shared
-    lock: ExclusiveAccess
     count: U64
 
 routine add_many(state: @Shared) -> None
     until i == 100000 with i: U64 = 0
-        state.lock.lock()
-        next_count: U64 = state.count.peek() + 1
-        next_count.poke_into(state.count)
-        state.lock.unlock()
+        held: Authorized[Shared] = state.get_exclusive_access()
+        view: @Shared = held.getview()
+        next_count: U64 = view.count.peek() + 1
+        next_count.poke_into(view.count)
+        drop held
         continue with i: i + 1
     then
         return
 
 routine try_take(state: @Shared) -> Bool
-    taken: Bool = state.lock.try_lock()
+    local place: @SourceLocation <- .hollow()
+
+    taken: Bool = AccessManager.try_take(at: state, size: sizeof[Shared](), mode: ACCESS_WRITE,
+        place)
     if taken
-        state.lock.unlock()
+        AccessManager.give_back(at: state)
     return taken
 
 routine start() -> None
-    local state: @Shared <- Shared(lock: .construct(), count: 0)
+    local state: @Shared <- Shared(count: 0)
 
     t1: Thread[None] = get_thread[None]()
     t1.put_work(entry: add_many.to[Callable](), args: state)
@@ -44,12 +47,12 @@ routine start() -> None
     t4.give_back()
     Console.show("{state.count.peek()}")
     Console.show("cpus: {cpu_count().gt(0)}")
-    first: Bool = state.lock.try_lock()
+    held: Authorized[Shared] = state.get_exclusive_access()
     t5: Thread[Bool] = get_thread[Bool]()
     t5.put_work(entry: try_take.to[Callable](), args: state)
     t5.wait_finished()
     second: Bool = t5.retrieve()
     t5.give_back()
-    state.lock.unlock()
-    Console.show("try_lock: {first} then {second}")
+    drop held
+    Console.show("taken without waiting while held: {second}")
     return

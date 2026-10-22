@@ -28,6 +28,8 @@ public sealed partial class FunctionGen
     {
         if (_c.Prechecking || _decl.Blocks is not { Count: > 0 } || _inst.IsAsm) return;
         _escape = _c.Escapes.Begin(_inst, reports: EscapeOn);
+        foreach (var moved in ReshapedParams(_decl))
+            if (_decl.Params.FindIndex(p => p.Name == moved) is >= 0 and var index) _escape.Reshapes.Add(index);
         for (int i = 0; i < _decl.Params.Count && i < _inst.Params.Count; i++)
         {
             var p = _decl.Params[i];
@@ -78,12 +80,13 @@ public sealed partial class FunctionGen
             case ValueRef r:
                 return _atoms.TryGetValue(r.Name, out var bound) ? [.. bound] : [];
             case PresetRef p when IsGlobalRef(p):
-                return [new GlobalAtom(p.Name, 0)];
+                return [new GlobalAtom(p.Name, 0, ThreadLocal(p))];
             case RoutineRef or LambdaExpr when _routineValueSymbols.TryGetValue(e.Pos, out var routine):
                 return [new EscapeCheck.RoutineAtom(routine, 0)];
             case MethodCallExpr when TableManager(e) is { } manager:
                 return AtomsOf(manager);
-            case MethodCallExpr { Name: "getview" or "to" or "getslot" } m when MemName(m.Receiver) is { } owned:
+            case MethodCallExpr { Name: "getview" or "to" or "getslot" or "getslice" or "getitem" } m when MemName(m.Receiver) is { } owned
+                && (m.Name != "getitem" || ManagedMemory(InferQuiet(m.Receiver)) is { Decl.Name: "Memory" }):
                 return [new FrameAtom($"the memory '{owned}' holds", HeldOwner(owned), 0)];
             case MethodCallExpr { Name: "getslot" or "getslice" or "stride" or "offset" or "to" or "getview", Args.Count: <= 2 } m
                 when InferQuiet(m) is { } viewed && PointsAtMemory(viewed):
@@ -115,7 +118,7 @@ public sealed partial class FunctionGen
                     : AtomsOf(stolen);
             case StealExpr s:
                 return InferQuiet(s.Value) is PtrType ? Shifted(AtomsOf(s.Value), 1) : AtomsOf(s.Value);
-            // `[...] at manager` is the construct call it stands for.
+            // `[...] from manager` is the construct call it stands for.
             case AtExpr at when _escapeCalls.TryGetValue((at.Pos, "construct"), out int made):
                 return [new ResultAtom(made, 0)];
             case TempSlotExpr slot:
@@ -193,6 +196,32 @@ public sealed partial class FunctionGen
         return name is not null && _escapeCalls.TryGetValue((e.Pos, name), out int index) ? index : null;
     }
 
+    /// Whether a global is `@threadlocal`: each thread has its own.
+    private bool ThreadLocal(PresetRef p)
+    {
+        try { return _c.FindPreset("", p.Name, _env.File, p.Pos, p.Path)?.AnnotationNamed("threadlocal") is not null; }
+        catch (CompileError) { return false; }
+    }
+
+    /// Whether a place is in a `@threadlocal` global: each thread has its own.
+    private bool ThreadLocalRoot(Expr place)
+    {
+        var at = AsValueCall(place);
+        while (true)
+        {
+            switch (at)
+            {
+                case FieldExpr f: at = f.Base; continue;
+                case IndexExpr ix: at = ix.Base; continue;
+                case MethodCallExpr { Name: "getslot" or "stride" or "offset" or "getslice" or "to" or "getview" } m: at = m.Receiver; continue;
+            }
+            break;
+        }
+        if (at is not PresetRef { Owner: null } p) return false;
+        try { return _c.FindPreset("", p.Name, _env.File, p.Pos, p.Path) is { IsGlobal: true } g && g.AnnotationNamed("threadlocal") is not null; }
+        catch (CompileError) { return false; }
+    }
+
     /// Whether a preset reference names a global (memory that outlives every routine).
     private bool IsGlobalRef(PresetRef p)
     {
@@ -232,11 +261,11 @@ public sealed partial class FunctionGen
         if (value is null || into is null) return;
         int valueParam = sig.Decl.Name == "poke_into" ? 0 : sig.Params.Count - 1;
         var stored = Atoms(value, valueParam >= 0 && valueParam < sig.Params.Count ? sig.Params[valueParam] : null);
-        if (stored.Count == 0) return;
+        // A store of a plain value is recorded too: what a routine changes matters to work on other threads.
         var place = AtomsOf(into);
         if (place.Count == 0) return;
         _escape.Stores.Add(new EscapeCheck.StoreFact(place, stored, plan.Pos, Spelled(new MethodCallExpr(
-            plan.Receiver, sig.Decl.Name, [], plan.Args, plan.Pos))));
+            plan.Receiver, sig.Decl.Name, [], plan.Args, plan.Pos))) { Unshared = sig.Decl.Name.Contains("atomic") || sig.Decl.Owner is { Name: "Atomic" } || ThreadLocalRoot(into) || UnderExclusiveAccess(into) });
     }
 
     /// A store straight into a global (`G.poke(x)`): whether it puts back a value read out of that global, so the
@@ -277,7 +306,9 @@ public sealed partial class FunctionGen
                 ? new MethodCallExpr(plan.Receiver, plan.Decl.Name, [], plan.Args, plan.Pos)
                 : new CallExpr(plan.Decl.Name, [], plan.Args, plan.Pos));
         _escapeCalls[(plan.Pos, plan.Decl.Name)] = _escape.Calls.Count;
-        _escape.Calls.Add(new EscapeCheck.CallFact(callee.Symbol, args, plan.Pos, text));
+        var handed = plan.Receiver is { } receiver ? plan.Args.Prepend(receiver).ToList() : plan.Args;
+        var exclusive = Enumerable.Range(0, handed.Count).Where(i => UnderExclusiveAccess(handed[i])).ToHashSet();
+        _escape.Calls.Add(new EscapeCheck.CallFact(callee.Symbol, args, plan.Pos, text) { Exclusive = exclusive.Count > 0 ? exclusive : null });
     }
 
     /// Records a call through a Callable value: the value's atoms say which routine it may be.
@@ -459,12 +490,24 @@ public sealed partial class FunctionGen
                     else _atoms[ticket] = held;
                 }
                 // The work is a call of `entry` with the arguments, made from here on.
+                // A Fiber's work runs on this thread, between this routine's waits: only a Thread's or a Job's runs
+                // alongside it.
                 if (entry is not null)
                     _escape.Calls.Add(new EscapeCheck.CallFact("", atoms, plan.Pos, Spelled(new MethodCallExpr(plan.Receiver!, "put_work", [], plan.Args, plan.Pos)))
-                        { Through = AtomsOf(entry) });
+                    {
+                        Through = AtomsOf(entry),
+                        Work = plan.Decl.Owner is { Name: "Thread" or "Job" },
+                        Handed = parts.Select(p => (Spelled(p is StealExpr st ? st.Value : p), p is StealExpr,
+                            p is not StealExpr && (UnderExclusiveAccess(p) || IsExclusiveAccessType(InferQuiet(p))))).ToList(),
+                    });
             }
             if (MemOn)
             {
+                // The view of an access handed to work belongs to the work until it is waited for.
+                foreach (var part in parts)
+                    if (part is ValueRef view && _accessViews.Contains(view.Name)) Mem(new MemoryRules.WorkHolds(ticket, view.Name, part.Pos));
+                    else if (AccessKey(part) is { } key && _accessGroups.TryGetValue(key, out var group))
+                        Mem(new MemoryRules.WorkHolds(ticket, group, part.Pos));
                 if (parts.Select(FrameView).FirstOrDefault(v => v is not null) is { } sees)
                     Mem(new MemoryRules.WorkStarted(ticket, sees, plan.Pos));
                 var roots = parts.SelectMany(ViewRoots).ToHashSet();

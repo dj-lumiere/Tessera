@@ -1,0 +1,35 @@
+# Memory given back while another thread holds an access to one of its elements waits until that access is given
+# back: the AccessManager keeps the block until no access inside it is held.
+
+import Standard/Os
+
+record Steps
+    given_back: Atomic[U64]
+    started: Atomic[U64]
+
+### Holds exclusive access to the second element a while, then gives it back and says so.
+### :param m: The memory.
+### :param steps: Where the order is noted.
+routine hold_a_while(m: @Memory[U64], steps: @Steps) -> None
+    second: Authorized[U64] = m.getview(1).get_exclusive_access()
+    steps.started.poke(1)
+    waitfor(40ms)
+    second.getview().poke(9)
+    steps.given_back.poke(1)
+    drop second
+    return
+
+routine start() -> None
+    local m: @Memory[U64] <- [0] * 4 from HEAP
+    local steps: @Steps <- Steps(given_back: .construct(value: 0), started: .construct(value: 0))
+
+    t: Thread[None] = get_thread[None]()
+    t.put_work(entry: hold_a_while.to[Callable](), args: (m, steps))
+    until steps.started.peek() == 1
+        waitfor(1ms)
+    drop m
+    after: Bool = steps.given_back.peek() == 1
+    t.wait_finished()
+    t.give_back()
+    Console.show("the memory was given back after the access: {after}")
+    return

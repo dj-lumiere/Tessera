@@ -29,11 +29,12 @@ secret record ChannelWait
     waiter: Waiter
     next: @ChannelWait
 
-### What both kinds of channel are: a ring of values under a lock, the open transmitters and receivers, and who waits.
+### What both kinds of channel are: a ring of values under one exclusive access, the open transmitters and receivers, and who waits.
 ### :typeparam T: The type of the values.
 secret entity ChannelCore[T]
 needs T: typename
-    lock: ExclusiveAccess
+    ### The byte whose exclusive access guards every field below.
+    guard: U8
     ### Room for `capacity` values, a ring.
     items: Memory[T]
     ### Where the oldest value is.
@@ -80,8 +81,8 @@ common routine ChannelCore[T].construct(capacity: U64, manager: @MemoryManager) 
 needs T: typename
     if capacity == 0
         crash(name: "InvalidValueError", message: "A channel needs room for at least one value.")
-    return Me(lock: .construct(), items: .construct(count: capacity, manager: manager), head: 0,
-        count: 0, transmitters: 1, receivers: 1, getters: .hollow(), putters: .hollow())
+    return Me(guard: 0, items: .construct(count: capacity, manager: manager), head: 0, count: 0,
+        transmitters: 1, receivers: 1, getters: .hollow(), putters: .hollow())
 
 ### Gives the room back. The values left in it are dropped.
 @track_caller
@@ -263,26 +264,26 @@ needs T: typename
     local node: @ChannelWait <- ChannelWait(waiter, next: .hollow())
 
     loop
-        me.lock.lock()
+        held: Authorized[U8] = me.guard.get_exclusive_access()
         if me.receivers.peek() == 0
-            me.lock.unlock()
+            drop held
             throw ChannelClosedError()
         if me.count.peek() < me.items.count()
             me.push(value)
-            me.lock.unlock()
+            drop held
             return
         node.next.poke(me.putters.peek())
         me.putters.poke(node)
-        me.lock.unlock()
+        drop held
         if blocked_until_cancelled(waiter)
-            me.lock.lock()
+            held2: Authorized[U8] = me.guard.get_exclusive_access()
             unlink(list: me.putters, node)
-            me.lock.unlock()
+            drop held2
             throw CancelRequested()
         waiter.park()
-        me.lock.lock()
+        held3: Authorized[U8] = me.guard.get_exclusive_access()
         unlink(list: me.putters, node)
-        me.lock.unlock()
+        drop held3
 
 ### Transmits `value` if there is room, without waiting.
 ### :param value: The value.
@@ -290,12 +291,12 @@ needs T: typename
 @target(os: not "none")
 routine @ChannelCore[T].transmit_if_room(value: T) -> Bool
 needs T: typename
-    me.lock.lock()
+    held: Authorized[U8] = me.guard.get_exclusive_access()
     if not (me.receivers.peek() != 0 and me.count.peek() < me.items.count())
-        me.lock.unlock()
+        drop held
         return false
     me.push(value)
-    me.lock.unlock()
+    drop held
     return true
 
 ### Takes the oldest value, waiting while there is none.
@@ -307,43 +308,43 @@ needs T: typename
     local node: @ChannelWait <- ChannelWait(waiter, next: .hollow())
 
     loop
-        me.lock.lock()
+        held: Authorized[U8] = me.guard.get_exclusive_access()
         if me.count.peek() != 0
             value: T = me.pop()
-            me.lock.unlock()
+            drop held
             return value
         if me.transmitters.peek() == 0
-            me.lock.unlock()
+            drop held
             throw ChannelClosedError()
         node.next.poke(me.getters.peek())
         me.getters.poke(node)
-        me.lock.unlock()
+        drop held
         if blocked_until_cancelled(waiter)
-            me.lock.lock()
+            held2: Authorized[U8] = me.guard.get_exclusive_access()
             unlink(list: me.getters, node)
-            me.lock.unlock()
+            drop held2
             throw CancelRequested()
         waiter.park()
-        me.lock.lock()
+        held3: Authorized[U8] = me.guard.get_exclusive_access()
         unlink(list: me.getters, node)
-        me.lock.unlock()
+        drop held3
 
 ### Counts one more transmitter.
 @target(os: not "none")
 routine @ChannelCore[T].add_transmitter() -> None
 needs T: typename
-    me.lock.lock()
+    held: Authorized[U8] = me.guard.get_exclusive_access()
     me.transmitters.poke(me.transmitters.peek() + 1)
-    me.lock.unlock()
+    drop held
     return
 
 ### Counts one more receiver.
 @target(os: not "none")
 routine @ChannelCore[T].add_receiver() -> None
 needs T: typename
-    me.lock.lock()
+    held: Authorized[U8] = me.guard.get_exclusive_access()
     me.receivers.poke(me.receivers.peek() + 1)
-    me.lock.unlock()
+    drop held
     return
 
 ### One transmitter is done: once every transmitter is, the waiting receivers wake to take what is left.
@@ -352,13 +353,13 @@ needs T: typename
 @track_caller
 routine @ChannelCore[T].close_transmitting() -> None
 needs T: typename
-    me.lock.lock()
+    held: Authorized[U8] = me.guard.get_exclusive_access()
     if me.transmitters.peek() == 0
         crash(name: "InvalidValueError",
             message: "Every transmitter of this channel has closed already.")
     me.transmitters.poke(me.transmitters.peek() - 1)
     wake_list(me.getters.peek())
-    me.lock.unlock()
+    drop held
     return
 
 ### One receiver is done: once every receiver is, the values left are dropped and the waiting transmitters wake.
@@ -367,7 +368,7 @@ needs T: typename
 @track_caller
 routine @ChannelCore[T].close_receiving() -> None
 needs T: typename
-    me.lock.lock()
+    held: Authorized[U8] = me.guard.get_exclusive_access()
     if me.receivers.peek() == 0
         crash(name: "InvalidValueError",
             message: "Every receiver of this channel has closed already.")
@@ -375,7 +376,7 @@ needs T: typename
     if me.receivers.peek() == 0
         me.count.poke(0)
         wake_list(me.putters.peek())
-    me.lock.unlock()
+    drop held
     return
 
 ### Puts `value` behind the others and wakes the waiting receivers. The lock is held and there is room.
@@ -385,7 +386,7 @@ secret routine @ChannelCore[T].push(value: T) -> None
 needs T: typename
     capacity: U64 = me.items.count()
     at: U64 = (me.head.peek() + me.count.peek()) % capacity
-    me.items.store(index: at, value: steal value)
+    me.items[at].store(steal value)
     me.count.poke(me.count.peek() + 1)
     wake_list(me.getters.peek())
     return
@@ -396,7 +397,7 @@ needs T: typename
 secret routine @ChannelCore[T].pop() -> T
 needs T: typename
     head: U64 = me.head.peek()
-    value: T = steal me.items.getslot(head)
+    value: T = me.items[head].take()
     me.head.poke((head + 1) % me.items.count())
     me.count.poke(me.count.peek() - 1)
     wake_list(me.putters.peek())

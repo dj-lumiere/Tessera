@@ -349,7 +349,7 @@ public sealed class Printer
                 return a.Repeat is null ? $"[{items}]" : $"[{items}] * {Expr(a.Repeat, 9)}";
             }
             case AtExpr at:
-                return $"{Expr(at.Value)} at {Expr(at.Manager, 9)}";
+                return $"{Expr(at.Value)} from {Expr(at.Manager, 9)}";
             case WhenExpr:
                 throw new InvalidOperationException("a when value is written by the statement that binds it");
             default:

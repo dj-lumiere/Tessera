@@ -53,9 +53,6 @@ namespace Tessera;
 /// which every file sees without an import: `Standard/Core`, `Standard/Format`, `Standard/Alloc`, `Standard/Boot`, and
 /// `Standard/Json` are gone into it (`--step modules`).
 ///
-/// 0.5: a lock gives access, so `ExclusiveLock` is `ExclusiveAccess`, `MultiReadLock` is `MultiReadAccess`, and a
-/// `SignalCaster` wait names the access it gives up (`access:`, not `mutex:`) (`--step access`).
-///
 /// 0.5: the thread-locals' manager `ThreadLocalStorageManager` is `ThreadLocalManager` (`--step threadlocal`).
 ///
 /// 0.5: the OS's file manager is `OsFileManager` (`FileManager` is the role), `subdir` is `go_to`, a `Mapping` is a
@@ -110,7 +107,7 @@ public static class Migrate
         }
 
         // The entry step also rewrites the examples of documentation pages.
-        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf" or "managers" or "float-presets" or "modules" or "access" or "threadlocal" or "files" or "checked" or "manager" or "until" or "channels" or "nothing";
+        bool entryPages = step is "entry" or "none" or "destruct" or "structured" or "spellings" or "drop" or "comments" or "division" or "repeat" or "visibility" or "size" or "elseif" or "span" or "hollow" or "guards" or "ranges" or "receiver" or "operators" or "names" or "inf" or "managers" or "float-presets" or "modules" or "threadlocal" or "files" or "checked" or "manager" or "until" or "channels" or "nothing";
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.te", SearchOption.AllDirectories)
                 .Concat(entryPages ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories) : [])
@@ -511,9 +508,6 @@ public static class Migrate
         ["modules"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, ModuleMigration.Rewrite)
             : ModuleMigration.Rewrite(text),
-        ["access"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
-            ? StructuredMigration.MarkdownBlocks(text, AccessMigration.Rewrite)
-            : AccessMigration.Rewrite(text),
         ["threadlocal"] = (file, text, _) => file.EndsWith(".md", StringComparison.Ordinal)
             ? StructuredMigration.MarkdownBlocks(text, ManagerMigration.RewriteThreadLocal)
             : ManagerMigration.RewriteThreadLocal(text),
@@ -885,7 +879,7 @@ public static class Migrate
             lines[i] = inAsmBody ? RewriteTypeArguments(line) : RewriteNames(line);
         }
 
-        return ChannelMigration.Rewrite(AccessMigration.Rewrite(FloatPresetMigration.Rewrite(ManagerMigration.Rewrite(RoutineNameMigration.Rewrite(ThreadMigration.Rewrite(EntryMigration.Rewrite(MembershipNames(VariantMigration.Rewrite(IteratorNames(Renames(CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names))))))))))))))), [], "");
+        return ChannelMigration.Rewrite(FloatPresetMigration.Rewrite(ManagerMigration.Rewrite(RoutineNameMigration.Rewrite(ThreadMigration.Rewrite(EntryMigration.Rewrite(MembershipNames(VariantMigration.Rewrite(IteratorNames(Renames(CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names)))))))))))))), [], "");
     }
 
     private static readonly Regex IteratorNext = new(@"\.next(?=\s*\()", RegexOptions.Compiled);

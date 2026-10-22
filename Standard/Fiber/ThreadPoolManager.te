@@ -34,8 +34,8 @@ import Standard/Os
 ### Runs jobs on its threads, each thread's fibers on that thread, and a waiting job on whichever thread is free when it
 ### wakes.
 entity ThreadPoolManager
-    ### Guards the queue, the idle jobs, the woken fibers, the kept fibers, and the threads.
-    lock: ExclusiveAccess
+    ### The byte whose exclusive access guards the queue, the idle jobs, the woken fibers, the kept fibers, and the threads.
+    guard: U8
     ### The jobs whose work waits for a thread, in order.
     first: @PoolJob
     last: @PoolJob
@@ -65,6 +65,15 @@ secret entity PoolJob
     next: @PoolJob
     pool: @ThreadPoolManager
 
+### A ticket for a job of a ThreadPoolManager, from {ThreadPoolManager.get_job}: it runs one piece of work at a time, whose result is a
+### `T` (`Void` for none), until {Job[T].give_back}.
+### :typeparam T: The type of the work's result.
+record Job[T]
+needs T: typename
+    job: @PoolJob
+    ### The ticket's number: the job's until the ticket is given back.
+    issued: U64
+
 ### Makes a `PoolJob` from its fields.
 ### :param slot: Its `slot`.
 ### :param next: Its `next`.
@@ -80,15 +89,6 @@ secret routine @PoolJob.destruct() -> None
     me.slot.destruct()
     return
 
-### A ticket for a job of a ThreadPoolManager, from {ThreadPoolManager.get_job}: it runs one piece of work at a time, whose result is a
-### `T` (`Void` for none), until {Job[T].give_back}.
-### :typeparam T: The type of the work's result.
-record Job[T]
-needs T: typename
-    job: @PoolJob
-    ### The ticket's number: the job's until the ticket is given back.
-    issued: U64
-
 ### A pool that will run `threads` threads, or one per processor for 0. They start with the first job.
 ### :param threads: How many threads, or 0 for one per processor.
 ### :returns: The pool, with no threads yet.
@@ -97,8 +97,8 @@ common routine ThreadPoolManager.construct(threads: U64) -> Me
     count: U64 = when
         threads == 0 => cpu_count()
         else => threads
-    return Me(lock: .construct(), first: .hollow(), last: .hollow(), idle: .hollow(), epoch: 0,
-        stopping: 0, count, threads: .hollow(), manager: HEAP,
+    return Me(guard: 0, first: .hollow(), last: .hollow(), idle: .hollow(), epoch: 0, stopping: 0,
+        count, threads: .hollow(), manager: HEAP,
         woken: CircularList[@FiberState].construct(manager: HEAP), fibers: .hollow(),
         spare: .hollow())
 
@@ -115,7 +115,7 @@ routine @ThreadPoolManager.destruct() -> None
     wake_all(me.epoch)
 
     each i in 0 til started
-        t: Thread[None] = threads.load(index: i)
+        t: Thread[None] = threads[i].load()
         t.wait_finished()
         t.give_back()
 
@@ -163,11 +163,11 @@ needs T: typename
 @track_caller
 routine @ThreadPoolManager.get_job[T]() -> Job[T]
 needs T: typename
-    me.lock.lock()
+    held: Authorized[U8] = me.guard.get_exclusive_access()
     me.start_threads()
     idle: @PoolJob = me.idle.peek()
     if idle.is_hollow()
-        me.lock.unlock()
+        drop held
         manager: @MemoryManager = me.manager.peek()
         job: @PoolJob = allocate[PoolJob](count: 1, manager)
         if job.is_hollow()
@@ -175,7 +175,7 @@ needs T: typename
         job.poke(PoolJob(slot: .construct(manager), next: .hollow(), pool: me))
         return Job[T](job, issued: 0)
     me.idle.poke(idle.next.peek())
-    me.lock.unlock()
+    drop held
     idle.next.poke(.hollow())
     idle.slot.state.poke_atomic(TICKET_EMPTY)
     return Job[T](job: idle, issued: idle.slot.issued.peek())
@@ -195,7 +195,7 @@ secret routine @ThreadPoolManager.start_threads() -> None
     each i in 0 til count
         t: Thread[None] = get_thread[None]()
         t.put_work(entry: pool_thread.to[Callable](), args: me)
-        threads.store(index: i, value: t)
+        threads[i].store(t)
     then
         return
 
@@ -203,14 +203,14 @@ secret routine @ThreadPoolManager.start_threads() -> None
 ### :param job: The job, with its work put on.
 @target(os: not "none")
 secret routine @ThreadPoolManager.queue(job: @PoolJob) -> None
-    me.lock.lock()
+    held: Authorized[U8] = me.guard.get_exclusive_access()
     last: @PoolJob = me.last.peek()
     if last.is_hollow()
         me.first.poke(job)
     else
         last.next.poke(job)
     me.last.poke(job)
-    me.lock.unlock()
+    drop held
     me.epoch.atomic_fetch_add(1)
     wake_all(me.epoch)
     return
@@ -219,17 +219,17 @@ secret routine @ThreadPoolManager.queue(job: @PoolJob) -> None
 ### :returns: The job, or null.
 @target(os: not "none")
 secret routine @ThreadPoolManager.take() -> @PoolJob
-    me.lock.lock()
+    held: Authorized[U8] = me.guard.get_exclusive_access()
     job: @PoolJob = me.first.peek()
     if job.is_hollow()
-        me.lock.unlock()
+        drop held
         return .hollow()
     next: @PoolJob = job.next.peek()
     me.first.poke(next)
     if next.is_hollow()
         me.last.poke(.hollow())
     job.next.poke(.hollow())
-    me.lock.unlock()
+    drop held
     return job
 
 ### Puts `fiber`, a pool's fiber a wake made ready, in the queue of woken fibers and wakes the threads.
@@ -237,9 +237,9 @@ secret routine @ThreadPoolManager.take() -> @PoolJob
 @target(os: not "none")
 @reshaping
 secret routine @ThreadPoolManager.queue_woken(fiber: @FiberState) -> None
-    me.lock.lock()
+    held: Authorized[U8] = me.guard.get_exclusive_access()
     me.woken.add_last(fiber)
-    me.lock.unlock()
+    drop held
     me.epoch.atomic_fetch_add(1)
     wake_all(me.epoch)
     return
@@ -249,22 +249,22 @@ secret routine @ThreadPoolManager.queue_woken(fiber: @FiberState) -> None
 @target(os: not "none")
 @reshaping
 secret routine @ThreadPoolManager.take_woken() -> @FiberState
-    me.lock.lock()
+    held: Authorized[U8] = me.guard.get_exclusive_access()
     if me.woken.is_empty()
-        me.lock.unlock()
+        drop held
         return .hollow()
     fiber: @FiberState = me.woken.remove_first()
-    me.lock.unlock()
+    drop held
     return fiber
 
 ### Keeps `fiber`, whose job is over, for the next job.
 ### :param fiber: The fiber.
 @target(os: not "none")
 secret routine @ThreadPoolManager.keep_fiber(fiber: @FiberState) -> None
-    me.lock.lock()
+    held: Authorized[U8] = me.guard.get_exclusive_access()
     fiber.next_idle.poke(me.spare.peek())
     me.spare.poke(fiber)
-    me.lock.unlock()
+    drop held
     return
 
 ### A fiber for a job: one kept from an earlier job, or a new one with a stack of its own.
@@ -273,16 +273,16 @@ secret routine @ThreadPoolManager.keep_fiber(fiber: @FiberState) -> None
 @target(os: not "none")
 @track_caller
 secret routine @ThreadPoolManager.take_fiber() -> @FiberState
-    me.lock.lock()
+    held: Authorized[U8] = me.guard.get_exclusive_access()
     spare: @FiberState = me.spare.peek()
     if spare.is_not_hollow()
         me.spare.poke(spare.next_idle.peek())
-        me.lock.unlock()
+        drop held
         spare.next_idle.poke(.hollow())
         # No manager runs it until a thread adopts it, which counts it among that thread's busy fibers.
         spare.manager.poke_atomic(.hollow())
         return spare
-    me.lock.unlock()
+    drop held
     manager: @MemoryManager = me.manager.peek()
     local stack: @StackManager <- take_stack(size: DEFAULT_FIBER_STACK, pages: PAGES)
     if stack.top.peek().is_hollow()
@@ -296,10 +296,10 @@ secret routine @ThreadPoolManager.take_fiber() -> @FiberState
         work: fiber.slot, then: requeue.to[Callable](), wake_state: FIBER_RUNNING, timer: 0,
         trace_depth: 0, access: .hollow(), race: race_stack_new(), next_idle: .hollow(),
         next_all: .hollow(), pool: me))
-    me.lock.lock()
+    held2: Authorized[U8] = me.guard.get_exclusive_access()
     fiber.next_all.poke(me.fibers.peek())
     me.fibers.poke(fiber)
-    me.lock.unlock()
+    drop held2
     return fiber
 
 ### Makes `fiber` one of this thread's: it counts among FIBERS' busy fibers instead of its last manager's, and goes in
@@ -601,8 +601,8 @@ needs T: typename
     me.work_slot().give_back()
     job: @PoolJob = me.job
     pool: @ThreadPoolManager = job.pool.peek()
-    pool.lock.lock()
+    held: Authorized[U8] = pool.guard.get_exclusive_access()
     job.next.poke(pool.idle.peek())
     pool.idle.poke(job)
-    pool.lock.unlock()
+    drop held
     return

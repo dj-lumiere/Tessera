@@ -1,18 +1,19 @@
 # Tessera stdlib: @[T], a view of a run of values that something else gives back
 #
 # Four types say where values are. `@T` (a Ptr) is the address of one value and `@[T]` the address and the count
-# of a run of them: both are views of memory someone else gives back, read with `peek` and written with `poke`, and
-# they release nothing. `Box[T]` and `Memory[T]` (Memory.te) are memory taken from a manager: each is released
-# exactly once with `drop()`, and their `load` / `store` check that it hasn't been.
+# of a run of them: both are views of memory someone else gives back, and they release nothing. `Box[T]` and
+# `Memory[T]` (Memory.te) are memory taken from a manager: each is given back exactly once with `drop`.
 #
-# A span comes from what holds the values: `getview()` of a Memory, a List, an Array, or another span, `getslice` for
-# part of one, a string literal (a `@[Byte]` of the program image), `preset NAME: @[T] <- [...]` and
+# A span reads and writes nothing itself: it turns an element into a value or a place. `getitem(i)` is the value (a
+# copy), `getslot(i)` its place, a `@T`, which reads and writes with `peek` and `poke`.
+#
+# A span comes from what holds the values: `getslice()` of a Memory, `getview()` of a List, an Array, or another
+# span, `getslice` for part of one, a string literal (a `@[Byte]` of the program image), `preset NAME: @[T] <- [...]` and
 # `global NAME: @[T] <- [...]` in static memory, `claim xs: @[T] <- [...]` in the routine's frame (an array
 # literal passed where a span is expected is one too), or `@[T].construct(data, count)` over memory from C. It is
 # valid as long as that memory is and isn't moved. A routine that takes a `@[T]` only views the values: a
 # `Memory[T]` passed where a `@[T]` is expected stays its holder's. `getslot(i)` is the checked address, and every access through it
-# is `@T`'s own: `peek`, `poke`, `peek_volatile`, `atomic_fetch_add`, and the rest. `getitem` and `setitem` are the
-# value shortcuts.
+# is `@T`'s own: `peek`, `poke`, `peek_volatile`, `atomic_fetch_add`, and the rest.
 
 module Standard/System
 
@@ -20,7 +21,7 @@ module Standard/System
 ### :typeparam T: The element type.
 record Span[T]
 needs T: typename
-obeys ViewingIndexable[@[T], T], ModifyingIndexable[@[T], T]
+obeys ViewingIndexable[@[T], T]
     data: @T
     count: U64
 
@@ -138,26 +139,6 @@ failable routine @@[T].getitem(index: U64) -> T
 needs T: typename
     return when check me.peek().getitem(index)
         is T as value => value
-
-### Writes `value` at `index`, checked: `getslot(index).poke(value)`.
-### :param index: The zero-based position.
-### :param value: The value to write.
-### :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
-@track_caller
-routine @[T].setitem(index: U64, value: T) -> None
-needs T: typename
-    me.getslot(index).poke(steal value)
-    return
-
-### Writes `value` at `index`, checked: `getslot(index).poke(value)`.
-### :param index: The zero-based position.
-### :param value: The value to write.
-### :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
-@track_caller
-routine @@[T].setitem(index: U64, value: T) -> None
-needs T: typename
-    me.peek()[index] = value
-    return
 
 ### Exchanges the values at `first` and `second` in place. Each value is moved, never copied, so entity values swap
 ### too, and neither place is left hollow. The same index twice changes nothing.
