@@ -1867,7 +1867,9 @@ the type's own).
 **Arrays and `stride`.** `p.stride(i)` is the address of the i-th `T` of a `@T` (a
 `U64`, or an `S64` to move back; `offset` counts bytes); it's a place, so `p.stride(i).f` works. On a
 `@Array[T, COUNT]` that is the i-th whole array, so array elements are `arr.getitem(i)` / `arr.setitem(index: i, value: v)` / `arr.getslot(i)`
-(bounds checked), or `arr.to[@T]().stride(i).peek()` unchecked. An array literal is `[1, 2, 3]`, and `[0] * 256`
+(bounds checked), or `arr.to[@T]().stride(i).peek()` unchecked. An array literal is `[1, 2, 3]` (a bracketed list
+broken over lines, also a tuple, call arguments, parameters or a record literal, may end with a comma before its
+closing bracket, on one line that comma is a build error), and `[0] * 256`
 repeats its elements (`[1, 2] * 3` = `[1, 2, 1, 2, 1, 2]`; the count is a number or a preset, or a runtime value in an `at` literal). The same holds for array fields (`node.keys.getitem(i)`) and
 array presets (`K.getitem(i)`, with `preset K: @Array[T, COUNT] <- [...]`), and for span presets and globals
 (`preset K: @[T] <- [...]`, `K.getitem(i)`, `K.count()`).

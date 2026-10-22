@@ -1041,7 +1041,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 // `hi: U64 = R2`: the register an assembly routine's parameter arrives in.
                 Token? register = Accept(TokenKind.Eq) ? Expect(TokenKind.Ident, "a register after '='") : null;
                 list.Add(new Param(n.Text, type, n.Pos) { Register = register });
-            } while (Accept(TokenKind.Comma));
+            } while (AcceptListComma(TokenKind.RParen));
         }
         Expect(TokenKind.RParen, "')'");
         return list;
@@ -2354,7 +2354,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 if (Accept(TokenKind.Comma))
                 {
                     var items = new List<Expr> { inner };
-                    do items.Add(ParseExpr()); while (Accept(TokenKind.Comma));
+                    do items.Add(ParseExpr()); while (AcceptListComma(TokenKind.RParen));
                     Expect(TokenKind.RParen, "')'");
                     return new ArrayLit(items, t.Pos) { IsTuple = true };
                 }
@@ -2367,7 +2367,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 Next();
                 var elems = new List<Expr>();
                 if (!Is(TokenKind.RBracket))
-                    do elems.Add(ParseExpr()); while (Accept(TokenKind.Comma));
+                    do elems.Add(ParseExpr()); while (AcceptListComma(TokenKind.RBracket));
                 Expect(TokenKind.RBracket, "']'");
                 // `[0] * 256`: the elements repeated, as many times as a count the build knows. A bracket literal followed by
                 // `*` is always a repeat: a Vector literal is bound to a name before it is multiplied.
@@ -2569,10 +2569,24 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 var f = Next();
                 Expect(TokenKind.Colon, "':'");
                 fields.Add((f.Text, ParseExpr(), f.Pos));
-            } while (Accept(TokenKind.Comma));
+            } while (AcceptListComma(TokenKind.RParen));
         }
         Expect(TokenKind.RParen, "')'");
         return AtManager(new RecordLit(null, fields, pos));
+    }
+
+    /// Takes the comma between two items of a bracketed list and says whether another item follows. A comma right
+    /// before the closing bracket ends the list when the list is broken over lines (the bracket on a later line), as
+    /// the formatter writes a broken list. On one line it is an error that says to remove it.
+    private bool AcceptListComma(TokenKind close)
+    {
+        if (!Is(TokenKind.Comma)) return false;
+        var comma = Next();
+        if (Cur.Kind != close) return true;
+        if (Cur.Pos.Line == comma.Pos.Line)
+            throw new CompileError(comma.Pos, "a comma before the closing bracket goes only on a list broken over lines, "
+                + "with the bracket on a line of its own: remove this comma, or break the list");
+        return false;
     }
 
     private List<TypeRef> ParseTypeArgsOpt()
@@ -2623,7 +2637,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 names.Add(Cur.Kind == TokenKind.Ident && PeekTok(1).Kind == TokenKind.Colon ? Next().Text : null);
                 if (names[^1] is not null) Next();
                 args.Add(ParseExpr());
-            } while (Accept(TokenKind.Comma));
+            } while (AcceptListComma(TokenKind.RParen));
         }
         Expect(TokenKind.RParen, "')'");
         return (args, names.Any(n => n is not null) ? names : null);

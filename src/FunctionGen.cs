@@ -520,6 +520,27 @@ public sealed partial class FunctionGen
         _ => null,
     };
 
+    /// The views bound to a part of what they come from (`merged: @Dict = sets.getslot(a)`, a field, an element), not to
+    /// the same thing under another name (`b = a`, a conversion).
+    private readonly HashSet<string> _partViews = [];
+
+    /// Whether `e` reaches into a part of what it is taken from, rather than naming that thing again.
+    private static bool TakesPart(Expr e) =>
+        e is not ValueRef && e is not MethodCallExpr { Name: "to" };
+
+    /// The names between `name` and the name it comes from in the end, nearest first, each with whether the step to it
+    /// goes into a part of it.
+    private List<(string Name, bool Part)> ViewChain(string name)
+    {
+        var chain = new List<(string, bool)>();
+        for (int i = 0; i < 64 && _rootOf.TryGetValue(name, out var from) && from != name; i++)
+        {
+            chain.Add((from, _partViews.Contains(name)));
+            name = from;
+        }
+        return chain;
+    }
+
     /// The name a value comes from in the end, through the bindings that were made from it.
     private string ResolveRoot(string name)
     {
@@ -564,8 +585,19 @@ public sealed partial class FunctionGen
             Expr? arg = index == 0 && plan.Receiver is not null ? plan.Receiver
                 : index - offset >= 0 && index - offset < plan.Args.Count ? plan.Args[index - offset] : null;
             if (arg is null || RootName(arg) is not { } root) continue;
+            // A view of a part (`merged: @Dict = sets.getslot(a)`) moves only what that part holds: through names that
+            // are the same thing again, the reshaped one is the first that is a part of what it comes from.
+            string? inner = null;
+            if (arg is ValueRef)
+            {
+                string named = root;
+                for (int i = 0; i < 64 && _rootOf.TryGetValue(named, out var from) && from != named
+                     && !_partViews.Contains(named); i++)
+                    named = from;
+                if (_partViews.Contains(named)) inner = named;
+            }
             root = ResolveRoot(root);
-            Mem(new MemoryRules.Reshape(root, $"'{plan.Decl.DisplayName}'", plan.Pos));
+            Mem(new MemoryRules.Reshape(root, $"'{plan.Decl.DisplayName}'", plan.Pos) { Inner = inner });
             if (!instance && _decl.Params.Any(p => p.Name == root) && !ReshapedParams(_decl).Contains(root))
                 throw Err(plan.Pos, $"'{_decl.DisplayName}' may move the memory of '{root}' here ('{plan.Decl.DisplayName}' is "
                     + $"@reshaping): mark it {(root == "me" ? "@reshaping" : $"@reshaping({root})")}, so its callers know a view "
@@ -1443,8 +1475,9 @@ public sealed partial class FunctionGen
                 if (PointsAtMemory(t) && b.Value is not ClaimExpr && RootName(b.Value) is { } made && made != b.Name)
                 {
                     _rootOf[b.Name] = made;
+                    if (TakesPart(b.Value)) _partViews.Add(b.Name);
                     _viewNames.Add(b.Name);
-                    Mem(new MemoryRules.ViewOf(b.Name, ResolveRoot(made), b.Pos));
+                    Mem(new MemoryRules.ViewOf(b.Name, ResolveRoot(made), b.Pos) { Chain = ViewChain(b.Name) });
                 }
                 if (b.Value is ClaimExpr) _claimedSlots.Add(b.Name);
                 if ((b.Value is ClaimExpr { Contents: { } claimed } ? claimed : b.Value) is { } made2

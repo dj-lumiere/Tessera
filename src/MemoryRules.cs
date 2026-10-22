@@ -90,10 +90,19 @@ public static class MemoryRules
         /// The view holds the address of `Root`'s slot itself (a manager's table holds the manager's): `Root` must not
         /// end while the view is still used.
         public bool Holds { get; init; }
+
+        /// The names between the view and `Root`, nearest first, each with whether the step to it goes into a part of
+        /// it (`sets.getslot(a)`, a field, an element) rather than naming the same thing again (`b = a`).
+        public IReadOnlyList<(string Name, bool Part)> Chain { get; init; } = [];
     }
 
     /// A `#reshaping` routine may move the memory `Root` names: the views of it no longer see it.
-    public sealed record Reshape(string Root, string How, Pos Pos) : Event(Pos);
+    public sealed record Reshape(string Root, string How, Pos Pos) : Event(Pos)
+    {
+        /// The view named here is a part of `Root` (a slot of a list, a field), and the call moves only the memory that
+        /// part holds (a dict's storage, not the list holding the dict): only views taken from inside it go stale.
+        public string? Inner { get; init; }
+    }
 
     /// `Name` holds a view of the memory `Root` names in it (a field, a part, or a pointer a call gave back from it):
     /// using `Name` after that memory is given back reads memory that is gone.
@@ -274,6 +283,24 @@ public static class MemoryRules
             if (reported.Add($"{pos}|{message}")) errors.Add(new CompileError(pos, message));
         }
 
+        // A value is bound once, so the names a view was taken through are the same on every path.
+        var chains = new Dictionary<string, IReadOnlyList<(string Name, bool Part)>>();
+        foreach (var v in events.Values.SelectMany(l => l).OfType<ViewOf>())
+            if (v.Chain.Count > 0) chains[v.Name] = v.Chain;
+
+        // Whether `view` is taken from inside `inner`: through it, with a step into a part on the way.
+        bool InsideOf(string view, string inner)
+        {
+            if (!chains.TryGetValue(view, out var chain)) return false;
+            bool part = false;
+            foreach (var (name, isPart) in chain)
+            {
+                part |= isPart;
+                if (name == inner) return part;
+            }
+            return false;
+        }
+
         var entry = events.ContainsKey("") ? "" : firstBlock;
         var seen = new HashSet<string>();
         var work = new Queue<(string Block, State State)>();
@@ -429,7 +456,8 @@ public static class MemoryRules
                         break;
                     case Reshape rs:
                         foreach (var (view, root) in state.Views)
-                            if (root == rs.Root) state.Stale[view] = (rs.Pos, rs.How);
+                            if (root == rs.Root && (rs.Inner is not { } inner || InsideOf(view, inner)))
+                                state.Stale[view] = (rs.Pos, rs.How);
                         break;
                     case GlobalStore gs:
                         if (gs.Restoring) state.Changed.Remove(gs.Global);
