@@ -209,6 +209,11 @@ routine switch_stack(from: @Addr, to: Addr) -> None
 
 # -- a new stack ---------------------------------------------------------------------
 
+### The room a stack keeps at its bottom for the handler of a stack overflow on it: a thread that asks Windows for this
+### guarantee (SetThreadStackGuarantee) gets its stack overflow exception there.
+@target(arch: "x86_64", os: "windows")
+secret preset OVERFLOW_ROOM: U64 = 65536
+
 ### What VirtualQuery says about a range of pages (MEMORY_BASIC_INFORMATION on 64-bit Windows).
 @target(arch: "x86_64", os: "windows")
 secret record PageRange
@@ -362,6 +367,54 @@ secret routine store_bounds(sp: @U64, limit: U64, base: U64) -> None
 ### :param base: The top of the stack.
 @target(arch: "x86_64", os: not "windows")
 secret routine store_bounds(sp: @U64, limit: U64, base: U64) -> None
+    return
+
+### Binds the Win32 `VirtualProtect` function, which changes the protection of committed pages.
+### :param addr: The start of the pages.
+### :param size: The number of bytes.
+### :param protect: The new `PAGE_*` protection.
+### :param old: Where the previous protection goes.
+### :returns: Nonzero on success, 0 with the last error set.
+@external("c")
+@symbol("VirtualProtect")
+@callconv("stdcall")
+@target(arch: "x86_64", os: "windows")
+secret routine c_virtual_protect(addr: Addr, size: CSize, protect: U32, old: @U32) -> CInt
+
+### Windows raises its stack overflow exception when a stack grows into a guard page and less than the thread's
+### guarantee (SetThreadStackGuarantee) is left below it, and the exception's handler runs on that rest. A stack that
+### reaches the closed page below it gets no exception: there is no room to hand one over, and the process ends
+### without a report. So a stack of at least four times OVERFLOW_ROOM gets a guard page OVERFLOW_ROOM above its bottom:
+### the stack runs into it with that much room left, and its last OVERFLOW_ROOM bytes are for the handler. A smaller
+### stack keeps only the closed page.
+### :param bottom: The stack's bottom, above the closed page.
+### :param size: The stack's size in bytes.
+### :param page: The page size in bytes.
+@target(arch: "x86_64", os: "windows")
+secret routine guard_overflow_room(bottom: Addr, size: U64, page: U64) -> None
+    old: &U32 <- 0
+
+    if size < OVERFLOW_ROOM * 4
+        return
+    # PAGE_READWRITE (0x04) with PAGE_GUARD (0x100)
+    c_virtual_protect(bottom +% ByteSize.construct(bytes: OVERFLOW_ROOM), page.to[CSize](), 0x104,
+        old)
+    return
+
+### Does nothing: outside Windows the closed page below a stack reports its overflow (Standard/System/Cpu).
+### :param bottom: The stack's bottom, above the closed page.
+### :param size: The stack's size in bytes.
+### :param page: The page size in bytes.
+@target(arch: not "x86_64")
+secret routine guard_overflow_room(bottom: Addr, size: U64, page: U64) -> None
+    return
+
+### Does nothing: outside Windows the closed page below a stack reports its overflow (Standard/System/Cpu).
+### :param bottom: The stack's bottom, above the closed page.
+### :param size: The stack's size in bytes.
+### :param page: The page size in bytes.
+@target(arch: "x86_64", os: not "windows")
+secret routine guard_overflow_room(bottom: Addr, size: U64, page: U64) -> None
     return
 
 ### A new stack of size bytes at stack: the stack pointer to switch to, at a frame that returns into entry.

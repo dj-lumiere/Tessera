@@ -444,12 +444,15 @@ routine start() -> None
   the caller's stack pointer. It has no table: every routine borrows its frame from the running flow's StackManager,
   the builder calling `StackManager.borrow_frame(size)` right after the prologue and `StackManager.give_back_frame()`
   right before each return (after the STACK places go back). Programs never write these two (an `@inline` routine,
-  an assembly routine, and the two themselves don't get them). Without an OS, `borrow_frame` reads the stack pointer and
+  an assembly routine, a routine that calls no other routine and has at most 1 KiB of slots, and the two themselves
+  don't get them). Without an OS, `borrow_frame` reads the stack pointer and
   stops the program with `StackOverflowError` when it is less than 4 KiB above the stack's bottom (a frame whose slots
   exceed the margin is checked from where the stack pointer was before it; a stack the program switched to itself, a
   fiber stack in a global, isn't checked). With an OS the closed page below each stack stops it, and the fault report
   names it `StackOverflowError (SIGSEGV)` (Linux / macOS: a fault at most 1 MiB below the running flow's StackManager
-  bottom or 4 KiB above it), on Windows the OS's stack overflow exception. `StackManager.current()` is the running flow's: a fiber's
+  bottom or 4 KiB above it), on Windows the OS's stack overflow exception (a fiber stack of 256 KiB or more
+  has a guard page 64 KiB above its bottom, where Windows raises it with that room left for the handler on a thread
+  that asked for it with SetThreadStackGuarantee). `StackManager.current()` is the running flow's: a fiber's
   inside a fiber, else the thread's own stack, whose bounds the OS gives (without an OS, `__stack_bottom` to
   `__stack_top`: the end of the globals to the end of the board's RAM). `ThreadLocalManager.reset()` puts this thread's `@threadlocal` globals back
   to their starting values. Without an OS, `GlobalManager.prepare()` puts the globals in place (`prepare_core()` in the
@@ -1516,8 +1519,8 @@ searches the holders its request overlaps, what they wait for, and so on, and cr
 threads and fibers and where each took its access, instead of waiting forever. `[debug] access-order = true` (off by
 default, time on every access) crashes with `AccessOrderError` on two accesses taken in opposite orders. The builder
 sets them as the presets `DEADLOCK_CHECK` / `ACCESS_ORDER`. `AccessManager.held()` / `held_count()` / `alert_held()`
-list what the running flow holds. `AccessManager.take(at, size, mode, deadline, place) -> Bool` (a timeout: `false`
-when the deadline passed first), `try_take(at, size, mode, place)`, and `give_back(at)` take and give back a range by
+list what the running flow holds. `AccessManager.take(request: AccessRequest(at, size, mode), deadline, place) -> Bool` (a timeout:
+`false` when the deadline passed first), `try_take(request, place)`, and `give_back(at)` take and give back a range by
 its `Addr`: the build doesn't follow them (code that keeps its own addresses, another language's runtime).
 `SignalCaster` (a condition variable for an exclusive access: `wait(held)`, `wait_for(held, timeout)` /
 `wait_until(held, deadline)` with the `Authorized[T]` the caller holds, returning whether it returned in time, each
