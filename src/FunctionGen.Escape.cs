@@ -13,6 +13,9 @@ public sealed partial class FunctionGen
     /// The facts of this instance, or null while a generic body is checked (or for a routine without a body).
     private EscapeCheck.RoutineFacts? _escape;
 
+    /// The routine each routine value written here names (`keep.to[Callable]()`, a lambda), by its place.
+    private readonly Dictionary<Pos, string> _routineValueSymbols = [];
+
     /// The atoms each name is bound to.
     private readonly Dictionary<string, HashSet<Atom>> _atoms = [];
 
@@ -24,7 +27,9 @@ public sealed partial class FunctionGen
     private void BeginEscape()
     {
         if (_c.Prechecking || _decl.Blocks is not { Count: > 0 } || _inst.IsAsm) return;
-        _escape = _c.Escapes.Begin(_inst, reports: MemOn);
+        _escape = _c.Escapes.Begin(_inst, reports: EscapeOn);
+        foreach (var moved in ReshapedParams(_decl))
+            if (_decl.Params.FindIndex(p => p.Name == moved) is >= 0 and var index) _escape.Reshapes.Add(index);
         for (int i = 0; i < _decl.Params.Count && i < _inst.Params.Count; i++)
         {
             var p = _decl.Params[i];
@@ -39,15 +44,15 @@ public sealed partial class FunctionGen
         }
     }
 
-    /// Whether a value of `t` can hold an address: a pointer, or a record, a tuple, an array or a variant with one in it.
-    /// A routine value holds none of this routine's memory, and an `Addr` is an address as a number (an identity, or
-    /// what a thread or fiber ticket carries), which the check doesn't follow.
+    /// Whether a value of `t` can hold an address: a pointer, a routine value (a call through it is a call to the routine
+    /// it names), or a record, a tuple, an array or a variant with one in it. An `Addr` is an address as a number (an
+    /// identity), which the check doesn't follow.
     private bool CarriesAddress(DType t) => CarriesAddress(t, []);
 
     private bool CarriesAddress(DType t, HashSet<string> seen) => t switch
     {
         PtrType { Pointee: null } => false,
-        PtrType => true,
+        PtrType or CallableType => true,
         ArrayType a => CarriesAddress(a.Elem, seen),
         VectorType v => CarriesAddress(v.Elem, seen),
         RecordType r when seen.Add(r.Key) => _c.Fields(r).Any(f => CarriesAddress(f.Type, seen)),
@@ -75,7 +80,9 @@ public sealed partial class FunctionGen
             case ValueRef r:
                 return _atoms.TryGetValue(r.Name, out var bound) ? [.. bound] : [];
             case PresetRef p when IsGlobalRef(p):
-                return [new GlobalAtom(p.Name, 0)];
+                return [new GlobalAtom(p.Name, 0, ThreadLocal(p))];
+            case RoutineRef or LambdaExpr when _routineValueSymbols.TryGetValue(e.Pos, out var routine):
+                return [new EscapeCheck.RoutineAtom(routine, 0)];
             case MethodCallExpr when TableManager(e) is { } manager:
                 return AtomsOf(manager);
             case MethodCallExpr { Name: "getview" or "to" or "getslot" } m when MemName(m.Receiver) is { } owned:
@@ -110,6 +117,9 @@ public sealed partial class FunctionGen
                     : AtomsOf(stolen);
             case StealExpr s:
                 return InferQuiet(s.Value) is PtrType ? Shifted(AtomsOf(s.Value), 1) : AtomsOf(s.Value);
+            // `[...] at manager` is the construct call it stands for.
+            case AtExpr at when _escapeCalls.TryGetValue((at.Pos, "construct"), out int made):
+                return [new ResultAtom(made, 0)];
             case TempSlotExpr slot:
             {
                 string owner = $"[temporary slot at {slot.Pos}]";
@@ -185,6 +195,32 @@ public sealed partial class FunctionGen
         return name is not null && _escapeCalls.TryGetValue((e.Pos, name), out int index) ? index : null;
     }
 
+    /// Whether a global is `@threadlocal`: each thread has its own.
+    private bool ThreadLocal(PresetRef p)
+    {
+        try { return _c.FindPreset("", p.Name, _env.File, p.Pos, p.Path)?.AnnotationNamed("threadlocal") is not null; }
+        catch (CompileError) { return false; }
+    }
+
+    /// Whether a place is in a `@threadlocal` global: each thread has its own.
+    private bool ThreadLocalRoot(Expr place)
+    {
+        var at = AsValueCall(place);
+        while (true)
+        {
+            switch (at)
+            {
+                case FieldExpr f: at = f.Base; continue;
+                case IndexExpr ix: at = ix.Base; continue;
+                case MethodCallExpr { Name: "getslot" or "stride" or "offset" or "getslice" or "to" or "getview" } m: at = m.Receiver; continue;
+            }
+            break;
+        }
+        if (at is not PresetRef { Owner: null } p) return false;
+        try { return _c.FindPreset("", p.Name, _env.File, p.Pos, p.Path) is { IsGlobal: true } g && g.AnnotationNamed("threadlocal") is not null; }
+        catch (CompileError) { return false; }
+    }
+
     /// Whether a preset reference names a global (memory that outlives every routine).
     private bool IsGlobalRef(PresetRef p)
     {
@@ -224,11 +260,32 @@ public sealed partial class FunctionGen
         if (value is null || into is null) return;
         int valueParam = sig.Decl.Name == "poke_into" ? 0 : sig.Params.Count - 1;
         var stored = Atoms(value, valueParam >= 0 && valueParam < sig.Params.Count ? sig.Params[valueParam] : null);
-        if (stored.Count == 0) return;
+        // A store of a plain value is recorded too: what a routine changes matters to work on other threads.
         var place = AtomsOf(into);
         if (place.Count == 0) return;
         _escape.Stores.Add(new EscapeCheck.StoreFact(place, stored, plan.Pos, Spelled(new MethodCallExpr(
-            plan.Receiver, sig.Decl.Name, [], plan.Args, plan.Pos))));
+            plan.Receiver, sig.Decl.Name, [], plan.Args, plan.Pos))) { Unshared = sig.Decl.Name.Contains("atomic") || ThreadLocalRoot(into) });
+    }
+
+    /// A store straight into a global (`G.poke(x)`): whether it puts back a value read out of that global, so the
+    /// escape check knows which globals every path puts back as they were.
+    private void NoteGlobalStore(CallPlan plan, Instance sig)
+    {
+        if (!MemOn || _escape is null || plan.Receiver is null) return;
+        Expr? value = sig.Decl.Name switch
+        {
+            "poke" or "poke_volatile" or "poke_atomic" or "store" or "setitem" => plan.Args.LastOrDefault(),
+            "poke_into" => plan.Receiver,
+            _ => null,
+        };
+        Expr? into = sig.Decl.Name == "poke_into" ? plan.Args.FirstOrDefault() : plan.Receiver;
+        if (value is null || into is null) return;
+        foreach (var g in AtomsOf(into).OfType<GlobalAtom>().Where(g => g.Level == 0))
+        {
+            var stored = AtomsOf(value);
+            bool restoring = stored.Count > 0 && stored.All(a => a is GlobalAtom v && v.Name == g.Name && v.Level > 0);
+            Mem(new MemoryRules.GlobalStore(g.Name, restoring, plan.Pos));
+        }
     }
 
     /// Records a call to a routine with a body: each parameter's atoms, so its effects can be checked here once they
@@ -249,6 +306,17 @@ public sealed partial class FunctionGen
                 : new CallExpr(plan.Decl.Name, [], plan.Args, plan.Pos));
         _escapeCalls[(plan.Pos, plan.Decl.Name)] = _escape.Calls.Count;
         _escape.Calls.Add(new EscapeCheck.CallFact(callee.Symbol, args, plan.Pos, text));
+    }
+
+    /// Records a call through a Callable value: the value's atoms say which routine it may be.
+    private void RecordIndirectCall(Expr callee, CallableType ct, List<Expr> argExprs, Pos pos)
+    {
+        if (_escape is null) return;
+        var args = argExprs.Select((a, i) => Atoms(a, i < ct.Params.Count ? ct.Params[i] : null)).ToList();
+        if (args.All(a => a.Count == 0)) return;
+        _escapeCalls[(pos, "call")] = _escape.Calls.Count;
+        _escape.Calls.Add(new EscapeCheck.CallFact("", args, pos, Spelled(new MethodCallExpr(callee, "call", [], argExprs, pos)))
+            { Through = AtomsOf(callee) });
     }
 
     /// How a line spells `e` in a message: a value the builder made in place (a temporary slot) has no spelling.
@@ -339,7 +407,12 @@ public sealed partial class FunctionGen
     private void NoteBoundViews(BindStmt b, DType t)
     {
         if (!MemOn || b.Value is ClaimExpr || !CarriesAddress(t) || RootName(b.Value) is not null) return;
-        NoteHeldViews(b.Name, ViewRoots(b.Value), b.Pos);
+        var roots = ViewRoots(b.Value);
+        // Memory handed into the same value with its view (`Me(path: path.getview(), storage: steal path)`) lives as
+        // long as the value: the view goes along with it.
+        foreach (var part in b.Value switch { RecordLit lit => lit.Fields.Select(f => f.Value), ArrayLit a => a.Elements, _ => CallParts(b.Value) })
+            if (part is StealExpr { Value: ValueRef moved }) roots.Remove(ResolveRoot(moved.Name));
+        NoteHeldViews(b.Name, roots, b.Pos);
     }
 
     /// A store of a value that holds views of memory into a place of this routine: the place's value holds them now.
@@ -357,13 +430,112 @@ public sealed partial class FunctionGen
         if (RootName(into) is { } root && !_routineParams.ContainsKey(root)) NoteHeldViews(ResolveRoot(root), ViewRoots(value), plan.Pos);
     }
 
+    /// A call that hands a view of memory this routine holds to one parameter and a value of this routine (a list, a slot)
+    /// to another: if the callee keeps the view there (`xs.add_last(m.getview())`, `keep(out: q, v: m.getview())`), that
+    /// value holds a view of the memory from here on. Which callees keep what is known once every routine is built.
+    private void NoteCallKeepsViews(CallPlan plan, Instance callee)
+    {
+        if (!MemOn || callee.IsExternalC || callee.IsTemplate || callee.IsAsm) return;
+        var parts = new List<Expr>();
+        if (plan.Receiver is not null) parts.Add(plan.Receiver);
+        parts.AddRange(plan.Args);
+        for (int from = 0; from < parts.Count; from++)
+        {
+            var roots = ViewRoots(parts[from]);
+            if (roots.Count == 0) continue;
+            for (int into = 0; into < parts.Count; into++)
+            {
+                if (into == from || RootName(parts[into]) is not { } named || _routineParams.ContainsKey(named) || !BoundInRoutine(named))
+                    continue;
+                string holder = ResolveRoot(named);
+                foreach (var root in roots)
+                    if (root != holder)
+                    {
+                        _viewNames.Add(holder);
+                        Mem(new MemoryRules.MayHoldViewOf(holder, root, callee.Symbol, from, into, plan.Pos));
+                    }
+            }
+        }
+    }
+
+    /// Whether a routine is a ticket's (`Thread[T]`, `Fiber[T]`, `Job[T]` of the standard library).
+    private static bool IsTicketRoutine(RoutineDecl d) =>
+        d.IsLibrary && d.Owner is { Name: "Thread" or "Fiber" or "Job" };
+
+    /// A ticket's work runs on, after `put_work` returns, until it is waited for: the ticket holds what its work was
+    /// handed. Storing or returning the ticket takes that along (the escape check), work handed a view of the frame
+    /// is waited for before the routine returns, and work handed a view of memory makes the ticket a holder of that view
+    /// until the work is over.
+    private void NoteTicketCall(CallPlan plan, Instance callee)
+    {
+        if (_escape is null && !MemOn) return;
+        string? ticket = plan.Receiver is { } r && RootName(r) is { } root ? ResolveRoot(root) : null;
+        // The standard library's own work (a pool's threads, which its destruct ends) is its own to keep right.
+        if (IsTicketRoutine(plan.Decl) && plan.Decl.Name == "put_work" && ticket is not null && !_decl.IsLibrary)
+        {
+            // The plan's arguments are in the parameters' order: `entry`, then `args`.
+            Expr? entry = plan.Args.ElementAtOrDefault(0);
+            Expr? args = plan.Args.ElementAtOrDefault(1);
+            var parts = args is ArrayLit { IsTuple: true } tuple ? tuple.Elements : args is null ? [] : [args];
+            if (_escape is not null)
+            {
+                var atoms = parts.Select(p => Atoms(p)).ToList();
+                var held = atoms.SelectMany(a => a).Select(a => a.Shift(-1)).ToHashSet();
+                if (held.Count > 0)
+                {
+                    if (_atoms.TryGetValue(ticket, out var known)) known.UnionWith(held);
+                    else _atoms[ticket] = held;
+                }
+                // The work is a call of `entry` with the arguments, made from here on.
+                // A Fiber's work runs on this thread, between this routine's waits: only a Thread's or a Job's runs
+                // alongside it.
+                if (entry is not null)
+                    _escape.Calls.Add(new EscapeCheck.CallFact("", atoms, plan.Pos, Spelled(new MethodCallExpr(plan.Receiver!, "put_work", [], plan.Args, plan.Pos)))
+                    {
+                        Through = AtomsOf(entry),
+                        Work = plan.Decl.Owner is { Name: "Thread" or "Job" },
+                        InLoop = _loops.Count > 0,
+                        Handed = parts.Select(p => p switch
+                        {
+                            ValueRef v => v.Name,
+                            PresetRef g when IsGlobalRef(g) => g.Name,
+                            _ => null,
+                        }).ToList(),
+                    });
+            }
+            if (MemOn)
+            {
+                if (parts.Select(FrameView).FirstOrDefault(v => v is not null) is { } sees)
+                    Mem(new MemoryRules.WorkStarted(ticket, sees, plan.Pos));
+                var roots = parts.SelectMany(ViewRoots).ToHashSet();
+                NoteHeldViews(ticket, roots, plan.Pos);
+            }
+            return;
+        }
+        // An access taken here: what this routine changes, it changes under it.
+        // (`ExclusiveAccess.lock` and its kin, or a lock routine of a runtime, named `..._lock`).
+        if (_escape is not null && (plan.Decl.Name is "lock" or "lock_write" or "try_lock" or "try_lock_write" or "lock_within"
+                or "lock_write_within" || plan.Decl.Name.EndsWith("_lock", StringComparison.Ordinal)))
+            _escape.TakesAccess = true;
+        if (!MemOn) return;
+        if (IsTicketRoutine(plan.Decl) && ticket is not null
+            && plan.Decl.Name is "wait_finished" or "wait_finished_cancellable" or "retrieve" or "give_back")
+            Mem(new MemoryRules.WorkWaited(ticket, plan.Pos));
+        // A ticket handed to another routine (a list of tickets that waits for them all) is followed no further.
+        foreach (var arg in plan.Args)
+            if (arg is ValueRef handed && InferQuiet(arg) is RecordType { Decl.Name: "Thread" or "Fiber" or "Job" })
+                Mem(new MemoryRules.WorkWaited(handed.Name, arg.Pos));
+    }
+
     /// Whether `name` is a parameter that points at memory or an entity its caller holds (`m: @Memory[Byte]`, `me`
     /// of an entity's routine): the caller gives it back, not this routine.
     private bool IsCallerHeldParam(string name)
     {
         int index = _decl.Params.FindIndex(p => p.Name == name);
+        // A parameter written as a bare type parameter (`value: T`) that this instance binds to a pointer is a value of
+        // its own, handed over: only one written as an address (`@T`, `@Memory[T]`, `me`) points at what the caller holds.
         return index >= 0 && index < _inst.Params.Count && _inst.Params[index] is PtrType { Pointee: { } held } && Tracked(held)
-               && _decl.Name is not ("destruct" or "destruct_all");
+               && !PointerOfTypeParam(name) && _decl.Name is not ("destruct" or "destruct_all");
     }
 
     /// `drop p` or `steal p` of a parameter pointing at what the caller holds: the routine must put a value back before it returns.
@@ -382,6 +554,10 @@ public sealed partial class FunctionGen
             "poke_into" => plan.Args.FirstOrDefault(),
             _ => null,
         };
-        if (into is ValueRef r && IsCallerHeldParam(r.Name)) Mem(new MemoryRules.CallerHeldRefill(r.Name, plan.Pos));
+        // A field of it written (`me.manager.poke(m)` after `drop me`) leaves it hollow with that field set, which the
+        // caller may hold and give back again.
+        var at = into;
+        while (at is FieldExpr f) at = f.Base;
+        if (at is ValueRef r && IsCallerHeldParam(r.Name)) Mem(new MemoryRules.CallerHeldRefill(r.Name, plan.Pos));
     }
 }

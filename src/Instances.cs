@@ -9,6 +9,12 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
     public List<DType> Params { get; } = parameters;
     public DType Ret { get; } = ret;
 
+    /// How a message names this instance: the routine, and what its type parameters stand for
+    /// (`keep with T = Memory[S64]`).
+    public string Readable => Env.All.Where(kv => kv.Key != "Me").ToList() is { Count: > 0 } bound
+        ? $"{Decl.DisplayName} with {string.Join(", ", bound.Select(kv => $"{kv.Key} = {kv.Value}"))}"
+        : Decl.DisplayName;
+
     public bool IsExternalC => Decl.AnnotationNamed("external") is { First: "c" };
     public bool IsTemplate => Decl.AnnotationNamed("template") is not null;
     /// An `@external("asm")` routine: its body is put in place at each call as inline assembly.

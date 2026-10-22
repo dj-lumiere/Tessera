@@ -146,8 +146,14 @@ public sealed partial class FunctionGen
     /// was made on, so a binding of it is a copy of that handle.
     private (Pos Call, string Of)? _memSame;
 
-    /// Whether the check follows this routine: a built routine without type parameters, with a body.
-    private bool MemOn => !_c.Prechecking && !Compiler.IsGenericRoutine(_decl) && _decl.Blocks is { Count: > 0 };
+    /// Whether the check follows this routine: a built routine with a body. An instance of a generic routine is checked
+    /// with its type parameters bound, so `drop x` of a `T` that is a Memory is followed like any Memory.
+    private bool MemOn => !_c.Prechecking && _decl.Blocks is { Count: > 0 };
+
+    /// Whether the escape check reports in this routine: every routine the memory check follows, except an instance of
+    /// a generic routine of the standard library, whose frame nodes (a channel's wait list) are linked and unlinked by
+    /// design. Those still give their effects to their callers.
+    private bool EscapeOn => MemOn && !(_decl.IsLibrary && Compiler.IsGenericRoutine(_decl));
 
     private void Mem(MemoryRules.Event e)
     {
@@ -159,9 +165,30 @@ public sealed partial class FunctionGen
     private string? MemName(Expr e) => e switch
     {
         ValueRef r when _memTracked.Contains(r.Name) => r.Name,
+        FieldExpr f when PlaceKey(f) is { } key && _memTracked.Contains(key) => key,
         MethodCallExpr { Name: "peek", Args.Count: 0, Receiver: ValueRef r } when _memTracked.Contains(r.Name) => r.Name,
         _ => null,
     };
+
+    /// The fields of me a destruct gives back (`me.items`), followed as handles.
+    private readonly HashSet<string> _destructFields = [];
+
+    /// The memory or entity type a field place holds (`q.m` of a `Memory[S64]` field), or null.
+    private DType? FieldHeld(Expr place) =>
+        InferQuiet(place) is PtrType { Pointee: { } held } && held is not PtrType && Tracked(held) ? held : null;
+
+    /// A destruct that never gives back a field of me holding memory or an entity (on no path: no drop, give_back,
+    /// destruct_all, take, or steal of it) leaves that memory behind.
+    private void CheckDestructGivesBack()
+    {
+        if (!MemOn || _destructFields.Count == 0) return;
+        var ended = _memEvents.Values.SelectMany(list => list).OfType<MemoryRules.End>().Select(e => e.Name).ToHashSet();
+        foreach (var key in _destructFields.Order(StringComparer.Ordinal))
+            if (!ended.Contains(key))
+                throw Err(_decl.Pos, $"'{_decl.DisplayName}' never gives back '{key}', and a destruct gives back every Memory, Box, "
+                    + $"and entity the value holds: drop {key} here (or {key}.give_back()), or take it out with steal {key} as old "
+                    + "and hand it on");
+    }
 
     /// Whether a value of `t` is a Box or a Memory itself (not a slot of one).
     private static bool ManagedValue(DType t) => t is not PtrType && Tracked(t);
@@ -396,6 +423,7 @@ public sealed partial class FunctionGen
         if (value is ImplicitCallExpr { Name: "hollow" } or NsCallExpr { Name: "hollow" })
         {
             _memTracked.Add(name);
+            Mem(new MemoryRules.Store(name, null, pos) { Hollow = true });
             return;
         }
         // `b: T = steal a` (or `steal a as b`): a's life ended at the steal, and b's starts here.
@@ -446,7 +474,7 @@ public sealed partial class FunctionGen
     /// other group must have ended. The events go in after the value is evaluated, so its own calls come first.
     private void MemReturn(ReturnStmt r)
     {
-        if (MemOn) CheckReturnEscape(r);
+        if (EscapeOn) CheckReturnEscape(r);
         _memReturnPos = r.Pos;
         _memReturnValue = r.Value;
     }
@@ -579,9 +607,37 @@ public sealed partial class FunctionGen
     private void NoteTable(string name, Expr manager, Pos pos)
     {
         if (RootName(manager) is not { } root || root == name) return;
+        _tables.Add(name);
         _rootOf[name] = root;
         _viewNames.Add(name);
         Mem(new MemoryRules.ViewOf(name, ResolveRoot(root), pos) { Holds = true });
+    }
+
+    /// The names that hold a manager's table (`table` in `local table: @MemoryManager <- arena.to[MemoryManager]()`).
+    private readonly HashSet<string> _tables = [];
+
+    /// Memory or a collection made through a table (`[0] * 4 at table`, `.construct(table)`) goes back to that table's
+    /// manager: `name` holds a view of the manager, which must outlive it.
+    private void NoteManagedThrough(string name, Expr value, Pos pos)
+    {
+        if (!MemOn) return;
+        var parts = value switch
+        {
+            AtExpr a => [a.Manager],
+            ImplicitCallExpr i => i.Args,
+            _ => CallParts(value).ToList(),
+        };
+        var managers = new HashSet<string>();
+        foreach (var part in parts)
+            if (part is ValueRef t && _tables.Contains(t.Name))
+            {
+                // The memory keeps the table's address, and the table the manager's.
+                if (_memTracked.Contains(t.Name)) managers.Add(t.Name);
+                if (ResolveRoot(t.Name) is var manager && _memTracked.Contains(manager)) managers.Add(manager);
+            }
+        if (managers.Count == 0) return;
+        _viewNames.Add(name);
+        foreach (var manager in managers) Mem(new MemoryRules.HoldsViewOf(name, manager, pos) { Manager = true });
     }
 
     /// What the value of `e` sees of this routine's memory, or null: a name that sees it, a view of a Box or a Memory the
@@ -611,6 +667,25 @@ public sealed partial class FunctionGen
                 return lit.Fields.Select(f => FrameView(f.Value)).FirstOrDefault(v => v is not null);
             case ArrayLit { IsTuple: true } tuple:
                 return tuple.Elements.Select(FrameView).FirstOrDefault(v => v is not null);
+            // An address of the frame turned into a number is still that address: `ptrtoint` of a view, arithmetic on
+            // the number, and `inttoptr` of it see the same memory.
+            case CallExpr { Name: "ptrtoint" or "inttoptr", Args: [var converted] }:
+                return FrameView(converted);
+            // The distance between two addresses of the frame is a plain number.
+            case BinaryExpr { Op: "-" or "-%" } bin when FrameView(bin.Left) is not null && FrameView(bin.Right) is not null:
+                return null;
+            case MethodCallExpr { Name: "sub" or "sub_wrap" or "sub_unchecked", Args: [var right] } diff
+                when FrameView(diff.Receiver) is not null && FrameView(right) is not null:
+                return null;
+            case BinaryExpr bin when InferQuiet(bin) is IntType:
+                return FrameView(bin.Left) ?? FrameView(bin.Right);
+            case MethodCallExpr { Name: "add" or "sub" or "mul" or "add_wrap" or "sub_wrap" or "mul_wrap" or "add_clamp" or "sub_clamp"
+                    or "mul_clamp" or "add_unchecked" or "sub_unchecked" or "mul_unchecked" or "bitand" or "bitor" or "bitxor"
+                    or "bitnot" or "shift_left" or "arith_shift_right" or "logical_shift_right" or "floordiv" or "mod" } arith
+                when InferQuiet(arith) is IntType && InferQuiet(arith.Receiver) is IntType:
+                return FrameView(arith.Receiver) ?? arith.Args.Select(FrameView).FirstOrDefault(v => v is not null);
+            case NsCallExpr { FromOperator: true } op when InferQuiet(op) is IntType:
+                return op.Args.Select(FrameView).FirstOrDefault(v => v is not null);
             default:
                 return null;
         }
@@ -637,7 +712,7 @@ public sealed partial class FunctionGen
     /// was given, or in a global.
     private void CheckStoreEscape(CallPlan plan, Instance sig)
     {
-        if (!MemOn || plan.Receiver is null) return;
+        if (!EscapeOn || plan.Receiver is null) return;
         Expr? value = sig.Decl.Name switch
         {
             "poke" or "poke_volatile" or "poke_atomic" or "store" or "setitem" => plan.Args.LastOrDefault(),
@@ -649,6 +724,20 @@ public sealed partial class FunctionGen
         if (FrameView(into) is not null || MemName(into) is not null || IsOwnFrameValue(into)) return;
         throw Err(plan.Pos, $"this keeps a view of {sees} where it outlives '{_decl.DisplayName}': that memory is gone once the "
             + "routine returns. Keep the values there, or keep the view in this routine only");
+    }
+
+    /// A number made from an address of this routine's frame (`ptrtoint`) is followed in this routine only: handed to
+    /// another routine, it would be a plain number there, which that routine may turn back into an address and keep.
+    private void CheckFrameNumberArgs(CallPlan plan, Instance callee)
+    {
+        // A number's own routines (`n.eq(0)`, `n.add(8)`) work out other numbers.
+        if (!EscapeOn || callee.IsTemplate || callee.IsAsm || plan.Receiver is { } own && InferQuiet(own) is IntType
+            || callee.Decl.Owner is not null && callee.Params is [IntType, ..]) return;
+        foreach (var arg in plan.Receiver is { } r ? plan.Args.Prepend(r) : plan.Args)
+            if (InferQuiet(arg) is IntType && FrameView(arg) is { } sees)
+                throw Err(arg.Pos, $"this hands '{callee.Decl.DisplayName}' a number made from the address of {sees}, and the build "
+                    + "follows such a number only in the routine that made it: keep the address as a view (a @T or a @[T]) to "
+                    + "hand it on, or use the number in this routine only");
     }
 
     /// Whether a place is rooted at a value of this routine (a binding or a claim), not at a parameter or a global.
@@ -683,7 +772,18 @@ public sealed partial class FunctionGen
         // A value put back into a place steal emptied: the place holds something again.
         bool refilling = plan.Receiver is not null && sig.Decl.Name is "poke" or "poke_volatile" && receiver is null
             && PlaceKey(plan.Receiver) is not null;
-        if (refilling) Mem(new MemoryRules.Store(PlaceKey(plan.Receiver!)!, null, plan.Pos));
+        if (refilling)
+        {
+            string key = PlaceKey(plan.Receiver!)!;
+            // A field that holds memory or an entity is poked only while it holds nothing.
+            if (plan.Receiver is FieldExpr && FieldHeld(plan.Receiver) is { } held)
+                Mem(new MemoryRules.FieldStore(key, held.Name, plan.Pos));
+            else
+                Mem(new MemoryRules.Store(key, null, plan.Pos) { Hollow = plan.Args is [ImplicitCallExpr { Name: "hollow" } or NsCallExpr { Name: "hollow" }] });
+        }
+        if (sig.Decl.Name == "poke_into" && plan.Args is [FieldExpr intoField] && MemName(intoField) is null && FieldHeld(intoField) is { } intoHeld
+            && PlaceKey(intoField) is { } intoKey)
+            Mem(new MemoryRules.FieldStore(intoKey, intoHeld.Name, plan.Pos));
         // An element's place read or lent (`xs.getslot(i).peek()`, `use(xs.getslot(i))`): a place steal left hollow
         // must have a value put back first.
         foreach (var at in plan.Receiver is { } r && !refilling ? plan.Args.Prepend(r) : plan.Args)
@@ -712,8 +812,11 @@ public sealed partial class FunctionGen
         }
         if (receiver is not null)
         {
+            // In a destruct, a field of me given back with give_back() or moved out with take() ends there too.
+            bool fieldEnds = _destructFields.Contains(receiver) && sig.Decl.Name is "give_back" or "take";
             Mem(sig.Decl.Name is "destruct" or "destruct_all"
                 ? new MemoryRules.End(receiver, sig.Decl.Name is "destruct" ? $"drop {receiver}" : $"{receiver}.destruct_all()", plan.Pos)
+                : fieldEnds ? new MemoryRules.End(receiver, $"{receiver}.{sig.Decl.Name}()", plan.Pos)
                 : new MemoryRules.Use(receiver, plan.Pos));
             // with_count and the like give the same memory back: a binding of the call is a copy of the handle.
             if (ManagedValue(sig.Ret) && ManagedMemory(sig.Params[0]) is not null && sig.Decl.Name != "duplicate"
@@ -753,7 +856,7 @@ public sealed partial class FunctionGen
         // A generic body checked against its constraints is no instance: the error is the template's own.
         _c.Prechecking ? ""
         : _decl.IsLibrary || _decl.TypeParams.Count > 0 || (_decl.Owner?.Args.Count ?? 0) > 0
-            ? $" (in {_inst.Symbol})"
+            ? $" (in {_inst.Readable})"
             : "";
 
     // ── Function skeleton ───────────────────────────────────────────────────
@@ -842,6 +945,16 @@ public sealed partial class FunctionGen
                     _memTracked.Add(_decl.Params[i].Name);
                     handed.Add(new MemoryRules.Acquire(_decl.Params[i].Name, "handed in", _decl.Params[i].Pos) { Entity = Entities.HeldIn(_inst.Params[i])?.Name });
                 }
+            // A destruct gives back each field of me that holds memory or an entity: each is followed as a handle.
+            if (_decl.Name == "destruct" && _decl.Params is [{ Name: "me" } self, ..] && _inst.Params[0] is PtrType { Pointee: RecordType owner })
+                foreach (var (field, type) in _c.Fields(owner))
+                    if (type is not PtrType && Tracked(type))
+                    {
+                        string key = $"me.{field}";
+                        _memTracked.Add(key);
+                        _destructFields.Add(key);
+                        handed.Add(new MemoryRules.Acquire(key, $"held by me", self.Pos) { Entity = Entities.HeldIn(type)?.Name ?? type.Name, Field = true });
+                    }
         }
         if (Debug) BeginSubprogram();
         EmitHead();
@@ -850,10 +963,27 @@ public sealed partial class FunctionGen
         // A place reached through a parameter, `me`, or a global outlives the routine: one is from outside when its root
         // is a parameter or a name the routine doesn't bind.
         var parameters = _decl.Params.Select(p => p.Name).ToHashSet();
-        bool FromOutside(string root) => parameters.Contains(root) || !BoundInRoutine(root);
+        // A generic routine of the standard library may leave an element place hollow by design (Array.copy moves
+        // entity elements), which its documentation says.
+        bool libraryGeneric = _decl.IsLibrary && Compiler.IsGenericRoutine(_decl);
+        bool FromOutside(string root) => !libraryGeneric && (parameters.Contains(root) || !BoundInRoutine(root));
+        CheckDestructGivesBack();
+        var leftChanged = new HashSet<string>();
+        if (_escape is not null) _escape.LeftChanged = leftChanged;
         if (MemOn && MemoryRules.Check(_decl.DisplayName, _decl.Pos, blocks[0].Name, _memEvents, _routineValues.Keys.ToHashSet(),
-                FromOutside) is [var memoryError, ..])
-            throw memoryError;
+                FromOutside, leftChanged: leftChanged) is [var memoryError, ..])
+            throw new CompileError(memoryError.Pos, memoryError.Text + InstantiationNote());
+        // A call that may keep a view in a value of this routine is known once every routine is built: the check runs
+        // again then, with what each callee keeps (Compiler.CheckKeptViews).
+        if (MemOn && _memEvents.Values.Any(list => list.OfType<MemoryRules.MayHoldViewOf>().Any()))
+        {
+            string routine = _decl.DisplayName, first = blocks[0].Name, note = InstantiationNote();
+            var events = _memEvents;
+            var wide = _routineValues.Keys.ToHashSet();
+            var pos = _decl.Pos;
+            _c.DeferMemoryCheck(keeps => MemoryRules.Check(routine, pos, first, events, wide, FromOutside, keeps)
+                .Select(e => new CompileError(e.Pos, e.Text + note)).ToList());
+        }
 
         // A BF16 parameter arrives as its i16 bits (see Instance.PassesBf16AsBits) and is bitcast back on entry.
         // An aggregate the C ABI coerces arrives as its parts, stored into a buffer and loaded back as the value; one
@@ -1199,7 +1329,8 @@ public sealed partial class FunctionGen
     private void MemEdge(string region, IEnumerable<string>? visible = null, List<(string Param, string Arg)>? passed = null, Pos pos = default)
     {
         if (!MemOn) return;
-        var names = (visible ?? _values.Keys).Where(_memTracked.Contains).ToHashSet();
+        // The views go along, so a view used after the arms that each gave its memory back is still seen as one.
+        var names = (visible ?? _values.Keys).Where(n => _memTracked.Contains(n) || _viewNames.Contains(n)).ToHashSet();
         Mem(new MemoryRules.Exit(region, false, passed ?? [], pos) { Visible = names, Region = true });
     }
 
@@ -1323,7 +1454,7 @@ public sealed partial class FunctionGen
                         _frameViews[b.Name] = Compiler.IsCoreSpan(t, out _)
                             ? $"the frame span '{b.Name}' (claimed at line {b.Pos.Line})"
                             : $"the frame slot '{b.Name}' (claimed at line {b.Pos.Line})";
-                    else if (PointsAtMemory(t) && FrameView(b.Value) is { } sees) _frameViews[b.Name] = sees;
+                    else if ((PointsAtMemory(t) || t is IntType) && FrameView(b.Value) is { } sees) _frameViews[b.Name] = sees;
                 }
                 if (b.Value is ClaimExpr)
                     BindClaim(b.Name, Compiler.IsCoreSpan(t, out _)
@@ -1331,6 +1462,8 @@ public sealed partial class FunctionGen
                         : $"the frame slot '{b.Name}' (claimed at line {b.Pos.Line})");
                 else BindAtoms(b.Name, b.Value, t);
                 NoteBoundViews(b, t);
+                if ((b.Value is ClaimExpr { Contents: { } madeFrom } ? madeFrom : b.Value) is { } made3 && Tracked(t))
+                    NoteManagedThrough(b.Name, made3, b.Pos);
                 if (MemOn && Tracked(t))
                 {
                     if (b.Value is ClaimExpr { Contents: { } held }) MemBind(b.Name, held, b.Pos, warn: false, type: t);
@@ -3313,6 +3446,7 @@ public sealed partial class FunctionGen
         // Tessera routines do. An external C routine takes the real float, so it can't sit behind one.
         if (!inst.PassesBf16AsBits && Instance.HasBitsCarrier(inst.Params, inst.Ret, _c.Target))
             throw Err(r.Pos, $"routine '{r.Name}' passes a float the C way, so it can't be a Callable; wrap it in a Tessera routine");
+        _routineValueSymbols[r.Pos] = inst.Symbol;
         return new Val($"@{Compiler.Quote(inst.Symbol)}", own);
     }
 
@@ -3346,6 +3480,7 @@ public sealed partial class FunctionGen
         var own = OwnCallable(c.Inst);
         if (r.Callable is { } shown && Resolve(shown) is var ct && !ct.Equals(own) && !ct.Equals(own.Plain))
             throw Err(r.Pos, $"routine '{r.Name}' is {own}, not {ct}");
+        _routineValueSymbols[r.Pos] = c.Inst.Symbol;
         return new Val($"@{Compiler.Quote(c.Inst.Symbol)}", own);
     }
 
@@ -3360,6 +3495,7 @@ public sealed partial class FunctionGen
             throw Err(l.Pos, $"the lambda takes {l.Params.Count} parameter(s), and {ct} takes {ct.Params.Count}");
         var decl = _c.LambdaRoutine(l, ct, _decl, _env, _values.Keys.Concat(_routineValues.Keys));
         var inst = _c.RequireInstance(decl, _env.Clone(decl.File));
+        _routineValueSymbols[l.Pos] = inst.Symbol;
         return new Val($"@{Compiler.Quote(inst.Symbol)}", ct);
     }
 
@@ -4395,6 +4531,7 @@ public sealed partial class FunctionGen
         MemCall(plan, sig, offset);
         CheckStoreEscape(plan, sig);
         RecordStore(plan, sig);
+        NoteGlobalStore(plan, sig);
         NoteStoredViews(plan, sig);
         NoteCallerHeldRefill(plan, sig);
         if (sig.Decl.Name is "poke" && plan.Receiver is ValueRef slot && plan.Args is [var stored] && TableManager(stored) is { } held)
@@ -4430,6 +4567,9 @@ public sealed partial class FunctionGen
         var inst = _c.RequireInstance(plan.Decl, plan.Env);
         _c.RecordCall(_inst, inst);
         RecordCall(plan, inst);
+        NoteCallKeepsViews(plan, inst);
+        NoteTicketCall(plan, inst);
+        CheckFrameNumberArgs(plan, inst);
         if (inst.Decl.IsFailable)
         {
             // A generic body being checked only types the call: a try or check around it counts it all the same.
@@ -4591,6 +4731,7 @@ public sealed partial class FunctionGen
             throw Err(pos, $"this Callable takes {ct.Params.Count} argument(s), got {argExprs.Count}");
         Val fp = Eval(callee, ct);
         var args = argExprs.Select((a, i) => EvalArg(a, ct.Params[i], i + 1)).ToList();
+        RecordIndirectCall(callee, ct, argExprs, pos);
         string cc = Compiler.CcPrefix(ct.CallConv, _c.Target);
         const bool bits = true;
         bool c = ct.CallConv != "fast";

@@ -248,8 +248,10 @@ routine start() -> None
   manager: `load` / `store`, given back exactly once or handed over, empty or not. 3. A `@T` / `@[T]` viewing this
   routine's memory (a local slot, a frame span) does not leave the routine. 4. A routine that moves memory says
   `@reshaping`, and isn't called while that memory is viewed. 5. A global `Box` / `Memory` is changed with `replace`,
-  and the program's end gives the last one back. The build checks all five, as below. Build errors unless marked.
-- **The group check (rule 2), in every routine without type parameters.** A Box / Memory is an entity, so the entity
+  and the program's end gives the last one back. The build checks all five, as below, in every routine: an instance of
+  a generic routine is checked with its type parameters bound (`keep[Memory[S64]]` is followed like a routine that takes
+  a `Memory[S64]`), and an error in one says which instance (`(in keep with T = Memory[S64])`). Build errors unless marked.
+- **The group check (rule 2).** A Box / Memory is an entity, so the entity
   rules apply: it lives in a slot, and it ends exactly once on every path (`drop m`, `return m`, handed over with
   `steal m`, or handed over to an entity's field). The errors and their fixes:
   - `'m' holds a Memory[Byte] (from line N) that hasn't ended when 'r' returns here`: drop it, return it, or hand it
@@ -260,18 +262,35 @@ routine start() -> None
     put in it (`poke`).
   - `'s' holds a Memory[Byte] (from line N) that hasn't ended, and this overwrites it`: a `poke` into a slot that
     holds live memory. Drop it first, or use `replace(value: new)`.
+  - `'q.m' holds a Memory[S64], and this poke overwrites it without giving it back`: a field that holds a Memory, a Box,
+    or an entity is changed with `q.m.replace(value: new)` (it gives the old one back first). A `poke` into it is allowed
+    only while it holds nothing: after `steal q.m as old`, or when its slot was filled with `.hollow()` and the field
+    wasn't poked since.
+  - `'Q.destruct' never gives back 'me.m'`: a `destruct` gives back every field of `me` that holds a Memory, a Box, or an
+    entity (`drop me.m`, `me.m.give_back()`, `me.m.destruct_all()`, `me.m.take()`, or `steal me.m as old` handed on) on
+    some path. A path that returns early (the field is hollow there) is allowed. Giving one back twice on a path is
+    `'me.m' ended already` or `'me.m' is used after drop me.m`.
   - `'v' is a view of 'm', whose memory was given back (drop m on line N)`: a `@T` / `@[T]` made from memory
     (`m.getview()`, `getslot`, `getslice`, `stride`, `offset`, `to[...]`, and views made from those) is read, written,
-    passed, returned, stored or used to make another view after `drop m`. Use it before the drop.
+    passed, returned, stored or used to make another view after `drop m`, on any path (memory given back in both arms
+    of an `if` counts). Use it before the drop. The same holds after `steal m` or after `m` is handed to a routine that
+    takes it by value: `'v' is a view of 'm', whose memory was handed over (steal m on line N), and whoever took it may
+    give it back`.
   - `'q' holds a view of 'm', whose memory was given back`: a value that holds such a view (a view poked into a
-    field of `q`, a record built with one, a pointer a routine gave back from `m` passed to it, `first(m: m)`) is used
-    after `drop m`, its own `drop` included (its `destruct` would read the view). Finish with `q` first.
+    field of `q`, a record built with one, a pointer a routine gave back from `m` passed to it, `first(m: m)`, a view a
+    routine keeps in `q`: `xs.add_last(m.getview())`, `keep(out: q, v: m.getview())`, and a view read back out of `q`:
+    `xs[0]`) is used after `drop m`, its own `drop` included (its `destruct` would read the view). Finish with `q`
+    first. A routine keeps a view when its body stores it in what another parameter reaches, which the build works out
+    from the bodies (a routine that copies the values a view shows keeps nothing).
+  - `'m' came from the manager 'arena', which ended at drop arena on line N`: memory (or a collection) taken through a
+    manager's table (`[0] * n at table`, `.construct(table)`) goes back to that manager, so the manager and its table
+    outlive it. Give `m` back first.
   - `'kill' gives back what 'm' points at (drop m on line N), and its caller holds that`: a routine drops (or steals) what a
     `@Box[T]` / `@Memory[T]` / `@E` parameter points at and returns without putting a value back. The caller still
     holds it. Take it by value (the caller hands it over with `steal`), or poke a value back before returning.
     `destruct` and `destruct_all` are the routines that end `me`.
-  The check follows one routine's flow, and a routine it calls only through what that routine says about its
-  parameters (by value: taken over, `@T`: the caller keeps it).
+  The check follows one routine's flow, and a routine it calls through what that routine says about its parameters
+  (by value: taken over, `@T`: the caller keeps it) and what its body does with them (what it keeps where).
 - **The escape check (rule 3).** A routine doesn't return a view of its frame (a local slot, a frame span, and
   every view made from them with `getslot` / `getslice` / `stride` / `offset` / `to` / a span's `getview`) or of a
   Box / Memory it holds (`m.getview()`, `m.getslot(i)`), and doesn't store one through a parameter (`out.poke(x)`)
@@ -287,10 +306,24 @@ routine start() -> None
     `stash(l) hands 'stash' a value that reaches the frame slot 'l' ..., and 'stash' keeps what its 'p' reaches
     where it outlives the call (line N: KEPT.poke(p))`. A routine that only reads its parameter may be handed one.
   - A global put back as it was before the routine returns (`outer: W = G.peek()`, `G.poke(x)`, ..., `G.poke(outer)`)
-    holds the value only while the routine runs, and isn't counted. An `Addr` is an address as a number, which the
-    check doesn't follow, so a view handed to a thread or fiber ticket isn't checked (the work is waited for).
-  - Only routines without type parameters report errors. An instance of a generic routine still gives its effects to
-    its callers.
+    on every path holds the value only while the routine runs, and isn't counted. A path that returns without putting
+    it back keeps the value there.
+  - A call through a routine value is a call to the routine it names: `apply(f: keep.to[Callable](), p: l)` hands `l`
+    to `keep` when `apply` calls `f` on its `p`, and a lambda is the routine it makes. A routine value read out of
+    memory (a global, a field) names no routine to the build, and what it is called on there isn't followed.
+  - Work put on a ticket (`t.put_work(entry: f.to[Callable](), args: x)`, on a `Thread`, a `Fiber`, or a `Job`) is a
+    call of `f` on `x`, and the ticket holds `x` until the work is over: storing or returning the ticket is storing or
+    returning `x`. Work handed a view of the frame is waited for (`wait_finished`, `wait_finished_cancellable`,
+    `retrieve`, or `give_back`) before the routine returns: `the work put on 't' on line N was handed the frame slot
+    'l' ..., and 'fill' returns here without waiting for it`. A ticket handed to another routine (a list of tickets) is
+    followed no further. Work handed a view of memory makes the ticket hold that view until the work is over, so the
+    memory isn't given back before.
+  - A number made from an address of the frame (`ptrtoint`, then arithmetic on it: `add`, `sub`, `bitand`, ...) is that
+    address to the check, in the routine that made it: returning it, storing it outside, or turning it back with
+    `inttoptr` and letting that leave is the escape error, and handing it to another routine is `this hands 'keep' a
+    number made from the address of the frame slot 'l'` (a number's own routines, `n.eq(0)`, may take it). An `Addr`
+    passed on as such isn't followed across routines.
+  - Every routine reports errors, an instance of a generic routine included.
 - **`@reshaping` (rule 4), written by hand.** `@reshaping` alone means the routine may move the memory of `me`.
   `@reshaping(items, keys)` names parameters. The base: `MemoryManager.realloc` (`@reshaping(at)`), `reallocate[T]`
   (`@reshaping(ptr)`), `Memory[T].resize`, and every growing collection mutator: `List.add_last` /
@@ -302,7 +335,7 @@ routine start() -> None
     A user routine that grows a list it was handed (`items: @List[T]`) carries `@reshaping(items)`, one on `me`
     carries `@reshaping`. A name that isn't a parameter, or a bare `@reshaping` on a routine without `me`, is an
     error.
-  - In a routine without type parameters, a view (an address or a span) of memory used after a `@reshaping` call
+  - In every routine, a view (an address or a span) of memory used after a `@reshaping` call
     that may move it is an error: `'first' is a view of 'xs', and 'grow' on line N may have moved that memory`. Keep
     a position (a `U64` index) and take the view again after the call:
 
@@ -370,12 +403,13 @@ routine start() -> None
   `NotImplementedError`). Its fields and `MemoryManager.construct` are secret to `Standard/System/Memory`, which also
   writes out the hosted tables (`DefaultMemory.te`) for its hosted managers (`Heap.te`, `Pages.te`). Raw `allocate[T]` asks for
   `alignof[T]()`.
-- **The table views its manager.** In a routine without type parameters, using a table after its manager's slot
+- **The table views its manager.** Using a table after its manager's slot
   ended is a build error: `'table' is the table of the manager 'arena', which ended at drop arena on line N, so the
   table points at a manager that isn't there: a manager outlives its table. Use 'table' before line N, or end 'arena'
   after the table's last use` (the same for `steal arena`), and returning a table of a frame slot's manager is the
-  escape check's error. Memory already taken through the table (a `List`, a `Box`) that outlives the manager isn't
-  followed: that is the program's to get right.
+  escape check's error. Memory taken through the table in the same routine (a `Memory`, a `Box`, a `List`) is given
+  back before the manager and the table end (the group check above). Memory handed to another routine and given back
+  there after the manager ended isn't followed.
 - **The default heap comes with a target that has an OS.** `Standard/System/Memory` then has `HEAP`, `C_HEAP`, and
   `PAGES`, `@MemoryManager` tables ready before `start`. `Standard/Os` has, like
   `Console`, a `construct` without the manager for every collection and `Memory` (`List[S64].construct()`,
@@ -1272,7 +1306,8 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 `t.check_finished()` to look without waiting or `t.wait_finished()` / `t.wait_finished_for(timeout) -> Bool` (`timeout` a `Duration`) to wait,
 `r: S64 = t.retrieve()` (failable), then more work on the same ticket or `t.give_back()`. `T` is the result type, `Thread[None]`
 for none. `args` is nothing, one value, or a tuple of two to four (`args: (a, b)`), copied into a block from the
-memory manager the thread manager holds. A pointer argument must outlive the work, so wait before releasing what it points to. One piece
+memory manager the thread manager holds. A pointer argument must outlive the work, so wait before releasing what it points to (the build
+checks it: the escape check's ticket rules). One piece
 of work at a time: `put_work` or `give_back` while it runs crashes with `TicketBusyError`, a ticket used after
 `give_back` with `TicketGivenBackError`, a ticket destructed before `give_back` with `TicketNotGivenBackError`, and
 `retrieve` with no work with `NoWorkError`. `cancel()` asks the work to stop: the work asks `cancel_requested()` where
@@ -1281,6 +1316,20 @@ stopping is safe and returns. `retrieve()` of cancelled work throws `CancelReque
 each piece of work a thread puts every `@threadlocal` global back to its starting value. The same flow on all three
 ticket kinds: `Thread[T]`, `Fiber[T]`, `Job[T]` (a ThreadPoolManager's). `work_slot()` gives the ticket's `@WorkSlot`, for
 code waiting on several tickets at once.
+- **What work changes.** Work on a `Thread` or a `Job` runs alongside the routine that put it and alongside other work, so
+  the build checks what it changes (the work's routine and every routine of the program it calls). A global changed with
+  no atomic access and no lock is a build error (`t.put_work(...) runs 'work' on another thread, and it changes the
+  global 'COUNT' (line N: ...) with no atomic access and no lock`), and so is memory handed whole (a name, a global) to
+  more than one piece of work, or to work put in a loop, when the work changes it (`t1.put_work(...) hands 'xs' to
+  'work', which changes it with no atomic access and no lock, and 'xs' is handed to other work too`). Allowed: an
+  `Atomic[T]` changed with its routines, a `@threadlocal` global, and anything a routine that takes an access (`lock`,
+  `lock_write`, `try_lock`, `lock_within`, ..., or a runtime's lock routine named `..._lock`) changes, with the
+  routines it calls. Parts of one buffer handed to each
+  piece of work (`view.getslice(0, n)`) aren't the same memory to the check, and the standard library's routines share
+  what they share under their own accesses (one counts as changing a parameter only when it is `@reshaping` on it). A
+  Fiber's work runs on the thread that drives it, between waits, and isn't checked. What the check doesn't see (the
+  same memory under two names, the routine that put the work changing a global before it waits, work put through a
+  routine value read out of memory), `--race-check` finds at run time.
 - **Cancellable waits**: the failable `wait_finished_cancellable()` (on all three tickets) and a channel's `transmit` /
   `receive` throw `CancelRequested` as soon as the WAITING work's own ticket is
   cancelled. Then clean up and return. Plain `wait_finished` / `wait_finished_for` are not cancellable. Outside a
@@ -1333,7 +1382,7 @@ code waiting on several tickets at once.
   `Thread.spawn(...).detach()` into tickets and `launch_unwatched`.
 
 **Atomics.** `Atomic[T]` (Core, `Atomic.te`) is a record aligned to T's size whose every access is atomic: the
-form for state a program shares between threads (`hits: Atomic[U64]` in a shared record, `Atomic[U64].construct(value:
+form for state a program shares between threads (a plain global that thread work changes is a build error, above) (`hits: Atomic[U64]` in a shared record, `Atomic[U64].construct(value:
 0)` or `.construct(value: 0)`). Threads share its place, `@Atomic[T]`, never copies. Routines: `peek` / `poke`,
 `swap`, `compare_exchange` / `compare_exchange_weak` (`Maybe[T]`: `None` when it wrote, the value found when
 not), `fetch_add` / `fetch_sub` (integers, wrapping), `fetch_and` / `fetch_or` / `fetch_xor`, `fetch_fadd` /

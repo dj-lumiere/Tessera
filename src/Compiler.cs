@@ -68,6 +68,20 @@ public sealed partial class Compiler
 
     /// What every built routine does with values that reach memory, for the escape check across routines.
     public EscapeCheck Escapes { get; } = new();
+
+    /// The memory checks of routines that wait for what their callees keep (FunctionGen: a view handed to a call next to
+    /// a value of the routine), run once the escape check knows that.
+    private readonly List<Func<Func<string, int, int, bool>, List<CompileError>>> _keptViewChecks = [];
+
+    public void DeferMemoryCheck(Func<Func<string, int, int, bool>, List<CompileError>> check)
+    {
+        lock (_keptViewChecks) _keptViewChecks.Add(check);
+    }
+
+    /// The deferred memory checks, run after Escapes.Verify.
+    private List<CompileError> CheckKeptViews() =>
+        _keptViewChecks.SelectMany(check => check(Escapes.KeepsInto)).GroupBy(e => e.Pos).Select(g => g.First())
+            .OrderBy(e => e.Pos.File, StringComparer.Ordinal).ThenBy(e => e.Pos.Line).ThenBy(e => e.Pos.Col).ToList();
     private readonly Dictionary<string, List<(string Name, DType Type)>> _fieldCache = [];
     private readonly Dictionary<string, string> _strings = [];
     private readonly Dictionary<string, string> _wideStrings = [];
@@ -495,6 +509,7 @@ public sealed partial class Compiler
         if (VerifyThrows() is [var unlisted, ..]) throw unlisted;
         if (VerifyCrashPathsTakeNoMemory() is [var allocating, ..]) throw allocating;
         if (Escapes.Verify() is [var escape, ..]) throw escape;
+        if (CheckKeptViews() is [var kept, ..]) throw kept;
         return Output();
     }
 
@@ -593,6 +608,8 @@ public sealed partial class Compiler
         // A routine that stopped at an error says it once: the same place found again across routines isn't repeated.
         var reportedAt = errors.Select(e => e.Pos).ToHashSet();
         errors.AddRange(Escapes.Verify().Where(e => !reportedAt.Contains(e.Pos) && (scope is null || scope(e.Pos.File))));
+        reportedAt = errors.Select(e => e.Pos).ToHashSet();
+        errors.AddRange(CheckKeptViews().Where(e => !reportedAt.Contains(e.Pos) && (scope is null || scope(e.Pos.File))));
         return [.. errors.Take(checkedUpTo), .. errors.Skip(checkedUpTo).Where(e => !templateErrors.Contains(e.Pos))];
     }
 

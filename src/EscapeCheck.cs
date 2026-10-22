@@ -42,7 +42,13 @@ public sealed class EscapeCheck
     }
 
     /// A global: what is stored into memory it reaches outlives every routine.
-    public sealed record GlobalAtom(string Name, int Level) : Atom(Level)
+    public sealed record GlobalAtom(string Name, int Level, bool ThreadLocal = false) : Atom(Level)
+    {
+        public override Atom Shift(int by) => this with { Level = Clamp(Level + by) };
+    }
+
+    /// A routine as a value (`keep.to[Callable]()`): a call through it is a call to that routine.
+    public sealed record RoutineAtom(string Symbol, int Level) : Atom(Level)
     {
         public override Atom Shift(int by) => this with { Level = Clamp(Level + by) };
     }
@@ -54,11 +60,28 @@ public sealed class EscapeCheck
         public override Atom Shift(int by) => this with { Level = Clamp(Level + by) };
     }
 
-    /// A call to a routine with a body: the callee's symbol, and each of its parameters' atoms (`me` first).
-    public sealed record CallFact(string Callee, List<HashSet<Atom>> Args, Pos Pos, string Text);
+    /// A call to a routine with a body: the callee's symbol, and each of its parameters' atoms (`me` first). A call
+    /// through a Callable value has no callee symbol, and `Through` holds the atoms of the value called.
+    public sealed record CallFact(string Callee, List<HashSet<Atom>> Args, Pos Pos, string Text)
+    {
+        public HashSet<Atom>? Through { get; init; }
+
+        /// Work put on a Thread or a Job ticket: it runs on another thread, next to this routine and other work.
+        public bool Work { get; init; }
+
+        /// The work is put inside a loop, so the same call starts several pieces of work.
+        public bool InLoop { get; init; }
+
+        /// For work, the name each argument is when it is handed whole (a name, a global), else null.
+        public List<string?>? Handed { get; init; }
+    }
 
     /// A store: the place written (an address) and the value written there.
-    public sealed record StoreFact(HashSet<Atom> Place, HashSet<Atom> Value, Pos Pos, string Text);
+    public sealed record StoreFact(HashSet<Atom> Place, HashSet<Atom> Value, Pos Pos, string Text)
+    {
+        /// An atomic store, or one into this thread's own copy of a global: safe from other threads.
+        public bool Unshared { get; init; }
+    }
 
     /// A returned value.
     public sealed record ReturnFact(HashSet<Atom> Value, Pos Pos);
@@ -74,6 +97,15 @@ public sealed class EscapeCheck
         public List<CallFact> Calls { get; } = [];
         public List<StoreFact> Stores { get; } = [];
         public List<ReturnFact> Returns { get; } = [];
+
+        /// The globals some path of the routine changes and returns without putting back (MemoryRules.GlobalStore).
+        public HashSet<string> LeftChanged { get; set; } = [];
+
+        /// The routine takes an access (`lock`, `lock_write`, ...): what it changes, it changes under that access.
+        public bool TakesAccess { get; set; }
+
+        /// The parameters a library routine may move the memory of (`@reshaping`): what it changes through them.
+        public HashSet<int> Reshapes { get; } = [];
     }
 
     /// Why an effect holds: the place in the routine that has it, and what it does there.
@@ -91,10 +123,28 @@ public sealed class EscapeCheck
         public Dictionary<(int Param, int Level), Why> StoresOut { get; } = [];
         public Dictionary<(int From, int FromLevel, int Into, int IntoLevel), Why> StoresInto { get; } = [];
 
-        public int Size => Returns.Count + StoresOut.Count + StoresInto.Count;
+        /// The calls it makes through a Callable parameter (the parameter and level the value is read at), with what each
+        /// argument is made of in terms of its own parameters: a caller that passes a routine calls that routine so.
+        public Dictionary<string, (int Param, int Level, List<HashSet<(int Param, int Level)>> Args, Why Why)> Invokes { get; } = [];
+
+        /// The parameters it changes memory through without an atomic access or a lock (a library routine: the ones it
+        /// is `@reshaping` on), and the globals it changes so.
+        public HashSet<int> Writes { get; } = [];
+        public Dictionary<string, Why> WritesGlobals { get; } = [];
+
+        public int Size => Returns.Count + StoresOut.Count + StoresInto.Count + Invokes.Count + Writes.Count + WritesGlobals.Count;
     }
 
     private readonly Dictionary<string, RoutineFacts> _facts = [];
+
+    /// Every routine's effects, once Verify has worked them out.
+    private Dictionary<string, Effects>? _effects;
+
+    /// Whether the routine `callee` keeps what its parameter `from` is (or reaches) in memory its parameter `into`
+    /// reaches (`List[T].add_last` keeps `value` in `me`'s memory): known once Verify has run.
+    public bool KeepsInto(string callee, int from, int into) =>
+        _effects?.GetValueOrDefault(callee) is { } e
+        && e.StoresInto.Keys.Any(k => k.From == from && k.FromLevel <= 0 && k.Into == into);
 
     /// Starts the facts of an instance anew: a routine built again (to learn what it throws) records them again.
     public RoutineFacts Begin(Instance inst, bool reports)
@@ -109,9 +159,18 @@ public sealed class EscapeCheck
     {
         var effects = _facts.Keys.ToDictionary(k => k, _ => new Effects());
         var callers = new Dictionary<string, HashSet<string>>();
+        void Edge(string callee, string caller) => (callers.TryGetValue(callee, out var set) ? set : callers[callee] = []).Add(caller);
         foreach (var (symbol, facts) in _facts)
             foreach (var call in facts.Calls)
-                (callers.TryGetValue(call.Callee, out var set) ? set : callers[call.Callee] = []).Add(symbol);
+            {
+                Edge(call.Callee, symbol);
+                // A routine handed on as a value may be called from anywhere it reaches: its effects matter to every
+                // routine that names it.
+                foreach (var atom in call.Args.SelectMany(a => a).Concat(call.Through ?? []).OfType<RoutineAtom>()) Edge(atom.Symbol, symbol);
+            }
+        foreach (var (symbol, facts) in _facts)
+            foreach (var atom in facts.Stores.SelectMany(st => st.Value).Concat(facts.Returns.SelectMany(r => r.Value)).OfType<RoutineAtom>())
+                Edge(atom.Symbol, symbol);
         var work = new Queue<string>(_facts.Keys);
         var queued = new HashSet<string>(_facts.Keys);
         int rounds = 0;
@@ -129,10 +188,11 @@ public sealed class EscapeCheck
             foreach (var caller in callers.GetValueOrDefault(symbol) ?? [])
                 if (queued.Add(caller)) work.Enqueue(caller);
         }
+        _effects = effects;
         var errors = new List<CompileError>();
         foreach (var facts in _facts.Values)
             if (facts.Reports) new Resolver(facts, effects, _facts).Collect(new Effects(), errors);
-        return errors.GroupBy(e => e.Message).Select(g => g.First())
+        return errors.GroupBy(e => e.Pos).Select(g => g.First())
             .OrderBy(e => e.Pos.File, StringComparer.Ordinal).ThenBy(e => e.Pos.Line).ThenBy(e => e.Pos.Col).ToList();
     }
 
@@ -146,6 +206,12 @@ public sealed class EscapeCheck
         foreach (var (k, v) in b.StoresOut) merged.StoresOut.TryAdd(k, v);
         foreach (var (k, v) in a.StoresInto) merged.StoresInto[k] = v;
         foreach (var (k, v) in b.StoresInto) merged.StoresInto.TryAdd(k, v);
+        foreach (var (k, v) in a.Invokes) merged.Invokes[k] = v;
+        foreach (var (k, v) in b.Invokes) merged.Invokes.TryAdd(k, v);
+        merged.Writes.UnionWith(a.Writes);
+        merged.Writes.UnionWith(b.Writes);
+        foreach (var (k, v) in a.WritesGlobals) merged.WritesGlobals[k] = v;
+        foreach (var (k, v) in b.WritesGlobals) merged.WritesGlobals.TryAdd(k, v);
         return merged;
     }
 
@@ -160,6 +226,9 @@ public sealed class EscapeCheck
         private readonly HashSet<int> _resolving = [];
 
         private string Routine => facts.Inst.Decl.DisplayName;
+
+        /// Which instance an error is in, for a routine of the library or one with type parameters.
+        private string Note => facts.Inst.Decl.IsLibrary || Compiler.IsGenericRoutine(facts.Inst.Decl) ? $" (in {facts.Inst.Readable})" : "";
 
         private Effects? Of(string callee) => effects.GetValueOrDefault(callee);
 
@@ -201,10 +270,14 @@ public sealed class EscapeCheck
             if (!_resolving.Add(index)) return [];
             var result = new HashSet<Atom>();
             var call = facts.Calls[index];
-            if (Of(call.Callee) is { } e)
-                foreach (var (param, level) in e.Returns)
-                    if (param < call.Args.Count)
-                        foreach (var a in Resolve(call.Args[param])) result.Add(a.Shift(level));
+            var callees = call.Through is { } through
+                ? Resolve(through).OfType<RoutineAtom>().Select(r => r.Symbol).ToList()
+                : [call.Callee];
+            foreach (var callee in callees)
+                if (Of(callee) is { } e)
+                    foreach (var (param, level) in e.Returns)
+                        if (param < call.Args.Count)
+                            foreach (var a in Resolve(call.Args[param])) result.Add(a.Shift(level));
             _resolving.Remove(index);
             return _results[index] = result;
         }
@@ -215,16 +288,18 @@ public sealed class EscapeCheck
             if (_held.TryGetValue(owner, out var known)) return known;
             if (!_holding.Add(owner)) return [];
             var held = new HashSet<Atom>();
+            // A value stored `depth` dereferences below the slot (into memory the slot's value reaches, as a list's
+            // elements are) is reached from the slot's value by dereferencing that many more times.
             foreach (var store in facts.Stores)
-                if (Targets(store.Place).Any(t => t is FrameAtom f && f.Owner == owner))
-                    held.UnionWith(Resolve(store.Value));
+                foreach (var depth in Depths(Targets(store.Place), owner))
+                    held.UnionWith(Resolve(store.Value).Select(v => v.Shift(-depth)));
             foreach (var call in facts.Calls)
             {
                 if (Of(call.Callee) is not { } e) continue;
                 foreach (var ((from, fromLevel, into, intoLevel), _) in e.StoresInto)
-                    if (from < call.Args.Count && into < call.Args.Count
-                        && Targets(call.Args[into], intoLevel).Any(t => t is FrameAtom f && f.Owner == owner))
-                        held.UnionWith(Resolve(call.Args[from]).Select(v => v.Shift(fromLevel)));
+                    if (from < call.Args.Count && into < call.Args.Count)
+                        foreach (var depth in Depths(Targets(call.Args[into], intoLevel), owner))
+                            held.UnionWith(Resolve(call.Args[from]).Select(v => v.Shift(fromLevel - depth)));
             }
             _holding.Remove(owner);
             return _held[owner] = held;
@@ -233,7 +308,11 @@ public sealed class EscapeCheck
         /// The slots of the frame a store through a place with these atoms (dereferenced `level` more times) lands in,
         /// following the addresses kept in slots (`q.held.peek().poke(x)` writes into the slot `q.held` points at).
         private HashSet<Atom> Targets(HashSet<Atom> place, int level = 0) =>
-            Resolve(place).Select(a => a.Shift(level)).Where(a => a is FrameAtom { Level: 0 }).ToHashSet();
+            Resolve(place).Select(a => a.Shift(level)).Where(a => a is FrameAtom { Level: >= 0 }).ToHashSet();
+
+        /// How far below the slot `owner` names each target lands: 0 for the slot itself.
+        private static IEnumerable<int> Depths(HashSet<Atom> targets, string owner) =>
+            targets.OfType<FrameAtom>().Where(f => f.Owner == owner).Select(f => f.Level).Distinct();
 
         /// Where a store through the place lands as the place itself says: a slot of the frame, or memory a global or a
         /// parameter reaches. What a slot of the frame holds is not followed here: a slot keeps several values (a
@@ -271,6 +350,8 @@ public sealed class EscapeCheck
                 if (value.Count > 0 && value.All(a => a is GlobalAtom g && g.Name == target.Name && g.Level > target.Level))
                     _restored.Add(target.Name);
             }
+            // Put back on every path: a path that returns with the global changed keeps the value there.
+            _restored.ExceptWith(facts.LeftChanged);
             return _restored;
         }
 
@@ -289,39 +370,151 @@ public sealed class EscapeCheck
                 if (errors is not null && Reaches(value) is { } sees)
                     errors.Add(new CompileError(r.Pos, $"this returns a value that reaches {sees.What}, which is gone once "
                         + $"'{Routine}' returns: return the values themselves, or let the caller pass the memory in (a span "
-                        + "or a slot) and write there"));
+                        + "or a slot) and write there" + Note));
             }
+            bool library = facts.Inst.Decl.IsLibrary;
+            if (library) found.Writes.UnionWith(facts.Reshapes);
             foreach (var s in facts.Stores)
             {
                 var place = Lands(s.Place);
                 var value = Resolve(s.Value);
+                if (!library && !facts.TakesAccess && !s.Unshared)
+                    foreach (var target in place)
+                        switch (target)
+                        {
+                            case ParamAtom p:
+                                found.Writes.Add(p.Index);
+                                break;
+                            case GlobalAtom { ThreadLocal: false } g:
+                                found.WritesGlobals.TryAdd(g.Name, new Why(s.Pos, Routine, s.Text));
+                                break;
+                        }
                 Store(found, place, value, new Why(s.Pos, Routine, s.Text));
                 if (errors is not null && Outside(place) && Reaches(value) is { } sees)
                     errors.Add(new CompileError(s.Pos, $"this keeps a value that reaches {sees.What} where it outlives "
                         + $"'{Routine}': that memory is gone once the routine returns. Keep the values there, or keep the "
-                        + "view in this routine only"));
+                        + "view in this routine only" + Note));
             }
             foreach (var call in facts.Calls)
             {
-                if (Of(call.Callee) is not { } e) continue;
                 var args = call.Args.Select(Resolve).ToList();
-                foreach (var ((param, level), why) in e.StoresOut)
+                // Work runs on another thread: what it changes, it changes next to this routine.
+                // The library shares what it shares under its own accesses.
+                if (call.Work && errors is not null && !facts.Inst.Decl.IsLibrary) CheckWork(call, Resolve(call.Through ?? []), args, errors);
+                if (call.Through is { } through) Through(call, Resolve(through), args, call.Args, found, errors, 0);
+                else Apply(call, call.Callee, args, call.Args, found, errors, 0);
+            }
+        }
+
+        /// The work of a Thread or a Job ticket may change memory other threads reach only through an atomic access or
+        /// under an access (a lock): a global, or memory handed whole to more than one piece of work.
+        private void CheckWork(CallFact call, HashSet<Atom> through, List<HashSet<Atom>> args, List<CompileError> errors)
+        {
+            foreach (var routine in through.OfType<RoutineAtom>().Select(r => r.Symbol).Distinct())
+            {
+                if (Of(routine) is not { } e) continue;
+                string name = all.GetValueOrDefault(routine)?.Inst.Decl.DisplayName ?? routine;
+                const string fix = "make it an Atomic[T] and change it with its routines (fetch_add, ...), or take an access around "
+                    + "the change (ExclusiveAccess.lock / unlock)";
+                var handedGlobal = e.Writes.Where(param => param < args.Count)
+                    .SelectMany(param => args[param].OfType<GlobalAtom>().Where(g => g.Level == 0 && !g.ThreadLocal)).FirstOrDefault();
+                if (handedGlobal is not null)
                 {
-                    if (param >= args.Count) continue;
-                    foreach (var p in args[param].OfType<ParamAtom>())
-                        found.StoresOut.TryAdd((p.Index, Clamp(p.Level + level)), new Why(call.Pos, Routine, call.Text, why));
-                    if (errors is not null && Reaches(args[param], level) is { } sees)
-                        errors.Add(Kept(call, param, sees, why));
+                    errors.Add(new CompileError(call.Pos, $"{call.Text} hands the global '{handedGlobal.Name}' to '{name}', which changes it on "
+                        + $"another thread with no atomic access and no lock, while other threads may use it too: {fix}" + Note));
+                    continue;
                 }
-                foreach (var ((from, fromLevel, into, intoLevel), why) in e.StoresInto)
+                foreach (var (global, why) in e.WritesGlobals.OrderBy(c => c.Key, StringComparer.Ordinal))
                 {
-                    if (from >= args.Count || into >= args.Count) continue;
-                    var place = Lands(call.Args[into], intoLevel);
-                    var value = args[from].Select(a => a.Shift(fromLevel)).ToHashSet();
-                    Store(found, place, value, new Why(call.Pos, Routine, call.Text, why));
-                    if (errors is not null && Outside(place) && Reaches(value) is { } sees)
-                        errors.Add(Kept(call, from, sees, why));
+                    var at = why.Store;
+                    errors.Add(new CompileError(call.Pos, $"{call.Text} runs '{name}' on another thread, and it changes the global "
+                        + $"'{global}' ({(at.Routine == name ? "" : $"'{at.Routine}', ")}line {at.Pos.Line}: {at.Text}) with no atomic "
+                        + $"access and no lock, while other threads may use it too: {fix}" + Note));
+                    break;
                 }
+                // Memory handed whole to work that changes it, more than once: two threads change it at once.
+                foreach (var param in e.Writes)
+                {
+                    if (call.Handed is not { } handed || param >= handed.Count || handed[param] is not { } whole) continue;
+                    int times = facts.Calls.Where(c => c.Work && c.Handed is { } h && h.Contains(whole)).Count();
+                    if (times < 2 && !call.InLoop) continue;
+                    errors.Add(new CompileError(call.Pos, $"{call.Text} hands '{whole}' to '{name}', which changes it with no atomic access "
+                        + $"and no lock, and '{whole}' is handed to {(call.InLoop ? "work started in a loop" : "other work")} too, so "
+                        + "several threads change it at once: take an access around the changes (ExclusiveAccess.lock / unlock), keep "
+                        + "an Atomic[T] in it, or hand each piece of work memory of its own" + Note));
+                    break;
+                }
+            }
+        }
+
+        /// The effects of a call to `callee` with these arguments (`places` as written, for where a store lands).
+        private void Apply(CallFact call, string callee, List<HashSet<Atom>> args, List<HashSet<Atom>> places, Effects found,
+            List<CompileError>? errors, int depth)
+        {
+            if (Of(callee) is not { } e) return;
+            if (!facts.Inst.Decl.IsLibrary && !facts.TakesAccess && !(all.GetValueOrDefault(callee)?.TakesAccess ?? false))
+            {
+                foreach (var param in e.Writes)
+                    if (param < args.Count)
+                        foreach (var a in Lands(places[param]))
+                            switch (a)
+                            {
+                                case ParamAtom p:
+                                    found.Writes.Add(p.Index);
+                                    break;
+                                case GlobalAtom { ThreadLocal: false } g:
+                                    found.WritesGlobals.TryAdd(g.Name, new Why(call.Pos, Routine, call.Text));
+                                    break;
+                            }
+                foreach (var (g, why) in e.WritesGlobals) found.WritesGlobals.TryAdd(g, new Why(call.Pos, Routine, call.Text, why));
+            }
+            foreach (var ((param, level), why) in e.StoresOut)
+            {
+                if (param >= args.Count) continue;
+                foreach (var p in args[param].OfType<ParamAtom>())
+                    found.StoresOut.TryAdd((p.Index, Clamp(p.Level + level)), new Why(call.Pos, Routine, call.Text, why));
+                if (errors is not null && Reaches(args[param], level) is { } sees)
+                    errors.Add(Kept(call, callee, param, sees, why));
+            }
+            foreach (var ((from, fromLevel, into, intoLevel), why) in e.StoresInto)
+            {
+                if (from >= args.Count || into >= args.Count) continue;
+                var place = Lands(places[into], intoLevel);
+                var value = args[from].Select(a => a.Shift(fromLevel)).ToHashSet();
+                Store(found, place, value, new Why(call.Pos, Routine, call.Text, why));
+                if (errors is not null && Outside(place) && Reaches(value) is { } sees)
+                    errors.Add(Kept(call, callee, from, sees, why));
+            }
+            // What the callee calls through a Callable this call hands it.
+            foreach (var (param, level, invoked, why) in e.Invokes.Values)
+            {
+                if (param >= args.Count) continue;
+                var mapped = invoked.Select(parts => parts.Where(p => p.Param < args.Count)
+                    .SelectMany(p => args[p.Param].Select(a => a.Shift(p.Level))).ToHashSet()).ToList();
+                var mappedPlaces = invoked.Select(parts => parts.Where(p => p.Param < places.Count)
+                    .SelectMany(p => places[p.Param].Select(a => a.Shift(p.Level))).ToHashSet()).ToList();
+                var through = Resolve(args[param].Select(a => a.Shift(level)).ToHashSet());
+                Through(call with { Text = call.Text }, through, mapped, mappedPlaces, found, errors, depth + 1, why);
+            }
+        }
+
+        /// A call through a Callable value made of `through`: a call to each routine it may be, and for a Callable
+        /// parameter, an effect its callers apply with the routine they pass. A Callable the build can't name (read out
+        /// of memory it doesn't follow) may be any routine, which may keep what it is handed.
+        private void Through(CallFact call, HashSet<Atom> through, List<HashSet<Atom>> args, List<HashSet<Atom>> places,
+            Effects found, List<CompileError>? errors, int depth, Why? inner = null)
+        {
+            if (depth > 8) return;
+            var routines = through.OfType<RoutineAtom>().Select(r => r.Symbol).Distinct().ToList();
+            foreach (var routine in routines) Apply(call, routine, args, places, found, errors, depth + 1);
+            var parameters = through.OfType<ParamAtom>().ToList();
+            // A routine value read out of memory (a global, a field) names no routine here: the routines stored there
+            // are the program's to get right, and the check doesn't follow them.
+            foreach (var p in parameters)
+            {
+                var parts = args.Select(a => a.OfType<ParamAtom>().Select(x => (x.Index, x.Level)).ToHashSet()).ToList();
+                found.Invokes.TryAdd($"{p.Index}:{p.Level}:{call.Pos}:{call.Text}:{string.Join("|", parts.Select(x => string.Join(",", x.Order())))}",
+                    (p.Index, p.Level, parts, inner ?? new Why(call.Pos, Routine, call.Text)));
             }
         }
 
@@ -343,10 +536,10 @@ public sealed class EscapeCheck
         }
 
         /// The error of a call that hands a value reaching this routine's memory to a routine that keeps it.
-        private CompileError Kept(CallFact call, int param, FrameAtom sees, Why why)
+        private CompileError Kept(CallFact call, string calleeSymbol, int param, FrameAtom sees, Why why)
         {
-            var callee = all.GetValueOrDefault(call.Callee)?.Inst.Decl;
-            string calleeName = callee?.DisplayName ?? call.Callee;
+            var callee = all.GetValueOrDefault(calleeSymbol)?.Inst.Decl;
+            string calleeName = callee?.DisplayName ?? calleeSymbol;
             string paramName = callee is not null && param < callee.Params.Count ? callee.Params[param].Name : $"argument {param + 1}";
             var store = why.Store;
             string kept = store.Routine == calleeName
@@ -354,7 +547,7 @@ public sealed class EscapeCheck
                 : $"'{store.Routine}', line {store.Pos.Line}: {store.Text}";
             return new CompileError(call.Pos, $"{call.Text} hands '{calleeName}' a value that reaches {sees.What}, and "
                 + $"'{calleeName}' keeps what its '{paramName}' reaches where it outlives the call ({kept}). That memory "
-                + $"is gone once '{Routine}' returns: keep the values themselves there, or keep the view in '{Routine}' only");
+                + $"is gone once '{Routine}' returns: keep the values themselves there, or keep the view in '{Routine}' only" + Note);
         }
     }
 }

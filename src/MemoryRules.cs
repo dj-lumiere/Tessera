@@ -22,6 +22,10 @@ public static class MemoryRules
     {
         /// The entity type the group is, when it is one rather than memory from a manager: the messages name it.
         public string? Entity { get; init; }
+
+        /// A field of `me` in its type's `destruct`: the routine gives it back, but a path that finds it hollow (an early
+        /// return) may skip that, so only a second end and a use after one are reported on a path.
+        public bool Field { get; init; }
     }
 
     /// `Name` is another handle of `Of`'s group.
@@ -34,7 +38,15 @@ public static class MemoryRules
     public sealed record Use(string Name, Pos Pos) : Event(Pos);
 
     /// The slot `Slot` gets a new value: `From`'s group, or nothing (null). A group it held must have ended.
-    public sealed record Store(string Slot, string? From, Pos Pos) : Event(Pos);
+    public sealed record Store(string Slot, string? From, Pos Pos) : Event(Pos)
+    {
+        /// The value stored is `.hollow()`: every field of the slot holds nothing until one is put in.
+        public bool Hollow { get; init; }
+    }
+
+    /// A field that holds memory or an entity gets a new value with `poke`: it must hold nothing then (its slot was
+    /// filled with `.hollow()`, or steal emptied it), or what it held is lost. `What` is the field's type.
+    public sealed record FieldStore(string Place, string What, Pos Pos) : Event(Pos);
 
     /// The line leaves the block: to `Block` (null for a return or a call that doesn't return), passing each named
     /// handle to the parameter it is mapped to.
@@ -64,7 +76,26 @@ public static class MemoryRules
 
     /// `Name` holds a view of the memory `Root` names in it (a field, a part, or a pointer a call gave back from it):
     /// using `Name` after that memory is given back reads memory that is gone.
-    public sealed record HoldsViewOf(string Name, string Root, Pos Pos) : Event(Pos);
+    public sealed record HoldsViewOf(string Name, string Root, Pos Pos) : Event(Pos)
+    {
+        /// `Root` is the manager `Name`'s memory came from and goes back to.
+        public bool Manager { get; init; }
+    }
+
+    /// A call hands `Root`'s view to the parameter `From` of `Callee` and the value `Name` to its parameter `Into`: when
+    /// the callee keeps the one in the other (known once every routine is built), `Name` holds a view of `Root`.
+    public sealed record MayHoldViewOf(string Name, string Root, string Callee, int From, int Into, Pos Pos) : Event(Pos);
+
+    /// A store into the global `Global`: `Restoring` when the value is one read out of that global before (a scheduler
+    /// putting back the fiber it found running).
+    public sealed record GlobalStore(string Global, bool Restoring, Pos Pos) : Event(Pos);
+
+    /// Work put on the ticket `Ticket` was handed a view of this routine's frame (`Sees`): the routine waits for it
+    /// before it returns.
+    public sealed record WorkStarted(string Ticket, string Sees, Pos Pos) : Event(Pos);
+
+    /// The work on the ticket `Ticket` is over (waited for, retrieved, given back), or the ticket was handed on.
+    public sealed record WorkWaited(string Ticket, Pos Pos) : Event(Pos);
 
     /// The routine gives back what its parameter `Name` points at, memory or an entity its caller holds.
     public sealed record CallerHeldEnd(string Name, string How, Pos Pos) : Event(Pos);
@@ -77,12 +108,22 @@ public static class MemoryRules
 
     public sealed record ArmEnd(Pos Pos) : Event(Pos);
 
-    /// Whether a group ended by being given back (drop, destruct_all), not handed over to a holder that keeps it.
+    /// Whether a group ended by being given back (drop, destruct_all), or by being handed over with steal or to a routine
+    /// that takes it by value, which may give it back: either way a view made before reads memory that may be gone. Not
+    /// a return (nothing runs after) or a value kept in another of this routine's values.
     private static bool GaveBack(Group g) => g.How is { } how && (how.StartsWith("drop ", StringComparison.Ordinal)
-        || how.EndsWith(".destruct_all()", StringComparison.Ordinal));
+        || how.EndsWith(".destruct_all()", StringComparison.Ordinal) || HandedOver(g));
+
+    private static bool HandedOver(Group g) => g.How is { } how
+        && (how.StartsWith("steal ", StringComparison.Ordinal) || how.StartsWith("handed to ", StringComparison.Ordinal));
+
+    /// How a message says what became of the memory: given back, or handed over.
+    private static string Gone(Group g) => HandedOver(g)
+        ? $"was handed over ({g.How} on line {g.Ended!.Value.Line}), and whoever took it may give it back"
+        : $"was given back ({g.How} on line {g.Ended!.Value.Line})";
 
     /// A group: where it came from, and whether and where it ended.
-    private sealed record Group(string Origin, Pos Born, Pos? Ended, string? How, string? Entity = null);
+    private sealed record Group(string Origin, Pos Born, Pos? Ended, string? How, string? Entity = null, bool Field = false);
 
     private sealed class State
     {
@@ -103,11 +144,25 @@ public static class MemoryRules
         /// The parameters pointing at what the caller holds that the routine gave back, and how, until it puts a value back.
         public Dictionary<string, (Pos Pos, string How)> CallerHeldEnded = [];
 
+        /// The globals changed and not put back yet on this path.
+        public HashSet<string> Changed = [];
+
+        /// The tickets whose work was handed a view of the frame and isn't waited for yet: what it sees, and where.
+        public Dictionary<string, (string Sees, Pos Pos)> Working = [];
+
+        /// The groups that are managers a held view names (HoldsViewOf.Manager).
+        public HashSet<string> Managers = [];
+
+        /// The slots last filled with `.hollow()`, and the fields of them poked since.
+        public HashSet<string> HollowSlots = [];
+        public HashSet<string> Filled = [];
+
         public State Copy() => new()
         {
             Names = new(Names), Groups = new(Groups), Views = new(Views), Stale = new(Stale), Holding = new(Holding),
             ViewGroups = new(ViewGroups), HeldViews = HeldViews.ToDictionary(h => h.Key, h => new HashSet<string>(h.Value)),
-            CallerHeldEnded = new(CallerHeldEnded),
+            CallerHeldEnded = new(CallerHeldEnded), HollowSlots = new(HollowSlots), Filled = new(Filled), Managers = new(Managers),
+            Working = new(Working), Changed = new(Changed),
         };
 
         /// The same state with its groups named by the first handle that names each, so states that differ only in
@@ -133,7 +188,9 @@ public static class MemoryRules
                 ViewGroups = ViewGroups.Where(v => rename.ContainsKey(v.Value)).ToDictionary(v => v.Key, v => rename[v.Value]),
                 HeldViews = HeldViews.ToDictionary(h => h.Key,
                     h => h.Value.Where(rename.ContainsKey).Select(id => rename[id]).ToHashSet()),
-                CallerHeldEnded = new(CallerHeldEnded),
+                CallerHeldEnded = new(CallerHeldEnded), HollowSlots = new(HollowSlots), Filled = new(Filled),
+                Managers = Managers.Where(rename.ContainsKey).Select(id => rename[id]).ToHashSet(),
+                Working = new(Working), Changed = new(Changed),
             };
         }
 
@@ -148,14 +205,20 @@ public static class MemoryRules
             + "|" + string.Join(";", ViewGroups.OrderBy(v => v.Key, StringComparer.Ordinal).Select(v => $"{v.Key}>{v.Value}"))
             + "|" + string.Join(";", HeldViews.OrderBy(h => h.Key, StringComparer.Ordinal)
                 .Select(h => $"{h.Key}>{string.Join(",", h.Value.Order(StringComparer.Ordinal))}"))
-            + "|" + string.Join(";", CallerHeldEnded.Keys.Order(StringComparer.Ordinal));
+            + "|" + string.Join(";", CallerHeldEnded.Keys.Order(StringComparer.Ordinal))
+            + "|" + string.Join(";", HollowSlots.Order(StringComparer.Ordinal))
+            + "|" + string.Join(";", Filled.Order(StringComparer.Ordinal))
+            + "|" + string.Join(";", Managers.Order(StringComparer.Ordinal))
+            + "|" + string.Join(";", Working.Keys.Order(StringComparer.Ordinal))
+            + "|" + string.Join(";", Changed.Order(StringComparer.Ordinal));
     }
 
     /// The errors of one routine: each a message at its place, first one first. `routineWide` names the handles every
     /// block sees (the routine's parameters and the values of its head): the rest live in their block only. Each path is
     /// followed with its own state, and a block is entered again only with a state it hasn't been entered with.
     public static List<CompileError> Check(string routine, Pos routinePos, string firstBlock, IReadOnlyDictionary<string, List<Event>> events,
-        IReadOnlySet<string> routineWide, Func<string, bool>? fromOutside = null)
+        IReadOnlySet<string> routineWide, Func<string, bool>? fromOutside = null, Func<string, int, int, bool>? keeps = null,
+        HashSet<string>? leftChanged = null)
     {
         var errors = new List<CompileError>();
         var reported = new HashSet<string>();
@@ -190,7 +253,7 @@ public static class MemoryRules
                     case Acquire a:
                     {
                         string id = $"{block}:{a.Name}:{a.Pos}";
-                        state.Groups[id] = new Group(a.Name, a.Pos, null, null, a.Entity);
+                        state.Groups[id] = new Group(a.Name, a.Pos, null, null, a.Entity, a.Field);
                         state.Names[a.Name] = id;
                         break;
                     }
@@ -200,7 +263,7 @@ public static class MemoryRules
                     case End end:
                     {
                         if (!state.Names.TryGetValue(end.Name, out var id) || !state.Groups.TryGetValue(id, out var g)) break;
-                        if (g.Ended is { } emptiedAt && g.Entity is not null && end.Name.Contains('.'))
+                        if (g.Ended is { } emptiedAt && g.Entity is not null && end.Name.Contains('.') && g.How?.StartsWith("steal ", StringComparison.Ordinal) == true)
                             Report(end.Pos, $"'{end.Name}' was left hollow by {g.How} on line {emptiedAt.Line}, so there is nothing to take or drop: "
                                 + $"put a value back first, {end.Name}.poke(...)");
                         else if (g.Ended is { } endedAt && g.Entity is { } once)
@@ -215,7 +278,7 @@ public static class MemoryRules
                     case Use u:
                     {
                         if (state.Names.TryGetValue(u.Name, out var id) && state.Groups.TryGetValue(id, out var g) && g.Ended is { } at)
-                            Report(u.Pos, g.Entity is { } gone && u.Name.Contains('.')
+                            Report(u.Pos, g.Entity is { } gone && u.Name.Contains('.') && g.How?.StartsWith("steal ", StringComparison.Ordinal) == true
                                 ? $"'{u.Name}' was left hollow by {g.How} on line {at.Line}, and is read here before a {gone} is put back: "
                                   + $"put one in first, {u.Name}.poke(...)"
                                 : g.Entity is { } gone2
@@ -236,6 +299,32 @@ public static class MemoryRules
                                   + $"overwrites it: give it back first (drop {st.Slot})");
                         if (st.From is { } from && state.Names.TryGetValue(from, out var fromId)) state.Names[st.Slot] = fromId;
                         else state.Names.Remove(st.Slot);
+                        if (st.Hollow) state.HollowSlots.Add(st.Slot);
+                        else state.HollowSlots.Remove(st.Slot);
+                        state.Filled.RemoveWhere(f => f.StartsWith(st.Slot + ".", StringComparison.Ordinal));
+                        // A whole value put in fills its places too (`me.poke(.hollow())` after `steal me.stride(0)`).
+                        foreach (var inside in state.Names.Keys.Where(n => n.StartsWith(st.Slot + ".", StringComparison.Ordinal)).ToList())
+                            if (state.Groups.TryGetValue(state.Names[inside], out var emptied) && emptied.Ended is not null)
+                                state.Names.Remove(inside);
+                        break;
+                    }
+                    case FieldStore fs:
+                    {
+                        if (state.Names.TryGetValue(fs.Place, out var id) && state.Groups.TryGetValue(id, out var g))
+                        {
+                            if (g.Ended is null && !state.Names.Any(n => n.Key != fs.Place && n.Value == id))
+                                Report(fs.Pos, $"'{fs.Place}' holds a {g.Entity ?? fs.What} (from line {g.Born.Line}) that hasn't ended, and this "
+                                    + $"overwrites it: drop {fs.Place} first, or change it with {fs.Place}.replace(value: ...)");
+                            state.Names.Remove(fs.Place);
+                            break;
+                        }
+                        // A field of a slot filled with `.hollow()` holds nothing until it is poked once.
+                        var parts = fs.Place.Split('.');
+                        bool hollow = Enumerable.Range(1, parts.Length - 1).Any(n => state.HollowSlots.Contains(string.Join('.', parts.Take(n))));
+                        if (hollow && state.Filled.Add(fs.Place)) break;
+                        Report(fs.Pos, $"'{fs.Place}' holds a {fs.What}, and this poke overwrites it without giving it back: change it "
+                            + $"with {fs.Place}.replace(value: ...), which gives the old one back first, or take it out first with "
+                            + $"steal {fs.Place} as old");
                         break;
                     }
                     case ViewOf v:
@@ -245,14 +334,38 @@ public static class MemoryRules
                         else state.ViewGroups.Remove(v.Name);
                         if (v.Holds) state.Holding.Add(v.Name);
                         else state.Holding.Remove(v.Name);
+                        // A view taken from a value that holds views (an element of a list of views) holds them too.
+                        if (state.HeldViews.TryGetValue(v.Root, out var inherited) && v.Root != v.Name)
+                            (state.HeldViews.TryGetValue(v.Name, out var mine) ? mine : state.HeldViews[v.Name] = []).UnionWith(inherited);
                         break;
                     case Reshape rs:
                         foreach (var (view, root) in state.Views)
                             if (root == rs.Root) state.Stale[view] = (rs.Pos, rs.How);
                         break;
+                    case GlobalStore gs:
+                        if (gs.Restoring) state.Changed.Remove(gs.Global);
+                        else state.Changed.Add(gs.Global);
+                        break;
+                    case WorkStarted ws:
+                        state.Working.TryAdd(ws.Ticket, (ws.Sees, ws.Pos));
+                        break;
+                    case WorkWaited ww:
+                        state.Working.Remove(ww.Ticket);
+                        // Finished work reads nothing any more: the ticket holds no view.
+                        state.HeldViews.Remove(ww.Ticket);
+                        break;
+                    case MayHoldViewOf may:
+                        if (keeps?.Invoke(may.Callee, may.From, may.Into) == true && state.Names.TryGetValue(may.Root, out var keptGroup))
+                            (state.HeldViews.TryGetValue(may.Name, out var kept) ? kept : state.HeldViews[may.Name] = []).Add(keptGroup);
+                        break;
                     case HoldsViewOf hv:
-                        if (state.Names.TryGetValue(hv.Root, out var heldGroup))
+                        // Memory taken through the table of a manager that ended already: the table's use says so.
+                        if (state.Names.TryGetValue(hv.Root, out var heldGroup)
+                            && !(hv.Manager && state.Groups.TryGetValue(heldGroup, out var managerGroup) && managerGroup.Ended is not null))
+                        {
                             (state.HeldViews.TryGetValue(hv.Name, out var groups) ? groups : state.HeldViews[hv.Name] = []).Add(heldGroup);
+                            if (hv.Manager) state.Managers.Add(heldGroup);
+                        }
                         break;
                     case CallerHeldEnd le:
                         state.CallerHeldEnded.TryAdd(le.Name, (le.Pos, le.How));
@@ -265,14 +378,21 @@ public static class MemoryRules
                         if (!state.Holding.Contains(uv.Name)
                             && state.ViewGroups.TryGetValue(uv.Name, out var sawGroup) && state.Groups.TryGetValue(sawGroup, out var saw)
                             && saw.Ended is { } sawEnd && GaveBack(saw))
-                            Report(uv.Pos, $"'{uv.Name}' is a view of '{saw.Origin}', whose memory was given back ({saw.How} on line "
-                                + $"{sawEnd.Line}), so it reads memory that is gone: use '{uv.Name}' before line {sawEnd.Line}, or "
+                            Report(uv.Pos, $"'{uv.Name}' is a view of '{saw.Origin}', whose memory {Gone(saw)}, so it reads memory that is gone: use '{uv.Name}' before line {sawEnd.Line}, or "
                                 + $"take the view again from memory that is still there");
                         foreach (var heldId in state.HeldViews.GetValueOrDefault(uv.Name) ?? [])
                             if (state.Groups.TryGetValue(heldId, out var heldMemory) && heldMemory.Ended is { } heldEnd && GaveBack(heldMemory))
                             {
-                                Report(uv.Pos, $"'{uv.Name}' holds a view of '{heldMemory.Origin}', whose memory was given back "
-                                    + $"({heldMemory.How} on line {heldEnd.Line}), so what '{uv.Name}' holds there points at memory "
+                                if (state.Managers.Contains(heldId))
+                                {
+                                    Report(uv.Pos, $"'{uv.Name}' came from the manager '{heldMemory.Origin}', which ended at {heldMemory.How} on "
+                                        + $"line {heldEnd.Line}, and memory goes back to the manager it came from: a manager outlives the "
+                                        + $"memory it hands out. Give '{uv.Name}' back before line {heldEnd.Line}, or end '{heldMemory.Origin}' "
+                                        + $"after '{uv.Name}' is given back");
+                                    break;
+                                }
+                                Report(uv.Pos, $"'{uv.Name}' holds a view of '{heldMemory.Origin}', whose memory {Gone(heldMemory)}, "
+                                    + $"so what '{uv.Name}' holds there points at memory "
                                     + $"that is gone: finish with '{uv.Name}' before line {heldEnd.Line}, or give '{heldMemory.Origin}' "
                                     + $"back after '{uv.Name}'s last use");
                                 break;
@@ -295,6 +415,11 @@ public static class MemoryRules
                         if (arms.Count > 0) state = arms.Pop();
                         break;
                     case Exit { Returns: true } ex:
+                        leftChanged?.UnionWith(state.Changed);
+                        foreach (var (ticket, (sees, at)) in state.Working)
+                            Report(ex.Pos, $"the work put on '{ticket}' on line {at.Line} was handed {sees}, and '{routine}' returns "
+                                + $"here without waiting for it, so the work would read memory that is gone: wait for it first, "
+                                + $"{ticket}.wait_finished()");
                         foreach (var (param, (endedAt, how)) in state.CallerHeldEnded)
                             Report(ex.Pos, $"'{routine}' gives back what '{param}' points at ({how} on line {endedAt.Line}), and its "
                                 + $"caller holds that and gives it back itself. Take '{param}' by value and have the caller hand it "
@@ -303,12 +428,12 @@ public static class MemoryRules
                         // the caller would read the hole after the routine returns.
                         foreach (var (name, id) in state.Names)
                             if (name.Contains('.') && fromOutside?.Invoke(name[..name.IndexOf('.')]) == true
-                                && state.Groups.TryGetValue(id, out var hole) && hole is { Ended: { } emptiedAt, Entity: { } lost })
+                                && state.Groups.TryGetValue(id, out var hole) && hole is { Ended: { } emptiedAt, Entity: { } lost, Field: false })
                                 Report(ex.Pos, $"'{name}' was left hollow by {hole.How} on line {emptiedAt.Line}, and '{routine}' "
                                     + $"returns here: whoever reaches that place after the call finds no {lost}. Put one back first, "
                                     + $"{name}.poke(...)");
                         foreach (var (_, g) in state.Groups)
-                            if (g.Ended is null)
+                            if (g.Ended is null && !g.Field)
                                 Report(ex.Pos, g.Entity is { } alive
                                     ? $"'{g.Origin}' holds a {alive} (from line {g.Born.Line}) that hasn't ended when '{routine}' returns here: "
                                       + $"drop {g.Origin}, return it, or hand it over with steal {g.Origin}"
@@ -338,6 +463,11 @@ public static class MemoryRules
                             if (Sees(view)) next.ViewGroups[view] = id;
                         foreach (var (holder, ids) in state.HeldViews)
                             if (Sees(holder)) next.HeldViews[holder] = [.. ids];
+                        next.Managers.UnionWith(state.Managers);
+                        foreach (var (ticket, started) in state.Working) next.Working[ticket] = started;
+                        next.Changed.UnionWith(state.Changed);
+                        next.HollowSlots.UnionWith(state.HollowSlots);
+                        next.Filled.UnionWith(state.Filled);
                         foreach (var (param, ended) in state.CallerHeldEnded) next.CallerHeldEnded[param] = ended;
                         // A group no name of the next block reaches is lost there, unless it has ended.
                         var seenByViews = next.ViewGroups.Values.Concat(next.HeldViews.Values.SelectMany(v => v)).ToHashSet();
@@ -350,7 +480,7 @@ public static class MemoryRules
                             }
                             bool reached = next.Names.ContainsValue(id);
                             if (reached) next.Groups[id] = g;
-                            else if (g.Ended is null)
+                            else if (g.Ended is null && !g.Field)
                                 Report(ex.Pos, g.Entity is { } unseen
                                     ? $"'{g.Origin}' holds a {unseen} (from line {g.Born.Line}) that hasn't ended, and goes out of sight here: "
                                       + $"drop it, return it, or hand it over with steal {g.Origin}"

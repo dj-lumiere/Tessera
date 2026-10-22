@@ -58,6 +58,16 @@ spelling has no step, the build error names the new one.
 - A view of memory used after the memory is given back is a build error, and so is a value holding one (a field, a
   record, a pointer a routine gave back from it). A routine that gives back what a `@Box[T]` / `@Memory[T]` / `@E`
   parameter points at must put a value back before returning.
+- The memory checks run in every routine, an instance of a generic routine included (the error names the instance). A
+  `destruct` gives back every field holding a `Memory`, a `Box` or an entity, a field like that changes with
+  `replace` (a `poke` only while it holds nothing), a view is dead after its memory is handed over with `steal`, a
+  routine that keeps a view in a value of its caller makes that value hold it, and memory taken through a manager's
+  table is given back before the manager ends.
+- Work on a ticket is a call of its routine, and the ticket holds what the work was handed: work handed a view of the
+  frame is waited for before the routine returns. A call through a `Callable` value is a call to the routine it
+  names. A number made from an address of the frame (`ptrtoint`) is that address in the routine that made it.
+- Work on a `Thread` or a `Job` that changes a global, or memory handed whole to more than one piece of work, with no
+  atomic access and no lock is a build error.
 
 **Failure**
 - `Result[T, E]` and the `_result` routines are gone: a routine that can fail is `failable` and throws, and the
