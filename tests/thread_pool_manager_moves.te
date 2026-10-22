@@ -7,14 +7,14 @@ import Standard/Os
 ### Spins until `release` is 1: work that keeps its thread without waiting.
 ### :param release: Set to 1 to end it.
 routine hold(release: @U32) -> None
-    until release.peek_atomic() != 0
+    until release.peek_unbroken() != 0
         continue
     return
 
 ### Says it started, then spins for 50 ms without waiting.
 ### :param started: Set to 1 when it starts.
 routine child(started: @U32) -> None
-    started.poke_atomic(1)
+    started.poke_unbroken(1)
     deadline: Duration = Clock.monotonic() +^ 50ms
     until Clock.monotonic() >= deadline
         continue
@@ -36,17 +36,19 @@ routine watch(pool: @ThreadPoolManager) -> Bool
     c: Job[None] <- pool.get_job[None]()
     work_c: Work[None] <- child.to[Work](started: started)
     c.put_work(work_c)
+    drop work_c
     # The child runs on the other thread: this one is busy here until this job waits.
-    until started.peek_atomic() != 0
+    until started.peek_unbroken() != 0
         continue
     h: Job[None] <- pool.get_job[None]()
     work_h: Work[None] <- hold.to[Work](release: release)
     h.put_work(work_h)
+    drop work_h
     before: Addr = running_manager()
     # The wait frees this thread, which takes `hold`, the only job left in the queue.
     c.wait_finished()
     after: Addr = running_manager()
-    release.poke_atomic(1)
+    release.poke_unbroken(1)
     h.wait_finished()
     drop c
     drop h
@@ -59,6 +61,7 @@ routine start() -> None
     j: Job[Bool] <- pool.get_job[Bool]()
     work_j: Work[Bool] <- watch.to[Work](pool: pool)
     j.put_work(work_j)
+    drop work_j
     j.wait_finished()
     Console.show("went on on another thread: {j.retrieve()}")
     drop j

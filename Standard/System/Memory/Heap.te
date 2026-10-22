@@ -237,7 +237,7 @@ routine @AlignedHeapManager.give_back(at: Addr) -> None
 #
 # With the heap check on (config.toml's [debug] heap-check, the same in every build mode) every block has a header
 # right in front of it: a tag that says whether the block is live or freed, its size, and where malloc's block starts
-# (the block is placed HEADER_ROOM bytes or more into it, at the alignment asked for). Freeing swaps the tag to FREED atomically and looks at what was there:
+# (the block is placed HEADER_ROOM bytes or more into it, at the alignment asked for). Freeing swaps the tag to FREED unbroken and looks at what was there:
 #
 # - LIVE: the first free. The block goes into a quarantine of the last QUARANTINE_SIZE freed blocks instead of back to
 #   malloc, so its memory keeps saying FREED. The block it pushes out of the quarantine goes back to malloc.
@@ -246,7 +246,7 @@ routine @AlignedHeapManager.give_back(at: Addr) -> None
 # - anything else: the pointer isn't a block from this heap (or the bytes in front of it were overwritten), and the
 #   program crashes with InvalidValueError.
 #
-# The swap is atomic, so two threads freeing one block at once are caught too: exactly one of them sees LIVE. A
+# The swap is unbroken, so two threads freeing one block at once are caught too: exactly one of them sees LIVE. A
 # second free is caught for sure while the block is in the quarantine. Once it has gone back to malloc, malloc may
 # have written over the header (the free reads as "not a block": still a crash) or handed the memory out again as
 # another live block (the second free then frees that one, unseen), so the quarantine keeps the window wide. A
@@ -342,7 +342,7 @@ routine @CheckedHeapManager.reborrow(at: Addr, size: U64, align: U64) -> Addr
     if at.is_hollow()
         return me.borrow(size, align)
     header: @BlockHeader = header_of(at)
-    tag: U64 = header.tag.peek_atomic()
+    tag: U64 = header.tag.peek_unbroken()
     when
         tag == LIVE =>
             new_ptr: Addr = me.borrow(size, align)
@@ -386,12 +386,12 @@ secret routine header_of(block_start: Addr) -> @BlockHeader
 secret routine release_block(block_start: Addr) -> None
     header: @BlockHeader = header_of(block_start)
 
-    was: U64 = header.tag.atomic_swap(FREED)
+    was: U64 = header.tag.unbroken_swap(FREED)
     when
         was == LIVE =>
-            turn: U64 = QUARANTINE_NEXT.atomic_fetch_add(1)
+            turn: U64 = QUARANTINE_NEXT.unbroken_fetch_add(1)
             slot: @Addr = QUARANTINE.getslot(turn & QUARANTINE_MASK)
-            evicted: Addr = slot.atomic_swap(header)
+            evicted: Addr = slot.unbroken_swap(header)
             if evicted.is_hollow()
                 return
             c_free(evicted.to[@BlockHeader]().raw.peek())

@@ -11,13 +11,13 @@
 #   where each node also keeps the largest end of its subtree, so the accesses that overlap a range are found without
 #   looking at the others. A node keeps the range, the mode (read or write), the flow holding it, and a word the flows
 #   waiting for it sleep on. Shared reads may overlap each other. The table is guarded by one internal word (taken with
-#   one atomic step when free), and its nodes are kept in a pool and used again.
+#   one unbroken step when free), and its nodes are kept in a pool and used again.
 # - A flow about to wait first publishes what it waits for, then (with the deadlock check on) searches the flows that
 #   hold accesses its request overlaps, what those flows wait for, and so on (a request may overlap several holders).
 #   A search that comes back to the flow is a deadlock, and the program stops with a crash that names every flow in the
 #   cycle and where each took the access it holds.
 # - Taking an access that overlaps one the flow already holds stops the program with ReenterDuringAccessError.
-# - Memory given back or moved by a Memory or a Box (Standard/System) is handed to the AccessManager first: while
+# - Memory given back or moved by a BorrowedSlice or a BorrowedCell (Standard/System) is handed to the AccessManager first: while
 #   another flow holds an access inside it, the flow giving it back waits, and when the flow itself holds one, that is
 #   a deadlock.
 # - With the access-order check on, every access taken while others are held records the order of the pair, and a
@@ -258,7 +258,7 @@ needs T: typename
 ###     with `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
 @track_caller
 @target(os: not "none")
-routine Ptr[T].get_exclusive_access() -> Authorized[T]
+routine PointedCell[T].get_exclusive_access() -> Authorized[T]
 needs T: typename
     take_range(at: me, size: sizeof[T](), mode: ACCESS_WRITE, place: caller_location(),
         deadline: Duration.MAX, hooked: false)
@@ -272,7 +272,7 @@ needs T: typename
 ###     with `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
 @track_caller
 @target(os: not "none")
-routine Ptr[T].get_shared_read_access() -> ReadAuthorized[T]
+routine PointedCell[T].get_shared_read_access() -> ReadAuthorized[T]
 needs T: typename
     take_range(at: me, size: sizeof[T](), mode: ACCESS_READ, place: caller_location(),
         deadline: Duration.MAX, hooked: false)
@@ -285,7 +285,7 @@ needs T: typename
 ###     with `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
 @track_caller
 @target(os: not "none")
-routine @Box[T].get_exclusive_access() -> Authorized[T]
+routine @BorrowedCell[T].get_exclusive_access() -> Authorized[T]
 needs T: typename
     at: @T = me.getview()
     take_range(at, size: sizeof[T](), mode: ACCESS_WRITE, place: caller_location(),
@@ -299,7 +299,7 @@ needs T: typename
 ###     with `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
 @track_caller
 @target(os: not "none")
-routine @Box[T].get_shared_read_access() -> ReadAuthorized[T]
+routine @BorrowedCell[T].get_shared_read_access() -> ReadAuthorized[T]
 needs T: typename
     at: @T = me.getview()
     take_range(at, size: sizeof[T](), mode: ACCESS_READ, place: caller_location(),
@@ -423,7 +423,7 @@ routine current_flow() -> @AccessFlow
         slot.is_hollow() => THREAD_FLOW
         else => fiber_flow(slot)
     if flow.number.peek() == 0
-        flow.number.poke(NEXT_FLOW.atomic_fetch_add(1))
+        flow.number.poke(NEXT_FLOW.unbroken_fetch_add(1))
     return flow
 
 ### The flow kept in a fiber's or an work's slot, made there the first time it is needed.
@@ -497,7 +497,7 @@ common routine AccessManager.configure(deadlock_check: Bool, access_order: Bool,
     DEADLOCK_ON.poke(deadlock_check)
     ORDER_ON.poke(access_order)
     WORDS.poke(words)
-    PLACE.poke_atomic(place.addr())
+    PLACE.poke_unbroken(place.addr())
     MAIN_FLOW.poke(current_flow())
     return
 
@@ -506,7 +506,7 @@ common routine AccessManager.configure(deadlock_check: Bool, access_order: Bool,
 ### (`Duration.MAX` for none), and may return early.
 ### :param park: The routine, or `.hollow()` for the stdlib's own wait.
 common routine AccessManager.set_park(park: Callable[(@U32, U32, Duration), None]) -> None
-    PARK.poke_atomic(park.addr())
+    PARK.poke_unbroken(park.addr())
     return
 
 ### Where the code taking an access is, for the crash reports: the routine set with `configure` writes it. An empty
@@ -515,7 +515,7 @@ common routine AccessManager.set_park(park: Callable[(@U32, U32, Duration), None
 common routine AccessManager.place_here() -> SourceLocation
     place: &SourceLocation <- .hollow()
 
-    hook: Addr = PLACE.peek_atomic()
+    hook: Addr = PLACE.peek_unbroken()
     if hook.is_hollow()
         return place.load()
     if not (DEADLOCK_ON.peek() or ORDER_ON.peek())
@@ -526,17 +526,17 @@ common routine AccessManager.place_here() -> SourceLocation
 
 # -- the table -----------------------------------------------------------------------------------------------------
 
-### Takes the word that guards the table: one atomic step when it is free, else the thread sleeps until it is. A fiber
+### Takes the word that guards the table: one unbroken step when it is free, else the thread sleeps until it is. A fiber
 ### doesn't park here: parking takes accesses itself, and the table is held only for a few steps, by another thread
 ### (no flow parks while it holds it).
 @target(os: not "none")
 secret routine lock_table() -> None
     found: &U32 <- 0
 
-    if TABLE_WORD.atomic_compare_exchange_acquire_raw(expected: 0, new: 1, previous: found)
+    if TABLE_WORD.unbroken_compare_exchange_acquire_raw(expected: 0, new: 1, previous: found)
         return
     # Marks it contended. Whoever takes it from 0 this way holds it.
-    until TABLE_WORD.atomic_swap_acquire(2) == 0
+    until TABLE_WORD.unbroken_swap_acquire(2) == 0
         wait_on(at: TABLE_WORD, expected: 2)
     then
         return
@@ -544,7 +544,7 @@ secret routine lock_table() -> None
 ### Gives the table's word up, waking one flow that waits for it.
 @target(os: not "none")
 secret routine unlock_table() -> None
-    if TABLE_WORD.atomic_swap_release(0) == 2
+    if TABLE_WORD.unbroken_swap_release(0) == 2
         wake_one(TABLE_WORD)
     return
 
@@ -788,8 +788,8 @@ secret routine take_range(at: Addr, size: U64, mode: U8, place: @SourceLocation,
     start: U64 = ptrtoint[Addr, U64](at)
     end: U64 = start +% size.max(1)
 
-    if ACCESS_RANGE_CHECK.peek_atomic().is_hollow()
-        ACCESS_RANGE_CHECK.poke_atomic(check_range.to[Callable]().addr())
+    if ACCESS_RANGE_CHECK.peek_unbroken().is_hollow()
+        ACCESS_RANGE_CHECK.poke_unbroken(check_range.to[Callable]().addr())
     loop
         lock_table()
         if find_own(node: TABLE_ROOT.peek(), start, end, flow).is_not_hollow()
@@ -810,7 +810,7 @@ secret routine take_range(at: Addr, size: U64, mode: U8, place: @SourceLocation,
             node.left.poke(.hollow())
             node.right.poke(.hollow())
             TABLE_ROOT.poke(insert_node(root: TABLE_ROOT.peek(), node))
-            HELD_TOTAL.poke_atomic(HELD_TOTAL.peek() + 1)
+            HELD_TOTAL.poke_unbroken(HELD_TOTAL.peek() + 1)
             unlock_table()
             note_taken(flow,
                 taken: HeldAccess(access: at, kind: ACCESS_EXCLUSIVE, mode, place: place.peek()))
@@ -851,7 +851,7 @@ secret routine wait_for_node(flow: @AccessFlow, blocker: @AccessNode, at: Addr, 
     flow.waiting_end.poke(end)
     flow.waiting_mode.poke(mode)
     flow.waiting_holder.poke(.hollow())
-    flow.waiting_for.poke_atomic(at)
+    flow.waiting_for.poke_unbroken(at)
     unlock_table()
     if DEADLOCK_ON.peek()
         check_deadlock(flow, wait)
@@ -874,9 +874,9 @@ secret routine give_back_range(at: Addr) -> None
         crash(name: "AccessNotHeldError",
             message: "This gives back an access that this thread or fiber doesn't hold: an access is given back once, by the flow that took it, through the pointer it was taken at.")
     TABLE_ROOT.poke(remove_node(root: TABLE_ROOT.peek(), node))
-    HELD_TOTAL.poke_atomic(HELD_TOTAL.peek() - 1)
+    HELD_TOTAL.poke_unbroken(HELD_TOTAL.peek() - 1)
     waiters: U32 = node.waiters.peek()
-    node.word.atomic_fetch_add(1)
+    node.word.unbroken_fetch_add(1)
     node.waiters.poke(0)
     node.writer_waits.poke(0)
     node.holder.poke(.hollow())
@@ -888,7 +888,7 @@ secret routine give_back_range(at: Addr) -> None
     note_released(flow, access: at)
     return
 
-### Memory is given back or moved (by a Memory or a Box): waits while another flow holds an access inside it. The
+### Memory is given back or moved (by a BorrowedSlice or a BorrowedCell): waits while another flow holds an access inside it. The
 ### routine Standard/System calls through ACCESS_RANGE_CHECK.
 ### :param at: The memory's first byte.
 ### :param size: Its size in bytes.
@@ -900,7 +900,7 @@ secret routine check_range(at: Addr, size: U64) -> None
     end: U64 = start +% size.max(1)
     place: &SourceLocation <- .hollow()
 
-    if HELD_TOTAL.peek_atomic() == 0
+    if HELD_TOTAL.peek_unbroken() == 0
         return
     loop
         lock_table()
@@ -1209,7 +1209,7 @@ secret routine crash_reenter(place: @SourceLocation) -> None
 secret routine park(wait: AccessWait, deadline: Duration) -> None
     word: @U32 = wait.word
     expected: U32 = wait.expected
-    hook: Addr = PARK.peek_atomic()
+    hook: Addr = PARK.peek_unbroken()
 
     if wait.hooked and hook.is_not_hollow()
         parker: Callable[(@U32, U32, Duration), None] = bitcast(hook)
@@ -1230,7 +1230,7 @@ secret routine park(wait: AccessWait, deadline: Duration) -> None
 ### Notes that `flow` no longer waits.
 ### :param flow: The flow.
 secret routine end_wait(flow: @AccessFlow) -> None
-    flow.waiting_for.poke_atomic(.hollow())
+    flow.waiting_for.poke_unbroken(.hollow())
     return
 
 ### For code that waits for an access in its own way (a Roamed entity's lock): publishes that the running flow waits
@@ -1246,8 +1246,8 @@ common routine AccessManager.begin_wait(access: Addr, holder: @U64, place: @Sour
     lock_table()
     flow.waiting_place.poke(place.peek())
     flow.waiting_end.poke(0)
-    flow.waiting_holder.poke_atomic(holder)
-    flow.waiting_for.poke_atomic(access)
+    flow.waiting_holder.poke_unbroken(holder)
+    flow.waiting_for.poke_unbroken(access)
     unlock_table()
     if DEADLOCK_ON.peek()
         check_deadlock(flow,
@@ -1280,14 +1280,14 @@ secret routine search_flow(flow: @AccessFlow, target: @AccessFlow, path: @Deadlo
     path.at.getslot(depth).poke(.hollow())
     path.taken.getslot(depth).poke(.hollow())
     path.count.poke(depth + 1)
-    waits_for: Addr = flow.waiting_for.peek_atomic()
+    waits_for: Addr = flow.waiting_for.peek_unbroken()
     if waits_for.is_not_hollow()
         if flow.waiting_end.peek() != 0
             if search_nodes(node: TABLE_ROOT.peek(), flow, target, path)
                 return true
         else
-            holder_at: @U64 = flow.waiting_holder.peek_atomic()
-            id: U64 = holder_at.peek_atomic()
+            holder_at: @U64 = flow.waiting_holder.peek_unbroken()
+            id: U64 = holder_at.peek_unbroken()
             if id != 0
                 path.at.getslot(depth).poke(waits_for)
                 next: @AccessFlow = flow_of(id)
@@ -1309,7 +1309,7 @@ secret routine search_nodes(node: @AccessNode, flow: @AccessFlow, target: @Acces
     path: @DeadlockPath) -> Bool
     if node.is_hollow()
         return false
-    start: U64 = ptrtoint[Addr, U64](flow.waiting_for.peek_atomic())
+    start: U64 = ptrtoint[Addr, U64](flow.waiting_for.peek_unbroken())
     end: U64 = flow.waiting_end.peek()
     if node.max_end.peek() <= start
         return false
@@ -1356,7 +1356,7 @@ secret routine check_deadlock(flow: @AccessFlow, wait: AccessWait) -> None
     # A holder letting go of a lock outside the table looks the same for a moment: wait a little and look again.
     until Clock.monotonic() >= recheck_at
         if word.is_not_hollow()
-            if word.peek_atomic() != expected
+            if word.peek_unbroken() != expected
                 return
         park(wait, deadline: recheck_at)
     then
@@ -1413,7 +1413,7 @@ secret routine report_deadlock(flow: @AccessFlow, path: @DeadlockPath) -> None
     words: U8 = WORDS.peek()
     length: U64 = path.count.peek()
 
-    if REPORTING.atomic_swap(1) != 0
+    if REPORTING.unbroken_swap(1) != 0
         wait_for_report()
 
     when
@@ -1452,7 +1452,7 @@ secret routine report_deadlock(flow: @AccessFlow, path: @DeadlockPath) -> None
 ### Takes ORDER_FLAG, the plain flag that guards ORDERS.
 @target(os: not "none")
 secret routine lock_orders() -> None
-    until ORDER_FLAG.atomic_swap(1) == 0
+    until ORDER_FLAG.unbroken_swap(1) == 0
         wait_while(at: ORDER_FLAG, expected: 1)
     then
         return
@@ -1460,7 +1460,7 @@ secret routine lock_orders() -> None
 ### Gives ORDER_FLAG up.
 @target(os: not "none")
 secret routine unlock_orders() -> None
-    ORDER_FLAG.poke_atomic(0)
+    ORDER_FLAG.poke_unbroken(0)
     wake_all(ORDER_FLAG)
     return
 
@@ -1517,7 +1517,7 @@ secret routine report_order(place: @SourceLocation, before: SourceLocation) -> N
     out: &SliceWriter <- SliceWriter.construct(data: buffer.to[@Byte](), capacity: 1024)
     words: U8 = WORDS.peek()
 
-    if REPORTING.atomic_swap(1) != 0
+    if REPORTING.unbroken_swap(1) != 0
         wait_for_report()
 
     when

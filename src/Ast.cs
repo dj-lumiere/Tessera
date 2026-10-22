@@ -4,7 +4,7 @@ namespace Tessera;
 
 // ── Types as written ────────────────────────────────────────────────────────
 
-/// A type as written in source: `S64`, `@Byte` (a `Ptr[Byte]`), `Array[T, 8]`, `Callable[(Addr, U64), Addr]`.
+/// A type as written in source: `S64`, `@Byte` (a `PointedCell[Byte]`), `Array[T, 8]`, `Callable[(Addr, U64), Addr]`.
 public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
 {
     /// The module a qualified name was written with: `Standard/Collections` in `Standard/Collections/List[T]`.
@@ -17,15 +17,15 @@ public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
     /// alike: the parser keeps the index reading here, and the checker takes it when NAME isn't a type.
     public Expr? AsIndex { get; init; }
 
-    /// `&T` or `&[T]`, the short form of the standard library's `Box[T]` / `Memory[T]`, as written.
+    /// `&T` or `&[T]`, the short form of the standard library's `BorrowedCell[T]` / `BorrowedSlice[T]`, as written.
     public bool Amp { get; init; }
 
     public override string ToString() =>
-        Amp && Name == "Box" && Args is [TypeArgType boxed] ? $"&{boxed}"
-        : Amp && Name == "Memory" && Args is [TypeArgType elems] ? $"&[{elems}]"
+        Amp && Name == "BorrowedCell" && Args is [TypeArgType boxed] ? $"&{boxed}"
+        : Amp && Name == "BorrowedSlice" && Args is [TypeArgType elems] ? $"&[{elems}]"
         : Path is null && Name == UnionName ? string.Join(" | ", Args)
-        : Path is null && Name == "Ptr" && Args is [TypeArgType inner] ? $"@{inner}"
-        : Path is null && Name == "Span" && Args is [TypeArgType elem] ? $"@[{elem}]"
+        : Path is null && Name == "PointedCell" && Args is [TypeArgType inner] ? $"@{inner}"
+        : Path is null && Name == "PointedSlice" && Args is [TypeArgType elem] ? $"@[{elem}]"
         : (Path is null ? "" : Path + "/") + (Args.Count == 0 ? Name : $"{Name}[{string.Join(", ", Args)}]");
     public static TypeRef Simple(string name, Pos pos) => new(name, [], pos);
 
@@ -138,16 +138,16 @@ public sealed record RoutineDecl(
     public bool IsCommon => Owner is not null && Params is not [{ Name: "me" }, ..];
 
     /// A routine that takes me by its address: `routine @Point.move(...)`.
-    public bool TakesAddress => Params is [{ Name: "me", Type: { Name: "Ptr", Path: null } }, ..];
+    public bool TakesAddress => Params is [{ Name: "me", Type: { Name: "PointedCell", Path: null } }, ..];
 
     /// The header up to the parameters, as written: `routine Point.scaled`, `routine @Point.move`,
     /// `common routine Point.origin`, `routine gcd`.
     public string Header => (IsFailable ? "failable " : "") + (IsCommon ? "common routine " : "routine ") + (TakesAddress ? "@" : "")
         + (Owner is null ? Name : $"{OwnerAsWritten}.{Name}");
 
-    /// The owner as a header writes it: `Ptr[Cell]` for a routine on the pointer type, since `@Cell.read` would take a
+    /// The owner as a header writes it: `PointedCell[Cell]` for a routine on the pointer type, since `@Cell.read` would take a
     /// Cell's address.
-    private string OwnerAsWritten => Owner is { Name: "Ptr", Path: null, Args: [TypeArgType p] } ? $"Ptr[{p.Type}]" : $"{Owner}";
+    private string OwnerAsWritten => Owner is { Name: "PointedCell", Path: null, Args: [TypeArgType p] } ? $"PointedCell[{p.Type}]" : $"{Owner}";
 }
 
 public sealed record FieldDecl(string Name, TypeRef Type, List<Annotation> Annotations, Pos Pos, bool IsPrivate = false)
@@ -196,17 +196,17 @@ public sealed record VariantBranch(TypeRef Type, Pos Pos)
 
 /// `preset NAME: T = value` is a value, and `preset NAME: @T <- value` is read-only memory. With `IsGlobal`,
 /// `global NAME: @T [<- value]` is mutable memory, all-zero without a value. In memory (`IsStorage`), Type is the
-/// pointee T and the name is its address. With `IsSpan`, `preset NAME: Span[T] <- [...]` or `global NAME: Span[T] <-
-/// [...]`, Type is the Span and the name is a Span of the literal's elements, as many as it has. The contents are part
+/// pointee T and the name is its address. With `IsSpan`, `preset NAME: PointedSlice[T] <- [...]` or `global NAME: PointedSlice[T] <-
+/// [...]`, Type is the PointedSlice and the name is a PointedSlice of the literal's elements, as many as it has. The contents are part
 /// of the program image, there before `start` runs.
 public sealed record PresetDecl(
     string File, List<Annotation> Annotations, TypeRef? Owner, string Name, TypeRef Type, Expr? Value, Pos Pos)
     : Decl(File, Annotations, Pos)
 {
     public bool IsGlobal { get; init; }
-    /// A global, or a preset declared `@T` or `Span[T]`: the name is an address, not a value.
+    /// A global, or a preset declared `@T` or `PointedSlice[T]`: the name is an address, not a value.
     public bool IsStorage { get; init; }
-    /// Declared `Span[T]`: the name is a Span over the memory, whose count the array literal gives.
+    /// Declared `PointedSlice[T]`: the name is a PointedSlice over the memory, whose count the array literal gives.
     public bool IsSpan { get; init; }
 }
 
@@ -258,6 +258,10 @@ public sealed record BindStmt(string Name, TypeRef Type, Expr Value, Pos Pos) : 
 
     /// The binding a `<-` line of a borrowed thing (an access, a ticket) stands for, after the builder read it.
     public bool Lowered { get; init; }
+
+    /// The `<-` line bound a ticket, a piece of work, or a mapped file's storage: the memory rules follow the name as
+    /// one thing the program gives back with `drop` exactly once.
+    public bool Ticket { get; init; }
 }
 
 /// `call(...)` evaluated for its side effect. A call to a `@noreturn` routine (`crash(...)`) ends the body it is in.
@@ -376,7 +380,11 @@ public abstract record Expr(Pos Pos);
 
 /// An integer literal. HexDigits counts the digits of a `0x` literal (0 for other bases), since a Byte literal
 /// must have exactly two.
-public sealed record IntLit(BigInteger Value, Pos Pos, int HexDigits = 0) : Expr(Pos);
+public sealed record IntLit(BigInteger Value, Pos Pos, int HexDigits = 0) : Expr(Pos)
+{
+    /// Written in base 10 (not `0x`, `0b` or `0o`): a whole number so written also goes into a binary float place.
+    public bool Base10 { get; init; }
+}
 /// A literal whose type is fixed by its spelling: `b'A'` is a Byte (8 bits), `'A'` is a Char (32 bits).
 public sealed record TypedIntLit(long Value, int Bits, Pos Pos) : Expr(Pos)
 {
@@ -551,7 +559,7 @@ public sealed record ArrayLit(List<Expr> Elements, Pos Pos) : Expr(Pos)
 /// (`Work[T]`, T the routine's result) not started yet.
 public sealed record WorkExpr(RoutineRef Routine, List<Expr> Args, List<string?>? ArgNames, Pos Pos) : Expr(Pos);
 
-/// `[0] * n from manager` (a `Memory[T]`) or `(value: 1, next: .hollow()) from manager` (a `Box[T]`): the literal in memory
+/// `[0] * n from manager` (a `BorrowedSlice[T]`) or `(value: 1, next: .hollow()) from manager` (a `BorrowedCell[T]`): the literal in memory
 /// taken from the manager, which `drop` gives back. A repeat count here may be known only while running.
 public sealed record AtExpr(Expr Value, Expr Manager, Pos Pos) : Expr(Pos);
 

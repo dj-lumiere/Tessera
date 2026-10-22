@@ -17,8 +17,8 @@ namespace Tessera;
 ///   further in (every continuation line sits 4 further in, whatever made the line long); a line with nowhere to break
 ///   (a comment, one long argument) stays as it is;
 /// - an annotation list `@[a, b]` is written one annotation per line.
-/// - a pointer type is written `@T`, not `Ptr[T]`, except where routines are declared on or called through the record
-///   (`routine Ptr[T].peek`); comments and literals are left alone;
+/// - a pointer type is written `@T`, not `PointedCell[T]`, except where routines are declared on or called through the record
+///   (`routine PointedCell[T].peek`); comments and literals are left alone;
 /// - parentheses around one value that hold no operator, which group nothing, are dropped: `(x).add(1)` is
 ///   `x.add(1)`. Those around an operation (`(a + b) * c`), a call's arguments, a tuple type, and `(a, b)` stay.
 /// - top-level declarations come in one order: module, imports (sorted), defines, globals, presets, types (records,
@@ -817,9 +817,9 @@ public static class Formatter
 
     // ── @T ──────────────────────────────────────────────────────────────
 
-    /// Writes `Ptr[X]` as `@X` outside comments and literals. The record's own name stays where it is declared
-    /// (`record Ptr[T]`), where a routine is declared on or called through it (`Ptr[X].name`), and when qualified
-    /// (`Standard/System/Ptr[X]`).
+    /// Writes `PointedCell[X]` as `@X` outside comments and literals. The record's own name stays where it is declared
+    /// (`record PointedCell[T]`), where a routine is declared on or called through it (`PointedCell[X].name`), and when qualified
+    /// (`Standard/System/PointedCell[X]`).
     // ── Grouping parentheses ─────────────────────────────────────────────────
 
     /// Drops the parentheses around a single value where an expression starts (after `(`, `,`, `=`, `<-`, `?`, or a
@@ -943,10 +943,10 @@ public static class Formatter
                 break;
             }
             bool boundaryBefore = i == 0 || !(char.IsLetterOrDigit(line[i - 1]) || line[i - 1] is '_' or '%' or '.' or ':');
-            if (boundaryBefore && string.CompareOrdinal(line, i, "Ptr[", 0, 4) == 0 && MatchingBracket(line, i + 3) is int close
+            if (boundaryBefore && string.CompareOrdinal(line, i, "PointedCell[", 0, 12) == 0 && MatchingBracket(line, i + 11) is int close
                 && !(close + 1 < line.Length && line[close + 1] == '.') && !line[..i].TrimEnd().EndsWith("record", StringComparison.Ordinal) && !line[..i].TrimEnd().EndsWith("entity", StringComparison.Ordinal))
             {
-                sb.Append('@').Append(UseAt(line[(i + 4)..close]));
+                sb.Append('@').Append(UseAt(line[(i + 12)..close]));
                 i = close;
                 continue;
             }
@@ -995,8 +995,8 @@ public static class Formatter
             // `require T: typename`), so its header keeps T. `require` lines always name their types.
             bool typeParameter = Enumerable.Range(i + 1, end - i - 1).Any(j => result[j].StartsWith("needs ")
                 && System.Text.RegularExpressions.Regex.IsMatch(result[j], $@"(^needs |,\s*){owner}\s*:"));
-            // A routine on Ptr<T> meets its owner spelled `@T`.
-            string? atOwner = owner.StartsWith("Ptr[", StringComparison.Ordinal) ? "@" + owner[4..^1] : null;
+            // A routine on PointedCell<T> meets its owner spelled `@T`.
+            string? atOwner = owner.StartsWith("PointedCell[", StringComparison.Ordinal) ? "@" + owner[12..^1] : null;
             string Replace(string line) => atOwner is null ? ReplaceType(line, owner) : ReplaceType(ReplaceType(line, owner), atOwner);
             if (!typeParameter)
             {

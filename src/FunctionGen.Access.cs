@@ -32,7 +32,7 @@ public sealed partial class FunctionGen
 
     /// Whether `d` is one of the standard library's routines that take an access.
     private static bool TakesAccess(RoutineDecl d) => d.IsLibrary && d.Name is "get_exclusive_access" or "get_shared_read_access"
-        && d.Owner is { Name: "Ptr" or "Box" };
+        && d.Owner is { Name: "PointedCell" or "BorrowedCell" };
 
     /// Whether `t` is an access the AccessManager hands out, `Authorized[T]` or `ReadAuthorized[T]`.
     private static bool IsAccessType(DType? t) =>
@@ -73,9 +73,9 @@ public sealed partial class FunctionGen
         if (_c.Prechecking) return;
         Expr? written = plan.Decl.Name switch
         {
-            "poke" or "poke_volatile" or "poke_atomic" or "poke_unaligned" or "zeroinit" or "copy" or "store" or "setitem" or "swap" => plan.Receiver,
+            "poke" or "poke_volatile" or "poke_unbroken" or "poke_unaligned" or "zeroinit" or "copy" or "store" or "setitem" or "swap" => plan.Receiver,
             "poke_into" or "copy_into" => plan.Args.FirstOrDefault(),
-            _ when plan.Decl.Name.StartsWith("atomic_", StringComparison.Ordinal) => plan.Receiver,
+            _ when plan.Decl.Name.StartsWith("unbroken_", StringComparison.Ordinal) => plan.Receiver,
             _ => null,
         };
         if (written is not null && ReadOnlyView(written))

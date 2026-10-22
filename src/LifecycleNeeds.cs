@@ -1,7 +1,7 @@
 namespace Tessera;
 
-/// Which types hold something to release, and so declare `construct` and `destruct`: memory from a manager (`Box`,
-/// `Memory`), an entity, or a type with a field (a branch, for a variant) that is a value of a type parameter (an
+/// Which types hold something to release, and so declare `construct` and `destruct`: memory from a manager (`BorrowedCell`,
+/// `BorrowedSlice`), an entity, or a type with a field (a branch, for a variant) that is a value of a type parameter (an
 /// instance may hold anything) or a value of a type that itself holds something to release. An address (`@T`, `@[T]`,
 /// `Addr`) only points at memory someone else gives back, so it holds nothing. A type of plain data (numbers, Bool,
 /// choices, addresses, records of those) holds nothing: it may declare them, and needs neither.
@@ -33,7 +33,7 @@ public sealed class LifecycleNeeds(Func<TypeRef, string, Decl?> find, bool unkno
         string? why = null;
         switch (d)
         {
-            case RecordDecl r when r is { Name: "Memory" or "Box" } && r.Module == Compiler.SystemModule:
+            case RecordDecl r when r is { Name: "BorrowedSlice" or "BorrowedCell" } && r.Module == Compiler.SystemModule:
                 why = $"it is memory from a manager";
                 break;
             case RecordDecl { IsEntity: true }:
@@ -72,7 +72,7 @@ public sealed class LifecycleNeeds(Func<TypeRef, string, Decl?> find, bool unkno
         switch (t.Name)
         {
             // An address points at memory someone else gives back.
-            case "Ptr" or "Addr" or "Span" when t.Path is null:
+            case "PointedCell" or "Addr" or "PointedSlice" when t.Path is null:
                 return false;
             case "Callable":
                 return false;

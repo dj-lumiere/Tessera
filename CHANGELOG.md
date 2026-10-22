@@ -39,22 +39,34 @@ These change code written for the pre-release builders. Where a spelling changed
 - Sizes, counts and indexes are `U64` on every target. C's `size_t` is `CSize` / `CSSize`.
 
 **Memory and managers**
-- `Slice[T]` is `Span[T]` and `Bytes` is `Span[Byte]`. Managers hand out `Memory[T]` and
-  `Box[T]`, which go back with `destruct`, and a value goes back with `drop x`.
+- `Slice[T]` is `PointedSlice[T]` and `Bytes` is `PointedSlice[Byte]`. Managers hand out `BorrowedSlice[T]` and
+  `BorrowedCell[T]`, which go back with `destruct`, and a value goes back with `drop x`.
 - A place is borrowed from a manager with `<-`: `count: &S64 <- 0` (from STACK when no manager is named),
-  `node: &Node <- (value: 1) from HEAP`, `words: &[U64] <- [0] * n from HEAP`. `&T` is short for `Box[T]` and
-  `&[T]` for `Memory[T]`. `@T` and `@[T]` only view. `=` binds a value or a view, never a place, and `local` is gone.
+  `node: &Node <- (value: 1) from HEAP`, `words: &[U64] <- [0] * n from HEAP`. `&T` is short for `BorrowedCell[T]` and
+  `&[T]` for `BorrowedSlice[T]`. `@T` and `@[T]` only view. `=` binds a value or a view, never a place, and `local` is gone.
   A `<-` name is given back with `drop`, and the builder gives STACK places back at every exit of their body, the last
   one first. Accesses and tickets are bound with `<-` from the call that borrows them. Presets and globals in memory
   are written `&T` / `&[T]`.
-- Only `Box[T]` reads and writes with `load` / `store`, and only `@T` with `peek` / `poke`. `Memory[T]` and `@[T]`
+- Only `BorrowedCell[T]` reads and writes with `load` / `store`, and only `@T` with `peek` / `poke`. `BorrowedSlice[T]` and `@[T]`
   reach their elements the same way: `m[i]` is the value, `m.getslot(i)` its place as a `@T`, and
   `m.getslice(start, count)` / `m.getslice()` a `@[T]`. An entity element comes out with `steal m.getslot(i)`.
   `m.load(i)`, `m.store(i, v)`, `m[i] = v`, `m.getview()`, `m.getview(i)`, and `xs[i] = v` on a span are build
   errors that name the new forms.
+- The memory types are named for what they do: `PointedCell[T]` (`@T`) and `PointedSlice[T]` (`@[T]`) point at
+  memory, `BorrowedCell[T]` (`&T`) and `BorrowedSlice[T]` (`&[T]`) are borrowed from a manager. `Ptr`, `Span`, `Box`
+  and `Memory` are build errors that name the new type.
+- `Atomic[T]` is `Unbroken[T]`, and its protocols are `UnbrokenStorable`, `UnbrokenExchangeable`, `UnbrokenAddable`,
+  `UnbrokenMaskable` and `UnbrokenFloatAddable`. The routines on a `@T` are `peek_unbroken`, `poke_unbroken` and
+  `unbroken_swap`, `unbroken_fetch_add`, `unbroken_compare_exchange` and the rest: an `atomic_` name is a build error
+  that names the new one. `CircularList` is `RotatableList`.
+- A `FileStorage[T]` is an entity borrowed from `OsFileManager.storage` with `<-` and given back with `drop`, which
+  writes changed pages back and unmaps it. `unmap()` is gone.
+- A ticket (`Thread`, `Fiber`, `Job`), a `Work` and a `FileStorage` bound with `<-` is given back with `drop` once on
+  every path: a missing drop, a second one and a use after it are build errors.
+- A whole number written in base 10 goes into a binary float place: `x: &B64 <- 0`.
 - A memory manager lends memory: `MemoryManager.borrow`, `reborrow` and `give_back` (the `MemoryManageable`
   protocol's three routines).
-- `Box[T]` is `{at, manager}` and `Memory[T]` is `{data, count, manager}`: the block holds only the values, and the
+- `BorrowedCell[T]` is `{at, manager}` and `BorrowedSlice[T]` is `{data, count, manager}`: the block holds only the values, and the
   generation check is gone. A second give-back the build doesn't see is caught by the heap check (`DoubleFreeError`).
 - A record declares `construct` / `destruct` only when it holds something to release.
 - Every memory region has a manager: `DEFAULT_HEAP` is `HEAP`, `DEFAULT_STACKS` is `PAGES`, and processes,
@@ -67,10 +79,10 @@ These change code written for the pre-release builders. Where a spelling changed
   receives it), and a routine's result that may be one of its parameters is that argument. `R(held: l)` is checked
   like `(held: l)`.
 - A view of memory used after the memory is given back is a build error, and so is a value holding one (a field, a
-  record, a pointer a routine gave back from it). A routine that gives back what a `@Box[T]` / `@Memory[T]` / `@E`
+  record, a pointer a routine gave back from it). A routine that gives back what a `@BorrowedCell[T]` / `@BorrowedSlice[T]` / `@E`
   parameter points at must put a value back before returning.
 - The memory checks run in every routine, an instance of a generic routine included (the error names the instance). A
-  `destruct` gives back every field holding a `Memory`, a `Box` or an entity, a field like that changes with
+  `destruct` gives back every field holding a `BorrowedSlice`, a `BorrowedCell` or an entity, a field like that changes with
   `replace` (a `poke` only while it holds nothing), a view is dead after its memory is handed over with `steal`, a
   routine that keeps a view in a value of its caller makes that value hold it, and memory taken through a manager's
   table is given back before the manager ends.
@@ -121,7 +133,7 @@ These change code written for the pre-release builders. Where a spelling changed
 
 ### Added
 - Collections from an array value: `List[T].of(values: [3, 1, 2], manager: HEAP)` and the default-heap
-  `List[T].of(values: ...)`, for `List`, `CircularList`, `SortedList`, `Set`, `SortedSet`, `PriorityQueue`, `BitList`,
+  `List[T].of(values: ...)`, for `List`, `RotatableList`, `SortedList`, `Set`, `SortedSet`, `PriorityQueue`, `BitList`,
   `Dict` and `SortedDict`.
 - Every routine borrows its frame from the running flow's `StackManager` (`borrow_frame`, `give_back_frame`, which the
   builder calls). Without an operating system the borrow stops the program with `StackOverflowError` when the stack
@@ -136,20 +148,20 @@ These change code written for the pre-release builders. Where a spelling changed
   `ProcessManager`), the `MemoryManageable` and `PageManageable` protocols with `m.to[MemoryManager]()`, a buildtime
   check that every path gives memory back once, `--heap-check` and `--uninit-fill`.
 - Concurrency: fibers over a thread pool with work stealing (blocking calls run on I/O threads),
-  `ThreadPoolManager`, `Atomic[T]`, the `AccessManager` (exclusive and shared read access to memory, one interval
+  `ThreadPoolManager`, `Unbroken[T]`, the `AccessManager` (exclusive and shared read access to memory, one interval
   table of the held accesses, deadlock detection that follows every holder a request overlaps, `access-order`, memory
   given back waits for the accesses inside it), channels, `CpuEventManager`, and race checks on macOS and Linux.
 - Build checks for accesses: an access is given back on every path and once, its view isn't used after, the view of
   a `ReadAuthorized[T]` isn't written, and the check follows accesses across routines. Thread work changes only memory
   handed to it with `steal`, an `Authorized[T]` handed to it (the handing routine doesn't touch it until the wait), or
-  an `Atomic`: a global or memory handed without `steal` changed any other way is a build error.
+  an `Unbroken`: a global or memory handed without `steal` changed any other way is a build error.
 - Failure: `failable`, `throw`, crashables, `try` and `check`, with the thrown set of each call collected at
   buildtime (no heap and no runtime type information). `@throws`.
 - Targets without an OS: `when_power_on`, a reporting routine in the `Crash` slot, board files
   (`Tessera/boards/<name>.toml`) from which the builder writes the link script, 32-bit ARM (Thumb, VFP) assembly
   and fibers, Cortex-M startup, and riscv32 at tier 3.
 - Hardware: inline assembly (`@external("asm")`, registers `R0` / `V0` / `F0`), naked routines, `@feature` to pick
-  CPU features, atomic pointer operations, SIMD `Vector[T, N]`.
+  CPU features, unbroken pointer operations, SIMD `Vector[T, N]`.
 - Standard library: correctly rounded math for B16 to B128 and BF16, shortest round-trip float printing, `Random`
   (xoshiro256**), JSON string escaping, a keyed SipHash `hash()`, collections, files, directories, subprocesses,
   `Clock`, `CpuClock`, `Moment`, `TextPattern` and `BytesPattern`.
@@ -160,7 +172,7 @@ These change code written for the pre-release builders. Where a spelling changed
 - An arm of a value `when` can leave with `throw` in a failable routine. The language server's quick fix writes
   `failable` on a routine whose `throw` line it isn't declared for.
 - `@[Byte]` text has `split(separator:, manager:)` and `words(manager:)`: views into the text, in a
-  `Memory[@[Byte]]` from the manager.
+  `BorrowedSlice[@[Byte]]` from the manager.
 
 ### Fixed
 - 32-bit x86: SSE2 by default, B32 and B64 results returned as integer bits, sizes past `size_t` have no room, and

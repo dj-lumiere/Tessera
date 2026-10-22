@@ -28,7 +28,7 @@ public sealed class EscapeCheck
         public abstract Atom Shift(int by);
     }
 
-    /// Memory of this routine: its frame (a slot, a frame span) or memory it holds (a Box, a Memory). `Owner` names the
+    /// Memory of this routine: its frame (a slot, a frame span) or memory it holds (a BorrowedCell, a BorrowedSlice). `Owner` names the
     /// slot or the holder, so what is stored into it is found again where it is read.
     public sealed record FrameAtom(string What, string Owner, int Level) : Atom(Level)
     {
@@ -81,7 +81,7 @@ public sealed class EscapeCheck
     /// A store: the place written (an address) and the value written there.
     public sealed record StoreFact(HashSet<Atom> Place, HashSet<Atom> Value, Pos Pos, string Text)
     {
-        /// An atomic store, one into this thread's own copy of a global, or one through the view of an exclusive access:
+        /// An unbroken store, one into this thread's own copy of a global, or one through the view of an exclusive access:
         /// safe from other threads.
         public bool Unshared { get; init; }
     }
@@ -127,7 +127,7 @@ public sealed class EscapeCheck
         /// argument is made of in terms of its own parameters: a caller that passes a routine calls that routine so.
         public Dictionary<string, (int Param, int Level, List<HashSet<(int Param, int Level)>> Args, Why Why)> Invokes { get; } = [];
 
-        /// The parameters it changes memory through without an atomic access or a lock (a library routine: the ones it
+        /// The parameters it changes memory through without an unbroken access or a lock (a library routine: the ones it
         /// is `@reshaping` on), and the globals it changes so.
         public HashSet<int> Writes { get; } = [];
         public Dictionary<string, Why> WritesGlobals { get; } = [];
@@ -407,7 +407,7 @@ public sealed class EscapeCheck
         }
 
         /// The work of a Thread or a Job ticket changes only memory no other thread reaches, or reaches safely: memory
-        /// handed to it with `steal`, memory it changes through the view of an exclusive access, or an Atomic. A global,
+        /// handed to it with `steal`, memory it changes through the view of an exclusive access, or an Unbroken. A global,
         /// and memory handed to it without `steal`, is shared.
         private void CheckWork(CallFact call, HashSet<Atom> through, List<HashSet<Atom>> args, List<CompileError> errors)
         {
@@ -418,7 +418,7 @@ public sealed class EscapeCheck
                 const string fix = "hand the work an exclusive access to it (its parameter an Authorized[T]): borrowed in the "
                     + "work's arguments, f.to[Work](p: p.get_exclusive_access()), for start_from, whose retrieve gives it back, or "
                     + "borrowed in a name first, held: Authorized[T] <- p.get_exclusive_access(), and dropped after the ticket's wait; "
-                    + "or make it an Atomic[T] and change it with its routines";
+                    + "or make it an Unbroken[T] and change it with its routines";
                 foreach (var (global, why) in e.WritesGlobals.OrderBy(c => c.Key, StringComparer.Ordinal))
                 {
                     var at = why.Store;

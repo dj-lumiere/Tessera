@@ -3,10 +3,10 @@ using System.Globalization;
 namespace Tessera;
 
 /// `x: &T <- value [from manager]`: a line that borrows. With a `&T` / `&[T]` declared, it borrows a place from the
-/// manager (STACK when none is named) and puts the value in it: three steps, the manager's borrow, the Box or Memory
+/// manager (STACK when none is named) and puts the value in it: three steps, the manager's borrow, the BorrowedCell or BorrowedSlice
 /// made over the place, and the store. From STACK the three are one frame slot with no fields, and the builder gives
 /// it back at every exit of its body, the last one first (a `drop` the program writes first is not repeated), running
-/// the value's `destruct`. Anything else that is given back (an access, a thread ticket, a Box or a Memory a routine
+/// the value's `destruct`. Anything else that is given back (an access, a thread ticket, a BorrowedCell or a BorrowedSlice a routine
 /// returns) is the result of the call on the right, bound to the name, and the program writes its `drop`.
 public sealed partial class FunctionGen
 {
@@ -42,19 +42,25 @@ public sealed partial class FunctionGen
     /// that borrows them: the accesses, the thread and fiber tickets, a mapped file's storage, a piece of work.
     private static bool IsBorrowedType(DType? t) =>
         t is RecordType { Decl.IsLibrary: true } r
-        && r.Decl.Name is "Authorized" or "ReadAuthorized" or "Thread" or "Fiber" or "Job" or "Work";
+        && r.Decl.Name is "Authorized" or "ReadAuthorized" or "Thread" or "Fiber" or "Job" or "Work" or "FileStorage";
 
-    /// Whether `t` is the standard library's `Box[T]` (`&T`) or `Memory[T]` (`&[T]`), not a type of the program that
+    /// Whether `t` (or a slot of it) is a borrowed thing the memory rules follow as one group that ends once: a thread,
+    /// fiber, or job ticket, a piece of work, or a mapped file's storage. The accesses have their own check (Access).
+    private static bool IsTicketLike(DType? t) =>
+        (t is PtrType { Pointee: { } inner } ? inner : t) is RecordType { Decl.IsLibrary: true } r
+        && r.Decl.Name is "Thread" or "Fiber" or "Job" or "Work" or "FileStorage";
+
+    /// Whether `t` is the standard library's `BorrowedCell[T]` (`&T`) or `BorrowedSlice[T]` (`&[T]`), not a type of the program that
     /// is named so.
     private bool IsPlaceType(TypeRef t)
     {
-        if (t is not { Name: "Box" or "Memory", Args: [TypeArgType] }) return false;
+        if (t is not { Name: "BorrowedCell" or "BorrowedSlice", Args: [TypeArgType] }) return false;
         if (t.Amp) return true;
         try { return ManagedMemory(Resolve(t)) is not null; }
         catch (CompileError) { return false; }
     }
 
-    /// The binding line a `<-` line stands for: a frame slot of the value (STACK), a slot holding the Box or Memory
+    /// The binding line a `<-` line stands for: a frame slot of the value (STACK), a slot holding the BorrowedCell or BorrowedSlice
     /// a manager lent (`from HEAP`, or a call that returns one), or the borrowed thing itself.
     private (BindStmt Line, bool Stack) LowerBorrow(BindStmt b)
     {
@@ -69,11 +75,11 @@ public sealed partial class FunctionGen
         if (IsPlaceType(written))
         {
             var elem = ((TypeArgType)written.Args[0]).Type;
-            bool memory = written.Name == "Memory";
-            var slotOfHandle = new TypeRef("Ptr", [new TypeArgType(written)], written.Pos);
+            bool memory = written.Name == "BorrowedSlice";
+            var slotOfHandle = new TypeRef("PointedCell", [new TypeArgType(written)], written.Pos);
             if (fromManager is not null)
                 return (new BindStmt(b.Name, slotOfHandle, new ClaimExpr(b.Pos) { Contents = fromManager }, b.Pos) { Source = b.Source }, false);
-            // A call that returns the Box or Memory itself (`Memory[U8].construct(...)`, `.construct(count, manager)` on a
+            // A call that returns the BorrowedCell or BorrowedSlice itself (`BorrowedSlice[U8].construct(...)`, `.construct(count, manager)` on a
             // `&[T]`): the name holds what it lent.
             if (memory && value is ImplicitCallExpr
                 || value is not ArrayLit && InferQuiet(value) is { } given && given.Equals(Resolve(written)))
@@ -83,7 +89,7 @@ public sealed partial class FunctionGen
                 if (value is not ArrayLit { IsTuple: false })
                     throw Err(value.Pos, $"a &[{elem}] from STACK is an array literal, whose count the build knows: {b.Name}: "
                         + $"&[{elem}] <- [0] * 64, or [0] * n from HEAP for a count known only while running");
-                var span = new TypeRef("Span", [new TypeArgType(elem)], written.Pos);
+                var span = new TypeRef("PointedSlice", [new TypeArgType(elem)], written.Pos);
                 if (HasReleaseDuty(Resolve(elem)))
                     throw Err(b.Pos, $"a &[{elem}] from STACK holds values with nothing to give back: values of {elem} go in "
                         + $"memory from a manager that the program gives back, {b.Name}: &[{elem}] <- [...] from HEAP");
@@ -92,12 +98,12 @@ public sealed partial class FunctionGen
             if (IsBorrowedType(InferQuiet(value)) || IsBorrowedType(Resolve(elem)))
                 throw Err(b.Pos, $"a {elem} is borrowed from its own manager and given back with drop: bind it with "
                     + $"<- from the call that borrows it, {b.Name}: {elem} <- ..., not in a STACK place");
-            var slot = new TypeRef("Ptr", [new TypeArgType(elem)], written.Pos);
+            var slot = new TypeRef("PointedCell", [new TypeArgType(elem)], written.Pos);
             return (new BindStmt(b.Name, slot, new ClaimExpr(b.Pos) { Contents = value }, b.Pos) { Source = b.Source }, true);
         }
-        if (written is { Name: "Ptr" or "Span", Path: null })
+        if (written is { Name: "PointedCell" or "PointedSlice", Path: null })
             throw Err(written.Pos, $"{written} only views memory, and '<-' borrows a place: {b.Name}: "
-                + (written.Args is [TypeArgType inner] ? (written.Name == "Ptr" ? $"&{inner}" : $"&[{inner}]") : "&T") + " <- value");
+                + (written.Args is [TypeArgType inner] ? (written.Name == "PointedCell" ? $"&{inner}" : $"&[{inner}]") : "&T") + " <- value");
         if (fromManager is not null)
             throw Err(fromManager.Pos, $"a place borrowed from a manager is a &T or a &[T]: {b.Name}: &{written} <- ... from manager");
         var type = Resolve(written);
@@ -107,14 +113,18 @@ public sealed partial class FunctionGen
         if (value is not (CallExpr or NsCallExpr or MethodCallExpr or ImplicitCallExpr or StealExpr or WorkExpr))
             throw Err(value.Pos, $"a {type.Name} is borrowed by a call (or handed over with steal), and this is "
                 + $"{new Printer().Expr(value, 0)}: a second name for one borrowed {type.Name} would give it back twice");
-        // A piece of work changes as it starts and ends (start_from, retrieve): its name is a place that holds it.
-        if (type is RecordType { Decl.Name: "Work" })
+        // A piece of work changes as it starts and ends (start_from, retrieve), and a mapped file's storage is an
+        // entity: the name is a place that holds it.
+        if (type is RecordType { Decl.Name: "Work" or "FileStorage" })
         {
             if (value is WorkExpr made) _madeWork[b.Name] = (made.Routine, WorkArgs(made, WorkRoutine(made)));
-            return (new BindStmt(b.Name, new TypeRef("Ptr", [new TypeArgType(written)], written.Pos), new ClaimExpr(b.Pos) { Contents = value }, b.Pos)
-                { Source = b.Source }, false);
+            return (new BindStmt(b.Name, new TypeRef("PointedCell", [new TypeArgType(written)], written.Pos), new ClaimExpr(b.Pos) { Contents = value }, b.Pos)
+                { Source = b.Source, Ticket = true }, false);
         }
-        return (new BindStmt(b.Name, written, value, b.Pos) { Source = b.Source, Lowered = true }, false);
+        // A ticket made again from its fields (`Thread[Byte](worker: lent, ...)`) is a view of one lent elsewhere, which
+        // is given back there.
+        bool remade = value is CallExpr remaking && type is RecordType { Decl.Name: var typeName } && remaking.Name == typeName;
+        return (new BindStmt(b.Name, written, value, b.Pos) { Source = b.Source, Lowered = true, Ticket = IsTicketLike(type) && !remade }, false);
     }
 
     /// The error for a `=` binding of something borrowed, which `<-` binds, or null.
@@ -206,7 +216,7 @@ public sealed partial class FunctionGen
     private Expr? StackPlaceCall(MethodCallExpr m)
     {
         if (m.Receiver is not ValueRef r || !_stackPlaces.ContainsKey(r.Name) || !_values.TryGetValue(r.Name, out var slot)) return null;
-        // A routine the value's own type declares under the name is the value's (a List's getview, an Atomic's load).
+        // A routine the value's own type declares under the name is the value's (a List's getview, an Unbroken's load).
         if (slot.Type is PtrType { Pointee: { } held } && OwnRoutine(held, m))
             return null;
         return m switch

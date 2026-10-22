@@ -165,15 +165,15 @@ public sealed partial class Compiler
                 }
     }
 
-    /// `p.name()` on a `@X` finds `routine @X.name` first and `routine Ptr[T].name` (any T) after it: the more specific
-    /// receiver wins. `routine Ptr[X].name` for that same X is as specific as `routine @X.name`, so with the same
+    /// `p.name()` on a `@X` finds `routine @X.name` first and `routine PointedCell[T].name` (any T) after it: the more specific
+    /// receiver wins. `routine PointedCell[X].name` for that same X is as specific as `routine @X.name`, so with the same
     /// parameters a call couldn't choose, and one of them takes another name.
     private void RejectPointerReceiverClashes()
     {
         static string Rest(RoutineDecl r) => string.Join(", ", r.Params.Skip(1).Select(p => p.Type.ToString()));
         foreach (var ((owner, name), group) in _methods)
         {
-            if (owner != "Ptr") continue;
+            if (owner != "PointedCell") continue;
             foreach (var onPtr in group)
             {
                 if (!HasReceiver(onPtr) || onPtr.Owner!.Args is not [TypeArgType { Type: var pointee }]) continue;
@@ -192,7 +192,7 @@ public sealed partial class Compiler
 
     /// The types `===` and `!==` work on: what `same` and `notsame` mean. Only memory has an identity, a place that two
     /// names can reach, so the standard library's addresses and spans declare them and nothing else does.
-    private static readonly HashSet<string> IdentityOwners = ["Ptr", "Addr", "Span"];
+    private static readonly HashSet<string> IdentityOwners = ["PointedCell", "Addr", "PointedSlice"];
 
     /// `a === b` is `a.same(b)`: whether two names reach the same memory. A routine `same` or `notsame` on any other
     /// type would give `===` another meaning, so it is a build error that points at `==` (`eq`).
@@ -304,7 +304,7 @@ public sealed partial class Compiler
         }
         if (required.Count > 0) return required;
         // A routine on every type defined for type arguments (`T.to[MemoryManager]`) is in the set only for the type
-        // arguments it is for, so `p.to[@U]()` still reaches Ptr's own.
+        // arguments it is for, so `p.to[@U]()` still reaches PointedCell's own.
         return BlanketCandidates(name, file, pos, anyModule, m => fits?.Invoke(m) ?? m.Fixed.Count == 0);
     }
 

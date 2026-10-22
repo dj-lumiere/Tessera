@@ -230,7 +230,7 @@ public sealed partial class Compiler
             _missingConstraint[key] = Show(concept.Name, args);
             return $"no constraint in force says {Show(concept.Name, args)}";
         }
-        // A marker states a capability its conformances grant per target (the atomics), so say which target.
+        // A marker states a capability its conformances grant per target (the unbroken values), so say which target.
         bool targetBound = _conformances.Any(c => c.Concept.Name == concept.Name
                                                   && c.Source.Annotations.Any(a => a.Name is "target" or "feature"));
         string where = targetBound
@@ -308,7 +308,7 @@ public sealed partial class Compiler
             VariantDecl v => $" under 'variant {DeclHeader(v.Name, v.TypeParams)}'",
             _ => "",
         };
-        // A type without the routine at all is the call's to report (a Memory lends its view's routines).
+        // A type without the routine at all is the call's to report (a BorrowedSlice lends its view's routines).
         if (!MethodsNamed(type, routine).Any(HasReceiver)) return null;
         return $"{op} on {type.Name} calls {type.Name}.{routine}, and an operator works on a type only when the type obeys "
             + $"the operator's protocol: {type.Name} doesn't obey {protocol}{others}; write 'obeys {protocol}'{where}";
@@ -465,7 +465,7 @@ public sealed partial class Compiler
         {
             case RecordType rt when NamesDecl(pattern, rt.Decl, binding.File): actualArgs = rt.Args; break;
             case VariantType vt when NamesDecl(pattern, vt.Decl, binding.File): actualArgs = vt.Args; break;
-            case PtrType pt when pattern.Name == "Ptr" && pt.Pointee is not null: actualArgs = [pt.Pointee]; break;
+            case PtrType pt when pattern.Name == "PointedCell" && pt.Pointee is not null: actualArgs = [pt.Pointee]; break;
             case ArrayType at when pattern.Name == "Array": actualArgs = [at.Elem, new ConstArg(at.Count)]; break;
             case VectorType vt when pattern.Name == "Vector": actualArgs = [vt.Elem, new ConstArg(vt.Count)]; break;
             default: return false;

@@ -554,10 +554,10 @@ secret routine wide_length(units: @U16) -> U64
 ### :throws: Throws `MemoryAllocationError` when `manager` fails.
 @target(os: "windows")
 secret failable routine copied_wide(units: @U16, count: U64,
-    manager: @MemoryManager) -> Memory[Byte]
+    manager: @MemoryManager) -> BorrowedSlice[Byte]
     room: U64 = (count * 3).max(1)
-    when check Memory[Byte].construct(count: room, manager: manager)
-        is Memory[Byte] as buffer =>
+    when check BorrowedSlice[Byte].construct(count: room, manager: manager)
+        is BorrowedSlice[Byte] as buffer =>
             n: U64 = narrow(units, count, out: buffer.data.peek())
             buffer.keep_first(n)
             return buffer
@@ -1176,12 +1176,12 @@ routine @DirIter.close() -> None
 ### :returns: The path.
 ### :throws: Throws the reason when the OS can't report it, `MemoryAllocationError` when `manager` fails.
 @target(os: "windows")
-secret failable routine current_dir(manager: @MemoryManager) -> Memory[Byte]
+secret failable routine current_dir(manager: @MemoryManager) -> BorrowedSlice[Byte]
     need: U32 = c_get_current_directory(0, .hollow())
     if need == 0
         throw last_error()
-    when check Memory[U16].construct(count: need.to[U64](), manager: manager)
-        is Memory[U16] as units =>
+    when check BorrowedSlice[U16].construct(count: need.to[U64](), manager: manager)
+        is BorrowedSlice[U16] as units =>
             need2: U32 = units.count().to[U32]()
             data: @U16 = units.data.peek()
             got: U32 = c_get_current_directory(need2, data)
@@ -1190,7 +1190,7 @@ secret failable routine current_dir(manager: @MemoryManager) -> Memory[Byte]
                 drop units
                 throw error
             when check copied_wide(units: data, count: got.to[U64](), manager)
-                is Memory[Byte] as text =>
+                is BorrowedSlice[Byte] as text =>
                     drop units
                     return text
                 is FsError as error =>
@@ -1204,13 +1204,13 @@ secret failable routine current_dir(manager: @MemoryManager) -> Memory[Byte]
 ### :returns: The path.
 ### :throws: Throws `MemoryAllocationError` when `manager` fails.
 @target(os: "windows")
-secret failable routine temp_dir(manager: @MemoryManager) -> Memory[Byte]
+secret failable routine temp_dir(manager: @MemoryManager) -> BorrowedSlice[Byte]
     units: &Array[U16, PATH_CAPACITY] <- .hollow()
 
     got: U32 = c_get_temp_path(PATH_CAPACITY.to[U32](), units.to[@U16]())
     if got == 0 or got.to[U64]() >= PATH_CAPACITY
-        when check Memory[Byte].construct(count: 15, manager: manager)
-            is Memory[Byte] as buffer =>
+        when check BorrowedSlice[Byte].construct(count: 15, manager: manager)
+            is BorrowedSlice[Byte] as buffer =>
                 buffer.data.peek().copy(src: "C:\\Windows\\Temp", count: 15)
                 return buffer
             is MemoryAllocationError as error => throw error
@@ -1219,9 +1219,9 @@ secret failable routine temp_dir(manager: @MemoryManager) -> Memory[Byte]
     last: U16 = path_units.stride(trimmed).peek()
     if last == 0x5C or last == 0x2F
         when check copied_wide(units: units.to[@U16](), count: trimmed, manager)
-            is Memory[Byte] as returned => return returned
+            is BorrowedSlice[Byte] as returned => return returned
     when check copied_wide(units: units.to[@U16](), count: got.to[U64](), manager)
-        is Memory[Byte] as returned => return returned
+        is BorrowedSlice[Byte] as returned => return returned
 
 ### The environment variable name, as UTF-8 in memory from manager, when it is set and not empty.
 ### :param name: The variable's 0-terminated UTF-16 name.
@@ -1229,7 +1229,7 @@ secret failable routine temp_dir(manager: @MemoryManager) -> Memory[Byte]
 ### :returns: The value.
 ### :absent: When the variable is not set, is empty, takes `PATH_CAPACITY` units or more, or `manager` fails.
 @target(os: "windows")
-secret routine env_dir(name: CWStrView, manager: @MemoryManager) -> Maybe[Memory[Byte]]
+secret routine env_dir(name: CWStrView, manager: @MemoryManager) -> Maybe[BorrowedSlice[Byte]]
     units: &Array[U16, PATH_CAPACITY] <- .hollow()
 
     got: U32 = c_get_environment_variable(name.to[@CWChar](), units.to[@U16](),
@@ -1237,7 +1237,7 @@ secret routine env_dir(name: CWStrView, manager: @MemoryManager) -> Maybe[Memory
     if got == 0 or got.to[U64]() >= PATH_CAPACITY
         return None()
     when check copied_wide(units: units.to[@U16](), count: got.to[U64](), manager)
-        is Memory[Byte] as t => return t
+        is BorrowedSlice[Byte] as t => return t
         is FsError => return None()
 
 ### USERPROFILE, or HOMEDRIVE and HOMEPATH, in memory from manager. NotFound when neither is set.
@@ -1246,14 +1246,14 @@ secret routine env_dir(name: CWStrView, manager: @MemoryManager) -> Maybe[Memory
 ### :throws: Throws `NotFoundError` when neither is set, or when `manager` fails for a variable's value. Crashes
 ###     with `MemoryAllocationError` when `manager` fails joining HOMEDRIVE and HOMEPATH.
 @target(os: "windows")
-secret failable routine home_dir(manager: @MemoryManager) -> Memory[Byte]
+secret failable routine home_dir(manager: @MemoryManager) -> BorrowedSlice[Byte]
     when env_dir(name: "USERPROFILE", manager)
-        is Memory[Byte] as dir => return dir
+        is BorrowedSlice[Byte] as dir => return dir
         is None => nothing
     when env_dir(name: "HOMEDRIVE", manager)
-        is Memory[Byte] as drive =>
+        is BorrowedSlice[Byte] as drive =>
             when env_dir(name: "HOMEPATH", manager)
-                is Memory[Byte] as path =>
+                is BorrowedSlice[Byte] as path =>
                     joined: &[Byte] <- @[Byte].concat(a: drive.getslice(), b: path.getslice(),
                         manager)
                     drop drive
@@ -1272,7 +1272,7 @@ secret failable routine home_dir(manager: @MemoryManager) -> Memory[Byte]
 ### :throws: Throws the reason, `NameTooLongError` when the result doesn't fit, `MemoryAllocationError` when
 ###     `manager` fails, `InvalidPathError` or `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: "windows")
-secret failable routine absolute_path(path: @[Byte], manager: @MemoryManager) -> Memory[Byte]
+secret failable routine absolute_path(path: @[Byte], manager: @MemoryManager) -> BorrowedSlice[Byte]
     wpath: &Array[U16, PATH_CAPACITY] <- .hollow()
 
     if not wide_path(path, out: wpath.to[@U16]())
@@ -1285,7 +1285,7 @@ secret failable routine absolute_path(path: @[Byte], manager: @MemoryManager) ->
     if got.to[U64]() >= PATH_CAPACITY
         throw NameTooLongError()
     when check copied_wide(units: full.to[@U16](), count: got.to[U64](), manager)
-        is Memory[Byte] as returned => return returned
+        is BorrowedSlice[Byte] as returned => return returned
 
 ### The absolute path with every link, ".", and ".." resolved, and path must exist. The "\\?\" prefix the OS gives is
 ### taken off ("\\?\UNC\server\share" becomes "\\server\share").
@@ -1295,7 +1295,8 @@ secret failable routine absolute_path(path: @[Byte], manager: @MemoryManager) ->
 ### :throws: Throws the reason, such as `NotFoundError`, `MemoryAllocationError` when `manager` fails, `InvalidPathError`
 ###     or `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: "windows")
-secret failable routine canonical_path(path: @[Byte], manager: @MemoryManager) -> Memory[Byte]
+secret failable routine canonical_path(path: @[Byte],
+    manager: @MemoryManager) -> BorrowedSlice[Byte]
     wpath: &Array[U16, PATH_CAPACITY] <- .hollow()
 
     if not wide_path(path, out: wpath.to[@U16]())
@@ -1313,7 +1314,7 @@ secret failable routine canonical_path(path: @[Byte], manager: @MemoryManager) -
     if got.to[U64]() >= PATH_CAPACITY
         throw NameTooLongError()
     when check copied_wide(units: full.to[@U16](), count: got.to[U64](), manager)
-        is Memory[Byte] as t =>
+        is BorrowedSlice[Byte] as t =>
             unc: Bool = t.getslice().has_prefix("\\\\?\\UNC\\")
             if not unc and not t.getslice().has_prefix("\\\\?\\")
                 return t
@@ -1398,40 +1399,38 @@ needs T: typename, StorageCell[T]
         throw error_of(e)
     return Me(base: view, delta: delta, count: cells, writable: write)
 
-### Writes changed pages back to the file.
+### Writes the changed pages of a mapping back to its file.
+### :param base: The mapping's base.
+### :param bytes: The mapped length.
 ### :throws: Throws the reason when FlushViewOfFile fails.
 @target(os: "windows")
-failable routine FileStorage[T].flush() -> None
-needs T: typename, StorageCell[T]
-    if me.base.is_hollow()
-        return
-    when check checked(c_flush_view_of_file(me.base, 0))
+secret failable routine flush_mapping(base: Addr, bytes: U64) -> None
+    when check checked(c_flush_view_of_file(base, 0))
         is None => return
 
-### Writes changed pages back and unmaps.
+### Writes the changed pages of a mapping back and unmaps it.
+### :param base: The mapping's base.
+### :param bytes: The mapped length.
 @target(os: "windows")
-routine FileStorage[T].unmap() -> None
-needs T: typename, StorageCell[T]
-    if me.base.is_hollow()
-        return
-    c_flush_view_of_file(me.base, 0)
-    c_unmap_view_of_file(me.base)
+secret routine unmap_mapping(base: Addr, bytes: U64) -> None
+    c_flush_view_of_file(base, 0)
+    c_unmap_view_of_file(base)
     return
 
-### Asks the OS to read the whole storage in now.
+### Asks the OS to read a whole mapping in now.
+### :param base: The mapping's base.
+### :param bytes: The mapped length.
 @target(os: "windows")
-routine FileStorage[T].prefetch() -> None
-needs T: typename, StorageCell[T]
-    if me.base.is_hollow()
-        return
-    range: &MemoryRange <- MemoryRange(address: me.base, size: me.mapped_bytes())
+secret routine prefetch_mapping(base: Addr, bytes: U64) -> None
+    range: &MemoryRange <- MemoryRange(address: base, size: bytes)
     c_prefetch_virtual_memory(c_get_current_process(), 1, range, 0)
     return
 
-### Tells the OS the storage will be read front to back: a read-only mapping's file was already opened that way.
+### Tells the OS a mapping will be read front to back: a read-only mapping's file was already opened that way.
+### :param base: The mapping's base.
+### :param bytes: The mapped length.
 @target(os: "windows")
-routine FileStorage[T].advise_sequential() -> None
-needs T: typename, StorageCell[T]
+secret routine advise_sequential_mapping(base: Addr, bytes: U64) -> None
     return
 
 # -- partitions --------------------------------------------------------------------------

@@ -5,7 +5,7 @@ namespace Tessera;
 
 /// Symbol names follow the Itanium C++ ABI mangling (Modules → A Tessera ABI): a module is a namespace, a routine on
 /// a type is nested in the type, and every type is a named type by its path, built-in ones included
-/// (`Standard::Core::S64`, `Standard::Core::Ptr<T>`). `Standard::Format::write_str` becomes
+/// (`Standard::Core::S64`, `Standard::Core::PointedCell<T>`). `Standard::Format::write_str` becomes
 /// `_ZN8Standard6Format9write_strE...` followed by its parameter types.
 ///
 /// Where Tessera has no C++ counterpart: a `private` declaration carries its file as an ABI tag
@@ -176,7 +176,7 @@ public sealed partial class Compiler
                 case RecordType r: return Declared(r.Decl, r.Decl.Name, r.Args, t);
                 case VariantType v: return Declared(v.Decl, v.Decl.Name, v.Args, t);
                 case ChoiceType ch: return Declared(ch.Decl, ch.Decl.Name, [], t);
-                case PtrType { Pointee: { } p }: return Core("Ptr", [p], t);
+                case PtrType { Pointee: { } p }: return Core("PointedCell", [p], t);
                 case ArrayType a: return Core("Array", [a.Elem, new ConstArg(a.Count)], t);
                 case VectorType v: return Core("Vector", [v.Elem, new ConstArg(v.Count)], t);
                 default: return Core(t.OwnerName, [], t);   // S64, Bool, B32, CSize, Addr, ...
@@ -326,7 +326,7 @@ public sealed partial class Compiler
             // A generic type applied to arguments that mention the routine's parameters.
             List<Step> steps;
             string qualified;
-            if (t.Path is null or SystemModule && t.Name is "Ptr" or "Array" or "Vector" or "Check")
+            if (t.Path is null or SystemModule && t.Name is "PointedCell" or "Array" or "Vector" or "Check")
             {
                 steps = ModuleSteps(SystemModule);
                 qualified = SystemModule + "/" + t.Name;

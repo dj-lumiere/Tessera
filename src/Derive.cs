@@ -83,7 +83,7 @@ public static class Derive
         {
             ChoiceDecl c => c.Members.Count > 0 || method is not ("represent_into" or "diagnose_into"),
             VariantDecl v => concept is not ("Equatable" or "Hashable" or "Comparable")
-                             || v.Branches.All(c => c.Type.Name is not ("Ptr" or "Addr")),
+                             || v.Branches.All(c => c.Type.Name is not ("PointedCell" or "Addr")),
             _ => false,
         };
     }
@@ -110,7 +110,7 @@ public static class Derive
             if (v.Clauses.Any(c => c.Kind == "conform" && c.Concepts.Any(x => x.Name == concept)))
                 throw new CompileError(at, $"{name} derives {concept}, which declares the conformance; drop 'conform {concept}[...]'");
             if (concept is "Equatable" or "Hashable" or "Comparable"
-                && v.Branches.FirstOrDefault(c => c.Type.Name is "Ptr" or "Addr") is { } pointerBranch)
+                && v.Branches.FirstOrDefault(c => c.Type.Name is "PointedCell" or "Addr") is { } pointerBranch)
                 throw new CompileError(at, $"{name} can't derive {concept}: its branch {pointerBranch.Name} is a pointer; declare '{method}'");
             return;
         }
@@ -119,10 +119,10 @@ public static class Derive
             throw new CompileError(at, $"{name} is an @llvm record, so it has no fields to derive {concept} from");
         if (r.Clauses.Any(c => c.Kind == "conform" && c.Concepts.Any(x => x.Name == concept)))
             throw new CompileError(at, $"{name} derives {concept}, which declares the conformance; drop 'conform {concept}[...]'");
-        // A pointer compares by address only through same, on purpose (see Type-System, Ptr<T> and T's API),
+        // A pointer compares by address only through same, on purpose (see Type-System, PointedCell<T> and T's API),
         // so there's nothing to derive.
         if (concept is "Equatable" or "Hashable" or "Comparable"
-            && r.Fields.FirstOrDefault(f => f.Type.Name is "Ptr" or "Addr") is { } pointer)
+            && r.Fields.FirstOrDefault(f => f.Type.Name is "PointedCell" or "Addr") is { } pointer)
             throw new CompileError(at, $"{name} can't derive {concept}: field '{pointer.Name}' is a pointer; declare '{method}'");
     }
 
@@ -254,7 +254,7 @@ public static class Derive
             string before = i == 0 ? $"{r.Name}(" : ", ";
             string value = $"f{i}";
             sb.Append($"        Standard/System/Text/write_str(out, text: \"{before}{f.Name}: \")\n");
-            sb.Append(f.Type.Name == "Ptr"
+            sb.Append(f.Type.Name == "PointedCell"
                 ? $"        {value} : Addr = me.{f.Name}.to[Addr]()\n"
                 : $"        {value}: {f.Type} = me.{f.Name}\n");
             sb.Append($"        {value}.diagnose_into(out)\n");
@@ -354,7 +354,7 @@ public static class Derive
             // A pointer branch writes its address, so it asks nothing of the pointer to write it.
             bool writes = method is "represent_into" or "diagnose_into";
             constraints = constraints
-                .Concat(v.Branches.Where(b => !(writes && b.Type.Name is "Ptr" or "Addr")).Select(b => $"{part}[{b.Type}]"))
+                .Concat(v.Branches.Where(b => !(writes && b.Type.Name is "PointedCell" or "Addr")).Select(b => $"{part}[{b.Type}]"))
                 .Distinct().ToList();
         }
         string self = SelfName(v.Name, v.TypeParams);
@@ -377,7 +377,7 @@ public static class Derive
                 {
                     sb.Append($"\n    block branch{i}(p: {branches[i].Type})\n");
                     // A pointer writes its address, as a record's pointer field does.
-                    if (branches[i].Type.Name is "Ptr" or "Addr")
+                    if (branches[i].Type.Name is "PointedCell" or "Addr")
                     {
                         sb.Append("        address: Addr = p.to[Addr]()\n");
                         sb.Append("        address.diagnose_into(out)\n");

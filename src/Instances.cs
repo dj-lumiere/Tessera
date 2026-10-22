@@ -10,7 +10,7 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
     public DType Ret { get; } = ret;
 
     /// How a message names this instance: the routine, and what its type parameters stand for
-    /// (`keep with T = Memory[S64]`).
+    /// (`keep with T = BorrowedSlice[S64]`).
     public string Readable => Env.All.Where(kv => kv.Key != "Me").ToList() is { Count: > 0 } bound
         ? $"{Decl.DisplayName} with {string.Join(", ", bound.Select(kv => $"{kv.Key} = {kv.Value}"))}"
         : Decl.DisplayName;
@@ -129,7 +129,7 @@ public sealed partial class Compiler
         CheckUntraced(r);
         ExpensiveCallLint.CheckAnnotation(r);
 
-        // An owner's argument that names a type (`Byte` of `Span[Byte].to_result`) fixes it rather than binding it.
+        // An owner's argument that names a type (`Byte` of `PointedSlice[Byte].to_result`) fixes it rather than binding it.
         var needed = new HashSet<string>(OwnerTypeParams(r).Where(n => !(IntType.FromName(n) is not null || DeclaresType(n)))
             .Concat(r.TypeParams));
         foreach (var n in needed)

@@ -1417,9 +1417,10 @@ routine @DirIter.close() -> None
 ### :returns: The copy.
 ### :throws: Throws `MemoryAllocationError` when `manager` fails.
 @target(os: ("linux", "macos"))
-secret failable routine copied_text(p: @Byte, n: U64, manager: @MemoryManager) -> Memory[Byte]
-    when check Memory[Byte].construct(count: n.max(1), manager: manager)
-        is Memory[Byte] as buffer =>
+secret failable routine copied_text(p: @Byte, n: U64,
+    manager: @MemoryManager) -> BorrowedSlice[Byte]
+    when check BorrowedSlice[Byte].construct(count: n.max(1), manager: manager)
+        is BorrowedSlice[Byte] as buffer =>
             buffer.data.peek().copy(src: p, count: n)
             buffer.keep_first(n)
             return buffer
@@ -1443,10 +1444,10 @@ secret routine nonempty_env(name: CStrView) -> Maybe[@Byte]
 ### :returns: The path.
 ### :throws: Throws the reason when the OS can't report it, `MemoryAllocationError` when `manager` fails.
 @target(os: ("linux", "macos"))
-secret failable routine current_dir(manager: @MemoryManager) -> Memory[Byte]
+secret failable routine current_dir(manager: @MemoryManager) -> BorrowedSlice[Byte]
     loop with capacity: U64 = 256
-        when check Memory[Byte].construct(count: capacity, manager: manager)
-            is Memory[Byte] as buffer2 =>
+        when check BorrowedSlice[Byte].construct(count: capacity, manager: manager)
+            is BorrowedSlice[Byte] as buffer2 =>
                 data: @Byte = buffer2.data.peek()
                 if c_getcwd(data, capacity.to[CSize]()).is_not_hollow()
                     count: U64 = data.to[CStrView]().count()
@@ -1465,26 +1466,26 @@ secret failable routine current_dir(manager: @MemoryManager) -> Memory[Byte]
 ### :returns: The path.
 ### :throws: Throws `MemoryAllocationError` when `manager` fails.
 @target(os: ("linux", "macos"))
-secret failable routine temp_dir(manager: @MemoryManager) -> Memory[Byte]
+secret failable routine temp_dir(manager: @MemoryManager) -> BorrowedSlice[Byte]
     t: Maybe[@Byte] = nonempty_env("TMPDIR")
     dir: @Byte = when t
         is @Byte as set => set
         is None => "/tmp"
     when check copied_text(p: dir, n: dir.to[CStrView]().count(), manager)
-        is Memory[Byte] as text => return text
+        is BorrowedSlice[Byte] as text => return text
 
 ### HOME, in memory from manager. NotFound when it isn't set or is empty.
 ### :param manager: The memory manager for the text.
 ### :returns: The path.
 ### :throws: Throws `NotFoundError` when HOME is not set or empty, `MemoryAllocationError` when `manager` fails.
 @target(os: ("linux", "macos"))
-secret failable routine home_dir(manager: @MemoryManager) -> Memory[Byte]
+secret failable routine home_dir(manager: @MemoryManager) -> BorrowedSlice[Byte]
     h: Maybe[@Byte] = nonempty_env("HOME")
     dir: @Byte = when h
         is @Byte as set => set
         is None => throw NotFoundError()
     when check copied_text(p: dir, n: dir.to[CStrView]().count(), manager)
-        is Memory[Byte] as text => return text
+        is BorrowedSlice[Byte] as text => return text
 
 ### path made absolute by the text alone: the working directory in front of a relative path, nothing resolved.
 ### :param path: The path to make absolute.
@@ -1493,12 +1494,12 @@ secret failable routine home_dir(manager: @MemoryManager) -> Memory[Byte]
 ### :throws: Throws the reason when the working directory can't be read, `MemoryAllocationError` when `manager`
 ###     fails for it. Crashes with `MemoryAllocationError` when `manager` fails for the joined path.
 @target(os: ("linux", "macos"))
-secret failable routine absolute_path(path: @[Byte], manager: @MemoryManager) -> Memory[Byte]
+secret failable routine absolute_path(path: @[Byte], manager: @MemoryManager) -> BorrowedSlice[Byte]
     if path.has_prefix("/")
         when check copied_text(p: path.data, n: path.count(), manager)
-            is Memory[Byte] as returned => return returned
+            is BorrowedSlice[Byte] as returned => return returned
     when check current_dir(manager)
-        is Memory[Byte] as dir =>
+        is BorrowedSlice[Byte] as dir =>
             full: &[Byte] <- join_path(a: dir.getslice(), b: path, manager)
             drop dir
             return full
@@ -1511,7 +1512,8 @@ secret failable routine absolute_path(path: @[Byte], manager: @MemoryManager) ->
 ### :throws: Throws the reason, such as `NotFoundError`, `MemoryAllocationError` when `manager` fails, `InvalidPathError`
 ###     or `NameTooLongError` when `path` doesn't fit a C path.
 @target(os: ("linux", "macos"))
-secret failable routine canonical_path(path: @[Byte], manager: @MemoryManager) -> Memory[Byte]
+secret failable routine canonical_path(path: @[Byte],
+    manager: @MemoryManager) -> BorrowedSlice[Byte]
     cpath: &Array[Byte, PATH_CAPACITY] <- .hollow()
 
     if not c_path(path, out: cpath.to[@Byte]())
@@ -1520,7 +1522,7 @@ secret failable routine canonical_path(path: @[Byte], manager: @MemoryManager) -
     if resolved.is_hollow()
         throw last_error()
     when check copied_text(p: resolved, n: resolved.to[CStrView]().count(), manager)
-        is Memory[Byte] as text =>
+        is BorrowedSlice[Byte] as text =>
             c_free(resolved)
             return text
         is FsError as error =>
@@ -1592,44 +1594,40 @@ needs T: typename, StorageCell[T]
     file.close()
     return Me(base: p, delta: delta, count: cells, writable: write)
 
-### Writes changed pages back to the file.
+### Writes the changed pages of a mapping back to its file.
+### :param base: The mapping's base.
+### :param bytes: The mapped length.
 ### :throws: Throws the reason when msync fails.
 @target(os: ("linux", "macos"))
-failable routine FileStorage[T].flush() -> None
-needs T: typename, StorageCell[T]
-    if me.base.is_hollow()
-        return
-    when check checked(c_msync(me.base, me.mapped_bytes().to[CSize](), ms_sync()))
+secret failable routine flush_mapping(base: Addr, bytes: U64) -> None
+    when check checked(c_msync(base, bytes.to[CSize](), ms_sync()))
         is None => return
 
-### Writes changed pages back and unmaps.
+### Writes the changed pages of a mapping back and unmaps it.
+### :param base: The mapping's base.
+### :param bytes: The mapped length.
 @target(os: ("linux", "macos"))
-routine FileStorage[T].unmap() -> None
-needs T: typename, StorageCell[T]
-    if me.base.is_hollow()
-        return
-    c_msync(me.base, me.mapped_bytes().to[CSize](), ms_sync())
-    c_munmap(me.base, me.mapped_bytes().to[CSize]())
+secret routine unmap_mapping(base: Addr, bytes: U64) -> None
+    c_msync(base, bytes.to[CSize](), ms_sync())
+    c_munmap(base, bytes.to[CSize]())
     return
 
-### Asks the OS to read the whole storage in now.
+### Asks the OS to read a whole mapping in now.
+### :param base: The mapping's base.
+### :param bytes: The mapped length.
 @target(os: ("linux", "macos"))
-routine FileStorage[T].prefetch() -> None
-needs T: typename, StorageCell[T]
-    if me.base.is_hollow()
-        return
+secret routine prefetch_mapping(base: Addr, bytes: U64) -> None
     # MADV_WILLNEED
-    c_madvise(me.base, me.mapped_bytes().to[CSize](), 3)
+    c_madvise(base, bytes.to[CSize](), 3)
     return
 
-### Tells the OS the storage will be read front to back.
+### Tells the OS a mapping will be read front to back.
+### :param base: The mapping's base.
+### :param bytes: The mapped length.
 @target(os: ("linux", "macos"))
-routine FileStorage[T].advise_sequential() -> None
-needs T: typename, StorageCell[T]
-    if me.base.is_hollow()
-        return
+secret routine advise_sequential_mapping(base: Addr, bytes: U64) -> None
     # MADV_SEQUENTIAL
-    c_madvise(me.base, me.mapped_bytes().to[CSize](), 2)
+    c_madvise(base, bytes.to[CSize](), 2)
     return
 
 # -- partitions --------------------------------------------------------------------------

@@ -18,9 +18,9 @@ routine report(what: @[Byte], r: Check[None]) -> None
             return
 
 ### The file's text, or the error's name.
-routine contents(f: @File, manager: @MemoryManager) -> Memory[Byte]
+routine contents(f: @File, manager: @MemoryManager) -> BorrowedSlice[Byte]
     when check OsFileManager.read_all(at: f, manager)
-        is Memory[Byte] as text => return text
+        is BorrowedSlice[Byte] as text => return text
         is FsError as error => return @[Byte].concat(a: error_name(error), b: "", manager)
 
 ### Writes the file's text, or the error's name, after `what`.
@@ -42,6 +42,14 @@ routine failure_name[T](c: Check[T]) -> @[Byte]
 needs T: typename
     when c
         is T => return "ok"
+        is Crashables as e => return e.name()
+
+### What mapping `f` gives: "ok", or the name of the failure.
+routine map_failure_name(f: @File) -> @[Byte]
+    when check OsFileManager.storage[Byte](at: f, write: true, start: 0, count: U64.MAX)
+        is FileStorage[Byte] as mapped =>
+            drop mapped
+            return "ok"
         is Crashables as e => return e.name()
 
 routine start() -> None
@@ -73,9 +81,7 @@ routine start() -> None
     Console.show("open_write before make_file: {failure_name(early)}")
     early_append: Check[FileHandle] = check OsFileManager.open_append(at: hello)
     Console.show("open_append before make_file: {failure_name(early_append)}")
-    early_map: Check[FileStorage[Byte]] = check OsFileManager.storage[Byte](at: hello, write: true,
-        start: 0, count: U64.MAX)
-    Console.show("map before make_file: {failure_name(early_map)}")
+    Console.show("map before make_file: {map_failure_name(f: hello)}")
     report(what: "set_size before make_file", r: check OsFileManager.set_size(at: hello, size: 4))
     Console.show("still missing: {not OsFileManager.is_present(at: hello)}")
     report(what: "make_file", r: check OsFileManager.make_file(at: hello, replacing: false))
@@ -170,23 +176,24 @@ routine start() -> None
     canonical_ok: Bool = canonical.name() == "tessera_fs_basic"
     absolute_ok: Bool = absolute.name() == "x.txt"
     Console.show("names right: working {cwd_ok}, canonical {canonical_ok}, absolute {absolute_ok}")
-    whole: FileStorage[Byte] = OsFileManager.storage[Byte](at: hello, write: false, start: 0,
+    whole: FileStorage[Byte] <- OsFileManager.storage[Byte](at: hello, write: false, start: 0,
         count: U64.MAX)
     w: @[Byte] = @[Byte].construct(data: whole.data(), count: whole.count())
     Console.show("map: {w}")
-    whole.unmap()
-    part: FileStorage[Byte] = OsFileManager.storage[Byte](at: hello, write: false, start: 1,
+    drop whole
+    part: FileStorage[Byte] <- OsFileManager.storage[Byte](at: hello, write: false, start: 1,
         count: 3)
     p: @[Byte] = @[Byte].construct(data: part.data(), count: part.count())
     Console.show("map 1..4: {p}")
-    part.unmap()
-    past: FileStorage[Byte] = OsFileManager.storage[Byte](at: hello, write: false, start: 100,
+    drop part
+    past: FileStorage[Byte] <- OsFileManager.storage[Byte](at: hello, write: false, start: 100,
         count: 3)
     Console.show("map past the end: {past.count()}")
-    rw2: FileStorage[Byte] = OsFileManager.storage[Byte](at: hello, write: true, start: 0,
+    drop past
+    rw2: FileStorage[Byte] <- OsFileManager.storage[Byte](at: hello, write: true, start: 0,
         count: U64.MAX)
     rw2.data().poke(b'J')
-    rw2.unmap()
+    drop rw2
     show_contents(what: "after a mapped store: ", f: hello, manager)
     Console.show("")
     report(what: "delete a non-empty directory", r: check OsFileManager.delete(at: a))

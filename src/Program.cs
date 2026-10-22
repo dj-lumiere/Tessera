@@ -33,7 +33,7 @@ static class Cli
                  Without either, debug and release builds keep it and release-time and release-space leave it out;
                  check keeps it. A routine marked @untraced is left out of it in any build.
         race check: a debug build on Linux and macOS on x86_64 and aarch64 stops with a report of both places when
-                 two threads touch the same memory, one of them writing, with neither an atomic access nor a lock
+                 two threads touch the same memory, one of them writing, with neither an unbroken access nor a lock
                  between them. --no-race-check (or [debug] race-check = false in config.toml) turns it off, and
                  --race-check (or race-check = true) turns it on in the release modes. It makes the program slower.
                  test runs every test without a config.toml with it on those targets. check checks its declarations too.

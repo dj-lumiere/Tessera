@@ -16,7 +16,7 @@ public abstract class DType : IEquatable<DType>
     /// The LLVM IR spelling.
     public abstract string Llvm { get; }
 
-    /// The namespace its routines live in: `S64`, `Ptr`, `Option`, `Array`.
+    /// The namespace its routines live in: `S64`, `PointedCell`, `Option`, `Array`.
     public abstract string OwnerName { get; }
 
     public bool IsPointer => this is PtrType;
@@ -185,14 +185,14 @@ public sealed class VoidType : DType
     public override string OwnerName => Name;
 }
 
-/// `Ptr[T]` (written `@T`), or `Addr` when Pointee is null. Every pointer lowers to LLVM `ptr`.
+/// `PointedCell[T]` (written `@T`), or `Addr` when Pointee is null. Every pointer lowers to LLVM `ptr`.
 public sealed class PtrType(DType? pointee) : DType
 {
     public DType? Pointee { get; } = pointee;
     public override string Name => Pointee is null ? "Addr" : $"@{Pointee.Name}";
-    public override string Key => Pointee is null ? "Addr" : $"Ptr[{Pointee.Key}]";
+    public override string Key => Pointee is null ? "Addr" : $"PointedCell[{Pointee.Key}]";
     public override string Llvm => "ptr";
-    public override string OwnerName => Pointee is null ? "Addr" : "Ptr";
+    public override string OwnerName => Pointee is null ? "Addr" : "PointedCell";
 }
 
 /// `Array[T, COUNT]`: COUNT elements of T, stored inline.
@@ -251,7 +251,9 @@ public sealed class RecordType(RecordDecl decl, List<DType> args, Func<RecordTyp
     public List<DType> Args { get; } = args;
     public override string Name =>
         IsTuple ? $"({string.Join(", ", Args.Select(a => a.Name))})"
-        : Decl is { Name: "Span", Module: Compiler.SystemModule } && Args is [var elem] ? $"@[{elem.Name}]"
+        : Decl is { Name: "PointedSlice", Module: Compiler.SystemModule } && Args is [var elem] ? $"@[{elem.Name}]"
+        : Decl is { Name: "BorrowedSlice", Module: Compiler.SystemModule } && Args is [var elems] ? $"&[{elems.Name}]"
+        : Decl is { Name: "BorrowedCell", Module: Compiler.SystemModule } && Args is [var cell] ? $"&{cell.Name}"
         : Args.Count == 0 ? Decl.Name : $"{Decl.Name}[{string.Join(", ", Args.Select(a => a.Name))}]";
     public override string Key => DeclKey(Decl, Decl.Name, Args);
 

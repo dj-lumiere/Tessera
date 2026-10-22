@@ -141,18 +141,18 @@ public sealed partial class FunctionGen
 
     // ── The memory model's group check (MemoryRules.cs) ─────────────────────
 
-    /// What each block does with the Box and Memory handles of this routine, in order, for MemoryRules.Check.
+    /// What each block does with the BorrowedCell and BorrowedSlice handles of this routine, in order, for MemoryRules.Check.
     private readonly Dictionary<string, List<MemoryRules.Event>> _memEvents = [];
 
     /// The names (values, block parameters, slots) whose memory the check follows.
     private readonly HashSet<string> _memTracked = [];
 
-    /// A call to a Memory or Box routine that gives back the same memory (`with_count`): the call, and the handle it
+    /// A call to a BorrowedSlice or BorrowedCell routine that gives back the same memory (`with_count`): the call, and the handle it
     /// was made on, so a binding of it is a copy of that handle.
     private (Pos Call, string Of)? _memSame;
 
     /// Whether the check follows this routine: a built routine with a body. An instance of a generic routine is checked
-    /// with its type parameters bound, so `drop x` of a `T` that is a Memory is followed like any Memory.
+    /// with its type parameters bound, so `drop x` of a `T` that is a BorrowedSlice is followed like any BorrowedSlice.
     private bool MemOn => !_c.Prechecking && _decl.Blocks is { Count: > 0 };
 
     /// Whether the escape check reports in this routine: every routine the memory check follows, except an instance of
@@ -178,7 +178,7 @@ public sealed partial class FunctionGen
     /// The fields of me a destruct gives back (`me.items`), followed as handles.
     private readonly HashSet<string> _destructFields = [];
 
-    /// The memory or entity type a field place holds (`q.m` of a `Memory[S64]` field), or null.
+    /// The memory or entity type a field place holds (`q.m` of a `BorrowedSlice[S64]` field), or null.
     private DType? FieldHeld(Expr place) =>
         InferQuiet(place) is PtrType { Pointee: { } held } && held is not PtrType && Tracked(held) ? held : null;
 
@@ -190,18 +190,21 @@ public sealed partial class FunctionGen
         var ended = _memEvents.Values.SelectMany(list => list).OfType<MemoryRules.End>().Select(e => e.Name).ToHashSet();
         foreach (var key in _destructFields.Order(StringComparer.Ordinal))
             if (!ended.Contains(key))
-                throw Err(_decl.Pos, $"'{_decl.DisplayName}' never gives back '{key}', and a destruct gives back every Memory, Box, "
+                throw Err(_decl.Pos, $"'{_decl.DisplayName}' never gives back '{key}', and a destruct gives back every BorrowedSlice, BorrowedCell, "
                     + $"and entity the value holds: drop {key} here (or {key}.give_back()), or take it out with steal {key} as old "
                     + "and hand it on");
     }
 
-    /// Whether a value of `t` is a Box or a Memory itself (not a slot of one).
+    /// Whether a value of `t` is a BorrowedCell or a BorrowedSlice itself (not a slot of one).
     private static bool ManagedValue(DType t) => t is not PtrType && Tracked(t);
 
-    /// Whether the memory rules follow a value of `t` (or a slot of one): a Box, a Memory, or an entity. Each must end
+    /// Whether the memory rules follow a value of `t` (or a slot of one): a BorrowedCell, a BorrowedSlice, or an entity. Each must end
     /// once on every path (drop, return, handed over), and nothing uses it after.
     /// The names bound by a claim (`local x: @T <- value`): each is a slot of the frame, so `steal x` takes what it holds.
     private readonly HashSet<string> _claimedSlots = [];
+
+    /// The names a `<-` line bound to a ticket, a piece of work, or a mapped file's storage (BindStmt.Ticket).
+    private readonly HashSet<string> _ticketNames = [];
 
     private static bool Tracked(DType? t) => ManagedMemory(t) is not null || Entities.HeldIn(t) is not null;
 
@@ -226,7 +229,7 @@ public sealed partial class FunctionGen
                 return $"getitem copies the element, and {t.Name} {(Entities.IsEntity(t) ? "is an entity" : "holds one")}, "
                     + "which is never copied: look at it through its place, getslot(i) (a @" + t.Name + "), or take it out with "
                     + "steal xs.getslot(i)";
-            case MethodCallExpr { Name: "peek" or "peek_atomic" or "peek_volatile" or "load" } m
+            case MethodCallExpr { Name: "peek" or "peek_unbroken" or "peek_volatile" or "load" } m
                 when InferQuiet(m) is { } t && Entities.Holds(t):
                 return $"'{m.Name}' reads a {t.Name} out of memory, which copies it, and {(Entities.IsEntity(t) ? "an entity" : "a value holding an entity")} "
                     + "is never copied: pass the place itself, or hand it over with steal";
@@ -246,7 +249,7 @@ public sealed partial class FunctionGen
     private static string HoldsWhat(DType t) => Entities.IsEntity(t) ? "an entity" : "a value holding an entity";
 
     /// Whether a value of `t` (or the value a slot of `t` holds) has something to give back: its type writes a
-    /// destruct, or the memory rules follow it (Box, Memory, an entity, a value holding one).
+    /// destruct, or the memory rules follow it (BorrowedCell, BorrowedSlice, an entity, a value holding one).
     private bool HasReleaseDuty(DType? t)
     {
         if (t is null) return false;
@@ -423,7 +426,7 @@ public sealed partial class FunctionGen
     /// returned name): Eval reads and clears it, so only that expression itself is exempt.
     private bool _moving;
 
-    /// The event for binding `name` to `value`, a Box or a Memory (or a slot of one): a copy of a handle, the same memory
+    /// The event for binding `name` to `value`, a BorrowedCell or a BorrowedSlice (or a slot of one): a copy of a handle, the same memory
     /// again, or new memory. A field read or a value from elsewhere isn't followed.
     private void MemBind(string name, Expr value, Pos pos, bool warn = true, DType? type = null)
     {
@@ -452,7 +455,7 @@ public sealed partial class FunctionGen
         {
             _memTracked.Add(name);
             Mem(new MemoryRules.Alias(name, of, pos));
-            // A view of the place (`m: @Memory[T] = me.m`) is no second handle.
+            // A view of the place (`m: @BorrowedSlice[T] = me.m`) is no second handle.
             if (warn && type is not PtrType)
                 _c.NoteExpensiveCalls([(pos, $"{pos}: warning: '{name}' and '{of}' are the same memory, released once whichever one "
                 + $"gives it back: keep memory of its own with {of}.duplicate(), or lend it with {of}.getview()")]);
@@ -504,7 +507,7 @@ public sealed partial class FunctionGen
     }
 
     /// The name a place or a view is rooted at: `me` in `me.items.getslot(i)`, or null. An address read out of a field
-    /// is other memory than the record's, unless the field is the block a Memory or a Box owns (`me.data.peek()` in one).
+    /// is other memory than the record's, unless the field is the block a BorrowedSlice or a BorrowedCell owns (`me.data.peek()` in one).
     private string? RootName(Expr e) => e switch
     {
         ValueRef r => r.Name,
@@ -572,7 +575,7 @@ public sealed partial class FunctionGen
 
     // ── Globals that hold memory ─────────────────────────────────────────────
 
-    /// A global that holds a Box or a Memory lives as long as the program: it always holds one value (`.hollow()` to
+    /// A global that holds a BorrowedCell or a BorrowedSlice lives as long as the program: it always holds one value (`.hollow()` to
     /// start with), and a routine changes it only with `replace`, which gives the old memory back first. The program's
     /// end gives the last one back (the process's memory goes with it, and a device without an OS runs until reset), so
     /// nothing has to drop it. `start` may still drop one, which leaves it hollow.
@@ -595,13 +598,13 @@ public sealed partial class FunctionGen
 
     // ── The escape check ──────────────────────────────────────────────────────
 
-    /// The values that see memory of this routine, by name, with what they see: the frame (a claimed slot, a Span in
-    /// the frame) or memory the routine holds (a view of a Box or a Memory it took). Such a view doesn't leave the
+    /// The values that see memory of this routine, by name, with what they see: the frame (a claimed slot, a PointedSlice in
+    /// the frame) or memory the routine holds (a view of a BorrowedCell or a BorrowedSlice it took). Such a view doesn't leave the
     /// routine: that memory is gone, or the routine's to give back, once it returns.
     private readonly Dictionary<string, string> _frameViews = [];
 
-    /// Whether a value of `t` points at memory: an address, a Span, or an Addr.
-    private static bool PointsAtMemory(DType? t) => t is PtrType || t is RecordType { Decl.Name: "Span" } span
+    /// Whether a value of `t` points at memory: an address, a PointedSlice, or an Addr.
+    private static bool PointsAtMemory(DType? t) => t is PtrType || t is RecordType { Decl.Name: "PointedSlice" } span
         && span.Decl.Module == Compiler.SystemModule;
 
     /// The manager a `MemoryManager` table is made from (`arena` in `arena.to[MemoryManager]()`), or null when `e` isn't
@@ -650,8 +653,8 @@ public sealed partial class FunctionGen
         foreach (var manager in managers) Mem(new MemoryRules.HoldsViewOf(name, manager, pos) { Manager = true });
     }
 
-    /// What the value of `e` sees of this routine's memory, or null: a name that sees it, a view of a Box or a Memory the
-    /// routine holds, or a pointer or Span made from one.
+    /// What the value of `e` sees of this routine's memory, or null: a name that sees it, a view of a BorrowedCell or a BorrowedSlice the
+    /// routine holds, or a pointer or PointedSlice made from one.
     private string? FrameView(Expr e)
     {
         if (!MemOn) return null;
@@ -706,7 +709,7 @@ public sealed partial class FunctionGen
         if (!EscapeOn || plan.Receiver is null) return;
         Expr? value = sig.Decl.Name switch
         {
-            "poke" or "poke_volatile" or "poke_atomic" or "store" or "setitem" => plan.Args.LastOrDefault(),
+            "poke" or "poke_volatile" or "poke_unbroken" or "store" or "setitem" => plan.Args.LastOrDefault(),
             "poke_into" => plan.Receiver,
             _ => null,
         };
@@ -742,7 +745,7 @@ public sealed partial class FunctionGen
     }
 
     /// The events of a call's receiver and arguments, once they are evaluated: `drop` ends a group, a parameter that
-    /// takes a Box or a Memory by value takes the group over, `poke` into a slot stores one, and anything else uses it.
+    /// takes a BorrowedCell or a BorrowedSlice by value takes the group over, `poke` into a slot stores one, and anything else uses it.
     private void MemCall(CallPlan plan, Instance sig, int offset)
     {
         if (!MemOn) return;
@@ -798,13 +801,14 @@ public sealed partial class FunctionGen
                 : new MemoryRules.Use(receiver, plan.Pos));
             // with_count and the like give the same memory back: a binding of the call is a copy of the handle.
             if (ManagedValue(sig.Ret) && ManagedMemory(sig.Params[0]) is not null && sig.Decl.Name != "duplicate"
-                && sig.Decl.Owner is { Name: "Memory" or "Box" })
+                && sig.Decl.Owner is { Name: "BorrowedSlice" or "BorrowedCell" })
                 _memSame = (plan.Pos, receiver);
         }
         for (int i = 0; i < plan.Args.Count && i + offset < sig.Params.Count; i++)
         {
             if (MemName(plan.Args[i]) is not { } arg) continue;
-            Mem(ManagedValue(sig.Params[i + offset])
+            Mem(ManagedValue(sig.Params[i + offset]) || _ticketNames.Contains(arg) && IsTicketLike(sig.Params[i + offset])
+                    && sig.Params[i + offset] is not PtrType && !ReferenceEquals(plan.Args[i], _claimContents)
                 ? new MemoryRules.End(arg, $"handed to '{sig.Decl.DisplayName}'", plan.Args[i].Pos)
                 : new MemoryRules.Use(arg, plan.Args[i].Pos));
         }
@@ -1466,7 +1470,15 @@ public sealed partial class FunctionGen
                 if (b.Value is not ClaimExpr) NoteAccessBinding(b.Name, b.Value, t, b.Pos);
                 if ((b.Value is ClaimExpr { Contents: { } madeFrom } ? madeFrom : b.Value) is { } made3 && Tracked(t))
                     NoteManagedThrough(b.Name, made3, b.Pos);
-                if (MemOn && Tracked(t))
+                if (MemOn && b.Ticket && !Tracked(t))
+                {
+                    // A ticket, a piece of work, or a mapped file's storage: given back with drop, once, on every path.
+                    _memTracked.Add(b.Name);
+                    _ticketNames.Add(b.Name);
+                    Mem(new MemoryRules.Acquire(b.Name, "borrowed here", b.Pos)
+                        { Entity = (t is PtrType { Pointee: { } held } ? held : t).Name });
+                }
+                else if (MemOn && Tracked(t))
                 {
                     if (b.Value is ClaimExpr { Contents: { } held }) MemBind(b.Name, held, b.Pos, warn: false, type: t);
                     else if (b.Value is not ClaimExpr) MemBind(b.Name, b.Value, b.Pos, type: t);
@@ -1578,6 +1590,9 @@ public sealed partial class FunctionGen
                     && InferQuiet(d.Value) is RecordType { Decl.IsLibrary: true, Decl.Name: "Thread" or "Fiber" or "Job" or "Work" }
                         or PtrType { Pointee: RecordType { Decl.IsLibrary: true, Decl.Name: "Work" } })
                     Mem(new MemoryRules.WorkWaited(givenTicket.Name, d.Pos));
+                // A ticket bound by value goes into a slot of its own for its destruct: its name ends there.
+                string? endsTicket = MemOn && d.Value is ValueRef droppedTicket && _ticketNames.Contains(droppedTicket.Name)
+                    && InferQuiet(d.Value) is not PtrType ? droppedTicket.Name : null;
                 // The access a drop gives back isn't read by it: a second drop says so itself.
                 _givingBack = d.Value is ValueRef givenBack && _accessViews.Contains(givenBack.Name) ? d.Value : null;
                 var call = new MethodCallExpr(d.Value, "destruct", [], [], d.Pos);
@@ -1592,6 +1607,7 @@ public sealed partial class FunctionGen
                         new ClaimExpr(d.Pos) { Contents = d.Value }, d.Pos));
                     _givingBack = null;
                     EmitStmt(new DropStmt(new ValueRef(spill, d.Pos), d.Pos));
+                    if (endsTicket is not null) Mem(new MemoryRules.End(endsTicket, $"drop {endsTicket}", d.Pos));
                     break;
                 }
                 NoteCallerHeldEnd(d.Value, $"drop {new Printer().Expr(d.Value, 0)}", d.Pos);
@@ -1783,7 +1799,7 @@ public sealed partial class FunctionGen
                 string fieldAddr = EmitTmp($"getelementptr {s.Llvm}, ptr {baseAddr}, i32 0, {_c.Shape(s).GepPath(idx)}");
                 // In a dense record (or below one) a field may sit at an offset its type's alignment doesn't divide: the
                 // address is only as aligned as the base and the offset allow, and loads and stores through the place
-                // use that alignment. A Ptr taken from it assumes its type's alignment, which the author owns.
+                // use that alignment. A PointedCell taken from it assumes its type's alignment, which the author owns.
                 long baseAlign = _placeAlign.TryGetValue(baseAddr, out long known) ? known : _c.SizeAlign(s, f.Pos).Align;
                 long offset = _c.FieldOffsets(s, f.Pos)[idx];
                 long fieldAlign = offset == 0 ? baseAlign : Math.Min(baseAlign, offset & -offset);
@@ -1816,7 +1832,7 @@ public sealed partial class FunctionGen
                 if (bp.Pointee is null) throw Err(ix.Pos, "an Addr has no element type to stride over: cast it to @T first, or step bytes with offset");
                 var idx = EvalIndex(ix.Index);
                 _c.EnsureTypeDefined(bp.Pointee);
-                // `Ptr[X].stride(i)` is the i-th X, whatever X is: on a Ptr<Array<T, COUNT>> it steps over whole arrays
+                // `PointedCell[X].stride(i)` is the i-th X, whatever X is: on a PointedCell<Array<T, COUNT>> it steps over whole arrays
                 // (elements are .at / .get / .set, or .to<@T>().stride(i)).
                 return (EmitTmp($"getelementptr {bp.Pointee.Llvm}, ptr {b.Op}, {idx.Type.Llvm} {idx.Op}"), bp.Pointee);
             }
@@ -1839,13 +1855,13 @@ public sealed partial class FunctionGen
         return i;
     }
 
-    /// The address of a place (`p`, `p.f`, `p[i]`) and the type stored there. `opaqueAs` types an opaque `Ptr`.
+    /// The address of a place (`p`, `p.f`, `p[i]`) and the type stored there. `opaqueAs` types an opaque `PointedCell`.
     private (string Addr, DType Pointee) Address(Expr place, DType opaqueAs)
     {
         if (AsStride(place) is FieldExpr or IndexExpr && IsPlaceChain(place)) return PlaceAddress(place);
         var v = EvalAny(place);
         if (v.Type is not PtrType p)
-            throw Err(place.Pos, $"this is {v.Type}, not a pointer; memory is only reached through Ptr values");
+            throw Err(place.Pos, $"this is {v.Type}, not a pointer; memory is only reached through PointedCell values");
         return (v.Op, p.Pointee ?? opaqueAs);
     }
 
@@ -1954,7 +1970,7 @@ public sealed partial class FunctionGen
             : e;
 
     /// `p.stride(n)` on a pointer is built in: the address n Ts past p (LLVM GEP's first index; on a
-    /// `Ptr[Array[T, COUNT]]` that's n whole arrays). It's a place like `p.f`, so it chains (`p.stride(i).f`) and a
+    /// `PointedCell[Array[T, COUNT]]` that's n whole arrays). It's a place like `p.f`, so it chains (`p.stride(i).f`) and a
     /// load or store through it keeps a dense record's real alignment. n is a U64 or an S64 (negative moves back).
     private Expr AsStride(Expr e) =>
         e is MethodCallExpr { Name: "stride", TypeArgs.Count: 0, Args: [var n] } m && Infer(m.Receiver) is PtrType
@@ -2085,7 +2101,7 @@ public sealed partial class FunctionGen
         // A `Check[T]` written as a binding's type takes its list of crashables from the check that fills it.
         || (Crashing.IsCheck(actual) && expected is VariantType { Args.Count: 1 } open && Crashing.IsCheck(open)
             && Crashing.ValueOf((VariantType)actual).Equals(open.Args[0]))
-        // Ptr<T> converts to Addr (the C `void*` of FFI signatures); the other way takes a cast.
+        // PointedCell<T> converts to Addr (the C `void*` of FFI signatures); the other way takes a cast.
         || (actual is PtrType && expected is PtrType { Pointee: null });
 
     private CompileError Mismatch(Pos pos, DType expected, string actual) => Err(pos, $"expected {expected}, found {actual}");
@@ -2110,11 +2126,13 @@ public sealed partial class FunctionGen
             _moving = moving;
             return WrapInVariant(Eval(e, branch, argument), vt, e.Pos);
         }
-        // An argument borrows what a parameter takes as a view: a Memory lends its Span, a Box its address.
+        // An argument borrows what a parameter takes as a view: a BorrowedSlice lends its PointedSlice, a BorrowedCell its address.
         if (argument > 0 && Lends(InferQuiet(e), expected))
             return Eval(new MethodCallExpr(e, LendName(InferQuiet(e)), [], [], e.Pos), expected, argument);
         Val v = e switch
         {
+            IntLit { Base10: true } i when Compiler.WholeAsFloat(i.Value, expected, i.Pos) is { } whole =>
+                new Val(Compiler.ConstLlvm(whole), expected),
             IntLit i => IntConst(i.Value, i.Pos, expected, i.HexDigits),
             TypedIntLit t => TypedConst(t),
             UnitLit u => UnitConst(u),
@@ -2240,7 +2258,7 @@ public sealed partial class FunctionGen
 
     private Val StringLiteral(StrLit s, DType expected)
     {
-        // A string literal is a Span[Byte] (data + count, UTF-8) where one is expected, a CStrView or CWStrView (a pointer to
+        // A string literal is a PointedSlice[Byte] (data + count, UTF-8) where one is expected, a CStrView or CWStrView (a pointer to
         // NUL-terminated text) where one of those is expected, and a NUL-terminated @Byte where a pointer is.
         string g = _c.StringGlobal(s.Value);
         if (expected is PtrType { Pointee: null or IntType { Kind: IntKind.Byte } })
@@ -2299,7 +2317,7 @@ public sealed partial class FunctionGen
         }
     }
 
-    /// Whether a value of `t` may point into memory something else owns: a pointer, a Span, or a record, array, or
+    /// Whether a value of `t` may point into memory something else owns: a pointer, a PointedSlice, or a record, array, or
     /// variant holding one. An entity owns what it points at. A secret field counts too: this asks about the layout,
     /// not about reading the field.
     private bool MayBorrow(DType? t, HashSet<string>? seen) => t switch
@@ -2355,7 +2373,7 @@ public sealed partial class FunctionGen
         return false;
     }
 
-    /// Where `type` holds a pointer (a Ptr, an Addr, a Callable, or the Span, Box, or Memory over one), as a path
+    /// Where `type` holds a pointer (a PointedCell, an Addr, a Callable, or the PointedSlice, BorrowedCell, or BorrowedSlice over one), as a path
     /// from `path` (`Reader.buf.data`), or null when it holds none.
     private string? PointerIn(DType type, string path, HashSet<string> seen)
     {
@@ -2384,22 +2402,22 @@ public sealed partial class FunctionGen
 
     private Val EvalClaim(ClaimExpr a, DType expected)
     {
-        // `claim xs: Span[T] <- [...]`: the elements in the frame, and the claim is the Span over them.
+        // `claim xs: PointedSlice[T] <- [...]`: the elements in the frame, and the claim is the PointedSlice over them.
         if (Compiler.IsCoreSpan(expected, out _) && a.Contents is ArrayLit lit)
             return FrameSpan(lit, expected);
         if (expected is not PtrType { Pointee: { } t })
             throw Err(a.Pos, $"claim needs a typed pointer to fill, such as claim p: @T; found {expected}");
         _c.EnsureTypeDefined(t);
         string slot = $"%s{_allocas.Count}";
-        // The alignment is written out: the IR names no data layout, so LLVM would give a U128 slot 8 where an atomic
+        // The alignment is written out: the IR names no data layout, so LLVM would give a U128 slot 8 where an unbroken
         // access (cmpxchg16b) needs its 16.
         _allocas.Add($"{slot} = alloca {t.Llvm}, align {_c.SizeAlign(t, a.Pos).Align}");
         _slotBytes += _c.SizeAlign(t, a.Pos).Size;
         return new Val(slot, new PtrType(t));
     }
 
-    /// An array literal in the routine's frame, seen as a `Span[T]`: as many elements as the literal has, a count the
-    /// build knows. The Span mustn't outlive the routine.
+    /// An array literal in the routine's frame, seen as a `PointedSlice[T]`: as many elements as the literal has, a count the
+    /// build knows. The PointedSlice mustn't outlive the routine.
     private Val FrameSpan(ArrayLit lit, DType span)
     {
         Compiler.IsCoreSpan(span, out var elem);
@@ -2424,7 +2442,7 @@ public sealed partial class FunctionGen
         return SpanOver(slot, count, span);
     }
 
-    /// The `Span[T]` value of `count` elements at `address`.
+    /// The `PointedSlice[T]` value of `count` elements at `address`.
     private Val SpanOver(string address, long count, DType span)
     {
         _c.EnsureTypeDefined(span);
@@ -2432,8 +2450,8 @@ public sealed partial class FunctionGen
         return new Val(EmitTmp($"insertvalue {span.Llvm} {data}, {_c.Count.Llvm} {count}, 1"), span);
     }
 
-    /// `[...] from manager` is a `Memory[T]` of the elements, the pattern written out and repeated as many times as the
-    /// count says (known only while running is fine), and `value from manager` is a `Box[T]` of the value. Both are
+    /// `[...] from manager` is a `BorrowedSlice[T]` of the elements, the pattern written out and repeated as many times as the
+    /// count says (known only while running is fine), and `value from manager` is a `BorrowedCell[T]` of the value. Both are
     /// the type's own `construct`, which takes the memory from the manager.
     private Val EvalAt(AtExpr a, DType expected)
     {
@@ -2442,25 +2460,25 @@ public sealed partial class FunctionGen
         if (IsStackNamed(a.Manager))
             throw Err(a.Pos, "a place from STACK is borrowed on a line of its own, x: &T <- value (from STACK), and it stays "
                 + "in its routine: memory that goes elsewhere comes from a manager the program gives it back to (from HEAP)");
-        if (expected is RecordType { Decl.Name: "Memory", Args: [_] } memory && memory.Decl.Module == Compiler.SystemModule)
+        if (expected is RecordType { Decl.Name: "BorrowedSlice", Args: [_] } memory && memory.Decl.Module == Compiler.SystemModule)
         {
             if (a.Value is not ArrayLit { IsTuple: false } lit)
                 throw Err(a.Value.Pos, $"a {expected} from a manager is an array literal: [a, b] from manager, or [0] * n from manager");
-            var owner = new TypeRef("Memory", [], a.Pos) { Known = memory };
+            var owner = new TypeRef("BorrowedSlice", [], a.Pos) { Known = memory };
             Expr times = lit.Repeat ?? new IntLit(1, lit.Pos);
             var call = new NsCallExpr(owner, "construct", [], [lit with { Repeat = null }, times, a.Manager], a.Pos)
                 { ArgNames = ["values", "times", "manager"] };
             return EvalCall(call, expected);
         }
-        if (expected is RecordType { Decl.Name: "Box", Args: [_] } box && box.Decl.Module == Compiler.SystemModule)
+        if (expected is RecordType { Decl.Name: "BorrowedCell", Args: [_] } box && box.Decl.Module == Compiler.SystemModule)
         {
             if (a.Value is ArrayLit { IsTuple: false })
-                throw Err(a.Value.Pos, $"an array literal from a manager is a Memory[T], and this place takes {expected}");
-            var owner = new TypeRef("Box", [], a.Pos) { Known = box };
+                throw Err(a.Value.Pos, $"an array literal from a manager is a BorrowedSlice[T], and this place takes {expected}");
+            var owner = new TypeRef("BorrowedCell", [], a.Pos) { Known = box };
             var call = new NsCallExpr(owner, "construct", [], [a.Value, a.Manager], a.Pos) { ArgNames = ["value", "manager"] };
             return EvalCall(call, expected);
         }
-        throw Err(a.Pos, $"'from' takes memory from a manager: [...] from manager is a Memory[T], value from manager a Box[T]; "
+        throw Err(a.Pos, $"'from' takes memory from a manager: [...] from manager is a BorrowedSlice[T], value from manager a BorrowedCell[T]; "
                          + $"this place takes {expected}");
     }
 
@@ -2534,6 +2552,9 @@ public sealed partial class FunctionGen
             // An integer literal is a number: a choice branch takes one only by its member's name.
             return b is not (VariantType or ChoiceType) && UntypedMisfit(e, b, ref preferred) is null;
         }).ToList();
+        // A whole number goes into an integer branch before a float one.
+        if (e is IntLit && fits.Count > 1 && fits.Any(b => b is IntType))
+            fits = fits.Where(b => b is not FloatType && !HexFloat.IsB128(b)).ToList();
         return fits.Count == 1 ? fits[0] : null;
     }
 
@@ -3226,7 +3247,7 @@ public sealed partial class FunctionGen
 
                 // `===` / `!==` ask whether two names reach the same memory, which an address or a span has: values
                 // compare with `==` / `!=`.
-                if (b.Op is "===" or "!==" && TryInfer(b.Left) is { } sameType and not PtrType and not RecordType { Decl.Name: "Addr" or "Span" })
+                if (b.Op is "===" or "!==" && TryInfer(b.Left) is { } sameType and not PtrType and not RecordType { Decl.Name: "Addr" or "PointedSlice" })
                     throw Err(b.Pos, $"'{b.Op}' asks whether two names reach the same memory, which an address (@T, Addr) or a span (@[T]) has, "
                         + $"and the left side is {sameType.Name}: values compare with '{b.Op[..2]}'");
 
@@ -3391,7 +3412,7 @@ public sealed partial class FunctionGen
         var env = new Compiler.TypeEnv(c.File);
         if (self is not null) env.Bind("Me", self);
         var t = _c.ResolveType(c.Type, env);
-        // `preset NAME: Span[T] <- [...]` and `global NAME: Span[T] <- [...]`: the name is a Span over the memory.
+        // `preset NAME: PointedSlice[T] <- [...]` and `global NAME: PointedSlice[T] <- [...]`: the name is a PointedSlice over the memory.
         if (c is { IsSpan: true, Value: StrLit text })
             return new PresetInfo(t, _ => StringLiteral(text, t));
         if (c.IsSpan)
@@ -3797,9 +3818,9 @@ public sealed partial class FunctionGen
                 return ps.Types.Select((p, i) => CouldMatch(p, ct.Params[i], unbound)).All(x => x)
                        && (ct.Ret is VoidType ? ret.Type.Name is "None" || unbound.Contains(ret.Type.Name) : CouldMatch(ret.Type, ct.Ret, unbound));
             case PtrType { Pointee: { } pointee }:
-                return t.Name != "Ptr" || t.Args is not [TypeArgType inner] || CouldMatch(inner.Type, pointee, unbound);
+                return t.Name != "PointedCell" || t.Args is not [TypeArgType inner] || CouldMatch(inner.Type, pointee, unbound);
             case RecordType s:
-                if (t.Name is "Callable" or "Ptr") return false;
+                if (t.Name is "Callable" or "PointedCell") return false;
                 if (t.Name != s.Decl.Name) return t.Args.Count == 0;
                 if (t.Args.Count != s.Args.Count) return false;
                 return t.Args.Select((a, i) => a is not TypeArgType ta || CouldMatch(ta.Type, s.Args[i], unbound)).All(x => x);
@@ -3829,7 +3850,7 @@ public sealed partial class FunctionGen
     {
         if (!_c.Prechecking) return null;
         // Parsable's `to` is text's: a `to` on anything else is the conversions each type defines.
-        if (_c.ConceptProvides(m.Name) && !(m.Name == "to" && InferQuiet(m.Receiver) is not (RecordType { Decl.Name: "Span" } or PtrType { Pointee: RecordType { Decl.Name: "Span" } })))
+        if (_c.ConceptProvides(m.Name) && !(m.Name == "to" && InferQuiet(m.Receiver) is not (RecordType { Decl.Name: "PointedSlice" } or PtrType { Pointee: RecordType { Decl.Name: "PointedSlice" } })))
             return null;
         var typeArgs = m.TypeArgs;
         if (typeArgs.Count == 0 && m is { Name: "to" or "to_wrap" or "to_clamp", Args.Count: 0 } && expected is not null)
@@ -3845,7 +3866,7 @@ public sealed partial class FunctionGen
             if (defined.Count == 0 || defined.Any(d => d.Fixed.Count == 0)) continue;
             try
             {
-                // A routine defined for a pattern (`Ptr[T].to[@U]`) takes the parameter like any type: no deferring.
+                // A routine defined for a pattern (`PointedCell[T].to[@U]`) takes the parameter like any type: no deferring.
                 if (_c.MethodCandidates(owner, m.Name, _env.File, m.Pos, true, d => FixedFits(d, owner, typeArgs, m.Pos)).Count > 0)
                     return null;
                 var d = defined.FirstOrDefault(d => d.Fixed.Count == given.Count);
@@ -3919,6 +3940,9 @@ public sealed partial class FunctionGen
         }
         switch (arg)
         {
+            case IntLit { Base10: true } when pt is FloatType || HexFloat.IsB128(pt):
+                preferred = false;
+                return null;
             case IntLit i:
             {
                 var it = pt switch { IntType x => x, ChoiceType ch => ch.Underlying, _ => null };
@@ -3940,7 +3964,7 @@ public sealed partial class FunctionGen
                     ArrayType at when !a.IsTuple && at.Count == a.Elements.Count => ElementsMisfit(a, at.Elem),
                     VectorType vt when !a.IsTuple && vt.Count == a.Elements.Count => null,
                     RecordType { IsTuple: true } tu when a.IsTuple && tu.Args.Count == a.Elements.Count => null,
-                    // An argument borrows a literal in the frame where a Span is expected.
+                    // An argument borrows a literal in the frame where a PointedSlice is expected.
                     _ when !a.IsTuple && Compiler.IsCoreSpan(pt, out var elem) => ElementsMisfit(a, elem),
                     _ => a.IsTuple
                         ? $"a tuple of {a.Elements.Count} items can't be a {pt}"
@@ -4025,7 +4049,7 @@ public sealed partial class FunctionGen
     /// bare `[a, b]` an Array or a Vector, a bare `(a, b)` a tuple, a bare `(x: a)` a record.
     private static bool LiteralCanBe(Expr literal, DType? t) => literal switch
     {
-        IntLit => t is IntType { IsNumber: true },
+        IntLit i => t is IntType { IsNumber: true } || i.Base10 && (t is FloatType || HexFloat.IsB128(t)),
         FloatLit f => t is FloatType || (HexFloat.IsHex(f.Text) || f.IsWord) && HexFloat.IsB128(t),
         ArrayLit { IsTuple: true } => t is RecordType { IsTuple: true },
         ArrayLit => t is ArrayType or VectorType,
@@ -4036,7 +4060,7 @@ public sealed partial class FunctionGen
     private CallPlan? PlanMethod(MethodCallExpr m, DType? expected)
     {
         if (StackPlaceCall(m) is MethodCallExpr onPlace) m = onPlace;
-        if (ManagedMemory(TryInfer(m.Receiver)) is { Decl.Name: "Memory" } && OldMemoryElementCall(m) is { } older)
+        if (ManagedMemory(TryInfer(m.Receiver)) is { Decl.Name: "BorrowedSlice" } && OldMemoryElementCall(m) is { } older)
             throw Err(m.Pos, older);
         if (IndirectCall(m) is not null || AddrOfCallable(m) is not null) return null;
 
@@ -4073,7 +4097,7 @@ public sealed partial class FunctionGen
             }
         }
 
-        // Receivers behind a pointer: `p.m()` finds `routine @T.m` first, then `routine Ptr[T].m`. The more specific
+        // Receivers behind a pointer: `p.m()` finds `routine @T.m` first, then `routine PointedCell[T].m`. The more specific
         // receiver wins, and the two can't be the same routine (RejectPointerReceiverClashes).
         var candidates = new List<(DType Owner, bool PassesPointer)>();
         if (rt is PtrType { Pointee: { } pointee })
@@ -4118,7 +4142,7 @@ public sealed partial class FunctionGen
             }
             var env = BindOwner(r, owner, m.Pos);
             var selfType = _c.ResolveType(r.Params[0].Type, env);
-            // Through a pointer, T's method must take exactly that pointer: `slot: Ptr[Addr]` doesn't make
+            // Through a pointer, T's method must take exactly that pointer: `slot: PointedCell[Addr]` doesn't make
             // `slot.peek()` an Addr method on the slot.
             if (passesPointer ? !selfType.Equals(rt) : !Compatible(rt, selfType)) continue;
             BindExplicit(r, env, m.TypeArgs, m.Pos);
@@ -4126,9 +4150,9 @@ public sealed partial class FunctionGen
             return new CallPlan(r, env, m.Receiver, m.Args, m.Pos);
         }
 
-        // A Memory or a Box lends its view to the routines it has none of its own for: `line.trim()` on a
-        // `Memory[Byte]` is `line.getview().trim()`, checked once.
-        // A Box or a Memory value (a call's result, `m[i]`) with a routine of its own for this goes in a slot first.
+        // A BorrowedSlice or a BorrowedCell lends its view to the routines it has none of its own for: `line.trim()` on a
+        // `BorrowedSlice[Byte]` is `line.getview().trim()`, checked once.
+        // A BorrowedCell or a BorrowedSlice value (a call's result, `m[i]`) with a routine of its own for this goes in a slot first.
         if (m.Receiver is not TempSlotExpr && rt is not PtrType && ManagedMemory(rt) is not null && Entities.Holds(rt))
         {
             try
@@ -4139,7 +4163,7 @@ public sealed partial class FunctionGen
         }
         if (ManagedMemory(rt) is { } lending && m.Name != LendName(lending))
         {
-            if (lending.Decl.Name == "Memory" && OldMemoryElementCall(m) is { } newer)
+            if (lending.Decl.Name == "BorrowedSlice" && OldMemoryElementCall(m) is { } newer)
                 throw Err(m.Pos, newer);
             return PlanMethod(m with { Receiver = new MethodCallExpr(m.Receiver, LendName(lending), [], [], m.Receiver.Pos) }, expected);
         }
@@ -4230,6 +4254,11 @@ public sealed partial class FunctionGen
         }
         if (m.Name == "setitem" && Compiler.IsCoreSpan(rt is PtrType { Pointee: { } spanned } ? spanned : rt, out _))
             throw Err(m.Pos, "a span writes nothing itself: xs[i] = v is xs.getslot(i).poke(v)");
+        if (m.Name == "unmap" && (rt is PtrType { Pointee: { } mapped } ? mapped : rt) is RecordType { Decl.Name: "FileStorage" })
+            throw Err(m.Pos, $"{rt} has no method 'unmap': a FileStorage is given back with drop, which writes changed pages "
+                + "back and unmaps it");
+        if (OldSpellings.OldRoutineName(m.Name) is { } renamed)
+            throw Err(m.Pos, $"{rt} has no method '{m.Name}': {renamed}");
         throw Err(m.Pos, $"{rt} has no method '{m.Name}'");
     }
 
@@ -4289,10 +4318,10 @@ public sealed partial class FunctionGen
 
     private bool PrimitiveOrRecordName(string name) =>
         IntType.FromName(name) is not null
-        || name is "B16" or "BF16" or "B32" or "B64" or "Bool" or "None" or "Ptr" or "Addr" or "Array" or "Vector"
+        || name is "B16" or "BF16" or "B32" or "B64" or "Bool" or "None" or "PointedCell" or "Addr" or "Array" or "Vector"
         || _c.DeclaresType(name);
 
-    /// Whether a routine defined for type arguments (`S32.to[S64]`, `Ptr[T].to[@U]`) is the one these name.
+    /// Whether a routine defined for type arguments (`S32.to[S64]`, `PointedCell[T].to[@U]`) is the one these name.
     private bool FixedFits(RoutineDecl r, DType owner, List<TypeRef> typeArgs, Pos pos)
     {
         if (typeArgs.Count != r.Fixed.Count) return false;
@@ -4371,7 +4400,7 @@ public sealed partial class FunctionGen
         }
         switch (actual)
         {
-            case PtrType { Pointee: { } p } when t.Name == "Ptr" && t.Args is [TypeArgType inner]:
+            case PtrType { Pointee: { } p } when t.Name == "PointedCell" && t.Args is [TypeArgType inner]:
                 Unify(inner.Type, p, env, unbound);
                 break;
             case RecordType s when s.Decl.Name == t.Name && s.Args.Count == t.Args.Count:
@@ -4557,7 +4586,7 @@ public sealed partial class FunctionGen
         int offset = plan.Receiver is null ? 0 : 1;
         int fixedCount = sig.Params.Count - offset - (sig.IsTrackCaller ? 1 : 0);
         bool arityOk = sig.Variadic && sig.IsExternalC ? plan.Args.Count >= fixedCount : plan.Args.Count == fixedCount;
-        if (!arityOk && plan.Decl.Owner is { Name: "Memory" } && plan.Decl.IsLibrary
+        if (!arityOk && plan.Decl.Owner is { Name: "BorrowedSlice" } && plan.Decl.IsLibrary
             && OldMemoryElementCall(new MethodCallExpr(plan.Receiver ?? new ValueRef("m", plan.Pos), plan.Decl.Name, [], plan.Args, plan.Pos)) is { } newer)
             throw Err(plan.Pos, newer);
         if (!arityOk)
@@ -4661,42 +4690,42 @@ public sealed partial class FunctionGen
 
     /// The stdlib's Bytes, the type `type_name[T]()` gives.
     private DType BytesType(Pos pos) =>
-        _c.ResolveType(new TypeRef("Span", [new TypeArgType(TypeRef.Simple("Byte", pos))], pos) { Path = Compiler.SystemModule }, _env);
+        _c.ResolveType(new TypeRef("PointedSlice", [new TypeArgType(TypeRef.Simple("Byte", pos))], pos) { Path = Compiler.SystemModule }, _env);
 
-    /// The `Memory[T]` or `Box[T]` a value is (or a slot holds), or null: memory from a manager, which lends a view.
+    /// The `BorrowedSlice[T]` or `BorrowedCell[T]` a value is (or a slot holds), or null: memory from a manager, which lends a view.
     private static RecordType? ManagedMemory(DType? t)
     {
         var managed = t is PtrType { Pointee: RecordType inner } ? inner : t as RecordType;
-        return managed is { Decl.Name: "Memory" or "Box", Args.Count: 1 } && managed.Decl.Module == Compiler.SystemModule ? managed : null;
+        return managed is { Decl.Name: "BorrowedSlice" or "BorrowedCell", Args.Count: 1 } && managed.Decl.Module == Compiler.SystemModule ? managed : null;
     }
 
-    /// The routine that lends a Memory's or a Box's view: `getslice()` (every value) of a Memory, `getview()` of a Box.
-    private static string LendName(DType? t) => ManagedMemory(t) is { Decl.Name: "Memory" } ? "getslice" : "getview";
+    /// The routine that lends a BorrowedSlice's or a BorrowedCell's view: `getslice()` (every value) of a BorrowedSlice, `getview()` of a BorrowedCell.
+    private static string LendName(DType? t) => ManagedMemory(t) is { Decl.Name: "BorrowedSlice" } ? "getslice" : "getview";
 
-    /// The build error for a call of a routine a `Memory[T]` no longer has (it reads and writes nothing itself), naming the
+    /// The build error for a call of a routine a `BorrowedSlice[T]` no longer has (it reads and writes nothing itself), naming the
     /// form that took its place, or null.
     private static string? OldMemoryElementCall(MethodCallExpr m) => m switch
     {
-        { Name: "load", Args.Count: 1 } => "a Memory reads nothing itself: an element's value is m[i], or m.getslot(i).peek()",
-        { Name: "store", Args.Count: 2 } => "a Memory writes nothing itself: write an element through its place, m.getslot(i).poke(v)",
-        { Name: "setitem", Args.Count: 2 } => "a Memory writes nothing itself: write an element through its place, m.getslot(i).poke(v)",
-        { Name: "getview", Args.Count: 0 } => "a Memory's values as a @[T] are m.getslice(), and one element's place is m.getslot(i)",
+        { Name: "load", Args.Count: 1 } => "a BorrowedSlice reads nothing itself: an element's value is m[i], or m.getslot(i).peek()",
+        { Name: "store", Args.Count: 2 } => "a BorrowedSlice writes nothing itself: write an element through its place, m.getslot(i).poke(v)",
+        { Name: "setitem", Args.Count: 2 } => "a BorrowedSlice writes nothing itself: write an element through its place, m.getslot(i).poke(v)",
+        { Name: "getview", Args.Count: 0 } => "a BorrowedSlice's values as a @[T] are m.getslice(), and one element's place is m.getslot(i)",
         { Name: "getview", Args.Count: 1 } => "one element's place is m.getslot(i), a @T",
         _ => null,
     };
 
-    /// Whether a value of `actual` is lent where `expected` is: a `Memory[T]` (or a slot of one) where a `Span[T]` is
-    /// expected, a `Box[T]` where a `@T` is.
+    /// Whether a value of `actual` is lent where `expected` is: a `BorrowedSlice[T]` (or a slot of one) where a `PointedSlice[T]` is
+    /// expected, a `BorrowedCell[T]` where a `@T` is.
     private static bool Lends(DType? actual, DType expected) =>
         ManagedMemory(actual) is { } managed
-        && (managed.Decl.Name == "Memory"
-            ? expected is RecordType { Decl.Name: "Span", Args: [var e] } span && span.Decl.Module == Compiler.SystemModule
+        && (managed.Decl.Name == "BorrowedSlice"
+            ? expected is RecordType { Decl.Name: "PointedSlice", Args: [var e] } span && span.Decl.Module == Compiler.SystemModule
               && e.Equals(managed.Args[0])
             : expected is PtrType { Pointee: { } p } && p.Equals(managed.Args[0]) && !actual!.Equals(expected));
 
-    /// Whether `t` is `Span[Byte]`, the type of text: a string literal is one.
+    /// Whether `t` is `PointedSlice[Byte]`, the type of text: a string literal is one.
     private static bool IsByteSpan(DType t) =>
-        t is RecordType { Decl.Name: "Span", Args: [IntType { Kind: IntKind.Byte }] } span && span.Decl.Module == Compiler.SystemModule;
+        t is RecordType { Decl.Name: "PointedSlice", Args: [IntType { Kind: IntKind.Byte }] } span && span.Decl.Module == Compiler.SystemModule;
 
     /// `caller_location()`: inside a `@track_caller` routine, where it was called from.
     private DType SourceLocationPtr(Pos pos) =>
@@ -5003,7 +5032,7 @@ public sealed partial class FunctionGen
                 sb.Append(t is ConstArg ca ? ca.Name : t.Llvm);
                 continue;
             }
-            // `{sizeof T}`: a type parameter's size in bytes (an atomic access is aligned to it).
+            // `{sizeof T}`: a type parameter's size in bytes (an unbroken access is aligned to it).
             if (key.StartsWith("sizeof ", StringComparison.Ordinal) && sig.Env.Get(key[7..]) is { } sized)
             {
                 sb.Append(_c.SizeAlign(sized, pos).Size);

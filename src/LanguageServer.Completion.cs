@@ -120,7 +120,7 @@ public static partial class LanguageServer
         if (scope.Values.FirstOrDefault(v => v.Name == first) is { Name: not null } value)
             type = value.Type;
         else if (scope.TypeParams.Contains(first) || compiler.TypeDeclQuiet(first, file) is not null
-                 || compiler.ConceptDeclQuiet(first, file) is not null || first is "Ptr" || IsBuiltinType(first))
+                 || compiler.ConceptDeclQuiet(first, file) is not null || first is "PointedCell" || IsBuiltinType(first))
         {
             type = TypeRef.Simple(first, new Pos(file, 0, 0)) with { Args = firstArgs };
             isValue = false;
@@ -149,7 +149,7 @@ public static partial class LanguageServer
             // Through a pointer, the pointee's routines that take their `me` as `@Me`.
             bool throughPointer = !ReferenceEquals(owner, type);
             foreach (var r in compiler.RoutinesOn(owner, file).Where(r =>
-                         !throughPointer || r.Params is [{ Type: { Name: "Ptr", Path: null } }, ..]))
+                         !throughPointer || r.Params is [{ Type: { Name: "PointedCell", Path: null } }, ..]))
                 add(r.Name, isValue ? KindMethod : KindFunction, Signature(r), r, null, r.Owner?.Name != owner.Name ? 2 : owners.Count > 1 && !throughPointer ? 1 : 0);
         }
         if (isValue)
@@ -207,7 +207,7 @@ public static partial class LanguageServer
 
     private static TypeRef? Unpointer(TypeRef? t)
     {
-        while (t is { Name: "Ptr", Path: null, Args: [TypeArgType inner] }) t = inner.Type;
+        while (t is { Name: "PointedCell", Path: null, Args: [TypeArgType inner] }) t = inner.Type;
         return t;
     }
 
@@ -292,7 +292,7 @@ public static partial class LanguageServer
         /// A type with `Me` written out as the routine's owner.
         public TypeRef? WithOwner(TypeRef? t) =>
             t is { Name: "Me", Path: null } && _routine?.Owner is { Name: not "Me" } owner ? owner
-            : t is { Name: "Ptr", Path: null, Args: [TypeArgType { Type: { Name: "Me", Path: null } }] }
+            : t is { Name: "PointedCell", Path: null, Args: [TypeArgType { Type: { Name: "Me", Path: null } }] }
               && _routine?.Owner is { Name: not "Me" } pointee
                 ? t with { Args = [new TypeArgType(pointee)] }
                 : t;

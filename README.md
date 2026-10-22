@@ -163,7 +163,7 @@ sources = ["src"]
   The entry is `routine start()`, or the entry file's top-level lines (script mode). On a target without an operating
   system, `when_power_on()` runs first and readies the core with `prepare_core()`.
 - **Memory managers:** any type that obeys `MemoryManageable` (and `PageManageable` for pages) is one, and
-  `m.to[MemoryManager]()` makes the table every routine that borrows memory takes. `steal` hands a `Box` or `Memory`
+  `m.to[MemoryManager]()` makes the table every routine that borrows memory takes. `steal` hands a `BorrowedCell` or `BorrowedSlice`
   on and leaves the place zeroed.
 - **Threads and fibers:** a piece of work is `f.to[Work](param: value)`. `work.start_from(manager)` runs it on a
   worker a `ThreadManager`, `FiberManager` or `ThreadPoolManager` lends, and a ticket held (`get_thread`) takes it with

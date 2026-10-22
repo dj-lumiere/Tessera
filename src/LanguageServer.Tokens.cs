@@ -333,7 +333,7 @@ public static partial class LanguageServer
         /// The type a value's written type names, past pointers (`@Me` is a `Me`), with `Me` as the routine's owner.
         private TypeRef? Pointee(TypeRef? t)
         {
-            while (t is { Name: "Ptr", Path: null, Args: [TypeArgType inner] }) t = inner.Type;
+            while (t is { Name: "PointedCell", Path: null, Args: [TypeArgType inner] }) t = inner.Type;
             return t is { Name: "Me", Path: null } ? _routine?.Owner : t;
         }
 
@@ -428,7 +428,7 @@ public static partial class LanguageServer
             ValueRef v when _written.GetValueOrDefault(v.Name) is { } t => MeIsOwner(t),
             // A field reached through a pointer is a place: `me.capacity.peek()` reads it.
             FieldExpr f when IsPlace(f.Base) && Field(f.Base, f.Name) is { } field =>
-                new TypeRef("Ptr", [new TypeArgType(field.Field.Type)], f.Pos),
+                new TypeRef("PointedCell", [new TypeArgType(field.Field.Type)], f.Pos),
             MethodCallExpr { Name: "stride", Args.Count: 1 } stride => ReceiverType(stride.Receiver),
             MethodCallExpr or CallExpr or NsCallExpr => ResultType(e),
             PresetRef preset => PresetType(preset.Owner?.Name ?? "", preset.Name),
@@ -439,7 +439,7 @@ public static partial class LanguageServer
         /// of a place, `p.stride(n)`.
         private bool IsPlace(Expr e) => e switch
         {
-            ValueRef => ReceiverType(e) is { Name: "Ptr", Path: null },
+            ValueRef => ReceiverType(e) is { Name: "PointedCell", Path: null },
             FieldExpr f => IsPlace(f.Base),
             MethodCallExpr { Name: "stride", Args.Count: 1 } stride => IsPlace(stride.Receiver),
             _ => false,
@@ -482,14 +482,14 @@ public static partial class LanguageServer
             if (m.Name != "stride" || m.Args.Count != 1) return null;
             string? pointee = analysis.Compiler.ValueTypes.GetValueOrDefault(m.Receiver.Pos) is PtrType { Pointee: { } known }
                 ? known.ToString()
-                : ReceiverType(m.Receiver) is { Name: "Ptr", Path: null, Args: [TypeArgType inner] } ? inner.Type.ToString()
+                : ReceiverType(m.Receiver) is { Name: "PointedCell", Path: null, Args: [TypeArgType inner] } ? inner.Type.ToString()
                 : null;
             if (pointee is null) return null;
-            string ptr = Path.Combine("Standard", "System", "Ptr.te");
+            string ptr = Path.Combine("Standard", "System", "PointedCell.te");
             var lines = LinesOf(analysis, ptr);
             int at = Array.FindIndex(lines, l => l.Contains("`p.stride(n)`", StringComparison.Ordinal));
             Pos? where = at < 0 ? null : new Pos(ptr, at + 1, lines[at].IndexOf("stride", StringComparison.Ordinal) + 1);
-            Func<string?> hover = () => HoverText("routine Ptr[T].stride(n: U64) -> Me",
+            Func<string?> hover = () => HoverText("routine PointedCell[T].stride(n: U64) -> Me",
                 Ko("The address `n` `T`s past this one; an `S64` moves back. Built into the builder: it is a place like a "
                    + "field, so it chains (`p.stride(i).f`), and a load or a store through it keeps a dense record's "
                    + "alignment.",

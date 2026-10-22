@@ -47,11 +47,11 @@ entity ThreadPoolManager
     ### How many threads it runs: 0 until the first job starts them.
     count: U64
     ### The threads' tickets.
-    threads: Memory[Thread[None]]
+    threads: BorrowedSlice[Thread[None]]
     ### Where the jobs, the fibers, and the threads' tickets come from.
     manager: @MemoryManager
     ### The fibers running jobs that were woken, for the first free thread to go on with.
-    woken: CircularList[@FiberState]
+    woken: RotatableList[@FiberState]
     ### Every fiber the pool made, through `next_all`.
     fibers: @FiberState
     ### The fibers whose job is over, waiting for the next, through `next_idle`.
@@ -97,7 +97,7 @@ common routine ThreadPoolManager.construct(threads: U64) -> Me
         else => threads
     return Me(guard: 0, first: .hollow(), last: .hollow(), idle: .hollow(), epoch: 0, stopping: 0,
         count, threads: .hollow(), manager: HEAP,
-        woken: CircularList[@FiberState].construct(manager: HEAP), fibers: .hollow(),
+        woken: RotatableList[@FiberState].construct(manager: HEAP), fibers: .hollow(),
         spare: .hollow())
 
 ### Stops the pool: its threads finish the work they have, then end, and the idle jobs and the fibers go. Give every
@@ -105,11 +105,11 @@ common routine ThreadPoolManager.construct(threads: U64) -> Me
 @target(os: not "none")
 @track_caller
 routine @ThreadPoolManager.destruct() -> None
-    threads: @Memory[Thread[None]] = me.threads
+    threads: @BorrowedSlice[Thread[None]] = me.threads
     started: U64 = threads.count()
 
-    me.stopping.poke_atomic(1)
-    me.epoch.atomic_fetch_add(1)
+    me.stopping.poke_unbroken(1)
+    me.epoch.unbroken_fetch_add(1)
     wake_all(me.epoch)
 
     each i in 0 til started
@@ -181,7 +181,7 @@ needs T: typename
     me.idle.poke(idle.next.peek())
     drop held
     idle.next.poke(.hollow())
-    idle.slot.state.poke_atomic(TICKET_EMPTY)
+    idle.slot.state.poke_unbroken(TICKET_EMPTY)
     return Job[T](job: idle, issued: idle.slot.issued.peek())
 
 ### Starts the pool's threads, the first time. The lock is held.
@@ -190,11 +190,11 @@ needs T: typename
 secret routine @ThreadPoolManager.start_threads() -> None
     count: U64 = me.count.peek()
 
-    threads: @Memory[Thread[None]] = me.threads
+    threads: @BorrowedSlice[Thread[None]] = me.threads
 
     if not (threads.count() == 0)
         return
-    threads.replace(value: Memory[Thread[None]].construct(count, manager: me.manager.peek()))
+    threads.replace(value: BorrowedSlice[Thread[None]].construct(count, manager: me.manager.peek()))
 
     each i in 0 til count
         t: Thread[None] <- get_thread[None]()
@@ -215,7 +215,7 @@ secret routine @ThreadPoolManager.queue(job: @PoolJob) -> None
         last.next.poke(job)
     me.last.poke(job)
     drop held
-    me.epoch.atomic_fetch_add(1)
+    me.epoch.unbroken_fetch_add(1)
     wake_all(me.epoch)
     return
 
@@ -244,7 +244,7 @@ secret routine @ThreadPoolManager.queue_woken(fiber: @FiberState) -> None
     held: Authorized[U8] <- me.guard.get_exclusive_access()
     me.woken.add_last(fiber)
     drop held
-    me.epoch.atomic_fetch_add(1)
+    me.epoch.unbroken_fetch_add(1)
     wake_all(me.epoch)
     return
 
@@ -284,7 +284,7 @@ secret routine @ThreadPoolManager.take_fiber() -> @FiberState
         drop held
         spare.next_idle.poke(.hollow())
         # No manager runs it until a thread adopts it, which counts it among that thread's busy fibers.
-        spare.manager.poke_atomic(.hollow())
+        spare.manager.poke_unbroken(.hollow())
         return spare
     drop held
     manager: @MemoryManager = me.manager.peek()
@@ -311,12 +311,12 @@ secret routine @ThreadPoolManager.take_fiber() -> @FiberState
 ### :param fiber: A pool's fiber, ready to run.
 @target(os: not "none")
 secret routine adopt(fiber: @FiberState) -> None
-    from: @FiberManager = fiber.manager.peek_atomic()
+    from: @FiberManager = fiber.manager.peek_unbroken()
     if from !== FIBERS
-        FIBERS.busy.atomic_fetch_add(1)
-        fiber.manager.poke_atomic(FIBERS)
+        FIBERS.busy.unbroken_fetch_add(1)
+        fiber.manager.poke_unbroken(FIBERS)
         if from.is_not_hollow()
-            from.busy.atomic_fetch_sub(1)
+            from.busy.unbroken_fetch_sub(1)
     FIBERS.ready.add_last(fiber)
     return
 
@@ -330,7 +330,7 @@ secret routine pool_thread(pool: @ThreadPoolManager) -> None
 
     # Reads the epoch before looking, so work or a wake that comes in between changes it and the sleep returns.
     loop
-        seen: U32 = pool.epoch.peek_atomic()
+        seen: U32 = pool.epoch.peek_unbroken()
         FIBERS.run_until_idle()
         woken: @FiberState = pool.take_woken()
         if woken.is_not_hollow()
@@ -338,7 +338,7 @@ secret routine pool_thread(pool: @ThreadPoolManager) -> None
             continue
         job: @PoolJob = pool.take()
         if job.is_hollow()
-            if pool.stopping.peek_atomic() == 1 and FIBERS.busy.peek_atomic() == 0
+            if pool.stopping.peek_unbroken() == 1 and FIBERS.busy.peek_unbroken() == 0
                 break
             wait: Duration = FIBERS.idle_wait()
             if wait == Duration.MAX
@@ -347,7 +347,7 @@ secret routine pool_thread(pool: @ThreadPoolManager) -> None
             wait_on_for(at: pool.epoch, expected: seen, timeout: wait)
             continue
         fiber: @FiberState = pool.take_fiber()
-        fiber.slot.state.poke_atomic(TICKET_RUNNING)
+        fiber.slot.state.poke_unbroken(TICKET_RUNNING)
         fiber.work.poke(job.slot)
         adopt(fiber)
         continue

@@ -216,7 +216,7 @@ public sealed partial class Compiler
             // A record holding an entity says so before anything about its lifecycle: the fix is to make it one.
             if (d is RecordDecl { IsEntity: false } plain)
                 foreach (var f in plain.Fields)
-                    if (!(f.Type.Args.Count == 0 && plain.TypeParams.Contains(f.Type.Name)) && f.Type.Name is not ("Ptr" or "Addr")
+                    if (!(f.Type.Args.Count == 0 && plain.TypeParams.Contains(f.Type.Name)) && f.Type.Name is not ("PointedCell" or "Addr")
                         && EntityNamed(f.Type, plain.File) is not null)
                         throw new CompileError(f.Pos, $"record '{plain.Name}' holds {f.Type} in '{f.Name}', and an entity is never copied, "
                             + $"which a record is: declare it entity {plain.Name}, or hold a pointer, @{f.Type}");
@@ -233,12 +233,12 @@ public sealed partial class Compiler
         }
     }
 
-    /// What memory of its own a value of `t` holds: a Memory, a Box, an entity, or a value of a type with one in it, or
+    /// What memory of its own a value of `t` holds: a BorrowedSlice, a BorrowedCell, an entity, or a value of a type with one in it, or
     /// null for none. A view (an address, a span) holds none.
     private string? OwnsMemory(TypeRef t, string file, HashSet<string> seen)
     {
-        if (t.Name is "Ptr" or "Addr" or "Span" or "Callable" || t.Known is not null) return null;
-        if (t.Name is "Memory" or "Box" && (t.Path is null or SystemModule)) return t.ToString();
+        if (t.Name is "PointedCell" or "Addr" or "PointedSlice" or "Callable" || t.Known is not null) return null;
+        if (t.Name is "BorrowedSlice" or "BorrowedCell" && (t.Path is null or SystemModule)) return t.ToString();
         foreach (var a in t.Args.OfType<TypeArgType>())
             if (OwnsMemory(a.Type, file, seen) is { } inArg) return inArg;
         Decl? d;
@@ -454,7 +454,7 @@ public sealed partial class Compiler
     }
 
     /// Whether the program runs with the data race check: two threads that touch the same memory, one of them writing,
-    /// with neither an atomic access nor a lock between them, stop the program with a report of both places.
+    /// with neither an unbroken access nor a lock between them, stop the program with a report of both places.
     public bool RaceCheck { get; }
 
     /// `@race_check("on")` / `@race_check("off")` keeps a standard library declaration only with the race check on or
@@ -553,7 +553,7 @@ public sealed partial class Compiler
     public sealed record CallUse(RoutineDecl Decl, List<(string Name, DType Type)> Bindings);
 
     /// The calls and the values of the routines that aren't generic, by the position the parser gave them (a call also
-    /// by the routine's name: `claim p: @T <- .make()` calls `make` and stores through `Ptr[T].poke` at one place):
+    /// by the routine's name: `claim p: @T <- .make()` calls `make` and stores through `PointedCell[T].poke` at one place):
     /// what the language server shows on hover. A generic routine's body means something else in each instance, so it
     /// isn't recorded.
     public Dictionary<(Pos Pos, string Name), CallUse> CallUses { get; } = [];
@@ -791,7 +791,7 @@ public sealed partial class Compiler
     /// under it are seen from every file without an import.
     public const string SystemModule = "Standard/System";
 
-    /// The memory managers, `Memory[T]`'s regions, and atomics.
+    /// The memory managers, `BorrowedSlice[T]`'s regions, and unbroken values.
     public const string MemoryModule = SystemModule + "/Memory";
 
     /// The startup steps and the CpuEventManager.
@@ -912,7 +912,7 @@ public sealed partial class Compiler
 
     private Decl? OwnerDecl(TypeRef owner, string file) => TypeDeclQuiet(owner.Name, file, owner.Path);
 
-    /// The declaration behind a type. A built-in type (`S64`, `Ptr[T]`) has one too, a record in Standard/System that
+    /// The declaration behind a type. A built-in type (`S64`, `PointedCell[T]`) has one too, a record in Standard/System that
     /// carries its conformances; null if there's none.
     private Decl? DeclOf(DType t) => t switch
     {
@@ -1159,12 +1159,12 @@ public sealed partial class Compiler
             case "Void": throw new CompileError(t.Pos, "nothing is written None, not Void");
             case "Unit": throw new CompileError(t.Pos, "the type with one value is written None, not Unit");
             case "Addr": NoArgs(); return new PtrType(null);
-            case "Ptr":
+            case "PointedCell":
                 return t.Args switch
                 {
                     [] => throw new CompileError(t.Pos, "a pointer without a pointee type is spelled Addr"),
                     [TypeArgType inner] => new PtrType(ResolveType(inner.Type, env)),
-                    _ => throw new CompileError(t.Pos, "Ptr takes one type argument"),
+                    _ => throw new CompileError(t.Pos, "PointedCell takes one type argument"),
                 };
             case "Array":
                 if (t.Args is not [TypeArgType elem, var count])
@@ -1225,7 +1225,7 @@ public sealed partial class Compiler
                     _ => throw new CompileError(t.Pos, $"invalid generic argument for '{s.Name}'"),
                 });
             // An entity argument is fine: a record never holds one by value (Fields says so where a field would), so a
-            // generic record that takes one holds it through memory it owns, as List[T] and Memory[T] do. A tuple holds
+            // generic record that takes one holds it through memory it owns, as List[T] and BorrowedSlice[T] do. A tuple holds
             // its items by value, so it is said here, where the tuple is written.
             if (RecordType.IsTupleDecl(s) && Entities.EntityArgument(args) is { } inTuple)
                 throw new CompileError(t.Pos, $"a tuple holds {inTuple.Name}, an entity, which is never copied: hold it through a pointer, @{inTuple.Name}");
@@ -1274,7 +1274,7 @@ public sealed partial class Compiler
             throw new CompileError(t.Pos, $"unknown type '{t}': the console is Console (Console.show, Console.alert, " +
                 "Console.ask_line, Console.output()), and its streams are ConsoleOutput, ConsoleErrors and ConsoleInput");
 
-        if (t.Args.Count == 0 && OldSpellings.OldTypeName(t.Name) is { } renamed)
+        if (t.Path is null && OldSpellings.OldTypeName(t.Name) is { } renamed)
             throw new CompileError(t.Pos, $"unknown type '{t}': {renamed}");
 
         if (t.Args.Count == 0 && t.Name == "Mapping")
@@ -1795,7 +1795,7 @@ public sealed partial class Compiler
         return name;
     }
 
-    /// The memory under `preset NAME: Span[T] <- [...]` or `global NAME: Span[T] <- [...]`: an Array of the literal's
+    /// The memory under `preset NAME: PointedSlice[T] <- [...]` or `global NAME: PointedSlice[T] <- [...]`: an Array of the literal's
     /// elements, as many as it has.
     public ArrayType SpanStorage(PresetDecl c, DType span, TypeEnv env)
     {
@@ -1807,10 +1807,10 @@ public sealed partial class Compiler
         return new ArrayType(elem, Elements(lit, env).Count);
     }
 
-    /// Whether `t` is the core `Span[T]`, and its element type.
+    /// Whether `t` is the core `PointedSlice[T]`, and its element type.
     public static bool IsCoreSpan(DType t, out DType elem)
     {
-        if (t is RecordType { Decl.Name: "Span", Args: [var e] } span && span.Decl.Module == SystemModule)
+        if (t is RecordType { Decl.Name: "PointedSlice", Args: [var e] } span && span.Decl.Module == SystemModule)
         {
             elem = e;
             return true;
@@ -1845,7 +1845,7 @@ public sealed partial class Compiler
         return ConstLlvm(Typed(Fold(e, t, env), t, e.Pos));
     }
 
-    /// A Span known when the program is linked: a string literal's bytes, or another Span preset or global. Null for
+    /// A PointedSlice known when the program is linked: a string literal's bytes, or another PointedSlice preset or global. Null for
     /// anything else, which then goes in as a record literal.
     private string? SpanInitializer(Expr e, DType span, TypeEnv env)
     {

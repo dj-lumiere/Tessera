@@ -34,7 +34,7 @@ public sealed partial class Compiler
     /// The routine or conformance being checked, and the constraints in force there.
     private sealed class PrecheckScope(string what, string fix)
     {
-        /// The routine or conformance, as an error names it: `'max_of'`, `conform Equatable[Box[T]]`.
+        /// The routine or conformance, as an error names it: `'max_of'`, `conform Equatable[BorrowedCell[T]]`.
         public string What { get; } = what;
 
         /// Where a missing constraint goes, said as the end of "add Comparable<T> to ...".
@@ -94,7 +94,7 @@ public sealed partial class Compiler
             ? $"the needs of '{r.DisplayName}'"
             : $"the needs of '{r.DisplayName}', or to {ownerName}'s if every one of its instances needs it";
         _precheck = new PrecheckScope($"'{r.DisplayName}'", fix);
-        // A receiver written as a fixed type (`Ptr[T].to[CStrView](me: @CChar)`) fixes the owner's parameters it matches.
+        // A receiver written as a fixed type (`PointedCell[T].to[CStrView](me: @CChar)`) fixes the owner's parameters it matches.
         if (r.Owner is { Args.Count: > 0 } fixedOwner && HasReceiver(r) && !NamesMe(r.Params[0].Type)
             && ResolveTypeQuiet(r.Params[0].Type, new TypeEnv(r.File)) is { } receiver)
         {
@@ -162,7 +162,7 @@ public sealed partial class Compiler
 
     /// Whether a receiver's type is `Me` or `@Me`, the owner itself.
     private static bool NamesMe(TypeRef t) =>
-        t is { Name: "Me", Args.Count: 0 } || t is { Name: "Ptr", Args: [TypeArgType { Type: { Name: "Me", Args.Count: 0 } }] };
+        t is { Name: "Me", Args.Count: 0 } || t is { Name: "PointedCell", Args: [TypeArgType { Type: { Name: "Me", Args.Count: 0 } }] };
 
     /// The kinds the `require` and `conform ... when` clauses declare for their parameters: `typename`, or a value
     /// type such as `U64`.

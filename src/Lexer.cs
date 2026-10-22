@@ -8,7 +8,7 @@ public enum TokenKind
 {
     Ident,       // routine, S64, entry, add, count, ...
     Hash,        // @ at the head of a line or in a type argument list (starts an annotation), or the old `#`
-    At,          // @ (a pointer type: @T is Ptr<T>)
+    At,          // @ (a pointer type: @T is PointedCell<T>)
     Op,          // an operator: + - * / % ** == != < <= > >= <=> & | ^ ~ << >> >>> and the +% +^ +! forms
     Int,         // 42, -5, 0xFF
     Unit,        // 20ms, 4kib: a whole number with a time or size unit (IntValue is the number, Text the literal)

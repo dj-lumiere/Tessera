@@ -33,7 +33,7 @@ public sealed partial class Compiler
     private readonly Dictionary<string, string> _places = [];
 
     /// The constant SourceLocation of a place in the source, for a call to a `@track_caller` routine: its file as a
-    /// Span[Byte] of the program image, its line, and its column (0 when a `@source` gives none).
+    /// PointedSlice[Byte] of the program image, its line, and its column (0 when a `@source` gives none).
     public string PlaceGlobal(Pos pos)
     {
         if (Prechecking) return "@precheck";

@@ -140,11 +140,12 @@ record DirEntry
 
 ### A file seen as cells of `T`, mapped into memory (mmap, or CreateFileMapping and MapViewOfFile): random access
 ### by index, `storage[i]` and `storage[i] = v`, each read and write going to the file through the OS's page cache.
-### It comes from {OsFileManager.storage}, and `unmap` gives it back (writing changed pages first).
+### It is borrowed from {OsFileManager.storage} with `<-` and given back with `drop`, which writes changed pages back
+### and unmaps it.
 ### `FileStorage[Byte]` is the file's bytes, `FileStorage[Char]` its Unicode scalars, four bytes each (UTF-32LE). A
 ### UTF-8 text file isn't a `FileStorage[Char]`: read it as bytes.
 ### :typeparam T: The cell type, `Byte` or `Char`.
-record FileStorage[T]
+entity FileStorage[T]
 needs T: typename, StorageCell[T]
 obeys ViewingIndexable[FileStorage[T], T], ModifyingIndexable[FileStorage[T], T]
     base: Addr  # what the OS mapped, from an aligned offset (null for an empty storage)
@@ -296,8 +297,8 @@ needs TWriter: typename, Writer[TWriter]
     out.write("Cell {me.index} isn't a value of the storage's type (a Char cell holds a Unicode scalar).")
     return
 
-### A `FileStorage` over a mapping made elsewhere, from its base, delta, and cell count, to flush or unmap it. Its cells
-### count as writable.
+### A `FileStorage` over a mapping made elsewhere, from its base, delta, and cell count: its `drop` writes changed pages
+### back and unmaps it. Its cells count as writable.
 ### :param base: The mapping's base.
 ### :param delta: Bytes from the base to the first cell.
 ### :param count: The number of cells.
@@ -402,13 +403,13 @@ secret failable routine remove_entries(path: @[Byte], manager: @MemoryManager) -
 ### :returns: The file's bytes.
 ### :throws: Throws the reason when the file can't be opened or read, `MemoryAllocationError` when `manager` fails or
 ###     the file is too large for the address space (4 GiB or more on a 32-bit target).
-secret failable routine read_file(path: @[Byte], manager: @MemoryManager) -> Memory[Byte]
+secret failable routine read_file(path: @[Byte], manager: @MemoryManager) -> BorrowedSlice[Byte]
     f: &FileHandle <- .hollow()
 
     when check FileHandle.open(path, mode: OpenMode.READ)
         is FileHandle as opened => f.store(opened)
     when check read_rest(f, manager)
-        is Memory[Byte] as text =>
+        is BorrowedSlice[Byte] as text =>
             f.close()
             return text
         is FsError as error =>
@@ -422,7 +423,7 @@ secret failable routine read_file(path: @[Byte], manager: @MemoryManager) -> Mem
 ### :returns: The bytes read.
 ### :throws: Throws the reason when a read fails, `MemoryAllocationError` when `manager` fails or the file is too large
 ###     for the address space (it reports a size, or grows to one, that a U64 can't hold).
-secret failable routine read_rest(f: @FileHandle, manager: @MemoryManager) -> Memory[Byte]
+secret failable routine read_rest(f: @FileHandle, manager: @MemoryManager) -> BorrowedSlice[Byte]
     buffer: &[Byte] <- .hollow()
 
     capacity: U64 = when check f.size()
@@ -434,8 +435,8 @@ secret failable routine read_rest(f: @FileHandle, manager: @MemoryManager) -> Me
                     drop buffer
                     throw MemoryAllocationError()
         is FsError => 64
-    when check Memory[Byte].construct(count: capacity, manager: manager)
-        is Memory[Byte] as slice => buffer.replace(value: steal slice)
+    when check BorrowedSlice[Byte].construct(count: capacity, manager: manager)
+        is BorrowedSlice[Byte] as slice => buffer.replace(value: steal slice)
         is MemoryAllocationError as error =>
             drop buffer
             throw error
@@ -554,7 +555,7 @@ routine path_separator() -> Byte
 ### :throws: Crashes with `MemoryAllocationError` when the memory manager fails.
 @track_caller
 @expensive("allocates the joined path")
-secret routine join_path(a: @[Byte], b: @[Byte], manager: @MemoryManager) -> Memory[Byte]
+secret routine join_path(a: @[Byte], b: @[Byte], manager: @MemoryManager) -> BorrowedSlice[Byte]
     ends: Bool = when
         a.is_empty() => true
         else => is_separator(a.byte_at(a.count() - 1).bits())
@@ -563,7 +564,7 @@ secret routine join_path(a: @[Byte], b: @[Byte], manager: @MemoryManager) -> Mem
         else => 1
     prefix_count: U64 = a.count() + sep
     count: U64 = prefix_count + b.count()
-    memory: &[Byte] <- Memory[Byte].construct(count: count.max(1), manager: manager)
+    memory: &[Byte] <- BorrowedSlice[Byte].construct(count: count.max(1), manager: manager)
     buffer: @Byte = memory.data.peek()
     buffer.copy(src: a.data, count: a.count())
     if not ends
@@ -712,41 +713,54 @@ common routine FileStorage[T].cell_size() -> U64
 needs T: typename, StorageCell[T]
     return sizeof[T]()
 
+### Writes changed pages back and unmaps the storage, which then holds nothing.
+routine @FileStorage[T].destruct() -> None
+needs T: typename, StorageCell[T]
+    base: Addr = me.base.peek()
+    if base.is_hollow()
+        return
+    unmap_mapping(base, bytes: me.mapped_bytes())
+    me.base.poke(.hollow())
+    me.count.poke(0)
+    return
+
 ### The first byte of the first cell (null for an empty storage).
 ### :returns: `base` plus `delta`, or null.
-routine FileStorage[T].data() -> @Byte
+routine @FileStorage[T].data() -> @Byte
 needs T: typename, StorageCell[T]
-    if me.base.is_hollow()
+    base: Addr = me.base.peek()
+    if base.is_hollow()
         return .hollow()
-    return me.base.to[@Byte]().stride(me.delta)
+    return base.to[@Byte]().stride(me.delta.peek())
 
 ### The number of cells.
 ### :returns: The cell count, 0 for an empty storage.
-routine FileStorage[T].count() -> U64
+routine @FileStorage[T].count() -> U64
 needs T: typename, StorageCell[T]
-    return me.count
+    return me.count.peek()
 
 ### The bytes the OS mapped, from `base`: the delta and every cell.
 ### :returns: The mapped length in bytes.
-routine FileStorage[T].mapped_bytes() -> U64
+routine @FileStorage[T].mapped_bytes() -> U64
 needs T: typename, StorageCell[T]
-    return me.delta + me.count * sizeof[T]()
+    return me.delta.peek() + me.count.peek() * sizeof[T]()
 
 ### The value in cell `index`, `storage[index]`.
 ### :param index: The cell, from 0.
 ### :returns: The value.
 ### :throws: Throws `IndexOutOfBoundsError` when `index` is not below `count()`, and `InvalidCellError` when the cell's
 ###     bytes aren't a `T` (four bytes that aren't a Unicode scalar, in a `FileStorage[Char]`).
-failable routine FileStorage[T].getitem(index: U64) -> T
+failable routine @FileStorage[T].getitem(index: U64) -> T
 needs T: typename, StorageCell[T]
-    if index >= me.count
-        throw IndexOutOfBoundsError(index, count: me.count)
+    count: U64 = me.count.peek()
+    if index >= count
+        throw IndexOutOfBoundsError(index, count)
     when T.from_cell(at: me.data().stride(index * sizeof[T]()))
         is T as value => return value
         is None => throw InvalidCellError(index)
 
 ### Writes `value` into cell `index`, `storage[index] = value`. It reaches the file when the OS writes the page back,
-### at `flush`, or at `unmap`.
+### at `flush`, or at `drop`.
 ### :param index: The cell, from 0.
 ### :param value: The value to write.
 ### :throws: Crashes with `IndexOutOfBoundsError` when `index` is not below `count()` (a storage never grows its file),
@@ -759,9 +773,47 @@ needs T: typename, StorageCell[T]
     if not me.writable.peek()
         crash(name: "InvalidValueError",
             message: "This storage was mapped for reading only: map it with write: true to change its cells.")
-    storage: Me = me.peek()
-    value.into_cell(at: storage.data().stride(index * sizeof[T]()))
+    value.into_cell(at: me.data().stride(index * sizeof[T]()))
     return
+
+### Writes changed pages back to the file.
+### :throws: Throws the reason when the OS can't write them.
+failable routine @FileStorage[T].flush() -> None
+needs T: typename, StorageCell[T]
+    base: Addr = me.base.peek()
+    if base.is_hollow()
+        return
+    when check flush_mapping(base, bytes: me.mapped_bytes())
+        is None => return
+
+### Asks the OS to read the whole storage in now.
+routine @FileStorage[T].prefetch() -> None
+needs T: typename, StorageCell[T]
+    base: Addr = me.base.peek()
+    if base.is_hollow()
+        return
+    prefetch_mapping(base, bytes: me.mapped_bytes())
+    return
+
+### Tells the OS the storage will be read front to back.
+routine @FileStorage[T].advise_sequential() -> None
+needs T: typename, StorageCell[T]
+    base: Addr = me.base.peek()
+    if base.is_hollow()
+        return
+    advise_sequential_mapping(base, bytes: me.mapped_bytes())
+    return
+
+### Takes the mapping out of the storage, which then holds nothing (its `drop` unmaps nothing): for code that hands
+### the mapping on by its address and later gives it back through {FileStorage.construct} and `drop`.
+### :returns: The mapping's base (null for an empty storage).
+routine @FileStorage[T].take_mapping() -> Addr
+needs T: typename, StorageCell[T]
+    base: Addr = me.base.peek()
+    me.base.poke(.hollow())
+    me.count.poke(0)
+    me.delta.poke(0)
+    return base
 
 ### Where `count` cells from cell `start` begin in a file of `size` bytes, and how many of them it has: `start` and
 ### `count` clamped to the whole cells the file holds.
@@ -891,40 +943,3 @@ secret failable routine move_path(from: @[Byte], to: @[Byte], replacing: Bool,
     when check remove_file(from)
         is None => return
         is FsError => throw OriginalKeptError()
-
-# -- a FileStorage in a slot -------------------------------------------------------------
-#
-# A storage written by index (`s[i] = v`) lives in a slot, so its reading routines take the slot too.
-
-### The number of cells.
-### :returns: The cell count, 0 for an empty storage.
-routine @FileStorage[T].count() -> U64
-needs T: typename, StorageCell[T]
-    return me.count.peek()
-
-### The value in cell `index`, `storage[index]`.
-### :param index: The cell, from 0.
-### :returns: The value.
-### :throws: Throws `IndexOutOfBoundsError` when `index` is not below `count()`, and `InvalidCellError` when the cell's
-###     bytes aren't a `T`.
-failable routine @FileStorage[T].getitem(index: U64) -> T
-needs T: typename, StorageCell[T]
-    storage: Me = me.peek()
-    return when check storage.getitem(index)
-        is T as value => value
-
-### Writes changed pages back to the file.
-### :throws: Throws the reason when the OS can't write them.
-failable routine @FileStorage[T].flush() -> None
-needs T: typename, StorageCell[T]
-    storage: Me = me.peek()
-    when check storage.flush()
-        is None => return
-
-### Writes changed pages back, unmaps, and leaves the slot an empty storage.
-routine @FileStorage[T].unmap() -> None
-needs T: typename, StorageCell[T]
-    storage: Me = me.peek()
-    storage.unmap()
-    me.poke(Me.empty())
-    return

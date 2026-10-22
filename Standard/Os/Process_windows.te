@@ -974,14 +974,14 @@ secret routine moved(b: @CaptureBuffer, manager: @MemoryManager) -> CaptureBuffe
 ###     read or allocated.
 @target(os: "windows")
 @expensive("allocates a copy of the variable")
-secret routine env_var(name: @[Byte], manager: @MemoryManager) -> Maybe[Memory[Byte]]
+secret routine env_var(name: @[Byte], manager: @MemoryManager) -> Maybe[BorrowedSlice[Byte]]
     units: &@U16 <- .hollow()
     key: &Array[U16, 256] <- .hollow()
 
     n: Maybe[U64] = encode_utf16(text: name, out: key.to[@U16](), capacity: 256)
     if not n.is_present()
         return None()
-    value: &Maybe[Memory[Byte]] <- env_value(key: key.to[@U16](), units, manager)
+    value: &Maybe[BorrowedSlice[Byte]] <- env_value(key: key.to[@U16](), units, manager)
 
     # The UTF-16 value, when there is one: the UTF-8 copy is what goes back.
     held: @U16 = units.load()
@@ -998,14 +998,15 @@ secret routine env_var(name: @[Byte], manager: @MemoryManager) -> Maybe[Memory[B
 ### :returns: The value's bytes.
 ### :absent: When the variable isn't set, or the value can't be read or allocated.
 @target(os: "windows")
-secret routine env_value(key: @U16, units: @@U16, manager: @MemoryManager) -> Maybe[Memory[Byte]]
+secret routine env_value(key: @U16, units: @@U16,
+    manager: @MemoryManager) -> Maybe[BorrowedSlice[Byte]]
     c_set_last_error(0)
     need: U32 = c_get_environment_variable(key, .hollow(), 0)
     # ERROR_ENVVAR_NOT_FOUND
     if need == 0 and c_get_last_error() == 203
         return None()
     if need == 0
-        return Memory[Byte].construct(count: 0, manager: manager)
+        return BorrowedSlice[Byte].construct(count: 0, manager: manager)
     made: @U16 = allocate[U16](count: need.to[U64](), manager)
     made.poke_into(units)
     if made.is_hollow()
@@ -1014,5 +1015,5 @@ secret routine env_value(key: @U16, units: @@U16, manager: @MemoryManager) -> Ma
     if got == 0 or got >= need
         return None()
     when check copied_wide(units: made, count: got.to[U64](), manager)
-        is Memory[Byte] as t => return t
+        is BorrowedSlice[Byte] as t => return t
         is FsError => return None()

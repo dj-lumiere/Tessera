@@ -13,17 +13,17 @@ import Standard/Collections
 ### A piece of a text pattern: what it matches, as a piece tree.
 entity TextPiece
     ### The piece tree.
-    code: Memory[U32]
+    code: BorrowedSlice[U32]
 
 ### A piece of a bytes pattern: what it matches, as a piece tree.
 entity BytesPiece
     ### The piece tree.
-    code: Memory[U32]
+    code: BorrowedSlice[U32]
 
 ### Makes a text piece of a piece tree.
 ### :param code: The tree, taken over.
 ### :returns: The piece.
-common routine TextPiece.construct(code: Memory[U32]) -> Me
+common routine TextPiece.construct(code: BorrowedSlice[U32]) -> Me
     return Me(code: steal code)
 
 ### Gives back the tree.
@@ -34,7 +34,7 @@ routine @TextPiece.destruct() -> None
 ### Makes a bytes piece of a piece tree.
 ### :param code: The tree, taken over.
 ### :returns: The piece.
-common routine BytesPiece.construct(code: Memory[U32]) -> Me
+common routine BytesPiece.construct(code: BorrowedSlice[U32]) -> Me
     return Me(code: steal code)
 
 ### Gives back the tree.
@@ -46,17 +46,17 @@ routine @BytesPiece.destruct() -> None
 ### :param words: The words.
 ### :param manager: Where it takes memory.
 ### :returns: The tree.
-secret routine tree_of(words: @[U32], manager: @MemoryManager) -> Memory[U32]
-    return Memory[U32].construct(values: words, times: 1, manager: manager)
+secret routine tree_of(words: @[U32], manager: @MemoryManager) -> BorrowedSlice[U32]
+    return BorrowedSlice[U32].construct(values: words, times: 1, manager: manager)
 
 ### A tree that starts with `head` and then holds `child` (a node with one child).
 ### :param head: The words before the child.
 ### :param child: The child's tree.
 ### :returns: The tree, from the child's manager.
-secret routine wrap(head: @[U32], child: @Memory[U32]) -> Memory[U32]
+secret routine wrap(head: @[U32], child: @BorrowedSlice[U32]) -> BorrowedSlice[U32]
     count: U64 = head.count()
     total: U64 = count + child.count()
-    tree: &[U32] <- Memory[U32].construct(count: total, manager: child.manager.peek())
+    tree: &[U32] <- BorrowedSlice[U32].construct(count: total, manager: child.manager.peek())
 
     each i: U64 in 0 til count
         tree.getslot(i).poke(head.getitem(i))
@@ -84,8 +84,8 @@ secret routine code_points(text: @[Byte], manager: @MemoryManager) -> List[U32]
 ### :param units: The units.
 ### :param manager: Where it takes memory.
 ### :returns: The tree.
-secret routine literal_tree(units: @[U32], manager: @MemoryManager) -> Memory[U32]
-    tree: &[U32] <- Memory[U32].construct(count: units.count() + 2, manager: manager)
+secret routine literal_tree(units: @[U32], manager: @MemoryManager) -> BorrowedSlice[U32]
+    tree: &[U32] <- BorrowedSlice[U32].construct(count: units.count() + 2, manager: manager)
 
     tree.getslot(0).poke(NODE_LITERAL)
     tree.getslot(1).poke(units.count().to[U32]())
@@ -212,10 +212,11 @@ routine none_of(chars: @[Byte], manager: @MemoryManager) -> TextPiece
 ### :param negated: Whether the characters outside them are meant.
 ### :param manager: Where the tree takes memory.
 ### :returns: The tree.
-secret routine set_tree(chars: @[Byte], negated: Bool, manager: @MemoryManager) -> Memory[U32]
+secret routine set_tree(chars: @[Byte], negated: Bool,
+    manager: @MemoryManager) -> BorrowedSlice[U32]
     points: &List[U32] <- code_points(text: chars, manager)
     count: U64 = points.count()
-    tree: &[U32] <- Memory[U32].construct(count: count * 2 + 3, manager: manager)
+    tree: &[U32] <- BorrowedSlice[U32].construct(count: count * 2 + 3, manager: manager)
 
     tree.getslot(0).poke(NODE_RANGES)
     tree.getslot(1).poke(negated.to[U32]())
@@ -303,7 +304,7 @@ routine end_of_bytes(manager: @MemoryManager) -> BytesPiece
 ### :param max: The most rounds, REPEAT_UNBOUNDED for no limit.
 ### :returns: The tree, from the child's manager.
 @track_caller
-secret routine repeat_tree(code: @Memory[U32], min: U64, max: U64) -> Memory[U32]
+secret routine repeat_tree(code: @BorrowedSlice[U32], min: U64, max: U64) -> BorrowedSlice[U32]
     if min > max
         crash("InvalidPatternError", "A repetition asks for more rounds at least than at most.")
     if max != REPEAT_UNBOUNDED.to[U64]() and max >= REPEAT_UNBOUNDED.to[U64]()
@@ -418,7 +419,7 @@ routine one_or_more(piece: BytesPiece) -> BytesPiece
 ### :param name: The name.
 ### :param code: The child's tree.
 ### :returns: The tree, from the child's manager.
-secret routine capture_tree(name: @[Byte], code: @Memory[U32]) -> Memory[U32]
+secret routine capture_tree(name: @[Byte], code: @BorrowedSlice[U32]) -> BorrowedSlice[U32]
     points: &List[U32] <- code_points(text: name, manager: code.manager.peek())
     head: &List[U32] <- .construct(code.manager.peek())
 
@@ -476,7 +477,7 @@ routine ignoring_case(piece: BytesPiece) -> BytesPiece
 ### :returns: The tree, from the first piece's manager.
 ### :throws: Crashes with `InvalidPatternError` when there are no pieces.
 @track_caller
-secret routine text_branches(kind: U32, pieces: @[TextPiece]) -> Memory[U32]
+secret routine text_branches(kind: U32, pieces: @[TextPiece]) -> BorrowedSlice[U32]
     if pieces.count() == 0
         crash("InvalidPatternError", "An either needs at least one alternative.")
     manager: @MemoryManager = pieces.getslot(0).code.manager.peek()
@@ -488,7 +489,8 @@ secret routine text_branches(kind: U32, pieces: @[TextPiece]) -> Memory[U32]
         piece: @TextPiece = pieces.getslot(i)
         append_words(tree: words, from: piece.code.getslice())
         drop pieces.getslot(i)
-    tree: &[U32] <- Memory[U32].construct(values: words.getview(), times: 1, manager: manager)
+    tree: &[U32] <- BorrowedSlice[U32].construct(values: words.getview(), times: 1,
+        manager: manager)
 
     drop words
     return tree
@@ -499,7 +501,7 @@ secret routine text_branches(kind: U32, pieces: @[TextPiece]) -> Memory[U32]
 ### :returns: The tree, from the first piece's manager.
 ### :throws: Crashes with `InvalidPatternError` when there are no pieces.
 @track_caller
-secret routine bytes_branches(kind: U32, pieces: @[BytesPiece]) -> Memory[U32]
+secret routine bytes_branches(kind: U32, pieces: @[BytesPiece]) -> BorrowedSlice[U32]
     if pieces.count() == 0
         crash("InvalidPatternError", "An either needs at least one alternative.")
     manager: @MemoryManager = pieces.getslot(0).code.manager.peek()
@@ -511,7 +513,8 @@ secret routine bytes_branches(kind: U32, pieces: @[BytesPiece]) -> Memory[U32]
         piece: @BytesPiece = pieces.getslot(i)
         append_words(tree: words, from: piece.code.getslice())
         drop pieces.getslot(i)
-    tree: &[U32] <- Memory[U32].construct(values: words.getview(), times: 1, manager: manager)
+    tree: &[U32] <- BorrowedSlice[U32].construct(values: words.getview(), times: 1,
+        manager: manager)
 
     drop words
     return tree

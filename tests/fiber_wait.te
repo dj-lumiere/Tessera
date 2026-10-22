@@ -34,17 +34,17 @@ record Family
 routine play(game: @PingPong, mine: U32, own: @@FiberState, other: @@FiberState) -> None
     sched: @FiberManager = game.sched.peek()
 
-    own.poke_atomic(sched.current())
+    own.poke_unbroken(sched.current())
 
     each i in 0 til ROUNDS
         # park may return without a wake, so the turn is checked again.
-        until game.turn.peek_atomic() == mine
+        until game.turn.peek_unbroken() == mine
             sched.park()
         then
             # The other side may not have its handle in yet: then it hasn't checked the turn either, and will see it.
-            game.handoffs.atomic_fetch_add(1)
-            game.turn.poke_atomic(mine ^ 1)
-            peer: @FiberState = other.peek_atomic()
+            game.handoffs.unbroken_fetch_add(1)
+            game.turn.poke_unbroken(mine ^ 1)
+            peer: @FiberState = other.peek_unbroken()
             if peer.is_hollow()
                 continue
             else
@@ -71,11 +71,11 @@ routine sleeper(s: @Sleeper) -> None
     wake_at: Duration = delay + all.base.peek()
     all.sched.peek().waitfor(wake_at -^ Clock.monotonic())
     early: Bool = Clock.monotonic() < wake_at
-    slot: U64 = all.next.atomic_fetch_add(1)
+    slot: U64 = all.next.unbroken_fetch_add(1)
     order_slots: @U64 = all.order.to[@U64]()
     order_slots.stride(slot).poke(id)
     if early
-        all.short.atomic_fetch_add(1)
+        all.short.unbroken_fetch_add(1)
         return
     else
         return
@@ -84,9 +84,9 @@ routine sleeper(s: @Sleeper) -> None
 routine child(family: @Family) -> None
     sched: @FiberManager = family.sched.peek()
     sched.waitfor(1ms)
-    family.sum.atomic_fetch_add(1)
+    family.sum.unbroken_fetch_add(1)
     sched.yield()
-    family.sum.atomic_fetch_add(9)
+    family.sum.unbroken_fetch_add(9)
     return
 
 routine parent(family: @Family) -> None
@@ -97,13 +97,14 @@ routine parent(family: @Family) -> None
         kid: Fiber[None] <- sched.get_fiber[None]()
         work_kid: Work[None] <- child.to[Work](family: family)
         kid.put_work(work_kid)
+        drop work_kid
         kids.stride(i).poke(kid)
 
     each i: U64 in 0 til 10
         kid: Fiber[None] <- kids.stride(i).peek()
         kid.wait_finished()
         drop kid
-    Console.show("joined: sum {family.sum.peek_atomic()}")
+    Console.show("joined: sum {family.sum.peek_unbroken()}")
     return
 
 routine start() -> None
@@ -128,10 +129,12 @@ routine start() -> None
     pinger: Fiber[None] <- sched.get_fiber[None]()
     work_pinger: Work[None] <- ping.to[Work](game: game)
     pinger.put_work(work_pinger)
+    drop work_pinger
     players[0] = pinger
     ponger: Fiber[None] <- sched.get_fiber[None]()
     work_ponger: Work[None] <- pong.to[Work](game: game)
     ponger.put_work(work_ponger)
+    drop work_ponger
     players[1] = ponger
 
     sleepers.store(Sleepers(sched: sched, order: [0, 0, 0, 0, 0, 0, 0, 0], next: 0, short: 0,
@@ -143,15 +146,18 @@ routine start() -> None
         f: Fiber[None] <- sched.get_fiber[None]()
         work_f: Work[None] <- sleeper.to[Work](s: s)
         f.put_work(work_f)
+        drop work_f
         sleeper_fibers[i] = f
     family: &Family <- Family(sched: sched, sum: 0, children: .hollow())
     elder: Fiber[None] <- sched.get_fiber[None]()
     work_elder: Work[None] <- parent.to[Work](family: family)
     elder.put_work(work_elder)
+    drop work_elder
     alone: &Family <- Family(sched: sched, sum: 0, children: .hollow())
     lone: Fiber[None] <- sched.get_fiber[None]()
     work_lone: Work[None] <- child.to[Work](family: alone)
     lone.put_work(work_lone)
+    drop work_lone
     sched.run()
     drop elder
     Console.show("handoffs: {game.handoffs.peek()}")

@@ -26,7 +26,7 @@ top to bottom with declarations seen everywhere, and the end of the file is its 
 STACK places back there, and every other place must be given back by then). A routine can't read a top-level binding (pass it, or use a `global`),
 an imported file has no top-level lines, and a file with them declares no `start`. A file may start with `module A/B` and `import` lines. Name lookup follows
 modules: a file sees its own module, `Standard/System` and every module under it (always seen: the built-in types,
-`Maybe`, `Check`, `None`, `@[T]`, `Memory`, `Box`, the protocols, formatting, the memory managers, `HEAP`), and what
+`Maybe`, `Check`, `None`, `@[T]`, `BorrowedSlice`, `BorrowedCell`, the protocols, formatting, the memory managers, `HEAP`), and what
 it imports, so a `List` needs `import Standard/Collections`, and `Console` / `ProcessManager` need `import Standard/Os`
 (the hosted layer, the only one that calls libc; a target with OS `none` has none of it). Importing a module brings
 that module, not the modules under it. A standard library module is its folder (`Standard/System/Memory/` is
@@ -41,7 +41,7 @@ Standard/Collections/Dict` names a type.
 
 The standard library's modules:
 
-- `Standard/System`: the built-in types (integers, floats, `Bool`, `Ptr`, `Array`, `Vector`, `@[T]`, `Memory`, `Box`,
+- `Standard/System`: the built-in types (integers, floats, `Bool`, `PointedCell`, `Array`, `Vector`, `@[T]`, `BorrowedSlice`, `BorrowedCell`,
   `Maybe`, `Check`, `Result` for the C boundary, tuples), the protocols, the crashables, the `Crash` service and the
   crash trace, and hashing.
 - `Standard/System/Numerics`: wide division, `BigNat`, the float formats, and one folder per float type with its math
@@ -49,7 +49,7 @@ The standard library's modules:
 - `Standard/System/Text`: formatting (`Writer`, `Representable`, `Diagnosable`), reading values from text
   (`Parsable`), UTF-8, and the byte-text views.
 - `Standard/System/Memory`: the memory managers and their tables (`HEAP`, `C_HEAP`, `PAGES`), `StackManager`,
-  `GlobalManager`, `ThreadLocalManager`, `ByteSize`, and `Atomic`.
+  `GlobalManager`, `ThreadLocalManager`, `ByteSize`, and `Unbroken`.
 - `Standard/System/Cpu`: the startup steps without an OS (`prepare_core`, which the program's `when_power_on` calls), the
   `CpuEventManager`, and the fault report.
 - `Standard/System/Temporal` (`Duration`, `Moment`), `Standard/System/Serialization` (JSON strings),
@@ -107,9 +107,9 @@ routine start() -> None
   whether a value is a pointer (`@T`, or `Addr` for an address with no pointee type, C's `void*`). `@T`
   passes where an `Addr` is expected; the other way takes `a.to[@T]()`. An `Addr` moves by a `ByteSize` with `+%` /
   `-%` (`buf +% 16b`, `at -% header`), and `b -% a` is the distance from `a` to `b` as a `ByteSize`: both wrap and
-  check no bounds. Plain `+` / `-` on an `Addr` are build errors that point to them. Two addresses compare with `===` / `!==`. `@T` is how the record `Ptr[T]` is
+  check no bounds. Plain `+` / `-` on an `Addr` are build errors that point to them. Two addresses compare with `===` / `!==`. `@T` is how the record `PointedCell[T]` is
   written (`@@Byte`, `@Array[@S32, 3]`); it keeps its name only where routines are declared on it or called through
-  it (`routine Ptr[T].peek`). An annotation is a `@name` line of its own
+  it (`routine PointedCell[T].peek`). An annotation is a `@name` line of its own
   above the declaration, one per line: `@target(os: "windows")`, then `@external("c")`, then `@noreturn`. `@T` is
   also the pointer type: an annotation only starts a line (or sits inside a `Callable` type, below).
 - `=` only binds. Memory is read and written with methods: `v: S64 = p.peek()`, `p.poke(v)`,
@@ -134,24 +134,24 @@ routine start() -> None
   `handler: Callable[…] = me.handler.peek()`, then `handler.call(x)`. `me.handler(...)` is an error.
 - A field of a record value is read with plain `=`: `key: K = pair.key`.
 - **Places: `<-` borrows.** `x: &T <- v` borrows a place for a `T` from a memory manager and puts `v` in it: three
-  steps in one line (the manager's borrow, the `Box[T]` made over the place, the store). With no `from` (or `from
+  steps in one line (the manager's borrow, the `BorrowedCell[T]` made over the place, the store). With no `from` (or `from
   STACK`, or `from StackManager.current()`) the manager is the running flow's stack, and the place is one frame slot
-  with no fields. `x: &[T] <- [v] * n from HEAP` borrows a run (a `Memory[T]`), `node: &Node <- (value: 1, next:
-  .hollow()) from HEAP` one value (a `Box[T]`). `&T` is short for `Box[T]` and `&[T]` for `Memory[T]` (the long names
-  stay valid), the way `@T` is `Ptr[T]`. `@T` / `@[T]` only view: they come from `getview`, `getslot`, `getslice`, and
+  with no fields. `x: &[T] <- [v] * n from HEAP` borrows a run (a `BorrowedSlice[T]`), `node: &Node <- (value: 1, next:
+  .hollow()) from HEAP` one value (a `BorrowedCell[T]`). `&T` is short for `BorrowedCell[T]` and `&[T]` for `BorrowedSlice[T]` (the long names
+  stay valid), the way `@T` is `PointedCell[T]`. `@T` / `@[T]` only view: they come from `getview`, `getslot`, `getslice`, and
   are never places. `=` binds a value or a view (`x: S64 = 3`, `cell: @Cell = m.getslot(i)`), never a `&T` / `&[T]`
   (build error: "a &List[S64] is a place borrowed from a manager, and '=' only binds a value or a view: xs:
   &List[S64] <- value"), and `x: S64 <- 3` is a build error ("'<-' borrows: n: &S64 <- value borrows a place and puts
   the value in it, and n: S64 = value binds a value"), as is `x: @S64 <- 3` ("@S64 only views memory, and '<-' borrows
-  a place: n: &S64 <- value"). A call that returns the Box / Memory itself is bound with `<-` too: `m: &[U8] <-
-  Memory[U8].construct(count: 4, manager: HEAP)` (the name holds what the manager lent). `local` is not a statement (a
+  a place: n: &S64 <- value"). A call that returns the BorrowedCell / BorrowedSlice itself is bound with `<-` too: `m: &[U8] <-
+  BorrowedSlice[U8].construct(count: 4, manager: HEAP)` (the name holds what the manager lent). `local` is not a statement (a
   line starting with it is a build error that shows both forms), and stays a reserved word.
 - **Giving a place back.** A `<-` name owes a give back (`drop`). STACK places: the builder gives them back at every
   exit of the body they are in (its end, `return`, `break` / `continue` out of a loop, a value `when`'s `becomes`),
   the last one borrowed first, running the value's `destruct`: `xs: &List[S64] <- .construct(HEAP)` gives its heap
   storage back at that exit too. The program doesn't write their `drop`. It may `drop xs` early, and the builder
-  then doesn't drop it again. A place from another manager (`from HEAP`, a call returning a Box / Memory) and an access:
-  the program writes `drop`, and a missing one is a build error ("'cell' holds a Box[S64] (from line 6)
+  then doesn't drop it again. A place from another manager (`from HEAP`, a call returning a BorrowedCell / BorrowedSlice) and an access:
+  the program writes `drop`, and a missing one is a build error ("'cell' holds a &S64 (from line 6)
   that hasn't ended when 'start' returns here: drop cell, return it, or hand it over with steal cell"). A STACK place
   of a variant, or of a type whose `destruct` takes a manager argument, is ended by the program too (the same error
   when it isn't). A STACK `&[T]` takes an array literal with a count the build knows (a literal count or a preset)
@@ -167,7 +167,7 @@ routine start() -> None
 - A place that a routine fills later (an out parameter, `out.construct(...)`, an iterator's place) starts as
   `p: &T <- .hollow()`: `T.hollow()`, which every type has, is the all-zero value (`0`, `false`, a pointer to nothing, a
   collection with no memory, a choice's first member), and every `destruct` leaves it alone (`<- .hollow()` is a
-  memset in place). A place whose type holds no pointer (no `Ptr`, `Addr`, `Callable`, `@[T]`, `Box`, `Memory`) may
+  memset in place). A place whose type holds no pointer (no `PointedCell`, `Addr`, `Callable`, `@[T]`, `BorrowedCell`, `BorrowedSlice`) may
   start `<- .uninit()`: nothing is written, for a buffer a routine fills right away. Read it only after the fill
   (`--uninit-fill` / `[debug] uninit-fill = true` fills such places with 0xAA bytes to make an early read stand out).
   `.uninit()` elsewhere, or on a type holding a pointer, is a build error. An array value comes from `[1, 2, x]` or a
@@ -176,34 +176,34 @@ routine start() -> None
   `global`, an argument, an element of an outer literal, the pointer of `poke_into`), the type can be left off:
   `preset SORTED: &Array[S64, 3] <- [-8, 0, 7]`, `p: Point = (x: 1, y: 2)`, like `.absent()`. Write the type
   where it isn't on the same line. A receiver gives it no type: `[1, 2].eq(...)` is an error.
-- **Where values are: four types.** `@T` (a `Ptr`) is the address of one value (a place's value, a field, an element,
-  memory from C). `@[T]` (Core, `Types/Span.te`) is `{data, count}`, a run of values it views. Both only VIEW
+- **Where values are: four types.** `@T` (a `PointedCell`) is the address of one value (a place's value, a field, an element,
+  memory from C). `@[T]` (Core, `Types/PointedSlice.te`) is `{data, count}`, a run of values it views. Both only VIEW
   memory and release nothing. Only a `@T` reads and writes its value (`peek` / `poke`, and everything `@T` has:
-  `peek_volatile`, `atomic_fetch_add`, ...), and only a `Box[T]` reads and writes its own (`load` / `store`). A span
+  `peek_volatile`, `unbroken_fetch_add`, ...), and only a `BorrowedCell[T]` reads and writes its own (`load` / `store`). A span
   turns an element into one of those: `getitem(i)` is the value (a copy, `xs[i]`), `getslot(i)` its place (the checked
   `@T`), `try view.getitem(i)` a `Maybe`, `getslice(start, count)` a part, `getview()` itself, `to[@T]()` the first
   address, and `swap(first, second)` trades two values in place (moved). A span has no `setitem`: `xs[i] = v` on a span
-  is a build error, write `xs.getslot(i).poke(v)`. `Box[T]` (`&T`, `{at, manager}`) and `Memory[T]` (`&[T]`, `{data, count,
-  manager}`, `Memory.te`) are places BORROWED from a `MemoryManager`, and both are ENTITIES (Entities, below): never
-  copied, bound with `<-` (`m: &[Byte] <- Memory[Byte].construct(count: 4, manager: manager)`), every
-  routine takes `me` by its address (`routine @Memory[T].getslot(...)`). The block holds the values and nothing else,
+  is a build error, write `xs.getslot(i).poke(v)`. `BorrowedCell[T]` (`&T`, `{at, manager}`) and `BorrowedSlice[T]` (`&[T]`, `{data, count,
+  manager}`, `BorrowedSlice.te`) are places BORROWED from a `MemoryManager`, and both are ENTITIES (Entities, below): never
+  copied, bound with `<-` (`m: &[Byte] <- BorrowedSlice[Byte].construct(count: 4, manager: manager)`), every
+  routine takes `me` by its address (`routine @BorrowedSlice[T].getslot(...)`). The block holds the values and nothing else,
   plain `T` values in a row. Given back exactly once, with the statement `drop m`, by `return m`, or by handing it on
-  with `steal m` to a routine that takes a `Memory` / `Box` by value (that routine gives it back then). `drop x` calls
+  with `steal m` to a routine that takes a `BorrowedSlice` / `BorrowedCell` by value (that routine gives it back then). `drop x` calls
   the type's `destruct`: a program never writes `x.destruct()` itself (a build error: "a value is given back with drop:
   drop x"), only a type's own `destruct` body gives its members back. `drop` leaves the place hollow: `.hollow()` holds
   nothing, `drop` on it does nothing, a read crashes with `InvalidValueError`.
-- **The elements of a Memory.** A `Memory[T]` reads and writes nothing itself, and reaches its elements the way a
+- **The elements of a BorrowedSlice.** A `BorrowedSlice[T]` reads and writes nothing itself, and reaches its elements the way a
   `@[T]` does: `m[i]` (getitem, failable: `IndexOutOfBoundsError`) is the value, a copy, `m.getslot(i)` its place as a
   `@T` (the address `data + i * T.data_size()`, checked against the count), `m.getslice(start, count)` a run of them as
   a `@[T]`, and `m.getslice()` every value. An entity element is never copied, so `m[i]` on one is a build error: look
   at it through `m.getslot(i)`, or take it out with `steal m.getslot(i)`, which leaves the place hollow. Write an
   element through its place: `m.getslot(i).poke(v)`. `m.load(i)`, `m.store(i, v)`, `m[i] = v`, `m.getview()`, and
-  `m.getview(i)` are build errors that name these forms. A Memory also has
+  `m.getview(i)` are build errors that name these forms. A BorrowedSlice also has
   `construct(count, manager)` (uninitialized, failable: it throws `MemoryAllocationError`, which `check
-  Memory[T].construct(...)` receives), `count()`, `swap(first, second)`, `keep_first(n)` (only the first n in use, no
+  BorrowedSlice[T].construct(...)` receives), `count()`, `swap(first, second)`, `keep_first(n)` (only the first n in use, no
   copy), `duplicate()` (memory of its own), `replace(value: new)`, `take()` (moves the memory out, leaving this one
   empty with the same manager), `give_back()`, `resize(n)` (failable like `construct`), `to[@T]()` (the first value's
-  address, for C), and `destruct_all()` (destructs every value, then gives the memory back). A `Box[T]` has `load()`,
+  address, for C), and `destruct_all()` (destructs every value, then gives the memory back). A `BorrowedCell[T]` has `load()`,
   `store(v)`, `getview()` (its `@T`), `take()`, `duplicate()`, `replace(value: new)`. `Array[T, COUNT]` is the run of
   values whose count is in the type, a value. `getview()` gives a `@[T]` of anything else holding contiguous elements
   (a `List`, an `Array` through a pointer, a `SliceWriter`, a `CStrView`). `@[T].construct(data, count)` wraps memory
@@ -220,9 +220,9 @@ routine start() -> None
   header in front of each block and crashes with `DoubleFreeError` at the line that gives the same block back a second time (a
   quarantine of the last 256 blocks given back keeps that sure, raw layer included). With it off it is plain malloc / free,
   and so is a single-file build without a manifest.
-- **Lending.** Passing a `Memory[T]` where a `@[T]` parameter is expected lends it (the argument becomes
-  `getslice()`), and a `Box[T]` where a `@T` is expected lends its address (`getview()`). A routine a Memory has none
-  of its own for is called on its `getslice()` (`line.trim()` on a `Memory[Byte]`). Only at argument positions and
+- **Lending.** Passing a `BorrowedSlice[T]` where a `@[T]` parameter is expected lends it (the argument becomes
+  `getslice()`), and a `BorrowedCell[T]` where a `@T` is expected lends its address (`getview()`). A routine a BorrowedSlice has none
+  of its own for is called on its `getslice()` (`line.trim()` on a `BorrowedSlice[Byte]`). Only at argument positions and
   receivers: anywhere else write `m.getslice()` (`view: @[U32] = m.getslice()`). The view is valid until the memory
   is given back or resized.
 - **Static and frame memory as a span.** `preset NAME: &[T] <- [a, b]` is read-only static data (a write faults
@@ -234,35 +234,35 @@ routine start() -> None
   frame span too: `total([4, 5, 6])`. A view of the frame must not leave the routine. `preset NAME: &Array[T, N] <-
   [...]` is an array in memory.
 - **Memory from a manager is written with `from`.** `words: &[U64] <- [0] * n from HEAP` (the count
-  may be a runtime value: it calls `Memory[T].construct(values: @[T], times: U64, manager)`),
+  may be a runtime value: it calls `BorrowedSlice[T].construct(values: @[T], times: U64, manager)`),
   `node: &Node <- (value: 1, next: .hollow()) from HEAP`, and `x: &S64 <- 10 from HEAP` (they
-  call `Box[T].construct(value, manager)`). The program gives these back with `drop`. Without `from` the place is a
+  call `BorrowedCell[T].construct(value, manager)`). The program gives these back with `drop`. Without `from` the place is a
   slot of the routine's frame, which the routine borrowed from its flow's `StackManager` (below): `x: &S64 <- 5 from
   STACK` is the same place as `x: &S64 <- 5`, follows rule 3 (no view of it leaves the routine), and the builder
   gives it back.
-- **The five rules.** 1. `@T` / `@[T]` only view (peek / poke), never give back. 2. `Box` / `Memory` and accesses
+- **The five rules.** 1. `@T` / `@[T]` only view (peek / poke), never give back. 2. `BorrowedCell` / `BorrowedSlice` and accesses
   come from a manager: given back exactly once or handed over, empty or not. 3. A `@T` / `@[T]` viewing this
   routine's memory (a STACK place, a frame span) does not leave the routine. 4. A routine that moves memory says
   `@reshaping`, and isn't called while that memory is viewed. 5. A global `&T` / `&[T]` holding memory is changed with
   `replace`, and the last one is given back when the program ends. The build checks all five, as below, in every routine: an instance of
-  a generic routine is checked with its type parameters bound (`keep[Memory[S64]]` is followed like a routine that takes
-  a `Memory[S64]`), and an error in one says which instance (`(in keep with T = Memory[S64])`). Build errors unless marked.
-- **The group check (rule 2).** A Box / Memory is an entity, so the entity
+  a generic routine is checked with its type parameters bound (`keep[BorrowedSlice[S64]]` is followed like a routine that takes
+  a `BorrowedSlice[S64]`), and an error in one says which instance (`(in keep with T = BorrowedSlice[S64])`). Build errors unless marked.
+- **The group check (rule 2).** A BorrowedCell / BorrowedSlice is an entity, so the entity
   rules apply: it lives in a place, and it ends exactly once on every path (`drop m`, `return m`, handed over with
   `steal m`, handed over to an entity's field, or the builder's give back of a STACK place). The errors and their fixes:
-  - `'m' holds a Memory[Byte] (from line N) that hasn't ended when 'r' returns here`: drop it, return it, or hand it
+  - `'m' holds a &[Byte] (from line N) that hasn't ended when 'r' returns here`: drop it, return it, or hand it
     on. Also what a path that skips the release gets (dropped in one arm of an `if`, not the other).
-  - `'m' ended already (drop m on line N), and a Memory[Byte] ends once` (a second `drop`, or a drop after
+  - `'m' ended already (drop m on line N), and a &[Byte] ends once` (a second `drop`, or a drop after
     `steal m`), and `'m' is used after drop m on line N ended it`: a place dropped or handed over is gone. A `drop`
     leaves the place empty at run time, but the build counts the drop: the place holds nothing again until a value is
     put in it (`poke`).
-  - `'s' holds a Memory[Byte] (from line N) that hasn't ended, and this overwrites it`: a `poke` into a place that
+  - `'s' holds a &[Byte] (from line N) that hasn't ended, and this overwrites it`: a `poke` into a place that
     holds live memory. Drop it first, or use `replace(value: new)`.
-  - `'q.m' holds a Memory[S64], and this poke overwrites it without giving it back`: a field that holds a Memory, a Box,
+  - `'q.m' holds a &[S64], and this poke overwrites it without giving it back`: a field that holds a BorrowedSlice, a BorrowedCell,
     or an entity is changed with `q.m.replace(value: new)` (it gives the old one back first). A `poke` into it is allowed
     only while it holds nothing: after `steal q.m as old`, or when its place was filled with `.hollow()` and the field
     wasn't poked since.
-  - `'Q.destruct' never gives back 'me.m'`: a `destruct` gives back every field of `me` that holds a Memory, a Box, or an
+  - `'Q.destruct' never gives back 'me.m'`: a `destruct` gives back every field of `me` that holds a BorrowedSlice, a BorrowedCell, or an
     entity (`drop me.m`, `me.m.give_back()`, `me.m.destruct_all()`, `me.m.take()`, or `steal me.m as old` handed on) on
     some path. A path that returns early (the field is hollow there) is allowed. Giving one back twice on a path is
     `'me.m' ended already` or `'me.m' is used after drop me.m`.
@@ -282,7 +282,7 @@ routine start() -> None
     manager's table (`[0] * n from table`, `.construct(table)`) goes back to that manager, so the manager and its table
     outlive it. Give `m` back first.
   - `'kill' gives back what 'm' points at (drop m on line N), and its caller holds that`: a routine drops (or steals) what a
-    `@Box[T]` / `@Memory[T]` / `@E` parameter points at and returns without putting a value back. The caller still
+    `@BorrowedCell[T]` / `@BorrowedSlice[T]` / `@E` parameter points at and returns without putting a value back. The caller still
     holds it. Take it by value (the caller hands it over with `steal`), or poke a value back before returning.
     `destruct` and `destruct_all` are the routines that end `me`.
   The check follows one routine's flow, and a routine it calls through what that routine says about its parameters
@@ -304,7 +304,7 @@ routine start() -> None
   `work.start_from(manager)` on a `ThreadManager` or a `ThreadPoolManager`) runs on another thread, next to the
   routine that started it and other work. The memory it changes (in its own body or in the program's routines it
   calls) is one of three, else it is a build error: memory it was handed with `steal` (its own from then on), an
-  `Authorized[T]` handed to it, or an `Atomic[T]` (changed with its routines), so the work routine's parameters show
+  `Authorized[T]` handed to it, or an `Unbroken[T]` (changed with its routines), so the work routine's parameters show
   what it changes (`routine collect_dues(book: Authorized[Ledger], rate: U64)`). The rules are the same for both ways
   of starting work. With `start_from`, the access is borrowed right in the work's arguments, and the work's
   `retrieve()` gives it back:
@@ -346,13 +346,13 @@ routine start() -> None
   thread, and it changes the global 'G' (line N: ...) without an exclusive access, while other threads reach it too:
   ...` and `work.start_from(DEFAULT_THREADS) hands 'xs' to 'f', which changes it on another thread without an
   exclusive access, and it isn't handed over with steal, so other threads may reach it too: hand it over with steal,
-  or ...`, both ending with the fix "hand the work an exclusive access to it (its parameter an Authorized[T]): borrowed in the work's arguments, f.to[Work](p: p.get_exclusive_access()), for start_from, whose retrieve gives it back, or borrowed in a name first, held: Authorized[T] <- p.get_exclusive_access(), and dropped after the ticket's wait; or make it an Atomic[T] and change it with its routines".
+  or ...`, both ending with the fix "hand the work an exclusive access to it (its parameter an Authorized[T]): borrowed in the work's arguments, f.to[Work](p: p.get_exclusive_access()), for start_from, whose retrieve gives it back, or borrowed in a name first, held: Authorized[T] <- p.get_exclusive_access(), and dropped after the ticket's wait; or make it an Unbroken[T] and change it with its routines".
   The build doesn't know whether two threads get the same memory and follows no `Addr` or address made with
   `inttoptr`: the debug race check (`[debug] race-check`, on in a debug build where it is supported) catches what it
   misses while the program runs.
 - **The escape check (rule 3).** A routine doesn't return a view of its frame (a STACK place, a frame span, and
   every view made from them with `getslot` / `getslice` / `stride` / `offset` / `to` / a span's `getview`) or of a
-  Box / Memory it holds (`m.getslice()`, `m.getslot(i)`), and doesn't store one through a parameter (`out.poke(x)`)
+  BorrowedCell / BorrowedSlice it holds (`m.getslice()`, `m.getslot(i)`), and doesn't store one through a parameter (`out.poke(x)`)
   or into a global. Errors: `this returns a view of the frame slot 'x' ...` and `this keeps a view of ... where it
   outlives 'r'`. Fix: return the values, or let the caller pass the memory in (a `@[T]` or a `@T` parameter) and
   write there. The check follows values out of the routine:
@@ -386,8 +386,8 @@ routine start() -> None
   - Every routine reports errors, an instance of a generic routine included.
 - **`@reshaping` (rule 4), written by hand.** `@reshaping` alone means the routine may move the memory of `me`.
   `@reshaping(items, keys)` names parameters. The base: `MemoryManager.reborrow` (`@reshaping(at)`), `reallocate[T]`
-  (`@reshaping(ptr)`), `Memory[T].resize`, and every growing collection mutator: `List.add_last` /
-  `reserve` / `ensure_capacity`, `Dict.setitem`, `Set.add`, `CircularList.add_last` / `add_first`,
+  (`@reshaping(ptr)`), `BorrowedSlice[T].resize`, and every growing collection mutator: `List.add_last` /
+  `reserve` / `ensure_capacity`, `Dict.setitem`, `Set.add`, `RotatableList.add_last` / `add_first`,
   `PriorityQueue.add` / `reserve`, and the `FiberManager` routines (`run`, `waitfor`, `wake`,
   ...). Giving back (`give_back`, `destruct`) isn't moving.
   - A routine that calls a `@reshaping` routine on memory reached from its own parameter must say so:
@@ -410,7 +410,7 @@ routine start() -> None
     grow(xs)
     again: @S64 = xs.getslot(0)  # take it again after
     ```
-- **A global holding a Box / Memory (rule 5).** `global CACHE: &[Byte]` (no literal) is a global holding a `Memory`,
+- **A global holding a BorrowedCell / BorrowedSlice (rule 5).** `global CACHE: &[Byte]` (no literal) is a global holding a `BorrowedSlice`,
   hollow until `CACHE.replace(value: ...)`. Only `replace` changes it (it gives the old memory back, then stores the
   new one: `poke` is an error), and no other routine than `start` drops it. Nothing has to: a global lives as long as
   the program, and its memory is given back when the program ends (the process's memory goes with it, and a device
@@ -420,7 +420,7 @@ routine start() -> None
   global CACHE: &[Byte]
 
   routine refill(count: U64, fill: Byte) -> None
-      CACHE.replace(value: Memory[Byte].construct(values: [fill], times: count, manager: HEAP))
+      CACHE.replace(value: BorrowedSlice[Byte].construct(values: [fill], times: count, manager: HEAP))
       return
 
   routine start() -> None
@@ -428,7 +428,7 @@ routine start() -> None
       return
   ```
 
-  `Box[T].replace` works the same. `Memory[T].give_back()` gives the memory back and keeps the manager, so a later
+  `BorrowedCell[T].replace` works the same. `BorrowedSlice[T].give_back()` gives the memory back and keeps the manager, so a later
   `resize` draws from it again (what a collection's `destruct` does with its storage).
 - **Every memory region has a manager** (all in Standard/System/Memory: the protocols, the hosted managers, and the
   ones without an OS). A manager is named for what it manages. A heap's obeys `HeapManageable` (blocks given back in any
@@ -475,13 +475,13 @@ routine start() -> None
   ended is a build error: `'table' is the table of the manager 'arena', which ended at drop arena on line N, so the
   table points at a manager that isn't there: a manager outlives its table. Use 'table' before line N, or end 'arena'
   after the table's last use` (the same for `steal arena`), and returning a table of a STACK place's manager is the
-  escape check's error. Memory borrowed through the table in the same routine (a `Memory`, a `Box`, a `List`) is given
+  escape check's error. Memory borrowed through the table in the same routine (a `BorrowedSlice`, a `BorrowedCell`, a `List`) is given
   back before the manager and the table end (the group check above). Memory handed to another routine and given back
   there after the manager ended isn't followed.
 - **The default heap comes with a target that has an OS.** `Standard/System/Memory` then has `HEAP`, `C_HEAP`, and
   `PAGES`, `@MemoryManager` tables ready before `start`. `Standard/Os` has, like
-  `Console`, a `construct` without the manager for every collection and `Memory` (`List[S64].construct()`,
-  `Memory[U8].construct(n)`), drawing from `HEAP`. Memory C frees or reallocates, or memory from C's malloc, goes
+  `Console`, a `construct` without the manager for every collection and `BorrowedSlice` (`List[S64].construct()`,
+  `BorrowedSlice[U8].construct(n)`), drawing from `HEAP`. Memory C frees or reallocates, or memory from C's malloc, goes
   through `C_HEAP` (plain malloc in every build). A file that doesn't import `Standard/Os`,
   and every program for a target without an OS, passes a manager.
 - **Presets and globals in memory are places too, filled with `<-`.** `p: &T <- v` (a STACK place, `<- .hollow()`
@@ -522,7 +522,7 @@ routine start() -> None
   crash trace (below); `@untraced` keeps a larger hot routine off it too.
 - `@expensive` (or `@expensive("allocates heap memory")`, the reason reading after the routine's name) marks a routine
   that costs a lot on every call and every target: allocation and freeing (`allocate`, `reallocate`, `deallocate`,
-  `Memory[T].construct` / `resize`, `@[Byte].concat`, `List[T].reserve`), the operating system (`Out` / `Err` writes,
+  `BorrowedSlice[T].construct` / `resize`, `@[Byte].concat`, `List[T].reserve`), the operating system (`Out` / `Err` writes,
   allocating `Console.ask` reads, file and directory operations, `FileHandle` I/O, processes, `launch_unwatched`), `U256` / `S256`
   division and `BigNat` division, and whole-buffer hashes. It changes nothing in the output and goes on routines
   only. `tessera lint` (and `check` / `build` / `run` for the program's own files, and the language server) warns on a
@@ -738,6 +738,10 @@ routine start() -> None
   `next_f64()` ([0, 1)), and `below(bound)` (unbiased). Not for secrets. JSON string escaping is
   `text.json_quote_into(out)` in `Standard/System/Serialization`.
 - A literal must fit its type: `-1` isn't a `U64`, and `255` isn't an `S8`.
+- A whole number written in base 10 also goes into a binary float place, typed by where it goes: `x: &B64 <- 0`,
+  `y: B32 = 3`, `half(7)` for a `B64` parameter, `w: B128 = 12` (exact when the type holds it, else the nearest value).
+  A literal with a base prefix (`0xFF`, `0b1010`) stays an integer, and a variant with an integer and a float branch
+  takes a whole number through the integer one.
 - A hex float (`0x1p-25`, `0x1.8p3`) spells a power-of-two value exactly, so it goes only into a binary float (`B16`,
   `BF16`, `B32`, `B64`, and `B128` with its 113 significant bits) that holds it exactly: anywhere else, or one the
   type would round, overflow, or flush below its smallest subnormal, is a build error that says which. A decimal
@@ -782,8 +786,8 @@ routine start() -> None
   when copying it is unwanted (a large value); take `T` when a copy is fine and the value isn't changed. There are no
   compound assignments (`+=`, `add_assign`): change a value in memory by load, act, store —
   `(p.peek() + 1).poke_into(p)`.
-- **Methods through a pointer.** `p.m()` finds `routine @T.m` first, then `Ptr`'s own methods (`is_hollow`,
-  `offset`, `to[@U]`, ...): the more specific receiver wins. A `routine Ptr[X].m` and a `routine @X.m` with the same
+- **Methods through a pointer.** `p.m()` finds `routine @T.m` first, then `PointedCell`'s own methods (`is_hollow`,
+  `offset`, `to[@U]`, ...): the more specific receiver wins. A `routine PointedCell[X].m` and a `routine @X.m` with the same
   parameters are the same call, a build error asking to rename one. Value methods (`routine T.m`, such as every
   collection's `eq`) aren't reachable through a pointer, because that would hide a load: load first
   (`a.peek().eq(b.peek())`).
@@ -797,7 +801,7 @@ routine start() -> None
   by address, `a === b`, so values compare as `a.peek() == b.peek()`), `represent_into` / `diagnose_into` (a pointer isn't
   Representable, so `{p}` on a `&Point` or `&S64` place is a build error that asks for `{p.peek()}`, also written
   `{p.load()}`, while an entity's place writes directly: `{list}`), and a generic `to[T]` (it
-  would hide `Ptr`'s `to<@U>`). You can't call a pointer method on a temporary:
+  would hide `PointedCell`'s `to<@U>`). You can't call a pointer method on a temporary:
   `DictIter[TKey, TValue].construct(m).emit()` fails with "has no method 'emit'"; put the iterator in a place
   first (`iter: &DictIter[TKey, TValue] <- .construct(m)`).
 - **A constraint is said once, where it belongs.** A record's (or variant's) `needs` constraints hold in every
@@ -827,7 +831,7 @@ routine start() -> None
   integer), `FixedRepresentable` (`represent_fixed_into`, every float), `Diagnosable`, `Parsable` (a
   capability is an `-able` adjective), and the roles `Iterator`, `Reader`, `Writer`. Constraints are checked: a type satisfies a
   protocol only through an `obeys` (on its record, or a top-level `obeys C[X]` line), and the builder checks the
-  declared routines' signatures. Conditional conformance: `obeys Equatable[Box[T]] when T: typename, Equatable[T]`.
+  declared routines' signatures. Conditional conformance: `obeys Equatable[BorrowedCell[T]] when T: typename, Equatable[T]`.
   `Reversed[T]` (Core) is a `T` whose `compare` is flipped (`Reversed[S64].construct(5)`): Comparable, Equatable,
   Hashable, Representable, and Diagnosable when `T` is.
 - A bare literal doesn't bind a type parameter: bind it first (`n: S64 = 42`), then pass `n`.
@@ -873,16 +877,16 @@ routine start() -> None
   plus a `Duration`), page and stack sizes are `ByteSize`. The memory manager routines (`borrow(size, align)`, the page
   routines) and `sizeof` stay `U64` byte counts, and a count of elements is a count.
 - Text is a `@[Byte]` (UTF-8 by convention, unchecked: `is_utf8` checks, and `chars()` reads a bad sequence as
-  U+FFFD), and text in memory from a manager is a `Memory[Byte]`. The text routines are on `@[Byte]` (`Types/ByteSpan.te`:
+  U+FFFD), and text in memory from a manager is a `BorrowedSlice[Byte]`. The text routines are on `@[Byte]` (`Types/ByteSpan.te`:
   `find`, `has`, `has_prefix`, `slice(start, end)`, `byte_at`, `bytes()`, `chars()`, `concat(a, b, manager)`,
-  `split(separator:, manager:)` and `words(manager:)` (a `Memory[@[Byte]]` of views into the text, RazorForge's and
+  `split(separator:, manager:)` and `words(manager:)` (a `BorrowedSlice[@[Byte]]` of views into the text, RazorForge's and
   Suflae's meaning: empty pieces kept, an empty separator gives characters, words skip white space runs), `eq`,
   `compare`, `hash`, ...). A literal is a `@[Byte]` of the program image, `@[Byte].construct(data, count)`
   wraps bytes from C, and text made from other text (`slice`, `getslice`, the iterators, `buf.getview()` of a
   `List[Byte]`) views the same memory. Text a routine takes memory for (`@[Byte].concat`, `Console.ask_line`,
-  `OsFileManager.read_all`, `OsEnvironment.variable`, ...) comes back as a `Memory[Byte]`: bind it with `<-` and give it
+  `OsFileManager.read_all`, `OsEnvironment.variable`, ...) comes back as a `BorrowedSlice[Byte]`: bind it with `<-` and give it
   back once (`line: &[Byte] <- Console.ask_line()`, then `drop line`), and observe a `Maybe` or `Check` of one
-  with `when` (`when try Console.ask_line(manager)` then `is Memory[Byte] as line => ...`). A Memory lends itself to a text routine at
+  with `when` (`when try Console.ask_line(manager)` then `is BorrowedSlice[Byte] as line => ...`). A BorrowedSlice lends itself to a text routine at
   a receiver or an argument (`line.find("=")`, `out.write("{line.getslice()}")` in a template). Escapes: `\xXX` is one byte (strings, `b'..'`), `\uXXXXXX` one
   character by exactly six hex digits (strings, `'..'`), so `"\u01F600"` equals `"\xF0\x9F\x98\x80"`.
   Source files must be UTF-8.
@@ -908,7 +912,7 @@ routine start() -> None
   `@track_caller`, so the place is the caller's line. Mark a routine of your own the same way when its crashes are its
   caller's fault.
 - **Expected failures are thrown.** `crashable NotFoundError` declares a failure: a record of a few plain values
-  (numbers, choices, views such as `@[Byte]`: no Memory, Box or entity, a build error) that writes `routine
+  (numbers, choices, views such as `@[Byte]`: no BorrowedSlice, BorrowedCell or entity, a build error) that writes `routine
   NotFoundError.message_into[TWriter](out: @TWriter) -> None` (`needs TWriter: typename, Writer[TWriter]`). The builder
   writes its `name()` (the type's name) and makes it obey `Crashable`. A routine that can fail is declared `failable
   routine` (`secret failable common routine`, and `failable routine` in a protocol), and `throw NotFoundError(code: 2)`
@@ -1004,7 +1008,7 @@ routine start() -> None
   `when_interrupted(h)` (SIGINT, Ctrl+C: the program goes on after `h`, and an interrupt that comes while `h` is still
   running is ignored), `when_faulted(h)` (in place of the fault report below, the fault then ends the process), `holder(kind)`, and
   `CpuEventManager.raise(kind)` sends one to this process (the real signal on Linux and macOS). A handler runs inside
-  the signal handler on Linux and macOS: an atomic or a `Console` line, no exclusive access. On Windows an interrupt handler runs
+  the signal handler on Linux and macOS: an `Unbroken[T]` or a `Console` line, no exclusive access. On Windows an interrupt handler runs
   on a thread the CpuEventManager starts (the console hands its handlers one event at a time). Without an OS: `when_power_off`
   (passed on by `CpuEventManager.power_off()`, which the board's shutdown interrupt handler calls, then the core
   halts), `when_faulted` (the core halts when it returns), `when_supervisor_called` (`svc #n` / `ecall`, `code` the
@@ -1035,16 +1039,16 @@ routine start() -> None
 - Every record is a struct of its fields, one field included (`record Meters / value: B64` is `{ double }`); only a
   library `@llvm("iN")` record with no fields is an integer underneath (`B128` is an `i128`). `@layout(align: N)` sets
   a record's alignment, `@aligned` a field's.
-- A record can't contain itself by value; go through a `Ptr`.
+- A record can't contain itself by value; go through a `PointedCell`.
 - `choice Name: U8` names integer values, one member per line (`RED`, or `RED: 4`): a member without a value is the one
   before it plus 1, the first 0. The underlying type is any integer type (`S8` .. `S256`, `U8` .. `U256`), and `S32`,
   C's `int`, when it isn't written (`choice Light`).
 - **A type that holds something to release declares a `common routine T.construct(...)` (returning `Me`) and a `routine @T.destruct() -> None`**
-  (a variant only the `destruct`), a build error otherwise that names what it holds. A `Box`, a `Memory` and an entity
+  (a variant only the `destruct`), a build error otherwise that names what it holds. A `BorrowedCell`, a `BorrowedSlice` and an entity
   hold something, and so does a type with a field (a branch, for a variant) that is a value of a type parameter or a
   value of a type that itself holds something (a `List`, a `CStr`, a record with such a field). Its `destruct` gives
   those fields back (`drop me.storage`). An address (`@T`, `@[T]`, `Addr`) holds nothing: it points at memory that a
-  `Box`, a `Memory` or an entity gives back. A type of plain data (numbers, `Bool`, choices, addresses, records and
+  `BorrowedCell`, a `BorrowedSlice` or an entity gives back. A type of plain data (numbers, `Bool`, choices, addresses, records and
   variants of those) declares neither: `Point(x: 1, y: 2)` makes it and nothing releases it. It may still declare them,
   and a plain type used where generic code asks for `Destructible[T]` (`destruct_all`) declares a `destruct` that does
   nothing.
@@ -1086,12 +1090,12 @@ routine start() -> None
   and `c` ends.
 - What copies an entity is a build error that says what to do instead: a load out of memory (`p.peek()`, `m[i]`), or a
   field read out of a record value.
-- A record can't hold an entity by value (it would copy it), a generic one included (`nodes: Memory[T]`): declare the
+- A record can't hold an entity by value (it would copy it), a generic one included (`nodes: BorrowedSlice[T]`): declare the
   holder `entity` too, or hold a pointer. A tuple item can't be an entity either. A record or tuple item that is a
   pointer to an entity (`(pool, 0, 10)` for a `(@ThreadPoolManager, U64, U64)`) lends the entity's place: the place it came
   from still holds it.
-- In the standard library, these are entities: `Memory[T]`, `Box[T]`, every collection (`List`, `Set`, `Dict`, the
-  sorted ones, `CircularList`, `PriorityQueue`), `Channel[T]` / `SharedChannel[T]`, `ThreadPoolManager`, `FiberManager`,
+- In the standard library, these are entities: `BorrowedSlice[T]`, `BorrowedCell[T]`, every collection (`List`, `Set`, `Dict`, the
+  sorted ones, `RotatableList`, `PriorityQueue`), `Channel[T]` / `SharedChannel[T]`, `ThreadPoolManager`, `FiberManager`,
   `CStr` / `CWStr`, `ProcessOutput`, and `File` / `Directory` (each holds the memory of a path it made). A
   `MemoryManager`, a `@[T]`, a `@T`, and an iterator stay records.
 - An entity value a `routine @E.f` is called on, or that goes where an `@E` is taken, needs no place of its
@@ -1105,13 +1109,13 @@ routine start() -> None
   result (`when open()`) or out of its place (`when steal r`), and `is Counter as c` hands the entity over to the arm's own
   place `c`, which ends there (drop, return, or hand on). The arm that observes an entity branch must name it, and `else`
   never takes one. `return c` from a Counter's place returns it where the routine returns a variant with a Counter branch.
-- A container that owns its elements may take an entity as its type argument: `List[List[S64]]`, `Memory[Counter]`, a
-  `Shelf[Counter]` of your own that keeps them in a `Memory[T]`. Elements go in with `steal` and are reached through
+- A container that owns its elements may take an entity as its type argument: `List[List[S64]]`, `BorrowedSlice[Counter]`, a
+  `Shelf[Counter]` of your own that keeps them in a `BorrowedSlice[T]`. Elements go in with `steal` and are reached through
   `getslot` (an `@T`), two of them trade places with `swap(first, second)` (both moved, neither place left hollow:
   never a steal / poke dance by hand), and the container's destruct ends each one before giving its memory back. `getitem`, which
   copies an element, is a build error for an entity element that points at `getslot`.
 - `steal` and `drop` mark what matters: a hand-over and a give-back of something with a release duty (its type writes
-  a destruct, or it is a Box, a Memory, an entity, or a value holding one). `drop x` calls x's destruct, and x ends
+  a destruct, or it is a BorrowedCell, a BorrowedSlice, an entity, or a value holding one). `drop x` calls x's destruct, and x ends
   there. In code that names its types, `steal x` or `drop x` on a value with nothing to give back is a build error
   (the value is copied, the drop does nothing): leave the marker out. Where x's written type is a type parameter
   (`T`, `@T`, `List[T]`, `Me` of a generic type), both are always allowed and written once for any T: for an entity T
@@ -1181,7 +1185,7 @@ routine sum_to(n: U64) -> U64
 ```
 
 Iterating a collection (`emit` is failable and throws `AbsentValueError` past the end, so `try iter.emit()` gives `None`
-there and `each x in iter` stops there; an iterator over elements in memory, `ListIter`, `ArrayIter`, `CircularListIter`,
+there and `each x in iter` stops there; an iterator over elements in memory, `ListIter`, `ArrayIter`, `RotatableListIter`,
 `SortedListIter`, `SortedSetIter`, `DictValues` (a dict's values, never its keys), also hands out each element's place
 with the failable `next`):
 
@@ -1224,7 +1228,7 @@ the builder gives it back at the end of the body (from STACK). Tessera presets f
 - `either_longer([...])` / `either_shorter([...])` (the rule is in the name, the first written wins a tie),
   `capture("name", p)`, `ignoring_case(p)`, `TextPattern.of(pieces, ignore_case: true, manager)`.
 - Searches on `@TextPattern` (UTF-8 `@[Byte]`, byte positions): `matches(text)`, `find(text, manager) -> Maybe[TextMatch]`,
-  `find_all(text, manager) -> List[TextMatch]`, `replace(text, with:, manager) -> Memory[Byte]`, `split(text, manager) ->
+  `find_all(text, manager) -> List[TextMatch]`, `replace(text, with:, manager) -> BorrowedSlice[Byte]`, `split(text, manager) ->
   List[@[Byte]]`. A `TextMatch` (an entity, drop it) views the text and the pattern: `start()`, `end()`, `text()`,
   `group(name)` (failable: `CaptureNameError` for no capture of that name, `AbsentValueError` for one that took no part,
   so `try m.group(name)` gives `None` for both).
@@ -1246,8 +1250,8 @@ Format through `Standard/System/Text` (`Format.te`), not printf. printf is for C
   end: "")`, a string literal). Both expand their template like a Writer's `write` (below). Standard input:
   `Console.ask[T]()`, `Console.ask_line()` / `ask_line(manager)`, `ask_word`, `ask_bytes(n)`, `ask_all`, all through one
   buffer the process shares. `ask_line` and `ask_word` are failable and throw `EndOfInputError` at the end of the
-  input, so `try Console.ask_line()` gives `Maybe[Memory[Byte]]`, `None` there (a blank line is empty): a loop to the end
-  uses that. Text comes back as a `Memory[Byte]` from the manager: `drop line` gives it back. There are no `In` / `Out` /
+  input, so `try Console.ask_line()` gives `Maybe[BorrowedSlice[Byte]]`, `None` there (a blank line is empty): a loop to the end
+  uses that. Text comes back as a `BorrowedSlice[Byte]` from the manager: `drop line` gives it back. There are no `In` / `Out` /
   `Err` types and no `print`.
 - Writers: `Console.output()` / `Console.errors()` (`@ConsoleOutput` / `@ConsoleErrors`, standard output and error,
   unbuffered, also `is_terminal()`, `enable_colors()`, `write_all(data, count)`, failable), a `FileHandle`,
@@ -1263,7 +1267,7 @@ Format through `Standard/System/Text` (`Format.te`), not printf. printf is for C
   through a temporary on `HEAP`). It is failable: `EndOfInputError` at the end of the input, and the failure of
   `to[T]` on a word that isn't a T. `try Console.ask[T]()` gives `Maybe[T]` (`None` for both).
 - `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, and
-  `@[Byte]` (a `Memory[Byte]` writes through its view: `{line.getslice()}`). A pointer is neither Representable nor Diagnosable, so `{sum}` on a `sum: &S64` place is a build
+  `@[Byte]` (a `BorrowedSlice[Byte]` writes through its view: `{line.getslice()}`). A pointer is neither Representable nor Diagnosable, so `{sum}` on a `sum: &S64` place is a build
   error, not its address: write the value with `{sum.load()}` or `{sum.peek()}`, or the address with `{sum.to[Addr]()}`
   (`0x7ffd5e8c1a40`, an `Addr` writes itself). A derived routine writes a pointer field's address.
   `v.represent_hex_into(out)` for an integer's bits in hex; `represent_into(out, min_digits)` (`U64`, `U128`, `U256`) and `represent_hex_into(out,
@@ -1285,19 +1289,19 @@ Format through `Standard/System/Text` (`Format.te`), not printf. printf is for C
 ## Collections
 
 All in `Standard/Collections/`, documented in `../Tessera-Wiki/docs/Collections.md`. They keep their
-storage in a `Memory[T]`: a `List` is `storage` (a Memory whose count is the capacity) and `count`. `construct(manager)` keeps
+storage in a `BorrowedSlice[T]`: a `List` is `storage` (a BorrowedSlice whose count is the capacity) and `count`. `construct(manager)` keeps
 the memory manager (`construct()` with `Standard/Os` uses the default heap), and `drop list` gives the storage back and
 keeps the memory manager, so the collection can be used again. Every collection is also made from an array value with
 `of(values: Array[T, N], manager: @MemoryManager)`, or `of(values: ...)` from the default heap (Standard/Os): `xs:
-&List[S64] <- List[S64].of(values: [3, 1, 2], manager: HEAP)`. List, CircularList, SortedList, Set, SortedSet,
+&List[S64] <- List[S64].of(values: [3, 1, 2], manager: HEAP)`. List, RotatableList, SortedList, Set, SortedSet,
 PriorityQueue (`Array[(TPriority, TElement), N]`), BitList (`Array[Bool, N]`), Dict and SortedDict (`Array[(TKey,
 TValue), N]`) have it. The array is taken over, so entity values go in themselves, not copies
 (`List[List[S64]].of(values: [List[S64].of(values: [7]), List[S64].construct()])`). Element access is
 `getitem(i)` / `setitem(i, v)` (the name says what is fetched), `getslot(i)` the checked address, `swap(first, second)`
 (the two elements trade places in place, moved, never copied, so entity elements swap too, a no-op for the same index,
-and an index past the end crashes like `getitem`: on `List`, `CircularList`, `Array` through its pointer, `@[T]`, and
-`Memory`), and `getview()` /
-`getslice(start, count)` a `@[T]` of the elements (a `Memory` has its own element routines, above, and no `setitem`) (a List is not lent on its own: pass `list.getview()` where a
+and an index past the end crashes like `getitem`: on `List`, `RotatableList`, `Array` through its pointer, `@[T]`, and
+`BorrowedSlice`), and `getview()` /
+`getslice(start, count)` a `@[T]` of the elements (a `BorrowedSlice` has its own element routines, above, and no `setitem`) (a List is not lent on its own: pass `list.getview()` where a
 span is expected). Out-of-range access, `remove_last`
 on empty, and `getitem` of a missing key throw (`IndexOutOfBoundsError` with the index and the count, `AbsentValueError`,
 `KeyNotFoundError`): the collections' `getitem`, `getslot`, `remove_last`, `remove_first`, `first`, `first_entry`,
@@ -1306,7 +1310,7 @@ gives `Maybe[T]`. `setitem` and `swap` still crash. Each insertion and `reserve`
 `MemoryAllocationError` when the memory can't grow and leaves the collection unchanged, so a bare call stops there and
 `check xs.add_last(v)` receives it. There are no `_checked` twins: `try` in front of the call is the `Maybe`.
 The mutators that grow storage are `@reshaping` (`List.add_last` / `reserve` / `ensure_capacity`, `Dict.setitem`,
-`Set.add`, `CircularList.add_last` / `add_first`, `PriorityQueue.add` / `reserve`): a
+`Set.add`, `RotatableList.add_last` / `add_first`, `PriorityQueue.add` / `reserve`): a
 `getslot` / `getview` taken before one is not used after it, and a routine that calls one on a collection parameter
 says `@reshaping(name)`.
 
@@ -1314,7 +1318,7 @@ says `@reshaping(name)`.
 |------|----------------|-----------------|
 | `Array[T, COUNT]` | `[a, b]` literal, `getslot`, `getitem` (on a value or a pointer: `[2, 3, 5].getitem(i)`), `setitem`, `swap` (through a pointer), `getslice`, `getview` (through a pointer), `shift_left`, `shift_right`, `copy`, `destruct_all` (no `destruct`: it acquires nothing) | index |
 | `List[T]` | `add_last`, `remove_last`, `getitem`, `setitem`, `getslot`, `swap`, `getslice`, `getview`, `clear`, `reserve` | index |
-| `CircularList[T]` | `add_first`, `add_last`, `remove_first`, `remove_last`, `getitem`, `setitem`, `getslot`, `swap` | front to back |
+| `RotatableList[T]` | `add_first`, `add_last`, `remove_first`, `remove_last`, `getitem`, `setitem`, `getslot`, `swap` | front to back |
 | `Dict[TKey, TValue]` | `setitem` (adds or replaces), `getitem`, `has_key` / `lacks_key`, `remove` | **insertion order (guaranteed)** |
 | `Set[T]` | `add`, `has` / `lacks`, `remove` | **insertion order (guaranteed)** |
 | `SortedDict[TKey, TValue]` | `setitem`, `getitem`, `getslot`, `has_key` / `lacks_key`, `remove`, `get_by_rank(rank)` (a `KVPair` copy), `value_ptr_by_rank(rank)` | ascending key |
@@ -1347,7 +1351,7 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 
 - `routine start() -> None` is the entry point of an executable. With an operating system the builder writes the
   platform's C `main`, which calls `start` and returns the exit status `set_exit_code(code: S32)` (Standard/Os)
-  stored, 0 when nothing did. It is one atomic value: the last store wins, any thread may set it, and a thread
+  stored, 0 when nothing did. It is one unbroken value: the last store wins, any thread may set it, and a thread
   still running when `start` returns may or may not get its store in. `exit_code()` reads it back. A crash keeps its
   own status (82 by default). `main` is an ordinary routine name; a program with `main` and no `start` is a build
   error that says so. `start` with parameters or a result is an error too.
@@ -1366,8 +1370,10 @@ parameter of 'f' its value, and 'b' has none", "'n' is given twice", "a piece of
 'f' has 5: hand it a record of them"; a generic routine names its instance, `f[T].to[Work](...)`). `T` is the routine's
 result type, `None` for none. The arguments are computed on that line, and the work doesn't run yet. A `Work[T]` is
 bound with `<-` (`primes: Work[U64] <- count_primes.to[Work](table: table, limit: 1000)`), and `=` is a build error
-("a Work[U64] is borrowed and given back with drop, so it is bound with '<-' from the call that borrows it: ..."). It
-starts in one of two ways:
+("a Work[U64] is borrowed and given back with drop, so it is bound with '<-' from the call that borrows it: ..."), and
+given back with `drop` on every path, once: a missing drop is a build error ("'w' holds a Work[U64] (from line N) that
+hasn't ended when 'start' returns here: drop w, return it, or hand it over with steal w"), and so are a second drop and
+a use after it. It starts in one of two ways:
 
 - **On a lent worker: `work.start_from(manager)`.** The manager lends a worker (a thread, a fiber, a pool's job), the
   work runs on it from here on, and the work's own routines follow it: `check_finished()`, `cancel()`, and
@@ -1388,7 +1394,9 @@ bottom: `t: Thread[S64] <- get_thread[S64]()` (a ticket is bound with `<-` from 
 error: "a Thread[S64] is borrowed and given back with drop, so it is bound with '<-' from the call that borrows it: t:
 Thread[S64] <- ..."), `t.put_work(work)` (a `@Work[T]`, it runs from here on), `t.check_finished()` to look without
 waiting or `t.wait_finished()` / `t.wait_finished_for(timeout) -> Bool` (`timeout` a `Duration`) to wait,
-`r: S64 = t.retrieve()` (failable), then more work on the same ticket or `drop t`, which gives the ticket back. `T`
+`r: S64 = t.retrieve()` (failable), then more work on the same ticket or `drop t`, which gives the ticket back. Every
+ticket bound with `<-` is given back with `drop` on every path, once, or handed to a routine that takes it (a `List` of
+tickets): a missing drop, a second one, and a use after it are build errors, as for every `<-` binding. `T`
 is the result type, `Thread[None]` for none. The work runs a copy of its block (the routine, its arguments, room for
 the result), copied into memory from the memory manager the thread manager holds, so one `Work` may go on several
 tickets and may be dropped once `put_work` returns. A ticket's `retrieve()` gives back nothing the work was handed, so
@@ -1456,26 +1464,26 @@ for code waiting on several tickets at once.
   `tests/thread_pool_manager_moves.te`): don't rely on a `@threadlocal` global across a wait in a job. Fibers a job
   makes with `FIBERS` stay on their thread. A job may start more work on the pool (`start_from(pool)` or a job ticket) and wait: the waiting job parks, its
   thread runs other jobs (recursive splitting: `tests/thread_pool_manager.te`). Jobs don't choose their thread, so they
-  share values like threads do (atomics, exclusive accesses, channels). Threads start with the first job and end at
+  share values like threads do (unbroken values, exclusive accesses, channels). Threads start with the first job and end at
   `drop pool`: give every job back and retrieve every piece of work first. In a program that runs pool jobs, the builder calls the crash trace's
   `trace_push` / `trace_at` / `trace_pop` out of line, so each finds the trace of the thread it runs on.
 
-**Atomics.** `Atomic[T]` (Core, `Atomic.te`) is a record aligned to T's size whose every access is atomic: the
+**Unbroken values.** `Unbroken[T]` (Core, `Unbroken.te`) is a record aligned to T's size whose every access is unbroken: the
 form for state a program shares between threads (thread work changes shared memory only through an exclusive access
-or an Atomic, above) (`hits: Atomic[U64]` in a shared record, `Atomic[U64].construct(value:
-0)` or `.construct(value: 0)`). Threads share its place, `@Atomic[T]`, never copies. Routines: `peek` / `poke`,
+or an Unbroken, above) (`hits: Unbroken[U64]` in a shared record, `Unbroken[U64].construct(value:
+0)` or `.construct(value: 0)`). Threads share its place, `@Unbroken[T]`, never copies. Routines: `peek` / `poke`,
 `swap`, `compare_exchange` / `compare_exchange_weak` (`Maybe[T]`: `None` when it wrote, the value found when
 not), `fetch_add` / `fetch_sub` (integers, wrapping), `fetch_and` / `fetch_or` / `fetch_xor`, `fetch_fadd` /
 `fetch_fsub` (B32, B64), each with the order suffixes LLVM allows: `_relaxed` / `_acquire` / `_release` / `_acq_rel`
-(`peek_acquire`, `poke_release`, `fetch_add_relaxed`), none = sequentially consistent. `@T`'s `atomic_*` routines
-(`peek_atomic`, `poke_atomic`, `atomic_fetch_add`, ...) are for memory whose type the program doesn't choose (from C,
+(`peek_acquire`, `poke_release`, `fetch_add_relaxed`), none = sequentially consistent. `@T`'s `unbroken_*` routines
+(`peek_unbroken`, `poke_unbroken`, `unbroken_fetch_add`, ...) are for memory whose type the program doesn't choose (from C,
 another process, a futex word). What T allows depends on the target (capability protocols, a wider access is a build
 error). `Bool` has none: use a `U8`.
 
 **Accesses and waits.** A thread waiting sleeps, a fiber waiting parks (its thread goes on with the other fibers): every
 stdlib wait does what fits the code running it. The `AccessManager` (Standard/Os/AccessManager.te) hands out access to
 memory: `held: Authorized[T] <- p.get_exclusive_access()` (this flow alone reads and writes the value) and `reading:
-ReadAuthorized[T] <- p.get_shared_read_access()` (several flows read it, none writes), on a `@T` and on a `Box[T]`
+ReadAuthorized[T] <- p.get_shared_read_access()` (several flows read it, none writes), on a `@T` and on a `BorrowedCell[T]`
 (`b.get_exclusive_access()` is the value's). The value is read and written through the access's `getview()`, a `@T`
 (`held.getview().poke(v)`, `reading.getview().peek()`), and the view of a `ReadAuthorized[T]` reads only. `drop held`
 gives the access back, and the program writes it. An access is bound with `<-` from the call that borrows it: `=` is a
@@ -1486,7 +1494,7 @@ one borrowed Authorized[S64] would give it back twice"), and so is a STACK place
 of a run are taken one at a time (`m.getslot(i).get_exclusive_access()`, `list.getslot(i).get_exclusive_access()`), and
 `list.data.get_exclusive_access()` is the first element alone. A record (a List's count, capacity and data pointer)
 and its element buffer are separate memory, taken separately: growing or moving a buffer changes the record, so it
-needs the record's access, and giving back or moving a Memory or a Box waits while another flow holds an access inside
+needs the record's access, and giving back or moving a BorrowedSlice or a BorrowedCell waits while another flow holds an access inside
 it (the flow giving it back holding one there is a `DeadlockError`). Shared reads overlap each other, an exclusive
 access overlaps nothing, and once a flow asking to write waits, later readers wait too. A flow that asks while another
 holds an access in the way waits. Taking an access that overlaps one the same flow holds crashes with
@@ -1524,13 +1532,13 @@ with one transmitter and one receiver: `add_transmitter()` / `add_receiver()` (S
 `close_transmitting()` / `close_receiving()` once. All transmitters closed: receivers drain what is left, then get
 `ChannelClosedError`. All receivers closed: the values left are discarded (never given back) and transmitters get `ChannelClosedError`,
 so a receiver takes out values holding memory before it closes. A channel moves one message at a time, so its verbs are
-`transmit` / `receive` (`load` / `store` belong to places: `Memory`, `Box`, `Atomic`).
+`transmit` / `receive` (`load` / `store` belong to places: `BorrowedSlice`, `BorrowedCell`, `Unbroken`).
 
 **The data race check.** On by default in a debug build on Linux and macOS on x86_64 and aarch64, off in the release
 modes and on other targets. `[debug] race-check = false` in config.toml (or `--no-race-check`) turns it off, and
 `race-check = true` (or `--race-check`) turns it on in a release mode (on a target without it, that is an error). Every
 routine (stdlib too) is instrumented with ThreadSanitizer, and the program stops at the first data race (two threads
-touching the same memory, one writing, neither an atomic access nor an exclusive access between them) with exit status 82 and a
+touching the same memory, one writing, neither an unbroken access nor an exclusive access between them) with exit status 82 and a
 report of both places on stderr. The program runs slower. It sees the races a run has, not every possible one. An
 allocation the check's runtime can't make returns null, so the program's own `OutOfMemoryError` reports it. Fibers tell the check which stack runs
 (`Standard/Os/RaceCheck.te`). `tessera check` checks the stdlib's `@race_check("on")` / `@race_check("off")` sides
@@ -1556,15 +1564,18 @@ is failable and throws one of `FsError`'s crashables: a bare call that fails sto
   which empties it), `make_directory(at, parents)` (`parents` is mkdir -p, a directory already there is fine).
   Nothing else makes a file: `open_write`, `open_append`, `write_all`, `set_size`, and `storage` on a missing file
   throw `NotFoundError`.
-- reading and writing: `read_all(at, manager)` (a `Memory[Byte]`, drop it), `write_all(at, data)` (the whole content,
+- reading and writing: `read_all(at, manager)` (a `BorrowedSlice[Byte]`, drop it), `write_all(at, data)` (the whole content,
   the file emptied first).
 - opening: `open_read` / `open_write` (emptied) / `open_append` / `open_read_write` give a `FileHandle` (keep it in a
   place: `read_bytes`, `write_all`, `h.write("...")`, `seek`, `size`, `set_size`, `sync`, all failable, `close`,
   which leaves it empty, and `FileHandle.empty()` a handle to nothing whose `close` does nothing).
 - file storage: `storage[T](at, write, start, count)` maps the file as cells of `T` (`StorageCell[T]`: `Byte`, or
   `Char`, four bytes each, UTF-32LE), `count` cells from cell `start` (`U64.MAX` to the end), clamped to the whole
-  cells the file has. It gives a `FileStorage[T]` (a record: `count()`, `s[i]` (failable: `IndexOutOfBoundsError`, `InvalidCellError`), `s[i] = v` on a
-  place (`s: &FileStorage[Byte] <- OsFileManager.storage[Byte](...)`), `data()`, the failable `flush()`, `unmap()`). A cell past `count()` crashes with `IndexOutOfBoundsError`, a
+  cells the file has. It lends a `FileStorage[T]`, an entity borrowed with `<-` and given back with `drop`, which
+  writes changed pages back and unmaps it (`s: FileStorage[Byte] <- OsFileManager.storage[Byte](...)`, then `drop s`: a
+  missing drop, a second one, a use after it, and `=` are build errors, and there is no `unmap()`). It has `count()`, `s[i]`
+  (failable: `IndexOutOfBoundsError`, `InvalidCellError`), `s[i] = v`, `data()`, the failable `flush()`, `prefetch()`,
+  `advise_sequential()`, and `take_mapping()` (takes the mapping out, so `drop` unmaps nothing). A cell past `count()` crashes with `IndexOutOfBoundsError`, a
   write to one mapped without `write` and a `Char` cell that isn't a Unicode scalar with `InvalidValueError`. It never
   grows the file: `set_size` first.
 - deleting, renaming, moving, copying: `delete(at)` (a file, or an empty directory), `delete_all(at, manager)`,
@@ -1590,9 +1601,9 @@ OS's own). `is FsError as e` on a `Check` takes any of them. With an arm for one
 `else as e` (two arms can't observe one crashable).
 
 Each routine that takes `manager` has an overload without it that uses the default heap. A routine that hands text back
-takes a memory manager and returns a `Memory[Byte]` from it (`read_all`, `OsEnvironment.variable`): give it back with
+takes a memory manager and returns a `BorrowedSlice[Byte]` from it (`read_all`, `OsEnvironment.variable`): give it back with
 `drop`. A `File` and a `Directory` are entities: one that makes a path (`file`, `go_to`, `absolute`, `canonical`,
-OsEnvironment's directories) returns a `File` / `Directory` whose path is held in a `Memory[Byte]`,
+OsEnvironment's directories) returns a `File` / `Directory` whose path is held in a `BorrowedSlice[Byte]`,
 kept in a place and given back with `drop file` / `drop dir`, or by the builder for a STACK place (which gives nothing back for a path it only views, such
 as a literal's):
 
@@ -1605,7 +1616,7 @@ OsFileManager.write_all(at: notes, data: "first line\n")
 **Storage.** Memory is main memory, storage what keeps files (a disk, an SSD, an SD card). A `StorageManager` manages
 one storage device, a `PartitionManager` one partition on it, and a file manager the file system on one partition: a
 partition has exactly one file manager, and a second one over a partition that has one fails loudly (on an OS, the
-OS's one file system per volume). With an OS they are what the OS reports, read only, entities holding `Memory[Byte]`
+OS's one file system per volume). With an OS they are what the OS reports, read only, entities holding `BorrowedSlice[Byte]`
 names (drop them, or the list): `StorageManager.list(manager)` (`name`, `size`; on Linux /sys/block, on macOS the disks
 of the mounted file systems, empty on Windows, which names them only to an administrator), `PartitionManager.list(manager)`
 (`name`, `device`, `mounted_at`, `file_system`, `size`, and `directory()`; Linux /sys/class/block, macOS getfsstat,
@@ -1615,7 +1626,7 @@ there yet.
 **The environment.** `OsEnvironment` (Standard/Os) reads what the OS gave the process and changes none of it:
 `argument_count()` and `argument(index)` (the program's own name left out, a borrowed `@[Byte]`, UTF-8 on Windows; the
 builder's `main` hands them over through `tessera_set_arguments(argc, argv)`), `variable(name, manager)` (a
-`Maybe[Memory[Byte]]` asked of the OS, so on Windows a name's case doesn't matter), `variables(manager)` (a snapshot,
+`Maybe[BorrowedSlice[Byte]]` asked of the OS, so on Windows a name's case doesn't matter), `variables(manager)` (a snapshot,
 a `List[EnvironmentEntry]` of `name` / `value` memory), and the failable `working_directory(manager)`,
 `temp_directory(manager)`, `home_directory(manager)`. There is no setting a variable or the working
 directory: a child process gets its own through `ProcessOptions` (`directory`, `env`), and code that works elsewhere
@@ -1628,7 +1639,7 @@ options, manager)` create one, wait for it to end, reap it, and return a `Proces
 one of `ProcessError`'s crashables (`NotFoundError`, `NotEnoughPermissionError`, `InvalidArgumentError`,
 `MemoryAllocationError`, `IoError`) when the program can't start or its output can't be captured. The output is an `ExitStatus`
 (`variant ExitStatus / Exited / Signaled` over the records `Exited(code: S32)` and `Signaled(signal: S32)`, with
-`.code()`, `.is_success()`) and the captured `stdout` / `stderr` (`Memory[Byte]`). A `ProcessOutput` is an entity:
+`.code()`, `.is_success()`) and the captured `stdout` / `stderr` (`BorrowedSlice[Byte]`). A `ProcessOutput` is an entity:
 `out: &ProcessOutput <- ProcessManager.create_shell_process(...)` or `when check ProcessManager.create_shell_process(...)`, then `drop out`. `ProcessOptions.default()` captures both and gives the child the null device as input. Set
 `directory`, `env` / `env_count` (overrides merged into this process's environment), and each stream's mode.
 `OsEnvironment.variable(name, manager)` reads a variable (`None` when it isn't set), `ProcessManager.exit_process(status)`
@@ -1734,7 +1745,7 @@ routine, block, or statement it wrote: debug information and build errors then p
 value into another type is the method `x.to[T]()` on the type it converts from, the target a fixed type argument
 (each pair of types is its own routine, `routine S32.to[S64]`): `n.to[S64]()`, `x.to_wrap[U8]()`, `arr.to[@T]()`,
 `p.to[@U]()`, `b.to[U8]()` on a `Byte`, `s.to[CStr](manager)` / `s.to[CWStr](manager)` on a `@[Byte]` (a conversion may take
-parameters), `buf.to[CStrView]()` on a `List[Byte]`, `m.to[@T]()` on a `Memory` or a `@[T]`,
+parameters), `buf.to[CStrView]()` on a `List[Byte]`, `m.to[@T]()` on a `BorrowedSlice` or a `@[T]`,
 `a.to[Vector[B32, 4]]()` on an `Array`, `n.to[B128Big]()`, `f.to[B128Extended]()`. Its variants keep the family
 (`to_wrap`, `to_clamp`, `to_unchecked`, `to_nearest[S64]()` on a `B128Extended`). There is no `to_s64`, `as_[type]`,
 `y_from_x`, or `x_to_y`, and a routine that differs from another only in the type it produces takes the type as a
@@ -1747,7 +1758,7 @@ byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`
 
 - A routine that can fail has one name. A routine whose failure is a caller's mistake crashes (`getitem`, `unwrap`),
   and one whose failure the caller may handle is failable and throws a crashable (`OsFileManager.open_read`,
-  `to[T]`, `Console.ask[T]`, `Memory[T].construct`): a bare call stops on it, `check` and `try` receive it. There are
+  `to[T]`, `Console.ask[T]`, `BorrowedSlice[T].construct`): a bare call stops on it, `check` and `try` receive it. There are
   no `_result` names and no `_checked` twins (no `to_checked[T]` either): `try` in front of a
   failable call gives the `Maybe`, `try xs.getitem(i)`, `try Console.ask[T]()`. A plain name never returns a
   `Maybe` just to say it failed. A `Maybe` that is a normal outcome keeps a plain name: `@[Byte].find` (not found),
@@ -1772,17 +1783,17 @@ that `to[T]`, which would call itself there. It keeps the shape under its own na
 
 **The empty value: `.hollow()`, `.empty()`, or `.zero()`.** A type's ready-made empty value (what a place that
 `finish` releases starts as, the "nothing yet" of a record) is a typewise routine without arguments. Every type has
-`.hollow()`, all bytes zero, which every `destruct` and `drop` leaves alone: the empty value of a `Memory`, a `Box`, a
+`.hollow()`, all bytes zero, which every `destruct` and `drop` leaves alone: the empty value of a `BorrowedSlice`, a `BorrowedCell`, a
 `@[T]`, and a record holding them. A type whose empty value isn't all zero, or means something of its own, names it
 `.empty()` (`FileHandle.empty()`, an OS handle, `FileStorage[T].empty()`). A type with no pointer inside (numbers, records and vectors of
 numbers) has `.zero()`: `Vector[T, LANES].zero()`. `Maybe[T]` is empty as `None()`, and a pointer to nothing is
 `.hollow()` too (tested with `is_hollow()` / `is_not_hollow()`), so there is no `none()` or `nothing()` routine, and
 no `null`: writing it is a build error that asks for `.hollow()`. `.hollow()` is typed by where it goes: where nothing gives the type (a variant with a pointer branch,
-an argument to a generic routine), name it, `Ptr[Node].hollow()`, `Addr.hollow()`, `T.hollow()`. A default that
+an argument to a generic routine), name it, `PointedCell[Node].hollow()`, `Addr.hollow()`, `T.hollow()`. A default that
 isn't empty is named for what it is: `ProcessOptions.default()` captures both streams.
 
 **The memory manager comes last.** A routine that takes an `@MemoryManager` takes it as its last parameter:
-`List[T].construct(manager)`, `Memory[T].construct(count, manager)`, `allocate[T](count, manager)`,
+`List[T].construct(manager)`, `BorrowedSlice[T].construct(count, manager)`, `allocate[T](count, manager)`,
 `deallocate(p, manager)`, `Console.ask_line(manager)`, `ThreadManager.construct(manager)`. The parameter is
 `manager: @MemoryManager`.
 A second memory manager for another job goes just before it, and each is named for what it manages
@@ -1836,7 +1847,7 @@ decide what `[...]` after it is. Before `(` it is a routine's or type's argument
 PascalCase: `Dict[TKey, TValue]`, `Iterator[TItem, TIter]`,
 `Tuple2[TItem0, TItem1]`, `bitcast[TFrom, TTo]`. A routine's own type parameters count together with its receiver
 type's, and the receiver type's keep the names the type declares: `List[T].represent_into[TWriter]`,
-`Dict[TKey, TValue].represent_into[TWriter]`, `Ptr[T].to[@TPointee]`. A value (const) parameter is named like a
+`Dict[TKey, TValue].represent_into[TWriter]`, `PointedCell[T].to[@TPointee]`. A value (const) parameter is named like a
 preset, UPPER_SNAKE for what it counts: `Array[T, COUNT]`, `Vector[T, LANES]`, `BigNat[LIMBS]`. Why: a type
 parameter can't be told from a real type by its case (both PascalCase), so the leading `T` marks "a type slot", and
 the upper case marks a build-time value like a preset. That's not Hungarian notation: it marks what kind of name it
@@ -1865,7 +1876,7 @@ array presets (`K.getitem(i)`, with `preset K: @Array[T, COUNT] <- [...]`), and 
 - Other ways to make a value are named for what they make: `Console.output()`, `Xoshiro256.from_seed(seed)`,
   `FormatSpec.zero_padded(6)`.
 - `deallocate(p, manager)` (the raw layer) is not a destructor: it hands a block of memory back to its memory manager.
-  `drop m` on a `Memory[T]` / `Box[T]` is the way to do it for memory taken from a manager.
+  `drop m` on a `BorrowedSlice[T]` / `BorrowedCell[T]` is the way to do it for memory taken from a manager.
 
 ## Style
 
@@ -1876,7 +1887,7 @@ presets, types, protocols, standalone conformances, routines (in your order), an
 `scan`, `sift_up`), values named for what they mean (`in_bounds`, not `t1`), boolean names that read as
 predicates, a guard that returns instead of a nested `if`, and helper routines instead of one huge body. You should
 start the name of a type that keeps memory from a manager and gives it back with `Managed` (`ManagedTables`, with
-`Memory[T]` fields), and leave the prefix off the type that only views it (`Tables`, with `@[T]` fields). Don't add
+`BorrowedSlice[T]` fields), and leave the prefix off the type that only views it (`Tables`, with `@[T]` fields). Don't add
 syntax sugar to shorten code; readability comes from decomposition and naming.
 
 ## Tests

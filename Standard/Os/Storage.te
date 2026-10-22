@@ -17,22 +17,22 @@ import Standard/Collections
 
 ### One storage device, as the OS reports it.
 entity StorageManager
-    name: Memory[Byte]  # the OS's name: "sda", "nvme0n1" on Linux, "disk0" on macOS
+    name: BorrowedSlice[Byte]  # the OS's name: "sda", "nvme0n1" on Linux, "disk0" on macOS
     size: U64  # its size in bytes, 0 when the OS doesn't say
 
 ### One partition, as the OS reports it.
 entity PartitionManager
-    name: Memory[Byte]  # the OS's name: "sda1" on Linux, "disk3s1" on macOS, "C:" on Windows
-    device: Memory[Byte]  # the name of the StorageManager it is on, empty when the OS doesn't say
-    mounted_at: Memory[Byte]  # the directory its file system is reached at, empty when it isn't mounted
-    file_system: Memory[Byte]  # "ext4", "apfs", "NTFS", empty when it has none mounted
+    name: BorrowedSlice[Byte]  # the OS's name: "sda1" on Linux, "disk3s1" on macOS, "C:" on Windows
+    device: BorrowedSlice[Byte]  # the name of the StorageManager it is on, empty when the OS doesn't say
+    mounted_at: BorrowedSlice[Byte]  # the directory its file system is reached at, empty when it isn't mounted
+    file_system: BorrowedSlice[Byte]  # "ext4", "apfs", "NTFS", empty when it has none mounted
     size: U64  # its size in bytes, 0 when the OS doesn't say
 
 ### Makes a `StorageManager` that takes over the memory of its name.
 ### :param name: The device's name.
 ### :param size: Its size in bytes.
 ### :returns: The new value.
-common routine StorageManager.construct(name: Memory[Byte], size: U64) -> Me
+common routine StorageManager.construct(name: BorrowedSlice[Byte], size: U64) -> Me
     return Me(name: steal name, size)
 
 ### Gives the name's memory back.
@@ -48,8 +48,8 @@ routine @StorageManager.destruct() -> None
 ### :param file_system: Its file system's name.
 ### :param size: Its size in bytes.
 ### :returns: The new value.
-common routine PartitionManager.construct(name: Memory[Byte], device: Memory[Byte],
-    mounted_at: Memory[Byte], file_system: Memory[Byte], size: U64) -> Me
+common routine PartitionManager.construct(name: BorrowedSlice[Byte], device: BorrowedSlice[Byte],
+    mounted_at: BorrowedSlice[Byte], file_system: BorrowedSlice[Byte], size: U64) -> Me
     return Me(name: steal name, device: steal device, mounted_at: steal mounted_at,
         file_system: steal file_system, size)
 
@@ -177,7 +177,7 @@ secret routine mount_of(mounts: @[Byte], key: @[Byte]) -> Maybe[MountLine]
 ### :throws: Crashes with `MemoryAllocationError` when `manager` fails.
 @target(os: "linux")
 @track_caller
-secret routine unescaped(text: @[Byte], manager: @MemoryManager) -> Memory[Byte]
+secret routine unescaped(text: @[Byte], manager: @MemoryManager) -> BorrowedSlice[Byte]
     out: &List[Byte] <- .construct(manager)
 
     until i >= text.count() with i: U64 = 0
@@ -203,9 +203,9 @@ secret routine unescaped(text: @[Byte], manager: @MemoryManager) -> Memory[Byte]
 ### :throws: Crashes with `MemoryAllocationError` when `manager` fails.
 @target(os: "linux")
 @track_caller
-secret routine text_of(path: @[Byte], manager: @MemoryManager) -> Memory[Byte]
+secret routine text_of(path: @[Byte], manager: @MemoryManager) -> BorrowedSlice[Byte]
     when check read_file(path, manager)
-        is Memory[Byte] as text => return text
+        is BorrowedSlice[Byte] as text => return text
         is FsError => return copied(text: "", manager)
 
 ### The number a /sys file holds, 0 when it can't be read.
@@ -240,7 +240,7 @@ secret routine linux_partition(sys: @[Byte], name: @[Byte], mounts: @[Byte],
     # A partition's device is the directory above it in /sys/devices. Something that isn't a partition (a whole disk
     # with a file system on it, a device-mapper volume) is its own device.
     when check canonical_path(path: sys, manager)
-        is Memory[Byte] as resolved =>
+        is BorrowedSlice[Byte] as resolved =>
             if is_present(marker.getslice())
                 device.replace(value: copied(text: file_name(parent_path(resolved.getslice())),
                     manager))
@@ -351,7 +351,7 @@ secret routine linux_partition_at(sys: @[Byte], key: @[Byte], mounts: @[Byte],
     name: &[Byte] <- copied(text: key, manager)
 
     when check canonical_path(path: sys, manager)
-        is Memory[Byte] as resolved =>
+        is BorrowedSlice[Byte] as resolved =>
             name.replace(value: copied(text: file_name(resolved.getslice()), manager))
             drop resolved
         is FsError => nothing

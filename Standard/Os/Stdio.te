@@ -142,7 +142,7 @@ secret routine @InputBuffer.compact() -> None
 ### :returns: The word.
 ### :absent: At the end of the input.
 ### :throws: Crashes with `MemoryAllocationError` when a word longer than the buffer can't be copied.
-secret routine @InputBuffer.word(spill: @Memory[Byte]) -> Maybe[@[Byte]]
+secret routine @InputBuffer.word(spill: @BorrowedSlice[Byte]) -> Maybe[@[Byte]]
     # White space up to the word's first byte, which is put back.
     loop
         c: Maybe[Byte] = try me.emit()
@@ -188,7 +188,7 @@ secret routine @InputBuffer.take_word(length: U64) -> @[Byte]
 ### :param spill: Where the word is kept, hollow before.
 ### :returns: The word, a view of `spill`.
 ### :throws: Crashes with `MemoryAllocationError` when the word can't be copied.
-secret routine @InputBuffer.spill_word(length: U64, spill: @Memory[Byte]) -> @[Byte]
+secret routine @InputBuffer.spill_word(length: U64, spill: @BorrowedSlice[Byte]) -> @[Byte]
     text: &CaptureBuffer <- CaptureBuffer.empty()
 
     text.append(chunk: me.bytes.to[@Byte](), n: length, manager: HEAP)
@@ -295,11 +295,11 @@ failable routine @ConsoleInput.read_bytes(buffer: @Byte, count: U64) -> U64
 ### :param manager: The manager for the bytes.
 ### :returns: The bytes read (empty when the allocation fails).
 @expensive("allocates what it reads")
-common routine Console.ask_bytes(count: U64, manager: @MemoryManager) -> Memory[Byte]
-    buffer: &[Byte] <- Memory[Byte].construct(count: 0, manager: manager)
+common routine Console.ask_bytes(count: U64, manager: @MemoryManager) -> BorrowedSlice[Byte]
+    buffer: &[Byte] <- BorrowedSlice[Byte].construct(count: 0, manager: manager)
 
-    when check Memory[Byte].construct(count: count.max(1), manager: manager)
-        is Memory[Byte] as made => buffer.replace(value: steal made)
+    when check BorrowedSlice[Byte].construct(count: count.max(1), manager: manager)
+        is BorrowedSlice[Byte] as made => buffer.replace(value: steal made)
         is MemoryAllocationError => return buffer
 
     until n == count with n: U64 = 0
@@ -320,7 +320,7 @@ common routine Console.ask_bytes(count: U64, manager: @MemoryManager) -> Memory[
 ### :param manager: The memory manager for the bytes.
 ### :returns: The bytes up to the end of the input (or up to a read failure).
 @expensive("allocates what it reads")
-common routine Console.ask_all(manager: @MemoryManager) -> Memory[Byte]
+common routine Console.ask_all(manager: @MemoryManager) -> BorrowedSlice[Byte]
     text: &CaptureBuffer <- CaptureBuffer.empty()
     chunk_buffer: &Array[Byte, 4096] <- .hollow()
     chunk: @Byte = chunk_buffer.to[@Byte]()
@@ -342,21 +342,21 @@ common routine Console.ask_all(manager: @MemoryManager) -> Memory[Byte]
 ### :returns: The line.
 ### :throws: Throws `EndOfInputError` at the end of the input.
 @expensive("allocates what it reads")
-failable common routine Console.ask_line(manager: @MemoryManager) -> Memory[Byte]
+failable common routine Console.ask_line(manager: @MemoryManager) -> BorrowedSlice[Byte]
     b: @InputBuffer = STDIN_BUFFER
 
     held: Authorized[U8] <- b.guard.get_exclusive_access()
-    line: &Maybe[Memory[Byte]] <- b.line(manager)
+    line: &Maybe[BorrowedSlice[Byte]] <- b.line(manager)
     drop held
     when steal line
-        is Memory[Byte] as text => return text
+        is BorrowedSlice[Byte] as text => return text
         is None => throw EndOfInputError(reader: "Console.ask_line")
 
 ### The next line, without its "\n" (or "\r\n"), in memory from manager. The lock is held.
 ### :param manager: The memory manager for the line.
 ### :returns: The line.
 ### :absent: At the end of the input.
-secret routine @InputBuffer.line(manager: @MemoryManager) -> Maybe[Memory[Byte]]
+secret routine @InputBuffer.line(manager: @MemoryManager) -> Maybe[BorrowedSlice[Byte]]
     text: &CaptureBuffer <- CaptureBuffer.empty()
 
     loop with any: Bool = false
@@ -381,7 +381,7 @@ secret routine @InputBuffer.line(manager: @MemoryManager) -> Maybe[Memory[Byte]]
 ### `line` without a "\r" at its end. The memory and its memory manager stay the same, only the count drops.
 ### :param line: The line.
 ### :returns: The line, one byte shorter when it ended in "\r".
-secret routine trim_cr(line: Memory[Byte]) -> Memory[Byte]
+secret routine trim_cr(line: BorrowedSlice[Byte]) -> BorrowedSlice[Byte]
     if line.getslice().has_suffix("\r")
         line.keep_first(line.count() - 1)
     return line
@@ -400,21 +400,21 @@ secret routine is_space(c: Byte) -> Bool
 ### :returns: The word.
 ### :throws: Throws `EndOfInputError` at the end of the input.
 @expensive("allocates what it reads")
-failable common routine Console.ask_word(manager: @MemoryManager) -> Memory[Byte]
+failable common routine Console.ask_word(manager: @MemoryManager) -> BorrowedSlice[Byte]
     b: @InputBuffer = STDIN_BUFFER
 
     held: Authorized[U8] <- b.guard.get_exclusive_access()
-    word: &Maybe[Memory[Byte]] <- b.take_word(manager)
+    word: &Maybe[BorrowedSlice[Byte]] <- b.take_word(manager)
     drop held
     when steal word
-        is Memory[Byte] as text => return text
+        is BorrowedSlice[Byte] as text => return text
         is None => throw EndOfInputError(reader: "Console.ask_word")
 
 ### The next word, in memory from manager. The space after the word stays in the input. The lock is held.
 ### :param manager: The memory manager for the word.
 ### :returns: The word.
 ### :absent: At the end of the input.
-secret routine @InputBuffer.take_word(manager: @MemoryManager) -> Maybe[Memory[Byte]]
+secret routine @InputBuffer.take_word(manager: @MemoryManager) -> Maybe[BorrowedSlice[Byte]]
     text: &CaptureBuffer <- CaptureBuffer.empty()
     single: &Byte <- .hollow()
 

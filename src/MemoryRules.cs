@@ -1,6 +1,6 @@
 namespace Tessera;
 
-/// The memory model's group check, over one routine's blocks. A `Box[T]` or a `Memory[T]` is memory taken from a
+/// The memory model's group check, over one routine's blocks. A `BorrowedCell[T]` or a `BorrowedSlice[T]` is memory taken from a
 /// manager, released exactly once. `=` copies its bits, so every handle that names the same memory belongs to one
 /// group: the value a call or an `at` literal gives, a parameter the routine was handed, and every copy of those, block
 /// parameters they are passed to, and slots they are stored in. A group ends exactly once on every path: with `drop()`
@@ -84,7 +84,7 @@ public static class MemoryRules
     /// What an arm's arguments do applies to that arm only: the lines after an arm see the state before it.
     public sealed record ArmBegin(Pos Pos) : Event(Pos);
 
-    /// `Name` is a view of the memory `Root` names: an address or a Span into it.
+    /// `Name` is a view of the memory `Root` names: an address or a PointedSlice into it.
     public sealed record ViewOf(string Name, string Root, Pos Pos) : Event(Pos)
     {
         /// The view holds the address of `Root`'s slot itself (a manager's table holds the manager's): `Root` must not
@@ -211,18 +211,21 @@ public static class MemoryRules
         public State Canonical()
         {
             var rename = new Dictionary<string, string>();
+            void Name(string id, string name) => rename.TryAdd(id, name);
             foreach (var (name, id) in Names.OrderBy(n => n.Key, StringComparer.Ordinal))
-                rename.TryAdd(id, $"@{name}#{Groups[id].Born}");
+                Name(id, $"@{name}#{Groups[id].Born}");
             // A group only a view still sees keeps a name of its own, so a use of the view finds it ended.
             foreach (var (view, id) in ViewGroups.OrderBy(v => v.Key, StringComparer.Ordinal))
-                if (Groups.TryGetValue(id, out var seen)) rename.TryAdd(id, $"@view:{view}#{seen.Born}");
+                if (Groups.TryGetValue(id, out var seen)) Name(id, $"@view:{view}#{seen.Born}");
             foreach (var (holder, ids) in HeldViews.OrderBy(h => h.Key, StringComparer.Ordinal))
                 foreach (var id in ids.Order(StringComparer.Ordinal))
-                    if (Groups.TryGetValue(id, out var held)) rename.TryAdd(id, $"@held:{holder}#{held.Born}");
+                    if (Groups.TryGetValue(id, out var held)) Name(id, $"@held:{holder}#{held.Born}");
             return new State
             {
                 Names = Names.ToDictionary(n => n.Key, n => rename[n.Value]),
-                Groups = Groups.Where(g => rename.ContainsKey(g.Key)).ToDictionary(g => rename[g.Key], g => g.Value),
+                // Two groups born on one line (a loop's rounds) seen through one holder are one: the first stays.
+                Groups = Groups.Where(g => rename.ContainsKey(g.Key)).GroupBy(g => rename[g.Key])
+                    .ToDictionary(g => g.Key, g => g.First().Value),
                 Views = new(Views),
                 Stale = new(Stale),
                 Holding = new(Holding),

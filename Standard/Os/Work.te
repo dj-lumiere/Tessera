@@ -103,7 +103,7 @@ routine cancel_requested() -> Bool
     slot: @WorkSlot = RUNNING_WORK.peek()
     if slot.is_hollow()
         return false
-    return slot.cancel.peek_atomic() == 1
+    return slot.cancel.peek_unbroken() == 1
 
 ### Crashes unless the ticket numbered `issued` still holds the slot.
 ### :param issued: The ticket's number.
@@ -119,7 +119,7 @@ routine @WorkSlot.check_ticket(issued: U64) -> None
 ### :throws: Crashes with `TicketBusyError` while the work runs.
 @track_caller
 routine @WorkSlot.check_free() -> None
-    if me.state.peek_atomic() == TICKET_RUNNING
+    if me.state.peek_unbroken() == TICKET_RUNNING
         crash(name: "TicketBusyError",
             message: "This ticket's work hasn't finished: a ticket runs one piece of work at a time, so wait_finished() first.")
     return
@@ -134,9 +134,9 @@ routine @WorkSlot.put(runner: Callable[(Addr,), None], work: Addr) -> None
     me.free_work()
     me.runner.poke(runner)
     me.work.poke(work)
-    me.cancel.poke_atomic(0)
+    me.cancel.poke_unbroken(0)
     me.blocked.poke(.hollow())
-    me.state.poke_atomic(TICKET_RUNNING)
+    me.state.poke_unbroken(TICKET_RUNNING)
     wake_all(me.state)
     return
 
@@ -152,7 +152,7 @@ routine @WorkSlot.free_work() -> None
 ### Whether no work runs: it finished, or there was none.
 ### :returns: True unless the work runs.
 routine @WorkSlot.is_finished() -> Bool
-    return me.state.peek_atomic() != TICKET_RUNNING
+    return me.state.peek_unbroken() != TICKET_RUNNING
 
 ### Waits until the work has finished. A fiber parks and the thread goes on with its manager's other fibers. A thread
 ### sleeps.
@@ -230,7 +230,7 @@ routine @WorkSlot.unregister(waiter: Waiter) -> None
 ### returns.
 @target(os: not "none")
 routine @WorkSlot.complete() -> None
-    me.state.poke_atomic(TICKET_DONE)
+    me.state.poke_unbroken(TICKET_DONE)
     wake_all(me.state)
     held: Authorized[U8] <- me.guard.get_exclusive_access()
     waiter: Waiter = me.waiter.peek()
@@ -247,7 +247,7 @@ routine @WorkSlot.complete() -> None
 @track_caller
 routine @WorkSlot.result_place[T]() -> @T
 needs T: typename
-    state: U32 = me.state.peek_atomic()
+    state: U32 = me.state.peek_unbroken()
     if not (state == TICKET_DONE)
         if state == TICKET_RUNNING
             crash(name: "TicketBusyError",
@@ -259,13 +259,13 @@ needs T: typename
 ### Whether `cancel()` asked the work to stop.
 ### :returns: True once it did.
 routine @WorkSlot.is_cancelled() -> Bool
-    return me.cancel.peek_atomic() == 1
+    return me.cancel.peek_unbroken() == 1
 
 ### Asks the work to stop: `cancel_requested()` turns true inside it, and a cancellable wait it is in (a
 ### `wait_finished_cancellable`, a channel's transmit or receive) ends.
 @target(os: not "none")
 routine @WorkSlot.request_cancel() -> None
-    me.cancel.poke_atomic(1)
+    me.cancel.poke_unbroken(1)
     held: Authorized[U8] <- me.guard.get_exclusive_access()
     blocked: Waiter = me.blocked.peek()
     drop held
@@ -276,12 +276,12 @@ routine @WorkSlot.request_cancel() -> None
 ### :throws: Crashes with `TicketBusyError` while the work runs.
 @track_caller
 routine @WorkSlot.give_back() -> None
-    if me.state.peek_atomic() == TICKET_RUNNING
+    if me.state.peek_unbroken() == TICKET_RUNNING
         crash(name: "TicketBusyError",
             message: "This ticket's work hasn't finished: wait_finished() before give_back(), so nothing it still uses goes away.")
     me.free_work()
     me.issued.poke(me.issued.peek() + 1)
-    me.state.poke_atomic(TICKET_IDLE)
+    me.state.poke_unbroken(TICKET_IDLE)
     return
 
 # -- the blocks of work, by number of arguments -----------------------------------------------------------------

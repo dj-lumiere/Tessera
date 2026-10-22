@@ -90,7 +90,7 @@ public sealed partial class FunctionGen
             case MethodCallExpr { Name: "getslot" or "getslice" or "stride" or "offset" or "to" or "getview", Args.Count: <= 2 } m
                 when InferQuiet(m) is { } viewed && PointsAtMemory(viewed):
                 return AtomsOf(m.Receiver);
-            case MethodCallExpr { Name: "peek" or "peek_volatile" or "peek_atomic", Args.Count: 0 } m:
+            case MethodCallExpr { Name: "peek" or "peek_volatile" or "peek_unbroken", Args.Count: 0 } m:
                 return Shifted(AtomsOf(m.Receiver), 1);
             case FieldExpr f:
                 return AtomsOf(f.Base);
@@ -174,7 +174,7 @@ public sealed partial class FunctionGen
         catch (CompileError) { return e; }
     }
 
-    /// The owner name of the memory a Box or a Memory named `name` holds (not its slot).
+    /// The owner name of the memory a BorrowedCell or a BorrowedSlice named `name` holds (not its slot).
     private static string HeldOwner(string name) => $"{name}'s memory";
 
     /// Whether `c` builds a record by naming its fields: `R(held: l)`, `Me(held: l)`.
@@ -252,7 +252,7 @@ public sealed partial class FunctionGen
         if (_escape is null || plan.Receiver is null) return;
         Expr? value = sig.Decl.Name switch
         {
-            "poke" or "poke_volatile" or "poke_atomic" or "store" or "setitem" => plan.Args.LastOrDefault(),
+            "poke" or "poke_volatile" or "poke_unbroken" or "store" or "setitem" => plan.Args.LastOrDefault(),
             "poke_into" => plan.Receiver,
             _ => null,
         };
@@ -264,7 +264,7 @@ public sealed partial class FunctionGen
         var place = AtomsOf(into);
         if (place.Count == 0) return;
         _escape.Stores.Add(new EscapeCheck.StoreFact(place, stored, plan.Pos, Spelled(new MethodCallExpr(
-            plan.Receiver, sig.Decl.Name, [], plan.Args, plan.Pos))) { Unshared = sig.Decl.Name.Contains("atomic") || sig.Decl.Owner is { Name: "Atomic" } || ThreadLocalRoot(into) || UnderExclusiveAccess(into) });
+            plan.Receiver, sig.Decl.Name, [], plan.Args, plan.Pos))) { Unshared = sig.Decl.Name.Contains("unbroken") || sig.Decl.Owner is { Name: "Unbroken" } || ThreadLocalRoot(into) || UnderExclusiveAccess(into) });
     }
 
     /// A store straight into a global (`G.poke(x)`): whether it puts back a value read out of that global, so the
@@ -274,7 +274,7 @@ public sealed partial class FunctionGen
         if (!MemOn || _escape is null || plan.Receiver is null) return;
         Expr? value = sig.Decl.Name switch
         {
-            "poke" or "poke_volatile" or "poke_atomic" or "store" or "setitem" => plan.Args.LastOrDefault(),
+            "poke" or "poke_volatile" or "poke_unbroken" or "store" or "setitem" => plan.Args.LastOrDefault(),
             "poke_into" => plan.Receiver,
             _ => null,
         };
@@ -398,6 +398,8 @@ public sealed partial class FunctionGen
     private void NoteHeldViews(string holder, HashSet<string> roots, Pos pos)
     {
         roots.Remove(holder);
+        // A ticket or a piece of work copied into memory (a table of tickets) is no view of memory that goes away.
+        roots.RemoveWhere(_ticketNames.Contains);
         if (!MemOn || roots.Count == 0) return;
         _viewNames.Add(holder);
         (_heldRoots.TryGetValue(holder, out var known) ? known : _heldRoots[holder] = []).UnionWith(roots);
@@ -542,13 +544,13 @@ public sealed partial class FunctionGen
                 Mem(new MemoryRules.WorkWaited(handed.Name, arg.Pos));
     }
 
-    /// Whether `name` is a parameter that points at memory or an entity its caller holds (`m: @Memory[Byte]`, `me`
+    /// Whether `name` is a parameter that points at memory or an entity its caller holds (`m: @BorrowedSlice[Byte]`, `me`
     /// of an entity's routine): the caller gives it back, not this routine.
     private bool IsCallerHeldParam(string name)
     {
         int index = _decl.Params.FindIndex(p => p.Name == name);
         // A parameter written as a bare type parameter (`value: T`) that this instance binds to a pointer is a value of
-        // its own, handed over: only one written as an address (`@T`, `@Memory[T]`, `me`) points at what the caller holds.
+        // its own, handed over: only one written as an address (`@T`, `@BorrowedSlice[T]`, `me`) points at what the caller holds.
         return index >= 0 && index < _inst.Params.Count && _inst.Params[index] is PtrType { Pointee: { } held } && Tracked(held)
                && !PointerOfTypeParam(name) && _decl.Name is not ("destruct" or "destruct_all");
     }

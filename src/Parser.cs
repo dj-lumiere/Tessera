@@ -14,9 +14,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// new one. The parser reads them and reports the first one.
     public List<(Pos Pos, string Message)> Legacy { get; } = [];
 
-    /// `Span[T]`, the old spelling of a span.
-    private void OldSpan(Pos pos) => Old(pos, "a span is written @[T]: @[Byte], @[Byte].construct(...), routine @[Byte].find");
-
+    /// `PointedSlice[T]`, the old spelling of a span.
     private void Old(Pos pos, string message)
     {
         Legacy.Add((pos, message));
@@ -529,7 +527,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// `block name(...)` at the start of a line: a block of the routine.
     private bool IsBlockHeader() => IsIdent("block") && PeekTok(1).Kind == TokenKind.Ident && PeekTok(2).Kind == TokenKind.LParen;
 
-    /// Every type name a type is written with: `Ptr`, `U` in `@U`, `Array`, `T` and `COUNT` in `Array[T, COUNT]`.
+    /// Every type name a type is written with: `PointedCell`, `U` in `@U`, `Array`, `T` and `COUNT` in `Array[T, COUNT]`.
     private static IEnumerable<string> NamesIn(TypeRef t) =>
         new[] { t.Name }.Concat(t.Args.OfType<TypeArgType>().SelectMany(a => NamesIn(a.Type)));
 
@@ -562,7 +560,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         ExpectIdent("routine");
 
         // `name`, `name[T]`, `Owner.name`, `Owner[T].name[U]`, and `@Owner.name`, which takes me by its address. `@[T]`
-        // is the Span type, so `@[Byte].trim` is a routine on a span, and `@@[Byte].clear` takes the span's address.
+        // is the PointedSlice type, so `@[Byte].trim` is a routine on a span, and `@@[Byte].clear` takes the span's address.
         var receiverAt = Is(TokenKind.At) && PeekTok(1).Kind != TokenKind.LBracket ? Next().Pos : (Pos?)null;
         var first = ParseType();
         TypeRef? owner = null;
@@ -598,7 +596,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         // its address (`routine @Point.move(...)`). A `common` one takes none and is called on its type.
         if (owner is not null && !isCommon)
             parameters.Insert(0, new Param("me", receiverAt is { } meAt
-                ? new TypeRef("Ptr", [new TypeArgType(new TypeRef("Me", [], meAt))], meAt)
+                ? new TypeRef("PointedCell", [new TypeArgType(new TypeRef("Me", [], meAt))], meAt)
                 : new TypeRef("Me", [], first.Pos), receiverAt ?? first.Pos) { Implicit = true });
         else if (receiverAt is { } commonAt)
             throw new CompileError(commonAt, "a common routine takes no me, so nothing is taken by its address: drop the '@'");
@@ -608,7 +606,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         ExpectLineEnd();
         var clauses = ParseClauses();
         // `TFrom.bitcast[TTo]` declares TTo in its `require`. `S32.to[S64]` names the type it is defined for instead, and
-        // `Ptr[T].to[@U]` a pattern of one: its own parameters there (U) are bound by matching a call's type arguments.
+        // `PointedCell[T].to[@U]` a pattern of one: its own parameters there (U) are bound by matching a call's type arguments.
         List<TypeRef> fixedArgs = [];
         if (ownArgs.Count != 0)
         {
@@ -931,7 +929,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (Is(TokenKind.Eq))
             throw Error($"a global is a place, filled with '<-': global {name.Text}: {type} <- value");
         // `global NAME: &[T] <- [0] * 26`: the literal gives the elements and how many there are. Without a literal the
-        // global holds the Memory itself (hollow until the program puts one in, with replace).
+        // global holds the BorrowedSlice itself (hollow until the program puts one in, with replace).
         if (StorageSpanOf(type) is { } spanType)
         {
             Expr? contents = Accept(TokenKind.LeftArrow) ? ParseExpr() : null;
@@ -950,23 +948,23 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new PresetDecl(file, annotations, null, name.Text, pointee, value, pos) { IsGlobal = true, IsStorage = true };
     }
 
-    /// `T` in `&T` (`Box[T]`), the type of a preset or global in memory, or null.
+    /// `T` in `&T` (`BorrowedCell[T]`), the type of a preset or global in memory, or null.
     private static TypeRef? StoragePointeeOf(TypeRef type) =>
-        type is { Name: "Box", Path: null or Compiler.SystemModule, Args: [TypeArgType inner] } ? inner.Type : null;
+        type is { Name: "BorrowedCell", Path: null or Compiler.SystemModule, Args: [TypeArgType inner] } ? inner.Type : null;
 
-    /// The span `@[T]` a preset or global `&[T]` (`Memory[T]`) is seen as, or null.
+    /// The span `@[T]` a preset or global `&[T]` (`BorrowedSlice[T]`) is seen as, or null.
     private static TypeRef? StorageSpanOf(TypeRef type) =>
-        type is { Name: "Memory", Path: null or Compiler.SystemModule, Args: [TypeArgType elem] } ? new TypeRef("Span", [elem], type.Pos) : null;
+        type is { Name: "BorrowedSlice", Path: null or Compiler.SystemModule, Args: [TypeArgType elem] } ? new TypeRef("PointedSlice", [elem], type.Pos) : null;
 
     /// `T` in `@[T]`.
     private static TypeRef? ElemOf(TypeRef type) => type.Args is [TypeArgType elem] ? elem.Type : null;
 
-    /// `Span[T]`, the type of a run of values in static memory or in a routine's frame.
-    private static bool IsSpanType(TypeRef type) => type is { Name: "Span", Path: null, Args.Count: 1 };
+    /// `PointedSlice[T]`, the type of a run of values in static memory or in a routine's frame.
+    private static bool IsSpanType(TypeRef type) => type is { Name: "PointedSlice", Path: null, Args.Count: 1 };
 
     /// `T` in `@T`, or null if the type isn't a pointer.
     private static TypeRef? PointeeOf(TypeRef type) =>
-        type is { Name: "Ptr", Path: null, Args: [TypeArgType inner] } ? inner.Type : null;
+        type is { Name: "PointedCell", Path: null, Args: [TypeArgType inner] } ? inner.Type : null;
 
     private ConceptDecl ParseConcept(List<Annotation> annotations)
     {
@@ -1062,7 +1060,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     private TypeRef ParseTypeAtom()
     {
-        // `@T` is `Ptr[T]`, and `@[T]` is `Span[T]`: many Ts, viewed.
+        // `@T` is `PointedCell[T]`, and `@[T]` is `PointedSlice[T]`: many Ts, viewed.
         if (Is(TokenKind.At))
         {
             var at = Next().Pos;
@@ -1070,14 +1068,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             {
                 var elem = ParseType();
                 Expect(TokenKind.RBracket, "']' closing @[T]");
-                return new TypeRef("Span", [new TypeArgType(elem)], at);
+                return new TypeRef("PointedSlice", [new TypeArgType(elem)], at);
             }
             if (Is(TokenKind.LParen) && UnionInParens())
                 throw new CompileError(Cur.Pos,
                     "a pointer to a variant written inline goes through a name: define Choice = A | B, then @Choice");
-            return new TypeRef("Ptr", [new TypeArgType(ParseTypeAtom())], at);
+            return new TypeRef("PointedCell", [new TypeArgType(ParseTypeAtom())], at);
         }
-        // `&T` is `Box[T]`, and `&[T]` is `Memory[T]`: borrowed from a manager, given back with drop.
+        // `&T` is `BorrowedCell[T]`, and `&[T]` is `BorrowedSlice[T]`: borrowed from a manager, given back with drop.
         if (Cur is { Kind: TokenKind.Op, Text: "&" })
         {
             var amp = Next().Pos;
@@ -1085,9 +1083,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             {
                 var elem = ParseType();
                 Expect(TokenKind.RBracket, "']' closing &[T]");
-                return new TypeRef("Memory", [new TypeArgType(elem)], amp) { Path = Compiler.SystemModule, Amp = true };
+                return new TypeRef("BorrowedSlice", [new TypeArgType(elem)], amp) { Path = Compiler.SystemModule, Amp = true };
             }
-            return new TypeRef("Box", [new TypeArgType(ParseTypeAtom())], amp) { Path = Compiler.SystemModule, Amp = true };
+            return new TypeRef("BorrowedCell", [new TypeArgType(ParseTypeAtom())], amp) { Path = Compiler.SystemModule, Amp = true };
         }
         if (Is(TokenKind.LParen))
         {
@@ -1101,7 +1099,6 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
         var (path, name) = ParseQualifiedName("a type");
         var args = ParseTypeArgs(callable: name.Text == "Callable" && path is null);
-        if (path is null && name.Text == "Span" && args.Count == 1) OldSpan(name.Pos);
         return new TypeRef(name.Text, args, name.Pos) { Path = path };
     }
 
@@ -1546,7 +1543,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             Expect(TokenKind.Eq, "'=' (or '<-' to borrow a place)");
             var value = ParseValue(col);
             if (value is AtExpr at)
-                throw new CompileError(at.Pos, $"a place from a manager is borrowed with '<-': {name}: {(type is { Name: "Box" or "Memory" } ? $"{type}" : $"&{type}")} <- ... from manager");
+                throw new CompileError(at.Pos, $"a place from a manager is borrowed with '<-': {name}: {(type is { Name: "BorrowedCell" or "BorrowedSlice" } ? $"{type}" : $"&{type}")} <- ... from manager");
             if (value is not WhenExpr) ExpectLineEnd();
             _values!.Add(name);
             return new BindStmt(name, type, value, pos);
@@ -2307,7 +2304,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         {
             case TokenKind.Int:
                 Next();
-                return new IntLit(t.IntValue, t.Pos, HexDigits(t.Text));
+                return new IntLit(t.IntValue, t.Pos, HexDigits(t.Text))
+                {
+                    Base10 = !t.Text.TrimStart('-').StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                        && !t.Text.TrimStart('-').StartsWith("0b", StringComparison.OrdinalIgnoreCase)
+                        && !t.Text.TrimStart('-').StartsWith("0o", StringComparison.OrdinalIgnoreCase),
+                };
             case TokenKind.Unit:
                 Next();
                 return new UnitLit(t.IntValue, t.Text.TrimStart('-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '_'), t.Text, t.Pos);
@@ -2403,7 +2405,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
     }
 
-    /// `literal from manager`: a literal in memory from a manager, a `Memory[T]` or a `Box[T]`. Without `from` the
+    /// `literal from manager`: a literal in memory from a manager, a `BorrowedSlice[T]` or a `BorrowedCell[T]`. Without `from` the
     /// literal itself.
     private Expr AtManager(Expr literal)
     {
@@ -2496,7 +2498,6 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 { Path = path, ArgNames = names, WrittenTypeArgs = numbers ? typeArgs : null });
         }
 
-        if (path is null && name.Text == "Span" && typeArgs.Count == 1 && asIndex is null) OldSpan(pos);
         var owner = new TypeRef(name.Text, typeArgs, pos) { Path = path, AsIndex = asIndex };
 
         if (typeArgs.All(a => a is TypeArgType) && Is(TokenKind.Dot) && PeekTok(1) is { Kind: TokenKind.Ident, Text: "to" }

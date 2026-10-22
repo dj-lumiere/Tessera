@@ -6,7 +6,7 @@
 #   - Slots is an index table: each cell is DICT_SLOT_EMPTY, DICT_SLOT_TOMBSTONE, or an
 #     entry index >= 0. Linear probing on the hash mod capacity.
 #
-# Every array is a Memory of the same count, the capacity, and each keeps
+# Every array is a BorrowedSlice of the same count, the capacity, and each keeps
 # the memory manager. Removal marks the entry dead and the slot a tombstone. The
 # entry's position in the entries array is retained so the insertion order of
 # surviving entries is preserved. Rehash compacts dead entries away.
@@ -18,7 +18,7 @@ module Standard/Collections
 secret preset DICT_SLOT_EMPTY: U64 = U64.MAX
 secret preset DICT_SLOT_TOMBSTONE: U64 = DICT_SLOT_EMPTY.sub(1)
 
-### An insertion-ordered hash map. Entries live in parallel arrays (each a {Memory[T]} holding the capacity and the manager) in the order they were first inserted, and an open-addressed slot table with linear probing maps a key hash to its entry. Removal marks the entry dead, so surviving entries keep their order until the next rehash.
+### An insertion-ordered hash map. Entries live in parallel arrays (each a {BorrowedSlice[T]} holding the capacity and the manager) in the order they were first inserted, and an open-addressed slot table with linear probing maps a key hash to its entry. Removal marks the entry dead, so surviving entries keep their order until the next rehash.
 ### :typeparam TKey: The key type, which must provide hashing and equality.
 ### :typeparam TValue: The value type.
 entity Dict[TKey, TValue]
@@ -28,11 +28,11 @@ obeys Diagnosable[Dict[TKey, TValue]] when TKey: typename, TValue: typename, Dia
 obeys Equatable[Dict[TKey, TValue]] when TKey: typename, TValue: typename, Equatable[TValue]
 needs TKey: typename, TValue: typename, HashEquatable[TKey]
 obeys KeyFindable[Dict[TKey, TValue], TKey, TValue]
-    keys: Memory[TKey]
-    values: Memory[TValue]
-    hashes: Memory[U64]
-    entry_states: Memory[U8]
-    slots: Memory[U64]
+    keys: BorrowedSlice[TKey]
+    values: BorrowedSlice[TValue]
+    hashes: BorrowedSlice[U64]
+    entry_states: BorrowedSlice[U8]
+    slots: BorrowedSlice[U64]
     count: U64
     entries_count: U64
 
@@ -41,11 +41,11 @@ obeys KeyFindable[Dict[TKey, TValue], TKey, TValue]
 ### :returns: A new empty Dict.
 common routine Dict[TKey, TValue].construct(manager: @MemoryManager) -> Me
 needs TKey: typename, TValue: typename
-    return Me(keys: Memory[TKey].construct(count: 0, manager: manager),
-        values: Memory[TValue].construct(count: 0, manager: manager),
-        hashes: Memory[U64].construct(count: 0, manager: manager),
-        entry_states: Memory[U8].construct(count: 0, manager: manager),
-        slots: Memory[U64].construct(count: 0, manager: manager), count: 0, entries_count: 0)
+    return Me(keys: BorrowedSlice[TKey].construct(count: 0, manager: manager),
+        values: BorrowedSlice[TValue].construct(count: 0, manager: manager),
+        hashes: BorrowedSlice[U64].construct(count: 0, manager: manager),
+        entry_states: BorrowedSlice[U8].construct(count: 0, manager: manager),
+        slots: BorrowedSlice[U64].construct(count: 0, manager: manager), count: 0, entries_count: 0)
 
 ### A Dict of the values of an array, drawing its storage from `manager`. The array is taken over: its values go
 ### into the dict, entity values too, each a key and its value (a later key equal to an earlier one replaces its value).
@@ -233,11 +233,11 @@ secret routine @Dict[TKey, TValue].rehash(new_capacity: U64) -> Bool
 needs TKey: typename, TValue: typename
     manager: @MemoryManager = me.keys.manager.peek()
     fresh: &Me <- .construct(manager)
-    keys: @Memory[TKey] = fresh.keys
-    values: @Memory[TValue] = fresh.values
-    hashes: @Memory[U64] = fresh.hashes
-    entry_states: @Memory[U8] = fresh.entry_states
-    slots: @Memory[U64] = fresh.slots
+    keys: @BorrowedSlice[TKey] = fresh.keys
+    values: @BorrowedSlice[TValue] = fresh.values
+    hashes: @BorrowedSlice[U64] = fresh.hashes
+    entry_states: @BorrowedSlice[U8] = fresh.entry_states
+    slots: @BorrowedSlice[U64] = fresh.slots
 
     if make_array[TKey](into: keys, count: new_capacity)
         if make_array[TValue](into: values, count: new_capacity)
@@ -513,11 +513,11 @@ needs TKey: typename, TValue: typename, Diagnosable[TKey], Diagnosable[TValue], 
 ### :param into: The empty slice to fill, which carries the memory manager.
 ### :param count: The number of elements to allocate.
 ### :returns: True when it allocated, false when the memory manager failed (leaving `into` empty).
-secret routine make_array[T](into: @Memory[T], count: U64) -> Bool
+secret routine make_array[T](into: @BorrowedSlice[T], count: U64) -> Bool
 needs T: typename
     manager: @MemoryManager = into.manager.peek()
-    when check Memory[T].construct(count, manager: manager)
-        is Memory[T] as slice =>
+    when check BorrowedSlice[T].construct(count, manager: manager)
+        is BorrowedSlice[T] as slice =>
             into.replace(value: steal slice)
             return true
         is MemoryAllocationError => return false
@@ -526,7 +526,7 @@ needs T: typename
 ### :typeparam T: The element type.
 ### :param a: The first slice.
 ### :param b: The second slice.
-secret routine swap_slices[T](a: @Memory[T], b: @Memory[T]) -> None
+secret routine swap_slices[T](a: @BorrowedSlice[T], b: @BorrowedSlice[T]) -> None
 needs T: typename
     first: &[T] <- steal a.stride(0)
 

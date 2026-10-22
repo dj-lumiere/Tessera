@@ -62,6 +62,29 @@ public sealed partial class Compiler
         return new ConstVal(t, bits);
     }
 
+    /// A whole number written in base 10 as a constant of a binary float type (B16, BF16, B32, B64, B128): exact when
+    /// the type holds it, else the nearest value, and a build error when it is beyond the type's largest. Null when `t`
+    /// isn't a binary float type.
+    public static ConstVal? WholeAsFloat(BigInteger value, DType? t, Pos pos)
+    {
+        string hex = (value.Sign < 0 ? "-" : "") + "0x" + BigInteger.Abs(value).ToString("X") + "p0";
+        if (t is FloatType ft)
+        {
+            var (fraction, exponent) = HexFloat.Format(ft);
+            if (HexFloat.Encode(hex, fraction, exponent) is { } exact) return new ConstVal(ft, exact);
+            double d = (double)value;
+            double largest = ft == FloatType.B16 ? 65504 : ft == FloatType.B64 ? double.MaxValue : float.MaxValue;
+            if (double.IsInfinity(d) || Math.Abs(d) > largest)
+                throw new CompileError(pos, $"the number {value} is beyond the largest {ft.Name}");
+            return new ConstVal(ft, FloatBits(ft, d));
+        }
+        if (HexFloat.IsB128(t))
+            return HexFloat.Encode(hex, HexFloat.B128Fraction, HexFloat.B128Exponent) is { } bits
+                ? new ConstVal(t!, bits)
+                : throw new CompileError(pos, $"the number {value} isn't exactly a B128: write it as a hex float that rounds it");
+        return null;
+    }
+
     /// The LLVM constant for a folded value.
     public static string ConstLlvm(ConstVal v)
     {
@@ -174,6 +197,8 @@ public sealed partial class Compiler
     {
         switch (AsRecordLit(e, env))
         {
+            case IntLit { Base10: true } whole when WholeAsFloat(whole.Value, hint, whole.Pos) is { } asFloat:
+                return asFloat;
             case IntLit il:
                 if (hint is IntType it)
                 {

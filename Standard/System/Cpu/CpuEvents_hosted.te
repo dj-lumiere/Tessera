@@ -17,7 +17,7 @@
 #   returns, as it would have.
 #
 # A handler runs where the system delivers the event: on Linux and macOS inside a signal handler, on whichever thread
-# the signal comes to, cutting into what that thread was doing (so it writes with Console and sets atomics, and takes
+# the signal comes to, cutting into what that thread was doing (so it writes with Console and sets unbroken values, and takes
 # no lock that thread may hold). On Windows a request to end runs on a thread the system starts for it, and an
 # interrupt on a thread of the CpuEventManager's own (the system hands its handlers one event at a time, so an
 # interrupt handler on its thread would hold back the next interrupt until it returned).
@@ -85,7 +85,7 @@ secret routine slot_of(kind: CpuEventKind) -> U64
 secret common routine CpuEventManager.replace(kind: CpuEventKind,
     holder: Callable[(CpuEvent,), None]) -> Callable[(CpuEvent,), None]
     slot: @Addr = HOLDERS.getslot(slot_of(kind))
-    before: Addr = slot.atomic_swap(holder.addr())
+    before: Addr = slot.unbroken_swap(holder.addr())
     return bitcast(before)
 
 ### The handler that holds `kind`'s slot.
@@ -93,7 +93,7 @@ secret common routine CpuEventManager.replace(kind: CpuEventKind,
 ### :returns: The handler, `.hollow()` for none.
 @target(os: not "none")
 common routine CpuEventManager.holder(kind: CpuEventKind) -> Callable[(CpuEvent,), None]
-    return bitcast(HOLDERS.getslot(slot_of(kind)).peek_atomic())
+    return bitcast(HOLDERS.getslot(slot_of(kind)).peek_unbroken())
 
 ### Sets the handler of a request to end the process: SIGTERM on Linux and macOS, a console window closed, a logoff,
 ### or a shutdown on Windows. The handler decides: to end, it calls {ProcessManager.exit_process}, and when it returns
@@ -140,10 +140,10 @@ secret routine deliver(event: CpuEvent) -> Bool
     if event.kind != CpuEventKind.INTERRUPTED
         holder.call(event)
         return true
-    if INTERRUPT_RUNNING.atomic_swap(1) == 1
+    if INTERRUPT_RUNNING.unbroken_swap(1) == 1
         return true
     holder.call(event)
-    INTERRUPT_RUNNING.poke_atomic(0)
+    INTERRUPT_RUNNING.poke_unbroken(0)
     return true
 
 # -- Linux and macOS ----------------------------------------------------------------------------------------------
@@ -260,7 +260,7 @@ secret routine c_raise_exception(code: U32, flags: U32, count: U32, args: Addr) 
 ### :throws: Crashes with `TaskSpawnError` when the dispatch thread can't be started.
 @target(os: "windows")
 secret routine listen(kind: CpuEventKind, on: Bool) -> None
-    if on and CONSOLE_HANDLER_ON.atomic_swap(1) == 0
+    if on and CONSOLE_HANDLER_ON.unbroken_swap(1) == 0
         DEFAULT_THREADS.launch_unwatched(entry: interrupt_dispatch.to[Callable](),
             arg: INTERRUPT_PENDING)
         c_set_console_ctrl_handler(on_console_event.to[Callable](), 1)
@@ -273,7 +273,7 @@ secret routine listen(kind: CpuEventKind, on: Bool) -> None
 @untraced
 secret routine interrupt_dispatch(pending: @U32) -> None
     loop
-        ctrl: U32 = pending.atomic_swap(0)
+        ctrl: U32 = pending.unbroken_swap(0)
         if ctrl == 0
             wait_on(at: pending, expected: 0)
             continue
@@ -282,7 +282,7 @@ secret routine interrupt_dispatch(pending: @U32) -> None
             ProcessManager.exit_process(CONTROL_C_EXIT)
         holder.call(CpuEvent(kind: CpuEventKind.INTERRUPTED, code: (ctrl - 1).to[U64](),
             place: .hollow(), address: .hollow()))
-        INTERRUPT_RUNNING.poke_atomic(0)
+        INTERRUPT_RUNNING.poke_unbroken(0)
         continue
 
 ### The console's events: Ctrl+C (0) and Ctrl+Break (1) are INTERRUPTED, a window closed (2), a logoff (5), and a
@@ -304,9 +304,9 @@ secret routine on_console_event(ctrl: U32) -> CInt
         return 0
     if CpuEventManager.holder(CpuEventKind.INTERRUPTED).addr().is_hollow()
         return 0
-    if INTERRUPT_RUNNING.atomic_swap(1) == 1
+    if INTERRUPT_RUNNING.unbroken_swap(1) == 1
         return 1
-    INTERRUPT_PENDING.poke_atomic(ctrl + 1)
+    INTERRUPT_PENDING.poke_unbroken(ctrl + 1)
     wake_one(INTERRUPT_PENDING)
     return 1
 

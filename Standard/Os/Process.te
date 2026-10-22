@@ -79,8 +79,8 @@ record ProcessOptions
 ### both. One not captured is empty and holds nothing.
 entity ProcessOutput
     status: ExitStatus
-    stdout: Memory[Byte]
-    stderr: Memory[Byte]
+    stdout: BorrowedSlice[Byte]
+    stderr: BorrowedSlice[Byte]
 
 ### Makes the manager. It holds no values.
 ### :returns: The manager.
@@ -104,8 +104,8 @@ needs TWriter: typename, Writer[TWriter]
 ### :param stdout: Its `stdout`.
 ### :param stderr: Its `stderr`.
 ### :returns: The new value.
-common routine ProcessOutput.construct(status: ExitStatus, stdout: Memory[Byte],
-    stderr: Memory[Byte]) -> Me
+common routine ProcessOutput.construct(status: ExitStatus, stdout: BorrowedSlice[Byte],
+    stderr: BorrowedSlice[Byte]) -> Me
     return Me(status, stdout: steal stdout, stderr: steal stderr)
 
 ### Gives both captured streams back to the memory manager they came from.
@@ -174,19 +174,19 @@ secret routine shell_program() -> @[Byte]
 secret routine shell_flag() -> @[Byte]
     return "-c"
 
-### Sets the exit status the program ends with when `start` returns. The last store wins: it is one atomic value, so
+### Sets the exit status the program ends with when `start` returns. The last store wins: it is one unbroken value, so
 ### any thread may set it, and the builder's `main` reads it after `start` returned (a thread still running then may
 ### or may not get its store in). A crash ends the process with its own status, whatever was set.
 ### :param code: The exit status, 0 for success.
 routine set_exit_code(code: S32) -> None
-    EXIT_CODE.poke_atomic(code)
+    EXIT_CODE.poke_unbroken(code)
     return
 
 ### The exit status the program ends with when `start` returns: the last {set_exit_code}, 0 when nothing set one.
 ### The builder's `main` returns it after `start`.
 ### :returns: The status.
 routine exit_code() -> S32
-    return EXIT_CODE.peek_atomic()
+    return EXIT_CODE.peek_unbroken()
 
 ### Ends this process with `status`, without returning. (Nothing is flushed but what the C library flushes.)
 ### :param status: The process's exit status.
@@ -199,7 +199,7 @@ common routine ProcessManager.exit_process(status: S32) -> None
 ### A captured stream as it grows, in memory from a memory manager: `storage` holds the capacity, `count` the bytes in
 ### use.
 secret entity CaptureBuffer
-    storage: Memory[Byte]
+    storage: BorrowedSlice[Byte]
     count: U64
     failed: Bool  # an allocation failed: what came after was dropped
 
@@ -208,7 +208,8 @@ secret entity CaptureBuffer
 ### :param count: Its `count`.
 ### :param failed: Its `failed`.
 ### :returns: The new value.
-secret common routine CaptureBuffer.construct(storage: Memory[Byte], count: U64, failed: Bool) -> Me
+secret common routine CaptureBuffer.construct(storage: BorrowedSlice[Byte], count: U64,
+    failed: Bool) -> Me
     return Me(storage: steal storage, count, failed)
 
 ### Gives the buffer's memory back.
@@ -237,8 +238,8 @@ secret routine @CaptureBuffer.append(chunk: @Byte, n: U64, manager: @MemoryManag
 
         bigger: U64 = doubled.max(need).max(256)
         if me.storage.data.peek().is_hollow()
-            when check Memory[Byte].construct(count: bigger, manager: manager)
-                is Memory[Byte] as memory =>
+            when check BorrowedSlice[Byte].construct(count: bigger, manager: manager)
+                is BorrowedSlice[Byte] as memory =>
                     me.storage.replace(value: steal memory)
                     me.storage.getslot(me.count.peek()).copy(src: chunk, count: n)
                     next_count: U64 = me.count.peek() + n
@@ -263,7 +264,7 @@ secret routine @CaptureBuffer.append(chunk: @Byte, n: U64, manager: @MemoryManag
 
 ### What was captured, in memory the caller drops. The buffer is left empty.
 ### :returns: The captured bytes.
-secret routine @CaptureBuffer.take_all() -> Memory[Byte]
+secret routine @CaptureBuffer.take_all() -> BorrowedSlice[Byte]
     me.storage.keep_first(me.count.peek())
     me.count.poke(0)
     return me.storage.take()

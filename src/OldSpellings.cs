@@ -21,7 +21,7 @@ public static class OldSpellings
             ? $"{module} is gone: its names are in {now}, which every file sees without an import"
             : null;
 
-    /// The message for a lock record that is gone, else null.
+    /// The message for a type that is gone or renamed, else null.
     public static string? OldTypeName(string name) => name switch
     {
         "ExclusiveAccess" or "ExclusiveLock" => $"'{name}' is gone: the AccessManager hands out access to the memory itself. "
@@ -30,8 +30,25 @@ public static class OldSpellings
         "MultiReadAccess" or "MultiReadLock" => $"'{name}' is gone: the AccessManager hands out access to the memory itself. "
             + "Readers take a ReadAuthorized[T] with p.get_shared_read_access(), a writer an Authorized[T] with "
             + "p.get_exclusive_access(), each reads and writes through getview(), and gives it back with drop",
+        "Ptr" => Renamed(name, "PointedCell[T] now (written @T)"),
+        "Span" => Renamed(name, "PointedSlice[T] now (written @[T])"),
+        "Box" => Renamed(name, "BorrowedCell[T] now (written &T)"),
+        "Memory" => Renamed(name, "BorrowedSlice[T] now (written &[T])"),
+        "Atomic" => Renamed(name, "Unbroken[T] now"),
+        "AtomicStorable" or "AtomicExchangeable" or "AtomicAddable" or "AtomicMaskable" or "AtomicFloatAddable" =>
+            Renamed(name, "Unbroken" + name["Atomic".Length..] + " now"),
+        "CircularList" or "CircularListIter" => Renamed(name, "RotatableList" + name["CircularList".Length..] + " now"),
         _ => null,
     };
+
+    private static string Renamed(string name, string now) => $"'{name}' is called {now}";
+
+    /// The message for a routine that took a new name, else null: the routines that change a value as one unbroken
+    /// step are `unbroken_...` (`peek_unbroken`, `poke_unbroken`, `unbroken_fetch_add`).
+    public static string? OldRoutineName(string name) =>
+        name.StartsWith("atomic_", StringComparison.Ordinal) ? $"'{name}' is called 'unbroken_{name["atomic_".Length..]}' now"
+        : name.Contains("_atomic", StringComparison.Ordinal) ? $"'{name}' is called '{name.Replace("_atomic", "_unbroken")}' now"
+        : null;
 
     /// The message for a name that is gone, else null.
     public static string? OldName(string name) => name switch

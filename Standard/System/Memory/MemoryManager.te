@@ -9,7 +9,7 @@
 # Heap.te's and Pages.te's. A stack is a StackManager's (StackManager.te): it hands out a routine's
 # local slots by moving the stack pointer, with no call, so it has no table.
 #
-# Heap memory reaches user code as a Memory[T] (Memory.te in Standard/System) or a Box[T]:
+# Heap memory reaches user code as a BorrowedSlice[T] (BorrowedSlice.te in Standard/System) or a BorrowedCell[T]:
 # an address, a count, and this manager, released with drop(). allocate,
 # reallocate, and deallocate below are the raw layer under it, for the stdlib's
 # own node-based structures (B-tree nodes, thread and fiber records) and for
@@ -138,7 +138,7 @@ routine @MemoryManager.destruct() -> None
     return
 
 ### A table that hands out blocks and doesn't handle pages: its page routines and `protect_fn` are null. For
-### Standard/System/Memory's own tables built from C routines, everything else makes its table with `m.to[MemoryManager]()`.
+### Standard/System/BorrowedSlice's own tables built from C routines, everything else makes its table with `m.to[MemoryManager]()`.
 ### :param borrow_fn: Allocates `(state, size, align)`.
 ### :param reborrow_fn: Resizes `(state, at, size, align)`.
 ### :param give_back_fn: Gives a block back `(state, at)`.
@@ -426,7 +426,7 @@ needs T: typename
 ### :typeparam T: The element type.
 ### :param data: The block, from `allocate` or `reallocate`.
 ### :param manager: The memory manager the block came from.
-### :note: A raw layer beside {Memory[T]} and {Box[T]}, for node-based structures and memory C hands over. Code that holds a Memory never needs it.
+### :note: A raw layer beside {BorrowedSlice[T]} and {BorrowedCell[T]}, for node-based structures and memory C hands over. Code that holds a BorrowedSlice never needs it.
 @track_caller
 @expensive("frees heap memory")
 routine deallocate[T](data: @T, manager: @MemoryManager) -> None
@@ -484,7 +484,7 @@ routine allocator_call_place() -> @SourceLocation
 ### :param count: The number of values of `T` to copy.
 ### :throws: Crashes with `IntegerOverflowError` when the byte size does not fit in U64.
 ### :note: The ranges must not overlap, and no destructor or copy hook runs.
-routine Ptr[T].copy(src: Me, count: U64) -> None
+routine PointedCell[T].copy(src: Me, count: U64) -> None
 needs T: typename
     elem_size: U64 = sizeof[T]()
     size: U64 = elem_size * count
@@ -500,7 +500,7 @@ needs T: typename
 ### :param count: The number of values of `T` to copy.
 ### :throws: Crashes with `IntegerOverflowError` when the byte size does not fit in U64.
 ### :note: The ranges must not overlap, and no destructor or copy hook runs.
-routine Ptr[T].copy_into(dst: Me, count: U64) -> None
+routine PointedCell[T].copy_into(dst: Me, count: U64) -> None
 needs T: typename
     elem_size: U64 = sizeof[T]()
     size: U64 = elem_size * count
@@ -526,23 +526,23 @@ secret routine copy_bytes(dst: Addr, src: Addr, bytes: U64) -> None
 ### A NUL-terminated copy of some text, for C, in memory from a memory manager: `text.to[CStr](manager)`. It lends a
 ### `CStrView` with `to[CStrView]()` and gives the memory back when dropped.
 entity CStr
-    storage: Memory[CChar]
+    storage: BorrowedSlice[CChar]
 
 ### A copy of some text in wide characters ending with a 0, for C, in memory from a memory manager:
 ### `text.to[CWStr](manager)`. It lends a `CWStrView` with `to[CWStrView]()` and gives the memory back when dropped.
 entity CWStr
-    storage: Memory[CWChar]
+    storage: BorrowedSlice[CWChar]
 
 ### Makes a `CStr` from its fields.
 ### :param storage: Its `storage`.
 ### :returns: The new value.
-common routine CStr.construct(storage: Memory[CChar]) -> Me
+common routine CStr.construct(storage: BorrowedSlice[CChar]) -> Me
     return Me(storage: steal storage)
 
 ### Makes a `CWStr` from its fields.
 ### :param storage: Its `storage`.
 ### :returns: The new value.
-common routine CWStr.construct(storage: Memory[CWChar]) -> Me
+common routine CWStr.construct(storage: BorrowedSlice[CWChar]) -> Me
     return Me(storage: steal storage)
 
 ### The text, borrowed: valid until it is dropped.
@@ -577,7 +577,7 @@ routine @CWStr.destruct() -> None
 @expensive("allocates a copy")
 routine @[Byte].to[CStr](manager: @MemoryManager) -> CStr
     count: U64 = me.count
-    buffer: &[CChar] <- Memory[CChar].construct(count: count + 1, manager: manager)
+    buffer: &[CChar] <- BorrowedSlice[CChar].construct(count: count + 1, manager: manager)
     buffer.data.peek().to[@Byte]().copy(src: me.data, count)
     buffer.data.peek().stride(count).poke(0)
     return CStr(storage: steal buffer)
@@ -590,7 +590,7 @@ routine @[Byte].to[CStr](manager: @MemoryManager) -> CStr
 @track_caller
 @expensive("allocates a copy")
 routine @[Byte].to[CWStr](manager: @MemoryManager) -> CWStr
-    storage: &[CWChar] <- Memory[CWChar].construct(count: me.count + 1, manager: manager)
+    storage: &[CWChar] <- BorrowedSlice[CWChar].construct(count: me.count + 1, manager: manager)
     units: @CWChar = storage.data.peek()
     iter: &BytesCharsIter <- me.chars()
     n: &U64 <- 0
