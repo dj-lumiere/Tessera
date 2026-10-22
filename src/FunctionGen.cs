@@ -52,6 +52,9 @@ public sealed partial class FunctionGen
     /// The source of the write-template hole being expanded (`sum` for `{sum}`), so an error about it can quote it.
     private string? _templateHole;
 
+    /// The value a template hole or `Console.show(x)` writes, while it is written: the memory-cell warning is for it.
+    private Expr? _shownCell;
+
     /// In a program's `when_power_on` without an operating system: whether it has readied memory yet (called Standard/System/Cpu's
     /// prepare_core or zero_bss). Until then .bss holds whatever the reset left and .data isn't copied, so no global is
     /// touched. Null in any other routine.
@@ -3133,22 +3136,104 @@ public sealed partial class FunctionGen
     }
 
     /// The value `Console.show(x)` shows, written with its represent_into: a type without one is a build error that says so.
+    /// A memory cell shows itself (MemoryCellWrite), never the value it holds.
     private void WriteShown(Expr writer, Expr shown, string shower)
     {
-        var value = BoxValue(shown);
-        if (InferQuiet(value) is { } t and not PtrType && _c.FindMethod(t, "represent_into", _env.File, shown.Pos) is null)
+        if (InferQuiet(shown) is { } t and not PtrType && ManagedMemory(t) is null && !IsPointedSlice(t)
+            && _c.FindMethod(t, "represent_into", _env.File, shown.Pos) is null)
             throw Err(shown.Pos, $"'{t}' has no represent_into, so {shower} can't show it");
-        EvalCall(new MethodCallExpr(value, "represent_into", [], [writer], shown.Pos), VoidType.Instance);
+        var outer = (_shownCell, _templateHole);
+        _shownCell = shown;
+        _templateHole = shown switch
+        {
+            ValueRef r => r.Name,
+            PresetRef { Owner: null } p => p.Name,
+            _ => null,
+        };
+        try
+        {
+            EvalCall(new MethodCallExpr(shown, "represent_into", [], [writer], shown.Pos), VoidType.Instance);
+        }
+        finally
+        {
+            (_shownCell, _templateHole) = outer;
+        }
     }
 
-    /// A `&T` box written into text is the value it holds: `{x}` and `Console.show(x)` read `x.load()`. A box of an
-    /// entity stays the place, which the entity's represent_into takes (an entity is never copied out).
-    private Expr BoxValue(Expr e) =>
-        e is ValueRef r && _stackPlaces.ContainsKey(r.Name) && _values.TryGetValue(r.Name, out var slot)
-        && slot.Type is PtrType { Pointee: var held } && !Entities.Holds(held)
-        || ManagedMemory(InferQuiet(e)) is { Decl.Name: "BorrowedCell", Args: [var inner] } && !Entities.Holds(inner)
-            ? new MethodCallExpr(e, "load", [], [], e.Pos)
-            : e;
+    /// Whether a preset reference names a global or a preset in memory (`global COUNT: &U64`, `preset NAMES: &[U8] <- ...`):
+    /// a place in the program image.
+    private bool InMemoryPreset(PresetRef p)
+    {
+        if (p.Owner is not null) return false;
+        try { return _c.FindPreset("", p.Name, _env.File, p.Pos, p.Path) is { IsStorage: true }; }
+        catch (CompileError) { return false; }
+    }
+
+    /// Whether t is a `@[T]` (the record PointedSlice).
+    private static bool IsPointedSlice(DType? t) =>
+        t is RecordType { Decl.Name: "PointedSlice", Args.Count: 1 } slice && slice.Decl.Module == Compiler.SystemModule;
+
+    /// `x.represent_into(out)` and `x.diagnose_into(out)` on a memory cell that holds no entity: the cell never reads the
+    /// value it holds, so it writes what it is, the same for both (Standard/System/Text/MemoryCell.te): `@S64(0x...)`,
+    /// `@[S64](data: 0x..., count: 3)`, `&S64(at: 0x..., manager: HEAP)`, `&[S64](data: 0x..., count: 3, manager:
+    /// HEAP)`. In a template hole or `Console.show(x)` the builder warns that the cell is shown, and says how to write
+    /// the value. Null for any other call. A cell of an entity isn't one of these: the entity's routine takes the place.
+    private CallPlan? MemoryCellWrite(MethodCallExpr m, DType rt, DType? expected)
+    {
+        if (m is not { Name: "represent_into" or "diagnose_into", TypeArgs.Count: 0, Args: [var writer] }) return null;
+        // A call to a routine nothing declares has no type to show: its own error says so.
+        if (m.Receiver is CallExpr { Path: null } unknown && _c.FreeCandidates(unknown.Name, _env.File, unknown.Pos, null).Count == 0)
+            return null;
+        string name = _templateHole is { } hole && ReferenceEquals(m.Receiver, _shownCell) ? hole : "";
+        string routine, shows, fix;
+        var args = new List<Expr> { m.Receiver };
+        var argNames = new List<string?> { "cell" };
+        if (rt is PtrType { Pointee: { } held } && !Entities.Holds(held))
+        {
+            if (m.Receiver is ValueRef r && _stackPlaces.ContainsKey(r.Name))
+            {
+                (routine, shows, fix) = ("write_stack_cell", "its address and manager", $"{name}.load()");
+            }
+            else if (m.Receiver is PresetRef p && InMemoryPreset(p))
+            {
+                (routine, shows, fix) = ("write_global_cell", "its address", $"{name}.peek()");
+            }
+            else (routine, shows, fix) = ("write_pointed_cell", "its address", $"{name}.peek()");
+        }
+        else if (ManagedMemory(rt) is { Decl.Name: "BorrowedCell", Args: [var inner] } && !Entities.Holds(inner))
+            (routine, shows, fix) = ("write_borrowed_cell", "its address and manager", $"{name}.load()");
+        else if (ManagedMemory(rt) is { Decl.Name: "BorrowedSlice", Args: [var element] })
+        {
+            (routine, shows) = ("write_borrowed_slice", "its address, count and manager");
+            fix = element.Name == "Byte"
+                ? $"write {name}.getslice() for its text, or index it ({name}[i]) or go through it with a loop"
+                : $"index it ({name}[i]) or go through it with a loop";
+            argNames[0] = "cells";
+        }
+        else if (IsPointedSlice(rt))
+        {
+            (routine, shows) = m.Receiver switch
+            {
+                ValueRef r when _stackSpans.Contains(r.Name) => ("write_stack_slice", "its address, count and manager"),
+                PresetRef p when InMemoryPreset(p) => ("write_global_slice", "its address and count"),
+                _ => ("write_pointed_slice", "its address and count"),
+            };
+            fix = $"index it ({name}[i]) or go through it with a loop";
+            argNames[0] = "cells";
+        }
+        else return null;
+        args.Add(writer);
+        argNames.Add("out");
+        if (name.Length > 0)
+        {
+            bool slice = routine.EndsWith("slice", StringComparison.Ordinal);
+            string meant = slice ? "its values" : "its value";
+            string write = slice ? fix : $"write {fix}";
+            _c.NoteExpensiveCalls([(m.Receiver.Pos, $"{m.Receiver.Pos}: warning: this shows the cell '{name}' itself ({shows}): "
+                + $"if you meant {meant}, {write}")]);
+        }
+        return PlanCall(new CallExpr(routine, [], args, m.Pos) { ArgNames = argNames, Path = FormatModule }, expected);
+    }
 
     private Val ExpandPieces(Expr writer, StrLit template)
     {
@@ -3198,11 +3283,13 @@ public sealed partial class FunctionGen
             _templateHole = source.Trim();
             try
             {
-                EvalCall(new MethodCallExpr(BoxValue(value), "represent_into", [], [writer], at), VoidType.Instance);
+                _shownCell = value;
+                EvalCall(new MethodCallExpr(value, "represent_into", [], [writer], at), VoidType.Instance);
             }
             finally
             {
                 _templateHole = null;
+                _shownCell = null;
             }
             i = end;
         }
@@ -4239,6 +4326,9 @@ public sealed partial class FunctionGen
             return new CallPlan(r, env, m.Receiver, m.Args, m.Pos);
         }
 
+        // A memory cell written as text shows itself, not the value it holds.
+        if ((rt is not PtrType || ManagedMemory(rt) is not null) && MemoryCellWrite(m, rt, expected) is { } cellWrite) return cellWrite;
+
         // A BorrowedSlice or a BorrowedCell lends its view to the routines it has none of its own for: `line.trim()` on a
         // `BorrowedSlice[Byte]` is `line.getview().trim()`, checked once.
         // A BorrowedCell or a BorrowedSlice value (a call's result, `m[i]`) with a routine of its own for this goes in a slot first.
@@ -4284,20 +4374,13 @@ public sealed partial class FunctionGen
         if (typewise is not null)
             throw Err(m.Pos, $"'{typewise.DisplayName}' doesn't take me, so it isn't a method; call it by its type: "
                 + $"{typewise.Owner!.Name}.{m.Name}(...)");
-        // A pointer writes neither its value nor its address on its own: `{sum}` on a slot would print where the sum
-        // is, so the line says which one it means.
+        // Generic code reaches elements through their places: a `@T` element of a record T writes the value it points
+        // at there (a List's represent_into). Anywhere else a pointer writes what it is (MemoryCellWrite).
         if (rt is PtrType { Pointee: { } shown } && m.Name is "represent_into" or "diagnose_into"
             && SourceTypeParams.Count > 0 && !Entities.Holds(shown)
             && _c.FindMethod(shown, m.Name, _env.File, m.Pos, FromTypeParameter(shown) || Derived) is not null)
             return PlanMethod(m with { Receiver = new MethodCallExpr(m.Receiver, "peek", [], [], m.Receiver.Pos) }, expected);
-        if (rt is PtrType { Pointee: not null } && m.Name is "represent_into" or "diagnose_into")
-        {
-            string concept = m.Name == "represent_into" ? "Representable" : "Diagnosable";
-            string fix = _templateHole is { } hole && m.Name == "represent_into"
-                ? $"write the value with {{{hole}.peek()}}, or the address with {{{hole}.to[Addr]()}}"
-                : $"write the value with .peek().{m.Name}(out), or the address with .to[Addr]().{m.Name}(out)";
-            throw Err(m.Pos, $"{rt} is a pointer, and a pointer isn't {concept}; {fix}");
-        }
+        if (rt is PtrType && MemoryCellWrite(m, rt, expected) is { } pointerWrite) return pointerWrite;
         // `p.eq(q)` where T.eq takes values: the load is written, not implied.
         if (rt is PtrType { Pointee: { } held } && _c.FindMethod(held, m.Name, _env.File, m.Pos, FromTypeParameter(held) || Derived) is not null)
         {

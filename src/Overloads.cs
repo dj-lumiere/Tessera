@@ -339,7 +339,7 @@ public sealed partial class Compiler
 
     /// For an error about a call to a routine on a type that takes `args` arguments: a routine of the same type and name
     /// that does take that many but sits in a module `file` doesn't import, named so the error says where it is
-    /// (an overload without a memory manager in Standard/Os, say). Empty when there is none.
+    /// (an overload another module adds, say). Empty when there is none.
     public string HiddenOverloadHint(RoutineDecl seen, int args, string file)
     {
         if (seen.Owner is null || !_methods.TryGetValue((seen.Owner.Name, seen.Name), out var all)) return "";

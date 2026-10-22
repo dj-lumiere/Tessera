@@ -76,6 +76,18 @@ These change code written for the pre-release builders. Where a spelling changed
   `BorrowedSlice[U8].construct(count: n, manager: HEAP)`. The default-heap `construct()` and `construct(count)` are
   gone, and a call without the manager is a build error that names the missing `manager`. On a target without an
   operating system, naming `HEAP` is a build error that says the target has none.
+- Every other routine that borrows memory takes its manager too: `Console.ask_line(HEAP)`, `ask_word(HEAP)`,
+  `ask_bytes(n, manager: HEAP)`, `ask_all(HEAP)`, `OsFileManager.read_all` / `absolute` / `canonical` / `delete_all` /
+  `move` / `partition` (`manager: HEAP`), `dir.file(name, manager: HEAP)`, `dir.go_to(name, manager: HEAP)`,
+  `OsEnvironment.working_directory(HEAP)` / `temp_directory` / `home_directory` / `variable(name, manager: HEAP)` /
+  `variables(HEAP)`, and `StorageManager.list(HEAP)` / `PartitionManager.list(HEAP)`. The default-heap overloads
+  (`Standard/Os/Defaults.te`) are gone, and a call without the manager is a build error that names `manager`.
+- A memory cell (`@T`, `@[T]`, `&T`, `&[T]`) never reads its value on its own. In a template hole, in
+  `Console.show(x)`, and through `represent_into` / `diagnose_into` it writes what it is: `@S64(0x7ffd1c2a3b40)`,
+  `@[S64](data: 0x55d0c1a2b3c0, count: 3)`, `&S64(at: 0x55d0c1a2b3c0, manager: HEAP)`, `&[S64](data: 0x55d0c1a2b3c0,
+  count: 3, manager: HEAP)`, with a warning that says how to write the value (`x.load()`, `x.peek()`, an index, or
+  `x.getslice()` for a `&[Byte]`'s text). `{x}` on a `&[Byte]` writes the cell, not the text. A `@T` given to
+  `represent_into` was a build error. A `@[Byte]` is text and writes its bytes, and a cell of an entity writes the entity.
 - Every manager is an entity.
 - An address moves by a `ByteSize` with `+%` / `-%`: `a.offset(8)` is `a +% 8b`.
 - The escape check follows values out of a routine: a value holding a view of the frame (or of memory the routine
@@ -136,8 +148,7 @@ These change code written for the pre-release builders. Where a spelling changed
   `take_all`), not `owned`. `WorkSlot` is an entity.
 
 ### Added
-- `Console.show(x)` and `Console.alert(x)` with a value are `Console.show("{x}")` and `Console.alert("{x}")`. A `&T`
-  box in a template hole or shown this way shows the value it holds.
+- `Console.show(x)` and `Console.alert(x)` with a value are `Console.show("{x}")` and `Console.alert("{x}")`.
 - `v.store_into(x)` writes into a `&T` box from the value's side, the twin of `x.store(v)` as `poke_into` is of
   `poke`: `(x.load() + 1).store_into(x)`.
 - Collections from an array value: `List[T].of(values: [3, 1, 2], manager: HEAP)`, for `List`, `RotatableList`,

@@ -1,0 +1,172 @@
+# Tessera stdlib: how a memory cell writes itself
+#
+# A memory cell (`@T`, `@[T]`, `&T`, `&[T]`) never reads the value it holds on its own. In a template hole or in
+# `Console.show(x)` it writes what it is, the same text for represent and diagnose:
+#
+#     @S64(0x7ffd1c2a3b40)                                    a @T: its address
+#     @[S64](data: 0x55d0c1a2b3c0, count: 3)                  a @[T]: its address and count
+#     &S64(at: 0x55d0c1a2b3c0, manager: HEAP)                 a &T: its address and manager
+#     &[S64](data: 0x55d0c1a2b3c0, count: 3, manager: HEAP)   a &[T]: its address, count, and manager
+#
+# The manager is named when it is HEAP, C_HEAP, PAGES, or the running flow's STACK, and written as its address
+# otherwise. A global or a preset in memory has no manager: `&U64(at: 0x55d0c1a2b3c0)`. A cell that holds an entity
+# isn't written this way: the entity's own routine takes the place. The builder calls these routines and warns that
+# the cell is shown, not its value.
+
+module Standard/System/Text
+
+### Writes a `@T` as `@T(0x...)`: its address, not the value it points at.
+### :typeparam T: The type the cell points at.
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param cell: The cell.
+### :param out: The Writer the text is written to.
+routine write_pointed_cell[T, TWriter](cell: @T, out: @TWriter) -> None
+needs T: typename, TWriter: typename, Writer[TWriter]
+    write_str(out, text: "@")
+    write_str(out, text: type_name[T]())
+    write_str(out, text: "(")
+    cell.to[Addr]().represent_into(out)
+    write_str(out, text: ")")
+    return
+
+### Writes a `@[T]` as `@[T](data: 0x..., count: n)`: its address and count, not the values it views.
+### :typeparam T: The element type.
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param cells: The view.
+### :param out: The Writer the text is written to.
+routine write_pointed_slice[T, TWriter](cells: @[T], out: @TWriter) -> None
+needs T: typename, TWriter: typename, Writer[TWriter]
+    write_str(out, text: "@[")
+    write_str(out, text: type_name[T]())
+    write_str(out, text: "](data: ")
+    cells.data.to[Addr]().represent_into(out)
+    write_str(out, text: ", count: ")
+    cells.count.represent_into(out)
+    write_str(out, text: ")")
+    return
+
+### Writes a STACK `&[T]` as `&[T](data: 0x..., count: n, manager: STACK)`: its address, count, and manager, not its
+### values.
+### :typeparam T: The element type.
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param cells: The frame's values.
+### :param out: The Writer the text is written to.
+routine write_stack_slice[T, TWriter](cells: @[T], out: @TWriter) -> None
+needs T: typename, TWriter: typename, Writer[TWriter]
+    write_str(out, text: "&[")
+    write_str(out, text: type_name[T]())
+    write_str(out, text: "](data: ")
+    cells.data.to[Addr]().represent_into(out)
+    write_str(out, text: ", count: ")
+    cells.count.represent_into(out)
+    write_str(out, text: ", manager: STACK)")
+    return
+
+### Writes a global or a preset in memory `&[T]` as `&[T](data: 0x..., count: n)`: its address and count, not its
+### values. It is part of the program image, so it has no manager.
+### :typeparam T: The element type.
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param cells: The values.
+### :param out: The Writer the text is written to.
+routine write_global_slice[T, TWriter](cells: @[T], out: @TWriter) -> None
+needs T: typename, TWriter: typename, Writer[TWriter]
+    write_str(out, text: "&[")
+    write_str(out, text: type_name[T]())
+    write_str(out, text: "](data: ")
+    cells.data.to[Addr]().represent_into(out)
+    write_str(out, text: ", count: ")
+    cells.count.represent_into(out)
+    write_str(out, text: ")")
+    return
+
+### Writes a STACK place `&T` as `&T(at: 0x..., manager: STACK)`: its address and manager, not the value it holds.
+### :typeparam T: The type the place holds.
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param cell: The place.
+### :param out: The Writer the text is written to.
+routine write_stack_cell[T, TWriter](cell: @T, out: @TWriter) -> None
+needs T: typename, TWriter: typename, Writer[TWriter]
+    write_str(out, text: "&")
+    write_str(out, text: type_name[T]())
+    write_str(out, text: "(at: ")
+    cell.to[Addr]().represent_into(out)
+    write_str(out, text: ", manager: STACK)")
+    return
+
+### Writes a global or a preset in memory `&T` as `&T(at: 0x...)`: its address, not the value it holds. It is part of
+### the program image, so it has no manager.
+### :typeparam T: The type the place holds.
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param cell: The place.
+### :param out: The Writer the text is written to.
+routine write_global_cell[T, TWriter](cell: @T, out: @TWriter) -> None
+needs T: typename, TWriter: typename, Writer[TWriter]
+    write_str(out, text: "&")
+    write_str(out, text: type_name[T]())
+    write_str(out, text: "(at: ")
+    cell.to[Addr]().represent_into(out)
+    write_str(out, text: ")")
+    return
+
+### Writes a `&T` as `&T(at: 0x..., manager: HEAP)`: its address and manager, not the value it holds.
+### :typeparam T: The type the cell holds.
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param cell: The cell.
+### :param out: The Writer the text is written to.
+routine write_borrowed_cell[T, TWriter](cell: @BorrowedCell[T], out: @TWriter) -> None
+needs T: typename, TWriter: typename, Writer[TWriter]
+    write_str(out, text: "&")
+    write_str(out, text: type_name[T]())
+    write_str(out, text: "(at: ")
+    cell.at.peek().to[Addr]().represent_into(out)
+    write_str(out, text: ", manager: ")
+    write_manager_name(manager: cell.manager.peek(), out)
+    write_str(out, text: ")")
+    return
+
+### Writes a `&[T]` as `&[T](data: 0x..., count: n, manager: HEAP)`: its address, count, and manager, not its values.
+### :typeparam T: The element type.
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param cells: The memory.
+### :param out: The Writer the text is written to.
+routine write_borrowed_slice[T, TWriter](cells: @BorrowedSlice[T], out: @TWriter) -> None
+needs T: typename, TWriter: typename, Writer[TWriter]
+    write_str(out, text: "&[")
+    write_str(out, text: type_name[T]())
+    write_str(out, text: "](data: ")
+    cells.data.peek().to[Addr]().represent_into(out)
+    write_str(out, text: ", count: ")
+    cells.count.peek().represent_into(out)
+    write_str(out, text: ", manager: ")
+    write_manager_name(manager: cells.manager.peek(), out)
+    write_str(out, text: ")")
+    return
+
+### Writes a memory manager's name when it is one of the hosted tables (HEAP, C_HEAP, PAGES), its address otherwise.
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param manager: The manager.
+### :param out: The Writer the text is written to.
+@target(os: not "none")
+routine write_manager_name[TWriter](manager: @MemoryManager, out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    if manager === HEAP
+        write_str(out, text: "HEAP")
+        return
+    if manager === C_HEAP
+        write_str(out, text: "C_HEAP")
+        return
+    if manager === PAGES
+        write_str(out, text: "PAGES")
+        return
+    manager.to[Addr]().represent_into(out)
+    return
+
+### Writes a memory manager's address: a target without an operating system has no tables of its own to name.
+### :typeparam TWriter: The type of the Writer that receives the text.
+### :param manager: The manager.
+### :param out: The Writer the text is written to.
+@target(os: "none")
+routine write_manager_name[TWriter](manager: @MemoryManager, out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    manager.to[Addr]().represent_into(out)
+    return

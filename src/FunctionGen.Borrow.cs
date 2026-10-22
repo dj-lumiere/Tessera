@@ -25,6 +25,10 @@ public sealed partial class FunctionGen
     /// The STACK places by name, for the routines a `&T` takes (`load`, `store`, `getview`, `take`).
     private readonly Dictionary<string, StackPlace> _stackPlaces = [];
 
+    /// The names of the STACK `&[T]` spans (`xs: &[S64] <- [1, 2, 3]`), which are `@[T]` views of the frame: a template
+    /// hole shows them as the STACK memory they are.
+    private readonly HashSet<string> _stackSpans = [];
+
     /// Set while the builder's own drop of a STACK place is emitted: the memory check sees an AutoEnd instead.
     private bool _memMuted;
 
@@ -93,6 +97,7 @@ public sealed partial class FunctionGen
                 if (HasReleaseDuty(Resolve(elem)))
                     throw Err(b.Pos, $"a &[{elem}] from STACK holds values with nothing to give back: values of {elem} go in "
                         + $"memory from a manager that the program gives back, {b.Name}: &[{elem}] <- [...] from HEAP");
+                _stackSpans.Add(b.Name);
                 return (new BindStmt(b.Name, span, new ClaimExpr(b.Pos) { Contents = value }, b.Pos) { Source = b.Source }, false);
             }
             if (IsBorrowedType(InferQuiet(value)) || IsBorrowedType(Resolve(elem)))

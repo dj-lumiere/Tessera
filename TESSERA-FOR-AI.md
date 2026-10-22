@@ -486,8 +486,10 @@ routine start() -> None
   there after the manager ended isn't followed.
 - **The default heap comes with a target that has an OS.** `Standard/System/Memory` then has `HEAP`, `C_HEAP`, and
   `PAGES`, `@MemoryManager` tables ready before `start`. A collection and a `BorrowedSlice` always name their manager
-  (`List[S64].construct(HEAP)`, `BorrowedSlice[U8].construct(count: n, manager: HEAP)`): there is no default-heap
-  `construct`, and a call without the manager is a build error naming `manager`. Memory C frees or reallocates, or
+  (`List[S64].construct(HEAP)`, `BorrowedSlice[U8].construct(count: n, manager: HEAP)`), and so does every other routine
+  that borrows memory (`Console.ask_line(HEAP)`, `OsFileManager.read_all(at, manager: HEAP)`, `dir.file(name, manager:
+  HEAP)`, `OsEnvironment.temp_directory(HEAP)`): there is no default-heap form, and a call without the manager is a
+  build error naming `manager`. Memory C frees or reallocates, or
   memory from C's malloc, goes through `C_HEAP` (plain malloc in every build). On a target without an OS, naming `HEAP`
   is a build error that says the target has none, and the program passes a manager of its own.
 - **Presets and globals in memory are places too, filled with `<-`.** `p: &T <- v` (a STACK place, `<- .hollow()`
@@ -804,9 +806,9 @@ routine start() -> None
   `SliceWriter`) and a value too. This holds for the collections and `@[T]`, and a type of your own
   that people keep in places does the same for the reads they call there. It's never automatic, and three kinds stay
   value-only because on a pointer they'd be about the pointer: `eq` / `compare` / `hash` (a pointer compares only
-  by address, `a === b`, so values compare as `a.peek() == b.peek()`), `represent_into` / `diagnose_into` (a pointer isn't
-  Representable, so `{p}` on a `&Point` or `&S64` place is a build error that asks for `{p.peek()}`, also written
-  `{p.load()}`, while an entity's place writes directly: `{list}`), and a generic `to[T]` (it
+  by address, `a === b`, so values compare as `a.peek() == b.peek()`), `represent_into` / `diagnose_into` (on a
+  `&Point` or `&S64` place `{p}` writes the cell, its address and manager, with a warning that asks for `{p.load()}`,
+  while an entity's place writes the entity: `{list}`), and a generic `to[T]` (it
   would hide `PointedCell`'s `to<@U>`). You can't call a pointer method on a temporary:
   `DictIter[TKey, TValue].construct(m).emit()` fails with "has no method 'emit'"; put the iterator in a place
   first (`iter: &DictIter[TKey, TValue] <- .construct(m)`).
@@ -891,7 +893,7 @@ routine start() -> None
   wraps bytes from C, and text made from other text (`slice`, `getslice`, the iterators, `buf.getview()` of a
   `List[Byte]`) views the same memory. Text a routine takes memory for (`@[Byte].concat`, `Console.ask_line`,
   `OsFileManager.read_all`, `OsEnvironment.variable`, ...) comes back as a `BorrowedSlice[Byte]`: bind it with `<-` and give it
-  back once (`line: &[Byte] <- Console.ask_line()`, then `drop line`), and observe a `Maybe` or `Check` of one
+  back once (`line: &[Byte] <- Console.ask_line(HEAP)`, then `drop line`), and observe a `Maybe` or `Check` of one
   with `when` (`when try Console.ask_line(manager)` then `is BorrowedSlice[Byte] as line => ...`). A BorrowedSlice lends itself to a text routine at
   a receiver or an argument (`line.find("=")`, `out.write("{line.getslice()}")` in a template). Escapes: `\xXX` is one byte (strings, `b'..'`), `\uXXXXXX` one
   character by exactly six hex digits (strings, `'..'`), so `"\u01F600"` equals `"\xF0\x9F\x98\x80"`.
@@ -1257,11 +1259,11 @@ Format through `Standard/System/Text` (`Format.te`), not printf. printf is for C
   `Console.alert("...")` one line to standard error, and `end:` changes the line end (`Console.show("loading",
   end: "")`, a string literal). Both expand their template like a Writer's `write` (below). With a value in place
   of the template, `Console.show(x)` / `Console.alert(x)` is `Console.show("{x}")`: x's `represent_into` writes it
-  (a type without one is a build error saying so), `end:` still works, and a `&T` box shows the value it holds (in a
-  template hole too: `{x}` with `x: &B64` reads `x.load()`, a box of an entity stays the place). Standard input:
-  `Console.ask[T]()`, `Console.ask_line()` / `ask_line(manager)`, `ask_word`, `ask_bytes(n)`, `ask_all`, all through one
-  buffer the process shares. `ask_line` and `ask_word` are failable and throw `EndOfInputError` at the end of the
-  input, so `try Console.ask_line()` gives `Maybe[BorrowedSlice[Byte]]`, `None` there (a blank line is empty): a loop to the end
+  (a type without one is a build error saying so), and `end:` still works. A memory cell shows itself, not its value
+  (below). Standard input:
+  `Console.ask[T]()`, `Console.ask_line(manager)`, `ask_word(manager)`, `ask_bytes(n, manager)`, `ask_all(manager)`, all
+  through one buffer the process shares. `ask_line` and `ask_word` are failable and throw `EndOfInputError` at the end of the
+  input, so `try Console.ask_line(HEAP)` gives `Maybe[BorrowedSlice[Byte]]`, `None` there (a blank line is empty): a loop to the end
   uses that. Text comes back as a `BorrowedSlice[Byte]` from the manager: `drop line` gives it back. There are no `In` / `Out` /
   `Err` types and no `print`.
 - Writers: `Console.output()` / `Console.errors()` (`@ConsoleOutput` / `@ConsoleErrors`, standard output and error,
@@ -1278,10 +1280,19 @@ Format through `Standard/System/Text` (`Format.te`), not printf. printf is for C
   through a temporary on `HEAP`). It is failable: `EndOfInputError` at the end of the input, and the failure of
   `to[T]` on a word that isn't a T. `try Console.ask[T]()` gives `Maybe[T]` (`None` for both).
 - `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, and
-  `@[Byte]` (a `BorrowedSlice[Byte]` writes through its view: `{line.getslice()}`). A pointer is neither Representable nor Diagnosable, so `{view}` on a `view: @S64` is a build
-  error, not its address: write the value with `{view.peek()}`, or the address with `{view.to[Addr]()}`
-  (`0x7ffd5e8c1a40`, an `Addr` writes itself). A `&T` box writes the value it holds (`{sum}` on `sum: &S64` is
-  `{sum.load()}`). A derived routine writes a pointer field's address.
+  `@[Byte]` (a `BorrowedSlice[Byte]` writes its text through its view: `{line.getslice()}`).
+- **A memory cell never reads its value on its own.** `@T`, `@[T]`, `&T`, and `&[T]` in a template hole, in
+  `Console.show(x)`, or given to `represent_into` / `diagnose_into` write what the cell is, the same text for both
+  (`Standard/System/Text/MemoryCell.te`): `@S64(0x7ffd1c2a3b40)` (its address), `@[S64](data: 0x55d0c1a2b3c0, count:
+  3)`, `&S64(at: 0x55d0c1a2b3c0, manager: HEAP)`, `&[S64](data: 0x55d0c1a2b3c0, count: 3, manager: HEAP)`. The manager
+  is named when it is `HEAP`, `C_HEAP`, `PAGES`, or `STACK` (a STACK place), and written as its address otherwise. A
+  global or a preset in memory has none: `&U64(at: 0x55d0c1a2b3c0)`. In a template hole and `Console.show(x)` the
+  build warns ("this shows the cell 'sum' itself (its address and manager): if you meant its value, write
+  sum.load()"; `.peek()` for a `@T`, index or loop for a slice, `.getslice()` for a `&[Byte]`'s text), in `check`,
+  `build`, `run`, and `lint`; it is a warning, not an error. Two exceptions: `@[Byte]` is text and writes its bytes,
+  and a cell that holds an entity (`words: &List[S64]`) passes its place to the entity's own routine, which writes
+  the entity. `{view.to[Addr]()}` writes only the address (`0x7ffd5e8c1a40`, an `Addr` writes itself). A derived
+  routine writes a pointer field's address.
   `v.represent_hex_into(out)` for an integer's bits in hex; `represent_into(out, min_digits)` (`U64`, `U128`, `U256`) and `represent_hex_into(out,
   min_digits)` (`U64`) zero-pad; `represent_fixed_into(out, digits)`; `represent_with_into(out, v, spec)` with a `FormatSpec`.
   There are no `write_decimal_*` / `write_hex_*` helpers: the integer's own method is the writer.
@@ -1620,7 +1631,7 @@ device couldn't read or write: a bad sector, a failing disk), `MemoryAllocationE
 OS's own). `is FsError as e` on a `Check` takes any of them. With an arm for one of them, take the others with
 `else as e` (two arms can't observe one crashable).
 
-Each of these routines that takes `manager` has an overload without it that uses the default heap. A routine that hands text back
+A routine that hands text back
 takes a memory manager and returns a `BorrowedSlice[Byte]` from it (`read_all`, `OsEnvironment.variable`): give it back with
 `drop`. A `File` and a `Directory` are entities: one that makes a path (`file`, `go_to`, `absolute`, `canonical`,
 OsEnvironment's directories) returns a `File` / `Directory` whose path is held in a `BorrowedSlice[Byte]`,
@@ -1818,9 +1829,8 @@ isn't empty is named for what it is: `ProcessOptions.default()` captures both st
 `deallocate(p, manager)`, `Console.ask_line(manager)`, `ThreadManager.construct(manager)`. The parameter is
 `manager: @MemoryManager`.
 A second memory manager for another job goes just before it, and each is named for what it manages
-(`FiberManager.construct(stack_size, stack_manager, manager)`, a `scratch_manager`). So the form without the memory manager
-(`Console.ask_line()` with `Standard/Os`) is the same call with the last argument left off. Collections and
-`BorrowedSlice` have no such form.
+(`FiberManager.construct(stack_size, stack_manager, manager)`, a `scratch_manager`). No routine has a form without the
+memory manager: a call that leaves it off is the build error "missing argument 'manager'".
 
 **Named arguments.** A call to a routine taking three or more arguments besides `me` names each one, in the order
 of the parameters (`box(width: 3, height: 4, depth: 5)`); a name out of place is a build error. A value already

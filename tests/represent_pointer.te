@@ -1,13 +1,70 @@
-# A pointer isn't Representable: `{view}` on a @S64 would print where the sum is, not the sum, so the build asks
-# for {view.peek()} or {view.to[Addr]()}. A &S64 box shows the value it holds.
+# A memory cell never reads its value on its own. In a template hole or Console.show(x) it writes what it is: a @T its
+# address, a @[T] its address and count, a &T its address and manager, a &[T] its address, count, and manager (the
+# builder warns there, and says how to write the value). The addresses change from run to run, so this test writes
+# them without their hex digits. A @[Byte] is text, and a box of an entity writes the entity.
 
+import Standard/Collections
 import Standard/Os
 
-routine start() -> None
-    sum: &S64 <- 0
+global TOTAL: &U64 <- 7
 
+### Whether c is a lowercase hex digit.
+### :param c: The byte.
+### :returns: `true` for 0-9 and a-f.
+routine is_hex_digit(c: Byte) -> Bool
+    return b'0' <= c <= b'9' or b'a' <= c <= b'f'
+
+### Whether the byte at `at` belongs to an address: hex digits back to the "x" of its "0x".
+### :param text: The text.
+### :param at: The byte's index.
+### :returns: `true` inside an address.
+routine in_address(text: @[Byte], at: U64) -> Bool
+    c: Byte = text.data.stride(at).peek()
+    if c == b'x'
+        return true
+    if not is_hex_digit(c) or at == 0
+        return false
+    return in_address(text, at: at - 1)
+
+### Writes the text with the hex digits after each "0x" left out.
+### :param text: The text.
+### :param manager: Where the kept bytes are put together.
+routine show_masked(text: @[Byte], manager: @MemoryManager) -> None
+    kept: &List[Byte] <- .construct(manager)
+    each i in 0 til text.count
+        c: Byte = text.data.stride(i).peek()
+        if not (i > 0 and is_hex_digit(c) and in_address(text, at: i - 1))
+            kept.add_last(c)
+    then
+        shown: @[Byte] = kept.getview()
+        Console.show(shown, end: "")
+        drop kept
+        return
+
+routine start() -> None
+    text: &List[Byte] <- .construct(HEAP)
+    sum: &S64 <- 0
     (sum.load() + 5).poke_into(sum)
-    Console.show("box: {sum}")
+    text.write("stack box: {sum}, its value: {sum.load()}\n")
     view: @S64 = sum.getview()
-    Console.show("total: {view}")
+    text.write("view: {view}, its value: {view.peek()}\n")
+    h: &S64 <- 3 from HEAP
+    text.write("heap box: {h}, its value: {h.load()}\n")
+    drop h
+    line: &[Byte] <- @[Byte].concat(a: "ab", b: "c", manager: HEAP)
+    text.write("heap bytes: {line}, its text: {line.getslice()}\n")
+    drop line
+    xs: &[S64] <- [1, 2, 3]
+    text.write("stack span: {xs}\n")
+    ys: @[S64] = xs
+    text.write("span view: {ys}, an element: {ys[1]}\n")
+    text.write("global: {TOTAL}, its value: {TOTAL.peek()}\n")
+    name: @[Byte] = "Tessera"
+    text.write("text: {name}\n")
+    words: &List[S64] <- List[S64].of(values: [1, 2], manager: HEAP)
+    text.write("entity box: {words}\n")
+    view.diagnose_into(text)
+    write_line(text)
+    show_masked(text.getview(), manager: HEAP)
+    drop text
     return
