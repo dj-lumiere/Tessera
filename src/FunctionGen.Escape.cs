@@ -28,8 +28,6 @@ public sealed partial class FunctionGen
     {
         if (_c.Prechecking || _decl.Blocks is not { Count: > 0 } || _inst.IsAsm) return;
         _escape = _c.Escapes.Begin(_inst, reports: EscapeOn);
-        foreach (var moved in ReshapedParams(_decl))
-            if (_decl.Params.FindIndex(p => p.Name == moved) is >= 0 and var index) _escape.Reshapes.Add(index);
         for (int i = 0; i < _decl.Params.Count && i < _inst.Params.Count; i++)
         {
             var p = _decl.Params[i];
@@ -80,7 +78,7 @@ public sealed partial class FunctionGen
             case ValueRef r:
                 return _atoms.TryGetValue(r.Name, out var bound) ? [.. bound] : [];
             case PresetRef p when IsGlobalRef(p):
-                return [new GlobalAtom(p.Name, 0, ThreadLocal(p))];
+                return [new GlobalAtom(p.Name, 0)];
             case RoutineRef or LambdaExpr when _routineValueSymbols.TryGetValue(e.Pos, out var routine):
                 return [new EscapeCheck.RoutineAtom(routine, 0)];
             case MethodCallExpr when TableManager(e) is { } manager:
@@ -195,32 +193,6 @@ public sealed partial class FunctionGen
         return name is not null && _escapeCalls.TryGetValue((e.Pos, name), out int index) ? index : null;
     }
 
-    /// Whether a global is `@threadlocal`: each thread has its own.
-    private bool ThreadLocal(PresetRef p)
-    {
-        try { return _c.FindPreset("", p.Name, _env.File, p.Pos, p.Path)?.AnnotationNamed("threadlocal") is not null; }
-        catch (CompileError) { return false; }
-    }
-
-    /// Whether a place is in a `@threadlocal` global: each thread has its own.
-    private bool ThreadLocalRoot(Expr place)
-    {
-        var at = AsValueCall(place);
-        while (true)
-        {
-            switch (at)
-            {
-                case FieldExpr f: at = f.Base; continue;
-                case IndexExpr ix: at = ix.Base; continue;
-                case MethodCallExpr { Name: "getslot" or "stride" or "offset" or "getslice" or "to" or "getview" } m: at = m.Receiver; continue;
-            }
-            break;
-        }
-        if (at is not PresetRef { Owner: null } p) return false;
-        try { return _c.FindPreset("", p.Name, _env.File, p.Pos, p.Path) is { IsGlobal: true } g && g.AnnotationNamed("threadlocal") is not null; }
-        catch (CompileError) { return false; }
-    }
-
     /// Whether a preset reference names a global (memory that outlives every routine).
     private bool IsGlobalRef(PresetRef p)
     {
@@ -260,11 +232,11 @@ public sealed partial class FunctionGen
         if (value is null || into is null) return;
         int valueParam = sig.Decl.Name == "poke_into" ? 0 : sig.Params.Count - 1;
         var stored = Atoms(value, valueParam >= 0 && valueParam < sig.Params.Count ? sig.Params[valueParam] : null);
-        // A store of a plain value is recorded too: what a routine changes matters to work on other threads.
+        if (stored.Count == 0) return;
         var place = AtomsOf(into);
         if (place.Count == 0) return;
         _escape.Stores.Add(new EscapeCheck.StoreFact(place, stored, plan.Pos, Spelled(new MethodCallExpr(
-            plan.Receiver, sig.Decl.Name, [], plan.Args, plan.Pos))) { Unshared = sig.Decl.Name.Contains("atomic") || ThreadLocalRoot(into) });
+            plan.Receiver, sig.Decl.Name, [], plan.Args, plan.Pos))));
     }
 
     /// A store straight into a global (`G.poke(x)`): whether it puts back a value read out of that global, so the
@@ -487,21 +459,9 @@ public sealed partial class FunctionGen
                     else _atoms[ticket] = held;
                 }
                 // The work is a call of `entry` with the arguments, made from here on.
-                // A Fiber's work runs on this thread, between this routine's waits: only a Thread's or a Job's runs
-                // alongside it.
                 if (entry is not null)
                     _escape.Calls.Add(new EscapeCheck.CallFact("", atoms, plan.Pos, Spelled(new MethodCallExpr(plan.Receiver!, "put_work", [], plan.Args, plan.Pos)))
-                    {
-                        Through = AtomsOf(entry),
-                        Work = plan.Decl.Owner is { Name: "Thread" or "Job" },
-                        InLoop = _loops.Count > 0,
-                        Handed = parts.Select(p => p switch
-                        {
-                            ValueRef v => v.Name,
-                            PresetRef g when IsGlobalRef(g) => g.Name,
-                            _ => null,
-                        }).ToList(),
-                    });
+                        { Through = AtomsOf(entry) });
             }
             if (MemOn)
             {
@@ -512,11 +472,6 @@ public sealed partial class FunctionGen
             }
             return;
         }
-        // An access taken here: what this routine changes, it changes under it.
-        // (`ExclusiveAccess.lock` and its kin, or a lock routine of a runtime, named `..._lock`).
-        if (_escape is not null && (plan.Decl.Name is "lock" or "lock_write" or "try_lock" or "try_lock_write" or "lock_within"
-                or "lock_write_within" || plan.Decl.Name.EndsWith("_lock", StringComparison.Ordinal)))
-            _escape.TakesAccess = true;
         if (!MemOn) return;
         if (IsTicketRoutine(plan.Decl) && ticket is not null
             && plan.Decl.Name is "wait_finished" or "wait_finished_cancellable" or "retrieve" or "give_back")

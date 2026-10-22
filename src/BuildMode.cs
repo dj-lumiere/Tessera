@@ -35,4 +35,14 @@ public static class BuildModes
     /// Whether the mode looks for deadlocks unless told otherwise (`[debug] deadlock-check`): a debug build does, the
     /// release modes don't.
     public static bool DeadlockCheckedByDefault(this BuildMode mode) => mode == BuildMode.Debug;
+
+    /// Whether the mode runs the data race check unless told otherwise (`[debug] race-check`): a debug build does on the
+    /// targets that have the check, the release modes don't.
+    public static bool RaceCheckedByDefault(this BuildMode mode, BuildTarget target) =>
+        mode == BuildMode.Debug && RaceCheckable(target);
+
+    /// Whether the data race check runs on the target: hosted Linux and macOS on x86-64 and AArch64, where clang has
+    /// its runtime.
+    public static bool RaceCheckable(BuildTarget target) =>
+        target.Os is "linux" or "macos" && target.Arch is "x86_64" or "aarch64";
 }

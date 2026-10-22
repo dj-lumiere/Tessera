@@ -12,9 +12,9 @@ static class Cli
           tessera new   [<folder>]      start a solution: config.toml, main.te, .gitignore, VS Code files
           tessera check [<target>] [<trace>] [<file.te>...]   type-check every non-generic routine, the stdlib included
           tessera build                 build the solution its config.toml describes (here or above)
-          tessera build <file.te>... [-o <out>] [--emit-llvm] [--no-stdlib-exports] [<target>] [--mode <mode>] [<trace>] [--race-check]
+          tessera build <file.te>... [-o <out>] [--emit-llvm] [--no-stdlib-exports] [<target>] [--mode <mode>] [<trace>] [--race-check | --no-race-check]
           tessera run                   build it and run it
-          tessera run   <file.te>... [<target>] [--mode <mode>] [<trace>] [--race-check] [-- <argument>...]
+          tessera run   <file.te>... [<target>] [--mode <mode>] [<trace>] [--race-check | --no-race-check] [-- <argument>...]
           tessera test  [<target>] [--mode <mode>] [<trace>] <dir-or-file.te>...
           tessera fmt   [--check] <file-or-dir>...   format .te files in place (--check: list files that would change)
           tessera fmt   -               format the source on standard input to standard output (for an editor)
@@ -33,10 +33,11 @@ static class Cli
         <trace>: --no-trace leaves out the crash trace (the program's routines on the crash report), --trace keeps it.
                  Without either, debug and release builds keep it and release-time and release-space leave it out;
                  check keeps it. A routine marked @untraced is left out of it in any build.
-        race check: --race-check (or [debug] race-check = true in config.toml) builds a program that stops with a
-                 report of both places when two threads touch the same memory, one of them writing, with neither an
-                 atomic access nor a lock between them. It is slow, so it is for runs that look for such races, on
-                 Linux and macOS on x86_64 and aarch64. check checks its declarations too.
+        race check: a debug build on Linux and macOS on x86_64 and aarch64 stops with a report of both places when
+                 two threads touch the same memory, one of them writing, with neither an atomic access nor a lock
+                 between them. --no-race-check (or [debug] race-check = false in config.toml) turns it off, and
+                 --race-check (or race-check = true) turns it on in the release modes. It makes the program slower.
+                 test runs every test without a config.toml with it on those targets. check checks its declarations too.
         uninit fill: --uninit-fill (or [debug] uninit-fill = true in config.toml) fills every slot that starts
                  <- .uninit() with 0xAA bytes, so a read before its routine fills it stands out. Off by default: the
                  slot keeps whatever was there.
@@ -374,10 +375,7 @@ static class Cli
     private sealed record Options(List<string> Inputs, string? Output, bool EmitLlvm, BuildTarget Target, BuildMode Mode,
         bool StdlibExports, bool? Trace, bool RaceCheck, bool UninitFill, bool HeapCheck = false, Board? Board = null);
 
-    /// Whether the data race check runs on the target: hosted Linux and macOS on x86-64 and AArch64, where clang has
-    /// its runtime.
-    internal static bool RaceCheckable(BuildTarget target) =>
-        target.Os is "linux" or "macos" && target.Arch is "x86_64" or "aarch64";
+    internal static bool RaceCheckable(BuildTarget target) => BuildModes.RaceCheckable(target);
 
     /// The race check on a target without it is an error, not a build that checks nothing.
     private static void RequireRaceCheckable(BuildTarget target)
@@ -409,8 +407,8 @@ static class Cli
     {
         var inputs = new List<string>();
         string? output = null;
-        bool emit = false, stdlibExports = true, race = false, uninitFill = false, heapCheck = false;
-        bool? trace = null;
+        bool emit = false, stdlibExports = true, uninitFill = false, heapCheck = false;
+        bool? trace = null, race = null;
         var mode = BuildMode.Debug;
         var targetArgs = new TargetArgs();
         for (int i = 0; i < args.Length; i++)
@@ -425,6 +423,7 @@ static class Cli
                 case "--heap-check": heapCheck = true; break;
                 case "--mode": mode = ParseMode(args, ref i); break;
                 case "--race-check": race = true; break;
+                case "--no-race-check": race = false; break;
                 default:
                     if (args[i].StartsWith('-')) throw new ToolError($"unknown option '{args[i]}'");
                     inputs.Add(args[i]);
@@ -433,8 +432,9 @@ static class Cli
         }
         if (inputs.Count == 0) throw new ToolError("no input files");
         var target = targetArgs.Build();
-        if (race) RequireRaceCheckable(target);
-        return new Options(inputs, output, emit, target, mode, stdlibExports, trace, race, uninitFill, heapCheck, targetArgs.Board);
+        if (race == true) RequireRaceCheckable(target);
+        return new Options(inputs, output, emit, target, mode, stdlibExports, trace, race ?? mode.RaceCheckedByDefault(target),
+            uninitFill, heapCheck, targetArgs.Board);
     }
 
     /// Parses every input, plus the whole standard library, into one compilation and lowers it to LLVM IR.
@@ -704,7 +704,7 @@ static class Cli
 
     private static string BuildManifest(Manifest m)
     {
-        if (m.RaceCheck) RequireRaceCheckable(m.Target);
+        if (m.RaceCheckSetting == true) RequireRaceCheckable(m.Target);
         string ir = Compile(m.Sources, m.Target, roots: m.Roots, mode: m.Mode, trace: m.Traced,
             heapCheck: m.HeapCheck, raceCheck: m.RaceCheck, traceFrames: m.TraceFrames, failureTraces: m.FailureTraces,
             uninitFill: m.UninitFill, deadlockCheck: m.DeadlockCheck, accessOrder: m.AccessOrder,
@@ -1116,6 +1116,7 @@ static class Cli
 
         Manifest? manifest = null;
         string ir;
+        bool race;
         try
         {
             if (sources is [var only] && Path.GetFileName(only) == Manifest.FileName)
@@ -1124,11 +1125,13 @@ static class Cli
                 (sources, target) = ([.. manifest.Sources], manifest.Target);
             }
             // The race check's runtime is there on some targets only: a test that asks for it passes elsewhere.
-            if (manifest is { RaceCheck: true } && !RaceCheckable(target)) return null;
+            if (manifest is { RaceCheckSetting: true } && !RaceCheckable(target)) return null;
+            // A test without a manifest runs with the race check when its mode and target have it, as a program does.
+            race = manifest?.RaceCheck ?? _testMode.RaceCheckedByDefault(target);
             // A test always runs with the heap check on, whatever its manifest says: a block freed twice fails it.
             ir = Compile(sources, target, mode: manifest?.Mode ?? _testMode, lint: false,
                 trace: manifest is null ? _testTrace : manifest.Traced, heapCheck: true,
-                raceCheck: manifest?.RaceCheck ?? false, traceFrames: manifest?.TraceFrames,
+                raceCheck: race, traceFrames: manifest?.TraceFrames,
                 failureTraces: manifest?.FailureTraces, uninitFill: manifest?.UninitFill ?? false,
                 deadlockCheck: manifest?.DeadlockCheck, accessOrder: manifest?.AccessOrder ?? false,
                 crashMessageSize: manifest?.CrashMessageSize);
@@ -1151,7 +1154,7 @@ static class Cli
             try
             {
                 Link(ir, exe, target, manifest?.Mode ?? _testMode,
-                    (manifest?.LinkArguments() ?? []).Concat(RaceLink(manifest?.RaceCheck ?? false)));
+                    (manifest?.LinkArguments() ?? []).Concat(RaceLink(race)));
             }
             catch (ToolError e) { return e.Message; }
 

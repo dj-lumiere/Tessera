@@ -31,8 +31,9 @@ namespace Tessera;
 ///                                     # left out in release-time and release-space)
 /// trace-frames = 64                    # the frames a crash trace and a failure's trace keep (a power of two, 32)
 /// failure-traces = 16                  # the failures each thread remembers where they were made (32)
-/// race-check = true                   # stop on a data race between threads, with both places (slow, for a run
-///                                     # that looks for races, Linux and macOS on x86_64 and aarch64)
+/// race-check = false                  # stop on a data race between threads, with both places (default: on in
+///                                     # debug on Linux and macOS on x86_64 and aarch64, off in the release modes
+///                                     # and on other targets)
 /// uninit-fill = true                  # fill every slot that starts <- .uninit() with 0xAA bytes (default: off,
 ///                                     # the slot keeps whatever was there)
 /// heap-check = true                   # the default heap crashes on a block freed twice (DoubleFreeError), in
@@ -92,9 +93,12 @@ public sealed record Manifest(
     /// manifest turns it on.
     public bool UninitFill { get; init; }
 
-    /// `[debug] race-check`: whether the program stops on a data race between threads. Off unless the manifest turns
-    /// it on.
-    public bool RaceCheck { get; init; }
+    /// `[debug] race-check`: whether the program stops on a data race between threads, or null for the default (on in
+    /// debug on the targets that have the check).
+    public bool? RaceCheckSetting { get; init; }
+
+    /// Whether the program runs with the data race check: `[debug] race-check`, else the mode's default.
+    public bool RaceCheck => RaceCheckSetting ?? Mode.RaceCheckedByDefault(Target);
 
     /// `[debug] deadlock-check`: whether threads or fibers waiting on each other for accesses stop the program, or
     /// null for the mode's default (on in debug, off in the release modes).
@@ -248,7 +252,7 @@ public sealed record Manifest(
             RootFiles = rootFiles,
             Trace = Bool(debug, "trace", path),
             HeapCheck = Bool(debug, "heap-check", path) ?? false,
-            RaceCheck = Bool(debug, "race-check", path) ?? false,
+            RaceCheckSetting = Bool(debug, "race-check", path),
             UninitFill = Bool(debug, "uninit-fill", path) ?? false,
             DeadlockCheck = Bool(debug, "deadlock-check", path),
             AccessOrder = Bool(debug, "access-order", path) ?? false,

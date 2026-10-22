@@ -11,7 +11,7 @@ answer.
 dotnet run -- run   file.te        # build and run (the whole stdlib is always available)
 dotnet run -- run --mode release file.te   # the same at -O2 (also release-time -O3, release-space -Os)
 dotnet run -- run --no-trace file.te   # without the crash trace (--trace keeps it; build, run, test, check)
-dotnet run -- run --race-check file.te # stop at the first data race, exit 82 (build too, Linux/macOS on x86_64 and aarch64)
+dotnet run -- run --no-race-check file.te # without the data race check (on in debug on Linux/macOS x86_64 and aarch64)
 dotnet run -- check file.te        # type-check only
 dotnet run -- test tests examples             # golden tests
 dotnet run -- fmt <files or dirs>        # format in place (--check to only list)
@@ -318,11 +318,9 @@ routine start() -> None
     'l' ..., and 'fill' returns here without waiting for it`. A ticket handed to another routine (a list of tickets) is
     followed no further. Work handed a view of memory makes the ticket hold that view until the work is over, so the
     memory isn't given back before.
-  - A number made from an address of the frame (`ptrtoint`, then arithmetic on it: `add`, `sub`, `bitand`, ...) is that
-    address to the check, in the routine that made it: returning it, storing it outside, or turning it back with
-    `inttoptr` and letting that leave is the escape error, and handing it to another routine is `this hands 'keep' a
-    number made from the address of the frame slot 'l'` (a number's own routines, `n.eq(0)`, may take it). An `Addr`
-    passed on as such isn't followed across routines.
+  - A number made from an address (`ptrtoint`) is a number, and the check doesn't follow it, the same as an `Addr`
+    passed on to another routine. The build doesn't check an address made from a number with `inttoptr`: what it
+    points at and how long that memory lives are the code's to keep right.
   - Every routine reports errors, an instance of a generic routine included.
 - **`@reshaping` (rule 4), written by hand.** `@reshaping` alone means the routine may move the memory of `me`.
   `@reshaping(items, keys)` names parameters. The base: `MemoryManager.realloc` (`@reshaping(at)`), `reallocate[T]`
@@ -954,8 +952,8 @@ routine start() -> None
   the core's level, RISC-V mtvec, the Cortex-M table), `prepare_core` (called in the program's `when_power_on`) points the CPU at it, an event nobody holds
   crashes with `HardwareFault`, and on x86_64 without an OS calling one is a build error (no table yet).
   `when_power_on` stays a routine the program declares: nothing can set a handler before it runs.
-- Hardware faults: a traced build's entry calls `install_fault_handlers()` before `start` (not under `--race-check`,
-  which reports faults itself). Linux/macOS: SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT, each handler on a 64 KiB
+- Hardware faults: a traced build's entry calls `install_fault_handlers()` before `start` (not with the data race check,
+  which reports faults itself: a debug build on Linux and macOS on x86_64 and aarch64 unless `race-check = false`). Linux/macOS: SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT, each handler on a 64 KiB
   signal stack every thread gets (so a stack overflow is reported too). Windows: the unhandled-exception filter
   (AccessViolation, StackOverflow, IllegalInstruction, IntegerDivideByZero, IntegerOverflow). The report on stderr:
   `tessera: SegmentationFault (SIGSEGV): <meaning>`, the crash trace (a frame that made no call yet shows only its
@@ -1316,20 +1314,10 @@ stopping is safe and returns. `retrieve()` of cancelled work throws `CancelReque
 each piece of work a thread puts every `@threadlocal` global back to its starting value. The same flow on all three
 ticket kinds: `Thread[T]`, `Fiber[T]`, `Job[T]` (a ThreadPoolManager's). `work_slot()` gives the ticket's `@WorkSlot`, for
 code waiting on several tickets at once.
-- **What work changes.** Work on a `Thread` or a `Job` runs alongside the routine that put it and alongside other work, so
-  the build checks what it changes (the work's routine and every routine of the program it calls). A global changed with
-  no atomic access and no lock is a build error (`t.put_work(...) runs 'work' on another thread, and it changes the
-  global 'COUNT' (line N: ...) with no atomic access and no lock`), and so is memory handed whole (a name, a global) to
-  more than one piece of work, or to work put in a loop, when the work changes it (`t1.put_work(...) hands 'xs' to
-  'work', which changes it with no atomic access and no lock, and 'xs' is handed to other work too`). Allowed: an
-  `Atomic[T]` changed with its routines, a `@threadlocal` global, and anything a routine that takes an access (`lock`,
-  `lock_write`, `try_lock`, `lock_within`, ..., or a runtime's lock routine named `..._lock`) changes, with the
-  routines it calls. Parts of one buffer handed to each
-  piece of work (`view.getslice(0, n)`) aren't the same memory to the check, and the standard library's routines share
-  what they share under their own accesses (one counts as changing a parameter only when it is `@reshaping` on it). A
-  Fiber's work runs on the thread that drives it, between waits, and isn't checked. What the check doesn't see (the
-  same memory under two names, the routine that put the work changing a global before it waits, work put through a
-  routine value read out of memory), `--race-check` finds at run time.
+- **What work changes.** The build doesn't check what work on a `Thread` or a `Job` changes: it can't know which
+  access guards which memory, or whether two pieces of work reach the same memory (under another name, through an
+  address). The data race check (below) finds such races at run time, and a debug build on Linux and macOS on x86_64
+  and aarch64 runs it. Work handed a view of the frame is still waited for before the routine returns (rule 1).
 - **Cancellable waits**: the failable `wait_finished_cancellable()` (on all three tickets) and a channel's `transmit` /
   `receive` throw `CancelRequested` as soon as the WAITING work's own ticket is
   cancelled. Then clean up and return. Plain `wait_finished` / `wait_finished_for` are not cancellable. Outside a
@@ -1433,14 +1421,18 @@ so a receiver takes out values holding memory before it closes. A channel moves 
 renames the old `send`, `send_if_room`, `add_sender` and `close_sending` (a `.send(` on a name not typed as a channel is
 listed).
 
-**The data race check.** `tessera run|build --race-check`, or `[debug] race-check = true` in config.toml: every
+**The data race check.** On by default in a debug build on Linux and macOS on x86_64 and aarch64, off in the release
+modes and on other targets. `[debug] race-check = false` in config.toml (or `--no-race-check`) turns it off, and
+`race-check = true` (or `--race-check`) turns it on in a release mode (on a target without it, that is an error). Every
 routine (stdlib too) is instrumented with ThreadSanitizer, and the program stops at the first data race (two threads
 touching the same memory, one writing, neither an atomic access nor a lock between them) with exit status 82 and a
-report of both places on stderr. Linux and macOS on x86_64 and aarch64 only (elsewhere an error). Slow: for runs that
-look for races. It sees the races a run has, not every possible one. Fibers tell the check which stack runs
+report of both places on stderr. The program runs slower. It sees the races a run has, not every possible one. An
+allocation the check's runtime can't make returns null, so the program's own `OutOfMemoryError` reports it. Fibers tell the check which stack runs
 (`Standard/Os/RaceCheck.te`). `tessera check` checks the stdlib's `@race_check("on")` / `@race_check("off")` sides
-too. A golden test of a race (`tests/race_check/` with `race_check.exit` holding `82`) expects the stop, and passes on
-a target without the check.
+too. `tessera test` builds every test without a config.toml with the check on those targets. A golden test of a race
+(`tests/race_check/` with `race_check.exit` holding `82`, and `[debug] race-check = true`) expects the stop, and passes
+on a target without the check. A test that can't run under the check turns it off in its config.toml
+(`tests/cpu_event_interrupted/`: an interrupt raised inside its own handler doesn't return under the check).
 
 Fibers run on System V and Windows x86-64 (where the switch moves the thread block's stack fields with the stack), AArch64
 outside Windows, and 32-bit ARM (ARM and Thumb code, Cortex-M included).

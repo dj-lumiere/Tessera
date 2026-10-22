@@ -42,7 +42,7 @@ public sealed class EscapeCheck
     }
 
     /// A global: what is stored into memory it reaches outlives every routine.
-    public sealed record GlobalAtom(string Name, int Level, bool ThreadLocal = false) : Atom(Level)
+    public sealed record GlobalAtom(string Name, int Level) : Atom(Level)
     {
         public override Atom Shift(int by) => this with { Level = Clamp(Level + by) };
     }
@@ -65,23 +65,10 @@ public sealed class EscapeCheck
     public sealed record CallFact(string Callee, List<HashSet<Atom>> Args, Pos Pos, string Text)
     {
         public HashSet<Atom>? Through { get; init; }
-
-        /// Work put on a Thread or a Job ticket: it runs on another thread, next to this routine and other work.
-        public bool Work { get; init; }
-
-        /// The work is put inside a loop, so the same call starts several pieces of work.
-        public bool InLoop { get; init; }
-
-        /// For work, the name each argument is when it is handed whole (a name, a global), else null.
-        public List<string?>? Handed { get; init; }
     }
 
     /// A store: the place written (an address) and the value written there.
-    public sealed record StoreFact(HashSet<Atom> Place, HashSet<Atom> Value, Pos Pos, string Text)
-    {
-        /// An atomic store, or one into this thread's own copy of a global: safe from other threads.
-        public bool Unshared { get; init; }
-    }
+    public sealed record StoreFact(HashSet<Atom> Place, HashSet<Atom> Value, Pos Pos, string Text);
 
     /// A returned value.
     public sealed record ReturnFact(HashSet<Atom> Value, Pos Pos);
@@ -100,12 +87,6 @@ public sealed class EscapeCheck
 
         /// The globals some path of the routine changes and returns without putting back (MemoryRules.GlobalStore).
         public HashSet<string> LeftChanged { get; set; } = [];
-
-        /// The routine takes an access (`lock`, `lock_write`, ...): what it changes, it changes under that access.
-        public bool TakesAccess { get; set; }
-
-        /// The parameters a library routine may move the memory of (`@reshaping`): what it changes through them.
-        public HashSet<int> Reshapes { get; } = [];
     }
 
     /// Why an effect holds: the place in the routine that has it, and what it does there.
@@ -127,12 +108,7 @@ public sealed class EscapeCheck
         /// argument is made of in terms of its own parameters: a caller that passes a routine calls that routine so.
         public Dictionary<string, (int Param, int Level, List<HashSet<(int Param, int Level)>> Args, Why Why)> Invokes { get; } = [];
 
-        /// The parameters it changes memory through without an atomic access or a lock (a library routine: the ones it
-        /// is `@reshaping` on), and the globals it changes so.
-        public HashSet<int> Writes { get; } = [];
-        public Dictionary<string, Why> WritesGlobals { get; } = [];
-
-        public int Size => Returns.Count + StoresOut.Count + StoresInto.Count + Invokes.Count + Writes.Count + WritesGlobals.Count;
+        public int Size => Returns.Count + StoresOut.Count + StoresInto.Count + Invokes.Count;
     }
 
     private readonly Dictionary<string, RoutineFacts> _facts = [];
@@ -208,10 +184,6 @@ public sealed class EscapeCheck
         foreach (var (k, v) in b.StoresInto) merged.StoresInto.TryAdd(k, v);
         foreach (var (k, v) in a.Invokes) merged.Invokes[k] = v;
         foreach (var (k, v) in b.Invokes) merged.Invokes.TryAdd(k, v);
-        merged.Writes.UnionWith(a.Writes);
-        merged.Writes.UnionWith(b.Writes);
-        foreach (var (k, v) in a.WritesGlobals) merged.WritesGlobals[k] = v;
-        foreach (var (k, v) in b.WritesGlobals) merged.WritesGlobals.TryAdd(k, v);
         return merged;
     }
 
@@ -372,23 +344,10 @@ public sealed class EscapeCheck
                         + $"'{Routine}' returns: return the values themselves, or let the caller pass the memory in (a span "
                         + "or a slot) and write there" + Note));
             }
-            bool library = facts.Inst.Decl.IsLibrary;
-            if (library) found.Writes.UnionWith(facts.Reshapes);
             foreach (var s in facts.Stores)
             {
                 var place = Lands(s.Place);
                 var value = Resolve(s.Value);
-                if (!library && !facts.TakesAccess && !s.Unshared)
-                    foreach (var target in place)
-                        switch (target)
-                        {
-                            case ParamAtom p:
-                                found.Writes.Add(p.Index);
-                                break;
-                            case GlobalAtom { ThreadLocal: false } g:
-                                found.WritesGlobals.TryAdd(g.Name, new Why(s.Pos, Routine, s.Text));
-                                break;
-                        }
                 Store(found, place, value, new Why(s.Pos, Routine, s.Text));
                 if (errors is not null && Outside(place) && Reaches(value) is { } sees)
                     errors.Add(new CompileError(s.Pos, $"this keeps a value that reaches {sees.What} where it outlives "
@@ -398,52 +357,8 @@ public sealed class EscapeCheck
             foreach (var call in facts.Calls)
             {
                 var args = call.Args.Select(Resolve).ToList();
-                // Work runs on another thread: what it changes, it changes next to this routine.
-                // The library shares what it shares under its own accesses.
-                if (call.Work && errors is not null && !facts.Inst.Decl.IsLibrary) CheckWork(call, Resolve(call.Through ?? []), args, errors);
                 if (call.Through is { } through) Through(call, Resolve(through), args, call.Args, found, errors, 0);
                 else Apply(call, call.Callee, args, call.Args, found, errors, 0);
-            }
-        }
-
-        /// The work of a Thread or a Job ticket may change memory other threads reach only through an atomic access or
-        /// under an access (a lock): a global, or memory handed whole to more than one piece of work.
-        private void CheckWork(CallFact call, HashSet<Atom> through, List<HashSet<Atom>> args, List<CompileError> errors)
-        {
-            foreach (var routine in through.OfType<RoutineAtom>().Select(r => r.Symbol).Distinct())
-            {
-                if (Of(routine) is not { } e) continue;
-                string name = all.GetValueOrDefault(routine)?.Inst.Decl.DisplayName ?? routine;
-                const string fix = "make it an Atomic[T] and change it with its routines (fetch_add, ...), or take an access around "
-                    + "the change (ExclusiveAccess.lock / unlock)";
-                var handedGlobal = e.Writes.Where(param => param < args.Count)
-                    .SelectMany(param => args[param].OfType<GlobalAtom>().Where(g => g.Level == 0 && !g.ThreadLocal)).FirstOrDefault();
-                if (handedGlobal is not null)
-                {
-                    errors.Add(new CompileError(call.Pos, $"{call.Text} hands the global '{handedGlobal.Name}' to '{name}', which changes it on "
-                        + $"another thread with no atomic access and no lock, while other threads may use it too: {fix}" + Note));
-                    continue;
-                }
-                foreach (var (global, why) in e.WritesGlobals.OrderBy(c => c.Key, StringComparer.Ordinal))
-                {
-                    var at = why.Store;
-                    errors.Add(new CompileError(call.Pos, $"{call.Text} runs '{name}' on another thread, and it changes the global "
-                        + $"'{global}' ({(at.Routine == name ? "" : $"'{at.Routine}', ")}line {at.Pos.Line}: {at.Text}) with no atomic "
-                        + $"access and no lock, while other threads may use it too: {fix}" + Note));
-                    break;
-                }
-                // Memory handed whole to work that changes it, more than once: two threads change it at once.
-                foreach (var param in e.Writes)
-                {
-                    if (call.Handed is not { } handed || param >= handed.Count || handed[param] is not { } whole) continue;
-                    int times = facts.Calls.Where(c => c.Work && c.Handed is { } h && h.Contains(whole)).Count();
-                    if (times < 2 && !call.InLoop) continue;
-                    errors.Add(new CompileError(call.Pos, $"{call.Text} hands '{whole}' to '{name}', which changes it with no atomic access "
-                        + $"and no lock, and '{whole}' is handed to {(call.InLoop ? "work started in a loop" : "other work")} too, so "
-                        + "several threads change it at once: take an access around the changes (ExclusiveAccess.lock / unlock), keep "
-                        + "an Atomic[T] in it, or hand each piece of work memory of its own" + Note));
-                    break;
-                }
             }
         }
 
@@ -452,22 +367,6 @@ public sealed class EscapeCheck
             List<CompileError>? errors, int depth)
         {
             if (Of(callee) is not { } e) return;
-            if (!facts.Inst.Decl.IsLibrary && !facts.TakesAccess && !(all.GetValueOrDefault(callee)?.TakesAccess ?? false))
-            {
-                foreach (var param in e.Writes)
-                    if (param < args.Count)
-                        foreach (var a in Lands(places[param]))
-                            switch (a)
-                            {
-                                case ParamAtom p:
-                                    found.Writes.Add(p.Index);
-                                    break;
-                                case GlobalAtom { ThreadLocal: false } g:
-                                    found.WritesGlobals.TryAdd(g.Name, new Why(call.Pos, Routine, call.Text));
-                                    break;
-                            }
-                foreach (var (g, why) in e.WritesGlobals) found.WritesGlobals.TryAdd(g, new Why(call.Pos, Routine, call.Text, why));
-            }
             foreach (var ((param, level), why) in e.StoresOut)
             {
                 if (param >= args.Count) continue;

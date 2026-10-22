@@ -65,9 +65,10 @@ spelling has no step, the build error names the new one.
   table is given back before the manager ends.
 - Work on a ticket is a call of its routine, and the ticket holds what the work was handed: work handed a view of the
   frame is waited for before the routine returns. A call through a `Callable` value is a call to the routine it
-  names. A number made from an address of the frame (`ptrtoint`) is that address in the routine that made it.
-- Work on a `Thread` or a `Job` that changes a global, or memory handed whole to more than one piece of work, with no
-  atomic access and no lock is a build error.
+  names. A number made from an address (`ptrtoint`) is a number the check doesn't follow, and the build doesn't check
+  an address made with `inttoptr`.
+- The data race check is on by default in a debug build on Linux and macOS on x86_64 and aarch64
+  (`[debug] race-check = false` or `--no-race-check` turns it off), and `tessera test` runs with it there.
 
 **Failure**
 - `Result[T, E]` and the `_result` routines are gone: a routine that can fail is `failable` and throws, and the

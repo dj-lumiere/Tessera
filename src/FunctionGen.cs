@@ -667,25 +667,6 @@ public sealed partial class FunctionGen
                 return lit.Fields.Select(f => FrameView(f.Value)).FirstOrDefault(v => v is not null);
             case ArrayLit { IsTuple: true } tuple:
                 return tuple.Elements.Select(FrameView).FirstOrDefault(v => v is not null);
-            // An address of the frame turned into a number is still that address: `ptrtoint` of a view, arithmetic on
-            // the number, and `inttoptr` of it see the same memory.
-            case CallExpr { Name: "ptrtoint" or "inttoptr", Args: [var converted] }:
-                return FrameView(converted);
-            // The distance between two addresses of the frame is a plain number.
-            case BinaryExpr { Op: "-" or "-%" } bin when FrameView(bin.Left) is not null && FrameView(bin.Right) is not null:
-                return null;
-            case MethodCallExpr { Name: "sub" or "sub_wrap" or "sub_unchecked", Args: [var right] } diff
-                when FrameView(diff.Receiver) is not null && FrameView(right) is not null:
-                return null;
-            case BinaryExpr bin when InferQuiet(bin) is IntType:
-                return FrameView(bin.Left) ?? FrameView(bin.Right);
-            case MethodCallExpr { Name: "add" or "sub" or "mul" or "add_wrap" or "sub_wrap" or "mul_wrap" or "add_clamp" or "sub_clamp"
-                    or "mul_clamp" or "add_unchecked" or "sub_unchecked" or "mul_unchecked" or "bitand" or "bitor" or "bitxor"
-                    or "bitnot" or "shift_left" or "arith_shift_right" or "logical_shift_right" or "floordiv" or "mod" } arith
-                when InferQuiet(arith) is IntType && InferQuiet(arith.Receiver) is IntType:
-                return FrameView(arith.Receiver) ?? arith.Args.Select(FrameView).FirstOrDefault(v => v is not null);
-            case NsCallExpr { FromOperator: true } op when InferQuiet(op) is IntType:
-                return op.Args.Select(FrameView).FirstOrDefault(v => v is not null);
             default:
                 return null;
         }
@@ -724,20 +705,6 @@ public sealed partial class FunctionGen
         if (FrameView(into) is not null || MemName(into) is not null || IsOwnFrameValue(into)) return;
         throw Err(plan.Pos, $"this keeps a view of {sees} where it outlives '{_decl.DisplayName}': that memory is gone once the "
             + "routine returns. Keep the values there, or keep the view in this routine only");
-    }
-
-    /// A number made from an address of this routine's frame (`ptrtoint`) is followed in this routine only: handed to
-    /// another routine, it would be a plain number there, which that routine may turn back into an address and keep.
-    private void CheckFrameNumberArgs(CallPlan plan, Instance callee)
-    {
-        // A number's own routines (`n.eq(0)`, `n.add(8)`) work out other numbers.
-        if (!EscapeOn || callee.IsTemplate || callee.IsAsm || plan.Receiver is { } own && InferQuiet(own) is IntType
-            || callee.Decl.Owner is not null && callee.Params is [IntType, ..]) return;
-        foreach (var arg in plan.Receiver is { } r ? plan.Args.Prepend(r) : plan.Args)
-            if (InferQuiet(arg) is IntType && FrameView(arg) is { } sees)
-                throw Err(arg.Pos, $"this hands '{callee.Decl.DisplayName}' a number made from the address of {sees}, and the build "
-                    + "follows such a number only in the routine that made it: keep the address as a view (a @T or a @[T]) to "
-                    + "hand it on, or use the number in this routine only");
     }
 
     /// Whether a place is rooted at a value of this routine (a binding or a claim), not at a parameter or a global.
@@ -1454,7 +1421,7 @@ public sealed partial class FunctionGen
                         _frameViews[b.Name] = Compiler.IsCoreSpan(t, out _)
                             ? $"the frame span '{b.Name}' (claimed at line {b.Pos.Line})"
                             : $"the frame slot '{b.Name}' (claimed at line {b.Pos.Line})";
-                    else if ((PointsAtMemory(t) || t is IntType) && FrameView(b.Value) is { } sees) _frameViews[b.Name] = sees;
+                    else if (PointsAtMemory(t) && FrameView(b.Value) is { } sees) _frameViews[b.Name] = sees;
                 }
                 if (b.Value is ClaimExpr)
                     BindClaim(b.Name, Compiler.IsCoreSpan(t, out _)
@@ -4569,7 +4536,6 @@ public sealed partial class FunctionGen
         RecordCall(plan, inst);
         NoteCallKeepsViews(plan, inst);
         NoteTicketCall(plan, inst);
-        CheckFrameNumberArgs(plan, inst);
         if (inst.Decl.IsFailable)
         {
             // A generic body being checked only types the call: a try or check around it counts it all the same.
