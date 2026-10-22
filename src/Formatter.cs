@@ -16,6 +16,7 @@ namespace Tessera;
 /// - a line longer than 100 characters breaks after commas inside its first bracketed list, continuing 4 spaces
 ///   further in (every continuation line sits 4 further in, whatever made the line long); a line with nowhere to break
 ///   (a comment, one long argument) stays as it is;
+/// - a bracketed list broken over lines that ends with a comma before its closing bracket stays as it is written;
 /// - an annotation list `@[a, b]` is written one annotation per line.
 /// - a pointer type is written `@T`, not `PointedCell[T]`, except where routines are declared on or called through the record
 ///   (`routine PointedCell[T].peek`); comments and literals are left alone;
@@ -608,7 +609,9 @@ public static class Formatter
     // ── Joining ─────────────────────────────────────────────────────────
 
     /// Joins a bracketed list that spans lines back into one line, so Wrap can break it again only where it must:
-    /// the fewest lines that fit. A list with a comment inside stays as written.
+    /// the fewest lines that fit. A list with a comment inside stays as written, and so does a list that ends with a
+    /// comma before its closing bracket on the next line: its author broke it on purpose, and joined onto one line
+    /// that comma would be a build error.
     private static List<string> JoinContinuations(List<string> lines)
     {
         var continued = Continuations(lines);
@@ -626,7 +629,9 @@ public static class Formatter
             }
             var group = lines.GetRange(i, end - i);
             bool commented = group.Any(l => TopLevelComment(l) >= 0 || l.TrimStart().StartsWith("#"));
-            if (commented || group.Any(l => l.Length == 0))
+            bool trailingComma = group.Zip(group.Skip(1))
+                .Any(p => p.First.TrimEnd().EndsWith(',') && p.Second.TrimStart() is [')' or ']' or '}', ..]);
+            if (commented || trailingComma || group.Any(l => l.Length == 0))
             {
                 // kept as written, except that a continuation sits 4 further in, so one 8 further in comes back to 4
                 int indent = Indent(group[0]);

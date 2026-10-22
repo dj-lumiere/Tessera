@@ -134,4 +134,25 @@ public class FormatterTests
             """;
         Assert.Contains("first: S64 = (try m.remove_last()).unwrap()", Formatter.Format(source));
     }
+
+    [Fact]
+    public void AListBrokenWithATrailingCommaStaysBroken()
+    {
+        // Joined onto one line, the comma before the closing bracket would be a build error, and the author broke the
+        // list on purpose: it stays as written.
+        string source = """
+            routine add3(
+                a: S64,
+                b: S64,
+                c: S64,
+            ) -> S64
+                xs: (S64, S64) = (
+                    1,
+                    2,
+                )
+                return a + b + c
+
+            """;
+        Assert.Equal(source, Formatter.Format(source));
+    }
 }
