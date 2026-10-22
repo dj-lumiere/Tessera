@@ -218,6 +218,37 @@ record AccessWait
     ### does, or the stdlib's own way (a thread sleeps, a fiber parks), as the stdlib's and that runtime's own do.
     hooked: Bool
 
+### A range of bytes and the mode asked for on it: what {AccessManager.take} and {AccessManager.try_take} take.
+record AccessRequest
+    ### The first byte.
+    at: Addr
+    ### How many bytes (0 counts as 1).
+    size: U64
+    ### ACCESS_READ or ACCESS_WRITE.
+    mode: U8
+
+### One request on its way through the table: the bytes and the mode, where it was asked, until when the flow waits,
+### and how it waits.
+secret record AccessAsk
+    ### The bytes and the mode.
+    request: AccessRequest
+    ### Where it was asked.
+    place: @SourceLocation
+    ### When to give up, in `Clock.monotonic()` time: `Duration.MAX` for never, `Duration.zero()` for not waiting at
+    ### all.
+    deadline: Duration
+    ### Whether the flow waits the way another language's runtime asked.
+    hooked: Bool
+
+### The bytes a request covers, `[start, end)` as numbers, and the mode it asks for: what the table compares.
+secret record AccessSpan
+    ### The first byte.
+    start: U64
+    ### One past the last byte.
+    end: U64
+    ### ACCESS_READ or ACCESS_WRITE.
+    mode: U8
+
 ### The program's manager of who holds which access and who waits for what. Its routines are called on the type.
 entity AccessManager
     nothing
@@ -260,8 +291,8 @@ needs T: typename
 @target(os: not "none")
 routine PointedCell[T].get_exclusive_access() -> Authorized[T]
 needs T: typename
-    take_range(at: me, size: sizeof[T](), mode: ACCESS_WRITE, place: caller_location(),
-        deadline: Duration.MAX, hooked: false)
+    take_range(ask: AccessAsk(request: AccessRequest(at: me, size: sizeof[T](), mode: ACCESS_WRITE),
+        place: caller_location(), deadline: Duration.MAX, hooked: false))
     return Authorized[T](at: me)
 
 ### Takes shared read access to the value `me` points at: other flows may read it at the same time, none writes it.
@@ -274,8 +305,8 @@ needs T: typename
 @target(os: not "none")
 routine PointedCell[T].get_shared_read_access() -> ReadAuthorized[T]
 needs T: typename
-    take_range(at: me, size: sizeof[T](), mode: ACCESS_READ, place: caller_location(),
-        deadline: Duration.MAX, hooked: false)
+    take_range(ask: AccessAsk(request: AccessRequest(at: me, size: sizeof[T](), mode: ACCESS_READ),
+        place: caller_location(), deadline: Duration.MAX, hooked: false))
     return ReadAuthorized[T](at: me)
 
 ### Takes exclusive access to the value in the box: `getview().get_exclusive_access()`.
@@ -288,8 +319,8 @@ needs T: typename
 routine @BorrowedCell[T].get_exclusive_access() -> Authorized[T]
 needs T: typename
     at: @T = me.getview()
-    take_range(at, size: sizeof[T](), mode: ACCESS_WRITE, place: caller_location(),
-        deadline: Duration.MAX, hooked: false)
+    take_range(ask: AccessAsk(request: AccessRequest(at, size: sizeof[T](), mode: ACCESS_WRITE),
+        place: caller_location(), deadline: Duration.MAX, hooked: false))
     return Authorized[T](at)
 
 ### Takes shared read access to the value in the box: `getview().get_shared_read_access()`.
@@ -302,8 +333,8 @@ needs T: typename
 routine @BorrowedCell[T].get_shared_read_access() -> ReadAuthorized[T]
 needs T: typename
     at: @T = me.getview()
-    take_range(at, size: sizeof[T](), mode: ACCESS_READ, place: caller_location(),
-        deadline: Duration.MAX, hooked: false)
+    take_range(ask: AccessAsk(request: AccessRequest(at, size: sizeof[T](), mode: ACCESS_READ),
+        place: caller_location(), deadline: Duration.MAX, hooked: false))
     return ReadAuthorized[T](at)
 
 ### The value the access covers: the view to read and write it through while the access is held.
@@ -362,31 +393,27 @@ needs T: typename
 
 # -- taking ranges, for code that keeps its own addresses ----------------------------------------------------------
 
-### Takes an access to `size` bytes at `at` in `mode`, waiting until `deadline` at most: what the access routines above
-### and other languages' runtimes call. The build doesn't follow it: give it back with {AccessManager.give_back}.
-### :param at: The first byte.
-### :param size: How many bytes (0 counts as 1).
-### :param mode: ACCESS_READ or ACCESS_WRITE.
+### Takes an access to the request's bytes in its mode, waiting until `deadline` at most: what the access routines
+### above and other languages' runtimes call. The build doesn't follow it: give it back with {AccessManager.give_back}.
+### :param request: The bytes and the mode.
 ### :param deadline: When to give up, in `Clock.monotonic()` time, `Duration.MAX` for never.
 ### :param place: Where it is taken.
 ### :returns: True when it took the access, false when the deadline passed first.
 ### :throws: Crashes with `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
 ###     with `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
 @target(os: not "none")
-common routine AccessManager.take(at: Addr, size: U64, mode: U8, deadline: Duration,
+common routine AccessManager.take(request: AccessRequest, deadline: Duration,
     place: @SourceLocation) -> Bool
-    return take_range(at, size, mode, place, deadline, hooked: false)
+    return take_range(ask: AccessAsk(request, place, deadline, hooked: false))
 
-### Takes an access to `size` bytes at `at` if no other flow holds one in the way right now, without waiting.
-### :param at: The first byte.
-### :param size: How many bytes (0 counts as 1).
-### :param mode: ACCESS_READ or ACCESS_WRITE.
+### Takes an access to the request's bytes if no other flow holds one in the way right now, without waiting.
+### :param request: The bytes and the mode.
 ### :param place: Where it is taken.
 ### :returns: True when it took the access.
 ### :throws: Crashes with `ReenterDuringAccessError` when this flow already holds an access that overlaps it.
 @target(os: not "none")
-common routine AccessManager.try_take(at: Addr, size: U64, mode: U8, place: @SourceLocation) -> Bool
-    return take_range(at, size, mode, place, deadline: Duration.zero(), hooked: false)
+common routine AccessManager.try_take(request: AccessRequest, place: @SourceLocation) -> Bool
+    return take_range(ask: AccessAsk(request, place, deadline: Duration.zero(), hooked: false))
 
 ### Takes exclusive access to `size` bytes at `at`, waiting as long as it takes: for a runtime that gives an access
 ### back and takes it again around a wait of its own. The build doesn't follow it.
@@ -398,8 +425,8 @@ common routine AccessManager.try_take(at: Addr, size: U64, mode: U8, place: @Sou
 common routine AccessManager.take_exclusive(at: Addr, size: U64) -> None
     place: &SourceLocation <- Me.place_here()
 
-    taken: Bool = take_range(at, size, mode: ACCESS_WRITE, place, deadline: Duration.MAX,
-        hooked: false)
+    taken: Bool = take_range(ask: AccessAsk(request: AccessRequest(at, size, mode: ACCESS_WRITE),
+        place, deadline: Duration.MAX, hooked: false))
     return
 
 ### Gives back the access this flow holds that starts at `at`, and wakes the flows that wait for it.
@@ -728,25 +755,23 @@ secret routine find_own(node: @AccessNode, start: U64, end: U64, flow: @AccessFl
 
 ### An access another flow holds that overlaps `[start, end)` and keeps out a request in `mode`, or hollow.
 ### :param node: The subtree's root, or hollow.
-### :param start: The range's first byte.
-### :param end: One past its last byte.
-### :param mode: ACCESS_READ or ACCESS_WRITE.
+### :param span: The range and the mode asked for.
 ### :param flow: The flow asking.
 ### :returns: The node, or hollow.
-secret routine find_blocker(node: @AccessNode, start: U64, end: U64, mode: U8,
-    flow: @AccessFlow) -> @AccessNode
+secret routine find_blocker(node: @AccessNode, span: AccessSpan, flow: @AccessFlow) -> @AccessNode
     if node.is_hollow()
         return node
-    if node.max_end.peek() <= start
+    if node.max_end.peek() <= span.start
         return .hollow()
-    found: @AccessNode = find_blocker(node: node.left.peek(), start, end, mode, flow)
+    found: @AccessNode = find_blocker(node: node.left.peek(), span, flow)
     if found.is_not_hollow()
         return found
-    if node.start.peek() >= end
+    if node.start.peek() >= span.end
         return .hollow()
-    if node.end.peek() > start and node.holder.peek() !== flow and keeps_out(node, mode)
+    if node.end.peek() > span.start and node.holder.peek() !== flow and keeps_out(node,
+        mode: span.mode)
         return node
-    return find_blocker(node: node.right.peek(), start, end, mode, flow)
+    return find_blocker(node: node.right.peek(), span, flow)
 
 ### The access `flow` holds that starts at `start`, or hollow.
 ### :param node: The subtree's root, or hollow.
@@ -770,58 +795,57 @@ secret routine find_held(node: @AccessNode, start: U64, flow: @AccessFlow) -> @A
 
 # -- taking and giving back ----------------------------------------------------------------------------------------
 
-### Takes an access to `size` bytes at `at` in `mode`, waiting while another flow holds one in the way.
-### :param at: The first byte.
-### :param size: How many bytes (0 counts as 1).
-### :param mode: ACCESS_READ or ACCESS_WRITE.
-### :param place: Where it is taken.
-### :param deadline: When to give up, in `Clock.monotonic()` time: `Duration.MAX` for never, `Duration.zero()` for not
-###     waiting at all.
-### :param hooked: Whether the flow waits the way another language's runtime asked.
+### The bytes a request covers, as numbers, and its mode.
+### :param request: The request.
+### :returns: The span.
+secret routine span_of(request: AccessRequest) -> AccessSpan
+    start: U64 = ptrtoint[Addr, U64](request.at)
+    return AccessSpan(start, end: start +% request.size.max(1), mode: request.mode)
+
+### Takes an access to the request's bytes in its mode, waiting while another flow holds one in the way.
+### :param ask: The request, where it was asked, until when to wait, and how.
 ### :returns: True when it took the access.
 ### :throws: Crashes with `ReenterDuringAccessError` when the flow already holds an access that overlaps it, and with
 ###     `DeadlockError` (with the deadlock check on) on a cycle.
 @target(os: not "none")
-secret routine take_range(at: Addr, size: U64, mode: U8, place: @SourceLocation, deadline: Duration,
-    hooked: Bool) -> Bool
+secret routine take_range(ask: AccessAsk) -> Bool
     flow: @AccessFlow = current_flow()
-    start: U64 = ptrtoint[Addr, U64](at)
-    end: U64 = start +% size.max(1)
+    span: AccessSpan = span_of(ask.request)
 
     if ACCESS_RANGE_CHECK.peek_unbroken().is_hollow()
         ACCESS_RANGE_CHECK.poke_unbroken(check_range.to[Callable]().addr())
     loop
         lock_table()
-        if find_own(node: TABLE_ROOT.peek(), start, end, flow).is_not_hollow()
+        if find_own(node: TABLE_ROOT.peek(), start: span.start, end: span.end, flow).is_not_hollow()
             unlock_table()
-            crash_reenter(place)
-        blocker: @AccessNode = find_blocker(node: TABLE_ROOT.peek(), start, end, mode, flow)
+            crash_reenter(ask.place)
+        blocker: @AccessNode = find_blocker(node: TABLE_ROOT.peek(), span, flow)
         if blocker.is_hollow()
             node: @AccessNode = new_node()
-            node.start.poke(start)
-            node.end.poke(end)
-            node.max_end.poke(end)
+            node.start.poke(span.start)
+            node.end.poke(span.end)
+            node.max_end.poke(span.end)
             node.height.poke(1)
             node.waiters.poke(0)
-            node.mode.poke(mode)
+            node.mode.poke(span.mode)
             node.writer_waits.poke(0)
             node.holder.poke(flow)
-            node.place.poke(place.peek())
+            node.place.poke(ask.place.peek())
             node.left.poke(.hollow())
             node.right.poke(.hollow())
             TABLE_ROOT.poke(insert_node(root: TABLE_ROOT.peek(), node))
             HELD_TOTAL.poke_unbroken(HELD_TOTAL.peek() + 1)
             unlock_table()
             note_taken(flow,
-                taken: HeldAccess(access: at, kind: ACCESS_EXCLUSIVE, mode, place: place.peek()))
+                taken: HeldAccess(access: ask.request.at, kind: ACCESS_EXCLUSIVE, mode: span.mode, place: ask.place.peek()))
             return true
-        if deadline == Duration.zero()
+        if ask.deadline == Duration.zero()
             unlock_table()
             return false
-        if deadline != Duration.MAX and Clock.monotonic() >= deadline
+        if ask.deadline != Duration.MAX and Clock.monotonic() >= ask.deadline
             unlock_table()
             return false
-        wait_for_node(flow, blocker, at, end, mode, place, deadline, hooked)
+        wait_for_node(flow, blocker, ask)
         continue
     then
         unreachable
@@ -831,31 +855,27 @@ secret routine take_range(at: Addr, size: U64, mode: U8, place: @SourceLocation,
 ### when it is called, and not when it returns: the caller looks at the table again.
 ### :param flow: The flow.
 ### :param blocker: The access in the way.
-### :param at: The request's first byte.
-### :param end: One past its last byte.
-### :param mode: ACCESS_READ or ACCESS_WRITE.
-### :param place: Where the flow asked.
-### :param deadline: When to stop waiting, `Duration.MAX` for never.
-### :param hooked: Whether the flow waits the way another language's runtime asked.
+### :param ask: The request, where the flow asked, until when it waits (`Duration.MAX` for never), and how.
 @target(os: not "none")
-secret routine wait_for_node(flow: @AccessFlow, blocker: @AccessNode, at: Addr, end: U64, mode: U8,
-    place: @SourceLocation, deadline: Duration, hooked: Bool) -> None
+secret routine wait_for_node(flow: @AccessFlow, blocker: @AccessNode, ask: AccessAsk) -> None
     word: @U32 = blocker.word
     seen: U32 = word.peek()
-    wait: AccessWait = AccessWait(access: at, holder: .hollow(), word, expected: seen, hooked)
+    span: AccessSpan = span_of(ask.request)
+    wait: AccessWait = AccessWait(access: ask.request.at, holder: .hollow(), word, expected: seen,
+        hooked: ask.hooked)
 
     blocker.waiters.poke(blocker.waiters.peek() + 1)
-    if mode == ACCESS_WRITE
+    if span.mode == ACCESS_WRITE
         blocker.writer_waits.poke(1)
-    flow.waiting_place.poke(place.peek())
-    flow.waiting_end.poke(end)
-    flow.waiting_mode.poke(mode)
+    flow.waiting_place.poke(ask.place.peek())
+    flow.waiting_end.poke(span.end)
+    flow.waiting_mode.poke(span.mode)
     flow.waiting_holder.poke(.hollow())
-    flow.waiting_for.poke_unbroken(at)
+    flow.waiting_for.poke_unbroken(ask.request.at)
     unlock_table()
     if DEADLOCK_ON.peek()
         check_deadlock(flow, wait)
-    park(wait, deadline)
+    park(wait, deadline: ask.deadline)
     end_wait(flow)
     return
 
@@ -896,26 +916,25 @@ secret routine give_back_range(at: Addr) -> None
 @target(os: not "none")
 secret routine check_range(at: Addr, size: U64) -> None
     flow: @AccessFlow = current_flow()
-    start: U64 = ptrtoint[Addr, U64](at)
-    end: U64 = start +% size.max(1)
     place: &SourceLocation <- .hollow()
 
     if HELD_TOTAL.peek_unbroken() == 0
         return
+    ask: AccessAsk = AccessAsk(request: AccessRequest(at, size, mode: ACCESS_WRITE), place,
+        deadline: Duration.MAX, hooked: false)
+    span: AccessSpan = span_of(ask.request)
     loop
         lock_table()
-        own: @AccessNode = find_own(node: TABLE_ROOT.peek(), start, end, flow)
+        own: @AccessNode = find_own(node: TABLE_ROOT.peek(), start: span.start, end: span.end, flow)
         if own.is_not_hollow()
             taken: SourceLocation = own.place.peek()
             unlock_table()
             crash_give_back_held(taken)
-        blocker: @AccessNode = find_blocker(node: TABLE_ROOT.peek(), start, end, mode: ACCESS_WRITE,
-            flow)
+        blocker: @AccessNode = find_blocker(node: TABLE_ROOT.peek(), span, flow)
         if blocker.is_hollow()
             unlock_table()
             return
-        wait_for_node(flow, blocker, at, end, mode: ACCESS_WRITE, place, deadline: Duration.MAX,
-            hooked: false)
+        wait_for_node(flow, blocker, ask)
         continue
     then
         unreachable
@@ -970,8 +989,9 @@ common routine AccessManager.take_kind(access: Addr, kind: U8, mode: U8,
     place: @SourceLocation) -> None
     if kind == ACCESS_IDENTITY
         return
-    take_range(at: access, size: 1, mode: kind_mode(kind, mode), place, deadline: Duration.MAX,
-        hooked: true)
+    take_range(ask: AccessAsk(
+        request: AccessRequest(at: access, size: 1, mode: kind_mode(kind, mode)), place,
+        deadline: Duration.MAX, hooked: true))
     return
 
 ### Takes another language's access if no other flow holds it in the way right now, without waiting. An
@@ -987,8 +1007,9 @@ common routine AccessManager.try_take_kind(access: Addr, kind: U8, mode: U8,
     place: @SourceLocation) -> Bool
     if kind == ACCESS_IDENTITY
         return true
-    return take_range(at: access, size: 1, mode: kind_mode(kind, mode), place,
-        deadline: Duration.zero(), hooked: true)
+    return take_range(ask: AccessAsk(
+        request: AccessRequest(at: access, size: 1, mode: kind_mode(kind, mode)), place,
+        deadline: Duration.zero(), hooked: true))
 
 ### Gives back another language's access that the calling flow holds. An `ACCESS_IDENTITY` entry gives back nothing.
 ### :param access: The access's address.
