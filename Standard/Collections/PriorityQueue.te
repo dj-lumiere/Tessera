@@ -350,32 +350,86 @@ needs TPriority: typename, TElement: typename
 
 # -- text -----------------------------------------------------------------------
 
-### The entries in heap order (the top first, the rest not sorted), each written `priority: element` with both
-### diagnosed (strings quoted): [1: "a", 4: "d", 2: "b"].
+### The entries in the order they come out, the next one first, each written `priority: element` with both
+### diagnosed (strings quoted): [1: "a", 2: "b", 4: "d"]. Entries with equal priorities show in storage order.
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
+### :throws: Crashes with `MemoryAllocationError` when the queue's memory manager has no memory for the sorted copy.
+@track_caller
 routine @PriorityQueue[TPriority, TElement].represent_into[TWriter](out: @TWriter) -> None
 needs TPriority: typename, TElement: typename, Diagnosable[TPriority], Diagnosable[TElement], TWriter: typename, Writer[TWriter]
     me.diagnose_into(out)
     return
 
-### The entries in heap order (the top first, the rest not sorted), each written `priority: element` with both
-### diagnosed: [1: "a", 4: "d", 2: "b"].
+### The entries in the order they come out, the next one first, each written `priority: element` with both
+### diagnosed: [1: "a", 2: "b", 4: "d"]. The order comes from a sorted copy of the entries' places, so the heap
+### itself is not changed. Entries with equal priorities show in storage order.
 ### :typeparam TWriter: The type of the Writer that receives the text.
 ### :param out: The writer to write to.
+### :throws: Crashes with `MemoryAllocationError` when the queue's memory manager has no memory for the sorted copy.
+@track_caller
 routine @PriorityQueue[TPriority, TElement].diagnose_into[TWriter](out: @TWriter) -> None
 needs TPriority: typename, TElement: typename, Diagnosable[TPriority], Diagnosable[TElement], TWriter: typename, Writer[TWriter]
     count: U64 = me.count.peek()
 
-    write_str(out, text: "[")
+    if count == 0
+        write_str(out, text: "[]")
+        return
+    priorities: @TPriority = me.priorities.data.peek()
+    elements: @TElement = me.elements.data.peek()
+    shown: &List[ShownEntry[TPriority]] <- .construct(manager: me.priorities.manager.peek())
 
     each at in 0 til count
-        if not (at == 0)
+        shown.add_last(ShownEntry[TPriority].construct(priority: priorities.stride(at), at))
+    shown.sort()
+
+    write_str(out, text: "[")
+
+    each i in 0 til count
+        if not (i == 0)
             write_str(out, text: ", ")
-        priorities: @TPriority = me.priorities.data.peek()
-        elements: @TElement = me.elements.data.peek()
-        priorities.stride(at).diagnose_into(out)
+        entry: ShownEntry[TPriority] = shown[i]
+        entry.priority.diagnose_into(out)
         write_str(out, text: ": ")
-        elements.stride(at).diagnose_into(out)
+        elements.stride(entry.at).diagnose_into(out)
     write_str(out, text: "]")
+    drop shown
     return
+
+### One queue entry as `represent_into` and `diagnose_into` show it: the place of its priority and its position in
+### the heap. It orders by priority, then by position.
+### :typeparam TPriority: The priority type.
+secret record ShownEntry[TPriority]
+obeys Comparable[ShownEntry[TPriority]] when TPriority: typename, Comparable[TPriority]
+needs TPriority: typename
+    ### The place of the entry's priority, read and never changed.
+    priority: @TPriority
+    ### The entry's position in the heap.
+    at: U64
+
+### Makes a `ShownEntry` from its fields.
+### :param priority: Its `priority`.
+### :param at: Its `at`.
+### :returns: The new value.
+common routine ShownEntry[TPriority].construct(priority: @TPriority, at: U64) -> Me
+needs TPriority: typename
+    return Me(priority, at)
+
+### Releases nothing: a `ShownEntry` only points at a priority the queue keeps.
+routine @ShownEntry[TPriority].destruct() -> None
+needs TPriority: typename
+    return
+
+### Compares the priorities through their places, then the positions: -1, 0, or 1.
+### :param other: The entry to compare with.
+### :returns: -1 when `me` shows first, 0 for the same entry, and 1 when `other` shows first.
+routine ShownEntry[TPriority].compare(other: Me) -> S32
+needs TPriority: typename, Comparable[TPriority]
+    order: S32 = me.priority.compare(other.priority)
+    if order != 0
+        return order
+    if me.at < other.at
+        return -1
+    if me.at > other.at
+        return 1
+    return 0

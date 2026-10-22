@@ -1328,6 +1328,14 @@ says `@reshaping(name)`.
 | `SortedList[T]` | `add` (sorted, after equals), `getitem` / `getslot` / `get_by_rank`, `rank(v)`, `has` / `lacks`, `remove(i)` (`T: Comparable[T]`) | ascending |
 | `PriorityQueue[TPriority, TElement]` | `add(priority, element)`, `remove` (the element moves out) / `first` (a copy), `first_slot` / `priority_slot` (the top's places), `remove_entry` / `first_entry` (a `PriorityEntry` record with `priority` and `element`); a min-heap on `TPriority: Comparable[TPriority]`, the smallest first, `Reversed[T]` priorities for the largest first | none (the top first) |
 
+Every collection represents and diagnoses the same way, in Tessera source form with each element diagnosed (strings
+quoted): `Console.show("{xs}")` and `xs.diagnose_into(out)` write `[1, 2, 3]` for `Array`, `List`, `RotatableList`,
+`SortedList`, `BitList` and `BitArray`, `{1, 2}` for the sets, `{1: 10, 2: 20}` for the maps, `{}` for an empty set and
+`{:}` for an empty map, in the iteration order of the table above, whether the collection is held as a `&T` place
+or an `@T` pointer. A `PriorityQueue` writes its `priority: element` pairs in the order they come out, the next
+one first (`[1: "a", 2: "b", 4: "d"]`), from a sorted copy of its places that it takes from its own memory
+manager and gives back, so the heap does not change.
+
 Keys and elements may be entities in every collection: `Set[File]`, `Dict[Counter, List[S64]]`, `SortedSet[Counter]`,
 `PriorityQueue[Job, Counter]`. Hashing, `eq`, and `compare` read them through their places (`@T`), so neither an entity
 nor a record key is copied for a lookup. They are handed over with `steal` (a key that doesn't go in, because an equal one is
