@@ -2,8 +2,9 @@ namespace Tessera;
 
 /// The style warning for long chains: a chain (a value, then calls one after another on what each gives back) holds at
 /// most MaxOperations calls, so a reader follows at most three steps before a name says what came out (a
-/// read-modify-write such as `sum.peek().add(x).poke_into(sum)` is one chain). Everything that
-/// looks like a call counts: `x.f()`, `T.f()`, `f()`, `.stride(i)` and `.to[T]()` included; a field (`p.x`) doesn't.
+/// read-modify-write such as `sum.peek().add(x).poke_into(sum)` or `x.load().add(1).store_into(x)` is one chain).
+/// Everything that looks like a call counts: `x.f()`, `T.f()`, `f()`, `.stride(i)` and `.to[T]()` included; a field
+/// (`p.x`) doesn't.
 /// A call's arguments are chains of their own, and so is each `{...}` hole of a write template.
 ///
 /// It's a warning, not an error: `tessera check`, `build`, and `run` print it for the program's own files, and

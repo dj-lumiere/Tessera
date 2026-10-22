@@ -253,12 +253,12 @@ public sealed partial class FunctionGen
         Expr? value = sig.Decl.Name switch
         {
             "poke" or "poke_volatile" or "poke_unbroken" or "store" or "setitem" => plan.Args.LastOrDefault(),
-            "poke_into" => plan.Receiver,
+            "poke_into" or "store_into" => plan.Receiver,
             _ => null,
         };
-        Expr? into = sig.Decl.Name == "poke_into" ? plan.Args.FirstOrDefault() : plan.Receiver;
+        Expr? into = sig.Decl.Name is "poke_into" or "store_into" ? plan.Args.FirstOrDefault() : plan.Receiver;
         if (value is null || into is null) return;
-        int valueParam = sig.Decl.Name == "poke_into" ? 0 : sig.Params.Count - 1;
+        int valueParam = sig.Decl.Name is "poke_into" or "store_into" ? 0 : sig.Params.Count - 1;
         var stored = Atoms(value, valueParam >= 0 && valueParam < sig.Params.Count ? sig.Params[valueParam] : null);
         // A store of a plain value is recorded too: what a routine changes matters to work on other threads.
         var place = AtomsOf(into);
@@ -275,10 +275,10 @@ public sealed partial class FunctionGen
         Expr? value = sig.Decl.Name switch
         {
             "poke" or "poke_volatile" or "poke_unbroken" or "store" or "setitem" => plan.Args.LastOrDefault(),
-            "poke_into" => plan.Receiver,
+            "poke_into" or "store_into" => plan.Receiver,
             _ => null,
         };
-        Expr? into = sig.Decl.Name == "poke_into" ? plan.Args.FirstOrDefault() : plan.Receiver;
+        Expr? into = sig.Decl.Name is "poke_into" or "store_into" ? plan.Args.FirstOrDefault() : plan.Receiver;
         if (value is null || into is null) return;
         foreach (var g in AtomsOf(into).OfType<GlobalAtom>().Where(g => g.Level == 0))
         {
@@ -426,10 +426,10 @@ public sealed partial class FunctionGen
         Expr? value = sig.Decl.Name switch
         {
             "poke" or "poke_volatile" or "store" or "setitem" => plan.Args.LastOrDefault(),
-            "poke_into" => plan.Receiver,
+            "poke_into" or "store_into" => plan.Receiver,
             _ => null,
         };
-        Expr? into = sig.Decl.Name == "poke_into" ? plan.Args.FirstOrDefault() : plan.Receiver;
+        Expr? into = sig.Decl.Name is "poke_into" or "store_into" ? plan.Args.FirstOrDefault() : plan.Receiver;
         if (value is null || into is null || InferQuiet(value) is { } stored && !CarriesAddress(stored)) return;
         if (RootName(into) is { } root && !_routineParams.ContainsKey(root)) NoteHeldViews(ResolveRoot(root), ViewRoots(value), plan.Pos);
         // A ticket stored in memory (a table of tickets that a later loop waits for), see MemoryRules.WorkStored.
@@ -568,7 +568,7 @@ public sealed partial class FunctionGen
         Expr? into = sig.Decl.Name switch
         {
             "poke" or "poke_volatile" or "replace" => plan.Receiver,
-            "poke_into" => plan.Args.FirstOrDefault(),
+            "poke_into" or "store_into" => plan.Args.FirstOrDefault(),
             _ => null,
         };
         // A field of it written (`me.manager.poke(m)` after `drop me`) leaves it hollow with that field set, which the

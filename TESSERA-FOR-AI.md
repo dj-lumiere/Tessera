@@ -120,7 +120,10 @@ routine start() -> None
   read-modify-write on one place reads left to right: `me.count.peek().add(1).poke_into(me.count)`, not
   `me.count.poke(me.count.peek().add(1))`. The load needn't come first: `x.sub(p.peek()).poke_into(p)`
   (for a commutative op, put the load first: `p.peek().add(x).poke_into(p)`). A literal receiver takes its type from the pointer
-  (`0.poke_into(count)`).
+  (`0.poke_into(count)`). A `&T` box has the same twin of `store`: `v.store_into(x)` is `x.store(v)`
+  (`routine T.store_into(dest: @&T)`, next to `load` / `store` in `BorrowedSlice.te`), so
+  `(x.load() + y).store_into(x)` is one chain, on a STACK place (where it is the slot's `poke_into`) or a box from a
+  manager. The builder follows it like `poke_into`: a store into `dest` for the escape, access, and read-only checks.
 - Memory is never read implicitly. A place passed as an argument is its address, so `Byte.to[U8](p.stride(i))` is an
   error: write `Byte.to[U8](p.stride(i).peek())`.
 - `.addr()` gives a `Callable`'s code address as an `Addr`, for C code that takes a function as `void*`:
@@ -482,11 +485,11 @@ routine start() -> None
   back before the manager and the table end (the group check above). Memory handed to another routine and given back
   there after the manager ended isn't followed.
 - **The default heap comes with a target that has an OS.** `Standard/System/Memory` then has `HEAP`, `C_HEAP`, and
-  `PAGES`, `@MemoryManager` tables ready before `start`. `Standard/Os` has, like
-  `Console`, a `construct` without the manager for every collection and `BorrowedSlice` (`List[S64].construct()`,
-  `BorrowedSlice[U8].construct(n)`), drawing from `HEAP`. Memory C frees or reallocates, or memory from C's malloc, goes
-  through `C_HEAP` (plain malloc in every build). A file that doesn't import `Standard/Os`,
-  and every program for a target without an OS, passes a manager.
+  `PAGES`, `@MemoryManager` tables ready before `start`. A collection and a `BorrowedSlice` always name their manager
+  (`List[S64].construct(HEAP)`, `BorrowedSlice[U8].construct(count: n, manager: HEAP)`): there is no default-heap
+  `construct`, and a call without the manager is a build error naming `manager`. Memory C frees or reallocates, or
+  memory from C's malloc, goes through `C_HEAP` (plain malloc in every build). On a target without an OS, naming `HEAP`
+  is a build error that says the target has none, and the program passes a manager of its own.
 - **Presets and globals in memory are places too, filled with `<-`.** `p: &T <- v` (a STACK place, `<- .hollow()`
   if a routine fills it), `global NAME: &T [<- value]` (mutable, all-zero without a value), `preset NAME: &T <- value`
   (read-only), and the span forms above: `preset TABLE: &Array[U32, 4] <- [...]`, `preset NAMES: &[@[Byte]] <- [...]`,
@@ -808,8 +811,8 @@ routine start() -> None
   `DictIter[TKey, TValue].construct(m).emit()` fails with "has no method 'emit'"; put the iterator in a place
   first (`iter: &DictIter[TKey, TValue] <- .construct(m)`).
 - **A constraint is said once, where it belongs.** A record's (or variant's) `needs` constraints hold in every
-  routine on it, wherever the routine is declared (an extension routine in another module, such as
-  `Standard/Os/Defaults.te`, included): a constraint is a fact about the type, said where the type is declared. So a
+  routine on it, wherever the routine is declared (an extension routine in another module
+  included): a constraint is a fact about the type, said where the type is declared. So a
   routine on a record lists its type parameters and only the constraints it adds: `SortedDict[TKey, TValue].has_key`
   calls `key.compare(...)` with `needs TKey: typename, TValue: typename`, and `SortedDict.eq` adds just
   `Equatable[TValue]`. The same goes for an `obeys ... when` on the type: it lists only the conditions that
@@ -875,8 +878,8 @@ routine start() -> None
   `from_epoch(d)` / `epoch()`, `m.timestamp()` / `since_epoch()`, `year()` / `month()` / `day()` / `hour()` /
   `minute()` / `second()` / `day_of_week()` (0 = Monday, UTC, Gregorian), `m + d`, `m - d`, `m - m` (a `Duration`),
   comparisons, `{m}` = `2026-01-01 00:00:00`. `ByteSize` has the same arithmetic, `ByteSize.construct(bytes: n)` and
-  `size.bytes()`. `{d}` writes `1s 500ms` / `4KiB`, `{d.diagnose()}` the literal (`1500ms`, `4kib`). A time is a
-  `Duration` wherever the stdlib takes one: waits, timeouts, deadlines (a deadline is a reading of `Clock.monotonic()`
+  `size.bytes()`. `{d}` writes `1s 500ms` / `4_096B` (a size is its byte count grouped in threes by `_`, never split
+  into units), `{d.diagnose()}` the literal (`1500ms`, `4kib`). A time is a `Duration` wherever the stdlib takes one: waits, timeouts, deadlines (a deadline is a reading of `Clock.monotonic()`
   plus a `Duration`), page and stack sizes are `ByteSize`. The memory manager routines (`borrow(size, align)`, the page
   routines) and `sizeof` stay `U64` byte counts, and a count of elements is a count.
 - Text is a `@[Byte]` (UTF-8 by convention, unchecked: `is_utf8` checks, and `chars()` reads a bad sequence as
@@ -1295,13 +1298,13 @@ Format through `Standard/System/Text` (`Format.te`), not printf. printf is for C
 
 All in `Standard/Collections/`, documented in `../Tessera-Wiki/docs/Collections.md`. They keep their
 storage in a `BorrowedSlice[T]`: a `List` is `storage` (a BorrowedSlice whose count is the capacity) and `count`. `construct(manager)` keeps
-the memory manager (`construct()` with `Standard/Os` uses the default heap), and `drop list` gives the storage back and
+the memory manager (always named, `construct(HEAP)` for the default heap), and `drop list` gives the storage back and
 keeps the memory manager, so the collection can be used again. Every collection is also made from an array value with
 `of(values: Array[T, N], manager: @MemoryManager)`, the manager always named (there is no default-heap `of`): `xs:
 &List[S64] <- List[S64].of(values: [3, 1, 2], manager: HEAP)`. List, RotatableList, SortedList, Set, SortedSet,
 PriorityQueue (`Array[(TPriority, TElement), N]`), BitList (`Array[Bool, N]`), Dict and SortedDict (`Array[(TKey,
 TValue), N]`) have it. The array is taken over, so entity values go in themselves, not copies
-(`List[List[S64]].of(values: [List[S64].of(values: [7], manager: HEAP), List[S64].construct()], manager: HEAP)`). Element access is
+(`List[List[S64]].of(values: [List[S64].of(values: [7], manager: HEAP), List[S64].construct(HEAP)], manager: HEAP)`). Element access is
 `getitem(i)` / `setitem(i, v)` (the name says what is fetched), `getslot(i)` the checked address, `swap(first, second)`
 (the two elements trade places in place, moved, never copied, so entity elements swap too, a no-op for the same index,
 and an index past the end crashes like `getitem`: on `List`, `RotatableList`, `Array` through its pointer, `@[T]`, and
@@ -1613,7 +1616,7 @@ device couldn't read or write: a bad sector, a failing disk), `MemoryAllocationE
 OS's own). `is FsError as e` on a `Check` takes any of them. With an arm for one of them, take the others with
 `else as e` (two arms can't observe one crashable).
 
-Each routine that takes `manager` has an overload without it that uses the default heap. A routine that hands text back
+Each of these routines that takes `manager` has an overload without it that uses the default heap. A routine that hands text back
 takes a memory manager and returns a `BorrowedSlice[Byte]` from it (`read_all`, `OsEnvironment.variable`): give it back with
 `drop`. A `File` and a `Directory` are entities: one that makes a path (`file`, `go_to`, `absolute`, `canonical`,
 OsEnvironment's directories) returns a `File` / `Directory` whose path is held in a `BorrowedSlice[Byte]`,
@@ -1664,7 +1667,7 @@ ends this process at once, and
 `SliceWriter` or `List[Byte]`, the memory protocols) and `Standard/Collections` check there. `Standard/Os` drops out of the build, so importing it or naming anything in it is one
 build error ("Standard/Os needs an operating system ..."); there's no `Out`, files, threads, `@threadlocal`, fiber `FiberManager` (`Standard/Fiber`'s
 `switch_stack` and `initial_stack` are there, which `tests/freestanding_fiber` switches stacks with),
-`HEAP`, `PAGES`, or `construct()` without a memory manager. The program passes the table of a manager of its own if it
+`HEAP` or `PAGES` (naming `HEAP` is a build error saying the target has none). The program passes the table of a manager of its own if it
 allocates (a type that obeys `MemoryManageable`, such as a bump arena over a buffer, and `arena.to[MemoryManager]()`).
 
 The build names the board: `[target] board = "raspi4b"` in config.toml (or `--board raspi4b` on the command line) is
@@ -1780,7 +1783,8 @@ byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`
 
 - `to[T]()` is a type conversion: one value of type A becomes a value of type B, on A (`p.to[CStrView]()`, not
   `CStrView.from_ptr(p)`). A conversion that can fail is a failable `to[T]()`.
-- `_into` is the argument-swapped form of a routine that acts on a place: `p.poke(v)` is `v.poke_into(p)`. The
+- `_into` is the argument-swapped form of a routine that acts on a place: `p.poke(v)` is `v.poke_into(p)`, and
+  `x.store(v)` is `v.store_into(x)`. The
   plain form's receiver is the place acted on, and the `_into` form's receiver is the thing being put there, with the
   place as the argument. So a chain reads left to right and ends at the place: `x.peek().add(1).poke_into(x)`,
   `value.represent_into(out)`, `src.copy_into(dst, count)` next to `dst.copy(src, count)`. The Writer's `write_*`
@@ -1811,7 +1815,8 @@ isn't empty is named for what it is: `ProcessOptions.default()` captures both st
 `manager: @MemoryManager`.
 A second memory manager for another job goes just before it, and each is named for what it manages
 (`FiberManager.construct(stack_size, stack_manager, manager)`, a `scratch_manager`). So the form without the memory manager
-(`construct()` with `Standard/Os`) is the same call with the last argument left off.
+(`Console.ask_line()` with `Standard/Os`) is the same call with the last argument left off. Collections and
+`BorrowedSlice` have no such form.
 
 **Named arguments.** A call to a routine taking three or more arguments besides `me` names each one, in the order
 of the parameters (`box(width: 3, height: 4, depth: 5)`); a name out of place is a build error. A value already

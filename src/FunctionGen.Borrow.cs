@@ -212,9 +212,13 @@ public sealed partial class FunctionGen
     }
 
     /// `x.load()`, `x.store(v)`, `x.getview()` and `x.take()` on a STACK place: its frame slot's `peek`, `poke`, the
-    /// slot's address, and the value handed out.
+    /// slot's address, and the value handed out. `v.store_into(x)` is the slot's `poke_into`.
     private Expr? StackPlaceCall(MethodCallExpr m)
     {
+        // `v.store_into(x)` into a STACK place is `v.poke_into(x)` into its frame slot.
+        if (m is { Name: "store_into", Args: [ValueRef into] } && _stackPlaces.ContainsKey(into.Name)
+            && _values.TryGetValue(into.Name, out var intoSlot) && intoSlot.Type is PtrType)
+            return m with { Name = "poke_into" };
         if (m.Receiver is not ValueRef r || !_stackPlaces.ContainsKey(r.Name) || !_values.TryGetValue(r.Name, out var slot)) return null;
         // A routine the value's own type declares under the name is the value's (a List's getview, an Unbroken's load).
         if (slot.Type is PtrType { Pointee: { } held } && OwnRoutine(held, m))

@@ -742,10 +742,10 @@ public sealed partial class FunctionGen
         Expr? value = sig.Decl.Name switch
         {
             "poke" or "poke_volatile" or "poke_unbroken" or "store" or "setitem" => plan.Args.LastOrDefault(),
-            "poke_into" => plan.Receiver,
+            "poke_into" or "store_into" => plan.Receiver,
             _ => null,
         };
-        Expr? into = sig.Decl.Name == "poke_into" ? plan.Args.FirstOrDefault() : plan.Receiver;
+        Expr? into = sig.Decl.Name is "poke_into" or "store_into" ? plan.Args.FirstOrDefault() : plan.Receiver;
         if (value is null || into is null || FrameView(value) is not { } sees) return;
         if (FrameView(into) is not null || MemName(into) is not null || IsOwnFrameValue(into)) return;
         throw Err(plan.Pos, $"this keeps a view of {sees} where it outlives '{_decl.DisplayName}': that memory is gone once the "
@@ -794,7 +794,7 @@ public sealed partial class FunctionGen
             else
                 Mem(new MemoryRules.Store(key, null, plan.Pos) { Hollow = plan.Args is [ImplicitCallExpr { Name: "hollow" } or NsCallExpr { Name: "hollow" }] });
         }
-        if (sig.Decl.Name == "poke_into" && plan.Args is [FieldExpr intoField] && MemName(intoField) is null && FieldHeld(intoField) is { } intoHeld
+        if (sig.Decl.Name is "poke_into" or "store_into" && plan.Args is [FieldExpr intoField] && MemName(intoField) is null && FieldHeld(intoField) is { } intoHeld
             && PlaceKey(intoField) is { } intoKey)
             Mem(new MemoryRules.FieldStore(intoKey, intoHeld.Name, plan.Pos));
         // An element's place read or lent (`xs.getslot(i).peek()`, `use(xs.getslot(i))`): a place steal left hollow
@@ -808,8 +808,9 @@ public sealed partial class FunctionGen
             Mem(new MemoryRules.Store(receiver, plan.Args.Count == 1 ? MemName(plan.Args[0]) : null, plan.Pos));
             return;
         }
-        // `x.poke_into(slot)` stores x where slot points: into a tracked slot, or away from this routine.
-        if (sig.Decl.Name == "poke_into" && receiver is not null && plan.Args.Count == 1)
+        // `x.poke_into(slot)` (or `x.store_into(box)`) stores x where slot points: into a tracked slot, or away from this
+        // routine.
+        if (sig.Decl.Name is "poke_into" or "store_into" && receiver is not null && plan.Args.Count == 1)
         {
             Mem(MemName(plan.Args[0]) is { } into
                 ? new MemoryRules.Store(into, receiver, plan.Pos)
@@ -1938,6 +1939,15 @@ public sealed partial class FunctionGen
             : $"'{name}' is not visible here: a name is visible from the line after its binding to the end of the body "
               + "(an if, a loop, a when arm) it is bound in, and a block's values only in that block"
               + (fromNextLine ? "" : "");
+
+    /// The hosted memory managers' tables (`HEAP`, `C_HEAP`, `PAGES`) on a target without an operating system, which has
+    /// none of them, else null.
+    private string? HostedTable(string name) =>
+        name is "HEAP" or "C_HEAP" or "PAGES" && !_c.Target.HasOs
+            ? $"'{name}' is a memory manager of a target with an operating system, and target "
+              + $"{_c.Target.Arch}-{_c.Target.Os}-{_c.Target.Abi} has none: make a memory manager over memory the program "
+              + "has (a type that obeys MemoryManageable, its table from .to[MemoryManager]()) and pass that"
+            : null;
 
     /// The console's old names (`Out.write`, `In.read_line`) point at Console, else null.
     private static string? OldConsoleName(string name) => name is "Out" or "Err" or "In"
@@ -3493,6 +3503,8 @@ public sealed partial class FunctionGen
             throw Err(r.Pos, NotVisible(r.Name, fromNextLine: true));
         if (r.Owner is null && r.Path is null && ScriptBinding(r.Name) is { } fromScript)
             throw Err(r.Pos, fromScript);
+        if (r.Owner is null && r.Path is null && HostedTable(r.Name) is { } hosted)
+            throw Err(r.Pos, hosted);
         throw Err(r.Pos, $"unknown name '{(r.Owner is null ? r.Name : $"{r.Owner}.{r.Name}")}'");
     }
 
@@ -3678,7 +3690,7 @@ public sealed partial class FunctionGen
                 if (set.Count > 1)
                 {
                     var fit = ChooseOverload([.. set.Select(o => (o, new Compiler.TypeEnv(o.File)))], c.TypeArgs, c.Args, 0,
-                        expected, c.Pos, c.Name);
+                        expected, c.Pos, c.Name, c.ArgNames);
                     return new CallPlan(fit.Decl, fit.Env, null, c.Args, c.Pos);
                 }
                 var r = set[0];
@@ -3699,7 +3711,7 @@ public sealed partial class FunctionGen
                 if (set.Count > 1)
                 {
                     var fit = ChooseOverload([.. set.Select(o => (o, BindOwner(o, owner, ic.Pos)))], ic.TypeArgs, ic.Args, 0,
-                        expected, ic.Pos, $"{owner}.{ic.Name}");
+                        expected, ic.Pos, $"{owner}.{ic.Name}", ic.ArgNames);
                     return new CallPlan(fit.Decl, fit.Env, null, ic.Args, ic.Pos);
                 }
                 var r = set[0];
@@ -3724,7 +3736,7 @@ public sealed partial class FunctionGen
                 if (set.Count > 1)
                 {
                     var fit = ChooseOverload([.. set.Select(o => (o, BindOwner(o, owner, n.Pos)))], n.TypeArgs, n.Args, 0,
-                        expected, n.Pos, $"{owner}.{n.Name}");
+                        expected, n.Pos, $"{owner}.{n.Name}", n.ArgNames);
                     return new CallPlan(fit.Decl, fit.Env, null, n.Args, n.Pos);
                 }
                 var r = set[0];
@@ -3753,11 +3765,13 @@ public sealed partial class FunctionGen
     /// type arguments (`Thread[Void].put_work`) beats the one for any; then one where every untyped
     /// integer literal is an S64 beats the rest. Anything else that is left is ambiguous.
     private Fit ChooseOverload(List<(RoutineDecl Decl, Compiler.TypeEnv Env)> set, List<TypeRef> typeArgs, List<Expr> args,
-        int firstArgParam, DType? expected, Pos pos, string what)
+        int firstArgParam, DType? expected, Pos pos, string what, List<string?>? names = null)
     {
         var fits = set.Select(c => TryFit(c.Decl, c.Env, typeArgs, args, firstArgParam, expected, pos)).ToList();
         var taking = fits.Where(f => f.Why is null).ToList();
         string shown = string.Join(", ", args.Select(DescribeArg));
+        if (taking.Count == 0 && MissingArguments(set.Select(c => c.Decl), args.Count, firstArgParam, names, what) is { } missing)
+            throw Err(pos, missing);
         if (taking.Count == 0)
             throw Err(pos, $"no overload of '{what}' takes ({shown}); it has:"
                 + string.Concat(fits.Select(f => $"\n    {Compiler.ShowSignature(f.Decl)} at {f.Decl.Pos}: {f.Why}"))
@@ -3786,6 +3800,22 @@ public sealed partial class FunctionGen
                 : "give the arguments the types of the overload you mean";
         throw Err(pos, $"the call of '{what}' with ({shown}) is ambiguous; these overloads all take it:"
             + string.Concat(tier.Select(f => $"\n    {Compiler.ShowSignature(f.Decl)} at {f.Decl.Pos}")) + $"\n{hint}");
+    }
+
+    /// A call whose arguments are all named and fit only one overload's parameters, with some of them left out, gets the
+    /// error naming what it leaves out (`construct(count: 3)` against `construct(count, manager)`), else null.
+    private static string? MissingArguments(IEnumerable<RoutineDecl> set, int given, int first, List<string?>? names,
+        string what)
+    {
+        if (names is null || names.Count != given || names.Any(n => n is null)) return null;
+        var shorter = set.Where(r => r.Params.Count - first > given
+                                     && names.All(n => r.Params.Skip(first).Any(p => p.Name == n))).ToList();
+        if (shorter is not [var r]) return null;
+        var all = r.Params.Skip(first).Where(p => p.Name != "me").ToList();
+        var left = all.Where(p => !names.Contains(p.Name)).ToList();
+        string list = string.Join(", ", left.Select(p => $"'{p.Name}'"));
+        string shape = $"{r.DisplayName}({string.Join(", ", all.Select(p => $"{p.Name}: ..."))})";
+        return $"missing argument{(left.Count == 1 ? "" : "s")} {list} in the call of '{what}', which takes {all.Count}: {shape}";
     }
 
     private Fit TryFit(RoutineDecl r, Compiler.TypeEnv env, List<TypeRef> typeArgs, List<Expr> args, int first, DType? expected, Pos pos)
@@ -4163,7 +4193,7 @@ public sealed partial class FunctionGen
                     if (passesPointer ? oself.Equals(rt) : Compatible(rt, oself)) receivers.Add((o, oenv));
                 }
                 if (receivers.Count == 0) continue;
-                var fit = ChooseOverload(receivers, m.TypeArgs, m.Args, 1, expected, m.Pos, $"{owner}.{m.Name}");
+                var fit = ChooseOverload(receivers, m.TypeArgs, m.Args, 1, expected, m.Pos, $"{owner}.{m.Name}", m.ArgNames);
                 return new CallPlan(fit.Decl, fit.Env, m.Receiver, m.Args, m.Pos);
             }
             var r = set[0];
@@ -4679,7 +4709,7 @@ public sealed partial class FunctionGen
         if (sig.Decl.Name is "poke" or "poke_volatile" or "setitem" or "shift_left" or "shift_right" or "copy"
             && plan.Receiver is { } place && PresetArrayRoot(place) is { } root)
             throw Err(plan.Pos, $"'{root.Name}' is a preset; its memory is read-only");
-        if (sig.Decl.Name is "poke_into" or "copy_into" or "poke_at" && plan.Receiver is not null && plan.Args.Count >= 1
+        if (sig.Decl.Name is "poke_into" or "store_into" or "copy_into" or "poke_at" && plan.Receiver is not null && plan.Args.Count >= 1
             && PresetArrayRoot(plan.Args[0]) is { } destRoot)
             throw Err(plan.Pos, $"'{destRoot.Name}' is a preset; its memory is read-only");
         // An assembly routine is checked as assembly on its own, so a generic body being checked only types its call.

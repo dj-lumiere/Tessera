@@ -72,6 +72,10 @@ These change code written for the pre-release builders. Where a spelling changed
 - Every memory region has a manager: `DEFAULT_HEAP` is `HEAP`, `DEFAULT_STACKS` is `PAGES`, and processes,
   thread-locals and globals have `ProcessManager`, `ThreadLocalManager` and `GlobalManager`. A manager table is reached through its place (`HEAP`).
 - A routine that takes a memory manager names the parameter `manager: @MemoryManager`.
+- A collection and a `BorrowedSlice[T]` are always made with a named memory manager: `List[S64].construct(HEAP)`,
+  `BorrowedSlice[U8].construct(count: n, manager: HEAP)`. The default-heap `construct()` and `construct(count)` are
+  gone, and a call without the manager is a build error that names the missing `manager`. On a target without an
+  operating system, naming `HEAP` is a build error that says the target has none.
 - Every manager is an entity.
 - An address moves by a `ByteSize` with `+%` / `-%`: `a.offset(8)` is `a +% 8b`.
 - The escape check follows values out of a routine: a value holding a view of the frame (or of memory the routine
@@ -132,6 +136,8 @@ These change code written for the pre-release builders. Where a spelling changed
   `take_all`), not `owned`. `WorkSlot` is an entity.
 
 ### Added
+- `v.store_into(x)` writes into a `&T` box from the value's side, the twin of `x.store(v)` as `poke_into` is of
+  `poke`: `(x.load() + 1).store_into(x)`.
 - Collections from an array value: `List[T].of(values: [3, 1, 2], manager: HEAP)`, for `List`, `RotatableList`,
   `SortedList`, `Set`, `SortedSet`, `PriorityQueue`, `BitList`, `Dict` and `SortedDict`. The memory manager is always
   named, there is no default-heap `of`: `of(values: ...)` alone is a build error that names the missing `manager`.
