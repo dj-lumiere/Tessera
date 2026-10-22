@@ -1255,7 +1255,10 @@ Format through `Standard/System/Text` (`Format.te`), not printf. printf is for C
 
 - The console is `Console` (`Standard/Os`): `Console.show("x = {x}")` writes one line to standard output,
   `Console.alert("...")` one line to standard error, and `end:` changes the line end (`Console.show("loading",
-  end: "")`, a string literal). Both expand their template like a Writer's `write` (below). Standard input:
+  end: "")`, a string literal). Both expand their template like a Writer's `write` (below). With a value in place
+  of the template, `Console.show(x)` / `Console.alert(x)` is `Console.show("{x}")`: x's `represent_into` writes it
+  (a type without one is a build error saying so), `end:` still works, and a `&T` box shows the value it holds (in a
+  template hole too: `{x}` with `x: &B64` reads `x.load()`, a box of an entity stays the place). Standard input:
   `Console.ask[T]()`, `Console.ask_line()` / `ask_line(manager)`, `ask_word`, `ask_bytes(n)`, `ask_all`, all through one
   buffer the process shares. `ask_line` and `ask_word` are failable and throw `EndOfInputError` at the end of the
   input, so `try Console.ask_line()` gives `Maybe[BorrowedSlice[Byte]]`, `None` there (a blank line is empty): a loop to the end
@@ -1275,9 +1278,10 @@ Format through `Standard/System/Text` (`Format.te`), not printf. printf is for C
   through a temporary on `HEAP`). It is failable: `EndOfInputError` at the end of the input, and the failure of
   `to[T]` on a word that isn't a T. `try Console.ask[T]()` gives `Maybe[T]` (`None` for both).
 - `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, and
-  `@[Byte]` (a `BorrowedSlice[Byte]` writes through its view: `{line.getslice()}`). A pointer is neither Representable nor Diagnosable, so `{sum}` on a `sum: &S64` place is a build
-  error, not its address: write the value with `{sum.load()}` or `{sum.peek()}`, or the address with `{sum.to[Addr]()}`
-  (`0x7ffd5e8c1a40`, an `Addr` writes itself). A derived routine writes a pointer field's address.
+  `@[Byte]` (a `BorrowedSlice[Byte]` writes through its view: `{line.getslice()}`). A pointer is neither Representable nor Diagnosable, so `{view}` on a `view: @S64` is a build
+  error, not its address: write the value with `{view.peek()}`, or the address with `{view.to[Addr]()}`
+  (`0x7ffd5e8c1a40`, an `Addr` writes itself). A `&T` box writes the value it holds (`{sum}` on `sum: &S64` is
+  `{sum.load()}`). A derived routine writes a pointer field's address.
   `v.represent_hex_into(out)` for an integer's bits in hex; `represent_into(out, min_digits)` (`U64`, `U128`, `U256`) and `represent_hex_into(out,
   min_digits)` (`U64`) zero-pad; `represent_fixed_into(out, digits)`; `represent_with_into(out, v, spec)` with a `FormatSpec`.
   There are no `write_decimal_*` / `write_hex_*` helpers: the integer's own method is the writer.

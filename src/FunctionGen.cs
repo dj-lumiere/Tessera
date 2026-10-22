@@ -2200,8 +2200,8 @@ public sealed partial class FunctionGen
             ImplicitMemberExpr m => throw Err(m.Pos,
                 $"'.{m.Name}' isn't a value of {expected}: a leading '.' starts a call on the type, .{m.Name}(...)"),
             ImplicitCallExpr => EvalCall(e, expected),
-            NsCallExpr or MethodCallExpr when TemplateCall(e) is var (writer, template) =>
-                ExpandTemplate(writer, template),
+            NsCallExpr or MethodCallExpr when TemplateCall(e) is var (writer, template, shown) =>
+                ExpandTemplate(writer, template, shown),
             PresetRef r => EvalPresetRef(r, expected),
             RoutineRef rr => RoutineValue(rr, expected),
             WorkExpr work => EvalWork(work, expected),
@@ -3051,12 +3051,14 @@ public sealed partial class FunctionGen
 
     /// A call that writes a template, with the writer it goes to and the template: a Writer's `.write("x = {x}\n")`
     /// (TemplateWriter), or `Console.show("x = {x}")` / `Console.alert("...")`, which write to `Console.output()` /
-    /// `Console.errors()` and end the line with `end:`'s text, "\n" when it isn't given. Null for an ordinary call.
-    private (Expr Writer, StrLit Template)? TemplateCall(Expr e)
+    /// `Console.errors()` and end the line with `end:`'s text, "\n" when it isn't given. `Console.show(x)` with a value
+    /// instead of a template is `Console.show("{x}")`: the value comes back as `Shown`, written before the template (then
+    /// only the end). Null for an ordinary call.
+    private (Expr Writer, StrLit Template, Expr? Shown)? TemplateCall(Expr e)
     {
         if (TemplateWriter(e) is { } writer)
-            return (writer, (StrLit)(e is NsCallExpr ns ? ns.Args[0] : ((MethodCallExpr)e).Args[0]));
-        if (e is not NsCallExpr { Name: "show" or "alert", TypeArgs.Count: 0, Args: [StrLit text, ..] } call ||
+            return (writer, (StrLit)(e is NsCallExpr ns ? ns.Args[0] : ((MethodCallExpr)e).Args[0]), null);
+        if (e is not NsCallExpr { Name: "show" or "alert", TypeArgs.Count: 0, Args: [var first, ..] } call ||
             TryResolveOwner(call.Owner) is not { } owner || owner.Name != "Console" ||
             _c.FindMethod(owner, call.Name, _env.File, call.Pos) is not null)
             return null;
@@ -3072,7 +3074,11 @@ public sealed partial class FunctionGen
         }
         else if (call.Args.Count != 1)
             throw Err(call.Pos, $"Console.{call.Name} takes the text and, after it, end: with a string literal (end: \"\" for none)");
-        return (new NsCallExpr(call.Owner, stream, [], [], call.Pos), text with { Value = text.Value + end });
+        if (call.ArgNames is [not null, ..])
+            throw Err(call.Pos, $"Console.{call.Name} takes the text, or a value to show, without a name");
+        var target = new NsCallExpr(call.Owner, stream, [], [], call.Pos);
+        if (first is StrLit text) return (target, text with { Value = text.Value + end }, null);
+        return (target, new StrLit(end, first.Pos), first);
     }
 
     /// The writer a `.write("x = {x}\n")` writes to, or null when the call is an ordinary one: on a type, a stateless
@@ -3104,8 +3110,9 @@ public sealed partial class FunctionGen
     /// `out.write("x = {x}\n")` expands in place, in order: `write_str(out, "x = ")`, `x.represent_into(out)`,
     /// `write_str(out, "\n")`, with the writer TemplateWriter finds. A brace holds one expression; `{{` and `}}`
     /// are literal braces. Nothing is allocated: each piece goes straight to the writer.
-    private Val ExpandTemplate(Expr writer, StrLit template)
+    private Val ExpandTemplate(Expr writer, StrLit template, Expr? shown = null)
     {
+        string shower = writer is NsCallExpr { Name: "errors" } ? "Console.alert" : "Console.show";
         // The writer is evaluated once (`Console.output()`, `files.stride(i)`), and every piece writes to that value, held
         // under a name no source can spell.
         if (writer is not ValueRef)
@@ -3116,6 +3123,7 @@ public sealed partial class FunctionGen
         }
         try
         {
+            if (shown is not null) WriteShown(writer, shown, shower);
             return ExpandPieces(writer, template);
         }
         finally
@@ -3123,6 +3131,24 @@ public sealed partial class FunctionGen
             _values.Remove("write writer");
         }
     }
+
+    /// The value `Console.show(x)` shows, written with its represent_into: a type without one is a build error that says so.
+    private void WriteShown(Expr writer, Expr shown, string shower)
+    {
+        var value = BoxValue(shown);
+        if (InferQuiet(value) is { } t and not PtrType && _c.FindMethod(t, "represent_into", _env.File, shown.Pos) is null)
+            throw Err(shown.Pos, $"'{t}' has no represent_into, so {shower} can't show it");
+        EvalCall(new MethodCallExpr(value, "represent_into", [], [writer], shown.Pos), VoidType.Instance);
+    }
+
+    /// A `&T` box written into text is the value it holds: `{x}` and `Console.show(x)` read `x.load()`. A box of an
+    /// entity stays the place, which the entity's represent_into takes (an entity is never copied out).
+    private Expr BoxValue(Expr e) =>
+        e is ValueRef r && _stackPlaces.ContainsKey(r.Name) && _values.TryGetValue(r.Name, out var slot)
+        && slot.Type is PtrType { Pointee: var held } && !Entities.Holds(held)
+        || ManagedMemory(InferQuiet(e)) is { Decl.Name: "BorrowedCell", Args: [var inner] } && !Entities.Holds(inner)
+            ? new MethodCallExpr(e, "load", [], [], e.Pos)
+            : e;
 
     private Val ExpandPieces(Expr writer, StrLit template)
     {
@@ -3172,7 +3198,7 @@ public sealed partial class FunctionGen
             _templateHole = source.Trim();
             try
             {
-                EvalCall(new MethodCallExpr(value, "represent_into", [], [writer], at), VoidType.Instance);
+                EvalCall(new MethodCallExpr(BoxValue(value), "represent_into", [], [writer], at), VoidType.Instance);
             }
             finally
             {

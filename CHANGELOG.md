@@ -136,6 +136,8 @@ These change code written for the pre-release builders. Where a spelling changed
   `take_all`), not `owned`. `WorkSlot` is an entity.
 
 ### Added
+- `Console.show(x)` and `Console.alert(x)` with a value are `Console.show("{x}")` and `Console.alert("{x}")`. A `&T`
+  box in a template hole or shown this way shows the value it holds.
 - `v.store_into(x)` writes into a `&T` box from the value's side, the twin of `x.store(v)` as `poke_into` is of
   `poke`: `(x.load() + 1).store_into(x)`.
 - Collections from an array value: `List[T].of(values: [3, 1, 2], manager: HEAP)`, for `List`, `RotatableList`,
