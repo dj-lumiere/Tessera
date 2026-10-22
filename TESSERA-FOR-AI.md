@@ -1006,7 +1006,9 @@ routine start() -> None
   decides, it calls `ProcessManager.exit_process` to end, and when it returns the program goes on, except that
   Windows ends the process itself after a closed console window, a logoff or a shutdown),
   `when_interrupted(h)` (SIGINT, Ctrl+C: the program goes on after `h`, and an interrupt that comes while `h` is still
-  running is ignored), `when_faulted(h)` (in place of the fault report below, the fault then ends the process), `holder(kind)`, and
+  running is ignored), `when_faulted(h)` (in place of the fault report below, the fault then ends the process; a memory fault's
+  `address` is the address it touched on Linux and macOS, and `event.ran_out_of_stack()` is true when the running
+  flow's stack ran out), `holder(kind)`, and
   `CpuEventManager.raise(kind)` sends one to this process (the real signal on Linux and macOS). A handler runs inside
   the signal handler on Linux and macOS: an `Unbroken[T]` or a `Console` line, no exclusive access. On Windows an interrupt handler runs
   on a thread the CpuEventManager starts (the console hands its handlers one event at a time). Without an OS: `when_power_off`

@@ -159,14 +159,18 @@ secret routine stack_ran_out(at: Addr) -> Bool
 secret routine on_fault(sig: CInt, info: Addr, context: Addr) -> None
     signals: Array[CInt, 5] = fault_signals()
 
-    if deliver(CpuEvent(kind: CpuEventKind.FAULT, code: sig.to[U64](), place: .hollow(),
-        address: .hollow()))
-        c_raise(sig)
-        return
     until i >= 4 or signals[i] == sig with i: U64 = 0
         continue with i: i + 1
     then
-        if i <= 1 and info.is_not_hollow() and stack_ran_out(fault_address(info))
+        # A memory fault (SIGSEGV, SIGBUS) says the address it touched.
+        at: Addr = when
+            i <= 1 and info.is_not_hollow() => fault_address(info)
+            else => .hollow()
+        if deliver(CpuEvent(kind: CpuEventKind.FAULT, code: sig.to[U64](), place: .hollow(),
+            address: at))
+            c_raise(sig)
+            return
+        if at.is_not_hollow() and stack_ran_out(at)
             Console.alert("tessera: StackOverflowError ({signal_name(i)}): the stack ran out, the routines called each other deeper than it holds")
         else
             Console.alert("tessera: {fault_name(i)}")
@@ -174,6 +178,14 @@ secret routine on_fault(sig: CInt, info: Addr, context: Addr) -> None
         write_platform_stack()
         c_raise(sig)
         return
+
+### Whether this event is the running flow's stack running out: a memory fault (SIGSEGV, SIGBUS) at an address in the
+### closed pages below the stack of the flow it came to. A fault handler set with CpuEventManager.when_faulted asks it
+### to tell a stack overflow from other faults.
+### :returns: True when the stack ran out.
+@target(os: ("linux", "macos"))
+routine CpuEvent.ran_out_of_stack() -> Bool
+    return me.kind == CpuEventKind.FAULT and me.address.is_not_hollow() and stack_ran_out(me.address)
 
 ### Writes the platform's stack: the return addresses with the symbols the system knows.
 @target(os: ("linux", "macos"))
@@ -347,6 +359,12 @@ secret routine on_exception(pointers: Addr) -> CLong
         err.write("\n")
     then
         return 0
+
+### Whether this event is the running thread's stack running out: the exception code of a stack overflow.
+### :returns: True when the stack ran out.
+@target(os: "windows")
+routine CpuEvent.ran_out_of_stack() -> Bool
+    return me.kind == CpuEventKind.FAULT and me.code == 0xC00000FD
 
 ### Installs the fault report: the generated entry calls it before `start` when the build keeps the crash trace, and
 ### CpuEventManager.when_faulted when a handler takes the slot. A second call does nothing.
