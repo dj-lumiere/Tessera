@@ -4300,8 +4300,22 @@ public sealed partial class FunctionGen
         var unbound = r.TypeParams.Where(p => !env.Has(p)).ToHashSet();
         if (unbound.Count == 0) return;
         for (int i = 0; i < args.Count && i + firstArgParam < r.Params.Count; i++)
+        {
             if (Infer(args[i]) is { } at) Unify(r.Params[i + firstArgParam].Type, at, env, unbound);
+            else UnifyArrayCount(r.Params[i + firstArgParam].Type, args[i], env, unbound);
+        }
         if (expected is not null) Unify(r.ReturnType, expected, env, unbound);
+    }
+
+    /// An array literal, whose type comes from where it goes, still says how many values it has: `[3, 1, 2]` passed to
+    /// `values: Array[T, COUNT]` binds COUNT to 3, so `List[S64].of(values: [3, 1, 2])` needn't name it.
+    private void UnifyArrayCount(TypeRef t, Expr arg, Compiler.TypeEnv env, HashSet<string> unbound)
+    {
+        if (arg is not ArrayLit { IsTuple: false } lit || t is not { Name: "Array", Args: [_, TypeArgType { Type: { Args.Count: 0 } n }] }
+            || !unbound.Contains(n.Name) || env.Has(n.Name))
+            return;
+        try { env.Bind(n.Name, new ConstArg(_c.Elements(lit, _env).Count)); }
+        catch (CompileError) { }
     }
 
     private static void Unify(TypeRef t, DType actual, Compiler.TypeEnv env, HashSet<string> unbound)
