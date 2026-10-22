@@ -793,10 +793,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (IsIdent("private") && PeekTok(1).Kind == TokenKind.Ident) throw Error(PrivateRenamed);
             bool isPrivate = IsIdent("secret") && PeekTok(1).Kind == TokenKind.Ident;
             if (isPrivate) Next();
-            if (!(Is(TokenKind.Ident) && PeekTok(1).Kind == TokenKind.Colon))
+            // A field sits further in than its type's header: a line at column 1 is the next declaration, or a
+            // script's next top-level line (`x: &S64 <- 0`).
+            if (!(Is(TokenKind.Ident) && PeekTok(1).Kind == TokenKind.Colon) || Cur.Pos.Col == 1)
             {
                 _i = start;
-                if (fieldAnnotations.Count > 0 || isPrivate || AtDeclStart()) break;
+                if (fieldAnnotations.Count > 0 || isPrivate || AtDeclStart() || Cur.Pos.Col == 1) break;
             }
 
             var f = Expect(TokenKind.Ident, "a field name");

@@ -154,10 +154,11 @@ public sealed partial class FunctionGen
     }
 
     /// Whether the builder's drop of a STACK place holding `held` runs a destruct: the value has something to give back
-    /// and a `destruct()` of its own. A variant, or a type whose destruct takes more (a manager), is ended by the program.
+    /// and a `destruct()` of its own. A variant, an array, or a type whose destruct takes more (a manager), is ended by the
+    /// program.
     private bool GivenBackAtExit(DType held)
     {
-        if (!HasReleaseDuty(held) || held is VariantType) return false;
+        if (!HasReleaseDuty(held) || held is VariantType or ArrayType) return false;
         if (held is not RecordType) return true;
         try { return _c.FindMethod(held, "destruct", _env.File, _decl.Pos, FromTypeParameter(held) || Derived) is not { } d || d.Params.Count <= 1; }
         catch (CompileError) { return true; }
