@@ -1055,7 +1055,7 @@ public sealed partial class FunctionGen
         if (push is not null) _out.AppendLine($"  {push}");
         // The frame is borrowed from the running flow's StackManager once the prologue has made it: without an
         // operating system its borrow checks the stack pointer against the stack's bottom.
-        if (FrameCalls && _c.FrameCall("borrow_frame", SlotBytes) is { } borrowFrame)
+        if (FrameCalls && !IsSmallLeaf() && _c.FrameCall("borrow_frame", SlotBytes) is { } borrowFrame)
             _out.AppendLine($"  {borrowFrame}{(Debug ? $", !dbg !{Location(FramePlace)}" : "")}");
         // The head's lines go on in the start block, after the parameters are unpacked and the frame is pushed.
         if (_head is null) _out.AppendLine("  br label %b.entry");

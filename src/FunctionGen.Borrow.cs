@@ -238,4 +238,33 @@ public sealed partial class FunctionGen
 
     /// The frame's size the builder knows, for `StackManager.borrow_frame`.
     private string SlotBytes => _slotBytes.ToString(CultureInfo.InvariantCulture);
+
+    /// The largest frame a routine that calls no other routine may have and still skip borrow_frame: well inside the
+    /// room (StackManager_freestanding.te's STACK_MARGIN, 4096 bytes) its caller's own check left above the stack's
+    /// bottom.
+    private const long LeafFrameBytes = 1024;
+
+    /// Whether the routine calls no other routine (an LLVM intrinsic and inline assembly don't count) and its slots
+    /// are small: it borrows no frame, since the check of the routine that called it already left it room. The
+    /// routines the frame check itself calls (`+%`, `to[Addr]`, `stack_pointer`) are such routines, so the check
+    /// never runs itself, and the small routines LLVM inlines bring no check along.
+    private bool IsSmallLeaf()
+    {
+        if (_slotBytes > LeafFrameBytes) return false;
+        string? giveBack = _c.FrameCall("give_back_frame");
+        foreach (var lb in _lblocks)
+            foreach (var line in lb.Lines)
+            {
+                if (line == giveBack) continue;
+                int call = line.IndexOf("call ", StringComparison.Ordinal);
+                if (call < 0) call = line.IndexOf("invoke ", StringComparison.Ordinal);
+                if (call < 0) continue;
+                int callee = line.IndexOf('@', call);
+                if (line.Contains(" asm ", StringComparison.Ordinal)
+                    || callee >= 0 && line.AsSpan(callee).StartsWith("@llvm.", StringComparison.Ordinal))
+                    continue;
+                return false;
+            }
+        return true;
+    }
 }
