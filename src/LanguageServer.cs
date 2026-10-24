@@ -336,6 +336,8 @@ public static partial class LanguageServer
                     inLibrary ? StandardLibrary.ModuleOf(Shown(source)) : Manifest.PlaceModule(source)));
             }
             decls.AddRange(StdlibDecls(stdlib).Where(d => !own.Contains(d.File)));
+            if (StandardLibrary.FindIngrid(stdlib) is { } ingrid)
+                decls.AddRange(StandardLibrary.LoadIngrid(ingrid).Where(d => !own.Contains(d.File)));
 
             var compiler = new Compiler(target, decls);
             analysis = new Analysis(text, shown, decls.Where(d => SameFile(d.File, shown)).ToList(), compiler, stdlib);

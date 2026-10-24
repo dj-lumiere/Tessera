@@ -18,6 +18,9 @@ public sealed partial class Compiler
     /// The directory `Standard/...` file names are relative to, so a debugger finds the stdlib's sources.
     public string? StdlibParent { get; init; }
 
+    /// The directory `Ingrid/...` file names are relative to (Ingrid's `tessera` folder), so a debugger finds them.
+    public string? IngridDir { get; init; }
+
     private readonly List<string> _meta = [];
     private readonly Dictionary<string, int> _metaUnique = [];
     private readonly Dictionary<string, int> _diFiles = [];
@@ -99,6 +102,10 @@ public sealed partial class Compiler
         _rootFile ??= shown;
         if (_diFiles.TryGetValue(shown, out int id)) return id;
         string full = Path.IsPathRooted(shown) ? shown
+            : IngridDir is not null && shown.Length > StandardLibrary.IngridRoot.Length
+                && shown.StartsWith(StandardLibrary.IngridRoot, StringComparison.Ordinal)
+                && shown[StandardLibrary.IngridRoot.Length] is '/' or '\\'
+                ? Path.Combine(IngridDir, shown[(StandardLibrary.IngridRoot.Length + 1)..])
             : StdlibParent is not null && shown.StartsWith("Standard", StringComparison.Ordinal)
                 ? Path.Combine(StdlibParent, shown)
                 : Path.GetFullPath(shown);

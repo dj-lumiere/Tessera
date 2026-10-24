@@ -345,6 +345,9 @@ public sealed record Manifest(
         return result;
     }
 
+    /// The module a file's `module` line names, or null when it has none.
+    internal static string? DeclaredModule(string file) => Header(file).Module;
+
     /// A file's `module` line and `import` lines: the lines before its first declaration.
     private static (string? Module, List<string> Imports) Header(string file)
     {

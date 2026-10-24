@@ -3907,6 +3907,18 @@ public sealed partial class FunctionGen
     /// Works out which routine a call refers to and binds its type parameters.
     private CallPlan? PlanCall(Expr e, DType? expected)
     {
+        var plan = PlanCallInner(e, expected);
+        if (plan is { Decl: { Name: "bitcast", IsLibrary: true, Module: Compiler.SystemModule } cast }
+            && !_decl.IsLibrary && !Tessera.Derive.IsImplicit(_decl)
+            && FlagsOf(plan.Env.Get(cast.TypeParams.LastOrDefault() ?? "")) is { } flags)
+            throw Err(plan.Pos, $"bitcast doesn't check that every bit on is one of {flags.Name}'s members: convert the "
+                + $"bitmask with to[{flags.Name}](), which throws UnknownBitsError for a bit no member has "
+                + $"(bits.to[{flags.Name}](), or try bits.to[{flags.Name}]() to handle it)");
+        return plan;
+    }
+
+    private CallPlan? PlanCallInner(Expr e, DType? expected)
+    {
         // A routine called on a Crashables is each crashable's own, chosen by the tag (EvalUnionCall).
         if (e is MethodCallExpr onUnion && CrashableGroup(onUnion) is not null) return null;
         if (e is NsCallExpr { Owner: { Args.Count: 0, Path: null } receiver }) UnknownReceiver(receiver);

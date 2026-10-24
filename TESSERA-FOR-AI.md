@@ -56,6 +56,11 @@ The standard library's modules:
   `Standard/System/CSubSystem` (C strings, the C memory routines without an OS).
 - Imported: `Standard/Collections`, `Standard/Os` (console, files, storage, the environment, processes, threads, clocks), `Standard/Fiber`,
   `Standard/Random`, `Standard/Text/Patterns` (text patterns, below).
+- `Ingrid/Decimal` (imported, not under `Standard`): the decimal numbers `D32`, `D64`, `D128`, and `Decimal` (below).
+  They come from Ingrid, the numeric library RazorForge and Suflae use too (one implementation), which every build
+  reads like the standard library: `$TESSERA_INGRID`, else an `Ingrid` folder next to `Standard` (an installed
+  Tessera), else `Ingrid/tessera` of a checkout above the standard library. The files are Ingrid's
+  (`Ingrid/tessera/decimal/`), and the engine's names are `secret` to `Ingrid/Decimal`.
 
 A builder that uses Tessera as a library (RazorForge's Tessera backend) can split one program over two modules, a base
 built once and a delta built for each edit that links against it: `new Compiler(...) { ExposeDefinitions = true }`
@@ -776,6 +781,26 @@ routine start() -> None
   Stdlib float implementations and Ingrid's exports use `to_unchecked`, so a C caller never crashes.
 - Floats are `B16`, `BF16`, `B32`, `B64`, and software `B128` (an `i128`; stdlib code reads it with `f128_bits`):
   `add`, `mul`, `truediv`, `floordiv`, `mod`, and so on. `x.bits()` gives the bits as the same-width `U`, `B64.from_bits(u)` goes back.
+- **Decimals** (`import Ingrid/Decimal`): `D32`, `D64`, `D128` are IEEE 754 decimal32/64/128 (BID, 7/16/34
+  digits, a value keeps its exponent: `2.50` stays `2.50`, `1.0 == 1.00`). Every operation rounds once, a tie to the
+  even one. `+ - * /` and `sqrt` crash on an infinite result (`NumericOverflowError`), a NaN (`NumericDomainError`),
+  and a nonzero value over zero (`DivisionByZeroError`), and `add_unchecked` .. `truediv_unchecked`, `sqrt_unchecked`
+  give the raw IEEE value. `Decimal` is 34 digits and never an infinity or a NaN: `+ - *` are exact and failable
+  (`NumericOverflowError` when the result needs more than 34 digits), `/` rounds to 34 digits, and every rounding a
+  `Decimal` does (`/`, text read in, an integer with more digits, `Fixed[Decimal]`, `round()`) takes a value exactly
+  halfway away from zero (`2.5` to `3`, `-2.5` to `-3`). Its text drops the zeros after the point (`2.50` is `2.5`).
+  There is no decimal literal: a value comes from text (`"19.99".to[Decimal]()`, failable: `EmptyTextError`,
+  `InvalidValueError`, and for `Decimal` `OutOfRangeError`), from an integer (`n.to[D64]()`, `S64.to[Decimal](3)`
+  on every `S8` .. `U256`), or `D64.zero()` / `Decimal.zero()` (`.hollow()` is the all-zero bits, a zero at the
+  lowest exponent, not `0`). `d.to[S64]()` and the other integers truncate toward zero and throw
+  `IntegerOverflowError` past the range or on an infinity or a NaN. Widening (`D32.to[D64]()`, `D64.to[D128]()`,
+  `Decimal.to[D128]()`) is plain, narrowing (`D64.to[D32]()`) throws `NumericOverflowError` for a finite value that
+  rounds to an infinity (`to_unchecked[D32]()` gives the infinity), and `D128.to[Decimal]()` crashes on an infinity
+  or a NaN. Each obeys Equatable, Comparable (a NaN orders as 0, `<` and `<=` are false), the operator protocols,
+  Representable (`1E+20`, `1.23E-8`, `0.000001`, `1E-7`, `inf`, `NaN`, the text RazorForge and Suflae write),
+  Diagnosable (`D64(1.5)`, `Decimal(2.5)`), FixedRepresentable (`Fixed[D64](value: d, digits: 2)`), and Parsable.
+  `from_bits` / `bits()` move a D type to and from its BID encoding. Not there yet: hashing, the transcendentals, and
+  conversions to and from the binary floats.
 
 **Routines and generics**
 
@@ -1061,7 +1086,10 @@ routine start() -> None
   visible value of the same name (`none` or a member's) hides the bare spelling there. `x.has(A and B)` is true when all of
   them are on, `x.has_any(A and B)` when at least one is, `x.lacks(A and B)` when none is, and `x.without(A)` is `x`
   with `A` off. `==` and `!=` compare the whole set. `x.to[U64]()` is the bitmask (and `to[U8]()` for a `U8` flags
-  type, likewise for its own width). `|`, `&`, `^` and `~` on a flags value, `or` between flags values, a number
+  type, likewise for its own width). A bitmask goes back with `bits.to[CellMarks]()` on any unsigned integer type
+  (`U8` .. `U64`): it is failable and throws `UnknownBitsError` (`bits`, `target`) when a bit that no member has is on,
+  so `try`/`check` take a bitmask from C that may hold other bits. `bits.bitcast[CellMarks]()` and `bitcast[U32,
+  CellMarks](bits)` are build errors that point to `to[CellMarks]()`. `|`, `&`, `^` and `~` on a flags value, `or` between flags values, a number
   where a flags value goes, `<` and the other orderings, and `when x` on a flags value are build errors. A flags
   type derives Representable (`MINE and FLAGGED`, `none` when no member is on), Diagnosable (`CellMarks.MINE and
   CellMarks.FLAGGED`, `none`), Equatable, and Hashable (as its bits), never Comparable. Presets take flags values

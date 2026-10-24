@@ -189,7 +189,12 @@ static class Cli
     {
         if (args.Length != 2) return Fail("docs: give the library's source directory and the output directory");
         if (!Directory.Exists(args[0])) throw new ToolError($"no such directory: {args[0]}");
-        var (files, pages, problems) = new ApiDocs(args[0], path => ParseFile(path, isLibrary: true)).Generate(args[1]);
+        // The standard library's reference also holds Ingrid's library, the other one every program has.
+        bool standard = Path.GetFullPath(args[0]).TrimEnd(Path.DirectorySeparatorChar)
+            == Path.GetFullPath(StdlibDir()).TrimEnd(Path.DirectorySeparatorChar);
+        var ingrid = standard && IngridDir() is { } found ? StandardLibrary.IngridFiles(found) : null;
+        var (files, pages, problems) = new ApiDocs(args[0], path => ParseFile(path, isLibrary: true), ingrid)
+            .Generate(args[1]);
         foreach (string problem in problems) Console.Error.WriteLine($"not documented: {problem}");
         Console.WriteLine($"{files} files: {pages} pages written to {args[1]}, {problems.Count} could not be read");
         return problems.Count > 0 ? 1 : 0;
@@ -543,6 +548,7 @@ static class Cli
             Optimized = mode.IsOptimized(),
             EmitLibraryExports = stdlibExports,
             StdlibParent = Path.GetDirectoryName(StdlibDir()),
+            IngridDir = IngridDir(),
             UninitFill = uninitFill,
         };
         compiler.SetTraceSizes(traceFrames, failureTraces);
@@ -598,7 +604,8 @@ static class Cli
         CpuModel.Prefetch(target);
         DataLayout.Prefetch(target);
         var inputs = files.Select(Path.GetFullPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var jobs = inputs.Select(f => (Path: f, IsLibrary: false, ShownAs: (string?)null, Stamp: default(StandardLibrary.FileStamp)))
+        var jobs = inputs.Select(f => (Path: f, IsLibrary: false, ShownAs: (string?)null, Stamp: default(StandardLibrary.FileStamp),
+                Module: (string?)null))
             .ToList();
         // Stdlib files are named from the stdlib directory (Standard/Collections/List.te) wherever the build runs, so
         // the file tags in private symbols don't depend on the working directory. A stdlib that can't be found is
@@ -611,7 +618,12 @@ static class Cli
                          .OrderBy(f => f.FullName))
                 if (!inputs.Contains(f.FullName))
                     jobs.Add((f.FullName, true, StandardLibrary.ShownAs(stdlib, f.FullName),
-                        StandardLibrary.FileStamp.Of(f)));
+                        StandardLibrary.FileStamp.Of(f), null));
+            // Ingrid's library (the decimal numbers) is always there too, under its own modules (`Ingrid/Decimal`).
+            if (IngridDir() is { } ingrid)
+                foreach (var f in StandardLibrary.IngridFiles(ingrid))
+                    if (!inputs.Contains(f.Path))
+                        jobs.Add((f.Path, true, f.ShownAs, StandardLibrary.FileStamp.Of(new FileInfo(f.Path)), f.Module));
         }
         catch (Exception e)
         {
@@ -630,12 +642,12 @@ static class Cli
         var failed = new ExceptionDispatchInfo?[jobs.Count];
         Parallel.For(0, jobs.Count, i =>
         {
-            var (path, isLibrary, shownAs, stamp) = jobs[i];
+            var (path, isLibrary, shownAs, stamp, module) = jobs[i];
             try
             {
                 if (isLibrary)
                 {
-                    parsed[i] = StandardLibrary.Declarations(path, shownAs!, stamp);
+                    parsed[i] = StandardLibrary.Declarations(path, shownAs!, stamp, module);
                     return;
                 }
                 if (!File.Exists(path)) throw new ToolError($"no such file: {path}");
@@ -689,6 +701,17 @@ static class Cli
     }
 
     private static string? _stdlib;
+    private static string? _ingrid;
+    private static bool _ingridFound;
+
+    /// Ingrid's library (StandardLibrary.FindIngrid), or null when there is none.
+    internal static string? IngridDir()
+    {
+        if (_ingridFound) return _ingrid;
+        _ingrid = StandardLibrary.FindIngrid(StdlibDir());
+        _ingridFound = true;
+        return _ingrid;
+    }
 
     /// The standard library: $TESSERA_STDLIB, or the nearest `Standard/` (with System/Prelude.te) above the working
     /// directory or the builder binary.

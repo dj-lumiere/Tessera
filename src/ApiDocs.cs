@@ -10,7 +10,9 @@ namespace Tessera;
 /// routines, presets, and aliases follow. A `{Name}` in a doc comment links to the type's section when the library
 /// declares that type. Private declarations, and files under a `tests`, `playground`, `scratch`, or
 /// `generated` directory, are left out.
-public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse)
+/// Ingrid's library files (`ingrid`), when given, join the pages under `Ingrid/`, a folder per module.
+public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse,
+    IReadOnlyList<StandardLibrary.IngridFile>? ingrid = null)
 {
     private sealed record Page(string SourcePath, string PagePath, string Title, List<Decl> Decls, string[] Lines)
     {
@@ -62,6 +64,26 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse)
             string[] lines = File.ReadAllText(full).Replace("\r\n", "\n").Split('\n');
             _pages.Add(new Page(relative, Path.ChangeExtension(relative, ".md"), Path.GetFileNameWithoutExtension(relative),
                 decls, lines));
+        }
+
+        foreach (var file in ingrid ?? [])
+        {
+            if (!DocLint.IsLibraryFile(file.ShownAs.Replace('\\', '/'))) continue;
+            List<Decl> decls;
+            try
+            {
+                decls = StandardLibrary.Declarations(file.Path, file.ShownAs,
+                    StandardLibrary.FileStamp.Of(new FileInfo(file.Path)), file.Module);
+            }
+            catch (CompileError e)
+            {
+                problems.Add($"{file.ShownAs}: {e.Message}");
+                continue;
+            }
+            string[] lines = File.ReadAllText(file.Path).Replace("\r\n", "\n").Split('\n');
+            string page = file.Module + "/" + Path.ChangeExtension(Path.GetFileName(file.Path), ".md");
+            _pages.Add(new Page(file.ShownAs.Replace('\\', '/'), page, Path.GetFileNameWithoutExtension(file.Path), decls,
+                lines));
         }
 
         foreach (var page in _pages) RegisterTypes(page);

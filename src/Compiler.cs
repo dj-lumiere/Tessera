@@ -143,7 +143,11 @@ public sealed partial class Compiler
         foreach (var imp in _imports)
         {
             if (!_modules.Contains(imp.Path))
-                throw new CompileError(imp.Pos, OldSpellings.OldModule(imp.Path) ?? $"unknown module '{imp.Path}'");
+                throw new CompileError(imp.Pos, OldSpellings.OldModule(imp.Path) ?? (IsUnder(imp.Path, StandardLibrary.IngridRoot)
+                    && !_modules.Contains(StandardLibrary.IngridRoot)
+                    ? $"unknown module '{imp.Path}': Ingrid's library wasn't found (an Ingrid folder next to the standard "
+                      + "library, or Ingrid/tessera above it); set TESSERA_INGRID to its folder"
+                    : $"unknown module '{imp.Path}'"));
             // Only the program's entry file runs top-level lines: in a file another one imports, they would be a second
             // start nobody asked for.
             if (_userRoutines.FirstOrDefault(r => r.IsScript && r.Module == imp.Path && r.Module != "" && r.File != imp.File)

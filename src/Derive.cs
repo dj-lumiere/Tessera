@@ -603,6 +603,23 @@ public static class Derive
                 sb.Append(width == u ? "    return a\n\n" : $"    return a.to[{width}]()\n\n");
             }
         }
+        // Back from a bitmask: every unsigned integer converts, and a bit that is no member's is an error.
+        var members = System.Numerics.BigInteger.Zero;
+        foreach (var (_, value) in c.Members) members |= ((IntLit)value).Value;
+        var stray = (System.Numerics.BigInteger.One << 64) - 1 - members;
+        int Width(string t) => int.Parse(t[1..], System.Globalization.CultureInfo.InvariantCulture);
+        foreach (var from in new[] { "U8", "U16", "U32", "U64" })
+        {
+            sb.Append($"### The {c.Name} whose members are the bits on in `me`.\n### :returns: The flags value.\n");
+            sb.Append($"### :throws: Throws `UnknownBitsError` when a bit that no member of {c.Name} has is on.\n");
+            sb.Append($"failable routine {from}.to[{c.Name}]() -> {c.Name}\n");
+            sb.Append(from == "U64" ? "    wide: U64 = me\n" : "    wide: U64 = me.to[U64]()\n");
+            sb.Append($"    stray: U64 = wide.bitand(0x{stray:X})\n");
+            sb.Append("    if stray != 0\n");
+            sb.Append($"        throw UnknownBitsError(bits: stray, target: \"{c.Name}\")\n");
+            string bits = from == u ? "me" : Width(from) < Width(u) ? $"me.to[{u}]()" : $"me.to_wrap[{u}]()";
+            sb.Append($"    return bitcast[{u}, {c.Name}]({bits})\n\n");
+        }
         return sb.ToString();
     }
 }
