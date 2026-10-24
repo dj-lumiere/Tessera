@@ -642,6 +642,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         // lines, if it has any), then its entry block: written `block entry()`, or the lines before the first block.
         string display = owner is null ? name : $"{owner}.{name}";
         _routineDisplay = display;
+        // A routine's lines sit further in than its header, so an @external routine followed by a line that starts at
+        // the left edge (a script's next top-level line) has no body.
+        if (annotations.Any(a => a.Name == "external") && Cur.Kind != TokenKind.Eof && Cur.Pos.Col == 1 &&
+            Cur.Pos.Line > headerEnd)
+            return new RoutineDecl(file, annotations, owner, name, typeParams, parameters, ret, clauses, null, pos) { Fixed = fixedArgs, Source = source };
         var shared = ParseHead(display);
         var blocks = new List<BlockDecl>();
         int afterHead = _i;
