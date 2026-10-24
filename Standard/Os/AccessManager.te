@@ -601,7 +601,7 @@ secret routine fiber_flow(slot: @@AccessFlow) -> @AccessFlow
         return flow
     made: @AccessFlow = allocate[AccessFlow](count: 1, manager: C_HEAP)
     if made.is_hollow()
-        crash_allocation()
+        throw MemoryAllocationError()
     made.poke(.hollow())
     made.kind.poke(FLOW_FIBER)
     slot.poke(made)
@@ -723,7 +723,7 @@ secret routine new_node() -> @AccessNode
     if FREE_NODES.peek().is_hollow()
         chunk: @AccessNode = allocate[AccessNode](count: NODE_CHUNK, manager: C_HEAP)
         if chunk.is_hollow()
-            crash_allocation()
+            throw MemoryAllocationError()
         each i in 0 til NODE_CHUNK
             node: @AccessNode = chunk.stride(i)
             node.poke(.hollow())
@@ -1030,8 +1030,8 @@ secret routine give_back_range(at: Addr) -> None
     node: @AccessNode = find_held(node: TABLE_ROOT.peek(), start, flow)
     if node.is_hollow()
         unlock_table()
-        crash(name: "AccessNotHeldError",
-            message: "This gives back an access that this thread or fiber doesn't hold: an access is given back once, by the flow that took it, through the pointer it was taken at.")
+        throw AccessNotHeldError(
+            description: "This gives back an access that this thread or fiber doesn't hold: an access is given back once, by the flow that took it, through the pointer it was taken at.")
     TABLE_ROOT.poke(remove_node(root: TABLE_ROOT.peek(), node))
     HELD_TOTAL.poke_unbroken(HELD_TOTAL.peek() - 1)
     waiters: U32 = node.waiters.peek()
@@ -1089,7 +1089,7 @@ secret routine crash_give_back_held(taken: SourceLocation) -> None
     if write_place_after(out, before: " (taken at ", place: taken)
         out.write(")")
     out.write(". It would wait for itself to give the access back: give the access back first.")
-    crash_at(name: "DeadlockError", message: out.getview(), place: .hollow())
+    crash_at(error: DeadlockError(description: out.getview()), place: .hollow())
 
 ### Writes `before` and a place, when the place names a file.
 ### :param out: Where to write.
@@ -1171,13 +1171,13 @@ common routine AccessManager.give_back_kind(access: Addr, kind: U8) -> None
 ### :param access: The access, or the value.
 ### :param kind: ACCESS_EXCLUSIVE, ACCESS_MULTI_READ, or ACCESS_IDENTITY.
 ### :param mode: ACCESS_READ or ACCESS_WRITE.
-### :throws: Crashes with `InvalidValueError` when a block names more than HELD_SLOTS.
+### :throws: Crashes with `UnacceptedValueError` when a block names more than HELD_SLOTS.
 common routine AccessManager.enlist(access: Addr, kind: U8, mode: U8) -> None
     flow: @AccessFlow = current_flow()
     count: U64 = flow.pending_count.peek()
     if count >= HELD_SLOTS
-        crash(name: "InvalidValueError",
-            message: "A block opens more accesses at once than the AccessManager keeps.")
+        throw UnacceptedValueError(
+            description: "A block opens more accesses at once than the AccessManager keeps.")
     flow.pending.getslot(count).poke(HeldAccess(access, kind, mode, place: .hollow()))
     flow.pending_count.poke(count + 1)
     return
@@ -1198,8 +1198,8 @@ secret routine sort_enlisted(flow: @AccessFlow, place: @SourceLocation) -> U64
             low_address: U64 = ptrtoint[Addr, U64](low.access.peek())
             high_address: U64 = ptrtoint[Addr, U64](high.access.peek())
             if low_address == high_address
-                crash_at(name: "AliasedTokensError",
-                    message: "Two names this block opens are the same entity. Opening it twice would give two tokens on one entity, so a change through one could move what the other reads. Name it once.",
+                crash_at(error: AliasedTokensError(
+                    description: "Two names this block opens are the same entity. Opening it twice would give two tokens on one entity, so a change through one could move what the other reads. Name it once."),
                     place: known_place(place))
             if low_address < high_address
                 break
@@ -1355,7 +1355,7 @@ secret routine crash_reenter(place: @SourceLocation) -> None
     message: @[Byte] = when
         words == WORDS_TESSERA => "This thread or fiber already holds the access it takes here. Waiting for it would never end, and going in would see its own work half done. Don't take it again inside: the code that holds it does the work."
         else => "This work opens access to a Guarded it already has open. Waiting for it would never end, and going in would see the work of its own block half done. Pass the token you already have instead of opening it again."
-    crash_at(name: "ReenterDuringAccessError", message, place: known_place(place))
+    crash_at(error: ReenterDuringAccessError(description: message), place: known_place(place))
 
 # -- parking ------------------------------------------------------------------------------------------------------
 
@@ -1605,7 +1605,7 @@ secret routine report_deadlock(flow: @AccessFlow, path: @DeadlockPath) -> None
         place: @SourceLocation = when
             words == WORDS_SUFLAE => .hollow()
             else => known_place(flow.waiting_place)
-        crash_at(name: "DeadlockError", message: out.getview(), place)
+        crash_at(error: DeadlockError(description: out.getview()), place)
 
 # -- access order --------------------------------------------------------------------------------------------------
 
@@ -1690,4 +1690,71 @@ secret routine report_order(place: @SourceLocation, before: SourceLocation) -> N
     when
         words == WORDS_TESSERA => out.write(". Two threads or fibers doing both could wait on each other. Take the accesses in the same order everywhere.")
         else => out.write(". Two pieces of work doing both could wait on each other. Open them together in one block, or open them in the same order everywhere.")
-    crash_at(name: "AccessOrderError", message: out.getview(), place: known_place(place))
+    crash_at(error: AccessOrderError(description: out.getview()), place: known_place(place))
+
+# -- the crashables ------------------------------------------------------------------------------------------------
+
+### An access given back by a flow that doesn't hold it.
+crashable AccessNotHeldError
+    ### What happened, in a sentence.
+    description: @[Byte]
+
+### Flows that wait on each other for good.
+crashable DeadlockError
+    ### Which flows wait for which accesses, and how to keep them from it.
+    description: @[Byte]
+
+### Two names a block opens that are the same entity.
+crashable AliasedTokensError
+    ### What happened, in a sentence.
+    description: @[Byte]
+
+### A flow taking an access it already holds.
+crashable ReenterDuringAccessError
+    ### What happened, in a sentence.
+    description: @[Byte]
+
+### Two accesses taken in the opposite order to an earlier time.
+crashable AccessOrderError
+    ### Where the two were taken, and how to keep them in one order.
+    description: @[Byte]
+
+### Writes the description.
+### :typeparam TWriter: The type of the Writer.
+### :param out: The Writer the message goes to.
+routine AccessNotHeldError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    out.write("{me.description}")
+    return
+
+### Writes the description.
+### :typeparam TWriter: The type of the Writer.
+### :param out: The Writer the message goes to.
+routine DeadlockError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    out.write("{me.description}")
+    return
+
+### Writes the description.
+### :typeparam TWriter: The type of the Writer.
+### :param out: The Writer the message goes to.
+routine AliasedTokensError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    out.write("{me.description}")
+    return
+
+### Writes the description.
+### :typeparam TWriter: The type of the Writer.
+### :param out: The Writer the message goes to.
+routine ReenterDuringAccessError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    out.write("{me.description}")
+    return
+
+### Writes the description.
+### :typeparam TWriter: The type of the Writer.
+### :param out: The Writer the message goes to.
+routine AccessOrderError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    out.write("{me.description}")
+    return

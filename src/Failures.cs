@@ -104,7 +104,7 @@ public sealed partial class Compiler
     /// grows (FinishThrows).
     public void EnsureThrowsKnown(Instance inst)
     {
-        if (Prechecking || !inst.Decl.IsFailable || inst.Decl.Blocks is null || inst.IsExternalC) return;
+        if (Prechecking || !inst.IsFailable || inst.Decl.Blocks is null || inst.IsExternalC) return;
         if (_emittedSymbols.Contains(inst.Symbol) || _emittingSymbols.Contains(inst.Symbol)) return;
         BuildInstance(inst);
     }
@@ -125,7 +125,7 @@ public sealed partial class Compiler
             _emittingSymbols.Remove(inst.Symbol);
         }
         _emittedSymbols.Add(inst.Symbol);
-        if (inst.Decl.IsFailable) _failableInstances[inst.Symbol] = inst;
+        if (inst.IsFailable) _failableInstances[inst.Symbol] = inst;
         if (!_functionTexts.ContainsKey(inst.Symbol)) _functionOrder.Add(inst.Symbol);
         _functionTexts[inst.Symbol] = text.ToString();
     }
@@ -279,12 +279,12 @@ public sealed partial class Compiler
         return name;
     }
 
-    /// The name under which a routine's instance keeps the failable Callable a parameter declared as a plain one was
-    /// given: the routine is built for that Callable, what it can throw included.
+    /// The name under which a routine's instance keeps the routine value a `failable Callable` parameter was given: the
+    /// routine is built for that Callable, what it can throw included.
     public static string FailingParamKey(string param) => "$failing " + param;
 
-    /// An ABI tag for an instance built for failable Callables given to plain Callable parameters, so it doesn't share
-    /// its symbol with the instance for plain ones.
+    /// An ABI tag for an instance built for the routine values given to `failable Callable` parameters, so an instance
+    /// for failable ones doesn't share its symbol with the one for plain ones.
     private string FailingCallableTag(RoutineDecl r, TypeEnv env)
     {
         var given = r.Params.Select(p => env.Get(FailingParamKey(p.Name))).OfType<DType>().ToList();

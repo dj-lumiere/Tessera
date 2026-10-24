@@ -1,9 +1,10 @@
 # Fibers without an operating system: start switches to a fiber on a stack of its own (a global array), the fiber
 # counts and switches back, three times, and start adds up what it counted. There is no scheduler here (it needs
-# threads), only Standard/Fiber's switch_stack and initial_stack, which a board's own cooperative loop is built
-# on. CI builds it for the targets without an OS that have fiber switches (32-bit ARM's Cortex-M, AArch64, x86_64),
-# links it with the board of each target, and checks that nothing is left undefined (see freestanding_fiber.arch: it
-# never runs here).
+# threads), only Standard/Fiber's switch_fiber and initial_stack, which a board's own cooperative loop is built on.
+# The fiber reserves its own failure mold first, and switch_fiber puts each side's mold back in place when it
+# resumes, so a failure on the fiber never lands in start's mold. CI builds it for the targets without an OS that
+# have fiber switches (32-bit ARM's Cortex-M, AArch64, x86_64), links it with the board of each target, and checks
+# that nothing is left undefined (see freestanding_fiber.arch: it never runs here).
 
 import Standard/Fiber
 
@@ -21,12 +22,13 @@ routine halt(name: @[Byte], message: @CrashMessage, place: @SourceLocation) -> N
     loop
         nothing
 
-### The fiber: counts a step and switches back to start, forever.
+### The fiber: reserves its failure mold, then counts a step and switches back to start, forever.
 @noreturn
 routine fiber_main() -> None
+    RUNNING_MOLD.poke(reserve_failure_mold())
     loop
         (STEPS.peek() + 1).poke_into(STEPS)
-        switch_stack(from: FIBER_SP, to: MAIN_SP.peek())
+        switch_fiber(from: FIBER_SP, to: MAIN_SP.peek())
 
 ### Turns the managers on, then puts the reporting routine in the Crash service's slot.
 routine when_power_on() -> None
@@ -42,7 +44,7 @@ routine start() -> None
     sp.poke_into(FIBER_SP)
 
     until i == 3 with i: U32 = 0
-        switch_stack(from: MAIN_SP, to: FIBER_SP.peek())
+        switch_fiber(from: MAIN_SP, to: FIBER_SP.peek())
         (TOTAL.peek() + STEPS.peek()).poke_into(TOTAL)
         continue with i: i + 1
     then

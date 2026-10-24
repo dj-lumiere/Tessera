@@ -1,0 +1,63 @@
+# A program that switches fibers by hand with switch_fiber: each fiber has its own failure mold. The fiber reserves
+# its mold first, and switch_fiber puts each side's mold back in place when it resumes. Each side throws a different
+# failure while the other's waits in its own mold, then reads it back.
+
+import Standard/Fiber
+import Standard/Os
+
+global MAIN_SP: &Addr
+global FIBER_SP: &Addr
+
+### The fiber's stack: 16 KiB.
+global FIBER_STACK: &Array[U64, 2048]
+
+crashable OddError
+    value: S64
+
+### Writes the message.
+### :typeparam TWriter: The Writer.
+### :param out: Where it goes.
+routine OddError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    out.write("{me.value} is odd")
+    return
+
+### Half of an even n.
+### :param n: The number.
+### :returns: Its half.
+failable routine half(n: S64) -> S64
+    if n % 2 != 0
+        throw OddError(value: n)
+    return n // 2
+
+### Says what a Check holds.
+### :param who: Who says it.
+### :param c: The Check.
+routine show(who: @[Byte], c: Check[S64]) -> None
+    when c
+        is S64 as v => Console.show("{who}: {v}")
+        is OddError as e => Console.show("{who}: {e.value} is odd")
+    return
+
+### The fiber: fails on 7, lets start fail on 9, then shows its own failure.
+@noreturn
+routine fiber_main() -> None
+    RUNNING_MOLD.poke(reserve_failure_mold())
+    mine: Check[S64] = check half(n: 7)
+    switch_fiber(from: FIBER_SP, to: MAIN_SP.peek())
+    show(who: "fiber", c: mine)
+    switch_fiber(from: FIBER_SP, to: MAIN_SP.peek())
+    loop
+        switch_fiber(from: FIBER_SP, to: MAIN_SP.peek())
+
+routine start() -> None
+    size: U64 = sizeof[Array[U64, 2048]]()
+    sp: Addr = initial_stack(stack: FIBER_STACK, size, entry: fiber_main.to[Callable]().addr())
+    sp.poke_into(FIBER_SP)
+
+    switch_fiber(from: MAIN_SP, to: FIBER_SP.peek())
+    main: Check[S64] = check half(n: 9)
+    switch_fiber(from: MAIN_SP, to: FIBER_SP.peek())
+    show(who: "start", c: main)
+    show(who: "start again", c: check half(n: 8))
+    return

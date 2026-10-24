@@ -843,7 +843,7 @@ public sealed partial class Compiler
     /// The first name of every standard library module's path.
     public const string StandardRoot = "Standard";
 
-    /// The language's base module: the built-in types, the protocols, crash, and the conversions. It and every module
+    /// The language's base module: the built-in types, the protocols, the Crash service, and the conversions. It and every module
     /// under it are seen from every file without an import.
     public const string SystemModule = "Standard/System";
 
@@ -1368,7 +1368,8 @@ public sealed partial class Compiler
         // `Callable[(S,), T]` with `T` the None record (a generic argument) returns nothing, like `-> None` written out.
         var returned = ResolveType(ret.Type, env, allowVoid: true);
         if (returned is RecordType { Decl.Name: "None" } none && none.Decl.Module == SystemModule) returned = VoidType.Instance;
-        return new CallableType(cc, ps.Types.Select(p => ResolveType(p, env)).ToList(), returned);
+        // `failable Callable[...]`: open to a failable value, whose list the instance takes from the value it is given.
+        return new CallableType(cc, ps.Types.Select(p => ResolveType(p, env)).ToList(), returned, failable: t.Failable);
     }
 
     /// `@callconv("fast")`, `@callconv("cold")`, or `@callconv("stdcall")`; every other routine uses the default, the C
@@ -1680,7 +1681,8 @@ public sealed partial class Compiler
     public RoutineDecl LambdaRoutine(LambdaExpr l, CallableType ct, RoutineDecl around, TypeEnv env, IEnumerable<string> outer)
     {
         string bindings = string.Join(",", env.All.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => $"{kv.Key}={kv.Value.Key}"));
-        string key = $"{around.File}:{l.Pos.Line}:{l.Pos.Col}|{ct.Key}|{bindings}";
+        // A failable Callable's list is the lambda's own to find, so it is no part of the key.
+        string key = $"{around.File}:{l.Pos.Line}:{l.Pos.Col}|{ct.Plain.Key}{(ct.Failable ? "|failable" : "")}|{bindings}";
         if (_lambdas.TryGetValue(key, out var known)) return known;
         uint h = 2166136261;
         foreach (char c in key) { h ^= c; h *= 16777619; }
@@ -1697,6 +1699,9 @@ public sealed partial class Compiler
             parameters, ret, [], [new BlockDecl("entry", [], stmts, pos)], pos)
         {
             Module = around.Module, IsPrivate = true, IsLibrary = around.IsLibrary,
+            // Written where a failable Callable goes, the lambda is failable, and a failure of its one expression goes
+            // to whoever calls the value.
+            IsFailable = ct.Failable, PassesOnFailures = ct.Failable,
         };
         _lambdas[key] = decl;
         LambdaOuter[decl] = (outer.Where(n => !l.Params.Any(p => p.Name == n)).ToHashSet(), around.DisplayName);

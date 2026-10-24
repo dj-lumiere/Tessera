@@ -20,13 +20,17 @@ public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
     /// `&T` or `&[T]`, the short form of the standard library's `BorrowedCell[T]` / `BorrowedSlice[T]`, as written.
     public bool Amp { get; init; }
 
+    /// `failable Callable[(T,), U]`: a routine value that may fail, written as a parameter's type. The call that hands a
+    /// failable routine value to such a parameter fails the way the value does.
+    public bool Failable { get; init; }
+
     public override string ToString() =>
         Amp && Name == "BorrowedCell" && Args is [TypeArgType boxed] ? $"&{boxed}"
         : Amp && Name == "BorrowedSlice" && Args is [TypeArgType elems] ? $"&[{elems}]"
         : Path is null && Name == UnionName ? string.Join(" | ", Args)
         : Path is null && Name == "PointedCell" && Args is [TypeArgType inner] ? $"@{inner}"
         : Path is null && Name == "PointedSlice" && Args is [TypeArgType elem] ? $"@[{elem}]"
-        : (Path is null ? "" : Path + "/") + (Args.Count == 0 ? Name : $"{Name}[{string.Join(", ", Args)}]");
+        : (Failable ? "failable " : "") + (Path is null ? "" : Path + "/") + (Args.Count == 0 ? Name : $"{Name}[{string.Join(", ", Args)}]");
     public static TypeRef Simple(string name, Pos pos) => new(name, [], pos);
 
     /// The name of a variant written inline, `A | B`: its arguments are the branches as written.
@@ -130,6 +134,10 @@ public sealed record RoutineDecl(
     /// that fails stops the program on the call's line (through `Crash`), and `try` / `check` in front of the call
     /// take the failure as a value instead.
     public bool IsFailable { get; init; }
+
+    /// A lambda written where a failable Callable goes: a failure of a bare call in its one expression goes to whoever
+    /// calls the value.
+    public bool PassesOnFailures { get; init; }
 
     public string DisplayName => (Owner is null ? Name : $"{Owner}.{Name}")
         + (Fixed.Count == 0 ? "" : $"[{string.Join(", ", Fixed)}]");
@@ -268,7 +276,7 @@ public sealed record BindStmt(string Name, TypeRef Type, Expr Value, Pos Pos) : 
     public bool Ticket { get; init; }
 }
 
-/// `call(...)` evaluated for its side effect. A call to a `@noreturn` routine (`crash(...)`) ends the body it is in.
+/// `call(...)` evaluated for its side effect. A call to a `@noreturn` routine (`Crash.stop()`) ends the body it is in.
 public sealed record ExprStmt(Expr Value, Pos Pos) : Stmt(Pos)
 {
     /// Written on the line before: `@asm_prefix("lock")` on an instruction of an assembly routine.

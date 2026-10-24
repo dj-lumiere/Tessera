@@ -42,7 +42,14 @@ public sealed partial class Compiler
     /// Whether this instance keeps a frame on the crash trace.
     public bool IsTraced(Instance inst) =>
         Trace && !inst.Decl.IsLibrary && !inst.IsAsm && inst.Decl.Blocks is not null
-        && inst.Decl.AnnotationNamed("untraced") is null && inst.Decl.AnnotationNamed("inline") is null && inst.Decl.AnnotationNamed("derived") is null;
+        && inst.Decl.AnnotationNamed("untraced") is null && inst.Decl.AnnotationNamed("inline") is null && inst.Decl.AnnotationNamed("derived") is null
+        && !IsCrashableMessage(inst);
+
+    /// A crashable's `message_into`: it runs while a crash is reported, after the report read the trace's depth, so it
+    /// keeps no frame of its own (one would overwrite a frame of the crash's trace).
+    private static bool IsCrashableMessage(Instance inst) =>
+        inst.Decl.Name == "message_into" && inst.Params.FirstOrDefault() is { } me
+        && Crashing.IsCrashable(me is PtrType { Pointee: { } pointee } ? pointee : me);
 
     private readonly Dictionary<string, Instance> _traceRoutines = [];
 

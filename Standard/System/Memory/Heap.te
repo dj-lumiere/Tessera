@@ -145,15 +145,15 @@ routine @CHeapManager.borrow(size: U64, align: U64) -> Addr
 ### :param size: The number of bytes.
 ### :param align: The alignment, a power of two.
 ### :returns: The new block, null when malloc fails.
-### :throws: Crashes with `InvalidValueError` when `align` is past malloc's own.
+### :throws: Crashes with `UnacceptedValueError` when `align` is past malloc's own.
 @target(os: "windows")
 routine @CHeapManager.borrow(size: U64, align: U64) -> Addr
     if not fits_c_size(size)
         return .hollow()
     if align <= MALLOC_ALIGN
         return c_malloc(size.to[CSize]())
-    crash(name: "InvalidValueError",
-        message: "The C heap can't give a block aligned past malloc's own on Windows: use HEAP.")
+    throw UnacceptedValueError(
+        description: "The C heap can't give a block aligned past malloc's own on Windows: use HEAP.")
 
 ### Resizes a block with realloc, and a block aligned past malloc's own through a new aligned block, the contents
 ### copied over.
@@ -234,7 +234,7 @@ routine @AlignedHeapManager.give_back(at: Addr) -> None
 # - FREED: the block was freed before, and the program crashes with DoubleFreeError at the line that freed it again
 #   (allocator_call_place(), noted by deallocate).
 # - anything else: the pointer isn't a block from this heap (or the bytes in front of it were overwritten), and the
-#   program crashes with InvalidValueError.
+#   program crashes with UnacceptedValueError.
 #
 # The swap is unbroken, so two threads freeing one block at once are caught too: exactly one of them sees LIVE. A
 # second free is caught for sure while the block is in the quarantine. Once it has gone back to malloc, malloc may
@@ -268,7 +268,7 @@ secret preset QUARANTINE_SIZE: U64 = 256
 secret preset QUARANTINE_MASK: U64 = QUARANTINE_SIZE.sub(1)
 
 ### The checked heap: the C library's heap with a header in front of each block, which crashes with `DoubleFreeError`
-### on a block freed twice and with `InvalidValueError` on memory that isn't one of its blocks. Every alignment is
+### on a block freed twice and with `UnacceptedValueError` on memory that isn't one of its blocks. Every alignment is
 ### there. `HEAP` is its table when the heap check is on.
 @target(os: not "none")
 entity CheckedHeapManager
@@ -321,7 +321,7 @@ routine @CheckedHeapManager.borrow(size: U64, align: U64) -> Addr
 ### :param size: The new size in bytes.
 ### :param align: The block's alignment.
 ### :returns: The new block, null when malloc fails and the old block is untouched.
-### :throws: Crashes with `InvalidValueError` when `at` was freed already or isn't a block of this heap.
+### :throws: Crashes with `UnacceptedValueError` when `at` was freed already or isn't a block of this heap.
 @target(os: not "none")
 routine @CheckedHeapManager.reborrow(at: Addr, size: U64, align: U64) -> Addr
     if at.is_hollow()
@@ -337,14 +337,14 @@ routine @CheckedHeapManager.reborrow(at: Addr, size: U64, align: U64) -> Addr
             new_ptr.to[@Byte]().copy(src: at.to[@Byte](), count: kept)
             release_block(at)
             return new_ptr
-        tag == FREED => heap_crash(name: "InvalidValueError",
-            message: "The checked heap was asked to resize a block that was given back already.")
-        else => heap_crash(name: "InvalidValueError",
-            message: "The checked heap was asked to resize memory that isn't a block it gave out.")
+        tag == FREED => heap_crash(error: UnacceptedValueError(
+            description: "The checked heap was asked to resize a block that was given back already."))
+        else => heap_crash(error: UnacceptedValueError(
+            description: "The checked heap was asked to resize memory that isn't a block it gave out."))
 
 ### Gives a block back: checks the block's tag and puts the block in the quarantine.
 ### :param at: The block to free. Null does nothing.
-### :throws: Crashes with `DoubleFreeError` when the block was freed already, and with `InvalidValueError` when `at`
+### :throws: Crashes with `DoubleFreeError` when the block was freed already, and with `UnacceptedValueError` when `at`
 ###     isn't a block of this heap.
 @target(os: not "none")
 routine @CheckedHeapManager.give_back(at: Addr) -> None
@@ -365,7 +365,7 @@ secret routine header_of(block_start: Addr) -> @BlockHeader
 ### Tags the block FREED and puts it in the quarantine, crashing when it was freed already or isn't a block of this
 ### heap. The block pushed out of the quarantine goes back to malloc.
 ### :param block_start: The block to release.
-### :throws: Crashes with `DoubleFreeError` when the block was freed already, and with `InvalidValueError` when it
+### :throws: Crashes with `DoubleFreeError` when the block was freed already, and with `UnacceptedValueError` when it
 ###     isn't a block of this heap.
 @target(os: not "none")
 secret routine release_block(block_start: Addr) -> None
@@ -381,20 +381,32 @@ secret routine release_block(block_start: Addr) -> None
                 return
             c_free(evicted.to[@BlockHeader]().raw.peek())
             return
-        was == FREED => heap_crash(name: "DoubleFreeError",
-            message: "This block was given back already: it was given back twice.")
-        else => heap_crash(name: "InvalidValueError",
-            message: "The checked heap was asked to take back memory that isn't a block it lent.")
+        was == FREED => heap_crash(error: DoubleFreeError())
+        else => heap_crash(error: UnacceptedValueError(
+            description: "The checked heap was asked to take back memory that isn't a block it lent."))
 
 ### Crashes at the place of the deallocate or reallocate call that reached the heap, when one was noted, else at the
 ### heap itself.
-### :param name: The crash's error name, such as `DoubleFreeError`.
-### :param message: The crash message.
-### :throws: Always crashes with the error `name`.
+### :typeparam E: The crashable.
+### :param error: The failure, such as a `DoubleFreeError`.
+### :throws: Always crashes with `error`.
 @target(os: not "none")
 @noreturn
-secret routine heap_crash(name: @[Byte], message: @[Byte]) -> None
+secret routine heap_crash[E](error: E) -> None
+needs E: typename, Crashable[E]
     place: @SourceLocation = allocator_call_place()
     if place.is_not_hollow()
-        crash_at(name, message, place)
-    crash(name, message)
+        crash_at(error, place)
+    throw error
+
+### A block given back a second time.
+crashable DoubleFreeError
+    nothing
+
+### Writes `This block was given back already: it was given back twice.`
+### :typeparam TWriter: The type of the Writer.
+### :param out: The Writer the message goes to.
+routine DoubleFreeError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    out.write("This block was given back already: it was given back twice.")
+    return

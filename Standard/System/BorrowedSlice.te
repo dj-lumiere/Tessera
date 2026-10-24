@@ -138,7 +138,7 @@ needs T: typename
 
 ### The values as a view: what lending passes where a `@[T]` is expected.
 ### :returns: A span over every value, valid until the memory is given back or resized.
-### :throws: Crashes with `InvalidValueError` when the memory is hollow and holds values.
+### :throws: Crashes with `UnacceptedValueError` when the memory is hollow and holds values.
 @track_caller
 routine @BorrowedSlice[T].getslice() -> @[T]
 needs T: typename
@@ -147,8 +147,8 @@ needs T: typename
     if count == 0
         return @[T].construct(data, count: 0)
     if data.is_hollow()
-        crash(name: "InvalidValueError",
-            message: "This memory holds nothing: it is hollow, or was given back.")
+        throw UnacceptedValueError(
+            description: "This memory holds nothing: it is hollow, or was given back.")
     return @[T].construct(data, count)
 
 ### The `count` values from `start` as a view.
@@ -185,7 +185,7 @@ needs T: typename
 
 ### The address of the first value: for C code that takes the values' address.
 ### :returns: `data`, hollow for an empty memory.
-### :throws: Crashes with `InvalidValueError` when the memory is hollow and holds values.
+### :throws: Crashes with `UnacceptedValueError` when the memory is hollow and holds values.
 @track_caller
 routine @BorrowedSlice[T].to[@T]() -> @T
 needs T: typename
@@ -212,7 +212,7 @@ needs T: typename
 routine @BorrowedSlice[T].keep_first(count: U64) -> None
 needs T: typename
     if count > me.count.peek()
-        crash_out_of_bounds()
+        throw IndexOutOfBoundsError(index: count, count: me.count.peek())
     count.poke_into(me.count)
     return
 
@@ -231,10 +231,17 @@ needs T: typename
     copy.data.peek().copy(src: view.data, count: view.count)
     return copy
 
+### Stops the program for a resize of hollow memory: a routine that isn't failable, so its throw stops the program
+### instead of giving the failure to resize's caller.
+@noreturn
+@track_caller
+secret routine crash_hollow_resize() -> None
+    throw UnacceptedValueError(description: "This memory is hollow (it has no manager), so it can't be resized.")
+
 ### Holds `count` values from here on, keeping the first ones (as many as both counts allow). The memory may move:
 ### views and addresses taken before see it no longer. A count of 0 gives the memory back and keeps the manager.
 ### :param count: The new number of values.
-### :throws: Crashes with `InvalidValueError` on a hollow memory (no manager). Throws `MemoryAllocationError` when the
+### :throws: Crashes with `UnacceptedValueError` on a hollow memory (no manager). Throws `MemoryAllocationError` when the
 ###     manager has no memory to give, and the memory is unchanged then.
 @track_caller
 @expensive("reallocates memory")
@@ -245,8 +252,7 @@ needs T: typename
     data: @T = me.data.peek()
 
     if manager.is_hollow()
-        crash(name: "InvalidValueError",
-            message: "This memory is hollow (it has no manager), so it can't be resized.")
+        crash_hollow_resize()
     if count == 0
         drop me
         me.manager.poke(manager)
@@ -342,25 +348,25 @@ common routine BorrowedCell[T].construct(value: T, manager: @MemoryManager) -> M
 needs T: typename
     at: @T = take_block[T](count: 1, manager)
     if at.is_hollow()
-        crash_allocation()
+        throw MemoryAllocationError()
     at.poke(steal value)
     return Me(at, manager)
 
 ### The value's address: what lending passes.
 ### :returns: The address, valid until the box is dropped.
-### :throws: Crashes with `InvalidValueError` when the box is hollow.
+### :throws: Crashes with `UnacceptedValueError` when the box is hollow.
 @track_caller
 routine @BorrowedCell[T].getview() -> @T
 needs T: typename
     at: @T = me.at.peek()
     if at.is_hollow()
-        crash(name: "InvalidValueError",
-            message: "This box holds nothing: it is hollow, or was dropped.")
+        throw UnacceptedValueError(
+            description: "This box holds nothing: it is hollow, or was dropped.")
     return at
 
 ### The value.
 ### :returns: A copy of the value.
-### :throws: Crashes with `InvalidValueError` when the box is hollow.
+### :throws: Crashes with `UnacceptedValueError` when the box is hollow.
 @track_caller
 routine @BorrowedCell[T].load() -> T
 needs T: typename
@@ -368,7 +374,7 @@ needs T: typename
 
 ### Writes `value` into the box.
 ### :param value: The value to write, taken over.
-### :throws: Crashes with `InvalidValueError` when the box is hollow.
+### :throws: Crashes with `UnacceptedValueError` when the box is hollow.
 @track_caller
 routine @BorrowedCell[T].store(value: T) -> None
 needs T: typename
@@ -378,7 +384,7 @@ needs T: typename
 ### Writes this value into the box `dest`: `dest.store(me)` read from the value's side, for a chain that ends in the
 ### box (`x.load().add(1).store_into(x)`).
 ### :param dest: The box to write to.
-### :throws: Crashes with `InvalidValueError` when the box is hollow.
+### :throws: Crashes with `UnacceptedValueError` when the box is hollow.
 @track_caller
 routine T.store_into(dest: @&T) -> None
 needs T: typename
@@ -388,7 +394,7 @@ needs T: typename
 ### Moves the value out and leaves the place hollow (`.hollow()`): how an element of a `BorrowedSlice[T]` is taken out, an
 ### entity value included.
 ### :returns: The value that was there.
-### :throws: Crashes with `InvalidValueError` when the box is hollow.
+### :throws: Crashes with `UnacceptedValueError` when the box is hollow.
 @track_caller
 routine @BorrowedCell[T].take() -> T
 needs T: typename
@@ -397,7 +403,7 @@ needs T: typename
 
 ### The value in a box of its own from the same manager.
 ### :returns: The copy.
-### :throws: Crashes with `InvalidValueError` when the box is hollow.
+### :throws: Crashes with `UnacceptedValueError` when the box is hollow.
 @track_caller
 @expensive("allocates memory")
 routine @BorrowedCell[T].duplicate() -> Me

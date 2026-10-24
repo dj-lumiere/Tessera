@@ -1160,6 +1160,15 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 throw new CompileError(pos, "a variant written inline needs no parentheses: A | B is already the loosest type form");
             return TupleType(items, pos);
         }
+        // `failable Callable[(T,), U]`: a routine value that may fail.
+        if (IsIdent("failable") && PeekTok(1) is { Kind: TokenKind.Ident, Text: "Callable" })
+        {
+            Next();
+            var callable = ParseTypeAtom();
+            return callable with { Failable = true };
+        }
+        if (IsIdent("failable"))
+            throw new CompileError(Cur.Pos, "failable goes before a Callable type, failable Callable[(T,), U]: only a routine value can fail");
         var (path, name) = ParseQualifiedName("a type");
         var args = ParseTypeArgs(callable: name.Text == "Callable" && path is null);
         return new TypeRef(name.Text, args, name.Pos) { Path = path };
@@ -1974,8 +1983,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             case "todo":
             {
                 string message = $"block '{_blockName}' of routine '{_routineDisplay}' is not written yet";
-                var crash = new CallExpr("crash", [], [new StrLit("NotImplementedError", pos), new StrLit(message, pos)], pos)
-                    { ArgNames = ["name", "message"], Path = Compiler.SystemModule };
+                var crash = new CallExpr("NotImplementedError", [], [new StrLit(message, pos)], pos)
+                    { ArgNames = ["description"], Path = Compiler.SystemModule };
                 return new TodoStmt(crash, _blockName, pos);
             }
             case "continue":

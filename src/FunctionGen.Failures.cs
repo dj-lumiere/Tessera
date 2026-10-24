@@ -161,9 +161,24 @@ public sealed partial class FunctionGen
             }
             Terminate($"br label %{frame.Fail.Label}");
         }
+        else if (_decl.PassesOnFailures && _inst.IsFailable) PassOnBare(slot, carrierLlvm, failures, pos);
         else StopOnFailure(slot, carrierLlvm, failures, pos, inMold: true);
         _cur = ok;
         return LoadValue(slot, carrierLlvm, declared, valueType);
+    }
+
+    /// A bare call that failed in a lambda written where a failable Callable goes: the failure goes on to whoever called
+    /// the value. Its crashable waits in the mold already, so the lambda's carrier takes the tag alone.
+    private void PassOnBare(string slot, string carrierLlvm, List<DType> failures, Pos pos)
+    {
+        _c.AddThrows(_inst, failures);
+        string carrier = Compiler.CarrierName(_inst);
+        for (int i = _statementTemps.Count - 1; i >= 0; i--)
+            EmitStmtCore(new DropStmt(new ValueRef(_statementTemps[i].Name, pos), pos));
+        string own = NewCarrierSlot(carrier);
+        string tag = EmitTmp($"load i64, ptr {CarrierField(slot, carrierLlvm, 0)}");
+        Line($"store i64 {tag}, ptr {CarrierField(own, carrier, 0)}");
+        Return($"ret {carrier} {EmitTmp($"load {carrier}, ptr {own}")}");
     }
 
     // ── The mold ────────────────────────────────────────────────────────────
@@ -276,7 +291,7 @@ public sealed partial class FunctionGen
     /// A routine's value as a Callable: a failable routine's carries what it can throw.
     private CallableType OwnCallable(Instance inst)
     {
-        if (!inst.Decl.IsFailable) return new CallableType(inst.CallConv, inst.Params, inst.Ret);
+        if (!inst.IsFailable) return new CallableType(inst.CallConv, inst.Params, inst.Ret);
         if (Emitting) _c.EnsureThrowsKnown(inst);
         return new CallableType(inst.CallConv, inst.Params, inst.Ret, failable: true, Emitting ? _c.ThrowsOf(inst, _inst) : []);
     }
@@ -289,22 +304,32 @@ public sealed partial class FunctionGen
                 + "hand C a routine that receives the failure itself (with check or try)");
     }
 
-    /// A failable Callable given to a parameter declared as the same Callable without the failure: the routine is built
-    /// for it, so a call through it there fails the way the routine it holds does. C has no failure to receive: a C
-    /// routine's parameter takes none.
-    private DType? FailingCallable(RoutineDecl r, int param, DType given, DType declared)
+    /// A routine value given to a parameter written `failable Callable[...]`: the routine is built for the value it is
+    /// given, so a call through it there fails the way the routine it holds does (or never, for a plain one). A failable
+    /// value given to a plain Callable parameter is a build error: that routine has no way to pass the failure on. C has
+    /// no failure to receive: a C routine's parameter takes none.
+    private DType? FailingCallable(RoutineDecl r, int param, DType given, DType declared, Pos at)
     {
         // A `Check[T]` parameter takes the list of crashables of the check it is given, the way a binding does.
         if (Crashing.IsCheck(given) && declared is VariantType { Args.Count: 1 } open && Crashing.IsCheck(open)
             && Crashing.ValueOf((VariantType)given).Equals(open.Args[0]))
             return given.Equals(declared) ? null : given;
-        if (given is not CallableType { Failable: true } failing || declared is not CallableType { Failable: false } plain
-            || !failing.Plain.Equals(plain))
+        if (given is not CallableType value || declared is not CallableType wanted || !value.Plain.Equals(wanted.Plain))
             return null;
+        if (wanted.Failable)
+        {
+            if (r.AnnotationNamed("external") is not null || r.AnnotationNamed("export") is not null)
+                throw Err(r.Pos, $"'{r.DisplayName}' is a C routine, and C has no way to receive a failure: its parameter "
+                    + $"'{r.Params[param].Name}' can't be a failable Callable");
+            return value;
+        }
+        if (!value.Failable) return null;
         if (r.AnnotationNamed("external") is not null || r.AnnotationNamed("export") is not null)
-            throw Err(r.Pos, $"'{r.DisplayName}' is a C routine, and argument {param + 1} is a failable routine's value, whose "
+            throw Err(at, $"'{r.DisplayName}' is a C routine, and argument {param + 1} is a failable routine's value, whose "
                 + "failure C has no way to receive: hand it a routine that receives the failure itself (with check or try)");
-        return failing;
+        throw Err(at, $"you hand a failable routine value to '{r.Params[param].Name}' of '{r.DisplayName}', and that parameter "
+            + $"takes a plain {wanted}, so the failure would have no way out: write the parameter's type failable {wanted}, "
+            + "or hand it a routine that receives its failures itself (with check or try)");
     }
 
     /// Binds each plain Callable parameter of the call's routine that is given a failable Callable, as TryFit does for a
@@ -321,7 +346,9 @@ public sealed partial class FunctionGen
             DType declared;
             try { declared = _c.ResolveType(param.Type, plan.Env); }
             catch (CompileError) { continue; }
-            if (InferQuiet(plan.Args[i]) is { } given && FailingCallable(r, i + offset, given, declared) is { } failing)
+            if (plan.Args[i] is LambdaExpr lambda && declared is CallableType { Failable: true } open)
+                plan.Env.Bind(Compiler.FailingParamKey(param.Name), FailableLambdaType(lambda, open));
+            else if (InferQuiet(plan.Args[i]) is { } given && FailingCallable(r, i + offset, given, declared, plan.Args[i].Pos) is { } failing)
                 plan.Env.Bind(Compiler.FailingParamKey(param.Name), failing);
         }
     }
@@ -384,12 +411,15 @@ public sealed partial class FunctionGen
                         if (IndirectCall(x) is { Callable: { Failable: true } ct })
                             found.AddRange(ct.Throws);
                         else if (x is not MethodCallExpr { } onUnion || CrashableGroup(onUnion) is null)
-                            if (PlanCall(x, null) is { Decl.IsFailable: true } plan)
+                            if (PlanCall(x, null) is { } plan && (plan.Decl.IsFailable || plan.Decl.Params.Any(p => p.Type.Failable)))
                             {
                                 BindFailingCallables(plan);
                                 var inst = _c.RequireInstance(plan.Decl, plan.Env);
-                                _c.EnsureThrowsKnown(inst);
-                                found.AddRange(_c.ThrowsOf(inst, _inst));
+                                if (inst.IsFailable)
+                                {
+                                    _c.EnsureThrowsKnown(inst);
+                                    found.AddRange(_c.ThrowsOf(inst, _inst));
+                                }
                             }
                     }
                     catch (CompileError) { }
@@ -398,6 +428,23 @@ public sealed partial class FunctionGen
         }
         Walk(e);
         return Crashing.Ordered(found);
+    }
+
+    /// The build error for `try` or `check` in front of an expression with no call that can fail.
+    private string NothingToRecover(UnaryExpr u)
+    {
+        string? callee = null;
+        try
+        {
+            if (u.Operand is CallExpr or NsCallExpr or MethodCallExpr && IndirectCall(u.Operand) is null)
+                callee = PlanCall(u.Operand, null)?.Decl.DisplayName;
+        }
+        catch (CompileError) { }
+        return callee is null
+            ? $"you wrote {u.Op} in front of an expression that calls no failable routine, so {u.Op} has no failure to receive: "
+                + $"remove {u.Op}, or declare the routine it calls failable"
+            : $"you wrote {u.Op} in front of a call of '{callee}', which isn't failable, so {u.Op} has no failure to receive: "
+                + $"remove {u.Op}, or declare '{callee}' failable (failable routine) if it should give its failures to its caller";
     }
 
     private DType MaybeOf(DType value, Pos pos) =>
@@ -439,7 +486,7 @@ public sealed partial class FunctionGen
         // In an instance of a generic routine a call through a protocol may reach a routine that never fails (the body
         // was checked against the failable requirement): the try or check is then always the value.
         if (frame.Calls == 0 && !(Emitting && Compiler.IsGenericRoutine(_decl)))
-            throw Err(u.Pos, $"nothing after {u.Op} can fail: {u.Op} takes an expression with a call of a failable routine");
+            throw Err(u.Operand.Pos, NothingToRecover(u));
         var valueType = _c.ValueTypeOf(v.Type, u.Pos);
         var value = v.Type is VoidType ? new Val("zeroinitializer", valueType) : v;
         var join = NewLBlock(isCheck ? "checked" : "tried");
@@ -531,8 +578,10 @@ public sealed partial class FunctionGen
     private void EmitThrow(ReturnStmt r)
     {
         if (!_decl.IsFailable)
-            throw Err(r.Pos, $"throw ends a failable routine with a failure, and '{_decl.DisplayName}' isn't failable: "
-                + $"declare it failable {_decl.Header[(_decl.IsFailable ? "failable ".Length : 0)..]}(...)");
+        {
+            CrashHere(r.Value!, r.Pos);
+            return;
+        }
         MemReturn(r with { Value = null });
         var v = EvalAny(r.Value!);
         if (_cur.Terminated) return;
@@ -568,6 +617,38 @@ public sealed partial class FunctionGen
         throw Err(r.Value!.Pos, $"throw takes a crashable (declared crashable {v.Type.Name}), or the Crashables a check caught, not {v.Type}");
     }
 
+    /// `throw e` in a routine that isn't failable, and `todo`: the program stops here through `Crash` with the
+    /// crashable's name and message. Nothing is given back first. The place is the throw's line, or the caller's in a
+    /// `@track_caller` routine (fail_with passes on the place it was called from).
+    private void CrashHere(Expr error, Pos pos)
+    {
+        var v = EvalAny(error);
+        if (_cur.Terminated) return;
+        Mem(new MemoryRules.Exit(null, false, [], pos));
+        if (!Emitting)
+        {
+            if (!Crashing.IsCrashable(v.Type) && v.Type is not ArchetypeType && v.Type is not VariantType)
+                throw Err(error.Pos, $"throw takes a crashable (declared crashable {v.Type.Name}), not {v.Type}");
+            Terminate("unreachable");
+            return;
+        }
+        var none = new Val("0", IntType.U(32));
+        if (Crashing.IsCrashable(v.Type))
+        {
+            Stop(v, none, pos);
+            return;
+        }
+        if (v.Type is VariantType union && (Crashing.IsUnion(union) || union.Leaves.All(Crashing.IsCrashable)))
+        {
+            string llvm = TaggedLlvm(union);
+            string slot = NewSlot(union);
+            Line($"store {llvm} {v.Op}, ptr {slot}");
+            StopOnFailure(slot, llvm, union.Leaves.ToList(), pos, inMold: false);
+            return;
+        }
+        throw Err(error.Pos, $"throw takes a crashable (declared crashable {v.Type.Name}), or the Crashables a check caught, not {v.Type}");
+    }
+
     /// The tag of a new failure of `leaf`: its type ID, and in a traced routine the failure's number in the high half
     /// (Trace.te's failure_note), wrapping the failure the arm it is made in observed.
     private string FailureTagOp(DType leaf, Pos at)
@@ -596,9 +677,29 @@ public sealed partial class FunctionGen
         _cur = NewLBlock("passon");
         string label = _cur.Label;
         string llvm = TaggedLlvm(vt);
-        if (_decl.IsFailable)
+        // A routine not declared failable passes on only what the failable routine values it was given throw: those
+        // failures are its caller's. The rest stop the program here.
+        var passed = missing;
+        if (!_decl.IsFailable)
         {
-            _c.AddThrows(_inst, missing);
+            var theirs = _inst.ValueThrows;
+            passed = missing.Where(m => theirs.Any(t => t.Equals(m))).ToList();
+        }
+        var stopped = missing.Except(passed).ToList();
+        if (passed.Count > 0 && stopped.Count > 0)
+        {
+            // Two ways out: the tag says which.
+            var pass = NewLBlock("passing");
+            var stop = NewLBlock("stopping");
+            string id = EmitTmp($"trunc i64 {EmitTmp($"load i64, ptr {CarrierField(slot, llvm, 0)}")} to i32");
+            Terminate($"switch i32 {id}, label %{stop.Label} [ {string.Join(" ", passed.Select(m => $"i32 {VariantType.TypeId(m)}, label %{pass.Label}"))} ]");
+            _cur = stop;
+            StopOnFailure(slot, llvm, stopped, w.Pos, inMold: false);
+            _cur = pass;
+        }
+        if (passed.Count > 0)
+        {
+            _c.AddThrows(_inst, passed);
             string carrier = Compiler.CarrierName(_inst);
             // The temporary slots the statements around it made (`File.at(p)` an argument of the call) end first: no
             // line of the program names them.

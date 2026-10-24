@@ -15,6 +15,20 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
         ? $"{Decl.DisplayName} with {string.Join(", ", bound.Select(kv => $"{kv.Key} = {kv.Value}"))}"
         : Decl.DisplayName;
 
+    /// Whether a call of this instance can fail: the routine is declared failable, or a parameter written
+    /// `failable Callable[...]` was given a failable routine value (the call fails the way the value does).
+    public bool IsFailable => Decl.IsFailable || FailsThroughValues;
+
+    /// Whether a `failable Callable` parameter of this instance holds a failable routine value.
+    public bool FailsThroughValues =>
+        Decl.Params.Select((p, i) => (p, i)).Any(x => x.p.Type.Failable && x.i < Params.Count && Params[x.i] is CallableType { Failable: true });
+
+    /// The crashables the failable routine values given to the `failable Callable` parameters can throw.
+    public List<DType> ValueThrows =>
+        Crashing.Ordered(Decl.Params.Select((p, i) => (p, i))
+            .Where(x => x.p.Type.Failable && x.i < Params.Count && Params[x.i] is CallableType { Failable: true })
+            .SelectMany(x => ((CallableType)Params[x.i]).Throws));
+
     public bool IsExternalC => Decl.AnnotationNamed("external") is { First: "c" };
     public bool IsTemplate => Decl.AnnotationNamed("template") is not null;
     /// An `@external("asm")` routine: its body is put in place at each call as inline assembly.
@@ -139,7 +153,7 @@ public sealed partial class Compiler
         var ps = new List<DType>();
         foreach (var p in r.Params)
         {
-            // A plain Callable parameter given a failable Callable is that Callable in this instance.
+            // A `failable Callable` parameter is the routine value it was given in this instance.
             var t = env.Get(FailingParamKey(p.Name)) ?? ResolveType(p.Type, env);
             ps.Add(t);
         }
@@ -243,7 +257,7 @@ public sealed partial class Compiler
         {
             // A failable routine the base defines is built here too, only to learn what it throws: its callers need
             // the list, and the base built the same lines.
-            if (!sig.IsExternalC && sig.Decl.IsFailable && sig.Decl.Blocks is not null)
+            if (!sig.IsExternalC && sig.IsFailable && sig.Decl.Blocks is not null)
             {
                 _throwsOnly.Add(sig.Symbol);
                 _pending.Enqueue(sig);

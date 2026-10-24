@@ -1486,6 +1486,10 @@ public sealed partial class FunctionGen
                 if (t is CallableType { Failable: false } plain && InferQuiet(b.Value) is CallableType { Failable: true } failing
                     && failing.Plain.Equals(plain))
                     t = failing;
+                // A `failable Callable` written as the type takes the value's list, or none for a plain value.
+                else if (t is CallableType { Failable: true } open && b.Value is not LambdaExpr
+                         && InferQuiet(b.Value) is CallableType given && given.Plain.Equals(open.Plain))
+                    t = given;
                 var v = Eval(b.Value, t);
                 // A `Check[T]` written as the type takes the list of crashables of the check that fills it.
                 if (Crashing.IsCheck(t) && Crashing.IsCheck(v.Type)) t = v.Type;
@@ -1608,7 +1612,7 @@ public sealed partial class FunctionGen
             }
             case ExprStmt e:
             {
-                // A call that never returns (`crash(...)`) ends the body here.
+                // A call that never returns (`Crash.stop()`) ends the body here.
                 if (IsNoReturn(e.Value))
                 {
                     EmitNoReturnCall(e.Value, e.Pos);
@@ -1729,9 +1733,8 @@ public sealed partial class FunctionGen
                 Terminate("unreachable");
                 break;
             case TodoStmt t:
-                EvalAny(t.Crash);
-                Mem(new MemoryRules.Exit(null, false, [], t.Pos));
-                Terminate("unreachable");
+                // `todo` stops the program even in a failable routine: it isn't a failure the caller receives.
+                CrashHere(t.Crash, t.Pos);
                 break;
             case ContinueStmt c:
                 EmitContinue(c);
@@ -3019,9 +3022,9 @@ public sealed partial class FunctionGen
         var saved = _cur;
         _cur = NewLBlock("hollow");
         string defaultLabel = _cur.Label;
-        EmitNoReturnCall(new CallExpr("crash", [], [new StrLit("InvalidValueError", w.Pos),
-            new StrLit($"This {vt} holds none of its branches: it is hollow (all zero), not a value of one of them.", w.Pos)],
-            w.Pos) { ArgNames = ["name", "message"], Path = Compiler.SystemModule }, w.Pos);
+        CrashHere(new CallExpr("UnacceptedValueError", [],
+            [new StrLit($"This {vt} holds none of its branches: it is hollow (all zero), not a value of one of them.", w.Pos)],
+            w.Pos) { ArgNames = ["description"], Path = Compiler.SystemModule }, w.Pos);
         _cur = saved;
         Terminate($"switch i32 {id}, label %{defaultLabel} [ {string.Join(" ", cases)} ]");
     }
@@ -3827,7 +3830,18 @@ public sealed partial class FunctionGen
         var decl = _c.LambdaRoutine(l, ct, _decl, _env, _values.Keys.Concat(_routineValues.Keys));
         var inst = _c.RequireInstance(decl, _env.Clone(decl.File));
         _routineValueSymbols[l.Pos] = inst.Symbol;
-        return new Val($"@{Compiler.Quote(inst.Symbol)}", ct);
+        return new Val($"@{Compiler.Quote(inst.Symbol)}", ct.Failable ? OwnCallable(inst) : ct);
+    }
+
+    /// The Callable a lambda becomes where a `failable Callable` goes: a failable routine whose body's failures go to
+    /// whoever calls the value, with the list its body gives.
+    private CallableType FailableLambdaType(LambdaExpr l, CallableType open)
+    {
+        if (open.Params.Count != l.Params.Count)
+            throw Err(l.Pos, $"the lambda takes {l.Params.Count} parameter(s), and {open} takes {open.Params.Count}");
+        var decl = _c.LambdaRoutine(l, open, _decl, _env, _values.Keys.Concat(_routineValues.Keys));
+        var inst = _c.RequireInstance(decl, _env.Clone(decl.File));
+        return OwnCallable(inst);
     }
 
     /// Resolves a type written as a namespace, or null if it doesn't name a type (it may be a preset).
@@ -4122,7 +4136,7 @@ public sealed partial class FunctionGen
                     // A value of a branch type goes into its variant, and memory lends its view: fits an exact
                     // overload beats.
                     if (Widens(at, pt) || Lends(at, pt) || SlotsTemp(at, pt)) preferred = false;
-                    else if (FailingCallable(r, i + first, at, pt) is { } failing)
+                    else if (FailingCallable(r, i + first, at, pt, args[i].Pos) is { } failing)
                         env.Bind(Compiler.FailingParamKey(r.Params[i + first].Name), failing);
                     else if (!at.Equals(pt) && !(at is VoidType && Compiler.IsNoneRecord(pt)))
                         return No(ArgumentMismatch(i + 1, at.ToString(), pt));
@@ -5010,7 +5024,7 @@ public sealed partial class FunctionGen
         NoteAccessCall(plan, inst);
         NoteCallKeepsViews(plan, inst);
         NoteTicketCall(plan, inst);
-        if (inst.Decl.IsFailable)
+        if (inst.IsFailable)
         {
             // A generic body being checked only types the call: a try or check around it counts it all the same.
             if (!Emitting) return CheckedOnly(inst.Ret);
@@ -5022,7 +5036,7 @@ public sealed partial class FunctionGen
             ? $"{_c.AbiRet(inst, withAttrs: false)} ({string.Join(", ", _c.AbiParams(inst, withAttrs: false))}) "
             : $"{_c.AbiRet(inst, withAttrs: false)} ";
         TraceAt(plan.Pos);
-        if (inst.Decl.IsFailable)
+        if (inst.IsFailable)
         {
             string carrier = Compiler.CarrierName(inst);
             var returned = EmitAbiCall($"{inst.CcPrefix(_c.Target)}{fnType}@{Compiler.Quote(inst.Symbol)}", abi,
@@ -5201,9 +5215,10 @@ public sealed partial class FunctionGen
                 i => c ? CAbi.Ext(_c.Target, ct.Params[i], isReturn: false) : "");
             return ReceiveFailable(returned, carrier, ct.Ret, ct.Throws, pos);
         }
-        // A routine built for a plain Callable is built again for each failable one it is given, so a try or check
-        // around a call through one counts it.
-        if (_recover.Count > 0) _recover.Peek().Calls++;
+        // A call through a parameter written `failable Callable` is one that can fail, though this instance was given
+        // a plain value: a try or check around it counts it.
+        if (_recover.Count > 0 && callee is ValueRef named && _decl.Params.Any(p => p.Name == named.Name && p.Type.Failable))
+            _recover.Peek().Calls++;
         var sig = _c.LowerSignature(ct.Params, ct.Ret, ct.CallConv, pos);
         string ret = Compiler.AbiRetType(sig, Instance.BitsCarrier(ct.Ret, isReturn: true, _c.Target) ?? ct.Ret.Llvm);
         string retExt = c ? CAbi.Ext(_c.Target, ct.Ret, isReturn: true).TrimStart() : "";
@@ -5495,14 +5510,15 @@ public sealed partial class FunctionGen
 
     private void EmitReturn(ReturnStmt r)
     {
-        if (_decl.AnnotationNamed("noreturn") is not null)
-            throw Err(r.Pos, $"'{_decl.DisplayName}' is @noreturn, so no line in it can return: end it with a call that never returns, or drop the annotation");
+        // A @noreturn routine isn't failable, so its throw stops the program there.
         if (r.IsThrow)
         {
             EmitThrow(r);
             return;
         }
-        if (_decl.IsFailable)
+        if (_decl.AnnotationNamed("noreturn") is not null)
+            throw Err(r.Pos, $"'{_decl.DisplayName}' is @noreturn, so no line in it can return: end it with a call that never returns, or a throw, or drop the annotation");
+        if (_inst.IsFailable)
         {
             EmitFailableReturn(r);
             return;
@@ -5600,7 +5616,7 @@ public sealed partial class FunctionGen
                 ? $"'{c.Name}' is a block: jump {c.Name}(...)"
                 : $"no routine named '{c.Name}'");
         if (!IsNoReturn(call))
-            throw Err(pos, "only a @noreturn routine (such as crash) can end a body; this one returns");
+            throw Err(pos, "only a @noreturn routine (such as Crash.stop) or a throw can end a body; this one returns");
         EvalAny(call);
         Terminate("unreachable");
     }

@@ -199,7 +199,7 @@ routine start() -> None
   with `steal m` to a routine that takes a `BorrowedSlice` / `BorrowedCell` by value (that routine gives it back then). `drop x` is
   `x.destruct()`, and a `BorrowedCell` / `BorrowedSlice` holds its manager, so its `destruct` gives the memory back to it: a program never writes `x.destruct()` itself (a build error: "a value is given back with drop:
   drop x"), only a type's own `destruct` body gives its members back. `drop` leaves the place hollow: `.hollow()` holds
-  nothing, `drop` on it does nothing, a read crashes with `InvalidValueError`.
+  nothing, `drop` on it does nothing, a read crashes with `UnacceptedValueError`.
 - **The elements of a BorrowedSlice.** A `BorrowedSlice[T]` reads and writes nothing itself, and reaches its elements the way a
   `@[T]` does: `m[i]` (getitem, failable: `IndexOutOfBoundsError`) is the value, a copy, `m.getslot(i)` its place as a
   `@T` (the address `data + i * T.data_size()`, checked against the count), `m.getslice(start, count)` a run of them as
@@ -557,8 +557,8 @@ routine start() -> None
 
 - A routine body is its statements, top to bottom, 4 spaces in under the header (its leading binding lines are simply
   its first lines). Every path through the body ends in a `return` (bare for `None`, `return x` otherwise) or in a
-  call to a `@noreturn` routine (`crash(...)`, `crash_overflow()`), which ends the body it is in: no `return` after
-  it. A body that can run off its end is a build error. A routine without a body must be `@external`.
+  `throw` in a routine that isn't failable (it stops the program there), or in a call to a `@noreturn` routine
+  (`Crash.stop()`), which ends the body it is in: no `return` after it. A body that can run off its end is a build error. A routine without a body must be `@external`.
 - **Where a name is seen.** The routine's parameters are seen in the whole body. Any other binding (a value, a
   place) is seen from the line after it to the end of the body it is bound in: the routine's own lines, an `if` arm,
   a loop body, a `when` arm. No name is bound twice: there is no reassignment, and a binding made inside an arm or a
@@ -948,33 +948,41 @@ routine start() -> None
 
 **Errors**
 
-- Bugs crash, and a crash names its kind: `crash("ConfigurationError", "The configuration file is missing.")`.
-  The names are RazorForge's crashables, so a failure reads the same in both languages. The stdlib's own kinds have
-  one short routine each with RazorForge's default message: `crash_overflow()` (IntegerOverflowError),
-  `crash_division_by_zero()`, `crash_out_of_bounds()`, `crash_allocation()` (MemoryAllocationError),
-  `crash_invalid_value()`, `crash_numeric_domain()` (`ilog2(0)`, `isqrt` of a negative), `crash_negative_exponent()`,
-  `crash_float_overflow()`, `crash_absent_value()`
-  (unwrap of an empty Maybe, pop on empty), `crash_key_not_found()`, `crash_task_spawn()`, and
-  `crash_logic_breached()` for a state the code rules out. A failure with its own message calls `crash(name,
-  message)`. There's no `trap()`: every stop is a crash. A stdlib routine that crashes on its caller's mistake is
-  `@track_caller`, so the place is the caller's line. Mark a routine of your own the same way when its crashes are its
-  caller's fault.
-- **Expected failures are thrown.** `crashable NotFoundError` declares a failure: a record of a few plain values
+- **One error kind: the crashable.** `crashable NotFoundError` declares a failure: a record of a few plain values
   (numbers, choices, views such as `@[Byte]`: no BorrowedSlice, BorrowedCell or entity, a build error) that writes `routine
   NotFoundError.message_into[TWriter](out: @TWriter) -> None` (`needs TWriter: typename, Writer[TWriter]`). The builder
-  writes its `name()` (the type's name) and makes it obey `Crashable`. A routine that can fail is declared `failable
+  writes its `name()` (the type's name) and makes it obey `Crashable`. The names are RazorForge's crashables, so a
+  failure reads the same in both languages.
+- **`throw` in a failable routine gives the failure to the caller.** A routine that can fail is declared `failable
   routine` (`secret failable common routine`, and `failable routine` in a protocol), and `throw NotFoundError(code: 2)`
-  ends it with the failure instead of its value. `throw` in a routine not declared failable is a build error.
+  ends it with the failure instead of its value.
+- **`throw` in a routine that isn't failable crashes on the spot.** That is how a bug or a broken contract stops the
+  program: `throw ConfigurationError()`, `throw IndexOutOfBoundsError(index, count)`. The `Crash` service reports the
+  crashable's name and message and the place, and stops (status 82 with an OS), the same way a bare failed call does.
+  Nothing is given back first. The place is the throw's line, or the caller's line when the routine is
+  `@track_caller`: a stdlib routine that crashes on its caller's mistake is `@track_caller`, and a routine of your own
+  is marked the same way when its crashes are its caller's fault. To crash inside a failable routine (a bug, not a
+  failure for the caller), throw from a small routine that isn't failable: the failure can't pass it. `todo` crashes
+  with `NotImplementedError` in any routine, and never makes it failable. `crash_at(error: e, place: p)` reports a
+  crashable at a place the code knows better than its own line (a memory manager callback reporting the line that
+  freed a block twice). There's no `trap()`: every stop is a crash. `ForeignError(kind, description)` is the crashable
+  of failures another language names while the program runs (code built from RazorForge).
+- **Failures rise only through failable routines.** A routine that isn't failable is a wall: a failure inside it
+  (its own `throw`, or a bare call that fails) crashes there, even with `try` or `check` further up.
 - **The standard library's failures** are crashables of a few numbers at most: `IntegerOverflowError`,
   `DivisionByZeroError`, `NegativeExponentError`, `IndexOutOfBoundsError` (`index`, `count`), `AbsentValueError` (an
-  iterator past its end, an empty list's last element), `KeyNotFoundError` (Standard/System/Crashables.te), plus
+  iterator past its end, an empty list's last element, unwrap of an empty Maybe), `KeyNotFoundError`,
+  `NumericOverflowError`, `NumericDomainError` (`ilog2(0)`, `isqrt` of a negative, a NaN result), `UnacceptedValueError`
+  (`description`: a value outside what a routine accepts, such as clamp with min > max, hollow memory, a closed
+  channel), `TaskSpawnError`, `LogicBreachedError` (a state the code rules out), `NotImplementedError` (`description`)
+  (Standard/System/Crashables.te), plus
   `MemoryAllocationError`, the text conversions' (`EmptyTextError`, `InvalidValueError`, `OutOfRangeError`),
   `EndOfInputError`, the file system's (`FsError`), `CaptureNameError`, `InvalidCellError`, and the others named with
   their routines.
 - **A call written bare that fails stops the program on its own line,** the way an overflowing `+` does: the `Crash`
   service reports the failure's name and message, the call's place, the crash trace, and where the failure was made,
-  and stops (status 82 with an OS). `throw` itself only gives the failure back to the caller. This holds inside a
-  failable routine too: a bare call never passes a failure on. The language server shows `may stop` after such a call.
+  and stops (status 82 with an OS). `throw` in a failable routine only gives the failure back to the caller. This
+  holds inside a failable routine too: a bare call never passes a failure on. The language server shows `may stop` after such a call.
 - **`try` and `check` take the failure as a value.** `try f(x)` gives `Maybe[T]` (`None` on failure), `check f(x)`
   gives `Check[T]`, the value or the failure. The word takes the rest of the expression: `check a(x) + b(y)` runs the
   calls left to right and the first failure ends it. A `when` on a `Check` observes the value (`is S64 as v`, required)
@@ -994,7 +1002,10 @@ routine start() -> None
   requirement is).
 - **A failure waits in its flow's mold.** The `Crash` service holds one mold per flow: one per thread (one for the
   program without an operating system) and one per fiber, reserved in the frame of the fiber's first routine when it
-  first runs, and put in place at each resume (`failure_mold()`, Standard/System/Crash.te). A mold has room for the
+  first runs, and put in place at each resume (`failure_mold()`, Standard/System/Crash.te). A program that switches
+  fibers by hand (a board's own loop, without CoroutineManager) switches with `switch_fiber(from, to)`
+  (Standard/Fiber), which puts each side's mold back when it resumes, and the fiber's first routine reserves its own
+  first: `RUNNING_MOLD.poke(reserve_failure_mold())`. A mold has room for the
   largest crashable the program throws, and nothing is borrowed when something fails. `throw` writes the crashable
   into the running flow's mold just before the routine returns (after its places are given back), and the failable
   routine returns a carrier of the tag and its value's room only, so a call that doesn't fail moves no more than its
@@ -1005,9 +1016,20 @@ routine start() -> None
   failure's crashable never holds another failure in flight.
 - **Routine values carry their list.** `f.to[Callable]()` of a failable routine is a failable Callable whose list is a
   hidden part of its type. A call through it fails like a call of `f`. A binding with a written `Callable[...]` type
-  takes the value's list, and a routine whose parameter is a plain `Callable` given a failable one is built again for
-  that Callable (a symbol of its own), so `check fn.call(x)` there receives the failure.
-- **`@throws([NotFoundError, InvalidValueError])`** above a failable routine fixes its list (an exported routine, whose
+  takes the value's list.
+- **A parameter that takes a failable routine value is written `failable Callable[(T,), U]`.** Handing a failable
+  value to a plain `Callable` parameter is a build error. The routine is built for the value it is given (a symbol of
+  its own), and the call that hands it a failable value fails the way the value does: its list includes the value's,
+  so `try apply(f: half.to[Callable](), x: 7)` and `check ...` receive the failure, and a bare call stops. Handed a
+  plain value, the call never fails. Inside, the routine passes the value's failure on with `y: U = when check
+  f.call(x)` and only the value arm (a bare `f.call(x)` stops there, like any bare call). A routine not declared
+  failable passes on only the failures of the values it was given. A lambda written where a `failable Callable` goes
+  is failable itself: `try apply(f: (x) => 10 // x, x: 0)` gives `None`. A routine that keeps a routine value to call
+  later (a fiber's or a thread's work, a reporting routine, an event handler) takes a plain `Callable`: the value
+  receives its own failures.
+- **`try` or `check` in front of an expression with no call that can fail is a build error.** Remove the keyword, or
+  declare the routine it calls failable.
+- **`@throws([NotFoundError, EmptyTextError])`** above a failable routine fixes its list (an exported routine, whose
   callers shouldn't see it change when its body does): what the routine can throw must be in it (a build error that
   names the missing ones), and the routine's `Check` holds exactly those.
 - **C never sees a failure.** An `@export` or `@external("c")` routine can't be failable, `addr()` of a failable routine
@@ -1270,7 +1292,7 @@ routine start() -> None
   high 32 bits are reserved for what travels with the value. Storage is the largest branch, and zero-size branches
   (`None`, empty records) need none. Building with storage and an arm that names the value go through a frame slot
   (gone at `-O`). An all-zero (`.hollow()`) variant holds no branch, and a `when` on it crashes with
-  `InvalidValueError`.
+  `UnacceptedValueError`.
 - A choice or variant without `@derive` derives Representable, Diagnosable, Equatable, Hashable, and Comparable (a flags type
   all but Comparable, a variant each only when every branch has it), skipping what it declares itself; `@derive(...)` lists exactly what
   to derive, `@derive()` nothing. A record derives only what it lists. A variant writes the held value as that value
@@ -1730,7 +1752,7 @@ is failable and throws one of `FsError`'s crashables: a bare call that fails sto
   missing drop, a second one, a use after it, and `=` are build errors, and there is no `unmap()`). It has `count()`, `s[i]`
   (failable: `IndexOutOfBoundsError`, `InvalidCellError`), `s[i] = v`, `data()`, the failable `flush()`, `prefetch()`,
   `advise_sequential()`, and `take_mapping()` (takes the mapping out, so `drop` unmaps nothing). A cell past `count()` crashes with `IndexOutOfBoundsError`, a
-  write to one mapped without `write` and a `Char` cell that isn't a Unicode scalar with `InvalidValueError`. It never
+  write to one mapped without `write` and a `Char` cell that isn't a Unicode scalar with `UnacceptedValueError`. It never
   grows the file: `set_size` first.
 - deleting, renaming, moving, copying: `delete(at)` (a file, or an empty directory), `delete_all(at, manager)`,
   `rename(at, to: name, replacing)` (the name only, a file or a directory: an empty name, ".", "..", or a separator is

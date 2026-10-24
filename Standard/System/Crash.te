@@ -1,29 +1,29 @@
 # Tessera stdlib: crash, failures, and the Crash service
 #
-# A crash ends the program when a contract is broken: an index out of bounds, unwrap of None, a failed allocation. It
-# names its own kind, with the names RazorForge's crashables use (IntegerOverflowError, IndexOutOfBoundsError, ...),
-# so a failure reads the same whichever language it happens in.
+# Every failure is a crashable: a record of a few plain values with a name and a message routine that writes into a
+# Writer. Its name is the one RazorForge's crashables use (IntegerOverflowError, IndexOutOfBoundsError, ...), so a
+# failure reads the same whichever language it happens in.
 #
-# An expected failure is a crashable a failable routine throws. `throw` only gives the failure back to the caller: a
-# call written with `try` or `check` in front receives it as a value, and a bare call that fails stops the program on
-# its own line, the way an overflowing `+` does. A crashable is a record of a few plain values with a name and a
-# message routine that writes into a Writer, and the builder collects, for every call, the crashables that can come
-# out of it, so a `Check[T]` is a variant of fixed size with no heap and nothing looked up at run time.
+# `throw` in a failable routine gives the failure back to the caller: a call written with `try` or `check` in front
+# receives it as a value, and a bare call that fails stops the program on its own line, the way an overflowing `+`
+# does. `throw` in a routine that isn't failable stops the program on the spot: that is how a broken contract crashes
+# (an index out of bounds, unwrap of None, a failed allocation). The builder collects, for every call, the crashables
+# that can come out of it, so a `Check[T]` is a variant of fixed size with no heap and nothing looked up at run time.
 #
-# Both stop through the Crash service, one per program: it reports what happened (the name, the message, the place,
-# and the crash trace through trace_frame) with the routine in its slot, then stops. With an operating system the
-# default report goes to standard error (Os/Crash.te) and stopping exits with status 82. Without one the default is
-# to stop at once, and a program puts a routine that writes to a UART or blinks an LED in the slot with
-# Crash.report_with. The first thread that crashes reports, a crash while it reports skips the report and stops, and
-# another thread that crashes meanwhile waits for the stop.
+# A crash and a failure nothing receives stop through the Crash service, one per program: it reports what happened
+# (the name, the message, the place, and the crash trace through trace_frame) with the routine in its slot, then
+# stops. With an operating system the default report goes to standard error (Os/Crash.te) and stopping exits with
+# status 82. Without one the default is to stop at once, and a program puts a routine that writes to a UART or blinks
+# an LED in the slot with Crash.report_with. The first thread that crashes reports, a crash while it reports skips the
+# report and stops, and another thread that crashes meanwhile waits for the stop.
 #
 # The message is written only when it is reported: a failure carries its crashable value, and the report asks the
 # crashable to write into a sink, Crash's fixed buffer by default (CRASH_MESSAGE_SIZE bytes, from config.toml's
 # [crash] message-size, the rest cut and marked with an ellipsis). A reporting routine and a message routine never
 # take memory from a general memory manager such as HEAP (a build error): a crash may come from running out of it.
 #
-# crash and the stdlib routines that crash on a caller's mistake (an index out of bounds, an overflowing add) are
-# @track_caller: the report names the place of the call in the caller's code, not a line inside the stdlib.
+# The stdlib routines that crash on a caller's mistake (an index out of bounds, an overflowing add) are @track_caller: a
+# throw there reports the place of the call in the caller's code, not a line inside the stdlib.
 
 module Standard/System
 
@@ -344,102 +344,39 @@ needs E: typename, Crashable[E]
 
     Crash.raise(name: error.name(), message, place: caller_location())
 
-### Ends the program through the Crash service.
-### :param name: The kind of failure, named like a RazorForge crashable: `IntegerOverflowError`, or a program's own.
-### :param message: What happened, in a sentence.
-### :note: The report names the call site in the caller's code.
-@noreturn
-@track_caller
-routine crash(name: @[Byte], message: @[Byte]) -> None
-    text: &CrashMessage <- CrashMessage.of_text(message)
+### A failure whose kind is named while the program runs: code another language builds into Tessera reports its own
+### failures with it, under the names that language gives them.
+crashable ForeignError
+    ### The kind of failure, such as `DivisionByZeroError`.
+    kind: @[Byte]
+    ### What happened, in a sentence.
+    description: @[Byte]
 
-    Crash.raise(name, message: text, place: caller_location())
+### The kind the other language named.
+### :returns: The name.
+routine ForeignError.name() -> @[Byte]
+    return me.kind
 
-### Ends the program like {crash}, reporting `place` instead of the caller's: for code that knows a better place than
+### Writes the description.
+### :typeparam TWriter: The type of the Writer.
+### :param out: The Writer the message goes to.
+routine ForeignError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    out.write("{me.description}")
+    return
+
+### Ends the program like a `throw` in a routine that isn't failable, reporting `place`, a better place than the one of
 ### its own caller, such as an allocator callback reporting the line that freed a block twice
 ### ({allocator_call_place}).
-### :param name: The kind of failure.
-### :param message: What happened, in a sentence.
+### :typeparam E: The crashable.
+### :param error: The failure: its name and message are reported.
 ### :param place: The place the report names.
 @noreturn
-routine crash_at(name: @[Byte], message: @[Byte], place: @SourceLocation) -> None
-    text: &CrashMessage <- CrashMessage.of_text(message)
+@untraced
+routine crash_at[E](error: E, place: @SourceLocation) -> None
+needs E: typename, Crashable[E]
+    held: &E <- error
+    message: &CrashMessage <- CrashMessage(text: "", error: held.to[Addr](),
+        writer: write_crash_message[E].to[Callable](), failure: 0)
 
-    Crash.raise(name, message: text, place)
-
-### Crashes with `IntegerOverflowError`: an arithmetic result or a conversion doesn't fit its type.
-@noreturn
-@track_caller
-routine crash_overflow() -> None
-    crash(name: "IntegerOverflowError",
-        message: "Integer overflow: value does not fit in the target type.")
-
-### Crashes with `DivisionByZeroError`: a division or remainder by zero.
-@noreturn
-@track_caller
-routine crash_division_by_zero() -> None
-    crash(name: "DivisionByZeroError",
-        message: "You tried to divide by zero, which is not allowed.")
-
-### Crashes with `IndexOutOfBoundsError`: an index or range outside the valid one.
-@noreturn
-@track_caller
-routine crash_out_of_bounds() -> None
-    crash(name: "IndexOutOfBoundsError", message: "Index is out of bounds for the collection.")
-
-### Crashes with `MemoryAllocationError`: the allocator returned null.
-@noreturn
-@track_caller
-routine crash_allocation() -> None
-    crash(name: "MemoryAllocationError", message: "Failed to allocate memory.")
-
-### Crashes with `InvalidValueError`: an argument outside what the routine accepts, such as clamp with min > max.
-@noreturn
-@track_caller
-routine crash_invalid_value() -> None
-    crash(name: "InvalidValueError", message: "The value is not one the routine accepts.")
-
-### Crashes with `NumericDomainError`: a numeric operation with no result for its argument, such as ilog2 of 0, the
-### square root of a negative number, or a float operation whose result is NaN.
-@noreturn
-@track_caller
-routine crash_numeric_domain() -> None
-    crash(name: "NumericDomainError", message: "The operation has no result for this value.")
-
-### Crashes with `NumericDomainError` for an integer power with a negative exponent, which is a fraction.
-@noreturn
-@track_caller
-routine crash_negative_exponent() -> None
-    crash(name: "NumericDomainError",
-        message: "A negative exponent makes the power a fraction, which an integer can't hold.")
-
-### Crashes with `NumericOverflowError`: a float operation whose result is infinite, out of its type's range.
-@noreturn
-@track_caller
-routine crash_float_overflow() -> None
-    crash(name: "NumericOverflowError",
-        message: "The result is out of the float type's range: it would be infinite.")
-
-### Crashes with `AbsentValueError`: unwrap of None, or pop / peek on an empty collection.
-@noreturn
-@track_caller
-routine crash_absent_value() -> None
-    crash(name: "AbsentValueError", message: "Attempted to access a value that is absent.")
-
-### Crashes with `KeyNotFoundError`: get of a key that isn't there.
-@noreturn
-@track_caller
-routine crash_key_not_found() -> None
-    crash(name: "KeyNotFoundError", message: "Key not found.")
-
-### Crashes with `TaskSpawnError`: the operating system didn't start a thread.
-@noreturn
-@track_caller
-routine crash_task_spawn() -> None
-    crash(name: "TaskSpawnError", message: "Failed to spawn a threaded task.")
-
-### Crashes with `LogicBreachedError`: a state the code rules out was reached, a bug in the code that crashes.
-@noreturn
-@track_caller
-routine crash_logic_breached() -> None
-    crash(name: "LogicBreachedError", message: "A logic breach was detected.")
+    Crash.raise(name: error.name(), message, place)

@@ -118,6 +118,12 @@ These change code written for the pre-release builders. Where a spelling changed
 - The `_checked` twins are gone: the plain routine is failable, and `x.add_checked(y)` is `try x.add(y)`,
   `x.to_checked[U8]()` is `try x.to[U8]()`.
 - A crash handler goes in the `Crash` service's slot.
+- Every failure is a crashable. `crash(name, message)` and the `crash_*()` routines are gone: a `throw` in a routine
+  that isn't failable stops the program there (`throw IndexOutOfBoundsError(index, count)`), at the caller's line in
+  a `@track_caller` routine.
+- `try` or `check` in front of an expression with no failable call is a build error.
+- A parameter that takes a failable routine value is written `failable Callable[(T,), U]`, and the call that hands
+  it one fails the way the value does. A failable value handed to a plain `Callable` parameter is a build error.
 - Float operations and math routines crash on an inf or NaN result. The raw result is `+! -! *! /!` and the
   `_unchecked` routines. The presets `INFINITY`, `NEG_INFINITY` and `NAN` are the literals `inf`, `-inf` and `nan`
  .
@@ -191,8 +197,8 @@ These change code written for the pre-release builders. Where a spelling changed
   the program's own routines, and exit code 82 on a crash.
 - Tools: `tessera fmt`, `lint`, `lsp`, `test`, `new`, and `docs`, a Rider plugin, a VS Code extension,
   `config.toml` builds and golden tests for other targets.
-- An arm of a value `when` can leave with `throw` in a failable routine. The language server's quick fix writes
-  `failable` on a routine whose `throw` line it isn't declared for.
+- An arm of a value `when` can leave with `throw`. The language server's quick fix writes `failable` on a routine
+  whose `throw` line it isn't declared for, so the failure goes to the caller.
 - `@[Byte]` text has `split(separator:, manager:)` and `words(manager:)`: views into the text, in a
   `BorrowedSlice[@[Byte]]` from the manager.
 

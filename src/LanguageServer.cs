@@ -169,7 +169,7 @@ public static partial class LanguageServer
 
     /// The quick fixes for lines `first` to `last` (0-based): `until false` is written `loop`, `pass` is written
     /// `nothing`, a type with no member variables gets the body `nothing`, and a `throw` in a routine not declared
-    /// failable puts `failable` on its header.
+    /// failable (which stops the program there) can put `failable` on its header, so the failure goes to the caller.
     private static JsonArray CodeActions(string uri, int first, int last)
     {
         var actions = new JsonArray();
@@ -196,7 +196,7 @@ public static partial class LanguageServer
             }
             else if (ThrowLine.IsMatch(l) && NotFailableHeader(lines, line) is { } header)
             {
-                actions.Add(QuickFix(uri, "Write 'failable routine'", header.Line, header.Column, header.Line,
+                actions.Add(QuickFix(uri, "Write 'failable routine' (give the failure to the caller)", header.Line, header.Column, header.Line,
                     header.Column, "failable "));
             }
         }

@@ -7,7 +7,8 @@
 # fiber's first routine (initial_stack).
 #
 # A stopping flow's stack pointer goes to its StackManager's `sp`: CoroutineManager, ThreadPoolManager and Ingrid's
-# coroutines pass `stack.sp` as from, and read it back as to.
+# coroutines pass `stack.sp` as from, and read it back as to. CoroutineManager puts each fiber's failure mold in
+# place itself, and a program that switches fibers by hand calls switch_fiber, which carries the mold along.
 #
 # It is written for System V and Windows x86-64, for AArch64 outside Windows,
 # and for 32-bit ARM, ARM and Thumb code alike (Cortex-M included, with or
@@ -206,6 +207,22 @@ routine switch_stack(from: @Addr, to: Addr) -> None
 @symbol("tessera_fibers_unsupported_on_this_target")
 @target(arch: "aarch64", os: "windows")
 routine switch_stack(from: @Addr, to: Addr) -> None
+
+# -- switching with the failure mold ---------------------------------------------------------------------
+
+### Switches to another fiber like {switch_stack}, for a program that switches fibers by hand on one thread (a board's
+### own cooperative loop, without CoroutineManager): the running fiber's failure mold goes along with it, so each
+### fiber keeps its own (Standard/System/Crash.te). The mold of the fiber that switches is kept in its frame here, and
+### put back in place when something switches to it again. A fiber's first routine reserves its own mold before
+### anything in it can fail: `RUNNING_MOLD.poke(reserve_failure_mold())`.
+### :param from: Where the current stack pointer is saved.
+### :param to: The stack pointer to resume.
+@noinline
+routine switch_fiber(from: @Addr, to: Addr) -> None
+    mine: Addr = RUNNING_MOLD.peek()
+    switch_stack(from, to)
+    RUNNING_MOLD.poke(mine)
+    return
 
 # -- a new stack ---------------------------------------------------------------------
 
