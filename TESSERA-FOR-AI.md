@@ -290,7 +290,8 @@ routine start() -> None
     `destruct` and `destruct_all` are the routines that end `me`.
   The check follows one routine's flow, and a routine it calls through what that routine says about its parameters
   (by value: taken over, `@T`: the caller keeps it) and what its body does with them (what it keeps where).
-- **Accesses (rule 2 too).** An access (`Authorized[T]` or `ReadAuthorized[T]`, Accesses and waits, below) is taken
+- **Accesses (rule 2 too).** An access (`Authorized[T]` or `ReadAuthorized[T]` for one value, `AuthorizedSlice[T]` or
+  `ReadAuthorizedSlice[T]` for a run, Accesses and waits, below) is taken
   from the `AccessManager`, so the group check follows it like memory from a manager, across routines too:
   - `'counter' holds an exclusive access (taken on line N) that isn't given back before 'r' returns here`: give it back
     on every path (`drop held`), or return it (the caller then holds it and gives it back).
@@ -324,7 +325,13 @@ routine start() -> None
 
   Between `put_work` and the retrieve the handing routine neither uses nor gives back the access (`'held' is handed to
   the work put on 't' on line N, which changes it until it is waited for`), and it hands one access to one piece of
-  work at a time. In the AccessManager's records the handing routine's flow holds it, and the work works through it.
+  work at a time. A run of values goes to the work as its run's access (`routine double_all(part:
+  AuthorizedSlice[S64])`, `held: AuthorizedSlice[S64] <- view.getslice(start: 0, count: 4).get_exclusive_access()`).
+  Work whose ticket goes into a list (`ts.add_last(t)`) works through the access until the list waits for it
+  (`ts.retrieve_all()`, `ts.give_back_all()`, `drop ts`). Accesses taken in a loop body go into a list of their own
+  (`halves.add_last(held)`, a `List[AuthorizedSlice[S64]]`), which gives each one back when it is dropped, after the
+  tickets' list: `'halves' holds the access to '...' handed to the work put on 'ts' on line N, which works through it
+  until it is waited for: give it back after ts.retrieve_all()`. In the AccessManager's records the handing routine's flow holds it, and the work works through it.
   Work that takes an exclusive access itself (`counter: Authorized[U64] <- COUNTER.get_exclusive_access()`, the change
   through `counter.getview()`, `drop counter`, for many threads changing one value in turn) changes through that
   access too. Memory handed to the work without `steal`, and every global, counts as shared, even when the routine
@@ -337,7 +344,10 @@ routine start() -> None
   other threads may reach it too: hand it over with steal, or ...`, both ending with the fix "hand the work an
   exclusive access to it (its parameter an Authorized[T]), borrowed in a name first, held: Authorized[T] <-
   p.get_exclusive_access(), and dropped after the ticket's retrieve; or make it an Unbroken[T] and change it with its
-  routines".
+  routines". A `@[T]` the work changes names the run's access instead: "hand the work the run's exclusive access (its
+  parameter an AuthorizedSlice[S64]), borrowed in a name first, held: AuthorizedSlice[S64] <- s.get_exclusive_access(),
+  and dropped after the ticket's retrieve". A `@T` or `@[T]` the work only reads, and one it changes under an access it
+  takes itself, is no build error, as for every view.
   The build doesn't know whether two threads get the same memory and follows no `Addr` or address made with
   `inttoptr`: the debug race check (`[debug] race-check`, on in a debug build where it is supported) catches what it
   misses while the program runs.
@@ -1434,7 +1444,9 @@ result type, `None` for none. The arguments are computed on that line, and the w
 plain value bound with `=` (`primes: Work[U64] = count_primes.to[Work](table: table, limit: 1000)`): its block (the
 routine, its arguments, room for the result, a size the build knows) is in the frame of the routine that made it, and
 nothing gives it back (`<-` is a build error: "'<-' borrows: w: &Work[U64] <- value borrows a place and puts the value
-in it, and w: Work[U64] = value binds a value"). It runs on a ticket.
+in it, and w: Work[U64] = value binds a value"). It runs on a ticket. An argument may be an entity handed over with
+`steal` (the work's routine then holds it), and the result may be an entity (`Thread[List[S64]]`, `result: &List[S64]
+<- t.retrieve()`): `retrieve()` moves the result out of the ticket.
 
 **Threads, fibers, and passable fibers are tickets.** A manager lends one, and it is used in one flow, top to
 bottom: `t: Thread[S64] <- get_thread[S64]()` (a ticket is bound with `<-` from the call that borrows it, `=` is a build
@@ -1538,9 +1550,16 @@ gives the access back, and the program writes it. An access is bound with `<-` f
 build error ("a Authorized[S64] is borrowed and given back with drop, so it is bound with '<-' from the call that
 borrows it: held: Authorized[S64] <- ..."), so is a second name (`again: Authorized[T] <- held`: "a second name for
 one borrowed Authorized[S64] would give it back twice"), and so is a STACK place of one (`held: &Authorized[S64] <-
-...`). An access covers the value's bytes, `[p, p + sizeof[T]())`: there is no way to take a `@[T]` at once, the elements
-of a run are taken one at a time (`m.getslot(i).get_exclusive_access()`, `list.getslot(i).get_exclusive_access()`), and
-`list.data.get_exclusive_access()` is the first element alone. A record (a List's count, capacity and data pointer)
+...`). An access covers the value's bytes, `[p, p + sizeof[T]())`, and `list.data.get_exclusive_access()` is the first
+element alone. A run of values is taken at once on a `@[T]` and on a `BorrowedSlice[T]`: `whole: AuthorizedSlice[T] <-
+s.get_exclusive_access()` and `reading: ReadAuthorizedSlice[T] <- s.get_shared_read_access()` cover `[data, data + count *
+sizeof[T]())` (a run of no bytes covers nothing and takes nothing), their `getview()` is the `@[T]`
+(`whole.getview().getslot(i).poke(v)`), and the view of a `ReadAuthorizedSlice[T]` reads only. They are bound, given back,
+and checked like the accesses of one value. One element is taken alone with `s.getslot(i).get_exclusive_access()`.
+An element's access and the access of the run around it overlap: one waits for the other, and the same flow taking both
+is `ReenterDuringAccessError` (the build reports it where it sees an access taken inside a place whose access is held:
+"this takes an exclusive access to 'numbers.getslot(1)', and an exclusive access to 'numbers', which overlaps it, is held
+already"). A record (a List's count, capacity and data pointer)
 and its element buffer are separate memory, taken separately: growing or moving a buffer changes the record, so it
 needs the record's access, and giving back or moving a BorrowedSlice or a BorrowedCell waits while another flow holds an access inside
 it (the flow giving it back holding one there is a `DeadlockError`). Shared reads overlap each other, an exclusive

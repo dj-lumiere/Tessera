@@ -4,8 +4,10 @@
 # language's work) asks for access to the value at a pointer, `p.get_exclusive_access()` (an `Authorized[T]`: it
 # alone reads and writes it) or `p.get_shared_read_access()` (a `ReadAuthorized[T]`: several flows read it, none
 # writes), and reads and writes through the access's `getview()`. The access covers the bytes of that one value,
-# `[p, p + size of T)`: the elements of a run are taken one at a time. When another flow holds an access that overlaps
-# and doesn't share, the flow waits. It gives the access back with `drop`.
+# `[p, p + size of T)`. A run of values, a `@[T]` or a `&[T]`, is taken at once the same way: `s.get_exclusive_access()`
+# gives an `AuthorizedSlice[T]` and `s.get_shared_read_access()` a `ReadAuthorizedSlice[T]`, which cover
+# `[data, data + count * size of T)`, and their `getview()` is the `@[T]`. When another flow holds an access that
+# overlaps and doesn't share, the flow waits. It gives the access back with `drop`.
 #
 # - Every access held is a node of one table: an interval tree, a balanced tree in the order of the start addresses,
 #   where each node also keeps the largest end of its subtree, so the accesses that overlap a range are found without
@@ -333,6 +335,88 @@ needs T: typename
         place: caller_location(), deadline: Duration.MAX, hooked: false))
     return ReadAuthorized[T](at)
 
+### Exclusive access to the run of values `at` views, which the AccessManager handed out: this flow alone reads and
+### writes them until the access is given back with `drop`. Read and write them through `getview()`.
+### :typeparam T: The values' type.
+record AuthorizedSlice[T]
+needs T: typename
+    ### The values the access covers, `.hollow()` once it is given back.
+    at: @[T]
+
+### Shared read access to the run of values `at` views, which the AccessManager handed out: other flows may read them
+### at the same time, none writes them, until the access is given back with `drop`. Read them through `getview()`.
+### :typeparam T: The values' type.
+record ReadAuthorizedSlice[T]
+needs T: typename
+    ### The values the access covers, `.hollow()` once it is given back.
+    at: @[T]
+
+### Takes exclusive access to every value of the run `me` views: this flow alone reads and writes them until the
+### access is given back. Waits while another flow holds an access that overlaps them. The access covers the values'
+### bytes, `[data, data + count * size of T)`. A run of no bytes covers nothing, and nothing is taken.
+### :typeparam T: The values' type.
+### :returns: The access, given back with `drop`.
+### :throws: Crashes with `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
+###     with `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
+@track_caller
+@target(os: not "none")
+routine @[T].get_exclusive_access() -> AuthorizedSlice[T]
+needs T: typename
+    size: U64 = me.count * sizeof[T]()
+    if size > 0
+        take_range(ask: AccessAsk(request: AccessRequest(at: me.data, size, mode: ACCESS_WRITE),
+            place: caller_location(), deadline: Duration.MAX, hooked: false))
+    return AuthorizedSlice[T](at: me)
+
+### Takes shared read access to every value of the run `me` views: other flows may read them at the same time, none
+### writes them. Waits while another flow holds exclusive access that overlaps them, or waits for one. The access
+### covers `[data, data + count * size of T)`. A run of no bytes covers nothing, and nothing is taken.
+### :typeparam T: The values' type.
+### :returns: The access, given back with `drop`.
+### :throws: Crashes with `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
+###     with `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
+@track_caller
+@target(os: not "none")
+routine @[T].get_shared_read_access() -> ReadAuthorizedSlice[T]
+needs T: typename
+    size: U64 = me.count * sizeof[T]()
+    if size > 0
+        take_range(ask: AccessAsk(request: AccessRequest(at: me.data, size, mode: ACCESS_READ),
+            place: caller_location(), deadline: Duration.MAX, hooked: false))
+    return ReadAuthorizedSlice[T](at: me)
+
+### Takes exclusive access to every value of the run: `getslice().get_exclusive_access()`.
+### :typeparam T: The values' type.
+### :returns: The access, given back with `drop`.
+### :throws: Crashes with `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
+###     with `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
+@track_caller
+@target(os: not "none")
+routine @BorrowedSlice[T].get_exclusive_access() -> AuthorizedSlice[T]
+needs T: typename
+    at: @[T] = me.getslice()
+    size: U64 = at.count * sizeof[T]()
+    if size > 0
+        take_range(ask: AccessAsk(request: AccessRequest(at: at.data, size, mode: ACCESS_WRITE),
+            place: caller_location(), deadline: Duration.MAX, hooked: false))
+    return AuthorizedSlice[T](at)
+
+### Takes shared read access to every value of the run: `getslice().get_shared_read_access()`.
+### :typeparam T: The values' type.
+### :returns: The access, given back with `drop`.
+### :throws: Crashes with `ReenterDuringAccessError` when this flow already holds an access that overlaps it, and
+###     with `DeadlockError` (with the deadlock check on) when the flows waiting for each other close a cycle.
+@track_caller
+@target(os: not "none")
+routine @BorrowedSlice[T].get_shared_read_access() -> ReadAuthorizedSlice[T]
+needs T: typename
+    at: @[T] = me.getslice()
+    size: U64 = at.count * sizeof[T]()
+    if size > 0
+        take_range(ask: AccessAsk(request: AccessRequest(at: at.data, size, mode: ACCESS_READ),
+            place: caller_location(), deadline: Duration.MAX, hooked: false))
+    return ReadAuthorizedSlice[T](at)
+
 ### The value the access covers: the view to read and write it through while the access is held.
 ### :typeparam T: The value's type.
 ### :returns: The value's address.
@@ -384,6 +468,64 @@ needs T: typename
     if at.is_hollow()
         return
     give_back_range(at)
+    me.at.poke(.hollow())
+    return
+
+### The values the access covers: the view to read and write them through while the access is held.
+### :typeparam T: The values' type.
+### :returns: The run of values.
+routine AuthorizedSlice[T].getview() -> @[T]
+needs T: typename
+    return me.at
+
+### The values the access covers: the view to read and write them through while the access is held.
+### :typeparam T: The values' type.
+### :returns: The run of values.
+routine @AuthorizedSlice[T].getview() -> @[T]
+needs T: typename
+    return me.at.peek()
+
+### The values the access covers: the view to read them through while the access is held. It is read only.
+### :typeparam T: The values' type.
+### :returns: The run of values.
+routine ReadAuthorizedSlice[T].getview() -> @[T]
+needs T: typename
+    return me.at
+
+### The values the access covers: the view to read them through while the access is held. It is read only.
+### :typeparam T: The values' type.
+### :returns: The run of values.
+routine @ReadAuthorizedSlice[T].getview() -> @[T]
+needs T: typename
+    return me.at.peek()
+
+### Gives the access back and wakes the flows that wait for it. Nothing on an access given back already, or on one of
+### an empty run.
+### :typeparam T: The values' type.
+### :throws: Crashes with `AccessNotHeldError` when this flow doesn't hold it.
+@target(os: not "none")
+routine @AuthorizedSlice[T].destruct() -> None
+needs T: typename
+    at: @[T] = me.at.peek()
+    if at.data.is_hollow()
+        return
+    if at.count * sizeof[T]() > 0
+        give_back_range(at: at.data)
+    me.at.poke(.hollow())
+    return
+
+### Gives the access back and wakes the flows that wait for it. Nothing on an access given back already, or on one of
+### an empty run.
+### :typeparam T: The values' type.
+### :throws: Crashes with `AccessNotHeldError` when this flow doesn't hold it.
+@target(os: not "none")
+routine @ReadAuthorizedSlice[T].destruct() -> None
+needs T: typename
+    at: @[T] = me.at.peek()
+    if at.data.is_hollow()
+        return
+    if at.count * sizeof[T]() > 0
+        give_back_range(at: at.data)
     me.at.poke(.hollow())
     return
 

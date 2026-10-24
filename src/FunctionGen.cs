@@ -342,10 +342,13 @@ public sealed partial class FunctionGen
         // build error, followed by the place's spelling.
         if (s.Value is not ValueRef && InferQuiet(s.Value) is PtrType { Pointee: { } element } && s.Value is MethodCallExpr or IndexExpr)
         {
-            if (!HasReleaseDuty(element) && SourceTypeParams.Count == 0 && !_c.Prechecking)
+            // A pointer held in the place is a value of its own, with nothing to give back (what it points at is someone
+            // else's): only a value held in the place itself may have.
+            bool duty = element is not PtrType && HasReleaseDuty(element);
+            if (!duty && SourceTypeParams.Count == 0 && !_c.Prechecking)
                 throw Err(s.Pos, $"the place holds {element.Name}, which has nothing to give back, so reading it copies it: "
                     + "read it with peek() instead of steal");
-            if (!HasReleaseDuty(element) || !Entities.Holds(element) && ManagedMemory(element) is null)
+            if (!duty || !Entities.Holds(element) && ManagedMemory(element) is null)
             {
                 _moving = true;
                 return Eval(new MethodCallExpr(s.Value, "peek", [], [], s.Pos), expected);
@@ -1001,15 +1004,16 @@ public sealed partial class FunctionGen
         CheckDestructGivesBack();
         var leftChanged = new HashSet<string>();
         if (_escape is not null) _escape.LeftChanged = leftChanged;
-        // What a call does with an access (returns one, gives back one handed to it) is known once every routine is
-        // built: a routine with such a call is checked then only.
-        bool accessLater = _memEvents.Values.Any(list => list.Any(e => e is MemoryRules.MayAcquireAccess or MemoryRules.MayEndAccess));
+        // What a call does with an access (returns one, gives back one handed to it, keeps one in a value of this
+        // routine) is known once every routine is built: a routine with such a call is checked then only.
+        bool accessLater = _memEvents.Values.Any(list => list.Any(e => e is MemoryRules.MayAcquireAccess or MemoryRules.MayEndAccess or MemoryRules.KeptInto));
         if (MemOn && MemoryRules.Check(_decl.DisplayName, _decl.Pos, blocks[0].Name, _memEvents, _routineValues.Keys.ToHashSet(),
                 FromOutside, leftChanged: leftChanged) is [var memoryError, ..] && !accessLater)
             throw new CompileError(memoryError.Pos, memoryError.Text + InstantiationNote());
         // A call that may keep a view in a value of this routine is known once every routine is built: the check runs
         // again then, with what each callee keeps (Compiler.CheckKeptViews).
-        if (MemOn && _memEvents.Values.Any(list => list.Any(e => e is MemoryRules.MayHoldViewOf or MemoryRules.MayAcquireAccess or MemoryRules.MayEndAccess)))
+        if (MemOn && _memEvents.Values.Any(list => list.Any(e => e is MemoryRules.MayHoldViewOf or MemoryRules.MayAcquireAccess or MemoryRules.MayEndAccess
+            or MemoryRules.KeptInto)))
         {
             string routine = _decl.DisplayName, first = blocks[0].Name, note = InstantiationNote();
             var events = _memEvents;
@@ -1529,7 +1533,7 @@ public sealed partial class FunctionGen
                     Mem(new MemoryRules.Acquire(b.Name, "borrowed here", b.Pos)
                         { Entity = (t is PtrType { Pointee: { } held } ? held : t).Name });
                 }
-                else if (MemOn && Tracked(t))
+                else if (MemOn && Tracked(t) && !_workBlocks.Contains(b.Name))
                 {
                     if (b.Value is ClaimExpr { Contents: { } held }) MemBind(b.Name, held, b.Pos, warn: false, type: t);
                     else if (b.Value is not ClaimExpr) MemBind(b.Name, b.Value, b.Pos, type: t);

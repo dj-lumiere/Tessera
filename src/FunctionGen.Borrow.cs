@@ -47,7 +47,7 @@ public sealed partial class FunctionGen
     /// work (`Work[T]`) is a plain value bound with `=`.
     private static bool IsBorrowedType(DType? t) =>
         t is RecordType { Decl.IsLibrary: true } r
-        && r.Decl.Name is "Authorized" or "ReadAuthorized" or "Thread" or "Fiber" or "PassableFiber" or "FileStorage";
+        && r.Decl.Name is "Authorized" or "ReadAuthorized" or "AuthorizedSlice" or "ReadAuthorizedSlice" or "Thread" or "Fiber" or "PassableFiber" or "FileStorage";
 
     /// Whether `t` (or a slot of it) is a borrowed thing the memory rules follow as one group that ends once: a thread,
     /// fiber, or passable fiber ticket, or a mapped file's storage. The accesses have their own check (Access).

@@ -18,6 +18,9 @@ public sealed partial class FunctionGen
 
     private int _works;
 
+    /// The frame slots of the works' blocks, which the memory rules don't follow as places to give back.
+    private readonly HashSet<string> _workBlocks = [];
+
     /// The routine `f.to[Work](...)` names, with its parameters.
     private RoutineDecl WorkRoutine(WorkExpr w) =>
         _c.FreeCandidates(w.Routine.Name, _env.File, w.Routine.Pos, w.Routine.Path) switch
@@ -88,7 +91,7 @@ public sealed partial class FunctionGen
         for (int i = 0; i < n; i++)
         {
             var arg = args[i];
-            if (IsBorrowedType(ct.Params[i]) && ct.Params[i] is RecordType { Decl.Name: "Authorized" or "ReadAuthorized" }
+            if (IsBorrowedType(ct.Params[i]) && ct.Params[i] is RecordType { Decl.Name: "Authorized" or "ReadAuthorized" or "AuthorizedSlice" or "ReadAuthorizedSlice" }
                 && arg is CallExpr or NsCallExpr or MethodCallExpr)
                 throw Err(arg.Pos, $"the access for '{routine.Params[i].Name}' is borrowed right in the work's arguments, and "
                     + $"nothing would give it back: borrow it in a name first, held: {ct.Params[i]} <- ..., hand the work "
@@ -99,6 +102,10 @@ public sealed partial class FunctionGen
         var ctor = new NsCallExpr(new TypeRef(blockRef.Name, blockArgs, w.Pos) { Known = blockType }, "construct", [], ctorArgs, w.Pos)
             { ArgNames = ctorNames };
         string slot = $"$work{_works++}";
+        // The block is an entity (it may hold an entity the work is handed with steal, or room for one it returns), and
+        // nothing gives it back: each ticket runs a copy of its bytes, which takes the arguments and the result out.
+        // What the arguments hand over ends at the block's construct.
+        _workBlocks.Add(slot);
         EmitStmtCore(new BindStmt(slot, new TypeRef("$work", [], w.Pos) { Known = new PtrType(blockType) },
             new ClaimExpr(w.Pos) { Contents = ctor }, w.Pos));
         string suffix = none ? "voidwork" : "work";

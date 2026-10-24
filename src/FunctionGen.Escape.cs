@@ -451,6 +451,11 @@ public sealed partial class FunctionGen
         for (int from = 0; from < parts.Count; from++)
         {
             var roots = ViewRoots(parts[from]);
+            // A handle handed by value (a ticket or memory into a list, `ts.add_last(t)`) is kept itself, not a view of
+            // it: the holder holds the views the handle holds, and the handle's own end is the hand-over.
+            if ((parts[from] is StealExpr { Value: ValueRef stolen } ? stolen : parts[from]) is ValueRef handedOver
+                && callee.Params.ElementAtOrDefault(from) is not (null or PtrType))
+                roots.Remove(ResolveRoot(handedOver.Name));
             if (roots.Count == 0) continue;
             for (int into = 0; into < parts.Count; into++)
             {
@@ -466,6 +471,10 @@ public sealed partial class FunctionGen
             }
         }
     }
+
+    /// Whether a routine is a List's of the standard library: on a list of tickets, `retrieve_all`, `give_back_all` and
+    /// its destruct wait for (or end) the tickets' work.
+    private static bool IsTicketListRoutine(RoutineDecl d) => d.IsLibrary && d.Owner is { Name: "List" };
 
     /// Whether a routine is a ticket's (`Thread[T]`, `Fiber[T]`, `PassableFiber[T]` of the standard library).
     private static bool IsTicketRoutine(RoutineDecl d) =>
@@ -530,10 +539,18 @@ public sealed partial class FunctionGen
         if (!MemOn) return;
         if (IsTicketRoutine(plan.Decl) && ticket is not null && plan.Decl.Name is "retrieve" or "destruct")
             Mem(new MemoryRules.WorkWaited(ticket, plan.Pos));
-        // A ticket handed to another routine (a list of tickets that waits for them all) is followed no further.
+        // A list of tickets waits for its tickets' work when it takes their results or gives them back.
+        if (ticket is not null && IsTicketListRoutine(plan.Decl) && plan.Decl.Name is "retrieve_all" or "give_back_all" or "destruct")
+            Mem(new MemoryRules.WorkWaited(ticket, plan.Pos));
+        string? holder = plan.Decl.IsLibrary && ticket is not null && !_routineParams.ContainsKey(ticket) && BoundInRoutine(ticket) ? ticket : null;
+        // A ticket handed into a list of this routine (`ts.add_last(t)`): the list waits for its work, and the accesses
+        // that work was handed stay the list's work's until then. A ticket handed to another routine is followed no further.
         foreach (var arg in plan.Args)
-            if (arg is ValueRef handed && InferQuiet(arg) is RecordType { Decl.Name: "Thread" or "Fiber" or "PassableFiber" })
-                Mem(new MemoryRules.WorkWaited(handed.Name, arg.Pos));
+            if ((arg is StealExpr { Value: ValueRef stolen } ? stolen : arg) is ValueRef handed
+                && InferQuiet(handed) is RecordType { Decl.Name: "Thread" or "Fiber" or "PassableFiber" })
+                Mem(holder is not null
+                    ? new MemoryRules.WorkKept(handed.Name, holder, $"{holder}.retrieve_all()", arg.Pos)
+                    : new MemoryRules.WorkWaited(handed.Name, arg.Pos));
     }
 
     /// Whether `name` is a parameter that points at memory or an entity its caller holds (`m: @BorrowedSlice[Byte]`, `me`

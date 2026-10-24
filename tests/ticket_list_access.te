@@ -1,0 +1,37 @@
+# Tickets whose work was handed a run's shared read access go in a List[Thread[S64]] and are retrieved
+# together. The accesses go in a list too, given back once the tickets' work is over.
+
+import Standard/Collections
+import Standard/Os
+
+### The sum of the values the access covers.
+### :param part: The shared read access to the values.
+### :returns: Their sum.
+routine total(part: ReadAuthorizedSlice[S64]) -> S64
+    view: @[S64] = part.getview()
+
+    each i in 0 til view.count() with sum: S64 = 0
+        continue with sum: sum + view[i]
+    then
+        return sum
+
+### Sums each half of four numbers on a thread of its own.
+routine start() -> None
+    numbers: &[S64] <- [1, 2, 3, 4] * 1 from HEAP
+    ts: &List[Thread[S64]] <- .construct(HEAP)
+    reads: &List[ReadAuthorizedSlice[S64]] <- .construct(HEAP)
+    view: @[S64] = numbers.getslice()
+
+    each half: U64 in 0 til 2
+        held: ReadAuthorizedSlice[S64] <- view.getslice(start: half * 2, count: 2).get_shared_read_access()
+        t: Thread[S64] <- get_thread[S64]()
+        work: Work[S64] = total.to[Work](part: held)
+        t.put_work(work)
+        ts.add_last(t)
+        reads.add_last(held)
+    sums: &List[S64] <- ts.retrieve_all()
+    ts.give_back_all()
+    drop reads
+    Console.show("{sums[0]} {sums[1]}")
+    drop numbers
+    return

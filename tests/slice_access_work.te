@@ -1,0 +1,40 @@
+# A run of values is taken at once: each thread's work is handed the exclusive access to its half, an
+# AuthorizedSlice[S64], and changes the half through the access's view. The accesses wait in a list until the tickets'
+# work is over.
+
+import Standard/Collections
+import Standard/Os
+
+### Doubles every value the access covers.
+### :param part: The exclusive access to the values.
+routine double_all(part: AuthorizedSlice[S64]) -> None
+    view: @[S64] = part.getview()
+
+    each i in 0 til view.count()
+        view.getslot(i).poke(view[i] * 2)
+    return
+
+### Doubles each half of eight numbers on a thread of its own, each handed the exclusive access to its half.
+routine start() -> None
+    numbers: &[S64] <- [1, 2, 3, 4, 5, 6, 7, 8] * 1 from HEAP
+    ts: &List[Thread[None]] <- .construct(HEAP)
+    halves: &List[AuthorizedSlice[S64]] <- .construct(HEAP)
+    view: @[S64] = numbers.getslice()
+
+    each half: U64 in 0 til 2
+        held: AuthorizedSlice[S64] <- view.getslice(start: half * 4, count: 4).get_exclusive_access()
+        t: Thread[None] <- get_thread[None]()
+        work: Work[None] = double_all.to[Work](part: held)
+        t.put_work(work)
+        ts.add_last(t)
+        halves.add_last(held)
+    each i in 0 til ts.count()
+        ts[i].retrieve()
+    ts.give_back_all()
+    drop halves
+    whole: ReadAuthorizedSlice[S64] <- numbers.get_shared_read_access()
+    seen: @[S64] = whole.getview()
+    Console.show("{seen[0]} {seen[3]} {seen[4]} {seen[7]}")
+    drop whole
+    drop numbers
+    return

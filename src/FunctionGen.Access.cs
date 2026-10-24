@@ -32,16 +32,18 @@ public sealed partial class FunctionGen
 
     /// Whether `d` is one of the standard library's routines that take an access.
     private static bool TakesAccess(RoutineDecl d) => d.IsLibrary && d.Name is "get_exclusive_access" or "get_shared_read_access"
-        && d.Owner is { Name: "PointedCell" or "BorrowedCell" };
+        && d.Owner is { Name: "PointedCell" or "BorrowedCell" or "PointedSlice" or "BorrowedSlice" };
 
-    /// Whether `t` is an access the AccessManager hands out, `Authorized[T]` or `ReadAuthorized[T]`.
+    /// Whether `t` is an access the AccessManager hands out: `Authorized[T]` or `ReadAuthorized[T]` for one value,
+    /// `AuthorizedSlice[T]` or `ReadAuthorizedSlice[T]` for a run of them.
     private static bool IsAccessType(DType? t) =>
-        (t is PtrType { Pointee: { } inner } ? inner : t) is RecordType { Decl.Name: "Authorized" or "ReadAuthorized", Args.Count: 1 } r
+        (t is PtrType { Pointee: { } inner } ? inner : t) is RecordType
+        { Decl.Name: "Authorized" or "ReadAuthorized" or "AuthorizedSlice" or "ReadAuthorizedSlice", Args.Count: 1 } r
         && r.Decl.Module == "Standard/Os";
 
-    /// Whether `t` is `Authorized[T]`, exclusive access.
+    /// Whether `t` is `Authorized[T]` or `AuthorizedSlice[T]`, exclusive access.
     private static bool IsExclusiveAccessType(DType? t) =>
-        IsAccessType(t) && (t is PtrType { Pointee: { } inner } ? inner : t) is RecordType { Decl.Name: "Authorized" };
+        IsAccessType(t) && (t is PtrType { Pointee: { } inner } ? inner : t) is RecordType { Decl.Name: "Authorized" or "AuthorizedSlice" };
 
     /// The names that are a `ReadAuthorized[T]` or a view made from one: what is reached through them is read only.
     private readonly HashSet<string> _readOnlyViews = [];
@@ -80,7 +82,7 @@ public sealed partial class FunctionGen
         };
         if (written is not null && ReadOnlyView(written))
             throw Err(plan.Pos, $"{Spelled(written)} is the view of a shared read access, which reads only: take exclusive access "
-                + "(get_exclusive_access, an Authorized[T]) to write");
+                + "(get_exclusive_access, an Authorized[T], or an AuthorizedSlice[T] for a run of values) to write");
         foreach (var name in ReshapedParams(plan.Decl))
         {
             int index = plan.Decl.Params.FindIndex(p => p.Name == name);
@@ -145,7 +147,10 @@ public sealed partial class FunctionGen
             // One name for every access taken on the same place: a give-back on that place ends the one held on the path.
             string group = AccessKey(taken) is { } named ? $"access:{named}" : $"access:{shown}@{plan.Pos.Line}:{plan.Pos.Col}";
             Mem(new MemoryRules.Acquire(group, "taken", plan.Pos)
-                { Access = exclusive ? "an exclusive access" : "a shared read access", Shown = shown });
+                {
+                    Access = exclusive ? "an exclusive access" : "a shared read access", Shown = shown,
+                    Run = plan.Decl.Owner is { Name: "PointedSlice" or "BorrowedSlice" },
+                });
             if (AccessKey(taken) is { } key)
             {
                 _accessGroups[key] = group;
@@ -161,7 +166,17 @@ public sealed partial class FunctionGen
         {
             var arg = handed[i] is StealExpr st ? st.Value : handed[i];
             if (arg is ValueRef p && ParamIndex(p.Name) is >= 0 and var mine) _c.Access.NotePasses(_inst.Symbol, mine, callee.Symbol, i);
-            if (plan.Decl.IsLibrary) continue;
+            if (plan.Decl.IsLibrary)
+            {
+                // An access handed by value to a library routine that keeps it in a value of this routine
+                // (`accesses.add_last(held)`) is that value's from here on: it gives it back (a List's destruct drops
+                // every element).
+                if (arg is ValueRef kept && _accessViews.Contains(kept.Name) && i > 0 && plan.Receiver is { } into
+                    && RootName(into) is { } holder && !_routineParams.ContainsKey(holder) && BoundInRoutine(holder)
+                    && callee.Params.ElementAtOrDefault(i) is { } param and not PtrType && IsAccessType(param))
+                    Mem(new MemoryRules.KeptInto(kept.Name, ResolveRoot(holder), callee.Symbol, i, 0, $"handed to '{plan.Decl.DisplayName}'", arg.Pos));
+                continue;
+            }
             string how = $"handed to '{plan.Decl.DisplayName}'";
             if (arg is ValueRef v && _accessViews.Contains(v.Name)) Mem(new MemoryRules.MayEndAccess(v.Name, callee.Symbol, i, how, arg.Pos));
             else if (AccessKey(arg) is { } key && _accessGroups.TryGetValue(key, out var group))
@@ -195,7 +210,8 @@ public sealed partial class FunctionGen
             else _readOnlyViews.Add(name);
             return;
         }
-        if (t is not PtrType) return;
+        // A view: a pointer, or a run of values (`v: @[T] = held.getview()`).
+        if (t is not PtrType && !Compiler.IsCoreSpan(t, out _)) return;
         if (FromAddr(value)) _fromAddr.Add(name);
         if (RootName(value) is { } root)
         {

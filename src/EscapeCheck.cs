@@ -432,9 +432,16 @@ public sealed class EscapeCheck
                     var global = param < args.Count ? args[param].OfType<GlobalAtom>().FirstOrDefault(g => g.Level == 0 && !g.ThreadLocal) : null;
                     string what = global is not null ? $"the global '{global.Name}'"
                         : call.Handed is { } h && param < h.Count ? $"'{h[param].Text}'" : "memory";
+                    // A run of values (a @[T] parameter) is taken at once, with the access of the whole run.
+                    var paramType = all.GetValueOrDefault(routine)?.Inst.Params.ElementAtOrDefault(param);
+                    string handFix = paramType is not null && Compiler.IsCoreSpan(paramType, out var element)
+                        ? $"hand the work the run's exclusive access (its parameter an AuthorizedSlice[{element.Name}]), borrowed in a "
+                          + $"name first, held: AuthorizedSlice[{element.Name}] <- s.get_exclusive_access(), and dropped after the "
+                          + "ticket's retrieve"
+                        : fix;
                     errors.Add(new CompileError(call.Pos, $"{call.Text} hands {what} to '{name}', which changes it on another thread "
                         + "without an exclusive access, and it isn't handed over with steal, so other threads may reach it too: "
-                        + $"hand it over with steal, or {fix}" + Note));
+                        + $"hand it over with steal, or {handFix}" + Note));
                     break;
                 }
             }
