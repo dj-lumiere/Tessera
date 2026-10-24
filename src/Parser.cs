@@ -2474,7 +2474,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     // Infinity and NaN are float literals, typed like `1.5` by where they go, and `-inf` is `-` on `inf`.
                     case "inf": Next(); return new FloatLit(double.PositiveInfinity, t.Pos) { Text = "inf" };
                     case "nan": Next(); return new FloatLit(BitConverter.Int64BitsToDouble(0x7FF8000000000000), t.Pos) { Text = "nan" };
-                    case "null":
+                    case "null" when !IsValue(t):
                         // `null` is gone: a pointer that holds nothing is the all-zero value every type has.
                         Next();
                         Old(t.Pos, "a pointer that holds nothing is written .hollow() (T.hollow() where nothing gives the type), not null");
