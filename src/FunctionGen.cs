@@ -308,6 +308,19 @@ public sealed partial class FunctionGen
         return null;
     }
 
+    /// Whether `e` is a field written with a bare type parameter (`value: T`) that this instance binds to a pointer: the
+    /// field holds that pointer, which points at what someone else gives back.
+    private bool PointerFieldOfTypeParam(Expr e)
+    {
+        if (e is not FieldExpr f) return false;
+        // A field reached through a pointer is a place of the field's type, one of a value is the value.
+        bool throughPointer = InferQuiet(f.Base) is PtrType;
+        var owner = throughPointer ? (InferQuiet(f.Base) as PtrType)?.Pointee as RecordType : InferQuiet(f.Base) as RecordType;
+        var held = throughPointer ? (InferQuiet(e) as PtrType)?.Pointee : InferQuiet(e);
+        return held is PtrType && owner?.Decl.Fields.FirstOrDefault(x => x.Name == f.Name)?.Type is { Path: null, Args.Count: 0 } written
+               && owner.Decl.TypeParams.Contains(written.Name);
+    }
+
     /// Whether `name` is written with a bare type parameter (`value: T`) that this instance binds to a pointer (`T` is
     /// `@Node`): its value is that pointer, not a slot of what it points to, so steal hands the pointer on.
     private bool PointerOfTypeParam(string name) =>
@@ -1452,6 +1465,7 @@ public sealed partial class FunctionGen
             {
                 var t = Resolve(b.Type);
                 if (BorrowedWithEquals(b, t) is { } borrowedWithEquals) throw Err(b.Pos, borrowedWithEquals);
+                NoteMadeWork(b.Name, b.Value);
                 if (Entities.Holds(t))
                     throw Err(b.Pos, $"a {t.Name} {(Entities.IsEntity(t) ? "is an entity" : "holds an entity")}, which lives in a place: "
                         + $"{b.Name}: &{b.Type} <- ...");
@@ -1607,9 +1621,9 @@ public sealed partial class FunctionGen
             }
             case DropStmt d:
             {
-                // Nothing to give back: in generic code (a T that is a record here) drop does nothing, in code that
-                // names its types it says so.
-                if (!HasReleaseDuty(InferQuiet(d.Value)))
+                // Nothing to give back: in generic code (a T that is a record here, or a pointer a field written T
+                // holds) drop does nothing, in code that names its types it says so.
+                if (!HasReleaseDuty(InferQuiet(d.Value)) || PointerFieldOfTypeParam(d.Value))
                 {
                     if ((d.Value is ValueRef named ? WrittenGeneric(named.Name) : SourceTypeParams.Count > 0) || _c.Prechecking)
                     {
@@ -1621,11 +1635,28 @@ public sealed partial class FunctionGen
                     throw Err(d.Pos, $"{new Printer().Expr(d.Value, 0)} has nothing to give back ({InferQuiet(d.Value)?.Name ?? "its type"} "
                         + "writes no destruct): leave the drop out");
                 }
+                // An array has no destruct of its own: dropping it drops each element, the last first, and the array
+                // ends as one.
+                if ((InferQuiet(d.Value) is PtrType { Pointee: ArrayType inArray } ? inArray : InferQuiet(d.Value) as ArrayType) is { } array
+                    && (d.Value is ValueRef or FieldExpr))
+                {
+                    for (long i = array.Count - 1; i >= 0 && !_cur.Terminated; i--)
+                    {
+                        bool muted = _memMuted;
+                        _memMuted = true;
+                        try { EmitStmtCore(new DropStmt(new MethodCallExpr(d.Value, "getslot", [], [new IntLit(i, d.Pos)], d.Pos), d.Pos)); }
+                        finally { _memMuted = muted; }
+                    }
+                    string spelled = new Printer().Expr(d.Value, 0);
+                    if (MemName(d.Value) is { } ended) Mem(new MemoryRules.End(ended, $"drop {spelled}", d.Pos));
+                    NoteCallerHeldEnd(d.Value, $"drop {spelled}", d.Pos);
+                    StackPlaceEnded(d.Value);
+                    break;
+                }
                 NoteAccessDrop(d.Value, d.Pos);
                 // Giving a ticket back ends its work (a ticket whose work runs crashes instead): it counts as waited for.
                 if (MemOn && d.Value is ValueRef givenTicket
-                    && InferQuiet(d.Value) is RecordType { Decl.IsLibrary: true, Decl.Name: "Thread" or "Fiber" or "Job" or "Work" }
-                        or PtrType { Pointee: RecordType { Decl.IsLibrary: true, Decl.Name: "Work" } })
+                    && InferQuiet(d.Value) is RecordType { Decl.IsLibrary: true, Decl.Name: "Thread" or "Fiber" or "PassableFiber" })
                     Mem(new MemoryRules.WorkWaited(givenTicket.Name, d.Pos));
                 // A ticket bound by value goes into a slot of its own for its destruct: its name ends there.
                 string? endsTicket = MemOn && d.Value is ValueRef droppedTicket && _ticketNames.Contains(droppedTicket.Name)
@@ -2497,8 +2528,9 @@ public sealed partial class FunctionGen
     }
 
     /// `[...] from manager` is a `BorrowedSlice[T]` of the elements, the pattern written out and repeated as many times as the
-    /// count says (known only while running is fine), and `value from manager` is a `BorrowedCell[T]` of the value. Both are
-    /// the type's own `construct`, which takes the memory from the manager.
+    /// count says (known only while running is fine), the type's own `construct`, which takes the memory from the
+    /// manager. `value from manager` is a `BorrowedCell[T]` of the value: the manager's `borrow_and_fill[T](t: value)`
+    /// (ResourceManageable), which borrows the place and puts the value in it.
     private Val EvalAt(AtExpr a, DType expected)
     {
         // A place from the running flow's stack is a frame slot, which a `<-` line makes (LowerBorrow): `from STACK`
@@ -2520,8 +2552,8 @@ public sealed partial class FunctionGen
         {
             if (a.Value is ArrayLit { IsTuple: false })
                 throw Err(a.Value.Pos, $"an array literal from a manager is a BorrowedSlice[T], and this place takes {expected}");
-            var owner = new TypeRef("BorrowedCell", [], a.Pos) { Known = box };
-            var call = new NsCallExpr(owner, "construct", [], [a.Value, a.Manager], a.Pos) { ArgNames = ["value", "manager"] };
+            var held = new TypeRef(box.Args[0].Name, [], a.Pos) { Known = box.Args[0] };
+            var call = new MethodCallExpr(a.Manager, "borrow_and_fill", [held], [a.Value], a.Pos) { ArgNames = ["t"] };
             return EvalCall(call, expected);
         }
         throw Err(a.Pos, $"'from' takes memory from a manager: [...] from manager is a BorrowedSlice[T], value from manager a BorrowedCell[T]; "
@@ -3645,7 +3677,9 @@ public sealed partial class FunctionGen
         // Tessera routines do. An external C routine takes the real float, so it can't sit behind one.
         if (!inst.PassesBf16AsBits && Instance.HasBitsCarrier(inst.Params, inst.Ret, _c.Target))
             throw Err(r.Pos, $"routine '{r.Name}' passes a float the C way, so it can't be a Callable; wrap it in a Tessera routine");
-        _routineValueSymbols[r.Pos] = inst.Symbol;
+        // The first routine at a place is the one written there: `f.to[Work](...)` also names the block's runner at the
+        // place of `f`, which isn't what the work runs.
+        _routineValueSymbols.TryAdd(r.Pos, inst.Symbol);
         return new Val($"@{Compiler.Quote(inst.Symbol)}", own);
     }
 
@@ -3679,7 +3713,7 @@ public sealed partial class FunctionGen
         var own = OwnCallable(c.Inst);
         if (r.Callable is { } shown && Resolve(shown) is var ct && !ct.Equals(own) && !ct.Equals(own.Plain))
             throw Err(r.Pos, $"routine '{r.Name}' is {own}, not {ct}");
-        _routineValueSymbols[r.Pos] = c.Inst.Symbol;
+        _routineValueSymbols.TryAdd(r.Pos, c.Inst.Symbol);
         return new Val($"@{Compiler.Quote(c.Inst.Symbol)}", own);
     }
 

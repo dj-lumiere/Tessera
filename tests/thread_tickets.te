@@ -1,6 +1,6 @@
-# Thread tickets: put_work with no argument up to four (a tuple), a result retrieved after wait_finished, the same
-# ticket taking a second piece of work, a Thread[None], wait_finished_for that runs out before slow work finishes,
-# cancel that the work sees through cancel_requested() and retrieve_result reports, a @threadlocal global back at its
+# Thread tickets: put_work with no argument up to four (a tuple), a result retrieve waits for, the same ticket taking a
+# second piece of work, a Thread[None], waitfor(1ms).retrieve() that runs out before slow work finishes, cancel that
+# the work sees through cancel_requested() and retrieve reports, a @threadlocal global back at its
 # starting value for the next ticket on a reused thread, and a fiber that waits for a thread ticket while the other
 # fibers of its manager go on.
 
@@ -63,10 +63,9 @@ routine until_five_steps(log: @Log) -> U64
 ### A fiber that waits for a thread ticket: only it waits.
 routine waits_for_thread(log: @Log) -> S64
     t: Thread[U64] <- get_thread[U64]()
-    work_t: Work[U64] <- until_five_steps.to[Work](log: log)
+    work_t: Work[U64] = until_five_steps.to[Work](log: log)
     t.put_work(work_t)
-    drop work_t
-    t.wait_finished()
+    t.retrieve()
     drop t
     return log.steps.peek().to[S64]()
 
@@ -84,12 +83,10 @@ routine steps(log: @Log) -> S64
 routine cancelled(out: @ConsoleOutput) -> None
     k: Thread[U64] <- get_thread[U64]()
 
-    work_k: Work[U64] <- nap_until_cancelled.to[Work](limit: 100000)
+    work_k: Work[U64] = nap_until_cancelled.to[Work](limit: 100000)
     k.put_work(work_k)
-    drop work_k
-    if not k.wait_finished_for(3ms)
+    if (try k.waitfor(3ms).retrieve()).is_absent()
         k.cancel()
-        k.wait_finished()
         when check k.retrieve()
             is U64 => nothing
             is CancelRequested =>
@@ -103,68 +100,51 @@ routine cancelled(out: @ConsoleOutput) -> None
 routine start() -> None
     out: @ConsoleOutput = Console.output()
     t: Thread[S64] <- get_thread[S64]()
-    work_t: Work[S64] <- forty_two.to[Work]()
+    work_t: Work[S64] = forty_two.to[Work]()
     t.put_work(work_t)
-    drop work_t
-    t.wait_finished()
     a: S64 = t.retrieve()
-    work_t_2: Work[S64] <- twice.to[Work](n: a)
+    work_t_2: Work[S64] = twice.to[Work](n: a)
     t.put_work(work_t_2)
-    drop work_t_2
-    t.wait_finished()
     b: S64 = t.retrieve()
-    work_t_3: Work[S64] <- pair.to[Work](a: b, b: false)
+    work_t_3: Work[S64] = pair.to[Work](a: b, b: false)
     t.put_work(work_t_3)
-    drop work_t_3
-    t.wait_finished()
     c: S64 = t.retrieve()
-    work_t_4: Work[S64] <- sum3.to[Work](a: 1, b: 2, c: 3)
+    work_t_4: Work[S64] = sum3.to[Work](a: 1, b: 2, c: 3)
     t.put_work(work_t_4)
-    drop work_t_4
-    t.wait_finished()
     d: S64 = t.retrieve()
-    work_t_5: Work[S64] <- sum4.to[Work](a: 1, b: 2, c: 3, d: 4)
+    work_t_5: Work[S64] = sum4.to[Work](a: 1, b: 2, c: 3, d: 4)
     t.put_work(work_t_5)
-    drop work_t_5
-    t.wait_finished()
     e: S64 = t.retrieve()
     out.write("results: {a} {b} {c} {d} {e}, finished: {t.check_finished()}\n")
     drop t
 
     m: Thread[U64] <- get_thread[U64]()
-    work_m: Work[U64] <- mark.to[Work](value: 99)
+    work_m: Work[U64] = mark.to[Work](value: 99)
     m.put_work(work_m)
-    drop work_m
-    m.wait_finished()
     first: U64 = m.retrieve()
-    work_m_2: Work[U64] <- mark.to[Work](value: 5)
+    work_m_2: Work[U64] = mark.to[Work](value: 5)
     m.put_work(work_m_2)
-    drop work_m_2
-    m.wait_finished()
     second: U64 = m.retrieve()
     out.write("thread-local at the start of each work: {first} {second}\n")
     drop m
 
     s: Thread[U64] <- get_thread[U64]()
-    work_s: Work[U64] <- slow.to[Work](ns: 200000000)
+    work_s: Work[U64] = slow.to[Work](ns: 200000000)
     s.put_work(work_s)
-    drop work_s
-    in_time: Bool = s.wait_finished_for(1ms)
+    in_time: Bool = (try s.waitfor(1ms).retrieve()).is_present()
     out.write("slow work finished in 1 ms: {in_time}, running: {not s.check_finished()}\n")
-    s.wait_finished()
+    s.retrieve()
     drop s
 
     cancelled(out)
 
     log: &Log <- Log(steps: 0)
     w: Fiber[S64] <- FIBERS.get_fiber[S64]()
-    work_w: Work[S64] <- waits_for_thread.to[Work](log: log)
+    work_w: Work[S64] = waits_for_thread.to[Work](log: log)
     w.put_work(work_w)
-    drop work_w
     x: Fiber[S64] <- FIBERS.get_fiber[S64]()
-    work_x: Work[S64] <- steps.to[Work](log: log)
+    work_x: Work[S64] = steps.to[Work](log: log)
     x.put_work(work_x)
-    drop work_x
     FIBERS.run()
     out.write("steps the other fiber took while one waited for a thread: {w.retrieve()} of {x.retrieve()}\n")
     drop w

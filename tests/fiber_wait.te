@@ -1,6 +1,6 @@
 # Fibers that wait without holding up their thread: two fibers hand a turn back and forth a thousand times with park
 # and wake, eight fibers sleep until different times and wake in that order, and a fiber starts ten others and waits
-# for each. Outside a fiber, waitfor waits the thread, and wait_finished of a fiber whose work is done returns at once.
+# for each. Outside a fiber, waitfor waits the thread, and retrieve of a fiber whose work is done returns at once.
 
 import Standard/Fiber
 import Standard/Os
@@ -8,14 +8,14 @@ import Standard/Os
 preset ROUNDS: U64 = 1000
 
 record PingPong
-    sched: @FiberManager
+    sched: @CoroutineManager
     turn: U32  # 0: ping's, 1: pong's
     ping: @FiberState
     pong: @FiberState
     handoffs: U64
 
 record Sleepers
-    sched: @FiberManager
+    sched: @CoroutineManager
     order: Array[U64, 8]  # the sleepers' numbers in the order they woke
     next: U64
     short: U64  # sleepers that woke too early
@@ -26,13 +26,13 @@ record Sleeper
     id: U64
 
 record Family
-    sched: @FiberManager
+    sched: @CoroutineManager
     sum: U64
     children: Array[Fiber[None], 10]
 
 ### One side of the ping-pong: waits for mine, hands the turn to the other, ROUNDS times.
 routine play(game: @PingPong, mine: U32, own: @@FiberState, other: @@FiberState) -> None
-    sched: @FiberManager = game.sched.peek()
+    sched: @CoroutineManager = game.sched.peek()
 
     own.poke_unbroken(sched.current())
 
@@ -82,7 +82,7 @@ routine sleeper(s: @Sleeper) -> None
 
 ### A child adds its share, sleeping and yielding on the way so the parent waits on children still running.
 routine child(family: @Family) -> None
-    sched: @FiberManager = family.sched.peek()
+    sched: @CoroutineManager = family.sched.peek()
     sched.waitfor(1ms)
     family.sum.unbroken_fetch_add(1)
     sched.yield()
@@ -90,19 +90,18 @@ routine child(family: @Family) -> None
     return
 
 routine parent(family: @Family) -> None
-    sched: @FiberManager = family.sched.peek()
+    sched: @CoroutineManager = family.sched.peek()
     kids: @Fiber[None] = family.children.to[@Fiber[None]]()
 
     each i: U64 in 0 til 10
         kid: Fiber[None] <- sched.get_fiber[None]()
-        work_kid: Work[None] <- child.to[Work](family: family)
+        work_kid: Work[None] = child.to[Work](family: family)
         kid.put_work(work_kid)
-        drop work_kid
         kids.stride(i).poke(kid)
 
     each i: U64 in 0 til 10
         kid: Fiber[None] <- kids.stride(i).peek()
-        kid.wait_finished()
+        kid.retrieve()
         drop kid
     Console.show("joined: sum {family.sum.peek_unbroken()}")
     return
@@ -110,7 +109,7 @@ routine parent(family: @Family) -> None
 routine start() -> None
     manager: @MemoryManager = HEAP
     stack_manager: @MemoryManager = PAGES
-    sched: &FiberManager <- .construct(stack_size: 64kib, stack_manager, manager)
+    sched: &CoroutineManager <- .construct(stack_size: 64kib, stack_manager, manager)
     game: &PingPong <- PingPong(sched: sched, turn: 0, ping: .hollow(), pong: .hollow(),
         handoffs: 0)
     sleepers: &Sleepers <- .hollow()
@@ -127,14 +126,12 @@ routine start() -> None
     Console.show("thread slept: {waited}")
 
     pinger: Fiber[None] <- sched.get_fiber[None]()
-    work_pinger: Work[None] <- ping.to[Work](game: game)
+    work_pinger: Work[None] = ping.to[Work](game: game)
     pinger.put_work(work_pinger)
-    drop work_pinger
     players[0] = pinger
     ponger: Fiber[None] <- sched.get_fiber[None]()
-    work_ponger: Work[None] <- pong.to[Work](game: game)
+    work_ponger: Work[None] = pong.to[Work](game: game)
     ponger.put_work(work_ponger)
-    drop work_ponger
     players[1] = ponger
 
     sleepers.store(Sleepers(sched: sched, order: [0, 0, 0, 0, 0, 0, 0, 0], next: 0, short: 0,
@@ -144,20 +141,17 @@ routine start() -> None
         s: @Sleeper = sleeper_at.stride(i)
         s.poke(Sleeper(all: sleepers, id: i.to[U64]()))
         f: Fiber[None] <- sched.get_fiber[None]()
-        work_f: Work[None] <- sleeper.to[Work](s: s)
+        work_f: Work[None] = sleeper.to[Work](s: s)
         f.put_work(work_f)
-        drop work_f
         sleeper_fibers[i] = f
     family: &Family <- Family(sched: sched, sum: 0, children: .hollow())
     elder: Fiber[None] <- sched.get_fiber[None]()
-    work_elder: Work[None] <- parent.to[Work](family: family)
+    work_elder: Work[None] = parent.to[Work](family: family)
     elder.put_work(work_elder)
-    drop work_elder
     alone: &Family <- Family(sched: sched, sum: 0, children: .hollow())
     lone: Fiber[None] <- sched.get_fiber[None]()
-    work_lone: Work[None] <- child.to[Work](family: alone)
+    work_lone: Work[None] = child.to[Work](family: alone)
     lone.put_work(work_lone)
-    drop work_lone
     sched.run()
     drop elder
     Console.show("handoffs: {game.handoffs.peek()}")
@@ -166,9 +160,9 @@ routine start() -> None
         order_slots: @U64 = sleepers.order.to[@U64]()
         Console.show("{order_slots.stride(i).peek()} ", end: "")
     then
-        # The lone child finished during run: wait_finished returns at once.
+        # The lone child finished during run: retrieve returns at once.
         Console.show("\nwoke early: {sleepers.short.peek()}")
-        lone.wait_finished()
+        lone.retrieve()
         drop lone
         Console.show("lone joined")
 

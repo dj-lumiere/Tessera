@@ -163,6 +163,45 @@ public static class Derive
         return sb.ToString();
     }
 
+    /// The `destruct` the builder writes for a type that holds something to release and writes none: each field that
+    /// holds something (`holds`) is dropped, the last field first (an array field's drop drops its elements), and a variant
+    /// drops the value of its branch. A type whose fields hold nothing (an entity of plain fields) gets one that does
+    /// nothing. It is marked `#derived(implicit)`, so it is built only where a drop uses it.
+    public static IEnumerable<Decl> DefaultDestruct(Decl type, Func<TypeRef, bool> holds)
+    {
+        var (name, typeParams, clauses) = type switch
+        {
+            RecordDecl r => (r.Name, r.TypeParams, r.Clauses),
+            VariantDecl v => (v.Name, v.TypeParams, v.Clauses),
+            _ => throw new InvalidOperationException(type.GetType().Name),
+        };
+        var constraints = clauses.Where(c => c.Kind == "require").SelectMany(c => c.Params)
+            .Select(p => $"{p.Name}: {p.Kind}").Distinct().ToList();
+        var sb = new StringBuilder();
+        sb.Append("### Gives back what the value holds, the last field first: the builder's walk over its fields.\n");
+        Header(sb, $"routine @{SelfName(name, typeParams)}.destruct() -> None", constraints);
+        switch (type)
+        {
+            case RecordDecl r:
+                for (int i = r.Fields.Count - 1; i >= 0; i--)
+                {
+                    var f = r.Fields[i];
+                    if (!holds(f.Type)) continue;
+                    sb.Append($"    drop me.{f.Name}\n");
+                }
+                break;
+            case VariantDecl v:
+                sb.Append("    when steal me.stride(0)\n");
+                foreach (var b in v.Branches)
+                    sb.Append(holds(b.Type) ? $"        is {b.Type} as held =>\n            drop held\n" : $"        is {b.Type} => nothing\n");
+                // The place the value was taken out of is left as a hollow variant, which a second drop leaves alone.
+                sb.Append("    me.stride(0).poke(.hollow())\n");
+                break;
+        }
+        sb.Append("    return\n");
+        return Parse(type, sb.ToString(), implicitly: true);
+    }
+
     /// Whether a routine was derived without the type asking (a choice or variant with no `@derive`).
     public static bool IsImplicit(Decl d) => d.AnnotationNamed("derived") is { Args: [{ Value: "implicit" }] };
 

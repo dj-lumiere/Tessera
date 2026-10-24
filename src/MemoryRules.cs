@@ -373,7 +373,7 @@ public static class MemoryRules
                         if (state.Lent.TryGetValue(id, out var endedWhileLent) && end.How != "returned")
                         {
                             Report(end.Pos, $"'{g.Origin}' is handed to the work put on '{endedWhileLent.Ticket}' on line {endedWhileLent.Pos.Line}, "
-                                + $"which works through it until it is waited for: give the access back after {endedWhileLent.Ticket}.wait_finished()");
+                                + $"which works through it until it is waited for: give the access back after {endedWhileLent.Ticket}.retrieve()");
                             break;
                         }
                         if (g.Ended is { } emptiedAt && g.Entity is not null && end.Name.Contains('.') && g.How?.StartsWith("steal ", StringComparison.Ordinal) == true)
@@ -507,7 +507,7 @@ public static class MemoryRules
                         break;
                     case UseView uv when state.ViewGroups.TryGetValue(uv.Name, out var usedGroup) && state.Lent.TryGetValue(usedGroup, out var usedBy):
                         Report(uv.Pos, $"'{uv.Name}' is handed to the work put on '{usedBy.Ticket}' on line {usedBy.Pos.Line}, which changes it "
-                            + $"until it is waited for: wait for the work first ({usedBy.Ticket}.wait_finished())");
+                            + $"until it is waited for: wait for the work first ({usedBy.Ticket}.retrieve())");
                         break;
                     case UseView uv:
                         // A view of memory given back since it was made (or a value holding one) reads memory that is gone.
@@ -561,7 +561,7 @@ public static class MemoryRules
                         foreach (var (ticket, (sees, _, at)) in state.Working)
                             Report(ex.Pos, $"the work put on '{ticket}' on line {at.Line} was handed {sees}, and '{routine}' returns "
                                 + $"here without waiting for it, so the work would read memory that is gone: wait for it first, "
-                                + $"{ticket}.wait_finished()");
+                                + $"{ticket}.retrieve()");
                         foreach (var (param, (endedAt, how)) in state.CallerHeldEnded)
                             Report(ex.Pos, $"'{routine}' gives back what '{param}' points at ({how} on line {endedAt.Line}), and its "
                                 + $"caller holds that and gives it back itself. Take '{param}' by value and have the caller hand it "

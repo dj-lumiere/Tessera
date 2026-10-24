@@ -117,8 +117,10 @@ public sealed partial class FunctionGen
                     : AtomsOf(stolen);
             case StealExpr s:
                 return InferQuiet(s.Value) is PtrType ? Shifted(AtomsOf(s.Value), 1) : AtomsOf(s.Value);
-            // `[...] from manager` is the construct call it stands for.
-            case AtExpr at when _escapeCalls.TryGetValue((at.Pos, "construct"), out int made):
+            // `[...] from manager` is the construct call it stands for, and `value from manager` the manager's
+            // borrow_and_fill.
+            case AtExpr at when _escapeCalls.TryGetValue((at.Pos, "construct"), out int made)
+                                || _escapeCalls.TryGetValue((at.Pos, "borrow_and_fill"), out made):
                 return [new ResultAtom(made, 0)];
             case TempSlotExpr slot:
             {
@@ -433,7 +435,7 @@ public sealed partial class FunctionGen
         if (value is null || into is null || InferQuiet(value) is { } stored && !CarriesAddress(stored)) return;
         if (RootName(into) is { } root && !_routineParams.ContainsKey(root)) NoteHeldViews(ResolveRoot(root), ViewRoots(value), plan.Pos);
         // A ticket stored in memory (a table of tickets that a later loop waits for), see MemoryRules.WorkStored.
-        if (value is ValueRef ticket && InferQuiet(value) is RecordType { Decl.Name: "Thread" or "Fiber" or "Job" })
+        if (value is ValueRef ticket && InferQuiet(value) is RecordType { Decl.Name: "Thread" or "Fiber" or "PassableFiber" })
             Mem(new MemoryRules.WorkStored(ResolveRoot(ticket.Name), plan.Pos));
     }
 
@@ -465,9 +467,9 @@ public sealed partial class FunctionGen
         }
     }
 
-    /// Whether a routine is a ticket's (`Thread[T]`, `Fiber[T]`, `Job[T]` of the standard library).
+    /// Whether a routine is a ticket's (`Thread[T]`, `Fiber[T]`, `PassableFiber[T]` of the standard library).
     private static bool IsTicketRoutine(RoutineDecl d) =>
-        d.IsLibrary && d.Owner is { Name: "Thread" or "Fiber" or "Job" };
+        d.IsLibrary && d.Owner is { Name: "Thread" or "Fiber" or "PassableFiber" };
 
     /// A ticket's work runs on, after `put_work` returns, until it is waited for: the ticket holds what its work was
     /// handed. Storing or returning the ticket takes that along (the escape check), work handed a view of the frame
@@ -478,20 +480,11 @@ public sealed partial class FunctionGen
         if (_escape is null && !MemOn) return;
         string? ticket = plan.Receiver is { } r && RootName(r) is { } root ? ResolveRoot(root) : null;
         // The standard library's own work (a pool's threads, which its destruct ends) is its own to keep right.
-        // `t.put_work(work)` and `work.start_from(manager)`: the routine and the arguments the work was made with.
-        bool startsWork = plan.Decl is { IsLibrary: true, Owner.Name: "Work", Name: "start_from" };
+        // `t.put_work(work)`: the routine and the arguments the work was made with.
         (RoutineRef Routine, List<Expr> Args)? made = null;
         if (IsTicketRoutine(plan.Decl) && plan.Decl.Name == "put_work" && plan.Args is [ValueRef handedWork]
             && _madeWork.TryGetValue(handedWork.Name, out var put))
-        {
-            if (put.Args.Any(a => a is CallExpr or NsCallExpr or MethodCallExpr && InferQuiet(a) is RecordType { Decl.Name: "Authorized" or "ReadAuthorized" }))
-                throw Err(plan.Pos, $"'{handedWork.Name}' was handed an access borrowed in its arguments, which the work's own "
-                    + $"retrieve gives back: start it with {handedWork.Name}.start_from(manager), or borrow the access in a name of its "
-                    + "own, hand the work that name, and drop it after the ticket's wait");
             made = put;
-        }
-        else if (startsWork && plan.Receiver is ValueRef started && _madeWork.TryGetValue(started.Name, out var lent))
-            made = lent;
         if ((IsTicketRoutine(plan.Decl) && plan.Decl.Name is "put_work" or "put_callable" || made is not null) && ticket is not null && !_decl.IsLibrary)
         {
             // The plan's arguments are in the parameters' order: `entry`, then `args`, or the work's own.
@@ -508,13 +501,13 @@ public sealed partial class FunctionGen
                     else _atoms[ticket] = held;
                 }
                 // The work is a call of `entry` with the arguments, made from here on.
-                // A Fiber's work runs on this thread, between this routine's waits: only a Thread's or a Job's runs
-                // alongside it.
+                // A Fiber's work runs on this thread, between this routine's waits: only a Thread's or a
+                // PassableFiber's runs alongside it.
                 if (entry is not null)
                     _escape.Calls.Add(new EscapeCheck.CallFact("", atoms, plan.Pos, Spelled(new MethodCallExpr(plan.Receiver!, plan.Decl.Name, [], plan.Args, plan.Pos)))
                     {
                         Through = AtomsOf(entry),
-                        Work = plan.Decl.Owner is { Name: "Thread" or "Job" or "Work" },
+                        Work = plan.Decl.Owner is { Name: "Thread" or "PassableFiber" },
                         Handed = parts.Select(p => (Spelled(p is StealExpr st ? st.Value : p), p is StealExpr,
                             p is not StealExpr && (UnderExclusiveAccess(p) || IsExclusiveAccessType(InferQuiet(p))))).ToList(),
                     });
@@ -535,12 +528,11 @@ public sealed partial class FunctionGen
             return;
         }
         if (!MemOn) return;
-        if ((IsTicketRoutine(plan.Decl) || plan.Decl is { IsLibrary: true, Owner.Name: "Work" }) && ticket is not null
-            && plan.Decl.Name is "wait_finished" or "wait_finished_cancellable" or "retrieve" or "destruct")
+        if (IsTicketRoutine(plan.Decl) && ticket is not null && plan.Decl.Name is "retrieve" or "destruct")
             Mem(new MemoryRules.WorkWaited(ticket, plan.Pos));
         // A ticket handed to another routine (a list of tickets that waits for them all) is followed no further.
         foreach (var arg in plan.Args)
-            if (arg is ValueRef handed && InferQuiet(arg) is RecordType { Decl.Name: "Thread" or "Fiber" or "Job" })
+            if (arg is ValueRef handed && InferQuiet(arg) is RecordType { Decl.Name: "Thread" or "Fiber" or "PassableFiber" })
                 Mem(new MemoryRules.WorkWaited(handed.Name, arg.Pos));
     }
 

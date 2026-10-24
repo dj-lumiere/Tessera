@@ -8,7 +8,7 @@ import Standard/Os
 record Worker
     name: @[Byte]
     steps: S64
-    sched: @FiberManager
+    sched: @CoroutineManager
 
 routine worker(state: @Worker) -> None
     each i in 1 to state.steps.peek()
@@ -20,36 +20,32 @@ routine worker(state: @Worker) -> None
 ### Starts a late worker from inside a fiber, and waits for it before it returns: only this fiber waits, and the
 ### others go on.
 routine spawner(late: @Worker) -> None
-    sched: @FiberManager = late.sched.peek()
+    sched: @CoroutineManager = late.sched.peek()
     Console.show("spawner")
     f: Fiber[None] <- sched.get_fiber[None]()
-    work_f: Work[None] <- worker.to[Work](state: late)
+    work_f: Work[None] = worker.to[Work](state: late)
     f.put_work(work_f)
-    drop work_f
-    f.wait_finished()
+    f.retrieve()
     drop f
     return
 
 routine start() -> None
     manager: @MemoryManager = HEAP
     stack_manager: @MemoryManager = PAGES
-    sched: &FiberManager <- .construct(stack_size: 64kib, stack_manager, manager)
+    sched: &CoroutineManager <- .construct(stack_size: 64kib, stack_manager, manager)
     a: &Worker <- Worker(name: "a", steps: 3, sched: sched)
     b: &Worker <- Worker(name: "b", steps: 2, sched: sched)
     c: &Worker <- Worker(name: "c", steps: 1, sched: sched)
 
     fa: Fiber[None] <- sched.get_fiber[None]()
-    work_fa: Work[None] <- worker.to[Work](state: a)
+    work_fa: Work[None] = worker.to[Work](state: a)
     fa.put_work(work_fa)
-    drop work_fa
     fb: Fiber[None] <- sched.get_fiber[None]()
-    work_fb: Work[None] <- worker.to[Work](state: b)
+    work_fb: Work[None] = worker.to[Work](state: b)
     fb.put_work(work_fb)
-    drop work_fb
     fc: Fiber[None] <- sched.get_fiber[None]()
-    work_fc: Work[None] <- spawner.to[Work](late: c)
+    work_fc: Work[None] = spawner.to[Work](late: c)
     fc.put_work(work_fc)
-    drop work_fc
     sched.run()
     drop fa
     drop fb

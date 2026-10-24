@@ -1,13 +1,14 @@
 # Tessera stdlib: MemoryManager pattern and memory routines
 #
-# Every memory region a program uses has a manager, which lends blocks of it and takes them back. A heap's manager
-# obeys HeapManageable (blocks come back in any order), and a page manager obeys PageManageable (it also reserves
-# address space and sets what pages allow). Both refine MemoryManageable, the protocol of a manager that lends
-# blocks (borrow, reborrow, give_back). m.to[MemoryManager]() makes the MemoryManager table that callers pass as @MemoryManager to any routine that
-# allocates: routines that forward to m's own, with m's address as the table's state. Nothing here needs an operating
-# system. On a target with one, DefaultMemory.te has the hosted tables (HEAP, C_HEAP, PAGES), whose managers are
-# Heap.te's and Pages.te's. A stack is a StackManager's (StackManager.te): it hands out a routine's
-# local slots by moving the stack pointer, with no call, so it has no table.
+# Every memory region a program uses has a manager, which lends blocks of it and takes them back. A heap's manager obeys
+# HeapManageable (blocks come back in any order), and a page manager obeys PageManageable (it also reserves address
+# space and sets what pages allow). Both refine MemoryManageable, the protocol of a manager that lends blocks (borrow,
+# reborrow, give_back). m.to[MemoryManager]() makes the MemoryManager table that callers pass as @MemoryManager to any
+# routine that allocates: routines that forward to m's own, with m's address as the table's state. Nothing here needs an
+# operating system. On a target with one, DefaultMemory.te has the hosted tables (HEAP, C_HEAP, PAGES), whose managers
+# are Heap.te's and Pages.te's. A stack is a StackManager's (StackManager.te): it hands out a routine's frame slots by
+# moving the stack pointer, with no call, so it has no table. A MemoryManager also obeys ResourceManageable, the
+# protocol behind `x: &T <- value from m`.
 #
 # Heap memory reaches user code as a BorrowedSlice[T] (BorrowedSlice.te in Standard/System) or a BorrowedCell[T]:
 # an address, a count, and this manager, released with drop(). allocate,
@@ -62,6 +63,18 @@ entity MemoryManager
 ### A memory manager had no memory to give. What asked for it is left as it was (a collection keeps its elements).
 crashable MemoryAllocationError
     nothing
+
+### A manager that lends a place and puts a value in it: what a `<-` line with `from` stands for. `x: &T <- value from
+### m` is `m.borrow_and_fill[T](t: value)`, and `drop x` is `x.destruct()`, which gives the place back to the manager
+### the `&T` holds. A place from STACK is a frame slot the builder makes, with no call.
+### :typeparam M: The manager type.
+protocol ResourceManageable[M]
+needs M: typename
+    ### Borrows a place for one `T` and puts `t` in it.
+    ### :typeparam T: The value's type.
+    ### :param t: The value, taken over.
+    ### :returns: The place, which `drop` gives back to this manager.
+    routine @Me.borrow_and_fill[T](t: T) -> BorrowedCell[T]
 
 ### A type that lends memory: it lends blocks (`borrow`), resizes them (`reborrow`), and takes them back (`give_back`). A value of it in a slot
 ### becomes the table every allocating routine takes with `m.to[MemoryManager]()`.
@@ -125,16 +138,25 @@ needs T: typename
     ### :returns: False when the access can't be set.
     routine @Me.protect(at: Addr, size: U64, access: PageAccess) -> Bool
 
+obeys ResourceManageable[MemoryManager]
+
+### `t` in memory borrowed from this manager: what `x: &T <- t from m` stands for, given back with `drop x`.
+### :typeparam T: The value's type.
+### :param t: The value, taken over.
+### :returns: The place.
+### :throws: Crashes with `MemoryAllocationError` when the manager has no memory to give.
+@track_caller
+@expensive("allocates memory")
+routine @MemoryManager.borrow_and_fill[T](t: T) -> BorrowedCell[T]
+needs T: typename
+    return BorrowedCell[T].construct(value: steal t, manager: me)
+
 ### Writes `Failed to allocate memory.`
 ### :typeparam TWriter: The type of the Writer.
 ### :param out: The Writer the message goes to.
 routine MemoryAllocationError.message_into[TWriter](out: @TWriter) -> None
 needs TWriter: typename, Writer[TWriter]
     out.write("Failed to allocate memory.")
-    return
-
-### Releases nothing: a `MemoryManager` holds no memory of its own.
-routine @MemoryManager.destruct() -> None
     return
 
 ### A table that hands out blocks and doesn't handle pages: its page routines and `protect_fn` are null. For
@@ -551,23 +573,11 @@ routine @CStr.to[CStrView]() -> CStrView
     text: CStrView = me.storage.data.peek().to[CStrView]()
     return text
 
-### Gives the memory back to the memory manager it came from.
-@track_caller
-routine @CStr.destruct() -> None
-    drop me.storage
-    return
-
 ### The text, borrowed: valid until it is dropped.
 ### :returns: The 0-terminated wide text.
 routine @CWStr.to[CWStrView]() -> CWStrView
     text: CWStrView = me.storage.data.peek().to[CWStrView]()
     return text
-
-### Gives the memory back to the memory manager it came from.
-@track_caller
-routine @CWStr.destruct() -> None
-    drop me.storage
-    return
 
 ### Copies me into memory from manager and ends it with a NUL: an {CStr}, dropped when done.
 ### :param manager: The memory manager the copy's memory comes from.

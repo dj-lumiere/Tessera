@@ -30,7 +30,7 @@ public static partial class LanguageServer
 
     private static readonly HashSet<string> Keywords =
     [
-        "routine", "record", "entity", "choice", "variant", "preset", "global", "protocol", "obeys", "define", "block", "local", "steal",
+        "routine", "record", "entity", "choice", "variant", "preset", "global", "protocol", "obeys", "define", "block", "steal",
         "failable", "crashable", "import", "module", "secret", "common", "needs", "not", "true", "false", "typename",
     ];
 
@@ -233,7 +233,7 @@ public static partial class LanguageServer
         /// The routine's and the current block's parameters: a value by one of these names is a parameter.
         private HashSet<string> _params = [];
 
-        /// The routine head's `local` names: values every block sees, colored apart from a block's own.
+        /// The names the routine head binds: values every block sees, colored apart from a block's own.
         private HashSet<string> _shared = [];
 
         /// The routine's result type: what a `return(...)` value is expected to be.
@@ -784,7 +784,7 @@ public static partial class LanguageServer
                 _params.Add(p.Name);
             }
             Type(r.ReturnType);
-            // The head's `local` lines: values every block sees, declared once above them.
+            // The head's binding lines: values every block sees, declared once above them.
             foreach (var shared in r.Shared)
             {
                 _written[shared.Name] = shared.Type;

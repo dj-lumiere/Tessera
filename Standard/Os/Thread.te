@@ -3,9 +3,9 @@
 # A thread is a ticket a ThreadManager hands out: `get_thread[T]()` takes one from DEFAULT_THREADS, the hosted
 # manager, whose threads are the operating system's, and `get_thread[T](manager)` from a manager of the program's own.
 # The ticket runs one piece of work at a time, in the flow of Work.te: `put_work` starts it, `check_finished`
-# looks, `wait_finished` waits, `retrieve` takes the result, and `drop` gives the thread back to its manager, which
-# keeps it asleep for the next ticket instead of ending it. Until then the same ticket takes more work, one piece after
-# another. A ThreadManager is also a WorkManager: `work.start_from(DEFAULT_THREADS)` lends a thread for one piece.
+# looks, `retrieve` waits for it and takes the result, and `drop` gives the thread back to its manager, which keeps it
+# asleep for the next ticket instead of ending it. Until then the same ticket takes more work, one piece after
+# another.
 #
 # A ticket given back with its work still running crashes: no work runs on that nobody looks at, and nothing it uses
 # goes away under it. Work with no result is a `Thread[None]`, waited for
@@ -38,7 +38,6 @@ secret entity ThreadWorker
 ### Hands out threads. Its routine starts a thread, and the threads it started and got back wait among the idle ones
 ### for the next ticket. `DEFAULT_THREADS` is the hosted one, and a program without an operating system makes its own.
 entity ThreadManager
-obeys WorkManager[ThreadManager]
     ### Starts a thread that runs `(entry, arg)` and ends when it returns, given `state`: false when none starts.
     launch_fn: Callable[(Callable[(Addr,), None], Addr, Addr), Bool]
     ### What `launch_fn` is given.
@@ -233,17 +232,17 @@ needs T: typename
     me.work_slot().put(runner, work)
     return
 
-### Starts `work` on the ticket at once: it runs from here on, and the ticket's `retrieve()` gives its result. The work
-### runs a copy of its block, so it may be put on more tickets.
+### Starts `work` on the ticket at once: it runs from here on, and the ticket's `retrieve()` waits for it and gives its
+### result. The work runs a copy of its block, so it may be put on more tickets.
 ### :param work: The work, made with `f.to[Work](...)`.
 ### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket given
 ###     back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @track_caller
-routine Thread[T].put_work(work: @Work[T]) -> None
+routine Thread[T].put_work(work: Work[T]) -> None
 needs T: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    me.start(runner: work.runner.peek(), work: work.copy_for(slot))
+    me.start(runner: work.runner, work: work.copy_for(slot))
     return
 
 ### Starts `entry` on the ticket. It runs from here on.
@@ -393,53 +392,52 @@ routine Thread[T].check_finished() -> Bool
 needs T: typename
     return me.work_slot().is_finished()
 
-### Waits until the work has finished. Inside a fiber only the fiber waits: its thread goes on with the other fibers,
-### and the thread that finishes the work wakes it.
+### Makes the next `retrieve()` wait at most `timeout`: `t.waitfor(5s).retrieve()` throws `TaskTimeoutError` when the
+### work hasn't finished by then.
+### :param timeout: The longest wait, from now.
+### :returns: The ticket, for its `retrieve()`.
 @target(os: not "none")
 @track_caller
-routine Thread[T].wait_finished() -> None
+routine Thread[T].waitfor(timeout: Duration) -> Me
 needs T: typename
-    me.work_slot().wait()
-    return
+    me.work_slot().set_deadline(timeout)
+    return me
 
-### Waits until the work has finished or `timeout` has passed, whichever comes first.
-### :param timeout: The longest wait.
-### :returns: True when the work has finished, false when the time ran out first.
+### Waits until the work has finished, and checks that it wasn't cancelled: work with no result. Inside a fiber only
+### the fiber waits: its thread goes on with the other fibers, and the thread that finishes the work wakes it.
+### :throws: Crashes with `NoWorkError` when there was none. Throws `TaskTimeoutError` when the deadline `waitfor` set
+###     passed first, and `CancelRequested` when `cancel()` asked the work to stop before it finished, or asked the
+###     work that waits to stop while it waits.
 @target(os: not "none")
-@track_caller
-routine Thread[T].wait_finished_for(timeout: Duration) -> Bool
-needs T: typename
-    return me.work_slot().wait_until(deadline: Clock.monotonic() +^ timeout, cancellable: false)
-
-### Waits until the work has finished, or until the work that waits is asked to stop with `cancel()`.
-### :throws: Throws `CancelRequested` when the waiting work was cancelled first.
-@target(os: not "none")
-@track_caller
-failable routine Thread[T].wait_finished_cancellable() -> None
-needs T: typename
-    if me.work_slot().wait_until(deadline: Duration.MAX, cancellable: true)
-        return
-    throw CancelRequested()
-
-### Gives nothing: work with no result. It checks that the work has finished and wasn't cancelled.
-### :throws: Crashes with `TicketBusyError` while the work runs, and with `NoWorkError` when there was none. Throws
-###     `CancelRequested` when `cancel()` asked it to stop before it finished.
 @track_caller
 failable routine Thread[None].retrieve() -> None
     slot: @WorkSlot = me.work_slot()
+    waited: U32 = slot.wait_to_retrieve()
+    if waited == WAITED_TIMED_OUT
+        throw TaskTimeoutError()
+    if waited == WAITED_CANCELLED
+        throw CancelRequested()
     slot.result_place[Byte]()
     if slot.is_cancelled()
         throw CancelRequested()
     return
 
-### The finished work's result.
+### Waits until the work has finished, and gives its result. Inside a fiber only the fiber waits: its thread goes on
+### with the other fibers, and the thread that finishes the work wakes it.
 ### :returns: The result.
-### :throws: Crashes with `TicketBusyError` while the work runs, and with `NoWorkError` when there was none. Throws
-###     `CancelRequested` when `cancel()` asked it to stop before it finished.
+### :throws: Crashes with `NoWorkError` when there was none. Throws `TaskTimeoutError` when the deadline `waitfor` set
+###     passed first, and `CancelRequested` when `cancel()` asked the work to stop before it finished, or asked the
+###     work that waits to stop while it waits.
+@target(os: not "none")
 @track_caller
 failable routine Thread[T].retrieve() -> T
 needs T: typename
     slot: @WorkSlot = me.work_slot()
+    waited: U32 = slot.wait_to_retrieve()
+    if waited == WAITED_TIMED_OUT
+        throw TaskTimeoutError()
+    if waited == WAITED_CANCELLED
+        throw CancelRequested()
     place: @T = slot.result_place[T]()
     if slot.is_cancelled()
         throw CancelRequested()
@@ -618,48 +616,3 @@ routine cpu_count() -> U64
     if n < 1
         return 1
     return n.to[U64]()
-
-# -- lending threads for work (ThreadManager obeys WorkManager) -------------------------------------------------------
-
-### Lends a thread for one piece of work: `work.start_from(manager)` calls it.
-### :returns: The thread.
-@track_caller
-routine @ThreadManager.lend_worker() -> Addr
-    worker: @ThreadWorker = me.take_worker()
-    return worker.to[Addr]()
-
-### The slot a lent thread runs its work in.
-### :param worker: The thread.
-### :returns: Its slot.
-routine @ThreadManager.lent_slot(worker: Addr) -> @WorkSlot
-    lent: @ThreadWorker = worker.to[@ThreadWorker]()
-    return lent.slot
-
-### Starts work on a lent thread.
-### :param worker: The thread.
-### :param runner: Runs the block.
-### :param work: The block, from the slot's memory manager.
-@track_caller
-routine @ThreadManager.start_lent(worker: Addr, runner: Callable[(Addr,), None], work: Addr) -> None
-    lent: @ThreadWorker = worker.to[@ThreadWorker]()
-    ticket: Thread[Byte] <- Thread[Byte](worker: lent, issued: lent.slot.issued.peek())
-    ticket.start(runner, work)
-    return
-
-### Takes a lent thread back, its work over.
-### :param worker: The thread.
-@track_caller
-routine @ThreadManager.take_back(worker: Addr) -> None
-    lent: @ThreadWorker = worker.to[@ThreadWorker]()
-    ticket: Thread[Byte] <- Thread[Byte](worker: lent, issued: lent.slot.issued.peek())
-    drop ticket
-    return
-
-### Waits until a lent thread's work has finished, the way its ticket's `wait_finished` waits.
-### :param worker: The thread.
-@track_caller
-routine @ThreadManager.wait_lent(worker: Addr) -> None
-    lent: @ThreadWorker = worker.to[@ThreadWorker]()
-    ticket: Thread[Byte] <- Thread[Byte](worker: lent, issued: lent.slot.issued.peek())
-    ticket.wait_finished()
-    return

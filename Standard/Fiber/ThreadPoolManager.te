@@ -1,93 +1,98 @@
 # Tessera stdlib: ThreadPoolManager, fibers over many threads
 #
-# A ThreadPoolManager runs work on a number of threads, each with a FiberManager of its own (its FIBERS). A job is a
-# ticket in the same flow as a thread's or a fiber's (Work.te): `pool.get_job[T]()`, `put_work`, `wait_finished`,
-# `retrieve`, `give_back`. Work put on a job waits in the pool's queue until a thread of the pool is free, and that
-# thread runs it on a fiber the pool keeps. Like any fiber, it runs until it waits, and nothing interrupts it there.
+# A ThreadPoolManager runs work on a number of threads, each with a CoroutineManager of its own (its FIBERS). A
+# passable fiber is a fiber the pool's threads hand between them, and its ticket, `PassableFiber[T]`, goes the same
+# way as a thread's or a fiber's (Work.te): `pool.get_passable_fiber[T]()`, `put_work`, `retrieve`, `drop`. Work put on
+# a passable fiber waits in the pool's queue until a thread of the pool is free, and that thread runs it on a fiber the
+# pool keeps. Like any fiber, it runs until it waits, and nothing interrupts it there.
 #
-# While a job waits, it belongs to no thread: the wake that ends the wait puts it in the pool's queue of woken fibers,
-# and whichever thread of the pool is free first goes on with it (the thread it waited on, or one that had nothing to
-# do). A job therefore may wake on another thread than the one it waited on, so it doesn't rely on a `@threadlocal`
-# global across a wait. Fibers a job makes with FIBERS stay on their thread, as every manager's fibers do.
+# While a passable fiber waits, it belongs to no thread: the wake that ends the wait puts it in the pool's queue of
+# woken fibers, and whichever thread of the pool is free first goes on with it (the thread it waited on, or one that had
+# nothing to do). A passable fiber therefore may wake on another thread than the one it waited on, so it doesn't rely on
+# a `@threadlocal` global across a wait. Fibers a passable fiber makes with FIBERS stay on their thread, as every
+# manager's fibers do.
 #
-# A job's work may itself put work on more jobs and wait for them: the waiting job parks, its thread goes on with
-# other work, and a free thread goes on with it once a child wakes it. That is how work splits itself in parts on
-# every core without a thread per part:
+# A passable fiber's work may itself put work on more passable fibers and wait for them: the waiting passable fiber
+# parks, its thread goes on with other work, and a free thread goes on with it once a child wakes it. That is how work
+# splits itself in parts on every core without a thread per part:
 #
 #     pool: &ThreadPoolManager <- .construct(threads: 0)   # 0: one thread per processor
-#     summing: Work[U64] <- sum_range.to[Work](pool: pool, from: 0, til: 1000000)
-#     summing.start_from(pool)
-#     total: U64 = summing.retrieve()
-#     drop summing
+#     t: PassableFiber[U64] <- pool.get_passable_fiber[U64]()
+#     summing: Work[U64] = sum_range.to[Work](pool: pool, from: 0, til: 1000000)
+#     t.put_work(summing)
+#     total: U64 = t.retrieve()
+#     drop t
 #
-# A thread of the pool sleeps when it has nothing to run, until work or a woken job is queued, a wake comes for one of
-# its own fibers, or one of them is due. The pool's threads start with the first job and end when the pool is
-# destructed.
+# A thread of the pool sleeps when it has nothing to run, until work or a woken passable fiber is queued, a wake comes
+# for one of its own fibers, or one of them is due. The pool's threads start with the first passable fiber and end when
+# the pool is destructed.
 
 module Standard/Fiber
 
 import Standard/Collections
 import Standard/Os
 
-### Runs jobs on its threads, each thread's fibers on that thread, and a waiting job on whichever thread is free when it
-### wakes.
+### Runs passable fibers on its threads, each thread's fibers on that thread, and a waiting passable fiber on whichever
+### thread is free when it wakes.
 entity ThreadPoolManager
-    ### The byte whose exclusive access guards the queue, the idle jobs, the woken fibers, the kept fibers, and the threads.
+    ### The byte whose exclusive access guards the queue, the idle passable fibers, the woken fibers, the kept fibers,
+    ### and the threads.
     guard: U8
-    ### The jobs whose work waits for a thread, in order.
-    first: @PoolJob
-    last: @PoolJob
-    ### The jobs given back, for the next ticket.
-    idle: @PoolJob
+    ### The passable fibers whose work waits for a thread, in order.
+    first: @PassableFiberSlot
+    last: @PassableFiberSlot
+    ### The passable fibers given back, for the next ticket.
+    idle: @PassableFiberSlot
     ### Changes when work is queued, a fiber of a pool thread is woken from another thread, or the pool stops. The
     ### threads sleep on it.
     epoch: U32
     ### 1 once the pool stops: its threads end when they have nothing left.
     stopping: U32
-    ### How many threads it runs: 0 until the first job starts them.
+    ### How many threads it runs: 0 until the first passable fiber starts them.
     count: U64
     ### The threads' tickets.
     threads: BorrowedSlice[Thread[None]]
-    ### Where the jobs, the fibers, and the threads' tickets come from.
+    ### Where the passable fibers, the fibers, and the threads' tickets come from.
     manager: @MemoryManager
-    ### The fibers running jobs that were woken, for the first free thread to go on with.
+    ### The fibers running passable fibers that were woken, for the first free thread to go on with.
     woken: RotatableList[@FiberState]
     ### Every fiber the pool made, through `next_all`.
     fibers: @FiberState
-    ### The fibers whose job is over, waiting for the next, through `next_idle`.
+    ### The fibers whose passable fiber is over, waiting for the next, through `next_idle`.
     spare: @FiberState
 
-### One job of a pool: its work, and its place in the queue or among the idle ones.
-secret entity PoolJob
+### One passable fiber of a pool: its work, and its place in the queue or among the idle ones.
+secret entity PassableFiberSlot
     slot: WorkSlot
-    next: @PoolJob
+    next: @PassableFiberSlot
     pool: @ThreadPoolManager
 
-### A ticket for a job of a ThreadPoolManager, from {ThreadPoolManager.get_job}: it runs one piece of work at a time, whose result is a
-### `T` (`Void` for none), until it is given back with `drop`.
+### A ticket for a passable fiber of a ThreadPoolManager, from {ThreadPoolManager.get_passable_fiber}: it runs one piece
+### of work at a time, whose result is a `T` (`Void` for none), until it is given back with `drop`.
 ### :typeparam T: The type of the work's result.
-record Job[T]
+record PassableFiber[T]
 needs T: typename
-    job: @PoolJob
-    ### The ticket's number: the job's until the ticket is given back.
+    passable: @PassableFiberSlot
+    ### The ticket's number: the passable fiber's until the ticket is given back.
     issued: U64
 
-### Makes a `PoolJob` from its fields.
+### Makes a `PassableFiberSlot` from its fields.
 ### :param slot: Its `slot`.
 ### :param next: Its `next`.
 ### :param pool: Its `pool`.
 ### :returns: The new value.
 @target(os: not "none")
-secret common routine PoolJob.construct(slot: WorkSlot, next: @Me, pool: @ThreadPoolManager) -> Me
+secret common routine PassableFiberSlot.construct(slot: WorkSlot, next: @Me,
+    pool: @ThreadPoolManager) -> Me
     return Me(slot: steal slot, next, pool)
 
 ### Gives back the block of its last work.
 @target(os: not "none")
-secret routine @PoolJob.destruct() -> None
+secret routine @PassableFiberSlot.destruct() -> None
     me.slot.destruct()
     return
 
-### A pool that will run `threads` threads, or one per processor for 0. They start with the first job.
+### A pool that will run `threads` threads, or one per processor for 0. They start with the first passable fiber.
 ### :param threads: How many threads, or 0 for one per processor.
 ### :returns: The pool, with no threads yet.
 @target(os: not "none")
@@ -100,8 +105,8 @@ common routine ThreadPoolManager.construct(threads: U64) -> Me
         woken: RotatableList[@FiberState].construct(manager: HEAP), fibers: .hollow(),
         spare: .hollow())
 
-### Stops the pool: its threads finish the work they have, then end, and the idle jobs and the fibers go. Give every
-### job back first.
+### Stops the pool: its threads finish the work they have, then end, and the idle passable fibers and the fibers go.
+### Give every passable fiber back first.
 @target(os: not "none")
 @track_caller
 routine @ThreadPoolManager.destruct() -> None
@@ -114,14 +119,14 @@ routine @ThreadPoolManager.destruct() -> None
 
     each i in 0 til started
         t: Thread[None] <- steal threads.getslot(i)
-        t.wait_finished()
+        t.work_slot().wait()
         drop t
 
-    until job.is_hollow() with job: @PoolJob = me.idle.peek()
-        next: @PoolJob = job.next.peek()
-        job.destruct()
-        deallocate(data: job, manager: me.manager.peek())
-        continue with job: next
+    until passable.is_hollow() with passable: @PassableFiberSlot = me.idle.peek()
+        next: @PassableFiberSlot = passable.next.peek()
+        passable.destruct()
+        deallocate(data: passable, manager: me.manager.peek())
+        continue with passable: next
     drop me.threads
     me.idle.poke(.hollow())
 
@@ -138,51 +143,51 @@ routine @ThreadPoolManager.destruct() -> None
     me.woken.destruct()
     return
 
-### Gives the ticket back: hands the job back to its manager, which keeps it for the next ticket. A ticket given
-### back already, or a copy of one, gives nothing back. Written `drop t`.
+### Gives the ticket back: hands the passable fiber back to its manager, which keeps it for the next ticket. A ticket
+### given back already, or a copy of one, gives nothing back. Written `drop t`.
 ### :throws: Crashes with `TicketBusyError` while the work runs.
 @target(os: not "none")
 @track_caller
-routine @Job[T].destruct() -> None
+routine @PassableFiber[T].destruct() -> None
 needs T: typename
-    job: @PoolJob = me.job.peek()
-    if job.is_hollow()
+    passable: @PassableFiberSlot = me.passable.peek()
+    if passable.is_hollow()
         return
-    if job.slot.issued.peek() != me.issued.peek()
+    if passable.slot.issued.peek() != me.issued.peek()
         return
-    job.slot.give_back()
-    pool: @ThreadPoolManager = job.pool.peek()
+    passable.slot.give_back()
+    pool: @ThreadPoolManager = passable.pool.peek()
     held: Authorized[U8] <- pool.guard.get_exclusive_access()
-    job.next.poke(pool.idle.peek())
-    pool.idle.poke(job)
+    passable.next.poke(pool.idle.peek())
+    pool.idle.poke(passable)
     drop held
     return
 
-### A ticket for a job of the pool: one given back, or a new one. The pool's threads start with the first.
+### A ticket for a passable fiber of the pool: one given back, or a new one. The pool's threads start with the first.
 ### :typeparam T: The type of the work's result, `Void` for none.
 ### :returns: The ticket, with no work yet.
-### :throws: Crashes with `MemoryAllocationError` when there is no memory for the job, and with `TaskSpawnError` when
-###     the pool's threads can't start.
+### :throws: Crashes with `MemoryAllocationError` when there is no memory for the passable fiber, and with
+###     `TaskSpawnError` when the pool's threads can't start.
 @target(os: not "none")
 @track_caller
-routine @ThreadPoolManager.get_job[T]() -> Job[T]
+routine @ThreadPoolManager.get_passable_fiber[T]() -> PassableFiber[T]
 needs T: typename
     held: Authorized[U8] <- me.guard.get_exclusive_access()
     me.start_threads()
-    idle: @PoolJob = me.idle.peek()
+    idle: @PassableFiberSlot = me.idle.peek()
     if idle.is_hollow()
         drop held
         manager: @MemoryManager = me.manager.peek()
-        job: @PoolJob = allocate[PoolJob](count: 1, manager)
-        if job.is_hollow()
+        passable: @PassableFiberSlot = allocate[PassableFiberSlot](count: 1, manager)
+        if passable.is_hollow()
             crash_allocation()
-        job.poke(PoolJob(slot: .construct(manager), next: .hollow(), pool: me))
-        return Job[T](job, issued: 0)
+        passable.poke(PassableFiberSlot(slot: .construct(manager), next: .hollow(), pool: me))
+        return PassableFiber[T](passable, issued: 0)
     me.idle.poke(idle.next.peek())
     drop held
     idle.next.poke(.hollow())
     idle.slot.state.poke_unbroken(TICKET_EMPTY)
-    return Job[T](job: idle, issued: idle.slot.issued.peek())
+    return PassableFiber[T](passable: idle, issued: idle.slot.issued.peek())
 
 ### Starts the pool's threads, the first time. The lock is held.
 @target(os: not "none")
@@ -203,38 +208,38 @@ secret routine @ThreadPoolManager.start_threads() -> None
     then
         return
 
-### Puts `job` behind the others in the queue and wakes the threads.
-### :param job: The job, with its work put on.
+### Puts `passable fiber` behind the others in the queue and wakes the threads.
+### :param passable fiber: The passable fiber, with its work put on.
 @target(os: not "none")
-secret routine @ThreadPoolManager.queue(job: @PoolJob) -> None
+secret routine @ThreadPoolManager.queue(passable: @PassableFiberSlot) -> None
     held: Authorized[U8] <- me.guard.get_exclusive_access()
-    last: @PoolJob = me.last.peek()
+    last: @PassableFiberSlot = me.last.peek()
     if last.is_hollow()
-        me.first.poke(job)
+        me.first.poke(passable)
     else
-        last.next.poke(job)
-    me.last.poke(job)
+        last.next.poke(passable)
+    me.last.poke(passable)
     drop held
     me.epoch.unbroken_fetch_add(1)
     wake_all(me.epoch)
     return
 
-### The job at the front of the queue, taken out, or null.
-### :returns: The job, or null.
+### The passable fiber at the front of the queue, taken out, or null.
+### :returns: The passable fiber, or null.
 @target(os: not "none")
-secret routine @ThreadPoolManager.take() -> @PoolJob
+secret routine @ThreadPoolManager.take() -> @PassableFiberSlot
     held: Authorized[U8] <- me.guard.get_exclusive_access()
-    job: @PoolJob = me.first.peek()
-    if job.is_hollow()
+    passable: @PassableFiberSlot = me.first.peek()
+    if passable.is_hollow()
         drop held
         return .hollow()
-    next: @PoolJob = job.next.peek()
+    next: @PassableFiberSlot = passable.next.peek()
     me.first.poke(next)
     if next.is_hollow()
         me.last.poke(.hollow())
-    job.next.poke(.hollow())
+    passable.next.poke(.hollow())
     drop held
-    return job
+    return passable
 
 ### Puts `fiber`, a pool's fiber a wake made ready, in the queue of woken fibers and wakes the threads.
 ### :param fiber: The fiber.
@@ -261,7 +266,7 @@ secret routine @ThreadPoolManager.take_woken() -> @FiberState
     drop held
     return fiber
 
-### Keeps `fiber`, whose job is over, for the next job.
+### Keeps `fiber`, whose passable fiber is over, for the next passable fiber.
 ### :param fiber: The fiber.
 @target(os: not "none")
 secret routine @ThreadPoolManager.keep_fiber(fiber: @FiberState) -> None
@@ -271,7 +276,7 @@ secret routine @ThreadPoolManager.keep_fiber(fiber: @FiberState) -> None
     drop held
     return
 
-### A fiber for a job: one kept from an earlier job, or a new one with a stack of its own.
+### A fiber for a passable fiber: one kept from an earlier passable fiber, or a new one with a stack of its own.
 ### :returns: The fiber.
 ### :throws: Crashes with `MemoryAllocationError` when there is no memory for the fiber or its stack.
 @target(os: not "none")
@@ -311,7 +316,7 @@ secret routine @ThreadPoolManager.take_fiber() -> @FiberState
 ### :param fiber: A pool's fiber, ready to run.
 @target(os: not "none")
 secret routine adopt(fiber: @FiberState) -> None
-    from: @FiberManager = fiber.manager.peek_unbroken()
+    from: @CoroutineManager = fiber.manager.peek_unbroken()
     if from !== FIBERS
         FIBERS.busy.unbroken_fetch_add(1)
         fiber.manager.poke_unbroken(FIBERS)
@@ -320,8 +325,8 @@ secret routine adopt(fiber: @FiberState) -> None
     FIBERS.ready.add_last(fiber)
     return
 
-### A pool thread's work: runs this thread's fibers until none is ready, goes on with a woken job or starts the next
-### queued one, and sleeps when there is nothing, until the pool stops and its fibers are done.
+### A pool thread's work: runs this thread's fibers until none is ready, goes on with a woken passable fiber or starts
+### the next queued one, and sleeps when there is nothing, until the pool stops and its fibers are done.
 ### :param pool: The pool.
 @target(os: not "none")
 @reshaping(pool)
@@ -336,8 +341,8 @@ secret routine pool_thread(pool: @ThreadPoolManager) -> None
         if woken.is_not_hollow()
             adopt(woken)
             continue
-        job: @PoolJob = pool.take()
-        if job.is_hollow()
+        passable: @PassableFiberSlot = pool.take()
+        if passable.is_hollow()
             if pool.stopping.peek_unbroken() == 1 and FIBERS.busy.peek_unbroken() == 0
                 break
             wait: Duration = FIBERS.idle_wait()
@@ -348,7 +353,7 @@ secret routine pool_thread(pool: @ThreadPoolManager) -> None
             continue
         fiber: @FiberState = pool.take_fiber()
         fiber.slot.state.poke_unbroken(TICKET_RUNNING)
-        fiber.work.poke(job.slot)
+        fiber.work.poke(passable.slot)
         adopt(fiber)
         continue
     return
@@ -360,36 +365,36 @@ secret routine pool_thread(pool: @ThreadPoolManager) -> None
 ### :throws: Crashes with `TicketGivenBackError` for a ticket given back.
 @target(os: not "none")
 @track_caller
-routine Job[T].work_slot() -> @WorkSlot
+routine PassableFiber[T].work_slot() -> @WorkSlot
 needs T: typename
-    job: @PoolJob = me.job
-    job.slot.check_ticket(me.issued)
-    return job.slot
+    passable: @PassableFiberSlot = me.passable
+    passable.slot.check_ticket(me.issued)
+    return passable.slot
 
 ### Starts the work in `work`, run by `runner`: it waits in the pool's queue for a free thread.
 ### :param runner: Runs the work.
 ### :param work: Its block.
 @target(os: not "none")
 @track_caller
-secret routine Job[T].start(runner: Callable[(Addr,), None], work: Addr) -> None
+secret routine PassableFiber[T].start(runner: Callable[(Addr,), None], work: Addr) -> None
 needs T: typename
-    job: @PoolJob = me.job
+    passable: @PassableFiberSlot = me.passable
     me.work_slot().put(runner, work)
-    job.pool.peek().queue(job)
+    passable.pool.peek().queue(passable)
     return
 
-### Starts `work` on the ticket at once: it runs from here on, and the ticket's `retrieve()` gives its result. The work
-### runs a copy of its block, so it may be put on more tickets.
+### Starts `work` on the ticket at once: it runs from here on, and the ticket's `retrieve()` waits for it and gives its
+### result. The work runs a copy of its block, so it may be put on more tickets.
 ### :param work: The work, made with `f.to[Work](...)`.
 ### :throws: Crashes with `TicketBusyError` while the last work runs, with `TicketGivenBackError` for a ticket given
 ###     back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[T].put_work(work: @Work[T]) -> None
+routine PassableFiber[T].put_work(work: Work[T]) -> None
 needs T: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
-    me.start(runner: work.runner.peek(), work: work.copy_for(slot))
+    me.start(runner: work.runner, work: work.copy_for(slot))
     return
 
 ### Starts `entry` on the ticket. It runs from here on.
@@ -398,7 +403,7 @@ needs T: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[T].put_callable(entry: Callable[(), T]) -> None
+routine PassableFiber[T].put_callable(entry: Callable[(), T]) -> None
 needs T: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -413,7 +418,7 @@ needs T: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[T].put_callable[A](entry: Callable[(A,), T], args: A) -> None
+routine PassableFiber[T].put_callable[A](entry: Callable[(A,), T], args: A) -> None
 needs T: typename, A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -428,7 +433,7 @@ needs T: typename, A: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[T].put_callable[A, B](entry: Callable[(A, B), T], args: (A, B)) -> None
+routine PassableFiber[T].put_callable[A, B](entry: Callable[(A, B), T], args: (A, B)) -> None
 needs T: typename, A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -443,7 +448,8 @@ needs T: typename, A: typename, B: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[T].put_callable[A, B, C](entry: Callable[(A, B, C), T], args: (A, B, C)) -> None
+routine PassableFiber[T].put_callable[A, B, C](entry: Callable[(A, B, C), T],
+    args: (A, B, C)) -> None
 needs T: typename, A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -458,7 +464,7 @@ needs T: typename, A: typename, B: typename, C: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[T].put_callable[A, B, C, D](entry: Callable[(A, B, C, D), T],
+routine PassableFiber[T].put_callable[A, B, C, D](entry: Callable[(A, B, C, D), T],
     args: (A, B, C, D)) -> None
 needs T: typename, A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
@@ -473,7 +479,7 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[None].put_callable(entry: Callable[(), None]) -> None
+routine PassableFiber[None].put_callable(entry: Callable[(), None]) -> None
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
     runner, work = make_voidwork0(entry, manager: slot.manager.peek())
@@ -487,7 +493,7 @@ routine Job[None].put_callable(entry: Callable[(), None]) -> None
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[None].put_callable[A](entry: Callable[(A,), None], args: A) -> None
+routine PassableFiber[None].put_callable[A](entry: Callable[(A,), None], args: A) -> None
 needs A: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -502,7 +508,7 @@ needs A: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[None].put_callable[A, B](entry: Callable[(A, B), None], args: (A, B)) -> None
+routine PassableFiber[None].put_callable[A, B](entry: Callable[(A, B), None], args: (A, B)) -> None
 needs A: typename, B: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -517,7 +523,8 @@ needs A: typename, B: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[None].put_callable[A, B, C](entry: Callable[(A, B, C), None], args: (A, B, C)) -> None
+routine PassableFiber[None].put_callable[A, B, C](entry: Callable[(A, B, C), None],
+    args: (A, B, C)) -> None
 needs A: typename, B: typename, C: typename
     slot: @WorkSlot = me.work_slot()
     slot.check_free()
@@ -532,7 +539,7 @@ needs A: typename, B: typename, C: typename
 ###     given back, and with `MemoryAllocationError` when the manager has no memory for the work.
 @target(os: not "none")
 @track_caller
-routine Job[None].put_callable[A, B, C, D](entry: Callable[(A, B, C, D), None],
+routine PassableFiber[None].put_callable[A, B, C, D](entry: Callable[(A, B, C, D), None],
     args: (A, B, C, D)) -> None
 needs A: typename, B: typename, C: typename, D: typename
     slot: @WorkSlot = me.work_slot()
@@ -545,58 +552,56 @@ needs A: typename, B: typename, C: typename, D: typename
 ### :returns: True unless the work runs or waits for a thread.
 @target(os: not "none")
 @track_caller
-routine Job[T].check_finished() -> Bool
+routine PassableFiber[T].check_finished() -> Bool
 needs T: typename
     return me.work_slot().is_finished()
 
-### Waits until the work has finished. Inside a fiber only that fiber waits, and its thread goes on with other work.
+### Makes the next `retrieve()` wait at most `timeout`: `t.waitfor(5s).retrieve()` throws `TaskTimeoutError` when the
+### work hasn't finished by then.
+### :param timeout: The longest wait, from now.
+### :returns: The ticket, for its `retrieve()`.
 @target(os: not "none")
 @track_caller
-routine Job[T].wait_finished() -> None
+routine PassableFiber[T].waitfor(timeout: Duration) -> Me
 needs T: typename
-    me.work_slot().wait()
-    return
+    me.work_slot().set_deadline(timeout)
+    return me
 
-### Waits until the work has finished or `timeout` has passed, whichever comes first.
-### :param timeout: The longest wait.
-### :returns: True when the work has finished, false when the time ran out first.
+### Waits until the work has finished, and checks that it wasn't cancelled: work with no result. Inside a fiber only
+### that fiber waits, and its thread goes on with other work.
+### :throws: Crashes with `NoWorkError` when there was none. Throws `TaskTimeoutError` when the deadline `waitfor` set
+###     passed first, and `CancelRequested` when `cancel()` asked the work to stop before it finished, or asked the
+###     work that waits to stop while it waits.
 @target(os: not "none")
 @track_caller
-routine Job[T].wait_finished_for(timeout: Duration) -> Bool
-needs T: typename
-    return me.work_slot().wait_until(deadline: Clock.monotonic() +^ timeout, cancellable: false)
-
-### Waits until the work has finished, or until the work that waits is asked to stop with `cancel()`.
-### :throws: Throws `CancelRequested` when the waiting work was cancelled first.
-@target(os: not "none")
-@track_caller
-failable routine Job[T].wait_finished_cancellable() -> None
-needs T: typename
-    if me.work_slot().wait_until(deadline: Duration.MAX, cancellable: true)
-        return
-    throw CancelRequested()
-
-### Gives nothing: work with no result. It checks that the work has finished and wasn't cancelled.
-### :throws: Crashes with `TicketBusyError` while the work runs, and with `NoWorkError` when there was none. Throws
-###     `CancelRequested` when `cancel()` asked it to stop before it finished.
-@target(os: not "none")
-@track_caller
-failable routine Job[None].retrieve() -> None
+failable routine PassableFiber[None].retrieve() -> None
     slot: @WorkSlot = me.work_slot()
+    waited: U32 = slot.wait_to_retrieve()
+    if waited == WAITED_TIMED_OUT
+        throw TaskTimeoutError()
+    if waited == WAITED_CANCELLED
+        throw CancelRequested()
     slot.result_place[Byte]()
     if slot.is_cancelled()
         throw CancelRequested()
     return
 
-### The finished work's result.
+### Waits until the work has finished, and gives its result. Inside a fiber only that fiber waits, and its thread goes
+### on with other work.
 ### :returns: The result.
-### :throws: Crashes with `TicketBusyError` while the work runs, and with `NoWorkError` when there was none. Throws
-###     `CancelRequested` when `cancel()` asked it to stop before it finished.
+### :throws: Crashes with `NoWorkError` when there was none. Throws `TaskTimeoutError` when the deadline `waitfor` set
+###     passed first, and `CancelRequested` when `cancel()` asked the work to stop before it finished, or asked the
+###     work that waits to stop while it waits.
 @target(os: not "none")
 @track_caller
-failable routine Job[T].retrieve() -> T
+failable routine PassableFiber[T].retrieve() -> T
 needs T: typename
     slot: @WorkSlot = me.work_slot()
+    waited: U32 = slot.wait_to_retrieve()
+    if waited == WAITED_TIMED_OUT
+        throw TaskTimeoutError()
+    if waited == WAITED_CANCELLED
+        throw CancelRequested()
     place: @T = slot.result_place[T]()
     if slot.is_cancelled()
         throw CancelRequested()
@@ -605,62 +610,7 @@ needs T: typename
 ### Asks the work to stop: `cancel_requested()` turns true inside it, and the work stops where it looks.
 @target(os: not "none")
 @track_caller
-routine Job[T].cancel() -> None
+routine PassableFiber[T].cancel() -> None
 needs T: typename
     me.work_slot().request_cancel()
-    return
-
-# -- lending jobs for work (ThreadPoolManager obeys WorkManager) -------------------------------------------------------
-
-### A ThreadPoolManager lends its workers for work (`work.start_from(manager)`).
-@target(os: not "none")
-obeys WorkManager[ThreadPoolManager]
-
-### Lends a job for one piece of work: `work.start_from(manager)` calls it.
-### :returns: The job.
-@target(os: not "none")
-@track_caller
-routine @ThreadPoolManager.lend_worker() -> Addr
-    job: @PoolJob = me.get_job[Byte]().job
-    return job.to[Addr]()
-
-### The slot a lent job runs its work in.
-### :param worker: The job.
-### :returns: Its slot.
-@target(os: not "none")
-routine @ThreadPoolManager.lent_slot(worker: Addr) -> @WorkSlot
-    job: @PoolJob = worker.to[@PoolJob]()
-    return job.slot
-
-### Starts work on a lent job.
-### :param worker: The job.
-### :param runner: Runs the block.
-### :param work: The block, from the slot's memory manager.
-@target(os: not "none")
-@track_caller
-routine @ThreadPoolManager.start_lent(worker: Addr, runner: Callable[(Addr,), None],
-    work: Addr) -> None
-    job: @PoolJob = worker.to[@PoolJob]()
-    ticket: Job[Byte] <- Job[Byte](job, issued: job.slot.issued.peek())
-    ticket.start(runner, work)
-    return
-
-### Takes a lent job back, its work over.
-### :param worker: The job.
-@target(os: not "none")
-@track_caller
-routine @ThreadPoolManager.take_back(worker: Addr) -> None
-    job: @PoolJob = worker.to[@PoolJob]()
-    ticket: Job[Byte] <- Job[Byte](job, issued: job.slot.issued.peek())
-    drop ticket
-    return
-
-### Waits until a lent job's work has finished, the way its ticket's `wait_finished` waits.
-### :param worker: The job.
-@target(os: not "none")
-@track_caller
-routine @ThreadPoolManager.wait_lent(worker: Addr) -> None
-    job: @PoolJob = worker.to[@PoolJob]()
-    ticket: Job[Byte] <- Job[Byte](job: job, issued: job.slot.issued.peek())
-    ticket.wait_finished()
     return

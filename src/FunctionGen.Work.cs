@@ -1,20 +1,20 @@
 namespace Tessera;
 
-/// `f.to[Work](param: value, ...)`: a piece of work, the routine `f` with its arguments named by its parameters. The
-/// builder puts the work's block (the routine, the arguments, room for the result: a `WorkN` / `VoidWorkN` of
-/// Standard/Os) in a frame slot of the routine and makes the `Work[T]` over it with `work_from`. Each argument that is
-/// an access (`Authorized`, `ReadAuthorized`) gets a bit in `kept`: `retrieve()` of work started with `start_from`
-/// gives those back. What the work is handed is kept by its name, so `t.put_work(work)` and `work.start_from(m)` are
-/// checked like work put on a ticket with its routine and arguments.
+/// `f.to[Work](param: value, ...)`: a piece of work, the routine `f` with its arguments named by its parameters, a
+/// plain value bound with `=`. The builder puts the work's block (the routine, the arguments, room for the result: a
+/// `WorkN` / `VoidWorkN` of Standard/Os, a size the build knows) in a frame slot of the routine and makes the `Work[T]`
+/// over it with `work_from`. What the work is handed is kept by its name, so `t.put_work(work)` is checked like work
+/// put on a ticket with its routine and arguments.
 public sealed partial class FunctionGen
 {
-    /// The routine and the arguments, in its parameters' order, of each work a `<-` line bound.
+    /// The routine and the arguments, in its parameters' order, of each work a line bound.
     private readonly Dictionary<string, (RoutineRef Routine, List<Expr> Args)> _madeWork = [];
 
-    /// Whether the work a name holds was handed an access borrowed in its arguments, which only `start_from` and the
-    /// work's own `retrieve` give back.
-    private bool HandsAccess(List<Expr> args, RoutineDecl routine) =>
-        args.Any(a => a is CallExpr or NsCallExpr or MethodCallExpr && IsBorrowedType(InferQuiet(a)) && InferQuiet(a) is RecordType { Decl.Name: "Authorized" or "ReadAuthorized" });
+    /// Notes the routine and the arguments of the work a binding holds, for the check of the ticket it is put on.
+    private void NoteMadeWork(string name, Expr value)
+    {
+        if (value is WorkExpr made) _madeWork[name] = (made.Routine, WorkArgs(made, WorkRoutine(made)));
+    }
 
     private int _works;
 
@@ -58,7 +58,7 @@ public sealed partial class FunctionGen
         return names.Select(n => byName[n]).ToList();
     }
 
-    /// The block in a frame slot, then `work_from[T, Block](block, runner, release, kept)`.
+    /// The block in a frame slot, then `work_from[T, Block](block, runner)`.
     private Val EvalWork(WorkExpr w, DType? expected)
     {
         var routine = WorkRoutine(w);
@@ -83,23 +83,16 @@ public sealed partial class FunctionGen
         }
         ctorArgs.Add(w.Routine);
         ctorNames.Add("entry");
-        // An access borrowed right in the arguments is handed to the work: it goes in a name of its own, whose group
-        // ends here, and the work's retrieve (after start_from) gives it back. An access passed by its name stays the
-        // caller's to give back.
-        int kept = 0;
-        var handedAccesses = new List<(string Name, Pos Pos)>();
+        // An access borrowed right in the arguments would have no name to give it back by: the work would hold it
+        // past its ticket's retrieve, and no line ends it.
         for (int i = 0; i < n; i++)
         {
             var arg = args[i];
             if (IsBorrowedType(ct.Params[i]) && ct.Params[i] is RecordType { Decl.Name: "Authorized" or "ReadAuthorized" }
                 && arg is CallExpr or NsCallExpr or MethodCallExpr)
-            {
-                string handed = $"$handed{_works}_{i}";
-                EmitStmtCore(new BindStmt(handed, Known(ct.Params[i]), arg, arg.Pos) { Lowered = true });
-                handedAccesses.Add((handed, arg.Pos));
-                arg = new ValueRef(handed, arg.Pos);
-                kept |= 1 << i;
-            }
+                throw Err(arg.Pos, $"the access for '{routine.Params[i].Name}' is borrowed right in the work's arguments, and "
+                    + $"nothing would give it back: borrow it in a name first, held: {ct.Params[i]} <- ..., hand the work "
+                    + "that name, and drop it after the ticket's retrieve");
             ctorArgs.Add(arg);
             ctorNames.Add(fields[i]);
         }
@@ -108,17 +101,13 @@ public sealed partial class FunctionGen
         string slot = $"$work{_works++}";
         EmitStmtCore(new BindStmt(slot, new TypeRef("$work", [], w.Pos) { Known = new PtrType(blockType) },
             new ClaimExpr(w.Pos) { Contents = ctor }, w.Pos));
-        foreach (var (handed, at) in handedAccesses)
-            Mem(new MemoryRules.End(handed, "handed to the work, whose retrieve gives it back", at));
         string suffix = none ? "voidwork" : "work";
         var routineArgs = blockArgs.Select(a => ((TypeArgType)a).Type).ToList();
         var result = none ? Known(Resolve(TypeRef.Simple("None", w.Pos))) : Known(ct.Ret);
         var call = new CallExpr("work_from", [result, new TypeRef(blockRef.Name, blockArgs, w.Pos) { Known = blockType }],
             [new ValueRef(slot, w.Pos),
-             new RoutineRef($"run_{suffix}{n}", null, w.Pos) { TypeArgs = routineArgs },
-             new RoutineRef($"release_{suffix}{n}", null, w.Pos) { TypeArgs = routineArgs },
-             new IntLit(kept, w.Pos)], w.Pos)
-            { ArgNames = ["made", "runner", "release", "kept"] };
+             new RoutineRef($"run_{suffix}{n}", null, w.Pos) { TypeArgs = routineArgs }], w.Pos)
+            { ArgNames = ["made", "runner"] };
         return Eval(call, expected ?? WorkType(w)!);
     }
 }

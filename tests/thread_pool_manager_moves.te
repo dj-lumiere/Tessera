@@ -1,5 +1,6 @@
-# A ThreadPoolManager goes on with a waiting job on whichever of its threads is free: the job waits for a child on the
-# second thread while a job that never waits holds its own, so the second thread goes on with it once the child is done.
+# A ThreadPoolManager goes on with a waiting passable fiber on whichever of its threads is free: the passable fiber
+# waits for a child on the second thread while a passable fiber that never waits holds its own, so the second thread
+# goes on with it once the child is done.
 
 import Standard/Fiber
 import Standard/Os
@@ -33,23 +34,21 @@ routine watch(pool: @ThreadPoolManager) -> Bool
     started: &U32 <- 0
     release: &U32 <- 0
 
-    c: Job[None] <- pool.get_job[None]()
-    work_c: Work[None] <- child.to[Work](started: started)
+    c: PassableFiber[None] <- pool.get_passable_fiber[None]()
+    work_c: Work[None] = child.to[Work](started: started)
     c.put_work(work_c)
-    drop work_c
-    # The child runs on the other thread: this one is busy here until this job waits.
+    # The child runs on the other thread: this one is busy here until this passable fiber waits.
     until started.peek_unbroken() != 0
         continue
-    h: Job[None] <- pool.get_job[None]()
-    work_h: Work[None] <- hold.to[Work](release: release)
+    h: PassableFiber[None] <- pool.get_passable_fiber[None]()
+    work_h: Work[None] = hold.to[Work](release: release)
     h.put_work(work_h)
-    drop work_h
     before: Addr = running_manager()
-    # The wait frees this thread, which takes `hold`, the only job left in the queue.
-    c.wait_finished()
+    # The wait frees this thread, which takes `hold`, the only passable fiber left in the queue.
+    c.retrieve()
     after: Addr = running_manager()
     release.poke_unbroken(1)
-    h.wait_finished()
+    h.retrieve()
     drop c
     drop h
     return before.notsame(after)
@@ -58,11 +57,9 @@ routine watch(pool: @ThreadPoolManager) -> Bool
 routine start() -> None
     pool: &ThreadPoolManager <- .construct(threads: 2)
 
-    j: Job[Bool] <- pool.get_job[Bool]()
-    work_j: Work[Bool] <- watch.to[Work](pool: pool)
+    j: PassableFiber[Bool] <- pool.get_passable_fiber[Bool]()
+    work_j: Work[Bool] = watch.to[Work](pool: pool)
     j.put_work(work_j)
-    drop work_j
-    j.wait_finished()
     Console.show("went on on another thread: {j.retrieve()}")
     drop j
     drop pool

@@ -165,9 +165,9 @@ sources = ["src"]
 - **Memory managers:** any type that obeys `MemoryManageable` (and `PageManageable` for pages) is one, and
   `m.to[MemoryManager]()` makes the table every routine that borrows memory takes. `steal` hands a `BorrowedCell` or `BorrowedSlice`
   on and leaves the place zeroed.
-- **Threads and fibers:** a piece of work is `f.to[Work](param: value)`. `work.start_from(manager)` runs it on a
-  worker a `ThreadManager`, `FiberManager` or `ThreadPoolManager` lends, and a ticket held (`get_thread`) takes it with
-  `put_work`: wait, retrieve the result, `drop` the ticket.
+- **Threads and fibers:** a piece of work is `f.to[Work](param: value)`, a plain value. A ticket a `ThreadManager`,
+  `CoroutineManager` or `ThreadPoolManager` lends (`Thread`, `Fiber`, `PassableFiber`) takes it with `put_work`, its
+  `retrieve()` waits and gives the result, and `drop` gives the ticket back.
 - **Standard library:** written in Tessera and layered so that only `Standard/Os` and the hosted files of
   `Standard/System` (the heap and page managers, the CPU events) need libc, and a target without an operating system
   builds without them.

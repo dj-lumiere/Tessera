@@ -189,15 +189,23 @@ public sealed partial class Compiler
         catch (CompileError) { return null; }
     }
 
-    /// Every type says how it is made and how it is released: a record declares a `construct` and a `destruct`, and a
-    /// variant a `destruct` (its values are made from its branches). A machine type (`@llvm`) and a variant written
-    /// inline are exempt, and so is a choice, which holds a member and nothing to release.
+    /// Every type that holds something to release says how it is made (a record declares a `construct`, a variant's
+    /// values are made from its branches) and has a `destruct`: the one it writes, or the builder's walk over the fields
+    /// that hold something (Derive.DefaultDestruct). A machine type (`@llvm`) and a variant written inline are exempt, and
+    /// so is a choice, which holds a member and nothing to release.
     private void CheckLifecycle()
     {
         var needs = LifecycleNeeds();
+        var walked = new List<Decl>();
         var has = new HashSet<(Decl, string)>();
         foreach (var r in _lifeRoutines)
+        {
+            // `drop x` is `x.destruct()`: what a value gives back is reached from its fields, a manager included.
+            if (r is { Name: "destruct", Params.Count: > 1 })
+                throw new CompileError(r.Params[1].Pos, $"a destruct takes no arguments, and {r.Owner}.destruct takes "
+                    + $"'{r.Params[1].Name}': drop x calls x.destruct(), so keep what it needs in a field");
             if (OwnerDeclQuiet(r) is { } owner) has.Add((owner, r.Name));
+        }
         foreach (var d in _records.Values.SelectMany(g => g).Cast<Decl>().Concat(_variants.Values.SelectMany(g => g)))
         {
             if (!Selected(d) || d.AnnotationNamed("llvm") is not null || d is VariantDecl { IsAnonymous: true }
@@ -223,14 +231,26 @@ public sealed partial class Compiler
             bool construct = d is not RecordDecl || has.Contains((d, "construct"));
             bool destruct = has.Contains((d, "destruct"));
             if (construct && destruct) continue;
-            // Only a type that holds something to release says how it is made and released.
+            // Only a type that holds something to release says how it is made and has a destruct.
             if (needs.Why(d) is not { } why) continue;
             if (!construct)
                 throw new CompileError(d.Pos, $"{kind} '{name}' holds something to release ({why}), so it says how it is "
                     + $"made: common routine {name}.construct(...) -> Me (for plain fields, taking them in order and returning Me(...))");
-            throw new CompileError(d.Pos, $"{kind} '{name}' holds something to release ({why}), so it says how it is "
-                + $"released: routine @{name}.destruct() -> None");
+            if (!destruct) walked.Add(d);
         }
+        foreach (var d in walked)
+            foreach (var r in Tessera.Derive.DefaultDestruct(d, t => needs.Holds(d, t)).OfType<RoutineDecl>())
+                AddDerivedRoutine(r);
+    }
+
+    /// A routine the builder writes once the declarations are in (a type's destruct), registered as a declared one is.
+    private void AddDerivedRoutine(RoutineDecl r)
+    {
+        _lifeRoutines.Add(r);
+        if (!Selected(r)) return;
+        if (IsBlanketOwner(r)) Add(_blanket, r.Name, r);
+        else Add(_methods, (r.Owner!.Name, r.Name), r);
+        _allRoutines.Add(r);
     }
 
     /// What memory of its own a value of `t` holds: a BorrowedSlice, a BorrowedCell, an entity, or a value of a type with one in it, or
@@ -718,7 +738,7 @@ public sealed partial class Compiler
         foreach (var sb in new[] { _typeDefs, failureTypes, _globals, declares })
             if (sb.Length > 0) o.Append(sb).AppendLine();
         string functions = FunctionTexts();
-        o.Append(MovesWaitingJobs ? TraceOutOfLine(functions) : functions);
+        o.Append(MovesWaitingFibers ? TraceOutOfLine(functions) : functions);
         o.Append(ResetThreadLocals());
         o.Append(RaceCheckOptions());
         o.Append(_entry);
@@ -726,12 +746,12 @@ public sealed partial class Compiler
         return o.ToString();
     }
 
-    /// Whether the program runs ThreadPoolManager jobs, which may wake on another thread than the one they waited on.
-    private bool MovesWaitingJobs => _instances.Values.Any(i =>
+    /// Whether the program runs ThreadPoolManager passable fibers, which may wake on another thread than the one they waited on.
+    private bool MovesWaitingFibers => _instances.Values.Any(i =>
         i.Decl.IsLibrary && i.Decl.Name == "pool_thread" && i.Decl.Module == "Standard/Fiber");
 
     /// The functions with trace_push, trace_at and trace_pop called out of line. LLVM may work out a thread-local's
-    /// address once per function, so the inlined ones would go on writing the trace of the thread a job started on
+    /// address once per function, so the inlined ones would go on writing the trace of the thread a passable fiber started on
     /// after it wakes on another: called, each finds the trace of the thread it runs on.
     private string TraceOutOfLine(string functions)
     {
@@ -968,7 +988,7 @@ public sealed partial class Compiler
         MethodCandidates(ownerType, name, file, pos, anyModule, fits).FirstOrDefault();
 
     /// Whether two routines on a type are defined for the same type arguments: none, or the same `<S64>`.
-    /// Whether two routines on one type are for the same owner arguments: `List[Fiber[T]]` and `List[Job[T]]` aren't.
+    /// Whether two routines on one type are for the same owner arguments: `List[Fiber[T]]` and `List[PassableFiber[T]]` aren't.
     /// A type parameter stands for any argument.
     private bool SameOwnerArgs(RoutineDecl a, RoutineDecl b)
     {

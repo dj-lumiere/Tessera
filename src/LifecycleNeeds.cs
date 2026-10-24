@@ -1,10 +1,11 @@
 namespace Tessera;
 
-/// Which types hold something to release, and so declare `construct` and `destruct`: memory from a manager (`BorrowedCell`,
-/// `BorrowedSlice`), an entity, or a type with a field (a branch, for a variant) that is a value of a type parameter (an
-/// instance may hold anything) or a value of a type that itself holds something to release. An address (`@T`, `@[T]`,
-/// `Addr`) only points at memory someone else gives back, so it holds nothing. A type of plain data (numbers, Bool,
-/// choices, addresses, records of those) holds nothing: it may declare them, and needs neither.
+/// Which types hold something to release, and so declare `construct` and have a `destruct` (written by hand, or by the
+/// builder as a walk over the fields that hold something): memory from a manager (`BorrowedCell`, `BorrowedSlice`), an
+/// entity, or a type with a field (a branch, for a variant) that is a value of a type parameter (an instance may hold
+/// anything) or a value of a type that itself holds something to release. An address (`@T`, `@[T]`, `Addr`) only points
+/// at memory someone else gives back, so it holds nothing. A type of plain data (numbers, Bool, choices, addresses,
+/// records of those) holds nothing: it may declare them, and needs neither.
 ///
 /// It reads the declarations as written, so the build (Compiler.CheckLifecycle) answers
 /// alike. `find` names the declaration a type means, or null. A type no declaration names counts as holding something
@@ -21,6 +22,16 @@ public sealed class LifecycleNeeds(Func<TypeRef, string, Decl?> find, bool unkno
         RecordDecl r => DeclWhy(r, r.TypeParams.ToDictionary(p => p, _ => true)),
         VariantDecl v => DeclWhy(v, v.TypeParams.ToDictionary(p => p, _ => true)),
         _ => null,
+    };
+
+    /// Whether a value of `t`, a field's type (a branch's, for a variant) as `owner` writes it, holds something to
+    /// release, each of the owner's type parameters counting as holding something: the fields the builder's `destruct`
+    /// walks.
+    public bool Holds(Decl owner, TypeRef t) => owner switch
+    {
+        RecordDecl r => Holds(t, r.TypeParams.ToDictionary(p => p, _ => true), r.File),
+        VariantDecl v => Holds(t, v.TypeParams.ToDictionary(p => p, _ => true), v.File),
+        _ => false,
     };
 
     private string? DeclWhy(Decl d, Dictionary<string, bool> args)

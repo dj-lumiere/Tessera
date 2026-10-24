@@ -46,7 +46,8 @@ These change code written for the pre-release builders. Where a spelling changed
   `&[T]` for `BorrowedSlice[T]`. `@T` and `@[T]` only view. `=` binds a value or a view, never a place, and `local` is gone.
   A `<-` name is given back with `drop`, and the builder gives STACK places back at every exit of their body, the last
   one first. Accesses and tickets are bound with `<-` from the call that borrows them. Presets and globals in memory
-  are written `&T` / `&[T]`.
+  are written `&T` / `&[T]`. `x: &T <- v from m` is `m.borrow_and_fill[T](t: v)` of `ResourceManageable`, which a
+  `MemoryManager` obeys, and `drop x` is `x.destruct()`.
 - Only `BorrowedCell[T]` reads and writes with `load` / `store`, and only `@T` with `peek` / `poke`. `BorrowedSlice[T]` and `@[T]`
   reach their elements the same way: `m[i]` is the value, `m.getslot(i)` its place as a `@T`, and
   `m.getslice(start, count)` / `m.getslice()` a `@[T]`. An entity element comes out with `steal m.getslot(i)`.
@@ -61,14 +62,16 @@ These change code written for the pre-release builders. Where a spelling changed
   that names the new one. `CircularList` is `RotatableList`.
 - A `FileStorage[T]` is an entity borrowed from `OsFileManager.storage` with `<-` and given back with `drop`, which
   writes changed pages back and unmaps it. `unmap()` is gone.
-- A ticket (`Thread`, `Fiber`, `Job`), a `Work` and a `FileStorage` bound with `<-` is given back with `drop` once on
+- A ticket (`Thread`, `Fiber`, `PassableFiber`) and a `FileStorage` bound with `<-` is given back with `drop` once on
   every path: a missing drop, a second one and a use after it are build errors.
 - A whole number written in base 10 goes into a binary float place: `x: &B64 <- 0`.
 - A memory manager lends memory: `MemoryManager.borrow`, `reborrow` and `give_back` (the `MemoryManageable`
   protocol's three routines).
 - `BorrowedCell[T]` is `{at, manager}` and `BorrowedSlice[T]` is `{data, count, manager}`: the block holds only the values, and the
   generation check is gone. A second give-back the build doesn't see is caught by the heap check (`DoubleFreeError`).
-- A record declares `construct` / `destruct` only when it holds something to release.
+- A record declares `construct` only when it holds something to release. Every type has a `destruct()`, which takes no
+  arguments: the builder writes a walk over the fields that hold something, the last field first, unless the type
+  writes its own, which replaces the walk.
 - Every memory region has a manager: `DEFAULT_HEAP` is `HEAP`, `DEFAULT_STACKS` is `PAGES`, and processes,
   thread-locals and globals have `ProcessManager`, `ThreadLocalManager` and `GlobalManager`. A manager table is reached through its place (`HEAP`).
 - A routine that takes a memory manager names the parameter `manager: @MemoryManager`.
@@ -131,11 +134,11 @@ These change code written for the pre-release builders. Where a spelling changed
   one at a time, and a record and its element buffer separately. `SignalCaster` waits take the `Authorized[T]` the
   caller holds. Naming `ExclusiveAccess` or `MultiReadAccess` is a build error that
   names the new form.
-- Threads and fibers are tickets: `get_thread`, `put_work`, `wait_finished`, given back with `drop t`. A piece of work
-  is `Work[T]`, made with `f.to[Work](param: value, ...)`, put on a ticket with `t.put_work(work)` or started with
-  `work.start_from(manager)` on a `WorkManager` (`ThreadManager`, `FiberManager`, `ThreadPoolManager`), whose
-  `retrieve()` gives back the worker and the accesses borrowed in the work's arguments. The fiber pool is
-  `ThreadPoolManager`.
+- Threads and fibers are tickets: `t: Thread[U64] <- get_thread[U64]()`, `t.put_work(work)`, `t.retrieve()` (which
+  waits for the work, `t.waitfor(5s).retrieve()` at most 5 seconds, `TaskTimeoutError` after), given back with
+  `drop t`. A piece of work is `Work[T]`, a plain value made with `f.to[Work](param: value, ...)` and bound with `=`.
+  The fiber manager is `CoroutineManager`, and the fiber pool `ThreadPoolManager`, whose tickets are
+  `PassableFiber[T]`.
 - The console is `Console.ask`, `Console.show` and `Console.alert`.
 - Files: the OS file manager is `OsFileManager`, `subdir` is `go_to`, a `Mapping` is a `FileStorage[Byte]`, and
   the directories and environment variables are `OsEnvironment`'s.

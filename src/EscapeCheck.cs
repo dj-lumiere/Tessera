@@ -66,7 +66,7 @@ public sealed class EscapeCheck
     {
         public HashSet<Atom>? Through { get; init; }
 
-        /// Work put on a Thread or a Job ticket: it runs on another thread, next to this routine and other work.
+        /// Work put on a Thread or a PassableFiber ticket: it runs on another thread, next to this routine and other work.
         public bool Work { get; init; }
 
         /// For work, each argument as written, whether it is handed over with `steal` (the work then has it to
@@ -406,7 +406,7 @@ public sealed class EscapeCheck
             }
         }
 
-        /// The work of a Thread or a Job ticket changes only memory no other thread reaches, or reaches safely: memory
+        /// The work of a Thread or a PassableFiber ticket changes only memory no other thread reaches, or reaches safely: memory
         /// handed to it with `steal`, memory it changes through the view of an exclusive access, or an Unbroken. A global,
         /// and memory handed to it without `steal`, is shared.
         private void CheckWork(CallFact call, HashSet<Atom> through, List<HashSet<Atom>> args, List<CompileError> errors)
@@ -415,9 +415,8 @@ public sealed class EscapeCheck
             {
                 if (Of(routine) is not { } e) continue;
                 string name = all.GetValueOrDefault(routine)?.Inst.Decl.DisplayName ?? routine;
-                const string fix = "hand the work an exclusive access to it (its parameter an Authorized[T]): borrowed in the "
-                    + "work's arguments, f.to[Work](p: p.get_exclusive_access()), for start_from, whose retrieve gives it back, or "
-                    + "borrowed in a name first, held: Authorized[T] <- p.get_exclusive_access(), and dropped after the ticket's wait; "
+                const string fix = "hand the work an exclusive access to it (its parameter an Authorized[T]), borrowed in a name "
+                    + "first, held: Authorized[T] <- p.get_exclusive_access(), and dropped after the ticket's retrieve; "
                     + "or make it an Unbroken[T] and change it with its routines";
                 foreach (var (global, why) in e.WritesGlobals.OrderBy(c => c.Key, StringComparer.Ordinal))
                 {

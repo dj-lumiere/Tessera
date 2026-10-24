@@ -1,28 +1,18 @@
-# Tessera stdlib: lists of fiber and job tickets
+# Tessera stdlib: lists of fiber and passable fiber tickets
 #
-# Work spread over several fibers or ThreadPoolManager jobs keeps their tickets in a List[Fiber[T]] or a List[Job[T]], and
-# these routines handle them together: wait for all, take every result, give all back, wait for whichever finishes
-# first, cancel all, and take out or give back the ones that have finished.
+# Work spread over several fibers or ThreadPoolManager passable fibers keeps their tickets in a List[Fiber[T]] or a
+# List[PassableFiber[T]], and these routines handle them together: take every result (waiting for each), give all back,
+# wait for whichever finishes first, cancel all, and take out or give back the ones that have finished.
 
 module Standard/Fiber
 
 import Standard/Collections
 import Standard/Os
 
-### Waits until the work of every fiber ticket in the list has finished.
-@target(os: not "none")
-@track_caller
-routine @List[Fiber[T]].wait_all_finished() -> None
-needs T: typename
-    each i in 0 til me.count()
-        me[i].wait_finished()
-    then
-        return
-
-### The results of the fiber tickets' finished work, in the list's order, in a list from `manager`.
+### The results of the fiber tickets' work, in the list's order, each waited for, in a list from `manager`.
 ### :param manager: Where the list comes from.
 ### :returns: The results.
-### :throws: Crashes as each ticket's `retrieve` does: work still running, none, or cancelled.
+### :throws: Crashes as each ticket's `retrieve` does: no work, or cancelled.
 @target(os: not "none")
 @track_caller
 routine @List[Fiber[T]].retrieve_all(manager: @MemoryManager) -> List[T]
@@ -34,9 +24,9 @@ needs T: typename
     then
         return results
 
-### The results of the fiber tickets' finished work, in the list's order, in a list from HEAP.
+### The results of the fiber tickets' work, in the list's order, each waited for, in a list from HEAP.
 ### :returns: The results.
-### :throws: Crashes as each ticket's `retrieve` does: work still running, none, or cancelled.
+### :throws: Crashes as each ticket's `retrieve` does: no work, or cancelled.
 @target(os: not "none")
 @track_caller
 routine @List[Fiber[T]].retrieve_all() -> List[T]
@@ -150,23 +140,13 @@ needs T: typename
         then
             return
 
-### Waits until the work of every job ticket in the list has finished.
-@target(os: not "none")
-@track_caller
-routine @List[Job[T]].wait_all_finished() -> None
-needs T: typename
-    each i in 0 til me.count()
-        me[i].wait_finished()
-    then
-        return
-
-### The results of the job tickets' finished work, in the list's order, in a list from `manager`.
+### The results of the passable fiber tickets' work, in the list's order, each waited for, in a list from `manager`.
 ### :param manager: Where the list comes from.
 ### :returns: The results.
-### :throws: Crashes as each ticket's `retrieve` does: work still running, none, or cancelled.
+### :throws: Crashes as each ticket's `retrieve` does: no work, or cancelled.
 @target(os: not "none")
 @track_caller
-routine @List[Job[T]].retrieve_all(manager: @MemoryManager) -> List[T]
+routine @List[PassableFiber[T]].retrieve_all(manager: @MemoryManager) -> List[T]
 needs T: typename
     results: &List[T] <- .construct(manager)
 
@@ -175,43 +155,43 @@ needs T: typename
     then
         return results
 
-### The results of the job tickets' finished work, in the list's order, in a list from HEAP.
+### The results of the passable fiber tickets' work, in the list's order, each waited for, in a list from HEAP.
 ### :returns: The results.
-### :throws: Crashes as each ticket's `retrieve` does: work still running, none, or cancelled.
+### :throws: Crashes as each ticket's `retrieve` does: no work, or cancelled.
 @target(os: not "none")
 @track_caller
-routine @List[Job[T]].retrieve_all() -> List[T]
+routine @List[PassableFiber[T]].retrieve_all() -> List[T]
 needs T: typename
     return me.retrieve_all(manager: HEAP)
 
-### Gives every job ticket in the list back, and empties the list.
+### Gives every passable fiber ticket in the list back, and empties the list.
 ### :throws: Crashes as each ticket's `drop` does, when its work still runs.
 @target(os: not "none")
 @track_caller
-routine @List[Job[T]].give_back_all() -> None
+routine @List[PassableFiber[T]].give_back_all() -> None
 needs T: typename
     each i in 0 til me.count()
         drop me.getslot(i)
     me.clear()
     return
 
-### Asks the work of every job ticket in the list to stop.
+### Asks the work of every passable fiber ticket in the list to stop.
 @target(os: not "none")
 @track_caller
-routine @List[Job[T]].cancel_all() -> None
+routine @List[PassableFiber[T]].cancel_all() -> None
 needs T: typename
     each i in 0 til me.count()
         me[i].cancel()
     then
         return
 
-### Waits until the work of one of the job tickets in the list has finished, and says which: the first in the list
-### among those finished when it looks.
+### Waits until the work of one of the passable fiber tickets in the list has finished, and says which: the first in the
+### list among those finished when it looks.
 ### :returns: The position of a ticket whose work has finished.
 ### :throws: Crashes with `InvalidValueError` for an empty list.
 @target(os: not "none")
 @track_caller
-routine @List[Job[T]].wait_any_finished() -> U64
+routine @List[PassableFiber[T]].wait_any_finished() -> U64
 needs T: typename
     waiter: Waiter = current_waiter()
 
@@ -239,18 +219,18 @@ needs T: typename
                 return result
             continue with i: 0
 
-### Takes the job tickets whose work has finished out of the list, into a list from `manager`, keeping the others
-### in order.
+### Takes the passable fiber tickets whose work has finished out of the list, into a list from `manager`, keeping the
+### others in order.
 ### :param manager: Where the list of finished tickets comes from.
 ### :returns: The finished tickets, in the order they had.
 @target(os: not "none")
 @track_caller
-routine @List[Job[T]].take_finished(manager: @MemoryManager) -> Me
+routine @List[PassableFiber[T]].take_finished(manager: @MemoryManager) -> Me
 needs T: typename
     finished: &Me <- .construct(manager)
 
     each i in 0 til me.count() with kept: U64 = 0
-        ticket: Job[T] <- steal me.getslot(i)
+        ticket: PassableFiber[T] <- steal me.getslot(i)
         if ticket.check_finished()
             finished.add_last(steal ticket)
             continue with kept: kept
@@ -258,27 +238,27 @@ needs T: typename
         continue with kept: kept + 1
     then
         until me.count() <= kept
-            removed: Job[T] <- me.remove_last()
+            removed: PassableFiber[T] <- me.remove_last()
             drop removed
         then
             return finished
 
-### Takes the job tickets whose work has finished out of the list, into a list from HEAP.
+### Takes the passable fiber tickets whose work has finished out of the list, into a list from HEAP.
 ### :returns: The finished tickets, in the order they had.
 @target(os: not "none")
 @track_caller
-routine @List[Job[T]].take_finished() -> Me
+routine @List[PassableFiber[T]].take_finished() -> Me
 needs T: typename
     return me.take_finished(manager: HEAP)
 
-### Gives back the job tickets whose work has finished, and takes them out of the list: for work whose result
+### Gives back the passable fiber tickets whose work has finished, and takes them out of the list: for work whose result
 ### nobody needs.
 @target(os: not "none")
 @track_caller
-routine @List[Job[T]].give_back_finished() -> None
+routine @List[PassableFiber[T]].give_back_finished() -> None
 needs T: typename
     each i in 0 til me.count() with kept: U64 = 0
-        ticket: Job[T] <- steal me.getslot(i)
+        ticket: PassableFiber[T] <- steal me.getslot(i)
         if ticket.check_finished()
             drop ticket
             continue with kept: kept
@@ -286,7 +266,7 @@ needs T: typename
         continue with kept: kept + 1
     then
         until me.count() <= kept
-            removed: Job[T] <- me.remove_last()
+            removed: PassableFiber[T] <- me.remove_last()
             drop removed
         then
             return

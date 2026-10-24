@@ -32,13 +32,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private HashSet<string>? _values = values?.ToHashSet();
     private List<string> _routineValues = [];
 
-    /// The routine being parsed: its name as written, and its head's local lines, for the errors that point there.
+    /// The routine being parsed: its name as written, and its head's binding lines, for the errors that point there.
     private string _routineDisplay = "";
     private string _blockName = "";
     private List<BindStmt> _routineShared = [];
 
     /// A file's top-level lines so far (script mode), gathered between its declarations into one `start`: the head's
-    /// `local` lines, the other lines, the names they bind (seen by the lines after them), and where the first one is.
+    /// binding lines, the other lines, the names they bind (seen by the lines after them), and where the first one is.
     private List<Stmt>? _scriptLines;
     private List<BindStmt> _scriptHead = [];
     private readonly HashSet<string> _scriptNames = [];
@@ -51,7 +51,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// The words a statement starts with, besides a binding or a call.
     private static readonly HashSet<string> StatementKeywords =
         ["jump", "branch", "when", "return", "throw", "unreachable", "todo", "if", "each", "until", "loop", "continue", "break", "nothing",
-         "becomes", "local", "claim", "else", "elseif", "then", "drop", "steal"];
+         "becomes", "claim", "else", "elseif", "then", "drop", "steal"];
 
     private static readonly HashSet<string> DeclKeywords =
         ["routine", "record", "entity", "crashable", "choice", "variant", "preset", "global", "concept", "conform", "protocol", "obeys", "define"];
@@ -133,7 +133,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     }
 
     /// A run of top-level lines (script mode): the file's lines outside any declaration, read like a routine's body.
-    /// The first run may open with `local` lines, the head. A name bound here is seen by the top-level lines after it,
+    /// The first run may open with binding lines, the head. A name bound here is seen by the top-level lines after it,
     /// across the declarations in between, and by no routine.
     private void ParseScriptLines()
     {
@@ -153,7 +153,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         _values = [.. _scriptNames];
         int at = _i;
         var lines = ParseBody(0, routineLevel: true);
-        // A first run that is only `local` lines is a head with an empty body: the end of the file returns.
+        // A first run that is only binding lines is a head with an empty body: the end of the file returns.
         if (_i == at && !(first && _scriptHead!.Count > 0))
             throw Error($"expected a declaration or a line of the file's top-level code, found {Describe(Cur)}");
         foreach (var line in lines)
@@ -632,7 +632,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (inConcept)
             return new RoutineDecl(file, annotations, owner, name, typeParams, parameters, ret, clauses, null, pos) { Fixed = fixedArgs };
 
-        // Only an @external routine is declared without a body. Every other one has its head (the routine's local
+        // Only an @external routine is declared without a body. Every other one has its head (the routine's binding
         // lines, if it has any), then its entry block: written `block entry()`, or the lines before the first block.
         string display = owner is null ? name : $"{owner}.{name}";
         _routineDisplay = display;
@@ -1476,6 +1476,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             Next();
             return new NothingStmt(pos);
         }
+        if (IsIdent("local") && PeekTok(1).Kind == TokenKind.Ident) throw LocalGone();
         if (IsKeyword(Cur) && StatementKeywords.Contains(Cur.Text) && !StartsValue())
         {
             switch (Cur.Text)
@@ -1509,8 +1510,6 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 case "else": throw Error("'else' follows the body of an if or a when arm, at the same column as the if");
                 case "elseif": throw Error("'elseif' follows the body of an if, at the same column as the if");
                 case "then": throw Error("'then' follows the body of a loop, at the same column as the loop");
-                case "local":
-                    throw LocalGone();
                 case "claim":
                     throw Error("a place is borrowed with x: &T <- value, not claim");
                 case "branch":
@@ -1861,7 +1860,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
         if (IsKeyword(Cur) && StatementKeywords.Contains(Cur.Text) && !StartsValue())
         {
-            if (Cur.Text is "if" or "each" or "until" or "loop" or "when" or "local" or "claim" or "branch")
+            if (Cur.Text is "if" or "each" or "until" or "loop" or "when" or "claim" or "branch")
                 throw Error($"'{Cur.Text}' opens a body of its own: write it under the arm, on the lines after =>");
             return ParseLeave();
         }

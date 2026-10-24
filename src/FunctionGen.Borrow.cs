@@ -43,16 +43,17 @@ public sealed partial class FunctionGen
         && _decl.AnnotationNamed("naked") is null;
 
     /// The types whose values are borrowed from a manager and given back with `drop`, bound with `<-` from the call
-    /// that borrows them: the accesses, the thread and fiber tickets, a mapped file's storage, a piece of work.
+    /// that borrows them: the accesses, the thread, fiber and passable fiber tickets, a mapped file's storage. A piece of
+    /// work (`Work[T]`) is a plain value bound with `=`.
     private static bool IsBorrowedType(DType? t) =>
         t is RecordType { Decl.IsLibrary: true } r
-        && r.Decl.Name is "Authorized" or "ReadAuthorized" or "Thread" or "Fiber" or "Job" or "Work" or "FileStorage";
+        && r.Decl.Name is "Authorized" or "ReadAuthorized" or "Thread" or "Fiber" or "PassableFiber" or "FileStorage";
 
     /// Whether `t` (or a slot of it) is a borrowed thing the memory rules follow as one group that ends once: a thread,
-    /// fiber, or job ticket, a piece of work, or a mapped file's storage. The accesses have their own check (Access).
+    /// fiber, or passable fiber ticket, or a mapped file's storage. The accesses have their own check (Access).
     private static bool IsTicketLike(DType? t) =>
         (t is PtrType { Pointee: { } inner } ? inner : t) is RecordType { Decl.IsLibrary: true } r
-        && r.Decl.Name is "Thread" or "Fiber" or "Job" or "Work" or "FileStorage";
+        && r.Decl.Name is "Thread" or "Fiber" or "PassableFiber" or "FileStorage";
 
     /// Whether `t` is the standard library's `BorrowedCell[T]` (`&T`) or `BorrowedSlice[T]` (`&[T]`), not a type of the program that
     /// is named so.
@@ -115,14 +116,12 @@ public sealed partial class FunctionGen
         if (!IsBorrowedType(type))
             throw Err(b.Pos, $"'<-' borrows: {b.Name}: &{written} <- value borrows a place and puts the value in it, and "
                 + $"{b.Name}: {written} = value binds a value");
-        if (value is not (CallExpr or NsCallExpr or MethodCallExpr or ImplicitCallExpr or StealExpr or WorkExpr))
+        if (value is not (CallExpr or NsCallExpr or MethodCallExpr or ImplicitCallExpr or StealExpr))
             throw Err(value.Pos, $"a {type.Name} is borrowed by a call (or handed over with steal), and this is "
                 + $"{new Printer().Expr(value, 0)}: a second name for one borrowed {type.Name} would give it back twice");
-        // A piece of work changes as it starts and ends (start_from, retrieve), and a mapped file's storage is an
-        // entity: the name is a place that holds it.
-        if (type is RecordType { Decl.Name: "Work" or "FileStorage" })
+        // A mapped file's storage is an entity: the name is a place that holds it.
+        if (type is RecordType { Decl.Name: "FileStorage" })
         {
-            if (value is WorkExpr made) _madeWork[b.Name] = (made.Routine, WorkArgs(made, WorkRoutine(made)));
             return (new BindStmt(b.Name, new TypeRef("PointedCell", [new TypeArgType(written)], written.Pos), new ClaimExpr(b.Pos) { Contents = value }, b.Pos)
                 { Source = b.Source, Ticket = true }, false);
         }
@@ -168,16 +167,9 @@ public sealed partial class FunctionGen
         _stackPlaces[name] = place;
     }
 
-    /// Whether the builder's drop of a STACK place holding `held` runs a destruct: the value has something to give back
-    /// and a `destruct()` of its own. A variant, an array, or a type whose destruct takes more (a manager), is ended by the
-    /// program.
-    private bool GivenBackAtExit(DType held)
-    {
-        if (!HasReleaseDuty(held) || held is VariantType or ArrayType) return false;
-        if (held is not RecordType) return true;
-        try { return _c.FindMethod(held, "destruct", _env.File, _decl.Pos, FromTypeParameter(held) || Derived) is not { } d || d.Params.Count <= 1; }
-        catch (CompileError) { return true; }
-    }
+    /// Whether the builder's drop of a STACK place holding `held` runs a destruct: the value has something to give back.
+    /// A variant or an array is ended by the program.
+    private bool GivenBackAtExit(DType held) => HasReleaseDuty(held) && held is not (VariantType or ArrayType);
 
     /// The flags' first values, written in the start block: no STACK place is borrowed yet.
     private readonly List<string> _flagInits = [];
