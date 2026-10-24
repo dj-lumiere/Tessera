@@ -789,7 +789,17 @@ routine start() -> None
   (`NumericOverflowError` when the result needs more than 34 digits), `/` rounds to 34 digits, and every rounding a
   `Decimal` does (`/`, text read in, an integer with more digits, `Fixed[Decimal]`, `round()`) is half up: x goes to
   the n (at the digit kept) with `n - 0.5 <= x < n + 0.5`, that is `floor(x + 0.5)` (`2.5` to `3`, `-2.5` to `-2`,
-  `-7.125` to 2 places `-7.12`, and `round()` of `-0.5` is `0`). Its text drops the zeros after the point (`2.50` is `2.5`).
+  `-7.125` to 2 places `-7.12`, and `round()` of `-0.5` is `0`). A `Decimal` has one form per value: every result is
+  normalized (no trailing zeros in the coefficient, a zero is always `0`, never `-0`), so `1.0` and `1.00` hash the
+  same (`Decimal` obeys Hashable). Its text drops the zeros after the point (`2.50` is `2.5`) and writes an integer of
+  up to 34 digits in full (`"1e2"` reads as `100`). The operators keep each type's one rule; a routine that rounds on
+  purpose takes a `RoundingRule` (`HALF_UP`, `HALF_EVEN`, `HALF_AWAY`, `FLOOR`, `CEIL`, `TRUNC`, from `Ingrid/Decimal`):
+  `x.round()`, `x.round(places)`, `x.round(rule: r)`, `x.round(places, rule: r)` on all four types (left out, the
+  type's rule: `HALF_EVEN` for the D types, `HALF_UP` for `Decimal`, `round_ties_even` is gone), and on `Decimal`
+  `a.divide(by: b, places: p)`, `a.add(other: b, places: p)`, `a.subtract(other: b, places: p)`, `a.multiply(by: b, places: p)`, each with an
+  optional `rule:` (exact, then rounded once: they round where `+ - *` fail, and throw `NumericOverflowError` only
+  when even the rounded value needs more than 34 digits). A fixed text with another rule is
+  `Fixed[Decimal](value: x.round(places, rule: r), digits: places)`. No global rounding state.
   There is no decimal literal: a value comes from text (`"19.99".to[Decimal]()`, failable: `EmptyTextError`,
   `InvalidValueError`, and for `Decimal` `OutOfRangeError`), from an integer (`n.to[D64]()`, `S64.to[Decimal](3)`
   on every `S8` .. `U256`), or `D64.zero()` / `Decimal.zero()` (`.hollow()` is the all-zero bits, a zero at the
@@ -800,7 +810,7 @@ routine start() -> None
   or a NaN. Each obeys Equatable, Comparable (a NaN orders as 0, `<` and `<=` are false), the operator protocols,
   Representable (`1E+20`, `1.23E-8`, `0.000001`, `1E-7`, `inf`, `NaN`, the text RazorForge and Suflae write),
   Diagnosable (`D64(1.5)`, `Decimal(2.5)`), FixedRepresentable (`Fixed[D64](value: d, digits: 2)`), and Parsable.
-  `from_bits` / `bits()` move a D type to and from its BID encoding. Not there yet: hashing, the transcendentals, and
+  `from_bits` / `bits()` move a D type to and from its BID encoding. Not there yet: hashing of the D types, the transcendentals, and
   conversions to and from the binary floats.
 
 **Routines and generics**
