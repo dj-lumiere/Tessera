@@ -175,6 +175,10 @@ public sealed record ChoiceDecl(
 {
     /// Whether the source writes the underlying type (`choice Dir: U8`). A choice that doesn't is an `S32`.
     public bool UnderlyingWritten { get; init; } = true;
+
+    /// `flags Name`: each member is one bit (the first bit 0 unless it states one), a value has any set of them on, and the value
+    /// with none on is `none`. The underlying type is U8, U16, U32 or U64, U64 when it isn't written.
+    public bool IsFlags { get; init; }
 }
 
 /// `variant Cell` and its branches, one type per line: a value of the variant is a value of one of them, which `when`

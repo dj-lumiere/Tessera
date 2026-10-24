@@ -195,6 +195,25 @@ public sealed partial class Compiler
 
     private ConstVal Fold(Expr e, DType? hint, TypeEnv env)
     {
+        // Where a flags value goes, a bare member names its bit, `none` no member, and `a and b` the members of both.
+        if (hint is ChoiceType { Decl.IsFlags: true } flags)
+        {
+            switch (e)
+            {
+                case PresetRef { Owner: null, Path: null, Name: "none" }:
+                    return new ConstVal(flags, 0);
+                case PresetRef { Owner: null, Path: null } bare when flags.Decl.Members.FirstOrDefault(m => m.Name == bare.Name) is { Name: not null, Value: IntLit bit }:
+                    return new ConstVal(flags, bit.Value);
+                case BinaryExpr { Op: "and" } both:
+                    return new ConstVal(flags, Typed(Fold(both.Left, flags, env), flags, both.Left.Pos).Value
+                                               | Typed(Fold(both.Right, flags, env), flags, both.Right.Pos).Value);
+                case BinaryExpr { Op: "|" or "&" or "^" } bitwise:
+                    throw new CompileError(bitwise.Pos, $"'{bitwise.Op}' is for integers, and this is a {flags.Name} value: members "
+                        + "combine with 'and' (A and B)");
+                case IntLit number:
+                    throw new CompileError(number.Pos, $"a {flags.Name} value is made of its members, or none for no member on, not a number");
+            }
+        }
         switch (AsRecordLit(e, env))
         {
             case IntLit { Base10: true } whole when WholeAsFloat(whole.Value, hint, whole.Pos) is { } asFloat:

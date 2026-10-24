@@ -38,6 +38,9 @@ public static class Derive
         foreach (var type in decls.Where(d => d is RecordDecl or ChoiceDecl or VariantDecl))
         {
             var annotations = type.Annotations.Where(a => a.Name == "derive").ToList();
+            // A flags type always has its member tests, combined or not with what it derives.
+            if (type is ChoiceDecl { IsFlags: true } flags)
+                derived.AddRange(Parse(type, FlagsRoutines(flags, declared), implicitly: true));
             if (annotations.Count == 0 && type is ChoiceDecl or VariantDecl)
             {
                 foreach (var (concept, method) in Methods)
@@ -81,6 +84,8 @@ public static class Derive
         if (clauses.Any(c => c.Kind == "conform" && c.Concepts.Any(x => x.Name == concept))) return false;
         return type switch
         {
+            // A flags value is a set of members, which has no order.
+            ChoiceDecl { IsFlags: true } => concept != "Comparable",
             ChoiceDecl c => c.Members.Count > 0 || method is not ("represent_into" or "diagnose_into"),
             VariantDecl v => concept is not ("Equatable" or "Hashable" or "Comparable")
                              || v.Branches.All(c => c.Type.Name is not ("PointedCell" or "Addr")),
@@ -114,6 +119,8 @@ public static class Derive
                 throw new CompileError(at, $"{name} can't derive {concept}: its branch {pointerBranch.Name} is a pointer; declare '{method}'");
             return;
         }
+        if (type is ChoiceDecl { IsFlags: true } && concept == "Comparable")
+            throw new CompileError(at, $"{name} is a flags type, a set of members, which has no order to derive Comparable from");
         if (type is not RecordDecl r) return;
         if (r.AnnotationNamed("llvm") is not null)
             throw new CompileError(at, $"{name} is an @llvm record, so it has no fields to derive {concept} from");
@@ -481,6 +488,12 @@ public static class Derive
     {
         var u = c.Underlying;
         var sb = new StringBuilder();
+        if (c.IsFlags && method is "represent_into" or "diagnose_into")
+        {
+            sb.Append($"obeys {Qualified(concept)}[{c.Name}]\n\n");
+            FlagsWriter(sb, c, method);
+            return sb.ToString();
+        }
         sb.Append($"obeys {Qualified(concept)}[{c.Name}]\n\n");
         switch (method)
         {
@@ -519,6 +532,72 @@ public static class Derive
                 sb.Append("        r: S32 = a.compare(b)\n");
                 sb.Append("        return r\n");
                 break;
+        }
+        return sb.ToString();
+    }
+
+    // ── Flags ───────────────────────────────────────────────────────────────
+
+    /// A flags value writes its members joined by ` and ` in declaration order (`MINE and FLAGGED`), and `none` when
+    /// none is on. Diagnosed, each member is qualified (`CellMarks.MINE and CellMarks.FLAGGED`), and the empty value is
+    /// `none` too.
+    private static void FlagsWriter(StringBuilder sb, ChoiceDecl c, string method)
+    {
+        var u = c.Underlying;
+        bool diagnose = method == "diagnose_into";
+        string prefix = diagnose ? $"{c.Name}." : "";
+        sb.Append(WriterHeader(c.Name, method, "T"));
+        sb.Append($"needs T: typename, {Fmt}Writer[T]\n");
+        sb.Append($"    bits: {u} = bitcast[Me, {u}](me)\n");
+        sb.Append("    if bits == 0\n");
+        sb.Append($"        {Fmt}write_str(out, \"none\")\n");
+        sb.Append("        return\n");
+        var before = System.Numerics.BigInteger.Zero;
+        foreach (var (member, value) in c.Members)
+        {
+            var bit = ((IntLit)value).Value;
+            sb.Append($"    if bits.bitand({bit}) != 0\n");
+            if (!before.IsZero)
+            {
+                // A member after the first is joined to the ones before it, when one of them is on.
+                sb.Append($"        if bits.bitand({before}) != 0\n");
+                sb.Append($"            {Fmt}write_str(out, \" and \")\n");
+            }
+            sb.Append($"        {Fmt}write_str(out, \"{prefix}{member}\")\n");
+            before |= bit;
+        }
+        sb.Append("    return\n");
+    }
+
+    /// The member tests of a flags type, each one the type doesn't declare itself: `has` (every member of the
+    /// argument on), `has_any` (at least one on), `lacks` (none on), `without` (the value with those members off), and
+    /// `to[U64]()` with the bitmask (and `to[U8]()` and so on for its own width).
+    private static string FlagsRoutines(ChoiceDecl c, HashSet<(string, string)> declared)
+    {
+        string u = c.Underlying.Name;
+        var sb = new StringBuilder();
+        void Test(string name, string doc, string returns, string body)
+        {
+            if (declared.Contains((c.Name, name))) return;
+            sb.Append($"### {doc}\n### :param other: The members to look at.\n### :returns: {returns}\n");
+            sb.Append($"routine {c.Name}.{name}(other: Me) -> {(name == "without" ? "Me" : "Bool")}\n");
+            sb.Append($"    a: {u} = bitcast[Me, {u}](me)\n");
+            sb.Append($"    b: {u} = bitcast[Me, {u}](other)\n");
+            sb.Append($"    {body}\n\n");
+        }
+        Test("has", "Whether every member of `other` is on.", "`true` when all of them are on.", "return a.bitand(b) == b");
+        Test("has_any", "Whether at least one member of `other` is on.", "`true` when one or more of them are on.", "return a.bitand(b) != 0");
+        Test("lacks", "Whether no member of `other` is on.", "`true` when none of them is on.", "return a.bitand(b) == 0");
+        Test("without", "This value with the members of `other` off.", "The value without them.", $"return bitcast[{u}, Me](a.bitand(b.bitnot()))");
+        if (!declared.Contains((c.Name, "to")))
+        {
+            foreach (var width in u == "U64" ? new[] { "U64" } : [u, "U64"])
+            {
+                sb.Append($"### The bitmask: each member on is its bit.\n### :returns: The bits.\n");
+                sb.Append($"routine {c.Name}.to[{width}]() -> {width}\n");
+                sb.Append($"    a: {u} = bitcast[Me, {u}](me)\n");
+                sb.Append(width == u ? "    return a\n\n" : $"    return a.to[{width}]()\n\n");
+            }
         }
         return sb.ToString();
     }

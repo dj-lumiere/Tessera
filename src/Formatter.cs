@@ -95,7 +95,7 @@ public static class Formatter
             {
                 string decl = trimmed.StartsWith("secret ") ? trimmed[7..] : trimmed;
                 if (decl.StartsWith("record ") || decl.StartsWith("entity ") || decl.StartsWith("crashable ")) context = "record";
-                else if (decl.StartsWith("choice ")) context = "choice";
+                else if (decl.StartsWith("choice ") || decl.StartsWith("flags ")) context = "choice";
                 else if (decl.StartsWith("variant ")) context = "variant";
                 else if (!(trimmed.StartsWith("obeys ") || trimmed.StartsWith("needs ") || IsAnnotation(trimmed)))
                     context = null;
@@ -423,7 +423,7 @@ public static class Formatter
 
     private static bool StartsDeclaration(string line) =>
         line.StartsWith("routine ") || line.StartsWith("common routine ") || line.StartsWith("failable ") || line.StartsWith("record ")
-        || line.StartsWith("crashable ") || line.StartsWith("choice ") ||
+        || line.StartsWith("crashable ") || line.StartsWith("choice ") || line.StartsWith("flags ") ||
         line.StartsWith("variant ") || line.StartsWith("protocol ") || line.StartsWith("#") || IsAnnotation(line);
 
     /// The nearest line before `i` that isn't a comment, annotation, continuation, or blank.
@@ -685,7 +685,7 @@ public static class Formatter
             "define" => DeclKind.Define,
             "global" => DeclKind.Global,
             "preset" => DeclKind.Preset,
-            "record" or "entity" or "crashable" or "choice" or "variant" => DeclKind.Type,
+            "record" or "entity" or "crashable" or "choice" or "flags" or "variant" => DeclKind.Type,
             "protocol" => DeclKind.Concept,
             "obeys" => DeclKind.Conform,
             "routine" => IsEntryHeader(s, "start") || IsEntryHeader(s, "when_power_on") ? DeclKind.Entry : DeclKind.Routine,

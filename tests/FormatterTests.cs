@@ -20,6 +20,16 @@ public class FormatterTests
     }
 
     [Fact]
+    public void AFlagsTypeIsATypeAndItsMemberBitsSitTight()
+    {
+        // A flags type's members are its lines, like a choice's: a stated bit writes its `:` right after the name, and
+        // the type sits with the types, after the presets.
+        const string source = "flags CellMarks: U8\n    MINE\n    FLAGGED : 3\n\npreset NOTHING: CellMarks = none\n";
+        const string expected = "preset NOTHING: CellMarks = none\n\nflags CellMarks: U8\n    MINE\n    FLAGGED: 3\n";
+        Assert.Equal(expected, Formatter.Format(source));
+    }
+
+    [Fact]
     public void AScriptKeepsItsOrderAndItsBodiesTight()
     {
         // Top-level lines run in the order written, so no declaration moves past them, and a line after an `if` body

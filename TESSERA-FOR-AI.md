@@ -609,7 +609,8 @@ routine start() -> None
   holds taken. `when v` takes value arms: constants (`1, 2 =>`, `b'+', b'-' =>`, `Shape.CIRCLE =>`), observations of
   a variant (`is S64 as n =>`, `is None =>`, `is A, is B =>`), `else =>`, and `else as rest =>`. The one line after
   `=>` is a call, `return`, `break`, `continue`, or `nothing` (go on after the `when`), or the arm takes its lines
-  under it. Only the taken arm runs. An integer `when v` needs `else`, a choice `when v` without `else` lists every member,
+  under it. Only the taken arm runs. An integer `when v` needs `else`, a choice `when v` without `else` lists every member
+  (a flags value has no `when v`: test it with `has` in a condition `when`),
   a variant `when` without `else` observes every branch. There are no range patterns: test ranges with a chained
   comparison (`b'0' <= c <= b'9' =>`) in a condition `when`.
 - **`nothing` is the line with no work:** an arm with nothing to do (`Light.YELLOW => nothing`), and the body of a
@@ -1040,6 +1041,39 @@ routine start() -> None
 - `choice Name: U8` names integer values, one member per line (`RED`, or `RED: 4`): a member without a value is the one
   before it plus 1, the first 0. The underlying type is any integer type (`S8` .. `S256`, `U8` .. `U256`), and `S32`,
   C's `int`, when it isn't written (`choice Light`).
+- `flags Name` names a set of members, one per line, each one bit. A value has any of them on at once. The first
+  member is bit 0 and each next member the bit after the one before it, unless it states its bit (`MINE: 3` is bit
+  3). The type is a `U64` unless it is written: `flags Name: U8` takes `U8`, `U16`, `U32`, or `U64`. A bit that the
+  width doesn't have, more members than it has bits, two members on one bit, and any other written type are build
+  errors. Members combine with `and` (`CellMarks.MINE and CellMarks.FLAGGED`). Where a value of the flags type is
+  expected (a typed binding, a parameter, a field, the other side of `==`, `!=` or `and` from a flags value), a member is named
+  bare (`marks.has(MINE)`) and the value with no member on is `none` (`marks: CellMarks = none`, `marks == none`). A
+  visible value of the same name (`none` or a member's) hides the bare spelling there. `x.has(A and B)` is true when all of
+  them are on, `x.has_any(A and B)` when at least one is, `x.lacks(A and B)` when none is, and `x.without(A)` is `x`
+  with `A` off. `==` and `!=` compare the whole set. `x.to[U64]()` is the bitmask (and `to[U8]()` for a `U8` flags
+  type, likewise for its own width). `|`, `&`, `^` and `~` on a flags value, `or` between flags values, a number
+  where a flags value goes, `<` and the other orderings, and `when x` on a flags value are build errors. A flags
+  type derives Representable (`MINE and FLAGGED`, `none` when no member is on), Diagnosable (`CellMarks.MINE and
+  CellMarks.FLAGGED`, `none`), Equatable, and Hashable (as its bits), never Comparable. Presets take flags values
+  too: `preset EMPTY: CellMarks = none`, `preset START: &Cell <- Cell(marks: MINE and FLAGGED, adjacent_mines: 0)`.
+
+  ```tessera
+  ### What is true of a cell.
+  flags CellMarks
+      ### The cell holds a mine.
+      MINE
+      ### The cell is open.
+      REVEALED
+      ### The cell carries a flag.
+      FLAGGED
+
+  routine start() -> None
+      marks: CellMarks = CellMarks.MINE and CellMarks.FLAGGED
+      Console.show("{marks}, {marks.has(MINE and FLAGGED)}, {marks.lacks(REVEALED)}, {marks.without(MINE)}")
+      return
+  ```
+
+  prints `MINE and FLAGGED, true, true, FLAGGED`.
 - **Every type has a `destruct()`, and `drop x` is `x.destruct()`.** A type that holds something to release declares a
   `common routine T.construct(...)` (returning `Me`; a variant's values are made from its branches), a build error
   otherwise that names what it holds. A `BorrowedCell`, a `BorrowedSlice` and an entity hold something, and so does a
@@ -1168,8 +1202,8 @@ routine start() -> None
   (`None`, empty records) need none. Building with storage and an arm that names the value go through a frame slot
   (gone at `-O`). An all-zero (`.hollow()`) variant holds no branch, and a `when` on it crashes with
   `InvalidValueError`.
-- A choice or variant without `@derive` derives Representable, Diagnosable, Equatable, Hashable, and Comparable (a
-  variant's each only when every branch has it), skipping what it declares itself; `@derive(...)` lists exactly what
+- A choice or variant without `@derive` derives Representable, Diagnosable, Equatable, Hashable, and Comparable (a flags type
+  all but Comparable, a variant each only when every branch has it), skipping what it declares itself; `@derive(...)` lists exactly what
   to derive, `@derive()` nothing. A record derives only what it lists. A variant writes the held value as that value
   writes itself (a `Maybe[S64]` holding 4 prints `4`, an empty one `None`, diagnosed `None()`), a pointer branch its
   address. eq: same branch and equal values. compare: by branch in declaration order, then by value. hash: the
@@ -1848,9 +1882,9 @@ symbol keeps its own name (`rf_fs_can_read`). A vector mask asks
 `wait_for`). A `Bool` value in a body reads as a predicate too, but needs no prefix (`done`, `found`).
 
 **Name case.** Types, protocols, and modules are `PascalCase` (`Maybe`, `NotFoundError`), with acronyms written as
-words (`Utf8Decoded`). Routines, fields, and values are `snake_case`. Choice members, presets, globals, and
+words (`Utf8Decoded`). Routines, fields, and values are `snake_case`. Choice and flags members, presets, globals, and
 value generic parameters are `UPPER_SNAKE_CASE` (`FileKind.DIRECTORY`, `U64.MAX`, `NODE_KEYS`), and the build rejects a
-choice member written otherwise. Case is a convention, never grammar: the parser doesn't read a name's spelling to
+choice or flags member written otherwise. Case is a convention, never grammar: the parser doesn't read a name's spelling to
 decide what `[...]` after it is. Before `(` it is a routine's or type's arguments, alone it is an index, and before
 `.member` (`Array[T, 4].count()`, `TABLE[i].field`) the checker decides by what the name is.
 

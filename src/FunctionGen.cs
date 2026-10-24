@@ -2070,6 +2070,8 @@ public sealed partial class FunctionGen
             case WhenExpr: return null;
             case IfExpr ie: return Infer(ie.Then) ?? Infer(ie.Else);
             case RangeExpr r: throw Err(r.Pos, "a range is walked by each: each i in a til b");
+            case BinaryExpr { Op: "and" } fa when FlagsAnd(fa) is var (known, bare) && (known is not null || bare):
+                return known;
             case BinaryExpr { Op: "and" or "or" } or UnaryExpr { Op: "not" }: return BoolType.Instance;
             case UnaryExpr { Op: "try" or "check" } rc: return InferRecover(rc);
             case IntLit or FloatLit or StrLit: return null;
@@ -2194,6 +2196,8 @@ public sealed partial class FunctionGen
     {
         bool moving = _moving;
         _moving = false;
+        if (FlagsOf(expected) is { } flagsExpected && e is BinaryExpr { Op: "|" or "&" or "^" } bitwise)
+            throw Err(bitwise.Pos, FlagsBitwise(bitwise.Op, flagsExpected));
         e = AsStride(AsField(AsIndexed(_c.AsRecordLit(Desugar(e), _env))));
         if (!moving && CopiedEntity(e) is { } copied) throw Err(e.Pos, copied);
         // A value of a branch type is a value of the variant (one level), and so is a narrower variant's.
@@ -2210,6 +2214,9 @@ public sealed partial class FunctionGen
         {
             IntLit { Base10: true } i when Compiler.WholeAsFloat(i.Value, expected, i.Pos) is { } whole =>
                 new Val(Compiler.ConstLlvm(whole), expected),
+            IntLit i when FlagsOf(expected) is { } flagsOfInt => throw Err(i.Pos,
+                $"a {flagsOfInt.Name} value is made of its members ({string.Join(" and ", flagsOfInt.Decl.Members.Take(2).Select(m => m.Name))}), "
+                + "or none for no member on, not a number"),
             IntLit i => IntConst(i.Value, i.Pos, expected, i.HexDigits),
             TypedIntLit t => TypedConst(t),
             UnitLit u => UnitConst(u),
@@ -2223,6 +2230,7 @@ public sealed partial class FunctionGen
             FieldExpr f => ExtractField(f),
             IfExpr s => EvalIf(s, expected),
             WhenExpr w => EvalWhenValue(w, expected),
+            BinaryExpr { Op: "and" } fa when FlagsOf(expected) is { } flagsAnd => EvalFlagsAnd(fa, flagsAnd),
             BinaryExpr { Op: "and" or "or" } l => EvalLogic(l),
             UnaryExpr { Op: "not" } n => EvalNot(n),
             UnaryExpr { Op: "try" or "check" } rc => EvalRecover(rc, expected),
@@ -2236,6 +2244,7 @@ public sealed partial class FunctionGen
             ImplicitCallExpr => EvalCall(e, expected),
             NsCallExpr or MethodCallExpr when TemplateCall(e) is var (writer, template, shown) =>
                 ExpandTemplate(writer, template, shown),
+            PresetRef r when FlagsOf(expected) is { } flagsOfName && BareFlags(r, flagsOfName) is { } bits => IntConst(bits, r.Pos, flagsOfName),
             PresetRef r => EvalPresetRef(r, expected),
             RoutineRef rr => RoutineValue(rr, expected),
             WorkExpr work => EvalWork(work, expected),
@@ -2843,6 +2852,9 @@ public sealed partial class FunctionGen
     /// `when v` on an integer, a Byte, a Char, or a choice: a switch on the value.
     private void EmitSwitchWhen(WhenStmt w, Val v, Func<WhenArm, Action?, string> armBlock)
     {
+        if (FlagsOf(v.Type) is { } flagsWhen)
+            throw Err(w.Value!.Pos, $"a {flagsWhen.Name} value can have several members on at once, so when has no one arm to pick: "
+                + "test it with has, has_any or lacks in a condition when (x.has(A) => ...)");
         if (v.Type is not (IntType or ChoiceType))
             throw Err(w.Value!.Pos, $"when v needs an integer, Byte, Char, choice, or variant value, not {v.Type}");
         if (w.ElseBinding is { } named)
@@ -3388,6 +3400,11 @@ public sealed partial class FunctionGen
     /// `a and b` / `a or b`: the right side runs only when the left leaves the answer open.
     private Val EvalLogic(BinaryExpr l)
     {
+        if (FlagsAnd(l) is ({ } flagsSide, _))
+            throw Err(l.Pos, l.Op == "or"
+                ? $"'or' is Bool's, and these are {flagsSide.Name} values: members combine with 'and' (A and B), and "
+                  + "x.has_any(A and B) asks whether at least one of them is on"
+                : $"these are {flagsSide.Name} values, and a Bool is expected here: test them with has, has_any or lacks (x.has(A and B))");
         var a = Eval(l.Left, BoolType.Instance);
         var right = NewLBlock("rhs");
         var join = NewLBlock("logic");
@@ -3402,6 +3419,55 @@ public sealed partial class FunctionGen
         string shortValue = isAnd ? "false" : "true";
         return new Val(EmitTmp($"phi i1 [ {shortValue}, %{aPred} ], [ {b.Op}, %{bPred} ]"), BoolType.Instance);
     }
+
+    // ── Flags ───────────────────────────────────────────────────────────────
+
+    /// The flags type `t` is, or null.
+    private static ChoiceType? FlagsOf(DType? t) => t is ChoiceType { Decl.IsFlags: true } f ? f : null;
+
+    /// A bare name where a value of the flags type `f` goes: one of its members (its bit), or `none` (no member on).
+    /// Null for any other name.
+    private static BigInteger? BareFlags(PresetRef r, ChoiceType f)
+    {
+        if (r.Owner is not null || r.Path is not null) return null;
+        if (r.Name == "none") return BigInteger.Zero;
+        return f.Decl.Members.FirstOrDefault(m => m.Name == r.Name) is { Name: not null, Value: IntLit bit } ? bit.Value : null;
+    }
+
+    /// A preset reference's preset, or null when it names none (or naming it fails).
+    private PresetInfo? ResolvePresetQuiet(PresetRef r)
+    {
+        try { return ResolvePreset(r); }
+        catch (CompileError) { return null; }
+    }
+
+    /// What `a and b` combines when it isn't Bool's: the flags type a side has (`known`), or, when neither side has a
+    /// type of its own, whether both are bare names or such combinations (`bare`, `MINE and FLAGGED`), which take the
+    /// flags type of where the value goes.
+    private (ChoiceType? Known, bool Bare) FlagsAnd(BinaryExpr b)
+    {
+        if (b.Op != "and") return (FlagsOf(TryInfer(b.Left)) ?? FlagsOf(TryInfer(b.Right)), false);
+        if ((FlagsOf(TryInfer(b.Left)) ?? FlagsOf(TryInfer(b.Right))) is { } known) return (known, false);
+        bool Bare(Expr e) => e switch
+        {
+            PresetRef { Owner: null, Path: null } r => ResolvePresetQuiet(r) is null,
+            BinaryExpr { Op: "and" } inner => FlagsAnd(inner) is (null, true),
+            _ => false,
+        };
+        return (null, Bare(b.Left) && Bare(b.Right));
+    }
+
+    /// `a and b` of flags values: the members on in either.
+    private Val EvalFlagsAnd(BinaryExpr b, ChoiceType f)
+    {
+        var left = Eval(b.Left, f);
+        var right = Eval(b.Right, f);
+        return new Val(EmitTmp($"or {f.Llvm} {left.Op}, {right.Op}"), f);
+    }
+
+    private static string FlagsBitwise(string op, ChoiceType f) =>
+        $"'{op}' is for integers, and this is a {f.Name} value: members combine with 'and' (A and B), x.has(A) asks whether "
+        + "A is on (has_any for at least one, lacks for none), and x.without(A) takes A off";
 
     private Val EvalNot(UnaryExpr n)
     {
@@ -3441,6 +3507,12 @@ public sealed partial class FunctionGen
 
                 bool literalLeft = b.Left is IntLit or FloatLit;
                 var operand = literalLeft ? Infer(b.Right) : TryInfer(b.Left);
+                if (b.Op is "|" or "&" or "^" && (FlagsOf(operand) ?? FlagsOf(TryInfer(b.Right))) is { } bitFlags)
+                    throw Err(b.Pos, FlagsBitwise(b.Op, bitFlags));
+                // `none == marks`: a bare member or none takes its type from the other side, so the flags value goes first.
+                if (b.Op is "==" or "!=" && operand is null && b.Left is PresetRef { Owner: null }
+                    && FlagsOf(TryInfer(b.Right)) is not null)
+                    return Desugar(b with { Left = b.Right, Right = b.Left });
                 Expr Call(string routine) => literalLeft && operand is not null
                     ? new NsCallExpr(new TypeRef("$operand", [], b.Pos) { Known = operand }, routine, [], [b.Left, b.Right], b.Pos) { FromOperator = true }
                     : new MethodCallExpr(b.Left, routine, [], [b.Right], b.Pos) { FromOperator = true };
@@ -3455,6 +3527,9 @@ public sealed partial class FunctionGen
                         CheckOperator("eq", operand, b.Pos);
                         return OwnComparison(operand, name) ? Call(name) : new UnaryExpr("not", Call("eq"), b.Pos);
                     }
+                    if (FlagsOf(operand) is { } unordered)
+                        throw Err(b.Pos, $"a {unordered.Name} value is a set of members, which has no order: compare with == or !=, "
+                            + "or ask x.has(A) for a member");
                     CheckOperator("compare", operand, b.Pos);
                     if (OwnComparison(operand, name)) return Call(name);
                     return Desugar(new BinaryExpr(b.Op, Call("compare"), new IntLit(0, b.Pos), b.Pos));
@@ -3467,6 +3542,8 @@ public sealed partial class FunctionGen
             case UnaryExpr u:
             {
                 string name = u.Op == "-" ? "neg" : "bitnot";
+                if (u.Op == "~" && FlagsOf(TryInfer(u.Operand)) is { } notFlags)
+                    throw Err(u.Pos, $"'~' is for integers, and this is a {notFlags.Name} value: x.without(A) takes members off");
                 if (TryInfer(u.Operand) is { } operand) CheckOperator(name, operand, u.Pos);
                 return new MethodCallExpr(u.Operand, name, [], [], u.Pos) { FromOperator = true };
             }
@@ -3650,6 +3727,8 @@ public sealed partial class FunctionGen
             throw Err(r.Pos, fromScript);
         if (r.Owner is null && r.Path is null && HostedTable(r.Name) is { } hosted)
             throw Err(r.Pos, hosted);
+        if (r.Owner is null && FlagsOf(expected) is { } flags)
+            throw Err(r.Pos, $"{flags.Name} has no member '{r.Name}': its members are {string.Join(", ", flags.Decl.Members.Select(m => m.Name))}");
         throw Err(r.Pos, $"unknown name '{(r.Owner is null ? r.Name : $"{r.Owner}.{r.Name}")}'");
     }
 
@@ -4182,6 +4261,13 @@ public sealed partial class FunctionGen
                 };
             case RecordLit { Type: null }:
                 return pt is RecordType { IsTuple: false } ? null : $"(name: ...) can't be a {pt}";
+            case PresetRef { Owner: null, Path: null } bare when FlagsOf(pt) is { } flagsParam && ResolvePresetQuiet(bare) is null:
+                return BareFlags(bare, flagsParam) is null ? $"{flagsParam.Name} has no member '{bare.Name}'" : null;
+            case BinaryExpr { Op: "and" } flagsAnd when FlagsOf(pt) is { } flagsParam && FlagsAnd(flagsAnd) is (null, true):
+            {
+                bool ignored = true;
+                return UntypedMisfit(flagsAnd.Left, flagsParam, ref ignored) ?? UntypedMisfit(flagsAnd.Right, flagsParam, ref ignored);
+            }
             case ImplicitMemberExpr m:
                 return $"'.{m.Name}' isn't a value of {pt}";
             case ImplicitCallExpr ic:

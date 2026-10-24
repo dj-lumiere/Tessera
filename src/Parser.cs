@@ -100,16 +100,17 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (isFailable && !IsIdent("routine"))
                 throw Error("failable marks a routine: failable routine name(...) -> T, or failable common routine Owner.name(...)");
             if (annotations.Count == 0 && !isPrivate && !isCommon && !isFailable && Cur.Pos.Col == 1
-                && (!IsKeyword(Cur) || !DeclKeywords.Contains(Cur.Text)) && !isLibrary)
+                && (!IsKeyword(Cur) || !DeclKeywords.Contains(Cur.Text)) && !FlagsNext() && !isLibrary)
             {
                 ParseScriptLines();
                 SkipNewlines();
                 continue;
             }
-            if (!IsKeyword(Cur) || !DeclKeywords.Contains(Cur.Text))
-                throw Error($"expected a declaration (routine, record, entity, crashable, choice, variant, preset, global, protocol, obeys, define), found {Describe(Cur)}");
+            if ((!IsKeyword(Cur) || !DeclKeywords.Contains(Cur.Text)) && !FlagsNext())
+                throw Error($"expected a declaration (routine, record, entity, crashable, choice, flags, variant, preset, global, protocol, obeys, define), found {Describe(Cur)}");
             Decl d = Cur.Text switch
             {
+                "flags" => ParseFlags(annotations),
                 "routine" => ParseRoutine(annotations, inConcept: false, isCommon: isCommon) with { IsFailable = isFailable },
                 "record" or "entity" or "crashable" => ParseRecord(annotations),
                 "choice" => ParseChoice(annotations),
@@ -285,7 +286,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         Is(TokenKind.Eof) || (AtAnnotation() && Cur.Pos.Col == 1)
         || (IsKeyword(Cur) && (DeclKeywords.Contains(Cur.Text) || Cur.Text is "secret") && Cur.Pos.Col == 1)
         || (IsIdent("common") && PeekTok(1) is { Kind: TokenKind.Ident, Text: "routine" } && Cur.Pos.Col == 1)
-        || (FailableNext() && Cur.Pos.Col == 1);
+        || (FailableNext() && Cur.Pos.Col == 1)
+        || (FlagsNext() && Cur.Pos.Col == 1);
+
+    /// Whether `flags` at the cursor starts a flags declaration, `flags Name`: elsewhere `flags` is an ordinary name
+    /// (a parameter of a C routine, a binding in a script).
+    private bool FlagsNext() => IsIdent("flags") && PeekTok(1) is { Kind: TokenKind.Ident } next && next.Pos.Line == Cur.Pos.Line;
 
     /// Whether a variant's branch lines or a choice's member lines end here: they are indented, so a line at column 1
     /// starts the next declaration or, in a script, the next top-level line.
@@ -865,6 +871,63 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             ExpectLineEnd();
         }
         return new ChoiceDecl(file, annotations, name.Text, underlying, members, pos) { UnderlyingWritten = written };
+    }
+
+    /// The widths a flags type may write: one bit per member, at most as many members as the width has bits.
+    private static readonly Dictionary<string, int> FlagsWidths = new() { ["U8"] = 8, ["U16"] = 16, ["U32"] = 32, ["U64"] = 64 };
+
+    /// `flags Name` (or `flags Name: U16`) and its members, one per line: the first member is bit 0, the next bit 1,
+    /// and so on, unless a member states its bit (`MINE: 3`). Without a written width the flags type is a U64.
+    private ChoiceDecl ParseFlags(List<Annotation> annotations)
+    {
+        var pos = Cur.Pos;
+        ExpectIdent("flags");
+        var name = TypeName(Expect(TokenKind.Ident, "a flags name"));
+        bool written = Accept(TokenKind.Colon);
+        var underlying = written ? ParseType() : new TypeRef("U64", [], name.Pos);
+        if (written && (underlying.Args.Count != 0 || underlying.Path is not null || !FlagsWidths.ContainsKey(underlying.Name)))
+            throw new CompileError(underlying.Pos,
+                $"flags '{name.Text}' takes the width U8, U16, U32 or U64, not {underlying}: each member is one bit of it");
+        int bits = FlagsWidths[underlying.Name];
+        ExpectLineEnd();
+
+        // A member may state its bit (`MINE: 0`). One that doesn't takes the bit after the member before it, the
+        // first member bit 0, as a choice member takes the value after the one before it.
+        var listed = new List<(Token Name, System.Numerics.BigInteger Bit, Pos At)>();
+        while (!AtMemberListEnd())
+        {
+            var m = Expect(TokenKind.Ident, "a flags member");
+            if (!IsScreamingSnake(m.Text))
+                throw new CompileError(m.Pos, $"flags members are SCREAMING_SNAKE_CASE: '{m.Text}' is written {OldSpellings.Screaming(m.Text)}");
+            if (listed.Any(x => x.Name.Text == m.Text))
+                throw new CompileError(m.Pos, $"flags '{name.Text}' has two members named {m.Text}");
+            System.Numerics.BigInteger bit = listed.Count == 0 ? 0 : listed[^1].Bit + 1;
+            var at = m.Pos;
+            if (Accept(TokenKind.Colon))
+            {
+                at = Cur.Pos;
+                if (ParseExpr() is not IntLit index)
+                    throw new CompileError(at, $"flags member '{m.Text}' states its bit with a whole number: {m.Text}: 0 is bit 0");
+                bit = index.Value;
+            }
+            listed.Add((m, bit, at));
+            ExpectLineEnd();
+        }
+        if (listed.Count == 0) throw new CompileError(pos, $"flags '{name.Text}' needs at least one member");
+        if (listed.Count > bits)
+            throw new CompileError(pos, written
+                ? $"flags '{name.Text}' has {listed.Count} members and {underlying.Name} holds {bits}: write a wider width, or leave it out for U64"
+                : $"flags '{name.Text}' has {listed.Count} members, and a flags value holds at most 64 (U64)");
+        var members = new List<(string, Expr)>();
+        foreach (var (m, bit, at) in listed)
+        {
+            if (bit < 0 || bit >= bits)
+                throw new CompileError(at, $"flags member '{m.Text}' is bit {bit}, and {underlying.Name} has bits 0 to {bits - 1}");
+            if (listed.FirstOrDefault(x => x.Bit == bit).Name is { } first && first != m)
+                throw new CompileError(at, $"flags members '{first.Text}' and '{m.Text}' are both bit {bit}: give each member a bit of its own");
+            members.Add((m.Text, new IntLit(System.Numerics.BigInteger.One << (int)bit, m.Pos)));
+        }
+        return new ChoiceDecl(file, annotations, name.Text, underlying, members, pos) { UnderlyingWritten = written, IsFlags = true };
     }
 
     private static bool IsScreamingSnake(string name) =>

@@ -196,6 +196,9 @@ public static partial class LanguageServer
             TokenKind.Ident when member => null,
             TokenKind.Ident when !t.Escaped && ControlKeywords.Contains(t.Text) => "controlKeyword",
             TokenKind.Ident when !t.Escaped && Keywords.Contains(t.Text) => "keyword",
+            // `flags` starts a declaration only at the start of a line before the type's name: elsewhere it is a name.
+            TokenKind.Ident when !t.Escaped && t.Text == "flags" && t.Pos.Col == 1 && i + 1 < tokens.Count
+                && tokens[i + 1] is { Kind: TokenKind.Ident } named && named.Pos.Line == t.Pos.Line => "keyword",
             TokenKind.Ident when !t.Escaped && PlannedKeywords.Contains(t.Text) => "keyword",
             TokenKind.Ident when !t.Escaped && NumberWords.Contains(t.Text) => "number",
             TokenKind.Ident when i > 0 && tokens[i - 1].Kind == TokenKind.Hash => "decorator",
@@ -707,7 +710,8 @@ public static partial class LanguageServer
                     {
                         Mark(value.Pos.Line > 0 ? value.Pos with { Col = 1 } : choice.Pos, name, "constant",
                             CaseHover(TypeRef.Simple(choice.Name, choice.Pos), name));
-                        Expr(value);
+                        // A flags member's value is its bit, which the builder works out from the list.
+                        if (!choice.IsFlags) Expr(value);
                     }
                     break;
                 case VariantDecl variant:
