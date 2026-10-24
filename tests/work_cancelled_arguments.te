@@ -1,0 +1,64 @@
+# Work cancelled before it runs still runs, sees cancel_requested(), and ends the arguments it was handed. A result it
+# leaves, which retrieve() of cancelled work doesn't give, ends with the ticket. Each Noisy says when it ends, and holds
+# memory from HEAP, which the heap check would catch given back twice.
+
+import Standard/Fiber
+import Standard/Os
+
+### A value that says when it ends.
+entity Noisy
+    n: S64
+    cell: &S64
+
+### Makes one, with a cell from HEAP.
+### :param n: Its number.
+### :returns: The new value.
+common routine Noisy.construct(n: S64) -> Me
+    cell: &S64 <- n from HEAP
+    return Me(n, cell: steal cell)
+
+### Says that it ends, and gives the cell back.
+routine @Noisy.destruct() -> None
+    Console.show("end {me.n.peek()}")
+    drop me.cell
+    return
+
+### Work with no result: ends `item` and stops when it was cancelled.
+### :param item: What it was handed.
+routine look(item: Noisy) -> None
+    if cancel_requested()
+        Console.show("look was cancelled")
+        drop item
+        return
+    Console.show("look ran")
+    drop item
+    return
+
+### Work that hands back what it was handed.
+### :param item: What it was handed.
+### :returns: The same value.
+routine pass_on(item: Noisy) -> Noisy
+    Console.show("pass_on cancelled: {cancel_requested()}")
+    return item
+
+routine start() -> None
+    a: &Noisy <- Noisy.construct(1)
+    f: Fiber[None] <- FIBERS.get_fiber[None]()
+    first: Work[None] = look.to[Work](item: steal a)
+    f.put_work(first)
+    f.cancel()
+    FIBERS.run()
+    when check f.retrieve()
+        is None => Console.show("not cancelled")
+        is CancelRequested => Console.show("retrieve: cancelled")
+    drop f
+
+    b: &Noisy <- Noisy.construct(2)
+    g: Fiber[Noisy] <- FIBERS.get_fiber[Noisy]()
+    second: Work[Noisy] = pass_on.to[Work](item: steal b)
+    g.put_work(second)
+    g.cancel()
+    FIBERS.run()
+    Console.show("fiber dropped")
+    drop g
+    return

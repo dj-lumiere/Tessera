@@ -1,0 +1,95 @@
+# A result nobody retrieved ends with its ticket: `drop t` is the ticket's destruct, which destructs what the work left,
+# on a thread, a fiber and a passable fiber, in a ticket list (give_back_all, drop), and when more work goes on the
+# same ticket first. Each Noisy says when it ends, and holds memory from HEAP, which the heap check would catch given
+# back twice.
+
+import Standard/Collections
+import Standard/Fiber
+import Standard/Os
+
+### A value that says when it ends.
+entity Noisy
+    n: S64
+    cell: &S64
+
+### Makes one, with a cell from HEAP.
+### :param n: Its number.
+### :returns: The new value.
+common routine Noisy.construct(n: S64) -> Me
+    cell: &S64 <- n from HEAP
+    return Me(n, cell: steal cell)
+
+### Says that it ends, and gives the cell back.
+routine @Noisy.destruct() -> None
+    Console.show("end {me.n.peek()}")
+    drop me.cell
+    return
+
+### The work: a Noisy numbered `n`.
+### :param n: Its number.
+### :returns: The value.
+routine make(n: S64) -> Noisy
+    return Noisy.construct(n)
+
+routine start() -> None
+    t: Thread[Noisy] <- get_thread[Noisy]()
+    first: Work[Noisy] = make.to[Work](n: 1)
+    t.put_work(first)
+    loop
+        if t.check_finished()
+            break
+        continue
+    # More work on the same ticket: the result of the first ends here.
+    second: Work[Noisy] = make.to[Work](n: 2)
+    t.put_work(second)
+    loop
+        if t.check_finished()
+            break
+        continue
+    Console.show("thread dropped")
+    drop t
+
+    f: Fiber[Noisy] <- FIBERS.get_fiber[Noisy]()
+    third: Work[Noisy] = make.to[Work](n: 3)
+    f.put_work(third)
+    FIBERS.run()
+    Console.show("fiber dropped")
+    drop f
+
+    pool: &ThreadPoolManager <- .construct(threads: 2)
+    p: PassableFiber[Noisy] <- pool.get_passable_fiber[Noisy]()
+    fourth: Work[Noisy] = make.to[Work](n: 4)
+    p.put_work(fourth)
+    loop
+        if p.check_finished()
+            break
+        continue
+    Console.show("passable fiber dropped")
+    drop p
+    drop pool
+
+    ts: &List[Thread[Noisy]] <- .construct(HEAP)
+    each i: S64 in 5 til 7
+        u: Thread[Noisy] <- get_thread[Noisy]()
+        made: Work[Noisy] = make.to[Work](n: i)
+        u.put_work(made)
+        ts.add_last(steal u)
+    each i: U64 in 0 til ts.count()
+        loop
+            if ts[i].check_finished()
+                break
+            continue
+    Console.show("give_back_all")
+    ts.give_back_all()
+    drop ts
+
+    fs: &List[Fiber[Noisy]] <- .construct(HEAP)
+    each i: S64 in 7 til 9
+        g: Fiber[Noisy] <- FIBERS.get_fiber[Noisy]()
+        made: Work[Noisy] = make.to[Work](n: i)
+        g.put_work(made)
+        fs.add_last(steal g)
+    FIBERS.run()
+    Console.show("fiber list dropped")
+    drop fs
+    return

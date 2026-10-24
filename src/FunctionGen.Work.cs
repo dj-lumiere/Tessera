@@ -61,7 +61,8 @@ public sealed partial class FunctionGen
         return names.Select(n => byName[n]).ToList();
     }
 
-    /// The block in a frame slot, then `work_from[T, Block](block, runner)`.
+    /// The block in a frame slot, then `work_from[T, Block](block, runner, discard)`: a ticket runs a copy of the block
+    /// with `runner` and ends what the copy still holds (a result nobody retrieved) with `discard`.
     private Val EvalWork(WorkExpr w, DType? expected)
     {
         var routine = WorkRoutine(w);
@@ -113,8 +114,9 @@ public sealed partial class FunctionGen
         var result = none ? Known(Resolve(TypeRef.Simple("None", w.Pos))) : Known(ct.Ret);
         var call = new CallExpr("work_from", [result, new TypeRef(blockRef.Name, blockArgs, w.Pos) { Known = blockType }],
             [new ValueRef(slot, w.Pos),
-             new RoutineRef($"run_{suffix}{n}", null, w.Pos) { TypeArgs = routineArgs }], w.Pos)
-            { ArgNames = ["made", "runner"] };
+             new RoutineRef($"run_{suffix}{n}", null, w.Pos) { TypeArgs = routineArgs },
+             new RoutineRef($"discard_{suffix}{n}", null, w.Pos) { TypeArgs = routineArgs }], w.Pos)
+            { ArgNames = ["made", "runner", "discard"] };
         return Eval(call, expected ?? WorkType(w)!);
     }
 }

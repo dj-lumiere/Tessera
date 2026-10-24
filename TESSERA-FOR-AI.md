@@ -1446,7 +1446,14 @@ routine, its arguments, room for the result, a size the build knows) is in the f
 nothing gives it back (`<-` is a build error: "'<-' borrows: w: &Work[U64] <- value borrows a place and puts the value
 in it, and w: Work[U64] = value binds a value"). It runs on a ticket. An argument may be an entity handed over with
 `steal` (the work's routine then holds it), and the result may be an entity (`Thread[List[S64]]`, `result: &List[S64]
-<- t.retrieve()`): `retrieve()` moves the result out of the ticket.
+<- t.retrieve()`): `retrieve()` moves the result out of the ticket and leaves its place hollow. `drop t` is the
+ticket's `destruct()`: it destructs a result nobody retrieved (dropped before `retrieve()`, or `retrieve()` threw
+`CancelRequested`) through the block's own destruct (a `WorkN` / `VoidWorkN` entity, which skips hollow places) before
+the block goes back, for each ticket of a list too (`give_back_all()`, `drop ts`). More work put on a ticket that still
+holds the last result destructs that result first (no build error, no crash). A retrieved result isn't destructed
+again. The work's routine gets the arguments when it runs, cancelled or not, so it
+ends them (`look(item: Noisy)` drops `item` on its `cancel_requested()` path too, the build checks it), and the
+block's destruct only ends what is still in it.
 
 **Threads, fibers, and passable fibers are tickets.** A manager lends one, and it is used in one flow, top to
 bottom: `t: Thread[S64] <- get_thread[S64]()` (a ticket is bound with `<-` from the call that borrows it, `=` is a build

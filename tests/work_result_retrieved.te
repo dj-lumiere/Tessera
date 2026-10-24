@@ -1,0 +1,52 @@
+# A result retrieve() moved out of the ticket is the caller's: dropping the ticket after it doesn't end it again, on a
+# thread and on a fiber, and the same ticket's next work starts clean. Each Noisy says when it ends, and holds memory
+# from HEAP, which the heap check would catch given back twice.
+
+import Standard/Fiber
+import Standard/Os
+
+### A value that says when it ends.
+entity Noisy
+    n: S64
+    cell: &S64
+
+### Makes one, with a cell from HEAP.
+### :param n: Its number.
+### :returns: The new value.
+common routine Noisy.construct(n: S64) -> Me
+    cell: &S64 <- n from HEAP
+    return Me(n, cell: steal cell)
+
+### Says that it ends, and gives the cell back.
+routine @Noisy.destruct() -> None
+    Console.show("end {me.n.peek()}")
+    drop me.cell
+    return
+
+### The work: a Noisy numbered `n`.
+### :param n: Its number.
+### :returns: The value.
+routine make(n: S64) -> Noisy
+    return Noisy.construct(n)
+
+routine start() -> None
+    t: Thread[Noisy] <- get_thread[Noisy]()
+    first: Work[Noisy] = make.to[Work](n: 1)
+    t.put_work(first)
+    one: &Noisy <- t.retrieve()
+    second: Work[Noisy] = make.to[Work](n: 2)
+    t.put_work(second)
+    two: &Noisy <- t.retrieve()
+    drop t
+    Console.show("thread dropped, holding {one.n.peek()} and {two.n.peek()}")
+    drop one
+    drop two
+
+    f: Fiber[Noisy] <- FIBERS.get_fiber[Noisy]()
+    third: Work[Noisy] = make.to[Work](n: 3)
+    f.put_work(third)
+    three: &Noisy <- f.retrieve()
+    drop f
+    Console.show("fiber dropped, holding {three.n.peek()}")
+    drop three
+    return

@@ -18,6 +18,11 @@
 # `CancelRequested`, and so does one whose own work was cancelled. The same ticket takes more work after a
 # `retrieve()`, one piece after another.
 #
+# `drop t` is the ticket's destruct. The result `retrieve()` moves out leaves its place hollow, and a result nobody
+# retrieved (the work was cancelled, the ticket is dropped first, or more work is put on it) is destructed through the
+# block's destruct before the block goes back. The arguments went to the work's routine when it ran, and the routine
+# ends them, on its cancelled path too.
+#
 # This file holds what the tickets share: the WorkSlot a ticket's work lives in (its state, the block that holds the
 # routine, its arguments and the room for its result, a cancel request, the deadline of the next `retrieve()`, and a
 # fiber waiting for it), the blocks for each number of arguments, and `cancel_requested()`, which the work itself asks.
@@ -58,6 +63,8 @@ entity WorkSlot
     state: U32
     ### Runs the work in `work`: calls its routine with its arguments and stores the result in front.
     runner: Callable[(Addr,), None]
+    ### Ends what the block in `work` still holds (a result nobody retrieved) through the block's destruct.
+    discard: Callable[(Addr,), None]
     ### The block of the work, from `manager`, or null.
     work: Addr
     ### The memory manager the work's blocks come from: the thread or coroutine manager's.
@@ -104,11 +111,12 @@ needs TWriter: typename, Writer[TWriter]
 ### :param manager: Where the work's blocks come from.
 ### :returns: The slot.
 common routine WorkSlot.construct(manager: @MemoryManager) -> Me
-    return Me(state: TICKET_EMPTY, runner: no_work.to[Callable](), work: .hollow(), manager,
+    return Me(state: TICKET_EMPTY, runner: no_work.to[Callable](), discard: no_work.to[Callable](),
+        work: .hollow(), manager,
         cancel: 0, guard: 0, waiter: .hollow(), blocked: .hollow(), issued: 0,
         deadline: Duration.MAX)
 
-### Gives back the block of the last work.
+### Ends what the last work's block still holds and gives the block back.
 routine @WorkSlot.destruct() -> None
     me.free_work()
     return
@@ -147,15 +155,19 @@ routine @WorkSlot.check_free() -> None
             message: "This ticket's work hasn't finished: a ticket runs one piece of work at a time, so retrieve() first.")
     return
 
-### Starts the work in `work`, run by `runner`, in place of the last one, whose block goes back.
+### Starts the work in `work`, run by `runner`, in place of the last one: a result of the last one that nobody
+### retrieved is destructed, and its block goes back.
 ### :param runner: Runs the work.
+### :param discard: Destructs the block, for a result nobody retrieves.
 ### :param work: Its block, from the slot's memory manager.
 ### :throws: Crashes with `TicketBusyError` while the last work runs.
 @track_caller
-routine @WorkSlot.put(runner: Callable[(Addr,), None], work: Addr) -> None
+routine @WorkSlot.put(runner: Callable[(Addr,), None], discard: Callable[(Addr,), None],
+    work: Addr) -> None
     me.check_free()
     me.free_work()
     me.runner.poke(runner)
+    me.discard.poke(discard)
     me.work.poke(work)
     me.cancel.poke_unbroken(0)
     me.blocked.poke(.hollow())
@@ -163,11 +175,14 @@ routine @WorkSlot.put(runner: Callable[(Addr,), None], work: Addr) -> None
     wake_all(me.state)
     return
 
-### Gives the block of the last work back, if there is one.
+### Destructs the block of the last work, if there is one, and gives it back: a result nobody retrieved ends there. A
+### result `retrieve` took left a hollow place, which the destruct leaves alone, and the arguments went to the work's
+### routine when it ran.
 routine @WorkSlot.free_work() -> None
     work: Addr = me.work.peek()
     if work.is_hollow()
         return
+    me.discard.peek().call(work)
     deallocate(data: work.to[@Byte](), manager: me.manager.peek())
     me.work.poke(.hollow())
     return
@@ -295,6 +310,13 @@ needs T: typename
             message: "This ticket has no work to retrieve: put_work() comes first.")
     return me.work.peek().to[@T]()
 
+### Leaves the result's place hollow once `retrieve` took the result out, so the block's destruct doesn't end it again.
+### :typeparam T: The result type.
+routine @WorkSlot.result_taken[T]() -> None
+needs T: typename
+    me.work.peek().to[@T]().zeroinit(1)
+    return
+
 ### Whether `cancel()` asked the work to stop.
 ### :returns: True once it did.
 routine @WorkSlot.is_cancelled() -> Bool
@@ -311,7 +333,8 @@ routine @WorkSlot.request_cancel() -> None
     blocked.wake()
     return
 
-### Ends the ticket that holds the slot: gives the last work's block back and gives the slot a new number.
+### Ends the ticket that holds the slot: destructs the last work's block (a result nobody retrieved ends there), gives
+### it back, and gives the slot a new number.
 ### :throws: Crashes with `TicketBusyError` while the work runs.
 @track_caller
 routine @WorkSlot.give_back() -> None
@@ -324,6 +347,22 @@ routine @WorkSlot.give_back() -> None
     return
 
 # -- the blocks of work, by number of arguments -----------------------------------------------------------------
+
+### Whether the value at `at` is hollow, all of its bytes zero: a place a block's destruct leaves alone.
+### :typeparam T: The value's type.
+### :param at: The value.
+### :returns: True when every byte is zero.
+secret routine is_hollow_value[T](at: @T) -> Bool
+needs T: typename
+    # Through Addr: a T with its own to[...] (a @[Byte]) would convert itself instead of its place.
+    place: Addr = at
+    bytes: @Byte = place.to[@Byte]()
+
+    each i in 0 til sizeof[T]()
+        if bytes.stride(i).peek() != 0x00
+            return false
+    then
+        return true
 
 ### The work a ticket runs: a routine of 0 argument(s), its result first.
 entity Work0[T]
@@ -407,10 +446,21 @@ common routine Work0[T].construct(result: T, entry: Callable[(), T]) -> Me
 needs T: typename
     return Me(result: steal result, entry)
 
-### Releases nothing: a `Work0` holds the work's arguments and room for its result, which the ticket's copy of the block
-### takes out.
+### Ends what the block still holds, the last field first: the result nobody retrieved, or the arguments of work
+### that never ran. A hollow place (an argument the work's routine took, a result `retrieve` took out) is left alone.
 routine @Work0[T].destruct() -> None
 needs T: typename
+    if not is_hollow_value(me.result)
+        drop me.result
+    return
+
+### Ends what the block at `raw`, a `Work0`, still holds, through its destruct: a ticket calls it before it gives
+### the block back.
+### :param raw: The block.
+routine discard_work0[T](raw: Addr) -> None
+needs T: typename
+    work: @Work0[T] = raw.to[@Work0[T]]()
+    drop work.stride(0)
     return
 
 ### Runs the work in the block at `raw`, a `Work0`, and stores its result there.
@@ -424,22 +474,25 @@ needs T: typename
     result.poke(steal value)
     return
 
-### The block for `entry` and its arguments, from `manager`, and its runner: what a ticket's `put_work` hands over.
+### The block for `entry` and its arguments, from `manager`, its runner and its destruct: what a ticket's `put_callable`
+### hands over.
 ### :param entry: The routine.
 ### :param manager: Where the block comes from.
-### :returns: The runner and the block.
+### :returns: The runner, the destruct of the block and the block.
 ### :throws: Crashes with `MemoryAllocationError` when `manager` can't give the block.
 @track_caller
 routine make_work0[T](entry: Callable[(), T],
-    manager: @MemoryManager) -> (Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr,), None], Callable[(Addr,), None], Addr)
 needs T: typename
     work: @Work0[T] = allocate[Work0[T]](count: 1, manager)
     if work.is_hollow()
         crash_allocation()
+    work.result.zeroinit(1)
     work.entry.poke(entry)
     runner: Callable[(Addr,), None] = run_work0[T].to[Callable]()
     place: Addr = work
-    return (runner, place)
+    discard: Callable[(Addr,), None] = discard_work0[T].to[Callable]()
+    return (runner, discard, place)
 
 ### Makes a `Work1` from its fields.
 ### :param result: Its `result`.
@@ -450,10 +503,23 @@ common routine Work1[T, A].construct(result: T, entry: Callable[(A,), T], first:
 needs T: typename, A: typename
     return Me(result: steal result, entry, first: steal first)
 
-### Releases nothing: a `Work1` holds the work's arguments and room for its result, which the ticket's copy of the block
-### takes out.
+### Ends what the block still holds, the last field first: the result nobody retrieved, or the arguments of work
+### that never ran. A hollow place (an argument the work's routine took, a result `retrieve` took out) is left alone.
 routine @Work1[T, A].destruct() -> None
 needs T: typename, A: typename
+    if not is_hollow_value(me.first)
+        drop me.first
+    if not is_hollow_value(me.result)
+        drop me.result
+    return
+
+### Ends what the block at `raw`, a `Work1`, still holds, through its destruct: a ticket calls it before it gives
+### the block back.
+### :param raw: The block.
+routine discard_work1[T, A](raw: Addr) -> None
+needs T: typename, A: typename
+    work: @Work1[T, A] = raw.to[@Work1[T, A]]()
+    drop work.stride(0)
     return
 
 ### Runs the work in the block at `raw`, a `Work1`, and stores its result there.
@@ -464,28 +530,33 @@ needs T: typename, A: typename
     entry: Callable[(A,), T] = work.entry.peek()
     first: @A = work.first
     value: &T <- entry.call(steal first.stride(0))
+    # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
+    first.zeroinit(1)
     result: @T = work.result
     result.poke(steal value)
     return
 
-### The block for `entry` and its arguments, from `manager`, and its runner: what a ticket's `put_work` hands over.
+### The block for `entry` and its arguments, from `manager`, its runner and its destruct: what a ticket's `put_callable`
+### hands over.
 ### :param entry: The routine.
 ### :param args: Its arguments.
 ### :param manager: Where the block comes from.
-### :returns: The runner and the block.
+### :returns: The runner, the destruct of the block and the block.
 ### :throws: Crashes with `MemoryAllocationError` when `manager` can't give the block.
 @track_caller
 routine make_work1[T, A](entry: Callable[(A,), T], args: A,
-    manager: @MemoryManager) -> (Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr,), None], Callable[(Addr,), None], Addr)
 needs T: typename, A: typename
     work: @Work1[T, A] = allocate[Work1[T, A]](count: 1, manager)
     if work.is_hollow()
         crash_allocation()
+    work.result.zeroinit(1)
     work.entry.poke(entry)
     work.first.poke(args)
     runner: Callable[(Addr,), None] = run_work1[T, A].to[Callable]()
     place: Addr = work
-    return (runner, place)
+    discard: Callable[(Addr,), None] = discard_work1[T, A].to[Callable]()
+    return (runner, discard, place)
 
 ### Makes a `Work2` from its fields.
 ### :param result: Its `result`.
@@ -498,10 +569,25 @@ common routine Work2[T, A, B].construct(result: T, entry: Callable[(A, B), T], f
 needs T: typename, A: typename, B: typename
     return Me(result: steal result, entry, first: steal first, second: steal second)
 
-### Releases nothing: a `Work2` holds the work's arguments and room for its result, which the ticket's copy of the block
-### takes out.
+### Ends what the block still holds, the last field first: the result nobody retrieved, or the arguments of work
+### that never ran. A hollow place (an argument the work's routine took, a result `retrieve` took out) is left alone.
 routine @Work2[T, A, B].destruct() -> None
 needs T: typename, A: typename, B: typename
+    if not is_hollow_value(me.second)
+        drop me.second
+    if not is_hollow_value(me.first)
+        drop me.first
+    if not is_hollow_value(me.result)
+        drop me.result
+    return
+
+### Ends what the block at `raw`, a `Work2`, still holds, through its destruct: a ticket calls it before it gives
+### the block back.
+### :param raw: The block.
+routine discard_work2[T, A, B](raw: Addr) -> None
+needs T: typename, A: typename, B: typename
+    work: @Work2[T, A, B] = raw.to[@Work2[T, A, B]]()
+    drop work.stride(0)
     return
 
 ### Runs the work in the block at `raw`, a `Work2`, and stores its result there.
@@ -513,29 +599,35 @@ needs T: typename, A: typename, B: typename
     first: @A = work.first
     second: @B = work.second
     value: &T <- entry.call(steal first.stride(0), steal second.stride(0))
+    # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
+    first.zeroinit(1)
+    second.zeroinit(1)
     result: @T = work.result
     result.poke(steal value)
     return
 
-### The block for `entry` and its arguments, from `manager`, and its runner: what a ticket's `put_work` hands over.
+### The block for `entry` and its arguments, from `manager`, its runner and its destruct: what a ticket's `put_callable`
+### hands over.
 ### :param entry: The routine.
 ### :param args: Its arguments.
 ### :param manager: Where the block comes from.
-### :returns: The runner and the block.
+### :returns: The runner, the destruct of the block and the block.
 ### :throws: Crashes with `MemoryAllocationError` when `manager` can't give the block.
 @track_caller
 routine make_work2[T, A, B](entry: Callable[(A, B), T], args: (A, B),
-    manager: @MemoryManager) -> (Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr,), None], Callable[(Addr,), None], Addr)
 needs T: typename, A: typename, B: typename
     work: @Work2[T, A, B] = allocate[Work2[T, A, B]](count: 1, manager)
     if work.is_hollow()
         crash_allocation()
+    work.result.zeroinit(1)
     work.entry.poke(entry)
     work.first.poke(args.item0)
     work.second.poke(args.item1)
     runner: Callable[(Addr,), None] = run_work2[T, A, B].to[Callable]()
     place: Addr = work
-    return (runner, place)
+    discard: Callable[(Addr,), None] = discard_work2[T, A, B].to[Callable]()
+    return (runner, discard, place)
 
 ### Makes a `Work3` from its fields.
 ### :param result: Its `result`.
@@ -550,10 +642,27 @@ needs T: typename, A: typename, B: typename, C: typename
     return Me(result: steal result, entry, first: steal first, second: steal second,
         third: steal third)
 
-### Releases nothing: a `Work3` holds the work's arguments and room for its result, which the ticket's copy of the block
-### takes out.
+### Ends what the block still holds, the last field first: the result nobody retrieved, or the arguments of work
+### that never ran. A hollow place (an argument the work's routine took, a result `retrieve` took out) is left alone.
 routine @Work3[T, A, B, C].destruct() -> None
 needs T: typename, A: typename, B: typename, C: typename
+    if not is_hollow_value(me.third)
+        drop me.third
+    if not is_hollow_value(me.second)
+        drop me.second
+    if not is_hollow_value(me.first)
+        drop me.first
+    if not is_hollow_value(me.result)
+        drop me.result
+    return
+
+### Ends what the block at `raw`, a `Work3`, still holds, through its destruct: a ticket calls it before it gives
+### the block back.
+### :param raw: The block.
+routine discard_work3[T, A, B, C](raw: Addr) -> None
+needs T: typename, A: typename, B: typename, C: typename
+    work: @Work3[T, A, B, C] = raw.to[@Work3[T, A, B, C]]()
+    drop work.stride(0)
     return
 
 ### Runs the work in the block at `raw`, a `Work3`, and stores its result there.
@@ -566,30 +675,37 @@ needs T: typename, A: typename, B: typename, C: typename
     second: @B = work.second
     third: @C = work.third
     value: &T <- entry.call(steal first.stride(0), steal second.stride(0), steal third.stride(0))
+    # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
+    first.zeroinit(1)
+    second.zeroinit(1)
+    third.zeroinit(1)
     result: @T = work.result
     result.poke(steal value)
     return
 
-### The block for `entry` and its arguments, from `manager`, and its runner: what a ticket's `put_work` hands over.
+### The block for `entry` and its arguments, from `manager`, its runner and its destruct: what a ticket's `put_callable`
+### hands over.
 ### :param entry: The routine.
 ### :param args: Its arguments.
 ### :param manager: Where the block comes from.
-### :returns: The runner and the block.
+### :returns: The runner, the destruct of the block and the block.
 ### :throws: Crashes with `MemoryAllocationError` when `manager` can't give the block.
 @track_caller
 routine make_work3[T, A, B, C](entry: Callable[(A, B, C), T], args: (A, B, C),
-    manager: @MemoryManager) -> (Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr,), None], Callable[(Addr,), None], Addr)
 needs T: typename, A: typename, B: typename, C: typename
     work: @Work3[T, A, B, C] = allocate[Work3[T, A, B, C]](count: 1, manager)
     if work.is_hollow()
         crash_allocation()
+    work.result.zeroinit(1)
     work.entry.poke(entry)
     work.first.poke(args.item0)
     work.second.poke(args.item1)
     work.third.poke(args.item2)
     runner: Callable[(Addr,), None] = run_work3[T, A, B, C].to[Callable]()
     place: Addr = work
-    return (runner, place)
+    discard: Callable[(Addr,), None] = discard_work3[T, A, B, C].to[Callable]()
+    return (runner, discard, place)
 
 ### Makes a `Work4` from its fields.
 ### :param result: Its `result`.
@@ -605,10 +721,29 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
     return Me(result: steal result, entry, first: steal first, second: steal second,
         third: steal third, fourth: steal fourth)
 
-### Releases nothing: a `Work4` holds the work's arguments and room for its result, which the ticket's copy of the block
-### takes out.
+### Ends what the block still holds, the last field first: the result nobody retrieved, or the arguments of work
+### that never ran. A hollow place (an argument the work's routine took, a result `retrieve` took out) is left alone.
 routine @Work4[T, A, B, C, D].destruct() -> None
 needs T: typename, A: typename, B: typename, C: typename, D: typename
+    if not is_hollow_value(me.fourth)
+        drop me.fourth
+    if not is_hollow_value(me.third)
+        drop me.third
+    if not is_hollow_value(me.second)
+        drop me.second
+    if not is_hollow_value(me.first)
+        drop me.first
+    if not is_hollow_value(me.result)
+        drop me.result
+    return
+
+### Ends what the block at `raw`, a `Work4`, still holds, through its destruct: a ticket calls it before it gives
+### the block back.
+### :param raw: The block.
+routine discard_work4[T, A, B, C, D](raw: Addr) -> None
+needs T: typename, A: typename, B: typename, C: typename, D: typename
+    work: @Work4[T, A, B, C, D] = raw.to[@Work4[T, A, B, C, D]]()
+    drop work.stride(0)
     return
 
 ### Runs the work in the block at `raw`, a `Work4`, and stores its result there.
@@ -623,23 +758,30 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
     fourth: @D = work.fourth
     value: &T <- entry.call(steal first.stride(0), steal second.stride(0), steal third.stride(0),
         steal fourth.stride(0))
+    # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
+    first.zeroinit(1)
+    second.zeroinit(1)
+    third.zeroinit(1)
+    fourth.zeroinit(1)
     result: @T = work.result
     result.poke(steal value)
     return
 
-### The block for `entry` and its arguments, from `manager`, and its runner: what a ticket's `put_work` hands over.
+### The block for `entry` and its arguments, from `manager`, its runner and its destruct: what a ticket's `put_callable`
+### hands over.
 ### :param entry: The routine.
 ### :param args: Its arguments.
 ### :param manager: Where the block comes from.
-### :returns: The runner and the block.
+### :returns: The runner, the destruct of the block and the block.
 ### :throws: Crashes with `MemoryAllocationError` when `manager` can't give the block.
 @track_caller
 routine make_work4[T, A, B, C, D](entry: Callable[(A, B, C, D), T], args: (A, B, C, D),
-    manager: @MemoryManager) -> (Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr,), None], Callable[(Addr,), None], Addr)
 needs T: typename, A: typename, B: typename, C: typename, D: typename
     work: @Work4[T, A, B, C, D] = allocate[Work4[T, A, B, C, D]](count: 1, manager)
     if work.is_hollow()
         crash_allocation()
+    work.result.zeroinit(1)
     work.entry.poke(entry)
     work.first.poke(args.item0)
     work.second.poke(args.item1)
@@ -647,7 +789,16 @@ needs T: typename, A: typename, B: typename, C: typename, D: typename
     work.fourth.poke(args.item3)
     runner: Callable[(Addr,), None] = run_work4[T, A, B, C, D].to[Callable]()
     place: Addr = work
-    return (runner, place)
+    discard: Callable[(Addr,), None] = discard_work4[T, A, B, C, D].to[Callable]()
+    return (runner, discard, place)
+
+### Ends what the block at `raw`, a `VoidWork0`, still holds, through its destruct: a ticket calls it before it gives
+### the block back.
+### :param raw: The block.
+routine discard_voidwork0(raw: Addr) -> None
+    work: @VoidWork0 = raw.to[@VoidWork0]()
+    drop work.stride(0)
+    return
 
 ### Runs the work in the block at `raw`, a `VoidWork0`.
 ### :param raw: The block.
@@ -657,21 +808,23 @@ routine run_voidwork0(raw: Addr) -> None
     entry.call()
     return
 
-### The block for `entry` and its arguments, from `manager`, and its runner: what a ticket's `put_work` hands over.
+### The block for `entry` and its arguments, from `manager`, its runner and its destruct: what a ticket's `put_callable`
+### hands over.
 ### :param entry: The routine.
 ### :param manager: Where the block comes from.
-### :returns: The runner and the block.
+### :returns: The runner, the destruct of the block and the block.
 ### :throws: Crashes with `MemoryAllocationError` when `manager` can't give the block.
 @track_caller
 routine make_voidwork0(entry: Callable[(), None],
-    manager: @MemoryManager) -> (Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr,), None], Callable[(Addr,), None], Addr)
     work: @VoidWork0 = allocate[VoidWork0](count: 1, manager)
     if work.is_hollow()
         crash_allocation()
     work.entry.poke(entry)
     runner: Callable[(Addr,), None] = run_voidwork0.to[Callable]()
     place: Addr = work
-    return (runner, place)
+    discard: Callable[(Addr,), None] = discard_voidwork0.to[Callable]()
+    return (runner, discard, place)
 
 ### Makes a `VoidWork0` from its field.
 ### :param entry: Its `entry`.
@@ -687,9 +840,21 @@ common routine VoidWork1[A].construct(entry: Callable[(A,), None], first: A) -> 
 needs A: typename
     return Me(entry, first: steal first)
 
-### Releases nothing: a `VoidWork1` holds the work's arguments, which the ticket's copy of the block takes out.
+### Ends the arguments of work that never ran, the last first. A hollow place (an argument the work's routine took)
+### is left alone.
 routine @VoidWork1[A].destruct() -> None
 needs A: typename
+    if not is_hollow_value(me.first)
+        drop me.first
+    return
+
+### Ends what the block at `raw`, a `VoidWork1`, still holds, through its destruct: a ticket calls it before it gives
+### the block back.
+### :param raw: The block.
+routine discard_voidwork1[A](raw: Addr) -> None
+needs A: typename
+    work: @VoidWork1[A] = raw.to[@VoidWork1[A]]()
+    drop work.stride(0)
     return
 
 ### Runs the work in the block at `raw`, a `VoidWork1`.
@@ -700,17 +865,20 @@ needs A: typename
     entry: Callable[(A,), None] = work.entry.peek()
     first: @A = work.first
     entry.call(steal first.stride(0))
+    # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
+    first.zeroinit(1)
     return
 
-### The block for `entry` and its arguments, from `manager`, and its runner: what a ticket's `put_work` hands over.
+### The block for `entry` and its arguments, from `manager`, its runner and its destruct: what a ticket's `put_callable`
+### hands over.
 ### :param entry: The routine.
 ### :param args: Its arguments.
 ### :param manager: Where the block comes from.
-### :returns: The runner and the block.
+### :returns: The runner, the destruct of the block and the block.
 ### :throws: Crashes with `MemoryAllocationError` when `manager` can't give the block.
 @track_caller
 routine make_voidwork1[A](entry: Callable[(A,), None], args: A,
-    manager: @MemoryManager) -> (Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr,), None], Callable[(Addr,), None], Addr)
 needs A: typename
     work: @VoidWork1[A] = allocate[VoidWork1[A]](count: 1, manager)
     if work.is_hollow()
@@ -719,7 +887,8 @@ needs A: typename
     work.first.poke(args)
     runner: Callable[(Addr,), None] = run_voidwork1[A].to[Callable]()
     place: Addr = work
-    return (runner, place)
+    discard: Callable[(Addr,), None] = discard_voidwork1[A].to[Callable]()
+    return (runner, discard, place)
 
 ### Makes a `VoidWork2` from its fields.
 ### :param entry: Its `entry`.
@@ -730,9 +899,23 @@ common routine VoidWork2[A, B].construct(entry: Callable[(A, B), None], first: A
 needs A: typename, B: typename
     return Me(entry, first: steal first, second: steal second)
 
-### Releases nothing: a `VoidWork2` holds the work's arguments, which the ticket's copy of the block takes out.
+### Ends the arguments of work that never ran, the last first. A hollow place (an argument the work's routine took)
+### is left alone.
 routine @VoidWork2[A, B].destruct() -> None
 needs A: typename, B: typename
+    if not is_hollow_value(me.second)
+        drop me.second
+    if not is_hollow_value(me.first)
+        drop me.first
+    return
+
+### Ends what the block at `raw`, a `VoidWork2`, still holds, through its destruct: a ticket calls it before it gives
+### the block back.
+### :param raw: The block.
+routine discard_voidwork2[A, B](raw: Addr) -> None
+needs A: typename, B: typename
+    work: @VoidWork2[A, B] = raw.to[@VoidWork2[A, B]]()
+    drop work.stride(0)
     return
 
 ### Runs the work in the block at `raw`, a `VoidWork2`.
@@ -744,17 +927,21 @@ needs A: typename, B: typename
     first: @A = work.first
     second: @B = work.second
     entry.call(steal first.stride(0), steal second.stride(0))
+    # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
+    first.zeroinit(1)
+    second.zeroinit(1)
     return
 
-### The block for `entry` and its arguments, from `manager`, and its runner: what a ticket's `put_work` hands over.
+### The block for `entry` and its arguments, from `manager`, its runner and its destruct: what a ticket's `put_callable`
+### hands over.
 ### :param entry: The routine.
 ### :param args: Its arguments.
 ### :param manager: Where the block comes from.
-### :returns: The runner and the block.
+### :returns: The runner, the destruct of the block and the block.
 ### :throws: Crashes with `MemoryAllocationError` when `manager` can't give the block.
 @track_caller
 routine make_voidwork2[A, B](entry: Callable[(A, B), None], args: (A, B),
-    manager: @MemoryManager) -> (Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr,), None], Callable[(Addr,), None], Addr)
 needs A: typename, B: typename
     work: @VoidWork2[A, B] = allocate[VoidWork2[A, B]](count: 1, manager)
     if work.is_hollow()
@@ -764,7 +951,8 @@ needs A: typename, B: typename
     work.second.poke(args.item1)
     runner: Callable[(Addr,), None] = run_voidwork2[A, B].to[Callable]()
     place: Addr = work
-    return (runner, place)
+    discard: Callable[(Addr,), None] = discard_voidwork2[A, B].to[Callable]()
+    return (runner, discard, place)
 
 ### Makes a `VoidWork3` from its fields.
 ### :param entry: Its `entry`.
@@ -777,9 +965,25 @@ common routine VoidWork3[A, B, C].construct(entry: Callable[(A, B, C), None], fi
 needs A: typename, B: typename, C: typename
     return Me(entry, first: steal first, second: steal second, third: steal third)
 
-### Releases nothing: a `VoidWork3` holds the work's arguments, which the ticket's copy of the block takes out.
+### Ends the arguments of work that never ran, the last first. A hollow place (an argument the work's routine took)
+### is left alone.
 routine @VoidWork3[A, B, C].destruct() -> None
 needs A: typename, B: typename, C: typename
+    if not is_hollow_value(me.third)
+        drop me.third
+    if not is_hollow_value(me.second)
+        drop me.second
+    if not is_hollow_value(me.first)
+        drop me.first
+    return
+
+### Ends what the block at `raw`, a `VoidWork3`, still holds, through its destruct: a ticket calls it before it gives
+### the block back.
+### :param raw: The block.
+routine discard_voidwork3[A, B, C](raw: Addr) -> None
+needs A: typename, B: typename, C: typename
+    work: @VoidWork3[A, B, C] = raw.to[@VoidWork3[A, B, C]]()
+    drop work.stride(0)
     return
 
 ### Runs the work in the block at `raw`, a `VoidWork3`.
@@ -792,17 +996,22 @@ needs A: typename, B: typename, C: typename
     second: @B = work.second
     third: @C = work.third
     entry.call(steal first.stride(0), steal second.stride(0), steal third.stride(0))
+    # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
+    first.zeroinit(1)
+    second.zeroinit(1)
+    third.zeroinit(1)
     return
 
-### The block for `entry` and its arguments, from `manager`, and its runner: what a ticket's `put_work` hands over.
+### The block for `entry` and its arguments, from `manager`, its runner and its destruct: what a ticket's `put_callable`
+### hands over.
 ### :param entry: The routine.
 ### :param args: Its arguments.
 ### :param manager: Where the block comes from.
-### :returns: The runner and the block.
+### :returns: The runner, the destruct of the block and the block.
 ### :throws: Crashes with `MemoryAllocationError` when `manager` can't give the block.
 @track_caller
 routine make_voidwork3[A, B, C](entry: Callable[(A, B, C), None], args: (A, B, C),
-    manager: @MemoryManager) -> (Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr,), None], Callable[(Addr,), None], Addr)
 needs A: typename, B: typename, C: typename
     work: @VoidWork3[A, B, C] = allocate[VoidWork3[A, B, C]](count: 1, manager)
     if work.is_hollow()
@@ -813,7 +1022,8 @@ needs A: typename, B: typename, C: typename
     work.third.poke(args.item2)
     runner: Callable[(Addr,), None] = run_voidwork3[A, B, C].to[Callable]()
     place: Addr = work
-    return (runner, place)
+    discard: Callable[(Addr,), None] = discard_voidwork3[A, B, C].to[Callable]()
+    return (runner, discard, place)
 
 ### Makes a `VoidWork4` from its fields.
 ### :param entry: Its `entry`.
@@ -828,9 +1038,27 @@ needs A: typename, B: typename, C: typename, D: typename
     return Me(entry, first: steal first, second: steal second, third: steal third,
         fourth: steal fourth)
 
-### Releases nothing: a `VoidWork4` holds the work's arguments, which the ticket's copy of the block takes out.
+### Ends the arguments of work that never ran, the last first. A hollow place (an argument the work's routine took)
+### is left alone.
 routine @VoidWork4[A, B, C, D].destruct() -> None
 needs A: typename, B: typename, C: typename, D: typename
+    if not is_hollow_value(me.fourth)
+        drop me.fourth
+    if not is_hollow_value(me.third)
+        drop me.third
+    if not is_hollow_value(me.second)
+        drop me.second
+    if not is_hollow_value(me.first)
+        drop me.first
+    return
+
+### Ends what the block at `raw`, a `VoidWork4`, still holds, through its destruct: a ticket calls it before it gives
+### the block back.
+### :param raw: The block.
+routine discard_voidwork4[A, B, C, D](raw: Addr) -> None
+needs A: typename, B: typename, C: typename, D: typename
+    work: @VoidWork4[A, B, C, D] = raw.to[@VoidWork4[A, B, C, D]]()
+    drop work.stride(0)
     return
 
 ### Runs the work in the block at `raw`, a `VoidWork4`.
@@ -845,17 +1073,23 @@ needs A: typename, B: typename, C: typename, D: typename
     fourth: @D = work.fourth
     entry.call(steal first.stride(0), steal second.stride(0), steal third.stride(0),
         steal fourth.stride(0))
+    # The arguments are the routine's now: their places in the block are left hollow, which its destruct leaves alone.
+    first.zeroinit(1)
+    second.zeroinit(1)
+    third.zeroinit(1)
+    fourth.zeroinit(1)
     return
 
-### The block for `entry` and its arguments, from `manager`, and its runner: what a ticket's `put_work` hands over.
+### The block for `entry` and its arguments, from `manager`, its runner and its destruct: what a ticket's `put_callable`
+### hands over.
 ### :param entry: The routine.
 ### :param args: Its arguments.
 ### :param manager: Where the block comes from.
-### :returns: The runner and the block.
+### :returns: The runner, the destruct of the block and the block.
 ### :throws: Crashes with `MemoryAllocationError` when `manager` can't give the block.
 @track_caller
 routine make_voidwork4[A, B, C, D](entry: Callable[(A, B, C, D), None], args: (A, B, C, D),
-    manager: @MemoryManager) -> (Callable[(Addr,), None], Addr)
+    manager: @MemoryManager) -> (Callable[(Addr,), None], Callable[(Addr,), None], Addr)
 needs A: typename, B: typename, C: typename, D: typename
     work: @VoidWork4[A, B, C, D] = allocate[VoidWork4[A, B, C, D]](count: 1, manager)
     if work.is_hollow()
@@ -867,7 +1101,8 @@ needs A: typename, B: typename, C: typename, D: typename
     work.fourth.poke(args.item3)
     runner: Callable[(Addr,), None] = run_voidwork4[A, B, C, D].to[Callable]()
     place: Addr = work
-    return (runner, place)
+    discard: Callable[(Addr,), None] = discard_voidwork4[A, B, C, D].to[Callable]()
+    return (runner, discard, place)
 
 # -- Work[T]: a piece of work made before it runs ----------------------------------------------------------------
 
@@ -881,6 +1116,8 @@ record Work[T]
 needs T: typename
     ### Runs a block: calls the routine with the arguments and stores the result in front.
     runner: Callable[(Addr,), None]
+    ### Destructs a block: what a ticket calls for a result nobody retrieved, before the block goes back.
+    discard: Callable[(Addr,), None]
     ### The block the work was made in: the routine, its arguments and room for its result.
     block: @Byte
     ### The block's size in bytes, for the copy a ticket runs.
@@ -894,10 +1131,12 @@ needs T: typename
 ### :typeparam B: The block's type.
 ### :param made: The block: the routine, its arguments, room for the result.
 ### :param runner: Runs a block of this type.
+### :param discard: Destructs a block of this type.
 ### :returns: The work, not started.
-routine work_from[T, B](made: @B, runner: Callable[(Addr,), None]) -> Work[T]
+routine work_from[T, B](made: @B, runner: Callable[(Addr,), None],
+    discard: Callable[(Addr,), None]) -> Work[T]
 needs T: typename, B: typename
-    return Work[T](runner, block: made.to[@Byte](), size: sizeof[B](), align: alignof[B]())
+    return Work[T](runner, discard, block: made.to[@Byte](), size: sizeof[B](), align: alignof[B]())
 
 ### A copy of the work's block in memory from the slot's manager, which the slot gives back with its next work or
 ### when its ticket is given back.
