@@ -12,14 +12,15 @@ import com.intellij.platform.lsp.api.customization.LspSemanticTokensSupport
 import javax.swing.Icon
 
 /**
- * Tessera's own colors. Each starts as the C# color of its counterpart (record as struct, concept as interface, routine
- * as method, SSA value as local variable, module path as namespace, preset as constant, terminator as control-flow
+ * Tessera's own colors. Each starts as the C# color of its counterpart (record as struct, entity as class, concept as
+ * interface, routine as method, SSA value as local variable, module path as namespace, preset as constant, terminator as control-flow
  * keyword), so Tessera reads like C# in any scheme until Settings | Editor | Color Scheme | Tessera says otherwise.
  * Blocks and attributes have no C# counterpart of their own: a block starts pink and an attribute yellow
  * (colorSchemes/).
  */
 object TesseraColors {
     val RECORD = key("TESSERA_RECORD", TextAttributesKey.find("ReSharper.STRUCT_IDENTIFIER"))
+    val ENTITY = key("TESSERA_ENTITY", DefaultLanguageHighlighterColors.CLASS_NAME)
     val CONCEPT = key("TESSERA_CONCEPT", DefaultLanguageHighlighterColors.INTERFACE_NAME)
     val TYPE_PARAMETER = key("TESSERA_TYPE_PARAMETER", TextAttributesKey.find("ReSharper.TYPE_PARAMETER_IDENTIFIER"))
     val ROUTINE = key("TESSERA_ROUTINE", DefaultLanguageHighlighterColors.INSTANCE_METHOD)
@@ -48,6 +49,7 @@ object TesseraColors {
 internal object TesseraSemanticTokens : LspSemanticTokensSupport() {
     private val keys = mapOf(
         "recordType" to TesseraColors.RECORD,
+        "entityType" to TesseraColors.ENTITY,
         "interface" to TesseraColors.CONCEPT,
         "typeParameter" to TesseraColors.TYPE_PARAMETER,
         "function" to TesseraColors.ROUTINE,
@@ -78,6 +80,7 @@ internal object TesseraSemanticTokens : LspSemanticTokensSupport() {
 class TesseraColorSettingsPage : ColorSettingsPage {
     private val descriptors = arrayOf(
         AttributesDescriptor(TesseraBundle.message("color.types.record"), TesseraColors.RECORD),
+        AttributesDescriptor(TesseraBundle.message("color.types.entity"), TesseraColors.ENTITY),
         AttributesDescriptor(TesseraBundle.message("color.types.concept"), TesseraColors.CONCEPT),
         AttributesDescriptor(TesseraBundle.message("color.types.typeParameter"), TesseraColors.TYPE_PARAMETER),
         AttributesDescriptor(TesseraBundle.message("color.routine"), TesseraColors.ROUTINE),
@@ -99,6 +102,7 @@ class TesseraColorSettingsPage : ColorSettingsPage {
 
     private val tags = mapOf(
         "record" to TesseraColors.RECORD,
+        "entity" to TesseraColors.ENTITY,
         "concept" to TesseraColors.CONCEPT,
         "tp" to TesseraColors.TYPE_PARAMETER,
         "routine" to TesseraColors.ROUTINE,
@@ -136,6 +140,9 @@ class TesseraColorSettingsPage : ColorSettingsPage {
         <kw>record</kw> <record>Point</record>
             <field>x</field>: <record>S64</record>
             <field>y</field>: <record>S64</record>
+
+        <kw>entity</kw> <entity>Ledger</entity>
+            <field>total</field>: <record>S64</record>
 
         <attr>#track_caller</attr>
         <kw>routine</kw> <routine>find</routine><<tp>T</tp>: <concept>Eq</concept>>(<param>data</param>: <op>@</op><tp>T</tp>, <param>length</param>: <record>U64</record>, <param>target</param>: <tp>T</tp>) -> <record>Option</record><<record>U64</record>>

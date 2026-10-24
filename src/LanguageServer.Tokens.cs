@@ -3,16 +3,16 @@ using System.Text.Json.Nodes;
 
 namespace Tessera;
 
-/// Semantic tokens: what each name in a document is, so an editor colors a record apart from a concept, a block from
-/// a value. A type name's kind is what the builder resolves it to from the document's file (a record, variant, or
-/// choice; a concept), never a guess from the spelling. The rest comes from where the name stands in the syntax: a
+/// Semantic tokens: what each name in a document is, so an editor colors a record apart from an entity or a concept, a
+/// block from a value. A type name's kind is what the builder resolves it to from the document's file (a record,
+/// variant, or choice; an entity; a concept), never a guess from the spelling. The rest comes from where the name stands in the syntax: a
 /// block, a parameter, a value a statement binds, a field, a case, a preset.
 public static partial class LanguageServer
 {
     /// The token types this server sends, in legend order (an index into this list is a token's type).
     private static readonly string[] TokenTypes =
     [
-        "function", "variable", "parameter", "property", "namespace", "recordType", "interface", "typeParameter",
+        "function", "variable", "parameter", "property", "namespace", "recordType", "entityType", "interface", "typeParameter",
         "constant", "block", "decorator", "controlKeyword", "keyword", "operator", "number", "docTag", "docValue", "sharedValue",
     ];
 
@@ -117,6 +117,18 @@ public static partial class LanguageServer
         {
             return null;
         }
+    }
+
+    /// The kind of each colored name in `text`, checked as the file at `path` against the standard library at `stdlib`:
+    /// the token's text with the kind the server sends for it, in source order. For the tests.
+    internal static List<(int Line, string Text, string Kind)> TokenKinds(string path, string text, string stdlib)
+    {
+        var (_, analysis) = Check(new Uri(Path.GetFullPath(path)).AbsoluteUri, text, () => stdlib);
+        if (analysis is null || Lex(analysis.Shown, text) is not { } tokens) return [];
+        var lines = text.Replace("\r\n", "\n").Split('\n');
+        return Classified(tokens, analysis, line => line)
+            .Select(s => (s.Line, lines[s.Line - 1].Substring(s.Col - 1, s.Length), s.Kind))
+            .ToList();
     }
 
     /// The colored tokens of a checked text, each moved to the line `lineOf` gives it (0 drops it): what the check
@@ -645,6 +657,19 @@ public static partial class LanguageServer
             }
         }
 
+        /// Whether a free routine by the call's name is visible from the document's file.
+        private bool IsFreeRoutine(CallExpr call)
+        {
+            try
+            {
+                return analysis.Compiler.FreeCandidates(call.Name, analysis.Shown, call.Pos, call.Path).Any();
+            }
+            catch (CompileError)
+            {
+                return false;
+            }
+        }
+
         private Func<string?>? PresetHover(string owner, string name)
         {
             try
@@ -692,7 +717,7 @@ public static partial class LanguageServer
                     break;
                 case RecordDecl rec:
                     _typeParams = [.. rec.TypeParams];
-                    Mark(rec.Pos, rec.Name, "recordType", DeclHover(rec));
+                    Mark(rec.Pos, rec.Name, rec.IsEntity ? "entityType" : "recordType", DeclHover(rec));
                     Clauses(rec.Clauses);
                     TypeParamNames(rec.Pos, rec.TypeParams);
                     foreach (var f in rec.Fields)
@@ -863,7 +888,7 @@ public static partial class LanguageServer
                     analysis.Compiler.TypeDeclQuiet(owner.Name, analysis.Shown, owner.Path) is not (RecordDecl or VariantDecl))
                     continue;
                 Mark(concept.Pos, concept.Name, "interface", Targeted(concept, () => ConformText(analysis, line, owner)));
-                Mark(owner.Pos, owner.Name, "recordType", Targeted(owner, () => ConformText(analysis, line, owner)));
+                Mark(owner.Pos, owner.Name, TypeKind(owner) ?? "recordType", Targeted(owner, () => ConformText(analysis, line, owner)));
             }
         }
 
@@ -995,7 +1020,12 @@ public static partial class LanguageServer
                     Mark(r.Pos, r.Name, "function", CallHover(r.Pos, r.Name, null));
                     break;
                 case CallExpr call:
-                    Mark(call.Pos, call.Name, "function", CallHover(call.Pos, call.Name, FreeRoutine(call)));
+                    // `Ledger(total: 0)` builds a value of the type it names when no routine has that name.
+                    var built = new TypeRef(call.Name, [], call.Pos) { Path = call.Path };
+                    if (!IsFreeRoutine(call) && TypeKind(built) is "recordType" or "entityType")
+                        Mark(call.Pos, call.Name, TypeKind(built)!, TypeHover(built));
+                    else
+                        Mark(call.Pos, call.Name, "function", CallHover(call.Pos, call.Name, FreeRoutine(call)));
                     foreach (var t in call.TypeArgs) Type(t);
                     foreach (var a in call.Args) Expr(a);
                     break;
@@ -1169,12 +1199,13 @@ public static partial class LanguageServer
             }
         }
 
-        /// What a type name means from the document's file: a generic parameter in scope, a record (a variant or a
-        /// choice reads as one), or a concept. Null for a name nothing declares.
+        /// What a type name means from the document's file: a generic parameter in scope, an entity, a record (a variant
+        /// or a choice reads as one), or a concept. Null for a name nothing declares.
         private string? TypeKind(TypeRef t)
         {
             if (t.Path is null && _typeParams.Contains(t.Name)) return "typeParameter";
-            if (analysis.Compiler.TypeDeclQuiet(t.Name, analysis.Shown, t.Path) is not null) return "recordType";
+            if (analysis.Compiler.TypeDeclQuiet(t.Name, analysis.Shown, t.Path) is { } decl)
+                return decl is RecordDecl { IsEntity: true } ? "entityType" : "recordType";
             if (analysis.Compiler.ConceptDeclQuiet(t.Name, analysis.Shown, t.Path) is not null) return "interface";
             return null;
         }
