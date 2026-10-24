@@ -1,10 +1,10 @@
 # Tessera stdlib: the heap managers
 #
-# Two managers of the C library's heap, both HeapManageable (MemoryManager.te): CHeapManager is malloc, realloc, and
+# Two managers of the C library's heap, both HeapManageable (MemoryManager.te): HeapManagerByC is malloc, realloc, and
 # free with nothing in front of the blocks, for memory that C code frees or reallocates, or that comes from C's malloc,
-# and CheckedHeapManager keeps a header in front of each block and crashes on a block freed twice. HEAP (built in
+# and HeapManagerByCheckedHeap keeps a header in front of each block and crashes on a block freed twice. HEAP (built in
 # MemoryManager.te, with the table's fields) is the default heap, ready before start runs: the checked one with the heap
-# check on (config.toml's [debug] heap-check, in any build mode), else the C library's. C_HEAP is CHeapManager's table
+# check on (config.toml's [debug] heap-check, in any build mode), else the C library's. C_HEAP is HeapManagerByC's table
 # in every build. Every routine that borrows memory takes the MemoryManager it borrows from, so these are the hosted
 # tables, not a requirement.
 
@@ -19,8 +19,8 @@ secret preset MALLOC_ALIGN: U64 = sizeof[Addr]().mul(2)
 ### comes from posix_memalign (still freed with free), and on Windows, whose free can't take such a block, it crashes.
 ### `C_HEAP` is its table.
 @target(os: not "none")
-entity CHeapManager
-obeys HeapManageable[CHeapManager]
+entity HeapManagerByC
+obeys HeapManageable[HeapManagerByC]
     nothing
 
 ### The C library's heap through `_aligned_malloc`, so every alignment is there: the default heap on Windows with the
@@ -33,7 +33,7 @@ obeys HeapManageable[AlignedHeapManager]
 ### Makes the manager. It holds no values.
 ### :returns: The manager.
 @target(os: not "none")
-common routine CHeapManager.construct() -> Me
+common routine HeapManagerByC.construct() -> Me
     return Me()
 
 ### Makes the manager. It holds no values.
@@ -131,7 +131,7 @@ secret routine c_aligned_free(ptr: Addr) -> None
 ### :param align: The alignment, a power of two.
 ### :returns: The new block, null when the heap has no room.
 @target(os: ("linux", "macos"))
-routine @CHeapManager.borrow(size: U64, align: U64) -> Addr
+routine @HeapManagerByC.borrow(size: U64, align: U64) -> Addr
     if not fits_c_size(size)
         return .hollow()
     if align <= MALLOC_ALIGN
@@ -147,7 +147,7 @@ routine @CHeapManager.borrow(size: U64, align: U64) -> Addr
 ### :returns: The new block, null when malloc fails.
 ### :throws: Crashes with `UnacceptedValueError` when `align` is past malloc's own.
 @target(os: "windows")
-routine @CHeapManager.borrow(size: U64, align: U64) -> Addr
+routine @HeapManagerByC.borrow(size: U64, align: U64) -> Addr
     if not fits_c_size(size)
         return .hollow()
     if align <= MALLOC_ALIGN
@@ -162,7 +162,7 @@ routine @CHeapManager.borrow(size: U64, align: U64) -> Addr
 ### :param align: The block's alignment.
 ### :returns: The resized block (possibly moved), null when the heap has no room and the old block is untouched.
 @target(os: ("linux", "macos"))
-routine @CHeapManager.reborrow(at: Addr, size: U64, align: U64) -> Addr
+routine @HeapManagerByC.reborrow(at: Addr, size: U64, align: U64) -> Addr
     if not fits_c_size(size)
         return .hollow()
     if align <= MALLOC_ALIGN
@@ -183,7 +183,7 @@ routine @CHeapManager.reborrow(at: Addr, size: U64, align: U64) -> Addr
 ### :param align: The block's alignment, at most malloc's own.
 ### :returns: The resized block (possibly moved), null when realloc fails and the old block is untouched.
 @target(os: "windows")
-routine @CHeapManager.reborrow(at: Addr, size: U64, align: U64) -> Addr
+routine @HeapManagerByC.reborrow(at: Addr, size: U64, align: U64) -> Addr
     if not fits_c_size(size)
         return .hollow()
     return c_realloc(at, size.to[CSize]())
@@ -191,7 +191,7 @@ routine @CHeapManager.reborrow(at: Addr, size: U64, align: U64) -> Addr
 ### Gives a block back with free.
 ### :param at: The block to free. Null does nothing.
 @target(os: not "none")
-routine @CHeapManager.give_back(at: Addr) -> None
+routine @HeapManagerByC.give_back(at: Addr) -> None
     c_free(at)
     return
 
@@ -241,7 +241,7 @@ routine @AlignedHeapManager.give_back(at: Addr) -> None
 # have written over the header (the free reads as "not a block": still a crash) or handed the memory out again as
 # another live block (the second free then frees that one, unseen), so the quarantine keeps the window wide. A
 # reallocation copies into a new block and frees the old one the same way, so a stale pointer to the old block is
-# caught like any freed one. CheckedHeapManager is there in every build, and HEAP is the checked heap when the heap
+# caught like any freed one. HeapManagerByCheckedHeap is there in every build, and HEAP is the checked heap when the heap
 # check is on. With it off HEAP is the C library's heap above.
 
 ### The headers of the last QUARANTINE_SIZE freed blocks, held back from malloc.
@@ -271,8 +271,8 @@ secret preset QUARANTINE_MASK: U64 = QUARANTINE_SIZE.sub(1)
 ### on a block freed twice and with `UnacceptedValueError` on memory that isn't one of its blocks. Every alignment is
 ### there. `HEAP` is its table when the heap check is on.
 @target(os: not "none")
-entity CheckedHeapManager
-obeys HeapManageable[CheckedHeapManager]
+entity HeapManagerByCheckedHeap
+obeys HeapManageable[HeapManagerByCheckedHeap]
     nothing
 
 ### What the checked heap keeps in front of each block.
@@ -285,7 +285,7 @@ secret record BlockHeader
 ### Makes the manager. It holds no values.
 ### :returns: The manager.
 @target(os: not "none")
-common routine CheckedHeapManager.construct() -> Me
+common routine HeapManagerByCheckedHeap.construct() -> Me
     return Me()
 
 ### Allocates with malloc the header room, `size` bytes, and room to align, the header tagged LIVE.
@@ -293,7 +293,7 @@ common routine CheckedHeapManager.construct() -> Me
 ### :param align: The alignment, a power of two.
 ### :returns: The block after the header, null when malloc fails or the size can't hold a header too.
 @target(os: not "none")
-routine @CheckedHeapManager.borrow(size: U64, align: U64) -> Addr
+routine @HeapManagerByCheckedHeap.borrow(size: U64, align: U64) -> Addr
     step: U64 = align.max(MALLOC_ALIGN)
 
     total: Maybe[U64] = try size.add(HEADER_ROOM.add(step))
@@ -323,7 +323,7 @@ routine @CheckedHeapManager.borrow(size: U64, align: U64) -> Addr
 ### :returns: The new block, null when malloc fails and the old block is untouched.
 ### :throws: Crashes with `UnacceptedValueError` when `at` was freed already or isn't a block of this heap.
 @target(os: not "none")
-routine @CheckedHeapManager.reborrow(at: Addr, size: U64, align: U64) -> Addr
+routine @HeapManagerByCheckedHeap.reborrow(at: Addr, size: U64, align: U64) -> Addr
     if at.is_hollow()
         return me.borrow(size, align)
     header: @BlockHeader = header_of(at)
@@ -347,7 +347,7 @@ routine @CheckedHeapManager.reborrow(at: Addr, size: U64, align: U64) -> Addr
 ### :throws: Crashes with `DoubleFreeError` when the block was freed already, and with `UnacceptedValueError` when `at`
 ###     isn't a block of this heap.
 @target(os: not "none")
-routine @CheckedHeapManager.give_back(at: Addr) -> None
+routine @HeapManagerByCheckedHeap.give_back(at: Addr) -> None
     if at.is_hollow()
         return
     release_block(at)

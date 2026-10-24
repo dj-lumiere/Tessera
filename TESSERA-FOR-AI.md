@@ -226,7 +226,7 @@ routine start() -> None
   memory is given back, and a routine that gives back memory its caller holds (the group check below). Raw code the
   build doesn't follow (a `steal` out of an element place that reads the bits and leaves them, an address made with
   `inttoptr`) can still give a block back twice: with `[debug] heap-check = true` in config.toml or `--heap-check`
-  (any build mode, off by default, always on under `tessera test`) `HEAP` is the `CheckedHeapManager`, which keeps a
+  (any build mode, off by default, always on under `tessera test`) `HEAP` is the `HeapManagerByCheckedHeap`, which keeps a
   header in front of each block and crashes with `DoubleFreeError` at the line that gives the same block back a second time (a
   quarantine of the last 256 blocks given back keeps that sure, raw layer included). With it off it is plain malloc / free,
   and so is a single-file build without a manifest.
@@ -445,10 +445,10 @@ routine start() -> None
   `resize` draws from it again (what a collection's `destruct` does with its storage).
 - **Every memory region has a manager** (all in Standard/System/Memory: the protocols, the hosted managers, and the
   ones without an OS). A manager is named for what it manages. A heap's obeys `HeapManageable` (blocks given back in any
-  order): `CHeapManager` (C's malloc / realloc / free, nothing in front of the blocks) and `CheckedHeapManager` (the heap
+  order): `HeapManagerByC` (C's malloc / realloc / free, nothing in front of the blocks) and `HeapManagerByCheckedHeap` (the heap
   check below), and the hosted default table `HEAP` is the checked one under the heap check, else the C library's.
-  `C_HEAP` is `CHeapManager`'s table in every build (memory C frees, or C's malloc hands over). A page manager obeys
-  `PageManageable`: `OsPageManager`, whose table is `PAGES` (whole pages, `borrow` puts one page in front that keeps
+  `C_HEAP` is `HeapManagerByC`'s table in every build (memory C frees, or C's malloc hands over). A page manager obeys
+  `PageManageable`: `PageManagerByOs`, whose table is `PAGES` (whole pages, `borrow` puts one page in front that keeps
   the size). The tables are ready before `start`, and every routine that borrows memory takes one as `@MemoryManager`:
   `.construct(HEAP)`, `manager: PAGES`, `t: @MemoryManager = HEAP` to name it. A `StackManager`
   (`bottom`, `top`, `sp`: `size()`, `remaining()`, `used()`, `holds(at)`) manages one flow's stack: `sp` is the flow's
@@ -1217,7 +1217,10 @@ routine start() -> None
   `me` by its address, `routine @Counter.f(...)` (`routine Counter.f(...)` is a build error). A parameter that takes one over (`c: Counter`) is a place of the routine
   inside it, which the routine ends (`drop`, `return`, or hand on). Every entity declares `construct` and has a `destruct` (its own or the builder's walk), and its life ends
   exactly once on every path, like memory from a manager: the builder's give back of a STACK place, or `drop`.
-- Every manager is an `entity` (`MemoryManager`, `StackManager`, `CHeapManager`, `ThreadManager`, `AccessManager`, ...):
+- A manager is named for what it manages. When there are several ways to manage it, the way comes after `By`:
+  `HeapManagerByC`, `HeapManagerByCheckedHeap`, `PageManagerByOs` (the old `CHeapManager`, `CheckedHeapManager`,
+  `OsPageManager` are build errors naming the new name).
+- Every manager is an `entity` (`MemoryManager`, `StackManager`, `HeapManagerByC`, `ThreadManager`, `AccessManager`, ...):
   a copy would keep its own record and diverge, so a table is reached through its place (`manager: @MemoryManager =
   HEAP`, never `HEAP.peek()`). Every service (`Console`, `Clock`, `CpuClock`, `OsEnvironment`, `OsEntropy`, `Crash`)
   is a `record` with no member variables (body `nothing`): its state is a `secret` global or the OS's, and its
