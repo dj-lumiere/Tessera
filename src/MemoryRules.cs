@@ -38,6 +38,9 @@ public static class MemoryRules
 
         /// The access covers a run of values (`AuthorizedSlice[T]`): its elements are inside it.
         public bool Run { get; init; }
+
+        /// The group is a piece of work (`Work[T]`), which ends only by going to a ticket with steal: the messages say so.
+        public bool Work { get; init; }
     }
 
     /// The value `Name` a call to `Callee` gave: when that routine returns an access (known once every routine is
@@ -200,7 +203,7 @@ public static class MemoryRules
 
     /// A group: where it came from, and whether and where it ended.
     private sealed record Group(string Origin, Pos Born, Pos? Ended, string? How, string? Entity = null, bool Field = false,
-        string? Access = null, bool Run = false);
+        string? Access = null, bool Run = false, bool Work = false);
 
     private sealed class State
     {
@@ -385,7 +388,7 @@ public static class MemoryRules
                                     break;
                                 }
                         string id = $"{block}:{a.Name}:{a.Pos}";
-                        state.Groups[id] = new Group(a.Shown ?? a.Name, a.Pos, null, null, a.Entity, a.Field, a.Access, a.Run);
+                        state.Groups[id] = new Group(a.Shown ?? a.Name, a.Pos, null, null, a.Entity, a.Field, a.Access, a.Run, a.Work);
                         state.Names[a.Name] = id;
                         break;
                     }
@@ -442,6 +445,9 @@ public static class MemoryRules
                         else if (g.Ended is { } accessEnd && g.Access is { } access)
                             Report(end.Pos, $"'{(end.Name.StartsWith("access:", StringComparison.Ordinal) ? g.Origin : end.Name)}' gives back {access}{(end.Name.StartsWith("access:", StringComparison.Ordinal) ? "" : $" to '{g.Origin}'")} that was given back already ({g.How} on line {accessEnd.Line}): "
                                 + "an access is given back once, and taken again with get_exclusive_access or get_shared_read_access");
+                        else if (g.Ended is { } handedAt && g.Work)
+                            Report(end.Pos, $"'{end.Name}' was handed to a ticket already ({g.How} on line {handedAt.Line}), and a piece "
+                                + "of work runs once: make another one with to[Work] for the second ticket");
                         else if (g.Ended is { } endedAt && g.Entity is { } once)
                             Report(end.Pos, $"'{end.Name}' ended already ({g.How} on line {endedAt.Line}), and a {once} ends once");
                         else if (g.Ended is { } at)
@@ -643,7 +649,10 @@ public static class MemoryRules
                                     + $"{name}.poke(...)");
                         foreach (var (heldId, g) in state.Groups)
                             if (g.Ended is null && !g.Field)
-                                Report(ex.Pos, g.Access is { } held
+                                Report(ex.Pos, g.Work
+                                    ? $"'{g.Origin}' is a piece of work (from line {g.Born.Line}) that no ticket took when '{routine}' returns "
+                                      + $"here: hand it to a ticket on every path, t.put_work(steal {g.Origin})"
+                                    : g.Access is { } held
                                     ? $"'{g.Origin}' holds {held} (taken on line {g.Born.Line}) that isn't given back before '{routine}' "
                                       + $"returns here: give it back first (drop {Holder(state, heldId, g)}), or return it"
                                     : g.Entity is { } alive
@@ -696,7 +705,10 @@ public static class MemoryRules
                             bool reached = next.Names.ContainsValue(id);
                             if (reached) next.Groups[id] = g;
                             else if (g.Ended is null && !g.Field)
-                                Report(ex.Pos, g.Access is { } lostAccess
+                                Report(ex.Pos, g.Work
+                                    ? $"'{g.Origin}' is a piece of work (from line {g.Born.Line}) that no ticket took, and goes out of sight "
+                                      + $"here: hand it to a ticket on every path, t.put_work(steal {g.Origin})"
+                                    : g.Access is { } lostAccess
                                     ? $"'{g.Origin}' holds {lostAccess} (taken on line {g.Born.Line}) and goes out of sight here: give it "
                                       + $"back first (drop {Holder(state, id, g)}), or keep it in a name bound outside the body"
                                     : g.Entity is { } unseen

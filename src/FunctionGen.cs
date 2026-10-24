@@ -221,6 +221,8 @@ public sealed partial class FunctionGen
         if (_dropping is not null && e.Equals(_dropping)) return null;
         switch (e)
         {
+            case ValueRef work when _workNames.Contains(work.Name):
+                return WorkCopied(work.Name);
             case ValueRef r when InferQuiet(r) is { } t && Entities.Holds(t):
                 return $"'{r.Name}' holds {t.Name}, {HoldsWhat(t)}, which is never copied: hand it over with steal {r.Name}, "
                     + "or lend its place as a pointer";
@@ -371,7 +373,7 @@ public sealed partial class FunctionGen
             throw Err(s.Pos, "steal takes a name here (steal x): a field or an element comes out on its own line, "
                 + "steal p.left as b");
         var t = InferQuiet(r);
-        if (!HasReleaseDuty(t) && !WrittenGeneric(r.Name) && !_c.Prechecking)
+        if (!HasReleaseDuty(t) && !WrittenGeneric(r.Name) && !_workNames.Contains(r.Name) && !_c.Prechecking)
             throw Err(s.Pos, $"'{r.Name}' holds {t?.Name ?? "a value"}, which has nothing to give back, so passing it on copies it: "
                 + $"write {r.Name} without steal");
         _moving = true;
@@ -969,6 +971,9 @@ public sealed partial class FunctionGen
         if (_decl.Params is [{ Name: "me" } me, ..] && me.Type.Name == "Me" && _inst.Params.Count > 0 && Entities.IsEntity(_inst.Params[0]))
             throw Err(me.Pos, $"'{_decl.DisplayName}' takes me by value, which copies the {_inst.Params[0].Name}, an entity: "
                 + $"take it by its address, routine @{_decl.Owner}.{_decl.Name}(...)");
+        if (!MemOn)
+            for (int i = 0; i < _decl.Params.Count && i < _inst.Params.Count; i++)
+                NoteWorkName(_decl.Params[i].Name, _inst.Params[i], _decl.Params[i].Pos);
         if (MemOn)
         {
             string first = _decl.Shared.Count > 0 ? "" : blocks[0].Name;
@@ -979,6 +984,7 @@ public sealed partial class FunctionGen
                     _memTracked.Add(_decl.Params[i].Name);
                     handed.Add(new MemoryRules.Acquire(_decl.Params[i].Name, "handed in", _decl.Params[i].Pos) { Entity = Entities.HeldIn(_inst.Params[i])?.Name });
                 }
+                else NoteWorkName(_decl.Params[i].Name, _inst.Params[i], _decl.Params[i].Pos, handed);
             // A destruct gives back each field of me that holds memory or an entity: each is followed as a handle.
             if (_decl.Name == "destruct" && _decl.Params is [{ Name: "me" } self, ..] && _inst.Params[0] is PtrType { Pointee: RecordType owner })
                 foreach (var (field, type) in _c.Fields(owner))
@@ -1494,6 +1500,7 @@ public sealed partial class FunctionGen
                     Line($"{op} = {Copy(v, t)}");
                 Define(b.Name, new Val(op, t), b.Pos);
                 DescribeValue(b.Name, op, t, b.Source ?? b.Pos);
+                NoteWorkName(b.Name, t, b.Pos);
                 if (PointsAtMemory(t) && b.Value is not ClaimExpr && RootName(b.Value) is { } made && made != b.Name)
                 {
                     _rootOf[b.Name] = made;
@@ -1625,6 +1632,10 @@ public sealed partial class FunctionGen
             }
             case DropStmt d:
             {
+                // A piece of work ends only on a ticket, which runs it and ends its arguments.
+                if (d.Value is ValueRef droppedWork && _workNames.Contains(droppedWork.Name))
+                    throw Err(d.Pos, $"'{droppedWork.Name}' is a piece of work, which ends on the ticket that runs it, not with drop: "
+                        + $"t.put_work(steal {droppedWork.Name})");
                 // Nothing to give back: in generic code (a T that is a record here, or a pointer a field written T
                 // holds) drop does nothing, in code that names its types it says so.
                 if (!HasReleaseDuty(InferQuiet(d.Value)) || PointerFieldOfTypeParam(d.Value))
@@ -4917,6 +4928,7 @@ public sealed partial class FunctionGen
         if (!arityOk)
             throw Err(plan.Pos, $"'{plan.Decl.DisplayName}' takes {(sig.Variadic ? "at least " : "")}{fixedCount} argument(s), got {plan.Args.Count}"
                 + _c.HiddenOverloadHint(plan.Decl, plan.Args.Count, _env.File));
+        CheckWorkHandOver(plan);
 
         // A load or store reads its address straight from a place chain, so a field of a dense record keeps the
         // alignment it really has (see PlaceAddress); anywhere else such an address is refused.

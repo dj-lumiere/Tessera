@@ -18,6 +18,66 @@ public sealed partial class FunctionGen
 
     private int _works;
 
+    /// The names that hold a piece of work in this routine (a binding or a parameter of `Work[T]`): each goes to a ticket
+    /// with `t.put_work(steal work)` on every path, once, and is never copied or dropped.
+    private readonly HashSet<string> _workNames = [];
+
+    /// Whether `t` is the standard library's `Work[T]`.
+    private static bool IsWorkType(DType? t) => t is RecordType { Decl.IsLibrary: true, Decl.Name: "Work" };
+
+    /// After a binding or at a parameter: a name holding a piece of work starts a group of the memory check, which only
+    /// the hand-over to a ticket (`steal`) ends. The standard library's own routines pass work along as they need.
+    private void NoteWorkName(string name, DType t, Pos pos, List<MemoryRules.Event>? into = null)
+    {
+        if (_decl.IsLibrary || name.StartsWith('$') || !IsWorkType(t)) return;
+        _workNames.Add(name);
+        if (!MemOn) return;
+        _memTracked.Add(name);
+        var made = new MemoryRules.Acquire(name, into is null ? "made here" : "handed in", pos) { Entity = t.ToString(), Work = true };
+        if (into is not null) into.Add(made);
+        else Mem(made);
+    }
+
+    /// The error for a piece of work written where it would be copied (bound again, passed, returned) rather than
+    /// handed over with steal.
+    private static string WorkCopied(string name) =>
+        $"'{name}' is a piece of work, which runs once on one ticket: hand it over with steal, t.put_work(steal {name})";
+
+    /// Where a call may take a piece of work: a ticket's `put_work`, which takes it with `steal` (and a work made
+    /// right in the arguments is bound to a name first), or a parameter of the program's own routine written as
+    /// `Work[T]`, which then puts it on a ticket. Handed anywhere else (a list, a generic parameter) no ticket would run it.
+    private void CheckWorkHandOver(CallPlan plan)
+    {
+        if (_decl.IsLibrary) return;
+        bool putWork = IsTicketRoutine(plan.Decl) && plan.Decl.Name == "put_work";
+        string ticket = plan.Receiver is { } r ? Spelled(r) : "t";
+        var parameters = plan.Decl.Params.Where(p => p.Name != "me").ToList();
+        for (int i = 0; i < plan.Args.Count; i++)
+        {
+            var arg = plan.Args[i];
+            if (putWork)
+            {
+                switch (arg)
+                {
+                    case StealExpr { Value: ValueRef }:
+                        continue;
+                    case ValueRef named:
+                        throw Err(arg.Pos, $"{ticket}.put_work takes the work over, so it is handed with steal: "
+                            + $"{ticket}.put_work(steal {named.Name}), and '{named.Name}' isn't used after");
+                    case WorkExpr made:
+                        throw Err(arg.Pos, $"{ticket}.put_work takes a piece of work handed over with steal: bind it to a name first, "
+                            + $"work: {WorkType(made)} = {made.Routine.Name}.to[Work](...), then {ticket}.put_work(steal work)");
+                    default:
+                        throw Err(arg.Pos, $"{ticket}.put_work takes a piece of work handed over with steal: {ticket}.put_work(steal work)");
+                }
+            }
+            if (arg is StealExpr { Value: ValueRef stolen } && _workNames.Contains(stolen.Name)
+                && (plan.Decl.IsLibrary || parameters.ElementAtOrDefault(i)?.Type is not { Name: "Work", Path: null }))
+                throw Err(arg.Pos, $"'{stolen.Name}' is a piece of work, which goes to a ticket: t.put_work(steal {stolen.Name}). "
+                    + $"Handed to '{plan.Decl.Name}', no ticket would run it");
+        }
+    }
+
     /// The frame slots of the works' blocks, which the memory rules don't follow as places to give back.
     private readonly HashSet<string> _workBlocks = [];
 

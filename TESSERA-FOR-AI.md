@@ -309,7 +309,7 @@ routine start() -> None
     `ReadAuthorized[T]`, or handing it to a `@reshaping` routine, is a build error.
   - A routine that returns an access hands it to its caller, and a routine that gives back an access it is handed
     (`close(held)`) ends the caller's at the call. The build works both out from the bodies.
-- **What thread work changes.** Work on a thread or a passable fiber (`t.put_work(work)` on a `Thread` or a
+- **What thread work changes.** Work on a thread or a passable fiber (`t.put_work(steal work)` on a `Thread` or a
   `PassableFiber` ticket) runs on another thread, next to the routine that started it and other work. The memory it
   changes (in its own body or in the program's routines it calls) is one of three, else it is a build error: memory it
   was handed with `steal` (its own from then on), an `Authorized[T]` handed to it, or an `Unbroken[T]` (changed with
@@ -322,7 +322,7 @@ routine start() -> None
   held: Authorized[Ledger] <- ledger.get_exclusive_access()
   t: Thread[None] <- get_thread[None]()
   dues: Work[None] = collect_dues.to[Work](book: held, rate: 3)
-  t.put_work(dues)
+  t.put_work(steal dues)
   t.retrieve()
   drop t
   drop held
@@ -343,8 +343,8 @@ routine start() -> None
   that hands it waits for the work and doesn't touch it meanwhile: `steal` is for handing memory over for good. A
   `@threadlocal` global is each thread's own, and an address made from an `Addr` isn't followed. A standard library
   routine counts as changing a parameter only where it is `@reshaping` on it. Errors (each starts with the call that
-  starts the work, `t.put_work(work)`): `t.put_work(work) runs 'f' on another thread, and it changes the global 'G'
-  (line N: ...) without an exclusive access, while other threads reach it too: ...` and `t.put_work(work) hands 'xs'
+  starts the work, `t.put_work(steal work)`): `t.put_work(steal work) runs 'f' on another thread, and it changes the global 'G'
+  (line N: ...) without an exclusive access, while other threads reach it too: ...` and `t.put_work(steal work) hands 'xs'
   to 'f', which changes it on another thread without an exclusive access, and it isn't handed over with steal, so
   other threads may reach it too: hand it over with steal, or ...`, both ending with the fix "hand the work an
   exclusive access to it (its parameter an Authorized[T]), borrowed in a name first, held: Authorized[T] <-
@@ -376,7 +376,7 @@ routine start() -> None
   - A call through a routine value is a call to the routine it names: `apply(f: keep.to[Callable](), p: l)` hands `l`
     to `keep` when `apply` calls `f` on its `p`, and a lambda is the routine it makes. A routine value read out of
     memory (a global, a field) names no routine to the build, and what it is called on there isn't followed.
-  - Work put on a ticket (`t.put_work(work)` with `work: Work[T] = f.to[Work](p: x)`, on a `Thread`, a `Fiber`, or
+  - Work put on a ticket (`t.put_work(steal work)` with `work: Work[T] = f.to[Work](p: x)`, on a `Thread`, a `Fiber`, or
     a `PassableFiber`) is a call of `f` on `x`, and the ticket holds `x` until the work is over: storing or returning
     the ticket is storing or returning `x`. Work handed a view of the frame is waited for (`retrieve`, or `drop` of the
     ticket) before the routine returns: `the work put on 't' on line N was handed the frame slot
@@ -1469,11 +1469,25 @@ parameters, every parameter once, at most four (build errors: "to[Work] takes th
 parameters of 'f': f.to[Work](n: ...)", "'f' has no parameter named 'm': its parameters are n", "to[Work] gives every
 parameter of 'f' its value, and 'b' has none", "'n' is given twice", "a piece of work takes at most four arguments, and
 'f' has 5: hand it a record of them"; a generic routine names its instance, `f[T].to[Work](...)`). `T` is the routine's
-result type, `None` for none. The arguments are computed on that line, and the work doesn't run yet. A `Work[T]` is a
-plain value bound with `=` (`primes: Work[U64] = count_primes.to[Work](table: table, limit: 1000)`): its block (the
-routine, its arguments, room for the result, a size the build knows) is in the frame of the routine that made it, and
-nothing gives it back (`<-` is a build error: "'<-' borrows: w: &Work[U64] <- value borrows a place and puts the value
-in it, and w: Work[U64] = value binds a value"). It runs on a ticket. An argument may be an entity handed over with
+result type, `None` for none. The arguments are computed on that line, and the work doesn't run yet. A `Work[T]` is
+bound with `=` (`primes: Work[U64] = count_primes.to[Work](table: table, limit: 1000)`): its block (the routine, its
+arguments, room for the result, a size the build knows) is in the frame of the routine that made it (`<-` is a build
+error: "'<-' borrows: w: &Work[U64] <- value borrows a place and puts the value in it, and w: Work[U64] = value binds
+a value"). It goes to one ticket, handed over with `steal`: `t.put_work(steal primes)`, and the ticket moves the block
+into memory from its manager. The build checks every piece of work this way, whatever its arguments are:
+  - `t.put_work(primes)` is a build error that shows the steal form ("t.put_work takes the work over, so it is handed
+    with steal: t.put_work(steal primes), and 'primes' isn't used after"). Work made right in the arguments is bound
+    to a name first.
+  - After the steal the name is gone, so the same work can't go on a second ticket ("'primes' was handed to a ticket
+    already (steal primes on line N), and a piece of work runs once: make another one with to[Work] for the second
+    ticket"). Work made in a loop's body is made and put in each pass.
+  - Work that no ticket takes on some path is a build error at that path's exit, an `if` without an `else` and a loop
+    body's end included ("'primes' is a piece of work (from line N) that no ticket took when 'start' returns here:
+    hand it to a ticket on every path, t.put_work(steal primes)"). `drop primes` is a build error too.
+  - A routine of the program may take a `Work[T]` parameter (`run_on_thread(work: steal primes)`), and the same rules
+    hold for it inside. Handed anywhere else (a `List[Work[T]]`'s `add_last`, a generic parameter) is a build error,
+    since no ticket would run it, and copying the name (`w2: Work[U64] = primes`, `return primes`) is one as well.
+  - `put_callable` takes no `Work[T]`: its entity arguments are handed over with `steal` as for any call. An argument may be an entity handed over with
 `steal` (the work's routine then holds it), and the result may be an entity (`Thread[List[S64]]`, `result: &List[S64]
 <- t.retrieve()`): `retrieve()` moves the result out of the ticket and leaves its place hollow. `drop t` is the
 ticket's `destruct()`: it destructs a result nobody retrieved (dropped before `retrieve()`, or `retrieve()` threw
@@ -1487,15 +1501,15 @@ block's destruct only ends what is still in it.
 **Threads, fibers, and passable fibers are tickets.** A manager lends one, and it is used in one flow, top to
 bottom: `t: Thread[S64] <- get_thread[S64]()` (a ticket is bound with `<-` from the call that borrows it, `=` is a build
 error: "a Thread[S64] is borrowed and given back with drop, so it is bound with '<-' from the call that borrows it: t:
-Thread[S64] <- ..."), `t.put_work(work)` (a `Work[T]`, it runs from here on), `t.check_finished()` to look without
+Thread[S64] <- ..."), `t.put_work(steal work)` (a `Work[T]`, it runs from here on), `t.check_finished()` to look without
 waiting, `r: S64 = t.retrieve()` (failable), which waits until the work has finished and gives its result, then more
 work on the same ticket or `drop t`, which gives the ticket back. `t.waitfor(5s).retrieve()` waits at most that long
 (`waitfor(timeout)` takes a `Duration` and holds for the next `retrieve`) and throws `TaskTimeoutError` when the time
 runs out first (`try` gives `None`, or `false` for a `Thread[None]`). Every ticket bound with `<-` is given back with
 `drop` on every path, once, or handed to a routine that takes it (a `List` of tickets): a missing drop, a second one,
 and a use after it are build errors, as for every `<-` binding. `T` is the result type, `Thread[None]` for none
-(`t.retrieve()` then only waits). The work runs a copy of its block, copied into memory from the memory manager the
-thread manager holds, so one `Work` may go on several tickets, one after another. An access the work's routine takes
+(`t.retrieve()` then only waits). The work runs its block moved into memory from the memory manager the thread
+manager holds. An access the work's routine takes
 is borrowed in a name first, handed to the work by that name, and dropped after the ticket's `retrieve`: one borrowed
 right in the work's arguments is a build error ("the access for 'book' is borrowed right in the work's arguments, and
 nothing would give it back: ..."). A `Callable` value (no parameter names) goes on a ticket with `t.put_callable(entry:
