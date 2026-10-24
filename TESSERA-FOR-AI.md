@@ -800,11 +800,10 @@ routine start() -> None
   optional `rule:` (exact, then rounded once: they round where `+ - *` fail, and throw `NumericOverflowError` only
   when even the rounded value needs more than 34 digits). A fixed text with another rule is
   `Fixed[Decimal](value: x.round(places, rule: r), digits: places)`. No global rounding state.
-  `a.rem(b)` on `Decimal` is the remainder of the floored division, `a - b × floor(a / b)`, exact, with the sign of
-  `b` and never `-0` (`-7` by `2` is `1`, `7` by `-2` is `-1`, `5.5` by `2` is `1.5`, `1E+30` by `7` is `1`), failable:
-  `DivisionByZeroError` for a zero `b`, `NumericOverflowError` when it needs more than 34 digits (`-1e-40` by `7`).
-  Integer `%` is Euclidean (never negative, `7 % -2` is `1`), so the two agree for a positive divisor only. `Decimal`
-  has no `%` or `//`.
+  `a.rem(b)` on `Decimal` is the Euclidean remainder, as integer `%` is: exact, `0 <= r < |b|`, never negative
+  (`-7` by `2` is `1`, `7` by `-2` is `1`, `5.5` by `-2` is `1.5`, `-5.5` by `2` is `0.5`, `1E+30` by `7` is `1`),
+  failable: `DivisionByZeroError` for a zero `b`, `NumericOverflowError` when it needs more than 34 digits (`-1e-40`
+  by `7`). `Decimal` has no `%` or `//`.
   There is no decimal literal: a value comes from text (`"19.99".to[Decimal]()`, failable: `EmptyTextError`,
   `InvalidValueError`, and for `Decimal` `OutOfRangeError`), from an integer (`n.to[D64]()`, `S64.to[Decimal](3)`
   on every `S8` .. `U256`), or `D64.zero()` / `Decimal.zero()` (`.hollow()` is the all-zero bits, a zero at the
