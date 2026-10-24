@@ -1089,7 +1089,10 @@ routine start() -> None
   `BorrowedCell`, a `BorrowedSlice` or an entity gives back. A type of plain data (numbers, `Bool`, choices,
   addresses, records and variants of those) needs neither: `Point(x: 1, y: 2)` makes it, and its walk is empty, so
   nothing is called. A plain type used where generic code asks for `Destructible[T]` (`destruct_all`) declares a
-  `destruct` that does nothing.
+  `destruct` that does nothing. `tessera check --show-destructs <file.te>` (or `tessera build --show-destructs`)
+  prints the walks the builder writes for the program's own types as Tessera source, each marked
+  `@derived(implicit)` after a comment naming its type and where it is. A golden test's `<name>.destructs` holds that
+  text, and `tessera test` compares it.
 
 **Tuples**
 

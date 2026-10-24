@@ -10,9 +10,9 @@ static class Cli
     private const string Usage = """
         usage:
           tessera new   [<folder>]      start a solution: config.toml, main.te, .gitignore, VS Code files
-          tessera check [<target>] [<trace>] [<file.te>...]   type-check every non-generic routine, the stdlib included
+          tessera check [<target>] [<trace>] [--show-destructs] [<file.te>...]   type-check every non-generic routine, the stdlib included
           tessera build                 build the solution its config.toml describes (here or above)
-          tessera build <file.te>... [-o <out>] [--emit-llvm] [--no-stdlib-exports] [<target>] [--mode <mode>] [<trace>] [--race-check | --no-race-check]
+          tessera build <file.te>... [-o <out>] [--emit-llvm] [--no-stdlib-exports] [--show-destructs] [<target>] [--mode <mode>] [<trace>] [--race-check | --no-race-check]
           tessera run                   build it and run it
           tessera run   <file.te>... [<target>] [--mode <mode>] [<trace>] [--race-check | --no-race-check] [-- <argument>...]
           tessera test  [<target>] [--mode <mode>] [<trace>] <dir-or-file.te>...
@@ -26,6 +26,9 @@ static class Cli
 
         --no-stdlib-exports: leave out the standard library's @export routines (the default crash report, the B16 and
                 BF16 conversion helpers), for a library that is linked into a program which has them already.
+        --show-destructs: print the destruct routines the builder writes for the program's own types (a type that
+                holds something to release and writes no destruct), as Tessera source, each after a comment naming
+                its type. The test runner compares them with <name>.destructs when that file exists.
         <mode>: debug (-O0, the default), release (-O2), release-time (-O3), or release-space (-Os), as a
                 manifest's mode. Every mode has debug information: DWARF, or CodeView and a .pdb on Windows, so a
                 debugger shows Tessera lines, routine parameters, bindings and block parameters.
@@ -371,7 +374,8 @@ static class Cli
     }
 
     private sealed record Options(List<string> Inputs, string? Output, bool EmitLlvm, BuildTarget Target, BuildMode Mode,
-        bool StdlibExports, bool? Trace, bool RaceCheck, bool UninitFill, bool HeapCheck = false, Board? Board = null);
+        bool StdlibExports, bool? Trace, bool RaceCheck, bool UninitFill, bool HeapCheck = false, Board? Board = null,
+        bool ShowDestructs = false);
 
     internal static bool RaceCheckable(BuildTarget target) => BuildModes.RaceCheckable(target);
 
@@ -405,7 +409,7 @@ static class Cli
     {
         var inputs = new List<string>();
         string? output = null;
-        bool emit = false, stdlibExports = true, uninitFill = false, heapCheck = false;
+        bool emit = false, stdlibExports = true, uninitFill = false, heapCheck = false, showDestructs = false;
         bool? trace = null, race = null;
         var mode = BuildMode.Debug;
         var targetArgs = new TargetArgs();
@@ -419,6 +423,7 @@ static class Cli
                 case "--no-stdlib-exports": stdlibExports = false; break;
                 case "--uninit-fill": uninitFill = true; break;
                 case "--heap-check": heapCheck = true; break;
+                case "--show-destructs": showDestructs = true; break;
                 case "--mode": mode = ParseMode(args, ref i); break;
                 case "--race-check": race = true; break;
                 case "--no-race-check": race = false; break;
@@ -432,7 +437,7 @@ static class Cli
         var target = targetArgs.Build();
         if (race == true) RequireRaceCheckable(target);
         return new Options(inputs, output, emit, target, mode, stdlibExports, trace, race ?? mode.RaceCheckedByDefault(target),
-            uninitFill, heapCheck, targetArgs.Board);
+            uninitFill, heapCheck, targetArgs.Board, showDestructs);
     }
 
     /// Parses every input, plus the whole standard library, into one compilation and lowers it to LLVM IR.
@@ -443,9 +448,15 @@ static class Cli
         var targetArgs = new TargetArgs();
         var files = new List<string>();
         bool? trace = null;
+        bool showDestructs = false;
         for (int i = 0; i < args.Length; i++)
         {
             if (targetArgs.TryTake(args, ref i) || TryTrace(args[i], ref trace)) continue;
+            if (args[i] == "--show-destructs")
+            {
+                showDestructs = true;
+                continue;
+            }
             if (args[i].StartsWith('-')) throw new ToolError($"unknown option '{args[i]}'");
             files.Add(args[i]);
         }
@@ -472,6 +483,8 @@ static class Cli
         if (errors.Count == 0) Lint(ownDecls!, files, [.. checkedSides.Select(s => s.Compiler)]);
         Console.Error.WriteLine($"{instances} routine instance(s) checked (heap check on and off, race check on), {errors.Count} error(s)");
         if (errors.Count > 0) return 1;
+        // Both sides write the same destructs: the program's types are the same with the heap check on and off.
+        if (showDestructs) Console.Write(checkedSides[0].Compiler.ShownDestructs());
 
         // The IR must also be valid for LLVM: compile it to an object file and throw that away.
         foreach (var (name, compiler) in checkedSides)
@@ -518,7 +531,8 @@ static class Cli
     public static string Compile(IEnumerable<string> files, BuildTarget target, bool executable = true,
         IReadOnlyList<string>? roots = null, BuildMode mode = BuildMode.Debug, bool stdlibExports = true, bool lint = true,
         bool? trace = null, bool heapCheck = false, bool raceCheck = false, int? traceFrames = null, int? failureTraces = null,
-        bool uninitFill = false, bool? deadlockCheck = null, bool accessOrder = false, int? crashMessageSize = null)
+        bool uninitFill = false, bool? deadlockCheck = null, bool accessOrder = false, int? crashMessageSize = null,
+        TextWriter? destructs = null)
     {
         var inputs = files.ToList();
         var decls = LoadDecls(inputs, target);
@@ -535,6 +549,7 @@ static class Cli
         compiler.SetCrashMessageSize(crashMessageSize);
         compiler.SetAccessChecks(deadlockCheck ?? mode.DeadlockCheckedByDefault(), accessOrder);
         string ir = compiler.Generate();
+        destructs?.Write(compiler.ShownDestructs());
         if (lint) Lint(decls, inputs, [compiler]);
         if (executable && !compiler.HasStart)
             throw compiler.MainRoutine is { } main
@@ -723,7 +738,8 @@ static class Cli
         }
         var o = ParseOptions(args);
         string ir = Compile(o.Inputs, o.Target, executable: !o.EmitLlvm, mode: o.Mode, stdlibExports: o.StdlibExports,
-            trace: o.Trace, raceCheck: o.RaceCheck, uninitFill: o.UninitFill, heapCheck: o.HeapCheck);
+            trace: o.Trace, raceCheck: o.RaceCheck, uninitFill: o.UninitFill, heapCheck: o.HeapCheck,
+            destructs: o.ShowDestructs ? Console.Out : null);
         string stem = Path.ChangeExtension(o.Inputs[0], null);
 
         if (o.EmitLlvm)
@@ -1123,6 +1139,9 @@ static class Cli
         Manifest? manifest = null;
         string ir;
         bool race;
+        // `<name>.destructs`: the destruct routines the builder writes for the test's types, as --show-destructs
+        // prints them.
+        var destructs = File.Exists(stem + ".destructs") ? new StringWriter() : null;
         try
         {
             if (sources is [var only] && Path.GetFileName(only) == Manifest.FileName)
@@ -1140,7 +1159,7 @@ static class Cli
                 raceCheck: race, traceFrames: manifest?.TraceFrames,
                 failureTraces: manifest?.FailureTraces, uninitFill: manifest?.UninitFill ?? false,
                 deadlockCheck: manifest?.DeadlockCheck, accessOrder: manifest?.AccessOrder ?? false,
-                crashMessageSize: manifest?.CrashMessageSize);
+                crashMessageSize: manifest?.CrashMessageSize, destructs: destructs);
         }
         catch (ManifestError e)
         {
@@ -1153,6 +1172,12 @@ static class Cli
             return HasExpectedError(e.Message) ? null : $"expected an error containing \"{expectedError}\", got: {e.Message}";
         }
         if (expectedError is not null) return $"expected a build error containing \"{expectedError}\", but it compiled";
+        if (destructs is not null)
+        {
+            string want = Normalize(File.ReadAllText(stem + ".destructs"));
+            string got = Normalize(destructs.ToString().Replace('\\', '/'));
+            if (want != got) return "the destructs the builder writes: " + FirstDifference(want.Split('\n'), got.Split('\n'));
+        }
 
         string exe = TempExe();
         try

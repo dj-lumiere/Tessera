@@ -133,7 +133,7 @@ public static class Derive
             throw new CompileError(at, $"{name} can't derive {concept}: field '{pointer.Name}' is a pointer; declare '{method}'");
     }
 
-    /// Parses generated source in the type's file. Each routine is marked `#derived` (`#derived(implicit)` when the
+    /// Parses generated source in the type's file. Each routine is marked `@derived` (`@derived(implicit)` when the
     /// type didn't ask), which lets it find methods in any module and, when implicit, keeps it from being checked
     /// until something uses it.
     private static IEnumerable<Decl> Parse(Decl type, string source, bool implicitly)
@@ -173,8 +173,12 @@ public static class Derive
     /// The `destruct` the builder writes for a type that holds something to release and writes none: each field that
     /// holds something (`holds`) is dropped, the last field first (an array field's drop drops its elements), and a variant
     /// drops the value of its branch. A type whose fields hold nothing (an entity of plain fields) gets one that does
-    /// nothing. It is marked `#derived(implicit)`, so it is built only where a drop uses it.
-    public static IEnumerable<Decl> DefaultDestruct(Decl type, Func<TypeRef, bool> holds)
+    /// nothing. It is marked `@derived(implicit)`, so it is built only where a drop uses it.
+    public static IEnumerable<Decl> DefaultDestruct(Decl type, Func<TypeRef, bool> holds) =>
+        Parse(type, DefaultDestructSource(type, holds), implicitly: true);
+
+    /// The source of the `destruct` DefaultDestruct writes, as Tessera text: what `--show-destructs` prints.
+    public static string DefaultDestructSource(Decl type, Func<TypeRef, bool> holds)
     {
         var (name, typeParams, clauses) = type switch
         {
@@ -206,7 +210,7 @@ public static class Derive
                 break;
         }
         sb.Append("    return\n");
-        return Parse(type, sb.ToString(), implicitly: true);
+        return sb.ToString();
     }
 
     /// Whether a routine was derived without the type asking (a choice or variant with no `@derive`).

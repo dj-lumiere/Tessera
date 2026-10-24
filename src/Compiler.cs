@@ -239,8 +239,40 @@ public sealed partial class Compiler
             if (!destruct) walked.Add(d);
         }
         foreach (var d in walked)
+        {
+            if (!d.IsLibrary) _shownDestructs.Add((d, Tessera.Derive.DefaultDestructSource(d, t => needs.Holds(d, t))));
             foreach (var r in Tessera.Derive.DefaultDestruct(d, t => needs.Holds(d, t)).OfType<RoutineDecl>())
                 AddDerivedRoutine(r);
+        }
+    }
+
+    /// The `destruct` routines the builder wrote for the program's own types (not the standard library's), each with
+    /// the type, in the order of the types in their files.
+    private readonly List<(Decl Type, string Source)> _shownDestructs = [];
+
+    /// The `destruct` routines the builder wrote for the program's own types, as Tessera source (`--show-destructs`):
+    /// a comment says which type it is for and where that type is, then the routine, marked `@derived(implicit)` as
+    /// it is kept. Empty when there is none.
+    public string ShownDestructs()
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (var (type, source) in _shownDestructs.OrderBy(t => t.Type.File, StringComparer.Ordinal)
+                     .ThenBy(t => t.Type.Pos.Line).ThenBy(t => t.Type.Pos.Col))
+        {
+            if (sb.Length > 0) sb.Append('\n');
+            string kind = type switch
+            {
+                RecordDecl { IsEntity: true } => "entity",
+                RecordDecl => "record",
+                _ => "variant",
+            };
+            string name = type is RecordDecl r ? r.Name : ((VariantDecl)type).Name;
+            sb.Append($"# The builder writes this destruct for {kind} {name} ({type.File}:{type.Pos.Line}).\n");
+            // The mark goes between the routine's doc comment and its header, where an annotation is written.
+            int header = source.IndexOf("\nroutine ", StringComparison.Ordinal) + 1;
+            sb.Append(source[..header]).Append("@derived(implicit)\n").Append(source[header..]);
+        }
+        return sb.ToString();
     }
 
     /// A routine the builder writes once the declarations are in (a type's destruct), registered as a declared one is.
