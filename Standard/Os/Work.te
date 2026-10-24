@@ -1,14 +1,15 @@
 # Tessera stdlib: the work a ticket runs
 #
 # A piece of work is a routine and its arguments, `Work[T]`, made with `f.to[Work](name: value, ...)`: a value bound
-# with `=` that goes to one ticket, handed over with `steal`. A ticket is one flow of execution that a manager hands out, borrowed with
+# with `=`. Work whose arguments have nothing to give back is copied onto each ticket it goes on. Work with an argument
+# that has something to give back runs once, handed to its ticket with `steal`. A ticket is one flow of execution that a manager hands out, borrowed with
 # `<-` and given back with `drop`: a thread from a ThreadManager (`Thread[T]`), a fiber from a CoroutineManager
 # (`Fiber[T]`), or a passable fiber from a ThreadPoolManager (`PassableFiber[T]`), which the pool's threads hand
 # between them. A ticket runs one piece of work at a time:
 #
 #     t: Thread[S64] <- get_thread[S64]()
 #     primes: Work[S64] = count_primes.to[Work](table: table, limit: 1000)
-#     t.put_work(steal primes)   # runs from here on
+#     t.put_work(primes)   # runs from here on
 #     # ... other work, check_finished() to look without waiting
 #     count: S64 = t.retrieve()   # waits for the work, then gives its result
 #     drop t
@@ -1108,9 +1109,10 @@ needs A: typename, B: typename, C: typename, D: typename
 
 ### A piece of work: a routine and its arguments, made with `f.to[Work](name: value, ...)`, the arguments named by the
 ### routine's parameters. A plain value bound with `=`: its block (the routine, its arguments and room for the result,
-### a size the build knows) is in the frame of the routine that made it. `t.put_work(steal work)` starts it on a ticket,
-### which moves the block into its own memory, and the ticket's `retrieve()` waits for it and gives the result. The
-### build checks that every piece of work goes to a ticket this way on every path, once.
+### a size the build knows) is in the frame of the routine that made it. `t.put_work(work)` starts it on a ticket, which
+### runs a copy of the block, and the ticket's `retrieve()` waits for it and gives the result. Work with an argument
+### that has something to give back runs once: the build checks that it goes to one ticket with
+### `t.put_work(steal work)` on every path.
 ### :typeparam T: The type of the work's result, `None` for none.
 record Work[T]
 needs T: typename
@@ -1138,8 +1140,8 @@ routine work_from[T, B](made: @B, runner: Callable[(Addr,), None],
 needs T: typename, B: typename
     return Work[T](runner, discard, block: made.to[@Byte](), size: sizeof[B](), align: alignof[B]())
 
-### The work's block moved into memory from the slot's manager, which the slot gives back with its next work or when
-### its ticket is given back. The block in the frame isn't read again: `put_work` took the work with steal.
+### A copy of the work's block in memory from the slot's manager, which the slot gives back with its next work or when
+### its ticket is given back. Work that runs once was handed over with steal, so its block in the frame isn't read again.
 ### :param slot: The slot the work runs in.
 ### :returns: The copy.
 ### :throws: Crashes with `MemoryAllocationError` when the slot's manager has no memory for it.

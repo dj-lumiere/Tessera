@@ -221,8 +221,8 @@ public sealed partial class FunctionGen
         if (_dropping is not null && e.Equals(_dropping)) return null;
         switch (e)
         {
-            case ValueRef work when _workNames.Contains(work.Name):
-                return WorkCopied(work.Name);
+            case ValueRef work when RunsOnce(work.Name, out var once):
+                return WorkCopied(work.Name, once);
             case ValueRef r when InferQuiet(r) is { } t && Entities.Holds(t):
                 return $"'{r.Name}' holds {t.Name}, {HoldsWhat(t)}, which is never copied: hand it over with steal {r.Name}, "
                     + "or lend its place as a pointer";
@@ -373,7 +373,7 @@ public sealed partial class FunctionGen
             throw Err(s.Pos, "steal takes a name here (steal x): a field or an element comes out on its own line, "
                 + "steal p.left as b");
         var t = InferQuiet(r);
-        if (!HasReleaseDuty(t) && !WrittenGeneric(r.Name) && !_workNames.Contains(r.Name) && !_c.Prechecking)
+        if (!HasReleaseDuty(t) && !WrittenGeneric(r.Name) && !_workNames.ContainsKey(r.Name) && !_c.Prechecking)
             throw Err(s.Pos, $"'{r.Name}' holds {t?.Name ?? "a value"}, which has nothing to give back, so passing it on copies it: "
                 + $"write {r.Name} without steal");
         _moving = true;
@@ -973,7 +973,7 @@ public sealed partial class FunctionGen
                 + $"take it by its address, routine @{_decl.Owner}.{_decl.Name}(...)");
         if (!MemOn)
             for (int i = 0; i < _decl.Params.Count && i < _inst.Params.Count; i++)
-                NoteWorkName(_decl.Params[i].Name, _inst.Params[i], _decl.Params[i].Pos);
+                NoteWorkName(_decl.Params[i].Name, _inst.Params[i], null, _decl.Params[i].Pos);
         if (MemOn)
         {
             string first = _decl.Shared.Count > 0 ? "" : blocks[0].Name;
@@ -984,7 +984,7 @@ public sealed partial class FunctionGen
                     _memTracked.Add(_decl.Params[i].Name);
                     handed.Add(new MemoryRules.Acquire(_decl.Params[i].Name, "handed in", _decl.Params[i].Pos) { Entity = Entities.HeldIn(_inst.Params[i])?.Name });
                 }
-                else NoteWorkName(_decl.Params[i].Name, _inst.Params[i], _decl.Params[i].Pos, handed);
+                else NoteWorkName(_decl.Params[i].Name, _inst.Params[i], null, _decl.Params[i].Pos, handed);
             // A destruct gives back each field of me that holds memory or an entity: each is followed as a handle.
             if (_decl.Name == "destruct" && _decl.Params is [{ Name: "me" } self, ..] && _inst.Params[0] is PtrType { Pointee: RecordType owner })
                 foreach (var (field, type) in _c.Fields(owner))
@@ -1500,7 +1500,7 @@ public sealed partial class FunctionGen
                     Line($"{op} = {Copy(v, t)}");
                 Define(b.Name, new Val(op, t), b.Pos);
                 DescribeValue(b.Name, op, t, b.Source ?? b.Pos);
-                NoteWorkName(b.Name, t, b.Pos);
+                NoteWorkName(b.Name, t, b.Value, b.Pos);
                 if (PointsAtMemory(t) && b.Value is not ClaimExpr && RootName(b.Value) is { } made && made != b.Name)
                 {
                     _rootOf[b.Name] = made;
@@ -1633,9 +1633,9 @@ public sealed partial class FunctionGen
             case DropStmt d:
             {
                 // A piece of work ends only on a ticket, which runs it and ends its arguments.
-                if (d.Value is ValueRef droppedWork && _workNames.Contains(droppedWork.Name))
-                    throw Err(d.Pos, $"'{droppedWork.Name}' is a piece of work, which ends on the ticket that runs it, not with drop: "
-                        + $"t.put_work(steal {droppedWork.Name})");
+                if (d.Value is ValueRef droppedWork && RunsOnce(droppedWork.Name, out var droppedOnce))
+                    throw Err(d.Pos, $"{droppedOnce}, so the work in '{droppedWork.Name}' runs once, and only the ticket that runs it "
+                        + $"ends that argument, not drop: t.put_work(steal {droppedWork.Name})");
                 // Nothing to give back: in generic code (a T that is a record here, or a pointer a field written T
                 // holds) drop does nothing, in code that names its types it says so.
                 if (!HasReleaseDuty(InferQuiet(d.Value)) || PointerFieldOfTypeParam(d.Value))

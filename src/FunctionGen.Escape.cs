@@ -489,10 +489,12 @@ public sealed partial class FunctionGen
         if (_escape is null && !MemOn) return;
         string? ticket = plan.Receiver is { } r && RootName(r) is { } root ? ResolveRoot(root) : null;
         // The standard library's own work (a pool's threads, which its destruct ends) is its own to keep right.
-        // `t.put_work(steal work)`: the routine and the arguments the work was made with.
+        // `t.put_work(work)` or `t.put_work(steal work)`: the routine and the arguments the work was made with.
         (RoutineRef Routine, List<Expr> Args)? made = null;
-        if (IsTicketRoutine(plan.Decl) && plan.Decl.Name == "put_work" && plan.Args is [StealExpr { Value: ValueRef handedWork }]
-            && _madeWork.TryGetValue(handedWork.Name, out var put))
+        string? handedWork = plan.Args is [StealExpr { Value: ValueRef stolenWork }] ? stolenWork.Name
+            : plan.Args is [ValueRef copiedWork] ? copiedWork.Name : null;
+        if (IsTicketRoutine(plan.Decl) && plan.Decl.Name == "put_work" && handedWork is not null
+            && _madeWork.TryGetValue(handedWork, out var put))
             made = put;
         if ((IsTicketRoutine(plan.Decl) && plan.Decl.Name is "put_work" or "put_callable" || made is not null) && ticket is not null && !_decl.IsLibrary)
         {

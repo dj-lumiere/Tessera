@@ -18,34 +18,81 @@ public sealed partial class FunctionGen
 
     private int _works;
 
-    /// The names that hold a piece of work in this routine (a binding or a parameter of `Work[T]`): each goes to a ticket
-    /// with `t.put_work(steal work)` on every path, once, and is never copied or dropped.
-    private readonly HashSet<string> _workNames = [];
+    /// The names that hold a piece of work in this routine (a binding or a parameter of `Work[T]`), each with why it runs
+    /// once, or null for work whose arguments have nothing to give back. Such plain work is a value: `t.put_work(work)`
+    /// copies it, it may go on more tickets, and work no ticket takes leaves nothing behind. Work with an argument that
+    /// holds something to give back (an entity, memory from a manager, an access, a value with a destruct) runs once:
+    /// it goes to one ticket with `t.put_work(steal work)` on every path, and is never copied or dropped.
+    private readonly Dictionary<string, string?> _workNames = [];
 
     /// Whether `t` is the standard library's `Work[T]`.
     private static bool IsWorkType(DType? t) => t is RecordType { Decl.IsLibrary: true, Decl.Name: "Work" };
 
-    /// After a binding or at a parameter: a name holding a piece of work starts a group of the memory check, which only
-    /// the hand-over to a ticket (`steal`) ends. The standard library's own routines pass work along as they need.
-    private void NoteWorkName(string name, DType t, Pos pos, List<MemoryRules.Event>? into = null)
+    /// Why the work `f.to[Work](...)` makes runs once: its first argument that holds something to give back, or null
+    /// when none does. A view (`@T`, `@[T]`) holds nothing, so work handed views is plain.
+    private string? WorkOnce(WorkExpr w)
+    {
+        if (Infer(w.Routine) is not CallableType ct) return null;
+        var routine = WorkRoutine(w);
+        for (int i = 0; i < ct.Params.Count && i < routine.Params.Count; i++)
+        {
+            var t = ct.Params[i];
+            if (t is PtrType || Compiler.IsCoreSpan(t, out _) || !HasReleaseDuty(t)) continue;
+            string name = routine.Params[i].Name;
+            if (Entities.IsEntity(t)) return $"its argument '{name}' is an entity ({t})";
+            if (ManagedMemory(t) is not null) return $"its argument '{name}' is memory from a manager ({t})";
+            if (IsBorrowedType(t)) return $"its argument '{name}' is an access ({t})";
+            if (Entities.Holds(t)) return $"its argument '{name}' holds an entity ({t})";
+            return $"its argument '{name}' has something to give back ({t} has a destruct)";
+        }
+        return null;
+    }
+
+    /// Why the work a binding's value gives runs once: what `to[Work]` made, what the name it is copied or stolen from
+    /// holds, and for work from anywhere else (a call) the build can't see the arguments, so it runs once.
+    private string? WorkOnceOf(Expr value) => value switch
+    {
+        WorkExpr made => WorkOnce(made),
+        StealExpr { Value: ValueRef from } when _workNames.TryGetValue(from.Name, out var once) => once,
+        ValueRef from when _workNames.TryGetValue(from.Name, out var once) => once,
+        _ => "what its arguments hold isn't known here",
+    };
+
+    /// After a binding or at a parameter: a name holding a piece of work starts a group of the memory check. For work
+    /// that runs once only the hand-over to a ticket (`steal`) ends it, and it must end on every path. Plain work's
+    /// group only says when a steal ended the name. A parameter's work came from anywhere, so it runs once. The standard
+    /// library's own routines pass work along as they need.
+    private void NoteWorkName(string name, DType t, Expr? value, Pos pos, List<MemoryRules.Event>? into = null)
     {
         if (_decl.IsLibrary || name.StartsWith('$') || !IsWorkType(t)) return;
-        _workNames.Add(name);
+        string? once = value is null ? $"'{name}' is a parameter, and what its arguments hold isn't known here" : WorkOnceOf(value);
+        _workNames[name] = once;
+        if (value is ValueRef or StealExpr { Value: ValueRef } && (value is StealExpr st ? st.Value : value) is ValueRef copied
+            && _madeWork.TryGetValue(copied.Name, out var madeFrom))
+            _madeWork[name] = madeFrom;
         if (!MemOn) return;
         _memTracked.Add(name);
-        var made = new MemoryRules.Acquire(name, into is null ? "made here" : "handed in", pos) { Entity = t.ToString(), Work = true };
+        var made = new MemoryRules.Acquire(name, into is null ? "made here" : "handed in", pos) { Entity = t.ToString(), Work = true, Once = once };
         if (into is not null) into.Add(made);
         else Mem(made);
     }
 
-    /// The error for a piece of work written where it would be copied (bound again, passed, returned) rather than
-    /// handed over with steal.
-    private static string WorkCopied(string name) =>
-        $"'{name}' is a piece of work, which runs once on one ticket: hand it over with steal, t.put_work(steal {name})";
+    /// Whether `name` holds work that runs once, and why.
+    private bool RunsOnce(string name, out string once)
+    {
+        once = _workNames.TryGetValue(name, out var why) ? why ?? "" : "";
+        return once.Length > 0;
+    }
 
-    /// Where a call may take a piece of work: a ticket's `put_work`, which takes it with `steal` (and a work made
+    /// The error for work that runs once written where it would be copied (bound again, passed, returned) rather than
+    /// handed over with steal.
+    private static string WorkCopied(string name, string once) =>
+        $"{once}, so the work in '{name}' runs once: hand it over with steal, t.put_work(steal {name})";
+
+    /// Where a call may take a piece of work that runs once: a ticket's `put_work`, with `steal` (and such work made
     /// right in the arguments is bound to a name first), or a parameter of the program's own routine written as
-    /// `Work[T]`, which then puts it on a ticket. Handed anywhere else (a list, a generic parameter) no ticket would run it.
+    /// `Work[T]`, which then puts it on a ticket. Handed anywhere else (a list, a generic parameter) no ticket would run
+    /// it. Plain work goes anywhere a value goes.
     private void CheckWorkHandOver(CallPlan plan)
     {
         if (_decl.IsLibrary) return;
@@ -57,24 +104,18 @@ public sealed partial class FunctionGen
             var arg = plan.Args[i];
             if (putWork)
             {
-                switch (arg)
-                {
-                    case StealExpr { Value: ValueRef }:
-                        continue;
-                    case ValueRef named:
-                        throw Err(arg.Pos, $"{ticket}.put_work takes the work over, so it is handed with steal: "
-                            + $"{ticket}.put_work(steal {named.Name}), and '{named.Name}' isn't used after");
-                    case WorkExpr made:
-                        throw Err(arg.Pos, $"{ticket}.put_work takes a piece of work handed over with steal: bind it to a name first, "
-                            + $"work: {WorkType(made)} = {made.Routine.Name}.to[Work](...), then {ticket}.put_work(steal work)");
-                    default:
-                        throw Err(arg.Pos, $"{ticket}.put_work takes a piece of work handed over with steal: {ticket}.put_work(steal work)");
-                }
+                if (arg is ValueRef named && RunsOnce(named.Name, out var once))
+                    throw Err(arg.Pos, $"{once}, so the work in '{named.Name}' runs once, and {ticket}.put_work takes it over "
+                        + $"with steal: {ticket}.put_work(steal {named.Name})");
+                if (arg is WorkExpr made && WorkOnce(made) is { } madeOnce)
+                    throw Err(arg.Pos, $"{madeOnce}, so this work runs once and goes to its ticket with steal: bind it to a name "
+                        + $"first, work: {WorkType(made)} = {made.Routine.Name}.to[Work](...), then {ticket}.put_work(steal work)");
+                continue;
             }
-            if (arg is StealExpr { Value: ValueRef stolen } && _workNames.Contains(stolen.Name)
+            if (arg is StealExpr { Value: ValueRef stolen } && RunsOnce(stolen.Name, out var stolenOnce)
                 && (plan.Decl.IsLibrary || parameters.ElementAtOrDefault(i)?.Type is not { Name: "Work", Path: null }))
-                throw Err(arg.Pos, $"'{stolen.Name}' is a piece of work, which goes to a ticket: t.put_work(steal {stolen.Name}). "
-                    + $"Handed to '{plan.Decl.Name}', no ticket would run it");
+                throw Err(arg.Pos, $"{stolenOnce}, so the work in '{stolen.Name}' runs once and goes to a ticket: "
+                    + $"t.put_work(steal {stolen.Name}). Handed to '{plan.Decl.Name}', no ticket would run it");
         }
     }
 

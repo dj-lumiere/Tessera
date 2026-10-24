@@ -39,8 +39,12 @@ public static class MemoryRules
         /// The access covers a run of values (`AuthorizedSlice[T]`): its elements are inside it.
         public bool Run { get; init; }
 
-        /// The group is a piece of work (`Work[T]`), which ends only by going to a ticket with steal: the messages say so.
+        /// The group is a piece of work (`Work[T]`): the messages say so.
         public bool Work { get; init; }
+
+        /// Why the work runs once (an argument with something to give back), or null for plain work, which may be
+        /// copied and left on no ticket: only a steal ends its name.
+        public string? Once { get; init; }
     }
 
     /// The value `Name` a call to `Callee` gave: when that routine returns an access (known once every routine is
@@ -203,7 +207,7 @@ public static class MemoryRules
 
     /// A group: where it came from, and whether and where it ended.
     private sealed record Group(string Origin, Pos Born, Pos? Ended, string? How, string? Entity = null, bool Field = false,
-        string? Access = null, bool Run = false, bool Work = false);
+        string? Access = null, bool Run = false, bool Work = false, string? Once = null);
 
     private sealed class State
     {
@@ -388,7 +392,7 @@ public static class MemoryRules
                                     break;
                                 }
                         string id = $"{block}:{a.Name}:{a.Pos}";
-                        state.Groups[id] = new Group(a.Shown ?? a.Name, a.Pos, null, null, a.Entity, a.Field, a.Access, a.Run, a.Work);
+                        state.Groups[id] = new Group(a.Shown ?? a.Name, a.Pos, null, null, a.Entity, a.Field, a.Access, a.Run, a.Work, a.Once);
                         state.Names[a.Name] = id;
                         break;
                     }
@@ -446,8 +450,11 @@ public static class MemoryRules
                             Report(end.Pos, $"'{(end.Name.StartsWith("access:", StringComparison.Ordinal) ? g.Origin : end.Name)}' gives back {access}{(end.Name.StartsWith("access:", StringComparison.Ordinal) ? "" : $" to '{g.Origin}'")} that was given back already ({g.How} on line {accessEnd.Line}): "
                                 + "an access is given back once, and taken again with get_exclusive_access or get_shared_read_access");
                         else if (g.Ended is { } handedAt && g.Work)
-                            Report(end.Pos, $"'{end.Name}' was handed to a ticket already ({g.How} on line {handedAt.Line}), and a piece "
-                                + "of work runs once: make another one with to[Work] for the second ticket");
+                            Report(end.Pos, g.Once is { } once
+                                ? $"'{end.Name}' was handed to a ticket already ({g.How} on line {handedAt.Line}): {once}, so this work "
+                                  + "runs once. Make another one with to[Work] for the second ticket"
+                                : $"'{end.Name}' ended already ({g.How} on line {handedAt.Line}): to put the work on more tickets, put it "
+                                  + $"without steal, t.put_work({end.Name})");
                         else if (g.Ended is { } endedAt && g.Entity is { } once)
                             Report(end.Pos, $"'{end.Name}' ended already ({g.How} on line {endedAt.Line}), and a {once} ends once");
                         else if (g.Ended is { } at)
@@ -460,7 +467,13 @@ public static class MemoryRules
                     case Use u:
                     {
                         if (state.Names.TryGetValue(u.Name, out var id) && state.Groups.TryGetValue(id, out var g) && g.Ended is { } at)
-                            Report(u.Pos, g.Entity is { } gone && u.Name.Contains('.') && g.How?.StartsWith("steal ", StringComparison.Ordinal) == true
+                            Report(u.Pos, g.Work
+                                ? g.Once is { } usedOnce
+                                    ? $"'{u.Name}' was handed to a ticket already ({g.How} on line {at.Line}): {usedOnce}, so this work runs "
+                                      + "once. Make another one with to[Work] for the second ticket"
+                                    : $"'{u.Name}' is used after {g.How} on line {at.Line} ended it: to put the work on more tickets, put it "
+                                      + $"without steal, t.put_work({u.Name})"
+                                : g.Entity is { } gone && u.Name.Contains('.') && g.How?.StartsWith("steal ", StringComparison.Ordinal) == true
                                 ? $"'{u.Name}' was left hollow by {g.How} on line {at.Line}, and is read here before a {gone} is put back: "
                                   + $"put one in first, {u.Name}.poke(...)"
                                 : g.Entity is { } gone2
@@ -648,10 +661,11 @@ public static class MemoryRules
                                     + $"returns here: whoever reaches that place after the call finds no {lost}. Put one back first, "
                                     + $"{name}.poke(...)");
                         foreach (var (heldId, g) in state.Groups)
-                            if (g.Ended is null && !g.Field)
+                            if (g.Ended is null && !g.Field && !(g.Work && g.Once is null))
                                 Report(ex.Pos, g.Work
-                                    ? $"'{g.Origin}' is a piece of work (from line {g.Born.Line}) that no ticket took when '{routine}' returns "
-                                      + $"here: hand it to a ticket on every path, t.put_work(steal {g.Origin})"
+                                    ? $"'{g.Origin}' (from line {g.Born.Line}) isn't handed to a ticket when '{routine}' returns here: {g.Once}, "
+                                      + $"so this work runs once: hand it to a ticket on every path, "
+                                      + $"t.put_work(steal {g.Origin})"
                                     : g.Access is { } held
                                     ? $"'{g.Origin}' holds {held} (taken on line {g.Born.Line}) that isn't given back before '{routine}' "
                                       + $"returns here: give it back first (drop {Holder(state, heldId, g)}), or return it"
@@ -704,10 +718,11 @@ public static class MemoryRules
                             }
                             bool reached = next.Names.ContainsValue(id);
                             if (reached) next.Groups[id] = g;
-                            else if (g.Ended is null && !g.Field)
+                            else if (g.Ended is null && !g.Field && !(g.Work && g.Once is null))
                                 Report(ex.Pos, g.Work
-                                    ? $"'{g.Origin}' is a piece of work (from line {g.Born.Line}) that no ticket took, and goes out of sight "
-                                      + $"here: hand it to a ticket on every path, t.put_work(steal {g.Origin})"
+                                    ? $"'{g.Origin}' (from line {g.Born.Line}) isn't handed to a ticket and goes out of sight here: {g.Once}, "
+                                      + $"so this work runs once: hand it to a ticket on every path, "
+                                      + $"t.put_work(steal {g.Origin})"
                                     : g.Access is { } lostAccess
                                     ? $"'{g.Origin}' holds {lostAccess} (taken on line {g.Born.Line}) and goes out of sight here: give it "
                                       + $"back first (drop {Holder(state, id, g)}), or keep it in a name bound outside the body"
