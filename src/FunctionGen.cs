@@ -4014,7 +4014,8 @@ public sealed partial class FunctionGen
     /// untyped integer literal among the arguments lands on an S64.
     private sealed record Fit(RoutineDecl Decl, Compiler.TypeEnv Env, string? Why, bool Generic, bool Preferred);
 
-    /// Picks the overload a call means. An overload fits when each argument's type is its parameter's type exactly (an
+    /// Picks the overload a call means. An overload fits when each named argument's name is its parameter's name, and
+    /// each argument's type is its parameter's type exactly (an
     /// implicit conversion such as `@T` to `Addr` doesn't count) and an untyped argument can be its parameter's type.
     /// Of the ones that fit, one without type parameters of its own beats a generic one, and one written for its owner's
     /// type arguments (`Thread[Void].put_work`) beats the one for any; then one where every untyped
@@ -4022,7 +4023,7 @@ public sealed partial class FunctionGen
     private Fit ChooseOverload(List<(RoutineDecl Decl, Compiler.TypeEnv Env)> set, List<TypeRef> typeArgs, List<Expr> args,
         int firstArgParam, DType? expected, Pos pos, string what, List<string?>? names = null)
     {
-        var fits = set.Select(c => TryFit(c.Decl, c.Env, typeArgs, args, firstArgParam, expected, pos)).ToList();
+        var fits = set.Select(c => TryFit(c.Decl, c.Env, typeArgs, args, firstArgParam, expected, pos, names)).ToList();
         var taking = fits.Where(f => f.Why is null).ToList();
         string shown = string.Join(", ", args.Select(DescribeArg));
         if (taking.Count == 0 && MissingArguments(set.Select(c => c.Decl), args.Count, firstArgParam, names, what) is { } missing)
@@ -4045,14 +4046,20 @@ public sealed partial class FunctionGen
             tier = tier.Where(f => !tier.Any(g => g != f && closures[f].IsProperSubsetOf(closures[g]))).ToList();
         }
         if (tier.Count == 1) return tier[0];
-        string hint = args.Any(a => a is IntLit)
+        // An argument left without a name where the overloads name their parameters differently: its name picks one.
+        int unnamedApart = Enumerable.Range(0, args.Count).FirstOrDefault(i => names?.ElementAtOrDefault(i) is null
+            && tier.All(f => i + firstArgParam < f.Decl.Params.Count)
+            && tier.Select(f => f.Decl.Params[i + firstArgParam].Name).Distinct().Count() == tier.Count, -1);
+        string naming = unnamedApart < 0 ? "" : "; or name argument " + (unnamedApart + 1) + " for the overload you mean ("
+            + string.Join(" or ", tier.Select(f => f.Decl.Params[unnamedApart + firstArgParam].Name + ": ...")) + ")";
+        string hint = (args.Any(a => a is IntLit)
             ? "an untyped integer literal prefers S64, and that doesn't settle it here; "
               + "give the literal its type by binding it first (n: U8 = 1)"
             : args.FirstOrDefault(a => a is FloatLit) is FloatLit floatArg
                 ? $"a float literal can be any float type; give it its type by binding it first (x: B64 = {(floatArg.IsWord ? floatArg.Text : "1.5")})"
             : tier.All(f => f.Generic)
                 ? "more than one generic overload fits; pass the type arguments, or add an overload for these types"
-                : "give the arguments the types of the overload you mean";
+                : "give the arguments the types of the overload you mean") + naming;
         throw Err(pos, $"the call of '{what}' with ({shown}) is ambiguous; these overloads all take it:"
             + string.Concat(tier.Select(f => $"\n    {Compiler.ShowSignature(f.Decl)} at {f.Decl.Pos}")) + $"\n{hint}");
     }
@@ -4073,7 +4080,11 @@ public sealed partial class FunctionGen
         return $"missing argument{(left.Count == 1 ? "" : "s")} {list} in the call of '{what}', which takes {all.Count}: {shape}";
     }
 
-    private Fit TryFit(RoutineDecl r, Compiler.TypeEnv env, List<TypeRef> typeArgs, List<Expr> args, int first, DType? expected, Pos pos)
+    /// An argument written with a name fits only the parameter of that name in its place: `price.round(places: 2)` is
+    /// never a call of `round(rule)`. This is settled before any argument's type is, so a literal there takes the type
+    /// of the one parameter its name picks.
+    private Fit TryFit(RoutineDecl r, Compiler.TypeEnv env, List<TypeRef> typeArgs, List<Expr> args, int first, DType? expected, Pos pos,
+        List<string?>? names = null)
     {
         bool generic = r.TypeParams.Count > 0 || Compiler.IsBlanket(r);
         Fit No(string why) => new(r, env, why, generic, false);
@@ -4083,6 +4094,9 @@ public sealed partial class FunctionGen
             bool variadic = r.AnnotationNamed("variadic") is not null && r.AnnotationNamed("external") is { First: "c" };
             if (variadic ? args.Count < want : args.Count != want)
                 return No($"it takes {(variadic ? "at least " : "")}{want} argument(s), not {args.Count}");
+            for (int i = 0; i < args.Count && i + first < r.Params.Count; i++)
+                if (names?.ElementAtOrDefault(i) is { } label && label != r.Params[i + first].Name)
+                    return No($"argument {i + 1} is named '{label}', but the parameter there is '{r.Params[i + first].Name}'");
             if (r.Fixed.Count == 0 && typeArgs.Count != 0 && typeArgs.Count != r.TypeParams.Count)
                 return No($"it takes {r.TypeParams.Count} type argument(s), not {typeArgs.Count}");
             BindExplicit(r, env, typeArgs, pos);

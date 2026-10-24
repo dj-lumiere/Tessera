@@ -884,7 +884,8 @@ routine start() -> None
 - A bare literal doesn't bind a type parameter: bind it first (`n: S64 = 42`), then pass `n`.
 - **Overloads.** Routines of one name under one parent (a module's free routines, one type's routines) may differ in
   their parameter types (`me` included); a call picks the one whose parameter types are its arguments' types
-  exactly. No implicit conversion counts there (a `@T` isn't an `Addr` overload's argument), and an untyped integer
+  exactly. A named argument fits only an overload with that parameter in that place, settled before a literal takes
+  its type: `price.round(places: 2)` on a `Decimal` is `round(places: U64)`, never `round(rule: RoundingRule)`. No implicit conversion counts there (a `@T` isn't an `Addr` overload's argument), and an untyped integer
   literal prefers `S64` when several take it. An exact concrete overload beats a generic
   one, and a routine on a receiver type with its type arguments named (`routine Thread[None].put_callable`) beats the
   generic receiver type's (`Thread[T].put_callable`) for that receiver. A receiver type argument may nest the routine's type parameter:
@@ -900,8 +901,9 @@ routine start() -> None
   (`add_wrap`, not an `add` that wraps). Don't put a parameter's type in a name the overloads already tell apart
   (the stdlib's `wide_divrem(u, d)` for `U128` and `U256`, `soft_divmod`, `xxh64(data, len, seed)` beside
   `xxh64(v, seed)`); a type that only passes through (the Writer, an element) is a type parameter instead. Most of
-  these sets have no `S64` overload, so a bare literal argument several overloads take is ambiguous: pass a typed
-  value (`m.set(U64.MIN)` on a `BigNat`, or bind `one: U64 = 1` first).
+  these sets have no `S64` overload, so a bare literal argument several overloads take is ambiguous: name the
+  argument when the overloads' parameter names differ, or pass a typed value (`m.set(U64.MIN)` on a `BigNat`, or bind
+  `one: U64 = 1` first).
 - When every operand is a literal, name the type with a typewise call: `S64.eq(0, 1)`, `U128.shift_left(1, 100)`. There are
   no type suffixes (`0u64`).
 - **Time and size literals.** A whole decimal number with a unit right after it is typed by the unit: `w d h m s ms
