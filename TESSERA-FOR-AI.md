@@ -281,8 +281,9 @@ routine start() -> None
     passed, returned, stored or used to make another view after `drop m`, on any path (memory given back in both arms
     of an `if` counts). Use it before the drop. The builder's give back of a STACK place at the end of its body counts
     too: a view of a `xs: &List[S64]` borrowed in an `if` or loop body, kept in a place bound outside it
-    (`p.store(xs.getslot(0))`), and read after the body is `'p' holds a view of 'xs', whose memory was given back (the
-    end of the body that borrowed 'xs' on line N)`. Borrow the List outside the body, or keep the value, not the view. The same holds after `steal m` or after `m` is handed to a routine that
+    (`p.store(xs.getslot(0))`), and read after the body is `'p' holds a view of 'xs', whose memory was given back at
+    the end of the body that borrowed 'xs' on line N (the body ends on line M)`, M the body's last line (inside a
+    nested `if`, `when` or loop when the body ends with one). Borrow the List outside the body, or keep the value, not the view. The same holds after `steal m` or after `m` is handed to a routine that
     takes it by value: `'v' is a view of 'm', whose memory was handed over (steal m on line N), and whoever took it may
     give it back`.
   - `'q' holds a view of 'm', whose memory was given back`: a value that holds such a view (a view poked into a

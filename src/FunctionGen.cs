@@ -1379,9 +1379,24 @@ public sealed partial class FunctionGen
             }
             EmitStmt(s);
         }
-        // The body ends: the STACK places it borrowed go back, the last one first.
-        if (!_cur.Terminated) GiveBackStackPlaces(_boxScopes.Count - 1, body.Count > 0 ? body[^1].Pos : _decl.Pos);
+        // The body ends: the STACK places it borrowed go back, the last one first, at the body's last line.
+        if (!_cur.Terminated) GiveBackStackPlaces(_boxScopes.Count - 1, body.Count > 0 ? BodyEnd(body) : _decl.Pos);
         _boxScopes.RemoveAt(_boxScopes.Count - 1);
+    }
+
+    /// Where a body ends: its last line, inside the body of its last line when that line has one (an `if`'s `else`, a
+    /// `when`'s last arm, a loop's `then` or body), so a message says the line the body really ends on.
+    private static Pos BodyEnd(List<Stmt> body)
+    {
+        Stmt last = body[^1];
+        List<Stmt>? inner = last switch
+        {
+            IfStmt i => i.Else is { Count: > 0 } otherwise ? otherwise : i.Then,
+            WhenStmt w => w.Arms.Count > 0 ? w.Arms[^1].Body : null,
+            LoopStmt l => l.Then is { Count: > 0 } then ? then : l.Body,
+            _ => null,
+        };
+        return inner is { Count: > 0 } ? BodyEnd(inner) : last.Pos;
     }
 
     /// A body as a region of its own: what it binds isn't visible after it.
@@ -2845,7 +2860,7 @@ public sealed partial class FunctionGen
                     continued = (bound[0], _values[bound[0]], arm.Pos);
                 else if (arm.Body.Count == 0 && bound.Count == 1)
                     continued = (bound[0], _values[bound[0]], arm.Pos);
-                MemEdge(joinRegion, outerNames.Concat(bound), pos: arm.Pos);
+                MemEdge(joinRegion, outerNames.Concat(bound), pos: arm.Body.Count > 0 ? BodyEnd(arm.Body) : arm.Pos);
                 Terminate($"br label %{join.Label}");
                 reached++;
             }
@@ -5546,7 +5561,8 @@ public sealed partial class FunctionGen
             EnterRegion(region);
             EmitBody(body);
             if (_cur.Terminated) return;
-            MemEdge(joinRegion, outerNames, pos: i.Pos);
+            // What the arm bound goes out of sight where the arm ends.
+            MemEdge(joinRegion, outerNames, pos: body.Count > 0 ? BodyEnd(body) : i.Pos);
             Terminate($"br label %{join.Label}");
             reached++;
         }
@@ -5898,7 +5914,7 @@ public sealed partial class FunctionGen
         bool afterReached = false;
         if (!_cur.Terminated)
         {
-            MemEdge(afterRegion, outerNames, pos: l.Pos);
+            MemEdge(afterRegion, outerNames, pos: l.Then is { Count: > 0 } thenBody ? BodyEnd(thenBody) : l.Pos);
             Terminate($"br label %{after.Label}");
             // A loop that never ends by itself (`loop`, `until false`) without a `break` is never left but by a return:
             // its then, and what follows it, never run.

@@ -206,8 +206,12 @@ public static class MemoryRules
         && (how.StartsWith("steal ", StringComparison.Ordinal) || how.StartsWith("handed to ", StringComparison.Ordinal));
 
     /// How a message says what became of the memory: given back, or handed over.
+    /// Memory a STACK place held that its body gave back says where the place was borrowed and where the body ends.
     private static string Gone(Group g) => HandedOver(g)
         ? $"was handed over ({g.How} on line {g.Ended!.Value.Line}), and whoever took it may give it back"
+        : g.How is { } how && how.StartsWith(AutoEndHow, StringComparison.Ordinal)
+        ? $"was given back at the end of the body that borrowed '{g.Origin}' on line {g.Born.Line} (the body ends on "
+          + $"line {g.Ended!.Value.Line})"
         : $"was given back ({g.How} on line {g.Ended!.Value.Line})";
 
     /// A group: where it came from, and whether and where it ended.
