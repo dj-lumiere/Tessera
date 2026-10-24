@@ -2254,6 +2254,8 @@ public sealed partial class FunctionGen
             _ => throw new InvalidOperationException(e.GetType().Name),
         };
 
+        // A call that returns nothing, where the None record goes (a `T` bound to None), gives its one value.
+        if (v.Type is VoidType && Compiler.IsNoneRecord(expected)) v = new Val("zeroinitializer", expected);
         if (!Compatible(v.Type, expected))
             throw argument > 0 ? Err(e.Pos, ArgumentMismatch(argument, v.Type.ToString(), expected)) : Mismatch(e.Pos, expected, v.Type.ToString());
         return v;
@@ -4079,7 +4081,8 @@ public sealed partial class FunctionGen
                     if (Widens(at, pt) || Lends(at, pt) || SlotsTemp(at, pt)) preferred = false;
                     else if (FailingCallable(r, i + first, at, pt) is { } failing)
                         env.Bind(Compiler.FailingParamKey(r.Params[i + first].Name), failing);
-                    else if (!at.Equals(pt)) return No(ArgumentMismatch(i + 1, at.ToString(), pt));
+                    else if (!at.Equals(pt) && !(at is VoidType && Compiler.IsNoneRecord(pt)))
+                        return No(ArgumentMismatch(i + 1, at.ToString(), pt));
                     continue;
                 }
                 if (UntypedMisfit(args[i], pt, ref preferred) is { } why) return No($"argument {i + 1}: {why}");

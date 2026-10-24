@@ -811,6 +811,10 @@ public sealed partial class Compiler
     /// under it are seen from every file without an import.
     public const string SystemModule = "Standard/System";
 
+    /// Whether `t` is the None record, the one value of `None` (a generic argument bound to `None`, a `List[None]`'s
+    /// element). A call that returns nothing gives it where it is expected.
+    public static bool IsNoneRecord(DType? t) => t is RecordType { Decl.Name: "None" } none && none.Decl.Module == SystemModule;
+
     /// The memory managers, `BorrowedSlice[T]`'s regions, and unbroken values.
     public const string MemoryModule = SystemModule + "/Memory";
 
