@@ -1135,12 +1135,12 @@ routine start() -> None
   library `@llvm("iN")` record with no fields is an integer underneath (`B128` is an `i128`). `@layout(align: N)` sets
   a record's alignment, `@aligned` a field's.
 - A record can't contain itself by value; go through a `PointedCell`.
-- `choice Name: U8` names integer values, one member per line (`RED`, or `RED: 4`): a member without a value is the one
-  before it plus 1, the first 0. The underlying type is any integer type (`S8` .. `S256`, `U8` .. `U256`), and `S32`,
+- `choice Name: U8` names integer values, one member per line (`RED`, or `RED: 4`): every member has a value or none
+  does, and without values the members are 0, 1, 2, ... in order (some with and some without is a build error). The underlying type is any integer type (`S8` .. `S256`, `U8` .. `U256`), and `S32`,
   C's `int`, when it isn't written (`choice Light`).
-- `flags Name` names a set of members, one per line, each one bit. A value has any of them on at once. The first
-  member is bit 0 and each next member the bit after the one before it, unless it states its bit (`MINE: 3` is bit
-  3). The type is a `U64` unless it is written: `flags Name: U8` takes `U8`, `U16`, `U32`, or `U64`. A bit that the
+- `flags Name` names a set of members, one per line, each one bit. A value has any of them on at once. Every member
+  states its bit (`MINE: 3` is bit 3) or none does, and then the members are bits 0, 1, 2, ... in order (some with and
+  some without is a build error). The type is a `U64` unless it is written: `flags Name: U8` takes `U8`, `U16`, `U32`, or `U64`. A bit that the
   width doesn't have, more members than it has bits, two members on one bit, and any other written type are build
   errors. Members combine with `and` (`CellMarks.MINE and CellMarks.FLAGGED`). Where a value of the flags type is
   expected (a typed binding, a parameter, a field, the other side of `==`, `!=` or `and` from a flags value), a member is named

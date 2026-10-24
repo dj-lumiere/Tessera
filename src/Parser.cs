@@ -855,29 +855,38 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var underlying = written ? ParseType() : new TypeRef("S32", [], name.Pos);
         ExpectLineEnd();
 
-        var members = new List<(string, Expr)>();
+        // Every member is written with its value (`OK: 200`), or none is and the members are 0, 1, 2, ... in order.
+        var listed = new List<(Token Name, Expr? Value)>();
         while (!AtMemberListEnd())
         {
             var m = Expect(TokenKind.Ident, "a choice member");
             if (!IsScreamingSnake(m.Text))
                 throw new CompileError(m.Pos, $"choice members are SCREAMING_SNAKE_CASE: '{m.Text}' is written {OldSpellings.Screaming(m.Text)}");
-            Expr value;
-            if (Accept(TokenKind.Colon)) value = ParseExpr();
-            else if (members.Count == 0) value = new IntLit(0, m.Pos);
-            // A member without a value takes the previous value + 1.
-            else if (members[^1].Item2 is IntLit prev) value = new IntLit(prev.Value + 1, m.Pos);
-            else throw new CompileError(m.Pos, $"choice member '{m.Text}' needs a value: the one before it isn't an integer literal");
-            members.Add((m.Text, value));
+            listed.Add((m, Accept(TokenKind.Colon) ? ParseExpr() : null));
             ExpectLineEnd();
         }
+        RequireAllOrNone(kind: "choice", typeName: name.Text, what: "value", members: listed.Select(x => (x.Name, x.Value is not null)));
+        var members = listed.Select((x, i) => (x.Name.Text, x.Value ?? new IntLit(i, x.Name.Pos))).ToList();
         return new ChoiceDecl(file, annotations, name.Text, underlying, members, pos) { UnderlyingWritten = written };
     }
 
     /// The widths a flags type may write: one bit per member, at most as many members as the width has bits.
     private static readonly Dictionary<string, int> FlagsWidths = new() { ["U8"] = 8, ["U16"] = 16, ["U32"] = 32, ["U64"] = 64 };
 
+    /// A choice or flags type whose members say their value (or bit) for some members only: every member says it, or
+    /// none does and the members count up from 0 in order.
+    private static void RequireAllOrNone(string kind, string typeName, string what, IEnumerable<(Token Name, bool Written)> members)
+    {
+        var all = members.ToList();
+        if (all.All(x => x.Written) || all.All(x => !x.Written)) return;
+        var without = all.Where(x => !x.Written).ToList();
+        throw new CompileError(without[0].Name.Pos,
+            $"{kind} '{typeName}' gives some members a {what} and not others ({string.Join(", ", without.Select(x => x.Name.Text))}): " +
+            $"write a {what} on every member, or on none and they count up from 0 in order");
+    }
+
     /// `flags Name` (or `flags Name: U16`) and its members, one per line: the first member is bit 0, the next bit 1,
-    /// and so on, unless a member states its bit (`MINE: 3`). Without a written width the flags type is a U64.
+    /// and so on, or every member states its bit (`MINE: 3`). Without a written width the flags type is a U64.
     private ChoiceDecl ParseFlags(List<Annotation> annotations)
     {
         var pos = Cur.Pos;
@@ -891,9 +900,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         int bits = FlagsWidths[underlying.Name];
         ExpectLineEnd();
 
-        // A member may state its bit (`MINE: 0`). One that doesn't takes the bit after the member before it, the
-        // first member bit 0, as a choice member takes the value after the one before it.
+        // Every member states its bit (`MINE: 0`), or none does and the members are bits 0, 1, 2, ... in order.
         var listed = new List<(Token Name, System.Numerics.BigInteger Bit, Pos At)>();
+        var stated = new List<(Token Name, bool Written)>();
         while (!AtMemberListEnd())
         {
             var m = Expect(TokenKind.Ident, "a flags member");
@@ -901,9 +910,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 throw new CompileError(m.Pos, $"flags members are SCREAMING_SNAKE_CASE: '{m.Text}' is written {OldSpellings.Screaming(m.Text)}");
             if (listed.Any(x => x.Name.Text == m.Text))
                 throw new CompileError(m.Pos, $"flags '{name.Text}' has two members named {m.Text}");
-            System.Numerics.BigInteger bit = listed.Count == 0 ? 0 : listed[^1].Bit + 1;
+            System.Numerics.BigInteger bit = listed.Count;
             var at = m.Pos;
-            if (Accept(TokenKind.Colon))
+            bool statesBit = Accept(TokenKind.Colon);
+            if (statesBit)
             {
                 at = Cur.Pos;
                 if (ParseExpr() is not IntLit index)
@@ -911,8 +921,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 bit = index.Value;
             }
             listed.Add((m, bit, at));
+            stated.Add((m, statesBit));
             ExpectLineEnd();
         }
+        RequireAllOrNone(kind: "flags", typeName: name.Text, what: "bit", members: stated);
         if (listed.Count == 0) throw new CompileError(pos, $"flags '{name.Text}' needs at least one member");
         if (listed.Count > bits)
             throw new CompileError(pos, written
