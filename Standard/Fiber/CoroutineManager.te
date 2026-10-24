@@ -81,6 +81,9 @@ entity FiberState
     next_all: @FiberState
     ### The ThreadPoolManager that keeps it and runs it on any of its threads, or null for a fiber of one manager.
     pool: @ThreadPoolManager
+    ### Its mold, where a failure thrown on it waits for the caller to take it (Standard/System/Crash.te): reserved in
+    ### the frame of its first routine, hollow until it first runs.
+    mold: Addr
 
 ### A ticket for a fiber, from {CoroutineManager.get_fiber}: it runs one piece of work at a time, whose result is a `T`
 ### (`Void` for none), until it is given back with `drop`.
@@ -191,14 +194,15 @@ routine give_back_stack(stack: @StackManager, pages: @MemoryManager) -> None
 ### :param next_idle: Its `next_idle`.
 ### :param next_all: Its `next_all`.
 ### :param pool: Its `pool`.
+### :param mold: Its `mold`.
 ### :returns: The new value.
 @target(os: not "none")
 common routine FiberState.construct(stack: StackManager, manager: @CoroutineManager, slot: WorkSlot,
     work: @WorkSlot, then: Callable[(@CoroutineManager, @Me), None], wake_state: U32, timer: U64,
     trace_depth: U64, access: @AccessFlow, race: Addr, next_idle: @Me, next_all: @Me,
-    pool: @ThreadPoolManager) -> Me
+    pool: @ThreadPoolManager, mold: Addr) -> Me
     return Me(stack: steal stack, manager, slot: steal slot, work, then, wake_state, timer,
-        trace_depth, access, race, next_idle, next_all, pool)
+        trace_depth, access, race, next_idle, next_all, pool, mold)
 
 ### Releases the block of its last work. Its stack's pages are its manager's to give back (`give_back_stack`), and
 ### dropping the stack's `StackManager` releases nothing.
@@ -332,7 +336,7 @@ secret routine @CoroutineManager.make_fiber() -> @FiberState
         slot: .construct(manager: me.manager.peek()), work: fiber.slot,
         then: requeue.to[Callable](), wake_state: FIBER_RUNNING, timer: 0, trace_depth: 0,
         access: .hollow(), race: race_stack_new(), next_idle: .hollow(), next_all: me.all.peek(),
-        pool: .hollow()))
+        pool: .hollow(), mold: .hollow()))
     me.all.poke(fiber)
     return fiber
 
@@ -839,6 +843,9 @@ secret routine @CoroutineManager.resume(fiber: @FiberState) -> None
     # The fiber's crash trace depth goes in while it runs and comes back out with it, and the thread's own stays as
     # it was.
     own: U64 = trace_switch(fiber.trace_depth.peek())
+    # A failure thrown on the fiber goes in its own mold, and the thread's flow keeps the one it had.
+    outer_mold: Addr = RUNNING_MOLD.peek()
+    RUNNING_MOLD.poke(fiber.mold.peek())
     # The AccessManager sees the fiber as the flow running here while it runs.
     outer_flow: @@AccessFlow = AccessManager.switch_flow(fiber.access)
     # The running flow's StackManager is the fiber's while it runs.
@@ -852,6 +859,7 @@ secret routine @CoroutineManager.resume(fiber: @FiberState) -> None
     switch_stack(from: me.home, to: resume_at)
     RUNNING_STACK.poke(outer_stack)
     trace_switch(own).poke_into(fiber.trace_depth)
+    RUNNING_MOLD.poke(outer_mold)
     AccessManager.switch_flow(outer_flow)
     RUNNING_FIBER.poke(outer_fiber)
     RUNNING_WORK.poke(outer_work)
@@ -869,6 +877,11 @@ secret routine fiber_start() -> None
     # Read once: the routine runs on this one fiber's stack for good, and a pool's fiber may go on on another thread,
     # where this thread's RUNNING_FIBER is another fiber's.
     fiber: @FiberState = current_waiter().fiber.to[@FiberState]()
+    # The fiber's mold lives in this frame, which lasts as long as the fiber: its manager puts it in RUNNING_MOLD at
+    # each resume from now on.
+    mold: Addr = reserve_failure_mold()
+    fiber.mold.poke(mold)
+    RUNNING_MOLD.poke(mold)
     loop
         slot: @WorkSlot = fiber.work.peek()
         runner: Callable[(Addr,), None] = slot.runner.peek()

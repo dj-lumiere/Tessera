@@ -157,13 +157,47 @@ public sealed partial class FunctionGen
             if (frame.IsCheck)
             {
                 NoteLibraryFailure(slot, carrierLlvm, pos);
-                CopyTagged(slot, carrierLlvm, frame.Slot!, frame.SlotType!);
+                TakeFromMold(slot, carrierLlvm, frame.Slot!, frame.SlotType!, pos);
             }
             Terminate($"br label %{frame.Fail.Label}");
         }
-        else StopOnFailure(slot, carrierLlvm, failures, pos);
+        else StopOnFailure(slot, carrierLlvm, failures, pos, inMold: true);
         _cur = ok;
         return LoadValue(slot, carrierLlvm, declared, valueType);
+    }
+
+    // ── The mold ────────────────────────────────────────────────────────────
+
+    /// The address of the running flow's mold (Crash.te's failure_mold): the thread's, or the running fiber's.
+    private string MoldAddr(Pos pos) =>
+        EvalAny(new CallExpr("failure_mold", [], [], pos) { Path = Compiler.SystemModule }).Op;
+
+    /// `check` takes a failure that came back: the tag from the carrier (with the failure's number), and the crashable
+    /// copied out of the flow's mold into the check's own room, so the check keeps it past the next failure.
+    private void TakeFromMold(string carrierSlot, string carrierLlvm, string to, string toLlvm, Pos pos)
+    {
+        string tag = EmitTmp($"load i64, ptr {CarrierField(carrierSlot, carrierLlvm, 0)}");
+        Line($"store i64 {tag}, ptr {CarrierField(to, toLlvm, 0)}");
+        string mold = MoldAddr(pos);
+        string moldBytes = StorageBytes(mold, Compiler.MoldLlvm);
+        string toBytes = StorageBytes(to, toLlvm);
+        string smaller = EmitTmp($"icmp ult i64 {moldBytes}, {toBytes}");
+        string count = EmitTmp($"select i1 {smaller}, i64 {moldBytes}, i64 {toBytes}");
+        _c.DeclareMemcpy();
+        Line($"call void @llvm.memcpy.p0.p0.i64(ptr {CarrierField(to, toLlvm, 2)}, ptr {CarrierField(mold, Compiler.MoldLlvm, 2)}, i64 {count}, i1 false)");
+    }
+
+    /// Ends the routine with a failure: its carrier holds the tag of the one in `held` (a tagged layout), and the
+    /// crashable goes into the flow's mold just before the return, after the routine's places are given back (a
+    /// routine that runs then may use the mold itself).
+    private void ReturnFailure(string held, string heldLlvm, Pos pos)
+    {
+        string carrier = Compiler.CarrierName(_inst);
+        string slot = NewCarrierSlot(carrier);
+        string tag = EmitTmp($"load i64, ptr {CarrierField(held, heldLlvm, 0)}");
+        Line($"store i64 {tag}, ptr {CarrierField(slot, carrier, 0)}");
+        string value = EmitTmp($"load {carrier}, ptr {slot}");
+        Return($"ret {carrier} {value}", () => CopyTagged(held, heldLlvm, MoldAddr(pos), Compiler.MoldLlvm));
     }
 
     /// A failure a `check` of a traced routine keeps, made in the standard library (or another untraced routine), which
@@ -189,7 +223,8 @@ public sealed partial class FunctionGen
 
     /// A failure nothing receives: the program stops on `pos`'s line through `Crash`, with the crashable's name and
     /// message, and the number of the failure (its trace, in a traced build).
-    private void StopOnFailure(string slot, string carrierLlvm, List<DType> failures, Pos pos)
+    /// `inMold`: the crashable waits in the flow's mold (a carrier that came back), else it is in `slot` (a `Check`).
+    private void StopOnFailure(string slot, string carrierLlvm, List<DType> failures, Pos pos, bool inMold)
     {
         if (failures.Count == 0)
         {
@@ -205,7 +240,7 @@ public sealed partial class FunctionGen
         foreach (var (type, block) in arms)
         {
             _cur = block;
-            var error = LoadValue(slot, carrierLlvm, type, type);
+            var error = inMold ? LoadValue(MoldAddr(pos), Compiler.MoldLlvm, type, type) : LoadValue(slot, carrierLlvm, type, type);
             Stop(error, new Val(seq, IntType.U(32)), pos);
         }
         _cur = none;
@@ -510,9 +545,9 @@ public sealed partial class FunctionGen
                 Return($"ret {carrier} poison");
                 return;
             }
-            string slot = NewCarrierSlot(carrier);
-            StoreValue(slot, carrier, v, FailureTagOp(v.Type, r.Pos));
-            Return($"ret {carrier} {EmitTmp($"load {carrier}, ptr {slot}")}");
+            string held = NewCarrierSlot(Compiler.MoldLlvm);
+            StoreValue(held, Compiler.MoldLlvm, v, FailureTagOp(v.Type, r.Pos));
+            ReturnFailure(held, Compiler.MoldLlvm, r.Pos);
             return;
         }
         // A Crashables, or a variant whose every branch is a crashable (`variant FsError`), goes as the failure it holds.
@@ -527,9 +562,7 @@ public sealed partial class FunctionGen
             string llvm = TaggedLlvm(union);
             string from = NewSlot(union);
             Line($"store {llvm} {v.Op}, ptr {from}");
-            string slot = NewCarrierSlot(carrier);
-            CopyTagged(from, llvm, slot, carrier);
-            Return($"ret {carrier} {EmitTmp($"load {carrier}, ptr {slot}")}");
+            ReturnFailure(from, llvm, r.Pos);
             return;
         }
         throw Err(r.Value!.Pos, $"throw takes a crashable (declared crashable {v.Type.Name}), or the Crashables a check caught, not {v.Type}");
@@ -572,14 +605,9 @@ public sealed partial class FunctionGen
             for (int i = _statementTemps.Count - 1; i >= 0; i--)
                 EmitStmtCore(new DropStmt(new ValueRef(_statementTemps[i].Name, w.Pos), w.Pos));
             if (!Emitting) Return($"ret {carrier} poison");
-            else
-            {
-                string own = NewCarrierSlot(carrier);
-                CopyTagged(slot, llvm, own, carrier);
-                Return($"ret {carrier} {EmitTmp($"load {carrier}, ptr {own}")}");
-            }
+            else ReturnFailure(slot, llvm, w.Pos);
         }
-        else StopOnFailure(slot, llvm, missing, w.Pos);
+        else StopOnFailure(slot, llvm, missing, w.Pos, inMold: false);
         _cur = saved;
         return label;
     }

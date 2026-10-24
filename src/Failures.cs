@@ -185,14 +185,72 @@ public sealed partial class Compiler
         return errors;
     }
 
-    /// The carrier types and the `check` frame types, defined once every list is final.
+    /// The LLVM type of a flow's mold: the tagged layout of every crashable the program throws (Crash.te's
+    /// failure_mold).
+    public const string MoldLlvm = "%tessera.mold";
+
+    /// The thread's (or, without an operating system, the program's) own mold.
+    private const string ThreadMoldSymbol = "tessera.thread_mold";
+
+    /// The bytes a split program's mold holds at least: the base is built once, so its mold has room for the crashables
+    /// a delta adds later.
+    private const long SplitMoldBytes = 256;
+
+    /// The body of the struct a failable routine returns: the tag and the room of the value alone. A failure's crashable
+    /// waits in the flow's mold, so the carrier is as big as what the routine gives when it doesn't fail.
+    public string CarrierValueBody(VariantType check) => CarrierBody(Crashing.Check(Crashing.ValueOf(check), []));
+
+    /// The mold's type and the thread's mold: the tag, then room for the largest crashable any failable routine of the
+    /// program throws.
+    private string MoldDefs()
+    {
+        var all = new List<DType>();
+        foreach (var inst in _failableInstances.Values) all.AddRange(Crashing.FailuresOf(CarrierOf(inst)));
+        foreach (var check in _callableCarriers.Values) all.AddRange(Crashing.FailuresOf(check));
+        var crashables = Crashing.Ordered(all);
+        long size = 0, align = 8;
+        string alignType = "i64";
+        if (crashables.Count > 0)
+        {
+            var union = Crashing.Union(crashables);
+            EnsureTypeDefined(union);
+            var (aligner, s, a) = VariantStorage(union);
+            if (aligner is not null)
+            {
+                size = s;
+                align = a;
+                alignType = aligner.Llvm;
+            }
+        }
+        bool split = ExposeDefinitions || ProvidedSymbols.Count > 0;
+        if (split && size > SplitMoldBytes)
+            throw new CompileError(default, $"a crashable of this program takes {size} bytes, and a split program's mold holds {SplitMoldBytes}: "
+                + "keep a crashable to a few values");
+        if (split) size = SplitMoldBytes;
+        long words = (size + align - 1) / align;
+        var o = new StringBuilder();
+        o.AppendLine($"{MoldLlvm} = type {{ {VariantType.Tag.Llvm}, [0 x {alignType}], [{words} x i{align * 8}] }}");
+        string threadLocal = Target.Os == "none" ? "" : "thread_local ";
+        if (ProvidedSymbols.Contains(ThreadMoldSymbol))
+            o.AppendLine($"@{ThreadMoldSymbol} = external {threadLocal}global {MoldLlvm}");
+        else
+        {
+            if (ExposeDefinitions) NoteExposed(ThreadMoldSymbol);
+            string linkage = ExposeDefinitions ? "" : "internal ";
+            o.AppendLine($"@{ThreadMoldSymbol} = {linkage}{threadLocal}global {MoldLlvm} zeroinitializer, align 16");
+        }
+        return o.ToString();
+    }
+
+    /// The carrier types, the mold, and the `check` frame types, defined once every list is final.
     private string FailureTypeDefs()
     {
         var o = new StringBuilder();
         foreach (var inst in _failableInstances.Values.OrderBy(i => i.Symbol, StringComparer.Ordinal))
-            o.AppendLine($"{CarrierName(inst)} = type {CarrierBody(CarrierOf(inst))}");
+            o.AppendLine($"{CarrierName(inst)} = type {CarrierValueBody(CarrierOf(inst))}");
         foreach (var (name, check) in _callableCarriers.OrderBy(kv => kv.Key, StringComparer.Ordinal))
-            o.AppendLine($"{name} = type {CarrierBody(check)}");
+            o.AppendLine($"{name} = type {CarrierValueBody(check)}");
+        o.Append(MoldDefs());
         foreach (var (owner, types) in _frameTypes.OrderBy(kv => kv.Key, StringComparer.Ordinal))
             if (_functionTexts.ContainsKey(owner))
                 foreach (var (name, body) in types.OrderBy(kv => kv.Key, StringComparer.Ordinal))

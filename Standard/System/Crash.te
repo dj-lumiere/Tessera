@@ -27,6 +27,15 @@
 
 module Standard/System
 
+### The mold of the fiber running on this thread, or hollow while the thread runs itself: a fiber puts its own here
+### while it runs (Standard/Fiber), so a failure on one fiber never lands in another's.
+@threadlocal
+@target(os: not "none")
+global RUNNING_MOLD: &Addr
+### The mold of the fiber running, or hollow while the program runs itself.
+@target(os: "none")
+global RUNNING_MOLD: &Addr
+
 ### The buffer a crash's message is written into, CRASH_MESSAGE_SIZE bytes.
 secret global CRASH_MESSAGE: &[Byte] <- [0x00] * CRASH_MESSAGE_SIZE
 ### How many bytes of CRASH_MESSAGE hold the message.
@@ -284,6 +293,40 @@ needs E: typename, Crashable[E]
     value: E = error.to[@E]().peek()
     value.message_into(out)
     return
+
+### The mold of the flow running here: where a `throw` puts its failure for the caller to take. Each thread has one,
+### and each fiber one of its own (reserve_failure_mold), so a failure on one fiber never overwrites another's. A mold
+### holds any crashable the program throws (the builder sizes it), and it is reserved before anything fails: a failure
+### borrows no memory. Never inlined: a passable fiber may go on on another thread, whose mold is another one.
+### :returns: The mold's address.
+@noinline
+@untraced
+routine failure_mold() -> Addr
+    running: Addr = RUNNING_MOLD.peek()
+    if running.is_hollow()
+        return thread_failure_mold()
+    return running
+
+### This thread's own mold (the builder writes it, one per thread).
+### :returns: Its address.
+@external("llvm")
+@template("{result} = call ptr @llvm.threadlocal.address.p0(ptr @tessera.thread_mold)")
+@target(os: not "none")
+secret routine thread_failure_mold() -> Addr
+
+### The program's own mold, without an operating system (the builder writes it).
+### :returns: Its address.
+@external("llvm")
+@template("{result} = getelementptr i8, ptr @tessera.thread_mold, i64 0")
+@target(os: "none")
+secret routine thread_failure_mold() -> Addr
+
+### Reserves a mold in the calling routine's frame, for a fiber's first routine, whose frame lasts as long as the
+### fiber: it is the fiber's mold from then on.
+### :returns: The mold's address.
+@external("llvm")
+@template("{result} = alloca %tessera.mold, align 16")
+routine reserve_failure_mold() -> Addr
 
 ### Stops the program for a failure nothing received: the builder calls it on the line of a bare call of a failable
 ### routine that failed.

@@ -992,6 +992,17 @@ routine start() -> None
   crashables) call the crashable's own by its tag. Generic routines get their list per instance, and a protocol's
   failable routine is called through the instance's own routine (an implementation is failable exactly when the
   requirement is).
+- **A failure waits in its flow's mold.** The `Crash` service holds one mold per flow: one per thread (one for the
+  program without an operating system) and one per fiber, reserved in the frame of the fiber's first routine when it
+  first runs, and put in place at each resume (`failure_mold()`, Standard/System/Crash.te). A mold has room for the
+  largest crashable the program throws, and nothing is borrowed when something fails. `throw` writes the crashable
+  into the running flow's mold just before the routine returns (after its places are given back), and the failable
+  routine returns a carrier of the tag and its value's room only, so a call that doesn't fail moves no more than its
+  value. `check` copies the crashable out of the mold into the `Check`'s own room where it receives it, so a
+  `Check` kept in a name holds its failure after later failures. `try` copies nothing. A failure passed on (the arms
+  a `when` doesn't name, `throw e` of a caught value) goes back into the mold the same way. A bare call that fails
+  stops through `Crash`, which reads the crashable from the mold. One failure is in flight per flow at a time: a
+  failure's crashable never holds another failure in flight.
 - **Routine values carry their list.** `f.to[Callable]()` of a failable routine is a failable Callable whose list is a
   hidden part of its type. A call through it fails like a call of `f`. A binding with a written `Callable[...]` type
   takes the value's list, and a routine whose parameter is a plain `Callable` given a failable one is built again for

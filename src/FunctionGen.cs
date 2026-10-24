@@ -1256,7 +1256,8 @@ public sealed partial class FunctionGen
     }
 
     /// Ends the routine: its frame comes off the trace, then it returns.
-    private void Return(string ret)
+    /// `last` runs after everything the routine gives back, just before the return (a failure going into the mold).
+    private void Return(string ret, Action? last = null)
     {
         if (_memReturnValue is { } returned) MemTakeAlong(returned, "returned");
         _memReturnValue = null;
@@ -1265,6 +1266,7 @@ public sealed partial class FunctionGen
         Mem(new MemoryRules.Exit(null, true, [], _memReturnPos ?? _decl.Pos));
         if (FrameCalls && _c.FrameCall("give_back_frame") is { } giveBack) Line(giveBack);
         if (_traced) Line(_c.TraceCall("trace_pop"));
+        last?.Invoke();
         Terminate(ret);
     }
 
@@ -5775,7 +5777,7 @@ public sealed partial class FunctionGen
             }
             Terminate(ended is null ? $"br label %{stop.Label}" : $"br i1 {ended}, label %{thenB.Label}, label %{stop.Label}");
             _cur = stop;
-            StopOnFailure(itemSlot!, iteratorMaybe!.Llvm, otherFailures, l.Source!.Pos);
+            StopOnFailure(itemSlot!, iteratorMaybe!.Llvm, otherFailures, l.Source!.Pos, inMold: false);
         }
 
         // The body.

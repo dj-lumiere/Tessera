@@ -1,0 +1,126 @@
+# Failures and the mold: a `throw` puts its crashable in the mold of the flow it runs on (the thread's, or the
+# fiber's), and `check` copies it out into its own room. So a Check kept in a name holds its own failure after other
+# failures, `try` gives a Maybe that is `None` on failure, and two fibers on one thread that fail in turn, each keeping
+# a Check across the other's failures, each keep their own. Fibers switch stacks, which only the targets in
+# failure_molds.arch do.
+
+import Standard/Fiber
+import Standard/Os
+
+crashable NegativeError
+    value: S64
+
+crashable TooLargeError
+    value: S64
+    limit: S64
+
+### Writes the message.
+### :typeparam TWriter: The Writer.
+### :param out: Where it goes.
+routine NegativeError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    out.write("{me.value} is negative")
+    return
+
+### Writes the message.
+### :typeparam TWriter: The Writer.
+### :param out: Where it goes.
+routine TooLargeError.message_into[TWriter](out: @TWriter) -> None
+needs TWriter: typename, Writer[TWriter]
+    out.write("{me.value} is past {me.limit}")
+    return
+
+### Half of n, failing below zero and past 100.
+### :param n: The number.
+### :returns: Its half.
+failable routine half(n: S64) -> S64
+    if n < 0
+        throw NegativeError(value: n)
+    if n > 100
+        throw TooLargeError(value: n, limit: 100)
+    return n // 2
+
+### A quarter of n: half's failures go on to the caller.
+### :param n: The number.
+### :returns: Its quarter.
+failable routine quarter(n: S64) -> S64
+    h: S64 = when check half(n)
+        is S64 as v => v
+    return when check half(h)
+        is S64 as v => v
+
+### What a Check holds, in words.
+### :param c: The Check.
+### :returns: The words.
+routine said(c: Check[S64]) -> @[Byte]
+    when c
+        is S64 => return "a value"
+        is NegativeError as e =>
+            if e.value == -1
+                return "NegativeError -1"
+            return "NegativeError, another value"
+        is TooLargeError as e =>
+            if e.value == 500
+                return "TooLargeError 500"
+            return "TooLargeError, another value"
+
+### Fails with its own value three times, giving the other fiber a turn between each, and keeps the first failure in a
+### Check across them.
+### :param id: The fiber's number, 1 or 2: its failures carry -id or 1000 + id.
+### :returns: How many of its failures it got back as its own.
+routine fail_in_turns(id: S64) -> S64
+    kept: Check[S64] = check half(0 - id)
+    FIBERS.yield()
+    each round in 0 til 3 with own: S64 = 0
+        got: S64 = when check quarter(1000 + id)
+            is S64 => 0
+            is TooLargeError as e => e.value
+            is NegativeError => 0
+        FIBERS.yield()
+        hit: S64 = when
+            got == 1000 + id => 1
+            else => 0
+        continue with own: own + hit
+    then
+        mine: S64 = when kept
+            is NegativeError as e => e.value
+            is S64 => 0
+            is TooLargeError => 0
+        hit: S64 = when
+            mine == 0 - id => 1
+            else => 0
+        return own + hit
+
+routine start() -> None
+    when check half(-3)
+        is S64 as v => Console.show("half: {v}")
+        is NegativeError as e => Console.show("half(-3): NegativeError {e.value}")
+        is Crashables as e => Console.show("half(-3): {e.name()}")
+    when check quarter(400)
+        is S64 as v => Console.show("quarter: {v}")
+        is TooLargeError as e => Console.show("quarter(400): {e.value} past {e.limit}")
+        is Crashables as e => Console.show("quarter(400): {e.name()}")
+
+    # The first Check keeps its failure after the second one fails.
+    first: Check[S64] = check half(-1)
+    second: Check[S64] = check half(500)
+    third: Check[S64] = check half(40)
+    Console.show("first: {said(first)}")
+    Console.show("second: {said(second)}")
+    Console.show("third: {said(third)}")
+
+    a: Maybe[S64] = try half(8)
+    b: Maybe[S64] = try half(-8)
+    Console.show("try: {a.is_present()} {b.is_present()}")
+
+    one: Fiber[S64] <- FIBERS.get_fiber[S64]()
+    two: Fiber[S64] <- FIBERS.get_fiber[S64]()
+    one_work: Work[S64] = fail_in_turns.to[Work](id: 1)
+    two_work: Work[S64] = fail_in_turns.to[Work](id: 2)
+    one.put_work(one_work)
+    two.put_work(two_work)
+    Console.show("fiber 1 kept its own: {one.retrieve()} of 4")
+    Console.show("fiber 2 kept its own: {two.retrieve()} of 4")
+    drop one
+    drop two
+    return
