@@ -241,10 +241,13 @@ public sealed partial class Compiler
         if (Prechecking) return sig;
         // An @external declaration and an @export definition of one C name are one routine; the definition is the
         // instance, whichever was reached first, and the declaration is never emitted (see _exported).
+        if (_instances.TryGetValue(sig.Symbol, out var declared) && declared.IsExternalC && r.AnnotationNamed("export") is not null)
+            CheckSameCSignature(declared, sig);
         if (_instances.TryGetValue(sig.Symbol, out var existing) && !(existing.IsExternalC && r.AnnotationNamed("export") is not null))
         {
             if (existing.Decl != r && !sig.IsExternalC)
                 throw new CompileError(r.Pos, $"'{sig.Symbol}' is defined more than once (also at {existing.Decl.Pos})");
+            if (existing.Decl != r) CheckSameCSignature(existing, sig);
             return sig.IsExternalC ? sig : existing;
         }
         _instances[sig.Symbol] = sig;
@@ -277,6 +280,21 @@ public sealed partial class Compiler
             _pending.Enqueue(sig);
         }
         return sig;
+    }
+
+    /// One C name is one routine with one signature: a second declaration (or an `@export` definition) of the same
+    /// name with other types would call it with arguments it doesn't read, or read a result it doesn't give.
+    private void CheckSameCSignature(Instance first, Instance second)
+    {
+        if (Prechecking) return;
+        string Shape(Instance i) =>
+            $"{i.CcPrefix(Target)}{AbiRet(i, withAttrs: false)} ({string.Join(", ", AbiParams(i, withAttrs: false))})";
+        string a = Shape(first), b = Shape(second);
+        if (a == b) return;
+        string Spelled(Instance i) => $"({string.Join(", ", i.Params)}) -> {i.Ret}";
+        throw new CompileError(second.Decl.Pos, $"'{first.Symbol}' is declared at {first.Decl.Pos} as {Spelled(first)}, and "
+            + $"here as {Spelled(second)}: one C routine has one signature, so declare it once with the types its C "
+            + "declaration has and call that one");
     }
 
     /// Where the target's C ABI for aggregates isn't implemented yet, a record can still pass by value between Tessera

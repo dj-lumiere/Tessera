@@ -95,7 +95,7 @@ public sealed partial class FunctionGen
         /// Each round's values, by the block that sends them.
         public List<(string Pred, List<string> Ops)> Incoming { get; } = [];
         /// A `for` over a range: the index, its type, the bound, the step, and whether the bound is included.
-        public (string Name, IntType Type, Val To, Val Step, bool Inclusive, bool Descending)? Range { get; set; }
+        public (string Name, IntType Type, Val To, Val Step, bool Inclusive, bool Descending, bool Stepped)? Range { get; set; }
         /// The hidden flag of an inclusive range, named per loop so a loop inside another has its own.
         public string LiveFlag { get; set; } = FunctionGen.LiveFlag;
         /// The names visible in the header: the loop's outer scope and its carried values.
@@ -106,8 +106,23 @@ public sealed partial class FunctionGen
         public int BoxDepth { get; set; }
     }
 
+    /// The value a variant `when` observes, while its arms are emitted: what an arm's name is read out of.
+    private Expr? _whenScrutinee;
+
+    /// What each value `when` gives may reach (the atoms of every arm's value), by the when's place.
+    private readonly Dictionary<Pos, HashSet<EscapeCheck.Atom>> _whenAtoms = [];
+
+    /// What each value `when` gives may see of this routine's memory (the first arm's value that sees some).
+    private readonly Dictionary<Pos, string> _whenFrameViews = [];
+
     private sealed class ValueFrame(LBlock join, string joinRegion, DType type, HashSet<string> outerNames)
     {
+        /// The atoms of the values the arms give.
+        public HashSet<EscapeCheck.Atom> Atoms { get; } = [];
+
+        /// What one of the arms' values sees of this routine's memory, or null.
+        public string? Sees { get; set; }
+
         public LBlock Join { get; } = join;
         public string JoinRegion { get; } = joinRegion;
         public DType Type { get; } = type;
@@ -733,6 +748,8 @@ public sealed partial class FunctionGen
                 return lit.Fields.Select(f => FrameView(f.Value)).FirstOrDefault(v => v is not null);
             case ArrayLit { IsTuple: true } tuple:
                 return tuple.Elements.Select(FrameView).FirstOrDefault(v => v is not null);
+            case WhenExpr w:
+                return _whenFrameViews.GetValueOrDefault(w.Pos);
             default:
                 return null;
         }
@@ -1008,6 +1025,7 @@ public sealed partial class FunctionGen
         bool libraryGeneric = _decl.IsLibrary && Compiler.IsGenericRoutine(_decl);
         bool FromOutside(string root) => !libraryGeneric && (parameters.Contains(root) || !BoundInRoutine(root));
         CheckDestructGivesBack();
+        foreach (var (names, candidates) in _edgeNames) names.UnionWith(candidates.Where(FollowedByMemoryCheck));
         var leftChanged = new HashSet<string>();
         if (_escape is not null) _escape.LeftChanged = leftChanged;
         // What a call does with an access (returns one, gives back one handed to it, keeps one in a value of this
@@ -1388,9 +1406,19 @@ public sealed partial class FunctionGen
     {
         if (!MemOn) return;
         // The views go along, so a view used after the arms that each gave its memory back is still seen as one.
-        var names = (visible ?? _values.Keys).Where(n => _memTracked.Contains(n) || _viewNames.Contains(n)).ToHashSet();
+        var candidates = (visible ?? _values.Keys).ToList();
+        var names = candidates.Where(FollowedByMemoryCheck).ToHashSet();
+        _edgeNames.Add((names, candidates));
         Mem(new MemoryRules.Exit(region, false, passed ?? [], pos) { Visible = names, Region = true });
     }
+
+    /// Whether the memory check follows a name: it holds memory or an entity, or it is (or holds) a view.
+    private bool FollowedByMemoryCheck(string name) => _memTracked.Contains(name) || _viewNames.Contains(name);
+
+    /// Each region edge's visible names and the names it was emitted with. An edge is emitted once and taken by every
+    /// pass (a loop's header goes to its body and its `then` before the body is built), so a name that holds a view
+    /// only from a later line of the body is added once the routine is built.
+    private readonly List<(HashSet<string> Names, List<string> Candidates)> _edgeNames = [];
 
     private void EnterRegion(string region)
     {
@@ -1490,6 +1518,10 @@ public sealed partial class FunctionGen
                 else if (t is CallableType { Failable: true } open && b.Value is not LambdaExpr
                          && InferQuiet(b.Value) is CallableType given && given.Plain.Equals(open.Plain))
                     t = given;
+                // A place of a `Check[T]` (`m: &Check[T] <- check ...`) holds the Check the check makes, with its list.
+                if (b.Value is ClaimExpr { Contents: { } filled } && t is PtrType { Pointee: { } placed } && Crashing.IsCheck(placed)
+                    && InferQuiet(filled) is { } filledType && Crashing.IsCheck(filledType))
+                    t = new PtrType(filledType);
                 var v = Eval(b.Value, t);
                 // A `Check[T]` written as the type takes the list of crashables of the check that fills it.
                 if (Crashing.IsCheck(t) && Crashing.IsCheck(v.Type)) t = v.Type;
@@ -1757,6 +1789,8 @@ public sealed partial class FunctionGen
                     throw Err(bc.Pos, "becomes gives the value of a when arm, and this line isn't in an arm of a when that is a value");
                 var frame = _valueWhens.Peek();
                 var v = Eval(bc.Value, frame.Type);
+                if (_escape is not null) frame.Atoms.UnionWith(Atoms(bc.Value, frame.Type));
+                frame.Sees ??= FrameView(bc.Value);
                 MemTakeAlong(bc.Value, "the when's value");
                 // The arm ends here: the temporary slots its value was read through end before it leaves.
                 FlushTemps(_statementMark);
@@ -2853,7 +2887,14 @@ public sealed partial class FunctionGen
             if (v.Type is PtrType { Pointee: VariantType held } && Entities.Holds(held))
                 throw Err(w.Value.Pos, $"this is the slot of a {held}, which holds an entity: the when takes the value out of "
                     + $"it, when steal {(w.Value is ValueRef slotName ? slotName.Name : "...")}");
-            if (v.Type is VariantType vt) EmitVariantWhen(w, v, vt, Arm, armNames);
+            if (v.Type is VariantType vt)
+            {
+                // The arms' names are read out of this value, so they reach what it reaches.
+                var outerScrutinee = _whenScrutinee;
+                _whenScrutinee = w.Value;
+                try { EmitVariantWhen(w, v, vt, Arm, armNames); }
+                finally { _whenScrutinee = outerScrutinee; }
+            }
             else EmitSwitchWhen(w, v, Arm);
         }
 
@@ -3071,6 +3112,12 @@ public sealed partial class FunctionGen
         }
         Define(binding.Name, new Val(value, branch), binding.Pos);
         DescribeValue(binding.Name, value, branch, binding.Pos);
+        // The name holds what the observed value held: a view of the frame in it is a view of the frame here too.
+        if (_whenScrutinee is { } observed)
+        {
+            BindAtoms(binding.Name, observed, branch);
+            if (MemOn && PointsAtMemory(branch) && FrameView(observed) is { } sees) _frameViews[binding.Name] = sees;
+        }
         // A failure made in an arm that observed one wraps it (Trace.te).
         if (_c.Trace && !_c.Prechecking && (IsFailure(branch, vt) || Crashing.IsUnion(branch)))
         {
@@ -3105,6 +3152,8 @@ public sealed partial class FunctionGen
         {
             _valueWhens.Pop();
         }
+        if (frame.Atoms.Count > 0) _whenAtoms[w.Pos] = frame.Atoms;
+        if (frame.Sees is { } sees) _whenFrameViews[w.Pos] = sees;
         if (frame.Incoming.Count == 0)
         {
             // Every arm left the routine: nothing reaches here, and the value is never read.
@@ -4986,6 +5035,7 @@ public sealed partial class FunctionGen
         CheckStoreEscape(plan, sig);
         RecordStore(plan, sig);
         NoteGlobalStore(plan, sig);
+        StackPlaceRefilled(plan, sig);
         NoteStoredViews(plan, sig);
         NoteCallerHeldRefill(plan, sig);
         if (sig.Decl.Name is "poke" && plan.Receiver is ValueRef slot && plan.Args is [var stored] && TableManager(stored) is { } held)
@@ -5672,15 +5722,16 @@ public sealed partial class FunctionGen
                     throw Err(l.VarPos, $"'{l.Var}' is already bound here: the loop's index takes a name of its own (a name is bound once)");
                 frame.Carried.Add((l.Var!, it));
                 firstOps.Add(from.Op);
-                if (range.Inclusive)
+                if (range.Inclusive || range.Step is not null)
                 {
                     // The index stays inside the range: a hidden flag says when the last round is done, so the
-                    // index never steps past the bound (which could wrap).
+                    // index never steps past the bound (which could wrap). A step other than one can jump over the
+                    // bound and past the end of the type, so the flag also goes down when the next index would wrap.
                     frame.LiveFlag = $"{LiveFlag}{_loops.Count}";
                     frame.Carried.Add((frame.LiveFlag, BoolType.Instance));
                     firstOps.Add("true");
                 }
-                frame.Range = (l.Var!, it, to, step, range.Inclusive, descending);
+                frame.Range = (l.Var!, it, to, step, range.Inclusive, descending, range.Step is not null);
             }
             else
             {
@@ -5755,7 +5806,7 @@ public sealed partial class FunctionGen
                 string pred = r.Descending ? (r.Inclusive ? "ge" : "gt") : (r.Inclusive ? "le" : "lt");
                 string sign = r.Type.IsUnsigned ? "u" : "s";
                 cond = EmitTmp($"icmp {sign}{pred} {r.Type.Llvm} {index}, {r.To.Op}");
-                if (r.Inclusive) cond = EmitTmp($"and i1 {cond}, {_values[frame.LiveFlag].Op}");
+                if (r.Inclusive || r.Stepped) cond = EmitTmp($"and i1 {cond}, {_values[frame.LiveFlag].Op}");
                 break;
             }
             default:
@@ -5920,9 +5971,24 @@ public sealed partial class FunctionGen
         {
             // The next index. An inclusive range's last round clears the flag instead of stepping past the bound.
             string index = _values[range.Name].Op;
-            string next = EmitTmp($"add {range.Type.Llvm} {index}, {range.Step.Op}");
-            ops.Add(next);
-            if (range.Inclusive) ops.Add(EmitTmp($"icmp ne {range.Type.Llvm} {index}, {range.To.Op}"));
+            if (range.Stepped)
+            {
+                // A step can carry the index past the end of its type: that round is the last.
+                string ty = range.Type.Llvm;
+                string intrinsic = $"llvm.{(range.Type.IsUnsigned ? "u" : "s")}add.with.overflow.{ty}";
+                _c.DeclareIntrinsic(intrinsic, $"declare {{{ty}, i1}} @{intrinsic}({ty}, {ty})");
+                string sum = EmitTmp($"call {{{ty}, i1}} @{intrinsic}({ty} {index}, {ty} {range.Step.Op})");
+                ops.Add(EmitTmp($"extractvalue {{{ty}, i1}} {sum}, 0"));
+                string wrapped = EmitTmp($"extractvalue {{{ty}, i1}} {sum}, 1");
+                string live = EmitTmp($"xor i1 {wrapped}, true");
+                if (range.Inclusive) live = EmitTmp($"and i1 {live}, {EmitTmp($"icmp ne {ty} {index}, {range.To.Op}")}");
+                ops.Add(live);
+            }
+            else
+            {
+                ops.Add(EmitTmp($"add {range.Type.Llvm} {index}, {range.Step.Op}"));
+                if (range.Inclusive) ops.Add(EmitTmp($"icmp ne {range.Type.Llvm} {index}, {range.To.Op}"));
+            }
         }
         GiveBackStackPlaces(loop.BoxDepth, c.Pos);
         MemEdge(loop.HeaderRegion, loop.HeaderNames, passed, c.Pos);

@@ -90,7 +90,8 @@ public sealed partial class FunctionGen
             case MethodCallExpr { Name: "getslot" or "getslice" or "stride" or "offset" or "to" or "getview", Args.Count: <= 2 } m
                 when InferQuiet(m) is { } viewed && PointsAtMemory(viewed):
                 return AtomsOf(m.Receiver);
-            case MethodCallExpr { Name: "peek" or "peek_volatile" or "peek_unbroken", Args.Count: 0 } m:
+            // A read through a place, a `&T`'s `load()` and `take()` included, gives what the place holds.
+            case MethodCallExpr { Name: "peek" or "peek_volatile" or "peek_unbroken" or "load" or "take", Args.Count: 0 } m:
                 return Shifted(AtomsOf(m.Receiver), 1);
             case FieldExpr f:
                 return AtomsOf(f.Base);
@@ -132,6 +133,9 @@ public sealed partial class FunctionGen
             }
             case IfExpr i:
                 return [.. Atoms(i.Then), .. Atoms(i.Else)];
+            // A value `when` gives what one of its arms gives.
+            case WhenExpr w:
+                return _whenAtoms.TryGetValue(w.Pos, out var given) ? [.. given] : [];
             // A record's constructor, `R(held: l)` or `Me(held: l)`, is the record literal it builds.
             case CallExpr c when Constructs(c):
                 return Parts(c.Args, c.ArgNames, InferQuiet(c) as RecordType);

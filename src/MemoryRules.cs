@@ -195,7 +195,12 @@ public static class MemoryRules
     }
 
     private static bool GaveBack(Group g) => g.How is { } how && (g.Access is not null && how != "returned" || how.StartsWith("drop ", StringComparison.Ordinal)
+        || how.StartsWith(AutoEndHow, StringComparison.Ordinal)
         || how.EndsWith(".destruct_all()", StringComparison.Ordinal) || HandedOver(g));
+
+    /// How a STACK place the builder gives back at the end of its body ended: the memory its value held is gone after
+    /// that line, so a view of it kept outside the body reads memory that is gone.
+    private const string AutoEndHow = "the end of the body that borrowed";
 
     private static bool HandedOver(Group g) => g.How is { } how
         && (how.StartsWith("steal ", StringComparison.Ordinal) || how.StartsWith("handed to ", StringComparison.Ordinal));
@@ -417,7 +422,7 @@ public static class MemoryRules
                     case AutoEnd ae:
                         if (state.Names.TryGetValue(ae.Name, out var autoId) && state.Groups.TryGetValue(autoId, out var autoGroup)
                             && autoGroup.Ended is null)
-                            state.Groups[autoId] = autoGroup with { Ended = ae.Pos, How = $"the end of the body of '{ae.Name}'" };
+                            state.Groups[autoId] = autoGroup with { Ended = ae.Pos, How = $"{AutoEndHow} '{ae.Name}'" };
                         break;
                     case Alias al:
                         if (state.Names.TryGetValue(al.Of, out var of)) state.Names[al.Name] = of;

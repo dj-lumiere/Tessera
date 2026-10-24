@@ -181,6 +181,20 @@ public sealed partial class FunctionGen
             Line($"store i1 false, ptr {flag}");
     }
 
+    /// A whole new value put into a STACK place the program gave back or handed over (`steal t`, then `t.poke(v)`):
+    /// the place holds something again, so the builder's drop at the exit runs again.
+    private void StackPlaceRefilled(CallPlan plan, Instance sig)
+    {
+        Expr? into = sig.Decl.Name switch
+        {
+            "poke" or "poke_volatile" or "store" when plan.Args.Count == 1 => plan.Receiver,
+            "poke_into" or "store_into" when plan.Args.Count == 1 => plan.Args[0],
+            _ => null,
+        };
+        if (into is ValueRef r && _stackPlaces.TryGetValue(r.Name, out var place) && place.Flag is { } flag && !_cur.Terminated)
+            Line($"store i1 true, ptr {flag}");
+    }
+
     /// Gives back the STACK places of the scopes from `from` on, innermost first and each scope's last place first:
     /// the value's destruct where it has one and the place is still borrowed, and the memory check's AutoEnd.
     private void GiveBackStackPlaces(int from, Pos pos)

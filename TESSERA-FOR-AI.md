@@ -162,6 +162,8 @@ routine start() -> None
   then doesn't drop it again. A place from another manager (`from HEAP`, a call returning a BorrowedCell / BorrowedSlice) and an access:
   the program writes `drop`, and a missing one is a build error ("'cell' holds a &S64 (from line 6)
   that hasn't ended when 'start' returns here: drop cell, return it, or hand it over with steal cell"). A STACK place
+  handed over with `steal t` and filled again with `t.poke(v)` holds a value again, which the builder gives back at
+  the exit like the first one. A STACK place
   of a variant is ended by the program too (the same error when it isn't). A STACK `&[T]` takes an array literal with a count the build knows (a literal count or a preset)
   and holds values with nothing to give back ("a &[List[S64]] from STACK holds values with nothing to give back").
   A place borrowed in a loop body is borrowed again and given back on every pass, so it can't carry a value from
@@ -277,7 +279,10 @@ routine start() -> None
   - `'v' is a view of 'm', whose memory was given back (drop m on line N)`: a `@T` / `@[T]` made from memory
     (`m.getslice()`, `m.getslot(i)`, `getslice`, `getslice`, `stride`, `offset`, `to[...]`, and views made from those) is read, written,
     passed, returned, stored or used to make another view after `drop m`, on any path (memory given back in both arms
-    of an `if` counts). Use it before the drop. The same holds after `steal m` or after `m` is handed to a routine that
+    of an `if` counts). Use it before the drop. The builder's give back of a STACK place at the end of its body counts
+    too: a view of a `xs: &List[S64]` borrowed in an `if` or loop body, kept in a place bound outside it
+    (`p.store(xs.getslot(0))`), and read after the body is `'p' holds a view of 'xs', whose memory was given back (the
+    end of the body that borrowed 'xs' on line N)`. Borrow the List outside the body, or keep the value, not the view. The same holds after `steal m` or after `m` is handed to a routine that
     takes it by value: `'v' is a view of 'm', whose memory was handed over (steal m on line N), and whoever took it may
     give it back`.
   - `'q' holds a view of 'm', whose memory was given back`: a value that holds such a view (a view poked into a
@@ -362,6 +367,9 @@ routine start() -> None
   or into a global. Errors: `this returns a view of the frame slot 'x' ...` and `this keeps a view of ... where it
   outlives 'r'`. Fix: return the values, or let the caller pass the memory in (a `@[T]` or a `@T` parameter) and
   write there. The check follows values out of the routine:
+  - A value read out of such a place carries what the place holds: `k.load()` of a `k: &Knot` whose field holds the
+    address of its own other field is a value that reaches the frame slot `k`, and so is the name of a `when` arm
+    (`is @S64 as p` on a `Maybe[@S64]` holding a frame address) and the value of a value `when` whose arm gives one.
   - A value that holds such a view (a place or entity the view was poked into, a record built with one, `R(held: l)`
     as well as `(held: l)`) carries it: returning it, storing it, or handing it to a routine that keeps it is an
     error. `drop q` hands `q` to its `destruct`, so a `destruct` that moves what `q` holds into a global is one.
@@ -508,6 +516,9 @@ routine start() -> None
   name is used as its view: `TICKS.peek()`, `TICKS.poke(n)`, `STATS.calls.poke(n)`, `K.getitem(i)`, `TABLE[2]`.
   Writing a `&T` preset's memory is a build error. Neither kind is a buildtime
   constant: a preset value is (`Array[S64, N]` with `preset N: U64 = 4`). An array preset is always in memory.
+- One C name has one signature: two `@external("c")` routines of one symbol (or an `@export` of it) whose types
+  differ are a build error ("'abs' is declared at f.te:7:1 as (S32) -> S32, and here as (S64, S64) -> B64: one C
+  routine has one signature"). Declare it once, with the types its C declaration has.
 - `@external("c")` and `@symbol("environ")` above `global ENVIRON: &@@Byte` declare a C variable (C's `extern`): no `<-`, read and
   written like any global; dllimport on Windows.
 - `@threadlocal` above `global NAME: &T [<- value]` gives each thread its own copy, starting from the value; the name is the
@@ -585,7 +596,8 @@ routine start() -> None
   ```
 
 - **Loops.** `each i in 0 til n` walks the half-open range, `each i in 1 to n` the inclusive one, `each i in n to 1
-  by -1` steps. A range walks the type of its bounds, `S64` when both are bare numbers; `each k: U64 in 0 til 27`
+  by -1` steps. A stepped range ends before an index that would pass the end of its type (`each i: S8 in 100 to 127
+  by 20` walks 100 and 120 and stops, it never wraps around). A range walks the type of its bounds, `S64` when both are bare numbers; `each k: U64 in 0 til 27`
   names the type (for an index, say), and `each x in iter` reads an iterator in memory (one whose failable `emit` gives the next
   item) until emit throws `AbsentValueError`, its end. Any other failure of emit stops the program on the `each` line, as
   a bare call of emit would. The other loops are `until c` and `loop`. `until c` stops when `c` becomes true, tested

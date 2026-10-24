@@ -59,7 +59,12 @@ secret routine check_access_range(at: Addr, size: U64) -> None
 @expensive("allocates memory")
 secret routine take_block[T](count: U64, manager: @MemoryManager) -> @T
 needs T: typename
-    taken: Addr = manager.borrow(size: sizeof[T]() * count, align: alignof[T]())
+    bytes: U64 = sizeof[T]() * count
+    # Values of no size still take a block of their own, so the manager has an address to give.
+    size: U64 = when
+        bytes == 0 => 1
+        else => bytes
+    taken: Addr = manager.borrow(size, align: alignof[T]())
     return taken.to[@T]()
 
 ### Gives the block of `count` values at `data` back to `manager`, once no other flow holds an access inside it.
@@ -264,7 +269,11 @@ needs T: typename
                 return
     else
         check_access_range(at: data, size: sizeof[T]() * me.count.peek())
-        size: U64 = sizeof[T]() * count
+        bytes: U64 = sizeof[T]() * count
+        # Values of no size keep a block of one byte: a block of none would be given back by the move.
+        size: U64 = when
+            bytes == 0 => 1
+            else => bytes
         moved: @MemoryManager = me.manager.peek()
         grown: Addr = moved.reborrow(at: data, size, align: alignof[T]())
         if grown.is_hollow()

@@ -358,6 +358,12 @@ public sealed partial class Compiler
         r is { IsLibrary: true, Module: MemoryModule, Owner.Name: "MemoryManager", Name: "borrow" or "reborrow" or "reserve" or "commit" };
 
     /// Declares LLVM's memcpy, which copying a failure from one carrier into another uses.
+    /// Declares the LLVM intrinsic `name` once, with the declaration line `line`.
+    public void DeclareIntrinsic(string name, string line)
+    {
+        if (_declaredSymbols.Add(name)) _declares.Add((name, line));
+    }
+
     public void DeclareMemcpy()
     {
         const string name = "llvm.memcpy.p0.p0.i64";
