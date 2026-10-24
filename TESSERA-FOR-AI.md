@@ -787,8 +787,9 @@ routine start() -> None
   and a nonzero value over zero (`DivisionByZeroError`), and `add_unchecked` .. `truediv_unchecked`, `sqrt_unchecked`
   give the raw IEEE value. `Decimal` is 34 digits and never an infinity or a NaN: `+ - *` are exact and failable
   (`NumericOverflowError` when the result needs more than 34 digits), `/` rounds to 34 digits, and every rounding a
-  `Decimal` does (`/`, text read in, an integer with more digits, `Fixed[Decimal]`, `round()`) takes a value exactly
-  halfway away from zero (`2.5` to `3`, `-2.5` to `-3`). Its text drops the zeros after the point (`2.50` is `2.5`).
+  `Decimal` does (`/`, text read in, an integer with more digits, `Fixed[Decimal]`, `round()`) is half up: x goes to
+  the n (at the digit kept) with `n - 0.5 <= x < n + 0.5`, that is `floor(x + 0.5)` (`2.5` to `3`, `-2.5` to `-2`,
+  `-7.125` to 2 places `-7.12`, and `round()` of `-0.5` is `0`). Its text drops the zeros after the point (`2.50` is `2.5`).
   There is no decimal literal: a value comes from text (`"19.99".to[Decimal]()`, failable: `EmptyTextError`,
   `InvalidValueError`, and for `Decimal` `OutOfRangeError`), from an integer (`n.to[D64]()`, `S64.to[Decimal](3)`
   on every `S8` .. `U256`), or `D64.zero()` / `Decimal.zero()` (`.hollow()` is the all-zero bits, a zero at the
