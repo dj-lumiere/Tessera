@@ -831,7 +831,7 @@ routine start() -> None
   and a nonzero value over zero (`DivisionByZeroError`), and `add_unchecked` .. `truediv_unchecked`, `sqrt_unchecked`
   give the raw IEEE value. `Decimal` is 34 digits and never an infinity or a NaN: `+ - *` are exact and failable
   (`NumericOverflowError` when the result needs more than 34 digits), `/` rounds to 34 digits, and every rounding a
-  `Decimal` does (`/`, text read in, an integer with more digits, `Fixed[Decimal]`, `round()`) is half up: x goes to
+  `Decimal` does (`/`, `sqrt`, `powf`, `powi`, text read in, an integer with more digits, `Fixed[Decimal]`, `round()`) is half up: x goes to
   the n (at the digit kept) with `n - 0.5 <= x < n + 0.5`, that is `floor(x + 0.5)` (`2.5` to `3`, `-2.5` to `-2`,
   `-7.125` to 2 places `-7.12`, and `round()` of `-0.5` is `0`). A `Decimal` has one form per value: every result is
   normalized (no trailing zeros in the coefficient, a zero is always `0`, never `-0`), so `1.0` and `1.00` hash the
@@ -857,9 +857,12 @@ routine start() -> None
   rounds to an infinity (`to_unchecked[D32]()` gives the infinity), and `D128.to[Decimal]()` crashes on an infinity
   or a NaN. Each obeys Equatable, Comparable (a NaN orders as 0, `<` and `<=` are false), the operator protocols,
   Representable (`1E+20`, `1.23E-8`, `0.000001`, `1E-7`, `inf`, `NaN`, the text RazorForge and Suflae write),
-  Diagnosable (`D64(1.5)`, `Decimal(2.5)`), FixedRepresentable (`Fixed[D64](value: d, digits: 2)`), and Parsable.
-  `from_bits` / `bits()` move a D type to and from its BID encoding. Not there yet: hashing of the D types, the transcendentals, and
-  conversions to and from the binary floats.
+  Diagnosable (`D64(1.5)`, `Decimal(2.5)`), FixedRepresentable (`Fixed[D64](value: d, digits: 2)`), Parsable, and
+  Hashable: a D type hashes its value, not the digits it keeps (`1.0` and `1.00`, `+0` and `-0` hash the same, every
+  NaN hashes the same). `from_bits` / `bits()` move a D type to and from its BID encoding. `Decimal` has `sqrt()`,
+  `powf(exponent:)` and `powi(n)`, correctly rounded, a tie half up (they crash with `NumericDomainError` for a
+  negative base under a non-integer exponent or a negative `sqrt`, `NumericOverflowError` out of range). `D128` has
+  `sqrt()`. Not there yet: the other transcendentals and conversions to and from the binary floats.
 
 **Routines and generics**
 
