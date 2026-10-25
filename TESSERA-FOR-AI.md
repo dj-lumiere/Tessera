@@ -205,7 +205,7 @@ routine start() -> None
 - **Where values are: four types.** `@T` (a `PointedCell`) is the address of one value (a place's value, a field, an element,
   memory from C). `@[T]` (Core, `Types/PointedSlice.te`) is `{data, count}`, a run of values it views. Both only VIEW
   memory and release nothing. Only a `@T` reads and writes its value (`peek` / `poke`, and everything `@T` has:
-  `peek_volatile`, `unbroken_fetch_add`, ...), and only a `BorrowedCell[T]` reads and writes its own (`load` / `store`). A span
+  `peek_volatile`, `fetch_add_unbroken`, ...), and only a `BorrowedCell[T]` reads and writes its own (`load` / `store`). A span
   turns an element into one of those: `getitem(i)` is the value (a copy, `xs[i]`), `getslot(i)` its place (the checked
   `@T`), `try view.getitem(i)` a `Maybe`, `getslice(start, count)` a part, `getview()` itself, `to[@T]()` the first
   address, and `swap(first, second)` trades two values in place (moved). A span has no `setitem`: `xs[i] = v` on a span
@@ -1709,8 +1709,9 @@ or an Unbroken, above) (`hits: Unbroken[U64]` in a shared record, `Unbroken[U64]
 `swap`, `compare_exchange` / `compare_exchange_weak` (`Maybe[T]`: `None` when it wrote, the value found when
 not), `fetch_add` / `fetch_sub` (integers, wrapping), `fetch_and` / `fetch_or` / `fetch_xor`, `fetch_fadd` /
 `fetch_fsub` (B32, B64), each with the order suffixes LLVM allows: `_relaxed` / `_acquire` / `_release` / `_acq_rel`
-(`peek_acquire`, `poke_release`, `fetch_add_relaxed`), none = sequentially consistent. `@T`'s `unbroken_*` routines
-(`peek_unbroken`, `poke_unbroken`, `unbroken_fetch_add`, ...) are for memory whose type the program doesn't choose (from C,
+(`peek_acquire`, `poke_release`, `fetch_add_relaxed`), none = sequentially consistent. `@T`'s `*_unbroken` routines
+(`peek_unbroken`, `poke_unbroken`, `fetch_add_unbroken`, ..., the operation, then `_unbroken`, then the order:
+`fetch_add_unbroken_relaxed`) are for memory whose type the program doesn't choose (from C,
 another process, a futex word). What T allows depends on the target (capability protocols, a wider access is a build
 error). `Bool` has none: use a `U8`.
 

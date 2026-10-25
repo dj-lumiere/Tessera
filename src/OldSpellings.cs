@@ -36,11 +36,16 @@ public static class OldSpellings
     private static string Renamed(string name, string now) => $"'{name}' is called {now}";
 
     /// The message for a routine that took a new name, else null: the routines that change a value as one unbroken
-    /// step are `unbroken_...` (`peek_unbroken`, `poke_unbroken`, `unbroken_fetch_add`).
-    public static string? OldRoutineName(string name) =>
-        name.StartsWith("atomic_", StringComparison.Ordinal) ? $"'{name}' is called 'unbroken_{name["atomic_".Length..]}' now"
-        : name.Contains("_atomic", StringComparison.Ordinal) ? $"'{name}' is called '{name.Replace("_atomic", "_unbroken")}' now"
-        : null;
+    /// step are the operation, then `_unbroken`, then the memory order (`peek_unbroken`, `fetch_add_unbroken`,
+    /// `compare_exchange_weak_unbroken_acq_rel_raw`). An `atomic_...` or `unbroken_...` name says the new one.
+    public static string? OldRoutineName(string name)
+    {
+        string? now = name.StartsWith("atomic_", StringComparison.Ordinal) ? UnbrokenNames.ForOperation(name["atomic_".Length..])
+            : name.StartsWith("unbroken_", StringComparison.Ordinal) ? UnbrokenNames.ForOperation(name["unbroken_".Length..])
+            : name.Contains("_atomic", StringComparison.Ordinal) ? name.Replace("_atomic", "_unbroken")
+            : null;
+        return now is null ? null : $"'{name}' is called '{now}' now";
+    }
 
     /// The message for a name that is gone, else null.
     public static string? OldName(string name) => name switch

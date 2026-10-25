@@ -77,7 +77,7 @@ public sealed partial class FunctionGen
         {
             "poke" or "poke_volatile" or "poke_unbroken" or "poke_unaligned" or "zeroinit" or "copy" or "store" or "setitem" or "swap" => plan.Receiver,
             "poke_into" or "store_into" or "copy_into" => plan.Args.FirstOrDefault(),
-            _ when plan.Decl.Name.StartsWith("unbroken_", StringComparison.Ordinal) => plan.Receiver,
+            _ when UnbrokenNames.IsWrite(plan.Decl.Name) => plan.Receiver,
             _ => null,
         };
         if (written is not null && ReadOnlyView(written))
