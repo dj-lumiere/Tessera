@@ -1,0 +1,69 @@
+# Preemption on a board without an operating system: two threads of a ThreadManagerByRoundRobin print in turn, and
+# neither gives the core up: each spins until the other has printed. Only the timer's interrupt, which takes the core
+# from a spinning thread at the end of its slice, lets the other one print.
+
+import Standard/Fiber
+
+global GIC: &InterruptManagerByGic <- .hollow()
+global THREADS: &ThreadManagerByRoundRobin <- .hollow()
+### The threads' slots: 64 KiB, four slots of 16 KiB.
+global STACKS: &Array[U64, 8192]
+### Whose turn it is: 0 or 1.
+global TURN: &U32
+
+### The serial port of QEMU's virt machine.
+### :returns: The port.
+routine serial() -> Pl011
+    return Pl011.construct(base: inttoptr[U64, Addr](0x09000000))
+
+### Writes the crash's name and place on the serial port and turns the machine off.
+### :param name: The crashable's name.
+### :param message: Its message.
+### :param place: Where it was thrown.
+@untraced
+routine report(name: @[Byte], message: @CrashMessage, place: @SourceLocation) -> None
+    port: &Pl011 <- serial()
+    port.write("crash: {name}\n")
+    psci_power_off()
+    return
+
+### Turns the virt machine's GIC on and makes the thread manager over STACKS, with a slice of 1 ms.
+routine prepare_threads() -> None
+    GIC.poke(InterruptManagerByGic.construct(distributor: inttoptr[U64, Addr](0x08000000),
+        cpu_interface: inttoptr[U64, Addr](0x08010000)))
+    GIC.start()
+    THREADS.poke(ThreadManagerByRoundRobin.construct(region: STACKS, size: 64kib, stack_size: 16kib,
+        slice: Duration.from_milliseconds(1), interrupts: GIC))
+    return
+
+### Prints its number three times, each time once TURN is its own, then hands the turn on.
+### :param arg: Its number, 0 or 1, as an address.
+routine take_turns(arg: Addr) -> None
+    mine: U32 = ptrtoint[Addr, U64](arg).to[U32]()
+    port: &Pl011 <- serial()
+    each round in 0 til 3
+        loop
+            if TURN.peek_volatile() == mine
+                break
+            continue
+        port.write("thread {mine}: round {round}\n")
+        TURN.poke_volatile(1 - mine)
+    return
+
+### Turns the managers on and puts the reporting routine in the Crash service's slot.
+routine when_power_on() -> None
+    prepare_core()
+    Crash.report_with(report.to[Callable]())
+    return
+
+### Starts the two threads, runs them, and says whether the timer took the core.
+routine start() -> None
+    port: &Pl011 <- serial()
+    prepare_threads()
+    THREADS.launch(entry: take_turns.to[Callable](), arg: inttoptr[U64, Addr](0))
+    THREADS.launch(entry: take_turns.to[Callable](), arg: inttoptr[U64, Addr](1))
+    THREADS.run()
+    preempted: Bool = THREADS.preemptions() > 0
+    port.write("preempted: {preempted}\n")
+    psci_power_off()
+    return

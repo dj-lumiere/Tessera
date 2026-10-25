@@ -1,0 +1,105 @@
+# Blocking and waking on a board without an operating system: a sender and a receiver of a ThreadManagerByRoundRobin
+# pass five numbers through a mailbox of one value, built on the manager's word wait. The receiver waits on FULL while
+# the mailbox is empty, the sender waits on it while it is full, and each wakes the other after its change. The
+# sender sleeps before each number, so the receiver finds the mailbox empty and waits.
+
+import Standard/Fiber
+
+global GIC: &InterruptManagerByGic <- .hollow()
+global THREADS: &ThreadManagerByRoundRobin <- .hollow()
+### The threads' slots: 64 KiB, four slots of 16 KiB.
+global STACKS: &Array[U64, 8192]
+### The value in the mailbox.
+global VALUE: &U64
+### 1 while the mailbox holds a value, 0 while it is empty: the word both threads wait on.
+global FULL: &U32
+### How many times the receiver found the mailbox empty and waited.
+global RECEIVER_WAITS: &U64
+
+### The serial port of QEMU's virt machine.
+### :returns: The port.
+routine serial() -> Pl011
+    return Pl011.construct(base: inttoptr[U64, Addr](0x09000000))
+
+### Writes the crash's name and place on the serial port and turns the machine off.
+### :param name: The crashable's name.
+### :param message: Its message.
+### :param place: Where it was thrown.
+@untraced
+routine report(name: @[Byte], message: @CrashMessage, place: @SourceLocation) -> None
+    port: &Pl011 <- serial()
+    port.write("crash: {name}\n")
+    psci_power_off()
+    return
+
+### Turns the virt machine's GIC on and makes the thread manager over STACKS, with a slice of 1 ms.
+routine prepare_threads() -> None
+    GIC.poke(InterruptManagerByGic.construct(distributor: inttoptr[U64, Addr](0x08000000),
+        cpu_interface: inttoptr[U64, Addr](0x08010000)))
+    GIC.start()
+    THREADS.poke(ThreadManagerByRoundRobin.construct(region: STACKS, size: 64kib, stack_size: 16kib,
+        slice: Duration.from_milliseconds(1), interrupts: GIC))
+    return
+
+### Puts `value` in the mailbox once it is empty, and wakes the receiver.
+### :param value: The value.
+routine send(value: U64) -> None
+    loop
+        if FULL.peek_volatile() == 0
+            break
+        THREADS.wait_on(at: FULL, expected: 1)
+        continue
+    VALUE.poke_volatile(value)
+    FULL.poke_volatile(1)
+    THREADS.wake_all(FULL)
+    return
+
+### Takes the value out of the mailbox once it holds one, and wakes the sender.
+### :returns: The value.
+routine receive() -> U64
+    loop
+        if FULL.peek_volatile() == 1
+            break
+        RECEIVER_WAITS.peek().add(1).poke_into(RECEIVER_WAITS)
+        THREADS.wait_on(at: FULL, expected: 0)
+        continue
+    value: U64 = VALUE.peek_volatile()
+    FULL.poke_volatile(0)
+    THREADS.wake_all(FULL)
+    return value
+
+### Sends 1 to 5, sleeping 5 ms before each.
+### :param arg: Unused.
+routine sender(arg: Addr) -> None
+    first: U64 = 1
+    each n in first to 5
+        THREADS.sleep(Duration.from_milliseconds(5))
+        send(n)
+    return
+
+### Receives five values and prints each.
+### :param arg: Unused.
+routine receiver(arg: Addr) -> None
+    port: &Pl011 <- serial()
+    each i in 0 til 5
+        value: U64 = receive()
+        port.write("received {value}\n")
+    return
+
+### Turns the managers on and puts the reporting routine in the Crash service's slot.
+routine when_power_on() -> None
+    prepare_core()
+    Crash.report_with(report.to[Callable]())
+    return
+
+### Starts the receiver and the sender, runs them, and says whether the receiver waited.
+routine start() -> None
+    port: &Pl011 <- serial()
+    prepare_threads()
+    THREADS.launch(entry: receiver.to[Callable](), arg: .hollow())
+    THREADS.launch(entry: sender.to[Callable](), arg: .hollow())
+    THREADS.run()
+    waited: Bool = RECEIVER_WAITS.peek() >= 5
+    port.write("the receiver waited: {waited}\n")
+    psci_power_off()
+    return

@@ -1,0 +1,65 @@
+# Tessera stdlib: the AArch64 generic timer's virtual timer, on a board without an operating system
+#
+# Every AArch64 core has a counter that counts up at a fixed rate (CNTFRQ_EL0 ticks a second, from power on) and a
+# timer that raises an interrupt once the counter reaches a deadline. The virtual timer (CNTV) is the one a program at
+# EL1 always reaches. Its interrupt is line 27 of the core's interrupt controller (CPU_TIMER_LINE, a line of the
+# core's own devices). The deadline stays raised until it is moved or the timer stopped, so the handler of its line
+# does one of those before it returns.
+
+module Standard/System/Cpu
+
+### The interrupt line of the virtual timer: line 27 on a GIC.
+@target(arch: "aarch64", os: "none")
+preset CPU_TIMER_LINE: U32 = 27
+
+### How many ticks the counter counts in a second (CNTFRQ_EL0).
+### :returns: The rate.
+@target(arch: "aarch64", os: "none")
+@external("asm")
+routine cpu_timer_rate() -> U64
+    block entry()
+        mrs[U64](R0, CNTFRQ_EL0)  # mrs x0, cntfrq_el0
+        return R0
+
+### The counter now (CNTVCT_EL0), read after every instruction before it.
+### :returns: The count.
+@target(arch: "aarch64", os: "none")
+@external("asm")
+routine cpu_timer_count() -> U64
+    block entry()
+        isb()  # isb
+        mrs[U64](R0, CNTVCT_EL0)  # mrs x0, cntvct_el0
+        return R0
+
+### Sets the timer's deadline and turns the timer on: its line raises an interrupt once the counter reaches `count`.
+### :param count: The deadline, a counter value.
+@target(arch: "aarch64", os: "none")
+@external("asm")
+routine cpu_timer_raise_at(count: U64) -> None
+    block entry()
+        msr[U64](CNTV_CVAL_EL0, count)  # msr cntv_cval_el0, <count>
+        mov[U64](R9, 1)  # mov x9, #1: ENABLE on, IMASK off
+        msr[U64](CNTV_CTL_EL0, R9)  # msr cntv_ctl_el0, x9
+        isb()  # isb
+        return
+
+### Turns the timer off: its line raises nothing until the next cpu_timer_raise_at.
+@target(arch: "aarch64", os: "none")
+@external("asm")
+routine cpu_timer_stop() -> None
+    block entry()
+        msr[U64](CNTV_CTL_EL0, ZERO)  # msr cntv_ctl_el0, xzr
+        isb()  # isb
+        return
+
+### How many counter ticks `span` is, rounded down: 0 for a span of zero or less.
+### :param span: The time.
+### :returns: The ticks.
+@target(arch: "aarch64", os: "none")
+routine cpu_timer_ticks(span: Duration) -> U64
+    if span <= Duration.zero()
+        return 0
+    rate: U64 = cpu_timer_rate()
+    nanos: U64 = (span.nanoseconds_clamp() % 1000000000).to[U64]()
+    seconds: U64 = span.seconds().to[U64]()
+    return (seconds *^ rate) +^ (nanos * rate // 1000000000)

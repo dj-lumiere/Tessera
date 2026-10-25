@@ -1203,18 +1203,31 @@ static class Cli
         }
 
         string exe = TempExe();
+        // A program for a board links with the board's link script, written next to the temporary executable.
+        string? script = manifest?.Board is { } board ? Path.ChangeExtension(exe, ".ld") : null;
         try
         {
             try
             {
-                Link(ir, exe, target, manifest?.Mode ?? _testMode,
-                    (manifest?.LinkArguments() ?? []).Concat(RaceLink(race)));
+                var linkArgs = manifest?.LinkArguments() ?? [];
+                if (script is not null)
+                {
+                    File.WriteAllText(script, manifest!.Board!.LinkScript());
+                    linkArgs = manifest.LibraryPaths.Select(p => "-L" + p).Concat(manifest.CLibraries.Select(l => "-l" + l))
+                        .Concat(Manifest.BoardLinkArguments(script));
+                }
+                Link(ir, exe, target, manifest?.Mode ?? _testMode, linkArgs.Concat(RaceLink(race)));
             }
             catch (ToolError e) { return e.Message; }
 
             byte[]? input = File.Exists(stem + ".input") ? File.ReadAllBytes(stem + ".input") : null;
-            var (code, stdout, stderr) = Exec(exe, captureOutput: true, input,
-                limitSeconds: race ? TestSeconds * RaceCheckSlowdown : TestSeconds);
+            (int, string, string) result;
+            if (target.HasOs)
+                result = Exec(exe, captureOutput: true, input,
+                    limitSeconds: race ? TestSeconds * RaceCheckSlowdown : TestSeconds);
+            else if (Emulate(stem, exe, input) is { } emulated) result = emulated;
+            else return null;
+            var (code, stdout, stderr) = result;
             int expectedCode = File.Exists(stem + ".exit") ? int.Parse(File.ReadAllText(stem + ".exit").Trim()) : 0;
             if (code != expectedCode) return $"exit code {code}, expected {expectedCode}{(stderr.Length > 0 ? $"; stderr: {stderr}" : "")}";
 
@@ -1233,6 +1246,46 @@ static class Cli
         finally
         {
             DeleteTempExe(exe);
+            if (script is not null) TryDelete(script);
         }
+    }
+
+    /// Whether the note that an emulator is missing was written already: once per run.
+    private static int _emulatorNoted;
+
+    /// Runs a test built for a board without an operating system in the emulator its `<name>.qemu` file names: one
+    /// line, the emulator and its arguments, the program's path going last (`qemu-system-aarch64 -M virt -cpu
+    /// cortex-a53 -nographic -nic none -kernel`). The program's serial port is the emulator's standard output, and the
+    /// program ends the emulator itself (psci_power_off). Null when the emulator isn't installed: the test is skipped,
+    /// with a note on the error output.
+    private static (int, string, string)? Emulate(string stem, string exe, byte[]? input)
+    {
+        string file = stem + ".qemu";
+        if (!File.Exists(file))
+            return (-1, "", $"a test for a board without an operating system names its emulator in {Path.GetFileName(file)}");
+        var words = File.ReadAllLines(file).Select(l => l.Trim()).First(l => l.Length > 0 && !l.StartsWith('#'))
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        string? emulator = FindOnPath(words[0]);
+        if (emulator is null)
+        {
+            if (Interlocked.Exchange(ref _emulatorNoted, 1) == 0)
+                Console.Error.WriteLine($"note: {words[0]} isn't installed, so the tests that run in it are skipped");
+            return null;
+        }
+        var (code, stdout, stderr) = Exec(emulator, captureOutput: true, input, programArgs: [.. words[1..], exe],
+            limitSeconds: TestSeconds);
+        // The serial port writes \n, and QEMU's console may turn it into \r\n.
+        return (code, stdout.Replace("\r\n", "\n"), stderr);
+    }
+
+    /// The full path of `program` on PATH, or null when it isn't there.
+    private static string? FindOnPath(string program)
+    {
+        if (Path.IsPathRooted(program)) return File.Exists(program) ? program : null;
+        foreach (string dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
+            foreach (string name in OperatingSystem.IsWindows() ? [program + ".exe", program] : new[] { program })
+                if (dir.Length > 0 && File.Exists(Path.Combine(dir, name)))
+                    return Path.Combine(dir, name);
+        return null;
     }
 }
