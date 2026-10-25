@@ -64,7 +64,10 @@ public static class StandardLibrary
     /// <param name="shownAs">The file's name from the stdlib directory (ShownAs).</param>
     public static string ModuleOf(string shownAs)
     {
-        var parts = (Path.GetDirectoryName(shownAs) ?? "").Split('/', '\\', StringSplitOptions.RemoveEmptyEntries);
+        // The name is split on both separators wherever the builder runs, so a name written on Windows
+        // (Standard\Collections\List.te) gives the same module as one written on Linux.
+        var names = shownAs.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries);
+        var parts = names.Length > 0 ? names[..^1] : names;
         if (parts is not [Compiler.StandardRoot, _, ..])
             throw new CompileError(new Pos(shownAs, 1, 1),
                 "a standard library file goes in a module's folder under Standard, not in Standard itself");

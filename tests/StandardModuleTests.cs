@@ -25,6 +25,8 @@ public class StandardModuleTests
     [InlineData("Standard/System/Prelude.te", "System")]
     [InlineData("Standard/Collections/List.te", "Collections")]
     [InlineData("Standard/Text/Patterns/Regex.te", "Text/Patterns")]
+    [InlineData(@"Standard\Collections\List.te", "Collections")]
+    [InlineData(@"Standard\System\Memory\Heap.te", "System/Memory")]
     public void The_folder_is_the_module(string shownAs, string module)
     {
         Assert.Equal(module, StandardLibrary.ModuleOf(shownAs));
@@ -58,13 +60,5 @@ public class StandardModuleTests
         string stdlib = StdlibDir();
         var folders = Directory.GetDirectories(stdlib).Select(Path.GetFileName).Order(StringComparer.Ordinal);
         Assert.Equal(Compiler.StandardModuleRoots.Order(StringComparer.Ordinal), folders);
-    }
-
-    [Fact]
-    public void A_path_with_the_old_Standard_prefix_is_a_build_error_naming_the_new_path()
-    {
-        var e = Assert.Throws<CompileError>(() =>
-            Parse("Standard/System/Text/Format.te", "import Standard/Hosted\n\npreset WIDTH: U64 = 8\n"));
-        Assert.Contains("Standard/Hosted is written Hosted", e.Message);
     }
 }
